@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard};
 
 use horch_core::execution::legacy::Record;
-use horch_core::execution::records::Ledger;
+use horch_core::execution::records::SessionLedger;
 use horch_core::execution::store::ExecutionStore;
 use horch_core::harness::launch::{self, LaunchEnv, Session};
 use horch_core::harness::CommandSpec;
@@ -630,7 +630,7 @@ fn oracle_ledgers_match() {
     let tmp = tempfile::tempdir().unwrap();
     for name in LEDGERS {
         let fixture = oracles().join(format!("ledgers/{name}.json"));
-        let ledger = Ledger::for_project(tmp.path(), &format!("/oracle/{name}"));
+        let ledger = SessionLedger::for_project(tmp.path(), &format!("/oracle/{name}"));
         std::fs::copy(&fixture, ledger.path()).unwrap_or_else(|e| {
             panic!("{}: {e}", fixture.display());
         });

@@ -415,7 +415,7 @@ fn g63_warning_is_one_line_and_offers_finish_when_done() {
 
 #[test]
 fn g57_compacting_orchestrator_types_its_command_card() {
-    use horch_core::execution::records::Ledger;
+    use horch_core::execution::records::SessionLedger;
     let mut h = Harness::new("g57-compact").with_git();
     h.set("HORCH_WORKSPACE_ID", "w1");
     h.set("HORCH_NO_WAKE", "1");
@@ -451,7 +451,7 @@ fn g57_compacting_orchestrator_types_its_command_card() {
     let mailbox = horch_core::messaging::mailbox::Mailbox::under(&h.state, "w1");
     std::fs::create_dir_all(mailbox.dir()).unwrap();
     std::fs::write(mailbox.dir().join("orchestrator.id"), "w1:p1").unwrap();
-    let ledger = Ledger::for_project(&h.state, &h.project.to_string_lossy());
+    let ledger = SessionLedger::for_project(&h.state, &h.project.to_string_lossy());
     ledger
         .add(horch_core::execution::records::NewRecord {
             record_id: "r-orchestrator",

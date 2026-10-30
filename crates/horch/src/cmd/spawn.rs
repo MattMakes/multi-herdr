@@ -474,7 +474,7 @@ pub fn fleet_warnings(ctx: &RuntimeContext, as_note: bool) {
     if let Some(warning) = ctx.paths.ledger_isolation_warning() {
         eprintln!("horch: {prefix} {warning}");
     }
-    let caller = super::ledgercmd::caller_workspace(ctx);
+    let caller = super::sessionscmd::caller_workspace(ctx);
     let herdr = Herdr::with_bin(&ctx.bins.harness.herdr);
     if let Ok(workspaces) = herdr.workspace_list() {
         let listed = |w: &str| workspaces.iter().any(|ws| ws.workspace_id == w);

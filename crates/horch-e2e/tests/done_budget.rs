@@ -12,7 +12,7 @@ use std::process::{Command, Output, Stdio};
 use std::time::{Duration, Instant};
 
 use horch_core::execution::legacy::Record;
-use horch_core::execution::records::Ledger;
+use horch_core::execution::records::SessionLedger;
 use horch_e2e::harness::{wait_for, Harness};
 use serde_json::{json, Value};
 
@@ -77,7 +77,7 @@ fn world(name: &str) -> Harness {
     std::fs::write(mailbox.join("orchestrator.id"), ORCHESTRATOR).unwrap();
     std::fs::write(mailbox.join(format!("{ROLE}.id")), WORKER).unwrap();
     stick_orchestrator(&h);
-    Ledger::for_project(&h.state, &h.project.to_string_lossy())
+    SessionLedger::for_project(&h.state, &h.project.to_string_lossy())
         .insert(Record {
             record_id: RECORD.into(),
             agent: "claude".into(),
@@ -101,7 +101,7 @@ fn as_worker(h: &Harness, args: &[&str]) -> Command {
 }
 
 fn record(h: &Harness) -> Value {
-    Ledger::for_project(&h.state, &h.project.to_string_lossy())
+    SessionLedger::for_project(&h.state, &h.project.to_string_lossy())
         .get(RECORD)
         .map(|r| serde_json::to_value(r).unwrap())
         .unwrap()

@@ -1,5 +1,5 @@
 //! Behavioral coverage for fleet pitfalls #49–55.
-use horch_core::execution::records::Ledger;
+use horch_core::execution::records::SessionLedger;
 use horch_e2e::harness::{fixtures, Harness};
 use serde_json::json;
 
@@ -51,7 +51,7 @@ fn g50_machine_fixture_accepts_pinned_load() {
 #[test]
 fn g51_sessions_filter_workspace_live_role_and_indent_summary() {
     let mut h = Harness::new("g51-sessions");
-    let ledger = Ledger::for_project(&h.state, &h.project.to_string_lossy());
+    let ledger = SessionLedger::for_project(&h.state, &h.project.to_string_lossy());
     for (id, role, workspace) in [("r1", "sonnet-1", "w1"), ("r2", "sonnet-2", "w2")] {
         ledger
             .add(horch_core::execution::records::NewRecord {
@@ -347,7 +347,7 @@ fn g52_concurrent_workers_get_their_own_session_and_transcript() {
     });
     assert_ne!(workers[0]["session_id"], workers[1]["session_id"]);
     assert_ne!(workers[0]["transcript_path"], workers[1]["transcript_path"]);
-    let records = Ledger::for_project(&h.state, &h.project.to_string_lossy())
+    let records = SessionLedger::for_project(&h.state, &h.project.to_string_lossy())
         .read()
         .unwrap();
     for w in workers.iter().rev() {
@@ -416,7 +416,7 @@ fn g52_concurrent_workers_get_their_own_session_and_transcript() {
 }
 
 fn ledger_records(h: &Harness) -> Vec<horch_core::execution::legacy::Record> {
-    Ledger::for_project(&h.state, &h.project.to_string_lossy())
+    SessionLedger::for_project(&h.state, &h.project.to_string_lossy())
         .read()
         .unwrap()
 }
@@ -543,7 +543,7 @@ fn compact_world(name: &str, over: bool) -> (Harness, String) {
     std::fs::create_dir_all(mailbox.dir()).unwrap();
     std::fs::write(mailbox.dir().join("sonnet-1.id"), &pane).unwrap();
     std::fs::write(mailbox.dir().join("orchestrator.id"), "w1:p1").unwrap();
-    let ledger = Ledger::for_project(&h.state, &h.project.to_string_lossy());
+    let ledger = SessionLedger::for_project(&h.state, &h.project.to_string_lossy());
     ledger
         .add(horch_core::execution::records::NewRecord {
             record_id: "r-compact",
@@ -597,7 +597,7 @@ fn g53_progress_warns_once_and_missing_handoff_is_refused() {
 #[test]
 fn g53_below_threshold_handoff_does_not_schedule() {
     let (h, _) = compact_world("g53-small", false);
-    let ledger = Ledger::for_project(&h.state, &h.project.to_string_lossy());
+    let ledger = SessionLedger::for_project(&h.state, &h.project.to_string_lossy());
     ledger
         .record_event("r-compact", "context-warned", "earlier warning")
         .unwrap();
@@ -659,7 +659,7 @@ fn g50_live_foreign_runs_and_legacy_orchestrators_warn_but_do_not_block() {
 fn g50_legacy_orchestrator_and_host_load_are_advisory() {
     let mut h = fleet("g50-legacy", "");
     herdr(&h, &["workspace", "create", "--label", "legacy"]);
-    let ledger = Ledger::for_project(&h.state, &h.project.to_string_lossy());
+    let ledger = SessionLedger::for_project(&h.state, &h.project.to_string_lossy());
     ledger
         .insert(horch_core::execution::legacy::Record {
             record_id: "orchestrator-old".into(),
@@ -786,7 +786,7 @@ fn g53_ledger_handoff_compacts_resumes_and_records_progress_once() {
             "claude",
         ],
     );
-    let ledger = Ledger::for_project(&h.state, &h.project.to_string_lossy());
+    let ledger = SessionLedger::for_project(&h.state, &h.project.to_string_lossy());
     wait("completed compaction", || {
         ledger
             .get("r-compact")
@@ -876,7 +876,7 @@ fn g49_spawn_doctor_and_inbox_warn_once_and_name_installed_binary() {
 #[test]
 fn g51_pane_gone_context_filters_and_completed_summaries() {
     let mut h = fleet("g51-context", "");
-    let ledger = Ledger::for_project(&h.state, &h.project.to_string_lossy());
+    let ledger = SessionLedger::for_project(&h.state, &h.project.to_string_lossy());
     for (id, role, ws) in [
         ("a", "sonnet-1", "w1"),
         ("b", "sonnet-2", "w2"),
@@ -1029,7 +1029,7 @@ fn g52_done_discovery_uses_the_same_launch_token() {
     )
     .trim()
     .to_string();
-    let ledger = Ledger::for_project(&h.state, &h.project.to_string_lossy());
+    let ledger = SessionLedger::for_project(&h.state, &h.project.to_string_lossy());
     let record = ledger
         .read()
         .unwrap()

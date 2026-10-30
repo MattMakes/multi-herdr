@@ -96,9 +96,10 @@ impl World {
             codex,
             record("rec-s2", "sonnet-2", "claude", "sonnet", MISSING),
         ]);
-        let path = horch_core::execution::records::Ledger::for_project(root.join("state"), PROJECT)
-            .path()
-            .to_path_buf();
+        let path =
+            horch_core::execution::records::SessionLedger::for_project(root.join("state"), PROJECT)
+                .path()
+                .to_path_buf();
         std::fs::write(path, serde_json::to_string_pretty(&ledger).unwrap()).unwrap();
         World { _tmp: tmp, root }
     }
@@ -131,8 +132,10 @@ impl World {
     }
 
     fn history(&self, id: &str) -> Vec<(String, String)> {
-        let ledger =
-            horch_core::execution::records::Ledger::for_project(self.root.join("state"), PROJECT);
+        let ledger = horch_core::execution::records::SessionLedger::for_project(
+            self.root.join("state"),
+            PROJECT,
+        );
         ledger
             .get(id)
             .unwrap()
@@ -519,7 +522,8 @@ impl<'de> serde::Deserialize<'de> for Keys {
 #[test]
 fn ctx_24_json_has_every_key_and_nulls() {
     let w = World::new();
-    let ledger = horch_core::execution::records::Ledger::for_project(w.root.join("state"), PROJECT);
+    let ledger =
+        horch_core::execution::records::SessionLedger::for_project(w.root.join("state"), PROJECT);
     let mut records: Vec<serde_json::Value> =
         serde_json::from_str(&std::fs::read_to_string(ledger.path()).unwrap()).unwrap();
     let mut pi = record(
@@ -661,8 +665,10 @@ fn ctx_24_json_has_every_key_and_nulls() {
 impl World {
     /// Add `rec` to the ledger.
     fn add_record(&self, rec: serde_json::Value) {
-        let ledger =
-            horch_core::execution::records::Ledger::for_project(self.root.join("state"), PROJECT);
+        let ledger = horch_core::execution::records::SessionLedger::for_project(
+            self.root.join("state"),
+            PROJECT,
+        );
         let mut records: Vec<serde_json::Value> =
             serde_json::from_str(&std::fs::read_to_string(ledger.path()).unwrap()).unwrap();
         records.push(rec);
@@ -865,7 +871,8 @@ fn ctx_21_windows_table_names_the_compact_at_source() {
 #[test]
 fn ctx_25_cli_counts_native_and_horch_compactions() {
     let w = World::new();
-    let ledger = horch_core::execution::records::Ledger::for_project(w.root.join("state"), PROJECT);
+    let ledger =
+        horch_core::execution::records::SessionLedger::for_project(w.root.join("state"), PROJECT);
     let mut records: Vec<serde_json::Value> =
         serde_json::from_str(&std::fs::read_to_string(ledger.path()).unwrap()).unwrap();
     let opus = records.iter_mut().find(|r| r["role"] == "opus-1").unwrap();

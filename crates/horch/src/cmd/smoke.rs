@@ -11,7 +11,7 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 use clap::Subcommand;
 use horch_core::execution::legacy::Record;
-use horch_core::execution::records::Ledger;
+use horch_core::execution::records::SessionLedger;
 use horch_core::execution::TilingMode;
 use horch_core::messaging::mailbox::Mailbox;
 use horch_core::runtime::RuntimeContext;
@@ -342,7 +342,7 @@ fn fleet_run(ctx: &RuntimeContext) -> Step {
 /// The worker's session reached done in the ledger, and it closed its own pane.
 fn verify_worker_done(sc: &Scratch, pane: &str) -> Step {
     let id = sc.ws.workspace_id.as_str();
-    let ledger = Ledger::open_in(&sc.ctx)?;
+    let ledger = SessionLedger::open_in(&sc.ctx)?;
     let reached_done = poll(30, Duration::from_secs(1), || smoke_session_done(&ledger));
     if !reached_done {
         let mut lines = vec![format!(
@@ -917,7 +917,7 @@ fn check_survivors(sc: &Scratch, survivors: &[Worker]) -> Step {
 
 /// Exactly one session, finished, having recorded both a progress note and a
 /// completion summary.
-fn smoke_session_done(ledger: &Ledger) -> bool {
+fn smoke_session_done(ledger: &SessionLedger) -> bool {
     ledger
         .read()
         .ok()
@@ -1010,7 +1010,7 @@ mod tests {
     #[test]
     fn smoke_session_is_done_only_with_one_finished_noted_record() {
         let tmp = tempfile::tempdir().unwrap();
-        let ledger = Ledger::for_project(tmp.path(), "/p");
+        let ledger = SessionLedger::for_project(tmp.path(), "/p");
         assert!(!smoke_session_done(&ledger), "empty ledger");
 
         ledger
@@ -1054,7 +1054,7 @@ mod tests {
     #[test]
     fn a_done_session_without_a_note_fails_the_check() {
         let tmp = tempfile::tempdir().unwrap();
-        let ledger = Ledger::for_project(tmp.path(), "/p");
+        let ledger = SessionLedger::for_project(tmp.path(), "/p");
         ledger
             .add(horch_core::execution::records::NewRecord {
                 record_id: "r1",

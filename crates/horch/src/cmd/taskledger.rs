@@ -28,7 +28,7 @@ use horch_core::taskledger::tasks::{self, ClaimOutcome, Claimed, NewTask};
 use horch_core::taskledger::workers::{self, NewWorker};
 use horch_core::taskledger::{self, Store};
 
-use super::ledgercmd::LegacyCommand;
+use super::sessionscmd::LegacyCommand;
 use crate::output;
 
 /// Exit code of `status` when work remains.
@@ -540,7 +540,7 @@ fn group_of(command: &LedgerCommand) -> Group {
 
 pub fn run(ctx: &RuntimeContext, command: LedgerCommand) -> Result<ExitCode> {
     if let LedgerCommand::Legacy { command } = command {
-        return super::ledgercmd::run(ctx, command);
+        return super::sessionscmd::run(ctx, command);
     }
     if let LedgerCommand::Path = command {
         output::println(&ctx.paths.ledger_db.display().to_string());
