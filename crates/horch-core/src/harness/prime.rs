@@ -1718,6 +1718,70 @@ mod tests {
             .starts_with(&user.display().to_string()));
     }
 
+    /// An override of the model wins over a custom model with its id; the
+    /// first custom model with the id decides; a value that is not a whole
+    /// number is no window.
+    #[test]
+    fn models_window_takes_the_override_before_the_custom_model() {
+        let window = |text: &str, model: &str| models_window("/m.json", text, model);
+        let defined = |tokens: Option<u64>| {
+            Some(OperatorWindow {
+                tokens,
+                detail: "/m.json (provider p defined)".into(),
+            })
+        };
+        let both = r#"{"providers":{"p":{"modelOverrides":{"m":{"contextWindow":1000}},"models":[{"id":"m","contextWindow":2000}]}}}"#;
+        assert_eq!(window(both, "p/m"), defined(Some(1000)));
+        // An override without a window leaves it to the custom model.
+        let bare = r#"{"providers":{"p":{"modelOverrides":{"m":{}},"models":[{"id":"m","contextWindow":2000}]}}}"#;
+        assert_eq!(window(bare, "p/m"), defined(Some(2000)));
+        // So does an override whose window is no number.
+        let text = r#"{"providers":{"p":{"modelOverrides":{"m":{"contextWindow":"1000"}},"models":[{"id":"m","contextWindow":2000}]}}}"#;
+        assert_eq!(window(text, "p/m"), defined(Some(2000)));
+        // With no custom model either, there is no window.
+        let text = r#"{"providers":{"p":{"modelOverrides":{"m":{"contextWindow":-1}}}}}"#;
+        assert_eq!(window(text, "p/m"), defined(None));
+        // The first custom model with the id decides, with a window or not.
+        let twice =
+            r#"{"providers":{"p":{"models":[{"id":"m"},{"id":"m","contextWindow":3000}]}}}"#;
+        assert_eq!(window(twice, "p/m"), defined(None));
+        // `models` that is no array holds no model.
+        let object = r#"{"providers":{"p":{"models":{"id":"m","contextWindow":5}}}}"#;
+        assert_eq!(window(object, "p/m"), defined(None));
+        // The id is all that follows the first slash.
+        let slashed = r#"{"providers":{"p":{"modelOverrides":{"a/b":{"contextWindow":7}}}}}"#;
+        assert_eq!(window(slashed, "p/a/b"), defined(Some(7)));
+    }
+
+    /// A `models.json` is the operator's when it defines the provider, with
+    /// whatever value; or when it is no JSON and the model names a provider.
+    #[test]
+    fn models_window_is_none_unless_the_document_defines_the_provider() {
+        let window = |text: &str, model: &str| models_window("/m.json", text, model);
+        let defined = Some(OperatorWindow {
+            tokens: None,
+            detail: "/m.json (provider p defined)".into(),
+        });
+        assert_eq!(window(r#"{"providers":{"p":null}}"#, "p/m"), defined);
+        assert_eq!(window(r#"{"providers":{"p":{}}}"#, "p/m"), defined);
+        // Another provider, no `providers`, or a document that is no object.
+        assert_eq!(window(r#"{"providers":{"q":{}}}"#, "p/m"), None);
+        assert_eq!(window("{}", "p/m"), None);
+        assert_eq!(window(r#"{"providers":[]}"#, "p/m"), None);
+        assert_eq!(window("[1]", "p/m"), None);
+        // Text that is no JSON, for a model that names a provider.
+        assert_eq!(
+            window("{oops", "p/m"),
+            Some(OperatorWindow {
+                tokens: None,
+                detail: "/m.json (not valid JSON)".into(),
+            })
+        );
+        // A model with no provider is judged before the text is read.
+        assert_eq!(window("{oops", "no-slash"), None);
+        assert_eq!(window(r#"{"providers":{"p":{}}}"#, "no-slash"), None);
+    }
+
     #[test]
     fn find_session_picks_the_newest_jsonl() {
         let dir = tempfile::tempdir().unwrap();
