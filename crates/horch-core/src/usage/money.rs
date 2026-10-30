@@ -52,18 +52,17 @@ const EXACT_EPSILON: f64 = 1e-9;
 /// Nano-dollars per token for a price in dollars per million tokens.
 pub(crate) fn nano_per_token(dollars_per_mtok: f64) -> Result<i128, MoneyError> {
     let inexact = MoneyError::InexactPrice { dollars_per_mtok };
-    if dollars_per_mtok.is_nan() || dollars_per_mtok < 0.0 {
-        return Err(inexact);
-    }
     let scaled = dollars_per_mtok * 1000.0;
-    if scaled >= i64::MAX as f64 {
-        return Err(MoneyError::Overflow);
-    }
     let whole = scaled.round();
-    if (scaled - whole).abs() > EXACT_EPSILON {
-        return Err(inexact);
+    if dollars_per_mtok.is_nan() || dollars_per_mtok < 0.0 {
+        Err(inexact)
+    } else if scaled >= i64::MAX as f64 {
+        Err(MoneyError::Overflow)
+    } else if (scaled - whole).abs() > EXACT_EPSILON {
+        Err(inexact)
+    } else {
+        Ok(whole as i128)
     }
-    Ok(whole as i128)
 }
 
 impl NanoUsd {
@@ -154,28 +153,29 @@ impl FromStr for CostSource {
     type Err = ParseCostSourceError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let err = || ParseCostSourceError(s.to_string());
         match s {
-            "harness_reported" => return Ok(CostSource::HarnessReported),
-            "unpriced" => return Ok(CostSource::Unpriced),
-            _ => {}
-        }
-        if let Some(date) = s.strip_prefix("price_table@").filter(|d| !d.is_empty()) {
-            return Ok(CostSource::PriceTable { date: date.into() });
-        }
-        let sha12 = s.strip_prefix("pricing_file@").ok_or_else(err)?;
-        if sha12.len() == 12
-            && sha12
-                .bytes()
-                .all(|c| matches!(c, b'0'..=b'9' | b'a'..=b'f'))
-        {
-            Ok(CostSource::PricingFile {
-                sha12: sha12.into(),
-            })
-        } else {
-            Err(err())
+            "harness_reported" => Ok(CostSource::HarnessReported),
+            "unpriced" => Ok(CostSource::Unpriced),
+            _ => parse_dated(s),
         }
     }
+}
+
+/// The `price_table@<date>` and `pricing_file@<sha12>` forms.
+fn parse_dated(s: &str) -> Result<CostSource, ParseCostSourceError> {
+    match s.split_once('@') {
+        Some(("price_table", date)) if !date.is_empty() => {
+            Ok(CostSource::PriceTable { date: date.into() })
+        }
+        Some(("pricing_file", sha12)) if is_sha12(sha12) => Ok(CostSource::PricingFile {
+            sha12: sha12.into(),
+        }),
+        _ => Err(ParseCostSourceError(s.to_string())),
+    }
+}
+
+fn is_sha12(s: &str) -> bool {
+    s.len() == 12 && s.bytes().all(|c| matches!(c, b'0'..=b'9' | b'a'..=b'f'))
 }
 
 impl Serialize for CostSource {
