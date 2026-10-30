@@ -384,9 +384,11 @@ fn a_land_with_a_remote_names_the_push() {
             &head[..12]
         )
     );
+    let first = note(&r, "land");
     let r = w.finish(&id);
     assert!(r.complete);
-    assert_eq!(note(&r, "land"), note(&r, "land"));
+    assert_eq!(step(&r, "land").rounds, 1, "a passed land stands");
+    assert_eq!(note(&r, "land"), first);
 }
 
 #[test]
