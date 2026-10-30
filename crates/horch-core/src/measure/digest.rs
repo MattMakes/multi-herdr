@@ -195,6 +195,35 @@ mod tests {
         );
     }
 
+    /// Each JSON kind has exactly one canonical text: empty containers,
+    /// both booleans, integer and float forms, escapes in keys and strings,
+    /// and sorting at every depth.
+    #[test]
+    fn canonical_json_text_per_kind() {
+        for (value, want) in [
+            (json!(null), "null"),
+            (json!(true), "true"),
+            (json!(false), "false"),
+            (json!(0), "0"),
+            (json!(-7), "-7"),
+            (json!(u64::MAX), "18446744073709551615"),
+            (json!(1.5), "1.5"),
+            (json!(1e21), "1e+21"),
+            (json!("a\"b\\c\u{1}"), "\"a\\\"b\\\\c\\u0001\""),
+            (json!([]), "[]"),
+            (json!({}), "{}"),
+            (json!([[], {}, [1]]), "[[],{},[1]]"),
+            (json!({"b": {}, "a": []}), "{\"a\":[],\"b\":{}}"),
+            (json!({"k\"": 1, "A": 2}), "{\"A\":2,\"k\\\"\":1}"),
+            (
+                json!([{"y": [false], "x": null}, 2]),
+                "[{\"x\":null,\"y\":[false]},2]",
+            ),
+        ] {
+            assert_eq!(canonical_json(&value), want, "{value}");
+        }
+    }
+
     #[test]
     fn digest_string_round_trips() {
         let d = sha256_bytes(b"abc");
