@@ -376,11 +376,20 @@ fn git_update_ref_cas_mismatch_is_false() {
         Some(next.as_str())
     );
 
-    // Option-shaped arguments never reach git.
-    assert!(f
-        .git
-        .update_ref_cas(&f.repo, "--stdin", &next, &base)
-        .is_err());
+    // Option-shaped arguments never reach git. Each of these, run by git,
+    // would succeed: `--no-deref` drops the compare, `-d` deletes the ref.
+    for (refname, new, old) in [
+        ("--no-deref", target, base.as_str()),
+        (target, "-d", next.as_str()),
+        (target, base.as_str(), "--no-deref"),
+    ] {
+        let tried = f.git.update_ref_cas(&f.repo, refname, new, old);
+        assert!(tried.is_err(), "{refname} {new} {old}: {tried:?}");
+    }
+    assert_eq!(
+        f.git.rev_parse(&f.repo, target).unwrap().as_deref(),
+        Some(next.as_str())
+    );
     assert!(f.git.rev_parse(&f.repo, "--all").is_err());
 
     assert!(f.git.version().unwrap().starts_with("git version "));
