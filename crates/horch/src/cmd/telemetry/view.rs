@@ -1265,14 +1265,18 @@ mod tests {
         let next = press(w.clone(), KeyCode::Char('w'), &r);
         assert_eq!(next.window, (w.window + 1) % VIEW_WINDOWS.len());
         assert_eq!(next.tables[ROLLUP], TableState::default());
-        let mut live = ViewState::default();
-        live.window = VIEW_WINDOWS.len() - 1;
-        live.focus = ROLLUP;
+        let live = ViewState {
+            window: VIEW_WINDOWS.len() - 1,
+            focus: ROLLUP,
+            ..ViewState::default()
+        };
         let wrapped = press(live, KeyCode::Char('w'), &r);
         assert_eq!((wrapped.window, wrapped.focus), (0, LIVE));
 
-        let mut proj = ViewState::default();
-        proj.project = Some("/a".into());
+        let proj = ViewState {
+            project: Some("/a".into()),
+            ..ViewState::default()
+        };
         let (cleared, a) = on_key(proj, key(KeyCode::Esc), &r);
         assert_eq!((cleared.project, a), (None, Action::SetProject(None)));
         let mut cycle = r.clone();
