@@ -109,17 +109,16 @@ pub fn canonical_json(value: &serde_json::Value) -> String {
 fn write_canonical(value: &serde_json::Value, out: &mut String) {
     use serde_json::Value;
     match value {
-        Value::Null => out.push_str("null"),
-        Value::Bool(b) => out.push_str(if *b { "true" } else { "false" }),
-        Value::Number(n) => out.push_str(&n.to_string()),
+        // serde_json writes these 3 kinds as compact JSON already.
+        Value::Null | Value::Bool(_) | Value::Number(_) => out.push_str(&value.to_string()),
         Value::String(s) => write_string(s, out),
         Value::Array(items) => {
             out.push('[');
-            for (i, item) in items.iter().enumerate() {
-                if i > 0 {
-                    out.push(',');
-                }
+            let mut sep = "";
+            for item in items {
+                out.push_str(sep);
                 write_canonical(item, out);
+                sep = ",";
             }
             out.push(']');
         }
@@ -129,13 +128,13 @@ fn write_canonical(value: &serde_json::Value, out: &mut String) {
             let mut entries: Vec<_> = map.iter().collect();
             entries.sort_by(|a, b| a.0.cmp(b.0));
             out.push('{');
-            for (i, (k, v)) in entries.into_iter().enumerate() {
-                if i > 0 {
-                    out.push(',');
-                }
+            let mut sep = "";
+            for (k, v) in entries {
+                out.push_str(sep);
                 write_string(k, out);
                 out.push(':');
                 write_canonical(v, out);
+                sep = ",";
             }
             out.push('}');
         }
