@@ -460,16 +460,14 @@ fn a_spawned_worker_records_its_pids_session_and_checkins() {
         let want = horch_core::procid::start_time(pid).expect("the process runs");
         assert_eq!(w[started].as_i64().unwrap() as u64, want, "{pid}");
     }
-    // The agent was told to claim.
-    let launch = h
-        .calls_of("codex")
-        .into_iter()
-        .rev()
-        .find(|c| c["argv"].to_string().contains("horch ledger claim"));
-    assert!(
-        launch.is_some(),
-        "the agent's task names horch ledger claim"
-    );
+    // The agent was told to claim. The fake writes its call record after
+    // the PIDs are in, so wait for it.
+    wait_for("the agent's task names horch ledger claim", || {
+        h.calls_of("codex")
+            .into_iter()
+            .rev()
+            .find(|c| c["argv"].to_string().contains("horch ledger claim"))
+    });
 
     // Checkins advance while the agent runs.
     let first = w["last_checkin_at"].as_str().unwrap().to_string();
