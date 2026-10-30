@@ -135,6 +135,7 @@ const SKIP_NEW_TEAMMATES: &[&str] = &[
     "ue-ui-engineer",
     "ue-world-engineer",
     "visual-prototyper",
+    "worktree-steward",
 ];
 
 fn is_hex(s: &str) -> bool {

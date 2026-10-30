@@ -69,6 +69,10 @@ Example:
 The task ledger holds the work. You queue tasks. Workers claim them.
 - At the start of a run, read horch ledger unfinished. Discuss each item
   with the operator: what was meant to land, and what is still worth doing.
+- The worktree-steward pane decides about parked worktrees with the
+  operator. horch fleet starts it when parked worktrees exist. Do not run
+  horch worktree triage yourself. A parked worktree with no decision keeps
+  horch ledger run close from closing the run.
 - Discuss each new idea with the operator until it is vetted. Then make the
   spec and the tickets (see "From a rough idea to tickets").
 - horch ledger run new <slug> - create the run and its run branch, once.

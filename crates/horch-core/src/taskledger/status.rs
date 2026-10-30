@@ -68,6 +68,29 @@ pub struct Report {
     pub counts: Counts,
     /// The watchdog's version and binary, once it has checked in (#216).
     pub watchdog: Option<WatchdogLine>,
+    /// The run's parked worktrees on disk (#308).
+    pub parked: Parked,
+}
+
+/// The parked worktrees of a run: on disk, and no step takes them to an
+/// outcome. `horch worktree triage` decides them.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+pub struct Parked {
+    pub count: usize,
+    pub bytes: u64,
+}
+
+impl Parked {
+    fn of(conn: &Connection, run_id: &str) -> Result<Parked> {
+        let paths = super::runs::parked_worktrees(conn, run_id)?;
+        Ok(Parked {
+            count: paths.len(),
+            bytes: paths
+                .iter()
+                .map(|p| super::git::dir_bytes(std::path::Path::new(p)))
+                .sum(),
+        })
+    }
 }
 
 /// The watchdog of a run, as it recorded itself at its last checkin.
@@ -288,8 +311,13 @@ fn worker_lines(
 
 /// A worktree still holds work unless it is scratch or finished.
 fn any_open_worktree(wts: &[WorktreeLine]) -> bool {
-    wts.iter()
-        .any(|w| !w.scratch && !matches!(w.status.as_str(), "cleaned" | "unlanded" | "abandoned"))
+    wts.iter().any(|w| {
+        !w.scratch
+            && !matches!(
+                w.status.as_str(),
+                "cleaned" | "unlanded" | "abandoned" | "archived" | "trashed"
+            )
+    })
 }
 
 /// Build the board of `run`.
@@ -321,6 +349,7 @@ pub fn report_for(conn: &Connection, run: &Run, current: Option<&ExeIdentity>) -
         worktrees: wts,
         counts,
         watchdog: WatchdogLine::of(run, current),
+        parked: Parked::of(conn, &run.run_id)?,
     })
 }
 
@@ -350,6 +379,7 @@ pub fn render(r: &Report) -> String {
     render_tasks(&mut out, &r.tasks);
     render_live(&mut out, &r.workers);
     render_open_worktrees(&mut out, &r.worktrees);
+    render_parked(&mut out, &r.parked);
     let c = &r.counts;
     let _ = writeln!(
         out,
@@ -460,9 +490,25 @@ fn render_live(out: &mut String, workers: &[WorkerLine]) {
     }
 }
 
+/// The parked worktrees line; nothing when none.
+fn render_parked(out: &mut String, p: &Parked) {
+    if p.count == 0 {
+        return;
+    }
+    let _ = writeln!(
+        out,
+        "Parked worktrees: {} ({}). Decide about them with horch worktree triage.",
+        p.count,
+        super::triage::human_bytes(p.bytes)
+    );
+}
+
 /// The worktrees block for every worktree not yet cleaned; nothing when none.
 fn render_open_worktrees(out: &mut String, worktrees: &[WorktreeLine]) {
-    let open: Vec<&WorktreeLine> = worktrees.iter().filter(|w| w.status != "cleaned").collect();
+    let open: Vec<&WorktreeLine> = worktrees
+        .iter()
+        .filter(|w| !super::triage::SETTLED.contains(&w.status.as_str()))
+        .collect();
     if open.is_empty() {
         return;
     }

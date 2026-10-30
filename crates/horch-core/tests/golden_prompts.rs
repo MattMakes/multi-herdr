@@ -1321,6 +1321,22 @@ scratch, or drop --reason instead.
         "sanctioned block preimage missing"
     );
     expected = expected.replace(was, now);
+    // Sanctioned worktree steward block: the steward pane runs the worktree
+    // triage with the operator, so the orchestrator does not (#308).
+    let was = r####"  with the operator: what was meant to land, and what is still worth doing.
+"####;
+    let now = r####"  with the operator: what was meant to land, and what is still worth doing.
+- The worktree-steward pane decides about parked worktrees with the
+  operator. horch fleet starts it when parked worktrees exist. Do not run
+  horch worktree triage yourself. A parked worktree with no decision keeps
+  horch ledger run close from closing the run.
+"####;
+    assert_eq!(
+        expected.matches(was).count(),
+        1,
+        "sanctioned block preimage missing"
+    );
+    expected = expected.replace(was, now);
     expected
         .replace("{host}", &horch_core::project_notes::host_line())
         .replace("{project_facts}", "(No project facts recorded.)")
