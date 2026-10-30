@@ -385,7 +385,6 @@ fn start_detached(
     let mut cmd = std::process::Command::new(exe);
     cmd.args(["ledger", "watch", "--run", &run.run_id])
         .current_dir(root)
-        .env_remove("ANTHROPIC_API_KEY")
         .env("HORCH_PROJECT_DIR", root)
         .env("HORCH_LEDGER_DB", &ctx.paths.ledger_db)
         .stdin(std::process::Stdio::null())
