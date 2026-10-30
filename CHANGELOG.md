@@ -38,15 +38,19 @@
   background waits, exact permission denials, one completion report and
   delegated verification. Orchestrators retain decisions and get a command
   card on resume; Claude workers pre-allow common read-only commands.
-- A Codex worker runs only its own `horch ledger` subcommands outside its
-  sandbox (`claim`, `worktree`, `progress`, `status`, `show`, `steps`,
-  `finish`, `done`); `add`, `add-map` and `reopen` are refused. On Windows,
-  horch removes the old broad `horch ledger` rule from the shared codex rules
-  file. Every worker briefing tells the worker to run each `horch ledger`
-  command alone and carries the network-safety rule. `horch teammates --check`
-  fails for a Codex teammate without these lines. An overlay of
-  `_base/fleet-worker.md` must merge the new ledger lines and the
-  `== Network ==` section.
+- A Codex worker's exec policy allows only its own `horch ledger`
+  subcommands outside its sandbox (`claim`, `worktree`, `progress`, `status`,
+  `show`, `steps`, `finish`, `done`); `add`, `add-map` and `reopen` are
+  refused. `finish` still runs the task's check command and its git commands
+  outside the sandbox, so the check runs code the worker wrote; a later fix
+  runs the check inside the sandbox. On Windows, horch removes the old broad
+  `horch ledger` worker rule from the shared codex rules file. That file
+  serves every codex session, so after a Codex orchestrator starts, its
+  broad `horch ledger` rule applies to Windows workers too. Every worker
+  briefing tells the worker to run each `horch ledger` command alone and
+  carries the network-safety rule. `horch teammates --check` fails for a
+  Codex teammate without these lines. An overlay of `_base/fleet-worker.md`
+  must merge the new ledger lines and the `== Network ==` section.
 
 ## v0.4.0 - 2026-10-29
 

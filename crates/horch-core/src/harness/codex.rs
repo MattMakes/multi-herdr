@@ -369,7 +369,13 @@ pub(crate) fn ensure_rules(home: &Path, rules: &[ExecRule]) -> Result<()> {
         std::fs::create_dir_all(parent)
             .with_context(|| format!("creating {}", parent.display()))?;
     }
-    let read = std::fs::read_to_string(&path).unwrap_or_default();
+    // Only a missing file is empty. A file that is not UTF-8 text is an
+    // error: rewriting it from "" would drop the operator's own rules.
+    let read = match std::fs::read_to_string(&path) {
+        Ok(text) => text,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(e) => return Err(e).with_context(|| format!("reading {}", path.display())),
+    };
     let existing = read.replace(&prompts::codex_rule_block(&broad_ledger_rule()), "");
 
     let mut appended = String::new();
@@ -989,17 +995,18 @@ fn launch_sandbox(
 }
 
 /// Whether a codex launch of `teammate` can have the network, judged from
-/// the teammate file alone (the operator's `config.toml` is not read). It
-/// fails closed: only a read-only sandbox, or a workspace-write sandbox that
-/// does not turn `sandbox_workspace_write.network_access` on, has none. The
-/// fleet write profile, full access, a named profile and a sandbox the file
-/// leaves to codex or to the operator's config count as having it.
+/// the teammate file and the harness defaults. The operator's `config.toml`
+/// is not read, and it can turn the network on, so the answer fails closed:
+/// only a read-only sandbox, or a workspace-write sandbox whose args turn
+/// `sandbox_workspace_write.network_access` off, has none.
 pub(crate) fn launch_has_network(teammate: &Teammate) -> bool {
+    const KEY: &str = "sandbox_workspace_write.network_access";
     match launch_sandbox(teammate, || None).as_deref() {
         Some(READ_ONLY) => false,
         Some(WORKSPACE_WRITE) => {
-            config_pair_value(&teammate.args, "sandbox_workspace_write.network_access")
-                == Some("true")
+            let defaults = default_args(teammate, || None);
+            config_pair_value(&teammate.args, KEY).or_else(|| config_pair_value(&defaults, KEY))
+                != Some("false")
         }
         _ => true,
     }
@@ -1974,23 +1981,29 @@ mod tests {
     /// The decision codex takes for `argv` under the `prefix_rule` blocks in
     /// `rules`: the strictest decision of every rule whose pattern is a
     /// prefix of `argv`, or `None` (the command runs in the sandbox).
+    /// A block that does not parse, or an unknown decision, fails the test.
     fn rule_decision(rules: &str, argv: &[&str]) -> Option<String> {
         let rank = |d: &str| {
             ["allow", "prompt", "forbidden"]
                 .iter()
                 .position(|x| *x == d)
+                .unwrap_or_else(|| panic!("unknown decision {d:?}"))
         };
         rules
             .split("prefix_rule(")
             .skip(1)
             .filter_map(|block| {
                 let field = |name: &str| {
-                    let line = block.lines().find(|l| l.trim().starts_with(name))?;
-                    let value = line.split_once('=')?.1.trim().trim_end_matches(',');
-                    Some(value.to_string())
+                    let line = block
+                        .lines()
+                        .find(|l| l.trim().starts_with(name))
+                        .unwrap_or_else(|| panic!("no {name} in {block}"));
+                    let value = line.split_once('=').unwrap().1.trim();
+                    serde_json::from_str::<serde_json::Value>(value.trim_end_matches(','))
+                        .unwrap_or_else(|e| panic!("{name} in {block}: {e}"))
                 };
-                let pattern: Vec<String> = serde_json::from_str(&field("pattern")?).ok()?;
-                let decision: String = serde_json::from_str(&field("decision")?).ok()?;
+                let pattern: Vec<String> = serde_json::from_value(field("pattern")).unwrap();
+                let decision: String = serde_json::from_value(field("decision")).unwrap();
                 let matches =
                     pattern.len() <= argv.len() && pattern.iter().zip(argv).all(|(p, a)| p == a);
                 matches.then_some(decision)
@@ -2082,35 +2095,31 @@ mod tests {
     #[test]
     fn each_codex_teammate_states_the_network_its_launch_has() {
         let roster = Roster::builtin().unwrap();
+        // Every bundled codex teammate launches with the network.
         let expected = [
-            ("astra-creative", true),
-            ("codex-luna", true),
-            ("codex-network", true),
-            ("codex-reviewer", true),
-            ("codex-sol", true),
-            ("codex-swift-reviewer", true),
-            ("codex-terra", true),
-            ("orchestrator-codex", true),
-            ("visual-prototyper", true),
+            "astra-creative",
+            "codex-luna",
+            "codex-network",
+            "codex-reviewer",
+            "codex-sol",
+            "codex-swift-reviewer",
+            "codex-terra",
+            "orchestrator-codex",
+            "visual-prototyper",
         ];
         let codex: Vec<&str> = roster
             .names()
             .into_iter()
             .filter(|n| roster.require(n).unwrap().agent == HarnessKind::Codex)
             .collect();
-        assert_eq!(
-            codex,
-            expected.map(|(n, _)| n),
-            "a new codex teammate needs a row"
-        );
-        for (name, network) in expected {
+        assert_eq!(codex, expected, "a new codex teammate needs a row");
+        for name in expected {
             let t = roster.require(name).unwrap();
-            assert_eq!(argv_has_network(t), network, "{name}: argv");
-            assert_eq!(launch_has_network(t), network, "{name}: launch_has_network");
-            let said = if network { "+ network" } else { "no network" };
+            assert!(argv_has_network(t), "{name}: argv");
+            assert!(launch_has_network(t), "{name}: launch_has_network");
             assert!(
-                t.brief_description.contains(said),
-                "{name}: {:?} does not say {said:?}",
+                t.brief_description.contains("+ network"),
+                "{name}: {:?} does not say \"+ network\"",
                 t.brief_description
             );
         }
@@ -2134,7 +2143,21 @@ mod tests {
             args: args.iter().map(|s| s.to_string()).collect(),
             ..Default::default()
         };
-        assert!(!launch_has_network(&with(&["-s", "workspace-write"])));
+        // workspace-write counts as having the network unless the args turn
+        // it off: codex's config.toml can turn it on, and is not read here.
+        assert!(launch_has_network(&with(&["-s", "workspace-write"])));
+        assert!(!launch_has_network(&with(&[
+            "-s",
+            "workspace-write",
+            "-c",
+            "sandbox_workspace_write.network_access=false"
+        ])));
+        assert!(!launch_has_network(&with(&[
+            "-s",
+            "workspace-write",
+            "--config",
+            "sandbox_workspace_write.network_access=false"
+        ])));
         assert!(launch_has_network(&with(&[
             "-s",
             "workspace-write",
@@ -2951,6 +2974,24 @@ mod tests {
         );
     }
 
+    /// A shared rules file that cannot be read as text (UTF-16 from
+    /// PowerShell, 1 bad byte) is an error, never an empty file to overwrite:
+    /// the operator's own rules stay.
+    #[test]
+    fn an_unreadable_shared_rules_file_is_left_alone() {
+        let home = tempfile::tempdir().unwrap();
+        let path = rules_path(home.path());
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let utf16: Vec<u8> = [0xFF, 0xFE]
+            .into_iter()
+            .chain("# mine\n".encode_utf16().flat_map(u16::to_le_bytes))
+            .collect();
+        std::fs::write(&path, &utf16).unwrap();
+        let err = ensure_rules(home.path(), Roster::builtin().unwrap().exec_rules());
+        assert!(err.is_err(), "an unreadable file must not be rewritten");
+        assert_eq!(std::fs::read(&path).unwrap(), utf16);
+    }
+
     /// v0.4.0 appended 1 broad `["horch", "ledger"]` allow to the shared file.
     /// An upgrade removes exactly that block, so the narrowed rules apply on
     /// Windows too, and keeps the operator's own rules.
@@ -2977,6 +3018,20 @@ mod tests {
             rule_decision(&text, &["horch", "ledger", "claim"]),
             Some("allow".into())
         );
+
+        // The next launch finds the narrowed rules already there and writes
+        // nothing.
+        ensure_rules(home.path(), Roster::builtin().unwrap().exec_rules()).unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), text);
+
+        // A file that already holds the narrowed rules still loses the old
+        // broad block, and a second launch leaves it byte for byte.
+        std::fs::write(&path, format!("{text}{old}")).unwrap();
+        ensure_rules(home.path(), Roster::builtin().unwrap().exec_rules()).unwrap();
+        let migrated = std::fs::read(&path).unwrap();
+        assert_eq!(String::from_utf8(migrated.clone()).unwrap(), text);
+        ensure_rules(home.path(), Roster::builtin().unwrap().exec_rules()).unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), migrated);
 
         // A rule the operator wrote with the same pattern is theirs: it stays.
         std::fs::write(&path, own).unwrap();

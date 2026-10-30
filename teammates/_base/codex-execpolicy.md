@@ -20,7 +20,10 @@ rules:
   # command a worker runs needs its own allow rule. Only the worker's own
   # subcommands are allowed (#181). `add`, `add-map` and `reopen` take any
   # `--check` command, which `finish` would then run outside the sandbox, so
-  # they are forbidden: a forbidden rule beats any allow rule.
+  # they are forbidden: a forbidden rule beats any allow rule. `finish` still
+  # runs the task's check and its git commands outside the sandbox, in a tree
+  # and a .git the worker writes. On Windows every codex session shares 1
+  # rules file, so a codex orchestrator's broad ledger rule reaches workers.
   - pattern: '"horch", "ledger", "claim"'
     justification: take the next task for this worker
   - pattern: '"horch", "ledger", "worktree"'
