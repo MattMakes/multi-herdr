@@ -13,6 +13,8 @@
 
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant, SystemTime};
 
@@ -31,11 +33,23 @@ const LOCK_POLL: Duration = Duration::from_millis(10);
 #[derive(Debug, Clone)]
 pub struct Store {
     root: PathBuf,
+    /// Lock attempts that found the guard held. Shared by clones.
+    contentions: Arc<AtomicUsize>,
 }
 
 impl Store {
     pub fn new(root: impl Into<PathBuf>) -> Self {
-        Self { root: root.into() }
+        Self {
+            root: root.into(),
+            contentions: Arc::new(AtomicUsize::new(0)),
+        }
+    }
+
+    /// Test seam: how many lock attempts, on this store or a clone of it,
+    /// found the guard held by another holder. A test that holds the lock
+    /// waits for this to reach 1 to know a second caller is blocked on it.
+    pub fn lock_contentions(&self) -> usize {
+        self.contentions.load(Ordering::SeqCst)
     }
 
     pub fn root(&self) -> &Path {
@@ -77,7 +91,9 @@ impl Store {
         loop {
             match fs::create_dir(&dir) {
                 Ok(()) => break Ok(StoreLock { dir }),
-                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                    self.contentions.fetch_add(1, Ordering::SeqCst);
+                }
                 Err(e) => break Err(MarketplaceError::io(dir.display().to_string(), e)),
             }
             if self.clear_stale(&dir, stale_after) {
