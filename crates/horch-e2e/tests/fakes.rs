@@ -706,8 +706,12 @@ fn teardown_fails_a_test_that_leaks_a_process() {
     // Named by the harness root, in its own process group, deaf to SIGTERM.
     let stubborn = h.write_bin(
         "stubborn",
-        b"#!/bin/sh\ntrap '' TERM\necho $$ > \"$1\"\nwhile :; do /bin/sleep 1; done\n",
+        b"#!/bin/sh\nif [ \"$1\" = warm ]; then\n  exit 0\nfi\ntrap '' TERM\necho $$ > \"$1\"\nwhile :; do /bin/sleep 1; done\n",
     );
+    // macOS scans a new executable at its first exec, for up to 35 s under
+    // load: past the 10 s that pid_in waits for the pid.
+    let warmed = Command::new(&stubborn).arg("warm").status().unwrap();
+    assert!(warmed.success(), "warming the stubborn script failed");
     let pidfile = h.tmp.join("stubborn.pid");
     let mut cmd = Command::new(&stubborn);
     // Not the test's own output: a pipe it held open would stall the run.
