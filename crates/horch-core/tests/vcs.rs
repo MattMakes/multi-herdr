@@ -435,7 +435,6 @@ fn pid_alive(pid: i32) -> bool {
 #[test]
 fn cmp_09_gates_per_candidate_with_timeouts() {
     let tmp = tempfile::tempdir().unwrap();
-    let started = Instant::now();
     let (report, worktree, artifacts) = validate_in(
         &tmp,
         |_| {},
@@ -451,10 +450,6 @@ fn cmp_09_gates_per_candidate_with_timeouts() {
             )
         },
     );
-    assert!(
-        started.elapsed() < Duration::from_secs(4),
-        "the timeout fired"
-    );
     let statuses: Vec<_> = report.gates.iter().map(|g| g.status.clone()).collect();
     assert_eq!(
         statuses,
@@ -464,6 +459,11 @@ fn cmp_09_gates_per_candidate_with_timeouts() {
             GateStatus::TimedOut
         ]
     );
+    // The slow gate's own time, not the whole run's, so machine load on the
+    // other gates cannot fail it. Without the 300 ms timeout, `sleep 5`
+    // makes it at least 5000 ms.
+    let slow_ms = report.gates[2].duration_ms;
+    assert!(slow_ms < 4_000, "the timeout fired late: {slow_ms} ms");
     assert_eq!(report.label, "c1");
     assert_eq!(report.head_sha, "b".repeat(40));
     assert!((report.mechanical_score - 1.0 / 3.0).abs() < 1e-9);

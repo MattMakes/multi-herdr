@@ -33,6 +33,9 @@
 //! - `fail_typing`: `agent prompt` and `pane send-text` exit 1 with a message
 //!   on stderr, as a pane that is gone or a sandboxed caller gets. Nothing is
 //!   typed.
+//! - `fail_first_typing`: the first `agent prompt` into each pane exits 1,
+//!   and so does a `pane send-text` that follows it into that pane. Later
+//!   typing into the pane succeeds, so a retry gets through.
 //! - `mail_drop`: the first non-redelivery agent prompt succeeds but is
 //!   dropped, then the pane reports an idle agent for the courier.
 //!
@@ -75,7 +78,9 @@ const COMMANDS: [&str; 15] = [
 
 const MUTATING: [&str; 7] = ["focus", "tile", "split", "move", "close", "swap", "resize"];
 
-/// Set in the copy of this call that runs in its own process group.
+/// Set in the copy of this call that runs in its own process group, to the
+/// pid of the process that called herdr. The copy logs it as `caller`, so a
+/// test can tell apart the calls of 2 horch processes on the same pane.
 const DETACHED: &str = "HORCH_FAKE_HERDR_DETACHED";
 
 fn main() {
@@ -92,7 +97,7 @@ fn main() {
             .and_then(|exe| {
                 std::process::Command::new(exe)
                     .args(std::env::args_os().skip(1))
-                    .env(DETACHED, "1")
+                    .env(DETACHED, std::os::unix::process::parent_id().to_string())
                     .process_group(0)
                     .status()
             })
@@ -100,8 +105,12 @@ fn main() {
             .unwrap_or(1);
         std::process::exit(code);
     }
+    let caller = std::env::var(DETACHED).ok();
     std::env::remove_var(DETACHED);
     let mut call = Call::start("herdr");
+    if let Some(caller) = caller.and_then(|c| c.parse::<u32>().ok()) {
+        call.extra.insert("caller".into(), json!(caller));
+    }
     // A wait polls for seconds; holding the lock that long would stall the
     // very commands whose output it waits for.
     if call.argv.get(..2) == Some(&["pane".to_string(), "wait-output".to_string()][..]) {
@@ -385,6 +394,20 @@ fn run(call: &mut Call) -> i32 {
             if scenario_has("fail_typing") =>
         {
             eprintln!("fake-herdr: typing into {pane} refused (scenario fail_typing)");
+            1
+        }
+        ["agent", "prompt", pane, ..] | ["pane", "send-text", pane, ..]
+            if scenario_has("fail_first_typing")
+                && match state["typing_failures"][*pane].as_u64().unwrap_or(0) {
+                    0 => args[0] == "agent",
+                    1 => args[0] == "pane",
+                    _ => false,
+                } =>
+        {
+            let failures = state["typing_failures"][*pane].as_u64().unwrap_or(0);
+            state["typing_failures"][*pane] = json!(failures + 1);
+            save(&state);
+            eprintln!("fake-herdr: typing into {pane} refused once (scenario fail_first_typing)");
             1
         }
         ["agent", "prompt", pane, text]

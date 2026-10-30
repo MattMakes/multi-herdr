@@ -263,8 +263,15 @@ fn fds_06_spawn_runs_sync() {
 
     let out = spawn(&h, &["sonnet", "new work"]);
     assert_eq!(note_lines(&out, "horch: NOTE: fleet"), 0, "{}", text(&out));
-    let runs = rows(&h, "runs.jsonl");
-    assert_eq!(runs.len(), 1, "{runs:?}");
+    // fake-claude exits at once, so on a loaded machine the new worker can
+    // finish before the spawn's sync and get its own row. Only the rows of
+    // the 2 records written above are asserted.
+    let all = rows(&h, "runs.jsonl");
+    let runs: Vec<&Value> = all
+        .iter()
+        .filter(|r| r["record_id"] == "r-gone" || r["record_id"] == "r-cand")
+        .collect();
+    assert_eq!(runs.len(), 1, "{all:?}");
     assert_eq!(runs[0]["record_id"], "r-gone");
     assert_eq!(runs[0]["written_by"], "sync");
     assert_eq!(runs[0]["tokens"], Value::Null);
