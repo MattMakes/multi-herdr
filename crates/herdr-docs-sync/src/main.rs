@@ -237,13 +237,21 @@ fn stale_files(out_dir: &Path, pages: &[DocPage]) -> Result<Vec<PathBuf>> {
     Ok(entries
         .filter_map(|e| e.ok())
         .map(|e| e.path())
-        .filter(|path| path.is_file() && path.extension().is_some_and(|e| e == "md"))
-        .filter(|path| {
-            path.file_name()
-                .and_then(|n| n.to_str())
-                .is_some_and(|name| !expected.contains(name))
-        })
+        .filter(|path| is_markdown_file(path))
+        .filter(|path| is_unexpected(path, &expected))
         .collect())
+}
+
+/// A file with the extension `md`.
+fn is_markdown_file(path: &Path) -> bool {
+    path.is_file() && path.extension().is_some_and(|e| e == "md")
+}
+
+/// A path whose file name is text that no page maps to.
+fn is_unexpected(path: &Path, expected: &BTreeSet<&str>) -> bool {
+    path.file_name()
+        .and_then(|n| n.to_str())
+        .is_some_and(|name| !expected.contains(name))
 }
 
 fn fetch(url: &str) -> Result<String> {
