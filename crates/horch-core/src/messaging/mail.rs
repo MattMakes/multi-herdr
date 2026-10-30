@@ -275,6 +275,11 @@ impl Mail {
     /// could hold lines planted for the orchestrator to read.
     pub fn pending(&self) -> Result<Vec<Message>> {
         private::check(&self.dir)?;
+        read_pending(&self.pending_paths()?)
+    }
+
+    /// The pending mail files, oldest first.
+    fn pending_paths(&self) -> Result<Vec<PathBuf>> {
         let Some(entries) = read_dir_if_exists(&self.dir.join("pending"))? else {
             return Ok(Vec::new());
         };
@@ -283,7 +288,7 @@ impl Mail {
             .collect::<std::io::Result<Vec<_>>>()?;
         paths.retain(|path| path.extension().is_some_and(|ext| ext == "json"));
         paths.sort();
-        paths.iter().map(|path| read_message(path)).collect()
+        Ok(paths)
     }
 
     pub fn ack(&self, id: &Id) -> Result<()> {
@@ -390,16 +395,30 @@ fn question_lines(original: &str, from: &str) -> String {
         .join("\n")
 }
 
-/// Read one pending message; its file name must be its id.
-fn read_message(path: &Path) -> Result<Message> {
-    let file = File::open(path).with_context(|| format!("opening {}", path.display()))?;
+/// Read the pending messages at `paths`. A file that a concurrent ack moved
+/// away after the listing is no longer pending, so it is skipped.
+fn read_pending(paths: &[PathBuf]) -> Result<Vec<Message>> {
+    paths
+        .iter()
+        .filter_map(|path| read_message(path).transpose())
+        .collect()
+}
+
+/// Read one pending message, or `None` when its file is gone; its file name
+/// must be its id.
+fn read_message(path: &Path) -> Result<Option<Message>> {
+    let Some(file) =
+        if_exists(File::open(path)).with_context(|| format!("opening {}", path.display()))?
+    else {
+        return Ok(None);
+    };
     let message: Message =
         serde_json::from_reader(file).with_context(|| format!("parsing {}", path.display()))?;
     let file_id = path.file_stem().and_then(|stem| stem.to_str());
     if file_id != Some(message.id.0.as_str()) {
         bail!("mail id does not match {}", path.display());
     }
-    Ok(message)
+    Ok(Some(message))
 }
 
 /// The marker name for an answer at `at`: nanoseconds since 1970, padded,
@@ -556,6 +575,23 @@ mod tests {
             .join("acked")
             .join(format!("{}.json", first.0))
             .is_file());
+    }
+
+    /// A concurrent `horch inbox` acks a message after `pending` lists the
+    /// dir and before it opens the file. The acked message is no longer
+    /// pending: `pending` returns the rest, and does not fail.
+    #[test]
+    fn a_message_acked_between_the_listing_and_the_read_is_skipped() {
+        let root = tempfile::tempdir().unwrap();
+        let mail = Mail::under(root.path(), "w1");
+        let first = mail.enqueue("sonnet-1", "first").unwrap();
+        let second = mail.enqueue("opus-1", "second").unwrap();
+
+        let listed = mail.pending_paths().unwrap();
+        mail.ack(&first).unwrap();
+        let pending = read_pending(&listed).unwrap();
+
+        assert_eq!(pending.iter().map(|m| &m.id).collect::<Vec<_>>(), [&second]);
     }
 
     #[test]
