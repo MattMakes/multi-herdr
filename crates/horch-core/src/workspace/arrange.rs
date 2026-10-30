@@ -29,7 +29,7 @@ use crate::runtime::RuntimeContext;
 use crate::workspace::balance;
 use crate::workspace::herdr::Herdr;
 use crate::workspace::layout::{self, Orchestrator};
-use crate::workspace::model::Layout;
+use crate::workspace::model::{Direction, Layout};
 use crate::workspace::tile::{self, Fleet, FocusState, Op, Plan, TabRef, TabShape, Worker};
 
 /// The label of the `horch telemetry` workspace, which tiling leaves alone.
@@ -143,29 +143,71 @@ fn gather(ctx: &RuntimeContext, herdr: &Herdr, workspace_id: &str) -> Result<Sna
     if is_telemetry_space(herdr, workspace_id) {
         bail!("workspace {workspace_id} is the telemetry space; horch tile leaves it alone");
     }
+    let states = read_tabs(herdr, workspace_id)?;
+    let orchestrator = find_orchestrator(ctx, workspace_id, &states)?;
+    let orchestrator_tab = states
+        .iter()
+        .find(|t| t.layout.panes.iter().any(|p| p.pane_id == orchestrator))
+        .map(|t| t.tab_id.clone())
+        .expect("the orchestrator was found in one of these tabs");
+
+    let active_tab = active_tab(herdr, workspace_id).or_else(|| Some(orchestrator_tab.clone()));
+
+    Ok(Snapshot {
+        tabs: states,
+        orchestrator,
+        orchestrator_tab,
+        active_tab,
+    })
+}
+
+/// Every tab that holds a pane, with its layout.
+fn read_tabs(herdr: &Herdr, workspace_id: &str) -> Result<Vec<TabState>> {
     let tabs = herdr.tab_list(workspace_id)?;
     let panes = herdr.pane_list(workspace_id)?;
-    let mut states = Vec::new();
-    for tab in &tabs {
-        let Some(probe) = panes
-            .iter()
-            .find(|p| p.tab_id.as_deref() == Some(tab.tab_id.as_str()))
-        else {
-            continue;
-        };
-        states.push(TabState {
-            tab_id: tab.tab_id.clone(),
-            layout: herdr.pane_layout(Some(&probe.pane_id))?,
-        });
-    }
+    let states = tabs
+        .iter()
+        .filter_map(|tab| {
+            let probe = panes
+                .iter()
+                .find(|p| p.tab_id.as_deref() == Some(tab.tab_id.as_str()))?;
+            Some(
+                herdr
+                    .pane_layout(Some(&probe.pane_id))
+                    .map(|layout| TabState {
+                        tab_id: tab.tab_id.clone(),
+                        layout,
+                    }),
+            )
+        })
+        .collect::<Result<Vec<_>>>()?;
     if states.is_empty() {
         bail!("workspace {workspace_id} has no panes");
     }
+    Ok(states)
+}
 
-    // The mailbox is the registry; the leftmost full-height pane of the first tab
-    // is the same guess `horch layout` has always made. Never a silent third
-    // option: tiling a workspace whose orchestrator cannot be identified would
-    // file it as a worker and move it.
+/// The tab the workspace shows now, when herdr says.
+fn active_tab(herdr: &Herdr, workspace_id: &str) -> Option<String> {
+    herdr
+        .workspace_list()
+        .ok()?
+        .into_iter()
+        .find(|w| w.workspace_id == workspace_id)?
+        .active_tab_id
+}
+
+/// The pane that is the orchestrator.
+///
+/// The mailbox is the registry; the leftmost full-height pane of the first tab
+/// is the same guess `horch layout` has always made. Never a silent third
+/// option: tiling a workspace whose orchestrator cannot be identified would
+/// file it as a worker and move it.
+fn find_orchestrator(
+    ctx: &RuntimeContext,
+    workspace_id: &str,
+    states: &[TabState],
+) -> Result<String> {
     let registered = Mailbox::in_context(ctx, workspace_id)
         .panes_to_roles()
         .into_iter()
@@ -176,38 +218,16 @@ fn gather(ctx: &RuntimeContext, herdr: &Herdr, workspace_id: &str) -> Result<Sna
                 .iter()
                 .any(|t| t.layout.panes.iter().any(|p| &p.pane_id == id))
         });
-    let orchestrator = match registered {
-        Some(id) => id,
+    match registered {
+        Some(id) => Ok(id),
         None => layout::analyze_with(&states[0].layout, layout::Orchestrator::Infer)
             .orchestrator
             .context(
                 "no orchestrator in this workspace: no pane is registered for the role and no \
              full-height pane sits on the first tab. Register one with `horch register \
              orchestrator` in its pane, then tile again",
-            )?,
-    };
-    let orchestrator_tab = states
-        .iter()
-        .find(|t| t.layout.panes.iter().any(|p| p.pane_id == orchestrator))
-        .map(|t| t.tab_id.clone())
-        .expect("the orchestrator was found in one of these tabs");
-
-    let active_tab = herdr
-        .workspace_list()
-        .ok()
-        .and_then(|list| {
-            list.into_iter()
-                .find(|w| w.workspace_id == workspace_id)
-                .and_then(|w| w.active_tab_id)
-        })
-        .or_else(|| Some(orchestrator_tab.clone()));
-
-    Ok(Snapshot {
-        tabs: states,
-        orchestrator,
-        orchestrator_tab,
-        active_tab,
-    })
+            ),
+    }
 }
 
 /// Run the plan. Returns how many panes moved.
@@ -220,52 +240,66 @@ fn gather(ctx: &RuntimeContext, herdr: &Herdr, workspace_id: &str) -> Result<Sna
 fn apply(herdr: &Herdr, plan: &Plan) -> Result<usize> {
     let mut created: HashMap<usize, String> = HashMap::new();
     let mut moved = 0;
-
     for op in plan.ops() {
-        match op {
-            Op::NewTab {
-                pane,
-                label,
-                creates,
-            } => {
-                let result = herdr.pane_move_new_tab(pane, label)?;
-                declined(op, result.changed, result.reason.as_deref())?;
-                let tab = result
-                    .created_tab
-                    .map(|t| t.tab_id)
-                    .or_else(|| result.pane.tab_id.clone())
-                    .with_context(|| {
-                        format!("herdr moved {pane} to a new tab but did not name it")
-                    })?;
-                created.insert(*creates, tab);
-                moved += 1;
-            }
-            Op::Move {
-                pane,
-                tab,
-                split,
-                target,
-                ratio,
-            } => {
-                let tab_id = match tab {
-                    TabRef::Existing(id) => id.clone(),
-                    TabRef::Created(i) => created
-                        .get(i)
-                        .cloned()
-                        .with_context(|| format!("tab {i} was never created"))?,
-                };
-                let result = herdr.pane_move(pane, &tab_id, *split, Some(target), *ratio)?;
-                declined(op, result.changed, result.reason.as_deref())?;
-                moved += 1;
-            }
-            Op::FocusTab { tab } => {
-                if let TabRef::Existing(id) = tab {
-                    herdr.tab_focus(id)?;
-                }
-            }
-        }
+        moved += usize::from(apply_op(herdr, op, &mut created)?);
     }
     Ok(moved)
+}
+
+/// Run 1 op. True when it moved a pane.
+fn apply_op(herdr: &Herdr, op: &Op, created: &mut HashMap<usize, String>) -> Result<bool> {
+    match op {
+        Op::NewTab {
+            pane,
+            label,
+            creates,
+        } => {
+            created.insert(*creates, new_tab(herdr, op, pane, label)?);
+            Ok(true)
+        }
+        Op::Move {
+            pane,
+            tab,
+            split,
+            target,
+            ratio,
+        } => move_pane(herdr, op, (pane, tab, created), (*split, target, *ratio)).map(|()| true),
+        Op::FocusTab { tab } => {
+            if let TabRef::Existing(id) = tab {
+                herdr.tab_focus(id)?;
+            }
+            Ok(false)
+        }
+    }
+}
+
+/// Move `pane` into a new tab, returning the id herdr gave the tab.
+fn new_tab(herdr: &Herdr, op: &Op, pane: &str, label: &str) -> Result<String> {
+    let result = herdr.pane_move_new_tab(pane, label)?;
+    declined(op, result.changed, result.reason.as_deref())?;
+    result
+        .created_tab
+        .map(|t| t.tab_id)
+        .or_else(|| result.pane.tab_id.clone())
+        .with_context(|| format!("herdr moved {pane} to a new tab but did not name it"))
+}
+
+/// Move `pane` into `tab`; a tab the plan creates is looked up in `created`
+/// by its index.
+fn move_pane(
+    herdr: &Herdr,
+    op: &Op,
+    (pane, tab, created): (&str, &TabRef, &HashMap<usize, String>),
+    (split, target, ratio): (Direction, &str, Option<f64>),
+) -> Result<()> {
+    let tab_id = match tab {
+        TabRef::Existing(id) => id,
+        TabRef::Created(i) => created
+            .get(i)
+            .with_context(|| format!("tab {i} was never created"))?,
+    };
+    let result = herdr.pane_move(pane, tab_id, split, Some(target), ratio)?;
+    declined(op, result.changed, result.reason.as_deref())
 }
 
 fn declined(op: &Op, changed: bool, reason: Option<&str>) -> Result<()> {
@@ -316,11 +350,8 @@ fn balance_tab(herdr: &Herdr, mut layout: Layout, orchestrator: Option<&str>) ->
 fn balance_all(herdr: &Herdr, snapshot: &Snapshot) -> Result<usize> {
     let mut applied = 0;
     for tab in &snapshot.tabs {
-        let orchestrator = if tab.tab_id == snapshot.orchestrator_tab {
-            Some(snapshot.orchestrator.as_str())
-        } else {
-            None
-        };
+        let orchestrator =
+            (tab.tab_id == snapshot.orchestrator_tab).then_some(snapshot.orchestrator.as_str());
         applied += balance_tab(herdr, tab.layout.clone(), orchestrator)?;
     }
     Ok(applied)
@@ -409,31 +440,44 @@ impl TileLock {
     fn at(path: PathBuf, stale_after: Duration) -> Result<Option<Self>> {
         let deadline = SystemTime::now() + LOCK_WAIT;
         loop {
-            match std::fs::OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .open(&path)
-            {
-                Ok(_) => return Ok(Some(Self { path })),
-                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
-                Err(e) => return Err(e).context("taking the tile lock"),
+            if try_create(&path)? {
+                break Ok(Some(Self { path }));
             }
-            // A run that died leaves its lock behind; nothing legitimate holds it
-            // for a minute.
-            let stale = std::fs::metadata(&path)
-                .and_then(|m| m.modified())
-                .map(|m| m.elapsed().unwrap_or_default() >= stale_after)
-                .unwrap_or(false);
-            if stale {
-                let _ = std::fs::remove_file(&path);
+            if clear_stale(&path, stale_after) {
                 continue;
             }
             if SystemTime::now() > deadline {
-                return Ok(None);
+                break Ok(None);
             }
             std::thread::sleep(Duration::from_millis(200));
         }
     }
+}
+
+/// Make the lock file. `Ok(false)` when another run holds it.
+fn try_create(path: &std::path::Path) -> Result<bool> {
+    match std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)
+    {
+        Ok(_) => Ok(true),
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Ok(false),
+        Err(e) => Err(e).context("taking the tile lock"),
+    }
+}
+
+/// Remove a lock a run that died left behind; nothing legitimate holds it
+/// for a minute. True when it was stale.
+fn clear_stale(path: &std::path::Path, stale_after: Duration) -> bool {
+    let stale = std::fs::metadata(path)
+        .and_then(|m| m.modified())
+        .map(|m| m.elapsed().unwrap_or_default() >= stale_after)
+        .unwrap_or(false);
+    if stale {
+        let _ = std::fs::remove_file(path);
+    }
+    stale
 }
 
 impl Drop for TileLock {
@@ -462,76 +506,103 @@ pub fn run(
     plan_only: bool,
 ) -> Result<String> {
     let snapshot = gather(ctx, herdr, workspace_id)?;
-    let fleet = snapshot.fleet(newcomer);
-    let plan = tile::plan(&fleet);
-    let workers = plan.placement.len();
-
+    let plan = tile::plan(&snapshot.fleet(newcomer));
     if plan_only {
-        let mut out = format!(
-            "{} worker(s) over {} tab(s); {} move(s) to get there\n\n",
-            workers,
-            tile::tab_count(workers),
-            plan.ops().count()
-        );
-        if tile::is_canonical(&snapshot.shapes(), &snapshot.orchestrator, workers) {
-            out.push_str(
-                "the grid is already laid out; `horch tile` would only even out the \
-                          columns and change nothing else\n\n",
-            );
-        } else {
-            out.push_str("park every worker in a scratch tab:\n");
-            for op in &plan.park {
-                out.push_str(&format!("  {}\n", tile::command_line(op)));
-            }
-            out.push_str("\nthen place them, slot by slot:\n");
-            for op in &plan.place {
-                out.push_str(&format!("  {}\n", tile::command_line(op)));
-            }
-            out.push_str(
-                "\nemptied tabs close themselves, so no tab is ever closed by hand.\n\
-                 then: even out every column, and put focus back where it was.\n\n",
-            );
-        }
-        out.push_str(&tile::render_target(
-            &plan,
-            &snapshot.orchestrator,
-            &roles(ctx, workspace_id),
-        ));
-        return Ok(out);
+        Ok(plan_report(ctx, &snapshot, &plan, workspace_id))
+    } else {
+        run_live(ctx, herdr, workspace_id, snapshot, &plan)
     }
+}
 
+/// The `--plan` report: what a live run would do, changing nothing.
+fn plan_report(
+    ctx: &RuntimeContext,
+    snapshot: &Snapshot,
+    plan: &Plan,
+    workspace_id: &str,
+) -> String {
+    let workers = plan.placement.len();
+    let mut out = format!(
+        "{} worker(s) over {} tab(s); {} move(s) to get there\n\n",
+        workers,
+        tile::tab_count(workers),
+        plan.ops().count()
+    );
+    if tile::is_canonical(&snapshot.shapes(), &snapshot.orchestrator, workers) {
+        out.push_str(
+            "the grid is already laid out; `horch tile` would only even out the \
+                      columns and change nothing else\n\n",
+        );
+    } else {
+        out.push_str("park every worker in a scratch tab:\n");
+        push_ops(&mut out, &plan.park);
+        out.push_str("\nthen place them, slot by slot:\n");
+        push_ops(&mut out, &plan.place);
+        out.push_str(
+            "\nemptied tabs close themselves, so no tab is ever closed by hand.\n\
+             then: even out every column, and put focus back where it was.\n\n",
+        );
+    }
+    out.push_str(&tile::render_target(
+        plan,
+        &snapshot.orchestrator,
+        &roles(ctx, workspace_id),
+    ));
+    out
+}
+
+fn push_ops(out: &mut String, ops: &[Op]) {
+    for op in ops {
+        out.push_str(&format!("  {}\n", tile::command_line(op)));
+    }
+}
+
+/// Refuse a tile that herdr would decline or another tiler is running, and
+/// take the lock.
+fn ready_to_tile(
+    ctx: &RuntimeContext,
+    snapshot: &Snapshot,
+    workspace_id: &str,
+) -> Result<TileLock> {
     if let Some(tab) = snapshot.zoomed_tab() {
         bail!(
             "tab {tab} is zoomed, and herdr refuses to move panes into or out of a zoomed tab. \
              Unzoom it, then tile again"
         );
     }
-
-    let Some(_lock) = TileLock::acquire(ctx, workspace_id)? else {
-        bail!(
+    TileLock::acquire(ctx, workspace_id)?.with_context(|| {
+        format!(
             "another tile is still running in workspace {workspace_id} (waited {}s). Try again",
             LOCK_WAIT.as_secs()
-        );
-    };
+        )
+    })
+}
 
+fn run_live(
+    ctx: &RuntimeContext,
+    herdr: &Herdr,
+    workspace_id: &str,
+    snapshot: Snapshot,
+    plan: &Plan,
+) -> Result<String> {
+    let _lock = ready_to_tile(ctx, &snapshot, workspace_id)?;
+    let workers = plan.placement.len();
     // Fast path: the grid is already the right shape, so nothing is moved and only
     // the columns are evened out. This is the common case for a re-run, and it is
     // what keeps `horch spawn` from rebuilding a grid that was already right.
     let already = tile::is_canonical(&snapshot.shapes(), &snapshot.orchestrator, workers);
-    let mut moved = 0;
     // Read where the operator is looking BEFORE anything moves. Both values are
     // already in the snapshot, so this costs no herdr call. The tab is kept
     // separately because the fallback below still needs it on a herdr too old
     // to report which pane holds the focus.
     let was = snapshot.focus_state();
     let was_tab = snapshot.active_tab.clone();
-    let snapshot = if already {
-        snapshot
+    let (moved, snapshot) = if already {
+        (0, snapshot)
     } else {
-        moved = apply(herdr, &plan)?;
         // Tabs have appeared and disappeared; read it all again for the balance
         // and the report.
-        gather(ctx, herdr, workspace_id)?
+        (apply(herdr, plan)?, gather(ctx, herdr, workspace_id)?)
     };
 
     let resized = balance_all(herdr, &snapshot)?;
@@ -539,11 +610,9 @@ pub fn run(
     // finished grid. The fast path moved nothing, so there is nothing to put
     // back - and a focus call herdr does not need would pull the workspace into
     // view for no reason.
-    let focus = if already {
-        None
-    } else {
-        restore_focus(herdr, &snapshot, was.as_ref(), was_tab.as_deref())
-    };
+    let focus = (!already)
+        .then(|| restore_focus(herdr, &snapshot, was.as_ref(), was_tab.as_deref()))
+        .flatten();
     let mut out = format!(
         "{} worker(s) over {} tab(s): {} pane move(s), {} resize(s)\n",
         workers,
@@ -551,9 +620,7 @@ pub fn run(
         moved,
         resized
     );
-    if let Some(line) = focus {
-        out.push_str(&line);
-    }
+    out.extend(focus);
     if already && moved == 0 {
         out.push_str("the grid was already laid out; only the columns needed evening\n");
     }
@@ -570,22 +637,20 @@ pub fn workspace_of(
     pane: Option<&str>,
     workspace: Option<&str>,
 ) -> Result<String> {
-    if let Some(ws) = workspace.filter(|s| !s.is_empty()) {
-        return Ok(ws.to_string());
-    }
-    if let Some(pane) = pane {
-        return herdr
+    match (workspace.filter(|s| !s.is_empty()), pane) {
+        (Some(ws), _) => Ok(ws.to_string()),
+        (None, Some(pane)) => herdr
             .pane_get(pane)?
             .workspace_id
-            .with_context(|| format!("herdr did not say which workspace holds {pane}"));
+            .with_context(|| format!("herdr did not say which workspace holds {pane}")),
+        (None, None) => Ok(Mailbox::resolve_in(herdr, ctx)
+            .context(
+                "horch needs --workspace, or to run inside a herdr pane (HERDR_PANE_ID) or with \
+                 HORCH_WORKSPACE_ID set",
+            )?
+            .workspace_id()
+            .to_string()),
     }
-    Ok(Mailbox::resolve_in(herdr, ctx)
-        .context(
-            "horch needs --workspace, or to run inside a herdr pane (HERDR_PANE_ID) or with \
-             HORCH_WORKSPACE_ID set",
-        )?
-        .workspace_id()
-        .to_string())
 }
 
 /// Lay the grid out after something changed it, without failing the caller.
@@ -692,10 +757,7 @@ pub fn report(ctx: &RuntimeContext, herdr: &Herdr, workspace_id: &str) -> Result
     let mut notes = Vec::new();
     for (i, data) in layouts.iter().enumerate() {
         let on_this_tab = orchestrator.as_deref().filter(|id| holds(data, id));
-        let who = match on_this_tab {
-            Some(id) => Orchestrator::Pane(id),
-            None => Orchestrator::Absent,
-        };
+        let who = on_this_tab.map_or(Orchestrator::Absent, Orchestrator::Pane);
         notes.push(verdict(
             data,
             on_this_tab,
