@@ -245,7 +245,7 @@ pub(crate) fn usage_dir(
 
 /// Build the usage record of one finished candidate, and copy its transcript
 /// into the dataset only when `retain` is set.
-#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments)] // each argument is a distinct typed id or source; grouping would only hide them
 pub(crate) fn usage_record(
     source: &TelemetryUsage,
     meter: &UsageMeter,
