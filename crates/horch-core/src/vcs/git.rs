@@ -118,8 +118,8 @@ pub trait GitClient {
     ) -> anyhow::Result<CheckoutLocation>;
 }
 
-/// Wraps [`GitRunner`]. `GIT_TERMINAL_PROMPT=0`, `LC_ALL=C`, `FORBIDDEN_ENV`
-/// stripped. The caller passes the git binary (later from `RuntimeContext`,
+/// Wraps [`GitRunner`], which sets `GIT_TERMINAL_PROMPT=0` and `LC_ALL=C`
+/// and strips `FORBIDDEN_ENV` and the repository variables. The caller passes the git binary (later from `RuntimeContext`,
 /// `HORCH_GIT_BIN`); nothing here reads the environment.
 #[derive(Debug, Clone)]
 pub struct GitCli {
@@ -145,9 +145,7 @@ static SCRATCH: AtomicU64 = AtomicU64::new(0);
 impl GitCli {
     pub fn new(git_bin: PathBuf) -> Self {
         Self {
-            runner: GitRunner::new(git_bin)
-                .with_env("GIT_TERMINAL_PROMPT", "0")
-                .with_env("LC_ALL", "C"),
+            runner: GitRunner::new(git_bin),
         }
     }
 
