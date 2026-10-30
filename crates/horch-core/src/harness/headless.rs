@@ -386,6 +386,106 @@ mod tests {
         assert!(headless_command(&ctx(), &t, &SessionId::new("s").unwrap(), None).is_err());
     }
 
+    fn session() -> SessionId {
+        SessionId::new("s").unwrap()
+    }
+
+    #[test]
+    fn headless_refuses_a_harness_without_a_headless_mode() {
+        let mut t = judge();
+        t.agent = crate::harness::HarnessKind::Pi;
+        let err = headless_command(&ctx(), &t, &session(), None)
+            .unwrap_err()
+            .to_string();
+        assert_eq!(
+            err,
+            format!("teammate '{}' runs pi, which has no headless mode", t.name)
+        );
+    }
+
+    #[test]
+    fn headless_refuses_an_empty_tool_list_and_names_the_allowed_set() {
+        let mut t = judge();
+        t.tools = Some(vec![]);
+        let err = headless_command(&ctx(), &t, &session(), None)
+            .unwrap_err()
+            .to_string();
+        assert_eq!(
+            err,
+            format!(
+                "teammate '{}' names no tools; a headless run needs the read-only list",
+                t.name
+            )
+        );
+        t.tools = Some(vec!["Read".into(), "Bash".into()]);
+        let err = headless_command(&ctx(), &t, &session(), None)
+            .unwrap_err()
+            .to_string();
+        assert_eq!(
+            err,
+            format!(
+                "teammate '{}' asks for 'Bash'; a headless run allows only Read, Grep, Glob",
+                t.name
+            )
+        );
+    }
+
+    #[test]
+    fn headless_denies_the_teammates_own_list_after_the_fixed_one_once() {
+        let mut t = judge();
+        t.disallowed_tools = vec!["Edit".into(), "WebFetch".into(), "WebFetch".into()];
+        let a = argv(&headless_command(&ctx(), &t, &session(), None).unwrap());
+        assert_eq!(
+            value_of(&a, "--disallowedTools").as_deref(),
+            Some("Agent,Edit,Write,NotebookEdit,Bash,WebFetch")
+        );
+    }
+
+    #[test]
+    fn headless_drops_effort_for_a_model_without_one() {
+        let mut t = judge();
+        t.model = Some("haiku".into());
+        let a = argv(&headless_command(&ctx(), &t, &session(), None).unwrap());
+        assert_eq!(value_of(&a, "--model").as_deref(), Some("haiku"));
+        assert!(!a.contains(&"--effort".to_string()), "{a:?}");
+    }
+
+    /// The operator's enabled plugins go off in the overlay, and a judge
+    /// that says it inherits plugins is sealed anyway.
+    #[test]
+    fn headless_overlay_switches_the_operators_plugins_off() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(tmp.path().join(".claude")).unwrap();
+        std::fs::write(
+            tmp.path().join(".claude/settings.json"),
+            r#"{"enabledPlugins":{"a@m":true,"b@m":false}}"#,
+        )
+        .unwrap();
+        let env = MapEnv::new("/proj")
+            .with("HOME", &tmp.path().to_string_lossy())
+            .with("PATH", "/nowhere-b4")
+            .with("HORCH_CLAUDE_BIN", "/fake/claude");
+        let ctx = RuntimeContext::from_env(&env).unwrap();
+        let mut t = judge();
+        t.inherit_plugins = true;
+        let a = argv(&headless_command(&ctx, &t, &session(), None).unwrap());
+        let settings: serde_json::Value =
+            serde_json::from_str(&value_of(&a, "--settings").unwrap()).unwrap();
+        assert_eq!(settings["enabledPlugins"]["a@m"], false);
+        assert!(settings["enabledPlugins"].get("b@m").is_none());
+        assert_eq!(settings["syncClaudeAiPlugins"], false);
+    }
+
+    /// Existing system programs only: a freshly written fake would pay the
+    /// first-exec scan inside the probe's deadline.
+    #[test]
+    fn help_lists_reads_the_flag_from_the_help_text() {
+        // `echo --help` prints `--help`.
+        assert!(help_lists(Path::new("/bin/echo"), "--help"));
+        assert!(!help_lists(Path::new("/bin/echo"), "--json-schema"));
+        assert!(!help_lists(Path::new("/nonexistent/claude"), "--help"));
+    }
+
     #[test]
     fn judge_prompt_fills_rubric_and_schema() {
         let p = judge_prompt(&judge());
