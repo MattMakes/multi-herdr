@@ -617,6 +617,18 @@ pub(crate) fn note_check(src: &Sources, record_id: &str) -> Result<Option<String
 /// while waiting on a question). The order of the steps is
 /// [`lifecycle::done`]'s.
 pub fn done(ctx: &RuntimeContext, summary: &str, unlanded: Option<&str>) -> Result<()> {
+    done_then(ctx, summary, unlanded, &|| {})
+}
+
+/// [`done`], with `after_mark_done` run once the record is done and before
+/// the report push ([`DoneSteps::after_mark_done`]). A retry of a `done`
+/// that recorded its summary does not run it.
+pub fn done_then(
+    ctx: &RuntimeContext,
+    summary: &str,
+    unlanded: Option<&str>,
+    after_mark_done: &dyn Fn(),
+) -> Result<()> {
     let record_id = require_env("HORCH_RECORD_ID", worker_var(ctx, |w| &w.record_id))?;
     let role = require_env("HORCH_ROLE", worker_var(ctx, |w| &w.role))?;
     let pane_env = require_env(
@@ -639,6 +651,7 @@ pub fn done(ctx: &RuntimeContext, summary: &str, unlanded: Option<&str>) -> Resu
             ctx,
             settle: !coordinator_owns_layout(&ledger, &record_id),
             outgoing: std::cell::RefCell::new(None),
+            after_mark_done,
         },
         &DoneRequest {
             record_id: &record_id,
@@ -705,6 +718,8 @@ struct CliDone<'a> {
     /// The report [`DoneSteps::queue_report`] queued, for
     /// [`DoneSteps::push_report`].
     outgoing: std::cell::RefCell<Option<Outgoing<'a>>>,
+    /// [`DoneSteps::after_mark_done`]: see [`done_then`].
+    after_mark_done: &'a dyn Fn(),
 }
 
 impl DoneSteps for CliDone<'_> {
@@ -819,6 +834,10 @@ impl DoneSteps for CliDone<'_> {
         let sender = self.ctx.worker.as_ref().and_then(|w| w.role.clone());
         *self.outgoing.borrow_mut() = queue_as(self.ctx, sender, "orchestrator", line, true)?;
         Ok(())
+    }
+
+    fn after_mark_done(&self) {
+        (self.after_mark_done)();
     }
 
     fn push_report(&self) -> ReportStatus {

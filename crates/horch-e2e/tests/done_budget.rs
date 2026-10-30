@@ -166,16 +166,16 @@ fn done_finishes_in_time_against_a_stuck_orchestrator() {
     assert!(worker_pane_closed(&h), "the worker pane closes");
 }
 
-/// Acceptance 2: `horch ledger done` of a finished task. The ledger's wake
-/// and the report are both pending mail, in under 30 s in total.
-#[test]
-fn ledger_done_finishes_in_time_against_a_stuck_orchestrator() {
-    let h = world("ldone-stuck");
-    let ok = |cmd: &mut Command| {
-        let o = cmd.output().unwrap();
-        assert!(o.status.success(), "{}", text(&o));
-        String::from_utf8_lossy(&o.stdout).into_owned()
-    };
+/// Run `cmd`; its stdout. It must succeed.
+fn ok(cmd: &mut Command) -> String {
+    let o = cmd.output().unwrap();
+    assert!(o.status.success(), "{}", text(&o));
+    String::from_utf8_lossy(&o.stdout).into_owned()
+}
+
+/// A task-ledger run of 1 task that the worker claimed, committed and
+/// finished; the worker id, for `horch ledger done`.
+fn finished_task(h: &Harness) -> String {
     ok(&mut h.horch(&[
         "ledger",
         "run",
@@ -199,9 +199,9 @@ fn ledger_done_finishes_in_time_against_a_stuck_orchestrator() {
     ]));
     let worker = ok(&mut h.horch(&["ledger", "worker", "new", "--persona", "opus"]));
     let worker = worker.trim();
-    let mut claim = as_worker(&h, &["ledger", "claim"]);
+    let mut claim = as_worker(h, &["ledger", "claim"]);
     ok(claim.env("HORCH_WORKER_ID", worker));
-    let mut wt = as_worker(&h, &["ledger", "worktree", "new", "feature"]);
+    let mut wt = as_worker(h, &["ledger", "worktree", "new", "feature"]);
     let wt = ok(wt.env("HORCH_WORKER_ID", worker));
     let path = PathBuf::from(wt.lines().find_map(|l| l.strip_prefix("path: ")).unwrap());
     std::fs::write(path.join("feature.txt"), "work\n").unwrap();
@@ -211,12 +211,21 @@ fn ledger_done_finishes_in_time_against_a_stuck_orchestrator() {
     ] {
         ok(h.git_cmd(args).current_dir(&path));
     }
-    let mut finish = as_worker(&h, &["ledger", "finish"]);
+    let mut finish = as_worker(h, &["ledger", "finish"]);
     ok(finish.env("HORCH_WORKER_ID", worker));
+    worker.to_string()
+}
+
+/// Acceptance 2: `horch ledger done` of a finished task. The ledger's wake
+/// and the report are both pending mail, in under 30 s in total.
+#[test]
+fn ledger_done_finishes_in_time_against_a_stuck_orchestrator() {
+    let h = world("ldone-stuck");
+    let worker = finished_task(&h);
 
     let started = Instant::now();
     let mut done = as_worker(&h, &["ledger", "done", "finished the task"]);
-    let o = done.env("HORCH_WORKER_ID", worker).output().unwrap();
+    let o = done.env("HORCH_WORKER_ID", &worker).output().unwrap();
     let took = started.elapsed();
     assert!(o.status.success(), "{}", text(&o));
     assert!(took < LIMIT, "ledger done took {took:?}: {}", text(&o));
@@ -240,6 +249,54 @@ fn ledger_done_finishes_in_time_against_a_stuck_orchestrator() {
     );
     assert_eq!(record(&h)["status"], "done", "{}", record(&h));
     assert!(worker_pane_closed(&h), "the worker pane closes");
+}
+
+/// #67: `horch ledger done` marks the record done and queues the report
+/// before its wake push. A `ledger done` killed during that push, as
+/// Claude Code would, leaves the work done and the report pending; the
+/// retry queues no second report and closes the pane.
+#[test]
+fn ledger_done_killed_during_the_wake_push_has_recorded_the_report() {
+    let h = world("ldone-kill");
+    let worker = finished_task(&h);
+    let mut first = as_worker(&h, &["ledger", "done", "finished the task"]);
+    let mut first = first
+        .env("HORCH_WORKER_ID", &worker)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    // The wake is queued just before its push, which waits for the stuck
+    // orchestrator until the push budget ends: kill `ledger done` there.
+    wait_for("the wake to be queued", || {
+        pending(&h)
+            .iter()
+            .any(|m| m.contains("[horch] NOTE: All tasks are done."))
+            .then_some(())
+    });
+    assert!(
+        first.try_wait().unwrap().is_none(),
+        "ledger done is pushing"
+    );
+    first.kill().unwrap();
+    first.wait().unwrap();
+    assert_eq!(record(&h)["status"], "done", "{}", record(&h));
+    let mail = pending(&h);
+    assert!(
+        mail.iter()
+            .any(|m| m.contains("[opus-1] DONE: finished the task")),
+        "{mail:?}"
+    );
+    assert!(
+        !worker_pane_closed(&h),
+        "the killed done left its pane open"
+    );
+
+    let mut retry = as_worker(&h, &["ledger", "done", "finished the task"]);
+    ok(retry.env("HORCH_WORKER_ID", &worker));
+    assert_eq!(done_entries(&h), 1, "{}", record(&h));
+    assert_eq!(pending(&h).len(), 2, "{:?}", pending(&h));
+    assert!(worker_pane_closed(&h), "the retry closes the pane");
 }
 
 /// Acceptance 4: a `done` killed during its push has recorded the summary.
