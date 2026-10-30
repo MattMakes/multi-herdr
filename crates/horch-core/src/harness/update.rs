@@ -761,6 +761,10 @@ mod tests {
             );
             std::fs::write(&bin, script).unwrap();
             std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+            // macOS scans a new executable at its first exec. Warm it here,
+            // without a limit, so the scan never counts against a timeout.
+            let warm = Command::new(&bin).arg("--version").output().unwrap();
+            assert!(warm.status.success());
             let env = crate::runtime::context::MapEnv::new(dir.path())
                 .with(
                     "HORCH_STATE_DIR",

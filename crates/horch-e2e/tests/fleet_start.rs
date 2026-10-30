@@ -68,11 +68,37 @@ fn a_fleet_whose_orchestrator_skill_is_missing_creates_no_workspace() {
     assert!(!o.status.success(), "{}{}", out(&o), err(&o));
     assert!(err(&o).contains("no-such-skill-217"), "{}", err(&o));
     // The failure comes before herdr creates anything, not after a close.
-    let created = h.calls_of("herdr").iter().any(|c| {
+    assert!(!created_a_workspace(&h), "the fleet created a workspace");
+    assert_eq!(workspaces(&h), Vec::<String>::new(), "{}", out(&o));
+}
+
+/// Whether the fake herdr was asked to create a workspace.
+fn created_a_workspace(h: &Harness) -> bool {
+    h.calls_of("herdr").iter().any(|c| {
         let argv: Vec<String> = serde_json::from_value(c["argv"].clone()).unwrap_or_default();
         argv.get(..2) == Some(&["workspace".to_string(), "create".to_string()][..])
-    });
-    assert!(!created, "the fleet created a workspace");
+    })
+}
+
+/// #217: a roster that fails to load fails the fleet before herdr creates
+/// a workspace. Only an unreadable teammates directory fails the load; a
+/// broken file in it is a warning.
+#[cfg(unix)]
+#[test]
+fn a_fleet_whose_roster_fails_to_load_creates_no_workspace() {
+    use std::os::unix::fs::PermissionsExt;
+    let mut h = harness("f217-roster", "");
+    let teammates = h.root.join("teammates");
+    std::fs::create_dir_all(&teammates).unwrap();
+    std::fs::set_permissions(&teammates, std::fs::Permissions::from_mode(0o000)).unwrap();
+    h.set("HORCH_TEAMMATES_DIR", teammates.to_string_lossy());
+    let o = h.run(&["fleet", "opus", "--no-update", "--cwd", &cwd(&h)]);
+    // Readable again, so the harness can remove its temp dir.
+    std::fs::set_permissions(&teammates, std::fs::Permissions::from_mode(0o755)).unwrap();
+    assert!(!o.status.success(), "{}{}", out(&o), err(&o));
+    let reason = format!("loading teammates from {}", teammates.display());
+    assert!(err(&o).contains(&reason), "{}", err(&o));
+    assert!(!created_a_workspace(&h), "the fleet created a workspace");
     assert_eq!(workspaces(&h), Vec::<String>::new(), "{}", out(&o));
 }
 
