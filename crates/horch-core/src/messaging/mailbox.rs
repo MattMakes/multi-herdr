@@ -134,14 +134,17 @@ impl Mailbox {
         self.dir.join(file)
     }
 
-    /// Copy the old temp registry into the state folder, once: only while
-    /// the state folder has no registry, and only when this user owns the
-    /// old dir and others cannot write it. A refusal is printed once.
+    /// Copy the old temp registry into the state folder, once, and only
+    /// when this user owns the old dir, it is not a link, and no other user
+    /// can write it. A registry the state folder already has gets only the
+    /// old files it lacks: a fleet that started before the move keeps its
+    /// roles. A marker file ends the copy for good. A refusal is printed
+    /// once.
     fn settle(&self) {
         let Some(legacy) = &self.legacy_dir else {
             return;
         };
-        if self.dir.exists() || !legacy.is_dir() {
+        if self.dir.join(LEGACY_COPIED).exists() || !legacy.exists() {
             return;
         }
         if let Err(e) = self.copy_legacy(legacy) {
@@ -156,12 +159,19 @@ impl Mailbox {
     }
 
     fn copy_legacy(&self, legacy: &Path) -> Result<()> {
-        private::check(legacy)?;
+        private::check_shared(legacy)?;
+        if self.dir.is_dir() {
+            private::check(&self.dir)?;
+            copy_plain_files(legacy, &self.dir, false)?;
+            return private::write(&self.dir.join(LEGACY_COPIED), b"");
+        }
         let parent = self
             .dir
             .parent()
             .context("the registry has no parent dir")?;
-        private::ensure_dir(parent)?;
+        // The state root is the user's: create it, but leave its mode.
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("creating {}", parent.display()))?;
         let staging = parent.join(format!(
             ".{}.copy-{}",
             self.dir
@@ -172,18 +182,8 @@ impl Mailbox {
         ));
         let copied = (|| {
             private::ensure_dir(&staging)?;
-            for entry in std::fs::read_dir(legacy)
-                .with_context(|| format!("reading {}", legacy.display()))?
-            {
-                let entry = entry?;
-                // Plain files only: a link could point anywhere.
-                if !entry.file_type()?.is_file() {
-                    continue;
-                }
-                let bytes = std::fs::read(entry.path())
-                    .with_context(|| format!("reading {}", entry.path().display()))?;
-                private::write(&staging.join(entry.file_name()), &bytes)?;
-            }
+            copy_plain_files(legacy, &staging, true)?;
+            private::write(&staging.join(LEGACY_COPIED), b"")?;
             std::fs::rename(&staging, &self.dir)
                 .with_context(|| format!("moving the copy to {}", self.dir.display()))
         })();
@@ -470,6 +470,28 @@ impl Mailbox {
     }
 }
 
+/// In the state registry: the old temp registry was copied in.
+const LEGACY_COPIED: &str = ".legacy-copied";
+
+/// Copy each plain file of `from` into `to`, mode 0600. A link is skipped:
+/// it could point anywhere. Without `replace`, a file `to` has is kept.
+fn copy_plain_files(from: &Path, to: &Path, replace: bool) -> Result<()> {
+    for entry in std::fs::read_dir(from).with_context(|| format!("reading {}", from.display()))? {
+        let entry = entry?;
+        if !entry.file_type()?.is_file() {
+            continue;
+        }
+        let target = to.join(entry.file_name());
+        if !replace && target.exists() {
+            continue;
+        }
+        let bytes = std::fs::read(entry.path())
+            .with_context(|| format!("reading {}", entry.path().display()))?;
+        private::write(&target, &bytes)?;
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -646,6 +668,45 @@ mod tests {
             ]
         );
         assert_eq!(mb.pane_for("orchestrator"), None);
+    }
+
+    /// A fleet that started before the move can have a split registry: the
+    /// orchestrator in the old temp dir, newer workers in the state folder.
+    /// The files the state folder lacks are copied once; its own win.
+    #[test]
+    fn a_split_registry_gets_the_old_files_it_lacks_once() {
+        let state = tempfile::tempdir().unwrap();
+        let temp = tempfile::tempdir().unwrap();
+        let legacy = temp.path().join("herdr-orchestration-w1");
+        std::fs::create_dir_all(&legacy).unwrap();
+        std::fs::write(legacy.join("orchestrator.id"), "w1-1").unwrap();
+        std::fs::write(legacy.join("sonnet-1.id"), "old-pane").unwrap();
+        let split = state.path().join("herdr-orchestration-w1");
+        std::fs::create_dir_all(&split).unwrap();
+        std::fs::write(split.join("sonnet-1.id"), "w1-2").unwrap();
+        let mb = Mailbox::under(state.path(), "w1").with_legacy_root(temp.path());
+
+        assert_eq!(mb.pane_for("orchestrator").as_deref(), Some("w1-1"));
+        assert_eq!(mb.pane_for("sonnet-1").as_deref(), Some("w1-2"));
+        std::fs::write(legacy.join("planted.id"), "w1-9").unwrap();
+        assert_eq!(mb.pane_for("planted"), None, "the copy ran only once");
+    }
+
+    /// #77: the old temp dir is in a dir all users share. A link there is
+    /// not followed, even to a dir this user owns.
+    #[cfg(unix)]
+    #[test]
+    fn an_old_registry_that_is_a_link_is_not_copied() {
+        let state = tempfile::tempdir().unwrap();
+        let temp = tempfile::tempdir().unwrap();
+        let elsewhere = temp.path().join("elsewhere");
+        private::ensure_dir(&elsewhere).unwrap();
+        std::fs::write(elsewhere.join("orchestrator.id"), "planted").unwrap();
+        std::os::unix::fs::symlink(&elsewhere, temp.path().join("herdr-orchestration-w1")).unwrap();
+        let mb = Mailbox::under(state.path(), "w1").with_legacy_root(temp.path());
+
+        assert_eq!(mb.pane_for("orchestrator"), None);
+        assert!(!mb.dir().exists(), "nothing was copied");
     }
 
     /// #77: an old registry that other users can write is not copied, and
