@@ -18,7 +18,7 @@ use std::sync::mpsc;
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
-use anyhow::{anyhow, bail, Context, Result};
+use anyhow::{anyhow, Context, Result};
 use serde::Deserialize;
 
 use crate::workspace::model::*;
@@ -311,35 +311,25 @@ impl Herdr {
     pub fn pane_focus_walk(&self, tab: &str, target: &str) -> Result<bool> {
         // `pane layout` reports the whole tab that holds the pane it is asked
         // about, so the target doubles as the probe for its own tab.
-        let mut layout = self.pane_layout(Some(target))?;
+        let layout = self.pane_layout(Some(target))?;
         if layout.tab_id != tab {
-            return Ok(false);
+            Ok(false)
+        } else {
+            self.walk(layout, target)
         }
-        let budget = layout.panes.len();
-        for _ in 0..budget {
-            let Some(focused) = layout.focused_pane_id.clone() else {
-                return Ok(false);
+    }
+
+    /// The loop of [`Herdr::pane_focus_walk`] inside the target's tab: at most
+    /// 1 step per pane of `layout`.
+    fn walk(&self, mut layout: Layout, target: &str) -> Result<bool> {
+        for _ in 0..layout.panes.len() {
+            // `Arrived` and `Stuck` both end the walk; the check below tells
+            // them apart.
+            let Walk::Step { from, direction } = next_step(&layout, target) else {
+                break;
             };
-            if focused == target {
-                return Ok(true);
-            }
-            let rect = |id: &str| {
-                layout
-                    .panes
-                    .iter()
-                    .find(|p| p.pane_id == id)
-                    .map(|p| p.rect)
-            };
-            let (Some(from), Some(to)) = (rect(&focused), rect(target)) else {
-                return Ok(false);
-            };
-            let Some(direction) = crate::workspace::tile::step_toward(&from, &to) else {
-                return Ok(false);
-            };
-            let step = self.pane_focus(&focused, direction)?;
-            // `no_neighbor`, or a step that landed back where it started: either
-            // way the walk is not converging, so stop instead of spinning.
-            if !step.changed || step.focused_pane_id.as_deref() == Some(focused.as_str()) {
+            let step = self.pane_focus(&from, direction)?;
+            if stalled(&step, &from) {
                 return Ok(false);
             }
             layout = step.layout;
@@ -562,20 +552,68 @@ impl Herdr {
     }
 }
 
+/// What a focus walk does next, read from the layout alone.
+#[derive(Debug, PartialEq, Eq)]
+enum Walk {
+    /// The target has the focus.
+    Arrived,
+    /// No focus, a pane missing from the layout, or no direction leads on.
+    Stuck,
+    /// Move the focus from pane `from` toward `direction`.
+    Step { from: String, direction: FocusDir },
+}
+
+/// The next move of a walk of the focus of `layout` to `target`.
+fn next_step(layout: &Layout, target: &str) -> Walk {
+    let Some(from) = layout.focused_pane_id.as_deref() else {
+        return Walk::Stuck;
+    };
+    if from == target {
+        Walk::Arrived
+    } else {
+        step_between(layout, from, target).map_or(Walk::Stuck, |direction| Walk::Step {
+            from: from.to_owned(),
+            direction,
+        })
+    }
+}
+
+/// The direction of 1 step from pane `from` toward pane `to` of `layout`.
+/// `None` when either pane is not in the layout, or no direction leads on.
+fn step_between(layout: &Layout, from: &str, to: &str) -> Option<FocusDir> {
+    let rect = |id: &str| {
+        layout
+            .panes
+            .iter()
+            .find(|p| p.pane_id == id)
+            .map(|p| p.rect)
+    };
+    crate::workspace::tile::step_toward(&rect(from)?, &rect(to)?)
+}
+
+/// `no_neighbor`, or a step that landed back on `from`: either way the walk
+/// is not converging, so it stops instead of spinning.
+fn stalled(step: &Focus, from: &str) -> bool {
+    !step.changed || step.focused_pane_id.as_deref() == Some(from)
+}
+
 /// Read a `herdr pane wait-output` result: success is a match; herdr's
 /// `{"error":{"code":"timeout",...}}` on stderr is no match; anything else
 /// (a missing pane, an unknown command) is an error.
 fn wait_outcome(success: bool, stderr: &str) -> Result<bool> {
     if success {
-        return Ok(true);
+        Ok(true)
+    } else if is_timeout(stderr) {
+        Ok(false)
+    } else {
+        Err(anyhow!("{}", stderr.trim()))
     }
-    let code = serde_json::from_str::<serde_json::Value>(stderr.trim())
-        .ok()
-        .and_then(|v| v["error"]["code"].as_str().map(str::to_owned));
-    if code.as_deref() == Some("timeout") {
-        return Ok(false);
-    }
-    bail!("{}", stderr.trim())
+}
+
+/// Whether `stderr` is herdr's `{"error":{"code":"timeout",...}}`.
+fn is_timeout(stderr: &str) -> bool {
+    serde_json::from_str::<serde_json::Value>(stderr.trim())
+        .is_ok_and(|v| v["error"]["code"].as_str() == Some("timeout"))
 }
 
 /// The most a bounded call reads from each of stdout and stderr.
@@ -1418,6 +1456,54 @@ esac"#
             .lines()
             .map(str::to_owned)
             .collect()
+    }
+
+    fn layout_of(panes: &[(&str, i64)], focused: Option<&str>) -> Layout {
+        Layout {
+            workspace_id: "w1".into(),
+            tab_id: "w1:t1".into(),
+            area: Rect {
+                x: 0,
+                y: 0,
+                width: 100,
+                height: 10,
+            },
+            panes: panes
+                .iter()
+                .map(|(id, x)| LayoutPane {
+                    pane_id: (*id).into(),
+                    rect: Rect {
+                        x: *x,
+                        y: 0,
+                        width: 10,
+                        height: 10,
+                    },
+                })
+                .collect(),
+            focused_pane_id: focused.map(str::to_owned),
+            zoomed: false,
+        }
+    }
+
+    #[test]
+    fn next_step_reads_each_stop_reason_from_the_layout() {
+        let row = [("p1", 0), ("p2", 10)];
+        assert_eq!(next_step(&layout_of(&row, Some("p2")), "p2"), Walk::Arrived);
+        assert_eq!(
+            next_step(&layout_of(&row, Some("p2")), "p1"),
+            Walk::Step {
+                from: "p2".into(),
+                direction: FocusDir::Left
+            }
+        );
+        assert_eq!(next_step(&layout_of(&row, None), "p2"), Walk::Stuck);
+        assert_eq!(next_step(&layout_of(&row, Some("p9")), "p2"), Walk::Stuck);
+        assert_eq!(next_step(&layout_of(&row, Some("p1")), "p9"), Walk::Stuck);
+        let stacked = [("p1", 0), ("p2", 0)];
+        assert_eq!(
+            next_step(&layout_of(&stacked, Some("p1")), "p2"),
+            Walk::Stuck
+        );
     }
 
     #[cfg(unix)]
