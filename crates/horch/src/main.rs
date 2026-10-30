@@ -702,6 +702,17 @@ fn run() -> Result<std::process::ExitCode> {
         Command::Spawn { .. } | Command::Inbox { .. } => cmd::selfupdate::stale_warning(&ctx),
         _ => {}
     }
+    // A pane that herdr resumed after a restart has no HORCH_ROLE (#125).
+    if matches!(
+        &cli.command,
+        Command::Tell { .. }
+            | Command::Inbox { .. }
+            | Command::Note { .. }
+            | Command::Done { .. }
+            | Command::Ledger { .. }
+    ) {
+        cmd::restore::adopt_restored_identity(&mut ctx);
+    }
     let remind = !matches!(
         &cli.command,
         Command::Channel { .. }
@@ -711,9 +722,12 @@ fn run() -> Result<std::process::ExitCode> {
             | Command::Balance { .. }
             | Command::Inbox { roles: false, .. }
     );
+    // `install` restarts a watchdog on the binary it installed; `ensure`
+    // would move it back onto the binary that ran `install` (#216).
     let watched = !matches!(
         &cli.command,
         Command::Worker { .. }
+            | Command::Install { .. }
             | Command::Ledger {
                 command: cmd::taskledger::LedgerCommand::Watch { .. }
             }

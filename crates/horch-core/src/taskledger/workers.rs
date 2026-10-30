@@ -554,6 +554,52 @@ pub struct Wait {
     pub task_ids: Vec<String>,
 }
 
+/// The wait kind of an author on its reviews.
+pub const REVIEWS_WAIT: &str = "reviewers";
+
+/// How long an author waits for its reviews when no deadline is known.
+pub const REVIEWS_WAIT_SECS: i64 = 7 * 24 * 3600;
+
+/// Whether `wait` is an author's reviewers wait after its reviews are in:
+/// it has no task ids, so [`waiting`] keeps it until finish clears it or
+/// its deadline passes (#177).
+pub fn holds_for_finish(wait: &Wait) -> bool {
+    wait.kind == REVIEWS_WAIT && wait.task_ids.is_empty()
+}
+
+/// After the last review of its task: keep `worker`'s reviewers wait, with
+/// no task ids, up to the deadline it had (#177). With no earlier wait, the
+/// wait lasts [`REVIEWS_WAIT_SECS`]. A deadline that has passed sets no
+/// wait: the stall checks then judge the author.
+pub fn hold_for_finish(conn: &Connection, worker: &str) -> Result<()> {
+    // Read the row, not `waiting`: that ends a reviewers wait whose reviews
+    // are done, which they all are now.
+    let deadline: Option<String> = optional(conn.query_row(
+        "SELECT deadline FROM worker_waits WHERE worker_id = ?1 AND kind = ?2",
+        params![worker, REVIEWS_WAIT],
+        |r| r.get(0),
+    ))?;
+    let left = match deadline {
+        None => REVIEWS_WAIT_SECS,
+        Some(raw) => {
+            let at = crate::clock::parse(&raw)
+                .with_context(|| format!("the reviewers wait of {worker} has deadline {raw:?}"))?;
+            (at - crate::clock::now()).num_seconds()
+        }
+    };
+    if left <= 0 {
+        return clear_wait(conn, worker, REVIEWS_WAIT);
+    }
+    set_wait(
+        conn,
+        worker,
+        REVIEWS_WAIT,
+        "the reviews are in; waiting for horch ledger finish",
+        &[],
+        left,
+    )
+}
+
 pub fn set_wait(
     conn: &Connection,
     worker: &str,
@@ -606,7 +652,7 @@ pub fn waiting(conn: &Connection, worker: &str) -> Result<Vec<Wait>> {
     let mut out = Vec::new();
     for (kind, reason, started_at, deadline, ids) in rows {
         let task_ids: Vec<String> = serde_json::from_str(&ids)?;
-        let reviews_done = kind == "reviewers"
+        let reviews_done = kind == REVIEWS_WAIT
             && !task_ids.is_empty()
             && task_ids.iter().all(|id| {
                 super::tasks::get(conn, id)
@@ -692,4 +738,107 @@ pub fn set_record(conn: &Connection, worker_id: &str, record_id: &str) -> Result
         bail!("no worker {worker_id} in the task ledger");
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::Path;
+
+    use super::*;
+    use crate::taskledger::runs::{self, NewRun};
+    use crate::taskledger::store::Store;
+
+    fn author(store: &mut Store) -> String {
+        store
+            .immediate(|tx| {
+                let run = runs::create(
+                    tx,
+                    Path::new("/r"),
+                    &NewRun {
+                        slug: "s".into(),
+                        ..Default::default()
+                    },
+                )?;
+                insert(
+                    tx,
+                    &NewWorker {
+                        run_id: run.run_id,
+                        persona: "opus".into(),
+                        ..Default::default()
+                    },
+                )
+            })
+            .unwrap()
+    }
+
+    fn seconds_left(wait: &Wait) -> i64 {
+        (crate::clock::parse(&wait.deadline).unwrap() - crate::clock::now()).num_seconds()
+    }
+
+    /// #177: the reviews are in. The author keeps waiting, with no task
+    /// ids, up to the deadline it had.
+    #[test]
+    fn a_held_wait_keeps_its_deadline_and_survives_waiting() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut s = Store::open(&dir.path().join("l.sqlite3")).unwrap();
+        let id = author(&mut s);
+        set_wait(
+            s.conn(),
+            &id,
+            REVIEWS_WAIT,
+            "reviews",
+            &["T-9".into()],
+            7200,
+        )
+        .unwrap();
+
+        hold_for_finish(s.conn(), &id).unwrap();
+
+        let waits = waiting(s.conn(), &id).unwrap();
+        assert_eq!(waits.len(), 1, "{waits:?}");
+        assert!(holds_for_finish(&waits[0]), "{waits:?}");
+        assert!(
+            (7195..=7200).contains(&seconds_left(&waits[0])),
+            "{waits:?}"
+        );
+    }
+
+    #[test]
+    fn a_held_wait_with_no_earlier_wait_lasts_7_days() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut s = Store::open(&dir.path().join("l.sqlite3")).unwrap();
+        let id = author(&mut s);
+
+        hold_for_finish(s.conn(), &id).unwrap();
+
+        let waits = waiting(s.conn(), &id).unwrap();
+        assert_eq!(waits.len(), 1, "{waits:?}");
+        let left = seconds_left(&waits[0]);
+        assert!(
+            (7 * 24 * 3600 - 5..=7 * 24 * 3600).contains(&left),
+            "{left}"
+        );
+    }
+
+    /// A deadline that has passed is not renewed: the stall checks judge
+    /// the author at once.
+    #[test]
+    fn a_wait_past_its_deadline_is_not_held() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut s = Store::open(&dir.path().join("l.sqlite3")).unwrap();
+        let id = author(&mut s);
+        set_wait(s.conn(), &id, REVIEWS_WAIT, "reviews", &["T-9".into()], -60).unwrap();
+
+        hold_for_finish(s.conn(), &id).unwrap();
+
+        let rows: i64 = s
+            .conn()
+            .query_row(
+                "SELECT COUNT(*) FROM worker_waits WHERE worker_id = ?1",
+                [&id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(rows, 0);
+    }
 }

@@ -82,10 +82,10 @@ pub struct WorktreeManager<'a, G: GitClient> {
 /// Whether `a` and `b` name the same directory. Git prints resolved paths
 /// (`/private/var/...` on macOS), the caller may not.
 fn same_dir(a: &Path, b: &Path) -> bool {
-    match (a.canonicalize(), b.canonicalize()) {
-        (Ok(a), Ok(b)) => a == b,
-        _ => a == b,
-    }
+    a.canonicalize()
+        .ok()
+        .zip(b.canonicalize().ok())
+        .map_or(a == b, |(a, b)| a == b)
 }
 
 impl<'a, G: GitClient> WorktreeManager<'a, G> {
@@ -101,24 +101,39 @@ impl<'a, G: GitClient> WorktreeManager<'a, G> {
             .worktree_list(&spec.repo)?
             .into_iter()
             .find(|(p, _)| same_dir(p, &path));
-        if let Some((_, on)) = existing {
-            if on.as_deref() != Some(branch.as_str()) {
-                bail!(
-                    "{} is a worktree on {}, not on {branch}",
-                    path.display(),
-                    on.as_deref().unwrap_or("a detached HEAD")
-                );
-            }
-            let head = self.git.head(&path)?;
-            if !self.git.is_ancestor(&path, &spec.base_sha, &head)? {
-                bail!(
-                    "{} is at {head}, which does not contain base {}",
-                    path.display(),
-                    spec.base_sha
-                );
-            }
-            return Ok(path);
+        match existing {
+            Some((_, on)) => self.reuse(spec, path, on.as_deref(), &branch),
+            None => self.add_new(spec, path, &branch),
         }
+    }
+
+    /// Return the worktree already at `path` when it is on `branch` at or
+    /// after the base.
+    fn reuse(
+        &self,
+        spec: &WorktreeSpec,
+        path: PathBuf,
+        on: Option<&str>,
+        branch: &str,
+    ) -> anyhow::Result<PathBuf> {
+        if on != Some(branch) {
+            bail!(
+                "{} is a worktree on {}, not on {branch}",
+                path.display(),
+                on.unwrap_or("a detached HEAD")
+            );
+        }
+        let head = self.git.head(&path)?;
+        self.ensure_contains(
+            &path,
+            &spec.base_sha,
+            &head,
+            format_args!("{} is at {head}, which", path.display()),
+        )
+        .map(|()| path)
+    }
+
+    fn add_new(&self, spec: &WorktreeSpec, path: PathBuf, branch: &str) -> anyhow::Result<PathBuf> {
         if path.exists() {
             bail!(
                 "{} exists and is not a worktree of {}",
@@ -132,18 +147,33 @@ impl<'a, G: GitClient> WorktreeManager<'a, G> {
             .git
             .rev_parse(&spec.repo, &format!("refs/heads/{branch}"))?
         {
-            if !self.git.is_ancestor(&spec.repo, &spec.base_sha, &tip)? {
-                bail!(
-                    "branch {branch} is at {tip}, which does not contain base {}",
-                    spec.base_sha
-                );
-            }
+            self.ensure_contains(
+                &spec.repo,
+                &spec.base_sha,
+                &tip,
+                format_args!("branch {branch} is at {tip}, which"),
+            )?;
         }
         std::fs::create_dir_all(&spec.root)
             .with_context(|| format!("creating {}", spec.root.display()))?;
         self.git
-            .worktree_add(&spec.repo, &path, &branch, &spec.base_sha)?;
+            .worktree_add(&spec.repo, &path, branch, &spec.base_sha)?;
         Ok(path)
+    }
+
+    /// Bail with "`what` does not contain base …" unless `tip` grows
+    /// from `base`.
+    fn ensure_contains(
+        &self,
+        repo: &Path,
+        base: &str,
+        tip: &str,
+        what: std::fmt::Arguments<'_>,
+    ) -> anyhow::Result<()> {
+        if !self.git.is_ancestor(repo, base, tip)? {
+            bail!("{what} does not contain base {base}");
+        }
+        Ok(())
     }
 
     /// Commit everything in the worktree as the dataset identity at `at`
@@ -166,36 +196,8 @@ impl<'a, G: GitClient> WorktreeManager<'a, G> {
             );
         }
         let frozen_at = at.to_rfc3339_opts(SecondsFormat::Secs, true);
-        let id = GitIdentity {
-            name: FREEZE_NAME.to_owned(),
-            email: FREEZE_EMAIL.to_owned(),
-            date: frozen_at.clone(),
-        };
-        let message = format!("candidate {} frozen", spec.label);
-        self.git.commit_all(&path, &message, &id)?;
-        // The candidate controls its worktree, including its `.git` file, so
-        // everything recorded is read from the main repository: the branch
-        // tip there must be what the worktree reports.
-        let head_sha = self.git.head(&path)?;
-        let tip = self
-            .git
-            .rev_parse(&spec.repo, &format!("refs/heads/{branch}"))?;
-        if tip.as_deref() != Some(head_sha.as_str()) {
-            bail!(
-                "candidate {} worktree reports {head_sha}, but {branch} in {} is at {}",
-                spec.label,
-                spec.repo.display(),
-                tip.as_deref().unwrap_or("nothing")
-            );
-        }
+        let head_sha = self.commit_head(spec, &branch, &frozen_at)?;
         let repo = &spec.repo;
-        if !self.git.is_ancestor(repo, &spec.base_sha, &head_sha)? {
-            bail!(
-                "candidate {} head {head_sha} does not contain base {}",
-                spec.label,
-                spec.base_sha
-            );
-        }
         Ok(FrozenCandidate {
             label: spec.label.clone(),
             execution_id: execution.clone(),
@@ -207,6 +209,46 @@ impl<'a, G: GitClient> WorktreeManager<'a, G> {
             head_sha,
             frozen_at,
         })
+    }
+
+    /// Commit everything in the worktree as the dataset identity and return
+    /// the head, which must be the branch tip and contain the base.
+    fn commit_head(
+        &self,
+        spec: &WorktreeSpec,
+        branch: &str,
+        frozen_at: &str,
+    ) -> anyhow::Result<String> {
+        let path = spec.path();
+        let id = GitIdentity {
+            name: FREEZE_NAME.to_owned(),
+            email: FREEZE_EMAIL.to_owned(),
+            date: frozen_at.to_owned(),
+        };
+        let message = format!("candidate {} frozen", spec.label);
+        self.git.commit_all(&path, &message, &id)?;
+        let head_sha = self.git.head(&path)?;
+        // The candidate controls its worktree, including its `.git` file, so
+        // everything recorded is read from the main repository: the branch
+        // tip there must be what the worktree reports.
+        let tip = self
+            .git
+            .rev_parse(&spec.repo, &format!("refs/heads/{branch}"))?;
+        if tip.as_deref() != Some(head_sha.as_str()) {
+            bail!(
+                "candidate {} worktree reports {head_sha}, but {branch} in {} is at {}",
+                spec.label,
+                spec.repo.display(),
+                tip.as_deref().unwrap_or("nothing")
+            );
+        }
+        self.ensure_contains(
+            &spec.repo,
+            &spec.base_sha,
+            &head_sha,
+            format_args!("candidate {} head {head_sha}", spec.label),
+        )
+        .map(|()| head_sha)
     }
 
     /// Remove the worktree with `--force`. The branch stays, so the frozen

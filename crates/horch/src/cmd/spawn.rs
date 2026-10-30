@@ -14,7 +14,7 @@ use std::time::{Duration, SystemTime};
 use anyhow::{bail, Context, Result};
 use horch_core::competition::budget::UsageMeter;
 use horch_core::competition::observe::TelemetryUsage;
-use horch_core::execution::lifecycle::{await_worker, WorkerStart};
+use horch_core::execution::lifecycle::{await_worker, StartupKey, WorkerStart};
 use horch_core::execution::plan::{self, GateInputs, MintedIds, PlanInputs};
 use horch_core::execution::service::{ExecutionService, SpawnError};
 use horch_core::execution::store::ExecutionStore;
@@ -275,14 +275,13 @@ fn spawn_worker(
     if !wait.is_zero() {
         let data_root = &ctx.paths.data_root;
         let mut registered = || mailbox.pane_for(role.as_str()).as_deref() == Some(pane.as_str());
-        match await_worker(
-            data_root,
-            role.as_str(),
-            started,
-            wait,
-            SPAWN_POLL,
-            &mut registered,
-        ) {
+        // The worker keys its error by this record, or by its pane when it
+        // could not read its brief (#192).
+        let keys = [
+            StartupKey::Record(out.plan.execution.id.as_str()),
+            StartupKey::Pane(pane.as_str()),
+        ];
+        match await_worker(data_root, &keys, started, wait, SPAWN_POLL, &mut registered) {
             WorkerStart::Registered => {}
             WorkerStart::Failed(error) => {
                 let id = out.plan.execution.id.as_str();
@@ -361,12 +360,16 @@ fn fleet_facts(
 /// Advisory collision/load diagnostics; abandoned workspaces do not count.
 pub fn fleet_warnings(ctx: &RuntimeContext, as_note: bool) {
     let prefix = if as_note { "NOTE:" } else { "WARNING:" };
+    if let Some(warning) = ctx.paths.ledger_isolation_warning() {
+        eprintln!("horch: {prefix} {warning}");
+    }
     let caller = super::ledgercmd::caller_workspace(ctx);
     let herdr = Herdr::with_bin(&ctx.bins.harness.herdr);
     if let Ok(workspaces) = herdr.workspace_list() {
         let listed = |w: &str| workspaces.iter().any(|ws| ws.workspace_id == w);
         let mut active = std::collections::BTreeMap::<String, Option<String>>::new();
-        if let Ok(store) = horch_core::taskledger::open(ctx) {
+        // A read only: a scratch fleet must not create the ledger (#199).
+        if let Ok(Some(store)) = horch_core::taskledger::open_existing(ctx) {
             if let Ok(root) = super::taskledger::project_root(ctx) {
                 if let Ok(runs) = horch_core::taskledger::runs::of_project(store.conn(), &root) {
                     for run in runs.into_iter().filter(|r| r.status == "active") {
