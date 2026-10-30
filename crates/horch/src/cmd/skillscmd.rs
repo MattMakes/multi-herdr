@@ -4,6 +4,7 @@
 //! `horch skills [list] [--phase <p>] [--json]` prints exactly what it
 //! printed before the marketplace existed (the A0 oracle).
 
+use std::path::Path;
 use std::process::ExitCode;
 
 use anyhow::{anyhow, Context, Result};
@@ -11,7 +12,7 @@ use clap::Subcommand;
 use horch_core::roster::Phase;
 use horch_core::runtime::RuntimeContext;
 use horch_core::skills::catalog::marketplace::{parse_source, InstallOptions, Lockfile, Store};
-use horch_core::skills::catalog::{self, StoreState};
+use horch_core::skills::catalog::{self, CatalogEntry, Copied, StoreState};
 use horch_core::skills::{reading, CatalogSource, SkillCatalog};
 use serde_json::json;
 
@@ -70,16 +71,23 @@ pub fn run(
     phase: Option<Phase>,
     json: bool,
 ) -> Result<ExitCode> {
+    let command = command.unwrap_or(SkillsCommand::List { phase, json });
     match command {
-        None => list(phase, json)?,
-        Some(SkillsCommand::List { phase, json }) => list(phase, json)?,
-        Some(SkillsCommand::Show { id, json }) => show(ctx, &id, json)?,
-        Some(SkillsCommand::Read { id, file, files }) => read(ctx, &id, file.as_deref(), files)?,
-        Some(SkillsCommand::Install { source, path }) => install(ctx, &source, path.as_deref())?,
-        Some(SkillsCommand::Update { id }) => update(ctx, id.as_deref())?,
-        Some(SkillsCommand::Doctor) => return doctor(ctx),
+        SkillsCommand::Doctor => doctor(ctx),
+        other => dispatch(ctx, other).map(|()| ExitCode::SUCCESS),
     }
-    Ok(ExitCode::SUCCESS)
+}
+
+/// Every subcommand that exits 0 on success.
+fn dispatch(ctx: &RuntimeContext, command: SkillsCommand) -> Result<()> {
+    match command {
+        SkillsCommand::List { phase, json } => list(phase, json),
+        SkillsCommand::Show { id, json } => show(ctx, &id, json),
+        SkillsCommand::Read { id, file, files } => read(ctx, &id, file.as_deref(), files),
+        SkillsCommand::Install { source, path } => install(ctx, &source, path.as_deref()),
+        SkillsCommand::Update { id } => update(ctx, id.as_deref()),
+        SkillsCommand::Doctor => unreachable!("run handles doctor"),
+    }
 }
 
 /// `horch skills show <id>`. JSON keys: `id`, `version`, `source`,
@@ -103,36 +111,48 @@ fn show(ctx: &RuntimeContext, id: &str, json: bool) -> Result<()> {
     });
     if json {
         output::println(&serde_json::to_string_pretty(&view)?);
-        return Ok(());
+    } else {
+        print_text(entry, path.as_deref());
     }
+    Ok(())
+}
+
+fn print_text(entry: &CatalogEntry, path: Option<&Path>) {
     output::println(&format!("id:           {}", entry.id));
     output::println(&format!("version:      {}", entry.version));
     output::println(&format!("source:       {}", entry.source_label()));
     output::println(&format!("digest:       {}", entry.digest));
     output::println(&format!("description:  {}", printable(&entry.description)));
     if let Some(c) = &entry.copied {
-        if c.copied_files.is_empty() {
-            output::println("copied:       none (own text)");
-        }
-        for file in &c.copied_files {
-            output::println(&format!("copied:       {file}"));
-        }
-        if c.verbatim {
-            output::println("verbatim:     true");
-        }
-        if let Some(reason) = &c.budget_exempt {
-            output::println(&format!("budget:       exempt ({})", printable(reason)));
-        }
+        print_copied(c);
     }
     output::println(&format!(
         "install path: {}",
-        match (&entry.source, &path) {
-            (_, Some(p)) => p.display().to_string(),
-            (CatalogSource::Bundled, None) => "compiled in".into(),
-            _ => "-".into(),
-        }
+        install_path_label(&entry.source, path)
     ));
-    Ok(())
+}
+
+fn print_copied(c: &Copied) {
+    if c.copied_files.is_empty() {
+        output::println("copied:       none (own text)");
+    }
+    for file in &c.copied_files {
+        output::println(&format!("copied:       {file}"));
+    }
+    if c.verbatim {
+        output::println("verbatim:     true");
+    }
+    if let Some(reason) = &c.budget_exempt {
+        output::println(&format!("budget:       exempt ({})", printable(reason)));
+    }
+}
+
+fn install_path_label(source: &CatalogSource, path: Option<&Path>) -> String {
+    match (source, path) {
+        (_, Some(p)) => p.display().to_string(),
+        (CatalogSource::Bundled, None) => "compiled in".into(),
+        _ => "-".into(),
+    }
 }
 
 /// `horch skills read <id> [<file>] [--files]`: the file's text as is, or
