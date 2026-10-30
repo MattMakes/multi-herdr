@@ -785,13 +785,8 @@ pub fn read_session_events(
     agent: &str,
     session_id: Option<&str>,
 ) -> std::result::Result<Session, Missing> {
-    use crate::telemetry::readers::{read_whole, Unreadable};
-    let (events, files) = read_whole(loc, agent, session_id).map_err(|e| match e {
-        Unreadable::NoSessionId => Missing::NoSessionId,
-        Unreadable::NoTranscript(_) => Missing::NoTranscript,
-        Unreadable::NotRead(_) => Missing::NotRead,
-        Unreadable::Failed(why) => Missing::Failed(why),
-    })?;
+    let (events, files) =
+        crate::telemetry::readers::read_whole(loc, agent, session_id).map_err(missing_for)?;
     let mut skill_loads = Vec::new();
     for file in &files {
         if let Ok(text) = std::fs::read_to_string(file) {
@@ -804,6 +799,17 @@ pub fn read_session_events(
         events,
         skill_loads,
     })
+}
+
+/// The [`Missing`] that a reader's refusal is reported as.
+fn missing_for(why: crate::telemetry::readers::Unreadable) -> Missing {
+    use crate::telemetry::readers::Unreadable;
+    match why {
+        Unreadable::NoSessionId => Missing::NoSessionId,
+        Unreadable::NoTranscript(_) => Missing::NoTranscript,
+        Unreadable::NotRead(_) => Missing::NotRead,
+        Unreadable::Failed(why) => Missing::Failed(why),
+    }
 }
 
 /// Find and read one session's whole usage for `agent`:
