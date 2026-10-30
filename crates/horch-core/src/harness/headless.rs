@@ -19,7 +19,7 @@ use super::launch::{teammate_env, LaunchEnv};
 use crate::evaluation::rubric::{rubric_text, schema_text};
 use crate::ids::SessionId;
 use crate::roster::Teammate;
-use crate::runtime::RuntimeContext;
+use crate::runtime::{process, RuntimeContext};
 
 /// The only tools a headless judge may have. They read; none writes or runs.
 pub(crate) const READ_ONLY_TOOLS: [&str; 3] = ["Read", "Grep", "Glob"];
@@ -211,12 +211,10 @@ fn help_lists(bin: &Path, flag: &str) -> bool {
 
 /// Whether `child` exits before `deadline`; a child that does not is killed.
 fn exited_before(child: &mut Child, deadline: Instant) -> bool {
-    let mut status = child.try_wait();
-    while matches!(status, Ok(None)) && Instant::now() < deadline {
-        std::thread::sleep(Duration::from_millis(20));
-        status = child.try_wait();
-    }
-    let exited = matches!(status, Ok(Some(_)));
+    let exited = matches!(
+        process::wait_until(child, deadline, Duration::from_millis(20)),
+        Ok(Some(_))
+    );
     if !exited {
         let _ = child.kill();
         let _ = child.wait();

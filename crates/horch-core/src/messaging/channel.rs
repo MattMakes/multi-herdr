@@ -82,20 +82,7 @@ impl std::error::Error for SendError {
 pub fn socket_path(state_root: &Path, workspace: &str) -> PathBuf {
     state_root
         .join("channels")
-        .join(format!("{}.sock", file_safe(workspace)))
-}
-
-fn file_safe(value: &str) -> String {
-    value
-        .chars()
-        .map(|character| {
-            if character.is_ascii_alphanumeric() || matches!(character, '.' | '_' | '-') {
-                character
-            } else {
-                '_'
-            }
-        })
-        .collect()
+        .join(format!("{}.sock", super::file_safe(workspace)))
 }
 
 /// Send one message to a relay and wait for its answer.
@@ -851,6 +838,11 @@ mod tests {
         assert_eq!(
             socket_path(Path::new("/tmp/root"), "w4W:p1"),
             Path::new("/tmp/root/channels/w4W_p1.sock")
+        );
+        // `.` is mapped to `_` like every other file name (messaging::file_safe).
+        assert_eq!(
+            socket_path(Path::new("/tmp/root"), "w4.p1"),
+            Path::new("/tmp/root/channels/w4_p1.sock")
         );
     }
 

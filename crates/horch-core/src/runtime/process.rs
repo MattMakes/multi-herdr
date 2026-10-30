@@ -7,7 +7,8 @@
 
 use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command};
+use std::process::{Child, Command, ExitStatus};
+use std::time::{Duration, Instant};
 
 /// Executable extensions to try when a name has none: the `PATHEXT` entries
 /// on Windows (lowercased), and nothing anywhere else.
@@ -43,6 +44,64 @@ pub(crate) fn which_in(paths: &OsStr, name: &str, extensions: &[String]) -> Opti
         }
     }
     None
+}
+
+/// The binary a name or path stands for, when it exists: a path with a
+/// separator must be a file, a bare name is searched on the context's PATH.
+pub fn resolve(ctx: &super::context::RuntimeContext, bin: &Path) -> Option<PathBuf> {
+    if bin.components().count() > 1 || bin.is_absolute() {
+        return bin.is_file().then(|| bin.to_path_buf());
+    }
+    which(
+        ctx.inherited.path.as_deref(),
+        ctx.inherited.pathext.as_deref(),
+        &bin.to_string_lossy(),
+    )
+}
+
+/// SIGKILL the process group `pgid` (a child started with `process_group(0)`).
+/// Whether the signal was sent; a group that is already gone gives ESRCH.
+#[cfg(unix)]
+pub fn kill_pgid(pgid: u32) -> bool {
+    // SAFETY: killpg takes plain integers and touches no memory.
+    unsafe { libc::killpg(pgid as libc::pid_t, libc::SIGKILL) == 0 }
+}
+
+#[cfg(not(unix))]
+pub fn kill_pgid(_pgid: u32) -> bool {
+    false
+}
+
+/// Kill the group of `child`, which was started with `process_group(0)`.
+/// The child must not be reaped yet, so its pid still names its group. Off
+/// unix there is no group, so only the child dies.
+#[cfg(unix)]
+pub fn kill_group(child: &mut Child) {
+    kill_pgid(child.id());
+}
+
+#[cfg(not(unix))]
+pub fn kill_group(child: &mut Child) {
+    let _ = child.kill();
+}
+
+/// Poll `child` every `poll` until it exits or `deadline` passes. `Ok(None)`
+/// means the deadline passed with the child still running; the child is left
+/// alone, so the caller decides whether to kill it.
+pub fn wait_until(
+    child: &mut Child,
+    deadline: Instant,
+    poll: Duration,
+) -> std::io::Result<Option<ExitStatus>> {
+    loop {
+        if let Some(status) = child.try_wait()? {
+            return Ok(Some(status));
+        }
+        if Instant::now() >= deadline {
+            return Ok(None);
+        }
+        std::thread::sleep(poll);
+    }
 }
 
 #[cfg(unix)]
@@ -238,6 +297,92 @@ fn detach(cmd: &mut Command) {
 mod tests {
     use super::*;
     use crate::runtime::context::MapEnv;
+
+    #[cfg(unix)]
+    fn group_leader(script: &str) -> Child {
+        let mut cmd = Command::new("sh");
+        cmd.args(["-c", script]);
+        std::os::unix::process::CommandExt::process_group(&mut cmd, 0);
+        cmd.spawn().unwrap()
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn wait_until_reports_an_exit_and_leaves_a_runner_alone() {
+        let mut quick = group_leader("exit 3");
+        let far = Instant::now() + Duration::from_secs(60);
+        let status = wait_until(&mut quick, far, Duration::from_millis(5)).unwrap();
+        assert_eq!(status.and_then(|s| s.code()), Some(3));
+
+        let mut slow = group_leader("sleep 60");
+        let soon = Instant::now() + Duration::from_millis(50);
+        assert!(wait_until(&mut slow, soon, Duration::from_millis(5))
+            .unwrap()
+            .is_none());
+        assert!(
+            slow.try_wait().unwrap().is_none(),
+            "the child is not killed"
+        );
+        kill_group(&mut slow);
+        slow.wait().unwrap();
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn kill_group_kills_the_grandchildren_too() {
+        // `sh` backgrounds a sleeper that prints its pid, then waits on it.
+        let mut cmd = Command::new("sh");
+        cmd.args(["-c", "sleep 60 & echo $!; wait"]);
+        cmd.stdout(std::process::Stdio::piped());
+        std::os::unix::process::CommandExt::process_group(&mut cmd, 0);
+        let mut child = cmd.spawn().unwrap();
+        let mut line = String::new();
+        std::io::BufRead::read_line(
+            &mut std::io::BufReader::new(child.stdout.take().unwrap()),
+            &mut line,
+        )
+        .unwrap();
+        let grandchild: libc::pid_t = line.trim().parse().unwrap();
+        kill_group(&mut child);
+        child.wait().unwrap();
+        let deadline = Instant::now() + Duration::from_secs(10);
+        // SAFETY: signal 0 only tests that the pid exists.
+        while unsafe { libc::kill(grandchild, 0) } == 0 && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert_ne!(
+            unsafe { libc::kill(grandchild, 0) },
+            0,
+            "grandchild still runs"
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn kill_pgid_is_false_for_a_group_that_is_gone() {
+        let mut child = group_leader("exit 0");
+        let pgid = child.id();
+        child.wait().unwrap();
+        assert!(!kill_pgid(pgid));
+    }
+
+    #[test]
+    fn resolve_takes_a_path_as_is_and_searches_a_bare_name() {
+        let dir = tempfile::tempdir().unwrap();
+        let bin = dir.path().join("tool");
+        std::fs::write(&bin, "").unwrap();
+        #[cfg(unix)]
+        std::fs::set_permissions(&bin, std::os::unix::fs::PermissionsExt::from_mode(0o755))
+            .unwrap();
+        let env = MapEnv::new(dir.path())
+            .with("HOME", &dir.path().to_string_lossy())
+            .with("PATH", &dir.path().to_string_lossy());
+        let ctx = crate::runtime::RuntimeContext::from_env(&env).unwrap();
+        assert_eq!(resolve(&ctx, &bin), Some(bin.clone()));
+        assert_eq!(resolve(&ctx, &dir.path().join("missing")), None);
+        assert_eq!(resolve(&ctx, Path::new("tool")), Some(bin));
+        assert_eq!(resolve(&ctx, Path::new("absent")), None);
+    }
 
     /// A detached child never carries a forbidden key: `spawn_detached`
     /// removes every one itself, after the caller's `env` calls.

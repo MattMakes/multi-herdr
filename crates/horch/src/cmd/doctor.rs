@@ -18,6 +18,7 @@ use horch_core::runtime::bins::{host_tool_bin, BLENDER_APP, GODOT_APP, GODOT_MON
 use horch_core::runtime::{process, RuntimeContext};
 use horch_core::sweep;
 use horch_core::taskledger::timer::Agent;
+use horch_core::usage::has_transcript;
 use horch_core::workspace::herdr::Herdr;
 
 pub fn doctor(ctx: &RuntimeContext, clean: bool) -> Result<()> {
@@ -246,15 +247,6 @@ fn reviewer_warnings(
         .collect()
 }
 
-/// Harnesses whose transcript the watchdog can find (see `usage.rs`).
-const WITH_TRANSCRIPT: [HarnessKind; 5] = [
-    HarnessKind::Claude,
-    HarnessKind::Codex,
-    HarnessKind::OpenCode,
-    HarnessKind::Pi,
-    HarnessKind::Prime,
-];
-
 /// One line per offered harness that has no timer format and no transcript
 /// lookup (#203): the watchdog cannot see that its workers progress.
 fn watchdog_blind_warnings(roster: &Roster) -> Vec<String> {
@@ -262,7 +254,7 @@ fn watchdog_blind_warnings(roster: &Roster) -> Vec<String> {
     for t in roster.offered() {
         let kind = t.agent;
         let blind = kind != HarnessKind::None
-            && !WITH_TRANSCRIPT.contains(&kind)
+            && !has_transcript(kind)
             && Agent::of_harness(kind.as_str()).is_none();
         if blind && !seen.contains(&kind) {
             seen.push(kind);

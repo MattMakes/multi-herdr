@@ -139,7 +139,7 @@ impl CheckGroup {
 
     /// Kill the group; when that fails, kill at least the shell.
     fn kill(&mut self) {
-        if !kill_group(self.child.id()) {
+        if !crate::runtime::process::kill_pgid(self.child.id()) {
             let _ = self.child.kill();
         }
     }
@@ -169,19 +169,6 @@ impl Drop for CheckGroup {
         }
         signals::forget();
     }
-}
-
-/// Kill the process group `pgid` (the check's pid: `process_group(0)`).
-/// Whether the kill was sent.
-#[cfg(unix)]
-fn kill_group(pgid: u32) -> bool {
-    // SAFETY: killpg takes plain integers and touches no memory.
-    unsafe { libc::killpg(pgid as libc::pid_t, libc::SIGKILL) == 0 }
-}
-
-#[cfg(not(unix))]
-fn kill_group(_pgid: u32) -> bool {
-    false
 }
 
 /// SIGINT, SIGTERM and SIGHUP to horch while a check runs kill the check's
