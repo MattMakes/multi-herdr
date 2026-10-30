@@ -171,7 +171,16 @@ impl Refused {
 /// followed. `Ok(None)`: nothing to read there (no file, no access, or not
 /// UTF-8 text).
 pub(crate) fn read_regular_bounded(path: &Path) -> std::result::Result<Option<String>, Refused> {
-    use std::io::Read;
+    match open_regular(path)?.and_then(read_bounded) {
+        None => Ok(None),
+        Some(bytes) if bytes.len() as u64 > READ_LIMIT => Err(Refused::TooLarge),
+        Some(bytes) => Ok(String::from_utf8(bytes).ok()),
+    }
+}
+
+/// Open `path` for [`read_regular_bounded`]. `Ok(None)`: no file or no
+/// access.
+fn open_regular(path: &Path) -> std::result::Result<Option<std::fs::File>, Refused> {
     let mut o = std::fs::OpenOptions::new();
     o.read(true);
     #[cfg(unix)]
@@ -180,22 +189,25 @@ pub(crate) fn read_regular_bounded(path: &Path) -> std::result::Result<Option<St
         // A FIFO opens at once instead of waiting for a writer.
         o.custom_flags(libc::O_NONBLOCK);
     }
-    let Ok(file) = o.open(path) else {
-        return Ok(None);
-    };
-    match file.metadata() {
-        Ok(m) if m.is_file() => {}
-        Ok(_) => return Err(Refused::NotRegular),
-        Err(_) => return Ok(None),
+    match o
+        .open(path)
+        .and_then(|file| file.metadata().map(|m| (file, m.is_file())))
+    {
+        Ok((file, true)) => Ok(Some(file)),
+        Ok((_, false)) => Err(Refused::NotRegular),
+        Err(_) => Ok(None),
     }
+}
+
+/// Read at most 1 byte over [`READ_LIMIT`] from `file`, so the caller can
+/// tell an oversized file. `None` on a read error.
+fn read_bounded(file: std::fs::File) -> Option<Vec<u8>> {
+    use std::io::Read;
     let mut bytes = Vec::new();
-    if file.take(READ_LIMIT + 1).read_to_end(&mut bytes).is_err() {
-        return Ok(None);
-    }
-    if bytes.len() as u64 > READ_LIMIT {
-        return Err(Refused::TooLarge);
-    }
-    Ok(String::from_utf8(bytes).ok())
+    file.take(READ_LIMIT + 1)
+        .read_to_end(&mut bytes)
+        .ok()
+        .map(|_| bytes)
 }
 
 /// Replace `path` with `bytes` atomically and durably, with file mode `mode`.
@@ -209,20 +221,22 @@ pub fn write_atomic(path: &Path, bytes: &[u8], mode: u32) -> Result<()> {
         std::process::id(),
         &nonce[..12]
     ));
-    let written = (|| {
-        let mut f = io(&tmp, create_new_file(&tmp, mode))?;
-        // The umask may have cleared bits the caller asked for.
-        set_mode(&tmp, mode)?;
-        io(&tmp, f.write_all(bytes))?;
-        io(&tmp, f.sync_all())?;
-        drop(f);
-        io(path, std::fs::rename(&tmp, path))
-    })();
+    let written =
+        write_temp(&tmp, bytes, mode).and_then(|()| io(path, std::fs::rename(&tmp, path)));
     if written.is_err() {
         let _ = std::fs::remove_file(&tmp);
     }
     written?;
     sync_dir(parent)
+}
+
+/// Create the temp file `tmp` with `bytes` and mode `mode`, synced to disk.
+fn write_temp(tmp: &Path, bytes: &[u8], mode: u32) -> Result<()> {
+    let mut f = io(tmp, create_new_file(tmp, mode))?;
+    // The umask may have cleared bits the caller asked for.
+    set_mode(tmp, mode)?;
+    io(tmp, f.write_all(bytes))?;
+    io(tmp, f.sync_all())
 }
 
 /// What [`create_immutable`] did.
@@ -261,32 +275,38 @@ fn create_immutable_with(
         std::process::id(),
         &nonce[..12]
     ));
-    let linked: Result<std::io::Result<()>> = (|| {
-        let mut f = io(&tmp, create_new_file(&tmp, mode))?;
-        set_mode(&tmp, mode)?;
-        io(&tmp, f.write_all(bytes))?;
-        io(&tmp, f.sync_all())?;
-        drop(f);
-        written();
-        Ok(std::fs::hard_link(&tmp, path))
-    })();
+    let linked = write_and_link(&tmp, path, bytes, mode, written);
     let _ = std::fs::remove_file(&tmp);
     match linked? {
-        Ok(()) => {}
-        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
-            let existing = io(path, std::fs::read(path))?;
-            return if existing == bytes {
-                Ok(Created::AlreadyIdentical)
-            } else {
-                Err(FsxError::Conflict {
-                    path: path.to_path_buf(),
-                })
-            };
-        }
-        Err(e) => return io(path, Err(e)),
+        Ok(()) => sync_dir(parent).map(|()| Created::Written),
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => compare_existing(path, bytes),
+        Err(e) => io(path, Err(e)),
     }
-    sync_dir(parent)?;
-    Ok(Created::Written)
+}
+
+/// Write `bytes` to `tmp`, run `written`, then hard-link `tmp` to `path`.
+/// The outer error is the temp write; the inner one is the link.
+fn write_and_link(
+    tmp: &Path,
+    path: &Path,
+    bytes: &[u8],
+    mode: u32,
+    written: impl FnOnce(),
+) -> Result<std::io::Result<()>> {
+    write_temp(tmp, bytes, mode)?;
+    written();
+    Ok(std::fs::hard_link(tmp, path))
+}
+
+/// The [`create_immutable`] result for a `path` that already exists.
+fn compare_existing(path: &Path, bytes: &[u8]) -> Result<Created> {
+    if io(path, std::fs::read(path))? == bytes {
+        Ok(Created::AlreadyIdentical)
+    } else {
+        Err(FsxError::Conflict {
+            path: path.to_path_buf(),
+        })
+    }
 }
 
 /// Create `path` and its parents; set `path` itself to mode 0700 on unix.
@@ -378,30 +398,33 @@ impl DirLockGuard {
 
     /// Refresh the lock directory age while a long operation still owns it.
     pub fn refresh(&self) -> Result<()> {
-        let Some(nonce) = &self.nonce else {
-            return io(
-                &self.path,
-                Err(std::io::Error::other("lock owner is not initialized")),
-            );
-        };
-        if read_owner(&self.path).is_none_or(|owner| &owner.nonce != nonce) {
-            return io(
-                &self.path,
-                Err(std::io::Error::other(
-                    "lock is no longer owned by this guard",
-                )),
-            );
-        }
+        let nonce = self
+            .nonce
+            .as_deref()
+            .ok_or_else(|| self.lock_error("lock owner is not initialized"))?;
+        self.ensure_owned(nonce, "lock is no longer owned by this guard")?;
         let heartbeat = self.path.join(format!("heartbeat-{nonce}"));
         write_atomic(&heartbeat, b"live\n", PRIVATE_FILE)?;
-        if read_owner(&self.path).is_none_or(|owner| &owner.nonce != nonce) {
-            let _ = std::fs::remove_file(&heartbeat);
-            return io(
-                &self.path,
-                Err(std::io::Error::other("lock changed while it was refreshed")),
-            );
+        self.ensure_owned(nonce, "lock changed while it was refreshed")
+            .inspect_err(|_| {
+                let _ = std::fs::remove_file(&heartbeat);
+            })
+    }
+
+    /// `Ok` while the owner file still names `nonce`; else the error `why`.
+    fn ensure_owned(&self, nonce: &str, why: &'static str) -> Result<()> {
+        if read_owner(&self.path).is_some_and(|owner| owner.nonce == nonce) {
+            Ok(())
+        } else {
+            Err(self.lock_error(why))
         }
-        Ok(())
+    }
+
+    fn lock_error(&self, why: &'static str) -> FsxError {
+        FsxError::Io {
+            path: self.path.clone(),
+            source: std::io::Error::other(why),
+        }
     }
 
     /// Release now (the same as dropping it).
@@ -472,19 +495,38 @@ impl DirLock {
         let start = Instant::now();
         let mut backoff = Duration::from_millis(5);
         loop {
-            if let Some(guard) = publish(&path, &mut writing)? {
-                return Ok(guard);
+            if let Some(done) = publish(&path, &mut writing).transpose() {
+                break done;
             }
-            if is_stale(&path, stale_after) && break_lock(&path, stale_after) {
-                continue;
+            let broke = is_stale(&path, stale_after) && break_lock(&path, stale_after);
+            if let Err(e) = wait_or_timeout(broke, &path, start, timeout, &mut backoff) {
+                break Err(e);
             }
-            if start.elapsed() >= timeout {
-                let waited = start.elapsed();
-                return Err(FsxError::LockTimeout { path, waited });
-            }
-            std::thread::sleep(backoff.min(timeout.saturating_sub(start.elapsed())));
-            backoff = (backoff * 2).min(Duration::from_millis(100));
         }
+    }
+}
+
+/// Wait `backoff` before the next try, and double it up to 100 ms. No wait
+/// after a broken lock. A [`FsxError::LockTimeout`] once `timeout` is over.
+fn wait_or_timeout(
+    broke: bool,
+    path: &Path,
+    start: Instant,
+    timeout: Duration,
+    backoff: &mut Duration,
+) -> Result<()> {
+    if broke {
+        Ok(())
+    } else if start.elapsed() >= timeout {
+        let waited = start.elapsed();
+        Err(FsxError::LockTimeout {
+            path: path.to_path_buf(),
+            waited,
+        })
+    } else {
+        std::thread::sleep((*backoff).min(timeout.saturating_sub(start.elapsed())));
+        *backoff = (*backoff * 2).min(Duration::from_millis(100));
+        Ok(())
     }
 }
 
@@ -590,12 +632,17 @@ fn rename_noreplace(from: &Path, to: &Path) -> std::io::Result<()> {
     std::fs::rename(from, to)
 }
 
-/// Whether the lock at `path` may be broken.
-fn is_stale(path: &Path, stale_after: Duration) -> bool {
-    let age = std::fs::metadata(path)
+/// How long ago `path` was last modified. `None` when that is unknown.
+fn age(path: &Path) -> Option<Duration> {
+    std::fs::metadata(path)
         .and_then(|m| m.modified())
         .ok()
-        .and_then(|t| t.elapsed().ok());
+        .and_then(|t| t.elapsed().ok())
+}
+
+/// Whether the lock at `path` may be broken.
+fn is_stale(path: &Path, stale_after: Duration) -> bool {
+    let age = age(path);
     if age.is_some_and(|a| a >= stale_after) {
         return true;
     }
@@ -624,21 +671,27 @@ impl BreakerGuard {
     /// holds it. Where `flock` is not available (not unix, or a filesystem
     /// without it) the guard holds nothing and the breaker directory alone
     /// excludes, as before the guard.
+    #[cfg(unix)]
     fn take(lock: &Path) -> Option<BreakerGuard> {
-        #[cfg(unix)]
-        {
-            use std::os::unix::io::AsRawFd;
-            let Some(dir) = lock.parent().and_then(|d| std::fs::File::open(d).ok()) else {
-                return Some(BreakerGuard { _dir: None });
-            };
-            if unsafe { libc::flock(dir.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0 {
-                return Some(BreakerGuard { _dir: Some(dir) });
-            }
-            if std::io::Error::last_os_error().raw_os_error() == Some(libc::EWOULDBLOCK) {
-                return None;
-            }
+        use std::os::unix::io::AsRawFd;
+        match lock.parent().and_then(|d| std::fs::File::open(d).ok()) {
+            Some(dir) => match unsafe {
+                libc::flock(dir.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB)
+            } {
+                0 => Some(BreakerGuard { _dir: Some(dir) }),
+                _ if std::io::Error::last_os_error().raw_os_error() == Some(libc::EWOULDBLOCK) => {
+                    None
+                }
+                _ => Some(BreakerGuard { _dir: None }),
+            },
+            None => Some(BreakerGuard { _dir: None }),
         }
-        #[cfg(not(unix))]
+    }
+
+    /// [`BreakerGuard::take`] where `flock` does not exist: the guard holds
+    /// nothing.
+    #[cfg(not(unix))]
+    fn take(lock: &Path) -> Option<BreakerGuard> {
         let _ = lock;
         Some(BreakerGuard { _dir: None })
     }
@@ -677,22 +730,26 @@ fn break_lock(path: &Path, stale_after: Duration) -> bool {
     let mut breaker = path.as_os_str().to_owned();
     breaker.push(".break");
     let breaker = PathBuf::from(breaker);
-    if std::fs::create_dir(&breaker).is_err() {
-        let age = std::fs::metadata(&breaker)
-            .and_then(|m| m.modified())
-            .ok()
-            .and_then(|t| t.elapsed().ok());
-        if age.is_some_and(|a| a >= BREAKER_STALE_AFTER) {
-            let _ = std::fs::remove_dir(&breaker);
-        }
-        return false;
-    }
-    let broke = is_stale(path, stale_after) && remove_lock(path);
-    let _ = std::fs::remove_dir(&breaker);
+    let broke = if std::fs::create_dir(&breaker).is_ok() {
+        let broke = is_stale(path, stale_after) && remove_lock(path);
+        let _ = std::fs::remove_dir(&breaker);
+        broke
+    } else {
+        clear_stale_breaker(&breaker);
+        false
+    };
     if broke {
         eprintln!("horch: broke stale lock {}", path.display());
     }
     broke
+}
+
+/// Remove a breaker directory left by a killed process. Call it only under
+/// the [`BreakerGuard`].
+fn clear_stale_breaker(breaker: &Path) {
+    if age(breaker).is_some_and(|a| a >= BREAKER_STALE_AFTER) {
+        let _ = std::fs::remove_dir(breaker);
+    }
 }
 
 #[cfg(test)]
