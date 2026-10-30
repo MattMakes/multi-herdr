@@ -765,6 +765,14 @@ impl Session {
     }
 }
 
+/// Whether horch can find the transcript of a `kind` worker (the arms of
+/// `telemetry::readers::locate` that read a session). The doctor's watchdog
+/// check asks this instead of keeping its own list.
+pub fn has_transcript(kind: crate::harness::HarnessKind) -> bool {
+    use crate::harness::HarnessKind as K;
+    matches!(kind, K::Claude | K::Codex | K::OpenCode | K::Pi | K::Prime)
+}
+
 /// Find and read one session for `agent`: its usage events and skill loads.
 ///
 /// Tokens come from the telemetry readers, from offset 0 with throwaway
@@ -1048,6 +1056,23 @@ mod tests {
         assert_eq!(names(skill_loads_in("pi", &pi)), ["tdd"; 2]);
         assert_eq!(names(skill_loads_in("prime", &pi)), ["tdd"; 2]);
         assert!(skill_loads_in("opencode", &pi).is_empty());
+    }
+
+    /// `has_transcript` must follow `locate`: a harness it names reads a
+    /// session, and one it does not name is refused as `none` or unknown.
+    #[test]
+    fn has_transcript_agrees_with_the_telemetry_locator() {
+        use crate::harness::HarnessKind;
+        use crate::telemetry::readers::{locate, Unreadable};
+        let home = tempfile::tempdir().unwrap();
+        let loc = Locations::under_home(home.path(), &crate::runtime::Inherited::default());
+        for &kind in HarnessKind::ALL {
+            let refused = matches!(
+                locate(&loc, kind.as_str(), "sid"),
+                Err(Unreadable::NotRead(why)) if why != "sqlite3 not found"
+            );
+            assert_eq!(has_transcript(kind), !refused, "{}", kind.as_str());
+        }
     }
 
     #[test]

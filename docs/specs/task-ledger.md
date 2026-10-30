@@ -1,6 +1,9 @@
 # Spec: the task ledger
 
-Status: draft for operator review. Nothing here is built yet.
+Status: shipped in v0.3.0 as `horch ledger`. Every item of section 8 is
+built. Later releases added the commands that section 6 marks as added
+after v0.3.0. 1 part differs from this design: `horch assign` is not
+retired. It stays for fleets that do not use a ledger run.
 
 ## 1. Why
 
@@ -41,7 +44,9 @@ One SQLite file for every project on the machine:
 - `$HORCH_LEDGER_DB` overrides the path. Tests use it.
 - The same place on every OS, so a human or an agent can find it without
   knowing XDG rules.
-- Opened in WAL mode with `busy_timeout = 5000`. Every write that reads
+- Opened in WAL mode with a busy timeout of 30 s (`store::BUSY_TIMEOUT`).
+  A claim or a checkin holds the lock for milliseconds, so 30 s gives room
+  for many workers at once on a slow disk. Every write that reads
   first (claim, reap, land) uses `BEGIN IMMEDIATE`, so 2 workers can never
   claim the same task.
 - The file must be on a local disk. SQLite locking is not safe on a
@@ -145,7 +150,7 @@ contract; the row is the routing and state around it.
 | `parallel` | INTEGER 0/1 | 1: may run at the same time as other tasks. 0: runs alone - no other task of the run may be `running` while it runs. |
 | `priority` | INTEGER | lower runs first among claimable tasks. Default 100. A requeued task gets its old priority minus 1000, so a retry goes first. |
 | `wave` | INTEGER NULL | copied from `MAP.md`, for display only. Order comes from `task_deps`. |
-| `worktree_mode` | TEXT | `shared` (single-branch mode) or `worktree` (own branch and worktree) |
+| `worktree_mode` | TEXT | `shared` (shared-checkout mode, `add --shared`) or `worktree` (own branch and worktree) |
 | `land_check` | TEXT NULL | the gate command the `check`, `recheck` and `land` finish steps run, e.g. `cargo test -p horch-core` |
 | `status` | TEXT | see below |
 | `attempts` | INTEGER | how many `workers` rows have claimed it. Starts 0. |
@@ -618,11 +623,21 @@ All under `horch ledger`. `--json` on every read command.
 | `claim` | worker | take the next matching task, or record `no_task` |
 | `progress "<text>"` | worker | a milestone; moves `last_progress_at` |
 | `note "<text>"` | worker | same as today's `horch note` |
-| `worktree new <name>` | worker | create the worktree and its row, branched from the run branch |
+| `worktree new <name> [--from <ref>]` | worker | create the worktree and its row, branched from the run branch or `<ref>` (`--from` added after v0.3.0) |
+| `worktree scratch <name>` | worker | a recorded throwaway worktree that never lands (added after v0.3.0) |
+| `worktree drop <name> --reason "<why>" [--keep-branch]` | worker | drop a clean worktree that will not land (added after v0.3.0) |
 | `finish` | worker | run the finish pipeline from the first step not passed (5.5) |
 | `steps [<task>]` | anyone | the finish steps of a task with their evidence |
 | `add-map <MAP.md>` | orchestrator | queue every ticket of a ticket map (5.5a) |
 | `run new <slug>` | orchestrator | create the run and its run branch from the main branch |
+| `run close`, `run list` | orchestrator | close a run whose work is done; list the project's runs (added after v0.3.0) |
+| `unblock <task> --from <task>` | orchestrator | drop 1 dependency (added after v0.3.0) |
+| `requeue <task>` | orchestrator | queue a held or cancelled task again (added after v0.3.0) |
+| `waive <task> <finding> "<reason>"` | orchestrator | rule that 1 code-sweep finding does not block (added after v0.3.0) |
+| `events` | anyone | the run's history, oldest first |
+| `path` | anyone | print the ledger file path |
+| `worker` | tests, debugging | worker rows (plumbing) |
+| `legacy` | anyone | the JSON session ledger plumbing (see `GLOSSARY.md`) |
 | `done "<summary>" [--unlanded "<reason>"]` | worker | finish the task |
 | `checkin` | `horch worker` (internal) | write `last_checkin_at = now` |
 | `watch` | the watchdog (internal) | the check loop of 5.3 |
@@ -633,8 +648,9 @@ All under `horch ledger`. `--json` on every read command.
 | `reap <worker>` | watchdog, orchestrator | 5.4 |
 | `stop <worker> "<reason>"` | orchestrator | stop 1 worker by its recorded PIDs and pane |
 
-`horch spawn`, `horch tell` and `horch inbox` stay. `horch assign` is
-retired: assignment is the claim.
+`horch spawn`, `horch tell` and `horch inbox` stay. In a ledger run,
+assignment is the claim. `horch assign` stays only for fleets without a
+ledger run.
 
 ## 7. Deterministic stop
 

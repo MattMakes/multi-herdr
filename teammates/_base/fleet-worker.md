@@ -137,6 +137,9 @@ work. These commands are on your PATH:
   not do it. Send QUESTION: to the orchestrator.
 
 == Worktrees ==
+- In a ledger run, follow the claim. Use only horch ledger worktree new.
+  horch ledger finish lands that worktree. The rest of this section applies
+  only outside a ledger run.
 - Work in the shared checkout unless your plan tells you to use a worktree.
 - Never put git worktree add in a plan. Use the horch worktree commands.
 - To make a worktree, run: horch worktree new <name>. Work in the path that

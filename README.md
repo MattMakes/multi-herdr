@@ -59,7 +59,7 @@ on it. On Windows the default install directory is
 Then check your setup and verify the machinery end to end:
 
 ```bash
-horch doctor            # herdr reachable? roster ok? host tools, effort overrides
+horch doctor            # herdr reachable? roster ok? host tools, effort overrides, stale state
 horch smoke messaging   # 2-pane check of the messaging primitives, no agents
 horch smoke fleet       # full spawn -> ledger -> report -> self-close check
 ```
@@ -77,6 +77,15 @@ about a non-Anthropic Claude proxy host. Fleet startup queues an acknowledgement
 probe; a warning leaves that probe pending for the courier. Startup prints the
 running version, and `doctor`, `spawn` and `inbox` warn about known stale binaries
 without a network check. `HORCH_NO_SELF_CHECK=1` silences that warning.
+
+Doctor ends with a count of stale state, by kind: spool files older than 7
+days, sockets that no relay answers, the registry and mail dirs of workspaces
+that herdr no longer lists, the skill bundles and Codex homes of finished
+workers, `write_atomic` temp files of dead processes, and `working` records
+whose pane is gone. It removes nothing. `horch doctor --clean` removes them at
+once. `horch fleet` and `horch spawn` run the same sweep at most once an hour,
+for at most 3 seconds. The sweep keeps everything when herdr does not answer,
+and keeps state whose owner is live or unknown.
 
 Both smoke checks spend no LLM tokens and clean up after themselves. They leave
 the scratch workspace open when they fail, so you can look at it.

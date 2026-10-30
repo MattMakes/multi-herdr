@@ -232,7 +232,7 @@ fn update_one(
 fn updater(ctx: &RuntimeContext, kind: HarnessKind) -> Option<(&'static [&'static str], PathBuf)> {
     let args = update_args(kind)?;
     let launched = kind.binary(&ctx.bins.harness)?;
-    Some((args, resolve(ctx, &update_bin(kind, &launched))?))
+    Some((args, process::resolve(ctx, &update_bin(kind, &launched))?))
 }
 
 /// 1 CLI's updater, ready to run.
@@ -482,18 +482,6 @@ pub fn update_bin(kind: HarnessKind, launched: &Path) -> PathBuf {
     }
 }
 
-/// The binary a name or path stands for, when it exists.
-fn resolve(ctx: &RuntimeContext, bin: &Path) -> Option<PathBuf> {
-    if bin.components().count() > 1 || bin.is_absolute() {
-        return bin.is_file().then(|| bin.to_path_buf());
-    }
-    process::which(
-        ctx.inherited.path.as_deref(),
-        ctx.inherited.pathext.as_deref(),
-        &bin.to_string_lossy(),
-    )
-}
-
 /// How 1 updater run ended.
 enum Ran {
     /// It exited 0.
@@ -566,15 +554,12 @@ type LogPair = (std::fs::File, std::fs::File);
 /// failed exit reads its reason from `tails`, the stdout and stderr logs.
 fn wait_or_kill(child: &mut Child, name: &str, timeout: Duration, tails: &mut LogPair) -> Ran {
     let deadline = Instant::now() + timeout;
-    loop {
-        match child.try_wait() {
-            Ok(Some(status)) => break finished(status, name, tails),
-            Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(50)),
-            Ok(None) => break Ran::Detached,
-            Err(e) => {
-                stop_group(child);
-                break Ran::Failed(cut(&format!("waiting for {name}: {e}")));
-            }
+    match process::wait_until(child, deadline, Duration::from_millis(50)) {
+        Ok(Some(status)) => finished(status, name, tails),
+        Ok(None) => Ran::Detached,
+        Err(e) => {
+            stop_group(child);
+            Ran::Failed(cut(&format!("waiting for {name}: {e}")))
         }
     }
 }
@@ -593,7 +578,7 @@ fn finished(status: ExitStatus, name: &str, tails: &mut LogPair) -> Ran {
 
 /// Kill `child`'s process group and reap it.
 fn stop_group(child: &mut Child) {
-    kill_group(child);
+    crate::runtime::process::kill_group(child);
     let _ = child.wait();
 }
 
@@ -603,21 +588,6 @@ fn exited(name: &str, status: ExitStatus) -> String {
         Some(code) => format!("{name} exited {code}"),
         None => format!("{name} exited on a signal"),
     }
-}
-
-#[cfg(unix)]
-fn kill_group(child: &mut Child) {
-    // The group id is the child's pid (`process_group(0)`). The child is not
-    // reaped yet, so its pid still names its group. A group that is already
-    // gone gives ESRCH, which is fine.
-    unsafe {
-        libc::killpg(child.id() as libc::pid_t, libc::SIGKILL);
-    }
-}
-
-#[cfg(not(unix))]
-fn kill_group(child: &mut Child) {
-    let _ = child.kill();
 }
 
 /// The failure reason in `text`: its last non-empty line, with ANSI escape

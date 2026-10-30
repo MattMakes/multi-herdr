@@ -209,6 +209,7 @@ fn launch(
             l.launch_failed(&format!("{e:#}"));
         }
     })?;
+    horch_core::sweep::run_due(ctx);
     let launch = &out.plan.launch;
     if let Some(l) = ledger {
         l.spawned(

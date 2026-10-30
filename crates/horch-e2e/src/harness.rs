@@ -427,7 +427,18 @@ impl Harness {
 
 impl Drop for Harness {
     fn drop(&mut self) {
-        let leaked = reap(&self.root, &self.log);
+        let leaked = match reap(&self.root, &self.log) {
+            Ok(leaked) => leaked,
+            // A test that passes while its processes cannot be seen can
+            // leave one running for hours: fail it, unless it already fails.
+            Err(error) if !std::thread::panicking() => panic!(
+                "teardown could not list the processes of this test ({error}); a leaked process would go unseen"
+            ),
+            Err(error) => {
+                eprintln!("teardown could not list the processes of this test ({error})");
+                Vec::new()
+            }
+        };
         if !std::thread::panicking() {
             check_built_fakes();
             assert!(
@@ -457,13 +468,16 @@ const REAP_GRACE: std::time::Duration = std::time::Duration::from_secs(5);
 /// fake run for ever. Teardown sends SIGTERM to the process group of every
 /// pane that fake-herdr recorded and that is still the same group (the
 /// leader's start time matches, see [`horch_core::procid::is_same_group`]), and
-/// to the group of every process whose command line names the harness root
-/// (a fake, a pane whose start was never recorded). A process of those
-/// groups, or one that names the root, that still runs after
-/// [`REAP_GRACE`] leaked: it gets SIGKILL and is returned.
+/// to the group of every process whose command line or environment names
+/// the harness root (a fake, a pane whose start was never recorded, the
+/// detached mail courier, which redelivers until `horch inbox`
+/// acknowledges). A process of those groups, or one that names the root,
+/// that still runs after [`REAP_GRACE`] leaked: it gets SIGKILL and is
+/// returned. The error is that the processes could not be listed within
+/// [`REAP_GRACE`].
 #[cfg(unix)]
-fn reap(root: &Path, log: &Path) -> Vec<String> {
-    use crate::process::{processes, signal_groups, Process};
+fn reap(root: &Path, log: &Path) -> std::io::Result<Vec<String>> {
+    use crate::process::{commands_with_environment, signal_groups, try_processes, Process};
     use horch_core::procid::is_same_group;
     let mut state = log.as_os_str().to_owned();
     state.push(".state.json");
@@ -477,8 +491,9 @@ fn reap(root: &Path, log: &Path) -> Vec<String> {
         marks.push(format!("{}/", canonical.display()));
     }
     let me = std::process::id();
-    let all = processes();
-    let own_group = all.iter().find(|p| p.pid == me).map(|p| p.pgid);
+    let all = listed(try_processes, REAP_GRACE)?;
+    // SAFETY: plain syscall without arguments.
+    let own_group = u32::try_from(unsafe { libc::getpgrp() }).ok();
     let mut groups: Vec<u32> = state["pids"]
         .as_object()
         .into_iter()
@@ -489,30 +504,61 @@ fn reap(root: &Path, log: &Path) -> Vec<String> {
             is_same_group(pid, started).then_some(pid)
         })
         .collect();
-    let names_root =
-        |p: &Process| p.pid != me && marks.iter().any(|m| p.command.contains(m.as_str()));
-    groups.extend(all.iter().filter(|p| names_root(p)).map(|p| p.pgid));
+    let names_root = |p: &Process, environments: &std::collections::HashMap<u32, String>| {
+        let named = |text: &str| marks.iter().any(|m| text.contains(m.as_str()));
+        p.pid != me && (named(&p.command) || environments.get(&p.pid).is_some_and(|e| named(e)))
+    };
+    let environments = commands_with_environment();
+    groups.extend(
+        all.iter()
+            .filter(|p| names_root(p, &environments))
+            .map(|p| p.pgid),
+    );
     groups.retain(|g| *g > 1 && Some(*g) != own_group);
     groups.sort_unstable();
     groups.dedup();
     if groups.is_empty() {
-        return Vec::new();
+        return Ok(Vec::new());
     }
     signal_groups(&groups, "TERM");
     // A group id stays ours while the group has members: no other process
     // can be given it.
-    let left = || -> Vec<Process> {
-        processes()
+    let left = |signalled: &[u32]| -> std::io::Result<Vec<Process>> {
+        let environments = commands_with_environment();
+        Ok(listed(try_processes, REAP_GRACE)?
             .into_iter()
-            .filter(|p| p.pid != me && (groups.contains(&p.pgid) || names_root(p)))
-            .collect()
+            .filter(|p| {
+                p.pid != me && (signalled.contains(&p.pgid) || names_root(p, &environments))
+            })
+            .collect())
     };
     let until = std::time::Instant::now() + REAP_GRACE;
+    // The pids that ran when the first SIGTERM went out, and every pid
+    // that has had one since.
+    let first: Vec<u32> = all.iter().map(|p| p.pid).collect();
+    let mut signalled = first.clone();
     loop {
-        let left = left();
+        let left = left(&groups)?;
         if left.is_empty() {
-            return Vec::new();
+            return Ok(Vec::new());
         }
+        // A process can start after a SIGTERM went out, even in a group
+        // that got it: a pane command that starts the mail courier on its
+        // way out. Its group gets SIGTERM too.
+        let late: Vec<&Process> = left
+            .iter()
+            .filter(|p| !signalled.contains(&p.pid))
+            .collect();
+        let mut late_groups: Vec<u32> = late
+            .iter()
+            .map(|p| p.pgid)
+            .filter(|g| *g > 1 && Some(*g) != own_group)
+            .collect();
+        late_groups.sort_unstable();
+        late_groups.dedup();
+        signal_groups(&late_groups, "TERM");
+        signalled.extend(late.iter().map(|p| p.pid));
+        groups.extend(late_groups);
         if std::time::Instant::now() >= until {
             let mut kill: Vec<u32> = left
                 .iter()
@@ -522,18 +568,45 @@ fn reap(root: &Path, log: &Path) -> Vec<String> {
             kill.sort_unstable();
             kill.dedup();
             signal_groups(&kill, "KILL");
-            return left
+            return Ok(left
                 .into_iter()
-                .map(|p| format!("{} {}", p.pid, p.command))
-                .collect();
+                .map(|p| {
+                    let when = if first.contains(&p.pid) {
+                        "ran at the first SIGTERM"
+                    } else {
+                        "started after the first SIGTERM"
+                    };
+                    format!("{} {} ({when})", p.pid, p.command)
+                })
+                .collect());
         }
         std::thread::sleep(std::time::Duration::from_millis(50));
     }
 }
 
 #[cfg(not(unix))]
-fn reap(_root: &Path, _log: &Path) -> Vec<String> {
-    Vec::new()
+fn reap(_root: &Path, _log: &Path) -> std::io::Result<Vec<String>> {
+    Ok(Vec::new())
+}
+
+/// What `list` returns, tried again every 50 ms while it fails, for at most
+/// `grace`. A `ps` that cannot fork on a loaded machine must not read as
+/// "no process runs": teardown would then signal nothing, report no leak,
+/// and leave a process running for hours.
+#[cfg(unix)]
+fn listed<T>(
+    list: impl Fn() -> std::io::Result<T>,
+    grace: std::time::Duration,
+) -> std::io::Result<T> {
+    let until = std::time::Instant::now() + grace;
+    loop {
+        match list() {
+            Err(_) if std::time::Instant::now() < until => {
+                std::thread::sleep(std::time::Duration::from_millis(50))
+            }
+            done => return done,
+        }
+    }
 }
 
 /// The size of each built fake when this test process first saw it.
@@ -667,5 +740,44 @@ fn walk(dir: &Path, out: &mut Vec<PathBuf>) {
         } else {
             out.push(path);
         }
+    }
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use std::cell::Cell;
+    use std::time::Duration;
+
+    use super::listed;
+
+    /// A `ps` that failed to fork once is asked again, so teardown still
+    /// sees the processes.
+    #[test]
+    fn a_list_that_fails_once_is_tried_again() {
+        let calls = Cell::new(0);
+        let got = listed(
+            || {
+                calls.set(calls.get() + 1);
+                if calls.get() == 1 {
+                    Err(std::io::Error::other("fork failed"))
+                } else {
+                    Ok(vec![7])
+                }
+            },
+            Duration::from_secs(5),
+        );
+        assert_eq!(got.unwrap(), [7]);
+        assert_eq!(calls.get(), 2);
+    }
+
+    /// A `ps` that never runs is an error after the grace, never an empty
+    /// list that reads as "nothing runs".
+    #[test]
+    fn a_list_that_keeps_failing_is_an_error_after_the_grace() {
+        let got = listed(
+            || Err::<Vec<u32>, _>(std::io::Error::other("fork failed")),
+            Duration::from_millis(200),
+        );
+        assert_eq!(got.unwrap_err().to_string(), "fork failed");
     }
 }

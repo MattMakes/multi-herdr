@@ -116,14 +116,20 @@ fn done_entries(h: &Harness) -> usize {
         .count()
 }
 
-/// The text of every pending mail file in the workspace.
+/// The text of every pending mail file in the workspace. The courier
+/// removes a delivered file between the listing and the read: that file
+/// is no longer pending, so it is skipped, as `Mail::pending` does.
 fn pending(h: &Harness) -> Vec<String> {
     let dir = h.state.join(format!("mail/{WORKSPACE}/pending"));
     let Ok(entries) = std::fs::read_dir(dir) else {
         return Vec::new();
     };
     entries
-        .map(|e| std::fs::read_to_string(e.unwrap().path()).unwrap())
+        .filter_map(|e| match std::fs::read_to_string(e.unwrap().path()) {
+            Ok(text) => Some(text),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+            Err(error) => panic!("reading pending mail: {error}"),
+        })
         .collect()
 }
 

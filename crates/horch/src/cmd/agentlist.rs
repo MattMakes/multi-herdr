@@ -6,7 +6,7 @@
 //! here starts a model turn or refreshes the quota.
 
 use std::collections::BTreeMap;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use anyhow::Result;
 use horch_core::clock;
@@ -59,7 +59,7 @@ pub(crate) fn gather(ctx: &RuntimeContext, probe: bool) -> BTreeMap<&'static str
         .iter()
         .filter_map(|k| {
             let bin = k.binary(&ctx.bins.harness)?;
-            Some((k.as_str(), resolve(ctx, &bin)))
+            Some((k.as_str(), process::resolve(ctx, &bin)))
         })
         .collect();
     std::thread::scope(|s| {
@@ -88,18 +88,6 @@ pub(crate) fn gather(ctx: &RuntimeContext, probe: bool) -> BTreeMap<&'static str
             })
             .collect()
     })
-}
-
-/// The binary a name or path stands for, when it exists.
-fn resolve(ctx: &RuntimeContext, bin: &Path) -> Option<PathBuf> {
-    if bin.components().count() > 1 || bin.is_absolute() {
-        return bin.is_file().then(|| bin.to_path_buf());
-    }
-    process::which(
-        ctx.inherited.path.as_deref(),
-        ctx.inherited.pathext.as_deref(),
-        &bin.to_string_lossy(),
-    )
 }
 
 fn table(rows: &[AgentRow], no_probe: bool) -> String {

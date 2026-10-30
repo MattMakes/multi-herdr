@@ -96,17 +96,51 @@ executor in the implementation phase.
 
 ## Branch modes
 
-### Single-branch mode (current)
+### Ledger worktree mode (current)
 
-All workers share 1 checkout and 1 branch. For the design-skills run, the
-checkout is the main checkout and the branch is `design-skills`.
+In a task ledger run, each task gets its own worktree and branch, and
+`horch ledger finish` lands it.
 
-- Nobody creates a worktree for a unit. Scratch repos for experiments go in
-  `.worktrees/_scratch/`, which is git-ignored and inside the trusted project
-  folder. Never use `/tmp`.
+- The claim tells the worker when to make the worktree. The worker runs
+  `horch ledger worktree new <name>` and works in the path it prints. The
+  branch starts from the run branch, or from `--from <ref>`. The ledger
+  records the row, so `finish` can check, land and clean it up.
+- A worker never runs `git worktree add` or the plain `horch worktree new`
+  in a ledger run. A worktree that the ledger does not record is never
+  checked or landed.
+- `horch ledger worktree scratch <name>` makes recorded throwaway work that
+  never lands. `horch ledger worktree drop <name> --reason "<why>"` drops a
+  clean worktree that will not land.
+- Worktrees live under `.worktrees/` in the main checkout. Each builds its
+  own `target/` (2 to 8 GB). Never share one `CARGO_TARGET_DIR` between
+  worktrees.
+- A worker commits exact files in its worktree, then runs
+  `horch ledger finish`. Its `land` step rebases the branch on the run
+  branch, runs the check again, and fast-forwards the run branch. Its
+  `pr` step writes the task's section in the run's 1 pull request. Its
+  `cleanup` step removes the worktree.
+- Nobody runs `git checkout` or `git switch` in the shared main checkout.
+
+### Shared-checkout mode (`horch ledger add --shared`)
+
+A task queued with `--shared` works in the main checkout, not a worktree.
+It is for repositories where worktrees are impractical (large game assets,
+Godot imports). The ledger enforces these limits (#166):
+
+- At most 1 shared task runs at a time. A 2nd shared task waits with
+  "exclusive: shared checkout".
+- The main checkout must be on the run branch. Otherwise `finish` refuses
+  and prints the `git switch <run branch>` line for the orchestrator.
+- `check` needs a clean checkout, and `land` needs at least 1 commit since
+  the claim.
+
+In this mode:
+
+- Scratch repos for experiments go in `.worktrees/_scratch/`, which is
+  git-ignored and inside the trusted project folder. Never use `/tmp`.
 - A worker edits only the files in the `FILES` section of its plan.
-- The tree must compile at every commit, because other workers build it.
-  Never leave a half-edited `.rs` file while you wait.
+- The tree must compile at every commit. Never leave a half-edited `.rs`
+  file while you wait.
 - A worker commits only its own paths:
 
   ```bash
@@ -120,22 +154,12 @@ checkout is the main checkout and the branch is `design-skills`.
 - After each commit, the worker runs `git show --stat HEAD`. Every file in it
   must be the worker's own.
 - If git reports that `index.lock` exists, wait 2 s and retry. Never delete it.
-- Nobody pushes. The orchestrator pushes after the gate passes.
-- While it works, a worker runs only the tests it touches. The orchestrator
-  runs the full gate once on the tip, in `.worktrees/_gate`, and sends a red
-  gate back to the worker whose commit broke it. See
-  [testing-and-gates.md](testing-and-gates.md).
 - Warning: never run tests or the gate under `git rebase -x` or a git hook.
-- A Codex worker can commit: its folder, `.git` included, is writable in the
-  `fleet_write` profile. Writes outside that folder still fail.
 
-The worker reports with `[<role>] NOTE: COMMITTED <short-sha>. Targeted checks
-green.` and then runs `horch done`.
+### Plain worktree mode (no ledger run)
 
-### Worktree mode (older alternative)
-
-The first runs gave each unit its own branch and worktree. Use it only when
-the operator asks for it.
+A fleet that does not use a ledger run gives each unit its own branch and
+worktree with the plain `horch worktree` commands.
 
 - The orchestrator owns 1 integration worktree on the run's branch. Nobody
   else edits, commits or builds there.
@@ -147,10 +171,7 @@ the operator asks for it.
   cd <the path that horch prints>
   ```
 
-- Unit worktrees live under `.worktrees/` in the main checkout. Each builds
-  its own `target/` (2 to 8 GB), so the orchestrator removes a worktree as soon
-  as its unit merges. Never share one `CARGO_TARGET_DIR` between worktrees.
-- Nobody runs `git checkout` or `git switch` in the shared main checkout.
+- The orchestrator removes a worktree as soon as its unit merges.
 
 When a unit is complete, the worker runs
 `horch worktree land --check "<gate command>"`. The command rebases the
@@ -166,10 +187,9 @@ in alphabetical order and keeps both sides at a rebase conflict.
 
 ## Reports
 
-Each unit writes a report to `ai_docs/reports/<run>/<unit>.md`. In
-single-branch mode the report is local scratch and the worker does not commit
-it; the `horch done` summary carries the result. In worktree mode the unit
-commits it. A report
+Each unit writes a report to `ai_docs/reports/<run>/<unit>.md`. The
+report is local scratch and the worker does not commit it; the `horch done`
+summary carries the result. A report
 holds: what changed, decisions and why, what was dropped, every oracle or
 golden change with a diff summary, gotchas, what was verified only against a
 fake, and follow-ups outside the unit's scope. Reports are the best place to
