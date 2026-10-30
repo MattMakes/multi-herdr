@@ -374,31 +374,46 @@ pub(crate) fn materialize_filtered(
     let mut dirs: Vec<String> = teammate.plugin_dirs.clone();
     for (plugin, wanted) in resolve_all_in(teammate, home)? {
         let name = plugin.name.as_str();
-        if name.is_empty() || matches!(name, "." | "..") || name.contains(['/', '\\', '\0']) {
+        if !is_dir_name(name) {
             bail!("plugin name '{name}' cannot name a directory");
         }
         let copy = bundle.join(FILTERED_DIR).join(name);
-        let pinned = |skill: &str| {
-            let id = format!("{name}:{skill}");
-            skills
-                .plan()
-                .activated
-                .iter()
-                .find(|r| r.id.as_str() == id)
-                .map(|r| r.digest.to_string())
-        };
+        let pinned = |skill: &str| pinned_digest(skills, name, skill);
         filtered_copy(&plugin, &wanted, &copy, pinned)?;
         let copy = copy.to_string_lossy().into_owned();
         let original = teammate
             .plugin_dirs
             .iter()
             .position(|d| expand_home(d, home) == plugin.root);
-        match original {
-            Some(at) => dirs[at] = copy,
-            None => dirs.push(copy),
-        }
+        put_copy(&mut dirs, original, copy);
     }
     Ok(dirs)
+}
+
+/// Whether `name` can be the name of one directory: it is not empty, not `.`
+/// or `..`, and holds no path separator or NUL.
+fn is_dir_name(name: &str) -> bool {
+    !name.is_empty() && !matches!(name, "." | "..") && !name.contains(['/', '\\', '\0'])
+}
+
+/// The digest the bundle's plan pinned for `<plugin>:<skill>`, if it did.
+fn pinned_digest(skills: &crate::skills::Bundle, plugin: &str, skill: &str) -> Option<String> {
+    let id = format!("{plugin}:{skill}");
+    skills
+        .plan()
+        .activated
+        .iter()
+        .find(|r| r.id.as_str() == id)
+        .map(|r| r.digest.to_string())
+}
+
+/// Put `copy` in `dirs` where the plugin's original directory stands (at
+/// `original`), else at the end.
+fn put_copy(dirs: &mut Vec<String>, original: Option<usize>, copy: String) {
+    match original {
+        Some(at) => dirs[at] = copy,
+        None => dirs.push(copy),
+    }
 }
 
 /// Copy `plugin` to `to` with only the `wanted` skills. `pinned` gives the
