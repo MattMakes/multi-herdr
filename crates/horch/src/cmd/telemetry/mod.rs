@@ -129,104 +129,118 @@ pub fn pool_table(
             names.push(extra);
         }
     }
-    for name in names {
-        let Some(r) = pools.get(name) else {
-            out.push(clip(&format!("{}no reading", pad(name, 14)), width));
-            continue;
+    out.extend(names.into_iter().map(|name| {
+        let line = match pools.get(name) {
+            None => format!("{}no reading", pad(name, 14)),
+            Some(r) => pool_row(name, r, now),
         };
-        let (state, shown) = pool_state(r);
-        let line = if name == quota::POOL_ZEN && r.windows.is_empty() {
-            let (s, note) = if state == "ok" {
-                ("ok*".to_string(), "* public work only")
-            } else {
-                (shown, "")
-            };
-            let resets = r
-                .cooling_until
-                .as_deref()
-                .map(quota::short_time)
-                .unwrap_or_else(|| "-".into());
-            format!(
-                "{}{}{}{}{}{}",
-                pad(name, 14),
-                pad("no signal", 29),
-                pad(&s, 12),
-                pad(&resets, 15),
-                pad("-", 11),
-                note
-            )
-        } else if r.windows.is_empty() {
-            let why = r
-                .error
-                .clone()
-                .or_else(|| r.reason.clone())
-                .unwrap_or_else(|| "-".into());
-            format!(
-                "{}{}{}{}{}{}",
-                pad(name, 14),
-                pad("-", 8),
-                pad("-", 7),
-                pad("-", 14),
-                pad(&shown, 12),
-                why
-            )
-        } else {
-            let unscoped = |mins: u64| unscoped_pct(r, mins, now);
-            let scoped = r
-                .windows
-                .iter()
-                .filter(|w| w.scope_model.is_some())
-                .max_by(|a, b| {
-                    a.used_at(now)
-                        .partial_cmp(&b.used_at(now))
-                        .unwrap_or(std::cmp::Ordering::Equal)
-                })
-                .map(|w| {
-                    format!(
-                        "{} {}",
-                        w.scope_model.as_deref().unwrap_or_default(),
-                        pct(w.used_at(now))
-                    )
-                })
-                .unwrap_or_else(|| "-".into());
-            let worst = r
-                .windows
-                .iter()
-                .filter(|w| w.scope_model.is_none())
-                .max_by(|a, b| {
-                    a.used_at(now)
-                        .partial_cmp(&b.used_at(now))
-                        .unwrap_or(std::cmp::Ordering::Equal)
-                });
-            let resets = worst
-                .and_then(|w| w.resets_at.as_deref())
-                .map(quota::short_time)
-                .unwrap_or_else(|| "-".into());
-            let headroom = r
-                .windows
-                .iter()
-                .filter(|w| w.scope_model.is_none())
-                .map(|w| w.headroom_per_h(now))
-                .fold(f64::INFINITY, f64::min);
-            let headroom = if headroom.is_finite() {
-                format!("{:.1}%", headroom * 100.0)
-            } else {
-                "-".into()
-            };
-            format!(
-                "{}{}{}{}{}{}{}",
-                pad(name, 14),
-                pad(&unscoped(300), 8),
-                pad(&unscoped(10_080), 7),
-                pad(&scoped, 14),
-                pad(&shown, 12),
-                pad(&resets, 15),
-                headroom
-            )
-        };
-        out.push(clip(line.trim_end(), width));
-    }
+        clip(line.trim_end(), width)
+    }));
     out
+}
+
+/// One pool's row, by its kind: the Zen row with no signal, a row with no
+/// windows, or a row with windows.
+fn pool_row(name: &str, r: &PoolReading, now: DateTime<Utc>) -> String {
+    let (state, shown) = pool_state(r);
+    match (name == quota::POOL_ZEN, r.windows.is_empty()) {
+        (true, true) => zen_row(name, r, state, shown),
+        (false, true) => no_window_row(name, r, &shown),
+        (_, false) => window_row(name, r, &shown, now),
+    }
+}
+
+/// The Zen row: no usage signal, only its state and when it cools.
+fn zen_row(name: &str, r: &PoolReading, state: &str, shown: String) -> String {
+    let (s, note) = if state == "ok" {
+        ("ok*".to_string(), "* public work only")
+    } else {
+        (shown, "")
+    };
+    let resets = r
+        .cooling_until
+        .as_deref()
+        .map(quota::short_time)
+        .unwrap_or_else(|| "-".into());
+    format!(
+        "{}{}{}{}{}{}",
+        pad(name, 14),
+        pad("no signal", 29),
+        pad(&s, 12),
+        pad(&resets, 15),
+        pad("-", 11),
+        note
+    )
+}
+
+/// A row for a pool with no windows: its state and why.
+fn no_window_row(name: &str, r: &PoolReading, shown: &str) -> String {
+    let why = r
+        .error
+        .clone()
+        .or_else(|| r.reason.clone())
+        .unwrap_or_else(|| "-".into());
+    format!(
+        "{}{}{}{}{}{}",
+        pad(name, 14),
+        pad("-", 8),
+        pad("-", 7),
+        pad("-", 14),
+        pad(shown, 12),
+        why
+    )
+}
+
+/// The window with the highest use among the scoped or the unscoped ones.
+fn most_used(r: &PoolReading, now: DateTime<Utc>, scoped: bool) -> Option<&quota::Window> {
+    r.windows
+        .iter()
+        .filter(|w| w.scope_model.is_some() == scoped)
+        .max_by(|a, b| {
+            a.used_at(now)
+                .partial_cmp(&b.used_at(now))
+                .unwrap_or(std::cmp::Ordering::Equal)
+        })
+}
+
+/// A row for a pool with windows: the 5h and 7d use, the most used scoped
+/// window, the state, when the worst window resets and the headroom.
+fn window_row(name: &str, r: &PoolReading, shown: &str, now: DateTime<Utc>) -> String {
+    let unscoped = |mins: u64| unscoped_pct(r, mins, now);
+    let scoped = most_used(r, now, true)
+        .map(|w| {
+            format!(
+                "{} {}",
+                w.scope_model.as_deref().unwrap_or_default(),
+                pct(w.used_at(now))
+            )
+        })
+        .unwrap_or_else(|| "-".into());
+    let resets = most_used(r, now, false)
+        .and_then(|w| w.resets_at.as_deref())
+        .map(quota::short_time)
+        .unwrap_or_else(|| "-".into());
+    let headroom = r
+        .windows
+        .iter()
+        .filter(|w| w.scope_model.is_none())
+        .map(|w| w.headroom_per_h(now))
+        .fold(f64::INFINITY, f64::min);
+    let headroom = if headroom.is_finite() {
+        format!("{:.1}%", headroom * 100.0)
+    } else {
+        "-".into()
+    };
+    format!(
+        "{}{}{}{}{}{}{}",
+        pad(name, 14),
+        pad(&unscoped(300), 8),
+        pad(&unscoped(10_080), 7),
+        pad(&scoped, 14),
+        pad(shown, 12),
+        pad(&resets, 15),
+        headroom
+    )
 }
 
 /// A pool's state, and how the table shows it: `ok`, else in capitals.
@@ -557,53 +571,70 @@ fn ensure_current(
     start_if_none: bool,
 ) -> Result<()> {
     let root = ctx.paths.state_root.clone();
-    match lock::holder(&root) {
+    let go = match lock::holder(&root) {
         Holder::Live(info)
             if lock::runs_other_binary(&info, horch_core::exeid::exe_identity(exe).as_ref()) =>
         {
-            // A collector horch cannot prove it owns (no recorded start time,
-            // a reused pid) is left running: `ensure` runs on fleet start and
-            // must not fail because an old collector is live.
-            if let Err(e) = lock::stop(&root, &info, Duration::from_secs(5)) {
-                eprintln!(
-                    "horch: telemetry collector pid {} runs another binary, but horch did not stop it: {e:#}. To replace it, first check that pid {} runs `horch telemetry collect` (`ps -p {} -o command=`), then stop it, and run `horch telemetry ensure` again.",
-                    info.pid, info.pid, info.pid
-                );
-                report_live(&info, quiet);
-                return Ok(());
-            }
-            output::println(&format!(
-                "stopped telemetry collector pid {}: it ran {}, not the build at {}",
-                info.pid,
-                info.exe
-                    .as_ref()
-                    .map(|e| format!("another build of {}", e.path))
-                    .unwrap_or_else(|| "a binary it did not record".into()),
-                exe.display()
-            ));
+            replace_other_binary(&root, &info, exe, quiet)
         }
         Holder::Live(info) => {
             report_live(&info, quiet);
-            return Ok(());
+            false
         }
-        _ if !start_if_none => return Ok(()),
-        _ => {}
+        _ => start_if_none,
+    };
+    if !go || start_pending(&root, quiet) {
+        return Ok(());
     }
-    match start::pending(&root) {
+    start(ctx, herdr, quiet, exe)
+}
+
+/// Stop a live collector that runs another binary. `false` when it cannot
+/// be stopped safely and is left running.
+fn replace_other_binary(root: &Path, info: &lock::LockInfo, exe: &Path, quiet: bool) -> bool {
+    // A collector horch cannot prove it owns (no recorded start time,
+    // a reused pid) is left running: `ensure` runs on fleet start and
+    // must not fail because an old collector is live.
+    let stopped = lock::stop(root, info, Duration::from_secs(5));
+    match &stopped {
+        Err(e) => {
+            eprintln!(
+                "horch: telemetry collector pid {} runs another binary, but horch did not stop it: {e:#}. To replace it, first check that pid {} runs `horch telemetry collect` (`ps -p {} -o command=`), then stop it, and run `horch telemetry ensure` again.",
+                info.pid, info.pid, info.pid
+            );
+            report_live(info, quiet);
+        }
+        Ok(_) => output::println(&format!(
+            "stopped telemetry collector pid {}: it ran {}, not the build at {}",
+            info.pid,
+            info.exe
+                .as_ref()
+                .map(|e| format!("another build of {}", e.path))
+                .unwrap_or_else(|| "a binary it did not record".into()),
+            exe.display()
+        )),
+    }
+    stopped.is_ok()
+}
+
+/// Whether a start is in progress, which blocks a new one. A failed earlier
+/// start is reported and cleared.
+fn start_pending(root: &Path, quiet: bool) -> bool {
+    match start::pending(root) {
         start::Pending::Starting(request) => {
             report_starting(&request, quiet);
-            return Ok(());
+            true
         }
         start::Pending::Failed(request, why) => {
             eprintln!(
                 "horch: the telemetry collector start in workspace {} failed: {why}; starting it again",
                 request.workspace_id
             );
-            start::clear(&root);
+            start::clear(root);
+            false
         }
-        start::Pending::None => {}
+        start::Pending::None => false,
     }
-    start(ctx, herdr, quiet, exe)
 }
 
 fn report_live(info: &lock::LockInfo, quiet: bool) {
@@ -636,21 +667,26 @@ enum LiveIn {
 }
 
 fn live_collector_in(herdr: &Herdr, root: &Path) -> LiveIn {
-    let Holder::Live(info) = lock::holder(root) else {
-        return LiveIn::Nothing;
-    };
-    let Some(pane) = info.pane_id else {
-        return LiveIn::Unknown;
-    };
-    // herdr pane ids are `<workspace>:p<n>`: a pane herdr no longer reports
-    // still names its workspace.
-    let ws = herdr
-        .pane_get(&pane)
+    match lock::holder(root) {
+        Holder::Live(info) => match info.pane_id {
+            Some(pane) => workspace_of(herdr, &pane, info.workspace_id)
+                .map_or(LiveIn::Unknown, LiveIn::Workspace),
+            None => LiveIn::Unknown,
+        },
+        _ => LiveIn::Nothing,
+    }
+}
+
+/// The workspace of a collector's pane: herdr's answer, else the recorded
+/// one. herdr pane ids are `<workspace>:p<n>`: a pane herdr no longer
+/// reports still names its workspace.
+fn workspace_of(herdr: &Herdr, pane: &str, recorded: Option<String>) -> Option<String> {
+    herdr
+        .pane_get(pane)
         .ok()
         .and_then(|p| p.workspace_id)
-        .or(info.workspace_id)
-        .or_else(|| pane.split_once(':').map(|(w, _)| w.to_string()));
-    ws.map(LiveIn::Workspace).unwrap_or(LiveIn::Unknown)
+        .or(recorded)
+        .or_else(|| pane.split_once(':').map(|(w, _)| w.to_string()))
 }
 
 /// The workspaces labelled [`WORKSPACE_LABEL`] that hold no live collector:
@@ -681,43 +717,13 @@ fn start(ctx: &RuntimeContext, herdr: &Herdr, quiet: bool, exe: &Path) -> Result
     let root = ctx.paths.state_root.clone();
     let id = start::new_id();
     let command = collector_command(ctx, exe, &id);
-    let request = |workspace_id: &str, pane_id: &str| start::Request {
-        id: id.clone(),
-        requested_at: clock::now_stamp(),
-        workspace_id: workspace_id.to_string(),
-        pane_id: pane_id.to_string(),
-        herdr: ctx.bins.harness.herdr.clone(),
-    };
     let old = herdr
         .workspace_list()
         .map(|all| old_collector_workspaces(&all, &live_collector_in(herdr, &root)))
         .unwrap_or_default();
-    let reusable = old.iter().find_map(|ws| match herdr.pane_list(ws) {
-        Ok(panes) if panes.len() == 1 => Some((ws.clone(), panes[0].pane_id.clone())),
-        _ => None,
-    });
-    let mut started = None;
-    if let Some((ws, pane)) = reusable {
-        start::record(&root, &request(&ws, &pane))?;
-        if herdr.pane_run(&pane, &command).is_ok() {
-            started = Some((ws, pane));
-        } else {
-            eprintln!(
-                "horch: the telemetry collector did not start in the old workspace {ws}; starting it in a new one"
-            );
-        }
-    }
-    let (ws, pane) = match started {
-        Some(s) => s,
-        None => {
-            let created = herdr.workspace_create(WORKSPACE_LABEL, None, false);
-            let ws = created.inspect_err(|_| start::clear(&root));
-            let ws = ws.context("creating the telemetry workspace")?;
-            start::record(&root, &request(&ws.workspace_id, &ws.root_pane_id))?;
-            let ran = herdr.pane_run(&ws.root_pane_id, &command);
-            ran.inspect_err(|_| start::clear(&root))?;
-            (ws.workspace_id, ws.root_pane_id)
-        }
+    let (ws, pane) = match start_in_old(ctx, herdr, &id, &command, &old)? {
+        Some(started) => started,
+        None => start_in_new(ctx, herdr, &id, &command)?,
     };
     if !quiet {
         output::println(&format!(
@@ -725,6 +731,65 @@ fn start(ctx: &RuntimeContext, herdr: &Herdr, quiet: bool, exe: &Path) -> Result
         ));
     }
     Ok(())
+}
+
+/// The record of a start in workspace `ws`, pane `pane`.
+fn start_request(ctx: &RuntimeContext, id: &str, ws: &str, pane: &str) -> start::Request {
+    start::Request {
+        id: id.to_string(),
+        requested_at: clock::now_stamp(),
+        workspace_id: ws.to_string(),
+        pane_id: pane.to_string(),
+        herdr: ctx.bins.harness.herdr.clone(),
+    }
+}
+
+/// Run the collector in an old workspace with 1 pane. `None` when there is
+/// none or the pane did not run it.
+fn start_in_old(
+    ctx: &RuntimeContext,
+    herdr: &Herdr,
+    id: &str,
+    command: &str,
+    old: &[String],
+) -> Result<Option<(String, String)>> {
+    let reusable = old.iter().find_map(|ws| match herdr.pane_list(ws) {
+        Ok(panes) if panes.len() == 1 => Some((ws.clone(), panes[0].pane_id.clone())),
+        _ => None,
+    });
+    let Some((ws, pane)) = reusable else {
+        return Ok(None);
+    };
+    start::record(&ctx.paths.state_root, &start_request(ctx, id, &ws, &pane))?;
+    Ok(herdr
+        .pane_run(&pane, command)
+        .map(|_| (ws.clone(), pane))
+        .inspect_err(|_| {
+            eprintln!(
+                "horch: the telemetry collector did not start in the old workspace {ws}; starting it in a new one"
+            )
+        })
+        .ok())
+}
+
+/// Run the collector in a new workspace. A failure clears the start record.
+fn start_in_new(
+    ctx: &RuntimeContext,
+    herdr: &Herdr,
+    id: &str,
+    command: &str,
+) -> Result<(String, String)> {
+    let root = &ctx.paths.state_root;
+    let created = herdr.workspace_create(WORKSPACE_LABEL, None, false);
+    let ws = created.inspect_err(|_| start::clear(root));
+    let ws = ws.context("creating the telemetry workspace")?;
+    start::record(
+        root,
+        &start_request(ctx, id, &ws.workspace_id, &ws.root_pane_id),
+    )?;
+    let ran = herdr.pane_run(&ws.root_pane_id, command);
+    ran.inspect_err(|_| start::clear(root))?;
+    Ok((ws.workspace_id, ws.root_pane_id))
 }
 
 /// A start is in progress: say where, and start no other.
@@ -754,21 +819,17 @@ pub(crate) fn report_failed_start(root: &Path) {
 fn close_after_claim(root: &Path, request: &start::Request, started_for: Option<&str>) {
     let herdr = Herdr::with_bin(&request.herdr);
     let keep = (started_for == Some(request.id.as_str())).then_some(request.workspace_id.as_str());
-    let Ok(all) = herdr.workspace_list() else {
-        return;
-    };
-    let other = |w: &horch_core::workspace::model::Workspace| {
-        w.label.as_deref() == Some(WORKSPACE_LABEL) && Some(w.workspace_id.as_str()) != keep
-    };
-    if !all.iter().any(other) {
-        return;
-    }
-    for ws in old_collector_workspaces(&all, &live_collector_in(&herdr, root)) {
-        if Some(ws.as_str()) == keep {
-            continue;
-        }
-        if let Err(e) = herdr.workspace_close(&ws) {
-            eprintln!("horch: could not close the old telemetry workspace {ws}: {e:#}");
+    if let Ok(all) = herdr.workspace_list() {
+        let other = |w: &horch_core::workspace::model::Workspace| {
+            w.label.as_deref() == Some(WORKSPACE_LABEL) && Some(w.workspace_id.as_str()) != keep
+        };
+        if all.iter().any(other) {
+            let old = old_collector_workspaces(&all, &live_collector_in(&herdr, root));
+            for ws in old.iter().filter(|ws| Some(ws.as_str()) != keep) {
+                if let Err(e) = herdr.workspace_close(ws) {
+                    eprintln!("horch: could not close the old telemetry workspace {ws}: {e:#}");
+                }
+            }
         }
     }
 }
@@ -828,6 +889,56 @@ mod tests {
             100,
             &[quota::POOL_GOOGLE]
         )));
+    }
+
+    /// Each row kind of the POOL block: no reading, the Zen row with no
+    /// signal, a pool with no windows, and a pool with windows.
+    #[test]
+    fn pool_table_rows_by_kind() {
+        use horch_core::routing::quota::Window;
+        let now = DateTime::parse_from_rfc3339("2026-10-30T10:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let soon = Some("2026-10-30T12:00:00Z".to_string());
+        let mut pools = std::collections::BTreeMap::new();
+        pools.insert(
+            quota::POOL_ZEN.to_string(),
+            PoolReading {
+                state: "ok".into(),
+                ..PoolReading::default()
+            },
+        );
+        pools.insert(
+            quota::POOL_GOOGLE.to_string(),
+            PoolReading {
+                state: "cooling".into(),
+                error: Some("boom".into()),
+                reason: Some("ignored".into()),
+                ..PoolReading::default()
+            },
+        );
+        pools.insert(
+            "codex".to_string(),
+            PoolReading {
+                state: "ok".into(),
+                windows: vec![
+                    Window::new(300, 0.25, soon.clone(), None),
+                    Window::new(10_080, 0.5, soon.clone(), None),
+                    Window::new(10_080, 0.75, soon, Some("fable".into())),
+                ],
+                ..PoolReading::default()
+            },
+        );
+        let rows = pool_table(&pools, now, 120, &[]);
+        let want = [
+            "POOL          5h      7d     scoped        state       resets         headroom/h",
+            "claude        no reading",
+            "codex         25%     50%    fable 75%     ok          Fri 12:00Z     25.0%",
+            "opencode-zen  no signal                    ok*         -              -          * public work only",
+            "google        -       -      -             COOLING     boom",
+            "local         no reading",
+        ];
+        assert_eq!(rows, want);
     }
 
     fn fixture_snapshot() -> Snapshot {

@@ -9,7 +9,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 allowed_core="anyhow serde serde_json serde_yaml chrono uuid libc sha2 horch-marketplace rusqlite windows-sys"
 allowed_horch="horch-core anyhow clap serde serde_json chrono tempfile libc ratatui crossterm ureq sha2 flate2 tar zip"
-allowed_marketplace="anyhow serde serde_json serde_yaml sha2"
+allowed_marketplace="anyhow serde serde_json serde_yaml sha2 thiserror"
 fail=0
 check() {
   local crate=$1 allowed=$2
