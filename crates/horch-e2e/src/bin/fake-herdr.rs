@@ -75,7 +75,9 @@ const COMMANDS: [&str; 15] = [
 
 const MUTATING: [&str; 7] = ["focus", "tile", "split", "move", "close", "swap", "resize"];
 
-/// Set in the copy of this call that runs in its own process group.
+/// Set in the copy of this call that runs in its own process group, to the
+/// pid of the process that called herdr. The copy logs it as `caller`, so a
+/// test can tell apart the calls of 2 horch processes on the same pane.
 const DETACHED: &str = "HORCH_FAKE_HERDR_DETACHED";
 
 fn main() {
@@ -92,7 +94,7 @@ fn main() {
             .and_then(|exe| {
                 std::process::Command::new(exe)
                     .args(std::env::args_os().skip(1))
-                    .env(DETACHED, "1")
+                    .env(DETACHED, std::os::unix::process::parent_id().to_string())
                     .process_group(0)
                     .status()
             })
@@ -100,8 +102,12 @@ fn main() {
             .unwrap_or(1);
         std::process::exit(code);
     }
+    let caller = std::env::var(DETACHED).ok();
     std::env::remove_var(DETACHED);
     let mut call = Call::start("herdr");
+    if let Some(caller) = caller.and_then(|c| c.parse::<u32>().ok()) {
+        call.extra.insert("caller".into(), json!(caller));
+    }
     // A wait polls for seconds; holding the lock that long would stall the
     // very commands whose output it waits for.
     if call.argv.get(..2) == Some(&["pane".to_string(), "wait-output".to_string()][..]) {
