@@ -62,22 +62,30 @@ pub fn parse_sessions(json: &str, project_dir: &str, since: SystemTime) -> Vec<S
     let workdir = Workdir::new(project_dir);
     let mut found: Vec<SessionCandidate> = records
         .iter()
-        .filter(|r| {
-            r.get("directory")
-                .and_then(|d| d.as_str())
-                .is_some_and(|d| workdir.matches(Path::new(d)))
-        })
-        .filter_map(|r| {
-            let created = millis(r.get("created")?)?;
-            Some(SessionCandidate {
-                session_id: r.get("id")?.as_str()?.to_string(),
-                created,
-            })
-        })
+        .filter(|r| in_project(r, &workdir))
+        .filter_map(candidate)
         .filter(|c| c.created >= since)
         .collect();
     found.sort_by_key(|c| std::cmp::Reverse(c.created));
     found
+}
+
+/// Whether the `directory` of a record is the project's.
+fn in_project(record: &serde_json::Value, workdir: &Workdir) -> bool {
+    record
+        .get("directory")
+        .and_then(|d| d.as_str())
+        .is_some_and(|d| workdir.matches(Path::new(d)))
+}
+
+/// The session a record names; None without a whole-number `created` or a
+/// text `id`.
+fn candidate(record: &serde_json::Value) -> Option<SessionCandidate> {
+    let created = millis(record.get("created")?)?;
+    Some(SessionCandidate {
+        session_id: record.get("id")?.as_str()?.to_string(),
+        created,
+    })
 }
 
 fn millis(value: &serde_json::Value) -> Option<SystemTime> {
