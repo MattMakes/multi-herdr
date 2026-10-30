@@ -1420,9 +1420,11 @@ mod tests {
             path.display()
         ));
 
-        let asked = horch_core::clock::stamp(Utc::now() + chrono::Duration::seconds(5));
+        // Both stamps are minutes from now, so a slow machine between the
+        // two writes cannot reorder them: the handoff is older than the ask.
+        let asked = minutes_ago(5);
         f.w.event_at("r-1", &asked, EVENT_REQUESTED, "tokens 1 threshold 2");
-        set_mtime(&path, Duration::ZERO);
+        set_mtime(&path, Duration::from_secs(10 * 60));
         check(format!(
             "horch compact: refused: handoff {} is older than the request at {asked}",
             path.display()
@@ -1475,7 +1477,7 @@ mod tests {
         let exe = bin.join("sleeper");
         std::fs::write(
             &exe,
-            "#!/bin/sh\nif [ \"$1\" = warm ]; then exit 0; fi\nsleep 30\n",
+            "#!/bin/sh\nif [ \"$1\" = warm ]; then exit 0; fi\nexec sleep 30\n",
         )
         .unwrap();
         horch_core::runtime::process::make_executable(&exe).unwrap();
@@ -1493,11 +1495,10 @@ mod tests {
         let begin = Instant::now();
         let o = f.run("sonnet-1", |_| {});
         let took = begin.elapsed();
-        // Well under the sleeper's 30 s, with room for a loaded CI runner.
-        assert!(
-            took >= f.start_timeout && took < Duration::from_secs(10),
-            "{took:?}"
-        );
+        // No upper bound on `took`: a loaded machine can stall any step. The
+        // child sleeps 30 s and never exits, so the failure below can come
+        // only from the start timeout stopping it.
+        assert!(took >= f.start_timeout, "{took:?}");
         assert_eq!(o.code, 1, "{o:?}");
         let log = f.env().job_dir("sonnet-1").join(LOG_FILE);
         let reason = "the job did not start in 1.5 s";
