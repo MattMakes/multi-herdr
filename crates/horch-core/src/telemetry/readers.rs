@@ -1000,3 +1000,403 @@ mod tests {
         assert!(skipped > 10, "the skim skipped {skipped} lines");
     }
 }
+
+/// Line readers, branch by branch: each case names the observations a line
+/// makes, so a restructure of a reader cannot change them unseen.
+#[cfg(test)]
+mod line_reader_tests {
+    use super::*;
+
+    fn run(
+        read: impl Fn(&mut Cursor, u64, &str, &mut Vec<Observation>),
+        lines: &[&str],
+    ) -> (Vec<Observation>, Cursor) {
+        let (mut c, mut out) = (Cursor::default(), Vec::new());
+        for (at, line) in lines.iter().enumerate() {
+            read(&mut c, at as u64 * 100, line, &mut out);
+        }
+        (out, c)
+    }
+
+    fn usages(obs: &[Observation]) -> Vec<&RawUsage> {
+        obs.iter()
+            .filter_map(|o| match o {
+                Observation::Usage(u) => Some(u),
+                Observation::Quota(_) => None,
+            })
+            .collect()
+    }
+
+    fn refusals(obs: &[Observation]) -> Vec<(String, String, String)> {
+        obs.iter()
+            .filter_map(|o| match o {
+                Observation::Quota(QuotaSignal::Refusal { pool, at, what }) => {
+                    Some((pool.clone(), at.clone(), what.clone()))
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn claude(line: &str) -> Vec<Observation> {
+        run(|c, at, l, o| claude_whole(c, at, l, false, o), &[line]).0
+    }
+
+    #[test]
+    fn claude_whole_guards_and_the_cache_write_split() {
+        // Not assistant, not JSON, no id, no usage object: nothing.
+        for line in [
+            r#"{"type":"user"}"#,
+            "{",
+            r#"{"type":"assistant","message":{"usage":{"output_tokens":1}}}"#,
+            r#"{"type":"assistant","message":{"id":"a","usage":5}}"#,
+        ] {
+            assert!(claude(line).is_empty(), "{line}");
+        }
+        let a = r#"{"type":"assistant","timestamp":"2026-09-20T12:00:00Z","effort":"high","message":{"id":"a","model":"m","usage":{"input_tokens":1,"output_tokens":2,"cache_read_input_tokens":3,"cache_creation_input_tokens":10,"cache_creation":{"ephemeral_1h_input_tokens":4},"output_tokens_details":{"thinking_tokens":7}}}}"#;
+        let obs = claude(a);
+        let u = usages(&obs)[0];
+        // The missing 5m count is what the 1h count leaves of the 10 written.
+        assert_eq!(
+            (
+                u.tokens.cache_write_5m,
+                u.tokens.cache_write_1h,
+                u.tokens.reasoning
+            ),
+            (6, 4, 7)
+        );
+        assert_eq!(
+            (u.event_id.as_str(), u.model.as_str(), u.effort.as_deref()),
+            ("a", "m", Some("high"))
+        );
+        // No `cache_creation` object: all written tokens are 5m.
+        let b = a.replace(r#""cache_creation":{"ephemeral_1h_input_tokens":4},"#, "");
+        let obs = claude(&b);
+        assert_eq!(
+            (
+                usages(&obs)[0].tokens.cache_write_5m,
+                usages(&obs)[0].tokens.cache_write_1h
+            ),
+            (10, 0)
+        );
+        // An explicit 5m count wins over the remainder.
+        let c = a.replace(
+            r#""ephemeral_1h_input_tokens":4"#,
+            r#""ephemeral_1h_input_tokens":4,"ephemeral_5m_input_tokens":2"#,
+        );
+        assert_eq!(usages(&claude(&c))[0].tokens.cache_write_5m, 2);
+    }
+
+    #[test]
+    fn claude_whole_synthetic_lines_only_refuse_on_rate_limit() {
+        let line = |err: &str| {
+            format!(
+                r#"{{"type":"assistant","timestamp":"2026-09-20T12:00:00Z","error":"{err}","message":{{"id":"x","model":"<synthetic>","content":[{{"text":"You hit your weekly limit"}}],"usage":{{"output_tokens":1}}}}}}"#
+            )
+        };
+        let obs = claude(&line("rate_limit"));
+        assert!(usages(&obs).is_empty());
+        assert_eq!(
+            refusals(&obs),
+            vec![("claude".into(), "2026-09-20T12:00:00Z".into(), "7d".into())]
+        );
+        assert!(claude(&line("other")).is_empty());
+    }
+
+    #[test]
+    fn claude_whole_repeats_emit_only_the_growth() {
+        let line = |out: u64| {
+            format!(
+                r#"{{"type":"assistant","message":{{"id":"a","model":"m","usage":{{"output_tokens":{out}}}}}}}"#
+            )
+        };
+        let (a, b, c) = (line(5), line(5), line(8));
+        let (obs, _) = run(|c, at, l, o| claude_whole(c, at, l, true, o), &[&a, &b, &c]);
+        let u = usages(&obs);
+        assert_eq!(u.len(), 2, "the repeat adds nothing");
+        assert_eq!(
+            (u[0].event_id.as_str(), u[0].delta, u[0].subagent),
+            ("a", false, true)
+        );
+        assert_eq!(
+            (u[1].event_id.as_str(), u[1].delta, u[1].tokens.output),
+            ("a+1", true, 3)
+        );
+    }
+
+    fn codex(lines: &[&str]) -> Vec<Observation> {
+        run(codex_whole, lines).0
+    }
+
+    #[test]
+    fn codex_whole_records_depend_on_the_version() {
+        let record = r#"{"timestamp":"2026-09-20T12:00:00Z","type":"token_usage_record","payload":{"response_id":"r1","usage":{"input_tokens":10,"cached_input_tokens":4,"output_tokens":2,"reasoning_output_tokens":1}}}"#;
+        let ctx = r#"{"type":"turn_context","payload":{"model":"gpt-x","effort":"low"}}"#;
+        let meta =
+            |v: &str| format!(r#"{{"type":"session_meta","payload":{{"cli_version":"{v}"}}}}"#);
+        // No version: the record settles it, and counts.
+        let obs = codex(&[ctx, record]);
+        let u = usages(&obs)[0];
+        assert_eq!(
+            (u.event_id.as_str(), u.model.as_str(), u.effort.as_deref()),
+            ("r1", "gpt-x", Some("low"))
+        );
+        assert_eq!(
+            (
+                u.tokens.input,
+                u.tokens.cache_read,
+                u.tokens.output,
+                u.tokens.reasoning
+            ),
+            (6, 4, 2, 1)
+        );
+        // A version that predates records: the record is skipped.
+        assert!(usages(&codex(&[&meta("0.156.9"), record])).is_empty());
+        assert_eq!(usages(&codex(&[&meta("v0.157.0"), record])).len(), 1);
+        // An unparsable version leaves the mode unset.
+        assert_eq!(usages(&codex(&[&meta("nope"), record])).len(), 1);
+        // No response id: the byte offset names the event.
+        let anon = record.replace(r#""response_id":"r1","#, "");
+        let (obs, _) = run(codex_whole, &[ctx, &anon]);
+        assert_eq!(usages(&obs)[0].event_id, "rec@100");
+        // No usage object: nothing.
+        let none = r#"{"type":"token_usage_record","payload":{}}"#;
+        assert!(codex(&[none]).is_empty());
+    }
+
+    #[test]
+    fn codex_whole_event_msg_snapshots_fallback_and_refusal() {
+        let tc = |total: u64, rl: &str| {
+            format!(
+                r#"{{"timestamp":"2026-09-20T12:00:00Z","type":"event_msg","payload":{{"type":"token_count"{rl},"info":{{"total_token_usage":{{"input_tokens":{total},"total_tokens":{total}}}}}}}}}"#
+            )
+        };
+        let rl = r#","rate_limits":{"primary":{"window_minutes":300,"used_percent":50,"resets_at":1790000000},"secondary":{"used_percent":9},"other":{"window_minutes":60}}"#;
+        let (a, b) = (tc(10, rl), tc(10, ""));
+        let obs = codex(&[&a]);
+        let snap: Vec<_> = obs
+            .iter()
+            .filter_map(|o| match o {
+                Observation::Quota(QuotaSignal::Snapshot { pool, windows, .. }) => {
+                    Some((pool.clone(), windows.clone()))
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(snap.len(), 1);
+        assert_eq!(snap[0].0, "codex");
+        // Only the primary window has a duration; the secondary has none.
+        assert_eq!(snap[0].1.len(), 1);
+        assert_eq!((snap[0].1[0].minutes, snap[0].1[0].used), (300, 0.5));
+        assert_eq!(
+            snap[0].1[0].resets_at.as_deref(),
+            Some("2026-09-21T14:13:20Z")
+        );
+        // Without records, the growth of the running total is usage; a
+        // repeat of the total adds nothing.
+        let ids: Vec<_> = usages(&codex(&[&a, &b, &tc(25, "")]))
+            .iter()
+            .map(|u| (u.event_id.clone(), u.tokens.input))
+            .collect();
+        assert_eq!(
+            ids,
+            vec![("tc:10".to_string(), 10), ("tc:25".to_string(), 15)]
+        );
+        // After a record, token counts no longer count as usage.
+        let record = r#"{"type":"token_usage_record","payload":{"response_id":"r","usage":{"output_tokens":1}}}"#;
+        assert_eq!(usages(&codex(&[record, &a])).len(), 1);
+        // A refusal buried in the payload.
+        let err = r#"{"timestamp":"2026-09-20T12:00:00Z","type":"event_msg","payload":{"type":"error","nested":{"codex_error_info":"usage_limit_exceeded"}}}"#;
+        assert_eq!(
+            refusals(&codex(&[err])),
+            vec![(
+                "codex".into(),
+                "2026-09-20T12:00:00Z".into(),
+                "usage_limit_exceeded".into()
+            )]
+        );
+        let other = err.replace("usage_limit_exceeded", "other");
+        assert!(codex(&[&other]).is_empty());
+    }
+
+    fn pi(line: &str) -> Vec<Observation> {
+        run(|c, at, l, o| pi_line(c, at, l, o), &[line]).0
+    }
+
+    #[test]
+    fn pi_line_roles_models_times_and_ids() {
+        let line = r#"{"id":"e1","timestamp":"2026-09-20T12:00:00Z","message":{"role":"assistant","provider":"acme","model":"m1","usage":{"input":5,"output":2,"cacheWrite":9,"cacheWrite1h":4,"cacheRead":1}}}"#;
+        let obs = pi(line);
+        let u = usages(&obs)[0];
+        assert_eq!(
+            (u.event_id.as_str(), u.model.as_str(), u.ts.as_str()),
+            ("e1", "acme/m1", "2026-09-20T12:00:00Z")
+        );
+        assert_eq!(
+            (
+                u.tokens.cache_write_5m,
+                u.tokens.cache_write_1h,
+                u.tokens.cache_read
+            ),
+            (5, 4, 1)
+        );
+        assert!(!u.tool_nested);
+        // A model with a slash, or no provider, is kept as it is.
+        assert_eq!(
+            usages(&pi(&line.replace(r#""m1""#, r#""x/m1""#)))[0].model,
+            "x/m1"
+        );
+        assert_eq!(
+            usages(&pi(&line.replace(r#""provider":"acme","#, "")))[0].model,
+            "m1"
+        );
+        // The tool result is nested usage; another role, or no tokens, is nothing.
+        assert!(usages(&pi(&line.replace("assistant", "toolResult")))[0].tool_nested);
+        assert!(pi(&line.replace("assistant", "user")).is_empty());
+        assert!(pi(&line.replace(
+            r#""input":5,"output":2,"cacheWrite":9,"cacheWrite1h":4,"cacheRead":1"#,
+            r#""input":0"#
+        ))
+        .is_empty());
+        assert!(pi("nope").is_empty());
+        // Without a line id the offset names the event; the message time is
+        // epoch milliseconds when the line has no timestamp.
+        let bare = line
+            .replace(r#""id":"e1","timestamp":"2026-09-20T12:00:00Z","#, "")
+            .replace(
+                r#""role":"assistant","#,
+                r#""role":"assistant","timestamp":1790000000000,"#,
+            );
+        let (obs, _) = run(|c, at, l, o| pi_line(c, at, l, o), &["x", &bare]);
+        let u = usages(&obs)[0];
+        assert_eq!(
+            (u.event_id.as_str(), u.ts.as_str()),
+            ("@100", "2026-09-21T14:13:20Z")
+        );
+    }
+
+    fn opencode(data: &str) -> Vec<Observation> {
+        let mut c = Cursor::default();
+        let mut out = Vec::new();
+        opencode_message(&mut c, "m1", &serde_json::from_str(data).unwrap(), &mut out);
+        out
+    }
+
+    #[test]
+    fn opencode_message_refusal_and_usage() {
+        let done = r#"{"role":"assistant","time":{"created":1790000000000,"completed":1790000060000},"providerID":"p","modelID":"m","cost":0.5,"tokens":{"input":1,"output":2,"reasoning":3,"cache":{"read":4,"write":5}}}"#;
+        let obs = opencode(done);
+        let u = usages(&obs)[0];
+        assert_eq!(
+            (u.event_id.as_str(), u.model.as_str(), u.harness_cost),
+            ("m1", "p/m", Some(0.5))
+        );
+        assert_eq!(
+            (
+                u.tokens.input,
+                u.tokens.output,
+                u.tokens.reasoning,
+                u.tokens.cache_read,
+                u.tokens.cache_write_5m
+            ),
+            (1, 2, 3, 4, 5)
+        );
+        assert_eq!(u.ts, "2026-09-21T14:14:20Z");
+        // Not an assistant, or not completed: nothing.
+        assert!(opencode(&done.replace("assistant", "user")).is_empty());
+        assert!(opencode(&done.replace(r#","completed":1790000060000"#, "")).is_empty());
+        // The refusal carries on a message with no role at all.
+        let refused =
+            r#"{"error":{"name":"FreeUsageLimitError"},"time":{"created":1790000000000}}"#;
+        assert_eq!(
+            refusals(&opencode(refused)),
+            vec![(
+                "opencode-zen".into(),
+                "2026-09-21T14:13:20Z".into(),
+                "FreeUsageLimitError".into()
+            )]
+        );
+        // The same message again adds nothing.
+        let mut c = Cursor::default();
+        let mut out = Vec::new();
+        let v: Value = serde_json::from_str(done).unwrap();
+        opencode_message(&mut c, "m1", &v, &mut out);
+        opencode_message(&mut c, "m1", &v, &mut out);
+        assert_eq!(out.len(), 1);
+    }
+
+    #[test]
+    fn sqlite_json_reads_rows_empty_output_and_failures() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("t.db");
+        std::fs::write(&db, "").unwrap();
+        let sqlite = Path::new("sqlite3");
+        if std::process::Command::new(sqlite)
+            .arg("-version")
+            .output()
+            .is_err()
+        {
+            return;
+        }
+        let rows = sqlite_json(sqlite, &db, "SELECT 1 AS a UNION SELECT 2;").unwrap();
+        assert_eq!(rows.len(), 2);
+        assert!(sqlite_json(sqlite, &db, "SELECT 1 WHERE 0;")
+            .unwrap()
+            .is_empty());
+        assert!(
+            matches!(sqlite_json(sqlite, &db, "SELEC;"), Err(Unreadable::Failed(m)) if m.contains("sqlite3 failed on"))
+        );
+        let missing = Path::new("/nonexistent/sqlite3-r-telemetry-core");
+        assert_eq!(
+            sqlite_json(missing, &db, "SELECT 1;"),
+            Err(Unreadable::NotRead("sqlite3 not found".into()))
+        );
+    }
+
+    #[test]
+    fn locate_errors_name_what_was_looked_for() {
+        let home = tempfile::tempdir().unwrap();
+        let loc = Locations::under_home(home.path(), &crate::runtime::Inherited::default());
+        for agent in ["claude", "codex", "pi", "prime"] {
+            assert!(
+                matches!(
+                    locate(&loc, agent, "nope"),
+                    Err(Unreadable::NoTranscript(_))
+                ),
+                "{agent}"
+            );
+        }
+        assert!(matches!(
+            locate(&loc, "opencode", "x"),
+            Ok(Located::OpenCode(_))
+        ));
+        assert_eq!(
+            locate(&loc, "none", "x").err(),
+            Some(Unreadable::NotRead("agent none is not read".into()))
+        );
+        assert_eq!(
+            locate(&loc, "agy", "x").err(),
+            Some(Unreadable::NotRead("unknown agent 'agy'".into()))
+        );
+    }
+
+    #[test]
+    fn rollout_windows_skip_a_slot_without_a_duration() {
+        let rl: Value = serde_json::from_str(r#"{"primary":{"window_minutes":300,"used_percent":25},"secondary":{"window_minutes":10080,"used_percent":50,"resets_at":1790000000},"other":{"window_minutes":1}}"#).unwrap();
+        let w = codex_rollout_windows(&rl);
+        let got: Vec<_> = w
+            .iter()
+            .map(|w| (w.name.as_str(), w.used, w.resets_at.clone()))
+            .collect();
+        assert_eq!(
+            got,
+            vec![
+                ("5h", 0.25, None),
+                ("7d", 0.5, Some("2026-09-21T14:13:20Z".to_string()))
+            ]
+        );
+        let none: Value =
+            serde_json::from_str(r#"{"primary":5,"secondary":{"used_percent":1}}"#).unwrap();
+        assert!(codex_rollout_windows(&none).is_empty());
+    }
+}
