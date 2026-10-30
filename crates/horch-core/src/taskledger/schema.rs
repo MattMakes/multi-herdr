@@ -25,18 +25,21 @@ fn origin_columns() -> String {
     )
 }
 
-/// The statements of version 1.
-fn v1() -> String {
-    let origin = origin_columns();
-    format!(
-        r#"
-CREATE TABLE projects (
+/// The `projects` table.
+fn projects() -> String {
+    r#"CREATE TABLE projects (
     project_id TEXT PRIMARY KEY,
     root TEXT NOT NULL UNIQUE,
     created_at TEXT NOT NULL
-);
+);"#
+    .to_string()
+}
 
-CREATE TABLE runs (
+/// The `runs_table` statements.
+fn runs_table() -> String {
+    let origin = origin_columns();
+    format!(
+        r#"CREATE TABLE runs (
     run_id TEXT PRIMARY KEY,
     project_id TEXT NOT NULL REFERENCES projects(project_id),
     slug TEXT NOT NULL,
@@ -60,9 +63,16 @@ CREATE TABLE runs (
     {origin},
     started_at TEXT NOT NULL,
     ended_at TEXT
-);
+);"#,
+        run_status = RunStatus::check("status"),
+    )
+}
 
-CREATE TABLE tasks (
+/// The `tasks_table` statements.
+fn tasks_table() -> String {
+    let origin = origin_columns();
+    format!(
+        r#"CREATE TABLE tasks (
     task_id TEXT PRIMARY KEY,
     run_id TEXT NOT NULL REFERENCES runs(run_id),
     seq INTEGER NOT NULL,
@@ -94,23 +104,45 @@ CREATE TABLE tasks (
     {task_file_rule},
     {persona_rule},
     {claimable_rule}
-);
+);"#,
+        worktree_mode = WorktreeMode::check("worktree_mode"),
+        task_kind = TaskKind::check("kind"),
+        task_status = TaskStatus::check("status"),
+        task_file_rule = native("task_file IS NOT NULL"),
+        persona_rule = native("primary_persona IS NOT NULL"),
+        claimable_rule = native("claimable_by IS NOT NULL"),
+    )
+}
 
-CREATE TABLE task_deps (
+/// The `task_deps` statements.
+fn task_deps() -> String {
+    r#"CREATE TABLE task_deps (
     task_id TEXT NOT NULL REFERENCES tasks(task_id),
     blocked_by TEXT NOT NULL REFERENCES tasks(task_id),
     PRIMARY KEY (task_id, blocked_by),
     CHECK (task_id <> blocked_by)
-);
+);"#
+    .to_string()
+}
 
-CREATE TABLE task_files (
+/// The `task_files` statements.
+fn task_files() -> String {
+    format!(
+        r#"CREATE TABLE task_files (
     task_id TEXT NOT NULL REFERENCES tasks(task_id),
     path TEXT NOT NULL,
     mode TEXT NOT NULL {file_mode},
     PRIMARY KEY (task_id, path, mode)
-);
+);"#,
+        file_mode = FileMode::check("mode"),
+    )
+}
 
-CREATE TABLE workers (
+/// The `workers_table` statements.
+fn workers_table() -> String {
+    let origin = origin_columns();
+    format!(
+        r#"CREATE TABLE workers (
     worker_id TEXT PRIMARY KEY,
     run_id TEXT REFERENCES runs(run_id),
     kind TEXT NOT NULL DEFAULT 'worker' {worker_kind},
@@ -150,9 +182,18 @@ CREATE TABLE workers (
 );
 
 CREATE UNIQUE INDEX workers_one_working_per_task
-    ON workers(task_id) WHERE status = 'working';
+    ON workers(task_id) WHERE status = 'working';"#,
+        worker_kind = WorkerKind::check("kind"),
+        progress_source = ProgressSource::check("last_progress_source"),
+        worker_status = WorkerStatus::check("status"),
+        worker_rule = native("run_id IS NOT NULL AND persona IS NOT NULL AND host IS NOT NULL"),
+    )
+}
 
-CREATE TABLE checks (
+/// The `checks_table` statements.
+fn checks_table() -> String {
+    format!(
+        r#"CREATE TABLE checks (
     check_id INTEGER PRIMARY KEY AUTOINCREMENT,
     worker_id TEXT NOT NULL REFERENCES workers(worker_id),
     at TEXT NOT NULL,
@@ -168,9 +209,15 @@ CREATE TABLE checks (
     verdict TEXT NOT NULL {verdict},
     round INTEGER NOT NULL,
     note TEXT NOT NULL DEFAULT ''
-);
+);"#,
+        verdict = Verdict::check("verdict"),
+    )
+}
 
-CREATE TABLE stops (
+/// The `stops_table` statements.
+fn stops_table() -> String {
+    format!(
+        r#"CREATE TABLE stops (
     stop_id INTEGER PRIMARY KEY AUTOINCREMENT,
     worker_id TEXT NOT NULL REFERENCES workers(worker_id),
     requested_by TEXT NOT NULL {stop_requester},
@@ -182,9 +229,19 @@ CREATE TABLE stops (
     pane_id TEXT,
     result TEXT NOT NULL {stop_result},
     at TEXT NOT NULL
-);
+);"#,
+        stop_requester = StopRequester::check("requested_by"),
+        stop_target = StopTarget::check("target"),
+        stop_signal = StopSignal::check("signal"),
+        stop_result = StopResult::check("result"),
+    )
+}
 
-CREATE TABLE worktrees (
+/// The `worktrees_table` statements.
+fn worktrees_table() -> String {
+    let origin = origin_columns();
+    format!(
+        r#"CREATE TABLE worktrees (
     worktree_id TEXT PRIMARY KEY,
     task_id TEXT REFERENCES tasks(task_id),
     worker_id TEXT REFERENCES workers(worker_id),
@@ -202,9 +259,15 @@ CREATE TABLE worktrees (
     landed_at TEXT,
     cleaned_at TEXT,
     reason TEXT
-);
+);"#,
+        worktree_status = WorktreeStatus::check("status"),
+    )
+}
 
-CREATE TABLE events (
+/// The `events_table` statements.
+fn events_table() -> String {
+    format!(
+        r#"CREATE TABLE events (
     event_id INTEGER PRIMARY KEY AUTOINCREMENT,
     at TEXT NOT NULL,
     run_id TEXT,
@@ -216,9 +279,16 @@ CREATE TABLE events (
 );
 
 CREATE INDEX events_by_task ON events(task_id, event_id);
-CREATE INDEX events_by_worker ON events(worker_id, event_id);
+CREATE INDEX events_by_worker ON events(worker_id, event_id);"#,
+        actor = Actor::check("actor"),
+        event_kind = EventKind::check("kind"),
+    )
+}
 
-CREATE TABLE task_steps (
+/// The `task_steps` statements.
+fn task_steps() -> String {
+    format!(
+        r#"CREATE TABLE task_steps (
     task_id TEXT NOT NULL REFERENCES tasks(task_id),
     worker_id TEXT NOT NULL REFERENCES workers(worker_id),
     seq INTEGER NOT NULL,
@@ -233,9 +303,16 @@ CREATE TABLE task_steps (
     ended_at TEXT,
     note TEXT,
     PRIMARY KEY (task_id, worker_id, seq)
-);
+);"#,
+        step_name = StepName::check("name"),
+        step_status = StepStatus::check("status"),
+    )
+}
 
-CREATE TABLE import_raw (
+/// The `import_raw` statements.
+fn import_raw() -> String {
+    format!(
+        r#"CREATE TABLE import_raw (
     raw_id INTEGER PRIMARY KEY AUTOINCREMENT,
     source_kind TEXT NOT NULL {source_kind},
     source_path TEXT NOT NULL,
@@ -245,9 +322,15 @@ CREATE TABLE import_raw (
     mapped_to TEXT,
     map_error TEXT,
     UNIQUE (source_kind, source_key)
-);
+);"#,
+        source_kind = SourceKind::check("source_kind"),
+    )
+}
 
-CREATE TABLE import_findings (
+/// The `import_findings` statements.
+fn import_findings() -> String {
+    format!(
+        r#"CREATE TABLE import_findings (
     finding_id INTEGER PRIMARY KEY AUTOINCREMENT,
     project_id TEXT REFERENCES projects(project_id),
     run_id TEXT REFERENCES runs(run_id),
@@ -261,34 +344,30 @@ CREATE TABLE import_findings (
     decided_at TEXT,
     decision_note TEXT,
     created_at TEXT NOT NULL
-);
-"#,
-        run_status = RunStatus::check("status"),
-        worktree_mode = WorktreeMode::check("worktree_mode"),
-        task_kind = TaskKind::check("kind"),
-        task_status = TaskStatus::check("status"),
-        task_file_rule = native("task_file IS NOT NULL"),
-        persona_rule = native("primary_persona IS NOT NULL"),
-        claimable_rule = native("claimable_by IS NOT NULL"),
-        file_mode = FileMode::check("mode"),
-        worker_kind = WorkerKind::check("kind"),
-        progress_source = ProgressSource::check("last_progress_source"),
-        worker_status = WorkerStatus::check("status"),
-        worker_rule = native("run_id IS NOT NULL AND persona IS NOT NULL AND host IS NOT NULL"),
-        verdict = Verdict::check("verdict"),
-        stop_requester = StopRequester::check("requested_by"),
-        stop_target = StopTarget::check("target"),
-        stop_signal = StopSignal::check("signal"),
-        stop_result = StopResult::check("result"),
-        worktree_status = WorktreeStatus::check("status"),
-        actor = Actor::check("actor"),
-        event_kind = EventKind::check("kind"),
-        step_name = StepName::check("name"),
-        step_status = StepStatus::check("status"),
-        source_kind = SourceKind::check("source_kind"),
+);"#,
         finding_kind = FindingKind::check("kind"),
         finding_status = FindingStatus::check("status"),
     )
+}
+
+/// The statements of version 1.
+fn v1() -> String {
+    let tables = [
+        projects(),
+        runs_table(),
+        tasks_table(),
+        task_deps(),
+        task_files(),
+        workers_table(),
+        checks_table(),
+        stops_table(),
+        worktrees_table(),
+        events_table(),
+        task_steps(),
+        import_raw(),
+        import_findings(),
+    ];
+    format!("\n{}\n", tables.join("\n\n"))
 }
 
 /// Bring the database to [`VERSION`]. A file from a newer binary is refused:
@@ -337,4 +416,41 @@ pub fn migrate(conn: &mut Connection) -> Result<()> {
     tx.pragma_update(None, "user_version", VERSION)?;
     tx.commit()?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// FNV-1a, so the pin below needs no copy of the 250-line text.
+    fn fnv1a(text: &str) -> u64 {
+        text.bytes().fold(0xcbf29ce484222325, |h, b| {
+            (h ^ u64::from(b)).wrapping_mul(0x100000001b3)
+        })
+    }
+
+    /// Version 1 runs as a migration on existing files: its text must not drift.
+    #[test]
+    fn v1_text_is_pinned() {
+        let sql = v1();
+        assert_eq!((sql.len(), fnv1a(&sql)), (8616, 949560913304565573));
+    }
+
+    #[test]
+    fn migrate_empty_database_reaches_version() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        migrate(&mut conn).unwrap();
+        let version: i64 = conn
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(version, VERSION);
+        let tables: i64 = conn
+            .query_row(
+                "SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(tables, 15);
+    }
 }
