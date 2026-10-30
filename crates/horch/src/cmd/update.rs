@@ -33,24 +33,22 @@ const MAX_PACKUMENT_BYTES: u64 = 256 * 1024 * 1024;
 const HERDR_WARNING: &str = "horch: NOTE: herdr update can stop the herdr server. \
                              That closes every pane, a running fleet included.";
 
-/// Update `harnesses` and print 1 line per result. With `fresh_for`, skip a
-/// harness updated less than that long ago. Returns whether 1 updater failed.
-pub fn run_step(
-    ctx: &RuntimeContext,
-    harnesses: &[HarnessKind],
-    fresh_for: Option<chrono::TimeDelta>,
-) -> bool {
+/// Update `harnesses` and print 1 line per result. With `skip_fresh`, skip
+/// a harness updated less than [`update::FRESH_FOR`] ago. Returns whether 1
+/// harness is not known to be updated: its updater failed, still runs, or
+/// another horch updates it.
+pub fn run_step(ctx: &RuntimeContext, harnesses: &[HarnessKind], skip_fresh: bool) -> bool {
     println!("Updating agent CLIs (horch fleet --no-update skips this)...");
-    let results = update::update_all(ctx, harnesses, &npm_packument, fresh_for);
+    let results = update::update_all(ctx, harnesses, &npm_packument, skip_fresh);
     // A NOTE goes to stderr, as every other `horch: NOTE:` line does.
     for result in &results {
-        if result.failed() || matches!(result.outcome, Outcome::Detached { .. }) {
+        if result.is_note() {
             eprintln!("{}", line(result));
         } else {
             println!("{}", line(result));
         }
     }
-    results.iter().any(UpdateResult::failed)
+    results.iter().any(UpdateResult::unfinished)
 }
 
 /// The update step of `horch fleet` and `horch orchestration`: a newer
@@ -63,11 +61,12 @@ pub fn before_fleet(ctx: &RuntimeContext, no_update: bool) {
     if no_update || ctx.settings.no_update {
         return;
     }
-    run_step(ctx, &update::ORDER, Some(update::FRESH_FOR));
+    run_step(ctx, &update::ORDER, true);
 }
 
-/// `horch update [NAME...]`: exit 1 when 1 updater failed. The operator
-/// asked, so a recent update does not skip a CLI.
+/// `horch update [NAME...]`: exit 1 when 1 updater failed or still runs,
+/// or another horch updates 1 of the CLIs. The operator asked, so a recent
+/// update does not skip a CLI.
 /// `herdr` runs last, attached to the terminal, and its exit code wins.
 pub fn update(ctx: &RuntimeContext, names: &[String]) -> Result<std::process::ExitCode> {
     let herdr = names.iter().any(|n| n == "herdr");
@@ -82,7 +81,7 @@ pub fn update(ctx: &RuntimeContext, names: &[String]) -> Result<std::process::Ex
     };
     let mut failed = false;
     if !agents.is_empty() {
-        failed = run_step(ctx, &agents, None);
+        failed = run_step(ctx, &agents, false);
     }
     if herdr {
         eprintln!("{HERDR_WARNING}");
@@ -155,8 +154,9 @@ pub fn line(result: &UpdateResult) -> String {
             format!("update: {name}: another horch is updating it (skipped)")
         }
         Outcome::Fresh { checked_at } => format!(
-            "update: {name}: updated at {}, less than 24 h ago (skipped)",
-            horch_core::clock::stamp(*checked_at)
+            "update: {name}: updated at {}, less than {} h ago (skipped)",
+            horch_core::clock::stamp(*checked_at),
+            update::FRESH_FOR.num_hours()
         ),
         Outcome::Detached { after } => format!(
             "horch: NOTE: update: {name}: still running after {} s, not waited for",

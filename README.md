@@ -909,7 +909,7 @@ command, which knows how it was installed (native, Homebrew, npm):
 | prime       | `prime-agent update`  |
 
 ```bash
-horch update                 # the same step, on demand; exits 1 if 1 updater fails
+horch update                 # the same step, on demand; exits 1 if 1 CLI is not updated
 horch update codex pi        # only these
 horch update herdr           # herdr too - read the warning below
 horch fleet --no-update      # start a fleet without the update step
@@ -917,15 +917,28 @@ horch fleet --no-update      # start a fleet without the update step
 
 The updaters run at the same time. Each one gets `HORCH_UPDATE_TIMEOUT_MS`
 (default 180000; a Homebrew `codex update` alone can take a minute). A CLI
-that is not on `PATH` is skipped. A failed or timed-out updater prints 1
+that is not on `PATH` is skipped. A failed updater prints 1
 `horch: NOTE: update:` line, and the fleet still starts on the build it has.
+An updater that still runs at the time limit is not killed, because a
+package manager stopped mid-install can leave no CLI. horch prints
+`still running after N s, not waited for` and goes on.
+
+Several fleets can start on 1 host. Each CLI has 1 lock and 1 mark under
+`<state root>/update/`, so only 1 updater of a CLI runs at a time, for at
+most 1 h. The fleet step skips a CLI that another horch updates
+(`another horch is updating it`) and a CLI whose last update succeeded
+less than 24 h ago (`updated at <time>, less than 24 h ago`).
+`horch update` skips only the first: you asked for it. It exits 1 when 1 CLI
+failed, still runs, or is updated by another horch. The updater output is
+in `<state root>/update/<cli>.stdout.log` and `.stderr.log`.
 When `cpx` is the Claude launcher, `claude` updates, because `cpx` only
 launches it. `HORCH_NO_UPDATE=1` skips the step like `--no-update`.
 
 Panes do not update during a fleet run: Claude panes get
 `DISABLE_AUTOUPDATER=1` and Codex panes `check_for_update_on_startup=false`.
-So every pane of 1 fleet runs the same build of each CLI, and no CLI changes
-under a running worker.
+A pane never updates its own CLI. A CLI can still change under a running
+fleet: an updater left running, or the update step of a later fleet start,
+replaces it.
 
 herdr is never in the default list. A herdr release can change the
 client/server protocol, and then `herdr update` offers to stop the herdr

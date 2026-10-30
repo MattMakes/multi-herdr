@@ -10,14 +10,17 @@
 //! - 1 lock per CLI under `<state root>/update/` lets 1 updater of a CLI run
 //!   at a time. A second horch that finds the lock held skips that CLI.
 //! - The fleet step skips a CLI whose last update succeeded less than
-//!   [`FRESH_FOR`] ago, the same 24 h rule as the horch self-update.
+//!   [`FRESH_FOR`] ago.
 //! - An updater that passes its time limit is not killed: a package manager
 //!   stopped between the removal of the old build and the link of the new
-//!   one leaves no CLI. It is left to finish, and while it runs, every
-//!   later horch skips that CLI.
+//!   one leaves no CLI. It is left to finish, and while it runs (at most
+//!   [`LOCK_STALE`]), every later horch skips that CLI. An updater that
+//!   ended unseen counts as the CLI's last check.
 //!
-//! So a CLI changes under a running fleet only when an updater of a later
-//! fleet start replaces it; it is never left half installed.
+//! So a CLI can change under a running fleet: a detached updater, or the
+//! updater of a later fleet start, replaces it. It is never left half
+//! installed. The files under `<state root>/update/` are written without
+//! following a link: a Codex pane can write the state root.
 //!
 //! Every updater waits out the release cooldown first ([`super::cooldown`]):
 //! a CLI whose newest release is younger than it, or whose release dates
@@ -35,7 +38,7 @@ use anyhow::{Context, Result};
 
 use super::cooldown::{self, Packument, Verdict};
 use super::HarnessKind;
-use crate::fsx::{DirLock, FsxError};
+use crate::fsx::{DirLock, FsxError, PRIVATE_FILE};
 use crate::routing::quota_probe::probe_version;
 use crate::runtime::{process, RuntimeContext};
 
@@ -52,13 +55,21 @@ pub const ORDER: [HarnessKind; 6] = [
 /// The longest failure reason, in characters.
 const REASON_MAX: usize = 200;
 
-/// How long a successful update of 1 CLI holds for the fleet step: the
-/// same 24 h as the horch self-update cache.
+/// How long a successful update of 1 CLI holds for the fleet step. The
+/// horch self-update cache (`CACHE_TTL_HOURS` in `horch`) is 24 h too.
 pub const FRESH_FOR: chrono::TimeDelta = chrono::TimeDelta::hours(24);
 
 /// How old an update lock must be before a later horch breaks it while its
-/// holder still runs. A holder that has exited is broken at once.
+/// holder still runs, and how long a detached updater keeps its CLI busy.
+/// A lock holder that has exited is broken at once.
 const LOCK_STALE: Duration = Duration::from_secs(3600);
+
+/// The longest horch waits for 1 updater: under [`LOCK_STALE`], so a later
+/// horch never breaks the lock of a horch that still waits.
+const MAX_TIMEOUT: Duration = Duration::from_secs(1800);
+
+/// How much of the end of an updater log horch reads for a failure reason.
+const LOG_TAIL: u64 = 64 * 1024;
 
 /// What the update step did for 1 harness.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -111,6 +122,21 @@ impl UpdateResult {
     pub fn failed(&self) -> bool {
         matches!(self.outcome, Outcome::Failed { .. })
     }
+
+    /// The result prints as a `horch: NOTE:` line on stderr: the updater
+    /// failed, or horch did not wait for it.
+    pub fn is_note(&self) -> bool {
+        matches!(
+            self.outcome,
+            Outcome::Failed { .. } | Outcome::Detached { .. }
+        )
+    }
+
+    /// The CLI is not known to be updated: its updater failed, still runs,
+    /// or another horch updates it. `horch update` exits 1 on it.
+    pub fn unfinished(&self) -> bool {
+        self.is_note() || self.outcome == Outcome::Busy
+    }
 }
 
 /// The arguments of `kind`'s own update command. `None` for the agentless
@@ -129,16 +155,16 @@ pub fn update_args(kind: HarnessKind) -> Option<&'static [&'static str]> {
 
 /// Update every harness in `harnesses` at the same time, each within
 /// `ctx.settings.update_timeout` and only past the release cooldown, whose
-/// dates `releases` reads. With `fresh_for`, a harness whose last update
-/// succeeded less than that long ago is skipped. The results come in
+/// dates `releases` reads. With `skip_fresh`, a harness whose last update
+/// succeeded less than [`FRESH_FOR`] ago is skipped. The results come in
 /// [`ORDER`], 1 per harness, whatever the order of `harnesses`.
 pub fn update_all(
     ctx: &RuntimeContext,
     harnesses: &[HarnessKind],
     releases: &ReleaseLookup<'_>,
-    fresh_for: Option<chrono::TimeDelta>,
+    skip_fresh: bool,
 ) -> Vec<UpdateResult> {
-    let timeout = ctx.settings.update_timeout;
+    let timeout = ctx.settings.update_timeout.min(MAX_TIMEOUT);
     let wanted: Vec<HarnessKind> = ORDER
         .iter()
         .copied()
@@ -150,7 +176,7 @@ pub fn update_all(
             .map(|&kind| {
                 (
                     kind,
-                    s.spawn(move || update_one(ctx, kind, timeout, releases, fresh_for)),
+                    s.spawn(move || update_one(ctx, kind, timeout, releases, skip_fresh)),
                 )
             })
             .collect();
@@ -174,7 +200,7 @@ fn update_one(
     kind: HarnessKind,
     timeout: Duration,
     releases: &ReleaseLookup<'_>,
-    fresh_for: Option<chrono::TimeDelta>,
+    skip_fresh: bool,
 ) -> UpdateResult {
     let not_installed = UpdateResult {
         harness: kind,
@@ -187,11 +213,13 @@ fn update_one(
     let Some(bin) = resolve(ctx, &update_bin(kind, &launched)) else {
         return not_installed;
     };
-    let marks = Marks {
-        dir: ctx.paths.state_root.join("update"),
-        name: kind.as_str(),
+    let job = Job {
+        kind,
+        bin: &bin,
+        args,
+        timeout,
     };
-    let outcome = locked_update(ctx, &marks, kind, &bin, args, timeout, releases, fresh_for);
+    let outcome = locked_update(ctx, &job, releases, skip_fresh);
     UpdateResult {
         harness: kind,
         bin: Some(bin),
@@ -199,19 +227,26 @@ fn update_one(
     }
 }
 
-/// [`update_one`] for the installed `bin`, under the CLI's update lock.
-#[allow(clippy::too_many_arguments)]
+/// 1 CLI's updater, ready to run.
+struct Job<'a> {
+    kind: HarnessKind,
+    bin: &'a Path,
+    args: &'a [&'a str],
+    timeout: Duration,
+}
+
+/// [`update_one`] for an installed CLI, under the CLI's update lock.
 fn locked_update(
     ctx: &RuntimeContext,
-    marks: &Marks,
-    kind: HarnessKind,
-    bin: &Path,
-    args: &[&str],
-    timeout: Duration,
+    job: &Job<'_>,
     releases: &ReleaseLookup<'_>,
-    fresh_for: Option<chrono::TimeDelta>,
+    skip_fresh: bool,
 ) -> Outcome {
-    let _lock = match DirLock::acquire(&marks.dir, marks.name, LOCK_STALE, Duration::ZERO) {
+    let files = UpdateFiles {
+        dir: ctx.paths.state_root.join("update"),
+        name: job.kind.as_str(),
+    };
+    let _lock = match DirLock::acquire(&files.dir, files.name, LOCK_STALE, Duration::ZERO) {
         Ok(guard) => guard,
         Err(FsxError::LockTimeout { .. }) => return Outcome::Busy,
         Err(e) => {
@@ -220,98 +255,170 @@ fn locked_update(
             }
         }
     };
-    if marks.still_running() {
+    let now = crate::clock::now();
+    if files.settle_running(now) {
         return Outcome::Busy;
     }
-    let now = crate::clock::now();
-    if let Some(checked_at) = fresh_for.and_then(|f| marks.checked_within(now, f)) {
+    if let Some(checked_at) = skip_fresh.then(|| files.checked_within(now)).flatten() {
         return Outcome::Fresh { checked_at };
     }
     let days = ctx.settings.update_cooldown_days;
     if days > 0 {
-        if let Some(held) = hold(kind, now, days, releases) {
+        if let Some(held) = hold(job.kind, now, days, releases) {
             return held;
         }
     }
-    let before = probe_version(bin).version();
-    let mut cmd = Command::new(bin);
-    cmd.args(args);
+    let before = probe_version(job.bin).version();
+    let mut cmd = Command::new(job.bin);
+    cmd.args(job.args);
     if days > 0 {
         cmd.envs(cooldown::child_env(now, days));
     }
-    match run_updater(cmd, timeout, marks) {
+    match run_updater(cmd, job.timeout, &files, now) {
         Ran::Done => {
-            marks.set_checked(now);
+            files.clear_running();
+            files.set_checked(now);
             Outcome::Updated {
                 before,
-                after: probe_version(bin).version(),
+                after: probe_version(job.bin).version(),
             }
         }
-        Ran::Detached(pid) => {
-            marks.set_running(pid);
-            Outcome::Detached { after: timeout }
+        Ran::Detached => Outcome::Detached { after: job.timeout },
+        Ran::Failed(reason) => {
+            files.clear_running();
+            Outcome::Failed { reason }
         }
-        Ran::Failed(reason) => Outcome::Failed { reason },
     }
 }
 
 /// The files of 1 CLI's update step in `dir` (`<state root>/update/`): the
-/// lock `<name>.lock/`, the last success `<name>.checked`, the updater left
-/// running `<name>.running`, and its output `<name>.stdout.log` and
+/// lock `<name>.lock/`, the last check `<name>.checked`, the updater that
+/// runs `<name>.running`, and its output `<name>.stdout.log` and
 /// `<name>.stderr.log`.
-struct Marks {
+struct UpdateFiles {
     dir: PathBuf,
     name: &'static str,
 }
 
-impl Marks {
+/// An updater as `<name>.running` records it: `<pid> <start time or -> <time>`.
+struct RunningMark {
+    pid: u32,
+    started: Option<u64>,
+    at: chrono::DateTime<chrono::Utc>,
+}
+
+impl RunningMark {
+    /// Whether its process group still runs. Without a start time, whether
+    /// the pid exists.
+    fn alive(&self) -> bool {
+        #[cfg(unix)]
+        if let Some(started) = self.started {
+            return crate::procid::is_same_group(self.pid, started);
+        }
+        crate::procid::alive(self.pid, self.started)
+    }
+}
+
+impl UpdateFiles {
     fn file(&self, suffix: &str) -> PathBuf {
         self.dir.join(format!("{}.{suffix}", self.name))
     }
 
-    /// When the last update succeeded, if that is less than `fresh_for`
-    /// before `now`.
+    /// When the last check was, if that is less than [`FRESH_FOR`] before
+    /// `now`. A time after `now` is not fresh.
     fn checked_within(
         &self,
         now: chrono::DateTime<chrono::Utc>,
-        fresh_for: chrono::TimeDelta,
     ) -> Option<chrono::DateTime<chrono::Utc>> {
-        let text = std::fs::read_to_string(self.file("checked")).ok()?;
-        let at = chrono::DateTime::parse_from_rfc3339(text.trim()).ok()?;
-        let at = at.with_timezone(&chrono::Utc);
-        (now - at < fresh_for).then_some(at)
+        let at = crate::clock::parse(&std::fs::read_to_string(self.file("checked")).ok()?)?;
+        (at <= now && now - at < FRESH_FOR).then_some(at)
     }
 
-    fn set_checked(&self, now: chrono::DateTime<chrono::Utc>) {
-        let stamp = crate::clock::stamp(now);
-        if let Err(e) = std::fs::write(self.file("checked"), stamp) {
+    fn set_checked(&self, at: chrono::DateTime<chrono::Utc>) {
+        let stamp = crate::clock::stamp(at);
+        if let Err(e) =
+            crate::fsx::write_atomic(&self.file("checked"), stamp.as_bytes(), PRIVATE_FILE)
+        {
             eprintln!("horch: NOTE: update: {}: {e}", self.name);
         }
     }
 
-    /// Whether the updater an earlier horch left running still runs.
-    fn still_running(&self) -> bool {
-        let Ok(text) = std::fs::read_to_string(self.file("running")) else {
+    fn running(&self) -> Option<RunningMark> {
+        let text = std::fs::read_to_string(self.file("running")).ok()?;
+        let mut words = text.split_whitespace();
+        let pid = words.next()?.parse().ok()?;
+        let started = words.next()?.parse().ok();
+        let at = crate::clock::parse(words.next()?)?;
+        Some(RunningMark { pid, started, at })
+    }
+
+    /// Whether an updater a horch started still runs, for at most
+    /// [`LOCK_STALE`]. A mark of an updater that ended, or ran too long,
+    /// is removed. The updater ran, so its start counts as the last check.
+    fn settle_running(&self, now: chrono::DateTime<chrono::Utc>) -> bool {
+        let Some(mark) = self.running() else {
+            self.clear_running();
             return false;
         };
-        let mut words = text.split_whitespace().map(str::parse::<u64>);
-        match (words.next(), words.next()) {
-            (Some(Ok(pid)), started) => {
-                let started = started.and_then(Result::ok);
-                u32::try_from(pid).is_ok_and(|pid| crate::procid::alive(pid, started))
-            }
-            _ => false,
+        let age = (now - mark.at).to_std().ok();
+        let recent = age.is_some_and(|a| a < LOCK_STALE);
+        if mark.alive() && recent {
+            return true;
         }
+        if mark.alive() {
+            eprintln!(
+                "horch: NOTE: update: {}: updater {} runs since {}; it no longer blocks updates. Its output is in {}",
+                self.name,
+                mark.pid,
+                crate::clock::stamp(mark.at),
+                self.file("stderr.log").display()
+            );
+        }
+        self.clear_running();
+        if mark.at <= now {
+            self.set_checked(mark.at);
+        }
+        false
     }
 
-    /// Record `pid`, an updater left running: `<pid> <start time>`.
-    fn set_running(&self, pid: u32) {
-        let started = crate::procid::start_time(pid)
-            .map(|t| format!(" {t}"))
-            .unwrap_or_default();
-        if let Err(e) = std::fs::write(self.file("running"), format!("{pid}{started}\n")) {
-            eprintln!("horch: NOTE: update: {}: {e}", self.name);
+    /// Record `pid`, the updater that runs from `now`.
+    fn set_running(&self, pid: u32, now: chrono::DateTime<chrono::Utc>) -> crate::fsx::Result<()> {
+        let started =
+            crate::procid::start_time(pid).map_or_else(|| "-".to_string(), |t| t.to_string());
+        let text = format!("{pid} {started} {}\n", crate::clock::stamp(now));
+        crate::fsx::write_atomic(&self.file("running"), text.as_bytes(), PRIVATE_FILE)
+    }
+
+    fn clear_running(&self) {
+        let _ = std::fs::remove_file(self.file("running"));
+    }
+
+    /// A new log file `suffix`: an old file or link at its path is removed
+    /// first, and the new one is created, never opened through a link.
+    fn new_log(&self, suffix: &str) -> std::io::Result<std::fs::File> {
+        let path = self.file(suffix);
+        match std::fs::remove_file(&path) {
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(e),
+            _ => {}
         }
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        std::os::unix::fs::OpenOptionsExt::mode(&mut options, PRIVATE_FILE);
+        options.open(path)
+    }
+
+    /// The last [`LOG_TAIL`] bytes of log `suffix`, as text.
+    fn log_tail(&self, suffix: &str) -> String {
+        use std::io::{Read, Seek, SeekFrom};
+        let Ok(mut file) = std::fs::File::open(self.file(suffix)) else {
+            return String::new();
+        };
+        let len = file.metadata().map(|m| m.len()).unwrap_or(0);
+        let _ = file.seek(SeekFrom::Start(len.saturating_sub(LOG_TAIL)));
+        let mut bytes = Vec::new();
+        let _ = file.read_to_end(&mut bytes);
+        String::from_utf8_lossy(&bytes).into_owned()
     }
 }
 
@@ -371,24 +478,32 @@ fn resolve(ctx: &RuntimeContext, bin: &Path) -> Option<PathBuf> {
 enum Ran {
     /// It exited 0.
     Done,
-    /// It still ran at the time limit: its pid.
-    Detached(u32),
+    /// It still ran at the time limit; its `.running` mark stays.
+    Detached,
     /// It failed: why.
     Failed(String),
 }
 
 /// Run 1 updater with stdin null, no forbidden variable, in its own process
-/// group, with its output in the log files of `marks`. Files, not pipes: an
+/// group, with its output in the log files of `files`. Files, not pipes: an
 /// updater left running at `timeout` must not die of a closed pipe when
-/// horch exits. It is not killed either (#205).
-fn run_updater(mut cmd: Command, timeout: Duration, marks: &Marks) -> Ran {
+/// horch exits. It is not killed either (#205). Its `.running` mark is
+/// written as soon as it starts, so a horch that dies while it waits
+/// still leaves the mark.
+fn run_updater(
+    mut cmd: Command,
+    timeout: Duration,
+    files: &UpdateFiles,
+    now: chrono::DateTime<chrono::Utc>,
+) -> Ran {
     process::scrub_child_env(&mut cmd);
     let name = cmd.get_program().to_string_lossy().into_owned();
-    let (out_log, err_log) = (marks.file("stdout.log"), marks.file("stderr.log"));
-    let logs =
-        std::fs::File::create(&out_log).and_then(|o| Ok((o, std::fs::File::create(&err_log)?)));
-    let (out, err) = match logs {
-        Ok(files) => files,
+    let out = match files.new_log("stdout.log") {
+        Ok(file) => file,
+        Err(e) => return Ran::Failed(cut(&format!("{name} log: {e}"))),
+    };
+    let err = match files.new_log("stderr.log") {
+        Ok(file) => file,
         Err(e) => return Ran::Failed(cut(&format!("{name} log: {e}"))),
     };
     cmd.stdin(Stdio::null()).stdout(out).stderr(err);
@@ -398,12 +513,21 @@ fn run_updater(mut cmd: Command, timeout: Duration, marks: &Marks) -> Ran {
         Ok(child) => child,
         Err(e) => return Ran::Failed(cut(&format!("{name} did not start: {e}"))),
     };
+    let marked = files.set_running(child.id(), now);
     let deadline = Instant::now() + timeout;
     let status = loop {
         match child.try_wait() {
             Ok(Some(status)) => break status,
             Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(50)),
-            Ok(None) => return Ran::Detached(child.id()),
+            Ok(None) => {
+                return match marked {
+                    Ok(()) => Ran::Detached,
+                    Err(e) => Ran::Failed(cut(&format!(
+                        "still running after {} s, not waited for, and unmarked: {e}",
+                        timeout.as_secs()
+                    ))),
+                }
+            }
             Err(e) => {
                 kill_group(&mut child);
                 let _ = child.wait();
@@ -414,10 +538,9 @@ fn run_updater(mut cmd: Command, timeout: Duration, marks: &Marks) -> Ran {
     if status.success() {
         return Ran::Done;
     }
-    let text = |path: &Path| std::fs::read_to_string(path).unwrap_or_default();
     Ran::Failed(
-        reason_line(&text(&err_log))
-            .or_else(|| reason_line(&text(&out_log)))
+        reason_line(&files.log_tail("stderr.log"))
+            .or_else(|| reason_line(&files.log_tail("stdout.log")))
             .unwrap_or_else(|| exited(&name, status)),
     )
 }
@@ -600,7 +723,8 @@ mod tests {
     }
 
     /// A codex updater script in a temp dir: `--version` prints 1 line, and
-    /// `update` appends 1 line to `runs` and then sleeps `sleep` seconds.
+    /// `update` appends its pid to `runs`, sleeps `sleep` seconds and exits
+    /// `exit`.
     #[cfg(unix)]
     struct FakeUpdater {
         dir: tempfile::TempDir,
@@ -609,14 +733,14 @@ mod tests {
 
     #[cfg(unix)]
     impl FakeUpdater {
-        fn new(sleep: u32, timeout_ms: u64) -> Self {
+        fn new(sleep: u32, exit: u8, timeout_ms: u64) -> Self {
             use std::os::unix::fs::PermissionsExt;
             let dir = tempfile::tempdir().unwrap();
             let bin = dir.path().join("codex");
             let runs = dir.path().join("runs");
             let script = format!(
                 "#!/bin/sh\ncase \"$1\" in --version) echo 'codex 1.0';; \
-                 *) echo $$ >> '{}'; sleep {sleep};; esac\n",
+                 *) echo $$ >> '{}'; sleep {sleep}; exit {exit};; esac\n",
                 runs.display()
             );
             std::fs::write(&bin, script).unwrap();
@@ -642,33 +766,72 @@ mod tests {
                 .collect()
         }
 
-        fn update(&self, fresh_for: Option<chrono::TimeDelta>) -> Outcome {
+        fn update(&self, skip_fresh: bool) -> Outcome {
             let none = |_: &str| -> Result<Packument, String> { Err("unused".into()) };
-            let mut results = update_all(&self.ctx, &[HarnessKind::Codex], &none, fresh_for);
+            let mut results = update_all(&self.ctx, &[HarnessKind::Codex], &none, skip_fresh);
             assert_eq!(results.len(), 1);
             results.remove(0).outcome
         }
 
-        fn checked_file(&self) -> PathBuf {
-            self.dir.path().join("state/update/codex.checked")
+        fn file(&self, suffix: &str) -> PathBuf {
+            self.dir
+                .path()
+                .join("state/update")
+                .join(format!("codex.{suffix}"))
         }
+
+        /// Write the `.running` mark of `pid` with start time `started`,
+        /// made at `at`.
+        fn mark_running(&self, pid: u32, started: Option<u64>, at: chrono::DateTime<chrono::Utc>) {
+            std::fs::create_dir_all(self.dir.path().join("state/update")).unwrap();
+            let started = started.map_or_else(|| "-".to_string(), |t| t.to_string());
+            let text = format!("{pid} {started} {}\n", crate::clock::stamp(at));
+            std::fs::write(self.file("running"), text).unwrap();
+        }
+    }
+
+    /// Kills the process group it names when dropped, so a failed assert
+    /// leaves no sleeping updater behind.
+    #[cfg(unix)]
+    struct GroupKill(u32);
+
+    #[cfg(unix)]
+    impl Drop for GroupKill {
+        fn drop(&mut self) {
+            // SAFETY: plain syscall on a group this test started; a group
+            // that has ended answers ESRCH, which is fine here.
+            unsafe {
+                libc::killpg(self.0 as libc::pid_t, libc::SIGKILL);
+            }
+        }
+    }
+
+    /// A `sleep 60` in its own process group: a live updater stand-in.
+    #[cfg(unix)]
+    fn sleeper() -> (std::process::Child, GroupKill) {
+        let mut cmd = Command::new("sleep");
+        cmd.arg("60");
+        std::os::unix::process::CommandExt::process_group(&mut cmd, 0);
+        let child = cmd.spawn().unwrap();
+        let guard = GroupKill(child.id());
+        (child, guard)
     }
 
     /// #205: 2 fleets that start together run 1 codex updater, and the
     /// second one says it skipped codex.
     #[cfg(unix)]
     #[test]
-    fn concurrent_updates_run_the_updater_once_and_the_second_skips() {
-        let fake = FakeUpdater::new(2, 20_000);
+    fn arc_33_concurrent_updates_run_the_updater_once_and_the_second_skips() {
+        let fake = FakeUpdater::new(2, 0, 20_000);
         let barrier = std::sync::Barrier::new(2);
         let outcomes: Vec<Outcome> = std::thread::scope(|s| {
             let a = s.spawn(|| {
                 barrier.wait();
-                fake.update(None)
+                fake.update(false)
             });
             let b = s.spawn(|| {
                 barrier.wait();
-                fake.update(None)
+                fake.update(false)
             });
             vec![a.join().unwrap(), b.join().unwrap()]
         });
@@ -679,38 +842,69 @@ mod tests {
             .count();
         let busy = outcomes.iter().filter(|o| **o == Outcome::Busy).count();
         assert_eq!((updated, busy), (1, 1), "{outcomes:?}");
+        assert!(
+            !fake.file("running").exists(),
+            "a finished run left its mark"
+        );
     }
 
     /// #205: the fleet step does not run a CLI again within 24 h of its
-    /// last successful update; `horch update` (no limit) and an older
-    /// success do run it.
+    /// last successful update; `horch update` (no skip), an older success,
+    /// a stamp in the future and an unreadable stamp do run it.
     #[cfg(unix)]
     #[test]
-    fn a_cli_updated_less_than_24_h_ago_is_not_run_again() {
-        let fake = FakeUpdater::new(0, 20_000);
-        assert!(matches!(
-            fake.update(Some(FRESH_FOR)),
-            Outcome::Updated { .. }
-        ));
+    fn arc_33_a_cli_updated_less_than_24_h_ago_is_not_run_again() {
+        let fake = FakeUpdater::new(0, 0, 20_000);
+        assert!(matches!(fake.update(true), Outcome::Updated { .. }));
         assert_eq!(fake.runs().len(), 1);
-        assert!(fake.checked_file().is_file());
+        assert!(fake.file("checked").is_file());
 
-        let skipped = fake.update(Some(FRESH_FOR));
+        let skipped = fake.update(true);
         assert!(matches!(skipped, Outcome::Fresh { .. }), "{skipped:?}");
         assert_eq!(fake.runs().len(), 1, "a fresh CLI ran again");
 
-        // The operator's own `horch update` passes no limit.
-        assert!(matches!(fake.update(None), Outcome::Updated { .. }));
+        // The operator's own `horch update` does not skip.
+        assert!(matches!(fake.update(false), Outcome::Updated { .. }));
         assert_eq!(fake.runs().len(), 2);
 
-        // 25 h ago is past the limit.
-        let old = chrono::Utc::now() - chrono::TimeDelta::hours(25);
-        std::fs::write(fake.checked_file(), crate::clock::stamp(old)).unwrap();
-        assert!(matches!(
-            fake.update(Some(FRESH_FOR)),
-            Outcome::Updated { .. }
-        ));
-        assert_eq!(fake.runs().len(), 3);
+        let now = chrono::Utc::now();
+        for (stamp, why) in [
+            (
+                crate::clock::stamp(now - chrono::TimeDelta::hours(25)),
+                "25 h ago",
+            ),
+            (
+                crate::clock::stamp(now + chrono::TimeDelta::hours(1)),
+                "in the future",
+            ),
+            ("garbage".to_string(), "unreadable"),
+        ] {
+            let runs = fake.runs().len();
+            std::fs::write(fake.file("checked"), stamp).unwrap();
+            assert!(
+                matches!(fake.update(true), Outcome::Updated { .. }),
+                "a stamp {why} skipped the CLI"
+            );
+            assert_eq!(fake.runs().len(), runs + 1, "{why}");
+        }
+    }
+
+    /// #205: a failed updater records no check, so the next fleet runs it
+    /// again.
+    #[cfg(unix)]
+    #[test]
+    fn arc_33_a_failed_updater_writes_no_check_and_runs_again() {
+        let fake = FakeUpdater::new(0, 1, 20_000);
+        assert_eq!(
+            fake.update(true),
+            Outcome::Failed {
+                reason: format!("{} exited 1", fake.dir.path().join("codex").display())
+            }
+        );
+        assert!(matches!(fake.update(true), Outcome::Failed { .. }));
+        assert_eq!(fake.runs().len(), 2);
+        assert!(!fake.file("checked").exists());
+        assert!(!fake.file("running").exists());
     }
 
     /// #205: an updater still running at the time limit is left to finish:
@@ -718,33 +912,78 @@ mod tests {
     /// not wait, and the next update skips the CLI while it runs.
     #[cfg(unix)]
     #[test]
-    fn an_updater_past_the_timeout_is_not_killed_and_not_waited_for() {
-        let fake = FakeUpdater::new(30, 500);
+    fn arc_33_an_updater_past_the_timeout_is_not_killed_and_not_waited_for() {
+        let fake = FakeUpdater::new(30, 0, 500);
         let started = Instant::now();
-        let outcome = fake.update(None);
+        let outcome = fake.update(false);
         assert!(started.elapsed() < Duration::from_secs(10), "horch waited");
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while fake.runs().is_empty() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        let runs = fake.runs();
+        assert_eq!(runs.len(), 1);
+        let _kill = GroupKill(runs[0]);
         assert_eq!(
             outcome,
             Outcome::Detached {
                 after: Duration::from_millis(500)
             }
         );
-        let runs = fake.runs();
-        assert_eq!(runs.len(), 1);
-        let pid = runs[0];
-        assert!(crate::fsx::pid_alive(pid), "the updater was killed");
+        assert!(
+            crate::procid::alive(runs[0], None),
+            "the updater was killed"
+        );
 
-        assert_eq!(fake.update(None), Outcome::Busy);
+        assert_eq!(fake.update(false), Outcome::Busy);
         assert_eq!(
             fake.runs().len(),
             1,
             "a second updater ran beside the first"
         );
+    }
 
-        // Clean up: the test, not horch, stops the sleeping updater.
-        unsafe {
-            libc::killpg(pid as libc::pid_t, libc::SIGKILL);
-        }
+    /// #205: a `.running` mark keeps the CLI busy only while its updater
+    /// runs, and for at most `LOCK_STALE`. A mark of an updater that ended
+    /// counts as the CLI's last check.
+    #[cfg(unix)]
+    #[test]
+    fn arc_33_a_running_mark_blocks_only_a_live_recent_updater() {
+        let fake = FakeUpdater::new(0, 0, 20_000);
+        let now = chrono::Utc::now();
+        let (live, _kill) = sleeper();
+        let started = crate::procid::start_time(live.id());
+        assert!(started.is_some(), "this host reads start times");
+
+        fake.mark_running(live.id(), started, now);
+        assert_eq!(fake.update(false), Outcome::Busy);
+        assert!(fake.runs().is_empty());
+
+        // The same pid with another start time is another process.
+        fake.mark_running(live.id(), started.map(|t| t + 1), now);
+        assert!(matches!(fake.update(false), Outcome::Updated { .. }));
+        assert_eq!(fake.runs().len(), 1);
+
+        // A live updater older than LOCK_STALE no longer blocks.
+        fake.mark_running(live.id(), started, now - chrono::TimeDelta::hours(2));
+        assert!(matches!(fake.update(false), Outcome::Updated { .. }));
+        assert_eq!(fake.runs().len(), 2);
+
+        // An updater that ended unseen: the fleet step counts its start as
+        // the last check and removes the mark.
+        let mut ended = Command::new("true").spawn().unwrap();
+        ended.wait().unwrap();
+        let at = now - chrono::TimeDelta::hours(1);
+        fake.mark_running(ended.id(), None, at);
+        let outcome = fake.update(true);
+        assert_eq!(
+            outcome,
+            Outcome::Fresh {
+                checked_at: crate::clock::parse(&crate::clock::stamp(at)).unwrap()
+            }
+        );
+        assert!(!fake.file("running").exists());
+        assert_eq!(fake.runs().len(), 2);
     }
 
     #[test]

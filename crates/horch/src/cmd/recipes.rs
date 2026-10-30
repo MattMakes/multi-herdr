@@ -403,86 +403,15 @@ pub fn fleet_with(
         let open: Vec<String> = open.into_iter().map(|w| w.workspace_id).collect();
         ledger.supersede_orchestrators(|ws| open.iter().any(|o| o == ws))?;
     }
-    let kind = flavor.pane_kind();
-    // The project's facts add its `skills_when` skills, here and at the
-    // pane launch, so the record and the launch agree.
-    let roster = super::load_roster(&ctx, None)?.with_project_facts(project_facts(Path::new(&cwd)));
-    let teammate = &roster.for_launch(roster.require(orchestrator_teammate(kind))?.clone());
-    let record_id = horch_core::mint_uuid();
-    // A resumed session's id is known up front for every agent, so the new
-    // record carries it and no discovery is needed.
-    let session_id = match &options.resume {
-        Some(id) => Some(SessionId::new(id.clone())?.as_str().to_string()),
-        None => teammate
-            .agent
-            .capabilities()
-            .caller_minted_session
-            .then(horch_core::mint_uuid),
-    };
-    // The record lists the skills the launch will activate, as a worker's
-    // does (SKL-04): the launch fails on a record whose skills differ.
-    let home = ctx.inherited.home_var.as_deref().map(Path::new);
-    let skills = SkillResolution::read(
-        roster.skill_catalog()?,
-        Some(teammate),
-        home,
-        harness_support,
-    )?
-    .plan(teammate)?;
+    let start = orchestrator_start(&ctx, &cwd, flavor, options)?;
+    let record_id = start.record.record_id.clone();
 
     println!("Creating fleet workspace rooted at {cwd}...");
     let label = workspace_label(Path::new(&cwd), ctx.paths.cwd.as_deref());
     let ws = herdr.workspace_create(&label, Some(&cwd), true)?;
     // From here a failure closes the workspace and ends the record (#217).
-    let mut inserted = false;
-    let started = (|| -> Result<()> {
-        // The rest of this command works in the new workspace.
-        ctx.herdr.workspace = Some(horch_core::ids::WorkspaceId::new(ws.workspace_id.as_str())?);
-        ledger.insert(Record {
-            record_id: record_id.clone(),
-            session_id: session_id.clone(),
-            agent: teammate.agent.as_str().to_string(),
-            tier: teammate.name.clone(),
-            model: flavor.model().to_string(),
-            effort: teammate.effort.clone(),
-            phase: teammate.phase,
-            role: "orchestrator".to_string(),
-            kind: KIND_ORCHESTRATOR.to_string(),
-            task: ORCHESTRATING_TASK.to_string(),
-            project: Some(cwd.clone()),
-            workspace_id: Some(ws.workspace_id.clone()),
-            skills: skills.activated.clone(),
-            ..Record::default()
-        })?;
-        inserted = true;
-
-        match &options.resume {
-            Some(id) => println!(
-                "Resuming orchestrator session {id} ({}). No briefing is sent; \
-                 type /orchestrator ($orchestrator in Codex) to re-brief it.",
-                flavor.label()
-            ),
-            None => println!("Launching orchestrator ({})...", flavor.label()),
-        }
-        herdr.pane_run(
-            &ws.root_pane_id,
-            &pane_command_for(
-                &ctx,
-                "orchestrator",
-                kind,
-                Some(flavor.model()),
-                Some(PaneRecord {
-                    record_id: &record_id,
-                    session_id: session_id.as_deref(),
-                    resume: options.resume.is_some(),
-                }),
-                options.compete.as_ref(),
-            )?,
-        )
-    })();
-    if let Err(e) = started {
-        let record = inserted.then_some(record_id.as_str());
-        abandon_start(&herdr, &ws.workspace_id, &ledger, record, &e);
+    if let Err(e) = start_orchestrator(&mut ctx, &herdr, &ws, &ledger, start) {
+        abandon_start(&herdr, &ws.workspace_id, Some((&ledger, &record_id)), &e);
         return Err(e);
     }
     let ctx = &ctx;
@@ -504,18 +433,129 @@ pub fn fleet_with(
     Ok(())
 }
 
-/// Undo a start that failed after its workspace was created (#217): end the
-/// orchestrator `record` it inserted as `LaunchFailed`, so no live record
-/// names the workspace, then close the workspace. A cleanup error is printed;
-/// `error`, the start's own, is the one the caller returns.
+/// What `fleet_with` resolved before its workspace exists: the orchestrator
+/// record without its workspace, and how to launch its pane.
+struct OrchestratorStart<'a> {
+    record: Record,
+    kind: PaneKind,
+    flavor: FleetFlavor,
+    options: &'a FleetOptions,
+}
+
+/// Resolve the orchestrator of a fleet in `cwd` before its workspace
+/// exists: its teammate, session id, skills and ledger record. Each step
+/// can fail, and none of them touches herdr (#217).
+fn orchestrator_start<'a>(
+    ctx: &RuntimeContext,
+    cwd: &str,
+    flavor: FleetFlavor,
+    options: &'a FleetOptions,
+) -> Result<OrchestratorStart<'a>> {
+    let kind = flavor.pane_kind();
+    // The project's facts add its `skills_when` skills, here and at the
+    // pane launch, so the record and the launch agree.
+    let roster = super::load_roster(ctx, None)?.with_project_facts(project_facts(Path::new(cwd)));
+    let teammate = &roster.for_launch(roster.require(orchestrator_teammate(kind))?.clone());
+    // A resumed session's id is known up front for every agent, so the new
+    // record carries it and no discovery is needed.
+    let session_id = match &options.resume {
+        Some(id) => Some(SessionId::new(id.clone())?.as_str().to_string()),
+        None => teammate
+            .agent
+            .capabilities()
+            .caller_minted_session
+            .then(horch_core::mint_uuid),
+    };
+    // The record lists the skills the launch will activate, as a worker's
+    // does (SKL-04): the launch fails on a record whose skills differ.
+    let home = ctx.inherited.home_var.as_deref().map(Path::new);
+    let skills = SkillResolution::read(
+        roster.skill_catalog()?,
+        Some(teammate),
+        home,
+        harness_support,
+    )?
+    .plan(teammate)?;
+    Ok(OrchestratorStart {
+        record: Record {
+            record_id: horch_core::mint_uuid(),
+            session_id,
+            agent: teammate.agent.as_str().to_string(),
+            tier: teammate.name.clone(),
+            model: flavor.model().to_string(),
+            effort: teammate.effort.clone(),
+            phase: teammate.phase,
+            role: "orchestrator".to_string(),
+            kind: KIND_ORCHESTRATOR.to_string(),
+            task: ORCHESTRATING_TASK.to_string(),
+            project: Some(cwd.to_string()),
+            skills: skills.activated,
+            ..Record::default()
+        },
+        kind,
+        flavor,
+        options,
+    })
+}
+
+/// Insert the orchestrator record of the new workspace `ws` and run its
+/// pane. `ctx` then works in `ws`.
+fn start_orchestrator(
+    ctx: &mut RuntimeContext,
+    herdr: &Herdr,
+    ws: &NewWorkspace,
+    ledger: &Ledger,
+    start: OrchestratorStart<'_>,
+) -> Result<()> {
+    ctx.herdr.workspace = Some(horch_core::ids::WorkspaceId::new(ws.workspace_id.as_str())?);
+    let OrchestratorStart {
+        mut record,
+        kind,
+        flavor,
+        options,
+    } = start;
+    record.workspace_id = Some(ws.workspace_id.clone());
+    let (record_id, session_id) = (record.record_id.clone(), record.session_id.clone());
+    ledger.insert(record)?;
+
+    match &options.resume {
+        Some(id) => println!(
+            "Resuming orchestrator session {id} ({}). No briefing is sent; \
+             type /orchestrator ($orchestrator in Codex) to re-brief it.",
+            flavor.label()
+        ),
+        None => println!("Launching orchestrator ({})...", flavor.label()),
+    }
+    herdr.pane_run(
+        &ws.root_pane_id,
+        &pane_command_for(
+            ctx,
+            "orchestrator",
+            kind,
+            Some(flavor.model()),
+            Some(PaneRecord {
+                record_id: &record_id,
+                session_id: session_id.as_deref(),
+                resume: options.resume.is_some(),
+            }),
+            options.compete.as_ref(),
+        )?,
+    )
+}
+
+/// Undo a start that failed after its workspace was created (#217): end
+/// the orchestrator `record` (ledger and key) as `LaunchFailed` when the
+/// start inserted it, so no live record names the workspace, then close
+/// the workspace. A cleanup error is printed; `error`, the start's own, is
+/// the one the caller returns. The stage `Run` covers the pane command
+/// and the pane run.
 fn abandon_start(
     herdr: &Herdr,
     workspace_id: &str,
-    ledger: &Ledger,
-    record: Option<&str>,
+    record: Option<(&Ledger, &str)>,
     error: &anyhow::Error,
 ) {
-    if let Some(key) = record {
+    if let Some((ledger, key)) = record.filter(|(ledger, key)| ledger.get(key).is_ok()) {
         let state = ExecutionStatus::LaunchFailed {
             stage: LaunchStage::Run,
             reason: format!("{error:#}"),
@@ -659,12 +699,7 @@ pub fn orchestration(ctx: &RuntimeContext, cwd: Option<&str>, no_update: bool) -
 
     // A failed split or pane run closes the workspace again (#217).
     if let Err(e) = lay_out_orchestration(ctx, &herdr, &ws) {
-        if let Err(close) = herdr.workspace_close(&ws.workspace_id) {
-            eprintln!(
-                "warning: closing workspace {} failed: {close:#}",
-                ws.workspace_id
-            );
-        }
+        abandon_start(&herdr, &ws.workspace_id, None, &e);
         return Err(e);
     }
 

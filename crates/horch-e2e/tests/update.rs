@@ -319,13 +319,62 @@ fn arc_33_a_hung_updater_is_left_running_at_the_timeout() {
     {
         let call = update_calls(&h, "opencode", &["upgrade"]);
         let pid = call[0]["pid"].as_u64().unwrap().to_string();
+        // Made before the assert, so a failed assert still stops the group.
+        let _kill = KillGroup(pid.clone());
         let alive = Command::new("kill")
             .args(["-0", &pid])
             .output()
             .is_ok_and(|o| o.status.success());
         assert!(alive, "updater {pid} was killed at its timeout");
-        // The test stops it, so it does not outlive the test.
-        let _ = Command::new("kill").args(["-9", &pid]).output();
+    }
+}
+
+/// Kills the process group `-<pid>` when dropped: horch starts each updater
+/// as the leader of its own group.
+#[cfg(unix)]
+struct KillGroup(String);
+
+#[cfg(unix)]
+impl Drop for KillGroup {
+    fn drop(&mut self) {
+        let _ = Command::new("kill")
+            .args(["-9", "--", &format!("-{}", self.0)])
+            .output();
+    }
+}
+
+/// #205: a second fleet start within 24 h runs no updater and says so for
+/// each CLI; the operator's `horch update` still runs every updater.
+#[test]
+fn arc_33_a_second_fleet_within_24_h_skips_the_updated_clis() {
+    let h = harness("arc33-fresh");
+    let first = fleet(&h, &[]);
+    assert!(
+        first.status.success(),
+        "{}\n{}",
+        stdout(&first),
+        stderr(&first)
+    );
+    let second = fleet(&h, &[]);
+    assert!(
+        second.status.success(),
+        "{}\n{}",
+        stdout(&second),
+        stderr(&second)
+    );
+    let lines = result_lines(&second);
+    for (fake, _, args) in UPDATERS {
+        assert_eq!(update_calls(&h, fake, args).len(), 1, "{fake} ran again");
+        let skipped = lines.iter().any(|l| {
+            l.starts_with(&format!("update: {fake}: updated at "))
+                && l.ends_with("less than 24 h ago (skipped)")
+        });
+        assert!(skipped, "{fake}: {lines:?}");
+    }
+    let out = h.run(&["update"]);
+    assert!(out.status.success(), "{}\n{}", stdout(&out), stderr(&out));
+    for (fake, _, args) in UPDATERS {
+        assert_eq!(update_calls(&h, fake, args).len(), 2, "{fake} {args:?}");
     }
 }
 

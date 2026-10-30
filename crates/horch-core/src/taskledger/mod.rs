@@ -28,7 +28,17 @@ use anyhow::Result;
 
 use crate::runtime::RuntimeContext;
 
-/// Open the ledger this context names.
+/// Open the ledger this context names. It creates the file when it does not
+/// exist; a caller that only reads uses [`open_existing`].
 pub fn open(ctx: &RuntimeContext) -> Result<Store> {
     Store::open(&ctx.paths.ledger_db)
+}
+
+/// Open the ledger this context names only when its file exists. A ledger
+/// that does not exist has no runs, and a read must not create it (#199).
+pub fn open_existing(ctx: &RuntimeContext) -> Result<Option<Store>> {
+    if !ctx.paths.ledger_db.is_file() {
+        return Ok(None);
+    }
+    open(ctx).map(Some)
 }

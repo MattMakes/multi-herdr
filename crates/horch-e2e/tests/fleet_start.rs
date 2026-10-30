@@ -66,6 +66,13 @@ fn a_fleet_whose_orchestrator_skill_is_missing_creates_no_workspace() {
     h.set("HORCH_TEAMMATES_DIR", teammates.to_string_lossy());
     let o = h.run(&["fleet", "opus", "--no-update", "--cwd", &cwd(&h)]);
     assert!(!o.status.success(), "{}{}", out(&o), err(&o));
+    assert!(err(&o).contains("no-such-skill-217"), "{}", err(&o));
+    // The failure comes before herdr creates anything, not after a close.
+    let created = h.calls_of("herdr").iter().any(|c| {
+        let argv: Vec<String> = serde_json::from_value(c["argv"].clone()).unwrap_or_default();
+        argv.get(..2) == Some(&["workspace".to_string(), "create".to_string()][..])
+    });
+    assert!(!created, "the fleet created a workspace");
     assert_eq!(workspaces(&h), Vec::<String>::new(), "{}", out(&o));
 }
 
@@ -132,6 +139,10 @@ fn a_scratch_fleet_warns_about_the_shared_ledger_and_does_not_create_it() {
     let o = h.run(&["doctor"]);
     let doctor = format!("warning: {warning}");
     assert_eq!(err(&o).matches(&doctor).count(), 1, "{}", err(&o));
+    assert!(
+        !default_ledger(&h).exists(),
+        "doctor created the default ledger"
+    );
     h.set("HORCH_WORKSPACE_ID", "w1");
     let o = h.run(&[
         "spawn",

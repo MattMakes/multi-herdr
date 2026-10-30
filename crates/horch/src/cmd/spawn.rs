@@ -350,13 +350,8 @@ pub fn fleet_warnings(ctx: &RuntimeContext, as_note: bool) {
     if let Ok(workspaces) = herdr.workspace_list() {
         let listed = |w: &str| workspaces.iter().any(|ws| ws.workspace_id == w);
         let mut active = std::collections::BTreeMap::<String, Option<String>>::new();
-        // A ledger that does not exist has no runs: opening it would create
-        // it, and a scratch fleet must not create the operator's (#199).
-        let ledger = ctx.paths.ledger_db.is_file();
-        if let Some(store) = ledger
-            .then(|| horch_core::taskledger::open(ctx).ok())
-            .flatten()
-        {
+        // A read only: a scratch fleet must not create the ledger (#199).
+        if let Ok(Some(store)) = horch_core::taskledger::open_existing(ctx) {
             if let Ok(root) = super::taskledger::project_root(ctx) {
                 if let Ok(runs) = horch_core::taskledger::runs::of_project(store.conn(), &root) {
                     for run in runs.into_iter().filter(|r| r.status == "active") {
