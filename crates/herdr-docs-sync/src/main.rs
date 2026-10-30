@@ -237,13 +237,21 @@ fn stale_files(out_dir: &Path, pages: &[DocPage]) -> Result<Vec<PathBuf>> {
     Ok(entries
         .filter_map(|e| e.ok())
         .map(|e| e.path())
-        .filter(|path| path.is_file() && path.extension().is_some_and(|e| e == "md"))
-        .filter(|path| {
-            path.file_name()
-                .and_then(|n| n.to_str())
-                .is_some_and(|name| !expected.contains(name))
-        })
+        .filter(|path| is_markdown_file(path))
+        .filter(|path| is_unexpected(path, &expected))
         .collect())
+}
+
+/// A file with the extension `md`.
+fn is_markdown_file(path: &Path) -> bool {
+    path.is_file() && path.extension().is_some_and(|e| e == "md")
+}
+
+/// A path whose file name is text that no page maps to.
+fn is_unexpected(path: &Path, expected: &BTreeSet<&str>) -> bool {
+    path.file_name()
+        .and_then(|n| n.to_str())
+        .is_some_and(|name| !expected.contains(name))
 }
 
 fn fetch(url: &str) -> Result<String> {
@@ -306,6 +314,31 @@ mod tests {
         // README.md is not in `pages`, so it is stale here; notse.txt is not
         // markdown and the directory is not a file.
         assert_eq!(stale, vec!["README.md", "agent-guide.md"]);
+    }
+
+    /// Only a file whose extension is `md` can be stale, and it is given by its
+    /// path: the case, a longer extension and a name with no extension all
+    /// leave a file alone.
+    #[test]
+    fn stale_files_wants_the_extension_md_and_gives_the_path() {
+        let tmp = tempfile::tempdir().unwrap();
+        for name in [
+            "old.md",
+            "UPPER.MD",
+            "old.md.bak",
+            "old.markdown",
+            "old",
+            "md",
+            ".md",
+        ] {
+            std::fs::write(tmp.path().join(name), "x").unwrap();
+        }
+        let stale = stale_files(tmp.path(), &pages(&["install"])).unwrap();
+        assert_eq!(stale, vec![tmp.path().join("old.md")]);
+        // A page that maps to the file keeps it.
+        assert!(stale_files(tmp.path(), &pages(&["old"]))
+            .unwrap()
+            .is_empty());
     }
 
     #[test]

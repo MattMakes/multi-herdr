@@ -435,17 +435,10 @@ pub fn project_root(ctx: &RuntimeContext) -> Result<PathBuf> {
 /// The run a command means: `--run`, else `HORCH_RUN_ID`, else the worker's
 /// run, else the project's 1 active run.
 pub fn resolve_run(ctx: &RuntimeContext, store: &Store, arg: &RunArg) -> Result<Run> {
-    let explicit = arg
-        .run
-        .clone()
-        .or_else(|| std::env::var("HORCH_RUN_ID").ok().filter(|v| !v.is_empty()));
+    let explicit = named_run(arg);
     if explicit.is_none() {
-        if let Some(wid) = worker_id_opt(ctx) {
-            if let Some(w) = workers::find(store.conn(), &wid)? {
-                if let Some(r) = w.run_id {
-                    return runs::get(store.conn(), &r);
-                }
-            }
+        if let Some(run) = worker_run(ctx, store)? {
+            return Ok(run);
         }
     }
     let workspace = ctx.herdr.workspace.as_ref().map(|w| w.as_str().to_string());
@@ -459,6 +452,24 @@ pub fn resolve_run(ctx: &RuntimeContext, store: &Store, arg: &RunArg) -> Result<
         eprintln!("horch: {note}");
     }
     Ok(run)
+}
+
+/// The run `--run` or `HORCH_RUN_ID` names.
+fn named_run(arg: &RunArg) -> Option<String> {
+    arg.run
+        .clone()
+        .or_else(|| std::env::var("HORCH_RUN_ID").ok().filter(|v| !v.is_empty()))
+}
+
+/// The run of the ledger worker in `HORCH_WORKER_ID`, when it has one.
+fn worker_run(ctx: &RuntimeContext, store: &Store) -> Result<Option<Run>> {
+    let Some(wid) = worker_id_opt(ctx) else {
+        return Ok(None);
+    };
+    let Some(w) = workers::find(store.conn(), &wid)? else {
+        return Ok(None);
+    };
+    w.run_id.map(|r| runs::get(store.conn(), &r)).transpose()
 }
 
 /// Refuse `what` when the caller is a ledger worker: the orchestrator
@@ -1804,15 +1815,23 @@ fn ticket_path(root: &Path, file: &Path, cwd: &Path) -> Result<String> {
         .unwrap_or_else(|_| canon.to_string_lossy().into_owned()))
 }
 
-fn add(ctx: &RuntimeContext, store: &mut Store, a: AddArgs) -> Result<ExitCode> {
-    let root = project_root(ctx)?;
-    let cwd = ctx.paths.current_dir().unwrap_or_else(|_| root.clone());
-    let file = ticket_path(&root, &a.file, &cwd)?;
-    let facts = std::fs::read_to_string(root.join(&file))
+/// The current directory, else the project root.
+fn cwd_or_root(ctx: &RuntimeContext, root: &Path) -> PathBuf {
+    ctx.paths
+        .current_dir()
+        .unwrap_or_else(|_| root.to_path_buf())
+}
+
+/// What a ticket file says about itself; nothing when it cannot be read.
+fn facts_of(root: &Path, file: &str) -> map::TicketFacts {
+    std::fs::read_to_string(root.join(file))
         .map(|t| map::ticket_facts(&t))
-        .unwrap_or_default();
-    let run = resolve_run(ctx, store, &a.run)?;
-    let new = NewTask {
+        .unwrap_or_default()
+}
+
+/// The task `add` queues: what a flag names, else what the ticket says.
+fn new_task(root: &Path, file: String, facts: map::TicketFacts, a: AddArgs) -> NewTask {
+    NewTask {
         title: a.title.unwrap_or_else(|| ticket_title(&root.join(&file))),
         task_file: file,
         issue_url: a.issue,
@@ -1838,10 +1857,19 @@ fn add(ctx: &RuntimeContext, store: &mut Store, a: AddArgs) -> Result<ExitCode> 
         } else {
             a.no_touch
         },
-    };
+    }
+}
+
+fn add(ctx: &RuntimeContext, store: &mut Store, a: AddArgs) -> Result<ExitCode> {
+    let root = project_root(ctx)?;
+    let file = ticket_path(&root, &a.file, &cwd_or_root(ctx, &root))?;
+    let facts = facts_of(&root, &file);
+    let run = resolve_run(ctx, store, &a.run)?;
     let _ = a.parallel;
+    let check_timeout = a.check_timeout;
+    let new = new_task(&root, file, facts, a);
     let t = store.immediate(|tx| tasks::add(tx, &run, &new, Actor::Orchestrator))?;
-    if let Some(secs) = a.check_timeout {
+    if let Some(secs) = check_timeout {
         finish::land::set_check_timeout(
             &tools(ctx).evidence_root,
             &t.task_id,
@@ -1859,12 +1887,7 @@ fn add(ctx: &RuntimeContext, store: &mut Store, a: AddArgs) -> Result<ExitCode> 
 
 fn add_map(ctx: &RuntimeContext, store: &mut Store, path: &Path, arg: &RunArg) -> Result<ExitCode> {
     let root = project_root(ctx)?;
-    let cwd = ctx.paths.current_dir().unwrap_or_else(|_| root.clone());
-    let path = if path.is_absolute() {
-        path.to_path_buf()
-    } else {
-        cwd.join(path)
-    };
+    let path = cwd_or_root(ctx, &root).join(path);
     let parsed = map::read(&path, &root)?;
     let run = resolve_run(ctx, store, arg)?;
     let items: Vec<(String, NewTask)> = parsed.items.into_iter().map(|i| (i.key, i.task)).collect();
@@ -1887,14 +1910,7 @@ fn add_map(ctx: &RuntimeContext, store: &mut Store, path: &Path, arg: &RunArg) -
 
 fn claim(ctx: &RuntimeContext, store: &mut Store, as_json: bool) -> Result<ExitCode> {
     let wid = worker_id(ctx)?;
-    let tools = tools(ctx);
-    let mut outcome = store.immediate(|tx| {
-        let o = tasks::claim(tx, &wid)?;
-        if let ClaimOutcome::Claimed(c) = &o {
-            finish::shared_claim(&tools, &runs::get(tx, &c.task.run_id)?, &c.task)?;
-        }
-        Ok(o)
-    })?;
+    let mut outcome = claim_task(store, &tools(ctx), &wid)?;
     if let ClaimOutcome::Claimed(c) = &mut outcome {
         absolute_ticket_if_missing(ctx, store, c);
     }
@@ -1902,6 +1918,24 @@ fn claim(ctx: &RuntimeContext, store: &mut Store, as_json: bool) -> Result<ExitC
         json(&outcome)?;
         return Ok(ExitCode::SUCCESS);
     }
+    print_claim(ctx, outcome)
+}
+
+/// Claim the next task for `wid`. A shared-checkout task gets its checkout in
+/// the same transaction.
+fn claim_task(store: &mut Store, tools: &finish::Tools, wid: &str) -> Result<ClaimOutcome> {
+    store.immediate(|tx| {
+        let o = tasks::claim(tx, wid)?;
+        if let ClaimOutcome::Claimed(c) = &o {
+            finish::shared_claim(tools, &runs::get(tx, &c.task.run_id)?, &c.task)?;
+        }
+        Ok(o)
+    })
+}
+
+/// What a claim prints: the line to send when no task fits, else the task and
+/// the project facts.
+fn print_claim(ctx: &RuntimeContext, outcome: ClaimOutcome) -> Result<ExitCode> {
     match outcome {
         ClaimOutcome::NoTask { tell, persona, .. } => {
             output::println(&format!(
@@ -1939,8 +1973,15 @@ fn absolute_ticket_if_missing(ctx: &RuntimeContext, store: &Store, c: &mut Claim
     if !in_root.is_file() {
         return;
     }
-    let in_worktree = match (&c.worktree, &run.run_branch) {
-        (Some(w), _) => Path::new(w).join(&file).is_file(),
+    if !worktree_holds(ctx, c, &run, &file) {
+        c.task.task_file = Some(in_root.to_string_lossy().into_owned());
+    }
+}
+
+/// Whether the worktree of the claim, or the one cut for it, holds `file`.
+fn worktree_holds(ctx: &RuntimeContext, c: &Claimed, run: &Run, file: &str) -> bool {
+    match (&c.worktree, &run.run_branch) {
+        (Some(w), _) => Path::new(w).join(file).is_file(),
         // A new worktree is cut from the run branch: it holds the ticket
         // only when the branch tracks a file (a blob) at that path.
         (None, Some(b)) => Git::new(&ctx.bins.harness.git)
@@ -1950,9 +1991,6 @@ fn absolute_ticket_if_missing(ctx: &RuntimeContext, store: &Store, c: &mut Claim
             )
             .is_ok_and(|o| o.ok && o.stdout == "blob"),
         (None, None) => true,
-    };
-    if !in_worktree {
-        c.task.task_file = Some(in_root.to_string_lossy().into_owned());
     }
 }
 
@@ -1990,47 +2028,18 @@ pub(super) fn reviewers_down(ctx: &RuntimeContext) -> Vec<(String, String)> {
 
 /// The finish steps' tools: git, gh, node, the sweep skills.
 pub fn tools(ctx: &RuntimeContext) -> finish::Tools {
-    let env = |k: &str| {
-        std::env::var_os(k)
-            .filter(|v| !v.is_empty())
-            .map(PathBuf::from)
-    };
     let mut roots = vec![
         ctx.paths.home.join(".claude").join("plugins"),
         ctx.paths.data_root.clone(),
     ];
     roots.extend(local_marketplaces(&ctx.paths.data_root));
-    // A plugin holds `<skill>/`; the skill store holds
-    // `skills/<skill>/<source>+<hash>/`.
-    let skill_dir = |p: &Path, skill: &str| {
-        p.file_name().is_some_and(|n| n == skill)
-            || p.parent()
-                .and_then(|d| d.file_name())
-                .is_some_and(|n| n == skill)
-    };
-    let code_sweep_dir = env("HORCH_CODE_SWEEP_DIR").or_else(|| {
-        find_dir(&roots, |p| {
-            skill_dir(p, "code-sweep") && p.join("reviewers").is_dir()
-        })
-    });
-    let complexity_cli = env("HORCH_COMPLEXITY_CLI").or_else(|| {
-        find_dir(&roots, |p| {
-            skill_dir(p, "complexity-sweep") && p.join("code/cli/dist/index.js").is_file()
-        })
-        .map(|d| d.join("code/cli/dist/index.js"))
-    });
     finish::Tools {
         git: Git::new(&ctx.bins.harness.git),
-        gh: env("HORCH_GH_BIN").unwrap_or_else(|| PathBuf::from("gh")),
-        node: env("HORCH_NODE_BIN").unwrap_or_else(|| PathBuf::from("node")),
-        complexity_cli,
-        code_sweep_dir,
-        evidence_root: ctx
-            .paths
-            .ledger_db
-            .parent()
-            .map(|p| p.join("evidence"))
-            .unwrap_or_else(|| PathBuf::from("evidence")),
+        gh: tool_bin("HORCH_GH_BIN", "gh"),
+        node: tool_bin("HORCH_NODE_BIN", "node"),
+        complexity_cli: complexity_cli(&roots),
+        code_sweep_dir: code_sweep_dir(&roots),
+        evidence_root: evidence_root(ctx),
         // An absolute shell: a pane's PATH may not reach one.
         shell: PathBuf::from(if cfg!(unix) { "/bin/sh" } else { "sh" }),
         reviewers_down: Vec::new(),
@@ -2040,6 +2049,57 @@ pub fn tools(ctx: &RuntimeContext) -> finish::Tools {
             personas: Vec::new(),
         },
     }
+}
+
+/// The path in the variable `key`; an empty one counts as unset.
+fn env_path(key: &str) -> Option<PathBuf> {
+    std::env::var_os(key)
+        .filter(|v| !v.is_empty())
+        .map(PathBuf::from)
+}
+
+/// The program in the variable `key`, else `default`, found on the PATH.
+fn tool_bin(key: &str, default: &str) -> PathBuf {
+    env_path(key).unwrap_or_else(|| PathBuf::from(default))
+}
+
+/// Whether `p` is the folder of the skill `skill`. A plugin holds `<skill>/`;
+/// the skill store holds `skills/<skill>/<source>+<hash>/`.
+fn is_skill_dir(p: &Path, skill: &str) -> bool {
+    p.file_name().is_some_and(|n| n == skill)
+        || p.parent()
+            .and_then(|d| d.file_name())
+            .is_some_and(|n| n == skill)
+}
+
+/// The code-sweep skill folder: `HORCH_CODE_SWEEP_DIR`, else the first one
+/// under `roots` that holds `reviewers/`.
+fn code_sweep_dir(roots: &[PathBuf]) -> Option<PathBuf> {
+    env_path("HORCH_CODE_SWEEP_DIR").or_else(|| {
+        find_dir(roots, |p| {
+            is_skill_dir(p, "code-sweep") && p.join("reviewers").is_dir()
+        })
+    })
+}
+
+/// The complexity analyser: `HORCH_COMPLEXITY_CLI`, else the one in the first
+/// complexity-sweep folder under `roots` that holds it.
+fn complexity_cli(roots: &[PathBuf]) -> Option<PathBuf> {
+    env_path("HORCH_COMPLEXITY_CLI").or_else(|| {
+        find_dir(roots, |p| {
+            is_skill_dir(p, "complexity-sweep") && p.join("code/cli/dist/index.js").is_file()
+        })
+        .map(|d| d.join("code/cli/dist/index.js"))
+    })
+}
+
+/// The folder beside the ledger file that holds the evidence of the steps.
+fn evidence_root(ctx: &RuntimeContext) -> PathBuf {
+    ctx.paths
+        .ledger_db
+        .parent()
+        .map(|p| p.join("evidence"))
+        .unwrap_or_else(|| PathBuf::from("evidence"))
 }
 
 /// The roster's Codex teammates: their check runs in a Codex sandbox.
@@ -2496,9 +2556,147 @@ fn record_pids(
 
 #[cfg(test)]
 mod tests {
-    use super::LedgerCommand;
+    use super::{absolute_ticket_if_missing, LedgerCommand};
     use clap::Subcommand;
     use horch_core::roster::{ExecDecision, Roster};
+    use horch_core::runtime::{MapEnv, RuntimeContext};
+    use horch_core::taskledger::model::{Actor, WorktreeMode};
+    use horch_core::taskledger::runs::{self, NewRun};
+    use horch_core::taskledger::tasks::{self, ClaimOutcome, Claimed, NewTask};
+    use horch_core::taskledger::workers::{self, NewWorker};
+    use horch_core::taskledger::Store;
+    use std::path::Path;
+
+    /// The task "t" (ticket `tickets/t.md`, shaped by `shape`) of the run "r1"
+    /// of project root `root` (run branch `branch`), claimed by a new worker,
+    /// with the ledger and the context in `dir`.
+    fn claimed(
+        dir: &Path,
+        root: &Path,
+        branch: Option<&str>,
+        shape: impl FnOnce(&mut NewTask),
+    ) -> (RuntimeContext, Store, Claimed) {
+        let ctx = RuntimeContext::from_env(&MapEnv::new(dir)).unwrap();
+        let mut store = Store::open(&dir.join("ledger.sqlite3")).unwrap();
+        let new_run = NewRun {
+            slug: "r1".into(),
+            run_branch: branch.map(str::to_string),
+            ..Default::default()
+        };
+        let run = store
+            .immediate(|tx| runs::create(tx, root, &new_run))
+            .unwrap();
+        let mut task = NewTask::work("t", "tickets/t.md", "dev");
+        shape(&mut task);
+        store
+            .immediate(|tx| tasks::add(tx, &run, &task, Actor::Orchestrator))
+            .unwrap();
+        let worker = NewWorker {
+            run_id: run.run_id.clone(),
+            persona: "dev".into(),
+            ..Default::default()
+        };
+        let worker = store.immediate(|tx| workers::insert(tx, &worker)).unwrap();
+        let ClaimOutcome::Claimed(c) = store.immediate(|tx| tasks::claim(tx, &worker)).unwrap()
+        else {
+            panic!("the worker claims the task");
+        };
+        (ctx, store, *c)
+    }
+
+    /// The project root under `dir` (by its canonical path, as a run records
+    /// it), with the ticket `tickets/t.md` in it when `ticket` is true.
+    fn project(dir: &Path, ticket: bool) -> std::path::PathBuf {
+        let root = dir.join("project");
+        std::fs::create_dir_all(root.join("tickets")).unwrap();
+        if ticket {
+            std::fs::write(root.join("tickets/t.md"), "# t\n").unwrap();
+        }
+        root.canonicalize().unwrap()
+    }
+
+    fn ticket_of(c: &Claimed) -> &str {
+        c.task.task_file.as_deref().unwrap()
+    }
+
+    #[test]
+    fn a_claim_keeps_the_ticket_path_when_the_project_root_has_no_such_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = project(dir.path(), false);
+        let (ctx, store, mut c) = claimed(dir.path(), &root, Some("fleet/r1"), |_| {});
+        absolute_ticket_if_missing(&ctx, &store, &mut c);
+        assert_eq!(ticket_of(&c), "tickets/t.md");
+    }
+
+    #[test]
+    fn a_claim_whose_run_is_gone_keeps_the_ticket_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = project(dir.path(), true);
+        let (ctx, store, mut c) = claimed(dir.path(), &root, Some("fleet/r1"), |_| {});
+        c.task.run_id = "no-such-run".into();
+        absolute_ticket_if_missing(&ctx, &store, &mut c);
+        assert_eq!(ticket_of(&c), "tickets/t.md");
+    }
+
+    #[test]
+    fn a_shared_task_without_a_worktree_keeps_its_relative_ticket_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = project(dir.path(), true);
+        let (ctx, store, mut c) = claimed(dir.path(), &root, Some("fleet/r1"), |t| {
+            t.worktree_mode = WorktreeMode::Shared
+        });
+        assert!(c.worktree.is_none());
+        absolute_ticket_if_missing(&ctx, &store, &mut c);
+        assert_eq!(ticket_of(&c), "tickets/t.md");
+    }
+
+    #[test]
+    fn a_claim_with_a_worktree_names_the_ticket_by_the_root_only_when_the_worktree_lacks_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = project(dir.path(), true);
+        let with = dir.path().join("with");
+        std::fs::create_dir_all(with.join("tickets")).unwrap();
+        std::fs::write(with.join("tickets/t.md"), "# t\n").unwrap();
+        let without = dir.path().join("without");
+        std::fs::create_dir_all(&without).unwrap();
+
+        let (ctx, store, mut c) = claimed(dir.path(), &root, Some("fleet/r1"), |_| {});
+        c.worktree = Some(with.to_string_lossy().into_owned());
+        absolute_ticket_if_missing(&ctx, &store, &mut c);
+        assert_eq!(ticket_of(&c), "tickets/t.md");
+
+        c.worktree = Some(without.to_string_lossy().into_owned());
+        absolute_ticket_if_missing(&ctx, &store, &mut c);
+        assert_eq!(
+            Path::new(ticket_of(&c)),
+            root.join("tickets/t.md"),
+            "the claim names the ticket in the project root"
+        );
+
+        // A shared task with a worktree is looked at like any other.
+        let other = tempfile::tempdir().unwrap();
+        let (ctx, store, mut shared) = claimed(other.path(), &root, Some("fleet/r1"), |t| {
+            t.worktree_mode = WorktreeMode::Shared
+        });
+        shared.worktree = Some(without.to_string_lossy().into_owned());
+        absolute_ticket_if_missing(&ctx, &store, &mut shared);
+        assert_eq!(Path::new(ticket_of(&shared)), root.join("tickets/t.md"));
+    }
+
+    #[test]
+    fn a_run_without_a_branch_keeps_the_relative_ticket_path_and_one_with_a_branch_does_not() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = project(dir.path(), true);
+        let (ctx, store, mut c) = claimed(dir.path(), &root, None, |_| {});
+        absolute_ticket_if_missing(&ctx, &store, &mut c);
+        assert_eq!(ticket_of(&c), "tickets/t.md", "no branch to cut from");
+
+        // The root is no git repository, so no branch of it holds the ticket.
+        let other = tempfile::tempdir().unwrap();
+        let (ctx, store, mut c) = claimed(other.path(), &root, Some("fleet/r1"), |_| {});
+        absolute_ticket_if_missing(&ctx, &store, &mut c);
+        assert_eq!(Path::new(ticket_of(&c)), root.join("tickets/t.md"));
+    }
 
     /// Whether `cmd` or a subcommand under it takes `--check`.
     fn takes_check(cmd: &clap::Command) -> bool {

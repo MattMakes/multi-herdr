@@ -826,15 +826,7 @@ struct TempStore(Option<PathBuf>);
 
 impl TempStore {
     fn write(store: &Path, text: &str) -> anyhow::Result<TempStore> {
-        use std::io::Write as _;
-        let mut name = store.as_os_str().to_os_string();
-        let random = uuid::Uuid::new_v4().simple().to_string();
-        name.push(format!(
-            ".{TEMP_TAG}.{}.{}",
-            std::process::id(),
-            &random[..12]
-        ));
-        let path = PathBuf::from(name);
+        let path = temp_path(store);
         let mut open = std::fs::OpenOptions::new();
         open.write(true).create_new(true);
         #[cfg(unix)]
@@ -858,16 +850,11 @@ impl TempStore {
                 std::fs::set_permissions(&path, std::fs::Permissions::from_mode(mode))
                     .with_context(|| format!("setting the mode of {}", path.display()))?;
             }
-            f.write_all(text.as_bytes())
-                .and_then(|()| f.sync_all())
-                .with_context(|| format!("writing {}", path.display()))
+            write_synced(&mut f, &path, text)
         };
         let filled = fill();
         drop(f);
-        match filled {
-            Ok(()) => Ok(temp),
-            Err(e) => Err(temp.discard_with(e)),
-        }
+        temp.keep_if(filled)
     }
 
     fn rename_over(mut self, store: &Path) -> anyhow::Result<()> {
@@ -912,6 +899,36 @@ impl TempStore {
             Err(left) => anyhow::anyhow!("{err:#}; also {left:#}"),
         }
     }
+
+    /// `self` when `filled` is Ok; else the file is removed and the error
+    /// says so ([`TempStore::discard_with`]).
+    fn keep_if(self, filled: anyhow::Result<()>) -> anyhow::Result<TempStore> {
+        match filled {
+            Ok(()) => Ok(self),
+            Err(e) => Err(self.discard_with(e)),
+        }
+    }
+}
+
+/// `<store>.horch-tmp.<pid>.<12 hex>`: the name of a temporary copy of the
+/// store, next to it. [`remove_dead_temps`] reads this form.
+fn temp_path(store: &Path) -> PathBuf {
+    let mut name = store.as_os_str().to_os_string();
+    let random = uuid::Uuid::new_v4().simple().to_string();
+    name.push(format!(
+        ".{TEMP_TAG}.{}.{}",
+        std::process::id(),
+        &random[..12]
+    ));
+    PathBuf::from(name)
+}
+
+/// `text` written to `f` and flushed to disk.
+fn write_synced(f: &mut std::fs::File, path: &Path, text: &str) -> anyhow::Result<()> {
+    use std::io::Write as _;
+    f.write_all(text.as_bytes())
+        .and_then(|()| f.sync_all())
+        .with_context(|| format!("writing {}", path.display()))
 }
 
 /// Remove the temporary files that a dead horch writer left next to
@@ -2608,6 +2625,61 @@ mod tests {
         let path = temp.0.clone().unwrap();
         drop(temp);
         assert!(!path.exists());
+    }
+
+    /// The temp copy takes the permission bits of the store, whatever the
+    /// umask says, and `0600` when there is no store yet.
+    #[cfg(unix)]
+    #[test]
+    fn a_temp_store_takes_the_mode_of_the_store_else_0600() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::tempdir().unwrap();
+        let mode_of = |temp: &TempStore| {
+            let meta = std::fs::metadata(temp.0.as_ref().unwrap()).unwrap();
+            meta.permissions().mode() & 0o7777
+        };
+        let store = tmp.path().join("store.json");
+        std::fs::write(&store, "{}").unwrap();
+        std::fs::set_permissions(&store, std::fs::Permissions::from_mode(0o660)).unwrap();
+        assert_eq!(mode_of(&TempStore::write(&store, "x").unwrap()), 0o660);
+        assert_eq!(
+            mode_of(&TempStore::write(&tmp.path().join("new.json"), "x").unwrap()),
+            0o600
+        );
+    }
+
+    /// A temp store is named `<store>.horch-tmp.<pid>.<12 hex>`, next to the
+    /// store: the name the sweep of a dead writer's files reads as this
+    /// process's. Two writes never share a name.
+    #[test]
+    fn a_temp_store_is_named_as_the_sweep_of_dead_writers_reads_it() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = tmp.path().join("store.json");
+        let first = TempStore::write(&store, "a").unwrap();
+        let second = TempStore::write(&store, "b").unwrap();
+        let (a, b) = (first.0.clone().unwrap(), second.0.clone().unwrap());
+        assert_ne!(a, b);
+        for path in [&a, &b] {
+            assert_eq!(path.parent(), Some(tmp.path()));
+            let name = path.file_name().unwrap();
+            assert_eq!(
+                dead_temp_pid(name, "store.json.horch-tmp."),
+                Some(std::process::id())
+            );
+        }
+    }
+
+    #[test]
+    fn a_temp_store_in_a_missing_directory_names_the_file_it_could_not_create() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = tmp.path().join("no-dir/store.json");
+        let err = TempStore::write(&store, "x")
+            .err()
+            .expect("a missing directory is an error")
+            .to_string();
+        let want = format!("creating {}.horch-tmp.", store.display());
+        assert!(err.starts_with(&want), "{err}");
+        assert!(!tmp.path().join("no-dir").exists());
     }
 
     #[test]
