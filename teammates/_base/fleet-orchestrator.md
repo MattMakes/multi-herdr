@@ -221,8 +221,9 @@ each spawn. For a worker in state "over":
 1. Run horch compact <role> --request once. The state becomes "requested".
    Do not ask a "requested" worker again before it is stale. The row shows
    the age of the ask. On "request-stale" or "compact-failed", run
-   horch compact <role> --request one more time. If the state is "request-stale"
-   or "compact-failed" again, use the fresh route (step 3).
+   horch compact <role> --request one more time. If the state is
+   "request-stale" or "compact-failed" again, or horch compact refuses with
+   "use the fresh route", use the fresh route (step 3).
 2. On "[<role>] NOTE: COMPACT-READY <path>", run horch compact <role>. It
    returns at once. horch compacts the worker when it is idle, then tells
    it to read its handoff file.

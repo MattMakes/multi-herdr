@@ -30,7 +30,7 @@ use chrono::{DateTime, Utc};
 use horch_core::compaction::job::{self, JobPlan, JobPorts, Step};
 use horch_core::compaction::jobfile::{self, JobRecord, Started, JOB_FILE, LOG_FILE};
 use horch_core::compaction::policy::{
-    self, HandoffProblem, JobLiveness, EVENT_FAILED, EVENT_REQUESTED, EVENT_WARNED,
+    self, HandoffProblem, JobLiveness, RowState, EVENT_FAILED, EVENT_REQUESTED, EVENT_WARNED,
 };
 use horch_core::execution::legacy::Record;
 use horch_core::execution::records::Ledger;
@@ -212,13 +212,7 @@ pub fn worker_note_context(ctx: &RuntimeContext, text: &str) -> Result<()> {
         record,
         ctx.herdr.workspace.as_ref().map(|w| w.as_str()),
     );
-    let asked = policy::already_asked(
-        &row.record.history,
-        row.reading
-            .as_ref()
-            .ok()
-            .and_then(|r| r.last_compaction.as_ref()),
-    );
+    let asked = policy::already_asked(&row.record.history, row.last_compaction());
     if let Some(line) = super::messaging::note_check(&src, record_id)? {
         println!("{line}");
     }
@@ -293,6 +287,31 @@ struct Target {
 /// refusal reason.
 fn target(env: &Env, role: &str) -> Result<Target, String> {
     target_for(env, role, true)
+}
+
+/// The "already asked" line of a second `--request`, or None when the line
+/// goes out. A `request-stale` or `compact-failed` row is asked again (#75),
+/// up to [`policy::MAX_REQUESTS`] asks in the cycle; a row with a live or
+/// pending compaction, or inside the deadline, is not. `plan_override` is a
+/// warned plan pane, which is asked once whatever the warning.
+fn repeat_refusal(t: &Target, role: &str, plan_override: bool) -> Option<String> {
+    let history = &t.row.record.history;
+    let last = t.row.last_compaction();
+    if plan_override || !policy::already_asked(history, last) {
+        return None;
+    }
+    if matches!(
+        t.row.state,
+        RowState::RequestStale | RowState::CompactFailed
+    ) {
+        let asks = policy::request_count(history, last);
+        return (asks >= policy::MAX_REQUESTS)
+            .then(|| format!("already asked {role} {asks} times; use the fresh route"));
+    }
+    let at = policy::asked_at(history)
+        .map(|s| horch_core::clock::stamp(DateTime::<Utc>::from(s)))
+        .unwrap_or_else(|| "an earlier time".into());
+    Some(format!("already asked {role} at {at}"))
 }
 
 fn target_for(env: &Env, role: &str, need_command: bool) -> Result<Target, String> {
@@ -375,12 +394,6 @@ fn request(env: &Env, role: &str) -> Outcome {
         Err(why) => return Outcome::refused(why),
     };
     let record = &t.row.record;
-    let last = t
-        .row
-        .reading
-        .as_ref()
-        .ok()
-        .and_then(|r| r.last_compaction.as_ref());
     // A Codex pane with `permission_mode: plan` in read-only cannot write
     // its handoff (X6). It is switched to write below; a warning in this
     // cycle does not stop that, as the warned pane could not act on it.
@@ -392,13 +405,8 @@ fn request(env: &Env, role: &str) -> Outcome {
         .rev()
         .find(|e| e.event == EVENT_REQUESTED || e.event == EVENT_WARNED)
         .is_some_and(|e| e.event == EVENT_WARNED);
-    // A stale ask, or an ask a failed job followed, is asked again (#75).
-    let reask = policy::may_ask_again(&record.history, last, horch_core::clock::now());
-    if policy::already_asked(&record.history, last) && !(read_only && warned_only) && !reask {
-        let at = policy::asked_at(&record.history)
-            .map(|s| horch_core::clock::stamp(DateTime::<Utc>::from(s)))
-            .unwrap_or_else(|| "an earlier time".into());
-        return Outcome::ok(format!("already asked {role} at {at}"));
+    if let Some(line) = repeat_refusal(&t, role, read_only && warned_only) {
+        return Outcome::ok(line);
     }
     let tokens = t
         .row
@@ -1267,7 +1275,7 @@ mod tests {
         let f = Fleet::new();
         let pane = f.pane("sonnet-1");
         f.w.worker("r-1", "sonnet-1", "claude", "sonnet", Some(OVER));
-        let ago = |m: i64| horch_core::clock::stamp(Utc::now() - chrono::Duration::minutes(m));
+        let ago = minutes_ago;
         f.w.event_at("r-1", &ago(5), EVENT_REQUESTED, "earlier");
         let fresh = f.run("sonnet-1", |a| a.request = true);
         assert!(
@@ -1278,6 +1286,47 @@ mod tests {
         assert_eq!(f.w.events("r-1", EVENT_REQUESTED).len(), 1);
     }
 
+    /// #75: a third `--request` in 1 cycle is refused, and names the fresh route.
+    #[test]
+    fn a_stale_row_with_two_asks_is_not_asked_a_third_time() {
+        let f = Fleet::new();
+        let pane = f.pane("sonnet-1");
+        f.w.worker("r-1", "sonnet-1", "claude", "sonnet", Some(OVER));
+        f.w.event_at("r-1", &minutes_ago(60), EVENT_REQUESTED, "first");
+        f.w.event_at("r-1", &minutes_ago(25), EVENT_REQUESTED, "second");
+        let o = f.run("sonnet-1", |a| a.request = true);
+        assert_eq!(o.code, 0, "{o:?}");
+        assert_eq!(
+            o.out,
+            ["already asked sonnet-1 2 times; use the fresh route"]
+        );
+        assert!(f.typed(&pane).is_empty());
+        assert_eq!(f.w.events("r-1", EVENT_REQUESTED).len(), 2);
+    }
+
+    /// #75: a stale ask whose compaction job is live is not asked again.
+    #[test]
+    fn a_stale_ask_with_a_live_job_is_not_typed_again() {
+        let f = Fleet::new();
+        let pane = f.pane("sonnet-1");
+        f.w.worker("r-1", "sonnet-1", "claude", "sonnet", Some(OVER));
+        f.w.event_at("r-1", &minutes_ago(25), EVENT_REQUESTED, "earlier");
+        let dir = f.env().job_dir("sonnet-1");
+        std::fs::create_dir_all(&dir).unwrap();
+        let job = JobRecord {
+            v: 1,
+            role: "sonnet-1".into(),
+            record_id: "r-1".into(),
+            started_at: "2026-10-06T10:00:00Z".into(),
+            step: "wait-idle".into(),
+        };
+        jobfile::create_job(&dir, &job).unwrap();
+        let _beat = horch_core::heartbeat::start(&dir);
+        let o = f.run("sonnet-1", |a| a.request = true);
+        assert!(o.out[0].starts_with("already asked sonnet-1 at"), "{o:?}");
+        assert!(f.typed(&pane).is_empty());
+    }
+
     /// #75: the second `--request` on a stale row types the line and
     /// records a second event.
     #[test]
@@ -1285,7 +1334,7 @@ mod tests {
         let f = Fleet::new();
         let pane = f.pane("sonnet-1");
         f.w.worker("r-1", "sonnet-1", "claude", "sonnet", Some(OVER));
-        let ago = |m: i64| horch_core::clock::stamp(Utc::now() - chrono::Duration::minutes(m));
+        let ago = minutes_ago;
         f.w.event_at("r-1", &ago(25), EVENT_REQUESTED, "earlier");
         let o = f.run("sonnet-1", |a| a.request = true);
         assert_eq!(o.code, 0, "{o:?}");
@@ -1307,7 +1356,7 @@ mod tests {
         let f = Fleet::new();
         let pane = f.pane("sonnet-1");
         f.w.worker("r-1", "sonnet-1", "claude", "sonnet", Some(OVER));
-        let ago = |m: i64| horch_core::clock::stamp(Utc::now() - chrono::Duration::minutes(m));
+        let ago = minutes_ago;
         f.w.event_at("r-1", &ago(4), EVENT_REQUESTED, "earlier");
         f.w.event_at("r-1", &ago(2), EVENT_FAILED, "step wait-idle: timed out");
         let o = f.run("sonnet-1", |a| a.request = true);

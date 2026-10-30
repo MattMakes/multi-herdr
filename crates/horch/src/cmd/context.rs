@@ -23,7 +23,7 @@ use horch_core::harness::{launch, HarnessKind};
 use horch_core::roster::{Roster, Teammate};
 use horch_core::routing::decision::merge;
 use horch_core::runtime::RuntimeContext;
-use horch_core::telemetry::context::{read_current, Reading};
+use horch_core::telemetry::context::{read_current, CompactionMark, Reading};
 use horch_core::telemetry::readers::Unreadable;
 use horch_core::usage::Locations;
 use horch_core::workspace::client::WorkspaceClient;
@@ -114,16 +114,28 @@ impl Row {
                 _,
                 Err(why),
             ) => why.to_string(),
-            (RowState::CompactFailed, _, Ok(reading)) => {
-                let failed = policy::failed_after_ask(
-                    &self.record.history,
-                    reading.last_compaction.as_ref(),
-                )?;
-                format!("the compaction failed at {}: {}", failed.at, failed.text)
+            (RowState::CompactFailed, _, Ok(_)) => {
+                let failed =
+                    policy::failed_after_ask(&self.record.history, self.last_compaction())?;
+                // The text can hold subprocess output: 1 line, no control characters.
+                let text: String = failed
+                    .text
+                    .chars()
+                    .map(|c| if c.is_control() { ' ' } else { c })
+                    .collect();
+                format!("the compaction failed at {}: {text}", failed.at)
             }
             (RowState::Unknown, _, Ok(_)) => "the transcript has no usable response".into(),
             _ => return None,
         })
+    }
+
+    /// The newest compaction marker of the transcript, when it reads.
+    pub fn last_compaction(&self) -> Option<&CompactionMark> {
+        self.reading
+            .as_ref()
+            .ok()
+            .and_then(|r| r.last_compaction.as_ref())
     }
 
     /// The token count, when the reading has one.
@@ -244,7 +256,7 @@ pub(crate) fn build_row(src: &Sources, record: Record, workspace: Option<&str>) 
         job,
         job_dir,
         state: RowState::Ok,
-        now: Utc::now(),
+        now: horch_core::clock::now(),
     };
     row.state = policy::classify(&row.inputs());
     row
@@ -591,12 +603,8 @@ fn state_text(row: &Row) -> String {
 
 /// `asked 12m ago` for the newest ask of the cycle.
 fn ask_age_text(row: &Row) -> Option<String> {
-    let last = row
-        .reading
-        .as_ref()
-        .ok()
-        .and_then(|r| r.last_compaction.as_ref());
-    let age = policy::ask_age(&row.record.history, last, row.now)?;
+    let age = policy::ask_age(&row.record.history, row.last_compaction(), row.now)?;
+    // The age rounds down to whole minutes.
     Some(format!("asked {}m ago", age.as_secs() / 60))
 }
 
@@ -1019,6 +1027,11 @@ pub(crate) mod testkit {
         }
     }
 
+    /// The stamp of `m` minutes ago.
+    pub fn minutes_ago(m: i64) -> String {
+        horch_core::clock::stamp(horch_core::clock::now() - chrono::Duration::minutes(m))
+    }
+
     /// A pid that ran and has exited.
     pub fn dead_pid() -> u32 {
         let mut child = std::process::Command::new("true").spawn().unwrap();
@@ -1263,7 +1276,7 @@ mod tests {
         let w = World::new();
         w.worker("r-1", "sonnet-1", "claude", "sonnet", Some(OVER));
         w.worker("r-2", "sonnet-2", "claude", "sonnet", Some(OVER));
-        let ago = |m: i64| horch_core::clock::stamp(Utc::now() - chrono::Duration::minutes(m));
+        let ago = minutes_ago;
         w.event_at("r-1", &ago(5), "compact-requested", "");
         w.event_at("r-2", &ago(25), "compact-requested", "");
         let out = text(&w, true);
@@ -1280,7 +1293,7 @@ mod tests {
     fn over_lists_a_compact_failed_row_with_its_step() {
         let w = World::new();
         w.worker("r-1", "sonnet-1", "claude", "sonnet", Some(OVER));
-        let ago = |m: i64| horch_core::clock::stamp(Utc::now() - chrono::Duration::minutes(m));
+        let ago = minutes_ago;
         w.event_at("r-1", &ago(10), "compact-requested", "");
         w.event_at("r-1", &ago(5), EVENT_FAILED, "step wait-idle: timed out");
         let out = text(&w, true);
