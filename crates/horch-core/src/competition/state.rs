@@ -84,30 +84,32 @@ impl RoundEvent {
             RoundEvent::PreflightFailed => "preflight.completed:failed",
             RoundEvent::ExperimentAborted => "experiment.aborted",
             RoundEvent::RoundCreated => "round.created",
-            RoundEvent::CandidatePlanned { last: false } => "candidate.planned",
-            RoundEvent::CandidatePlanned { last: true } => "candidate.planned:last",
-            RoundEvent::WorktreeCreated { last: false } => "worktree.created",
-            RoundEvent::WorktreeCreated { last: true } => "worktree.created:last",
+            RoundEvent::CandidatePlanned { last } => {
+                pick(*last, "candidate.planned", "candidate.planned:last")
+            }
+            RoundEvent::WorktreeCreated { last } => {
+                pick(*last, "worktree.created", "worktree.created:last")
+            }
             RoundEvent::CandidateSpawned => "candidate.spawned",
-            RoundEvent::CandidateEnded { last: false } => "candidate.ended",
-            RoundEvent::CandidateEnded { last: true } => "candidate.ended:last",
+            RoundEvent::CandidateEnded { last } => {
+                pick(*last, "candidate.ended", "candidate.ended:last")
+            }
             RoundEvent::CandidateFrozen => "candidate.frozen",
-            RoundEvent::ValidationCompleted { last: false, .. } => "validation.completed",
-            RoundEvent::ValidationCompleted {
-                last: true,
-                any_eligible: true,
-            } => "validation.completed:last",
-            RoundEvent::ValidationCompleted {
-                last: true,
-                any_eligible: false,
-            } => "validation.completed:none_eligible",
+            RoundEvent::ValidationCompleted { last, any_eligible } => pick(
+                *last,
+                "validation.completed",
+                pick(
+                    *any_eligible,
+                    "validation.completed:none_eligible",
+                    "validation.completed:last",
+                ),
+            ),
             RoundEvent::JudgeScheduled => "judge.scheduled",
             RoundEvent::JudgeStarted => "judge.started",
             RoundEvent::JudgeCompleted => "judge.completed",
-            RoundEvent::JudgeFailed {
-                last_attempt: false,
-            } => "judge.failed",
-            RoundEvent::JudgeFailed { last_attempt: true } => "judge.failed:last_attempt",
+            RoundEvent::JudgeFailed { last_attempt } => {
+                pick(*last_attempt, "judge.failed", "judge.failed:last_attempt")
+            }
             RoundEvent::WinnerSelected => "winner.selected",
             RoundEvent::PromotionRequested => "promotion.requested",
             RoundEvent::WinnerRejected => "winner.rejected",
@@ -115,19 +117,28 @@ impl RoundEvent {
             RoundEvent::PromotionConflicted => "promotion.conflicted",
             RoundEvent::PromotionCompleted => "promotion.completed",
             RoundEvent::PromotionRolledBack => "promotion.rolled_back",
-            RoundEvent::NeedsIntervention(InterventionSource::Judge) => {
-                "round.needs_intervention:judge"
-            }
-            RoundEvent::NeedsIntervention(InterventionSource::Promotion) => {
-                "round.needs_intervention:promotion"
-            }
-            RoundEvent::NeedsIntervention(InterventionSource::Operator) => {
-                "round.needs_intervention:operator"
-            }
+            RoundEvent::NeedsIntervention(source) => intervention_name(*source),
             RoundEvent::OperatorPromote => "operator.promote",
             RoundEvent::CleanupStarted => "round.cleanup_started",
             RoundEvent::RoundCompleted => "round.completed",
         }
+    }
+}
+
+/// `plain`, or `flagged` when the event's condition holds.
+fn pick(flag: bool, plain: &'static str, flagged: &'static str) -> &'static str {
+    if flag {
+        flagged
+    } else {
+        plain
+    }
+}
+
+fn intervention_name(source: InterventionSource) -> &'static str {
+    match source {
+        InterventionSource::Judge => "round.needs_intervention:judge",
+        InterventionSource::Promotion => "round.needs_intervention:promotion",
+        InterventionSource::Operator => "round.needs_intervention:operator",
     }
 }
 
@@ -288,6 +299,92 @@ mod tests {
                 !TABLE[..i].iter().any(|(f2, e2, _)| f2 == f && e2 == e),
                 "{f} {e} appears twice"
             );
+        }
+    }
+
+    #[test]
+    fn every_event_has_its_table_name() {
+        use RoundEvent::*;
+        let cases: Vec<(RoundEvent, &str)> = vec![
+            (ExperimentCreated, "experiment.created"),
+            (PreflightPassed, "preflight.completed:passed"),
+            (PreflightFailed, "preflight.completed:failed"),
+            (ExperimentAborted, "experiment.aborted"),
+            (RoundCreated, "round.created"),
+            (CandidatePlanned { last: false }, "candidate.planned"),
+            (CandidatePlanned { last: true }, "candidate.planned:last"),
+            (WorktreeCreated { last: false }, "worktree.created"),
+            (WorktreeCreated { last: true }, "worktree.created:last"),
+            (CandidateSpawned, "candidate.spawned"),
+            (CandidateEnded { last: false }, "candidate.ended"),
+            (CandidateEnded { last: true }, "candidate.ended:last"),
+            (CandidateFrozen, "candidate.frozen"),
+            (
+                ValidationCompleted {
+                    last: false,
+                    any_eligible: false,
+                },
+                "validation.completed",
+            ),
+            (
+                ValidationCompleted {
+                    last: false,
+                    any_eligible: true,
+                },
+                "validation.completed",
+            ),
+            (
+                ValidationCompleted {
+                    last: true,
+                    any_eligible: true,
+                },
+                "validation.completed:last",
+            ),
+            (
+                ValidationCompleted {
+                    last: true,
+                    any_eligible: false,
+                },
+                "validation.completed:none_eligible",
+            ),
+            (JudgeScheduled, "judge.scheduled"),
+            (JudgeStarted, "judge.started"),
+            (JudgeCompleted, "judge.completed"),
+            (
+                JudgeFailed {
+                    last_attempt: false,
+                },
+                "judge.failed",
+            ),
+            (
+                JudgeFailed { last_attempt: true },
+                "judge.failed:last_attempt",
+            ),
+            (WinnerSelected, "winner.selected"),
+            (PromotionRequested, "promotion.requested"),
+            (WinnerRejected, "winner.rejected"),
+            (PromotionStarted, "promotion.started"),
+            (PromotionConflicted, "promotion.conflicted"),
+            (PromotionCompleted, "promotion.completed"),
+            (PromotionRolledBack, "promotion.rolled_back"),
+            (
+                NeedsIntervention(InterventionSource::Judge),
+                "round.needs_intervention:judge",
+            ),
+            (
+                NeedsIntervention(InterventionSource::Promotion),
+                "round.needs_intervention:promotion",
+            ),
+            (
+                NeedsIntervention(InterventionSource::Operator),
+                "round.needs_intervention:operator",
+            ),
+            (OperatorPromote, "operator.promote"),
+            (CleanupStarted, "round.cleanup_started"),
+            (RoundCompleted, "round.completed"),
+        ];
+        for (event, name) in cases {
+            assert_eq!(event.name(), name);
         }
     }
 }
