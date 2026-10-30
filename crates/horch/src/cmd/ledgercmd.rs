@@ -9,7 +9,7 @@ use std::process::ExitCode;
 
 use anyhow::Result;
 use clap::Subcommand;
-use horch_core::execution::records::Ledger;
+use horch_core::execution::records::{Ledger, NewRecord};
 use horch_core::execution::store::ExecutionStore;
 use horch_core::runtime::RuntimeContext;
 
@@ -265,15 +265,16 @@ fn write(ledger: &Ledger, command: LegacyCommand) -> Result<()> {
             role,
             session_id,
             task,
-        } => ledger.add(
-            &record_id,
-            &agent,
-            &tier,
-            &model,
-            &role,
-            session_id.as_deref(),
-            task.as_deref().unwrap_or_default(),
-        ),
+        } => ledger.add(NewRecord {
+            record_id: &record_id,
+            agent: &agent,
+            tier: &tier,
+            model: &model,
+            role: &role,
+            session_id: session_id.as_deref(),
+            task: task.as_deref().unwrap_or_default(),
+            phase: None,
+        }),
         LegacyCommand::SetSession { key, session_id } => ledger.set_session(&key, &session_id),
         LegacyCommand::Resume { key, role, task } => {
             ledger.resume(&key, &role, task.as_deref().unwrap_or_default())

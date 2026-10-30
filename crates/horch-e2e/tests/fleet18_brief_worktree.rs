@@ -453,15 +453,16 @@ fn g57_compacting_orchestrator_types_its_command_card() {
     std::fs::write(mailbox.dir().join("orchestrator.id"), "w1:p1").unwrap();
     let ledger = Ledger::for_project(&h.state, &h.project.to_string_lossy());
     ledger
-        .add(
-            "r-orchestrator",
-            "claude",
-            "orchestrator",
-            "fable",
-            "orchestrator",
-            Some("11111111-1111-4111-8111-111111111111"),
-            "run",
-        )
+        .add(horch_core::execution::records::NewRecord {
+            record_id: "r-orchestrator",
+            agent: "claude",
+            tier: "orchestrator",
+            model: "fable",
+            role: "orchestrator",
+            session_id: Some("11111111-1111-4111-8111-111111111111"),
+            task: "run",
+            phase: None,
+        })
         .unwrap();
     ledger
         .store()

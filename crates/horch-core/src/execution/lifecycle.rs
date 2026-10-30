@@ -2225,7 +2225,16 @@ mod tests {
             let tmp = tempfile::tempdir().unwrap();
             let ledger = crate::execution::records::Ledger::for_project(tmp.path(), "/p");
             ledger
-                .add("r1", "claude", "sonnet", "sonnet", "sonnet-1", None, "t")
+                .add(crate::execution::records::NewRecord {
+                    record_id: "r1",
+                    agent: "claude",
+                    tier: "sonnet",
+                    model: "sonnet",
+                    role: "sonnet-1",
+                    session_id: None,
+                    task: "t",
+                    phase: None,
+                })
                 .unwrap();
             let store = ExecutionStore::for_project(tmp.path(), "/p");
             record_startup_failure(&store, "r1", "project dir '/p' is missing").unwrap();
@@ -2267,7 +2276,16 @@ mod tests {
             let project_text = project.to_string_lossy().into_owned();
             let ledger = crate::execution::records::Ledger::for_project(&state, &project_text);
             ledger
-                .add("r1", "claude", "sonnet", "sonnet", "sonnet-1", None, "t")
+                .add(crate::execution::records::NewRecord {
+                    record_id: "r1",
+                    agent: "claude",
+                    tier: "sonnet",
+                    model: "sonnet",
+                    role: "sonnet-1",
+                    session_id: None,
+                    task: "t",
+                    phase: None,
+                })
                 .unwrap();
             let home = tmp.path().join("home");
             let mut ctx = RuntimeContext::from_env(&MapEnv::new(&home)).unwrap();
