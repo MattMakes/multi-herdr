@@ -1,7 +1,8 @@
 //! Detached delivery of durable worker mail.
 
 use std::collections::HashMap;
-use std::fs::OpenOptions;
+use std::fs::{File, OpenOptions};
+use std::path::PathBuf;
 use std::time::{Duration, Instant, SystemTime};
 
 use anyhow::{Context, Result};
@@ -11,6 +12,7 @@ use horch_core::messaging::mail::{redelivery_due, redelivery_offset, Id, Mail, M
 use horch_core::messaging::mailbox::Mailbox;
 use horch_core::runtime::RuntimeContext;
 use horch_core::workspace::herdr::Herdr;
+use horch_core::workspace::model::Pane;
 
 const POLL: Duration = Duration::from_secs(5);
 const NO_ORCHESTRATOR_LIMIT: Duration = Duration::from_secs(10 * 60);
@@ -19,9 +21,46 @@ pub fn start_courier(ctx: &RuntimeContext, workspace: &str) -> Result<()> {
     horch_core::messaging::mail::start_courier(ctx, workspace)
 }
 
+/// What one pass of the courier loop decides.
+enum Step {
+    /// Leave the loop.
+    Stop,
+    /// Look again at once.
+    Retry,
+    /// Sleep one poll, then look again.
+    Wait,
+    /// Redeliver the due orchestrator mail to `pane` or the relay.
+    Deliver {
+        pane: Option<(String, Pane)>,
+        relay_live: bool,
+    },
+}
+
+struct Courier<'a> {
+    ctx: &'a RuntimeContext,
+    workspace: &'a str,
+    mail: Mail,
+    lock: File,
+    herdr: Herdr,
+    mailbox: Mailbox,
+    socket: PathBuf,
+    poll: Duration,
+    no_orchestrator_limit: Duration,
+    attempts: Attempts,
+    no_orchestrator_since: Option<Instant>,
+}
+
 pub fn courier(ctx: &RuntimeContext, workspace: &str) -> Result<()> {
     let mail = Mail::under(&ctx.paths.state_root, workspace);
     mail.ensure_dir()?;
+    let Some(lock) = acquire_lock(&mail)? else {
+        return Ok(());
+    };
+    Courier::new(ctx, workspace, mail, lock).run()
+}
+
+/// Take the courier lock of `mail`. `None` means another courier holds it.
+fn acquire_lock(mail: &Mail) -> Result<Option<File>> {
     let lock_path = mail.dir().join("courier.lock");
     let lock = OpenOptions::new()
         .read(true)
@@ -31,118 +70,172 @@ pub fn courier(ctx: &RuntimeContext, workspace: &str) -> Result<()> {
         .open(&lock_path)
         .with_context(|| format!("opening {}", lock_path.display()))?;
     match lock.try_lock() {
-        Ok(()) => {}
-        Err(std::fs::TryLockError::WouldBlock) => return Ok(()),
-        Err(error) => {
-            return Err(error).with_context(|| format!("locking {}", lock_path.display()))
+        Ok(()) => Ok(Some(lock)),
+        Err(std::fs::TryLockError::WouldBlock) => Ok(None),
+        Err(error) => Err(error).with_context(|| format!("locking {}", lock_path.display())),
+    }
+}
+
+/// Send `line` to the pane `id` when it is idle. Returns whether it tried.
+fn send_if_idle(herdr: &Herdr, id: &str, idle: bool, line: &str) -> bool {
+    if idle {
+        let _ = delivery::send_line(herdr, id, line);
+    }
+    idle
+}
+
+type RoleMail = Vec<(String, Mail, Vec<Message>)>;
+
+impl<'a> Courier<'a> {
+    fn new(ctx: &'a RuntimeContext, workspace: &'a str, mail: Mail, lock: File) -> Self {
+        Self {
+            ctx,
+            workspace,
+            mail,
+            lock,
+            herdr: Herdr::with_bin(&ctx.bins.harness.herdr).with_timeout(Duration::from_secs(5)),
+            mailbox: Mailbox::in_context(ctx, workspace),
+            socket: channel::socket_path(&ctx.paths.state_root, workspace),
+            poll: test_duration("HORCH_TEST_MAIL_POLL_MS", POLL),
+            no_orchestrator_limit: test_duration(
+                "HORCH_TEST_MAIL_NO_ORCHESTRATOR_MS",
+                NO_ORCHESTRATOR_LIMIT,
+            ),
+            attempts: HashMap::new(),
+            no_orchestrator_since: None,
         }
     }
 
-    let herdr = Herdr::with_bin(&ctx.bins.harness.herdr).with_timeout(Duration::from_secs(5));
-    let mailbox = Mailbox::in_context(ctx, workspace);
-    let socket = channel::socket_path(&ctx.paths.state_root, workspace);
-    let poll = test_duration("HORCH_TEST_MAIL_POLL_MS", POLL);
-    let no_orchestrator_limit =
-        test_duration("HORCH_TEST_MAIL_NO_ORCHESTRATOR_MS", NO_ORCHESTRATOR_LIMIT);
-    let mut attempts: Attempts = HashMap::new();
-    let mut no_orchestrator_since = None;
-
-    loop {
-        let pending = mail.pending()?;
-        let role_mail = pending_role_mail(&mail);
-        if pending.is_empty() && role_mail.is_empty() {
-            // A message enqueued while this courier was deciding to exit
-            // found the lock held, so its own courier exited at once. Look
-            // once more with the lock released, and take it back for it.
-            let _ = lock.unlock();
-            let still = !mail.pending()?.is_empty() || !pending_role_mail(&mail).is_empty();
-            if !still || lock.try_lock().is_err() {
-                return Ok(());
+    fn run(&mut self) -> Result<()> {
+        loop {
+            let pending = self.mail.pending()?;
+            let role_mail = pending_role_mail(&self.mail);
+            match self.next_step(&pending, &role_mail)? {
+                Step::Stop => return Ok(()),
+                Step::Retry => {}
+                Step::Wait => std::thread::sleep(self.poll),
+                Step::Deliver { pane, relay_live } => {
+                    self.deliver_due(&pending, pane, relay_live);
+                    std::thread::sleep(self.poll);
+                }
             }
-            continue;
+        }
+    }
+
+    fn next_step(&mut self, pending: &[Message], role_mail: &RoleMail) -> Result<Step> {
+        if pending.is_empty() && role_mail.is_empty() {
+            return self.settle_empty();
+        }
+        let roles_reachable = self.deliver_roles(role_mail);
+        let (pane, relay_live) = self.orchestrator_target(pending);
+        let has_target = pane.is_some() || relay_live;
+        if !(roles_reachable || has_target) {
+            return Ok(self.wait_for_orchestrator());
+        }
+        self.no_orchestrator_since = None;
+        if !has_target || check_login(&self.herdr, &self.mailbox, &self.mail)? {
+            return Ok(Step::Wait);
+        }
+        Ok(Step::Deliver { pane, relay_live })
+    }
+
+    /// The orchestrator's pane, else whether its relay socket is live.
+    fn orchestrator_target(&self, pending: &[Message]) -> (Option<(String, Pane)>, bool) {
+        if pending.is_empty() {
+            return (None, false);
         }
         // A pane id file can outlive its pane: a pane herdr does not answer
         // for is no target.
-        let open_pane = |role: &str| {
-            mailbox
-                .pane_for(role)
-                .and_then(|id| herdr.pane_get(&id).ok().map(|state| (id, state)))
-        };
-        // A worker pane gets its mail only when it is idle: no relay.
-        let mut reachable = false;
+        let pane = self
+            .mailbox
+            .pane_for("orchestrator")
+            .and_then(|id| self.herdr.pane_get(&id).ok().map(|state| (id, state)));
+        let relay_live = pane.is_none() && channel::is_live(&self.socket);
+        (pane, relay_live)
+    }
+
+    /// The queue is empty. A message enqueued while this courier was deciding
+    /// to exit found the lock held, so its own courier exited at once. Look
+    /// once more with the lock released, and take it back for it.
+    fn settle_empty(&self) -> Result<Step> {
+        let _ = self.lock.unlock();
+        let still = !self.mail.pending()?.is_empty() || !pending_role_mail(&self.mail).is_empty();
+        if !still || self.lock.try_lock().is_err() {
+            return Ok(Step::Stop);
+        }
+        Ok(Step::Retry)
+    }
+
+    /// No target is reachable: stop once that has lasted past the limit.
+    fn wait_for_orchestrator(&mut self) -> Step {
+        let since = self.no_orchestrator_since.get_or_insert_with(Instant::now);
+        if since.elapsed() >= self.no_orchestrator_limit {
+            Step::Stop
+        } else {
+            Step::Wait
+        }
+    }
+
+    /// Redeliver the mail of each worker role. Returns whether a role pane
+    /// answered. A worker pane gets its mail only when it is idle: no relay.
+    fn deliver_roles(&mut self, role_mail: &RoleMail) -> bool {
         // A role's mail dir name is file safe, not the role: match the dirs.
         let registered = if role_mail.is_empty() {
             Vec::new()
         } else {
-            mailbox.roles()
+            self.mailbox.roles()
         };
-        for (dir_name, role_box, messages) in &role_mail {
-            let Some((_, id)) = registered.iter().find(|(role, _)| {
-                Mail::to_role(&ctx.paths.state_root, workspace, role).dir() == role_box.dir()
-            }) else {
-                // The role is gone (`done` freed it): no one can answer its
-                // notices, so they must not keep this courier alive.
-                if let Err(error) = role_box.ack_all() {
-                    eprintln!("horch: acknowledging the mail of {dir_name} failed: {error:#}");
-                }
-                continue;
-            };
-            // A pane id file can outlive its pane.
-            let Ok(state) = herdr.pane_get(id) else {
-                continue;
-            };
-            reachable = true;
-            let idle = state.at_prompt();
-            redeliver_due(ctx, &mut attempts, messages, |_, line| {
-                if idle {
-                    let _ = delivery::send_line(&herdr, id, line);
-                    true
-                } else {
-                    false
-                }
-            });
+        let mut reachable = false;
+        for (dir_name, role_box, messages) in role_mail {
+            reachable |= self.deliver_role(&registered, dir_name, role_box, messages);
         }
-        let pane = if pending.is_empty() {
-            None
-        } else {
-            open_pane("orchestrator")
+        reachable
+    }
+
+    fn deliver_role(
+        &mut self,
+        registered: &[(String, String)],
+        dir_name: &str,
+        role_box: &Mail,
+        messages: &[Message],
+    ) -> bool {
+        let state_root = &self.ctx.paths.state_root;
+        let Some((_, id)) = registered.iter().find(|(role, _)| {
+            Mail::to_role(state_root, self.workspace, role).dir() == role_box.dir()
+        }) else {
+            // The role is gone (`done` freed it): no one can answer its
+            // notices, so they must not keep this courier alive.
+            if let Err(error) = role_box.ack_all() {
+                eprintln!("horch: acknowledging the mail of {dir_name} failed: {error:#}");
+            }
+            return false;
         };
-        let relay_live = !pending.is_empty() && pane.is_none() && channel::is_live(&socket);
-        reachable |= pane.is_some() || relay_live;
-        if !reachable {
-            let since = no_orchestrator_since.get_or_insert_with(Instant::now);
-            if since.elapsed() >= no_orchestrator_limit {
-                return Ok(());
-            }
-            std::thread::sleep(poll);
-            continue;
-        }
-        no_orchestrator_since = None;
-        if pane.is_none() && !relay_live {
-            std::thread::sleep(poll);
-            continue;
-        }
-        if check_login(&herdr, &mailbox, &mail)? {
-            std::thread::sleep(poll);
-            continue;
-        }
-        let idle = pane.as_ref().is_some_and(|(_, state)| state.at_prompt());
-        redeliver_due(ctx, &mut attempts, &pending, |message, line| {
-            if let Some((id, _)) = &pane {
-                if idle {
-                    let _ = delivery::send_line(&herdr, id, line);
-                    true
-                } else {
-                    false
-                }
-            } else if relay_live {
-                let _ = channel::send(&socket, &message.from, line, channel::SEND_TIMEOUT);
-                true
-            } else {
-                false
-            }
+        // A pane id file can outlive its pane.
+        let Ok(state) = self.herdr.pane_get(id) else {
+            return false;
+        };
+        let idle = state.at_prompt();
+        redeliver_due(self.ctx, &mut self.attempts, messages, |_, line| {
+            send_if_idle(&self.herdr, id, idle, line)
         });
-        std::thread::sleep(poll);
+        true
+    }
+
+    fn deliver_due(&mut self, pending: &[Message], pane: Option<(String, Pane)>, relay_live: bool) {
+        let idle = pane.as_ref().is_some_and(|(_, state)| state.at_prompt());
+        redeliver_due(
+            self.ctx,
+            &mut self.attempts,
+            pending,
+            |message, line| match &pane {
+                Some((id, _)) => send_if_idle(&self.herdr, id, idle, line),
+                None if relay_live => {
+                    let _ = channel::send(&self.socket, &message.from, line, channel::SEND_TIMEOUT);
+                    true
+                }
+                None => false,
+            },
+        );
     }
 }
 
@@ -301,6 +394,8 @@ pub(super) fn check_login(herdr: &Herdr, mailbox: &Mailbox, mail: &Mail) -> Resu
 mod tests {
     use std::time::{Duration, SystemTime};
 
+    use horch_core::messaging::mail::Mail;
+
     use super::first_attempt_after;
 
     /// A courier that cannot start is an error, so `done` stops before it
@@ -390,5 +485,57 @@ mod tests {
             first_attempt_after(at, at + Duration::from_secs(86_400)),
             290
         );
+    }
+
+    fn courier_for(tmp: &std::path::Path) -> (horch_core::runtime::RuntimeContext, Mail) {
+        use horch_core::runtime::{MapEnv, RuntimeContext};
+        let ctx = RuntimeContext::from_env(
+            &MapEnv::new("/").with("HORCH_STATE_DIR", tmp.to_str().unwrap()),
+        )
+        .unwrap();
+        let mail = Mail::under(&ctx.paths.state_root, "w1");
+        mail.ensure_dir().unwrap();
+        (ctx, mail)
+    }
+
+    #[test]
+    fn a_held_lock_leaves_the_second_courier_without_one() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (_ctx, mail) = courier_for(tmp.path());
+        let first = super::acquire_lock(&mail).unwrap();
+        assert!(first.is_some());
+        assert!(super::acquire_lock(&mail).unwrap().is_none());
+        drop(first);
+        assert!(super::acquire_lock(&mail).unwrap().is_some());
+    }
+
+    #[test]
+    fn an_empty_queue_stops_and_mail_that_arrives_meanwhile_retries() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (ctx, mail) = courier_for(tmp.path());
+        let lock = super::acquire_lock(&mail).unwrap().unwrap();
+        let courier = super::Courier::new(&ctx, "w1", mail.clone(), lock);
+        assert!(matches!(courier.settle_empty().unwrap(), super::Step::Stop));
+
+        mail.enqueue("worker", "late").unwrap();
+        assert!(matches!(
+            courier.settle_empty().unwrap(),
+            super::Step::Retry
+        ));
+        // The courier holds the lock again for the mail that arrived.
+        assert!(super::acquire_lock(&mail).unwrap().is_none());
+    }
+
+    #[test]
+    fn a_courier_with_no_target_waits_until_the_limit_then_stops() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (ctx, mail) = courier_for(tmp.path());
+        let lock = super::acquire_lock(&mail).unwrap().unwrap();
+        let mut courier = super::Courier::new(&ctx, "w1", mail, lock);
+        courier.no_orchestrator_limit = Duration::from_secs(3600);
+        assert!(matches!(courier.wait_for_orchestrator(), super::Step::Wait));
+        assert!(courier.no_orchestrator_since.is_some());
+        courier.no_orchestrator_limit = Duration::ZERO;
+        assert!(matches!(courier.wait_for_orchestrator(), super::Step::Stop));
     }
 }
