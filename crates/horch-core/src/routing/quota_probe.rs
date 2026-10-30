@@ -819,4 +819,204 @@ mod tests {
         );
         assert!(started.elapsed() < timeout, "{:?}", started.elapsed());
     }
+
+    /// The fakes below always answer or exit, so the probes wait for them: a
+    /// fake starved by a loaded test run (the first-exec scan takes 14 to
+    /// 35 s on macOS) must not give a timeout.
+    #[cfg(unix)]
+    const UNTIL_THE_FAKE_ANSWERS: StdDuration = StdDuration::from_secs(600);
+
+    /// The shell script `script` as the executable `name` under `dir`.
+    #[cfg(unix)]
+    fn fake(dir: &Path, name: &str, script: &str) -> PathBuf {
+        let bin = dir.join(name);
+        std::fs::write(&bin, script).unwrap();
+        crate::runtime::process::make_executable(&bin).unwrap();
+        bin
+    }
+
+    /// A fake that writes to files in `log`: `script` with `@LOG@` filled in.
+    #[cfg(unix)]
+    fn logging_fake(dir: &Path, name: &str, script: &str, log: &Path) -> PathBuf {
+        fake(
+            dir,
+            name,
+            &script.replace("@LOG@", &log.display().to_string()),
+        )
+    }
+
+    /// The `get_usage` probe starts `claude` in a scratch dir of its own, sends
+    /// the one request, skips every line that is not the reply to it, and
+    /// removes the scratch dir.
+    #[cfg(unix)]
+    #[test]
+    fn probe_claude_asks_for_usage_from_a_scratch_dir_and_skips_other_lines() {
+        let tmp = tempfile::tempdir().unwrap();
+        let log = tmp.path().join("log");
+        std::fs::create_dir(&log).unwrap();
+        let bin = logging_fake(
+            tmp.path(),
+            "claude",
+            r#"#!/bin/sh
+printf '%s\n' "$*" > '@LOG@/argv'
+pwd -P > '@LOG@/cwd'
+read line
+printf '%s\n' "$line" > '@LOG@/stdin'
+echo 'not json'
+echo '{"type":"system","subtype":"init"}'
+echo '{"type":"control_response","response":{"request_id":"other"}}'
+echo '{"type":"other","response":{"request_id":"horch-quota-1"}}'
+echo '{"type":"control_response","response":{"subtype":"success","request_id":"horch-quota-1","response":{"rate_limits_available":true,"rate_limits":{"five_hour":{"utilization":12,"resets_at":"2026-09-28T19:19:59Z"},"seven_day":{"utilization":40,"resets_at":"2026-10-02T13:59:59Z"}}}}}'
+"#,
+            &log,
+        );
+        let root = tmp.path().join("scratch");
+        std::fs::create_dir(&root).unwrap();
+
+        let got = probe_claude(&bin, UNTIL_THE_FAKE_ANSWERS, &root).unwrap();
+        let windows: Vec<_> = got
+            .windows
+            .iter()
+            .map(|w| (w.name.as_str(), w.used))
+            .collect();
+        assert_eq!(windows, [("5h", 0.12), ("7d", 0.4)]);
+        assert_eq!(got.ordinary_usage_allowed, None);
+
+        let read = |name: &str| std::fs::read_to_string(log.join(name)).unwrap();
+        assert_eq!(
+            read("argv"),
+            "-p --model haiku --input-format stream-json --output-format stream-json --verbose\n"
+        );
+        let request: Value = serde_json::from_str(&read("stdin")).unwrap();
+        assert_eq!(
+            request,
+            serde_json::json!({
+                "type": "control_request",
+                "request_id": "horch-quota-1",
+                "request": {"subtype": "get_usage", "skip_behaviors": true}
+            })
+        );
+        let scratch = format!("horch-quota-{}", std::process::id());
+        let cwd = read("cwd");
+        assert_eq!(
+            Path::new(cwd.trim_end()),
+            std::fs::canonicalize(&root).unwrap().join(&scratch)
+        );
+        assert!(!root.join(&scratch).exists(), "the scratch dir is removed");
+    }
+
+    /// A harness that does not start, or ends with no reply, gives its
+    /// reason; the scratch dir goes either way.
+    #[cfg(unix)]
+    #[test]
+    fn probe_claude_says_why_it_got_no_usage_and_removes_its_scratch_dir() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("scratch");
+        std::fs::create_dir(&root).unwrap();
+        let scratch = root.join(format!("horch-quota-{}", std::process::id()));
+
+        let absent = tmp.path().join("absent");
+        let err = probe_claude(&absent, UNTIL_THE_FAKE_ANSWERS, &root).unwrap_err();
+        assert!(
+            err.starts_with(&format!("starting {}: ", absent.display())),
+            "{err}"
+        );
+        assert!(!scratch.exists());
+
+        let bin = fake(tmp.path(), "claude", "#!/bin/sh\nread line\nexit 0\n");
+        assert_eq!(
+            probe_claude(&bin, UNTIL_THE_FAKE_ANSWERS, &root),
+            Err("no get_usage reply within 600000 ms".to_string())
+        );
+        assert!(!scratch.exists());
+    }
+
+    /// The app-server probe sends `initialize`, then `initialized` and the
+    /// limits request once the `initialize` reply is in, and skips every line
+    /// that is not the reply to the request it waits for.
+    #[cfg(unix)]
+    #[test]
+    fn probe_codex_sends_the_three_requests_and_skips_other_lines() {
+        let tmp = tempfile::tempdir().unwrap();
+        let log = tmp.path().join("log");
+        std::fs::create_dir(&log).unwrap();
+        let bin = logging_fake(
+            tmp.path(),
+            "codex",
+            r#"#!/bin/sh
+printf '%s\n' "$*" > '@LOG@/argv'
+read line
+printf '%s\n' "$line" >> '@LOG@/stdin'
+echo 'not json'
+echo '{"id":"1","result":{}}'
+echo '{"id":2,"result":{}}'
+echo '{"id":1,"result":{}}'
+read line
+printf '%s\n' "$line" >> '@LOG@/stdin'
+read line
+printf '%s\n' "$line" >> '@LOG@/stdin'
+echo '{"method":"account/rateLimits/updated","params":{}}'
+echo '{"id":3,"result":{}}'
+echo '{"id":2,"result":{"rateLimits":{"primary":{"windowDurationMins":300,"usedPercent":12.0,"resetsAt":"2026-09-28T19:19:59Z"},"secondary":{"windowDurationMins":10080,"usedPercent":40.0,"resetsAt":"2026-10-02T13:59:59Z"}}}}'
+"#,
+            &log,
+        );
+
+        let got = probe_codex(&bin, UNTIL_THE_FAKE_ANSWERS).unwrap();
+        let windows: Vec<_> = got
+            .windows
+            .iter()
+            .map(|w| (w.name.as_str(), w.used))
+            .collect();
+        assert_eq!(windows, [("5h", 0.12), ("7d", 0.4)]);
+
+        assert_eq!(
+            std::fs::read_to_string(log.join("argv")).unwrap(),
+            "app-server\n"
+        );
+        let stdin = std::fs::read_to_string(log.join("stdin")).unwrap();
+        let sent: Vec<Value> = stdin
+            .lines()
+            .map(|l| serde_json::from_str(l).unwrap())
+            .collect();
+        assert_eq!(
+            sent,
+            [
+                serde_json::json!({"id": 1, "method": "initialize", "params": {
+                    "clientInfo": {"name": "horch", "version": env!("CARGO_PKG_VERSION")}}}),
+                serde_json::json!({"method": "initialized"}),
+                serde_json::json!({"id": 2, "method": "account/rateLimits/read", "params": null}),
+            ]
+        );
+    }
+
+    /// A harness that does not start, or ends before it answers the request
+    /// the probe waits for, gives its reason.
+    #[cfg(unix)]
+    #[test]
+    fn probe_codex_says_where_the_app_server_gave_no_reply() {
+        let tmp = tempfile::tempdir().unwrap();
+        let absent = tmp.path().join("absent");
+        let err = probe_codex(&absent, UNTIL_THE_FAKE_ANSWERS).unwrap_err();
+        assert!(
+            err.starts_with(&format!("starting {}: ", absent.display())),
+            "{err}"
+        );
+
+        let silent = fake(tmp.path(), "silent", "#!/bin/sh\nread line\nexit 0\n");
+        assert_eq!(
+            probe_codex(&silent, UNTIL_THE_FAKE_ANSWERS),
+            Err("no initialize reply".to_string())
+        );
+
+        let half = fake(
+            tmp.path(),
+            "half",
+            "#!/bin/sh\nread line\necho '{\"id\":1,\"result\":{}}'\nread line\nread line\nexit 0\n",
+        );
+        assert_eq!(
+            probe_codex(&half, UNTIL_THE_FAKE_ANSWERS),
+            Err("no account/rateLimits/read reply within 600000 ms".to_string())
+        );
+    }
 }
