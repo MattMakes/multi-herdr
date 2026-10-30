@@ -456,6 +456,50 @@ mod tests {
         assert_eq!(header.matches('|').count(), line.matches('|').count());
     }
 
+    /// Every note, in order, and the price cell both ways.
+    #[test]
+    fn the_matrix_notes_and_price_cells_render_exactly() {
+        let row = |price: Option<(f64, f64)>| super::MatrixRow {
+            name: "t".into(),
+            agent: "codex".into(),
+            model: "m".into(),
+            effort: "inherits config.toml".into(),
+            effort_is_explicit: false,
+            phase: "-".into(),
+            skills: vec![],
+            plugin_skills: vec![],
+            available_skills: vec![],
+            operator_skills: vec![],
+            offer_when: vec!["a".into(), "b".into()],
+            requires: vec!["xcode".into(), "git".into()],
+            offered: false,
+            generic: true,
+            trains_on_input: true,
+            price_in: price.map(|p| p.0),
+            price_out: price.map(|p| p.1),
+        };
+        let table = super::matrix_table(&[row(Some((1.5, 7.0))), row(None)]);
+        let lines: Vec<&str> = table.lines().skip(2).collect();
+        let notes = "hidden, generic, trains on input, effort unset, offer when a or b, requires xcode, git";
+        assert_eq!(
+            lines[0],
+            format!("| t | codex | m | inherits config.toml | - | - | - | 1.5 / 7 | {notes} |")
+        );
+        assert_eq!(
+            lines[1],
+            format!("| t | codex | m | inherits config.toml | - | - | - | unknown | {notes} |")
+        );
+        let mut plain = row(None);
+        plain.offered = true;
+        plain.generic = false;
+        plain.trains_on_input = false;
+        plain.effort_is_explicit = true;
+        plain.offer_when.clear();
+        plain.requires.clear();
+        let table = super::matrix_table(&[plain]);
+        assert!(table.lines().nth(2).unwrap().ends_with("| unknown |  |"));
+    }
+
     /// The template must survive the same parser real teammates go through,
     /// including `deny_unknown_fields`.
     #[test]
