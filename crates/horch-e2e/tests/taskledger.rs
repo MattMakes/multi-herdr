@@ -125,7 +125,18 @@ fn the_ledger_path_is_in_horch_home_by_default() {
 fn legacy_plumbing_lives_under_ledger_legacy() {
     let h = world("tl-legacy");
     let p = ok(&h, &["ledger", "legacy", "path"]);
-    assert!(p.trim().ends_with(".json"), "{p}");
+    // `<state>/<project path with every non-alphanumeric byte as '-'>.json`.
+    let slug: String = h
+        .project
+        .to_string_lossy()
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+        .collect();
+    assert_eq!(
+        Path::new(p.trim()),
+        h.state.join(format!("{slug}.json")),
+        "{p}"
+    );
 }
 
 #[test]
