@@ -4,6 +4,9 @@ use std::path::PathBuf;
 
 use anyhow::{anyhow, Result};
 use horch_core::runtime::RuntimeContext;
+use horch_core::taskledger;
+use horch_core::taskledger::git::Git;
+use horch_core::taskledger::triage::{self, Measure};
 use horch_core::vcs::landing::{ClaimState, Landing, Skipped};
 
 use super::messaging;
@@ -125,6 +128,35 @@ pub fn list(ctx: &RuntimeContext) -> Result<()> {
                 entry.dirty
             );
         }
+    }
+    Ok(())
+}
+
+/// The main checkout of the project the command runs in.
+fn triage_root(ctx: &RuntimeContext, git: &Git) -> Result<PathBuf> {
+    let dir = ctx.paths.project()?;
+    Ok(git
+        .main_root(&dir)
+        .unwrap_or_else(|| dir.canonicalize().unwrap_or(dir)))
+}
+
+/// The parked worktrees of the project, measured as `measure` says.
+pub fn triage_rows(ctx: &RuntimeContext, measure: Measure) -> Result<Vec<triage::Row>> {
+    let git = Git::new(&ctx.bins.harness.git);
+    let root = triage_root(ctx, &git)?;
+    match taskledger::open_existing(ctx)? {
+        Some(store) => triage::collect(store.conn(), &git, &root, measure),
+        None => triage::collect_without_ledger(&git, &root, measure),
+    }
+}
+
+/// `horch worktree triage [--json]`: the facts of every parked worktree.
+pub fn triage(ctx: &RuntimeContext, json: bool) -> Result<()> {
+    let rows = triage_rows(ctx, Measure::Full)?;
+    if json {
+        println!("{}", triage::to_json(&rows));
+    } else {
+        print!("{}", triage::render(&rows));
     }
     Ok(())
 }

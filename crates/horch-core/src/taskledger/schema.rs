@@ -10,7 +10,7 @@ use rusqlite::Connection;
 use super::model::*;
 
 /// The schema version this binary writes.
-pub const VERSION: i64 = 4;
+pub const VERSION: i64 = 5;
 
 /// A rule that applies to rows this ledger writes, not to imported ones
 /// (section 11.2): `CHECK (origin = 'import' OR <expr>)`.
@@ -237,6 +237,10 @@ fn stops_table() -> String {
     )
 }
 
+/// `worktrees.status` as version 1 wrote it. Version 1 runs as a migration,
+/// so its text keeps these words; version 5 adds the later ones.
+const V1_WORKTREE_STATUS: &str = "CHECK (status IN ('open', 'landing', 'landed', 'cleanup_failed', 'cleaned', 'unlanded', 'abandoned'))";
+
 /// The `worktrees_table` statements.
 fn worktrees_table() -> String {
     let origin = origin_columns();
@@ -260,7 +264,7 @@ fn worktrees_table() -> String {
     cleaned_at TEXT,
     reason TEXT
 );"#,
-        worktree_status = WorktreeStatus::check("status"),
+        worktree_status = V1_WORKTREE_STATUS,
     )
 }
 
@@ -394,9 +398,49 @@ const V3: &str = "ALTER TABLE runs ADD COLUMN max_attempts INTEGER NOT NULL DEFA
 const V4: &str = "ALTER TABLE runs ADD COLUMN watchdog_version TEXT;
              ALTER TABLE runs ADD COLUMN watchdog_exe TEXT;";
 
+/// Version 5: worktree triage (#308). The statuses `archived` and `trashed`,
+/// and the columns of a decision. SQLite cannot change a `CHECK`, so the
+/// table is built again under its own name and its rows copied.
+fn v5() -> String {
+    let columns = "worktree_id, task_id, worker_id, repo_root, path, branch, base, base_commit, \
+        status, landed_commit, check_output_path, bytes_on_disk, origin, import_raw_id, \
+        created_at, landed_at, cleaned_at, reason";
+    let table = worktrees_table()
+        .replace("CREATE TABLE worktrees (", "CREATE TABLE worktrees_v5 (")
+        .replace(V1_WORKTREE_STATUS, &WorktreeStatus::check("status"))
+        .replace(
+            "\n    reason TEXT\n);",
+            &format!(
+                "\n    reason TEXT,\n    archive_ref TEXT,\n    decision TEXT {},\n    decided_at TEXT,\n    bytes_freed INTEGER\n);",
+                TriageDecision::check("decision")
+            ),
+        );
+    // The rows of `worktree_modes` point at `worktrees`. [`migrate`] turns
+    // the foreign keys off around it and checks them before the commit.
+    format!(
+        "{table}
+INSERT INTO worktrees_v5 ({columns}) SELECT {columns} FROM worktrees;
+DROP TABLE worktrees;
+ALTER TABLE worktrees_v5 RENAME TO worktrees;"
+    )
+}
+
 /// Bring the database to [`VERSION`]. A file from a newer binary is refused:
 /// this one would not know its columns.
+///
+/// Foreign keys are off while it runs: a table that is built again
+/// ([`v5`]) is dropped while other rows point at it. They are checked before
+/// the commit, and turned back on after it.
 pub fn migrate(conn: &mut Connection) -> Result<()> {
+    // The pragma is a no-op inside a transaction, so it is set before one.
+    let keys: bool = conn.query_row("PRAGMA foreign_keys", [], |r| r.get(0))?;
+    conn.pragma_update(None, "foreign_keys", false)?;
+    let migrated = migrate_unchecked(conn);
+    conn.pragma_update(None, "foreign_keys", keys)?;
+    migrated
+}
+
+fn migrate_unchecked(conn: &mut Connection) -> Result<()> {
     // The write lock first, then the version: 2 processes that open a fresh
     // file at once must not both create the tables.
     let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
@@ -417,6 +461,17 @@ pub fn migrate(conn: &mut Connection) -> Result<()> {
     for (version, sql) in [(2, V2), (3, V3), (4, V4)] {
         if current < version {
             tx.execute_batch(sql)?;
+        }
+    }
+    if current < 5 {
+        tx.execute_batch(&v5())
+            .context("adding the worktree triage columns")?;
+        let broken: i64 =
+            tx.query_row("SELECT count(*) FROM pragma_foreign_key_check", [], |r| {
+                r.get(0)
+            })?;
+        if broken > 0 {
+            bail!("the version 5 migration left {broken} rows with a broken reference");
         }
     }
     tx.pragma_update(None, "user_version", VERSION)?;
@@ -492,8 +547,92 @@ mod tests {
         let v: i64 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(v, 4);
+        assert_eq!(v, VERSION);
         // A second run of the migration changes nothing.
         migrate(&mut conn).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod v5_tests {
+    use super::*;
+
+    /// A ledger file as version 4 left it, with 1 worktree and its mode row.
+    fn version_4_file(path: &std::path::Path) {
+        let conn = Connection::open(path).unwrap();
+        conn.execute_batch(&v1()).unwrap();
+        for sql in [V2, V3, V4] {
+            conn.execute_batch(sql).unwrap();
+        }
+        conn.pragma_update(None, "user_version", 4).unwrap();
+        conn.execute_batch(
+            "INSERT INTO projects VALUES ('p', '/r', 'now');
+             INSERT INTO runs (run_id, project_id, slug, status, started_at) VALUES ('r1', 'p', 's', 'active', 'now');
+             INSERT INTO worktrees (worktree_id, repo_root, path, branch, base, status, created_at, reason, bytes_on_disk)
+                VALUES ('wt1', '/r', '/r/.worktrees/a', 'a', 'main', 'unlanded', 'then', 'check red', 99);
+             INSERT INTO worktree_modes (worktree_id, run_id, name, scratch) VALUES ('wt1', 'r1', 'a', 0);",
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn migrate_from_version_4_keeps_rows_and_adds_the_triage_words_and_columns() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("ledger.sqlite3");
+        version_4_file(&path);
+        // The store opens with foreign keys on, as every real open does.
+        let store = crate::taskledger::Store::open(&path).unwrap();
+        let conn = store.conn();
+        let v: i64 = conn
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(v, 5);
+        let kept: (String, String, i64, Option<String>) = conn
+            .query_row(
+                "SELECT status, reason, bytes_on_disk, decision FROM worktrees WHERE worktree_id = 'wt1'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+            )
+            .unwrap();
+        assert_eq!(kept, ("unlanded".into(), "check red".into(), 99, None));
+        conn.execute(
+            "UPDATE worktrees SET status = 'archived', decision = 'ARCHIVE', archive_ref = 'refs/horch/archive/a',
+                decided_at = 'now', bytes_freed = 99 WHERE worktree_id = 'wt1'",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "UPDATE worktrees SET status = 'trashed' WHERE worktree_id = 'wt1'",
+            [],
+        )
+        .unwrap();
+        assert!(conn
+            .execute(
+                "UPDATE worktrees SET status = 'lost' WHERE worktree_id = 'wt1'",
+                []
+            )
+            .is_err());
+        assert!(conn
+            .execute(
+                "UPDATE worktrees SET decision = 'MAYBE' WHERE worktree_id = 'wt1'",
+                []
+            )
+            .is_err());
+        // The mode row still points at the rebuilt table, and the key holds.
+        let fk: i64 = conn
+            .query_row("SELECT count(*) FROM pragma_foreign_key_check", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(fk, 0);
+        assert!(conn
+            .execute(
+                "INSERT INTO worktree_modes (worktree_id, run_id, name) VALUES ('nope', 'r1', 'x')",
+                []
+            )
+            .is_err());
+        drop(store);
+        // A second open migrates nothing.
+        crate::taskledger::Store::open(&path).unwrap();
     }
 }

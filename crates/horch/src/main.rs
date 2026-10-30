@@ -632,6 +632,14 @@ enum WorktreeSubcommand {
     },
     /// Show registered claims and changed unregistered worktrees.
     List,
+    /// List every parked worktree with the facts for a decision, then a
+    /// reply table. `triage apply <file|->` runs the decisions of a filled
+    /// table (#308).
+    Triage {
+        /// Print the rows as JSON.
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -1174,6 +1182,7 @@ fn worktree_command(ctx: &mut Ctx, command: WorktreeSubcommand) -> Result<()> {
             cmd::worktree::land(ctx, name.as_deref(), check.as_deref())
         }
         WorktreeSubcommand::List => cmd::worktree::list(ctx),
+        WorktreeSubcommand::Triage { json } => cmd::worktree::triage(ctx, json),
     }
 }
 
