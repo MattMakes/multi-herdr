@@ -15,6 +15,7 @@ use horch_core::harness::HarnessKind;
 use horch_core::roster::{operator_effort_warnings, Requirement, Roster};
 use horch_core::runtime::bins::{host_tool_bin, BLENDER_APP, GODOT_APP, GODOT_MONO_APP};
 use horch_core::runtime::{process, RuntimeContext};
+use horch_core::taskledger::timer::Agent;
 use horch_core::workspace::herdr::Herdr;
 
 pub fn doctor(ctx: &RuntimeContext) -> Result<()> {
@@ -90,6 +91,7 @@ fn host_warnings(ctx: &RuntimeContext, roster: &Roster) -> (Vec<String>, Vec<Str
         &ctx.paths.home,
         ctx.inherited.codex_home.as_deref(),
     );
+    let facts = super::agentlist::gather(ctx, true);
     let warnings = requirement_problems(
         roster,
         path,
@@ -106,9 +108,9 @@ fn host_warnings(ctx: &RuntimeContext, roster: &Roster) -> (Vec<String>, Vec<Str
         &ctx.bins.harness.antigravity,
     ))
     .chain(export_problem)
-    .chain(broken_harness_warnings(&super::agentlist::gather(
-        ctx, true,
-    )))
+    .chain(broken_harness_warnings(&facts))
+    .chain(reviewer_warnings(roster, &facts))
+    .chain(watchdog_blind_warnings(roster))
     .chain(operator_effort_warnings(
         home,
         &codex_home,
@@ -161,6 +163,73 @@ fn broken_harness_warnings(
                 "harness {name} is broken: {why}. The quota probe marks it broken and \
                  routing then does not choose its teammates. Fix `{name} --version` first."
             ))
+        })
+        .collect()
+}
+
+/// The code-sweep reviewers (#158): the persona for a non-Codex author, then
+/// the one for a Codex author.
+const REVIEWERS: [&str; 2] = ["codex-reviewer", "architect-reviewer"];
+
+/// One line per code-sweep reviewer that cannot run on this host: it is not
+/// in the roster, or its harness binary is missing or broken. Nothing is
+/// started; `facts` come from the binary lookup.
+fn reviewer_warnings(
+    roster: &Roster,
+    facts: &std::collections::BTreeMap<&'static str, BinaryFacts>,
+) -> Vec<String> {
+    REVIEWERS
+        .into_iter()
+        .filter_map(|name| {
+            let why = match roster.get(name) {
+                None => "it is not in the roster".to_string(),
+                Some(t) => {
+                    let harness = t.agent.as_str();
+                    let f = facts.get(harness)?;
+                    match (&f.path, &f.broken) {
+                        (None, _) => format!("the {harness} binary is not installed"),
+                        (_, Some(_)) => format!("the {harness} binary is broken"),
+                        _ => return None,
+                    }
+                }
+            };
+            Some(format!(
+                "reviewer {name} cannot run on this host: {why}. Code-sweep reviews \
+                 for it cannot start."
+            ))
+        })
+        .collect()
+}
+
+/// Harnesses whose transcript the watchdog can find (see `usage.rs`).
+const WITH_TRANSCRIPT: [HarnessKind; 5] = [
+    HarnessKind::Claude,
+    HarnessKind::Codex,
+    HarnessKind::OpenCode,
+    HarnessKind::Pi,
+    HarnessKind::Prime,
+];
+
+/// One line per offered harness that has no timer format and no transcript
+/// lookup (#203): the watchdog cannot see that its workers progress.
+fn watchdog_blind_warnings(roster: &Roster) -> Vec<String> {
+    let mut seen = Vec::new();
+    for t in roster.offered() {
+        let kind = t.agent;
+        let blind = kind != HarnessKind::None
+            && !WITH_TRANSCRIPT.contains(&kind)
+            && Agent::of_harness(kind.as_str()).is_none();
+        if blind && !seen.contains(&kind) {
+            seen.push(kind);
+        }
+    }
+    seen.into_iter()
+        .map(|k| {
+            format!(
+                "harness {} has no timer format and no transcript lookup, so the watchdog \
+                 cannot see the progress of its workers.",
+                k.as_str()
+            )
         })
         .collect()
 }
@@ -1577,6 +1646,85 @@ mod tests {
             assert!(problems[0].contains(seat), "{seat}: {}", problems[0]);
         }
         assert!(!problems[0].contains("ue-code-reviewer"), "{}", problems[0]);
+    }
+
+    fn facts(
+        entries: &[(&'static str, Option<&str>, Option<&str>)],
+    ) -> std::collections::BTreeMap<&'static str, BinaryFacts> {
+        entries
+            .iter()
+            .map(|(name, path, broken)| {
+                (
+                    *name,
+                    BinaryFacts {
+                        path: path.map(Into::into),
+                        version: None,
+                        broken: broken.map(Into::into),
+                    },
+                )
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_reviewer_without_its_binary_is_a_doctor_warning() {
+        let r = Roster::builtin().unwrap();
+        let warnings = reviewer_warnings(
+            &r,
+            &facts(&[("codex", None, None), ("claude", Some("/bin/claude"), None)]),
+        );
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+        assert!(
+            warnings[0].starts_with("reviewer codex-reviewer cannot run on this host: the codex binary is not installed."),
+            "{}",
+            warnings[0]
+        );
+    }
+
+    #[test]
+    fn a_broken_reviewer_binary_is_a_doctor_warning() {
+        let r = Roster::builtin().unwrap();
+        let warnings = reviewer_warnings(
+            &r,
+            &facts(&[
+                ("codex", Some("/bin/codex"), None),
+                (
+                    "claude",
+                    Some("/bin/claude"),
+                    Some("claude --version exited 1"),
+                ),
+            ]),
+        );
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+        assert!(
+            warnings[0].contains("architect-reviewer")
+                && warnings[0].contains("claude binary is broken"),
+            "{}",
+            warnings[0]
+        );
+    }
+
+    #[test]
+    fn reviewers_that_can_run_get_no_warning() {
+        let r = Roster::builtin().unwrap();
+        let ok = facts(&[
+            ("codex", Some("/bin/codex"), None),
+            ("claude", Some("/bin/claude"), None),
+        ]);
+        assert!(reviewer_warnings(&r, &ok).is_empty());
+    }
+
+    #[test]
+    fn a_harness_with_no_timer_and_no_transcript_is_a_doctor_warning() {
+        let r = Roster::builtin().unwrap();
+        let warnings = watchdog_blind_warnings(&r);
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+        assert!(
+            warnings[0]
+                .starts_with("harness antigravity has no timer format and no transcript lookup"),
+            "{}",
+            warnings[0]
+        );
     }
 
     #[test]
