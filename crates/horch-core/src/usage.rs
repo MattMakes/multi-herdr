@@ -930,6 +930,102 @@ mod tests {
         );
     }
 
+    /// Every noise form and alias `canonical_model` strips or resolves, alone
+    /// and stacked, and the names it must leave as they are.
+    #[test]
+    fn canonical_model_strips_each_noise_form_and_resolves_every_alias() {
+        for (raw, key) in [
+            ("  Claude-Opus-5-5  ", "claude-opus-5-5"),
+            ("openai/gpt-5.6-sol", "gpt-5.6-sol"),
+            ("anthropic/claude-haiku-4-5-20251001[1m]", "claude-haiku-4-5"),
+            ("fable", "claude-fable-5-1"),
+            ("haiku", "claude-haiku-4-5"),
+            ("claude-opus-5-5-2025101", "claude-opus-5-5-2025101"),
+            ("claude-opus-5-5-2025101x", "claude-opus-5-5-2025101x"),
+            ("gpt-5.6-sol", "gpt-5.6-sol"),
+            ("nodashname", "nodashname"),
+        ] {
+            assert_eq!(canonical_model(raw), key, "{raw}");
+        }
+    }
+
+    /// `find_file` walks into sub-directories, skips files the matcher
+    /// rejects, and gives `None` for a missing directory or no match.
+    #[test]
+    fn find_file_walks_sub_directories_and_applies_the_matcher() {
+        let tmp = tempfile::tempdir().unwrap();
+        let deep = tmp.path().join("a/b");
+        std::fs::create_dir_all(&deep).unwrap();
+        std::fs::create_dir_all(tmp.path().join("empty")).unwrap();
+        std::fs::write(tmp.path().join("a/skip.txt"), "").unwrap();
+        std::fs::write(deep.join("want.jsonl"), "").unwrap();
+        let found = find_file(tmp.path(), &|n| n.ends_with(".jsonl"));
+        assert_eq!(found, Some(deep.join("want.jsonl")));
+        assert_eq!(find_file(tmp.path(), &|n| n == "nope"), None);
+        assert_eq!(find_file(&tmp.path().join("missing"), &|_| true), None);
+    }
+
+    /// The skill scan per harness: Claude counts a `Skill` tool call once per
+    /// id on assistant lines only; Codex counts reads in call records; pi and
+    /// Prime count reads in assistant messages; an unknown harness and an
+    /// unparsable line count nothing.
+    #[test]
+    fn skill_loads_in_reads_each_harness_format() {
+        let skill = |id: &str, name: &str| {
+            format!(
+                r#"{{"type":"tool_use","id":"{id}","name":"Skill","input":{{"skill":"{name}"}}}}"#
+            )
+        };
+        let claude = [
+            format!(
+                r#"{{"type":"assistant","timestamp":"2026-10-06T12:00:00Z","message":{{"content":[{},{},{{"type":"tool_use","id":"o","name":"Bash","input":{{"skill":"no"}}}}]}}}}"#,
+                skill("t1", "one"),
+                skill("t1", "one-again")
+            ),
+            "not json".to_string(),
+            format!(
+                r#"{{"type":"user","message":{{"content":[{}]}}}}"#,
+                skill("t2", "user-line")
+            ),
+            r#"{"type":"assistant","message":{"content":"text"}}"#.to_string(),
+            format!(
+                r#"{{"type":"assistant","message":{{"content":[{}]}}}}"#,
+                skill("t1", "repeat-id")
+            ),
+            format!(
+                r#"{{"type":"assistant","message":{{"content":[{},{{"type":"tool_use","name":"Skill","input":{{}}}}]}}}}"#,
+                skill("t3", "three")
+            ),
+        ]
+        .join("\n");
+        let names = |loads: Vec<SkillLoad>| loads.into_iter().map(|l| l.skill).collect::<Vec<_>>();
+        let loads = skill_loads_in("claude", &claude);
+        assert_eq!(loads[0].ts, "2026-10-06T12:00:00Z");
+        assert_eq!(names(loads), ["one", "three"]);
+
+        let read = "cat /h/skills/tdd/SKILL.md";
+        let codex = [
+            format!(r#"{{"payload":{{"type":"function_call","arguments":"{read}"}}}}"#),
+            format!(r#"{{"payload":{{"type":"local_shell_call","command":"{read}"}}}}"#),
+            format!(r#"{{"payload":{{"type":"custom_tool_call","input":"{read}"}}}}"#),
+            format!(r#"{{"payload":{{"type":"message","text":"{read}"}}}}"#),
+            format!(r#"{{"text":"{read}"}}"#),
+        ]
+        .join("\n");
+        assert_eq!(names(skill_loads_in("codex", &codex)), ["tdd"; 3]);
+
+        let pi = [
+            format!(r#"{{"message":{{"role":"assistant","content":"{read}"}}}}"#),
+            format!(r#"{{"message":{{"role":"user","content":"{read}"}}}}"#),
+            format!(r#"{{"role":"assistant","content":"{read}"}}"#),
+            format!(r#"{{"role":"user","content":"{read}"}}"#),
+        ]
+        .join("\n");
+        assert_eq!(names(skill_loads_in("pi", &pi)), ["tdd"; 2]);
+        assert_eq!(names(skill_loads_in("prime", &pi)), ["tdd"; 2]);
+        assert!(skill_loads_in("opencode", &pi).is_empty());
+    }
+
     #[test]
     fn transcripts_are_found_by_session_id_per_harness() {
         let tmp = tempfile::tempdir().unwrap();
