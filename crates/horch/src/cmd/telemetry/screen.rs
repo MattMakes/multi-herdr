@@ -972,6 +972,94 @@ mod tests {
         }
     }
 
+    /// A feed whose first `fail` ticks fail with `boom`.
+    struct FailingFeed {
+        fail: usize,
+        at: usize,
+    }
+
+    impl Feed for FailingFeed {
+        fn next(&mut self) -> Result<Option<Snapshot>> {
+            self.at += 1;
+            if self.at <= self.fail {
+                anyhow::bail!("boom");
+            }
+            Ok(Some(snap("T1", 1)))
+        }
+        fn filter(&mut self, snap: &Snapshot, _: &str, _: DateTime<Utc>) -> Snapshot {
+            snap.clone()
+        }
+        fn mode(&self) -> &'static str {
+            "collector"
+        }
+    }
+
+    /// A tick error is an update once, and the next good tick clears it.
+    #[test]
+    fn spc_04_a_tick_error_shows_once_and_clears_on_the_next_good_tick() {
+        let mut feed = FailingFeed { fail: 3, at: 0 };
+        let (req_tx, req_rx) = mpsc::channel();
+        let (tx, rx) = mpsc::channel();
+        std::thread::scope(|s| {
+            let req_tx = req_tx;
+            let w = s.spawn(|| worker(&mut feed, Duration::from_millis(5), fixed, req_rx, tx));
+            let first = update(&rx);
+            assert_eq!(first.status.as_deref(), Some("boom"));
+            let second = update(&rx);
+            assert_eq!(second.status, None);
+            assert_eq!(second.snapshot.generated_at, "T1");
+            req_tx.send(Request::Stop).unwrap();
+            w.join().unwrap();
+        });
+        assert!(rx.try_recv().is_err());
+    }
+
+    /// `recv` hands on a message, ends an empty wait with `Idle`, and reads
+    /// a channel with no sender as `WorkerGone`.
+    #[test]
+    fn spc_04_recv_returns_a_message_idle_or_worker_gone() {
+        let (tx, rx) = mpsc::channel();
+        assert!(matches!(recv(&rx, Duration::from_millis(1)), Msg::Idle));
+        tx.send(Msg::InputGone("why".into())).unwrap();
+        match recv(&rx, Duration::from_secs(5)) {
+            Msg::InputGone(why) => assert_eq!(why, "why"),
+            _ => panic!("not the sent message"),
+        }
+        drop(tx);
+        assert!(matches!(recv(&rx, Duration::from_secs(5)), Msg::WorkerGone));
+    }
+
+    /// One scripted terminal event, then silence.
+    struct OneKey(Option<crossterm::event::Event>);
+
+    impl Events for OneKey {
+        fn poll(&mut self, _: Duration) -> std::io::Result<bool> {
+            Ok(self.0.is_some())
+        }
+        fn read(&mut self) -> std::io::Result<crossterm::event::Event> {
+            Ok(self.0.take().expect("polled before read"))
+        }
+    }
+
+    /// `input` forwards a terminal event as `Msg::Input`, and stops when
+    /// the UI is gone.
+    #[test]
+    fn spc_04_input_forwards_an_event() {
+        use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
+        let key = Event::Key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE));
+        let (tx, rx) = mpsc::channel();
+        let stop = AtomicBool::new(false);
+        std::thread::scope(|s| {
+            let h = s.spawn(|| input(OneKey(Some(key.clone())), tx, &stop));
+            match rx.recv_timeout(Duration::from_secs(5)) {
+                Ok(Msg::Input(got)) => assert_eq!(got, key),
+                _ => panic!("no input message"),
+            }
+            stop.store(true, Ordering::SeqCst);
+            h.join().unwrap();
+        });
+    }
+
     /// Terminal events that fail at once, as when the terminal closes.
     struct Broken;
 
