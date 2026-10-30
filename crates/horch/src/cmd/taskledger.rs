@@ -1690,7 +1690,8 @@ fn find_dir(roots: &[PathBuf], want: impl Fn(&Path) -> bool) -> Option<PathBuf> 
 }
 
 /// `horch ledger done` (and `horch done` from a ledger worker): record the
-/// finish, wake whoever must act on it, then report and close the pane.
+/// finish, then (in a pane) report, wake whoever must act on it and close
+/// the pane.
 pub fn done_cmd(
     ctx: &RuntimeContext,
     mut store: Store,
@@ -1713,7 +1714,13 @@ pub fn done_cmd(
     }
     let c = finish::complete(&mut store, &wid, summary, unlanded)?;
     let run = runs::get(store.conn(), &c.run_id)?;
-    if !c.already {
+    // The wakes, at most once. In a pane they run after `done` marks the
+    // record done and before its report push, in the same budget (#67).
+    let woken = std::cell::Cell::new(c.already);
+    let wake = || {
+        if woken.replace(true) {
+            return;
+        }
         if let Some((parent, Some(role))) = &c.reviews_in_for {
             let line =
                 format!("[horch] NOTE: The reviews of {parent} are in. Run horch ledger finish.");
@@ -1748,7 +1755,7 @@ pub fn done_cmd(
             super::taskledger_wake::cancelled_dependents(ctx, &store, &run, &c.task, &waiting);
         }
         super::taskledger_wake::after_done(ctx, &store, &run);
-    }
+    };
     output::println(&format!(
         "{} {}.",
         c.task,
@@ -1758,11 +1765,14 @@ pub fn done_cmd(
             "done"
         }
     ));
-    drop(store);
-    if in_pane {
-        super::messaging::done(ctx, summary, unlanded)?;
+    if !in_pane {
+        wake();
+        return Ok(());
     }
-    Ok(())
+    let done = super::messaging::done_then(ctx, summary, unlanded, &wake);
+    // A `done` that stopped before the record, or a retry, ran no wake.
+    wake();
+    done
 }
 
 /// After the last review of a task: the author holds its reviewers wait
