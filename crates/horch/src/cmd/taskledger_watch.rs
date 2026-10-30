@@ -59,11 +59,7 @@ struct Live {
 
 impl Observer for Live {
     fn observe(&self, w: &Worker) -> Observation {
-        let agent_alive = match (w.agent_pid, w.agent_started) {
-            (Some(p), Some(s)) => horch_core::procid::is_same(p as u32, s as u64),
-            (Some(p), None) => horch_core::procid::alive(p as u32, None),
-            _ => false,
-        };
+        let agent_alive = agent_alive(w);
         let pane = w
             .pane_id
             .as_deref()
@@ -72,21 +68,39 @@ impl Observer for Live {
             .pane_id
             .as_deref()
             .and_then(|p| self.herdr.pane_read(p, "visible").ok());
-        let meta = w
-            .transcript_path
-            .as_deref()
-            .and_then(|t| std::fs::metadata(t).ok());
+        let (transcript_bytes, transcript_mtime) = transcript_facts(w);
         Observation {
             agent_alive,
             herdr_status: pane.as_ref().and_then(|p| p.agent_status.clone()),
             herdr_seq: pane.as_ref().and_then(|p| p.state_change_seq),
-            transcript_bytes: meta.as_ref().map(|m| m.len() as i64),
-            transcript_mtime: meta
-                .and_then(|m| m.modified().ok())
-                .map(|t| horch_core::clock::stamp(chrono::DateTime::<chrono::Utc>::from(t))),
+            transcript_bytes,
+            transcript_mtime,
             screen,
         }
     }
+}
+
+/// Whether the agent PID of `w` runs with its recorded start time. An old
+/// record has no start time: the PID alone counts.
+fn agent_alive(w: &Worker) -> bool {
+    match (w.agent_pid, w.agent_started) {
+        (Some(p), Some(s)) => horch_core::procid::is_same(p as u32, s as u64),
+        (Some(p), None) => horch_core::procid::alive(p as u32, None),
+        _ => false,
+    }
+}
+
+/// The size and the write time of the transcript of `w`, when it can be read.
+fn transcript_facts(w: &Worker) -> (Option<i64>, Option<String>) {
+    let meta = w
+        .transcript_path
+        .as_deref()
+        .and_then(|t| std::fs::metadata(t).ok());
+    (
+        meta.as_ref().map(|m| m.len() as i64),
+        meta.and_then(|m| m.modified().ok())
+            .map(|t| horch_core::clock::stamp(chrono::DateTime::<chrono::Utc>::from(t))),
+    )
 }
 
 /// The single-instance lock of a run's watchdog.
@@ -472,7 +486,8 @@ fn start_detached(
     Ok(pid)
 }
 
-#[cfg(all(test, unix))]
+#[cfg(unix)]
+#[cfg(test)]
 mod tests {
     use super::Live;
     use horch_core::taskledger::runs::{self, NewRun};
