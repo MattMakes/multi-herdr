@@ -14,7 +14,7 @@ use super::teammate::{
     CONTEXT_WINDOWS_BASE, HARNESS_DEFAULTS_BASE, HEADLESS_ONLY,
 };
 use super::{
-    effort_problem, reserved_tier, ExecDecision, ExecRule, PermissionMode, Roster, Teammate,
+    effort_problem, reserved_tier, Base, ExecDecision, ExecRule, PermissionMode, Roster, Teammate,
     BRIEF_DESCRIPTION_MAX, FLEET_ORCHESTRATORS, ORCHESTRATOR_DENIED_TOOLS,
     ORCHESTRATOR_ONLY_SKILLS, TOP_TIER_SEATS,
 };
@@ -158,41 +158,12 @@ impl Roster {
             ));
         }
         for (pattern, skills) in &t.skills_when {
-            if let Some(problem) = super::offer::pattern_problem(pattern) {
-                problems.push(format!("{who}: skills_when pattern '{pattern}' {problem}"));
-            }
-            if skills.is_empty() {
-                problems.push(format!("{who}: skills_when '{pattern}' names no skill"));
-            }
-            for name in skills {
-                let unknown = catalog.as_ref().is_some_and(|c| c.lookup(name).is_none());
-                if unknown {
-                    problems.push(format!(
-                        "{who}: skills_when '{pattern}' names unknown skill '{name}'"
-                    ));
-                }
-                if t.skills.contains(name) {
-                    problems.push(format!(
-                        "{who}: '{name}' is both in skills and in skills_when '{pattern}'"
-                    ));
-                }
-                if t.disabled_skills
-                    .iter()
-                    .any(|d| d == name || *d == format!("horch:{name}"))
-                {
-                    problems.push(format!(
-                        "{who}: '{name}' is both in skills_when '{pattern}' and in \
-                         disabled_skills"
-                    ));
-                }
-                if !FLEET_ORCHESTRATORS.contains(&who.as_str())
-                    && ORCHESTRATOR_ONLY_SKILLS.contains(&name.as_str())
-                {
-                    problems.push(format!(
-                        "{who}: skill '{name}' belongs to the orchestrator only"
-                    ));
-                }
-            }
+            problems.extend(skills_when_pattern_problems(
+                who,
+                (pattern, skills),
+                catalog.as_ref(),
+                t,
+            ));
         }
         problems
     }
@@ -1035,68 +1006,97 @@ impl Roster {
         let Some(windows) = self.context_windows().and_then(|b| b.windows.as_ref()) else {
             return Vec::new();
         };
-        let mut problems = Vec::new();
-        for (key, &w) in windows {
-            let Some((kind, name)) = split_window_key(key) else {
-                problems.push(format!(
-                    "{file}: windows key {key} is not <harness>/<teammate or model> with a harness name"
-                ));
-                continue;
-            };
-            if name.is_empty() {
-                problems.push(format!(
-                    "{file}: windows key {key} has no teammate or model name"
-                ));
-                continue;
-            }
-            let rule = kind.capabilities().compaction.trigger;
-            let native = match rule {
-                TriggerRule::Unknown | TriggerRule::PerModel => {
-                    problems.push(format!(
-                        "{file}: windows key {key} does nothing on harness {kind}: it has no window setting"
-                    ));
-                    continue;
-                }
-                // A teammate name as the model part: the model window is
-                // unknown, so the key's value is the window.
-                TriggerRule::WindowMinusReserve { reserve } => {
-                    native_trigger(rule, kind.as_str(), name, Some(w), None)
-                        .unwrap_or_else(|| w.saturating_sub(reserve))
-                }
-                TriggerRule::CodexLimit => w,
-            };
-            if let Some((t_watch, h)) = below_floor(native) {
-                problems.push(format!(
-                    "{file}: windows {key} {w} leaves headroom {h} tokens, below the {HEADROOM_FLOOR} floor (native trigger {native}, threshold {t_watch})"
-                ));
-            }
-            // Finding 3: teammate `name` runs another model, and `name` is
-            // also the model of a teammate on the same harness.
-            if let Some(t) = self.get(name).filter(|t| t.agent == kind) {
-                let model = t.model.as_deref().unwrap_or("");
-                let also_model = self
-                    .teammates
-                    .values()
-                    .any(|o| o.agent == kind && o.model.as_deref() == Some(name));
-                if model != name && also_model {
-                    problems.push(format!(
-                        "{file}: windows key {key} is teammate {name} (model {model}) and model {name}; set compact_window in {name}.md instead"
-                    ));
-                }
-            }
+        windows
+            .iter()
+            .flat_map(|(key, &w)| self.window_key_problems(&file, key, w))
+            .collect()
+    }
+
+    /// The problems of one `windows` key.
+    fn window_key_problems(&self, file: &str, key: &str, w: u64) -> Vec<String> {
+        let Some((kind, name)) = split_window_key(key) else {
+            return vec![format!(
+                "{file}: windows key {key} is not <harness>/<teammate or model> with a harness name"
+            )];
+        };
+        if name.is_empty() {
+            return vec![format!(
+                "{file}: windows key {key} has no teammate or model name"
+            )];
         }
+        let rule = kind.capabilities().compaction.trigger;
+        let native = match rule {
+            TriggerRule::Unknown | TriggerRule::PerModel => {
+                return vec![format!(
+                    "{file}: windows key {key} does nothing on harness {kind}: it has no window setting"
+                )];
+            }
+            // A teammate name as the model part: the model window is
+            // unknown, so the key's value is the window.
+            TriggerRule::WindowMinusReserve { reserve } => {
+                native_trigger(rule, kind.as_str(), name, Some(w), None)
+                    .unwrap_or_else(|| w.saturating_sub(reserve))
+            }
+            TriggerRule::CodexLimit => w,
+        };
+        let mut problems = Vec::new();
+        if let Some((t_watch, h)) = below_floor(native) {
+            problems.push(format!(
+                "{file}: windows {key} {w} leaves headroom {h} tokens, below the {HEADROOM_FLOOR} floor (native trigger {native}, threshold {t_watch})"
+            ));
+        }
+        problems.extend(self.shared_window_name_problem(file, key, kind, name));
         problems
+    }
+
+    /// Finding 3: teammate `name` runs another model, and `name` is also the
+    /// model of a teammate on the same harness.
+    fn shared_window_name_problem(
+        &self,
+        file: &str,
+        key: &str,
+        kind: HarnessKind,
+        name: &str,
+    ) -> Option<String> {
+        let t = self.get(name).filter(|t| t.agent == kind)?;
+        let model = t.model.as_deref().unwrap_or("");
+        let also_model = self
+            .teammates
+            .values()
+            .any(|o| o.agent == kind && o.model.as_deref() == Some(name));
+        (model != name && also_model).then(|| {
+            format!(
+                "{file}: windows key {key} is teammate {name} (model {model}) and model {name}; set compact_window in {name}.md instead"
+            )
+        })
     }
 
     /// Rule 4: both context bases exist, each holds only its own keys, no
     /// other base holds them, and every name and message is well formed.
     fn context_base_problems(&self) -> Vec<String> {
-        let mut problems = Vec::new();
-        for name in [CONTEXT_WINDOWS_BASE, CONTEXT_MESSAGES_BASE] {
-            if !self.bases.contains_key(name) {
-                problems.push(format!("_base/{name}.md is missing"));
-            }
+        let mut problems = self.base_presence_problems();
+        problems.extend(self.base_owner_problems());
+        if let Some(base) = self.context_windows() {
+            problems.extend(windows_base_problems(base));
         }
+        if let Some(base) = self.context_messages() {
+            problems.extend(messages_base_problems(base));
+        }
+        problems
+    }
+
+    /// Both context bases exist.
+    fn base_presence_problems(&self) -> Vec<String> {
+        [CONTEXT_WINDOWS_BASE, CONTEXT_MESSAGES_BASE]
+            .into_iter()
+            .filter(|name| !self.bases.contains_key(*name))
+            .map(|name| format!("_base/{name}.md is missing"))
+            .collect()
+    }
+
+    /// Each context key lives only in the base that owns it.
+    fn base_owner_problems(&self) -> Vec<String> {
+        let mut problems = Vec::new();
         for (name, base) in &self.bases {
             let file = format!("_base/{name}.md");
             for (key, set, owner) in [
@@ -1111,59 +1111,66 @@ impl Roster {
                 }
             }
         }
-        if let Some(base) = self.context_windows() {
-            let file = format!("_base/{CONTEXT_WINDOWS_BASE}.md");
-            for (key, set) in [
-                ("windows", base.windows.is_some()),
-                ("in_place", base.in_place.is_some()),
-            ] {
-                if !set {
-                    problems.push(format!(
-                        "{file} sets no {key}; a copy replaces the whole file, so keep both keys"
-                    ));
-                }
-            }
-            for entry in base.in_place.iter().flatten() {
-                match harness_kind(entry) {
-                    None => problems.push(format!(
-                        "{file}: in_place entry {entry} is not a harness name"
-                    )),
-                    Some(kind) if !kind.capabilities().compaction.has_command() => {
-                        problems.push(format!(
-                        "{file}: in_place entry {entry}: horch has no compact command for {entry}"
-                    ))
-                    }
-                    Some(_) => {}
-                }
-            }
-        }
-        if let Some(base) = self.context_messages() {
-            let file = format!("_base/{CONTEXT_MESSAGES_BASE}.md");
-            for key in CONTEXT_MESSAGE_KEYS {
-                if !base.messages.contains_key(key) {
-                    problems.push(format!("{file}: message {key} is missing"));
-                }
-            }
-            let known: BTreeMap<&str, &str> = CONTEXT_MESSAGE_PLACEHOLDERS
-                .into_iter()
-                .map(|p| (p, ""))
-                .collect();
-            for (key, message) in &base.messages {
-                if message.trim().is_empty() {
-                    problems.push(format!("{file}: message {key} is empty"));
-                }
-                if message.contains(['\n', '\r']) {
-                    problems.push(format!(
-                        "{file}: message {key} has a newline; a newline submits the line early"
-                    ));
-                }
-                if let Err(e) = crate::prompts::render(message, &known) {
-                    problems.push(format!("{file}: message {key}: {e}"));
-                }
-            }
-        }
         problems
     }
+}
+
+/// The `context-windows` base sets both keys, and each `in_place` entry names
+/// a harness that has a compact command.
+fn windows_base_problems(base: &Base) -> Vec<String> {
+    let file = format!("_base/{CONTEXT_WINDOWS_BASE}.md");
+    let mut problems = Vec::new();
+    for (key, set) in [
+        ("windows", base.windows.is_some()),
+        ("in_place", base.in_place.is_some()),
+    ] {
+        if !set {
+            problems.push(format!(
+                "{file} sets no {key}; a copy replaces the whole file, so keep both keys"
+            ));
+        }
+    }
+    for entry in base.in_place.iter().flatten() {
+        match harness_kind(entry) {
+            None => problems.push(format!(
+                "{file}: in_place entry {entry} is not a harness name"
+            )),
+            Some(kind) if !kind.capabilities().compaction.has_command() => problems.push(format!(
+                "{file}: in_place entry {entry}: horch has no compact command for {entry}"
+            )),
+            Some(_) => {}
+        }
+    }
+    problems
+}
+
+/// The `context-messages` base has every message, each one line and renderable.
+fn messages_base_problems(base: &Base) -> Vec<String> {
+    let file = format!("_base/{CONTEXT_MESSAGES_BASE}.md");
+    let mut problems = Vec::new();
+    for key in CONTEXT_MESSAGE_KEYS {
+        if !base.messages.contains_key(key) {
+            problems.push(format!("{file}: message {key} is missing"));
+        }
+    }
+    let known: BTreeMap<&str, &str> = CONTEXT_MESSAGE_PLACEHOLDERS
+        .into_iter()
+        .map(|p| (p, ""))
+        .collect();
+    for (key, message) in &base.messages {
+        if message.trim().is_empty() {
+            problems.push(format!("{file}: message {key} is empty"));
+        }
+        if message.contains(['\n', '\r']) {
+            problems.push(format!(
+                "{file}: message {key} has a newline; a newline submits the line early"
+            ));
+        }
+        if let Err(e) = crate::prompts::render(message, &known) {
+            problems.push(format!("{file}: message {key}: {e}"));
+        }
+    }
+    problems
 }
 
 /// Warnings, not errors, of the context policy:
@@ -1174,65 +1181,81 @@ impl Roster {
 /// - an overlay teammate on a watched harness without `compact_at`: the
 ///   fleet base applies. A built-in file without it is a check problem.
 pub fn context_policy_warnings(roster: &Roster) -> Vec<String> {
-    let mut out = Vec::new();
-    for t in roster.teammates.values() {
-        if !watched(t) || t.compact_at.is_some() {
-            continue;
-        }
-        let builtin_lacks_it = BUILTIN_TEAMMATES
-            .iter()
-            .find(|(name, _)| *name == t.name)
-            .and_then(|(name, text)| parse_teammate(name, text).ok())
-            .is_some_and(|b| b.compact_at.is_none());
-        if !builtin_lacks_it {
-            out.push(format!(
+    let mut out: Vec<String> = roster
+        .teammates
+        .values()
+        .filter(|t| watched(t) && t.compact_at.is_none())
+        .filter(|t| !builtin_lacks_compact_at(t))
+        .map(|t| {
+            format!(
                 "{}; the fleet base {BASE_THRESHOLD} applies",
                 compact_at_missing(&t.name)
-            ));
-        }
-    }
-    if let Some(windows) = roster.context_windows().and_then(|b| b.windows.as_ref()) {
-        for key in windows.keys() {
-            let Some((kind, name)) = split_window_key(key) else {
-                continue;
-            };
-            // An empty name or a harness without a window setting is
-            // already a check problem.
-            let lever = !matches!(
-                kind.capabilities().compaction.trigger,
-                TriggerRule::Unknown | TriggerRule::PerModel
-            );
-            let known = name.is_empty()
-                || !lever
-                || roster.get(name).is_some()
-                || roster
-                    .teammates
-                    .values()
-                    .any(|t| t.agent == kind && t.model.as_deref() == Some(name));
-            if !known {
-                out.push(format!(
-                    "_base/{CONTEXT_WINDOWS_BASE}.md: windows key {key} names no teammate and no model of a teammate on {kind}"
-                ));
-            }
-        }
-    }
+            )
+        })
+        .collect();
+    out.extend(unknown_window_warnings(roster));
+    out.extend(stale_builtin_warning(roster));
+    out
+}
+
+/// Whether the built-in file of `t` has no `compact_at` either, which is a
+/// check problem and not a warning.
+fn builtin_lacks_compact_at(t: &Teammate) -> bool {
+    BUILTIN_TEAMMATES
+        .iter()
+        .find(|(name, _)| *name == t.name)
+        .and_then(|(name, text)| parse_teammate(name, text).ok())
+        .is_some_and(|b| b.compact_at.is_none())
+}
+
+/// A `windows` key whose name is no teammate and no model of a teammate on
+/// its harness.
+fn unknown_window_warnings(roster: &Roster) -> Vec<String> {
+    let Some(windows) = roster.context_windows().and_then(|b| b.windows.as_ref()) else {
+        return Vec::new();
+    };
+    windows
+        .keys()
+        .filter_map(|key| Some((key, split_window_key(key)?)))
+        .filter(|(_, (kind, name))| !window_name_known(roster, *kind, name))
+        .map(|(key, (kind, _))| {
+            format!(
+                "_base/{CONTEXT_WINDOWS_BASE}.md: windows key {key} names no teammate and no model of a teammate on {kind}"
+            )
+        })
+        .collect()
+}
+
+/// An empty name or a harness without a window setting is already a check
+/// problem, so it counts as known here.
+fn window_name_known(roster: &Roster, kind: HarnessKind, name: &str) -> bool {
+    let lever = !matches!(
+        kind.capabilities().compaction.trigger,
+        TriggerRule::Unknown | TriggerRule::PerModel
+    );
+    name.is_empty()
+        || !lever
+        || roster.get(name).is_some()
+        || roster
+            .teammates
+            .values()
+            .any(|t| t.agent == kind && t.model.as_deref() == Some(name))
+}
+
+/// The loaded `context-messages` base replaces the built-in one.
+fn stale_builtin_warning(roster: &Roster) -> Option<String> {
     let builtin = BUILTIN_BASES
         .iter()
         .find(|(name, _)| *name == CONTEXT_MESSAGES_BASE)
-        .and_then(|(name, text)| parse_base(name, text).ok());
-    if let (Some(loaded), Some(builtin), Some(path)) = (
-        roster.context_messages(),
-        builtin,
-        roster.base_origin(CONTEXT_MESSAGES_BASE),
-    ) {
-        if *loaded != builtin {
-            out.push(format!(
-                "_base/{CONTEXT_MESSAGES_BASE}.md: {} replaces the built-in protocol messages; the briefings name their prefixes, so delete the copy",
-                path.display()
-            ));
-        }
-    }
-    out
+        .and_then(|(name, text)| parse_base(name, text).ok())?;
+    let loaded = roster.context_messages()?;
+    let path = roster.base_origin(CONTEXT_MESSAGES_BASE)?;
+    (*loaded != builtin).then(|| {
+        format!(
+            "_base/{CONTEXT_MESSAGES_BASE}.md: {} replaces the built-in protocol messages; the briefings name their prefixes, so delete the copy",
+            path.display()
+        )
+    })
 }
 
 /// The harness and the name part of a `windows` key. None: the part before
@@ -1255,6 +1278,67 @@ fn below_floor(native: u64) -> Option<(u64, u64)> {
     let t_watch = threshold(BASE_THRESHOLD, Some(native));
     let h = headroom(native, t_watch);
     (h < HEADROOM_FLOOR).then_some((t_watch, h))
+}
+
+/// What is wrong with one `skills_when` entry: its pattern, its skill list,
+/// and each skill in it.
+fn skills_when_pattern_problems(
+    who: &str,
+    (pattern, skills): (&str, &[String]),
+    catalog: Option<&SkillCatalog>,
+    t: &Teammate,
+) -> Vec<String> {
+    let mut problems = Vec::new();
+    if let Some(problem) = super::offer::pattern_problem(pattern) {
+        problems.push(format!("{who}: skills_when pattern '{pattern}' {problem}"));
+    }
+    if skills.is_empty() {
+        problems.push(format!("{who}: skills_when '{pattern}' names no skill"));
+    }
+    for name in skills {
+        problems.extend(skill_name_problems(who, pattern, name, catalog, t));
+    }
+    problems
+}
+
+/// Whether `name` is in `disabled_skills`, bare or as `horch:<name>`.
+fn is_disabled_skill(t: &Teammate, name: &str) -> bool {
+    t.disabled_skills
+        .iter()
+        .any(|d| d == name || *d == format!("horch:{name}"))
+}
+
+/// What is wrong with one skill `name` listed under a `skills_when` pattern.
+fn skill_name_problems(
+    who: &str,
+    pattern: &str,
+    name: &str,
+    catalog: Option<&SkillCatalog>,
+    t: &Teammate,
+) -> Vec<String> {
+    let mut problems = Vec::new();
+    if catalog.is_some_and(|c| c.lookup(name).is_none()) {
+        problems.push(format!(
+            "{who}: skills_when '{pattern}' names unknown skill '{name}'"
+        ));
+    }
+    if t.skills.iter().any(|s| s == name) {
+        problems.push(format!(
+            "{who}: '{name}' is both in skills and in skills_when '{pattern}'"
+        ));
+    }
+    if is_disabled_skill(t, name) {
+        problems.push(format!(
+            "{who}: '{name}' is both in skills_when '{pattern}' and in \
+             disabled_skills"
+        ));
+    }
+    if !FLEET_ORCHESTRATORS.contains(&who) && ORCHESTRATOR_ONLY_SKILLS.contains(&name) {
+        problems.push(format!(
+            "{who}: skill '{name}' belongs to the orchestrator only"
+        ));
+    }
+    problems
 }
 
 /// `--setting-sources ""` loads no settings file, so a `permissions.deny`
