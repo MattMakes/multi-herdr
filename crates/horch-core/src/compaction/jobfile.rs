@@ -47,6 +47,19 @@ pub struct JobRecord {
     pub step: String,
 }
 
+impl JobRecord {
+    /// The record for a `job.json` that is absent or does not parse.
+    fn unknown() -> JobRecord {
+        JobRecord {
+            v: JOB_VERSION,
+            role: String::new(),
+            record_id: String::new(),
+            started_at: String::new(),
+            step: "unknown".into(),
+        }
+    }
+}
+
 /// `spawned`: the parent started the child `pid` at `at`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Spawned {
@@ -133,19 +146,12 @@ pub fn liveness(dir: &Path, now: DateTime<Utc>) -> JobLiveness {
 pub fn claim_lost(dir: &Path) -> Result<Option<JobRecord>> {
     let path = dir.join(LOST_FILE);
     let body = serde_json::json!({ "at": crate::clock::now_stamp() }).to_string();
-    match create_new(&path, body.as_bytes()) {
-        Ok(()) => {}
-        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => return Ok(None),
-        Err(e) => return Err(e).with_context(|| format!("creating {}", path.display())),
-    }
-    let job = read_job(dir).flatten().unwrap_or_else(|| JobRecord {
-        v: JOB_VERSION,
-        role: String::new(),
-        record_id: String::new(),
-        started_at: String::new(),
-        step: "unknown".into(),
-    });
-    Ok(Some(job))
+    let claimed = match create_new(&path, body.as_bytes()) {
+        Ok(()) => true,
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => false,
+        Err(e) => Err(e).context(format!("creating {}", path.display()))?,
+    };
+    Ok(claimed.then(|| read_job(dir).flatten().unwrap_or_else(JobRecord::unknown)))
 }
 
 /// Create `job.json` with `create_new`, so 2 jobs for 1 role cannot both
@@ -174,20 +180,34 @@ pub fn clear_on_exit(dir: &Path) {
 /// [`Started::AlreadyRunning`] and spawn nothing. So 2 callers cannot
 /// remove each other's new job.
 pub fn start_locked(dir: &Path, spawn: impl FnOnce() -> Result<u32>) -> Result<Started> {
-    let root = dir.parent().context("the job dir has no parent")?;
-    let name = dir
-        .file_name()
-        .and_then(|n| n.to_str())
-        .context("the job dir has no name")?;
-    fsx::ensure_private_dir(root)?;
-    let _lock = fsx::DirLock::acquire(root, name, STALE_AFTER, LOCK_TIMEOUT)?;
+    let _lock = lock_job_dir(dir)?;
     // Wall clock: heartbeats and spawn times are real times.
     if liveness(dir, Utc::now()) == JobLiveness::Live {
         return Ok(Started::AlreadyRunning);
     }
     fsx::ensure_private_dir(dir)?;
     remove(dir, &[JOB_FILE, HEARTBEAT_FILE, SPAWNED_FILE, LOST_FILE]);
-    let pid = spawn()?;
+    record_spawn(dir, spawn()?)
+}
+
+/// The start lock of `dir`, in the job dir's parent under the job dir's name.
+fn lock_job_dir(dir: &Path) -> Result<fsx::DirLockGuard> {
+    let root = dir.parent().context("the job dir has no parent")?;
+    let name = dir
+        .file_name()
+        .and_then(std::ffi::OsStr::to_str)
+        .context("the job dir has no name")?;
+    fsx::ensure_private_dir(root)?;
+    Ok(fsx::DirLock::acquire(
+        root,
+        name,
+        STALE_AFTER,
+        LOCK_TIMEOUT,
+    )?)
+}
+
+/// Write `spawned`: the parent started the child `pid` now.
+fn record_spawn(dir: &Path, pid: u32) -> Result<Started> {
     let spawned = Spawned {
         pid,
         at: crate::clock::stamp(Utc::now()),
