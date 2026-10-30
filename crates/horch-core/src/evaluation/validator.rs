@@ -282,6 +282,7 @@ fn private_file(path: &Path) -> anyhow::Result<File> {
 /// own group.
 #[cfg(unix)]
 fn leader_exited(child: &mut Child) -> std::io::Result<bool> {
+    // SAFETY: `siginfo_t` is plain data, and an all-zero value is valid.
     let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
     // SAFETY: `info` is a valid siginfo_t to fill; the pid is this
     // process's own unreaped child.
@@ -297,6 +298,7 @@ fn leader_exited(child: &mut Child) -> std::io::Result<bool> {
         return Err(std::io::Error::last_os_error());
     }
     // With WNOHANG and no exit yet, the pid field stays 0.
+    // SAFETY: `waitid` succeeded, so `info` is initialised and `si_pid` reads a valid field.
     Ok(unsafe { info.si_pid() } != 0)
 }
 

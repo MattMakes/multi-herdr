@@ -326,6 +326,7 @@ pub fn pid_alive(pid: u32) -> bool {
     #[cfg(unix)]
     {
         // Signal 0 checks existence and permission without sending anything.
+        // SAFETY: `kill` with signal 0 sends nothing and touches no memory; `os` is a pid value.
         let r = unsafe { libc::kill(os, 0) };
         r == 0 || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
     }
@@ -347,6 +348,8 @@ fn host_name() -> String {
     #[cfg(unix)]
     {
         let mut buf = [0u8; 256];
+        // SAFETY: `buf` is a live 256-byte buffer and the length passed is `buf.len()`;
+        // `gethostname` writes at most that many bytes.
         let r = unsafe { libc::gethostname(buf.as_mut_ptr().cast(), buf.len()) };
         if r != 0 {
             return String::new();
@@ -675,6 +678,8 @@ impl BreakerGuard {
     fn take(lock: &Path) -> Option<BreakerGuard> {
         use std::os::unix::io::AsRawFd;
         match lock.parent().and_then(|d| std::fs::File::open(d).ok()) {
+            // SAFETY: `dir` is an open directory `File` that outlives the call, so its raw fd is valid;
+            // `flock` touches no memory.
             Some(dir) => match unsafe {
                 libc::flock(dir.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB)
             } {
@@ -705,6 +710,8 @@ impl Drop for BreakerGuard {
         #[cfg(unix)]
         if let Some(dir) = &self._dir {
             use std::os::unix::io::AsRawFd;
+            // SAFETY: `dir` is the open directory `File` this guard owns, so its raw fd is valid until drop;
+            // `flock` touches no memory.
             unsafe { libc::flock(dir.as_raw_fd(), libc::LOCK_UN) };
         }
     }
@@ -1092,6 +1099,7 @@ mod tests {
         let child = unsafe { libc::fork() };
         assert!(child >= 0, "fork failed");
         if child == 0 {
+            // SAFETY: the forked child runs only `pause` and `_exit`, both async-signal-safe.
             unsafe {
                 libc::pause();
                 libc::_exit(0);
@@ -1099,6 +1107,8 @@ mod tests {
         }
         drop(held);
         let free = BreakerGuard::take(&lock).is_some();
+        // SAFETY: `child` is the pid of the child forked above, which this test has not yet reaped;
+        // SIGKILL and `waitpid` with a null status pointer touch no memory.
         unsafe {
             libc::kill(child, libc::SIGKILL);
             libc::waitpid(child, std::ptr::null_mut(), 0);

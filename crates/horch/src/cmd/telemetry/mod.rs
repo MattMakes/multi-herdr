@@ -52,6 +52,8 @@ extern "C" fn on_signal(_: libc::c_int) {
 /// the lock is released on the way out.
 fn install_signal_handlers() {
     #[cfg(unix)]
+    // SAFETY: `on_signal` is an `extern "C"` fn that is async-signal-safe;
+    // `signal` only registers it for valid signal numbers.
     unsafe {
         let handler = on_signal as extern "C" fn(libc::c_int) as libc::sighandler_t;
         libc::signal(libc::SIGTERM, handler);
@@ -1368,6 +1370,7 @@ mod tests {
         for sig in [libc::SIGHUP, libc::SIGTERM, libc::SIGINT] {
             // SAFETY: reads the action; a null new action changes nothing.
             let mut old: libc::sigaction = unsafe { std::mem::zeroed() };
+            // SAFETY: `old` is a zeroed `sigaction` the call may fill; `sig` is a valid signal number.
             unsafe { libc::sigaction(sig, std::ptr::null(), &mut old) };
             assert_eq!(old.sa_sigaction, handler, "signal {sig}");
         }
