@@ -1795,4 +1795,139 @@ mod tests {
         assert!(o.err[0].starts_with("horch compact: refused: "), "{o:?}");
         assert!(f.typed(&orch).is_empty());
     }
+
+    #[test]
+    fn request_refuses_the_orchestrator_before_any_lookup() {
+        let f = Fleet::new();
+        let o = f.run("orchestrator", |a| a.request = true);
+        assert_eq!(
+            o,
+            Outcome::refused(
+                "refused: the orchestrator is not asked; it compacts itself at its stopping point"
+            )
+        );
+    }
+
+    #[test]
+    fn request_and_schedule_refuse_a_role_with_no_record_or_no_pane() {
+        let f = Fleet::new();
+        let missing = Outcome::refused("no live record for role ghost-1 in workspace w1");
+        assert_eq!(f.run("ghost-1", |a| a.request = true), missing);
+        assert_eq!(f.run("ghost-1", |_| {}), missing);
+        f.w.worker("r-1", "sonnet-1", "claude", "sonnet", Some(SMALL));
+        let nopane = Outcome::refused("role sonnet-1 has no pane in workspace w1");
+        assert_eq!(f.run("sonnet-1", |a| a.request = true), nopane);
+        assert_eq!(f.run("sonnet-1", |_| {}), nopane);
+    }
+
+    #[test]
+    fn a_failed_type_into_the_pane_refuses_and_records_nothing() {
+        let f = Fleet::new();
+        // The pane id is in the mailbox, but the workspace does not know it.
+        std::fs::write(f.mailbox.dir().join("sonnet-1.id"), "no-such-pane").unwrap();
+        f.w.worker("r-1", "sonnet-1", "claude", "sonnet", Some(OVER));
+        let o = f.run("sonnet-1", |a| a.request = true);
+        assert_eq!(o.code, 1, "{o:?}");
+        assert!(o.out.is_empty());
+        assert!(f.w.events("r-1", EVENT_REQUESTED).is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_live_job_is_reported_as_already_running_and_nothing_starts() {
+        let f = Fleet::new();
+        f.pane("sonnet-1");
+        f.w.worker("r-1", "sonnet-1", "claude", "sonnet", Some(OVER));
+        let dir = f.env().job_dir("sonnet-1");
+        std::fs::create_dir_all(&dir).unwrap();
+        let beat = horch_core::heartbeat::start(&dir);
+        let o = f.run("sonnet-1", |_| {});
+        beat.stop();
+        assert_eq!(
+            o,
+            Outcome::ok(format!(
+                "compaction of sonnet-1 already running; log {}",
+                dir.join(LOG_FILE).display()
+            ))
+        );
+    }
+
+    /// Run `horch compact sonnet-1` against a fake `horch` that runs `body`.
+    #[cfg(unix)]
+    fn start_with_child(body: &str) -> (Fleet, Outcome) {
+        let mut f = Fleet::new();
+        let bin = f.w.tmp.path().join("bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        let exe = bin.join("child");
+        std::fs::write(
+            &exe,
+            format!("#!/bin/sh\nif [ \"$1\" = warm ]; then exit 0; fi\n{body}\n"),
+        )
+        .unwrap();
+        horch_core::runtime::process::make_executable(&exe).unwrap();
+        assert!(std::process::Command::new(&exe)
+            .arg("warm")
+            .status()
+            .unwrap()
+            .success());
+        f.exe = exe;
+        f.start_timeout = Duration::from_secs(20);
+        f.pane("sonnet-1");
+        f.w.worker("r-1", "sonnet-1", "claude", "sonnet", Some(SMALL));
+        f.handoff(&f.w.project(), "sonnet-1");
+        let o = f.run("sonnet-1", |_| {});
+        (f, o)
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_child_that_exits_0_means_a_job_already_runs() {
+        let (f, o) = start_with_child("exit 0");
+        let log = f.env().job_dir("sonnet-1").join(LOG_FILE);
+        assert_eq!(o, Outcome::ok(already_running("sonnet-1", &log)));
+        assert!(f.w.events("r-1", EVENT_FAILED).is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_child_that_reports_itself_returns_its_line_with_no_second_event() {
+        let (f, o) = start_with_child("echo '2026 start [horch] BLOCKED: boom'\nexit 3");
+        assert_eq!(
+            o,
+            Outcome {
+                code: 1,
+                out: vec!["[horch] BLOCKED: boom".into()],
+                err: vec![],
+            }
+        );
+        assert!(f.w.events("r-1", EVENT_FAILED).is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_child_that_exits_3_with_no_report_fails_the_start() {
+        let (f, o) = start_with_child("exit 3");
+        assert_eq!(o.code, 1, "{o:?}");
+        assert_eq!(
+            f.w.events("r-1", EVENT_FAILED),
+            ["step start: the job exited with 3 and no report in its log"]
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_child_that_exits_with_another_code_or_a_signal_fails_the_start() {
+        let (f, o) = start_with_child("exit 7");
+        assert_eq!(o.code, 1, "{o:?}");
+        assert_eq!(
+            f.w.events("r-1", EVENT_FAILED),
+            ["step start: the job exited with 7 before it started"]
+        );
+        let (f, o) = start_with_child("kill -9 $$");
+        assert_eq!(o.code, 1, "{o:?}");
+        assert_eq!(
+            f.w.events("r-1", EVENT_FAILED),
+            ["step start: the job exited with a signal before it started"]
+        );
+    }
 }
