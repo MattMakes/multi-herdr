@@ -818,6 +818,49 @@ fn teardown_stops_a_process_that_starts_after_its_first_signal() {
     }
 }
 
+/// A process can leave its group between teardown's look and its SIGTERM:
+/// the mail courier, forked into the pane's group, calls `setsid` before
+/// it execs. Its pid ran at the first SIGTERM, but the signal missed it.
+/// Teardown signals its new group too, and the test does not fail for it.
+#[cfg(unix)]
+#[test]
+fn teardown_stops_a_process_that_leaves_its_group_before_the_signal() {
+    let h = Harness::new("teardown-mover");
+    // The first SIGTERM moves it to a group of its own, as `setsid` before
+    // that SIGTERM would; the next one ends it.
+    let mover = h.write_bin(
+        "mover",
+        b"#!/usr/bin/perl\nuse POSIX ();\nexit 0 if $ARGV[0] eq 'warm';\n\
+          $SIG{TERM} = sub { POSIX::setsid(); $SIG{TERM} = 'DEFAULT' };\n\
+          open(my $f, '>', $ARGV[0]) or die; print $f $$; close $f;\n\
+          sleep 1 while 1;\n",
+    );
+    // macOS scans a new executable at its first exec, for seconds.
+    assert!(Command::new(&mover).arg("warm").status().unwrap().success());
+    let pidfile = h.tmp.join("mover.pid");
+    // A member of a group whose leader, the outer shell, exits: `setsid`
+    // fails for a group leader.
+    let mut cmd = Command::new("/bin/sh");
+    cmd.args(["-c", "\"$0\" \"$1\" </dev/null >/dev/null 2>&1 &"])
+        .arg(&mover)
+        .arg(&pidfile);
+    std::os::unix::process::CommandExt::process_group(&mut cmd, 0);
+    assert!(cmd.status().unwrap().success());
+    let pid = pid_in(&pidfile);
+
+    let teardown = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| drop(h)));
+    let stopped = !runs(&pid);
+    if !stopped {
+        // SIGKILL, so this test never leaks the process itself.
+        let _ = Command::new("/bin/kill").args(["-9", &pid]).status();
+    }
+    assert!(stopped, "teardown stops the process {pid}");
+    if let Err(panic) = teardown {
+        let message = panic.downcast_ref::<String>().cloned().unwrap_or_default();
+        panic!("a process that teardown stopped is no leak: {message}");
+    }
+}
+
 /// A process that outlives teardown's SIGTERM fails the test, and teardown
 /// kills it.
 #[cfg(unix)]

@@ -2557,11 +2557,11 @@ fn a_new_tree_supersedes_the_open_reviews_of_the_old_round() {
     let all = reviews(&h);
     let (old, new) = all.split_at(n);
     assert!(
-        old.iter().all(|r| r.1 == "cancelled"),
+        !old.is_empty() && old.iter().all(|r| r.1 == "cancelled"),
         "round 1 is cancelled: {all:?}"
     );
     assert!(
-        new.iter().all(|r| r.1 == "queued"),
+        !new.is_empty() && new.iter().all(|r| r.1 == "queued"),
         "round 2 is queued: {all:?}"
     );
     // A superseded review is never queued again.
