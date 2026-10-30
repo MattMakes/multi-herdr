@@ -1276,6 +1276,22 @@ mod tests {
         assert_eq!(label(&project.join(".")), "my-project");
         assert_eq!(label(&project.join("sub").join("..")), "my-project");
     }
+    #[test]
+    fn resolved_path_is_nothing_for_an_empty_path_or_an_unknown_current_directory() {
+        let cwd = Path::new("/base");
+        assert_eq!(resolved_path(Path::new(""), Some(cwd)), None);
+        assert_eq!(resolved_path(Path::new("no-such-dir/x"), None), None);
+    }
+
+    #[test]
+    fn resolved_path_joins_a_missing_relative_path_to_the_current_directory() {
+        let cwd = Path::new("/base/here");
+        assert_eq!(
+            resolved_path(Path::new("no-such-dir/./a/../b"), Some(cwd)),
+            Some(PathBuf::from("/base/here/no-such-dir/b"))
+        );
+    }
+
     /// `offer_when` sees the top level and one level down, and nothing deeper
     /// or inside a dot-directory.
     #[test]
