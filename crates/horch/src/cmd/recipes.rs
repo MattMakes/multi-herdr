@@ -405,6 +405,7 @@ pub fn fleet_with(
     // spend is counted. Orchestrators of workspaces that are gone are
     // retired first: an orchestrator never runs `horch done`.
     let ledger = open_ledger(&ctx, &herdr)?;
+    horch_core::sweep::run_due(&ctx);
     let start = orchestrator_start(&ctx, &cwd, flavor, options)?;
     let record_id = start.record.record_id.clone();
 

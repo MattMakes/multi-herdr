@@ -5,6 +5,7 @@
 //! It also checks the host tools (`requires:`) of the teammates this project
 //! is offered.
 
+use std::collections::BTreeMap;
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -15,10 +16,11 @@ use horch_core::harness::HarnessKind;
 use horch_core::roster::{operator_effort_warnings, Requirement, Roster};
 use horch_core::runtime::bins::{host_tool_bin, BLENDER_APP, GODOT_APP, GODOT_MONO_APP};
 use horch_core::runtime::{process, RuntimeContext};
+use horch_core::sweep;
 use horch_core::taskledger::timer::Agent;
 use horch_core::workspace::herdr::Herdr;
 
-pub fn doctor(ctx: &RuntimeContext) -> Result<()> {
+pub fn doctor(ctx: &RuntimeContext, clean: bool) -> Result<()> {
     check(ctx)?;
     println!("herdr is installed and its server is reachable.");
     super::delivery_probe::doctor(ctx);
@@ -42,7 +44,50 @@ pub fn doctor(ctx: &RuntimeContext) -> Result<()> {
     for w in &warnings {
         eprintln!("warning: {w}");
     }
+    report_stale_state(ctx, clean);
     Ok(())
+}
+
+/// The stale state the sweep finds, per kind (#140). `clean` removes it;
+/// otherwise nothing is removed.
+fn report_stale_state(ctx: &RuntimeContext, clean: bool) {
+    let (lines, warnings) = stale_state(ctx, clean);
+    for w in &warnings {
+        eprintln!("warning: stale state: {w}");
+    }
+    for line in &lines {
+        println!("{line}");
+    }
+}
+
+/// The lines of [`report_stale_state`], and its warnings.
+fn stale_state(ctx: &RuntimeContext, clean: bool) -> (Vec<String>, Vec<String>) {
+    let herdr = Herdr::with_bin(&ctx.bins.harness.herdr);
+    let per_kind = |counts: &BTreeMap<sweep::Kind, usize>| {
+        counts
+            .iter()
+            .map(|(kind, n)| format!("  {n} {}", kind.label()))
+            .collect::<Vec<_>>()
+    };
+    if clean {
+        let applied = sweep::clean_in(ctx, &herdr, sweep::DOCTOR_BUDGET);
+        let mut lines = vec![format!("stale state: removed {}", applied.total())];
+        lines.extend(per_kind(&applied.removed));
+        return (lines, applied.errors);
+    }
+    let (plan, listed) = sweep::plan_in(ctx, &herdr, sweep::DOCTOR_BUDGET);
+    if listed.is_none() {
+        let line = "stale state: not checked, as herdr does not answer".to_string();
+        return (vec![line], Vec::new());
+    }
+    let counts = plan.counts();
+    let total: usize = counts.values().sum();
+    let mut lines = vec![match total {
+        0 => "stale state: none".to_string(),
+        n => format!("stale state: {n} (`horch doctor --clean` removes it)"),
+    }];
+    lines.extend(per_kind(&counts));
+    (lines, Vec::new())
 }
 
 /// The roster line, or its problems. Problems are not fatal: a fleet still
@@ -1759,6 +1804,83 @@ mod tests {
             warnings[0]
         );
         assert!(warnings[0].contains("Fix `pi --version` first."));
+    }
+
+    /// A context whose state root is in `dir` and whose herdr is a warmed
+    /// script that lists workspace `w1` with pane `p1`.
+    fn sweep_ctx(dir: &Path) -> RuntimeContext {
+        use std::os::unix::fs::PermissionsExt;
+        let herdr = dir.join("herdr");
+        std::fs::write(
+            &herdr,
+            "#!/bin/sh\ncase \"$1 $2\" in\n\
+             'workspace list') echo '{\"result\":{\"workspaces\":[{\"workspace_id\":\"w1\"}]}}' ;;\n\
+             'pane list') echo '{\"result\":{\"panes\":[{\"pane_id\":\"p1\"}]}}' ;;\n\
+             warm*) ;;\n\
+             *) exit 1 ;;\nesac\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&herdr, std::fs::Permissions::from_mode(0o755)).unwrap();
+        // macOS scans a new executable at its first exec: warm it.
+        assert!(Command::new(&herdr).arg("warm").status().unwrap().success());
+        let env = horch_core::runtime::MapEnv::new(dir)
+            .with("HOME", &dir.to_string_lossy())
+            .with("HORCH_STATE_DIR", &dir.join("state").to_string_lossy())
+            .with("HORCH_HERDR_BIN", &herdr.to_string_lossy());
+        RuntimeContext::from_env(&env).unwrap()
+    }
+
+    #[test]
+    fn doctor_counts_stale_state_by_kind_and_clean_removes_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let ctx = sweep_ctx(dir.path());
+        let state = dir.path().join("state");
+        let ledger = horch_core::execution::records::Ledger::for_project(&state, "/proj");
+        for (id, pane) in [("done-1", "p1"), ("closed-1", "p7")] {
+            ledger
+                .insert(horch_core::execution::legacy::Record {
+                    record_id: id.into(),
+                    role: format!("opus-{id}"),
+                    workspace_id: Some("w1".into()),
+                    pane_id: Some(pane.into()),
+                    ..Default::default()
+                })
+                .unwrap();
+        }
+        ledger.done("done-1", "finished").unwrap();
+        let bundle = state.join("skill-bundles").join("done-1");
+        std::fs::create_dir_all(&bundle).unwrap();
+        let socket = horch_core::messaging::channel::socket_path(&state, "w9");
+        std::fs::create_dir_all(socket.parent().unwrap()).unwrap();
+        drop(std::os::unix::net::UnixListener::bind(&socket).unwrap());
+
+        let (lines, warnings) = stale_state(&ctx, false);
+        assert_eq!(
+            lines,
+            [
+                "stale state: 3 (`horch doctor --clean` removes it)",
+                "  1 working records with a closed pane",
+                "  1 channel sockets",
+                "  1 skill bundles",
+            ]
+        );
+        assert!(warnings.is_empty(), "{warnings:?}");
+        assert!(
+            bundle.exists() && socket.exists(),
+            "doctor alone removes nothing"
+        );
+        assert!(ledger.get("closed-1").unwrap().execution_status().is_live());
+
+        let (lines, warnings) = stale_state(&ctx, true);
+        assert_eq!(lines[0], "stale state: removed 3", "{lines:?}");
+        assert!(warnings.is_empty(), "{warnings:?}");
+        assert!(!bundle.exists() && !socket.exists());
+        assert!(ledger
+            .get("closed-1")
+            .unwrap()
+            .execution_status()
+            .is_terminal());
+        assert_eq!(stale_state(&ctx, false).0, ["stale state: none"]);
     }
 }
 
