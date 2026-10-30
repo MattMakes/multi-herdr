@@ -457,13 +457,15 @@ const REAP_GRACE: std::time::Duration = std::time::Duration::from_secs(5);
 /// fake run for ever. Teardown sends SIGTERM to the process group of every
 /// pane that fake-herdr recorded and that is still the same group (the
 /// leader's start time matches, see [`horch_core::procid::is_same_group`]), and
-/// to the group of every process whose command line names the harness root
-/// (a fake, a pane whose start was never recorded). A process of those
-/// groups, or one that names the root, that still runs after
-/// [`REAP_GRACE`] leaked: it gets SIGKILL and is returned.
+/// to the group of every process whose command line or environment names
+/// the harness root (a fake, a pane whose start was never recorded, the
+/// detached mail courier, which redelivers until `horch inbox`
+/// acknowledges). A process of those groups, or one that names the root,
+/// that still runs after [`REAP_GRACE`] leaked: it gets SIGKILL and is
+/// returned.
 #[cfg(unix)]
 fn reap(root: &Path, log: &Path) -> Vec<String> {
-    use crate::process::{processes, signal_groups, Process};
+    use crate::process::{commands_with_environment, processes, signal_groups, Process};
     use horch_core::procid::is_same_group;
     let mut state = log.as_os_str().to_owned();
     state.push(".state.json");
@@ -489,9 +491,16 @@ fn reap(root: &Path, log: &Path) -> Vec<String> {
             is_same_group(pid, started).then_some(pid)
         })
         .collect();
-    let names_root =
-        |p: &Process| p.pid != me && marks.iter().any(|m| p.command.contains(m.as_str()));
-    groups.extend(all.iter().filter(|p| names_root(p)).map(|p| p.pgid));
+    let names_root = |p: &Process, environments: &std::collections::HashMap<u32, String>| {
+        let named = |text: &str| marks.iter().any(|m| text.contains(m.as_str()));
+        p.pid != me && (named(&p.command) || environments.get(&p.pid).is_some_and(|e| named(e)))
+    };
+    let environments = commands_with_environment();
+    groups.extend(
+        all.iter()
+            .filter(|p| names_root(p, &environments))
+            .map(|p| p.pgid),
+    );
     groups.retain(|g| *g > 1 && Some(*g) != own_group);
     groups.sort_unstable();
     groups.dedup();
@@ -502,9 +511,10 @@ fn reap(root: &Path, log: &Path) -> Vec<String> {
     // A group id stays ours while the group has members: no other process
     // can be given it.
     let left = || -> Vec<Process> {
+        let environments = commands_with_environment();
         processes()
             .into_iter()
-            .filter(|p| p.pid != me && (groups.contains(&p.pgid) || names_root(p)))
+            .filter(|p| p.pid != me && (groups.contains(&p.pgid) || names_root(p, &environments)))
             .collect()
     };
     let until = std::time::Instant::now() + REAP_GRACE;

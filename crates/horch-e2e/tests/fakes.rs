@@ -697,6 +697,53 @@ fn teardown_kills_the_open_panes() {
     assert!(!runs(&pid), "teardown kills the pane command");
 }
 
+/// The mail courier redelivers until `horch inbox` acknowledges, so a test
+/// that queues orchestrator mail leaves it running. Only its environment
+/// names the harness root, not its command line: teardown finds it by its
+/// environment, stops it, and the test does not fail for it.
+#[cfg(unix)]
+#[test]
+fn teardown_stops_the_mail_courier_of_its_state() {
+    let h = Harness::new("teardown-courier");
+    // Orchestrator mail and no orchestrator: the courier waits for one.
+    horch_core::messaging::mail::Mail::under(&h.state, "w1")
+        .enqueue("sonnet-1", "DONE: x")
+        .unwrap();
+    // Started as horch starts it: detached (the shell exits) in its own
+    // process group, with the harness paths only in its environment.
+    let mut cmd = Command::new("/bin/sh");
+    h.seal(&mut cmd);
+    cmd.args([
+        "-c",
+        "\"$0\" mail courier --workspace w1 </dev/null >/dev/null 2>&1 &",
+    ])
+    .arg(Harness::horch_bin());
+    std::os::unix::process::CommandExt::process_group(&mut cmd, 0);
+    assert!(cmd.status().unwrap().success());
+    let lock = h.state.join("mail/w1/courier.lock");
+    let started = std::time::Instant::now();
+    let pid = loop {
+        let holders = Command::new("lsof").arg("-t").arg(&lock).output().unwrap();
+        let pid = String::from_utf8_lossy(&holders.stdout).trim().to_string();
+        if !pid.is_empty() {
+            break pid;
+        }
+        assert!(
+            started.elapsed().as_secs() < 10,
+            "the courier did not start"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    };
+
+    drop(h);
+    let stopped = !runs(&pid);
+    if !stopped {
+        // SIGKILL, so this test never leaks the process itself.
+        let _ = Command::new("/bin/kill").args(["-9", &pid]).status();
+    }
+    assert!(stopped, "teardown stops the courier {pid}");
+}
+
 /// A process that outlives teardown's SIGTERM fails the test, and teardown
 /// kills it.
 #[cfg(unix)]

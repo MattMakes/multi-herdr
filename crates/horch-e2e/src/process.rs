@@ -37,6 +37,55 @@ pub fn processes() -> Vec<Process> {
         .collect()
 }
 
+/// The command line and environment of each process of this user, by pid,
+/// as 1 line each. A detached process that a harness started (the mail
+/// courier) names the harness only in its environment. Empty when they
+/// cannot be read.
+#[cfg(target_os = "macos")]
+pub fn commands_with_environment() -> std::collections::HashMap<u32, String> {
+    let Ok(out) = std::process::Command::new("/bin/ps")
+        .args(["-xwwE", "-o", "pid=,command="])
+        .output()
+    else {
+        return Default::default();
+    };
+    String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .filter_map(|line| {
+            let line = line.trim_start();
+            let (pid, rest) = line.split_once(' ')?;
+            Some((pid.parse().ok()?, rest.to_string()))
+        })
+        .collect()
+}
+
+/// [`commands_with_environment`] from `/proc`.
+#[cfg(target_os = "linux")]
+pub fn commands_with_environment() -> std::collections::HashMap<u32, String> {
+    let Ok(entries) = std::fs::read_dir("/proc") else {
+        return Default::default();
+    };
+    entries
+        .flatten()
+        .filter_map(|entry| {
+            let pid: u32 = entry.file_name().to_str()?.parse().ok()?;
+            let mut text = Vec::new();
+            for part in ["cmdline", "environ"] {
+                text.extend(std::fs::read(entry.path().join(part)).ok()?);
+                text.push(0);
+            }
+            let text = String::from_utf8_lossy(&text).replace('\0', " ");
+            Some((pid, text))
+        })
+        .collect()
+}
+
+/// [`commands_with_environment`] where neither `ps -E` nor `/proc` exists.
+#[cfg(all(unix, not(any(target_os = "macos", target_os = "linux"))))]
+pub fn commands_with_environment() -> std::collections::HashMap<u32, String> {
+    Default::default()
+}
+
 /// Send `signal` (`TERM`, `KILL`) to each process group.
 ///
 /// No `--` before the groups: dash, `/bin/sh` on Debian and Ubuntu, rejects
