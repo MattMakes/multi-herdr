@@ -10,6 +10,7 @@
 //! | [`clock`]       | the one clock horch reads (`HORCH_NOW` pins it)             |
 //! | [`fsx`]         | durable file writes and the cross-process directory lock    |
 //! | [`procid`]      | process identity: a pid with its start time                 |
+//! | [`exeid`]       | which binary a long-lived horch process runs                |
 //! | [`heartbeat`]   | the liveness of background jobs (judge, compaction)         |
 //! | [`runtime`]     | the process boundary: `RuntimeContext`, paths, binaries     |
 //! | [`roster`]      | `teammates/` files: parsing, layering, `--check` rules      |
@@ -17,8 +18,10 @@
 //! | [`skills`]      | skill catalogs, activation plans and launch bundles         |
 //! | [`harness`]     | the agent CLIs (claude, codex, OpenCode, pi, Prime, Antigravity) and launch |
 //! | [`routing`]     | quota-aware routing: policy, quota view, decisions          |
-//! | [`execution`]   | executions: model, ledger record and store, spawn plan, lifecycle |
+//! | [`execution`]   | executions: model, session ledger record and store, spawn plan, lifecycle |
 //! | [`messaging`]   | the worker brief, the mailbox and message delivery          |
+//! | [`project_notes`] | durable project facts and the host line of every brief    |
+//! | [`taskledger`]  | the SQLite task ledger: runs, tasks, claims, finish, stop   |
 //! | [`workspace`]   | the herdr client, layout, tiling and balancing              |
 //! | [`compaction`]  | context windows, thresholds, row states, the compaction job |
 //! | [`telemetry`]   | live per-pane token telemetry and the collector             |
