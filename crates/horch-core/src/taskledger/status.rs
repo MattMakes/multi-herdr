@@ -9,6 +9,7 @@ use serde::Serialize;
 
 use crate::exeid::{exe_identity, ExeIdentity};
 
+use super::model::WorktreeStatus;
 use super::runs::Run;
 use super::store::optional;
 use super::tasks::{self, Task};
@@ -554,7 +555,9 @@ fn ago(s: i64) -> String {
 fn render_open_worktrees(out: &mut String, worktrees: &[WorktreeLine]) {
     let open: Vec<&WorktreeLine> = worktrees
         .iter()
-        .filter(|w| !super::triage::SETTLED.contains(&w.status.as_str()))
+        .filter(|w| {
+            !WorktreeStatus::parse(&w.status).is_ok_and(|s| super::triage::SETTLED.contains(&s))
+        })
         .collect();
     if open.is_empty() {
         return;
