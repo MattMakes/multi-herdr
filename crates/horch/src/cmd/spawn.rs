@@ -8,26 +8,29 @@
 //! [`SPAWN_WAIT`] for the worker to register, and fails with the worker's
 //! startup error when the worker dies first.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
 use anyhow::{bail, Context, Result};
 use horch_core::competition::budget::UsageMeter;
 use horch_core::competition::observe::TelemetryUsage;
+use horch_core::execution::legacy::Record;
 use horch_core::execution::lifecycle::{await_worker, StartupKey, WorkerStart};
 use horch_core::execution::plan::{self, GateInputs, MintedIds, PlanInputs};
-use horch_core::execution::service::{ExecutionService, SpawnError};
+use horch_core::execution::service::{ExecutionService, SpawnError, SpawnOutcome};
 use horch_core::execution::store::ExecutionStore;
 use horch_core::execution::{
-    Execution, ExecutionStatus, LaunchStage, SessionMode, SpawnRequest, TilingMode,
+    Execution, ExecutionPlan, ExecutionStatus, LaunchStage, SessionMode, SpawnRequest, TilingMode,
 };
 use horch_core::fleet_runs::facts::{record_start, RunSources};
 use horch_core::fleet_runs::sync::sync_project;
 use horch_core::ids::{ExecutionId, SessionId, TeammateName};
 use horch_core::measure::paths::DatasetPaths;
 use horch_core::messaging::mailbox::Mailbox;
-use horch_core::roster::Phase;
+use horch_core::roster::{Phase, Roster};
 use horch_core::routing::decision::GateFlags;
+use horch_core::routing::policy::BalanceMode;
+use horch_core::routing::quota::QuotaView;
 use horch_core::runtime::RuntimeContext;
 use horch_core::skills::{harness_support, SkillResolution};
 use horch_core::usage::Locations;
@@ -115,28 +118,138 @@ pub fn spawn(ctx: &RuntimeContext, mut args: SpawnArgs) -> Result<String> {
     result
 }
 
+/// What `spawn_worker` reads before it plans, and the steps after it use.
+struct SpawnContext {
+    roster: Roster,
+    herdr: Herdr,
+    mailbox: Mailbox,
+    project: PathBuf,
+    store: ExecutionStore,
+}
+
 fn spawn_worker(
     ctx: &RuntimeContext,
     args: SpawnArgs,
     ledger: Option<&super::taskledger_spawn::LedgerSpawn>,
 ) -> Result<String> {
+    let req = build_request(&args)?;
+    let sc = spawn_context(ctx)?;
+    let existing = resume_record(&req, &sc)?;
+    let plan = plan_request(ctx, &req, &sc, existing.as_ref())?;
+    launch(ctx, &sc, plan, args.role.as_deref(), ledger)
+}
+
+/// The record a resume continues, when the request has one.
+fn resume_record(req: &SpawnRequest, sc: &SpawnContext) -> Result<Option<Record>> {
+    // A record whose pane closed without `horch done` ends here, so it resumes.
+    if let Some(key) = req.resume.as_deref() {
+        sc.store.end_if_pane_closed(key, &sc.herdr)?;
+    }
+    let existing = req.resume.as_deref().and_then(|key| sc.store.get(key).ok());
+    refuse_competition_record(existing.as_ref())?;
+    Ok(existing)
+}
+
+/// Gate, mint ids, read skills and plan. Print the gate line.
+fn plan_request(
+    ctx: &RuntimeContext,
+    req: &SpawnRequest,
+    sc: &SpawnContext,
+    existing: Option<&Record>,
+) -> Result<ExecutionPlan> {
+    let gated = gate_inputs(ctx, req, &sc.roster)?;
+    let ids = MintedIds {
+        execution: ExecutionId::new(horch_core::mint_uuid())?,
+        session: SessionId::new(horch_core::mint_uuid())?,
+    };
+    let skills = read_skills(ctx, req, &sc.roster, existing)?;
+    let inputs = PlanInputs {
+        roster: &sc.roster,
+        skills: &skills,
+        gate: gated.as_ref().map(|(view, balance)| GateInputs {
+            view,
+            balance: *balance,
+        }),
+        existing,
+        now: horch_core::clock::now(),
+        ids: &ids,
+        project: &sc.project,
+    };
+    let plan = plan(req, &inputs)?;
+    if let Some(line) = &plan.gate_line {
+        crate::output::println(line);
+    }
+    Ok(plan)
+}
+
+/// Start the planned worker, then wait for it and report it.
+fn launch(
+    ctx: &RuntimeContext,
+    sc: &SpawnContext,
+    plan: ExecutionPlan,
+    role: Option<&str>,
+    ledger: Option<&super::taskledger_spawn::LedgerSpawn>,
+) -> Result<String> {
+    // Advisory probes belong after validation: a refused/headless request
+    // must not contact herdr or create diagnostic state.
+    fleet_warnings(ctx, true);
+
+    let tile = |pane: &str, tiling: TilingMode| tile_pane(ctx, sc, pane, tiling);
+    let service = ExecutionService {
+        ctx,
+        store: &sc.store,
+        workspace: &sc.herdr,
+        mailbox: &sc.mailbox,
+        tile: &tile,
+        ledger_worker: ledger.map(|l| l.worker_id.as_str()),
+    };
+    let started = SystemTime::now();
+    let out = service.spawn(plan, role).inspect_err(|e| {
+        if let Some(l) = ledger {
+            l.launch_failed(&format!("{e:#}"));
+        }
+    })?;
+    let launch = &out.plan.launch;
+    if let Some(l) = ledger {
+        l.spawned(
+            out.plan.execution.role.as_str(),
+            &out.pane,
+            launch.teammate.agent.as_str(),
+            &launch.model,
+            out.plan.execution.effort.as_deref(),
+        );
+    }
+    // The record has its pane, and the spawn has run the ledger recovery.
+    fleet_facts(ctx, &sc.store, &sc.project, &out.plan.execution);
+    wait_for_start(ctx, sc, &out, started, ledger)?;
+    eprintln!("{}", spawned_line(&out));
+    Ok(out.pane)
+}
+
+/// The request `horch spawn` plans, from its arguments.
+fn build_request(args: &SpawnArgs) -> Result<SpawnRequest> {
     let mut req = SpawnRequest::worker(
         args.teammate
             .as_deref()
             .map(TeammateName::new)
             .transpose()?,
-        args.task,
+        args.task.clone(),
     );
     if req.teammate.is_none() && args.resume.is_none() {
         return Err(SpawnError::from(plan::PlanError::NothingToSpawn).into());
     }
-    (req.resume, req.phase, req.effort) = (args.resume, args.phase, args.effort);
-    (req.from_pane, req.direction, req.tiling) = (args.from_pane, args.direction, args.tiling);
+    (req.resume, req.phase, req.effort) = (args.resume.clone(), args.phase, args.effort.clone());
+    (req.from_pane, req.direction, req.tiling) =
+        (args.from_pane.clone(), args.direction, args.tiling);
     req.flags = GateFlags {
         exact: args.exact,
         force: args.force,
     };
+    Ok(req)
+}
 
+/// The roster, the workspace, the mailbox, the project and the store.
+fn spawn_context(ctx: &RuntimeContext) -> Result<SpawnContext> {
     let roster_dir = super::path_text(ctx.bins.roster_override.as_deref());
     let roster = super::load_roster(ctx, roster_dir.as_deref())?;
     let herdr = Herdr::with_bin(&ctx.bins.harness.herdr);
@@ -149,176 +262,173 @@ fn spawn_worker(
     // The project's facts add the teammate's `skills_when` skills at planning.
     let roster = roster.with_project_facts(horch::project::project_facts(&project));
     let store = ExecutionStore::open_in(ctx)?;
+    Ok(SpawnContext {
+        roster,
+        herdr,
+        mailbox,
+        project,
+        store,
+    })
+}
 
-    // A record whose pane closed without `horch done` ends here, so it resumes.
-    if let Some(key) = req.resume.as_deref() {
-        store.end_if_pane_closed(key, &herdr)?;
-    }
-    let existing = req.resume.as_deref().and_then(|key| store.get(key).ok());
-    if let Some(r) = existing.as_ref().filter(|r| r.round_id.is_some()) {
-        anyhow::bail!(
-            "record {} is a competition {} (round {}); multi-herdr-dataset owns it, \
-             so horch spawn --resume refuses it",
-            r.record_id,
-            if r.experiment_id.is_some() {
-                "candidate"
-            } else {
-                "judge"
-            },
-            r.round_id.as_deref().unwrap_or_default()
-        );
+/// A competition record belongs to multi-herdr-dataset, never to a resume.
+fn refuse_competition_record(existing: Option<&Record>) -> Result<()> {
+    let Some(r) = existing.filter(|r| r.round_id.is_some()) else {
+        return Ok(());
+    };
+    bail!(
+        "record {} is a competition {} (round {}); multi-herdr-dataset owns it, \
+         so horch spawn --resume refuses it",
+        r.record_id,
+        if r.experiment_id.is_some() {
+            "candidate"
+        } else {
+            "judge"
+        },
+        r.round_id.as_deref().unwrap_or_default()
+    )
+}
+
+/// The quota view and balance mode, when the request spends quota.
+fn gate_inputs(
+    ctx: &RuntimeContext,
+    req: &SpawnRequest,
+    roster: &Roster,
+) -> Result<Option<(QuotaView, BalanceMode)>> {
+    if !plan::needs_gate(req, roster) {
+        return Ok(None);
     }
     let root = &ctx.paths.state_root;
-    let gated = match plan::needs_gate(&req, &roster) {
-        true => {
-            let policy = super::quotacmd::load_policy(ctx, root)?;
-            let env = super::quotacmd::quota_env(ctx);
-            let now = horch_core::clock::now();
-            let view = horch_core::routing::snapshot::obtain(root, now, &policy, true, &env)?;
-            Some((view, policy.balance_mode))
-        }
-        false => None,
-    };
-    let ids = MintedIds {
-        execution: ExecutionId::new(horch_core::mint_uuid())?,
-        session: SessionId::new(horch_core::mint_uuid())?,
-    };
-    // Planning reads no files, so the operator and plugin skills of the
-    // teammate that will launch are read here. Then the record lists them,
-    // as the launch bundle does.
+    let policy = super::quotacmd::load_policy(ctx, root)?;
+    let env = super::quotacmd::quota_env(ctx);
+    let now = horch_core::clock::now();
+    let view = horch_core::routing::snapshot::obtain(root, now, &policy, true, &env)?;
+    Ok(Some((view, policy.balance_mode)))
+}
+
+/// Planning reads no files, so the operator and plugin skills of the
+/// teammate that will launch are read here. Then the record lists them,
+/// as the launch bundle does.
+fn read_skills(
+    ctx: &RuntimeContext,
+    req: &SpawnRequest,
+    roster: &Roster,
+    existing: Option<&Record>,
+) -> Result<SkillResolution> {
     let launching = req
         .teammate
         .as_ref()
         .map(|t| t.as_str())
-        .or(existing.as_ref().map(|r| r.tier.as_str()));
-    let skills = SkillResolution::read(
+        .or(existing.map(|r| r.tier.as_str()));
+    SkillResolution::read(
         roster.skill_catalog()?,
         launching.and_then(|name| roster.get(name)),
-        ctx.inherited.home_var.as_deref().map(std::path::Path::new),
+        ctx.inherited.home_var.as_deref().map(Path::new),
         harness_support,
-    )?;
-    let inputs = PlanInputs {
-        roster: &roster,
-        skills: &skills,
-        gate: gated.as_ref().map(|(view, balance)| GateInputs {
-            view,
-            balance: *balance,
-        }),
-        existing: existing.as_ref(),
-        now: horch_core::clock::now(),
-        ids: &ids,
-        project: &project,
-    };
-    let plan = match plan::plan_launch(&req, &inputs).map_err(SpawnError::from) {
-        Err(e @ SpawnError::Refused { .. }) => {
-            if let SpawnError::Refused { line, .. } = &e {
+    )
+}
+
+/// Plan the launch. A refusal prints its REFUSED line before it fails.
+fn plan(req: &SpawnRequest, inputs: &PlanInputs) -> Result<ExecutionPlan> {
+    let planned = plan::plan_launch(req, inputs)
+        .map_err(SpawnError::from)
+        .inspect_err(|e| {
+            if let SpawnError::Refused { line, .. } = e {
                 crate::output::println(line);
             }
-            return Err(e.into());
-        }
-        other => other?,
-    };
-    if let Some(line) = &plan.gate_line {
-        crate::output::println(line);
-    }
-    // Advisory probes belong after validation: a refused/headless request
-    // must not contact herdr or create diagnostic state.
-    fleet_warnings(ctx, true);
+        });
+    Ok(planned?)
+}
 
-    // Lay the grid out, which also puts the pane where it belongs: a split
-    // halves its parent, and the tiler moves the worker into the next free
-    // slot and evens every column. Best effort: a grid that will not lay out
-    // must not fail a spawn whose worker is already running.
-    let tile = |pane: &str, tiling: TilingMode| {
-        if tiling == TilingMode::Disabled {
-            if let Ok(layout) = herdr.pane_layout(Some(pane)) {
-                arrange::equalize_quietly(ctx, &herdr, layout);
-            }
-        } else {
-            arrange::after_change(ctx, &herdr, mailbox.workspace_id(), Some(pane));
-        }
-    };
-    let service = ExecutionService {
-        ctx,
-        store: &store,
-        workspace: &herdr,
-        mailbox: &mailbox,
-        tile: &tile,
-        ledger_worker: ledger.map(|l| l.worker_id.as_str()),
-    };
-    let started = SystemTime::now();
-    let out = match service.spawn(plan, args.role.as_deref()) {
-        Ok(out) => out,
-        Err(e) => {
-            if let Some(l) = ledger {
-                l.launch_failed(&format!("{e:#}"));
-            }
-            return Err(e.into());
-        }
-    };
-    let (launch, role, pane) = (&out.plan.launch, &out.plan.execution.role, &out.pane);
-    if let Some(l) = ledger {
-        l.spawned(
-            role.as_str(),
-            pane,
-            launch.teammate.agent.as_str(),
-            &launch.model,
-            out.plan.execution.effort.as_deref(),
-        );
+/// Lay the grid out, which also puts the pane where it belongs: a split
+/// halves its parent, and the tiler moves the worker into the next free
+/// slot and evens every column. Best effort: a grid that will not lay out
+/// must not fail a spawn whose worker is already running.
+fn tile_pane(ctx: &RuntimeContext, sc: &SpawnContext, pane: &str, tiling: TilingMode) {
+    if tiling != TilingMode::Disabled {
+        arrange::after_change(ctx, &sc.herdr, sc.mailbox.workspace_id(), Some(pane));
+    } else if let Ok(layout) = sc.herdr.pane_layout(Some(pane)) {
+        arrange::equalize_quietly(ctx, &sc.herdr, layout);
     }
-    // The record has its pane, and the spawn has run the ledger recovery.
-    fleet_facts(ctx, &store, &project, &out.plan.execution);
-    // A pane line starts with `exec`, so a worker that fails at startup
-    // closes its pane and takes its stderr with it. It leaves the error in a
-    // file instead, and this wait reads it.
+}
+
+/// Wait for the worker to register. A pane line starts with `exec`, so a
+/// worker that fails at startup closes its pane and takes its stderr with
+/// it. It leaves the error in a file instead, and this wait reads it.
+fn wait_for_start(
+    ctx: &RuntimeContext,
+    sc: &SpawnContext,
+    out: &SpawnOutcome,
+    started: SystemTime,
+    ledger: Option<&super::taskledger_spawn::LedgerSpawn>,
+) -> Result<()> {
     let wait = ctx.settings.spawn_wait.unwrap_or(SPAWN_WAIT);
-    if !wait.is_zero() {
-        let data_root = &ctx.paths.data_root;
-        let mut registered = || mailbox.pane_for(role.as_str()).as_deref() == Some(pane.as_str());
-        // The worker keys its error by this record, or by its pane when it
-        // could not read its brief (#192).
-        let keys = [
-            StartupKey::Record(out.plan.execution.id.as_str()),
-            StartupKey::Pane(pane.as_str()),
-        ];
-        match await_worker(data_root, &keys, started, wait, SPAWN_POLL, &mut registered) {
-            WorkerStart::Registered => {}
-            WorkerStart::Failed(error) => {
-                let id = out.plan.execution.id.as_str();
-                let state = ExecutionStatus::LaunchFailed {
-                    stage: LaunchStage::Run,
-                    reason: error.clone(),
-                };
-                if let Err(e) = store.end_live(id, state) {
-                    eprintln!("horch spawn: recording the failed start of {id} failed: {e:#}");
-                }
-                // The pane closed with the worker, or the worker closed it;
-                // this close is for a pane that did neither.
-                let _ = herdr.pane_close(pane);
-                mailbox.unregister(role.as_str());
-                if let Some(l) = ledger {
-                    l.launch_failed(&error);
-                }
-                bail!("worker {role} (pane {pane}) failed to start: {error}");
-            }
-            WorkerStart::Waiting => eprintln!(
+    if wait.is_zero() {
+        return Ok(());
+    }
+    let (role, pane) = (&out.plan.execution.role, &out.pane);
+    let mut registered = || sc.mailbox.pane_for(role.as_str()).as_deref() == Some(pane.as_str());
+    // The worker keys its error by this record, or by its pane when it
+    // could not read its brief (#192).
+    let keys = [
+        StartupKey::Record(out.plan.execution.id.as_str()),
+        StartupKey::Pane(pane.as_str()),
+    ];
+    let data_root = &ctx.paths.data_root;
+    match await_worker(data_root, &keys, started, wait, SPAWN_POLL, &mut registered) {
+        WorkerStart::Registered => Ok(()),
+        WorkerStart::Failed(error) => {
+            record_failed_start(sc, out, &error, ledger);
+            bail!("worker {role} (pane {pane}) failed to start: {error}")
+        }
+        WorkerStart::Waiting => {
+            eprintln!(
                 "horch spawn: worker {role} (pane {pane}) has not registered after {} ms; \
                  it can still start",
                 wait.as_millis()
-            ),
+            );
+            Ok(())
         }
     }
+}
+
+/// End the record of a worker that failed at startup, and clean up after it.
+fn record_failed_start(
+    sc: &SpawnContext,
+    out: &SpawnOutcome,
+    error: &str,
+    ledger: Option<&super::taskledger_spawn::LedgerSpawn>,
+) {
+    let id = out.plan.execution.id.as_str();
+    let state = ExecutionStatus::LaunchFailed {
+        stage: LaunchStage::Run,
+        reason: error.to_string(),
+    };
+    if let Err(e) = sc.store.end_live(id, state) {
+        eprintln!("horch spawn: recording the failed start of {id} failed: {e:#}");
+    }
+    // The pane closed with the worker, or the worker closed it;
+    // this close is for a pane that did neither.
+    let _ = sc.herdr.pane_close(&out.pane);
+    sc.mailbox.unregister(out.plan.execution.role.as_str());
+    if let Some(l) = ledger {
+        l.launch_failed(error);
+    }
+}
+
+/// The line `horch spawn` prints on stderr when the worker is up.
+fn spawned_line(out: &SpawnOutcome) -> String {
+    let (launch, role, pane) = (&out.plan.launch, &out.plan.execution.role, &out.pane);
     let what = format!("{} {}", launch.teammate.agent, launch.model);
     match &launch.session {
         SessionMode::Resume(id) => {
-            eprintln!("spawned {role} (pane {pane}): {what}, RESUMING session {id}")
+            format!("spawned {role} (pane {pane}): {what}, RESUMING session {id}")
         }
-        SessionMode::Fresh(None) => eprintln!("spawned {role} (pane {pane}): {what}, new session"),
+        SessionMode::Fresh(None) => format!("spawned {role} (pane {pane}): {what}, new session"),
         SessionMode::Fresh(Some(id)) => {
-            eprintln!("spawned {role} (pane {pane}): {what}, new session {id}")
+            format!("spawned {role} (pane {pane}): {what}, new session {id}")
         }
     }
-    Ok(out.pane)
 }
 
 /// The most run rows one `horch spawn` writes. Each reads a transcript;
