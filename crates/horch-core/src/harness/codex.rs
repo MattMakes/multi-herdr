@@ -396,33 +396,41 @@ pub(crate) fn ensure_rules(home: &Path, rules: &[ExecRule]) -> Result<()> {
         std::fs::create_dir_all(parent)
             .with_context(|| format!("creating {}", parent.display()))?;
     }
-    // Only a missing file is empty. A file that is not UTF-8 text is an
-    // error: rewriting it from "" would drop the operator's own rules.
-    let read = match std::fs::read_to_string(&path) {
-        Ok(text) => text,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
-        Err(e) => return Err(e).with_context(|| format!("reading {}", path.display())),
-    };
+    let read = read_rules_text(&path)?;
     let existing = read.replace(&prompts::codex_rule_block(&broad_ledger_rule()), "");
 
-    let mut appended = String::new();
-    for rule in rules.iter().filter(|r| r.decision == ExecDecision::Allow) {
-        // Match on the rendered pattern list, exactly as the bash `grep -qF` did.
-        if existing.contains(&format!("[{}]", rule.pattern)) {
-            continue;
-        }
-        appended.push_str(&prompts::codex_rule_block(rule));
-    }
+    // Match on the rendered pattern list, exactly as the bash `grep -qF` did.
+    let appended: String = rules
+        .iter()
+        .filter(|r| r.decision == ExecDecision::Allow)
+        .filter(|r| !existing.contains(&format!("[{}]", r.pattern)))
+        .map(prompts::codex_rule_block)
+        .collect();
     if appended.is_empty() && existing == read {
-        return Ok(());
+        Ok(())
+    } else {
+        write_rules(&path, existing, &appended)
     }
+}
 
+/// Only a missing file is empty. A file that is not UTF-8 text is an
+/// error: rewriting it from "" would drop the operator's own rules.
+fn read_rules_text(path: &Path) -> Result<String> {
+    match std::fs::read_to_string(path) {
+        Ok(text) => Ok(text),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(String::new()),
+        Err(e) => Err(e).with_context(|| format!("reading {}", path.display())),
+    }
+}
+
+/// Write `existing` plus `appended`, starting `appended` on its own line.
+fn write_rules(path: &Path, existing: String, appended: &str) -> Result<()> {
     let mut next = existing;
     if !next.is_empty() && !next.ends_with('\n') {
         next.push('\n');
     }
-    next.push_str(&appended);
-    std::fs::write(&path, next).with_context(|| format!("writing {}", path.display()))
+    next.push_str(appended);
+    std::fs::write(path, next).with_context(|| format!("writing {}", path.display()))
 }
 
 /// The broad worker rule that v0.4.0 appended to the shared rules file. It
@@ -554,60 +562,58 @@ fn collect_rollouts(
         return;
     };
     for entry in entries.filter_map(|e| e.ok()) {
-        let path = entry.path();
-        let Ok(meta) = entry.metadata() else { continue };
-        if meta.is_dir() {
-            collect_rollouts(&path, since, workdir, out);
-            continue;
+        if entry.metadata().is_ok_and(|meta| meta.is_dir()) {
+            collect_rollouts(&entry.path(), since, workdir, out);
+        } else {
+            out.extend(rollout_candidate(&entry, since, workdir));
         }
-        if !meta.is_file() {
-            continue;
-        }
-        let Ok(modified) = meta.modified() else {
-            continue;
-        };
-        // An equal mtime is this launch's: mtimes come from a coarse clock,
-        // so a rollout written in the marker's tick has the marker's mtime.
-        if modified < since {
-            continue;
-        }
-        let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
-            continue;
-        };
-        let Some(session_id) = session_id_from_rollout(name) else {
-            continue;
-        };
-        if !head_names_cwd(&path, workdir) {
-            continue;
-        }
-        out.push(RolloutCandidate {
-            session_id: session_id.to_string(),
-            path,
-            modified,
-        });
     }
+}
+
+/// The rollout file `entry` names, if it is a recent file of this workdir.
+fn rollout_candidate(
+    entry: &std::fs::DirEntry,
+    since: SystemTime,
+    workdir: &Workdir,
+) -> Option<RolloutCandidate> {
+    let meta = entry.metadata().ok()?;
+    meta.is_file().then_some(())?;
+    let modified = meta.modified().ok()?;
+    // An equal mtime is this launch's: mtimes come from a coarse clock,
+    // so a rollout written in the marker's tick has the marker's mtime.
+    (modified >= since).then_some(())?;
+    let path = entry.path();
+    let session_id = session_id_from_rollout(path.file_name()?.to_str()?)?.to_string();
+    head_names_cwd(&path, workdir).then_some(())?;
+    Some(RolloutCandidate {
+        session_id,
+        path,
+        modified,
+    })
 }
 
 /// Does the first 16KB of `path` record `workdir` as a `"cwd"`?
 fn head_names_cwd(path: &Path, workdir: &Workdir) -> bool {
-    use std::io::Read;
-    let Ok(mut file) = std::fs::File::open(path) else {
-        return false;
-    };
-    let mut buf = vec![0u8; 16 * 1024];
-    let Ok(read) = file.read(&mut buf) else {
-        return false;
-    };
-    buf.truncate(read);
-    let head = String::from_utf8_lossy(&buf);
-    head.match_indices("\"cwd\":").any(|(i, key)| {
-        let rest = head[i + key.len()..].trim_start();
-        serde_json::Deserializer::from_str(rest)
-            .into_iter::<String>()
-            .next()
-            .and_then(|v| v.ok())
-            .is_some_and(|cwd| workdir.matches(Path::new(&cwd)))
+    read_head(path).is_some_and(|head| {
+        head.match_indices("\"cwd\":").any(|(i, key)| {
+            let rest = head[i + key.len()..].trim_start();
+            serde_json::Deserializer::from_str(rest)
+                .into_iter::<String>()
+                .next()
+                .and_then(|v| v.ok())
+                .is_some_and(|cwd| workdir.matches(Path::new(&cwd)))
+        })
     })
+}
+
+/// The first 16KB of `path`, lossily decoded.
+fn read_head(path: &Path) -> Option<String> {
+    use std::io::Read;
+    let mut file = std::fs::File::open(path).ok()?;
+    let mut buf = vec![0u8; 16 * 1024];
+    let read = file.read(&mut buf).ok()?;
+    buf.truncate(read);
+    Some(String::from_utf8_lossy(&buf).into_owned())
 }
 
 /// The operator's `config.toml`, read bounded (a FIFO, a device or a file
