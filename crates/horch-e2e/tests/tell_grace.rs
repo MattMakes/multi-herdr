@@ -60,11 +60,45 @@ fn within(limit: Duration, mut f: impl FnMut() -> bool) -> bool {
     f()
 }
 
-/// U-70: with the default grace, the smoke worker's pane closes in under
-/// 5 s after its `horch done` records the session as done.
+/// The herdr calls on `pane` that the done report's push made between its
+/// last screen read (the `/login` check) and its `agent prompt`, or the
+/// last call when it typed nothing: the readiness and grace waits of `tell`.
+fn waits_before_the_report(h: &Harness, pane: &str) -> Vec<String> {
+    let calls: Vec<Vec<String>> = h
+        .calls_of("herdr")
+        .iter()
+        .filter_map(|c| {
+            let argv: Vec<String> = c["argv"]
+                .as_array()?
+                .iter()
+                .filter_map(|a| a.as_str().map(str::to_owned))
+                .collect();
+            (argv.get(2).map(String::as_str) == Some(pane)).then_some(argv)
+        })
+        .collect();
+    // A grace wait can spend the push budget: then nothing is prompted.
+    let prompt = calls
+        .iter()
+        .position(|a| a[..2] == ["agent", "prompt"] && a.iter().any(|w| w.contains("DONE:")))
+        .unwrap_or(calls.len());
+    let read = calls[..prompt]
+        .iter()
+        .rposition(|a| a[..2] == ["pane", "read"])
+        .expect("the push read the orchestrator pane first");
+    calls[read + 1..prompt]
+        .iter()
+        .map(|a| a.join(" "))
+        .collect()
+}
+
+/// U-70: with the default grace, the smoke worker's `horch done` does not
+/// wait for an agent to show in the orchestrator's shell pane: its push
+/// asks herdr about that pane once and types the report, and the pane
+/// closes. A count of calls, not a time: the push alone is 8 herdr calls
+/// and a 1 s Enter wait, which took 5.8 s at load 40.
 #[cfg(unix)]
 #[test]
-fn worker_pane_closes_within_5_s_of_done_with_the_default_tell_grace() {
+fn worker_done_reports_without_waiting_for_the_default_tell_grace() {
     let mut h = Harness::new("tell-grace");
     // `seal` sets the variable to 0; an empty value is the default grace.
     h.set("HORCH_TELL_GRACE_MS", "");
@@ -108,7 +142,6 @@ fn worker_pane_closes_within_5_s_of_done_with_the_default_tell_grace() {
         "the smoke session never reached done: {:?}",
         records(&h)
     );
-    let done_at = Instant::now();
     assert!(
         within(Duration::from_secs(40), || !herdr(
             &h,
@@ -118,9 +151,10 @@ fn worker_pane_closes_within_5_s_of_done_with_the_default_tell_grace() {
         .success()),
         "the worker pane {pane} never closed"
     );
-    let waited = done_at.elapsed();
-    assert!(
-        waited < Duration::from_secs(5),
-        "the pane closed {waited:?} after done; tell waited for its grace"
+    let waits = waits_before_the_report(&h, "w1:p1");
+    assert_eq!(
+        waits,
+        ["pane get w1:p1"],
+        "tell waited for its grace before the report"
     );
 }
