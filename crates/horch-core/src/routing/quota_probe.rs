@@ -227,19 +227,18 @@ fn run_with_deadline(
     let out = read_on_thread(child.stdout.take());
     let err = read_on_thread(child.stderr.take());
     let deadline = Instant::now() + timeout;
-    let status = loop {
-        match child.try_wait() {
-            Ok(Some(status)) => break Some(status),
-            Ok(None) if Instant::now() < deadline => {
-                std::thread::sleep(StdDuration::from_millis(20))
-            }
-            // The readers are not joined: a process the child started can
-            // still hold the pipes open.
-            _ => {
-                let _ = child.kill();
-                let _ = child.wait();
-                break None;
-            }
+    // The readers are not joined: a process the child started can still
+    // hold the pipes open.
+    let status = match crate::runtime::process::wait_until(
+        &mut child,
+        deadline,
+        StdDuration::from_millis(20),
+    ) {
+        Ok(Some(status)) => Some(status),
+        _ => {
+            let _ = child.kill();
+            let _ = child.wait();
+            None
         }
     };
     let text = |r: std::thread::JoinHandle<String>| r.join().unwrap_or_default();

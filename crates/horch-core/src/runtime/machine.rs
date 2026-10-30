@@ -233,18 +233,17 @@ mod sys {
             let _ = stdout.read_to_string(&mut text);
             text
         });
-        let start = Instant::now();
-        let status = loop {
-            match child.try_wait() {
-                Ok(Some(status)) => break Some(status),
-                Ok(None) if start.elapsed() < COMMAND_TIMEOUT => {
-                    std::thread::sleep(Duration::from_millis(10));
-                }
-                _ => {
-                    let _ = child.kill();
-                    let _ = child.wait();
-                    break None;
-                }
+        let deadline = Instant::now() + COMMAND_TIMEOUT;
+        let status = match crate::runtime::process::wait_until(
+            &mut child,
+            deadline,
+            Duration::from_millis(10),
+        ) {
+            Ok(Some(status)) => Some(status),
+            _ => {
+                let _ = child.kill();
+                let _ = child.wait();
+                None
             }
         };
         let text = reader.join().ok()?;

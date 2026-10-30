@@ -377,13 +377,11 @@ enum Waited {
 /// on alone.
 fn wait_for_stop(child: &mut std::process::Child, limit: std::time::Duration) -> Waited {
     let deadline = std::time::Instant::now() + limit;
-    loop {
-        match child.try_wait() {
-            Ok(Some(status)) => break Waited::Exited(status.success()),
-            Err(_) => break Waited::Exited(false),
-            Ok(None) if std::time::Instant::now() >= deadline => break Waited::TimedOut,
-            Ok(None) => std::thread::sleep(std::time::Duration::from_millis(50)),
-        }
+    match crate::runtime::process::wait_until(child, deadline, std::time::Duration::from_millis(50))
+    {
+        Ok(Some(status)) => Waited::Exited(status.success()),
+        Err(_) => Waited::Exited(false),
+        Ok(None) => Waited::TimedOut,
     }
 }
 
