@@ -90,8 +90,12 @@ impl World {
     }
 
     fn list(&self) -> Output {
+        self.horch(&["worktree", "list"])
+    }
+
+    fn horch(&self, args: &[&str]) -> Output {
         Command::new(env!("CARGO_BIN_EXE_horch"))
-            .args(["worktree", "list"])
+            .args(args)
             .current_dir(&self.repo)
             .env_clear()
             .env("PATH", std::env::var_os("PATH").unwrap_or_default())
@@ -140,4 +144,25 @@ fn list_says_none_when_every_worktree_is_clean() {
     let out = w.list();
     assert!(out.status.success(), "{}", text(&out));
     assert_eq!(String::from_utf8_lossy(&out.stdout), "unregistered: none\n");
+}
+
+/// A claim made by `worktree new` is a line of its own before the section of
+/// the unregistered worktrees: its name, role, state (`open` until it lands),
+/// branch, base, the commits it is ahead, the lines of `git status`, and
+/// whether its branch is in the base.
+#[test]
+fn list_prints_a_claim_with_its_state() {
+    let w = World::new();
+    let made = w.horch(&["worktree", "new", "mine"]);
+    assert!(made.status.success(), "{}", text(&made));
+    let out = w.list();
+    assert!(out.status.success(), "{}", text(&out));
+    let stdout = String::from_utf8(out.stdout).unwrap();
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert_eq!(lines.len(), 4, "{stdout}");
+    assert_eq!(
+        lines[0],
+        "mine orchestrator open wt/orchestrator-mine main ahead=0 dirty=0 contained=true"
+    );
+    assert_eq!(lines[1], "unregistered:");
 }
