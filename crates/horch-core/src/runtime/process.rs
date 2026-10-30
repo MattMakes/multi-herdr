@@ -595,6 +595,70 @@ mod tests {
         assert_eq!(which_in(&paths, "dup", &[]), Some(first.path().join("dup")));
     }
 
+    /// In one directory the bare name beats an extension, and the extensions
+    /// go in the order given.
+    #[test]
+    fn which_in_tries_the_bare_name_then_each_extension_in_order() {
+        let tmp = tempfile::tempdir().unwrap();
+        for file in ["tool", "tool.cmd", "tool.exe", "only.cmd", "only.exe"] {
+            let exe = tmp.path().join(file);
+            std::fs::write(&exe, "").unwrap();
+            make_executable(&exe).unwrap();
+        }
+        let paths = path_list(&[tmp.path()]);
+        let extensions = [".exe".to_string(), ".cmd".to_string()];
+        assert_eq!(
+            which_in(&paths, "tool", &extensions),
+            Some(tmp.path().join("tool"))
+        );
+        assert_eq!(
+            which_in(&paths, "only", &extensions),
+            Some(tmp.path().join("only.exe"))
+        );
+    }
+
+    /// A directory is searched whole before the next one: an extension in an
+    /// earlier directory beats the bare name in a later one.
+    #[test]
+    fn which_in_finishes_a_directory_before_the_next() {
+        let first = tempfile::tempdir().unwrap();
+        let second = tempfile::tempdir().unwrap();
+        for exe in [first.path().join("tool.exe"), second.path().join("tool")] {
+            std::fs::write(&exe, "").unwrap();
+            make_executable(&exe).unwrap();
+        }
+        let paths = path_list(&[first.path(), second.path()]);
+        assert_eq!(
+            which_in(&paths, "tool", &[".exe".to_string()]),
+            Some(first.path().join("tool.exe"))
+        );
+    }
+
+    /// A file without the executable bit stops nothing: the extension in the
+    /// same directory and the bare name in a later one still match.
+    #[cfg(unix)]
+    #[test]
+    fn which_in_passes_over_files_without_the_executable_bit() {
+        let first = tempfile::tempdir().unwrap();
+        let second = tempfile::tempdir().unwrap();
+        std::fs::write(first.path().join("tool"), "").unwrap();
+        std::fs::write(first.path().join("other"), "").unwrap();
+        for exe in [first.path().join("tool.exe"), second.path().join("other")] {
+            std::fs::write(&exe, "").unwrap();
+            make_executable(&exe).unwrap();
+        }
+        let paths = path_list(&[first.path(), second.path()]);
+        let extensions = [".exe".to_string()];
+        assert_eq!(
+            which_in(&paths, "tool", &extensions),
+            Some(first.path().join("tool.exe"))
+        );
+        assert_eq!(
+            which_in(&paths, "other", &extensions),
+            Some(second.path().join("other"))
+        );
+    }
+
     #[test]
     fn on_path_in_ignores_trailing_separators() {
         let tmp = tempfile::tempdir().unwrap();
