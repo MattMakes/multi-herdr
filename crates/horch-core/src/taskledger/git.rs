@@ -153,6 +153,17 @@ impl Git {
             .collect())
     }
 
+    /// Like [`Git::dirty`], but only tracked files: changed, staged or
+    /// deleted. Untracked files do not count.
+    pub fn dirty_tracked(&self, dir: &Path) -> Result<Vec<String>> {
+        let out = self.run(dir, &["status", "--porcelain", "--untracked-files=no"])?;
+        Ok(out
+            .lines()
+            .filter(|l| !l.trim().is_empty())
+            .map(|l| l.to_string())
+            .collect())
+    }
+
     /// The stash entries whose message names `branch`.
     pub fn stashes_on(&self, dir: &Path, branch: &str) -> Result<Vec<String>> {
         let out = self.run(dir, &["stash", "list"])?;

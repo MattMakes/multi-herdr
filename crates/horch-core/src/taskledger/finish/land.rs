@@ -24,6 +24,12 @@ const MAX_LAND_TRIES: u32 = 5;
 /// (`horch ledger add --check-timeout`).
 pub const CHECK_TIMEOUT: Duration = Duration::from_secs(20 * 60);
 
+/// The longest check timeout a task may set; a longer one is cut to this.
+pub const MAX_CHECK_TIMEOUT: Duration = Duration::from_secs(24 * 60 * 60);
+
+/// How long a timed-out check gets to exit after its group is killed.
+const REAP_WAIT: Duration = Duration::from_secs(5);
+
 /// How often a land that waits for the land lock names its holder.
 const LOCK_NOTICE_EVERY: Duration = Duration::from_secs(30);
 
@@ -31,8 +37,16 @@ fn check_timeout_path(evidence_root: &Path, task_id: &str) -> PathBuf {
     super::task_dir(evidence_root, task_id).join("check-timeout-s")
 }
 
-/// Record the check timeout of 1 task.
+/// Record the check timeout of 1 task. Refuses 0 and more than
+/// [`MAX_CHECK_TIMEOUT`].
 pub fn set_check_timeout(evidence_root: &Path, task_id: &str, timeout: Duration) -> Result<()> {
+    if timeout.is_zero() || timeout > MAX_CHECK_TIMEOUT {
+        bail!(
+            "a check timeout is 1 to {} s, not {} s",
+            MAX_CHECK_TIMEOUT.as_secs(),
+            timeout.as_secs()
+        );
+    }
     let path = check_timeout_path(evidence_root, task_id);
     std::fs::create_dir_all(path.parent().expect("a task folder"))?;
     std::fs::write(&path, format!("{}\n", timeout.as_secs()))?;
@@ -45,7 +59,7 @@ pub fn check_timeout(evidence_root: &Path, task_id: &str) -> Duration {
         .ok()
         .and_then(|s| s.trim().parse::<u64>().ok())
         .filter(|s| *s > 0)
-        .map(Duration::from_secs)
+        .map(|s| Duration::from_secs(s).min(MAX_CHECK_TIMEOUT))
         .unwrap_or(CHECK_TIMEOUT)
 }
 
@@ -58,7 +72,9 @@ enum Checked {
 }
 
 /// Run `command` in `dir` with the shell, in its own process group; the
-/// output goes to `log`. At `timeout` the whole group is killed (#160).
+/// output goes to `log`. At `timeout` the whole group is killed (#160), and
+/// so it is on every other way out of this function, and when horch gets
+/// SIGINT, SIGTERM or SIGHUP while the check runs.
 fn run_check(
     shell: &Path,
     dir: &Path,
@@ -79,22 +95,30 @@ fn run_check(
     crate::runtime::process::scrub_child_env(&mut cmd);
     #[cfg(unix)]
     std::os::unix::process::CommandExt::process_group(&mut cmd, 0);
-    let mut child = cmd
+    let child = cmd
         .spawn()
         .with_context(|| format!("running the check `{command}`"))?;
-    let deadline = std::time::Instant::now() + timeout;
+    let mut group = CheckGroup::new(child);
+    let deadline = std::time::Instant::now()
+        .checked_add(timeout.min(MAX_CHECK_TIMEOUT))
+        .context("the check deadline")?;
     let status = loop {
-        if let Some(st) = child.try_wait()? {
+        if let Some(st) = group.child.try_wait()? {
             break st;
         }
         if std::time::Instant::now() >= deadline {
-            kill_group(&mut child);
-            let _ = child.wait();
+            group.kill();
+            let reaped = group.reap(REAP_WAIT);
             writeln!(file, "\n# timed out after {} s", timeout.as_secs())?;
+            if !reaped {
+                writeln!(file, "# the check did not exit after the kill")?;
+            }
             return Ok(Checked::TimedOut(timeout));
         }
         std::thread::sleep(Duration::from_millis(50));
     };
+    group.done = true;
+    signals::forget();
     writeln!(file, "\n# exit: {:?}", status.code())?;
     Ok(if status.success() {
         Checked::Passed
@@ -103,19 +127,114 @@ fn run_check(
     })
 }
 
+/// A running check. Dropped before it exited (an error, a panic), it kills
+/// the check's whole group, so no check outlives its finish.
+struct CheckGroup {
+    child: std::process::Child,
+    done: bool,
+}
+
+impl CheckGroup {
+    fn new(child: std::process::Child) -> Self {
+        signals::watch(child.id());
+        Self { child, done: false }
+    }
+
+    /// Kill the group; when that fails, kill at least the shell.
+    fn kill(&mut self) {
+        if !kill_group(self.child.id()) {
+            let _ = self.child.kill();
+        }
+    }
+
+    /// Wait up to `limit` for the killed check to exit. Whether it did.
+    fn reap(&mut self, limit: Duration) -> bool {
+        let until = std::time::Instant::now() + limit;
+        loop {
+            if matches!(self.child.try_wait(), Ok(Some(_)) | Err(_)) {
+                self.done = true;
+                signals::forget();
+                return true;
+            }
+            if std::time::Instant::now() >= until {
+                return false;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+}
+
+impl Drop for CheckGroup {
+    fn drop(&mut self) {
+        if !self.done {
+            self.kill();
+            self.reap(REAP_WAIT);
+        }
+        signals::forget();
+    }
+}
+
+/// Kill the process group `pgid` (the check's pid: `process_group(0)`).
+/// Whether the kill was sent.
 #[cfg(unix)]
-fn kill_group(child: &mut std::process::Child) {
-    // The group id is the child's pid (`process_group(0)`); the child is not
-    // reaped yet, so the id still names its group.
+fn kill_group(pgid: u32) -> bool {
     // SAFETY: killpg takes plain integers and touches no memory.
-    unsafe {
-        libc::killpg(child.id() as libc::pid_t, libc::SIGKILL);
+    unsafe { libc::killpg(pgid as libc::pid_t, libc::SIGKILL) == 0 }
+}
+
+#[cfg(not(unix))]
+fn kill_group(_pgid: u32) -> bool {
+    false
+}
+
+/// SIGINT, SIGTERM and SIGHUP to horch while a check runs kill the check's
+/// group too: the check has its own group, so a terminal's signal does not
+/// reach it, and without this it ran on with no deadline.
+#[cfg(unix)]
+mod signals {
+    use std::sync::atomic::{AtomicI32, Ordering};
+    use std::sync::Once;
+
+    /// The group of the running check, 0 when none runs.
+    static GROUP: AtomicI32 = AtomicI32::new(0);
+    static INSTALL: Once = Once::new();
+
+    extern "C" fn on_signal(sig: libc::c_int) {
+        let pgid = GROUP.swap(0, Ordering::SeqCst);
+        // SAFETY: killpg, signal and raise are async-signal-safe. The
+        // default action is put back and the signal raised again, so horch
+        // ends as it would have without this handler.
+        unsafe {
+            if pgid > 0 {
+                libc::killpg(pgid, libc::SIGKILL);
+            }
+            libc::signal(sig, libc::SIG_DFL);
+            libc::raise(sig);
+        }
+    }
+
+    pub(super) fn watch(pgid: u32) {
+        GROUP.store(pgid as i32, Ordering::SeqCst);
+        INSTALL.call_once(|| {
+            // SAFETY: the handler only calls async-signal-safe functions.
+            unsafe {
+                let handler = on_signal as extern "C" fn(libc::c_int) as libc::sighandler_t;
+                libc::signal(libc::SIGINT, handler);
+                libc::signal(libc::SIGTERM, handler);
+                libc::signal(libc::SIGHUP, handler);
+            }
+        });
+    }
+
+    pub(super) fn forget() {
+        GROUP.store(0, Ordering::SeqCst);
     }
 }
 
 #[cfg(not(unix))]
-fn kill_group(child: &mut std::process::Child) {
-    let _ = child.kill();
+mod signals {
+    pub(super) fn watch(_pgid: u32) {}
+    pub(super) fn forget() {}
 }
 
 /// The task's check command, if it has one.
@@ -127,26 +246,34 @@ fn check_command<'a>(cx: &'a Ctx<'_>) -> Option<&'a str> {
 }
 
 /// Run the task's check in `dir`. `None` when it passed or there is none,
-/// else why it did not pass.
-fn check_in(cx: &Ctx<'_>, dir: &Path, log: &Path) -> Result<Option<String>> {
+/// else how it ended and why it did not pass.
+fn check_in(cx: &Ctx<'_>, dir: &Path, log: &Path) -> Result<Option<(Checked, String)>> {
     let Some(cmd) = check_command(cx) else {
         return Ok(None);
     };
     let timeout = check_timeout(&cx.tools.evidence_root, &cx.task.task_id);
-    Ok(match run_check(&cx.tools.shell, dir, cmd, log, timeout)? {
-        Checked::Passed => None,
-        Checked::Failed => Some(format!("`{cmd}` failed; read {}", log.display())),
-        Checked::TimedOut(t) => Some(format!(
+    let checked = run_check(&cx.tools.shell, dir, cmd, log, timeout)?;
+    let why = match checked {
+        Checked::Passed => return Ok(None),
+        Checked::Failed => format!("`{cmd}` failed; read {}", log.display()),
+        Checked::TimedOut(t) => format!(
             "`{cmd}` timed out after {} s and was killed; read {}",
             t.as_secs(),
             log.display()
-        )),
-    })
+        ),
+    };
+    Ok(Some((checked, why)))
 }
 
 /// Committed work only: a step judges commits, never a half-saved tree.
-fn require_clean(git: &Git, dir: &Path) -> Result<()> {
-    let dirty = git.dirty(dir)?;
+/// In the shared checkout only tracked files count: its untracked files are
+/// the operator's or other workers', not the task's.
+fn require_clean(git: &Git, dir: &Path, shared: bool) -> Result<()> {
+    let dirty = if shared {
+        git.dirty_tracked(dir)?
+    } else {
+        git.dirty(dir)?
+    };
     if !dirty.is_empty() {
         bail!(
             "{} has uncommitted changes ({} files, e.g. {}). Commit your work, then run horch ledger finish again",
@@ -165,18 +292,17 @@ pub fn check(cx: &Ctx<'_>, name: StepName) -> Result<Outcome> {
             "the task has no check command (horch ledger add --check)",
         ));
     };
-    require_clean(&cx.tools.git, &cx.dir)?;
+    require_clean(&cx.tools.git, &cx.dir, !cx.task.uses_worktree())?;
     let log = cx
         .evidence_dir
         .join(format!("{}-{}.log", cx.seq, name.as_str()));
     let tree = cx.tools.git.tree(&cx.dir).ok();
     match check_in(cx, &cx.dir, &log)? {
         None => Ok(Outcome::pass("exit 0", Some(log), &format!("`{cmd}` passed")).judged(tree)),
-        Some(why) => {
-            let verdict = if why.contains("timed out") {
-                "timed out"
-            } else {
-                "red"
+        Some((checked, why)) => {
+            let verdict = match checked {
+                Checked::TimedOut(_) => "timed out",
+                _ => "red",
             };
             Ok(Outcome::fail(verdict, Some(log), &format!("{why}; fix it")).judged(tree))
         }
@@ -258,7 +384,7 @@ pub fn land(store: &mut Store, cx: &Ctx<'_>) -> Result<Outcome> {
         return land_again(cx, &wt, &run_branch, &log);
     }
     let dir = PathBuf::from(&wt.path);
-    require_clean(git, &dir)?;
+    require_clean(git, &dir, false)?;
     set_worktree(store.conn(), &wt.worktree_id, WorktreeStatus::Landing, None)?;
     let about = About {
         run: Some(&cx.run.run_id),
@@ -289,8 +415,10 @@ pub fn land(store: &mut Store, cx: &Ctx<'_>) -> Result<Outcome> {
         Ok(Outcome::fail("not landed", Some(log.clone()), &why))
     };
     // Rebase and check outside the land lock; under it, fast-forward only
-    // when the run branch did not move meanwhile, else go again (#160).
+    // when the run branch did not move meanwhile (#160). When it moved, the
+    // next try takes the lock first, so a land runs the check at most twice.
     let mut tries = 0;
+    let mut held: Option<crate::fsx::DirLockGuard> = None;
     let (_lock, new) = loop {
         tries += 1;
         let target_before = git.rev(&cx.root, &run_branch)?;
@@ -306,7 +434,7 @@ pub fn land(store: &mut Store, cx: &Ctx<'_>) -> Result<Outcome> {
                 ),
             );
         }
-        if let Some(why) = check_in(cx, &dir, &log)? {
+        if let Some((_, why)) = check_in(cx, &dir, &log)? {
             return red(store, format!("after the rebase: {why}"));
         }
         let new = git.rev(&dir, "HEAD")?;
@@ -316,7 +444,10 @@ pub fn land(store: &mut Store, cx: &Ctx<'_>) -> Result<Outcome> {
                 "the rebased branch does not contain the run branch".into(),
             );
         }
-        let lock = land_lock(cx)?;
+        let lock = match held.take() {
+            Some(lock) => lock,
+            None => land_lock(cx)?,
+        };
         if git.rev(&cx.root, &run_branch)? == target_before {
             break (lock, new);
         }
@@ -326,6 +457,7 @@ pub fn land(store: &mut Store, cx: &Ctx<'_>) -> Result<Outcome> {
                 format!("{run_branch} moved during each of {tries} checks; run finish again"),
             );
         }
+        held = Some(lock);
     };
     // Fast-forward the run branch: by merge when it is checked out in the
     // main checkout, else by a compare-and-swap of its ref. Never forced.
@@ -418,7 +550,7 @@ pub(crate) fn reopen_if_new_commits(
     }
     let new = git
         .commits_missing_from(root, &wt.branch, run_branch)
-        .unwrap_or_default();
+        .with_context(|| format!("listing the commits of {} after its land", wt.branch))?;
     if new.is_empty() {
         return Ok(false);
     }
@@ -473,7 +605,7 @@ fn land_again(cx: &Ctx<'_>, wt: &WorktreeRow, run_branch: &str, log: &Path) -> R
 /// the checkout is on it; push them.
 fn land_shared(cx: &Ctx<'_>, run_branch: &str, log: &Path) -> Result<Outcome> {
     let git = &cx.tools.git;
-    require_clean(git, &cx.root)?;
+    require_clean(git, &cx.root, true)?;
     if git.current_branch(&cx.root).as_deref() != Some(run_branch) {
         bail!("a shared-checkout task lands only when the checkout is on {run_branch}");
     }

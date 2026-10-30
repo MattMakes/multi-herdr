@@ -494,7 +494,13 @@ pub fn run(ctx: &RuntimeContext, command: LedgerCommand) -> Result<ExitCode> {
             run,
         } => {
             let r = resolve_run(ctx, &store, &run)?;
-            if let Some(w) = worker_id_opt(ctx) {
+            // The caller: its worker id, else the run's worker in its pane, so
+            // a worker that unsets HORCH_WORKER_ID is still known.
+            let pane = ctx.herdr.pane.as_ref().map(|p| p.as_str().to_string());
+            let caller = worker_id_opt(ctx).or_else(|| {
+                finish::codesweep::worker_in_pane(store.conn(), &r.run_id, pane.as_deref())
+            });
+            if let Some(w) = caller {
                 let w = workers::get(store.conn(), &w)?;
                 if w.kind != WorkerKind::Orchestrator.as_str() {
                     bail!("only the orchestrator waives a code-sweep finding; fix it, or answer an Important finding in the answers file");

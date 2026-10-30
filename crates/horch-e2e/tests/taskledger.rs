@@ -1965,7 +1965,9 @@ fn a_check_past_its_timeout_is_killed_with_its_children() {
     ok(&h, &["ledger", "run", "new", "alpha", "--steps", "check"]);
     let p = ticket(&h, "01-a", "# 01: Feature\n");
     let pidfile = h.root.join("sleep.pid");
-    let check = format!("/bin/sleep 5 & echo $! > {}; wait", pidfile.display());
+    // The check never ends by itself: only the timeout ends it, so no
+    // wall-clock bound on the finish is needed to prove the kill.
+    let check = format!("/bin/sleep 3600 & echo $! > {}; wait", pidfile.display());
     ok(
         &h,
         &[
@@ -1986,13 +1988,7 @@ fn a_check_past_its_timeout_is_killed_with_its_children() {
     let wt = ok_as(&h, &w, &["ledger", "worktree", "new", "feat"]);
     let path = PathBuf::from(wt.lines().find_map(|l| l.strip_prefix("path: ")).unwrap());
     commit_file(&h, &path, "a.txt");
-    let start = Instant::now();
     let (code, r) = finish_json(&h, &w);
-    assert!(
-        start.elapsed() < Duration::from_secs(4),
-        "{:?}",
-        start.elapsed()
-    );
     assert_eq!(code, Some(1), "{r}");
     assert_eq!(
         step_of(&r, "check"),
@@ -2010,12 +2006,15 @@ fn a_check_past_its_timeout_is_killed_with_its_children() {
         .unwrap()
         .trim()
         .to_string();
-    let alive = std::process::Command::new("kill")
-        .args(["-0", &pid])
-        .status()
-        .unwrap()
-        .success();
-    assert!(!alive, "the check's sleep {pid} is gone");
+    // The killed sleep is reaped by init, not by finish: wait for that.
+    wait_for("the check's sleep to be gone", || {
+        let alive = std::process::Command::new("kill")
+            .args(["-0", &pid])
+            .status()
+            .unwrap()
+            .success();
+        (!alive).then_some(())
+    });
 }
 
 #[test]
@@ -2023,7 +2022,15 @@ fn a_land_checks_outside_the_lock_and_lands_after_a_faster_task() {
     let h = finish_world("tl-land-race");
     ok(&h, &["ledger", "run", "new", "alpha", "--steps", "land"]);
     let started = h.root.join("a-started");
-    let slow = format!("/usr/bin/touch {}; /bin/sleep 4", started.display());
+    let release = h.root.join("a-release");
+    // A's check holds until the test releases it, so B's land always falls
+    // inside A's check, however slow the host is. The loop ends after 600 s
+    // so a failed test leaves no check behind.
+    let slow = format!(
+        "/usr/bin/touch {}; i=0; while [ $i -lt 6000 ]; do [ -e {} ] && exit 0; /bin/sleep 0.1; i=$((i + 1)); done; exit 1",
+        started.display(),
+        release.display()
+    );
     for (name, check) in [("01-a", slow.as_str()), ("02-b", "true")] {
         let p = ticket(&h, name, &format!("# {name}\n"));
         ok(
@@ -2060,6 +2067,7 @@ fn a_land_checks_outside_the_lock_and_lands_after_a_faster_task() {
     let (code, r) = finish_json(&h, &wb);
     assert_eq!(code, Some(0), "B lands while A checks: {r}");
     assert!(a.try_wait().unwrap().is_none(), "A still checks");
+    std::fs::write(&release, "").unwrap();
     let out = a.wait_with_output().unwrap();
     assert!(out.status.success(), "{}", text(&out));
     let project = h.project.clone();

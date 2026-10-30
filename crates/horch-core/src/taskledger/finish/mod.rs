@@ -587,7 +587,7 @@ pub fn finish(store: &mut Store, tools: &Tools, worker_id: &str) -> Result<Finis
 /// are cancelled as superseded.
 pub fn rereview(store: &mut Store, tools: &Tools, worker_id: &str) -> Result<()> {
     let (w, task) = held_task(store.conn(), worker_id)?;
-    codesweep::forget_tree(&tools.evidence_root, &task.task_id)?;
+    codesweep::forget_tree(store.conn(), &tools.evidence_root, &task.task_id)?;
     store.immediate(|tx| {
         tx.execute(
             "UPDATE task_steps SET status = 'pending' WHERE task_id = ?1 AND worker_id = ?2 AND name = 'code-sweep'",

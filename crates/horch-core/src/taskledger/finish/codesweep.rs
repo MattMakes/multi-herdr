@@ -150,7 +150,15 @@ struct State {
     dir: String,
     /// (code, review task id, findings file)
     reviews: Vec<(String, String, String)>,
+    /// How many times each reviewer code of this round was queued again
+    /// after a cancel.
+    #[serde(default)]
+    requeues: std::collections::BTreeMap<String, u32>,
 }
+
+/// How many times 1 cancelled review of 1 round is queued again. After
+/// that it stays cancelled, and the step fails with the ways out.
+const MAX_REQUEUES: u32 = 2;
 
 fn state_path(evidence_root: &Path, task_id: &str) -> PathBuf {
     super::task_dir(evidence_root, task_id).join("code-sweep-state.json")
@@ -162,8 +170,17 @@ fn load_state(evidence_root: &Path, task_id: &str) -> Option<State> {
         .and_then(|b| serde_json::from_slice(&b).ok())
 }
 
+/// The task's state; a state file at the per-worker path of an older horch
+/// is moved to the task path first, so its round goes on.
 fn load(cx: &Ctx<'_>) -> Option<State> {
-    load_state(&cx.tools.evidence_root, &cx.task.task_id)
+    if let Some(state) = load_state(&cx.tools.evidence_root, &cx.task.task_id) {
+        return Some(state);
+    }
+    let legacy = cx.evidence_dir.join("code-sweep-state.json");
+    let state: State = serde_json::from_slice(&std::fs::read(&legacy).ok()?).ok()?;
+    save(cx, &state).ok()?;
+    let _ = std::fs::remove_file(legacy);
+    Some(state)
 }
 
 fn save(cx: &Ctx<'_>, state: &State) -> Result<()> {
@@ -174,11 +191,27 @@ fn save(cx: &Ctx<'_>, state: &State) -> Result<()> {
 }
 
 /// Make the next code-sweep of the task queue a new round, also for the
-/// same tree (`finish --rereview`).
-pub fn forget_tree(evidence_root: &Path, task_id: &str) -> Result<()> {
+/// same tree (`finish --rereview`). Only when a review of the current round
+/// was cancelled or ended without its findings file: a round whose every
+/// reviewer reported stands, so its findings cannot be rolled again.
+pub fn forget_tree(conn: &rusqlite::Connection, evidence_root: &Path, task_id: &str) -> Result<()> {
     let Some(mut state) = load_state(evidence_root, task_id) else {
         bail!("the task has no code-sweep round yet: run horch ledger finish");
     };
+    let mut lost = false;
+    for (_, id, file) in &state.reviews {
+        let t = tasks::get(conn, id)?;
+        let empty = std::fs::read_to_string(file)
+            .map(|s| s.trim().is_empty())
+            .unwrap_or(true);
+        lost |= t.status == "cancelled" || (t.status == "done" && empty);
+    }
+    if !lost {
+        bail!(
+            "every review of round {} is in or still runs, so the round stands. Fix its findings and commit, or ask the orchestrator to waive one",
+            state.round
+        );
+    }
     state.tree.clear();
     let path = state_path(evidence_root, task_id);
     std::fs::write(path, serde_json::to_vec_pretty(&state)?)?;
@@ -253,6 +286,22 @@ pub fn waivers(evidence_root: &Path, task_id: &str) -> Vec<Waiver> {
         .into_iter()
         .filter(|w| w.round == state.round)
         .collect()
+}
+
+/// The run's latest worker in herdr pane `pane`, if any: who calls
+/// `horch ledger waive` when HORCH_WORKER_ID is unset.
+pub fn worker_in_pane(
+    conn: &rusqlite::Connection,
+    run_id: &str,
+    pane: Option<&str>,
+) -> Option<String> {
+    conn.query_row(
+        "SELECT worker_id FROM workers WHERE run_id = ?1 AND pane_id = ?2
+         ORDER BY spawned_at DESC LIMIT 1",
+        rusqlite::params![run_id, pane?],
+        |row| row.get(0),
+    )
+    .ok()
 }
 
 /// `horch ledger waive`: the orchestrator rules that finding `id` of the
@@ -524,8 +573,9 @@ fn queue_round(
     let planned = plan_round(
         cx, sweep, &dir, &diff, &diff_path, &files, persona, fallback,
     )?;
-    // 1 transaction: the old round's cancels, every new task and the state
-    // file. A failure queues nothing.
+    // 1 transaction: the old round's cancels and every new task. The state
+    // file is written after it commits, so it never names a task that a
+    // failed commit dropped. A failure queues nothing.
     let (state, shorts, stop) = store.immediate(|tx| {
         let stop = supersede(tx, old, round)?;
         let mut reviews = Vec::new();
@@ -540,10 +590,11 @@ fn queue_round(
             tree: tree.to_string(),
             dir: dir.to_string_lossy().into_owned(),
             reviews,
+            requeues: Default::default(),
         };
-        save(cx, &state)?;
         Ok((state, shorts, stop))
     })?;
+    save(cx, &state)?;
     wait_for_reviews(store, cx, &state)?;
     let mut note = format!(
         "round {round}: {} reviewer tasks queued ({}) for {persona}. horch wakes the orchestrator to spawn them, and tells you when the reviews are in. End your turn now",
@@ -564,14 +615,18 @@ fn queue_round(
 
 /// Queue a review again for each review of the current round that the
 /// orchestrator cancelled: same reviewer, same tree, same findings file.
+/// Each reviewer at most [`MAX_REQUEUES`] times.
 fn requeue_cancelled(store: &mut Store, cx: &Ctx<'_>, state: &mut State) -> Result<Vec<String>> {
-    let mut again = Vec::new();
-    store.immediate(|tx| {
-        for review in state.reviews.iter_mut() {
+    let (again, next) = store.immediate(|tx| {
+        let mut again = Vec::new();
+        let mut next = state.clone();
+        for review in next.reviews.iter_mut() {
             let old = tasks::get(tx, &review.1)?;
-            if old.status != "cancelled" {
+            let count = next.requeues.entry(review.0.clone()).or_default();
+            if old.status != "cancelled" || *count >= MAX_REQUEUES {
                 continue;
             }
+            *count += 1;
             // The persona that last could claim it: after a fallback, that one.
             let primary = old
                 .claimable_by
@@ -598,11 +653,12 @@ fn requeue_cancelled(store: &mut Store, cx: &Ctx<'_>, state: &mut State) -> Resu
             again.push(added.short());
             review.1 = added.task_id;
         }
-        if !again.is_empty() {
-            save(cx, state)?;
-        }
-        Ok(())
+        Ok((again, next))
     })?;
+    if !again.is_empty() {
+        *state = next;
+        save(cx, state)?;
+    }
     Ok(again)
 }
 
