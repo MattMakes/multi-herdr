@@ -89,9 +89,7 @@ fn agy_cases() -> Vec<Value> {
         json!({"id": id, "window": window, "remaining_fraction": left,
                "reset_time": "2026-09-28T19:00:00Z"})
     };
-    let groups = |buckets: Vec<Value>| {
-        json!({"status": "SUCCESS", "command": {"data": {"groups": [{"buckets": buckets}]}}})
-    };
+    let groups = |buckets: Vec<Value>| json!({"status": "SUCCESS", "command": {"data": {"groups": [{"buckets": buckets}]}}});
     vec![
         json!({"status": "ERROR", "response": "\n  quota service down\nmore"}),
         json!({"status": "ERROR"}),
@@ -143,5 +141,9 @@ fn the_parsers_match_the_golden_file() {
         std::fs::write(&golden, &got).unwrap();
     }
     let want = std::fs::read_to_string(&golden).unwrap();
-    assert!(want == got, "parser output changed; see {}", golden.display());
+    assert!(
+        want == got,
+        "parser output changed; see {}",
+        golden.display()
+    );
 }

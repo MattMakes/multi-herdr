@@ -339,7 +339,12 @@ mod tests {
                 false,
             ),
             b(R::Hidden, |t| t.hidden = true, NOTHING_F, false),
-            b(R::AgentNone, |t| t.agent = HarnessKind::None, NOTHING_F, false),
+            b(
+                R::AgentNone,
+                |t| t.agent = HarnessKind::None,
+                NOTHING_F,
+                false,
+            ),
             b(
                 R::ReservedTier,
                 |t| t.model = Some("gpt-6-astra".into()),
@@ -353,7 +358,12 @@ mod tests {
                 NOTHING_F,
                 false,
             ),
-            b(R::TrainsOnInput, |t| t.trains_on_input = true, NOTHING_F, false),
+            b(
+                R::TrainsOnInput,
+                |t| t.trains_on_input = true,
+                NOTHING_F,
+                false,
+            ),
             b(
                 R::HarnessUnavailable,
                 NOTHING_T,
@@ -376,7 +386,11 @@ mod tests {
 
     /// The rule a clean `sonnet` breaks after the chosen breakers apply.
     fn rule_after(chosen: &[&Breaker]) -> Option<ExclusionReason> {
-        let mut t = Roster::builtin().unwrap().require("sonnet").unwrap().clone();
+        let mut t = Roster::builtin()
+            .unwrap()
+            .require("sonnet")
+            .unwrap()
+            .clone();
         let mut filter = EligibilityFilter::default();
         let mut blocked = false;
         for b in chosen {

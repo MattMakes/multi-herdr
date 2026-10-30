@@ -10,11 +10,22 @@ use horch_core::routing::quota::{
     PoolReading, QuotaFile, QuotaView, Window, POOL_CLAUDE, POOL_CODEX, POOL_GOOGLE, POOL_ZEN,
 };
 
-const POOLS: [&str; 6] = [POOL_CLAUDE, POOL_CODEX, POOL_GOOGLE, POOL_ZEN, "local", "unknown"];
+const POOLS: [&str; 6] = [
+    POOL_CLAUDE,
+    POOL_CODEX,
+    POOL_GOOGLE,
+    POOL_ZEN,
+    "local",
+    "unknown",
+];
 const SCOPES: [Option<&str>; 3] = [None, Some("fable"), Some("opus")];
 const LOCAL_MODELS: [Option<&str>; 3] = [None, Some("qwen3.8"), Some("missing-model")];
 /// Before and after the zen cooldown of `opencode-cooling.json`.
-const NOWS: [&str; 3] = ["2026-09-28T18:00:00Z", "2026-09-28T19:00:00Z", "2026-10-30T00:00:00Z"];
+const NOWS: [&str; 3] = [
+    "2026-09-28T18:00:00Z",
+    "2026-09-28T19:00:00Z",
+    "2026-10-30T00:00:00Z",
+];
 
 fn dump() -> String {
     let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/telemetry/quota");
@@ -65,7 +76,11 @@ fn assess_pool_matches_the_golden_file() {
         std::fs::write(&golden, &got).unwrap();
     }
     let want = std::fs::read_to_string(&golden).unwrap();
-    assert!(want == got, "assess_pool output changed; see {}", golden.display());
+    assert!(
+        want == got,
+        "assess_pool output changed; see {}",
+        golden.display()
+    );
 }
 
 fn view_of(pool: &str, reading: PoolReading) -> QuotaView {
@@ -92,8 +107,16 @@ fn a_local_model_missing_from_ollama_list_is_broken() {
     assert_eq!(missing.state.to_string(), "broken");
     assert_eq!(missing.reason, "model llama9 is not in ollama list");
     // `:latest` is optional, and no wanted model skips the check.
-    assert_eq!(view.assess_pool("local", None, Some("qwen3.8")).state.to_string(), "ok");
-    assert_eq!(view.assess_pool("local", None, None).state.to_string(), "ok");
+    assert_eq!(
+        view.assess_pool("local", None, Some("qwen3.8"))
+            .state
+            .to_string(),
+        "ok"
+    );
+    assert_eq!(
+        view.assess_pool("local", None, None).state.to_string(),
+        "ok"
+    );
 }
 
 #[test]
@@ -106,7 +129,10 @@ fn a_local_reading_marked_broken_without_an_error_says_broken() {
         },
     );
     let a = view.assess_pool("local", None, None);
-    assert_eq!((a.state.to_string().as_str(), a.reason.as_str()), ("broken", "broken"));
+    assert_eq!(
+        (a.state.to_string().as_str(), a.reason.as_str()),
+        ("broken", "broken")
+    );
 }
 
 #[test]

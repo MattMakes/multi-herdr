@@ -278,14 +278,11 @@ impl PoolReading {
     /// Note a refusal, when it is newer than the last one; a `zen` refusal
     /// also starts a cooldown.
     fn apply_refusal(&mut self, pool: &str, at: &str, what: &str, policy: &Policy) {
-        if self
-            .refusal_seen_at
-            .as_deref()
-            .is_none_or(|prev| at > prev)
-        {
+        if self.refusal_seen_at.as_deref().is_none_or(|prev| at > prev) {
             self.refusal_seen_at = Some(at.to_string());
-            self.refusal_window = matches!(what, "5h" | "7d" | "7d:opus" | "7d:sonnet" | "7d:fable")
-                .then(|| what.to_string());
+            self.refusal_window =
+                matches!(what, "5h" | "7d" | "7d:opus" | "7d:sonnet" | "7d:fable")
+                    .then(|| what.to_string());
         }
         if let Some(t) = (pool == POOL_ZEN).then(|| clock::parse(at)).flatten() {
             let until = clock::stamp(t + Duration::minutes(policy.opencode_cooldown_min));
@@ -307,11 +304,7 @@ impl PoolReading {
         windows: &[Window],
         ordinary_usage_allowed: Option<bool>,
     ) {
-        if self
-            .observed_at
-            .as_deref()
-            .is_none_or(|prev| at > prev)
-        {
+        if self.observed_at.as_deref().is_none_or(|prev| at > prev) {
             self.windows = windows.to_vec();
             self.observed_at = Some(at.to_string());
             self.source = Some("rollout".into());
@@ -479,22 +472,25 @@ impl QuotaView {
     ) -> Assessment {
         match self.precheck(pool, local_model) {
             Ok(r) => self.assess_reading(pool, scope, r),
-            Err(a) => a,
+            Err((state, reason)) => Assessment::new(pool, state, reason, None, None),
         }
     }
 
-    /// The reading of `pool`, or the assessment that stops the rules at once:
-    /// an unknown pool, no reading, or a broken local health check.
-    fn precheck(&self, pool: &str, local_model: Option<&str>) -> Result<&PoolReading, Assessment> {
-        let stop = |state, reason: &str| Assessment::new(pool, state, reason.into(), None, None);
+    /// The reading of `pool`, or the state and reason that stop the rules at
+    /// once: an unknown pool, no reading, or a broken local health check.
+    fn precheck(
+        &self,
+        pool: &str,
+        local_model: Option<&str>,
+    ) -> Result<&PoolReading, (State, String)> {
         if pool == POOL_UNKNOWN {
-            return Err(stop(State::Unknown, "no known pool for this model"));
+            return Err((State::Unknown, "no known pool for this model".into()));
         }
         let Some(r) = self.file.pools.get(pool) else {
-            return Err(stop(State::Unknown, "no reading"));
+            return Err((State::Unknown, "no reading".into()));
         };
         match local_broken(pool, r, local_model) {
-            Some(why) => Err(stop(State::Broken, &why)),
+            Some(why) => Err((State::Broken, why)),
             None => Ok(r),
         }
     }
@@ -582,9 +578,7 @@ impl Rules<'_> {
 
     fn full_window(&self) -> Option<Assessment> {
         let limit = self.view.policy.exhausted_used;
-        let w = self
-            .worst
-            .filter(|w| w.used_at(self.view.now) >= limit)?;
+        let w = self.worst.filter(|w| w.used_at(self.view.now) >= limit)?;
         Some(self.out(
             State::Exhausted,
             format!("{} (>= {limit})", self.describe(w)),
@@ -669,12 +663,7 @@ impl Rules<'_> {
                 .is_some_and(|t| now - t < Duration::minutes(self.view.policy.stale_after_min));
         match self.worst {
             Some(w) if fresh => self.tight(w).unwrap_or_else(|| {
-                self.out(
-                    State::Ok,
-                    self.describe(w),
-                    Some(w.clone()),
-                    self.headroom,
-                )
+                self.out(State::Ok, self.describe(w), Some(w.clone()), self.headroom)
             }),
             _ => self.out(
                 State::Unknown,
@@ -884,7 +873,11 @@ fn row_window(row: &Value, all: &[Window]) -> Option<Window> {
             let scope = name.to_ascii_lowercase();
             (!has_scope(all, &scope)).then(|| Window::new(10_080, used, resets, Some(scope)))
         }
-        Some("weekly_all") if !all.iter().any(|w| w.minutes == 10_080 && w.scope_model.is_none()) => {
+        Some("weekly_all")
+            if !all
+                .iter()
+                .any(|w| w.minutes == 10_080 && w.scope_model.is_none()) =>
+        {
             Some(Window::new(10_080, used, resets, None))
         }
         Some("session") if !all.iter().any(|w| w.minutes == 300) => {
