@@ -808,40 +808,29 @@ mod tests {
     #[test]
     fn a_land_that_waits_names_the_holder() {
         let dir = tempfile::tempdir().unwrap();
-        let every = Duration::from_millis(100);
-        let held = take_lock(
-            dir.path(),
-            "land-x",
-            "T-3 of w1 (PID 7)",
-            every,
-            every,
-            |_| {},
-        )
-        .unwrap();
+        let every = Duration::from_millis(50);
+        let take = |holder: &str, timeout: Duration, notice: &mut dyn FnMut(&str)| {
+            take_lock(dir.path(), "land-x", holder, every, timeout, |h| notice(h))
+        };
+        let mut held = Some(take("T-3 of w1 (PID 7)", every, &mut |_| {}).unwrap());
+        // No time left: the wait gives up and names nobody.
         let mut seen = Vec::new();
-        let start = std::time::Instant::now();
-        let r = take_lock(
-            dir.path(),
-            "land-x",
-            "T-4 of w2 (PID 8)",
-            every,
-            Duration::from_millis(350),
-            |h| seen.push(h.to_string()),
-        );
+        let r = take("T-4 of w2 (PID 8)", Duration::ZERO, &mut |h| {
+            seen.push(h.to_string())
+        });
         assert!(r.is_err(), "the lock is held");
-        assert!(start.elapsed() < Duration::from_secs(2));
-        assert!(seen.len() >= 2, "1 line per wait interval: {seen:?}");
-        assert_eq!(seen[0], "T-3 of w1 (PID 7)");
-        drop(held);
-        let g = take_lock(
-            dir.path(),
-            "land-x",
-            "T-4 of w2 (PID 8)",
-            every,
-            every,
-            |_| {},
-        )
+        assert!(seen.is_empty(), "{seen:?}");
+        // The holder lets go after the 2nd line. The long timeout is never
+        // reached: the lines, not the clock, end the wait.
+        let g = take("T-4 of w2 (PID 8)", Duration::from_secs(600), &mut |h| {
+            seen.push(h.to_string());
+            if seen.len() == 2 {
+                held = None;
+            }
+        })
         .unwrap();
+        assert_eq!(seen, vec!["T-3 of w1 (PID 7)"; 2], "1 line per wait");
+        assert!(held.is_none());
         assert_eq!(
             std::fs::read_to_string(g.path().join("holder")).unwrap(),
             "T-4 of w2 (PID 8)\n"
