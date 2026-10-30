@@ -1427,39 +1427,134 @@ mod tests {
         }
     }
 
-    #[test]
-    fn the_telemetry_commands_parse() {
-        for argv in [
-            vec!["horch", "telemetry"],
-            vec!["horch", "telemetry", "ensure"],
-            vec!["horch", "telemetry", "collect", "--once"],
-            vec![
-                "horch",
-                "telemetry",
-                "render",
-                "--size",
-                "80x24",
-                "--group",
-                "phase",
-                "--window",
-                "7d",
-            ],
-            vec![
-                "horch", "usage", "--json", "--by", "plan", "--window", "today",
-            ],
-            vec!["horch", "quota", "--refresh", "--json"],
-            vec!["horch", "route", "researcher", "--json"],
-            vec!["horch", "fleet", "auto"],
-            vec![
-                "horch",
-                "fleet",
-                "--resume",
-                "0b6f8c1e-6c0e-4a43-9d7e-3f2a1b4c5d6e",
-            ],
-            vec!["horch", "fleet", "sol", "--resume", "thread-1"],
-        ] {
-            assert!(Cli::try_parse_from(argv.clone()).is_ok(), "{argv:?}");
+    /// Which flattened group a parsed command landed in.
+    fn group_of(command: &Command) -> &'static str {
+        match command {
+            Command::Launch(_) => "launch",
+            Command::Messaging(_) => "messaging",
+            Command::Session(_) => "session",
+            Command::Project(_) => "project",
+            Command::Measure(_) => "measure",
+            Command::Grid(_) => "grid",
+            Command::Tool(_) => "tool",
         }
+    }
+
+    #[test]
+    fn the_telemetry_and_fleet_commands_parse_into_their_groups() {
+        for (argv, group) in [
+            (vec!["horch", "telemetry"], "measure"),
+            (vec!["horch", "telemetry", "ensure"], "measure"),
+            (vec!["horch", "telemetry", "collect", "--once"], "measure"),
+            (
+                vec![
+                    "horch",
+                    "telemetry",
+                    "render",
+                    "--size",
+                    "80x24",
+                    "--group",
+                    "phase",
+                    "--window",
+                    "7d",
+                ],
+                "measure",
+            ),
+            (
+                vec![
+                    "horch", "usage", "--json", "--by", "plan", "--window", "today",
+                ],
+                "measure",
+            ),
+            (vec!["horch", "quota", "--refresh", "--json"], "measure"),
+            (vec!["horch", "route", "researcher", "--json"], "measure"),
+            (vec!["horch", "fleet", "auto"], "launch"),
+            (
+                vec![
+                    "horch",
+                    "fleet",
+                    "--resume",
+                    "0b6f8c1e-6c0e-4a43-9d7e-3f2a1b4c5d6e",
+                ],
+                "launch",
+            ),
+            (
+                vec!["horch", "fleet", "sol", "--resume", "thread-1"],
+                "launch",
+            ),
+        ] {
+            let cli = Cli::try_parse_from(argv.clone()).unwrap_or_else(|e| panic!("{argv:?}: {e}"));
+            assert_eq!(group_of(&cli.command), group, "{argv:?}");
+        }
+    }
+
+    /// Grouping the variants into flattened sub-enums must not change what
+    /// `horch --help` lists: the same commands, in the same order, with the
+    /// internal ones still hidden.
+    #[test]
+    fn help_lists_the_same_commands_in_the_same_order() {
+        let cmd = Cli::command();
+        let listed: Vec<(&str, bool)> = cmd
+            .get_subcommands()
+            .map(|c| (c.get_name(), c.is_hide_set()))
+            .collect();
+        let expected = [
+            ("channel", true),
+            ("mail", true),
+            ("fleet", false),
+            ("orchestration", false),
+            ("update", false),
+            ("tell", false),
+            ("inbox", false),
+            ("peek", false),
+            ("assign", false),
+            ("note", false),
+            ("context", false),
+            ("compact", false),
+            ("mode", false),
+            ("done", false),
+            ("worktree", false),
+            ("sessions", false),
+            ("teammates", false),
+            ("cost", false),
+            ("spawn", false),
+            ("usage", false),
+            ("agent-list", false),
+            ("quota", false),
+            ("route", false),
+            ("telemetry", false),
+            ("layout", false),
+            ("tile", false),
+            ("balance", false),
+            ("ledger", false),
+            ("skills", false),
+            ("marketplace", false),
+            ("doctor", false),
+            ("install", false),
+            ("self-update", false),
+            ("smoke", false),
+            ("worker", true),
+            ("pane-launch", true),
+            ("register", true),
+        ];
+        assert_eq!(listed, expected);
+    }
+
+    /// The commands whose reminders, watchdog and identity handling differ.
+    #[test]
+    fn command_policies_follow_the_command() {
+        let parse = |argv: &[&str]| Cli::try_parse_from(argv).unwrap().command;
+        let inbox_roles = parse(&["horch", "inbox", "--roles"]);
+        let inbox_mail = parse(&["horch", "inbox"]);
+        assert!(inbox_roles.reminds() && !inbox_mail.reminds());
+        assert!(!parse(&["horch", "tile"]).reminds());
+        assert!(!parse(&["horch", "worker", "r"]).watched());
+        assert!(!parse(&["horch", "install"]).watched());
+        assert!(!parse(&["horch", "ledger", "watch"]).watched());
+        assert!(parse(&["horch", "ledger", "path"]).watched());
+        assert!(parse(&["horch", "done", "x"]).adopts_identity());
+        assert!(parse(&["horch", "ledger", "path"]).adopts_identity());
+        assert!(!parse(&["horch", "peek", "r"]).adopts_identity());
     }
 
     /// `horch fleet --resume` reaches the pane as `--session-id <id> --resume`;
