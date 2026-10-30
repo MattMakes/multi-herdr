@@ -1441,58 +1441,92 @@ fn repeated_defaults(t: &Teammate) -> Vec<String> {
             ));
         }
     }
-    let mut own = t.args.iter();
-    while let Some(arg) = own.next() {
-        if arg == "-c" {
-            let Some(pair) = own.next() else { break };
-            if args.windows(2).any(|w| w[0] == "-c" && w[1] == pair) {
-                out.push(format!(
-                    "{who}: args -c {pair} repeats the {kind} harness default; delete the pair"
-                ));
-            }
-        } else if args.contains(&arg.as_str()) {
-            out.push(format!(
-                "{who}: args {arg} repeats the {kind} harness default; delete it"
-            ));
-        }
-    }
+    out.extend(repeated_args(who, kind, &t.args, &args));
+    out.extend(repeated_inline_json(t, &settings, &config));
+    out
+}
+
+/// Inline-JSON `settings` and `OPENCODE_CONFIG_CONTENT` leaves that repeat a
+/// harness default.
+fn repeated_inline_json(
+    t: &Teammate,
+    settings: &serde_json::Map<String, serde_json::Value>,
+    config: &serde_json::Map<String, serde_json::Value>,
+) -> Vec<String> {
+    let (who, kind) = (&t.name, t.agent);
+    let mut out = Vec::new();
     let inline = |text: Option<&String>| {
         text.filter(|s| s.trim_start().starts_with('{'))
             .and_then(|s| serde_json::from_str::<serde_json::Value>(s).ok())
     };
     for (what, own, defaults) in [
-        ("settings", inline(t.settings.as_ref()), &settings),
+        ("settings", inline(t.settings.as_ref()), settings),
         (
             "OPENCODE_CONFIG_CONTENT",
             inline(t.env.get("OPENCODE_CONFIG_CONTENT")),
-            &config,
+            config,
         ),
     ] {
-        let Some(serde_json::Value::Object(own)) = own else {
-            continue;
-        };
-        let mut paths = Vec::new();
-        json_leaves(defaults, "", &mut paths);
-        for (path, value) in paths {
-            let mut node = Some(&own);
-            let mut found = None;
-            let parts: Vec<&str> = path.split('.').collect();
-            for (i, part) in parts.iter().enumerate() {
-                let next = node.and_then(|n| n.get(*part));
-                if i + 1 == parts.len() {
-                    found = next;
-                } else {
-                    node = next.and_then(|v| v.as_object());
-                }
-            }
-            if found == Some(&value) {
-                out.push(format!(
-                    "{who}: {what} {path} repeats the {kind} harness default; delete it"
-                ));
-            }
+        if let Some(serde_json::Value::Object(own)) = own {
+            out.extend(repeated_json_leaves(who, kind, what, &own, defaults));
         }
     }
     out
+}
+
+/// The teammate's `args` that repeat a harness default: a flag, or a `-c`
+/// pair.
+fn repeated_args(who: &str, kind: HarnessKind, own: &[String], defaults: &[&str]) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut own = own.iter();
+    while let Some(arg) = own.next() {
+        if arg == "-c" {
+            let Some(pair) = own.next() else { break };
+            if defaults.windows(2).any(|w| w[0] == "-c" && w[1] == pair) {
+                out.push(format!(
+                    "{who}: args -c {pair} repeats the {kind} harness default; delete the pair"
+                ));
+            }
+        } else if defaults.contains(&arg.as_str()) {
+            out.push(format!(
+                "{who}: args {arg} repeats the {kind} harness default; delete it"
+            ));
+        }
+    }
+    out
+}
+
+/// The leaves of `own` (inline JSON) that repeat a harness default.
+fn repeated_json_leaves(
+    who: &str,
+    kind: HarnessKind,
+    what: &str,
+    own: &serde_json::Map<String, serde_json::Value>,
+    defaults: &serde_json::Map<String, serde_json::Value>,
+) -> Vec<String> {
+    let mut paths = Vec::new();
+    json_leaves(defaults, "", &mut paths);
+    paths
+        .into_iter()
+        .filter(|(path, value)| json_leaf(own, path) == Some(value))
+        .map(|(path, _)| {
+            format!("{who}: {what} {path} repeats the {kind} harness default; delete it")
+        })
+        .collect()
+}
+
+/// The value at the dotted `path` below `obj`, if every step exists.
+fn json_leaf<'a>(
+    obj: &'a serde_json::Map<String, serde_json::Value>,
+    path: &str,
+) -> Option<&'a serde_json::Value> {
+    let parts: Vec<&str> = path.split('.').collect();
+    let (last, parents) = parts.split_last()?;
+    let mut node = obj;
+    for part in parents {
+        node = node.get(*part)?.as_object()?;
+    }
+    node.get(*last)
 }
 
 /// Every leaf of a JSON object as (dotted path, value).
@@ -1514,10 +1548,10 @@ fn json_leaves(
     }
 }
 
-/// What is wrong with one harness-default entry (check rule 3).
-fn harness_default_entry_problems(entry: &HarnessDefault) -> Vec<String> {
-    let mut out = Vec::new();
+/// Each harness-specific field is set only on the harness that owns it.
+fn field_owner_problems(entry: &HarnessDefault) -> Vec<String> {
     let kind = entry.harness;
+    let mut out = Vec::new();
     for (field, set, owner) in [
         ("settings", entry.settings.is_some(), HarnessKind::Claude),
         ("config", entry.config.is_some(), HarnessKind::OpenCode),
@@ -1531,10 +1565,13 @@ fn harness_default_entry_problems(entry: &HarnessDefault) -> Vec<String> {
             out.push(format!("{field} is only for harness {owner}"));
         }
     }
-    if entry.force.as_deref().is_some_and(|f| f.trim().is_empty()) {
-        out.push("force must give the reason and the decision that allowed it".into());
-    }
-    let mut args = entry.args.iter();
+    out
+}
+
+/// A harness default's `args` are `-c <key>=<value>` pairs and flags.
+fn args_problems(args: &[String]) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut args = args.iter();
     while let Some(arg) = args.next() {
         if arg == "-c" {
             match args.next() {
@@ -1547,7 +1584,13 @@ fn harness_default_entry_problems(entry: &HarnessDefault) -> Vec<String> {
             ));
         }
     }
-    for key in entry.env.keys() {
+    out
+}
+
+/// A harness default's `env` keys are allowed in a fleet launch.
+fn env_problems(kind: HarnessKind, env: &BTreeMap<String, String>) -> Vec<String> {
+    let mut out = Vec::new();
+    for key in env.keys() {
         if FORBIDDEN_ENV.contains(&key.as_str()) || key.starts_with("ANTHROPIC_") {
             out.push(format!("env {key} is forbidden in a fleet launch"));
         } else if kind != HarnessKind::Claude && !DEFAULT_ENV_YIELD.contains(&key.as_str()) {
@@ -1556,6 +1599,19 @@ fn harness_default_entry_problems(entry: &HarnessDefault) -> Vec<String> {
             ));
         }
     }
+    out
+}
+
+/// What is wrong with one harness-default entry (check rule 3).
+fn harness_default_entry_problems(entry: &HarnessDefault) -> Vec<String> {
+    let mut out = Vec::new();
+    let kind = entry.harness;
+    out.extend(field_owner_problems(entry));
+    if entry.force.as_deref().is_some_and(|f| f.trim().is_empty()) {
+        out.push("force must give the reason and the decision that allowed it".into());
+    }
+    out.extend(args_problems(&entry.args));
+    out.extend(env_problems(kind, &entry.env));
     let mut settings_paths = Vec::new();
     if let Some(settings) = &entry.settings {
         json_paths(settings, "", &mut settings_paths);
@@ -1631,39 +1687,53 @@ const CLAUDE_ONLY_TOOLS: [&str; 7] = [
 /// Section 13.3 rules 1-5, as `horch teammates --check` errors (BAL-02).
 pub fn fallback_problems(roster: &Roster) -> Vec<String> {
     let mut out = Vec::new();
-    for name in roster.names() {
-        let Some(t) = roster.get(name) else { continue };
+    for t in roster.teammates.values() {
         let pool = quota::pool_for(t.agent.as_str(), t.model.as_deref().unwrap_or_default());
         for fb in &t.fallbacks {
             let who = &t.name;
-            let Some(f) = roster.get(fb) else {
-                out.push(format!("{who}: fallback '{fb}' does not exist"));
-                continue;
-            };
-            if f.hidden {
-                out.push(format!("{who}: fallback '{fb}' is hidden"));
-            }
-            if let Err(e) = Roster::is_routable(f) {
-                out.push(format!("{who}: fallback '{fb}' is not spawnable: {e:#}"));
-            }
-            let fpool = quota::pool_for(f.agent.as_str(), f.model.as_deref().unwrap_or_default());
-            if fpool == pool {
-                out.push(format!(
-                    "{who}: fallback '{fb}' draws from the same pool ({pool}), so it cannot help"
-                ));
-            }
-            if trains_on_input(f) {
-                out.push(format!(
-                    "{who}: fallback '{fb}' trains on its input; free tiers are chosen by \
-                     the orchestrator, never automatically"
-                ));
-            }
-            let merged = merge(t, f);
-            for p in roster.check_teammate(&merged) {
-                out.push(format!("{who} via {fb}: {p}"));
+            match roster.get(fb) {
+                Some(f) => out.extend(fallback_pair_problems(roster, (t, f), fb, &pool)),
+                None => out.push(format!("{who}: fallback '{fb}' does not exist")),
             }
         }
     }
+    out
+}
+
+/// What is wrong with fallback `f` (named `fb`) of teammate `t`.
+fn fallback_pair_problems(
+    roster: &Roster,
+    (t, f): (&Teammate, &Teammate),
+    fb: &str,
+    pool: &str,
+) -> Vec<String> {
+    let who = &t.name;
+    let mut out = Vec::new();
+    if f.hidden {
+        out.push(format!("{who}: fallback '{fb}' is hidden"));
+    }
+    if let Err(e) = Roster::is_routable(f) {
+        out.push(format!("{who}: fallback '{fb}' is not spawnable: {e:#}"));
+    }
+    let fpool = quota::pool_for(f.agent.as_str(), f.model.as_deref().unwrap_or_default());
+    if fpool == pool {
+        out.push(format!(
+            "{who}: fallback '{fb}' draws from the same pool ({pool}), so it cannot help"
+        ));
+    }
+    if trains_on_input(f) {
+        out.push(format!(
+            "{who}: fallback '{fb}' trains on its input; free tiers are chosen by \
+             the orchestrator, never automatically"
+        ));
+    }
+    let merged = merge(t, f);
+    out.extend(
+        roster
+            .check_teammate(&merged)
+            .into_iter()
+            .map(|p| format!("{who} via {fb}: {p}")),
+    );
     out
 }
 
@@ -1671,20 +1741,21 @@ pub fn fallback_problems(roster: &Roster) -> Vec<String> {
 /// on a fallback whose agent lacks it.
 pub fn fallback_warnings(roster: &Roster) -> Vec<String> {
     let mut out = Vec::new();
-    for name in roster.names() {
-        let Some(t) = roster.get(name) else { continue };
-        for fb in &t.fallbacks {
-            let Some(f) = roster.get(fb) else { continue };
-            if f.agent == HarnessKind::Claude {
-                continue;
-            }
-            for tool in CLAUDE_ONLY_TOOLS {
-                if names_tool(&t.persona, tool) {
-                    out.push(format!(
-                        "{}: the persona names the {tool} tool, which {} (fallback {fb}) lacks",
-                        t.name, f.agent
-                    ));
-                }
+    for t in roster.teammates.values() {
+        let fallbacks = t
+            .fallbacks
+            .iter()
+            .filter_map(|fb| Some((fb, roster.get(fb)?)))
+            .filter(|(_, f)| f.agent != HarnessKind::Claude);
+        for (fb, f) in fallbacks {
+            for tool in CLAUDE_ONLY_TOOLS
+                .iter()
+                .filter(|tool| names_tool(&t.persona, tool))
+            {
+                out.push(format!(
+                    "{}: the persona names the {tool} tool, which {} (fallback {fb}) lacks",
+                    t.name, f.agent
+                ));
             }
         }
     }
@@ -1696,22 +1767,28 @@ pub fn fallback_warnings(roster: &Roster) -> Vec<String> {
 /// its own copy with Xcode. A real problem with the field is an error in
 /// [`Roster::check`] instead.
 pub fn operator_skill_warnings(roster: &Roster) -> Vec<String> {
-    let mut out = Vec::new();
-    for name in roster.names() {
-        let Some(t) = roster.get(name) else { continue };
-        if t.operator_skills.is_none() {
-            continue;
-        }
-        let Ok(skills) = roster.skill_catalog().and_then(|c| {
-            SkillResolution::read(c, Some(t), roster.home.as_deref(), harness_support)
-        }) else {
-            continue;
-        };
-        for skipped in skills.catalog().skipped_operator() {
-            out.push(format!("{name}: {}", skipped.note()));
-        }
-    }
-    out
+    roster
+        .teammates
+        .values()
+        .filter(|t| t.operator_skills.is_some())
+        .filter_map(|t| {
+            let skills = roster
+                .skill_catalog()
+                .and_then(|c| {
+                    SkillResolution::read(c, Some(t), roster.home.as_deref(), harness_support)
+                })
+                .ok()?;
+            Some((t, skills))
+        })
+        .flat_map(|(t, skills)| {
+            skills
+                .catalog()
+                .skipped_operator()
+                .iter()
+                .map(|skipped| format!("{}: {}", t.name, skipped.note()))
+                .collect::<Vec<_>>()
+        })
+        .collect()
 }
 
 /// Whether `text` names `tool` as a tool: the name in backticks, or followed
