@@ -827,10 +827,9 @@ mod tests {
         assert!(declined(&op, true, None).is_ok());
     }
 
-    /// One tiler at a time, and the lock goes away when the run ends however it
-    /// ends.
+    /// The lock goes away when the run ends however it ends.
     #[test]
-    fn the_tile_lock_excludes_a_second_tiler_and_is_released_on_drop() {
+    fn the_tile_lock_is_created_and_released_on_drop() {
         let tmp = tempfile::tempdir().unwrap();
         let path = tmp.path().join("tile.lock");
         let first = TileLock::at(path.clone(), LOCK_STALE)
@@ -839,6 +838,18 @@ mod tests {
         assert!(path.exists());
         drop(first);
         assert!(!path.exists(), "the lock is released on drop");
+    }
+
+    #[test]
+    fn a_lock_that_cannot_be_created_is_an_error_not_a_wait() {
+        let tmp = tempfile::tempdir().unwrap();
+        let err = TileLock::at(tmp.path().join("missing").join("tile.lock"), LOCK_STALE)
+            .err()
+            .expect("no directory, no lock");
+        assert!(
+            format!("{err:#}").starts_with("taking the tile lock: "),
+            "{err:#}"
+        );
     }
 
     /// A lock left behind by a run that died must not wedge the fleet: nothing
