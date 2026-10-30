@@ -294,6 +294,53 @@ mod tests {
         }
     }
 
+    /// Edges of the three scanners the main table does not reach: blank
+    /// kinds around the separator, an empty or unterminated quoted value, a
+    /// bare value cut at a quote, a PEM label that spans lines, and token
+    /// bodies that stop at their own byte class.
+    #[test]
+    fn sec_01_scanner_edges() {
+        for (input, want) in [
+            ("token	=	 abc def", "token	=	 [REDACTED] def"),
+            ("token  :  v", "token  :  [REDACTED]"),
+            (r#"token="abc"#, r#"token="[REDACTED]"#),
+            ("token='a b\nc'", "token='[REDACTED]\nc'"),
+            ("token=abc\"def", "token=[REDACTED]\"def"),
+            ("token=abc'def", "token=[REDACTED]'def"),
+            ("'token'='x'", "'token'='[REDACTED]'"),
+            (
+                "-----BEGIN PRIVATE KEY-----\nA\n-----END PRIVATE KEY-----x",
+                "[REDACTED]x",
+            ),
+            (
+                "-----BEGIN PRIVATE KEY-----\nA\n-----END PRIVATE KEY",
+                "[REDACTED]",
+            ),
+            ("-----BEGIN PRIVATE KEY", "-----BEGIN PRIVATE KEY"),
+            (
+                "-----BEGIN A\nPRIVATE KEY-----\nA",
+                "-----BEGIN A\nPRIVATE KEY-----\nA",
+            ),
+            ("ghp_abcdefghijKLMNOPQRST0123_tail", "[REDACTED]_tail"),
+            ("github_pat_abcdefghij_KLMNOPQRST-0123", "[REDACTED]-0123"),
+            ("xoxb-12345-67890-abc", "[REDACTED]"),
+            (
+                "sk-ant-1234567 sk-ant-12345678",
+                "sk-ant-1234567 [REDACTED]",
+            ),
+            ("sk-abcdefghijKLMNOPQRS", "sk-abcdefghijKLMNOPQRS"),
+            ("AKIAIOSFODNN7EXAMPLE-", "AKIAIOSFODNN7EXAMPLE-"),
+            ("AKIAIOSFODNN7EXAMPLE.", "[REDACTED]."),
+            ("x_AKIAIOSFODNN7EXAMPLE", "x_AKIAIOSFODNN7EXAMPLE"),
+            ("AKIAIOSFODNN7exAMPLE", "AKIAIOSFODNN7exAMPLE"),
+        ] {
+            assert_eq!(red(input), want, "input: {input:?}");
+        }
+        for untouched in ["token=\"\"", "token=", "token= \n", "token\n=x"] {
+            assert_eq!(red(untouched), untouched, "input: {untouched:?}");
+        }
+    }
+
     #[test]
     fn redaction_keeps_surrounding_unicode() {
         assert_eq!(
