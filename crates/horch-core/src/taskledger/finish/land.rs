@@ -385,6 +385,24 @@ pub fn land(store: &mut Store, cx: &Ctx<'_>) -> Result<Outcome> {
     }
     let dir = PathBuf::from(&wt.path);
     require_clean(git, &dir, false)?;
+    // The task may be cancelled at any time before the fast-forward (#136).
+    let still_mine = |store: &Store| -> Result<Option<Outcome>> {
+        let t = super::tasks::get(store.conn(), &cx.task.task_id)?;
+        if t.status == "landing"
+            && t.current_worker_id.as_deref() == Some(cx.worker.worker_id.as_str())
+        {
+            return Ok(None);
+        }
+        let why = format!(
+            "{} is {}: nothing landed. Stop work, then run horch done",
+            t.short(),
+            t.status
+        );
+        Ok(Some(Outcome::fail("not landed", None, &why)))
+    };
+    if let Some(o) = still_mine(store)? {
+        return Ok(o);
+    }
     set_worktree(store.conn(), &wt.worktree_id, WorktreeStatus::Landing, None)?;
     let about = About {
         run: Some(&cx.run.run_id),
@@ -459,6 +477,11 @@ pub fn land(store: &mut Store, cx: &Ctx<'_>) -> Result<Outcome> {
         }
         held = Some(lock);
     };
+    // Under the land lock, just before the fast-forward: a cancel that
+    // arrived during the rebase, the check or the lock wait lands nothing.
+    if let Some(o) = still_mine(store)? {
+        return Ok(o);
+    }
     // Fast-forward the run branch: by merge when it is checked out in the
     // main checkout, else by a compare-and-swap of its ref. Never forced.
     let checked_out = git.current_branch(&cx.root).as_deref() == Some(run_branch.as_str());

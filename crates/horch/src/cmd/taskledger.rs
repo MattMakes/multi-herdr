@@ -52,7 +52,8 @@ pub enum LedgerCommand {
         #[arg(long)]
         json: bool,
     },
-    /// Runs: `run new <slug>` creates a run and its run branch.
+    /// Runs: `run new <slug>` creates a run and its run branch; `run close`
+    /// ends it.
     Run {
         #[command(subcommand)]
         command: RunCommand,
@@ -79,8 +80,27 @@ pub enum LedgerCommand {
         #[command(flatten)]
         run: RunArg,
     },
-    /// Drop a task.
+    /// Drop a task. Its worker lets go of it at once; `--stop` also stops
+    /// that worker by its recorded PIDs and pane.
     Cancel {
+        task: String,
+        reason: String,
+        #[arg(long)]
+        stop: bool,
+        #[command(flatten)]
+        run: RunArg,
+    },
+    /// Drop 1 dependency: TASK no longer waits for --from (orchestrator).
+    Unblock {
+        task: String,
+        #[arg(long = "from", value_name = "BLOCKER")]
+        from: String,
+        #[command(flatten)]
+        run: RunArg,
+    },
+    /// Queue a held or cancelled task again (orchestrator). It keeps its
+    /// attempt history and gets the run's attempt limit anew.
+    Requeue {
         task: String,
         reason: String,
         #[command(flatten)]
@@ -285,6 +305,20 @@ pub enum RunCommand {
         /// Slack, in seconds, when a screen timer is compared with the clock.
         #[arg(long, hide = true)]
         timer_tolerance: Option<i64>,
+        /// Attempts at 1 task before horch holds it and asks the operator
+        /// (default 3).
+        #[arg(long)]
+        max_attempts: Option<i64>,
+    },
+    /// Close the run when its work is done. Refuses while a task is queued,
+    /// held, running or landing, or a worktree is open or landing.
+    Close {
+        #[command(flatten)]
+        run: RunArg,
+        /// Cancel every open task with this reason, then close the run as
+        /// abandoned.
+        #[arg(long, value_name = "REASON")]
+        abandon: Option<String>,
     },
     /// Every run of this project.
     List {
@@ -303,6 +337,9 @@ pub enum WorkerCommand {
         role: Option<String>,
         #[arg(long)]
         replaces: Option<String>,
+        /// The herdr pane the worker runs in.
+        #[arg(long)]
+        pane: Option<String>,
         #[command(flatten)]
         run: RunArg,
     },
@@ -398,7 +435,30 @@ pub fn resolve_run(ctx: &RuntimeContext, store: &Store, arg: &RunArg) -> Result<
             }
         }
     }
-    runs::resolve(store.conn(), &project_root(ctx)?, explicit.as_deref())
+    let workspace = ctx.herdr.workspace.as_ref().map(|w| w.as_str().to_string());
+    let (run, note) = runs::resolve(
+        store.conn(),
+        &project_root(ctx)?,
+        explicit.as_deref(),
+        workspace.as_deref(),
+    )?;
+    if let Some(note) = note {
+        eprintln!("horch: {note}");
+    }
+    Ok(run)
+}
+
+/// Refuse `what` when the caller is a ledger worker: the orchestrator
+/// decides it.
+fn orchestrator_only(ctx: &RuntimeContext, store: &Store, what: &str) -> Result<()> {
+    if let Some(wid) = worker_id_opt(ctx) {
+        if let Some(w) = workers::find(store.conn(), &wid)? {
+            if w.kind == WorkerKind::Worker.as_str() {
+                bail!("horch ledger {what} is for the orchestrator, not a worker");
+            }
+        }
+    }
+    Ok(())
 }
 
 fn worker_id_opt(ctx: &RuntimeContext) -> Option<String> {
@@ -474,19 +534,70 @@ pub fn run(ctx: &RuntimeContext, command: LedgerCommand) -> Result<ExitCode> {
             ));
             Ok(ExitCode::SUCCESS)
         }
-        LedgerCommand::Cancel { task, reason, run } => {
+        LedgerCommand::Cancel {
+            task,
+            reason,
+            stop: stop_it,
+            run,
+        } => {
             let r = resolve_run(ctx, &store, &run)?;
+            let holder = tasks::resolve(store.conn(), &r.run_id, &task)?.current_worker_id;
+            if let (true, Some(w)) = (stop_it, &holder) {
+                let report = stop::stop_worker(
+                    &mut store,
+                    w,
+                    StopRequester::Orchestrator,
+                    &format!("task cancelled: {reason}"),
+                    &HerdrPanes::new(ctx),
+                    &stop::Os,
+                    &stop::StopOptions {
+                        grace: stop_grace(),
+                        ..Default::default()
+                    },
+                )?;
+                print_stop(&report, false)?;
+            }
             let t = store.immediate(|tx| {
                 let t = tasks::resolve(tx, &r.run_id, &task)?;
                 tasks::cancel(tx, &t, &reason)
             })?;
             output::println(&format!("{} cancelled.", t.short()));
-            if t.current_worker_id.is_some() {
+            if let (false, Some(w)) = (stop_it, &holder) {
                 eprintln!(
-                    "horch ledger: a worker still holds {}. Stop it with horch ledger stop <worker>.",
+                    "horch ledger: worker {w} held {} and can no longer finish it. Its process may still run: horch ledger stop {w} \"<reason>\".",
                     t.short()
                 );
             }
+            let waiting = tasks::dependents(store.conn(), &t.task_id)?;
+            if !waiting.is_empty() {
+                let names: Vec<String> = waiting.iter().map(|d| d.short()).collect();
+                output::println(&format!("Waiting for {}: {}.", t.short(), names.join(", ")));
+            }
+            super::taskledger_wake::cancelled_dependents(ctx, &store, &r, &t.short(), &waiting);
+            Ok(ExitCode::SUCCESS)
+        }
+        LedgerCommand::Unblock { task, from, run } => {
+            orchestrator_only(ctx, &store, "unblock")?;
+            let r = resolve_run(ctx, &store, &run)?;
+            let t = store.immediate(|tx| {
+                let t = tasks::resolve(tx, &r.run_id, &task)?;
+                let b = tasks::resolve(tx, &r.run_id, &from)?;
+                tasks::unblock(tx, &t, &b)?;
+                Ok(t)
+            })?;
+            output::println(&format!("{} no longer waits for {from}.", t.short()));
+            super::taskledger_wake::nudge_startable(ctx, &store, &r);
+            Ok(ExitCode::SUCCESS)
+        }
+        LedgerCommand::Requeue { task, reason, run } => {
+            orchestrator_only(ctx, &store, "requeue")?;
+            let r = resolve_run(ctx, &store, &run)?;
+            let t = store.immediate(|tx| {
+                let t = tasks::resolve(tx, &r.run_id, &task)?;
+                tasks::requeue_by_operator(tx, &t, &reason)
+            })?;
+            output::println(&format!("{} is queued again.", t.short()));
+            super::taskledger_wake::nudge_startable(ctx, &store, &r);
             Ok(ExitCode::SUCCESS)
         }
         LedgerCommand::Waive {
@@ -1116,6 +1227,21 @@ fn opt(v: Option<i64>) -> String {
 fn run_cmd(ctx: &RuntimeContext, store: &mut Store, command: RunCommand) -> Result<ExitCode> {
     let root = project_root(ctx)?;
     match command {
+        RunCommand::Close { run, abandon } => {
+            let r = resolve_run(ctx, store, &run)?;
+            let closed = store.immediate(|tx| runs::close_run(tx, &r, abandon.as_deref()))?;
+            for (task, holder) in &closed.cancelled {
+                match holder {
+                    Some(w) => output::println(&format!(
+                        "{task} cancelled. Its worker {w} may still run: horch ledger stop {w} \"run abandoned\" --run {}",
+                        r.slug
+                    )),
+                    None => output::println(&format!("{task} cancelled.")),
+                }
+            }
+            output::println(&format!("Run {} closed as {}.", r.slug, closed.status));
+            Ok(ExitCode::SUCCESS)
+        }
         RunCommand::List { json: as_json } => {
             let all = runs::of_project(store.conn(), &root)?;
             if as_json {
@@ -1147,6 +1273,7 @@ fn run_cmd(ctx: &RuntimeContext, store: &mut Store, command: RunCommand) -> Resu
             heartbeat_every,
             heartbeat_stale,
             timer_tolerance,
+            max_attempts,
         } => {
             let steps: Vec<StepName> = steps
                 .iter()
@@ -1169,6 +1296,12 @@ fn run_cmd(ctx: &RuntimeContext, store: &mut Store, command: RunCommand) -> Resu
                 if !git.branch_exists(&root, &run_branch) {
                     git.run(&root, &["branch", &run_branch, base])?;
                     eprintln!("horch ledger: created run branch {run_branch} from {base}.");
+                } else if !git.is_ancestor(&root, base, &run_branch) {
+                    // An earlier run's branch: tasks would land on old code.
+                    bail!(
+                        "branch {run_branch} exists and lacks commits of {base}. Delete it \
+                         (git branch -D {run_branch}) or name another with --branch"
+                    );
                 }
                 if let Some(remote) = &remote {
                     let out =
@@ -1194,6 +1327,7 @@ fn run_cmd(ctx: &RuntimeContext, store: &mut Store, command: RunCommand) -> Resu
                     heartbeat_every_s: heartbeat_every,
                     heartbeat_stale_s: heartbeat_stale,
                     timer_tolerance_s: timer_tolerance,
+                    max_attempts,
                 },
             };
             let pane = ctx.herdr.pane.as_ref().map(|p| p.as_str().to_string());
@@ -1609,6 +1743,10 @@ pub fn done_cmd(
                 );
             }
         }
+        if c.unlanded {
+            let waiting = tasks::dependents(store.conn(), &c.task_id)?;
+            super::taskledger_wake::cancelled_dependents(ctx, &store, &run, &c.task, &waiting);
+        }
         super::taskledger_wake::after_done(ctx, &store, &run);
     }
     output::println(&format!(
@@ -1639,23 +1777,25 @@ fn hold_for_finish(store: &Store, review_task_id: &str) -> Result<()> {
     workers::hold_for_finish(store.conn(), &author)
 }
 
-/// The slug of this project's active task-ledger run, if it has one. Never
-/// creates the ledger file.
+/// The slug of the active task-ledger run of this project that the caller's
+/// herdr workspace owns, if any (#89). Never creates the ledger file.
 pub fn active_run_slug(ctx: &RuntimeContext) -> Option<String> {
     if !ctx.paths.ledger_db.exists() {
         return None;
     }
+    let workspace = ctx.herdr.workspace.as_ref()?.as_str().to_string();
     let store = taskledger::open(ctx).ok()?;
     let root = project_root(ctx).ok()?;
     runs::of_project(store.conn(), &root)
         .ok()?
         .into_iter()
-        .find(|r| r.status == "active")
+        .find(|r| r.status == "active" && r.workspace_id.as_deref() == Some(workspace.as_str()))
         .map(|r| r.slug)
 }
 
-/// Whether this process is a task-ledger worker that holds (or held) a task:
-/// `horch done` then goes through [`done_cmd`].
+/// Whether this process is a task-ledger worker that holds (or finished) a
+/// task: `horch done` then goes through [`done_cmd`]. A worker whose task
+/// was cancelled or taken from it ends with the plain `horch done` (#136).
 pub fn is_ledger_worker(ctx: &RuntimeContext) -> bool {
     let Some(wid) = worker_id_opt(ctx) else {
         return false;
@@ -1663,7 +1803,9 @@ pub fn is_ledger_worker(ctx: &RuntimeContext) -> bool {
     taskledger::open(ctx)
         .ok()
         .and_then(|s| workers::find(s.conn(), &wid).ok().flatten())
-        .is_some_and(|w| w.task_id.is_some())
+        .is_some_and(|w| {
+            w.task_id.is_some() && (w.status == "done" || w.status().is_ok_and(|s| s.is_live()))
+        })
 }
 
 /// The text a worker reads after a claim.
@@ -1803,6 +1945,7 @@ fn worker_cmd(ctx: &RuntimeContext, store: &mut Store, command: WorkerCommand) -
             persona,
             role,
             replaces,
+            pane,
             run,
         } => {
             let r = resolve_run(ctx, store, &run)?;
@@ -1815,6 +1958,7 @@ fn worker_cmd(ctx: &RuntimeContext, store: &mut Store, command: WorkerCommand) -
                         persona,
                         role,
                         previous_worker_id: replaces,
+                        pane_id: pane,
                         ..Default::default()
                     },
                 )

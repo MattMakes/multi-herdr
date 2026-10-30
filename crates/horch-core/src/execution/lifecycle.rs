@@ -811,6 +811,11 @@ impl WorkerSteps for PaneWorker<'_> {
                          horch spawn {persona} --replaces {id}"
                     ))
                 }
+                Ok(crate::taskledger::supervisor::Ended::Held { task }) => Some(format!(
+                    " QUESTION: {task} used up its attempts and is held. Ask the operator: \
+                     requeue it (horch ledger requeue {task} \"<reason>\"), change the ticket, \
+                     or cancel it. Spawn no replacement."
+                )),
                 Ok(_) => None,
                 Err(e) => {
                     eprintln!(

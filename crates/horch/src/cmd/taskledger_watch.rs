@@ -169,6 +169,7 @@ fn pass(
             _ => {}
         }
     }
+    taskledger_wake::after_watch(ctx, store, run);
     let git = Git::new(&ctx.bins.harness.git);
     for (path, o) in land::retry_cleanup(store, &git)? {
         eprintln!("horch ledger watch: cleanup of {path}: {}", o.note);
