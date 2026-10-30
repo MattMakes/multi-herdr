@@ -2139,6 +2139,36 @@ mod tests {
             assert!(!tmp.path().join("x.txt").exists());
         }
 
+        /// A key names its file by its kind and keeps letters, digits, `-` and
+        /// `_`. A pane id swaps its `:` for `_`; a record id does not. Anything
+        /// else, `.` and a space and a non-ASCII letter included, could name
+        /// a path and gives no file.
+        #[test]
+        fn a_startup_key_names_its_file_by_its_kind() {
+            for (key, want) in [
+                (StartupKey::Record("e1"), Some("record-e1.txt")),
+                (StartupKey::Record("Rec_a-9"), Some("record-Rec_a-9.txt")),
+                (StartupKey::Pane("w1:p2"), Some("pane-w1_p2.txt")),
+                (StartupKey::Pane("w-1:p_2"), Some("pane-w-1_p_2.txt")),
+                (StartupKey::Pane("a:b:c"), Some("pane-a_b_c.txt")),
+                (StartupKey::Pane(":"), Some("pane-_.txt")),
+                (StartupKey::Record(""), None),
+                (StartupKey::Record("w1:p2"), None),
+                (StartupKey::Record("a.b"), None),
+                (StartupKey::Record("a b"), None),
+                (StartupKey::Record("é"), None),
+                (StartupKey::Record("a/b"), None),
+                (StartupKey::Record("a\\b"), None),
+                (StartupKey::Pane(""), None),
+                (StartupKey::Pane("w1:p2.json"), None),
+                (StartupKey::Pane("w1:p 2"), None),
+                (StartupKey::Pane("w1:é"), None),
+                (StartupKey::Pane("w1/2:p"), None),
+            ] {
+                assert_eq!(key.file_name().as_deref(), want, "{key:?}");
+            }
+        }
+
         /// #192: 2 spawns of the same role in 2 workspaces wait at the same
         /// time. The error of 1 worker reaches only the wait of its record,
         /// or of its pane when it had no brief.
