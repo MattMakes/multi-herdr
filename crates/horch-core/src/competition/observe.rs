@@ -82,23 +82,28 @@ impl IdleWatch {
         end_after_s: u64,
     ) -> IdleAction {
         if nudge_after_s == 0 {
-            return IdleAction::Wait;
-        }
-        if !at_prompt(agent_status) {
+            IdleAction::Wait
+        } else if !at_prompt(agent_status) {
             self.since = None;
-            return IdleAction::Wait;
+            IdleAction::Wait
+        } else {
+            self.step(now, nudge_after_s, end_after_s)
         }
+    }
+
+    /// The candidate waits at its prompt: start or continue the idle stretch.
+    fn step(&mut self, now: DateTime<Utc>, nudge_after_s: u64, end_after_s: u64) -> IdleAction {
         let since = *self.since.get_or_insert(now);
         if !self.nudged && deadline_passed(since, now, nudge_after_s) {
             self.nudged = true;
             // The end period counts from the nudge.
             self.since = Some(now);
-            return IdleAction::Nudge;
+            IdleAction::Nudge
+        } else if self.nudged && deadline_passed(since, now, end_after_s) {
+            IdleAction::End
+        } else {
+            IdleAction::Wait
         }
-        if self.nudged && deadline_passed(since, now, end_after_s) {
-            return IdleAction::End;
-        }
-        IdleAction::Wait
     }
 }
 
