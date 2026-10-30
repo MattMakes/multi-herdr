@@ -86,27 +86,17 @@ pub fn parse_judgment(
 
 /// The size, UTF-8 and single-value checks, and the repeated-key check.
 fn read_node(raw: &[u8], cap_bytes: usize) -> Result<Node, ParseError> {
-    check_size(raw, cap_bytes)?;
+    if raw.len() > cap_bytes {
+        return Err(ParseError::TooLarge(raw.len()));
+    }
     let text =
         std::str::from_utf8(raw).map_err(|e| ParseError::NotJson(format!("not UTF-8: {e}")))?;
     // `from_str` rejects anything but whitespace after the value.
     let node: Node = serde_json::from_str(text).map_err(|e| ParseError::NotJson(e.to_string()))?;
-    check_no_duplicate(&node)?;
-    Ok(node)
-}
-
-fn check_no_duplicate(node: &Node) -> Result<(), ParseError> {
-    match node.duplicate_key("$") {
-        Some(path) => Err(ParseError::DuplicateKey(path)),
-        None => Ok(()),
-    }
-}
-
-fn check_size(raw: &[u8], cap_bytes: usize) -> Result<(), ParseError> {
-    if raw.len() > cap_bytes {
-        Err(ParseError::TooLarge(raw.len()))
+    if let Some(path) = node.duplicate_key("$") {
+        Err(ParseError::DuplicateKey(path))
     } else {
-        Ok(())
+        Ok(node)
     }
 }
 
@@ -233,38 +223,40 @@ fn check_shape(value: &Value) -> Result<(), ParseError> {
     check_fields(top, "$", JUDGMENT_FIELDS, JUDGMENT_OPTIONAL_FIELDS)?;
     check_enum(top, "schema_version", &[JUDGMENT_SCHEMA_VERSION])?;
     check_enum(top, "verdict", VERDICTS)?;
-    match top.get("candidates") {
-        Some(Value::Object(candidates)) => check_assessments(candidates),
-        _ => Ok(()),
+    if let Some(Value::Object(candidates)) = top.get("candidates") {
+        check_assessments(candidates)
+    } else {
+        Ok(())
     }
 }
 
 /// `key` holds a string that is one of `allowed`; any other type passes
 /// here and fails in the typed step.
 fn check_enum(top: &Map<String, Value>, key: &str, allowed: &[&str]) -> Result<(), ParseError> {
-    match top.get(key) {
-        Some(Value::String(v)) if !allowed.contains(&v.as_str()) => {
-            Err(ParseError::UnknownEnum(format!("$.{key}: {v:?}")))
-        }
-        _ => Ok(()),
+    let unknown = top
+        .get(key)
+        .and_then(Value::as_str)
+        .filter(|v| !allowed.contains(v));
+    if let Some(v) = unknown {
+        Err(ParseError::UnknownEnum(format!("$.{key}: {v:?}")))
+    } else {
+        Ok(())
     }
 }
 
 fn check_assessments(candidates: &Map<String, Value>) -> Result<(), ParseError> {
     let components = components();
-    candidates
-        .iter()
-        .filter_map(|(label, a)| a.as_object().map(|a| (label, a)))
-        .try_for_each(|(label, assessment)| {
-            let path = format!("$.candidates.{label}");
-            check_fields(assessment, &path, ASSESSMENT_FIELDS, &[])?;
-            match assessment.get("scores") {
-                Some(Value::Object(scores)) => {
-                    check_fields(scores, &format!("{path}.scores"), &components, &[])
-                }
-                _ => Ok(()),
-            }
-        })
+    for (label, assessment) in candidates {
+        let Value::Object(assessment) = assessment else {
+            continue;
+        };
+        let path = format!("$.candidates.{label}");
+        check_fields(assessment, &path, ASSESSMENT_FIELDS, &[])?;
+        if let Some(Value::Object(scores)) = assessment.get("scores") {
+            check_fields(scores, &format!("{path}.scores"), &components, &[])?;
+        }
+    }
+    Ok(())
 }
 
 fn check_fields(
@@ -286,23 +278,27 @@ fn check_fields(
 }
 
 fn check_numbers(j: &Judgment) -> Result<(), ParseError> {
-    let bad_score = j
-        .candidates
-        .iter()
-        .flat_map(|(l, a)| a.scores.iter().map(move |(c, s)| (l, c, s)))
-        .find(|(_, _, s)| !(s.is_finite() && (SCORE_MIN..=SCORE_MAX).contains(*s)));
-    if !(j.confidence.is_finite() && (0.0..=1.0).contains(&j.confidence)) {
+    // A range check also rejects NaN and the infinities.
+    if !(0.0..=1.0).contains(&j.confidence) {
         Err(ParseError::NonFinite(format!(
             "$.confidence: {}",
             j.confidence
         )))
-    } else if let Some((label, component, score)) = bad_score {
+    } else if let Some((label, component, score)) = first_bad_score(j) {
         Err(ParseError::NonFinite(format!(
             "$.candidates.{label}.scores.{component}: {score}"
         )))
     } else {
         Ok(())
     }
+}
+
+/// The first `(label, component, score)` outside `SCORE_MIN..=SCORE_MAX`.
+fn first_bad_score(j: &Judgment) -> Option<(&String, &String, &f64)> {
+    j.candidates
+        .iter()
+        .flat_map(|(l, a)| a.scores.iter().map(move |(c, s)| (l, c, s)))
+        .find(|(_, _, s)| !(SCORE_MIN..=SCORE_MAX).contains(*s))
 }
 
 fn check_labels(j: &Judgment, labels: &[String]) -> Result<(), ParseError> {
@@ -313,34 +309,40 @@ fn check_labels(j: &Judgment, labels: &[String]) -> Result<(), ParseError> {
             "$.candidates has {assessed:?}, the round has {expected:?}"
         )))
     } else {
-        check_ranking(&j.ranking, &expected)?;
-        check_winner(j.verdict, j.winner.as_ref(), &expected)
+        // Both are pure, so the first error wins as with `?`.
+        check_ranking(&j.ranking, &expected).and(check_winner(
+            j.verdict,
+            j.winner.as_ref(),
+            &expected,
+        ))
     }
 }
 
 /// Every label exactly once.
 fn check_ranking(ranking: &[String], expected: &BTreeSet<&str>) -> Result<(), ParseError> {
     let mut ranked = BTreeSet::new();
-    ranking.iter().try_for_each(|label| {
-        if !expected.contains(label.as_str()) {
-            Err(ParseError::ImpossibleLabel(format!(
-                "$.ranking: {label:?} is not a label"
-            )))
-        } else if !ranked.insert(label.as_str()) {
-            Err(ParseError::ImpossibleLabel(format!(
-                "$.ranking: {label:?} appears twice"
-            )))
-        } else {
+    ranking
+        .iter()
+        .try_for_each(|label| {
+            if !expected.contains(label.as_str()) {
+                Err(ParseError::ImpossibleLabel(format!(
+                    "$.ranking: {label:?} is not a label"
+                )))
+            } else if !ranked.insert(label.as_str()) {
+                Err(ParseError::ImpossibleLabel(format!(
+                    "$.ranking: {label:?} appears twice"
+                )))
+            } else {
+                Ok(())
+            }
+        })
+        .and(if ranked.len() == expected.len() {
             Ok(())
-        }
-    })?;
-    if ranked.len() == expected.len() {
-        Ok(())
-    } else {
-        Err(ParseError::ImpossibleLabel(
-            "$.ranking misses a label".into(),
-        ))
-    }
+        } else {
+            Err(ParseError::ImpossibleLabel(
+                "$.ranking misses a label".into(),
+            ))
+        })
 }
 
 /// A winner is named exactly when the verdict is `winner`, and it is a label.
@@ -516,6 +518,29 @@ mod tests {
             parse(&v),
             Err(ParseError::NonFinite("$.confidence: -1".into()))
         );
+    }
+
+    #[test]
+    fn a_nan_or_infinite_number_is_rejected_as_non_finite() {
+        // JSON text cannot carry these, but the typed check must still stop them.
+        for bad in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            let mut j = parse(&valid()).unwrap();
+            j.confidence = bad;
+            assert!(
+                matches!(check_numbers(&j), Err(ParseError::NonFinite(m)) if m.starts_with("$.confidence")),
+                "confidence {bad}"
+            );
+            let mut j = parse(&valid()).unwrap();
+            j.candidates
+                .get_mut("A")
+                .unwrap()
+                .scores
+                .insert("risk".into(), bad);
+            assert!(
+                matches!(check_numbers(&j), Err(ParseError::NonFinite(m)) if m.starts_with("$.candidates.A.scores.risk")),
+                "score {bad}"
+            );
+        }
     }
 
     #[test]

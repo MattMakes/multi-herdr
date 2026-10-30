@@ -94,15 +94,14 @@ pub fn decide_winner(
     policy: &WinnerPolicy,
 ) -> WinnerOutcome {
     if eligible.is_empty() {
-        WinnerOutcome::Rejected {
+        return WinnerOutcome::Rejected {
             reason: RejectReason::NoEligible,
-        }
-    } else {
-        match j {
-            None => needs("no valid judgment"),
-            Some(j) => verdict_outcome(j, eligible, policy),
-        }
+        };
     }
+    let Some(j) = j else {
+        return needs("no valid judgment");
+    };
+    verdict_outcome(j, eligible, policy)
 }
 
 fn verdict_outcome(
@@ -134,30 +133,38 @@ fn tie_outcome(j: &Judgment, eligible: &BTreeSet<String>, policy: &WinnerPolicy)
 }
 
 fn named_winner(j: &Judgment, eligible: &BTreeSet<String>, policy: &WinnerPolicy) -> WinnerOutcome {
-    match &j.winner {
-        None => needs("the verdict is winner but no winner is named"),
-        Some(label) if !eligible.contains(label) => WinnerOutcome::Rejected {
+    let Some(label) = &j.winner else {
+        return needs("the verdict is winner but no winner is named");
+    };
+    labelled_winner(label, j, eligible, policy)
+}
+
+fn labelled_winner(
+    label: &String,
+    j: &Judgment,
+    eligible: &BTreeSet<String>,
+    policy: &WinnerPolicy,
+) -> WinnerOutcome {
+    if !eligible.contains(label) {
+        WinnerOutcome::Rejected {
             reason: RejectReason::JudgeRejected,
-        },
+        }
+    } else if !j.candidates.get(label).is_some_and(|a| a.acceptable) {
         // The judge contradicts itself: a winner must be acceptable.
-        Some(label) if !j.candidates.get(label).is_some_and(|a| a.acceptable) => {
-            needs(&format!("the winner {label:?} is not marked acceptable"))
-        }
+        needs(&format!("the winner {label:?} is not marked acceptable"))
+    } else if !matches!(
+        j.confidence.partial_cmp(&policy.min_confidence),
+        Some(Ordering::Greater | Ordering::Equal)
+    ) {
         // A NaN on either side is not confident.
-        Some(_)
-            if !matches!(
-                j.confidence.partial_cmp(&policy.min_confidence),
-                Some(Ordering::Greater | Ordering::Equal)
-            ) =>
-        {
-            needs(&format!(
-                "confidence {} is below {}",
-                j.confidence, policy.min_confidence
-            ))
-        }
-        Some(label) => WinnerOutcome::Winner {
+        needs(&format!(
+            "confidence {} is below {}",
+            j.confidence, policy.min_confidence
+        ))
+    } else {
+        WinnerOutcome::Winner {
             label: label.clone(),
-        },
+        }
     }
 }
 

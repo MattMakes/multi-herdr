@@ -319,7 +319,10 @@ pub(crate) struct LostKill {
 /// it, and a CLI that leaves its group is outside horch's control.
 pub(crate) fn kill_lost_job(job_dir: &Path) -> LostKill {
     let path = job_dir.join(HEARTBEAT_FILE);
-    read_heartbeat(&path).map_or_else(LostKill::default, |hb| kill_lost(&path, &hb))
+    let Some(hb) = read_heartbeat(&path) else {
+        return LostKill::default();
+    };
+    kill_lost(&path, &hb)
 }
 
 fn read_heartbeat(path: &Path) -> Option<Heartbeat> {
@@ -334,10 +337,9 @@ fn kill_lost(path: &Path, hb: &Heartbeat) -> LostKill {
         ..LostKill::default()
     };
     let last_beat = std::fs::metadata(path).and_then(|m| m.modified());
-    if !done.job && !fsx::pid_alive(hb.pid) {
-        if let Ok(last_beat) = last_beat {
-            (done.killed, done.kept) = sweep_group(hb.pid, last_beat);
-        }
+    // A killed job, or a leader that still lives, leaves its group alone.
+    if let (false, false, Ok(last_beat)) = (done.job, fsx::pid_alive(hb.pid), last_beat) {
+        (done.killed, done.kept) = sweep_group(hb.pid, last_beat);
     }
     done
 }
@@ -361,11 +363,12 @@ fn sweep_group(pgid: u32, last_beat: std::time::SystemTime) -> (Vec<u32>, Vec<u3
 fn kill_member(pid: u32, pgid: u32, started: u64) -> bool {
     #[cfg(unix)]
     {
-        procid::os_pid(pid)
-            .zip(procid::os_pid(pgid))
-            // SAFETY: plain syscall; a pid that has gone answers -1.
-            .is_some_and(|(os, group)| unsafe { libc::getpgid(os) } == group)
-            && procid::signal_same(pid, started, libc::SIGKILL)
+        let (Some(os), Some(group)) = (procid::os_pid(pid), procid::os_pid(pgid)) else {
+            return false;
+        };
+        // SAFETY: plain syscall; a pid that has gone answers -1.
+        let in_group = unsafe { libc::getpgid(os) } == group;
+        in_group && procid::signal_same(pid, started, libc::SIGKILL)
     }
     #[cfg(not(unix))]
     {

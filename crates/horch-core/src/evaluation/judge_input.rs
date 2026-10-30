@@ -283,9 +283,7 @@ fn collect_files(
         let (patch, cut) = git
             .diff_patch(repo, &frozen.base_sha, &frozen.head_sha, DIFF_CAP_BYTES)
             .with_context(|| format!("reading the patch of candidate '{original}'"))?;
-        if cut {
-            truncated_diffs.push(blind.clone());
-        }
+        truncated_diffs.extend(cut.then_some(blind.clone()));
         blindness.extend(scan_blindness(blind, &patch));
         files.insert(format!("candidates/{blind}/diff.patch"), patch.into_bytes());
         files.insert(
@@ -328,6 +326,11 @@ fn write_and_seal(
     }
     // The manifest goes last: its presence means the bundle is whole.
     fsx::create_immutable(&dir.join("manifest.json"), manifest_bytes, BUNDLE_FILE_MODE)?;
+    seal_bundle(dir, labels)
+}
+
+/// Make the bundle read-only, innermost directory first.
+fn seal_bundle(dir: &Path, labels: &[String]) -> anyhow::Result<()> {
     for label in labels {
         seal_dir(&dir.join("candidates").join(label))?;
     }
@@ -366,7 +369,7 @@ pub fn build_judge_input(
         blindness,
         truncated_diffs,
     } = collect_files(task_text, &pairs, &by_label, git, repo)?;
-    let labels: Vec<String> = pairs.iter().map(|(b, _)| b.clone()).collect();
+    let (labels, _): (Vec<String>, Vec<String>) = pairs.iter().cloned().unzip();
     let manifest = JudgeInputManifest {
         schema_version: JUDGE_INPUT_SCHEMA_VERSION.into(),
         round_id: round_id.clone(),
@@ -383,10 +386,10 @@ pub fn build_judge_input(
     let dir = paths.judge_input_dir(&round.experiment_id, round_id)?;
     if dir.join("manifest.json").exists() {
         files.insert("manifest.json".into(), manifest_bytes.clone());
-        verify_bundle(&dir, &files)?;
+        verify_bundle(&dir, &files)
     } else {
-        write_and_seal(&dir, &labels, &files, &manifest_bytes)?;
-    }
+        write_and_seal(&dir, &labels, &files, &manifest_bytes)
+    }?;
     Ok(JudgeInput {
         dir,
         labels,

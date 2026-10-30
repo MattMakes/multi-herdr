@@ -150,8 +150,9 @@ impl CommandValidator {
         worktree: &Path,
         raw: &Path,
     ) -> anyhow::Result<GateStatus> {
-        let mut cmd = self.gate_command(gate, worktree, raw)?;
-        match cmd.spawn() {
+        let out = private_file(raw)?;
+        let err = out.try_clone()?;
+        match self.gate_command(gate, worktree, out, err).spawn() {
             Ok(mut child) => wait_gate(&mut child, gate.timeout),
             Err(e) => Ok(GateStatus::Error {
                 reason: format!("cannot start sh: {e}"),
@@ -159,14 +160,8 @@ impl CommandValidator {
         }
     }
 
-    fn gate_command(
-        &self,
-        gate: &GateSpec,
-        worktree: &Path,
-        raw: &Path,
-    ) -> anyhow::Result<Command> {
-        let out = private_file(raw)?;
-        let err = out.try_clone()?;
+    /// The `sh -c` command of one gate, writing to `out` and `err`.
+    fn gate_command(&self, gate: &GateSpec, worktree: &Path, out: File, err: File) -> Command {
         let mut cmd = Command::new("sh");
         cmd.arg("-c")
             .arg(&gate.command)
@@ -174,9 +169,7 @@ impl CommandValidator {
             .stdin(Stdio::null())
             .stdout(out)
             .stderr(err);
-        for (k, v) in &self.env {
-            cmd.env(k, v);
-        }
+        cmd.envs(self.env.iter().cloned());
         cmd.env("CARGO_TARGET_DIR", worktree.join("target"));
         for key in FORBIDDEN_ENV {
             cmd.env_remove(key);
@@ -188,7 +181,7 @@ impl CommandValidator {
         // started, not just `sh`.
         #[cfg(unix)]
         std::os::unix::process::CommandExt::process_group(&mut cmd, 0);
-        Ok(cmd)
+        cmd
     }
 }
 
@@ -357,10 +350,10 @@ fn store_log(raw: &Path, log: &Path) -> anyhow::Result<(Digest, bool)> {
     let mut file = File::open(raw).with_context(|| format!("opening {}", raw.display()))?;
     let len = file.metadata()?.len();
     let (text, truncated) = if len <= LOG_CAP as u64 {
-        read_whole(&mut file)?
+        read_whole(&mut file)
     } else {
-        (read_head_tail(&mut file, len)?, true)
-    };
+        read_head_tail(&mut file, len)
+    }?;
     fsx::write_atomic(log, text.as_bytes(), fsx::PRIVATE_FILE)?;
     Ok((sha256_bytes(text.as_bytes()), truncated))
 }
@@ -381,7 +374,7 @@ fn read_whole(file: &mut File) -> anyhow::Result<(String, bool)> {
 }
 
 /// A raw log over the cap: its head and tail with a marker between them.
-fn read_head_tail(file: &mut File, len: u64) -> anyhow::Result<String> {
+fn read_head_tail(file: &mut File, len: u64) -> anyhow::Result<(String, bool)> {
     let half = (LOG_CAP - 128) / 2;
     let mut head = vec![0u8; half];
     file.read_exact(&mut head)?;
@@ -398,7 +391,7 @@ fn read_head_tail(file: &mut File, len: u64) -> anyhow::Result<String> {
         "[horch: {omitted} bytes omitted from the middle of this log]\n"
     ));
     text.push_str(&redact(&String::from_utf8_lossy(&tail)));
-    Ok(cut_utf8(&text, LOG_CAP).to_owned())
+    Ok((cut_utf8(&text, LOG_CAP).to_owned(), true))
 }
 
 /// Drop the partial line at the end of `head` and at the start of `tail`.

@@ -188,20 +188,34 @@ fn replay(events: &[EventEnvelope]) -> Result<Replay> {
     };
     for env in events {
         out.projection.apply(env);
-        let known = env
-            .round_id
-            .as_ref()
-            .and_then(|id| out.projection.rounds.get(id).map(|r| (id, r.state)));
-        if let Some((round, state)) = known {
-            if env.kind == "round.created" && !out.created_at.contains_key(round) {
-                out.created_at.insert(round.clone(), occurred_at(env)?);
-            }
-            if is_decided(state) && !out.decided_at.contains_key(round) {
-                out.decided_at.insert(round.clone(), occurred_at(env)?);
+        let Some(round) = &env.round_id else { continue };
+        let Some(r) = out.projection.rounds.get(round) else {
+            continue;
+        };
+        let state = r.state;
+        let stamps = [
+            (&mut out.created_at, env.kind == "round.created"),
+            (&mut out.decided_at, is_decided(state)),
+        ];
+        for (times, applies) in stamps {
+            if applies {
+                stamp_first(times, round, env)?;
             }
         }
     }
     Ok(out)
+}
+
+/// Record when `env` happened for `round`, unless the map already has a time.
+fn stamp_first(
+    times: &mut BTreeMap<RoundId, DateTime<Utc>>,
+    round: &RoundId,
+    env: &EventEnvelope,
+) -> Result<()> {
+    if let std::collections::btree_map::Entry::Vacant(slot) = times.entry(round.clone()) {
+        slot.insert(occurred_at(env)?);
+    }
+    Ok(())
 }
 
 /// The rows as JSONL: one canonical JSON object (sorted keys, no
@@ -325,20 +339,23 @@ impl RowParts {
             .as_ref()
             .with_context(|| format!("candidate {label} was never planned"))?;
         let config_id = &planned.config_id;
-        let execution_id = c
-            .execution_id
-            .as_ref()
-            .with_context(|| format!("candidate {label} has no execution id"))?;
-        let run_facts = facts
-            .facts(execution_id)
-            .with_context(|| format!("no execution facts for {execution_id}"))?;
         let components = judgment
             .and_then(|j| j.candidates.get(label))
             .map(|a| a.scores.clone());
-        let run = WorkerRun::project(&run_facts, round_events, components.clone())?;
+        let run = project_run(label, c, facts, round_events, components.clone())?;
         self.cost += NanoUsd(i128::from(run.facts.cost_microusd.0) * 1000);
         self.worker_runs.push(run);
+        self.options
+            .extend(c.is_eligible().then_some(config_id.clone()));
+        self.add_quality(config_id, components)
+    }
 
+    /// The quality question of one config and its answer.
+    fn add_quality(
+        &mut self,
+        config_id: &String,
+        components: Option<BTreeMap<String, f64>>,
+    ) -> Result<()> {
         let key = format!("{QUALITY_PREFIX}{config_id}");
         if self.questions.contains_key(&key) {
             bail!("config {config_id} appears twice in the round");
@@ -361,9 +378,6 @@ impl RowParts {
         self.answers.insert(key, answer);
         if let Some(scores) = components {
             self.component_quality.insert(config_id.clone(), scores);
-        }
-        if c.is_eligible() {
-            self.options.push(config_id.clone());
         }
         Ok(())
     }
@@ -389,6 +403,36 @@ impl RowParts {
             }),
         );
     }
+}
+
+/// The worker run of one candidate, from its execution facts.
+fn project_run(
+    label: &str,
+    c: &CandidateView,
+    facts: &dyn ExecutionFactsSource,
+    round_events: &[EventEnvelope],
+    components: Option<BTreeMap<String, f64>>,
+) -> Result<WorkerRun> {
+    let execution_id = c
+        .execution_id
+        .as_ref()
+        .with_context(|| format!("candidate {label} has no execution id"))?;
+    let run_facts = facts
+        .facts(execution_id)
+        .with_context(|| format!("no execution facts for {execution_id}"))?;
+    WorkerRun::project(&run_facts, round_events, components).map_err(Into::into)
+}
+
+/// The events of one round and of its experiment's own log.
+fn round_events(events: &[EventEnvelope], r: &RoundView, round_id: &RoundId) -> Vec<EventEnvelope> {
+    events
+        .iter()
+        .filter(|e| {
+            e.experiment_id == r.experiment_id
+                && e.round_id.as_ref().is_none_or(|id| id == round_id)
+        })
+        .cloned()
+        .collect()
 }
 
 /// The winner's config id. A later rejection (stale judgment, failed
@@ -425,14 +469,7 @@ fn build_row(
     let judgment = read_judgment(paths, round_id, r.judge.judgment_id.as_ref())?;
 
     // WorkerRun::project folds what it is given: only this round's events.
-    let round_events: Vec<EventEnvelope> = events
-        .iter()
-        .filter(|e| {
-            e.experiment_id == r.experiment_id
-                && e.round_id.as_ref().is_none_or(|id| id == round_id)
-        })
-        .cloned()
-        .collect();
+    let round_events = round_events(events, r, round_id);
 
     let mut parts = RowParts::default();
     for (label, c) in &r.candidates {
