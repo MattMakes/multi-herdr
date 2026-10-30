@@ -1503,4 +1503,142 @@ mod tests {
             .unwrap()
             .is_empty());
     }
+
+    #[test]
+    fn status_reads_a_live_and_a_removed_worktree() {
+        let fixture = Fixture::new();
+        let mut claim = fixture.create("worker", None, "one");
+        fixture.commit_file(&claim.path, "worker.txt", "work\n", "worker");
+        fs::write(claim.path.join("untracked.txt"), "new\n").unwrap();
+        let live = fixture.landing.status(&claim).unwrap();
+        assert_eq!(
+            live,
+            ClaimStatus {
+                ahead: 1,
+                dirty: 1,
+                contained: false,
+                exists: true
+            }
+        );
+
+        let path = claim.path.to_str().unwrap().to_owned();
+        fixture.git(&fixture.repo, &["worktree", "remove", "--force", &path]);
+        let kept = fixture.landing.status(&claim).unwrap();
+        assert_eq!(
+            kept,
+            ClaimStatus {
+                ahead: 1,
+                dirty: 0,
+                contained: false,
+                exists: false
+            },
+            "the branch outlives the folder"
+        );
+
+        fixture.git(&fixture.repo, &["branch", "-D", &claim.branch]);
+        let gone = fixture.landing.status(&claim).unwrap();
+        assert_eq!((gone.ahead, gone.contained, gone.exists), (0, false, false));
+        claim.state = ClaimState::Landed;
+        assert!(
+            fixture.landing.status(&claim).unwrap().contained,
+            "a landed claim without its branch counts as contained"
+        );
+
+        claim.path = PathBuf::from("w3-no-such-folder");
+        let error = fixture.landing.status(&claim).unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "claim path w3-no-such-folder has no repository parent"
+        );
+    }
+
+    #[test]
+    fn land_needs_exactly_one_open_claim_of_the_role() {
+        let fixture = Fixture::new();
+        let error = fixture
+            .landing
+            .land(&fixture.repo, "worker", None, None)
+            .unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "cannot select one open claim for role 'worker'; found 0: []"
+        );
+        fixture.create("worker", None, "one");
+        fixture.create("worker", None, "two");
+        fixture.create("other", None, "three");
+        let error = fixture
+            .landing
+            .land(&fixture.repo, "worker", None, None)
+            .unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "cannot select one open claim for role 'worker'; found 2: [one, two]"
+        );
+        let error = fixture
+            .landing
+            .land(&fixture.repo, "worker", Some("nine"), None)
+            .unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "cannot select one open claim for role 'worker'; found 0: [one, two]"
+        );
+    }
+
+    #[test]
+    fn create_refuses_an_existing_branch() {
+        let fixture = Fixture::new();
+        fixture.git(&fixture.repo, &["branch", "wt/worker-one"]);
+        let error = fixture
+            .landing
+            .create(&fixture.repo, "worker", None, "one")
+            .unwrap_err();
+        let path = fixture
+            .repo
+            .canonicalize()
+            .unwrap()
+            .join(".worktrees/worker-one");
+        assert_eq!(
+            error.to_string(),
+            format!(
+                "worktree name 'one' already exists at {} or branch wt/worker-one exists",
+                path.display()
+            )
+        );
+        assert!(!path.exists());
+    }
+
+    #[test]
+    fn land_refuses_a_missing_worktree_and_keeps_the_claim_open() {
+        let fixture = Fixture::new();
+        let claim = fixture.create("worker", None, "one");
+        let path = claim.path.to_str().unwrap().to_owned();
+        fixture.git(&fixture.repo, &["worktree", "remove", "--force", &path]);
+        let error = fixture
+            .landing
+            .land(&fixture.repo, "worker", Some("one"), None)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.starts_with(&format!("worktree {path} does not exist\nKept branch")),
+            "{error}"
+        );
+        assert_eq!(
+            fixture.landing.claims(&fixture.repo).unwrap()[0].state,
+            ClaimState::Open
+        );
+    }
+
+    #[test]
+    fn record_has_open_claims_reads_every_registry_and_skips_other_files() {
+        let fixture = Fixture::new();
+        fixture.create("worker", Some("record-1"), "one");
+        let registries = fixture.state.join("worktrees");
+        fs::write(registries.join("notes.txt"), b"not json").unwrap();
+        assert!(fixture.landing.record_has_open_claims("record-1").unwrap());
+        fs::write(registries.join("broken.json"), b"not json").unwrap();
+        assert!(
+            fixture.landing.record_has_open_claims("record-1").is_err(),
+            "a broken registry fails the read even after a match"
+        );
+    }
 }
