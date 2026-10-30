@@ -171,20 +171,7 @@ pub(crate) fn poll_lines_until(
     let meta = file.metadata()?;
     let (dev, ino) = file_identity(&meta);
     let path_str = path.to_string_lossy().into_owned();
-    if cursor.dev != dev
-        || cursor.ino != ino
-        || meta.len() < cursor.offset
-        || cursor.path != path_str
-    {
-        *cursor = Cursor {
-            path: path_str,
-            agent: std::mem::take(&mut cursor.agent),
-            session_id: std::mem::take(&mut cursor.session_id),
-            dev,
-            ino,
-            ..Cursor::default()
-        };
-    }
+    reset_if_moved(cursor, dev, ino, meta.len(), path_str);
     let mut reader = BufReader::with_capacity(1 << 20, file);
     reader.seek(SeekFrom::Start(cursor.offset))?;
     let mut buf = LINE.take();
@@ -232,6 +219,23 @@ fn read_lines(
         }
     }
     Ok(consumed_any)
+}
+
+/// Start `cursor` over when it belongs to another file (`dev`, `ino` or
+/// `path` differ) or to the earlier, longer state of this one (`len` is below
+/// its offset). The agent and the session id stay: they name the owner of
+/// the input, not its contents.
+fn reset_if_moved(cursor: &mut Cursor, dev: u64, ino: u64, len: u64, path: String) {
+    if cursor.dev != dev || cursor.ino != ino || len < cursor.offset || cursor.path != path {
+        *cursor = Cursor {
+            path,
+            agent: std::mem::take(&mut cursor.agent),
+            session_id: std::mem::take(&mut cursor.session_id),
+            dev,
+            ino,
+            ..Cursor::default()
+        };
+    }
 }
 
 #[cfg(test)]
