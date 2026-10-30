@@ -529,20 +529,22 @@ pub enum StartupKey<'a> {
 impl StartupKey<'_> {
     /// The file name, or `None` when a part could name a path.
     fn file_name(&self) -> Option<String> {
-        let plain = |s: &str| {
-            !s.is_empty()
-                && s.chars()
-                    .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
-        };
         match *self {
-            StartupKey::Record(id) => plain(id).then(|| format!("record-{id}.txt")),
+            StartupKey::Record(id) => is_plain(id).then(|| format!("record-{id}.txt")),
             StartupKey::Pane(pane) => {
                 // A public pane id is `<workspace>:<pane>`.
                 let name = pane.replace(':', "_");
-                plain(&name).then(|| format!("pane-{name}.txt"))
+                is_plain(&name).then(|| format!("pane-{name}.txt"))
             }
         }
     }
+}
+
+/// Whether `s` is letters, digits, `-` and `_` only, and not empty.
+fn is_plain(s: &str) -> bool {
+    !s.is_empty()
+        && s.chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
 }
 
 /// Where a worker's startup error waits for `horch spawn`: under the data
