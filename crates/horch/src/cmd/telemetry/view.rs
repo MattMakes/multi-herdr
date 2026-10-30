@@ -10,7 +10,7 @@ use chrono::{DateTime, Utc};
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use horch_core::clock;
 use horch_core::routing::quota;
-use horch_core::telemetry::collect::{LiveRow, Snapshot};
+use horch_core::telemetry::collect::{Insights, LiveRow, Snapshot};
 use horch_core::telemetry::store::{RollupRow, GROUPS};
 use ratatui::backend::TestBackend;
 use ratatui::buffer::Buffer;
@@ -235,11 +235,10 @@ fn page(r: Rect) -> usize {
     (r.height as usize).saturating_sub(2).max(1)
 }
 
-/// A key on the screen. Pure.
-pub fn on_key(mut s: ViewState, key: KeyEvent, rows: &Rows) -> (ViewState, Action) {
-    let ctrl_c = key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL);
-    let motion = matches!(
-        key.code,
+/// A table motion key.
+fn is_motion(code: KeyCode) -> bool {
+    matches!(
+        code,
         KeyCode::Down
             | KeyCode::Up
             | KeyCode::Char('j')
@@ -248,79 +247,73 @@ pub fn on_key(mut s: ViewState, key: KeyEvent, rows: &Rows) -> (ViewState, Actio
             | KeyCode::PageUp
             | KeyCode::Home
             | KeyCode::End
-    );
+    )
+}
+
+/// `q` or Ctrl-C.
+fn is_quit(key: &KeyEvent) -> bool {
+    let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+    matches!(
+        (key.code, ctrl),
+        (KeyCode::Char('q'), _) | (KeyCode::Char('c'), true)
+    )
+}
+
+/// The key counts: a press, or a repeat of a motion key; and, behind the
+/// modal help, only the keys that leave it.
+fn counts(s: &ViewState, key: &KeyEvent) -> bool {
     // A held motion key repeats; an action key acts once per press.
     let pressed = match key.kind {
         KeyEventKind::Press => true,
-        KeyEventKind::Repeat => motion,
+        KeyEventKind::Repeat => is_motion(key.code),
         KeyEventKind::Release => false,
     };
     // The help is modal.
-    let allowed = !s.help
-        || ctrl_c
-        || matches!(
-            key.code,
-            KeyCode::Char('?') | KeyCode::Char('q') | KeyCode::Esc
-        );
-    if !pressed || !allowed {
-        return (s, Action::None);
-    }
-    let before = s.clone();
-    let t = s.focus;
-    let (n, pg) = (rows.count(t), rows.page[t]);
-    let action = match key.code {
-        KeyCode::Char('q') => Action::Quit,
-        KeyCode::Char('c') if ctrl_c => Action::Quit,
-        KeyCode::Char('?') => {
-            s.help = !s.help;
-            Action::Redraw
-        }
-        KeyCode::Esc if s.help => {
-            s.help = false;
-            Action::Redraw
-        }
-        KeyCode::Esc if s.project.is_some() => {
-            s.project = None;
-            Action::SetProject(None)
-        }
-        KeyCode::Esc => Action::None,
-        KeyCode::Tab | KeyCode::BackTab => {
-            // 2 tables at most: next and previous are the same one.
-            if s.has_rollup() {
-                s.focus = 1 - s.focus.min(1);
-            }
-            Action::Redraw
-        }
-        KeyCode::Down | KeyCode::Char('j') => {
-            s.tables[t].select(s.tables[t].sel + 1, n, pg);
-            Action::Redraw
-        }
-        KeyCode::Up | KeyCode::Char('k') => {
-            s.tables[t].select(s.tables[t].sel.saturating_sub(1), n, pg);
-            Action::Redraw
-        }
+    let allowed = !s.help || is_quit(key) || matches!(key.code, KeyCode::Char('?') | KeyCode::Esc);
+    pressed && allowed
+}
+
+/// A motion key on one table with `n` rows and pages of `pg` rows.
+fn move_selection(table: &mut TableState, code: KeyCode, n: usize, pg: usize) {
+    match code {
+        KeyCode::Down | KeyCode::Char('j') => table.select(table.sel + 1, n, pg),
+        KeyCode::Up | KeyCode::Char('k') => table.select(table.sel.saturating_sub(1), n, pg),
         KeyCode::PageDown => {
-            s.tables[t].offset = (s.tables[t].offset + pg).min(n.saturating_sub(pg));
-            s.tables[t].select(s.tables[t].sel + pg, n, pg);
-            Action::Redraw
+            table.offset = (table.offset + pg).min(n.saturating_sub(pg));
+            table.select(table.sel + pg, n, pg);
         }
         KeyCode::PageUp => {
-            s.tables[t].offset = s.tables[t].offset.saturating_sub(pg);
-            s.tables[t].select(s.tables[t].sel.saturating_sub(pg), n, pg);
-            Action::Redraw
+            table.offset = table.offset.saturating_sub(pg);
+            table.select(table.sel.saturating_sub(pg), n, pg);
         }
-        KeyCode::Home => {
-            s.tables[t].select(0, n, pg);
-            Action::Redraw
-        }
-        KeyCode::End => {
-            s.tables[t].select(n.saturating_sub(1), n, pg);
-            Action::Redraw
-        }
+        KeyCode::Home => table.select(0, n, pg),
+        _ => table.select(n.saturating_sub(1), n, pg),
+    }
+}
+
+/// `?` toggles the help; Esc closes the help, else clears the project.
+fn on_help_or_esc(s: &mut ViewState, code: KeyCode) -> Action {
+    if code == KeyCode::Char('?') {
+        s.help = !s.help;
+        return Action::Redraw;
+    }
+    if s.help {
+        s.help = false;
+        Action::Redraw
+    } else if s.project.is_some() {
+        s.project = None;
+        Action::SetProject(None)
+    } else {
+        Action::None
+    }
+}
+
+/// Tab, `g` and `w`: change the focus, the group or the window.
+fn on_view_key(s: &mut ViewState, code: KeyCode) {
+    match code {
         KeyCode::Char('g') => {
             s.group = (s.group + 1) % GROUPS.len();
             s.tables[ROLLUP] = TableState::default();
-            Action::Redraw
         }
         KeyCode::Char('w') => {
             s.window = (s.window + 1) % VIEW_WINDOWS.len();
@@ -328,8 +321,48 @@ pub fn on_key(mut s: ViewState, key: KeyEvent, rows: &Rows) -> (ViewState, Actio
             if !s.has_rollup() {
                 s.focus = LIVE;
             }
+        }
+        // 2 tables at most: next and previous are the same one.
+        _ => {
+            if s.has_rollup() {
+                s.focus = 1 - s.focus.min(1);
+            }
+        }
+    }
+}
+
+/// A key on the screen. Pure.
+pub fn on_key(mut s: ViewState, key: KeyEvent, rows: &Rows) -> (ViewState, Action) {
+    if !counts(&s, &key) {
+        return (s, Action::None);
+    }
+    let before = s.clone();
+    let action = dispatch(&mut s, &key, rows);
+    let quiet = action == Action::Redraw && s == before;
+    (s, if quiet { Action::None } else { action })
+}
+
+/// What a counted key does to the state.
+fn dispatch(s: &mut ViewState, key: &KeyEvent, rows: &Rows) -> Action {
+    let t = s.focus;
+    match key.code {
+        _ if is_quit(key) => Action::Quit,
+        KeyCode::Char('?') | KeyCode::Esc => on_help_or_esc(s, key.code),
+        KeyCode::Tab | KeyCode::BackTab | KeyCode::Char('g') | KeyCode::Char('w') => {
+            on_view_key(s, key.code);
             Action::Redraw
         }
+        code if is_motion(code) => {
+            move_selection(&mut s.tables[t], code, rows.count(t), rows.page[t]);
+            Action::Redraw
+        }
+        code => on_data_key(s, code, rows),
+    }
+}
+
+/// `p` cycles the project filter; `r` asks for a refresh.
+fn on_data_key(s: &mut ViewState, code: KeyCode, rows: &Rows) -> Action {
+    match code {
         KeyCode::Char('p') => {
             s.project = next_project(&rows.projects, s.project.take());
             Action::SetProject(s.project.clone())
@@ -339,11 +372,7 @@ pub fn on_key(mut s: ViewState, key: KeyEvent, rows: &Rows) -> (ViewState, Actio
             Action::Refresh
         }
         _ => Action::None,
-    };
-    if action == Action::Redraw && s == before {
-        return (s, Action::None);
     }
-    (s, action)
 }
 
 /// A mouse wheel step over table `t`: scroll it. The selection stays on its
@@ -546,24 +575,24 @@ fn facts(snap: &Snapshot, view: &ViewState) -> Vec<String> {
             .collect();
         out.push(format!("UNREAD  {}", items.join("; ")));
     }
-    let i = &snap.insights;
-    let mut facts = Vec::new();
-    if let Some(s) = i.orchestrator_share {
-        facts.push(format!("orchestrators {} of spend", pct(s)));
-    }
-    if let Some(h) = i.cache_hit {
-        facts.push(format!("cache hit {}", pct(h)));
-    }
-    if let Some(s) = i.idle_spend_share {
-        facts.push(format!("{} of spend while idle", pct(s)));
-    }
-    if let Some(p) = &i.top_plan {
-        facts.push(format!("top plan {p}"));
-    }
-    if !facts.is_empty() {
-        out.push(facts.join(" · "));
-    }
+    out.extend(insight_line(&snap.insights));
     out
+}
+
+/// The insights on 1 line, or none when there is no insight.
+fn insight_line(i: &Insights) -> Option<String> {
+    let facts: Vec<String> = [
+        i.orchestrator_share
+            .map(|s| format!("orchestrators {} of spend", pct(s))),
+        i.cache_hit.map(|h| format!("cache hit {}", pct(h))),
+        i.idle_spend_share
+            .map(|s| format!("{} of spend while idle", pct(s))),
+        i.top_plan.as_ref().map(|p| format!("top plan {p}")),
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
+    (!facts.is_empty()).then(|| facts.join(" · "))
 }
 
 /// The fact lines: 1 per fact, or on a short terminal all of them on 1
@@ -961,32 +990,20 @@ pub fn draw(frame: &mut Frame, snap: &Snapshot, view: &ViewState, now: DateTime<
     draw_buf(frame.buffer_mut(), area, snap, view, now);
 }
 
-/// [`draw`] into a buffer.
-pub fn draw_buf(
-    buf: &mut Buffer,
-    area: Rect,
+/// The pool lines, with each state colored.
+fn pool_paragraph(
     snap: &Snapshot,
     view: &ViewState,
+    area: Rect,
     now: DateTime<Utc>,
-) {
-    let width = area.width as usize;
-    let a = areas(snap, view, area);
-    let labels = project_labels(snap);
-    let para = |buf: &mut Buffer, lines: Vec<Line<'static>>, r: Rect| {
-        ratatui::widgets::Widget::render(Paragraph::new(lines), r, buf);
-    };
-    para(
-        buf,
-        vec![Line::from(header(snap, view, width, now))],
-        a.header,
-    );
+) -> Vec<Line<'static>> {
     // Every pool line form puts the state at these characters.
     let (state_at, first) = if short(area) {
         ((COMPACT_STATE, COMPACT_STATE + 12), 0)
     } else {
         ((43, 55), 1)
     };
-    let pools = pool_lines(snap, area, now)
+    pool_lines(snap, area, now)
         .into_iter()
         .enumerate()
         .map(|(i, l)| {
@@ -996,13 +1013,22 @@ pub fn draw_buf(
                 pool_line(l, view.color, state_at)
             }
         })
-        .collect();
-    para(buf, pools, a.pools);
+        .collect()
+}
 
+/// The live panes table.
+fn draw_live(
+    buf: &mut Buffer,
+    r: Rect,
+    snap: &Snapshot,
+    view: &ViewState,
+    labels: &std::collections::BTreeMap<String, String>,
+) {
+    let width = buf.area.width as usize;
     let live = live_rows(snap, view);
     let cells: Vec<Vec<String>> = live
         .iter()
-        .map(|r| live_cells(r, label(&labels, r.project.as_deref())))
+        .map(|r| live_cells(r, label(labels, r.project.as_deref())))
         .collect();
     let heads: Vec<String> = LIVE_COLS.iter().map(|c| c.head.to_string()).collect();
     let widths = fit_columns(&LIVE_COLS, &heads, &cells, width);
@@ -1030,7 +1056,7 @@ pub fn draw_buf(
         .collect();
     draw_table(
         buf,
-        a.live,
+        r,
         "live panes",
         table_line(&heads, &widths, width),
         lines,
@@ -1038,43 +1064,78 @@ pub fn draw_buf(
         &view.tables[LIVE],
         view.focus == LIVE,
     );
+}
 
+/// The rollup table.
+fn draw_rollup(
+    buf: &mut Buffer,
+    r: Rect,
+    snap: &Snapshot,
+    view: &ViewState,
+    labels: &std::collections::BTreeMap<String, String>,
+) {
+    let width = buf.area.width as usize;
+
+    let rows = rollup_rows(snap, view);
+    let total: f64 = rows.iter().map(|r| r.cost_usd).sum();
+    let title = format!("{} by {}", view.window_name(), view.group_name());
+    let by_project = view.group_name() == "project";
+    let cells: Vec<Vec<String>> = rows
+        .iter()
+        .map(|row| {
+            let key = if by_project && row.key != "-" {
+                label(labels, Some(&row.key))
+            } else {
+                row.key.clone()
+            };
+            rollup_cells(row, total, key)
+        })
+        .collect();
+    let mut heads: Vec<String> = ROLLUP_COLS.iter().map(|c| c.head.to_string()).collect();
+    heads[0] = title.to_uppercase();
+    let widths = fit_columns(&ROLLUP_COLS, &heads, &cells, width);
+    let lines = cells
+        .iter()
+        .map(|c| (table_line(c, &widths, width), Style::default()))
+        .collect();
+    let note = view
+        .loading
+        .then(|| format!("loading {}…", label(labels, view.project.as_deref())));
+    draw_table(
+        buf,
+        r,
+        &title,
+        table_line(&heads, &widths, width),
+        lines,
+        note,
+        &view.tables[ROLLUP],
+        view.focus == ROLLUP,
+    );
+}
+
+/// [`draw`] into a buffer.
+pub fn draw_buf(
+    buf: &mut Buffer,
+    area: Rect,
+    snap: &Snapshot,
+    view: &ViewState,
+    now: DateTime<Utc>,
+) {
+    let width = area.width as usize;
+    let a = areas(snap, view, area);
+    let labels = project_labels(snap);
+    let para = |buf: &mut Buffer, lines: Vec<Line<'static>>, r: Rect| {
+        ratatui::widgets::Widget::render(Paragraph::new(lines), r, buf);
+    };
+    para(
+        buf,
+        vec![Line::from(header(snap, view, width, now))],
+        a.header,
+    );
+    para(buf, pool_paragraph(snap, view, area, now), a.pools);
+    draw_live(buf, a.live, snap, view, &labels);
     if let Some(r) = a.rollup {
-        let rows = rollup_rows(snap, view);
-        let total: f64 = rows.iter().map(|r| r.cost_usd).sum();
-        let title = format!("{} by {}", view.window_name(), view.group_name());
-        let by_project = view.group_name() == "project";
-        let cells: Vec<Vec<String>> = rows
-            .iter()
-            .map(|row| {
-                let key = if by_project && row.key != "-" {
-                    label(&labels, Some(&row.key))
-                } else {
-                    row.key.clone()
-                };
-                rollup_cells(row, total, key)
-            })
-            .collect();
-        let mut heads: Vec<String> = ROLLUP_COLS.iter().map(|c| c.head.to_string()).collect();
-        heads[0] = title.to_uppercase();
-        let widths = fit_columns(&ROLLUP_COLS, &heads, &cells, width);
-        let lines = cells
-            .iter()
-            .map(|c| (table_line(c, &widths, width), Style::default()))
-            .collect();
-        let note = view
-            .loading
-            .then(|| format!("loading {}…", label(&labels, view.project.as_deref())));
-        draw_table(
-            buf,
-            r,
-            &title,
-            table_line(&heads, &widths, width),
-            lines,
-            note,
-            &view.tables[ROLLUP],
-            view.focus == ROLLUP,
-        );
+        draw_rollup(buf, r, snap, view, &labels);
     }
 
     para(
@@ -1179,6 +1240,74 @@ mod tests {
 
     fn press(s: ViewState, code: KeyCode, r: &Rows) -> ViewState {
         on_key(s, key(code), r).0
+    }
+
+    /// The other motion keys, `g`, `w`, `p` and Esc with a project.
+    #[test]
+    fn spc_07_up_pageup_home_and_the_view_keys() {
+        let r = rows(30, 30, 10);
+        let mut s = ViewState::default();
+        s.tables[LIVE].select(25, 30, 10);
+        let up = press(s.clone(), KeyCode::Up, &r);
+        assert_eq!(up.tables[LIVE].sel, 24);
+        let pgup = press(s.clone(), KeyCode::PageUp, &r);
+        assert_eq!(pgup.tables[LIVE].sel, 15);
+        let home = press(s.clone(), KeyCode::Home, &r);
+        assert_eq!((home.tables[LIVE].sel, home.tables[LIVE].offset), (0, 0));
+        let k = press(s.clone(), KeyCode::Char('k'), &r);
+        assert_eq!(k.tables[LIVE].sel, 24);
+
+        let mut w = ViewState::with("teammate", "5h").unwrap();
+        w.tables[ROLLUP].select(3, 30, 10);
+        let g = press(w.clone(), KeyCode::Char('g'), &r);
+        assert_eq!(g.group, (w.group + 1) % GROUPS.len());
+        assert_eq!(g.tables[ROLLUP], TableState::default());
+        let next = press(w.clone(), KeyCode::Char('w'), &r);
+        assert_eq!(next.window, (w.window + 1) % VIEW_WINDOWS.len());
+        assert_eq!(next.tables[ROLLUP], TableState::default());
+        let live = ViewState {
+            window: VIEW_WINDOWS.len() - 1,
+            focus: ROLLUP,
+            ..ViewState::default()
+        };
+        let wrapped = press(live, KeyCode::Char('w'), &r);
+        assert_eq!((wrapped.window, wrapped.focus), (0, LIVE));
+
+        let proj = ViewState {
+            project: Some("/a".into()),
+            ..ViewState::default()
+        };
+        let (cleared, a) = on_key(proj, key(KeyCode::Esc), &r);
+        assert_eq!((cleared.project, a), (None, Action::SetProject(None)));
+        let mut cycle = r.clone();
+        cycle.projects = vec!["/a".into(), "/b".into()];
+        let (first, a) = on_key(ViewState::default(), key(KeyCode::Char('p')), &cycle);
+        assert_eq!(a, Action::SetProject(Some("/a".into())));
+        let (last, a) = on_key(first, key(KeyCode::Char('p')), &cycle);
+        let (none, b) = on_key(last, key(KeyCode::Char('p')), &cycle);
+        assert_eq!(a, Action::SetProject(Some("/b".into())));
+        assert_eq!((none.project, b), (None, Action::SetProject(None)));
+    }
+
+    /// The insights show in a fixed order, only those that exist.
+    #[test]
+    fn spc_04_the_insight_line_lists_the_known_insights() {
+        let snap = Snapshot {
+            insights: horch_core::telemetry::collect::Insights {
+                orchestrator_share: Some(0.5),
+                cache_hit: None,
+                idle_spend_share: Some(0.25),
+                top_plan: Some("big".into()),
+            },
+            ..Snapshot::default()
+        };
+        assert_eq!(
+            facts(&snap, &ViewState::default())
+                .last()
+                .map(String::as_str),
+            Some("orchestrators 50% of spend · 25% of spend while idle · top plan big")
+        );
+        assert!(facts(&Snapshot::default(), &ViewState::default()).is_empty());
     }
 
     /// SPC-07: `j` on the last row stays there.

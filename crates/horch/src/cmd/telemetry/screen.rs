@@ -10,12 +10,16 @@ use std::time::{Duration, Instant, SystemTime};
 
 use anyhow::Result;
 use chrono::{DateTime, Utc};
+use crossterm::event::{Event, KeyEvent, MouseEvent, MouseEventKind};
 use horch_core::clock;
 use horch_core::runtime::RuntimeContext;
 use horch_core::telemetry::collect::{self, Collector, Probing, Snapshot};
 use horch_core::telemetry::lock;
 use horch_core::telemetry::store;
 use horch_core::usage::Locations;
+use ratatui::backend::CrosstermBackend;
+use ratatui::buffer::Buffer;
+use ratatui::layout::Rect;
 
 use super::view::{draw_buf, on_key, on_wheel, table_at, Action, Rows, ViewState};
 use super::SHUTDOWN;
@@ -80,8 +84,123 @@ impl Drop for GoneGuard<'_> {
     }
 }
 
-/// (generated_at, project, minute) and the filtered snapshot for them.
-type FilterCache = ((String, String, i64), Arc<Snapshot>);
+/// (generated_at, project, minute): what a filtered snapshot is for.
+type FilterKey = (String, String, i64);
+
+/// The last filtered snapshot and the key it is for.
+#[derive(Default)]
+struct FilterCache(Option<(FilterKey, Arc<Snapshot>)>);
+
+impl FilterCache {
+    fn key(snap: &Snapshot, project: &str, minute: i64) -> FilterKey {
+        (snap.generated_at.clone(), project.to_string(), minute)
+    }
+
+    /// The cached snapshot, when it is for this key.
+    fn get(&self, snap: &Snapshot, project: &str, minute: i64) -> Option<Arc<Snapshot>> {
+        let key = Self::key(snap, project, minute);
+        self.0.as_ref().filter(|c| c.0 == key).map(|c| c.1.clone())
+    }
+
+    /// A project is set and the cache is not for it.
+    fn stale(&self, snap: &Snapshot, project: Option<&str>, minute: i64) -> bool {
+        project.is_some_and(|p| self.get(snap, p, minute).is_none())
+    }
+
+    /// The snapshot filtered to `project`, from the cache or the feed.
+    fn filtered<F: Feed>(
+        &mut self,
+        feed: &mut F,
+        snap: &Snapshot,
+        project: &str,
+        minute: i64,
+        now: &dyn Fn() -> DateTime<Utc>,
+    ) -> Arc<Snapshot> {
+        if let Some(f) = self.get(snap, project, minute) {
+            return f;
+        }
+        let at = DateTime::from_timestamp(minute * 60, 0).unwrap_or_else(now);
+        let f = Arc::new(feed.filter(snap, project, at));
+        self.0 = Some((Self::key(snap, project, minute), f.clone()));
+        f
+    }
+}
+
+/// What the feed last gave the worker.
+struct Seen {
+    snap: Arc<Snapshot>,
+    status: Option<String>,
+    mode: &'static str,
+}
+
+/// What the UI asked of the worker since the last loop.
+struct Asked {
+    project: Option<String>,
+    project_changed: bool,
+    refresh: bool,
+    due: Instant,
+}
+
+/// One feed tick into `seen`. Whether the UI needs an update: `changed`
+/// from the caller, or a new snapshot, status or mode.
+fn tick<F: Feed>(feed: &mut F, seen: &mut Seen, mut changed: bool) -> bool {
+    match feed.next() {
+        Ok(Some(mut s)) => {
+            let at = std::mem::replace(&mut s.generated_at, seen.snap.generated_at.clone());
+            // The first tick replaces the empty start snapshot.
+            if changed || *seen.snap != s {
+                s.generated_at = at;
+                seen.snap = Arc::new(s);
+                changed = true;
+            }
+            changed |= seen.status.take().is_some();
+        }
+        Ok(None) => changed |= seen.status.take().is_some(),
+        Err(e) => {
+            let s = Some(format!("{e:#}"));
+            if s != seen.status {
+                seen.status = s;
+                changed = true;
+            }
+        }
+    }
+    if feed.mode() != seen.mode {
+        seen.mode = feed.mode();
+        changed = true;
+    }
+    changed
+}
+
+/// How long the worker waits for a request. With a project set the filtered
+/// rollup expires at the end of the minute it was computed for (at once
+/// when that has passed).
+fn wait_for(due: Instant, project: bool, minute: i64, now: &dyn Fn() -> DateTime<Utc>) -> Duration {
+    let wait = due.saturating_duration_since(Instant::now());
+    if !project {
+        return wait;
+    }
+    let ms = ((minute + 1) * 60_000 - now().timestamp_millis()).max(0);
+    wait.min(Duration::from_millis(ms as u64))
+}
+
+/// A request, or the end of the wait. Whether the worker goes on.
+fn on_request(got: Result<Request, RecvTimeoutError>, asked: &mut Asked) -> bool {
+    match got {
+        Ok(Request::Refresh) => {
+            asked.due = Instant::now();
+            asked.refresh = true;
+        }
+        Ok(Request::SetProject(p)) => {
+            if p != asked.project {
+                asked.project = p;
+                asked.project_changed = true;
+            }
+        }
+        Ok(Request::Stop) | Err(RecvTimeoutError::Disconnected) => return false,
+        Err(RecvTimeoutError::Timeout) => {}
+    }
+    true
+}
 
 /// The worker loop: a tick every `tick` from the start of the last one (a
 /// tick that overruns is followed at once, with no catch-up), and at once on
@@ -94,103 +213,51 @@ type FilterCache = ((String, String, i64), Arc<Snapshot>);
 /// is gone.
 pub fn worker<F: Feed>(
     feed: &mut F,
-    tick: Duration,
+    tick_every: Duration,
     now: impl Fn() -> DateTime<Utc>,
     rx: Receiver<Request>,
     tx: Sender<Msg>,
 ) {
     let mut guard = GoneGuard(&tx, false);
-    let mut snap: Arc<Snapshot> = Arc::default();
-    let mut status: Option<String> = None;
-    let mut project: Option<String> = None;
-    let mut cache: Option<FilterCache> = None;
+    let mut seen = Seen {
+        snap: Arc::default(),
+        status: None,
+        mode: feed.mode(),
+    };
+    let mut asked = Asked {
+        project: None,
+        project_changed: false,
+        refresh: false,
+        due: Instant::now(),
+    };
+    let mut cache = FilterCache::default();
     let mut first = true;
-    let mut due = Instant::now();
-    let mut project_changed = false;
-    let mut refresh = false;
-    let mut mode = feed.mode();
     loop {
-        let mut changed = std::mem::take(&mut first) | std::mem::take(&mut refresh);
-        if Instant::now() >= due {
+        let mut changed = std::mem::take(&mut first) | std::mem::take(&mut asked.refresh);
+        if Instant::now() >= asked.due {
             let start = Instant::now();
-            match feed.next() {
-                Ok(Some(mut s)) => {
-                    let at = std::mem::replace(&mut s.generated_at, snap.generated_at.clone());
-                    // The first tick replaces the empty start snapshot.
-                    if changed || *snap != s {
-                        s.generated_at = at;
-                        snap = Arc::new(s);
-                        changed = true;
-                    }
-                    changed |= status.take().is_some();
-                }
-                Ok(None) => changed |= status.take().is_some(),
-                Err(e) => {
-                    let s = Some(format!("{e:#}"));
-                    if s != status {
-                        status = s;
-                        changed = true;
-                    }
-                }
-            }
-            due = start + tick;
-            if feed.mode() != mode {
-                mode = feed.mode();
-                changed = true;
-            }
+            changed = tick(feed, &mut seen, changed);
+            asked.due = start + tick_every;
         }
         let minute = now().timestamp().div_euclid(60);
-        let key = |p: &String| (snap.generated_at.clone(), p.clone(), minute);
-        let cached = |cache: &Option<FilterCache>, p: &String| {
-            cache
-                .as_ref()
-                .filter(|c| c.0 == key(p))
-                .map(|c| c.1.clone())
-        };
-        let stale = project
-            .as_ref()
-            .is_some_and(|p| cached(&cache, p).is_none());
-        if changed || std::mem::take(&mut project_changed) || stale {
-            let filtered = project.as_ref().map(|p| match cached(&cache, p) {
-                Some(f) => f,
-                None => {
-                    let at = DateTime::from_timestamp(minute * 60, 0).unwrap_or_else(&now);
-                    let f = Arc::new(feed.filter(&snap, p, at));
-                    cache = Some((key(p), f.clone()));
-                    f
-                }
-            });
+        let project = asked.project.as_deref();
+        let stale = cache.stale(&seen.snap, project, minute);
+        if changed || std::mem::take(&mut asked.project_changed) || stale {
+            let filtered = project.map(|p| cache.filtered(feed, &seen.snap, p, minute, &now));
             let update = Update {
-                snapshot: snap.clone(),
+                snapshot: seen.snap.clone(),
                 filtered,
-                project: project.clone(),
-                status: status.clone(),
-                mode,
+                project: asked.project.clone(),
+                status: seen.status.clone(),
+                mode: seen.mode,
             };
             if tx.send(Msg::Update(update)).is_err() {
                 break;
             }
         }
-        let mut wait = due.saturating_duration_since(Instant::now());
-        if project.is_some() {
-            // The filtered rollup expires at the end of the minute it was
-            // computed for (at once when that has passed).
-            let ms = ((minute + 1) * 60_000 - now().timestamp_millis()).max(0);
-            wait = wait.min(Duration::from_millis(ms as u64));
-        }
-        match rx.recv_timeout(wait) {
-            Ok(Request::Refresh) => {
-                due = Instant::now();
-                refresh = true;
-            }
-            Ok(Request::SetProject(p)) => {
-                if p != project {
-                    project = p;
-                    project_changed = true;
-                }
-            }
-            Ok(Request::Stop) | Err(RecvTimeoutError::Disconnected) => break,
-            Err(RecvTimeoutError::Timeout) => {}
+        let wait = wait_for(asked.due, project.is_some(), minute, &now);
+        if !on_request(rx.recv_timeout(wait), &mut asked) {
+            break;
         }
     }
     guard.1 = true;
@@ -228,39 +295,49 @@ impl<'a> LiveFeed<'a> {
     }
 }
 
+impl LiveFeed<'_> {
+    /// A viewer whose collector died takes over (the next `ensure` would).
+    fn take_over(&mut self) -> Result<()> {
+        let (ctx, root) = (self.ctx, self.root.as_path());
+        if !matches!(self.source, Source::Viewer) || lock::collector_live(root) {
+            return Ok(());
+        }
+        if let Ok(Ok(held)) = lock::acquire(root, &lock::this_process(&clock::now_stamp(), ctx)) {
+            let c = Collector::open_in(
+                ctx,
+                Locations::from_context(ctx),
+                Probing::Scheduled,
+                clock::now(),
+            )?;
+            self.source = Source::Collector {
+                collector: Box::new(c),
+                _lock: held,
+            };
+        }
+        Ok(())
+    }
+
+    /// A viewer's snapshot, when `snapshot.json` changed since it last read it.
+    fn read_if_new(&mut self) -> Result<Option<Snapshot>> {
+        let path = collect::snapshot_path(&self.root);
+        let stamp = std::fs::metadata(&path)
+            .ok()
+            .and_then(|m| Some((m.modified().ok()?, m.len())));
+        if stamp.is_some() && stamp == self.seen {
+            return Ok(None);
+        }
+        let snap = Snapshot::read(&path)?;
+        self.seen = stamp;
+        Ok(Some(snap))
+    }
+}
+
 impl Feed for LiveFeed<'_> {
     fn next(&mut self) -> Result<Option<Snapshot>> {
-        let (ctx, root) = (self.ctx, self.root.as_path());
-        // A viewer whose collector died takes over (the next `ensure` would).
-        if matches!(self.source, Source::Viewer) && !lock::collector_live(root) {
-            if let Ok(Ok(held)) = lock::acquire(root, &lock::this_process(&clock::now_stamp(), ctx))
-            {
-                let c = Collector::open_in(
-                    ctx,
-                    Locations::from_context(ctx),
-                    Probing::Scheduled,
-                    clock::now(),
-                )?;
-                self.source = Source::Collector {
-                    collector: Box::new(c),
-                    _lock: held,
-                };
-            }
-        }
+        self.take_over()?;
         match &mut self.source {
             Source::Collector { collector, .. } => collector.tick(clock::now()).map(Some),
-            Source::Viewer => {
-                let path = collect::snapshot_path(root);
-                let stamp = std::fs::metadata(&path)
-                    .ok()
-                    .and_then(|m| Some((m.modified().ok()?, m.len())));
-                if stamp.is_some() && stamp == self.seen {
-                    return Ok(None);
-                }
-                let snap = Snapshot::read(&path)?;
-                self.seen = stamp;
-                Ok(Some(snap))
-            }
+            Source::Viewer => self.read_if_new(),
         }
     }
 
@@ -323,6 +400,20 @@ impl Events for TermEvents {
     }
 }
 
+/// The next terminal event as a message, or `None` when nothing arrived
+/// within the poll.
+fn read_msg<E: Events>(events: &mut E) -> Option<Msg> {
+    let ev = match events.poll(Duration::from_millis(200)) {
+        Ok(true) => events.read(),
+        Ok(false) => return None,
+        Err(e) => Err(e),
+    };
+    Some(match ev {
+        Ok(ev) => Msg::Input(ev),
+        Err(e) => Msg::InputGone(format!("the terminal input failed: {e}")),
+    })
+}
+
 /// Forwards terminal events, and a shutdown signal, until `stop` is set.
 /// Every other way out tells the UI first: a read error sends
 /// [`Msg::InputGone`].
@@ -332,14 +423,8 @@ fn input<E: Events>(mut events: E, tx: Sender<Msg>, stop: &AtomicBool) {
             let _ = tx.send(Msg::Shutdown);
             return;
         }
-        let ev = match events.poll(Duration::from_millis(200)) {
-            Ok(true) => events.read(),
-            Ok(false) => continue,
-            Err(e) => Err(e),
-        };
-        let msg = match ev {
-            Ok(ev) => Msg::Input(ev),
-            Err(e) => Msg::InputGone(format!("the terminal input failed: {e}")),
+        let Some(msg) = read_msg(&mut events) else {
+            continue;
         };
         let gone = matches!(msg, Msg::InputGone(_));
         if tx.send(msg).is_err() || gone {
@@ -357,14 +442,17 @@ pub fn recv(rx: &Receiver<Msg>, wait: Duration) -> Msg {
     let until = Instant::now() + wait;
     loop {
         if SHUTDOWN.load(Ordering::SeqCst) {
-            return Msg::Shutdown;
+            break Msg::Shutdown;
         }
         let left = until.saturating_duration_since(Instant::now());
-        match rx.recv_timeout(left.min(POLL)) {
-            Ok(m) => return m,
-            Err(RecvTimeoutError::Disconnected) => return Msg::WorkerGone,
-            Err(RecvTimeoutError::Timeout) if left <= POLL => return Msg::Idle,
-            Err(RecvTimeoutError::Timeout) => {}
+        let got = match rx.recv_timeout(left.min(POLL)) {
+            Ok(m) => Some(m),
+            Err(RecvTimeoutError::Disconnected) => Some(Msg::WorkerGone),
+            Err(RecvTimeoutError::Timeout) if left <= POLL => Some(Msg::Idle),
+            Err(RecvTimeoutError::Timeout) => None,
+        };
+        if let Some(m) = got {
+            break m;
         }
     }
 }
@@ -469,7 +557,7 @@ pub fn write_frame<W: std::io::Write>(
     next: &ratatui::buffer::Buffer,
 ) -> std::io::Result<()> {
     use ratatui::backend::Backend;
-    use ratatui::buffer::{Buffer, Cell};
+    use ratatui::buffer::Cell;
     let blank;
     let prev = match prev {
         Some(p) if p.area == next.area => p,
@@ -515,18 +603,12 @@ pub fn shown<'a>(u: &'a Update, view: &ViewState) -> (&'a Snapshot, bool) {
     }
 }
 
-/// The screen loop on a terminal. It reads no file and runs no tick: the
-/// worker does (SPC-09). It writes to the terminal only when the frame
-/// changed, and only the changed cells (SPC-08).
-pub fn screen<F: Feed + Send>(feed: &mut F, tick: Duration) -> Result<()> {
-    use crossterm::event::{Event, MouseEventKind};
-    use ratatui::backend::CrosstermBackend;
-    use ratatui::buffer::Buffer;
-    use ratatui::layout::Rect;
+/// Raw mode, the alternate screen and the mouse on. The guard restores the
+/// terminal, also when a step in between fails.
+fn enter_screen() -> Result<(TerminalGuard, std::io::Stdout)> {
     use std::io::Write;
-
     crossterm::terminal::enable_raw_mode()?;
-    let _guard = TerminalGuard;
+    let guard = TerminalGuard;
     let mut stdout = std::io::stdout();
     crossterm::execute!(
         stdout,
@@ -535,100 +617,178 @@ pub fn screen<F: Feed + Send>(feed: &mut F, tick: Duration) -> Result<()> {
     )?;
     stdout.write_all(MOUSE_ON.as_bytes())?;
     stdout.flush()?;
-    let mut out = CrosstermBackend::new(stdout);
-    let mut view = ViewState {
+    Ok((guard, stdout))
+}
+
+/// The state of the screen loop on the UI thread.
+struct Ui<'a> {
+    out: CrosstermBackend<std::io::Stdout>,
+    req: &'a Sender<Request>,
+    view: ViewState,
+    /// Shown until the first update arrives.
+    empty: Update,
+    last: Option<Update>,
+    redraw: Redraw,
+    prev: Option<Buffer>,
+    /// An update arrived since the last draw.
+    update: bool,
+    /// The view changed since the last draw.
+    changed: bool,
+    /// The terminal area at the last draw.
+    area: Rect,
+}
+
+impl<'a> Ui<'a> {
+    fn new(
+        out: CrosstermBackend<std::io::Stdout>,
+        view: ViewState,
+        req: &'a Sender<Request>,
+    ) -> Self {
+        Ui {
+            out,
+            req,
+            view,
+            empty: Update {
+                snapshot: Arc::default(),
+                filtered: None,
+                project: None,
+                status: None,
+                mode: "",
+            },
+            last: None,
+            redraw: Redraw::default(),
+            prev: None,
+            update: true,
+            changed: true,
+            area: Rect::default(),
+        }
+    }
+
+    /// The snapshot to show, and whether it is still loading.
+    fn shown(&self) -> (&Snapshot, bool) {
+        shown(self.last.as_ref().unwrap_or(&self.empty), &self.view)
+    }
+
+    /// The rows the keys act on.
+    fn rows(&self) -> Rows {
+        Rows::of(self.shown().0, &self.view, self.area)
+    }
+
+    /// Draw when something changed, and write only the changed cells.
+    fn draw(&mut self, now: DateTime<Utc>) -> Result<()> {
+        let (w, h) = crossterm::terminal::size()?;
+        self.area = Rect::new(0, 0, w, h);
+        let (draw, resized) = self.redraw.due(
+            now.timestamp().div_euclid(60),
+            (w, h),
+            std::mem::take(&mut self.update),
+            std::mem::take(&mut self.changed),
+        );
+        if !draw {
+            return Ok(());
+        }
+        self.view.loading = self.shown().1;
+        let u = self.last.as_ref().unwrap_or(&self.empty);
+        let snap = shown(u, &self.view).0;
+        self.view.sync(&Rows::of(snap, &self.view, self.area));
+        let mut buf = Buffer::empty(self.area);
+        draw_buf(&mut buf, self.area, snap, &self.view, now);
+        if resized {
+            self.prev = None;
+        }
+        // An equal frame writes nothing, not even the sync marks.
+        if self.prev.as_ref() != Some(&buf) {
+            write_frame(&mut self.out, self.prev.as_ref(), &buf)?;
+            self.prev = Some(buf);
+        }
+        Ok(())
+    }
+
+    fn set_view(&mut self, next: ViewState) {
+        self.changed = next != self.view;
+        self.view = next;
+    }
+
+    fn on_key(&mut self, k: KeyEvent) -> Action {
+        let rows = self.rows();
+        let (next, action) = on_key(self.view.clone(), k, &rows);
+        self.set_view(next);
+        action
+    }
+
+    fn on_mouse(&mut self, m: MouseEvent) -> Action {
+        let down = match m.kind {
+            MouseEventKind::ScrollDown => true,
+            MouseEventKind::ScrollUp => false,
+            _ => return Action::None,
+        };
+        let snap = self.shown().0;
+        let Some(t) = table_at(snap, &self.view, self.area, m.column, m.row) else {
+            return Action::None;
+        };
+        let rows = Rows::of(snap, &self.view, self.area);
+        let (next, action) = on_wheel(self.view.clone(), t, down, &rows);
+        self.set_view(next);
+        action
+    }
+
+    /// A message: whether the loop ends.
+    fn on_msg(&mut self, msg: Msg) -> Result<bool> {
+        let action = match msg {
+            Msg::Idle => Action::None,
+            Msg::Update(u) => {
+                self.view.status = u.status.clone();
+                self.view.mode = Some(u.mode);
+                self.last = Some(u);
+                self.update = true;
+                Action::None
+            }
+            Msg::Input(Event::Key(k)) => self.on_key(k),
+            Msg::Input(Event::Mouse(m)) => self.on_mouse(m),
+            // A resize draws at once: the loop reads the new size.
+            Msg::Input(_) => Action::None,
+            Msg::Shutdown | Msg::WorkerGone => return Ok(true),
+            Msg::InputGone(why) => anyhow::bail!(why),
+        };
+        Ok(self.act(action))
+    }
+
+    /// What the action asks of the worker: whether the loop ends.
+    fn act(&self, action: Action) -> bool {
+        match action {
+            Action::Quit => return true,
+            Action::Refresh => {
+                let _ = self.req.send(Request::Refresh);
+            }
+            Action::SetProject(p) => {
+                let _ = self.req.send(Request::SetProject(p));
+            }
+            Action::None | Action::Redraw => {}
+        }
+        false
+    }
+}
+
+/// The screen loop on a terminal. It reads no file and runs no tick: the
+/// worker does (SPC-09). It writes to the terminal only when the frame
+/// changed, and only the changed cells (SPC-08).
+pub fn screen<F: Feed + Send>(feed: &mut F, tick: Duration) -> Result<()> {
+    let (_guard, stdout) = enter_screen()?;
+    let view = ViewState {
         color: std::env::var_os("NO_COLOR").is_none_or(|v| v.is_empty()),
         status: Some("waiting for the first tick".into()),
         ..ViewState::default()
     };
     run(feed, tick, TermEvents, |rx, req| {
-        let empty = Update {
-            snapshot: Arc::default(),
-            filtered: None,
-            project: None,
-            status: None,
-            mode: "",
-        };
-        let mut last: Option<Update> = None;
-        let mut redraw = Redraw::default();
-        let mut prev: Option<Buffer> = None;
-        let (mut update, mut changed) = (true, true);
+        let mut ui = Ui::new(CrosstermBackend::new(stdout), view, req);
         loop {
             let now = clock::now();
-            let (w, h) = crossterm::terminal::size()?;
-            let area = Rect::new(0, 0, w, h);
-            let u = last.as_ref().unwrap_or(&empty);
-            let (draw, resized) = redraw.due(
-                now.timestamp().div_euclid(60),
-                (w, h),
-                std::mem::take(&mut update),
-                std::mem::take(&mut changed),
-            );
-            if draw {
-                let (snap, loading) = shown(u, &view);
-                view.loading = loading;
-                view.sync(&Rows::of(snap, &view, area));
-                let mut buf = Buffer::empty(area);
-                draw_buf(&mut buf, area, snap, &view, now);
-                if resized {
-                    prev = None;
-                }
-                // An equal frame writes nothing, not even the sync marks.
-                if prev.as_ref() != Some(&buf) {
-                    write_frame(&mut out, prev.as_ref(), &buf)?;
-                    prev = Some(buf);
-                }
-            }
+            ui.draw(now)?;
             // Wake at the next minute boundary for the header clock.
             let wait =
                 Duration::from_millis(60_000 - now.timestamp_millis().rem_euclid(60_000) as u64);
-            let u = last.as_ref().unwrap_or(&empty);
-            let action = match recv(rx, wait) {
-                Msg::Idle => continue,
-                Msg::Update(u) => {
-                    view.status = u.status.clone();
-                    view.mode = Some(u.mode);
-                    last = Some(u);
-                    update = true;
-                    Action::None
-                }
-                Msg::Input(Event::Key(k)) => {
-                    let rows = Rows::of(shown(u, &view).0, &view, area);
-                    let (next, action) = on_key(view.clone(), k, &rows);
-                    changed = next != view;
-                    view = next;
-                    action
-                }
-                Msg::Input(Event::Mouse(m)) => {
-                    let down = match m.kind {
-                        MouseEventKind::ScrollDown => true,
-                        MouseEventKind::ScrollUp => false,
-                        _ => continue,
-                    };
-                    let snap = shown(u, &view).0;
-                    let Some(t) = table_at(snap, &view, area, m.column, m.row) else {
-                        continue;
-                    };
-                    let rows = Rows::of(snap, &view, area);
-                    let (next, action) = on_wheel(view.clone(), t, down, &rows);
-                    changed = next != view;
-                    view = next;
-                    action
-                }
-                // A resize draws at once: the loop reads the new size.
-                Msg::Input(_) => Action::None,
-                Msg::Shutdown | Msg::WorkerGone => return Ok(()),
-                Msg::InputGone(why) => anyhow::bail!(why),
-            };
-            match action {
-                Action::Quit => return Ok(()),
-                Action::Refresh => {
-                    let _ = req.send(Request::Refresh);
-                }
-                Action::SetProject(p) => {
-                    let _ = req.send(Request::SetProject(p));
-                }
-                Action::None | Action::Redraw => {}
+            if ui.on_msg(recv(rx, wait))? {
+                return Ok(());
             }
         }
     })
@@ -970,6 +1130,94 @@ mod tests {
                 b - a
             );
         }
+    }
+
+    /// A feed whose first `fail` ticks fail with `boom`.
+    struct FailingFeed {
+        fail: usize,
+        at: usize,
+    }
+
+    impl Feed for FailingFeed {
+        fn next(&mut self) -> Result<Option<Snapshot>> {
+            self.at += 1;
+            if self.at <= self.fail {
+                anyhow::bail!("boom");
+            }
+            Ok(Some(snap("T1", 1)))
+        }
+        fn filter(&mut self, snap: &Snapshot, _: &str, _: DateTime<Utc>) -> Snapshot {
+            snap.clone()
+        }
+        fn mode(&self) -> &'static str {
+            "collector"
+        }
+    }
+
+    /// A tick error is an update once, and the next good tick clears it.
+    #[test]
+    fn spc_04_a_tick_error_shows_once_and_clears_on_the_next_good_tick() {
+        let mut feed = FailingFeed { fail: 3, at: 0 };
+        let (req_tx, req_rx) = mpsc::channel();
+        let (tx, rx) = mpsc::channel();
+        std::thread::scope(|s| {
+            let req_tx = req_tx;
+            let w = s.spawn(|| worker(&mut feed, Duration::from_millis(5), fixed, req_rx, tx));
+            let first = update(&rx);
+            assert_eq!(first.status.as_deref(), Some("boom"));
+            let second = update(&rx);
+            assert_eq!(second.status, None);
+            assert_eq!(second.snapshot.generated_at, "T1");
+            req_tx.send(Request::Stop).unwrap();
+            w.join().unwrap();
+        });
+        assert!(rx.try_recv().is_err());
+    }
+
+    /// `recv` hands on a message, ends an empty wait with `Idle`, and reads
+    /// a channel with no sender as `WorkerGone`.
+    #[test]
+    fn spc_04_recv_returns_a_message_idle_or_worker_gone() {
+        let (tx, rx) = mpsc::channel();
+        assert!(matches!(recv(&rx, Duration::from_millis(1)), Msg::Idle));
+        tx.send(Msg::InputGone("why".into())).unwrap();
+        match recv(&rx, Duration::from_secs(5)) {
+            Msg::InputGone(why) => assert_eq!(why, "why"),
+            _ => panic!("not the sent message"),
+        }
+        drop(tx);
+        assert!(matches!(recv(&rx, Duration::from_secs(5)), Msg::WorkerGone));
+    }
+
+    /// One scripted terminal event, then silence.
+    struct OneKey(Option<crossterm::event::Event>);
+
+    impl Events for OneKey {
+        fn poll(&mut self, _: Duration) -> std::io::Result<bool> {
+            Ok(self.0.is_some())
+        }
+        fn read(&mut self) -> std::io::Result<crossterm::event::Event> {
+            Ok(self.0.take().expect("polled before read"))
+        }
+    }
+
+    /// `input` forwards a terminal event as `Msg::Input`, and stops when
+    /// the UI is gone.
+    #[test]
+    fn spc_04_input_forwards_an_event() {
+        use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
+        let key = Event::Key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE));
+        let (tx, rx) = mpsc::channel();
+        let stop = AtomicBool::new(false);
+        std::thread::scope(|s| {
+            let h = s.spawn(|| input(OneKey(Some(key.clone())), tx, &stop));
+            match rx.recv_timeout(Duration::from_secs(5)) {
+                Ok(Msg::Input(got)) => assert_eq!(got, key),
+                _ => panic!("no input message"),
+            }
+            stop.store(true, Ordering::SeqCst);
+            h.join().unwrap();
+        });
     }
 
     /// Terminal events that fail at once, as when the terminal closes.

@@ -929,6 +929,141 @@ fn a_failed_reviews_in_tell_wakes_the_orchestrator_once() {
     assert_eq!(fallbacks(), 1, "a retry does not send it again");
 }
 
+/// #177: the reviews-in line is durable mail to the author. A first push
+/// that fails is redelivered by the courier, the author waits until it
+/// runs finish, and finish acknowledges the mail, so the courier stops.
+#[test]
+fn a_failed_reviews_in_push_is_redelivered_until_the_author_runs_finish() {
+    use horch_core::messaging::mail::Mail;
+    use horch_core::taskledger::{workers, Store};
+    let mut h = finish_world("tl-reviews-courier");
+    h.set("HORCH_WORKSPACE_ID", "w1");
+    h.set("HORCH_FAKE_SCENARIO", "fail_first_typing");
+    h.set("HORCH_TEST_MAIL_REDELIVERY_MS", "50");
+    h.set("HORCH_TEST_MAIL_POLL_MS", "10");
+    let herdr = |args: &[&str]| {
+        let mut cmd = std::process::Command::new(h.bin.join("herdr"));
+        h.seal(&mut cmd);
+        let o = cmd.args(args).output().unwrap();
+        assert!(o.status.success(), "{}", text(&o));
+    };
+    herdr(&["workspace", "create", "--label", "author"]);
+    herdr(&[
+        "pane",
+        "test-state",
+        "w1:p1",
+        "--status",
+        "idle",
+        "--agent",
+        "claude",
+    ]);
+    let mailbox = h.state.join("herdr-orchestration-w1");
+    std::fs::create_dir_all(&mailbox).unwrap();
+    std::fs::write(mailbox.join("opus-1.id"), "w1:p1").unwrap();
+
+    ok(
+        &h,
+        &["ledger", "run", "new", "alpha", "--steps", "code-sweep"],
+    );
+    let p = ticket(&h, "01-a", "# 01: Feature\n");
+    ok(
+        &h,
+        &[
+            "ledger",
+            "add",
+            "--file",
+            &p.to_string_lossy(),
+            "--primary",
+            "opus",
+        ],
+    );
+    let w = ok(
+        &h,
+        &[
+            "ledger",
+            "worker",
+            "new",
+            "--persona",
+            "opus",
+            "--role",
+            "opus-1",
+        ],
+    )
+    .trim()
+    .to_string();
+    ok_as(&h, &w, &["ledger", "claim"]);
+    let wt = ok_as(&h, &w, &["ledger", "worktree", "new", "f"]);
+    let path = PathBuf::from(wt.lines().find_map(|l| l.strip_prefix("path: ")).unwrap());
+    std::fs::write(path.join("a.txt"), "1\n").unwrap();
+    git_in(&h, &path, &["add", "a.txt"]);
+    git_in(
+        &h,
+        &path,
+        &["commit", "--quiet", "--no-gpg-sign", "-m", "a"],
+    );
+    let (_, r) = finish_json(&h, &w);
+    let n = r["queued_reviews"].as_array().unwrap().len();
+    review_all(
+        &h,
+        n,
+        "## Critical\n- none\n## Important\n- none\n## Minor\n- none\n",
+    );
+
+    let mail = Mail::to_role(&h.state, "w1", "opus-1");
+    let pending = mail.pending().unwrap();
+    assert_eq!(pending.len(), 1, "{pending:?}");
+    assert_eq!(
+        pending[0].text,
+        "[horch] NOTE: The reviews of T-1 are in. Run horch ledger finish."
+    );
+    let store = Store::open(&h.root.join("ledger.sqlite3")).unwrap();
+    // The reviews are done, and the author still waits: for finish.
+    let waits = workers::waiting(store.conn(), &w).unwrap();
+    assert!(
+        waits
+            .iter()
+            .any(|wait| wait.kind == "reviewers" && wait.task_ids.is_empty()),
+        "the author waits for finish: {waits:?}"
+    );
+
+    let reviews_in_prompts = || {
+        h.calls_of("herdr")
+            .iter()
+            .filter(|c| {
+                c["argv"][0] == "agent"
+                    && c["argv"][1] == "prompt"
+                    && c["argv"][2] == "w1:p1"
+                    && c["argv"][3]
+                        .as_str()
+                        .is_some_and(|t| t.contains("The reviews of T-1 are in"))
+            })
+            .count()
+    };
+    // The first prompt failed; the courier's redelivery is the next one.
+    wait_for("the courier's redelivery", || {
+        (reviews_in_prompts() >= 2).then_some(())
+    });
+
+    finish_json(&h, &w);
+    assert!(mail.pending().unwrap().is_empty(), "finish acknowledges");
+    assert!(
+        !workers::waiting(store.conn(), &w)
+            .unwrap()
+            .iter()
+            .any(|wait| wait.kind == "reviewers"),
+        "finish ends the wait"
+    );
+    let lock = std::fs::OpenOptions::new()
+        .write(true)
+        .open(h.state.join("mail/w1/courier.lock"))
+        .unwrap();
+    wait_for("the courier to exit", || lock.try_lock().ok());
+    let after = reviews_in_prompts();
+    let _ = lock.unlock();
+    finish_json(&h, &w);
+    assert_eq!(reviews_in_prompts(), after, "the line stops after finish");
+}
+
 #[test]
 fn stopping_one_of_three_workers_leaves_the_others_running() {
     let mut h = fleet("tl-stop", "exec,stay");
@@ -1123,11 +1258,24 @@ fn three_checks_without_progress_reap_the_worker_by_its_pid() {
     assert_eq!(claim["attempt"], 2);
 }
 
-/// Kills the stand-in agent and the watchdog that holds a lock in `locks`
-/// when dropped, so a failed assertion leaks neither.
+/// Kills the stand-in agent, the watchdog that holds a lock in `locks`, and
+/// each process in `also`, when dropped, so a failed assertion leaks none.
 struct WatchdogTeardown {
     agent: std::process::Child,
     locks: PathBuf,
+    /// Watchdogs as `(pid, start time)` that may hold no lock.
+    also: Vec<(u32, u64)>,
+}
+
+impl WatchdogTeardown {
+    /// Kill at teardown each watchdog that a warning of `o` says it started.
+    fn kill_started(&mut self, o: &Output) {
+        for pid in started_pids(o) {
+            if let Some(started) = horch_core::procid::start_time(pid) {
+                self.also.push((pid, started));
+            }
+        }
+    }
 }
 
 impl Drop for WatchdogTeardown {
@@ -1136,6 +1284,9 @@ impl Drop for WatchdogTeardown {
         locks
             .flatten()
             .for_each(|lock| kill_lock_owner(&lock.path()));
+        for &(pid, started) in &self.also {
+            horch_core::procid::signal_same(pid, started, 9);
+        }
         let _ = self.agent.kill();
         let _ = self.agent.wait();
     }
@@ -1150,12 +1301,13 @@ fn kill_lock_owner(lock: &Path) {
     }
 }
 
-#[test]
-fn a_dead_watchdog_is_restarted_and_a_second_one_is_refused() {
-    let mut h = world("tl-wdog");
+/// In `h`, run `zeta` with 1 running task of a worker whose agent is a live child of
+/// the test, and the watchdog restart on. The watchdog checks the worker
+/// every second; many stall rounds keep it from reaping the worker, which
+/// would end the running task. Returns the output of the worker's `claim`,
+/// the first command after the task runs, which starts the watchdog.
+fn watched_run(mut h: Harness) -> (Harness, WatchdogTeardown, Output) {
     h.unset("HORCH_NO_WATCHDOG");
-    // The watchdog checks the worker every second. Many stall rounds keep a
-    // stalled worker from being reaped, which would end the running task.
     ok(
         &h,
         &[
@@ -1182,14 +1334,14 @@ fn a_dead_watchdog_is_restarted_and_a_second_one_is_refused() {
         ],
     );
     let w = worker_new(&h, "opus");
-    // The worker's agent is a child this test owns, so the watchdog sees it
-    // alive and does not reap the worker. A reap would stop only the child.
+    // A reap would stop only the child.
     let teardown = WatchdogTeardown {
         agent: std::process::Command::new("/bin/sleep")
             .arg("600")
             .spawn()
             .unwrap(),
         locks: h.root.join("locks"),
+        also: Vec::new(),
     };
     horch_core::taskledger::supervisor::agent_started(
         &h.root.join("ledger.sqlite3"),
@@ -1197,7 +1349,6 @@ fn a_dead_watchdog_is_restarted_and_a_second_one_is_refused() {
         teardown.agent.id(),
     )
     .unwrap();
-    // The first horch command after a task runs starts the missing watchdog.
     let mut cmd = h.horch(&["ledger", "claim"]);
     cmd.env("HORCH_WORKER_ID", &w);
     let o = cmd.output().unwrap();
@@ -1206,13 +1357,54 @@ fn a_dead_watchdog_is_restarted_and_a_second_one_is_refused() {
         "{}",
         text(&o)
     );
+    (h, teardown, o)
+}
+
+/// Every PID in the "started it (PID n)" warnings of `o`.
+fn started_pids(o: &Output) -> Vec<u32> {
+    text(o)
+        .split("started it (PID ")
+        .skip(1)
+        .filter_map(|rest| rest.split(')').next()?.parse().ok())
+        .collect()
+}
+
+/// The live holder of the watchdog lock of the run in `status`.
+fn lock_holder(
+    h: &Harness,
+    status: &Value,
+) -> Option<horch_core::taskledger::watchdog::LockHolder> {
+    let run_id = status["run_id"].as_str().expect("the run id");
+    horch_core::taskledger::watchdog::holder(&h.root.join("locks"), run_id)
+}
+
+/// A watchdog that was just started and has not taken its lock yet is not
+/// "not running": the next command does not start a second one. On a
+/// loaded machine a second one could take over when the test below killed
+/// the first, so the restart that test waits for never came.
+#[test]
+fn a_watchdog_that_is_still_starting_is_not_started_twice() {
+    let mut h = world("tl-wdog-starting");
+    // The new watchdog waits 60 s before it takes its lock.
+    h.set("HORCH_FAULT", "watchdog-start-ms:60000");
+    let (h, mut teardown, o) = watched_run(h);
+    teardown.kill_started(&o);
+    assert_eq!(teardown.also.len(), 1, "{}", text(&o));
+    // `status` exits 1 while the run is not complete.
+    let o = h.run(&["ledger", "status"]);
+    teardown.kill_started(&o);
+    assert!(out(&o).contains("Run zeta (active)"), "{}", text(&o));
+    assert!(!text(&o).contains("started it"), "{}", text(&o));
+}
+
+#[test]
+fn a_dead_watchdog_is_restarted_and_a_second_one_is_refused() {
+    let (h, _teardown, _) = watched_run(world("tl-wdog"));
     let run = || json_of(&h, &["ledger", "status", "--json"])["run"].clone();
-    let r = wait_for("the watchdog's checkin", || {
-        let r = run();
-        r["watchdog_pid"].is_i64().then_some(r)
-    });
-    let pid = r["watchdog_pid"].as_i64().unwrap() as u32;
-    let started = r["watchdog_started"].as_i64().unwrap() as u64;
+    // The lock, not the checkin: the starter records the PID it started
+    // before that process takes the lock.
+    let holder = wait_for("the watchdog's lock", || lock_holder(&h, &run()));
+    let (pid, started) = (holder.pid, holder.started.unwrap());
     // A second watchdog for the run is refused.
     let o = h.run(&["ledger", "watch"]);
     assert!(
@@ -1231,15 +1423,13 @@ fn a_dead_watchdog_is_restarted_and_a_second_one_is_refused() {
         let o = h.run(&["ledger", "status"]);
         text(&o).contains("started it").then_some(())
     });
-    let r2 = wait_for("the new watchdog", || {
-        let r = run();
-        (r["watchdog_pid"].as_i64() != Some(pid as i64) && r["watchdog_pid"].is_i64()).then_some(r)
+    let h2 = wait_for("the new watchdog's lock", || {
+        lock_holder(&h, &run()).filter(|l| l.pid != pid)
     });
-    let (p2, s2) = (
-        r2["watchdog_pid"].as_i64().unwrap() as u32,
-        r2["watchdog_started"].as_i64().unwrap() as u64,
+    assert!(
+        horch_core::procid::signal_same(h2.pid, h2.started.unwrap(), 9),
+        "teardown"
     );
-    assert!(horch_core::procid::signal_same(p2, s2, 9), "teardown");
 }
 
 #[test]
