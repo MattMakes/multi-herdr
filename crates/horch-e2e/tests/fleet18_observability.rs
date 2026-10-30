@@ -54,15 +54,16 @@ fn g51_sessions_filter_workspace_live_role_and_indent_summary() {
     let ledger = Ledger::for_project(&h.state, &h.project.to_string_lossy());
     for (id, role, workspace) in [("r1", "sonnet-1", "w1"), ("r2", "sonnet-2", "w2")] {
         ledger
-            .add(
-                id,
-                "claude",
-                "sonnet",
-                "sonnet",
+            .add(horch_core::execution::records::NewRecord {
+                record_id: id,
+                agent: "claude",
+                tier: "sonnet",
+                model: "sonnet",
                 role,
-                Some(id),
-                "first\nsecond\nthird",
-            )
+                session_id: Some(id),
+                task: "first\nsecond\nthird",
+                phase: None,
+            })
             .unwrap();
         ledger
             .store()
@@ -544,15 +545,16 @@ fn compact_world(name: &str, over: bool) -> (Harness, String) {
     std::fs::write(mailbox.dir().join("orchestrator.id"), "w1:p1").unwrap();
     let ledger = Ledger::for_project(&h.state, &h.project.to_string_lossy());
     ledger
-        .add(
-            "r-compact",
-            "claude",
-            "sonnet",
-            "sonnet",
-            "sonnet-1",
-            Some(sid),
-            "work",
-        )
+        .add(horch_core::execution::records::NewRecord {
+            record_id: "r-compact",
+            agent: "claude",
+            tier: "sonnet",
+            model: "sonnet",
+            role: "sonnet-1",
+            session_id: Some(sid),
+            task: "work",
+            phase: None,
+        })
         .unwrap();
     ledger
         .store()

@@ -628,7 +628,7 @@ pub struct LockHolder {
     /// The binary it runs; `None` for a watchdog older than this record, or
     /// for a new one that has not written it yet.
     pub exe: Option<ExeIdentity>,
-    /// It took the lock less than [`EXE_RECORD_GRACE_S`] ago, so a missing
+    /// It took the lock less than `EXE_RECORD_GRACE_S` ago, so a missing
     /// binary record can still be on its way.
     pub recent: bool,
 }

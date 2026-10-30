@@ -172,8 +172,17 @@ fn arc_17_old_reader_sees_compat_status() {
     let statuses = every_status();
     for (i, state) in statuses.iter().enumerate() {
         let id = format!("r{i}");
-        l.add(&id, "claude", "sonnet", "sonnet", "sonnet-1", None, "t")
-            .unwrap();
+        l.add(horch_core::execution::records::NewRecord {
+            record_id: &id,
+            agent: "claude",
+            tier: "sonnet",
+            model: "sonnet",
+            role: "sonnet-1",
+            session_id: None,
+            task: "t",
+            phase: None,
+        })
+        .unwrap();
         l.store().set_state(&id, state.clone()).unwrap();
     }
 
@@ -232,8 +241,17 @@ fn arc_17_old_reader_sees_compat_status() {
 #[test]
 fn skl_04_execution_records_skill_refs() {
     let (_t, l) = ledger();
-    l.add("r1", "claude", "opus", "opus", "opus-1", Some("s1"), "t")
-        .unwrap();
+    l.add(horch_core::execution::records::NewRecord {
+        record_id: "r1",
+        agent: "claude",
+        tier: "opus",
+        model: "opus",
+        role: "opus-1",
+        session_id: Some("s1"),
+        task: "t",
+        phase: None,
+    })
+    .unwrap();
     let raw = std::fs::read_to_string(l.path()).unwrap();
     assert!(
         !raw.contains("\"skills\""),
@@ -308,8 +326,17 @@ fn store_dirlock_excludes_concurrent_writers() {
 #[test]
 fn effort_is_recorded_rendered_and_optional_on_disk() {
     let (_t, l) = ledger();
-    l.add("r1", "claude", "opus", "opus", "opus-1", Some("s1"), "t")
-        .unwrap();
+    l.add(horch_core::execution::records::NewRecord {
+        record_id: "r1",
+        agent: "claude",
+        tier: "opus",
+        model: "opus",
+        role: "opus-1",
+        session_id: Some("s1"),
+        task: "t",
+        phase: None,
+    })
+    .unwrap();
     assert_eq!(l.get("r1").unwrap().effort, None);
     assert!(!std::fs::read_to_string(l.path())
         .unwrap()
@@ -331,15 +358,16 @@ fn a_stale_lock_is_broken_rather_than_deadlocking() {
     std::fs::create_dir(l.path().with_extension("json.lock")).unwrap();
 
     let started = std::time::Instant::now();
-    l.add(
-        "r1",
-        "claude",
-        "sonnet",
-        "sonnet",
-        "sonnet-1",
-        Some("s1"),
-        "t",
-    )
+    l.add(horch_core::execution::records::NewRecord {
+        record_id: "r1",
+        agent: "claude",
+        tier: "sonnet",
+        model: "sonnet",
+        role: "sonnet-1",
+        session_id: Some("s1"),
+        task: "t",
+        phase: None,
+    })
     .unwrap();
     assert!(l.get("r1").is_ok());
     // ~15s of spinning before the break, then success.
