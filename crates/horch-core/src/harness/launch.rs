@@ -223,7 +223,6 @@ fn harness_default_env(
             || (teammate.agent != HarnessKind::Claude && env.operator_env.contains_key(key))
     };
     HarnessDefault::for_harness(&teammate.harness_defaults, teammate.agent)
-        .into_iter()
         .flat_map(|entry| entry.env.iter())
         .filter(|(key, _)| !yields(key))
         .map(|(key, value)| (key.clone(), value.clone()))
