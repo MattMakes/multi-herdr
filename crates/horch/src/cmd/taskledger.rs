@@ -1815,15 +1815,23 @@ fn ticket_path(root: &Path, file: &Path, cwd: &Path) -> Result<String> {
         .unwrap_or_else(|_| canon.to_string_lossy().into_owned()))
 }
 
-fn add(ctx: &RuntimeContext, store: &mut Store, a: AddArgs) -> Result<ExitCode> {
-    let root = project_root(ctx)?;
-    let cwd = ctx.paths.current_dir().unwrap_or_else(|_| root.clone());
-    let file = ticket_path(&root, &a.file, &cwd)?;
-    let facts = std::fs::read_to_string(root.join(&file))
+/// The current directory, else the project root.
+fn cwd_or_root(ctx: &RuntimeContext, root: &Path) -> PathBuf {
+    ctx.paths
+        .current_dir()
+        .unwrap_or_else(|_| root.to_path_buf())
+}
+
+/// What a ticket file says about itself; nothing when it cannot be read.
+fn facts_of(root: &Path, file: &str) -> map::TicketFacts {
+    std::fs::read_to_string(root.join(file))
         .map(|t| map::ticket_facts(&t))
-        .unwrap_or_default();
-    let run = resolve_run(ctx, store, &a.run)?;
-    let new = NewTask {
+        .unwrap_or_default()
+}
+
+/// The task `add` queues: what a flag names, else what the ticket says.
+fn new_task(root: &Path, file: String, facts: map::TicketFacts, a: AddArgs) -> NewTask {
+    NewTask {
         title: a.title.unwrap_or_else(|| ticket_title(&root.join(&file))),
         task_file: file,
         issue_url: a.issue,
@@ -1849,10 +1857,19 @@ fn add(ctx: &RuntimeContext, store: &mut Store, a: AddArgs) -> Result<ExitCode> 
         } else {
             a.no_touch
         },
-    };
+    }
+}
+
+fn add(ctx: &RuntimeContext, store: &mut Store, a: AddArgs) -> Result<ExitCode> {
+    let root = project_root(ctx)?;
+    let file = ticket_path(&root, &a.file, &cwd_or_root(ctx, &root))?;
+    let facts = facts_of(&root, &file);
+    let run = resolve_run(ctx, store, &a.run)?;
     let _ = a.parallel;
+    let check_timeout = a.check_timeout;
+    let new = new_task(&root, file, facts, a);
     let t = store.immediate(|tx| tasks::add(tx, &run, &new, Actor::Orchestrator))?;
-    if let Some(secs) = a.check_timeout {
+    if let Some(secs) = check_timeout {
         finish::land::set_check_timeout(
             &tools(ctx).evidence_root,
             &t.task_id,
@@ -1870,12 +1887,7 @@ fn add(ctx: &RuntimeContext, store: &mut Store, a: AddArgs) -> Result<ExitCode> 
 
 fn add_map(ctx: &RuntimeContext, store: &mut Store, path: &Path, arg: &RunArg) -> Result<ExitCode> {
     let root = project_root(ctx)?;
-    let cwd = ctx.paths.current_dir().unwrap_or_else(|_| root.clone());
-    let path = if path.is_absolute() {
-        path.to_path_buf()
-    } else {
-        cwd.join(path)
-    };
+    let path = cwd_or_root(ctx, &root).join(path);
     let parsed = map::read(&path, &root)?;
     let run = resolve_run(ctx, store, arg)?;
     let items: Vec<(String, NewTask)> = parsed.items.into_iter().map(|i| (i.key, i.task)).collect();
@@ -1898,14 +1910,7 @@ fn add_map(ctx: &RuntimeContext, store: &mut Store, path: &Path, arg: &RunArg) -
 
 fn claim(ctx: &RuntimeContext, store: &mut Store, as_json: bool) -> Result<ExitCode> {
     let wid = worker_id(ctx)?;
-    let tools = tools(ctx);
-    let mut outcome = store.immediate(|tx| {
-        let o = tasks::claim(tx, &wid)?;
-        if let ClaimOutcome::Claimed(c) = &o {
-            finish::shared_claim(&tools, &runs::get(tx, &c.task.run_id)?, &c.task)?;
-        }
-        Ok(o)
-    })?;
+    let mut outcome = claim_task(store, &tools(ctx), &wid)?;
     if let ClaimOutcome::Claimed(c) = &mut outcome {
         absolute_ticket_if_missing(ctx, store, c);
     }
@@ -1913,6 +1918,24 @@ fn claim(ctx: &RuntimeContext, store: &mut Store, as_json: bool) -> Result<ExitC
         json(&outcome)?;
         return Ok(ExitCode::SUCCESS);
     }
+    print_claim(ctx, outcome)
+}
+
+/// Claim the next task for `wid`. A shared-checkout task gets its checkout in
+/// the same transaction.
+fn claim_task(store: &mut Store, tools: &finish::Tools, wid: &str) -> Result<ClaimOutcome> {
+    store.immediate(|tx| {
+        let o = tasks::claim(tx, wid)?;
+        if let ClaimOutcome::Claimed(c) = &o {
+            finish::shared_claim(tools, &runs::get(tx, &c.task.run_id)?, &c.task)?;
+        }
+        Ok(o)
+    })
+}
+
+/// What a claim prints: the line to send when no task fits, else the task and
+/// the project facts.
+fn print_claim(ctx: &RuntimeContext, outcome: ClaimOutcome) -> Result<ExitCode> {
     match outcome {
         ClaimOutcome::NoTask { tell, persona, .. } => {
             output::println(&format!(
