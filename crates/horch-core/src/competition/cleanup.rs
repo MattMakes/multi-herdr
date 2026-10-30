@@ -18,7 +18,7 @@
 
 use std::path::{Path, PathBuf};
 
-use anyhow::Result;
+use anyhow::{ensure, Result};
 
 use crate::clock;
 use crate::competition::model::RoundState;
@@ -28,7 +28,7 @@ use crate::measure::event::{
     Actor, EventKind, FinalOutcome, RoundCleanupStarted, RoundCompleted, WorktreeCleanupFailed,
 };
 use crate::measure::paths::DatasetPaths;
-use crate::measure::projection::RoundView;
+use crate::measure::projection::{CandidateView, RoundView};
 use crate::measure::recorder::{NewEvent, Recorder};
 use crate::runtime::fault::Faults;
 use crate::vcs::git::GitClient;
@@ -79,84 +79,130 @@ impl<G: GitClient, R: Recorder> RoundCleanup<'_, G, R> {
         } else {
             view.state
         };
-        let final_outcome = match from {
-            RoundState::Decided => FinalOutcome::Winner,
-            RoundState::Rejected => FinalOutcome::Rejected,
-            RoundState::Promoted => {
-                // PRO-05: the receipt is durable before any worktree goes.
-                if !self.paths.promotion(round)?.exists() {
-                    return Ok(skipped(format!(
-                        "round {round} is PROMOTED but has no receipt yet"
-                    )));
-                }
-                FinalOutcome::Promoted
+        match self.final_outcome(round, from, resuming, options)? {
+            Err(skip) => Ok(skip),
+            Ok(final_outcome) => {
+                let pass = Pass {
+                    round,
+                    view,
+                    from,
+                    options,
+                };
+                self.clean_round(&pass, resuming, final_outcome)
             }
-            RoundState::NeedsIntervention if options.force || resuming => {
-                FinalOutcome::NeedsIntervention
-            }
-            RoundState::NeedsIntervention => {
-                return Ok(skipped(format!(
-                    "round {round} needs intervention; only the operator's cleanup removes its worktrees"
-                )));
-            }
-            other => {
-                return Ok(skipped(format!(
-                    "round {round} is {other}; cleanup waits for its end"
-                )));
-            }
-        };
-        let key = |what: &str| format!("{what}:{round}:{from}");
+        }
+    }
+
+    /// What the round ends as when cleanup starts from `from`, or the
+    /// `Skipped` outcome when cleanup must wait.
+    fn final_outcome(
+        &self,
+        round: &RoundId,
+        from: RoundState,
+        resuming: bool,
+        options: CleanupOptions,
+    ) -> Result<std::result::Result<FinalOutcome, CleanupOutcome>> {
+        Ok(match from {
+            RoundState::Decided => Ok(FinalOutcome::Winner),
+            RoundState::Rejected => Ok(FinalOutcome::Rejected),
+            // PRO-05: the receipt is durable before any worktree goes.
+            RoundState::Promoted => proceed(
+                self.paths.promotion(round)?.exists(),
+                FinalOutcome::Promoted,
+                || format!("round {round} is PROMOTED but has no receipt yet"),
+            ),
+            // Cleaned only when the operator forces it, or when a forced
+            // cleanup was already under way.
+            RoundState::NeedsIntervention => proceed(
+                options.force | resuming,
+                FinalOutcome::NeedsIntervention,
+                || {
+                    format!(
+                        "round {round} needs intervention; only the operator's cleanup removes its worktrees"
+                    )
+                },
+            ),
+            other => Err(skipped(format!(
+                "round {round} is {other}; cleanup waits for its end"
+            ))),
+        })
+    }
+
+    /// Remove each candidate's worktree, then record the round complete.
+    fn clean_round(
+        &self,
+        pass: &Pass,
+        resuming: bool,
+        final_outcome: FinalOutcome,
+    ) -> Result<CleanupOutcome> {
         if !resuming {
             self.emit(
-                round,
-                view,
-                key("round.cleanup_started"),
+                pass,
+                pass.key("round.cleanup_started"),
                 EventKind::RoundCleanupStarted(RoundCleanupStarted {}),
             )?;
         }
-
-        let mut removed = Vec::new();
-        let mut failed = Vec::new();
-        let listed = self.git.worktree_list(&self.repo)?;
-        for (label, candidate) in &view.candidates {
-            let Some(worktree) = &candidate.worktree else {
-                continue;
-            };
-            if !listed.iter().any(|(p, _)| same_dir(p, &worktree.path)) {
-                continue;
-            }
-            if let Err(e) = self.git.worktree_remove(&self.repo, &worktree.path, true) {
-                self.emit(
-                    round,
-                    view,
-                    format!("{}:{label}", key("worktree.cleanup_failed")),
-                    EventKind::WorktreeCleanupFailed(WorktreeCleanupFailed {
-                        label: label.clone(),
-                        path: worktree.path.clone(),
-                        error: format!("{e:#}"),
-                    }),
-                )?;
-                failed.push(label.clone());
-                continue;
-            }
-            removed.push(label.clone());
-            if options.prune_branches {
-                self.prune(&worktree.branch)?;
-            }
-            let point = format!("{ABORT_DURING_CLEANUP}:{}", removed.len());
-            if self.faults.has(&point) {
-                return Err(FaultFired(point).into());
-            }
-        }
-
-        remove_empty_dirs(view);
+        let (removed, failed) = self.clean_worktrees(pass)?;
+        remove_empty_dirs(pass.view);
         self.emit(
-            round,
-            view,
-            key("round.completed"),
+            pass,
+            pass.key("round.completed"),
             EventKind::RoundCompleted(RoundCompleted { final_outcome }),
         )?;
         Ok(CleanupOutcome::Done { removed, failed })
+    }
+
+    /// Remove every candidate worktree: the labels removed, and the labels
+    /// whose removal failed.
+    fn clean_worktrees(&self, pass: &Pass) -> Result<(Vec<String>, Vec<String>)> {
+        let mut tally = Tally::default();
+        let listed = self.git.worktree_list(&self.repo)?;
+        for (label, candidate) in &pass.view.candidates {
+            self.clean_candidate(pass, label, candidate, &listed, &mut tally)?;
+        }
+        Ok((tally.removed, tally.failed))
+    }
+
+    /// Remove the worktree of one candidate, when git still lists it.
+    fn clean_candidate(
+        &self,
+        pass: &Pass,
+        label: &str,
+        candidate: &CandidateView,
+        listed: &[(PathBuf, Option<String>)],
+        tally: &mut Tally,
+    ) -> Result<()> {
+        let Some(worktree) = candidate
+            .worktree
+            .as_ref()
+            .filter(|w| listed.iter().any(|(p, _)| same_dir(p, &w.path)))
+        else {
+            return Ok(());
+        };
+        if let Err(e) = self.git.worktree_remove(&self.repo, &worktree.path, true) {
+            tally.failed.push(label.to_string());
+            return self.emit(
+                pass,
+                format!("{}:{label}", pass.key("worktree.cleanup_failed")),
+                EventKind::WorktreeCleanupFailed(WorktreeCleanupFailed {
+                    label: label.to_string(),
+                    path: worktree.path.clone(),
+                    error: format!("{e:#}"),
+                }),
+            );
+        }
+        tally.removed.push(label.to_string());
+        if pass.options.prune_branches {
+            self.prune(&worktree.branch)?;
+        }
+        self.fault_after(tally.removed.len())
+    }
+
+    /// The fault `abort-during-cleanup:<n>` stops after removal `n`.
+    fn fault_after(&self, removals: usize) -> Result<()> {
+        let point = format!("{ABORT_DURING_CLEANUP}:{removals}");
+        ensure!(!self.faults.has(&point), FaultFired(point));
+        Ok(())
     }
 
     fn prune(&self, branch: &str) -> Result<()> {
@@ -168,17 +214,53 @@ impl<G: GitClient, R: Recorder> RoundCleanup<'_, G, R> {
         Ok(())
     }
 
-    fn emit(&self, round: &RoundId, view: &RoundView, key: String, kind: EventKind) -> Result<()> {
+    fn emit(&self, pass: &Pass, key: String, kind: EventKind) -> Result<()> {
         self.recorder.append(NewEvent {
             kind,
             actor: Actor::Coordinator,
-            experiment_id: view.experiment_id.clone(),
-            round_id: Some(round.clone()),
+            experiment_id: pass.view.experiment_id.clone(),
+            round_id: Some(pass.round.clone()),
             execution_id: None,
             idempotency_key: key,
             occurred_at: clock::now(),
         })?;
         Ok(())
+    }
+}
+
+/// One cleanup of one round: what the idempotency keys and each removal
+/// need to know.
+struct Pass<'a> {
+    round: &'a RoundId,
+    view: &'a RoundView,
+    /// The state cleanup started from.
+    from: RoundState,
+    options: CleanupOptions,
+}
+
+impl Pass<'_> {
+    fn key(&self, what: &str) -> String {
+        format!("{what}:{}:{}", self.round, self.from)
+    }
+}
+
+/// The labels removed, and the labels whose removal failed.
+#[derive(Default)]
+struct Tally {
+    removed: Vec<String>,
+    failed: Vec<String>,
+}
+
+/// `outcome` when `go`, else the `Skipped` outcome with `reason`.
+fn proceed(
+    go: bool,
+    outcome: FinalOutcome,
+    reason: impl FnOnce() -> String,
+) -> std::result::Result<FinalOutcome, CleanupOutcome> {
+    if go {
+        Ok(outcome)
+    } else {
+        Err(skipped(reason()))
     }
 }
 
