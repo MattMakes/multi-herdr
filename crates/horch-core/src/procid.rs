@@ -181,6 +181,7 @@ pub(crate) fn windows_running(pid: i32) -> bool {
 #[cfg(target_os = "macos")]
 mod imp {
     pub(super) fn start_time(pid: i32) -> Option<u64> {
+        // SAFETY: `proc_bsdinfo` is plain data, and an all-zero value is valid.
         let mut info: libc::proc_bsdinfo = unsafe { std::mem::zeroed() };
         let size = std::mem::size_of::<libc::proc_bsdinfo>() as libc::c_int;
         // SAFETY: the buffer is a zeroed `proc_bsdinfo` of `size` bytes.
@@ -272,6 +273,8 @@ mod imp {
             return (err != Some(libc::ENOSYS)).then_some(false);
         }
         let fd = fd as libc::c_int;
+        // SAFETY: `fd` is the pidfd opened above and still open; the siginfo
+        // pointer is null, which the syscall allows.
         let sent = same()
             && unsafe {
                 libc::syscall(
@@ -282,6 +285,7 @@ mod imp {
                     0,
                 )
             } == 0;
+        // SAFETY: `fd` is the pidfd this function opened and closes only here.
         unsafe { libc::close(fd) };
         Some(sent)
     }

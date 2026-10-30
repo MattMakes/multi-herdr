@@ -351,6 +351,7 @@ mod tests {
             std::thread::sleep(Duration::from_millis(10));
         }
         assert_ne!(
+            // SAFETY: signal 0 only tests that the pid exists.
             unsafe { libc::kill(grandchild, 0) },
             0,
             "grandchild still runs"

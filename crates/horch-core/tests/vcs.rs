@@ -429,6 +429,7 @@ fn validate_in(
 
 #[cfg(unix)]
 fn pid_alive(pid: i32) -> bool {
+    // SAFETY: signal 0 only tests that the pid exists.
     unsafe { libc::kill(pid, 0) == 0 }
 }
 
