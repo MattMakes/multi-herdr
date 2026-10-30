@@ -59,6 +59,7 @@ impl BinOverrides {
     ];
 
     /// Every override variable, in the order of `SLOTS`.
+    #[cfg(test)]
     pub(crate) const VARS: [&'static str; 10] = {
         let mut names = [""; 10];
         let mut i = 0;
