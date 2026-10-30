@@ -9,6 +9,7 @@
 //! This is an adapter: it does file I/O, so the domain modules never do.
 
 use std::collections::{BTreeMap, HashMap};
+use std::fs::File;
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -64,18 +65,41 @@ pub(crate) fn parse_line(line: &[u8]) -> Option<EventEnvelope> {
 /// The `*.jsonl` files of the events dir, sorted by name (= by UTC day).
 pub(crate) fn event_files(paths: &DatasetPaths) -> Result<Vec<PathBuf>> {
     let dir = paths.events_dir();
-    let entries = match std::fs::read_dir(&dir) {
-        Ok(entries) => entries,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
-        Err(e) => return Err(e).with_context(|| format!("reading {}", dir.display())),
-    };
+    match std::fs::read_dir(&dir) {
+        Ok(entries) => Ok(sorted_jsonl(entries)),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
+        Err(e) => Err(e).with_context(|| format!("reading {}", dir.display())),
+    }
+}
+
+fn sorted_jsonl(entries: std::fs::ReadDir) -> Vec<PathBuf> {
     let mut files: Vec<PathBuf> = entries
         .flatten()
         .map(|e| e.path())
         .filter(|p| p.is_file() && p.extension().and_then(|e| e.to_str()) == Some("jsonl"))
         .collect();
     files.sort();
-    Ok(files)
+    files
+}
+
+/// The non-blank lines of a file, each with whether a newline ended it:
+/// `false` only for a last line with no newline.
+fn framed_lines(bytes: &[u8]) -> impl Iterator<Item = (&[u8], bool)> {
+    bytes
+        .split_inclusive(|&b| b == b'\n')
+        .map(frame)
+        .filter(has_content)
+}
+
+fn frame(line: &[u8]) -> (&[u8], bool) {
+    match line.strip_suffix(b"\n") {
+        Some(body) => (body, true),
+        None => (line, false),
+    }
+}
+
+fn has_content((line, _): &(&[u8], bool)) -> bool {
+    !line.iter().all(u8::is_ascii_whitespace)
 }
 
 /// Read every event file in full.
@@ -83,23 +107,7 @@ pub fn read_all(paths: &DatasetPaths) -> Result<ReadEvents> {
     let mut out = ReadEvents::default();
     for file in event_files(paths)? {
         let bytes = std::fs::read(&file).with_context(|| format!("reading {}", file.display()))?;
-        let mut rest: &[u8] = &bytes;
-        while !rest.is_empty() {
-            let (line, terminated) = match rest.iter().position(|&b| b == b'\n') {
-                Some(n) => {
-                    let line = &rest[..n];
-                    rest = &rest[n + 1..];
-                    (line, true)
-                }
-                None => {
-                    let line = rest;
-                    rest = &[];
-                    (line, false)
-                }
-            };
-            if line.iter().all(u8::is_ascii_whitespace) {
-                continue;
-            }
+        for (line, terminated) in framed_lines(&bytes) {
             match parse_line(line).filter(|_| terminated) {
                 Some(env) => out.events.push(env),
                 None => out.torn_lines += 1,
@@ -167,6 +175,23 @@ pub fn append(paths: &DatasetPaths, file: &Path, env: &EventEnvelope) -> Result<
     line.push('\n');
 
     let existed = file.exists();
+    let mut f = open_private_append(file)?;
+    // A torn last line from a crashed writer: end it, so this event starts
+    // on a line of its own and the torn one stays a single skipped line.
+    let line = after_torn_tail(&mut f, line)?;
+    write_durably(&mut f, &line).with_context(|| format!("appending to {}", file.display()))?;
+    if !existed {
+        sync_dir(&paths.events_dir())?;
+    }
+    Ok(())
+}
+
+fn write_durably(f: &mut File, line: &str) -> std::io::Result<()> {
+    f.write_all(line.as_bytes())?;
+    f.sync_data()
+}
+
+fn open_private_append(file: &Path) -> Result<File> {
     let mut opts = std::fs::OpenOptions::new();
     opts.read(true).append(true).create(true);
     #[cfg(unix)]
@@ -174,28 +199,23 @@ pub fn append(paths: &DatasetPaths, file: &Path, env: &EventEnvelope) -> Result<
         use std::os::unix::fs::OpenOptionsExt;
         opts.mode(fsx::PRIVATE_FILE);
     }
-    let mut f = opts
-        .open(file)
-        .with_context(|| format!("opening {}", file.display()))?;
+    opts.open(file)
+        .with_context(|| format!("opening {}", file.display()))
+}
 
-    // A torn last line from a crashed writer: end it, so this event starts
-    // on a line of its own and the torn one stays a single skipped line.
+/// `line`, led by a newline when the file has content whose last byte is
+/// not one.
+fn after_torn_tail(f: &mut File, mut line: String) -> Result<String> {
     let len = f.metadata()?.len();
+    let mut last = [b'\n'];
     if len > 0 {
-        let mut last = [0u8; 1];
         f.seek(SeekFrom::Start(len - 1))?;
         f.read_exact(&mut last)?;
-        if last[0] != b'\n' {
-            line.insert(0, '\n');
-        }
     }
-    f.write_all(line.as_bytes())
-        .and_then(|()| f.sync_data())
-        .with_context(|| format!("appending to {}", file.display()))?;
-    if !existed {
-        sync_dir(&paths.events_dir())?;
+    if last[0] != b'\n' {
+        line.insert(0, '\n');
     }
-    Ok(())
+    Ok(line)
 }
 
 /// Make a new directory entry durable.
