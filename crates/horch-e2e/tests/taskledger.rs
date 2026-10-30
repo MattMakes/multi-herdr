@@ -3568,3 +3568,182 @@ fn a_cancel_during_the_land_lands_nothing() {
     assert_eq!(t["task"]["status"], "cancelled", "{t}");
     assert_eq!(worktree_of("T-1"), "abandoned");
 }
+
+/// A worker `opus-1` in its registered pane `w1:p1`, with 1 claimed task
+/// whose check is `check`, and 1 commit in its worktree (#160).
+fn pane_world(name: &str, check: &str, timeout: Option<&str>) -> (Harness, String) {
+    let mut h = finish_world(name);
+    h.set("HORCH_WORKSPACE_ID", "w1");
+    let herdr = |args: &[&str]| {
+        let mut cmd = std::process::Command::new(h.bin.join("herdr"));
+        h.seal(&mut cmd);
+        let o = cmd.args(args).output().unwrap();
+        assert!(o.status.success(), "{}", text(&o));
+    };
+    herdr(&["workspace", "create", "--label", "author"]);
+    herdr(&[
+        "pane",
+        "test-state",
+        "w1:p1",
+        "--status",
+        "idle",
+        "--agent",
+        "claude",
+    ]);
+    let mailbox = h.state.join("herdr-orchestration-w1");
+    std::fs::create_dir_all(&mailbox).unwrap();
+    std::fs::write(mailbox.join("opus-1.id"), "w1:p1").unwrap();
+    ok(&h, &["ledger", "run", "new", "alpha", "--steps", "check"]);
+    let p = ticket(&h, "01-a", "# 01: Feature\n");
+    let p = p.to_string_lossy();
+    let mut add = vec![
+        "ledger",
+        "add",
+        "--file",
+        &p,
+        "--primary",
+        "opus",
+        "--check",
+        check,
+    ];
+    if let Some(t) = timeout {
+        add.extend(["--check-timeout", t]);
+    }
+    ok(&h, &add);
+    let w = ok(
+        &h,
+        &[
+            "ledger",
+            "worker",
+            "new",
+            "--persona",
+            "opus",
+            "--role",
+            "opus-1",
+        ],
+    )
+    .trim()
+    .to_string();
+    ok_as(&h, &w, &["ledger", "claim"]);
+    let wt = ok_as(&h, &w, &["ledger", "worktree", "new", "f"]);
+    let path = PathBuf::from(wt.lines().find_map(|l| l.strip_prefix("path: ")).unwrap());
+    commit_file(&h, &path, "a.txt");
+    (h, w)
+}
+
+/// `horch ledger finish` as worker `w` in its pane.
+fn finish_in_pane(h: &Harness, w: &str) -> Output {
+    let mut cmd = h.horch(&["ledger", "finish"]);
+    cmd.env("HORCH_WORKER_ID", w)
+        .env("HERDR_PANE_ID", "w1:p1")
+        .env("HORCH_ROLE", "opus-1");
+    cmd.output().unwrap()
+}
+
+/// The PID in the "finish runs (PID <n>)" line of a detached finish.
+fn detached_pid(o: &Output) -> String {
+    let s = out(o);
+    s.split("finish runs (PID ")
+        .nth(1)
+        .and_then(|r| r.split(')').next())
+        .unwrap_or_else(|| panic!("no detached finish: {}", text(o)))
+        .to_string()
+}
+
+/// The pending mail of `opus-1` that reports the end of a finish.
+fn finish_mail(h: &Harness) -> Option<String> {
+    use horch_core::messaging::mail::Mail;
+    Mail::to_role(&h.state, "w1", "opus-1")
+        .pending()
+        .ok()?
+        .into_iter()
+        .map(|m| m.text)
+        .find(|t| t.contains("The finish of T-1 ended."))
+}
+
+/// #160: in its pane, a worker's finish returns at once while a long check
+/// runs; the result arrives as durable mail. Elsewhere it runs in the
+/// foreground and says why.
+#[test]
+fn a_detached_finish_returns_at_once_and_mails_the_result() {
+    let (h, w) = pane_world("tl-detach", "/bin/sleep 20", Some("3"));
+    let started = Instant::now();
+    let o = finish_in_pane(&h, &w);
+    assert!(
+        started.elapsed() < Duration::from_secs(2),
+        "finish returned after {:?}",
+        started.elapsed()
+    );
+    assert_eq!(o.status.code(), Some(0), "{}", text(&o));
+    assert!(
+        out(&o).contains("horch tells you the result. End your turn now"),
+        "{}",
+        text(&o)
+    );
+    detached_pid(&o);
+    let mail = wait_for("the finish mail", || finish_mail(&h));
+    assert!(
+        mail.starts_with("[horch] NOTE: The finish of T-1 ended."),
+        "{mail}"
+    );
+    assert!(mail.contains("timed out after 3 s"), "{mail}");
+    assert!(mail.ends_with("Steps: check failed."), "{mail}");
+    let st = json_of(&h, &["ledger", "steps", "T-1", "--json"]);
+    assert_eq!(st[0]["verdict"], "timed out", "{st}");
+
+    // Outside its pane, finish runs in the foreground and says why.
+    let mut cmd = h.horch(&["ledger", "finish"]);
+    cmd.env("HORCH_WORKER_ID", &w);
+    let o = cmd.output().unwrap();
+    assert_eq!(o.status.code(), Some(1), "{}", text(&o));
+    assert!(
+        text(&o).contains(
+            "finish runs in the foreground: this command does not run in the registered pane of opus-1"
+        ),
+        "{}",
+        text(&o)
+    );
+}
+
+/// #160: a detached finish that is killed leaves no result; the next finish
+/// reports it and runs again.
+#[test]
+fn a_killed_detached_finish_is_reported_by_the_next_finish() {
+    let tmp = tempfile::tempdir().unwrap();
+    let started = tmp.path().join("started");
+    let go = tmp.path().join("go");
+    let check = format!(
+        "/usr/bin/touch {}; test -f {} || /bin/sleep 20",
+        started.display(),
+        go.display()
+    );
+    let (h, w) = pane_world("tl-detach-killed", &check, None);
+    let o = finish_in_pane(&h, &w);
+    let pid = detached_pid(&o);
+    wait_for("the check to start", || started.exists().then_some(()));
+    let kill = |args: &[&str]| {
+        std::process::Command::new("kill")
+            .args(args)
+            .status()
+            .unwrap()
+            .success()
+    };
+    assert!(kill(&["-TERM", &pid]), "the detached finish runs");
+    wait_for("the detached finish to end", || {
+        (!kill(&["-0", &pid])).then_some(())
+    });
+    assert_eq!(finish_mail(&h), None, "a killed run sends no result");
+
+    std::fs::write(&go, "").unwrap();
+    let o = finish_in_pane(&h, &w);
+    assert!(
+        out(&o).contains(&format!(
+            "the detached finish (PID {pid}) ended without a result; finish runs again"
+        )),
+        "{}",
+        text(&o)
+    );
+    assert_ne!(detached_pid(&o), pid, "a new run starts");
+    let mail = wait_for("the finish mail", || finish_mail(&h));
+    assert!(mail.contains("every finish step passed"), "{mail}");
+}
