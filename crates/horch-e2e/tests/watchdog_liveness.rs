@@ -3,6 +3,7 @@
 //! process that starts it (#218).
 #![cfg(unix)]
 
+use horch_core::taskledger::watchdog;
 use horch_core::taskledger::{
     model::Actor,
     runs::{self, NewRun, Run},
@@ -10,7 +11,6 @@ use horch_core::taskledger::{
     workers::{self, NewWorker},
     Store,
 };
-use horch_core::taskledger::watchdog;
 use horch_e2e::harness::Harness;
 
 const SIGKILL: i32 = 9;
@@ -388,7 +388,15 @@ fn a_sigterm_during_a_reap_lets_the_reap_finish() {
     fake(
         &h,
         &[
-            "pane", "test-state", "w1:p1", "--text", "Ready", "--status", "idle", "--agent", "pi",
+            "pane",
+            "test-state",
+            "w1:p1",
+            "--text",
+            "Ready",
+            "--status",
+            "idle",
+            "--agent",
+            "pi",
         ],
     );
     // An agent that ignores TERM and says when it got one.
@@ -639,7 +647,15 @@ fn a_detached_watchdog_does_not_inherit_the_starting_panes_workspace() {
     fake(
         &h,
         &[
-            "pane", "test-state", "w1:p1", "--text", "Ready", "--status", "idle", "--agent", "pi",
+            "pane",
+            "test-state",
+            "w1:p1",
+            "--text",
+            "Ready",
+            "--status",
+            "idle",
+            "--agent",
+            "pi",
         ],
     );
     store
