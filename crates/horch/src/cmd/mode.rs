@@ -645,6 +645,29 @@ mod tests {
         assert!(f.events("claude-1").is_empty());
     }
 
+    /// Each refusal names its cause, word for word.
+    #[test]
+    fn each_refusal_gives_its_exact_reason() {
+        let f = Fleet::new();
+        f.worker("claude-1", "claude", "codex-plan");
+        f.w.worker("rec-lost", "lost", "codex", "codex-plan", None);
+        let sim = SimCodex::new(PaneMode::Plan);
+        let line = |role: &str| f.run(&sim, role, PaneMode::Write).1;
+        assert_eq!(
+            line("nobody"),
+            "horch mode: refused: no live record for role nobody in workspace w1"
+        );
+        assert_eq!(
+            line("claude-1"),
+            "horch mode: refused: role claude-1 is not a Codex pane with permission_mode plan"
+        );
+        assert_eq!(
+            line("lost"),
+            "horch mode: refused: role lost has no pane in workspace w1"
+        );
+        assert!(sim.typed().is_empty());
+    }
+
     /// A pane that stays busy is refused before any key.
     #[test]
     fn a_busy_pane_is_refused_before_any_key() {
