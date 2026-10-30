@@ -69,17 +69,24 @@ fn g61_doctor_call_bound_follows_the_fault() {
     );
 }
 
+/// The typing fails, and the probe still closes its workspace. The cleanup
+/// gets the long call bound of [`CONFIRM_FAULTS`]: on a loaded machine one
+/// fake herdr call takes seconds, and a close cut off at the 2 s default is
+/// never recorded. The bound itself is g61_doctor_call_bound_follows_the_fault.
 #[test]
 fn g61_doctor_typing_failure_warns_without_failing_or_leaking_workspace() {
-    let h = world("g61-no-type", "exec,shell,fail_typing");
+    let mut h = world("g61-no-type", "exec,shell,fail_typing");
+    h.set("HORCH_FAULT", CONFIRM_FAULTS);
     let out = h.run(&["doctor"]);
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(out.status.success(), "{stderr}");
     assert!(stderr.contains("warning: delivery test failed"), "{stderr}");
-    assert!(h
-        .calls_of("herdr")
-        .iter()
-        .any(|c| c["argv"][0] == "workspace" && c["argv"][1] == "close"));
+    assert!(
+        h.calls_of("herdr")
+            .iter()
+            .any(|c| c["argv"][0] == "workspace" && c["argv"][1] == "close"),
+        "{stderr}"
+    );
 }
 
 #[test]

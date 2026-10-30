@@ -46,6 +46,8 @@ path = "src/bin/fake-ollama.rs"
 horch-core.workspace = true
 # `git::scrub_repo_env`: every git child of the harness and the fakes.
 horch-marketplace.workspace = true
+# `kill`: teardown and fake-herdr signal process groups without a fork.
+libc = "0.2"
 serde_json.workspace = true
 
 [dev-dependencies]

@@ -764,6 +764,7 @@ dependencies = [
  "anyhow",
  "horch-core",
  "horch-marketplace",
+ "libc",
  "serde_json",
  "tempfile",
 ]

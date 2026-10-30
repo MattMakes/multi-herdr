@@ -266,18 +266,24 @@ impl Drop for Rules {
     }
 }
 
-/// Top-level entries of a private home that are not symlinks and not `rules/`.
+/// Caches codex writes at the top of every home it runs in (#140). They hold
+/// nothing the real codex home needs.
+const CODEX_CACHE_FILES: [&str; 2] = ["cloud-config-bundle-cache.json", ".hook-trust"];
+
+/// Top-level entries of a private home that are not symlinks, not `rules/`
+/// and not one of [`CODEX_CACHE_FILES`].
 ///
 /// Everything the overlay creates is a symlink or `rules/`, so anything else is
 /// something codex made: a file that did not exist in the real codex home when
 /// the overlay was built.
-fn stranded_entries(dir: &Path) -> Vec<String> {
+pub(crate) fn stranded_entries(dir: &Path) -> Vec<String> {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return Vec::new();
     };
     let mut out: Vec<String> = entries
         .flatten()
         .filter(|e| e.file_name() != "rules")
+        .filter(|e| !CODEX_CACHE_FILES.iter().any(|f| e.file_name() == *f))
         .filter(|e| {
             !e.path()
                 .symlink_metadata()

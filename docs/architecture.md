@@ -49,14 +49,20 @@ open first.
 | `ids` | typed identities (`ExecutionId`, `RoleName`, `PaneId`, ...) | `crates/horch-core/src/ids.rs` |
 | `clock` | the one clock horch reads (`HORCH_NOW` pins it) | `crates/horch-core/src/clock.rs` |
 | `fsx` | durable file writes and the cross-process directory lock (`DirLock`) | `crates/horch-core/src/fsx.rs` |
+| `procid` | process identity: a pid with its start time, and the signal to that exact process | `crates/horch-core/src/procid.rs` |
+| `exeid` | which binary a long-lived horch process runs, so a stale watchdog or collector is noticed after an install | `crates/horch-core/src/exeid.rs` |
+| `heartbeat` | the liveness of background jobs (the judge job, the compaction job) | `crates/horch-core/src/heartbeat.rs` |
 | `runtime` | the process boundary: `RuntimeContext`, paths, binary overrides (`HORCH_*_BIN`), fault points | `crates/horch-core/src/runtime/context.rs`, `crates/horch-core/src/runtime/paths.rs`, `crates/horch-core/src/runtime/bins.rs` |
 | `roster` | `teammates/` files: parsing, layering, `--check` rules, effort and permission mapping | `crates/horch-core/src/roster/repository.rs`, `crates/horch-core/src/roster/validation.rs` |
 | `prompts` | rendering briefings from `teammates/` | `crates/horch-core/src/prompts.rs` |
 | `skills` | skill catalogs, phase selection, activation plans, launch bundles | `crates/horch-core/src/skills/selection.rs`, `crates/horch-core/src/skills/catalog.rs` |
 | `harness` | 1 adapter per agent CLI (claude, codex, OpenCode, pi, Prime, Antigravity), capabilities, the launch flow, the `agent-list` inventory, the headless judge command | `crates/horch-core/src/harness/mod.rs`, `crates/horch-core/src/harness/launch.rs` |
 | `routing` | quota-aware routing: policy, quota pools, the spawn decision | `crates/horch-core/src/routing/decision.rs`, `crates/horch-core/src/routing/quota.rs` |
-| `execution` | executions: model, ledger record and store, spawn plan, the spawn service, lifecycle (`done`) | `crates/horch-core/src/execution/service.rs`, `crates/horch-core/src/execution/store.rs` |
+| `execution` | executions: model, the JSON session ledger (`horch sessions`) record and store, spawn plan, the spawn service, lifecycle (`done`) | `crates/horch-core/src/execution/service.rs`, `crates/horch-core/src/execution/store.rs` |
 | `messaging` | the worker brief, the mailbox and message delivery | `crates/horch-core/src/messaging/brief.rs`, `crates/horch-core/src/messaging/mailbox.rs` |
+| `project_notes` | durable project facts (`horch note --fact`) and the host line of every brief | `crates/horch-core/src/project_notes.rs` |
+| `taskledger` | the SQLite task ledger (`horch ledger`): runs, tasks, claims, workers, the watchdog, the finish steps, deterministic stop, the import of old JSON ledgers | `crates/horch-core/src/taskledger/mod.rs`, `crates/horch-core/src/taskledger/finish/mod.rs` |
+| `compaction` | context windows, thresholds, row states and the compaction job | `crates/horch-core/src/compaction/policy.rs`, `crates/horch-core/src/compaction/job.rs` |
 | `workspace` | the herdr client, layout, tiling and balancing | `crates/horch-core/src/workspace/herdr.rs`, `crates/horch-core/src/workspace/tile.rs` |
 | `telemetry` | live per-pane token telemetry and the collector | `crates/horch-core/src/telemetry/collect.rs`, `crates/horch-core/src/telemetry/readers.rs` |
 | `usage` | what a run cost, read back from each harness's own records | `crates/horch-core/src/usage.rs` |
@@ -65,6 +71,7 @@ open first.
 | `competition` | competitive mode: config, preflight, planner, round state table, coordinator, judging, promotion, budget | `crates/horch-core/src/competition/coordinator.rs`, `crates/horch-core/src/competition/state.rs` |
 | `evaluation` | validation gates, judge input, judging and winner policy | `crates/horch-core/src/evaluation/validator.rs`, `crates/horch-core/src/evaluation/winner.rs` |
 | `dataset` | the dataset outputs: export rows and readiness | `crates/horch-core/src/dataset/export.rs` |
+| `fleet_runs` | fleet run facts: a start, run and verdict row per worker, and the sync that fills missing run rows | `crates/horch-core/src/fleet_runs/sync.rs`, `crates/horch-core/src/fleet_runs/rows.rs` |
 | `teacher` | the System One decision-model seam (inert) | `crates/horch-core/src/teacher/mod.rs` |
 
 The harness kinds are in `harness/mod.rs` (`HarnessKind`): `claude`, `codex`,
@@ -80,25 +87,40 @@ in `harness/capabilities.rs`.
 |---|---|
 | `agentlist.rs` | `horch agent-list` |
 | `balancecmd.rs` | `horch balance` |
+| `channel.rs` | `horch channel serve` (hidden; the worker-report channel relay, an MCP stdio server) |
+| `compact.rs` | `horch compact` |
+| `context.rs` | `horch context` |
 | `cost.rs` | `horch cost` |
+| `cost/` | the report tables and rendering of `horch cost` |
+| `delivery_probe.rs` | the delivery checks of `horch fleet` and `horch doctor` |
 | `doctor.rs` | `horch doctor` |
 | `install.rs` | `horch install` (copies `horch` and `multi-herdr-dataset`) |
 | `layoutcmd.rs` | `horch layout` |
-| `ledgercmd.rs` | `horch sessions`, `horch ledger` |
+| `ledgercmd.rs` | `horch sessions`, `horch ledger legacy` (the JSON session ledger) |
+| `mail.rs` | `horch mail courier` (hidden; delivers durable worker mail) |
 | `marketplacecmd.rs` | `horch marketplace` |
-| `messaging.rs` | `horch tell`, `inbox`, `assign`, `note`, `done` |
+| `messaging.rs` | `horch tell`, `inbox`, `peek`, `assign`, `note`, `done` |
 | `mod.rs` | the module list and `load_roster` |
+| `mode.rs` | `horch mode` (switches a Codex pane between write and plan) |
 | `quotacmd.rs` | `horch quota` |
-| `recipes.rs` | `horch fleet`, `horch orchestration` |
+| `recipes.rs` | `horch fleet`, `horch orchestration`, `horch pane-launch` (hidden) |
+| `restore.rs` | herdr's agent session restore: the restored pane's identity, and the warning in `fleet` and `doctor` |
 | `route.rs` | `horch route` |
+| `selfupdate.rs` | `horch self-update`, and the stale-version warning at boot |
 | `skillscmd.rs` | `horch skills` |
 | `smoke.rs` | `horch smoke messaging`, `fleet`, `tile` |
 | `spawn.rs` | `horch spawn` |
+| `taskledger.rs` | `horch ledger` (the SQLite task ledger): every subcommand except `legacy` |
+| `taskledger_spawn.rs` | the task-ledger side of `horch spawn`: the worker row and its id in the brief |
+| `taskledger_wake.rs` | the wake lines the task ledger sends the orchestrator |
+| `taskledger_watch.rs` | `horch ledger watch` (the watchdog) and its restart when it goes quiet |
 | `teammatescmd.rs` | `horch teammates` |
-| `telemetry.rs` | `horch telemetry` |
+| `telemetry/` | `horch telemetry` |
 | `tilecmd.rs` | `horch tile` |
+| `update.rs` | `horch update`, and the update step of `fleet` and `orchestration` |
 | `usagecmd.rs` | `horch usage` |
 | `worker.rs` | `horch worker` (hidden; runs inside a spawned pane) |
+| `worktree.rs` | `horch worktree new`, `land`, `list` (outside a ledger run) |
 
 `crates/horch/src/dataset/` holds the `multi-herdr-dataset` commands:
 
@@ -128,13 +150,15 @@ environment), `crates/horch/src/exit.rs` (exit codes), `crates/horch/src/output.
 | what | path | source |
 |---|---|---|
 | state root | `$HORCH_STATE_DIR`, else `${XDG_STATE_HOME:-~/.local/state}/horch` | `runtime/paths.rs` `state_root` |
-| execution ledger | `<state root>/<slug of the project path>.json` | `execution/store.rs` `ExecutionStore::for_project` |
+| session ledger (JSON) | `<state root>/<slug of the project path>.json` | `execution/store.rs` `ExecutionStore::for_project` |
+| task ledger | `$HORCH_LEDGER_DB`, else `~/.horch/ledger.sqlite3`, 1 file per machine | `taskledger/store.rs` `default_path` |
 | dataset root | `<state root>/multi-herdr/<project slug>/` | `measure/paths.rs` (`DATASET_DIR`) |
 | dataset events | `<dataset root>/events/YYYY-MM-DD.jsonl`, 1 file per UTC day | `measure/paths.rs` `events_file` |
 | skill bundles per launch | `<state root>/skill-bundles/<execution id>/` | `skills.rs`, `harness/launch.rs` |
 | marketplace skills (data root) | `$HORCH_DATA_DIR`, else `${XDG_DATA_HOME:-~/.local/share}/horch/` | `runtime/paths.rs` `data_root` |
 
-`horch ledger legacy path` prints the ledger path for the current project.
+`horch ledger legacy path` prints the session ledger path for the current project.
+`horch ledger path` prints the task ledger path.
 
 A herdr pane does not inherit the environment of the `horch` that split it.
 So every horch process in a fleet gets the spawner's data root this way:

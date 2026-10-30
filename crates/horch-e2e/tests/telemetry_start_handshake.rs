@@ -90,12 +90,10 @@ impl Drop for CollectorGuard {
         while self.0.join("telemetry/start.json").exists() && Instant::now() < until {
             std::thread::sleep(Duration::from_millis(100));
         }
+        // The kill syscall, not a `kill` program: a fork can fail on a
+        // loaded machine, and then nothing is signalled.
         if let Some((pid, start)) = collector(&self.0) {
-            if horch_core::procid::is_same(pid, start) {
-                let _ = std::process::Command::new("/bin/kill")
-                    .arg(pid.to_string())
-                    .status();
-            }
+            horch_core::procid::signal_same(pid, start, libc::SIGTERM);
         }
     }
 }
