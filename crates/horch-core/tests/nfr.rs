@@ -201,7 +201,14 @@ fn assert_no_workspace_dep(banned: &[&str], exempt: &[&str], why: &str) {
 fn nfr_06_dependency_allowlist() {
     let manifest = repo().join("crates/horch-marketplace/Cargo.toml");
     if manifest.is_file() {
-        let allowed = ["anyhow", "serde", "serde_json", "serde_yaml", "sha2", "thiserror"];
+        let allowed = [
+            "anyhow",
+            "serde",
+            "serde_json",
+            "serde_yaml",
+            "sha2",
+            "thiserror",
+        ];
         for d in deps(&manifest) {
             assert!(
                 allowed.contains(&d.as_str()),
