@@ -300,30 +300,38 @@ pub(crate) fn named_skills(
             .unwrap_or_else(|| format!("{}@inline", plugin.name));
         let dirs = skill_dirs(&plugin.root)?;
         for skill in wanted {
-            let (_, description, dir) = dirs
-                .iter()
-                .find(|(name, _, _)| *name == skill)
-                .with_context(|| {
-                    format!("plugin skill '{}:{skill}' has no directory", plugin.name)
-                })?;
-            let digest = horch_marketplace::integrity::tree_digest(dir)
-                .map_err(|e| anyhow::anyhow!("plugin skill '{}:{skill}': {e}", plugin.name))?;
-            let skill_file_bytes = std::fs::metadata(dir.join("SKILL.md"))
-                .map(|m| m.len() as usize)
-                .unwrap_or(0);
-            out.push(NamedPluginSkill {
-                plugin: plugin.name.clone(),
-                skill,
-                plugin_key: plugin_key.clone(),
-                version: plugin.version.clone(),
-                description: description.clone(),
-                dir: dir.clone(),
-                skill_file_bytes,
-                digest,
-            });
+            out.push(named_skill(&plugin, &plugin_key, &dirs, skill)?);
         }
     }
     Ok(out)
+}
+
+/// `skill` of `plugin`, found among the `dirs` of its skills (see
+/// [`skill_dirs`]) and digested.
+fn named_skill(
+    plugin: &Plugin,
+    plugin_key: &str,
+    dirs: &[(String, String, PathBuf)],
+    skill: String,
+) -> Result<NamedPluginSkill> {
+    let (_, description, dir) = dirs
+        .iter()
+        .find(|(name, _, _)| *name == skill)
+        .with_context(|| format!("plugin skill '{}:{skill}' has no directory", plugin.name))?;
+    let digest = skill_digest(plugin, &skill, dir)?;
+    let skill_file_bytes = std::fs::metadata(dir.join("SKILL.md"))
+        .map(|m| m.len() as usize)
+        .unwrap_or(0);
+    Ok(NamedPluginSkill {
+        plugin: plugin.name.clone(),
+        skill,
+        plugin_key: plugin_key.to_string(),
+        version: plugin.version.clone(),
+        description: description.clone(),
+        dir: dir.clone(),
+        skill_file_bytes,
+        digest,
+    })
 }
 
 /// The directory under a skills bundle that holds the filtered plugins.
