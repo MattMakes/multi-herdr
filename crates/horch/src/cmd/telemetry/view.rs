@@ -1181,6 +1181,70 @@ mod tests {
         on_key(s, key(code), r).0
     }
 
+    /// The other motion keys, `g`, `w`, `p` and Esc with a project.
+    #[test]
+    fn spc_07_up_pageup_home_and_the_view_keys() {
+        let r = rows(30, 30, 10);
+        let mut s = ViewState::default();
+        s.tables[LIVE].select(25, 30, 10);
+        let up = press(s.clone(), KeyCode::Up, &r);
+        assert_eq!(up.tables[LIVE].sel, 24);
+        let pgup = press(s.clone(), KeyCode::PageUp, &r);
+        assert_eq!(pgup.tables[LIVE].sel, 15);
+        let home = press(s.clone(), KeyCode::Home, &r);
+        assert_eq!((home.tables[LIVE].sel, home.tables[LIVE].offset), (0, 0));
+        let k = press(s.clone(), KeyCode::Char('k'), &r);
+        assert_eq!(k.tables[LIVE].sel, 24);
+
+        let mut w = ViewState::with("teammate", "5h").unwrap();
+        w.tables[ROLLUP].select(3, 30, 10);
+        let g = press(w.clone(), KeyCode::Char('g'), &r);
+        assert_eq!(g.group, (w.group + 1) % GROUPS.len());
+        assert_eq!(g.tables[ROLLUP], TableState::default());
+        let next = press(w.clone(), KeyCode::Char('w'), &r);
+        assert_eq!(next.window, (w.window + 1) % VIEW_WINDOWS.len());
+        assert_eq!(next.tables[ROLLUP], TableState::default());
+        let mut live = ViewState::default();
+        live.window = VIEW_WINDOWS.len() - 1;
+        live.focus = ROLLUP;
+        let wrapped = press(live, KeyCode::Char('w'), &r);
+        assert_eq!((wrapped.window, wrapped.focus), (0, LIVE));
+
+        let mut proj = ViewState::default();
+        proj.project = Some("/a".into());
+        let (cleared, a) = on_key(proj, key(KeyCode::Esc), &r);
+        assert_eq!((cleared.project, a), (None, Action::SetProject(None)));
+        let mut cycle = r.clone();
+        cycle.projects = vec!["/a".into(), "/b".into()];
+        let (first, a) = on_key(ViewState::default(), key(KeyCode::Char('p')), &cycle);
+        assert_eq!(a, Action::SetProject(Some("/a".into())));
+        let (last, a) = on_key(first, key(KeyCode::Char('p')), &cycle);
+        let (none, b) = on_key(last, key(KeyCode::Char('p')), &cycle);
+        assert_eq!(a, Action::SetProject(Some("/b".into())));
+        assert_eq!((none.project, b), (None, Action::SetProject(None)));
+    }
+
+    /// The insights show in a fixed order, only those that exist.
+    #[test]
+    fn spc_04_the_insight_line_lists_the_known_insights() {
+        let snap = Snapshot {
+            insights: horch_core::telemetry::collect::Insights {
+                orchestrator_share: Some(0.5),
+                cache_hit: None,
+                idle_spend_share: Some(0.25),
+                top_plan: Some("big".into()),
+            },
+            ..Snapshot::default()
+        };
+        assert_eq!(
+            facts(&snap, &ViewState::default())
+                .last()
+                .map(String::as_str),
+            Some("orchestrators 50% of spend · 25% of spend while idle · top plan big")
+        );
+        assert!(facts(&Snapshot::default(), &ViewState::default()).is_empty());
+    }
+
     /// SPC-07: `j` on the last row stays there.
     #[test]
     fn spc_07_j_at_the_last_row_stays() {
