@@ -422,6 +422,7 @@ pub fn run(ctx: &RuntimeContext, command: LedgerCommand) -> Result<ExitCode> {
         LedgerCommand::AddMap { map: path, run } => add_map(ctx, &mut store, &path, &run),
         LedgerCommand::PlanWorkers { run, json: as_json } => {
             let r = resolve_run(ctx, &store, &run)?;
+            adopt_workspace(ctx, &store, &r)?;
             let plan = tasks::plan_workers(store.conn(), &r.run_id)?;
             if as_json {
                 json(&plan)?;
@@ -815,6 +816,32 @@ pub fn run(ctx: &RuntimeContext, command: LedgerCommand) -> Result<ExitCode> {
     }
 }
 
+/// A run created outside herdr has no workspace (#218). The first
+/// `status` or `plan-workers` from a herdr pane that is not a worker's
+/// records that pane's workspace on the run, so wakes find its orchestrator.
+fn adopt_workspace(ctx: &RuntimeContext, store: &Store, run: &Run) -> Result<()> {
+    let (None, Some(ws), Some(_pane)) = (&run.workspace_id, &ctx.herdr.workspace, &ctx.herdr.pane)
+    else {
+        return Ok(());
+    };
+    let role = ctx.worker.as_ref().and_then(|w| w.role.as_deref());
+    if role.is_some_and(|r| r != "orchestrator") {
+        return Ok(());
+    }
+    let changed = store.conn().execute(
+        "UPDATE runs SET workspace_id = ?2 WHERE run_id = ?1 AND workspace_id IS NULL",
+        [&run.run_id, ws.as_str()],
+    )?;
+    if changed == 1 {
+        eprintln!(
+            "NOTE: run {} had no workspace. It now has workspace {}, so wakes go to the orchestrator of this workspace.",
+            run.slug,
+            ws.as_str()
+        );
+    }
+    Ok(())
+}
+
 fn status_cmd(
     ctx: &RuntimeContext,
     store: &Store,
@@ -833,6 +860,7 @@ fn status_cmd(
         return Ok(ExitCode::SUCCESS);
     }
     let run = resolve_run(ctx, store, arg)?;
+    adopt_workspace(ctx, store, &run)?;
     let report = status::report(store.conn(), &run)?;
     if as_json {
         json(&report)?;
@@ -1128,6 +1156,12 @@ fn run_cmd(ctx: &RuntimeContext, store: &mut Store, command: RunCommand) -> Resu
                 r.run_branch.as_deref().unwrap_or("(no git repository)"),
                 r.finish_steps.join(", ")
             ));
+            if r.workspace_id.is_none() {
+                eprintln!(
+                    "horch ledger: warning: run {} has no workspace, because this command ran outside a herdr pane. Wakes go only to an orchestrator that runs a ledger command from its pane. Run horch ledger plan-workers in the orchestrator pane to record its workspace.",
+                    r.slug
+                );
+            }
             Ok(ExitCode::SUCCESS)
         }
     }

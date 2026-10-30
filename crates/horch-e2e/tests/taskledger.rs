@@ -1258,11 +1258,24 @@ fn three_checks_without_progress_reap_the_worker_by_its_pid() {
     assert_eq!(claim["attempt"], 2);
 }
 
-/// Kills the stand-in agent and the watchdog that holds a lock in `locks`
-/// when dropped, so a failed assertion leaks neither.
+/// Kills the stand-in agent, the watchdog that holds a lock in `locks`, and
+/// each process in `also`, when dropped, so a failed assertion leaks none.
 struct WatchdogTeardown {
     agent: std::process::Child,
     locks: PathBuf,
+    /// Watchdogs as `(pid, start time)` that may hold no lock.
+    also: Vec<(u32, u64)>,
+}
+
+impl WatchdogTeardown {
+    /// Kill at teardown each watchdog that a warning of `o` says it started.
+    fn kill_started(&mut self, o: &Output) {
+        for pid in started_pids(o) {
+            if let Some(started) = horch_core::procid::start_time(pid) {
+                self.also.push((pid, started));
+            }
+        }
+    }
 }
 
 impl Drop for WatchdogTeardown {
@@ -1271,6 +1284,9 @@ impl Drop for WatchdogTeardown {
         locks
             .flatten()
             .for_each(|lock| kill_lock_owner(&lock.path()));
+        for &(pid, started) in &self.also {
+            horch_core::procid::signal_same(pid, started, 9);
+        }
         let _ = self.agent.kill();
         let _ = self.agent.wait();
     }
@@ -1285,12 +1301,13 @@ fn kill_lock_owner(lock: &Path) {
     }
 }
 
-#[test]
-fn a_dead_watchdog_is_restarted_and_a_second_one_is_refused() {
-    let mut h = world("tl-wdog");
+/// In `h`, run `zeta` with 1 running task of a worker whose agent is a live child of
+/// the test, and the watchdog restart on. The watchdog checks the worker
+/// every second; many stall rounds keep it from reaping the worker, which
+/// would end the running task. Returns the output of the worker's `claim`,
+/// the first command after the task runs, which starts the watchdog.
+fn watched_run(mut h: Harness) -> (Harness, WatchdogTeardown, Output) {
     h.unset("HORCH_NO_WATCHDOG");
-    // The watchdog checks the worker every second. Many stall rounds keep a
-    // stalled worker from being reaped, which would end the running task.
     ok(
         &h,
         &[
@@ -1317,14 +1334,14 @@ fn a_dead_watchdog_is_restarted_and_a_second_one_is_refused() {
         ],
     );
     let w = worker_new(&h, "opus");
-    // The worker's agent is a child this test owns, so the watchdog sees it
-    // alive and does not reap the worker. A reap would stop only the child.
+    // A reap would stop only the child.
     let teardown = WatchdogTeardown {
         agent: std::process::Command::new("/bin/sleep")
             .arg("600")
             .spawn()
             .unwrap(),
         locks: h.root.join("locks"),
+        also: Vec::new(),
     };
     horch_core::taskledger::supervisor::agent_started(
         &h.root.join("ledger.sqlite3"),
@@ -1332,7 +1349,6 @@ fn a_dead_watchdog_is_restarted_and_a_second_one_is_refused() {
         teardown.agent.id(),
     )
     .unwrap();
-    // The first horch command after a task runs starts the missing watchdog.
     let mut cmd = h.horch(&["ledger", "claim"]);
     cmd.env("HORCH_WORKER_ID", &w);
     let o = cmd.output().unwrap();
@@ -1341,13 +1357,54 @@ fn a_dead_watchdog_is_restarted_and_a_second_one_is_refused() {
         "{}",
         text(&o)
     );
+    (h, teardown, o)
+}
+
+/// Every PID in the "started it (PID n)" warnings of `o`.
+fn started_pids(o: &Output) -> Vec<u32> {
+    text(o)
+        .split("started it (PID ")
+        .skip(1)
+        .filter_map(|rest| rest.split(')').next()?.parse().ok())
+        .collect()
+}
+
+/// The live holder of the watchdog lock of the run in `status`.
+fn lock_holder(
+    h: &Harness,
+    status: &Value,
+) -> Option<horch_core::taskledger::watchdog::LockHolder> {
+    let run_id = status["run_id"].as_str().expect("the run id");
+    horch_core::taskledger::watchdog::holder(&h.root.join("locks"), run_id)
+}
+
+/// A watchdog that was just started and has not taken its lock yet is not
+/// "not running": the next command does not start a second one. On a
+/// loaded machine a second one could take over when the test below killed
+/// the first, so the restart that test waits for never came.
+#[test]
+fn a_watchdog_that_is_still_starting_is_not_started_twice() {
+    let mut h = world("tl-wdog-starting");
+    // The new watchdog waits 60 s before it takes its lock.
+    h.set("HORCH_FAULT", "watchdog-start-ms:60000");
+    let (h, mut teardown, o) = watched_run(h);
+    teardown.kill_started(&o);
+    assert_eq!(teardown.also.len(), 1, "{}", text(&o));
+    // `status` exits 1 while the run is not complete.
+    let o = h.run(&["ledger", "status"]);
+    teardown.kill_started(&o);
+    assert!(out(&o).contains("Run zeta (active)"), "{}", text(&o));
+    assert!(!text(&o).contains("started it"), "{}", text(&o));
+}
+
+#[test]
+fn a_dead_watchdog_is_restarted_and_a_second_one_is_refused() {
+    let (h, _teardown, _) = watched_run(world("tl-wdog"));
     let run = || json_of(&h, &["ledger", "status", "--json"])["run"].clone();
-    let r = wait_for("the watchdog's checkin", || {
-        let r = run();
-        r["watchdog_pid"].is_i64().then_some(r)
-    });
-    let pid = r["watchdog_pid"].as_i64().unwrap() as u32;
-    let started = r["watchdog_started"].as_i64().unwrap() as u64;
+    // The lock, not the checkin: the starter records the PID it started
+    // before that process takes the lock.
+    let holder = wait_for("the watchdog's lock", || lock_holder(&h, &run()));
+    let (pid, started) = (holder.pid, holder.started.unwrap());
     // A second watchdog for the run is refused.
     let o = h.run(&["ledger", "watch"]);
     assert!(
@@ -1366,15 +1423,13 @@ fn a_dead_watchdog_is_restarted_and_a_second_one_is_refused() {
         let o = h.run(&["ledger", "status"]);
         text(&o).contains("started it").then_some(())
     });
-    let r2 = wait_for("the new watchdog", || {
-        let r = run();
-        (r["watchdog_pid"].as_i64() != Some(pid as i64) && r["watchdog_pid"].is_i64()).then_some(r)
+    let h2 = wait_for("the new watchdog's lock", || {
+        lock_holder(&h, &run()).filter(|l| l.pid != pid)
     });
-    let (p2, s2) = (
-        r2["watchdog_pid"].as_i64().unwrap() as u32,
-        r2["watchdog_started"].as_i64().unwrap() as u64,
+    assert!(
+        horch_core::procid::signal_same(h2.pid, h2.started.unwrap(), 9),
+        "teardown"
     );
-    assert!(horch_core::procid::signal_same(p2, s2, 9), "teardown");
 }
 
 #[test]

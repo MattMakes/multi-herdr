@@ -51,6 +51,8 @@ pub fn install(ctx: &RuntimeContext, dir: Option<&str>) -> Result<()> {
     if let Err(e) = super::telemetry::restart_if_stale(ctx, &herdr, &target) {
         println!("warning: telemetry collector not restarted: {e:#}; run `horch telemetry ensure`");
     }
+    // A task-ledger watchdog too (#216).
+    super::taskledger_watch::restart_if_stale(ctx, &target);
 
     // The sibling binaries are built next to horch (`cargo build --bin
     // multi-herdr-dataset --bin herdr-install`), and are installed next to it too.

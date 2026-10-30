@@ -15,6 +15,7 @@ pub mod messaging;
 pub mod mode;
 pub mod quotacmd;
 pub mod recipes;
+pub mod restore;
 pub mod route;
 pub mod selfupdate;
 pub mod skillscmd;
