@@ -129,7 +129,11 @@ fn pi_tail_takes_only_assistant_message_lines_with_tokens() {
             pi_line("message", &assistant(r#"{"totalTokens":0}"#)),
             pi_line("message", &assistant(r#"{}"#)),
         ] {
-            assert_eq!(usable_in(agent, &[line.clone()]), None, "{agent}: {line}");
+            assert_eq!(
+                usable_in(agent, std::slice::from_ref(&line)),
+                None,
+                "{agent}: {line}"
+            );
         }
     }
 }
