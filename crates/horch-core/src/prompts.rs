@@ -407,6 +407,36 @@ mod tests {
     }
 
     #[test]
+    fn a_block_the_base_lacks_names_the_teammate_and_the_base() {
+        let mut r = roster();
+        let mut t = r.require("opus").unwrap().clone();
+        let base_name = t.base.clone().unwrap();
+        r.bases.get_mut(&base_name).unwrap().skills_instruction = "  ".into();
+        r.bases.get_mut(&base_name).unwrap().trains_on_input = String::new();
+
+        t.skills = vec!["planning".into()];
+        let err = worker_prompt(&r, &t, "opus-1", "task", &SessionMode::Fresh(None)).unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            format!(
+                "teammate 'opus' declares skills but base '{base_name}' has no \
+                 skills_instruction to render them into"
+            )
+        );
+
+        t.skills.clear();
+        t.trains_on_input = true;
+        let err = worker_prompt(&r, &t, "opus-1", "task", &SessionMode::Fresh(None)).unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            format!(
+                "teammate 'opus' sets trains_on_input but base '{base_name}' has no \
+                 trains_on_input block to render it into"
+            )
+        );
+    }
+
+    #[test]
     fn orchestrator_briefing_carries_the_roster() {
         let r = roster();
         let p = agent_prompt(&r, r.require("orchestrator").unwrap(), "orchestrator").unwrap();
