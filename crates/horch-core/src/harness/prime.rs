@@ -955,6 +955,50 @@ fn command_model(cmd: &Command) -> Option<String> {
         .map(|w| w[1].to_string())
 }
 
+/// The variable that points Prime at this launch's agent dir, built from the
+/// operator's. Without the operator's agent dir there is nothing to link, and
+/// a login would land in a directory nobody keeps: Prime runs on its own
+/// default dir, without a fleet window. A dir that cannot be built is removed
+/// and left out the same way.
+fn fleet_agent_dir_env(
+    ctx: &RuntimeContext,
+    req: &PrepareRequest<'_>,
+    daemon: &Daemon,
+) -> Option<(String, std::ffi::OsString)> {
+    let src = source_agent_dir(ctx, req.teammate);
+    if !src.is_dir() {
+        return None;
+    }
+    let dir = daemon.agent_dir();
+    match build_agent_dir(&src, &dir, req) {
+        Ok(()) => Some((AGENT_DIR_ENV.into(), dir.into_os_string())),
+        Err(e) => {
+            let _ = std::fs::remove_dir_all(&dir);
+            eprintln!(
+                "horch[{}]: Prime agent dir not built, the pane uses {}: {e:#}",
+                req.role,
+                src.display()
+            );
+            None
+        }
+    }
+}
+
+/// Name the pane in the launch dir, for [`finish_pane`]. A failed write
+/// costs `horch done` its way to the daemon; the launch goes on.
+fn write_pane_file(daemon: &Daemon, role: &str, pane: &str) {
+    if let Err(e) = crate::fsx::write_atomic(
+        &daemon.launch_dir().join(PANE),
+        format!("{pane}\n").as_bytes(),
+        crate::fsx::PRIVATE_FILE,
+    ) {
+        eprintln!(
+            "horch[{}]: Prime pane file not written, horch done cannot stop the daemon: {e:#}",
+            role
+        );
+    }
+}
+
 /// The Prime Agent adapter.
 pub struct Prime;
 
@@ -984,41 +1028,13 @@ impl Harness for Prime {
             sessions_dir: Some(daemon.sessions_dir().to_path_buf()),
             ..Prepared::default()
         };
-        // Without the operator's agent dir there is nothing to link, and a
-        // login would land in a directory nobody keeps: Prime runs on its
-        // own default dir, without a fleet window.
-        let src = source_agent_dir(ctx, req.teammate);
-        if src.is_dir() {
-            let dir = daemon.agent_dir();
-            match build_agent_dir(&src, &dir, req) {
-                Ok(()) => prepared
-                    .env
-                    .push((AGENT_DIR_ENV.into(), dir.into_os_string())),
-                Err(e) => {
-                    let _ = std::fs::remove_dir_all(&dir);
-                    eprintln!(
-                        "horch[{}]: Prime agent dir not built, the pane uses {}: {e:#}",
-                        req.role,
-                        src.display()
-                    )
-                }
-            }
-        }
+        prepared.env.extend(fleet_agent_dir_env(ctx, req, &daemon));
         // In a herdr pane only: `horch done` finds this launch by its pane
         // and stops the daemon (`finish_pane`). Prime's built-in reporter
         // reports the pane's agent state itself.
         let pane = ctx.herdr.pane.as_ref().map(|p| p.as_str().to_string());
         if let Some(pane) = &pane {
-            if let Err(e) = crate::fsx::write_atomic(
-                &daemon.launch_dir().join(PANE),
-                format!("{pane}\n").as_bytes(),
-                crate::fsx::PRIVATE_FILE,
-            ) {
-                eprintln!(
-                    "horch[{}]: Prime pane file not written, horch done cannot stop the daemon: {e:#}",
-                    req.role
-                );
-            }
+            write_pane_file(&daemon, req.role, pane);
         }
         // After the CLI has exited, not before: stopping the daemon early would
         // take the session it is still writing with it.
