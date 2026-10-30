@@ -1013,6 +1013,108 @@ mod tests {
         ));
     }
 
+    /// Send `bytes` to the relay, close the write side, and read its answer.
+    fn raw_answer(socket: &Path, bytes: &[u8]) -> String {
+        let mut stream = UnixStream::connect(socket).expect("connect raw client");
+        stream
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .expect("set client timeout");
+        // The relay may answer and close before it has read every byte of an
+        // oversized line, so a broken pipe here is not an error.
+        let _ = stream.write_all(bytes);
+        let _ = stream.shutdown(std::net::Shutdown::Write);
+        let mut answer = String::new();
+        BufReader::new(stream)
+            .read_line(&mut answer)
+            .expect("read raw answer");
+        answer
+    }
+
+    #[test]
+    fn a_malformed_socket_request_gets_one_error_answer() {
+        let (socket, mut input, output, server) = start_server(Output::ClaudeNotification);
+        initialize(&mut input, &socket);
+        let cases: [(&str, &[u8]); 5] = [
+            ("no newline", b"{\"ping\":true}"),
+            ("not json", b"nope\n"),
+            ("no from", b"{\"text\":\"hi\"}\n"),
+            ("no text", b"{\"from\":\"a\"}\n"),
+            ("text not a string", b"{\"from\":\"a\",\"text\":1}\n"),
+        ];
+        for (name, bytes) in cases {
+            assert_eq!(raw_answer(&socket, bytes), "error: bad request\n", "{name}");
+        }
+        assert!(output.lines().is_empty(), "no case may reach the output");
+        drop(input);
+        server
+            .join()
+            .expect("server thread")
+            .expect("server result");
+    }
+
+    /// Parse `bytes` as one socket request on a blocking socket pair.
+    fn parse_request(bytes: Vec<u8>) -> std::result::Result<SocketRequest, SocketReadError> {
+        let (reader, mut writer) = UnixStream::pair().expect("socket pair");
+        let sender = thread::spawn(move || {
+            let _ = writer.write_all(&bytes);
+        });
+        let parsed = read_socket_request(&reader);
+        drop(reader);
+        sender.join().expect("sender thread");
+        parsed
+    }
+
+    #[test]
+    fn a_line_over_the_limit_is_a_bad_request_and_one_at_the_limit_is_not() {
+        // `len` counts the newline too.
+        let line = |len: usize| {
+            let mut line = format!("{{\"ping\":true,\"pad\":\"").into_bytes();
+            let pad = len - line.len() - 3;
+            line.extend(std::iter::repeat(b'x').take(pad));
+            line.extend_from_slice(b"\"}\n");
+            line
+        };
+        assert!(matches!(
+            parse_request(line(MAX_LINE_BYTES + 2)),
+            Err(SocketReadError::BadRequest)
+        ));
+        assert!(matches!(
+            parse_request(line(MAX_LINE_BYTES + 1)),
+            Ok(SocketRequest::Ping)
+        ));
+    }
+
+    #[test]
+    fn a_ping_and_a_crlf_message_are_answered_ok() {
+        let (socket, mut input, output, server) = start_server(Output::ClaudeNotification);
+        initialize(&mut input, &socket);
+        assert_eq!(raw_answer(&socket, b"{\"ping\":true}\n"), "ok\n");
+        assert!(output.lines().is_empty(), "a ping delivers nothing");
+        assert_eq!(
+            raw_answer(&socket, b"{\"from\":\"a\",\"text\":\"hi\"}\r\n"),
+            "ok\n"
+        );
+        assert_eq!(output.lines().len(), 1, "the message is delivered once");
+        drop(input);
+        server
+            .join()
+            .expect("server thread")
+            .expect("server result");
+    }
+
+    #[test]
+    fn invalid_mcp_json_is_skipped_and_serving_goes_on() {
+        let (socket, mut input, _output, server) = start_server(Output::ClaudeNotification);
+        input.write_all(b"not json\n").expect("write garbage");
+        initialize(&mut input, &socket);
+        assert_eq!(raw_answer(&socket, b"{\"ping\":true}\n"), "ok\n");
+        drop(input);
+        server
+            .join()
+            .expect("server thread")
+            .expect("server result");
+    }
+
     #[test]
     fn arc_30_silent_client_is_dropped_after_the_timeout() {
         let (socket, mut input, _output, server) =
