@@ -332,9 +332,10 @@ fn apply_round(r: &mut RoundView, env: &EventEnvelope, kind: EventKind) -> Resul
         }
         EventKind::PromotionStarted(_)
         | EventKind::PromotionConflicted(_)
-        | EventKind::PromotionCompleted(_)
-        | EventKind::OperatorPromote(_)
-        | EventKind::PromotionRolledBack(_) => apply_promotion_event(r, kind, &name),
+        | EventKind::PromotionCompleted(_) => apply_promotion_event(r, kind),
+        EventKind::PromotionRolledBack(_) | EventKind::OperatorPromote(_) => {
+            apply_reversal_event(r, kind, &name)
+        }
         EventKind::WorktreeCleanupFailed(_)
         | EventKind::OutcomeRecorded(_)
         | EventKind::RoundNeedsIntervention(_)
@@ -579,8 +580,8 @@ fn reject_winner(r: &mut RoundView, reason: RejectReason, name: &str) -> Result<
     Ok(())
 }
 
-/// `promotion.*` and `operator.promote`.
-fn apply_promotion_event(r: &mut RoundView, kind: EventKind, name: &str) -> Result<(), String> {
+/// `promotion.started`, `promotion.conflicted` and `promotion.completed`.
+fn apply_promotion_event(r: &mut RoundView, kind: EventKind) -> Result<(), String> {
     match kind {
         EventKind::PromotionStarted(p) => advance(r, RoundEvent::PromotionStarted, |r| {
             r.promotion.started = Some(p)
@@ -591,11 +592,19 @@ fn apply_promotion_event(r: &mut RoundView, kind: EventKind, name: &str) -> Resu
         EventKind::PromotionCompleted(c) => advance(r, RoundEvent::PromotionCompleted, |r| {
             r.promotion.completed = Some(c)
         }),
-        EventKind::OperatorPromote(_) => operator_promote(r, name),
+        _ => unreachable!("not a promotion event"),
+    }
+}
+
+/// `promotion.rolled_back` and `operator.promote`: a promotion undone or
+/// asked for again.
+fn apply_reversal_event(r: &mut RoundView, kind: EventKind, name: &str) -> Result<(), String> {
+    match kind {
         EventKind::PromotionRolledBack(rb) => advance(r, RoundEvent::PromotionRolledBack, |r| {
             r.promotion.rolled_back.push(rb)
         }),
-        _ => unreachable!("not a promotion event"),
+        EventKind::OperatorPromote(_) => operator_promote(r, name),
+        _ => unreachable!("not a reversal event"),
     }
 }
 
