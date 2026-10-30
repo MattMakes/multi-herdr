@@ -1014,7 +1014,16 @@ mod tests {
         assert!(!smoke_session_done(&ledger), "empty ledger");
 
         ledger
-            .add("r1", "none", "smoke", "none", "smoke-1", Some("s1"), "t")
+            .add(horch_core::execution::records::NewRecord {
+                record_id: "r1",
+                agent: "none",
+                tier: "smoke",
+                model: "none",
+                role: "smoke-1",
+                session_id: Some("s1"),
+                task: "t",
+                phase: None,
+            })
             .unwrap();
         assert!(!smoke_session_done(&ledger), "still working");
 
@@ -1026,7 +1035,16 @@ mod tests {
 
         // A second session means something else spawned into the scratch ledger.
         ledger
-            .add("r2", "none", "smoke", "none", "smoke-2", Some("s2"), "t")
+            .add(horch_core::execution::records::NewRecord {
+                record_id: "r2",
+                agent: "none",
+                tier: "smoke",
+                model: "none",
+                role: "smoke-2",
+                session_id: Some("s2"),
+                task: "t",
+                phase: None,
+            })
             .unwrap();
         assert!(!smoke_session_done(&ledger));
     }
@@ -1038,7 +1056,16 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let ledger = Ledger::for_project(tmp.path(), "/p");
         ledger
-            .add("r1", "none", "smoke", "none", "smoke-1", Some("s1"), "t")
+            .add(horch_core::execution::records::NewRecord {
+                record_id: "r1",
+                agent: "none",
+                tier: "smoke",
+                model: "none",
+                role: "smoke-1",
+                session_id: Some("s1"),
+                task: "t",
+                phase: None,
+            })
             .unwrap();
         ledger.done("r1", "finished").unwrap();
         assert!(!smoke_session_done(&ledger));

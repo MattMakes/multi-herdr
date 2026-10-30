@@ -613,7 +613,7 @@ fn search(
 /// Check each hit of `needle` in `chunk`, which starts at file offset `pos`,
 /// and add each hit whose whole line is a marker to `marks`. A hit before
 /// `checked_to` is inside a line already checked.
-#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments)] // scan state is split on purpose: file and chunk are read, the rest is updated
 fn scan_chunk(
     file: &mut File,
     chunk: &[u8],
