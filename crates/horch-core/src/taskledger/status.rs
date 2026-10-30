@@ -4,7 +4,7 @@ use std::fmt::Write as _;
 use std::path::PathBuf;
 
 use anyhow::Result;
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, Row};
 use serde::Serialize;
 
 use super::runs::Run;
@@ -84,21 +84,37 @@ pub fn worktrees(conn: &Connection, run_id: &str) -> Result<Vec<WorktreeLine>> {
          WHERE t.run_id = ?1 OR m.run_id = ?1 ORDER BY w.created_at, w.rowid",
     )?;
     let rows = stmt
-        .query_map([run_id], |r| {
-            Ok(WorktreeLine {
-                worktree_id: r.get(0)?,
-                task: r.get::<_, Option<i64>>(1)?.map(|s| format!("T-{s}")),
-                path: r.get(2)?,
-                branch: r.get(3)?,
-                status: r.get(4)?,
-                bytes_on_disk: r.get(5)?,
-                reason: r.get(6)?,
-                base: r.get(7)?,
-                scratch: r.get::<_, i64>(8)? != 0,
-            })
-        })?
+        .query_map([run_id], WorktreeLine::from_row)?
         .collect::<rusqlite::Result<Vec<_>>>()?;
     Ok(rows)
+}
+
+impl WorktreeLine {
+    /// The 9 columns of the `worktrees` SELECT, in order.
+    fn from_row(r: &Row<'_>) -> rusqlite::Result<WorktreeLine> {
+        let (worktree_id, seq, path, branch, status, bytes_on_disk, reason, base, scratch): (
+            String,
+            Option<i64>,
+            String,
+            String,
+            String,
+            Option<i64>,
+            Option<String>,
+            String,
+            i64,
+        ) = r.try_into()?;
+        Ok(WorktreeLine {
+            worktree_id,
+            task: seq.map(|s| format!("T-{s}")),
+            path,
+            branch,
+            base,
+            scratch: scratch != 0,
+            status,
+            bytes_on_disk,
+            reason,
+        })
+    }
 }
 
 /// Every path the ledger records as a worktree, in any run. The claim
@@ -120,99 +136,145 @@ fn last_check_at(conn: &Connection, worker_id: &str) -> Result<Option<String>> {
     ))
 }
 
+impl Counts {
+    /// Count 1 task by its status; a status with no counter is not counted.
+    fn add(&mut self, status: &str) {
+        match status {
+            "queued" => self.queued += 1,
+            "running" => self.running += 1,
+            "landing" => self.landing += 1,
+            "done" => self.done += 1,
+            "cancelled" => self.cancelled += 1,
+            _ => {}
+        }
+    }
+}
+
+/// Why a task does not start now: its hold, else the queue's wait.
+fn task_wait(t: &Task, waits: &[(Task, tasks::Wait)]) -> Option<String> {
+    match &t.held_reason {
+        Some(r) => Some(format!(
+            "held: {r}. Ask the operator; release it with horch ledger requeue {} \"<reason>\"",
+            t.short()
+        )),
+        None => waits
+            .iter()
+            .find(|(w, _)| w.task_id == t.task_id)
+            .map(|(_, w)| w.to_string()),
+    }
+}
+
+/// The line of 1 worker: its ages, its watch state and its waits.
+fn worker_line(
+    conn: &Connection,
+    run: &Run,
+    w: Worker,
+    lines: &[TaskLine],
+    now: &str,
+) -> Result<WorkerLine> {
+    let checkin_age_s = w
+        .last_checkin_at
+        .as_deref()
+        .and_then(|t| util::seconds_between(t, now));
+    let progress_age_s = w
+        .last_progress_at
+        .as_deref()
+        .and_then(|t| util::seconds_between(t, now));
+    let task = w.task_id.as_ref().and_then(|id| {
+        lines
+            .iter()
+            .find(|l| &l.task.task_id == id)
+            .map(|l| l.task.short())
+    });
+    Ok(WorkerLine {
+        stale: workers::is_stale(&w, run.heartbeat_stale_s, now),
+        waiting: workers::waiting(conn, &w.worker_id)?,
+        unwatched: is_unwatched(conn, run, &w, now)?,
+        worker: w,
+        task,
+        checkin_age_s,
+        progress_age_s,
+    })
+}
+
+/// A working worker with no check in the last 2 check intervals.
+fn is_unwatched(conn: &Connection, run: &Run, w: &Worker, now: &str) -> Result<bool> {
+    if w.status != "working" {
+        return Ok(false);
+    }
+    let since = last_check_at(conn, &w.worker_id)?.or_else(|| w.claimed_at.clone());
+    Ok(since
+        .as_deref()
+        .and_then(|t| util::seconds_between(t, now))
+        .is_some_and(|age| age > 2 * run.check_every_s))
+}
+
+/// The line of 1 task: its holder's role, its wait and how its attempts ended.
+fn task_line(
+    conn: &Connection,
+    t: Task,
+    waits: &[(Task, tasks::Wait)],
+    roster: &[Worker],
+) -> Result<TaskLine> {
+    let attempt_ends = if t.attempts > 1 {
+        tasks::attempt_ends(conn, &t)?
+    } else {
+        Vec::new()
+    };
+    let worker = t.current_worker_id.as_ref().and_then(|id| {
+        roster
+            .iter()
+            .find(|w| &w.worker_id == id)
+            .map(|w| w.label().to_string())
+    });
+    Ok(TaskLine {
+        attempt_ends,
+        worker,
+        waits: task_wait(&t, waits),
+        task: t,
+    })
+}
+
+/// The lines of every worker of the run.
+fn worker_lines(
+    conn: &Connection,
+    run: &Run,
+    roster: Vec<Worker>,
+    lines: &[TaskLine],
+    now: &str,
+) -> Result<Vec<WorkerLine>> {
+    roster
+        .into_iter()
+        .map(|w| worker_line(conn, run, w, lines, now))
+        .collect()
+}
+
+/// A worktree still holds work unless it is scratch or finished.
+fn any_open_worktree(wts: &[WorktreeLine]) -> bool {
+    wts.iter()
+        .any(|w| !w.scratch && !matches!(w.status.as_str(), "cleaned" | "unlanded" | "abandoned"))
+}
+
 /// Build the board of `run`.
 pub fn report(conn: &Connection, run: &Run) -> Result<Report> {
     let now = util::now();
-    let all = tasks::of_run(conn, &run.run_id)?;
     let waits = tasks::waits(conn, &run.run_id)?;
     let roster = workers::of_run(conn, &run.run_id)?;
-    let role_of = |id: &Option<String>| {
-        id.as_ref().and_then(|id| {
-            roster
-                .iter()
-                .find(|w| &w.worker_id == id)
-                .map(|w| w.label().to_string())
-        })
-    };
     let mut counts = Counts::default();
     let mut lines = Vec::new();
-    for t in all {
-        match t.status.as_str() {
-            "queued" => counts.queued += 1,
-            "running" => counts.running += 1,
-            "landing" => counts.landing += 1,
-            "done" => counts.done += 1,
-            "cancelled" => counts.cancelled += 1,
-            _ => {}
-        }
-        let wait = match &t.held_reason {
-            Some(r) => Some(format!(
-                "held: {r}. Ask the operator; release it with horch ledger requeue {} \"<reason>\"",
-                t.short()
-            )),
-            None => waits
-                .iter()
-                .find(|(w, _)| w.task_id == t.task_id)
-                .map(|(_, w)| w.to_string()),
-        };
-        let attempt_ends = if t.attempts > 1 {
-            tasks::attempt_ends(conn, &t)?
-        } else {
-            Vec::new()
-        };
-        lines.push(TaskLine {
-            attempt_ends,
-            worker: role_of(&t.current_worker_id),
-            waits: wait,
-            task: t,
-        });
+    for t in tasks::of_run(conn, &run.run_id)? {
+        counts.add(&t.status);
+        lines.push(task_line(conn, t, &waits, &roster)?);
     }
-    let mut wl = Vec::new();
-    for w in roster {
-        let checkin_age_s = w
-            .last_checkin_at
-            .as_deref()
-            .and_then(|t| util::seconds_between(t, &now));
-        let progress_age_s = w
-            .last_progress_at
-            .as_deref()
-            .and_then(|t| util::seconds_between(t, &now));
-        let unwatched = if w.status == "working" {
-            let since = last_check_at(conn, &w.worker_id)?.or_else(|| w.claimed_at.clone());
-            since
-                .as_deref()
-                .and_then(|t| util::seconds_between(t, &now))
-                .is_some_and(|age| age > 2 * run.check_every_s)
-        } else {
-            false
-        };
-        let task = w.task_id.as_ref().and_then(|id| {
-            lines
-                .iter()
-                .find(|l| &l.task.task_id == id)
-                .map(|l| l.task.short())
-        });
-        wl.push(WorkerLine {
-            stale: workers::is_stale(&w, run.heartbeat_stale_s, &now),
-            waiting: workers::waiting(conn, &w.worker_id)?,
-            worker: w,
-            task,
-            checkin_age_s,
-            progress_age_s,
-            unwatched,
-        });
-    }
+    let wl = worker_lines(conn, run, roster, &lines, &now)?;
     let wts = worktrees(conn, &run.run_id)?;
     let open_tasks = counts.queued + counts.running + counts.landing;
-    let open_worktrees = wts
-        .iter()
-        .any(|w| !w.scratch && !matches!(w.status.as_str(), "cleaned" | "unlanded" | "abandoned"));
     Ok(Report {
         run: run.clone(),
         tasks: lines,
         workers: wl,
+        complete: open_tasks == 0 && !any_open_worktree(&wts),
         worktrees: wts,
-        complete: open_tasks == 0 && !open_worktrees,
         counts,
     })
 }
@@ -239,10 +301,34 @@ pub fn render(r: &Report) -> String {
         run.base_branch.as_deref().unwrap_or("(none)"),
         run.pr_url.as_deref().unwrap_or("none")
     );
-    if r.tasks.is_empty() {
+    render_tasks(&mut out, &r.tasks);
+    render_live(&mut out, &r.workers);
+    render_open_worktrees(&mut out, &r.worktrees);
+    let c = &r.counts;
+    let _ = writeln!(
+        out,
+        "{} tasks: {} done, {} running, {} landing, {} queued, {} cancelled. {}",
+        r.tasks.len(),
+        c.done,
+        c.running,
+        c.landing,
+        c.queued,
+        c.cancelled,
+        if r.complete {
+            "Complete."
+        } else {
+            "Not complete."
+        }
+    );
+    out
+}
+
+/// The task rows, or `No tasks.`.
+fn render_tasks(out: &mut String, lines: &[TaskLine]) {
+    if lines.is_empty() {
         let _ = writeln!(out, "No tasks.");
     }
-    for l in &r.tasks {
+    for l in lines {
         let t = &l.task;
         let _ = write!(
             out,
@@ -265,8 +351,11 @@ pub fn render(r: &Report) -> String {
         }
         let _ = writeln!(out);
     }
-    let live: Vec<&WorkerLine> = r
-        .workers
+}
+
+/// The live workers block, with their waits; nothing when none is live.
+fn render_live(out: &mut String, workers: &[WorkerLine]) {
+    let live: Vec<&WorkerLine> = workers
         .iter()
         .filter(|w| {
             matches!(
@@ -275,77 +364,62 @@ pub fn render(r: &Report) -> String {
             ) && w.worker.kind == "worker"
         })
         .collect();
-    if !live.is_empty() {
-        let _ = writeln!(out, "Live workers:");
-        for w in live {
-            for wait in &w.waiting {
-                let _ = writeln!(
-                    out,
-                    "  {} waiting: {} ({} ago; until {})",
-                    w.worker.label(),
-                    wait.reason,
-                    age(util::seconds_between(&wait.started_at, &util::now())),
-                    wait.deadline
-                );
-            }
+    if live.is_empty() {
+        return;
+    }
+    let _ = writeln!(out, "Live workers:");
+    for w in live {
+        for wait in &w.waiting {
             let _ = writeln!(
                 out,
-                "  {:<20} {:<9} {:<5} checkin {} ago, progress {} ago{}",
+                "  {} waiting: {} ({} ago; until {})",
                 w.worker.label(),
-                w.worker.status,
-                w.task.as_deref().unwrap_or("-"),
-                age(w.checkin_age_s),
-                age(w.progress_age_s),
-                if w.unwatched {
-                    "  UNWATCHED"
-                } else if w.stale {
-                    "  STALE"
-                } else {
-                    ""
-                }
+                wait.reason,
+                age(util::seconds_between(&wait.started_at, &util::now())),
+                wait.deadline
             );
         }
+        let _ = writeln!(
+            out,
+            "  {:<20} {:<9} {:<5} checkin {} ago, progress {} ago{}",
+            w.worker.label(),
+            w.worker.status,
+            w.task.as_deref().unwrap_or("-"),
+            age(w.checkin_age_s),
+            age(w.progress_age_s),
+            if w.unwatched {
+                "  UNWATCHED"
+            } else if w.stale {
+                "  STALE"
+            } else {
+                ""
+            }
+        );
     }
-    let open: Vec<&WorktreeLine> = r
-        .worktrees
-        .iter()
-        .filter(|w| w.status != "cleaned")
-        .collect();
-    if !open.is_empty() {
-        let _ = writeln!(out, "Worktrees:");
-        for w in open {
-            let _ = writeln!(
-                out,
-                "  {:<5} {:<14} {} (base {}){}{}",
-                w.task.as_deref().unwrap_or("-"),
-                w.status,
-                w.path,
-                w.base,
-                if w.scratch { " [scratch]" } else { "" },
-                w.reason
-                    .as_deref()
-                    .map(|r| format!(" ({r})"))
-                    .unwrap_or_default()
-            );
-        }
+}
+
+/// The worktrees block for every worktree not yet cleaned; nothing when none.
+fn render_open_worktrees(out: &mut String, worktrees: &[WorktreeLine]) {
+    let open: Vec<&WorktreeLine> = worktrees.iter().filter(|w| w.status != "cleaned").collect();
+    if open.is_empty() {
+        return;
     }
-    let c = &r.counts;
-    let _ = writeln!(
-        out,
-        "{} tasks: {} done, {} running, {} landing, {} queued, {} cancelled. {}",
-        r.tasks.len(),
-        c.done,
-        c.running,
-        c.landing,
-        c.queued,
-        c.cancelled,
-        if r.complete {
-            "Complete."
-        } else {
-            "Not complete."
-        }
-    );
-    out
+    let _ = writeln!(out, "Worktrees:");
+    for w in open {
+        let _ = writeln!(
+            out,
+            "  {:<5} {:<14} {} (base {}){}{}",
+            w.task.as_deref().unwrap_or("-"),
+            w.status,
+            w.path,
+            w.base,
+            if w.scratch { " [scratch]" } else { "" },
+            w.reason
+                .as_deref()
+                .map(|r| format!(" ({r})"))
+                .unwrap_or_default()
+        );
+    }
 }
 
 /// The history of 1 task or worker, oldest first.
@@ -369,11 +443,11 @@ pub fn events(conn: &Connection, column: &str, id: &str) -> Result<Vec<EventLine
     ))?;
     let rows = stmt
         .query_map([id], |r| {
-            Ok(EventLine {
-                at: r.get(0)?,
-                actor: r.get(1)?,
-                kind: r.get(2)?,
-                text: r.get(3)?,
+            r.try_into().map(|(at, actor, kind, text)| EventLine {
+                at,
+                actor,
+                kind,
+                text,
             })
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -394,6 +468,34 @@ pub struct StopLine {
     pub result: String,
 }
 
+impl StopLine {
+    /// The 9 columns of the `stops` SELECT, in order.
+    fn from_row(r: &Row<'_>) -> rusqlite::Result<StopLine> {
+        let (at, requested_by, reason, target, pid, pid_started, signal, pane_id, result): (
+            String,
+            String,
+            String,
+            String,
+            Option<i64>,
+            Option<i64>,
+            Option<String>,
+            Option<String>,
+            String,
+        ) = r.try_into()?;
+        Ok(StopLine {
+            at,
+            requested_by,
+            reason,
+            target,
+            pid,
+            pid_started,
+            signal,
+            pane_id,
+            result,
+        })
+    }
+}
+
 /// The stops of 1 worker, oldest first.
 pub fn stops(conn: &Connection, worker_id: &str) -> Result<Vec<StopLine>> {
     let mut stmt = conn.prepare(
@@ -401,19 +503,7 @@ pub fn stops(conn: &Connection, worker_id: &str) -> Result<Vec<StopLine>> {
          FROM stops WHERE worker_id = ?1 ORDER BY stop_id",
     )?;
     let rows = stmt
-        .query_map([worker_id], |r| {
-            Ok(StopLine {
-                at: r.get(0)?,
-                requested_by: r.get(1)?,
-                reason: r.get(2)?,
-                target: r.get(3)?,
-                pid: r.get(4)?,
-                pid_started: r.get(5)?,
-                signal: r.get(6)?,
-                pane_id: r.get(7)?,
-                result: r.get(8)?,
-            })
-        })?
+        .query_map([worker_id], StopLine::from_row)?
         .collect::<rusqlite::Result<Vec<_>>>()?;
     Ok(rows)
 }
