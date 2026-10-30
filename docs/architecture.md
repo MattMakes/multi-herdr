@@ -112,6 +112,7 @@ in `harness/capabilities.rs`.
 | `smoke.rs` | `horch smoke messaging`, `fleet`, `tile` |
 | `spawn.rs` | `horch spawn` |
 | `taskledger.rs` | `horch ledger` (the SQLite task ledger): every subcommand except `legacy` |
+| `taskledger_finish.rs` | `horch ledger finish`: the finish steps in the foreground or detached, and the mail with the result of a detached finish |
 | `taskledger_spawn.rs` | the task-ledger side of `horch spawn`: the worker row and its id in the brief |
 | `taskledger_wake.rs` | the wake lines the task ledger sends the orchestrator |
 | `taskledger_watch.rs` | `horch ledger watch` (the watchdog) and its restart when it goes quiet |
