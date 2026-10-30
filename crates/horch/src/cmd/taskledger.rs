@@ -1774,8 +1774,16 @@ pub fn done_cmd(
             }
         }
         if c.unlanded {
-            let waiting = tasks::dependents(store.conn(), &c.task_id)?;
-            super::taskledger_wake::cancelled_dependents(ctx, &store, &run, &c.task, &waiting);
+            // The task is already done here, so a read error only costs the wake.
+            match tasks::dependents(store.conn(), &c.task_id) {
+                Ok(waiting) => super::taskledger_wake::cancelled_dependents(
+                    ctx, &store, &run, &c.task, &waiting,
+                ),
+                Err(e) => eprintln!(
+                    "horch ledger: could not read the tasks that wait on {}: {e:#}",
+                    c.task
+                ),
+            }
         }
         super::taskledger_wake::after_done(ctx, &store, &run);
     };
