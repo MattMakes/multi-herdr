@@ -15,10 +15,12 @@ use crate::harness::HarnessKind;
 use crate::messaging::brief::Brief;
 use crate::messaging::mailbox::Mailbox;
 use crate::messaging::message::strip_done_prefix;
-use crate::roster::Roster;
+use crate::roster::{Roster, Teammate};
 use crate::runtime::{process, RuntimeContext};
+use crate::taskledger::supervisor::Checkins;
 use crate::workspace::client::WorkspaceClient;
 use crate::workspace::herdr::Herdr;
+use crate::workspace::model::Pane;
 
 /// Who hears about an execution when it ends.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -143,73 +145,24 @@ pub fn done(ws: &dyn WorkspaceClient, steps: &dyn DoneSteps, req: &DoneRequest) 
     close(ws, steps, req)
 }
 
+/// Print `what: error` when `result` failed. For the best-effort steps.
+fn warn_err(result: Result<()>, what: impl std::fmt::Display) {
+    if let Err(e) = result {
+        eprintln!("{what}: {e:#}");
+    }
+}
+
+/// [`warn_err`] for a step of the worker `role`.
+fn warn_worker(role: &str, what: &str, result: Result<()>) {
+    warn_err(result, format!("horch worker[{role}]: {what}"));
+}
+
 /// The steps of [`done`] up to the summary in the ledger.
 fn report_and_record(steps: &dyn DoneSteps, req: &DoneRequest) -> Result<()> {
-    let role = req.role;
     let open = steps.open_claims(req.record_id)?;
-    if !open.is_empty() && req.unlanded.is_none() {
-        let claims = open
-            .iter()
-            .map(|claim| {
-                format!(
-                    "{} at {} ({} commits ahead of {}), worktree {}",
-                    claim.branch,
-                    claim.short_sha,
-                    claim.ahead,
-                    claim.base,
-                    claim.path.display()
-                )
-            })
-            .collect::<Vec<_>>()
-            .join("\n");
-        bail!(
-            "horch done refused because this record has an open worktree claim:\n{claims}\n\
-             Run: horch worktree land\n\
-             If it cannot land: horch done --unlanded \"<reason>\" \"<summary>\""
-        );
-    }
-    let unregistered = match steps.unregistered() {
-        Ok(entries) => entries,
-        Err(error) => {
-            eprintln!("horch done: could not inspect unregistered worktrees ({error:#})");
-            Vec::new()
-        }
-    };
-    // `done` adds the tag and keyword itself; a summary that repeats them would
-    // arrive as `[r] DONE: [r] DONE: ...`.
-    let mut summary = strip_done_prefix(req.summary, role).to_owned();
-    if let Some(reason) = req.unlanded {
-        for claim in &open {
-            summary.push_str(&format!(
-                " | UNLANDED: {} at {} ({} commits ahead of {}), worktree {}: {}",
-                claim.branch,
-                claim.short_sha,
-                claim.ahead,
-                claim.base,
-                claim.path.display(),
-                reason
-            ));
-        }
-    }
-    for entry in unregistered {
-        summary.push_str(&format!(" | UNREGISTERED: {entry}"));
-    }
-    let report = req.report_to == ReportTarget::Orchestrator;
-    if report {
-        if let Err(e) = steps.queue_report(&format!("[{role}] DONE: {summary}")) {
-            steps.report_failed(req.record_id, &format!("{e:#}"));
-            // A context, not a new error: the CLI's sandbox hint looks for
-            // the herdr failure in the chain.
-            return Err(e.context(
-                "horch done: the report did not reach the orchestrator.\n\
-                 This pane stays open. The record is not done. Your role stays registered.\n\
-                 Fix the cause if you can, then run the same horch done command again.\n\
-                 If it fails again, record your summary with horch note and end your turn.\n\
-                 Do not close this pane.\n\
-                 The cause",
-            ));
-        }
-    }
+    refuse_open_claims(&open, req.unlanded)?;
+    let summary = done_summary(req, &open, unregistered_entries(steps));
+    queue_done_report(steps, req, &summary)?;
     // After the report: a claim marked unlanded is not open, and a retry of
     // a failed report must find it open to report the same line.
     if let Some(reason) = req.unlanded {
@@ -217,10 +170,86 @@ fn report_and_record(steps: &dyn DoneSteps, req: &DoneRequest) -> Result<()> {
     }
     steps.mark_done(req.record_id, &summary)?;
     steps.after_mark_done();
-    if report {
+    if req.report_to == ReportTarget::Orchestrator {
         note_queued(steps, req, steps.push_report());
     }
     Ok(())
+}
+
+/// The facts of one open claim, as a refusal and a summary show them.
+fn describe_claim(claim: &ClaimLine) -> String {
+    format!(
+        "{} at {} ({} commits ahead of {}), worktree {}",
+        claim.branch,
+        claim.short_sha,
+        claim.ahead,
+        claim.base,
+        claim.path.display()
+    )
+}
+
+/// Refuse `done` while a claim is open and no `--unlanded` reason is given.
+fn refuse_open_claims(open: &[ClaimLine], unlanded: Option<&str>) -> Result<()> {
+    if open.is_empty() || unlanded.is_some() {
+        return Ok(());
+    }
+    let claims = open
+        .iter()
+        .map(describe_claim)
+        .collect::<Vec<_>>()
+        .join("\n");
+    bail!(
+        "horch done refused because this record has an open worktree claim:\n{claims}\n\
+         Run: horch worktree land\n\
+         If it cannot land: horch done --unlanded \"<reason>\" \"<summary>\""
+    );
+}
+
+/// The unregistered worktrees, or none when they cannot be inspected.
+fn unregistered_entries(steps: &dyn DoneSteps) -> Vec<String> {
+    steps.unregistered().unwrap_or_else(|error| {
+        eprintln!("horch done: could not inspect unregistered worktrees ({error:#})");
+        Vec::new()
+    })
+}
+
+/// The summary `done` records and reports.
+fn done_summary(req: &DoneRequest, open: &[ClaimLine], unregistered: Vec<String>) -> String {
+    // `done` adds the tag and keyword itself; a summary that repeats them would
+    // arrive as `[r] DONE: [r] DONE: ...`.
+    let mut summary = strip_done_prefix(req.summary, req.role).to_owned();
+    if let Some(reason) = req.unlanded {
+        for claim in open {
+            summary.push_str(&format!(" | UNLANDED: {}: {reason}", describe_claim(claim)));
+        }
+    }
+    for entry in unregistered {
+        summary.push_str(&format!(" | UNREGISTERED: {entry}"));
+    }
+    summary
+}
+
+/// Queue the report of `done` for the orchestrator, when the record reports
+/// to it. A failure stops `done` before any change.
+fn queue_done_report(steps: &dyn DoneSteps, req: &DoneRequest, summary: &str) -> Result<()> {
+    if req.report_to != ReportTarget::Orchestrator {
+        return Ok(());
+    }
+    steps
+        .queue_report(&format!("[{}] DONE: {summary}", req.role))
+        .inspect_err(|e| steps.report_failed(req.record_id, &format!("{e:#}")))
+        // A context, not a new error: the CLI's sandbox hint looks for
+        // the herdr failure in the chain.
+        .map_err(|e| {
+            e.context(
+                "horch done: the report did not reach the orchestrator.\n\
+                 This pane stays open. The record is not done. Your role stays registered.\n\
+                 Fix the cause if you can, then run the same horch done command again.\n\
+                 If it fails again, record your summary with horch note and end your turn.\n\
+                 Do not close this pane.\n\
+                 The cause",
+            )
+        })
 }
 
 /// A pushed report remains queued until its explicit inbox acknowledgement.
@@ -231,31 +260,19 @@ fn note_queued(steps: &dyn DoneSteps, req: &DoneRequest, status: ReportStatus) {
     }
 }
 
+/// What `done` returns when herdr does not answer.
+const HERDR_UNREACHABLE: &str =
+    "herdr is unreachable: the summary is recorded, but this pane may still be open";
+
 /// The steps of [`done`] after the summary is in the ledger: the pane closes.
 fn close(ws: &dyn WorkspaceClient, steps: &dyn DoneSteps, req: &DoneRequest) -> Result<()> {
-    let role = req.role;
     // The record holds the summary now. The dataset coordinator closes the
     // pane of a candidate whose record is done, so from here on it can close
     // this pane first, at any step. A pane that is gone is closed: the steps
     // that need only the workspace still run, and nothing fails. When herdr
     // itself does not answer, the pane may still be open: the same steps
     // run, and `done` fails at the end so the caller knows.
-    let mut unreachable = None;
-    let pane = match ws.pane_get(req.pane) {
-        Ok(pane) => Some(pane),
-        Err(e) if !ws.server_reachable() => {
-            eprintln!(
-                "horch done: herdr is unreachable ({e:#}); the summary is recorded, \
-                 but this pane may still be open"
-            );
-            unreachable = Some(e);
-            None
-        }
-        Err(e) => {
-            eprintln!("horch done: this pane is gone ({e:#}); it is closed already");
-            None
-        }
-    };
+    let (pane, unreachable) = lookup_pane(ws, req.pane);
     let workspace = req
         .workspace
         .map(str::to_owned)
@@ -267,13 +284,10 @@ fn close(ws: &dyn WorkspaceClient, steps: &dyn DoneSteps, req: &DoneRequest) -> 
     };
 
     if let Some(workspace) = &workspace {
-        if let Err(e) = steps.record_session(workspace, role, req.record_id) {
+        if let Err(e) = steps.record_session(workspace, req.role, req.record_id) {
             eprintln!("horch done: could not record the session id ({e:#}); shutting down anyway");
         }
-
-        if let Err(e) = steps.try_unregister(workspace, role) {
-            eprintln!("horch done: {e:#}");
-        }
+        warn_err(steps.try_unregister(workspace, req.role), "horch done");
 
         // A departing worker leaves a hole and hands its width to whichever
         // neighbour happens to be its split sibling, which lumps the grid
@@ -286,27 +300,57 @@ fn close(ws: &dyn WorkspaceClient, steps: &dyn DoneSteps, req: &DoneRequest) -> 
     }
 
     // After the session discovery, so a Codex row finds its transcript.
-    if let Err(e) = steps.record_run(req.record_id) {
-        eprintln!("horch: NOTE: fleet run row not written: {e:#}");
-    }
+    warn_err(
+        steps.record_run(req.record_id),
+        "horch: NOTE: fleet run row not written",
+    );
 
-    if let Some(e) = unreachable {
-        return Err(e.context(
-            "herdr is unreachable: the summary is recorded, but this pane may still be open",
-        ));
+    close_pane(ws, pane, unreachable)
+}
+
+/// This pane, or why it is not known: `None` with no error when the pane is
+/// gone, `None` with the error when herdr does not answer.
+fn lookup_pane(ws: &dyn WorkspaceClient, pane: &str) -> (Option<Pane>, Option<anyhow::Error>) {
+    match ws.pane_get(pane) {
+        Ok(pane) => (Some(pane), None),
+        Err(e) if !ws.server_reachable() => {
+            eprintln!(
+                "horch done: herdr is unreachable ({e:#}); the summary is recorded, \
+                 but this pane may still be open"
+            );
+            (None, Some(e))
+        }
+        Err(e) => {
+            eprintln!("horch done: this pane is gone ({e:#}); it is closed already");
+            (None, None)
+        }
     }
-    let Some(pane) = pane else {
-        return Ok(());
-    };
-    let Err(e) = ws.pane_close(&pane.pane_id) else {
-        return Ok(());
-    };
-    if ws.pane_get(&pane.pane_id).is_ok() {
+}
+
+/// Close the pane. A pane that is gone counts as closed; a herdr that does
+/// not answer is an error.
+fn close_pane(
+    ws: &dyn WorkspaceClient,
+    pane: Option<Pane>,
+    unreachable: Option<anyhow::Error>,
+) -> Result<()> {
+    match (unreachable, pane) {
+        (Some(e), _) => Err(e.context(HERDR_UNREACHABLE)),
+        (None, None) => Ok(()),
+        (None, Some(pane)) => match ws.pane_close(&pane.pane_id) {
+            Err(e) => closed_or(ws, &pane.pane_id, e),
+            Ok(_) => Ok(()),
+        },
+    }
+}
+
+/// The outcome of a pane close that failed with `e`: an error only while the
+/// pane is still there or herdr does not answer.
+fn closed_or(ws: &dyn WorkspaceClient, pane_id: &str, e: anyhow::Error) -> Result<()> {
+    if ws.pane_get(pane_id).is_ok() {
         Err(e)
     } else if !ws.server_reachable() {
-        Err(e.context(
-            "herdr is unreachable: the summary is recorded, but this pane may still be open",
-        ))
+        Err(e.context(HERDR_UNREACHABLE))
     } else {
         Ok(())
     }
@@ -378,70 +422,56 @@ pub trait WorkerSteps {
 /// after a `load_brief` failure, and the spawner's error is the only one the
 /// operator sees.
 pub fn run_worker(steps: &mut dyn WorkerSteps) -> Result<i32> {
-    let brief = match steps.load_brief() {
-        Ok(brief) => brief,
-        Err(e) => {
-            if let Err(leave) = steps.leave_startup_error(&format!("{e:#}"), None) {
-                eprintln!("horch worker: could not leave the startup error: {leave:#}");
-            }
-            return Err(e);
-        }
-    };
-    if let Err(e) = steps
+    let brief = steps.load_brief().inspect_err(|e| {
+        warn_err(
+            steps.leave_startup_error(&format!("{e:#}"), None),
+            "horch worker: could not leave the startup error",
+        )
+    })?;
+    steps
         .enter_context(&brief)
         .and_then(|()| steps.register(&brief))
-    {
-        if let Err(rec) = steps
-            .startup_failed(&brief, &format!("{e:#}"))
-            .and_then(|()| steps.agent_exited(&brief, None))
-        {
-            eprintln!(
-                "horch worker[{}]: recording the startup failure failed: {rec:#}",
-                brief.role
-            );
-        }
-        // The close ends this process, so the error is printed and left
-        // for the spawner first.
-        eprintln!("horch worker[{}]: startup failed: {e:#}", brief.role);
-        if let Err(leave) = steps.leave_startup_error(&format!("{e:#}"), Some(&brief)) {
-            eprintln!(
-                "horch worker[{}]: could not leave the startup error: {leave:#}",
-                brief.role
-            );
-        }
-        if let Err(close) = steps.close_pane() {
-            eprintln!(
-                "horch worker[{}]: could not close the pane: {close:#}",
-                brief.role
-            );
-        }
-        return Err(e);
-    }
-    if let Err(e) = steps.set_running(&brief) {
-        eprintln!(
-            "horch worker[{}]: recording the start failed: {e:#}",
-            brief.role
-        );
-    }
-    let code = match steps.launch(&brief) {
-        Ok(code) => code,
-        Err(e) => {
-            if let Err(rec) = steps.agent_exited(&brief, None) {
-                eprintln!(
-                    "horch worker[{}]: recording the exit failed: {rec:#}",
-                    brief.role
-                );
-            }
-            return Err(e);
-        }
-    };
-    if let Err(e) = steps.agent_exited(&brief, code) {
-        eprintln!(
-            "horch worker[{}]: recording the exit failed: {e:#}",
-            brief.role
-        );
-    }
+        .inspect_err(|e| fail_startup(steps, &brief, e))?;
+    warn_worker(
+        &brief.role,
+        "recording the start failed",
+        steps.set_running(&brief),
+    );
+    let code = steps.launch(&brief).inspect_err(|_| {
+        warn_worker(
+            &brief.role,
+            "recording the exit failed",
+            steps.agent_exited(&brief, None),
+        )
+    })?;
+    warn_worker(
+        &brief.role,
+        "recording the exit failed",
+        steps.agent_exited(&brief, code),
+    );
     Ok(code.unwrap_or(1))
+}
+
+/// Clean up after a startup failure `e`: record it, leave it for the
+/// spawner and close the pane.
+fn fail_startup(steps: &mut dyn WorkerSteps, brief: &Brief, e: &anyhow::Error) {
+    let role = &brief.role;
+    warn_worker(
+        role,
+        "recording the startup failure failed",
+        steps
+            .startup_failed(brief, &format!("{e:#}"))
+            .and_then(|()| steps.agent_exited(brief, None)),
+    );
+    // The close ends this process, so the error is printed and left
+    // for the spawner first.
+    eprintln!("horch worker[{role}]: startup failed: {e:#}");
+    warn_worker(
+        role,
+        "could not leave the startup error",
+        steps.leave_startup_error(&format!("{e:#}"), Some(brief)),
+    );
+    warn_worker(role, "could not close the pane", steps.close_pane());
 }
 
 /// The history event of a worker that failed before its agent launched. Its
@@ -582,21 +612,77 @@ pub fn await_worker(
 ) -> WorkerStart {
     let until = Instant::now() + limit;
     loop {
-        if let Some(error) = keys
-            .iter()
-            .find_map(|key| take_startup_error(data_root, *key, since))
-        {
-            return WorkerStart::Failed(error);
-        }
-        if registered() {
-            return WorkerStart::Registered;
+        if let Some(start) = poll_start(data_root, keys, since, registered) {
+            break start;
         }
         let left = until.saturating_duration_since(Instant::now());
         if left.is_zero() {
-            return WorkerStart::Waiting;
+            break WorkerStart::Waiting;
         }
         std::thread::sleep(poll.min(left));
     }
+}
+
+/// One look at how the worker's start went: `None` while neither happened.
+fn poll_start(
+    data_root: &Path,
+    keys: &[StartupKey<'_>],
+    since: SystemTime,
+    registered: &mut dyn FnMut() -> bool,
+) -> Option<WorkerStart> {
+    let error = keys
+        .iter()
+        .find_map(|key| take_startup_error(data_root, *key, since));
+    match error {
+        Some(error) => Some(WorkerStart::Failed(error)),
+        None => registered().then_some(WorkerStart::Registered),
+    }
+}
+
+/// What a harness launch needs besides the process context.
+struct AgentPlan<'a> {
+    roster: &'a Roster,
+    teammate: &'a Teammate,
+    prompt: &'a str,
+}
+
+/// Run the agent through its harness and wait. Every flag comes from the
+/// teammate file, and every harness difference (codex rules, the Prime
+/// daemon, session discovery) from its harness module: this only says which
+/// pane, record and rules apply.
+fn run_agent(
+    ctx: &RuntimeContext,
+    brief: &Brief,
+    mailbox: &Mailbox,
+    plan: &AgentPlan<'_>,
+    env: Vec<(String, String)>,
+    checkins: Option<Checkins>,
+) -> Result<Option<i32>> {
+    let (roster, teammate) = (plan.roster, plan.teammate);
+    let code = launch::run_flow_code(
+        ctx,
+        LaunchRequest {
+            role: &brief.role,
+            teammate,
+            session: &brief.session,
+            prompt: plan.prompt,
+            model_override: None,
+            exec_rules: roster.exec_rules(),
+            child_env: env,
+            record: Some(DiscoveryTarget {
+                mailbox,
+                record_id: &brief.record_id,
+                workdir: brief.workdir_or_project(),
+            }),
+            fleet_window: roster
+                .fleet_window(teammate, teammate.model.as_deref().unwrap_or_default()),
+            briefing_skill: None,
+        },
+    );
+    if let Some(c) = checkins {
+        c.stop();
+    }
+    code
 }
 
 /// The worker in a real herdr pane.
@@ -629,6 +715,120 @@ impl<'a> PaneWorker<'a> {
             launched: false,
             ledger: None,
         }
+    }
+
+    /// Settle the worker row in the task ledger. The text to add to the
+    /// orchestrator's line when the task is queued again or held.
+    fn ledger_exit(&self, brief: &Brief, code: Option<i32>) -> Option<String> {
+        use crate::taskledger::supervisor::Ended;
+        let (db, id) = self.ledger.as_ref()?;
+        match crate::taskledger::supervisor::agent_exited(db, id, code) {
+            Ok(Ended::Requeued { task, persona }) => Some(format!(
+                " The task ledger queued {task} again. Spawn {persona} with: \
+                 horch spawn {persona} --replaces {id}"
+            )),
+            Ok(Ended::Held { task }) => Some(format!(
+                " QUESTION: {task} used up its attempts and is held. Ask the operator: \
+                 requeue it (horch ledger requeue {task} \"<reason>\"), change the ticket, \
+                 or cancel it. Spawn no replacement."
+            )),
+            Ok(_) => None,
+            Err(e) => {
+                eprintln!(
+                    "horch worker[{}]: the task ledger did not record the exit: {e:#}",
+                    brief.role
+                );
+                None
+            }
+        }
+    }
+
+    /// Tell the orchestrator that the agent exited early.
+    fn tell_early_exit(
+        &self,
+        brief: &Brief,
+        code: Option<i32>,
+        requeued: Option<String>,
+    ) -> Result<()> {
+        let env = child_env(self.mailbox()?, brief, self.path.clone());
+        let mut line = early_exit_line(brief, code);
+        line.extend(requeued);
+        warn_worker(
+            &brief.role,
+            "could not tell the orchestrator about the exit",
+            run_horch(&env, &["tell", "orchestrator", &line]),
+        );
+        Ok(())
+    }
+
+    /// The roster of this launch and the teammate the brief names.
+    fn load_roster(&self, brief: &Brief) -> Result<(Roster, Teammate)> {
+        let ctx: &RuntimeContext = self.ctx;
+        // The teammate resolved at spawn time travels in the brief. Falling
+        // back to the roster keeps briefs written by an older horch loadable.
+        let roster = Roster::load_layered(
+            ctx.inherited.home_var.as_deref().map(Path::new),
+            ctx.bins.roster_override.as_deref(),
+            brief.teammates_dir.as_deref(),
+        )?;
+        // F7: an overlay file that does not load is named once, in the pane.
+        for w in roster.load_warnings() {
+            eprintln!("warning: {w}");
+        }
+        let teammate = match &brief.resolved {
+            Some(t) => t.clone(),
+            None => roster.require(&brief.teammate)?.clone(),
+        };
+        Ok((roster, teammate))
+    }
+
+    fn worker_prompt(&self, brief: &Brief, roster: &Roster, teammate: &Teammate) -> Result<String> {
+        let ctx: &RuntimeContext = self.ctx;
+        crate::prompts::worker_prompt_with_context(
+            roster,
+            teammate,
+            self.role,
+            &brief.task,
+            &brief.session,
+            &crate::project_notes::display(&ctx.paths.state_root, &ctx.paths.project()?)?,
+            &crate::project_notes::host_line(),
+        )
+    }
+
+    /// The task ledger gets the agent's PID the moment it starts, and a
+    /// checkin from this process while the agent runs.
+    fn start_checkins(&self, brief: &Brief) -> Option<Checkins> {
+        self.ledger.clone().map(|(db, id)| {
+            let (obs_db, obs_id, role) = (db.clone(), id.clone(), brief.role.clone());
+            launch::observe_agent_start(move |pid| {
+                warn_worker(
+                    &role,
+                    "the task ledger did not record the agent PID",
+                    crate::taskledger::supervisor::agent_started(&obs_db, &obs_id, pid),
+                );
+            });
+            let every = crate::taskledger::supervisor::interval(&db, &id);
+            let lookup = session_lookup(
+                self.ctx.clone(),
+                brief.record_id.clone(),
+                brief.agent.clone(),
+            );
+            crate::taskledger::supervisor::start_checkins(db, id, every, lookup)
+        })
+    }
+
+    /// A teammate with no harness: only a note, as a smoke test of the pane.
+    fn run_smoke_agent(
+        &self,
+        env: &[(String, String)],
+        checkins: Option<Checkins>,
+    ) -> Result<Option<i32>> {
+        if let Some((db, id)) = &self.ledger {
+            let _ = crate::taskledger::supervisor::agent_started(db, id, std::process::id());
+        }
+        let out = run_smoke(env).map(|()| Some(0));
+        drop(checkins);
+        out
     }
 
     fn herdr(&self) -> Herdr {
@@ -711,30 +911,8 @@ impl WorkerSteps for PaneWorker<'_> {
     fn launch(&mut self, brief: &Brief) -> Result<Option<i32>> {
         let ctx: &RuntimeContext = self.ctx;
         let mailbox = self.mailbox()?;
-        // The teammate resolved at spawn time travels in the brief. Falling
-        // back to the roster keeps briefs written by an older horch loadable.
-        let roster = Roster::load_layered(
-            ctx.inherited.home_var.as_deref().map(Path::new),
-            ctx.bins.roster_override.as_deref(),
-            brief.teammates_dir.as_deref(),
-        )?;
-        // F7: an overlay file that does not load is named once, in the pane.
-        for w in roster.load_warnings() {
-            eprintln!("warning: {w}");
-        }
-        let teammate = match &brief.resolved {
-            Some(t) => t.clone(),
-            None => roster.require(&brief.teammate)?.clone(),
-        };
-        let prompt = crate::prompts::worker_prompt_with_context(
-            &roster,
-            &teammate,
-            self.role,
-            &brief.task,
-            &brief.session,
-            &crate::project_notes::display(&ctx.paths.state_root, &ctx.paths.project()?)?,
-            &crate::project_notes::host_line(),
-        )?;
+        let (roster, teammate) = self.load_roster(brief)?;
+        let prompt = self.worker_prompt(brief, &roster, &teammate)?;
         // The agent starts in its workdir (a candidate's worktree), once the
         // roster has resolved from the project.
         if let Some(workdir) = &brief.workdir {
@@ -742,64 +920,19 @@ impl WorkerSteps for PaneWorker<'_> {
                 .with_context(|| format!("entering workdir {workdir}"))?;
         }
         let env = child_env(mailbox, brief, self.path.clone());
-        // The task ledger gets the agent's PID the moment it starts, and a
-        // checkin from this process while the agent runs.
-        let checkins = self.ledger.clone().map(|(db, id)| {
-            let (obs_db, obs_id, role) = (db.clone(), id.clone(), brief.role.clone());
-            launch::observe_agent_start(move |pid| {
-                if let Err(e) = crate::taskledger::supervisor::agent_started(&obs_db, &obs_id, pid)
-                {
-                    eprintln!(
-                        "horch worker[{role}]: the task ledger did not record the agent PID: {e:#}"
-                    );
-                }
-            });
-            let every = crate::taskledger::supervisor::interval(&db, &id);
-            let lookup = session_lookup(
-                self.ctx.clone(),
-                brief.record_id.clone(),
-                brief.agent.clone(),
-            );
-            crate::taskledger::supervisor::start_checkins(db, id, every, lookup)
-        });
+        let checkins = self.start_checkins(brief);
         if teammate.agent == HarnessKind::None {
-            if let Some((db, id)) = &self.ledger {
-                let _ = crate::taskledger::supervisor::agent_started(db, id, std::process::id());
-            }
-            let out = run_smoke(&env).map(|()| Some(0));
-            drop(checkins);
-            return out;
-        }
-        // Every flag comes from the teammate file, and every harness
-        // difference (codex rules, the Prime daemon, session discovery) from
-        // its harness module: this only says which pane, record and rules
-        // apply.
-        let code = launch::run_flow_code(
-            ctx,
-            LaunchRequest {
-                role: &brief.role,
+            self.run_smoke_agent(&env, checkins)
+        } else {
+            let plan = AgentPlan {
+                roster: &roster,
                 teammate: &teammate,
-                session: &brief.session,
                 prompt: &prompt,
-                model_override: None,
-                exec_rules: roster.exec_rules(),
-                child_env: env,
-                record: Some(DiscoveryTarget {
-                    mailbox,
-                    record_id: &brief.record_id,
-                    workdir: brief.workdir_or_project(),
-                }),
-                fleet_window: roster
-                    .fleet_window(&teammate, teammate.model.as_deref().unwrap_or_default()),
-                briefing_skill: None,
-            },
-        );
-        if let Some(c) = checkins {
-            c.stop();
+            };
+            let code = run_agent(ctx, brief, mailbox, &plan, env, checkins)?;
+            self.launched = true;
+            Ok(code)
         }
-        let code = code?;
-        self.launched = true;
-        Ok(code)
     }
 
     /// An agent that exits before `horch done` reported nothing, and the
@@ -808,47 +941,13 @@ impl WorkerSteps for PaneWorker<'_> {
     /// tells the orchestrator. Only after an agent ran: a startup failure is
     /// `horch spawn`'s to report. A failed tell is printed.
     fn agent_exited(&mut self, brief: &Brief, code: Option<i32>) -> Result<()> {
-        let requeued = match &self.ledger {
-            Some((db, id)) => match crate::taskledger::supervisor::agent_exited(db, id, code) {
-                Ok(crate::taskledger::supervisor::Ended::Requeued { task, persona }) => {
-                    Some(format!(
-                        " The task ledger queued {task} again. Spawn {persona} with: \
-                         horch spawn {persona} --replaces {id}"
-                    ))
-                }
-                Ok(crate::taskledger::supervisor::Ended::Held { task }) => Some(format!(
-                    " QUESTION: {task} used up its attempts and is held. Ask the operator: \
-                     requeue it (horch ledger requeue {task} \"<reason>\"), change the ticket, \
-                     or cancel it. Spawn no replacement."
-                )),
-                Ok(_) => None,
-                Err(e) => {
-                    eprintln!(
-                        "horch worker[{}]: the task ledger did not record the exit: {e:#}",
-                        brief.role
-                    );
-                    None
-                }
-            },
-            None => None,
-        };
+        let requeued = self.ledger_exit(brief, code);
         let store = self.store()?;
         let ended = store.record_exit(&brief.record_id, code)?;
-        if !(ended && self.launched) {
-            return Ok(());
-        }
-        record_early_exit(&store, &brief.record_id, code)?;
-        if brief.report_to == ReportTarget::Orchestrator {
-            let env = child_env(self.mailbox()?, brief, self.path.clone());
-            let mut line = early_exit_line(brief, code);
-            if let Some(extra) = &requeued {
-                line.push_str(extra);
-            }
-            if let Err(e) = run_horch(&env, &["tell", "orchestrator", &line]) {
-                eprintln!(
-                    "horch worker[{}]: could not tell the orchestrator about the exit: {e:#}",
-                    brief.role
-                );
+        if ended && self.launched {
+            record_early_exit(&store, &brief.record_id, code)?;
+            if brief.report_to == ReportTarget::Orchestrator {
+                self.tell_early_exit(brief, code, requeued)?;
             }
         }
         Ok(())
