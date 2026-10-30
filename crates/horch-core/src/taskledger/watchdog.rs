@@ -733,11 +733,26 @@ pub fn holder(dir: &std::path::Path, run_id: &str) -> Option<LockHolder> {
 }
 
 /// Record the watchdog's own heartbeat on the run.
+///
+/// It also records the horch version and the binary of the calling process,
+/// so `ledger status` shows a watchdog that runs old code (#216).
 pub fn checkin(conn: &Connection, run_id: &str, pid: u32, started: Option<u64>) -> Result<()> {
+    let exe = std::env::current_exe()
+        .ok()
+        .and_then(|p| crate::exeid::exe_identity(&p))
+        .and_then(|e| serde_json::to_string(&e).ok());
     conn.execute(
-        "UPDATE runs SET watchdog_pid = ?2, watchdog_started = ?3, watchdog_checkin_at = ?4
+        "UPDATE runs SET watchdog_pid = ?2, watchdog_started = ?3, watchdog_checkin_at = ?4,
+            watchdog_version = ?5, watchdog_exe = ?6
          WHERE run_id = ?1",
-        params![run_id, pid as i64, started.map(|s| s as i64), util::now()],
+        params![
+            run_id,
+            pid as i64,
+            started.map(|s| s as i64),
+            util::now(),
+            env!("CARGO_PKG_VERSION"),
+            exe
+        ],
     )?;
     Ok(())
 }

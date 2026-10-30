@@ -312,7 +312,25 @@ pub fn add_many(
     if keys.len() != items.len() {
         bail!("2 tickets in the map share a number");
     }
-    // Edges inside the map; blockers outside it must already exist.
+    let edges = dependency_edges(conn, run, items, &keys)?;
+    if let Some(cycle) = find_cycle(&edges) {
+        let names: Vec<&str> = cycle.iter().map(|&i| items[i].0.as_str()).collect();
+        bail!("the map has a dependency cycle: {}", names.join(" -> "));
+    }
+    let ids = insert_in_order(conn, run, items, &keys, &topo_order(&edges))?;
+    let mut out = queued_events(conn, run, items, ids, actor)?;
+    out.sort_by_key(|t| t.seq);
+    Ok(out)
+}
+
+/// The edges inside the map (node -> the nodes it waits for). Blockers
+/// outside the map must already exist.
+fn dependency_edges(
+    conn: &Connection,
+    run: &Run,
+    items: &[(String, NewTask)],
+    keys: &BTreeMap<&str, usize>,
+) -> Result<Vec<Vec<usize>>> {
     let mut edges: Vec<Vec<usize>> = vec![Vec::new(); items.len()];
     for (i, (_, new)) in items.iter().enumerate() {
         validate(new)?;
@@ -327,14 +345,20 @@ pub fn add_many(
             }
         }
     }
-    if let Some(cycle) = find_cycle(&edges) {
-        let names: Vec<&str> = cycle.iter().map(|&i| items[i].0.as_str()).collect();
-        bail!("the map has a dependency cycle: {}", names.join(" -> "));
-    }
-    // Insert in dependency order so every edge points at an existing row.
-    let order = topo_order(&edges);
+    Ok(edges)
+}
+
+/// Insert in dependency order so every edge points at an existing row.
+/// Returns the new id of each item, by index.
+fn insert_in_order(
+    conn: &Connection,
+    run: &Run,
+    items: &[(String, NewTask)],
+    keys: &BTreeMap<&str, usize>,
+    order: &[usize],
+) -> Result<Vec<Option<String>>> {
     let mut ids: Vec<Option<String>> = vec![None; items.len()];
-    for &i in &order {
+    for &i in order {
         let (_, new) = &items[i];
         let id = insert(conn, run, new)?;
         for b in &new.blocked_by {
@@ -349,6 +373,17 @@ pub fn add_many(
         }
         ids[i] = Some(id);
     }
+    Ok(ids)
+}
+
+/// Record the `Added` event of every inserted item and return the tasks.
+fn queued_events(
+    conn: &Connection,
+    run: &Run,
+    items: &[(String, NewTask)],
+    ids: Vec<Option<String>>,
+    actor: Actor,
+) -> Result<Vec<Task>> {
     let mut out = Vec::new();
     for (i, id) in ids.into_iter().enumerate() {
         let task = get(conn, &id.expect("every item inserted"))?;
@@ -371,7 +406,6 @@ pub fn add_many(
         )?;
         out.push(task);
     }
-    out.sort_by_key(|t| t.seq);
     Ok(out)
 }
 
@@ -453,25 +487,21 @@ fn find_cycle(edges: &[Vec<usize>]) -> Option<Vec<usize>> {
     fn visit(n: usize, edges: &[Vec<usize>], mark: &mut [Mark], path: &mut Vec<usize>) -> bool {
         mark[n] = Mark::Open;
         path.push(n);
-        for &m in &edges[n] {
-            match mark[m] {
-                Mark::Open => {
-                    let at = path.iter().position(|&p| p == m).unwrap_or(0);
-                    path.drain(..at);
-                    path.push(m);
-                    return true;
-                }
-                Mark::New => {
-                    if visit(m, edges, mark, path) {
-                        return true;
-                    }
-                }
-                Mark::Closed => {}
+        let found = edges[n].iter().any(|&m| match mark[m] {
+            Mark::Open => {
+                let at = path.iter().position(|&p| p == m).unwrap_or(0);
+                path.drain(..at);
+                path.push(m);
+                true
             }
+            Mark::New => visit(m, edges, mark, path),
+            Mark::Closed => false,
+        });
+        if !found {
+            path.pop();
+            mark[n] = Mark::Closed;
         }
-        path.pop();
-        mark[n] = Mark::Closed;
-        false
+        found
     }
     let mut mark = vec![Mark::New; edges.len()];
     for n in 0..edges.len() {
@@ -540,6 +570,34 @@ impl std::fmt::Display for Wait {
     }
 }
 
+/// The 2 text columns of `sql`, a query of 1 `?1` run id.
+fn pairs(conn: &Connection, sql: &str, run_id: &str) -> Result<Vec<(String, String)>> {
+    let mut stmt = conn.prepare(sql)?;
+    let rows = stmt
+        .query_map([run_id], |r| r.try_into())?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(rows)
+}
+
+/// An exclusive task runs, or `t` is exclusive and others run.
+fn exclusive(t: &Task, work: &[&&Task]) -> Option<Wait> {
+    let blocker = work.iter().find(|a| !a.parallel).or_else(|| {
+        // An exclusive task waits for any running one.
+        (!t.parallel).then(|| work.first()).flatten()
+    });
+    blocker.map(|x| Wait::Exclusive { running: x.short() })
+}
+
+/// 1 checkout holds the edits of every shared task: they go 1 by 1.
+fn shared_checkout(t: &Task, work: &[&&Task]) -> Option<Wait> {
+    if t.uses_worktree() {
+        return None;
+    }
+    work.iter()
+        .find(|a| !a.uses_worktree())
+        .map(|a| Wait::SharedCheckout { running: a.short() })
+}
+
 /// The state the claimable rule reads: the run's tasks with their files and
 /// blockers.
 struct Board {
@@ -552,26 +610,22 @@ impl Board {
     fn load(conn: &Connection, run_id: &str) -> Result<Board> {
         let tasks = of_run(conn, run_id)?;
         let mut own: BTreeMap<String, Vec<String>> = BTreeMap::new();
-        let mut deps: BTreeMap<String, Vec<String>> = BTreeMap::new();
-        {
-            let mut stmt = conn.prepare(
-                "SELECT f.task_id, f.path FROM task_files f JOIN tasks t ON t.task_id = f.task_id
-                 WHERE t.run_id = ?1 AND f.mode = 'own'",
-            )?;
-            for row in stmt.query_map([run_id], |r| Ok((r.get::<_, String>(0)?, r.get(1)?)))? {
-                let (t, p) = row?;
-                own.entry(t).or_default().push(p);
-            }
+        for (t, p) in pairs(
+            conn,
+            "SELECT f.task_id, f.path FROM task_files f JOIN tasks t ON t.task_id = f.task_id
+             WHERE t.run_id = ?1 AND f.mode = 'own'",
+            run_id,
+        )? {
+            own.entry(t).or_default().push(p);
         }
-        {
-            let mut stmt = conn.prepare(
-                "SELECT d.task_id, d.blocked_by FROM task_deps d JOIN tasks t ON t.task_id = d.task_id
-                 WHERE t.run_id = ?1",
-            )?;
-            for row in stmt.query_map([run_id], |r| Ok((r.get::<_, String>(0)?, r.get(1)?)))? {
-                let (t, b) = row?;
-                deps.entry(t).or_default().push(b);
-            }
+        let mut deps: BTreeMap<String, Vec<String>> = BTreeMap::new();
+        for (t, b) in pairs(
+            conn,
+            "SELECT d.task_id, d.blocked_by FROM task_deps d JOIN tasks t ON t.task_id = d.task_id
+             WHERE t.run_id = ?1",
+            run_id,
+        )? {
+            deps.entry(t).or_default().push(b);
         }
         Ok(Board { tasks, own, deps })
     }
@@ -584,53 +638,60 @@ impl Board {
         matches!(t.status.as_str(), "running" | "landing")
     }
 
-    /// Why `t` cannot start beside the `active` tasks, or `None`.
+    /// Why `t` cannot start beside the `active` tasks, or `None`. Review
+    /// tasks change no code: they never conflict on files and never wait for
+    /// an exclusive task (that task waits for them).
     fn wait(&self, t: &Task, active: &[&Task]) -> Option<Wait> {
-        for b in self.deps.get(&t.task_id).into_iter().flatten() {
-            if let Some(bt) = self.task(b) {
+        self.blocked_by(t).or_else(|| {
+            let work: Vec<&&Task> = active.iter().filter(|a| !a.is_review()).collect();
+            (!t.is_review())
+                .then(|| {
+                    exclusive(t, &work)
+                        .or_else(|| shared_checkout(t, &work))
+                        .or_else(|| self.file_held(t, &work))
+                })
+                .flatten()
+        })
+    }
+
+    /// The first blocker of `t` that is not done.
+    fn blocked_by(&self, t: &Task) -> Option<Wait> {
+        self.deps
+            .get(&t.task_id)
+            .into_iter()
+            .flatten()
+            .filter_map(|b| self.task(b))
+            .find_map(|bt| {
                 if bt.status == TaskStatus::Cancelled.as_str() {
-                    return Some(Wait::BlockerCancelled { task: bt.short() });
-                }
-                if bt.status != TaskStatus::Done.as_str() {
-                    return Some(Wait::BlockedBy {
+                    Some(Wait::BlockerCancelled { task: bt.short() })
+                } else if bt.status != TaskStatus::Done.as_str() {
+                    Some(Wait::BlockedBy {
                         task: bt.short(),
                         status: bt.status.clone(),
-                    });
+                    })
+                } else {
+                    None
                 }
-            }
-        }
-        // Review tasks change no code: they never conflict on files and
-        // never wait for an exclusive task (that task waits for them).
-        if t.is_review() {
-            return None;
-        }
-        let work: Vec<&&Task> = active.iter().filter(|a| !a.is_review()).collect();
-        if let Some(x) = work.iter().find(|a| !a.parallel) {
-            return Some(Wait::Exclusive { running: x.short() });
-        }
-        if !t.parallel {
-            if let Some(a) = work.first() {
-                return Some(Wait::Exclusive { running: a.short() });
-            }
-        }
-        // 1 checkout holds the edits of every shared task: they go 1 by 1.
-        if !t.uses_worktree() {
-            if let Some(a) = work.iter().find(|a| !a.uses_worktree()) {
-                return Some(Wait::SharedCheckout { running: a.short() });
-            }
-        }
+            })
+    }
+
+    /// The first file of `t` that a running task owns.
+    fn file_held(&self, t: &Task, work: &[&&Task]) -> Option<Wait> {
         let mine = self.own.get(&t.task_id).cloned().unwrap_or_default();
-        for a in &work {
-            for theirs in self.own.get(&a.task_id).into_iter().flatten() {
-                if let Some(p) = mine.iter().find(|m| util::paths_overlap(m, theirs)) {
-                    return Some(Wait::FileHeld {
-                        path: p.clone(),
-                        by: a.short(),
-                    });
-                }
-            }
-        }
-        None
+        work.iter().find_map(|a| {
+            self.own
+                .get(&a.task_id)
+                .into_iter()
+                .flatten()
+                .find_map(|theirs| {
+                    mine.iter()
+                        .find(|m| util::paths_overlap(m, theirs))
+                        .map(|p| Wait::FileHeld {
+                            path: p.clone(),
+                            by: a.short(),
+                        })
+                })
+        })
     }
 
     /// Queued tasks in claim order: priority, then seq. A held task waits
@@ -738,19 +799,45 @@ pub enum ClaimOutcome {
 /// interleave with another claim.
 pub fn claim(conn: &Connection, worker_id: &str) -> Result<ClaimOutcome> {
     let w = workers::get(conn, worker_id)?;
+    let (run_id, persona) = check_claimer(&w)?;
+    match held_task(conn, &w)? {
+        Some(task) => claimed_outcome(conn, &w, task),
+        None => claim_next(conn, &w, &run_id, &persona),
+    }
+}
+
+/// A second claim by a working worker gives back its own task.
+fn held_task(conn: &Connection, w: &Worker) -> Result<Option<Task>> {
+    match (&w.task_id, w.status()? == WorkerStatus::Working) {
+        (Some(t), true) => Ok(Some(get(conn, t)?)),
+        _ => Ok(None),
+    }
+}
+
+/// Take the next task for `w`, or end `w` when the queue has none for it.
+fn claim_next(conn: &Connection, w: &Worker, run_id: &str, persona: &str) -> Result<ClaimOutcome> {
+    let Some(task) = pick_task(conn, w, run_id, persona)? else {
+        return no_task(conn, w, persona, run_id);
+    };
+    take_task(conn, w, run_id, &task)?;
+    let task = get(conn, &task.task_id)?;
+    let w = workers::get(conn, &w.worker_id)?;
+    claimed_outcome(conn, &w, task)
+}
+
+/// The claimed outcome for `task`, held by `w`.
+fn claimed_outcome(conn: &Connection, w: &Worker, task: Task) -> Result<ClaimOutcome> {
+    Ok(ClaimOutcome::Claimed(Box::new(claimed(conn, w, task)?)))
+}
+
+/// Refuse a claimer that cannot claim; give back its run and persona.
+fn check_claimer(w: &Worker) -> Result<(String, String)> {
     if w.kind == WorkerKind::Orchestrator.as_str() {
         bail!("the orchestrator does not claim tasks");
     }
     let status = w.status()?;
     let run_id = w.run_id.clone().context("this worker has no run")?;
     let persona = w.persona.clone().context("this worker has no persona")?;
-    // A second claim by a working worker gives back its own task.
-    if status == WorkerStatus::Working {
-        if let Some(t) = &w.task_id {
-            let task = get(conn, t)?;
-            return Ok(ClaimOutcome::Claimed(Box::new(claimed(conn, &w, task)?)));
-        }
-    }
     if !status.is_live() {
         bail!(
             "worker {} is {}; a worker that ended cannot claim",
@@ -758,54 +845,78 @@ pub fn claim(conn: &Connection, worker_id: &str) -> Result<ClaimOutcome> {
             w.status
         );
     }
-    let board = Board::load(conn, &run_id)?;
+    Ok((run_id, persona))
+}
+
+/// The next startable task of `persona`. A replacement takes its
+/// predecessor's task first.
+fn pick_task(conn: &Connection, w: &Worker, run_id: &str, persona: &str) -> Result<Option<Task>> {
+    let board = Board::load(conn, run_id)?;
     let startable = board.startable();
-    let mine = |t: &Task| t.claimable_by.as_deref() == Some(persona.as_str());
-    // A replacement takes its predecessor's task first.
-    let predecessor_task = match &w.previous_worker_id {
-        Some(p) => workers::get(conn, p)?.task_id,
-        None => None,
+    let mine = |t: &&Task| t.claimable_by.as_deref() == Some(persona);
+    let predecessor = predecessor_task(conn, w)?;
+    let first = |pred: Option<&str>| {
+        startable
+            .iter()
+            .copied()
+            .filter(mine)
+            .find(|t| pred.is_none_or(|p| t.task_id == p))
     };
-    let pick = predecessor_task
-        .as_deref()
-        .and_then(|pt| startable.iter().find(|t| t.task_id == pt && mine(t)))
-        .or_else(|| startable.iter().find(|t| mine(t)))
-        .map(|t| (*t).clone());
-    let Some(task) = pick else {
-        let tell = format!(
-            "horch tell orchestrator \"[{}] NOTE: No task for {}. I exit. PID {}.\"",
-            w.label(),
-            persona,
-            w.supervisor_pid
-                .map(|p| p.to_string())
-                .unwrap_or_else(|| "unknown".into())
-        );
-        conn.execute(
-            "UPDATE workers SET status = ?2, end_reason = ?3 WHERE worker_id = ?1",
-            params![
-                worker_id,
-                WorkerStatus::NoTask.as_str(),
-                format!("no task for persona {persona}")
-            ],
-        )?;
-        util::event(
-            conn,
-            &About {
-                run: Some(&run_id),
-                task: None,
-                worker: Some(worker_id),
-            },
-            Actor::Worker,
-            EventKind::NoTask,
-            &format!("No task for persona {persona}."),
-        )?;
-        return Ok(ClaimOutcome::NoTask {
-            persona,
-            role: w.role.clone(),
-            supervisor_pid: w.supervisor_pid,
-            tell,
-        });
-    };
+    Ok(first(predecessor.as_deref())
+        .or_else(|| first(None))
+        .cloned())
+}
+
+/// The task a replaced worker held, if `w` replaces one.
+fn predecessor_task(conn: &Connection, w: &Worker) -> Result<Option<String>> {
+    let prev = w.previous_worker_id.as_deref();
+    Ok(prev
+        .map(|p| workers::get(conn, p))
+        .transpose()?
+        .and_then(|p| p.task_id))
+}
+
+/// End a worker that found no task: the notice, the status and the event.
+fn no_task(conn: &Connection, w: &Worker, persona: &str, run_id: &str) -> Result<ClaimOutcome> {
+    let tell = format!(
+        "horch tell orchestrator \"[{}] NOTE: No task for {}. I exit. PID {}.\"",
+        w.label(),
+        persona,
+        w.supervisor_pid
+            .map(|p| p.to_string())
+            .unwrap_or_else(|| "unknown".into())
+    );
+    conn.execute(
+        "UPDATE workers SET status = ?2, end_reason = ?3 WHERE worker_id = ?1",
+        params![
+            w.worker_id,
+            WorkerStatus::NoTask.as_str(),
+            format!("no task for persona {persona}")
+        ],
+    )?;
+    util::event(
+        conn,
+        &About {
+            run: Some(run_id),
+            task: None,
+            worker: Some(&w.worker_id),
+        },
+        Actor::Worker,
+        EventKind::NoTask,
+        &format!("No task for persona {persona}."),
+    )?;
+    Ok(ClaimOutcome::NoTask {
+        persona: persona.to_string(),
+        role: w.role.clone(),
+        supervisor_pid: w.supervisor_pid,
+        tell,
+    })
+}
+
+/// Write the claim: the task, the worker, an open worktree from an earlier
+/// attempt, and the event.
+fn take_task(conn: &Connection, w: &Worker, run_id: &str, task: &Task) -> Result<()> {
+    let worker_id = w.worker_id.as_str();
     let now = util::now();
     let attempt = task.attempts + 1;
     let n = conn.execute(
@@ -831,7 +942,7 @@ pub fn claim(conn: &Connection, worker_id: &str) -> Result<ClaimOutcome> {
     util::event(
         conn,
         &About {
-            run: Some(&run_id),
+            run: Some(run_id),
             task: Some(&task.task_id),
             worker: Some(worker_id),
         },
@@ -842,10 +953,7 @@ pub fn claim(conn: &Connection, worker_id: &str) -> Result<ClaimOutcome> {
             w.label(),
             task.short()
         ),
-    )?;
-    let task = get(conn, &task.task_id)?;
-    let w = workers::get(conn, worker_id)?;
-    Ok(ClaimOutcome::Claimed(Box::new(claimed(conn, &w, task)?)))
+    )
 }
 
 fn claimed(conn: &Connection, w: &Worker, task: Task) -> Result<Claimed> {
