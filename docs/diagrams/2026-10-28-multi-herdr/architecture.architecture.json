@@ -1,0 +1,326 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "multi-herdr: who runs where",
+    "locale": "en",
+    "quality_profile": "showcase",
+    "visual_preset": "blueprint",
+    "views": [
+      {
+        "id": "panes",
+        "label": "Panes and the CLI",
+        "focus": [
+          "operator",
+          "orch",
+          "workers",
+          "horch",
+          "herdr"
+        ],
+        "note": "Every agent is a pane in 1 herdr workspace. Agents coordinate only through horch commands."
+      },
+      {
+        "id": "launch",
+        "label": "Launching an agent",
+        "focus": [
+          "horch",
+          "roster",
+          "harness",
+          "pools",
+          "bundles"
+        ],
+        "note": "A teammate file picks the agent CLI and model; routing checks the pool; the skill bundle rides along."
+      },
+      {
+        "id": "state",
+        "label": "State on disk",
+        "focus": [
+          "horch",
+          "sessions",
+          "tasks",
+          "mail",
+          "bundles"
+        ],
+        "note": "Session records, tasks, mail and bundles outlive any pane."
+      }
+    ]
+  },
+  "components": [
+    {
+      "id": "operator",
+      "type": "external",
+      "label": "Operator",
+      "sublabel": "the human",
+      "pos": [
+        40,
+        270
+      ],
+      "size": [
+        120,
+        60
+      ]
+    },
+    {
+      "id": "orch",
+      "type": "frontend",
+      "label": "Orchestrator pane",
+      "sublabel": "claude or codex",
+      "pos": [
+        240,
+        190
+      ],
+      "size": [
+        150,
+        64
+      ]
+    },
+    {
+      "id": "workers",
+      "type": "frontend",
+      "label": "Worker panes",
+      "sublabel": "sonnet-feature-1",
+      "pos": [
+        240,
+        350
+      ],
+      "size": [
+        150,
+        64
+      ]
+    },
+    {
+      "id": "horch",
+      "type": "backend",
+      "label": "horch CLI",
+      "sublabel": "spawn, tell, ledger",
+      "pos": [
+        500,
+        270
+      ],
+      "size": [
+        140,
+        64
+      ]
+    },
+    {
+      "id": "herdr",
+      "type": "cloud",
+      "label": "herdr server",
+      "sublabel": "split, read, type",
+      "pos": [
+        500,
+        80
+      ],
+      "size": [
+        140,
+        60
+      ]
+    },
+    {
+      "id": "roster",
+      "type": "backend",
+      "label": "Teammates",
+      "sublabel": "teammates/*.md",
+      "pos": [
+        500,
+        470
+      ],
+      "size": [
+        140,
+        60
+      ]
+    },
+    {
+      "id": "harness",
+      "type": "external",
+      "label": "Agent CLIs",
+      "sublabel": "claude, codex, +4 more",
+      "pos": [
+        770,
+        80
+      ],
+      "size": [
+        150,
+        60
+      ]
+    },
+    {
+      "id": "pools",
+      "type": "cloud",
+      "label": "Model pools",
+      "sublabel": "claude, codex, +3 more",
+      "pos": [
+        1000,
+        80
+      ],
+      "size": [
+        150,
+        60
+      ]
+    },
+    {
+      "id": "sessions",
+      "type": "database",
+      "label": "Session ledger",
+      "sublabel": "state/<slug>.json",
+      "pos": [
+        770,
+        200
+      ],
+      "size": [
+        150,
+        60
+      ]
+    },
+    {
+      "id": "tasks",
+      "type": "database",
+      "label": "Task ledger",
+      "sublabel": "~/.horch/ledger.sqlite3",
+      "pos": [
+        770,
+        290
+      ],
+      "size": [
+        150,
+        60
+      ]
+    },
+    {
+      "id": "mail",
+      "type": "messagebus",
+      "label": "Mail + channels",
+      "sublabel": "state/mail, channels",
+      "pos": [
+        770,
+        380
+      ],
+      "size": [
+        150,
+        60
+      ]
+    },
+    {
+      "id": "bundles",
+      "type": "database",
+      "label": "Skill bundles",
+      "sublabel": "state/skill-bundles",
+      "pos": [
+        770,
+        470
+      ],
+      "size": [
+        150,
+        60
+      ]
+    }
+  ],
+  "boundaries": [
+    {
+      "kind": "region",
+      "label": "herdr workspace",
+      "wraps": [
+        "orch",
+        "workers"
+      ]
+    },
+    {
+      "kind": "region",
+      "label": "State on disk",
+      "wraps": [
+        "sessions",
+        "tasks",
+        "mail",
+        "bundles"
+      ]
+    }
+  ],
+  "connections": [
+    {
+      "id": "asks",
+      "from": "operator",
+      "to": "orch",
+      "label": "asks"
+    },
+    {
+      "id": "orch-cli",
+      "from": "orch",
+      "to": "horch",
+      "label": "spawn, tell",
+      "variant": "emphasis"
+    },
+    {
+      "id": "worker-cli",
+      "from": "workers",
+      "to": "horch",
+      "label": "tell, done"
+    },
+    {
+      "id": "panes",
+      "from": "horch",
+      "to": "herdr",
+      "label": "panes"
+    },
+    {
+      "id": "read-roster",
+      "from": "horch",
+      "to": "roster",
+      "label": "reads",
+      "labelAt": [
+        570,
+        348
+      ]
+    },
+    {
+      "id": "launch",
+      "from": "horch",
+      "to": "harness",
+      "label": "launch",
+      "variant": "emphasis"
+    },
+    {
+      "id": "model-calls",
+      "from": "harness",
+      "to": "pools",
+      "label": "calls"
+    },
+    {
+      "id": "records",
+      "from": "horch",
+      "to": "sessions"
+    },
+    {
+      "id": "claims",
+      "from": "horch",
+      "to": "tasks"
+    },
+    {
+      "id": "messages",
+      "from": "horch",
+      "to": "mail"
+    },
+    {
+      "id": "skills",
+      "from": "horch",
+      "to": "bundles"
+    }
+  ],
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "Processes",
+      "items": [
+        "1 agent per pane; the orchestrator does not do the work",
+        "horch is 1 binary that every pane calls"
+      ]
+    },
+    {
+      "dot": "emerald",
+      "title": "State",
+      "items": [
+        "state = $HORCH_STATE_DIR, else ~/.local/state/horch",
+        "The task ledger is 1 SQLite file per machine"
+      ]
+    }
+  ]
+}

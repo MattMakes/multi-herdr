@@ -1,0 +1,235 @@
+{
+  "schema_version": 2,
+  "diagram_type": "workflow",
+  "meta": {
+    "title": "From a vetted idea to landed work",
+    "locale": "en",
+    "quality_profile": "showcase",
+    "visual_preset": "editorial",
+    "views": [
+      {
+        "id": "idea",
+        "label": "Idea to tickets",
+        "focus": [
+          "brief",
+          "specw",
+          "questions",
+          "ticketw"
+        ],
+        "note": "The writers talk only in file paths: brief.md, spec.md, then tickets and MAP.md."
+      },
+      {
+        "id": "queue",
+        "label": "Queue and claim",
+        "focus": [
+          "ticketw",
+          "queue",
+          "claim",
+          "watchdog"
+        ],
+        "note": "add-map queues every ticket in 1 transaction. A worker claims; nobody types a task into it."
+      },
+      {
+        "id": "finish",
+        "label": "Finish and land",
+        "focus": [
+          "claim",
+          "finish",
+          "land"
+        ],
+        "note": "No task is done until the sweeps pass, the commit lands on the run branch and the worktree is gone."
+      }
+    ]
+  },
+  "lanes": [
+    {
+      "id": "plan",
+      "label": "Orchestrator + writers"
+    },
+    {
+      "id": "ledger",
+      "label": "Task ledger"
+    },
+    {
+      "id": "worker",
+      "label": "Worker"
+    }
+  ],
+  "phases": [
+    {
+      "id": "ideaphase",
+      "label": "Idea to tickets",
+      "fromCol": 0,
+      "toCol": 3
+    },
+    {
+      "id": "runphase",
+      "label": "Task run",
+      "fromCol": 4,
+      "toCol": 5,
+      "variant": "dashed"
+    }
+  ],
+  "mainPath": [
+    "brief",
+    "specw",
+    "questions",
+    "ticketw",
+    "queue",
+    "claim",
+    "finish",
+    "land"
+  ],
+  "nodes": [
+    {
+      "id": "brief",
+      "lane": "plan",
+      "col": 0,
+      "type": "frontend",
+      "label": "Vetted idea",
+      "sublabel": "brief.md",
+      "width": 132
+    },
+    {
+      "id": "specw",
+      "lane": "plan",
+      "col": 1,
+      "type": "backend",
+      "label": "spec-writer",
+      "sublabel": "spec.md",
+      "width": 132
+    },
+    {
+      "id": "questions",
+      "lane": "plan",
+      "col": 2,
+      "type": "security",
+      "label": "Open questions",
+      "sublabel": "decide or ask",
+      "width": 132
+    },
+    {
+      "id": "ticketw",
+      "lane": "plan",
+      "col": 3,
+      "type": "backend",
+      "label": "ticket-writer",
+      "sublabel": "tickets + MAP.md",
+      "width": 132
+    },
+    {
+      "id": "queue",
+      "lane": "ledger",
+      "col": 3,
+      "type": "database",
+      "label": "Queued tasks",
+      "sublabel": "add-map",
+      "width": 132
+    },
+    {
+      "id": "watchdog",
+      "lane": "ledger",
+      "col": 5,
+      "type": "messagebus",
+      "label": "Watchdog",
+      "sublabel": "every 10 min",
+      "width": 132
+    },
+    {
+      "id": "claim",
+      "lane": "worker",
+      "col": 3,
+      "type": "backend",
+      "label": "Claim",
+      "sublabel": "BEGIN IMMEDIATE",
+      "width": 132
+    },
+    {
+      "id": "finish",
+      "lane": "worker",
+      "col": 4,
+      "type": "security",
+      "label": "Finish sweeps",
+      "sublabel": "check, reviews",
+      "width": 132
+    },
+    {
+      "id": "land",
+      "lane": "worker",
+      "col": 5,
+      "type": "backend",
+      "label": "Land + PR",
+      "sublabel": "then cleanup",
+      "width": 132
+    }
+  ],
+  "edges": [
+    {
+      "id": "write-spec",
+      "from": "brief",
+      "to": "specw",
+      "variant": "emphasis"
+    },
+    {
+      "id": "spec-questions",
+      "from": "specw",
+      "to": "questions"
+    },
+    {
+      "id": "write-tickets",
+      "from": "questions",
+      "to": "ticketw",
+      "variant": "emphasis"
+    },
+    {
+      "id": "add-map",
+      "from": "ticketw",
+      "to": "queue",
+      "label": "add-map"
+    },
+    {
+      "id": "claim-task",
+      "from": "queue",
+      "to": "claim",
+      "variant": "emphasis",
+      "route": "drop"
+    },
+    {
+      "id": "run-finish",
+      "from": "claim",
+      "to": "finish"
+    },
+    {
+      "id": "land-task",
+      "from": "finish",
+      "to": "land",
+      "variant": "emphasis"
+    },
+    {
+      "id": "requeue",
+      "from": "watchdog",
+      "to": "queue",
+      "label": "reap, requeue",
+      "variant": "security",
+      "role": "error"
+    }
+  ],
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "Who writes what",
+      "items": [
+        "Writers run on the google pool and fall back to opus",
+        "The orchestrator decides open questions it can, asks the rest"
+      ]
+    },
+    {
+      "dot": "rose",
+      "title": "Finish steps",
+      "items": [
+        "check, code-sweep, complexity-sweep, recheck",
+        "land, pr, cleanup; finish stops at the first failure"
+      ]
+    }
+  ]
+}

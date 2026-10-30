@@ -1,0 +1,187 @@
+{
+  "schema_version": 1,
+  "diagram_type": "lifecycle",
+  "meta": {
+    "title": "A worker session lifecycle",
+    "locale": "en",
+    "viewBox": [
+      1080,
+      660
+    ],
+    "quality_profile": "showcase",
+    "visual_preset": "editorial"
+  },
+  "lanes": [
+    {
+      "id": "main",
+      "label": "Session"
+    },
+    {
+      "id": "context",
+      "label": "Context watch"
+    },
+    {
+      "id": "terminal",
+      "label": "Ends"
+    }
+  ],
+  "states": [
+    {
+      "id": "spawned",
+      "type": "start",
+      "label": "Spawned",
+      "sublabel": "Planned, Starting",
+      "lane": "main",
+      "col": 0,
+      "step": "01"
+    },
+    {
+      "id": "registered",
+      "type": "active",
+      "label": "Registered",
+      "sublabel": "role in mailbox",
+      "lane": "main",
+      "col": 1,
+      "step": "02"
+    },
+    {
+      "id": "working",
+      "type": "active",
+      "label": "Working",
+      "sublabel": "Running, horch note",
+      "lane": "main",
+      "col": 2,
+      "step": "03"
+    },
+    {
+      "id": "done",
+      "type": "success",
+      "label": "Done",
+      "sublabel": "summary recorded",
+      "lane": "main",
+      "col": 3,
+      "step": "04"
+    },
+    {
+      "id": "closed",
+      "type": "neutral",
+      "label": "Pane closed",
+      "sublabel": "exact pane id",
+      "lane": "main",
+      "col": 4,
+      "step": "05"
+    },
+    {
+      "id": "compacting",
+      "type": "waiting",
+      "label": "Compacting",
+      "sublabel": "COMPACT-READY",
+      "lane": "context",
+      "col": 1
+    },
+    {
+      "id": "failed",
+      "type": "failure",
+      "label": "Failed",
+      "sublabel": "exit before done",
+      "lane": "terminal",
+      "col": 0
+    },
+    {
+      "id": "record",
+      "type": "success",
+      "label": "Resumable record",
+      "sublabel": "spawn --resume <id>",
+      "lane": "terminal",
+      "col": 2
+    }
+  ],
+  "transitions": [
+    {
+      "id": "register",
+      "from": "spawned",
+      "to": "registered"
+    },
+    {
+      "id": "launch",
+      "from": "registered",
+      "to": "working",
+      "variant": "emphasis"
+    },
+    {
+      "id": "finish",
+      "from": "working",
+      "to": "done",
+      "variant": "emphasis"
+    },
+    {
+      "id": "close",
+      "from": "done",
+      "to": "closed"
+    },
+    {
+      "id": "keep",
+      "from": "closed",
+      "to": "record"
+    },
+    {
+      "id": "threshold",
+      "from": "working",
+      "to": "compacting",
+      "label": "over threshold",
+      "variant": "dashed",
+      "fromSide": "bottom",
+      "toSide": "top"
+    },
+    {
+      "id": "resume",
+      "from": "compacting",
+      "to": "working",
+      "label": "compacted",
+      "variant": "dashed",
+      "fromSide": "left",
+      "toSide": "bottom",
+      "labelSegment": 0
+    },
+    {
+      "id": "exited",
+      "from": "working",
+      "to": "failed",
+      "variant": "security",
+      "fromSide": "bottom",
+      "toSide": "top",
+      "route": "straight"
+    },
+    {
+      "id": "failed-kept",
+      "from": "failed",
+      "to": "record"
+    }
+  ],
+  "cards": [
+    {
+      "dot": "emerald",
+      "title": "Main path",
+      "items": [
+        "horch done records the summary, then closes the exact pane",
+        "The session id stays in the ledger after the pane is gone"
+      ]
+    },
+    {
+      "dot": "amber",
+      "title": "Context watch",
+      "items": [
+        "horch watches min(base, 80% of the native window)",
+        "The worker writes a handoff file before horch types /compact"
+      ]
+    },
+    {
+      "dot": "rose",
+      "title": "Failure",
+      "items": [
+        "An agent that exits without horch done ends Failed",
+        "horch worker then sends BLOCKED: with the resume command"
+      ]
+    }
+  ]
+}
