@@ -330,14 +330,14 @@ fn read_skills(
 
 /// Plan the launch. A refusal prints its REFUSED line before it fails.
 fn plan(req: &SpawnRequest, inputs: &PlanInputs) -> Result<ExecutionPlan> {
-    let planned = plan::plan_launch(req, inputs)
+    plan::plan_launch(req, inputs)
         .map_err(SpawnError::from)
         .inspect_err(|e| {
             if let SpawnError::Refused { line, .. } = e {
                 crate::output::println(line);
             }
-        });
-    Ok(planned?)
+        })
+        .map_err(anyhow::Error::from)
 }
 
 /// Lay the grid out, which also puts the pane where it belongs: a split
