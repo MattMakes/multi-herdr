@@ -15,10 +15,13 @@ fn worker() -> String {
 #[test]
 fn g56_fact_command_accepts_and_deduplicates() {
     let h = Harness::new("g56-facts").with_git();
-    for _ in 0..2 {
-        let o = h.run(&["note", "--fact", "Use BSD sed"]);
-        assert!(o.status.success(), "{o:?}");
+    for said in ["Project fact recorded.", "Project fact already recorded."] {
+        assert_eq!(ok(&h, &["note", "--fact", "Use BSD sed"]).trim(), said);
     }
+    assert_eq!(
+        horch_core::project_notes::read(&h.state, &h.project).unwrap(),
+        ["Use BSD sed"]
+    );
 }
 #[test]
 fn g57_orchestrator_resume_has_command_card() {
@@ -35,12 +38,15 @@ fn g57_orchestrator_resume_has_command_card() {
 #[test]
 fn g58_codex_description_states_current_boundaries() {
     let r = Roster::builtin().unwrap();
+    let mut codex = 0;
     for n in r.names() {
         let t = r.require(n).unwrap();
         if t.agent.as_str() == "codex" {
+            codex += 1;
             assert!(t.brief_description.contains(".git"), "{n}");
         }
     }
+    assert!(codex > 0, "the roster has no codex teammate");
 }
 #[test]
 fn g63_worker_has_questions_background_and_one_done() {
