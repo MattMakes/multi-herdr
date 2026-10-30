@@ -1311,7 +1311,7 @@ fn config_pair_value<'a>(args: &'a [String], key: &str) -> Option<&'a str> {
         .filter_map(|w| w[1].split_once('='))
         .filter(|(pair_key, _)| pair_key.trim() == key)
         .map(|(_, value)| value.trim())
-        .last()
+        .next_back()
 }
 
 /// Whether the final Codex `-c` pairs turn native multi-agent support off.

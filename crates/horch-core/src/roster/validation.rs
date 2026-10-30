@@ -1692,7 +1692,7 @@ pub fn fallback_problems(roster: &Roster) -> Vec<String> {
         for fb in &t.fallbacks {
             let who = &t.name;
             match roster.get(fb) {
-                Some(f) => out.extend(fallback_pair_problems(roster, (t, f), fb, &pool)),
+                Some(f) => out.extend(fallback_pair_problems(roster, (t, f), fb, pool)),
                 None => out.push(format!("{who}: fallback '{fb}' does not exist")),
             }
         }
