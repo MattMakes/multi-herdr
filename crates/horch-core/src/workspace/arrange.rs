@@ -621,7 +621,8 @@ fn run_live(
         resized
     );
     out.extend(focus);
-    if already && moved == 0 {
+    // `already` moved nothing.
+    if already {
         out.push_str("the grid was already laid out; only the columns needed evening\n");
     }
     out.push('\n');
