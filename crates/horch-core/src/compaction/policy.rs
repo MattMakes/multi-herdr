@@ -401,6 +401,7 @@ pub fn compact_line(caps: CompactionCaps, instructions: &str) -> Option<String> 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::harness::capabilities::CompactCommand;
     use crate::telemetry::context::Reading;
     use std::path::PathBuf;
 
@@ -608,6 +609,178 @@ mod tests {
         assert_eq!(
             ask_age(&history, None, at("2026-09-20T10:05:00Z")),
             Some(Duration::ZERO)
+        );
+    }
+
+    fn row(
+        reading: Result<&Reading, &Unreadable>,
+        job: &JobLiveness,
+        history: &[HistoryEntry],
+    ) -> RowState {
+        classify(&RowInputs {
+            reading,
+            threshold: 300_000,
+            history,
+            job,
+            now: at("2026-09-20T10:01:00Z"),
+        })
+    }
+
+    #[test]
+    fn classify_returns_each_state_in_policy_order() {
+        let lost = JobLiveness::Lost {
+            step: "send".into(),
+        };
+        let asked = [ev("2026-09-20T10:00:00Z", EVENT_REQUESTED, "")];
+        let failed = [
+            ev("2026-09-20T10:00:00Z", EVENT_REQUESTED, ""),
+            ev("2026-09-20T10:00:30Z", EVENT_FAILED, "boom"),
+        ];
+        let over = over_reading();
+        let mut ok = over_reading();
+        ok.tokens = Some(1_000);
+        let mut blank = over_reading();
+        blank.tokens = None;
+        let mut pending = over_reading();
+        pending.pending = true;
+        let mut pending_blank = blank.clone();
+        pending_blank.pending = true;
+        let none = JobLiveness::None;
+        let live = JobLiveness::Live;
+
+        // A lost job outranks every reading, even an unreadable one.
+        assert_eq!(
+            row(Err(&Unreadable::NoSessionId), &lost, &[]),
+            RowState::CompactLost
+        );
+        assert_eq!(row(Ok(&over), &lost, &asked), RowState::CompactLost);
+        assert_eq!(
+            row(Err(&Unreadable::NoSessionId), &none, &[]),
+            RowState::NoSession
+        );
+        assert_eq!(
+            row(Err(&Unreadable::NotRead("x".into())), &live, &[]),
+            RowState::NotRead
+        );
+        assert_eq!(
+            row(Err(&Unreadable::NoTranscript("x".into())), &none, &[]),
+            RowState::NoTranscript
+        );
+        assert_eq!(
+            row(Err(&Unreadable::Failed("x".into())), &none, &[]),
+            RowState::Unknown
+        );
+        // No tokens and not pending is unknown, even with a live job.
+        assert_eq!(row(Ok(&blank), &none, &[]), RowState::Unknown);
+        assert_eq!(row(Ok(&blank), &live, &[]), RowState::Unknown);
+        // A live job outranks pending and every ask.
+        assert_eq!(row(Ok(&pending_blank), &live, &[]), RowState::Compacting);
+        assert_eq!(row(Ok(&over), &live, &failed), RowState::Compacting);
+        // Pending outranks an ask.
+        assert_eq!(row(Ok(&pending), &none, &failed), RowState::Pending);
+        assert_eq!(row(Ok(&pending_blank), &none, &[]), RowState::Pending);
+        // An ask outranks the threshold, in both directions.
+        assert_eq!(row(Ok(&over), &none, &failed), RowState::CompactFailed);
+        assert_eq!(row(Ok(&ok), &none, &asked), RowState::Requested);
+        assert_eq!(row(Ok(&over), &none, &asked), RowState::Requested);
+        assert_eq!(row(Ok(&over), &none, &[]), RowState::Over);
+        assert_eq!(row(Ok(&ok), &none, &[]), RowState::Ok);
+        // The threshold is inclusive.
+        let mut edge = over_reading();
+        edge.tokens = Some(300_000);
+        assert_eq!(row(Ok(&edge), &none, &[]), RowState::Over);
+        edge.tokens = Some(299_999);
+        assert_eq!(row(Ok(&edge), &none, &[]), RowState::Ok);
+    }
+
+    #[test]
+    fn classify_reports_request_stale_past_the_deadline() {
+        let asked = [ev("2026-09-20T09:00:00Z", EVENT_REQUESTED, "")];
+        let reading = over_reading();
+        assert_eq!(
+            row(Ok(&reading), &JobLiveness::None, &asked),
+            RowState::RequestStale
+        );
+    }
+
+    #[test]
+    fn as_str_names_every_state() {
+        let names = [
+            (RowState::CompactLost, "compact-lost"),
+            (RowState::NoSession, "no-session"),
+            (RowState::NotRead, "not-read"),
+            (RowState::NoTranscript, "no-transcript"),
+            (RowState::Unknown, "unknown"),
+            (RowState::Compacting, "compacting"),
+            (RowState::Pending, "pending"),
+            (RowState::CompactFailed, "compact-failed"),
+            (RowState::RequestStale, "request-stale"),
+            (RowState::Requested, "requested"),
+            (RowState::Over, "over"),
+            (RowState::Ok, "ok"),
+        ];
+        for (state, name) in names {
+            assert_eq!(state.as_str(), name);
+        }
+    }
+
+    fn caps(command: CompactCommand, max_sends: u8) -> CompactionCaps {
+        CompactionCaps {
+            command,
+            max_sends,
+            trigger: crate::harness::capabilities::TriggerRule::CodexLimit,
+            failure_lines: &[],
+        }
+    }
+
+    #[test]
+    fn compact_line_covers_its_four_outcomes() {
+        let with = caps(CompactCommand::WithInstructions, 1);
+        // No command: none.
+        assert_eq!(
+            compact_line(caps(CompactCommand::Unknown, 1), "keep x"),
+            None
+        );
+        assert_eq!(compact_line(caps(CompactCommand::Bare, 0), "keep x"), None);
+        // A command without instructions types the bare line.
+        assert_eq!(
+            compact_line(caps(CompactCommand::Bare, 1), "keep x").as_deref(),
+            Some("/compact")
+        );
+        // A line break is refused.
+        assert_eq!(compact_line(with, "a\nb"), None);
+        assert_eq!(compact_line(with, "a\rb"), None);
+        // Instructions are trimmed; blank ones give the bare line.
+        assert_eq!(
+            compact_line(with, "  keep x  ").as_deref(),
+            Some("/compact keep x")
+        );
+        assert_eq!(compact_line(with, "   ").as_deref(), Some("/compact"));
+    }
+
+    #[test]
+    fn handoff_fresh_covers_its_branches() {
+        let now = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000);
+        let ago = |s: u64| Some(now - Duration::from_secs(s));
+        assert_eq!(handoff_fresh(None, None, now), Err(HandoffProblem::Missing));
+        assert_eq!(
+            handoff_fresh(None, ago(5), now),
+            Err(HandoffProblem::Missing)
+        );
+        assert_eq!(handoff_fresh(ago(10), ago(20), now), Ok(()));
+        assert!(matches!(
+            handoff_fresh(ago(20), ago(10), now),
+            Err(HandoffProblem::BeforeAsk { .. })
+        ));
+        // Equal times are not later than the ask.
+        assert!(matches!(
+            handoff_fresh(ago(10), ago(10), now),
+            Err(HandoffProblem::BeforeAsk { .. })
+        ));
+        assert_eq!(handoff_fresh(ago(3_600), None, now), Ok(()));
+        assert_eq!(
+            handoff_fresh(ago(3_660), None, now),
+            Err(HandoffProblem::Stale { minutes: 61 })
         );
     }
 }
