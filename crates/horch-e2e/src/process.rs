@@ -16,13 +16,21 @@ pub struct Process {
 /// Every process on the machine, from `ps`. Empty when `ps` cannot run.
 #[cfg(unix)]
 pub fn processes() -> Vec<Process> {
-    let Ok(out) = std::process::Command::new("/bin/ps")
+    try_processes().unwrap_or_default()
+}
+
+/// Every process on the machine, from `ps`, or why `ps` did not run: a
+/// fork can fail on a loaded machine, and an empty list then hides every
+/// process.
+#[cfg(unix)]
+pub fn try_processes() -> std::io::Result<Vec<Process>> {
+    let out = std::process::Command::new("/bin/ps")
         .args(["-axww", "-o", "pid=,pgid=,command="])
-        .output()
-    else {
-        return Vec::new();
-    };
-    String::from_utf8_lossy(&out.stdout)
+        .output()?;
+    if !out.status.success() {
+        return Err(std::io::Error::other(format!("ps failed: {}", out.status)));
+    }
+    Ok(String::from_utf8_lossy(&out.stdout)
         .lines()
         .filter_map(|line| {
             let mut parts = line.split_whitespace();
@@ -34,7 +42,7 @@ pub fn processes() -> Vec<Process> {
                 command: parts.collect::<Vec<_>>().join(" "),
             })
         })
-        .collect()
+        .collect())
 }
 
 /// The command line and environment of each process of this user, by pid,
@@ -86,19 +94,22 @@ pub fn commands_with_environment() -> std::collections::HashMap<u32, String> {
     Default::default()
 }
 
-/// Send `signal` (`TERM`, `KILL`) to each process group.
-///
-/// No `--` before the groups: dash, `/bin/sh` on Debian and Ubuntu, rejects
-/// it ("Illegal number"), and then nothing is signalled. After the signal
-/// option every shell reads `-<pgid>` as a group.
+/// Send `signal` (`TERM`, `KILL`) to each process group, with the `kill`
+/// syscall: a `kill` program would need a fork, which can fail on a loaded
+/// machine, and then nothing is signalled.
 #[cfg(unix)]
 pub fn signal_groups(groups: &[u32], signal: &str) {
-    if groups.is_empty() {
-        return;
+    let signal = match signal {
+        "KILL" => libc::SIGKILL,
+        _ => libc::SIGTERM,
+    };
+    for group in groups {
+        let Ok(group) = libc::pid_t::try_from(*group) else {
+            continue;
+        };
+        if group > 1 {
+            // SAFETY: plain syscall; a group that has ended answers ESRCH.
+            unsafe { libc::kill(-group, signal) };
+        }
     }
-    let targets: Vec<String> = groups.iter().map(|g| format!("-{g}")).collect();
-    let _ = std::process::Command::new("/bin/sh")
-        .arg("-c")
-        .arg(format!("kill -{signal} {} 2>/dev/null", targets.join(" ")))
-        .status();
 }
