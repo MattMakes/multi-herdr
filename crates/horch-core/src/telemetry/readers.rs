@@ -704,10 +704,41 @@ pub(crate) fn pi_line(_c: &mut Cursor, at: u64, line: &str, out: &mut Vec<Observ
 // ─── opencode ───────────────────────────────────────────────────────────────
 
 /// A session id safe to put in a SQL literal.
-fn safe_id(s: &str) -> bool {
+pub(crate) fn safe_id(s: &str) -> bool {
     !s.is_empty()
         && s.chars()
             .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+}
+
+/// The input check of an OpenCode read: `valid` accepts the session id (it
+/// goes into the SQL text), and the database must be a file.
+pub(crate) fn check_opencode(
+    db: &Path,
+    session_id: &str,
+    valid: fn(&str) -> bool,
+) -> Result<(), Unreadable> {
+    if !valid(session_id) {
+        return Err(Unreadable::Failed(format!(
+            "unexpected opencode session id '{session_id}'"
+        )));
+    }
+    if !db.is_file() {
+        return Err(Unreadable::NoTranscript(format!(
+            "no opencode database at {}",
+            db.display()
+        )));
+    }
+    Ok(())
+}
+
+/// The `data` of an OpenCode row: a JSON string is parsed, an object is
+/// taken as it is, anything else is null.
+pub(crate) fn row_data(row: &Value) -> Value {
+    match row.get("data") {
+        Some(Value::String(s)) => serde_json::from_str(s).unwrap_or(Value::Null),
+        Some(v) => v.clone(),
+        None => Value::Null,
+    }
 }
 
 /// Read one OpenCode session's messages updated since the cursor (TEL-06).
