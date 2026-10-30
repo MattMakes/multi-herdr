@@ -588,3 +588,235 @@ fn spawn_checks_the_run_the_persona_and_the_replaced_worker() {
         "horch: run r1 is done; a closed run takes no new worker\n"
     );
 }
+
+/// `ledger claim`: the line a worker sends when nothing is meant for it, the
+/// ticket path in text and in JSON, and the project facts after the text.
+#[test]
+fn claim_prints_the_line_to_send_the_ticket_and_the_project_facts() {
+    let w = World::new();
+    w.ok(&["ledger", "run", "new", "r1"]);
+    w.ok(&["ledger", "add", "--file", "t1.md", "--primary", "dev"]);
+    let new_worker = |persona: &str| {
+        w.ok(&["ledger", "worker", "new", "--persona", persona])
+            .trim()
+            .to_string()
+    };
+
+    let (text_id, json_id) = (new_worker("other"), new_worker("another"));
+    let none = w.run_as(Some(&text_id), &["ledger", "claim"]);
+    assert_eq!(none.code, 0, "{}", none.err);
+    assert_eq!(
+        none.out,
+        format!("No task for other. Send this line, then end your turn:\nhorch tell orchestrator \"[{text_id}] NOTE: No task for other. I exit. PID unknown.\"\n")
+    );
+    let none = w.run_as(Some(&json_id), &["ledger", "claim", "--json"]);
+    assert_eq!(none.code, 0, "{}", none.err);
+    let none = json(&none.out);
+    assert_eq!(none["outcome"], "no_task");
+    assert_eq!(none["persona"], "another");
+    assert_eq!(
+        none["tell"],
+        format!("horch tell orchestrator \"[{json_id}] NOTE: No task for another. I exit. PID unknown.\"")
+    );
+
+    // t1.md is not committed, so a worktree would not hold it: both forms
+    // name it by its absolute path.
+    let dev = new_worker("dev");
+    let claimed = w.run_as(Some(&dev), &["ledger", "claim", "--json"]);
+    assert_eq!(claimed.code, 0, "{}", claimed.err);
+    let claimed = json(&claimed.out);
+    assert_eq!(claimed["outcome"], "claimed");
+    let ticket = claimed["task"]["task_file"].as_str().unwrap();
+    assert!(
+        Path::new(ticket).is_absolute() && ticket.ends_with("/t1.md"),
+        "{claimed}"
+    );
+    let text = w.run_as(Some(&dev), &["ledger", "claim"]);
+    assert_eq!(text.code, 0, "{}", text.err);
+    let lines: Vec<&str> = text.out.lines().collect();
+    assert_eq!(
+        lines[1],
+        format!("Ticket: {ticket}. Read it in full and follow it exactly.")
+    );
+    assert_eq!(lines.last(), Some(&"(No project facts recorded.)"));
+
+    assert_eq!(
+        w.ok(&["note", "--fact", "the build needs X"]),
+        "Project fact recorded.\n"
+    );
+    let text = w.run_as(Some(&dev), &["ledger", "claim"]);
+    assert!(
+        text.out.ends_with(
+            "When the work is complete, run: horch ledger finish\n- the build needs X\n"
+        ),
+        "{}",
+        text.out
+    );
+}
+
+const TICKET_WITH_FACTS: &str =
+    "# 03: From the ticket\n**Check:** `true`\n**Own:** `src/a`, `src/b`\n**Do not touch:** `src/c`\n";
+
+/// `ledger add`: what a ticket says about itself fills in what no flag says,
+/// and a flag beats the ticket.
+#[test]
+fn add_takes_the_title_check_and_files_from_the_ticket_unless_a_flag_names_them() {
+    let w = World::new();
+    w.ok(&["ledger", "run", "new", "r1"]);
+    std::fs::write(w.proj().join("facts.md"), TICKET_WITH_FACTS).unwrap();
+    let claim = |worker: &str| {
+        let o = w.run_as(Some(worker), &["ledger", "claim", "--json"]);
+        assert_eq!(o.code, 0, "{}", o.err);
+        json(&o.out)
+    };
+    let new_worker = || {
+        w.ok(&["ledger", "worker", "new", "--persona", "dev"])
+            .trim()
+            .to_string()
+    };
+
+    assert_eq!(
+        w.ok(&["ledger", "add", "--file", "facts.md", "--primary", "dev"]),
+        "T-1 queued for dev: From the ticket.\n"
+    );
+    let first = claim(&new_worker());
+    let task = &first["task"];
+    assert_eq!(task["title"], "From the ticket");
+    assert_eq!(task["land_check"], "true");
+    assert_eq!(first["own"], serde_json::json!(["src/a", "src/b"]));
+    assert_eq!(first["do_not_touch"], serde_json::json!(["src/c"]));
+    assert_eq!(task["fallback_persona"], serde_json::Value::Null);
+    assert_eq!(task["priority"], 100);
+    assert_eq!(task["parallel"], true);
+    assert_eq!(task["worktree_mode"], "worktree");
+
+    let flags = [
+        "ledger",
+        "add",
+        "--file",
+        "facts.md",
+        "--primary",
+        "dev",
+        "--fallback",
+        "dev2",
+        "--title",
+        "Named",
+        "--phase",
+        "p1",
+        "--issue",
+        "http://i/1",
+        "--spec",
+        "http://s/1",
+        "--priority",
+        "7",
+        "--check",
+        "echo hi",
+        "--own",
+        "x/1,x/2",
+        "--no-touch",
+        "y/1",
+        "--check-timeout",
+        "33",
+    ];
+    assert_eq!(w.ok(&flags), "T-2 queued for dev: Named.\n");
+    let second = claim(&new_worker());
+    let task = &second["task"];
+    assert_eq!(task["title"], "Named");
+    assert_eq!(task["land_check"], "echo hi");
+    assert_eq!(second["own"], serde_json::json!(["x/1", "x/2"]));
+    assert_eq!(second["do_not_touch"], serde_json::json!(["y/1"]));
+    assert_eq!(task["fallback_persona"], "dev2");
+    assert_eq!(task["phase"], "p1");
+    assert_eq!(task["issue_url"], "http://i/1");
+    assert_eq!(task["spec_ref"], "http://s/1");
+    assert_eq!(task["priority"], 7);
+    // The timeout sits in the evidence folder beside the ledger file.
+    let task_id = task["task_id"].as_str().unwrap();
+    let timeout = w
+        .tmp
+        .path()
+        .join("home/.horch/evidence")
+        .join(task_id)
+        .join("check-timeout-s");
+    assert_eq!(std::fs::read_to_string(timeout).unwrap(), "33\n");
+
+    let flags = ["ledger", "add", "--file", "facts.md", "--primary", "dev"];
+    let both = [flags.as_slice(), &["--shared", "--exclusive"]].concat();
+    assert_eq!(w.ok(&both), "T-3 queued for dev: From the ticket.\n");
+    let shown = json(&w.ok(&["ledger", "show", "T-3", "--json"]));
+    assert_eq!(shown["task"]["worktree_mode"], "shared");
+    assert_eq!(shown["task"]["parallel"], false);
+    assert_eq!(shown["own"], serde_json::json!(["src/a", "src/b"]));
+}
+
+/// A check timeout is set after the task is queued: a refused one leaves the
+/// task queued.
+#[test]
+fn add_refuses_a_check_timeout_of_zero_after_it_queued_the_task() {
+    let w = World::new();
+    w.ok(&["ledger", "run", "new", "r1"]);
+    let o = w.run(&[
+        "ledger",
+        "add",
+        "--file",
+        "t1.md",
+        "--primary",
+        "dev",
+        "--check-timeout",
+        "0",
+    ]);
+    assert_eq!(o.code, 1);
+    assert_eq!(o.out, "");
+    assert_eq!(o.err, "horch: a check timeout is 1 to 86400 s, not 0 s\n");
+    assert!(w
+        .ok(&["ledger", "show", "T-1"])
+        .starts_with("T-1 queued: Ticket One\n"));
+}
+
+/// `ledger add-map`: each queued task, then the map path it read, relative to
+/// the current directory or as given.
+#[test]
+fn add_map_prints_each_task_and_the_path_of_the_map_it_read() {
+    let map = "# Map: x\nSpec: [#28](https://example/28)\n\n| # | Issue | Title | Blocked by | Wave |\n|---|---|---|---|---|\n\
+               | [01](m1.md) | [#29](https://example/29) | Store | - | 1 |\n\
+               | [02](m2.md) | [#30](https://example/30) | Claim | #29 | 2 |\n";
+    let queue = |as_given: &dyn Fn(&World) -> PathBuf| {
+        let w = World::new();
+        w.ok(&["ledger", "run", "new", "r1"]);
+        let tickets = [
+            (
+                "m1.md",
+                "# 01: Store\n\n**Persona:** primary `dev`, fallback `dev2` · **Parallel:** yes\n",
+            ),
+            (
+                "m2.md",
+                "# 02: Claim\n\n**Persona:** primary `dev` · **Parallel:** no\n",
+            ),
+        ];
+        for (name, body) in tickets {
+            std::fs::write(w.proj().join(name), body).unwrap();
+        }
+        std::fs::write(w.proj().join("MAP.md"), map).unwrap();
+        let given = as_given(&w);
+        let out = w.ok(&["ledger", "add-map", &given.to_string_lossy()]);
+        // `status` exits 1 while work remains.
+        let status = json(&w.run(&["ledger", "status", "--json"]).out);
+        assert_eq!(status["tasks"].as_array().unwrap().len(), 2, "{status}");
+        (out, std::fs::canonicalize(w.proj()).unwrap())
+    };
+
+    let (out, cwd) = queue(&|_| PathBuf::from("MAP.md"));
+    assert_eq!(
+        out,
+        format!(
+            "T-1 queued for dev: Store.\nT-2 queued for dev: Claim.\n2 tasks queued from {}.\n",
+            cwd.join("MAP.md").display()
+        )
+    );
+    let (out, _) = queue(&|w| w.proj().join("MAP.md"));
+    let given = out.lines().last().unwrap().to_string();
+    assert!(
+        given.starts_with("2 tasks queued from ") && given.ends_with("/proj/MAP.md."),
+        "{out}"
+    );
+}
