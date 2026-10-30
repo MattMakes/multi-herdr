@@ -479,12 +479,22 @@ pub fn redelivery_due(created_at: SystemTime, attempt: usize) -> Option<SystemTi
 }
 
 fn next_id(created_at: SystemTime) -> Id {
-    let millis = created_at
-        .duration_since(SystemTime::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis();
     let counter = NEXT_ID.fetch_add(1, Ordering::Relaxed);
-    Id(format!("{millis:013}-{}-{counter}", std::process::id()))
+    mail_id(created_at, SystemTime::now(), std::process::id(), counter)
+}
+
+/// A mail id. `pending` lists mail by id, so the id sorts by `created_at`,
+/// then by the real time of the enqueue: 2 processes that enqueue in the
+/// same millisecond, or under a pinned clock, keep their order. The pid and
+/// the counter only make the id unique.
+fn mail_id(created_at: SystemTime, enqueued_at: SystemTime, pid: u32, counter: u64) -> Id {
+    let since = |at: SystemTime| {
+        at.duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap_or_default()
+    };
+    let millis = since(created_at).as_millis();
+    let nanos = since(enqueued_at).as_nanos();
+    Id(format!("{millis:013}-{nanos:020}-{pid}-{counter}"))
 }
 
 fn file_safe(s: &str) -> String {
@@ -803,6 +813,20 @@ mod tests {
         mail.mark_answered("worker", at - Duration::from_secs(60))
             .unwrap();
         assert_eq!(mail.answered_at("worker"), Some(at));
+    }
+
+    /// 2 processes enqueue under the same `created_at` (a pinned clock, or
+    /// the same millisecond). The later enqueue sorts last, whatever the
+    /// pids: pid 10000 sorts before pid 9999 as text.
+    #[test]
+    fn ids_of_one_millisecond_sort_by_enqueue_time_not_by_pid() {
+        let created = SystemTime::UNIX_EPOCH + Duration::from_secs(1_900_000_000);
+        let first = mail_id(created, created + Duration::from_micros(10), 9999, 0);
+        let second = mail_id(created, created + Duration::from_micros(20), 10000, 0);
+        assert!(first.0 < second.0, "{first:?} {second:?}");
+        let earlier = mail_id(created, created + Duration::from_secs(5), 1, 0);
+        let later = mail_id(created + Duration::from_millis(1), created, 1, 0);
+        assert!(earlier.0 < later.0, "created_at comes first");
     }
 
     #[test]
