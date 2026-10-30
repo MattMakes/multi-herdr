@@ -160,3 +160,110 @@ pub fn triage(ctx: &RuntimeContext, json: bool) -> Result<()> {
     }
     Ok(())
 }
+
+/// The reply text: the file, or stdin for `-`.
+fn read_reply(file: &str) -> Result<String> {
+    if file == "-" {
+        let mut text = String::new();
+        std::io::Read::read_to_string(&mut std::io::stdin(), &mut text)?;
+        return Ok(text);
+    }
+    std::fs::read_to_string(file).map_err(|e| anyhow!("reading the reply {file}: {e}"))
+}
+
+/// `gh`: `HORCH_GH_BIN`, else `gh` on PATH.
+fn gh_bin() -> PathBuf {
+    std::env::var_os("HORCH_GH_BIN")
+        .filter(|v| !v.is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("gh"))
+}
+
+/// `horch worktree triage apply <file|->`: parse the operator's reply and
+/// run each decision. A bad reply runs nothing.
+pub fn triage_apply(ctx: &RuntimeContext, file: &str, primary: &str) -> Result<()> {
+    let text = read_reply(file)?;
+    let git = Git::new(&ctx.bins.harness.git);
+    let root = triage_root(ctx, &git)?;
+    let mut store = taskledger::open(ctx)?;
+    let rows = triage::collect(store.conn(), &git, &root, Measure::Ids)?;
+    let gh = gh_bin();
+    let remote = triage::apply::pr_remote(&git, &root, &gh);
+    let decided = triage::reply::parse(&text, &rows, remote.is_some())?;
+    let evidence = ctx
+        .paths
+        .ledger_db
+        .parent()
+        .map(|p| p.join("evidence"))
+        .unwrap_or_else(|| PathBuf::from("evidence"));
+    let env = triage::apply::Env {
+        git: &git,
+        root: &root,
+        evidence_root: &evidence,
+        gh: remote.is_some().then_some(gh.as_path()),
+        remote: remote.as_deref(),
+        primary,
+    };
+    let applied = triage::apply::apply(&mut store, &env, &rows, &decided)?;
+    for a in &applied {
+        println!("{}", a.line());
+    }
+    wake_for_finish(ctx, &store, &applied);
+    let failed = applied.iter().filter(|a| !a.ok).count();
+    if failed > 0 {
+        return Err(anyhow!(
+            "{failed} of {} decisions failed; nothing of theirs was deleted. Run horch worktree triage again",
+            applied.len()
+        ));
+    }
+    Ok(())
+}
+
+/// Wake each run's orchestrator for the tasks that `FINISH` queued.
+fn wake_for_finish(
+    ctx: &RuntimeContext,
+    store: &taskledger::Store,
+    applied: &[triage::apply::Applied],
+) {
+    for q in applied.iter().filter_map(|a| a.queued.as_ref()) {
+        match taskledger::runs::get(store.conn(), &q.run_id) {
+            Ok(run) => super::taskledger_wake::wake(
+                ctx,
+                store,
+                &run,
+                &format!(
+                    "NOTE: worktree triage queued {} (FINISH). It inherits its worktree. Spawn a worker for it.",
+                    q.task
+                ),
+            ),
+            Err(e) => eprintln!("horch worktree triage: no run {} to wake ({e:#})", q.run_id),
+        }
+    }
+}
+
+/// `horch worktree restore <name>`: the folder again, from its archive or
+/// trash ref.
+pub fn restore(ctx: &RuntimeContext, name: &str) -> Result<()> {
+    let git = Git::new(&ctx.bins.harness.git);
+    let root = triage_root(ctx, &git)?;
+    let store = taskledger::open(ctx)?;
+    println!("{}", triage::apply::restore(&store, &git, &root, name)?);
+    Ok(())
+}
+
+/// `horch ledger gc`: delete the trash refs older than 30 days.
+pub fn gc(ctx: &RuntimeContext) -> Result<()> {
+    let git = Git::new(&ctx.bins.harness.git);
+    let root = triage_root(ctx, &git)?;
+    let deleted = triage::refs::gc(&git, &root, horch_core::clock::now())?;
+    if deleted.is_empty() {
+        println!(
+            "No trash ref is older than {} days.",
+            triage::refs::TRASH_DAYS
+        );
+    }
+    for r in deleted {
+        println!("deleted {r}");
+    }
+    Ok(())
+}

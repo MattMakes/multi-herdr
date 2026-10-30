@@ -206,6 +206,9 @@ pub enum LedgerCommand {
         #[arg(long)]
         json: bool,
     },
+    /// Delete the worktree triage trash refs (`refs/horch/trash/...`) of
+    /// this project that are older than 30 days (#308).
+    Gc,
     /// Queue a task for an unfinished finding; its claim gets the old
     /// branch, worktree and transcript.
     Reopen {
@@ -534,6 +537,9 @@ fn group_of(command: &LedgerCommand) -> Group {
 pub fn run(ctx: &RuntimeContext, command: LedgerCommand) -> Result<ExitCode> {
     if let LedgerCommand::Legacy { command } = command {
         return super::ledgercmd::run(ctx, command);
+    }
+    if let LedgerCommand::Gc = command {
+        return super::worktree::gc(ctx).map(|()| ExitCode::SUCCESS);
     }
     if let LedgerCommand::Path = command {
         output::println(&ctx.paths.ledger_db.display().to_string());

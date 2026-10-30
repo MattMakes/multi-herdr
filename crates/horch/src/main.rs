@@ -639,6 +639,21 @@ enum WorktreeSubcommand {
         /// Print the rows as JSON.
         #[arg(long)]
         json: bool,
+        #[command(subcommand)]
+        action: Option<TriageAction>,
+    },
+    /// Recreate an archived or trashed worktree folder from its ref.
+    Restore { name: String },
+}
+
+#[derive(Subcommand)]
+enum TriageAction {
+    /// Parse a filled reply table and run each decision. `-` reads stdin.
+    Apply {
+        file: String,
+        /// The persona of the tasks that FINISH queues.
+        #[arg(long, default_value = "opus")]
+        primary: String,
     },
 }
 
@@ -1182,7 +1197,12 @@ fn worktree_command(ctx: &mut Ctx, command: WorktreeSubcommand) -> Result<()> {
             cmd::worktree::land(ctx, name.as_deref(), check.as_deref())
         }
         WorktreeSubcommand::List => cmd::worktree::list(ctx),
-        WorktreeSubcommand::Triage { json } => cmd::worktree::triage(ctx, json),
+        WorktreeSubcommand::Triage { json, action: None } => cmd::worktree::triage(ctx, json),
+        WorktreeSubcommand::Triage {
+            action: Some(TriageAction::Apply { file, primary }),
+            ..
+        } => cmd::worktree::triage_apply(ctx, &file, &primary),
+        WorktreeSubcommand::Restore { name } => cmd::worktree::restore(ctx, &name),
     }
 }
 

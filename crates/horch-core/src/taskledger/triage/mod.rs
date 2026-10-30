@@ -212,12 +212,12 @@ pub fn name_of(root: &Path, path: &Path) -> String {
 
 /// 1 entry of `git worktree list --porcelain`.
 #[derive(Debug, Clone)]
-struct Listed {
-    path: String,
-    branch: Option<String>,
+pub(super) struct Listed {
+    pub(super) path: String,
+    pub(super) branch: Option<String>,
 }
 
-fn listed_worktrees(git: &Git, root: &Path) -> Vec<Listed> {
+pub(super) fn listed_worktrees(git: &Git, root: &Path) -> Vec<Listed> {
     let Ok(out) = git.try_run(root, &["worktree", "list", "--porcelain"]) else {
         return Vec::new();
     };
@@ -353,6 +353,15 @@ fn folder_row_of(conn: &Connection, root: &Path, l: &Listed, base: &str) -> Resu
 }
 
 impl Row {
+    /// A row with only an ID and a name, for tests of the reply parser.
+    #[doc(hidden)]
+    pub fn for_test(id: &str, name: &str) -> Row {
+        let mut row = Row::blank(Path::new("/"), &format!("/{name}"), "main");
+        row.id = id.to_string();
+        row.name = name.to_string();
+        row
+    }
+
     fn blank(root: &Path, path: &str, base: &str) -> Row {
         Row {
             id: String::new(),

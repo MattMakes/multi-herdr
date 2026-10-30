@@ -326,18 +326,28 @@ pub fn check(cx: &Ctx<'_>, name: StepName) -> Result<Outcome> {
 /// The lock every land of 1 repository takes, so lands go in a line. While
 /// it waits, it prints who holds it every 30 s.
 pub(crate) fn land_lock(cx: &Ctx<'_>) -> Result<crate::fsx::DirLockGuard> {
-    let dir = cx.tools.evidence_root.join("locks");
-    let key = sha_hex(&cx.root.to_string_lossy());
     let holder = format!(
         "{} of {} (PID {})",
         cx.task.short(),
         cx.worker.label(),
         std::process::id()
     );
+    repo_land_lock(&cx.tools.evidence_root, &cx.root, &holder)
+}
+
+/// The land lock of the repository at `root`, held by `holder`: the lock
+/// [`land_lock`] takes, for a land that has no finish context (#308).
+pub(crate) fn repo_land_lock(
+    evidence_root: &Path,
+    root: &Path,
+    holder: &str,
+) -> Result<crate::fsx::DirLockGuard> {
+    let dir = evidence_root.join("locks");
+    let key = sha_hex(&root.to_string_lossy());
     take_lock(
         &dir,
         &format!("land-{}", &key[..16]),
-        &holder,
+        holder,
         LOCK_NOTICE_EVERY,
         LAND_LOCK_TIMEOUT,
         |held_by| eprintln!("horch ledger: waiting for the land lock; {held_by} holds it"),
