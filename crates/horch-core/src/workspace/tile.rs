@@ -1734,4 +1734,160 @@ mod tests {
         assert_eq!((op.pane.as_str(), op.direction), ("p5", ResizeDir::Right));
         assert_eq!((op.from_x, op.to_x), (100, 150));
     }
+
+    /// Each rule of the canonical grid, broken alone.
+    #[test]
+    fn every_broken_grid_rule_is_not_canonical() {
+        let broken: Vec<(&str, Box<dyn Fn(&mut TabShape)>)> = vec![
+            (
+                "orchestrator pane missing",
+                Box::new(|s| s.panes[0].0 = "gone".into()),
+            ),
+            (
+                "orchestrator not full height",
+                Box::new(|s| s.panes[0].1.height = 40),
+            ),
+            (
+                "orchestrator not leftmost",
+                Box::new(|s| s.panes[0].1.x = 30),
+            ),
+            (
+                "worker left of the orchestrator's edge",
+                Box::new(|s| s.panes[1].1.x = 80),
+            ),
+            (
+                "3 panes on top",
+                Box::new(|s| s.panes[3].1 = rect(87, 1, 62, 27)),
+            ),
+            ("gap in the top row", Box::new(|s| s.panes[2].1.x = 160)),
+            ("top row ends short", Box::new(|s| s.panes[2].1.width = 50)),
+            (
+                "gap above the bottom row",
+                Box::new(|s| {
+                    s.panes[3].1.y = 40;
+                    s.panes[4].1.y = 40;
+                }),
+            ),
+            (
+                "rows do not fill the height",
+                Box::new(|s| {
+                    s.panes[3].1.height = 20;
+                    s.panes[4].1.height = 20;
+                }),
+            ),
+            (
+                "bottom columns off the top columns",
+                Box::new(|s| {
+                    s.panes[3].1.width = 43;
+                    s.panes[4].1 = rect(130, 28, 80, 26);
+                }),
+            ),
+        ];
+        assert!(tab_is_canonical(&tab1_2x2(), Some("orch"), 4));
+        for (what, change) in broken {
+            let mut shape = tab1_2x2();
+            change(&mut shape);
+            assert!(!tab_is_canonical(&shape, Some("orch"), 4), "{what}");
+        }
+    }
+
+    #[test]
+    fn the_worker_count_must_match_the_panes_on_the_tab() {
+        assert!(!tab_is_canonical(&tab1_2x2(), Some("orch"), 3));
+        let alone = TabShape {
+            tab_id: "t1".into(),
+            area: rect(26, 1, 184, 53),
+            panes: vec![("orch".into(), rect(26, 1, 184, 53))],
+            zoomed: false,
+        };
+        assert!(tab_is_canonical(&alone, Some("orch"), 0));
+        assert!(!tab_is_canonical(&alone, Some("orch"), 1));
+    }
+
+    #[test]
+    fn a_single_worker_must_fill_the_worker_area() {
+        let one = |r: Rect| TabShape {
+            tab_id: "t2".into(),
+            area: rect(0, 0, 200, 52),
+            panes: vec![("p5".into(), r)],
+            zoomed: false,
+        };
+        assert!(tab_is_canonical(&one(rect(0, 0, 200, 52)), None, 1));
+        assert!(
+            !tab_is_canonical(&one(rect(0, 0, 200, 26)), None, 1),
+            "short"
+        );
+        assert!(
+            !tab_is_canonical(&one(rect(10, 0, 190, 52)), None, 1),
+            "left gap"
+        );
+        assert!(
+            !tab_is_canonical(&one(rect(0, 0, 150, 52)), None, 1),
+            "right gap"
+        );
+    }
+
+    #[test]
+    fn the_orchestrator_divider_moves_left_when_the_column_is_too_wide() {
+        let mut shape = tab1_2x2();
+        // Orchestrator 61 -> 85 wide; the workers give up the cells.
+        shape.panes[0].1.width = 85;
+        shape.panes[1].1 = rect(111, 1, 38, 27);
+        shape.panes[3].1 = rect(111, 28, 38, 26);
+        let op = balance_op(&shape, Some("orch")).expect("too wide");
+        assert_eq!((op.pane.as_str(), op.direction), ("p1", ResizeDir::Left));
+        assert_eq!((op.from_x, op.to_x), (111, 87));
+        assert!((op.amount - 24.0 / 184.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn nothing_balances_without_the_orchestrator_pane_or_two_workers_or_width() {
+        assert_eq!(balance_op(&tab1_2x2(), Some("gone")), None);
+        let mut one_worker = tab1_2x2();
+        one_worker.panes.truncate(2);
+        one_worker.panes[0].1.width = 92;
+        one_worker.panes[1].1 = rect(118, 1, 92, 53);
+        assert_eq!(balance_op(&one_worker, Some("orch")), None);
+        let mut flat = overflow_tab("t2", &["a", "b", "c", "d"]);
+        flat.area.width = 0;
+        assert_eq!(balance_op(&flat, None), None);
+    }
+
+    #[test]
+    fn the_bottom_row_is_balanced_after_the_top_row() {
+        let mut shape = tab1_2x2();
+        // Top row even; bottom row's divider 20 cells left of its target.
+        shape.panes[3].1.width = 42;
+        shape.panes[4].1 = rect(129, 28, 81, 26);
+        let op = balance_op(&shape, Some("orch")).expect("the bottom row is uneven");
+        assert_eq!((op.pane.as_str(), op.direction), ("p2", ResizeDir::Right));
+        assert_eq!((op.from_x, op.to_x), (129, 149));
+        assert!((op.amount - 20.0 / 123.0).abs() < 1e-9, "{}", op.amount);
+    }
+
+    #[test]
+    fn a_diagonal_step_closes_the_wider_gap_and_ties_go_across() {
+        let from = rect(0, 0, 10, 10);
+        assert_eq!(
+            step_toward(&from, &rect(20, 100, 10, 10)),
+            Some(FocusDir::Down)
+        );
+        assert_eq!(
+            step_toward(&rect(20, 100, 10, 10), &from),
+            Some(FocusDir::Up)
+        );
+        assert_eq!(
+            step_toward(&from, &rect(100, 20, 10, 10)),
+            Some(FocusDir::Right)
+        );
+        assert_eq!(
+            step_toward(&rect(100, 20, 10, 10), &from),
+            Some(FocusDir::Left)
+        );
+        // Equal gaps: across first.
+        assert_eq!(
+            step_toward(&from, &rect(20, 20, 10, 10)),
+            Some(FocusDir::Right)
+        );
+    }
 }
