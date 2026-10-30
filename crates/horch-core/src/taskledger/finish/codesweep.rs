@@ -40,26 +40,50 @@ pub const REVIEWERS: &[(&str, &str, &str)] = &[
     ("u", "interface-auditor", "UI"),
 ];
 
-/// The skill's auto-triage: `b` and `c` always, the others by diff signals.
-pub fn triage(diff: &str, files: &[String]) -> Vec<&'static str> {
-    let d = diff.to_lowercase();
-    let added: String = diff
-        .lines()
-        .filter(|l| l.starts_with('+') && !l.starts_with("+++"))
-        .collect::<Vec<_>>()
-        .join("\n")
-        .to_lowercase();
-    let any = |words: &[&str]| words.iter().any(|w| added.contains(w));
-    let ext = |exts: &[&str]| {
-        files.iter().any(|f| {
-            Path::new(f)
-                .extension()
-                .and_then(|e| e.to_str())
-                .is_some_and(|e| exts.contains(&e))
-        })
-    };
-    let mut out = vec!["b", "c"];
-    if any(&[
+/// What the triage reads of 1 change.
+struct Signals<'a> {
+    /// The whole diff, lower case.
+    diff: String,
+    /// The added lines, lower case.
+    added: String,
+    files: &'a [String],
+    lines: usize,
+    deleted: usize,
+}
+
+impl<'a> Signals<'a> {
+    fn new(diff: &str, files: &'a [String]) -> Signals<'a> {
+        let added: Vec<&str> = diff
+            .lines()
+            .filter(|l| l.starts_with('+') && !l.starts_with("+++"))
+            .collect();
+        Signals {
+            diff: diff.to_lowercase(),
+            added: added.join("\n").to_lowercase(),
+            files,
+            lines: diff.lines().count(),
+            deleted: diff
+                .lines()
+                .filter(|l| l.starts_with('-') && !l.starts_with("---"))
+                .count(),
+        }
+    }
+
+    /// Whether an added line holds 1 of `words`.
+    fn adds(&self, words: &[&str]) -> bool {
+        words.iter().any(|w| self.added.contains(w))
+    }
+
+    /// Whether a changed file's name ends with 1 of `ends`.
+    fn file_ends_with(&self, ends: &[&str]) -> bool {
+        self.files
+            .iter()
+            .any(|f| ends.iter().any(|e| f.ends_with(e)))
+    }
+}
+
+fn security(s: &Signals<'_>) -> bool {
+    s.adds(&[
         "auth",
         "password",
         "token",
@@ -71,28 +95,30 @@ pub fn triage(diff: &str, files: &[String]) -> Vec<&'static str> {
         "exec(",
         "unsafe",
         "credential",
-    ]) {
-        out.push("v");
-    }
-    if d.contains("new file mode")
-        || d.contains("rename from")
-        || any(&["pub trait", "interface ", "pub struct", "impl "])
-    {
-        out.push("s");
-    }
-    if any(&[
+    ])
+}
+
+fn new_files(s: &Signals<'_>) -> bool {
+    s.diff.contains("new file mode")
+        || s.diff.contains("rename from")
+        || s.adds(&["pub trait", "interface ", "pub struct", "impl "])
+}
+
+fn hot_paths(s: &Signals<'_>) -> bool {
+    s.adds(&[
         "for ", "while ", "loop", "async", "await", "cache", "query", ".iter()", "select ",
-    ]) {
-        out.push("e");
-    }
-    let tests_changed = files.iter().any(|f| f.contains("test"));
-    let code_changed = files
+    ])
+}
+
+/// Tests or code changed: any file but a non-test Markdown file.
+fn tests_or_code_changed(s: &Signals<'_>) -> bool {
+    s.files
         .iter()
-        .any(|f| !f.contains("test") && !f.ends_with(".md"));
-    if tests_changed || code_changed {
-        out.push("t");
-    }
-    if any(&[
+        .any(|f| f.contains("test") || !f.ends_with(".md"))
+}
+
+fn contracts(s: &Signals<'_>) -> bool {
+    s.adds(&[
         "pub fn",
         "pub mod",
         "export ",
@@ -100,45 +126,86 @@ pub fn triage(diff: &str, files: &[String]) -> Vec<&'static str> {
         "alter table",
         "schema",
         "#[derive(serialize",
-    ]) {
-        out.push("g");
-    }
-    let deleted = diff
-        .lines()
-        .filter(|l| l.starts_with('-') && !l.starts_with("---"))
-        .count();
-    if diff.lines().count() > 400 || deleted > 100 {
-        out.push("w");
-    }
-    if any(&[
+    ])
+}
+
+fn large_change(s: &Signals<'_>) -> bool {
+    s.lines > 400 || s.deleted > 100
+}
+
+fn resources(s: &Signals<'_>) -> bool {
+    s.adds(&[
         "lock", "mutex", "thread", "spawn", "file", "socket", "drop(", "close", "kill", "signal",
-    ]) {
-        out.push("r");
-    }
-    if files.iter().any(|f| {
-        f.ends_with("Cargo.toml")
-            || f.ends_with("package.json")
-            || f.ends_with("requirements.txt")
-            || f.ends_with("go.mod")
-            || f.ends_with("Cargo.lock")
-    }) {
-        out.push("d");
-    }
-    if any(&[
+    ])
+}
+
+fn touches_dependencies(s: &Signals<'_>) -> bool {
+    s.file_ends_with(&[
+        "Cargo.toml",
+        "package.json",
+        "requirements.txt",
+        "go.mod",
+        "Cargo.lock",
+    ])
+}
+
+fn loose_rules(s: &Signals<'_>) -> bool {
+    s.adds(&[
         " as ",
         "unwrap()",
         "#[allow",
         "eslint-disable",
         "type: ignore",
         "any)",
-    ]) || diff.lines().count() > 200
-    {
-        out.push("j");
-    }
-    if ext(&["html", "css", "scss", "tsx", "jsx", "vue", "svelte"]) {
-        out.push("u");
-    }
+    ]) || s.lines > 200
+}
+
+fn touches_ui(s: &Signals<'_>) -> bool {
+    const UI: &[&str] = &["html", "css", "scss", "tsx", "jsx", "vue", "svelte"];
+    s.files.iter().any(|f| {
+        Path::new(f)
+            .extension()
+            .and_then(|e| e.to_str())
+            .is_some_and(|e| UI.contains(&e))
+    })
+}
+
+/// The reviewers the triage adds after `b` and `c`, in queue order, each
+/// with the signal that picks it.
+type Rule = fn(&Signals<'_>) -> bool;
+const RULES: &[(&str, Rule)] = &[
+    ("v", security),
+    ("s", new_files),
+    ("e", hot_paths),
+    ("t", tests_or_code_changed),
+    ("g", contracts),
+    ("w", large_change),
+    ("r", resources),
+    ("d", touches_dependencies),
+    ("j", loose_rules),
+    ("u", touches_ui),
+];
+
+/// The skill's auto-triage: `b` and `c` always, the others by diff signals.
+pub fn triage(diff: &str, files: &[String]) -> Vec<&'static str> {
+    let signals = Signals::new(diff, files);
+    let mut out = vec!["b", "c"];
+    out.extend(
+        RULES
+            .iter()
+            .filter(|(_, picks)| picks(&signals))
+            .map(|(code, _)| *code),
+    );
     out
+}
+
+/// The prompt file name of reviewer `code`.
+fn reviewer_name(code: &str) -> &'static str {
+    REVIEWERS
+        .iter()
+        .find(|(c, _, _)| *c == code)
+        .map(|(_, n, _)| *n)
+        .unwrap_or("reviewer")
 }
 
 /// The state of the step between `finish` runs.
@@ -386,31 +453,30 @@ pub struct Finding {
     pub text: String,
 }
 
+/// The severity a `## ` heading opens, if any.
+fn heading_severity(heading: &str) -> Option<&'static str> {
+    let h = heading.trim().to_lowercase();
+    ["Critical", "Important", "Minor"]
+        .into_iter()
+        .find(|s| h.starts_with(&s.to_lowercase()))
+}
+
+/// The text of a `- ` item that is a finding: not empty, not `none`.
+fn finding_item(line: &str) -> Option<&str> {
+    line.strip_prefix("- ")
+        .map(str::trim)
+        .filter(|item| !item.is_empty() && !item.eq_ignore_ascii_case("none"))
+}
+
 /// The findings of 1 reviewer's file: the `- ` items under `## Critical`,
 /// `## Important` and `## Minor`. `- none` is no finding.
 pub fn parse_findings(reviewer: &str, text: &str) -> Vec<(String, String, String)> {
     let mut out = Vec::new();
     let mut sev: Option<&str> = None;
-    for line in text.lines() {
-        let l = line.trim();
+    for l in text.lines().map(str::trim) {
         if let Some(h) = l.strip_prefix("## ") {
-            let h = h.trim().to_lowercase();
-            sev = if h.starts_with("critical") {
-                Some("Critical")
-            } else if h.starts_with("important") {
-                Some("Important")
-            } else if h.starts_with("minor") {
-                Some("Minor")
-            } else {
-                None
-            };
-            continue;
-        }
-        if let (Some(s), Some(item)) = (sev, l.strip_prefix("- ")) {
-            let item = item.trim();
-            if item.is_empty() || item.eq_ignore_ascii_case("none") {
-                continue;
-            }
+            sev = heading_severity(h);
+        } else if let (Some(s), Some(item)) = (sev, finding_item(l)) {
             out.push((s.to_string(), reviewer.to_string(), item.to_string()));
         }
     }
@@ -535,19 +601,87 @@ fn supersede(tx: &rusqlite::Connection, old: Option<&State>, round: u32) -> Resu
     Ok(held)
 }
 
+/// The review task ids of the round.
+fn review_ids(state: &State) -> Vec<String> {
+    state.reviews.iter().map(|(_, id, _)| id.clone()).collect()
+}
+
 fn wait_for_reviews(store: &Store, cx: &Ctx<'_>, state: &State) -> Result<()> {
     super::super::workers::set_wait(
         store.conn(),
         &cx.worker.worker_id,
         "reviewers",
         "waiting for reviewer tasks",
-        &state
-            .reviews
-            .iter()
-            .map(|(_, id, _)| id.clone())
-            .collect::<Vec<_>>(),
+        &review_ids(state),
         7 * 24 * 3600,
     )
+}
+
+/// The change a round reviews, written into the round's folder.
+struct RoundDiff {
+    dir: PathBuf,
+    diff: String,
+    diff_path: PathBuf,
+    files: Vec<String>,
+}
+
+/// The folder of round `round` of the task's reviews, with the branch's
+/// diff in it.
+fn round_diff(cx: &Ctx<'_>, base: &str, round: u32) -> Result<RoundDiff> {
+    let git = &cx.tools.git;
+    let diff = git.run(&cx.dir, &["diff", &format!("{base}...HEAD")])?;
+    let names = git.run(&cx.dir, &["diff", "--name-only", &format!("{base}...HEAD")])?;
+    let dir = review_root(&cx.root)?
+        .join(format!("T{}-{}", cx.task.seq, &cx.task.task_id[..8]))
+        .join(format!("round-{round}"));
+    std::fs::create_dir_all(&dir)?;
+    let diff_path = dir.join("diff.patch");
+    std::fs::write(&diff_path, &diff)?;
+    Ok(RoundDiff {
+        dir,
+        diff,
+        diff_path,
+        files: names.lines().map(String::from).collect(),
+    })
+}
+
+/// What `finish` says after it queued a round.
+fn queued_note(round: u32, shorts: &[String], persona: &str, swapped: Option<String>) -> String {
+    let note = format!(
+        "round {round}: {} reviewer tasks queued ({}) for {persona}. horch wakes the orchestrator to spawn them, and tells you when the reviews are in. End your turn now",
+        shorts.len(),
+        shorts.join(", ")
+    );
+    match swapped {
+        Some(why) => format!("{why}, so the reviews go to {persona}. {note}"),
+        None => note,
+    }
+}
+
+/// The new round, the short names of its tasks, and the workers that held
+/// a review of the old round. 1 transaction: the old round's cancels and
+/// every new task. The state file is written after it commits, so it never
+/// names a task that a failed commit dropped. A failure queues nothing.
+fn add_round(
+    store: &mut Store,
+    cx: &Ctx<'_>,
+    old: Option<&State>,
+    round: State,
+    planned: &[Planned],
+) -> Result<(State, Vec<String>, Vec<String>)> {
+    store.immediate(|tx| {
+        let stop = supersede(tx, old, round.round)?;
+        let mut state = round;
+        let mut shorts = Vec::new();
+        for p in planned {
+            let added = tasks::add(tx, cx.run, &p.task, Actor::Worker)?;
+            shorts.push(added.short());
+            state
+                .reviews
+                .push((p.code.clone(), added.task_id.clone(), p.findings.clone()));
+        }
+        Ok((state, shorts, stop))
+    })
 }
 
 fn queue_round(
@@ -558,57 +692,31 @@ fn queue_round(
     tree: &str,
     old: Option<&State>,
 ) -> Result<Outcome> {
-    let round = old.map(|o| o.round + 1).unwrap_or(1);
-    let git = &cx.tools.git;
-    let diff = git.run(&cx.dir, &["diff", &format!("{base}...HEAD")])?;
-    let names = git.run(&cx.dir, &["diff", "--name-only", &format!("{base}...HEAD")])?;
-    let files: Vec<String> = names.lines().map(|s| s.to_string()).collect();
-    let dir = review_root(&cx.root)?
-        .join(format!("T{}-{}", cx.task.seq, &cx.task.task_id[..8]))
-        .join(format!("round-{round}"));
-    std::fs::create_dir_all(&dir)?;
-    let diff_path = dir.join("diff.patch");
-    std::fs::write(&diff_path, &diff)?;
+    let round = old.map_or(1, |o| o.round + 1);
+    let d = round_diff(cx, base, round)?;
     let (persona, fallback, swapped) = reviewer_personas(cx);
     let planned = plan_round(
-        cx, sweep, &dir, &diff, &diff_path, &files, persona, fallback,
+        cx,
+        sweep,
+        &d.dir,
+        &d.diff,
+        &d.diff_path,
+        &d.files,
+        persona,
+        fallback,
     )?;
-    // 1 transaction: the old round's cancels and every new task. The state
-    // file is written after it commits, so it never names a task that a
-    // failed commit dropped. A failure queues nothing.
-    let (state, shorts, stop) = store.immediate(|tx| {
-        let stop = supersede(tx, old, round)?;
-        let mut reviews = Vec::new();
-        let mut shorts = Vec::new();
-        for p in &planned {
-            let added = tasks::add(tx, cx.run, &p.task, Actor::Worker)?;
-            shorts.push(added.short());
-            reviews.push((p.code.clone(), added.task_id.clone(), p.findings.clone()));
-        }
-        let state = State {
-            round,
-            tree: tree.to_string(),
-            dir: dir.to_string_lossy().into_owned(),
-            reviews,
-            requeues: Default::default(),
-        };
-        Ok((state, shorts, stop))
-    })?;
+    let empty = State {
+        round,
+        tree: tree.to_string(),
+        dir: d.dir.to_string_lossy().into_owned(),
+        reviews: Vec::new(),
+        requeues: Default::default(),
+    };
+    let (state, shorts, stop) = add_round(store, cx, old, empty, &planned)?;
     save(cx, &state)?;
     wait_for_reviews(store, cx, &state)?;
-    let mut note = format!(
-        "round {round}: {} reviewer tasks queued ({}) for {persona}. horch wakes the orchestrator to spawn them, and tells you when the reviews are in. End your turn now",
-        shorts.len(),
-        shorts.join(", ")
-    );
-    if let Some(why) = swapped {
-        note = format!("{why}, so the reviews go to {persona}. {note}");
-    }
-    let mut out = Outcome::waiting(
-        &note,
-        state.reviews.iter().map(|(_, id, _)| id.clone()).collect(),
-    )
-    .judged(Some(tree.to_string()));
+    let note = queued_note(round, &shorts, persona, swapped);
+    let mut out = Outcome::waiting(&note, review_ids(&state)).judged(Some(tree.to_string()));
     out.stop_workers = stop;
     Ok(out)
 }
@@ -634,11 +742,7 @@ fn requeue_cancelled(store: &mut Store, cx: &Ctx<'_>, state: &mut State) -> Resu
                 .or(old.primary_persona.clone())
                 .unwrap_or_else(|| reviewer_persona(None).to_string());
             let fallback = other_reviewer(&primary);
-            let name = REVIEWERS
-                .iter()
-                .find(|(c, _, _)| *c == review.0)
-                .map(|(_, n, _)| *n)
-                .unwrap_or("reviewer");
+            let name = reviewer_name(&review.0);
             let ticket = old.task_file.clone().unwrap_or_default();
             let _ = std::fs::remove_file(&review.2);
             let t = review_task(
@@ -662,19 +766,21 @@ fn requeue_cancelled(store: &mut Store, cx: &Ctx<'_>, state: &mut State) -> Resu
     Ok(again)
 }
 
-/// The step.
-pub fn step(store: &mut Store, cx: &Ctx<'_>) -> Result<Outcome> {
+/// The round of the branch's tree, with the tree: the saved round when it
+/// reviews this tree. Else a new round is queued, and its outcome, like a
+/// step with nothing to review, is the `Err`.
+fn current_round(
+    store: &mut Store,
+    cx: &Ctx<'_>,
+    base: &str,
+) -> Result<std::result::Result<(State, String), Outcome>> {
     let git = &cx.tools.git;
-    let base = cx
-        .run
-        .run_branch
-        .clone()
-        .or(cx.run.base_branch.clone())
-        .context("the run has no run branch")?;
     let names = git.run(&cx.dir, &["diff", "--name-only", &format!("{base}...HEAD")])?;
     let tree = git.tree(&cx.dir)?;
     if names.trim().is_empty() {
-        return Ok(Outcome::not_applicable("the branch changes no file").judged(Some(tree)));
+        return Ok(Err(
+            Outcome::not_applicable("the branch changes no file").judged(Some(tree))
+        ));
     }
     let Some(sweep) = cx
         .tools
@@ -682,18 +788,20 @@ pub fn step(store: &mut Store, cx: &Ctx<'_>) -> Result<Outcome> {
         .clone()
         .filter(|d| d.join("reviewers").is_dir())
     else {
-        return Ok(Outcome::fail(
+        return Ok(Err(Outcome::fail(
             "no skill",
             None,
             "the code-sweep skill was not found. Install the dev plugin's code-sweep skill, or set HORCH_CODE_SWEEP_DIR to its folder (the one that holds reviewers/)",
-        ));
+        )));
     };
-    let mut state = match load(cx) {
-        Some(s) if s.tree == tree => s,
-        old => return queue_round(store, cx, &sweep, &base, &tree, old.as_ref()),
-    };
-    // The round of this tree: queue cancelled reviews again, then wait.
-    let again = requeue_cancelled(store, cx, &mut state)?;
+    match load(cx) {
+        Some(s) if s.tree == tree => Ok(Ok((s, tree))),
+        old => queue_round(store, cx, &sweep, base, &tree, old.as_ref()).map(Err),
+    }
+}
+
+/// The short names of the round's reviews that are not in yet.
+fn pending_reviews(store: &Store, state: &State) -> Result<Vec<String>> {
     let mut pending = Vec::new();
     for (_, id, _) in &state.reviews {
         let t = tasks::get(store.conn(), id)?;
@@ -701,61 +809,101 @@ pub fn step(store: &mut Store, cx: &Ctx<'_>) -> Result<Outcome> {
             pending.push(t.short());
         }
     }
-    if !pending.is_empty() {
-        // Keep the original deadline; repeated finish calls do not extend it.
-        if !again.is_empty()
-            || !super::super::workers::waiting(store.conn(), &cx.worker.worker_id)?
-                .iter()
-                .any(|w| w.kind == "reviewers")
-        {
-            wait_for_reviews(store, cx, &state)?;
-        }
-        let requeued = if again.is_empty() {
-            String::new()
-        } else {
-            format!(
-                "{} cancelled reviews are queued again ({}). ",
-                again.len(),
-                again.join(", ")
-            )
-        };
-        return Ok(Outcome::waiting(
+    Ok(pending)
+}
+
+/// Record the wait for the round's reviewers. Keep the original deadline;
+/// repeated finish calls do not extend it. Reviews queued again start a
+/// new wait.
+fn keep_waiting(store: &Store, cx: &Ctx<'_>, state: &State, requeued: bool) -> Result<()> {
+    if requeued
+        || !super::super::workers::waiting(store.conn(), &cx.worker.worker_id)?
+            .iter()
+            .any(|w| w.kind == "reviewers")
+    {
+        wait_for_reviews(store, cx, state)?;
+    }
+    Ok(())
+}
+
+fn requeued_note(again: &[String]) -> String {
+    if again.is_empty() {
+        String::new()
+    } else {
+        format!(
+            "{} cancelled reviews are queued again ({}). ",
+            again.len(),
+            again.join(", ")
+        )
+    }
+}
+
+/// Queue cancelled reviews of the round again, then wait for the reviews
+/// that are not in. `None` when every review is in.
+fn wait_for_round(
+    store: &mut Store,
+    cx: &Ctx<'_>,
+    state: &mut State,
+    tree: &str,
+) -> Result<Option<Outcome>> {
+    let again = requeue_cancelled(store, cx, state)?;
+    let pending = pending_reviews(store, state)?;
+    if pending.is_empty() {
+        super::super::workers::clear_wait(store.conn(), &cx.worker.worker_id, "reviewers")?;
+        return Ok(None);
+    }
+    keep_waiting(store, cx, state, !again.is_empty())?;
+    let requeued = requeued_note(&again);
+    Ok(Some(
+        Outcome::waiting(
             &format!(
                 "round {}: {requeued}waiting for reviewer tasks {}. End your turn; horch tells you when they are in",
                 state.round,
                 pending.join(", ")
             ),
-            state.reviews.iter().map(|(_, id, _)| id.clone()).collect(),
+            review_ids(state),
         )
-        .judged(Some(tree)));
-    }
-    super::super::workers::clear_wait(store.conn(), &cx.worker.worker_id, "reviewers")?;
-    // Merge the findings.
-    let mut findings = Vec::new();
+        .judged(Some(tree.to_string())),
+    ))
+}
+
+/// The merged findings of a round's reviews.
+struct Graded {
+    findings: Vec<Finding>,
+    /// 1 report row per reviewer.
+    table: Vec<String>,
+    /// A reviewer finished without a findings file.
+    missing: bool,
+}
+
+/// The report row of 1 reviewer.
+fn table_row(name: &str, text: &str, found: &[(String, String, String)]) -> String {
+    let count = |s: &str| found.iter().filter(|f| f.0 == s).count();
+    let (c, i, m) = (count("Critical"), count("Important"), count("Minor"));
+    let verdict = if text.trim().is_empty() {
+        "MISSING"
+    } else if c > 0 {
+        "FAIL"
+    } else if i > 0 {
+        "WARN"
+    } else {
+        "PASS"
+    };
+    format!("| {name} | {verdict} | {c} | {i} | {m} |")
+}
+
+/// Read every findings file of the round and number the findings.
+fn grade_reviews(state: &State) -> Graded {
+    let mut found_all = Vec::new();
     let mut table = Vec::new();
     for (code, _, file) in &state.reviews {
-        let name = REVIEWERS
-            .iter()
-            .find(|(c, _, _)| c == code)
-            .map(|(_, n, _)| *n)
-            .unwrap_or("reviewer");
+        let name = reviewer_name(code);
         let text = std::fs::read_to_string(file).unwrap_or_default();
         let found = parse_findings(name, &text);
-        let count = |s: &str| found.iter().filter(|f| f.0 == s).count();
-        let (c, i, m) = (count("Critical"), count("Important"), count("Minor"));
-        let verdict = if text.trim().is_empty() {
-            "MISSING"
-        } else if c > 0 {
-            "FAIL"
-        } else if i > 0 {
-            "WARN"
-        } else {
-            "PASS"
-        };
-        table.push(format!("| {name} | {verdict} | {c} | {i} | {m} |"));
-        findings.extend(found);
+        table.push(table_row(name, &text, &found));
+        found_all.extend(found);
     }
-    let findings: Vec<Finding> = findings
+    let findings = found_all
         .into_iter()
         .enumerate()
         .map(|(n, (severity, reviewer, text))| Finding {
@@ -765,23 +913,70 @@ pub fn step(store: &mut Store, cx: &Ctx<'_>) -> Result<Outcome> {
             text,
         })
         .collect();
-    let answers_path = Path::new(&state.dir).join("answers.md");
-    let answers = parse_answers(&std::fs::read_to_string(&answers_path).unwrap_or_default());
-    let answered = |id: &str| answers.iter().any(|(a, _)| a == id);
-    let waived = waivers(&cx.tools.evidence_root, &cx.task.task_id);
-    let waiver = |id: &str| waived.iter().find(|w| w.id == id);
     let missing = table.iter().any(|r| r.contains("| MISSING |"));
-    let critical: Vec<&Finding> = findings
-        .iter()
-        .filter(|f| f.severity == "Critical" && waiver(&f.id).is_none())
-        .collect();
-    let open_important: Vec<&Finding> = findings
-        .iter()
-        .filter(|f| f.severity == "Important" && !answered(&f.id) && waiver(&f.id).is_none())
-        .collect();
-    let overall = if !critical.is_empty() || missing {
+    Graded {
+        findings,
+        table,
+        missing,
+    }
+}
+
+/// The author's answers and the orchestrator's waivers of a round.
+struct Rulings {
+    answers_path: PathBuf,
+    answers: Vec<(String, String)>,
+    waived: Vec<Waiver>,
+}
+
+impl Rulings {
+    fn read(cx: &Ctx<'_>, state: &State) -> Rulings {
+        let answers_path = Path::new(&state.dir).join("answers.md");
+        let answers = parse_answers(&std::fs::read_to_string(&answers_path).unwrap_or_default());
+        Rulings {
+            answers_path,
+            answers,
+            waived: waivers(&cx.tools.evidence_root, &cx.task.task_id),
+        }
+    }
+
+    fn answer(&self, id: &str) -> Option<&str> {
+        self.answers
+            .iter()
+            .find(|(a, _)| a == id)
+            .map(|(_, why)| why.as_str())
+    }
+
+    fn waiver(&self, id: &str) -> Option<&Waiver> {
+        self.waived.iter().find(|w| w.id == id)
+    }
+
+    /// Whether `f` blocks the step: a Critical finding until it is waived,
+    /// an Important one until it is answered or waived.
+    fn blocks(&self, f: &Finding) -> bool {
+        self.waiver(&f.id).is_none() && (f.severity == "Critical" || self.answer(&f.id).is_none())
+    }
+}
+
+/// The verdict of a round.
+struct Judgement<'a> {
+    overall: &'static str,
+    missing: bool,
+    critical: Vec<&'a Finding>,
+    open_important: Vec<&'a Finding>,
+}
+
+fn judge<'a>(g: &'a Graded, r: &Rulings) -> Judgement<'a> {
+    let blocking = |severity: &str| -> Vec<&'a Finding> {
+        g.findings
+            .iter()
+            .filter(|f| f.severity == severity && r.blocks(f))
+            .collect()
+    };
+    let critical = blocking("Critical");
+    let overall = if !critical.is_empty() || g.missing {
         "FAIL"
-    } else if findings
+    } else if g
+        .findings
         .iter()
         .any(|f| f.severity == "Important" || f.severity == "Critical")
     {
@@ -789,76 +984,106 @@ pub fn step(store: &mut Store, cx: &Ctx<'_>) -> Result<Outcome> {
     } else {
         "PASS"
     };
+    Judgement {
+        overall,
+        missing: g.missing,
+        open_important: blocking("Important"),
+        critical,
+    }
+}
+
+/// The merged report of the round.
+fn render_report(cx: &Ctx<'_>, state: &State, g: &Graded, r: &Rulings, overall: &str) -> String {
     let mut report = format!(
         "# Code sweep of {} (round {})\n\nOverall verdict: {overall}\n\n| Reviewer | Verdict | Critical | Important | Minor |\n|---|---|---|---|---|\n{}\n",
         cx.task.short(),
         state.round,
-        table.join("\n")
+        g.table.join("\n")
     );
     for sev in ["Critical", "Important", "Minor"] {
         report.push_str(&format!("\n## {sev}\n"));
-        for f in findings.iter().filter(|f| f.severity == sev) {
-            let ans = answers
-                .iter()
-                .find(|(a, _)| *a == f.id)
-                .map(|(_, w)| format!(" — answered: {w}"))
+        for f in g.findings.iter().filter(|f| f.severity == sev) {
+            let ans = r
+                .answer(&f.id)
+                .map(|w| format!(" — answered: {w}"))
                 .unwrap_or_default();
-            let ans = match waiver(&f.id) {
+            let ans = match r.waiver(&f.id) {
                 Some(w) => format!("{ans} — waived by the orchestrator: {}", w.reason),
                 None => ans,
             };
             report.push_str(&format!("- {} [{}] {}{ans}\n", f.id, f.reviewer, f.text));
         }
     }
+    report
+}
+
+fn ids(findings: &[&Finding]) -> String {
+    findings
+        .iter()
+        .map(|f| f.id.as_str())
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+impl Judgement<'_> {
+    /// The step's outcome: its verdict is the overall verdict.
+    fn outcome(&self, state: &State, r: &Rulings, evidence: PathBuf) -> Outcome {
+        let report = evidence.display();
+        let note = if self.missing {
+            format!(
+                "a reviewer finished without a findings file; read {report}. To review this tree again, run horch ledger finish --rereview"
+            )
+        } else if !self.critical.is_empty() {
+            format!(
+                "{} Critical findings ({}). Fix them, commit, and run finish again: the change is reviewed again. Report: {report}",
+                self.critical.len(),
+                ids(&self.critical)
+            )
+        } else if !self.open_important.is_empty() {
+            format!(
+                "{} Important findings without an answer ({}). Fix each one and commit (the change is reviewed again), or answer it in {} as `F<n>: <reason>`. Then run finish again. Report: {report}",
+                self.open_important.len(),
+                ids(&self.open_important),
+                r.answers_path.display()
+            )
+        } else {
+            return Outcome::pass(
+                self.overall,
+                Some(evidence.clone()),
+                &format!("round {}: {}", state.round, self.overall),
+            );
+        };
+        Outcome::fail(self.overall, Some(evidence.clone()), &note)
+    }
+}
+
+/// The step.
+pub fn step(store: &mut Store, cx: &Ctx<'_>) -> Result<Outcome> {
+    let base = cx
+        .run
+        .run_branch
+        .clone()
+        .or(cx.run.base_branch.clone())
+        .context("the run has no run branch")?;
+    let (mut state, tree) = match current_round(store, cx, &base)? {
+        Ok(round) => round,
+        Err(outcome) => return Ok(outcome),
+    };
+    if let Some(waiting) = wait_for_round(store, cx, &mut state, &tree)? {
+        return Ok(waiting);
+    }
+    let graded = grade_reviews(&state);
+    let rulings = Rulings::read(cx, &state);
+    let judgement = judge(&graded, &rulings);
+    let report = render_report(cx, &state, &graded, &rulings, judgement.overall);
     let evidence = cx
         .evidence_dir
         .join(format!("{}-code-sweep-report.md", cx.seq));
     std::fs::write(&evidence, &report)?;
     std::fs::write(Path::new(&state.dir).join("report.md"), &report)?;
-    if missing {
-        return Ok(Outcome::fail(
-            "FAIL",
-            Some(evidence.clone()),
-            &format!(
-                "a reviewer finished without a findings file; read {}. To review this tree again, run horch ledger finish --rereview",
-                evidence.display()
-            ),
-        )
-        .judged(Some(tree)));
-    }
-    if !critical.is_empty() {
-        return Ok(Outcome::fail(
-            "FAIL",
-            Some(evidence.clone()),
-            &format!(
-                "{} Critical findings ({}). Fix them, commit, and run finish again: the change is reviewed again. Report: {}",
-                critical.len(),
-                critical.iter().map(|f| f.id.as_str()).collect::<Vec<_>>().join(", "),
-                evidence.display()
-            ),
-        )
-        .judged(Some(tree)));
-    }
-    if !open_important.is_empty() {
-        return Ok(Outcome::fail(
-            "WARN",
-            Some(evidence.clone()),
-            &format!(
-                "{} Important findings without an answer ({}). Fix each one and commit (the change is reviewed again), or answer it in {} as `F<n>: <reason>`. Then run finish again. Report: {}",
-                open_important.len(),
-                open_important.iter().map(|f| f.id.as_str()).collect::<Vec<_>>().join(", "),
-                answers_path.display(),
-                evidence.display()
-            ),
-        )
-        .judged(Some(tree)));
-    }
-    Ok(Outcome::pass(
-        overall,
-        Some(evidence),
-        &format!("round {}: {overall}", state.round),
-    )
-    .judged(Some(tree)))
+    Ok(judgement
+        .outcome(&state, &rulings, evidence)
+        .judged(Some(tree)))
 }
 
 #[cfg(test)]
