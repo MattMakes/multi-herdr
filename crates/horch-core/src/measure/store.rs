@@ -208,3 +208,121 @@ fn sync_dir(dir: &Path) -> Result<()> {
     let _ = dir;
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::NaiveDate;
+
+    fn envelope(key: &str) -> EventEnvelope {
+        serde_json::from_value(serde_json::json!({
+            "schema_version": "1.0.0",
+            "event_id": "0199a5b0-0000-7000-8000-000000000003",
+            "kind": "judge.started",
+            "occurred_at": "2026-10-02T12:00:00.000Z",
+            "actor": "coordinator",
+            "experiment_id": "0199a5b0-0000-7000-8000-000000000001",
+            "idempotency_key": key,
+            "payload": {},
+        }))
+        .unwrap()
+    }
+
+    fn line(key: &str) -> String {
+        serde_json::to_string(&envelope(key)).unwrap()
+    }
+
+    fn day(d: u32) -> NaiveDate {
+        NaiveDate::from_ymd_opt(2026, 10, d).unwrap()
+    }
+
+    fn keys(read: &ReadEvents) -> Vec<&str> {
+        read.events
+            .iter()
+            .map(|e| e.idempotency_key.as_str())
+            .collect()
+    }
+
+    /// Only regular `*.jsonl` files count, in name order; a missing events
+    /// dir is empty and any other read error is an error.
+    #[test]
+    fn event_files_lists_sorted_jsonl_files_only() {
+        let tmp = tempfile::tempdir().unwrap();
+        let paths = DatasetPaths::from_slug(tmp.path(), "proj");
+        assert!(event_files(&paths).unwrap().is_empty(), "no dir yet");
+
+        let dir = paths.events_dir();
+        std::fs::create_dir_all(dir.join("sub.jsonl")).unwrap();
+        for name in ["2026-10-03.jsonl", "2026-10-01.jsonl", "notes.txt", "x"] {
+            std::fs::write(dir.join(name), "").unwrap();
+        }
+        let names: Vec<_> = event_files(&paths)
+            .unwrap()
+            .iter()
+            .map(|p| p.file_name().unwrap().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(names, ["2026-10-01.jsonl", "2026-10-03.jsonl"]);
+
+        let other = DatasetPaths::from_slug(tmp.path(), "other");
+        std::fs::create_dir_all(other.root()).unwrap();
+        std::fs::write(other.events_dir(), "a file, not a dir").unwrap();
+        let err = event_files(&other).unwrap_err();
+        assert!(format!("{err:#}").contains("reading"), "{err:#}");
+    }
+
+    /// Blank and whitespace-only lines are skipped without a count; a line
+    /// that does not parse and a last line with no newline each count as
+    /// torn, even when that last line is a whole envelope.
+    #[test]
+    fn read_all_skips_blank_lines_and_counts_torn_ones() {
+        let tmp = tempfile::tempdir().unwrap();
+        let paths = DatasetPaths::from_slug(tmp.path(), "proj");
+        fsx::ensure_private_dir(&paths.events_dir()).unwrap();
+        let first = format!("{}\n\n  \t\nnot json\r\n{}\r\n", line("a"), line("b"));
+        std::fs::write(paths.events_file(day(1)), first).unwrap();
+        std::fs::write(
+            paths.events_file(day(2)),
+            format!("{}\n{}", line("c"), line("d")),
+        )
+        .unwrap();
+        std::fs::write(paths.events_file(day(3)), "\n\n").unwrap();
+        std::fs::write(paths.events_dir().join("skip.txt"), "garbage").unwrap();
+
+        let read = read_all(&paths).unwrap();
+        assert_eq!(keys(&read), ["a", "b", "c"]);
+        assert_eq!(read.torn_lines, 2, "bad line + unterminated last line");
+    }
+
+    /// An append creates the day file, is the file's only content, and ends
+    /// a torn last line first so the new event is a line of its own.
+    #[test]
+    fn append_creates_the_file_and_terminates_a_torn_tail() {
+        let tmp = tempfile::tempdir().unwrap();
+        let paths = DatasetPaths::from_slug(tmp.path(), "proj");
+        let file = paths.events_file(day(1));
+        append(&paths, &file, &envelope("a")).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&file).unwrap(),
+            format!("{}\n", line("a"))
+        );
+
+        append(&paths, &file, &envelope("b")).unwrap();
+        let mut text = std::fs::read_to_string(&file).unwrap();
+        assert_eq!(text, format!("{}\n{}\n", line("a"), line("b")));
+
+        text.push_str("{\"torn");
+        std::fs::write(&file, text).unwrap();
+        append(&paths, &file, &envelope("c")).unwrap();
+        let read = read_all(&paths).unwrap();
+        assert_eq!(keys(&read), ["a", "b", "c"]);
+        assert_eq!(read.torn_lines, 1);
+
+        let empty = paths.events_file(day(2));
+        std::fs::write(&empty, "").unwrap();
+        append(&paths, &empty, &envelope("d")).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&empty).unwrap(),
+            format!("{}\n", line("d"))
+        );
+    }
+}
