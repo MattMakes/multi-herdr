@@ -68,3 +68,53 @@ pub(crate) fn effort_problem(
         ))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn each_rule_gives_its_exact_message_and_the_first_rule_wins() {
+        assert_eq!(
+            effort_problem(HarnessKind::Claude, Some("haiku"), "low").as_deref(),
+            Some(
+                "haiku has no effort setting on claude; remove effort (it would be \
+                 ignored, or refused)"
+            )
+        );
+        assert_eq!(
+            effort_problem(HarnessKind::Codex, Some("gpt-5.6-sol"), "minimal").as_deref(),
+            Some("codex effort 'minimal' is an API error on the gpt-5.6 models; use low")
+        );
+        assert_eq!(
+            effort_problem(HarnessKind::Codex, Some("gpt-5.6-sol"), "ultra").as_deref(),
+            Some(
+                "codex effort 'ultra' fans out to parallel client-side agents and \
+                 multiplies spend; use max"
+            )
+        );
+        assert_eq!(
+            effort_problem(HarnessKind::Codex, Some("gpt-6-astra"), "none").as_deref(),
+            Some("gpt-6-astra does not accept effort 'none'; use low")
+        );
+        assert_eq!(
+            effort_problem(HarnessKind::Pi, Some("ollama/qwen3.8"), "ultra").as_deref(),
+            Some(
+                format!(
+                    "effort 'ultra' is not a pi level (expected one of: {})",
+                    valid_efforts(HarnessKind::Pi).join(", ")
+                )
+                .as_str()
+            )
+        );
+        // `none` on a codex model without a reserved tier is a valid level.
+        assert_eq!(
+            effort_problem(HarnessKind::Codex, Some("gpt-5.6-sol"), "none"),
+            None
+        );
+        // Rule 1 beats rule 3: a no-effort model reports itself, not the level.
+        assert!(effort_problem(HarnessKind::Claude, Some("haiku"), "bogus")
+            .unwrap()
+            .starts_with("haiku has no effort setting"));
+    }
+}
