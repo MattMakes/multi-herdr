@@ -921,33 +921,35 @@ pub(crate) fn codex_operator_limit(
 /// The key includes its `[table]`; quotes around key parts are dropped. An
 /// array-of-tables (`[[x]]`) section is skipped.
 fn toml_entries(text: &str) -> Vec<(String, String)> {
-    let mut out = Vec::new();
     let mut table: Option<String> = Some(String::new());
-    for line in text.lines() {
-        let line = strip_toml_comment(line).trim();
-        if line.is_empty() {
-            continue;
-        }
-        if line.starts_with("[[") {
-            table = None;
-            continue;
-        }
-        if let Some(header) = line.strip_prefix('[').and_then(|h| h.strip_suffix(']')) {
-            table = Some(toml_key(header));
-            continue;
-        }
-        let (Some(table), Some((key, value))) = (&table, line.split_once('=')) else {
-            continue;
-        };
-        let key = toml_key(key);
-        let full = if table.is_empty() {
-            key
-        } else {
-            format!("{table}.{key}")
-        };
-        out.push((full, value.trim().to_string()));
+    text.lines()
+        .filter_map(|line| toml_line(line, &mut table))
+        .collect()
+}
+
+/// One line's entry, if it is a `key = value` line. A `[table]` header or an
+/// array-of-tables header changes `table` and gives no entry.
+fn toml_line(line: &str, table: &mut Option<String>) -> Option<(String, String)> {
+    let line = strip_toml_comment(line).trim();
+    if line.is_empty() {
+        return None;
     }
-    out
+    if line.starts_with("[[") {
+        *table = None;
+        return None;
+    }
+    if let Some(header) = line.strip_prefix('[').and_then(|h| h.strip_suffix(']')) {
+        *table = Some(toml_key(header));
+        return None;
+    }
+    let (table, (key, value)) = (table.as_ref()?, line.split_once('=')?);
+    let key = toml_key(key);
+    let full = if table.is_empty() {
+        key
+    } else {
+        format!("{table}.{key}")
+    };
+    Some((full, value.trim().to_string()))
 }
 
 /// A dotted TOML key with its parts unquoted and trimmed.
@@ -976,15 +978,16 @@ fn strip_toml_comment(line: &str) -> &str {
 /// `_` separators, anything else as written.
 fn toml_scalar(raw: &str) -> String {
     let raw = raw.trim();
-    for q in ['"', '\''] {
-        if let Some(inner) = raw.strip_prefix(q).and_then(|r| r.strip_suffix(q)) {
-            return inner.to_string();
-        }
+    let unquoted = ['"', '\'']
+        .into_iter()
+        .find_map(|q| raw.strip_prefix(q).and_then(|r| r.strip_suffix(q)));
+    if let Some(inner) = unquoted {
+        inner.to_string()
+    } else if raw.starts_with(|c: char| c.is_ascii_digit() || c == '-' || c == '+') {
+        raw.replace('_', "")
+    } else {
+        raw.to_string()
     }
-    if raw.starts_with(|c: char| c.is_ascii_digit() || c == '-' || c == '+') {
-        return raw.replace('_', "");
-    }
-    raw.to_string()
 }
 
 /// Codex's sandbox name that allows extra writable roots.
@@ -1018,37 +1021,54 @@ fn launch_sandbox(
     while let Some(arg) = it.next() {
         match arg.as_str() {
             "-s" | "--sandbox" => flag = it.next().cloned(),
-            "--full-auto" | "--approve-for-me" | "--not-so-yolo" => {
-                flag = Some(WORKSPACE_WRITE.into())
-            }
-            "--dangerously-bypass-approvals-and-sandbox" | "--yolo" => {
-                flag = Some("danger-full-access".into())
-            }
-            "-c" | "--config" => {
-                let Some((key, value)) = it.next().and_then(|p| p.split_once('=')) else {
-                    continue;
-                };
-                match key.trim() {
-                    "sandbox_mode" => pair = Some(toml_scalar(value)),
-                    "default_permissions" => pair = Some(profile_sandbox(&toml_scalar(value))),
-                    _ => {}
-                }
-            }
+            "-c" | "--config" => pair = it.next().and_then(|p| config_sandbox(p)).or(pair),
             other => {
-                if let Some(s) = other.strip_prefix("--sandbox=") {
-                    flag = Some(s.to_string());
-                }
+                flag = sandbox_alias(other)
+                    .map(str::to_string)
+                    .or_else(|| other.strip_prefix("--sandbox=").map(str::to_string))
+                    .or(flag)
             }
         }
     }
-    flag.or(pair).or_else(|| {
-        let layers = config()?;
-        layers.value("sandbox_mode").or_else(|| {
-            layers
-                .value("default_permissions")
-                .map(|p| profile_sandbox(&p))
-        })
+    flag.or(pair)
+        .or_else(|| config().and_then(|layers| layers_sandbox(&layers)))
+}
+
+/// The sandbox the inherited config names: `sandbox_mode`, else the profile
+/// named by `default_permissions`.
+fn layers_sandbox(layers: &ConfigLayers) -> Option<String> {
+    layers.value("sandbox_mode").or_else(|| {
+        layers
+            .value("default_permissions")
+            .map(|p| profile_sandbox(&p))
     })
+}
+
+/// The sandbox a convenience flag stands for.
+fn sandbox_alias(arg: &str) -> Option<&'static str> {
+    const SANDBOX_ALIASES: [(&str, &str); 5] = [
+        ("--full-auto", WORKSPACE_WRITE),
+        ("--approve-for-me", WORKSPACE_WRITE),
+        ("--not-so-yolo", WORKSPACE_WRITE),
+        (
+            "--dangerously-bypass-approvals-and-sandbox",
+            "danger-full-access",
+        ),
+        ("--yolo", "danger-full-access"),
+    ];
+    SANDBOX_ALIASES
+        .iter()
+        .find_map(|&(flag, mode)| (flag == arg).then_some(mode))
+}
+
+/// The sandbox a `sandbox_mode=` or `default_permissions=` config pair names.
+fn config_sandbox(pair: &str) -> Option<String> {
+    let (key, value) = pair.split_once('=')?;
+    match key.trim() {
+        "sandbox_mode" => Some(toml_scalar(value)),
+        "default_permissions" => Some(profile_sandbox(&toml_scalar(value))),
+        _ => None,
+    }
 }
 
 /// Whether a codex launch of `teammate` can have the network, judged from
@@ -1235,16 +1255,13 @@ fn permission_args(teammate: &Teammate) -> Option<Vec<String>> {
 /// The profile a codex launch runs: the value after `-p` or `--profile` in
 /// the teammate's args. `None` lets the config's own `profile` decide.
 fn args_profile(args: &[String]) -> Option<&str> {
-    let mut it = args.iter();
-    while let Some(arg) = it.next() {
+    args.iter().enumerate().find_map(|(i, arg)| {
         if arg == "-p" || arg == "--profile" {
-            return it.next().map(String::as_str);
+            args.get(i + 1).map(String::as_str)
+        } else {
+            arg.strip_prefix("--profile=")
         }
-        if let Some(p) = arg.strip_prefix("--profile=") {
-            return Some(p);
-        }
-    }
-    None
+    })
 }
 
 /// The harness-default args of a codex launch, which go before the
@@ -1289,20 +1306,12 @@ pub(crate) fn default_args(
 }
 
 fn config_pair_value<'a>(args: &'a [String], key: &str) -> Option<&'a str> {
-    let mut found = None;
-    let mut args = args.iter();
-    while let Some(arg) = args.next() {
-        if arg != "-c" && arg != "--config" {
-            continue;
-        }
-        let Some((pair_key, value)) = args.next().and_then(|pair| pair.split_once('=')) else {
-            continue;
-        };
-        if pair_key.trim() == key {
-            found = Some(value.trim());
-        }
-    }
-    found
+    args.windows(2)
+        .filter(|w| w[0] == "-c" || w[0] == "--config")
+        .filter_map(|w| w[1].split_once('='))
+        .filter(|(pair_key, _)| pair_key.trim() == key)
+        .map(|(_, value)| value.trim())
+        .last()
 }
 
 /// Whether the final Codex `-c` pairs turn native multi-agent support off.
@@ -1540,20 +1549,7 @@ pub fn parse_permissions_menu(screen: &str) -> Option<PermissionsMenu> {
     let start = screen.rfind(PERMISSIONS_MENU_TITLE)?;
     let mut items = Vec::new();
     let mut cursor = None;
-    for line in screen[start..].lines().skip(1) {
-        let mut rest = line.trim_start();
-        let here = rest.starts_with('›');
-        if here {
-            rest = rest.trim_start_matches('›').trim_start();
-        }
-        let Some((num, label)) = rest.split_once(". ") else {
-            continue;
-        };
-        if num.is_empty() || !num.chars().all(|c| c.is_ascii_digit()) {
-            continue;
-        }
-        let label = label.split("  ").next().unwrap_or("").trim();
-        let label = label.strip_suffix("(current)").unwrap_or(label).trim();
+    for (here, label) in screen[start..].lines().skip(1).filter_map(menu_item) {
         if here {
             cursor = Some(items.len());
         }
@@ -1564,6 +1560,25 @@ pub fn parse_permissions_menu(screen: &str) -> Option<PermissionsMenu> {
         items,
     })
     .filter(|m| !m.items.is_empty())
+}
+
+/// One menu line: whether the cursor is on it, and its label. `None` for a
+/// line that is not a numbered item.
+fn menu_item(line: &str) -> Option<(bool, &str)> {
+    let mut rest = line.trim_start();
+    let here = rest.starts_with('›');
+    if here {
+        rest = rest.trim_start_matches('›').trim_start();
+    }
+    let (num, label) = rest.split_once(". ")?;
+    if num.is_empty() || !num.chars().all(|c| c.is_ascii_digit()) {
+        return None;
+    }
+    let label = label.split("  ").next().unwrap_or("").trim();
+    Some((
+        here,
+        label.strip_suffix("(current)").unwrap_or(label).trim(),
+    ))
 }
 
 /// The value of the newest `Permissions:` line of a `/status` block, with
@@ -2844,6 +2859,134 @@ mod tests {
             with(vec![], Some("default_permissions = \"mine\"\n")).as_deref(),
             Some("mine")
         );
+    }
+
+    fn strings(args: &[&str]) -> Vec<String> {
+        args.iter().map(|a| a.to_string()).collect()
+    }
+
+    #[test]
+    fn w3_sandbox_flags_beat_config_pairs_beat_the_config_file() {
+        let sandbox = |args: &[&str], config: Option<&str>| {
+            let t = Teammate {
+                args: strings(args),
+                ..Default::default()
+            };
+            launch_sandbox(&t, || config.map(ConfigLayers::base))
+        };
+        let cfg = Some("sandbox_mode = \"read-only\"\n");
+        assert_eq!(sandbox(&[], cfg).as_deref(), Some("read-only"));
+        assert_eq!(sandbox(&[], None), None);
+        // A pair beats the file; an unrelated pair or a lone `-c` changes nothing.
+        let pair = ["-c", "sandbox_mode=\"workspace-write\""];
+        assert_eq!(sandbox(&pair, cfg).as_deref(), Some("workspace-write"));
+        assert_eq!(
+            sandbox(&["-c", "model=\"x\""], cfg).as_deref(),
+            Some("read-only")
+        );
+        assert_eq!(sandbox(&["-c"], cfg).as_deref(), Some("read-only"));
+        assert_eq!(sandbox(&["-c", "nokey"], cfg).as_deref(), Some("read-only"));
+        // A flag beats a pair, in any order; the later flag wins.
+        for flag in [
+            &["-s", "danger-full-access"][..],
+            &["--sandbox=danger-full-access"],
+        ] {
+            let mut args = strings(flag);
+            args.extend(strings(&pair));
+            let t = Teammate {
+                args,
+                ..Default::default()
+            };
+            assert_eq!(
+                launch_sandbox(&t, || None).as_deref(),
+                Some("danger-full-access"),
+                "{flag:?}"
+            );
+        }
+        assert_eq!(
+            sandbox(&["--sandbox", "a", "-s", "b"], None).as_deref(),
+            Some("b")
+        );
+        for (alias, mode) in [
+            ("--full-auto", "workspace-write"),
+            ("--approve-for-me", "workspace-write"),
+            ("--not-so-yolo", "workspace-write"),
+            ("--yolo", "danger-full-access"),
+            (
+                "--dangerously-bypass-approvals-and-sandbox",
+                "danger-full-access",
+            ),
+        ] {
+            assert_eq!(sandbox(&[alias], cfg).as_deref(), Some(mode), "{alias}");
+        }
+        assert_eq!(
+            sandbox(&["--config", "sandbox_mode=x"], None).as_deref(),
+            Some("x")
+        );
+    }
+
+    #[test]
+    fn w3_args_profile_and_config_pairs_scan_the_argv() {
+        assert_eq!(args_profile(&strings(&["-p", "fleet"])), Some("fleet"));
+        assert_eq!(
+            args_profile(&strings(&["--profile", "a", "-p", "b"])),
+            Some("a")
+        );
+        assert_eq!(args_profile(&strings(&["x", "--profile=zed"])), Some("zed"));
+        assert_eq!(args_profile(&strings(&["-p"])), None);
+        assert_eq!(args_profile(&strings(&["--search"])), None);
+
+        let argv = strings(&[
+            "-c", "k=1", "--model", "m", "--config", " k = 2 ", "-c", "other=3",
+        ]);
+        assert_eq!(config_pair_value(&argv, "k"), Some("2"));
+        assert_eq!(config_pair_value(&argv, "other"), Some("3"));
+        assert_eq!(config_pair_value(&argv, "absent"), None);
+        // A `k=v` that is not behind a `-c` is not a pair.
+        assert_eq!(config_pair_value(&strings(&["k=9"]), "k"), None);
+        assert_eq!(
+            config_pair_value(&strings(&["-c", "nopair"]), "nopair"),
+            None
+        );
+    }
+
+    #[test]
+    fn w3_toml_scanners_read_entries_and_scalars() {
+        let text = "top = 1_000 # note\n\
+                    [tbl]\n\
+                    \"quoted\" = 'x'\n\
+                    # whole-line comment\n\
+                    \n\
+                    [[arr]]\n\
+                    skipped = true\n\
+                    [a.\"b\"]\n\
+                    c = \"has # inside\"\n\
+                    no_equals_here\n";
+        assert_eq!(
+            toml_entries(text),
+            vec![
+                ("top".to_string(), "1_000".to_string()),
+                ("tbl.quoted".to_string(), "'x'".to_string()),
+                ("a.b.c".to_string(), "\"has # inside\"".to_string()),
+            ]
+        );
+        assert_eq!(toml_scalar(" \"abc\" "), "abc");
+        assert_eq!(toml_scalar("'abc'"), "abc");
+        assert_eq!(toml_scalar("1_000"), "1000");
+        assert_eq!(toml_scalar("-5"), "-5");
+        assert_eq!(toml_scalar("true"), "true");
+        assert_eq!(toml_scalar("\"open"), "\"open");
+    }
+
+    #[test]
+    fn w3_the_permissions_menu_skips_lines_that_are_not_numbered_items() {
+        let screen = format!(
+            "{PERMISSIONS_MENU_TITLE}\n\n  1. Read Only (current)  detail\n  note. not an item\n  x1. bad\n› 2. Default\n  3. Full Access\n"
+        );
+        let m = parse_permissions_menu(&screen).unwrap();
+        assert_eq!(m.items, ["Read Only", "Default", "Full Access"]);
+        assert_eq!(m.cursor_label(), Some("Default"));
+        assert!(parse_permissions_menu(&format!("{PERMISSIONS_MENU_TITLE}\n  1. A\n")).is_none());
     }
 
     /// A path with a quote or a backslash stays 1 TOML string.
