@@ -534,3 +534,57 @@ fn ensure_starts_nothing_with_the_watchdog_off_or_without_a_ledger() {
     assert!(!none.err.contains("watchdog"), "{}", none.err);
     assert!(!bare.tmp.path().join("home/.horch/ledger.sqlite3").exists());
 }
+
+#[test]
+fn spawn_checks_the_run_the_persona_and_the_replaced_worker() {
+    let w = World::new();
+    let no_run = w.run(&["spawn", "sonnet", "--replaces", "nope"]);
+    assert_eq!(no_run.code, 1);
+    assert!(
+        no_run
+            .err
+            .starts_with("horch: --replaces needs an active task-ledger run in ")
+            && no_run.err.ends_with("/proj\n"),
+        "{}",
+        no_run.err
+    );
+    w.ok(&["ledger", "run", "new", "r1"]);
+    let id = w
+        .ok(&[
+            "ledger",
+            "worker",
+            "new",
+            "--persona",
+            "dev",
+            "--role",
+            "dev1",
+        ])
+        .trim()
+        .to_string();
+    let live = w.run(&["spawn", "sonnet", "--replaces", &id]);
+    assert_eq!(live.code, 1);
+    assert_eq!(
+        live.err,
+        format!("horch: worker dev1 is still spawning. Run horch ledger stop {id} \"<reason>\" --run r1, then spawn again\n")
+    );
+    let outside = w.run(&["spawn", "sonnet", "do a thing"]);
+    assert!(
+        outside.err.starts_with("horch spawn: NOTE: this spawn has task text, so it runs outside task-ledger run r1. Give --run <slug> to join a run.\n"),
+        "{}",
+        outside.err
+    );
+    let missing = w.run(&["spawn", "sonnet", "--run", "nosuch"]);
+    assert_eq!(missing.code, 1);
+    assert!(
+        missing.err.starts_with("horch: no run 'nosuch' in "),
+        "{}",
+        missing.err
+    );
+    w.ok(&["ledger", "run", "close"]);
+    let closed = w.run(&["spawn", "sonnet", "--run", "r1"]);
+    assert_eq!(closed.code, 1);
+    assert_eq!(
+        closed.err,
+        "horch: run r1 is done; a closed run takes no new worker\n"
+    );
+}
