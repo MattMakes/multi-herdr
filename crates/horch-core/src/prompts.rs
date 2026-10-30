@@ -185,9 +185,11 @@ pub fn context_message(roster: &Roster, key: &str, vars: &BTreeMap<&str, &str>) 
 /// Render one execpolicy `prefix_rule` block for `~/.codex/execpolicy`.
 pub fn codex_rule_block(rule: &ExecRule) -> String {
     format!(
-        "prefix_rule(\n    pattern = [{}],\n    decision = \"allow\",\n    \
+        "prefix_rule(\n    pattern = [{}],\n    decision = \"{}\",\n    \
          justification = \"herdr-fleet: {}\",\n)\n",
-        rule.pattern, rule.justification
+        rule.pattern,
+        rule.decision.as_str(),
+        rule.justification
     )
 }
 

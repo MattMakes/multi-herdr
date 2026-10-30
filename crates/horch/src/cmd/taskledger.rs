@@ -705,6 +705,7 @@ pub fn run(ctx: &RuntimeContext, command: LedgerCommand) -> Result<ExitCode> {
             }
             let mut tools = tools(ctx);
             tools.reviewers_down = reviewers_down(ctx);
+            tools.codex.personas = codex_personas(ctx);
             if rereview {
                 finish::rereview(&mut store, &tools, &wid)?;
             }
@@ -1632,7 +1633,29 @@ pub fn tools(ctx: &RuntimeContext) -> finish::Tools {
         // An absolute shell: a pane's PATH may not reach one.
         shell: PathBuf::from(if cfg!(unix) { "/bin/sh" } else { "sh" }),
         reviewers_down: Vec::new(),
+        codex: finish::CodexSandbox {
+            bin: ctx.bins.harness.codex.clone(),
+            state_root: ctx.paths.state_root.clone(),
+            personas: Vec::new(),
+        },
     }
+}
+
+/// The roster's Codex teammates: their check runs in a Codex sandbox.
+fn codex_personas(ctx: &RuntimeContext) -> Vec<String> {
+    let Ok(roster) = super::load_roster_unwarned(ctx, None) else {
+        return Vec::new();
+    };
+    roster
+        .names()
+        .into_iter()
+        .filter(|n| {
+            roster
+                .get(n)
+                .is_some_and(|t| t.agent == horch_core::harness::HarnessKind::Codex)
+        })
+        .map(str::to_string)
+        .collect()
 }
 
 /// The `plugins/` folder of each local marketplace checkout that the skill
@@ -1997,4 +2020,70 @@ fn worker_cmd(ctx: &RuntimeContext, store: &mut Store, command: WorkerCommand) -
         }
     }
     Ok(ExitCode::SUCCESS)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::LedgerCommand;
+    use clap::Subcommand;
+    use horch_core::roster::{ExecDecision, Roster};
+
+    /// Whether `cmd` or a subcommand under it takes `--check`.
+    fn takes_check(cmd: &clap::Command) -> bool {
+        cmd.get_arguments().any(|a| a.get_long() == Some("check"))
+            || cmd.get_subcommands().any(takes_check)
+    }
+
+    /// #181: an allow rule runs a codex worker's `horch ledger <sub>` outside
+    /// its sandbox, and `finish` runs a task's check command there. So no
+    /// subcommand that takes `--check` may be allowed, and every allow rule
+    /// names a real subcommand. Read from the clap definition, so a new
+    /// `--check` on an allowed subcommand fails here.
+    #[test]
+    fn no_allowed_ledger_subcommand_takes_a_check_command() {
+        let roster = Roster::builtin().unwrap();
+        let ledger = LedgerCommand::augment_subcommands(clap::Command::new("ledger"));
+        let tokens = |pattern: &str| -> Vec<String> {
+            pattern
+                .split(',')
+                .map(|t| t.trim().trim_matches('"').to_string())
+                .collect()
+        };
+        let allowed = |sub: &str| {
+            let argv = ["horch", "ledger", sub];
+            let matching: Vec<ExecDecision> = roster
+                .exec_rules()
+                .iter()
+                .filter(|r| {
+                    let p = tokens(&r.pattern);
+                    p.len() <= argv.len() && p.iter().zip(argv).all(|(t, a)| t == a)
+                })
+                .map(|r| r.decision)
+                .collect();
+            !matching.is_empty() && !matching.contains(&ExecDecision::Forbidden)
+        };
+        let with_check: Vec<&str> = ledger
+            .get_subcommands()
+            .filter(|c| takes_check(c))
+            .map(|c| c.get_name())
+            .collect();
+        assert!(with_check.contains(&"add"), "{with_check:?}");
+        assert!(with_check.contains(&"reopen"), "{with_check:?}");
+        for sub in &with_check {
+            assert!(
+                !allowed(sub),
+                "'horch ledger {sub}' takes --check and is allowed"
+            );
+        }
+        for rule in roster.exec_rules() {
+            let p = tokens(&rule.pattern);
+            if p.len() > 2 && p[..2] == ["horch", "ledger"] {
+                assert!(
+                    ledger.find_subcommand(&p[2]).is_some(),
+                    "the rule {:?} names no ledger subcommand",
+                    rule.pattern
+                );
+            }
+        }
+    }
 }
