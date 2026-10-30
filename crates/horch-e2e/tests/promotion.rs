@@ -617,6 +617,50 @@ fn pro_rollback_e2e() {
     assert_clean(&h);
 }
 
+/// A round with a receipt that is not PROMOTED or COMPLETE has a promotion
+/// the cleanup has not closed yet. Rollback refuses it (exit 1) and moves
+/// nothing, even though the receipt says the target can go back.
+#[test]
+fn pro_rollback_refuses_a_round_that_stopped_in_cleanup() {
+    let Some(h) = round_harness(
+        "prorollbackcleanup",
+        "",
+        json!({"A": done("a.txt"), "B": done("b.txt")}),
+    ) else {
+        return;
+    };
+    // The promotion lands, then the cleanup stops after its first removal.
+    let out = run_round(
+        &h,
+        &["--promote-to", TARGET],
+        &[("HORCH_FAULT", "abort-during-cleanup:1")],
+    );
+    assert_eq!(out.status.code(), Some(86), "{}", text(&out));
+    let round = rounds(&h)[0].clone();
+    let receipt = receipts(&h)
+        .into_iter()
+        .find(|r| r["round_id"] == round)
+        .unwrap_or_else(|| panic!("no receipt for {round}"));
+    let after = receipt["dest_after"].as_str().unwrap().to_string();
+    assert_eq!(tip(&h, TARGET), after);
+    assert_eq!(round_state(&h, &round), "CLEANUP");
+
+    let out = dataset(&h, &["rollback", &round], &[]);
+    assert_eq!(out.status.code(), Some(1), "{}", text(&out));
+    let refused = format!("REFUSED: round {round} is CLEANUP; rollback needs PROMOTED or COMPLETE");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert_eq!(
+        stdout.lines().last(),
+        Some(refused.as_str()),
+        "{}",
+        text(&out)
+    );
+    assert_eq!(tip(&h, TARGET), after);
+    assert!(of_kind(&events(&h), "promotion.rolled_back").is_empty());
+    assert_eq!(round_state(&h, &round), "CLEANUP");
+    assert_clean(&h);
+}
+
 #[test]
 fn pro_cleanup_needs_force_from_intervention() {
     // The judge fails both attempts: the round needs the operator, and
