@@ -480,4 +480,59 @@ mod tests {
         );
         assert!(ops.iter().all(|o| o.from_x > 179 && o.to_x > 179));
     }
+
+    #[test]
+    fn the_orchestrator_is_guessed_when_none_is_named() {
+        let named = plan(&fresh_2x3(), Some("orch"));
+        assert!(!named.is_empty());
+        assert_eq!(plan(&fresh_2x3(), None), named);
+        // An empty name counts as none.
+        assert_eq!(plan(&fresh_2x3(), Some("")), named);
+    }
+
+    #[test]
+    fn only_a_settled_two_row_grid_is_balanceable() {
+        assert!(balanceable(&fresh_2x3(), Some("orch")));
+        // No workers at all.
+        let mut alone = fresh_2x3();
+        alone.panes.truncate(1);
+        assert!(!balanceable(&alone, Some("orch")));
+        // Three worker rows.
+        let mut three = fresh_2x3();
+        three.panes.push(LayoutPane {
+            pane_id: "third".into(),
+            rect: Rect {
+                x: 179,
+                y: 15,
+                width: 40,
+                height: 10,
+            },
+        });
+        assert!(!balanceable(&three, Some("orch")));
+        // Rows that end at different edges.
+        let uneven = grid(306, 153, &[179, 256, 332], &[179, 256, 300]);
+        assert!(!balanceable(&uneven, Some("orch")));
+        assert!(plan(&uneven, Some("orch")).is_empty());
+    }
+
+    #[test]
+    fn a_divider_right_of_its_target_moves_left_and_one_left_of_it_moves_right() {
+        // 2 columns over [179, 332): the even divider is at 256.
+        let right_of = grid(306, 153, &[179, 290, 332], &[179, 290, 332]);
+        let ops = plan(&right_of, Some("orch"));
+        assert_eq!(ops.len(), 2);
+        assert!(ops.iter().all(|o| o.direction == ResizeDir::Left));
+        assert!(ops.iter().all(|o| o.from_x == 290 && o.to_x == 256));
+        let left_of = grid(306, 153, &[179, 200, 332], &[179, 200, 332]);
+        let ops = plan(&left_of, Some("orch"));
+        assert_eq!(ops.len(), 2);
+        assert!(ops.iter().all(|o| o.direction == ResizeDir::Right));
+        assert!(ops.iter().all(|o| o.from_x == 200 && o.to_x == 256));
+    }
+
+    #[test]
+    fn a_divider_within_the_tolerance_is_left_alone() {
+        let near = grid(306, 153, &[179, 257, 332], &[179, 255, 332]);
+        assert!(plan(&near, Some("orch")).is_empty());
+    }
 }
