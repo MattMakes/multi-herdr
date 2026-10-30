@@ -1722,8 +1722,9 @@ fn a_shared_task_claims_on_the_run_branch_and_lands_only_new_clean_commits() {
     git_in(&h, &project, &["switch", "--quiet", "fleet/alpha"]);
     ok_as(&h, &w, &["ledger", "claim"]);
 
-    // check judges committed work only, in a shared checkout too.
-    std::fs::write(project.join("doc.md"), "draft\n").unwrap();
+    // check judges committed work only, in a shared checkout too: a
+    // changed tracked file fails it.
+    std::fs::write(&p, "# 01: Doc, edited\n").unwrap();
     let (code, r) = finish_json(&h, &w);
     assert_eq!(code, Some(1));
     assert_eq!(r["stopped_at"], "check", "{r}");
@@ -1731,10 +1732,14 @@ fn a_shared_task_claims_on_the_run_branch_and_lands_only_new_clean_commits() {
         r["message"].as_str().unwrap().contains("uncommitted"),
         "{r}"
     );
+    let rel = p.strip_prefix(&project).unwrap().to_string_lossy();
+    git_in(&h, &project, &["checkout", "--", &rel]);
 
+    // An untracked file is not this task's work and does not fail check.
     // No commit since the claim: land refuses.
-    std::fs::remove_file(project.join("doc.md")).unwrap();
+    std::fs::write(project.join("doc.md"), "draft\n").unwrap();
     let (code, r) = finish_json(&h, &w);
+    assert_eq!(step_of(&r, "check").0, "passed", "{r}");
     assert_eq!(code, Some(1));
     assert_eq!(r["stopped_at"], "land", "{r}");
     assert!(
