@@ -8,7 +8,7 @@ use std::process::ExitCode;
 
 use anyhow::{bail, Context, Result};
 use horch_core::harness::HarnessKind;
-use horch_core::roster::{model_takes_effort, Teammate, TEMPLATE};
+use horch_core::roster::{model_takes_effort, Roster, Teammate, TEMPLATE};
 use horch_core::runtime::RuntimeContext;
 use horch_core::usage;
 use serde::Serialize;
@@ -25,25 +25,15 @@ pub fn list(ctx: &RuntimeContext, json: bool) -> Result<()> {
             .map(|n| roster.get(n).unwrap())
             .collect();
         output::println(&serde_json::to_string_pretty(&all)?);
-        return Ok(());
-    }
-
-    let mut out = String::new();
-    if roster.sources.is_empty() {
-        out.push_str("Roster: compiled-in only\n\n");
     } else {
-        let dirs: Vec<String> = roster
-            .sources
-            .iter()
-            .map(|d| d.display().to_string())
-            .collect();
-        out.push_str(&format!(
-            "Roster: compiled-in, overlaid by {}\n\n",
-            dirs.join(", ")
-        ));
+        output::print(&roster_text(&roster));
     }
+    Ok(())
+}
 
-    let offered = roster.offered();
+/// The text body of `horch teammates`: header, offered section, hidden section.
+fn roster_text(roster: &Roster) -> String {
+    let mut out = roster_header(roster);
     // Width spans every printed name, hidden ones included, so the two
     // sections stay in one column.
     let width = roster
@@ -53,6 +43,25 @@ pub fn list(ctx: &RuntimeContext, json: bool) -> Result<()> {
         .max()
         .unwrap_or(0)
         .max(4);
+    offered_section(&mut out, roster, width);
+    hidden_section(&mut out, roster, width);
+    out
+}
+
+fn roster_header(roster: &Roster) -> String {
+    if roster.sources.is_empty() {
+        return "Roster: compiled-in only\n\n".to_string();
+    }
+    let dirs: Vec<String> = roster
+        .sources
+        .iter()
+        .map(|d| d.display().to_string())
+        .collect();
+    format!("Roster: compiled-in, overlaid by {}\n\n", dirs.join(", "))
+}
+
+fn offered_section(out: &mut String, roster: &Roster, width: usize) {
+    let offered = roster.offered();
     // Agent and model names vary a lot across five harnesses - `claude`/`opus`
     // next to `opencode`/`opencode/nemotron-3.5-lightning-free` - so both
     // columns are measured rather than guessed, or the descriptions stop
@@ -71,14 +80,11 @@ pub fn list(ctx: &RuntimeContext, json: bool) -> Result<()> {
         .max(5);
     out.push_str("OFFERED TO THE ORCHESTRATOR\n");
     let (specialists, generics): (Vec<_>, Vec<_>) = offered.iter().partition(|t| !t.generic);
-    let groups: [(&str, Vec<&&horch_core::roster::Teammate>); 2] = [
+    let groups: [(&str, Vec<&&Teammate>); 2] = [
         ("specialists", specialists),
         ("generic fallbacks", generics),
     ];
-    for (label, group) in groups {
-        if group.is_empty() {
-            continue;
-        }
+    for (label, group) in groups.iter().filter(|(_, g)| !g.is_empty()) {
         out.push_str(&format!("  {label}:\n"));
         for t in group {
             out.push_str(&format!(
@@ -87,9 +93,6 @@ pub fn list(ctx: &RuntimeContext, json: bool) -> Result<()> {
                 t.agent.as_str(),
                 t.model.as_deref().unwrap_or("-"),
                 t.brief_description,
-                width = width,
-                agent_width = agent_width,
-                model_width = model_width
             ));
             // Only for a teammate that sets it, so every other line stays as it was.
             if !t.offer_when.is_empty() {
@@ -97,33 +100,31 @@ pub fn list(ctx: &RuntimeContext, json: bool) -> Result<()> {
                     "    {:<width$}  offered when the project has: {}\n",
                     "",
                     t.offer_when.join(", "),
-                    width = width
                 ));
             }
         }
     }
+}
 
+fn hidden_section(out: &mut String, roster: &Roster, width: usize) {
     let hidden: Vec<_> = roster
         .names()
         .into_iter()
         .filter_map(|n| roster.get(n))
         .filter(|t| t.hidden)
         .collect();
-    if !hidden.is_empty() {
-        // Not "spawnable by name": the orchestrators are hidden AND reserved,
-        // launched into a pane by `horch fleet` rather than spawned into one.
-        out.push_str("\nHIDDEN (never in the orchestrator's context)\n");
-        for t in hidden {
-            out.push_str(&format!(
-                "    {:<width$}  {}\n",
-                t.name,
-                t.brief_description,
-                width = width
-            ));
-        }
+    if hidden.is_empty() {
+        return;
     }
-    output::print(&out);
-    Ok(())
+    // Not "spawnable by name": the orchestrators are hidden AND reserved,
+    // launched into a pane by `horch fleet` rather than spawned into one.
+    out.push_str("\nHIDDEN (never in the orchestrator's context)\n");
+    for t in hidden {
+        out.push_str(&format!(
+            "    {:<width$}  {}\n",
+            t.name, t.brief_description,
+        ));
+    }
 }
 
 /// One teammate's tuning, as `horch teammates --matrix` shows it.
@@ -228,32 +229,9 @@ fn matrix_table(rows: &[MatrixRow]) -> String {
          |---|---|---|---|---|---|---|---|---|\n",
     );
     for r in rows {
-        let mut notes: Vec<String> = Vec::new();
-        if !r.offered {
-            notes.push("hidden".into());
-        }
-        if r.generic {
-            notes.push("generic".into());
-        }
-        if r.trains_on_input {
-            notes.push("trains on input".into());
-        }
-        if !r.effort_is_explicit && r.effort == "inherits config.toml" {
-            notes.push("effort unset".into());
-        }
-        if !r.offer_when.is_empty() {
-            notes.push(format!("offer when {}", r.offer_when.join(" or ")));
-        }
-        if !r.requires.is_empty() {
-            notes.push(format!("requires {}", r.requires.join(", ")));
-        }
         let mut skills = r.skills.clone();
         skills.extend(r.plugin_skills.iter().cloned());
         skills.extend(r.operator_skills.iter().map(|s| format!("operator:{s}")));
-        let price = match (r.price_in, r.price_out) {
-            (Some(i), Some(o)) => format!("{i} / {o}"),
-            _ => "unknown".into(),
-        };
         out.push_str(&format!(
             "| {} | {} | {} | {} | {} | {} | {} | {} | {} |\n",
             r.name,
@@ -263,11 +241,44 @@ fn matrix_table(rows: &[MatrixRow]) -> String {
             r.phase,
             list(&skills),
             list(&r.available_skills),
-            price,
-            notes.join(", "),
+            price_cell(r),
+            row_notes(r).join(", "),
         ));
     }
     out
+}
+
+/// The price column: USD per MTok in / out, or `unknown`.
+fn price_cell(r: &MatrixRow) -> String {
+    match (r.price_in, r.price_out) {
+        (Some(i), Some(o)) => format!("{i} / {o}"),
+        _ => "unknown".into(),
+    }
+}
+
+/// The notes column, as (condition, label) pairs kept in display order.
+fn row_notes(r: &MatrixRow) -> Vec<String> {
+    let flags = [
+        (!r.offered, "hidden".to_string()),
+        (r.generic, "generic".to_string()),
+        (r.trains_on_input, "trains on input".to_string()),
+        (
+            !r.effort_is_explicit && r.effort == "inherits config.toml",
+            "effort unset".to_string(),
+        ),
+        (
+            !r.offer_when.is_empty(),
+            format!("offer when {}", r.offer_when.join(" or ")),
+        ),
+        (
+            !r.requires.is_empty(),
+            format!("requires {}", r.requires.join(", ")),
+        ),
+    ];
+    flags
+        .into_iter()
+        .filter_map(|(on, label)| on.then_some(label))
+        .collect()
 }
 
 /// Validate the roster. Exit code is what CI and `horch doctor` care about.
