@@ -7,6 +7,8 @@ use anyhow::Result;
 use rusqlite::{params, Connection, Row};
 use serde::Serialize;
 
+use crate::exeid::{exe_identity, ExeIdentity};
+
 use super::runs::Run;
 use super::tasks::{self, Task};
 use super::util;
@@ -64,6 +66,37 @@ pub struct Report {
     /// abandoned: nothing is left to do.
     pub complete: bool,
     pub counts: Counts,
+    /// The watchdog's version and binary, once it has checked in (#216).
+    pub watchdog: Option<WatchdogLine>,
+}
+
+/// The watchdog of a run, as it recorded itself at its last checkin.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct WatchdogLine {
+    pub version: String,
+    pub exe: Option<ExeIdentity>,
+    pub checkin_at: Option<String>,
+    /// It runs another binary than the horch that built this board: an old
+    /// watchdog after `horch self-update`.
+    pub other_binary: bool,
+}
+
+impl WatchdogLine {
+    /// The line for `run`, judged against the binary `current` that builds
+    /// the board. A run whose watchdog never checked in has none.
+    fn of(run: &Run, current: Option<&ExeIdentity>) -> Option<WatchdogLine> {
+        let version = run.watchdog_version.clone()?;
+        Some(WatchdogLine {
+            other_binary: run
+                .watchdog_exe
+                .as_ref()
+                .zip(current)
+                .is_some_and(|(a, b)| a != b),
+            exe: run.watchdog_exe.clone(),
+            checkin_at: run.watchdog_checkin_at.clone(),
+            version,
+        })
+    }
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
@@ -261,6 +294,13 @@ fn any_open_worktree(wts: &[WorktreeLine]) -> bool {
 
 /// Build the board of `run`.
 pub fn report(conn: &Connection, run: &Run) -> Result<Report> {
+    let current = std::env::current_exe().ok().and_then(|p| exe_identity(&p));
+    report_for(conn, run, current.as_ref())
+}
+
+/// Build the board of `run`, judging its watchdog against the binary
+/// `current` that builds it.
+pub fn report_for(conn: &Connection, run: &Run, current: Option<&ExeIdentity>) -> Result<Report> {
     let now = util::now();
     let waits = tasks::waits(conn, &run.run_id)?;
     let roster = workers::of_run(conn, &run.run_id)?;
@@ -280,6 +320,7 @@ pub fn report(conn: &Connection, run: &Run) -> Result<Report> {
         complete: open_tasks == 0 && !any_open_worktree(&wts),
         worktrees: wts,
         counts,
+        watchdog: WatchdogLine::of(run, current),
     })
 }
 
@@ -305,6 +346,7 @@ pub fn render(r: &Report) -> String {
         run.base_branch.as_deref().unwrap_or("(none)"),
         run.pr_url.as_deref().unwrap_or("none")
     );
+    render_watchdog(&mut out, r.watchdog.as_ref());
     render_tasks(&mut out, &r.tasks);
     render_live(&mut out, &r.workers);
     render_open_worktrees(&mut out, &r.worktrees);
@@ -325,6 +367,22 @@ pub fn render(r: &Report) -> String {
         }
     );
     out
+}
+
+/// The watchdog line; nothing before its first checkin.
+fn render_watchdog(out: &mut String, w: Option<&WatchdogLine>) {
+    let Some(w) = w else { return };
+    let _ = writeln!(
+        out,
+        "Watchdog: horch {}, last checkin {}.{}",
+        w.version,
+        w.checkin_at.as_deref().unwrap_or("-"),
+        if w.other_binary {
+            " OLD BINARY: it runs another binary than this horch. Restart it with horch install."
+        } else {
+            ""
+        }
+    );
 }
 
 /// The task rows, or `No tasks.`.

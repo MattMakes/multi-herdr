@@ -192,3 +192,67 @@ fn events_and_stops_read_their_rows_in_order() {
         (Some("TERM"), Some("p1"), "sent", "2000-01-01T00:00:00Z")
     );
 }
+
+#[test]
+fn the_watchdog_version_and_binary_show_after_its_checkin() {
+    use horch_core::exeid::ExeIdentity;
+    let (_d, store, run) = ledger();
+    let mine = ExeIdentity {
+        path: "/bin/horch".into(),
+        len: 10,
+        mtime_ns: 5,
+    };
+    // Before the first checkin there is no watchdog line.
+    let before = status::report_for(store.conn(), &run, Some(&mine)).unwrap();
+    assert_eq!(before.watchdog, None);
+    assert!(!status::render(&before).contains("Watchdog"));
+
+    store
+        .conn()
+        .execute(
+            "UPDATE runs SET watchdog_version = '0.4.0', watchdog_checkin_at = '2000-01-01T00:00:00Z', \
+             watchdog_exe = ?2 WHERE run_id = ?1",
+            rusqlite::params![run.run_id, serde_json::to_string(&mine).unwrap()],
+        )
+        .unwrap();
+    let run = runs::get(store.conn(), &run.run_id).unwrap();
+
+    let same = status::report_for(store.conn(), &run, Some(&mine)).unwrap();
+    assert_eq!(
+        status::render(&same).lines().nth(1),
+        Some("Watchdog: horch 0.4.0, last checkin 2000-01-01T00:00:00Z.")
+    );
+    let json = serde_json::to_value(&same).unwrap();
+    assert_eq!(json["watchdog"]["version"], "0.4.0");
+    assert_eq!(json["watchdog"]["other_binary"], false);
+
+    let newer = ExeIdentity {
+        mtime_ns: 6,
+        ..mine
+    };
+    let old = status::report_for(store.conn(), &run, Some(&newer)).unwrap();
+    assert!(old.watchdog.as_ref().unwrap().other_binary);
+    assert_eq!(
+        status::render(&old).lines().nth(1),
+        Some("Watchdog: horch 0.4.0, last checkin 2000-01-01T00:00:00Z. OLD BINARY: it runs another binary than this horch. Restart it with horch install.")
+    );
+    assert_eq!(
+        serde_json::to_value(&old).unwrap()["watchdog"]["other_binary"],
+        true
+    );
+}
+
+#[test]
+fn a_checkin_records_the_version_and_the_binary_of_the_watchdog() {
+    use horch_core::taskledger::watchdog;
+    let (_d, store, run) = ledger();
+    watchdog::checkin(store.conn(), &run.run_id, 4242, Some(1)).unwrap();
+    let run = runs::get(store.conn(), &run.run_id).unwrap();
+    assert_eq!(
+        run.watchdog_version.as_deref(),
+        Some(env!("CARGO_PKG_VERSION"))
+    );
+    let me = std::env::current_exe().unwrap();
+    assert_eq!(run.watchdog_exe, horch_core::exeid::exe_identity(&me));
+    assert!(run.watchdog_exe.is_some());
+}

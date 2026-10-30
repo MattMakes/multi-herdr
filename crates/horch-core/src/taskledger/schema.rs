@@ -10,7 +10,7 @@ use rusqlite::Connection;
 use super::model::*;
 
 /// The schema version this binary writes.
-pub const VERSION: i64 = 3;
+pub const VERSION: i64 = 4;
 
 /// A rule that applies to rows this ledger writes, not to imported ones
 /// (section 11.2): `CHECK (origin = 'import' OR <expr>)`.
@@ -370,6 +370,30 @@ fn v1() -> String {
     format!("\n{}\n", tables.join("\n\n"))
 }
 
+/// Version 2: the waits of a worker, and the modes of a worktree.
+const V2: &str = "CREATE TABLE worker_waits (
+            worker_id TEXT NOT NULL REFERENCES workers(worker_id),
+            kind TEXT NOT NULL CHECK(kind IN ('question','reviewers','background')),
+            reason TEXT NOT NULL, started_at TEXT NOT NULL, deadline TEXT NOT NULL,
+            task_ids TEXT NOT NULL DEFAULT '[]', PRIMARY KEY(worker_id,kind));
+            CREATE TABLE worktree_modes (
+                worktree_id TEXT PRIMARY KEY REFERENCES worktrees(worktree_id),
+                run_id TEXT NOT NULL REFERENCES runs(run_id), name TEXT NOT NULL,
+                scratch INTEGER NOT NULL DEFAULT 0 CHECK(scratch IN (0,1))); ";
+
+/// Version 3: a held task stays `queued` with a reason, so the status CHECK
+/// list keeps its words (#168). `attempt_floor` is the attempt count at the
+/// last operator requeue: the limit counts the attempts after it.
+const V3: &str = "ALTER TABLE runs ADD COLUMN max_attempts INTEGER NOT NULL DEFAULT 3;
+             ALTER TABLE tasks ADD COLUMN held_reason TEXT;
+             ALTER TABLE tasks ADD COLUMN attempt_floor INTEGER NOT NULL DEFAULT 0;";
+
+/// Version 4: the version and the binary (a JSON `ExeIdentity`) of the
+/// watchdog at its last checkin, so `ledger status` shows an old watchdog
+/// (#216).
+const V4: &str = "ALTER TABLE runs ADD COLUMN watchdog_version TEXT;
+             ALTER TABLE runs ADD COLUMN watchdog_exe TEXT;";
+
 /// Bring the database to [`VERSION`]. A file from a newer binary is refused:
 /// this one would not know its columns.
 pub fn migrate(conn: &mut Connection) -> Result<()> {
@@ -390,28 +414,10 @@ pub fn migrate(conn: &mut Connection) -> Result<()> {
         tx.execute_batch(&v1())
             .context("creating the task ledger tables")?;
     }
-    if current < 2 {
-        tx.execute_batch(
-            "CREATE TABLE worker_waits (
-            worker_id TEXT NOT NULL REFERENCES workers(worker_id),
-            kind TEXT NOT NULL CHECK(kind IN ('question','reviewers','background')),
-            reason TEXT NOT NULL, started_at TEXT NOT NULL, deadline TEXT NOT NULL,
-            task_ids TEXT NOT NULL DEFAULT '[]', PRIMARY KEY(worker_id,kind));
-            CREATE TABLE worktree_modes (
-                worktree_id TEXT PRIMARY KEY REFERENCES worktrees(worktree_id),
-                run_id TEXT NOT NULL REFERENCES runs(run_id), name TEXT NOT NULL,
-                scratch INTEGER NOT NULL DEFAULT 0 CHECK(scratch IN (0,1))); ",
-        )?;
-    }
-    if current < 3 {
-        // A held task stays `queued` with a reason, so the status CHECK list
-        // keeps its words (#168). `attempt_floor` is the attempt count at the
-        // last operator requeue: the limit counts the attempts after it.
-        tx.execute_batch(
-            "ALTER TABLE runs ADD COLUMN max_attempts INTEGER NOT NULL DEFAULT 3;
-             ALTER TABLE tasks ADD COLUMN held_reason TEXT;
-             ALTER TABLE tasks ADD COLUMN attempt_floor INTEGER NOT NULL DEFAULT 0;",
-        )?;
+    for (version, sql) in [(2, V2), (3, V3), (4, V4)] {
+        if current < version {
+            tx.execute_batch(sql)?;
+        }
     }
     tx.pragma_update(None, "user_version", VERSION)?;
     tx.commit()?;
@@ -452,5 +458,42 @@ mod tests {
             )
             .unwrap();
         assert_eq!(tables, 15);
+    }
+
+    /// A ledger file as version 3 left it, with 1 run.
+    fn version_3_ledger() -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(&v1()).unwrap();
+        conn.execute_batch(V2).unwrap();
+        conn.execute_batch(V3).unwrap();
+        conn.pragma_update(None, "user_version", 3).unwrap();
+        conn.execute_batch(
+            "INSERT INTO projects VALUES ('p', '/r', 'now');
+             INSERT INTO runs (run_id, project_id, slug, status, started_at, watchdog_pid)
+                VALUES ('r1', 'p', 's', 'active', 'now', 77);",
+        )
+        .unwrap();
+        conn
+    }
+
+    #[test]
+    fn migrate_from_version_3_adds_the_watchdog_columns_and_keeps_rows() {
+        let mut conn = version_3_ledger();
+        assert!(conn.prepare("SELECT watchdog_version FROM runs").is_err());
+        migrate(&mut conn).unwrap();
+        let (pid, version, exe): (i64, Option<String>, Option<String>) = conn
+            .query_row(
+                "SELECT watchdog_pid, watchdog_version, watchdog_exe FROM runs",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!((pid, version, exe), (77, None, None));
+        let v: i64 = conn
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(v, 4);
+        // A second run of the migration changes nothing.
+        migrate(&mut conn).unwrap();
     }
 }

@@ -9,6 +9,7 @@ use serde::Serialize;
 use super::model::{Actor, EventKind, Origin, RunStatus, StepName};
 use super::store::optional;
 use super::util::{self, About};
+use crate::exeid::ExeIdentity;
 
 /// 1 run: an orchestrator's body of work.
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -35,6 +36,10 @@ pub struct Run {
     pub watchdog_pid: Option<i64>,
     pub watchdog_started: Option<i64>,
     pub watchdog_checkin_at: Option<String>,
+    /// The horch version of the watchdog at its last checkin (#216).
+    pub watchdog_version: Option<String>,
+    /// The binary the watchdog runs, as it recorded at its last checkin.
+    pub watchdog_exe: Option<ExeIdentity>,
     pub status: String,
     pub origin: String,
     pub started_at: String,
@@ -76,6 +81,10 @@ impl Run {
             watchdog_pid: r.get("watchdog_pid")?,
             watchdog_started: r.get("watchdog_started")?,
             watchdog_checkin_at: r.get("watchdog_checkin_at")?,
+            watchdog_version: r.get("watchdog_version")?,
+            watchdog_exe: r
+                .get::<_, Option<String>>("watchdog_exe")?
+                .and_then(|j| serde_json::from_str(&j).ok()),
             status: r.get("status")?,
             origin: r.get("origin")?,
             started_at: r.get("started_at")?,
