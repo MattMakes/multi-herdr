@@ -71,12 +71,12 @@ enum Checked {
     TimedOut(Duration),
 }
 
-/// Run `command` in `dir` with the shell, in its own process group; the
-/// output goes to `log`. At `timeout` the whole group is killed (#160), and
-/// so it is on every other way out of this function, and when horch gets
-/// SIGINT, SIGTERM or SIGHUP while the check runs.
+/// Run `cmd`, which runs `command`, in `dir`, in its own process group;
+/// the output goes to `log`. At `timeout` the whole group is killed (#160),
+/// and so it is on every other way out of this function, and when horch
+/// gets SIGINT, SIGTERM or SIGHUP while the check runs.
 fn run_check(
-    shell: &Path,
+    mut cmd: Command,
     dir: &Path,
     command: &str,
     log: &Path,
@@ -85,10 +85,7 @@ fn run_check(
     use std::io::Write;
     let mut file = std::fs::File::create(log)?;
     writeln!(file, "$ {command}\n# in {}", dir.display())?;
-    let mut cmd = Command::new(shell);
-    cmd.arg("-c")
-        .arg(command)
-        .current_dir(dir)
+    cmd.current_dir(dir)
         .stdin(std::process::Stdio::null())
         .stdout(file.try_clone()?)
         .stderr(file.try_clone()?);
@@ -245,6 +242,28 @@ fn check_command<'a>(cx: &'a Ctx<'_>) -> Option<&'a str> {
         .filter(|c| !c.trim().is_empty())
 }
 
+/// The process that runs the check `command` in `dir`: the shell, or for a
+/// Codex worker the shell inside the sandbox of its pane (#181), with the
+/// pane's TMPDIR, as `/tmp` is read-only there.
+fn check_process(cx: &Ctx<'_>, dir: &Path, command: &str, sandboxed: bool) -> Result<Command> {
+    let codex = &cx.tools.codex;
+    let mut cmd = if sandboxed {
+        let role = cx.worker.role.as_deref().unwrap_or(&cx.worker.worker_id);
+        let tmpdir = crate::harness::codex::pane_tmpdir(&codex.state_root, role);
+        std::fs::create_dir_all(&tmpdir)
+            .with_context(|| format!("creating {}", tmpdir.display()))?;
+        let mut cmd = Command::new(&codex.bin);
+        cmd.args(crate::harness::codex::sandbox_args(&codex.state_root, dir))
+            .arg(&cx.tools.shell)
+            .env("TMPDIR", tmpdir);
+        cmd
+    } else {
+        Command::new(&cx.tools.shell)
+    };
+    cmd.arg("-c").arg(command);
+    Ok(cmd)
+}
+
 /// Run the task's check in `dir`. `None` when it passed or there is none,
 /// else how it ended and why it did not pass.
 fn check_in(cx: &Ctx<'_>, dir: &Path, log: &Path) -> Result<Option<(Checked, String)>> {
@@ -252,9 +271,17 @@ fn check_in(cx: &Ctx<'_>, dir: &Path, log: &Path) -> Result<Option<(Checked, Str
         return Ok(None);
     };
     let timeout = check_timeout(&cx.tools.evidence_root, &cx.task.task_id);
-    let checked = run_check(&cx.tools.shell, dir, cmd, log, timeout)?;
+    let sandboxed = cx.tools.codex.runs(cx.worker);
+    let process = check_process(cx, dir, cmd, sandboxed)?;
+    let checked = run_check(process, dir, cmd, log, timeout)?;
     let why = match checked {
         Checked::Passed => return Ok(None),
+        Checked::Failed if sandboxed => format!(
+            "`{cmd}` failed in the codex sandbox, which lets it write only {} and \
+             the horch state dir; read {}",
+            dir.display(),
+            log.display()
+        ),
         Checked::Failed => format!("`{cmd}` failed; read {}", log.display()),
         Checked::TimedOut(t) => format!(
             "`{cmd}` timed out after {} s and was killed; read {}",

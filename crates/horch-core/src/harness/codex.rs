@@ -1071,9 +1071,27 @@ fn fleet_write_profile_args(state_root: &str) -> Vec<String> {
     .collect()
 }
 
+/// The args after `codex` that run a command in the sandbox of a Codex
+/// write pane (#181): [`FLEET_WRITE_PROFILE`] with `dir` as its project
+/// root and `state_root` as its 1 extra writable root. The command follows
+/// the last arg, `--`. `codex sandbox` keeps the command in its own process
+/// group, so killing the group of `codex` kills the command too.
+pub fn sandbox_args(state_root: &Path, dir: &Path) -> Vec<String> {
+    let mut args = vec!["sandbox".to_string()];
+    args.extend(fleet_write_profile_args(&state_root.to_string_lossy()));
+    args.extend([
+        "-P".into(),
+        FLEET_WRITE_PROFILE.into(),
+        "-C".into(),
+        dir.to_string_lossy().into_owned(),
+        "--".into(),
+    ]);
+    args
+}
+
 /// The pane's private temp dir, `<state root>/tmp/<role>`: `/tmp` and the
 /// system temp dir are read-only in [`FLEET_WRITE_PROFILE`].
-fn pane_tmpdir(state_root: &Path, role: &str) -> PathBuf {
+pub(crate) fn pane_tmpdir(state_root: &Path, role: &str) -> PathBuf {
     let safe: String = role
         .chars()
         .map(|c| {

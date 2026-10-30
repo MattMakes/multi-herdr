@@ -594,6 +594,7 @@ pub fn run(ctx: &RuntimeContext, command: LedgerCommand) -> Result<ExitCode> {
             }
             let mut tools = tools(ctx);
             tools.reviewers_down = reviewers_down(ctx);
+            tools.codex.personas = codex_personas(ctx);
             if rereview {
                 finish::rereview(&mut store, &tools, &wid)?;
             }
@@ -1498,7 +1499,29 @@ pub fn tools(ctx: &RuntimeContext) -> finish::Tools {
         // An absolute shell: a pane's PATH may not reach one.
         shell: PathBuf::from(if cfg!(unix) { "/bin/sh" } else { "sh" }),
         reviewers_down: Vec::new(),
+        codex: finish::CodexSandbox {
+            bin: ctx.bins.harness.codex.clone(),
+            state_root: ctx.paths.state_root.clone(),
+            personas: Vec::new(),
+        },
     }
+}
+
+/// The roster's Codex teammates: their check runs in a Codex sandbox.
+fn codex_personas(ctx: &RuntimeContext) -> Vec<String> {
+    let Ok(roster) = super::load_roster_unwarned(ctx, None) else {
+        return Vec::new();
+    };
+    roster
+        .names()
+        .into_iter()
+        .filter(|n| {
+            roster
+                .get(n)
+                .is_some_and(|t| t.agent == horch_core::harness::HarnessKind::Codex)
+        })
+        .map(str::to_string)
+        .collect()
 }
 
 /// The `plugins/` folder of each local marketplace checkout that the skill

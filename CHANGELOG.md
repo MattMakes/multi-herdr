@@ -43,9 +43,11 @@
   `show`, `steps`, `finish`, `done`); `add`, `add-map` and `reopen` are
   refused. A Codex pane's private codex home, which holds these rules, is
   now in horch's data folder, so a sandboxed worker cannot edit it. `finish`
-  still runs the task's check command and its git commands
-  outside the sandbox, so the check runs code the worker wrote; a later fix
-  runs the check inside the sandbox. On Windows, horch removes the old broad
+  runs the check command of a Codex worker inside `codex sandbox`, in the
+  same `fleet_write` profile as its pane: the check can write only the
+  worktree and horch's state folder, and it keeps the task's check timeout.
+  Only the git, push and `gh` steps of `finish` run outside the sandbox.
+  On Windows, horch removes the old broad
   `horch ledger` worker rule from the shared codex rules file. That file
   serves every codex session, so after a Codex orchestrator starts, its
   broad `horch ledger` rule applies to Windows workers too. Every worker

@@ -2212,6 +2212,122 @@ fn a_check_past_its_timeout_is_killed_with_its_children() {
     });
 }
 
+/// A run with only the check step, 1 task with `check` (and `timeout` s),
+/// claimed by a new `persona` worker that commits 1 file in its worktree.
+/// Returns (worker, worktree path).
+fn claimed_check(
+    h: &Harness,
+    persona: &str,
+    check: &str,
+    timeout: Option<&str>,
+) -> (String, PathBuf) {
+    ok(h, &["ledger", "run", "new", "alpha", "--steps", "check"]);
+    let p = ticket(h, "01-a", "# 01: Feature\n");
+    let p = p.to_string_lossy();
+    let mut add = vec![
+        "ledger",
+        "add",
+        "--file",
+        &p,
+        "--primary",
+        persona,
+        "--check",
+        check,
+    ];
+    if let Some(t) = timeout {
+        add.extend(["--check-timeout", t]);
+    }
+    ok(h, &add);
+    let w = worker_new(h, persona);
+    ok_as(h, &w, &["ledger", "claim"]);
+    let wt = ok_as(h, &w, &["ledger", "worktree", "new", "feat"]);
+    let path = PathBuf::from(wt.lines().find_map(|l| l.strip_prefix("path: ")).unwrap());
+    commit_file(h, &path, "a.txt");
+    (w, path)
+}
+
+/// #181: `finish` runs outside a Codex worker's sandbox, so it runs the
+/// worker's check inside `codex sandbox`, writable only in the worktree and
+/// the state dir. A check that writes outside fails, and the file is never
+/// made. The same check of a Claude worker writes it: the host allows it.
+#[cfg(target_os = "macos")]
+#[test]
+fn a_codex_workers_check_cannot_write_outside_its_worktree() {
+    for (persona, sandboxed) in [("codex-sol", true), ("opus", false)] {
+        let h = finish_world(&format!("tl-codex-check-{persona}"));
+        let outside = h.root.join("outside.txt");
+        let check = format!("echo in > inside.txt && echo out > {}", outside.display());
+        let (w, path) = claimed_check(&h, persona, &check, None);
+        let (code, r) = finish_json(&h, &w);
+        let codex = h.calls_of("codex");
+        if !sandboxed {
+            assert_eq!(code, Some(0), "{r}");
+            assert!(outside.is_file(), "the host allows the write");
+            assert!(codex.is_empty(), "{codex:?}");
+            continue;
+        }
+        assert_eq!(code, Some(1), "{r}");
+        assert_eq!(step_of(&r, "check").0, "failed", "{r}");
+        assert!(
+            r["message"].as_str().unwrap().contains("codex sandbox"),
+            "{r}"
+        );
+        assert!(!outside.exists(), "the check wrote outside its worktree");
+        assert!(
+            path.join("inside.txt").is_file(),
+            "the worktree is writable"
+        );
+        assert_eq!(codex.len(), 1, "{codex:?}");
+        assert_eq!(codex[0]["argv"][0], "sandbox", "{codex:?}");
+        let writable: Vec<PathBuf> =
+            serde_json::from_value(codex[0]["sandbox_writable"].clone()).unwrap();
+        assert_eq!(writable, [h.state.clone(), path.clone()], "{codex:?}");
+    }
+}
+
+/// #181 with #160: a Codex worker's check in its sandbox still has the
+/// task's timeout. `finish` fails the check with the timeout, and neither
+/// the check's sleep nor `codex sandbox` outlives it.
+#[cfg(unix)]
+#[test]
+fn a_codex_workers_sandboxed_check_past_its_timeout_leaves_no_process() {
+    let h = finish_world("tl-codex-check-timeout");
+    // The check never ends by itself, so only the timeout ends it. Its
+    // parent is `codex sandbox`.
+    let check = "echo $PPID > codex.pid; /bin/sleep 3600 & echo $! > sleep.pid; wait";
+    let (w, path) = claimed_check(&h, "codex-sol", check, Some("2"));
+    let (code, r) = finish_json(&h, &w);
+    assert_eq!(code, Some(1), "{r}");
+    assert_eq!(
+        step_of(&r, "check"),
+        ("failed".into(), "timed out".into()),
+        "{r}"
+    );
+    assert!(
+        r["message"]
+            .as_str()
+            .unwrap()
+            .contains("timed out after 2 s"),
+        "{r}"
+    );
+    assert_eq!(h.calls_of("codex")[0]["argv"][0], "sandbox");
+    for file in ["sleep.pid", "codex.pid"] {
+        let pid = std::fs::read_to_string(path.join(file))
+            .unwrap()
+            .trim()
+            .to_string();
+        // A killed process is reaped by init, not by finish: wait for that.
+        wait_for(&format!("the process in {file} to be gone"), || {
+            let alive = std::process::Command::new("kill")
+                .args(["-0", &pid])
+                .status()
+                .unwrap()
+                .success();
+            (!alive).then_some(())
+        });
+    }
+}
+
 #[test]
 fn a_land_checks_outside_the_lock_and_lands_after_a_faster_task() {
     let h = finish_world("tl-land-race");
