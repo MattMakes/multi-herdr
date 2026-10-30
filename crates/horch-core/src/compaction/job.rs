@@ -360,18 +360,30 @@ mod tests {
     /// effect is 1 entry in `trail`.
     struct Fake {
         trail: RefCell<Vec<String>>,
-        sent: Cell<bool>,
+        sent: Cell<u8>,
         clock: Cell<Duration>,
         restore: Option<Result<(), String>>,
+        /// The marker shows from this send on; 0: never.
+        marker_on_send: u8,
+        idle: bool,
+        pending: bool,
+        tokens_after: u64,
+        /// The pane text per `pane_text` call; the last one repeats.
+        texts: RefCell<Vec<String>>,
     }
 
     impl Fake {
         fn new(restore: Option<Result<(), String>>) -> Fake {
             Fake {
                 trail: RefCell::new(vec![]),
-                sent: Cell::new(false),
+                sent: Cell::new(0),
                 clock: Cell::new(Duration::ZERO),
                 restore,
+                marker_on_send: 1,
+                idle: true,
+                pending: false,
+                tokens_after: 5,
+                texts: RefCell::new(vec![String::new()]),
             }
         }
 
@@ -382,18 +394,25 @@ mod tests {
 
     impl JobPorts for Fake {
         fn pane_status(&self) -> Result<Option<String>> {
-            Ok(Some("idle".into()))
+            Ok(Some(if self.idle { "idle" } else { "working" }.into()))
         }
         fn send(&self, line: &str) -> Result<()> {
             self.trail.borrow_mut().push(format!("send {line}"));
-            self.sent.set(true);
+            self.sent.set(self.sent.get() + 1);
             Ok(())
         }
         fn pane_text(&self) -> Result<String> {
-            Ok(String::new())
+            let mut texts = self.texts.borrow_mut();
+            Ok(if texts.len() > 1 {
+                texts.remove(0)
+            } else {
+                texts[0].clone()
+            })
         }
         fn reading(&self) -> Result<Reading, Unreadable> {
-            let mark = self.sent.get().then(|| CompactionMark {
+            let sent = self.sent.get();
+            let marked = self.marker_on_send > 0 && sent >= self.marker_on_send;
+            let mark = marked.then(|| CompactionMark {
                 at: "2026-10-07T00:00:00Z".into(),
                 offset: 10,
                 trigger: None,
@@ -401,9 +420,13 @@ mod tests {
                 post_tokens: Some(5),
             });
             Ok(Reading {
-                tokens: Some(if mark.is_some() { 5 } else { 100 }),
+                tokens: Some(if mark.is_some() {
+                    self.tokens_after
+                } else {
+                    100
+                }),
                 provisional: false,
-                pending: false,
+                pending: self.pending && mark.is_some(),
                 window: None,
                 model: None,
                 last_compaction: mark,
@@ -495,5 +518,128 @@ mod tests {
         let fake = Fake::new(None);
         assert!(run(&fake, &plan()).is_ok());
         assert_eq!(fake.trail()[..2], ["send /compact", "send resume"]);
+    }
+
+    /// With more sends allowed, a send with no marker is repeated after
+    /// `resend_after`, and the marker of the second send ends the wait.
+    #[test]
+    fn a_missing_marker_sends_the_line_again_after_the_resend_wait() {
+        let mut fake = Fake::new(None);
+        fake.marker_on_send = 2;
+        let mut p = plan();
+        p.max_sends = 2;
+        assert!(run(&fake, &p).is_ok());
+        assert_eq!(
+            fake.trail()[..3],
+            ["send /compact", "send /compact", "send resume"]
+        );
+    }
+
+    /// With 1 send allowed, no marker fails the job at `wait-marker`.
+    #[test]
+    fn no_marker_fails_the_job_at_wait_marker_after_the_timeout() {
+        let mut fake = Fake::new(None);
+        fake.marker_on_send = 0;
+        let fail = run(&fake, &plan()).unwrap_err();
+        assert_eq!(fail.step, Step::WaitMarker);
+        assert_eq!(fail.reason, "no compaction marker after 1 sends");
+        assert_eq!(
+            fake.trail()
+                .iter()
+                .filter(|t| *t == "send /compact")
+                .count(),
+            1
+        );
+        // 1 s to idle (2 polls), then the 60 s marker wait.
+        assert_eq!(fake.elapsed(), Duration::from_secs(61));
+    }
+
+    /// A failure line that is new after the send stops the job at once and
+    /// names the harness.
+    #[test]
+    fn a_new_failure_line_stops_the_wait_for_the_marker() {
+        let mut fake = Fake::new(None);
+        fake.marker_on_send = 0;
+        *fake.texts.borrow_mut() = vec!["ready".into(), "ready\n  boom: no room  ".into()];
+        let mut p = plan();
+        p.failure_lines = vec!["boom".into()];
+        let fail = run(&fake, &p).unwrap_err();
+        assert_eq!(fail.step, Step::WaitMarker);
+        assert_eq!(fail.reason, "codex said \"boom: no room\"");
+        // Only the 1 s to idle: the first marker poll sees the failure.
+        assert_eq!(fake.elapsed(), Duration::from_secs(1));
+    }
+
+    /// A failure line that was in the pane before the send is not new.
+    #[test]
+    fn an_old_failure_line_does_not_stop_the_job() {
+        let fake = Fake::new(None);
+        *fake.texts.borrow_mut() = vec!["boom".into()];
+        let mut p = plan();
+        p.failure_lines = vec!["boom".into()];
+        assert!(run(&fake, &p).is_ok());
+    }
+
+    #[test]
+    fn a_pane_that_never_idles_fails_the_job_at_wait_idle() {
+        let mut fake = Fake::new(None);
+        fake.idle = false;
+        let fail = run(&fake, &plan()).unwrap_err();
+        assert_eq!(fail.step, Step::WaitIdle);
+        assert_eq!(fail.reason, "no idle status in 10 s");
+        assert!(fake.trail().iter().all(|t| !t.starts_with("send")));
+    }
+
+    #[test]
+    fn the_outcome_carries_the_reading_after_the_resume_line() {
+        let mut fake = Fake::new(None);
+        fake.tokens_after = 7;
+        let done = run(&fake, &plan()).unwrap();
+        assert_eq!((done.pre, done.post), (Some(100), Some(7)));
+        assert_eq!(done.mark.offset, 10);
+        assert_eq!(fake.trail().last().unwrap(), "report ok 100 -> 7");
+    }
+
+    /// A reading that stays pending past `reading_timeout` falls back to the
+    /// marker's own post count.
+    #[test]
+    fn a_pending_reading_falls_back_to_the_marker_post_tokens() {
+        let mut fake = Fake::new(None);
+        fake.pending = true;
+        fake.tokens_after = 7;
+        let done = run(&fake, &plan()).unwrap();
+        assert_eq!(done.post, Some(5));
+        // 1 s to idle before the send, 1 s after the marker, 10 s reading wait.
+        assert_eq!(fake.elapsed(), Duration::from_secs(12));
+    }
+
+    #[test]
+    fn step_names_are_kebab_case_in_order() {
+        let all = [
+            Step::Start,
+            Step::WaitIdle,
+            Step::Send,
+            Step::WaitMarker,
+            Step::WaitIdleAfter,
+            Step::RestoreMode,
+            Step::Resume,
+            Step::WaitReading,
+            Step::Report,
+        ];
+        let names: Vec<_> = all.iter().map(|s| s.as_str()).collect();
+        assert_eq!(
+            names,
+            [
+                "start",
+                "wait-idle",
+                "send",
+                "wait-marker",
+                "wait-idle-after",
+                "restore-mode",
+                "resume",
+                "wait-reading",
+                "report"
+            ]
+        );
     }
 }
