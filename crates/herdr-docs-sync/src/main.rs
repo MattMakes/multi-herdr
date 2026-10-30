@@ -308,6 +308,31 @@ mod tests {
         assert_eq!(stale, vec!["README.md", "agent-guide.md"]);
     }
 
+    /// Only a file whose extension is `md` can be stale, and it is given by its
+    /// path: the case, a longer extension and a name with no extension all
+    /// leave a file alone.
+    #[test]
+    fn stale_files_wants_the_extension_md_and_gives_the_path() {
+        let tmp = tempfile::tempdir().unwrap();
+        for name in [
+            "old.md",
+            "UPPER.MD",
+            "old.md.bak",
+            "old.markdown",
+            "old",
+            "md",
+            ".md",
+        ] {
+            std::fs::write(tmp.path().join(name), "x").unwrap();
+        }
+        let stale = stale_files(tmp.path(), &pages(&["install"])).unwrap();
+        assert_eq!(stale, vec![tmp.path().join("old.md")]);
+        // A page that maps to the file keeps it.
+        assert!(stale_files(tmp.path(), &pages(&["old"]))
+            .unwrap()
+            .is_empty());
+    }
+
     #[test]
     fn stale_files_is_empty_for_a_fresh_directory() {
         let tmp = tempfile::tempdir().unwrap();
