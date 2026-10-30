@@ -84,7 +84,7 @@ Every requirement has an ID. Tests carry the ID in their name (section 16.4), an
 |---|---|
 | SPC-01 | At most 1 collector runs per state root. A stale lock (its pid is dead) is broken and reported. |
 | SPC-02 | `horch telemetry` becomes a read-only viewer when the lock is held. Any number of viewers can run. |
-| SPC-03 | `horch telemetry ensure` opens the collector in its own herdr workspace with `--no-focus`. It never focuses, moves, splits or tiles any existing pane, and it does nothing when a live collector runs the current binary. A live collector on another binary is stopped (by pid and start time) and replaced. A live collector that horch cannot stop safely (it recorded no start time) is left running: `ensure` warns on stderr with the pid and the way to stop it by hand, reports it live and exits 0. A start leaves 1 `horch telemetry` workspace: it runs the collector in an old collector workspace (labelled `horch telemetry`, 1 pane, not the live collector's) when one exists, and closes the other old ones after the new collector holds the lock. It never closes a workspace with another label or the live collector's workspace. |
+| SPC-03 | `horch telemetry ensure` opens the collector in its own herdr workspace with `--no-focus`. It never focuses, moves, splits or tiles any existing pane, and it does nothing when a live collector runs the current binary. A live collector on another binary is stopped (by pid and start time) and replaced. A live collector that horch cannot stop safely (it recorded no start time) is left running: `ensure` warns on stderr with the pid and the way to stop it by hand, reports it live and exits 0. `ensure` never waits for the collector it starts, so no wall-clock limit decides whether it succeeds: it records the start in `telemetry/start.json` and exits 0 (section 12.1). While that start is in progress, a later `ensure` reports it and starts no other. A failed start (its process ended before it took the lock, or no process marked it within 5 min) is reported by the next `ensure` or `horch telemetry`, and the next `ensure` starts the collector again. A start leaves 1 `horch telemetry` workspace: it runs the collector in an old collector workspace (labelled `horch telemetry`, 1 pane, not the live collector's) when one exists. The new collector closes the other old ones once it holds the lock, and a duplicate start that finds the lock held ends. It never closes a workspace with another label or the live collector's workspace. |
 | SPC-04 | The screen shows pools, live panes, rollups and insights, with keys `g`, `w`, `p`, `r`, `?`, `Esc`, `q` and Ctrl-C (section 12.4). The help is modal. The columns follow the column rule: money and the state flags never go, 1 space between columns, project base names. A short terminal (24 rows or fewer) shows 1 line per pool and 1 line of facts. A project change shows `loading <project>…` until its rollup arrives. A lost terminal, SIGHUP, SIGINT or SIGTERM ends the screen and restores the terminal. `horch telemetry render` prints 1 `ratatui` frame as plain text, at 20x6 or more. |
 | SPC-05 | `horch usage` and `horch quota` print the same data as the screen, as text or `--json`. |
 | SPC-06 | `horch fleet` calls `ensure`. If `ensure` fails, the fleet still starts and prints 1 warning line. |
@@ -458,12 +458,38 @@ A reading whose `resets_at` has passed is treated as `used = 0` for that window 
 | command | behavior |
 |---|---|
 | `horch telemetry` | Try the lock. If acquired: collector + TUI. If held by a live pid: viewer (TUI over `snapshot.json`, refreshed every `tick_ms`). |
-| `horch telemetry ensure` | If a live collector holds the lock and runs the current binary: print its location, exit 0. If it runs another binary (section 12.2): stop it, then start a new one as below. Else: `herdr workspace create --label "horch telemetry" --no-focus`, then run `horch telemetry` in its root pane, and wait up to 5 s for `collector.json` to show the new pid. |
+| `horch telemetry ensure` | If a live collector holds the lock and runs the current binary: print its location, exit 0. If it runs another binary (section 12.2): stop it, then start a new one as below. If a start is in progress (below): print where, start no other, exit 0. Else: run `horch telemetry` in an old collector workspace with 1 pane, or in a new one from `herdr workspace create --label "horch telemetry" --no-focus`, record the start, and exit 0 without waiting. A failed earlier start is reported on stderr first and replaced. |
 | `horch telemetry collect --once` | Takes the lock, runs exactly 1 tick with no TUI, and releases the lock. Exit 2 if a live collector holds the lock. Tests use a private `HORCH_STATE_DIR`. |
 | `horch telemetry render [--snapshot F] [--size 120x40] [--group G] [--window W]` | Render 1 frame to stdout as plain text. Used by golden tests and by the cloud verification. |
 | `horch usage [--json] [--since T] [--project P] [--by teammate\|phase\|agent\|project\|plan\|kind] [--window 5h\|today\|7d]` | Report from the event store. If no live collector holds the lock, it first runs the same step as `collect --once`, so the store is current. Otherwise it reads the store as it is. Each record lists its `unpriced_models` and `unpriced_events`; the total says "plus N unpriced event(s)", and the report lists the unpriced events per model with their tokens. |
 | `horch quota [--json] [--refresh]` | The pool table (section 12.4 header block). `--refresh` probes now, subject to QUO-07. |
 | `horch route <teammate> [--json]` | Print the gate decision (section 13.4) with no side effects. |
+
+#### 12.1.1 The start handshake
+
+No fixed wait decides whether `ensure` succeeds: on an idle host the new collector takes the lock in 0.17 to 0.47 s, but under load (load average 30 to 90) it took more than 5 s, and herdr reports no pane process, so `ensure` cannot tell a slow start from a failed one by waiting. The start is a handshake through 2 files instead (`horch_core::telemetry::start`):
+
+1. `ensure` writes `telemetry/start.json` = `{id, requested_at, workspace_id, pane_id, herdr}` before `herdr pane run`, and runs `horch telemetry` with `HORCH_TELEMETRY_START=<id>`. It exits 0. A failed `pane run` removes the request and fails `ensure`.
+2. The started process writes `telemetry/starting.json` = `{id, pid, pid_start, started_at}` as its first step, then tries the lock.
+3. The process that takes the lock reads `start.json`, closes every old collector workspace except its own with the recorded `herdr`, and removes both files. A collector the operator started by hand ends an outstanding start the same way.
+4. A started process that finds the lock held by a live collector removes its own request and marker (never a later one) and ends: it never becomes a viewer.
+
+While no collector holds the lock, `start.json` is classified (`start::pending`): a marker of the same id whose pid is live (pid and start time) is a start in progress at any age; a marker whose pid is dead is a failed start at once; no marker is a start in progress until `start.json` is 5 min old (its modification time, not `HORCH_NOW`), then a failed start. The 5 min bound decides only when to retry, never whether `ensure` succeeds. A wrong guess costs nothing: the lock lets 1 collector run, and the loser ends.
+
+#### 12.1.2 What a late or dead collector loses
+
+Nothing within the retention bounds, so there is no spool. The collector only pulls from files that outlive it; no horch command pushes an event to it:
+
+- Ledgers: every `<state>/*.json` is read each tick (`collect.rs` `refresh_ledgers`). No horch code prunes ledger records.
+- Transcripts: Claude, Codex, Pi and Prime session files and `opencode.db` stay where the harness writes them (`usage.rs` `Locations`, `readers.rs` `locate`). `cursors.json` resumes each read where the last saved cursor stopped; the store drops repeats (section 8.2).
+- Quota signals come from the same transcripts. Probes are readings of the moment, and `horch quota` and `horch usage` run an on-demand step when no collector is live (QUO-07).
+
+The 2 bounds:
+
+1. A record whose `updated_at` is older than `retention_days` (default 35) is not read (`collect.rs` `tick_on`).
+2. A transcript the harness deletes before the collector reads it is lost (Claude deletes old sessions after about 30 days by default).
+
+Only a collector that is down for weeks reaches either bound.
 
 ### 12.2 Singleton lock
 
@@ -475,7 +501,7 @@ A reading whose `resets_at` has passed is treated as `used = 0` for that window 
 
 ### 12.3 herdr integration
 
-- `ensure` uses only `herdr workspace create --no-focus`, `herdr pane run`, read-only list calls, and `herdr workspace close` of an old collector workspace (SPC-03, W17). It never calls `focus`, `tile`, `split` or `move`, and it never closes a pane or another workspace. The fake herdr in section 16.3 records every argv, and a test asserts this list.
+- `ensure` uses only `herdr workspace create --no-focus`, `herdr pane run` and read-only list calls. The new collector, once it holds the lock, uses only read-only list calls and `herdr workspace close` of an old collector workspace (SPC-03, W17). It never calls `focus`, `tile`, `split` or `move`, and it never closes a pane or another workspace. The fake herdr in section 16.3 records every argv, and a test asserts this list.
 - The space's workspace never contains a fleet worker, so `horch tile` and `horch balance` never touch it. `horch tile` skips any workspace labelled `horch telemetry` as a second guard.
 - A viewer can run in any herdr session, because the data comes from files. That is the answer to the 8-session limit [H].
 - Not planned (§18, M7): a sidebar where the collector pushes `$spend` and `$pool` tokens with `workspace.report_metadata` onto fleet workspaces in its own herdr session (limits: 16 keys, 80-char values) [H]. The screen and `horch usage` cover it.
@@ -636,7 +662,9 @@ If your own pool becomes tight, write a handoff with horch:handoff and tell the 
 | `opencode.db` is locked | retry next tick; WAL makes this rare [S] |
 | A probe hangs | killed at the timeout; fallback signal used; `error` recorded |
 | A probe response shape changes | parse error recorded with the harness version; state from the fallback; never `ok` on a parse failure |
-| 2 fleets run `ensure` at the same time | 1 wins the lock; the other sees a live holder and prints its location |
+| 2 fleets run `ensure` at the same time | the 2nd sees the 1st start in progress and starts none; in a race both start, 1 wins the lock and the other ends |
+| The new collector starts slowly (load) | `ensure` has already exited 0; a later `ensure` reports the start in progress; the collector reads every transcript from its cursors when it runs (section 12.1.2) |
+| The new collector never runs, or ends before the lock | the next `ensure` or `horch telemetry` reports the failed start; the next `ensure` starts it again |
 | The collector is killed | the lock goes stale; the next `ensure` or `horch telemetry` breaks it and resumes from cursors |
 | The clock jumps | windows use `resets_at` from the reading; events keep their transcript timestamps |
 | herdr is absent (`ensure`) | `ensure` fails with 1 line; `horch fleet` continues (SPC-06) |
@@ -764,7 +792,7 @@ Test names start with the requirement ID. U = unit test in the module; I = integ
 | QUO-07 | `quo_07_cli_does_not_probe_when_collector_live`, `quo_07_probe_cadence` (with `HORCH_NOW` stepped) | E |
 | SPC-01 | `spc_01_second_collector_is_refused`, `spc_01_stale_lock_is_broken` (a lock with a dead pid) | I |
 | SPC-02 | `spc_02_viewer_when_locked` | I |
-| SPC-03 | `spc_03_ensure_argv` (fake-herdr log: `workspace create ... --no-focus`, `pane run`, and only read-only calls besides), `spc_03_restart_after_a_dead_collector_leaves_1_telemetry_workspace`, `spc_03_restart_closes_an_old_workspace_it_cannot_reuse`, `spc_03_a_live_collector_keeps_every_workspace` (E), `spc_03_old_collector_workspaces` (U), `spc_03_ensure_noop_when_live` (E: a live collector that records the binary under test), `spc_03_ensure_warns_and_succeeds_for_a_collector_it_cannot_stop` (E). `spc_03_ensure_leaves_a_collector_it_cannot_stop` (U). `spc_03_ensure_restarts_a_collector_on_an_older_binary`, `a_collector_on_another_binary_is_found`, `stop_ends_the_recorded_collector`, `stop_never_signals_a_process_that_is_not_the_recorded_collector` (U, with a fake collector record) | E, U |
+| SPC-03 | `spc_03_ensure_argv` (fake-herdr log: `workspace create ... --no-focus`, `pane run`, and only read-only calls besides), `spc_03_restart_after_a_dead_collector_leaves_1_telemetry_workspace`, `spc_03_restart_closes_an_old_workspace_it_cannot_reuse`, `spc_03_a_live_collector_keeps_every_workspace` (E), `spc_03_old_collector_workspaces` (U), `spc_03_ensure_noop_when_live` (E: a live collector that records the binary under test), `spc_03_ensure_warns_and_succeeds_for_a_collector_it_cannot_stop` (E). `spc_03_ensure_leaves_a_collector_it_cannot_stop` (U). `spc_03_a_slow_collector_start_loses_no_event`, `spc_03_a_start_that_never_runs_is_reported_and_retried` (E, `telemetry_start_handshake.rs`), `spc_03_an_unseen_start_fails_only_after_the_bound`, `spc_03_a_marker_decides_by_its_pid` (U). `spc_03_ensure_restarts_a_collector_on_an_older_binary`, `a_collector_on_another_binary_is_found`, `stop_ends_the_recorded_collector`, `stop_never_signals_a_process_that_is_not_the_recorded_collector` (U, with a fake collector record) | E, U |
 | SPC-04 | `spc_04_render_goldens` (120x40 and 80x24, from `snapshot-fixture.json`), `spc_04_render_layout_goldens` (80x24, 100x20, 120x40, 200x50, from `telemetry-layout-fixture.json`), `spc_04_the_layout_keeps_money_flags_and_gutters` (every size, group and window), `spc_04_project_names_and_wide_roles`, `spc_04_a_short_terminal_gives_the_rows_to_the_tables`, `spc_04_columns_have_a_gutter`, `spc_04_the_column_rule`, `spc_04_render_every_group_and_window_fits` (every `g` and `w` value), `spc_04_render_rejects_a_size_below_the_minimum`, `spc_04_the_header_clock_is_the_given_time`, `spc_04_keys_p_q_r`, `spc_04_r_shows_refreshing`, `spc_04_a_refresh_always_sends_an_update`, `spc_04_the_help_is_modal`, `spc_04_the_help_fits_60x12`, `spc_04_a_new_project_loads_before_its_rollups_show`, `spc_04_a_loading_project_shows_no_global_rollup`, `spc_04_an_input_error_ends_the_screen_and_stops_the_worker`, `spc_04_sighup_ends_the_screen_like_sigterm` | G, U |
 | SPC-05 | `spc_05_usage_json_schema`, `spc_05_quota_json_schema` (every field in sections 9 and 11.3 present, with its type) | E |
 | SPC-06 | `spc_06_fleet_survives_ensure_failure` (fake-herdr fails `workspace create` for the label) | E |
