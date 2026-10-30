@@ -793,10 +793,10 @@ mod tests {
     /// Kills the process group it names when dropped, so a failed assert
     /// leaves no sleeping updater behind.
     #[cfg(unix)]
-    struct GroupKill(u32);
+    struct StopGroupOnDrop(u32);
 
     #[cfg(unix)]
-    impl Drop for GroupKill {
+    impl Drop for StopGroupOnDrop {
         fn drop(&mut self) {
             // SAFETY: plain syscall on a group this test started; a group
             // that has ended answers ESRCH, which is fine here.
@@ -808,12 +808,12 @@ mod tests {
 
     /// A `sleep 60` in its own process group: a live updater stand-in.
     #[cfg(unix)]
-    fn sleeper() -> (std::process::Child, GroupKill) {
+    fn sleeper() -> (std::process::Child, StopGroupOnDrop) {
         let mut cmd = Command::new("sleep");
         cmd.arg("60");
         std::os::unix::process::CommandExt::process_group(&mut cmd, 0);
         let child = cmd.spawn().unwrap();
-        let guard = GroupKill(child.id());
+        let guard = StopGroupOnDrop(child.id());
         (child, guard)
     }
 
@@ -923,7 +923,7 @@ mod tests {
         }
         let runs = fake.runs();
         assert_eq!(runs.len(), 1);
-        let _kill = GroupKill(runs[0]);
+        let _kill = StopGroupOnDrop(runs[0]);
         assert_eq!(
             outcome,
             Outcome::Detached {
