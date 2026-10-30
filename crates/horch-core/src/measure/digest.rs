@@ -67,16 +67,19 @@ impl FromStr for Digest {
         if hex.len() != 64 {
             return Err(err());
         }
-        let nibble = |c: u8| match c {
-            b'0'..=b'9' => Some(c - b'0'),
-            b'a'..=b'f' => Some(c - b'a' + 10),
-            _ => None,
-        };
         let mut out = [0u8; 32];
         for (i, pair) in hex.as_bytes().chunks(2).enumerate() {
             out[i] = (nibble(pair[0]).ok_or_else(err)? << 4) | nibble(pair[1]).ok_or_else(err)?;
         }
         Ok(Digest(out))
+    }
+}
+
+fn nibble(c: u8) -> Option<u8> {
+    match c {
+        b'0'..=b'9' => Some(c - b'0'),
+        b'a'..=b'f' => Some(c - b'a' + 10),
+        _ => None,
     }
 }
 
