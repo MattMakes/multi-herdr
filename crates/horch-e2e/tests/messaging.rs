@@ -634,10 +634,16 @@ fn mail_u1_worker_inbox_does_not_print_or_ack_pending_mail() {
 /// orchestrator's mail is never shown or acknowledged.
 #[test]
 fn a_worker_inbox_prints_and_acks_its_own_role_mail_only() {
-    let h = fleet("mail-worker-role", "exec,stay");
+    let mut h = fleet("mail-worker-role", "exec,stay");
+    // The tell below starts a courier. A fast poll makes it see the role
+    // mail at once: it must leave the mail of a registered role alone.
+    h.set("HORCH_TEST_MAIL_POLL_MS", "10");
     let mailbox = h.state.join("herdr-orchestration-w1");
     std::fs::create_dir_all(&mailbox).unwrap();
     std::fs::write(mailbox.join("orchestrator.id"), "w1:p1").unwrap();
+    // A courier acknowledges the mail of a role no one holds (`done` freed
+    // it), so the worker is registered, as a spawned worker is.
+    std::fs::write(mailbox.join("sonnet-1.id"), "w1:p2").unwrap();
     let tell = as_worker(
         &h,
         &["tell", "orchestrator", "NOTE: private"],
