@@ -242,4 +242,16 @@ mod tests {
         assert_eq!(v.len(), 1);
         assert_eq!(v[0].function_name, "g");
     }
+
+    #[test]
+    fn changed_lines_reads_every_hunk_kind() {
+        let diff = "@@ -1 +1 @@ before any file\n\
+                    +++ b/a.ts\n@@ -1,0 +2 @@\n@@ -5,2 +7,0 @@ deleted only\n@@ -9 +10,2 @@\n\
+                    +++ /dev/null\n@@ -1,3 +0,0 @@\n\
+                    +++ b/b.py\n@@ -0,0 +1,4 @@\n";
+        let changed = changed_lines(diff);
+        assert_eq!(changed.len(), 2, "{changed:?}");
+        assert_eq!(changed["a.ts"], vec![(2, 2), (10, 11)]);
+        assert_eq!(changed["b.py"], vec![(1, 4)]);
+    }
 }

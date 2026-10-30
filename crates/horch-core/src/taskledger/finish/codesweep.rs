@@ -890,4 +890,43 @@ mod tests {
             vec![("F1".to_string(), "the caller clamps it".to_string())]
         );
     }
+
+    #[test]
+    fn triage_keeps_the_reviewer_order() {
+        let mut diff = String::from(
+            "diff --git a/x b/x\nnew file mode 100644\n+let password = 1;\n+pub struct A;\n\
+             +for x in y {}\n+pub fn f() {}\n+let l = lock();\n+let n = m as u8;\n",
+        );
+        diff.push_str(&"+x\n".repeat(400));
+        let files: Vec<String> = ["src/a_test.rs", "Cargo.toml", "web/x.tsx"]
+            .map(String::from)
+            .to_vec();
+        assert_eq!(
+            triage(&diff, &files),
+            ["b", "c", "v", "s", "e", "t", "g", "w", "r", "d", "j", "u"]
+        );
+        assert_eq!(triage("+x\n", &["README.md".into()]), ["b", "c"]);
+        assert_eq!(triage("+x\n", &["a_test.md".into()]), ["b", "c", "t"]);
+        let deleted = "-x\n".repeat(101);
+        assert_eq!(triage(&deleted, &["a.md".into()]), ["b", "c", "w"]);
+    }
+
+    #[test]
+    fn findings_outside_a_severity_heading_do_not_count() {
+        let f = parse_findings(
+            "r",
+            "- before any heading\n## Critical\n-  \n- None\n  - a.rs:1 boom  \n## Notes\n- not a finding\n## minor things\n- small\n",
+        );
+        assert_eq!(
+            f,
+            vec![
+                (
+                    "Critical".to_string(),
+                    "r".to_string(),
+                    "a.rs:1 boom".to_string()
+                ),
+                ("Minor".to_string(), "r".to_string(), "small".to_string()),
+            ]
+        );
+    }
 }
