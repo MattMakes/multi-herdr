@@ -1,54 +1,63 @@
-//! The one error type of the marketplace. Written by hand: the crate
-//! allowlist has no `thiserror`.
+//! The one error type of the marketplace. Each message sits on its variant.
 
 use std::fmt;
 use std::io;
 use std::path::PathBuf;
 
+use thiserror::Error;
+
 use crate::git::GitError;
 
 pub type Result<T> = std::result::Result<T, MarketplaceError>;
 
-#[derive(Debug)]
+#[derive(Debug, Error)]
 pub enum MarketplaceError {
     /// The source spec, skill id or revision is not usable, or the
     /// catalog does not know the skill.
+    #[error("invalid skill source: {0}")]
     BadSource(String),
     /// The URL carried userinfo or a token. The text says which, and never
     /// holds the URL, so the secret cannot reach a log.
+    #[error("skill source URL carries credentials ({0}); remove them")]
     Credentials(String),
-    Git(GitError),
+    #[error("{0}")]
+    Git(#[source] GitError),
     /// A branch or tag is not on the remote, or a commit could not be
     /// fetched.
-    RevisionNotFound {
-        url: String,
-        revision: String,
-    },
+    #[error("revision '{revision}' not found in {url}")]
+    RevisionNotFound { url: String, revision: String },
     /// SKILL.md is missing, not UTF-8, has no frontmatter, or has an
     /// unknown key.
+    #[error("invalid SKILL.md: {0}")]
     Manifest(String),
     /// The SKILL.md name or description breaks a rule.
+    #[error("invalid SKILL.md: {0}")]
     SkillMd(String),
     /// A `..`, empty or otherwise unclean relative path.
+    #[error("path '{}' is not a clean relative path", .0.display())]
     Traversal(PathBuf),
+    #[error("absolute path '{}'", .0.display())]
     AbsolutePath(PathBuf),
+    #[error("'{}' is a symlink", .0.display())]
     Symlink(PathBuf),
     /// A device, socket, fifo or git submodule.
+    #[error("'{}' is not a regular file", .0.display())]
     NotRegularFile(PathBuf),
+    #[error("skill has more than {0} files")]
     TooManyFiles(usize),
-    FileTooLarge {
-        path: PathBuf,
-        bytes: u64,
-    },
+    #[error("'{}' is {bytes} bytes, over the limit", .path.display())]
+    FileTooLarge { path: PathBuf, bytes: u64 },
+    #[error("skill is over {0} bytes in total")]
     TotalTooLarge(u64),
-    DigestMismatch {
-        expected: String,
-        actual: String,
-    },
+    #[error("digest {actual} does not match the locked {expected}")]
+    DigestMismatch { expected: String, actual: String },
     /// `marketplace.lock` cannot be parsed or has another version.
+    #[error("marketplace.lock: {0}")]
     Lock(String),
-    Io(io::Error),
+    #[error("{0}")]
+    Io(#[source] io::Error),
     /// A `FaultPoint` fired. Only tests and crash drills set one.
+    #[error("fault injected at {0}")]
     Fault(&'static str),
 }
 
@@ -56,48 +65,6 @@ impl MarketplaceError {
     /// An I/O error with the path or action in its message.
     pub(crate) fn io(context: impl fmt::Display, e: io::Error) -> Self {
         Self::Io(io::Error::new(e.kind(), format!("{context}: {e}")))
-    }
-}
-
-impl fmt::Display for MarketplaceError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::BadSource(why) => write!(f, "invalid skill source: {why}"),
-            Self::Credentials(why) => write!(
-                f,
-                "skill source URL carries credentials ({why}); remove them"
-            ),
-            Self::Git(e) => write!(f, "{e}"),
-            Self::RevisionNotFound { url, revision } => {
-                write!(f, "revision '{revision}' not found in {url}")
-            }
-            Self::Manifest(why) | Self::SkillMd(why) => write!(f, "invalid SKILL.md: {why}"),
-            Self::Traversal(p) => write!(f, "path '{}' is not a clean relative path", p.display()),
-            Self::AbsolutePath(p) => write!(f, "absolute path '{}'", p.display()),
-            Self::Symlink(p) => write!(f, "'{}' is a symlink", p.display()),
-            Self::NotRegularFile(p) => write!(f, "'{}' is not a regular file", p.display()),
-            Self::TooManyFiles(limit) => write!(f, "skill has more than {limit} files"),
-            Self::FileTooLarge { path, bytes } => {
-                write!(f, "'{}' is {bytes} bytes, over the limit", path.display())
-            }
-            Self::TotalTooLarge(limit) => write!(f, "skill is over {limit} bytes in total"),
-            Self::DigestMismatch { expected, actual } => {
-                write!(f, "digest {actual} does not match the locked {expected}")
-            }
-            Self::Lock(why) => write!(f, "marketplace.lock: {why}"),
-            Self::Io(e) => write!(f, "{e}"),
-            Self::Fault(point) => write!(f, "fault injected at {point}"),
-        }
-    }
-}
-
-impl std::error::Error for MarketplaceError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        match self {
-            Self::Git(e) => Some(e),
-            Self::Io(e) => Some(e),
-            _ => None,
-        }
     }
 }
 
@@ -187,5 +154,19 @@ mod tests {
         for (err, text) in cases {
             assert_eq!(err.to_string(), text);
         }
+    }
+
+    #[test]
+    fn only_git_and_io_have_a_source() {
+        use std::error::Error;
+        let git = MarketplaceError::from(GitError::NoDir);
+        assert_eq!(
+            git.source().unwrap().to_string(),
+            "git needs an explicit working directory"
+        );
+        let io = MarketplaceError::io("ctx", io::Error::other("disk"));
+        assert_eq!(io.source().unwrap().to_string(), "ctx: disk");
+        assert!(MarketplaceError::Lock("x".into()).source().is_none());
+        assert!(MarketplaceError::Symlink("l".into()).source().is_none());
     }
 }
