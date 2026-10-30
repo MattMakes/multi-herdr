@@ -12,12 +12,22 @@ const MARKER: &str = "HORCH_DELIVERY_73";
 
 fn budget(ctx: &RuntimeContext) -> Duration {
     // Fault injection makes timeout behavior testable without a real-time wait.
+    fault_ms(ctx, "delivery-probe-ms").unwrap_or(Duration::from_secs(5))
+}
+
+/// The bound of each herdr call of a probe, and of its cleanup: `default`,
+/// or the `delivery-probe-call-ms` fault point. A test's fake herdr keeps
+/// its state in files, and on a loaded machine one call can take seconds.
+fn call_timeout(ctx: &RuntimeContext, default: Duration) -> Duration {
+    fault_ms(ctx, "delivery-probe-call-ms").unwrap_or(default)
+}
+
+fn fault_ms(ctx: &RuntimeContext, point: &str) -> Option<Duration> {
     ctx.settings
         .faults
-        .indexed("delivery-probe-ms")
+        .indexed(point)
         .and_then(|s| s.parse::<u64>().ok())
         .map(|ms| Duration::from_millis(ms.clamp(1, 30_000)))
-        .unwrap_or(Duration::from_secs(5))
 }
 
 /// Confirm shell execution in a private two-pane workspace, cleaning it up on
@@ -32,7 +42,7 @@ pub fn doctor(ctx: &RuntimeContext) {
 fn doctor_check(ctx: &RuntimeContext) -> Result<()> {
     let deadline = Instant::now() + budget(ctx);
     let herdr = Herdr::with_bin(&ctx.bins.harness.herdr)
-        .with_timeout(Duration::from_secs(2))
+        .with_timeout(call_timeout(ctx, Duration::from_secs(2)))
         .until(Some(deadline));
     let ws = herdr.workspace_create("horch delivery test", None, false)?;
     let checked: Result<()> = (|| {
@@ -64,7 +74,7 @@ fn doctor_check(ctx: &RuntimeContext) -> Result<()> {
     })();
     // Use a separate short cleanup budget even when the probe spent its own.
     let cleanup = Herdr::with_bin(&ctx.bins.harness.herdr)
-        .with_timeout(Duration::from_secs(2))
+        .with_timeout(call_timeout(ctx, Duration::from_secs(2)))
         .workspace_close(&ws.workspace_id);
     match (checked, cleanup) {
         (Err(e), Err(cleanup)) => Err(e.context(format!(
@@ -94,7 +104,7 @@ fn fleet_check(ctx: &RuntimeContext, workspace: &str, pane: &str) -> Result<()> 
     }
     let deadline = Instant::now() + budget(ctx);
     let herdr = Herdr::with_bin(&ctx.bins.harness.herdr)
-        .with_timeout(Duration::from_secs(1))
+        .with_timeout(call_timeout(ctx, Duration::from_secs(1)))
         .until(Some(deadline));
     let mut attempted = false;
     let mut reason = "not acknowledged";

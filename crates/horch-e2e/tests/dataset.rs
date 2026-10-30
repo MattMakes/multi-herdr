@@ -7,6 +7,7 @@
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
+use std::sync::{Condvar, Mutex};
 
 use horch_e2e::harness::{Harness, DEADLINE};
 use horch_e2e::{bin_dir, violations};
@@ -27,6 +28,33 @@ fn dataset_bin() -> PathBuf {
         path.display()
     );
     path
+}
+
+/// How many `multi-herdr-dataset` calls this test binary runs at once. A
+/// round's candidates get a wall-clock deadline (20 s in `cmp_07_timeout` and
+/// `mea_10_every_spawn_has_terminal_event`), and each candidate is a chain of
+/// processes: `horch worker`, the stand-in agent, 2 `git` calls and `horch
+/// done`. With every test thread running a round and several copies of the
+/// binary on one loaded machine, that chain took up to 18 s of the 20 s
+/// (measured from `candidate.spawned` to `candidate.completed`), and a slow
+/// moment pushed a finishing candidate past the deadline.
+const MAX_CALLS: usize = 3;
+
+static RUNNING: (Mutex<usize>, Condvar) = (Mutex::new(0), Condvar::new());
+
+/// Runs `cmd` once one of the `MAX_CALLS` slots is free.
+fn output_in_slot(cmd: &mut Command) -> Output {
+    let (running, freed) = &RUNNING;
+    let mut count = running.lock().unwrap_or_else(|e| e.into_inner());
+    while *count >= MAX_CALLS {
+        count = freed.wait(count).unwrap_or_else(|e| e.into_inner());
+    }
+    *count += 1;
+    drop(count);
+    let out = cmd.output();
+    *running.lock().unwrap_or_else(|e| e.into_inner()) -= 1;
+    freed.notify_one();
+    out.expect("running multi-herdr-dataset")
 }
 
 /// A harness with git, or `None` when git is missing (and not required).
@@ -54,10 +82,19 @@ const WARMED: [&str; 7] = [
 /// scans a new executable at its first exec, and under load that takes 14
 /// to 35 s. Without `HORCH_FAKE_LOG` the fakes record nothing, so no test
 /// sees these calls.
+///
+/// `horch` is warmed too, by the path a candidate's pane runs: every
+/// candidate starts as `horch worker candidate-<L>`. Left cold, its first
+/// exec lands inside the round and eats the candidate deadline (20 s in
+/// `cmp_07_timeout`, 60 s elsewhere): B never finishes, or A is cut off as
+/// `timed_out` before it can vanish or crash.
 fn warm(h: &Harness) {
-    for name in WARMED {
-        let exe = format!("{name}{}", std::env::consts::EXE_SUFFIX);
-        let mut cmd = Command::new(h.bin.join(exe));
+    let fakes = WARMED.map(|name| {
+        h.bin
+            .join(format!("{name}{}", std::env::consts::EXE_SUFFIX))
+    });
+    for exe in fakes.into_iter().chain([Harness::horch_bin()]) {
+        let mut cmd = Command::new(exe);
         cmd.arg("--version");
         h.seal(&mut cmd);
         cmd.env_remove("HORCH_FAKE_LOG");
@@ -101,7 +138,7 @@ fn run_with(h: &Harness, args: &[&str], extra: &[(&str, &str)]) -> Output {
     cmd.args(args);
     h.seal(&mut cmd);
     cmd.envs(extra.iter().copied());
-    cmd.output().expect("running multi-herdr-dataset")
+    output_in_slot(&mut cmd)
 }
 
 /// Every event in the dataset dir, in file and line order.
@@ -500,7 +537,7 @@ fn dataset(h: &Harness, args: &[&str], extra: &[(&str, &str)]) -> Output {
     cmd.args(args);
     h.seal(&mut cmd);
     cmd.envs(extra.iter().copied());
-    cmd.output().expect("running multi-herdr-dataset")
+    output_in_slot(&mut cmd)
 }
 
 fn run_round(h: &Harness, n: u32, extra: &[(&str, &str)]) -> Output {
@@ -912,12 +949,18 @@ fn cmp_07_timeout() {
         return;
     };
     let out = run_round(&h, 2, &[]);
-    assert_eq!(out.status.code(), Some(0), "{}", text(&out));
     let events = events(&h);
-    assert_eq!(
-        failure_of(&events, "A"),
-        serde_json::json!({"kind": "timed_out"})
-    );
+    let timed_out = serde_json::json!({"kind": "timed_out"});
+    assert_eq!(failure_of(&events, "A"), timed_out, "{}", text(&out));
+    // B has the same 20 s deadline, and a loaded machine can run it past
+    // that too. Then no candidate is eligible: the round ends with exit 6.
+    match failure_of(&events, "B") {
+        Value::Null => assert_eq!(out.status.code(), Some(0), "{}", text(&out)),
+        b => {
+            assert_eq!(b, timed_out, "{}", text(&out));
+            assert_eq!(out.status.code(), Some(6), "{}", text(&out));
+        }
+    }
     // The pane was closed, which killed the hanging agent.
     let a = candidate_records(&h)
         .into_iter()
@@ -1570,8 +1613,21 @@ fn mea_10_every_spawn_has_terminal_event() {
         return;
     };
     let out = run_round(&h, 3, &[]);
-    assert_eq!(out.status.code(), Some(0), "{}", text(&out));
     let events = events(&h);
+    // A has C's 20 s deadline, and a loaded machine can run it past that.
+    // Then no candidate is eligible: the round ends with exit 6.
+    match failure_of(&events, "A") {
+        Value::Null => assert_eq!(out.status.code(), Some(0), "{}", text(&out)),
+        a => {
+            assert_eq!(
+                a,
+                serde_json::json!({"kind": "timed_out"}),
+                "{}",
+                text(&out)
+            );
+            assert_eq!(out.status.code(), Some(6), "{}", text(&out));
+        }
+    }
     assert_eq!(of_kind(&events, "candidate.spawned").len(), 3);
     assert_every_spawn_ended(&h);
     assert_clean(&h);

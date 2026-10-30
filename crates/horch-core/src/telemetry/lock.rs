@@ -10,7 +10,7 @@
 //! existed), or a platform without start times (Windows), falls back to
 //! "the pid exists". The lock is also removed on every normal exit.
 //!
-//! The holder also records its binary ([`ExeIdentity`]: path, size and
+//! The holder also records its binary ([`crate::exeid::ExeIdentity`]: path, size and
 //! modification time). A collector keeps running the binary it started
 //! with, so after `just install` replaces that file it runs old code: old
 //! prices, old readers. [`runs_other_binary`] finds it, and [`stop`] ends
@@ -44,29 +44,7 @@ pub struct LockInfo {
     pub exe: Option<ExeIdentity>,
 }
 
-/// A binary file as it is now: a rebuilt or reinstalled binary at the same
-/// path has another size or modification time.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ExeIdentity {
-    /// The path, symlinks resolved when they resolve.
-    pub path: String,
-    pub len: u64,
-    /// Nanoseconds since the Unix epoch.
-    pub mtime_ns: u64,
-}
-
-/// The identity of the file at `path` now, or `None` when it cannot be read.
-pub fn exe_identity(path: &Path) -> Option<ExeIdentity> {
-    let real = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
-    let meta = std::fs::metadata(&real).ok()?;
-    let mtime = meta.modified().ok()?;
-    let mtime_ns = mtime.duration_since(std::time::UNIX_EPOCH).ok()?.as_nanos();
-    Some(ExeIdentity {
-        path: real.to_string_lossy().into_owned(),
-        len: meta.len(),
-        mtime_ns: u64::try_from(mtime_ns).ok()?,
-    })
-}
+use crate::exeid::{exe_identity, ExeIdentity};
 
 /// Whether the live holder `info` runs another binary than `current`, the
 /// binary that should collect now. A holder that recorded no binary was
