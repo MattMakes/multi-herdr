@@ -76,6 +76,10 @@ The task ledger holds the work. You queue tasks. Workers claim them.
   horch ledger add --file <ticket> --primary <persona> [--fallback
   <persona>] [--blocked-by T-<n>] [--exclusive] [--own <path>] [--check
   "<command>"].
+- Add --shared only when a worktree is impractical (large assets). A
+  --shared task works in the main checkout. Before its worker claims, run
+  git switch <run branch> in the main checkout. Shared tasks run 1 at a
+  time. Each one lands only with a new commit since its claim.
 - horch ledger plan-workers - then spawn exactly that many workers of each
   persona, with no task: horch spawn <persona>. Each worker claims its task.
 - A worker that died is replaced with: horch spawn <persona> --replaces

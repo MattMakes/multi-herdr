@@ -50,20 +50,24 @@ impl Default for Lockfile {
 impl Lockfile {
     /// Read the lock. A missing file is an empty lock.
     pub fn read(path: &Path) -> Result<Self> {
-        let bytes = match fs::read(path) {
-            Ok(b) => b,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Self::default()),
-            Err(e) => return Err(MarketplaceError::io(path.display().to_string(), e)),
-        };
+        match fs::read(path) {
+            Ok(bytes) => Self::parse(&bytes),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Self::default()),
+            Err(e) => Err(MarketplaceError::io(path.display().to_string(), e)),
+        }
+    }
+
+    fn parse(bytes: &[u8]) -> Result<Self> {
         let lock: Self =
-            serde_json::from_slice(&bytes).map_err(|e| MarketplaceError::Lock(e.to_string()))?;
-        if lock.version != LOCK_VERSION {
-            return Err(MarketplaceError::Lock(format!(
+            serde_json::from_slice(bytes).map_err(|e| MarketplaceError::Lock(e.to_string()))?;
+        if lock.version == LOCK_VERSION {
+            Ok(lock)
+        } else {
+            Err(MarketplaceError::Lock(format!(
                 "version {} is not supported (expected {LOCK_VERSION})",
                 lock.version
-            )));
+            )))
         }
-        Ok(lock)
     }
 
     /// Write the lock atomically, entries sorted by id.
@@ -85,5 +89,86 @@ impl Lockfile {
         self.skills.retain(|e| e.id != entry.id);
         self.skills.push(entry);
         self.skills.sort_by(|a, b| a.id.cmp(&b.id));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn read_text(text: &str) -> Result<Lockfile> {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("marketplace.lock");
+        fs::write(&path, text).unwrap();
+        Lockfile::read(&path)
+    }
+
+    #[test]
+    fn missing_file_is_an_empty_lock() {
+        let dir = tempfile::tempdir().unwrap();
+        let lock = Lockfile::read(&dir.path().join("marketplace.lock")).unwrap();
+        assert_eq!(
+            lock,
+            Lockfile {
+                version: 1,
+                skills: vec![]
+            }
+        );
+    }
+
+    #[test]
+    fn unreadable_path_is_an_io_error_naming_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let err = Lockfile::read(dir.path()).unwrap_err();
+        assert!(matches!(err, MarketplaceError::Io(_)), "{err:?}");
+        assert!(
+            err.to_string().contains(&dir.path().display().to_string()),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn unsupported_version_is_refused() {
+        let err = read_text(r#"{"version":2,"skills":[]}"#).unwrap_err();
+        assert!(matches!(err, MarketplaceError::Lock(_)), "{err:?}");
+        assert_eq!(
+            err.to_string(),
+            "marketplace.lock: version 2 is not supported (expected 1)"
+        );
+    }
+
+    #[test]
+    fn invalid_json_and_unknown_fields_are_lock_errors() {
+        for text in [
+            "not json",
+            r#"{"version":1}"#,
+            r#"{"version":1,"skills":[],"x":1}"#,
+        ] {
+            let err = read_text(text).unwrap_err();
+            assert!(matches!(err, MarketplaceError::Lock(_)), "{text}: {err:?}");
+        }
+    }
+
+    #[test]
+    fn written_lock_reads_back_sorted() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("marketplace.lock");
+        let entry = |id: &str| LockEntry {
+            id: id.into(),
+            source: format!("bundled:{id}"),
+            requested_revision: None,
+            resolved_commit: None,
+            version: "bundled+abc".into(),
+            digest: "sha256:abc".into(),
+            installed_at: "2026-01-01T00:00:00Z".into(),
+        };
+        let mut lock = Lockfile::default();
+        lock.upsert(entry("b"));
+        lock.upsert(entry("a"));
+        lock.write(&path).unwrap();
+        let back = Lockfile::read(&path).unwrap();
+        let ids: Vec<_> = back.skills.iter().map(|e| e.id.as_str()).collect();
+        assert_eq!(ids, ["a", "b"]);
+        assert_eq!(back.get("a"), Some(&entry("a")));
     }
 }
