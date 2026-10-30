@@ -314,6 +314,7 @@ fn ctx_11_requested_state_after_ask() {
             threshold: 300_000,
             history: &history,
             job: &job,
+            now: at("2026-09-20T10:10:00Z"),
         };
         assert_eq!(classify(&i), want, "{name}");
     }
@@ -331,6 +332,7 @@ fn ctx_10_should_warn_is_classify_over() {
             threshold: 300_000,
             history: &history,
             job: &job,
+            now: at("2026-09-20T10:10:00Z"),
         };
         assert_eq!(should_warn(&i), classify(&i) == RowState::Over, "{name}");
         warned += usize::from(should_warn(&i));

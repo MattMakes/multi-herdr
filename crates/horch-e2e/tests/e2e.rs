@@ -142,7 +142,7 @@ impl Drop for CollectorGuard {
 /// the horch binary under test: it records that binary and its own start
 /// time, as a current collector does.
 fn hold_lock(h: &Harness) {
-    let identity = horch_core::telemetry::lock::exe_identity(&Harness::horch_bin())
+    let identity = horch_core::exeid::exe_identity(&Harness::horch_bin())
         .expect("the horch binary under test has an identity");
     let mut record = serde_json::json!({
         "pid": std::process::id(),

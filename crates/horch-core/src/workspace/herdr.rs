@@ -599,6 +599,20 @@ fn limit_error(message: String, kind: std::io::ErrorKind) -> std::io::Error {
 /// A reader's channel and its thread.
 type Reader = (mpsc::Receiver<std::io::Result<Vec<u8>>>, JoinHandle<()>);
 
+/// The error for a stream that read past [`OUTPUT_CAP`], if one did.
+fn over_cap(collected: &[Option<Vec<u8>>]) -> Option<std::io::Error> {
+    collected
+        .iter()
+        .flatten()
+        .any(|b| b.len() as u64 > OUTPUT_CAP)
+        .then(|| {
+            limit_error(
+                format!("herdr printed more than {OUTPUT_CAP} bytes"),
+                std::io::ErrorKind::InvalidData,
+            )
+        })
+}
+
 /// Read at most [`OUTPUT_CAP`] + 1 bytes of `pipe`, then send them. The
 /// reader ends when the pipe closes or the cap is hit; a caller waits for it
 /// only for [`READER_GRACE`].
@@ -874,15 +888,8 @@ fn output_within(
         if read_failure.is_some() {
             break read_failure;
         }
-        if collected
-            .iter()
-            .flatten()
-            .any(|b| b.len() as u64 > OUTPUT_CAP)
-        {
-            break Some(limit_error(
-                format!("herdr printed more than {OUTPUT_CAP} bytes"),
-                std::io::ErrorKind::InvalidData,
-            ));
+        if let Some(error) = over_cap(&collected) {
+            break Some(error);
         }
         if !exited {
             exited = match has_exited(&mut child) {
@@ -970,6 +977,16 @@ mod tests {
         assert!(gone, "descendant {pid} is still running");
     }
 
+    /// A stream that never ends is read only to 1 byte past the cap, so the
+    /// call can stop it: no timing is involved.
+    #[test]
+    fn a_reader_stops_1_byte_past_the_cap_of_an_endless_stream() {
+        let (receiver, handle) = read_capped(Some(std::io::repeat(0))).unwrap();
+        let bytes = receiver.recv().unwrap().unwrap();
+        handle.join().unwrap();
+        assert_eq!(bytes.len() as u64, OUTPUT_CAP + 1);
+    }
+
     /// A herdr that prints past the cap on either stream fails the call with
     /// InvalidData. The script runs once first: macOS scans a new executable
     /// at its first exec for seconds, which would race the call's timeout.
@@ -988,6 +1005,24 @@ mod tests {
                 output_within(Command::new(&script), Duration::from_secs(5), None).unwrap_err();
             assert_eq!(error.kind(), std::io::ErrorKind::InvalidData, "{stream}");
             assert!(error.to_string().contains("more than"), "{error}");
+        }
+    }
+
+    /// Output past the cap on stdout or on stderr fails the call with
+    /// InvalidData; output at the cap does not.
+    #[test]
+    fn output_past_the_cap_on_either_stream_is_invalid_data() {
+        let at_cap = Some(vec![0; OUTPUT_CAP as usize]);
+        let past = Some(vec![0; OUTPUT_CAP as usize + 1]);
+        assert!(over_cap(&[at_cap.clone(), at_cap.clone()]).is_none());
+        assert!(over_cap(&[None, at_cap.clone()]).is_none());
+        for collected in [[past.clone(), None], [at_cap, past]] {
+            let error = over_cap(&collected).unwrap();
+            assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
+            assert!(
+                error.to_string().contains("more than 1048576 bytes"),
+                "{error}"
+            );
         }
     }
 

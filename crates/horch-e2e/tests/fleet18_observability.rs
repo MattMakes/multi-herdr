@@ -101,6 +101,29 @@ fn g51_sessions_filter_workspace_live_role_and_indent_summary() {
 }
 
 #[test]
+fn g51_sessions_points_to_ledger_status_only_for_the_callers_active_run() {
+    let mut h = Harness::new("g51-pointer").with_git();
+    h.set(
+        "HORCH_LEDGER_DB",
+        h.root.join("ledger.sqlite3").to_string_lossy(),
+    );
+    h.set("HORCH_NO_WATCHDOG", "1");
+    h.set("HORCH_NO_WAKE", "1");
+    h.set("HORCH_WORKSPACE_ID", "w1");
+    assert!(!out(&h.run(&["sessions"])).contains("horch ledger status"));
+    let o = h.run(&["ledger", "run", "new", "review"]);
+    assert!(o.status.success(), "{}", err(&o));
+    let text = out(&h.run(&["sessions"]));
+    assert_eq!(
+        text.lines().last(),
+        Some("Active task-ledger run: horch ledger status"),
+        "{text}"
+    );
+    h.set("HORCH_WORKSPACE_ID", "w2");
+    assert!(!out(&h.run(&["sessions"])).contains("horch ledger status"));
+}
+
+#[test]
 fn g54_doctor_warns_on_proxy_host() {
     let mut h = Harness::new("g54-proxy");
     h.set("HORCH_FAULT", "delivery-probe-ms:100");
@@ -789,7 +812,14 @@ fn g53_ledger_handoff_compacts_resumes_and_records_progress_once() {
     assert!(
         lines
             .iter()
-            .any(|l| l.contains("Read ai_docs/handoffs/sonnet-1-whats-next.md")),
+            .any(|l| l.contains("Read ai_docs/handoffs/sonnet-1-whats-next.md now. Then continue")),
+        "{lines:?}"
+    );
+    // #57: only the orchestrator resume carries the command card.
+    assert!(
+        !lines
+            .iter()
+            .any(|l| l.contains("Command card:") || l.contains("decisions.md")),
         "{lines:?}"
     );
     assert_eq!(

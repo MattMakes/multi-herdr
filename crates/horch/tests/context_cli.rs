@@ -213,7 +213,7 @@ Then end your turn. If DONE WHEN is met, run horch ledger finish, then horch led
         .find(|l| l.starts_with("sonnet-1 "))
         .unwrap();
     assert!(
-        row.ends_with(" requested"),
+        row.ends_with(" requested (asked 0m ago)"),
         "a warned row is requested:\n{requested}"
     );
 }

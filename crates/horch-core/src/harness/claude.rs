@@ -4,6 +4,7 @@
 //! after launch. Skills reach it as a `--plugin-dir` plus a `--settings`
 //! overlay.
 
+use std::ffi::OsString;
 use std::path::Path;
 use std::process::Command;
 
@@ -114,8 +115,7 @@ pub(super) fn claude_command(
     prompt: &str,
     model_override: Option<&str>,
 ) -> Result<Command> {
-    let bin = env.bins.claude.clone();
-    let mut cmd = Command::new(&bin);
+    let mut cmd = Command::new(&env.bins.claude);
 
     // ORDERING MATTERS. `--mcp-config`, `--tools`, `--allowedTools` and
     // `--disallowedTools` are variadic (`<x...>`): they keep consuming
@@ -123,23 +123,34 @@ pub(super) fn claude_command(
     // end, so any variadic flag that ended up last would swallow it as one
     // more config path or tool name. Every variadic flag therefore goes
     // first, and `--model` - always present, never variadic - fences them off.
-    //
-    // `--strict-mcp-config` makes `--mcp-config` the whole truth rather than an
-    // addition, so an empty `mcpServers` object is what "no MCP servers at all"
-    // looks like. Without strict, the operator's servers would still load.
+    push_mcp_args(&mut cmd, env, teammate);
+    push_tool_args(&mut cmd, teammate);
+
+    let model = model_for(teammate, model_override)?;
+    cmd.arg("--model").arg(model);
+
+    push_model_args(&mut cmd, teammate, model);
+    push_plugin_args(&mut cmd, env, teammate)?;
+    check_sandbox_host(env, teammate)?;
+    push_settings_arg(&mut cmd, env, teammate)?;
+    push_session_args(&mut cmd, session);
+    // Escape-hatch args sit right before the prompt: a variadic flag at the
+    // end of `args` would eat it. `Roster::check` warns about that.
+    cmd.args(&teammate.args);
+    // An empty prompt is no prompt: a resumed orchestrator starts idle.
+    if !prompt.is_empty() {
+        cmd.arg(prompt);
+    }
+    Ok(cmd)
+}
+
+/// `--strict-mcp-config` makes `--mcp-config` the whole truth rather than an
+/// addition, so an empty `mcpServers` object is what "no MCP servers at all"
+/// looks like. Without strict, the operator's servers would still load.
+fn push_mcp_args(cmd: &mut Command, env: &LaunchEnv, teammate: &Teammate) {
     if teammate.mcp_servers.is_some() || teammate.worker_channel {
-        let mut servers = teammate.mcp_servers.clone().unwrap_or_default();
-        if teammate.worker_channel {
-            servers.insert(
-                "horch".into(),
-                json!({
-                    "command": env.horch_exe,
-                    "args": ["channel", "serve", "--agent", "claude"]
-                }),
-            );
-        }
-        let config = serde_json::json!({ "mcpServers": servers });
-        cmd.arg("--mcp-config").arg(config.to_string());
+        cmd.arg("--mcp-config")
+            .arg(mcp_servers_config(env, teammate));
         for file in &teammate.mcp_config_files {
             cmd.arg("--mcp-config").arg(env.expand_home(file));
         }
@@ -152,6 +163,25 @@ pub(super) fn claude_command(
             cmd.arg(env.expand_home(file));
         }
     }
+}
+
+/// The inline `--mcp-config` JSON: the teammate's servers plus the horch
+/// channel server of a worker channel.
+fn mcp_servers_config(env: &LaunchEnv, teammate: &Teammate) -> String {
+    let mut servers = teammate.mcp_servers.clone().unwrap_or_default();
+    if teammate.worker_channel {
+        servers.insert(
+            "horch".into(),
+            json!({
+                "command": env.horch_exe,
+                "args": ["channel", "serve", "--agent", "claude"]
+            }),
+        );
+    }
+    json!({ "mcpServers": servers }).to_string()
+}
+
+fn push_tool_args(cmd: &mut Command, teammate: &Teammate) {
     // `Some([])` means "no tools", which is `--tools ""`, not "omit the flag".
     if let Some(tools) = &teammate.tools {
         cmd.arg("--tools").arg(tools.join(","));
@@ -167,10 +197,9 @@ pub(super) fn claude_command(
     if teammate.worker_channel {
         cmd.args(["--dangerously-load-development-channels", "server:horch"]);
     }
+}
 
-    let model = model_for(teammate, model_override)?;
-    cmd.arg("--model").arg(model);
-
+fn push_model_args(cmd: &mut Command, teammate: &Teammate, model: &str) {
     // Haiku 4.5 has no effort setting, and a `--model haiku` override can land
     // on a teammate whose file sets one; drop it rather than fail the launch.
     if let Some(effort) = &teammate.effort {
@@ -189,6 +218,9 @@ pub(super) fn claude_command(
     if let Some(sources) = &teammate.setting_sources {
         cmd.arg("--setting-sources").arg(sources.join(","));
     }
+}
+
+fn push_plugin_args(cmd: &mut Command, env: &LaunchEnv, teammate: &Teammate) -> Result<()> {
     if teammate.disable_skills {
         cmd.arg("--disable-slash-commands");
     } else {
@@ -198,152 +230,177 @@ pub(super) fn claude_command(
     for dir in &teammate.plugin_dirs {
         cmd.arg("--plugin-dir").arg(env.expand_home(dir));
     }
+    Ok(())
+}
 
-    // A sandboxed teammate never starts on a host that cannot sandbox it.
-    if teammate.sandbox.is_some() {
-        if let Some(problem) = sandbox_host_problem(
+/// A sandboxed teammate never starts on a host that cannot sandbox it.
+fn check_sandbox_host(env: &LaunchEnv, teammate: &Teammate) -> Result<()> {
+    let Some(problem) = teammate.sandbox.as_ref().and_then(|_| {
+        sandbox_host_problem(
             std::env::consts::OS,
             env.path.as_deref(),
             Path::new(SANDBOX_EXEC).exists(),
-        ) {
-            anyhow::bail!(
-                "{}: refusing to launch without a sandbox: {problem}",
-                teammate.name
-            );
-        }
-    }
+        )
+    }) else {
+        return Ok(());
+    };
+    anyhow::bail!(
+        "{}: refusing to launch without a sandbox: {problem}",
+        teammate.name
+    )
+}
 
-    // `--settings` takes a path OR a JSON string, and is not repeatable, so
-    // everything horch wants to overlay has to be assembled into one object.
-    if let Some(settings) = &teammate.settings {
-        // A skills launch gives inline JSON with the sandbox merged in. A file
-        // the teammate named would replace the overlay and drop the sandbox.
-        if teammate.sandbox.is_some() && !settings.trim_start().starts_with('{') {
-            anyhow::bail!(
-                "{}: sandbox cannot be combined with a settings file",
-                teammate.name
-            );
-        }
-        let has_defaults =
-            HarnessDefault::for_harness(&teammate.harness_defaults, HarnessKind::Claude)
-                .any(|d| d.settings.is_some());
-        let window = applied_window(env);
-        if (has_defaults || window.is_some()) && settings.trim_start().starts_with('{') {
-            // Inline JSON (the teammate's own, or the skills overlay): the
-            // harness defaults and the fleet window merge under it.
-            // Unchanged text when none adds a key.
-            let mut value: Value =
-                serde_json::from_str(settings).context("invalid teammate settings JSON")?;
-            let obj = value
-                .as_object_mut()
-                .context("teammate settings must be a JSON object")?;
-            let mut changed = false;
-            if has_defaults {
-                changed |= merge_settings_defaults(teammate, obj, || operator_settings(env))?;
-            }
-            changed |= overlay_window(window, obj);
-            if changed {
-                cmd.arg("--settings").arg(value.to_string());
-            } else {
-                cmd.arg("--settings").arg(settings);
-            }
-        } else {
-            // The teammate named its own file; that file owns the overlay.
-            cmd.arg("--settings").arg(env.expand_home(settings));
-        }
+/// `--settings` takes a path OR a JSON string, and is not repeatable, so
+/// everything horch wants to overlay has to be assembled into one object.
+fn push_settings_arg(cmd: &mut Command, env: &LaunchEnv, teammate: &Teammate) -> Result<()> {
+    let arg = match &teammate.settings {
+        Some(settings) => inline_settings_arg(env, teammate, settings).map(Some),
+        None => default_overlay(env, teammate),
+    }?;
+    if let Some(arg) = arg {
+        cmd.arg("--settings").arg(arg);
+    }
+    Ok(())
+}
+
+/// The `--settings` argument for a teammate that names its own settings.
+fn inline_settings_arg(env: &LaunchEnv, teammate: &Teammate, settings: &str) -> Result<OsString> {
+    let inline = settings.trim_start().starts_with('{');
+    // A skills launch gives inline JSON with the sandbox merged in. A file
+    // the teammate named would replace the overlay and drop the sandbox.
+    if teammate.sandbox.is_some() && !inline {
+        anyhow::bail!(
+            "{}: sandbox cannot be combined with a settings file",
+            teammate.name
+        );
+    }
+    let has_defaults = HarnessDefault::for_harness(&teammate.harness_defaults, HarnessKind::Claude)
+        .any(|d| d.settings.is_some());
+    let window = applied_window(env);
+    if inline && (has_defaults || window.is_some()) {
+        merged_inline_settings(env, teammate, settings, window)
     } else {
-        let mut overlay = serde_json::Map::new();
-        // Switch the operator's globally-enabled plugins off, by name, for this
-        // session. Settings merge per key, so this touches nothing else -
-        // verified against a live launch: "Found 3 plugins (0 enabled,
-        // 3 disabled)" with every other setting intact.
-        if !teammate.inherit_plugins {
-            let off: serde_json::Map<String, serde_json::Value> =
-                operator_enabled_plugins(env.home())
-                    .into_iter()
-                    .map(|name| (name, serde_json::Value::Bool(false)))
-                    .collect();
-            if !off.is_empty() {
-                overlay.insert("enabledPlugins".into(), serde_json::Value::Object(off));
-            }
-        }
-        // Whatever inherit_plugins says: the generic tiers inherit plugins, but
-        // no pane has a use for the operator's claude.ai skills.
-        overlay_skill_switches(teammate, &mut overlay, env.home())?;
-        // Restricting settings would take the status line with it. Every pane
-        // in a fleet keeps the operator's, so a worker reads like any session.
-        if teammate.setting_sources.is_some() {
-            if let Some(status_line) = operator_status_line(env.home()) {
-                overlay.insert("statusLine".into(), status_line);
-            }
-        }
-        overlay_sandbox(teammate, &mut overlay)?;
-        merge_settings_defaults(teammate, &mut overlay, || operator_settings(env))?;
-        overlay_window(applied_window(env), &mut overlay);
-        if !overlay.is_empty() {
-            cmd.arg("--settings")
-                .arg(serde_json::Value::Object(overlay).to_string());
-        }
+        // The teammate named its own file; that file owns the overlay.
+        Ok(env.expand_home(settings).into_os_string())
     }
+}
 
-    match session {
-        Session::Fresh(id) => {
-            cmd.arg("--session-id").arg(id);
-        }
-        Session::Resume(id) => {
-            cmd.arg("--resume").arg(id);
-        }
-        Session::Unmanaged => {}
+/// Inline JSON (the teammate's own, or the skills overlay): the harness
+/// defaults and the fleet window merge under it. Unchanged text when none
+/// adds a key.
+fn merged_inline_settings(
+    env: &LaunchEnv,
+    teammate: &Teammate,
+    settings: &str,
+    window: Option<u64>,
+) -> Result<OsString> {
+    let mut value: Value =
+        serde_json::from_str(settings).context("invalid teammate settings JSON")?;
+    let obj = value
+        .as_object_mut()
+        .context("teammate settings must be a JSON object")?;
+    let changed = merge_settings_defaults(teammate, obj, || operator_settings(env))?
+        | overlay_window(window, obj);
+    Ok(if changed {
+        value.to_string().into()
+    } else {
+        settings.into()
+    })
+}
+
+/// The `--settings` overlay of a teammate with no settings of its own, as
+/// JSON text; `None` when it would be empty.
+fn default_overlay(env: &LaunchEnv, teammate: &Teammate) -> Result<Option<OsString>> {
+    let mut overlay = serde_json::Map::new();
+    disable_operator_plugins(&mut overlay, teammate, env.home())?;
+    // Whatever inherit_plugins says: the generic tiers inherit plugins, but
+    // no pane has a use for the operator's claude.ai skills.
+    overlay_skill_switches(teammate, &mut overlay, env.home())?;
+    copy_operator_status_line(&mut overlay, teammate, env.home());
+    overlay_sandbox(teammate, &mut overlay)?;
+    merge_settings_defaults(teammate, &mut overlay, || operator_settings(env))?;
+    overlay_window(applied_window(env), &mut overlay);
+    Ok((!overlay.is_empty()).then(|| Value::Object(overlay).to_string().into()))
+}
+
+fn push_session_args(cmd: &mut Command, session: Session<'_>) {
+    if let Session::Fresh(id) = session {
+        cmd.arg("--session-id").arg(id);
+    } else if let Session::Resume(id) = session {
+        cmd.arg("--resume").arg(id);
     }
-    // Escape-hatch args sit right before the prompt: a variadic flag at the
-    // end of `args` would eat it. `Roster::check` warns about that.
-    cmd.args(&teammate.args);
-    // An empty prompt is no prompt: a resumed orchestrator starts idle.
-    if !prompt.is_empty() {
-        cmd.arg(prompt);
+}
+
+/// Unless the teammate inherits plugins, switch the operator's
+/// globally-enabled plugins off, by name, for this session. Settings merge per key, so this touches nothing else - verified
+/// against a live launch: "Found 3 plugins (0 enabled, 3 disabled)" with
+/// every other setting intact.
+pub(crate) fn disable_operator_plugins(
+    obj: &mut serde_json::Map<String, Value>,
+    teammate: &Teammate,
+    home: Option<&Path>,
+) -> Result<()> {
+    if teammate.inherit_plugins {
+        return Ok(());
     }
-    Ok(cmd)
+    for name in operator_enabled_plugins(home) {
+        object_entry(obj, "enabledPlugins")?.insert(name, json!(false));
+    }
+    Ok(())
+}
+
+/// Restricting settings would take the status line with it. Every pane in a
+/// fleet keeps the operator's, so a worker reads like any session.
+fn copy_operator_status_line(
+    obj: &mut serde_json::Map<String, Value>,
+    teammate: &Teammate,
+    home: Option<&Path>,
+) {
+    let wanted = teammate.setting_sources.is_some() && !obj.contains_key("statusLine");
+    if let Some(status) = wanted.then(|| operator_status_line(home)).flatten() {
+        obj.insert("statusLine".into(), status);
+    }
+}
+
+/// The object under `key`, made empty when it is missing.
+fn object_entry<'a>(
+    map: &'a mut serde_json::Map<String, Value>,
+    key: &str,
+) -> Result<&'a mut serde_json::Map<String, Value>> {
+    map.entry(key)
+        .or_insert_with(|| json!({}))
+        .as_object_mut()
+        .with_context(|| format!("{key} must be an object"))
 }
 
 /// The `--settings` overlay of a launch with a skills bundle: the teammate's
 /// own settings (inline JSON or a file), with horch's switches merged in.
 fn skills_settings(teammate: &Teammate, home: Option<&Path>) -> Result<Value> {
-    let mut settings = match &teammate.settings {
-        Some(source) => {
-            let text = if source.trim_start().starts_with('{') {
-                source.clone()
-            } else {
-                std::fs::read_to_string(expand_home(source, home))
-                    .context("reading teammate settings")?
-            };
-            serde_json::from_str::<Value>(&text).context("invalid teammate settings JSON")?
-        }
-        None => json!({}),
-    };
+    let mut settings = read_settings_value(teammate.settings.as_deref(), home)?;
     let obj = settings
         .as_object_mut()
         .context("teammate settings must be a JSON object")?;
     obj.entry("disableBundledSkills").or_insert(json!(true));
     obj.entry("disableWorkflows").or_insert(json!(true));
-    if !teammate.inherit_plugins {
-        let plugins = obj
-            .entry("enabledPlugins")
-            .or_insert(json!({}))
-            .as_object_mut()
-            .context("enabledPlugins must be an object")?;
-        for name in operator_enabled_plugins(home) {
-            plugins.insert(name, json!(false));
-        }
-    }
+    disable_operator_plugins(obj, teammate, home)?;
     // After the plugin switch-off: a plugin_skills plugin stays enabled.
     overlay_skill_switches(teammate, obj, home)?;
-    if teammate.setting_sources.is_some() && !obj.contains_key("statusLine") {
-        if let Some(status) = operator_status_line(home) {
-            obj.insert("statusLine".into(), status);
-        }
-    }
+    copy_operator_status_line(obj, teammate, home);
     overlay_sandbox(teammate, obj)?;
     Ok(settings)
+}
+
+/// A teammate's `settings` source as JSON: inline text, or a file to read.
+fn read_settings_value(source: Option<&str>, home: Option<&Path>) -> Result<Value> {
+    let Some(source) = source else {
+        return Ok(json!({}));
+    };
+    let text = if source.trim_start().starts_with('{') {
+        source.to_string()
+    } else {
+        std::fs::read_to_string(expand_home(source, home)).context("reading teammate settings")?
+    };
+    serde_json::from_str(&text).context("invalid teammate settings JSON")
 }
 
 /// The texts of the operator's Claude settings files, for one launch. A
@@ -487,7 +544,27 @@ pub(crate) fn claude_operator_window(
     sources: Option<&[String]>,
     process_window: Option<&str>,
 ) -> Option<OperatorWindow> {
-    let parsed = |v: &Value, detail: String| match window_tokens(v) {
+    operator_docs(t, sources)
+        .find_map(|(doc, detail)| {
+            let env = doc.get("env")?;
+            let value = env.get(WINDOW_ENV)?;
+            Some(if env.get(PCT_OVERRIDE_ENV).is_some() {
+                OperatorWindow {
+                    tokens: None,
+                    detail: format!("{detail} ({PCT_OVERRIDE_ENV} set; trigger unknown)"),
+                }
+            } else {
+                parse_window(value, detail)
+            })
+        })
+        .or_else(|| {
+            let process = Value::String(process_window?.to_string());
+            Some(parse_window(&process, format!("process env {WINDOW_ENV}")))
+        })
+}
+
+fn parse_window(v: &Value, detail: String) -> OperatorWindow {
+    match window_tokens(v) {
         Some(n) => OperatorWindow {
             tokens: Some(n),
             detail,
@@ -496,27 +573,7 @@ pub(crate) fn claude_operator_window(
             tokens: None,
             detail: format!("{detail} (not a number)"),
         },
-    };
-    for (doc, detail) in operator_docs(t, sources) {
-        let Some(env) = doc.get("env") else {
-            continue;
-        };
-        let Some(value) = env.get(WINDOW_ENV) else {
-            continue;
-        };
-        if env.get(PCT_OVERRIDE_ENV).is_some() {
-            return Some(OperatorWindow {
-                tokens: None,
-                detail: format!("{detail} ({PCT_OVERRIDE_ENV} set; trigger unknown)"),
-            });
-        }
-        return Some(parsed(value, detail));
     }
-    let process = process_window?;
-    Some(parsed(
-        &Value::String(process.to_string()),
-        format!("process env {WINDOW_ENV}"),
-    ))
 }
 
 /// The value at a dotted key path in a JSON document.
@@ -545,13 +602,49 @@ fn leaf_paths(obj: &serde_json::Map<String, Value>, prefix: &str, out: &mut Vec<
 fn overlay_blocks(overlay: &serde_json::Map<String, Value>, parents: &[&str], key: &str) -> bool {
     let mut node = overlay;
     for parent in parents {
-        match node.get(*parent) {
-            Some(Value::Object(inner)) => node = inner,
-            Some(_) => return true,
-            None => return false,
-        }
+        let Some(child) = node.get(*parent) else {
+            return false;
+        };
+        let Value::Object(inner) = child else {
+            return true;
+        };
+        node = inner;
     }
     node.contains_key(key)
+}
+
+/// The operator's settings files, read at most once and only when a
+/// non-forced default key asks whether the operator already sets it.
+struct OperatorChain<'a, F> {
+    texts: Option<F>,
+    read: Option<ClaudeSettingsTexts>,
+    sources: Option<&'a [String]>,
+}
+
+impl<F: FnOnce() -> ClaudeSettingsTexts> OperatorChain<'_, F> {
+    fn sets(&mut self, path: &str) -> bool {
+        let chain = self
+            .read
+            .get_or_insert_with(|| (self.texts.take().expect("read once"))());
+        claude_operator_value(chain, self.sources, path).is_some()
+    }
+}
+
+/// The leaf key paths of harness-default settings objects as (path, value,
+/// forced), from entries of (settings, forced). A later entry wins.
+pub(super) fn default_leaves<'a>(
+    entries: impl Iterator<Item = (&'a serde_json::Map<String, Value>, bool)>,
+) -> Vec<(String, Value, bool)> {
+    let mut leaves: Vec<(String, Value, bool)> = Vec::new();
+    for (settings, forced) in entries {
+        let mut paths = Vec::new();
+        leaf_paths(settings, "", &mut paths);
+        for (path, value) in paths {
+            leaves.retain(|(p, _, _)| *p != path);
+            leaves.push((path, value, forced));
+        }
+    }
+    leaves
 }
 
 /// Merge the teammate's Claude harness-default `settings` into a
@@ -565,48 +658,45 @@ pub(crate) fn merge_settings_defaults(
     overlay: &mut serde_json::Map<String, Value>,
     texts: impl FnOnce() -> ClaudeSettingsTexts,
 ) -> Result<bool> {
-    let mut leaves: Vec<(String, Value, bool)> = Vec::new();
-    for entry in HarnessDefault::for_harness(&teammate.harness_defaults, HarnessKind::Claude) {
-        let Some(settings) = &entry.settings else {
-            continue;
-        };
-        let mut paths = Vec::new();
-        leaf_paths(settings, "", &mut paths);
-        for (path, value) in paths {
-            leaves.retain(|(p, _, _)| *p != path);
-            leaves.push((path, value, entry.force.is_some()));
-        }
-    }
-    let mut texts = Some(texts);
-    let mut read: Option<ClaudeSettingsTexts> = None;
+    let mut chain = OperatorChain {
+        texts: Some(texts),
+        read: None,
+        sources: teammate.setting_sources.as_deref(),
+    };
     let mut changed = false;
-    for (path, value, forced) in leaves {
-        let mut parts: Vec<&str> = path.split('.').collect();
-        let key = parts.pop().expect("a non-empty key path");
-        if overlay_blocks(overlay, &parts, key) {
-            continue;
+    let entries = HarnessDefault::for_harness(&teammate.harness_defaults, HarnessKind::Claude)
+        .filter_map(|entry| Some((entry.settings.as_ref()?, entry.force.is_some())));
+    for (path, value, forced) in default_leaves(entries) {
+        let mut parents: Vec<&str> = path.split('.').collect();
+        let key = parents.pop().expect("a non-empty key path");
+        let skipped = overlay_blocks(overlay, &parents, key) || (!forced && chain.sets(&path));
+        if !skipped {
+            anyhow::ensure!(
+                insert_at_path(overlay, &parents, key, value),
+                "checked above: an object"
+            );
+            changed = true;
         }
-        if !forced {
-            if let Some(f) = texts.take() {
-                read = Some(f());
-            }
-            let chain = read.as_ref().expect("read above");
-            if claude_operator_value(chain, teammate.setting_sources.as_deref(), &path).is_some() {
-                continue;
-            }
-        }
-        let mut node = &mut *overlay;
-        for parent in parts {
-            node = node
-                .entry(parent)
-                .or_insert_with(|| json!({}))
-                .as_object_mut()
-                .context("checked above: an object")?;
-        }
-        node.insert(key.to_string(), value);
-        changed = true;
     }
     Ok(changed)
+}
+
+/// Set `parents.key` in `overlay`, making the parent objects; whether it
+/// was set. A parent that is not an object is left alone, and so is the
+/// value.
+pub(super) fn insert_at_path(
+    overlay: &mut serde_json::Map<String, Value>,
+    parents: &[&str],
+    key: &str,
+    value: Value,
+) -> bool {
+    let node = parents.iter().try_fold(overlay, |node, parent| {
+        node.entry(*parent)
+            .or_insert_with(|| json!({}))
+            .as_object_mut()
+    });
+    node.map(|node| node.insert(key.to_string(), value))
+        .is_some()
 }
 
 /// Where macOS keeps the Seatbelt launcher Claude Code's sandbox runs under.
@@ -782,11 +872,7 @@ pub(crate) fn overlay_skill_switches(
     overlay
         .entry("remoteControlAtStartup")
         .or_insert(serde_json::Value::Bool(teammate.remote_control));
-    let overrides = overlay
-        .entry("skillOverrides")
-        .or_insert_with(|| serde_json::json!({}))
-        .as_object_mut()
-        .context("skillOverrides must be an object")?;
+    let overrides = object_entry(overlay, "skillOverrides")?;
     for name in &teammate.disabled_skills {
         overrides.insert(name.clone(), "off".into());
     }
@@ -796,33 +882,35 @@ pub(crate) fn overlay_skill_switches(
         overrides.insert(name.to_string(), "off".into());
     }
     super::claude_plugins::overlay_plugin_skills(teammate, overlay, home)?;
-    // A plugin skill ignores skillOverrides, in every key form (Claude Code
-    // 2.1.283, tested live), so the official plugin goes off as a plugin.
-    let plugins = overlay
-        .entry("enabledPlugins")
-        .or_insert_with(|| serde_json::json!({}))
-        .as_object_mut()
-        .context("enabledPlugins must be an object")?;
-    for key in super::claude_plugins::installed_keys(
-        super::claude_plugins::installed_plugins_in(home).as_ref(),
+    disable_skill_plugins(teammate, overlay, home)
+}
+
+/// A plugin skill ignores skillOverrides, in every key form (Claude Code
+/// 2.1.283, tested live), so the official plugin goes off as a plugin. For
+/// the same reason a disabled `<plugin>:<skill>` switches its whole plugin
+/// off (Claude Code 2.1.289).
+/// `or_insert` keeps what plugin_skills set. Its filtered copy is
+/// `<plugin>@inline`, a key this never names, so it stays on.
+fn disable_skill_plugins(
+    teammate: &Teammate,
+    overlay: &mut serde_json::Map<String, Value>,
+    home: Option<&Path>,
+) -> Result<()> {
+    let plugins = object_entry(overlay, "enabledPlugins")?;
+    let installed = super::claude_plugins::installed_plugins_in(home);
+    let skill_creator = super::claude_plugins::installed_keys(
+        installed.as_ref(),
         "skill-creator",
         "skill-creator@claude-plugins-official",
-    ) {
-        plugins.entry(key).or_insert(serde_json::Value::Bool(false));
-    }
-    // For the same reason a disabled `<plugin>:<skill>` switches its whole
-    // plugin off (Claude Code 2.1.289).
-    // `or_insert` keeps what plugin_skills set. Its filtered copy is
-    // `<plugin>@inline`, a key this loop never names, so it stays on.
+    );
     let enabled = operator_enabled_plugins(home);
-    let installed = super::claude_plugins::installed_plugins_in(home);
-    for name in &teammate.disabled_skills {
-        let Some((plugin, _)) = name.split_once(':') else {
-            continue;
-        };
-        for key in plugin_keys(plugin, &enabled, installed.as_ref()) {
-            plugins.entry(key).or_insert(serde_json::Value::Bool(false));
-        }
+    let disabled = teammate
+        .disabled_skills
+        .iter()
+        .filter_map(|name| name.split_once(':'))
+        .flat_map(|(plugin, _)| plugin_keys(plugin, &enabled, installed.as_ref()));
+    for key in skill_creator.into_iter().chain(disabled) {
+        plugins.entry(key).or_insert(Value::Bool(false));
     }
     Ok(())
 }
@@ -1291,6 +1379,429 @@ mod tests {
                 sandbox_host_problem("linux", Some(dir.path().as_os_str()), false),
                 None
             );
+        }
+    }
+    // ---- Pins for the claude_command split (#191) ----
+
+    fn claude_default(settings: serde_json::Map<String, Value>, force: bool) -> HarnessDefault {
+        HarnessDefault {
+            harness: HarnessKind::Claude,
+            base: None,
+            env: Default::default(),
+            args: Vec::new(),
+            settings: Some(settings),
+            config: None,
+            agent_settings: None,
+            force: force.then(|| "test".to_string()),
+        }
+    }
+
+    fn obj(v: Value) -> serde_json::Map<String, Value> {
+        v.as_object().unwrap().clone()
+    }
+
+    fn quiet(model: &str) -> Teammate {
+        Teammate {
+            model: Some(model.into()),
+            inherit_plugins: true,
+            inherit_claudeai_skills: true,
+            ..Teammate::default()
+        }
+    }
+
+    fn built(env: &LaunchEnv, t: &Teammate, s: Session<'_>, prompt: &str) -> Vec<String> {
+        command_args(&claude_command(env, t, s, prompt, None).unwrap())
+    }
+
+    /// Every flag group at once, in the order the variadic fence needs.
+    #[test]
+    fn every_flag_group_keeps_its_place() {
+        let mut t = quiet("opus");
+        t.effort = Some("high".into());
+        t.permission_mode = Some(crate::roster::PermissionMode::AcceptEdits);
+        t.mcp_servers = Some([("srv".to_string(), json!({"command": "x"}))].into());
+        t.mcp_config_files = vec!["~/a.json".into()];
+        t.worker_channel = true;
+        t.tools = Some(vec!["Read".into()]);
+        t.allowed_tools = vec!["Read".into(), "Grep".into()];
+        t.disallowed_tools = vec!["Bash".into()];
+        t.setting_sources = Some(vec!["user".into()]);
+        t.disable_skills = true;
+        t.plugin_dirs = vec!["/p".into()];
+        t.args = vec!["--x".into()];
+        let a = built(&LaunchEnv::for_test(), &t, Session::Fresh("S"), "PROMPT");
+        let mcp = json!({"mcpServers": {
+            "horch": {"command": "horch", "args": ["channel", "serve", "--agent", "claude"]},
+            "srv": {"command": "x"}
+        }})
+        .to_string();
+        assert_eq!(a[..2], ["--mcp-config".to_string(), mcp]);
+        let settings = a.iter().position(|x| x == "--settings").unwrap();
+        let mut rest = a.clone();
+        rest.drain(settings..settings + 2);
+        assert_eq!(
+            rest[2..],
+            [
+                "--mcp-config",
+                "~/a.json",
+                "--strict-mcp-config",
+                "--tools",
+                "Read",
+                "--allowedTools",
+                "Read,Grep",
+                "--disallowedTools",
+                "Bash",
+                "--dangerously-load-development-channels",
+                "server:horch",
+                "--model",
+                "opus",
+                "--effort",
+                "high",
+                "--permission-mode",
+                "acceptEdits",
+                "--setting-sources",
+                "user",
+                "--disable-slash-commands",
+                "--plugin-dir",
+                "/p",
+                "--session-id",
+                "S",
+                "--x",
+                "PROMPT"
+            ]
+        );
+        assert!(settings > rest.iter().position(|x| x == "--plugin-dir").unwrap());
+    }
+
+    #[test]
+    fn mcp_flags_per_shape() {
+        let env = LaunchEnv::for_test();
+        let mcp_part = |t: &Teammate| {
+            let a = built(&env, t, Session::Unmanaged, "");
+            a[..a.iter().position(|x| x == "--model").unwrap()].to_vec()
+        };
+        assert!(mcp_part(&quiet("m")).is_empty());
+
+        // Files only: one variadic flag, not strict.
+        let mut t = quiet("m");
+        t.mcp_config_files = vec!["a.json".into(), "b.json".into()];
+        assert_eq!(mcp_part(&t), ["--mcp-config", "a.json", "b.json"]);
+
+        // Declared servers: strict, each file its own flag.
+        let mut t = quiet("m");
+        t.mcp_servers = Some(Default::default());
+        t.mcp_config_files = vec!["a.json".into(), "b.json".into()];
+        assert_eq!(
+            mcp_part(&t),
+            [
+                "--mcp-config",
+                r#"{"mcpServers":{}}"#,
+                "--mcp-config",
+                "a.json",
+                "--mcp-config",
+                "b.json",
+                "--strict-mcp-config"
+            ]
+        );
+
+        // Channel alone: not strict.
+        let mut t = quiet("m");
+        t.worker_channel = true;
+        let a = mcp_part(&t);
+        assert!(!a.contains(&"--strict-mcp-config".to_string()), "{a:?}");
+        assert_eq!(a.len(), 4, "{a:?}");
+
+        // `Some([])` tools is `--tools ""`.
+        let mut t = quiet("m");
+        t.tools = Some(vec![]);
+        assert_eq!(mcp_part(&t), ["--tools", ""]);
+    }
+
+    #[test]
+    fn a_session_resume_or_none_and_the_effort_drop() {
+        let env = LaunchEnv::for_test();
+        let t = quiet("haiku");
+        let mut with_effort = t.clone();
+        with_effort.effort = Some("high".into());
+        let fresh = built(&env, &with_effort, Session::Fresh("S"), "P");
+        assert!(!fresh.contains(&"--effort".to_string()), "{fresh:?}");
+        assert!(fresh.windows(2).any(|w| w == ["--session-id", "S"]));
+        let resumed = built(&env, &t, Session::Resume("S"), "");
+        assert!(resumed.windows(2).any(|w| w == ["--resume", "S"]));
+        assert_eq!(resumed.last().unwrap(), "S");
+        let unmanaged = built(&env, &t, Session::Unmanaged, "P");
+        assert!(!unmanaged
+            .iter()
+            .any(|a| a.starts_with("--session") || a == "--resume"));
+    }
+
+    #[test]
+    fn inline_settings_gain_defaults_and_window_or_stay_byte_for_byte() {
+        let mut env = LaunchEnv::for_test();
+        let mut t = quiet("m");
+        t.settings = Some(r#" { "a" : 1 } "#.into());
+        let value = |a: &[String]| -> String {
+            a[a.iter().position(|x| x == "--settings").unwrap() + 1].clone()
+        };
+        assert_eq!(
+            value(&built(&env, &t, Session::Unmanaged, "")),
+            r#" { "a" : 1 } "#
+        );
+
+        t.harness_defaults = vec![claude_default(obj(json!({"b": {"c": 2}, "a": 9})), false)];
+        let merged: Value =
+            serde_json::from_str(&value(&built(&env, &t, Session::Unmanaged, ""))).unwrap();
+        assert_eq!(merged, json!({"a": 1, "b": {"c": 2}}));
+
+        // A default that adds nothing leaves the text alone.
+        t.harness_defaults = vec![claude_default(obj(json!({"a": 9})), false)];
+        assert_eq!(
+            value(&built(&env, &t, Session::Unmanaged, "")),
+            r#" { "a" : 1 } "#
+        );
+
+        // The window merges in as env.CLAUDE_CODE_AUTO_COMPACT_WINDOW.
+        env.compact_window = Some(crate::compaction::window::WindowDecision {
+            tokens: Some(1234),
+            source: crate::compaction::window::WindowSource::Fleet,
+            detail: "d".into(),
+            applied: true,
+        });
+        let merged: Value =
+            serde_json::from_str(&value(&built(&env, &t, Session::Unmanaged, ""))).unwrap();
+        assert_eq!(
+            merged,
+            json!({"a": 1, "env": {"CLAUDE_CODE_AUTO_COMPACT_WINDOW": "1234"}})
+        );
+
+        // Invalid inline JSON that needs a merge is refused; a file is passed on.
+        t.settings = Some("{oops".into());
+        assert!(claude_command(&env, &t, Session::Unmanaged, "", None).is_err());
+        t.settings = Some("~/s.json".into());
+        env.home = Some("/home/x".into());
+        assert_eq!(
+            value(&built(&env, &t, Session::Unmanaged, "")),
+            "/home/x/s.json"
+        );
+    }
+
+    fn home_with(settings: &str) -> (tempfile::TempDir, LaunchEnv) {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(tmp.path().join(".claude")).unwrap();
+        std::fs::write(tmp.path().join(".claude/settings.json"), settings).unwrap();
+        let mut env = LaunchEnv::for_test();
+        env.home = Some(tmp.path().to_path_buf());
+        (tmp, env)
+    }
+
+    #[test]
+    fn the_default_overlay_sheds_plugins_and_keeps_the_status_line() {
+        let (_tmp, env) = home_with(
+            r#"{"enabledPlugins":{"a@m":true,"b@m":false},"statusLine":{"type":"command","command":"x"}}"#,
+        );
+        let mut t = quiet("m");
+        t.inherit_plugins = false;
+        t.setting_sources = Some(vec!["user".into()]);
+        let a = built(&env, &t, Session::Unmanaged, "");
+        let overlay = settings_overlay_of(&a);
+        assert_eq!(overlay["enabledPlugins"]["a@m"], false);
+        assert!(overlay["enabledPlugins"].get("b@m").is_none());
+        assert_eq!(overlay["statusLine"]["command"], "x");
+        assert_eq!(overlay["syncClaudeAiPlugins"], false);
+
+        // Without setting_sources the status line stays with the operator.
+        t.setting_sources = None;
+        let overlay = settings_overlay_of(&built(&env, &t, Session::Unmanaged, ""));
+        assert!(overlay.get("statusLine").is_none());
+    }
+
+    fn settings_overlay_of(a: &[String]) -> Value {
+        serde_json::from_str(&a[a.iter().position(|x| x == "--settings").unwrap() + 1]).unwrap()
+    }
+
+    #[test]
+    fn skills_settings_reads_its_source_and_adds_the_switches() {
+        let (tmp, _env) = home_with(
+            r#"{"enabledPlugins":{"a@m":true},"statusLine":{"type":"command","command":"op"}}"#,
+        );
+        let home = Some(tmp.path());
+        let mut t = quiet("m");
+        let v = skills_settings(&t, home).unwrap();
+        assert_eq!(v["disableBundledSkills"], true);
+        assert_eq!(v["disableWorkflows"], true);
+        assert!(v.get("statusLine").is_none());
+
+        // A file source is read, and its own keys win.
+        std::fs::write(
+            tmp.path().join("mine.json"),
+            r#"{"disableWorkflows":false,"statusLine":"mine"}"#,
+        )
+        .unwrap();
+        t.settings = Some(tmp.path().join("mine.json").to_string_lossy().into_owned());
+        t.inherit_plugins = false;
+        t.setting_sources = Some(vec![]);
+        let v = skills_settings(&t, home).unwrap();
+        assert_eq!(v["disableWorkflows"], false);
+        assert_eq!(v["statusLine"], "mine");
+        assert_eq!(v["enabledPlugins"]["a@m"], false);
+
+        // Without its own status line the operator's is copied.
+        t.settings = Some("{}".into());
+        let v = skills_settings(&t, home).unwrap();
+        assert_eq!(v["statusLine"]["command"], "op");
+
+        std::fs::write(tmp.path().join("list.json"), "[]").unwrap();
+        let list = tmp.path().join("list.json").to_string_lossy().into_owned();
+        for (source, why) in [
+            (list.as_str(), "teammate settings must be a JSON object"),
+            ("{oops", "invalid teammate settings JSON"),
+            ("/no/such/file.json", "reading teammate settings"),
+        ] {
+            t.settings = Some(source.into());
+            let err = format!("{:#}", skills_settings(&t, home).unwrap_err());
+            assert!(err.contains(why), "{source}: {err}");
+        }
+        t.settings = Some(r#"{"enabledPlugins":3}"#.into());
+        let err = format!("{:#}", skills_settings(&t, home).unwrap_err());
+        assert!(err.contains("enabledPlugins must be an object"), "{err}");
+    }
+
+    #[test]
+    fn operator_window_reads_the_first_source_then_the_process() {
+        let texts = ClaudeSettingsTexts {
+            managed: Some(r#"{"env":{"OTHER":"1"}}"#.into()),
+            local: Some("not json".into()),
+            project: Some(r#"{"env":{"CLAUDE_CODE_AUTO_COMPACT_WINDOW":"150000"}}"#.into()),
+            user: Some(
+                r#"{"env":{"CLAUDE_CODE_AUTO_COMPACT_WINDOW":"9","CLAUDE_AUTOCOMPACT_PCT_OVERRIDE":"50"}}"#
+                    .into(),
+            ),
+            user_path: "/u".into(),
+        };
+        let w = claude_operator_window(&texts, None, Some("77")).unwrap();
+        assert_eq!(w.tokens, Some(150000));
+        assert_eq!(w.detail, ".claude/settings.json");
+
+        // Narrowed to user: the percentage override hides the trigger.
+        let only_user = vec!["user".to_string()];
+        let w = claude_operator_window(&texts, Some(&only_user), Some("77")).unwrap();
+        assert_eq!(w.tokens, None);
+        assert_eq!(
+            w.detail,
+            "/u (CLAUDE_AUTOCOMPACT_PCT_OVERRIDE set; trigger unknown)"
+        );
+
+        // No file sets it: the process env counts; a non-number is flagged.
+        let none = ClaudeSettingsTexts::default();
+        let w = claude_operator_window(&none, None, Some("88")).unwrap();
+        assert_eq!(
+            (w.tokens, w.detail.as_str()),
+            (Some(88), "process env CLAUDE_CODE_AUTO_COMPACT_WINDOW")
+        );
+        let w = claude_operator_window(&none, None, Some("lots")).unwrap();
+        assert_eq!(w.tokens, None);
+        assert!(w.detail.ends_with("(not a number)"), "{}", w.detail);
+        assert_eq!(claude_operator_window(&none, None, None), None);
+
+        let bad = ClaudeSettingsTexts {
+            managed: Some(r#"{"env":{"CLAUDE_CODE_AUTO_COMPACT_WINDOW":true}}"#.into()),
+            ..Default::default()
+        };
+        let w = claude_operator_window(&bad, None, None).unwrap();
+        assert_eq!(w.tokens, None);
+        assert_eq!(w.detail, "managed settings (not a number)");
+    }
+
+    #[test]
+    fn overlay_window_respects_what_the_overlay_already_says() {
+        let mut o = obj(json!({}));
+        assert!(!overlay_window(None, &mut o));
+        assert!(o.is_empty());
+        assert!(overlay_window(Some(5), &mut o));
+        assert_eq!(o["env"]["CLAUDE_CODE_AUTO_COMPACT_WINDOW"], "5");
+        assert!(!overlay_window(Some(6), &mut o));
+        assert_eq!(o["env"]["CLAUDE_CODE_AUTO_COMPACT_WINDOW"], "5");
+
+        let mut o = obj(json!({"env": {"KEEP": "1"}}));
+        assert!(overlay_window(Some(7), &mut o));
+        assert_eq!(
+            o["env"],
+            json!({"KEEP": "1", "CLAUDE_CODE_AUTO_COMPACT_WINDOW": "7"})
+        );
+
+        // A non-object env is left alone.
+        let mut o = obj(json!({"env": 3}));
+        assert!(!overlay_window(Some(7), &mut o));
+        assert_eq!(o["env"], 3);
+    }
+
+    #[test]
+    fn overlay_blocks_walks_parents() {
+        let o = obj(json!({"a": {"b": {"c": 1}}, "s": 1}));
+        assert!(overlay_blocks(&o, &[], "s"));
+        assert!(!overlay_blocks(&o, &[], "z"));
+        assert!(overlay_blocks(&o, &["a", "b"], "c"));
+        assert!(!overlay_blocks(&o, &["a", "b"], "d"));
+        assert!(!overlay_blocks(&o, &["a", "x"], "c"));
+        assert!(!overlay_blocks(&o, &["x", "y"], "c"));
+        // A parent that is not an object blocks every child key.
+        assert!(overlay_blocks(&o, &["s"], "anything"));
+        assert!(overlay_blocks(&o, &["a", "b", "c"], "d"));
+    }
+
+    #[test]
+    fn merge_defaults_later_entry_wins_and_operator_yields() {
+        let (_tmp, env) = home_with(r#"{"fromOperator": 1, "nest": {"op": 1}}"#);
+        let read = || operator_settings(&env);
+        let mut t = quiet("m");
+        t.harness_defaults = vec![
+            claude_default(
+                obj(json!({"x": 1, "fromOperator": 2, "nest": {"op": 2, "new": 3}})),
+                false,
+            ),
+            claude_default(
+                obj(json!({"x": 5, "forced": 1, "deep": {"er": {"k": true}}})),
+                true,
+            ),
+        ];
+        let mut o = obj(json!({"present": 1}));
+        assert!(merge_settings_defaults(&t, &mut o, read).unwrap());
+        assert_eq!(
+            Value::Object(o.clone()),
+            json!({
+                "present": 1,
+                "x": 5,
+                "forced": 1,
+                "deep": {"er": {"k": true}},
+                "nest": {"new": 3}
+            })
+        );
+        // A second pass changes nothing.
+        assert!(!merge_settings_defaults(&t, &mut o, read).unwrap());
+
+        // The overlay's own key beats a default, even a forced one; a
+        // non-object parent blocks.
+        let mut o = obj(json!({"x": 0, "deep": 3}));
+        merge_settings_defaults(&t, &mut o, read).unwrap();
+        assert_eq!(o["x"], 0);
+        assert_eq!(o["deep"], 3);
+
+        // The operator files are read only when a non-forced key needs them.
+        let mut only_forced = quiet("m");
+        only_forced.harness_defaults = vec![claude_default(obj(json!({"f": 1})), true)];
+        let mut o = obj(json!({}));
+        assert!(merge_settings_defaults(&only_forced, &mut o, || panic!("read")).unwrap());
+    }
+
+    #[test]
+    fn skill_switches_refuse_non_object_sections() {
+        let t = quiet("m");
+        for key in ["skillOverrides", "enabledPlugins"] {
+            let mut o = obj(json!({ key: 3 }));
+            let err = overlay_skill_switches(&t, &mut o, None)
+                .unwrap_err()
+                .to_string();
+            assert_eq!(err, format!("{key} must be an object"));
         }
     }
 }
