@@ -70,11 +70,8 @@ impl Mail {
 
     /// The worker roles that have a mail dir under this workspace mail.
     pub fn roles(&self) -> Result<Vec<(String, Mail)>> {
-        let dir = self.dir.join("roles");
-        let entries = match std::fs::read_dir(&dir) {
-            Ok(entries) => entries,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
-            Err(error) => return Err(error).with_context(|| format!("reading {}", dir.display())),
+        let Some(entries) = read_dir_if_exists(&self.dir.join("roles"))? else {
+            return Ok(Vec::new());
         };
         let mut roles = Vec::new();
         for entry in entries {
@@ -123,55 +120,34 @@ impl Mail {
         };
         let final_path = pending.join(format!("{}.json", id.0));
         let temp_path = pending.join(format!(".{}.json.tmp", id.0));
-        let mut file = private::create_new(&temp_path)
-            .with_context(|| format!("creating {}", temp_path.display()))?;
-        let bytes = serde_json::to_vec(&message).context("serializing mail")?;
-        if let Err(error) = file.write_all(&bytes).and_then(|()| file.sync_all()) {
-            let _ = std::fs::remove_file(&temp_path);
-            return Err(error).with_context(|| format!("writing {}", temp_path.display()));
-        }
-        let questions = original
-            .lines()
-            .filter(|line| {
-                let line = line.trim_start();
-                let line = line
-                    .strip_prefix(&format!("[{from}]"))
-                    .unwrap_or(line)
-                    .trim_start();
-                line.starts_with("QUESTION:") || line.starts_with("BLOCKED:")
+        write_temp(
+            &temp_path,
+            &serde_json::to_vec(&message).context("serializing mail")?,
+        )?;
+        let questions = question_lines(original, from);
+        let question_path = (!questions.is_empty())
+            .then(|| {
+                let question = Message {
+                    text: questions,
+                    ..message
+                };
+                self.publish_question(&id, &question)
             })
-            .collect::<Vec<_>>()
-            .join("\n");
-        let question_path = if questions.is_empty() {
-            None
-        } else {
-            let dir = self.dir.join("questions");
-            private::ensure_dir(&dir)?;
-            let path = dir.join(format!("{}.json", id.0));
-            let temporary = dir.join(format!(".{}.tmp", id.0));
-            let question = Message {
-                text: questions,
-                ..message
-            };
-            let bytes = serde_json::to_vec(&question)?;
-            let mut file = private::create_new(&temporary)?;
-            file.write_all(&bytes)?;
-            file.sync_all()?;
-            std::fs::rename(&temporary, &path)?;
-            Some(path)
-        };
+            .transpose()?;
         // Publish questions first: a courier/inbox can observe pending mail as
         // soon as this rename completes, and acknowledgement must not erase them.
-        if let Err(error) = std::fs::rename(&temp_path, &final_path) {
-            let _ = std::fs::remove_file(&temp_path);
-            if let Some(path) = question_path {
-                let _ = std::fs::remove_file(path);
-            }
-            return Err(error).with_context(|| {
-                format!("moving {} to {}", temp_path.display(), final_path.display())
-            });
-        }
+        publish_pending(&temp_path, &final_path, question_path.as_deref())?;
         Ok(id)
+    }
+
+    fn publish_question(&self, id: &Id, question: &Message) -> Result<PathBuf> {
+        let dir = self.dir.join("questions");
+        private::ensure_dir(&dir)?;
+        let path = dir.join(format!("{}.json", id.0));
+        let temporary = dir.join(format!(".{}.tmp", id.0));
+        write_temp(&temporary, &serde_json::to_vec(question)?)?;
+        std::fs::rename(&temporary, &path)?;
+        Ok(path)
     }
 
     /// Unanswered questions are independent of pending mail and need no ledger run.
@@ -299,35 +275,15 @@ impl Mail {
     /// could hold lines planted for the orchestrator to read.
     pub fn pending(&self) -> Result<Vec<Message>> {
         private::check(&self.dir)?;
-        let dir = self.dir.join("pending");
-        let entries = match std::fs::read_dir(&dir) {
-            Ok(entries) => entries,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
-            Err(error) => return Err(error).with_context(|| format!("reading {}", dir.display())),
+        let Some(entries) = read_dir_if_exists(&self.dir.join("pending"))? else {
+            return Ok(Vec::new());
         };
         let mut paths = entries
             .map(|entry| entry.map(|entry| entry.path()))
             .collect::<std::io::Result<Vec<_>>>()?;
-        paths.retain(|path| {
-            path.extension()
-                .is_some_and(|extension| extension == "json")
-        });
+        paths.retain(|path| path.extension().is_some_and(|ext| ext == "json"));
         paths.sort();
-
-        paths
-            .into_iter()
-            .map(|path| {
-                let file =
-                    File::open(&path).with_context(|| format!("opening {}", path.display()))?;
-                let message: Message = serde_json::from_reader(file)
-                    .with_context(|| format!("parsing {}", path.display()))?;
-                let file_id = path.file_stem().and_then(|stem| stem.to_str());
-                if file_id != Some(message.id.0.as_str()) {
-                    bail!("mail id does not match {}", path.display());
-                }
-                Ok(message)
-            })
-            .collect()
+        paths.iter().map(|path| read_message(path)).collect()
     }
 
     pub fn ack(&self, id: &Id) -> Result<()> {
@@ -347,11 +303,8 @@ impl Mail {
     }
 
     fn prune_acked(&self) -> Result<()> {
-        let dir = self.dir.join("acked");
-        let entries = match std::fs::read_dir(&dir) {
-            Ok(entries) => entries,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-            Err(error) => return Err(error).with_context(|| format!("reading {}", dir.display())),
+        let Some(entries) = read_dir_if_exists(&self.dir.join("acked"))? else {
+            return Ok(());
         };
         self.prune_paths(entries.map(|entry| entry.map(|entry| entry.path())))
     }
@@ -360,34 +313,93 @@ impl Mail {
     fn prune_paths(&self, paths: impl IntoIterator<Item = std::io::Result<PathBuf>>) -> Result<()> {
         let now = SystemTime::now();
         for path in paths {
-            let path = match path {
-                Ok(path) => path,
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            match path {
+                Ok(path) => remove_if_expired(&path, now)?,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
                 Err(error) => return Err(error).context("reading an acked mail entry"),
-            };
-            let modified = match path.metadata().and_then(|metadata| metadata.modified()) {
-                Ok(modified) => modified,
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
-                Err(error) => {
-                    return Err(error)
-                        .with_context(|| format!("reading metadata for {}", path.display()))
-                }
-            };
-            if now
-                .duration_since(modified)
-                .is_ok_and(|age| age > ACK_RETENTION)
-            {
-                match std::fs::remove_file(&path) {
-                    Ok(()) => {}
-                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-                    Err(error) => {
-                        return Err(error).with_context(|| format!("removing {}", path.display()))
-                    }
-                }
             }
         }
         Ok(())
     }
+}
+
+/// `Some` of an io result, or `None` when the path is missing.
+fn if_exists<T>(result: std::io::Result<T>) -> std::io::Result<Option<T>> {
+    match result {
+        Ok(value) => Ok(Some(value)),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error),
+    }
+}
+
+/// `read_dir`, with a missing dir as `None`.
+fn read_dir_if_exists(dir: &Path) -> Result<Option<std::fs::ReadDir>> {
+    if_exists(std::fs::read_dir(dir)).with_context(|| format!("reading {}", dir.display()))
+}
+
+/// Remove `path` when it is older than [`ACK_RETENTION`]. A file that a
+/// concurrent prune removed first is skipped.
+fn remove_if_expired(path: &Path, now: SystemTime) -> Result<()> {
+    let metadata = if_exists(path.metadata().and_then(|metadata| metadata.modified()))
+        .with_context(|| format!("reading metadata for {}", path.display()))?;
+    let expired = metadata.is_some_and(|modified| {
+        now.duration_since(modified)
+            .is_ok_and(|age| age > ACK_RETENTION)
+    });
+    if expired {
+        if_exists(std::fs::remove_file(path))
+            .with_context(|| format!("removing {}", path.display()))?;
+    }
+    Ok(())
+}
+
+/// Move the written pending mail into place. A failed move removes it and
+/// its published question.
+fn publish_pending(temp: &Path, published: &Path, question: Option<&Path>) -> Result<()> {
+    std::fs::rename(temp, published)
+        .with_context(|| format!("moving {} to {}", temp.display(), published.display()))
+        .inspect_err(|_| {
+            let _ = std::fs::remove_file(temp);
+            question.map(std::fs::remove_file);
+        })
+}
+
+/// Create `path` and write `bytes` to disk. A failed write removes the file.
+fn write_temp(path: &Path, bytes: &[u8]) -> Result<()> {
+    let mut file =
+        private::create_new(path).with_context(|| format!("creating {}", path.display()))?;
+    file.write_all(bytes)
+        .and_then(|()| file.sync_all())
+        .with_context(|| format!("writing {}", path.display()))
+        .inspect_err(|_| {
+            let _ = std::fs::remove_file(path);
+        })
+}
+
+/// The lines of `original` that ask a question or report a block.
+fn question_lines(original: &str, from: &str) -> String {
+    let prefix = format!("[{from}]");
+    original
+        .lines()
+        .filter(|line| {
+            let line = line.trim_start();
+            let line = line.strip_prefix(&prefix).unwrap_or(line).trim_start();
+            line.starts_with("QUESTION:") || line.starts_with("BLOCKED:")
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// Read one pending message; its file name must be its id.
+fn read_message(path: &Path) -> Result<Message> {
+    let file = File::open(path).with_context(|| format!("opening {}", path.display()))?;
+    let message: Message =
+        serde_json::from_reader(file).with_context(|| format!("parsing {}", path.display()))?;
+    let file_id = path.file_stem().and_then(|stem| stem.to_str());
+    if file_id != Some(message.id.0.as_str()) {
+        bail!("mail id does not match {}", path.display());
+    }
+    Ok(message)
 }
 
 /// The marker name for an answer at `at`: nanoseconds since 1970, padded,
@@ -916,5 +928,21 @@ mod tests {
         mail.enqueue("worker", "hello").unwrap();
         std::fs::write(mail.dir.join("pending").join("note.txt"), "x").unwrap();
         assert_eq!(mail.pending().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn a_failed_publish_removes_the_temp_file_and_the_question() {
+        let root = tempfile::tempdir().unwrap();
+        let temp = root.path().join(".a.json.tmp");
+        let question = root.path().join("q.json");
+        std::fs::write(&temp, "{}").unwrap();
+        std::fs::write(&question, "{}").unwrap();
+        let blocked = root.path().join("a.json");
+        std::fs::create_dir_all(blocked.join("child")).unwrap();
+
+        let err = publish_pending(&temp, &blocked, Some(&question)).unwrap_err();
+        assert!(format!("{err:#}").contains("moving"), "{err:#}");
+        assert!(!temp.exists());
+        assert!(!question.exists());
     }
 }
