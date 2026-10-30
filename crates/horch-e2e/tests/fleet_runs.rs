@@ -2,7 +2,9 @@
 //! (`docs/specs/fleet-dataset.md` §4, FDS-02, FDS-04, FDS-06).
 //!
 //! fake-herdr runs in the `exec` scenario, so `horch spawn`'s pane command
-//! really starts `horch worker`, as in `lifecycle.rs`.
+//! really starts `horch worker`, as in `lifecycle.rs`. The agent in a pane
+//! runs until the test calls [`release`]: fake-claude exits at once, and
+//! under load its record could end before the spawn's own sync reads it.
 
 use std::path::PathBuf;
 use std::process::Output;
@@ -38,7 +40,52 @@ fn fleet(name: &str) -> Harness {
         .output()
         .unwrap();
     assert!(out.status.success(), "{}", text(&out));
+    hold_agents(&h);
     h
+}
+
+/// The file that lets every held agent go on, see [`release`].
+fn release_file(h: &Harness) -> PathBuf {
+    h.root.join("release-agents")
+}
+
+/// Put a `claude` in `bin/` that, in a pane, waits for [`release_file`]
+/// and then runs fake-claude. Its first exec happens here: macOS scans a
+/// new executable at its first exec.
+fn hold_agents(h: &Harness) {
+    let fake = std::fs::canonicalize(h.bin.join("claude")).unwrap();
+    let stub = format!(
+        "#!/bin/sh
+case \" $* \" in *\" --version \"*) ;; *)
+  if [ -n \"$HERDR_PANE_ID\" ]; then
+    while [ ! -f '{}' ]; do /bin/sleep 0.1; done
+  fi ;;
+esac
+exec '{}' \"$@\"
+",
+        release_file(h).display(),
+        fake.display()
+    );
+    let claude = h.write_bin("claude", stub.as_bytes());
+    let mut warm = std::process::Command::new(claude);
+    h.seal(&mut warm);
+    let out = warm.arg("--version").output().unwrap();
+    assert!(out.status.success(), "{}", text(&out));
+}
+
+/// Let every held agent exit, and wait until no record is live, so that
+/// teardown finds no worker still starting or running.
+fn release(h: &Harness) {
+    std::fs::write(release_file(h), "").unwrap();
+    wait_for("every worker to end", || {
+        records(h)
+            .iter()
+            .all(|r| {
+                !["planned", "starting", "running"]
+                    .contains(&r["state"]["state"].as_str().unwrap_or(""))
+            })
+            .then_some(())
+    });
 }
 
 fn slug(h: &Harness) -> String {
@@ -179,6 +226,7 @@ fn fds_04_done_writes_run_row() {
     assert_eq!(note_lines(&out, "horch: NOTE: fleet"), 0, "{}", text(&out));
     assert_eq!(rows(&h, "runs.jsonl").len(), 1);
     assert_eq!(rows(&h, "starts.jsonl").len(), 2);
+    release(&h);
 }
 
 /// FDS-04: a fleet dir that cannot be written gives 1 NOTE line, and
@@ -210,6 +258,7 @@ fn fds_04_done_write_failure_is_a_note() {
         .unwrap();
     assert_eq!(r["status"], "done", "{r}");
     assert!(rows(&h, "runs.jsonl").is_empty());
+    release(&h);
 }
 
 /// FDS-02: a start row that cannot be written gives a NOTE line; the spawn
@@ -227,6 +276,7 @@ fn fds_02_start_row_failure_is_a_note() {
     assert_eq!(stdout.lines().count(), 1, "{}", text(&out));
     assert!(stdout.trim().starts_with("w1:"), "{}", text(&out));
     assert_eq!(records(&h).len(), 1);
+    release(&h);
 }
 
 /// FDS-06: `horch spawn` syncs: a finished record without a row (its pane
@@ -270,4 +320,5 @@ fn fds_06_spawn_runs_sync() {
     assert_eq!(runs[0]["tokens"], Value::Null);
     assert_eq!(runs[0]["cost_source"], "unpriced");
     assert_eq!(runs[0]["duration_ms"], 1_800_000);
+    release(&h);
 }
