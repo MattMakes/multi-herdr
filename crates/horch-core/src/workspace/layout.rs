@@ -152,7 +152,6 @@ pub(crate) fn analyze(layout: &Layout, orchestrator: Option<&str>) -> Analysis {
 /// Analyse a tab layout, saying explicitly whether the orchestrator is on it.
 pub(crate) fn analyze_with(layout: &Layout, orchestrator: Orchestrator) -> Analysis {
     let area = layout.area;
-    let height = area.height;
     let all: Vec<Slot> = layout
         .panes
         .iter()
@@ -167,17 +166,9 @@ pub(crate) fn analyze_with(layout: &Layout, orchestrator: Orchestrator) -> Analy
 
     // A column is "full" when it spans the tab height, "half" when it is one of
     // two stacked rows. The 1-cell tolerance absorbs border rows.
-    let is_full = |s: &Slot| s.h >= height - 1;
+    let is_full = |s: &Slot| s.h >= area.height - 1;
 
-    let orch_id: Option<String> = match orchestrator {
-        Orchestrator::Pane(id) if !id.is_empty() => Some(id.to_string()),
-        Orchestrator::Pane(_) | Orchestrator::Infer => {
-            let mut full: Vec<&Slot> = all.iter().filter(|s| is_full(s)).collect();
-            full.sort_by_key(|s| s.x);
-            full.first().map(|s| s.id.clone())
-        }
-        Orchestrator::Absent => None,
-    };
+    let orch_id = pick_orchestrator(&all, orchestrator, area.height);
 
     let workers: Vec<&Slot> = all
         .iter()
@@ -188,99 +179,30 @@ pub(crate) fn analyze_with(layout: &Layout, orchestrator: Orchestrator) -> Analy
     let top: Vec<&Slot> = half.iter().copied().filter(|s| s.y == area.y).collect();
     let bottom: Vec<&Slot> = half.iter().copied().filter(|s| s.y > area.y).collect();
 
-    // Column boundaries: every distinct pane edge across both rows.
-    let mut edges: Vec<i64> = top
-        .iter()
-        .chain(bottom.iter())
-        .flat_map(|s| [s.x, s.x + s.w])
-        .collect();
-    edges.sort_unstable();
-    edges.dedup();
-
-    let cells: Vec<Cell> = edges
-        .windows(2)
-        .map(|w| {
-            let (x0, x1) = (w[0], w[1]);
-            Cell {
-                x0,
-                x1,
-                top: top.iter().find(|s| s.covers(x0, x1)).map(|s| s.id.clone()),
-                bottom: bottom
-                    .iter()
-                    .find(|s| s.covers(x0, x1))
-                    .map(|s| s.id.clone()),
-                depth: half.iter().filter(|s| s.covers(x0, x1)).count(),
-            }
-        })
-        .collect();
-
-    let offgrid = cells.iter().any(|c| c.depth > 2);
-
-    // A row is ragged where one of its panes swallows a boundary the other row
-    // has. That pane is the one to split RIGHT.
-    let ragged_in = |row: &[&Slot]| -> Option<String> {
-        let mut spanning: Vec<&&Slot> = row
-            .iter()
-            .filter(|p| edges.iter().any(|e| *e > p.x && *e < p.x + p.w))
-            .collect();
-        spanning.sort_by_key(|p| p.x);
-        spanning.first().map(|p| p.id.clone())
-    };
-    let top_ragged = ragged_in(&top);
-    let bottom_ragged = ragged_in(&bottom);
-
-    let rightmost =
-        |row: &[&Slot]| -> Option<String> { row.iter().max_by_key(|s| s.x).map(|s| s.id.clone()) };
-
-    let state = if offgrid {
-        GridState::Offgrid
-    } else if workers.is_empty() {
-        GridState::Empty
-    } else if !full.is_empty() {
-        GridState::Unpaired
-    } else if bottom_ragged.is_some() {
-        GridState::RaggedBottom
-    } else if top_ragged.is_some() {
-        GridState::RaggedTop
-    } else if top.len() == bottom.len() {
-        GridState::Complete
-    } else {
-        GridState::Ragged
-    };
-
-    let next = match state {
-        GridState::Unpaired => rightmost(&full).map(|from| NextSplit {
-            direction: Direction::Down,
-            from,
-            why: "worker owns a full-height column; DOWN pairs it into a 2-tall column",
-            followup: None,
-        }),
-        GridState::RaggedBottom => bottom_ragged.map(|from| NextSplit {
-            direction: Direction::Right,
-            from,
-            why: "bottom pane spans a boundary the top row already has; RIGHT subdivides it",
-            followup: None,
-        }),
-        GridState::RaggedTop => top_ragged.map(|from| NextSplit {
-            direction: Direction::Right,
-            from,
-            why: "top pane spans a boundary the bottom row already has; RIGHT subdivides it",
-            followup: None,
-        }),
-        GridState::Complete => rightmost(&top).map(|from| NextSplit {
-            direction: Direction::Right,
-            from,
-            why: "grid is 2xN; RIGHT from the top-rightmost pane opens column N+1",
-            followup: rightmost(&bottom),
-        }),
-        GridState::Empty => orch_id.clone().map(|from| NextSplit {
-            direction: Direction::Right,
-            from,
-            why: "no workers yet; RIGHT off the orchestrator makes the first one",
-            followup: None,
-        }),
-        GridState::Offgrid | GridState::Ragged => None,
-    };
+    let edges = column_edges(&top, &bottom);
+    let cells = cells(&edges, &top, &bottom, &half);
+    let top_ragged = ragged_in(&edges, &top);
+    let bottom_ragged = ragged_in(&edges, &bottom);
+    let state = grid_state(&Shape {
+        offgrid: cells.iter().any(|c| c.depth > 2),
+        workers: workers.len(),
+        full: full.len(),
+        top_ragged: top_ragged.is_some(),
+        bottom_ragged: bottom_ragged.is_some(),
+        top: top.len(),
+        bottom: bottom.len(),
+    });
+    let next = next_split(
+        state,
+        &Rows {
+            full: &full,
+            top: &top,
+            bottom: &bottom,
+            top_ragged,
+            bottom_ragged,
+            orchestrator: orch_id.clone(),
+        },
+    );
 
     Analysis {
         workspace_id: layout.workspace_id.clone(),
@@ -294,6 +216,145 @@ pub(crate) fn analyze_with(layout: &Layout, orchestrator: Orchestrator) -> Analy
         cells,
         next,
     }
+}
+
+/// The orchestrator's pane id: the registered one, else the leftmost
+/// full-height pane, else none.
+fn pick_orchestrator(all: &[Slot], orchestrator: Orchestrator, height: i64) -> Option<String> {
+    match orchestrator {
+        Orchestrator::Pane(id) if !id.is_empty() => Some(id.to_string()),
+        Orchestrator::Pane(_) | Orchestrator::Infer => all
+            .iter()
+            .filter(|s| s.h >= height - 1)
+            .min_by_key(|s| s.x)
+            .map(|s| s.id.clone()),
+        Orchestrator::Absent => None,
+    }
+}
+
+/// Column boundaries: every distinct pane edge across both rows.
+fn column_edges(top: &[&Slot], bottom: &[&Slot]) -> Vec<i64> {
+    let mut edges: Vec<i64> = top
+        .iter()
+        .chain(bottom.iter())
+        .flat_map(|s| [s.x, s.x + s.w])
+        .collect();
+    edges.sort_unstable();
+    edges.dedup();
+    edges
+}
+
+/// One cell per slice between 2 neighbouring edges.
+fn cells(edges: &[i64], top: &[&Slot], bottom: &[&Slot], half: &[&Slot]) -> Vec<Cell> {
+    let occupant =
+        |row: &[&Slot], x0, x1| row.iter().find(|s| s.covers(x0, x1)).map(|s| s.id.clone());
+    edges
+        .windows(2)
+        .map(|w| {
+            let (x0, x1) = (w[0], w[1]);
+            Cell {
+                x0,
+                x1,
+                top: occupant(top, x0, x1),
+                bottom: occupant(bottom, x0, x1),
+                depth: half.iter().filter(|s| s.covers(x0, x1)).count(),
+            }
+        })
+        .collect()
+}
+
+/// A row is ragged where one of its panes swallows a boundary the other row
+/// has. That pane is the one to split RIGHT.
+fn ragged_in(edges: &[i64], row: &[&Slot]) -> Option<String> {
+    row.iter()
+        .filter(|p| edges.iter().any(|e| *e > p.x && *e < p.x + p.w))
+        .min_by_key(|p| p.x)
+        .map(|p| p.id.clone())
+}
+
+fn rightmost(row: &[&Slot]) -> Option<String> {
+    row.iter().max_by_key(|s| s.x).map(|s| s.id.clone())
+}
+
+/// The counts that decide a tab's [`GridState`].
+struct Shape {
+    offgrid: bool,
+    workers: usize,
+    full: usize,
+    top_ragged: bool,
+    bottom_ragged: bool,
+    top: usize,
+    bottom: usize,
+}
+
+fn grid_state(shape: &Shape) -> GridState {
+    if shape.offgrid {
+        GridState::Offgrid
+    } else if shape.workers == 0 {
+        GridState::Empty
+    } else if shape.full > 0 {
+        GridState::Unpaired
+    } else if shape.bottom_ragged {
+        GridState::RaggedBottom
+    } else if shape.top_ragged {
+        GridState::RaggedTop
+    } else if shape.top == shape.bottom {
+        GridState::Complete
+    } else {
+        GridState::Ragged
+    }
+}
+
+/// The panes the next split can start from.
+struct Rows<'a> {
+    full: &'a [&'a Slot],
+    top: &'a [&'a Slot],
+    bottom: &'a [&'a Slot],
+    top_ragged: Option<String>,
+    bottom_ragged: Option<String>,
+    orchestrator: Option<String>,
+}
+
+fn next_split(state: GridState, rows: &Rows) -> Option<NextSplit> {
+    let (from, direction, why, followup) = match state {
+        GridState::Unpaired => (
+            rightmost(rows.full),
+            Direction::Down,
+            "worker owns a full-height column; DOWN pairs it into a 2-tall column",
+            None,
+        ),
+        GridState::RaggedBottom => (
+            rows.bottom_ragged.clone(),
+            Direction::Right,
+            "bottom pane spans a boundary the top row already has; RIGHT subdivides it",
+            None,
+        ),
+        GridState::RaggedTop => (
+            rows.top_ragged.clone(),
+            Direction::Right,
+            "top pane spans a boundary the bottom row already has; RIGHT subdivides it",
+            None,
+        ),
+        GridState::Complete => (
+            rightmost(rows.top),
+            Direction::Right,
+            "grid is 2xN; RIGHT from the top-rightmost pane opens column N+1",
+            rightmost(rows.bottom),
+        ),
+        GridState::Empty => (
+            rows.orchestrator.clone(),
+            Direction::Right,
+            "no workers yet; RIGHT off the orchestrator makes the first one",
+            None,
+        ),
+        GridState::Offgrid | GridState::Ragged => return None,
+    };
+    from.map(|from| NextSplit {
+        direction,
+        from,
+        why,
+        followup,
+    })
 }
 
 /// Render every tab of a workspace, one block per tab in tab-strip order.
@@ -334,70 +395,20 @@ pub(crate) fn render_all(
 
 /// Render an analysis the way `horch-layout` printed it.
 pub fn render(analysis: &Analysis, roles: &HashMap<String, String>) -> String {
-    let label = |id: Option<&str>| -> String {
-        match id {
-            None => "-".to_string(),
-            Some(id) => match roles.get(id) {
-                Some(role) => format!("{role}({id})"),
-                None => id.to_string(),
-            },
-        }
-    };
-
     let a = analysis;
-    let mut out = String::new();
-    out.push_str(&format!(
+    let mut out = format!(
         "workspace {}  tab {}  area {}x{}\n",
         a.workspace_id, a.tab_id, a.area.width, a.area.height
-    ));
+    );
     match &a.orchestrator {
         Some(id) => out.push_str(&format!(
             "orchestrator: {} (excluded from the grid)\n",
-            label(Some(id))
+            role_label(roles, Some(id))
         )),
         None => out.push_str("orchestrator: none detected\n"),
     }
     out.push('\n');
-
-    if !a.cells.is_empty() {
-        let mut hdr = " ".repeat(10);
-        let mut top_line = "  top     ".to_string();
-        let mut bot_line = "  bottom  ".to_string();
-        let mut spans = false;
-
-        for cell in &a.cells {
-            let mut tl = label(cell.top.as_deref());
-            let mut bl = label(cell.bottom.as_deref());
-            // Mark a cell whose pane also covers the neighbouring column.
-            let shared = |id: &Option<String>, pick: fn(&Cell) -> &Option<String>| -> bool {
-                id.is_some() && a.cells.iter().filter(|c| pick(c) == id).count() > 1
-            };
-            if shared(&cell.top, |c| &c.top) {
-                tl.push('*');
-                spans = true;
-            }
-            if shared(&cell.bottom, |c| &c.bottom) {
-                bl.push('*');
-                spans = true;
-            }
-            let head = format!("{}-{}", cell.x0, cell.x1);
-            let w = tl
-                .chars()
-                .count()
-                .max(bl.chars().count())
-                .max(head.chars().count());
-            hdr.push_str(&format!("{head:<w$}  "));
-            top_line.push_str(&format!("{tl:<w$}  "));
-            bot_line.push_str(&format!("{bl:<w$}  "));
-        }
-
-        out.push_str(&format!("{hdr}\n{top_line}\n{bot_line}\n"));
-        if spans {
-            out.push_str("  (* pane spans more than one column)\n");
-        }
-        out.push('\n');
-    }
-
+    out.push_str(&render_cells(a, roles));
     out.push_str(&format!(
         "grid: {} column(s), top row {}, bottom row {}  ->  {}\n",
         a.columns,
@@ -409,27 +420,88 @@ pub fn render(analysis: &Analysis, roles: &HashMap<String, String>) -> String {
         out.push_str(&format!("        {explanation}\n"));
     }
     out.push('\n');
+    out.push_str(&render_next(a.next.as_ref(), roles));
+    out
+}
 
-    let Some(next) = &a.next else {
-        out.push_str("no suggestion for this shape.\n");
-        return out;
+/// A pane as the report names it: `role(id)` when the mailbox knows its role.
+fn role_label(roles: &HashMap<String, String>, id: Option<&str>) -> String {
+    match id {
+        None => "-".to_string(),
+        Some(id) => match roles.get(id) {
+            Some(role) => format!("{role}({id})"),
+            None => id.to_string(),
+        },
+    }
+}
+
+/// `label` with a star when its pane also covers the neighbouring column.
+fn marked(label: String, shared: bool) -> String {
+    if shared {
+        label + "*"
+    } else {
+        label
+    }
+}
+
+/// Whether the pane `id` fills more than one cell of the row `pick` reads.
+fn spans_columns(cells: &[Cell], id: &Option<String>, pick: fn(&Cell) -> &Option<String>) -> bool {
+    id.is_some() && cells.iter().filter(|c| pick(c) == id).count() > 1
+}
+
+/// The cell table, its legend when a pane spans columns, and a blank line;
+/// nothing when there are no cells.
+fn render_cells(a: &Analysis, roles: &HashMap<String, String>) -> String {
+    if a.cells.is_empty() {
+        return String::new();
+    }
+    let mut hdr = " ".repeat(10);
+    let mut top_line = "  top     ".to_string();
+    let mut bot_line = "  bottom  ".to_string();
+    let mut spans = false;
+
+    for cell in &a.cells {
+        let top_shared = spans_columns(&a.cells, &cell.top, |c| &c.top);
+        let bottom_shared = spans_columns(&a.cells, &cell.bottom, |c| &c.bottom);
+        spans |= top_shared || bottom_shared;
+        let tl = marked(role_label(roles, cell.top.as_deref()), top_shared);
+        let bl = marked(role_label(roles, cell.bottom.as_deref()), bottom_shared);
+        let head = format!("{}-{}", cell.x0, cell.x1);
+        let w = tl
+            .chars()
+            .count()
+            .max(bl.chars().count())
+            .max(head.chars().count());
+        hdr.push_str(&format!("{head:<w$}  "));
+        top_line.push_str(&format!("{tl:<w$}  "));
+        bot_line.push_str(&format!("{bl:<w$}  "));
+    }
+
+    let legend = if spans {
+        "  (* pane spans more than one column)\n"
+    } else {
+        ""
     };
+    format!("{hdr}\n{top_line}\n{bot_line}\n{legend}\n")
+}
 
+/// The advice for the next split, or the line saying there is none.
+fn render_next(next: Option<&NextSplit>, roles: &HashMap<String, String>) -> String {
+    let Some(next) = next else {
+        return "no suggestion for this shape.\n".to_string();
+    };
     let verb = match next.direction {
         Direction::Down => "VERTICAL",
         Direction::Right => "HORIZONTAL",
     };
-    out.push_str(&format!(
-        "next split: {verb} ({}) from {}\n",
+    let mut out = format!(
+        "next split: {verb} ({}) from {}\n  why: {}\n\n  horch spawn <teammate> --from-pane {} --direction {}\n",
         next.direction.as_str(),
-        label(Some(&next.from))
-    ));
-    out.push_str(&format!("  why: {}\n\n", next.why));
-    out.push_str(&format!(
-        "  horch spawn <teammate> --from-pane {} --direction {}\n",
+        role_label(roles, Some(&next.from)),
+        next.why,
         next.from,
         next.direction.as_str()
-    ));
+    );
     if let Some(followup) = &next.followup {
         out.push_str("\n  then, to finish the new column (2 splits per column):\n");
         out.push_str(&format!(
