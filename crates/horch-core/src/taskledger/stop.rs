@@ -126,6 +126,86 @@ fn record(
     Ok(())
 }
 
+impl From<StopRequester> for Actor {
+    fn from(by: StopRequester) -> Actor {
+        match by {
+            StopRequester::Watchdog => Actor::Watchdog,
+            StopRequester::SelfExit => Actor::Supervisor,
+            StopRequester::Operator => Actor::Operator,
+            StopRequester::Orchestrator => Actor::Orchestrator,
+        }
+    }
+}
+
+/// The recorded PID and start time, when that process still runs. Otherwise
+/// the result to record: nothing is sent to a PID that cannot be proved to
+/// be this worker's process.
+fn live_identity(
+    procs: &dyn Processes,
+    pid: Option<i64>,
+    started: Option<i64>,
+) -> Result<(u32, u64), StopResult> {
+    let pid = pid
+        .and_then(|p| u32::try_from(p).ok())
+        .ok_or(StopResult::AlreadyGone)?;
+    // No recorded start time: the PID cannot be proved to be this worker's.
+    let started = started
+        .and_then(|s| u64::try_from(s).ok())
+        .ok_or(StopResult::NotSameProcess)?;
+    if procs.is_same(pid, started) {
+        return Ok((pid, started));
+    }
+    // The PID is free, or another program has it now.
+    Err(if procs.exists(pid) {
+        StopResult::NotSameProcess
+    } else {
+        StopResult::AlreadyGone
+    })
+}
+
+/// Wait up to the grace period for the process to go. Whether it went.
+fn wait_gone(procs: &dyn Processes, pid: u32, started: u64, opts: &StopOptions) -> bool {
+    let until = Instant::now() + opts.grace;
+    while Instant::now() < until {
+        if !procs.is_same(pid, started) {
+            return true;
+        }
+        std::thread::sleep(opts.poll);
+    }
+    !procs.is_same(pid, started)
+}
+
+/// TERM, wait, then KILL if the same process still runs.
+fn signal_and_wait(
+    procs: &dyn Processes,
+    pid: u32,
+    started: u64,
+    opts: &StopOptions,
+    step: &dyn Fn(Option<StopSignal>, StopResult) -> StopStep,
+) -> Vec<StopStep> {
+    let term_sent = procs.stop_same(pid, started, procid::Stop::Term);
+    let mut steps = vec![step(
+        Some(StopSignal::Term),
+        if term_sent {
+            StopResult::Sent
+        } else {
+            StopResult::NotSameProcess
+        },
+    )];
+    if term_sent && !wait_gone(procs, pid, started, opts) {
+        let sent = procs.stop_same(pid, started, procid::Stop::Kill);
+        steps.push(step(
+            Some(StopSignal::Kill),
+            if sent {
+                StopResult::Sent
+            } else {
+                StopResult::AlreadyGone
+            },
+        ));
+    }
+    steps
+}
+
 /// Stop 1 process: TERM, wait up to the grace period, then KILL if the same
 /// process still runs. Returns the steps taken.
 fn stop_process(
@@ -142,51 +222,134 @@ fn stop_process(
         pane_id: None,
         result: result.as_str().into(),
     };
-    let Some(pid) = pid.and_then(|p| u32::try_from(p).ok()) else {
-        return vec![step(None, StopResult::AlreadyGone)];
-    };
-    let Some(started) = started.and_then(|s| u64::try_from(s).ok()) else {
-        // No recorded start time: the PID cannot be proved to be this
-        // worker's process, so nothing is sent.
-        return vec![step(None, StopResult::NotSameProcess)];
-    };
-    if !procs.is_same(pid, started) {
-        // The PID is free, or another program has it now: nothing is sent.
-        return vec![step(
-            None,
-            if procs.exists(pid) {
-                StopResult::NotSameProcess
-            } else {
-                StopResult::AlreadyGone
-            },
-        )];
+    match live_identity(procs, pid, started) {
+        Err(result) => vec![step(None, result)],
+        Ok((pid, started)) => signal_and_wait(procs, pid, started, opts, &step),
     }
+}
+
+/// Refuse the workers that `stop_worker` must not touch: the orchestrator,
+/// and a worker of another host (recorded as a step).
+fn check_stoppable(store: &Store, w: &Worker, by: StopRequester, reason: &str) -> Result<()> {
+    if w.kind == WorkerKind::Orchestrator.as_str() {
+        bail!("horch ledger stop does not stop the orchestrator; the operator does");
+    }
+    let here = util::host_name();
+    if w.host.as_deref().is_some_and(|h| h != here) {
+        let step = StopStep {
+            target: StopTarget::Agent.as_str().into(),
+            pid: w.agent_pid,
+            signal: None,
+            pane_id: None,
+            result: StopResult::RefusedOtherHost.as_str().into(),
+        };
+        record(store.conn(), w, by, reason, &step, w.agent_started)?;
+        bail!(
+            "worker {} runs on host {}, not {here}: its PIDs mean nothing here",
+            w.label(),
+            w.host.as_deref().unwrap_or("?")
+        );
+    }
+    Ok(())
+}
+
+/// Queue the task `task_id` again when `worker_id` still holds it. Returns
+/// the task as it was read, and whether it was queued.
+fn requeue_if_held(
+    conn: &Connection,
+    task_id: &str,
+    worker_id: &str,
+    why: &str,
+) -> Result<(tasks::Task, bool)> {
+    let task = tasks::get(conn, task_id)?;
+    let held = matches!(task.status.as_str(), "running" | "landing")
+        && task.current_worker_id.as_deref() == Some(worker_id);
+    if held {
+        tasks::requeue(conn, task_id, why)?;
+    }
+    Ok((task, held))
+}
+
+/// Settle the worker's row first: the supervisor sees a worker that is no
+/// longer working and records only the exit code. Returns the task queued
+/// again.
+fn end_row(
+    store: &mut Store,
+    w: &Worker,
+    by: StopRequester,
+    reason: &str,
+    opts: &StopOptions,
+) -> Result<Option<String>> {
+    store.immediate(|tx| {
+        let about = About {
+            run: w.run_id.as_deref(),
+            task: w.task_id.as_deref(),
+            worker: Some(&w.worker_id),
+        };
+        workers::end(tx, &w.worker_id, opts.final_status, reason, None)?;
+        util::event(
+            tx,
+            &about,
+            by.into(),
+            EventKind::Stopped,
+            &format!("Stopping {}: {reason}", w.label()),
+        )?;
+        let Some(t) = &w.task_id else {
+            return Ok(None);
+        };
+        let why = format!("{} was stopped: {reason}", w.label());
+        let (task, held) = requeue_if_held(tx, t, &w.worker_id, &why)?;
+        Ok(held.then(|| task.short()))
+    })
+}
+
+/// Stop the agent, then the supervisor, each by its recorded PID and start
+/// time. Every step is recorded.
+fn stop_processes(
+    store: &Store,
+    w: &Worker,
+    by: StopRequester,
+    reason: &str,
+    procs: &dyn Processes,
+    opts: &StopOptions,
+) -> Result<Vec<StopStep>> {
     let mut steps = Vec::new();
-    if procs.stop_same(pid, started, procid::Stop::Term) {
-        steps.push(step(Some(StopSignal::Term), StopResult::Sent));
-    } else {
-        steps.push(step(Some(StopSignal::Term), StopResult::NotSameProcess));
-        return steps;
-    }
-    let until = Instant::now() + opts.grace;
-    while Instant::now() < until {
-        if !procs.is_same(pid, started) {
-            return steps;
+    for (target, pid, started) in [
+        (StopTarget::Agent, w.agent_pid, w.agent_started),
+        (
+            StopTarget::Supervisor,
+            w.supervisor_pid,
+            w.supervisor_started,
+        ),
+    ] {
+        for s in stop_process(procs, target, pid, started, opts) {
+            record(store.conn(), w, by, reason, &s, started)?;
+            steps.push(s);
         }
-        std::thread::sleep(opts.poll);
     }
-    if procs.is_same(pid, started) {
-        let sent = procs.stop_same(pid, started, procid::Stop::Kill);
-        steps.push(step(
-            Some(StopSignal::Kill),
-            if sent {
-                StopResult::Sent
+    Ok(steps)
+}
+
+/// Close the worker's pane by its id.
+fn close_pane(panes: &dyn Panes, pane: Option<&String>) -> StopStep {
+    let (pane_id, result) = match pane {
+        Some(p) if panes.exists(p) => (
+            Some(p.clone()),
+            if panes.close(p).is_ok() {
+                StopResult::PaneClosed
             } else {
-                StopResult::AlreadyGone
+                StopResult::Error
             },
-        ));
+        ),
+        other => (other.cloned(), StopResult::AlreadyGone),
+    };
+    StopStep {
+        target: StopTarget::Pane.as_str().into(),
+        pid: None,
+        signal: None,
+        pane_id,
+        result: result.as_str().into(),
     }
-    steps
 }
 
 /// Stop worker `worker_id`: its agent, then its supervisor, each by the PID
@@ -203,94 +366,10 @@ pub fn stop_worker(
     opts: &StopOptions,
 ) -> Result<StopReport> {
     let w = workers::get(store.conn(), worker_id)?;
-    if w.kind == WorkerKind::Orchestrator.as_str() {
-        bail!("horch ledger stop does not stop the orchestrator; the operator does");
-    }
-    let here = util::host_name();
-    if w.host.as_deref().is_some_and(|h| h != here) {
-        let step = StopStep {
-            target: StopTarget::Agent.as_str().into(),
-            pid: w.agent_pid,
-            signal: None,
-            pane_id: None,
-            result: StopResult::RefusedOtherHost.as_str().into(),
-        };
-        record(store.conn(), &w, by, reason, &step, w.agent_started)?;
-        bail!(
-            "worker {} runs on host {}, not {here}: its PIDs mean nothing here",
-            w.label(),
-            w.host.as_deref().unwrap_or("?")
-        );
-    }
-    // Settle the row first: the supervisor sees a worker that is no longer
-    // working and records only the exit code.
-    let requeued = store.immediate(|tx| {
-        let about = About {
-            run: w.run_id.as_deref(),
-            task: w.task_id.as_deref(),
-            worker: Some(worker_id),
-        };
-        workers::end(tx, worker_id, opts.final_status, reason, None)?;
-        util::event(
-            tx,
-            &about,
-            match by {
-                StopRequester::Watchdog => Actor::Watchdog,
-                StopRequester::SelfExit => Actor::Supervisor,
-                StopRequester::Operator => Actor::Operator,
-                StopRequester::Orchestrator => Actor::Orchestrator,
-            },
-            EventKind::Stopped,
-            &format!("Stopping {}: {reason}", w.label()),
-        )?;
-        let mut requeued = None;
-        if let Some(t) = &w.task_id {
-            let task = tasks::get(tx, t)?;
-            if matches!(task.status.as_str(), "running" | "landing")
-                && task.current_worker_id.as_deref() == Some(worker_id)
-            {
-                tasks::requeue(tx, t, &format!("{} was stopped: {reason}", w.label()))?;
-                requeued = Some(task.short());
-            }
-        }
-        Ok(requeued)
-    })?;
-    let mut steps = Vec::new();
-    for (target, pid, started) in [
-        (StopTarget::Agent, w.agent_pid, w.agent_started),
-        (
-            StopTarget::Supervisor,
-            w.supervisor_pid,
-            w.supervisor_started,
-        ),
-    ] {
-        for s in stop_process(procs, target, pid, started, opts) {
-            record(store.conn(), &w, by, reason, &s, started)?;
-            steps.push(s);
-        }
-    }
-    let pane_step = match &w.pane_id {
-        Some(pane) if panes.exists(pane) => {
-            let result = match panes.close(pane) {
-                Ok(()) => StopResult::PaneClosed,
-                Err(_) => StopResult::Error,
-            };
-            StopStep {
-                target: StopTarget::Pane.as_str().into(),
-                pid: None,
-                signal: None,
-                pane_id: Some(pane.clone()),
-                result: result.as_str().into(),
-            }
-        }
-        other => StopStep {
-            target: StopTarget::Pane.as_str().into(),
-            pid: None,
-            signal: None,
-            pane_id: other.clone(),
-            result: StopResult::AlreadyGone.as_str().into(),
-        },
-    };
+    check_stoppable(store, &w, by, reason)?;
+    let requeued = end_row(store, &w, by, reason, opts)?;
+    let mut steps = stop_processes(store, &w, by, reason, procs, opts)?;
+    let pane_step = close_pane(panes, w.pane_id.as_ref());
     record(store.conn(), &w, by, reason, &pane_step, None)?;
     steps.push(pane_step);
     Ok(StopReport {
@@ -885,6 +964,28 @@ pub struct ReapReport {
     pub persona: Option<String>,
 }
 
+/// Refuse a worker that already finished: there is nothing to reap.
+fn check_reapable(w: &Worker) -> Result<()> {
+    let status = w.status()?;
+    if !status.is_live() && status != WorkerStatus::Incomplete {
+        bail!(
+            "worker {} is {}; only a live or incomplete worker is reaped",
+            w.label(),
+            w.status
+        );
+    }
+    Ok(())
+}
+
+/// Who a reap is recorded as: the watchdog, or else the orchestrator.
+fn reap_actor(by: StopRequester) -> Actor {
+    if matches!(by, StopRequester::Watchdog) {
+        Actor::Watchdog
+    } else {
+        Actor::Orchestrator
+    }
+}
+
 /// Reap a dead worker (section 5.4): stop it by its recorded PIDs and pane,
 /// end its attempt `incomplete`, and queue its task again, first in line.
 /// A worker that already finished (`done`, `no_task`, `stopped`) is refused:
@@ -899,14 +1000,7 @@ pub fn reap(
     grace: Duration,
 ) -> Result<ReapReport> {
     let w = workers::get(store.conn(), worker_id)?;
-    let status = w.status()?;
-    if !status.is_live() && status != WorkerStatus::Incomplete {
-        bail!(
-            "worker {} is {}; only a live or incomplete worker is reaped",
-            w.label(),
-            w.status
-        );
-    }
+    check_reapable(&w)?;
     let opts = StopOptions {
         grace,
         final_status: WorkerStatus::Incomplete,
@@ -925,12 +1019,7 @@ pub fn reap(
     // requeued) still gets its pane closed above; the task is checked here.
     let persona = match &w.task_id {
         Some(t) => {
-            let task = tasks::get(store.conn(), t)?;
-            if matches!(task.status.as_str(), "running" | "landing")
-                && task.current_worker_id.as_deref() == Some(worker_id)
-            {
-                store.immediate(|tx| tasks::requeue(tx, t, reason))?;
-            }
+            let (task, _) = store.immediate(|tx| requeue_if_held(tx, t, worker_id, reason))?;
             task.claimable_by
         }
         None => w.persona.clone(),
@@ -942,10 +1031,7 @@ pub fn reap(
             task: w.task_id.as_deref(),
             worker: Some(worker_id),
         },
-        match by {
-            StopRequester::Watchdog => Actor::Watchdog,
-            _ => Actor::Orchestrator,
-        },
+        reap_actor(by),
         EventKind::Reaped,
         &format!("{} reaped: {reason}", w.label()),
     )?;
