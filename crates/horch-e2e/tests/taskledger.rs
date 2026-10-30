@@ -2815,6 +2815,97 @@ fn finish_finds_the_code_sweep_skill_in_the_skill_store() {
     );
 }
 
+/// The status of the finish step `complexity-sweep` of a task that commits
+/// `a.ts`, and whether the analyser in `layout` (a folder of `h.root`) ran.
+/// A folder named like the skill that holds no analyser sits first in the walk
+/// and must be skipped.
+fn complexity_step_with_the_analyser_in(name: &str, layout: &str) -> (String, bool) {
+    let mut h = finish_world(name);
+    let called = h.root.join("analyser-called");
+    let skill = h.root.join(layout);
+    let analyser = skill.join("code/cli/dist/index.js");
+    std::fs::create_dir_all(analyser.parent().unwrap()).unwrap();
+    std::fs::write(
+        &analyser,
+        format!(
+            "/usr/bin/touch {}\necho '{{\"files\":[],\"violations\":[]}}'\n",
+            called.display()
+        ),
+    )
+    .unwrap();
+    let decoy = skill.parent().unwrap().parent().unwrap();
+    std::fs::create_dir_all(decoy.join("aa-decoy/complexity-sweep")).unwrap();
+    h.set("HORCH_DATA_DIR", h.root.join("data").to_string_lossy());
+    h.set("HORCH_COMPLEXITY_CLI", "");
+    // index.js is a shell script here: run it with sh as the node binary.
+    h.set("HORCH_NODE_BIN", "/bin/sh");
+    let (w, _) = claimed_with_commit(&h, "complexity-sweep", None, "a.ts");
+    let (_, r) = finish_json(&h, &w);
+    (step_of(&r, "complexity-sweep").0, called.exists())
+}
+
+#[test]
+fn finish_finds_the_complexity_analyser_in_the_plugins_of_the_home() {
+    // <home>/.claude/plugins/<plugin>/<skill>/
+    let (status, ran) = complexity_step_with_the_analyser_in(
+        "tl-cx-plugins",
+        "home/.claude/plugins/zz/complexity-sweep",
+    );
+    assert_eq!(status, "passed");
+    assert!(ran, "the plugin analyser ran");
+}
+
+#[test]
+fn finish_finds_the_complexity_analyser_in_the_skill_store() {
+    // <data>/skills/<skill>/<source>+<hash>/
+    let (status, ran) = complexity_step_with_the_analyser_in(
+        "tl-cx-store",
+        "data/skills/complexity-sweep/local+b9691d7496c9",
+    );
+    assert_eq!(status, "passed");
+    assert!(ran, "the store analyser ran");
+}
+
+#[test]
+fn finish_finds_the_code_sweep_skill_in_the_plugins_of_the_home() {
+    let mut h = finish_world("tl-sweep-plugins");
+    // <home>/.claude/plugins/<plugin>/<skill>/: a folder named like the skill
+    // that holds no reviewers/ sits first in the sort order and is skipped.
+    let plugins = h.home.join(".claude/plugins");
+    std::fs::create_dir_all(plugins.join("aa-decoy/code-sweep")).unwrap();
+    let skill = plugins.join("zz/code-sweep");
+    std::fs::create_dir_all(skill.join("reviewers")).unwrap();
+    for entry in std::fs::read_dir(h.root.join("code-sweep/reviewers")).unwrap() {
+        let p = entry.unwrap().path();
+        std::fs::copy(&p, skill.join("reviewers").join(p.file_name().unwrap())).unwrap();
+    }
+    h.set("HORCH_DATA_DIR", h.root.join("data").to_string_lossy());
+    h.set("HORCH_CODE_SWEEP_DIR", "");
+    let (w, _) = sweep_world(&h);
+    let (code, r) = finish_json(&h, &w);
+    assert_eq!(code, Some(1));
+    assert_eq!(
+        step_of(&r, "code-sweep").0,
+        "running",
+        "reviews are queued: {r}"
+    );
+    let ticket = std::fs::read_to_string(
+        json_of(&h, &["ledger", "status", "--json"])["tasks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|t| t["task"]["kind"] == "review")
+            .unwrap()["task"]["task_file"]
+            .as_str()
+            .unwrap(),
+    )
+    .unwrap();
+    assert!(
+        ticket.contains("You are bug-hunter."),
+        "the plugin prompt: {ticket}"
+    );
+}
+
 // ─── #89: closing a run, and which run a command means ──────────────────────
 
 /// `horch <args>` with extra environment variables.
