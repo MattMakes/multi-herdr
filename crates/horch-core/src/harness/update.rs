@@ -798,6 +798,20 @@ mod tests {
     #[cfg(unix)]
     impl FakeUpdater {
         fn new(sleep: u32, exit: u8, timeout_ms: u64) -> Self {
+            Self::with_wait(&format!("sleep {sleep}"), exit, timeout_ms)
+        }
+
+        /// An updater that runs until the test creates `release`: no clock
+        /// decides how long it holds the update lock.
+        fn gated(timeout_ms: u64) -> Self {
+            Self::with_wait(
+                "while [ ! -e \"$(dirname \"$0\")/release\" ]; do sleep 0.05; done",
+                0,
+                timeout_ms,
+            )
+        }
+
+        fn with_wait(wait: &str, exit: u8, timeout_ms: u64) -> Self {
             use std::os::unix::fs::PermissionsExt;
             let dir = tempfile::tempdir().unwrap();
             let bin = dir.path().join("codex");
@@ -805,7 +819,7 @@ mod tests {
             let finished = dir.path().join("finished");
             let script = format!(
                 "#!/bin/sh\ncase \"$1\" in --version) echo 'codex 1.0';; \
-                 *) echo $$ >> '{}'; sleep {sleep}; echo $$ >> '{}'; exit {exit};; esac\n",
+                 *) echo $$ >> '{}'; {wait}; echo $$ >> '{}'; exit {exit};; esac\n",
                 runs.display(),
                 finished.display()
             );
@@ -908,26 +922,26 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn arc_33_concurrent_updates_run_the_updater_once_and_the_second_skips() {
-        let fake = FakeUpdater::new(2, 0, 20_000);
-        let barrier = std::sync::Barrier::new(2);
+        // The updater holds the lock until the second horch has answered, so
+        // a slow thread under load cannot start after the first one is done.
+        let fake = FakeUpdater::gated(20_000);
+        let (tx, rx) = std::sync::mpsc::channel();
         let outcomes: Vec<Outcome> = std::thread::scope(|s| {
-            let a = s.spawn(|| {
-                barrier.wait();
-                fake.update(false)
-            });
-            let b = s.spawn(|| {
-                barrier.wait();
-                fake.update(false)
-            });
-            vec![a.join().unwrap(), b.join().unwrap()]
+            for _ in 0..2 {
+                let tx = tx.clone();
+                let fake = &fake;
+                s.spawn(move || tx.send(fake.update(false)).unwrap());
+            }
+            let first = rx.recv().unwrap();
+            std::fs::write(fake.dir.path().join("release"), "").unwrap();
+            vec![first, rx.recv().unwrap()]
         });
         assert_eq!(fake.runs().len(), 1, "{outcomes:?}");
-        let updated = outcomes
-            .iter()
-            .filter(|o| matches!(o, Outcome::Updated { .. }))
-            .count();
-        let busy = outcomes.iter().filter(|o| **o == Outcome::Busy).count();
-        assert_eq!((updated, busy), (1, 1), "{outcomes:?}");
+        assert_eq!(outcomes[0], Outcome::Busy, "{outcomes:?}");
+        assert!(
+            matches!(outcomes[1], Outcome::Updated { .. }),
+            "{outcomes:?}"
+        );
         assert!(
             !fake.file("running").exists(),
             "a finished run left its mark"
