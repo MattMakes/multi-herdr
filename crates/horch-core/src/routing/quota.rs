@@ -1374,6 +1374,126 @@ mod tests {
         );
     }
 
+    /// Whether a refusal seen at `seen` is in force at `now()`, for a claude
+    /// pool that reads `windows` (all far from full) and whose refusal named
+    /// `named`.
+    fn refusal_holds(seen: &str, named: Option<&str>, windows: Vec<Window>) -> bool {
+        let mut file = QuotaFile::default();
+        file.pools.insert(
+            POOL_CLAUDE.into(),
+            PoolReading {
+                observed_at: Some("2026-09-28T17:55:00Z".into()),
+                windows,
+                refusal_seen_at: Some(seen.into()),
+                refusal_window: named.map(str::to_string),
+                ..Default::default()
+            },
+        );
+        let a = QuotaView::new(file, now(), Policy::default(), false).assess("claude", "opus");
+        if a.state == State::Exhausted {
+            assert_eq!(a.reason, format!("refused at {seen}"));
+            assert_eq!(a.headroom_per_h, Some(0.0));
+        }
+        a.state == State::Exhausted
+    }
+
+    /// The 5h window `now()` is in: it began at 14:00 and resets at 19:00.
+    fn five_h() -> Window {
+        Window::new(300, 0.1, Some("2026-09-28T19:00:00Z".into()), None)
+    }
+
+    /// The 7d window `now()` is in: it began on 09-25 and resets on 10-02.
+    fn seven_d() -> Window {
+        Window::new(10_080, 0.1, Some("2026-10-02T00:00:00Z".into()), None)
+    }
+
+    /// A refusal that named no window is held to the shortest window, wherever
+    /// it is listed: it counts from the window's start until its reset.
+    #[test]
+    fn a_refusal_without_a_window_is_held_to_the_shortest_window() {
+        let both = || vec![seven_d(), five_h()];
+        assert!(refusal_holds("2026-09-28T17:00:00Z", None, both()));
+        // Before the start of the 5h window, inside the 7d one.
+        assert!(!refusal_holds("2026-09-28T13:00:00Z", None, both()));
+        // The start of the window counts, the second before it does not.
+        assert!(refusal_holds("2026-09-28T14:00:00Z", None, both()));
+        assert!(!refusal_holds("2026-09-28T13:59:59Z", None, both()));
+    }
+
+    /// The window a refusal named is the one that decides, and a name no
+    /// window answers to falls back to the shortest window.
+    #[test]
+    fn a_refusal_is_held_to_the_window_it_named() {
+        let both = || vec![five_h(), seven_d()];
+        assert!(refusal_holds("2026-09-28T13:00:00Z", Some("7d"), both()));
+        assert!(!refusal_holds("2026-09-28T13:00:00Z", Some("5h"), both()));
+        // No `7d:opus` window: the shortest one decides, not the 5-hour hold
+        // (13:30 is 4.5 hours ago, before the 5h window began).
+        assert!(!refusal_holds(
+            "2026-09-28T13:30:00Z",
+            Some("7d:opus"),
+            both()
+        ));
+        assert!(refusal_holds(
+            "2026-09-28T17:00:00Z",
+            Some("7d:opus"),
+            both()
+        ));
+        // A scoped window answers to its scoped name only: it began on 09-28.
+        let opus = Window::new(
+            10_080,
+            0.1,
+            Some("2026-10-05T00:00:00Z".into()),
+            Some("opus".into()),
+        );
+        let seen = "2026-09-28T13:00:00Z";
+        assert!(refusal_holds(
+            seen,
+            Some("7d:opus"),
+            vec![five_h(), opus.clone()]
+        ));
+        assert!(!refusal_holds(seen, Some("7d"), vec![five_h(), opus]));
+    }
+
+    /// A refusal ends with the window: at its reset second, not before.
+    #[test]
+    fn a_refusal_ends_when_its_window_resets() {
+        let resets = |at: &str| vec![Window::new(300, 0.1, Some(at.into()), None)];
+        let seen = "2026-09-28T17:00:00Z";
+        assert!(refusal_holds(seen, None, resets("2026-09-28T18:00:01Z")));
+        assert!(!refusal_holds(seen, None, resets("2026-09-28T18:00:00Z")));
+        assert!(!refusal_holds(seen, None, resets("2026-09-28T17:30:00Z")));
+    }
+
+    /// With no window to read (none at all, or none with a reset time) a
+    /// refusal counts while it is less than 5 hours old.
+    #[test]
+    fn a_refusal_with_no_window_to_read_counts_for_5_hours() {
+        let readings: [fn() -> Vec<Window>; 2] =
+            [Vec::new, || vec![Window::new(300, 0.1, None, None)]];
+        for windows in readings {
+            assert!(refusal_holds("2026-09-28T13:00:01Z", None, windows()));
+            assert!(!refusal_holds("2026-09-28T13:00:00Z", None, windows()));
+            assert!(!refusal_holds("2026-09-28T12:00:00Z", None, windows()));
+            assert!(refusal_holds("2026-09-28T17:59:00Z", Some("5h"), windows()));
+        }
+    }
+
+    /// Of 2 windows as short as each other, the first listed decides.
+    #[test]
+    fn a_refusal_is_held_to_the_first_of_two_equally_short_windows() {
+        let opus = Window::new(
+            10_080,
+            0.1,
+            Some("2026-10-05T00:00:00Z".into()),
+            Some("opus".into()),
+        );
+        // Seen after the 7d window began (09-25) and before the opus one (09-28).
+        let seen = "2026-09-27T12:00:00Z";
+        assert!(refusal_holds(seen, None, vec![seven_d(), opus.clone()]));
+        assert!(!refusal_holds(seen, None, vec![opus, seven_d()]));
+    }
+
     #[test]
     fn quo_06_local_model_must_be_listed() {
         let mut file = QuotaFile::default();
