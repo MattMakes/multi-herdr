@@ -98,7 +98,8 @@ each spawn. For a worker in state "over":
    returns at once. horch compacts the worker when it is idle, then tells
    it to read its handoff file.
 3. If horch compact refuses with "uses the fresh route", or a line starts
-   with "[horch] BLOCKED:", or the row state is "compact-lost", use the
+   with "[horch] BLOCKED:" and you already ran --request twice or the row is
+   not "compact-failed", or the row state is "compact-lost", use the
    fresh route: tell the worker to run
    horch done with a summary that names <path>. Then spawn the same
    teammate with a task that names the plan file and
