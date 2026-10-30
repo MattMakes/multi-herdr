@@ -1251,7 +1251,7 @@ fn g70_delayed_older_reply_cannot_reopen_newer_answered_question() {
                 h.horch(&["tell", "worker-1", "delayed answer"])
                     .env("HORCH_NOW", format!("2030-01-01T00:0{minute}:00Z"))
                     .stdout(std::process::Stdio::null())
-                    .stderr(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::piped())
                     .spawn()
                     .unwrap(),
             )
@@ -1261,7 +1261,11 @@ fn g70_delayed_older_reply_cannot_reopen_newer_answered_question() {
     for reply in &mut replies {
         loop {
             if let Some(status) = reply.0.try_wait().unwrap() {
-                assert!(status.success());
+                let mut stderr = String::new();
+                if let Some(mut pipe) = reply.0.stderr.take() {
+                    std::io::Read::read_to_string(&mut pipe, &mut stderr).unwrap();
+                }
+                assert!(status.success(), "{status}: {stderr}");
                 break;
             }
             assert!(
