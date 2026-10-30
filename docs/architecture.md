@@ -52,6 +52,7 @@ open first.
 | `procid` | process identity: a pid with its start time, and the signal to that exact process | `crates/horch-core/src/procid.rs` |
 | `exeid` | which binary a long-lived horch process runs, so a stale watchdog or collector is noticed after an install | `crates/horch-core/src/exeid.rs` |
 | `heartbeat` | the liveness of background jobs (the judge job, the compaction job) | `crates/horch-core/src/heartbeat.rs` |
+| `sweep` | the removal of stale state whose owner is gone (records, spools, sockets, registries, mail, bundles, codex homes, temp files), run by `fleet`, `spawn` and `doctor --clean` | `crates/horch-core/src/sweep.rs` |
 | `runtime` | the process boundary: `RuntimeContext`, paths, binary overrides (`HORCH_*_BIN`), fault points | `crates/horch-core/src/runtime/context.rs`, `crates/horch-core/src/runtime/paths.rs`, `crates/horch-core/src/runtime/bins.rs` |
 | `roster` | `teammates/` files: parsing, layering, `--check` rules, effort and permission mapping | `crates/horch-core/src/roster/repository.rs`, `crates/horch-core/src/roster/validation.rs` |
 | `prompts` | rendering briefings from `teammates/` | `crates/horch-core/src/prompts.rs` |
