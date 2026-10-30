@@ -2507,9 +2507,147 @@ fn record_pids(
 
 #[cfg(test)]
 mod tests {
-    use super::LedgerCommand;
+    use super::{absolute_ticket_if_missing, LedgerCommand};
     use clap::Subcommand;
     use horch_core::roster::{ExecDecision, Roster};
+    use horch_core::runtime::{MapEnv, RuntimeContext};
+    use horch_core::taskledger::model::{Actor, WorktreeMode};
+    use horch_core::taskledger::runs::{self, NewRun};
+    use horch_core::taskledger::tasks::{self, ClaimOutcome, Claimed, NewTask};
+    use horch_core::taskledger::workers::{self, NewWorker};
+    use horch_core::taskledger::Store;
+    use std::path::Path;
+
+    /// The task "t" (ticket `tickets/t.md`, shaped by `shape`) of the run "r1"
+    /// of project root `root` (run branch `branch`), claimed by a new worker,
+    /// with the ledger and the context in `dir`.
+    fn claimed(
+        dir: &Path,
+        root: &Path,
+        branch: Option<&str>,
+        shape: impl FnOnce(&mut NewTask),
+    ) -> (RuntimeContext, Store, Claimed) {
+        let ctx = RuntimeContext::from_env(&MapEnv::new(dir)).unwrap();
+        let mut store = Store::open(&dir.join("ledger.sqlite3")).unwrap();
+        let new_run = NewRun {
+            slug: "r1".into(),
+            run_branch: branch.map(str::to_string),
+            ..Default::default()
+        };
+        let run = store
+            .immediate(|tx| runs::create(tx, root, &new_run))
+            .unwrap();
+        let mut task = NewTask::work("t", "tickets/t.md", "dev");
+        shape(&mut task);
+        store
+            .immediate(|tx| tasks::add(tx, &run, &task, Actor::Orchestrator))
+            .unwrap();
+        let worker = NewWorker {
+            run_id: run.run_id.clone(),
+            persona: "dev".into(),
+            ..Default::default()
+        };
+        let worker = store.immediate(|tx| workers::insert(tx, &worker)).unwrap();
+        let ClaimOutcome::Claimed(c) = store.immediate(|tx| tasks::claim(tx, &worker)).unwrap()
+        else {
+            panic!("the worker claims the task");
+        };
+        (ctx, store, *c)
+    }
+
+    /// The project root under `dir` (by its canonical path, as a run records
+    /// it), with the ticket `tickets/t.md` in it when `ticket` is true.
+    fn project(dir: &Path, ticket: bool) -> std::path::PathBuf {
+        let root = dir.join("project");
+        std::fs::create_dir_all(root.join("tickets")).unwrap();
+        if ticket {
+            std::fs::write(root.join("tickets/t.md"), "# t\n").unwrap();
+        }
+        root.canonicalize().unwrap()
+    }
+
+    fn ticket_of(c: &Claimed) -> &str {
+        c.task.task_file.as_deref().unwrap()
+    }
+
+    #[test]
+    fn a_claim_keeps_the_ticket_path_when_the_project_root_has_no_such_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = project(dir.path(), false);
+        let (ctx, store, mut c) = claimed(dir.path(), &root, Some("fleet/r1"), |_| {});
+        absolute_ticket_if_missing(&ctx, &store, &mut c);
+        assert_eq!(ticket_of(&c), "tickets/t.md");
+    }
+
+    #[test]
+    fn a_claim_whose_run_is_gone_keeps_the_ticket_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = project(dir.path(), true);
+        let (ctx, store, mut c) = claimed(dir.path(), &root, Some("fleet/r1"), |_| {});
+        c.task.run_id = "no-such-run".into();
+        absolute_ticket_if_missing(&ctx, &store, &mut c);
+        assert_eq!(ticket_of(&c), "tickets/t.md");
+    }
+
+    #[test]
+    fn a_shared_task_without_a_worktree_keeps_its_relative_ticket_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = project(dir.path(), true);
+        let (ctx, store, mut c) = claimed(dir.path(), &root, Some("fleet/r1"), |t| {
+            t.worktree_mode = WorktreeMode::Shared
+        });
+        assert!(c.worktree.is_none());
+        absolute_ticket_if_missing(&ctx, &store, &mut c);
+        assert_eq!(ticket_of(&c), "tickets/t.md");
+    }
+
+    #[test]
+    fn a_claim_with_a_worktree_names_the_ticket_by_the_root_only_when_the_worktree_lacks_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = project(dir.path(), true);
+        let with = dir.path().join("with");
+        std::fs::create_dir_all(with.join("tickets")).unwrap();
+        std::fs::write(with.join("tickets/t.md"), "# t\n").unwrap();
+        let without = dir.path().join("without");
+        std::fs::create_dir_all(&without).unwrap();
+
+        let (ctx, store, mut c) = claimed(dir.path(), &root, Some("fleet/r1"), |_| {});
+        c.worktree = Some(with.to_string_lossy().into_owned());
+        absolute_ticket_if_missing(&ctx, &store, &mut c);
+        assert_eq!(ticket_of(&c), "tickets/t.md");
+
+        c.worktree = Some(without.to_string_lossy().into_owned());
+        absolute_ticket_if_missing(&ctx, &store, &mut c);
+        assert_eq!(
+            Path::new(ticket_of(&c)),
+            root.join("tickets/t.md"),
+            "the claim names the ticket in the project root"
+        );
+
+        // A shared task with a worktree is looked at like any other.
+        let other = tempfile::tempdir().unwrap();
+        let (ctx, store, mut shared) = claimed(other.path(), &root, Some("fleet/r1"), |t| {
+            t.worktree_mode = WorktreeMode::Shared
+        });
+        shared.worktree = Some(without.to_string_lossy().into_owned());
+        absolute_ticket_if_missing(&ctx, &store, &mut shared);
+        assert_eq!(Path::new(ticket_of(&shared)), root.join("tickets/t.md"));
+    }
+
+    #[test]
+    fn a_run_without_a_branch_keeps_the_relative_ticket_path_and_one_with_a_branch_does_not() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = project(dir.path(), true);
+        let (ctx, store, mut c) = claimed(dir.path(), &root, None, |_| {});
+        absolute_ticket_if_missing(&ctx, &store, &mut c);
+        assert_eq!(ticket_of(&c), "tickets/t.md", "no branch to cut from");
+
+        // The root is no git repository, so no branch of it holds the ticket.
+        let other = tempfile::tempdir().unwrap();
+        let (ctx, store, mut c) = claimed(other.path(), &root, Some("fleet/r1"), |_| {});
+        absolute_ticket_if_missing(&ctx, &store, &mut c);
+        assert_eq!(Path::new(ticket_of(&c)), root.join("tickets/t.md"));
+    }
 
     /// Whether `cmd` or a subcommand under it takes `--check`.
     fn takes_check(cmd: &clap::Command) -> bool {
