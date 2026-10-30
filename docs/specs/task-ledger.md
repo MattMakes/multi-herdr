@@ -430,8 +430,9 @@ courier) checks each `working` worker every `check_every_s` and writes 1
    (example: 10m then 15m, 10 min apart: it stopped or restarted about
    5 min ago), or herdr says `idle` while the task is `running`. The
    watchdog verifies at once: PID alive, herdr status, transcript mtime.
-   If the transcript was written after the timer stopped, or herdr shows
-   `working`, it is `proxy_checkin`. Else verdict `no_progress`.
+   If the transcript was written after the timer stopped, it is
+   `proxy_checkin`. If herdr shows `working`, go to step 5: a frozen timer
+   under a `working` spinner has the same cap. Else verdict `no_progress`.
 5. **Herdr fallback.** Nothing above moved, but herdr shows `working`
    (a harness with no timer format, a session with no transcript, or 1
    long tool call): verdict `proxy_checkin` with source `herdr_state`,

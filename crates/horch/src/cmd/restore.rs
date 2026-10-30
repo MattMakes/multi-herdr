@@ -10,6 +10,7 @@
 //! Nothing here reads a forbidden variable: the warning names it only.
 
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use horch_core::harness::launch::FORBIDDEN_ENV;
 use horch_core::messaging::mailbox::Mailbox;
@@ -91,7 +92,8 @@ pub fn warn_if_resume_on(ctx: &RuntimeContext) {
 ///
 /// Only a pane that herdr shows running an agent counts: an operator's
 /// shell that got a stale pane id is not a worker. The orchestrator's role
-/// is never taken: an untagged orchestrator line is the operator's.
+/// is never taken, and nothing is taken in the pane the workspace registers
+/// for the orchestrator: an untagged orchestrator line is the operator's.
 pub fn adopt_restored_identity(ctx: &mut RuntimeContext) {
     if ctx.worker.as_ref().is_some_and(|w| w.role.is_some()) {
         return;
@@ -99,7 +101,17 @@ pub fn adopt_restored_identity(ctx: &mut RuntimeContext) {
     let Some(pane_env) = ctx.herdr.pane.as_ref().map(|p| p.as_str().to_string()) else {
         return;
     };
-    let Ok(pane) = Herdr::with_bin(&ctx.bins.harness.herdr).pane_get(&pane_env) else {
+    // With the workspace known, the registry answers first: most panes
+    // that get here (the orchestrator's) name no worker, and need no herdr
+    // call.
+    if let Some(ws) = ctx.herdr.workspace.as_ref().map(|w| w.as_str().to_string()) {
+        if worker_role_of(&Mailbox::in_context(ctx, &ws), &pane_env).is_none() {
+            return;
+        }
+    }
+    // herdr can hang while its server restarts, the case this serves.
+    let herdr = Herdr::with_bin(&ctx.bins.harness.herdr).with_timeout(Duration::from_secs(2));
+    let Ok(pane) = herdr.pane_get(&pane_env) else {
         return;
     };
     if pane.agent.is_none() {
@@ -113,11 +125,7 @@ pub fn adopt_restored_identity(ctx: &mut RuntimeContext) {
         return;
     };
     let mailbox = Mailbox::in_context(ctx, &ws);
-    let Some((role, _)) = mailbox
-        .roles()
-        .into_iter()
-        .find(|(role, id)| *id == pane.pane_id && role != "orchestrator")
-    else {
+    let Some(role) = worker_role_of(&mailbox, &pane.pane_id) else {
         return;
     };
     let Ok(brief) = mailbox.read_brief(&role) else {
@@ -141,6 +149,23 @@ pub fn adopt_restored_identity(ctx: &mut RuntimeContext) {
     if let Ok(id) = horch_core::ids::WorkspaceId::new(&ws) {
         ctx.herdr.workspace = Some(id);
     }
+}
+
+/// The worker role that `mailbox` registers on `pane`, or `None` when no
+/// worker role does, or when the pane is the orchestrator's: a stale worker
+/// id on the orchestrator's pane never makes the orchestrator that worker.
+fn worker_role_of(mailbox: &Mailbox, pane: &str) -> Option<String> {
+    let roles = mailbox.roles();
+    if roles
+        .iter()
+        .any(|(role, id)| role == "orchestrator" && id == pane)
+    {
+        return None;
+    }
+    roles
+        .into_iter()
+        .find(|(role, id)| id == pane && role != "orchestrator")
+        .map(|(role, _)| role)
 }
 
 #[cfg(test)]

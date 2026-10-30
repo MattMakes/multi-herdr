@@ -3,6 +3,7 @@
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use anyhow::{bail, Result};
@@ -21,6 +22,35 @@ use horch_core::workspace::herdr::Herdr;
 use super::taskledger::{stop_grace, HerdrPanes};
 use super::taskledger_wake;
 use crate::output;
+
+/// A SIGTERM came: the watchdog loop ends after the pass it runs.
+static TERM: AtomicBool = AtomicBool::new(false);
+
+#[cfg(unix)]
+extern "C" fn on_term(_: libc::c_int) {
+    TERM.store(true, Ordering::SeqCst);
+}
+
+/// SIGTERM ends the watchdog loop between passes, never inside one: a pass
+/// can be in a reap, which requeues the task before it stops the agent
+/// (#216 restart, review of T-3).
+fn exit_between_passes() {
+    #[cfg(unix)]
+    // SAFETY: the handler only stores to an atomic, which is
+    // async-signal-safe.
+    unsafe {
+        let handler = on_term as extern "C" fn(libc::c_int) as libc::sighandler_t;
+        libc::signal(libc::SIGTERM, handler);
+    }
+}
+
+/// Sleep `d`, or less when a SIGTERM comes.
+fn sleep_unless_term(d: Duration) {
+    let until = std::time::Instant::now() + d;
+    while !TERM.load(Ordering::SeqCst) && std::time::Instant::now() < until {
+        std::thread::sleep(Duration::from_millis(100));
+    }
+}
 
 /// What the watchdog reads: herdr for the pane, the disk for the transcript.
 struct Live {
@@ -182,16 +212,17 @@ pub fn watch(
         return Ok(ExitCode::SUCCESS);
     }
     // The loop: a pass on every tick; each worker is checked when it is due.
+    exit_between_passes();
     loop {
         let run_now = runs::get(store.conn(), &run.run_id)?;
-        if run_now.status != "active" {
+        if run_now.status != "active" || TERM.load(Ordering::SeqCst) {
             return Ok(ExitCode::SUCCESS);
         }
         if let Err(e) = pass(ctx, &mut store, &run_now, false) {
             eprintln!("horch ledger watch: {e:#}");
         }
         let tick = (run_now.check_every_s / 10).clamp(1, 30) as u64;
-        std::thread::sleep(Duration::from_secs(tick));
+        sleep_unless_term(Duration::from_secs(tick));
     }
 }
 
@@ -219,8 +250,16 @@ pub fn ensure(ctx: &RuntimeContext) {
     };
     for run in all.into_iter().filter(|r| r.status == "active") {
         if let Some(h) = watchdog::holder(&lock_dir(ctx), &run.run_id) {
-            if h.runs_other_binary(exe_identity(&exe).as_ref()) {
-                replace(ctx, &run, &root, &h, &exe, true);
+            // Only a watchdog whose own binary file changed moves, and onto
+            // that file: a horch at another path does not take it over.
+            if h.binary_replaced() {
+                let target = h
+                    .exe
+                    .as_ref()
+                    .map(|e| PathBuf::from(&e.path))
+                    .filter(|p| p.is_file())
+                    .unwrap_or_else(|| exe.clone());
+                replace(ctx, &run, &root, &h, &target, true);
             }
             continue;
         }
@@ -266,7 +305,8 @@ pub fn restart_if_stale(ctx: &RuntimeContext, installed: &Path) {
 
 /// Stop the live watchdog `h` of `run`, which runs another binary, by its
 /// exact PID and start time, then start one on `exe`. A watchdog keeps no
-/// state between passes, so the restart loses nothing.
+/// state between passes, so the restart loses nothing. It ends after its
+/// current pass, and a reap in that pass waits up to the stop grace.
 fn replace(
     ctx: &RuntimeContext,
     run: &Run,
@@ -275,7 +315,7 @@ fn replace(
     exe: &Path,
     as_warning: bool,
 ) {
-    if let Err(e) = h.stop(Duration::from_secs(5)) {
+    if let Err(e) = h.stop(stop_grace() + Duration::from_secs(5)) {
         eprintln!(
             "horch: warning: the watchdog of run {} (PID {}) runs another build of horch, but horch did not stop it: {e:#}",
             run.slug, h.pid
@@ -284,7 +324,7 @@ fn replace(
     }
     let line = match start_detached(ctx, run, root, exe) {
         Ok(pid) => format!(
-            "restarted the watchdog of run {} on {}: PID {} ran another build of horch, PID {pid} runs this one",
+            "restarted the watchdog of run {} on {}: PID {} ran another build of horch, PID {pid} runs the new one",
             run.slug,
             exe.display(),
             h.pid
