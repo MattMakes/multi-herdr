@@ -274,42 +274,7 @@ pub enum WorktreeCommand {
 #[derive(Subcommand)]
 pub enum RunCommand {
     /// Create a run and its run branch (from the main branch).
-    New {
-        slug: String,
-        /// The branch tasks land on; default `fleet/<slug>`.
-        #[arg(long)]
-        branch: Option<String>,
-        /// The main branch the run branch starts from and the PR targets;
-        /// default the branch checked out in the project.
-        #[arg(long)]
-        base: Option<String>,
-        /// The remote the run branch is pushed to; default `origin` when it
-        /// exists.
-        #[arg(long)]
-        remote: Option<String>,
-        /// The finish steps, comma-separated; default all 7.
-        #[arg(long, value_delimiter = ',')]
-        steps: Vec<String>,
-        /// Seconds between watchdog checks (default 600).
-        #[arg(long, hide = true)]
-        check_every: Option<i64>,
-        /// Checks in a row without progress before a worker is dead (default 3).
-        #[arg(long, hide = true)]
-        stall_rounds: Option<i64>,
-        /// Seconds between supervisor checkins (default 30).
-        #[arg(long, hide = true)]
-        heartbeat_every: Option<i64>,
-        /// Seconds after which a checkin is missed (default 120).
-        #[arg(long, hide = true)]
-        heartbeat_stale: Option<i64>,
-        /// Slack, in seconds, when a screen timer is compared with the clock.
-        #[arg(long, hide = true)]
-        timer_tolerance: Option<i64>,
-        /// Attempts at 1 task before horch holds it and asks the operator
-        /// (default 3).
-        #[arg(long)]
-        max_attempts: Option<i64>,
-    },
+    New(NewRunArgs),
     /// Close the run when its work is done. Refuses while a task is queued,
     /// held, running or landing, or a worktree is open or landing.
     Close {
@@ -325,6 +290,44 @@ pub enum RunCommand {
         #[arg(long)]
         json: bool,
     },
+}
+
+#[derive(Args)]
+pub struct NewRunArgs {
+    slug: String,
+    /// The branch tasks land on; default `fleet/<slug>`.
+    #[arg(long)]
+    branch: Option<String>,
+    /// The main branch the run branch starts from and the PR targets;
+    /// default the branch checked out in the project.
+    #[arg(long)]
+    base: Option<String>,
+    /// The remote the run branch is pushed to; default `origin` when it
+    /// exists.
+    #[arg(long)]
+    remote: Option<String>,
+    /// The finish steps, comma-separated; default all 7.
+    #[arg(long, value_delimiter = ',')]
+    steps: Vec<String>,
+    /// Seconds between watchdog checks (default 600).
+    #[arg(long, hide = true)]
+    check_every: Option<i64>,
+    /// Checks in a row without progress before a worker is dead (default 3).
+    #[arg(long, hide = true)]
+    stall_rounds: Option<i64>,
+    /// Seconds between supervisor checkins (default 30).
+    #[arg(long, hide = true)]
+    heartbeat_every: Option<i64>,
+    /// Seconds after which a checkin is missed (default 120).
+    #[arg(long, hide = true)]
+    heartbeat_stale: Option<i64>,
+    /// Slack, in seconds, when a screen timer is compared with the clock.
+    #[arg(long, hide = true)]
+    timer_tolerance: Option<i64>,
+    /// Attempts at 1 task before horch holds it and asks the operator
+    /// (default 3).
+    #[arg(long)]
+    max_attempts: Option<i64>,
 }
 
 #[derive(Subcommand)]
@@ -476,6 +479,58 @@ fn json(v: &impl serde::Serialize) -> Result<()> {
     Ok(())
 }
 
+/// The dispatch of 1 group of `LedgerCommand` variants.
+type GroupCmd = fn(&RuntimeContext, Store, LedgerCommand) -> Result<ExitCode>;
+
+/// The groups of `LedgerCommand` variants, each with its own dispatch.
+#[derive(Clone, Copy)]
+enum Group {
+    Board,
+    Control,
+    Worker,
+    Admin,
+}
+
+fn group_of(command: &LedgerCommand) -> Group {
+    use LedgerCommand as C;
+    if matches!(
+        command,
+        C::Status { .. }
+            | C::Show { .. }
+            | C::Run { .. }
+            | C::Add(_)
+            | C::AddMap { .. }
+            | C::PlanWorkers { .. }
+            | C::Events { .. }
+    ) {
+        Group::Board
+    } else if matches!(
+        command,
+        C::Fallback { .. }
+            | C::Cancel { .. }
+            | C::Unblock { .. }
+            | C::Requeue { .. }
+            | C::Waive { .. }
+            | C::Stop { .. }
+            | C::Reap { .. }
+    ) {
+        Group::Control
+    } else if matches!(
+        command,
+        C::Claim { .. }
+            | C::Worktree { .. }
+            | C::Finish { .. }
+            | C::Steps { .. }
+            | C::Done { .. }
+            | C::Progress { .. }
+            | C::Note { .. }
+    ) {
+        Group::Worker
+    } else {
+        Group::Admin
+    }
+}
+
 pub fn run(ctx: &RuntimeContext, command: LedgerCommand) -> Result<ExitCode> {
     if let LedgerCommand::Legacy { command } = command {
         return super::ledgercmd::run(ctx, command);
@@ -484,167 +539,409 @@ pub fn run(ctx: &RuntimeContext, command: LedgerCommand) -> Result<ExitCode> {
         output::println(&ctx.paths.ledger_db.display().to_string());
         return Ok(ExitCode::SUCCESS);
     }
-    let mut store = taskledger::open(ctx)?;
+    let store = taskledger::open(ctx)?;
+    // One entry per `Group`, in its order.
+    let dispatch: [GroupCmd; 4] = [board_cmd, control_cmd, worker_side_cmd, admin_cmd];
+    dispatch[group_of(&command) as usize](ctx, store, command)
+}
+
+/// The orchestrator reads and fills the board.
+fn board_cmd(ctx: &RuntimeContext, mut store: Store, command: LedgerCommand) -> Result<ExitCode> {
+    if let LedgerCommand::Status { run, json: as_json } = command {
+        return status_cmd(ctx, &store, &run, as_json);
+    }
+    if let LedgerCommand::Show {
+        key,
+        run,
+        json: as_json,
+    } = command
+    {
+        return show(ctx, &store, &key, &run, as_json);
+    }
+    if let LedgerCommand::Run { command } = command {
+        return run_cmd(ctx, &mut store, command);
+    }
+    if let LedgerCommand::Add(args) = command {
+        return add(ctx, &mut store, args);
+    }
+    if let LedgerCommand::AddMap { map: path, run } = command {
+        return add_map(ctx, &mut store, &path, &run);
+    }
+    if let LedgerCommand::PlanWorkers { run, json: as_json } = command {
+        return plan_workers_cmd(ctx, &store, &run, as_json);
+    }
+    if let LedgerCommand::Events { run, json: as_json } = command {
+        return events_cmd(ctx, &store, &run, as_json);
+    }
+    unreachable!("not a board command")
+}
+
+/// The orchestrator steers tasks and workers.
+fn control_cmd(ctx: &RuntimeContext, mut store: Store, command: LedgerCommand) -> Result<ExitCode> {
+    if let LedgerCommand::Fallback { task, reason, run } = command {
+        return fallback_cmd(ctx, &mut store, &task, &reason, &run);
+    }
+    if let LedgerCommand::Cancel {
+        task,
+        reason,
+        stop: stop_it,
+        run,
+    } = command
+    {
+        return cancel_cmd(ctx, &mut store, &task, &reason, stop_it, &run);
+    }
+    if let LedgerCommand::Unblock { task, from, run } = command {
+        return unblock_cmd(ctx, &mut store, &task, &from, &run);
+    }
+    if let LedgerCommand::Requeue { task, reason, run } = command {
+        return requeue_cmd(ctx, &mut store, &task, &reason, &run);
+    }
+    if let LedgerCommand::Waive {
+        task,
+        finding,
+        reason,
+        run,
+    } = command
+    {
+        return waive_cmd(ctx, &store, &task, &finding, &reason, &run);
+    }
+    if let LedgerCommand::Stop {
+        worker,
+        reason,
+        run,
+        json: as_json,
+    } = command
+    {
+        return stop_cmd(ctx, &mut store, &worker, &reason, &run, as_json);
+    }
+    if let LedgerCommand::Reap {
+        worker,
+        reason,
+        run,
+        json: as_json,
+    } = command
+    {
+        return reap_cmd(ctx, &mut store, &worker, &reason, &run, as_json);
+    }
+    unreachable!("not a control command")
+}
+
+/// What a worker does with its task.
+fn worker_side_cmd(
+    ctx: &RuntimeContext,
+    mut store: Store,
+    command: LedgerCommand,
+) -> Result<ExitCode> {
+    if let LedgerCommand::Claim { json: as_json } = command {
+        return claim(ctx, &mut store, as_json);
+    }
+    if let LedgerCommand::Worktree { command } = command {
+        return worktree_cmd(ctx, &mut store, command);
+    }
+    if let LedgerCommand::Finish {
+        json: as_json,
+        rereview,
+    } = command
+    {
+        return finish_cmd(ctx, &mut store, as_json, rereview);
+    }
+    if let LedgerCommand::Steps {
+        task,
+        run,
+        json: as_json,
+    } = command
+    {
+        return steps_cmd(ctx, &store, task, &run, as_json);
+    }
+    if let LedgerCommand::Done { summary, unlanded } = command {
+        return done_exit(ctx, store, &summary.join(" "), unlanded.as_deref());
+    }
+    if let LedgerCommand::Progress { text } = command {
+        return progress(ctx, &mut store, EventKind::Progress, &text);
+    }
+    if let LedgerCommand::Note { text } = command {
+        return progress(ctx, &mut store, EventKind::Note, &text);
+    }
+    unreachable!("not a worker command")
+}
+
+/// `horch ledger done`: the exit code once the finish is recorded.
+fn done_exit(
+    ctx: &RuntimeContext,
+    store: Store,
+    summary: &str,
+    unlanded: Option<&str>,
+) -> Result<ExitCode> {
+    done_cmd(ctx, store, summary, unlanded).map(|()| ExitCode::SUCCESS)
+}
+
+/// Import, unfinished work, the watchdog and worker rows.
+fn admin_cmd(ctx: &RuntimeContext, mut store: Store, command: LedgerCommand) -> Result<ExitCode> {
+    if let LedgerCommand::Import {
+        dry_run,
+        json: as_json,
+    } = command
+    {
+        return import_cmd(ctx, &mut store, dry_run, as_json);
+    }
+    if let LedgerCommand::Unfinished {
+        project,
+        json: as_json,
+    } = command
+    {
+        return unfinished_cmd(ctx, &mut store, project.as_deref(), as_json);
+    }
+    if let LedgerCommand::Reopen {
+        finding,
+        file,
+        primary,
+        fallback,
+        check,
+        run,
+    } = command
+    {
+        return {
+            let ticket = ReopenTicket {
+                file,
+                primary,
+                fallback,
+                check,
+            };
+            reopen_cmd(ctx, &mut store, finding, ticket, &run)
+        };
+    }
+    if let LedgerCommand::Dismiss {
+        finding,
+        reason,
+        cleanup,
+    } = command
+    {
+        return dismiss_cmd(ctx, &store, finding, &reason, cleanup);
+    }
+    if let LedgerCommand::Worker { command } = command {
+        return worker_cmd(ctx, &mut store, command);
+    }
+    if let LedgerCommand::Watch {
+        run,
+        once,
+        force,
+        json: as_json,
+    } = command
+    {
+        return {
+            let r = resolve_run(ctx, &store, &run)?;
+            super::taskledger_watch::watch(ctx, store, &r, once, force, as_json)
+        };
+    }
+    unreachable!("not a admin command")
+}
+
+fn plan_workers_cmd(
+    ctx: &RuntimeContext,
+    store: &Store,
+    run: &RunArg,
+    as_json: bool,
+) -> Result<ExitCode> {
+    let r = resolve_run(ctx, store, run)?;
+    adopt_workspace(ctx, store, &r)?;
+    let plan = tasks::plan_workers(store.conn(), &r.run_id)?;
+    if as_json {
+        json(&plan)?;
+        return Ok(ExitCode::SUCCESS);
+    }
+    if plan.is_empty() {
+        output::println("No task can start now. Spawn no worker.");
+    }
+    for p in &plan {
+        let mut line = format!(
+            "{}: spawn {} ({} can start, {} on the way).",
+            p.persona, p.spawn, p.startable, p.on_the_way
+        );
+        if !p.replaces.is_empty() {
+            line.push_str(&format!(
+                " Replaces: {}. Spawn those with --replaces <worker>.",
+                p.replaces.join(", ")
+            ));
+        }
+        output::println(&line);
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+fn fallback_cmd(
+    ctx: &RuntimeContext,
+    store: &mut Store,
+    task: &str,
+    reason: &str,
+    run: &RunArg,
+) -> Result<ExitCode> {
+    let r = resolve_run(ctx, store, run)?;
+    let t = store.immediate(|tx| {
+        let t = tasks::resolve(tx, &r.run_id, task)?;
+        tasks::fallback(tx, &t, reason)
+    })?;
+    output::println(&format!(
+        "{} can now be claimed by {}.",
+        t.short(),
+        t.claimable_by.as_deref().unwrap_or("?")
+    ));
+    Ok(ExitCode::SUCCESS)
+}
+
+fn cancel_cmd(
+    ctx: &RuntimeContext,
+    store: &mut Store,
+    task: &str,
+    reason: &str,
+    stop_it: bool,
+    run: &RunArg,
+) -> Result<ExitCode> {
+    let r = resolve_run(ctx, store, run)?;
+    let holder = tasks::resolve(store.conn(), &r.run_id, task)?.current_worker_id;
+    if let (true, Some(w)) = (stop_it, &holder) {
+        stop_holder(ctx, store, w, reason)?;
+    }
+    let t = cancel_task(store, &r, task, reason)?;
+    output::println(&format!("{} cancelled.", t.short()));
+    if let (false, Some(w)) = (stop_it, &holder) {
+        warn_still_running(w, &t.short());
+    }
+    wake_dependents(ctx, store, &r, &t)
+}
+
+fn cancel_task(store: &mut Store, run: &Run, task: &str, reason: &str) -> Result<tasks::Task> {
+    store.immediate(|tx| {
+        let t = tasks::resolve(tx, &run.run_id, task)?;
+        tasks::cancel(tx, &t, reason)
+    })
+}
+
+/// Name the tasks that wait for a cancelled task, and wake on them.
+fn wake_dependents(
+    ctx: &RuntimeContext,
+    store: &Store,
+    run: &Run,
+    t: &tasks::Task,
+) -> Result<ExitCode> {
+    let waiting = tasks::dependents(store.conn(), &t.task_id)?;
+    print_waiting(&t.short(), &waiting);
+    super::taskledger_wake::cancelled_dependents(ctx, store, run, &t.short(), &waiting);
+    Ok(ExitCode::SUCCESS)
+}
+
+fn warn_still_running(worker: &str, task: &str) {
+    eprintln!(
+        "horch ledger: worker {worker} held {task} and can no longer finish it. Its process may still run: horch ledger stop {worker} \"<reason>\"."
+    );
+}
+
+/// Stop the worker that held a cancelled task.
+fn stop_holder(ctx: &RuntimeContext, store: &mut Store, worker: &str, reason: &str) -> Result<()> {
+    let report = stop::stop_worker(
+        store,
+        worker,
+        StopRequester::Orchestrator,
+        &format!("task cancelled: {reason}"),
+        &HerdrPanes::new(ctx),
+        &stop::Os,
+        &stop::StopOptions {
+            grace: stop_grace(),
+            ..Default::default()
+        },
+    )?;
+    print_stop(&report, false)
+}
+
+/// The tasks that wait for a cancelled task.
+fn print_waiting(task: &str, waiting: &[tasks::Task]) {
+    if waiting.is_empty() {
+        return;
+    }
+    let names: Vec<String> = waiting.iter().map(|d| d.short()).collect();
+    output::println(&format!("Waiting for {task}: {}.", names.join(", ")));
+}
+
+fn unblock_cmd(
+    ctx: &RuntimeContext,
+    store: &mut Store,
+    task: &str,
+    from: &str,
+    run: &RunArg,
+) -> Result<ExitCode> {
+    orchestrator_only(ctx, store, "unblock")?;
+    let r = resolve_run(ctx, store, run)?;
+    let t = store.immediate(|tx| {
+        let t = tasks::resolve(tx, &r.run_id, task)?;
+        let b = tasks::resolve(tx, &r.run_id, from)?;
+        tasks::unblock(tx, &t, &b)?;
+        Ok(t)
+    })?;
+    output::println(&format!("{} no longer waits for {from}.", t.short()));
+    super::taskledger_wake::nudge_startable(ctx, store, &r);
+    Ok(ExitCode::SUCCESS)
+}
+
+fn requeue_cmd(
+    ctx: &RuntimeContext,
+    store: &mut Store,
+    task: &str,
+    reason: &str,
+    run: &RunArg,
+) -> Result<ExitCode> {
+    orchestrator_only(ctx, store, "requeue")?;
+    let r = resolve_run(ctx, store, run)?;
+    let t = store.immediate(|tx| {
+        let t = tasks::resolve(tx, &r.run_id, task)?;
+        tasks::requeue_by_operator(tx, &t, reason)
+    })?;
+    output::println(&format!("{} is queued again.", t.short()));
+    super::taskledger_wake::nudge_startable(ctx, store, &r);
+    Ok(ExitCode::SUCCESS)
+}
+
+fn waive_cmd(
+    ctx: &RuntimeContext,
+    store: &Store,
+    task: &str,
+    finding: &str,
+    reason: &str,
+    run: &RunArg,
+) -> Result<ExitCode> {
+    let r = resolve_run(ctx, store, run)?;
+    // The caller: its worker id, else the run's worker in its pane, so
+    // a worker that unsets HORCH_WORKER_ID is still known.
+    let pane = ctx.herdr.pane.as_ref().map(|p| p.as_str().to_string());
+    let caller = worker_id_opt(ctx)
+        .or_else(|| finish::codesweep::worker_in_pane(store.conn(), &r.run_id, pane.as_deref()));
+    if let Some(w) = caller {
+        let w = workers::get(store.conn(), &w)?;
+        if w.kind != WorkerKind::Orchestrator.as_str() {
+            bail!("only the orchestrator waives a code-sweep finding; fix it, or answer an Important finding in the answers file");
+        }
+    }
+    let t = tasks::resolve(store.conn(), &r.run_id, task)?;
+    let w = finish::codesweep::waive(store, &tools(ctx).evidence_root, &t, finding, reason)?;
+    output::println(&format!(
+        "{} round {}: {} waived. The next horch ledger finish of {} reads it.",
+        t.short(),
+        w.round,
+        w.id,
+        t.short()
+    ));
+    Ok(ExitCode::SUCCESS)
+}
+
+fn worktree_cmd(
+    ctx: &RuntimeContext,
+    store: &mut Store,
+    command: WorktreeCommand,
+) -> Result<ExitCode> {
+    let wid = worker_id(ctx)?;
+    let git = Git::new(&ctx.bins.harness.git);
     match command {
-        LedgerCommand::Legacy { .. } | LedgerCommand::Path => unreachable!("handled above"),
-        LedgerCommand::Status { run, json: as_json } => status_cmd(ctx, &store, &run, as_json),
-        LedgerCommand::Show {
-            key,
-            run,
-            json: as_json,
-        } => show(ctx, &store, &key, &run, as_json),
-        LedgerCommand::Run { command } => run_cmd(ctx, &mut store, command),
-        LedgerCommand::Add(args) => add(ctx, &mut store, args),
-        LedgerCommand::AddMap { map: path, run } => add_map(ctx, &mut store, &path, &run),
-        LedgerCommand::PlanWorkers { run, json: as_json } => {
-            let r = resolve_run(ctx, &store, &run)?;
-            adopt_workspace(ctx, &store, &r)?;
-            let plan = tasks::plan_workers(store.conn(), &r.run_id)?;
-            if as_json {
-                json(&plan)?;
-            } else if plan.is_empty() {
-                output::println("No task can start now. Spawn no worker.");
-            } else {
-                for p in &plan {
-                    let mut line = format!(
-                        "{}: spawn {} ({} can start, {} on the way).",
-                        p.persona, p.spawn, p.startable, p.on_the_way
-                    );
-                    if !p.replaces.is_empty() {
-                        line.push_str(&format!(
-                            " Replaces: {}. Spawn those with --replaces <worker>.",
-                            p.replaces.join(", ")
-                        ));
-                    }
-                    output::println(&line);
-                }
-            }
-            Ok(ExitCode::SUCCESS)
-        }
-        LedgerCommand::Fallback { task, reason, run } => {
-            let r = resolve_run(ctx, &store, &run)?;
-            let t = store.immediate(|tx| {
-                let t = tasks::resolve(tx, &r.run_id, &task)?;
-                tasks::fallback(tx, &t, &reason)
-            })?;
-            output::println(&format!(
-                "{} can now be claimed by {}.",
-                t.short(),
-                t.claimable_by.as_deref().unwrap_or("?")
-            ));
-            Ok(ExitCode::SUCCESS)
-        }
-        LedgerCommand::Cancel {
-            task,
-            reason,
-            stop: stop_it,
-            run,
-        } => {
-            let r = resolve_run(ctx, &store, &run)?;
-            let holder = tasks::resolve(store.conn(), &r.run_id, &task)?.current_worker_id;
-            if let (true, Some(w)) = (stop_it, &holder) {
-                let report = stop::stop_worker(
-                    &mut store,
-                    w,
-                    StopRequester::Orchestrator,
-                    &format!("task cancelled: {reason}"),
-                    &HerdrPanes::new(ctx),
-                    &stop::Os,
-                    &stop::StopOptions {
-                        grace: stop_grace(),
-                        ..Default::default()
-                    },
-                )?;
-                print_stop(&report, false)?;
-            }
-            let t = store.immediate(|tx| {
-                let t = tasks::resolve(tx, &r.run_id, &task)?;
-                tasks::cancel(tx, &t, &reason)
-            })?;
-            output::println(&format!("{} cancelled.", t.short()));
-            if let (false, Some(w)) = (stop_it, &holder) {
-                eprintln!(
-                    "horch ledger: worker {w} held {} and can no longer finish it. Its process may still run: horch ledger stop {w} \"<reason>\".",
-                    t.short()
-                );
-            }
-            let waiting = tasks::dependents(store.conn(), &t.task_id)?;
-            if !waiting.is_empty() {
-                let names: Vec<String> = waiting.iter().map(|d| d.short()).collect();
-                output::println(&format!("Waiting for {}: {}.", t.short(), names.join(", ")));
-            }
-            super::taskledger_wake::cancelled_dependents(ctx, &store, &r, &t.short(), &waiting);
-            Ok(ExitCode::SUCCESS)
-        }
-        LedgerCommand::Unblock { task, from, run } => {
-            orchestrator_only(ctx, &store, "unblock")?;
-            let r = resolve_run(ctx, &store, &run)?;
-            let t = store.immediate(|tx| {
-                let t = tasks::resolve(tx, &r.run_id, &task)?;
-                let b = tasks::resolve(tx, &r.run_id, &from)?;
-                tasks::unblock(tx, &t, &b)?;
-                Ok(t)
-            })?;
-            output::println(&format!("{} no longer waits for {from}.", t.short()));
-            super::taskledger_wake::nudge_startable(ctx, &store, &r);
-            Ok(ExitCode::SUCCESS)
-        }
-        LedgerCommand::Requeue { task, reason, run } => {
-            orchestrator_only(ctx, &store, "requeue")?;
-            let r = resolve_run(ctx, &store, &run)?;
-            let t = store.immediate(|tx| {
-                let t = tasks::resolve(tx, &r.run_id, &task)?;
-                tasks::requeue_by_operator(tx, &t, &reason)
-            })?;
-            output::println(&format!("{} is queued again.", t.short()));
-            super::taskledger_wake::nudge_startable(ctx, &store, &r);
-            Ok(ExitCode::SUCCESS)
-        }
-        LedgerCommand::Waive {
-            task,
-            finding,
-            reason,
-            run,
-        } => {
-            let r = resolve_run(ctx, &store, &run)?;
-            // The caller: its worker id, else the run's worker in its pane, so
-            // a worker that unsets HORCH_WORKER_ID is still known.
-            let pane = ctx.herdr.pane.as_ref().map(|p| p.as_str().to_string());
-            let caller = worker_id_opt(ctx).or_else(|| {
-                finish::codesweep::worker_in_pane(store.conn(), &r.run_id, pane.as_deref())
-            });
-            if let Some(w) = caller {
-                let w = workers::get(store.conn(), &w)?;
-                if w.kind != WorkerKind::Orchestrator.as_str() {
-                    bail!("only the orchestrator waives a code-sweep finding; fix it, or answer an Important finding in the answers file");
-                }
-            }
-            let t = tasks::resolve(store.conn(), &r.run_id, &task)?;
-            let w =
-                finish::codesweep::waive(&store, &tools(ctx).evidence_root, &t, &finding, &reason)?;
-            output::println(&format!(
-                "{} round {}: {} waived. The next horch ledger finish of {} reads it.",
-                t.short(),
-                w.round,
-                w.id,
-                t.short()
-            ));
-            Ok(ExitCode::SUCCESS)
-        }
-        LedgerCommand::Claim { json: as_json } => claim(ctx, &mut store, as_json),
-        LedgerCommand::Worktree {
-            command: WorktreeCommand::New { name, from },
-        } => {
-            let wid = worker_id(ctx)?;
-            let git = Git::new(&ctx.bins.harness.git);
-            let wt = taskledger::worktree_ops::create(
-                &mut store,
-                &git,
-                &wid,
-                &name,
-                from.as_deref(),
-                false,
-            )?;
+        WorktreeCommand::New { name, from } => {
+            let wt =
+                taskledger::worktree_ops::create(store, &git, &wid, &name, from.as_deref(), false)?;
             output::println(&format!("path: {}", wt.path));
             output::println(&format!("branch: {}", wt.branch));
             output::println(&format!("base: {}", wt.base));
@@ -652,351 +949,445 @@ pub fn run(ctx: &RuntimeContext, command: LedgerCommand) -> Result<ExitCode> {
                 "Work and commit in {}. When the work is complete, run: horch ledger finish",
                 wt.path
             ));
-            Ok(ExitCode::SUCCESS)
         }
-        LedgerCommand::Worktree {
-            command: WorktreeCommand::Scratch { name },
-        } => {
-            let wid = worker_id(ctx)?;
-            let git = Git::new(&ctx.bins.harness.git);
-            let wt = taskledger::worktree_ops::create(&mut store, &git, &wid, &name, None, true)?;
+        WorktreeCommand::Scratch { name } => {
+            let wt = taskledger::worktree_ops::create(store, &git, &wid, &name, None, true)?;
             output::println(&format!("path: {}", wt.path));
             output::println(&format!("branch: {}", wt.branch));
             output::println("Scratch worktree: drop it when it is no longer needed; it does not block completion.");
-            Ok(ExitCode::SUCCESS)
         }
-        LedgerCommand::Worktree {
-            command:
-                WorktreeCommand::Drop {
-                    name,
-                    reason,
-                    keep_branch,
-                },
-        } => {
-            let wid = worker_id(ctx)?;
-            let worker = workers::get(store.conn(), &wid)?;
-            let run_id = worker.run_id.as_deref().context("worker has no run")?;
-            let git = Git::new(&ctx.bins.harness.git);
-            let wt = taskledger::worktree_ops::drop_worktree(
-                &mut store,
-                &git,
-                run_id,
-                &name,
-                &reason,
-                keep_branch,
-            )?;
-            output::println(&format!("abandoned: {} ({reason})", wt.path));
-            Ok(ExitCode::SUCCESS)
-        }
-        LedgerCommand::Finish {
-            json: as_json,
-            rereview,
-        } => {
-            let wid = worker_id(ctx)?;
-            // finish answers a reviews-in notice: its mail and wait end.
-            if workers::waiting(store.conn(), &wid)?
-                .iter()
-                .any(workers::holds_for_finish)
-            {
-                workers::clear_wait(store.conn(), &wid, workers::REVIEWS_WAIT)?;
-            }
-            if let Some(role) = workers::get(store.conn(), &wid)?.role {
-                super::messaging::ack_role_mail(ctx, &role);
-            }
-            let mut tools = tools(ctx);
-            tools.reviewers_down = reviewers_down(ctx);
-            tools.codex.personas = codex_personas(ctx);
-            if rereview {
-                finish::rereview(&mut store, &tools, &wid)?;
-            }
-            let report = finish::finish(&mut store, &tools, &wid)?;
-            for w in &report.superseded_workers {
-                let stopped = stop::stop_worker(
-                    &mut store,
-                    w,
-                    StopRequester::Watchdog,
-                    "its review was superseded by a new code-sweep round",
-                    &HerdrPanes::new(ctx),
-                    &stop::Os,
-                    &stop::StopOptions {
-                        grace: stop_grace(),
-                        ..Default::default()
-                    },
-                );
-                if let Err(e) = stopped {
-                    eprintln!("horch ledger: could not stop reviewer {w}: {e:#}");
-                }
-            }
-            if !report.queued_reviews.is_empty() {
-                let w = workers::get(store.conn(), &wid)?;
-                if let Some(r) = &w.run_id {
-                    let run = runs::get(store.conn(), r)?;
-                    super::taskledger_wake::nudge_startable(ctx, &store, &run);
-                }
-            }
-            if as_json {
-                json(&report)?;
-            } else {
-                for st in &report.steps {
-                    output::println(&format!(
-                        "{:<2} {:<17} {:<15} {}",
-                        st.seq,
-                        st.name,
-                        st.status,
-                        st.verdict.as_deref().unwrap_or("")
-                    ));
-                }
-                output::println(&report.message);
-            }
-            Ok(if report.complete {
-                ExitCode::SUCCESS
-            } else {
-                ExitCode::from(EXIT_NOT_COMPLETE)
-            })
-        }
-        LedgerCommand::Steps {
-            task,
-            run,
-            json: as_json,
-        } => {
-            let (task_id, worker) = match task {
-                Some(key) => {
-                    let r = resolve_run(ctx, &store, &run)?;
-                    let t = tasks::resolve(store.conn(), &r.run_id, &key)?;
-                    let w = t
-                        .current_worker_id
-                        .clone()
-                        .or_else(|| {
-                            workers::attempts_at(store.conn(), &t.task_id)
-                                .ok()
-                                .and_then(|a| a.last().map(|w| w.worker_id.clone()))
-                        })
-                        .context("no attempt at this task yet")?;
-                    (t.task_id, w)
-                }
-                None => {
-                    let wid = worker_id(ctx)?;
-                    let w = workers::get(store.conn(), &wid)?;
-                    (w.task_id.context("this worker holds no task")?, wid)
-                }
-            };
-            let steps = finish::steps_of(store.conn(), &task_id, &worker)?;
-            if as_json {
-                json(&steps)?;
-            } else {
-                for st in steps {
-                    output::println(&format!(
-                        "{:<2} {:<17} {:<15} {:<16} {}",
-                        st.seq,
-                        st.name,
-                        st.status,
-                        st.verdict.as_deref().unwrap_or("-"),
-                        st.evidence_path.as_deref().unwrap_or("")
-                    ));
-                }
-            }
-            Ok(ExitCode::SUCCESS)
-        }
-        LedgerCommand::Done { summary, unlanded } => {
-            done_cmd(ctx, store, &summary.join(" "), unlanded.as_deref())?;
-            Ok(ExitCode::SUCCESS)
-        }
-        LedgerCommand::Progress { text } => progress(ctx, &mut store, EventKind::Progress, &text),
-        LedgerCommand::Note { text } => progress(ctx, &mut store, EventKind::Note, &text),
-        LedgerCommand::Worker { command } => worker_cmd(ctx, &mut store, command),
-        LedgerCommand::Events { run, json: as_json } => {
-            let r = resolve_run(ctx, &store, &run)?;
-            let ev = status::events(store.conn(), "run_id", &r.run_id)?;
-            if as_json {
-                json(&ev)?;
-            } else {
-                for e in ev {
-                    output::println(&format!(
-                        "{} {:<12} {:<13} {}",
-                        e.at, e.actor, e.kind, e.text
-                    ));
-                }
-            }
-            Ok(ExitCode::SUCCESS)
-        }
-        LedgerCommand::Import {
-            dry_run,
-            json: as_json,
-        } => {
-            let git = Git::new(&ctx.bins.harness.git);
-            let r = import::import(&mut store, &git, &ctx.paths.state_root, dry_run)?;
-            if as_json {
-                json(&r)?;
-            } else {
-                output::println(&format!(
-                    "{}{} files: {} records copied ({} already there); {} workers, {} tasks, {} worktrees mapped; {} could not be mapped.",
-                    if r.dry_run { "Dry run, nothing kept. " } else { "" },
-                    r.files.len(),
-                    r.raw_added,
-                    r.raw_skipped,
-                    r.workers,
-                    r.tasks,
-                    r.worktrees,
-                    r.map_errors
-                ));
-                for (k, n) in &r.findings {
-                    output::println(&format!("  {k}: {n}"));
-                }
-                if !r.findings.is_empty() {
-                    output::println("Read them with: horch ledger unfinished");
-                }
-            }
-            Ok(ExitCode::SUCCESS)
-        }
-        LedgerCommand::Unfinished {
-            project,
-            json: as_json,
-        } => {
-            let root = match project.as_deref() {
-                Some("all") => None,
-                Some(p) => Some(PathBuf::from(p)),
-                None => Some(project_root(ctx)?),
-            };
-            let list = store.immediate(|tx| import::unfinished(tx, root.as_deref()))?;
-            if as_json {
-                json(&list)?;
-            } else if list.is_empty() {
-                output::println("No unfinished work.");
-            } else {
-                for f in &list {
-                    output::println(&format!(
-                        "F{} {} [{}]: {}",
-                        f.finding_id,
-                        f.kind,
-                        f.run.as_deref().unwrap_or("-"),
-                        f.detail
-                    ));
-                }
-                output::println("Reopen 1: horch ledger reopen <id> --file <ticket> --primary <persona>. Close 1: horch ledger dismiss <id> \"<reason>\"");
-            }
-            Ok(ExitCode::SUCCESS)
-        }
-        LedgerCommand::Reopen {
-            finding,
-            file,
-            primary,
-            fallback,
-            check,
-            run,
-        } => {
-            let root = project_root(ctx)?;
-            let cwd = ctx.paths.current_dir().unwrap_or_else(|_| root.clone());
-            let ticket = ticket_path(&root, &file, &cwd)?;
-            let r = resolve_run(ctx, &store, &run)?;
-            let f = import::get_finding(store.conn(), finding)?;
-            let mut t = NewTask::work(&ticket_title(&root.join(&ticket)), &ticket, &primary);
-            t.fallback = fallback;
-            t.land_check = check;
-            t.spec_ref = Some(format!("finding F{finding}"));
-            let task = store.immediate(|tx| {
-                let task = tasks::add(tx, &r, &t, Actor::Orchestrator)?;
-                import::decide(tx, finding, "requeued", "orchestrator", &task.task_id)?;
-                // The old worktree, when it is still on disk, is this task's now.
-                if let Some(wt) = &f.worktree_id {
-                    let w = finish::worktree(tx, wt)?;
-                    if Path::new(&w.path).exists() && w.status != "cleaned" {
-                        tx.execute(
-                            "UPDATE worktrees SET task_id = ?2, worker_id = NULL, status = 'open' WHERE worktree_id = ?1",
-                            [wt, &task.task_id],
-                        )?;
-                    }
-                }
-                Ok(task)
-            })?;
-            output::println(&format!(
-                "{} queued for {} from finding F{finding}.",
-                task.short(),
-                primary
-            ));
-            Ok(ExitCode::SUCCESS)
-        }
-        LedgerCommand::Dismiss {
-            finding,
+        WorktreeCommand::Drop {
+            name,
             reason,
-            cleanup,
-        } => {
-            let f = import::get_finding(store.conn(), finding)?;
-            if cleanup {
-                let Some(wt) = &f.worktree_id else {
-                    bail!("finding F{finding} has no recorded worktree; --cleanup removes only a recorded path");
-                };
-                let w = finish::worktree(store.conn(), wt)?;
-                let git = Git::new(&ctx.bins.harness.git);
-                let o = land::remove(&store, &git, &w, &w.base, None)?;
-                if !o.status.is_through() {
-                    bail!("{}", o.note);
-                }
-                output::println(&o.note);
-            }
-            import::decide(store.conn(), finding, "dismissed", "orchestrator", &reason)?;
-            output::println(&format!("Finding F{finding} dismissed."));
-            Ok(ExitCode::SUCCESS)
-        }
-        LedgerCommand::Watch {
-            run,
-            once,
-            force,
-            json: as_json,
-        } => {
-            let r = resolve_run(ctx, &store, &run)?;
-            super::taskledger_watch::watch(ctx, store, &r, once, force, as_json)
-        }
-        LedgerCommand::Stop {
-            worker,
-            reason,
-            run,
-            json: as_json,
-        } => {
-            let r = resolve_run(ctx, &store, &run)?;
-            let w = workers::resolve(store.conn(), &r.run_id, &worker)?;
-            let herdr = HerdrPanes::new(ctx);
-            let report = stop::stop_worker(
-                &mut store,
-                &w.worker_id,
-                StopRequester::Orchestrator,
-                &reason,
-                &herdr,
-                &stop::Os,
-                &stop::StopOptions {
-                    grace: stop_grace(),
-                    ..Default::default()
-                },
-            )?;
-            print_stop(&report, as_json)?;
-            if let Some(t) = &report.requeued {
-                super::taskledger_wake::nudge_startable(ctx, &store, &r);
-                eprintln!("horch ledger: {t} is queued again.");
-            }
-            Ok(ExitCode::SUCCESS)
-        }
-        LedgerCommand::Reap {
-            worker,
-            reason,
-            run,
-            json: as_json,
-        } => {
-            let r = resolve_run(ctx, &store, &run)?;
-            let w = workers::resolve(store.conn(), &r.run_id, &worker)?;
-            let herdr = HerdrPanes::new(ctx);
-            let report = stop::reap(
-                &mut store,
-                &w.worker_id,
-                StopRequester::Orchestrator,
-                &reason,
-                &herdr,
-                &stop::Os,
-                stop_grace(),
-            )?;
-            print_stop(&report.stop, as_json)?;
-            super::taskledger_wake::after_reap(ctx, &store, &r, &report);
-            Ok(ExitCode::SUCCESS)
+            keep_branch,
+        } => drop_worktree_cmd(store, &git, &wid, &name, &reason, keep_branch)?,
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+fn drop_worktree_cmd(
+    store: &mut Store,
+    git: &Git,
+    wid: &str,
+    name: &str,
+    reason: &str,
+    keep_branch: bool,
+) -> Result<()> {
+    let worker = workers::get(store.conn(), wid)?;
+    let run_id = worker.run_id.as_deref().context("worker has no run")?;
+    let wt =
+        taskledger::worktree_ops::drop_worktree(store, git, run_id, name, reason, keep_branch)?;
+    output::println(&format!("abandoned: {} ({reason})", wt.path));
+    Ok(())
+}
+
+fn finish_cmd(
+    ctx: &RuntimeContext,
+    store: &mut Store,
+    as_json: bool,
+    rereview: bool,
+) -> Result<ExitCode> {
+    let wid = worker_id(ctx)?;
+    answer_reviews_in(ctx, store, &wid)?;
+    let report = run_finish(ctx, store, &wid, rereview)?;
+    stop_superseded(ctx, store, &report.superseded_workers);
+    if !report.queued_reviews.is_empty() {
+        nudge_run_of(ctx, store, &wid)?;
+    }
+    print_finish(&report, as_json)
+}
+
+/// Start a new code-sweep round when asked, then run the finish steps.
+fn run_finish(
+    ctx: &RuntimeContext,
+    store: &mut Store,
+    wid: &str,
+    rereview: bool,
+) -> Result<finish::FinishReport> {
+    let mut tools = tools(ctx);
+    tools.reviewers_down = reviewers_down(ctx);
+    tools.codex.personas = codex_personas(ctx);
+    if rereview {
+        finish::rereview(store, &tools, wid)?;
+    }
+    finish::finish(store, &tools, wid)
+}
+
+/// finish answers a reviews-in notice: its mail and wait end.
+fn answer_reviews_in(ctx: &RuntimeContext, store: &Store, wid: &str) -> Result<()> {
+    if workers::waiting(store.conn(), wid)?
+        .iter()
+        .any(workers::holds_for_finish)
+    {
+        workers::clear_wait(store.conn(), wid, workers::REVIEWS_WAIT)?;
+    }
+    if let Some(role) = workers::get(store.conn(), wid)?.role {
+        super::messaging::ack_role_mail(ctx, &role);
+    }
+    Ok(())
+}
+
+/// Wake the orchestrator of the worker's run about the tasks that can start.
+fn nudge_run_of(ctx: &RuntimeContext, store: &Store, wid: &str) -> Result<()> {
+    let w = workers::get(store.conn(), wid)?;
+    if let Some(r) = &w.run_id {
+        let run = runs::get(store.conn(), r)?;
+        super::taskledger_wake::nudge_startable(ctx, store, &run);
+    }
+    Ok(())
+}
+
+/// Stop the reviewers whose review a new code-sweep round superseded.
+fn stop_superseded(ctx: &RuntimeContext, store: &mut Store, superseded: &[String]) {
+    for w in superseded {
+        let stopped = stop::stop_worker(
+            store,
+            w,
+            StopRequester::Watchdog,
+            "its review was superseded by a new code-sweep round",
+            &HerdrPanes::new(ctx),
+            &stop::Os,
+            &stop::StopOptions {
+                grace: stop_grace(),
+                ..Default::default()
+            },
+        );
+        if let Err(e) = stopped {
+            eprintln!("horch ledger: could not stop reviewer {w}: {e:#}");
         }
     }
+}
+
+/// Print the steps; the exit code is 1 while a step has not passed.
+fn print_finish(report: &finish::FinishReport, as_json: bool) -> Result<ExitCode> {
+    if as_json {
+        json(report)?;
+        return Ok(exit_of(report.complete));
+    }
+    for st in &report.steps {
+        output::println(&format!(
+            "{:<2} {:<17} {:<15} {}",
+            st.seq,
+            st.name,
+            st.status,
+            st.verdict.as_deref().unwrap_or("")
+        ));
+    }
+    output::println(&report.message);
+    Ok(exit_of(report.complete))
+}
+
+fn steps_cmd(
+    ctx: &RuntimeContext,
+    store: &Store,
+    task: Option<String>,
+    run: &RunArg,
+    as_json: bool,
+) -> Result<ExitCode> {
+    let (task_id, worker) = steps_target(ctx, store, task, run)?;
+    let steps = finish::steps_of(store.conn(), &task_id, &worker)?;
+    if as_json {
+        json(&steps)?;
+    } else {
+        print_steps(&steps);
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+fn print_steps(steps: &[finish::Step]) {
+    for st in steps {
+        output::println(&format!(
+            "{:<2} {:<17} {:<15} {:<16} {}",
+            st.seq,
+            st.name,
+            st.status,
+            st.verdict.as_deref().unwrap_or("-"),
+            st.evidence_path.as_deref().unwrap_or("")
+        ));
+    }
+}
+
+/// The task and worker whose steps to show: the named task's, else this
+/// worker's own.
+fn steps_target(
+    ctx: &RuntimeContext,
+    store: &Store,
+    task: Option<String>,
+    run: &RunArg,
+) -> Result<(String, String)> {
+    if let Some(key) = task {
+        return task_attempt(ctx, store, &key, run);
+    }
+    let wid = worker_id(ctx)?;
+    let w = workers::get(store.conn(), &wid)?;
+    Ok((w.task_id.context("this worker holds no task")?, wid))
+}
+
+/// A task's id and the worker of its current or last attempt.
+fn task_attempt(
+    ctx: &RuntimeContext,
+    store: &Store,
+    key: &str,
+    run: &RunArg,
+) -> Result<(String, String)> {
+    let r = resolve_run(ctx, store, run)?;
+    let t = tasks::resolve(store.conn(), &r.run_id, key)?;
+    let w = t
+        .current_worker_id
+        .clone()
+        .or_else(|| {
+            workers::attempts_at(store.conn(), &t.task_id)
+                .ok()
+                .and_then(|a| a.last().map(|w| w.worker_id.clone()))
+        })
+        .context("no attempt at this task yet")?;
+    Ok((t.task_id, w))
+}
+
+fn events_cmd(
+    ctx: &RuntimeContext,
+    store: &Store,
+    run: &RunArg,
+    as_json: bool,
+) -> Result<ExitCode> {
+    let r = resolve_run(ctx, store, run)?;
+    let ev = status::events(store.conn(), "run_id", &r.run_id)?;
+    if as_json {
+        json(&ev)?;
+    } else {
+        for e in ev {
+            output::println(&format!(
+                "{} {:<12} {:<13} {}",
+                e.at, e.actor, e.kind, e.text
+            ));
+        }
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+fn import_cmd(
+    ctx: &RuntimeContext,
+    store: &mut Store,
+    dry_run: bool,
+    as_json: bool,
+) -> Result<ExitCode> {
+    let git = Git::new(&ctx.bins.harness.git);
+    let r = import::import(store, &git, &ctx.paths.state_root, dry_run)?;
+    if as_json {
+        json(&r)?;
+        return Ok(ExitCode::SUCCESS);
+    }
+    output::println(&format!(
+        "{}{} files: {} records copied ({} already there); {} workers, {} tasks, {} worktrees mapped; {} could not be mapped.",
+        if r.dry_run { "Dry run, nothing kept. " } else { "" },
+        r.files.len(),
+        r.raw_added,
+        r.raw_skipped,
+        r.workers,
+        r.tasks,
+        r.worktrees,
+        r.map_errors
+    ));
+    for (k, n) in &r.findings {
+        output::println(&format!("  {k}: {n}"));
+    }
+    if !r.findings.is_empty() {
+        output::println("Read them with: horch ledger unfinished");
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+fn unfinished_cmd(
+    ctx: &RuntimeContext,
+    store: &mut Store,
+    project: Option<&str>,
+    as_json: bool,
+) -> Result<ExitCode> {
+    let root = match project {
+        Some("all") => None,
+        Some(p) => Some(PathBuf::from(p)),
+        None => Some(project_root(ctx)?),
+    };
+    let list = store.immediate(|tx| import::unfinished(tx, root.as_deref()))?;
+    if as_json {
+        json(&list)?;
+    } else {
+        print_unfinished(&list);
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+fn print_unfinished(list: &[import::Unfinished]) {
+    if list.is_empty() {
+        output::println("No unfinished work.");
+        return;
+    }
+    for f in list {
+        output::println(&format!(
+            "F{} {} [{}]: {}",
+            f.finding_id,
+            f.kind,
+            f.run.as_deref().unwrap_or("-"),
+            f.detail
+        ));
+    }
+    output::println("Reopen 1: horch ledger reopen <id> --file <ticket> --primary <persona>. Close 1: horch ledger dismiss <id> \"<reason>\"");
+}
+
+/// The ticket, persona and check of `horch ledger reopen`.
+struct ReopenTicket {
+    file: PathBuf,
+    primary: String,
+    fallback: Option<String>,
+    check: Option<String>,
+}
+
+/// The run, the new task and the finding that `reopen` works from.
+fn reopen_plan(
+    ctx: &RuntimeContext,
+    store: &Store,
+    finding: i64,
+    ticket: ReopenTicket,
+    run: &RunArg,
+) -> Result<(Run, NewTask, import::Unfinished)> {
+    let root = project_root(ctx)?;
+    let cwd = ctx.paths.current_dir().unwrap_or_else(|_| root.clone());
+    let path = ticket_path(&root, &ticket.file, &cwd)?;
+    let r = resolve_run(ctx, store, run)?;
+    let f = import::get_finding(store.conn(), finding)?;
+    let mut t = NewTask::work(&ticket_title(&root.join(&path)), &path, &ticket.primary);
+    t.fallback = ticket.fallback;
+    t.land_check = ticket.check;
+    t.spec_ref = Some(format!("finding F{finding}"));
+    Ok((r, t, f))
+}
+
+/// Queue the reopened task and close the finding; the finding's old
+/// worktree, when it is still on disk, becomes the task's.
+fn queue_reopened(
+    store: &mut Store,
+    run: &Run,
+    new: &NewTask,
+    finding: &import::Unfinished,
+) -> Result<tasks::Task> {
+    store.immediate(|tx| {
+        let task = tasks::add(tx, run, new, Actor::Orchestrator)?;
+        import::decide(tx, finding.finding_id, "requeued", "orchestrator", &task.task_id)?;
+        // The old worktree, when it is still on disk, is this task's now.
+        if let Some(wt) = &finding.worktree_id {
+            if reusable(&finish::worktree(tx, wt)?) {
+                tx.execute(
+                    "UPDATE worktrees SET task_id = ?2, worker_id = NULL, status = 'open' WHERE worktree_id = ?1",
+                    [wt, &task.task_id],
+                )?;
+            }
+        }
+        Ok(task)
+    })
+}
+
+fn reopen_cmd(
+    ctx: &RuntimeContext,
+    store: &mut Store,
+    finding: i64,
+    ticket: ReopenTicket,
+    run: &RunArg,
+) -> Result<ExitCode> {
+    let primary = ticket.primary.clone();
+    let (r, t, f) = reopen_plan(ctx, store, finding, ticket, run)?;
+    let task = queue_reopened(store, &r, &t, &f)?;
+    output::println(&format!(
+        "{} queued for {} from finding F{finding}.",
+        task.short(),
+        primary
+    ));
+    Ok(ExitCode::SUCCESS)
+}
+
+/// Whether a finding's old worktree is still on disk and not cleaned.
+fn reusable(w: &finish::WorktreeRow) -> bool {
+    Path::new(&w.path).exists() && w.status != "cleaned"
+}
+
+fn dismiss_cmd(
+    ctx: &RuntimeContext,
+    store: &Store,
+    finding: i64,
+    reason: &str,
+    cleanup: bool,
+) -> Result<ExitCode> {
+    let f = import::get_finding(store.conn(), finding)?;
+    if cleanup {
+        let Some(wt) = &f.worktree_id else {
+            bail!("finding F{finding} has no recorded worktree; --cleanup removes only a recorded path");
+        };
+        let w = finish::worktree(store.conn(), wt)?;
+        let git = Git::new(&ctx.bins.harness.git);
+        let o = land::remove(store, &git, &w, &w.base, None)?;
+        if !o.status.is_through() {
+            bail!("{}", o.note);
+        }
+        output::println(&o.note);
+    }
+    import::decide(store.conn(), finding, "dismissed", "orchestrator", reason)?;
+    output::println(&format!("Finding F{finding} dismissed."));
+    Ok(ExitCode::SUCCESS)
+}
+
+fn stop_cmd(
+    ctx: &RuntimeContext,
+    store: &mut Store,
+    worker: &str,
+    reason: &str,
+    run: &RunArg,
+    as_json: bool,
+) -> Result<ExitCode> {
+    let r = resolve_run(ctx, store, run)?;
+    let w = workers::resolve(store.conn(), &r.run_id, worker)?;
+    let herdr = HerdrPanes::new(ctx);
+    let report = stop::stop_worker(
+        store,
+        &w.worker_id,
+        StopRequester::Orchestrator,
+        reason,
+        &herdr,
+        &stop::Os,
+        &stop::StopOptions {
+            grace: stop_grace(),
+            ..Default::default()
+        },
+    )?;
+    print_stop(&report, as_json)?;
+    if let Some(t) = &report.requeued {
+        super::taskledger_wake::nudge_startable(ctx, store, &r);
+        eprintln!("horch ledger: {t} is queued again.");
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+fn reap_cmd(
+    ctx: &RuntimeContext,
+    store: &mut Store,
+    worker: &str,
+    reason: &str,
+    run: &RunArg,
+    as_json: bool,
+) -> Result<ExitCode> {
+    let r = resolve_run(ctx, store, run)?;
+    let w = workers::resolve(store.conn(), &r.run_id, worker)?;
+    let herdr = HerdrPanes::new(ctx);
+    let report = stop::reap(
+        store,
+        &w.worker_id,
+        StopRequester::Orchestrator,
+        reason,
+        &herdr,
+        &stop::Os,
+        stop_grace(),
+    )?;
+    print_stop(&report.stop, as_json)?;
+    super::taskledger_wake::after_reap(ctx, store, &r, &report);
+    Ok(ExitCode::SUCCESS)
 }
 
 /// A run created outside herdr has no workspace (#218). The first
@@ -1025,36 +1416,53 @@ fn adopt_workspace(ctx: &RuntimeContext, store: &Store, run: &Run) -> Result<()>
     Ok(())
 }
 
+/// Whether the project has no run, and nothing names one.
+fn no_runs_to_show(ctx: &RuntimeContext, store: &Store, arg: &RunArg) -> Result<bool> {
+    let explicit = arg.run.is_some() || std::env::var("HORCH_RUN_ID").is_ok_and(|v| !v.is_empty());
+    let all = runs::of_project(store.conn(), &project_root(ctx)?)?;
+    Ok(all.is_empty() && !explicit && worker_id_opt(ctx).is_none())
+}
+
+fn print_no_runs(as_json: bool) -> Result<ExitCode> {
+    if as_json {
+        json(&serde_json::json!({ "runs": [] }))?;
+    } else {
+        output::println("No runs.");
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+/// Print the board; the exit code is 1 while work remains.
+fn print_status(report: &status::Report, as_json: bool) -> Result<ExitCode> {
+    if as_json {
+        json(report)?;
+    } else {
+        output::print(&status::render(report));
+    }
+    Ok(exit_of(report.complete))
+}
+
+fn exit_of(complete: bool) -> ExitCode {
+    if complete {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::from(EXIT_NOT_COMPLETE)
+    }
+}
+
 fn status_cmd(
     ctx: &RuntimeContext,
     store: &Store,
     arg: &RunArg,
     as_json: bool,
 ) -> Result<ExitCode> {
-    let root = project_root(ctx)?;
-    let explicit = arg.run.is_some() || std::env::var("HORCH_RUN_ID").is_ok_and(|v| !v.is_empty());
-    let all = runs::of_project(store.conn(), &root)?;
-    if all.is_empty() && !explicit && worker_id_opt(ctx).is_none() {
-        if as_json {
-            json(&serde_json::json!({ "runs": [] }))?;
-        } else {
-            output::println("No runs.");
-        }
-        return Ok(ExitCode::SUCCESS);
+    if no_runs_to_show(ctx, store, arg)? {
+        return print_no_runs(as_json);
     }
     let run = resolve_run(ctx, store, arg)?;
     adopt_workspace(ctx, store, &run)?;
     let report = status::report(store.conn(), &run)?;
-    if as_json {
-        json(&report)?;
-    } else {
-        output::print(&status::render(&report));
-    }
-    Ok(if report.complete {
-        ExitCode::SUCCESS
-    } else {
-        ExitCode::from(EXIT_NOT_COMPLETE)
-    })
+    print_status(&report, as_json)
 }
 
 fn show(
@@ -1067,63 +1475,14 @@ fn show(
     let run = resolve_run(ctx, store, arg)?;
     let conn = store.conn();
     if let Ok(t) = tasks::resolve(conn, &run.run_id, key) {
-        let events = status::events(conn, "task_id", &t.task_id)?;
-        let attempts = workers::attempts_at(conn, &t.task_id)?;
-        let blockers = tasks::blockers(conn, &t.task_id)?;
-        let own = tasks::files(
-            conn,
-            &t.task_id,
-            horch_core::taskledger::model::FileMode::Own,
-        )?;
-        if as_json {
-            json(&serde_json::json!({
-                "task": t, "events": events, "attempts": attempts,
-                "blocked_by": blockers.iter().map(|b| b.short()).collect::<Vec<_>>(),
-                "own": own,
-            }))?;
-        } else {
-            output::println(&format!("{} {}: {}", t.short(), t.status, t.title));
-            output::println(&format!(
-                "Ticket: {}",
-                t.task_file.as_deref().unwrap_or("-")
-            ));
-            output::println(&format!(
-                "Persona: {} (primary {}, fallback {}).",
-                t.claimable_by.as_deref().unwrap_or("-"),
-                t.primary_persona.as_deref().unwrap_or("-"),
-                t.fallback_persona.as_deref().unwrap_or("-")
-            ));
-            if !blockers.is_empty() {
-                output::println(&format!(
-                    "Blocked by: {}",
-                    blockers
-                        .iter()
-                        .map(|b| format!("{} ({})", b.short(), b.status))
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                ));
-            }
-            for a in &attempts {
-                output::println(&format!(
-                    "Attempt {}: {} {}{}",
-                    a.attempt.unwrap_or(0),
-                    a.label(),
-                    a.status,
-                    a.end_reason
-                        .as_deref()
-                        .map(|r| format!(" ({r})"))
-                        .unwrap_or_default()
-                ));
-            }
-            for e in events {
-                output::println(&format!(
-                    "  {} {:<10} {:<13} {}",
-                    e.at, e.actor, e.kind, e.text
-                ));
-            }
-        }
-        return Ok(ExitCode::SUCCESS);
+        return show_task(store, &t, as_json);
     }
+    show_worker(store, &run, key, as_json)
+}
+
+/// A worker (id or role) with its events and stops.
+fn show_worker(store: &Store, run: &Run, key: &str, as_json: bool) -> Result<ExitCode> {
+    let conn = store.conn();
     let w = workers::resolve(conn, &run.run_id, key)
         .with_context(|| format!("'{key}' is neither a task nor a worker of run {}", run.slug))?;
     let events = status::events(conn, "worker_id", &w.worker_id)?;
@@ -1131,42 +1490,115 @@ fn show(
         let stops = status::stops(conn, &w.worker_id)?;
         json(&serde_json::json!({ "worker": w, "events": events, "stops": stops }))?;
     } else {
-        output::println(&format!(
-            "{} {} ({}), persona {}.",
-            w.label(),
-            w.status,
-            w.worker_id,
-            w.persona.as_deref().unwrap_or("-")
-        ));
-        output::println(&format!(
-            "Supervisor PID {} (start {}), agent PID {} (start {}), pane {}, host {}.",
-            opt(w.supervisor_pid),
-            opt(w.supervisor_started),
-            opt(w.agent_pid),
-            opt(w.agent_started),
-            w.pane_id.as_deref().unwrap_or("-"),
-            w.host.as_deref().unwrap_or("-")
-        ));
-        output::println(&format!(
-            "Session {}. Transcript {}.",
-            w.session_id.as_deref().unwrap_or("-"),
-            w.transcript_path.as_deref().unwrap_or("-")
-        ));
-        output::println(&format!(
-            "Last checkin {}. Last progress {} ({}). Stall rounds {}.",
-            w.last_checkin_at.as_deref().unwrap_or("-"),
-            w.last_progress_at.as_deref().unwrap_or("-"),
-            w.last_progress_source.as_deref().unwrap_or("-"),
-            w.stall_rounds
-        ));
-        for e in events {
-            output::println(&format!(
-                "  {} {:<10} {:<13} {}",
-                e.at, e.actor, e.kind, e.text
-            ));
-        }
+        print_worker(&w, &events);
     }
     Ok(ExitCode::SUCCESS)
+}
+
+/// A task with its events, attempts and blockers.
+fn show_task(store: &Store, t: &tasks::Task, as_json: bool) -> Result<ExitCode> {
+    let conn = store.conn();
+    let events = status::events(conn, "task_id", &t.task_id)?;
+    let attempts = workers::attempts_at(conn, &t.task_id)?;
+    let blockers = tasks::blockers(conn, &t.task_id)?;
+    if as_json {
+        let own = tasks::files(
+            conn,
+            &t.task_id,
+            horch_core::taskledger::model::FileMode::Own,
+        )?;
+        json(&serde_json::json!({
+            "task": t, "events": events, "attempts": attempts,
+            "blocked_by": blockers.iter().map(|b| b.short()).collect::<Vec<_>>(),
+            "own": own,
+        }))?;
+    } else {
+        print_task(t, &blockers, &attempts, &events);
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+fn print_task(
+    t: &tasks::Task,
+    blockers: &[tasks::Task],
+    attempts: &[workers::Worker],
+    events: &[status::EventLine],
+) {
+    output::println(&format!("{} {}: {}", t.short(), t.status, t.title));
+    output::println(&format!(
+        "Ticket: {}",
+        t.task_file.as_deref().unwrap_or("-")
+    ));
+    output::println(&format!(
+        "Persona: {} (primary {}, fallback {}).",
+        t.claimable_by.as_deref().unwrap_or("-"),
+        t.primary_persona.as_deref().unwrap_or("-"),
+        t.fallback_persona.as_deref().unwrap_or("-")
+    ));
+    if !blockers.is_empty() {
+        output::println(&format!(
+            "Blocked by: {}",
+            blockers
+                .iter()
+                .map(|b| format!("{} ({})", b.short(), b.status))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
+    }
+    for a in attempts {
+        output::println(&format!(
+            "Attempt {}: {} {}{}",
+            a.attempt.unwrap_or(0),
+            a.label(),
+            a.status,
+            a.end_reason
+                .as_deref()
+                .map(|r| format!(" ({r})"))
+                .unwrap_or_default()
+        ));
+    }
+    print_events(events);
+}
+
+fn print_events(events: &[status::EventLine]) {
+    for e in events {
+        output::println(&format!(
+            "  {} {:<10} {:<13} {}",
+            e.at, e.actor, e.kind, e.text
+        ));
+    }
+}
+
+fn print_worker(w: &workers::Worker, events: &[status::EventLine]) {
+    output::println(&format!(
+        "{} {} ({}), persona {}.",
+        w.label(),
+        w.status,
+        w.worker_id,
+        w.persona.as_deref().unwrap_or("-")
+    ));
+    output::println(&format!(
+        "Supervisor PID {} (start {}), agent PID {} (start {}), pane {}, host {}.",
+        opt(w.supervisor_pid),
+        opt(w.supervisor_started),
+        opt(w.agent_pid),
+        opt(w.agent_started),
+        w.pane_id.as_deref().unwrap_or("-"),
+        w.host.as_deref().unwrap_or("-")
+    ));
+    output::println(&format!(
+        "Session {}. Transcript {}.",
+        w.session_id.as_deref().unwrap_or("-"),
+        w.transcript_path.as_deref().unwrap_or("-")
+    ));
+    output::println(&format!(
+        "Last checkin {}. Last progress {} ({}). Stall rounds {}.",
+        w.last_checkin_at.as_deref().unwrap_or("-"),
+        w.last_progress_at.as_deref().unwrap_or("-"),
+        w.last_progress_source.as_deref().unwrap_or("-"),
+        w.stall_rounds
+    ));
+    print_events(events);
 }
 
 /// The grace between TERM and KILL: 10 s, or `HORCH_STOP_GRACE_MS`.
@@ -1228,149 +1660,187 @@ fn opt(v: Option<i64>) -> String {
 fn run_cmd(ctx: &RuntimeContext, store: &mut Store, command: RunCommand) -> Result<ExitCode> {
     let root = project_root(ctx)?;
     match command {
-        RunCommand::Close { run, abandon } => {
-            let r = resolve_run(ctx, store, &run)?;
-            let closed = store.immediate(|tx| runs::close_run(tx, &r, abandon.as_deref()))?;
-            for (task, holder) in &closed.cancelled {
-                match holder {
-                    Some(w) => output::println(&format!(
-                        "{task} cancelled. Its worker {w} may still run: horch ledger stop {w} \"run abandoned\" --run {}",
-                        r.slug
-                    )),
-                    None => output::println(&format!("{task} cancelled.")),
-                }
-            }
-            output::println(&format!("Run {} closed as {}.", r.slug, closed.status));
-            Ok(ExitCode::SUCCESS)
-        }
-        RunCommand::List { json: as_json } => {
-            let all = runs::of_project(store.conn(), &root)?;
-            if as_json {
-                json(&all)?;
-            } else if all.is_empty() {
-                output::println("No runs.");
-            } else {
-                for r in all {
-                    output::println(&format!(
-                        "{} {} {} -> {} ({})",
-                        r.slug,
-                        r.status,
-                        r.run_branch.as_deref().unwrap_or("-"),
-                        r.base_branch.as_deref().unwrap_or("-"),
-                        r.run_id
-                    ));
-                }
-            }
-            Ok(ExitCode::SUCCESS)
-        }
-        RunCommand::New {
-            slug,
-            branch,
-            base,
-            remote,
-            steps,
-            check_every,
-            stall_rounds,
-            heartbeat_every,
-            heartbeat_stale,
-            timer_tolerance,
-            max_attempts,
-        } => {
-            let steps: Vec<StepName> = steps
-                .iter()
-                .filter(|s| !s.is_empty())
-                .map(|s| StepName::parse(s))
-                .collect::<Result<_>>()?;
-            let git = Git::new(&ctx.bins.harness.git);
-            let is_repo = git.main_root(&root).is_some();
-            let run_branch = branch.unwrap_or_else(|| format!("fleet/{slug}"));
-            let base = base.or_else(|| is_repo.then(|| git.current_branch(&root)).flatten());
-            let remote = remote.or_else(|| {
-                (is_repo && git.has_remote(&root, "origin")).then(|| "origin".to_string())
-            });
-            if is_repo {
-                let Some(base) = &base else {
-                    bail!(
-                        "the project has no branch checked out; name the main branch with --base"
-                    );
-                };
-                if !git.branch_exists(&root, &run_branch) {
-                    git.run(&root, &["branch", &run_branch, base])?;
-                    eprintln!("horch ledger: created run branch {run_branch} from {base}.");
-                } else if !git.is_ancestor(&root, base, &run_branch) {
-                    // An earlier run's branch: tasks would land on old code.
-                    bail!(
-                        "branch {run_branch} exists and lacks commits of {base}. Delete it \
-                         (git branch -D {run_branch}) or name another with --branch"
-                    );
-                }
-                if let Some(remote) = &remote {
-                    let out =
-                        git.try_run(&root, &["push", "--set-upstream", remote, &run_branch])?;
-                    if !out.ok {
-                        eprintln!(
-                            "horch ledger: warning: could not push {run_branch} to {remote}: {}",
-                            out.stderr
-                        );
-                    }
-                }
-            }
-            let new = NewRun {
-                slug,
-                workspace_id: ctx.herdr.workspace.as_ref().map(|w| w.as_str().to_string()),
-                base_branch: base,
-                run_branch: is_repo.then_some(run_branch),
-                remote,
-                finish_steps: steps,
-                thresholds: runs::Thresholds {
-                    check_every_s: check_every,
-                    stall_rounds,
-                    heartbeat_every_s: heartbeat_every,
-                    heartbeat_stale_s: heartbeat_stale,
-                    timer_tolerance_s: timer_tolerance,
-                    max_attempts,
-                },
-            };
-            let pane = ctx.herdr.pane.as_ref().map(|p| p.as_str().to_string());
-            let r = store.immediate(|tx| {
-                let r = runs::create(tx, &root, &new)?;
-                // The orchestrator's own row: the pane it runs in. It is
-                // never watched for progress (section 9).
-                let id = workers::insert(
-                    tx,
-                    &NewWorker {
-                        run_id: r.run_id.clone(),
-                        kind: Some(WorkerKind::Orchestrator),
-                        persona: "orchestrator".into(),
-                        role: Some("orchestrator".into()),
-                        workspace_id: new.workspace_id.clone(),
-                        pane_id: pane.clone(),
-                        ..Default::default()
-                    },
-                )?;
-                tx.execute(
-                    "UPDATE workers SET status = 'working', started_at = spawned_at WHERE worker_id = ?1",
-                    [&id],
-                )?;
-                runs::set_orchestrator(tx, &r.run_id, &id)?;
-                runs::get(tx, &r.run_id)
-            })?;
-            output::println(&format!(
-                "Run {} created ({}). Run branch: {}. Finish steps: {}.",
-                r.slug,
-                r.run_id,
-                r.run_branch.as_deref().unwrap_or("(no git repository)"),
-                r.finish_steps.join(", ")
-            ));
-            if r.workspace_id.is_none() {
-                eprintln!(
-                    "horch ledger: warning: run {} has no workspace, because this command ran outside a herdr pane. Wakes go only to an orchestrator that runs a ledger command from its pane. Run horch ledger plan-workers in the orchestrator pane to record its workspace.",
-                    r.slug
-                );
-            }
-            Ok(ExitCode::SUCCESS)
+        RunCommand::Close { run, abandon } => close_run_cmd(ctx, store, &run, abandon.as_deref()),
+        RunCommand::List { json: as_json } => list_runs(store, &root, as_json),
+        RunCommand::New(args) => new_run_cmd(ctx, store, &root, args),
+    }
+}
+
+fn close_run_cmd(
+    ctx: &RuntimeContext,
+    store: &mut Store,
+    run: &RunArg,
+    abandon: Option<&str>,
+) -> Result<ExitCode> {
+    let r = resolve_run(ctx, store, run)?;
+    let closed = store.immediate(|tx| runs::close_run(tx, &r, abandon))?;
+    for (task, holder) in &closed.cancelled {
+        match holder {
+            Some(w) => output::println(&format!(
+                "{task} cancelled. Its worker {w} may still run: horch ledger stop {w} \"run abandoned\" --run {}",
+                r.slug
+            )),
+            None => output::println(&format!("{task} cancelled.")),
         }
     }
+    output::println(&format!("Run {} closed as {}.", r.slug, closed.status));
+    Ok(ExitCode::SUCCESS)
+}
+
+fn list_runs(store: &Store, root: &Path, as_json: bool) -> Result<ExitCode> {
+    let all = runs::of_project(store.conn(), root)?;
+    if as_json {
+        json(&all)?;
+        return Ok(ExitCode::SUCCESS);
+    }
+    if all.is_empty() {
+        output::println("No runs.");
+    }
+    for r in &all {
+        output::println(&format!(
+            "{} {} {} -> {} ({})",
+            r.slug,
+            r.status,
+            r.run_branch.as_deref().unwrap_or("-"),
+            r.base_branch.as_deref().unwrap_or("-"),
+            r.run_id
+        ));
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+fn new_run_cmd(
+    ctx: &RuntimeContext,
+    store: &mut Store,
+    root: &Path,
+    a: NewRunArgs,
+) -> Result<ExitCode> {
+    let steps = parse_steps(&a.steps)?;
+    let git = Git::new(&ctx.bins.harness.git);
+    let is_repo = git.main_root(root).is_some();
+    let (run_branch, base, remote) = default_branches(&git, root, is_repo, &a);
+    if is_repo {
+        run_branches(&git, root, &run_branch, base.as_deref(), remote.as_deref())?;
+    }
+    let new = NewRun {
+        slug: a.slug.clone(),
+        workspace_id: ctx.herdr.workspace.as_ref().map(|w| w.as_str().to_string()),
+        base_branch: base,
+        run_branch: is_repo.then_some(run_branch),
+        remote,
+        finish_steps: steps,
+        thresholds: runs::Thresholds {
+            check_every_s: a.check_every,
+            stall_rounds: a.stall_rounds,
+            heartbeat_every_s: a.heartbeat_every,
+            heartbeat_stale_s: a.heartbeat_stale,
+            timer_tolerance_s: a.timer_tolerance,
+            max_attempts: a.max_attempts,
+        },
+    };
+    let r = insert_run(ctx, store, root, &new)?;
+    report_created(&r);
+    Ok(ExitCode::SUCCESS)
+}
+
+fn parse_steps(steps: &[String]) -> Result<Vec<StepName>> {
+    steps
+        .iter()
+        .filter(|s| !s.is_empty())
+        .map(|s| StepName::parse(s))
+        .collect()
+}
+
+/// The run branch, base and remote: as named, else `fleet/<slug>`, the
+/// branch checked out, and `origin` when it exists.
+fn default_branches(
+    git: &Git,
+    root: &Path,
+    is_repo: bool,
+    a: &NewRunArgs,
+) -> (String, Option<String>, Option<String>) {
+    let run_branch = (a.branch.clone()).unwrap_or_else(|| format!("fleet/{}", a.slug));
+    let base = (a.base.clone()).or_else(|| is_repo.then(|| git.current_branch(root)).flatten());
+    let remote = (a.remote.clone())
+        .or_else(|| (is_repo && git.has_remote(root, "origin")).then(|| "origin".to_string()));
+    (run_branch, base, remote)
+}
+
+fn report_created(r: &Run) {
+    output::println(&format!(
+        "Run {} created ({}). Run branch: {}. Finish steps: {}.",
+        r.slug,
+        r.run_id,
+        r.run_branch.as_deref().unwrap_or("(no git repository)"),
+        r.finish_steps.join(", ")
+    ));
+    if r.workspace_id.is_none() {
+        eprintln!(
+            "horch ledger: warning: run {} has no workspace, because this command ran outside a herdr pane. Wakes go only to an orchestrator that runs a ledger command from its pane. Run horch ledger plan-workers in the orchestrator pane to record its workspace.",
+            r.slug
+        );
+    }
+}
+
+/// Create the run branch from `base` when it is missing, refuse an old
+/// branch that lacks the base's commits, and push it to the remote.
+fn run_branches(
+    git: &Git,
+    root: &Path,
+    run_branch: &str,
+    base: Option<&str>,
+    remote: Option<&str>,
+) -> Result<()> {
+    let Some(base) = base else {
+        bail!("the project has no branch checked out; name the main branch with --base");
+    };
+    if !git.branch_exists(root, run_branch) {
+        git.run(root, &["branch", run_branch, base])?;
+        eprintln!("horch ledger: created run branch {run_branch} from {base}.");
+    } else if !git.is_ancestor(root, base, run_branch) {
+        // An earlier run's branch: tasks would land on old code.
+        bail!(
+            "branch {run_branch} exists and lacks commits of {base}. Delete it \
+             (git branch -D {run_branch}) or name another with --branch"
+        );
+    }
+    if let Some(remote) = remote {
+        let out = git.try_run(root, &["push", "--set-upstream", remote, run_branch])?;
+        if !out.ok {
+            eprintln!(
+                "horch ledger: warning: could not push {run_branch} to {remote}: {}",
+                out.stderr
+            );
+        }
+    }
+    Ok(())
+}
+
+/// Insert the run and the orchestrator's own row: the pane it runs in. It is
+/// never watched for progress (section 9).
+fn insert_run(ctx: &RuntimeContext, store: &mut Store, root: &Path, new: &NewRun) -> Result<Run> {
+    let pane = ctx.herdr.pane.as_ref().map(|p| p.as_str().to_string());
+    store.immediate(|tx| {
+        let r = runs::create(tx, root, new)?;
+        let id = workers::insert(
+            tx,
+            &NewWorker {
+                run_id: r.run_id.clone(),
+                kind: Some(WorkerKind::Orchestrator),
+                persona: "orchestrator".into(),
+                role: Some("orchestrator".into()),
+                workspace_id: new.workspace_id.clone(),
+                pane_id: pane.clone(),
+                ..Default::default()
+            },
+        )?;
+        tx.execute(
+            "UPDATE workers SET status = 'working', started_at = spawned_at WHERE worker_id = ?1",
+            [&id],
+        )?;
+        runs::set_orchestrator(tx, &r.run_id, &id)?;
+        runs::get(tx, &r.run_id)
+    })
 }
 
 /// The ticket's first heading, or its file stem.
@@ -1687,29 +2157,34 @@ fn local_marketplaces(data_root: &Path) -> Vec<PathBuf> {
 /// The first directory under `roots` (at most 10 levels down) that `want`
 /// accepts.
 fn find_dir(roots: &[PathBuf], want: impl Fn(&Path) -> bool) -> Option<PathBuf> {
-    fn walk(dir: &Path, depth: usize, want: &dyn Fn(&Path) -> bool) -> Option<PathBuf> {
-        if depth > 10 {
-            return None;
-        }
-        let rd = std::fs::read_dir(dir).ok()?;
-        let mut subs: Vec<PathBuf> = rd
-            .flatten()
-            .filter(|e| e.file_type().is_ok_and(|t| t.is_dir()))
-            .map(|e| e.path())
-            .filter(|p| {
-                !p.file_name()
-                    .is_some_and(|n| n == "node_modules" || n == ".git")
-            })
-            .collect();
-        subs.sort();
-        for p in &subs {
-            if want(p) {
-                return Some(p.clone());
-            }
-        }
-        subs.into_iter().find_map(|p| walk(&p, depth + 1, want))
-    }
     roots.iter().find_map(|r| walk(r, 0, &want))
+}
+
+fn walk(dir: &Path, depth: usize, want: &dyn Fn(&Path) -> bool) -> Option<PathBuf> {
+    if depth > 10 {
+        return None;
+    }
+    let subs = sorted_subdirs(dir)?;
+    subs.iter()
+        .find(|p| want(p))
+        .cloned()
+        .or_else(|| subs.into_iter().find_map(|p| walk(&p, depth + 1, want)))
+}
+
+/// The directories under `dir`, sorted, but not `node_modules` or `.git`.
+fn sorted_subdirs(dir: &Path) -> Option<Vec<PathBuf>> {
+    let mut subs: Vec<PathBuf> = std::fs::read_dir(dir)
+        .ok()?
+        .flatten()
+        .filter(|e| e.file_type().is_ok_and(|t| t.is_dir()))
+        .map(|e| e.path())
+        .filter(|p| {
+            !p.file_name()
+                .is_some_and(|n| n == "node_modules" || n == ".git")
+        })
+        .collect();
+    subs.sort();
+    Some(subs)
 }
 
 /// `horch ledger done` (and `horch done` from a ledger worker): record the
@@ -1724,11 +2199,7 @@ pub fn done_cmd(
     let wid = worker_id(ctx)?;
     // The report to the orchestrator and the pane close: `horch done`'s
     // machinery, when this runs in a worker pane.
-    let in_pane = ctx.herdr.pane.is_some()
-        && ctx
-            .worker
-            .as_ref()
-            .is_some_and(|w| w.record_id.is_some() && w.role.is_some());
+    let in_pane = in_worker_pane(ctx);
     // One push budget for the wakes and the report, inside the agent's
     // command timeout (#67).
     let budget = delivery::start_push_budget(delivery::DONE_PUSH_BUDGET);
@@ -1744,58 +2215,9 @@ pub fn done_cmd(
         if woken.replace(true) {
             return;
         }
-        if let Some((parent, Some(role))) = &c.reviews_in_for {
-            let line =
-                format!("[horch] NOTE: The reviews of {parent} are in. Run horch ledger finish.");
-            // The author waits for this line until it runs finish (#177).
-            if let Err(e) = hold_for_finish(&store, &c.task_id) {
-                eprintln!("horch ledger: could not record the wait of {role}: {e:#}");
-            }
-            let told = match super::messaging::tell_as(ctx, Some("horch".into()), role, &line) {
-                Ok(ReportStatus::Delivered) => Ok(()),
-                Ok(ReportStatus::Queued(cause)) => Err(anyhow::anyhow!(
-                    "{cause}; the courier types it when the pane is idle"
-                )),
-                Err(e) => Err(e),
-            };
-            if let Err(e) = told {
-                eprintln!("horch ledger: could not tell {role}: {e:#}");
-                // A retried done skips the tell, so the orchestrator gets it
-                // as durable mail too.
-                super::taskledger_wake::wake(
-                    ctx,
-                    &store,
-                    &run,
-                    &format!(
-                        "NOTE: The reviews of {parent} are in, but {role} was not told. \
-                         Tell {role} to run horch ledger finish."
-                    ),
-                );
-            }
-        }
-        if c.unlanded {
-            // The task is already done here, so a read error only costs the wake.
-            match tasks::dependents(store.conn(), &c.task_id) {
-                Ok(waiting) => super::taskledger_wake::cancelled_dependents(
-                    ctx, &store, &run, &c.task, &waiting,
-                ),
-                Err(e) => eprintln!(
-                    "horch ledger: could not read the tasks that wait on {}: {e:#}",
-                    c.task
-                ),
-            }
-        }
-        super::taskledger_wake::after_done(ctx, &store, &run);
+        wake_after_done(ctx, &store, &run, &c);
     };
-    output::println(&format!(
-        "{} {}.",
-        c.task,
-        if c.unlanded {
-            "parked as UNLANDED"
-        } else {
-            "done"
-        }
-    ));
+    output::println(&done_line(&c));
     if !in_pane {
         wake();
         return Ok(());
@@ -1804,6 +2226,90 @@ pub fn done_cmd(
     // A `done` that stopped before the record, or a retry, ran no wake.
     wake();
     done
+}
+
+/// Whether `horch done`'s report and pane close run: in a herdr pane of a
+/// worker with a record and a role.
+fn in_worker_pane(ctx: &RuntimeContext) -> bool {
+    ctx.herdr.pane.is_some()
+        && ctx
+            .worker
+            .as_ref()
+            .is_some_and(|w| w.record_id.is_some() && w.role.is_some())
+}
+
+/// The wakes of a finished task: the author of a reviewed task, the tasks a
+/// parked one cancels, and the orchestrator.
+fn wake_after_done(ctx: &RuntimeContext, store: &Store, run: &Run, c: &finish::Completed) {
+    if let Some((parent, Some(role))) = &c.reviews_in_for {
+        tell_reviews_in(ctx, store, run, &c.task_id, parent, role);
+    }
+    if c.unlanded {
+        wake_unlanded(ctx, store, run, c);
+    }
+    super::taskledger_wake::after_done(ctx, store, run);
+}
+
+/// The line `done` prints for the finished task.
+fn done_line(c: &finish::Completed) -> String {
+    let what = if c.unlanded {
+        "parked as UNLANDED"
+    } else {
+        "done"
+    };
+    format!("{} {what}.", c.task)
+}
+
+/// The last review of `parent` is in: tell its author to run finish, and
+/// wake the orchestrator when the tell fails.
+fn tell_reviews_in(
+    ctx: &RuntimeContext,
+    store: &Store,
+    run: &Run,
+    review_task_id: &str,
+    parent: &str,
+    role: &str,
+) {
+    let line = format!("[horch] NOTE: The reviews of {parent} are in. Run horch ledger finish.");
+    // The author waits for this line until it runs finish (#177).
+    if let Err(e) = hold_for_finish(store, review_task_id) {
+        eprintln!("horch ledger: could not record the wait of {role}: {e:#}");
+    }
+    let told = match super::messaging::tell_as(ctx, Some("horch".into()), role, &line) {
+        Ok(ReportStatus::Delivered) => Ok(()),
+        Ok(ReportStatus::Queued(cause)) => Err(anyhow::anyhow!(
+            "{cause}; the courier types it when the pane is idle"
+        )),
+        Err(e) => Err(e),
+    };
+    if let Err(e) = told {
+        eprintln!("horch ledger: could not tell {role}: {e:#}");
+        // A retried done skips the tell, so the orchestrator gets it
+        // as durable mail too.
+        super::taskledger_wake::wake(
+            ctx,
+            store,
+            run,
+            &format!(
+                "NOTE: The reviews of {parent} are in, but {role} was not told. \
+                 Tell {role} to run horch ledger finish."
+            ),
+        );
+    }
+}
+
+/// A parked task cancels what waited on it: wake on those tasks.
+fn wake_unlanded(ctx: &RuntimeContext, store: &Store, run: &Run, c: &finish::Completed) {
+    // The task is already done here, so a read error only costs the wake.
+    match tasks::dependents(store.conn(), &c.task_id) {
+        Ok(waiting) => {
+            super::taskledger_wake::cancelled_dependents(ctx, store, run, &c.task, &waiting)
+        }
+        Err(e) => eprintln!(
+            "horch ledger: could not read the tasks that wait on {}: {e:#}",
+            c.task
+        ),
+    }
 }
 
 /// After the last review of a task: the author holds its reviewers wait
@@ -1872,6 +2378,22 @@ pub fn render_claim(c: &Claimed) -> String {
         out.push_str("This is a review task. Write your findings file as the ticket says, then run: horch ledger done \"<summary>\"\n");
         return out;
     }
+    render_workplace(c, &mut out);
+    if let Some(from) = &c.reopened_from {
+        out.push_str(&format!(
+            "Reopened from unfinished past work:\n    {from}\nUse what you can of it. Read each earlier transcript in chunks first.\n"
+        ));
+    }
+    render_prior(&c.prior, &mut out);
+    out.push_str("Record milestones with: horch ledger progress \"<text>\"\n");
+    out.push_str("When the work is complete, run: horch ledger finish\n");
+    out
+}
+
+/// Where the worker works: an earlier attempt's worktree, a new one, or the
+/// shared checkout.
+fn render_workplace(c: &Claimed, out: &mut String) {
+    let t = &c.task;
     match (&c.worktree, t.uses_worktree()) {
         (Some(path), _) => {
             out.push_str(&format!(
@@ -1896,34 +2418,31 @@ pub fn render_claim(c: &Claimed) -> String {
         )),
         (None, false) => out.push_str("Work in the shared checkout.\n"),
     }
-    if let Some(from) = &c.reopened_from {
+}
+
+/// The earlier attempts at the task, oldest first.
+fn render_prior(prior: &[tasks::PriorAttempt], out: &mut String) {
+    if prior.is_empty() {
+        return;
+    }
+    out.push_str("Earlier attempts, oldest first:\n");
+    for p in prior {
         out.push_str(&format!(
-            "Reopened from unfinished past work:\n    {from}\nUse what you can of it. Read each earlier transcript in chunks first.\n"
+            "  Attempt {} by {}: {}{}.\n    Summary: {}\n    Transcript: {}\n",
+            p.attempt.unwrap_or(0),
+            p.role.as_deref().unwrap_or(&p.worker_id),
+            p.status,
+            p.end_reason
+                .as_deref()
+                .map(|r| format!(" ({r})"))
+                .unwrap_or_default(),
+            p.summary.as_deref().unwrap_or("(none)"),
+            p.transcript_path.as_deref().unwrap_or("(unknown)")
         ));
     }
-    if !c.prior.is_empty() {
-        out.push_str("Earlier attempts, oldest first:\n");
-        for p in &c.prior {
-            out.push_str(&format!(
-                "  Attempt {} by {}: {}{}.\n    Summary: {}\n    Transcript: {}\n",
-                p.attempt.unwrap_or(0),
-                p.role.as_deref().unwrap_or(&p.worker_id),
-                p.status,
-                p.end_reason
-                    .as_deref()
-                    .map(|r| format!(" ({r})"))
-                    .unwrap_or_default(),
-                p.summary.as_deref().unwrap_or("(none)"),
-                p.transcript_path.as_deref().unwrap_or("(unknown)")
-            ));
-        }
-        out.push_str(
-            "Use what you can of the earlier work. Before you continue, read each earlier transcript in chunks to learn what went wrong.\n",
-        );
-    }
-    out.push_str("Record milestones with: horch ledger progress \"<text>\"\n");
-    out.push_str("When the work is complete, run: horch ledger finish\n");
-    out
+    out.push_str(
+        "Use what you can of the earlier work. Before you continue, read each earlier transcript in chunks to learn what went wrong.\n",
+    );
 }
 
 /// A short branch-safe name from a title.
@@ -1988,46 +2507,60 @@ fn worker_cmd(ctx: &RuntimeContext, store: &mut Store, command: WorkerCommand) -
             replaces,
             pane,
             run,
-        } => {
-            let r = resolve_run(ctx, store, &run)?;
-            let id = store.immediate(|tx| {
-                workers::insert(
-                    tx,
-                    &NewWorker {
-                        run_id: r.run_id.clone(),
-                        kind: Some(WorkerKind::Worker),
-                        persona,
-                        role,
-                        previous_worker_id: replaces,
-                        pane_id: pane,
-                        ..Default::default()
-                    },
-                )
-            })?;
-            output::println(&id);
-        }
+        } => new_worker(ctx, store, persona, role, replaces, pane, &run),
         WorkerCommand::Pid {
             worker,
             supervisor,
             agent,
-        } => {
-            store.immediate(|tx| {
-                if let Some(pid) = supervisor {
-                    workers::supervisor_started(
-                        tx,
-                        &worker,
-                        pid,
-                        horch_core::procid::start_time(pid),
-                    )?;
-                }
-                if let Some(pid) = agent {
-                    workers::agent_started(tx, &worker, pid, horch_core::procid::start_time(pid))?;
-                }
-                Ok(())
-            })?;
-        }
+        } => record_pids(store, &worker, supervisor, agent),
     }
+}
+
+/// Insert a worker row and print its id.
+fn new_worker(
+    ctx: &RuntimeContext,
+    store: &mut Store,
+    persona: String,
+    role: Option<String>,
+    replaces: Option<String>,
+    pane: Option<String>,
+    run: &RunArg,
+) -> Result<ExitCode> {
+    let r = resolve_run(ctx, store, run)?;
+    let id = store.immediate(|tx| {
+        workers::insert(
+            tx,
+            &NewWorker {
+                run_id: r.run_id.clone(),
+                kind: Some(WorkerKind::Worker),
+                persona,
+                role,
+                previous_worker_id: replaces,
+                pane_id: pane,
+                ..Default::default()
+            },
+        )
+    })?;
+    output::println(&id);
     Ok(ExitCode::SUCCESS)
+}
+
+/// Record the PIDs of a worker's supervisor and agent.
+fn record_pids(
+    store: &mut Store,
+    worker: &str,
+    supervisor: Option<u32>,
+    agent: Option<u32>,
+) -> Result<ExitCode> {
+    store.immediate(|tx| {
+        if let Some(pid) = supervisor {
+            workers::supervisor_started(tx, worker, pid, horch_core::procid::start_time(pid))?;
+        }
+        if let Some(pid) = agent {
+            workers::agent_started(tx, worker, pid, horch_core::procid::start_time(pid))?;
+        }
+        Ok(ExitCode::SUCCESS)
+    })
 }
 
 #[cfg(test)]

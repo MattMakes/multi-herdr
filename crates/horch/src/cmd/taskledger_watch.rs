@@ -6,7 +6,7 @@ use std::process::ExitCode;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
-use anyhow::{bail, Result};
+use anyhow::{bail, ensure, Result};
 use horch_core::exeid::exe_identity;
 use horch_core::runtime::RuntimeContext;
 use horch_core::taskledger::finish::land;
@@ -134,40 +134,7 @@ fn pass(
         horch_core::messaging::delivery::DONE_PUSH_BUDGET,
     );
     for c in &checked {
-        let who = c.role.as_deref().unwrap_or(&c.worker_id);
-        let on = c.task.as_deref().unwrap_or("its task");
-        match c.verdict.as_str() {
-            "dead" => {
-                let panes = HerdrPanes::new(ctx);
-                match stop::reap(store, &c.worker_id, StopRequester::Watchdog, &c.note, &panes, &stop::Os, stop_grace()) {
-                    Ok(report) => taskledger_wake::after_reap(ctx, store, run, &report),
-                    Err(e) => eprintln!("horch ledger watch: reaping {who} failed: {e:#}"),
-                }
-            }
-            "no_progress" if c.first_stall => taskledger_wake::wake(
-                ctx,
-                store,
-                run,
-                &format!(
-                    "NOTE: {who} on {on} shows no progress ({}). Ask it for an update: horch tell {who} \"[orchestrator] QUESTION: What is your status?\"",
-                    c.note
-                ),
-            ),
-            "suspect" => taskledger_wake::wake(
-                ctx,
-                store,
-                run,
-                &format!(
-                    "NOTE: {who} on {on} may be stuck in pane {}: {}. The watchdog reaps it at the next check unless something else moves.",
-                    c.pane_id.as_deref().unwrap_or("unknown"),
-                    c.note
-                ),
-            ),
-            "progress" | "proxy_checkin" if c.changed => {
-                // Back to normal after a stall: nothing to do, no wake.
-            }
-            _ => {}
-        }
+        act_on(ctx, store, run, c);
     }
     taskledger_wake::after_watch(ctx, store, run);
     let git = Git::new(&ctx.bins.harness.git);
@@ -175,6 +142,56 @@ fn pass(
         eprintln!("horch ledger watch: cleanup of {path}: {}", o.note);
     }
     Ok(checked)
+}
+
+/// What the watchdog does about 1 verdict: reap the dead, wake the
+/// orchestrator on a first stall or a suspect.
+fn act_on(ctx: &RuntimeContext, store: &mut Store, run: &Run, c: &watchdog::Checked) {
+    let who = c.role.as_deref().unwrap_or(&c.worker_id);
+    let on = c.task.as_deref().unwrap_or("its task");
+    match c.verdict.as_str() {
+        "dead" => reap_dead(ctx, store, run, c),
+        "no_progress" if c.first_stall => taskledger_wake::wake(
+            ctx,
+            store,
+            run,
+            &format!(
+                "NOTE: {who} on {on} shows no progress ({}). Ask it for an update: horch tell {who} \"[orchestrator] QUESTION: What is your status?\"",
+                c.note
+            ),
+        ),
+        "suspect" => taskledger_wake::wake(
+            ctx,
+            store,
+            run,
+            &format!(
+                "NOTE: {who} on {on} may be stuck in pane {}: {}. The watchdog reaps it at the next check unless something else moves.",
+                c.pane_id.as_deref().unwrap_or("unknown"),
+                c.note
+            ),
+        ),
+        // A worker back to normal after a stall needs no wake.
+        _ => {}
+    }
+}
+
+/// Reap a worker the check found dead, and wake on the result.
+fn reap_dead(ctx: &RuntimeContext, store: &mut Store, run: &Run, c: &watchdog::Checked) {
+    let who = c.role.as_deref().unwrap_or(&c.worker_id);
+    let panes = HerdrPanes::new(ctx);
+    let reaped = stop::reap(
+        store,
+        &c.worker_id,
+        StopRequester::Watchdog,
+        &c.note,
+        &panes,
+        &stop::Os,
+        stop_grace(),
+    );
+    match reaped {
+        Ok(report) => taskledger_wake::after_reap(ctx, store, run, &report),
+        Err(e) => eprintln!("horch ledger watch: reaping {who} failed: {e:#}"),
+    }
 }
 
 /// `horch ledger watch`.
@@ -186,6 +203,19 @@ pub fn watch(
     force: bool,
     as_json: bool,
 ) -> Result<ExitCode> {
+    let _guard = take_lock(ctx, run)?;
+    if once {
+        let checked = pass(ctx, &mut store, run, force)?;
+        print_checked(&checked, as_json)?;
+        return Ok(ExitCode::SUCCESS);
+    }
+    watch_loop(ctx, &mut store, run)
+}
+
+/// Wait out the start fault, refuse a second watchdog, and take the lock of
+/// the run. The starter compares the recorded binary with the one it would
+/// start (#216).
+fn take_lock(ctx: &RuntimeContext, run: &Run) -> Result<horch_core::fsx::DirLockGuard> {
     // A slow start, as on a loaded machine: the e2e tests of `ensure` hold
     // a new watchdog before its lock with `HORCH_FAULT=watchdog-start-ms:<n>`.
     if let Some(ms) = ctx
@@ -197,45 +227,52 @@ pub fn watch(
         std::thread::sleep(Duration::from_millis(ms.min(120_000)));
     }
     if let Some(pid) = lock_held(ctx, run) {
-        if pid != std::process::id() {
-            bail!("the watchdog of run {} already runs (PID {pid})", run.slug);
-        }
+        ensure!(
+            pid == std::process::id(),
+            "the watchdog of run {} already runs (PID {pid})",
+            run.slug
+        );
     }
-    let guard = watchdog::lock(&lock_dir(ctx), &run.run_id)?;
-    let Some(guard) = guard else {
+    let Some(guard) = watchdog::lock(&lock_dir(ctx), &run.run_id)? else {
         bail!("the watchdog of run {} already runs", run.slug);
     };
-    // The starter compares this with the binary it would start (#216).
     let exe = std::env::current_exe().ok().and_then(|p| exe_identity(&p));
     watchdog::record_exe(&guard, exe.as_ref())?;
-    if once {
-        let checked = pass(ctx, &mut store, run, force)?;
-        if as_json {
-            output::println(&serde_json::to_string_pretty(&checked)?);
-        } else if checked.is_empty() {
-            output::println("No worker was due for a check.");
-        } else {
-            for c in &checked {
-                output::println(&format!(
-                    "{} {}: {} (round {}): {}",
-                    c.role.as_deref().unwrap_or(&c.worker_id),
-                    c.task.as_deref().unwrap_or("-"),
-                    c.verdict,
-                    c.round,
-                    c.note
-                ));
-            }
-        }
-        return Ok(ExitCode::SUCCESS);
+    Ok(guard)
+}
+
+/// The report of `watch --once`: JSON, or 1 line per checked worker.
+fn print_checked(checked: &[watchdog::Checked], as_json: bool) -> Result<()> {
+    if as_json {
+        output::println(&serde_json::to_string_pretty(checked)?);
+        return Ok(());
     }
-    // The loop: a pass on every tick; each worker is checked when it is due.
+    if checked.is_empty() {
+        output::println("No worker was due for a check.");
+    }
+    for c in checked {
+        output::println(&format!(
+            "{} {}: {} (round {}): {}",
+            c.role.as_deref().unwrap_or(&c.worker_id),
+            c.task.as_deref().unwrap_or("-"),
+            c.verdict,
+            c.round,
+            c.note
+        ));
+    }
+    Ok(())
+}
+
+/// The loop: a pass on every tick; each worker is checked when it is due.
+/// It ends when the run is no longer active or on SIGTERM.
+fn watch_loop(ctx: &RuntimeContext, store: &mut Store, run: &Run) -> Result<ExitCode> {
     exit_between_passes();
     loop {
         let run_now = runs::get(store.conn(), &run.run_id)?;
         if run_now.status != "active" || TERM.load(Ordering::SeqCst) {
             return Ok(ExitCode::SUCCESS);
         }
-        if let Err(e) = pass(ctx, &mut store, &run_now, false) {
+        if let Err(e) = pass(ctx, store, &run_now, false) {
             eprintln!("horch ledger watch: {e:#}");
         }
         let tick = (run_now.check_every_s / 10).clamp(1, 30) as u64;
@@ -246,53 +283,76 @@ pub fn watch(
 /// Restart the watchdog of each active run of this project that has gone
 /// quiet while a task runs. Best effort, silent unless it restarts one.
 pub fn ensure(ctx: &RuntimeContext) {
-    if std::env::var("HORCH_NO_WATCHDOG").is_ok_and(|v| v == "1") {
-        return;
-    }
-    // Never create the ledger just to look.
-    if !ctx.paths.ledger_db.exists() {
-        return;
-    }
-    let Ok(root) = super::taskledger::project_root(ctx) else {
-        return;
-    };
-    let Ok(store) = taskledger::open(ctx) else {
-        return;
-    };
-    let Ok(all) = runs::of_project(store.conn(), &root) else {
+    let Some((root, store, runs)) = quiet_runs(ctx) else {
         return;
     };
     let Ok(exe) = std::env::current_exe() else {
         return;
     };
-    for run in all.into_iter().filter(|r| r.status == "active") {
-        if let Some(h) = watchdog::holder(&lock_dir(ctx), &run.run_id) {
-            // Only a watchdog whose own binary file changed moves, and onto
-            // that file: a horch at another path does not take it over.
-            if h.binary_replaced() {
-                let target = h
-                    .exe
-                    .as_ref()
-                    .map(|e| PathBuf::from(&e.path))
-                    .filter(|p| p.is_file())
-                    .unwrap_or_else(|| exe.clone());
-                replace(ctx, &store, &run, &root, &h, &target, true);
-            }
-            continue;
+    for run in runs {
+        match watchdog::holder(&lock_dir(ctx), &run.run_id) {
+            Some(h) => keep_or_replace(ctx, &store, &run, &root, &h, &exe),
+            None => restart(ctx, &store, &run, &root, &exe),
         }
-        if !watchdog::needs_restart(store.conn(), &run).unwrap_or(false) {
-            continue;
-        }
-        match start_detached(ctx, &store, &run, &root, &exe) {
-            Ok(pid) => eprintln!(
-                "horch: warning: the watchdog of run {} was not running; started it (PID {pid})",
-                run.slug
-            ),
-            Err(e) => eprintln!(
-                "horch: warning: could not start the watchdog of run {}: {e:#}",
-                run.slug
-            ),
-        }
+    }
+}
+
+/// The active runs of this project, with its root and the ledger. None when
+/// the watchdog is off, the ledger file is missing (it is never created
+/// just to look) or unreadable.
+fn quiet_runs(ctx: &RuntimeContext) -> Option<(PathBuf, Store, Vec<Run>)> {
+    if std::env::var("HORCH_NO_WATCHDOG").is_ok_and(|v| v == "1") || !ctx.paths.ledger_db.exists() {
+        return None;
+    }
+    let Ok(root) = super::taskledger::project_root(ctx) else {
+        return None;
+    };
+    let Ok(store) = taskledger::open(ctx) else {
+        return None;
+    };
+    let Ok(all) = runs::of_project(store.conn(), &root) else {
+        return None;
+    };
+    let active = all.into_iter().filter(|r| r.status == "active").collect();
+    Some((root, store, active))
+}
+
+/// A live watchdog stays, unless its own binary file changed: it then moves
+/// onto that file. A horch at another path does not take it over.
+fn keep_or_replace(
+    ctx: &RuntimeContext,
+    store: &Store,
+    run: &Run,
+    root: &Path,
+    h: &watchdog::LockHolder,
+    exe: &Path,
+) {
+    if !h.binary_replaced() {
+        return;
+    }
+    let target = h
+        .exe
+        .as_ref()
+        .map(|e| PathBuf::from(&e.path))
+        .filter(|p| p.is_file())
+        .unwrap_or_else(|| exe.to_path_buf());
+    replace(ctx, store, run, root, h, &target, true);
+}
+
+/// Start a watchdog for a run that has none and needs one, and say so.
+fn restart(ctx: &RuntimeContext, store: &Store, run: &Run, root: &Path, exe: &Path) {
+    if !watchdog::needs_restart(store.conn(), run).unwrap_or(false) {
+        return;
+    }
+    match start_detached(ctx, store, run, root, exe) {
+        Ok(pid) => eprintln!(
+            "horch: warning: the watchdog of run {} was not running; started it (PID {pid})",
+            run.slug
+        ),
+        Err(e) => eprintln!(
+            "horch: warning: could not start the watchdog of run {}: {e:#}",
+            run.slug
+        ),
     }
 }
 
