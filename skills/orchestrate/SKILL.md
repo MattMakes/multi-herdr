@@ -17,7 +17,7 @@ Direct independent workers. Each unit has 1 owner, precise instructions and evid
 6. End your turn. horch wakes you for questions, stalls, deaths, newly startable tasks and a finished run. `horch ledger status` exits 0 only when all work is done.
 7. A worker is done only after `horch ledger finish` passed every step: check, code-sweep, complexity-sweep, recheck, land on the run branch, the run's PR, and a cleanup that cannot lose work. Do not accept a DONE that skipped one.
 8. Stop a worker only with `horch ledger stop <worker> "<reason>"`. It signals the PIDs the ledger recorded, never a name or a pattern.
-9. When all tasks are done and verified, close the run: `horch ledger run close`. To drop its open tasks, run `horch ledger run close --abandon "<reason>"`. A closed run stops its watchdog and frees its slug.
+9. Close a verified run: `horch ledger run close [--abandon "<reason>"]`.
 
 Keep `ai_docs/plans/<run-slug>/decisions.md`: operator decisions, reasons, rejected options. Read it before proposing designs. Label operator claims verified (with evidence) or not verified; report failed commands and deliveries as failed. Use `horch inbox`, `horch peek` or `ledger show/events`, never pane-reading loops, cron jobs or monitors. Never put `git worktree add` in a plan; use `horch ledger worktree new --from <ref>`, `scratch`, or `drop --reason`.
 
