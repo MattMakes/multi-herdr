@@ -1573,6 +1573,56 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
+    fn w3_attach_skills_replaces_a_symlink_and_refuses_a_real_directory() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (home, old, new) = (
+            tmp.path().join("home"),
+            tmp.path().join("old"),
+            tmp.path().join("new"),
+        );
+        for d in [&home, &old, &new] {
+            std::fs::create_dir_all(d).unwrap();
+        }
+        let rules = Rules::Private { dir: home.clone() };
+        // No link yet: the link is created.
+        rules.attach_skills(&old).unwrap();
+        assert_eq!(std::fs::read_link(home.join("skills")).unwrap(), old);
+        // An old link is replaced, never followed.
+        rules.attach_skills(&new).unwrap();
+        assert_eq!(std::fs::read_link(home.join("skills")).unwrap(), new);
+        // A real directory is the operator's: refuse and leave it alone.
+        std::fs::remove_file(home.join("skills")).unwrap();
+        std::fs::create_dir_all(home.join("skills")).unwrap();
+        let err = rules.attach_skills(&new).unwrap_err().to_string();
+        assert_eq!(
+            err,
+            format!(
+                "refusing to replace non-symlink {}",
+                home.join("skills").display()
+            )
+        );
+        assert!(home.join("skills").is_dir());
+        // Without a private home there is nowhere to attach.
+        let err = Rules::Shared.attach_skills(&new).unwrap_err().to_string();
+        assert_eq!(
+            err,
+            "Codex phase skills require a private CODEX_HOME; use WSL on Windows"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn w3_a_command_past_its_deadline_is_killed_and_named() {
+        let tmp = tempfile::tempdir().unwrap();
+        let slow = fake_codex(tmp.path(), "slow", "sleep 30");
+        let started = Instant::now();
+        let err = run_with_deadline(Command::new(&slow), Duration::from_millis(300)).unwrap_err();
+        assert_eq!(err.to_string(), "codex debug models timed out after 0s");
+        assert!(started.elapsed() < Duration::from_secs(20));
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn nw_01_catalog_failure_is_an_err() {
         let tmp = tempfile::tempdir().unwrap();
         let codex = fake_codex(tmp.path(), "codex-fail", "echo broken >&2\nexit 1");
