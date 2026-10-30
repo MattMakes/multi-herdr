@@ -447,4 +447,159 @@ mod tests {
         assert_eq!(map.items[1].task.fallback.as_deref(), Some("opus"));
         assert_eq!(map.items[1].task.issue_url.as_deref(), Some("https://x/30"));
     }
+
+    fn write_map(root: &Path, map: &str, tickets: &[(&str, &str)]) -> PathBuf {
+        let t = root.join("tickets");
+        std::fs::create_dir_all(&t).unwrap();
+        for (n, body) in tickets {
+            std::fs::write(t.join(n), body).unwrap();
+        }
+        std::fs::write(t.join("MAP.md"), map).unwrap();
+        t.join("MAP.md")
+    }
+
+    const PERSONA: &str = "# 01: A\n**Persona:** primary `opus`\n";
+
+    #[test]
+    fn blocker_ranges_tokens_and_limits() {
+        assert_eq!(blocker_tokens("t-5"), vec!["T-5"]);
+        assert_eq!(blocker_tokens("T-x"), Vec::<String>::new());
+        assert_eq!(blocker_tokens("3-5"), vec!["3", "4", "5"]);
+        assert_eq!(blocker_tokens("5-3"), Vec::<String>::new());
+        assert_eq!(blocker_tokens("#007; 08 ;none").len(), 2);
+        assert_eq!(blocker_tokens("#007; 08"), vec!["#007", "08"]);
+        assert_eq!(blocker_tokens("1-1000").len(), 1000);
+        assert_eq!(blocker_tokens("1-1001"), Vec::<String>::new());
+        assert_eq!(blocker_tokens("[01](a.md), word"), vec!["01"]);
+        assert_eq!(blocker_tokens("(only a title) 4"), vec!["4"]);
+        assert_eq!(blocker_tokens("NONE"), Vec::<String>::new());
+    }
+
+    #[test]
+    fn ticket_facts_titles_and_fields() {
+        assert_eq!(
+            ticket_facts("# Plain title\n").title.as_deref(),
+            Some("Plain title")
+        );
+        assert_eq!(ticket_facts("# a: b\n").title.as_deref(), Some("a: b"));
+        assert_eq!(
+            ticket_facts("# 1: first\n# 2: second\n").title.as_deref(),
+            Some("first")
+        );
+        assert_eq!(ticket_facts("**Parallel:** yes\n").parallel, Some(true));
+        assert_eq!(ticket_facts("**Parallel:** True\n").parallel, Some(true));
+        assert_eq!(ticket_facts("**Parallel:** no\n").parallel, Some(false));
+        assert_eq!(ticket_facts("**Parallel:** False\n").parallel, Some(false));
+        assert_eq!(ticket_facts("**Parallel:** maybe\n").parallel, None);
+        let f = ticket_facts("**Do not touch:** `a.rs`, `b/`\n**Own:** `c.rs`\nOwn: `no`\n");
+        assert_eq!(f.no_touch, vec!["a.rs", "b/"]);
+        assert_eq!(f.own, vec!["c.rs"]);
+        assert_eq!(
+            ticket_facts("**Check:** `just t`\n").check.as_deref(),
+            Some("just t")
+        );
+    }
+
+    #[test]
+    fn a_map_without_a_table_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = write_map(dir.path(), "# Map\nno table\n", &[]);
+        let e = read(&p, dir.path()).unwrap_err();
+        assert_eq!(
+            e.to_string(),
+            format!("{} has no ticket table", p.display())
+        );
+    }
+
+    #[test]
+    fn a_map_without_a_key_column_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = write_map(dir.path(), "| Title |\n|---|\n| x |\n", &[]);
+        let e = read(&p, dir.path()).unwrap_err();
+        assert_eq!(e.to_string(), "the map table has no '#' column");
+    }
+
+    #[test]
+    fn a_map_with_no_rows_lists_no_tickets() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = write_map(dir.path(), "| # | Title |\n|---|---|\n", &[]);
+        let e = read(&p, dir.path()).unwrap_err();
+        assert_eq!(e.to_string(), format!("{} lists no tickets", p.display()));
+    }
+
+    #[test]
+    fn a_row_without_a_ticket_file_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = write_map(
+            dir.path(),
+            "| # | Title |\n|---|---|\n| 01 | [x](gone.md) |\n",
+            &[],
+        );
+        let e = read(&p, dir.path()).unwrap_err();
+        assert_eq!(
+            e.to_string(),
+            format!(
+                "ticket 1 in {} links no ticket file that exists",
+                p.display()
+            )
+        );
+    }
+
+    #[test]
+    fn a_ticket_without_a_persona_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = write_map(
+            dir.path(),
+            "| # | Title |\n|---|---|\n| [01](a.md) | A |\n",
+            &[("a.md", "# 01: A\n")],
+        );
+        let e = read(&p, dir.path()).unwrap_err();
+        assert_eq!(
+            e.to_string(),
+            "ticket 1 (tickets/a.md) names no primary persona: add a **Persona:** line"
+        );
+    }
+
+    #[test]
+    fn a_blocker_outside_the_map_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = write_map(
+            dir.path(),
+            "| # | Issue | Blocked by |\n|---|---|---|\n| [01](a.md) | #5 | #9 |\n",
+            &[("a.md", PERSONA)],
+        );
+        let e = read(&p, dir.path()).unwrap_err();
+        assert_eq!(
+            e.to_string(),
+            "ticket 1 is blocked by #9, which is not in the map"
+        );
+    }
+
+    #[test]
+    fn columns_in_the_map_win_over_the_ticket() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = write_map(
+            dir.path(),
+            "Spec: plain words · more\n\n| Ticket | Title | Persona | Parallel | Wave | Blocked by |\n|---|---|---|---|---|---|\n\
+             | [01](a.md) | | primary `sonnet`, fallback `haiku` | No | 3 | - |\n\
+             | [02](b.md) | Second | opus (x) | yes | z | 01, T-9, 1 |\n\nafter\n| 03 | ignored |\n",
+            &[("a.md", "# 01: From file\n**Persona:** primary `opus`\n"), ("b.md", PERSONA)],
+        );
+        let m = read(&p, dir.path()).unwrap();
+        assert_eq!(m.spec_ref.as_deref(), Some("plain words"));
+        assert_eq!(m.items.len(), 2);
+        let (a, b) = (&m.items[0].task, &m.items[1].task);
+        assert_eq!(a.title, "From file");
+        assert_eq!(a.primary, "sonnet");
+        assert_eq!(a.fallback.as_deref(), Some("haiku"));
+        assert!(!a.parallel);
+        assert_eq!(a.wave, Some(3));
+        assert_eq!(a.spec_ref.as_deref(), Some("plain words"));
+        assert_eq!(b.title, "Second");
+        assert_eq!(b.primary, "opus");
+        assert!(b.parallel);
+        assert_eq!(b.wave, None);
+        assert_eq!(b.blocked_by, vec!["1", "T-9", "1"]);
+        assert_eq!(b.task_file, "tickets/b.md");
+    }
 }
