@@ -153,10 +153,18 @@ pub fn triage_rows(ctx: &RuntimeContext, measure: Measure) -> Result<Vec<triage:
 /// `horch worktree triage [--json]`: the facts of every parked worktree.
 pub fn triage(ctx: &RuntimeContext, json: bool) -> Result<()> {
     let rows = triage_rows(ctx, Measure::Full)?;
+    let git = Git::new(&ctx.bins.harness.git);
+    let remote = triage::apply::pr_remote(&git, &triage_root(ctx, &git)?, &gh_bin());
     if json {
-        println!("{}", triage::to_json(&rows));
-    } else {
-        print!("{}", triage::render(&rows));
+        println!("{}", triage::to_json(&rows, remote.is_some()));
+        return Ok(());
+    }
+    print!("{}", triage::render(&rows));
+    if !rows.is_empty() {
+        match remote {
+            Some(r) => println!("PR is offered: gh and the remote {r} exist."),
+            None => println!("PR is not offered: gh or a git remote is missing."),
+        }
     }
     Ok(())
 }

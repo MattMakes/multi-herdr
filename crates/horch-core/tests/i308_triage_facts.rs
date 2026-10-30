@@ -159,8 +159,9 @@ fn json_has_the_same_rows() {
     let base = w.rev("main");
     w.worktree("one", "one", &base);
     let rows = collect(&w);
-    let v: serde_json::Value = serde_json::from_str(&triage::to_json(&rows)).unwrap();
+    let v: serde_json::Value = serde_json::from_str(&triage::to_json(&rows, false)).unwrap();
     assert_eq!(v["rows"][0]["id"], "W1");
     assert_eq!(v["rows"][0]["name"], "one");
     assert_eq!(v["rows"][0]["ahead"], 0);
+    assert_eq!(v["pr_offered"], false);
 }

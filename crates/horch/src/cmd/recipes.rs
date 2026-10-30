@@ -421,6 +421,9 @@ pub fn fleet_with(
 
     super::delivery_probe::fleet(ctx, &ws.workspace_id, &ws.root_pane_id);
 
+    // Parked worktrees get a steward pane beside the orchestrator (#308).
+    start_worktree_steward(ctx, &ws);
+
     // The telemetry space (SPC-06). Never a reason for the fleet to fail.
     if let Err(e) = super::telemetry::ensure(ctx, &herdr, true) {
         println!("warning: telemetry space not started: {e:#}");
@@ -428,6 +431,47 @@ pub fn fleet_with(
 
     print_fleet_ready(&ws.workspace_id, &ledger);
     Ok(())
+}
+
+/// When the project has parked worktrees (`horch worktree triage`), spawn
+/// the `worktree-steward` teammate beside the orchestrator: it runs the
+/// triage with the operator. With none, nothing is spawned. Never a reason
+/// for the fleet to fail.
+fn start_worktree_steward(ctx: &RuntimeContext, ws: &NewWorkspace) {
+    let rows = match super::worktree::triage_rows(ctx, horch_core::taskledger::triage::Measure::Ids)
+    {
+        Ok(rows) => rows,
+        Err(e) => {
+            println!("warning: the worktree triage did not run: {e:#}");
+            return;
+        }
+    };
+    if rows.is_empty() {
+        return;
+    }
+    println!(
+        "{} parked worktrees: starting the worktree steward...",
+        rows.len()
+    );
+    let args = super::spawn::SpawnArgs {
+        teammate: Some("worktree-steward".to_string()),
+        // A fact, not a brief: the steward's file holds its instructions.
+        task: format!("parked worktrees: {}", rows.len()),
+        resume: None,
+        phase: None,
+        effort: None,
+        role: None,
+        from_pane: Some(ws.root_pane_id.clone()),
+        direction: Direction::Right,
+        tiling: horch_core::execution::TilingMode::Automatic,
+        exact: false,
+        force: false,
+        replaces: None,
+        run: None,
+    };
+    if let Err(e) = super::spawn::spawn(ctx, args) {
+        println!("warning: the worktree steward did not start: {e:#}");
+    }
 }
 
 /// `FleetFlavor::Auto` becomes the flavor whose pool can serve it; any other

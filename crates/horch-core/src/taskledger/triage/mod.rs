@@ -446,9 +446,11 @@ pub fn total_bytes(rows: &[Row]) -> u64 {
         .sum()
 }
 
-/// `--json`: `{"rows": [...]}`.
-pub fn to_json(rows: &[Row]) -> String {
-    serde_json::to_string_pretty(&serde_json::json!({ "rows": rows })).unwrap_or_default()
+/// `--json`: `{"rows": [...], "pr_offered": <bool>}`. `pr_offered` is
+/// whether `gh` and a git remote exist, so `PR` is a valid decision.
+pub fn to_json(rows: &[Row], pr_offered: bool) -> String {
+    serde_json::to_string_pretty(&serde_json::json!({ "rows": rows, "pr_offered": pr_offered }))
+        .unwrap_or_default()
 }
 
 /// A byte count for people: `1.2 GB`, `340 MB`, `12 KB`.
