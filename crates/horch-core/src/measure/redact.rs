@@ -94,15 +94,11 @@ fn run_end(b: &[u8], i: usize, ok: impl Fn(u8) -> bool) -> usize {
 /// unterminated block is redacted to the end of the text.
 fn pem(b: &[u8], i: usize) -> Option<(usize, usize)> {
     const BEGIN: &[u8] = b"-----BEGIN ";
-    if !b[i..].starts_with(BEGIN) {
-        return None;
-    }
+    b[i..].starts_with(BEGIN).then_some(())?;
     let header_end = find(b, i + BEGIN.len(), b"-----")?;
     let label = &b[i + BEGIN.len()..header_end];
     let private = label.windows(11).any(|w| w == b"PRIVATE KEY");
-    if !private || label.contains(&b'\n') {
-        return None;
-    }
+    (private && !label.contains(&b'\n')).then_some(())?;
     let end = find(b, header_end + 5, b"-----END ")
         .and_then(|e| find(b, e + 9, b"-----"))
         .map_or(b.len(), |e| e + 5);
@@ -127,23 +123,30 @@ fn assignment(b: &[u8], i: usize) -> Option<(usize, usize)> {
     if matches!(b.get(j), Some(b'"' | b'\'')) {
         j += 1;
     }
-    j = run_end(b, j, |c| c == b' ' || c == b'\t');
-    if !matches!(b.get(j), Some(b':' | b'=')) {
-        return None;
-    }
-    j = run_end(b, j + 1, |c| c == b' ' || c == b'\t');
+    j = run_end(b, j, is_blank);
+    matches!(b.get(j), Some(b':' | b'=')).then_some(())?;
+    value_span(b, j + 1)
+}
+
+fn is_blank(c: u8) -> bool {
+    c == b' ' || c == b'\t'
+}
+
+fn is_bare_value_byte(c: u8) -> bool {
+    !c.is_ascii_whitespace() && c != b'"' && c != b'\''
+}
+
+/// The value after a separator at `j`: blanks skipped, then a quoted value
+/// without its quotes or a bare one. `None` when it is empty.
+fn value_span(b: &[u8], j: usize) -> Option<(usize, usize)> {
+    let j = run_end(b, j, is_blank);
     // A quoted value runs to its closing quote, so a password with a space
     // in it goes whole; a bare one stops at whitespace or a quote.
-    let end = match b.get(j) {
-        Some(&q @ (b'"' | b'\'')) => {
-            j += 1;
-            quoted_end(b, j, q)
-        }
-        _ => run_end(b, j, |c| {
-            !c.is_ascii_whitespace() && c != b'"' && c != b'\''
-        }),
+    let (start, end) = match b.get(j) {
+        Some(&q @ (b'"' | b'\'')) => (j + 1, quoted_end(b, j + 1, q)),
+        _ => (j, run_end(b, j, is_bare_value_byte)),
     };
-    (end > j).then_some((j, end))
+    (end > start).then_some((start, end))
 }
 
 /// End of a quoted value starting at `i`: the closing `q`, a newline or the
@@ -163,35 +166,52 @@ fn quoted_end(b: &[u8], mut i: usize, q: u8) -> usize {
 /// A token rule: prefix, minimum body length, body byte class.
 type TokenRule = (&'static str, usize, fn(u8) -> bool);
 
+fn is_alphanumeric_byte(c: u8) -> bool {
+    c.is_ascii_alphanumeric()
+}
+
+fn is_slack_byte(c: u8) -> bool {
+    c.is_ascii_alphanumeric() || c == b'-'
+}
+
+fn is_github_pat_byte(c: u8) -> bool {
+    c.is_ascii_alphanumeric() || c == b'_'
+}
+
+/// Tried in order, so `sk-ant-` comes before `sk-`.
+const TOKEN_RULES: [TokenRule; 9] = [
+    ("sk-ant-", 8, is_token_byte),
+    ("sk-", 20, is_token_byte),
+    ("ghp_", 20, is_alphanumeric_byte),
+    ("github_pat_", 20, is_github_pat_byte),
+    ("xoxb-", 10, is_slack_byte),
+    ("xoxp-", 10, is_slack_byte),
+    ("xoxa-", 10, is_slack_byte),
+    ("xoxr-", 10, is_slack_byte),
+    ("xoxs-", 10, is_slack_byte),
+];
+
 /// `sk-ant-…`, `sk-…`, `ghp_…`, `github_pat_…` and Slack `xox?-…` tokens.
 fn prefixed_tokens(b: &[u8], i: usize) -> Option<(usize, usize)> {
-    if !at_word_start(b, i) {
-        return None;
-    }
-    let slack: fn(u8) -> bool = |c| c.is_ascii_alphanumeric() || c == b'-';
-    let rules: [TokenRule; 9] = [
-        ("sk-ant-", 8, is_token_byte),
-        ("sk-", 20, is_token_byte),
-        ("ghp_", 20, |c| c.is_ascii_alphanumeric()),
-        ("github_pat_", 20, |c| {
-            c.is_ascii_alphanumeric() || c == b'_'
-        }),
-        ("xoxb-", 10, slack),
-        ("xoxp-", 10, slack),
-        ("xoxa-", 10, slack),
-        ("xoxr-", 10, slack),
-        ("xoxs-", 10, slack),
-    ];
-    for (prefix, min, ok) in rules {
-        if b[i..].starts_with(prefix.as_bytes()) {
-            let body = i + prefix.len();
-            let end = run_end(b, body, ok);
-            if end - body >= min {
-                return Some((i, end));
-            }
-        }
-    }
-    None
+    at_word_start(b, i).then_some(())?;
+    TOKEN_RULES
+        .iter()
+        .find_map(|&(prefix, min, ok)| token_end(b, i, prefix, min, ok))
+}
+
+/// The span of a token at `i` that starts with `prefix` and has a body of
+/// at least `min` bytes of class `ok`.
+fn token_end(
+    b: &[u8],
+    i: usize,
+    prefix: &str,
+    min: usize,
+    ok: fn(u8) -> bool,
+) -> Option<(usize, usize)> {
+    b[i..].starts_with(prefix.as_bytes()).then_some(())?;
+    let body = i + prefix.len();
+    let end = run_end(b, body, ok);
+    (end - body >= min).then_some((i, end))
 }
 
 /// `AKIA` plus exactly 16 uppercase alphanumerics (an AWS access key id).
