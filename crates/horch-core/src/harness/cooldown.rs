@@ -204,6 +204,46 @@ mod tests {
         assert!(matches!(judge(&bad_time, now, 7), Verdict::Unknown { .. }));
     }
 
+    /// The reason of every `Unknown` is shown to the operator as written.
+    #[test]
+    fn arc_36_an_undated_release_says_why() {
+        let now = at("2030-01-01T00:00:00Z");
+        let unknown = |reason: &str| Verdict::Unknown {
+            reason: reason.into(),
+        };
+        let no_latest = unknown("the registry names no latest release");
+
+        // No `latest` tag: another tag and its date do not stand in for it.
+        let no_tag = doc(r#"{"dist-tags": {"next": "2.0.0-beta.1"},
+                "time": {"1.0.0": "2026-01-01T00:00:00Z", "2.0.0-beta.1": "2026-01-02T00:00:00Z"}}"#);
+        assert_eq!(judge(&no_tag, now, 7), no_latest);
+        assert_eq!(judge(&Packument::default(), now, 7), no_latest);
+
+        // `latest` names a version the time table does not list.
+        let missing =
+            doc(r#"{"dist-tags": {"latest": "2.0.0"}, "time": {"1.0.0": "2026-01-01T00:00:00Z"}}"#);
+        assert_eq!(
+            judge(&missing, now, 7),
+            unknown("the registry has no publish time for 2.0.0")
+        );
+
+        // A time that is not a string, or not an RFC 3339 time, is no time.
+        for bad in [
+            serde_json::json!(5),
+            serde_json::json!(null),
+            serde_json::json!("yesterday"),
+            serde_json::json!("2026-10-10"),
+        ] {
+            let json =
+                serde_json::json!({"dist-tags": {"latest": "1.0.0"}, "time": {"1.0.0": bad}});
+            assert_eq!(
+                judge(&doc(&json.to_string()), now, 7),
+                unknown("the registry has no publish time for 1.0.0"),
+                "{bad}"
+            );
+        }
+    }
+
     #[test]
     fn arc_36_the_age_reads_in_whole_days() {
         assert_eq!(age_text(TimeDelta::hours(5)), "less than 1 day old");

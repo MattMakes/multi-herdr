@@ -312,6 +312,48 @@ mod tests {
         assert_eq!(lines_of(&p, &mut c).len(), 2);
     }
 
+    /// A reset keeps whose cursor it is (agent and session), takes the
+    /// file's identity and path, drops the reader state and restarts the
+    /// count of quiet ticks. A cursor for another path resets too, even on
+    /// the same file identity.
+    #[test]
+    fn tel_07_a_reset_keeps_the_owner_and_restarts_the_quiet_count() {
+        let tmp = tempfile::tempdir().unwrap();
+        let p = tmp.path().join("t.jsonl");
+        std::fs::write(&p, "one\ntwo\n").unwrap();
+        let mut c = Cursor {
+            agent: "claude".into(),
+            session_id: "s-1".into(),
+            ..Cursor::default()
+        };
+        assert_eq!(lines_of(&p, &mut c).len(), 2);
+        let (dev, ino) = (c.dev, c.ino);
+        assert_eq!(c.path, p.to_string_lossy());
+
+        // The same file, nothing new: no reset, 1 more quiet tick.
+        c.model = "kept while the file is the same".into();
+        c.quiet_ticks = 4;
+        assert_eq!(lines_of(&p, &mut c), vec![]);
+        assert_eq!((c.offset, c.quiet_ticks), (8, 5));
+        assert_eq!(c.model, "kept while the file is the same");
+
+        // Only the path differs: start over.
+        c.path = "/elsewhere".into();
+        assert_eq!(lines_of(&p, &mut c).len(), 2);
+        assert_eq!(c.path, p.to_string_lossy());
+        assert_eq!((c.dev, c.ino), (dev, ino));
+        assert_eq!((c.agent.as_str(), c.session_id.as_str()), ("claude", "s-1"));
+        assert!(c.model.is_empty());
+        assert_eq!((c.offset, c.quiet_ticks), (8, 0));
+
+        // An emptied file resets too, and its first quiet tick counts as 1.
+        c.quiet_ticks = 5;
+        std::fs::write(&p, "").unwrap();
+        assert_eq!(lines_of(&p, &mut c), vec![]);
+        assert_eq!((c.offset, c.quiet_ticks), (0, 1));
+        assert_eq!((c.agent.as_str(), c.session_id.as_str()), ("claude", "s-1"));
+    }
+
     #[test]
     fn nfr_04_file_identity() {
         let tmp = tempfile::tempdir().unwrap();

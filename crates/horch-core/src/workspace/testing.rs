@@ -320,6 +320,47 @@ mod tests {
         fake.pane_run("p1", "ls").unwrap();
     }
 
+    /// While the server does not answer, that error comes first and a
+    /// queued failure waits for the server to answer again. Every call is
+    /// logged, the ones that fail too.
+    #[test]
+    fn an_unreachable_server_hides_a_queued_failure_and_every_call_is_logged() {
+        let fake = FakeWorkspace::new();
+        fake.workspace_create("w", None, false).unwrap();
+        fake.fail_next("pane_run", "boom");
+        fake.set_reachable(false);
+        let err = fake.pane_run("p1", "ls").unwrap_err();
+        assert_eq!(err.to_string(), "herdr: no server is running");
+        fake.set_reachable(true);
+        let err = fake.pane_run("p1", "ls").unwrap_err();
+        assert_eq!(err.to_string(), "boom");
+        fake.pane_run("p1", "ls").unwrap();
+
+        let runs: Vec<FakeCall> = fake
+            .calls()
+            .into_iter()
+            .filter(|c| c.method == "pane_run")
+            .collect();
+        assert_eq!(runs.len(), 3);
+        assert!(runs.iter().all(|c| c.args == ["p1", "ls"]), "{runs:?}");
+    }
+
+    /// A queued failure fires for the method it names, the first time that
+    /// method is called, and for no other.
+    #[test]
+    fn a_queued_failure_waits_for_its_own_method() {
+        let fake = FakeWorkspace::new();
+        fake.workspace_create("w", None, false).unwrap();
+        fake.fail_next("pane_run", "first");
+        fake.fail_next("pane_run", "second");
+        assert_eq!(fake.pane_read("p1", "visible").unwrap(), "");
+        let err = fake.pane_run("p1", "ls").unwrap_err();
+        assert_eq!(err.to_string(), "first");
+        let err = fake.pane_run("p1", "ls").unwrap_err();
+        assert_eq!(err.to_string(), "second");
+        fake.pane_run("p1", "ls").unwrap();
+    }
+
     #[test]
     fn pane_read_returns_the_screen_that_was_set() {
         let fake = FakeWorkspace::new();

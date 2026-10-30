@@ -424,3 +424,134 @@ pub(crate) fn overlay_dirs(home: Option<&Path>, roster_override: Option<&Path>) 
     }
     dirs
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Write `<dir>/_base/<stem>.md` as `text` says.
+    fn write_base(dir: &Path, stem: &str, text: &str) -> PathBuf {
+        std::fs::create_dir_all(dir.join("_base")).unwrap();
+        let path = dir.join("_base").join(format!("{stem}.md"));
+        std::fs::write(&path, text).unwrap();
+        path
+    }
+
+    fn base_text(name: &str, body: &str) -> String {
+        format!("---\nname: {name}\n---\n{body}\n")
+    }
+
+    const NO_FENCE: &str = "file does not start with a '---' frontmatter fence";
+
+    #[test]
+    fn a_good_base_replaces_the_builtin_and_names_its_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("layer");
+        let text = base_text("fleet-worker", "from the layer");
+        let path = write_base(&dir, "fleet-worker", &text);
+
+        let mut r = Roster::builtin().unwrap();
+        assert_eq!(r.base_origin("fleet-worker"), None);
+        r.overlay(&dir).unwrap();
+        assert_eq!(r.base("fleet-worker").unwrap().body, "from the layer");
+        assert_eq!(r.base_origin("fleet-worker"), Some(path.as_path()));
+        assert!(r.load_warnings().is_empty(), "{:?}", r.load_warnings());
+    }
+
+    #[test]
+    fn a_later_good_base_heals_an_earlier_broken_one() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (first, second) = (tmp.path().join("first"), tmp.path().join("second"));
+        write_base(&first, "fleet-worker", "no frontmatter here\n");
+        write_base(
+            &second,
+            "fleet-worker",
+            &base_text("fleet-worker", "from the second layer"),
+        );
+
+        let mut r = Roster::builtin().unwrap();
+        r.overlay(&first).unwrap();
+        assert_eq!(r.load_warnings().len(), 1, "{:?}", r.load_warnings());
+        r.overlay(&second).unwrap();
+        assert_eq!(
+            r.base("fleet-worker").unwrap().body,
+            "from the second layer"
+        );
+        assert!(r.load_warnings().is_empty(), "{:?}", r.load_warnings());
+    }
+
+    #[test]
+    fn a_broken_base_says_what_is_used_instead() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (first, second, third) = (
+            tmp.path().join("first"),
+            tmp.path().join("second"),
+            tmp.path().join("third"),
+        );
+        let good = write_base(
+            &first,
+            "fleet-worker",
+            &base_text("fleet-worker", "from the first layer"),
+        );
+        let wrong_name = write_base(&second, "fleet-worker", &base_text("other", "x"));
+        let builtin = write_base(&second, "channel", "no frontmatter here\n");
+        let unknown = write_base(&third, "no-such-base", "no frontmatter here\n");
+
+        let mut r = Roster::builtin().unwrap();
+        let channel = r.base("channel").unwrap().body.clone();
+        r.overlay(&first).unwrap();
+        r.overlay(&second).unwrap();
+        r.overlay(&third).unwrap();
+
+        // The earlier layer's file stays in use over the broken later one.
+        assert_eq!(r.base("fleet-worker").unwrap().body, "from the first layer");
+        // The built-in stays in use when no earlier layer set the base.
+        assert_eq!(r.base("channel").unwrap().body, channel);
+        // A base with no earlier definition is not available at all.
+        assert!(r.base("no-such-base").is_none());
+        assert_eq!(
+            r.load_warnings(),
+            vec![
+                format!(
+                    "base 'channel' did not load from {}: {NO_FENCE}; using the built-in 'channel' instead",
+                    builtin.display()
+                ),
+                format!(
+                    "base 'fleet-worker' did not load from {}: name is 'other' but the filename says 'fleet-worker'; using the earlier {} instead",
+                    wrong_name.display(),
+                    good.display()
+                ),
+                format!(
+                    "base 'no-such-base' did not load from {}: {NO_FENCE}; base 'no-such-base' is not available",
+                    unknown.display()
+                ),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_file_that_starts_with_an_underscore_is_no_teammate() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("layer");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("_scratch.md"), "not a teammate\n").unwrap();
+
+        let mut r = Roster::builtin().unwrap();
+        let before = r.names().len();
+        r.overlay(&dir).unwrap();
+        assert_eq!(r.names().len(), before);
+        assert!(r.load_warnings().is_empty(), "{:?}", r.load_warnings());
+    }
+
+    #[test]
+    fn overlaying_a_directory_that_cannot_be_read_fails() {
+        let tmp = tempfile::tempdir().unwrap();
+        let missing = tmp.path().join("missing");
+        let error = Roster::builtin().unwrap().overlay(&missing).unwrap_err();
+        let message = format!("{error:#}");
+        assert!(
+            message.starts_with(&format!("reading {}: ", missing.display())),
+            "{message}"
+        );
+    }
+}

@@ -117,7 +117,10 @@ fn is_executable(path: &Path) -> bool {
 /// `<path under <name>/>\0<hex sha256 of the bytes>\n`. The line of a
 /// file in `executable` ends `\0x\n` instead, so the execute bit is part
 /// of the digest and a skill without one keeps the marketplace digest.
-fn skill_digests(files: &[(String, String)], executable: &[&str]) -> Vec<(String, [u8; 32])> {
+pub(crate) fn skill_digests(
+    files: &[(String, String)],
+    executable: &[&str],
+) -> Vec<(String, [u8; 32])> {
     use sha2::{Digest as _, Sha256};
     let mut out = Vec::new();
     for (relative, _) in files {

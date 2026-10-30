@@ -140,3 +140,63 @@ pub(crate) fn expand_home(path: &str, home: Option<&Path>) -> PathBuf {
         None => PathBuf::from(path),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_root_effort_is_read_without_quotes_or_comment() {
+        for (toml, want) in [
+            ("model_reasoning_effort = \"high\"\n", "high"),
+            ("model_reasoning_effort = 'low'\n", "low"),
+            ("model_reasoning_effort = medium\n", "medium"),
+            ("model_reasoning_effort=\"xhigh\"", "xhigh"),
+            ("  model_reasoning_effort  =  \"high\"   # why\n", "high"),
+            ("model_reasoning_effort = \"\"\n", ""),
+            (
+                "model = \"gpt\"\n# a comment\n\nmodel_reasoning_effort = \"low\"\n",
+                "low",
+            ),
+        ] {
+            assert_eq!(
+                codex_default_effort(toml).as_deref(),
+                Some(want),
+                "{toml:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_first_root_effort_wins() {
+        let toml = "model_reasoning_effort = \"low\"\nmodel_reasoning_effort = \"high\"\n";
+        assert_eq!(codex_default_effort(toml).as_deref(), Some("low"));
+    }
+
+    #[test]
+    fn the_first_section_ends_the_root_table() {
+        // An effort under a profile or an array of tables is not the default.
+        for header in ["[profiles.x]", "[tui]", "[[hooks]]", "  [tui]"] {
+            let toml = format!("model = \"gpt\"\n{header}\nmodel_reasoning_effort = \"low\"\n");
+            assert_eq!(codex_default_effort(&toml), None, "{header}");
+        }
+        // One above the first section still counts.
+        let toml = "model_reasoning_effort = \"high\"\n[tui]\nmodel_reasoning_effort = \"low\"\n";
+        assert_eq!(codex_default_effort(toml).as_deref(), Some("high"));
+    }
+
+    #[test]
+    fn lines_that_are_not_the_effort_key_are_skipped() {
+        for toml in [
+            "",
+            "\n\n",
+            "model = \"gpt\"\n",
+            "no equals sign\n",
+            "# model_reasoning_effort = \"low\"\n",
+            "my_model_reasoning_effort = \"low\"\n",
+            "model_reasoning_effort_extra = \"low\"\n",
+        ] {
+            assert_eq!(codex_default_effort(toml), None, "{toml:?}");
+        }
+    }
+}
