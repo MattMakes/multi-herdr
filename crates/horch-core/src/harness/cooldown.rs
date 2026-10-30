@@ -79,31 +79,36 @@ pub enum Verdict {
 /// Judge the newest release (`dist-tags.latest`) of `doc` at `now`. A
 /// publish time in the future is too new.
 pub fn judge(doc: &Packument, now: DateTime<Utc>, days: u32) -> Verdict {
-    let Some(version) = doc.dist_tags.get("latest") else {
-        return Verdict::Unknown {
+    if let Some(version) = doc.dist_tags.get("latest") {
+        if let Some(published) = publish_time(doc, version) {
+            let age = now - published;
+            if age >= TimeDelta::days(i64::from(days)) {
+                Verdict::Clear
+            } else {
+                Verdict::TooNew {
+                    version: version.clone(),
+                    age,
+                }
+            }
+        } else {
+            Verdict::Unknown {
+                reason: format!("the registry has no publish time for {version}"),
+            }
+        }
+    } else {
+        Verdict::Unknown {
             reason: "the registry names no latest release".into(),
-        };
-    };
-    let published = doc
-        .time
+        }
+    }
+}
+
+/// When `doc` says `version` was published: a time that reads as RFC 3339.
+fn publish_time(doc: &Packument, version: &str) -> Option<DateTime<Utc>> {
+    doc.time
         .get(version)
         .and_then(serde_json::Value::as_str)
         .and_then(|t| DateTime::parse_from_rfc3339(t).ok())
-        .map(|t| t.with_timezone(&Utc));
-    let Some(published) = published else {
-        return Verdict::Unknown {
-            reason: format!("the registry has no publish time for {version}"),
-        };
-    };
-    let age = now - published;
-    if age >= TimeDelta::days(i64::from(days)) {
-        Verdict::Clear
-    } else {
-        Verdict::TooNew {
-            version: version.clone(),
-            age,
-        }
-    }
+        .map(|t| t.with_timezone(&Utc))
 }
 
 /// `1 day old`, `3 days old`, `less than 1 day old`.
