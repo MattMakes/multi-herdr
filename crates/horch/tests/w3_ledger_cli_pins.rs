@@ -50,6 +50,11 @@ impl World {
     }
 
     fn run_as(&self, worker: Option<&str>, args: &[&str]) -> Out {
+        self.run_env(worker, true, args)
+    }
+
+    /// `watchdog_off` sets `HORCH_NO_WATCHDOG=1`.
+    fn run_env(&self, worker: Option<&str>, watchdog_off: bool, args: &[&str]) -> Out {
         let root = self.tmp.path();
         let mut cmd = Command::new(env!("CARGO_BIN_EXE_horch"));
         cmd.args(args)
@@ -59,8 +64,10 @@ impl World {
             .env("HOME", root.join("home"))
             .env("XDG_DATA_HOME", root.join("data"))
             .env("HORCH_STATE_DIR", root.join("state"))
-            .env("HORCH_PROJECT_DIR", self.proj())
-            .env("HORCH_NO_WATCHDOG", "1");
+            .env("HORCH_PROJECT_DIR", self.proj());
+        if watchdog_off {
+            cmd.env("HORCH_NO_WATCHDOG", "1");
+        }
         if let Some(w) = worker {
             cmd.env("HORCH_WORKER_ID", w);
         }
@@ -437,4 +444,93 @@ fn the_unfinished_import_and_refusal_arms_print_their_pinned_text() {
     assert!(stop.err.starts_with("horch: "), "{}", stop.err);
     let pid = w.run(&["ledger", "worker", "pid", "nobody", "--agent", "1"]);
     assert_eq!(pid.code, 0, "{}", pid.err);
+}
+
+/// A world with run `r1` (checks every 10 s) and 1 claimed task.
+fn world_with_a_claimed_task() -> (World, String) {
+    let w = World::new();
+    w.ok(&["ledger", "run", "new", "r1", "--check-every", "10"]);
+    w.ok(&["ledger", "add", "--file", "t1.md", "--primary", "dev"]);
+    let id = w
+        .ok(&[
+            "ledger",
+            "worker",
+            "new",
+            "--persona",
+            "dev",
+            "--role",
+            "dev1",
+        ])
+        .trim()
+        .to_string();
+    assert_eq!(w.run_as(Some(&id), &["ledger", "claim"]).code, 0);
+    (w, id)
+}
+
+#[test]
+fn watch_once_reports_in_text_and_json() {
+    let (w, _) = world_with_a_claimed_task();
+    // Not due yet: nothing is checked, in either form.
+    assert_eq!(
+        w.ok(&["ledger", "watch", "--once"]),
+        "No worker was due for a check.\n"
+    );
+    assert_eq!(w.ok(&["ledger", "watch", "--once", "--json"]), "[]\n");
+    // Forced: the worker has no agent process, so it is dead and reaped.
+    let forced = w.run(&["ledger", "watch", "--once", "--force"]);
+    assert_eq!(forced.code, 0, "{}", forced.err);
+    assert_eq!(
+        forced.out,
+        "dev1 T-1: dead (round 0): the agent process is gone\n"
+    );
+    let status = w.ok(&["ledger", "show", "T-1"]);
+    assert!(status.starts_with("T-1 queued: Ticket One\n"), "{status}");
+    assert!(status.contains("Attempt 1: dev1"), "{status}");
+}
+
+#[test]
+fn watch_once_json_lists_each_checked_worker() {
+    let (w, id) = world_with_a_claimed_task();
+    let forced = w.run(&["ledger", "watch", "--once", "--force", "--json"]);
+    assert_eq!(forced.code, 0, "{}", forced.err);
+    let checked = json(&forced.out);
+    let list = checked.as_array().unwrap();
+    assert_eq!(list.len(), 1, "{checked}");
+    assert_eq!(list[0]["worker_id"], id.as_str());
+    assert_eq!(list[0]["role"], "dev1");
+    assert_eq!(list[0]["task"], "T-1");
+    assert_eq!(list[0]["verdict"], "dead");
+    assert_eq!(list[0]["note"], "the agent process is gone");
+}
+
+#[test]
+fn ensure_starts_a_quiet_watchdog_once() {
+    let (w, _) = world_with_a_claimed_task();
+    // The first command that runs with the watchdog on starts one.
+    let started = w.run_env(None, false, &["ledger", "status"]);
+    assert_eq!(started.code, 1, "{}", started.err);
+    assert!(
+        started.err.starts_with(
+            "horch: warning: the watchdog of run r1 was not running; started it (PID "
+        ),
+        "{}",
+        started.err
+    );
+    // A second command finds a live watchdog and starts none.
+    let again = w.run_env(None, false, &["ledger", "status"]);
+    assert!(!again.err.contains("started it"), "{}", again.err);
+    // Closing the run ends the watchdog loop at its next tick.
+    w.ok(&["ledger", "run", "close", "--abandon", "test over"]);
+}
+
+#[test]
+fn ensure_starts_nothing_with_the_watchdog_off_or_without_a_ledger() {
+    let (w, _) = world_with_a_claimed_task();
+    let off = w.run_env(None, true, &["ledger", "status"]);
+    assert!(!off.err.contains("watchdog"), "{}", off.err);
+    let bare = World::new();
+    let none = bare.run_env(None, false, &["ledger", "path"]);
+    assert_eq!(none.code, 0);
+    assert!(!none.err.contains("watchdog"), "{}", none.err);
+    assert!(!bare.tmp.path().join("home/.horch/ledger.sqlite3").exists());
 }
