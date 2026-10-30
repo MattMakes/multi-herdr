@@ -21,7 +21,7 @@
 
 use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::{Child, Command, ExitStatus, Stdio};
 use std::time::{Duration, Instant, SystemTime};
 
 use anyhow::{bail, Context, Result};
@@ -83,19 +83,29 @@ pub(crate) fn write_v1_catalog(codex_bin: &Path, state_root: &Path) -> Result<Pa
         serde_json::Value::Array(models) => models,
         _ => bail!("model catalog is neither an object nor an array"),
     };
-    for model in models {
-        let Some(model) = model.as_object_mut() else {
-            continue;
-        };
+    pin_multi_agent_v1(models);
+
+    write_catalog(&catalog, state_root)
+}
+
+/// Pin every model that carries a multi-agent version to `v1`.
+fn pin_multi_agent_v1(models: &mut [serde_json::Value]) {
+    for model in models
+        .iter_mut()
+        .filter_map(serde_json::Value::as_object_mut)
+    {
         if model.contains_key("multi_agent_version") {
             model.insert("multi_agent_version".into(), serde_json::json!("v1"));
         }
     }
+}
 
+/// Write the catalog under `<state_root>/codex/` and return its path.
+fn write_catalog(catalog: &serde_json::Value, state_root: &Path) -> Result<PathBuf> {
     let dir = state_root.join("codex");
     std::fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
     let path = dir.join("model-catalog-v1.json");
-    let bytes = serde_json::to_vec_pretty(&catalog).context("encoding v1 model catalog")?;
+    let bytes = serde_json::to_vec_pretty(catalog).context("encoding v1 model catalog")?;
     fsx::write_atomic(&path, &bytes, fsx::PRIVATE_FILE)
         .with_context(|| format!("writing {}", path.display()))?;
     Ok(path)
@@ -121,10 +131,19 @@ fn run_with_deadline(mut cmd: Command, timeout: Duration) -> Result<std::process
     };
     let out = read(Box::new(stdout));
     let err = read(Box::new(stderr));
-    let deadline = Instant::now() + timeout;
-    let status = loop {
+    let status = wait_until(&mut child, Instant::now() + timeout, timeout)?;
+    Ok(std::process::Output {
+        status,
+        stdout: out.join().unwrap_or_default(),
+        stderr: err.join().unwrap_or_default(),
+    })
+}
+
+/// Poll `child` until it exits or `deadline` passes; kill it on a timeout.
+fn wait_until(child: &mut Child, deadline: Instant, timeout: Duration) -> Result<ExitStatus> {
+    loop {
         match child.try_wait() {
-            Ok(Some(status)) => break status,
+            Ok(Some(status)) => return Ok(status),
             Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(20)),
             Ok(None) => {
                 let _ = child.kill();
@@ -133,12 +152,19 @@ fn run_with_deadline(mut cmd: Command, timeout: Duration) -> Result<std::process
             }
             Err(e) => return Err(e).context("waiting for codex catalog command"),
         }
-    };
-    Ok(std::process::Output {
-        status,
-        stdout: out.join().unwrap_or_default(),
-        stderr: err.join().unwrap_or_default(),
-    })
+    }
+}
+
+/// Remove an existing skills symlink; refuse anything that is not one.
+#[cfg(not(windows))]
+fn clear_skills_link(target: &Path) -> Result<()> {
+    match std::fs::symlink_metadata(target) {
+        Ok(meta) if meta.file_type().is_symlink() => std::fs::remove_file(target)?,
+        Ok(_) => anyhow::bail!("refusing to replace non-symlink {}", target.display()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => return Err(e.into()),
+    }
+    Ok(())
 }
 
 /// One codex launch's execpolicy rules.
@@ -186,20 +212,19 @@ impl Rules {
 
     /// Replace only the private home's skills link. Never follow it into the
     /// operator's skills directory. Codex discovers these files natively.
+    #[cfg(not(windows))]
     pub(crate) fn attach_skills(&self, skills_dir: &Path) -> Result<()> {
-        #[cfg(not(windows))]
-        if let Rules::Private { dir } = self {
-            let target = dir.join("skills");
-            match std::fs::symlink_metadata(&target) {
-                Ok(meta) if meta.file_type().is_symlink() => std::fs::remove_file(&target)?,
-                Ok(_) => anyhow::bail!("refusing to replace non-symlink {}", target.display()),
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-                Err(e) => return Err(e.into()),
-            }
-            std::os::unix::fs::symlink(skills_dir, &target)?;
-            return Ok(());
-        }
-        let _ = skills_dir;
+        let Rules::Private { dir } = self else {
+            anyhow::bail!("Codex phase skills require a private CODEX_HOME; use WSL on Windows");
+        };
+        let target = dir.join("skills");
+        clear_skills_link(&target)?;
+        std::os::unix::fs::symlink(skills_dir, &target)?;
+        Ok(())
+    }
+
+    #[cfg(windows)]
+    pub(crate) fn attach_skills(&self, _skills_dir: &Path) -> Result<()> {
         anyhow::bail!("Codex phase skills require a private CODEX_HOME; use WSL on Windows")
     }
 
