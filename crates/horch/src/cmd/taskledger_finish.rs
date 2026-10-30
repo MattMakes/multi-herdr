@@ -192,10 +192,11 @@ fn detached_run(
             "NOTE: finish stopped with an error: {e:#}. Fix it, then run horch ledger finish again."
         ),
     };
-    let told = super::messaging::tell_as(ctx, Some(HORCH.into()), &role, &text);
-    workers::clear_wait(store.conn(), wid, detach::FINISH_WAIT)?;
+    // End the run before the mail goes: a worker that reads the mail and
+    // runs finish again must find no detached finish.
     detach::clear(run);
-    told.map(|_| ExitCode::SUCCESS)
+    workers::clear_wait(store.conn(), wid, detach::FINISH_WAIT)?;
+    super::messaging::tell_as(ctx, Some(HORCH.into()), &role, &text).map(|_| ExitCode::SUCCESS)
 }
 
 /// The mail of a finished detached run.
