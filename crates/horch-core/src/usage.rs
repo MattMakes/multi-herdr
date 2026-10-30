@@ -1124,6 +1124,77 @@ mod tests {
         );
     }
 
+    /// A session that cannot be read is missing for the reason of the reader
+    /// that refused it.
+    #[test]
+    fn a_session_that_cannot_be_read_is_missing_for_the_readers_reason() {
+        let home = tempfile::tempdir().unwrap();
+        let loc = Locations::under_home(home.path(), &crate::runtime::Inherited::default());
+        let missing =
+            |agent: &str, id: Option<&str>| read_session_events(&loc, agent, id).unwrap_err();
+        assert_eq!(missing("claude", None), Missing::NoSessionId);
+        assert_eq!(missing("claude", Some("gone")), Missing::NoTranscript);
+        assert_eq!(missing("none", Some("x")), Missing::NotRead);
+        assert_eq!(
+            missing("opencode", Some("not safe")),
+            Missing::Failed("unexpected opencode session id 'not safe'".into())
+        );
+    }
+
+    /// The session's path is its main transcript; the calls and the skill
+    /// loads of a subagent's transcript count with it.
+    #[test]
+    fn a_session_is_its_main_transcript_with_the_subagent_ones() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join(".claude/projects/-proj");
+        let subagents = dir.join("sid-s/subagents");
+        std::fs::create_dir_all(&subagents).unwrap();
+        let line = |at: &str, id: &str, skill: &str| claude_line(at, id, 100, Some(skill)) + "\n";
+        std::fs::write(
+            dir.join("sid-s.jsonl"),
+            line("2026-10-06T12:00:00Z", "m1", "horch:tdd"),
+        )
+        .unwrap();
+        std::fs::write(
+            subagents.join("agent-a.jsonl"),
+            line("2026-10-06T12:05:00Z", "m2", "horch:check"),
+        )
+        .unwrap();
+        let loc = Locations::under_home(tmp.path(), &crate::runtime::Inherited::default());
+        let session = read_session_events(&loc, "claude", Some("sid-s")).unwrap();
+        assert_eq!(session.path, dir.join("sid-s.jsonl"));
+        assert_eq!(session.events.len(), 2);
+        let loads: Vec<(&str, &str)> = session
+            .skill_loads
+            .iter()
+            .map(|l| (l.ts.as_str(), l.skill.as_str()))
+            .collect();
+        assert_eq!(
+            loads,
+            [
+                ("2026-10-06T12:00:00Z", "horch:tdd"),
+                ("2026-10-06T12:05:00Z", "horch:check")
+            ]
+        );
+    }
+
+    /// A transcript that is not valid text still gives its usage: only the
+    /// scan for skill loads, which reads text, finds nothing in it.
+    #[test]
+    fn a_transcript_that_is_not_text_gives_its_usage_but_no_skill_loads() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join(".claude/projects/-proj");
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut bytes =
+            (claude_line("2026-10-06T12:00:00Z", "m1", 100, Some("horch:tdd")) + "\n").into_bytes();
+        bytes.extend_from_slice(b"\xff\xfe not text\n");
+        std::fs::write(dir.join("sid-b.jsonl"), bytes).unwrap();
+        let loc = Locations::under_home(tmp.path(), &crate::runtime::Inherited::default());
+        let session = read_session_events(&loc, "claude", Some("sid-b")).unwrap();
+        assert_eq!(session.events.len(), 1);
+        assert!(session.skill_loads.is_empty(), "{:?}", session.skill_loads);
+    }
+
     #[test]
     fn a_pricing_file_overrides_one_row_and_keeps_the_rest() {
         let tmp = tempfile::tempdir().unwrap();
