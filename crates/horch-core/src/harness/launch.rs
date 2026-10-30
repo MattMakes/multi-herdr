@@ -880,21 +880,34 @@ const POLL_SCHEDULE: [Duration; 62] = {
     schedule
 };
 
+/// What one session-id search looks at: the pane, the ledger and the
+/// harness's own records.
+#[derive(Clone, Copy)]
+struct Search<'a> {
+    ctx: &'a RuntimeContext,
+    agent: HarnessKind,
+    herdr: &'a Herdr,
+    pane: &'a str,
+    ledger: &'a Ledger,
+    workdir: &'a Path,
+    since: SystemTime,
+    sessions_dir: Option<&'a Path>,
+}
+
 /// One discovery attempt: herdr's native `agent_session_id` for the pane,
 /// else the harness's own records for `workdir`, newest first, skipping ids
 /// already claimed by a concurrently spawned worker.
-#[allow(clippy::too_many_arguments)]
-fn discover_once(
-    ctx: &RuntimeContext,
-    agent: HarnessKind,
-    herdr: &Herdr,
-    pane: &str,
-    ledger: &Ledger,
-    workdir: &Path,
-    since: SystemTime,
-    sessions_dir: Option<&Path>,
-    record_id: &str,
-) -> Option<String> {
+fn discover_once(search: &Search<'_>, record_id: &str) -> Option<String> {
+    let Search {
+        ctx,
+        agent,
+        herdr,
+        pane,
+        ledger,
+        workdir,
+        since,
+        sessions_dir,
+    } = *search;
     (!pane.is_empty())
         .then(|| herdr.pane_get(pane).ok())
         .flatten()
@@ -965,14 +978,16 @@ fn discover_into_ledger(
         .unwrap_or_default();
     let workdir = PathBuf::from(brief.workdir_or_project());
     if let Some(session_id) = discover_once(
-        ctx,
-        agent,
-        &herdr,
-        &pane,
-        ledger,
-        &workdir,
-        since,
-        sessions_dir.as_deref(),
+        &Search {
+            ctx,
+            agent,
+            herdr: &herdr,
+            pane: &pane,
+            ledger,
+            workdir: &workdir,
+            since,
+            sessions_dir: sessions_dir.as_deref(),
+        },
         record_id,
     ) {
         ledger.set_session(record_id, &session_id)?;
@@ -1057,7 +1072,7 @@ pub(crate) type QueueLine<'a> = &'a dyn Fn(&str) -> Result<()>;
 /// with no task and no word. `queue` first queues that line as durable
 /// orchestrator mail (#177), so a failed push still reaches it. True when
 /// the prompt was typed.
-#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments)] // each argument is a separate delivery input; grouping would only hide them
 pub(crate) fn type_resumed_prompt(
     ws: &dyn WorkspaceClient,
     pane: Option<&str>,
@@ -1140,14 +1155,16 @@ fn start_discovery(
             }
 
             let found = discover_once(
-                &ctx,
-                agent,
-                &herdr,
-                &pane,
-                &ledger,
-                &workdir,
-                since,
-                sessions_dir.as_deref(),
+                &Search {
+                    ctx: &ctx,
+                    agent,
+                    herdr: &herdr,
+                    pane: &pane,
+                    ledger: &ledger,
+                    workdir: &workdir,
+                    since,
+                    sessions_dir: sessions_dir.as_deref(),
+                },
                 &record_id,
             );
             if let Some(session_id) = found {

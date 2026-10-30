@@ -530,7 +530,7 @@ fn review_task(
 
 /// Write the ticket of every reviewer the triage picks. Nothing is queued
 /// yet: a prompt that does not read fails the round before any task exists.
-#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments)] // the round inputs are all distinct paths and strings of one step
 fn plan_round(
     cx: &Ctx<'_>,
     sweep: &Path,
