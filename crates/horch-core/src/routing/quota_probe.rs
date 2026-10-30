@@ -1018,6 +1018,23 @@ echo '{"id":2,"result":{"rateLimits":{"primary":{"windowDurationMins":300,"usedP
         );
     }
 
+    /// Neither probe starts its harness with a forbidden variable
+    /// (CLAUDE.md): each command removes every one, whatever the shell that
+    /// started horch exports.
+    #[test]
+    fn the_probe_commands_remove_the_forbidden_env() {
+        let commands = [
+            claude_command(Path::new("claude"), Path::new("scratch")),
+            codex_command(Path::new("codex")),
+        ];
+        for cmd in &commands {
+            for key in crate::harness::launch::FORBIDDEN_ENV {
+                let removed = cmd.get_envs().any(|(k, v)| k == key && v.is_none());
+                assert!(removed, "{:?} does not remove {key}", cmd.get_program());
+            }
+        }
+    }
+
     /// A harness that does not start, or ends before it answers the request
     /// the probe waits for, gives its reason.
     #[cfg(unix)]
