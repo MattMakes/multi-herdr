@@ -41,7 +41,9 @@
 - A Codex worker's exec policy allows only its own `horch ledger`
   subcommands outside its sandbox (`claim`, `worktree`, `progress`, `status`,
   `show`, `steps`, `finish`, `done`); `add`, `add-map` and `reopen` are
-  refused. `finish` still runs the task's check command and its git commands
+  refused. A Codex pane's private codex home, which holds these rules, is
+  now in horch's data folder, so a sandboxed worker cannot edit it. `finish`
+  still runs the task's check command and its git commands
   outside the sandbox, so the check runs code the worker wrote; a later fix
   runs the check inside the sandbox. On Windows, horch removes the old broad
   `horch ledger` worker rule from the shared codex rules file. That file

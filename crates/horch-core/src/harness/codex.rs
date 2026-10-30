@@ -162,15 +162,17 @@ impl Rules {
     /// left behind says which pane it belonged to.
     ///
     /// `codex_home` is the inherited codex home ([`codex_home`]) the private
-    /// one mirrors, and `state_root` is where the private one is built.
+    /// one mirrors, and `root` is where the private one is built. `root` must
+    /// be outside every writable root of the sandbox, or a worker can rewrite
+    /// the rules of a pane before codex reads them.
     pub fn install(
         home: &Path,
         codex_home: &Path,
-        state_root: &Path,
+        root: &Path,
         role: &str,
         rules: &[ExecRule],
     ) -> Result<Rules> {
-        install_rules(home, codex_home, state_root, role, rules)
+        install_rules(home, codex_home, root, role, rules)
     }
 
     /// Point the agent's command at these rules.
@@ -272,17 +274,17 @@ fn render(rules: &[ExecRule]) -> String {
 fn install_rules(
     _home: &Path,
     codex_home: &Path,
-    state_root: &Path,
+    root: &Path,
     role: &str,
     rules: &[ExecRule],
 ) -> Result<Rules> {
-    let dir = build_private_home(codex_home, state_root, role)?;
+    let dir = build_private_home(codex_home, root, role)?;
     std::fs::write(dir.join("rules").join("horch.rules"), render(rules))
         .with_context(|| format!("writing this launch's rules under {}", dir.display()))?;
     Ok(Rules::Private { dir })
 }
 
-/// Assemble a private codex home under `state_root`, mirroring `source`.
+/// Assemble a private codex home under `root`, mirroring `source`.
 ///
 /// Rebuilt on every launch rather than cached, so an entry added to the real
 /// codex home since the last fleet is linked rather than missing.
@@ -292,7 +294,7 @@ fn install_rules(
 /// symlinks and one rules file, harmless to delete, and legible about which
 /// pane they came from.
 #[cfg(not(windows))]
-fn build_private_home(source: &Path, state_root: &Path, role: &str) -> Result<PathBuf> {
+fn build_private_home(source: &Path, root: &Path, role: &str) -> Result<PathBuf> {
     let slug: String = role
         .chars()
         .map(|c| {
@@ -303,7 +305,7 @@ fn build_private_home(source: &Path, state_root: &Path, role: &str) -> Result<Pa
             }
         })
         .collect();
-    let dir = state_root
+    let dir = root
         .join("codex-home")
         .join(format!("{slug}-{}", crate::mint_uuid()));
     std::fs::create_dir_all(dir.join("rules"))
@@ -336,7 +338,7 @@ fn build_private_home(source: &Path, state_root: &Path, role: &str) -> Result<Pa
 fn install_rules(
     home: &Path,
     _codex_home: &Path,
-    _state_root: &Path,
+    _root: &Path,
     _role: &str,
     rules: &[ExecRule],
 ) -> Result<Rules> {
@@ -633,10 +635,12 @@ impl Harness for Codex {
     /// switch; full access needs none.
     fn prepare(&self, ctx: &RuntimeContext, req: &PrepareRequest<'_>) -> Result<Prepared> {
         let home = codex_home(&ctx.paths.home, ctx.inherited.codex_home.as_deref());
+        // The data root, not the state root: every pane may write the
+        // state root (review F13 of T-7).
         let rules = Rules::install(
             &ctx.paths.home,
             &home,
-            &ctx.paths.state_root,
+            &ctx.paths.data_root,
             req.role,
             req.exec_rules,
         )?;
@@ -997,15 +1001,20 @@ fn launch_sandbox(
 /// Whether a codex launch of `teammate` can have the network, judged from
 /// the teammate file and the harness defaults. The operator's `config.toml`
 /// is not read, and it can turn the network on, so the answer fails closed:
-/// only a read-only sandbox, or a workspace-write sandbox whose args turn
-/// `sandbox_workspace_write.network_access` off, has none.
+/// only a read-only sandbox, or a workspace-write sandbox whose args or
+/// forced harness defaults turn `sandbox_workspace_write.network_access`
+/// off, has none. A default without `force` yields to `config.toml`.
 pub(crate) fn launch_has_network(teammate: &Teammate) -> bool {
     const KEY: &str = "sandbox_workspace_write.network_access";
     match launch_sandbox(teammate, || None).as_deref() {
         Some(READ_ONLY) => false,
         Some(WORKSPACE_WRITE) => {
-            let defaults = default_args(teammate, || None);
-            config_pair_value(&teammate.args, KEY).or_else(|| config_pair_value(&defaults, KEY))
+            let forced: Vec<String> =
+                HarnessDefault::for_harness(&teammate.harness_defaults, HarnessKind::Codex)
+                    .filter(|d| d.force.is_some())
+                    .flat_map(|d| d.args.iter().cloned())
+                    .collect();
+            config_pair_value(&teammate.args, KEY).or_else(|| config_pair_value(&forced, KEY))
                 != Some("false")
         }
         _ => true,
@@ -2132,7 +2141,8 @@ mod tests {
     }
 
     /// A teammate whose own args choose the sandbox: workspace-write has the
-    /// network only with `network_access` on; full access always has it.
+    /// network unless the args or a forced harness default set
+    /// `network_access=false`; full access always has it.
     /// A sandbox the teammate file does not decide (codex's default, the
     /// operator's config, a named profile) counts as having the network, so
     /// the network-safety check fails closed.
@@ -2178,6 +2188,77 @@ mod tests {
         };
         assert!(launch_has_network(&profile));
         assert!(launch_has_network(&Teammate::default()));
+
+        // A harness default decides only when the teammate's args leave the
+        // key unset, and it turns the network off only with `force`: a
+        // default without it yields to the operator's config.toml.
+        let with_default = |args: &[&str], force: Option<&str>| Teammate {
+            harness_defaults: vec![HarnessDefault {
+                harness: HarnessKind::Codex,
+                base: None,
+                env: Default::default(),
+                args: vec![
+                    "-c".into(),
+                    "sandbox_workspace_write.network_access=false".into(),
+                ],
+                settings: None,
+                config: None,
+                agent_settings: None,
+                force: force.map(str::to_string),
+            }],
+            ..with(args)
+        };
+        assert!(!launch_has_network(&with_default(
+            &["-s", "workspace-write"],
+            Some("test")
+        )));
+        assert!(launch_has_network(&with_default(
+            &[
+                "-s",
+                "workspace-write",
+                "-c",
+                "sandbox_workspace_write.network_access=true"
+            ],
+            Some("test")
+        )));
+        assert!(launch_has_network(&with_default(
+            &["-s", "workspace-write"],
+            None
+        )));
+    }
+
+    /// Review F13 of T-7: the private codex homes lived under the state
+    /// root, which every pane may write, so a sandboxed worker could rewrite
+    /// the rules (and drop the `forbidden` blocks) of a pane horch launches
+    /// later. A private home is now built outside every writable root.
+    #[cfg(unix)]
+    #[test]
+    fn the_private_codex_home_is_outside_every_writable_root() {
+        let roster = Roster::builtin().unwrap();
+        for teammate in [roster.require("codex-sol").unwrap(), &Teammate::default()] {
+            let tmp = tempfile::tempdir().unwrap();
+            let (ctx, prepared) = prepare_in(tmp.path(), teammate);
+            let home = Path::new(
+                &prepared
+                    .env
+                    .iter()
+                    .find(|(k, _)| k == "CODEX_HOME")
+                    .expect("a private codex home")
+                    .1,
+            )
+            .to_path_buf();
+            assert!(home.join("rules/horch.rules").is_file(), "{home:?}");
+            assert!(home.starts_with(&ctx.paths.data_root), "{home:?}");
+            assert!(!home.starts_with(&ctx.paths.state_root), "{home:?}");
+            let added = prepared
+                .extra_args
+                .windows(2)
+                .filter(|w| w[0] == "--add-dir")
+                .map(|w| Path::new(&w[1]));
+            for root in added {
+                assert!(!home.starts_with(root), "{home:?} is under {root:?}");
+            }
+        }
     }
 
     /// The load-bearing safety property: cleanup removes the LINKS, never what

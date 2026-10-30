@@ -291,14 +291,13 @@ threshold.
 
 Security note on `--add-dir <state root>` (W21; orchestrator decision:
 accepted). Every Codex pane can now write the whole state root: the ledgers
-of all projects, the private `codex-home/<role>` dirs and the
-`skill-bundles/<execution_id>` dirs of live panes. A Claude worker has no OS
-sandbox and can already write there, so a Codex pane gets the same access,
-not more. Codex reads its rules only at startup, and each launch builds a
-new private home, so a write into a live pane's `codex-home` does not change
-that pane. Follow-up, not in this branch: move `codex-home` and
-`skill-bundles` out of the state root, then narrow `--add-dir` to the
-ledger and the dirs that `horch` writes.
+of all projects and the `skill-bundles/<execution_id>` dirs of live panes.
+A Claude worker has no OS sandbox and can already write there, so a Codex
+pane gets the same access, not more. The private `codex-home/<role>` dirs
+are in the data root (T-7, #181): no pane can write them, so a worker cannot
+change the rules of a pane that horch launches later. Follow-up, not in this
+branch: move `skill-bundles` out of the state root, then narrow `--add-dir`
+to the ledger and the dirs that `horch` writes.
 
 ### 4.2 Fresh-session route (pi and Prime; the fallback for all)
 
