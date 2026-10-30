@@ -2834,6 +2834,98 @@ fn queue(h: &Harness, name: &str, persona: &str, extra: &[&str]) {
     ok(h, &args);
 }
 
+/// Whether `ledger status` printed the board of run `slug`.
+fn shows_run(o: &Output, slug: &str) -> bool {
+    out(o).starts_with(&format!("Run {slug} (active)."))
+}
+
+/// The run a command means (`resolve_run`): `--run`, else `HORCH_RUN_ID`,
+/// else the run of the worker in `HORCH_WORKER_ID`, else the 1 active run.
+#[test]
+fn a_command_means_the_run_it_names_before_the_run_of_its_worker() {
+    let h = world("tl-which-run");
+    ok(&h, &["ledger", "run", "new", "a"]);
+    ok(&h, &["ledger", "run", "new", "b"]);
+    let in_b = ok(
+        &h,
+        &["ledger", "worker", "new", "--persona", "opus", "--run", "b"],
+    )
+    .trim()
+    .to_string();
+
+    // Nothing names a run, and 2 are active: the command refuses.
+    let o = h.run(&["ledger", "status"]);
+    assert!(!o.status.success(), "{}", text(&o));
+    assert!(text(&o).contains("2 active runs"), "{}", text(&o));
+
+    // `--run` names it. The environment names it too, and `--run` wins.
+    let o = h.run(&["ledger", "status", "--run", "a"]);
+    assert!(shows_run(&o, "a"), "{}", text(&o));
+    let o = run_env(&h, &[("HORCH_RUN_ID", "b")], &["ledger", "status"]);
+    assert!(shows_run(&o, "b"), "{}", text(&o));
+    let o = run_env(
+        &h,
+        &[("HORCH_RUN_ID", "b")],
+        &["ledger", "status", "--run", "a"],
+    );
+    assert!(shows_run(&o, "a"), "{}", text(&o));
+
+    // Without either, a worker means its own run.
+    let as_worker = |extra: &[(&str, &str)], args: &[&str]| {
+        let mut env = vec![("HORCH_WORKER_ID", in_b.as_str())];
+        env.extend_from_slice(extra);
+        run_env(&h, &env, args)
+    };
+    let o = as_worker(&[], &["ledger", "status"]);
+    assert!(shows_run(&o, "b"), "{}", text(&o));
+    // An empty `HORCH_RUN_ID` names nothing, so the worker's run still counts.
+    let o = as_worker(&[("HORCH_RUN_ID", "")], &["ledger", "status"]);
+    assert!(shows_run(&o, "b"), "{}", text(&o));
+    // A name beats the worker, from the flag and from the environment.
+    let o = as_worker(&[], &["ledger", "status", "--run", "a"]);
+    assert!(shows_run(&o, "a"), "{}", text(&o));
+    let o = as_worker(&[("HORCH_RUN_ID", "a")], &["ledger", "status"]);
+    assert!(shows_run(&o, "a"), "{}", text(&o));
+
+    // A worker the ledger does not know means no run.
+    let o = run_env(
+        &h,
+        &[("HORCH_WORKER_ID", "no-such-worker")],
+        &["ledger", "status"],
+    );
+    assert!(!o.status.success(), "{}", text(&o));
+    assert!(text(&o).contains("2 active runs"), "{}", text(&o));
+}
+
+#[test]
+fn a_command_from_another_workspace_says_whose_run_it_uses() {
+    let h = fleet("tl-which-ws", "default");
+    ok(&h, &["ledger", "run", "new", "a"]);
+    let note = "horch: NOTE: this command uses run a of workspace w1, not of this workspace w2. \
+                Name a run with --run <slug>.";
+    let o = run_env(&h, &[("HORCH_WORKSPACE_ID", "w2")], &["ledger", "status"]);
+    assert!(shows_run(&o, "a"), "{}", text(&o));
+    let stderr = String::from_utf8_lossy(&o.stderr).into_owned();
+    assert!(stderr.lines().any(|l| l == note), "{}", text(&o));
+
+    // The run's own workspace and a command that names the run get no note.
+    for (env, args) in [
+        (&[][..], &["ledger", "status"][..]),
+        (
+            &[("HORCH_WORKSPACE_ID", "w2")][..],
+            &["ledger", "status", "--run", "a"][..],
+        ),
+    ] {
+        let o = run_env(&h, env, args);
+        assert!(shows_run(&o, "a"), "{}", text(&o));
+        assert!(
+            !String::from_utf8_lossy(&o.stderr).contains("this command uses run"),
+            "{}",
+            text(&o)
+        );
+    }
+}
+
 #[test]
 fn a_closed_run_frees_the_project_for_the_next_run() {
     let h = world("tl-close");
