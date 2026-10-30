@@ -158,33 +158,31 @@ fn herdr_fallback(
     // with HERDR_ONLY, so the streak counts it. A `suspect` of the timer
     // rule (rule 4) has another note, and ends the streak at 0.
     let after_herdr_suspect = streak > 0 && prev_verdict == Some(Verdict::Suspect.as_str());
-    Ok(
-        if after_herdr_suspect {
-            (
-                Verdict::Dead,
-                format!(
-                    "{HERDR_ONLY}, but nothing else moved for {} checks in a row{missing}",
-                    streak + 1
-                ),
-                None,
-            )
-        } else if streak >= cap {
-            let pane = w.pane_id.as_deref().unwrap_or("unknown");
-            (
+    Ok(if after_herdr_suspect {
+        (
+            Verdict::Dead,
+            format!(
+                "{HERDR_ONLY}, but nothing else moved for {} checks in a row{missing}",
+                streak + 1
+            ),
+            None,
+        )
+    } else if streak >= cap {
+        let pane = w.pane_id.as_deref().unwrap_or("unknown");
+        (
                 Verdict::Suspect,
                 format!(
                     "{HERDR_ONLY}, but nothing else moved for {cap} checks in a row{missing}; pane {pane}"
                 ),
                 None,
             )
-        } else {
-            (
-                Verdict::ProxyCheckin,
-                format!("{HERDR_ONLY}, {detail}{missing}"),
-                Some(ProgressSource::HerdrState),
-            )
-        },
-    )
+    } else {
+        (
+            Verdict::ProxyCheckin,
+            format!("{HERDR_ONLY}, {detail}{missing}"),
+            Some(ProgressSource::HerdrState),
+        )
+    })
 }
 
 fn timer_agent(harness: Option<&str>) -> timer::Agent {
@@ -586,6 +584,17 @@ pub fn checkin(conn: &Connection, run_id: &str, pid: u32, started: Option<u64>) 
     Ok(())
 }
 
+/// Record on the run the watchdog process that a starter just started, but
+/// no checkin. Until it takes its lock and checks in, the next command
+/// sees it alive in [`needs_restart`] and does not start a second one.
+pub fn record_start(conn: &Connection, run_id: &str, pid: u32, started: Option<u64>) -> Result<()> {
+    conn.execute(
+        "UPDATE runs SET watchdog_pid = ?2, watchdog_started = ?3 WHERE run_id = ?1",
+        params![run_id, pid as i64, started.map(|s| s as i64)],
+    )?;
+    Ok(())
+}
+
 /// Every active run of the ledger, of any project: `horch install` checks
 /// the watchdog of each (#216).
 pub fn active_runs(conn: &Connection) -> Result<Vec<Run>> {
@@ -892,9 +901,17 @@ mod tests {
         let mut verdicts = Vec::new();
         for _ in 0..4 {
             pass_time(&s, &w, 600);
-            verdicts.push(check_run(&mut s, &run, &obs, false).unwrap().remove(0).verdict);
+            verdicts.push(
+                check_run(&mut s, &run, &obs, false)
+                    .unwrap()
+                    .remove(0)
+                    .verdict,
+            );
         }
-        assert_eq!(verdicts, ["proxy_checkin", "proxy_checkin", "suspect", "dead"]);
+        assert_eq!(
+            verdicts,
+            ["proxy_checkin", "proxy_checkin", "suspect", "dead"]
+        );
     }
 
     #[test]
@@ -916,11 +933,19 @@ mod tests {
         let mut verdicts = Vec::new();
         for _ in 0..13 {
             pass_time(&s, &w, 600);
-            verdicts.push(check_run(&mut s, &run, &obs, false).unwrap().remove(0).verdict);
+            verdicts.push(
+                check_run(&mut s, &run, &obs, false)
+                    .unwrap()
+                    .remove(0)
+                    .verdict,
+            );
         }
         // 13 checks, none past the cap of 6 in a row: the growth at check 7
         // starts a new streak.
-        assert!(verdicts.iter().all(|v| v == "proxy_checkin"), "{verdicts:?}");
+        assert!(
+            verdicts.iter().all(|v| v == "proxy_checkin"),
+            "{verdicts:?}"
+        );
     }
 
     #[test]
@@ -998,6 +1023,25 @@ mod tests {
             None,
             "a released lock has no holder"
         );
+    }
+
+    /// A watchdog that its starter recorded, but that has not checked in
+    /// yet, is not restarted while it runs; once it is gone, it is.
+    #[test]
+    fn a_recorded_start_holds_off_a_restart_while_that_process_runs() {
+        let (_d, s, run, _w) = setup();
+        let get = || runs::get(s.conn(), &run.run_id).unwrap();
+        assert!(needs_restart(s.conn(), &get()).unwrap(), "never checked in");
+        let me = std::process::id();
+        record_start(s.conn(), &run.run_id, me, crate::procid::start_time(me)).unwrap();
+        assert!(!needs_restart(s.conn(), &get()).unwrap(), "it is starting");
+        assert_eq!(get().watchdog_checkin_at, None, "a start is no checkin");
+        let Some(started) = crate::procid::start_time(me) else {
+            return; // No start times on this platform: a pid alone is alive.
+        };
+        // The same PID with another start time: the started process ended.
+        record_start(s.conn(), &run.run_id, me, Some(started + 1)).unwrap();
+        assert!(needs_restart(s.conn(), &get()).unwrap(), "it has gone");
     }
 
     #[cfg(unix)]

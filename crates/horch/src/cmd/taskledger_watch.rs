@@ -179,6 +179,16 @@ pub fn watch(
     force: bool,
     as_json: bool,
 ) -> Result<ExitCode> {
+    // A slow start, as on a loaded machine: the e2e tests of `ensure` hold
+    // a new watchdog before its lock with `HORCH_FAULT=watchdog-start-ms:<n>`.
+    if let Some(ms) = ctx
+        .settings
+        .faults
+        .indexed("watchdog-start-ms")
+        .and_then(|s| s.parse::<u64>().ok())
+    {
+        std::thread::sleep(Duration::from_millis(ms.min(120_000)));
+    }
     if let Some(pid) = lock_held(ctx, run) {
         if pid != std::process::id() {
             bail!("the watchdog of run {} already runs (PID {pid})", run.slug);
@@ -259,14 +269,14 @@ pub fn ensure(ctx: &RuntimeContext) {
                     .map(|e| PathBuf::from(&e.path))
                     .filter(|p| p.is_file())
                     .unwrap_or_else(|| exe.clone());
-                replace(ctx, &run, &root, &h, &target, true);
+                replace(ctx, &store, &run, &root, &h, &target, true);
             }
             continue;
         }
         if !watchdog::needs_restart(store.conn(), &run).unwrap_or(false) {
             continue;
         }
-        match start_detached(ctx, &run, &root, &exe) {
+        match start_detached(ctx, &store, &run, &root, &exe) {
             Ok(pid) => eprintln!(
                 "horch: warning: the watchdog of run {} was not running; started it (PID {pid})",
                 run.slug
@@ -297,7 +307,7 @@ pub fn restart_if_stale(ctx: &RuntimeContext, installed: &Path) {
         if let Some(h) = watchdog::holder(&lock_dir(ctx), &run.run_id) {
             if h.runs_other_binary(want.as_ref()) {
                 let root = PathBuf::from(&run.project_root);
-                replace(ctx, &run, &root, &h, installed, false);
+                replace(ctx, &store, &run, &root, &h, installed, false);
             }
         }
     }
@@ -309,6 +319,7 @@ pub fn restart_if_stale(ctx: &RuntimeContext, installed: &Path) {
 /// current pass, and a reap in that pass waits up to the stop grace.
 fn replace(
     ctx: &RuntimeContext,
+    store: &Store,
     run: &Run,
     root: &Path,
     h: &watchdog::LockHolder,
@@ -322,7 +333,7 @@ fn replace(
         );
         return;
     }
-    let line = match start_detached(ctx, run, root, exe) {
+    let line = match start_detached(ctx, store, run, root, exe) {
         Ok(pid) => format!(
             "restarted the watchdog of run {} on {}: PID {} ran another build of horch, PID {pid} runs the new one",
             run.slug,
@@ -346,8 +357,15 @@ fn replace(
 
 /// `horch ledger watch --run <id>` of `exe`, detached in its own session so
 /// a pane close does not end it. Its output goes to
-/// `<ledger dir>/watchdog-<run>.log`.
-fn start_detached(ctx: &RuntimeContext, run: &Run, root: &Path, exe: &Path) -> Result<u32> {
+/// `<ledger dir>/watchdog-<run>.log`. The run records the new process at
+/// once, so a command before its first checkin does not start another.
+fn start_detached(
+    ctx: &RuntimeContext,
+    store: &Store,
+    run: &Run,
+    root: &Path,
+    exe: &Path,
+) -> Result<u32> {
     let log_path = ctx
         .paths
         .ledger_db
@@ -371,5 +389,19 @@ fn start_detached(ctx: &RuntimeContext, run: &Run, root: &Path, exe: &Path) -> R
         cmd.env("HORCH_WORKSPACE_ID", ws);
     }
     let child = horch_core::runtime::process::spawn_detached(&mut cmd)?;
-    Ok(child.id())
+    let pid = child.id();
+    // It runs either way; without the record, the next command can start a
+    // second one, which finds the lock taken and ends.
+    if let Err(e) = watchdog::record_start(
+        store.conn(),
+        &run.run_id,
+        pid,
+        horch_core::procid::start_time(pid),
+    ) {
+        eprintln!(
+            "horch: warning: the run {} did not record its new watchdog (PID {pid}): {e:#}",
+            run.slug
+        );
+    }
+    Ok(pid)
 }
