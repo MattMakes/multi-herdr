@@ -1163,4 +1163,105 @@ mod tests {
         )
         .expect("a lock older than stale_after is broken");
     }
+
+    #[test]
+    fn read_regular_bounded_reads_text_up_to_the_limit() {
+        let tmp = tempfile::tempdir().unwrap();
+        let p = tmp.path().join("settings.json");
+        assert_eq!(
+            read_regular_bounded(&p),
+            Ok(None),
+            "no file: nothing to read"
+        );
+        std::fs::write(&p, "{\"a\":1}").unwrap();
+        assert_eq!(read_regular_bounded(&p), Ok(Some("{\"a\":1}".to_string())));
+        std::fs::write(&p, vec![b'x'; READ_LIMIT as usize]).unwrap();
+        let full = read_regular_bounded(&p)
+            .unwrap()
+            .expect("exactly the limit is read");
+        assert_eq!(full.len() as u64, READ_LIMIT);
+        std::fs::write(&p, vec![b'x'; READ_LIMIT as usize + 1]).unwrap();
+        assert_eq!(read_regular_bounded(&p), Err(Refused::TooLarge));
+        std::fs::write(&p, [0xff, 0xfe, 0x00]).unwrap();
+        assert_eq!(
+            read_regular_bounded(&p),
+            Ok(None),
+            "not UTF-8: nothing to read"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn read_regular_bounded_refuses_a_directory_and_a_fifo() {
+        let tmp = tempfile::tempdir().unwrap();
+        assert_eq!(read_regular_bounded(tmp.path()), Err(Refused::NotRegular));
+        let fifo = tmp.path().join("pipe");
+        let c = std::ffi::CString::new(fifo.to_str().unwrap()).unwrap();
+        // SAFETY: a NUL-terminated path that outlives the call.
+        assert_eq!(unsafe { libc::mkfifo(c.as_ptr(), 0o600) }, 0);
+        assert_eq!(read_regular_bounded(&fifo), Err(Refused::NotRegular));
+    }
+
+    #[test]
+    fn refresh_writes_a_heartbeat_only_while_owned() {
+        let tmp = tempfile::tempdir().unwrap();
+        let stale = Duration::from_secs(60);
+        let held = DirLock::acquire(tmp.path(), "events", stale, Duration::from_secs(1)).unwrap();
+        held.refresh().expect("the holder refreshes its own lock");
+        let nonce = held.nonce.clone().unwrap();
+        assert!(held.path().join(format!("heartbeat-{nonce}")).is_file());
+
+        let mut other = read_owner(held.path()).unwrap();
+        other.nonce = "someone-else".into();
+        std::fs::write(
+            held.path().join("owner"),
+            serde_json::to_vec(&other).unwrap(),
+        )
+        .unwrap();
+        let err = held.refresh().unwrap_err();
+        assert!(
+            err.to_string()
+                .ends_with("lock is no longer owned by this guard"),
+            "{err}"
+        );
+        drop(held);
+        assert!(
+            tmp.path().join("events.lock").exists(),
+            "a guard does not remove a lock it no longer owns"
+        );
+
+        let unowned = DirLockGuard {
+            path: tmp.path().join("other.lock"),
+            nonce: None,
+        };
+        let err = unowned.refresh().unwrap_err();
+        assert!(
+            err.to_string().ends_with("lock owner is not initialized"),
+            "{err}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn breaker_guard_without_a_parent_dir_holds_nothing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let lock = tmp.path().join("missing").join("events.lock");
+        let guard = BreakerGuard::take(&lock).expect("no directory to lock: free");
+        assert!(guard._dir.is_none());
+    }
+
+    #[test]
+    fn break_lock_keeps_a_fresh_breaker_and_the_lock() {
+        let tmp = tempfile::tempdir().unwrap();
+        let lock = tmp.path().join("events.lock");
+        std::fs::create_dir(&lock).unwrap();
+        let breaker = tmp.path().join("events.lock.break");
+        std::fs::create_dir(&breaker).unwrap();
+        assert!(!break_lock(&lock, Duration::ZERO));
+        assert!(
+            breaker.is_dir(),
+            "a fresh breaker belongs to a live process"
+        );
+        assert!(lock.is_dir());
+    }
 }
