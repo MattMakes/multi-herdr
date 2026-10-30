@@ -1343,6 +1343,44 @@ mod tests {
         assert!(sandbox_problems(empty.as_object().unwrap()).is_empty());
     }
 
+    /// The whole text of each line, and how a block of an odd shape reads.
+    #[test]
+    fn the_sandbox_check_gives_each_line_in_full_and_reads_odd_blocks() {
+        let problems = |block: Value| sandbox_problems(block.as_object().unwrap());
+        assert_eq!(
+            problems(json!({
+                "enabled": false,
+                "allowUnsandboxedCommands": true,
+                "network": {"strictAllowlist": false}
+            })),
+            [
+                "sandbox.enabled must be true or left out (horch sets it)",
+                "sandbox.allowUnsandboxedCommands must be false or left out (horch sets it)",
+                "sandbox.network.strictAllowlist must be true or left out (horch sets it)",
+            ]
+        );
+        // A key at its forced value is no problem, a value of another type is.
+        assert!(problems(json!({"enabled": true, "failIfUnavailable": true})).is_empty());
+        assert_eq!(
+            problems(json!({"enabled": "yes"})),
+            ["sandbox.enabled must be true or left out (horch sets it)"]
+        );
+        // A parent that is not an object holds no key to check.
+        assert!(problems(json!({"network": true})).is_empty());
+        // excludedCommands: anything but an empty list.
+        assert_eq!(
+            problems(json!({"excludedCommands": "asc *"})),
+            ["sandbox.excludedCommands runs commands outside the sandbox; leave it out"]
+        );
+        assert!(problems(json!({"excludedCommands": []})).is_empty());
+        // filesystem.disabled: anything but false.
+        assert_eq!(
+            problems(json!({"filesystem": {"disabled": "yes"}})),
+            ["sandbox.filesystem.disabled turns the filesystem layer off"]
+        );
+        assert!(problems(json!({"filesystem": 5})).is_empty());
+    }
+
     #[test]
     fn the_host_check_names_what_is_missing() {
         assert_eq!(sandbox_host_problem("macos", None, true), None);
