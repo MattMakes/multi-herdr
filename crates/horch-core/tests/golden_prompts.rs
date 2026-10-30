@@ -1186,6 +1186,25 @@ Communication and lifecycle (the `horch` command is on your PATH; these are
         "sanctioned block preimage missing"
     );
     expected = expected.replace(was, now);
+    // Sanctioned ledger-worktree block (#202): a ledger worker made a
+    // worktree with the plain `horch worktree new`, which the ledger does not
+    // record, so finish could not check or land it. In a ledger run the
+    // section now names 1 worktree command.
+    let was = r####"== Worktrees ==
+- Work in the shared checkout unless your plan tells you to use a worktree.
+"####;
+    let now = r####"== Worktrees ==
+- In a ledger run, follow the claim. Use only horch ledger worktree new.
+  horch ledger finish lands that worktree. The rest of this section applies
+  only outside a ledger run.
+- Work in the shared checkout unless your plan tells you to use a worktree.
+"####;
+    assert_eq!(
+        expected.matches(was).count(),
+        1,
+        "sanctioned block preimage missing"
+    );
+    expected = expected.replace(was, now);
     expected
         .replace("{host}", &horch_core::project_notes::host_line())
         .replace("{project_facts}", "(No project facts recorded.)")
