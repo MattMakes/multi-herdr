@@ -48,7 +48,9 @@ pub(crate) fn strip_done_prefix<'a>(summary: &'a str, role: &str) -> &'a str {
 /// holds the messages of one workspace delivered by reference. A fleet never
 /// lists another fleet's messages: role names repeat across fleets.
 pub fn spool_dir(state_root: &Path, workspace: &str) -> PathBuf {
-    state_root.join("messages").join(super::file_safe(workspace))
+    state_root
+        .join("messages")
+        .join(super::file_safe(workspace))
 }
 
 /// Write `message` to a new file under `dir` and return its path. The file
