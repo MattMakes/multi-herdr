@@ -255,9 +255,14 @@ pub fn resolve(
     workspace: Option<&str>,
 ) -> Result<(Run, Option<String>)> {
     let runs = of_project(conn, root)?;
-    if let Some(key) = explicit.filter(|k| !k.is_empty()) {
-        return by_key(conn, root, &runs, key).map(|r| (r, None));
+    match explicit.filter(|k| !k.is_empty()) {
+        Some(key) => by_key(conn, root, &runs, key).map(|r| (r, None)),
+        None => the_active(&runs, root, workspace),
     }
+}
+
+/// The 1 active run a command means when it names none (see [`resolve`]).
+fn the_active(runs: &[Run], root: &Path, workspace: Option<&str>) -> Result<(Run, Option<String>)> {
     let active: Vec<&Run> = runs
         .iter()
         .filter(|r| r.status == RunStatus::Active.as_str())
@@ -267,62 +272,67 @@ pub fn resolve(
         .copied()
         .filter(|r| workspace.is_some() && r.workspace_id.as_deref() == workspace)
         .collect();
-    if let [one] = own.as_slice() {
-        return Ok(((*one).clone(), None));
-    }
     match (own.as_slice(), active.as_slice()) {
-        ([], [one]) => {
-            let note = workspace
-                .filter(|ws| one.workspace_id.as_deref() != Some(*ws))
-                .map(|ws| {
-                    format!(
-                        "NOTE: this command uses run {} of workspace {}, not of this workspace {ws}. Name a run with --run <slug>.",
-                        one.slug,
-                        one.workspace_id.as_deref().unwrap_or("(none)")
-                    )
-                });
-            Ok(((*one).clone(), note))
-        }
+        ([one], _) => Ok(((*one).clone(), None)),
+        ([], [one]) => Ok(((*one).clone(), other_workspace_note(one, workspace))),
         (_, []) => bail!(
             "no active run in {}. Create one: horch ledger run new <slug>",
             root.display()
         ),
-        (mine, all) => {
-            let many = if mine.is_empty() { all } else { mine };
-            bail!(
-                "{} active runs in {}: {}. Name one with --run <slug>, or close one with horch ledger run close --run <slug>",
-                many.len(),
-                root.display(),
-                many.iter()
-                    .map(|r| match &r.workspace_id {
-                        Some(ws) => format!("{} (workspace {ws})", r.slug),
-                        None => r.slug.clone(),
-                    })
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            )
-        }
+        (mine, all) => bail!(
+            "{}",
+            ambiguous_runs(if mine.is_empty() { all } else { mine }, root)
+        ),
     }
 }
 
-/// A run by id or slug: a slug picks its active run, else its newest.
+/// The `NOTE:` line for the 1 active run when it is not the caller's workspace's.
+fn other_workspace_note(one: &Run, workspace: Option<&str>) -> Option<String> {
+    workspace
+        .filter(|ws| one.workspace_id.as_deref() != Some(*ws))
+        .map(|ws| {
+            format!(
+                "NOTE: this command uses run {} of workspace {}, not of this workspace {ws}. Name a run with --run <slug>.",
+                one.slug,
+                one.workspace_id.as_deref().unwrap_or("(none)")
+            )
+        })
+}
+
+/// The error text when 2+ active runs fit and none is chosen.
+fn ambiguous_runs(many: &[&Run], root: &Path) -> String {
+    format!(
+        "{} active runs in {}: {}. Name one with --run <slug>, or close one with horch ledger run close --run <slug>",
+        many.len(),
+        root.display(),
+        many.iter()
+            .map(|r| match &r.workspace_id {
+                Some(ws) => format!("{} (workspace {ws})", r.slug),
+                None => r.slug.clone(),
+            })
+            .collect::<Vec<_>>()
+            .join(", ")
+    )
+}
+
+/// A run by id or slug: a slug picks its active run, else its newest. A run
+/// id from another project (a worker in a worktree) still works.
 fn by_key(conn: &Connection, root: &Path, runs: &[Run], key: &str) -> Result<Run> {
-    if let Some(run) = runs.iter().find(|r| r.run_id == key) {
-        return Ok(run.clone());
-    }
-    let by_slug: Vec<&Run> = runs.iter().filter(|r| r.slug == key).collect();
-    if let Some(run) = by_slug
-        .iter()
+    runs.iter()
+        .find(|r| r.run_id == key)
+        .cloned()
+        .or_else(|| by_slug(runs, key))
+        .or_else(|| get(conn, key).ok())
+        .with_context(|| format!("no run '{key}' in {}", root.display()))
+}
+
+/// The active run with slug `key`, else the newest with it.
+fn by_slug(runs: &[Run], key: &str) -> Option<Run> {
+    let same: Vec<&Run> = runs.iter().filter(|r| r.slug == key).collect();
+    same.iter()
         .find(|r| r.status == RunStatus::Active.as_str())
-        .or(by_slug.first())
-    {
-        return Ok((*run).clone());
-    }
-    // A run id from another project (a worker in a worktree) still works.
-    if let Ok(run) = get(conn, key) {
-        return Ok(run);
-    }
-    bail!("no run '{key}' in {}", root.display());
+        .or(same.first())
+        .map(|r| (*r).clone())
 }
 
 /// Record the orchestrator's own worker row on the run.
