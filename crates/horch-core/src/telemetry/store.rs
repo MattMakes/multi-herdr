@@ -762,6 +762,57 @@ mod tests {
         assert!(!tmp.path().join("events-2026-08-01.jsonl").exists());
     }
 
+    /// The window keeps the file of its oldest day and an undated one,
+    /// deletes the file of the day before with its events, and leaves every
+    /// file that is not an event file alone.
+    #[test]
+    fn open_deletes_only_the_event_files_dated_before_the_oldest_day() {
+        let tmp = tempfile::tempdir().unwrap();
+        let before = ev("before", "2026-08-23T23:59:59Z", "r1", 1, 0.0);
+        let edge = ev("edge", "2026-08-24T00:00:00Z", "r1", 1, 0.0);
+        let undated = ev("undated", "soon", "r1", 1, 0.0);
+        let line = |e: &Event| serde_json::to_string(e).unwrap() + "\n";
+        for (name, text) in [
+            ("events-2026-08-23.jsonl", line(&before)),
+            ("events-2026-08-24.jsonl", line(&edge)),
+            ("events-undated.jsonl", line(&undated)),
+            ("events-2026-08-01.jsonl.bak", "kept".to_string()),
+            ("cursors.json", "{}".to_string()),
+        ] {
+            std::fs::write(tmp.path().join(name), text).unwrap();
+        }
+        let s = Store::open(tmp.path(), now(), 35).unwrap();
+        assert_eq!(s.len(), 2);
+        assert!(s.contains(&edge.key()) && s.contains(&undated.key()));
+        assert!(!s.contains(&before.key()));
+        for (name, kept) in [
+            ("events-2026-08-23.jsonl", false),
+            ("events-2026-08-24.jsonl", true),
+            ("events-undated.jsonl", true),
+            ("events-2026-08-01.jsonl.bak", true),
+            ("cursors.json", true),
+        ] {
+            assert_eq!(tmp.path().join(name).exists(), kept, "{name}");
+        }
+    }
+
+    /// The open makes the directory, with its parents, and names it when it
+    /// cannot.
+    #[test]
+    fn open_makes_the_directory_and_names_it_when_it_cannot() {
+        let tmp = tempfile::tempdir().unwrap();
+        let nested = tmp.path().join("a/b");
+        let s = Store::open(&nested, now(), 35).unwrap();
+        assert!(nested.is_dir());
+        assert_eq!((s.dir(), s.len()), (nested.as_path(), 0));
+
+        let file = tmp.path().join("file");
+        std::fs::write(&file, "x").unwrap();
+        let blocked = file.join("sub");
+        let err = Store::open(&blocked, now(), 35).unwrap_err();
+        assert_eq!(err.to_string(), format!("creating {}", blocked.display()));
+    }
+
     /// R2 review: the store never takes an event older than its retention
     /// window back (a transcript read again from the start, after its old
     /// keys left with their file). The window moves with [`Store::advance`];
