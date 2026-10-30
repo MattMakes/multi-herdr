@@ -99,13 +99,13 @@ impl FakeWorkspace {
             args: args.iter().map(|a| (*a).to_owned()).collect(),
         });
         if st.unreachable {
-            return Err(anyhow!("herdr: no server is running"));
-        }
-        if let Some(i) = st.failures.iter().position(|(m, _)| *m == method) {
+            Err(anyhow!("herdr: no server is running"))
+        } else if let Some(i) = st.failures.iter().position(|(m, _)| *m == method) {
             let (_, message) = st.failures.remove(i);
-            return Err(anyhow!(message));
+            Err(anyhow!(message))
+        } else {
+            Ok(())
         }
-        Ok(())
     }
 
     fn pane(&self, id: &str, workspace: &str) -> Pane {
