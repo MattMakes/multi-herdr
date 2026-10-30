@@ -159,51 +159,77 @@ pub enum Ended {
 /// Settle the worker row after the agent exited with `code`.
 pub fn agent_exited(db: &Path, worker_id: &str, code: Option<i32>) -> Result<Ended> {
     let mut s = Store::open(db)?;
-    s.immediate(|tx| {
-        let w = workers::get(tx, worker_id)?;
-        let how = match code {
-            Some(c) => format!("agent exited with code {c}"),
-            None => "agent was ended by a signal".to_string(),
-        };
-        let status = w.status()?;
-        let about = About {
-            run: w.run_id.as_deref(),
-            task: w.task_id.as_deref(),
-            worker: Some(worker_id),
-        };
-        match status {
-            WorkerStatus::Working => {
-                let reason = format!("{how} before horch ledger done");
-                workers::end(tx, worker_id, WorkerStatus::Incomplete, &reason, code)?;
-                util::event(tx, &about, Actor::Supervisor, EventKind::Exited, &reason)?;
-                let task = w.task_id.clone().unwrap_or_default();
-                let how = tasks::requeue(tx, &task, &format!("{} {reason}", w.label()))?;
-                let t = tasks::get(tx, &task)?;
-                Ok(match how {
-                    tasks::Requeue::Held => Ended::Held { task: t.short() },
-                    _ => Ended::Requeued {
-                        task: t.short(),
-                        persona: t.claimable_by.unwrap_or_default(),
-                    },
-                })
-            }
-            WorkerStatus::Starting | WorkerStatus::Spawning => {
-                workers::end(tx, worker_id, WorkerStatus::LaunchFailed, &how, code)?;
-                util::event(tx, &about, Actor::Supervisor, EventKind::Exited, &how)?;
-                Ok(Ended::Clean)
-            }
-            WorkerStatus::Claiming => {
-                let reason = format!("{how} before it claimed a task");
-                workers::end(tx, worker_id, WorkerStatus::NoTask, &reason, code)?;
-                util::event(tx, &about, Actor::Supervisor, EventKind::Exited, &reason)?;
-                Ok(Ended::Clean)
-            }
-            _ => {
-                workers::set_exit_code(tx, worker_id, code)?;
-                util::event(tx, &about, Actor::Supervisor, EventKind::Exited, &how)?;
-                Ok(Ended::Clean)
-            }
-        }
+    s.immediate(|tx| settle(tx, worker_id, code))
+}
+
+fn settle(tx: &rusqlite::Connection, worker_id: &str, code: Option<i32>) -> Result<Ended> {
+    let w = workers::get(tx, worker_id)?;
+    let status = w.status()?;
+    let about = About {
+        run: w.run_id.as_deref(),
+        task: w.task_id.as_deref(),
+        worker: Some(worker_id),
+    };
+    let reason = record_exit(tx, worker_id, status, code)?;
+    util::event(tx, &about, Actor::Supervisor, EventKind::Exited, &reason)?;
+    if status == WorkerStatus::Working {
+        return requeue_after_exit(tx, &w, &reason);
+    }
+    Ok(Ended::Clean)
+}
+
+/// End the worker per [`exit_rule`], or only record the exit code. Returns
+/// the reason text of the exit event.
+fn record_exit(
+    tx: &rusqlite::Connection,
+    worker_id: &str,
+    status: WorkerStatus,
+    code: Option<i32>,
+) -> Result<String> {
+    let how = exit_text(code);
+    let Some((end, suffix)) = exit_rule(status) else {
+        workers::set_exit_code(tx, worker_id, code)?;
+        return Ok(how);
+    };
+    let reason = format!("{how}{suffix}");
+    workers::end(tx, worker_id, end, &reason, code)?;
+    Ok(reason)
+}
+
+/// How the agent ended, as the exit event words it.
+fn exit_text(code: Option<i32>) -> String {
+    match code {
+        Some(c) => format!("agent exited with code {c}"),
+        None => "agent was ended by a signal".to_string(),
+    }
+}
+
+/// The end status and reason suffix of a worker whose agent exited in
+/// `status`; `None` keeps the row and only records the exit code.
+fn exit_rule(status: WorkerStatus) -> Option<(WorkerStatus, &'static str)> {
+    match status {
+        WorkerStatus::Working => Some((WorkerStatus::Incomplete, " before horch ledger done")),
+        WorkerStatus::Starting | WorkerStatus::Spawning => Some((WorkerStatus::LaunchFailed, "")),
+        WorkerStatus::Claiming => Some((WorkerStatus::NoTask, " before it claimed a task")),
+        _ => None,
+    }
+}
+
+/// Queue the task of a worker that exited while working, or hold it.
+fn requeue_after_exit(
+    tx: &rusqlite::Connection,
+    w: &workers::Worker,
+    reason: &str,
+) -> Result<Ended> {
+    let task = w.task_id.clone().unwrap_or_default();
+    let how = tasks::requeue(tx, &task, &format!("{} {reason}", w.label()))?;
+    let t = tasks::get(tx, &task)?;
+    Ok(match how {
+        tasks::Requeue::Held => Ended::Held { task: t.short() },
+        _ => Ended::Requeued {
+            task: t.short(),
+            persona: t.claimable_by.unwrap_or_default(),
+        },
     })
 }
 
@@ -328,10 +354,7 @@ mod tests {
             }
         );
         let reason = "agent exited with code 3 before horch ledger done";
-        assert_eq!(
-            row(&f),
-            ("incomplete".into(), Some(reason.into()), Some(3))
-        );
+        assert_eq!(row(&f), ("incomplete".into(), Some(reason.into()), Some(3)));
         assert_eq!(exited_text(&f), [reason]);
         let status: String = f
             .store
@@ -355,7 +378,10 @@ mod tests {
     #[test]
     fn a_claiming_agent_that_exits_ends_with_no_task() {
         let f = fixture("claiming");
-        assert_eq!(agent_exited(&f.db, &f.worker, Some(0)).unwrap(), Ended::Clean);
+        assert_eq!(
+            agent_exited(&f.db, &f.worker, Some(0)).unwrap(),
+            Ended::Clean
+        );
         let reason = "agent exited with code 0 before it claimed a task";
         assert_eq!(row(&f), ("no_task".into(), Some(reason.into()), Some(0)));
         assert_eq!(exited_text(&f), [reason]);
@@ -364,7 +390,10 @@ mod tests {
     #[test]
     fn an_agent_of_a_settled_worker_only_records_its_exit_code() {
         let f = fixture("done");
-        assert_eq!(agent_exited(&f.db, &f.worker, Some(7)).unwrap(), Ended::Clean);
+        assert_eq!(
+            agent_exited(&f.db, &f.worker, Some(7)).unwrap(),
+            Ended::Clean
+        );
         assert_eq!(row(&f), ("done".into(), None, Some(7)));
         assert_eq!(exited_text(&f), ["agent exited with code 7"]);
     }
