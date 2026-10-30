@@ -47,20 +47,23 @@ fn g61_doctor_confirms_executed_echo_and_cleans_up() {
     );
 }
 
-/// `delivery-probe-call-ms` bounds each herdr call of the probe: no fake
-/// herdr call ends within 1 ms, so the first one fails at that bound.
+/// `delivery-probe-call-ms` bounds each herdr call of the probe. The fake
+/// `pane split` never answers, so the probe fails at that bound and never
+/// at the 2000 ms default. A loaded machine can make another call (the
+/// create, the cleanup) miss the bound first; the warning names it then.
 #[test]
 fn g61_doctor_call_bound_follows_the_fault() {
-    let mut h = world("g61-call-ms", "exec,shell");
+    let mut h = world("g61-call-ms", "exec,shell,hang_split");
     h.set(
         "HORCH_FAULT",
-        "delivery-probe-ms:30000,delivery-probe-call-ms:1",
+        "delivery-probe-ms:30000,delivery-probe-call-ms:300",
     );
     let out = h.run(&["doctor"]);
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(out.status.success(), "{}\n{stderr}", out.status);
     assert!(
-        stderr.contains("warning: delivery test failed: herdr did not answer within 1 ms"),
+        stderr.contains("warning: delivery test failed: ")
+            && stderr.contains("herdr did not answer within 300 ms"),
         "{}{stderr}",
         String::from_utf8_lossy(&out.stdout)
     );

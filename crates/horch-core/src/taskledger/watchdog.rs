@@ -855,8 +855,20 @@ mod tests {
     }
 
     /// Back-date the worker's last check (or claim) by `secs`, as if that
-    /// much time had passed.
-    fn pass_time(s: &Store, w: &str, secs: i64) {
+    /// much time had passed, and return the stamp to check at: the moment of
+    /// that check (or claim). A check at the wall clock would see 1 s more
+    /// whenever a second ticks after the last write, and a loaded machine
+    /// often takes that long.
+    fn pass_time(s: &Store, w: &str, secs: i64) -> String {
+        let now: String = s
+            .conn()
+            .query_row(
+                "SELECT max(t) FROM (SELECT claimed_at AS t FROM workers WHERE worker_id = ?1
+                 UNION ALL SELECT at FROM checks WHERE worker_id = ?1)",
+                [w],
+                |row| row.get(0),
+            )
+            .unwrap();
         let t = |col: &str| {
             format!(
             "UPDATE {col} SET at = strftime('%Y-%m-%dT%H:%M:%SZ', at, '-{secs} seconds') WHERE worker_id = ?1"
@@ -869,20 +881,21 @@ mod tests {
                 [w],
             )
             .unwrap();
+        now
     }
 
     #[test]
     fn a_timer_that_ran_the_whole_interval_is_a_proxy_checkin() {
         let (_d, mut s, run, w) = setup();
-        pass_time(&s, &w, 600);
+        let now = pass_time(&s, &w, 600);
         let obs = Script(RefCell::new(vec![
             live(screen(10), "working"),
             live(screen(20), "working"),
         ]));
-        let r = check_run(&mut s, &run, &obs, false).unwrap();
+        let r = check_run_at(&mut s, &run, &obs, false, now).unwrap();
         assert_eq!(r[0].verdict, "proxy_checkin", "{r:?}");
-        pass_time(&s, &w, 600);
-        let r = check_run(&mut s, &run, &obs, false).unwrap();
+        let now = pass_time(&s, &w, 600);
+        let r = check_run_at(&mut s, &run, &obs, false, now).unwrap();
         assert_eq!(r[0].verdict, "proxy_checkin", "{r:?}");
         assert_eq!(workers::get(s.conn(), &w).unwrap().stall_rounds, 0);
     }
@@ -890,16 +903,13 @@ mod tests {
     #[test]
     fn a_timer_that_ran_less_than_the_clock_and_an_idle_pane_is_no_progress() {
         let (_d, mut s, run, w) = setup();
-        pass_time(&s, &w, 600);
+        let now = pass_time(&s, &w, 600);
         let obs = Script(RefCell::new(vec![
             live(screen(10), "working"),
             live(screen(15), "idle"),
         ]));
-        // Both checks at one stamp, so the second sees exactly 600 s pass
-        // even when the wall clock ticks a second between them.
-        let now = util::now();
-        check_run_at(&mut s, &run, &obs, false, now.clone()).unwrap();
-        pass_time(&s, &w, 600);
+        check_run_at(&mut s, &run, &obs, false, now).unwrap();
+        let now = pass_time(&s, &w, 600);
         let r = check_run_at(&mut s, &run, &obs, false, now).unwrap();
         assert_eq!(r[0].verdict, "no_progress", "{r:?}");
         assert!(
@@ -913,9 +923,9 @@ mod tests {
     #[test]
     fn a_gone_process_is_dead_at_once() {
         let (_d, mut s, run, w) = setup();
-        pass_time(&s, &w, 600);
+        let now = pass_time(&s, &w, 600);
         let obs = Script(RefCell::new(vec![Observation::default()]));
-        let r = check_run(&mut s, &run, &obs, false).unwrap();
+        let r = check_run_at(&mut s, &run, &obs, false, now).unwrap();
         assert_eq!(r[0].verdict, "dead");
     }
 
@@ -925,9 +935,9 @@ mod tests {
         let idle = || live(None, "idle");
         let obs = Script(RefCell::new(vec![idle(), idle(), idle(), idle(), idle()]));
         for want in ["no_progress", "no_progress"] {
-            pass_time(&s, &w, 600);
+            let now = pass_time(&s, &w, 600);
             assert_eq!(
-                check_run(&mut s, &run, &obs, false).unwrap()[0].verdict,
+                check_run_at(&mut s, &run, &obs, false, now).unwrap()[0].verdict,
                 want
             );
         }
@@ -936,17 +946,17 @@ mod tests {
             workers::progress(tx, &w, ProgressSource::Agent, EventKind::Progress, "x")
         })
         .unwrap();
-        pass_time(&s, &w, 600);
+        let now = pass_time(&s, &w, 600);
         s.conn().execute("UPDATE workers SET last_progress_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now', '-10 seconds') WHERE worker_id = ?1", [&w]).unwrap();
         let obs2 = Script(RefCell::new(vec![idle()]));
         assert_eq!(
-            check_run(&mut s, &run, &obs2, false).unwrap()[0].verdict,
+            check_run_at(&mut s, &run, &obs2, false, now).unwrap()[0].verdict,
             "progress"
         );
         for want in ["no_progress", "no_progress", "dead"] {
-            pass_time(&s, &w, 600);
+            let now = pass_time(&s, &w, 600);
             assert_eq!(
-                check_run(&mut s, &run, &obs, false).unwrap()[0].verdict,
+                check_run_at(&mut s, &run, &obs, false, now).unwrap()[0].verdict,
                 want
             );
         }
@@ -958,8 +968,8 @@ mod tests {
         let busy = || live(None, "working");
         let obs = Script(RefCell::new(vec![busy(), busy(), busy()]));
         for _ in 0..3 {
-            pass_time(&s, &w, 600);
-            let r = check_run(&mut s, &run, &obs, false).unwrap();
+            let now = pass_time(&s, &w, 600);
+            let r = check_run_at(&mut s, &run, &obs, false, now).unwrap();
             assert_eq!(r[0].verdict, "proxy_checkin", "{r:?}");
             assert!(r[0].note.contains("herdr shows working"), "{}", r[0].note);
             assert!(r[0].note.contains("no transcript"), "{}", r[0].note);
@@ -979,8 +989,12 @@ mod tests {
         let obs = Script(RefCell::new((0..8).map(|_| busy()).collect()));
         let mut got = Vec::new();
         for _ in 0..8 {
-            pass_time(&s, &w, 600);
-            got.push(check_run(&mut s, &run, &obs, false).unwrap().remove(0));
+            let now = pass_time(&s, &w, 600);
+            got.push(
+                check_run_at(&mut s, &run, &obs, false, now)
+                    .unwrap()
+                    .remove(0),
+            );
         }
         let verdicts: Vec<&str> = got.iter().map(|c| c.verdict.as_str()).collect();
         assert_eq!(
@@ -1013,8 +1027,12 @@ mod tests {
         let obs = Script(RefCell::new((0..9).map(|_| frozen()).collect()));
         let mut got = Vec::new();
         for _ in 0..9 {
-            pass_time(&s, &w, 600);
-            got.push(check_run(&mut s, &run, &obs, false).unwrap().remove(0));
+            let now = pass_time(&s, &w, 600);
+            got.push(
+                check_run_at(&mut s, &run, &obs, false, now)
+                    .unwrap()
+                    .remove(0),
+            );
         }
         let verdicts: Vec<&str> = got.iter().map(|c| c.verdict.as_str()).collect();
         // Check 1: the timer ran the whole interval. Checks 2 to 7: only
@@ -1058,9 +1076,9 @@ mod tests {
         let obs = Script(RefCell::new((0..4).map(|_| busy()).collect()));
         let mut verdicts = Vec::new();
         for _ in 0..4 {
-            pass_time(&s, &w, 600);
+            let now = pass_time(&s, &w, 600);
             verdicts.push(
-                check_run(&mut s, &run, &obs, false)
+                check_run_at(&mut s, &run, &obs, false, now)
                     .unwrap()
                     .remove(0)
                     .verdict,
@@ -1090,9 +1108,9 @@ mod tests {
         let obs = Script(RefCell::new(script));
         let mut verdicts = Vec::new();
         for _ in 0..13 {
-            pass_time(&s, &w, 600);
+            let now = pass_time(&s, &w, 600);
             verdicts.push(
-                check_run(&mut s, &run, &obs, false)
+                check_run_at(&mut s, &run, &obs, false, now)
                     .unwrap()
                     .remove(0)
                     .verdict,
@@ -1115,9 +1133,9 @@ mod tests {
                 [&w],
             )
             .unwrap();
-        pass_time(&s, &w, 600);
+        let now = pass_time(&s, &w, 600);
         let obs = Script(RefCell::new(vec![live(None, "idle")]));
-        let r = check_run(&mut s, &run, &obs, false).unwrap();
+        let r = check_run_at(&mut s, &run, &obs, false, now).unwrap();
         assert_eq!(r[0].verdict, "no_progress");
         assert!(
             r[0].note
@@ -1244,9 +1262,9 @@ mod tests {
     }
 
     fn one_check(s: &mut Store, run: &Run, w: &str, o: Observation) -> Checked {
-        pass_time(s, w, 600);
+        let now = pass_time(s, w, 600);
         let obs = Script(RefCell::new(vec![o]));
-        check_run(s, run, &obs, false).unwrap().remove(0)
+        check_run_at(s, run, &obs, false, now).unwrap().remove(0)
     }
 
     #[test]
@@ -1284,13 +1302,15 @@ mod tests {
     #[test]
     fn an_agent_that_recorded_progress_since_the_last_check_is_progress() {
         let (_d, mut s, run, w) = setup();
-        pass_time(&s, &w, 600);
+        let now = pass_time(&s, &w, 600);
         s.immediate(|tx| {
             workers::progress(tx, &w, ProgressSource::Agent, EventKind::Progress, "x")
         })
         .unwrap();
         let obs = Script(RefCell::new(vec![live(None, "idle")]));
-        let c = check_run(&mut s, &run, &obs, false).unwrap().remove(0);
+        let c = check_run_at(&mut s, &run, &obs, false, now)
+            .unwrap()
+            .remove(0);
         assert_eq!(c.verdict, "progress");
         assert_eq!(c.note, "the agent recorded progress");
     }
