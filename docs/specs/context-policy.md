@@ -405,17 +405,27 @@ reasons:
 - STATE, first match: `compact-lost` (the job dir says the job is lost),
   `no-session`, `not-read`, `no-transcript`, `unknown`, `compacting` (a
   live job), `pending` (a marker newer than the last usable response),
-  `requested` (asked in this cycle), `over`, `ok`.
-- `reasons:` holds 1 line per row in `compact-lost`, `no-session`,
-  `not-read`, `no-transcript` or `unknown`. The `compact-lost` reason is
-  `the compaction job is lost at step <step>; log <path>`.
+  `compact-failed` (a `compact-failed` event is later than the newest ask of
+  the cycle), `request-stale` (the newest ask of the cycle is older than 20
+  minutes, `REQUEST_DEADLINE`), `requested` (asked in this cycle), `over`,
+  `ok`. A new ask, a `compacted` event or a transcript marker ends
+  `compact-failed` and `request-stale`. A `compact-failed` event in a cycle
+  with no ask does not change the row.
+- The STATE column of a `requested` or `request-stale` row ends with
+  `(asked <n>m ago)`: the age of the newest ask, in whole minutes. The
+  `--json` `state` stays the bare name.
+- `reasons:` holds 1 line per row in `compact-lost`, `compact-failed`,
+  `no-session`, `not-read`, `no-transcript` or `unknown`. The `compact-lost`
+  reason is `the compaction job is lost at step <step>; log <path>`. The
+  `compact-failed` reason is `the compaction failed at <at>: <text>`, with
+  the failed step in `<text>`.
 - A reader that finds a lost job claims it; the 1 reader that claims it
   records 1 `compact-failed` event.
 - Exit 0, also when rows are unreadable. Exit 1 only when the ledger cannot
   be read (1 stderr line).
 
-`--over`: the header and only the rows in `over`, `requested` or
-`compact-lost`, with their `reasons:` lines. With none it prints exactly
+`--over`: the header and only the rows in `over`, `requested`,
+`request-stale`, `compact-lost` or `compact-failed`, with their `reasons:` lines. With none it prints exactly
 `no session is over its threshold` (no header), exit 0.
 
 `--windows`: 1 row per roster teammate on a harness with a known trigger
@@ -469,7 +479,12 @@ those of the text table.
 - Asked already in this compaction cycle (rule A: a `compact-requested` or
   `context-warned` event at or after the later of the newest `compacted`
   event and the transcript's last marker): prints
-  `already asked <role> at <at>`, exit 0, types nothing.
+  `already asked <role> at <at>`, exit 0, types nothing. Exception (#75): a
+  row in `request-stale` or `compact-failed` is asked again, up to 2
+  `compact-requested` events in the cycle (`MAX_REQUESTS`); the third
+  `--request` prints `already asked <role> <n> times; use the fresh route`,
+  exit 0, types nothing. A row with a live job (`compacting`) or a
+  pending marker is never asked again.
 - Else types the rendered `request` message when the pane is ready, records
   `compact-requested` `tokens <n> threshold <t>`, prints
   `asked <role> to write <handoff>`, exit 0.
@@ -504,7 +519,7 @@ those of the text table.
    (`spawn_detached`: a new session, stdin null, stdout and stderr appended
    to `job.log`, the forbidden env keys scrubbed) and writes `spawned`.
 6. Start handshake: the parent polls every 50 ms for up to `START_TIMEOUT`
-   (5 s). The wait ends as soon as `job.json` shows a step past `start`, so
+   (30 s). The wait ends as soon as `job.json` shows a step past `start`, so
    only a failed start waits the full time.
    - `job.json` past `start`: prints `compaction of <role> scheduled; log <path>`, exit 0.
    - The child exits 0 first (a second job for the role): the `already running` line, exit 0.
@@ -513,7 +528,7 @@ those of the text table.
      `[horch] BLOCKED:` line of `job.log`, exit 1.
    - Any other exit, or no job file at the timeout: the parent kills the
      unreaped child (SIGKILL), clears the job dir, records `compact-failed`
-     `step start: <reason>` (for example `the job did not start in 5 s`),
+     `step start: <reason>` (for example `the job did not start in 30 s`),
      prints the rendered `failed` line to stdout, exit 1.
 
 `--foreground` (the child): it creates `job.json` at step `start` first,
@@ -709,7 +724,7 @@ a job that runs in its own herdr pane.
 | the job is killed later | `job.json` with a dead pid or a stale heartbeat: `compact-lost`; 1 `compact-failed` event | `horch context --over` row and its reason; ledger |
 | 2 `horch compact` for 1 role | the second sees a live job (or `AlreadyExists`) and exits 0 `already running` | stdout line |
 | handoff missing or stale | refused; nothing typed | 1 stderr line |
-| the worker ignores the request or the warning | the row stays `requested`; the native trigger compacts later; the block keeps the state | `horch context` |
+| the worker ignores the request or the warning | the row is `requested`, then `request-stale` after 20 minutes; `--request` asks again once, then the orchestrator uses the fresh route | `horch context` |
 | the handoff costs more than the headroom | a native compaction during the handoff; the block keeps the state | LAST COMPACT |
 | herdr does not detect the agent (Prime 0.9.4: agent `null`; 0.10.0 reports itself) | the job never sees idle and fails `wait-idle`; it types nothing. Prime stays on the fresh route, which types nothing | `[horch] BLOCKED:` line on a forced job |
 | pi answers `/compact` with "Nothing to compact (session too small)" | the in-place round trip is not verified; pi stays on the fresh route | live check C5 |
@@ -735,7 +750,7 @@ slice 3 adds CTX-21 and CTX-25.
 | CTX-06 | The window a pane uses is proved per tier by a re-runnable live check that reads the harness's own report (`/autocompact` for Claude) and compares it with `horch context --windows`. | W1 | ctx_06_windows_view_lists_claude_and_codex_teammates, ctx_06_live_check_covers_every_tier |
 | CTX-07 | Threshold = `min(base, floor(0.8 x native))`, base 300,000; unknown native gives base. | W1 | ctx_07_threshold_is_min_of_base_and_eight_tenths, ctx_07_unknown_native_uses_base, ctx_07_native_trigger_per_rule, ctx_07_compaction_pure_modules_do_no_io |
 | CTX-08 | The roster check fails a teammate whose fleet window leaves headroom below 20,000. | W1 | ctx_08_roster_check_fails_headroom_below_floor, ctx_08_builtin_roster_passes_the_floor |
-| CTX-09 | `horch context --over` prints only `over`, `requested` and `compact-lost` rows, else exactly `no session is over its threshold`, exit 0. The orchestrator briefing names it at 2 checkpoints; the Codex orchestrator may run it. | W1 | ctx_09_over_prints_only_over_and_requested, ctx_09_over_prints_compact_lost, ctx_09_over_with_none_prints_exact_line, ctx_09_orchestrator_briefing_names_the_checkpoints |
+| CTX-09 | `horch context --over` prints only `over`, `requested`, `request-stale`, `compact-lost` and `compact-failed` rows, else exactly `no session is over its threshold`, exit 0. The orchestrator briefing names it at 2 checkpoints; the Codex orchestrator may run it. | W1 | ctx_09_over_prints_only_over_and_requested, ctx_09_over_prints_compact_lost, over_prints_the_age_of_a_requested_and_a_stale_ask, over_lists_a_compact_failed_row_with_its_step, a_request_on_a_stale_row_types_and_records_again, a_stale_row_with_two_asks_is_not_asked_a_third_time, ctx_09_over_with_none_prints_exact_line, ctx_09_orchestrator_briefing_names_the_checkpoints |
 | CTX-10 | `horch note` warns a session at or over its threshold, once per compaction cycle, after recording the note; a check failure changes nothing; the rule is `policy::should_warn`; a failed cache write does not hide the reading. Live check B2 passes for `workspace-write` Codex panes; for a `read-only` Codex pane the orchestrator checkpoint is the only watch. | W1 | ctx_10_rule_a_cycle_starts_at_newest_compaction, ctx_10_should_warn_is_classify_over, ctx_10_cache_write_failure_keeps_the_reading, ctx_10_note_warns_once_over_threshold, ctx_10_note_silent_on_unknown_pending_or_error, ctx_10_note_warns_again_after_compaction, ctx_10_note_warns_with_a_read_only_cache_dir |
 | CTX-11 | The orchestrator asks a worker to prepare; the worker answers `[<role>] NOTE: COMPACT-READY <path>`; the row shows `requested`. | W1 | ctx_11_requested_state_after_ask, ctx_11_request_types_message_and_records_event, ctx_11_live_for_role_filters_by_workspace, ctx_11_worker_briefing_explains_compact_ready, ctx_11_briefing_prefixes_start_the_rendered_messages |
 | CTX-12 | Handoff path `ai_docs/handoffs/<role>-whats-next.md`; distinct per role; the handoff skill defaults to it. | W1 | ctx_12_handoff_path_per_role_is_distinct, ctx_12_handoff_skill_names_the_role_path |

@@ -21,6 +21,7 @@ pub fn doctor(ctx: &RuntimeContext) -> Result<()> {
     check(ctx)?;
     println!("herdr is installed and its server is reachable.");
     super::delivery_probe::doctor(ctx);
+    super::restore::warn_if_resume_on(ctx);
     let mut roster = super::load_roster_unwarned(ctx, None)?;
     // Count and check what a fleet started here would offer (`offer_when`).
     if let Ok(project) = ctx.paths.project() {
@@ -28,6 +29,9 @@ pub fn doctor(ctx: &RuntimeContext) -> Result<()> {
     }
     for problem in service_problems(ctx, &roster) {
         eprintln!("warning: {problem}");
+    }
+    if let Some(warning) = ctx.paths.ledger_isolation_warning() {
+        eprintln!("warning: {warning}");
     }
     let problems = roster.check();
     if problems.is_empty() {

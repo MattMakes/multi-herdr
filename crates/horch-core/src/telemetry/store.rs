@@ -298,34 +298,9 @@ impl Store {
     /// appended. An event older than the retention window is dropped: its
     /// key may be gone with its file, and the store never takes it back.
     pub fn append(&mut self, events: Vec<Event>) -> Result<usize> {
-        let mut by_file: BTreeMap<PathBuf, Vec<Event>> = BTreeMap::new();
-        for event in events {
-            if self.expired(&event.ts) {
-                self.expired_dropped += 1;
-                continue;
-            }
-            if self.insert_key(&event) {
-                by_file
-                    .entry(file_for(&self.dir, &event.ts))
-                    .or_default()
-                    .push(event);
-            }
-        }
         let mut n = 0;
-        for (path, batch) in by_file {
-            let mut text = String::new();
-            for e in &batch {
-                text.push_str(&serde_json::to_string(e)?);
-                text.push('\n');
-            }
-            let mut f = private_options()
-                .create(true)
-                .append(true)
-                .open(&path)
-                .with_context(|| format!("opening {}", path.display()))?;
-            f.write_all(text.as_bytes())?;
-            f.sync_all()?;
-            self.bytes_written += text.len() as u64;
+        for (path, batch) in self.group_new(events) {
+            self.bytes_written += write_batch(&path, &batch)?;
             n += batch.len();
             for e in &batch {
                 self.table.push(e);
@@ -333,6 +308,40 @@ impl Store {
         }
         Ok(n)
     }
+
+    /// The events whose keys are new, grouped by file; an expired event is
+    /// counted in `expired_dropped` and left out.
+    fn group_new(&mut self, events: Vec<Event>) -> BTreeMap<PathBuf, Vec<Event>> {
+        let (expired, live): (Vec<Event>, Vec<Event>) =
+            events.into_iter().partition(|e| self.expired(&e.ts));
+        self.expired_dropped += expired.len() as u64;
+        let fresh: Vec<Event> = live.into_iter().filter(|e| self.insert_key(e)).collect();
+        let mut by_file: BTreeMap<PathBuf, Vec<Event>> = BTreeMap::new();
+        for event in fresh {
+            by_file
+                .entry(file_for(&self.dir, &event.ts))
+                .or_default()
+                .push(event);
+        }
+        by_file
+    }
+}
+
+/// Write one file's batch, one line each, and sync. Returns the bytes
+/// written.
+fn write_batch(path: &Path, batch: &[Event]) -> Result<u64> {
+    let text = batch
+        .iter()
+        .map(|e| serde_json::to_string(e).map(|line| line + "\n"))
+        .collect::<Result<String, _>>()?;
+    let mut f = private_options()
+        .create(true)
+        .append(true)
+        .open(path)
+        .with_context(|| format!("opening {}", path.display()))?;
+    f.write_all(text.as_bytes())?;
+    f.sync_all()?;
+    Ok(text.len() as u64)
 }
 
 /// Every event in one file, an event stored without a cost priced from
@@ -346,18 +355,17 @@ pub(crate) fn read_file(path: &Path, prices: &BTreeMap<String, Price>) -> Vec<Ev
 
 /// How many lines `path` holds (its `\n` bytes), 0 when it does not open.
 fn count_lines(path: &Path) -> usize {
+    std::fs::File::open(path).map_or(0, count_newlines)
+}
+
+/// The `\n` bytes `file` holds; a read error ends the count.
+fn count_newlines(file: std::fs::File) -> usize {
     use std::io::Read;
-    let Ok(mut file) = std::fs::File::open(path) else {
-        return 0;
-    };
-    let mut buf = vec![0u8; 64 << 10];
-    let mut n = 0;
-    loop {
-        match file.read(&mut buf) {
-            Ok(0) | Err(_) => return n,
-            Ok(got) => n += buf[..got].iter().filter(|b| **b == b'\n').count(),
-        }
-    }
+    std::io::BufReader::with_capacity(64 << 10, file)
+        .bytes()
+        .map_while(Result::ok)
+        .filter(|b| *b == b'\n')
+        .count()
 }
 
 /// [`read_file`], one event at a time: the file is never in memory whole.

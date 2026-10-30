@@ -851,7 +851,7 @@ fn cmp_16_only_judge_and_compaction_jobs_detached() {
         "crates/horch-core/src/harness/update.rs",
         // The mail courier redelivers a worker's report after the worker's
         // pane, and its session, is gone.
-        "crates/horch/src/cmd/mail.rs",
+        "crates/horch-core/src/messaging/mail.rs",
         // The task-ledger watchdog checks a run's workers after the pane of
         // the command that started it is gone (#42).
         "crates/horch/src/cmd/taskledger_watch.rs",

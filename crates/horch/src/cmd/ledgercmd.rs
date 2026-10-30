@@ -216,6 +216,46 @@ fn print_list(ctx: &RuntimeContext, json: bool, all: bool) -> Result<()> {
 
 pub fn run(ctx: &RuntimeContext, command: LegacyCommand) -> Result<ExitCode> {
     let ledger = Ledger::open_in(ctx)?;
+    if let LegacyCommand::HasSession { session_id } = &command {
+        return has_session(&ledger, session_id);
+    }
+    match command {
+        LegacyCommand::Get { .. } | LegacyCommand::List { .. } | LegacyCommand::Path => {
+            read(ctx, &ledger, command)
+        }
+        other => write(&ledger, other),
+    }?;
+    Ok(ExitCode::SUCCESS)
+}
+
+fn has_session(ledger: &Ledger, session_id: &str) -> Result<ExitCode> {
+    Ok(if ledger.has_session(session_id)? {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::FAILURE
+    })
+}
+
+/// The subcommands that only print.
+fn read(ctx: &RuntimeContext, ledger: &Ledger, command: LegacyCommand) -> Result<()> {
+    match command {
+        LegacyCommand::Get { key } => print_record(ledger, &key),
+        LegacyCommand::List { json } => print_list(ctx, json, true),
+        LegacyCommand::Path => {
+            output::println(&ledger.path().display().to_string());
+            Ok(())
+        }
+        _ => unreachable!("run routes only the print subcommands here"),
+    }
+}
+
+fn print_record(ledger: &Ledger, key: &str) -> Result<()> {
+    output::println(&serde_json::to_string_pretty(&ledger.get(key)?)?);
+    Ok(())
+}
+
+/// The subcommands that change the ledger.
+fn write(ledger: &Ledger, command: LegacyCommand) -> Result<()> {
     match command {
         LegacyCommand::Add {
             record_id,
@@ -233,26 +273,14 @@ pub fn run(ctx: &RuntimeContext, command: LegacyCommand) -> Result<ExitCode> {
             &role,
             session_id.as_deref(),
             task.as_deref().unwrap_or_default(),
-        )?,
-        LegacyCommand::SetSession { key, session_id } => ledger.set_session(&key, &session_id)?,
-        LegacyCommand::HasSession { session_id } => {
-            return Ok(if ledger.has_session(&session_id)? {
-                ExitCode::SUCCESS
-            } else {
-                ExitCode::FAILURE
-            })
-        }
+        ),
+        LegacyCommand::SetSession { key, session_id } => ledger.set_session(&key, &session_id),
         LegacyCommand::Resume { key, role, task } => {
-            ledger.resume(&key, &role, task.as_deref().unwrap_or_default())?
+            ledger.resume(&key, &role, task.as_deref().unwrap_or_default())
         }
-        LegacyCommand::Assign { role, task } => ledger.assign(&role, &task)?,
-        LegacyCommand::Note { key, text } => ledger.note(&key, &text)?,
-        LegacyCommand::Done { key, summary } => ledger.done(&key, &summary)?,
-        LegacyCommand::Get { key } => {
-            output::println(&serde_json::to_string_pretty(&ledger.get(&key)?)?)
-        }
-        LegacyCommand::List { json } => print_list(ctx, json, true)?,
-        LegacyCommand::Path => output::println(&ledger.path().display().to_string()),
+        LegacyCommand::Assign { role, task } => ledger.assign(&role, &task),
+        LegacyCommand::Note { key, text } => ledger.note(&key, &text),
+        LegacyCommand::Done { key, summary } => ledger.done(&key, &summary),
+        _ => unreachable!("run routes only the write subcommands here"),
     }
-    Ok(ExitCode::SUCCESS)
 }
