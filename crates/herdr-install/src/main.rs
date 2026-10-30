@@ -107,7 +107,7 @@ fn run() -> Result<()> {
     let installed = install(&cli, target, &version, &asset, &bytes)?;
     step(&format!("installed herdr to {}", installed.display()));
     verify_installed(&installed)?;
-    report_path(installed.parent().unwrap_or(&installed))?;
+    report_path(installed.parent().unwrap_or(&installed));
     Ok(())
 }
 
@@ -132,16 +132,17 @@ fn install(
     asset: &Asset,
     bytes: &[u8],
 ) -> Result<PathBuf> {
-    match target.os {
-        Os::Windows => install_windows(
+    if target.os == Os::Windows {
+        install_windows(
             bytes,
             &asset.format,
             cli.install_dir.as_deref(),
             version,
             target,
             cli.retain,
-        ),
-        Os::MacOs | Os::Linux => install_unix(bytes, cli.install_dir.as_deref()),
+        )
+    } else {
+        install_unix(bytes, cli.install_dir.as_deref())
     }
 }
 
@@ -187,13 +188,12 @@ fn describe_destination(
     install_dir: Option<&Path>,
     version: &str,
 ) -> Result<PathBuf> {
-    Ok(match target.os {
-        Os::Windows => win_layout(install_dir, version, target)?
+    Ok(if target.os == Os::Windows {
+        win_layout(install_dir, version, target)?
             .visible_bin
-            .join(place::exe_name()),
-        Os::MacOs | Os::Linux => {
-            place::unix_install_dir(&home_dir()?, install_dir).join(place::exe_name())
-        }
+            .join(place::exe_name())
+    } else {
+        place::unix_install_dir(&home_dir()?, install_dir).join(place::exe_name())
     })
 }
 
@@ -242,8 +242,8 @@ fn install_windows(
     place::promote_release(&staging, &layout.release_dir)?;
     step(&format!("unpacked to {}", layout.release_dir.display()));
 
-    win::set_junction(&layout.current_dir, &layout.release_dir)?;
-    win::set_junction(&layout.visible_bin, &layout.release_dir)?;
+    win::set_junction(&layout.current_dir, &layout.release_dir)
+        .and_then(|()| win::set_junction(&layout.visible_bin, &layout.release_dir))?;
     place::prune_old_releases(&layout.releases_dir, &layout.release_dir, retain);
 
     Ok(layout.visible_bin.join(place::exe_name()))
@@ -270,9 +270,9 @@ fn stage_package(
 
     match format {
         // The zip carries herdr.exe plus the app-local ConPTY runtime it needs.
-        Format::Zip => place::extract_zip(bytes, &staging)?,
-        Format::Binary => place::place_binary(bytes, &staging.join(place::exe_name()))?,
-    }
+        Format::Zip => place::extract_zip(bytes, &staging),
+        Format::Binary => place::place_binary(bytes, &staging.join(place::exe_name())),
+    }?;
     if !staging.join(place::exe_name()).is_file() {
         let _ = std::fs::remove_dir_all(&staging);
         bail!(
@@ -303,13 +303,12 @@ fn verify_installed(path: &Path) -> Result<()> {
 }
 
 /// Make sure the install directory is reachable, and say what to do if not.
-fn report_path(dir: &Path) -> Result<()> {
+fn report_path(dir: &Path) {
     if cfg!(windows) {
         report_windows_path(dir);
     } else {
         report_unix_path(dir);
     }
-    Ok(())
 }
 
 fn report_windows_path(dir: &Path) {

@@ -143,9 +143,7 @@ fn write_entry(entry: &mut zip::read::ZipFile<'_>, out_path: &Path) -> Result<()
 }
 
 fn write_file(entry: &mut impl Read, out_path: &Path) -> Result<()> {
-    if let Some(parent) = out_path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
+    out_path.parent().map(std::fs::create_dir_all).transpose()?;
     let mut buf = Vec::new();
     entry.read_to_end(&mut buf)?;
     std::fs::write(out_path, &buf).with_context(|| format!("writing {}", out_path.display()))?;

@@ -34,12 +34,7 @@ pub fn parse(xml: &str) -> Result<Sitemap> {
     let mut scan = SitemapScan::default();
     let mut buf = Vec::new();
 
-    loop {
-        let event = next_event(&mut reader, &mut buf)?;
-        if matches!(event, Event::Eof) {
-            break;
-        }
-        scan.event(event)?;
+    while scan.event(next_event(&mut reader, &mut buf)?)? {
         buf.clear();
     }
 
@@ -65,30 +60,28 @@ struct SitemapScan {
 }
 
 impl SitemapScan {
-    fn event(&mut self, event: Event<'_>) -> Result<()> {
+    /// Fold in one event; false once the input has ended.
+    fn event(&mut self, event: Event<'_>) -> Result<bool> {
         match event {
+            Event::Eof => return Ok(false),
             Event::Start(e) => self.start(e.name().as_ref()),
             Event::End(e) => self.end(e.name().as_ref()),
             Event::Text(text) if self.in_loc => self.text(text.unescape()?.into_owned()),
             _ => {}
         }
-        Ok(())
+        Ok(true)
     }
 
     fn start(&mut self, name: &[u8]) {
         self.depth += 1;
-        match local_name(name) {
-            b"sitemapindex" => self.is_index = true,
-            b"loc" => self.in_loc = true,
-            _ => {}
-        }
+        let name = local_name(name);
+        self.is_index |= name == b"sitemapindex";
+        self.in_loc |= name == b"loc";
     }
 
     fn end(&mut self, name: &[u8]) {
         self.depth -= 1;
-        if local_name(name) == b"loc" {
-            self.in_loc = false;
-        }
+        self.in_loc &= local_name(name) != b"loc";
     }
 
     fn text(&mut self, value: String) {

@@ -39,12 +39,12 @@ pub fn prepend_path_entry(current: &str, entry: &str) -> Option<String> {
         return None;
     }
 
-    let mut next = String::from(entry);
-    for part in kept {
-        next.push(';');
-        next.push_str(part);
-    }
-    Some(next)
+    Some(
+        std::iter::once(entry)
+            .chain(kept)
+            .collect::<Vec<_>>()
+            .join(";"),
+    )
 }
 
 /// What to do about a path that should become a junction.

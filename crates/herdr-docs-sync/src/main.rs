@@ -60,15 +60,19 @@ enum Outcome {
 impl Outcome {
     /// The word printed beside a file name; a dry run says what would happen.
     fn label(self, dry_run: bool) -> &'static str {
-        match (self, dry_run) {
-            (Outcome::Added, false) => "added",
-            (Outcome::Added, true) => "would add",
-            (Outcome::Updated, false) => "updated",
-            (Outcome::Updated, true) => "would update",
-            (Outcome::Removed, false) => "removed",
-            (Outcome::Removed, true) => "would remove",
-            (Outcome::Unchanged, _) => "unchanged",
-            (Outcome::Failed, _) => "FAILED",
+        // Indexed by `Outcome as usize`: (real run, dry run).
+        const LABELS: [(&str, &str); 5] = [
+            ("added", "would add"),
+            ("updated", "would update"),
+            ("unchanged", "unchanged"),
+            ("removed", "would remove"),
+            ("FAILED", "FAILED"),
+        ];
+        let (done, would) = LABELS[self as usize];
+        if dry_run {
+            would
+        } else {
+            done
         }
     }
 }
@@ -326,6 +330,9 @@ mod tests {
         assert_eq!(Outcome::Removed.label(false), "removed");
         assert_eq!(Outcome::Removed.label(true), "would remove");
         assert_eq!(Outcome::Unchanged.label(true), "unchanged");
+        assert_eq!(Outcome::Unchanged.label(false), "unchanged");
+        assert_eq!(Outcome::Failed.label(true), "FAILED");
+        assert_eq!(Outcome::Failed.label(false), "FAILED");
     }
 
     #[test]
