@@ -912,6 +912,35 @@ mod tests {
         assert_eq!(export_check(empty.path()), None);
     }
 
+    /// U-54: each way the export check cannot verify the command says so.
+    #[test]
+    fn xcode_export_names_a_missing_xcrun_and_an_unreadable_version() {
+        let dir = fake_xcode("27.0", "", 0);
+        std::fs::remove_file(dir.path().join("xcrun")).unwrap();
+        let Some(ExportCheck::Problem(p)) = export_check(dir.path()) else {
+            panic!("expected a problem");
+        };
+        assert!(
+            p.contains("xcrun not found on PATH beside Xcode 27.0"),
+            "{p}"
+        );
+        assert!(p.contains("swift-developer"), "{p}");
+
+        let dir = fake_xcode("27.0", "", 0);
+        std::fs::write(dir.path().join("xcodebuild"), "#!/bin/sh\necho nothing\n").unwrap();
+        let Some(ExportCheck::Note(n)) = export_check(dir.path()) else {
+            panic!("expected a note");
+        };
+        assert!(n.contains("gave no Xcode version"), "{n}");
+
+        let dir = fake_xcode("27.0", "  --dest <dir>", 0);
+        let Some(ExportCheck::Problem(p)) = export_check(dir.path()) else {
+            panic!("expected a problem");
+        };
+        assert!(p.contains(" ran or does not name"), "{p}");
+        assert!(p.contains(" xcrun said: --dest <dir>"), "{p}");
+    }
+
     #[test]
     fn xcode_version_reads_the_first_line() {
         assert_eq!(
@@ -1029,6 +1058,18 @@ mod tests {
         assert_eq!(problems.len(), 1, "{problems:?}");
         assert!(problems[0].contains("Blender 4.2"), "{}", problems[0]);
         assert!(problems[0].contains("5.1 or later"), "{}", problems[0]);
+    }
+
+    /// A `BLENDER_PATH` that cannot run is reported with its fix.
+    #[test]
+    fn a_blender_that_cannot_run_is_reported() {
+        let dir = tempfile::tempdir().unwrap();
+        let bin = dir.path().join("blender");
+        std::fs::write(&bin, "not executable").unwrap();
+        let problems = blender_problems(dir.path(), Some(bin.as_os_str()));
+        assert_eq!(problems.len(), 1, "{problems:?}");
+        assert!(problems[0].contains("could not run"), "{}", problems[0]);
+        assert!(problems[0].contains("Set BLENDER_PATH"), "{}", problems[0]);
     }
 
     #[test]
@@ -1187,6 +1228,22 @@ mod tests {
         assert!(problem.contains("godot not found"), "{problem}");
         assert!(problem.contains("GODOT_PATH"), "{problem}");
         assert!(problem.contains("4.3 or later"), "{problem}");
+    }
+
+    /// A broken Godot's stderr is quoted; one that cannot run names the fix.
+    #[test]
+    fn a_godot_that_cannot_run_or_fails_is_reported_with_its_detail() {
+        let broken = fake_godot("godot", "4.7.2.stable.official.e4f5a6b7c", 3);
+        let problem = godot_at(broken.path(), None, None).unwrap();
+        assert!(problem.contains("Reinstall Godot 4.3"), "{problem}");
+        assert!(problem.contains(" godot said: no display"), "{problem}");
+
+        let dir = tempfile::tempdir().unwrap();
+        let bin = dir.path().join("godot");
+        std::fs::write(&bin, "not executable").unwrap();
+        let problem = godot_at(dir.path(), Some(&bin), None).unwrap();
+        assert!(problem.contains("could not run"), "{problem}");
+        assert!(problem.contains("Set GODOT_PATH"), "{problem}");
     }
 
     #[test]
