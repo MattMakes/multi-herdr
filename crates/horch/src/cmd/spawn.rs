@@ -341,12 +341,16 @@ fn fleet_facts(
 /// Advisory collision/load diagnostics; abandoned workspaces do not count.
 pub fn fleet_warnings(ctx: &RuntimeContext, as_note: bool) {
     let prefix = if as_note { "NOTE:" } else { "WARNING:" };
+    if let Some(warning) = ctx.paths.ledger_isolation_warning() {
+        eprintln!("horch: {prefix} {warning}");
+    }
     let caller = super::ledgercmd::caller_workspace(ctx);
     let herdr = Herdr::with_bin(&ctx.bins.harness.herdr);
     if let Ok(workspaces) = herdr.workspace_list() {
         let listed = |w: &str| workspaces.iter().any(|ws| ws.workspace_id == w);
         let mut active = std::collections::BTreeMap::<String, Option<String>>::new();
-        if let Ok(store) = horch_core::taskledger::open(ctx) {
+        // A read only: a scratch fleet must not create the ledger (#199).
+        if let Ok(Some(store)) = horch_core::taskledger::open_existing(ctx) {
             if let Ok(root) = super::taskledger::project_root(ctx) {
                 if let Ok(runs) = horch_core::taskledger::runs::of_project(store.conn(), &root) {
                     for run in runs.into_iter().filter(|r| r.status == "active") {

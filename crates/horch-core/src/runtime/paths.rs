@@ -22,6 +22,10 @@ pub struct Paths {
     /// The explicit `$HORCH_STATE_DIR`, if any. A pane does not inherit this
     /// process's environment, so an explicit state root is passed on to it.
     pub state_override: Option<PathBuf>,
+    /// The state root without `$HORCH_STATE_DIR`. A pane command sets the
+    /// variable to the root it uses, so only a root other than this one
+    /// says that the state moved.
+    pub default_state_root: PathBuf,
     /// `$HORCH_DATA_DIR`, else `${XDG_DATA_HOME:-$HOME/.local/share}/horch`.
     /// A pane does not inherit this process's environment, so a pane command
     /// sets `HORCH_DATA_DIR` to this value.
@@ -59,6 +63,7 @@ impl Paths {
             project_dir: project_dir(env).ok(),
             state_root: state_root(env, &home),
             state_override: nonempty_path(env, "HORCH_STATE_DIR"),
+            default_state_root: default_state_root(env, &home),
             data_root: data_root(env, &home),
             ledger_db: nonempty_path(env, "HORCH_LEDGER_DB")
                 .unwrap_or_else(|| crate::taskledger::store::default_path(&home)),
@@ -82,6 +87,21 @@ impl Paths {
         self.cwd.clone().context("resolving the current directory")
     }
 
+    /// The warning for a command whose state root is not the default one
+    /// but that has no `HORCH_LEDGER_DB` (#199): the state moved, but the
+    /// task ledger did not. The ledger path stays independent of the state
+    /// root on purpose, as the state root is writable from a Codex pane
+    /// (#181).
+    pub fn ledger_isolation_warning(&self) -> Option<String> {
+        let moved = self.state_root != self.default_state_root;
+        (moved && self.ledger_override.is_none()).then(|| {
+            format!(
+                "the task ledger is still {}; set HORCH_LEDGER_DB to isolate it",
+                self.ledger_db.display()
+            )
+        })
+    }
+
     /// Point every state lookup at `dir`, as `HORCH_STATE_DIR=<dir>` would.
     pub fn set_state_dir(&mut self, dir: impl Into<PathBuf>) {
         let dir = dir.into();
@@ -93,9 +113,12 @@ impl Paths {
 /// Root directory for ledger files: `$HORCH_STATE_DIR`, else
 /// `${XDG_STATE_HOME:-$HOME/.local/state}/horch`.
 pub(crate) fn state_root(env: &dyn EnvSource, home: &Path) -> PathBuf {
-    if let Some(dir) = nonempty_path(env, "HORCH_STATE_DIR") {
-        return dir;
-    }
+    nonempty_path(env, "HORCH_STATE_DIR").unwrap_or_else(|| default_state_root(env, home))
+}
+
+/// The state root without `$HORCH_STATE_DIR`:
+/// `${XDG_STATE_HOME:-$HOME/.local/state}/horch`.
+fn default_state_root(env: &dyn EnvSource, home: &Path) -> PathBuf {
     nonempty_path(env, "XDG_STATE_HOME")
         .unwrap_or_else(|| home.join(".local").join("state"))
         .join("horch")
@@ -191,6 +214,46 @@ mod tests {
         let env = MapEnv::default();
         assert!(project_dir(&env).is_err(), "no cwd and no variable");
         assert!(Paths::from_env(&env).project().is_err());
+    }
+
+    /// #199: only a state root other than the default one, without an own
+    /// ledger, warns, and the warning names the ledger the command still
+    /// uses.
+    #[test]
+    fn a_state_dir_without_a_ledger_override_warns_with_the_ledger_path() {
+        let home = MapEnv::new("/cwd").with("HOME", "/h");
+        assert_eq!(Paths::from_env(&home).ledger_isolation_warning(), None);
+        let scratch = home.clone().with("HORCH_STATE_DIR", "/scratch");
+        let expected = format!(
+            "the task ledger is still {}; set HORCH_LEDGER_DB to isolate it",
+            Path::new("/h")
+                .join(".horch")
+                .join("ledger.sqlite3")
+                .display()
+        );
+        assert_eq!(
+            Paths::from_env(&scratch).ledger_isolation_warning(),
+            Some(expected)
+        );
+        // A fleet pane: its command sets HORCH_STATE_DIR to the root its
+        // opener used, which is the default root.
+        let default = Path::new("/h").join(".local").join("state").join("horch");
+        let pane = home
+            .clone()
+            .with("HORCH_STATE_DIR", &default.to_string_lossy());
+        assert_eq!(Paths::from_env(&pane).ledger_isolation_warning(), None);
+        let xdg_pane = home.clone().with("XDG_STATE_HOME", "/xdg").with(
+            "HORCH_STATE_DIR",
+            &Path::new("/xdg").join("horch").to_string_lossy(),
+        );
+        assert_eq!(Paths::from_env(&xdg_pane).ledger_isolation_warning(), None);
+        let isolated = scratch.with("HORCH_LEDGER_DB", "/scratch/ledger.sqlite3");
+        assert_eq!(Paths::from_env(&isolated).ledger_isolation_warning(), None);
+        let ledger_only = home.with("HORCH_LEDGER_DB", "/scratch/ledger.sqlite3");
+        assert_eq!(
+            Paths::from_env(&ledger_only).ledger_isolation_warning(),
+            None
+        );
     }
 
     #[test]
