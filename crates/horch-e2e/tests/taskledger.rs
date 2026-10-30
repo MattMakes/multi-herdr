@@ -2296,6 +2296,14 @@ fn a_codex_workers_sandboxed_check_past_its_timeout_leaves_no_process() {
     // parent is `codex sandbox`.
     let check = "echo $PPID > codex.pid; /bin/sleep 3600 & echo $! > sleep.pid; wait";
     let (w, path) = claimed_check(&h, "codex-sol", check, Some("2"));
+    // macOS scans the fake codex at its first exec, which can take longer
+    // than the 2 s check timeout: start it once first. `debug models`
+    // records no call.
+    let warmed = std::process::Command::new(h.bin.join("codex"))
+        .args(["debug", "models"])
+        .output()
+        .expect("warming the fake codex");
+    assert!(warmed.status.success(), "warming the fake codex failed");
     let (code, r) = finish_json(&h, &w);
     assert_eq!(code, Some(1), "{r}");
     assert_eq!(
