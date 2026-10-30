@@ -418,6 +418,17 @@ mod tests {
             .collect()
     }
 
+    /// The keys #218 names, written out. The tests read this list and not
+    /// `PANE_IDENTITY_ENV`: a loop over the list under test passes when a key
+    /// is dropped from it, or when the list is empty.
+    const PANE_KEYS: [&str; 5] = [
+        "HORCH_ROLE",
+        "HORCH_RECORD_ID",
+        "HORCH_WORKER_ID",
+        "HORCH_WORKSPACE_ID",
+        "HERDR_PANE_ID",
+    ];
+
     /// #218 through a real spawn: this test binary runs again as a process
     /// of a worker pane, and its `spawn_detached` child prints its env.
     #[cfg(unix)]
@@ -453,7 +464,7 @@ mod tests {
         );
         let env = std::fs::read_to_string(&seen).unwrap();
         let keys: Vec<&str> = env.lines().filter_map(|l| l.split('=').next()).collect();
-        for key in PANE_IDENTITY_ENV.iter().chain(&["TMPDIR"]) {
+        for key in PANE_KEYS.iter().chain(&["TMPDIR"]) {
             assert!(!keys.contains(key), "{key} reached the child:\n{env}");
         }
         assert!(
@@ -481,13 +492,15 @@ mod tests {
         inherited = inherited.with("HOME", "/home/a");
         inherited = inherited.with("HORCH_STATE_DIR", "/state");
         inherited = inherited.with("HORCH_ROLE", "sonnet-2");
+        inherited = inherited.with("HORCH_RECORD_ID", "r-1");
         inherited = inherited.with("HORCH_WORKER_ID", "w-123");
         inherited = inherited.with("HORCH_WORKSPACE_ID", "W2");
+        inherited = inherited.with("HERDR_PANE_ID", "p_9");
         inherited = inherited.with("TMPDIR", "/state/tmp/sonnet-2");
         let mut cmd = Command::new("true");
         scrub_pane_identity(&mut cmd, &inherited);
         let envs = envs_of(&cmd);
-        for key in PANE_IDENTITY_ENV.iter().chain(&["TMPDIR"]) {
+        for key in PANE_KEYS.iter().chain(&["TMPDIR"]) {
             assert!(
                 envs.contains(&(key.to_string(), None)),
                 "{key} is not removed: {envs:?}"
