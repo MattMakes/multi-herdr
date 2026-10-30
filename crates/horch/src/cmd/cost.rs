@@ -1033,6 +1033,59 @@ mod tests {
         assert!(err.to_string().contains("--since"), "{err}");
     }
 
+    /// Each bad flag stops the run with its own message, and `--session`
+    /// adds a record outside the ledger.
+    #[test]
+    fn the_flags_fail_with_their_messages_and_session_adds_a_record() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (loc, records) = fleet(tmp.path());
+        let project = tmp.path().join("proj");
+        let fail = |a: CostArgs| {
+            run(&a, records.clone(), None, &loc, now(), &project, "l")
+                .unwrap_err()
+                .to_string()
+        };
+        assert_eq!(
+            fail(CostArgs {
+                since: Some("last tuesday".into()),
+                ..args()
+            }),
+            "--since: 'last tuesday' is not a date or an RFC 3339 time"
+        );
+        assert_eq!(
+            fail(CostArgs {
+                sessions: vec!["nocolon".into()],
+                ..args()
+            }),
+            "--session takes <agent>:<session-id>, e.g. claude:0f10e145-..."
+        );
+        let msg = fail(CostArgs {
+            reprice: Some("no-such-model".into()),
+            ..args()
+        });
+        assert!(
+            msg.starts_with("--reprice: no price for 'no-such-model' (known: "),
+            "{msg}"
+        );
+        let out = run(
+            &CostArgs {
+                sessions: vec!["claude:abc".into()],
+                ..args()
+            },
+            Vec::new(),
+            None,
+            &loc,
+            now(),
+            &project,
+            "l",
+        )
+        .unwrap();
+        let r: serde_json::Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(r["not_priced"][0]["record_id"], "extra:abc");
+        assert_eq!(r["not_priced"][0]["teammate"], "(outside ledger)");
+        assert_eq!(r["not_priced"][0]["agent"], "claude");
+    }
+
     /// TEL-10 per window: the collector's stored events in the 24h span,
     /// summed per record, equal the 24h report's rows, class by class and
     /// cost to 1e-6 USD.
