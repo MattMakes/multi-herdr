@@ -737,8 +737,9 @@ fn report_starting(request: &start::Request, quiet: bool) {
     }
 }
 
-/// Warn about a failed start that no collector replaced yet.
-fn report_failed_start(root: &Path) {
+/// Warn about a failed start that no collector replaced yet. `horch
+/// telemetry` and `horch quota` call it; stderr, so `--json` stays clean.
+pub(crate) fn report_failed_start(root: &Path) {
     if let start::Pending::Failed(request, why) = start::pending(root) {
         eprintln!(
             "horch: the telemetry collector start in workspace {} failed: {why}; `horch telemetry ensure` starts it again",
