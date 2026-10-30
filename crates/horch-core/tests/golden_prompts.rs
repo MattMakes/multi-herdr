@@ -284,8 +284,11 @@ work. These commands are on your PATH:
   runs the finish steps in order: check, code-sweep, complexity-sweep,
   recheck, land, pr, cleanup. It stops at the first step that does not
   pass. Fix the cause, commit, and run it again. Never skip a step.
-  Run it with the longest timeout of your shell tool: a check can take
-  minutes.
+  In your pane, finish runs detached and prints "finish runs (PID <n>);
+  horch tells you the result. End your turn now". End your turn then.
+  horch sends you the result as a [horch] NOTE line. Outside your pane, and
+  with --wait or --json, finish runs in the foreground: run it with the
+  longest timeout of your shell tool, because a check can take minutes.
 - When code-sweep queues reviewer tasks, end your turn. horch tells you when
   the reviews are in. Fix each Critical and Important finding, or answer an
   Important finding in the answers file it names.
