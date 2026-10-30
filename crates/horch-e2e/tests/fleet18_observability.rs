@@ -812,7 +812,14 @@ fn g53_ledger_handoff_compacts_resumes_and_records_progress_once() {
     assert!(
         lines
             .iter()
-            .any(|l| l.contains("Read ai_docs/handoffs/sonnet-1-whats-next.md")),
+            .any(|l| l.contains("Read ai_docs/handoffs/sonnet-1-whats-next.md now. Then continue")),
+        "{lines:?}"
+    );
+    // #57: only the orchestrator resume carries the command card.
+    assert!(
+        !lines
+            .iter()
+            .any(|l| l.contains("Command card:") || l.contains("decisions.md")),
         "{lines:?}"
     );
     assert_eq!(
