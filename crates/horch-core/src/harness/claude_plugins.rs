@@ -99,30 +99,46 @@ pub(crate) fn resolve_in(
     plugin: &str,
     home: Option<&Path>,
 ) -> Result<Plugin> {
-    for dir in dirs {
-        if plugin_name(dir).as_deref() == Some(plugin) {
-            return Ok(Plugin {
-                name: plugin.to_string(),
-                installed_key: None,
-                root: dir.clone(),
-                version: manifest_version(dir),
-                skills: read_skills(dir)?,
-            });
-        }
+    if let Some(dir) = dirs
+        .iter()
+        .find(|d| plugin_name(d).as_deref() == Some(plugin))
+    {
+        plugin_from_dir(plugin, dir)
+    } else if let Some((key, root, version)) =
+        installed.and_then(|v| installed_root(v, plugin, home))
+    {
+        plugin_from_install(plugin, key, root, version)
+    } else {
+        bail!(
+            "plugin '{plugin}' is neither in plugin_dirs nor installed \
+             (~/.claude/plugins/installed_plugins.json)"
+        )
     }
-    if let Some((key, root, version)) = installed.and_then(|v| installed_root(v, plugin, home)) {
-        return Ok(Plugin {
-            name: plugin.to_string(),
-            installed_key: Some(key),
-            skills: read_skills(&root)?,
-            version: version.or_else(|| manifest_version(&root)),
-            root,
-        });
-    }
-    bail!(
-        "plugin '{plugin}' is neither in plugin_dirs nor installed \
-         (~/.claude/plugins/installed_plugins.json)"
-    )
+}
+
+fn plugin_from_dir(plugin: &str, dir: &Path) -> Result<Plugin> {
+    Ok(Plugin {
+        name: plugin.to_string(),
+        installed_key: None,
+        root: dir.to_path_buf(),
+        version: manifest_version(dir),
+        skills: read_skills(dir)?,
+    })
+}
+
+fn plugin_from_install(
+    plugin: &str,
+    key: String,
+    root: PathBuf,
+    version: Option<String>,
+) -> Result<Plugin> {
+    Ok(Plugin {
+        name: plugin.to_string(),
+        installed_key: Some(key),
+        skills: read_skills(&root)?,
+        version: version.or_else(|| manifest_version(&root)),
+        root,
+    })
 }
 
 /// A plugin directory's name: `.claude-plugin/plugin.json`'s `name`, else the
@@ -161,26 +177,31 @@ fn installed_root(
     home: Option<&Path>,
 ) -> Option<(String, PathBuf, Option<String>)> {
     let plugins = installed.get("plugins")?.as_object()?;
-    for (key, value) in plugins {
-        let name = key.split('@').next().unwrap_or(key);
-        if name != plugin && key != plugin {
-            continue;
-        }
-        let records: Vec<&Value> = match value {
-            Value::Array(list) => list.iter().collect(),
-            other => vec![other],
-        };
-        for record in records {
-            if let Some(path) = record.get("installPath").and_then(|p| p.as_str()) {
-                let version = record
-                    .get("version")
-                    .and_then(|v| v.as_str())
-                    .map(str::to_owned);
-                return Some((key.clone(), expand_home(path, home), version));
-            }
-        }
-    }
-    None
+    plugins
+        .iter()
+        .filter(|(key, _)| key.split('@').next().unwrap_or(key) == plugin || *key == plugin)
+        .find_map(|(key, value)| install_record(key, value, home))
+}
+
+/// The first record of one `installed_plugins.json` entry that has an
+/// `installPath`, as (key, install path, recorded version).
+fn install_record(
+    key: &str,
+    value: &Value,
+    home: Option<&Path>,
+) -> Option<(String, PathBuf, Option<String>)> {
+    let records = match value {
+        Value::Array(list) => list.as_slice(),
+        other => std::slice::from_ref(other),
+    };
+    records.iter().find_map(|record| {
+        let path = record.get("installPath")?.as_str()?;
+        let version = record
+            .get("version")
+            .and_then(|v| v.as_str())
+            .map(str::to_owned);
+        Some((key.to_string(), expand_home(path, home), version))
+    })
 }
 
 /// Every `name@marketplace` key under which `plugin` is installed, plus
@@ -380,14 +401,21 @@ fn filtered_copy(
     to: &Path,
     pinned: impl Fn(&str) -> Option<String>,
 ) -> Result<()> {
+    write_filtered_manifest(plugin, to)?;
+    copy_top_level(plugin, to)?;
+    skill_dirs(&plugin.root)?
+        .into_iter()
+        .filter(|(name, _, _)| wanted.contains(name))
+        .try_for_each(|(name, _, from)| copy_checked_skill(plugin, &name, &from, to, pinned(&name)))
+}
+
+/// The plugin's manifest without the keys that add skills, named for the
+/// plugin.
+fn write_filtered_manifest(plugin: &Plugin, to: &Path) -> Result<()> {
     std::fs::create_dir_all(to.join(".claude-plugin"))
         .with_context(|| format!("creating {}", to.display()))?;
     let manifest_path = plugin.root.join(".claude-plugin/plugin.json");
-    let mut manifest = match std::fs::read_to_string(&manifest_path) {
-        Ok(text) => serde_json::from_str::<Value>(&text)
-            .with_context(|| format!("parsing {}", manifest_path.display()))?,
-        Err(_) => serde_json::json!({}),
-    };
+    let mut manifest = read_manifest(&manifest_path)?;
     let fields = manifest
         .as_object_mut()
         .with_context(|| format!("{} must be a JSON object", manifest_path.display()))?;
@@ -397,42 +425,66 @@ fn filtered_copy(
     // A manifest-less plugin takes its name from its directory, which the
     // copy does not share.
     fields.insert("name".into(), Value::String(plugin.name.clone()));
-    std::fs::write(to.join(".claude-plugin/plugin.json"), manifest.to_string())?;
+    std::fs::write(to.join(".claude-plugin/plugin.json"), manifest.to_string())
+        .map_err(anyhow::Error::from)
+}
 
+/// The manifest at `path`; a plugin without one has an empty manifest.
+fn read_manifest(path: &Path) -> Result<Value> {
+    match std::fs::read_to_string(path) {
+        Ok(text) => {
+            serde_json::from_str(&text).with_context(|| format!("parsing {}", path.display()))
+        }
+        Err(_) => Ok(serde_json::json!({})),
+    }
+}
+
+fn skill_digest(plugin: &Plugin, name: &str, dir: &Path) -> Result<String> {
+    horch_marketplace::integrity::tree_digest(dir)
+        .map_err(|e| anyhow::anyhow!("plugin skill '{}:{name}': {e}", plugin.name))
+}
+
+/// Everything in the plugin root except the [`LEFT_OUT`] names.
+fn copy_top_level(plugin: &Plugin, to: &Path) -> Result<()> {
     let entries = std::fs::read_dir(&plugin.root)
         .with_context(|| format!("reading {}", plugin.root.display()))?;
     for entry in entries {
         let entry = entry?;
-        if LEFT_OUT.iter().any(|n| entry.file_name() == **n) {
-            continue;
+        let left_out = LEFT_OUT.iter().any(|n| entry.file_name() == **n);
+        if !left_out {
+            copy_entry(&entry.path(), &to.join(entry.file_name()))?;
         }
-        copy_entry(&entry.path(), &to.join(entry.file_name()))?;
     }
+    Ok(())
+}
 
-    for (name, _, from) in skill_dirs(&plugin.root)? {
-        if !wanted.contains(&name) {
-            continue;
-        }
-        let target = to
-            .join("skills")
-            .join(from.file_name().context("a skill directory has a name")?);
-        let digest = |dir: &Path| {
-            horch_marketplace::integrity::tree_digest(dir)
-                .map_err(|e| anyhow::anyhow!("plugin skill '{}:{name}': {e}", plugin.name))
-        };
-        let (expected, by) = match pinned(&name) {
-            Some(d) => (d, "the plan pins".to_string()),
-            None => (digest(&from)?, format!("{} holds", from.display())),
-        };
-        copy_entry(&from, &target)?;
-        let actual = digest(&target)?;
-        if actual != expected {
-            bail!(
-                "plugin skill '{}:{name}': the copy holds {actual}, {by} {expected}; \
-                 the plugin changed during the launch",
-                plugin.name
-            );
-        }
+/// Copy one wanted skill and check the copy against `pinned`, else against
+/// the source's own digest.
+fn copy_checked_skill(
+    plugin: &Plugin,
+    name: &str,
+    from: &Path,
+    to: &Path,
+    pinned: Option<String>,
+) -> Result<()> {
+    let target = to
+        .join("skills")
+        .join(from.file_name().context("a skill directory has a name")?);
+    let (expected, by) = match pinned {
+        Some(d) => (d, "the plan pins".to_string()),
+        None => (
+            skill_digest(plugin, name, from)?,
+            format!("{} holds", from.display()),
+        ),
+    };
+    copy_entry(from, &target)?;
+    let actual = skill_digest(plugin, name, &target)?;
+    if actual != expected {
+        bail!(
+            "plugin skill '{}:{name}': the copy holds {actual}, {by} {expected}; \
+             the plugin changed during the launch",
+            plugin.name
+        );
     }
     Ok(())
 }
@@ -443,24 +495,35 @@ fn copy_entry(from: &Path, to: &Path) -> Result<()> {
         .with_context(|| format!("reading {}", from.display()))?
         .file_type();
     if kind.is_symlink() {
-        let target = std::fs::read_link(from)?;
-        #[cfg(unix)]
-        std::os::unix::fs::symlink(&target, to)
-            .with_context(|| format!("linking {}", to.display()))?;
-        #[cfg(not(unix))]
-        bail!("{} is a symlink", from.display());
+        copy_symlink(from, to)
     } else if kind.is_dir() {
-        std::fs::create_dir_all(to)?;
-        for item in
-            std::fs::read_dir(from).with_context(|| format!("reading {}", from.display()))?
-        {
-            let item = item?;
-            copy_entry(&item.path(), &to.join(item.file_name()))?;
-        }
+        copy_dir(from, to)
     } else if kind.is_file() {
-        std::fs::copy(from, to).with_context(|| format!("copying {}", from.display()))?;
+        std::fs::copy(from, to)
+            .map(drop)
+            .with_context(|| format!("copying {}", from.display()))
     } else {
-        bail!("{} is not a regular file", from.display());
+        bail!("{} is not a regular file", from.display())
+    }
+}
+
+#[cfg(unix)]
+fn copy_symlink(from: &Path, to: &Path) -> Result<()> {
+    let target = std::fs::read_link(from)?;
+    std::os::unix::fs::symlink(&target, to).with_context(|| format!("linking {}", to.display()))
+}
+
+#[cfg(not(unix))]
+fn copy_symlink(from: &Path, _to: &Path) -> Result<()> {
+    std::fs::read_link(from)?;
+    bail!("{} is a symlink", from.display())
+}
+
+fn copy_dir(from: &Path, to: &Path) -> Result<()> {
+    std::fs::create_dir_all(to)?;
+    for item in std::fs::read_dir(from).with_context(|| format!("reading {}", from.display()))? {
+        let item = item?;
+        copy_entry(&item.path(), &to.join(item.file_name()))?;
     }
     Ok(())
 }
@@ -605,5 +668,243 @@ mod tests {
             ["sc@fork", "sc@official"]
         );
         assert_eq!(installed_keys(None, "sc", "sc@official"), ["sc@official"]);
+    }
+    // ---- Pins for the filtered_copy split (#200) ----
+
+    fn wanted(names: &[&str]) -> Vec<String> {
+        names.iter().map(|n| n.to_string()).collect()
+    }
+
+    fn resolved(dir: &Path) -> Plugin {
+        resolve_in(&[dir.to_path_buf()], None, "code", None).unwrap()
+    }
+
+    fn digest_of(dir: &Path) -> String {
+        horch_marketplace::integrity::tree_digest(dir).unwrap()
+    }
+
+    #[test]
+    fn a_filtered_copy_keeps_the_named_skills_and_the_plugins_other_files() {
+        let tmp = tempfile::tempdir().unwrap();
+        let src = plugin(tmp.path(), "code", &[("review", "R."), ("lint", "L.")]);
+        std::fs::create_dir_all(src.join("hooks")).unwrap();
+        std::fs::write(src.join("hooks/h.json"), "{}").unwrap();
+        std::fs::create_dir_all(src.join("commands")).unwrap();
+        std::fs::write(src.join("commands/c.md"), "c").unwrap();
+        std::fs::write(src.join("README.md"), "readme").unwrap();
+        for left_out in [".in_use", ".orphaned_at", ".git"] {
+            std::fs::write(src.join(left_out), "x").unwrap();
+        }
+        let plugin = resolved(&src);
+        std::fs::write(
+            src.join(".claude-plugin/plugin.json"),
+            r#"{"name":"stale","version":"2","skills":["./x"],"commands":"./c","hooks":"./hooks/h.json"}"#,
+        )
+        .unwrap();
+        let to = tmp.path().join("out");
+        filtered_copy(&plugin, &wanted(&["review"]), &to, |_| None).unwrap();
+
+        let mut top: Vec<String> = std::fs::read_dir(&to)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        top.sort();
+        assert_eq!(top, [".claude-plugin", "README.md", "hooks", "skills"]);
+        assert!(to.join("skills/review/SKILL.md").is_file());
+        assert!(!to.join("skills/lint").exists());
+        let manifest: Value = serde_json::from_str(
+            &std::fs::read_to_string(to.join(".claude-plugin/plugin.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            manifest,
+            serde_json::json!({"name":"code","version":"2","hooks":"./hooks/h.json"})
+        );
+    }
+
+    #[test]
+    fn a_filtered_copy_names_a_manifest_less_plugin_after_the_plugin() {
+        let tmp = tempfile::tempdir().unwrap();
+        let src = plugin(tmp.path(), "code", &[("review", "R.")]);
+        std::fs::remove_file(src.join(".claude-plugin/plugin.json")).unwrap();
+        let to = tmp.path().join("out");
+        filtered_copy(&resolved(&src), &wanted(&["review"]), &to, |_| None).unwrap();
+        let manifest = std::fs::read_to_string(to.join(".claude-plugin/plugin.json")).unwrap();
+        assert_eq!(manifest, r#"{"name":"code"}"#);
+    }
+
+    #[test]
+    fn a_filtered_copy_refuses_a_bad_manifest() {
+        let tmp = tempfile::tempdir().unwrap();
+        let src = plugin(tmp.path(), "code", &[("review", "R.")]);
+        let plugin = resolved(&src);
+        for (text, why) in [("{oops", "parsing"), ("[]", "must be a JSON object")] {
+            std::fs::write(src.join(".claude-plugin/plugin.json"), text).unwrap();
+            let err = filtered_copy(&plugin, &wanted(&["review"]), &tmp.path().join("o"), |_| {
+                None
+            })
+            .unwrap_err()
+            .to_string();
+            assert!(err.contains(why), "{err}");
+        }
+    }
+
+    /// The guard against a plugin that changes while the launch copies it.
+    #[test]
+    fn a_skill_that_differs_from_its_pinned_digest_fails_the_launch() {
+        let tmp = tempfile::tempdir().unwrap();
+        let src = plugin(tmp.path(), "code", &[("review", "R.")]);
+        let plugin = resolved(&src);
+        let real = digest_of(&src.join("skills/review"));
+
+        // The plan pins the real digest: the copy passes.
+        let ok = filtered_copy(&plugin, &wanted(&["review"]), &tmp.path().join("a"), |s| {
+            (s == "review").then(|| real.clone())
+        });
+        assert!(ok.is_ok(), "{ok:?}");
+
+        // The plan pinned other bytes: the launch fails and says why.
+        let err = filtered_copy(&plugin, &wanted(&["review"]), &tmp.path().join("b"), |_| {
+            Some("sha256:other".to_string())
+        })
+        .unwrap_err()
+        .to_string();
+        assert!(
+            err.starts_with("plugin skill 'code:review': the copy holds "),
+            "{err}"
+        );
+        assert!(
+            err.ends_with(", the plan pins sha256:other; the plugin changed during the launch"),
+            "{err}"
+        );
+
+        // No pin: the source's own digest is the expectation, so an
+        // untouched source passes.
+        let ok = filtered_copy(&plugin, &wanted(&["review"]), &tmp.path().join("c"), |_| {
+            None
+        });
+        assert!(ok.is_ok(), "{ok:?}");
+    }
+
+    #[test]
+    fn a_skill_is_copied_under_its_directory_name() {
+        let tmp = tempfile::tempdir().unwrap();
+        let src = plugin(tmp.path(), "code", &[("dir-name", "D.")]);
+        std::fs::write(
+            src.join("skills/dir-name/SKILL.md"),
+            "---\nname: front-name\ndescription: D.\n---\n",
+        )
+        .unwrap();
+        let to = tmp.path().join("out");
+        filtered_copy(&resolved(&src), &wanted(&["front-name"]), &to, |_| None).unwrap();
+        assert!(to.join("skills/dir-name/SKILL.md").is_file());
+        assert!(!to.join("skills/front-name").exists());
+    }
+
+    #[test]
+    fn copy_entry_copies_files_trees_and_links_and_refuses_the_rest() {
+        let tmp = tempfile::tempdir().unwrap();
+        let from = tmp.path().join("from");
+        std::fs::create_dir_all(from.join("d/e")).unwrap();
+        std::fs::write(from.join("d/e/f.txt"), "f").unwrap();
+        std::fs::write(from.join("top.txt"), "t").unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink("top.txt", from.join("link")).unwrap();
+        let to = tmp.path().join("to");
+        copy_entry(&from, &to).unwrap();
+        assert_eq!(std::fs::read_to_string(to.join("d/e/f.txt")).unwrap(), "f");
+        assert_eq!(std::fs::read_to_string(to.join("top.txt")).unwrap(), "t");
+        #[cfg(unix)]
+        {
+            let meta = std::fs::symlink_metadata(to.join("link")).unwrap();
+            assert!(meta.file_type().is_symlink());
+            assert_eq!(
+                std::fs::read_link(to.join("link")).unwrap(),
+                Path::new("top.txt")
+            );
+        }
+
+        let err = copy_entry(&tmp.path().join("missing"), &tmp.path().join("x"))
+            .unwrap_err()
+            .to_string();
+        assert!(err.starts_with("reading "), "{err}");
+
+        #[cfg(unix)]
+        {
+            let fifo = tmp.path().join("fifo");
+            let made = std::process::Command::new("mkfifo").arg(&fifo).status();
+            if made.is_ok_and(|s| s.success()) {
+                let err = copy_entry(&fifo, &tmp.path().join("y"))
+                    .unwrap_err()
+                    .to_string();
+                assert!(err.ends_with("is not a regular file"), "{err}");
+            }
+        }
+    }
+
+    #[test]
+    fn the_installed_registry_matches_by_name_or_key_and_takes_the_first_record_with_a_path() {
+        let home = Path::new("/home/u");
+        let registry = serde_json::json!({"plugins": {
+            "other@m": {"installPath": "/other"},
+            "dev@a": [{"scope": "x"}, {"installPath": "~/cache/dev", "version": "1.2"}, {"installPath": "/second"}],
+            "bare": {"installPath": "/bare"},
+            "nopath@m": {"version": "9"}
+        }});
+        assert_eq!(
+            installed_root(&registry, "dev", Some(home)),
+            Some((
+                "dev@a".to_string(),
+                PathBuf::from("/home/u/cache/dev"),
+                Some("1.2".to_string())
+            ))
+        );
+        // The whole key also names a plugin.
+        assert_eq!(
+            installed_root(&registry, "dev@a", Some(home)).map(|r| r.0),
+            Some("dev@a".to_string())
+        );
+        assert_eq!(
+            installed_root(&registry, "bare", None),
+            Some(("bare".to_string(), PathBuf::from("/bare"), None))
+        );
+        assert_eq!(installed_root(&registry, "nopath", None), None);
+        assert_eq!(installed_root(&registry, "absent", None), None);
+        assert_eq!(installed_root(&serde_json::json!({}), "dev", None), None);
+        assert_eq!(
+            installed_root(&serde_json::json!({"plugins": []}), "dev", None),
+            None
+        );
+    }
+
+    #[test]
+    fn an_installed_plugin_takes_its_version_from_the_record_else_the_manifest() {
+        let tmp = tempfile::tempdir().unwrap();
+        let installed = plugin(&tmp.path().join("cache"), "dev", &[("tdd", "T.")]);
+        std::fs::write(
+            installed.join(".claude-plugin/plugin.json"),
+            r#"{"name":"dev","version":"3.0"}"#,
+        )
+        .unwrap();
+        let with_record =
+            serde_json::json!({"plugins": {"dev@m": {"installPath": installed, "version": "1.0"}}});
+        let found = resolve_in(&[], Some(&with_record), "dev", None).unwrap();
+        assert_eq!(found.version.as_deref(), Some("1.0"));
+        let without = serde_json::json!({"plugins": {"dev@m": {"installPath": installed}}});
+        let found = resolve_in(&[], Some(&without), "dev", None).unwrap();
+        assert_eq!(found.version.as_deref(), Some("3.0"));
+        // A plugin_dirs entry is matched by its manifest name, else its directory name.
+        let local = plugin(tmp.path(), "dir-name", &[("a", "A.")]);
+        std::fs::write(
+            local.join(".claude-plugin/plugin.json"),
+            r#"{"name":"manifest-name","version":"0.1"}"#,
+        )
+        .unwrap();
+        let found = resolve_in(std::slice::from_ref(&local), None, "manifest-name", None).unwrap();
+        assert_eq!(
+            (found.version.as_deref(), found.installed_key),
+            (Some("0.1"), None)
+        );
+        assert!(resolve_in(&[local], None, "dir-name", None).is_err());
     }
 }

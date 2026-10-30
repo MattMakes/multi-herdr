@@ -109,17 +109,16 @@ pub fn canonical_json(value: &serde_json::Value) -> String {
 fn write_canonical(value: &serde_json::Value, out: &mut String) {
     use serde_json::Value;
     match value {
-        Value::Null => out.push_str("null"),
-        Value::Bool(b) => out.push_str(if *b { "true" } else { "false" }),
-        Value::Number(n) => out.push_str(&n.to_string()),
+        // serde_json writes these 3 kinds as compact JSON already.
+        Value::Null | Value::Bool(_) | Value::Number(_) => out.push_str(&value.to_string()),
         Value::String(s) => write_string(s, out),
         Value::Array(items) => {
             out.push('[');
-            for (i, item) in items.iter().enumerate() {
-                if i > 0 {
-                    out.push(',');
-                }
+            let mut sep = "";
+            for item in items {
+                out.push_str(sep);
                 write_canonical(item, out);
+                sep = ",";
             }
             out.push(']');
         }
@@ -129,13 +128,13 @@ fn write_canonical(value: &serde_json::Value, out: &mut String) {
             let mut entries: Vec<_> = map.iter().collect();
             entries.sort_by(|a, b| a.0.cmp(b.0));
             out.push('{');
-            for (i, (k, v)) in entries.into_iter().enumerate() {
-                if i > 0 {
-                    out.push(',');
-                }
+            let mut sep = "";
+            for (k, v) in entries {
+                out.push_str(sep);
                 write_string(k, out);
                 out.push(':');
                 write_canonical(v, out);
+                sep = ",";
             }
             out.push('}');
         }
@@ -193,6 +192,35 @@ mod tests {
             digest_json(&S { b: 2, a: "x" }),
             digest_json(&json!({"a": "x", "b": 2}))
         );
+    }
+
+    /// Each JSON kind has exactly one canonical text: empty containers,
+    /// both booleans, integer and float forms, escapes in keys and strings,
+    /// and sorting at every depth.
+    #[test]
+    fn canonical_json_text_per_kind() {
+        for (value, want) in [
+            (json!(null), "null"),
+            (json!(true), "true"),
+            (json!(false), "false"),
+            (json!(0), "0"),
+            (json!(-7), "-7"),
+            (json!(u64::MAX), "18446744073709551615"),
+            (json!(1.5), "1.5"),
+            (json!(1e21), "1e+21"),
+            (json!("a\"b\\c\u{1}"), "\"a\\\"b\\\\c\\u0001\""),
+            (json!([]), "[]"),
+            (json!({}), "{}"),
+            (json!([[], {}, [1]]), "[[],{},[1]]"),
+            (json!({"b": {}, "a": []}), "{\"a\":[],\"b\":{}}"),
+            (json!({"k\"": 1, "A": 2}), "{\"A\":2,\"k\\\"\":1}"),
+            (
+                json!([{"y": [false], "x": null}, 2]),
+                "[{\"x\":null,\"y\":[false]},2]",
+            ),
+        ] {
+            assert_eq!(canonical_json(&value), want, "{value}");
+        }
     }
 
     #[test]
