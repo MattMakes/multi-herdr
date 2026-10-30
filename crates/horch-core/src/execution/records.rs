@@ -49,6 +49,18 @@ fn now() -> String {
     crate::clock::now_stamp()
 }
 
+/// The fields of a fresh session record, named so adjacent strings cannot swap.
+pub struct NewRecord<'a> {
+    pub record_id: &'a str,
+    pub agent: &'a str,
+    pub tier: &'a str,
+    pub model: &'a str,
+    pub role: &'a str,
+    pub session_id: Option<&'a str>,
+    pub task: &'a str,
+    pub phase: Option<Phase>,
+}
+
 impl Ledger {
     /// The ledger for the context's project, under its state root. Records
     /// inserted here default to that project and the context's workspace.
@@ -95,43 +107,17 @@ impl Ledger {
         self.store.read()
     }
 
-    /// Record a freshly spawned session.
-    #[allow(clippy::too_many_arguments)]
-    pub fn add(
-        &self,
-        record_id: &str,
-        agent: &str,
-        tier: &str,
-        model: &str,
-        role: &str,
-        session_id: Option<&str>,
-        task: &str,
-    ) -> Result<()> {
-        self.add_with_phase(record_id, agent, tier, model, role, session_id, task, None)
-    }
-
-    /// Record a fresh session with its resolved work phase.
-    #[allow(clippy::too_many_arguments)]
-    pub(crate) fn add_with_phase(
-        &self,
-        record_id: &str,
-        agent: &str,
-        tier: &str,
-        model: &str,
-        role: &str,
-        session_id: Option<&str>,
-        task: &str,
-        phase: Option<Phase>,
-    ) -> Result<()> {
+    /// Record a freshly spawned session with its resolved work phase.
+    pub fn add(&self, new: NewRecord<'_>) -> Result<()> {
         self.insert(Record {
-            record_id: record_id.to_string(),
-            session_id: session_id.map(str::to_owned),
-            agent: agent.to_string(),
-            tier: tier.to_string(),
-            model: model.to_string(),
-            phase,
-            role: role.to_string(),
-            task: task.to_string(),
+            record_id: new.record_id.to_string(),
+            session_id: new.session_id.map(str::to_owned),
+            agent: new.agent.to_string(),
+            tier: new.tier.to_string(),
+            model: new.model.to_string(),
+            phase: new.phase,
+            role: new.role.to_string(),
+            task: new.task.to_string(),
             ..Record::default()
         })
     }
@@ -392,16 +378,16 @@ mod tests {
     #[test]
     fn phase_persists_and_resume_can_override_it() {
         let (_t, l) = ledger();
-        l.add_with_phase(
-            "r1",
-            "codex",
-            "codex-sol",
-            "sol",
-            "worker",
-            Some("s1"),
-            "task",
-            Some(Phase::Research),
-        )
+        l.add(NewRecord {
+            record_id: "r1",
+            agent: "codex",
+            tier: "codex-sol",
+            model: "sol",
+            role: "worker",
+            session_id: Some("s1"),
+            task: "task",
+            phase: Some(Phase::Research),
+        })
         .unwrap();
         l.resume("r1", "worker-2", "").unwrap();
         assert_eq!(l.get("r1").unwrap().phase, Some(Phase::Research));
@@ -434,15 +420,16 @@ mod tests {
     #[test]
     fn add_then_get_round_trips() {
         let (_t, l) = ledger();
-        l.add(
-            "r1",
-            "claude",
-            "sonnet",
-            "sonnet",
-            "sonnet-1",
-            Some("s1"),
-            "fix auth",
-        )
+        l.add(NewRecord {
+            record_id: "r1",
+            agent: "claude",
+            tier: "sonnet",
+            model: "sonnet",
+            role: "sonnet-1",
+            session_id: Some("s1"),
+            task: "fix auth",
+            phase: None,
+        })
         .unwrap();
 
         // Addressable by record id and by session id.
@@ -460,8 +447,17 @@ mod tests {
     #[test]
     fn idle_spawn_gets_the_placeholder_task() {
         let (_t, l) = ledger();
-        l.add("r1", "claude", "opus", "opus", "opus-1", None, "")
-            .unwrap();
+        l.add(NewRecord {
+            record_id: "r1",
+            agent: "claude",
+            tier: "opus",
+            model: "opus",
+            role: "opus-1",
+            session_id: None,
+            task: "",
+            phase: None,
+        })
+        .unwrap();
         let r = l.get("r1").unwrap();
         assert_eq!(r.task, "(idle - awaiting assignment)");
         assert_eq!(r.history[0].text, "spawned idle as opus-1");
@@ -473,15 +469,16 @@ mod tests {
     #[test]
     fn empty_session_id_becomes_null() {
         let (_t, l) = ledger();
-        l.add(
-            "r1",
-            "codex",
-            "codex-sol",
-            "gpt-5.6-sol",
-            "codex-sol-1",
-            Some(""),
-            "",
-        )
+        l.add(NewRecord {
+            record_id: "r1",
+            agent: "codex",
+            tier: "codex-sol",
+            model: "gpt-5.6-sol",
+            role: "codex-sol-1",
+            session_id: Some(""),
+            task: "",
+            phase: None,
+        })
         .unwrap();
         assert_eq!(l.get("r1").unwrap().session_id, None);
         assert!(!l.has_session("").unwrap());
@@ -490,15 +487,16 @@ mod tests {
     #[test]
     fn set_session_then_has_session() {
         let (_t, l) = ledger();
-        l.add(
-            "r1",
-            "codex",
-            "codex-sol",
-            "gpt-5.6-sol",
-            "codex-sol-1",
-            None,
-            "",
-        )
+        l.add(NewRecord {
+            record_id: "r1",
+            agent: "codex",
+            tier: "codex-sol",
+            model: "gpt-5.6-sol",
+            role: "codex-sol-1",
+            session_id: None,
+            task: "",
+            phase: None,
+        })
         .unwrap();
         assert!(!l.has_session("s9").unwrap());
         l.set_session("r1", "s9").unwrap();
@@ -509,15 +507,16 @@ mod tests {
     #[test]
     fn note_and_done_build_history_and_flip_status() {
         let (_t, l) = ledger();
-        l.add(
-            "r1",
-            "claude",
-            "sonnet",
-            "sonnet",
-            "sonnet-1",
-            Some("s1"),
-            "t",
-        )
+        l.add(NewRecord {
+            record_id: "r1",
+            agent: "claude",
+            tier: "sonnet",
+            model: "sonnet",
+            role: "sonnet-1",
+            session_id: Some("s1"),
+            task: "t",
+            phase: None,
+        })
         .unwrap();
         l.note("r1", "halfway").unwrap();
         l.done("s1", "all finished").unwrap();
@@ -534,15 +533,16 @@ mod tests {
     #[test]
     fn w2_done_recorded_only_after_the_newest_start() {
         let (_t, l) = ledger();
-        l.add(
-            "r1",
-            "claude",
-            "sonnet",
-            "sonnet",
-            "sonnet-1",
-            Some("s1"),
-            "t",
-        )
+        l.add(NewRecord {
+            record_id: "r1",
+            agent: "claude",
+            tier: "sonnet",
+            model: "sonnet",
+            role: "sonnet-1",
+            session_id: Some("s1"),
+            task: "t",
+            phase: None,
+        })
         .unwrap();
         assert!(!l.done_recorded("r1").unwrap());
         l.record_event("r1", EVENT_REPORT_FAILED, "relay refused")
@@ -557,26 +557,28 @@ mod tests {
     #[test]
     fn assign_targets_the_latest_working_record_for_the_role() {
         let (_t, l) = ledger();
-        l.add(
-            "old",
-            "claude",
-            "sonnet",
-            "sonnet",
-            "sonnet-1",
-            Some("s1"),
-            "first",
-        )
+        l.add(NewRecord {
+            record_id: "old",
+            agent: "claude",
+            tier: "sonnet",
+            model: "sonnet",
+            role: "sonnet-1",
+            session_id: Some("s1"),
+            task: "first",
+            phase: None,
+        })
         .unwrap();
         l.done("old", "finished").unwrap();
-        l.add(
-            "live",
-            "claude",
-            "sonnet",
-            "sonnet",
-            "sonnet-1",
-            Some("s2"),
-            "second",
-        )
+        l.add(NewRecord {
+            record_id: "live",
+            agent: "claude",
+            tier: "sonnet",
+            model: "sonnet",
+            role: "sonnet-1",
+            session_id: Some("s2"),
+            task: "second",
+            phase: None,
+        })
         .unwrap();
 
         l.assign("sonnet-1", "third").unwrap();
@@ -595,15 +597,16 @@ mod tests {
     #[test]
     fn resume_reopens_under_a_new_role_and_keeps_the_old_task_when_none_given() {
         let (_t, l) = ledger();
-        l.add(
-            "r1",
-            "claude",
-            "opus",
-            "opus",
-            "opus-1",
-            Some("s1"),
-            "original",
-        )
+        l.add(NewRecord {
+            record_id: "r1",
+            agent: "claude",
+            tier: "opus",
+            model: "opus",
+            role: "opus-1",
+            session_id: Some("s1"),
+            task: "original",
+            phase: None,
+        })
         .unwrap();
         l.done("r1", "done for now").unwrap();
 
@@ -636,28 +639,30 @@ mod tests {
     #[test]
     fn render_lists_newest_first_and_caps_history_at_three_entries() {
         let (_t, l) = ledger();
-        l.add(
-            "r1",
-            "claude",
-            "sonnet",
-            "sonnet",
-            "sonnet-1",
-            Some("s1"),
-            "first",
-        )
+        l.add(NewRecord {
+            record_id: "r1",
+            agent: "claude",
+            tier: "sonnet",
+            model: "sonnet",
+            role: "sonnet-1",
+            session_id: Some("s1"),
+            task: "first",
+            phase: None,
+        })
         .unwrap();
         for n in 1..=4 {
             l.note("r1", &format!("note {n}")).unwrap();
         }
-        l.add(
-            "r2",
-            "codex",
-            "codex-sol",
-            "gpt-5.6-sol",
-            "codex-sol-1",
-            None,
-            "",
-        )
+        l.add(NewRecord {
+            record_id: "r2",
+            agent: "codex",
+            tier: "codex-sol",
+            model: "gpt-5.6-sol",
+            role: "codex-sol-1",
+            session_id: None,
+            task: "",
+            phase: None,
+        })
         .unwrap();
 
         let out = l.render().unwrap();
@@ -683,15 +688,16 @@ mod tests {
     #[test]
     fn tel_02_orchestrator_records_render_apart_and_are_superseded() {
         let (_t, l) = ledger();
-        l.add(
-            "w1",
-            "claude",
-            "sonnet",
-            "sonnet",
-            "sonnet-1",
-            Some("s1"),
-            "t",
-        )
+        l.add(NewRecord {
+            record_id: "w1",
+            agent: "claude",
+            tier: "sonnet",
+            model: "sonnet",
+            role: "sonnet-1",
+            session_id: Some("s1"),
+            task: "t",
+            phase: None,
+        })
         .unwrap();
         l.insert(Record {
             record_id: "o1".into(),
