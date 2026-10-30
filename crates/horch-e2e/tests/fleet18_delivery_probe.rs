@@ -16,9 +16,16 @@ fn world(name: &str, scenario: &str) -> Harness {
     h
 }
 
+/// The budget of a probe that must confirm. Each fake herdr call loads and
+/// saves a state file, and on a loaded machine one call took 2.9 s: past
+/// the 2 s call bound and the 4 s budget. A probe that confirms ends at
+/// once, so the bounds cost nothing when delivery works.
+const CONFIRM_FAULTS: &str = "delivery-probe-ms:30000,delivery-probe-call-ms:30000";
+
 #[test]
 fn g61_doctor_confirms_executed_echo_and_cleans_up() {
-    let h = world("g61-doctor", "exec,shell");
+    let mut h = world("g61-doctor", "exec,shell");
+    h.set("HORCH_FAULT", CONFIRM_FAULTS);
     let out = h.run(&["doctor"]);
     let text = format!(
         "{}{}",
@@ -40,6 +47,28 @@ fn g61_doctor_confirms_executed_echo_and_cleans_up() {
     );
 }
 
+/// `delivery-probe-call-ms` bounds each herdr call of the probe. The fake
+/// `pane split` never answers, so the probe fails at that bound and never
+/// at the 2000 ms default. A loaded machine can make another call (the
+/// create, the cleanup) miss the bound first; the warning names it then.
+#[test]
+fn g61_doctor_call_bound_follows_the_fault() {
+    let mut h = world("g61-call-ms", "exec,shell,hang_split");
+    h.set(
+        "HORCH_FAULT",
+        "delivery-probe-ms:30000,delivery-probe-call-ms:300",
+    );
+    let out = h.run(&["doctor"]);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success(), "{}\n{stderr}", out.status);
+    assert!(
+        stderr.contains("warning: delivery test failed: ")
+            && stderr.contains("herdr did not answer within 300 ms"),
+        "{}{stderr}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+}
+
 #[test]
 fn g61_doctor_typing_failure_warns_without_failing_or_leaking_workspace() {
     let h = world("g61-no-type", "exec,shell,fail_typing");
@@ -55,7 +84,8 @@ fn g61_doctor_typing_failure_warns_without_failing_or_leaking_workspace() {
 
 #[test]
 fn g61_fleet_confirms_only_after_orchestrator_runs_inbox() {
-    let h = world("g61-fleet-ack", "exec,fleet_probe_ack");
+    let mut h = world("g61-fleet-ack", "exec,fleet_probe_ack");
+    h.set("HORCH_FAULT", CONFIRM_FAULTS);
     let out = h.run(&["fleet", "--no-update"]);
     let text = format!(
         "{}{}",

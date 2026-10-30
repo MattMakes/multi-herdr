@@ -395,6 +395,145 @@ pub fn end(
     Ok(n > 0)
 }
 
+/// How long a `spawning` row may wait for its supervisor: longer than the
+/// registration wait of `horch spawn` (#190).
+pub const LAUNCH_GRACE_S: i64 = 120;
+
+/// How long a live `claiming` worker may take to claim before the
+/// orchestrator is asked to look at its pane (#190).
+pub const CLAIM_GRACE_S: i64 = 600;
+
+/// Whether a pre-claim row (`spawning`, `starting`, `claiming`) no longer
+/// stands for a process on its way to a claim: its last checkin is older
+/// than `heartbeat_stale_s`, or it never checked in within
+/// [`LAUNCH_GRACE_S`] of its spawn.
+pub fn is_stale(w: &Worker, heartbeat_stale_s: i64, now: &str) -> bool {
+    if !matches!(w.status.as_str(), "spawning" | "starting" | "claiming") {
+        return false;
+    }
+    let older = |t: Option<&str>, limit: i64| {
+        t.and_then(|t| util::seconds_between(t, now))
+            .is_some_and(|age| age > limit)
+    };
+    match w.last_checkin_at.as_deref() {
+        Some(t) => older(Some(t), heartbeat_stale_s),
+        None => older(w.spawned_at.as_deref(), LAUNCH_GRACE_S),
+    }
+}
+
+/// Whether the worker's recorded supervisor process still runs.
+pub fn supervisor_alive(w: &Worker) -> bool {
+    w.supervisor_pid
+        .is_some_and(|p| crate::procid::alive(p as u32, w.supervisor_started.map(|s| s as u64)))
+}
+
+/// What the pre-claim sweep did to 1 worker.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct Preclaim {
+    pub worker: Worker,
+    /// The status it ended with; `None` for a live worker that has not
+    /// claimed within [`CLAIM_GRACE_S`] (reported once).
+    pub ended: Option<String>,
+    pub note: String,
+}
+
+const NO_CLAIM: &str = "No claim:";
+
+/// The watchdog's pass over pre-claim rows (#190). A row whose process is
+/// gone or silent ends: `launch_failed` before the agent ran, `no_task`
+/// after. A live `claiming` worker past [`CLAIM_GRACE_S`] is reported once.
+pub fn sweep_preclaim(
+    conn: &Connection,
+    run: &super::runs::Run,
+    alive: &dyn Fn(&Worker) -> bool,
+) -> Result<Vec<Preclaim>> {
+    let now = util::now();
+    let mut out = Vec::new();
+    for w in of_run(conn, &run.run_id)? {
+        if w.kind != WorkerKind::Worker.as_str() {
+            continue;
+        }
+        let status = w.status()?;
+        if !matches!(
+            status,
+            WorkerStatus::Spawning | WorkerStatus::Starting | WorkerStatus::Claiming
+        ) {
+            continue;
+        }
+        let about = About {
+            run: Some(&run.run_id),
+            task: None,
+            worker: Some(&w.worker_id),
+        };
+        let gone = w.supervisor_pid.is_some() && !alive(&w);
+        if gone || is_stale(&w, run.heartbeat_stale_s, &now) {
+            let (end_as, why) = match (status, gone) {
+                (WorkerStatus::Claiming, true) => (
+                    WorkerStatus::NoTask,
+                    "its supervisor is gone before it claimed a task",
+                ),
+                (WorkerStatus::Claiming, false) => {
+                    (WorkerStatus::NoTask, "no checkin before it claimed a task")
+                }
+                (_, true) => (
+                    WorkerStatus::LaunchFailed,
+                    "its supervisor is gone before the agent ran",
+                ),
+                (_, false) => (
+                    WorkerStatus::LaunchFailed,
+                    "no horch worker checked in after the spawn",
+                ),
+            };
+            if end(conn, &w.worker_id, end_as, why, None)? {
+                util::event(
+                    conn,
+                    &about,
+                    Actor::Watchdog,
+                    EventKind::Exited,
+                    &format!("{} ended {end_as}: {why}.", w.label()),
+                )?;
+                out.push(Preclaim {
+                    worker: w,
+                    ended: Some(end_as.as_str().to_string()),
+                    note: why.to_string(),
+                });
+            }
+            continue;
+        }
+        let waited = w
+            .started_at
+            .as_deref()
+            .or(w.spawned_at.as_deref())
+            .and_then(|t| util::seconds_between(t, &now))
+            .unwrap_or(0);
+        if status != WorkerStatus::Claiming || waited <= CLAIM_GRACE_S {
+            continue;
+        }
+        let told: i64 = conn.query_row(
+            "SELECT count(*) FROM events WHERE worker_id = ?1 AND kind = 'verdict' AND text LIKE ?2",
+            params![w.worker_id, format!("{NO_CLAIM}%")],
+            |r| r.get(0),
+        )?;
+        if told > 0 {
+            continue;
+        }
+        let note = format!("{} has not claimed a task in {}s", w.label(), waited);
+        util::event(
+            conn,
+            &about,
+            Actor::Watchdog,
+            EventKind::Verdict,
+            &format!("{NO_CLAIM} {note}."),
+        )?;
+        out.push(Preclaim {
+            worker: w,
+            ended: None,
+            note,
+        });
+    }
+    Ok(out)
+}
+
 /// Record the exit code of a worker that already ended (a `done` worker).
 pub fn set_exit_code(conn: &Connection, worker_id: &str, exit_code: Option<i32>) -> Result<()> {
     conn.execute(
@@ -413,6 +552,52 @@ pub struct Wait {
     pub started_at: String,
     pub deadline: String,
     pub task_ids: Vec<String>,
+}
+
+/// The wait kind of an author on its reviews.
+pub const REVIEWS_WAIT: &str = "reviewers";
+
+/// How long an author waits for its reviews when no deadline is known.
+pub const REVIEWS_WAIT_SECS: i64 = 7 * 24 * 3600;
+
+/// Whether `wait` is an author's reviewers wait after its reviews are in:
+/// it has no task ids, so [`waiting`] keeps it until finish clears it or
+/// its deadline passes (#177).
+pub fn holds_for_finish(wait: &Wait) -> bool {
+    wait.kind == REVIEWS_WAIT && wait.task_ids.is_empty()
+}
+
+/// After the last review of its task: keep `worker`'s reviewers wait, with
+/// no task ids, up to the deadline it had (#177). With no earlier wait, the
+/// wait lasts [`REVIEWS_WAIT_SECS`]. A deadline that has passed sets no
+/// wait: the stall checks then judge the author.
+pub fn hold_for_finish(conn: &Connection, worker: &str) -> Result<()> {
+    // Read the row, not `waiting`: that ends a reviewers wait whose reviews
+    // are done, which they all are now.
+    let deadline: Option<String> = optional(conn.query_row(
+        "SELECT deadline FROM worker_waits WHERE worker_id = ?1 AND kind = ?2",
+        params![worker, REVIEWS_WAIT],
+        |r| r.get(0),
+    ))?;
+    let left = match deadline {
+        None => REVIEWS_WAIT_SECS,
+        Some(raw) => {
+            let at = crate::clock::parse(&raw)
+                .with_context(|| format!("the reviewers wait of {worker} has deadline {raw:?}"))?;
+            (at - crate::clock::now()).num_seconds()
+        }
+    };
+    if left <= 0 {
+        return clear_wait(conn, worker, REVIEWS_WAIT);
+    }
+    set_wait(
+        conn,
+        worker,
+        REVIEWS_WAIT,
+        "the reviews are in; waiting for horch ledger finish",
+        &[],
+        left,
+    )
 }
 
 pub fn set_wait(
@@ -467,7 +652,7 @@ pub fn waiting(conn: &Connection, worker: &str) -> Result<Vec<Wait>> {
     let mut out = Vec::new();
     for (kind, reason, started_at, deadline, ids) in rows {
         let task_ids: Vec<String> = serde_json::from_str(&ids)?;
-        let reviews_done = kind == "reviewers"
+        let reviews_done = kind == REVIEWS_WAIT
             && !task_ids.is_empty()
             && task_ids.iter().all(|id| {
                 super::tasks::get(conn, id)
@@ -553,4 +738,107 @@ pub fn set_record(conn: &Connection, worker_id: &str, record_id: &str) -> Result
         bail!("no worker {worker_id} in the task ledger");
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::Path;
+
+    use super::*;
+    use crate::taskledger::runs::{self, NewRun};
+    use crate::taskledger::store::Store;
+
+    fn author(store: &mut Store) -> String {
+        store
+            .immediate(|tx| {
+                let run = runs::create(
+                    tx,
+                    Path::new("/r"),
+                    &NewRun {
+                        slug: "s".into(),
+                        ..Default::default()
+                    },
+                )?;
+                insert(
+                    tx,
+                    &NewWorker {
+                        run_id: run.run_id,
+                        persona: "opus".into(),
+                        ..Default::default()
+                    },
+                )
+            })
+            .unwrap()
+    }
+
+    fn seconds_left(wait: &Wait) -> i64 {
+        (crate::clock::parse(&wait.deadline).unwrap() - crate::clock::now()).num_seconds()
+    }
+
+    /// #177: the reviews are in. The author keeps waiting, with no task
+    /// ids, up to the deadline it had.
+    #[test]
+    fn a_held_wait_keeps_its_deadline_and_survives_waiting() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut s = Store::open(&dir.path().join("l.sqlite3")).unwrap();
+        let id = author(&mut s);
+        set_wait(
+            s.conn(),
+            &id,
+            REVIEWS_WAIT,
+            "reviews",
+            &["T-9".into()],
+            7200,
+        )
+        .unwrap();
+
+        hold_for_finish(s.conn(), &id).unwrap();
+
+        let waits = waiting(s.conn(), &id).unwrap();
+        assert_eq!(waits.len(), 1, "{waits:?}");
+        assert!(holds_for_finish(&waits[0]), "{waits:?}");
+        assert!(
+            (7195..=7200).contains(&seconds_left(&waits[0])),
+            "{waits:?}"
+        );
+    }
+
+    #[test]
+    fn a_held_wait_with_no_earlier_wait_lasts_7_days() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut s = Store::open(&dir.path().join("l.sqlite3")).unwrap();
+        let id = author(&mut s);
+
+        hold_for_finish(s.conn(), &id).unwrap();
+
+        let waits = waiting(s.conn(), &id).unwrap();
+        assert_eq!(waits.len(), 1, "{waits:?}");
+        let left = seconds_left(&waits[0]);
+        assert!(
+            (7 * 24 * 3600 - 5..=7 * 24 * 3600).contains(&left),
+            "{left}"
+        );
+    }
+
+    /// A deadline that has passed is not renewed: the stall checks judge
+    /// the author at once.
+    #[test]
+    fn a_wait_past_its_deadline_is_not_held() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut s = Store::open(&dir.path().join("l.sqlite3")).unwrap();
+        let id = author(&mut s);
+        set_wait(s.conn(), &id, REVIEWS_WAIT, "reviews", &["T-9".into()], -60).unwrap();
+
+        hold_for_finish(s.conn(), &id).unwrap();
+
+        let rows: i64 = s
+            .conn()
+            .query_row(
+                "SELECT COUNT(*) FROM worker_waits WHERE worker_id = ?1",
+                [&id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(rows, 0);
+    }
 }

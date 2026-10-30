@@ -34,6 +34,9 @@ pub struct TaskLine {
     pub worker: Option<String>,
     /// Why a queued task does not start now.
     pub waits: Option<String>,
+    /// How each attempt since the last operator requeue ended, when the
+    /// task had more than 1 attempt (#168).
+    pub attempt_ends: Vec<String>,
 }
 
 /// 1 worker line.
@@ -45,6 +48,8 @@ pub struct WorkerLine {
     pub progress_age_s: Option<i64>,
     /// A working worker with no check in the last 2 check intervals.
     pub unwatched: bool,
+    /// A pre-claim row whose process went silent ([`workers::is_stale`]).
+    pub stale: bool,
     pub waiting: Vec<workers::Wait>,
 }
 
@@ -140,11 +145,23 @@ pub fn report(conn: &Connection, run: &Run) -> Result<Report> {
             "cancelled" => counts.cancelled += 1,
             _ => {}
         }
-        let wait = waits
-            .iter()
-            .find(|(w, _)| w.task_id == t.task_id)
-            .map(|(_, w)| w.to_string());
+        let wait = match &t.held_reason {
+            Some(r) => Some(format!(
+                "held: {r}. Ask the operator; release it with horch ledger requeue {} \"<reason>\"",
+                t.short()
+            )),
+            None => waits
+                .iter()
+                .find(|(w, _)| w.task_id == t.task_id)
+                .map(|(_, w)| w.to_string()),
+        };
+        let attempt_ends = if t.attempts > 1 {
+            tasks::attempt_ends(conn, &t)?
+        } else {
+            Vec::new()
+        };
         lines.push(TaskLine {
+            attempt_ends,
             worker: role_of(&t.current_worker_id),
             waits: wait,
             task: t,
@@ -176,6 +193,7 @@ pub fn report(conn: &Connection, run: &Run) -> Result<Report> {
                 .map(|l| l.task.short())
         });
         wl.push(WorkerLine {
+            stale: workers::is_stale(&w, run.heartbeat_stale_s, &now),
             waiting: workers::waiting(conn, &w.worker_id)?,
             worker: w,
             task,
@@ -238,6 +256,13 @@ pub fn render(r: &Report) -> String {
         if let Some(w) = &l.waits {
             let _ = write!(out, "  [{w}]");
         }
+        if t.attempts > 1 {
+            let _ = write!(out, "  [{} attempts", t.attempts);
+            if !l.attempt_ends.is_empty() {
+                let _ = write!(out, "; ends: {}", l.attempt_ends.join("; "));
+            }
+            let _ = write!(out, "]");
+        }
         let _ = writeln!(out);
     }
     let live: Vec<&WorkerLine> = r
@@ -271,7 +296,13 @@ pub fn render(r: &Report) -> String {
                 w.task.as_deref().unwrap_or("-"),
                 age(w.checkin_age_s),
                 age(w.progress_age_s),
-                if w.unwatched { "  UNWATCHED" } else { "" }
+                if w.unwatched {
+                    "  UNWATCHED"
+                } else if w.stale {
+                    "  STALE"
+                } else {
+                    ""
+                }
             );
         }
     }

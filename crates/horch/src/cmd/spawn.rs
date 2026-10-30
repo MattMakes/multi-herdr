@@ -14,7 +14,7 @@ use std::time::{Duration, SystemTime};
 use anyhow::{bail, Context, Result};
 use horch_core::competition::budget::UsageMeter;
 use horch_core::competition::observe::TelemetryUsage;
-use horch_core::execution::lifecycle::{await_worker, WorkerStart};
+use horch_core::execution::lifecycle::{await_worker, StartupKey, WorkerStart};
 use horch_core::execution::plan::{self, GateInputs, MintedIds, PlanInputs};
 use horch_core::execution::service::{ExecutionService, SpawnError};
 use horch_core::execution::store::ExecutionStore;
@@ -63,6 +63,8 @@ pub struct SpawnArgs {
     pub force: bool,
     /// The dead task-ledger worker this spawn replaces.
     pub replaces: Option<String>,
+    /// The task-ledger run to join (`--run`).
+    pub run: Option<String>,
 }
 
 /// Split `horch spawn`'s positional arguments into a teammate and a task.
@@ -95,12 +97,29 @@ pub fn resolve_positionals(
 /// Spawn a worker pane, returning its pane id so callers can chain splits.
 /// A refusal is a [`SpawnError::Refused`]; its REFUSED line is on stdout.
 pub fn spawn(ctx: &RuntimeContext, mut args: SpawnArgs) -> Result<String> {
-    // The task ledger: when this project has an active run, the worker gets
-    // a row, and a spawn with no task tells it to claim one.
+    // The task ledger: when this spawn joins a run, the worker gets a row,
+    // and a spawn with no task tells it to claim one.
     let ledger = super::taskledger_spawn::prepare(ctx, &args)?;
     if ledger.is_some() && args.task.trim().is_empty() && args.resume.is_none() {
         args.task = super::taskledger_spawn::CLAIM_TASK.to_string();
     }
+    let result = spawn_worker(ctx, args, ledger.as_ref());
+    // No row outlives a spawn that failed before its worker ran (#190).
+    if let (Err(e), Some(l)) = (&result, &ledger) {
+        let reason = match e.downcast_ref::<SpawnError>() {
+            Some(SpawnError::Refused { line, .. }) => line.clone(),
+            _ => format!("{e:#}"),
+        };
+        l.launch_failed(&reason);
+    }
+    result
+}
+
+fn spawn_worker(
+    ctx: &RuntimeContext,
+    args: SpawnArgs,
+    ledger: Option<&super::taskledger_spawn::LedgerSpawn>,
+) -> Result<String> {
     let mut req = SpawnRequest::worker(
         args.teammate
             .as_deref()
@@ -225,20 +244,20 @@ pub fn spawn(ctx: &RuntimeContext, mut args: SpawnArgs) -> Result<String> {
         workspace: &herdr,
         mailbox: &mailbox,
         tile: &tile,
-        ledger_worker: ledger.as_ref().map(|l| l.worker_id.as_str()),
+        ledger_worker: ledger.map(|l| l.worker_id.as_str()),
     };
     let started = SystemTime::now();
     let out = match service.spawn(plan, args.role.as_deref()) {
         Ok(out) => out,
         Err(e) => {
-            if let Some(l) = &ledger {
+            if let Some(l) = ledger {
                 l.launch_failed(&format!("{e:#}"));
             }
             return Err(e.into());
         }
     };
     let (launch, role, pane) = (&out.plan.launch, &out.plan.execution.role, &out.pane);
-    if let Some(l) = &ledger {
+    if let Some(l) = ledger {
         l.spawned(
             role.as_str(),
             pane,
@@ -256,14 +275,13 @@ pub fn spawn(ctx: &RuntimeContext, mut args: SpawnArgs) -> Result<String> {
     if !wait.is_zero() {
         let data_root = &ctx.paths.data_root;
         let mut registered = || mailbox.pane_for(role.as_str()).as_deref() == Some(pane.as_str());
-        match await_worker(
-            data_root,
-            role.as_str(),
-            started,
-            wait,
-            SPAWN_POLL,
-            &mut registered,
-        ) {
+        // The worker keys its error by this record, or by its pane when it
+        // could not read its brief (#192).
+        let keys = [
+            StartupKey::Record(out.plan.execution.id.as_str()),
+            StartupKey::Pane(pane.as_str()),
+        ];
+        match await_worker(data_root, &keys, started, wait, SPAWN_POLL, &mut registered) {
             WorkerStart::Registered => {}
             WorkerStart::Failed(error) => {
                 let id = out.plan.execution.id.as_str();
@@ -278,7 +296,7 @@ pub fn spawn(ctx: &RuntimeContext, mut args: SpawnArgs) -> Result<String> {
                 // this close is for a pane that did neither.
                 let _ = herdr.pane_close(pane);
                 mailbox.unregister(role.as_str());
-                if let Some(l) = &ledger {
+                if let Some(l) = ledger {
                     l.launch_failed(&error);
                 }
                 bail!("worker {role} (pane {pane}) failed to start: {error}");
@@ -342,12 +360,16 @@ fn fleet_facts(
 /// Advisory collision/load diagnostics; abandoned workspaces do not count.
 pub fn fleet_warnings(ctx: &RuntimeContext, as_note: bool) {
     let prefix = if as_note { "NOTE:" } else { "WARNING:" };
+    if let Some(warning) = ctx.paths.ledger_isolation_warning() {
+        eprintln!("horch: {prefix} {warning}");
+    }
     let caller = super::ledgercmd::caller_workspace(ctx);
     let herdr = Herdr::with_bin(&ctx.bins.harness.herdr);
     if let Ok(workspaces) = herdr.workspace_list() {
         let listed = |w: &str| workspaces.iter().any(|ws| ws.workspace_id == w);
         let mut active = std::collections::BTreeMap::<String, Option<String>>::new();
-        if let Ok(store) = horch_core::taskledger::open(ctx) {
+        // A read only: a scratch fleet must not create the ledger (#199).
+        if let Ok(Some(store)) = horch_core::taskledger::open_existing(ctx) {
             if let Ok(root) = super::taskledger::project_root(ctx) {
                 if let Ok(runs) = horch_core::taskledger::runs::of_project(store.conn(), &root) {
                     for run in runs.into_iter().filter(|r| r.status == "active") {

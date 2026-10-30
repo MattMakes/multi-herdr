@@ -22,10 +22,12 @@ use horch_core::competition::observe::TelemetryUsage;
 use horch_core::competition::planner::{config_id, plan_round, PlanInput, RoundPlan};
 use horch_core::evaluation::scheduler::JudgeJobSpec;
 use horch_core::evaluation::validator::{CommandValidator, GateSpec};
+use horch_core::execution::plan::{plan_launch, MintedIds, PlanInputs};
 use horch_core::execution::store::{to_execution, ExecutionStore};
 use horch_core::execution::{ExecutionKind, ExecutionStatus, FailureKind, ReportTarget};
+use horch_core::execution::{SpawnRequest, TilingMode};
 use horch_core::harness::HarnessKind;
-use horch_core::ids::{ExperimentId, RoundId};
+use horch_core::ids::{ExperimentId, RoundId, SessionId};
 use horch_core::ids::{ModelId, TeammateName};
 use horch_core::measure::event::{Actor, EventKind};
 use horch_core::measure::paths::DatasetPaths;
@@ -40,6 +42,7 @@ use horch_core::routing::policy::Policy;
 use horch_core::routing::quota::{QuotaFile, QuotaView};
 use horch_core::runtime::fault::Faults;
 use horch_core::runtime::{MapEnv, RuntimeContext};
+use horch_core::skills::{harness_support, SkillResolution};
 use horch_core::usage::Locations;
 use horch_core::vcs::git::GitCli;
 use horch_core::workspace::client::WorkspaceClient;
@@ -187,6 +190,15 @@ enum Agent {
     /// after the coordinator read the record, before it writes its own end
     /// (see [`Racing`]). The round's clock moves 60 s per tick.
     DoneAtTheLook,
+    /// As `Crash`, but the first `pane_split` fails: candidate A fails to
+    /// launch.
+    SplitFails,
+    /// Runs, then its pane vanishes: closed with no `horch done`.
+    PaneGone,
+    /// As `Crash`, but a coordinator died after it planned the launch of A
+    /// and before its pane: A has a `Planned` record and no pane when the
+    /// round starts.
+    Abandoned,
 }
 
 /// [`FakeWorkspace`], and with `race` set, every running candidate record
@@ -279,6 +291,9 @@ fn round_cfg(
     let recorder = JsonlRecorder::open(&paths, StoreOptions::default()).unwrap();
     let store = ExecutionStore::open(&w.ctx.paths, &w.repo);
     let fake = FakeWorkspace::new();
+    if agent == Agent::SplitFails {
+        fake.fail_next("pane_split", "no room for a pane");
+    }
 
     let mut config = config::load(
         &w.repo,
@@ -371,7 +386,7 @@ fn round_cfg(
                     .set_state(&r.record_id, ExecutionStatus::Running)
                     .unwrap();
                 match agent {
-                    Agent::Crash => {
+                    Agent::Crash | Agent::SplitFails | Agent::Abandoned => {
                         store.record_exit(&r.record_id, Some(2)).unwrap();
                     }
                     Agent::TrustDialog => {
@@ -385,6 +400,9 @@ fn round_cfg(
                         r.pane_id.as_deref().unwrap(),
                         &[(Some("codex"), Some("idle")), (Some("codex"), Some("done"))],
                     ),
+                    Agent::PaneGone => {
+                        fake.pane_close(r.pane_id.as_deref().unwrap()).unwrap();
+                    }
                     Agent::DoneAtTheLook => {}
                 }
             }
@@ -445,6 +463,9 @@ fn round_cfg(
         tick: Duration::from_millis(1),
         watch_command: "watch".into(),
     };
+    if agent == Agent::Abandoned {
+        plant_planned_record(w, roster, &recorder, &store, &spec, &plan);
+    }
     let outcome = coordinator.start(&spec, &plan).unwrap();
     let calls = fake.calls();
     let raced = racing.raced.get();
@@ -459,6 +480,202 @@ fn round_cfg(
         },
         calls,
     )
+}
+
+/// The `Planned` record, with no pane, that a coordinator killed in the
+/// middle of launching candidate A leaves behind.
+fn plant_planned_record(
+    w: &World,
+    roster: &Roster,
+    recorder: &JsonlRecorder,
+    store: &ExecutionStore,
+    spec: &RoundSpec,
+    plan: &RoundPlan,
+) {
+    use horch_core::competition::coordinator::record_round_plan;
+    let now = horch_core::clock::parse("2026-10-02T12:00:00Z").unwrap();
+    record_round_plan(recorder, &spec.experiment, &spec.round, plan, &|| now).unwrap();
+    let view = fold(&recorder.read_all().unwrap().events)
+        .rounds
+        .remove(&spec.round)
+        .unwrap();
+    let a = &view.candidates["A"];
+    let teammate = a.planned.as_ref().unwrap().teammate.clone();
+    let mut req = SpawnRequest::worker(Some(teammate.clone()), String::from("add a greeting"));
+    req.kind = ExecutionKind::Candidate {
+        experiment: spec.experiment.clone(),
+        round: spec.round.clone(),
+        label: "A".into(),
+    };
+    req.workdir = Some(w.root.join("worktrees/A"));
+    req.report_to = ReportTarget::None;
+    req.pinned = true;
+    req.tiling = TilingMode::Disabled;
+    let skills = SkillResolution::read(
+        roster.skill_catalog().unwrap(),
+        roster.get(teammate.as_str()),
+        None,
+        harness_support,
+    )
+    .unwrap();
+    let ids = MintedIds {
+        execution: a.execution_id.clone().unwrap(),
+        session: SessionId::new(horch_core::mint_uuid()).unwrap(),
+    };
+    let launch = plan_launch(
+        &req,
+        &PlanInputs {
+            roster,
+            skills: &skills,
+            gate: None,
+            existing: None,
+            now,
+            ids: &ids,
+            project: &w.repo,
+        },
+    )
+    .unwrap();
+    assert_eq!(launch.execution.status, ExecutionStatus::Planned);
+    store.insert_execution(&launch.execution).unwrap();
+}
+
+/// The `candidate.failed` failure of each label, from the log.
+fn failures(recorder: &JsonlRecorder, round: &RoundId) -> Vec<(String, FailureKind)> {
+    let projection = fold(&recorder.read_all().unwrap().events);
+    projection.rounds[round]
+        .candidates
+        .iter()
+        .filter_map(|(l, c)| c.failed.as_ref().map(|f| (l.clone(), f.failure.clone())))
+        .collect()
+}
+
+/// An abandoned launch (a `Planned` record, no pane) never ran: it ends
+/// `Crashed`, is frozen at the base with an empty ineligible report, and
+/// the other candidate still launches and runs.
+#[test]
+fn observe_ends_an_abandoned_launch_as_crashed() {
+    let Some(w) = world() else { return };
+    let roster = roster();
+    let CrashRound {
+        recorder,
+        store,
+        round,
+        outcome,
+        ..
+    } = round_with(&w, &roster, |_| {}, Agent::Abandoned);
+    assert_eq!(outcome, RoundOutcome::Rejected { budget: false });
+    let failed = failures(&recorder, &round);
+    assert_eq!(failed[0], ("A".to_string(), FailureKind::Crashed));
+    // A's record is closed as a failed launch; B ran and crashed.
+    let a = store
+        .read()
+        .unwrap()
+        .into_iter()
+        .map(|r| to_execution(&r).unwrap())
+        .find(|e| matches!(&e.kind, ExecutionKind::Candidate { label, .. } if label == "A"))
+        .unwrap();
+    assert!(matches!(a.status, ExecutionStatus::LaunchFailed { .. }));
+    let projection = fold(&recorder.read_all().unwrap().events);
+    let c = &projection.rounds[&round].candidates["A"];
+    assert_eq!(c.frozen.as_ref().unwrap().head_sha, w.base);
+    let report = c.validation.as_ref().unwrap();
+    assert!(!report.eligible);
+    assert!(report.gates.is_empty());
+}
+
+/// A launch that fails at the pane split is recorded `Crashed`; the other
+/// candidate launches.
+#[test]
+fn launch_failure_at_the_split_ends_the_candidate_crashed() {
+    let Some(w) = world() else { return };
+    let roster = roster();
+    let CrashRound {
+        recorder,
+        store,
+        round,
+        ..
+    } = round_with(&w, &roster, |_| {}, Agent::SplitFails);
+    assert_eq!(
+        failures(&recorder, &round)[0],
+        ("A".to_string(), FailureKind::Crashed)
+    );
+    let statuses: Vec<(String, bool)> = store
+        .read()
+        .unwrap()
+        .into_iter()
+        .map(|r| to_execution(&r).unwrap())
+        .map(|e| {
+            let label = match e.kind {
+                ExecutionKind::Candidate { label, .. } => label,
+                other => panic!("{other:?}"),
+            };
+            (
+                label,
+                matches!(e.status, ExecutionStatus::LaunchFailed { .. }),
+            )
+        })
+        .collect();
+    assert_eq!(
+        statuses,
+        [("A".to_string(), true), ("B".to_string(), false)]
+    );
+}
+
+/// A plan the launch planner refuses (an unknown teammate) cancels the
+/// candidate with `spawn refused`, and writes no record.
+#[test]
+fn a_refused_launch_plan_cancels_the_candidate() {
+    let Some(w) = world() else { return };
+    let roster = roster();
+    let CrashRound {
+        recorder,
+        store,
+        round,
+        ..
+    } = round_with(
+        &w,
+        &roster,
+        |plan| plan.candidates[0].teammate = TeammateName::new("ghost").unwrap(),
+        Agent::Crash,
+    );
+    let failed = failures(&recorder, &round);
+    let (label, failure) = &failed[0];
+    assert_eq!(label, "A");
+    let FailureKind::Cancelled { reason } = failure else {
+        panic!("{failure:?}")
+    };
+    assert!(reason.starts_with("spawn refused:"), "{reason}");
+    assert!(reason.contains("ghost"), "{reason}");
+    assert_eq!(store.read().unwrap().len(), 1, "only B has a record");
+}
+
+/// A pane that vanishes while its record is still live (no `horch done`)
+/// ends the candidate `PaneVanished`.
+#[test]
+fn observe_ends_a_vanished_pane() {
+    let Some(w) = world() else { return };
+    let roster = roster();
+    let CrashRound {
+        recorder,
+        store,
+        round,
+        ..
+    } = round_with(&w, &roster, |_| {}, Agent::PaneGone);
+    assert_eq!(
+        failures(&recorder, &round),
+        [
+            ("A".to_string(), FailureKind::PaneVanished),
+            ("B".to_string(), FailureKind::PaneVanished)
+        ]
+    );
+    for r in store.read().unwrap() {
+        assert_eq!(
+            to_execution(&r).unwrap().status,
+            ExecutionStatus::Failed {
+                failure: FailureKind::PaneVanished
+            }
+        );
+    }
 }
 
 #[test]

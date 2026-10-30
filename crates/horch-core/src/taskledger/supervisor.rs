@@ -151,6 +151,9 @@ pub enum Ended {
     Clean,
     /// It held a task without finishing it: the task is queued again.
     Requeued { task: String, persona: String },
+    /// It held a task that has now used up its attempts: the task is held
+    /// for the operator (#168).
+    Held { task: String },
 }
 
 /// Settle the worker row after the agent exited with `code`.
@@ -174,11 +177,14 @@ pub fn agent_exited(db: &Path, worker_id: &str, code: Option<i32>) -> Result<End
                 workers::end(tx, worker_id, WorkerStatus::Incomplete, &reason, code)?;
                 util::event(tx, &about, Actor::Supervisor, EventKind::Exited, &reason)?;
                 let task = w.task_id.clone().unwrap_or_default();
-                tasks::requeue(tx, &task, &format!("{} {reason}", w.label()))?;
+                let how = tasks::requeue(tx, &task, &format!("{} {reason}", w.label()))?;
                 let t = tasks::get(tx, &task)?;
-                Ok(Ended::Requeued {
-                    task: t.short(),
-                    persona: t.claimable_by.unwrap_or_default(),
+                Ok(match how {
+                    tasks::Requeue::Held => Ended::Held { task: t.short() },
+                    _ => Ended::Requeued {
+                        task: t.short(),
+                        persona: t.claimable_by.unwrap_or_default(),
+                    },
                 })
             }
             WorkerStatus::Starting | WorkerStatus::Spawning => {

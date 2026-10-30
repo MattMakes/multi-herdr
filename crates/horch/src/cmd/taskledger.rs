@@ -10,6 +10,7 @@ use std::process::ExitCode;
 
 use anyhow::{bail, Context, Result};
 use clap::{Args, Subcommand};
+use horch_core::execution::lifecycle::ReportStatus;
 use horch_core::messaging::delivery;
 use horch_core::runtime::RuntimeContext;
 use horch_core::taskledger::finish::{self, land};
@@ -51,7 +52,8 @@ pub enum LedgerCommand {
         #[arg(long)]
         json: bool,
     },
-    /// Runs: `run new <slug>` creates a run and its run branch.
+    /// Runs: `run new <slug>` creates a run and its run branch; `run close`
+    /// ends it.
     Run {
         #[command(subcommand)]
         command: RunCommand,
@@ -78,9 +80,38 @@ pub enum LedgerCommand {
         #[command(flatten)]
         run: RunArg,
     },
-    /// Drop a task.
+    /// Drop a task. Its worker lets go of it at once; `--stop` also stops
+    /// that worker by its recorded PIDs and pane.
     Cancel {
         task: String,
+        reason: String,
+        #[arg(long)]
+        stop: bool,
+        #[command(flatten)]
+        run: RunArg,
+    },
+    /// Drop 1 dependency: TASK no longer waits for --from (orchestrator).
+    Unblock {
+        task: String,
+        #[arg(long = "from", value_name = "BLOCKER")]
+        from: String,
+        #[command(flatten)]
+        run: RunArg,
+    },
+    /// Queue a held or cancelled task again (orchestrator). It keeps its
+    /// attempt history and gets the run's attempt limit anew.
+    Requeue {
+        task: String,
+        reason: String,
+        #[command(flatten)]
+        run: RunArg,
+    },
+    /// (orchestrator) Rule that 1 code-sweep finding of a task's current
+    /// round does not block. Never the author.
+    Waive {
+        task: String,
+        /// The finding id in the code-sweep report, e.g. F1.
+        finding: String,
         reason: String,
         #[command(flatten)]
         run: RunArg,
@@ -101,6 +132,9 @@ pub enum LedgerCommand {
     Finish {
         #[arg(long)]
         json: bool,
+        /// Start a new code-sweep round for the same tree.
+        #[arg(long)]
+        rereview: bool,
     },
     /// The finish steps of a task (default: this worker's) with evidence.
     Steps {
@@ -271,6 +305,20 @@ pub enum RunCommand {
         /// Slack, in seconds, when a screen timer is compared with the clock.
         #[arg(long, hide = true)]
         timer_tolerance: Option<i64>,
+        /// Attempts at 1 task before horch holds it and asks the operator
+        /// (default 3).
+        #[arg(long)]
+        max_attempts: Option<i64>,
+    },
+    /// Close the run when its work is done. Refuses while a task is queued,
+    /// held, running or landing, or a worktree is open or landing.
+    Close {
+        #[command(flatten)]
+        run: RunArg,
+        /// Cancel every open task with this reason, then close the run as
+        /// abandoned.
+        #[arg(long, value_name = "REASON")]
+        abandon: Option<String>,
     },
     /// Every run of this project.
     List {
@@ -289,6 +337,9 @@ pub enum WorkerCommand {
         role: Option<String>,
         #[arg(long)]
         replaces: Option<String>,
+        /// The herdr pane the worker runs in.
+        #[arg(long)]
+        pane: Option<String>,
         #[command(flatten)]
         run: RunArg,
     },
@@ -340,6 +391,9 @@ pub struct AddArgs {
     /// The check the finish steps run.
     #[arg(long)]
     check: Option<String>,
+    /// Seconds the check may run before it is killed (default 1200).
+    #[arg(long = "check-timeout")]
+    check_timeout: Option<u64>,
     #[arg(long)]
     phase: Option<String>,
     #[arg(long)]
@@ -381,7 +435,30 @@ pub fn resolve_run(ctx: &RuntimeContext, store: &Store, arg: &RunArg) -> Result<
             }
         }
     }
-    runs::resolve(store.conn(), &project_root(ctx)?, explicit.as_deref())
+    let workspace = ctx.herdr.workspace.as_ref().map(|w| w.as_str().to_string());
+    let (run, note) = runs::resolve(
+        store.conn(),
+        &project_root(ctx)?,
+        explicit.as_deref(),
+        workspace.as_deref(),
+    )?;
+    if let Some(note) = note {
+        eprintln!("horch: {note}");
+    }
+    Ok(run)
+}
+
+/// Refuse `what` when the caller is a ledger worker: the orchestrator
+/// decides it.
+fn orchestrator_only(ctx: &RuntimeContext, store: &Store, what: &str) -> Result<()> {
+    if let Some(wid) = worker_id_opt(ctx) {
+        if let Some(w) = workers::find(store.conn(), &wid)? {
+            if w.kind == WorkerKind::Worker.as_str() {
+                bail!("horch ledger {what} is for the orchestrator, not a worker");
+            }
+        }
+    }
+    Ok(())
 }
 
 fn worker_id_opt(ctx: &RuntimeContext) -> Option<String> {
@@ -421,6 +498,7 @@ pub fn run(ctx: &RuntimeContext, command: LedgerCommand) -> Result<ExitCode> {
         LedgerCommand::AddMap { map: path, run } => add_map(ctx, &mut store, &path, &run),
         LedgerCommand::PlanWorkers { run, json: as_json } => {
             let r = resolve_run(ctx, &store, &run)?;
+            adopt_workspace(ctx, &store, &r)?;
             let plan = tasks::plan_workers(store.conn(), &r.run_id)?;
             if as_json {
                 json(&plan)?;
@@ -456,19 +534,101 @@ pub fn run(ctx: &RuntimeContext, command: LedgerCommand) -> Result<ExitCode> {
             ));
             Ok(ExitCode::SUCCESS)
         }
-        LedgerCommand::Cancel { task, reason, run } => {
+        LedgerCommand::Cancel {
+            task,
+            reason,
+            stop: stop_it,
+            run,
+        } => {
             let r = resolve_run(ctx, &store, &run)?;
+            let holder = tasks::resolve(store.conn(), &r.run_id, &task)?.current_worker_id;
+            if let (true, Some(w)) = (stop_it, &holder) {
+                let report = stop::stop_worker(
+                    &mut store,
+                    w,
+                    StopRequester::Orchestrator,
+                    &format!("task cancelled: {reason}"),
+                    &HerdrPanes::new(ctx),
+                    &stop::Os,
+                    &stop::StopOptions {
+                        grace: stop_grace(),
+                        ..Default::default()
+                    },
+                )?;
+                print_stop(&report, false)?;
+            }
             let t = store.immediate(|tx| {
                 let t = tasks::resolve(tx, &r.run_id, &task)?;
                 tasks::cancel(tx, &t, &reason)
             })?;
             output::println(&format!("{} cancelled.", t.short()));
-            if t.current_worker_id.is_some() {
+            if let (false, Some(w)) = (stop_it, &holder) {
                 eprintln!(
-                    "horch ledger: a worker still holds {}. Stop it with horch ledger stop <worker>.",
+                    "horch ledger: worker {w} held {} and can no longer finish it. Its process may still run: horch ledger stop {w} \"<reason>\".",
                     t.short()
                 );
             }
+            let waiting = tasks::dependents(store.conn(), &t.task_id)?;
+            if !waiting.is_empty() {
+                let names: Vec<String> = waiting.iter().map(|d| d.short()).collect();
+                output::println(&format!("Waiting for {}: {}.", t.short(), names.join(", ")));
+            }
+            super::taskledger_wake::cancelled_dependents(ctx, &store, &r, &t.short(), &waiting);
+            Ok(ExitCode::SUCCESS)
+        }
+        LedgerCommand::Unblock { task, from, run } => {
+            orchestrator_only(ctx, &store, "unblock")?;
+            let r = resolve_run(ctx, &store, &run)?;
+            let t = store.immediate(|tx| {
+                let t = tasks::resolve(tx, &r.run_id, &task)?;
+                let b = tasks::resolve(tx, &r.run_id, &from)?;
+                tasks::unblock(tx, &t, &b)?;
+                Ok(t)
+            })?;
+            output::println(&format!("{} no longer waits for {from}.", t.short()));
+            super::taskledger_wake::nudge_startable(ctx, &store, &r);
+            Ok(ExitCode::SUCCESS)
+        }
+        LedgerCommand::Requeue { task, reason, run } => {
+            orchestrator_only(ctx, &store, "requeue")?;
+            let r = resolve_run(ctx, &store, &run)?;
+            let t = store.immediate(|tx| {
+                let t = tasks::resolve(tx, &r.run_id, &task)?;
+                tasks::requeue_by_operator(tx, &t, &reason)
+            })?;
+            output::println(&format!("{} is queued again.", t.short()));
+            super::taskledger_wake::nudge_startable(ctx, &store, &r);
+            Ok(ExitCode::SUCCESS)
+        }
+        LedgerCommand::Waive {
+            task,
+            finding,
+            reason,
+            run,
+        } => {
+            let r = resolve_run(ctx, &store, &run)?;
+            // The caller: its worker id, else the run's worker in its pane, so
+            // a worker that unsets HORCH_WORKER_ID is still known.
+            let pane = ctx.herdr.pane.as_ref().map(|p| p.as_str().to_string());
+            let caller = worker_id_opt(ctx).or_else(|| {
+                finish::codesweep::worker_in_pane(store.conn(), &r.run_id, pane.as_deref())
+            });
+            if let Some(w) = caller {
+                let w = workers::get(store.conn(), &w)?;
+                if w.kind != WorkerKind::Orchestrator.as_str() {
+                    bail!("only the orchestrator waives a code-sweep finding; fix it, or answer an Important finding in the answers file");
+                }
+            }
+            let t = tasks::resolve(store.conn(), &r.run_id, &task)?;
+            let w =
+                finish::codesweep::waive(&store, &tools(ctx).evidence_root, &t, &finding, &reason)?;
+            output::println(&format!(
+                "{} round {}: {} waived. The next horch ledger finish of {} reads it.",
+                t.short(),
+                w.round,
+                w.id,
+                t.short()
+            ));
             Ok(ExitCode::SUCCESS)
         }
         LedgerCommand::Claim { json: as_json } => claim(ctx, &mut store, as_json),
@@ -528,10 +688,45 @@ pub fn run(ctx: &RuntimeContext, command: LedgerCommand) -> Result<ExitCode> {
             output::println(&format!("abandoned: {} ({reason})", wt.path));
             Ok(ExitCode::SUCCESS)
         }
-        LedgerCommand::Finish { json: as_json } => {
+        LedgerCommand::Finish {
+            json: as_json,
+            rereview,
+        } => {
             let wid = worker_id(ctx)?;
-            let tools = tools(ctx);
+            // finish answers a reviews-in notice: its mail and wait end.
+            if workers::waiting(store.conn(), &wid)?
+                .iter()
+                .any(workers::holds_for_finish)
+            {
+                workers::clear_wait(store.conn(), &wid, workers::REVIEWS_WAIT)?;
+            }
+            if let Some(role) = workers::get(store.conn(), &wid)?.role {
+                super::messaging::ack_role_mail(ctx, &role);
+            }
+            let mut tools = tools(ctx);
+            tools.reviewers_down = reviewers_down(ctx);
+            tools.codex.personas = codex_personas(ctx);
+            if rereview {
+                finish::rereview(&mut store, &tools, &wid)?;
+            }
             let report = finish::finish(&mut store, &tools, &wid)?;
+            for w in &report.superseded_workers {
+                let stopped = stop::stop_worker(
+                    &mut store,
+                    w,
+                    StopRequester::Watchdog,
+                    "its review was superseded by a new code-sweep round",
+                    &HerdrPanes::new(ctx),
+                    &stop::Os,
+                    &stop::StopOptions {
+                        grace: stop_grace(),
+                        ..Default::default()
+                    },
+                );
+                if let Err(e) = stopped {
+                    eprintln!("horch ledger: could not stop reviewer {w}: {e:#}");
+                }
+            }
             if !report.queued_reviews.is_empty() {
                 let w = workers::get(store.conn(), &wid)?;
                 if let Some(r) = &w.run_id {
@@ -804,6 +999,32 @@ pub fn run(ctx: &RuntimeContext, command: LedgerCommand) -> Result<ExitCode> {
     }
 }
 
+/// A run created outside herdr has no workspace (#218). The first
+/// `status` or `plan-workers` from a herdr pane that is not a worker's
+/// records that pane's workspace on the run, so wakes find its orchestrator.
+fn adopt_workspace(ctx: &RuntimeContext, store: &Store, run: &Run) -> Result<()> {
+    let (None, Some(ws), Some(_pane)) = (&run.workspace_id, &ctx.herdr.workspace, &ctx.herdr.pane)
+    else {
+        return Ok(());
+    };
+    let role = ctx.worker.as_ref().and_then(|w| w.role.as_deref());
+    if role.is_some_and(|r| r != "orchestrator") {
+        return Ok(());
+    }
+    let changed = store.conn().execute(
+        "UPDATE runs SET workspace_id = ?2 WHERE run_id = ?1 AND workspace_id IS NULL",
+        [&run.run_id, ws.as_str()],
+    )?;
+    if changed == 1 {
+        eprintln!(
+            "NOTE: run {} had no workspace. It now has workspace {}, so wakes go to the orchestrator of this workspace.",
+            run.slug,
+            ws.as_str()
+        );
+    }
+    Ok(())
+}
+
 fn status_cmd(
     ctx: &RuntimeContext,
     store: &Store,
@@ -822,6 +1043,7 @@ fn status_cmd(
         return Ok(ExitCode::SUCCESS);
     }
     let run = resolve_run(ctx, store, arg)?;
+    adopt_workspace(ctx, store, &run)?;
     let report = status::report(store.conn(), &run)?;
     if as_json {
         json(&report)?;
@@ -1006,6 +1228,21 @@ fn opt(v: Option<i64>) -> String {
 fn run_cmd(ctx: &RuntimeContext, store: &mut Store, command: RunCommand) -> Result<ExitCode> {
     let root = project_root(ctx)?;
     match command {
+        RunCommand::Close { run, abandon } => {
+            let r = resolve_run(ctx, store, &run)?;
+            let closed = store.immediate(|tx| runs::close_run(tx, &r, abandon.as_deref()))?;
+            for (task, holder) in &closed.cancelled {
+                match holder {
+                    Some(w) => output::println(&format!(
+                        "{task} cancelled. Its worker {w} may still run: horch ledger stop {w} \"run abandoned\" --run {}",
+                        r.slug
+                    )),
+                    None => output::println(&format!("{task} cancelled.")),
+                }
+            }
+            output::println(&format!("Run {} closed as {}.", r.slug, closed.status));
+            Ok(ExitCode::SUCCESS)
+        }
         RunCommand::List { json: as_json } => {
             let all = runs::of_project(store.conn(), &root)?;
             if as_json {
@@ -1037,6 +1274,7 @@ fn run_cmd(ctx: &RuntimeContext, store: &mut Store, command: RunCommand) -> Resu
             heartbeat_every,
             heartbeat_stale,
             timer_tolerance,
+            max_attempts,
         } => {
             let steps: Vec<StepName> = steps
                 .iter()
@@ -1059,6 +1297,12 @@ fn run_cmd(ctx: &RuntimeContext, store: &mut Store, command: RunCommand) -> Resu
                 if !git.branch_exists(&root, &run_branch) {
                     git.run(&root, &["branch", &run_branch, base])?;
                     eprintln!("horch ledger: created run branch {run_branch} from {base}.");
+                } else if !git.is_ancestor(&root, base, &run_branch) {
+                    // An earlier run's branch: tasks would land on old code.
+                    bail!(
+                        "branch {run_branch} exists and lacks commits of {base}. Delete it \
+                         (git branch -D {run_branch}) or name another with --branch"
+                    );
                 }
                 if let Some(remote) = &remote {
                     let out =
@@ -1084,6 +1328,7 @@ fn run_cmd(ctx: &RuntimeContext, store: &mut Store, command: RunCommand) -> Resu
                     heartbeat_every_s: heartbeat_every,
                     heartbeat_stale_s: heartbeat_stale,
                     timer_tolerance_s: timer_tolerance,
+                    max_attempts,
                 },
             };
             let pane = ctx.herdr.pane.as_ref().map(|p| p.as_str().to_string());
@@ -1117,6 +1362,12 @@ fn run_cmd(ctx: &RuntimeContext, store: &mut Store, command: RunCommand) -> Resu
                 r.run_branch.as_deref().unwrap_or("(no git repository)"),
                 r.finish_steps.join(", ")
             ));
+            if r.workspace_id.is_none() {
+                eprintln!(
+                    "horch ledger: warning: run {} has no workspace, because this command ran outside a herdr pane. Wakes go only to an orchestrator that runs a ledger command from its pane. Run horch ledger plan-workers in the orchestrator pane to record its workspace.",
+                    r.slug
+                );
+            }
             Ok(ExitCode::SUCCESS)
         }
     }
@@ -1189,6 +1440,13 @@ fn add(ctx: &RuntimeContext, store: &mut Store, a: AddArgs) -> Result<ExitCode> 
     };
     let _ = a.parallel;
     let t = store.immediate(|tx| tasks::add(tx, &run, &new, Actor::Orchestrator))?;
+    if let Some(secs) = a.check_timeout {
+        finish::land::set_check_timeout(
+            &tools(ctx).evidence_root,
+            &t.task_id,
+            std::time::Duration::from_secs(secs),
+        )?;
+    }
     output::println(&format!(
         "{} queued for {}: {}.",
         t.short(),
@@ -1228,7 +1486,14 @@ fn add_map(ctx: &RuntimeContext, store: &mut Store, path: &Path, arg: &RunArg) -
 
 fn claim(ctx: &RuntimeContext, store: &mut Store, as_json: bool) -> Result<ExitCode> {
     let wid = worker_id(ctx)?;
-    let mut outcome = store.immediate(|tx| tasks::claim(tx, &wid))?;
+    let tools = tools(ctx);
+    let mut outcome = store.immediate(|tx| {
+        let o = tasks::claim(tx, &wid)?;
+        if let ClaimOutcome::Claimed(c) = &o {
+            finish::shared_claim(&tools, &runs::get(tx, &c.task.run_id)?, &c.task)?;
+        }
+        Ok(o)
+    })?;
     if let ClaimOutcome::Claimed(c) = &mut outcome {
         absolute_ticket_if_missing(ctx, store, c);
     }
@@ -1290,6 +1555,38 @@ fn absolute_ticket_if_missing(ctx: &RuntimeContext, store: &Store, c: &mut Claim
     }
 }
 
+/// The code-sweep reviewer personas that cannot run here: not in the roster,
+/// or their harness CLI is not installed.
+fn reviewers_down(ctx: &RuntimeContext) -> Vec<(String, String)> {
+    let roster = super::load_roster_unwarned(ctx, None).ok();
+    ["codex-reviewer", "architect-reviewer"]
+        .into_iter()
+        .filter_map(|p| {
+            let why = match roster.as_ref().and_then(|r| r.get(p)) {
+                None => "not in the roster".to_string(),
+                Some(t) => {
+                    let bin = t.agent.binary(&ctx.bins.harness)?;
+                    let found = if bin.is_absolute() {
+                        bin.is_file()
+                    } else {
+                        horch_core::runtime::process::which(
+                            ctx.inherited.path.as_deref(),
+                            ctx.inherited.pathext.as_deref(),
+                            &bin.to_string_lossy(),
+                        )
+                        .is_some()
+                    };
+                    if found {
+                        return None;
+                    }
+                    format!("{} is not installed", bin.display())
+                }
+            };
+            Some((p.to_string(), why))
+        })
+        .collect()
+}
+
 /// The finish steps' tools: git, gh, node, the sweep skills.
 pub fn tools(ctx: &RuntimeContext) -> finish::Tools {
     let env = |k: &str| {
@@ -1297,19 +1594,27 @@ pub fn tools(ctx: &RuntimeContext) -> finish::Tools {
             .filter(|v| !v.is_empty())
             .map(PathBuf::from)
     };
-    let roots = [
+    let mut roots = vec![
         ctx.paths.home.join(".claude").join("plugins"),
         ctx.paths.data_root.clone(),
     ];
+    roots.extend(local_marketplaces(&ctx.paths.data_root));
+    // A plugin holds `<skill>/`; the skill store holds
+    // `skills/<skill>/<source>+<hash>/`.
+    let skill_dir = |p: &Path, skill: &str| {
+        p.file_name().is_some_and(|n| n == skill)
+            || p.parent()
+                .and_then(|d| d.file_name())
+                .is_some_and(|n| n == skill)
+    };
     let code_sweep_dir = env("HORCH_CODE_SWEEP_DIR").or_else(|| {
         find_dir(&roots, |p| {
-            p.file_name().is_some_and(|n| n == "code-sweep") && p.join("reviewers").is_dir()
+            skill_dir(p, "code-sweep") && p.join("reviewers").is_dir()
         })
     });
     let complexity_cli = env("HORCH_COMPLEXITY_CLI").or_else(|| {
         find_dir(&roots, |p| {
-            p.file_name().is_some_and(|n| n == "complexity-sweep")
-                && p.join("code/cli/dist/index.js").is_file()
+            skill_dir(p, "complexity-sweep") && p.join("code/cli/dist/index.js").is_file()
         })
         .map(|d| d.join("code/cli/dist/index.js"))
     });
@@ -1327,7 +1632,56 @@ pub fn tools(ctx: &RuntimeContext) -> finish::Tools {
             .unwrap_or_else(|| PathBuf::from("evidence")),
         // An absolute shell: a pane's PATH may not reach one.
         shell: PathBuf::from(if cfg!(unix) { "/bin/sh" } else { "sh" }),
+        reviewers_down: Vec::new(),
+        codex: finish::CodexSandbox {
+            bin: ctx.bins.harness.codex.clone(),
+            state_root: ctx.paths.state_root.clone(),
+            personas: Vec::new(),
+        },
     }
+}
+
+/// The roster's Codex teammates: their check runs in a Codex sandbox.
+fn codex_personas(ctx: &RuntimeContext) -> Vec<String> {
+    let Ok(roster) = super::load_roster_unwarned(ctx, None) else {
+        return Vec::new();
+    };
+    roster
+        .names()
+        .into_iter()
+        .filter(|n| {
+            roster
+                .get(n)
+                .is_some_and(|t| t.agent == horch_core::harness::HarnessKind::Codex)
+        })
+        .map(str::to_string)
+        .collect()
+}
+
+/// The `plugins/` folder of each local marketplace checkout that the skill
+/// store installed a skill from. The store cannot hold complexity-sweep (its
+/// npm links are symlinks), but its checkout sits next to code-sweep's.
+fn local_marketplaces(data_root: &Path) -> Vec<PathBuf> {
+    let lock = horch_core::skills::catalog::marketplace::Store::new(data_root).lock_path();
+    let Ok(lock) = horch_core::skills::catalog::marketplace::Lockfile::read(&lock) else {
+        return Vec::new();
+    };
+    let mut out: Vec<PathBuf> = Vec::new();
+    for e in &lock.skills {
+        let source = Path::new(&e.source);
+        if !source.is_absolute() {
+            continue;
+        }
+        if let Some(p) = source
+            .ancestors()
+            .find(|a| a.file_name().is_some_and(|n| n == "plugins"))
+        {
+            if !out.iter().any(|o| o == p) {
+                out.push(p.to_path_buf());
+            }
+        }
+    }
+    out
 }
 
 /// The first directory under `roots` (at most 10 levels down) that `want`
@@ -1359,7 +1713,8 @@ fn find_dir(roots: &[PathBuf], want: impl Fn(&Path) -> bool) -> Option<PathBuf> 
 }
 
 /// `horch ledger done` (and `horch done` from a ledger worker): record the
-/// finish, wake whoever must act on it, then report and close the pane.
+/// finish, then (in a pane) report, wake whoever must act on it and close
+/// the pane.
 pub fn done_cmd(
     ctx: &RuntimeContext,
     mut store: Store,
@@ -1382,14 +1737,31 @@ pub fn done_cmd(
     }
     let c = finish::complete(&mut store, &wid, summary, unlanded)?;
     let run = runs::get(store.conn(), &c.run_id)?;
-    if !c.already {
+    // The wakes, at most once. In a pane they run after `done` marks the
+    // record done and before its report push, in the same budget (#67).
+    let woken = std::cell::Cell::new(c.already);
+    let wake = || {
+        if woken.replace(true) {
+            return;
+        }
         if let Some((parent, Some(role))) = &c.reviews_in_for {
             let line =
                 format!("[horch] NOTE: The reviews of {parent} are in. Run horch ledger finish.");
-            if let Err(e) = super::messaging::tell_as(ctx, Some("horch".into()), role, &line) {
+            // The author waits for this line until it runs finish (#177).
+            if let Err(e) = hold_for_finish(&store, &c.task_id) {
+                eprintln!("horch ledger: could not record the wait of {role}: {e:#}");
+            }
+            let told = match super::messaging::tell_as(ctx, Some("horch".into()), role, &line) {
+                Ok(ReportStatus::Delivered) => Ok(()),
+                Ok(ReportStatus::Queued(cause)) => Err(anyhow::anyhow!(
+                    "{cause}; the courier types it when the pane is idle"
+                )),
+                Err(e) => Err(e),
+            };
+            if let Err(e) = told {
                 eprintln!("horch ledger: could not tell {role}: {e:#}");
-                // A tell to a worker is not durable, and a retried done skips
-                // it, so the orchestrator gets it as durable mail instead.
+                // A retried done skips the tell, so the orchestrator gets it
+                // as durable mail too.
                 super::taskledger_wake::wake(
                     ctx,
                     &store,
@@ -1401,8 +1773,20 @@ pub fn done_cmd(
                 );
             }
         }
+        if c.unlanded {
+            // The task is already done here, so a read error only costs the wake.
+            match tasks::dependents(store.conn(), &c.task_id) {
+                Ok(waiting) => super::taskledger_wake::cancelled_dependents(
+                    ctx, &store, &run, &c.task, &waiting,
+                ),
+                Err(e) => eprintln!(
+                    "horch ledger: could not read the tasks that wait on {}: {e:#}",
+                    c.task
+                ),
+            }
+        }
         super::taskledger_wake::after_done(ctx, &store, &run);
-    }
+    };
     output::println(&format!(
         "{} {}.",
         c.task,
@@ -1412,30 +1796,47 @@ pub fn done_cmd(
             "done"
         }
     ));
-    drop(store);
-    if in_pane {
-        super::messaging::done(ctx, summary, unlanded)?;
+    if !in_pane {
+        wake();
+        return Ok(());
     }
-    Ok(())
+    let done = super::messaging::done_then(ctx, summary, unlanded, &wake);
+    // A `done` that stopped before the record, or a retry, ran no wake.
+    wake();
+    done
 }
 
-/// The slug of this project's active task-ledger run, if it has one. Never
-/// creates the ledger file.
+/// After the last review of a task: the author holds its reviewers wait
+/// until it runs `horch ledger finish` ([`workers::hold_for_finish`]).
+fn hold_for_finish(store: &Store, review_task_id: &str) -> Result<()> {
+    let Some(parent) = tasks::get(store.conn(), review_task_id)?.parent_task_id else {
+        return Ok(());
+    };
+    let Some(author) = tasks::get(store.conn(), &parent)?.current_worker_id else {
+        return Ok(());
+    };
+    workers::hold_for_finish(store.conn(), &author)
+}
+
+/// The slug of the active task-ledger run of this project that the caller's
+/// herdr workspace owns, if any (#89). Never creates the ledger file.
 pub fn active_run_slug(ctx: &RuntimeContext) -> Option<String> {
     if !ctx.paths.ledger_db.exists() {
         return None;
     }
+    let workspace = ctx.herdr.workspace.as_ref()?.as_str().to_string();
     let store = taskledger::open(ctx).ok()?;
     let root = project_root(ctx).ok()?;
     runs::of_project(store.conn(), &root)
         .ok()?
         .into_iter()
-        .find(|r| r.status == "active")
+        .find(|r| r.status == "active" && r.workspace_id.as_deref() == Some(workspace.as_str()))
         .map(|r| r.slug)
 }
 
-/// Whether this process is a task-ledger worker that holds (or held) a task:
-/// `horch done` then goes through [`done_cmd`].
+/// Whether this process is a task-ledger worker that holds (or finished) a
+/// task: `horch done` then goes through [`done_cmd`]. A worker whose task
+/// was cancelled or taken from it ends with the plain `horch done` (#136).
 pub fn is_ledger_worker(ctx: &RuntimeContext) -> bool {
     let Some(wid) = worker_id_opt(ctx) else {
         return false;
@@ -1443,7 +1844,9 @@ pub fn is_ledger_worker(ctx: &RuntimeContext) -> bool {
     taskledger::open(ctx)
         .ok()
         .and_then(|s| workers::find(s.conn(), &wid).ok().flatten())
-        .is_some_and(|w| w.task_id.is_some())
+        .is_some_and(|w| {
+            w.task_id.is_some() && (w.status == "done" || w.status().is_ok_and(|s| s.is_live()))
+        })
 }
 
 /// The text a worker reads after a claim.
@@ -1470,10 +1873,23 @@ pub fn render_claim(c: &Claimed) -> String {
         return out;
     }
     match (&c.worktree, t.uses_worktree()) {
-        (Some(path), _) => out.push_str(&format!(
-            "Worktree: {path} (branch {}). It holds the earlier attempt's work. Work there.\n",
-            c.worktree_branch.as_deref().unwrap_or("?")
-        )),
+        (Some(path), _) => {
+            out.push_str(&format!(
+                "Worktree: {path} (branch {}). It holds the earlier attempt's work. Work there.\n",
+                c.worktree_branch.as_deref().unwrap_or("?")
+            ));
+            if let Some(landed) = &c.landed_commit {
+                out.push_str(&format!(
+                    "Its work already landed at {}. The finish steps left: {}. A new commit is checked, reviewed and landed again.\n",
+                    &landed[..landed.len().min(12)],
+                    if c.steps_after_land.is_empty() {
+                        "none".to_string()
+                    } else {
+                        c.steps_after_land.join(", ")
+                    }
+                ));
+            }
+        }
         (None, true) => out.push_str(&format!(
             "Make your worktree first: horch ledger worktree new {}\n",
             slug(&t.title)
@@ -1570,6 +1986,7 @@ fn worker_cmd(ctx: &RuntimeContext, store: &mut Store, command: WorkerCommand) -
             persona,
             role,
             replaces,
+            pane,
             run,
         } => {
             let r = resolve_run(ctx, store, &run)?;
@@ -1582,6 +1999,7 @@ fn worker_cmd(ctx: &RuntimeContext, store: &mut Store, command: WorkerCommand) -
                         persona,
                         role,
                         previous_worker_id: replaces,
+                        pane_id: pane,
                         ..Default::default()
                     },
                 )
@@ -1610,4 +2028,70 @@ fn worker_cmd(ctx: &RuntimeContext, store: &mut Store, command: WorkerCommand) -
         }
     }
     Ok(ExitCode::SUCCESS)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::LedgerCommand;
+    use clap::Subcommand;
+    use horch_core::roster::{ExecDecision, Roster};
+
+    /// Whether `cmd` or a subcommand under it takes `--check`.
+    fn takes_check(cmd: &clap::Command) -> bool {
+        cmd.get_arguments().any(|a| a.get_long() == Some("check"))
+            || cmd.get_subcommands().any(takes_check)
+    }
+
+    /// #181: an allow rule runs a codex worker's `horch ledger <sub>` outside
+    /// its sandbox, and `finish` runs a task's check command there. So no
+    /// subcommand that takes `--check` may be allowed, and every allow rule
+    /// names a real subcommand. Read from the clap definition, so a new
+    /// `--check` on an allowed subcommand fails here.
+    #[test]
+    fn no_allowed_ledger_subcommand_takes_a_check_command() {
+        let roster = Roster::builtin().unwrap();
+        let ledger = LedgerCommand::augment_subcommands(clap::Command::new("ledger"));
+        let tokens = |pattern: &str| -> Vec<String> {
+            pattern
+                .split(',')
+                .map(|t| t.trim().trim_matches('"').to_string())
+                .collect()
+        };
+        let allowed = |sub: &str| {
+            let argv = ["horch", "ledger", sub];
+            let matching: Vec<ExecDecision> = roster
+                .exec_rules()
+                .iter()
+                .filter(|r| {
+                    let p = tokens(&r.pattern);
+                    p.len() <= argv.len() && p.iter().zip(argv).all(|(t, a)| t == a)
+                })
+                .map(|r| r.decision)
+                .collect();
+            !matching.is_empty() && !matching.contains(&ExecDecision::Forbidden)
+        };
+        let with_check: Vec<&str> = ledger
+            .get_subcommands()
+            .filter(|c| takes_check(c))
+            .map(|c| c.get_name())
+            .collect();
+        assert!(with_check.contains(&"add"), "{with_check:?}");
+        assert!(with_check.contains(&"reopen"), "{with_check:?}");
+        for sub in &with_check {
+            assert!(
+                !allowed(sub),
+                "'horch ledger {sub}' takes --check and is allowed"
+            );
+        }
+        for rule in roster.exec_rules() {
+            let p = tokens(&rule.pattern);
+            if p.len() > 2 && p[..2] == ["horch", "ledger"] {
+                assert!(
+                    ledger.find_subcommand(&p[2]).is_some(),
+                    "the rule {:?} names no ledger subcommand",
+                    rule.pattern
+                );
+            }
+        }
+    }
 }

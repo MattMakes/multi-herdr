@@ -342,6 +342,10 @@ enum Command {
         /// takes that worker's task and gets its transcript and worktree.
         #[arg(long, value_name = "WORKER")]
         replaces: Option<String>,
+        /// The task-ledger run (slug or id) this worker joins. Without it, a
+        /// spawn with task text runs outside any run.
+        #[arg(long = "run", value_name = "RUN")]
+        run: Option<String>,
     },
 
     /// Where the tokens went: every pane on this machine, from the telemetry
@@ -698,6 +702,17 @@ fn run() -> Result<std::process::ExitCode> {
         Command::Spawn { .. } | Command::Inbox { .. } => cmd::selfupdate::stale_warning(&ctx),
         _ => {}
     }
+    // A pane that herdr resumed after a restart has no HORCH_ROLE (#125).
+    if matches!(
+        &cli.command,
+        Command::Tell { .. }
+            | Command::Inbox { .. }
+            | Command::Note { .. }
+            | Command::Done { .. }
+            | Command::Ledger { .. }
+    ) {
+        cmd::restore::adopt_restored_identity(&mut ctx);
+    }
     let remind = !matches!(
         &cli.command,
         Command::Channel { .. }
@@ -707,9 +722,12 @@ fn run() -> Result<std::process::ExitCode> {
             | Command::Balance { .. }
             | Command::Inbox { roles: false, .. }
     );
+    // `install` restarts a watchdog on the binary it installed; `ensure`
+    // would move it back onto the binary that ran `install` (#216).
     let watched = !matches!(
         &cli.command,
         Command::Worker { .. }
+            | Command::Install { .. }
             | Command::Ledger {
                 command: cmd::taskledger::LedgerCommand::Watch { .. }
             }
@@ -873,6 +891,7 @@ fn dispatch(
             exact,
             force,
             replaces,
+            run,
         } => {
             let (teammate, task) = cmd::spawn::resolve_positionals(&args, resume.as_deref())?;
             let pane = cmd::spawn::spawn(
@@ -890,6 +909,7 @@ fn dispatch(
                     exact,
                     force,
                     replaces,
+                    run,
                 },
             )?;
             output::println(&pane);

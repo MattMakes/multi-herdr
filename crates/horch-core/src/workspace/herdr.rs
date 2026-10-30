@@ -599,6 +599,20 @@ fn limit_error(message: String, kind: std::io::ErrorKind) -> std::io::Error {
 /// A reader's channel and its thread.
 type Reader = (mpsc::Receiver<std::io::Result<Vec<u8>>>, JoinHandle<()>);
 
+/// The error for a stream that read past [`OUTPUT_CAP`], if one did.
+fn over_cap(collected: &[Option<Vec<u8>>]) -> Option<std::io::Error> {
+    collected
+        .iter()
+        .flatten()
+        .any(|b| b.len() as u64 > OUTPUT_CAP)
+        .then(|| {
+            limit_error(
+                format!("herdr printed more than {OUTPUT_CAP} bytes"),
+                std::io::ErrorKind::InvalidData,
+            )
+        })
+}
+
 /// Read at most [`OUTPUT_CAP`] + 1 bytes of `pipe`, then send them. The
 /// reader ends when the pipe closes or the cap is hit; a caller waits for it
 /// only for [`READER_GRACE`].
@@ -874,15 +888,8 @@ fn output_within(
         if read_failure.is_some() {
             break read_failure;
         }
-        if collected
-            .iter()
-            .flatten()
-            .any(|b| b.len() as u64 > OUTPUT_CAP)
-        {
-            break Some(limit_error(
-                format!("herdr printed more than {OUTPUT_CAP} bytes"),
-                std::io::ErrorKind::InvalidData,
-            ));
+        if let Some(error) = over_cap(&collected) {
+            break Some(error);
         }
         if !exited {
             exited = match has_exited(&mut child) {
@@ -924,13 +931,19 @@ fn output_within(
 mod tests {
     use super::*;
 
+    /// A fake herdr that runs `body`, already run once. macOS scans a new
+    /// executable at its first exec for seconds (up to 35 s under load),
+    /// which would race every timed call. The warm run exits before `body`.
     #[cfg(unix)]
     fn script_in(body: &str) -> (tempfile::TempDir, PathBuf) {
         use std::os::unix::fs::PermissionsExt;
         let dir = tempfile::tempdir().unwrap();
         let script = dir.path().join("herdr");
-        std::fs::write(&script, format!("#!/bin/sh\n{body}\n")).unwrap();
+        let warm_guard = "if [ \"$1\" = warm ]; then\n  exit 0\nfi";
+        std::fs::write(&script, format!("#!/bin/sh\n{warm_guard}\n{body}\n")).unwrap();
         std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let warm = Command::new(&script).arg("warm").status().unwrap();
+        assert!(warm.success(), "warming {}", script.display());
         (dir, script)
     }
 
@@ -970,17 +983,46 @@ mod tests {
         assert!(gone, "descendant {pid} is still running");
     }
 
+    /// A stream that never ends is read only to 1 byte past the cap, so the
+    /// call can stop it: no timing is involved.
+    #[test]
+    fn a_reader_stops_1_byte_past_the_cap_of_an_endless_stream() {
+        let (receiver, handle) = read_capped(Some(std::io::repeat(0))).unwrap();
+        let bytes = receiver.recv().unwrap().unwrap();
+        handle.join().unwrap();
+        assert_eq!(bytes.len() as u64, OUTPUT_CAP + 1);
+    }
+
+    /// A herdr that prints past the cap on either stream fails the call with
+    /// InvalidData. [`script_in`] warms the script, so the scan at its first
+    /// exec does not race the call's timeout.
     #[cfg(unix)]
     #[test]
     fn a_herdr_that_prints_more_than_the_cap_fails_the_call() {
         for stream in ["", ">&2"] {
             let (_dir, script) = script_in(&format!("head -c 3000000 /dev/zero {stream}"));
-            let started = Instant::now();
             let error =
                 output_within(Command::new(&script), Duration::from_secs(5), None).unwrap_err();
             assert_eq!(error.kind(), std::io::ErrorKind::InvalidData, "{stream}");
             assert!(error.to_string().contains("more than"), "{error}");
-            assert!(started.elapsed() < Duration::from_secs(10));
+        }
+    }
+
+    /// Output past the cap on stdout or on stderr fails the call with
+    /// InvalidData; output at the cap does not.
+    #[test]
+    fn output_past_the_cap_on_either_stream_is_invalid_data() {
+        let at_cap = Some(vec![0; OUTPUT_CAP as usize]);
+        let past = Some(vec![0; OUTPUT_CAP as usize + 1]);
+        assert!(over_cap(&[at_cap.clone(), at_cap.clone()]).is_none());
+        assert!(over_cap(&[None, at_cap.clone()]).is_none());
+        for collected in [[past.clone(), None], [at_cap, past]] {
+            let error = over_cap(&collected).unwrap();
+            assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
+            assert!(
+                error.to_string().contains("more than 1048576 bytes"),
+                "{error}"
+            );
         }
     }
 
@@ -1056,22 +1098,16 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn a_call_past_the_deadline_is_killed() {
-        use std::os::unix::fs::PermissionsExt;
-        let tmp = tempfile::tempdir().unwrap();
-        let script = |name: &str, body: &str| {
-            let path = tmp.path().join(name);
-            std::fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
-            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
-            path
-        };
-        let stuck = Herdr::with_bin(script("stuck", "sleep 10"))
-            .until(Some(Instant::now() + Duration::from_millis(300)));
+        let (_stuck_dir, stuck_script) = script_in("sleep 10");
+        let (_quick_dir, quick_script) = script_in("echo hi");
+        let stuck =
+            Herdr::with_bin(stuck_script).until(Some(Instant::now() + Duration::from_millis(300)));
         let started = Instant::now();
         let err = stuck.pane_get("w1:p1").unwrap_err().to_string();
         assert!(started.elapsed() < Duration::from_secs(3), "{err}");
         assert!(err.contains("push budget"), "{err}");
-        let quick = Herdr::with_bin(script("quick", "echo hi"))
-            .until(Some(Instant::now() + Duration::from_secs(10)));
+        let quick =
+            Herdr::with_bin(quick_script).until(Some(Instant::now() + Duration::from_secs(10)));
         assert_eq!(quick.output(&["x"]).unwrap(), "hi\n");
     }
 

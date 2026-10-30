@@ -23,7 +23,7 @@ use horch_core::routing::quota::{self, PoolReading, POOLS};
 use horch_core::runtime::RuntimeContext;
 use horch_core::telemetry::collect::{self, Collector, Probing, Snapshot};
 use horch_core::telemetry::lock::{self, Holder};
-use horch_core::telemetry::store;
+use horch_core::telemetry::{start, store};
 use horch_core::usage::Locations;
 use horch_core::workspace::herdr::Herdr;
 
@@ -449,13 +449,29 @@ fn collect_once(ctx: &RuntimeContext) -> Result<ExitCode> {
     Ok(ExitCode::SUCCESS)
 }
 
-/// `horch telemetry`: the collector with its screen, or a viewer.
+/// `horch telemetry`: the collector with its screen, or a viewer. A process
+/// that `ensure` started ([`start::START_ENV`]) marks its start first; when
+/// it takes the lock it closes the old collector workspaces, and when
+/// another collector holds the lock it ends instead of viewing.
 fn space(ctx: &RuntimeContext) -> Result<ExitCode> {
     install_signal_handlers();
     let root = ctx.paths.state_root.clone();
+    let started_for = start::started_for();
+    match &started_for {
+        Some(id) => {
+            if let Err(e) = start::mark(&root, id, &clock::now_stamp()) {
+                eprintln!("horch: could not mark the telemetry collector start: {e:#}");
+            }
+        }
+        None => report_failed_start(&root),
+    }
     let me = lock::this_process(&clock::now_stamp(), ctx);
     let source = match lock::acquire(&root, &me)? {
         Ok(held) => {
+            if let Some(request) = start::current(&root) {
+                close_after_claim(&root, &request, started_for.as_deref());
+                start::clear(&root);
+            }
             let c = Collector::open_in(
                 ctx,
                 Locations::from_context(ctx),
@@ -468,6 +484,14 @@ fn space(ctx: &RuntimeContext) -> Result<ExitCode> {
             }
         }
         Err(other) => {
+            if let Some(id) = &started_for {
+                eprintln!(
+                    "horch: collector pid {} is live; this telemetry collector start ends",
+                    other.pid
+                );
+                start::withdraw(&root, id);
+                return Ok(ExitCode::SUCCESS);
+            }
             eprintln!(
                 "horch: collector pid {} is live; this is a read-only viewer",
                 other.pid
@@ -505,8 +529,9 @@ fn sleep_until_shutdown(d: Duration) {
 }
 
 /// `horch telemetry ensure` (SPC-03): nothing when a live collector runs
-/// this binary; else a new workspace, never focused, running
-/// `horch telemetry`. A live collector on another binary (an older build)
+/// this binary or a start is in progress; else a new workspace, never
+/// focused, running `horch telemetry`, without waiting for it. A failed
+/// earlier start is reported and started again. A live collector on another binary (an older build)
 /// is stopped first. Besides read-only list calls, only `workspace create
 /// --no-focus`, `pane run` and the `workspace close` of an old collector
 /// workspace touch herdr (W17).
@@ -533,7 +558,9 @@ fn ensure_current(
 ) -> Result<()> {
     let root = ctx.paths.state_root.clone();
     match lock::holder(&root) {
-        Holder::Live(info) if lock::runs_other_binary(&info, lock::exe_identity(exe).as_ref()) => {
+        Holder::Live(info)
+            if lock::runs_other_binary(&info, horch_core::exeid::exe_identity(exe).as_ref()) =>
+        {
             // A collector horch cannot prove it owns (no recorded start time,
             // a reused pid) is left running: `ensure` runs on fleet start and
             // must not fail because an old collector is live.
@@ -561,6 +588,20 @@ fn ensure_current(
         }
         _ if !start_if_none => return Ok(()),
         _ => {}
+    }
+    match start::pending(&root) {
+        start::Pending::Starting(request) => {
+            report_starting(&request, quiet);
+            return Ok(());
+        }
+        start::Pending::Failed(request, why) => {
+            eprintln!(
+                "horch: the telemetry collector start in workspace {} failed: {why}; starting it again",
+                request.workspace_id
+            );
+            start::clear(&root);
+        }
+        start::Pending::None => {}
     }
     start(ctx, herdr, quiet, exe)
 }
@@ -630,96 +671,110 @@ fn old_collector_workspaces(
         .collect()
 }
 
-/// Wait up to 5 s for a live collector; its pid.
-fn wait_for_collector(root: &Path) -> Option<u32> {
-    let until = Instant::now() + Duration::from_secs(5);
-    while Instant::now() < until {
-        if let Holder::Live(info) = lock::holder(root) {
-            if info.pid != 0 {
-                return Some(info.pid);
-            }
-        }
-        std::thread::sleep(Duration::from_millis(100));
-    }
-    None
-}
-
-/// `exe telemetry` in the telemetry workspace, never focused. A restart
-/// leaves 1 telemetry workspace: an old collector workspace with 1 pane is
-/// reused, and every other old one is closed once the new collector holds
-/// the lock.
+/// `exe telemetry` in the telemetry workspace, never focused, without a
+/// wait: under load the new process can take longer than any fixed wait to
+/// take the lock. The start is recorded first ([`start::record`]), so a
+/// later call can tell a slow start from a failed one. An old collector
+/// workspace with 1 pane is reused; the new collector closes every other
+/// old one once it holds the lock ([`close_after_claim`]).
 fn start(ctx: &RuntimeContext, herdr: &Herdr, quiet: bool, exe: &Path) -> Result<()> {
     let root = ctx.paths.state_root.clone();
-    let command = collector_command(ctx, exe);
+    let id = start::new_id();
+    let command = collector_command(ctx, exe, &id);
+    let request = |workspace_id: &str, pane_id: &str| start::Request {
+        id: id.clone(),
+        requested_at: clock::now_stamp(),
+        workspace_id: workspace_id.to_string(),
+        pane_id: pane_id.to_string(),
+        herdr: ctx.bins.harness.herdr.clone(),
+    };
     let old = herdr
         .workspace_list()
         .map(|all| old_collector_workspaces(&all, &live_collector_in(herdr, &root)))
         .unwrap_or_default();
-    let mut started = None;
-    if let Some((ws, pane)) = old.iter().find_map(|ws| match herdr.pane_list(ws) {
+    let reusable = old.iter().find_map(|ws| match herdr.pane_list(ws) {
         Ok(panes) if panes.len() == 1 => Some((ws.clone(), panes[0].pane_id.clone())),
         _ => None,
-    }) {
+    });
+    let mut started = None;
+    if let Some((ws, pane)) = reusable {
+        start::record(&root, &request(&ws, &pane))?;
         if herdr.pane_run(&pane, &command).is_ok() {
-            started = wait_for_collector(&root).map(|pid| (pid, ws.clone()));
-        }
-        if started.is_none() {
+            started = Some((ws, pane));
+        } else {
             eprintln!(
                 "horch: the telemetry collector did not start in the old workspace {ws}; starting it in a new one"
             );
         }
     }
-    let (pid, ws) = match started {
+    let (ws, pane) = match started {
         Some(s) => s,
         None => {
-            let ws = herdr
-                .workspace_create(WORKSPACE_LABEL, None, false)
-                .context("creating the telemetry workspace")?;
-            herdr.pane_run(&ws.root_pane_id, &command)?;
-            let Some(pid) = wait_for_collector(&root) else {
-                bail!(
-                    "the telemetry collector did not start within 5s in workspace {}",
-                    ws.workspace_id
-                )
-            };
-            (pid, ws.workspace_id)
+            let created = herdr.workspace_create(WORKSPACE_LABEL, None, false);
+            let ws = created.inspect_err(|_| start::clear(&root));
+            let ws = ws.context("creating the telemetry workspace")?;
+            start::record(&root, &request(&ws.workspace_id, &ws.root_pane_id))?;
+            let ran = herdr.pane_run(&ws.root_pane_id, &command);
+            ran.inspect_err(|_| start::clear(&root))?;
+            (ws.workspace_id, ws.root_pane_id)
         }
     };
     if !quiet {
         output::println(&format!(
-            "telemetry collector started: pid {pid}, workspace {ws}"
+            "telemetry collector starting: workspace {ws}, pane {pane}"
         ));
     }
-    close_old_workspaces(herdr, &root, &old, &ws, quiet);
     Ok(())
 }
 
-/// Close the old collector workspaces in `old`, except `keep`. Each one is
-/// checked again first: it still has the telemetry label, and the live
-/// collector does not run in it.
-fn close_old_workspaces(herdr: &Herdr, root: &Path, old: &[String], keep: &str, quiet: bool) {
-    if old.iter().all(|w| w == keep) {
-        return;
+/// A start is in progress: say where, and start no other.
+fn report_starting(request: &start::Request, quiet: bool) {
+    if !quiet {
+        output::println(&format!(
+            "telemetry collector is starting: workspace {}, pane {}",
+            request.workspace_id, request.pane_id
+        ));
     }
+}
+
+/// Warn about a failed start that no collector replaced yet. `horch
+/// telemetry` and `horch quota` call it; stderr, so `--json` stays clean.
+pub(crate) fn report_failed_start(root: &Path) {
+    if let start::Pending::Failed(request, why) = start::pending(root) {
+        eprintln!(
+            "horch: the telemetry collector start in workspace {} failed: {why}; `horch telemetry ensure` starts it again",
+            request.workspace_id
+        );
+    }
+}
+
+/// The new collector holds the lock, so every old collector workspace can
+/// be closed: one labelled [`WORKSPACE_LABEL`] that is not the collector's.
+/// The workspace of `request` stays when this process is its start.
+fn close_after_claim(root: &Path, request: &start::Request, started_for: Option<&str>) {
+    let herdr = Herdr::with_bin(&request.herdr);
+    let keep = (started_for == Some(request.id.as_str())).then_some(request.workspace_id.as_str());
     let Ok(all) = herdr.workspace_list() else {
         return;
     };
-    for ws in old_collector_workspaces(&all, &live_collector_in(herdr, root)) {
-        if ws == keep || !old.contains(&ws) {
+    let other = |w: &horch_core::workspace::model::Workspace| {
+        w.label.as_deref() == Some(WORKSPACE_LABEL) && Some(w.workspace_id.as_str()) != keep
+    };
+    if !all.iter().any(other) {
+        return;
+    }
+    for ws in old_collector_workspaces(&all, &live_collector_in(&herdr, root)) {
+        if Some(ws.as_str()) == keep {
             continue;
         }
-        match herdr.workspace_close(&ws) {
-            Ok(()) if !quiet => {
-                output::println(&format!("closed the old telemetry workspace {ws}"))
-            }
-            Ok(()) => {}
-            Err(e) => eprintln!("horch: could not close the old telemetry workspace {ws}: {e:#}"),
+        if let Err(e) = herdr.workspace_close(&ws) {
+            eprintln!("horch: could not close the old telemetry workspace {ws}: {e:#}");
         }
     }
 }
 
-/// The shell line that runs `exe telemetry` in a pane.
-fn collector_command(ctx: &RuntimeContext, exe: &Path) -> String {
+/// The shell line that runs `exe telemetry` in a pane, for start `id`.
+fn collector_command(ctx: &RuntimeContext, exe: &Path, id: &str) -> String {
     let mut args = vec!["telemetry".to_string()];
     // A pane does not inherit this process's environment.
     if let Some(dir) = super::path_text(ctx.paths.state_override.as_deref()) {
@@ -729,7 +784,10 @@ fn collector_command(ctx: &RuntimeContext, exe: &Path) -> String {
     let data_root = ctx.paths.data_root.to_string_lossy();
     horch_core::workspace::paneshell::PaneShell::host().command_line_with_env(
         exe,
-        &[("HORCH_DATA_DIR", data_root.as_ref())],
+        &[
+            ("HORCH_DATA_DIR", data_root.as_ref()),
+            (start::START_ENV, id),
+        ],
         &args,
     )
 }
@@ -839,7 +897,7 @@ mod tests {
     #[cfg(unix)]
     fn fake_collector(
         state: &Path,
-        exe: Option<lock::ExeIdentity>,
+        exe: Option<horch_core::exeid::ExeIdentity>,
     ) -> (u32, std::sync::mpsc::Receiver<()>) {
         let mut child = std::process::Command::new("/bin/sleep")
             .arg("30")
@@ -889,7 +947,7 @@ mod tests {
         let herdr = Herdr::with_bin(tmp.path().join("no-herdr"));
         restart_if_stale(&ctx, &herdr, &bin).expect("none live: nothing to do");
 
-        let (pid, ended) = fake_collector(&state, lock::exe_identity(&bin));
+        let (pid, ended) = fake_collector(&state, horch_core::exeid::exe_identity(&bin));
         if horch_core::procid::start_time(pid).is_none() {
             return; // No start times on this platform.
         }
@@ -903,9 +961,9 @@ mod tests {
 
         for exe in [
             None,
-            Some(lock::ExeIdentity {
+            Some(horch_core::exeid::ExeIdentity {
                 len: 1,
-                ..lock::exe_identity(&bin).unwrap()
+                ..horch_core::exeid::exe_identity(&bin).unwrap()
             }),
         ] {
             let (_, ended) = fake_collector(&state, exe);

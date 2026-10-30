@@ -5,7 +5,7 @@
 //! first that does not pass. A re-run starts again from the top: a step that
 //! passed is kept while the branch's tree is the one it judged, and runs
 //! again when a later fix changed it. Once `land` passed, the steps before
-//! it are final.
+//! it are final, until a commit arrives that the run branch lacks.
 
 pub mod codesweep;
 pub mod complexity;
@@ -43,6 +43,37 @@ pub struct Tools {
     pub evidence_root: PathBuf,
     /// The shell that runs a check command.
     pub shell: PathBuf,
+    /// Reviewer personas that cannot run on this host, with why (not in the
+    /// roster, harness not installed). Code-sweep queues their fallback.
+    pub reviewers_down: Vec<(String, String)>,
+    /// What runs the check of a Codex worker inside its pane's sandbox.
+    pub codex: CodexSandbox,
+}
+
+/// The check of a Codex worker runs in the sandbox of its pane, not with
+/// the operator's full rights (#181): `finish` itself runs outside the
+/// sandbox, and the check runs code the worker wrote.
+#[derive(Debug, Clone, Default)]
+pub struct CodexSandbox {
+    /// The `codex` CLI.
+    pub bin: PathBuf,
+    /// The state root: the pane's 1 extra writable root, and the parent of
+    /// its TMPDIR.
+    pub state_root: PathBuf,
+    /// The roster's Codex teammates. A worker with 1 of these personas is a
+    /// Codex worker, also when the ledger has no harness for it.
+    pub personas: Vec<String>,
+}
+
+impl CodexSandbox {
+    /// Whether `worker` runs in a Codex pane.
+    pub fn runs(&self, worker: &Worker) -> bool {
+        worker.harness.as_deref() == Some("codex")
+            || worker
+                .persona
+                .as_ref()
+                .is_some_and(|p| self.personas.contains(p))
+    }
 }
 
 /// 1 step row.
@@ -71,6 +102,8 @@ pub struct Outcome {
     /// The tree this result judged; a change re-runs the step.
     pub judged_rev: Option<String>,
     pub review_task_ids: Option<Vec<String>>,
+    /// Reviewer workers whose review a new round superseded: stop them.
+    pub stop_workers: Vec<String>,
 }
 
 impl Outcome {
@@ -82,6 +115,7 @@ impl Outcome {
             note: note.into(),
             judged_rev: None,
             review_task_ids: None,
+            stop_workers: Vec::new(),
         }
     }
 
@@ -208,6 +242,57 @@ pub(crate) fn set_worktree(
     Ok(())
 }
 
+/// The folder of 1 task's facts that outlive its workers (the start of a
+/// shared task, the code-sweep round, waivers).
+pub fn task_dir(evidence_root: &Path, task_id: &str) -> PathBuf {
+    evidence_root.join(task_id)
+}
+
+/// The file that holds the `HEAD` a shared-checkout task started from.
+fn shared_start_path(evidence_root: &Path, task_id: &str) -> PathBuf {
+    task_dir(evidence_root, task_id).join("shared-start")
+}
+
+/// The commit a shared-checkout task started from, when it was recorded.
+pub(crate) fn shared_start(evidence_root: &Path, task_id: &str) -> Option<String> {
+    std::fs::read_to_string(shared_start_path(evidence_root, task_id))
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+}
+
+/// The gate of a shared-checkout claim: the main checkout must be on the
+/// run branch, so the worker's commits go there. The first claim records
+/// `HEAD`; `land` later requires a commit after it. A worktree task or a
+/// review passes at once.
+pub fn shared_claim(tools: &Tools, run: &Run, task: &Task) -> Result<()> {
+    if task.uses_worktree() || task.is_review() {
+        return Ok(());
+    }
+    let Some(run_branch) = run.run_branch.as_deref() else {
+        return Ok(());
+    };
+    let root = Path::new(&run.project_root);
+    let on = tools.git.current_branch(root);
+    if on.as_deref() != Some(run_branch) {
+        bail!(
+            "{} works in the shared checkout, and {} is on {}, not {run_branch}. \
+             Ask the orchestrator to run this in {}: git switch {run_branch}",
+            task.short(),
+            root.display(),
+            on.as_deref().unwrap_or("a detached HEAD"),
+            root.display()
+        );
+    }
+    let path = shared_start_path(&tools.evidence_root, &task.task_id);
+    if !path.exists() {
+        let head = tools.git.rev(root, "HEAD")?;
+        std::fs::create_dir_all(path.parent().expect("a task folder"))?;
+        std::fs::write(&path, format!("{head}\n"))?;
+    }
+    Ok(())
+}
+
 /// The worker's current task, or an error a worker can act on.
 fn held_task(conn: &Connection, worker_id: &str) -> Result<(Worker, Task)> {
     let w = workers::get(conn, worker_id)?;
@@ -215,6 +300,13 @@ fn held_task(conn: &Connection, worker_id: &str) -> Result<(Worker, Task)> {
         bail!("this worker holds no task: run horch ledger claim first");
     };
     let task = tasks::get(conn, t)?;
+    if task.status == TaskStatus::Cancelled.as_str() {
+        bail!(
+            "{} was cancelled: {}. Stop work, then run horch done",
+            task.short(),
+            task.summary.as_deref().unwrap_or("no reason given")
+        );
+    }
     if task.current_worker_id.as_deref() != Some(worker_id) {
         bail!(
             "{} is no longer this worker's ({}); stop work and end your turn",
@@ -368,6 +460,9 @@ pub struct FinishReport {
     pub message: String,
     /// Reviewer tasks queued by code-sweep that no worker holds yet.
     pub queued_reviews: Vec<String>,
+    /// Reviewer workers whose review a new round superseded: the caller
+    /// stops them.
+    pub superseded_workers: Vec<String>,
 }
 
 /// The tree the branch holds now: what a step judges.
@@ -412,7 +507,8 @@ pub fn finish(store: &mut Store, tools: &Tools, worker_id: &str) -> Result<Finis
         }
         if task.status == TaskStatus::Running.as_str() {
             tx.execute(
-                "UPDATE tasks SET status = 'landing', updated_at = ?2 WHERE task_id = ?1",
+                "UPDATE tasks SET status = 'landing', updated_at = ?2
+                 WHERE task_id = ?1 AND status = 'running'",
                 params![task.task_id, util::now()],
             )?;
         }
@@ -423,9 +519,22 @@ pub fn finish(store: &mut Store, tools: &Tools, worker_id: &str) -> Result<Finis
         .iter()
         .position(|n| *n == StepName::Land)
         .map(|i| i as i64 + 1);
+    // Commits after a land: the steps before land judge them again (#154).
+    if let (Some(w0), Some(rb), Some(ls)) = (&wt, run.run_branch.as_deref(), land_seq) {
+        if land::reopen_if_new_commits(store, &tools.git, &root, w0, rb)? {
+            store.immediate(|tx| {
+                tx.execute(
+                    "UPDATE task_steps SET status = 'pending' WHERE task_id = ?1 AND worker_id = ?2 AND seq >= ?3",
+                    params![task.task_id, w.worker_id, ls],
+                )?;
+                Ok(())
+            })?;
+        }
+    }
     let mut stopped_at = None;
     let mut message = String::new();
     let mut queued_reviews = Vec::new();
+    let mut superseded_workers = Vec::new();
     for (i, name) in names.iter().enumerate() {
         let seq = i as i64 + 1;
         let rows = steps_of(store.conn(), &task.task_id, &w.worker_id)?;
@@ -480,6 +589,7 @@ pub fn finish(store: &mut Store, tools: &Tools, worker_id: &str) -> Result<Finis
         if let Some(ids) = &outcome.review_task_ids {
             queued_reviews = ids.clone();
         }
+        superseded_workers.extend(outcome.stop_workers.iter().cloned());
         if !outcome.status.is_through() {
             stopped_at = Some(name.as_str().to_string());
             message = format!("{}: {}", about(name.as_str()), outcome.note);
@@ -504,6 +614,22 @@ pub fn finish(store: &mut Store, tools: &Tools, worker_id: &str) -> Result<Finis
         stopped_at,
         message,
         queued_reviews,
+        superseded_workers,
+    })
+}
+
+/// `horch ledger finish --rereview`: the next finish queues a new
+/// code-sweep round for the same tree; the open reviews of the current one
+/// are cancelled as superseded.
+pub fn rereview(store: &mut Store, tools: &Tools, worker_id: &str) -> Result<()> {
+    let (w, task) = held_task(store.conn(), worker_id)?;
+    codesweep::forget_tree(store.conn(), &tools.evidence_root, &task.task_id)?;
+    store.immediate(|tx| {
+        tx.execute(
+            "UPDATE task_steps SET status = 'pending' WHERE task_id = ?1 AND worker_id = ?2 AND name = 'code-sweep'",
+            params![task.task_id, w.worker_id],
+        )?;
+        Ok(())
     })
 }
 
@@ -679,11 +805,18 @@ pub fn complete(
             }
             None => ("done", summary.to_string(), EventKind::Done),
         };
-        tx.execute(
+        // Never turn a task cancelled meanwhile into done (#136).
+        let n = tx.execute(
             "UPDATE tasks SET status = ?2, summary = ?3, updated_at = ?4, finished_at = ?4
-             WHERE task_id = ?1",
+             WHERE task_id = ?1 AND status IN ('running', 'landing')",
             params![task.task_id, status, text, now],
         )?;
+        if n == 0 {
+            bail!(
+                "{} is no longer running: stop work, then run horch done",
+                task.short()
+            );
+        }
         tx.execute(
             "UPDATE workers SET status = 'done', summary = ?2, end_reason = ?3, ended_at = ?4,
                 last_progress_at = ?4
@@ -736,4 +869,54 @@ pub fn complete(
     })?;
     let _ = w;
     Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::taskledger::runs::NewRun;
+    use crate::taskledger::workers::NewWorker;
+
+    /// #181: a worker's check runs in a Codex sandbox when the ledger
+    /// records its harness as codex (a spawned worker), or when its persona
+    /// is a Codex teammate (a worker the ledger has no harness for).
+    #[test]
+    fn a_codex_worker_is_known_by_its_harness_or_its_persona() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = Store::open(&dir.path().join("ledger.sqlite3")).unwrap();
+        let worker = |store: &mut Store, persona: &str, harness: Option<&str>| {
+            store
+                .immediate(|tx| {
+                    let run = runs::create(
+                        tx,
+                        Path::new("/repo"),
+                        &NewRun {
+                            slug: format!("r-{persona}-{}", harness.unwrap_or("none")),
+                            ..Default::default()
+                        },
+                    )?;
+                    let id = workers::insert(
+                        tx,
+                        &NewWorker {
+                            run_id: run.run_id,
+                            persona: persona.into(),
+                            ..Default::default()
+                        },
+                    )?;
+                    if let Some(h) = harness {
+                        workers::set_launch(tx, &id, "r-1", h, "m", None)?;
+                    }
+                    workers::get(tx, &id)
+                })
+                .unwrap()
+        };
+        let codex = CodexSandbox {
+            personas: vec!["codex-sol".into()],
+            ..Default::default()
+        };
+        assert!(codex.runs(&worker(&mut store, "codex-sol", None)));
+        assert!(codex.runs(&worker(&mut store, "custom", Some("codex"))));
+        assert!(!codex.runs(&worker(&mut store, "opus", Some("claude"))));
+        assert!(!codex.runs(&worker(&mut store, "opus", None)));
+    }
 }

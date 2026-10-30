@@ -167,32 +167,76 @@ impl Pick {
     }
 }
 
+/// What the baseline routing found: the gate's decision, the slot it
+/// launches (if any), and the names the other slots skip.
+struct BaselineRoute {
+    baseline: Baseline,
+    pick: Option<Pick>,
+    taken: Vec<String>,
+}
+
+impl BaselineRoute {
+    fn not_requested() -> Self {
+        BaselineRoute {
+            baseline: Baseline::NotRequested,
+            pick: None,
+            taken: Vec::new(),
+        }
+    }
+
+    fn unusable(requested: &str, reason: String, taken: Vec<String>) -> Self {
+        BaselineRoute {
+            baseline: Baseline::Unusable {
+                requested: requested.to_string(),
+                reason,
+            },
+            pick: None,
+            taken,
+        }
+    }
+
+    fn routed(decision: RoutingDecision, pick: Option<Pick>, taken: Vec<String>) -> Self {
+        BaselineRoute {
+            baseline: Baseline::Routed(decision),
+            pick,
+            taken,
+        }
+    }
+}
+
 /// The baseline: the gate's decision, and the slot it launches, if any.
 /// The requested name is returned too, so the other slots skip it.
-fn route_baseline(
+fn route_baseline(input: &PlanInput, prices: &BTreeMap<String, Price>) -> BaselineRoute {
+    if let Some(name) = input.baseline.as_ref().or(input.config.baseline.as_ref()) {
+        route_requested(input, prices, name.as_str())
+    } else {
+        BaselineRoute::not_requested()
+    }
+}
+
+fn route_requested(
     input: &PlanInput,
     prices: &BTreeMap<String, Price>,
-) -> (Baseline, Option<Pick>, Vec<String>) {
-    let Some(name) = input
-        .baseline
-        .clone()
-        .or_else(|| input.config.baseline.clone())
-    else {
-        return (Baseline::NotRequested, None, Vec::new());
-    };
-    let requested = name.to_string();
-    let unusable = |reason: String| Baseline::Unusable {
-        requested: requested.clone(),
-        reason,
-    };
-    let Some(req) = input.roster.get(name.as_str()) else {
-        return (
-            unusable("not in the roster".to_string()),
-            None,
-            vec![requested.clone()],
-        );
-    };
-    // Mode auto, no flags: what `horch spawn <name>` decides.
+    name: &str,
+) -> BaselineRoute {
+    if let Some(req) = input.roster.get(name) {
+        route_known(input, prices, req, name)
+    } else {
+        BaselineRoute::unusable(
+            name,
+            "not in the roster".to_string(),
+            vec![name.to_string()],
+        )
+    }
+}
+
+/// Mode auto, no flags: what `horch spawn <name>` decides.
+fn route_known(
+    input: &PlanInput,
+    prices: &BTreeMap<String, Price>,
+    req: &Teammate,
+    requested: &str,
+) -> BaselineRoute {
     let decision = decide(
         req,
         input.roster,
@@ -201,40 +245,88 @@ fn route_baseline(
         GateFlags::default(),
     );
     let routed = RoutingDecision::from(&decision);
-    let mut taken = vec![requested.clone()];
-    let Some(launch) = resolve(req, input.roster, &decision) else {
-        return (Baseline::Routed(routed), None, taken);
+    if let Some(launch) = resolve(req, input.roster, &decision) {
+        route_resolved(prices, routed, &launch, requested)
+    } else {
+        BaselineRoute::routed(routed, None, vec![requested.to_string()])
+    }
+}
+
+/// The gate resolved the baseline to `launch`: its slot, unless the name or
+/// the model cannot be planned.
+fn route_resolved(
+    prices: &BTreeMap<String, Price>,
+    routed: RoutingDecision,
+    launch: &Teammate,
+    requested: &str,
+) -> BaselineRoute {
+    let resolved = if let RoutingDecision::Substitute { resolved, .. } = &routed {
+        resolved.clone()
+    } else {
+        requested.to_string()
     };
-    let resolved = match &routed {
-        RoutingDecision::Substitute { resolved, .. } => resolved.clone(),
-        _ => requested.clone(),
-    };
-    taken.push(resolved.clone());
-    match baseline_pick(&launch, &resolved) {
-        Ok(pick) if !priced(prices, pick.model.as_str()) => (
-            unusable(format!("model {} has no price", pick.model)),
-            None,
-            taken,
-        ),
-        Ok(pick) => (Baseline::Routed(routed), Some(pick), taken),
-        Err(reason) => (unusable(reason), None, taken),
+    let taken = vec![requested.to_string(), resolved.clone()];
+    match baseline_pick(launch, &resolved, prices) {
+        Ok(pick) => BaselineRoute::routed(routed, Some(pick), taken),
+        Err(reason) => BaselineRoute::unusable(requested, reason, taken),
     }
 }
 
 /// The slot a resolved baseline launches: `resolved`'s name with the merged
 /// teammate's harness, model and effort.
-fn baseline_pick(launch: &Teammate, resolved: &str) -> Result<Pick, String> {
+fn baseline_pick(
+    launch: &Teammate,
+    resolved: &str,
+    prices: &BTreeMap<String, Price>,
+) -> Result<Pick, String> {
     Roster::is_routable(launch).map_err(|e| e.to_string())?;
     let model = ModelId::new(launch.model.as_deref().unwrap_or_default())
         .map_err(|_| "has no model of its own".to_string())?;
-    Ok(Pick {
+    let pick = Pick {
         slot: SlotKind::Baseline,
         teammate: TeammateName::new(resolved).map_err(|e| e.to_string())?,
         harness: launch.agent,
         model,
         effort: launch.effort.clone(),
         propensity: 1.0,
-    })
+    };
+    if priced(prices, pick.model.as_str()) {
+        Ok(pick)
+    } else {
+        Err(format!("model {} has no price", pick.model))
+    }
+}
+
+/// An eligible entry whose model the budget cannot price is excluded.
+fn mark_unpriced(set: &mut [EligibleEntry], prices: &BTreeMap<String, Price>) {
+    for e in set {
+        if e.is_eligible()
+            && e.model
+                .as_ref()
+                .is_some_and(|m| !priced(prices, m.as_str()))
+        {
+            e.verdict = Verdict::Excluded(ExclusionReason::Unpriced);
+        }
+    }
+}
+
+/// The baseline slot opens the round, when it launches and there is room.
+fn seed_picks(n: usize, base_pick: Option<Pick>, covered: &mut Coverage) -> Vec<Pick> {
+    base_pick
+        .filter(|_| n > 0)
+        .inspect(|p| covered.add(p.harness.as_str(), p.model.as_str(), p.effort.as_deref()))
+        .into_iter()
+        .collect()
+}
+
+/// One of `rest`, drawn by the round's seed; its propensity is 1/k.
+fn exploration_pick(rest: &[EligibleEntry], seed: u64) -> Option<Pick> {
+    let k = rest.len();
+    if k == 0 {
+        return None;
+    }
+    let i = SplitMix64::new(seed).below(k as u64) as usize;
+    Pick::from_entry(&rest[i], SlotKind::Exploration, 1.0 / k as f64)
 }
 
 /// Plan one round. The same input always gives the same plan; a different
@@ -244,27 +336,17 @@ pub fn plan_round(input: &PlanInput) -> RoundPlan {
     filter.excluded.extend(input.config.exclude.iter().cloned());
     let prices = builtin_prices();
     let mut eligible_set = roster_eligibility(input.roster, input.view, &filter);
-    for e in &mut eligible_set {
-        if e.is_eligible()
-            && e.model
-                .as_ref()
-                .is_some_and(|m| !priced(&prices, m.as_str()))
-        {
-            e.verdict = Verdict::Excluded(ExclusionReason::Unpriced);
-        }
-    }
+    mark_unpriced(&mut eligible_set, &prices);
     let seed = round_seed(input.round_id);
     let n = input.n as usize;
 
-    let (baseline, base_pick, taken) = route_baseline(input, &prices);
-    let mut picks: Vec<Pick> = Vec::new();
+    let BaselineRoute {
+        baseline,
+        pick: base_pick,
+        taken,
+    } = route_baseline(input, &prices);
     let mut covered = Coverage::default();
-    if n > 0 {
-        if let Some(p) = base_pick {
-            covered.add(p.harness.as_str(), p.model.as_str(), p.effort.as_deref());
-            picks.push(p);
-        }
-    }
+    let mut picks = seed_picks(n, base_pick, &mut covered);
 
     // Eligible entries with a model, not yet planned.
     let mut planned: BTreeSet<String> = taken.into_iter().collect();
@@ -284,15 +366,8 @@ pub fn plan_round(input: &PlanInput) -> RoundPlan {
         picks.extend(Pick::from_entry(&e, SlotKind::Diversity, 1.0));
     }
 
-    let rest = open(&planned);
-    if picks.len() < n && !rest.is_empty() {
-        let k = rest.len();
-        let i = SplitMix64::new(seed).below(k as u64) as usize;
-        picks.extend(Pick::from_entry(
-            &rest[i],
-            SlotKind::Exploration,
-            1.0 / k as f64,
-        ));
+    if picks.len() < n {
+        picks.extend(exploration_pick(&open(&planned), seed));
     }
 
     let candidates: Vec<PlannedSlot> = picks
@@ -372,7 +447,7 @@ mod tests {
         seat.name = "fable-creative".into();
         seat.model = Some("fable".into());
         seat.fallbacks.clear();
-        assert!(baseline_pick(&seat, "fable-creative").is_err());
+        assert!(baseline_pick(&seat, "fable-creative", &builtin_prices()).is_err());
         roster.insert_for_test(seat);
         let view = QuotaView::new(
             QuotaFile::default(),

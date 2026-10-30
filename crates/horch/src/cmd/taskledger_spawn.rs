@@ -23,16 +23,32 @@ pub struct LedgerSpawn {
     pub worker_id: String,
 }
 
-/// Write the worker row when the project has an active run. `None` when it
-/// has none: the spawn is not part of a ledger run.
+/// Write the worker row when this spawn joins a task-ledger run: it names
+/// one with `--run` (or `HORCH_RUN_ID`), it replaces a ledger worker, or it
+/// has no task text and the project has an active run. `None` otherwise: a
+/// spawn with task text runs outside every run, with 1 `NOTE:` (#89).
 pub fn prepare(ctx: &RuntimeContext, args: &SpawnArgs) -> Result<Option<LedgerSpawn>> {
     let mut store = taskledger::open(ctx)?;
     let root = project_root(ctx)?;
-    let explicit = std::env::var("HORCH_RUN_ID").ok().filter(|v| !v.is_empty());
+    let explicit = args
+        .run
+        .clone()
+        .or_else(|| std::env::var("HORCH_RUN_ID").ok().filter(|v| !v.is_empty()));
     let active: Vec<Run> = runs::of_project(store.conn(), &root)?
         .into_iter()
         .filter(|r| r.status == RunStatus::Active.as_str())
         .collect();
+    let joins = explicit.is_some() || args.replaces.is_some() || args.task.trim().is_empty();
+    if !joins {
+        if !active.is_empty() {
+            let slugs: Vec<&str> = active.iter().map(|r| r.slug.as_str()).collect();
+            eprintln!(
+                "horch spawn: NOTE: this spawn has task text, so it runs outside task-ledger run {}. Give --run <slug> to join a run.",
+                slugs.join(", ")
+            );
+        }
+        return Ok(None);
+    }
     if explicit.is_none() && active.is_empty() {
         if args.replaces.is_some() {
             bail!(
@@ -42,13 +58,14 @@ pub fn prepare(ctx: &RuntimeContext, args: &SpawnArgs) -> Result<Option<LedgerSp
         }
         return Ok(None);
     }
-    let run = super::taskledger::resolve_run(
-        ctx,
-        &store,
-        &RunArg {
-            run: explicit.clone(),
-        },
-    )?;
+    let run = super::taskledger::resolve_run(ctx, &store, &RunArg { run: explicit })?;
+    if run.status != RunStatus::Active.as_str() {
+        bail!(
+            "run {} is {}; a closed run takes no new worker",
+            run.slug,
+            run.status
+        );
+    }
     let persona = match (&args.teammate, &args.resume) {
         (Some(t), _) => t.clone(),
         (None, Some(key)) => ExecutionStore::open_in(ctx)?.get(key)?.tier,
@@ -58,9 +75,11 @@ pub fn prepare(ctx: &RuntimeContext, args: &SpawnArgs) -> Result<Option<LedgerSp
         let p = workers::get(store.conn(), prev)?;
         if p.status()?.is_live() {
             bail!(
-                "worker {} is still {}; reap or stop it before you replace it",
+                "worker {} is still {}. Run horch ledger stop {} \"<reason>\" --run {}, then spawn again",
                 p.label(),
-                p.status
+                p.status,
+                p.worker_id,
+                run.slug
             );
         }
     }

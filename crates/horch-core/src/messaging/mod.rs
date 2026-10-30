@@ -7,3 +7,4 @@ pub mod delivery;
 pub mod mail;
 pub mod mailbox;
 pub mod message;
+mod private;

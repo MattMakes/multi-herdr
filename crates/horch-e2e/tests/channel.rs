@@ -10,6 +10,7 @@ use std::time::{Duration, Instant};
 
 use horch_core::execution::legacy::Record;
 use horch_core::execution::records::Ledger;
+use horch_core::messaging::channel;
 use horch_e2e::harness::Harness;
 use serde_json::Value;
 use tempfile::TempDir;
@@ -152,11 +153,13 @@ impl Relay {
             .unwrap();
             input.flush().unwrap();
         }
+        // The socket file appears at bind, before the relay listens: a
+        // connect in that gap is refused. Only an answered ping is ready.
         let deadline = Instant::now() + Duration::from_secs(5);
-        while !socket.exists() && Instant::now() < deadline {
+        while !channel::is_live(socket) && Instant::now() < deadline {
             std::thread::sleep(Duration::from_millis(10));
         }
-        if !socket.exists() {
+        if !channel::is_live(socket) {
             drop(self.input.take());
             if self.child.try_wait().unwrap().is_none() {
                 self.child.kill().unwrap();
@@ -170,7 +173,7 @@ impl Relay {
                 .read_to_string(&mut error)
                 .unwrap();
             panic!(
-                "relay did not create {}; relay stderr: {error}",
+                "relay did not answer a ping on {}; relay stderr: {error}",
                 socket.display()
             );
         }

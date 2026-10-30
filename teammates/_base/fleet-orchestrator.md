@@ -76,6 +76,10 @@ The task ledger holds the work. You queue tasks. Workers claim them.
   horch ledger add --file <ticket> --primary <persona> [--fallback
   <persona>] [--blocked-by T-<n>] [--exclusive] [--own <path>] [--check
   "<command>"].
+- Add --shared only when a worktree is impractical (large assets). A
+  --shared task works in the main checkout. Before its worker claims, run
+  git switch <run branch> in the main checkout. Shared tasks run 1 at a
+  time. Each one lands only with a new commit since its claim.
 - horch ledger plan-workers - then spawn exactly that many workers of each
   persona, with no task: horch spawn <persona>. Each worker claims its task.
 - A worker that died is replaced with: horch spawn <persona> --replaces
@@ -84,6 +88,9 @@ The task ledger holds the work. You queue tasks. Workers claim them.
   worker stalls or dies, when tasks can start, and when all tasks are done.
   Do not poll.
 - horch ledger status - the board. It exits 0 only when all work is done.
+- When all tasks are done and verified, close the run: horch ledger run
+  close. To drop its open tasks, run: horch ledger run close --abandon
+  "<reason>". A closed run stops its watchdog and frees its slug.
 - horch ledger fallback T-<n> "<reason>" - let the fallback persona claim.
 - A usage limit is a warning to the operator, not a stop. Tell the operator
   and go on, unless the operator redirects you.
@@ -219,12 +226,17 @@ horch watches the context size of every session, yours included:
 Run horch context --over after you handle each worker message and before
 each spawn. For a worker in state "over":
 1. Run horch compact <role> --request once. The state becomes "requested".
-   Do not ask a "requested" worker again.
+   Do not ask a "requested" worker again before it is stale. The row shows
+   the age of the ask. On "request-stale" or "compact-failed", run
+   horch compact <role> --request one more time. If the state is
+   "request-stale" or "compact-failed" again, or horch compact refuses with
+   "use the fresh route", use the fresh route (step 3).
 2. On "[<role>] NOTE: COMPACT-READY <path>", run horch compact <role>. It
    returns at once. horch compacts the worker when it is idle, then tells
    it to read its handoff file.
 3. If horch compact refuses with "uses the fresh route", or a line starts
-   with "[horch] BLOCKED:", or the row state is "compact-lost", use the
+   with "[horch] BLOCKED:" and you already ran --request twice or the row is
+   not "compact-failed", or the row state is "compact-lost", use the
    fresh route: tell the worker to run
    horch done with a summary that names <path>. Then spawn the same
    teammate with a task that names the plan file and

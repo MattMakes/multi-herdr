@@ -59,12 +59,12 @@ use crate::competition::promotion::{
 };
 use crate::evaluation::validator::{ValidationReport, Validator};
 use crate::evaluation::winner::RejectReason;
-use crate::execution::plan::{plan_launch, MintedIds, PlanInputs};
-use crate::execution::service::{ExecutionService, SpawnError};
+use crate::execution::plan::{plan_launch, MintedIds, PlanError, PlanInputs};
+use crate::execution::service::{ExecutionService, SpawnError, SpawnOutcome};
 use crate::execution::store::{to_execution, ExecutionStore};
 use crate::execution::{
-    Execution, ExecutionKind, ExecutionStatus, FailureKind, LaunchStage, ReportTarget,
-    SpawnRequest, TilingMode,
+    Execution, ExecutionKind, ExecutionPlan, ExecutionStatus, FailureKind, LaunchStage,
+    ReportTarget, SpawnRequest, TilingMode,
 };
 use crate::fsx::{self, FsxError};
 use crate::heartbeat;
@@ -81,7 +81,7 @@ use crate::measure::recorder::{Appended, JsonlRecorder, NewEvent, Recorder};
 use crate::messaging::delivery::send_line;
 use crate::messaging::mailbox::Mailbox;
 use crate::prompts::render;
-use crate::roster::Roster;
+use crate::roster::{Roster, Teammate};
 use crate::runtime::fault::Faults;
 use crate::runtime::RuntimeContext;
 use crate::skills::{harness_support, SkillResolution};
@@ -191,6 +191,41 @@ impl Stop {
     }
 }
 
+/// What the run loop carries from one tick to the next.
+struct RunState {
+    /// Why no more candidates launch, once that is so.
+    stop: Option<Stop>,
+    /// What each started candidate has spent, by label, as of the last
+    /// check.
+    measured: BTreeMap<String, i64>,
+    tick: u128,
+    /// Ticks between two checks. The meter reads whole transcripts and the
+    /// probe starts processes: both run on the first tick and then once per
+    /// [`CHECK_EVERY`].
+    every: u128,
+    /// How long each candidate has waited at its prompt (4.11.5).
+    idle: BTreeMap<String, IdleWatch>,
+}
+
+impl RunState {
+    fn new(spec: &RoundSpec) -> Self {
+        RunState {
+            stop: None,
+            measured: BTreeMap::new(),
+            tick: 0,
+            every: (CHECK_EVERY.as_millis() / spec.tick.as_millis().max(1)).max(1),
+            idle: BTreeMap::new(),
+        }
+    }
+
+    /// Whether this tick is a check tick. Counts the tick.
+    fn next_check(&mut self) -> bool {
+        let check = self.tick.is_multiple_of(self.every);
+        self.tick += 1;
+        check
+    }
+}
+
 /// The text a candidate is briefed with: the round's task inside the
 /// competition rules. Rendered from `_base/competition-candidate.md`; the
 /// base prompts are untouched (CMP-15).
@@ -266,14 +301,28 @@ pub fn dataset_workspace(
     watch_command: &str,
 ) -> Result<DatasetWorkspace> {
     let file = paths.experiment_dir(experiment)?.join("workspace.json");
-    if let Some(ws) = std::fs::read(&file)
+    match live_workspace(workspace, &file) {
+        Some(ws) => Ok(ws),
+        None => create_workspace(workspace, paths, experiment, repo, watch_command, &file),
+    }
+}
+
+/// The workspace in `file`, when its root pane still exists.
+fn live_workspace(workspace: &dyn WorkspaceClient, file: &Path) -> Option<DatasetWorkspace> {
+    std::fs::read(file)
         .ok()
         .and_then(|b| serde_json::from_slice::<DatasetWorkspace>(&b).ok())
-    {
-        if workspace.pane_get(&ws.root_pane).is_ok() {
-            return Ok(ws);
-        }
-    }
+        .filter(|ws| workspace.pane_get(&ws.root_pane).is_ok())
+}
+
+fn create_workspace(
+    workspace: &dyn WorkspaceClient,
+    paths: &DatasetPaths,
+    experiment: &ExperimentId,
+    repo: &Path,
+    watch_command: &str,
+    file: &Path,
+) -> Result<DatasetWorkspace> {
     let repo = repo.to_string_lossy();
     let created = workspace
         .workspace_create(&workspace_name(experiment), Some(&repo), false)
@@ -286,7 +335,7 @@ pub fn dataset_workspace(
         eprintln!("multi-herdr-dataset: starting watch failed: {e:#}");
     }
     observe::ensure_dirs(paths, file.parent().context("workspace file")?)?;
-    fsx::write_atomic(&file, &serde_json::to_vec_pretty(&ws)?, 0o600)
+    fsx::write_atomic(file, &serde_json::to_vec_pretty(&ws)?, 0o600)
         .with_context(|| format!("writing {}", file.display()))?;
     Ok(ws)
 }
@@ -332,23 +381,29 @@ impl<G: GitClient> Coordinator<'_, G> {
         }
         // A round stopped for the operator stays stopped: only `promote` or
         // `cleanup` moves it on.
-        if matches!(view.state, RoundState::NeedsIntervention) {
-            return Ok(RoundOutcome::NeedsIntervention);
+        if matches!(view.state, RoundState::NeedsIntervention) || !self.provision(spec)? {
+            Ok(RoundOutcome::NeedsIntervention)
+        } else {
+            self.run_round(spec)
         }
-        if !self.provision(spec)? {
-            return Ok(RoundOutcome::NeedsIntervention);
-        }
-        if !self
-            .view(spec)?
-            .candidates
-            .values()
-            .all(|c| c.is_terminal())
-        {
+    }
+
+    /// Provisioned: run the candidates, validate them and decide.
+    fn run_round(&self, spec: &RoundSpec) -> Result<RoundOutcome> {
+        if !self.all_terminal(spec)? {
             let ws = self.dataset_workspace(spec)?;
             self.run_candidates(spec, &ws)?;
         }
         self.validate_all(spec)?;
         self.decide(spec)
+    }
+
+    fn all_terminal(&self, spec: &RoundSpec) -> Result<bool> {
+        Ok(self
+            .view(spec)?
+            .candidates
+            .values()
+            .all(CandidateView::is_terminal))
     }
 
     // ── provisioning ────────────────────────────────────────────────────
@@ -384,48 +439,67 @@ impl<G: GitClient> Coordinator<'_, G> {
             .values()
             .filter(|c| c.worktree.is_some())
             .count();
-        for (label, c) in &view.candidates {
-            if c.worktree.is_some() {
-                continue;
-            }
-            let wt = self.worktree_spec(spec, &view, label, &base);
-            let mgr = WorktreeManager { git: self.git };
-            let path = match mgr.create(&wt) {
-                Ok(path) => path,
-                Err(e) => {
-                    self.emit(
-                        spec,
-                        EventKind::RoundNeedsIntervention(RoundNeedsIntervention {
-                            reason: format!(
-                                "creating the worktree of {label}: {e:#}; \
-                                 `cleanup {} --force` removes the worktrees already made",
-                                spec.round
-                            ),
-                            source: InterventionSource::Operator,
-                        }),
-                        format!("needs_intervention:{}", spec.round),
-                        None,
-                    )?;
-                    return Ok(false);
-                }
-            };
-            let recorded = self.emit(
-                spec,
-                EventKind::WorktreeCreated(WorktreeCreated {
-                    label: label.clone(),
-                    path,
-                    branch: wt.branch(),
-                    base_sha: base.clone(),
-                }),
-                format!("worktree:{}:{label}", spec.round),
-                c.execution_id.clone(),
-            )?;
-            if recorded {
-                made += 1;
-                self.fault(&format!("{ABORT_AFTER_WORKTREE}:{made}"))?;
+        let missing = view.candidates.iter().filter(|(_, c)| c.worktree.is_none());
+        for (label, c) in missing {
+            if !self.provision_one(spec, &view, label, c, &base, &mut made)? {
+                return Ok(false);
             }
         }
         Ok(true)
+    }
+
+    /// The worktree of one candidate. `false` when it cannot be made.
+    fn provision_one(
+        &self,
+        spec: &RoundSpec,
+        view: &RoundView,
+        label: &str,
+        c: &CandidateView,
+        base: &str,
+        made: &mut usize,
+    ) -> Result<bool> {
+        let wt = self.worktree_spec(spec, view, label, base);
+        match (WorktreeManager { git: self.git }).create(&wt) {
+            Err(e) => {
+                self.emit_worktree_failed(spec, label, &e)?;
+                Ok(false)
+            }
+            Ok(path) => {
+                let recorded = self.emit(
+                    spec,
+                    EventKind::WorktreeCreated(WorktreeCreated {
+                        label: label.to_string(),
+                        path,
+                        branch: wt.branch(),
+                        base_sha: base.to_string(),
+                    }),
+                    format!("worktree:{}:{label}", spec.round),
+                    c.execution_id.clone(),
+                )?;
+                if recorded {
+                    *made += 1;
+                    self.fault(&format!("{ABORT_AFTER_WORKTREE}:{made}"))?;
+                }
+                Ok(true)
+            }
+        }
+    }
+
+    fn emit_worktree_failed(&self, spec: &RoundSpec, label: &str, e: &anyhow::Error) -> Result<()> {
+        self.emit(
+            spec,
+            EventKind::RoundNeedsIntervention(RoundNeedsIntervention {
+                reason: format!(
+                    "creating the worktree of {label}: {e:#}; \
+                     `cleanup {} --force` removes the worktrees already made",
+                    spec.round
+                ),
+                source: InterventionSource::Operator,
+            }),
+            format!("needs_intervention:{}", spec.round),
+            None,
+        )
+        .map(drop)
     }
 
     // ── the dataset workspace ───────────────────────────────────────────
@@ -470,102 +544,122 @@ impl<G: GitClient> Coordinator<'_, G> {
 
     /// Launch, observe and end candidates until every one is terminal.
     fn run_candidates(&self, spec: &RoundSpec, ws: &DatasetWorkspace) -> Result<()> {
-        let mut stop: Option<Stop> = None;
-        // What each started candidate has spent, by label, as of the last
-        // check.
-        let mut measured: BTreeMap<String, i64> = BTreeMap::new();
-        // The meter reads whole transcripts and the probe starts processes:
-        // both run on the first tick and then once per CHECK_EVERY.
-        let every = (CHECK_EVERY.as_millis() / spec.tick.as_millis().max(1)).max(1);
-        let mut tick: u128 = 0;
-        // How long each candidate has waited at its prompt (4.11.5).
-        let mut idle: BTreeMap<String, IdleWatch> = BTreeMap::new();
-        loop {
-            let check = tick.is_multiple_of(every);
-            tick += 1;
-            let view = self.view(spec)?;
-            if view.candidates.values().all(CandidateView::is_terminal) {
-                return Ok(());
-            }
-            let records = self.records()?;
-            let now = (self.clock)();
-
-            // Observe every started candidate.
-            for (label, c) in &view.candidates {
-                if c.is_terminal() {
-                    continue;
-                }
-                if let Some(e) = records.get(&self.key(spec, label)) {
-                    let watch = idle.entry(label.clone()).or_default();
-                    self.observe(spec, label, c, e, now, watch)?;
-                }
-            }
-
-            // The live budget (CMP-10). Measured spend is read on check
-            // ticks; the policy runs every tick, so a launch never misses
-            // what the running candidates are committed to. Committed spend
-            // (Spec B §4.11): each running candidate counts
-            // max(measured, projected), and the judge's reserve is held in
-            // the policy's limit until it completes (see `budget`). Each
-            // launch must also fit its own projection (`launch_wave`).
-            let records = self.records()?;
-            let view = self.view(spec)?;
-            if check {
-                measured = self.measured(spec, &view, &records);
-            }
-            let spent = MicroUsd(measured.values().fold(0i64, |a, m| a.saturating_add(*m)));
-            let committed = self.committed(spec, &view, &records, &measured);
-            match BudgetPolicy::check(spent, committed, &spec.config.budget) {
-                BudgetAction::Continue => {}
-                BudgetAction::StopLaunches => {
-                    stop.get_or_insert(Stop::Budget);
-                }
-                BudgetAction::CancelRunning => {
-                    stop.get_or_insert(Stop::Budget);
-                    self.cancel_live(spec, &records)?;
-                }
-            }
-
-            // Disk pressure (CMP-11): below the preflight headroom, nothing
-            // new starts. Running candidates go on. Checked before every
-            // launch, too.
-            let floor = spec.config.caps.disk_headroom_bytes;
-            let view = self.view(spec)?;
-            let launching = stop.is_none() && self.next_launch(spec, &view, &records).is_some();
-            if let Some(free) = (check || launching).then(|| (self.disk_free)()).flatten() {
-                if free < floor && stop.is_none() {
-                    eprintln!(
-                        "multi-herdr-dataset: disk pressure ({free} bytes free, floor {floor}); \
-                         no new candidates start"
-                    );
-                    stop = Some(Stop::Disk { free, floor });
-                }
-            }
-
-            let view = self.view(spec)?;
-            let records = self.records()?;
-            match &stop {
-                Some(why) => self.cancel_unlaunched(spec, &view, &records, why)?,
-                None => {
-                    if self.launch_wave(spec, ws, &view, &records, spent, committed)? {
-                        stop = Some(Stop::Budget);
-                        let view = self.view(spec)?;
-                        let records = self.records()?;
-                        self.cancel_unlaunched(spec, &view, &records, &Stop::Budget)?;
-                    }
-                }
-            }
-
-            if self
-                .view(spec)?
-                .candidates
-                .values()
-                .all(CandidateView::is_terminal)
-            {
-                return Ok(());
-            }
+        let mut st = RunState::new(spec);
+        while !self.run_tick(spec, ws, &mut st)? {
             (self.sleep)(spec.tick);
         }
+        Ok(())
+    }
+
+    /// One tick of the run loop. True when every candidate is terminal.
+    fn run_tick(&self, spec: &RoundSpec, ws: &DatasetWorkspace, st: &mut RunState) -> Result<bool> {
+        let check = st.next_check();
+        if self.all_terminal(spec)? {
+            Ok(true)
+        } else {
+            self.observe_all(spec, st)?;
+            let (spent, committed) = self.budget_tick(spec, st, check)?;
+            self.disk_tick(spec, st, check)?;
+            self.launch_tick(spec, ws, st, spent, committed)?;
+            self.all_terminal(spec)
+        }
+    }
+
+    /// Observe every started candidate.
+    fn observe_all(&self, spec: &RoundSpec, st: &mut RunState) -> Result<()> {
+        let view = self.view(spec)?;
+        let records = self.records()?;
+        let now = (self.clock)();
+        for (label, c) in view.candidates.iter().filter(|(_, c)| !c.is_terminal()) {
+            if let Some(e) = records.get(&self.key(spec, label)) {
+                let watch = st.idle.entry(label.clone()).or_default();
+                self.observe(spec, label, c, e, now, watch)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// The live budget (CMP-10). Measured spend is read on check ticks; the
+    /// policy runs every tick, so a launch never misses what the running
+    /// candidates are committed to. Committed spend (Spec B §4.11): each
+    /// running candidate counts max(measured, projected), and the judge's
+    /// reserve is held in the policy's limit until it completes (see
+    /// `budget`). Each launch must also fit its own projection
+    /// (`launch_wave`). Gives the spend and the committed spend.
+    fn budget_tick(
+        &self,
+        spec: &RoundSpec,
+        st: &mut RunState,
+        check: bool,
+    ) -> Result<(MicroUsd, MicroUsd)> {
+        let records = self.records()?;
+        let view = self.view(spec)?;
+        if check {
+            st.measured = self.measured(spec, &view, &records);
+        }
+        let spent = MicroUsd(st.measured.values().fold(0i64, |a, m| a.saturating_add(*m)));
+        let committed = self.committed(spec, &view, &records, &st.measured);
+        match BudgetPolicy::check(spent, committed, &spec.config.budget) {
+            BudgetAction::Continue => {}
+            BudgetAction::StopLaunches => {
+                st.stop.get_or_insert(Stop::Budget);
+            }
+            BudgetAction::CancelRunning => {
+                st.stop.get_or_insert(Stop::Budget);
+                self.cancel_live(spec, &records)?;
+            }
+        }
+        Ok((spent, committed))
+    }
+
+    /// Disk pressure (CMP-11): below the preflight headroom, nothing new
+    /// starts. Running candidates go on. Checked before every launch, too.
+    fn disk_tick(&self, spec: &RoundSpec, st: &mut RunState, check: bool) -> Result<()> {
+        let floor = spec.config.caps.disk_headroom_bytes;
+        let view = self.view(spec)?;
+        let records = self.records()?;
+        let launching = st.stop.is_none() && self.next_launch(spec, &view, &records).is_some();
+        let free = (check || launching).then(|| (self.disk_free)()).flatten();
+        if let Some(free) = free.filter(|free| *free < floor && st.stop.is_none()) {
+            eprintln!(
+                "multi-herdr-dataset: disk pressure ({free} bytes free, floor {floor}); \
+                 no new candidates start"
+            );
+            st.stop = Some(Stop::Disk { free, floor });
+        }
+        Ok(())
+    }
+
+    /// Launch the next wave, or end every candidate that has not started
+    /// once launches have stopped.
+    fn launch_tick(
+        &self,
+        spec: &RoundSpec,
+        ws: &DatasetWorkspace,
+        st: &mut RunState,
+        spent: MicroUsd,
+        committed: MicroUsd,
+    ) -> Result<()> {
+        if st.stop.is_none() && self.try_launch(spec, ws, spent, committed)? {
+            st.stop = Some(Stop::Budget);
+        }
+        match &st.stop {
+            Some(why) => self.cancel_unlaunched(spec, &self.view(spec)?, &self.records()?, why),
+            None => Ok(()),
+        }
+    }
+
+    /// Launch one wave; true when the budget blocks the next launch.
+    fn try_launch(
+        &self,
+        spec: &RoundSpec,
+        ws: &DatasetWorkspace,
+        spent: MicroUsd,
+        committed: MicroUsd,
+    ) -> Result<bool> {
+        let view = self.view(spec)?;
+        let records = self.records()?;
+        self.launch_wave(spec, ws, &view, &records, spent, committed)
     }
 
     /// Every candidate execution of the store, by idempotency key.
@@ -593,101 +687,13 @@ impl<G: GitClient> Coordinator<'_, G> {
         now: DateTime<Utc>,
         idle: &mut IdleWatch,
     ) -> Result<()> {
-        // A record that a killed coordinator started but did not announce.
-        if c.spawned.is_none() {
-            match &e.pane {
-                Some(pane) if e.status != ExecutionStatus::Planned => {
-                    self.announce_spawn(spec, label, e, pane)?;
-                }
-                _ if e.status == ExecutionStatus::Planned => {
-                    // Its spawner died before the pane: it never ran.
-                    let end = self.store.end_live(
-                        e.id.as_str(),
-                        ExecutionStatus::LaunchFailed {
-                            stage: LaunchStage::Split,
-                            reason: "abandoned: the coordinator stopped before the pane ran".into(),
-                        },
-                    )?;
-                    if !matches!(end, ExecutionStatus::LaunchFailed { .. }) {
-                        // It did run after this look: the next look sees it.
-                        return Ok(());
-                    }
-                    return self.ended(spec, label, e, Observed::Failed(FailureKind::Crashed));
-                }
-                _ => {}
-            }
+        if c.spawned.is_none() && self.observe_unspawned(spec, label, e)? {
+            return Ok(());
         }
         let alive = e.pane.as_ref().map(|p| self.pane_alive(p));
         match classify(e, alive) {
-            Observed::Live => {
-                let started = crate::clock::parse(&e.created_at).unwrap_or(now);
-                // A pane stopped at a trust dialog never starts: end it now,
-                // not at the deadline (PRE-14 should have refused the round).
-                if let Some(pane) = &e.pane {
-                    if !deadline_passed(started, now, TRUST_DIALOG_WINDOW_S) {
-                        let screen = self.workspace.pane_read(pane.as_str(), "visible");
-                        if screen.is_ok_and(|s| trust_dialog(&s).is_some()) {
-                            let reason = CANCELLED_TRUST.to_string();
-                            let failure = FailureKind::Cancelled { reason };
-                            return self.end_candidate(spec, label, e, failure);
-                        }
-                    }
-                }
-                // An agent that waits at its prompt without `horch done`
-                // gets one nudge, then ends instead of waiting for the
-                // deadline (dataset design 4.11.5).
-                let caps = &spec.config.caps;
-                if let (Some(pane), true) = (&e.pane, caps.idle_nudge_after_s > 0) {
-                    let status = self
-                        .workspace
-                        .pane_get(pane.as_str())
-                        .ok()
-                        .and_then(|p| p.agent_status);
-                    match idle.look(
-                        status.as_deref(),
-                        now,
-                        caps.idle_nudge_after_s,
-                        caps.idle_end_after_s,
-                    ) {
-                        IdleAction::Wait => {}
-                        IdleAction::Nudge => {
-                            eprintln!(
-                                "multi-herdr-dataset: candidate {label} waits at its prompt \
-                                 without horch done; nudging it once"
-                            );
-                            if let Err(err) = send_line(self.workspace, pane.as_str(), IDLE_NUDGE) {
-                                eprintln!(
-                                    "multi-herdr-dataset: nudging candidate {label}: {err:#}"
-                                );
-                            }
-                        }
-                        IdleAction::End => {
-                            let reason = CANCELLED_IDLE.to_string();
-                            let failure = FailureKind::Cancelled { reason };
-                            return self.end_candidate(spec, label, e, failure);
-                        }
-                    }
-                }
-                if deadline_passed(started, now, spec.config.caps.candidate_deadline_s) {
-                    self.end_candidate(spec, label, e, FailureKind::TimedOut)?;
-                }
-                Ok(())
-            }
-            Observed::Failed(FailureKind::PaneVanished) => {
-                // `horch done` marks the record before it closes the pane:
-                // read it again before calling the pane vanished.
-                let again = self.records()?.remove(&self.key(spec, label));
-                match again {
-                    Some(a) if a.status.is_live() => {
-                        self.end_candidate(spec, label, &a, FailureKind::PaneVanished)
-                    }
-                    Some(a) => {
-                        let alive = a.pane.as_ref().map(|p| self.pane_alive(p));
-                        self.ended(spec, label, &a, classify(&a, alive))
-                    }
-                    None => Ok(()),
-                }
-            }
+            Observed::Live => self.observe_live(spec, label, e, now, idle),
+            Observed::Failed(FailureKind::PaneVanished) => self.recheck_vanished(spec, label),
             ended => {
                 // The agent is gone; its pane may still hold a shell.
                 if let (Some(pane), Some(true)) = (&e.pane, alive) {
@@ -695,6 +701,130 @@ impl<G: GitClient> Coordinator<'_, G> {
                 }
                 self.ended(spec, label, e, ended)
             }
+        }
+    }
+
+    /// A record that a killed coordinator started but did not announce. True
+    /// when the candidate needs no further look.
+    fn observe_unspawned(&self, spec: &RoundSpec, label: &str, e: &Execution) -> Result<bool> {
+        if e.status == ExecutionStatus::Planned {
+            self.abandon_launch(spec, label, e)?;
+            return Ok(true);
+        }
+        if let Some(pane) = &e.pane {
+            self.announce_spawn(spec, label, e, pane)?;
+        }
+        Ok(false)
+    }
+
+    /// The spawner died before the pane: the candidate never ran.
+    fn abandon_launch(&self, spec: &RoundSpec, label: &str, e: &Execution) -> Result<()> {
+        let end = self.store.end_live(
+            e.id.as_str(),
+            ExecutionStatus::LaunchFailed {
+                stage: LaunchStage::Split,
+                reason: "abandoned: the coordinator stopped before the pane ran".into(),
+            },
+        )?;
+        if matches!(end, ExecutionStatus::LaunchFailed { .. }) {
+            self.ended(spec, label, e, Observed::Failed(FailureKind::Crashed))
+        } else {
+            // It did run after this look: the next look sees it.
+            Ok(())
+        }
+    }
+
+    /// A live candidate: end it when its pane waits at a trust dialog or at
+    /// its prompt too long, or when its deadline has passed.
+    fn observe_live(
+        &self,
+        spec: &RoundSpec,
+        label: &str,
+        e: &Execution,
+        now: DateTime<Utc>,
+        idle: &mut IdleWatch,
+    ) -> Result<()> {
+        let started = crate::clock::parse(&e.created_at).unwrap_or(now);
+        let cancelled = |reason: &str| FailureKind::Cancelled {
+            reason: reason.to_string(),
+        };
+        let failure = if self.trust_blocked(e, started, now) {
+            Some(cancelled(CANCELLED_TRUST))
+        } else if self.idle_step(spec, label, e, now, idle) == IdleAction::End {
+            Some(cancelled(CANCELLED_IDLE))
+        } else if deadline_passed(started, now, spec.config.caps.candidate_deadline_s) {
+            Some(FailureKind::TimedOut)
+        } else {
+            None
+        };
+        match failure {
+            Some(failure) => self.end_candidate(spec, label, e, failure),
+            None => Ok(()),
+        }
+    }
+
+    /// A pane stopped at a trust dialog never starts: end it now, not at the
+    /// deadline (PRE-14 should have refused the round).
+    fn trust_blocked(&self, e: &Execution, started: DateTime<Utc>, now: DateTime<Utc>) -> bool {
+        e.pane.as_ref().is_some_and(|pane| {
+            !deadline_passed(started, now, TRUST_DIALOG_WINDOW_S)
+                && self
+                    .workspace
+                    .pane_read(pane.as_str(), "visible")
+                    .is_ok_and(|screen| trust_dialog(&screen).is_some())
+        })
+    }
+
+    /// An agent that waits at its prompt without `horch done` gets one
+    /// nudge, then ends instead of waiting for the deadline (dataset design
+    /// 4.11.5). Sends the nudge when it is due.
+    fn idle_step(
+        &self,
+        spec: &RoundSpec,
+        label: &str,
+        e: &Execution,
+        now: DateTime<Utc>,
+        idle: &mut IdleWatch,
+    ) -> IdleAction {
+        let caps = &spec.config.caps;
+        let Some(pane) = e.pane.as_ref().filter(|_| caps.idle_nudge_after_s > 0) else {
+            return IdleAction::Wait;
+        };
+        let status = self
+            .workspace
+            .pane_get(pane.as_str())
+            .ok()
+            .and_then(|p| p.agent_status);
+        let action = idle.look(
+            status.as_deref(),
+            now,
+            caps.idle_nudge_after_s,
+            caps.idle_end_after_s,
+        );
+        if action == IdleAction::Nudge {
+            eprintln!(
+                "multi-herdr-dataset: candidate {label} waits at its prompt \
+                 without horch done; nudging it once"
+            );
+            if let Err(err) = send_line(self.workspace, pane.as_str(), IDLE_NUDGE) {
+                eprintln!("multi-herdr-dataset: nudging candidate {label}: {err:#}");
+            }
+        }
+        action
+    }
+
+    /// `horch done` marks the record before it closes the pane: read it
+    /// again before calling the pane vanished.
+    fn recheck_vanished(&self, spec: &RoundSpec, label: &str) -> Result<()> {
+        match self.records()?.remove(&self.key(spec, label)) {
+            Some(a) if a.status.is_live() => {
+                self.end_candidate(spec, label, &a, FailureKind::PaneVanished)
+            }
+            Some(a) => {
+                let alive = a.pane.as_ref().map(|p| self.pane_alive(p));
+                self.ended(spec, label, &a, classify(&a, alive))
+            }
+            None => Ok(()),
         }
     }
 
@@ -821,16 +951,16 @@ impl<G: GitClient> Coordinator<'_, G> {
         records: &BTreeMap<String, Execution>,
         measured: &BTreeMap<String, i64>,
     ) -> MicroUsd {
-        let mut total = 0i64;
-        for (label, c) in &view.candidates {
-            if c.is_terminal() || !records.contains_key(&self.key(spec, label)) {
-                continue;
-            }
-            let Some(planned) = &c.planned else { continue };
-            let projected = self.meter.projected(planned.model.as_str()).0;
-            let spent = measured.get(label).copied().unwrap_or(0);
-            total = total.saturating_add(projected.saturating_sub(spent).max(0));
-        }
+        let total = view
+            .candidates
+            .iter()
+            .filter(|(label, c)| self.live(spec, label, c, records))
+            .filter_map(|(label, c)| c.planned.as_ref().map(|planned| (label, planned)))
+            .fold(0i64, |total, (label, planned)| {
+                let projected = self.meter.projected(planned.model.as_str()).0;
+                let spent = measured.get(label).copied().unwrap_or(0);
+                total.saturating_add(projected.saturating_sub(spent).max(0))
+            });
         MicroUsd(total)
     }
 
@@ -857,6 +987,42 @@ impl<G: GitClient> Coordinator<'_, G> {
         Ok(())
     }
 
+    /// A candidate that is not terminal and has a record.
+    fn live(
+        &self,
+        spec: &RoundSpec,
+        label: &str,
+        c: &CandidateView,
+        records: &BTreeMap<String, Execution>,
+    ) -> bool {
+        !c.is_terminal() && records.contains_key(&self.key(spec, label))
+    }
+
+    /// A candidate that has no record yet and was not announced: it has not
+    /// started.
+    fn unlaunched(
+        &self,
+        spec: &RoundSpec,
+        label: &str,
+        c: &CandidateView,
+        records: &BTreeMap<String, Execution>,
+    ) -> bool {
+        !c.is_terminal() && c.spawned.is_none() && !records.contains_key(&self.key(spec, label))
+    }
+
+    /// The candidates that are live: not terminal, and with a record.
+    fn live_count(
+        &self,
+        spec: &RoundSpec,
+        view: &RoundView,
+        records: &BTreeMap<String, Execution>,
+    ) -> u32 {
+        view.candidates
+            .iter()
+            .filter(|(l, c)| self.live(spec, l, c, records))
+            .count() as u32
+    }
+
     /// End every candidate that has not started, with the reason.
     fn cancel_unlaunched(
         &self,
@@ -865,13 +1031,11 @@ impl<G: GitClient> Coordinator<'_, G> {
         records: &BTreeMap<String, Execution>,
         why: &Stop,
     ) -> Result<()> {
-        for (label, c) in &view.candidates {
-            if c.is_terminal()
-                || c.spawned.is_some()
-                || records.contains_key(&self.key(spec, label))
-            {
-                continue;
-            }
+        let unlaunched = view
+            .candidates
+            .iter()
+            .filter(|(label, c)| self.unlaunched(spec, label, c, records));
+        for (label, c) in unlaunched {
             self.emit(
                 spec,
                 EventKind::CandidateFailed(CandidateFailed {
@@ -894,19 +1058,12 @@ impl<G: GitClient> Coordinator<'_, G> {
         view: &'v RoundView,
         records: &BTreeMap<String, Execution>,
     ) -> Option<&'v String> {
-        let live = view
-            .candidates
-            .iter()
-            .filter(|(l, c)| !c.is_terminal() && records.contains_key(&self.key(spec, l)))
-            .count() as u32;
-        if live >= spec.safe_n.max(1) {
+        if self.live_count(spec, view, records) >= spec.safe_n.max(1) {
             return None;
         }
         view.candidates
             .iter()
-            .find(|(l, c)| {
-                !c.is_terminal() && c.spawned.is_none() && !records.contains_key(&self.key(spec, l))
-            })
+            .find(|(l, c)| self.unlaunched(spec, l, c, records))
             .map(|(l, _)| l)
     }
 
@@ -923,35 +1080,25 @@ impl<G: GitClient> Coordinator<'_, G> {
         spent: MicroUsd,
         mut committed: MicroUsd,
     ) -> Result<bool> {
-        let mut live = view
+        let live = self.live_count(spec, view, records);
+        let room = spec.safe_n.max(1).saturating_sub(live) as usize;
+        let launchable = view
             .candidates
             .iter()
-            .filter(|(l, c)| !c.is_terminal() && records.contains_key(&self.key(spec, l)))
-            .count() as u32;
-        let mut blocked = false;
-        for (label, c) in &view.candidates {
-            if live >= spec.safe_n.max(1) {
-                break;
-            }
-            if c.is_terminal()
-                || c.spawned.is_some()
-                || records.contains_key(&self.key(spec, label))
-            {
-                continue;
-            }
+            .filter(|(label, c)| self.unlaunched(spec, label, c, records))
+            .take(room);
+        for (live, (label, c)) in (live..).zip(launchable) {
             let next = c
                 .planned
                 .as_ref()
                 .map_or(MicroUsd(0), |p| self.meter.projected(p.model.as_str()));
             if !BudgetPolicy::fits(spent, committed, next, &spec.config.budget) {
-                blocked = true;
-                break;
+                return Ok(live == 0);
             }
             self.launch(spec, ws, label, c)?;
             committed = MicroUsd(committed.0.saturating_add(next.0));
-            live += 1;
         }
-        Ok(blocked && live == 0)
+        Ok(false)
     }
 
     /// Start one candidate through the execution service (CMP-05, ARC-24).
@@ -962,6 +1109,41 @@ impl<G: GitClient> Coordinator<'_, G> {
         label: &str,
         c: &CandidateView,
     ) -> Result<()> {
+        let (req, execution) = self.candidate_request(spec, ws, label, c)?;
+        match self.plan_candidate(spec, &req, &execution)? {
+            // Nothing was written: the candidate never runs.
+            Err(e) => self.end_unlaunched(
+                spec,
+                label,
+                execution,
+                FailureKind::Cancelled {
+                    reason: format!("spawn refused: {e}"),
+                },
+            ),
+            Ok(plan) => {
+                let mailbox = Mailbox::in_context(self.ctx, &ws.workspace_id);
+                let service = ExecutionService {
+                    ctx: self.ctx,
+                    store: self.store,
+                    workspace: self.workspace,
+                    mailbox: &mailbox,
+                    tile: &|_, _| {},
+                    ledger_worker: None,
+                };
+                let outcome = service.spawn(plan, Some(&candidate_role(label)));
+                self.record_spawn(spec, label, execution, outcome)
+            }
+        }
+    }
+
+    /// The request that starts the candidate, and its execution id.
+    fn candidate_request(
+        &self,
+        spec: &RoundSpec,
+        ws: &DatasetWorkspace,
+        label: &str,
+        c: &CandidateView,
+    ) -> Result<(SpawnRequest, ExecutionId)> {
         let planned: &CandidatePlanned = c.planned.as_ref().context("candidate not planned")?;
         let worktree = c.worktree.as_ref().context("candidate has no worktree")?;
         let execution = c
@@ -981,91 +1163,96 @@ impl<G: GitClient> Coordinator<'_, G> {
         req.effort = planned.effort.clone();
         req.from_pane = Some(ws.root_pane.clone());
         req.tiling = TilingMode::Disabled;
+        Ok((req, execution))
+    }
+
+    /// Plan the launch of `req`. The inner error is a plan the launch
+    /// planner refuses.
+    fn plan_candidate(
+        &self,
+        spec: &RoundSpec,
+        req: &SpawnRequest,
+        execution: &ExecutionId,
+    ) -> Result<std::result::Result<ExecutionPlan, PlanError>> {
         // As in `horch spawn`: planning reads no files, so the candidate's
         // operator and plugin skills are read here, and its record lists them.
         let skills = SkillResolution::read(
             self.roster.skill_catalog()?,
-            self.roster.get(planned.teammate.as_str()),
+            req.teammate
+                .as_ref()
+                .and_then(|t| self.roster.get(t.as_str())),
             self.ctx.inherited.home_var.as_deref().map(Path::new),
             harness_support,
         )?;
-        let now = (self.clock)();
         let ids = MintedIds {
             execution: execution.clone(),
             session: SessionId::new(crate::mint_uuid())?,
         };
-        let failed = |reason: String| {
-            EventKind::CandidateFailed(CandidateFailed {
-                label: label.to_string(),
-                failure: FailureKind::Cancelled { reason },
-            })
-        };
-        let plan = match plan_launch(
-            &req,
+        Ok(plan_launch(
+            req,
             &PlanInputs {
                 roster: self.roster,
                 skills: &skills,
                 gate: None,
                 existing: None,
-                now,
+                now: (self.clock)(),
                 ids: &ids,
                 project: &spec.repo,
             },
-        ) {
-            Ok(plan) => plan,
-            Err(e) => {
-                // Nothing was written: the candidate never runs.
-                self.emit(
-                    spec,
-                    failed(format!("spawn refused: {e}")),
-                    format!("ended:{}:{label}", spec.round),
-                    Some(execution),
-                )?;
-                return Ok(());
-            }
-        };
-        let mailbox = Mailbox::in_context(self.ctx, &ws.workspace_id);
-        let service = ExecutionService {
-            ctx: self.ctx,
-            store: self.store,
-            workspace: self.workspace,
-            mailbox: &mailbox,
-            tile: &|_, _| {},
-            ledger_worker: None,
-        };
-        match service.spawn(plan, Some(&candidate_role(label))) {
+        ))
+    }
+
+    /// Record how the service's spawn of a candidate went: 1 arm per kind
+    /// of failure.
+    fn record_spawn(
+        &self,
+        spec: &RoundSpec,
+        label: &str,
+        execution: ExecutionId,
+        outcome: std::result::Result<SpawnOutcome, SpawnError>,
+    ) -> Result<()> {
+        match outcome {
             Ok(out) => {
                 let e = self
                     .records()?
                     .remove(&self.key(spec, label))
                     .context("the spawned candidate has no record")?;
-                let pane = PaneId::new(out.pane)?;
-                self.announce_spawn(spec, label, &e, &pane)
+                self.announce_spawn(spec, label, &e, &PaneId::new(out.pane)?)
             }
             Err(SpawnError::LaunchFailed { stage, source, .. }) => {
                 eprintln!("multi-herdr-dataset: candidate {label} failed to launch at {stage:?}: {source:#}");
-                self.emit(
-                    spec,
-                    EventKind::CandidateFailed(CandidateFailed {
-                        label: label.to_string(),
-                        failure: FailureKind::Crashed,
-                    }),
-                    format!("ended:{}:{label}", spec.round),
-                    Some(execution),
-                )?;
-                Ok(())
+                self.end_unlaunched(spec, label, execution, FailureKind::Crashed)
             }
-            Err(e @ (SpawnError::Refused { .. } | SpawnError::Plan(_))) => {
-                self.emit(
-                    spec,
-                    failed(format!("spawn refused: {e}")),
-                    format!("ended:{}:{label}", spec.round),
-                    Some(execution),
-                )?;
-                Ok(())
-            }
+            Err(e @ (SpawnError::Refused { .. } | SpawnError::Plan(_))) => self.end_unlaunched(
+                spec,
+                label,
+                execution,
+                FailureKind::Cancelled {
+                    reason: format!("spawn refused: {e}"),
+                },
+            ),
             Err(SpawnError::Store(e)) => Err(e),
         }
+    }
+
+    /// A candidate that never started ends with `failure`.
+    fn end_unlaunched(
+        &self,
+        spec: &RoundSpec,
+        label: &str,
+        execution: ExecutionId,
+        failure: FailureKind,
+    ) -> Result<()> {
+        self.emit(
+            spec,
+            EventKind::CandidateFailed(CandidateFailed {
+                label: label.to_string(),
+                failure,
+            }),
+            format!("ended:{}:{label}", spec.round),
+            Some(execution),
+        )?;
+        Ok(())
     }
 
     // ── freeze and validation ───────────────────────────────────────────
@@ -1083,152 +1270,217 @@ impl<G: GitClient> Coordinator<'_, G> {
         }
         let records = self.records()?;
         for label in view.candidates.keys() {
-            let current = self.view(spec)?;
-            let c = &current.candidates[label];
-            let wt = c.worktree.as_ref().context("candidate has no worktree")?;
-            let execution = c
-                .execution_id
-                .clone()
-                .context("candidate.planned carries no execution id")?;
             let record = records.get(&self.key(spec, label));
-            let ran = record.is_some_and(|e| {
-                !matches!(
-                    e.status,
-                    ExecutionStatus::LaunchFailed { .. } | ExecutionStatus::Planned
-                )
-            });
-            if c.frozen.is_none() {
-                let (head_sha, numstat, diff_digest) = if ran {
-                    let f = WorktreeManager { git: self.git }.freeze(
-                        &self.worktree_spec(spec, &current, label, &wt.base_sha),
-                        &execution,
-                        (self.clock)(),
-                    )?;
-                    (f.head_sha, f.numstat, f.diff_digest)
-                } else {
-                    (wt.base_sha.clone(), Vec::new(), sha256_bytes(b""))
-                };
-                if let Some(e) = record {
-                    let usage = observe::usage_record(
-                        self.usage,
-                        self.meter,
-                        self.paths,
-                        &spec.experiment,
-                        &spec.round,
-                        e,
-                        label,
-                        spec.config.retain_transcripts,
-                    )?;
-                    observe::write_usage_record(self.paths, &spec.experiment, &spec.round, &usage)?;
-                }
-                let recorded = self.emit(
-                    spec,
-                    EventKind::CandidateFrozen(CandidateFrozen {
-                        label: label.clone(),
-                        head_sha,
-                        numstat,
-                        diff_digest,
-                    }),
-                    format!("freeze:{}:{label}", spec.round),
-                    Some(execution.clone()),
-                )?;
-                if recorded {
-                    self.fault(&format!("{ABORT_AFTER_FREEZE}:{label}"))?;
-                }
-            }
-            let c = &self.view(spec)?.candidates[label];
-            if c.validation.is_some() {
-                continue;
-            }
-            let frozen = c.frozen.as_ref().context("candidate not frozen")?;
-            let candidate = FrozenCandidate {
-                label: label.clone(),
-                execution_id: execution.clone(),
-                worktree: wt.path.clone(),
-                branch: wt.branch.clone(),
-                base_sha: wt.base_sha.clone(),
-                head_sha: frozen.head_sha.clone(),
-                numstat: frozen.numstat.clone(),
-                diff_digest: frozen.diff_digest,
-                frozen_at: crate::clock::stamp((self.clock)()),
-            };
-            let mut report = if ran {
-                self.validator.validate(&candidate)?
-            } else {
-                ValidationReport {
-                    validation_id: crate::ids::mint_v7((self.clock)()).to_string(),
-                    label: label.clone(),
-                    head_sha: candidate.head_sha.clone(),
-                    gates: Vec::new(),
-                    mechanical_score: 0.0,
-                    eligible: false,
-                }
-            };
-            report.eligible = report.eligible && c.completed.is_some();
-            let recorded = self.emit(
-                spec,
-                EventKind::ValidationCompleted(ValidationCompleted {
-                    label: label.clone(),
-                    report,
-                }),
-                format!("validation:{}:{label}", spec.round),
-                Some(execution),
-            )?;
-            if recorded {
-                self.fault(&format!("{ABORT_AFTER_VALIDATION}:{label}"))?;
-            }
+            self.validate_one(spec, label, record)?;
         }
         Ok(())
+    }
+
+    /// Freeze one candidate if it is not frozen yet, then validate it.
+    fn validate_one(
+        &self,
+        spec: &RoundSpec,
+        label: &str,
+        record: Option<&Execution>,
+    ) -> Result<()> {
+        let current = self.view(spec)?;
+        let c = &current.candidates[label];
+        c.worktree.as_ref().context("candidate has no worktree")?;
+        c.execution_id
+            .as_ref()
+            .context("candidate.planned carries no execution id")?;
+        let ran = record.is_some_and(|e| {
+            !matches!(
+                e.status,
+                ExecutionStatus::LaunchFailed { .. } | ExecutionStatus::Planned
+            )
+        });
+        if c.frozen.is_none() {
+            self.freeze_candidate(spec, &current, label, record, ran)?;
+        }
+        self.validate_frozen(spec, label, ran)
+    }
+
+    /// Freeze a candidate and record its usage; one that never ran keeps its base.
+    fn freeze_candidate(
+        &self,
+        spec: &RoundSpec,
+        current: &RoundView,
+        label: &str,
+        record: Option<&Execution>,
+        ran: bool,
+    ) -> Result<()> {
+        let c = &current.candidates[label];
+        let wt = c.worktree.as_ref().context("candidate has no worktree")?;
+        let execution = c
+            .execution_id
+            .clone()
+            .context("candidate.planned carries no execution id")?;
+        let (head_sha, numstat, diff_digest) = if ran {
+            let f = WorktreeManager { git: self.git }.freeze(
+                &self.worktree_spec(spec, current, label, &wt.base_sha),
+                &execution,
+                (self.clock)(),
+            )?;
+            (f.head_sha, f.numstat, f.diff_digest)
+        } else {
+            (wt.base_sha.clone(), Vec::new(), sha256_bytes(b""))
+        };
+        self.record_usage(spec, label, record)?;
+        let recorded = self.emit(
+            spec,
+            EventKind::CandidateFrozen(CandidateFrozen {
+                label: label.to_string(),
+                head_sha,
+                numstat,
+                diff_digest,
+            }),
+            format!("freeze:{}:{label}", spec.round),
+            Some(execution),
+        )?;
+        if recorded {
+            self.fault(&format!("{ABORT_AFTER_FREEZE}:{label}"))?;
+        }
+        Ok(())
+    }
+
+    /// Write the usage record of a candidate that has an execution.
+    fn record_usage(
+        &self,
+        spec: &RoundSpec,
+        label: &str,
+        record: Option<&Execution>,
+    ) -> Result<()> {
+        let Some(e) = record else { return Ok(()) };
+        let usage = observe::usage_record(
+            self.usage,
+            self.meter,
+            self.paths,
+            &spec.experiment,
+            &spec.round,
+            e,
+            label,
+            spec.config.retain_transcripts,
+        )?;
+        observe::write_usage_record(self.paths, &spec.experiment, &spec.round, &usage)
+    }
+
+    /// Validate a frozen candidate that has no report yet.
+    fn validate_frozen(&self, spec: &RoundSpec, label: &str, ran: bool) -> Result<()> {
+        let view = self.view(spec)?;
+        let c = &view.candidates[label];
+        if c.validation.is_some() {
+            return Ok(());
+        }
+        let candidate = self.frozen_candidate(&view, label)?;
+        let report = self.report_for(&candidate, ran, c.completed.is_some())?;
+        let recorded = self.emit(
+            spec,
+            EventKind::ValidationCompleted(ValidationCompleted {
+                label: label.to_string(),
+                report,
+            }),
+            format!("validation:{}:{label}", spec.round),
+            Some(candidate.execution_id),
+        )?;
+        if recorded {
+            self.fault(&format!("{ABORT_AFTER_VALIDATION}:{label}"))?;
+        }
+        Ok(())
+    }
+
+    /// The report of a candidate; only a completed one can be eligible.
+    fn report_for(
+        &self,
+        candidate: &FrozenCandidate,
+        ran: bool,
+        completed: bool,
+    ) -> Result<ValidationReport> {
+        let mut report = if ran {
+            self.validator.validate(candidate)?
+        } else {
+            not_run_report(candidate, (self.clock)())
+        };
+        report.eligible = report.eligible && completed;
+        Ok(report)
+    }
+
+    /// The frozen candidate as the validator takes it.
+    fn frozen_candidate(&self, view: &RoundView, label: &str) -> Result<FrozenCandidate> {
+        let c = &view.candidates[label];
+        let wt = c.worktree.as_ref().context("candidate has no worktree")?;
+        let frozen = c.frozen.as_ref().context("candidate not frozen")?;
+        Ok(FrozenCandidate {
+            label: label.to_string(),
+            execution_id: c
+                .execution_id
+                .clone()
+                .context("candidate.planned carries no execution id")?,
+            worktree: wt.path.clone(),
+            branch: wt.branch.clone(),
+            base_sha: wt.base_sha.clone(),
+            head_sha: frozen.head_sha.clone(),
+            numstat: frozen.numstat.clone(),
+            diff_digest: frozen.diff_digest,
+            frozen_at: crate::clock::stamp((self.clock)()),
+        })
     }
 
     // ── the decision ────────────────────────────────────────────────────
 
     fn decide(&self, spec: &RoundSpec) -> Result<RoundOutcome> {
         loop {
-            let view = self.view(spec)?;
-            match view.state {
-                RoundState::Validating => {
-                    if !view.candidates.values().all(|c| c.validation.is_some()) {
-                        bail!(
-                            "round {} is validating with unvalidated candidates",
-                            spec.round
-                        );
-                    }
-                    // 0 eligible: the judge is skipped (CMP-14).
-                    self.emit(
-                        spec,
-                        EventKind::WinnerRejected(WinnerRejected {
-                            reason: RejectReason::NoEligible,
-                        }),
-                        format!("winner.rejected:{}", spec.round),
-                        None,
-                    )?;
-                }
-                RoundState::JudgingBackground => return self.judge(spec),
-                // DECIDED holds a round only without a requested promotion:
-                // `winner.selected{requested}` moves on to REVALIDATING at once.
-                RoundState::Rejected
-                | RoundState::Cleanup
-                | RoundState::Decided
-                | RoundState::Promoted => {
-                    self.cleanup(spec, &view)?;
-                }
-                RoundState::Revalidating | RoundState::Promoting => {
-                    self.promoter(spec).advance(&spec.round, &view)?;
-                }
-                RoundState::Complete => {
-                    return Ok(match view.final_outcome {
-                        Some(FinalOutcome::Rejected) => RoundOutcome::Rejected {
-                            budget: budget_stopped(&view),
-                        },
-                        Some(FinalOutcome::NeedsIntervention) => RoundOutcome::NeedsIntervention,
-                        _ => RoundOutcome::Decided,
-                    })
-                }
-                RoundState::NeedsIntervention => return Ok(RoundOutcome::NeedsIntervention),
-                other => bail!("round {} cannot be decided in state {other}", spec.round),
+            if let Some(outcome) = self.decide_step(spec)? {
+                return Ok(outcome);
             }
         }
+    }
+
+    /// Advance the round one state; `Some` once it has an outcome.
+    fn decide_step(&self, spec: &RoundSpec) -> Result<Option<RoundOutcome>> {
+        let view = self.view(spec)?;
+        match view.state {
+            RoundState::JudgingBackground => self.judge(spec).map(Some),
+            RoundState::Complete | RoundState::NeedsIntervention => {
+                Ok(Some(settled_outcome(&view)))
+            }
+            _ => self.advance_round(spec, &view).map(|()| None),
+        }
+    }
+
+    fn advance_round(&self, spec: &RoundSpec, view: &RoundView) -> Result<()> {
+        match view.state {
+            RoundState::Validating => self.reject_unjudged(spec, view),
+            // DECIDED holds a round only without a requested promotion:
+            // `winner.selected{requested}` moves on to REVALIDATING at once.
+            RoundState::Rejected
+            | RoundState::Cleanup
+            | RoundState::Decided
+            | RoundState::Promoted => self.cleanup(spec, view),
+            RoundState::Revalidating | RoundState::Promoting => {
+                self.promoter(spec).advance(&spec.round, view).map(drop)
+            }
+            other => bail!("round {} cannot be decided in state {other}", spec.round),
+        }
+    }
+
+    /// 0 eligible: the judge is skipped (CMP-14).
+    fn reject_unjudged(&self, spec: &RoundSpec, view: &RoundView) -> Result<()> {
+        if !view.candidates.values().all(|c| c.validation.is_some()) {
+            bail!(
+                "round {} is validating with unvalidated candidates",
+                spec.round
+            );
+        }
+        self.emit(
+            spec,
+            EventKind::WinnerRejected(WinnerRejected {
+                reason: RejectReason::NoEligible,
+            }),
+            format!("winner.rejected:{}", spec.round),
+            None,
+        )?;
+        Ok(())
     }
 
     /// Clean up a round that reached its end. A skipped cleanup stops the
@@ -1273,18 +1525,44 @@ impl<G: GitClient> Coordinator<'_, G> {
     /// that conflicts with one already on disk is never retried: the round
     /// stops in NEEDS_INTERVENTION.
     fn judge(&self, spec: &RoundSpec) -> Result<RoundOutcome> {
-        let config = &spec.config;
+        let teammate = self.judge_teammate(spec)?;
+        let env = self.judge_env(spec, &teammate);
+        match self.run_judge(&env, spec) {
+            Ok(()) => self.decide(spec),
+            Err(e) => self.judge_error(spec, e),
+        }
+    }
+
+    /// Start the judge job and poll it until it settles.
+    fn run_judge(&self, env: &JudgeEnv, spec: &RoundSpec) -> Result<()> {
+        judging::start(env, &spec.round)?;
+        while matches!(
+            judging::poll(env, &spec.round, Utc::now())?,
+            JudgingStatus::Waiting
+        ) {
+            (self.sleep)(spec.tick);
+        }
+        Ok(())
+    }
+
+    fn judge_teammate(&self, spec: &RoundSpec) -> Result<Teammate> {
+        let judge = &spec.config.judge;
         let mut teammate = self.roster.require(JUDGE_TEAMMATE)?.clone();
-        teammate.model = Some(config.judge.model.clone());
-        teammate.effort = Some(config.judge.effort.clone()).filter(|e| !e.is_empty());
-        let env = JudgeEnv {
+        teammate.model = Some(judge.model.clone());
+        teammate.effort = Some(judge.effort.clone()).filter(|e| !e.is_empty());
+        Ok(teammate)
+    }
+
+    fn judge_env<'e>(&'e self, spec: &'e RoundSpec, judge: &'e Teammate) -> JudgeEnv<'e> {
+        let config = &spec.config;
+        JudgeEnv {
             ctx: self.ctx,
             recorder: self.recorder,
             paths: self.paths,
             git: self.git,
             repo: &spec.repo,
             store: self.store,
-            judge: &teammate,
+            judge,
             task_text: &spec.task,
             policy: &config.judge.policy,
             promotion: match &config.promote_to {
@@ -1297,18 +1575,6 @@ impl<G: GitClient> Coordinator<'_, G> {
             stale_after: heartbeat::STALE_AFTER,
             launcher: self.launcher,
             clock: self.clock,
-        };
-        if let Err(e) = judging::start(&env, &spec.round) {
-            return self.judge_error(spec, e);
-        }
-        loop {
-            match judging::poll(&env, &spec.round, Utc::now()) {
-                Ok(JudgingStatus::Waiting) => (self.sleep)(spec.tick),
-                Ok(JudgingStatus::Decided(_) | JudgingStatus::NeedsIntervention) => {
-                    return self.decide(spec)
-                }
-                Err(e) => return self.judge_error(spec, e),
-            }
         }
     }
 
@@ -1541,5 +1807,31 @@ pub fn monotonic(now: impl Fn() -> DateTime<Utc>) -> impl Fn() -> DateTime<Utc> 
         }
         last.set(Some(t));
         t
+    }
+}
+
+/// The report of a candidate that never ran: no gates, never eligible.
+fn not_run_report(candidate: &FrozenCandidate, now: DateTime<Utc>) -> ValidationReport {
+    ValidationReport {
+        validation_id: crate::ids::mint_v7(now).to_string(),
+        label: candidate.label.clone(),
+        head_sha: candidate.head_sha.clone(),
+        gates: Vec::new(),
+        mechanical_score: 0.0,
+        eligible: false,
+    }
+}
+
+/// The outcome a COMPLETE or NEEDS_INTERVENTION round reports.
+fn settled_outcome(view: &RoundView) -> RoundOutcome {
+    if view.state == RoundState::NeedsIntervention {
+        return RoundOutcome::NeedsIntervention;
+    }
+    match view.final_outcome {
+        Some(FinalOutcome::Rejected) => RoundOutcome::Rejected {
+            budget: budget_stopped(view),
+        },
+        Some(FinalOutcome::NeedsIntervention) => RoundOutcome::NeedsIntervention,
+        _ => RoundOutcome::Decided,
     }
 }

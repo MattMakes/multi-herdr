@@ -430,13 +430,28 @@ courier) checks each `working` worker every `check_every_s` and writes 1
    (example: 10m then 15m, 10 min apart: it stopped or restarted about
    5 min ago), or herdr says `idle` while the task is `running`. The
    watchdog verifies at once: PID alive, herdr status, transcript mtime.
-   If the transcript was written after the timer stopped, or herdr shows
-   `working`, it is `proxy_checkin`. Else verdict `no_progress`.
-5. **Nothing moved:** verdict `no_progress`, `stall_rounds + 1`. On the
+   If the transcript was written after the timer stopped, it is
+   `proxy_checkin`. If herdr shows `working`, go to step 5: a frozen timer
+   under a `working` spinner has the same cap. Else verdict `no_progress`.
+5. **Herdr fallback.** Nothing above moved, but herdr shows `working`
+   (a harness with no timer format, a session with no transcript, or 1
+   long tool call): verdict `proxy_checkin` with source `herdr_state`,
+   at most `2 * runs.stall_rounds` checks in a row (6 checks, 60 min with
+   the defaults). The next such check is `suspect`, and the watchdog wakes
+   the orchestrator once with the pane id. The check after a `suspect`
+   is `dead`, so a stuck spinner cannot hold a task forever. Go to 5.4.
+   Herdr `idle` or no herdr status goes on to step 6.
+6. **Nothing moved:** verdict `no_progress`, `stall_rounds + 1`. On the
    first `no_progress` the watchdog tells the orchestrator, and the
    orchestrator asks the worker for an update with `horch tell`.
-6. At `stall_rounds = runs.stall_rounds` (3 checks, 30 min with the
+7. At `stall_rounds = runs.stall_rounds` (3 checks, 30 min with the
    defaults): verdict `dead`. Go to 5.4.
+
+A worker in a waiting state (reviewer tasks, an open question, a
+background command) skips steps 2 to 7 while the wait holds; step 1
+still applies. Each `checks.note` names the signals the watchdog could
+not read, for example "no timer format for harness pi; no transcript",
+so `ledger show` explains a reap.
 
 The watchdog tells the orchestrator only when a verdict changes, so a
 healthy fleet makes no noise.
@@ -485,20 +500,38 @@ repeated unless a later fix changed the files they judged.
    `architect-reviewer` for Codex-built work, `blocked_by` nothing). Each
    reviewer writes its findings file and ends. `finish` merges them into
    the report with the skill's verdict rules. The author worker fixes every
-   Critical and Important finding, or answers it in the report with a
-   reason, then runs `finish` again, which re-reviews the changed files.
-   Passes when the verdict is `PASS`, or `WARN` with every Important
-   finding answered. Evidence: the report.
+   Critical and Important finding, or answers an Important finding in the
+   answers file with a reason, then runs `finish` again, which re-reviews
+   the changed files. The author never answers a Critical finding. Only the
+   orchestrator waives a Critical or an Important finding
+   (`horch ledger waive T-<n> F<k> "<reason>"`); the report and the PR body
+   name each waiver and its reason. Passes when the verdict is `PASS`, or
+   `WARN` with every Important finding answered or waived and every
+   Critical finding waived. Each reviewer task has the other reviewer
+   persona as its fallback; when the usual reviewer cannot run on this
+   host, the round goes to the fallback at once. A review that the
+   orchestrator cancels in the current round is queued again; a new round
+   cancels the open reviews of the old one as superseded.
+   `finish --rereview` starts a new round for the same tree. The round
+   state belongs to the task, so a replacement worker reuses it.
+   Evidence: the report.
 3. **complexity-sweep** - the worker runs the `complexity-sweep` skill
    itself on the changed files and refactors what it flags. Passes when
    the analysis JSON has 0 violations in functions the branch changed.
    Evidence: the analysis JSON. `not_applicable` when no changed file is in
    a language the analyser reads.
 4. **recheck** - the `land_check` again, because steps 2 and 3 changed code.
-5. **land** - rebases on `run_branch`, runs `land_check`, fast-forwards
-   `run_branch`, pushes it to `remote`, writes `landed_commit`. Concurrent
-   lands queue on the landing lock. A red gate fails the step; the branch,
+5. **land** - rebases on `run_branch`, runs `land_check` outside the
+   landing lock, then under the lock fast-forwards `run_branch` (only when
+   it did not move meanwhile; else it rebases and checks again), pushes it
+   to `remote`, writes `landed_commit`. Concurrent lands queue on the
+   landing lock. A check runs at most its timeout
+   (`horch ledger add --check-timeout`, default 20 minutes). A red gate fails the step; the branch,
    the worktree and `run_branch` stay unchanged.
+   The check of a Codex worker (its recorded harness, or a Codex persona)
+   runs inside `codex sandbox` with the `fleet_write` profile of its pane:
+   it can write only the worktree and the state root, and its TMPDIR is the
+   pane's (#181). This holds for check, recheck and land.
 6. **pr** - makes sure the run's PR exists (creates it from `run_branch`
    into `base_branch` if `runs.pr_number` is empty) and updates its
    description: 1 section per task between markers

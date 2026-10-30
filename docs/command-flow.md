@@ -193,6 +193,12 @@ you override it, and in the brief (`state_dir`) for a worker. The brief
 carries the roster dir and the binary overrides too. The worker passes all
 of them on to its agent as `HORCH_*` variables.
 
+The task ledger travels the same way when you override it: the
+orchestrator pane command sets `HORCH_LEDGER_DB`, and a worker's brief
+carries `ledger_db`. `HORCH_STATE_DIR` does not move the task ledger, so
+`horch fleet`, `horch spawn` and `horch doctor` warn once when it is set
+and `HORCH_LEDGER_DB` is not (#199).
+
 Side commands any time: `horch inbox` (live roles), `horch layout` /
 `horch tile` / `horch balance` (the pane grid), `horch quota` (the usage
 pools: claude, codex, opencode-zen, google, local), `horch agent-list` (the

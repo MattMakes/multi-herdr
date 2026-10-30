@@ -10,7 +10,7 @@ use rusqlite::Connection;
 use super::model::*;
 
 /// The schema version this binary writes.
-pub const VERSION: i64 = 2;
+pub const VERSION: i64 = 3;
 
 /// A rule that applies to rows this ledger writes, not to imported ones
 /// (section 11.2): `CHECK (origin = 'import' OR <expr>)`.
@@ -322,6 +322,16 @@ pub fn migrate(conn: &mut Connection) -> Result<()> {
                 worktree_id TEXT PRIMARY KEY REFERENCES worktrees(worktree_id),
                 run_id TEXT NOT NULL REFERENCES runs(run_id), name TEXT NOT NULL,
                 scratch INTEGER NOT NULL DEFAULT 0 CHECK(scratch IN (0,1))); ",
+        )?;
+    }
+    if current < 3 {
+        // A held task stays `queued` with a reason, so the status CHECK list
+        // keeps its words (#168). `attempt_floor` is the attempt count at the
+        // last operator requeue: the limit counts the attempts after it.
+        tx.execute_batch(
+            "ALTER TABLE runs ADD COLUMN max_attempts INTEGER NOT NULL DEFAULT 3;
+             ALTER TABLE tasks ADD COLUMN held_reason TEXT;
+             ALTER TABLE tasks ADD COLUMN attempt_floor INTEGER NOT NULL DEFAULT 0;",
         )?;
     }
     tx.pragma_update(None, "user_version", VERSION)?;

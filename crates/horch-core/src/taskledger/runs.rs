@@ -30,6 +30,8 @@ pub struct Run {
     pub heartbeat_every_s: i64,
     pub heartbeat_stale_s: i64,
     pub timer_tolerance_s: i64,
+    /// Attempts at 1 task before it is held for the operator (#168).
+    pub max_attempts: i64,
     pub watchdog_pid: Option<i64>,
     pub watchdog_started: Option<i64>,
     pub watchdog_checkin_at: Option<String>,
@@ -70,6 +72,7 @@ impl Run {
             heartbeat_every_s: r.get("heartbeat_every_s")?,
             heartbeat_stale_s: r.get("heartbeat_stale_s")?,
             timer_tolerance_s: r.get("timer_tolerance_s")?,
+            max_attempts: r.get("max_attempts")?,
             watchdog_pid: r.get("watchdog_pid")?,
             watchdog_started: r.get("watchdog_started")?,
             watchdog_checkin_at: r.get("watchdog_checkin_at")?,
@@ -133,6 +136,7 @@ pub struct Thresholds {
     pub heartbeat_every_s: Option<i64>,
     pub heartbeat_stale_s: Option<i64>,
     pub timer_tolerance_s: Option<i64>,
+    pub max_attempts: Option<i64>,
 }
 
 /// Create a run in project `root`. Refuses a second active run with the
@@ -140,6 +144,9 @@ pub struct Thresholds {
 pub fn create(conn: &Connection, root: &Path, new: &NewRun) -> Result<Run> {
     if new.slug.trim().is_empty() {
         bail!("a run needs a slug");
+    }
+    if new.thresholds.max_attempts.is_some_and(|n| n < 1) {
+        bail!("--max-attempts must be 1 or more");
     }
     let project = ensure_project(conn, root)?;
     let clash: Option<String> = optional(conn.query_row(
@@ -185,7 +192,8 @@ pub fn create(conn: &Connection, root: &Path, new: &NewRun) -> Result<Run> {
             stall_rounds = COALESCE(?3, stall_rounds),
             heartbeat_every_s = COALESCE(?4, heartbeat_every_s),
             heartbeat_stale_s = COALESCE(?5, heartbeat_stale_s),
-            timer_tolerance_s = COALESCE(?6, timer_tolerance_s)
+            timer_tolerance_s = COALESCE(?6, timer_tolerance_s),
+            max_attempts = COALESCE(?7, max_attempts)
          WHERE run_id = ?1",
         params![
             id,
@@ -193,7 +201,8 @@ pub fn create(conn: &Connection, root: &Path, new: &NewRun) -> Result<Run> {
             t.stall_rounds,
             t.heartbeat_every_s,
             t.heartbeat_stale_s,
-            t.timer_tolerance_s
+            t.timer_tolerance_s,
+            t.max_attempts
         ],
     )?;
     util::event(
@@ -235,49 +244,85 @@ pub fn of_project(conn: &Connection, root: &Path) -> Result<Vec<Run>> {
 }
 
 /// The run a command means: `explicit` (an id or a slug of this project),
-/// else the 1 active run of the project. 0 or 2+ active runs without
-/// `explicit` is an error that names them.
-pub fn resolve(conn: &Connection, root: &Path, explicit: Option<&str>) -> Result<Run> {
+/// else the 1 active run of the caller's herdr `workspace`, else the 1 active
+/// run of the project. The second value is a `NOTE:` line when that 1 run
+/// belongs to another workspace than the caller's (#89). 0 active runs, or
+/// 2+ with none of them the workspace's, is an error that names them.
+pub fn resolve(
+    conn: &Connection,
+    root: &Path,
+    explicit: Option<&str>,
+    workspace: Option<&str>,
+) -> Result<(Run, Option<String>)> {
     let runs = of_project(conn, root)?;
     if let Some(key) = explicit.filter(|k| !k.is_empty()) {
-        if let Some(run) = runs.iter().find(|r| r.run_id == key) {
-            return Ok(run.clone());
-        }
-        // A slug picks the active run with it, else the newest.
-        let by_slug: Vec<&Run> = runs.iter().filter(|r| r.slug == key).collect();
-        if let Some(run) = by_slug
-            .iter()
-            .find(|r| r.status == RunStatus::Active.as_str())
-            .or(by_slug.first())
-        {
-            return Ok((*run).clone());
-        }
-        // A run id from another project (a worker in a worktree) still works.
-        if let Ok(run) = get(conn, key) {
-            return Ok(run);
-        }
-        bail!("no run '{key}' in {}", root.display());
+        return by_key(conn, root, &runs, key).map(|r| (r, None));
     }
     let active: Vec<&Run> = runs
         .iter()
         .filter(|r| r.status == RunStatus::Active.as_str())
         .collect();
-    match active.as_slice() {
-        [one] => Ok((*one).clone()),
-        [] => bail!(
+    let own: Vec<&Run> = active
+        .iter()
+        .copied()
+        .filter(|r| workspace.is_some() && r.workspace_id.as_deref() == workspace)
+        .collect();
+    if let [one] = own.as_slice() {
+        return Ok(((*one).clone(), None));
+    }
+    match (own.as_slice(), active.as_slice()) {
+        ([], [one]) => {
+            let note = workspace
+                .filter(|ws| one.workspace_id.as_deref() != Some(*ws))
+                .map(|ws| {
+                    format!(
+                        "NOTE: this command uses run {} of workspace {}, not of this workspace {ws}. Name a run with --run <slug>.",
+                        one.slug,
+                        one.workspace_id.as_deref().unwrap_or("(none)")
+                    )
+                });
+            Ok(((*one).clone(), note))
+        }
+        (_, []) => bail!(
             "no active run in {}. Create one: horch ledger run new <slug>",
             root.display()
         ),
-        many => bail!(
-            "{} active runs in {}: {}. Name one with --run <slug>",
-            many.len(),
-            root.display(),
-            many.iter()
-                .map(|r| r.slug.as_str())
-                .collect::<Vec<_>>()
-                .join(", ")
-        ),
+        (mine, all) => {
+            let many = if mine.is_empty() { all } else { mine };
+            bail!(
+                "{} active runs in {}: {}. Name one with --run <slug>, or close one with horch ledger run close --run <slug>",
+                many.len(),
+                root.display(),
+                many.iter()
+                    .map(|r| match &r.workspace_id {
+                        Some(ws) => format!("{} (workspace {ws})", r.slug),
+                        None => r.slug.clone(),
+                    })
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )
+        }
     }
+}
+
+/// A run by id or slug: a slug picks its active run, else its newest.
+fn by_key(conn: &Connection, root: &Path, runs: &[Run], key: &str) -> Result<Run> {
+    if let Some(run) = runs.iter().find(|r| r.run_id == key) {
+        return Ok(run.clone());
+    }
+    let by_slug: Vec<&Run> = runs.iter().filter(|r| r.slug == key).collect();
+    if let Some(run) = by_slug
+        .iter()
+        .find(|r| r.status == RunStatus::Active.as_str())
+        .or(by_slug.first())
+    {
+        return Ok((*run).clone());
+    }
+    // A run id from another project (a worker in a worktree) still works.
+    if let Ok(run) = get(conn, key) {
+        return Ok(run);
+    }
+    bail!("no run '{key}' in {}", root.display());
 }
 
 /// Record the orchestrator's own worker row on the run.
@@ -305,4 +350,99 @@ pub fn close(conn: &Connection, run_id: &str, status: RunStatus) -> Result<()> {
         params![run_id, status.as_str(), util::now()],
     )?;
     Ok(())
+}
+
+/// What keeps a run open: each task that is queued (held included),
+/// running or landing, and each worktree that is open or landing.
+pub fn open_items(conn: &Connection, run_id: &str) -> Result<Vec<String>> {
+    let mut out: Vec<String> = super::tasks::of_run(conn, run_id)?
+        .into_iter()
+        .filter(|t| matches!(t.status.as_str(), "queued" | "running" | "landing"))
+        .map(|t| match &t.held_reason {
+            Some(r) => format!("{} (held: {r})", t.short()),
+            None => format!("{} ({})", t.short(), t.status),
+        })
+        .collect();
+    out.extend(
+        super::status::worktrees(conn, run_id)?
+            .into_iter()
+            .filter(|w| !w.scratch && matches!(w.status.as_str(), "open" | "landing"))
+            .map(|w| format!("worktree {} ({})", w.path, w.status)),
+    );
+    Ok(out)
+}
+
+/// What [`close_run`] did.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct Closed {
+    pub status: String,
+    /// The tasks `--abandon` cancelled, with the worker each one had.
+    pub cancelled: Vec<(String, Option<String>)>,
+}
+
+/// `horch ledger run close`: close an active run as `done`. It refuses while
+/// [`open_items`] names anything. With `abandon`, every open task is cancelled
+/// first (the 1 cancel path) and the run closes as `abandoned`.
+pub fn close_run(conn: &Connection, run: &Run, abandon: Option<&str>) -> Result<Closed> {
+    if run.status != RunStatus::Active.as_str() {
+        bail!("run {} is already {}", run.slug, run.status);
+    }
+    let mut cancelled = Vec::new();
+    if let Some(reason) = abandon {
+        for t in super::tasks::of_run(conn, &run.run_id)? {
+            if matches!(t.status.as_str(), "queued" | "running" | "landing") {
+                let holder = t.current_worker_id.clone();
+                super::tasks::cancel(conn, &t, &format!("run abandoned: {reason}"))?;
+                cancelled.push((t.short(), holder));
+            }
+        }
+        // A worktree no task holds open any more.
+        conn.execute(
+            "UPDATE worktrees SET status = 'abandoned', reason = ?2
+             WHERE status IN ('open', 'landing') AND task_id IN
+                (SELECT task_id FROM tasks WHERE run_id = ?1)",
+            params![run.run_id, format!("run abandoned: {reason}")],
+        )?;
+    }
+    let open = open_items(conn, &run.run_id)?;
+    if !open.is_empty() {
+        bail!(
+            "run {} still has open work: {}. Finish or cancel it, or run horch ledger run close --run {} --abandon \"<reason>\"",
+            run.slug,
+            open.join(", "),
+            run.slug
+        );
+    }
+    let status = if abandon.is_some() {
+        RunStatus::Abandoned
+    } else {
+        RunStatus::Done
+    };
+    close(conn, &run.run_id, status)?;
+    if let Some(orch) = &run.orchestrator_worker_id {
+        super::workers::end(
+            conn,
+            orch,
+            super::model::WorkerStatus::Done,
+            "the run was closed",
+            None,
+        )?;
+    }
+    util::event(
+        conn,
+        &About {
+            run: Some(&run.run_id),
+            ..Default::default()
+        },
+        Actor::Orchestrator,
+        EventKind::Note,
+        &match abandon {
+            Some(r) => format!("Run {} closed as abandoned: {r}", run.slug),
+            None => format!("Run {} closed as done.", run.slug),
+        },
+    )?;
+    Ok(Closed {
+        status: status.as_str().to_string(),
+        cancelled,
+    })
 }
