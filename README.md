@@ -924,13 +924,14 @@ package manager stopped mid-install can leave no CLI. horch prints
 `still running after N s, not waited for` and goes on.
 
 Several fleets can start on 1 host. Each CLI has 1 lock and 1 mark under
-`<state root>/update/`, so only 1 updater of a CLI runs at a time, for at
-most 1 h. The fleet step skips a CLI that another horch updates
+`${XDG_STATE_HOME:-~/.local/state}/horch/update/`, so only 1 updater of a
+CLI runs at a time, for at most 1 h. This folder does not follow
+`HORCH_STATE_DIR`: a scratch fleet updates the same installed CLIs. The fleet step skips a CLI that another horch updates
 (`another horch is updating it`) and a CLI whose last update succeeded
 less than 24 h ago (`updated at <time>, less than 24 h ago`).
 `horch update` skips only the first: you asked for it. It exits 1 when 1 CLI
 failed, still runs, or is updated by another horch. The updater output is
-in `<state root>/update/<cli>.stdout.log` and `.stderr.log`.
+in `update/<cli>.stdout.log` and `.stderr.log` in that folder.
 When `cpx` is the Claude launcher, `claude` updates, because `cpx` only
 launches it. `HORCH_NO_UPDATE=1` skips the step like `--no-update`.
 

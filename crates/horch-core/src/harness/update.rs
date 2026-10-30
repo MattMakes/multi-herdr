@@ -7,8 +7,10 @@
 //! themselves keep their auto-update switched off.
 //!
 //! Several fleets can start on 1 host, and each one runs this step (#205):
-//! - 1 lock per CLI under `<state root>/update/` lets 1 updater of a CLI run
-//!   at a time. A second horch that finds the lock held skips that CLI.
+//! - 1 lock per CLI under `<default state root>/update/` lets 1 updater of
+//!   a CLI run at a time on the host. The folder does not follow
+//!   `HORCH_STATE_DIR`: a scratch fleet updates the same installed CLIs.
+//!   A second horch that finds the lock held skips that CLI.
 //! - The fleet step skips a CLI whose last update succeeded less than
 //!   [`FRESH_FOR`] ago.
 //! - An updater that passes its time limit is not killed: a package manager
@@ -19,7 +21,7 @@
 //!
 //! So a CLI can change under a running fleet: a detached updater, or the
 //! updater of a later fleet start, replaces it. It is never left half
-//! installed. The files under `<state root>/update/` are written without
+//! installed. The files under `<default state root>/update/` are written without
 //! following a link: a Codex pane can write the state root.
 //!
 //! Every updater waits out the release cooldown first ([`super::cooldown`]):
@@ -246,7 +248,9 @@ fn locked_update(
     skip_fresh: bool,
 ) -> Outcome {
     let files = UpdateFiles {
-        dir: ctx.paths.state_root.join("update"),
+        // Host-wide, as the CLIs are: a fleet with its own state root
+        // updates the same installs (#205).
+        dir: ctx.paths.default_state_root.join("update"),
         name: job.kind.as_str(),
     };
     let _lock = match DirLock::acquire(&files.dir, files.name, LOCK_STALE, Duration::ZERO) {
@@ -294,7 +298,7 @@ fn locked_update(
     }
 }
 
-/// The files of 1 CLI's update step in `dir` (`<state root>/update/`): the
+/// The files of 1 CLI's update step in `dir` (`<default state root>/update/`): the
 /// lock `<name>.lock/`, the last check `<name>.checked`, the updater that
 /// runs `<name>.running`, and its output `<name>.stdout.log` and
 /// `<name>.stderr.log`.
@@ -760,6 +764,7 @@ mod tests {
                     "HORCH_STATE_DIR",
                     &dir.path().join("state").to_string_lossy(),
                 )
+                .with("HOME", &dir.path().join("home").to_string_lossy())
                 .with("HORCH_CODEX_BIN", &bin.to_string_lossy())
                 .with("HORCH_UPDATE_COOLDOWN_DAYS", "0")
                 .with("HORCH_UPDATE_TIMEOUT_MS", &timeout_ms.to_string());
@@ -783,17 +788,32 @@ mod tests {
             results.remove(0).outcome
         }
 
+        /// The pids of live processes whose command line names this
+        /// updater's script.
+        fn live_updaters(&self) -> Vec<u32> {
+            let out = Command::new("pgrep")
+                .arg("-f")
+                .arg(self.dir.path().join("codex"))
+                .output()
+                .unwrap();
+            String::from_utf8_lossy(&out.stdout)
+                .lines()
+                .filter_map(|l| l.trim().parse().ok())
+                .collect()
+        }
+
         fn file(&self, suffix: &str) -> PathBuf {
             self.dir
                 .path()
-                .join("state/update")
+                .join("home/.local/state/horch/update")
                 .join(format!("codex.{suffix}"))
         }
 
         /// Write the `.running` mark of `pid` with start time `started`,
         /// made at `at`.
         fn mark_running(&self, pid: u32, started: Option<u64>, at: chrono::DateTime<chrono::Utc>) {
-            std::fs::create_dir_all(self.dir.path().join("state/update")).unwrap();
+            std::fs::create_dir_all(self.dir.path().join("home/.local/state/horch/update"))
+                .unwrap();
             let started = started.map_or_else(|| "-".to_string(), |t| t.to_string());
             let text = format!("{pid} {started} {}\n", crate::clock::stamp(at));
             std::fs::write(self.file("running"), text).unwrap();
@@ -1065,10 +1085,46 @@ mod tests {
             reason.contains("could not be marked as running"),
             "{reason}"
         );
-        for pid in fake.runs() {
-            let _stop = StopGroupOnDrop(pid);
-            assert!(!crate::procid::alive(pid, None), "updater {pid} still runs");
+        // The updater can be stopped before it writes `runs`, so look for
+        // the process itself: its command line names the unique temp dir.
+        let deadline = Instant::now() + Duration::from_secs(1);
+        let mut left = fake.live_updaters();
+        while !left.is_empty() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(50));
+            left = fake.live_updaters();
         }
+        let _stop: Vec<_> = left.iter().map(|&pid| StopGroupOnDrop(pid)).collect();
+        assert!(left.is_empty(), "updater still runs: {left:?}");
+    }
+
+    /// #205: the update files are host-wide. A fleet with its own
+    /// `HORCH_STATE_DIR` sees the 24 h mark that another state root wrote.
+    #[cfg(unix)]
+    #[test]
+    fn arc_33_a_scratch_state_root_shares_the_update_files() {
+        let fake = FakeUpdater::new(0, 0, 20_000);
+        assert!(matches!(fake.update(true), Outcome::Updated { .. }));
+        let env = crate::runtime::context::MapEnv::new(fake.dir.path())
+            .with(
+                "HORCH_STATE_DIR",
+                &fake.dir.path().join("scratch").to_string_lossy(),
+            )
+            .with("HOME", &fake.dir.path().join("home").to_string_lossy())
+            .with(
+                "HORCH_CODEX_BIN",
+                &fake.dir.path().join("codex").to_string_lossy(),
+            )
+            .with("HORCH_UPDATE_COOLDOWN_DAYS", "0");
+        let scratch = RuntimeContext::from_env(&env).unwrap();
+        let none = |_: &str| -> Result<Packument, String> { Err("unused".into()) };
+        let results = update_all(&scratch, &[HarnessKind::Codex], &none, true);
+        assert!(
+            matches!(results[0].outcome, Outcome::Fresh { .. }),
+            "{:?}",
+            results[0].outcome
+        );
+        assert_eq!(fake.runs().len(), 1, "the scratch fleet ran the updater");
+        assert!(!fake.dir.path().join("scratch/update").exists());
     }
 
     /// #205: a FIFO planted as a mark file neither hangs the update step nor
@@ -1077,7 +1133,7 @@ mod tests {
     #[test]
     fn arc_33_a_fifo_mark_is_ignored() {
         let fake = FakeUpdater::new(0, 0, 20_000);
-        std::fs::create_dir_all(fake.dir.path().join("state/update")).unwrap();
+        std::fs::create_dir_all(fake.dir.path().join("home/.local/state/horch/update")).unwrap();
         for suffix in ["running", "checked"] {
             let made = Command::new("mkfifo")
                 .arg(fake.file(suffix))
