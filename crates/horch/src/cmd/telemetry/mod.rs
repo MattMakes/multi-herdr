@@ -129,104 +129,118 @@ pub fn pool_table(
             names.push(extra);
         }
     }
-    for name in names {
-        let Some(r) = pools.get(name) else {
-            out.push(clip(&format!("{}no reading", pad(name, 14)), width));
-            continue;
+    out.extend(names.into_iter().map(|name| {
+        let line = match pools.get(name) {
+            None => format!("{}no reading", pad(name, 14)),
+            Some(r) => pool_row(name, r, now),
         };
-        let (state, shown) = pool_state(r);
-        let line = if name == quota::POOL_ZEN && r.windows.is_empty() {
-            let (s, note) = if state == "ok" {
-                ("ok*".to_string(), "* public work only")
-            } else {
-                (shown, "")
-            };
-            let resets = r
-                .cooling_until
-                .as_deref()
-                .map(quota::short_time)
-                .unwrap_or_else(|| "-".into());
-            format!(
-                "{}{}{}{}{}{}",
-                pad(name, 14),
-                pad("no signal", 29),
-                pad(&s, 12),
-                pad(&resets, 15),
-                pad("-", 11),
-                note
-            )
-        } else if r.windows.is_empty() {
-            let why = r
-                .error
-                .clone()
-                .or_else(|| r.reason.clone())
-                .unwrap_or_else(|| "-".into());
-            format!(
-                "{}{}{}{}{}{}",
-                pad(name, 14),
-                pad("-", 8),
-                pad("-", 7),
-                pad("-", 14),
-                pad(&shown, 12),
-                why
-            )
-        } else {
-            let unscoped = |mins: u64| unscoped_pct(r, mins, now);
-            let scoped = r
-                .windows
-                .iter()
-                .filter(|w| w.scope_model.is_some())
-                .max_by(|a, b| {
-                    a.used_at(now)
-                        .partial_cmp(&b.used_at(now))
-                        .unwrap_or(std::cmp::Ordering::Equal)
-                })
-                .map(|w| {
-                    format!(
-                        "{} {}",
-                        w.scope_model.as_deref().unwrap_or_default(),
-                        pct(w.used_at(now))
-                    )
-                })
-                .unwrap_or_else(|| "-".into());
-            let worst = r
-                .windows
-                .iter()
-                .filter(|w| w.scope_model.is_none())
-                .max_by(|a, b| {
-                    a.used_at(now)
-                        .partial_cmp(&b.used_at(now))
-                        .unwrap_or(std::cmp::Ordering::Equal)
-                });
-            let resets = worst
-                .and_then(|w| w.resets_at.as_deref())
-                .map(quota::short_time)
-                .unwrap_or_else(|| "-".into());
-            let headroom = r
-                .windows
-                .iter()
-                .filter(|w| w.scope_model.is_none())
-                .map(|w| w.headroom_per_h(now))
-                .fold(f64::INFINITY, f64::min);
-            let headroom = if headroom.is_finite() {
-                format!("{:.1}%", headroom * 100.0)
-            } else {
-                "-".into()
-            };
-            format!(
-                "{}{}{}{}{}{}{}",
-                pad(name, 14),
-                pad(&unscoped(300), 8),
-                pad(&unscoped(10_080), 7),
-                pad(&scoped, 14),
-                pad(&shown, 12),
-                pad(&resets, 15),
-                headroom
-            )
-        };
-        out.push(clip(line.trim_end(), width));
-    }
+        clip(line.trim_end(), width)
+    }));
     out
+}
+
+/// One pool's row, by its kind: the Zen row with no signal, a row with no
+/// windows, or a row with windows.
+fn pool_row(name: &str, r: &PoolReading, now: DateTime<Utc>) -> String {
+    let (state, shown) = pool_state(r);
+    match (name == quota::POOL_ZEN, r.windows.is_empty()) {
+        (true, true) => zen_row(name, r, state, shown),
+        (false, true) => no_window_row(name, r, &shown),
+        (_, false) => window_row(name, r, &shown, now),
+    }
+}
+
+/// The Zen row: no usage signal, only its state and when it cools.
+fn zen_row(name: &str, r: &PoolReading, state: &str, shown: String) -> String {
+    let (s, note) = if state == "ok" {
+        ("ok*".to_string(), "* public work only")
+    } else {
+        (shown, "")
+    };
+    let resets = r
+        .cooling_until
+        .as_deref()
+        .map(quota::short_time)
+        .unwrap_or_else(|| "-".into());
+    format!(
+        "{}{}{}{}{}{}",
+        pad(name, 14),
+        pad("no signal", 29),
+        pad(&s, 12),
+        pad(&resets, 15),
+        pad("-", 11),
+        note
+    )
+}
+
+/// A row for a pool with no windows: its state and why.
+fn no_window_row(name: &str, r: &PoolReading, shown: &str) -> String {
+    let why = r
+        .error
+        .clone()
+        .or_else(|| r.reason.clone())
+        .unwrap_or_else(|| "-".into());
+    format!(
+        "{}{}{}{}{}{}",
+        pad(name, 14),
+        pad("-", 8),
+        pad("-", 7),
+        pad("-", 14),
+        pad(shown, 12),
+        why
+    )
+}
+
+/// The window with the highest use among the scoped or the unscoped ones.
+fn most_used(r: &PoolReading, now: DateTime<Utc>, scoped: bool) -> Option<&quota::Window> {
+    r.windows
+        .iter()
+        .filter(|w| w.scope_model.is_some() == scoped)
+        .max_by(|a, b| {
+            a.used_at(now)
+                .partial_cmp(&b.used_at(now))
+                .unwrap_or(std::cmp::Ordering::Equal)
+        })
+}
+
+/// A row for a pool with windows: the 5h and 7d use, the most used scoped
+/// window, the state, when the worst window resets and the headroom.
+fn window_row(name: &str, r: &PoolReading, shown: &str, now: DateTime<Utc>) -> String {
+    let unscoped = |mins: u64| unscoped_pct(r, mins, now);
+    let scoped = most_used(r, now, true)
+        .map(|w| {
+            format!(
+                "{} {}",
+                w.scope_model.as_deref().unwrap_or_default(),
+                pct(w.used_at(now))
+            )
+        })
+        .unwrap_or_else(|| "-".into());
+    let resets = most_used(r, now, false)
+        .and_then(|w| w.resets_at.as_deref())
+        .map(quota::short_time)
+        .unwrap_or_else(|| "-".into());
+    let headroom = r
+        .windows
+        .iter()
+        .filter(|w| w.scope_model.is_none())
+        .map(|w| w.headroom_per_h(now))
+        .fold(f64::INFINITY, f64::min);
+    let headroom = if headroom.is_finite() {
+        format!("{:.1}%", headroom * 100.0)
+    } else {
+        "-".into()
+    };
+    format!(
+        "{}{}{}{}{}{}{}",
+        pad(name, 14),
+        pad(&unscoped(300), 8),
+        pad(&unscoped(10_080), 7),
+        pad(&scoped, 14),
+        pad(shown, 12),
+        pad(&resets, 15),
+        headroom
+    )
 }
 
 /// A pool's state, and how the table shows it: `ok`, else in capitals.
