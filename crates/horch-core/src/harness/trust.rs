@@ -79,40 +79,58 @@ pub fn claude_config_file(home: &Path, claude_config_dir: Option<&Path>) -> Path
 /// repository root.
 pub fn claude_trust(file: Option<&str>, roots: &[PathBuf]) -> HarnessTrust {
     let claude = HarnessKind::Claude;
+    parse_store(claude, CLAUDE_TRUST_FILE, file).map_or_else(std::convert::identity, |doc| {
+        let accepted = roots.iter().any(|root| {
+            doc.get("projects")
+                .zip(root.to_str())
+                .and_then(|(p, root)| p.get(root))
+                .and_then(|e| e.get("hasTrustDialogAccepted"))
+                .and_then(serde_json::Value::as_bool)
+                == Some(true)
+        });
+        trust_result(
+            claude,
+            CLAUDE_TRUST_FILE,
+            accepted,
+            "has no accepted trust for the repository root",
+        )
+    })
+}
+
+/// A JSON store's document, or the verdict for a store that does not exist
+/// or is not JSON.
+fn parse_store(
+    harness: HarnessKind,
+    label: &str,
+    file: Option<&str>,
+) -> Result<serde_json::Value, HarnessTrust> {
     let Some(text) = file else {
-        return HarnessTrust::new(
-            claude,
+        return Err(HarnessTrust::new(
+            harness,
             TrustState::Untrusted,
-            format!("{CLAUDE_TRUST_FILE} does not exist"),
-        );
+            format!("{label} does not exist"),
+        ));
     };
-    let Ok(doc) = serde_json::from_str::<serde_json::Value>(text) else {
-        return HarnessTrust::new(
-            claude,
-            TrustState::Unknown,
-            format!("{CLAUDE_TRUST_FILE} is not valid JSON"),
-        );
-    };
-    let accepted = roots.iter().any(|root| {
-        doc.get("projects")
-            .zip(root.to_str())
-            .and_then(|(p, root)| p.get(root))
-            .and_then(|e| e.get("hasTrustDialogAccepted"))
-            .and_then(serde_json::Value::as_bool)
-            == Some(true)
-    });
-    if accepted {
+    serde_json::from_str(text).map_err(|_| {
         HarnessTrust::new(
-            claude,
+            harness,
+            TrustState::Unknown,
+            format!("{label} is not valid JSON"),
+        )
+    })
+}
+
+/// The verdict of a store that parsed: `trusts the repository root`, else
+/// the `missing` text after the store's name.
+fn trust_result(harness: HarnessKind, label: &str, trusted: bool, missing: &str) -> HarnessTrust {
+    if trusted {
+        HarnessTrust::new(
+            harness,
             TrustState::Trusted,
-            format!("{CLAUDE_TRUST_FILE} trusts the repository root"),
+            format!("{label} trusts the repository root"),
         )
     } else {
-        HarnessTrust::new(
-            claude,
-            TrustState::Untrusted,
-            format!("{CLAUDE_TRUST_FILE} has no accepted trust for the repository root"),
-        )
+        HarnessTrust::new(harness, TrustState::Untrusted, format!("{label} {missing}"))
     }
 }
 
@@ -140,19 +158,12 @@ pub fn codex_trust(file: Option<&str>, roots: &[PathBuf]) -> HarnessTrust {
             }
         }
     }
-    if trusted {
-        HarnessTrust::new(
-            codex,
-            TrustState::Trusted,
-            format!("{CODEX_TRUST_FILE} trusts the repository root"),
-        )
-    } else {
-        HarnessTrust::new(
-            codex,
-            TrustState::Untrusted,
-            format!("{CODEX_TRUST_FILE} has no trust_level = \"trusted\" for the repository root"),
-        )
-    }
+    trust_result(
+        codex,
+        CODEX_TRUST_FILE,
+        trusted,
+        "has no trust_level = \"trusted\" for the repository root",
+    )
 }
 
 /// Antigravity's trust in `roots`: the list `trustedWorkspaces` in
@@ -162,43 +173,22 @@ pub fn codex_trust(file: Option<&str>, roots: &[PathBuf]) -> HarnessTrust {
 /// (`docs/live-checks/harnesses.md`): `{"trustedWorkspaces": ["<dir>", ...]}`.
 pub fn antigravity_trust(file: Option<&str>, roots: &[PathBuf]) -> HarnessTrust {
     let agy = HarnessKind::Antigravity;
-    let Some(text) = file else {
-        return HarnessTrust::new(
+    parse_store(agy, ANTIGRAVITY_TRUST_FILE, file).map_or_else(std::convert::identity, |doc| {
+        let trusted = doc
+            .get("trustedWorkspaces")
+            .and_then(serde_json::Value::as_array)
+            .is_some_and(|dirs| {
+                dirs.iter()
+                    .filter_map(serde_json::Value::as_str)
+                    .any(|dir| roots.iter().any(|root| Path::new(dir) == root))
+            });
+        trust_result(
             agy,
-            TrustState::Untrusted,
-            format!("{ANTIGRAVITY_TRUST_FILE} does not exist"),
-        );
-    };
-    let Ok(doc) = serde_json::from_str::<serde_json::Value>(text) else {
-        return HarnessTrust::new(
-            agy,
-            TrustState::Unknown,
-            format!("{ANTIGRAVITY_TRUST_FILE} is not valid JSON"),
-        );
-    };
-    let trusted = doc
-        .get("trustedWorkspaces")
-        .and_then(serde_json::Value::as_array)
-        .is_some_and(|dirs| {
-            dirs.iter()
-                .filter_map(serde_json::Value::as_str)
-                .any(|dir| roots.iter().any(|root| Path::new(dir) == root))
-        });
-    if trusted {
-        HarnessTrust::new(
-            agy,
-            TrustState::Trusted,
-            format!("{ANTIGRAVITY_TRUST_FILE} trusts the repository root"),
+            ANTIGRAVITY_TRUST_FILE,
+            trusted,
+            "has no trustedWorkspaces entry for the repository root",
         )
-    } else {
-        HarnessTrust::new(
-            agy,
-            TrustState::Untrusted,
-            format!(
-                "{ANTIGRAVITY_TRUST_FILE} has no trustedWorkspaces entry for the repository root"
-            ),
-        )
-    }
+    })
 }
 
 /// The path of a strict `[projects."<path>"]` or `[projects.'<path>']`
@@ -224,42 +214,67 @@ fn toml_lines(text: &str) -> Vec<&str> {
         if open.is_none() {
             out.push(line.trim());
         }
-        let b = line.as_bytes();
-        let mut i = 0;
-        while i < b.len() {
-            let triple = |q: u8, i: usize| b[i..].starts_with(&[q, q, q]);
-            match open {
-                Some(b'"') if b[i] == b'\\' => i += 2,
-                Some(q) if triple(q, i) => {
-                    i += 3;
-                    // Up to 2 more quotes are content before the delimiter.
-                    for _ in 0..2 {
-                        if b.get(i) == Some(&q) {
-                            i += 1;
-                        }
-                    }
-                    open = None;
-                }
-                Some(_) => i += 1,
-                None => match b[i] {
-                    b'#' => break,
-                    q @ (b'"' | b'\'') if triple(q, i) => {
-                        open = Some(q);
-                        i += 3;
-                    }
-                    q @ (b'"' | b'\'') => {
-                        i += 1;
-                        while i < b.len() && b[i] != q {
-                            i += if q == b'"' && b[i] == b'\\' { 2 } else { 1 };
-                        }
-                        i += 1;
-                    }
-                    _ => i += 1,
-                },
-            }
-        }
+        open = toml_line_end_state(line.as_bytes(), open);
     }
     out
+}
+
+/// The quote of the multi-line string that is open at the end of line `b`,
+/// given the one open at its start.
+fn toml_line_end_state(b: &[u8], mut open: Option<u8>) -> Option<u8> {
+    let mut i = 0;
+    while i < b.len() {
+        let step = match open {
+            Some(q) => Some(step_in_multiline(b, i, q)),
+            None => step_outside(b, i),
+        };
+        let Some((next, state)) = step else {
+            break;
+        };
+        (i, open) = (next, state);
+    }
+    open
+}
+
+fn triple(b: &[u8], q: u8, i: usize) -> bool {
+    b[i..].starts_with(&[q, q, q])
+}
+
+/// One step inside a multi-line string with quote `q`: the next offset and
+/// the state after it.
+fn step_in_multiline(b: &[u8], i: usize, q: u8) -> (usize, Option<u8>) {
+    if q == b'"' && b[i] == b'\\' {
+        (i + 2, Some(q))
+    } else if triple(b, q, i) {
+        // Up to 2 more quotes are content before the delimiter.
+        let extra = b[i + 3..].iter().take(2).take_while(|c| **c == q).count();
+        (i + 3 + extra, None)
+    } else {
+        (i + 1, Some(q))
+    }
+}
+
+/// One step outside any string: the next offset and the state after it.
+/// `None` at a comment, which ends the line.
+fn step_outside(b: &[u8], i: usize) -> Option<(usize, Option<u8>)> {
+    match b[i] {
+        b'#' => None,
+        q @ (b'"' | b'\'') => Some(if triple(b, q, i) {
+            (i + 3, Some(q))
+        } else {
+            (skip_quoted(b, i, q), None)
+        }),
+        _ => Some((i + 1, None)),
+    }
+}
+
+/// The offset past the single-line string that opens at `i` with quote `q`.
+fn skip_quoted(b: &[u8], i: usize, q: u8) -> usize {
+    let mut i = i + 1;
+    while i < b.len() && b[i] != q {
+        i += if q == b'"' && b[i] == b'\\' { 2 } else { 1 };
+    }
+    i + 1
 }
 
 /// `"<value>"` or `'<value>'` for `key = ...`, `None` for any other line.
@@ -273,26 +288,36 @@ fn toml_string_value(line: &str, key: &str) -> Option<String> {
 /// `\\` and `\"`; any other escape gives `None`, so horch never takes a
 /// spelling it does not decode for the path it names.
 fn toml_quoted(text: &str) -> Option<(String, &str)> {
-    let mut chars = text.char_indices();
-    let (_, quote) = chars.next()?;
-    if quote != '"' && quote != '\'' {
-        return None;
+    let quote = text.chars().next()?;
+    let body = &text[quote.len_utf8()..];
+    match quote {
+        '\'' => toml_literal(body),
+        '"' => toml_basic(body),
+        _ => None,
     }
+}
+
+/// The body of a literal string (after its opening quote) and the rest.
+fn toml_literal(body: &str) -> Option<(String, &str)> {
+    let end = body.find('\'')?;
+    Some((body[..end].to_string(), &body[end + 1..]))
+}
+
+/// The body of a basic string (after its opening quote) and the rest.
+fn toml_basic(body: &str) -> Option<(String, &str)> {
     let mut out = String::new();
-    let mut escaped = false;
-    for (i, c) in chars {
-        if quote == '"' && escaped {
-            if c != '\\' && c != '"' {
-                return None;
+    let mut chars = body.char_indices();
+    while let Some((i, c)) = chars.next() {
+        match c {
+            '"' => return Some((out, &body[i + 1..])),
+            '\\' => {
+                let (_, escaped) = chars.next()?;
+                if escaped != '\\' && escaped != '"' {
+                    return None;
+                }
+                out.push(escaped);
             }
-            out.push(c);
-            escaped = false;
-        } else if quote == '"' && c == '\\' {
-            escaped = true;
-        } else if c == quote {
-            return Some((out, &text[i + c.len_utf8()..]));
-        } else {
-            out.push(c);
+            c => out.push(c),
         }
     }
     None
@@ -334,32 +359,56 @@ pub fn read_trust(
 ) -> Vec<HarnessTrust> {
     harnesses
         .iter()
-        .map(|&harness| match harness {
-            HarnessKind::Claude => match read_store(&claude_config_file(home, claude_config_dir)) {
-                Ok(text) => claude_trust(text.as_deref(), roots),
-                Err(()) => unreadable(harness, CLAUDE_TRUST_FILE),
-            },
-            HarnessKind::Codex => {
-                let file = super::codex::codex_home(home, codex_home_dir).join("config.toml");
-                match read_store(&file) {
-                    Ok(text) => codex_trust(text.as_deref(), roots),
-                    Err(()) => unreadable(harness, CODEX_TRUST_FILE),
-                }
+        .map(|&harness| {
+            if !asks_for_trust(harness) {
+                return HarnessTrust::new(
+                    harness,
+                    TrustState::Unknown,
+                    format!(
+                        "horch cannot read where {} keeps its trust",
+                        harness.as_str()
+                    ),
+                );
             }
-            HarnessKind::Antigravity => {
-                let file = home.join(".gemini/antigravity-cli/settings.json");
-                match read_store(&file) {
-                    Ok(text) => antigravity_trust(text.as_deref(), roots),
-                    Err(()) => unreadable(harness, ANTIGRAVITY_TRUST_FILE),
-                }
-            }
-            other => HarnessTrust::new(
-                other,
-                TrustState::Unknown,
-                format!("horch cannot read where {} keeps its trust", other.as_str()),
-            ),
+            let (file, label) = trust_store_of(harness, home, claude_config_dir, codex_home_dir);
+            read_store(&file).map_or_else(
+                |()| unreadable(harness, label),
+                |text| verdict_of(harness, text.as_deref(), roots),
+            )
         })
         .collect()
+}
+
+/// The store file of `harness` and the name the reasons use for it.
+fn trust_store_of(
+    harness: HarnessKind,
+    home: &Path,
+    claude_config_dir: Option<&Path>,
+    codex_home_dir: Option<&Path>,
+) -> (PathBuf, &'static str) {
+    match harness {
+        HarnessKind::Claude => (
+            claude_config_file(home, claude_config_dir),
+            CLAUDE_TRUST_FILE,
+        ),
+        HarnessKind::Codex => (
+            super::codex::codex_home(home, codex_home_dir).join("config.toml"),
+            CODEX_TRUST_FILE,
+        ),
+        _ => (
+            home.join(".gemini/antigravity-cli/settings.json"),
+            ANTIGRAVITY_TRUST_FILE,
+        ),
+    }
+}
+
+/// What the store text says about `roots`, for a harness that asks.
+fn verdict_of(harness: HarnessKind, text: Option<&str>, roots: &[PathBuf]) -> HarnessTrust {
+    match harness {
+        HarnessKind::Claude => claude_trust(text, roots),
+        HarnessKind::Codex => codex_trust(text, roots),
+        _ => antigravity_trust(text, roots),
+    }
 }
 
 /// The text of a trust store, `None` when it does not exist, `Err` when it
@@ -484,148 +533,224 @@ fn ensure_trusted_with(
     codex_home_dir: Option<&Path>,
     before_rename: &mut dyn FnMut(),
 ) -> anyhow::Result<TrustWrite> {
-    if !asks_for_trust(harness) {
-        return Ok(TrustWrite::Skipped(format!(
-            "{} has no trust step",
-            harness.as_str()
-        )));
-    }
-    let roots = match trust_roots(workdir, home) {
-        Ok(roots) => roots,
+    let (roots, keys) = match trust_plan(harness, workdir, home) {
+        Ok(plan) => plan,
         Err(why) => return Ok(TrustWrite::Skipped(why)),
     };
-    let keys = match trust_keys(&roots) {
-        Ok(keys) => keys,
-        Err(why) => return Ok(TrustWrite::Skipped(why)),
+    let (file, label) = trust_store_of(harness, home, claude_config_dir, codex_home_dir);
+    let store = TrustStore {
+        harness,
+        file,
+        label,
+        roots,
+        keys,
     };
-    let (file, label) = match harness {
-        HarnessKind::Claude => (
-            claude_config_file(home, claude_config_dir),
-            CLAUDE_TRUST_FILE,
-        ),
-        HarnessKind::Codex => (
-            super::codex::codex_home(home, codex_home_dir).join("config.toml"),
-            CODEX_TRUST_FILE,
-        ),
-        _ => (
-            home.join(".gemini/antigravity-cli/settings.json"),
-            ANTIGRAVITY_TRUST_FILE,
-        ),
-    };
-    let unreadable = || anyhow::anyhow!("{label} ({}) cannot be read", file.display());
-    let verdict = |text: Option<&str>| match harness {
-        HarnessKind::Claude => claude_trust(text, &roots),
-        HarnessKind::Codex => codex_trust(text, &roots),
-        _ => antigravity_trust(text, &roots),
-    };
-    let edit = |text: Option<&str>| -> Result<String, String> {
-        match (harness, text) {
-            (HarnessKind::Codex, text) => codex_add_trust(text.unwrap_or(""), &keys, label),
-            (_, None) => Err(format!(
-                "{label} does not exist: {} has never run with this store",
-                harness.as_str()
-            )),
-            (HarnessKind::Claude, Some(text)) => claude_add_trust(text, &keys, label),
-            (_, Some(text)) => antigravity_add_trust(text, &keys, label),
-        }
-    };
-    for _ in 0..WRITE_TRIES {
-        match std::fs::symlink_metadata(&file) {
-            Ok(meta) if meta.file_type().is_symlink() => {
-                return Ok(TrustWrite::Skipped(format!(
-                    "{label} ({}) is a symlink; horch does not write through it",
-                    file.display()
-                )))
-            }
-            _ => {}
-        }
-        if !file.parent().is_some_and(Path::is_dir) {
-            return Ok(TrustWrite::Skipped(format!(
-                "the directory of {label} ({}) does not exist",
-                file.display()
-            )));
-        }
-        let Some(lock) = StoreLock::take(&file)? else {
-            return Ok(TrustWrite::Skipped(format!(
-                "{}.lock stays held by another process",
-                file.display()
-            )));
-        };
-        remove_dead_temps(&file);
-        let before = read_store(&file).map_err(|()| unreadable())?;
-        let found = verdict(before.as_deref());
-        match found.state {
-            TrustState::Trusted => return Ok(TrustWrite::AlreadyTrusted),
-            TrustState::Unknown => return Ok(TrustWrite::Skipped(found.reason)),
-            TrustState::Untrusted => {}
-        }
-        let after = match edit(before.as_deref()) {
-            Ok(after) => after,
-            Err(why) => return Ok(TrustWrite::Skipped(why)),
-        };
-        let temp = TempStore::write(&file, &after)?;
-        before_rename();
-        let now = match read_store(&file) {
-            Ok(now) => now,
-            Err(()) => return Err(temp.discard_with(unreadable())),
-        };
-        if now != before {
-            temp.discard()?;
-            continue;
-        }
-        temp.rename_over(&file)?;
-        drop(lock);
-        let written = read_store(&file).map_err(|()| unreadable())?;
-        if verdict(written.as_deref()).state != TrustState::Trusted {
+    (0..WRITE_TRIES)
+        .find_map(|_| store.attempt(workdir, &mut *before_rename).transpose())
+        .unwrap_or_else(|| {
             anyhow::bail!(
-                "{label} ({}) does not trust {} after horch wrote it",
-                file.display(),
-                workdir.display()
-            );
-        }
-        return Ok(TrustWrite::Written(file));
+                "{} ({}) changed during each of {WRITE_TRIES} tries; horch wrote nothing",
+                store.label,
+                store.file.display()
+            )
+        })
+}
+
+/// The roots and store keys of a trust write, or why horch skips it: the
+/// harness has no trust step, or `workdir` may not be trusted.
+fn trust_plan(
+    harness: HarnessKind,
+    workdir: &Path,
+    home: &Path,
+) -> Result<(Vec<PathBuf>, Vec<String>), String> {
+    if !asks_for_trust(harness) {
+        return Err(format!("{} has no trust step", harness.as_str()));
     }
-    anyhow::bail!(
-        "{label} ({}) changed during each of {WRITE_TRIES} tries; horch wrote nothing",
-        file.display()
-    )
+    let roots = trust_roots(workdir, home)?;
+    let keys = trust_keys(&roots)?;
+    Ok((roots, keys))
+}
+
+/// One harness's store, and the roots and keys horch makes it trust.
+struct TrustStore {
+    harness: HarnessKind,
+    file: PathBuf,
+    label: &'static str,
+    roots: Vec<PathBuf>,
+    keys: Vec<String>,
+}
+
+/// What a store's text asks of horch.
+enum Decision {
+    /// Nothing to write: the outcome is final.
+    Done(TrustWrite),
+    /// Write this new store text.
+    Write(String),
+}
+
+impl TrustStore {
+    fn unreadable(&self) -> anyhow::Error {
+        anyhow::anyhow!("{} ({}) cannot be read", self.label, self.file.display())
+    }
+
+    fn verdict(&self, text: Option<&str>) -> HarnessTrust {
+        verdict_of(self.harness, text, &self.roots)
+    }
+
+    /// The store text with the trust entries added, or why horch does not
+    /// edit it.
+    fn edit(&self, text: Option<&str>) -> Result<String, String> {
+        match (self.harness, text) {
+            (HarnessKind::Codex, text) => {
+                codex_add_trust(text.unwrap_or(""), &self.keys, self.label)
+            }
+            (_, None) => Err(format!(
+                "{} does not exist: {} has never run with this store",
+                self.label,
+                self.harness.as_str()
+            )),
+            (HarnessKind::Claude, Some(text)) => claude_add_trust(text, &self.keys, self.label),
+            (_, Some(text)) => antigravity_add_trust(text, &self.keys, self.label),
+        }
+    }
+
+    /// Why horch does not touch the store path: a symlink, or no directory.
+    fn path_problem(&self) -> Option<String> {
+        let linked =
+            std::fs::symlink_metadata(&self.file).is_ok_and(|m| m.file_type().is_symlink());
+        if linked {
+            Some(format!(
+                "{} ({}) is a symlink; horch does not write through it",
+                self.label,
+                self.file.display()
+            ))
+        } else if !self.file.parent().is_some_and(Path::is_dir) {
+            Some(format!(
+                "the directory of {} ({}) does not exist",
+                self.label,
+                self.file.display()
+            ))
+        } else {
+            None
+        }
+    }
+
+    /// One try: the outcome, or `None` when the store changed under the
+    /// write and the caller starts again.
+    fn attempt(
+        &self,
+        workdir: &Path,
+        before_rename: &mut dyn FnMut(),
+    ) -> anyhow::Result<Option<TrustWrite>> {
+        if let Some(why) = self.path_problem() {
+            return Ok(Some(TrustWrite::Skipped(why)));
+        }
+        let Some(lock) = StoreLock::take(&self.file)? else {
+            return Ok(Some(TrustWrite::Skipped(format!(
+                "{}.lock stays held by another process",
+                self.file.display()
+            ))));
+        };
+        remove_dead_temps(&self.file);
+        let before = read_store(&self.file).map_err(|()| self.unreadable())?;
+        match self.decide(before.as_deref()) {
+            Decision::Done(done) => Ok(Some(done)),
+            Decision::Write(after) => self.commit(lock, &before, &after, workdir, before_rename),
+        }
+    }
+
+    fn decide(&self, before: Option<&str>) -> Decision {
+        let found = self.verdict(before);
+        match found.state {
+            TrustState::Trusted => Decision::Done(TrustWrite::AlreadyTrusted),
+            TrustState::Unknown => Decision::Done(TrustWrite::Skipped(found.reason)),
+            TrustState::Untrusted => match self.edit(before) {
+                Ok(after) => Decision::Write(after),
+                Err(why) => Decision::Done(TrustWrite::Skipped(why)),
+            },
+        }
+    }
+
+    /// Write `after` over the store when it is still `before`; `None` when
+    /// it changed. The lock is held until the rename.
+    fn commit(
+        &self,
+        lock: StoreLock,
+        before: &Option<String>,
+        after: &str,
+        workdir: &Path,
+        before_rename: &mut dyn FnMut(),
+    ) -> anyhow::Result<Option<TrustWrite>> {
+        let temp = TempStore::write(&self.file, after)?;
+        before_rename();
+        match read_store(&self.file) {
+            Err(()) => Err(temp.discard_with(self.unreadable())),
+            Ok(now) if now != *before => temp.discard().map(|()| None),
+            Ok(_) => {
+                temp.rename_over(&self.file)?;
+                drop(lock);
+                self.verify(workdir)?;
+                Ok(Some(TrustWrite::Written(self.file.clone())))
+            }
+        }
+    }
+
+    /// The store must trust `workdir` after the write.
+    fn verify(&self, workdir: &Path) -> anyhow::Result<()> {
+        let written = read_store(&self.file).map_err(|()| self.unreadable())?;
+        anyhow::ensure!(
+            self.verdict(written.as_deref()).state == TrustState::Trusted,
+            "{} ({}) does not trust {} after horch wrote it",
+            self.label,
+            self.file.display(),
+            workdir.display()
+        );
+        Ok(())
+    }
 }
 
 /// `workdir` and its canonical form, when horch may trust them: an
 /// absolute path of an existing directory that is not `/`, the home
 /// directory or an ancestor of it. Else why not.
 fn trust_roots(workdir: &Path, home: &Path) -> Result<Vec<PathBuf>, String> {
-    let shown = workdir.display();
-    if !workdir.is_absolute() {
-        return Err(format!("{shown} is not an absolute path"));
-    }
-    if !workdir.is_dir() {
-        return Err(format!("{shown} is not an existing directory"));
-    }
-    if !home.is_absolute() {
-        return Err(format!(
-            "the home directory is not known, so horch cannot protect it; {shown} is not trusted"
-        ));
-    }
-    let mut roots = vec![workdir.to_path_buf()];
-    if let Ok(canonical) = workdir.canonicalize() {
-        if canonical != workdir {
-            roots.push(canonical);
-        }
-    }
-    let mut homes = vec![home.to_path_buf()];
-    if let Ok(canonical) = home.canonicalize() {
-        homes.push(canonical);
-    }
+    check_workdir(workdir, home)?;
+    let roots = with_canonical(workdir);
+    let homes = with_canonical(home);
     let refused = roots
         .iter()
         .any(|r| r.parent().is_none() || homes.iter().any(|h| h.starts_with(r)));
     if refused {
-        return Err(format!(
-            "{shown} is / or the home directory or an ancestor of it; horch never trusts those"
-        ));
+        Err(format!(
+            "{} is / or the home directory or an ancestor of it; horch never trusts those",
+            workdir.display()
+        ))
+    } else {
+        Ok(roots)
     }
-    Ok(roots)
+}
+
+/// The first reason `workdir` cannot be a trust root before any path
+/// comparison: not absolute, not a directory, or no known home.
+fn check_workdir(workdir: &Path, home: &Path) -> Result<(), String> {
+    let shown = workdir.display();
+    if !workdir.is_absolute() {
+        Err(format!("{shown} is not an absolute path"))
+    } else if !workdir.is_dir() {
+        Err(format!("{shown} is not an existing directory"))
+    } else if !home.is_absolute() {
+        Err(format!(
+            "the home directory is not known, so horch cannot protect it; {shown} is not trusted"
+        ))
+    } else {
+        Ok(())
+    }
+}
+
+/// `path`, then its canonical form when that differs.
+fn with_canonical(path: &Path) -> Vec<PathBuf> {
+    let mut all = vec![path.to_path_buf()];
+    all.extend(path.canonicalize().ok().filter(|c| c != path));
+    all
 }
 
 /// The store keys for `roots`. Else why not: a path that is not valid UTF-8
@@ -659,28 +784,32 @@ impl StoreLock {
         let deadline = Instant::now() + LOCK_WAIT;
         loop {
             match std::fs::create_dir(&dir) {
-                Ok(()) => return Ok(Some(StoreLock(dir))),
+                Ok(()) => break Ok(Some(StoreLock(dir))),
                 Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
-                    let stale = std::fs::metadata(&dir)
-                        .and_then(|m| m.modified())
-                        .ok()
-                        .and_then(|t| SystemTime::now().duration_since(t).ok())
-                        .is_some_and(|age| age > LOCK_STALE);
-                    if stale && std::fs::remove_dir(&dir).is_ok() {
-                        continue;
+                    let reclaimed = lock_is_stale(&dir) && std::fs::remove_dir(&dir).is_ok();
+                    if !reclaimed {
+                        if Instant::now() >= deadline {
+                            break Ok(None);
+                        }
+                        std::thread::sleep(Duration::from_millis(50));
                     }
-                    if Instant::now() >= deadline {
-                        return Ok(None);
-                    }
-                    std::thread::sleep(Duration::from_millis(50));
                 }
                 Err(e) => {
-                    return Err(anyhow::Error::new(e)
+                    break Err(anyhow::Error::new(e)
                         .context(format!("creating the lock {}", dir.display())))
                 }
             }
         }
     }
+}
+
+/// Whether the lock directory is older than [`LOCK_STALE`].
+fn lock_is_stale(dir: &Path) -> bool {
+    std::fs::metadata(dir)
+        .and_then(|m| m.modified())
+        .ok()
+        .and_then(|t| SystemTime::now().duration_since(t).ok())
+        .is_some_and(|age| age > LOCK_STALE)
 }
 
 impl Drop for StoreLock {
@@ -745,16 +874,20 @@ impl TempStore {
         let Some(path) = self.0.clone() else {
             return Ok(());
         };
-        if let Err(e) = std::fs::rename(&path, store) {
-            let e = anyhow::Error::new(e).context(format!(
-                "renaming {} over {}",
-                path.display(),
-                store.display()
-            ));
-            return Err(self.discard_with(e));
+        match std::fs::rename(&path, store) {
+            Ok(()) => {
+                self.0 = None;
+                Ok(())
+            }
+            Err(e) => {
+                let e = anyhow::Error::new(e).context(format!(
+                    "renaming {} over {}",
+                    path.display(),
+                    store.display()
+                ));
+                Err(self.discard_with(e))
+            }
         }
-        self.0 = None;
-        Ok(())
     }
 
     /// Remove the file. Err names it when it stays.
@@ -796,28 +929,30 @@ fn remove_dead_temps(store: &Path) {
         return;
     };
     for entry in entries.flatten() {
-        let file_name = entry.file_name();
-        let Some(pid) = file_name
-            .to_str()
-            .and_then(|n| n.strip_prefix(&prefix))
-            .and_then(temp_pid)
-        else {
-            continue;
-        };
-        if crate::fsx::pid_alive(pid) {
-            continue;
-        }
-        let path = entry.path();
-        let stale = std::fs::symlink_metadata(&path)
-            .ok()
-            .filter(|m| m.file_type().is_file())
-            .and_then(|m| m.modified().ok())
-            .and_then(|t| SystemTime::now().duration_since(t).ok())
-            .is_some_and(|age| age > TEMP_STALE);
-        if stale {
-            let _ = std::fs::remove_file(&path);
+        let dead = dead_temp_pid(&entry.file_name(), &prefix)
+            .is_some_and(|pid| !crate::fsx::pid_alive(pid));
+        if dead && is_stale_file(&entry.path()) {
+            let _ = std::fs::remove_file(entry.path());
         }
     }
+}
+
+/// The pid in a temporary store name, `<prefix><pid>.<12 hex>`.
+fn dead_temp_pid(file_name: &std::ffi::OsStr, prefix: &str) -> Option<u32> {
+    file_name
+        .to_str()
+        .and_then(|n| n.strip_prefix(prefix))
+        .and_then(temp_pid)
+}
+
+/// A regular file older than [`TEMP_STALE`].
+fn is_stale_file(path: &Path) -> bool {
+    std::fs::symlink_metadata(path)
+        .ok()
+        .filter(|m| m.file_type().is_file())
+        .and_then(|m| m.modified().ok())
+        .and_then(|t| SystemTime::now().duration_since(t).ok())
+        .is_some_and(|age| age > TEMP_STALE)
 }
 
 /// The pid of a temporary name's tail, `<pid>.<12 lowercase hex>`; `None`
@@ -847,86 +982,121 @@ impl Drop for TempStore {
 /// (a re-parsed float could). Err: why horch cannot edit it safely.
 fn claude_add_trust(text: &str, keys: &[String], label: &str) -> Result<String, String> {
     let unsafe_edit = || format!("{label} has a shape horch does not edit");
-    let mut expected: serde_json::Value =
+    let doc: serde_json::Value =
         serde_json::from_str(text).map_err(|_| format!("{label} is not valid JSON"))?;
-    let mut out = text.to_string();
+    let out = keys
+        .iter()
+        .try_fold(text.to_string(), |out, key| add_claude_key(&out, key));
+    let expected = trusted_projects(doc, keys);
+    out.zip(expected)
+        .and_then(|(out, expected)| json_check(&out, &expected))
+        .ok_or_else(unsafe_edit)
+}
+
+/// `out` with `projects["<key>"].hasTrustDialogAccepted` set to `true`.
+/// None: the file has a shape horch does not edit.
+fn add_claude_key(out: &str, key: &str) -> Option<String> {
+    let top = json_object_at(out, 0)?;
+    let accepted = r#""hasTrustDialogAccepted":true"#;
+    let entry = format!("{}:{{{accepted}}}", json_quote(key));
+    let Some(projects) = json_member(&top, "projects") else {
+        return Some(json_insert(out, &top, &format!("\"projects\":{{{entry}}}")));
+    };
+    let projects = json_object_at(out, projects.0)?;
+    let Some(project) = json_member(&projects, key) else {
+        return Some(json_insert(out, &projects, &entry));
+    };
+    let project = json_object_at(out, project.0)?;
+    Some(match json_member(&project, "hasTrustDialogAccepted") {
+        None => json_insert(out, &project, accepted),
+        Some((start, end)) => format!("{}true{}", &out[..start], &out[end..]),
+    })
+}
+
+/// What the edited file must parse to: `doc` with each key trusted.
+fn trusted_projects(mut doc: serde_json::Value, keys: &[String]) -> Option<serde_json::Value> {
     for key in keys {
-        let top = json_object_at(&out, 0).ok_or_else(unsafe_edit)?;
-        let accepted = r#""hasTrustDialogAccepted":true"#;
-        let entry = format!("{}:{{{accepted}}}", json_quote(key));
-        let Some(projects) = json_member(&top, "projects") else {
-            out = json_insert(&out, &top, &format!("\"projects\":{{{entry}}}"));
-            continue;
-        };
-        let projects = json_object_at(&out, projects.0).ok_or_else(unsafe_edit)?;
-        let Some(project) = json_member(&projects, key) else {
-            out = json_insert(&out, &projects, &entry);
-            continue;
-        };
-        let project = json_object_at(&out, project.0).ok_or_else(unsafe_edit)?;
-        match json_member(&project, "hasTrustDialogAccepted") {
-            None => out = json_insert(&out, &project, accepted),
-            Some((start, end)) => out.replace_range(start..end, "true"),
-        }
-    }
-    for key in keys {
-        let projects = expected
-            .as_object_mut()
-            .ok_or_else(unsafe_edit)?
+        let projects = doc
+            .as_object_mut()?
             .entry("projects")
             .or_insert_with(|| serde_json::json!({}));
         let project = projects
-            .as_object_mut()
-            .ok_or_else(unsafe_edit)?
+            .as_object_mut()?
             .entry(key.clone())
             .or_insert_with(|| serde_json::json!({}));
         project
-            .as_object_mut()
-            .ok_or_else(unsafe_edit)?
+            .as_object_mut()?
             .insert("hasTrustDialogAccepted".into(), true.into());
     }
-    json_check(&out, &expected).ok_or_else(unsafe_edit)
+    Some(doc)
 }
 
 /// `text` with each key that is not in `trustedWorkspaces` added to the
 /// front of that list. Only those bytes change, as in [`claude_add_trust`].
 fn antigravity_add_trust(text: &str, keys: &[String], label: &str) -> Result<String, String> {
     let unsafe_edit = || format!("{label} has a shape horch does not edit");
-    let mut expected: serde_json::Value =
+    let doc: serde_json::Value =
         serde_json::from_str(text).map_err(|_| format!("{label} is not valid JSON"))?;
-    let list = expected
-        .as_object_mut()
-        .ok_or_else(unsafe_edit)?
-        .entry("trustedWorkspaces")
-        .or_insert_with(|| serde_json::json!([]))
-        .as_array_mut()
-        .ok_or_else(unsafe_edit)?;
-    let missing: Vec<&String> = keys
-        .iter()
-        .filter(|k| !list.iter().any(|d| d.as_str() == Some(k.as_str())))
-        .collect();
-    for (i, key) in missing.iter().enumerate() {
-        list.insert(i, serde_json::Value::String((*key).clone()));
-    }
+    let (expected, missing) = trusted_workspaces(doc, keys).ok_or_else(unsafe_edit)?;
     let items = missing
         .iter()
-        .map(|k| json_quote(k))
+        .map(String::as_str)
+        .map(json_quote)
         .collect::<Vec<_>>()
         .join(",");
-    let top = json_object_at(text, 0).ok_or_else(unsafe_edit)?;
-    let out = match json_member(&top, "trustedWorkspaces") {
-        None => json_insert(text, &top, &format!("\"trustedWorkspaces\":[{items}]")),
-        Some((start, _)) => {
-            let t = text.as_bytes();
-            if t.get(start) != Some(&b'[') {
-                return Err(unsafe_edit());
-            }
-            let empty = t.get(json_ws(t, start + 1)) == Some(&b']');
-            let sep = if empty { "" } else { "," };
-            format!("{}{items}{sep}{}", &text[..=start], &text[start + 1..])
-        }
-    };
-    json_check(&out, &expected).ok_or_else(unsafe_edit)
+    insert_workspaces(text, &items)
+        .and_then(|out| json_check(&out, &expected))
+        .ok_or_else(unsafe_edit)
+}
+
+/// `text` with `items` (JSON strings, comma-separated) put in front of its
+/// `trustedWorkspaces` list. None: the file has a shape horch does not edit.
+fn insert_workspaces(text: &str, items: &str) -> Option<String> {
+    let top = json_object_at(text, 0)?;
+    match json_member(&top, "trustedWorkspaces") {
+        None => Some(json_insert(
+            text,
+            &top,
+            &format!("\"trustedWorkspaces\":[{items}]"),
+        )),
+        Some((start, _)) => append_to_array(text, start, items),
+    }
+}
+
+/// What the edited file must parse to: `doc` with each key that is not in
+/// `trustedWorkspaces` put in front of that list, and those keys.
+fn trusted_workspaces(
+    mut doc: serde_json::Value,
+    keys: &[String],
+) -> Option<(serde_json::Value, Vec<String>)> {
+    let list = doc
+        .as_object_mut()?
+        .entry("trustedWorkspaces")
+        .or_insert_with(|| serde_json::json!([]))
+        .as_array_mut()?;
+    let missing: Vec<String> = keys
+        .iter()
+        .filter(|k| !list.iter().any(|d| d.as_str() == Some(k.as_str())))
+        .cloned()
+        .collect();
+    for (i, key) in missing.iter().enumerate() {
+        list.insert(i, serde_json::Value::String(key.clone()));
+    }
+    Some((doc, missing))
+}
+
+/// `text` with `items` first in the array that starts at `start`. None when
+/// no array starts there.
+fn append_to_array(text: &str, start: usize, items: &str) -> Option<String> {
+    let t = text.as_bytes();
+    (t.get(start) == Some(&b'[')).then_some(())?;
+    let empty = t.get(json_ws(t, start + 1)) == Some(&b']');
+    let sep = if empty { "" } else { "," };
+    Some(format!(
+        "{}{items}{sep}{}",
+        &text[..=start],
+        &text[start + 1..]
+    ))
 }
 
 /// `out` when it parses to `expected`; a guard on the byte edits.
@@ -946,34 +1116,41 @@ fn json_quote(text: &str) -> String {
 fn json_object_at(text: &str, at: usize) -> Option<JsonObject> {
     let t = text.as_bytes();
     let open = json_ws(t, at);
-    if t.get(open) != Some(&b'{') {
-        return None;
-    }
+    (t.get(open) == Some(&b'{')).then_some(())?;
+    let members = json_members(text, json_ws(t, open + 1))?;
+    Some(JsonObject { open, members })
+}
+
+/// The members of an object, from the first byte after its `{`.
+fn json_members(text: &str, mut i: usize) -> Option<Vec<(String, usize, usize)>> {
+    let t = text.as_bytes();
     let mut members = Vec::new();
-    let mut i = json_ws(t, open + 1);
     if t.get(i) == Some(&b'}') {
-        return Some(JsonObject { open, members });
+        return Some(members);
     }
     loop {
-        if t.get(i) != Some(&b'"') {
-            return None;
-        }
-        let key_end = json_string_end(t, i)?;
-        let key: String = serde_json::from_str(&text[i..key_end]).ok()?;
-        i = json_ws(t, key_end);
-        if t.get(i) != Some(&b':') {
-            return None;
-        }
-        let start = json_ws(t, i + 1);
-        let end = json_value_end(t, start)?;
-        members.push((key, start, end));
-        i = json_ws(t, end);
-        match t.get(i)? {
-            b',' => i = json_ws(t, i + 1),
-            b'}' => return Some(JsonObject { open, members }),
-            _ => return None,
+        let member = json_member_at(text, i)?;
+        i = json_ws(t, member.2);
+        members.push(member);
+        match t.get(i) {
+            Some(b',') => i = json_ws(t, i + 1),
+            Some(b'}') => break Some(members),
+            _ => break None,
         }
     }
+}
+
+/// One `"key": value` member at `i`: the key and the value span.
+fn json_member_at(text: &str, i: usize) -> Option<(String, usize, usize)> {
+    let t = text.as_bytes();
+    (t.get(i) == Some(&b'"')).then_some(())?;
+    let key_end = json_string_end(t, i)?;
+    let key: String = serde_json::from_str(&text[i..key_end]).ok()?;
+    let colon = json_ws(t, key_end);
+    (t.get(colon) == Some(&b':')).then_some(())?;
+    let start = json_ws(t, colon + 1);
+    let end = json_value_end(t, start)?;
+    Some((key, start, end))
 }
 
 /// An object in a JSON text: the offset of its `{` and its members.
@@ -1023,38 +1200,41 @@ fn json_string_end(t: &[u8], i: usize) -> Option<usize> {
 fn json_value_end(t: &[u8], i: usize) -> Option<usize> {
     match t.get(i)? {
         b'"' => json_string_end(t, i),
-        b'{' | b'[' => {
-            let mut depth = 0usize;
-            let mut j = i;
-            loop {
-                match t.get(j)? {
-                    b'"' => {
-                        j = json_string_end(t, j)?;
-                        continue;
-                    }
-                    b'{' | b'[' => depth += 1,
-                    b'}' | b']' => {
-                        depth -= 1;
-                        if depth == 0 {
-                            return Some(j + 1);
-                        }
-                    }
-                    _ => {}
+        b'{' | b'[' => json_container_end(t, i),
+        _ => json_scalar_end(t, i),
+    }
+}
+
+/// The end of the object or array that starts at `i`.
+fn json_container_end(t: &[u8], i: usize) -> Option<usize> {
+    let mut depth = 0usize;
+    let mut j = i;
+    loop {
+        match t.get(j)? {
+            b'"' => j = json_string_end(t, j)?,
+            b'{' | b'[' => {
+                depth += 1;
+                j += 1;
+            }
+            b'}' | b']' => {
+                depth -= 1;
+                j += 1;
+                if depth == 0 {
+                    break Some(j);
                 }
-                j += 1;
             }
-        }
-        _ => {
-            let mut j = i;
-            while t
-                .get(j)
-                .is_some_and(|b| !matches!(b, b',' | b'}' | b']' | b' ' | b'\t' | b'\n' | b'\r'))
-            {
-                j += 1;
-            }
-            (j > i).then_some(j)
+            _ => j += 1,
         }
     }
+}
+
+/// The end of the number or word that starts at `i`.
+fn json_scalar_end(t: &[u8], i: usize) -> Option<usize> {
+    let len = t[i..]
+        .iter()
+        .take_while(|b| !matches!(b, b',' | b'}' | b']' | b' ' | b'\t' | b'\n' | b'\r'))
+        .count();
+    (len > 0).then_some(i + len)
 }
 
 /// `text` with a `[projects."<key>"]` table, `trust_level = "trusted"`, for
@@ -1067,18 +1247,36 @@ fn json_value_end(t: &[u8], i: usize) -> Option<usize> {
 /// `[projects."<path>"]` header (see [`toml_projects_line`]). The result
 /// has exactly 1 strict header for each key, or it is Err.
 fn codex_add_trust(text: &str, keys: &[String], label: &str) -> Result<String, String> {
-    if text.contains("\"\"\"") || text.contains("'''") {
-        return Err(format!(
+    codex_editable(text, label)?;
+    refuse_existing_levels(&codex_trust_levels(text, keys), label)?;
+    let out = codex_trust_table(text, keys, label)?;
+    check_single_tables(&out, keys, label)?;
+    Ok(out)
+}
+
+/// Err when horch does not fully understand `text`.
+fn codex_editable(text: &str, label: &str) -> Result<(), String> {
+    let multi_line = text.contains("\"\"\"") || text.contains("'''");
+    let odd_projects = text
+        .lines()
+        .map(str::trim)
+        .any(|line| toml_projects_line(line) && toml_project_header(line).is_none());
+    if multi_line {
+        Err(format!(
             "{label} has a multi-line string, which horch does not edit; trust the path in codex"
-        ));
+        ))
+    } else if odd_projects {
+        Err(format!(
+            "{label} keeps projects in a form horch does not edit; trust the path in codex"
+        ))
+    } else {
+        Ok(())
     }
-    for line in text.lines().map(str::trim) {
-        if toml_projects_line(line) && toml_project_header(line).is_none() {
-            return Err(format!(
-                "{label} keeps projects in a form horch does not edit; trust the path in codex"
-            ));
-        }
-    }
+}
+
+/// The `trust_level` of each `[projects."<key>"]` table that `text` has
+/// for a key; `None` for a table without one.
+fn codex_trust_levels(text: &str, keys: &[String]) -> BTreeMap<String, Option<String>> {
     let mut table: Option<String> = None;
     let mut levels: BTreeMap<String, Option<String>> = BTreeMap::new();
     for line in text.lines().map(str::trim) {
@@ -1093,19 +1291,35 @@ fn codex_add_trust(text: &str, keys: &[String], label: &str) -> Result<String, S
             }
         }
     }
-    if let Some((path, _)) = levels
+    levels
+}
+
+/// Err when a table for a key exists already: an explicit
+/// `trust_level = "untrusted"` is the operator's choice, and any other table
+/// horch does not edit.
+fn refuse_existing_levels(
+    levels: &BTreeMap<String, Option<String>>,
+    label: &str,
+) -> Result<(), String> {
+    let untrusted = levels
         .iter()
-        .find(|(_, level)| level.as_deref() == Some("untrusted"))
-    {
-        return Err(format!(
+        .find(|(_, level)| level.as_deref() == Some("untrusted"));
+    if let Some((path, _)) = untrusted {
+        Err(format!(
             "{label} sets trust_level = \"untrusted\" for {path}; horch keeps the operator's choice"
-        ));
-    }
-    if let Some(path) = levels.keys().next() {
-        return Err(format!(
+        ))
+    } else if let Some(path) = levels.keys().next() {
+        Err(format!(
             "{label} has a [projects.\"{path}\"] table without trust_level = \"trusted\"; horch does not edit it"
-        ));
+        ))
+    } else {
+        Ok(())
     }
+}
+
+/// `text` with a trusted table appended for each key. The text before it
+/// stays byte for byte.
+fn codex_trust_table(text: &str, keys: &[String], label: &str) -> Result<String, String> {
     let mut out = text.to_string();
     if !out.is_empty() {
         if !out.ends_with('\n') {
@@ -1114,30 +1328,39 @@ fn codex_add_trust(text: &str, keys: &[String], label: &str) -> Result<String, S
         out.push('\n');
     }
     for key in keys {
-        if key.chars().any(char::is_control) {
-            return Err(format!("{label}: the path {key:?} has a control character"));
-        }
-        let quoted = key.replace('\\', "\\\\").replace('"', "\\\"");
-        let header = format!("[projects.\"{quoted}\"]");
-        if toml_project_header(&header).as_deref() != Some(key.as_str()) {
-            return Err(format!("{label}: horch cannot quote the path {key:?}"));
-        }
-        out.push_str(&header);
+        out.push_str(&codex_trust_header(key, label)?);
         out.push_str("\ntrust_level = \"trusted\"\n");
     }
-    for key in keys {
+    Ok(out)
+}
+
+/// The strict `[projects."<key>"]` header for `key`.
+fn codex_trust_header(key: &str, label: &str) -> Result<String, String> {
+    if key.chars().any(char::is_control) {
+        return Err(format!("{label}: the path {key:?} has a control character"));
+    }
+    let quoted = key.replace('\\', "\\\\").replace('"', "\\\"");
+    let header = format!("[projects.\"{quoted}\"]");
+    if toml_project_header(&header).as_deref() == Some(key) {
+        Ok(header)
+    } else {
+        Err(format!("{label}: horch cannot quote the path {key:?}"))
+    }
+}
+
+/// Err unless `out` has exactly 1 strict header for each key.
+fn check_single_tables(out: &str, keys: &[String], label: &str) -> Result<(), String> {
+    let wrong = keys.iter().find_map(|key| {
         let headers = out
             .lines()
             .map(str::trim)
             .filter(|line| toml_project_header(line).as_deref() == Some(key.as_str()))
             .count();
-        if headers != 1 {
-            return Err(format!(
-                "{label} would have {headers} tables for {key:?}; horch wrote nothing"
-            ));
-        }
-    }
-    Ok(out)
+        (headers != 1).then(|| {
+            format!("{label} would have {headers} tables for {key:?}; horch wrote nothing")
+        })
+    });
+    wrong.map_or(Ok(()), Err)
 }
 
 /// Whether a trimmed TOML line can define the `projects` table or a key in
