@@ -931,13 +931,19 @@ fn output_within(
 mod tests {
     use super::*;
 
+    /// A fake herdr that runs `body`, already run once. macOS scans a new
+    /// executable at its first exec for seconds (up to 35 s under load),
+    /// which would race every timed call. The warm run exits before `body`.
     #[cfg(unix)]
     fn script_in(body: &str) -> (tempfile::TempDir, PathBuf) {
         use std::os::unix::fs::PermissionsExt;
         let dir = tempfile::tempdir().unwrap();
         let script = dir.path().join("herdr");
-        std::fs::write(&script, format!("#!/bin/sh\n{body}\n")).unwrap();
+        let warm_guard = "if [ \"$1\" = warm ]; then\n  exit 0\nfi";
+        std::fs::write(&script, format!("#!/bin/sh\n{warm_guard}\n{body}\n")).unwrap();
         std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let warm = Command::new(&script).arg("warm").status().unwrap();
+        assert!(warm.success(), "warming {}", script.display());
         (dir, script)
     }
 
@@ -988,19 +994,13 @@ mod tests {
     }
 
     /// A herdr that prints past the cap on either stream fails the call with
-    /// InvalidData. The script runs once first: macOS scans a new executable
-    /// at its first exec for seconds, which would race the call's timeout.
+    /// InvalidData. [`script_in`] warms the script, so the scan at its first
+    /// exec does not race the call's timeout.
     #[cfg(unix)]
     #[test]
     fn a_herdr_that_prints_more_than_the_cap_fails_the_call() {
         for stream in ["", ">&2"] {
             let (_dir, script) = script_in(&format!("head -c 3000000 /dev/zero {stream}"));
-            let warm = Command::new(&script)
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .status()
-                .unwrap();
-            assert!(warm.success(), "{stream}");
             let error =
                 output_within(Command::new(&script), Duration::from_secs(5), None).unwrap_err();
             assert_eq!(error.kind(), std::io::ErrorKind::InvalidData, "{stream}");
@@ -1098,22 +1098,16 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn a_call_past_the_deadline_is_killed() {
-        use std::os::unix::fs::PermissionsExt;
-        let tmp = tempfile::tempdir().unwrap();
-        let script = |name: &str, body: &str| {
-            let path = tmp.path().join(name);
-            std::fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
-            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
-            path
-        };
-        let stuck = Herdr::with_bin(script("stuck", "sleep 10"))
-            .until(Some(Instant::now() + Duration::from_millis(300)));
+        let (_stuck_dir, stuck_script) = script_in("sleep 10");
+        let (_quick_dir, quick_script) = script_in("echo hi");
+        let stuck =
+            Herdr::with_bin(stuck_script).until(Some(Instant::now() + Duration::from_millis(300)));
         let started = Instant::now();
         let err = stuck.pane_get("w1:p1").unwrap_err().to_string();
         assert!(started.elapsed() < Duration::from_secs(3), "{err}");
         assert!(err.contains("push budget"), "{err}");
-        let quick = Herdr::with_bin(script("quick", "echo hi"))
-            .until(Some(Instant::now() + Duration::from_secs(10)));
+        let quick =
+            Herdr::with_bin(quick_script).until(Some(Instant::now() + Duration::from_secs(10)));
         assert_eq!(quick.output(&["x"]).unwrap(), "hi\n");
     }
 
