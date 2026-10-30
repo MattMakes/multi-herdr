@@ -174,6 +174,55 @@ impl CollectorLock {
     pub fn release(self) {}
 }
 
+/// The result of one try to take the lock.
+enum Attempt {
+    Taken(CollectorLock),
+    Held(LockInfo),
+    /// A stale lock was broken or the holder left; try again.
+    Retry,
+}
+
+/// Break the lock of a holder that is gone.
+fn break_stale(state_root: &Path, dir: &Path, old: Option<&LockInfo>) {
+    eprintln!(
+        "horch: removed stale telemetry lock {}",
+        old.map_or("(no holder recorded)".to_string(), |o| format!(
+            "of pid {}",
+            o.pid
+        ))
+    );
+    let _ = std::fs::remove_file(info_path(state_root));
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// The lock directory exists: find out who holds it.
+fn on_exists(state_root: &Path, dir: &Path) -> Attempt {
+    match holder(state_root) {
+        Holder::Live(other) => Attempt::Held(other),
+        Holder::Stale(old) => {
+            break_stale(state_root, dir, old.as_ref());
+            Attempt::Retry
+        }
+        Holder::Free => Attempt::Retry,
+    }
+}
+
+/// One try to take the lock.
+fn try_take(state_root: &Path, dir: &Path, info: &LockInfo) -> Result<Attempt> {
+    match std::fs::create_dir(dir) {
+        Ok(()) => {
+            let json = serde_json::to_vec_pretty(info)?;
+            super::store::replace_private(&info_path(state_root), &json)?;
+            Ok(Attempt::Taken(CollectorLock {
+                dir: dir.to_path_buf(),
+                info: info_path(state_root),
+            }))
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Ok(on_exists(state_root, dir)),
+        Err(e) => Err(e).with_context(|| format!("creating {}", dir.display())),
+    }
+}
+
 /// Take the lock, breaking a stale one. `Ok(Err(info))` when a live
 /// collector holds it.
 pub fn acquire(
@@ -183,37 +232,16 @@ pub fn acquire(
     let dir = lock_dir(state_root);
     std::fs::create_dir_all(super::dir(state_root))
         .with_context(|| format!("creating {}", super::dir(state_root).display()))?;
-    for _ in 0..2 {
-        match std::fs::create_dir(&dir) {
-            Ok(()) => {
-                let json = serde_json::to_vec_pretty(info)?;
-                super::store::replace_private(&info_path(state_root), &json)?;
-                return Ok(Ok(CollectorLock {
-                    dir,
-                    info: info_path(state_root),
-                }));
-            }
-            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => match holder(state_root) {
-                Holder::Live(other) => return Ok(Err(other)),
-                Holder::Stale(old) => {
-                    match &old {
-                        Some(o) => {
-                            eprintln!("horch: removed stale telemetry lock of pid {}", o.pid)
-                        }
-                        None => {
-                            eprintln!("horch: removed stale telemetry lock (no holder recorded)")
-                        }
-                    }
-                    let _ = std::fs::remove_file(info_path(state_root));
-                    let _ = std::fs::remove_dir_all(&dir);
-                }
-                Holder::Free => {}
-            },
-            Err(e) => return Err(e).with_context(|| format!("creating {}", dir.display())),
-        }
-    }
-    // Lost a race twice: someone else holds it now.
-    Ok(Err(read_info(state_root).unwrap_or_default()))
+    let last = (0..2)
+        .map(|_| try_take(state_root, &dir, info))
+        .find(|a| !matches!(a, Ok(Attempt::Retry)))
+        .unwrap_or(Ok(Attempt::Retry))?;
+    Ok(match last {
+        Attempt::Taken(lock) => Ok(lock),
+        Attempt::Held(other) => Err(other),
+        // Lost a race twice: someone else holds it now.
+        Attempt::Retry => Err(read_info(state_root).unwrap_or_default()),
+    })
 }
 
 /// This process's lock info: its host, herdr session, workspace and pane
