@@ -277,6 +277,28 @@ mod tests {
         assert_ne!(once.0, each);
     }
 
+    /// Every text that is not a cost source is refused with its own text in
+    /// the error: unknown names, an empty date, and a hash that is not 12
+    /// lower-case hex digits.
+    #[test]
+    fn mea_07_cost_source_refuses_malformed_text() {
+        for bad in [
+            "",
+            "free",
+            "price_table@",
+            "price_table",
+            "pricing_file@",
+            "pricing_file@ba7816bf8f0",
+            "pricing_file@ba7816bf8f011",
+            "pricing_file@BA7816BF8F01",
+            "pricing_file@ba7816bf8f0g",
+            "harness_reported ",
+        ] {
+            let err = bad.parse::<CostSource>().unwrap_err();
+            assert_eq!(err, ParseCostSourceError(bad.to_string()), "{bad:?}");
+        }
+    }
+
     #[test]
     fn mea_07_cost_source() {
         let cases = [
