@@ -51,7 +51,9 @@
   broad `horch ledger` rule applies to Windows workers too. Every worker
   briefing tells the worker to run each `horch ledger` command alone and
   carries the network-safety rule. `horch teammates --check` fails for a
-  Codex teammate without these lines. An overlay of `_base/fleet-worker.md`
+  Codex teammate without these lines, and for a Codex pane with the network
+  whose briefing says it has none. The Codex orchestrator briefing no longer
+  says its sandbox has no network. An overlay of `_base/fleet-worker.md`
   must merge the new ledger lines and the `== Network ==` section.
 
 ## v0.4.0 - 2026-10-29

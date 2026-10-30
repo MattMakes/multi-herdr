@@ -43,8 +43,8 @@ is yours. Do it here, write the result to a file, and hand the execution to
 codex-sol. Never delegate the thinking itself downward and hope.
 
 == Run every horch command on its own ==
-Your commands run in Codex's sandbox, which has no network. That also
-blocks herdr's socket, so a sandboxed `horch spawn`, `assign`, `tell`, `inbox`
+Your commands run in Codex's sandbox. The sandbox blocks herdr's
+socket, so a sandboxed `horch spawn`, `assign`, `tell`, `inbox`
 or `layout` fails with `PermissionDenied: Operation not permitted`. Your
 execpolicy rules lift the sandbox for a horch command, but only when that
 command is the whole command.
