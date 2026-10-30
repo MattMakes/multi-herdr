@@ -29,21 +29,19 @@ pub fn which(path: Option<&OsStr>, pathext: Option<&str>, name: &str) -> Option<
     which_in(path?, name, &path_extensions(pathext))
 }
 
-/// Find `name` in an explicit PATH-formatted list.
+/// Find `name` in an explicit PATH-formatted list. A directory is searched
+/// whole, the bare name first and then each extension, before the next one.
 pub(crate) fn which_in(paths: &OsStr, name: &str, extensions: &[String]) -> Option<PathBuf> {
-    for dir in std::env::split_paths(paths).filter(|d| !d.as_os_str().is_empty()) {
-        let direct = dir.join(name);
-        if is_executable(&direct) {
-            return Some(direct);
-        }
-        for ext in extensions {
-            let with_ext = dir.join(format!("{name}{ext}"));
-            if is_executable(&with_ext) {
-                return Some(with_ext);
-            }
-        }
-    }
-    None
+    std::env::split_paths(paths)
+        .filter(|d| !d.as_os_str().is_empty())
+        .find_map(|dir| {
+            let with_extensions = extensions
+                .iter()
+                .map(|ext| dir.join(format!("{name}{ext}")));
+            std::iter::once(dir.join(name))
+                .chain(with_extensions)
+                .find(|candidate| is_executable(candidate))
+        })
 }
 
 /// The binary a name or path stands for, when it exists: a path with a
