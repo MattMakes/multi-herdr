@@ -858,6 +858,8 @@ fn cmp_16_only_judge_and_compaction_jobs_detached() {
         // The finish check runs in its own process group, so its timeout
         // kills the build's children too. horch waits for it (#160).
         "crates/horch-core/src/taskledger/finish/land.rs",
+        // A plain finish runs its steps detached and mails the result (#160).
+        "crates/horch/src/cmd/taskledger_finish.rs",
     ];
     let mut found = Vec::new();
     let mut stack = vec![root.join("crates")];

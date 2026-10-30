@@ -414,8 +414,11 @@ impl Scanner<'_> {
         let Some(listed) = &self.herd.listed else {
             return false;
         };
-        let safe = file_safe(ws);
-        !listed.iter().any(|l| l == ws || file_safe(l) == safe) && !pending.holds(&safe)
+        let safe = crate::messaging::file_safe(ws);
+        !listed
+            .iter()
+            .any(|l| l == ws || crate::messaging::file_safe(l) == safe)
+            && !pending.holds(&safe)
     }
 
     /// `write_atomic` temp files of a dead process, under `dir`. Bundles and
@@ -553,19 +556,6 @@ fn codex_slug(role: &str) -> String {
                 c
             } else {
                 '-'
-            }
-        })
-        .collect()
-}
-
-/// The workspace part of a mail or spool dir name, as messaging writes it.
-fn file_safe(s: &str) -> String {
-    s.chars()
-        .map(|c| {
-            if c.is_ascii_alphanumeric() || c == '-' {
-                c
-            } else {
-                '_'
             }
         })
         .collect()

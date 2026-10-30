@@ -21,6 +21,7 @@ fn a_group_is_the_same_only_while_its_leader_is() {
     // This process runs, but leads no group of that id.
     let me = std::process::id();
     let mine = procid::start_time(me).unwrap();
+    // SAFETY: `getpgid(0)` reads this process's own group and touches no memory.
     if unsafe { libc::getpgid(0) } != me as i32 {
         assert!(!procid::is_same_group(me, mine), "not a group leader");
     }

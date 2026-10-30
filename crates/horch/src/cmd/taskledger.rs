@@ -135,6 +135,13 @@ pub enum LedgerCommand {
         /// Start a new code-sweep round for the same tree.
         #[arg(long)]
         rereview: bool,
+        /// Run the steps in this process and wait for them, also in a
+        /// pane where finish would run detached.
+        #[arg(long)]
+        wait: bool,
+        /// The detached run that a plain finish starts (#160).
+        #[arg(long, hide = true)]
+        run_steps: bool,
     },
     /// The finish steps of a task (default: this worker's) with evidence.
     Steps {
@@ -477,7 +484,7 @@ pub fn worker_id(ctx: &RuntimeContext) -> Result<String> {
         .context("HORCH_WORKER_ID is not set: run this from a worker pane that horch spawn opened")
 }
 
-fn json(v: &impl serde::Serialize) -> Result<()> {
+pub(super) fn json(v: &impl serde::Serialize) -> Result<()> {
     output::println(&serde_json::to_string_pretty(v)?);
     Ok(())
 }
@@ -647,9 +654,17 @@ fn worker_side_cmd(
     if let LedgerCommand::Finish {
         json: as_json,
         rereview,
+        wait,
+        run_steps,
     } = command
     {
-        return finish_cmd(ctx, &mut store, as_json, rereview);
+        let how = super::taskledger_finish::How {
+            as_json,
+            rereview,
+            wait,
+            run_steps,
+        };
+        return super::taskledger_finish::finish_cmd(ctx, &mut store, how);
     }
     if let LedgerCommand::Steps {
         task,
@@ -985,102 +1000,6 @@ fn drop_worktree_cmd(
         taskledger::worktree_ops::drop_worktree(store, git, run_id, name, reason, keep_branch)?;
     output::println(&format!("abandoned: {} ({reason})", wt.path));
     Ok(())
-}
-
-fn finish_cmd(
-    ctx: &RuntimeContext,
-    store: &mut Store,
-    as_json: bool,
-    rereview: bool,
-) -> Result<ExitCode> {
-    let wid = worker_id(ctx)?;
-    answer_reviews_in(ctx, store, &wid)?;
-    let report = run_finish(ctx, store, &wid, rereview)?;
-    stop_superseded(ctx, store, &report.superseded_workers);
-    if !report.queued_reviews.is_empty() {
-        nudge_run_of(ctx, store, &wid)?;
-    }
-    print_finish(&report, as_json)
-}
-
-/// Start a new code-sweep round when asked, then run the finish steps.
-fn run_finish(
-    ctx: &RuntimeContext,
-    store: &mut Store,
-    wid: &str,
-    rereview: bool,
-) -> Result<finish::FinishReport> {
-    let mut tools = tools(ctx);
-    tools.reviewers_down = reviewers_down(ctx);
-    tools.codex.personas = codex_personas(ctx);
-    if rereview {
-        finish::rereview(store, &tools, wid)?;
-    }
-    finish::finish(store, &tools, wid)
-}
-
-/// finish answers a reviews-in notice: its mail and wait end.
-fn answer_reviews_in(ctx: &RuntimeContext, store: &Store, wid: &str) -> Result<()> {
-    if workers::waiting(store.conn(), wid)?
-        .iter()
-        .any(workers::holds_for_finish)
-    {
-        workers::clear_wait(store.conn(), wid, workers::REVIEWS_WAIT)?;
-    }
-    if let Some(role) = workers::get(store.conn(), wid)?.role {
-        super::messaging::ack_role_mail(ctx, &role);
-    }
-    Ok(())
-}
-
-/// Wake the orchestrator of the worker's run about the tasks that can start.
-fn nudge_run_of(ctx: &RuntimeContext, store: &Store, wid: &str) -> Result<()> {
-    let w = workers::get(store.conn(), wid)?;
-    if let Some(r) = &w.run_id {
-        let run = runs::get(store.conn(), r)?;
-        super::taskledger_wake::nudge_startable(ctx, store, &run);
-    }
-    Ok(())
-}
-
-/// Stop the reviewers whose review a new code-sweep round superseded.
-fn stop_superseded(ctx: &RuntimeContext, store: &mut Store, superseded: &[String]) {
-    for w in superseded {
-        let stopped = stop::stop_worker(
-            store,
-            w,
-            StopRequester::Watchdog,
-            "its review was superseded by a new code-sweep round",
-            &HerdrPanes::new(ctx),
-            &stop::Os,
-            &stop::StopOptions {
-                grace: stop_grace(),
-                ..Default::default()
-            },
-        );
-        if let Err(e) = stopped {
-            eprintln!("horch ledger: could not stop reviewer {w}: {e:#}");
-        }
-    }
-}
-
-/// Print the steps; the exit code is 1 while a step has not passed.
-fn print_finish(report: &finish::FinishReport, as_json: bool) -> Result<ExitCode> {
-    if as_json {
-        json(report)?;
-        return Ok(exit_of(report.complete));
-    }
-    for st in &report.steps {
-        output::println(&format!(
-            "{:<2} {:<17} {:<15} {}",
-            st.seq,
-            st.name,
-            st.status,
-            st.verdict.as_deref().unwrap_or("")
-        ));
-    }
-    output::println(&report.message);
-    Ok(exit_of(report.complete))
 }
 
 fn steps_cmd(
@@ -1448,7 +1367,7 @@ fn print_status(report: &status::Report, as_json: bool) -> Result<ExitCode> {
     Ok(exit_of(report.complete))
 }
 
-fn exit_of(complete: bool) -> ExitCode {
+pub(super) fn exit_of(complete: bool) -> ExitCode {
     if complete {
         ExitCode::SUCCESS
     } else {
@@ -2039,7 +1958,7 @@ fn absolute_ticket_if_missing(ctx: &RuntimeContext, store: &Store, c: &mut Claim
 
 /// The code-sweep reviewer personas that cannot run here: not in the roster,
 /// or their harness CLI is not installed.
-fn reviewers_down(ctx: &RuntimeContext) -> Vec<(String, String)> {
+pub(super) fn reviewers_down(ctx: &RuntimeContext) -> Vec<(String, String)> {
     let roster = super::load_roster_unwarned(ctx, None).ok();
     ["codex-reviewer", "architect-reviewer"]
         .into_iter()
@@ -2124,7 +2043,7 @@ pub fn tools(ctx: &RuntimeContext) -> finish::Tools {
 }
 
 /// The roster's Codex teammates: their check runs in a Codex sandbox.
-fn codex_personas(ctx: &RuntimeContext) -> Vec<String> {
+pub(super) fn codex_personas(ctx: &RuntimeContext) -> Vec<String> {
     let Ok(roster) = super::load_roster_unwarned(ctx, None) else {
         return Vec::new();
     };

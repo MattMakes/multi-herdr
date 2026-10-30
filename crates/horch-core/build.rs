@@ -117,43 +117,46 @@ fn is_executable(path: &Path) -> bool {
 /// `<path under <name>/>\0<hex sha256 of the bytes>\n`. The line of a
 /// file in `executable` ends `\0x\n` instead, so the execute bit is part
 /// of the digest and a skill without one keeps the marketplace digest.
-fn skill_digests(files: &[(String, String)], executable: &[&str]) -> Vec<(String, [u8; 32])> {
+pub(crate) fn skill_digests(
+    files: &[(String, String)],
+    executable: &[&str],
+) -> Vec<(String, [u8; 32])> {
+    files
+        .iter()
+        .filter_map(|(relative, _)| relative.strip_suffix("/SKILL.md"))
+        .filter(|name| !name.contains('/'))
+        .map(|name| (name.to_owned(), tree_digest(name, files, executable)))
+        .collect()
+}
+
+/// The digest of the files below `<name>/` in `files`: see [`skill_digests`].
+fn tree_digest(name: &str, files: &[(String, String)], executable: &[&str]) -> [u8; 32] {
     use sha2::{Digest as _, Sha256};
-    let mut out = Vec::new();
-    for (relative, _) in files {
-        let Some(name) = relative.strip_suffix("/SKILL.md") else {
-            continue;
-        };
-        if name.contains('/') {
-            continue;
+    let prefix = format!("{name}/");
+    let mut lines: Vec<(&str, String, bool)> = files
+        .iter()
+        .filter_map(|(relative, absolute)| {
+            let rel = relative.strip_prefix(&prefix)?;
+            let bytes = std::fs::read(absolute).unwrap();
+            let hash: String = Sha256::digest(&bytes)
+                .iter()
+                .map(|b| format!("{b:02x}"))
+                .collect();
+            Some((rel, hash, executable.contains(&relative.as_str())))
+        })
+        .collect();
+    lines.sort();
+    let mut tree = Sha256::new();
+    for (rel, hash, exec) in &lines {
+        tree.update(rel.as_bytes());
+        tree.update([0u8]);
+        tree.update(hash.as_bytes());
+        if *exec {
+            tree.update(b"\0x");
         }
-        let prefix = format!("{name}/");
-        let mut lines: Vec<(&str, String, bool)> = files
-            .iter()
-            .filter_map(|(relative, absolute)| {
-                let rel = relative.strip_prefix(&prefix)?;
-                let bytes = std::fs::read(absolute).unwrap();
-                let hash: String = Sha256::digest(&bytes)
-                    .iter()
-                    .map(|b| format!("{b:02x}"))
-                    .collect();
-                Some((rel, hash, executable.contains(&relative.as_str())))
-            })
-            .collect();
-        lines.sort();
-        let mut tree = Sha256::new();
-        for (rel, hash, exec) in &lines {
-            tree.update(rel.as_bytes());
-            tree.update([0u8]);
-            tree.update(hash.as_bytes());
-            if *exec {
-                tree.update(b"\0x");
-            }
-            tree.update(b"\n");
-        }
-        out.push((name.to_owned(), tree.finalize().into()));
+        tree.update(b"\n");
     }
-    out
+    tree.finalize().into()
 }
 
 fn collect_skill_files(root: &Path, dir: &Path, files: &mut Vec<(String, String)>) {

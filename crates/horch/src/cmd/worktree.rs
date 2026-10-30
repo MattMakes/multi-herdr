@@ -7,7 +7,7 @@ use horch_core::runtime::RuntimeContext;
 use horch_core::taskledger;
 use horch_core::taskledger::git::Git;
 use horch_core::taskledger::triage::{self, Measure};
-use horch_core::vcs::landing::{ClaimState, Landing, Skipped};
+use horch_core::vcs::landing::{ClaimState, Landing, Skipped, Unregistered};
 
 use super::messaging;
 
@@ -96,16 +96,11 @@ pub fn list(ctx: &RuntimeContext) -> Result<()> {
     let landing = landing(ctx);
     for claim in landing.claims(&dir)? {
         let status = landing.status(&claim)?;
-        let state = match claim.state {
-            ClaimState::Open => "open",
-            ClaimState::Landed => "landed",
-            ClaimState::Unlanded => "unlanded",
-        };
         println!(
             "{} {} {} {} {} ahead={} dirty={} contained={}",
             claim.name,
             claim.role,
-            state,
+            state_label(claim.state),
             claim.branch,
             claim.base,
             status.ahead,
@@ -115,11 +110,27 @@ pub fn list(ctx: &RuntimeContext) -> Result<()> {
     }
     let scan = landing.unregistered(&dir)?;
     note_skipped("worktree list", &scan.skipped);
-    if scan.is_empty() {
+    print_unregistered(&scan.entries);
+    Ok(())
+}
+
+/// The word `list` prints for the state of a claim.
+fn state_label(state: ClaimState) -> &'static str {
+    match state {
+        ClaimState::Open => "open",
+        ClaimState::Landed => "landed",
+        ClaimState::Unlanded => "unlanded",
+    }
+}
+
+/// The `unregistered:` section of `list`: `none` on 1 line, else a header and
+/// a line for each worktree that has no claim.
+fn print_unregistered(entries: &[Unregistered]) {
+    if entries.is_empty() {
         println!("unregistered: none");
     } else {
         println!("unregistered:");
-        for entry in scan.entries {
+        for entry in entries {
             println!(
                 "{} branch={} ahead={} dirty={}",
                 entry.path.display(),
@@ -129,7 +140,6 @@ pub fn list(ctx: &RuntimeContext) -> Result<()> {
             );
         }
     }
-    Ok(())
 }
 
 /// The main checkout of the project the command runs in.
@@ -274,4 +284,17 @@ pub fn gc(ctx: &RuntimeContext) -> Result<()> {
         println!("deleted {r}");
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Each state of a claim has its own word in the lines of `list`.
+    #[test]
+    fn each_claim_state_has_its_own_word() {
+        assert_eq!(state_label(ClaimState::Open), "open");
+        assert_eq!(state_label(ClaimState::Landed), "landed");
+        assert_eq!(state_label(ClaimState::Unlanded), "unlanded");
+    }
 }
