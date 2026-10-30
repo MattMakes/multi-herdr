@@ -491,17 +491,20 @@ fn relay_delivery_case(agent: &str) {
         .unwrap();
     h.state = short.path().to_path_buf();
     if agent == "codex" {
-        horch_core::execution::records::Ledger::for_project(&h.state, &h.project.to_string_lossy())
-            .insert(horch_core::execution::legacy::Record {
-                record_id: "relay-orchestrator".into(),
-                session_id: Some("thread-fleet18".into()),
-                agent: "codex".into(),
-                tier: "sol".into(),
-                model: "gpt-6-sol".into(),
-                role: "orchestrator".into(),
-                ..Default::default()
-            })
-            .unwrap();
+        horch_core::execution::records::SessionLedger::for_project(
+            &h.state,
+            &h.project.to_string_lossy(),
+        )
+        .insert(horch_core::execution::legacy::Record {
+            record_id: "relay-orchestrator".into(),
+            session_id: Some("thread-fleet18".into()),
+            agent: "codex".into(),
+            tier: "sol".into(),
+            model: "gpt-6-sol".into(),
+            role: "orchestrator".into(),
+            ..Default::default()
+        })
+        .unwrap();
         h.set("HORCH_RECORD_ID", "relay-orchestrator");
         // macOS may scan a freshly linked executable longer than the relay's
         // real ten-second queue budget. Warm this exact sealed fake first.
@@ -581,7 +584,7 @@ fn relay_delivery_case(agent: &str) {
 #[test]
 fn g60_ledger_done_and_wake_queue_without_registration_then_courier_delivers() {
     use horch_core::{
-        execution::{legacy::Record, records::Ledger},
+        execution::{legacy::Record, records::SessionLedger},
         taskledger::{
             model::{Actor, TaskKind},
             runs::{self, NewRun},
@@ -637,7 +640,7 @@ fn g60_ledger_done_and_wake_queue_without_registration_then_courier_delivers() {
         })
         .unwrap();
     drop(store);
-    Ledger::for_project(&h.state, &h.project.to_string_lossy())
+    SessionLedger::for_project(&h.state, &h.project.to_string_lossy())
         .insert(Record {
             record_id: "r-g60".into(),
             agent: "claude".into(),
@@ -723,7 +726,7 @@ fn g60_ledger_done_and_wake_queue_without_registration_then_courier_delivers() {
 #[test]
 fn ledger_done_finds_the_orchestrator_in_a_copied_old_registry() {
     use horch_core::{
-        execution::{legacy::Record, records::Ledger},
+        execution::{legacy::Record, records::SessionLedger},
         taskledger::{
             model::{Actor, TaskKind},
             runs::{self, NewRun},
@@ -797,7 +800,7 @@ fn ledger_done_finds_the_orchestrator_in_a_copied_old_registry() {
         })
         .unwrap();
     drop(store);
-    Ledger::for_project(&h.state, &h.project.to_string_lossy())
+    SessionLedger::for_project(&h.state, &h.project.to_string_lossy())
         .insert(Record {
             record_id: "r-p09".into(),
             agent: "claude".into(),
@@ -1706,14 +1709,14 @@ fn g60_codex_queue_confirmation_stays_pending_until_inbox() {
 
 #[test]
 fn g60_plain_done_and_tell_without_registration_arrive_after_late_registration() {
-    use horch_core::execution::{legacy::Record, records::Ledger};
+    use horch_core::execution::{legacy::Record, records::SessionLedger};
     use horch_e2e::harness::wait_for;
     let mut h = world("g60-plain-done");
     h.set("HORCH_TEST_MAIL_REDELIVERY_MS", "50");
     h.set("HORCH_TEST_MAIL_NO_ORCHESTRATOR_MS", "100");
     fake(&h, &["workspace", "create", "--label", "plain-done"]);
     fake(&h, &["pane", "split", "w1:p1", "--direction", "right"]);
-    Ledger::for_project(&h.state, &h.project.to_string_lossy())
+    SessionLedger::for_project(&h.state, &h.project.to_string_lossy())
         .insert(Record {
             record_id: "plain-worker".into(),
             agent: "claude".into(),

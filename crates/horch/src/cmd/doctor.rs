@@ -1827,7 +1827,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let ctx = sweep_ctx(dir.path());
         let state = dir.path().join("state");
-        let ledger = horch_core::execution::records::Ledger::for_project(&state, "/proj");
+        let ledger = horch_core::execution::records::SessionLedger::for_project(&state, "/proj");
         for (id, pane) in [("done-1", "p1"), ("closed-1", "p7")] {
             ledger
                 .insert(horch_core::execution::legacy::Record {

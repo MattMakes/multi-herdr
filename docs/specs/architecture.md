@@ -1671,7 +1671,7 @@ Five commits:
 | 2 Pure plan | `execution/plan.rs` from `cmd/spawn.rs:76-262`; role allocation stays impure, moves under `DirLock`; briefs written atomically | — |
 | 3 Service | `execution/service.rs`: insert(Planned) → brief → split (error: `LaunchFailed{Split}` + unregister) → run (error: `LaunchFailed{Run}`, close pane, unregister) → `mark_starting(pane)` → tile best effort | `abort-after-execution-insert`, `abort-after-brief`, `abort-after-pane-split`, `fail-pane-split`, `fail-run` |
 | 4 Worker lifecycle | `execution/lifecycle::run_worker` (Spec A §8 order); records `agent_exited(code)` (Running → Failed(AgentExited)); propagates the exit code; `cmd/spawn.rs` → about 80 lines (from 471); `cmd/worker.rs` → about 30 lines (from 351); `main` maps `SpawnError::Refused` → exit 3 | — |
-| 5 Telemetry and presentation | `telemetry/collect.rs:29,212,423` read through the store; live rows use `is_live()`; `cmd/cost.rs`, `cmd/usagecmd.rs`, `cmd/ledgercmd.rs` (`sessions`) render from the store; `cmd/route.rs`, `cmd/quotacmd.rs` render `routing::*`; tile/balance commands call `workspace::arrange` (after A7) | — |
+| 5 Telemetry and presentation | `telemetry/collect.rs:29,212,423` read through the store; live rows use `is_live()`; `cmd/cost.rs`, `cmd/usagecmd.rs`, `cmd/sessionscmd.rs` (`sessions`) render from the store; `cmd/route.rs`, `cmd/quotacmd.rs` render `routing::*`; tile/balance commands call `workspace::arrange` (after A7) | — |
 
 | | |
 |---|---|

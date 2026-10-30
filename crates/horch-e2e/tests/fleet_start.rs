@@ -2,7 +2,7 @@
 //! they fail to start (#217), and what the orchestrator pane line carries
 //! (#199).
 
-use horch_core::execution::records::Ledger;
+use horch_core::execution::records::SessionLedger;
 use horch_e2e::harness::{copy_tree, fixtures, repo_root, Harness};
 use serde_json::Value;
 
@@ -113,7 +113,9 @@ fn a_fleet_whose_pane_run_fails_closes_its_workspace_and_ends_its_record() {
         err(&o)
     );
     assert_eq!(workspaces(&h), Vec::<String>::new(), "{}", out(&o));
-    let records = Ledger::for_project(&h.state, &cwd(&h)).read().unwrap();
+    let records = SessionLedger::for_project(&h.state, &cwd(&h))
+        .read()
+        .unwrap();
     let orchestrators: Vec<_> = records.iter().filter(|r| r.is_orchestrator()).collect();
     assert_eq!(orchestrators.len(), 1, "{records:#?}");
     let status = orchestrators[0].execution_status();

@@ -17,7 +17,7 @@ use horch_core::compaction::jobfile::{self, LOG_FILE};
 use horch_core::compaction::policy::{self, JobLiveness, RowInputs, RowState, EVENT_FAILED};
 use horch_core::compaction::window::{self, WindowDecision, WindowSource, HEADROOM_FLOOR};
 use horch_core::execution::legacy::Record;
-use horch_core::execution::records::Ledger;
+use horch_core::execution::records::SessionLedger;
 use horch_core::harness::codex::PaneMode;
 use horch_core::harness::{launch, HarnessKind};
 use horch_core::roster::{Roster, Teammate};
@@ -38,7 +38,7 @@ const NONE_OVER: &str = "no session is over its threshold";
 /// temp ledger and a fixture home.
 pub(crate) struct Sources<'a> {
     pub ctx: &'a RuntimeContext,
-    pub ledger: &'a Ledger,
+    pub ledger: &'a SessionLedger,
     pub roster: &'a Roster,
     pub loc: &'a Locations,
     /// `<state_root>/context`: the marker cache.
@@ -332,7 +332,7 @@ pub fn context_filtered(
     live: bool,
     role: Option<&str>,
 ) -> Result<ExitCode> {
-    let filter = super::ledgercmd::SessionFilter {
+    let filter = super::sessionscmd::SessionFilter {
         all_workspaces,
         live,
         role,
@@ -363,9 +363,9 @@ fn report(
     roster: &Roster,
     over: bool,
     json: bool,
-    filter: super::ledgercmd::SessionFilter<'_>,
+    filter: super::sessionscmd::SessionFilter<'_>,
 ) -> Result<Result<String>> {
-    let ledger = Ledger::open_in(ctx)?;
+    let ledger = SessionLedger::open_in(ctx)?;
     let loc = Locations::from_context(ctx);
     let cache = cache_dir(ctx);
     let src = Sources {
@@ -405,13 +405,13 @@ fn append_pane_gone(mut text: String, json: &str) -> String {
 /// or `compact-lost`). Err only when the ledger does not read.
 #[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn context_text(src: &Sources, over: bool) -> Result<String> {
-    context_text_matching(src, over, super::ledgercmd::SessionFilter::default())
+    context_text_matching(src, over, super::sessionscmd::SessionFilter::default())
 }
 
 fn context_text_matching(
     src: &Sources,
     over: bool,
-    filter: super::ledgercmd::SessionFilter<'_>,
+    filter: super::sessionscmd::SessionFilter<'_>,
 ) -> Result<String> {
     let rows: Vec<Row> = shown_rows_matching(src, filter)?
         .into_iter()
@@ -436,7 +436,7 @@ fn context_text_matching(
 /// The rows of every shown record. Err only when the ledger does not read.
 fn shown_rows_matching(
     src: &Sources,
-    filter: super::ledgercmd::SessionFilter<'_>,
+    filter: super::sessionscmd::SessionFilter<'_>,
 ) -> Result<Vec<Row>> {
     let workspace = caller_workspace(src.ctx);
     let records: Vec<_> = src
@@ -453,7 +453,7 @@ fn shown_rows_matching(
 
 /// The herdr workspace of the caller, if it runs in one.
 fn caller_workspace(ctx: &RuntimeContext) -> Option<String> {
-    super::ledgercmd::caller_workspace(ctx)
+    super::sessionscmd::caller_workspace(ctx)
 }
 
 /// 1 object of `horch context --json` (CTX-24, design §6.10). The field
@@ -515,13 +515,13 @@ pub(crate) struct JsonCompaction {
 /// Err only when the ledger does not read.
 #[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn context_json(src: &Sources, ws: &dyn WorkspaceClient) -> Result<String> {
-    context_json_matching(src, ws, super::ledgercmd::SessionFilter::default())
+    context_json_matching(src, ws, super::sessionscmd::SessionFilter::default())
 }
 
 fn context_json_matching(
     src: &Sources,
     ws: &dyn WorkspaceClient,
-    filter: super::ledgercmd::SessionFilter<'_>,
+    filter: super::sessionscmd::SessionFilter<'_>,
 ) -> Result<String> {
     let rows = shown_rows_matching(src, filter)?;
     let caller = caller_workspace(src.ctx);
@@ -892,7 +892,7 @@ pub(crate) mod testkit {
     pub struct World {
         pub tmp: tempfile::TempDir,
         pub ctx: RuntimeContext,
-        pub ledger: Ledger,
+        pub ledger: SessionLedger,
         pub roster: Roster,
         pub loc: Locations,
         pub cache: PathBuf,
@@ -931,7 +931,7 @@ pub(crate) mod testkit {
             )
             .unwrap();
             let ctx = RuntimeContext::from_env(&f(env)).unwrap();
-            let ledger = Ledger::open_in(&ctx).unwrap();
+            let ledger = SessionLedger::open_in(&ctx).unwrap();
             let loc = Locations::from_context(&ctx);
             let cache = cache_dir(&ctx);
             World {

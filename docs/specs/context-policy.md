@@ -474,7 +474,7 @@ those of the text table.
 ### 5.2 `horch compact <role> --request`
 
 - Resolves the live record of `<role>` in the caller's herdr workspace
-  (`Ledger::live_for_role(role, Some(<workspace>))`) and its pane.
+  (`SessionLedger::live_for_role(role, Some(<workspace>))`) and its pane.
 - Asked already in this compaction cycle (rule A: a `compact-requested` or
   `context-warned` event at or after the later of the newest `compacted`
   event and the transcript's last marker): prints

@@ -18,7 +18,7 @@ use anyhow::{bail, Context, Result};
 
 use crate::compaction::window::{self, WindowDecision, WindowSource};
 use crate::execution::legacy::LedgerWindow;
-use crate::execution::records::Ledger;
+use crate::execution::records::SessionLedger;
 use crate::execution::SessionMode;
 use crate::messaging::delivery::{self, Readiness, Timing};
 use crate::messaging::mail;
@@ -888,7 +888,7 @@ struct Search<'a> {
     agent: HarnessKind,
     herdr: &'a Herdr,
     pane: &'a str,
-    ledger: &'a Ledger,
+    ledger: &'a SessionLedger,
     workdir: &'a Path,
     since: SystemTime,
     sessions_dir: Option<&'a Path>,
@@ -949,7 +949,7 @@ pub fn discover_now(
     if !agent.adapter().capabilities().discovers_session() || brief.session.is_resume() {
         return Ok(());
     }
-    let ledger = Ledger::open_in(ctx)?;
+    let ledger = SessionLedger::open_in(ctx)?;
     if ledger.get(record_id)?.session_id.is_none() {
         discover_into_ledger(ctx, &ledger, mailbox, role, record_id, (agent, &brief))?;
     }
@@ -960,7 +960,7 @@ pub fn discover_now(
 /// ledger and the launch marker is removed.
 fn discover_into_ledger(
     ctx: &RuntimeContext,
-    ledger: &Ledger,
+    ledger: &SessionLedger,
     mailbox: &Mailbox,
     role: &str,
     record_id: &str,
@@ -1030,7 +1030,7 @@ fn start_typed_prompt(
     target: Option<&DiscoveryTarget<'_>>,
 ) {
     let ledger = target.and_then(|t| {
-        Ledger::open_in(ctx)
+        SessionLedger::open_in(ctx)
             .ok()
             .map(|l| (l, t.record_id.to_string()))
     });
@@ -1078,7 +1078,7 @@ pub(crate) fn type_resumed_prompt(
     pane: Option<&str>,
     prompt: &str,
     role: &str,
-    ledger: Option<(&Ledger, &str)>,
+    ledger: Option<(&SessionLedger, &str)>,
     orchestrator: Option<&str>,
     queue: Option<QueueLine<'_>>,
     wait: &Readiness,
@@ -1143,7 +1143,7 @@ fn start_discovery(
     let role = role.to_string();
     let record_id = target.record_id.to_string();
     let workdir = PathBuf::from(target.workdir);
-    let ledger = Ledger::open_in(ctx)?;
+    let ledger = SessionLedger::open_in(ctx)?;
     let herdr = Herdr::with_bin(&ctx.bins.harness.herdr);
     let ctx = ctx.clone();
 
@@ -2188,7 +2188,7 @@ mod tests {
             poll: Duration::from_millis(1),
         };
         let tmp = tempfile::tempdir().unwrap();
-        let ledger = Ledger::for_project(tmp.path(), "/proj");
+        let ledger = SessionLedger::for_project(tmp.path(), "/proj");
         ledger
             .add(crate::execution::records::NewRecord {
                 record_id: "rec-1",

@@ -9,7 +9,7 @@ use std::process::ExitCode;
 
 use anyhow::Result;
 use clap::Subcommand;
-use horch_core::execution::records::{Ledger, NewRecord};
+use horch_core::execution::records::{NewRecord, SessionLedger};
 use horch_core::execution::store::ExecutionStore;
 use horch_core::runtime::RuntimeContext;
 
@@ -215,7 +215,7 @@ fn print_list(ctx: &RuntimeContext, json: bool, all: bool) -> Result<()> {
 }
 
 pub fn run(ctx: &RuntimeContext, command: LegacyCommand) -> Result<ExitCode> {
-    let ledger = Ledger::open_in(ctx)?;
+    let ledger = SessionLedger::open_in(ctx)?;
     if let LegacyCommand::HasSession { session_id } = &command {
         return has_session(&ledger, session_id);
     }
@@ -228,7 +228,7 @@ pub fn run(ctx: &RuntimeContext, command: LegacyCommand) -> Result<ExitCode> {
     Ok(ExitCode::SUCCESS)
 }
 
-fn has_session(ledger: &Ledger, session_id: &str) -> Result<ExitCode> {
+fn has_session(ledger: &SessionLedger, session_id: &str) -> Result<ExitCode> {
     Ok(if ledger.has_session(session_id)? {
         ExitCode::SUCCESS
     } else {
@@ -237,7 +237,7 @@ fn has_session(ledger: &Ledger, session_id: &str) -> Result<ExitCode> {
 }
 
 /// The subcommands that only print.
-fn read(ctx: &RuntimeContext, ledger: &Ledger, command: LegacyCommand) -> Result<()> {
+fn read(ctx: &RuntimeContext, ledger: &SessionLedger, command: LegacyCommand) -> Result<()> {
     match command {
         LegacyCommand::Get { key } => print_record(ledger, &key),
         LegacyCommand::List { json } => print_list(ctx, json, true),
@@ -249,13 +249,13 @@ fn read(ctx: &RuntimeContext, ledger: &Ledger, command: LegacyCommand) -> Result
     }
 }
 
-fn print_record(ledger: &Ledger, key: &str) -> Result<()> {
+fn print_record(ledger: &SessionLedger, key: &str) -> Result<()> {
     output::println(&serde_json::to_string_pretty(&ledger.get(key)?)?);
     Ok(())
 }
 
 /// The subcommands that change the ledger.
-fn write(ledger: &Ledger, command: LegacyCommand) -> Result<()> {
+fn write(ledger: &SessionLedger, command: LegacyCommand) -> Result<()> {
     match command {
         LegacyCommand::Add {
             record_id,
