@@ -26,7 +26,7 @@ use super::{
 };
 use crate::ids::SkillId;
 use crate::measure::digest::Digest;
-use crate::roster::Teammate;
+use crate::roster::{OperatorSkills, Teammate};
 
 /// The marketplace API, for the `horch` binary, which depends on core only.
 pub use horch_marketplace as marketplace;
@@ -190,30 +190,38 @@ pub fn parse_copied(text: &str) -> Result<BTreeMap<String, Copied>> {
     let file: CopiedFile = serde_json::from_str(text).context("skills/copied.json")?;
     let mut out = BTreeMap::new();
     for s in file.skills {
-        let name = s.name;
-        for path in &s.copied_files {
-            if path.is_empty() || path.starts_with('/') || path.split('/').any(|c| c == "..") {
-                bail!("copied '{name}': '{path}' is not a path inside the skill directory");
-            }
-        }
-        if let Some(reason) = &s.budget_exempt {
-            if reason.trim().is_empty() {
-                bail!("copied '{name}': budget_exempt needs a reason");
-            }
-            if s.verbatim {
-                bail!("copied '{name}': a verbatim skill is already exempt; drop budget_exempt");
-            }
-        }
+        check_copied(&s)?;
         let entry = Copied {
             copied_files: s.copied_files,
             verbatim: s.verbatim,
             budget_exempt: s.budget_exempt,
         };
-        if out.insert(name.clone(), entry).is_some() {
-            bail!("copied '{name}': duplicate entry");
+        if out.insert(s.name.clone(), entry).is_some() {
+            bail!("copied '{}': duplicate entry", s.name);
         }
     }
     Ok(out)
+}
+
+/// The rules of one `copied.json` entry, before it is stored.
+fn check_copied(s: &CopiedSkill) -> Result<()> {
+    let name = &s.name;
+    for path in &s.copied_files {
+        if matches!(path.as_bytes().first(), None | Some(b'/'))
+            || path.split('/').any(|c| c == "..")
+        {
+            bail!("copied '{name}': '{path}' is not a path inside the skill directory");
+        }
+    }
+    if let Some(reason) = &s.budget_exempt {
+        if reason.trim().is_empty() {
+            bail!("copied '{name}': budget_exempt needs a reason");
+        }
+        if s.verbatim {
+            bail!("copied '{name}': a verbatim skill is already exempt; drop budget_exempt");
+        }
+    }
+    Ok(())
 }
 
 impl SkillCatalog {
@@ -232,52 +240,13 @@ impl SkillCatalog {
     fn bundled_uncached() -> Result<SkillCatalog> {
         let mut copied = parse_copied(BUNDLED_COPIED)?;
         let mut entries = BTreeMap::new();
-        for (path, bytes) in BUNDLED_SKILL_FILES {
-            let Some(name) = path.strip_suffix("/SKILL.md") else {
-                continue;
-            };
-            if name.contains('/') {
-                continue;
-            }
-            let meta = validate_skill_md(path, name, bytes)?;
-            let prefix = format!("{name}/");
-            let files: Vec<(&'static str, &'static [u8])> = BUNDLED_SKILL_FILES
-                .iter()
-                .filter_map(|(p, b)| p.strip_prefix(&prefix).map(|rel| (rel, *b)))
-                .collect();
-            let executable: Vec<&'static str> = BUNDLED_SKILL_EXECUTABLES
-                .iter()
-                .filter_map(|p| p.strip_prefix(&prefix))
-                .collect();
-            // `build.rs` digested the same bytes and execute bits at build time.
-            let digest = BUNDLED_SKILL_DIGESTS
-                .iter()
-                .find(|(n, _)| *n == name)
-                .map(|(_, d)| Digest(*d))
-                .with_context(|| format!("{path}: no build-time digest"))?;
-            let id = SkillId::new(name).with_context(|| format!("{path}: skill id"))?;
-            let copied = copied.remove(name);
-            for rel in copied.iter().flat_map(|c| &c.copied_files) {
-                if !files.iter().any(|(p, _)| p == rel) {
-                    bail!(
-                        "skills/copied.json: '{name}' lists '{rel}', which the skill does not have"
-                    );
-                }
-            }
-            entries.insert(
-                name.to_owned(),
-                CatalogEntry {
-                    id,
-                    version: SkillVersion(format!("bundled+{}", digest.short12())),
-                    source: CatalogSource::Bundled,
-                    digest,
-                    description: meta.description,
-                    copied,
-                    skill_file_bytes: bytes.len(),
-                    files,
-                    executable,
-                },
-            );
+        let skills = BUNDLED_SKILL_FILES.iter().filter_map(|&(path, bytes)| {
+            let name = path.strip_suffix("/SKILL.md")?;
+            (!name.contains('/')).then_some((path, name, bytes))
+        });
+        for (path, name, bytes) in skills {
+            let entry = bundled_entry(path, name, bytes, copied.remove(name))?;
+            entries.insert(name.to_owned(), entry);
         }
         if let Some(name) = copied.keys().next() {
             bail!("skills/copied.json: '{name}' is not a bundled skill");
@@ -487,6 +456,26 @@ impl SkillCatalog {
             return Ok(self);
         };
         let who = &teammate.name;
+        let ids = self.check_operator_names(who, operator)?;
+        let dir = operator_dir(who, operator, home)?;
+        for (name, id) in operator.names.iter().zip(ids) {
+            match load_operator_skill(who, operator, &dir, name, id)? {
+                Some(entry) => {
+                    self.entries.insert(name.clone(), entry);
+                }
+                None => self.skipped_operator.push(SkippedOperatorSkill {
+                    name: name.clone(),
+                    path: format!("{}/{name}", operator.dir.trim_end_matches('/')),
+                }),
+            }
+        }
+        Ok(self)
+    }
+
+    /// The name rules of `operator_skills:`, which hold on every host. The
+    /// ids of the names, in order.
+    fn check_operator_names(&self, who: &str, operator: &OperatorSkills) -> Result<Vec<SkillId>> {
+        let mut ids = Vec::new();
         if operator.names.is_empty() {
             bail!("{who}: operator_skills names no skill");
         }
@@ -500,80 +489,13 @@ impl SkillCatalog {
                      rename one, or name the catalog skill in skills:"
                 );
             }
-            SkillId::new(name.as_str())
-                .with_context(|| format!("{who}: operator skill '{name}'"))?;
-            if let Some(why) = subagent_skill(name, b"") {
-                bail!(
-                    "{who}: operator skill '{name}' is a subagent skill ({why}); \
-                     fleet panes start no subagents"
-                );
-            }
-        }
-        let dir = crate::roster::expand_home(&operator.dir, home);
-        let skip_all = !exists(&dir, || {
-            format!("{who}: operator_skills dir '{}'", operator.dir)
-        })?;
-        if !skip_all {
-            if !dir.is_dir() {
-                bail!(
-                    "{who}: operator_skills dir '{}' is not a directory",
-                    operator.dir
-                );
-            }
-            std::fs::read_dir(&dir).with_context(|| {
-                format!(
-                    "{who}: operator_skills dir '{}' cannot be read",
-                    operator.dir
-                )
-            })?;
-        }
-        for name in &operator.names {
-            let skill_dir = dir.join(name);
-            let shown = format!("{}/{name}", operator.dir.trim_end_matches('/'));
-            if skip_all || !exists(&skill_dir, || format!("{who}: operator skill '{name}'"))? {
-                self.skipped_operator.push(SkippedOperatorSkill {
-                    name: name.clone(),
-                    path: shown,
-                });
-                continue;
-            }
-            let id = SkillId::new(name.as_str())
-                .with_context(|| format!("{who}: operator skill '{name}'"))?;
-            let skill_md = skill_dir.join("SKILL.md");
-            let bytes = std::fs::read(&skill_md).map_err(|e| {
-                anyhow!(
-                    "{who}: operator skill '{name}' in '{}' has no readable {}: {e}",
-                    operator.dir,
-                    skill_md.display()
-                )
-            })?;
-            let meta = validate_skill_md(&skill_md.display().to_string(), name, &bytes)?;
-            if let Some(why) = subagent_skill(name, &bytes) {
-                bail!(
-                    "{who}: operator skill '{name}' is a subagent skill ({why}); \
-                     fleet panes start no subagents"
-                );
-            }
-            let digest: Digest = horch_marketplace::integrity::tree_digest(&skill_dir)
-                .map_err(|e| anyhow!("{who}: operator skill '{name}': {e}"))?
-                .parse()
-                .with_context(|| format!("{who}: operator skill '{name}' digest"))?;
-            self.entries.insert(
-                name.clone(),
-                CatalogEntry {
-                    id,
-                    version: SkillVersion(format!("operator+{}", digest.short12())),
-                    source: CatalogSource::Operator { dir: dir.clone() },
-                    digest,
-                    description: meta.description,
-                    copied: None,
-                    skill_file_bytes: bytes.len(),
-                    files: Vec::new(),
-                    executable: Vec::new(),
-                },
+            ids.push(
+                SkillId::new(name.as_str())
+                    .with_context(|| format!("{who}: operator skill '{name}'"))?,
             );
+            bail_if_subagent(who, name, b"")?;
         }
-        Ok(self)
+        Ok(ids)
     }
 
     /// The operator skills that `SkillCatalog::with_host_skills`
@@ -638,19 +560,112 @@ pub fn check_store(data_root: &Path) -> Result<Vec<(LockEntry, PathBuf, StoreSta
             Err(e) => (PathBuf::new(), StoreState::Invalid(format!("{e:#}"))),
             Ok(dir) if !dir.is_dir() => (dir, StoreState::Missing),
             Ok(dir) => {
-                let state = match horch_marketplace::integrity::tree_digest(&dir) {
-                    Ok(actual) if actual == entry.digest => StoreState::Ok,
-                    Ok(actual) => StoreState::Tampered { actual },
-                    Err(e) => StoreState::Tampered {
-                        actual: e.to_string(),
-                    },
-                };
+                let state = digest_state(&dir, &entry.digest);
                 (dir, state)
             }
         };
         out.push((entry, dir, state));
     }
     Ok(out)
+}
+
+/// The operator directory, expanded against `home`. A directory this host
+/// does not have is returned too: no skill is under it, so each is skipped.
+fn operator_dir(who: &str, operator: &OperatorSkills, home: Option<&Path>) -> Result<PathBuf> {
+    let dir = crate::roster::expand_home(&operator.dir, home);
+    if exists(&dir, || {
+        format!("{who}: operator_skills dir '{}'", operator.dir)
+    })? {
+        if !dir.is_dir() {
+            bail!(
+                "{who}: operator_skills dir '{}' is not a directory",
+                operator.dir
+            );
+        }
+        std::fs::read_dir(&dir).with_context(|| {
+            format!(
+                "{who}: operator_skills dir '{}' cannot be read",
+                operator.dir
+            )
+        })?;
+    }
+    Ok(dir)
+}
+
+/// The catalog entry of operator skill `name` under `dir`. `None` when this
+/// host does not have `<dir>/<name>/`.
+fn load_operator_skill(
+    who: &str,
+    operator: &OperatorSkills,
+    dir: &Path,
+    name: &str,
+    id: SkillId,
+) -> Result<Option<CatalogEntry>> {
+    let skill_dir = dir.join(name);
+    if !exists(&skill_dir, || format!("{who}: operator skill '{name}'"))? {
+        return Ok(None);
+    }
+    let (bytes, meta) = read_operator_skill_md(who, operator, name, &skill_dir)?;
+    bail_if_subagent(who, name, &bytes)?;
+    let digest: Digest = horch_marketplace::integrity::tree_digest(&skill_dir)
+        .map_err(|e| anyhow!("{who}: operator skill '{name}': {e}"))?
+        .parse()
+        .with_context(|| format!("{who}: operator skill '{name}' digest"))?;
+    Ok(Some(CatalogEntry {
+        id,
+        version: SkillVersion(format!("operator+{}", digest.short12())),
+        source: CatalogSource::Operator {
+            dir: dir.to_path_buf(),
+        },
+        digest,
+        description: meta.description,
+        copied: None,
+        skill_file_bytes: bytes.len(),
+        files: Vec::new(),
+        executable: Vec::new(),
+    }))
+}
+
+/// The bytes and the metadata of `<skill_dir>/SKILL.md`.
+fn read_operator_skill_md(
+    who: &str,
+    operator: &OperatorSkills,
+    name: &str,
+    skill_dir: &Path,
+) -> Result<(Vec<u8>, Metadata)> {
+    let skill_md = skill_dir.join("SKILL.md");
+    let bytes = std::fs::read(&skill_md).map_err(|e| {
+        anyhow!(
+            "{who}: operator skill '{name}' in '{}' has no readable {}: {e}",
+            operator.dir,
+            skill_md.display()
+        )
+    })?;
+    let meta = validate_skill_md(&skill_md.display().to_string(), name, &bytes)?;
+    Ok((bytes, meta))
+}
+
+/// Fails when operator skill `name` starts a subagent, which a fleet pane
+/// must not do.
+fn bail_if_subagent(who: &str, name: &str, skill_md: &[u8]) -> Result<()> {
+    if let Some(why) = subagent_skill(name, skill_md) {
+        bail!(
+            "{who}: operator skill '{name}' is a subagent skill ({why}); \
+             fleet panes start no subagents"
+        );
+    }
+    Ok(())
+}
+
+/// How the files of `dir` stand against the digest `want`.
+fn digest_state(dir: &Path, want: &str) -> StoreState {
+    // A tree the digest rules refuse reports why, in place of a digest.
+    let actual = horch_marketplace::integrity::tree_digest(dir).unwrap_or_else(|e| e.to_string());
+    if actual == want {
+        StoreState::Ok
+    } else {
+        StoreState::Tampered { actual }
+    }
 }
 
 /// `<root>/skills/<id>/<version>/`, after checking that `id` and `version`
@@ -664,6 +679,66 @@ fn version_dir(root: &Path, id: &str, version: &str) -> Result<PathBuf> {
         bail!("marketplace.lock: '{id}' version '{version}' cannot name a directory");
     }
     Ok(root.join("skills").join(id).join(version))
+}
+
+/// The catalog entry of the compiled-in skill `name`, whose SKILL.md is
+/// `bytes` at `path`.
+fn bundled_entry(
+    path: &str,
+    name: &str,
+    bytes: &'static [u8],
+    copied: Option<Copied>,
+) -> Result<CatalogEntry> {
+    let meta = validate_skill_md(path, name, bytes)?;
+    let (files, executable) = bundled_files(name);
+    // `build.rs` digested the same bytes and execute bits at build time.
+    let digest = BUNDLED_SKILL_DIGESTS
+        .iter()
+        .find_map(|&(n, d)| (n == name).then_some(Digest(d)))
+        .with_context(|| format!("{path}: no build-time digest"))?;
+    let id = SkillId::new(name).with_context(|| format!("{path}: skill id"))?;
+    check_copied_present(name, copied.as_ref(), &files)?;
+    Ok(CatalogEntry {
+        id,
+        version: SkillVersion(format!("bundled+{}", digest.short12())),
+        source: CatalogSource::Bundled,
+        digest,
+        description: meta.description,
+        copied,
+        skill_file_bytes: bytes.len(),
+        files,
+        executable,
+    })
+}
+
+/// The files of the compiled-in skill `name`, relative to its directory, and
+/// the ones among them with the execute bit.
+#[allow(clippy::type_complexity)]
+fn bundled_files(name: &str) -> (Vec<(&'static str, &'static [u8])>, Vec<&'static str>) {
+    let prefix = format!("{name}/");
+    let files = BUNDLED_SKILL_FILES
+        .iter()
+        .filter_map(|(p, b)| p.strip_prefix(&prefix).map(|rel| (rel, *b)))
+        .collect();
+    let executable = BUNDLED_SKILL_EXECUTABLES
+        .iter()
+        .filter_map(|p| p.strip_prefix(&prefix))
+        .collect();
+    (files, executable)
+}
+
+/// Every file `copied.json` lists for `name` is a file of the skill.
+fn check_copied_present(
+    name: &str,
+    copied: Option<&Copied>,
+    files: &[(&'static str, &'static [u8])],
+) -> Result<()> {
+    for rel in copied.iter().flat_map(|c| &c.copied_files) {
+        if !files.iter().any(|(p, _)| p == rel) {
+            bail!("skills/copied.json: '{name}' lists '{rel}', which the skill does not have");
+        }
+    }
+    Ok(())
 }
 
 /// Whether `path` exists. `false` only for "not found"; any other error
@@ -697,6 +772,15 @@ fn subagent_skill(name: &str, skill_md: &[u8]) -> Option<&'static str> {
 /// name and follows `[a-z0-9-]` without a leading, trailing or doubled `-`,
 /// and a non-empty `description` of at most 1024 bytes.
 fn validate_skill_md(path: &str, name: &str, bytes: &[u8]) -> Result<Metadata> {
+    let meta = skill_md_metadata(path, bytes)?;
+    if meta.name != name || !valid_skill_name(name) || !valid_description(&meta.description) {
+        bail!("{path}: invalid skill name or description");
+    }
+    Ok(meta)
+}
+
+/// The YAML frontmatter of a SKILL.md.
+fn skill_md_metadata(path: &str, bytes: &[u8]) -> Result<Metadata> {
     let text = std::str::from_utf8(bytes)
         .context("skill is not UTF-8")?
         .replace("\r\n", "\n");
@@ -704,22 +788,21 @@ fn validate_skill_md(path: &str, name: &str, bytes: &[u8]) -> Result<Metadata> {
         .strip_prefix("---\n")
         .and_then(|s| s.split_once("\n---").map(|p| p.0))
         .with_context(|| format!("{path}: missing YAML frontmatter"))?;
-    let meta: Metadata =
-        serde_yaml::from_str(front).with_context(|| format!("{path}: invalid metadata"))?;
-    if meta.name != name
-        || name.is_empty()
-        || name.starts_with('-')
-        || name.ends_with('-')
-        || name.contains("--")
-        || !name
-            .bytes()
-            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == b'-')
-        || meta.description.trim().is_empty()
-        || meta.description.len() > 1024
-    {
-        bail!("{path}: invalid skill name or description");
-    }
-    Ok(meta)
+    serde_yaml::from_str(front).with_context(|| format!("{path}: invalid metadata"))
+}
+
+/// A skill name follows `[a-z0-9-]` without a leading, trailing or doubled
+/// `-`.
+fn valid_skill_name(name: &str) -> bool {
+    // An empty part is an empty name, or a leading, trailing or doubled `-`.
+    name.split('-').all(|part| {
+        !part.is_empty() && part.bytes().all(|c| matches!(c, b'a'..=b'z' | b'0'..=b'9'))
+    })
+}
+
+/// A description is not blank and has at most 1024 bytes.
+fn valid_description(description: &str) -> bool {
+    !description.trim().is_empty() && description.len() <= 1024
 }
 
 /// The marketplace tree-digest rule (`horch_marketplace::integrity::tree_digest`)
@@ -927,10 +1010,8 @@ mod tests {
             copied_error(&one(r#","budget_exempt":"why","verbatim":true"#, "")),
             "copied 's': a verbatim skill is already exempt; drop budget_exempt"
         );
-        let dup = format!(
-            r#"{{"skills":[{{"name":"s","copied_files":[]}},{{"name":"s","copied_files":[]}}]}}"#
-        );
-        assert_eq!(copied_error(&dup), "copied 's': duplicate entry");
+        let dup = r#"{"skills":[{"name":"s","copied_files":[]},{"name":"s","copied_files":[]}]}"#;
+        assert_eq!(copied_error(dup), "copied 's': duplicate entry");
         let ok = parse_copied(&one(r#","budget_exempt":"why""#, r#""a/b.md""#)).unwrap();
         assert_eq!(ok["s"].copied_files, ["a/b.md"]);
         assert_eq!(ok["s"].budget_exempt.as_deref(), Some("why"));
