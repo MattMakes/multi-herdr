@@ -10,7 +10,7 @@ use std::path::PathBuf;
 
 use anyhow::Result;
 use horch_core::clock;
-use horch_core::harness::inventory::{inventory, AgentRow, BinaryFacts};
+use horch_core::harness::inventory::{inventory, AgentRow, BinaryFacts, ModelUse};
 use horch_core::harness::HarnessKind;
 use horch_core::routing::quota::QuotaView;
 use horch_core::routing::quota_probe::{probe_version, VersionProbe};
@@ -100,20 +100,13 @@ fn table(rows: &[AgentRow], no_probe: bool) -> String {
         "AGENT", "STATUS", "POOL", "BINARY  VERSION",
     ));
     for r in rows {
-        let version = match (&r.version, &r.broken, r.found, no_probe) {
-            (Some(v), _, _, _) => v.clone(),
-            (None, Some(why), true, _) => format!("(broken: {why})"),
-            (None, None, true, true) => "(not probed)".into(),
-            (None, None, true, false) => "(no answer)".into(),
-            (None, _, false, _) => "-".into(),
-        };
         out.push_str(&format!(
             "{:<agent_w$}  {:<status_w$}  {:<9}  {}  {}\n",
             r.agent,
             status(r),
             r.pool_state,
             r.path.as_deref().unwrap_or("(not found)"),
-            version,
+            version_label(r, no_probe),
         ));
         out.push_str(&format!(
             "{:<agent_w$}    efforts: {}\n",
@@ -129,29 +122,46 @@ fn table(rows: &[AgentRow], no_probe: bool) -> String {
             "", r.capabilities.resume, r.capabilities.headless, r.capabilities.skills
         ));
         for m in &r.models {
-            let users: Vec<String> = m
-                .teammates
-                .iter()
-                .map(|t| match &t.effort {
-                    Some(e) => format!("{} ({e})", t.name),
-                    None => t.name.clone(),
-                })
-                .collect();
-            out.push_str(&format!(
-                "{:<agent_w$}    model {}: {}\n",
-                "",
-                m.model.as_deref().unwrap_or("-"),
-                users.join(", ")
-            ));
+            out.push_str(&model_line(agent_w, m));
         }
     }
     out
 }
 
+/// The last column of a harness row: its version, or why it has none.
+fn version_label(r: &AgentRow, no_probe: bool) -> String {
+    match (&r.version, &r.broken, r.found, no_probe) {
+        (Some(v), _, _, _) => v.clone(),
+        (None, Some(why), true, _) => format!("(broken: {why})"),
+        (None, None, true, true) => "(not probed)".into(),
+        (None, None, true, false) => "(no answer)".into(),
+        (None, _, false, _) => "-".into(),
+    }
+}
+
+/// The line of one model and the teammates that run on it, indented under
+/// the agent column.
+fn model_line(agent_w: usize, m: &ModelUse) -> String {
+    let users: Vec<String> = m
+        .teammates
+        .iter()
+        .map(|t| match &t.effort {
+            Some(e) => format!("{} ({e})", t.name),
+            None => t.name.clone(),
+        })
+        .collect();
+    format!(
+        "{:<agent_w$}    model {}: {}\n",
+        "",
+        m.model.as_deref().unwrap_or("-"),
+        users.join(", ")
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use horch_core::harness::inventory::{CapabilitySummary, ModelUse, TeammateUse};
+    use horch_core::harness::inventory::{CapabilitySummary, TeammateUse};
 
     const HEADER: &str = "AGENT  STATUS       POOL       BINARY  VERSION\n";
 
