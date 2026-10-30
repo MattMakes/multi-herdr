@@ -62,7 +62,7 @@ open first.
 | `execution` | executions: model, the JSON session ledger (`horch sessions`) record and store, spawn plan, the spawn service, lifecycle (`done`) | `crates/horch-core/src/execution/service.rs`, `crates/horch-core/src/execution/store.rs` |
 | `messaging` | the worker brief, the mailbox and message delivery | `crates/horch-core/src/messaging/brief.rs`, `crates/horch-core/src/messaging/mailbox.rs` |
 | `project_notes` | durable project facts (`horch note --fact`) and the host line of every brief | `crates/horch-core/src/project_notes.rs` |
-| `taskledger` | the SQLite task ledger (`horch ledger`): runs, tasks, claims, workers, the watchdog, the finish steps, deterministic stop, the import of old JSON ledgers | `crates/horch-core/src/taskledger/mod.rs`, `crates/horch-core/src/taskledger/finish/mod.rs` |
+| `taskledger` | the SQLite task ledger (`horch ledger`): runs, tasks, claims, workers, the watchdog, the finish steps, deterministic stop, the import of old JSON ledgers, the worktree triage of parked worktrees (`taskledger/triage/`) | `crates/horch-core/src/taskledger/mod.rs`, `crates/horch-core/src/taskledger/finish/mod.rs` |
 | `compaction` | context windows, thresholds, row states and the compaction job | `crates/horch-core/src/compaction/policy.rs`, `crates/horch-core/src/compaction/job.rs` |
 | `workspace` | the herdr client, layout, tiling and balancing | `crates/horch-core/src/workspace/herdr.rs`, `crates/horch-core/src/workspace/tile.rs` |
 | `telemetry` | live per-pane token telemetry and the collector | `crates/horch-core/src/telemetry/collect.rs`, `crates/horch-core/src/telemetry/readers.rs` |
@@ -122,7 +122,7 @@ in `harness/capabilities.rs`.
 | `update.rs` | `horch update`, and the update step of `fleet` and `orchestration` |
 | `usagecmd.rs` | `horch usage` |
 | `worker.rs` | `horch worker` (hidden; runs inside a spawned pane) |
-| `worktree.rs` | `horch worktree new`, `land`, `list` (outside a ledger run) |
+| `worktree.rs` | `horch worktree new`, `land`, `list` (outside a ledger run); `horch worktree triage`, `triage apply`, `restore` and `horch ledger gc` (#308) |
 
 `crates/horch/src/dataset/` holds the `multi-herdr-dataset` commands:
 
