@@ -1085,6 +1085,135 @@ mod tests {
         assert!(!reaper.join().unwrap().success(), "ended by SIGTERM");
     }
 
+    fn one_check(s: &mut Store, run: &Run, w: &str, o: Observation) -> Checked {
+        pass_time(s, w, 600);
+        let obs = Script(RefCell::new(vec![o]));
+        check_run(s, run, &obs, false).unwrap().remove(0)
+    }
+
+    #[test]
+    fn a_check_names_the_workers_task_role_and_pane() {
+        let (_d, mut s, run, w) = setup();
+        s.conn()
+            .execute(
+                "UPDATE workers SET role = 'builder', pane_id = 'p-7' WHERE worker_id = ?1",
+                [&w],
+            )
+            .unwrap();
+        let c = one_check(&mut s, &run, &w, live(None, "idle"));
+        assert_eq!(c.task.as_deref(), Some("T-1"));
+        assert_eq!(c.role.as_deref(), Some("builder"));
+        assert_eq!(c.pane_id.as_deref(), Some("p-7"));
+        assert_eq!(c.worker_id, w);
+        assert!(c.changed);
+        assert_eq!(
+            c.note,
+            "no ledger call, no transcript growth, no state change, no running timer in 600s (no running timer; no transcript)"
+        );
+    }
+
+    #[test]
+    fn a_worker_that_waits_is_progress_and_names_the_reasons() {
+        let (_d, mut s, run, w) = setup();
+        workers::set_wait(s.conn(), &w, "question", "reason b", &[], 3600).unwrap();
+        workers::set_wait(s.conn(), &w, "background", "reason a", &[], 3600).unwrap();
+        let c = one_check(&mut s, &run, &w, live(None, "idle"));
+        assert_eq!(c.verdict, "progress");
+        assert_eq!(c.note, "waiting: reason a; reason b");
+        assert_eq!(c.round, 0);
+    }
+
+    #[test]
+    fn an_agent_that_recorded_progress_since_the_last_check_is_progress() {
+        let (_d, mut s, run, w) = setup();
+        pass_time(&s, &w, 600);
+        s.immediate(|tx| {
+            workers::progress(tx, &w, ProgressSource::Agent, EventKind::Progress, "x")
+        })
+        .unwrap();
+        let obs = Script(RefCell::new(vec![live(None, "idle")]));
+        let c = check_run(&mut s, &run, &obs, false).unwrap().remove(0);
+        assert_eq!(c.verdict, "progress");
+        assert_eq!(c.note, "the agent recorded progress");
+    }
+
+    #[test]
+    fn transcript_growth_is_a_proxy_checkin_and_records_the_source() {
+        let (_d, mut s, run, w) = setup();
+        let grown = |bytes| Observation {
+            transcript_bytes: Some(bytes),
+            ..live(None, "idle")
+        };
+        let first = one_check(&mut s, &run, &w, grown(10));
+        assert_eq!(first.verdict, "no_progress", "{first:?}");
+        let c = one_check(&mut s, &run, &w, grown(20));
+        assert_eq!(c.verdict, "proxy_checkin");
+        assert_eq!(c.note, "the transcript grew");
+        let src: String = s
+            .conn()
+            .query_row(
+                "SELECT last_progress_source FROM workers WHERE worker_id = ?1",
+                [&w],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(src, ProgressSource::Transcript.as_str());
+        // The same size again is no growth.
+        let same = one_check(&mut s, &run, &w, grown(20));
+        assert_eq!(same.verdict, "no_progress", "{same:?}");
+    }
+
+    #[test]
+    fn a_transcript_written_since_the_check_is_a_proxy_checkin_once() {
+        let (_d, mut s, run, w) = setup();
+        let written = || Observation {
+            transcript_mtime: Some("2999-01-01T00:00:00Z".into()),
+            ..live(None, "idle")
+        };
+        let c = one_check(&mut s, &run, &w, written());
+        assert_eq!(c.verdict, "proxy_checkin", "{c:?}");
+        assert_eq!(c.note, "the transcript grew");
+        // The same mtime as the last check is not new.
+        let again = one_check(&mut s, &run, &w, written());
+        assert_eq!(again.verdict, "no_progress", "{again:?}");
+    }
+
+    #[test]
+    fn a_moved_herdr_counter_is_a_proxy_checkin() {
+        let (_d, mut s, run, w) = setup();
+        let seq = |n| Observation {
+            herdr_seq: Some(n),
+            ..live(None, "idle")
+        };
+        let first = one_check(&mut s, &run, &w, seq(1));
+        assert_eq!(first.verdict, "no_progress", "{first:?}");
+        let c = one_check(&mut s, &run, &w, seq(2));
+        assert_eq!(c.verdict, "proxy_checkin");
+        assert_eq!(c.note, "herdr's state changed");
+        let same = one_check(&mut s, &run, &w, seq(2));
+        assert_eq!(same.verdict, "no_progress", "{same:?}");
+    }
+
+    #[test]
+    fn a_timer_that_ran_names_its_seconds_in_the_note() {
+        let (_d, mut s, run, w) = setup();
+        let c = one_check(&mut s, &run, &w, live(screen(10), "idle"));
+        assert_eq!(c.verdict, "proxy_checkin", "{c:?}");
+        assert_eq!(c.note, "the working timer ran the whole interval (600s)");
+    }
+
+    #[test]
+    fn a_short_timer_under_an_idle_pane_names_what_herdr_shows() {
+        let (_d, mut s, run, w) = setup();
+        one_check(&mut s, &run, &w, live(screen(10), "working"));
+        let c = one_check(&mut s, &run, &w, live(screen(12), "blocked"));
+        assert_eq!(c.verdict, "no_progress");
+        assert_eq!(
+            c.note,
+            "suspect: the timer moved 120s in 600s (it stopped about 480s ago), herdr shows blocked"
+        );
+    }
+
     #[test]
     fn a_worker_not_due_is_not_checked() {
         let (_d, mut s, run, _w) = setup();
