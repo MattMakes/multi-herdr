@@ -274,6 +274,61 @@ mod tests {
             .collect()
     }
 
+    /// #218 through a real spawn: this test binary runs again as a process
+    /// of a worker pane, and its `spawn_detached` child prints its env.
+    #[cfg(unix)]
+    #[test]
+    fn spawn_detached_gives_its_child_none_of_the_panes_identity() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = tmp.path().join("state");
+        let pane_tmp = state.join("tmp").join("sonnet-2");
+        std::fs::create_dir_all(&pane_tmp).unwrap();
+        let seen = tmp.path().join("env.txt");
+        let out = Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "runtime::process::tests::detached_identity_child",
+                "--ignored",
+                "--test-threads=1",
+            ])
+            .env("HORCH_TEST_DETACHED_ENV", &seen)
+            .env("HORCH_STATE_DIR", &state)
+            .env("TMPDIR", &pane_tmp)
+            .env("HORCH_ROLE", "sonnet-2")
+            .env("HORCH_RECORD_ID", "r-1")
+            .env("HORCH_WORKER_ID", "w-123")
+            .env("HORCH_WORKSPACE_ID", "W2")
+            .env("HERDR_PANE_ID", "p_9")
+            .output()
+            .unwrap();
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        assert!(
+            out.status.success() && stdout.contains("1 passed"),
+            "{stdout}\n{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let env = std::fs::read_to_string(&seen).unwrap();
+        let keys: Vec<&str> = env.lines().filter_map(|l| l.split('=').next()).collect();
+        for key in PANE_IDENTITY_ENV.iter().chain(&["TMPDIR"]) {
+            assert!(!keys.contains(key), "{key} reached the child:\n{env}");
+        }
+        assert!(
+            keys.contains(&"HORCH_STATE_DIR"),
+            "the rest of the env stays:\n{env}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    #[ignore = "run by spawn_detached_gives_its_child_none_of_the_panes_identity, in a pane's env"]
+    fn detached_identity_child() {
+        let seen = std::env::var_os("HORCH_TEST_DETACHED_ENV").expect("run by its parent test");
+        let file = std::fs::File::create(seen).unwrap();
+        let mut cmd = Command::new("/usr/bin/env");
+        cmd.stdout(file);
+        assert!(spawn_detached(&mut cmd).unwrap().wait().unwrap().success());
+    }
+
     /// #218: a child started from a worker pane does not carry that pane's
     /// identity or its private TMPDIR.
     #[test]
