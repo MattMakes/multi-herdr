@@ -272,6 +272,34 @@ mod tests {
         assert_eq!(read_info(tmp.path()).unwrap().pid, std::process::id());
     }
 
+    /// An old lock directory with no info file has no recorded holder; it
+    /// is broken and taken.
+    #[test]
+    fn an_old_lock_with_no_holder_info_is_broken() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = lock_dir(tmp.path());
+        std::fs::create_dir_all(&dir).unwrap();
+        let old = std::time::SystemTime::now() - std::time::Duration::from_secs(60);
+        std::fs::File::open(&dir)
+            .unwrap()
+            .set_modified(old)
+            .unwrap();
+        assert_eq!(holder(tmp.path()), Holder::Stale(None));
+        let lock = acquire(tmp.path(), &this_process("now", &test_ctx())).unwrap();
+        assert!(lock.is_ok(), "the empty stale lock is broken and taken");
+        assert_eq!(read_info(tmp.path()).unwrap().pid, std::process::id());
+    }
+
+    /// A young lock directory with no info is a holder mid-write: live.
+    #[test]
+    fn a_young_lock_with_no_holder_info_is_refused() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(lock_dir(tmp.path())).unwrap();
+        let second = acquire(tmp.path(), &this_process("now", &test_ctx())).unwrap();
+        assert_eq!(second.unwrap_err(), LockInfo::default());
+        assert!(lock_dir(tmp.path()).is_dir(), "the young lock is kept");
+    }
+
     /// A pid that names no single process (it would turn into -1, every
     /// process, as a `pid_t`) is a dead holder.
     #[test]
