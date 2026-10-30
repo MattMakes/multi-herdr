@@ -10,7 +10,7 @@ use std::time::{Duration, SystemTime};
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 
-use crate::messaging::private;
+use crate::messaging::{file_safe, private};
 
 const ACK_RETENTION: Duration = Duration::from_secs(7 * 24 * 60 * 60);
 static NEXT_ID: AtomicU64 = AtomicU64::new(0);
@@ -526,18 +526,6 @@ fn mail_id(created_at: SystemTime, enqueued_at: SystemTime, pid: u32, counter: u
     let millis = since(created_at).as_millis();
     let nanos = since(enqueued_at).as_nanos();
     Id(format!("{millis:013}-{nanos:020}-{pid}-{counter}"))
-}
-
-fn file_safe(s: &str) -> String {
-    s.chars()
-        .map(|c| {
-            if c.is_ascii_alphanumeric() || c == '-' {
-                c
-            } else {
-                '_'
-            }
-        })
-        .collect()
 }
 
 #[cfg(test)]
