@@ -1147,9 +1147,9 @@ mod tests {
     fn a_line_over_the_limit_is_a_bad_request_and_one_at_the_limit_is_not() {
         // `len` counts the newline too.
         let line = |len: usize| {
-            let mut line = format!("{{\"ping\":true,\"pad\":\"").into_bytes();
+            let mut line = String::from("{\"ping\":true,\"pad\":\"").into_bytes();
             let pad = len - line.len() - 3;
-            line.extend(std::iter::repeat(b'x').take(pad));
+            line.extend(std::iter::repeat_n(b'x', pad));
             line.extend_from_slice(b"\"}\n");
             line
         };
