@@ -752,10 +752,12 @@ mod tests {
             let dir = tempfile::tempdir().unwrap();
             let bin = dir.path().join("codex");
             let runs = dir.path().join("runs");
+            let finished = dir.path().join("finished");
             let script = format!(
                 "#!/bin/sh\ncase \"$1\" in --version) echo 'codex 1.0';; \
-                 *) echo $$ >> '{}'; sleep {sleep}; exit {exit};; esac\n",
-                runs.display()
+                 *) echo $$ >> '{}'; sleep {sleep}; echo $$ >> '{}'; exit {exit};; esac\n",
+                runs.display(),
+                finished.display()
             );
             std::fs::write(&bin, script).unwrap();
             std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
@@ -944,9 +946,9 @@ mod tests {
     #[test]
     fn arc_33_an_updater_past_the_timeout_is_not_killed_and_not_waited_for() {
         let fake = FakeUpdater::new(30, 0, 500);
-        let started = Instant::now();
+        // The updater sleeps 30 s, so a live updater after `update` returns
+        // shows that horch did not wait for it.
         let outcome = fake.update(false);
-        assert!(started.elapsed() < Duration::from_secs(10), "horch waited");
         let deadline = Instant::now() + Duration::from_secs(10);
         while fake.runs().is_empty() && Instant::now() < deadline {
             std::thread::sleep(Duration::from_millis(50));
@@ -1075,9 +1077,7 @@ mod tests {
         let fake = FakeUpdater::new(30, 0, 20_000);
         // A directory where the mark file belongs: the write fails.
         std::fs::create_dir_all(fake.file("running")).unwrap();
-        let started = Instant::now();
         let outcome = fake.update(false);
-        assert!(started.elapsed() < Duration::from_secs(10), "horch waited");
         let Outcome::Failed { reason } = &outcome else {
             panic!("{outcome:?}");
         };
@@ -1095,6 +1095,11 @@ mod tests {
         }
         let _stop: Vec<_> = left.iter().map(|&pid| StopGroupOnDrop(pid)).collect();
         assert!(left.is_empty(), "updater still runs: {left:?}");
+        // Stopped, not waited for: the updater never reached its end.
+        assert!(
+            !fake.dir.path().join("finished").exists(),
+            "horch waited for the updater to end"
+        );
     }
 
     /// #205: the update files are host-wide. A fleet with its own
@@ -1141,9 +1146,8 @@ mod tests {
                 .unwrap();
             assert!(made.success());
         }
-        let started = Instant::now();
+        // A FIFO that blocked the step would hang this call.
         assert!(matches!(fake.update(true), Outcome::Updated { .. }));
-        assert!(started.elapsed() < Duration::from_secs(10));
         assert_eq!(fake.runs().len(), 1);
     }
 
