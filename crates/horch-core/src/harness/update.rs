@@ -518,24 +518,34 @@ fn run_updater(
 ) -> Ran {
     process::scrub_child_env(&mut cmd);
     let name = cmd.get_program().to_string_lossy().into_owned();
-    let (logs, mut tails) = match open_logs(files) {
-        Ok(opened) => opened,
-        Err(e) => return Ran::Failed(cut(&format!("{name} log: {e}"))),
-    };
+    match start_updater(cmd, files, now, &name) {
+        Ok((mut child, mut tails)) => wait_or_kill(&mut child, &name, timeout, &mut tails),
+        Err(reason) => Ran::Failed(reason),
+    }
+}
+
+/// Start `cmd` with its output in the logs of `files` and its `.running`
+/// mark written. Its child and horch's handles to the logs, or why not.
+fn start_updater(
+    mut cmd: Command,
+    files: &UpdateFiles,
+    now: chrono::DateTime<chrono::Utc>,
+    name: &str,
+) -> Result<(Child, LogPair), String> {
+    let (logs, tails) = open_logs(files).map_err(|e| cut(&format!("{name} log: {e}")))?;
     cmd.stdin(Stdio::null()).stdout(logs.0).stderr(logs.1);
     #[cfg(unix)]
     std::os::unix::process::CommandExt::process_group(&mut cmd, 0);
-    let mut child = match cmd.spawn() {
-        Ok(child) => child,
-        Err(e) => return Ran::Failed(cut(&format!("{name} did not start: {e}"))),
-    };
+    let mut child = cmd
+        .spawn()
+        .map_err(|e| cut(&format!("{name} did not start: {e}")))?;
     // An unmarked updater must not outlive horch: a later horch would run a
     // second one beside it. It is stopped before it can change anything.
     if let Err(e) = files.set_running(child.id(), now) {
         stop_group(&mut child);
-        return Ran::Failed(cut(&format!("{name} could not be marked as running: {e}")));
+        return Err(cut(&format!("{name} could not be marked as running: {e}")));
     }
-    wait_or_kill(&mut child, &name, timeout, &mut tails)
+    Ok((child, tails))
 }
 
 /// The stdout and stderr log files of `files`, and horch's own handles to
@@ -558,12 +568,12 @@ fn wait_or_kill(child: &mut Child, name: &str, timeout: Duration, tails: &mut Lo
     let deadline = Instant::now() + timeout;
     loop {
         match child.try_wait() {
-            Ok(Some(status)) => return finished(status, name, tails),
+            Ok(Some(status)) => break finished(status, name, tails),
             Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(50)),
-            Ok(None) => return Ran::Detached,
+            Ok(None) => break Ran::Detached,
             Err(e) => {
                 stop_group(child);
-                return Ran::Failed(cut(&format!("waiting for {name}: {e}")));
+                break Ran::Failed(cut(&format!("waiting for {name}: {e}")));
             }
         }
     }
