@@ -43,6 +43,7 @@ pub mod competition;
 pub mod dataset;
 pub mod evaluation;
 pub mod execution;
+pub mod exeid;
 pub mod fleet_runs;
 pub mod fsx;
 pub mod harness;

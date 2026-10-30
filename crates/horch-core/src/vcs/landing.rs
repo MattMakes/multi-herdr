@@ -1147,11 +1147,12 @@ mod tests {
 
     #[test]
     fn arc_31_long_check_keeps_the_lock() {
-        // The check holds until the test releases it, so it outlives the
-        // stale age by a known margin; wall-clock races under a loaded test
-        // run made the 0.3 s version flaky.
+        // The check holds until the test releases it. The test ages the
+        // lock past its stale age by hand and waits for the heartbeat to
+        // refresh it: no wall-clock margin, which a loaded test run (a slow
+        // fsync in the refresh) broke at a 0.4 s stale age.
         let fixture = Fixture::new();
-        let stale = Duration::from_millis(400);
+        let stale = Duration::from_secs(3600);
         let landing = configured_landing(&fixture.state, &fixture.config).with_lock_timing(
             stale,
             Duration::from_millis(200),
@@ -1173,13 +1174,31 @@ mod tests {
         let land = std::thread::spawn(move || {
             worker_landing.land(&worker_path, "worker", Some("one"), Some(&command))
         });
-        let deadline = std::time::Instant::now() + Duration::from_secs(60);
-        while !marker.exists() && std::time::Instant::now() < deadline {
-            std::thread::sleep(Duration::from_millis(5));
-        }
-        assert!(marker.exists(), "the check started");
-        // Without the heartbeat the lock would be stale by now.
-        std::thread::sleep(stale * 5 / 2);
+        let wait_for = |what: &str, done: &dyn Fn() -> bool| {
+            let deadline = std::time::Instant::now() + Duration::from_secs(60);
+            while !done() && std::time::Instant::now() < deadline {
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            if !done() {
+                // A failed assert must not leave the check looping forever.
+                fs::write(&release, "").unwrap();
+                panic!("{what}");
+            }
+        };
+        wait_for("the check started", &|| marker.exists());
+        let lock = fs::read_dir(fixture.state.join("worktrees"))
+            .unwrap()
+            .flatten()
+            .map(|e| e.path())
+            .find(|p| p.extension().is_some_and(|x| x == "lock"))
+            .expect("the land holds the registry lock");
+        let mtime = || fs::metadata(&lock).and_then(|m| m.modified()).ok();
+        let aged = std::time::SystemTime::now() - stale * 2;
+        fs::File::open(&lock).unwrap().set_modified(aged).unwrap();
+        // Without the heartbeat the lock stays stale.
+        wait_for("the heartbeat refreshed the lock", &|| {
+            mtime().is_some_and(|t| t > aged + stale)
+        });
         let second = landing.create(&fixture.repo, "worker-2", None, "two");
         // Release before any assert: a failed assert must not leave the
         // check looping forever.

@@ -283,6 +283,45 @@ fn pre_01_namespace_free() {
     assert!(detail(&r, "PRE-01").contains("mh/exp/0a1b2c3d/r0/opus"));
 }
 
+#[test]
+fn pre_01_lists_every_problem_in_rule_order() {
+    let mut p = plan();
+    p.git.toplevel = None;
+    p.git.base_sha = None;
+    p.git.dirty = true;
+    p.git.git_version = Some("git version 2.16.6".into());
+    p.git.namespace_taken = vec!["mh/a".into(), "mh/b".into()];
+    p.git.promote_target_problem = Some("'release' is not a local branch".into());
+    let r = evaluate(&p, &mac());
+    assert_eq!(status(&r, "PRE-01"), CheckStatus::Fail);
+    assert_eq!(
+        detail(&r, "PRE-01"),
+        "the project is not inside a git repository; \
+         no base commit (HEAD does not resolve); \
+         the working tree is dirty (commit, or pass --allow-dirty); \
+         git 2.16 is older than 2.17; \
+         branch names already exist: mh/a, mh/b; \
+         'release' is not a local branch"
+    );
+
+    // An unknown version is its own problem; unsupported worktrees come
+    // first and hide it.
+    let mut p = plan();
+    p.git.git_version = None;
+    assert_eq!(
+        detail(&evaluate(&p, &mac()), "PRE-01"),
+        "the git version is unknown"
+    );
+    p.git.worktree_supported = false;
+    assert_eq!(
+        detail(&evaluate(&p, &mac()), "PRE-01"),
+        "git worktrees are not supported"
+    );
+
+    // A clean ready tree says so.
+    assert_eq!(detail(&evaluate(&plan(), &mac()), "PRE-01"), "git ready");
+}
+
 // ─── PRE-02 disk ────────────────────────────────────────────────────────────
 
 #[test]
@@ -879,6 +918,57 @@ fn pre_14_untrusted_root_refuses_with_the_fix() {
     p.candidates.retain(|c| c.harness == HarnessKind::OpenCode);
     p.trust.clear();
     assert_eq!(status(&evaluate(&p, &mac()), "PRE-14"), CheckStatus::Pass);
+}
+
+#[test]
+fn pre_14_messages_for_each_trust_state() {
+    // Untrusted: the fix follows the reason. Unknown: a warning that names
+    // the reason, or "not checked" when the store was not read.
+    let mut p = plan();
+    p.trust[0].state = TrustState::Untrusted;
+    p.trust[0].reason = "~/.claude.json has no entry".into();
+    p.trust[1].state = TrustState::Unknown;
+    p.trust[1].reason = "~/.codex/config.toml is broken".into();
+    let r = evaluate(&p, &mac());
+    assert_eq!(status(&r, "PRE-14"), CheckStatus::Fail);
+    assert_eq!(
+        detail(&r, "PRE-14"),
+        "claude has not trusted /Users/op/projects/app (~/.claude.json has no entry). Run once: \
+         cd '/Users/op/projects/app' && claude  (choose \"Yes, I trust this folder\", then exit)"
+    );
+
+    p.trust[0].state = TrustState::Trusted;
+    let r = evaluate(&p, &mac());
+    assert_eq!(status(&r, "PRE-14"), CheckStatus::Warn);
+    assert_eq!(
+        detail(&r, "PRE-14"),
+        "codex trust is unknown (~/.codex/config.toml is broken); a trust dialog may stop its panes"
+    );
+
+    p.trust.remove(1);
+    assert_eq!(
+        detail(&evaluate(&p, &mac()), "PRE-14"),
+        "codex trust is unknown (not checked); a trust dialog may stop its panes"
+    );
+
+    // An unknown root: warn, whatever the stores say.
+    let mut p = plan();
+    p.trust_root = None;
+    let r = evaluate(&p, &mac());
+    assert_eq!(status(&r, "PRE-14"), CheckStatus::Warn);
+    assert_eq!(
+        detail(&r, "PRE-14"),
+        "the repository root is unknown, so harness trust was not checked"
+    );
+    assert_eq!(
+        detail(&evaluate(&plan(), &mac()), "PRE-14"),
+        "every candidate harness trusts /Users/op/projects/app"
+    );
+    p.candidates.retain(|c| c.harness == HarnessKind::OpenCode);
+    assert_eq!(
+        detail(&evaluate(&p, &mac()), "PRE-14"),
+        "no candidate harness asks for trust"
+    );
 }
 
 #[test]

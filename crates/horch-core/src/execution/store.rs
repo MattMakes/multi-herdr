@@ -21,7 +21,7 @@ use crate::execution::model::{
     Execution, ExecutionKind, ExecutionStatus, FailureKind, LaunchStage, SessionState, Task,
 };
 use crate::fsx::{self, DirLock};
-use crate::ids::IdError;
+use crate::ids::{IdError, PaneId, WorkspaceId};
 use crate::runtime::Paths;
 use crate::skills::activation::ResolvedSkillRef;
 use crate::workspace::client::WorkspaceClient;
@@ -136,38 +136,57 @@ impl From<IdError> for LegacyError {
     }
 }
 
-fn kind_of(r: &LedgerRecordV1) -> Result<ExecutionKind, LegacyError> {
-    let bad = |reason: &str| LegacyError::Kind {
+fn kind_error(r: &LedgerRecordV1, reason: &str) -> LegacyError {
+    LegacyError::Kind {
         record: r.record_id.clone(),
         reason: reason.to_string(),
-    };
-    if r.kind == KIND_ORCHESTRATOR {
-        return match (&r.experiment_id, &r.round_id, &r.label) {
-            (None, None, None) => Ok(ExecutionKind::Orchestrator),
-            _ => Err(bad("an orchestrator has no experiment, round or label")),
-        };
     }
-    if r.kind != KIND_WORKER {
-        return Err(bad(&format!("unknown kind '{}'", r.kind)));
+}
+
+fn kind_of(r: &LedgerRecordV1) -> Result<ExecutionKind, LegacyError> {
+    match r.kind.as_str() {
+        KIND_ORCHESTRATOR => orchestrator_kind(r),
+        KIND_WORKER => worker_kind(r),
+        other => Err(kind_error(r, &format!("unknown kind '{other}'"))),
     }
+}
+
+fn orchestrator_kind(r: &LedgerRecordV1) -> Result<ExecutionKind, LegacyError> {
+    match (&r.experiment_id, &r.round_id, &r.label) {
+        (None, None, None) => Ok(ExecutionKind::Orchestrator),
+        _ => Err(kind_error(
+            r,
+            "an orchestrator has no experiment, round or label",
+        )),
+    }
+}
+
+fn worker_kind(r: &LedgerRecordV1) -> Result<ExecutionKind, LegacyError> {
     match (&r.experiment_id, &r.round_id, &r.label) {
         (None, None, None) => Ok(ExecutionKind::Worker),
         (None, Some(round), Some(label)) if label.starts_with(JUDGE_LABEL) => {
-            let attempt = label[JUDGE_LABEL.len()..]
-                .parse()
-                .map_err(|_| bad(&format!("judge label '{label}' has no attempt number")))?;
-            Ok(ExecutionKind::Judge {
-                round: round.parse()?,
-                attempt,
-            })
+            judge_kind(r, round, label)
         }
         (Some(experiment), Some(round), Some(label)) => Ok(ExecutionKind::Candidate {
             experiment: experiment.parse()?,
             round: round.parse()?,
             label: label.clone(),
         }),
-        _ => Err(bad("experiment_id, round_id and label do not name a kind")),
+        _ => Err(kind_error(
+            r,
+            "experiment_id, round_id and label do not name a kind",
+        )),
     }
+}
+
+fn judge_kind(r: &LedgerRecordV1, round: &str, label: &str) -> Result<ExecutionKind, LegacyError> {
+    let attempt = label[JUDGE_LABEL.len()..]
+        .parse()
+        .map_err(|_| kind_error(r, &format!("judge label '{label}' has no attempt number")))?;
+    Ok(ExecutionKind::Judge {
+        round: round.parse()?,
+        attempt,
+    })
 }
 
 /// The typed view of a ledger record. Every key of the record has a place in
@@ -176,7 +195,7 @@ fn kind_of(r: &LedgerRecordV1) -> Result<ExecutionKind, LegacyError> {
 /// A `session_id` of `""` (the bash spelling for none) reads as
 /// [`SessionState::Unavailable`] and writes back as `""`.
 pub fn to_execution(r: &LedgerRecordV1) -> Result<Execution, LegacyError> {
-    let path = |p: &Option<String>| p.as_ref().map(std::path::PathBuf::from);
+    let (workspace, pane) = placement(r)?;
     Ok(Execution {
         id: r.record_id.parse()?,
         kind: kind_of(r)?,
@@ -186,23 +205,15 @@ pub fn to_execution(r: &LedgerRecordV1) -> Result<Execution, LegacyError> {
         effort: r.effort.clone(),
         phase: r.phase,
         role: r.role.parse()?,
-        task: Task {
-            id: r.task_id.as_deref().map(str::parse).transpose()?,
-            text: r.task.clone(),
-            plan: r.plan.clone(),
-        },
+        task: task_of(r)?,
         status: r.execution_status(),
         typed_status: r.state.is_some(),
-        session: match r.session_id.as_deref() {
-            None => SessionState::Pending,
-            Some("") => SessionState::Unavailable,
-            Some(id) => SessionState::Known(id.parse()?),
-        },
+        session: session_state(r.session_id.as_deref())?,
         exit_code: r.exit_code,
-        project: path(&r.project),
-        workdir: path(&r.workdir),
-        workspace: r.workspace_id.as_deref().map(str::parse).transpose()?,
-        pane: r.pane_id.as_deref().map(str::parse).transpose()?,
+        project: r.project.as_ref().map(std::path::PathBuf::from),
+        workdir: r.workdir.as_ref().map(std::path::PathBuf::from),
+        workspace,
+        pane,
         skills: r.skills.clone(),
         routing: r.routing.clone(),
         via: r.via.clone(),
@@ -211,6 +222,29 @@ pub fn to_execution(r: &LedgerRecordV1) -> Result<Execution, LegacyError> {
         created_at: r.created_at.clone(),
         updated_at: r.updated_at.clone(),
         finished_at: r.finished_at.clone(),
+    })
+}
+
+fn session_state(id: Option<&str>) -> Result<SessionState, LegacyError> {
+    match id {
+        None => Ok(SessionState::Pending),
+        Some("") => Ok(SessionState::Unavailable),
+        Some(id) => Ok(SessionState::Known(id.parse()?)),
+    }
+}
+
+fn placement(r: &LedgerRecordV1) -> Result<(Option<WorkspaceId>, Option<PaneId>), LegacyError> {
+    Ok((
+        r.workspace_id.as_deref().map(str::parse).transpose()?,
+        r.pane_id.as_deref().map(str::parse).transpose()?,
+    ))
+}
+
+fn task_of(r: &LedgerRecordV1) -> Result<Task, LegacyError> {
+    Ok(Task {
+        id: r.task_id.as_deref().map(str::parse).transpose()?,
+        text: r.task.clone(),
+        plan: r.plan.clone(),
     })
 }
 
@@ -306,9 +340,7 @@ impl ExecutionStore {
     /// All records, oldest write order preserved. An absent or empty file reads
     /// as an empty ledger, matching the bash `[]` default.
     pub fn read(&self) -> Result<Vec<LedgerRecordV1>> {
-        let Ok(raw) = std::fs::read_to_string(&self.path) else {
-            return Ok(Vec::new());
-        };
+        let raw = std::fs::read_to_string(&self.path).unwrap_or_default();
         if raw.trim().is_empty() {
             return Ok(Vec::new());
         }
@@ -588,40 +620,23 @@ impl ExecutionStore {
     /// without a pane, an orchestrator, and a herdr that does not answer
     /// leave the record alone. Returns whether it ended the record.
     pub fn end_if_pane_closed(&self, key: &str, ws: &dyn WorkspaceClient) -> Result<bool> {
-        let Ok(record) = self.get(key) else {
-            return Ok(false);
-        };
-        let Some(pane) = record.pane_id.as_deref() else {
-            return Ok(false);
-        };
-        if record.status != STATUS_WORKING || record.is_orchestrator() {
-            return Ok(false);
-        }
-        if ws.pane_get(pane).is_ok() || !ws.server_reachable() {
-            return Ok(false);
-        }
         let at = crate::clock::now_stamp();
-        self.update(|records| {
-            let mut ended = false;
-            // Re-checked under the lock: the worker may run `horch done` now.
-            for r in records
-                .iter_mut()
-                .filter(|r| r.record_id == record.record_id && r.status == STATUS_WORKING)
-            {
-                r.set_state(ExecutionStatus::Failed {
-                    failure: FailureKind::PaneVanished,
-                });
-                r.finished_at.get_or_insert_with(|| at.clone());
-                r.updated_at = at.clone();
-                r.history.push(HistoryEntry {
-                    at: at.clone(),
-                    event: "ended".to_string(),
-                    text: PANE_CLOSED.to_string(),
-                });
-                ended = true;
-            }
-            Ok(ended)
-        })
+        match self.closed_working_record(key, ws) {
+            None => Ok(false),
+            Some(record) => self.update(|rs| Ok(mark_pane_vanished(rs, &record.record_id, &at))),
+        }
+    }
+
+    /// The newest record `key` addresses, when it is a working worker whose
+    /// pane herdr (answering) does not have.
+    fn closed_working_record(&self, key: &str, ws: &dyn WorkspaceClient) -> Option<LedgerRecordV1> {
+        let record = self.get(key).ok()?;
+        if record.status != STATUS_WORKING || record.is_orchestrator() {
+            return None;
+        }
+        let pane = record.pane_id.as_deref()?;
+        let gone = ws.pane_get(pane).is_err() && ws.server_reachable();
+        gone.then_some(record)
     }
 
     /// Records whose typed status is live: starting or running.
@@ -632,6 +647,31 @@ impl ExecutionStore {
             .filter(|r| r.execution_status().is_live())
             .collect())
     }
+}
+
+/// End the still-working rows of `record_id` as `PaneVanished`. Re-checked
+/// under the lock: the worker may run `horch done` now.
+fn mark_pane_vanished(records: &mut [LedgerRecordV1], record_id: &str, at: &str) -> bool {
+    let mut ended = false;
+    for r in records.iter_mut() {
+        if r.record_id != record_id || r.status != STATUS_WORKING {
+            continue;
+        }
+        r.set_state(ExecutionStatus::Failed {
+            failure: FailureKind::PaneVanished,
+        });
+        if r.finished_at.is_none() {
+            r.finished_at = Some(at.to_string());
+        }
+        r.updated_at = at.to_string();
+        r.history.push(HistoryEntry {
+            at: at.to_string(),
+            event: "ended".to_string(),
+            text: PANE_CLOSED.to_string(),
+        });
+        ended = true;
+    }
+    ended
 }
 
 /// The text of each record, in the given order.

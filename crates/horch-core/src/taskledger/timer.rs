@@ -18,6 +18,18 @@ pub enum Agent {
     Any,
 }
 
+impl Agent {
+    /// The agent CLI whose timer formats a fleet harness prints, or None for
+    /// a harness with no known format (#203).
+    pub fn of_harness(harness: &str) -> Option<Agent> {
+        match harness {
+            "codex" => Some(Agent::Codex),
+            "claude" => Some(Agent::Claude),
+            _ => None,
+        }
+    }
+}
+
 /// How long the agent's on-screen timer says it has been working, in seconds,
 /// or None when the screen shows no running timer. Never Some(0) for "no timer".
 ///
