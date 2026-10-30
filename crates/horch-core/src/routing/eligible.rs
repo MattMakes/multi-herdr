@@ -267,3 +267,160 @@ pub fn roster_eligibility(
         })
         .collect()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::routing::policy::Policy;
+    use crate::routing::quota::QuotaFile;
+
+    fn view(name: &str) -> QuotaView {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/telemetry/quota")
+            .join(format!("{name}.json"));
+        QuotaView::new(
+            QuotaFile::read(&path).unwrap(),
+            crate::clock::parse("2026-09-28T18:00:00Z").unwrap(),
+            Policy::default(),
+            true,
+        )
+    }
+
+    /// One way to break one `roster_rule` rule, applied to a clean teammate.
+    struct Breaker {
+        reason: ExclusionReason,
+        teammate: fn(&mut Teammate),
+        filter: fn(&mut EligibilityFilter),
+        pool: bool,
+    }
+
+    const NOTHING_T: fn(&mut Teammate) = |_| {};
+    const NOTHING_F: fn(&mut EligibilityFilter) = |_| {};
+
+    /// In the order `roster_rule` applies the rules.
+    fn breakers() -> Vec<Breaker> {
+        use ExclusionReason as R;
+        let b = |reason, teammate, filter, pool| Breaker {
+            reason,
+            teammate,
+            filter,
+            pool,
+        };
+        vec![
+            b(
+                R::ExcludedByConfig,
+                NOTHING_T,
+                |f| {
+                    f.excluded.insert(TeammateName::new("sonnet").unwrap());
+                },
+                false,
+            ),
+            b(R::Hidden, |t| t.hidden = true, NOTHING_F, false),
+            b(R::AgentNone, |t| t.agent = HarnessKind::None, NOTHING_F, false),
+            b(
+                R::ReservedTier,
+                |t| t.model = Some("gpt-6-astra".into()),
+                NOTHING_F,
+                false,
+            ),
+            b(R::Unspawnable, |t| t.model = None, NOTHING_F, false),
+            b(
+                R::EffortUnsupported,
+                |t| t.effort = Some("bogus".into()),
+                NOTHING_F,
+                false,
+            ),
+            b(R::TrainsOnInput, |t| t.trains_on_input = true, NOTHING_F, false),
+            b(
+                R::HarnessUnavailable,
+                NOTHING_T,
+                |f| f.available_harnesses = Some(Vec::new()),
+                false,
+            ),
+            b(R::PoolBlocked, NOTHING_T, NOTHING_F, true),
+            b(
+                R::OverBudget,
+                NOTHING_T,
+                |f| {
+                    f.max_cost_microusd = Some(1);
+                    f.estimated_cost_microusd
+                        .insert(TeammateName::new("sonnet").unwrap(), 2);
+                },
+                false,
+            ),
+        ]
+    }
+
+    /// The rule a clean `sonnet` breaks after the chosen breakers apply.
+    fn rule_after(chosen: &[&Breaker]) -> Option<ExclusionReason> {
+        let mut t = Roster::builtin().unwrap().require("sonnet").unwrap().clone();
+        let mut filter = EligibilityFilter::default();
+        let mut blocked = false;
+        for b in chosen {
+            (b.teammate)(&mut t);
+            (b.filter)(&mut filter);
+            blocked |= b.pool;
+        }
+        let view = view(if blocked { "all-exhausted" } else { "all-ok" });
+        let e = entry(&t, &view, None).unwrap();
+        roster_rule(&t, &e, &filter)
+    }
+
+    #[test]
+    fn a_clean_teammate_breaks_no_rule() {
+        assert_eq!(rule_after(&[]), None);
+    }
+
+    #[test]
+    fn each_breaker_trips_only_its_own_rule() {
+        let all = breakers();
+        for b in &all {
+            assert_eq!(rule_after(&[b]), Some(b.reason), "{}", b.reason);
+        }
+    }
+
+    /// A teammate that breaks 2 rules gets the reason of the earlier rule.
+    #[test]
+    fn the_earlier_rule_names_the_reason() {
+        use ExclusionReason as R;
+        let all = breakers();
+        for (i, first) in all.iter().enumerate() {
+            for second in &all[i + 1..] {
+                // Clearing the model also clears a reserved model.
+                if (first.reason, second.reason) == (R::ReservedTier, R::Unspawnable) {
+                    continue;
+                }
+                assert_eq!(
+                    rule_after(&[first, second]),
+                    Some(first.reason),
+                    "{} before {}",
+                    first.reason,
+                    second.reason
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn every_reason_has_its_serde_name() {
+        let names = [
+            ExclusionReason::NotInRoster,
+            ExclusionReason::Hidden,
+            ExclusionReason::ReservedTier,
+            ExclusionReason::TrainsOnInput,
+            ExclusionReason::PoolBlocked,
+            ExclusionReason::Unspawnable,
+            ExclusionReason::EffortUnsupported,
+            ExclusionReason::HarnessUnavailable,
+            ExclusionReason::AgentNone,
+            ExclusionReason::ExcludedByConfig,
+            ExclusionReason::OverBudget,
+            ExclusionReason::Unpriced,
+        ];
+        assert_eq!(names.len(), 12);
+        for r in names {
+            let json = serde_json::to_string(&r).unwrap();
+            assert_eq!(r.as_str(), json.trim_matches('"'));
+        }
+    }
+}
