@@ -496,29 +496,7 @@ impl QuotaView {
     }
 
     fn assess_reading(&self, pool: &str, scope: Option<&str>, r: &PoolReading) -> Assessment {
-        let now = self.now;
-        let windows: Vec<&Window> = r
-            .windows
-            .iter()
-            .filter(|w| w.scope_model.is_none() || w.scope_model.as_deref() == scope)
-            .collect();
-        let worst = windows.iter().copied().max_by(|a, b| {
-            a.used_at(now)
-                .partial_cmp(&b.used_at(now))
-                .unwrap_or(std::cmp::Ordering::Equal)
-        });
-        let headroom = windows
-            .iter()
-            .map(|w| w.headroom_per_h(now))
-            .min_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-        let rules = Rules {
-            view: self,
-            pool,
-            r,
-            windows,
-            worst,
-            headroom,
-        };
+        let rules = Rules::new(self, pool, scope, r);
         rules
             .full_window()
             .or_else(|| rules.refused())
@@ -557,7 +535,34 @@ struct Rules<'a> {
     headroom: Option<f64>,
 }
 
-impl Rules<'_> {
+impl<'a> Rules<'a> {
+    /// The rules for `r`, over the windows that apply to `scope`.
+    fn new(view: &'a QuotaView, pool: &'a str, scope: Option<&str>, r: &'a PoolReading) -> Self {
+        let now = view.now;
+        let windows: Vec<&Window> = r
+            .windows
+            .iter()
+            .filter(|w| w.scope_model.is_none() || w.scope_model.as_deref() == scope)
+            .collect();
+        let worst = windows.iter().copied().max_by(|a, b| {
+            a.used_at(now)
+                .partial_cmp(&b.used_at(now))
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+        let headroom = windows
+            .iter()
+            .map(|w| w.headroom_per_h(now))
+            .min_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        Rules {
+            view,
+            pool,
+            r,
+            windows,
+            worst,
+            headroom,
+        }
+    }
+
     fn out(
         &self,
         state: State,
@@ -865,26 +870,34 @@ fn row_windows(rl: &Value, have: &[Window]) -> Vec<Window> {
 fn row_window(row: &Value, all: &[Window]) -> Option<Window> {
     let used = pct_of(row, "percent")?;
     let resets = reset_stamp(row.get("resets_at"));
-    match row.get("kind").and_then(Value::as_str) {
-        Some("weekly_scoped") => {
-            let name = row
-                .pointer("/scope/model/display_name")
-                .and_then(Value::as_str)?;
-            let scope = name.to_ascii_lowercase();
-            (!has_scope(all, &scope)).then(|| Window::new(10_080, used, resets, Some(scope)))
-        }
-        Some("weekly_all")
-            if !all
-                .iter()
-                .any(|w| w.minutes == 10_080 && w.scope_model.is_none()) =>
-        {
-            Some(Window::new(10_080, used, resets, None))
-        }
-        Some("session") if !all.iter().any(|w| w.minutes == 300) => {
-            Some(Window::new(300, used, resets, None))
-        }
-        _ => None,
+    let (minutes, scope) = match row.get("kind").and_then(Value::as_str) {
+        Some("weekly_scoped") => (10_080, Some(row_scope(row)?)),
+        Some("weekly_all") => (10_080, None),
+        Some("session") => (300, None),
+        _ => return None,
+    };
+    (!window_held(all, minutes, scope.as_deref()))
+        .then(|| Window::new(minutes, used, resets, scope))
+}
+
+/// Whether `all` has the window a `limits` row would add: the scope's own, the
+/// unscoped weekly one, or any five-hour one.
+fn window_held(all: &[Window], minutes: u64, scope: Option<&str>) -> bool {
+    match scope {
+        Some(s) => has_scope(all, s),
+        None if minutes == 300 => all.iter().any(|w| w.minutes == 300),
+        None => all
+            .iter()
+            .any(|w| w.minutes == minutes && w.scope_model.is_none()),
     }
+}
+
+/// The lower-case model name a `weekly_scoped` row limits.
+fn row_scope(row: &Value) -> Option<String> {
+    let name = row
+        .pointer("/scope/model/display_name")
+        .and_then(Value::as_str)?;
+    Some(name.to_ascii_lowercase())
 }
 
 /// Parse an `account/rateLimits/read` result (quota specification 2). `usedPercent` is
