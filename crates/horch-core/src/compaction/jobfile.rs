@@ -215,3 +215,112 @@ fn create_new(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     file.write_all(bytes)?;
     file.sync_all()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn record(step: &str) -> JobRecord {
+        JobRecord {
+            v: JOB_VERSION,
+            role: "w".into(),
+            record_id: "r1".into(),
+            started_at: "2026-10-07T00:00:00Z".into(),
+            step: step.into(),
+        }
+    }
+
+    fn job_dir_in(root: &Path) -> PathBuf {
+        let dir = job_dir(root, "ws", "role");
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn claim_lost_returns_the_record_once() {
+        let root = tempfile::tempdir().unwrap();
+        let dir = job_dir_in(root.path());
+        create_job(&dir, &record("send")).unwrap();
+        assert_eq!(claim_lost(&dir).unwrap(), Some(record("send")));
+        assert!(dir.join(LOST_FILE).exists());
+        assert_eq!(claim_lost(&dir).unwrap(), None);
+    }
+
+    #[test]
+    fn claim_lost_names_an_unparsable_job_unknown() {
+        let root = tempfile::tempdir().unwrap();
+        let dir = job_dir_in(root.path());
+        std::fs::write(dir.join(JOB_FILE), b"not json").unwrap();
+        let job = claim_lost(&dir).unwrap().unwrap();
+        assert_eq!(job.step, "unknown");
+        assert_eq!(job.v, JOB_VERSION);
+        assert_eq!(job.role, "");
+    }
+
+    #[test]
+    fn claim_lost_without_a_job_file_names_the_step_unknown() {
+        let root = tempfile::tempdir().unwrap();
+        let dir = job_dir_in(root.path());
+        assert_eq!(claim_lost(&dir).unwrap().unwrap().step, "unknown");
+    }
+
+    #[test]
+    fn claim_lost_errors_when_the_dir_is_missing() {
+        let root = tempfile::tempdir().unwrap();
+        let dir = job_dir(root.path(), "ws", "missing");
+        let err = claim_lost(&dir).unwrap_err();
+        assert!(format!("{err:#}").contains("creating"), "{err:#}");
+    }
+
+    #[test]
+    fn start_locked_spawns_and_records_the_pid() {
+        let root = tempfile::tempdir().unwrap();
+        let dir = job_dir(root.path(), "ws", "role");
+        let started = start_locked(&dir, || Ok(4242)).unwrap();
+        assert_eq!(started, Started::Spawned { pid: 4242 });
+        let spawned: Spawned =
+            serde_json::from_slice(&std::fs::read(dir.join(SPAWNED_FILE)).unwrap()).unwrap();
+        assert_eq!(spawned.pid, 4242);
+    }
+
+    #[test]
+    fn start_locked_clears_old_files_before_the_spawn() {
+        let root = tempfile::tempdir().unwrap();
+        let dir = job_dir_in(root.path());
+        for name in [JOB_FILE, HEARTBEAT_FILE, LOST_FILE, LOG_FILE] {
+            let path = dir.join(name);
+            std::fs::write(&path, b"old").unwrap();
+            // Old enough that the job counts as lost, not starting.
+            let old = std::time::SystemTime::now() - Duration::from_secs(3600);
+            std::fs::File::options()
+                .write(true)
+                .open(&path)
+                .unwrap()
+                .set_modified(old)
+                .unwrap();
+        }
+        start_locked(&dir, || Ok(7)).unwrap();
+        for name in [JOB_FILE, HEARTBEAT_FILE, LOST_FILE] {
+            assert!(!dir.join(name).exists(), "{name} stays");
+        }
+        assert!(dir.join(LOG_FILE).exists());
+    }
+
+    #[test]
+    fn start_locked_is_already_running_while_a_job_lives() {
+        let root = tempfile::tempdir().unwrap();
+        let dir = job_dir(root.path(), "ws", "role");
+        start_locked(&dir, || Ok(1)).unwrap();
+        let second = start_locked(&dir, || panic!("a live job must not spawn"));
+        assert_eq!(second.unwrap(), Started::AlreadyRunning);
+    }
+
+    #[test]
+    fn start_locked_returns_a_spawn_error_and_writes_no_spawned_file() {
+        let root = tempfile::tempdir().unwrap();
+        let dir = job_dir(root.path(), "ws", "role");
+        let err = start_locked(&dir, || anyhow::bail!("no fork")).unwrap_err();
+        assert!(format!("{err:#}").contains("no fork"));
+        assert!(!dir.join(SPAWNED_FILE).exists());
+    }
+}
