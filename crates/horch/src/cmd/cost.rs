@@ -168,20 +168,66 @@ pub fn cost(ctx: &RuntimeContext, args: CostArgs) -> Result<()> {
 /// windows; its local time names the files.
 pub fn run(
     args: &CostArgs,
-    mut records: Vec<Record>,
+    records: Vec<Record>,
     roster: Option<&Roster>,
     loc: &Locations,
     now: DateTime<Utc>,
     project: &Path,
     ledger: &str,
 ) -> Result<String> {
-    let since =
-        match &args.since {
-            Some(s) => Some(clock::parse(s).map(clock::stamp).ok_or_else(|| {
-                anyhow::anyhow!("--since: '{s}' is not a date or an RFC 3339 time")
-            })?),
-            None => None,
-        };
+    let since = parse_since(args.since.as_deref())?;
+    let records = select_records(args, records)?;
+    let prices = usage::load_prices(args.pricing.as_deref().map(Path::new))?;
+    let reprice = checked_reprice(&prices, args.reprice.as_deref())?;
+    let local = now.with_timezone(&Local);
+    let prefix = local.format("%Y_%m_%d_%H%M%S").to_string();
+    let read = read_all(&records, loc);
+    let reports = Reports {
+        args,
+        read: &read,
+        roster,
+        prices: &prices,
+        reprice,
+        ledger,
+    };
+    if args.is_filtered() {
+        reports.filtered(since, &prefix)
+    } else {
+        reports.windows(now, &prefix, project)
+    }
+}
+
+/// `--since` as a ledger timestamp.
+fn parse_since(since: Option<&str>) -> Result<Option<String>> {
+    since
+        .map(|s| {
+            clock::parse(s)
+                .map(clock::stamp)
+                .ok_or_else(|| anyhow::anyhow!("--since: '{s}' is not a date or an RFC 3339 time"))
+        })
+        .transpose()
+}
+
+/// `--reprice` when the price table knows the model.
+fn checked_reprice<'a>(
+    prices: &BTreeMap<String, Price>,
+    model: Option<&'a str>,
+) -> Result<Option<&'a str>> {
+    model
+        .map(
+            |model| match usage::cost_of(prices, model, &Tokens::default()) {
+                Some(_) => Ok(model),
+                None => bail!(
+                    "--reprice: no price for '{model}' (known: {})",
+                    known(prices)
+                ),
+            },
+        )
+        .transpose()
+}
+
+/// The ledger records the flags name, plus every `--session` record.
+fn select_records(args: &CostArgs, mut records: Vec<Record>) -> Result<Vec<Record>> {
     if !args.records.is_empty() {
         records.retain(|r| {
             args.records
@@ -193,94 +239,110 @@ pub fn run(
         let Some((agent, id)) = extra.split_once(':') else {
             bail!("--session takes <agent>:<session-id>, e.g. claude:0f10e145-...");
         };
-        records.push(Record {
-            record_id: format!("extra:{id}"),
-            session_id: Some(id.to_string()),
-            agent: agent.to_string(),
-            tier: "(outside ledger)".into(),
-            model: String::new(),
-            effort: None,
-            phase: None,
-            role: "extra".into(),
-            status: String::new(),
-            task: String::new(),
-            history: Vec::new(),
-            created_at: String::new(),
-            updated_at: String::new(),
-            ..Record::default()
-        });
+        records.push(extra_record(agent, id));
     }
-    let prices = usage::load_prices(args.pricing.as_deref().map(Path::new))?;
-    let reprice = match &args.reprice {
-        Some(model) => match usage::cost_of(&prices, model, &Tokens::default()) {
-            Some(_) => Some(model.as_str()),
-            None => bail!(
-                "--reprice: no price for '{model}' (known: {})",
-                known(&prices)
-            ),
-        },
-        None => None,
-    };
-    let local = now.with_timezone(&Local);
-    let prefix = local.format("%Y_%m_%d_%H%M%S").to_string();
-    let read = read_all(&records, loc);
+    Ok(records)
+}
 
-    if args.is_filtered() {
+/// A session outside the ledger, named by `--session`.
+fn extra_record(agent: &str, id: &str) -> Record {
+    Record {
+        record_id: format!("extra:{id}"),
+        session_id: Some(id.to_string()),
+        agent: agent.to_string(),
+        tier: "(outside ledger)".into(),
+        model: String::new(),
+        effort: None,
+        phase: None,
+        role: "extra".into(),
+        status: String::new(),
+        task: String::new(),
+        history: Vec::new(),
+        created_at: String::new(),
+        updated_at: String::new(),
+        ..Record::default()
+    }
+}
+
+/// What every report of one run shares.
+struct Reports<'a> {
+    args: &'a CostArgs,
+    read: &'a [(&'a Record, std::result::Result<Session, Missing>)],
+    roster: Option<&'a Roster>,
+    prices: &'a BTreeMap<String, Price>,
+    reprice: Option<&'a str>,
+    ledger: &'a str,
+}
+
+impl Reports<'_> {
+    fn report(&self, window: Window) -> Report {
+        report(self.read, self.roster, self.prices, self.reprice, window)
+    }
+
+    /// One report for the filtered range, as JSON or text.
+    fn filtered(&self, since: Option<String>, prefix: &str) -> Result<String> {
         let window = Window {
             name: "custom".into(),
-            start: since.clone(),
+            start: since,
             end: None,
         };
-        let report = report(&read, roster, &prices, reprice, window);
-        if let Some(dir) = &args.dir {
+        let report = self.report(window);
+        if let Some(dir) = &self.args.dir {
             write_json(
                 &Path::new(dir).join(format!("{prefix}_custom.json")),
                 &report,
             )?;
         }
-        return Ok(if args.text {
-            render(&report, ledger)
+        if self.args.text {
+            Ok(render(&report, self.ledger))
         } else {
-            serde_json::to_string_pretty(&report)?
-        });
+            Ok(serde_json::to_string_pretty(&report)?)
+        }
     }
 
-    let dir = args
-        .dir
-        .as_ref()
-        .map(PathBuf::from)
-        .unwrap_or_else(|| project.join("ai_docs/reports/cost"));
-    let mut files = BTreeMap::new();
-    let mut windows = BTreeMap::new();
-    let mut text = String::new();
-    for (name, hours) in WINDOWS {
-        let start = clock::stamp(now - chrono::Duration::hours(hours));
-        let window = Window {
-            name: name.to_string(),
-            start: Some(start),
-            end: Some(clock::stamp(now)),
-        };
-        let report = report(&read, roster, &prices, reprice, window);
-        let path = dir.join(format!("{prefix}_{name}.json"));
-        write_json(&path, &report)?;
-        if args.text {
-            text.push_str(&render(&report, ledger));
-            text.push_str(&format!("\nFile: {}\n\n", path.display()));
+    /// One report file per window, then the text of all or the summary.
+    fn windows(&self, now: DateTime<Utc>, prefix: &str, project: &Path) -> Result<String> {
+        let dir = self
+            .args
+            .dir
+            .as_ref()
+            .map(PathBuf::from)
+            .unwrap_or_else(|| project.join("ai_docs/reports/cost"));
+        let mut files = BTreeMap::new();
+        let mut windows = BTreeMap::new();
+        let mut text = String::new();
+        for (name, hours) in WINDOWS {
+            let start = clock::stamp(now - chrono::Duration::hours(hours));
+            let window = Window {
+                name: name.to_string(),
+                start: Some(start),
+                end: Some(clock::stamp(now)),
+            };
+            let report = self.report(window);
+            let path = dir.join(format!("{prefix}_{name}.json"));
+            write_json(&path, &report)?;
+            if self.args.text {
+                text.push_str(&render(&report, self.ledger));
+                text.push_str(&format!("\nFile: {}\n\n", path.display()));
+            }
+            windows.insert(name.to_string(), WindowTotals::of(&report));
+            files.insert(name.to_string(), path);
         }
-        windows.insert(name.to_string(), WindowTotals::of(&report));
-        files.insert(name.to_string(), path);
+        if self.args.text {
+            Ok(text)
+        } else {
+            let summary = Summary {
+                generated_at: now
+                    .with_timezone(&Local)
+                    .to_rfc3339_opts(chrono::SecondsFormat::Secs, false),
+                project: project.to_path_buf(),
+                prices_as_of: PRICES_AS_OF,
+                files,
+                windows,
+            };
+            Ok(serde_json::to_string_pretty(&summary)?)
+        }
     }
-    if args.text {
-        return Ok(text);
-    }
-    let summary = Summary {
-        generated_at: local.to_rfc3339_opts(chrono::SecondsFormat::Secs, false),
-        project: project.to_path_buf(),
-        prices_as_of: PRICES_AS_OF,
-        files,
-        windows,
-    };
-    Ok(serde_json::to_string_pretty(&summary)?)
 }
 
 const PRICES_AS_OF: &str = "2026-09-24";
@@ -429,7 +491,7 @@ pub fn report(
         prices_as_of: PRICES_AS_OF,
         reprice: reprice.map(str::to_string),
         rows: Vec::new(),
-        not_priced: Vec::new(),
+        not_priced: not_priced(read, &span),
         by_teammate: BTreeMap::new(),
         by_harness: BTreeMap::new(),
         by_family: BTreeMap::new(),
@@ -438,65 +500,26 @@ pub fn report(
         skill_use: Vec::new(),
         partly_priced: Vec::new(),
     };
-    for (r, found) in read {
-        let session = match found {
-            Ok(session) => session,
-            Err(reason) => {
-                if may_overlap(r, &span) {
-                    report.not_priced.push(NotPriced {
-                        record_id: r.record_id.clone(),
-                        teammate: r.tier.clone(),
-                        agent: r.agent.clone(),
-                        reason: reason.clone(),
-                    });
-                }
-                continue;
-            }
-        };
-        let used = session.usage(&span);
-        if !span.is_all() && used.by_model.is_empty() {
-            continue;
-        }
-        let path = session.path.clone();
-        let mut cost = 0.0;
-        let mut unpriced = Vec::new();
-        for (model, tokens) in &used.by_model {
-            // A transcript that never names its model is priced as the
-            // model the ledger launched.
-            let model = if model.is_empty() { &r.model } else { model };
-            match usage::cost_of(prices, model, tokens) {
-                Some(c) => cost += c,
-                None => unpriced.push(model.clone()),
-            }
-        }
+    let readable = read
+        .iter()
+        .filter_map(|(r, found)| found.as_ref().ok().map(|session| (*r, session)))
+        .map(|(r, session)| (r, session, session.usage(&span)))
+        .filter(|(_, _, used)| span.is_all() || !used.by_model.is_empty());
+    for (r, session, used) in readable {
+        let (cost, unpriced) = price(prices, &used, &r.model);
         let tokens = used.tokens();
-        let skills_used: BTreeMap<String, u64> = used
-            .skills
-            .iter()
-            .map(|(k, v)| (k.strip_prefix("horch:").unwrap_or(k).to_string(), *v))
-            .collect();
+        let skills_used = skills_loaded(&used);
         let expected_unused = expected_skills(roster, &r.tier)
             .into_iter()
             .filter(|s| !skills_used.contains_key(s))
             .collect();
-        let models: BTreeSet<&str> = used
-            .by_model
-            .keys()
-            .map(|m| {
-                if m.is_empty() {
-                    r.model.as_str()
-                } else {
-                    m.as_str()
-                }
-            })
-            .collect();
-        let row = Row {
+        report.add_row(Row {
             record_id: r.record_id.clone(),
             teammate: r.tier.clone(),
             role: r.role.clone(),
             kind: r.kind.clone(),
             agent: r.agent.clone(),
-            model: models.into_iter().collect::<Vec<_>>().join(", "),
+            model: models_text(&used, &r.model),
             effort: r.effort.clone(),
             family: family(r.phase, &r.role),
             calls: used.calls,
@@ -504,31 +527,100 @@ pub fn report(
             cost,
             reprice_cost: reprice.and_then(|m| usage::cost_of(prices, m, &tokens)),
             unpriced_models: unpriced,
-            transcript: Some(path),
+            transcript: Some(session.path.clone()),
             skills_used,
             expected_unused,
-        };
+        });
+    }
+    report.tables = Tables::of(&report.rows);
+    report.skill_use = tables::skill_use(&report.rows, roster);
+    report
+}
+
+/// The records whose transcript could not be read but may have run in `span`.
+fn not_priced(
+    read: &[(&Record, std::result::Result<Session, Missing>)],
+    span: &Span,
+) -> Vec<NotPriced> {
+    read.iter()
+        .filter_map(|(r, found)| found.as_ref().err().map(|reason| (*r, reason)))
+        .filter(|(r, _)| may_overlap(r, span))
+        .map(|(r, reason)| NotPriced {
+            record_id: r.record_id.clone(),
+            teammate: r.tier.clone(),
+            agent: r.agent.clone(),
+            reason: reason.clone(),
+        })
+        .collect()
+}
+
+/// A transcript that never names its model is priced as the model the
+/// ledger launched.
+fn model_or<'a>(model: &'a str, launched: &'a str) -> &'a str {
+    if model.is_empty() {
+        launched
+    } else {
+        model
+    }
+}
+
+/// The cost of `used`, and the models the price table does not know.
+fn price(
+    prices: &BTreeMap<String, Price>,
+    used: &usage::Usage,
+    launched: &str,
+) -> (f64, Vec<String>) {
+    let mut cost = 0.0;
+    let mut unpriced = Vec::new();
+    for (model, tokens) in &used.by_model {
+        let model = model_or(model, launched);
+        match usage::cost_of(prices, model, tokens) {
+            Some(c) => cost += c,
+            None => unpriced.push(model.to_string()),
+        }
+    }
+    (cost, unpriced)
+}
+
+/// The skills `used` loaded, with the `horch:` plugin prefix dropped.
+fn skills_loaded(used: &usage::Usage) -> BTreeMap<String, u64> {
+    used.skills
+        .iter()
+        .map(|(k, v)| (k.strip_prefix("horch:").unwrap_or(k).to_string(), *v))
+        .collect()
+}
+
+/// The distinct models of `used`, sorted and comma-separated.
+fn models_text(used: &usage::Usage, launched: &str) -> String {
+    let models: BTreeSet<&str> = used
+        .by_model
+        .keys()
+        .map(|m| model_or(m, launched))
+        .collect();
+    models.into_iter().collect::<Vec<_>>().join(", ")
+}
+
+impl Report {
+    /// Fold `row` into the rollups, then keep it.
+    fn add_row(&mut self, row: Row) {
         for (map, key) in [
-            (&mut report.by_teammate, row.teammate.clone()),
-            (&mut report.by_harness, row.agent.clone()),
-            (&mut report.by_family, row.family.clone()),
+            (&mut self.by_teammate, row.teammate.clone()),
+            (&mut self.by_harness, row.agent.clone()),
+            (&mut self.by_family, row.family.clone()),
         ] {
             add(map.entry(key).or_default(), &row);
         }
-        add(&mut report.total, &row);
+        add(&mut self.total, &row);
         if !row.unpriced_models.is_empty() {
-            report.partly_priced.push(PartlyPriced {
+            self.partly_priced.push(PartlyPriced {
                 record_id: row.record_id.clone(),
                 teammate: row.teammate.clone(),
                 agent: row.agent.clone(),
                 models: row.unpriced_models.clone(),
             });
         }
-        report.rows.push(row);
+        self.rows.push(row);
     }
-    report.tables = Tables::of(&report.rows);
-    report.skill_use = tables::skill_use(&report.rows, roster);
-    report
 }
 
 fn add(roll: &mut Rollup, row: &Row) {
