@@ -337,43 +337,11 @@ pub fn context_filtered(
         live,
         role,
     };
-    let roster = match super::load_roster(ctx, None) {
-        Ok(r) => r,
-        Err(_) => Roster::builtin()?,
-    };
-    if windows {
-        let workdir = ctx.paths.current_dir()?;
-        crate::output::print(&windows_table(ctx, &roster, &workdir));
-        return Ok(ExitCode::SUCCESS);
-    }
-    let ledger = Ledger::open_in(ctx)?;
-    let loc = Locations::from_context(ctx);
-    let cache = cache_dir(ctx);
-    let src = Sources {
-        ctx,
-        ledger: &ledger,
-        roster: &roster,
-        loc: &loc,
-        cache_dir: &cache,
-    };
-    let herdr = Herdr::with_bin(&ctx.bins.harness.herdr);
-    let out = if json {
-        context_json_matching(&src, &herdr, filter)
+    let roster = super::load_roster(ctx, None).or_else(|_| Roster::builtin())?;
+    let out = if windows {
+        Ok(windows_table(ctx, &roster, &ctx.paths.current_dir()?))
     } else {
-        context_text_matching(&src, over, filter).map(|mut text| {
-            if let Ok(json) = context_json_matching(&src, &herdr, filter) {
-                if let Ok(rows) = serde_json::from_str::<Vec<serde_json::Value>>(&json) {
-                    for row in rows.into_iter().filter(|r| r["pane_gone"] == true) {
-                        if let Some(role) = row["role"].as_str() {
-                            if text.lines().any(|line| line.starts_with(role)) {
-                                text.push_str(&format!("{role}: (pane gone)\n"));
-                            }
-                        }
-                    }
-                }
-            }
-            text
-        })
+        report(ctx, &roster, over, json, filter)?
     };
     match out {
         Ok(text) => {
@@ -385,6 +353,52 @@ pub fn context_filtered(
             Ok(ExitCode::FAILURE)
         }
     }
+}
+
+/// The text or JSON report of the ledger. The outer `Err` is a setup that
+/// failed (the ledger does not open); the inner one is a report that did not
+/// read, which `context_filtered` prints.
+fn report(
+    ctx: &RuntimeContext,
+    roster: &Roster,
+    over: bool,
+    json: bool,
+    filter: super::ledgercmd::SessionFilter<'_>,
+) -> Result<Result<String>> {
+    let ledger = Ledger::open_in(ctx)?;
+    let loc = Locations::from_context(ctx);
+    let cache = cache_dir(ctx);
+    let src = Sources {
+        ctx,
+        ledger: &ledger,
+        roster,
+        loc: &loc,
+        cache_dir: &cache,
+    };
+    let herdr = Herdr::with_bin(&ctx.bins.harness.herdr);
+    Ok(if json {
+        context_json_matching(&src, &herdr, filter)
+    } else {
+        context_text_matching(&src, over, filter).map(|text| {
+            match context_json_matching(&src, &herdr, filter) {
+                Ok(json) => append_pane_gone(text, &json),
+                Err(_) => text,
+            }
+        })
+    })
+}
+
+/// `<role>: (pane gone)` for each row of the JSON report whose pane is gone
+/// and whose role starts a line of `text`.
+fn append_pane_gone(mut text: String, json: &str) -> String {
+    let rows: Vec<serde_json::Value> = serde_json::from_str(json).unwrap_or_default();
+    let gone = rows.iter().filter(|r| r["pane_gone"] == true);
+    for role in gone.filter_map(|r| r["role"].as_str()) {
+        if text.lines().any(|line| line.starts_with(role)) {
+            text.push_str(&format!("{role}: (pane gone)\n"));
+        }
+    }
+    text
 }
 
 /// The text of `horch context` (`--over`: only rows in `over`, `requested`
@@ -683,56 +697,70 @@ pub(crate) fn windows_table(ctx: &RuntimeContext, roster: &Roster, workdir: &Pat
     ]);
     let mut names = roster.names();
     names.sort_unstable();
-    for name in names {
-        let Some(teammate) = roster.get(name) else {
-            continue;
-        };
-        let kind = teammate.agent;
-        let trigger = kind.capabilities().compaction.trigger;
-        if trigger == horch_core::harness::capabilities::TriggerRule::Unknown {
-            continue;
-        }
-        let model = teammate.model.clone().unwrap_or_default();
-        let decision = launch::window_decision(
-            ctx,
-            teammate,
-            &model,
-            workdir,
-            roster.fleet_window(teammate, &model),
-        );
-        let native = window::native_trigger(trigger, kind.as_str(), &model, decision.tokens, None);
-        let threshold = window::threshold(policy::watch_base(teammate.compact_at), native);
-        let headroom = native.map_or_else(
-            || "-".to_string(),
-            |n| {
-                let h = window::headroom(n, threshold);
-                if h < HEADROOM_FLOOR {
-                    format!("{} WARN", grouped(h))
-                } else {
-                    grouped(h)
-                }
-            },
-        );
-        t.push(vec![
-            teammate.name.clone(),
-            kind.as_str().into(),
-            if model.is_empty() { "-".into() } else { model },
-            number(decision.tokens),
-            source_text(decision.source, false),
-            number(native),
-            grouped(policy::watch_base(teammate.compact_at)),
-            if teammate.compact_at.is_some() {
-                "teammate"
-            } else {
-                "fleet base"
-            }
-            .into(),
-            grouped(threshold),
-            headroom,
-            home_relative(&decision.detail, &ctx.paths.home),
-        ]);
+    let shown = names
+        .into_iter()
+        .filter_map(|name| roster.get(name))
+        .filter(|teammate| {
+            teammate.agent.capabilities().compaction.trigger
+                != horch_core::harness::capabilities::TriggerRule::Unknown
+        });
+    for teammate in shown {
+        t.push(window_row(ctx, roster, teammate, workdir));
     }
     t.render()
+}
+
+/// The 11 cells of 1 teammate in the `--windows` table.
+fn window_row(
+    ctx: &RuntimeContext,
+    roster: &Roster,
+    teammate: &Teammate,
+    workdir: &Path,
+) -> Vec<String> {
+    let kind = teammate.agent;
+    let trigger = kind.capabilities().compaction.trigger;
+    let model = teammate.model.clone().unwrap_or_default();
+    let decision = launch::window_decision(
+        ctx,
+        teammate,
+        &model,
+        workdir,
+        roster.fleet_window(teammate, &model),
+    );
+    let native = window::native_trigger(trigger, kind.as_str(), &model, decision.tokens, None);
+    let threshold = window::threshold(policy::watch_base(teammate.compact_at), native);
+    vec![
+        teammate.name.clone(),
+        kind.as_str().into(),
+        if model.is_empty() { "-".into() } else { model },
+        number(decision.tokens),
+        source_text(decision.source, false),
+        number(native),
+        grouped(policy::watch_base(teammate.compact_at)),
+        base_source(teammate.compact_at).into(),
+        grouped(threshold),
+        headroom_cell(native, threshold),
+        home_relative(&decision.detail, &ctx.paths.home),
+    ]
+}
+
+/// The HEADROOM cell: `-` with no native trigger, else the headroom with
+/// ` WARN` under [`HEADROOM_FLOOR`].
+fn headroom_cell(native: Option<u64>, threshold: u64) -> String {
+    match native.map(|n| window::headroom(n, threshold)) {
+        None => "-".into(),
+        Some(h) if h < HEADROOM_FLOOR => format!("{} WARN", grouped(h)),
+        Some(h) => grouped(h),
+    }
+}
+
+/// The FROM cell: where the watch base comes from.
+fn base_source(compact_at: Option<u64>) -> &'static str {
+    if compact_at.is_some() {
+        "teammate"
+    } else {
+        "fleet base"
+    }
 }
 
 /// The SOURCE column: `operator`, `fleet` or `harness`, with ` (now)` when
@@ -1398,5 +1426,43 @@ mod tests {
         assert_eq!(grouped(1_000), "1,000");
         assert_eq!(grouped(311_225), "311,225");
         assert_eq!(grouped(1_000_000), "1,000,000");
+    }
+
+    #[test]
+    fn headroom_cell_marks_a_thin_margin_and_an_unknown_trigger() {
+        assert_eq!(headroom_cell(None, 100_000), "-");
+        assert_eq!(headroom_cell(Some(1_000_000), 100_000), "900,000");
+        let thin = HEADROOM_FLOOR - 1;
+        assert_eq!(
+            headroom_cell(Some(100_000 + thin), 100_000),
+            format!("{} WARN", grouped(thin))
+        );
+        // The floor itself is not thin.
+        assert_eq!(
+            headroom_cell(Some(100_000 + HEADROOM_FLOOR), 100_000),
+            grouped(HEADROOM_FLOOR)
+        );
+    }
+
+    #[test]
+    fn base_source_names_the_teammate_or_the_fleet() {
+        assert_eq!(base_source(Some(250_000)), "teammate");
+        assert_eq!(base_source(None), "fleet base");
+    }
+
+    #[test]
+    fn pane_gone_rows_are_appended_only_for_roles_the_text_shows() {
+        let json = r#"[
+            {"role":"sonnet-1","pane_gone":true},
+            {"role":"sonnet-2","pane_gone":false},
+            {"role":"ghost-9","pane_gone":true},
+            {"role":null,"pane_gone":true}
+        ]"#;
+        let text = "sonnet-1  claude  ok\nsonnet-2  claude  ok\n".to_string();
+        assert_eq!(
+            append_pane_gone(text.clone(), json),
+            format!("{text}sonnet-1: (pane gone)\n")
+        );
+        assert_eq!(append_pane_gone(text.clone(), "not json"), text);
     }
 }
