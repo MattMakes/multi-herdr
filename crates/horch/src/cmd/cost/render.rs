@@ -4,7 +4,7 @@
 use horch_core::usage::Missing;
 
 use super::tables::{SkillUse, TableRow};
-use super::Report;
+use super::{NotPriced, PartlyPriced, Report, Window};
 
 fn money(x: f64) -> String {
     format!("${x:.2}")
@@ -97,14 +97,74 @@ fn skills(out: &mut String, use_: &[SkillUse]) {
     }
 }
 
-pub fn render(report: &Report, ledger: &str) -> String {
-    let w = &report.window;
-    let range = match (&w.start, &w.end) {
+fn range_text(w: &Window) -> String {
+    match (&w.start, &w.end) {
         (Some(s), Some(e)) => format!("calls from {s} to {e}"),
         (Some(s), None) => format!("calls from {s}"),
         (None, Some(e)) => format!("calls before {e}"),
         (None, None) => "every call".to_string(),
-    };
+    }
+}
+
+fn total_line(report: &Report) -> String {
+    format!(
+        "\n**Total: {}**{} across {} priced session(s), {} calls.\n",
+        money(report.total.cost),
+        report
+            .reprice
+            .as_ref()
+            .zip(report.total.reprice_cost)
+            .map(|(m, v)| format!(" ({} on {m})", money(v)))
+            .unwrap_or_default(),
+        report.total.sessions,
+        commas(report.total.calls),
+    )
+}
+
+fn partly_priced(out: &mut String, rows: &[PartlyPriced]) {
+    if rows.is_empty() {
+        return;
+    }
+    let names: Vec<String> = rows
+        .iter()
+        .map(|p| format!("{} ({})", p.teammate, p.models.join(", ")))
+        .collect();
+    out.push_str(&format!(
+        "\n\\* partly unpriced: no price for {}. Add them with --pricing.\n",
+        names.join("; ")
+    ));
+}
+
+fn missing_text(reason: &Missing) -> String {
+    match reason {
+        Missing::NoSessionId => "the ledger never learned its session id".to_string(),
+        Missing::NoTranscript => "no transcript found for its session id".to_string(),
+        Missing::NotRead => {
+            "this harness's usage is not read here (agent none, or no sqlite3)".to_string()
+        }
+        Missing::Failed(why) => format!("could not be read: {why}"),
+    }
+}
+
+fn not_priced(out: &mut String, rows: &[NotPriced]) {
+    if rows.is_empty() {
+        return;
+    }
+    out.push_str("\n## Not priced\n\n");
+    for n in rows {
+        out.push_str(&format!(
+            "- {} ({}, {}): {}\n",
+            n.teammate,
+            n.agent,
+            n.record_id,
+            missing_text(&n.reason)
+        ));
+    }
+}
+
+pub fn render(report: &Report, ledger: &str) -> String {
+    let w = &report.window;
+    let range = range_text(w);
     let mut out = format!(
         "# Fleet cost: {}\n\nWindow: {range} (each call by its own time).\nLedger: {ledger}\n\
          Prices as of {} (USD per MTok).\n\
@@ -134,46 +194,9 @@ pub fn render(report: &Report, ledger: &str) -> String {
         &report.tables.teammates,
         reprice,
     );
-    out.push_str(&format!(
-        "\n**Total: {}**{} across {} priced session(s), {} calls.\n",
-        money(report.total.cost),
-        report
-            .reprice
-            .as_ref()
-            .zip(report.total.reprice_cost)
-            .map(|(m, v)| format!(" ({} on {m})", money(v)))
-            .unwrap_or_default(),
-        report.total.sessions,
-        commas(report.total.calls),
-    ));
-    if !report.partly_priced.is_empty() {
-        let names: Vec<String> = report
-            .partly_priced
-            .iter()
-            .map(|p| format!("{} ({})", p.teammate, p.models.join(", ")))
-            .collect();
-        out.push_str(&format!(
-            "\n\\* partly unpriced: no price for {}. Add them with --pricing.\n",
-            names.join("; ")
-        ));
-    }
-    if !report.not_priced.is_empty() {
-        out.push_str("\n## Not priced\n\n");
-        for n in &report.not_priced {
-            let why = match &n.reason {
-                Missing::NoSessionId => "the ledger never learned its session id".to_string(),
-                Missing::NoTranscript => "no transcript found for its session id".to_string(),
-                Missing::NotRead => {
-                    "this harness's usage is not read here (agent none, or no sqlite3)".to_string()
-                }
-                Missing::Failed(why) => format!("could not be read: {why}"),
-            };
-            out.push_str(&format!(
-                "- {} ({}, {}): {why}\n",
-                n.teammate, n.agent, n.record_id
-            ));
-        }
-    }
+    out.push_str(&total_line(report));
+    partly_priced(&mut out, &report.partly_priced);
+    not_priced(&mut out, &report.not_priced);
     skills(&mut out, &report.skill_use);
     out
 }
@@ -181,7 +204,6 @@ pub fn render(report: &Report, ledger: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cmd::cost::{NotPriced, PartlyPriced, Window};
 
     fn report(window: Window) -> Report {
         Report {
