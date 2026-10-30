@@ -106,6 +106,22 @@ fn an_orchestration_whose_pane_run_fails_closes_its_workspace() {
     let h = harness("f217-orch", "fail_run");
     let o = h.run(&["orchestration", "--no-update", "--cwd", &cwd(&h)]);
     assert!(!o.status.success(), "{}{}", out(&o), err(&o));
+    assert!(err(&o).contains("pane run refused"), "{}", err(&o));
+    let calls: Vec<Vec<String>> = h
+        .calls_of("herdr")
+        .iter()
+        .map(|c| serde_json::from_value(c["argv"].clone()).unwrap_or_default())
+        .collect();
+    let count = |verb: &str| {
+        calls
+            .iter()
+            .filter(|a| {
+                a.first().map(String::as_str) == Some("workspace")
+                    && a.get(1).map(String::as_str) == Some(verb)
+            })
+            .count()
+    };
+    assert_eq!((count("create"), count("close")), (1, 1), "{calls:?}");
     assert_eq!(workspaces(&h), Vec::<String>::new(), "{}", out(&o));
 }
 

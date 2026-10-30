@@ -378,6 +378,36 @@ fn arc_33_a_second_fleet_within_24_h_skips_the_updated_clis() {
     }
 }
 
+/// ARC-35: `horch update` exits 1 when an updater still runs at the time
+/// limit, and when another updater of the CLI still runs.
+#[test]
+fn arc_35_horch_update_exits_1_on_a_detached_or_busy_cli() {
+    let mut h = harness("arc35-busy");
+    h.set("HORCH_FAKE_SCENARIO", "update_hang:pi");
+    h.set("HORCH_UPDATE_TIMEOUT_MS", "1000");
+    let first = h.run(&["update", "pi"]);
+    #[cfg(unix)]
+    let _kill = update_calls(&h, "pi", &["update", "--self"])
+        .first()
+        .map(|c| KillGroup(c["pid"].as_u64().unwrap().to_string()));
+    assert_eq!(first.status.code(), Some(1), "{}", stderr(&first));
+    assert_eq!(
+        notes(&first),
+        ["horch: NOTE: update: pi: still running after 1 s, not waited for"],
+        "{}",
+        stderr(&first)
+    );
+    let second = h.run(&["update", "pi"]);
+    assert_eq!(second.status.code(), Some(1), "{}", stdout(&second));
+    assert_eq!(
+        result_lines(&second),
+        ["update: pi: another horch is updating it (skipped)"],
+        "{}",
+        stdout(&second)
+    );
+    assert_eq!(update_calls(&h, "pi", &["update", "--self"]).len(), 1);
+}
+
 #[test]
 fn arc_33_no_updater_gets_anthropic_api_key() {
     let mut h = harness("arc33-key");

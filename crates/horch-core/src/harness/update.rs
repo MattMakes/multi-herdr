@@ -68,6 +68,9 @@ const LOCK_STALE: Duration = Duration::from_secs(3600);
 /// horch never breaks the lock of a horch that still waits.
 const MAX_TIMEOUT: Duration = Duration::from_secs(1800);
 
+// The lock of a horch that still waits must never be old enough to break.
+const _: () = assert!(MAX_TIMEOUT.as_secs() < LOCK_STALE.as_secs());
+
 /// How much of the end of an updater log horch reads for a failure reason.
 const LOG_TAIL: u64 = 64 * 1024;
 
@@ -330,7 +333,7 @@ impl UpdateFiles {
         &self,
         now: chrono::DateTime<chrono::Utc>,
     ) -> Option<chrono::DateTime<chrono::Utc>> {
-        let at = crate::clock::parse(&std::fs::read_to_string(self.file("checked")).ok()?)?;
+        let at = crate::clock::parse(&self.read_mark("checked")?)?;
         (at <= now && now - at < FRESH_FOR).then_some(at)
     }
 
@@ -343,8 +346,16 @@ impl UpdateFiles {
         }
     }
 
+    /// Mark file `suffix` as text: a regular file only, read without
+    /// blocking and bounded, as a Codex pane can write the state root.
+    fn read_mark(&self, suffix: &str) -> Option<String> {
+        crate::fsx::read_regular_bounded(&self.file(suffix))
+            .ok()
+            .flatten()
+    }
+
     fn running(&self) -> Option<RunningMark> {
-        let text = std::fs::read_to_string(self.file("running")).ok()?;
+        let text = self.read_mark("running")?;
         let mut words = text.split_whitespace();
         let pid = words.next()?.parse().ok()?;
         let started = words.next()?.parse().ok();
@@ -402,24 +413,23 @@ impl UpdateFiles {
             _ => {}
         }
         let mut options = std::fs::OpenOptions::new();
-        options.write(true).create_new(true);
+        // Read too: horch reads the tail through a clone of this handle.
+        options.read(true).write(true).create_new(true);
         #[cfg(unix)]
         std::os::unix::fs::OpenOptionsExt::mode(&mut options, PRIVATE_FILE);
         options.open(path)
     }
+}
 
-    /// The last [`LOG_TAIL`] bytes of log `suffix`, as text.
-    fn log_tail(&self, suffix: &str) -> String {
-        use std::io::{Read, Seek, SeekFrom};
-        let Ok(mut file) = std::fs::File::open(self.file(suffix)) else {
-            return String::new();
-        };
-        let len = file.metadata().map(|m| m.len()).unwrap_or(0);
-        let _ = file.seek(SeekFrom::Start(len.saturating_sub(LOG_TAIL)));
-        let mut bytes = Vec::new();
-        let _ = file.read_to_end(&mut bytes);
-        String::from_utf8_lossy(&bytes).into_owned()
-    }
+/// The last [`LOG_TAIL`] bytes of an updater log, read through the handle
+/// horch created it with, never by its path again.
+fn log_tail(file: &mut std::fs::File) -> String {
+    use std::io::{Read, Seek, SeekFrom};
+    let len = file.metadata().map(|m| m.len()).unwrap_or(0);
+    let _ = file.seek(SeekFrom::Start(len.saturating_sub(LOG_TAIL)));
+    let mut bytes = Vec::new();
+    let _ = file.take(LOG_TAIL).read_to_end(&mut bytes);
+    String::from_utf8_lossy(&bytes).into_owned()
 }
 
 /// What keeps `kind`'s updater from running under a cooldown of `days` at
@@ -498,36 +508,36 @@ fn run_updater(
 ) -> Ran {
     process::scrub_child_env(&mut cmd);
     let name = cmd.get_program().to_string_lossy().into_owned();
-    let out = match files.new_log("stdout.log") {
-        Ok(file) => file,
-        Err(e) => return Ran::Failed(cut(&format!("{name} log: {e}"))),
+    let logs = match (files.new_log("stdout.log"), files.new_log("stderr.log")) {
+        (Ok(out), Ok(err)) => (out, err),
+        (Err(e), _) | (_, Err(e)) => return Ran::Failed(cut(&format!("{name} log: {e}"))),
     };
-    let err = match files.new_log("stderr.log") {
-        Ok(file) => file,
-        Err(e) => return Ran::Failed(cut(&format!("{name} log: {e}"))),
+    // horch keeps its own handles to read the tails from.
+    let mine = match (logs.0.try_clone(), logs.1.try_clone()) {
+        (Ok(out), Ok(err)) => (out, err),
+        (Err(e), _) | (_, Err(e)) => return Ran::Failed(cut(&format!("{name} log: {e}"))),
     };
-    cmd.stdin(Stdio::null()).stdout(out).stderr(err);
+    let (mut out_tail, mut err_tail) = mine;
+    cmd.stdin(Stdio::null()).stdout(logs.0).stderr(logs.1);
     #[cfg(unix)]
     std::os::unix::process::CommandExt::process_group(&mut cmd, 0);
     let mut child = match cmd.spawn() {
         Ok(child) => child,
         Err(e) => return Ran::Failed(cut(&format!("{name} did not start: {e}"))),
     };
-    let marked = files.set_running(child.id(), now);
+    // An unmarked updater must not outlive horch: a later horch would run a
+    // second one beside it. It is stopped before it can change anything.
+    if let Err(e) = files.set_running(child.id(), now) {
+        kill_group(&mut child);
+        let _ = child.wait();
+        return Ran::Failed(cut(&format!("{name} could not be marked as running: {e}")));
+    }
     let deadline = Instant::now() + timeout;
     let status = loop {
         match child.try_wait() {
             Ok(Some(status)) => break status,
             Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(50)),
-            Ok(None) => {
-                return match marked {
-                    Ok(()) => Ran::Detached,
-                    Err(e) => Ran::Failed(cut(&format!(
-                        "still running after {} s, not waited for, and unmarked: {e}",
-                        timeout.as_secs()
-                    ))),
-                }
-            }
+            Ok(None) => return Ran::Detached,
             Err(e) => {
                 kill_group(&mut child);
                 let _ = child.wait();
@@ -539,8 +549,8 @@ fn run_updater(
         return Ran::Done;
     }
     Ran::Failed(
-        reason_line(&files.log_tail("stderr.log"))
-            .or_else(|| reason_line(&files.log_tail("stdout.log")))
+        reason_line(&log_tail(&mut err_tail))
+            .or_else(|| reason_line(&log_tail(&mut out_tail)))
             .unwrap_or_else(|| exited(&name, status)),
     )
 }
@@ -984,6 +994,101 @@ mod tests {
         );
         assert!(!fake.file("running").exists());
         assert_eq!(fake.runs().len(), 2);
+    }
+
+    /// Which outcomes print as a NOTE and which make `horch update` exit 1.
+    #[test]
+    fn arc_35_notes_and_unfinished_outcomes() {
+        let cases = [
+            (Outcome::NotInstalled, false, false),
+            (
+                Outcome::Updated {
+                    before: None,
+                    after: None,
+                },
+                false,
+                false,
+            ),
+            (
+                Outcome::Cooldown {
+                    version: "1".into(),
+                    age: chrono::TimeDelta::hours(1),
+                    days: 7,
+                },
+                false,
+                false,
+            ),
+            (Outcome::NoReleaseDates { days: 7 }, false, false),
+            (
+                Outcome::Fresh {
+                    checked_at: chrono::Utc::now(),
+                },
+                false,
+                false,
+            ),
+            (Outcome::Busy, false, true),
+            (
+                Outcome::Detached {
+                    after: Duration::from_secs(1),
+                },
+                true,
+                true,
+            ),
+            (Outcome::Failed { reason: "x".into() }, true, true),
+        ];
+        for (outcome, note, unfinished) in cases {
+            let result = UpdateResult {
+                harness: HarnessKind::Codex,
+                bin: None,
+                outcome: outcome.clone(),
+            };
+            assert_eq!(result.is_note(), note, "{outcome:?}");
+            assert_eq!(result.unfinished(), unfinished, "{outcome:?}");
+        }
+    }
+
+    /// #205: an updater whose `.running` mark cannot be written is stopped
+    /// at once, so no unmarked updater outlives horch.
+    #[cfg(unix)]
+    #[test]
+    fn arc_33_an_updater_that_cannot_be_marked_is_stopped() {
+        let fake = FakeUpdater::new(30, 0, 20_000);
+        // A directory where the mark file belongs: the write fails.
+        std::fs::create_dir_all(fake.file("running")).unwrap();
+        let started = Instant::now();
+        let outcome = fake.update(false);
+        assert!(started.elapsed() < Duration::from_secs(10), "horch waited");
+        let Outcome::Failed { reason } = &outcome else {
+            panic!("{outcome:?}");
+        };
+        assert!(
+            reason.contains("could not be marked as running"),
+            "{reason}"
+        );
+        for pid in fake.runs() {
+            let _stop = StopGroupOnDrop(pid);
+            assert!(!crate::procid::alive(pid, None), "updater {pid} still runs");
+        }
+    }
+
+    /// #205: a FIFO planted as a mark file neither hangs the update step nor
+    /// counts as a mark.
+    #[cfg(unix)]
+    #[test]
+    fn arc_33_a_fifo_mark_is_ignored() {
+        let fake = FakeUpdater::new(0, 0, 20_000);
+        std::fs::create_dir_all(fake.dir.path().join("state/update")).unwrap();
+        for suffix in ["running", "checked"] {
+            let made = Command::new("mkfifo")
+                .arg(fake.file(suffix))
+                .status()
+                .unwrap();
+            assert!(made.success());
+        }
+        let started = Instant::now();
+        assert!(matches!(fake.update(true), Outcome::Updated { .. }));
+        assert!(started.elapsed() < Duration::from_secs(10));
+        assert_eq!(fake.runs().len(), 1);
     }
 
     #[test]
