@@ -742,25 +742,28 @@ fn models_window(path: &str, text: &str, model: &str) -> Option<OperatorWindow> 
         });
     };
     let defined = doc.get("providers")?.get(provider)?;
-    let custom = || {
-        defined
-            .get("models")?
-            .as_array()?
-            .iter()
-            .find(|m| m.get("id").and_then(Value::as_str) == Some(id))?
-            .get("contextWindow")?
-            .as_u64()
-    };
     let tokens = defined
         .get("modelOverrides")
         .and_then(|o| o.get(id))
         .and_then(|o| o.get("contextWindow"))
         .and_then(Value::as_u64)
-        .or_else(custom);
+        .or_else(|| custom_window(defined, id));
     Some(OperatorWindow {
         tokens,
         detail: format!("{path} (provider {provider} defined)"),
     })
+}
+
+/// The `contextWindow` of the first custom model `id` in the `models` of a
+/// provider; None when that model has none.
+fn custom_window(provider: &Value, id: &str) -> Option<u64> {
+    provider
+        .get("models")?
+        .as_array()?
+        .iter()
+        .find(|m| m.get("id").and_then(Value::as_str) == Some(id))?
+        .get("contextWindow")?
+        .as_u64()
 }
 
 /// Whether a `settings.json` sets `compaction.reserveTokens` or
