@@ -954,15 +954,15 @@ fn start_typed_prompt(
     });
 }
 
+/// Queues 1 line as durable orchestrator mail.
+pub(crate) type QueueLine<'a> = &'a dyn Fn(&str) -> Result<()>;
+
 /// Type `prompt` into `pane` once its agent is idle. When that fails, the
 /// worker's record gets a note that says why, and the orchestrator pane, if
 /// one is registered, gets a `BLOCKED` line: a resumed pane never sits idle
 /// with no task and no word. `queue` first queues that line as durable
 /// orchestrator mail (#177), so a failed push still reaches it. True when
 /// the prompt was typed.
-/// Queues 1 line as durable orchestrator mail.
-pub(crate) type QueueLine<'a> = &'a dyn Fn(&str) -> Result<()>;
-
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn type_resumed_prompt(
     ws: &dyn WorkspaceClient,

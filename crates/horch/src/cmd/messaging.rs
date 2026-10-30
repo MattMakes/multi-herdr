@@ -212,11 +212,7 @@ fn enqueue_durable(
     courier_now: bool,
     take_back: bool,
 ) -> Result<()> {
-    let mail = if role == "orchestrator" {
-        Mail::under(&ctx.paths.state_root, workspace)
-    } else {
-        Mail::to_role(&ctx.paths.state_root, workspace, role)
-    };
+    let mail = Mail::for_role(&ctx.paths.state_root, workspace, role);
     let id = mail.enqueue_with_questions(from, line, original)?;
     if !courier_now {
         return Ok(());
@@ -768,6 +764,17 @@ struct CliDone<'a> {
     outgoing: std::cell::RefCell<Option<Outgoing<'a>>>,
 }
 
+impl CliDone<'_> {
+    /// The role name can start again: its old notices must not reach the
+    /// next worker that takes it. Best effort.
+    fn drop_role_mail(&self, workspace: &str, role: &str) {
+        let mail = Mail::to_role(&self.ctx.paths.state_root, workspace, role);
+        if let Err(error) = mail.ack_all() {
+            eprintln!("horch: acknowledging the mail of {role} failed: {error:#}");
+        }
+    }
+}
+
 impl DoneSteps for CliDone<'_> {
     fn open_claims(&self, record_id: &str) -> Result<Vec<ClaimLine>> {
         let landing = Landing::new(
@@ -895,10 +902,13 @@ impl DoneSteps for CliDone<'_> {
 
     fn unregister(&self, workspace: &str, role: &str) {
         Mailbox::in_context(self.ctx, workspace).unregister(role);
+        self.drop_role_mail(workspace, role);
     }
 
     fn try_unregister(&self, workspace: &str, role: &str) -> Result<()> {
-        Mailbox::in_context(self.ctx, workspace).try_unregister(role)
+        Mailbox::in_context(self.ctx, workspace).try_unregister(role)?;
+        self.drop_role_mail(workspace, role);
+        Ok(())
     }
 
     fn settle(&self, workspace: &str) {

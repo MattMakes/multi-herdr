@@ -629,6 +629,79 @@ fn mail_u1_worker_inbox_does_not_print_or_ack_pending_mail() {
     );
 }
 
+/// #177: a worker's inbox prints the notices horch queued for its role.
+/// `--peek` leaves them pending; a plain inbox acknowledges them. The
+/// orchestrator's mail is never shown or acknowledged.
+#[test]
+fn a_worker_inbox_prints_and_acks_its_own_role_mail_only() {
+    let h = fleet("mail-worker-role", "exec,stay");
+    let mailbox = h.state.join("herdr-orchestration-w1");
+    std::fs::create_dir_all(&mailbox).unwrap();
+    std::fs::write(mailbox.join("orchestrator.id"), "w1:p1").unwrap();
+    let tell = as_worker(
+        &h,
+        &["tell", "orchestrator", "NOTE: private"],
+        "w1:p2",
+        "sonnet-1",
+        "r1",
+    );
+    assert!(tell.status.success(), "{}", text(&tell));
+    horch_core::messaging::mail::Mail::to_role(&h.state, "w1", "sonnet-1")
+        .enqueue("horch", "NOTE: the reviews are in")
+        .unwrap();
+    let pending = |dir: &str| std::fs::read_dir(h.state.join(dir)).unwrap().count();
+
+    let peek = as_worker(&h, &["inbox", "--peek"], "w1:p2", "sonnet-1", "r1");
+    assert!(peek.status.success(), "{}", text(&peek));
+    assert!(
+        text(&peek).contains("NOTE: the reviews are in"),
+        "{}",
+        text(&peek)
+    );
+    assert_eq!(pending("mail/w1/roles/sonnet-1/pending"), 1);
+
+    let inbox = as_worker(&h, &["inbox"], "w1:p2", "sonnet-1", "r1");
+    let stdout = String::from_utf8_lossy(&inbox.stdout);
+    assert!(inbox.status.success(), "{}", text(&inbox));
+    assert!(
+        stdout.contains("NOTE: the reviews are in"),
+        "{}",
+        text(&inbox)
+    );
+    assert!(!stdout.contains("NOTE: private"), "{}", text(&inbox));
+    assert_eq!(pending("mail/w1/roles/sonnet-1/pending"), 0);
+    assert_eq!(
+        pending("mail/w1/pending"),
+        1,
+        "the orchestrator's mail stays"
+    );
+}
+
+/// The notices of a role that `done` freed reach no one: the courier
+/// acknowledges them and exits. They do not keep it polling, and a later
+/// worker that takes the role name does not get them.
+#[test]
+fn a_courier_drops_the_mail_of_a_role_no_pane_holds_and_exits() {
+    let h = fleet("mail-gone-role", "exec,stay");
+    let mailbox = h.state.join("herdr-orchestration-w1");
+    std::fs::create_dir_all(&mailbox).unwrap();
+    std::fs::write(mailbox.join("sonnet-2.id"), "w1:p3").unwrap();
+    horch_core::messaging::mail::Mail::to_role(&h.state, "w1", "sonnet-1")
+        .enqueue("horch", "NOTE: the reviews are in")
+        .unwrap();
+
+    let courier = h
+        .horch(&["mail", "courier", "--workspace", "w1"])
+        .env("HORCH_TEST_MAIL_POLL_MS", "10")
+        .env("HORCH_TEST_MAIL_NO_ORCHESTRATOR_MS", "600000")
+        .output()
+        .unwrap();
+
+    assert!(courier.status.success(), "{}", text(&courier));
+    let pending = h.state.join("mail/w1/roles/sonnet-1/pending");
+    assert_eq!(std::fs::read_dir(pending).unwrap().count(), 0);
+}
+
 #[test]
 fn mail_u1_orchestrator_command_reminds_without_acking() {
     let h = fleet("mail-remind", "exec,stay");

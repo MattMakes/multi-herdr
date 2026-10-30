@@ -751,11 +751,19 @@ fn refuse_child(
 
 /// Send 1 untagged line to the mailbox's `orchestrator` pane. Not
 /// `messaging::tell`: that would add a `[<role>]` tag.
+///
 /// Queue `line` as durable orchestrator mail first (#177): the courier
 /// delivers it when no orchestrator pane is registered yet or the push
-/// fails. Then type it, as before.
+/// fails. A queue that fails is printed, and the line is still typed.
 fn report(env: &Env, line: &str) -> Result<()> {
-    horch_core::messaging::mail::queue_notice(env.src.ctx, env.workspace(), "orchestrator", line)?;
+    if let Err(error) = horch_core::messaging::mail::queue_notice(
+        env.src.ctx,
+        env.workspace(),
+        "orchestrator",
+        line,
+    ) {
+        eprintln!("horch: queueing the line as mail failed: {error:#}");
+    }
     let pane = env
         .mailbox
         .pane_for("orchestrator")
@@ -1537,6 +1545,31 @@ mod tests {
             ),
             "{pending:?}"
         );
+    }
+
+    /// A mail dir that the trust check refuses does not stop the report:
+    /// the line is still typed into the orchestrator pane.
+    #[cfg(unix)]
+    #[test]
+    fn a_refused_mail_dir_does_not_stop_the_typed_report() {
+        use std::os::unix::fs::PermissionsExt;
+        let f = Fleet::new();
+        let orch = f.pane("orchestrator");
+        f.pane("sonnet-1");
+        f.w.worker("r-1", "sonnet-1", "claude", "sonnet", Some(SMALL));
+        let path = f.handoff(&f.w.project(), "sonnet-1");
+        set_mtime(&path, Duration::from_secs(90 * 60));
+        let mail = horch_core::messaging::mail::Mail::under(&f.w.ctx.paths.state_root, "w1");
+        std::fs::create_dir_all(mail.dir()).unwrap();
+        std::fs::set_permissions(mail.dir(), std::fs::Permissions::from_mode(0o777)).unwrap();
+
+        let o = f.run("sonnet-1", |a| a.foreground = true);
+
+        assert_eq!(o.code, EXIT_REPORTED, "{o:?}");
+        let reported = f.typed(&orch);
+        assert_eq!(reported.len(), 1, "{reported:?}");
+        assert!(reported[0].starts_with("[horch] BLOCKED: Compaction of sonnet-1 failed"));
+        assert!(!mail.dir().join("pending").exists(), "nothing was queued");
     }
 
     /// CTX-16: a harness that is not in `in_place` takes the fresh route,

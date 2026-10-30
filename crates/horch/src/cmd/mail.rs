@@ -49,13 +49,13 @@ pub fn courier(ctx: &RuntimeContext, workspace: &str) -> Result<()> {
 
     loop {
         let pending = mail.pending()?;
-        let role_mail = pending_role_mail(&mail)?;
+        let role_mail = pending_role_mail(&mail);
         if pending.is_empty() && role_mail.is_empty() {
             // A message enqueued while this courier was deciding to exit
             // found the lock held, so its own courier exited at once. Look
             // once more with the lock released, and take it back for it.
             let _ = lock.unlock();
-            let still = !mail.pending()?.is_empty() || !pending_role_mail(&mail)?.is_empty();
+            let still = !mail.pending()?.is_empty() || !pending_role_mail(&mail).is_empty();
             if !still || lock.try_lock().is_err() {
                 return Ok(());
             }
@@ -70,16 +70,35 @@ pub fn courier(ctx: &RuntimeContext, workspace: &str) -> Result<()> {
         };
         // A worker pane gets its mail only when it is idle: no relay.
         let mut reachable = false;
-        for (role, messages) in &role_mail {
-            let Some((id, state)) = open_pane(role) else {
+        // A role's mail dir name is file safe, not the role: match the dirs.
+        let registered = if role_mail.is_empty() {
+            Vec::new()
+        } else {
+            mailbox.roles()
+        };
+        for (dir_name, role_box, messages) in &role_mail {
+            let Some((_, id)) = registered.iter().find(|(role, _)| {
+                Mail::to_role(&ctx.paths.state_root, workspace, role).dir() == role_box.dir()
+            }) else {
+                // The role is gone (`done` freed it): no one can answer its
+                // notices, so they must not keep this courier alive.
+                if let Err(error) = role_box.ack_all() {
+                    eprintln!("horch: acknowledging the mail of {dir_name} failed: {error:#}");
+                }
+                continue;
+            };
+            // A pane id file can outlive its pane.
+            let Ok(state) = herdr.pane_get(id) else {
                 continue;
             };
             reachable = true;
             let idle = state.at_prompt();
             redeliver_due(ctx, &mut attempts, messages, |_, line| {
-                idle && {
-                    let _ = delivery::send_line(&herdr, &id, line);
+                if idle {
+                    let _ = delivery::send_line(&herdr, id, line);
                     true
+                } else {
+                    false
                 }
             });
         }
@@ -127,16 +146,26 @@ pub fn courier(ctx: &RuntimeContext, workspace: &str) -> Result<()> {
     }
 }
 
-/// The pending mail of each worker role that has some.
-fn pending_role_mail(mail: &Mail) -> Result<Vec<(String, Vec<Message>)>> {
+/// The pending mail of each worker role that has some. A role whose mail
+/// cannot be read is printed and left out: it must not stop the delivery
+/// of the others or of the orchestrator's mail.
+fn pending_role_mail(mail: &Mail) -> Vec<(String, Mail, Vec<Message>)> {
+    let roles = match mail.roles() {
+        Ok(roles) => roles,
+        Err(error) => {
+            eprintln!("horch: {error:#}");
+            return Vec::new();
+        }
+    };
     let mut out = Vec::new();
-    for (role, role_mail) in mail.roles()? {
-        let pending = role_mail.pending()?;
-        if !pending.is_empty() {
-            out.push((role, pending));
+    for (role, role_mail) in roles {
+        match role_mail.pending() {
+            Ok(pending) if pending.is_empty() => {}
+            Ok(pending) => out.push((role, role_mail, pending)),
+            Err(error) => eprintln!("horch: the mail of {role} is not read: {error:#}"),
         }
     }
-    Ok(out)
+    out
 }
 
 type Attempts = HashMap<Id, (usize, Option<SystemTime>)>;
@@ -288,6 +317,55 @@ mod tests {
         );
         let unknown = RuntimeContext::from_env(&MapEnv::new("/")).unwrap();
         assert!(super::start_courier(&unknown, "w1").is_err());
+    }
+
+    /// A busy worker pane gets no line, and its redelivery stays due: the
+    /// next poll that sends it sends redelivery 1, and then none is due.
+    #[test]
+    fn a_redelivery_that_is_not_sent_stays_due() {
+        use horch_core::messaging::mail::Mail;
+        use horch_core::runtime::{MapEnv, RuntimeContext};
+        let tmp = tempfile::tempdir().unwrap();
+        let clock = tmp.path().join("clock");
+        let ctx = RuntimeContext::from_env(
+            &MapEnv::new("/").with("HORCH_TEST_MAIL_CLOCK_FILE", clock.to_str().unwrap()),
+        )
+        .unwrap();
+        let mail = Mail::to_role(tmp.path(), "w1", "sonnet-1");
+        mail.enqueue("horch", "the reviews are in").unwrap();
+        let messages = mail.pending().unwrap();
+        let created: chrono::DateTime<chrono::Utc> = messages[0].created_at.into();
+        let mut attempts = super::Attempts::new();
+        // The courier sees the mail when it is new: redelivery 1 is 30 s on.
+        std::fs::write(&clock, horch_core::clock::stamp(created)).unwrap();
+        super::redeliver_due(&ctx, &mut attempts, &messages, |_, _| {
+            panic!("nothing is due at once")
+        });
+        let later = created + chrono::Duration::seconds(31);
+        std::fs::write(&clock, horch_core::clock::stamp(later)).unwrap();
+
+        let mut busy = 0;
+        super::redeliver_due(&ctx, &mut attempts, &messages, |_, _| {
+            busy += 1;
+            false
+        });
+        let mut sent = Vec::new();
+        super::redeliver_due(&ctx, &mut attempts, &messages, |_, line| {
+            sent.push(line.to_string());
+            true
+        });
+        let mut again = 0;
+        super::redeliver_due(&ctx, &mut attempts, &messages, |_, _| {
+            again += 1;
+            true
+        });
+
+        assert_eq!(busy, 1);
+        assert_eq!(
+            sent,
+            ["the reviews are in (redelivery 1: not acknowledged; run horch inbox)"]
+        );
+        assert_eq!(again, 0, "redelivery 2 is not due 31 s after the mail");
     }
 
     #[test]

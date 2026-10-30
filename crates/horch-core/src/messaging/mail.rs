@@ -49,6 +49,16 @@ impl Mail {
         }
     }
 
+    /// The mail of `role`: the workspace mail for the orchestrator, else
+    /// [`Mail::to_role`].
+    pub fn for_role(state_root: &Path, workspace: &str, role: &str) -> Self {
+        if role == "orchestrator" {
+            Self::under(state_root, workspace)
+        } else {
+            Self::to_role(state_root, workspace, role)
+        }
+    }
+
     pub fn dir(&self) -> &Path {
         &self.dir
     }
@@ -379,11 +389,7 @@ pub fn queue_notice(
     role: &str,
     line: &str,
 ) -> Result<Id> {
-    let mail = if role == "orchestrator" {
-        Mail::under(&ctx.paths.state_root, workspace)
-    } else {
-        Mail::to_role(&ctx.paths.state_root, workspace, role)
-    };
+    let mail = Mail::for_role(&ctx.paths.state_root, workspace, role);
     let id = mail.enqueue("horch", line)?;
     if let Err(error) = start_courier(ctx, workspace) {
         eprintln!("horch: {error:#}; the notice stays queued");

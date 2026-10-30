@@ -1740,6 +1740,8 @@ mod tests {
             fail_at: &'static str,
             startup_error: Option<String>,
             left_error: Option<String>,
+            /// The record id of the brief `leave_startup_error` got.
+            left_for: Option<Option<String>>,
         }
 
         impl Steps<'_> {
@@ -1807,9 +1809,10 @@ mod tests {
                 self.calls.push("close_pane");
                 self.ws.pane_close(&self.pane)
             }
-            fn leave_startup_error(&mut self, error: &str, _brief: Option<&Brief>) -> Result<()> {
+            fn leave_startup_error(&mut self, error: &str, brief: Option<&Brief>) -> Result<()> {
                 self.calls.push("leave_startup_error");
                 self.left_error = Some(error.to_string());
+                self.left_for = Some(brief.map(|b| b.record_id.clone()));
                 Ok(())
             }
         }
@@ -1823,6 +1826,7 @@ mod tests {
                 fail_at,
                 startup_error: None,
                 left_error: None,
+                left_for: None,
             }
         }
 
@@ -1844,6 +1848,8 @@ mod tests {
             );
             assert!(ws.pane_ids().is_empty(), "the pane is closed");
             assert_eq!(steps.left_error.as_deref(), Some("enter_context failed"));
+            // #192: after the brief loads, the error is keyed by its record.
+            assert_eq!(steps.left_for, Some(Some("r1".to_string())));
         }
 
         /// W13 C4: the pane closes when `horch worker` exits, so a worker
@@ -1854,6 +1860,7 @@ mod tests {
             let mut steps = steps(&ws, "load_brief");
             let e = run_worker(&mut steps).unwrap_err();
             assert_eq!(steps.calls, ["leave_startup_error"]);
+            assert_eq!(steps.left_for, Some(None), "no brief, no record key");
             assert_eq!(steps.left_error, Some(format!("{e:#}")));
             assert!(steps.left_error.unwrap().starts_with("no brief at "));
         }

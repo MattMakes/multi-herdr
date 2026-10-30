@@ -534,9 +534,9 @@ pub fn run(ctx: &RuntimeContext, command: LedgerCommand) -> Result<ExitCode> {
             // finish answers a reviews-in notice: its mail and wait end.
             if workers::waiting(store.conn(), &wid)?
                 .iter()
-                .any(|w| w.kind == REVIEWS_WAIT && w.task_ids.is_empty())
+                .any(workers::holds_for_finish)
             {
-                workers::clear_wait(store.conn(), &wid, REVIEWS_WAIT)?;
+                workers::clear_wait(store.conn(), &wid, workers::REVIEWS_WAIT)?;
             }
             if let Some(role) = workers::get(store.conn(), &wid)?.role {
                 super::messaging::ack_role_mail(ctx, &role);
@@ -1441,13 +1441,8 @@ pub fn done_cmd(
     Ok(())
 }
 
-/// The wait kind of an author on its reviews. With no task ids, the
-/// reviews are in, and it holds until the author runs finish.
-const REVIEWS_WAIT: &str = "reviewers";
-
-/// After the last review of a task: the author keeps its reviewers wait
-/// (#70), with no task ids, until it runs `horch ledger finish`, up to the
-/// deadline it had.
+/// After the last review of a task: the author holds its reviewers wait
+/// until it runs `horch ledger finish` ([`workers::hold_for_finish`]).
 fn hold_for_finish(store: &Store, review_task_id: &str) -> Result<()> {
     let Some(parent) = tasks::get(store.conn(), review_task_id)?.parent_task_id else {
         return Ok(());
@@ -1455,30 +1450,7 @@ fn hold_for_finish(store: &Store, review_task_id: &str) -> Result<()> {
     let Some(author) = tasks::get(store.conn(), &parent)?.current_worker_id else {
         return Ok(());
     };
-    // Read the row directly: `workers::waiting` ends a reviewers wait whose
-    // reviews are done, which they all are now.
-    let deadline: Option<String> = store
-        .conn()
-        .query_row(
-            "SELECT deadline FROM worker_waits WHERE worker_id = ?1 AND kind = 'reviewers'",
-            [&author],
-            |r| r.get(0),
-        )
-        .ok();
-    let left = deadline
-        .as_deref()
-        .and_then(horch_core::clock::parse)
-        .map(|d| (d - horch_core::clock::now()).num_seconds())
-        .filter(|s| *s > 0)
-        .unwrap_or(7 * 24 * 3600);
-    workers::set_wait(
-        store.conn(),
-        &author,
-        REVIEWS_WAIT,
-        "the reviews are in; waiting for horch ledger finish",
-        &[],
-        left,
-    )
+    workers::hold_for_finish(store.conn(), &author)
 }
 
 /// The slug of this project's active task-ledger run, if it has one. Never
