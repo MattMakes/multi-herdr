@@ -454,7 +454,7 @@ impl DirLock {
         stale_after: Duration,
         timeout: Duration,
     ) -> Result<DirLockGuard> {
-        Self::acquire_with(dir, name, stale_after, timeout, |_| {})
+        Self::acquire_with(dir, name, stale_after, timeout, no_hook)
     }
 
     /// [`DirLock::acquire`], with `writing` run once while the owner file
@@ -472,24 +472,24 @@ impl DirLock {
         let start = Instant::now();
         let mut backoff = Duration::from_millis(5);
         loop {
-            let held = std::fs::symlink_metadata(&path).is_ok();
-            if !held {
-                if let Some(guard) = publish(&path, &mut writing)? {
-                    return Ok(guard);
-                }
+            if let Some(guard) = publish(&path, &mut writing)? {
+                return Ok(guard);
             }
             if is_stale(&path, stale_after) && break_lock(&path, stale_after) {
                 continue;
             }
-            let waited = start.elapsed();
-            if waited >= timeout {
+            if start.elapsed() >= timeout {
+                let waited = start.elapsed();
                 return Err(FsxError::LockTimeout { path, waited });
             }
-            std::thread::sleep(backoff.min(timeout - waited));
+            std::thread::sleep(backoff.min(timeout.saturating_sub(start.elapsed())));
             backoff = (backoff * 2).min(Duration::from_millis(100));
         }
     }
 }
+
+/// The `acquire_with` hook of every caller but the tests.
+fn no_hook(_lock: &Path) {}
 
 /// Make the lock at `path` with its owner file in one step, or return
 /// `None` when another process holds it.
@@ -499,6 +499,10 @@ impl DirLock {
 /// a holder whose owner write is slow (an `F_FULLFSYNC` on macOS under I/O
 /// load can take seconds) is not taken for one that died before writing it.
 fn publish(path: &Path, writing: &mut Option<impl FnOnce(&Path)>) -> Result<Option<DirLockGuard>> {
+    // A held lock: no staging work that can only lose the rename.
+    if std::fs::symlink_metadata(path).is_ok() {
+        return Ok(None);
+    }
     let (parent, name) = parent_and_name(path)?;
     let nonce = uuid::Uuid::new_v4().simple().to_string();
     let stage = parent.join(format!(".{name}.new-{}", &nonce[..12]));
