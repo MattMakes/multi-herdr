@@ -406,24 +406,22 @@ fn target_dir(ctx: &RuntimeContext) -> Result<PathBuf> {
 
 /// `horch self-update [--check]`.
 pub fn self_update(ctx: &RuntimeContext, check: bool) -> Result<ExitCode> {
-    match fetch_latest(DOWNLOAD_TIMEOUT)? {
-        None => println!("horch: no multi-herdr release is published yet (you have v{CURRENT})"),
-        Some(release) if !is_newer(&release.tag, CURRENT) => {
-            println!("horch is up to date (v{CURRENT})")
-        }
-        Some(release) if check => println!(
+    let Some(release) = fetch_latest(DOWNLOAD_TIMEOUT)? else {
+        println!("horch: no multi-herdr release is published yet (you have v{CURRENT})");
+        return Ok(ExitCode::SUCCESS);
+    };
+    if !is_newer(&release.tag, CURRENT) {
+        println!("horch is up to date (v{CURRENT})");
+    } else if check {
+        println!(
             "multi-herdr {} is out (you have v{CURRENT}): {}",
             release.tag, release.html_url
-        ),
-        Some(release) => install_latest(ctx, &release)?,
+        );
+    } else {
+        install_release(ctx, &release, &target_dir(ctx)?)?;
+        println!("updated horch v{CURRENT} -> {}", release.tag);
     }
     Ok(ExitCode::SUCCESS)
-}
-
-fn install_latest(ctx: &RuntimeContext, release: &Release) -> Result<()> {
-    install_release(ctx, release, &target_dir(ctx)?)?;
-    println!("updated horch v{CURRENT} -> {}", release.tag);
-    Ok(())
 }
 
 /// Download `release` for this target, check its digest and its binaries,
@@ -444,7 +442,18 @@ fn install_release(ctx: &RuntimeContext, release: &Release, dir: &Path) -> Resul
     let new_horch = tmp
         .path()
         .join(format!("horch{}", std::env::consts::EXE_SUFFIX));
-    run_install(&new_horch, dir)?;
+    let status = Command::new(&new_horch)
+        .arg("install")
+        .arg("--dir")
+        .arg(dir)
+        .status()
+        .with_context(|| format!("cannot run {}", new_horch.display()))?;
+    if !status.success() {
+        bail!(
+            "the new horch install exited with {}",
+            status.code().unwrap_or(1)
+        );
+    }
     let _ = std::fs::remove_file(cache_path(&ctx.paths.state_root));
     Ok(())
 }
@@ -476,23 +485,6 @@ fn expected_digest(release: &Release, name: &str, sums_url: &str) -> Result<Stri
     let sums = String::from_utf8(download(sums_url)?).context("SHA256SUMS is not text")?;
     parse_sums(&sums, name)
         .with_context(|| format!("SHA256SUMS of {} has no line for {name}", release.tag))
-}
-
-/// Run `<new_horch> install --dir <dir>`.
-fn run_install(new_horch: &Path, dir: &Path) -> Result<()> {
-    let status = Command::new(new_horch)
-        .arg("install")
-        .arg("--dir")
-        .arg(dir)
-        .status()
-        .with_context(|| format!("cannot run {}", new_horch.display()))?;
-    if !status.success() {
-        bail!(
-            "the new horch install exited with {}",
-            status.code().unwrap_or(1)
-        );
-    }
-    Ok(())
 }
 
 // The network code below is the twin of `crates/herdr-install/src/net.rs`.
@@ -589,10 +581,9 @@ fn flat_name(name: &str) -> Result<&str> {
 #[cfg(unix)]
 fn extract(archive: &[u8], dir: &Path) -> Result<()> {
     let mut tar = tar::Archive::new(flate2::read::GzDecoder::new(archive));
-    for entry in tar.entries().context("the archive is not a .tar.gz")? {
-        extract_entry(entry, dir)?;
-    }
-    Ok(())
+    tar.entries()
+        .context("the archive is not a .tar.gz")?
+        .try_for_each(|entry| extract_entry(entry, dir))
 }
 
 #[cfg(unix)]
