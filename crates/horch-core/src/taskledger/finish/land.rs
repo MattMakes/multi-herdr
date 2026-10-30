@@ -397,7 +397,6 @@ fn sha_hex(s: &str) -> String {
 /// branch under the land lock, push it. A red check or a conflict changes
 /// nothing.
 pub fn land(store: &mut Store, cx: &Ctx<'_>) -> Result<Outcome> {
-    let git = &cx.tools.git;
     let run_branch = cx
         .run
         .run_branch
@@ -407,154 +406,242 @@ pub fn land(store: &mut Store, cx: &Ctx<'_>) -> Result<Outcome> {
     let Some(wt) = cx.worktree.clone() else {
         return land_shared(cx, &run_branch, &log);
     };
-    if is_landed(&wt) && !reopen_if_new_commits(store, git, &cx.root, &wt, &run_branch)? {
+    if is_landed(&wt) && !reopen_if_new_commits(store, &cx.tools.git, &cx.root, &wt, &run_branch)? {
         return land_again(cx, &wt, &run_branch, &log);
     }
     let dir = PathBuf::from(&wt.path);
-    require_clean(git, &dir, false)?;
-    // The task may be cancelled at any time before the fast-forward (#136).
-    let still_mine = |store: &Store| -> Result<Option<Outcome>> {
-        let t = super::tasks::get(store.conn(), &cx.task.task_id)?;
-        if t.status == "landing"
-            && t.current_worker_id.as_deref() == Some(cx.worker.worker_id.as_str())
-        {
-            return Ok(None);
-        }
+    // The lock stays held until the land is pushed and recorded.
+    match land_stages(store, cx, &wt, &dir, &run_branch, &log) {
+        Ok((_lock, new)) => finish_landed(store, cx, &wt, &run_branch, &new, log),
+        Err(Stop::Red(why)) => red(store, cx, &wt, log, why),
+        Err(Stop::NotMine(o)) => Ok(*o),
+        Err(Stop::Error(e)) => Err(e),
+    }
+}
+
+/// Why a land stopped before the fast-forward.
+enum Stop {
+    /// A red stage: the worktree goes back to `open` with this reason.
+    Red(String),
+    /// The task is no longer this worker's: nothing is recorded.
+    NotMine(Box<Outcome>),
+    Error(anyhow::Error),
+}
+
+impl From<anyhow::Error> for Stop {
+    fn from(e: anyhow::Error) -> Self {
+        Stop::Error(e)
+    }
+}
+
+/// The events of 1 land are about its run, task and worker.
+fn about<'a>(cx: &'a Ctx<'_>) -> About<'a> {
+    About {
+        run: Some(&cx.run.run_id),
+        task: Some(&cx.task.task_id),
+        worker: Some(&cx.worker.worker_id),
+    }
+}
+
+/// The stages of a land, in order. On success the land lock is held and
+/// the run branch is at the returned commit.
+fn land_stages(
+    store: &Store,
+    cx: &Ctx<'_>,
+    wt: &WorktreeRow,
+    dir: &Path,
+    run_branch: &str,
+    log: &Path,
+) -> Result<(crate::fsx::DirLockGuard, String), Stop> {
+    require_clean(&cx.tools.git, dir, false)?;
+    still_mine(store, cx)?;
+    set_worktree(store.conn(), &wt.worktree_id, WorktreeStatus::Landing, None)?;
+    util::event(
+        store.conn(),
+        &about(cx),
+        Actor::Worker,
+        EventKind::LandStarted,
+        &format!("Landing {} on {run_branch}.", wt.branch),
+    )?;
+    let (lock, new) = rebase_and_check(cx, dir, run_branch, log)?;
+    // Under the land lock, just before the fast-forward: a cancel that
+    // arrived during the rebase, the check or the lock wait lands nothing.
+    still_mine(store, cx)?;
+    fast_forward(cx, run_branch, &new)?;
+    Ok((lock, new))
+}
+
+/// The task may be cancelled at any time before the fast-forward (#136).
+fn still_mine(store: &Store, cx: &Ctx<'_>) -> Result<(), Stop> {
+    let t = super::tasks::get(store.conn(), &cx.task.task_id)?;
+    let mine = Some(cx.worker.worker_id.as_str());
+    if (t.status.as_str(), t.current_worker_id.as_deref()) == ("landing", mine) {
+        Ok(())
+    } else {
         let why = format!(
             "{} is {}: nothing landed. Stop work, then run horch done",
             t.short(),
             t.status
         );
-        Ok(Some(Outcome::fail("not landed", None, &why)))
-    };
-    if let Some(o) = still_mine(store)? {
-        return Ok(o);
-    }
-    set_worktree(store.conn(), &wt.worktree_id, WorktreeStatus::Landing, None)?;
-    let about = About {
-        run: Some(&cx.run.run_id),
-        task: Some(&cx.task.task_id),
-        worker: Some(&cx.worker.worker_id),
-    };
-    util::event(
-        store.conn(),
-        &about,
-        Actor::Worker,
-        EventKind::LandStarted,
-        &format!("Landing {} on {run_branch}.", wt.branch),
-    )?;
-    let red = |store: &mut Store, why: String| -> Result<Outcome> {
-        set_worktree(
-            store.conn(),
-            &wt.worktree_id,
-            WorktreeStatus::Open,
-            Some(&why),
-        )?;
-        util::event(
-            store.conn(),
-            &about,
-            Actor::Worker,
-            EventKind::LandRed,
+        Err(Stop::NotMine(Box::new(Outcome::fail(
+            "not landed",
+            None,
             &why,
-        )?;
-        Ok(Outcome::fail("not landed", Some(log.clone()), &why))
-    };
-    // Rebase and check outside the land lock; under it, fast-forward only
-    // when the run branch did not move meanwhile (#160). When it moved, the
-    // next try takes the lock first, so a land runs the check at most twice.
-    let mut tries = 0;
+        ))))
+    }
+}
+
+/// Rebase and check outside the land lock; under it, go on only when the
+/// run branch did not move meanwhile (#160). When it moved, the next try
+/// takes the lock first, so a land runs the check at most twice.
+fn rebase_and_check(
+    cx: &Ctx<'_>,
+    dir: &Path,
+    run_branch: &str,
+    log: &Path,
+) -> Result<(crate::fsx::DirLockGuard, String), Stop> {
     let mut held: Option<crate::fsx::DirLockGuard> = None;
-    let (_lock, new) = loop {
-        tries += 1;
-        let target_before = git.rev(&cx.root, &run_branch)?;
-        let rebase = git.try_run(&dir, &["rebase", &target_before])?;
-        if !rebase.ok {
-            let _ = git.try_run(&dir, &["rebase", "--abort"]);
-            std::fs::write(&log, format!("{}\n{}", rebase.stdout, rebase.stderr))?;
-            return red(
-                store,
-                format!(
-                    "rebase on {run_branch} conflicts; resolve it with git rebase {run_branch} in {}, commit, then run finish again",
-                    dir.display()
-                ),
-            );
-        }
-        if let Some((_, why)) = check_in(cx, &dir, &log)? {
-            return red(store, format!("after the rebase: {why}"));
-        }
-        let new = git.rev(&dir, "HEAD")?;
-        if !git.is_ancestor(&cx.root, &target_before, &new) {
-            return red(
-                store,
-                "the rebased branch does not contain the run branch".into(),
-            );
-        }
-        let lock = match held.take() {
-            Some(lock) => lock,
-            None => land_lock(cx)?,
-        };
-        if git.rev(&cx.root, &run_branch)? == target_before {
-            break (lock, new);
-        }
-        if tries >= MAX_LAND_TRIES {
-            return red(
-                store,
-                format!("{run_branch} moved during each of {tries} checks; run finish again"),
-            );
+    for _ in 0..MAX_LAND_TRIES {
+        let (target_before, new) = rebased_and_checked(cx, dir, run_branch, log)?;
+        // After the first try the lock is held already.
+        let lock = held.take().map_or_else(|| land_lock(cx), Ok)?;
+        if cx.tools.git.rev(&cx.root, run_branch)? == target_before {
+            return Ok((lock, new));
         }
         held = Some(lock);
-    };
-    // Under the land lock, just before the fast-forward: a cancel that
-    // arrived during the rebase, the check or the lock wait lands nothing.
-    if let Some(o) = still_mine(store)? {
-        return Ok(o);
     }
-    // Fast-forward the run branch: by merge when it is checked out in the
-    // main checkout, else by a compare-and-swap of its ref. Never forced.
-    let checked_out = git.current_branch(&cx.root).as_deref() == Some(run_branch.as_str());
-    let target_before = git.rev(&cx.root, &run_branch)?;
-    if checked_out {
-        let ff = git.try_run(&cx.root, &["merge", "--ff-only", &new])?;
-        if !ff.ok {
-            return red(
-                store,
-                format!("fast-forward of {run_branch} failed: {}", ff.stderr),
-            );
-        }
+    Err(Stop::Red(format!(
+        "{run_branch} moved during each of {MAX_LAND_TRIES} checks; run finish again"
+    )))
+}
+
+/// 1 try: rebase the branch on the run branch and run the check. The run
+/// branch it rebased on, and the new head.
+fn rebased_and_checked(
+    cx: &Ctx<'_>,
+    dir: &Path,
+    run_branch: &str,
+    log: &Path,
+) -> Result<(String, String), Stop> {
+    let git = &cx.tools.git;
+    let target_before = git.rev(&cx.root, run_branch)?;
+    rebase(cx, dir, run_branch, &target_before, log)?;
+    if let Some((_, why)) = check_in(cx, dir, log)? {
+        return Err(Stop::Red(format!("after the rebase: {why}")));
+    }
+    let new = git.rev(dir, "HEAD")?;
+    if git.is_ancestor(&cx.root, &target_before, &new) {
+        Ok((target_before, new))
     } else {
-        let r = git.try_run(
-            &cx.root,
-            &[
-                "update-ref",
-                &format!("refs/heads/{run_branch}"),
-                &new,
-                &target_before,
-            ],
-        )?;
-        if !r.ok {
-            return red(
-                store,
-                format!("{run_branch} moved during the land; run finish again"),
-            );
-        }
+        Err(Stop::Red(
+            "the rebased branch does not contain the run branch".into(),
+        ))
     }
+}
+
+/// Rebase on `target`; a conflict aborts the rebase.
+fn rebase(
+    cx: &Ctx<'_>,
+    dir: &Path,
+    run_branch: &str,
+    target: &str,
+    log: &Path,
+) -> Result<(), Stop> {
+    let git = &cx.tools.git;
+    let rebase = git.try_run(dir, &["rebase", target])?;
+    if rebase.ok {
+        return Ok(());
+    }
+    let _ = git.try_run(dir, &["rebase", "--abort"]);
+    std::fs::write(log, format!("{}\n{}", rebase.stdout, rebase.stderr))
+        .map_err(anyhow::Error::from)?;
+    Err(Stop::Red(format!(
+        "rebase on {run_branch} conflicts; resolve it with git rebase {run_branch} in {}, commit, then run finish again",
+        dir.display()
+    )))
+}
+
+/// Fast-forward the run branch to `new`: by merge when it is checked out in
+/// the main checkout, else by a compare-and-swap of its ref. Never forced.
+fn fast_forward(cx: &Ctx<'_>, run_branch: &str, new: &str) -> Result<(), Stop> {
+    let git = &cx.tools.git;
+    let checked_out = git.current_branch(&cx.root).as_deref() == Some(run_branch);
+    let target_before = git.rev(&cx.root, run_branch)?;
+    let (out, why) = if checked_out {
+        let ff = git.try_run(&cx.root, &["merge", "--ff-only", new])?;
+        let why = format!("fast-forward of {run_branch} failed: {}", ff.stderr);
+        (ff, why)
+    } else {
+        let to = format!("refs/heads/{run_branch}");
+        let cas = git.try_run(&cx.root, &["update-ref", &to, new, &target_before])?;
+        (
+            cas,
+            format!("{run_branch} moved during the land; run finish again"),
+        )
+    };
+    if out.ok {
+        Ok(())
+    } else {
+        Err(Stop::Red(why))
+    }
+}
+
+/// A red stage: the worktree is open again, with why.
+fn red(
+    store: &Store,
+    cx: &Ctx<'_>,
+    wt: &WorktreeRow,
+    log: PathBuf,
+    why: String,
+) -> Result<Outcome> {
+    set_worktree(
+        store.conn(),
+        &wt.worktree_id,
+        WorktreeStatus::Open,
+        Some(&why),
+    )?;
+    util::event(
+        store.conn(),
+        &about(cx),
+        Actor::Worker,
+        EventKind::LandRed,
+        &why,
+    )?;
+    Ok(Outcome::fail("not landed", Some(log), &why))
+}
+
+/// The worktree's work is on the run branch at `new`.
+fn record_landed(store: &Store, wt: &WorktreeRow, new: &str) -> Result<()> {
+    store.conn().execute(
+        "UPDATE worktrees SET status = 'landed', landed_commit = ?2, landed_at = ?3, reason = NULL
+         WHERE worktree_id = ?1",
+        params![wt.worktree_id, new, util::now()],
+    )?;
+    Ok(())
+}
+
+/// The run branch is at `new`: push it and record the land.
+fn finish_landed(
+    store: &Store,
+    cx: &Ctx<'_>,
+    wt: &WorktreeRow,
+    run_branch: &str,
+    new: &str,
+    log: PathBuf,
+) -> Result<Outcome> {
     let mut note = format!(
         "{} landed on {run_branch} at {}",
         wt.branch,
         &new[..new.len().min(12)]
     );
     if let Some(remote) = &cx.run.remote {
-        let push = git.try_run(
+        let push = cx.tools.git.try_run(
             &cx.root,
             &["push", remote, &format!("{run_branch}:{run_branch}")],
         )?;
         if !push.ok {
             // The land stands; the next finish pushes again (`land_again`).
-            set_worktree(store.conn(), &wt.worktree_id, WorktreeStatus::Landed, None)?;
-            store.conn().execute(
-                "UPDATE worktrees SET landed_commit = ?2, landed_at = ?3 WHERE worktree_id = ?1",
-                params![wt.worktree_id, new, util::now()],
-            )?;
+            record_landed(store, wt, new)?;
             return Ok(Outcome::fail(
                 "landed, not pushed",
                 Some(log),
@@ -563,20 +650,16 @@ pub fn land(store: &mut Store, cx: &Ctx<'_>) -> Result<Outcome> {
         }
         note.push_str(&format!("; pushed to {remote}"));
     }
-    store.conn().execute(
-        "UPDATE worktrees SET status = 'landed', landed_commit = ?2, landed_at = ?3, reason = NULL
-         WHERE worktree_id = ?1",
-        params![wt.worktree_id, new, util::now()],
-    )?;
+    record_landed(store, wt, new)?;
     util::event(
         store.conn(),
-        &about,
+        &about(cx),
         Actor::Worker,
         EventKind::Landed,
         &note,
     )?;
     std::fs::write(&log, format!("{note}\n"))?;
-    Ok(Outcome::pass(&new, Some(log), &note))
+    Ok(Outcome::pass(new, Some(log), &note))
 }
 
 /// Whether the worktree's work landed already.
@@ -685,7 +768,60 @@ fn land_shared(cx: &Ctx<'_>, run_branch: &str, log: &Path) -> Result<Outcome> {
     ))
 }
 
+/// What decides whether 1 worktree may be removed.
+struct Removal<'a> {
+    git: &'a Git,
+    root: &'a Path,
+    dir: &'a Path,
+    wt: &'a WorktreeRow,
+    run_branch: &'a str,
+    remote: Option<&'a str>,
+}
+
+impl Removal<'_> {
+    fn dirty(&self) -> Result<Option<String>> {
+        let dirty = self.git.dirty(self.dir)?;
+        Ok((!dirty.is_empty()).then(|| {
+            format!(
+                "{} uncommitted or untracked files, e.g. {}",
+                dirty.len(),
+                dirty[0].trim()
+            )
+        }))
+    }
+
+    fn stashed(&self) -> Result<Option<String>> {
+        let stashes = self.git.stashes_on(self.root, &self.wt.branch)?;
+        Ok(stashes
+            .first()
+            .map(|s| format!("a stash names {}: {s}", self.wt.branch)))
+    }
+
+    fn unlanded(&self) -> Result<Option<String>> {
+        let missing = self
+            .git
+            .commits_missing_from(self.root, &self.wt.branch, self.run_branch)?;
+        Ok((!missing.is_empty()).then(|| {
+            format!(
+                "{} commits on {} are not on {}",
+                missing.len(),
+                self.wt.branch,
+                self.run_branch
+            )
+        }))
+    }
+
+    fn unpushed(&self) -> Result<Option<String>> {
+        let (Some(remote), Some(landed)) = (self.remote, self.wt.landed_commit.as_deref()) else {
+            return Ok(None);
+        };
+        let pushed = remote_has(self.git, self.root, remote, self.run_branch, landed);
+        Ok((!pushed).then(|| format!("{remote}/{} does not have {landed} yet", self.run_branch)))
+    }
+}
+
 /// Why a worktree may not be removed yet, or `None` when no work can be lost.
+/// The checks run in order; a later one runs only when the earlier pass.
 pub fn unsafe_to_remove(
     git: &Git,
     root: &Path,
@@ -694,37 +830,30 @@ pub fn unsafe_to_remove(
     remote: Option<&str>,
 ) -> Result<Option<String>> {
     let dir = Path::new(&wt.path);
+    let removal = Removal {
+        git,
+        root,
+        dir,
+        wt,
+        run_branch,
+        remote,
+    };
     if !dir.exists() {
         return Ok(None);
     }
-    let dirty = git.dirty(dir)?;
-    if !dirty.is_empty() {
-        return Ok(Some(format!(
-            "{} uncommitted or untracked files, e.g. {}",
-            dirty.len(),
-            dirty[0].trim()
-        )));
-    }
-    let stashes = git.stashes_on(root, &wt.branch)?;
-    if !stashes.is_empty() {
-        return Ok(Some(format!("a stash names {}: {}", wt.branch, stashes[0])));
-    }
-    let missing = git.commits_missing_from(root, &wt.branch, run_branch)?;
-    if !missing.is_empty() {
-        return Ok(Some(format!(
-            "{} commits on {} are not on {run_branch}",
-            missing.len(),
-            wt.branch
-        )));
-    }
-    if let (Some(remote), Some(landed)) = (remote, wt.landed_commit.as_deref()) {
-        if !remote_has(git, root, remote, run_branch, landed) {
-            return Ok(Some(format!(
-                "{remote}/{run_branch} does not have {landed} yet"
-            )));
-        }
-    }
-    Ok(None)
+    let checks = [
+        Removal::dirty,
+        Removal::stashed,
+        Removal::unlanded,
+        Removal::unpushed,
+    ];
+    // The first reason ends the search: a later check runs only when the
+    // earlier ones found none.
+    checks
+        .iter()
+        .map(|check| check(&removal))
+        .find_map(Result::transpose)
+        .transpose()
 }
 
 /// Remove 1 landed worktree when no work can be lost; record the bytes.
@@ -745,54 +874,75 @@ pub fn remove(
     }
     let dir = PathBuf::from(&wt.path);
     let bytes = dir_bytes(&dir) as i64;
-    let mut errors = Vec::new();
+    match delete_worktree(git, &root, wt, &dir, run_branch)? {
+        None => removed(store, wt, bytes),
+        Some(why) => cleanup_failed(store, wt, &why),
+    }
+}
+
+/// Remove the worktree's folder, then its branch. What failed, if anything.
+fn delete_worktree(
+    git: &Git,
+    root: &Path,
+    wt: &WorktreeRow,
+    dir: &Path,
+    run_branch: &str,
+) -> Result<Option<String>> {
     if dir.exists() {
-        let out = git.try_run(&root, &["worktree", "remove", &wt.path])?;
+        let out = git.try_run(root, &["worktree", "remove", &wt.path])?;
         if !out.ok {
-            errors.push(format!("git worktree remove: {}", out.stderr));
+            return Ok(Some(format!("git worktree remove: {}", out.stderr)));
         }
     }
-    if errors.is_empty() && git.branch_exists(&root, &wt.branch) {
+    if git.branch_exists(root, &wt.branch) {
         // `branch -d` checks the branch is merged into its upstream (else the
         // checked-out branch): make that the run branch, so git itself
         // verifies the work is on it. Never `-D`.
         let _ = git.try_run(
-            &root,
+            root,
             &["branch", "--set-upstream-to", run_branch, &wt.branch],
         );
-        let out = git.try_run(&root, &["branch", "-d", &wt.branch])?;
+        let out = git.try_run(root, &["branch", "-d", &wt.branch])?;
         if !out.ok {
-            errors.push(format!("git branch -d: {}", out.stderr));
+            return Ok(Some(format!("git branch -d: {}", out.stderr)));
         }
     }
-    if errors.is_empty() && dir.exists() {
-        errors.push(format!("{} still exists", dir.display()));
+    Ok(dir
+        .exists()
+        .then(|| format!("{} still exists", dir.display())))
+}
+
+/// The events of a cleanup are about the worktree's task and worker.
+fn about_worktree(wt: &WorktreeRow) -> About<'_> {
+    About {
+        task: wt.task_id.as_deref(),
+        worker: wt.worker_id.as_deref(),
+        ..Default::default()
     }
-    if !errors.is_empty() {
-        let why = errors.join("; ");
-        set_worktree(
-            store.conn(),
-            &wt.worktree_id,
-            WorktreeStatus::CleanupFailed,
-            Some(&why),
-        )?;
-        util::event(
-            store.conn(),
-            &About {
-                task: wt.task_id.as_deref(),
-                worker: wt.worker_id.as_deref(),
-                ..Default::default()
-            },
-            Actor::Horch,
-            EventKind::CleanupFailed,
-            &why,
-        )?;
-        return Ok(Outcome::fail(
-            "cleanup failed",
-            None,
-            &format!("{why}; the watchdog retries it"),
-        ));
-    }
+}
+
+fn cleanup_failed(store: &Store, wt: &WorktreeRow, why: &str) -> Result<Outcome> {
+    set_worktree(
+        store.conn(),
+        &wt.worktree_id,
+        WorktreeStatus::CleanupFailed,
+        Some(why),
+    )?;
+    util::event(
+        store.conn(),
+        &about_worktree(wt),
+        Actor::Horch,
+        EventKind::CleanupFailed,
+        why,
+    )?;
+    Ok(Outcome::fail(
+        "cleanup failed",
+        None,
+        &format!("{why}; the watchdog retries it"),
+    ))
+}
+
+fn removed(store: &Store, wt: &WorktreeRow, bytes: i64) -> Result<Outcome> {
     store.conn().execute(
         "UPDATE worktrees SET status = 'cleaned', cleaned_at = ?2, bytes_on_disk = ?3, reason = NULL
          WHERE worktree_id = ?1",
@@ -800,11 +950,7 @@ pub fn remove(
     )?;
     util::event(
         store.conn(),
-        &About {
-            task: wt.task_id.as_deref(),
-            worker: wt.worker_id.as_deref(),
-            ..Default::default()
-        },
+        &about_worktree(wt),
         Actor::Horch,
         EventKind::Cleaned,
         &format!("Removed {} ({} bytes freed).", wt.path, bytes),
@@ -835,18 +981,26 @@ pub fn cleanup(store: &mut Store, cx: &Ctx<'_>) -> Result<Outcome> {
     )
 }
 
+/// Remove 1 `cleanup_failed` worktree again. `None` when it has no task or
+/// its run has no run branch.
+fn retry_one(store: &Store, git: &Git, wt: WorktreeRow) -> Result<Option<(String, Outcome)>> {
+    let Some(task) = &wt.task_id else {
+        return Ok(None);
+    };
+    let t = crate::taskledger::tasks::get(store.conn(), task)?;
+    let run = crate::taskledger::runs::get(store.conn(), &t.run_id)?;
+    let Some(rb) = run.run_branch.as_deref() else {
+        return Ok(None);
+    };
+    let o = remove(store, git, &wt, rb, run.remote.as_deref())?;
+    Ok(Some((wt.path, o)))
+}
+
 /// Retry every `cleanup_failed` worktree (the watchdog calls this).
 pub fn retry_cleanup(store: &mut Store, git: &Git) -> Result<Vec<(String, Outcome)>> {
     let mut out = Vec::new();
     for wt in super::worktrees_with(store.conn(), WorktreeStatus::CleanupFailed)? {
-        let Some(task) = &wt.task_id else { continue };
-        let t = crate::taskledger::tasks::get(store.conn(), task)?;
-        let run = crate::taskledger::runs::get(store.conn(), &t.run_id)?;
-        let Some(rb) = run.run_branch.clone() else {
-            continue;
-        };
-        let o = remove(store, git, &wt, &rb, run.remote.as_deref())?;
-        out.push((wt.path.clone(), o));
+        out.extend(retry_one(store, git, wt)?);
     }
     Ok(out)
 }

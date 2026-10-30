@@ -422,19 +422,21 @@ fn an_agent_that_exits_on_its_last_attempt_holds_the_task() {
 }
 
 #[test]
-fn a_schema_2_ledger_migrates_to_3_and_keeps_its_rows() {
+fn a_schema_2_ledger_migrates_forward_and_keeps_its_rows() {
     let (dir, mut store, run) = ledger();
     let t = add(&mut store, &run, "a", "opus", |_| {});
     let w = worker(&mut store, &run, "opus");
     assert_eq!(claimed_seq(&claim(&mut store, &w)), Some(1));
     drop(store);
-    // Take the file back to schema 2: v3 only added these 3 columns.
+    // Take the file back to schema 2: v3 added 3 columns, v4 added 2.
     let path = dir.path().join("ledger.sqlite3");
     let conn = rusqlite::Connection::open(&path).unwrap();
     conn.execute_batch(
         "ALTER TABLE runs DROP COLUMN max_attempts;
          ALTER TABLE tasks DROP COLUMN held_reason;
          ALTER TABLE tasks DROP COLUMN attempt_floor;
+         ALTER TABLE runs DROP COLUMN watchdog_version;
+         ALTER TABLE runs DROP COLUMN watchdog_exe;
          PRAGMA user_version = 2;",
     )
     .unwrap();
@@ -445,7 +447,7 @@ fn a_schema_2_ledger_migrates_to_3_and_keeps_its_rows() {
         .conn()
         .query_row("PRAGMA user_version", [], |r| r.get(0))
         .unwrap();
-    assert_eq!(v, 3);
+    assert_eq!(v, horch_core::taskledger::schema::VERSION);
     let migrated = runs::get(store.conn(), &run.run_id).unwrap();
     assert_eq!(migrated.slug, "r1");
     assert_eq!(migrated.max_attempts, 3);

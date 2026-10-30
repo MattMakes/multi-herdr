@@ -170,10 +170,9 @@ fn segment_start(record: &LedgerRecordV1) -> &str {
 
 /// Milliseconds from `start` to `end`; 0 when either does not parse.
 fn duration_ms(start: &str, end: &str) -> i64 {
-    match (crate::clock::parse(start), crate::clock::parse(end)) {
-        (Some(s), Some(e)) => (e - s).num_milliseconds(),
-        _ => 0,
-    }
+    crate::clock::parse(start)
+        .zip(crate::clock::parse(end))
+        .map_or(0, |(s, e)| (e - s).num_milliseconds())
 }
 
 /// A value as the plain string serde gives it (`Phase` is `"plan"`).
@@ -346,20 +345,90 @@ pub fn record_run(
     now: DateTime<Utc>,
     written_by: WrittenBy,
 ) -> Result<RunWrite> {
-    if let Some(reason) = skip_reason(record) {
-        return Ok(RunWrite::Skipped(reason));
-    }
     let key = run_key(record);
-    // Cheap check first: the transcript is read only for a new row.
-    if run_ids(paths)?.contains(&key) {
-        return Ok(RunWrite::AlreadyRecorded);
+    match skip_reason(record) {
+        Some(reason) => Ok(RunWrite::Skipped(reason)),
+        // Cheap check first: the transcript is read only for a new row.
+        None if run_ids(paths)?.contains(&key) => Ok(RunWrite::AlreadyRecorded),
+        None => {
+            let start = latest_starts(paths)?.remove(&record.record_id);
+            let row = build_run_row(record, start.as_ref(), sources, project, now, written_by);
+            append_if_new(paths, &key, row)
+        }
     }
-    let start = latest_starts(paths)?.remove(&record.record_id);
-    let row = build_run_row(record, start.as_ref(), sources, project, now, written_by);
+}
+
+/// Append `row` unless `runs.jsonl` has a row for `key`. The check runs
+/// again under the fleet lock: the check in [`record_run`] is only a cheap
+/// guard, and another writer can add the row between it and the lock.
+fn append_if_new(paths: &DatasetPaths, key: &RunKey, row: RunRow) -> Result<RunWrite> {
     let _guard = store::lock(paths)?;
-    if run_ids(paths)?.contains(&key) {
+    if run_ids(paths)?.contains(key) {
         return Ok(RunWrite::AlreadyRecorded);
     }
     store::append_locked(paths, FleetFile::Runs, &row)?;
     Ok(RunWrite::Written(Box::new(row)))
+}
+
+#[cfg(test)]
+pub(crate) mod tests {
+    use super::*;
+    use serde_json::json;
+
+    pub(crate) fn run_row(record_id: &str, segment: u32) -> RunRow {
+        serde_json::from_value(json!({
+            "schema": "mh.fleet-run/1.0.0", "record_id": record_id, "session_id": null,
+            "role": "w", "segment": segment, "kind": "worker", "project": "/p",
+            "project_slug": "p", "teammate": "t", "task": "t", "task_digest": "d",
+            "started_at": "2026-10-07T10:00:00Z", "finished_at": "2026-10-07T11:00:00Z",
+            "duration_ms": 1, "end": {"status": "done", "state": null, "exit_code": 0},
+            "notes": 0, "resumed": false, "cost_source": "unpriced",
+            "usage_at": "2026-10-07T12:00:00Z", "written_by": "done",
+            "horch_version": "0", "harness": null, "model": null, "effort": null,
+            "phase": null, "routing": null, "substitution_reason": null,
+            "skills_expected": [], "plan_path": null, "plan_digest": null,
+            "base_sha": null, "done_summary": null, "tokens": null,
+            "cost_microusd": null, "transcript_ref": null,
+            "transcript_digest": null, "head_sha": null
+        }))
+        .unwrap()
+    }
+
+    fn paths() -> (tempfile::TempDir, DatasetPaths) {
+        let tmp = tempfile::tempdir().unwrap();
+        let paths = DatasetPaths::new(&tmp.path().join("state"), &tmp.path().join("proj"));
+        (tmp, paths)
+    }
+
+    #[test]
+    fn append_if_new_writes_a_new_key_once() {
+        let (_tmp, paths) = paths();
+        let key = ("r-1".to_string(), 1);
+        let first = append_if_new(&paths, &key, run_row("r-1", 1)).unwrap();
+        assert!(matches!(first, RunWrite::Written(_)), "{first:?}");
+        let again = append_if_new(&paths, &key, run_row("r-1", 1)).unwrap();
+        assert_eq!(again, RunWrite::AlreadyRecorded);
+        assert_eq!(run_ids(&paths).unwrap(), BTreeSet::from([key]));
+    }
+
+    /// Another writer's row lands after the cheap check and before the lock:
+    /// the check under the lock must find it.
+    #[test]
+    fn append_if_new_rechecks_under_the_lock() {
+        let (_tmp, paths) = paths();
+        store::append(&paths, FleetFile::Runs, &run_row("r-1", 2)).unwrap();
+        let out = append_if_new(&paths, &("r-1".to_string(), 2), run_row("r-1", 2)).unwrap();
+        assert_eq!(out, RunWrite::AlreadyRecorded);
+        let rows = store::read_rows::<RunRow>(&paths, FleetFile::Runs).unwrap();
+        assert_eq!(rows.rows.len(), 1);
+    }
+
+    #[test]
+    fn append_if_new_writes_another_segment_of_the_record() {
+        let (_tmp, paths) = paths();
+        store::append(&paths, FleetFile::Runs, &run_row("r-1", 1)).unwrap();
+        let out = append_if_new(&paths, &("r-1".to_string(), 2), run_row("r-1", 2)).unwrap();
+        assert!(matches!(out, RunWrite::Written(_)), "{out:?}");
+        assert_eq!(run_ids(&paths).unwrap().len(), 2);
+    }
 }
