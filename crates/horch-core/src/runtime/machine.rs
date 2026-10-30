@@ -484,10 +484,16 @@ mod tests {
         }
     }
 
+    /// A whole snapshot parses; the same snapshot with one extra key does not.
+    /// A partial snapshot would fail on its missing fields either way.
     #[test]
     fn machine_fixture_rejects_unknown_fields() {
-        let text = r#"{"os":"linux","bogus":1}"#;
-        assert!(serde_json::from_str::<MachineSnapshot>(text).is_err());
+        let text = std::fs::read_to_string(fixture_dir().join("mac-m5-128g.json")).unwrap();
+        serde_json::from_str::<MachineSnapshot>(&text).unwrap();
+        let mut value: serde_json::Value = serde_json::from_str(&text).unwrap();
+        value["bogus"] = serde_json::json!(1);
+        let err = serde_json::from_value::<MachineSnapshot>(value).unwrap_err();
+        assert!(err.to_string().contains("unknown field `bogus`"), "{err}");
     }
 
     #[test]
