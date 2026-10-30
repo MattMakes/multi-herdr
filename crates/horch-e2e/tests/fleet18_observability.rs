@@ -148,26 +148,46 @@ fn g54_doctor_warns_on_proxy_host() {
 #[test]
 fn g55_unknown_pool_reason_is_visible() {
     let mut h = Harness::new("g55-reason");
+    // A stale reading has no error and a table row without its reason: only
+    // the `claude: <reason>` line says why the pool is unknown.
+    let telemetry = h.state.join("telemetry");
+    std::fs::create_dir_all(&telemetry).unwrap();
+    std::fs::copy(
+        fixtures().join("quota/claude-tight-codex-ok.json"),
+        telemetry.join("quota.json"),
+    )
+    .unwrap();
+    h.set("HORCH_NOW", "2026-09-28T18:30:00Z");
+    let why = "reading from 2026-09-28T17:55:00Z is stale";
+    let o = h.run(&["quota"]);
+    assert!(o.status.success(), "{}", err(&o));
+    let text = out(&o);
+    assert!(
+        text.lines().any(|l| l == format!("claude: {why}")),
+        "{text}"
+    );
+    let j = h.run(&["quota", "--json"]);
+    let value: serde_json::Value = serde_json::from_str(&out(&j)).unwrap();
+    assert_eq!(value["pools"]["claude"]["state"], "unknown");
+    assert_eq!(value["pools"]["claude"]["reason"], why);
+    // A probe error is the reason, in the row and on its own line.
     h.set(
         "HORCH_QUOTA_FILE",
         fixtures()
             .join("quota/claude-unknown-codex-ok.json")
             .to_string_lossy(),
     );
-    let o = h.run(&["quota"]);
-    assert!(o.status.success(), "{}", err(&o));
-    let j = h.run(&["quota", "--json"]);
-    let value: serde_json::Value = serde_json::from_str(&out(&j)).unwrap();
-    for (name, pool) in value["pools"].as_object().unwrap() {
-        if pool["state"] == "unknown" {
-            let reason = pool["reason"].as_str().unwrap();
-            assert!(
-                out(&o).contains(reason),
-                "{name}: missing {reason}: {}",
-                out(&o)
-            );
-        }
-    }
+    let text = out(&h.run(&["quota"]));
+    let row = text.lines().find(|l| l.starts_with("claude")).unwrap();
+    assert!(
+        row.contains("UNKNOWN") && row.ends_with("probe timed out after 10s"),
+        "{text}"
+    );
+    assert!(
+        text.lines()
+            .any(|l| l == "claude: probe timed out after 10s"),
+        "{text}"
+    );
 }
 
 #[test]

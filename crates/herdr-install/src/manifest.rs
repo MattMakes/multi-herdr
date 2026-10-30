@@ -434,10 +434,18 @@ mod tests {
         }
     }
 
+    /// `detect` names the host's own OS and architecture. Windows keys to the
+    /// x86_64 asset on every architecture.
     #[test]
     fn the_running_platform_is_supported() {
         let t = Target::detect().expect("this platform should be supported");
-        assert!(!t.asset_key().is_empty());
-        assert!(!t.describe().is_empty());
+        let (os, arch) = (std::env::consts::OS, std::env::consts::ARCH);
+        assert_eq!(t.describe(), format!("{os}/{arch}"));
+        let key = if os == "windows" {
+            "windows-x86_64".to_owned()
+        } else {
+            format!("{os}-{arch}")
+        };
+        assert_eq!(t.asset_key(), key);
     }
 }

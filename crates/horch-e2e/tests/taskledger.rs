@@ -2557,11 +2557,11 @@ fn a_new_tree_supersedes_the_open_reviews_of_the_old_round() {
     let all = reviews(&h);
     let (old, new) = all.split_at(n);
     assert!(
-        old.iter().all(|r| r.1 == "cancelled"),
+        !old.is_empty() && old.iter().all(|r| r.1 == "cancelled"),
         "round 1 is cancelled: {all:?}"
     );
     assert!(
-        new.iter().all(|r| r.1 == "queued"),
+        !new.is_empty() && new.iter().all(|r| r.1 == "queued"),
         "round 2 is queued: {all:?}"
     );
     // A superseded review is never queued again.
@@ -2815,6 +2815,97 @@ fn finish_finds_the_code_sweep_skill_in_the_skill_store() {
     );
 }
 
+/// The status of the finish step `complexity-sweep` of a task that commits
+/// `a.ts`, and whether the analyser in `layout` (a folder of `h.root`) ran.
+/// A folder named like the skill that holds no analyser sits first in the walk
+/// and must be skipped.
+fn complexity_step_with_the_analyser_in(name: &str, layout: &str) -> (String, bool) {
+    let mut h = finish_world(name);
+    let called = h.root.join("analyser-called");
+    let skill = h.root.join(layout);
+    let analyser = skill.join("code/cli/dist/index.js");
+    std::fs::create_dir_all(analyser.parent().unwrap()).unwrap();
+    std::fs::write(
+        &analyser,
+        format!(
+            "/usr/bin/touch {}\necho '{{\"files\":[],\"violations\":[]}}'\n",
+            called.display()
+        ),
+    )
+    .unwrap();
+    let decoy = skill.parent().unwrap().parent().unwrap();
+    std::fs::create_dir_all(decoy.join("aa-decoy/complexity-sweep")).unwrap();
+    h.set("HORCH_DATA_DIR", h.root.join("data").to_string_lossy());
+    h.set("HORCH_COMPLEXITY_CLI", "");
+    // index.js is a shell script here: run it with sh as the node binary.
+    h.set("HORCH_NODE_BIN", "/bin/sh");
+    let (w, _) = claimed_with_commit(&h, "complexity-sweep", None, "a.ts");
+    let (_, r) = finish_json(&h, &w);
+    (step_of(&r, "complexity-sweep").0, called.exists())
+}
+
+#[test]
+fn finish_finds_the_complexity_analyser_in_the_plugins_of_the_home() {
+    // <home>/.claude/plugins/<plugin>/<skill>/
+    let (status, ran) = complexity_step_with_the_analyser_in(
+        "tl-cx-plugins",
+        "home/.claude/plugins/zz/complexity-sweep",
+    );
+    assert_eq!(status, "passed");
+    assert!(ran, "the plugin analyser ran");
+}
+
+#[test]
+fn finish_finds_the_complexity_analyser_in_the_skill_store() {
+    // <data>/skills/<skill>/<source>+<hash>/
+    let (status, ran) = complexity_step_with_the_analyser_in(
+        "tl-cx-store",
+        "data/skills/complexity-sweep/local+b9691d7496c9",
+    );
+    assert_eq!(status, "passed");
+    assert!(ran, "the store analyser ran");
+}
+
+#[test]
+fn finish_finds_the_code_sweep_skill_in_the_plugins_of_the_home() {
+    let mut h = finish_world("tl-sweep-plugins");
+    // <home>/.claude/plugins/<plugin>/<skill>/: a folder named like the skill
+    // that holds no reviewers/ sits first in the sort order and is skipped.
+    let plugins = h.home.join(".claude/plugins");
+    std::fs::create_dir_all(plugins.join("aa-decoy/code-sweep")).unwrap();
+    let skill = plugins.join("zz/code-sweep");
+    std::fs::create_dir_all(skill.join("reviewers")).unwrap();
+    for entry in std::fs::read_dir(h.root.join("code-sweep/reviewers")).unwrap() {
+        let p = entry.unwrap().path();
+        std::fs::copy(&p, skill.join("reviewers").join(p.file_name().unwrap())).unwrap();
+    }
+    h.set("HORCH_DATA_DIR", h.root.join("data").to_string_lossy());
+    h.set("HORCH_CODE_SWEEP_DIR", "");
+    let (w, _) = sweep_world(&h);
+    let (code, r) = finish_json(&h, &w);
+    assert_eq!(code, Some(1));
+    assert_eq!(
+        step_of(&r, "code-sweep").0,
+        "running",
+        "reviews are queued: {r}"
+    );
+    let ticket = std::fs::read_to_string(
+        json_of(&h, &["ledger", "status", "--json"])["tasks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|t| t["task"]["kind"] == "review")
+            .unwrap()["task"]["task_file"]
+            .as_str()
+            .unwrap(),
+    )
+    .unwrap();
+    assert!(
+        ticket.contains("You are bug-hunter."),
+        "the plugin prompt: {ticket}"
+    );
+}
+
 // ─── #89: closing a run, and which run a command means ──────────────────────
 
 /// `horch <args>` with extra environment variables.
@@ -2832,6 +2923,98 @@ fn queue(h: &Harness, name: &str, persona: &str, extra: &[&str]) {
     let mut args = vec!["ledger", "add", "--file", &p, "--primary", persona];
     args.extend_from_slice(extra);
     ok(h, &args);
+}
+
+/// Whether `ledger status` printed the board of run `slug`.
+fn shows_run(o: &Output, slug: &str) -> bool {
+    out(o).starts_with(&format!("Run {slug} (active)."))
+}
+
+/// The run a command means (`resolve_run`): `--run`, else `HORCH_RUN_ID`,
+/// else the run of the worker in `HORCH_WORKER_ID`, else the 1 active run.
+#[test]
+fn a_command_means_the_run_it_names_before_the_run_of_its_worker() {
+    let h = world("tl-which-run");
+    ok(&h, &["ledger", "run", "new", "a"]);
+    ok(&h, &["ledger", "run", "new", "b"]);
+    let in_b = ok(
+        &h,
+        &["ledger", "worker", "new", "--persona", "opus", "--run", "b"],
+    )
+    .trim()
+    .to_string();
+
+    // Nothing names a run, and 2 are active: the command refuses.
+    let o = h.run(&["ledger", "status"]);
+    assert!(!o.status.success(), "{}", text(&o));
+    assert!(text(&o).contains("2 active runs"), "{}", text(&o));
+
+    // `--run` names it. The environment names it too, and `--run` wins.
+    let o = h.run(&["ledger", "status", "--run", "a"]);
+    assert!(shows_run(&o, "a"), "{}", text(&o));
+    let o = run_env(&h, &[("HORCH_RUN_ID", "b")], &["ledger", "status"]);
+    assert!(shows_run(&o, "b"), "{}", text(&o));
+    let o = run_env(
+        &h,
+        &[("HORCH_RUN_ID", "b")],
+        &["ledger", "status", "--run", "a"],
+    );
+    assert!(shows_run(&o, "a"), "{}", text(&o));
+
+    // Without either, a worker means its own run.
+    let as_worker = |extra: &[(&str, &str)], args: &[&str]| {
+        let mut env = vec![("HORCH_WORKER_ID", in_b.as_str())];
+        env.extend_from_slice(extra);
+        run_env(&h, &env, args)
+    };
+    let o = as_worker(&[], &["ledger", "status"]);
+    assert!(shows_run(&o, "b"), "{}", text(&o));
+    // An empty `HORCH_RUN_ID` names nothing, so the worker's run still counts.
+    let o = as_worker(&[("HORCH_RUN_ID", "")], &["ledger", "status"]);
+    assert!(shows_run(&o, "b"), "{}", text(&o));
+    // A name beats the worker, from the flag and from the environment.
+    let o = as_worker(&[], &["ledger", "status", "--run", "a"]);
+    assert!(shows_run(&o, "a"), "{}", text(&o));
+    let o = as_worker(&[("HORCH_RUN_ID", "a")], &["ledger", "status"]);
+    assert!(shows_run(&o, "a"), "{}", text(&o));
+
+    // A worker the ledger does not know means no run.
+    let o = run_env(
+        &h,
+        &[("HORCH_WORKER_ID", "no-such-worker")],
+        &["ledger", "status"],
+    );
+    assert!(!o.status.success(), "{}", text(&o));
+    assert!(text(&o).contains("2 active runs"), "{}", text(&o));
+}
+
+#[test]
+fn a_command_from_another_workspace_says_whose_run_it_uses() {
+    let h = fleet("tl-which-ws", "default");
+    ok(&h, &["ledger", "run", "new", "a"]);
+    let note = "horch: NOTE: this command uses run a of workspace w1, not of this workspace w2. \
+                Name a run with --run <slug>.";
+    let o = run_env(&h, &[("HORCH_WORKSPACE_ID", "w2")], &["ledger", "status"]);
+    assert!(shows_run(&o, "a"), "{}", text(&o));
+    let stderr = String::from_utf8_lossy(&o.stderr).into_owned();
+    assert!(stderr.lines().any(|l| l == note), "{}", text(&o));
+
+    // The run's own workspace and a command that names the run get no note.
+    for (env, args) in [
+        (&[][..], &["ledger", "status"][..]),
+        (
+            &[("HORCH_WORKSPACE_ID", "w2")][..],
+            &["ledger", "status", "--run", "a"][..],
+        ),
+    ] {
+        let o = run_env(&h, env, args);
+        assert!(shows_run(&o, "a"), "{}", text(&o));
+        assert!(
+            !String::from_utf8_lossy(&o.stderr).contains("this command uses run"),
+            "{}",
+            text(&o)
+        );
+    }
 }
 
 #[test]
