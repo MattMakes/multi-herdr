@@ -16,7 +16,7 @@ use std::collections::BTreeMap;
 use anyhow::{bail, Context, Result};
 
 use crate::execution::SessionMode;
-use crate::roster::{ExecRule, Roster, Teammate};
+use crate::roster::{Base, ExecRule, Roster, Teammate};
 
 /// Substitute `{name}` spans in `template`.
 ///
@@ -85,13 +85,7 @@ pub fn worker_prompt_with_context(
     };
     let base = roster.require_base(base_name)?;
 
-    let closing = if session.is_resume() {
-        &base.task_resume
-    } else if !task.is_empty() {
-        &base.task_fresh
-    } else {
-        &base.task_idle
-    };
+    let closing = closing_template(base, session, task);
     let closing = render(closing, &BTreeMap::from([("role", role), ("task", task)]))?;
 
     let mut vars = BTreeMap::from([
@@ -106,43 +100,73 @@ pub fn worker_prompt_with_context(
 
     let mut out = render(&base.body, &vars)?;
 
+    append_teammate_blocks(&mut out, teammate, (base_name, base), &vars)?;
+    Ok(out)
+}
+
+/// The optional blocks after the base body, in the order a worker reads them.
+fn append_teammate_blocks(
+    out: &mut String,
+    teammate: &Teammate,
+    (base_name, base): (&str, &Base),
+    vars: &BTreeMap<&str, &str>,
+) -> Result<()> {
+    let name = &teammate.name;
     // Explicit additions are named here; native discovery and phase routing
     // are installed by the launch bundle. Bodies load only when relevant.
     if !teammate.skills.is_empty() {
-        if base.skills_instruction.trim().is_empty() {
-            bail!(
-                "teammate '{}' declares skills but base '{base_name}' has no \
-                 skills_instruction to render them into",
-                teammate.name
-            );
-        }
         let joined = teammate.skills.join(", ");
         let mut skill_vars = vars.clone();
         skill_vars.insert("skills", joined.as_str());
-        out.push_str("\n\n");
-        out.push_str(&render(&base.skills_instruction, &skill_vars)?);
+        let missing = format!(
+            "teammate '{name}' declares skills but base '{base_name}' has no \
+             skills_instruction to render them into"
+        );
+        append_required_block(out, &base.skills_instruction, &skill_vars, missing)?;
     }
 
     // Last of the shared blocks, so it sits closest to the task: a worker that
     // reads one more thing before starting should read this one.
     if teammate.trains_on_input {
-        if base.trains_on_input.trim().is_empty() {
-            bail!(
-                "teammate '{}' sets trains_on_input but base '{base_name}' has no \
-                 trains_on_input block to render it into",
-                teammate.name
-            );
-        }
-        out.push_str("\n\n");
-        out.push_str(&render(&base.trains_on_input, &vars)?);
+        let missing = format!(
+            "teammate '{name}' sets trains_on_input but base '{base_name}' has no \
+             trains_on_input block to render it into"
+        );
+        append_required_block(out, &base.trains_on_input, vars, missing)?;
     }
 
     if let Some(first) = &teammate.first_instruction {
-        let first = render(first, &vars)?;
         out.push_str("\n\n");
-        out.push_str(&first);
+        out.push_str(&render(first, vars)?);
     }
-    Ok(out)
+    Ok(())
+}
+
+/// The closing paragraph that applies: resume, fresh task, or idle.
+fn closing_template<'a>(base: &'a Base, session: &SessionMode, task: &str) -> &'a str {
+    if session.is_resume() {
+        &base.task_resume
+    } else if !task.is_empty() {
+        &base.task_fresh
+    } else {
+        &base.task_idle
+    }
+}
+
+/// Append `block` rendered with `vars`, or fail with `missing` when the base
+/// has no text for a block the teammate asked for.
+fn append_required_block(
+    out: &mut String,
+    block: &str,
+    vars: &BTreeMap<&str, &str>,
+    missing: String,
+) -> Result<()> {
+    if block.trim().is_empty() {
+        bail!(missing);
+    }
+    out.push_str("\n\n");
+    out.push_str(&render(block, vars)?);
+    Ok(())
 }
 
 /// Briefing for a teammate that is not a fleet worker - an orchestrator, or a
