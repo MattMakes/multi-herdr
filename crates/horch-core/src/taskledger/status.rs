@@ -10,6 +10,7 @@ use serde::Serialize;
 use crate::exeid::{exe_identity, ExeIdentity};
 
 use super::runs::Run;
+use super::store::optional;
 use super::tasks::{self, Task};
 use super::util;
 use super::workers::{self, Worker};
@@ -74,22 +75,45 @@ pub struct Report {
 
 /// The parked worktrees of a run: on disk, and no step takes them to an
 /// outcome. `horch worktree triage` decides them.
+///
+/// The disk is the sum of what `horch worktree triage` stored for each row.
+/// `status` runs often, so it never walks a folder.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
 pub struct Parked {
     pub count: usize,
+    /// The sum of the stored measurements.
     pub bytes: u64,
+    /// The rows with no stored measurement.
+    pub unmeasured: usize,
+    /// Seconds since the oldest stored measurement; `None` when no row has one.
+    pub measured_age_s: Option<i64>,
 }
 
 impl Parked {
-    fn of(conn: &Connection, run_id: &str) -> Result<Parked> {
-        let paths = super::runs::parked_worktrees(conn, run_id)?;
-        Ok(Parked {
-            count: paths.len(),
-            bytes: paths
-                .iter()
-                .map(|p| super::git::dir_bytes(std::path::Path::new(p)))
-                .sum(),
-        })
+    fn of(conn: &Connection, run_id: &str, now: &str) -> Result<Parked> {
+        let mut parked = Parked::default();
+        let mut oldest: Option<String> = None;
+        for path in super::runs::parked_worktrees(conn, run_id)? {
+            parked.count += 1;
+            let stored: Option<(i64, String)> = optional(conn.query_row(
+                "SELECT bytes, bytes_measured_at FROM worktrees
+                     WHERE path = ?1 AND bytes IS NOT NULL AND bytes_measured_at IS NOT NULL",
+                [&path],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            ))?;
+            match stored {
+                Some((bytes, at)) => {
+                    parked.bytes += bytes.max(0) as u64;
+                    // Stamps sort as time does.
+                    if oldest.as_ref().is_none_or(|o| at < *o) {
+                        oldest = Some(at);
+                    }
+                }
+                None => parked.unmeasured += 1,
+            }
+        }
+        parked.measured_age_s = oldest.and_then(|at| util::seconds_between(&at, now));
+        Ok(parked)
     }
 }
 
@@ -349,7 +373,7 @@ pub fn report_for(conn: &Connection, run: &Run, current: Option<&ExeIdentity>) -
         worktrees: wts,
         counts,
         watchdog: WatchdogLine::of(run, current),
-        parked: Parked::of(conn, &run.run_id)?,
+        parked: Parked::of(conn, &run.run_id, &now)?,
     })
 }
 
@@ -495,12 +519,35 @@ fn render_parked(out: &mut String, p: &Parked) {
     if p.count == 0 {
         return;
     }
+    let disk = match p.measured_age_s {
+        Some(age) => {
+            let unmeasured = match p.unmeasured {
+                0 => String::new(),
+                n => format!("; {n} not measured"),
+            };
+            format!(
+                "{}, measured {} ago{unmeasured}",
+                super::triage::human_bytes(p.bytes),
+                ago(age)
+            )
+        }
+        None => "disk not measured; run horch worktree triage".to_string(),
+    };
     let _ = writeln!(
         out,
-        "Parked worktrees: {} ({}). Decide about them with horch worktree triage.",
+        "Parked worktrees: {} ({disk}). Decide about them with horch worktree triage.",
         p.count,
-        super::triage::human_bytes(p.bytes)
     );
+}
+
+/// How long ago, in the largest whole unit: `45s`, `5m`, `2h`, `3d`.
+fn ago(s: i64) -> String {
+    match s.max(0) {
+        s if s < 60 => format!("{s}s"),
+        s if s < 3600 => format!("{}m", s / 60),
+        s if s < 86_400 => format!("{}h", s / 3600),
+        s => format!("{}d", s / 86_400),
+    }
 }
 
 /// The worktrees block for every worktree not yet cleaned; nothing when none.
