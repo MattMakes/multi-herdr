@@ -1889,6 +1889,81 @@ mod tests {
             assert!(steps.left_error.unwrap().starts_with("no brief at "));
         }
 
+        /// Steps that start and run, with the ledger writes made to fail.
+        struct Flow {
+            calls: Vec<String>,
+            launch: Result<Option<i32>, &'static str>,
+            running_fails: bool,
+        }
+
+        impl WorkerSteps for Flow {
+            fn load_brief(&mut self) -> Result<Brief> {
+                Ok(Steps::brief())
+            }
+            fn enter_context(&mut self, _: &Brief) -> Result<()> {
+                Ok(())
+            }
+            fn register(&mut self, _: &Brief) -> Result<()> {
+                Ok(())
+            }
+            fn set_running(&mut self, _: &Brief) -> Result<()> {
+                self.calls.push("set_running".into());
+                if self.running_fails {
+                    bail!("ledger is read-only");
+                }
+                Ok(())
+            }
+            fn launch(&mut self, _: &Brief) -> Result<Option<i32>> {
+                self.calls.push("launch".into());
+                self.launch.map_err(|e| anyhow::anyhow!(e))
+            }
+            fn agent_exited(&mut self, _: &Brief, code: Option<i32>) -> Result<()> {
+                self.calls.push(format!("agent_exited({code:?})"));
+                bail!("exit not recorded")
+            }
+        }
+
+        /// A ledger write that fails is logged and the worker goes on: the
+        /// agent starts, and its exit code is the worker's.
+        #[test]
+        fn a_failed_ledger_write_does_not_stop_the_worker() {
+            let mut flow = Flow {
+                calls: Vec::new(),
+                launch: Ok(Some(3)),
+                running_fails: true,
+            };
+            assert_eq!(run_worker(&mut flow).unwrap(), 3);
+            assert_eq!(
+                flow.calls,
+                ["set_running", "launch", "agent_exited(Some(3))"]
+            );
+        }
+
+        #[test]
+        fn a_signal_exit_is_code_1() {
+            let mut flow = Flow {
+                calls: Vec::new(),
+                launch: Ok(None),
+                running_fails: false,
+            };
+            assert_eq!(run_worker(&mut flow).unwrap(), 1);
+            assert_eq!(flow.calls.last().unwrap(), "agent_exited(None)");
+        }
+
+        /// A launch that fails records the exit as a signal end, then
+        /// returns the launch error.
+        #[test]
+        fn a_failed_launch_records_the_exit_and_returns_its_error() {
+            let mut flow = Flow {
+                calls: Vec::new(),
+                launch: Err("no such harness"),
+                running_fails: false,
+            };
+            let e = run_worker(&mut flow).unwrap_err();
+            assert_eq!(e.to_string(), "no such harness");
+            assert_eq!(flow.calls, ["set_running", "launch", "agent_exited(None)"]);
+        }
+
         const KEY: StartupKey<'static> = StartupKey::Record("e1");
 
         #[test]
