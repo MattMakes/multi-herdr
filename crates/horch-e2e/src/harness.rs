@@ -545,8 +545,8 @@ fn reap(root: &Path, log: &Path) -> std::io::Result<Vec<String>> {
         // A process can start after a SIGTERM went out, even in a group
         // that got it: a pane command that starts the mail courier on its
         // way out. A process can also leave its group before the SIGTERM
-        // reaches it: the courier, forked into the pane's group, calls
-        // `setsid` before it execs. Its new group gets SIGTERM too.
+        // reaches it: the courier, forked into the pane's group, starts its
+        // own session before it execs. Its new group gets SIGTERM too.
         let late: Vec<&Process> = left
             .iter()
             .filter(|p| !signalled.contains(&(p.pid, p.pgid)))
