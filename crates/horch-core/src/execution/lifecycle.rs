@@ -2255,7 +2255,7 @@ mod tests {
         #[test]
         fn horch_sessions_shows_the_startup_error() {
             let tmp = tempfile::tempdir().unwrap();
-            let ledger = crate::execution::records::Ledger::for_project(tmp.path(), "/p");
+            let ledger = crate::execution::records::SessionLedger::for_project(tmp.path(), "/p");
             ledger
                 .add(crate::execution::records::NewRecord {
                     record_id: "r1",
@@ -2306,7 +2306,8 @@ mod tests {
             let state = tmp.path().join("state");
             let project = tmp.path().join("missing");
             let project_text = project.to_string_lossy().into_owned();
-            let ledger = crate::execution::records::Ledger::for_project(&state, &project_text);
+            let ledger =
+                crate::execution::records::SessionLedger::for_project(&state, &project_text);
             ledger
                 .add(crate::execution::records::NewRecord {
                     record_id: "r1",

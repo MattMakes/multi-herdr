@@ -13,7 +13,7 @@ use std::process::ExitCode;
 use anyhow::{Context, Result};
 use horch::project::project_facts;
 use horch_core::execution::legacy::{Record, KIND_ORCHESTRATOR};
-use horch_core::execution::records::{Ledger, ORCHESTRATING_TASK};
+use horch_core::execution::records::{SessionLedger, ORCHESTRATING_TASK};
 use horch_core::execution::{ExecutionStatus, LaunchStage, SessionMode};
 use horch_core::harness::launch::{self, DiscoveryTarget, LaunchRequest};
 use horch_core::harness::HarnessKind;
@@ -497,8 +497,8 @@ fn choose_flavor(ctx: &RuntimeContext, flavor: FleetFlavor) -> Result<FleetFlavo
 /// The session ledger. Orchestrators of workspaces that are gone are retired
 /// first: an orchestrator never runs `horch done`. Without a herdr workspace
 /// list, none is.
-fn open_ledger(ctx: &RuntimeContext, herdr: &Herdr) -> Result<Ledger> {
-    let ledger = Ledger::open_in(ctx)?;
+fn open_ledger(ctx: &RuntimeContext, herdr: &Herdr) -> Result<SessionLedger> {
+    let ledger = SessionLedger::open_in(ctx)?;
     if let Ok(open) = herdr.workspace_list() {
         let open: Vec<String> = open.into_iter().map(|w| w.workspace_id).collect();
         ledger.supersede_orchestrators(|ws| open.iter().any(|o| o == ws))?;
@@ -507,7 +507,7 @@ fn open_ledger(ctx: &RuntimeContext, herdr: &Herdr) -> Result<Ledger> {
 }
 
 /// The closing text of `horch fleet`.
-fn print_fleet_ready(workspace_id: &str, ledger: &Ledger) {
+fn print_fleet_ready(workspace_id: &str, ledger: &SessionLedger) {
     println!("\nDone. Fleet workspace {workspace_id} is live with one orchestrator pane.");
     println!("Session ledger: {}", ledger.path().display());
     println!("Orchestrator commands: horch sessions | horch assign | horch spawn [--resume]");
@@ -585,7 +585,7 @@ fn start_orchestrator(
     ctx: &mut RuntimeContext,
     herdr: &Herdr,
     ws: &NewWorkspace,
-    ledger: &Ledger,
+    ledger: &SessionLedger,
     start: OrchestratorStart<'_>,
 ) -> Result<()> {
     ctx.herdr.workspace = Some(horch_core::ids::WorkspaceId::new(ws.workspace_id.as_str())?);
@@ -633,7 +633,7 @@ fn start_orchestrator(
 fn abandon_start(
     herdr: &Herdr,
     workspace_id: &str,
-    record: Option<(&Ledger, &str)>,
+    record: Option<(&SessionLedger, &str)>,
     error: &anyhow::Error,
 ) {
     if let Some((ledger, key)) = record.filter(|(ledger, key)| ledger.get(key).is_ok()) {

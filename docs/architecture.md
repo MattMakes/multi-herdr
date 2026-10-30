@@ -13,7 +13,7 @@ concern. For how the commands connect at run time, see
 
 Both binaries are thin. They parse flags, build a `RuntimeContext`, call
 `horch-core`, and print the result. Both create executions through the same
-spawn service and write them to the same execution ledger.
+spawn service and write them to the same session ledger.
 
 The workspace has 6 crates:
 
@@ -97,7 +97,7 @@ in `harness/capabilities.rs`.
 | `doctor.rs` | `horch doctor` |
 | `install.rs` | `horch install` (copies `horch` and `multi-herdr-dataset`) |
 | `layoutcmd.rs` | `horch layout` |
-| `ledgercmd.rs` | `horch sessions`, `horch ledger legacy` (the JSON session ledger) |
+| `sessionscmd.rs` | `horch sessions`, `horch ledger legacy` (the JSON session ledger) |
 | `mail.rs` | `horch mail courier` (hidden; delivers durable worker mail) |
 | `marketplacecmd.rs` | `horch marketplace` |
 | `messaging.rs` | `horch tell`, `inbox`, `peek`, `assign`, `note`, `done` |

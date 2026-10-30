@@ -1,7 +1,7 @@
 //! The collector singleton (section 12.2, SPC-01).
 //!
 //! `telemetry/collector.lock/` is created with `create_dir`, which is atomic,
-//! the same idiom as `Ledger::lock`. The holder writes `collector.json` next
+//! the same idiom as `SessionLedger::lock`. The holder writes `collector.json` next
 //! to it. A lock whose pid is dead is broken, and the breaker says so.
 //!
 //! Liveness is "the pid exists and has the recorded start time"

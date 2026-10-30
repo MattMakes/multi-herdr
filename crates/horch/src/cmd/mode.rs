@@ -24,7 +24,7 @@ use std::time::Duration;
 
 use anyhow::Result;
 use horch_core::execution::legacy::{HistoryEntry, Record};
-use horch_core::execution::records::Ledger;
+use horch_core::execution::records::SessionLedger;
 use horch_core::harness::codex::{
     parse_permissions_menu, status_permissions, status_shows, PaneMode,
 };
@@ -279,7 +279,7 @@ pub(crate) fn is_plan_pane(roster: &Roster, record: &Record) -> bool {
 /// [`switch`] on a record, with its event: `mode-changed` on success,
 /// `mode-failed` when keys were typed and the check failed.
 pub(crate) fn switch_record(
-    ledger: &Ledger,
+    ledger: &SessionLedger,
     ws: &dyn WorkspaceClient,
     record: &Record,
     pane: &str,
@@ -304,7 +304,7 @@ pub(crate) fn switch_record(
 
 /// Everything `horch mode` works with. Tests pass a simulated pane.
 pub(crate) struct Env<'a> {
-    pub ledger: &'a Ledger,
+    pub ledger: &'a SessionLedger,
     pub roster: &'a Roster,
     pub ws: &'a dyn WorkspaceClient,
     pub mailbox: &'a Mailbox,
@@ -353,7 +353,7 @@ pub fn mode(ctx: &RuntimeContext, args: &ModeArgs) -> Result<ExitCode> {
             return Ok(ExitCode::from(1));
         }
     };
-    let ledger = Ledger::open_in(ctx)?;
+    let ledger = SessionLedger::open_in(ctx)?;
     let roster = match super::load_roster_unwarned(ctx, None) {
         Ok(r) => r,
         Err(_) => Roster::builtin()?,

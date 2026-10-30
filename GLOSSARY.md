@@ -103,3 +103,23 @@ interval.
 Stopping a dead worker by its recorded PIDs and pane, and requeueing its
 task for a new attempt.
 _Avoid_: kill, clean up
+
+## Stores
+
+horch keeps 2 ledgers. Say which one you mean.
+
+**Task ledger**:
+The 1 SQLite file per machine (`~/.horch/ledger.sqlite3`, or
+`$HORCH_LEDGER_DB`) that holds runs, tasks, workers, checks and finish
+steps. Code: `horch_core::taskledger`. Read and written by every
+`horch ledger` command except `horch ledger legacy`.
+_Avoid_: ledger (alone), database
+
+**Session ledger**:
+The 1 JSON file per project under the state root that holds every spawned
+session's record: role, pane, state, notes and its `horch done` summary.
+Code: `horch_core::execution::records::SessionLedger`. Read by
+`horch sessions`, `horch context` and `horch ledger legacy`; written by
+`horch spawn`, `horch note` and `horch done`. `horch ledger import` copies
+it into the task ledger.
+_Avoid_: ledger (alone), execution ledger

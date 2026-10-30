@@ -1,7 +1,7 @@
 //! The worker-report channel relay exposed as an MCP stdio server.
 
 use anyhow::{Context, Result};
-use horch_core::execution::records::Ledger;
+use horch_core::execution::records::SessionLedger;
 use horch_core::harness::HarnessKind;
 use horch_core::messaging::channel::{self, ServeOptions};
 use horch_core::runtime::RuntimeContext;
@@ -47,7 +47,7 @@ fn thread_id(ctx: &RuntimeContext) -> Result<String> {
         .as_ref()
         .and_then(|worker| worker.record_id.as_deref())
     {
-        return Ledger::open_in(ctx)?
+        return SessionLedger::open_in(ctx)?
             .get(record_id)?
             .session_id
             .filter(|id| !id.is_empty())

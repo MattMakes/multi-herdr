@@ -149,7 +149,7 @@ pub fn skip_reason(record: &LedgerRecordV1) -> Option<&'static str> {
     }
 }
 
-/// The history event of a resume (`execution::plan`, `Ledger::resume`).
+/// The history event of a resume (`execution::plan`, `SessionLedger::resume`).
 const RESUMED: &str = "resumed";
 
 /// The segment of a record (§3.2): 1 for its first run, 1 more for each

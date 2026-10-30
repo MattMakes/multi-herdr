@@ -1,7 +1,7 @@
 use super::*;
 use crate::execution::legacy::Record;
 use crate::execution::model::{ExecutionStatus, FailureKind};
-use crate::execution::records::Ledger;
+use crate::execution::records::SessionLedger;
 use crate::workspace::testing::FakeWorkspace;
 
 const DAY: Duration = Duration::from_secs(24 * 60 * 60);
@@ -35,8 +35,8 @@ impl World {
         self.tmp.path().join("temp")
     }
 
-    fn ledger(&self) -> Ledger {
-        Ledger::for_project(self.state(), "/proj")
+    fn ledger(&self) -> SessionLedger {
+        SessionLedger::for_project(self.state(), "/proj")
     }
 
     /// A working record of `role` in `ws`, in pane `pane`.
@@ -507,7 +507,7 @@ fn run_due_leaves_bundles_only_for_live_records_once_an_hour() {
     let tmp = tempfile::tempdir().unwrap();
     let ctx = script_ctx(tmp.path());
     let state = tmp.path().join("state");
-    let ledger = Ledger::for_project(&state, "/proj");
+    let ledger = SessionLedger::for_project(&state, "/proj");
     for (id, pane) in [("live-1", "p1"), ("closed-1", "p7"), ("done-1", "p1")] {
         ledger
             .insert(Record {

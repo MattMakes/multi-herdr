@@ -964,7 +964,7 @@ impl ProjectCommand {
                 all_workspaces,
                 live,
                 role,
-            } => done(cmd::ledgercmd::sessions_filtered(
+            } => done(cmd::sessionscmd::sessions_filtered(
                 ctx,
                 json,
                 all,

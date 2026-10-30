@@ -493,7 +493,7 @@ Only a collector that is down for weeks reaches either bound.
 
 ### 12.2 Singleton lock
 
-- The lock is `telemetry/collector.lock/`, created with `create_dir` (atomic), the same idiom as `Ledger::lock` [H].
+- The lock is `telemetry/collector.lock/`, created with `create_dir` (atomic), the same idiom as `SessionLedger::lock` [H].
 - The holder writes `collector.json` with `{pid, started_at, host, herdr_session, workspace_id, pane_id, pid_start, exe}`. `pid_start` is the process start time (`procid::start_time`). `exe` is the binary it runs: `{path, len, mtime_ns}`, the path with symlinks resolved.
 - Stale binary: a collector keeps running the binary it started with, so after `just install` it runs old prices and old readers. `horch telemetry ensure` compares the live holder's `exe` with the current executable; `horch install` compares it with the binary it just installed. A holder with another `exe`, or none (a horch older than the field), is stopped with SIGTERM through `procid::signal_same`, which signals only the pid that still has the recorded `pid_start`; a holder without `pid_start` is never signalled. A new collector then starts on the current binary. `horch install` starts none when none was live, and a failed restart only warns. Windows has no signal here: the stale collector is reported.
 - Liveness: on Unix, `kill(pid, 0)` succeeds and `started_at` matches the process start time. On Windows, `OpenProcess` succeeds. A lock whose pid is dead is broken, and the breaker prints `horch: removed stale telemetry lock of pid <n>`.
@@ -893,7 +893,7 @@ The cloud proves the logic against fixtures. These steps prove the fixtures matc
 |---|---|---|---|---|
 | M0 infrastructure | `crates/horch-e2e` with the fakes, `clock.rs`, the new seams (`herdr_bin`, `sqlite3_bin`, `ollama_bin`, `Locations` fields), the fixture corpus and `EXPECTED.md`, the scripts, `just verify` | NFR-01, NFR-04 (seams) | prompt-unwrap merged | `crates/horch-e2e/**`, `clock.rs`, `agent.rs`, `herdr.rs` (seam only), `usage.rs` (`Locations` only), fixtures, `scripts/*`, `justfile`, root `Cargo.toml` |
 | M1 readers | the trait, 5 readers, cursors, the 2 bug fixes, `horch cost` on the shared readers | TEL-03..07, TEL-10, TEL-11 (readers) | M0 | `telemetry/readers.rs`, `cursor.rs`, `usage.rs`, `cost.rs` |
-| M2 identity | the new `Record` fields, the orchestrator record, `plan` parsing, `horch sessions` sections, resume refusal | TEL-02, TEL-08 | M0 | `ledger.rs`, `recipes.rs`, `ledgercmd.rs`, `spawn.rs` (record fields only), `messaging.rs` (assign sets `plan`) |
+| M2 identity | the new `Record` fields, the orchestrator record, `plan` parsing, `horch sessions` sections, resume refusal | TEL-02, TEL-08 | M0 | `ledger.rs`, `recipes.rs`, `sessionscmd.rs`, `spawn.rs` (record fields only), `messaging.rs` (assign sets `plan`) |
 | M3 quota | pools, probes, normalization, states, `quota.json`, `policy.json`, `horch quota` | QUO-01..07 | M0 | `quota.rs`, `cmd/quotacmd.rs`, `main.rs` |
 | M4 store and CLI | store, dedupe index, tick, snapshot, `collect --once`, `horch usage` | TEL-01, TEL-07, TEL-09, SPC-05 | M1, M2 | `telemetry/store.rs`, `collect.rs`, `mod.rs`, `cmd/usagecmd.rs`, `main.rs` |
 | M5 balancing | `fallbacks`, merge, roster rules, `decide()`, the gate, `route`, flags, briefing section and golden block, `fleet auto` | BAL-01..09 | M2, M3 | `teammates.rs`, `balance_policy.rs`, `spawn.rs` (gate), `cmd/route.rs`, `teammates/*.md`, `_base/fleet-orchestrator.md`, `golden_prompts.rs`, `recipes.rs` (auto flavor), `main.rs` |

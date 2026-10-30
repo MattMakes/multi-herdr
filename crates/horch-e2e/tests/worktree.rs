@@ -6,7 +6,7 @@ use std::path::Path;
 use std::process::{Command, Output};
 
 use horch_core::execution::legacy::{Record, STATUS_DONE};
-use horch_core::execution::records::Ledger;
+use horch_core::execution::records::SessionLedger;
 use horch_e2e::harness::Harness;
 use serde_json::Value;
 
@@ -80,7 +80,7 @@ fn prepare_done(h: &mut Harness) -> String {
     std::fs::write(mailbox.join("orchestrator.id"), &pane).unwrap();
     h.set("HORCH_WORKSPACE_ID", WORKSPACE);
     h.set("HERDR_PANE_ID", pane.clone());
-    Ledger::for_project(&h.state, &h.project.to_string_lossy())
+    SessionLedger::for_project(&h.state, &h.project.to_string_lossy())
         .insert(Record {
             record_id: RECORD.into(),
             role: ROLE.into(),
@@ -133,7 +133,7 @@ fn arc_31_e2e_done_refuses_then_unlanded_reports() {
 
     let completed = h.run(&["done", "--unlanded", "r", "s"]);
     assert!(completed.status.success(), "{}", stderr(&completed));
-    let record = Ledger::for_project(&h.state, &h.project.to_string_lossy())
+    let record = SessionLedger::for_project(&h.state, &h.project.to_string_lossy())
         .get(RECORD)
         .unwrap();
     assert_eq!(record.status, STATUS_DONE);

@@ -9,7 +9,7 @@ use std::time::Duration;
 
 use horch_core::execution::legacy::{HistoryEntry, LedgerRecordV1};
 use horch_core::execution::legacy::{Record, KIND_WORKER, STATUS_DONE, STATUS_WORKING};
-use horch_core::execution::records::Ledger;
+use horch_core::execution::records::SessionLedger;
 use horch_core::execution::store::ExecutionStore;
 use horch_core::execution::{ExecutionStatus, FailureKind, LaunchStage};
 use horch_core::ids::SkillId;
@@ -32,9 +32,9 @@ fn fixture_store(tmp: &Path, name: &str) -> ExecutionStore {
     store
 }
 
-fn ledger() -> (tempfile::TempDir, Ledger) {
+fn ledger() -> (tempfile::TempDir, SessionLedger) {
     let tmp = tempfile::tempdir().unwrap();
-    let l = Ledger::for_project(tmp.path(), "/Users/a/proj");
+    let l = SessionLedger::for_project(tmp.path(), "/Users/a/proj");
     (tmp, l)
 }
 
@@ -59,7 +59,7 @@ fn arc_17_legacy_ledgers_load_and_resume() {
         let Some(worker) = records.iter().find(|r| r.kind == KIND_WORKER) else {
             continue;
         };
-        let ledger = Ledger::for_project(tmp.path(), &format!("/oracle/{name}"));
+        let ledger = SessionLedger::for_project(tmp.path(), &format!("/oracle/{name}"));
         ledger
             .resume(&worker.record_id, "opus-9", "resume ai_docs/plans/next.md")
             .unwrap();
@@ -416,7 +416,7 @@ fn tel_08_insert_fills_plan_project_and_workspace() {
 #[test]
 fn reads_a_ledger_written_by_the_bash_version() {
     let tmp = tempfile::tempdir().unwrap();
-    let l = Ledger::for_project(tmp.path(), "/p");
+    let l = SessionLedger::for_project(tmp.path(), "/p");
     std::fs::create_dir_all(tmp.path()).unwrap();
     std::fs::write(
         l.path(),
