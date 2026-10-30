@@ -117,9 +117,13 @@ fn raw(pid: u32) -> Option<i32> {
 /// be given out again between the two calls.
 #[cfg(unix)]
 pub fn signal_same(pid: u32, started: u64, signal: i32) -> bool {
-    let Some(os) = raw(pid) else {
-        return false;
-    };
+    raw(pid).is_some_and(|os| signal_os(pid, os, started, signal))
+}
+
+/// [`signal_same`] once `pid` is known to name one process, as the OS type
+/// `os`: the pidfd route on Linux, else the check and `kill`.
+#[cfg(unix)]
+fn signal_os(pid: u32, os: i32, started: u64, signal: i32) -> bool {
     #[cfg(target_os = "linux")]
     if let Some(sent) = imp::pidfd_signal(os, signal, || is_same(pid, started)) {
         return sent;
