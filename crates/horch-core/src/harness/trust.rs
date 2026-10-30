@@ -2610,6 +2610,61 @@ mod tests {
         assert!(!path.exists());
     }
 
+    /// The temp copy takes the permission bits of the store, whatever the
+    /// umask says, and `0600` when there is no store yet.
+    #[cfg(unix)]
+    #[test]
+    fn a_temp_store_takes_the_mode_of_the_store_else_0600() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::tempdir().unwrap();
+        let mode_of = |temp: &TempStore| {
+            let meta = std::fs::metadata(temp.0.as_ref().unwrap()).unwrap();
+            meta.permissions().mode() & 0o7777
+        };
+        let store = tmp.path().join("store.json");
+        std::fs::write(&store, "{}").unwrap();
+        std::fs::set_permissions(&store, std::fs::Permissions::from_mode(0o660)).unwrap();
+        assert_eq!(mode_of(&TempStore::write(&store, "x").unwrap()), 0o660);
+        assert_eq!(
+            mode_of(&TempStore::write(&tmp.path().join("new.json"), "x").unwrap()),
+            0o600
+        );
+    }
+
+    /// A temp store is named `<store>.horch-tmp.<pid>.<12 hex>`, next to the
+    /// store: the name the sweep of a dead writer's files reads as this
+    /// process's. Two writes never share a name.
+    #[test]
+    fn a_temp_store_is_named_as_the_sweep_of_dead_writers_reads_it() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = tmp.path().join("store.json");
+        let first = TempStore::write(&store, "a").unwrap();
+        let second = TempStore::write(&store, "b").unwrap();
+        let (a, b) = (first.0.clone().unwrap(), second.0.clone().unwrap());
+        assert_ne!(a, b);
+        for path in [&a, &b] {
+            assert_eq!(path.parent(), Some(tmp.path()));
+            let name = path.file_name().unwrap();
+            assert_eq!(
+                dead_temp_pid(name, "store.json.horch-tmp."),
+                Some(std::process::id())
+            );
+        }
+    }
+
+    #[test]
+    fn a_temp_store_in_a_missing_directory_names_the_file_it_could_not_create() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = tmp.path().join("no-dir/store.json");
+        let err = TempStore::write(&store, "x")
+            .err()
+            .expect("a missing directory is an error")
+            .to_string();
+        let want = format!("creating {}.horch-tmp.", store.display());
+        assert!(err.starts_with(&want), "{err}");
+        assert!(!tmp.path().join("no-dir").exists());
+    }
+
     #[test]
     fn temp_names_carry_a_pid_and_12_lowercase_hex() {
         assert_eq!(temp_pid("123.0123456789ab"), Some(123));
