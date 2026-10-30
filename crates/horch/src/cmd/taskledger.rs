@@ -2028,47 +2028,18 @@ pub(super) fn reviewers_down(ctx: &RuntimeContext) -> Vec<(String, String)> {
 
 /// The finish steps' tools: git, gh, node, the sweep skills.
 pub fn tools(ctx: &RuntimeContext) -> finish::Tools {
-    let env = |k: &str| {
-        std::env::var_os(k)
-            .filter(|v| !v.is_empty())
-            .map(PathBuf::from)
-    };
     let mut roots = vec![
         ctx.paths.home.join(".claude").join("plugins"),
         ctx.paths.data_root.clone(),
     ];
     roots.extend(local_marketplaces(&ctx.paths.data_root));
-    // A plugin holds `<skill>/`; the skill store holds
-    // `skills/<skill>/<source>+<hash>/`.
-    let skill_dir = |p: &Path, skill: &str| {
-        p.file_name().is_some_and(|n| n == skill)
-            || p.parent()
-                .and_then(|d| d.file_name())
-                .is_some_and(|n| n == skill)
-    };
-    let code_sweep_dir = env("HORCH_CODE_SWEEP_DIR").or_else(|| {
-        find_dir(&roots, |p| {
-            skill_dir(p, "code-sweep") && p.join("reviewers").is_dir()
-        })
-    });
-    let complexity_cli = env("HORCH_COMPLEXITY_CLI").or_else(|| {
-        find_dir(&roots, |p| {
-            skill_dir(p, "complexity-sweep") && p.join("code/cli/dist/index.js").is_file()
-        })
-        .map(|d| d.join("code/cli/dist/index.js"))
-    });
     finish::Tools {
         git: Git::new(&ctx.bins.harness.git),
-        gh: env("HORCH_GH_BIN").unwrap_or_else(|| PathBuf::from("gh")),
-        node: env("HORCH_NODE_BIN").unwrap_or_else(|| PathBuf::from("node")),
-        complexity_cli,
-        code_sweep_dir,
-        evidence_root: ctx
-            .paths
-            .ledger_db
-            .parent()
-            .map(|p| p.join("evidence"))
-            .unwrap_or_else(|| PathBuf::from("evidence")),
+        gh: tool_bin("HORCH_GH_BIN", "gh"),
+        node: tool_bin("HORCH_NODE_BIN", "node"),
+        complexity_cli: complexity_cli(&roots),
+        code_sweep_dir: code_sweep_dir(&roots),
+        evidence_root: evidence_root(ctx),
         // An absolute shell: a pane's PATH may not reach one.
         shell: PathBuf::from(if cfg!(unix) { "/bin/sh" } else { "sh" }),
         reviewers_down: Vec::new(),
@@ -2078,6 +2049,57 @@ pub fn tools(ctx: &RuntimeContext) -> finish::Tools {
             personas: Vec::new(),
         },
     }
+}
+
+/// The path in the variable `key`; an empty one counts as unset.
+fn env_path(key: &str) -> Option<PathBuf> {
+    std::env::var_os(key)
+        .filter(|v| !v.is_empty())
+        .map(PathBuf::from)
+}
+
+/// The program in the variable `key`, else `default`, found on the PATH.
+fn tool_bin(key: &str, default: &str) -> PathBuf {
+    env_path(key).unwrap_or_else(|| PathBuf::from(default))
+}
+
+/// Whether `p` is the folder of the skill `skill`. A plugin holds `<skill>/`;
+/// the skill store holds `skills/<skill>/<source>+<hash>/`.
+fn is_skill_dir(p: &Path, skill: &str) -> bool {
+    p.file_name().is_some_and(|n| n == skill)
+        || p.parent()
+            .and_then(|d| d.file_name())
+            .is_some_and(|n| n == skill)
+}
+
+/// The code-sweep skill folder: `HORCH_CODE_SWEEP_DIR`, else the first one
+/// under `roots` that holds `reviewers/`.
+fn code_sweep_dir(roots: &[PathBuf]) -> Option<PathBuf> {
+    env_path("HORCH_CODE_SWEEP_DIR").or_else(|| {
+        find_dir(roots, |p| {
+            is_skill_dir(p, "code-sweep") && p.join("reviewers").is_dir()
+        })
+    })
+}
+
+/// The complexity analyser: `HORCH_COMPLEXITY_CLI`, else the one in the first
+/// complexity-sweep folder under `roots` that holds it.
+fn complexity_cli(roots: &[PathBuf]) -> Option<PathBuf> {
+    env_path("HORCH_COMPLEXITY_CLI").or_else(|| {
+        find_dir(roots, |p| {
+            is_skill_dir(p, "complexity-sweep") && p.join("code/cli/dist/index.js").is_file()
+        })
+        .map(|d| d.join("code/cli/dist/index.js"))
+    })
+}
+
+/// The folder beside the ledger file that holds the evidence of the steps.
+fn evidence_root(ctx: &RuntimeContext) -> PathBuf {
+    ctx.paths
+        .ledger_db
+        .parent()
+        .map(|p| p.join("evidence"))
+        .unwrap_or_else(|| PathBuf::from("evidence"))
 }
 
 /// The roster's Codex teammates: their check runs in a Codex sandbox.
