@@ -53,29 +53,10 @@ fn normalize(markdown: &str) -> String {
     let mut in_fence = false;
 
     for line in markdown.lines() {
-        let trimmed = line.trim_end();
-        if trimmed.trim_start().starts_with("```") {
-            in_fence = !in_fence;
-            blank_run = 0;
-            out.push_str(trimmed);
+        if let Some(kept) = keep_line(line, &mut in_fence, &mut blank_run, out.is_empty()) {
+            out.push_str(kept);
             out.push('\n');
-            continue;
         }
-        if in_fence {
-            out.push_str(line.trim_end());
-            out.push('\n');
-            continue;
-        }
-        if trimmed.is_empty() {
-            blank_run += 1;
-            if blank_run > 1 || out.is_empty() {
-                continue;
-            }
-        } else {
-            blank_run = 0;
-        }
-        out.push_str(trimmed);
-        out.push('\n');
     }
 
     while out.ends_with("\n\n") {
@@ -85,6 +66,30 @@ fn normalize(markdown: &str) -> String {
         out.push('\n');
     }
     out
+}
+
+/// The text to write for `line`, or `None` to drop it. Tracks fence state and the
+/// run of blank lines across calls.
+fn keep_line<'a>(
+    line: &'a str,
+    in_fence: &mut bool,
+    blank_run: &mut usize,
+    out_empty: bool,
+) -> Option<&'a str> {
+    let trimmed = line.trim_end();
+    if trimmed.trim_start().starts_with("```") {
+        *in_fence = !*in_fence;
+        *blank_run = 0;
+        Some(trimmed)
+    } else if *in_fence {
+        Some(trimmed)
+    } else if trimmed.is_empty() {
+        *blank_run += 1;
+        (*blank_run <= 1 && !out_empty).then_some(trimmed)
+    } else {
+        *blank_run = 0;
+        Some(trimmed)
+    }
 }
 
 #[cfg(test)]
@@ -209,5 +214,22 @@ mod tests {
             normalize(input),
             "text\n\n```toml\n[ui]\n\n\nkey = 1\n```\n\nafter\n"
         );
+    }
+
+    /// An indented fence still toggles, trailing spaces go, and an unclosed fence
+    /// keeps its blank lines to the end.
+    #[test]
+    fn normalize_handles_indented_and_unterminated_fences() {
+        assert_eq!(
+            normalize("  ```sh   \nx  \n\n\ny\n  ```\n\n\nz\n"),
+            "  ```sh\nx\n\n\ny\n  ```\n\nz\n"
+        );
+        assert_eq!(normalize("```\na\n\n\n\nb\n"), "```\na\n\n\n\nb\n");
+    }
+
+    /// Closing a fence resets the blank-run count, so one blank after it survives.
+    #[test]
+    fn normalize_keeps_one_blank_line_straight_after_a_fence() {
+        assert_eq!(normalize("```\na\n```\n\nb\n"), "```\na\n```\n\nb\n");
     }
 }
