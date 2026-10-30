@@ -1311,101 +1311,25 @@ pub(super) fn codex_command(
         cmd.arg("resume");
     }
     if teammate.worker_channel {
-        const CHANNEL_ENV_VARS: [&str; 14] = [
-            "HORCH_WORKSPACE_ID",
-            "HORCH_RECORD_ID",
-            "HORCH_STATE_DIR",
-            "HORCH_DATA_DIR",
-            "HORCH_TEAMMATES_DIR",
-            "HORCH_CODEX_BIN",
-            "HERDR_PANE_ID",
-            "HERDR_SOCKET_PATH",
-            "HERDR_BIN_PATH",
-            "HORCH_HERDR_BIN",
-            "XDG_STATE_HOME",
-            "XDG_DATA_HOME",
-            "HOME",
-            "PATH",
-        ];
-        let horch = env.horch_exe.to_string_lossy();
-        let workdir = env
-            .workdir
-            .as_deref()
-            .context("the worker channel needs a launch workdir")?
-            .to_string_lossy();
-        let channel_args = ["channel", "serve", "--agent", "codex"]
-            .map(toml_string)
-            .join(",");
-        let env_vars = CHANNEL_ENV_VARS.map(toml_string).join(",");
-        for pair in [
-            format!("mcp_servers.horch.command={}", toml_string(&horch)),
-            format!("mcp_servers.horch.args=[{channel_args}]"),
-            format!("mcp_servers.horch.cwd={}", toml_string(&workdir)),
-            format!("mcp_servers.horch.env_vars=[{env_vars}]"),
-        ] {
-            cmd.arg("-c").arg(pair);
-        }
+        push_channel_args(&mut cmd, env)?;
     }
     cmd.arg("-c").arg(&model);
     // Fleet panes must reach their briefing without startup dialogs. Keep
     // sandbox/command approval policy separate from trust for enabled hooks.
     cmd.args(["-c", "check_for_update_on_startup=false"]);
     cmd.args(["-c", "tui.resume_cwd=\"current\""]);
-    if !teammate
-        .args
-        .iter()
-        .any(|arg| arg == "--dangerously-bypass-hook-trust")
-    {
-        cmd.arg("--dangerously-bypass-hook-trust");
-    }
+    push_hook_trust(&mut cmd, teammate);
 
-    if let Some(mode) = teammate.permission_mode {
-        match permission_args(teammate) {
-            Some(args) => {
-                cmd.args(args);
-            }
-            None => bail!(
-                "teammate '{}' sets permission_mode '{}', which has no codex equivalent",
-                teammate.name,
-                mode.as_str()
-            ),
-        }
-    }
+    push_permission_args(&mut cmd, teammate)?;
     if let Some(effort) = &teammate.effort {
         cmd.arg("-c")
             .arg(format!("model_reasoning_effort=\"{effort}\""));
     }
-    // Harness defaults first, so the teammate's own args come later and win.
-    let defaults = default_args(teammate, || {
-        let home = env.home()?;
-        let dir = codex_home(home, env.codex_home.as_deref());
-        ConfigLayers::read(&dir, args_profile(&teammate.args))
-    });
-    let multi_agent_off = config_pair_value(&teammate.args, "features.multi_agent")
-        .or_else(|| config_pair_value(&defaults, "features.multi_agent"))
-        == Some("false");
-    cmd.args(defaults);
-    // The fleet window, with the defaults: only when the decision applies
-    // it, and not over the teammate's own pair.
-    let window = env.compact_window.as_ref().filter(|d| d.applied);
-    if let Some(n) = window.and_then(|d| d.tokens) {
-        if !HarnessDefault::config_keys(&teammate.args).contains(&LIMIT_KEY) {
-            cmd.arg("-c").arg(format!("{LIMIT_KEY}={n}"));
-        }
-    }
+    let multi_agent_off = push_defaults(&mut cmd, env, teammate);
+    push_window_limit(&mut cmd, env, teammate);
     cmd.args(&teammate.args);
     if multi_agent_off {
-        if let Some(path) = env
-            .state_root
-            .as_ref()
-            .map(|root| root.join("codex/model-catalog-v1.json"))
-            .filter(|path| path.is_file())
-        {
-            cmd.arg("-c").arg(format!(
-                "model_catalog_json={}",
-                toml_string(&path.to_string_lossy())
-            ));
-        }
+        push_v1_catalog(&mut cmd, env);
     }
     if let Session::Resume(id) = session {
         cmd.arg(id);
@@ -1415,6 +1339,115 @@ pub(super) fn codex_command(
         cmd.arg(prompt);
     }
     Ok(cmd)
+}
+
+/// Hooks trust is separate from the sandbox policy; the teammate may set it.
+fn push_hook_trust(cmd: &mut Command, teammate: &Teammate) {
+    if !teammate
+        .args
+        .iter()
+        .any(|arg| arg == "--dangerously-bypass-hook-trust")
+    {
+        cmd.arg("--dangerously-bypass-hook-trust");
+    }
+}
+
+/// Harness defaults first, so the teammate's own args come later and win.
+/// Returns whether the merged config turns `features.multi_agent` off.
+fn push_defaults(cmd: &mut Command, env: &LaunchEnv, teammate: &Teammate) -> bool {
+    let defaults = default_args(teammate, || {
+        let home = env.home()?;
+        let dir = codex_home(home, env.codex_home.as_deref());
+        ConfigLayers::read(&dir, args_profile(&teammate.args))
+    });
+    let multi_agent_off = config_pair_value(&teammate.args, "features.multi_agent")
+        .or_else(|| config_pair_value(&defaults, "features.multi_agent"))
+        == Some("false");
+    cmd.args(defaults);
+    multi_agent_off
+}
+
+/// The `-c` pairs that register the worker channel MCP server.
+fn push_channel_args(cmd: &mut Command, env: &LaunchEnv) -> Result<()> {
+    const CHANNEL_ENV_VARS: [&str; 14] = [
+        "HORCH_WORKSPACE_ID",
+        "HORCH_RECORD_ID",
+        "HORCH_STATE_DIR",
+        "HORCH_DATA_DIR",
+        "HORCH_TEAMMATES_DIR",
+        "HORCH_CODEX_BIN",
+        "HERDR_PANE_ID",
+        "HERDR_SOCKET_PATH",
+        "HERDR_BIN_PATH",
+        "HORCH_HERDR_BIN",
+        "XDG_STATE_HOME",
+        "XDG_DATA_HOME",
+        "HOME",
+        "PATH",
+    ];
+    let horch = env.horch_exe.to_string_lossy();
+    let workdir = env
+        .workdir
+        .as_deref()
+        .context("the worker channel needs a launch workdir")?
+        .to_string_lossy();
+    let channel_args = ["channel", "serve", "--agent", "codex"]
+        .map(toml_string)
+        .join(",");
+    let env_vars = CHANNEL_ENV_VARS.map(toml_string).join(",");
+    for pair in [
+        format!("mcp_servers.horch.command={}", toml_string(&horch)),
+        format!("mcp_servers.horch.args=[{channel_args}]"),
+        format!("mcp_servers.horch.cwd={}", toml_string(&workdir)),
+        format!("mcp_servers.horch.env_vars=[{env_vars}]"),
+    ] {
+        cmd.arg("-c").arg(pair);
+    }
+    Ok(())
+}
+
+/// A permission mode needs a codex equivalent; one without is a roster error.
+fn push_permission_args(cmd: &mut Command, teammate: &Teammate) -> Result<()> {
+    let Some(mode) = teammate.permission_mode else {
+        return Ok(());
+    };
+    match permission_args(teammate) {
+        Some(args) => {
+            cmd.args(args);
+            Ok(())
+        }
+        None => bail!(
+            "teammate '{}' sets permission_mode '{}', which has no codex equivalent",
+            teammate.name,
+            mode.as_str()
+        ),
+    }
+}
+
+/// The fleet window, with the defaults: only when the decision applies it,
+/// and not over the teammate's own pair.
+fn push_window_limit(cmd: &mut Command, env: &LaunchEnv, teammate: &Teammate) {
+    let window = env.compact_window.as_ref().filter(|d| d.applied);
+    if let Some(n) = window.and_then(|d| d.tokens) {
+        if !HarnessDefault::config_keys(&teammate.args).contains(&LIMIT_KEY) {
+            cmd.arg("-c").arg(format!("{LIMIT_KEY}={n}"));
+        }
+    }
+}
+
+/// Point codex at the pinned v1 catalog, when `write_v1_catalog` made one.
+fn push_v1_catalog(cmd: &mut Command, env: &LaunchEnv) {
+    let path = env
+        .state_root
+        .as_ref()
+        .map(|root| root.join("codex/model-catalog-v1.json"))
+        .filter(|path| path.is_file());
+    if let Some(path) = path {
+        cmd.arg("-c").arg(format!(
+            "model_catalog_json={}",
+            toml_string(&path.to_string_lossy())
+        ));
+    }
 }
 
 // ─── run-time permission switch (`horch mode`, X6) ─────────────────────────
