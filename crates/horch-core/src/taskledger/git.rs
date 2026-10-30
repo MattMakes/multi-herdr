@@ -2,18 +2,19 @@
 //!
 //! Every call names its directory with `-C`; nothing depends on the current
 //! directory. No call here ever forces: no `--force`, no `-D`, no `reset`.
-//! Each call runs without the caller's git repository variables (a
-//! `GIT_DIR` from a hook wins over `-C`), never prompts, and in the C locale.
+//! Each call goes through [`GitRunner`], the 1 git runner of horch: it runs
+//! without the caller's git repository variables (a `GIT_DIR` from a hook
+//! wins over `-C`), never prompts, and in the C locale.
 
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 use anyhow::{bail, Context, Result};
+use horch_marketplace::git::GitRunner;
 
 /// A git binary.
 #[derive(Debug, Clone)]
 pub struct Git {
-    bin: PathBuf,
+    runner: GitRunner,
 }
 
 /// What 1 git call printed.
@@ -26,7 +27,9 @@ pub struct Out {
 
 impl Git {
     pub fn new(bin: impl Into<PathBuf>) -> Git {
-        Git { bin: bin.into() }
+        Git {
+            runner: GitRunner::new(bin),
+        }
     }
 
     /// Run git in `dir`; never fails on a non-zero exit.
@@ -37,18 +40,11 @@ impl Git {
                 .any(|a| *a == "--force" || *a == "-D" || *a == "-f"),
             "the task ledger never forces git"
         );
-        let mut cmd = Command::new(&self.bin);
-        cmd.arg("-C")
-            .arg(dir)
-            .args(args)
-            .env("GIT_TERMINAL_PROMPT", "0")
-            .env("LC_ALL", "C");
-        crate::runtime::process::scrub_child_env(&mut cmd);
-        let out = cmd
-            .output()
-            .with_context(|| format!("running {} {}", self.bin.display(), args.join(" ")))?;
+        let out = self.runner.output(dir, args).with_context(|| {
+            format!("running {} {}", self.runner.bin().display(), args.join(" "))
+        })?;
         Ok(Out {
-            ok: out.status.success(),
+            ok: out.status == 0,
             stdout: String::from_utf8_lossy(&out.stdout).trim_end().to_string(),
             stderr: String::from_utf8_lossy(&out.stderr).trim_end().to_string(),
         })
