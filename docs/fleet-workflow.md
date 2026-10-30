@@ -65,6 +65,80 @@ Use `horch ledger worktree new <name> --from <ref>` for a different base, and
 `horch ledger worktree scratch <name>` for work that will not land. Drop a clean
 tree with `horch ledger worktree drop <name> --reason "<why>"`; use
 `--keep-branch` to retain unique commits. No command forces removal.
+A worktree that no step takes to an outcome is decided in a worktree triage
+(see "Worktree triage").
+
+## Worktree triage
+
+A worktree is *parked* when no step takes it to an outcome: its worker did
+not land it (`horch ledger done --unlanded`), its task was cancelled, its run
+was abandoned, its cleanup failed, or git knows a folder under `.worktrees/`
+that the ledger does not. A parked worktree is often the only copy of work
+that cost real time, and each one holds a full checkout and its build output.
+The operator decides what happens to each one. Code collects the facts and
+applies the decisions; the `worktree-steward` teammate adds judgement.
+
+| step | who | command |
+|---|---|---|
+| list the parked worktrees with their facts | steward | `horch worktree triage` (`--json` for machines) |
+| show the facts, a relevance, a suggestion and a reply table | steward | (in its pane) |
+| fill `Decision` (and `Direction` for `FINISH` and `PR`) | operator | (in the steward's pane) |
+| run the decisions | steward | `horch worktree triage apply <file>` (`-` reads stdin) |
+| bring an archived or trashed folder back | anyone | `horch worktree restore <name>` |
+| delete trash refs older than 30 days | anyone | `horch ledger gc` |
+
+`horch fleet` runs the triage at start. When it finds 1 or more parked
+worktrees, it spawns `worktree-steward` in a pane beside the orchestrator.
+With none, no steward starts. The orchestrator does not run the triage.
+
+Each row of `horch worktree triage` has an ID (`W1`, `W2`, ... in name order)
+and: the task, findings and origin; the branch, path and base; the created,
+last commit and newest file times; the disk use and its ignored share (build
+output); ahead and behind the base; the diffstat and its 3 largest paths; the
+modified, staged and untracked counts, with the 3 largest untracked files;
+`superseded` (every commit has a patch-equivalent commit in the base, from
+`git cherry`); the conflict count of a merge into the base (`git merge-tree`);
+the last finish step; and why it is parked.
+
+The reply is a markdown table with the columns `ID`, `Worktree`, `Suggested`,
+`Decision` and `Direction`. Code parses it, never a model. `apply` refuses the
+whole reply, and runs nothing, when a line has an unknown ID, a `Worktree`
+that no longer matches its ID, an empty or unknown decision, a `FINISH` or
+`PR` with no `Direction`, a `PR` with no `gh` or no git remote, or an ID that
+appears twice. Each error names its line.
+
+| decision | effect |
+|---|---|
+| `LAND` | Commits the uncommitted files, then rebases the branch onto the branch that the main checkout has checked out. On the default branch (`main`, `master` or `origin/HEAD`) that branch does not move: the work goes to a new branch `land/<name>`. On a feature branch, that branch fast-forwards under the land lock. Then the folder is removed. A conflict changes nothing and reports `conflicts: choose FINISH`. |
+| `PR` | Pushes the branch, opens a pull request with the first line of `Direction` as its title and `Direction` as its body, then archives the folder. Offered only when `gh` and a git remote exist. |
+| `FINISH` | Writes `Direction` to `ai_docs/triage/<name>.md` and queues a task with it as the brief (`--primary <persona>`, default `opus`). The task inherits the worktree, and the orchestrator is woken. Needs an active run. |
+| `ARCHIVE` | Commits the uncommitted files, writes `refs/horch/archive/<name>` at the tip, removes the folder and keeps the branch. `horch worktree restore <name>` makes the folder again. |
+| `KEEP` | Changes nothing. The row comes back at the next triage. |
+| `DELETE` | Commits the uncommitted files, writes `refs/horch/trash/<name>/<UTC time>` at the tip, removes the folder, then deletes the branch once the trash ref is read back at the tip. `horch ledger gc` deletes the trash ref after 30 days; until then `horch worktree restore <name>` brings it back. |
+
+A superseded row suggests `DELETE`. A row that does not merge clean suggests
+`FINISH` or `ARCHIVE`, never `LAND`. Ignored files are never committed: an
+`ARCHIVE` or `DELETE` drops build output and keeps everything else.
+
+The rules: no git call forces (`git worktree remove` without `--force`,
+never `git branch -D`). Before a folder is removed, `unsafe_to_remove`, or an
+archive or trash ref that holds the tip, proves that no commit and no
+uncommitted file is lost. A failed decision deletes nothing: the row becomes
+`cleanup_failed` with the reason, and has no decision. `LAND` never moves the
+default branch. Only `gc` deletes a ref that may hold the only copy of a
+commit, and only a trash ref older than 30 days.
+
+Each decision is recorded on the worktree row (`decision`, `decided_at`, and
+`archive_ref` and `bytes_freed` where they apply) and as a ledger event. An
+open `import_findings` row of the worktree closes: `requeued` for `FINISH`,
+`dismissed` for the others. `ARCHIVE` and `PR` leave the row `archived`;
+`DELETE` leaves it `trashed`.
+
+`horch ledger run close` refuses while a parked worktree of the run is on
+disk with no decision, and names `horch worktree triage`. `--abandon` cancels
+the open tasks first, then refuses the same way; the run stays active until
+each worktree has a decision. `horch ledger status` prints a
+`Parked worktrees: <count> (<disk>)` line.
 
 ## Plan files
 
