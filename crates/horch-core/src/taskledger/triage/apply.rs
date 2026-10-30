@@ -16,6 +16,7 @@ use rusqlite::{params, Connection};
 
 use super::reply::Decided;
 use super::{human_bytes, listed_worktrees, refs, Row};
+use crate::runtime::process::scrub_child_env;
 use crate::taskledger::finish::{self, land, WorktreeRow};
 use crate::taskledger::git::{dir_bytes, Git};
 use crate::taskledger::model::{Actor, EventKind, TriageDecision, WorktreeStatus};
@@ -88,11 +89,10 @@ struct Done {
 
 /// The remote `PR` uses, when `gh` runs and the repository has a remote.
 pub fn pr_remote(git: &Git, root: &Path, gh: &Path) -> Option<String> {
-    let gh_runs = Command::new(gh)
-        .arg("--version")
-        .env_remove("ANTHROPIC_API_KEY")
-        .output()
-        .is_ok_and(|o| o.status.success());
+    let mut version = Command::new(gh);
+    version.arg("--version");
+    scrub_child_env(&mut version);
+    let gh_runs = version.output().is_ok_and(|o| o.status.success());
     if !gh_runs {
         return None;
     }
@@ -700,13 +700,15 @@ fn pr(env: &Env<'_>, row: &Row, wt: &WorktreeRow, direction: &str) -> Result<Don
     let b = &wt.branch;
     env.git
         .run(env.root, &["push", "--quiet", remote, &format!("{b}:{b}")])?;
-    let out = Command::new(gh)
+    let mut create = Command::new(gh);
+    create
         .current_dir(env.root)
         .args(["pr", "create", "--head", b, "--title"])
         .arg(first_line(direction, 200))
         .arg("--body")
-        .arg(direction)
-        .env_remove("ANTHROPIC_API_KEY")
+        .arg(direction);
+    scrub_child_env(&mut create);
+    let out = create
         .output()
         .with_context(|| format!("running {}", gh.display()))?;
     if !out.status.success() {

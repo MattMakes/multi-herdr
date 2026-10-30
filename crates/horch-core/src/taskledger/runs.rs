@@ -391,17 +391,73 @@ pub fn open_items(conn: &Connection, run_id: &str) -> Result<Vec<String>> {
     Ok(out)
 }
 
+/// The statuses of a worktree that no step takes to an outcome.
+const PARKED: &str = "'landed', 'cleanup_failed', 'unlanded', 'abandoned'";
+
+/// The folders of the run's parked worktrees that are on disk, with their
+/// decision (#308).
+fn parked_on_disk(conn: &Connection, run_id: &str) -> Result<Vec<(String, Option<String>)>> {
+    let mut stmt = conn.prepare(&format!(
+        "SELECT w.path, w.decision FROM worktrees w LEFT JOIN tasks t ON t.task_id = w.task_id
+         LEFT JOIN worktree_modes m ON m.worktree_id = w.worktree_id
+         WHERE (t.run_id = ?1 OR m.run_id = ?1) AND w.status IN ({PARKED})
+         ORDER BY w.created_at, w.rowid"
+    ))?;
+    let rows = stmt
+        .query_map([run_id], |r| Ok((r.get(0)?, r.get(1)?)))?
+        .collect::<rusqlite::Result<Vec<(String, Option<String>)>>>()?;
+    Ok(rows
+        .into_iter()
+        .filter(|(p, _)| std::path::Path::new(p).exists())
+        .collect())
+}
+
+/// The folders of the run's parked worktrees: on disk, not settled, not
+/// held by a task that is still open.
+pub fn parked_worktrees(conn: &Connection, run_id: &str) -> Result<Vec<String>> {
+    Ok(parked_on_disk(conn, run_id)?
+        .into_iter()
+        .map(|p| p.0)
+        .collect())
+}
+
+/// The parked worktrees of the run with no triage decision: they keep the
+/// run open, with `--abandon` too (#308).
+pub fn undecided_worktrees(conn: &Connection, run_id: &str) -> Result<Vec<String>> {
+    Ok(parked_on_disk(conn, run_id)?
+        .into_iter()
+        .filter(|(_, d)| d.is_none())
+        .map(|p| p.0)
+        .collect())
+}
+
+/// Why `run` cannot close while `parked` have no decision.
+pub fn parked_message(run: &Run, parked: &[String]) -> String {
+    format!(
+        "run {} has {} parked worktrees with no decision: {}. Run horch worktree triage, fill in its reply table, then run horch worktree triage apply <reply>",
+        run.slug,
+        parked.len(),
+        parked.join(", ")
+    )
+}
+
 /// What [`close_run`] did.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Closed {
     pub status: String,
     /// The tasks `--abandon` cancelled, with the worker each one had.
     pub cancelled: Vec<(String, Option<String>)>,
+    /// With `--abandon`: the parked worktrees with no decision. The cancels
+    /// stand, the run stays active, and the caller refuses the close.
+    pub parked: Vec<String>,
 }
 
 /// `horch ledger run close`: close an active run as `done`. It refuses while
-/// [`open_items`] names anything. With `abandon`, every open task is cancelled
-/// first (the 1 cancel path) and the run closes as `abandoned`.
+/// [`open_items`] names anything, or a parked worktree has no triage
+/// decision ([`undecided_worktrees`]). With `abandon`, every open task is
+/// cancelled first (the 1 cancel path) and the run closes as `abandoned`;
+/// an undecided worktree then keeps the run active, with the cancels done
+/// ([`Closed::parked`]).
 pub fn close_run(conn: &Connection, run: &Run, abandon: Option<&str>) -> Result<Closed> {
     if run.status != RunStatus::Active.as_str() {
         bail!("run {} is already {}", run.slug, run.status);
@@ -431,6 +487,17 @@ pub fn close_run(conn: &Connection, run: &Run, abandon: Option<&str>) -> Result<
             open.join(", "),
             run.slug
         );
+    }
+    let parked = undecided_worktrees(conn, &run.run_id)?;
+    if !parked.is_empty() {
+        if abandon.is_none() {
+            bail!("{}", parked_message(run, &parked));
+        }
+        return Ok(Closed {
+            status: RunStatus::Active.as_str().to_string(),
+            cancelled,
+            parked,
+        });
     }
     let status = if abandon.is_some() {
         RunStatus::Abandoned
@@ -463,5 +530,6 @@ pub fn close_run(conn: &Connection, run: &Run, abandon: Option<&str>) -> Result<
     Ok(Closed {
         status: status.as_str().to_string(),
         cancelled,
+        parked: Vec::new(),
     })
 }

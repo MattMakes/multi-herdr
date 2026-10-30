@@ -1689,6 +1689,12 @@ fn close_run_cmd(
             None => output::println(&format!("{task} cancelled.")),
         }
     }
+    if !closed.parked.is_empty() {
+        bail!(
+            "{}. The open tasks are cancelled; the run stays active",
+            runs::parked_message(&r, &closed.parked)
+        );
+    }
     output::println(&format!("Run {} closed as {}.", r.slug, closed.status));
     Ok(ExitCode::SUCCESS)
 }

@@ -181,3 +181,83 @@ fn archive_restore_and_gc_through_the_cli() {
         "No trash ref is older than 30 days."
     );
 }
+
+/// A run `alpha` with task T-1 claimed by a worker that made the worktree
+/// `T1-f` and committed in it. Returns the worker id and the path.
+fn claimed_worktree(h: &Harness) -> (String, PathBuf) {
+    ok(h, &["ledger", "run", "new", "alpha"]);
+    let dir = h.project.join("tickets");
+    std::fs::create_dir_all(&dir).unwrap();
+    let t = dir.join("01-f.md");
+    std::fs::write(&t, "# 01: Feature\n").unwrap();
+    ok(
+        h,
+        &[
+            "ledger",
+            "add",
+            "--file",
+            &t.to_string_lossy(),
+            "--primary",
+            "opus",
+        ],
+    );
+    let w = ok(h, &["ledger", "worker", "new", "--persona", "opus"])
+        .trim()
+        .to_string();
+    let as_worker = |args: &[&str]| {
+        let mut cmd = h.horch(args);
+        cmd.env("HORCH_WORKER_ID", &w);
+        let o = cmd.output().unwrap();
+        assert!(o.status.success(), "horch {}: {}", args.join(" "), text(&o));
+        out(&o)
+    };
+    as_worker(&["ledger", "claim"]);
+    let said = as_worker(&["ledger", "worktree", "new", "f"]);
+    let path = PathBuf::from(said.lines().find_map(|l| l.strip_prefix("path: ")).unwrap());
+    std::fs::write(path.join("f.txt"), "work\n").unwrap();
+    git_in(h, &path, &["add", "f.txt"]);
+    git_in(h, &path, &["commit", "--quiet", "--no-gpg-sign", "-m", "f"]);
+    (w, path)
+}
+
+fn name_of(path: &Path) -> String {
+    path.file_name().unwrap().to_string_lossy().into_owned()
+}
+
+#[test]
+fn run_close_refuses_while_a_parked_worktree_has_no_decision() {
+    let h = world("i308-close");
+    let (_, path) = claimed_worktree(&h);
+    ok(&h, &["ledger", "cancel", "T-1", "not needed now"]);
+    let status = ok(&h, &["ledger", "status"]);
+    assert!(status.contains("Parked worktrees: 1 ("), "{status}");
+    let o = h.run(&["ledger", "run", "close"]);
+    assert!(!o.status.success(), "{}", text(&o));
+    let err = String::from_utf8_lossy(&o.stderr);
+    assert!(err.contains(&path.to_string_lossy().into_owned()), "{err}");
+    assert!(err.contains("horch worktree triage"), "{err}");
+    let r = reply(&h, &[("W1", &name_of(&path), "KEEP", "")]);
+    ok(&h, &["worktree", "triage", "apply", &r.to_string_lossy()]);
+    let said = ok(&h, &["ledger", "run", "close"]);
+    assert!(said.contains("Run alpha closed as done."), "{said}");
+}
+
+#[test]
+fn run_close_abandon_cancels_then_refuses_until_the_worktree_is_decided() {
+    let h = world("i308-abandon");
+    let (_, path) = claimed_worktree(&h);
+    let o = h.run(&["ledger", "run", "close", "--abandon", "stop here"]);
+    assert!(!o.status.success(), "{}", text(&o));
+    let err = String::from_utf8_lossy(&o.stderr);
+    assert!(err.contains("horch worktree triage"), "{err}");
+    // The cancel stands; the run stays active until the decision.
+    let t: Value = serde_json::from_str(&ok(&h, &["ledger", "show", "T-1", "--json"])).unwrap();
+    assert_eq!(t["task"]["status"], "cancelled", "{t:#}");
+    let rows = triage_json(&h);
+    assert_eq!(rows["rows"][0]["status"], "abandoned", "{rows:#}");
+    let r = reply(&h, &[("W1", &name_of(&path), "ARCHIVE", "")]);
+    ok(&h, &["worktree", "triage", "apply", &r.to_string_lossy()]);
+    assert!(!path.exists());
+    let said = ok(&h, &["ledger", "run", "close", "--abandon", "stop here"]);
+    assert!(said.contains("Run alpha closed as abandoned"), "{said}");
+}
