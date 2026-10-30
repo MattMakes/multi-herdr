@@ -616,6 +616,78 @@ fn read_head(path: &Path) -> Option<String> {
     Some(String::from_utf8_lossy(&buf).into_owned())
 }
 
+/// The extra launch args the sandbox needs.
+///
+/// Codex 0.160.0 exits 1 when `--add-dir` meets a read-only sandbox ("the
+/// effective permissions do not allow additional writable roots"), and full
+/// access needs no extra root.
+fn launch_sandbox_args(
+    ctx: &RuntimeContext,
+    req: &PrepareRequest<'_>,
+    sandbox: Option<&str>,
+    prepared: &mut Prepared,
+) -> Result<()> {
+    let state_root = ctx.paths.state_root.to_string_lossy().into_owned();
+    let profile_form = write_profile_form(req.teammate) || plan_profile_form(req.teammate);
+    match sandbox {
+        // A write pane runs the fleet write profile; a plan pane defines
+        // it for `horch mode <role> write` (X6 repro 5). The profile holds
+        // the state root and the pane's own TMPDIR.
+        _ if profile_form => profile_form_args(ctx, req.role, prepared)?,
+        None | Some(WORKSPACE_WRITE) => {
+            prepared.extra_args = vec!["--add-dir".into(), state_root];
+        }
+        // Another read-only launch names it as a workspace-write root:
+        // codex reads it only after a switch to workspace-write, and
+        // starts normally with it (X6 repro 2).
+        Some(READ_ONLY)
+            if !HarnessDefault::config_keys(&req.teammate.args).contains(&WRITABLE_ROOTS_KEY) =>
+        {
+            prepared.extra_args = vec![
+                "-c".into(),
+                format!("{WRITABLE_ROOTS_KEY}=[{}]", toml_string(&state_root)),
+            ];
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+/// The fleet write profile, with a private TMPDIR that `finish` removes.
+fn profile_form_args(ctx: &RuntimeContext, role: &str, prepared: &mut Prepared) -> Result<()> {
+    let state_root = ctx.paths.state_root.to_string_lossy().into_owned();
+    let tmpdir = pane_tmpdir(&ctx.paths.state_root, role);
+    std::fs::create_dir_all(&tmpdir).with_context(|| format!("creating {}", tmpdir.display()))?;
+    prepared.extra_args = fleet_write_profile_args(&state_root);
+    let value = serde_json::to_string(&tmpdir.to_string_lossy()).context("encoding TMPDIR")?;
+    prepared.extra_args.push("-c".into());
+    prepared
+        .extra_args
+        .push(format!("shell_environment_policy.set.TMPDIR={value}"));
+    prepared.on_finish(move || {
+        let _ = std::fs::remove_dir_all(&tmpdir);
+    });
+    Ok(())
+}
+
+/// Whether `key` is a shell variable name codex can take as a config key.
+fn is_env_name(key: &str) -> bool {
+    !key.is_empty() && key.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
+}
+
+/// One `shell_environment_policy.set` pair per valid variable. A JSON string
+/// is a valid TOML basic string, newlines escaped too.
+fn shell_env_args(shell_env: &[(String, String)], prepared: &mut Prepared) -> Result<()> {
+    for (key, value) in shell_env.iter().filter(|(key, _)| is_env_name(key)) {
+        let value = serde_json::to_string(value).context("encoding a shell variable")?;
+        prepared.extra_args.push("-c".into());
+        prepared
+            .extra_args
+            .push(format!("shell_environment_policy.set.{key}={value}"));
+    }
+    Ok(())
+}
+
 /// The operator's `config.toml`, read bounded (a FIFO, a device or a file
 /// over 1 MiB counts as absent).
 fn read_config(path: &Path) -> Option<String> {
@@ -682,58 +754,8 @@ impl Harness for Codex {
             ConfigLayers::read(&home, args_profile(&req.teammate.args))
         });
         let mut prepared = Prepared::default();
-        // Codex 0.160.0 exits 1 when `--add-dir` meets a read-only sandbox
-        // ("the effective permissions do not allow additional writable
-        // roots"), and full access needs no extra root.
-        let state_root = ctx.paths.state_root.to_string_lossy().into_owned();
-        let profile_form = write_profile_form(req.teammate) || plan_profile_form(req.teammate);
-        match sandbox.as_deref() {
-            // A write pane runs the fleet write profile; a plan pane defines
-            // it for `horch mode <role> write` (X6 repro 5). The profile holds
-            // the state root and the pane's own TMPDIR.
-            _ if profile_form => {
-                let tmpdir = pane_tmpdir(&ctx.paths.state_root, req.role);
-                std::fs::create_dir_all(&tmpdir)
-                    .with_context(|| format!("creating {}", tmpdir.display()))?;
-                prepared.extra_args = fleet_write_profile_args(&state_root);
-                let value =
-                    serde_json::to_string(&tmpdir.to_string_lossy()).context("encoding TMPDIR")?;
-                prepared.extra_args.push("-c".into());
-                prepared
-                    .extra_args
-                    .push(format!("shell_environment_policy.set.TMPDIR={value}"));
-                prepared.on_finish(move || {
-                    let _ = std::fs::remove_dir_all(&tmpdir);
-                });
-            }
-            None | Some(WORKSPACE_WRITE) => {
-                prepared.extra_args = vec!["--add-dir".into(), state_root];
-            }
-            // Another read-only launch names it as a workspace-write root:
-            // codex reads it only after a switch to workspace-write, and
-            // starts normally with it (X6 repro 2).
-            Some(READ_ONLY)
-                if !HarnessDefault::config_keys(&req.teammate.args)
-                    .contains(&WRITABLE_ROOTS_KEY) =>
-            {
-                prepared.extra_args = vec![
-                    "-c".into(),
-                    format!("{WRITABLE_ROOTS_KEY}=[{}]", toml_string(&state_root)),
-                ];
-            }
-            _ => {}
-        }
-        // A JSON string is a valid TOML basic string, newlines escaped too.
-        for (key, value) in req.shell_env {
-            if key.is_empty() || !key.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_') {
-                continue;
-            }
-            let value = serde_json::to_string(value).context("encoding a shell variable")?;
-            prepared.extra_args.push("-c".into());
-            prepared
-                .extra_args
-                .push(format!("shell_environment_policy.set.{key}={value}"));
-        }
+        launch_sandbox_args(ctx, req, sandbox.as_deref(), &mut prepared)?;
+        shell_env_args(req.shell_env, &mut prepared)?;
         if let Rules::Private { dir } = &rules {
             // On the child only. This process keeps the real CODEX_HOME, so the
             // session discovery still reads the real sessions directory.
