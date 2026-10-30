@@ -1,6 +1,8 @@
 //! The task-ledger watchdog through the CLI: liveness from herdr's status
 //! (#203), its binary after an update (#216), and the identity of the
 //! process that starts it (#218).
+#![cfg(unix)]
+
 use horch_core::taskledger::{
     model::Actor,
     runs::{self, NewRun, Run},
@@ -8,7 +10,11 @@ use horch_core::taskledger::{
     workers::{self, NewWorker},
     Store,
 };
+use horch_core::taskledger::watchdog;
 use horch_e2e::harness::Harness;
+
+const SIGKILL: i32 = 9;
+const SIGTERM: i32 = 15;
 
 /// A fake agent process; killed on drop.
 struct Agent(std::process::Child);
@@ -213,8 +219,15 @@ struct Watchdog {
 }
 
 fn start_watchdog(h: &Harness, run_id: &str) -> Watchdog {
-    let mut child = h
-        .horch(&["ledger", "watch", "--run", run_id])
+    start_watchdog_of(h, run_id, &Harness::horch_bin())
+}
+
+/// [`start_watchdog`] of the horch binary at `bin`.
+fn start_watchdog_of(h: &Harness, run_id: &str, bin: &std::path::Path) -> Watchdog {
+    let mut cmd = std::process::Command::new(bin);
+    h.seal(&mut cmd);
+    let mut child = cmd
+        .args(["ledger", "watch", "--run", run_id])
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
@@ -242,11 +255,9 @@ fn start_watchdog(h: &Harness, run_id: &str) -> Watchdog {
 /// End the live watchdog of the run, whoever started it.
 fn stop_watchdog(h: &Harness, run_id: &str) {
     if let Some(w) = watchdog::holder(&locks(h), run_id) {
-        horch_core::procid::signal_same(w.pid, w.started.unwrap(), 9);
+        horch_core::procid::signal_same(w.pid, w.started.unwrap(), SIGKILL);
     }
 }
-
-use horch_core::taskledger::watchdog;
 
 #[test]
 fn a_watchdog_of_another_build_is_stopped_by_pid_and_replaced() {
@@ -298,6 +309,158 @@ fn a_watchdog_of_this_build_is_left_alone() {
     assert!(horch_core::procid::alive(w.pid, Some(w.started)));
     assert_eq!(watchdog::holder(&locks(&h), &run_id).unwrap().pid, w.pid);
     stop_watchdog(&h, &run_id);
+}
+
+/// A copy of this build's horch at `path`, put in place by a rename, as
+/// `horch self-update` replaces its binary. Its modification time is
+/// `mtime`, as a release archive of another build gives it; `fs::copy`
+/// can keep the source's.
+fn install_copy(h: &Harness, path: &std::path::Path, mtime: std::time::SystemTime) {
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    let tmp = h.root.join("horch.download");
+    std::fs::copy(Harness::horch_bin(), &tmp).unwrap();
+    std::fs::File::options()
+        .write(true)
+        .open(&tmp)
+        .unwrap()
+        .set_modified(mtime)
+        .unwrap();
+    std::fs::rename(&tmp, path).unwrap();
+}
+
+/// 2 horch binaries on 1 ledger do not replace each other's watchdog on
+/// every command. Only a change of the watchdog's own binary file (a
+/// self-update) moves it, onto that file.
+#[test]
+fn a_watchdog_of_another_path_stays_until_its_own_binary_is_replaced() {
+    let (h, run_id) = watchdog_world("wd216-other-path");
+    let other = h.root.join("other-bin").join("horch");
+    let day = std::time::Duration::from_secs(24 * 3600);
+    install_copy(&h, &other, std::time::SystemTime::now() - day);
+    let old = start_watchdog_of(&h, &run_id, &other);
+    let other_id = horch_core::exeid::exe_identity(&other).unwrap();
+    assert_eq!(
+        watchdog::holder(&locks(&h), &run_id).unwrap().exe.as_ref(),
+        Some(&other_id)
+    );
+    // Commands of the test's own horch leave it alone.
+    for _ in 0..2 {
+        let o = h.run(&["ledger", "status"]);
+        let err = String::from_utf8_lossy(&o.stderr);
+        assert!(!err.contains("restarted the watchdog"), "{err}");
+    }
+    assert!(old
+        .ended
+        .recv_timeout(std::time::Duration::from_millis(500))
+        .is_err());
+    assert_eq!(watchdog::holder(&locks(&h), &run_id).unwrap().pid, old.pid);
+    // A self-update replaces that binary: the next command moves the
+    // watchdog onto the new file at the same path.
+    install_copy(&h, &other, std::time::SystemTime::now());
+    let o = h.run(&["ledger", "status"]);
+    let err = String::from_utf8_lossy(&o.stderr);
+    assert!(
+        err.contains(&format!(
+            "restarted the watchdog of run zeta on {}: PID {} ran another build of horch",
+            other_id.path, old.pid
+        )),
+        "{err}"
+    );
+    old.ended
+        .recv_timeout(std::time::Duration::from_secs(30))
+        .expect("the old watchdog was stopped");
+    let new = horch_e2e::harness::wait_for("the new watchdog", || {
+        watchdog::holder(&locks(&h), &run_id).filter(|w| w.pid != old.pid && w.exe.is_some())
+    });
+    assert_eq!(new.exe, horch_core::exeid::exe_identity(&other));
+    stop_watchdog(&h, &run_id);
+}
+
+/// A SIGTERM while the watchdog reaps a worker ends it only after the reap:
+/// the agent that ignores TERM still gets KILL after the stop grace, and
+/// its pane is closed. A watchdog that died at once would leave both, with
+/// the task already requeued.
+#[test]
+fn a_sigterm_during_a_reap_lets_the_reap_finish() {
+    let (mut h, store, run, worker, _fake) = pinned_worker("wd216-term-mid-reap");
+    h.set("HORCH_STOP_GRACE_MS", "8000");
+    fake(&h, &["workspace", "create", "--label", "w1"]);
+    fake(
+        &h,
+        &[
+            "pane", "test-state", "w1:p1", "--text", "Ready", "--status", "idle", "--agent", "pi",
+        ],
+    );
+    // An agent that ignores TERM and says when it got one.
+    let got_term = h.root.join("got-term");
+    let mut agent = std::process::Command::new("/bin/sh")
+        .arg("-c")
+        .arg(format!(
+            "trap 'touch {}' TERM; while :; do sleep 1; done",
+            got_term.display()
+        ))
+        .stdin(std::process::Stdio::null())
+        .spawn()
+        .unwrap();
+    let agent_pid = agent.id();
+    let agent_started = horch_e2e::harness::wait_for("the agent's identity", || {
+        horch_core::procid::start_time(agent_pid)
+    });
+    let (tx, agent_ended) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = agent.wait();
+        let _ = tx.send(());
+    });
+    // Due now, and its next stall round is its last: the first pass reaps.
+    store
+        .conn()
+        .execute(
+            "UPDATE runs SET check_every_s = 1 WHERE run_id = ?1",
+            [&run.run_id],
+        )
+        .unwrap();
+    store
+        .conn()
+        .execute(
+            &format!(
+                "UPDATE workers SET agent_pid = {agent_pid}, agent_started = {agent_started},
+                 stall_rounds = 2,
+                 claimed_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now', '-1 hour'),
+                 last_progress_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now', '-1 hour')
+                 WHERE worker_id = ?1"
+            ),
+            [&worker],
+        )
+        .unwrap();
+    let w = start_watchdog(&h, &run.run_id);
+    // The reap sent TERM to the agent and now waits out the stop grace.
+    horch_e2e::harness::wait_for("the reap's TERM to the agent", || {
+        got_term.exists().then_some(())
+    });
+    assert!(horch_core::procid::signal_same(w.pid, w.started, SIGTERM));
+    assert!(
+        agent_ended.try_recv().is_err(),
+        "the SIGTERM came inside the stop grace"
+    );
+    agent_ended
+        .recv_timeout(std::time::Duration::from_secs(30))
+        .expect("the reap went on and killed the agent");
+    w.ended
+        .recv_timeout(std::time::Duration::from_secs(30))
+        .expect("the watchdog ended after its pass");
+    let mut stmt = store
+        .conn()
+        .prepare("SELECT target, result FROM stops WHERE worker_id = ?1 ORDER BY rowid")
+        .unwrap();
+    let steps: Vec<(String, String)> = stmt
+        .query_map([&worker], |r| Ok((r.get(0)?, r.get(1)?)))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    assert!(
+        steps.contains(&("pane".to_string(), "pane_closed".to_string())),
+        "the reap closed the pane: {steps:?}"
+    );
 }
 
 #[test]
@@ -461,6 +624,62 @@ fn a_watchdog_started_from_another_workspace_wakes_the_runs_workspace() {
         "{w:?}"
     );
     stop_watchdog(&h, &run.run_id);
+}
+
+/// A watchdog that a w2 worker pane starts for a run with no workspace
+/// does not take the pane's workspace: `spawn_detached` drops the pane
+/// identity, so its wakes go to no workspace, never to w2.
+#[test]
+fn a_detached_watchdog_does_not_inherit_the_starting_panes_workspace() {
+    let (mut h, store, run, worker, _agent) = pinned_worker("wd218-no-workspace");
+    h.unset("HORCH_NO_WAKE");
+    h.unset("HORCH_NO_WATCHDOG");
+    h.unset("HORCH_WORKSPACE_ID");
+    fake(&h, &["workspace", "create", "--label", "w1"]);
+    fake(
+        &h,
+        &[
+            "pane", "test-state", "w1:p1", "--text", "Ready", "--status", "idle", "--agent", "pi",
+        ],
+    );
+    store
+        .conn()
+        .execute(
+            "UPDATE runs SET check_every_s = 1, workspace_id = NULL WHERE run_id = ?1",
+            [&run.run_id],
+        )
+        .unwrap();
+    store
+        .conn()
+        .execute(
+            "UPDATE workers SET claimed_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now', '-1 hour'),
+             last_progress_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now', '-1 hour') WHERE worker_id = ?1",
+            [&worker],
+        )
+        .unwrap();
+    let o = h
+        .horch(&["ledger", "status", "--run", &run.run_id])
+        .env("HORCH_WORKSPACE_ID", "w2")
+        .env("HORCH_ROLE", "sonnet-2")
+        .env("HORCH_WORKER_ID", "w2-worker")
+        .env("HERDR_PANE_ID", "p_9")
+        .output()
+        .unwrap();
+    let err = String::from_utf8_lossy(&o.stderr);
+    assert!(
+        err.contains("the watchdog of run pinned was not running; started it"),
+        "{err}"
+    );
+    let w = horch_e2e::harness::wait_for("the stall wake", || {
+        let w = wakes(&store, &run);
+        (!w.is_empty()).then_some(w)
+    });
+    stop_watchdog(&h, &run.run_id);
+    assert!(
+        w[0].contains("for no workspace") && w[0].contains("worker-1"),
+        "{w:?}"
+    );
+    assert!(mail_in(&h, "w2").is_empty(), "{:?}", mail_in(&h, "w2"));
 }
 
 #[test]
