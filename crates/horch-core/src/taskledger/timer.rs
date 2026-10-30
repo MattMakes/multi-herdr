@@ -140,28 +140,36 @@ fn parse_duration(text: &str) -> Option<u64> {
     let mut last_rank = 3;
     let mut any = false;
     while !rest.is_empty() {
-        let digits = rest
-            .find(|c: char| !c.is_ascii_digit())
-            .unwrap_or(rest.len());
-        if digits == 0 {
-            return None;
-        }
-        let n: u64 = rest[..digits].parse().ok()?;
-        let (rank, unit) = match rest[digits..].chars().next()? {
-            'h' => (2, 3600),
-            'm' => (1, 60),
-            's' => (0, 1),
-            _ => return None,
-        };
-        if rank >= last_rank {
-            return None;
-        }
+        let (n, rank, unit, after) = next_part(rest)?;
+        (rank < last_rank).then_some(())?;
         last_rank = rank;
         total = total.checked_add(n.checked_mul(unit)?)?;
-        rest = rest[digits + 1..].trim_start();
+        rest = after;
         any = true;
     }
     any.then_some(total)
+}
+
+/// The unit letters with their rank (h 2, m 1, s 0) and their seconds.
+const UNITS: [(char, u8, u64); 3] = [('h', 2, 3600), ('m', 1, 60), ('s', 0, 1)];
+
+/// The first `<digits><unit>` of `rest`: the number, the unit's rank, the
+/// unit's seconds, and the text after it. No digits do not parse, so a
+/// missing number is `None`.
+fn next_part(rest: &str) -> Option<(u64, u8, u64, &str)> {
+    let end = rest
+        .find(|c: char| !c.is_ascii_digit())
+        .unwrap_or(rest.len());
+    let (digits, tail) = rest.split_at(end);
+    let mut chars = tail.chars();
+    let letter = chars.next()?;
+    let (_, rank, unit) = UNITS.iter().find(|u| u.0 == letter)?;
+    Some((
+        digits.parse().ok()?,
+        *rank,
+        *unit,
+        chars.as_str().trim_start(),
+    ))
 }
 
 #[cfg(test)]
