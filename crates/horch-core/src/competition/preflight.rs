@@ -274,37 +274,7 @@ pub fn evaluate(plan: &PreflightPlan, snapshot: &MachineSnapshot) -> PreflightRe
 
 fn pre_01_git(plan: &PreflightPlan) -> CheckResult {
     let git = &plan.git;
-    let version = git.git_version.as_deref().and_then(parse_git_version);
-    let mut problems = Vec::new();
-    if git.toplevel.is_none() {
-        problems.push("the project is not inside a git repository".to_string());
-    }
-    if git.base_sha.is_none() {
-        problems.push("no base commit (HEAD does not resolve)".to_string());
-    }
-    if git.dirty && !plan.config.allow_dirty {
-        problems.push("the working tree is dirty (commit, or pass --allow-dirty)".to_string());
-    }
-    match version {
-        _ if !git.worktree_supported => {
-            problems.push("git worktrees are not supported".to_string())
-        }
-        None => problems.push("the git version is unknown".to_string()),
-        Some(v) if v < MIN_GIT_VERSION => problems.push(format!(
-            "git {}.{} is older than {}.{}",
-            v.0, v.1, MIN_GIT_VERSION.0, MIN_GIT_VERSION.1
-        )),
-        Some(_) => {}
-    }
-    if !git.namespace_taken.is_empty() {
-        problems.push(format!(
-            "branch names already exist: {}",
-            git.namespace_taken.join(", ")
-        ));
-    }
-    if let Some(problem) = &git.promote_target_problem {
-        problems.push(problem.clone());
-    }
+    let problems = git_problems(git, plan.config.allow_dirty);
     let measured = json!({
         "toplevel": git.toplevel,
         "base_sha": git.base_sha,
@@ -324,6 +294,44 @@ fn pre_01_git(plan: &PreflightPlan) -> CheckResult {
         check("PRE-01", CheckStatus::Pass, detail, measured)
     } else {
         check("PRE-01", CheckStatus::Fail, problems.join("; "), measured)
+    }
+}
+
+/// Each git rule that fails, in rule order.
+fn git_problems(git: &GitFacts, allow_dirty: bool) -> Vec<String> {
+    [
+        git.toplevel
+            .is_none()
+            .then(|| "the project is not inside a git repository".to_string()),
+        git.base_sha
+            .is_none()
+            .then(|| "no base commit (HEAD does not resolve)".to_string()),
+        (git.dirty && !allow_dirty)
+            .then(|| "the working tree is dirty (commit, or pass --allow-dirty)".to_string()),
+        git_version_problem(git),
+        (!git.namespace_taken.is_empty()).then(|| {
+            format!(
+                "branch names already exist: {}",
+                git.namespace_taken.join(", ")
+            )
+        }),
+        git.promote_target_problem.clone(),
+    ]
+    .into_iter()
+    .flatten()
+    .collect()
+}
+
+/// Worktree support first, then the version: unknown or too old.
+fn git_version_problem(git: &GitFacts) -> Option<String> {
+    match git.git_version.as_deref().and_then(parse_git_version) {
+        _ if !git.worktree_supported => Some("git worktrees are not supported".to_string()),
+        None => Some("the git version is unknown".to_string()),
+        Some(v) if v < MIN_GIT_VERSION => Some(format!(
+            "git {}.{} is older than {}.{}",
+            v.0, v.1, MIN_GIT_VERSION.0, MIN_GIT_VERSION.1
+        )),
+        Some(_) => None,
     }
 }
 
@@ -1039,42 +1047,32 @@ fn pre_14_trust(plan: &PreflightPlan) -> CheckResult {
         "trust_root": plan.trust_root,
         "trust": plan.trust,
     });
-    if asking.is_empty() {
-        return check(
+    match (asking.is_empty(), plan.trust_root.as_deref()) {
+        (true, _) => check(
             "PRE-14",
             CheckStatus::Pass,
             "no candidate harness asks for trust",
             measured,
-        );
-    }
-    let Some(root) = plan.trust_root.as_deref() else {
-        return check(
+        ),
+        (false, None) => check(
             "PRE-14",
             CheckStatus::Warn,
             "the repository root is unknown, so harness trust was not checked",
             measured,
-        );
-    };
-    let mut untrusted = Vec::new();
-    let mut unknown = Vec::new();
-    for harness in asking {
-        let found = plan.trust.iter().find(|t| t.harness == harness.as_str());
-        match found.map(|t| t.state) {
-            Some(TrustState::Trusted) => {}
-            Some(TrustState::Untrusted) => untrusted.push(format!(
-                "{} has not trusted {} ({}). Run once: {}",
-                harness.as_str(),
-                root.display(),
-                found.map(|t| t.reason.as_str()).unwrap_or_default(),
-                trust_fix(harness, root)
-            )),
-            Some(TrustState::Unknown) | None => unknown.push(format!(
-                "{} trust is unknown ({}); a trust dialog may stop its panes",
-                harness.as_str(),
-                found.map(|t| t.reason.as_str()).unwrap_or("not checked")
-            )),
-        }
+        ),
+        (false, Some(root)) => trust_result(asking, root, &plan.trust, measured),
     }
+}
+
+/// The verdict on the asking harnesses: an untrusted one fails, an unknown
+/// one warns.
+fn trust_result(
+    asking: Vec<HarnessKind>,
+    root: &Path,
+    trust: &[HarnessTrust],
+    measured: serde_json::Value,
+) -> CheckResult {
+    let (untrusted, unknown) = trust_findings(asking, root, trust);
     if !untrusted.is_empty() {
         check("PRE-14", CheckStatus::Fail, untrusted.join("; "), measured)
     } else if !unknown.is_empty() {
@@ -1087,6 +1085,46 @@ fn pre_14_trust(plan: &PreflightPlan) -> CheckResult {
             measured,
         )
     }
+}
+
+/// The messages of the untrusted and of the unknown harnesses.
+fn trust_findings(
+    asking: Vec<HarnessKind>,
+    root: &Path,
+    trust: &[HarnessTrust],
+) -> (Vec<String>, Vec<String>) {
+    let mut untrusted = Vec::new();
+    let mut unknown = Vec::new();
+    for harness in asking {
+        let found = trust.iter().find(|t| t.harness == harness.as_str());
+        let reason = found.map(|t| t.reason.as_str());
+        match found.map(|t| t.state) {
+            Some(TrustState::Trusted) => {}
+            Some(TrustState::Untrusted) => {
+                untrusted.push(untrusted_message(harness, root, reason.unwrap_or_default()))
+            }
+            Some(TrustState::Unknown) | None => {
+                unknown.push(unknown_message(harness, reason.unwrap_or("not checked")))
+            }
+        }
+    }
+    (untrusted, unknown)
+}
+
+fn unknown_message(harness: HarnessKind, reason: &str) -> String {
+    format!(
+        "{} trust is unknown ({reason}); a trust dialog may stop its panes",
+        harness.as_str()
+    )
+}
+
+fn untrusted_message(harness: HarnessKind, root: &Path, reason: &str) -> String {
+    format!(
+        "{} has not trusted {} ({reason}). Run once: {}",
+        harness.as_str(),
+        root.display(),
+        trust_fix(harness, root)
+    )
 }
 
 fn gib(bytes: u64) -> String {
