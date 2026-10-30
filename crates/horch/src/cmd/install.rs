@@ -38,12 +38,7 @@ pub fn install(ctx: &RuntimeContext, dir: Option<&str>) -> Result<()> {
         .context("the running binary has no file name")?;
     let target = dir.join(file_name);
 
-    if cfg!(windows) {
-        // A process that still runs from a `.old` file keeps it; that is fine.
-        for old in stale_old_paths(&dir) {
-            let _ = std::fs::remove_file(old);
-        }
-    }
+    remove_stale_old(&dir);
     install_one("horch", &source, &target)?;
     // A live collector keeps running the binary it started with: old
     // prices, old readers. Restart it on the binary just installed.
@@ -59,30 +54,52 @@ pub fn install(ctx: &RuntimeContext, dir: Option<&str>) -> Result<()> {
     install_siblings(&source, &dir)?;
     install_launchers(&dir, ctx.bins.roster_override.as_deref())?;
 
-    if ctx
+    let on_path = ctx
         .inherited
         .path
         .as_ref()
-        .is_some_and(|path| process::on_path_in(path, &dir))
-    {
-        println!("\nReady. cd into a project and run: horch fleet");
-        println!("(needs a running herdr server: launch the herdr app, or `herdr server`)");
-    } else {
-        println!("\n{} is not on your PATH. Add it:\n", dir.display());
-        if cfg!(windows) {
-            println!("  PowerShell (current session):");
-            println!("    $env:Path = \"{};$env:Path\"", dir.display());
-            println!("\n  Permanently, for future sessions:");
-            println!("    setx PATH \"{};$($env:Path)\"", dir.display());
-        } else {
-            println!("  Add to ~/.zshrc (or ~/.bashrc):");
-            println!("    export PATH=\"{}:$PATH\"", dir.display());
-        }
-        println!("\nThen open a new terminal, cd into a project, and run: horch fleet");
-    }
+        .is_some_and(|path| process::on_path_in(path, &dir));
+    println!("{}", path_help(&dir, on_path));
 
     println!("\nInstalled version: {}", installed_version(&target)?);
     Ok(())
+}
+
+/// Removes the `.old` files a Windows replacement left; a no-op elsewhere.
+fn remove_stale_old(dir: &Path) {
+    if cfg!(windows) {
+        // A process that still runs from a `.old` file keeps it; that is fine.
+        for old in stale_old_paths(dir) {
+            let _ = std::fs::remove_file(old);
+        }
+    }
+}
+
+/// The closing text of `install`, without its final newline.
+fn path_help(dir: &Path, on_path: bool) -> String {
+    if on_path {
+        "\nReady. cd into a project and run: horch fleet\n(needs a running herdr server: launch the herdr app, or `herdr server`)".to_string()
+    } else {
+        format!(
+            "\n{} is not on your PATH. Add it:\n\n{}\n\nThen open a new terminal, cd into a project, and run: horch fleet",
+            dir.display(),
+            add_to_path_help(dir)
+        )
+    }
+}
+
+fn add_to_path_help(dir: &Path) -> String {
+    if cfg!(windows) {
+        format!(
+            "  PowerShell (current session):\n    $env:Path = \"{d};$env:Path\"\n\n  Permanently, for future sessions:\n    setx PATH \"{d};$($env:Path)\"",
+            d = dir.display()
+        )
+    } else {
+        format!(
+            "  Add to ~/.zshrc (or ~/.bashrc):\n    export PATH=\"{}:$PATH\"",
+            dir.display()
+        )
+    }
 }
 
 /// The second binary that `horch install` puts on PATH.
@@ -229,31 +246,52 @@ fn swap_in(
     move_aside: bool,
     rename: impl Fn(&Path, &Path) -> std::io::Result<()>,
 ) -> Result<()> {
-    let mut aside = None;
-    if move_aside && target.exists() {
-        let old = old_path(target);
-        let _ = std::fs::remove_file(&old);
-        rename(target, &old)
-            .with_context(|| format!("moving {} aside to {}", target.display(), old.display()))?;
-        aside = Some(old);
+    let aside = move_aside_old(target, move_aside, &rename)?;
+    rename(staged, target).map_err(|e| roll_back(install_error(e, target), aside, target, &rename))
+}
+
+/// With `enabled` and an existing `target`, moves it to its `.old` path and
+/// returns that path.
+fn move_aside_old(
+    target: &Path,
+    enabled: bool,
+    rename: &impl Fn(&Path, &Path) -> std::io::Result<()>,
+) -> Result<Option<PathBuf>> {
+    if !(enabled && target.exists()) {
+        return Ok(None);
     }
-    let Err(err) = rename(staged, target) else {
-        return Ok(());
-    };
-    let err = anyhow::Error::new(err).context(format!(
+    let old = old_path(target);
+    let _ = std::fs::remove_file(&old);
+    rename(target, &old)
+        .with_context(|| format!("moving {} aside to {}", target.display(), old.display()))?;
+    Ok(Some(old))
+}
+
+fn install_error(e: std::io::Error, target: &Path) -> anyhow::Error {
+    anyhow::Error::new(e).context(format!(
         "installing to {} (is a horch process running from there?)",
         target.display()
-    ));
+    ))
+}
+
+/// Puts the moved-aside `old` back at `target` after a failed install, and
+/// returns the error to report.
+fn roll_back(
+    err: anyhow::Error,
+    aside: Option<PathBuf>,
+    target: &Path,
+    rename: &impl Fn(&Path, &Path) -> std::io::Result<()>,
+) -> anyhow::Error {
     let Some(old) = aside else {
-        return Err(err);
+        return err;
     };
     match rename(&old, target) {
-        Ok(()) => Err(err.context(format!("restored the previous {}", target.display()))),
-        Err(rollback) => Err(err.context(format!(
+        Ok(()) => err.context(format!("restored the previous {}", target.display())),
+        Err(rollback) => err.context(format!(
             "restoring {} from {} also failed: {rollback}",
             target.display(),
             old.display()
-        ))),
+        )),
     }
 }
 
@@ -634,6 +672,22 @@ mod tests {
     }
 
     #[test]
+    fn swap_in_without_move_aside_reports_the_failed_install_and_keeps_the_target() {
+        let (_tmp, staged, target) = swap_fixture();
+        let fail = |_: &Path, _: &Path| -> std::io::Result<()> {
+            Err(std::io::Error::other("sharing violation"))
+        };
+
+        let err = swap_in(&staged, &target, false, fail).unwrap_err();
+
+        let text = format!("{err:#}");
+        assert!(text.contains("installing to"), "{text}");
+        assert!(text.contains("sharing violation"), "{text}");
+        assert!(!text.contains("restored"), "{text}");
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "old");
+    }
+
+    #[test]
     fn old_path_is_a_dot_old_file_in_the_same_dir() {
         assert_eq!(
             old_path(Path::new("/d/horch.exe")),
@@ -645,5 +699,26 @@ mod tests {
     fn is_symlink_is_false_for_a_missing_path() {
         let tmp = tempfile::tempdir().unwrap();
         assert!(!is_symlink(&tmp.path().join("missing")));
+    }
+
+    #[test]
+    fn path_help_on_path_points_at_fleet() {
+        let help = path_help(Path::new("/x/bin"), true);
+        assert!(help.starts_with("\nReady. cd into a project and run: horch fleet\n"));
+        assert!(!help.contains("not on your PATH"));
+    }
+
+    #[test]
+    fn path_help_off_path_shows_the_fix_for_this_platform() {
+        let help = path_help(Path::new("/x/bin"), false);
+        assert!(help.starts_with("\n/x/bin is not on your PATH. Add it:\n\n"));
+        assert!(
+            help.ends_with("\n\nThen open a new terminal, cd into a project, and run: horch fleet")
+        );
+        if cfg!(windows) {
+            assert!(help.contains("setx PATH \"/x/bin;"));
+        } else {
+            assert!(help.contains("export PATH=\"/x/bin:$PATH\""));
+        }
     }
 }
