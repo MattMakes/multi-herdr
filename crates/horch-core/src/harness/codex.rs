@@ -35,7 +35,7 @@ use crate::compaction::window::OperatorWindow;
 use crate::fsx;
 use crate::prompts;
 use crate::roster::{ExecDecision, ExecRule, HarnessDefault, PermissionMode, Teammate};
-use crate::runtime::RuntimeContext;
+use crate::runtime::{process, RuntimeContext};
 
 /// Path to codex's shared rules file: `~/.codex/rules/default.rules`.
 pub(crate) fn rules_path(home: &Path) -> PathBuf {
@@ -139,19 +139,16 @@ fn run_with_deadline(mut cmd: Command, timeout: Duration) -> Result<std::process
     })
 }
 
-/// Poll `child` until it exits or `deadline` passes; kill it on a timeout.
+/// Wait for `child` until `deadline`; kill it on a timeout.
 fn wait_until(child: &mut Child, deadline: Instant, timeout: Duration) -> Result<ExitStatus> {
-    loop {
-        match child.try_wait() {
-            Ok(Some(status)) => return Ok(status),
-            Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(20)),
-            Ok(None) => {
-                let _ = child.kill();
-                let _ = child.wait();
-                bail!("codex debug models timed out after {}s", timeout.as_secs());
-            }
-            Err(e) => return Err(e).context("waiting for codex catalog command"),
+    match process::wait_until(child, deadline, Duration::from_millis(20)) {
+        Ok(Some(status)) => Ok(status),
+        Ok(None) => {
+            let _ = child.kill();
+            let _ = child.wait();
+            bail!("codex debug models timed out after {}s", timeout.as_secs());
         }
+        Err(e) => Err(e).context("waiting for codex catalog command"),
     }
 }
 
