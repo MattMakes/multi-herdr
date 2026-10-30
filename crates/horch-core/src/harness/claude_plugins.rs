@@ -99,30 +99,46 @@ pub(crate) fn resolve_in(
     plugin: &str,
     home: Option<&Path>,
 ) -> Result<Plugin> {
-    for dir in dirs {
-        if plugin_name(dir).as_deref() == Some(plugin) {
-            return Ok(Plugin {
-                name: plugin.to_string(),
-                installed_key: None,
-                root: dir.clone(),
-                version: manifest_version(dir),
-                skills: read_skills(dir)?,
-            });
-        }
+    if let Some(dir) = dirs
+        .iter()
+        .find(|d| plugin_name(d).as_deref() == Some(plugin))
+    {
+        plugin_from_dir(plugin, dir)
+    } else if let Some((key, root, version)) =
+        installed.and_then(|v| installed_root(v, plugin, home))
+    {
+        plugin_from_install(plugin, key, root, version)
+    } else {
+        bail!(
+            "plugin '{plugin}' is neither in plugin_dirs nor installed \
+             (~/.claude/plugins/installed_plugins.json)"
+        )
     }
-    if let Some((key, root, version)) = installed.and_then(|v| installed_root(v, plugin, home)) {
-        return Ok(Plugin {
-            name: plugin.to_string(),
-            installed_key: Some(key),
-            skills: read_skills(&root)?,
-            version: version.or_else(|| manifest_version(&root)),
-            root,
-        });
-    }
-    bail!(
-        "plugin '{plugin}' is neither in plugin_dirs nor installed \
-         (~/.claude/plugins/installed_plugins.json)"
-    )
+}
+
+fn plugin_from_dir(plugin: &str, dir: &Path) -> Result<Plugin> {
+    Ok(Plugin {
+        name: plugin.to_string(),
+        installed_key: None,
+        root: dir.to_path_buf(),
+        version: manifest_version(dir),
+        skills: read_skills(dir)?,
+    })
+}
+
+fn plugin_from_install(
+    plugin: &str,
+    key: String,
+    root: PathBuf,
+    version: Option<String>,
+) -> Result<Plugin> {
+    Ok(Plugin {
+        name: plugin.to_string(),
+        installed_key: Some(key),
+        skills: read_skills(&root)?,
+        version: version.or_else(|| manifest_version(&root)),
+        root,
+    })
 }
 
 /// A plugin directory's name: `.claude-plugin/plugin.json`'s `name`, else the
@@ -161,26 +177,31 @@ fn installed_root(
     home: Option<&Path>,
 ) -> Option<(String, PathBuf, Option<String>)> {
     let plugins = installed.get("plugins")?.as_object()?;
-    for (key, value) in plugins {
-        let name = key.split('@').next().unwrap_or(key);
-        if name != plugin && key != plugin {
-            continue;
-        }
-        let records: Vec<&Value> = match value {
-            Value::Array(list) => list.iter().collect(),
-            other => vec![other],
-        };
-        for record in records {
-            if let Some(path) = record.get("installPath").and_then(|p| p.as_str()) {
-                let version = record
-                    .get("version")
-                    .and_then(|v| v.as_str())
-                    .map(str::to_owned);
-                return Some((key.clone(), expand_home(path, home), version));
-            }
-        }
-    }
-    None
+    plugins
+        .iter()
+        .filter(|(key, _)| key.split('@').next().unwrap_or(key) == plugin || *key == plugin)
+        .find_map(|(key, value)| install_record(key, value, home))
+}
+
+/// The first record of one `installed_plugins.json` entry that has an
+/// `installPath`, as (key, install path, recorded version).
+fn install_record(
+    key: &str,
+    value: &Value,
+    home: Option<&Path>,
+) -> Option<(String, PathBuf, Option<String>)> {
+    let records = match value {
+        Value::Array(list) => list.as_slice(),
+        other => std::slice::from_ref(other),
+    };
+    records.iter().find_map(|record| {
+        let path = record.get("installPath")?.as_str()?;
+        let version = record
+            .get("version")
+            .and_then(|v| v.as_str())
+            .map(str::to_owned);
+        Some((key.to_string(), expand_home(path, home), version))
+    })
 }
 
 /// Every `name@marketplace` key under which `plugin` is installed, plus
@@ -380,14 +401,21 @@ fn filtered_copy(
     to: &Path,
     pinned: impl Fn(&str) -> Option<String>,
 ) -> Result<()> {
+    write_filtered_manifest(plugin, to)?;
+    copy_top_level(plugin, to)?;
+    skill_dirs(&plugin.root)?
+        .into_iter()
+        .filter(|(name, _, _)| wanted.contains(name))
+        .try_for_each(|(name, _, from)| copy_checked_skill(plugin, &name, &from, to, pinned(&name)))
+}
+
+/// The plugin's manifest without the keys that add skills, named for the
+/// plugin.
+fn write_filtered_manifest(plugin: &Plugin, to: &Path) -> Result<()> {
     std::fs::create_dir_all(to.join(".claude-plugin"))
         .with_context(|| format!("creating {}", to.display()))?;
     let manifest_path = plugin.root.join(".claude-plugin/plugin.json");
-    let mut manifest = match std::fs::read_to_string(&manifest_path) {
-        Ok(text) => serde_json::from_str::<Value>(&text)
-            .with_context(|| format!("parsing {}", manifest_path.display()))?,
-        Err(_) => serde_json::json!({}),
-    };
+    let mut manifest = read_manifest(&manifest_path)?;
     let fields = manifest
         .as_object_mut()
         .with_context(|| format!("{} must be a JSON object", manifest_path.display()))?;
@@ -397,42 +425,66 @@ fn filtered_copy(
     // A manifest-less plugin takes its name from its directory, which the
     // copy does not share.
     fields.insert("name".into(), Value::String(plugin.name.clone()));
-    std::fs::write(to.join(".claude-plugin/plugin.json"), manifest.to_string())?;
+    std::fs::write(to.join(".claude-plugin/plugin.json"), manifest.to_string())
+        .map_err(anyhow::Error::from)
+}
 
+/// The manifest at `path`; a plugin without one has an empty manifest.
+fn read_manifest(path: &Path) -> Result<Value> {
+    match std::fs::read_to_string(path) {
+        Ok(text) => {
+            serde_json::from_str(&text).with_context(|| format!("parsing {}", path.display()))
+        }
+        Err(_) => Ok(serde_json::json!({})),
+    }
+}
+
+fn skill_digest(plugin: &Plugin, name: &str, dir: &Path) -> Result<String> {
+    horch_marketplace::integrity::tree_digest(dir)
+        .map_err(|e| anyhow::anyhow!("plugin skill '{}:{name}': {e}", plugin.name))
+}
+
+/// Everything in the plugin root except the [`LEFT_OUT`] names.
+fn copy_top_level(plugin: &Plugin, to: &Path) -> Result<()> {
     let entries = std::fs::read_dir(&plugin.root)
         .with_context(|| format!("reading {}", plugin.root.display()))?;
     for entry in entries {
         let entry = entry?;
-        if LEFT_OUT.iter().any(|n| entry.file_name() == **n) {
-            continue;
+        let left_out = LEFT_OUT.iter().any(|n| entry.file_name() == **n);
+        if !left_out {
+            copy_entry(&entry.path(), &to.join(entry.file_name()))?;
         }
-        copy_entry(&entry.path(), &to.join(entry.file_name()))?;
     }
+    Ok(())
+}
 
-    for (name, _, from) in skill_dirs(&plugin.root)? {
-        if !wanted.contains(&name) {
-            continue;
-        }
-        let target = to
-            .join("skills")
-            .join(from.file_name().context("a skill directory has a name")?);
-        let digest = |dir: &Path| {
-            horch_marketplace::integrity::tree_digest(dir)
-                .map_err(|e| anyhow::anyhow!("plugin skill '{}:{name}': {e}", plugin.name))
-        };
-        let (expected, by) = match pinned(&name) {
-            Some(d) => (d, "the plan pins".to_string()),
-            None => (digest(&from)?, format!("{} holds", from.display())),
-        };
-        copy_entry(&from, &target)?;
-        let actual = digest(&target)?;
-        if actual != expected {
-            bail!(
-                "plugin skill '{}:{name}': the copy holds {actual}, {by} {expected}; \
-                 the plugin changed during the launch",
-                plugin.name
-            );
-        }
+/// Copy one wanted skill and check the copy against `pinned`, else against
+/// the source's own digest.
+fn copy_checked_skill(
+    plugin: &Plugin,
+    name: &str,
+    from: &Path,
+    to: &Path,
+    pinned: Option<String>,
+) -> Result<()> {
+    let target = to
+        .join("skills")
+        .join(from.file_name().context("a skill directory has a name")?);
+    let (expected, by) = match pinned {
+        Some(d) => (d, "the plan pins".to_string()),
+        None => (
+            skill_digest(plugin, name, from)?,
+            format!("{} holds", from.display()),
+        ),
+    };
+    copy_entry(from, &target)?;
+    let actual = skill_digest(plugin, name, &target)?;
+    if actual != expected {
+        bail!(
+            "plugin skill '{}:{name}': the copy holds {actual}, {by} {expected}; \
+             the plugin changed during the launch",
+            plugin.name
+        );
     }
     Ok(())
 }
@@ -443,24 +495,35 @@ fn copy_entry(from: &Path, to: &Path) -> Result<()> {
         .with_context(|| format!("reading {}", from.display()))?
         .file_type();
     if kind.is_symlink() {
-        let target = std::fs::read_link(from)?;
-        #[cfg(unix)]
-        std::os::unix::fs::symlink(&target, to)
-            .with_context(|| format!("linking {}", to.display()))?;
-        #[cfg(not(unix))]
-        bail!("{} is a symlink", from.display());
+        copy_symlink(from, to)
     } else if kind.is_dir() {
-        std::fs::create_dir_all(to)?;
-        for item in
-            std::fs::read_dir(from).with_context(|| format!("reading {}", from.display()))?
-        {
-            let item = item?;
-            copy_entry(&item.path(), &to.join(item.file_name()))?;
-        }
+        copy_dir(from, to)
     } else if kind.is_file() {
-        std::fs::copy(from, to).with_context(|| format!("copying {}", from.display()))?;
+        std::fs::copy(from, to)
+            .map(drop)
+            .with_context(|| format!("copying {}", from.display()))
     } else {
-        bail!("{} is not a regular file", from.display());
+        bail!("{} is not a regular file", from.display())
+    }
+}
+
+#[cfg(unix)]
+fn copy_symlink(from: &Path, to: &Path) -> Result<()> {
+    let target = std::fs::read_link(from)?;
+    std::os::unix::fs::symlink(&target, to).with_context(|| format!("linking {}", to.display()))
+}
+
+#[cfg(not(unix))]
+fn copy_symlink(from: &Path, _to: &Path) -> Result<()> {
+    std::fs::read_link(from)?;
+    bail!("{} is a symlink", from.display())
+}
+
+fn copy_dir(from: &Path, to: &Path) -> Result<()> {
+    std::fs::create_dir_all(to)?;
+    for item in std::fs::read_dir(from).with_context(|| format!("reading {}", from.display()))? {
+        let item = item?;
+        copy_entry(&item.path(), &to.join(item.file_name()))?;
     }
     Ok(())
 }
