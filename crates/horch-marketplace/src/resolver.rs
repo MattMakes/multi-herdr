@@ -139,8 +139,7 @@ impl Resolver<'_> {
             .iter()
             .find_map(|want| {
                 refs.iter()
-                    .find(|(_, r)| r == want)
-                    .map(|(sha, _)| *sha)
+                    .find_map(|(sha, r)| (r == want).then_some(*sha))
                     .filter(|sha| is_full_sha(sha))
             })
             .map(str::to_ascii_lowercase)
@@ -168,18 +167,21 @@ fn resolve_local(path: &Path) -> Result<Origin> {
 
 fn wanted_refs(revision: &GitRevision) -> Result<Lookup<'_>> {
     match revision {
-        GitRevision::Commit(sha) if is_full_sha(sha) => {
-            Ok(Lookup::Commit(sha.to_ascii_lowercase()))
+        GitRevision::Commit(sha) => {
+            if is_full_sha(sha) {
+                Ok(Lookup::Commit(sha.to_ascii_lowercase()))
+            } else {
+                Err(MarketplaceError::BadSource(format!(
+                    "commit '{sha}' is not 40 hex characters"
+                )))
+            }
         }
-        GitRevision::Commit(sha) => Err(MarketplaceError::BadSource(format!(
-            "commit '{sha}' is not 40 hex characters"
-        ))),
-        GitRevision::Branch(b) if b == "HEAD" => Ok(Lookup::Refs {
-            wanted: vec!["HEAD".to_owned()],
-            name: b,
-        }),
         GitRevision::Branch(b) => Ok(Lookup::Refs {
-            wanted: vec![format!("refs/heads/{b}")],
+            wanted: vec![if b == "HEAD" {
+                "HEAD".to_owned()
+            } else {
+                format!("refs/heads/{b}")
+            }],
             name: b,
         }),
         GitRevision::Tag(t) => Ok(Lookup::Refs {

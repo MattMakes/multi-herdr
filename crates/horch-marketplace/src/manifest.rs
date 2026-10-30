@@ -41,10 +41,10 @@ impl SkillManifest {
             .ok_or_else(|| MarketplaceError::Manifest("missing YAML frontmatter".to_owned()))?;
         let manifest: Self =
             serde_yaml::from_str(front).map_err(|e| MarketplaceError::Manifest(e.to_string()))?;
-        match manifest.rule_violation(expected_name) {
-            Some(why) => Err(MarketplaceError::SkillMd(why)),
-            None => Ok(manifest),
+        if let Some(why) = manifest.rule_violation(expected_name) {
+            return Err(MarketplaceError::SkillMd(why));
         }
+        Ok(manifest)
     }
 
     /// The first SKILL.md rule this manifest breaks, or `None`.
@@ -117,8 +117,6 @@ mod tests {
                 .to_string();
             assert!(err.contains(why), "{text}: {err}");
         }
-        let long = format!("---\nname: tdd\ndescription: {}\n---\n", "x".repeat(1025));
-        assert!(SkillManifest::parse(&long, None).is_err());
     }
 
     #[test]

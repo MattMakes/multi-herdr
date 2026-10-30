@@ -59,68 +59,34 @@ impl MarketplaceError {
     }
 }
 
-impl MarketplaceError {
-    /// The message of a variant that names a path.
-    fn path_message(&self) -> Option<String> {
-        match self {
-            Self::Traversal(p) => Some(format!(
-                "path '{}' is not a clean relative path",
-                p.display()
-            )),
-            Self::AbsolutePath(p) => Some(format!("absolute path '{}'", p.display())),
-            Self::Symlink(p) => Some(format!("'{}' is a symlink", p.display())),
-            Self::NotRegularFile(p) => Some(format!("'{}' is not a regular file", p.display())),
-            _ => None,
-        }
-    }
-
-    /// The message of a variant that reports a size or count limit.
-    fn limit_message(&self) -> Option<String> {
-        match self {
-            Self::TooManyFiles(limit) => Some(format!("skill has more than {limit} files")),
-            Self::FileTooLarge { path, bytes } => Some(format!(
-                "'{}' is {bytes} bytes, over the limit",
-                path.display()
-            )),
-            Self::TotalTooLarge(limit) => Some(format!("skill is over {limit} bytes in total")),
-            _ => None,
-        }
-    }
-
-    /// The message of a variant that carries text or a source and names no
-    /// path or limit.
-    fn text_message(&self) -> Option<String> {
-        match self {
-            Self::BadSource(why) => Some(format!("invalid skill source: {why}")),
-            Self::Credentials(why) => Some(format!(
-                "skill source URL carries credentials ({why}); remove them"
-            )),
-            Self::RevisionNotFound { url, revision } => {
-                Some(format!("revision '{revision}' not found in {url}"))
-            }
-            Self::Manifest(why) | Self::SkillMd(why) => Some(format!("invalid SKILL.md: {why}")),
-            Self::DigestMismatch { expected, actual } => Some(format!(
-                "digest {actual} does not match the locked {expected}"
-            )),
-            Self::Lock(why) => Some(format!("marketplace.lock: {why}")),
-            Self::Fault(point) => Some(format!("fault injected at {point}")),
-            _ => None,
-        }
-    }
-}
-
 impl fmt::Display for MarketplaceError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::BadSource(why) => write!(f, "invalid skill source: {why}"),
+            Self::Credentials(why) => write!(
+                f,
+                "skill source URL carries credentials ({why}); remove them"
+            ),
             Self::Git(e) => write!(f, "{e}"),
-            Self::Io(e) => write!(f, "{e}"),
-            other => {
-                let text = other
-                    .path_message()
-                    .or_else(|| other.limit_message())
-                    .or_else(|| other.text_message());
-                f.write_str(&text.unwrap_or_default())
+            Self::RevisionNotFound { url, revision } => {
+                write!(f, "revision '{revision}' not found in {url}")
             }
+            Self::Manifest(why) | Self::SkillMd(why) => write!(f, "invalid SKILL.md: {why}"),
+            Self::Traversal(p) => write!(f, "path '{}' is not a clean relative path", p.display()),
+            Self::AbsolutePath(p) => write!(f, "absolute path '{}'", p.display()),
+            Self::Symlink(p) => write!(f, "'{}' is a symlink", p.display()),
+            Self::NotRegularFile(p) => write!(f, "'{}' is not a regular file", p.display()),
+            Self::TooManyFiles(limit) => write!(f, "skill has more than {limit} files"),
+            Self::FileTooLarge { path, bytes } => {
+                write!(f, "'{}' is {bytes} bytes, over the limit", path.display())
+            }
+            Self::TotalTooLarge(limit) => write!(f, "skill is over {limit} bytes in total"),
+            Self::DigestMismatch { expected, actual } => {
+                write!(f, "digest {actual} does not match the locked {expected}")
+            }
+            Self::Lock(why) => write!(f, "marketplace.lock: {why}"),
+            Self::Io(e) => write!(f, "{e}"),
+            Self::Fault(point) => write!(f, "fault injected at {point}"),
         }
     }
 }

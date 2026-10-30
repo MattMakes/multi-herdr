@@ -66,20 +66,20 @@ pub fn tree_digest(dir: &Path) -> Result<String> {
 }
 
 fn walk(dir: &Path, rel: &str, files: &mut Vec<(String, String)>, total: &mut u64) -> Result<()> {
-    for entry in read_entries(dir)? {
+    read_entries(dir)?.into_iter().try_for_each(|entry| {
         let (child, kind, meta) = classify(&entry, rel)?;
-        match kind {
-            Kind::Dir => walk(&entry.path(), &format!("{child}/"), files, total)?,
-            Kind::File => hash_file(&entry, child, &meta, files, total)?,
+        if matches!(kind, Kind::Dir) {
+            walk(&entry.path(), &format!("{child}/"), files, total)
+        } else {
+            hash_file(&entry, child, &meta, files, total)
         }
-    }
-    Ok(())
+    })
 }
 
 /// The entries of `dir`; an error names `dir`.
 pub(crate) fn read_entries(dir: &Path) -> Result<Vec<DirEntry>> {
     fs::read_dir(dir)
-        .and_then(|entries| entries.collect())
+        .and_then(Iterator::collect)
         .map_err(|e| MarketplaceError::io(dir.display(), e))
 }
 
@@ -102,8 +102,7 @@ pub(crate) fn classify(entry: &DirEntry, rel: &str) -> Result<(String, Kind, Met
     let child = format!("{rel}{name}");
     check_relative_path(&child)?;
     let meta = fs::symlink_metadata(entry.path()).map_err(|e| MarketplaceError::io(&child, e))?;
-    let kind = kind_of(meta.file_type(), &child)?;
-    Ok((child, kind, meta))
+    kind_of(meta.file_type(), &child).map(|kind| (child, kind, meta))
 }
 
 fn kind_of(file_type: FileType, child: &str) -> Result<Kind> {

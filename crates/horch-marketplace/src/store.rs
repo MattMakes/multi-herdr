@@ -71,13 +71,14 @@ impl Store {
 
     /// `lock` with explicit limits, for tests.
     pub fn lock_within(&self, wait: Duration, stale_after: Duration) -> Result<StoreLock> {
-        fs::create_dir_all(&self.root)
-            .map_err(|e| MarketplaceError::io(self.root.display().to_string(), e))?;
+        self.make_root()?;
         let dir = self.guard_path();
         let deadline = Instant::now() + wait;
         loop {
-            if try_take(&dir)? {
-                break Ok(StoreLock { dir });
+            match fs::create_dir(&dir) {
+                Ok(()) => break Ok(StoreLock { dir }),
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
+                Err(e) => break Err(MarketplaceError::io(dir.display().to_string(), e)),
             }
             if self.clear_stale(&dir, stale_after) {
                 continue;
@@ -87,6 +88,11 @@ impl Store {
             }
             thread::sleep(LOCK_POLL);
         }
+    }
+
+    fn make_root(&self) -> Result<()> {
+        fs::create_dir_all(&self.root)
+            .map_err(|e| MarketplaceError::io(self.root.display().to_string(), e))
     }
 
     /// Break a guard directory older than `stale_after`. Returns whether it
@@ -145,15 +151,6 @@ impl Store {
     }
 }
 
-/// Make the guard directory. `Ok(false)` means another install holds it.
-fn try_take(dir: &Path) -> Result<bool> {
-    match fs::create_dir(dir) {
-        Ok(()) => Ok(true),
-        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Ok(false),
-        Err(e) => Err(MarketplaceError::io(dir.display().to_string(), e)),
-    }
-}
-
 fn timed_out(dir: &Path) -> MarketplaceError {
     let timed_out = std::io::Error::new(
         std::io::ErrorKind::TimedOut,
@@ -164,7 +161,7 @@ fn timed_out(dir: &Path) -> MarketplaceError {
 
 /// How long ago the guard directory changed, or `None` when it is gone.
 fn guard_age(dir: &Path) -> Option<Duration> {
-    let modified = fs::metadata(dir).ok()?.modified().ok()?;
+    let modified = fs::metadata(dir).and_then(|meta| meta.modified()).ok()?;
     Some(
         SystemTime::now()
             .duration_since(modified)
