@@ -53,6 +53,22 @@ pub(crate) struct BrokenFile {
 }
 
 impl BrokenFile {
+    /// The record of the file `path` that failed with `error`, when `name`
+    /// was `loaded` from an earlier source: [`fallback_for`] says which.
+    fn new(
+        origins: &BTreeMap<String, PathBuf>,
+        name: &str,
+        loaded: bool,
+        path: PathBuf,
+        error: String,
+    ) -> BrokenFile {
+        BrokenFile {
+            path,
+            error,
+            fallback: fallback_for(origins, name, loaded),
+        }
+    }
+
     fn warning(&self, kind: &str, name: &str) -> String {
         let used = match &self.fallback {
             Some(f) => format!("using {f} instead"),
@@ -171,29 +187,35 @@ impl Roster {
     pub fn overlay(&mut self, dir: &Path) -> Result<()> {
         let base_dir = dir.join("_base");
         if base_dir.is_dir() {
-            for (stem, path) in md_files(&base_dir)? {
-                match read_parsed(&path, |text| parse_base(&stem, text)) {
-                    Ok(base) => {
-                        self.bases.insert(stem.clone(), base);
-                        self.broken_bases.remove(&stem);
-                        self.base_origins.insert(stem, path);
-                    }
-                    Err(error) => {
-                        let loaded = self.bases.contains_key(&stem);
-                        let fallback = fallback_for(&self.base_origins, &stem, loaded);
-                        self.broken_bases.insert(
-                            stem,
-                            BrokenFile {
-                                path,
-                                error,
-                                fallback,
-                            },
-                        );
-                    }
+            self.overlay_bases(md_files(&base_dir)?);
+        }
+        self.overlay_teammates(md_files(dir)?);
+        self.attach_harness_defaults();
+        Ok(())
+    }
+
+    /// Load the `_base/` files `files` over the bases already loaded.
+    fn overlay_bases(&mut self, files: Vec<(String, PathBuf)>) {
+        for (stem, path) in files {
+            match read_parsed(&path, |text| parse_base(&stem, text)) {
+                Ok(base) => {
+                    self.bases.insert(stem.clone(), base);
+                    self.broken_bases.remove(&stem);
+                    self.base_origins.insert(stem, path);
+                }
+                Err(error) => {
+                    let loaded = self.bases.contains_key(&stem);
+                    let file = BrokenFile::new(&self.base_origins, &stem, loaded, path, error);
+                    self.broken_bases.insert(stem, file);
                 }
             }
         }
-        for (stem, path) in md_files(dir)? {
+    }
+
+    /// Load the teammate files `files` over the teammates already loaded. A
+    /// file whose name begins with `_` is no teammate.
+    fn overlay_teammates(&mut self, files: Vec<(String, PathBuf)>) {
+        for (stem, path) in files {
             if stem.starts_with('_') {
                 continue;
             }
@@ -205,20 +227,11 @@ impl Roster {
                 }
                 Err(error) => {
                     let loaded = self.teammates.contains_key(&stem);
-                    let fallback = fallback_for(&self.teammate_origins, &stem, loaded);
-                    self.broken_teammates.insert(
-                        stem,
-                        BrokenFile {
-                            path,
-                            error,
-                            fallback,
-                        },
-                    );
+                    let file = BrokenFile::new(&self.teammate_origins, &stem, loaded, path, error);
+                    self.broken_teammates.insert(stem, file);
                 }
             }
         }
-        self.attach_harness_defaults();
-        Ok(())
     }
 
     /// One line per overlay file that did not load: the file, the error and
