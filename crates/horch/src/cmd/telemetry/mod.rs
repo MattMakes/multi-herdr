@@ -830,6 +830,56 @@ mod tests {
         )));
     }
 
+    /// Each row kind of the POOL block: no reading, the Zen row with no
+    /// signal, a pool with no windows, and a pool with windows.
+    #[test]
+    fn pool_table_rows_by_kind() {
+        use horch_core::routing::quota::Window;
+        let now = DateTime::parse_from_rfc3339("2026-10-30T10:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let soon = Some("2026-10-30T12:00:00Z".to_string());
+        let mut pools = std::collections::BTreeMap::new();
+        pools.insert(
+            quota::POOL_ZEN.to_string(),
+            PoolReading {
+                state: "ok".into(),
+                ..PoolReading::default()
+            },
+        );
+        pools.insert(
+            quota::POOL_GOOGLE.to_string(),
+            PoolReading {
+                state: "cooling".into(),
+                error: Some("boom".into()),
+                reason: Some("ignored".into()),
+                ..PoolReading::default()
+            },
+        );
+        pools.insert(
+            "codex".to_string(),
+            PoolReading {
+                state: "ok".into(),
+                windows: vec![
+                    Window::new(300, 0.25, soon.clone(), None),
+                    Window::new(10_080, 0.5, soon.clone(), None),
+                    Window::new(10_080, 0.75, soon, Some("fable".into())),
+                ],
+                ..PoolReading::default()
+            },
+        );
+        let rows = pool_table(&pools, now, 120, &[]);
+        let want = [
+            "POOL          5h      7d     scoped        state       resets         headroom/h",
+            "claude        no reading",
+            "codex         25%     50%    fable 75%     ok          Fri 12:00Z     25.0%",
+            "opencode-zen  no signal                    ok*         -              -          * public work only",
+            "google        -       -      -             COOLING     boom",
+            "local         no reading",
+        ];
+        assert_eq!(rows, want);
+    }
+
     fn fixture_snapshot() -> Snapshot {
         let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/golden/snapshot-fixture.json");
         Snapshot::read(&path).unwrap()
