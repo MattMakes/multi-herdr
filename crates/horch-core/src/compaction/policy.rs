@@ -53,22 +53,37 @@ pub enum RowState {
     Ok,
 }
 
+/// The names `horch context` prints, in declaration order of [`RowState`].
+const ROW_STATE_NAMES: [&str; 12] = [
+    "compact-lost",
+    "no-session",
+    "not-read",
+    "no-transcript",
+    "unknown",
+    "compacting",
+    "pending",
+    "compact-failed",
+    "request-stale",
+    "requested",
+    "over",
+    "ok",
+];
+
 impl RowState {
     /// The kebab-case name `horch context` prints.
     pub fn as_str(self) -> &'static str {
-        match self {
-            RowState::CompactLost => "compact-lost",
-            RowState::NoSession => "no-session",
-            RowState::NotRead => "not-read",
-            RowState::NoTranscript => "no-transcript",
-            RowState::Unknown => "unknown",
-            RowState::Compacting => "compacting",
-            RowState::Pending => "pending",
-            RowState::CompactFailed => "compact-failed",
-            RowState::RequestStale => "request-stale",
-            RowState::Requested => "requested",
-            RowState::Over => "over",
-            RowState::Ok => "ok",
+        ROW_STATE_NAMES[self as usize]
+    }
+}
+
+impl From<&Unreadable> for RowState {
+    /// The state of a row whose transcript does not read.
+    fn from(why: &Unreadable) -> Self {
+        match why {
+            Unreadable::NoSessionId => RowState::NoSession,
+            Unreadable::NotRead(_) => RowState::NotRead,
+            Unreadable::NoTranscript(_) => RowState::NoTranscript,
+            Unreadable::Failed(_) => RowState::Unknown,
         }
     }
 }
@@ -109,35 +124,27 @@ pub fn classify(i: &RowInputs) -> RowState {
     if matches!(i.job, JobLiveness::Lost { .. }) {
         return RowState::CompactLost;
     }
-    let reading = match i.reading {
-        Err(why) => return unreadable_state(why),
-        Ok(r) => r,
-    };
-    if reading.tokens.is_none() && !reading.pending {
-        return RowState::Unknown;
-    }
-    if *i.job == JobLiveness::Live {
-        return RowState::Compacting;
-    }
-    if reading.pending {
-        return RowState::Pending;
-    }
-    if let Some(state) = ask_state(i, reading.last_compaction.as_ref()) {
-        return state;
-    }
-    match reading.tokens {
-        Some(t) if t >= i.threshold => RowState::Over,
-        _ => RowState::Ok,
+    match i.reading {
+        Err(why) => RowState::from(why),
+        Ok(r) => classify_reading(r, i),
     }
 }
 
-/// The state of a row whose transcript does not read.
-fn unreadable_state(why: &Unreadable) -> RowState {
-    match why {
-        Unreadable::NoSessionId => RowState::NoSession,
-        Unreadable::NotRead(_) => RowState::NotRead,
-        Unreadable::NoTranscript(_) => RowState::NoTranscript,
-        Unreadable::Failed(_) => RowState::Unknown,
+/// The state of a row whose transcript reads, after the lost-job check.
+fn classify_reading(r: &Reading, i: &RowInputs) -> RowState {
+    if r.tokens.is_none() && !r.pending {
+        RowState::Unknown
+    } else if *i.job == JobLiveness::Live {
+        RowState::Compacting
+    } else if r.pending {
+        RowState::Pending
+    } else if let Some(state) = ask_state(i, r.last_compaction.as_ref()) {
+        state
+    } else {
+        match r.tokens {
+            Some(t) if t >= i.threshold => RowState::Over,
+            _ => RowState::Ok,
+        }
     }
 }
 
@@ -348,25 +355,22 @@ pub fn handoff_fresh(
     asked_at: Option<SystemTime>,
     now: SystemTime,
 ) -> Result<(), HandoffProblem> {
-    let Some(mtime) = mtime else {
-        return Err(HandoffProblem::Missing);
-    };
-    if let Some(asked) = asked_at {
-        return if mtime > asked {
-            Ok(())
-        } else {
-            Err(HandoffProblem::BeforeAsk {
-                asked_at: crate::clock::stamp(DateTime::<Utc>::from(asked)),
-            })
-        };
-    }
-    let age = now.duration_since(mtime).unwrap_or_default();
-    if age <= HANDOFF_MAX_AGE {
-        Ok(())
-    } else {
-        Err(HandoffProblem::Stale {
-            minutes: age.as_secs() / 60,
-        })
+    match (mtime, asked_at) {
+        (None, _) => Err(HandoffProblem::Missing),
+        (Some(m), Some(asked)) if m > asked => Ok(()),
+        (Some(_), Some(asked)) => Err(HandoffProblem::BeforeAsk {
+            asked_at: crate::clock::stamp(DateTime::<Utc>::from(asked)),
+        }),
+        (Some(m), None) => {
+            let age = now.duration_since(m).unwrap_or_default();
+            if age <= HANDOFF_MAX_AGE {
+                Ok(())
+            } else {
+                Err(HandoffProblem::Stale {
+                    minutes: age.as_secs() / 60,
+                })
+            }
+        }
     }
 }
 
@@ -381,21 +385,18 @@ pub fn asked_at(history: &[HistoryEntry]) -> Option<SystemTime> {
 /// command. Instructions with a line break are refused (None): a second
 /// line would be typed as a prompt.
 pub fn compact_line(caps: CompactionCaps, instructions: &str) -> Option<String> {
-    if !caps.has_command() {
-        return None;
-    }
-    if !caps.takes_instructions() {
-        return Some("/compact".into());
-    }
-    if instructions.contains(['\n', '\r']) {
-        return None;
-    }
     let keep = instructions.trim();
-    Some(if keep.is_empty() {
-        "/compact".into()
+    if !caps.has_command() {
+        None
+    } else if !caps.takes_instructions() {
+        Some("/compact".into())
+    } else if instructions.contains(['\n', '\r']) {
+        None
+    } else if keep.is_empty() {
+        Some("/compact".into())
     } else {
-        format!("/compact {keep}")
-    })
+        Some(format!("/compact {keep}"))
+    }
 }
 
 #[cfg(test)]
