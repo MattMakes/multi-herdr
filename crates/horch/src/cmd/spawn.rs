@@ -132,7 +132,6 @@ fn spawn_worker(
     args: SpawnArgs,
     ledger: Option<&super::taskledger_spawn::LedgerSpawn>,
 ) -> Result<String> {
-    horch_core::sweep::run_due(ctx);
     let req = build_request(&args)?;
     let sc = spawn_context(ctx)?;
     let existing = resume_record(&req, &sc)?;
@@ -210,6 +209,7 @@ fn launch(
             l.launch_failed(&format!("{e:#}"));
         }
     })?;
+    horch_core::sweep::run_due(ctx);
     let launch = &out.plan.launch;
     if let Some(l) = ledger {
         l.spawned(
