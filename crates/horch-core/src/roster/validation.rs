@@ -14,7 +14,7 @@ use super::teammate::{
     CONTEXT_WINDOWS_BASE, HARNESS_DEFAULTS_BASE, HEADLESS_ONLY,
 };
 use super::{
-    effort_problem, reserved_tier, ExecDecision, ExecRule, PermissionMode, Roster, Teammate,
+    effort_problem, reserved_tier, Base, ExecDecision, ExecRule, PermissionMode, Roster, Teammate,
     BRIEF_DESCRIPTION_MAX, FLEET_ORCHESTRATORS, ORCHESTRATOR_DENIED_TOOLS,
     ORCHESTRATOR_ONLY_SKILLS, TOP_TIER_SEATS,
 };
@@ -158,41 +158,12 @@ impl Roster {
             ));
         }
         for (pattern, skills) in &t.skills_when {
-            if let Some(problem) = super::offer::pattern_problem(pattern) {
-                problems.push(format!("{who}: skills_when pattern '{pattern}' {problem}"));
-            }
-            if skills.is_empty() {
-                problems.push(format!("{who}: skills_when '{pattern}' names no skill"));
-            }
-            for name in skills {
-                let unknown = catalog.as_ref().is_some_and(|c| c.lookup(name).is_none());
-                if unknown {
-                    problems.push(format!(
-                        "{who}: skills_when '{pattern}' names unknown skill '{name}'"
-                    ));
-                }
-                if t.skills.contains(name) {
-                    problems.push(format!(
-                        "{who}: '{name}' is both in skills and in skills_when '{pattern}'"
-                    ));
-                }
-                if t.disabled_skills
-                    .iter()
-                    .any(|d| d == name || *d == format!("horch:{name}"))
-                {
-                    problems.push(format!(
-                        "{who}: '{name}' is both in skills_when '{pattern}' and in \
-                         disabled_skills"
-                    ));
-                }
-                if !FLEET_ORCHESTRATORS.contains(&who.as_str())
-                    && ORCHESTRATOR_ONLY_SKILLS.contains(&name.as_str())
-                {
-                    problems.push(format!(
-                        "{who}: skill '{name}' belongs to the orchestrator only"
-                    ));
-                }
-            }
+            problems.extend(skills_when_pattern_problems(
+                who,
+                (pattern, skills),
+                catalog.as_ref(),
+                t,
+            ));
         }
         problems
     }
@@ -201,6 +172,37 @@ impl Roster {
     /// bases, its rules, its skill catalog). Also run on a teammate merged
     /// with a fallback.
     pub(crate) fn check_teammate(&self, t: &Teammate) -> Vec<String> {
+        let mut problems = Vec::new();
+        problems.extend(self.skill_catalog_rules(t));
+        problems.extend(self.description_rules(t));
+        problems.extend(self.skills_when_problems(t));
+        problems.extend(self.seat_rules(t));
+        problems.extend(self.model_effort_rules(t));
+        problems.extend(self.plugin_skill_rules(t));
+        problems.extend(self.codex_effort_rules(t));
+        problems.extend(self.harness_field_rules(t));
+        problems.extend(self.subagent_switch_rules(t));
+        problems.extend(self.orchestrator_tool_rules(t));
+        problems.extend(self.forbidden_env_rules(t));
+        problems.extend(self.antigravity_rules(t));
+        problems.extend(self.orchestrator_only_rules(t));
+        problems.extend(self.worker_channel_rules(t));
+        problems.extend(self.sandbox_rules(t));
+        problems.extend(self.permission_mode_rules(t));
+        problems.extend(self.plan_mode_rules(t));
+        problems.extend(self.empty_setting_sources_rules(t));
+        problems.extend(self.disable_skills_rules(t));
+        problems.extend(self.disabled_skill_rules(t));
+        problems.extend(self.trains_rules(t));
+        problems.extend(self.args_rules(t));
+        problems.extend(self.plugin_dir_rules(t));
+        problems.extend(self.settings_rules(t));
+        problems.extend(self.mcp_file_rules(t));
+        problems
+    }
+
+    /// Skills: the catalog, unknown offered skills, and a skill both kept and offered.
+    fn skill_catalog_rules(&self, t: &Teammate) -> Vec<String> {
         let mut problems = Vec::new();
         let who = &t.name;
         // Operator and plugin skills are read from the operator's machine, so
@@ -226,6 +228,13 @@ impl Roster {
                 ));
             }
         }
+        problems
+    }
+
+    /// The brief description, the base and the `offer_when` patterns.
+    fn description_rules(&self, t: &Teammate) -> Vec<String> {
+        let mut problems = Vec::new();
+        let who = &t.name;
         if t.brief_description.trim().is_empty() {
             problems.push(format!("{who}: brief_description is empty"));
         }
@@ -246,7 +255,13 @@ impl Roster {
                 problems.push(format!("{who}: offer_when pattern '{pattern}' {problem}"));
             }
         }
-        problems.extend(self.skills_when_problems(t));
+        problems
+    }
+
+    /// Top-tier seats take no fallbacks, and what the orchestrator may pick must spawn.
+    fn seat_rules(&self, t: &Teammate) -> Vec<String> {
+        let mut problems = Vec::new();
+        let who = &t.name;
         if TOP_TIER_SEATS
             .iter()
             .any(|(seat, _)| *seat == t.name.as_str())
@@ -266,6 +281,13 @@ impl Roster {
                 problems.push(format!("{e:#}"));
             }
         }
+        problems
+    }
+
+    /// A model for the agent, and an effort that agent and model take.
+    fn model_effort_rules(&self, t: &Teammate) -> Vec<String> {
+        let mut problems = Vec::new();
+        let who = &t.name;
         if t.agent != HarnessKind::None && t.model.is_none() && t.name != "orchestration-worker" {
             problems.push(format!("{who}: agent is {} but no model is set", t.agent));
         }
@@ -274,6 +296,13 @@ impl Roster {
                 problems.push(format!("{who}: {why}"));
             }
         }
+        problems
+    }
+
+    /// Reinforced plugin skills are loadable and named in a briefing.
+    fn plugin_skill_rules(&self, t: &Teammate) -> Vec<String> {
+        let mut problems = Vec::new();
+        let who = &t.name;
         // Reinforced plugin skills must exist, or the briefing promises a
         // skill the pane cannot load.
         if t.agent == HarnessKind::Claude && !t.plugin_skills.is_empty() {
@@ -297,6 +326,13 @@ impl Roster {
                 ));
             }
         }
+        problems
+    }
+
+    /// An offered codex teammate states its own effort.
+    fn codex_effort_rules(&self, t: &Teammate) -> Vec<String> {
+        let mut problems = Vec::new();
+        let who = &t.name;
         // A codex worker with no effort silently takes whatever the
         // operator's ~/.codex/config.toml says (the pane's private
         // CODEX_HOME links it). That made two workers run at "medium"
@@ -307,6 +343,13 @@ impl Roster {
                  inherits model_reasoning_effort from ~/.codex/config.toml"
             ));
         }
+        problems
+    }
+
+    /// Fields this agent cannot express, and Prime's `tools`.
+    fn harness_field_rules(&self, t: &Teammate) -> Vec<String> {
+        let mut problems = Vec::new();
+        let who = &t.name;
         // Every claude-shaped field this agent cannot express. Naming the
         // field beats a generic "unsupported": the author set it on purpose.
         for field in t.agent.unsupported_fields(t) {
@@ -325,6 +368,13 @@ impl Roster {
                  prime refuses --tools and --no-tools, so remove tools"
             ));
         }
+        problems
+    }
+
+    /// A fleet pane must not spawn subagents.
+    fn subagent_switch_rules(&self, t: &Teammate) -> Vec<String> {
+        let mut problems = Vec::new();
+        let who = &t.name;
         // A fleet pane must not spawn subagents. The prose rule in
         // `_base/fleet-worker.md` was not enough on its own, so the switch
         // carries it: `--disallowedTools Agent` takes the tool out of the
@@ -342,6 +392,13 @@ impl Roster {
                  disallowed_tools: [Agent] or set allow_subagents: true"
             ));
         }
+        problems
+    }
+
+    /// The orchestrator denies every tool that would not delegate to a worker.
+    fn orchestrator_tool_rules(&self, t: &Teammate) -> Vec<String> {
+        let mut problems = Vec::new();
+        let who = &t.name;
         // The orchestrator delegates to workers and nothing else: no
         // subagent and no background or cloud agent. `allow_subagents`
         // does not waive this one.
@@ -355,6 +412,13 @@ impl Roster {
                 }
             }
         }
+        problems
+    }
+
+    /// No teammate sets a forbidden environment variable.
+    fn forbidden_env_rules(&self, t: &Teammate) -> Vec<String> {
+        let mut problems = Vec::new();
+        let who = &t.name;
         // The operator's rule (CLAUDE.md): no teammate uses
         // ANTHROPIC_API_KEY. The launch removes it; a file that sets it is
         // a mistake to report, not to hide.
@@ -363,6 +427,13 @@ impl Roster {
                 problems.push(format!("{who}: env must not set {key}; never use it"));
             }
         }
+        problems
+    }
+
+    /// Antigravity: no login-bypass env, and a stated effort.
+    fn antigravity_rules(&self, t: &Teammate) -> Vec<String> {
+        let mut problems = Vec::new();
+        let who = &t.name;
         // An agy child signs in with the operator's Google login. These keys
         // bypass it, and the launch removes them from an agy child.
         if t.agent == HarnessKind::Antigravity {
@@ -391,6 +462,13 @@ impl Roster {
                 }
             }
         }
+        problems
+    }
+
+    /// Orchestrator-only skills, plugins and switches stay with the orchestrator.
+    fn orchestrator_only_rules(&self, t: &Teammate) -> Vec<String> {
+        let mut problems = Vec::new();
+        let who = &t.name;
         // Orchestrator-only capabilities stay with the orchestrator.
         if !FLEET_ORCHESTRATORS.contains(&who.as_str()) {
             for skill in ORCHESTRATOR_ONLY_SKILLS {
@@ -420,12 +498,26 @@ impl Roster {
                 ));
             }
         }
+        problems
+    }
+
+    /// The worker channel needs an agent that can host it.
+    fn worker_channel_rules(&self, t: &Teammate) -> Vec<String> {
+        let mut problems = Vec::new();
+        let who = &t.name;
         if t.worker_channel && !matches!(t.agent, HarnessKind::Claude | HarnessKind::Codex) {
             problems.push(format!(
                 "{who}: worker_channel needs agent claude or codex; agent {} cannot host it",
                 t.agent
             ));
         }
+        problems
+    }
+
+    /// The OS sandbox field is Claude only and excludes `settings`.
+    fn sandbox_rules(&self, t: &Teammate) -> Vec<String> {
+        let mut problems = Vec::new();
+        let who = &t.name;
         // Only Claude has an OS sandbox horch can switch on per launch. On any
         // other agent the field would promise a boundary that never exists.
         if let Some(block) = &t.sandbox {
@@ -445,6 +537,13 @@ impl Roster {
                 problems.push(format!("{who}: {problem}"));
             }
         }
+        problems
+    }
+
+    /// A permission mode needs an equivalent on this agent.
+    fn permission_mode_rules(&self, t: &Teammate) -> Vec<String> {
+        let mut problems = Vec::new();
+        let who = &t.name;
         if let Some(mode) = t.permission_mode {
             let ok = match t.agent {
                 HarnessKind::Codex => mode.codex_args().is_some(),
@@ -464,6 +563,13 @@ impl Roster {
                 ));
             }
         }
+        problems
+    }
+
+    /// A plan-mode Claude worker can leave plan mode.
+    fn plan_mode_rules(&self, t: &Teammate) -> Vec<String> {
+        let mut problems = Vec::new();
+        let who = &t.name;
         // A plan-mode worker that cannot leave plan mode stalls in a pane
         // nobody is watching. Denies normally beat allows, so naming the
         // tool in allowed_tools is not accepted as proof on its own.
@@ -471,18 +577,7 @@ impl Roster {
             // `--setting-sources ""` loads no settings file, so a
             // `permissions.deny` written for an attended session cannot
             // reach this worker.
-            let escapes_settings = t
-                .setting_sources
-                .as_ref()
-                .map(|v| v.is_empty())
-                .unwrap_or(false)
-                || t.settings.is_some();
-            let tool_available = t
-                .tools
-                .as_ref()
-                .map(|v| v.iter().any(|x| x == "ExitPlanMode" || x == "default"))
-                .unwrap_or(true);
-            if !escapes_settings {
+            if !plan_escapes_settings(t) {
                 problems.push(format!(
                     "{who}: permission_mode is 'plan' but it inherits the operator's \
                      settings, which may deny ExitPlanMode - set \
@@ -490,13 +585,20 @@ impl Roster {
                      for workers"
                 ));
             }
-            if !tool_available {
+            if !plan_tool_available(t) {
                 problems.push(format!(
                     "{who}: permission_mode is 'plan' but 'tools' does not include \
                      ExitPlanMode, so it can never leave plan mode"
                 ));
             }
         }
+        problems
+    }
+
+    /// Empty `setting_sources` must not quietly load more skills.
+    fn empty_setting_sources_rules(&self, t: &Teammate) -> Vec<String> {
+        let mut problems = Vec::new();
+        let who = &t.name;
         // Dropping the operator's settings also drops `disableBundledSkills`,
         // so "clean" can silently mean "more skills than before".
         if t.setting_sources
@@ -514,6 +616,13 @@ impl Roster {
                  will load. Set disable_skills: true, or name the plugins you want."
             ));
         }
+        problems
+    }
+
+    /// `disable_skills` turns off everything, so it excludes the rest.
+    fn disable_skills_rules(&self, t: &Teammate) -> Vec<String> {
+        let mut problems = Vec::new();
+        let who = &t.name;
         if t.disable_skills && !t.plugin_dirs.is_empty() {
             problems.push(format!(
                 "{who}: disable_skills turns off ALL skills, including the ones \
@@ -526,6 +635,13 @@ impl Roster {
                  disabled_skills list does nothing"
             ));
         }
+        problems
+    }
+
+    /// `disabled_skills` entries are named, and not also kept.
+    fn disabled_skill_rules(&self, t: &Teammate) -> Vec<String> {
+        let mut problems = Vec::new();
+        let who = &t.name;
         for name in &t.disabled_skills {
             if name.trim().is_empty() {
                 problems.push(format!("{who}: disabled_skills has a blank entry"));
@@ -539,6 +655,13 @@ impl Roster {
                 ));
             }
         }
+        problems
+    }
+
+    /// `trains_on_input` has a block to render; skills and phase need skills on.
+    fn trains_rules(&self, t: &Teammate) -> Vec<String> {
+        let mut problems = Vec::new();
+        let who = &t.name;
         if t.trains_on_input {
             let renders = t
                 .base
@@ -559,6 +682,13 @@ impl Roster {
                 "{who}: declares skills or phase but also disable_skills"
             ));
         }
+        problems
+    }
+
+    /// `args` does not end on a variadic flag.
+    fn args_rules(&self, t: &Teammate) -> Vec<String> {
+        let mut problems = Vec::new();
+        let who = &t.name;
         // `args` is emitted immediately before the prompt. These flags are
         // variadic and would take the prompt as one more value.
         if let Some(last) = t.args.last() {
@@ -578,11 +708,25 @@ impl Roster {
                 ));
             }
         }
+        problems
+    }
+
+    /// Every plugin directory exists.
+    fn plugin_dir_rules(&self, t: &Teammate) -> Vec<String> {
+        let mut problems = Vec::new();
+        let who = &t.name;
         for dir in &t.plugin_dirs {
             if !expand_home(dir, self.home.as_deref()).is_dir() {
                 problems.push(format!("{who}: plugin_dir '{dir}' does not exist"));
             }
         }
+        problems
+    }
+
+    /// A teammate's own settings parse and define a status line.
+    fn settings_rules(&self, t: &Teammate) -> Vec<String> {
+        let mut problems = Vec::new();
+        let who = &t.name;
         // A teammate that brings its own settings takes over the status line
         // too; one without a statusLine would be the only pane in the fleet
         // with none. `settings` is inline JSON (starts with `{`) or a file.
@@ -611,6 +755,13 @@ impl Roster {
                 Some(_) => {}
             }
         }
+        problems
+    }
+
+    /// Every MCP config file exists.
+    fn mcp_file_rules(&self, t: &Teammate) -> Vec<String> {
+        let mut problems = Vec::new();
+        let who = &t.name;
         for file in &t.mcp_config_files {
             if !expand_home(file, self.home.as_deref()).is_file() {
                 problems.push(format!(
@@ -855,68 +1006,97 @@ impl Roster {
         let Some(windows) = self.context_windows().and_then(|b| b.windows.as_ref()) else {
             return Vec::new();
         };
-        let mut problems = Vec::new();
-        for (key, &w) in windows {
-            let Some((kind, name)) = split_window_key(key) else {
-                problems.push(format!(
-                    "{file}: windows key {key} is not <harness>/<teammate or model> with a harness name"
-                ));
-                continue;
-            };
-            if name.is_empty() {
-                problems.push(format!(
-                    "{file}: windows key {key} has no teammate or model name"
-                ));
-                continue;
-            }
-            let rule = kind.capabilities().compaction.trigger;
-            let native = match rule {
-                TriggerRule::Unknown | TriggerRule::PerModel => {
-                    problems.push(format!(
-                        "{file}: windows key {key} does nothing on harness {kind}: it has no window setting"
-                    ));
-                    continue;
-                }
-                // A teammate name as the model part: the model window is
-                // unknown, so the key's value is the window.
-                TriggerRule::WindowMinusReserve { reserve } => {
-                    native_trigger(rule, kind.as_str(), name, Some(w), None)
-                        .unwrap_or_else(|| w.saturating_sub(reserve))
-                }
-                TriggerRule::CodexLimit => w,
-            };
-            if let Some((t_watch, h)) = below_floor(native) {
-                problems.push(format!(
-                    "{file}: windows {key} {w} leaves headroom {h} tokens, below the {HEADROOM_FLOOR} floor (native trigger {native}, threshold {t_watch})"
-                ));
-            }
-            // Finding 3: teammate `name` runs another model, and `name` is
-            // also the model of a teammate on the same harness.
-            if let Some(t) = self.get(name).filter(|t| t.agent == kind) {
-                let model = t.model.as_deref().unwrap_or("");
-                let also_model = self
-                    .teammates
-                    .values()
-                    .any(|o| o.agent == kind && o.model.as_deref() == Some(name));
-                if model != name && also_model {
-                    problems.push(format!(
-                        "{file}: windows key {key} is teammate {name} (model {model}) and model {name}; set compact_window in {name}.md instead"
-                    ));
-                }
-            }
+        windows
+            .iter()
+            .flat_map(|(key, &w)| self.window_key_problems(&file, key, w))
+            .collect()
+    }
+
+    /// The problems of one `windows` key.
+    fn window_key_problems(&self, file: &str, key: &str, w: u64) -> Vec<String> {
+        let Some((kind, name)) = split_window_key(key) else {
+            return vec![format!(
+                "{file}: windows key {key} is not <harness>/<teammate or model> with a harness name"
+            )];
+        };
+        if name.is_empty() {
+            return vec![format!(
+                "{file}: windows key {key} has no teammate or model name"
+            )];
         }
+        let rule = kind.capabilities().compaction.trigger;
+        let native = match rule {
+            TriggerRule::Unknown | TriggerRule::PerModel => {
+                return vec![format!(
+                    "{file}: windows key {key} does nothing on harness {kind}: it has no window setting"
+                )];
+            }
+            // A teammate name as the model part: the model window is
+            // unknown, so the key's value is the window.
+            TriggerRule::WindowMinusReserve { reserve } => {
+                native_trigger(rule, kind.as_str(), name, Some(w), None)
+                    .unwrap_or_else(|| w.saturating_sub(reserve))
+            }
+            TriggerRule::CodexLimit => w,
+        };
+        let mut problems = Vec::new();
+        if let Some((t_watch, h)) = below_floor(native) {
+            problems.push(format!(
+                "{file}: windows {key} {w} leaves headroom {h} tokens, below the {HEADROOM_FLOOR} floor (native trigger {native}, threshold {t_watch})"
+            ));
+        }
+        problems.extend(self.shared_window_name_problem(file, key, kind, name));
         problems
+    }
+
+    /// Finding 3: teammate `name` runs another model, and `name` is also the
+    /// model of a teammate on the same harness.
+    fn shared_window_name_problem(
+        &self,
+        file: &str,
+        key: &str,
+        kind: HarnessKind,
+        name: &str,
+    ) -> Option<String> {
+        let t = self.get(name).filter(|t| t.agent == kind)?;
+        let model = t.model.as_deref().unwrap_or("");
+        let also_model = self
+            .teammates
+            .values()
+            .any(|o| o.agent == kind && o.model.as_deref() == Some(name));
+        (model != name && also_model).then(|| {
+            format!(
+                "{file}: windows key {key} is teammate {name} (model {model}) and model {name}; set compact_window in {name}.md instead"
+            )
+        })
     }
 
     /// Rule 4: both context bases exist, each holds only its own keys, no
     /// other base holds them, and every name and message is well formed.
     fn context_base_problems(&self) -> Vec<String> {
-        let mut problems = Vec::new();
-        for name in [CONTEXT_WINDOWS_BASE, CONTEXT_MESSAGES_BASE] {
-            if !self.bases.contains_key(name) {
-                problems.push(format!("_base/{name}.md is missing"));
-            }
+        let mut problems = self.base_presence_problems();
+        problems.extend(self.base_owner_problems());
+        if let Some(base) = self.context_windows() {
+            problems.extend(windows_base_problems(base));
         }
+        if let Some(base) = self.context_messages() {
+            problems.extend(messages_base_problems(base));
+        }
+        problems
+    }
+
+    /// Both context bases exist.
+    fn base_presence_problems(&self) -> Vec<String> {
+        [CONTEXT_WINDOWS_BASE, CONTEXT_MESSAGES_BASE]
+            .into_iter()
+            .filter(|name| !self.bases.contains_key(*name))
+            .map(|name| format!("_base/{name}.md is missing"))
+            .collect()
+    }
+
+    /// Each context key lives only in the base that owns it.
+    fn base_owner_problems(&self) -> Vec<String> {
+        let mut problems = Vec::new();
         for (name, base) in &self.bases {
             let file = format!("_base/{name}.md");
             for (key, set, owner) in [
@@ -931,59 +1111,66 @@ impl Roster {
                 }
             }
         }
-        if let Some(base) = self.context_windows() {
-            let file = format!("_base/{CONTEXT_WINDOWS_BASE}.md");
-            for (key, set) in [
-                ("windows", base.windows.is_some()),
-                ("in_place", base.in_place.is_some()),
-            ] {
-                if !set {
-                    problems.push(format!(
-                        "{file} sets no {key}; a copy replaces the whole file, so keep both keys"
-                    ));
-                }
-            }
-            for entry in base.in_place.iter().flatten() {
-                match harness_kind(entry) {
-                    None => problems.push(format!(
-                        "{file}: in_place entry {entry} is not a harness name"
-                    )),
-                    Some(kind) if !kind.capabilities().compaction.has_command() => {
-                        problems.push(format!(
-                        "{file}: in_place entry {entry}: horch has no compact command for {entry}"
-                    ))
-                    }
-                    Some(_) => {}
-                }
-            }
-        }
-        if let Some(base) = self.context_messages() {
-            let file = format!("_base/{CONTEXT_MESSAGES_BASE}.md");
-            for key in CONTEXT_MESSAGE_KEYS {
-                if !base.messages.contains_key(key) {
-                    problems.push(format!("{file}: message {key} is missing"));
-                }
-            }
-            let known: BTreeMap<&str, &str> = CONTEXT_MESSAGE_PLACEHOLDERS
-                .into_iter()
-                .map(|p| (p, ""))
-                .collect();
-            for (key, message) in &base.messages {
-                if message.trim().is_empty() {
-                    problems.push(format!("{file}: message {key} is empty"));
-                }
-                if message.contains(['\n', '\r']) {
-                    problems.push(format!(
-                        "{file}: message {key} has a newline; a newline submits the line early"
-                    ));
-                }
-                if let Err(e) = crate::prompts::render(message, &known) {
-                    problems.push(format!("{file}: message {key}: {e}"));
-                }
-            }
-        }
         problems
     }
+}
+
+/// The `context-windows` base sets both keys, and each `in_place` entry names
+/// a harness that has a compact command.
+fn windows_base_problems(base: &Base) -> Vec<String> {
+    let file = format!("_base/{CONTEXT_WINDOWS_BASE}.md");
+    let mut problems = Vec::new();
+    for (key, set) in [
+        ("windows", base.windows.is_some()),
+        ("in_place", base.in_place.is_some()),
+    ] {
+        if !set {
+            problems.push(format!(
+                "{file} sets no {key}; a copy replaces the whole file, so keep both keys"
+            ));
+        }
+    }
+    for entry in base.in_place.iter().flatten() {
+        match harness_kind(entry) {
+            None => problems.push(format!(
+                "{file}: in_place entry {entry} is not a harness name"
+            )),
+            Some(kind) if !kind.capabilities().compaction.has_command() => problems.push(format!(
+                "{file}: in_place entry {entry}: horch has no compact command for {entry}"
+            )),
+            Some(_) => {}
+        }
+    }
+    problems
+}
+
+/// The `context-messages` base has every message, each one line and renderable.
+fn messages_base_problems(base: &Base) -> Vec<String> {
+    let file = format!("_base/{CONTEXT_MESSAGES_BASE}.md");
+    let mut problems = Vec::new();
+    for key in CONTEXT_MESSAGE_KEYS {
+        if !base.messages.contains_key(key) {
+            problems.push(format!("{file}: message {key} is missing"));
+        }
+    }
+    let known: BTreeMap<&str, &str> = CONTEXT_MESSAGE_PLACEHOLDERS
+        .into_iter()
+        .map(|p| (p, ""))
+        .collect();
+    for (key, message) in &base.messages {
+        if message.trim().is_empty() {
+            problems.push(format!("{file}: message {key} is empty"));
+        }
+        if message.contains(['\n', '\r']) {
+            problems.push(format!(
+                "{file}: message {key} has a newline; a newline submits the line early"
+            ));
+        }
+        if let Err(e) = crate::prompts::render(message, &known) {
+            problems.push(format!("{file}: message {key}: {e}"));
+        }
+    }
+    problems
 }
 
 /// Warnings, not errors, of the context policy:
@@ -994,65 +1181,81 @@ impl Roster {
 /// - an overlay teammate on a watched harness without `compact_at`: the
 ///   fleet base applies. A built-in file without it is a check problem.
 pub fn context_policy_warnings(roster: &Roster) -> Vec<String> {
-    let mut out = Vec::new();
-    for t in roster.teammates.values() {
-        if !watched(t) || t.compact_at.is_some() {
-            continue;
-        }
-        let builtin_lacks_it = BUILTIN_TEAMMATES
-            .iter()
-            .find(|(name, _)| *name == t.name)
-            .and_then(|(name, text)| parse_teammate(name, text).ok())
-            .is_some_and(|b| b.compact_at.is_none());
-        if !builtin_lacks_it {
-            out.push(format!(
+    let mut out: Vec<String> = roster
+        .teammates
+        .values()
+        .filter(|t| watched(t) && t.compact_at.is_none())
+        .filter(|t| !builtin_lacks_compact_at(t))
+        .map(|t| {
+            format!(
                 "{}; the fleet base {BASE_THRESHOLD} applies",
                 compact_at_missing(&t.name)
-            ));
-        }
-    }
-    if let Some(windows) = roster.context_windows().and_then(|b| b.windows.as_ref()) {
-        for key in windows.keys() {
-            let Some((kind, name)) = split_window_key(key) else {
-                continue;
-            };
-            // An empty name or a harness without a window setting is
-            // already a check problem.
-            let lever = !matches!(
-                kind.capabilities().compaction.trigger,
-                TriggerRule::Unknown | TriggerRule::PerModel
-            );
-            let known = name.is_empty()
-                || !lever
-                || roster.get(name).is_some()
-                || roster
-                    .teammates
-                    .values()
-                    .any(|t| t.agent == kind && t.model.as_deref() == Some(name));
-            if !known {
-                out.push(format!(
-                    "_base/{CONTEXT_WINDOWS_BASE}.md: windows key {key} names no teammate and no model of a teammate on {kind}"
-                ));
-            }
-        }
-    }
+            )
+        })
+        .collect();
+    out.extend(unknown_window_warnings(roster));
+    out.extend(stale_builtin_warning(roster));
+    out
+}
+
+/// Whether the built-in file of `t` has no `compact_at` either, which is a
+/// check problem and not a warning.
+fn builtin_lacks_compact_at(t: &Teammate) -> bool {
+    BUILTIN_TEAMMATES
+        .iter()
+        .find(|(name, _)| *name == t.name)
+        .and_then(|(name, text)| parse_teammate(name, text).ok())
+        .is_some_and(|b| b.compact_at.is_none())
+}
+
+/// A `windows` key whose name is no teammate and no model of a teammate on
+/// its harness.
+fn unknown_window_warnings(roster: &Roster) -> Vec<String> {
+    let Some(windows) = roster.context_windows().and_then(|b| b.windows.as_ref()) else {
+        return Vec::new();
+    };
+    windows
+        .keys()
+        .filter_map(|key| Some((key, split_window_key(key)?)))
+        .filter(|(_, (kind, name))| !window_name_known(roster, *kind, name))
+        .map(|(key, (kind, _))| {
+            format!(
+                "_base/{CONTEXT_WINDOWS_BASE}.md: windows key {key} names no teammate and no model of a teammate on {kind}"
+            )
+        })
+        .collect()
+}
+
+/// An empty name or a harness without a window setting is already a check
+/// problem, so it counts as known here.
+fn window_name_known(roster: &Roster, kind: HarnessKind, name: &str) -> bool {
+    let lever = !matches!(
+        kind.capabilities().compaction.trigger,
+        TriggerRule::Unknown | TriggerRule::PerModel
+    );
+    name.is_empty()
+        || !lever
+        || roster.get(name).is_some()
+        || roster
+            .teammates
+            .values()
+            .any(|t| t.agent == kind && t.model.as_deref() == Some(name))
+}
+
+/// The loaded `context-messages` base replaces the built-in one.
+fn stale_builtin_warning(roster: &Roster) -> Option<String> {
     let builtin = BUILTIN_BASES
         .iter()
         .find(|(name, _)| *name == CONTEXT_MESSAGES_BASE)
-        .and_then(|(name, text)| parse_base(name, text).ok());
-    if let (Some(loaded), Some(builtin), Some(path)) = (
-        roster.context_messages(),
-        builtin,
-        roster.base_origin(CONTEXT_MESSAGES_BASE),
-    ) {
-        if *loaded != builtin {
-            out.push(format!(
-                "_base/{CONTEXT_MESSAGES_BASE}.md: {} replaces the built-in protocol messages; the briefings name their prefixes, so delete the copy",
-                path.display()
-            ));
-        }
-    }
-    out
+        .and_then(|(name, text)| parse_base(name, text).ok())?;
+    let loaded = roster.context_messages()?;
+    let path = roster.base_origin(CONTEXT_MESSAGES_BASE)?;
+    (*loaded != builtin).then(|| {
+        format!(
+            "_base/{CONTEXT_MESSAGES_BASE}.md: {} replaces the built-in protocol messages; the briefings name their prefixes, so delete the copy",
+            path.display()
+        )
+    })
 }
 
 /// The harness and the name part of a `windows` key. None: the part before
@@ -1075,6 +1278,85 @@ fn below_floor(native: u64) -> Option<(u64, u64)> {
     let t_watch = threshold(BASE_THRESHOLD, Some(native));
     let h = headroom(native, t_watch);
     (h < HEADROOM_FLOOR).then_some((t_watch, h))
+}
+
+/// What is wrong with one `skills_when` entry: its pattern, its skill list,
+/// and each skill in it.
+fn skills_when_pattern_problems(
+    who: &str,
+    (pattern, skills): (&str, &[String]),
+    catalog: Option<&SkillCatalog>,
+    t: &Teammate,
+) -> Vec<String> {
+    let mut problems = Vec::new();
+    if let Some(problem) = super::offer::pattern_problem(pattern) {
+        problems.push(format!("{who}: skills_when pattern '{pattern}' {problem}"));
+    }
+    if skills.is_empty() {
+        problems.push(format!("{who}: skills_when '{pattern}' names no skill"));
+    }
+    for name in skills {
+        problems.extend(skill_name_problems(who, pattern, name, catalog, t));
+    }
+    problems
+}
+
+/// Whether `name` is in `disabled_skills`, bare or as `horch:<name>`.
+fn is_disabled_skill(t: &Teammate, name: &str) -> bool {
+    t.disabled_skills
+        .iter()
+        .any(|d| d == name || *d == format!("horch:{name}"))
+}
+
+/// What is wrong with one skill `name` listed under a `skills_when` pattern.
+fn skill_name_problems(
+    who: &str,
+    pattern: &str,
+    name: &str,
+    catalog: Option<&SkillCatalog>,
+    t: &Teammate,
+) -> Vec<String> {
+    let mut problems = Vec::new();
+    if catalog.is_some_and(|c| c.lookup(name).is_none()) {
+        problems.push(format!(
+            "{who}: skills_when '{pattern}' names unknown skill '{name}'"
+        ));
+    }
+    if t.skills.iter().any(|s| s == name) {
+        problems.push(format!(
+            "{who}: '{name}' is both in skills and in skills_when '{pattern}'"
+        ));
+    }
+    if is_disabled_skill(t, name) {
+        problems.push(format!(
+            "{who}: '{name}' is both in skills_when '{pattern}' and in \
+             disabled_skills"
+        ));
+    }
+    if !FLEET_ORCHESTRATORS.contains(&who) && ORCHESTRATOR_ONLY_SKILLS.contains(&name) {
+        problems.push(format!(
+            "{who}: skill '{name}' belongs to the orchestrator only"
+        ));
+    }
+    problems
+}
+
+/// `--setting-sources ""` loads no settings file, so a `permissions.deny`
+/// written for an attended session cannot reach this worker.
+fn plan_escapes_settings(t: &Teammate) -> bool {
+    t.setting_sources
+        .as_ref()
+        .map(|v| v.is_empty())
+        .unwrap_or(false)
+        || t.settings.is_some()
+}
+
+/// Whether the worker's `tools` list keeps `ExitPlanMode`.
+fn plan_tool_available(t: &Teammate) -> bool {
+    t.tools
+        .as_ref()
+        .map(|v| v.iter().any(|x| x == "ExitPlanMode" || x == "default"))
+        .unwrap_or(true)
 }
 
 /// Whether a `settings:` value is inline JSON rather than a file path.
@@ -1159,58 +1441,92 @@ fn repeated_defaults(t: &Teammate) -> Vec<String> {
             ));
         }
     }
-    let mut own = t.args.iter();
-    while let Some(arg) = own.next() {
-        if arg == "-c" {
-            let Some(pair) = own.next() else { break };
-            if args.windows(2).any(|w| w[0] == "-c" && w[1] == pair) {
-                out.push(format!(
-                    "{who}: args -c {pair} repeats the {kind} harness default; delete the pair"
-                ));
-            }
-        } else if args.contains(&arg.as_str()) {
-            out.push(format!(
-                "{who}: args {arg} repeats the {kind} harness default; delete it"
-            ));
-        }
-    }
+    out.extend(repeated_args(who, kind, &t.args, &args));
+    out.extend(repeated_inline_json(t, &settings, &config));
+    out
+}
+
+/// Inline-JSON `settings` and `OPENCODE_CONFIG_CONTENT` leaves that repeat a
+/// harness default.
+fn repeated_inline_json(
+    t: &Teammate,
+    settings: &serde_json::Map<String, serde_json::Value>,
+    config: &serde_json::Map<String, serde_json::Value>,
+) -> Vec<String> {
+    let (who, kind) = (&t.name, t.agent);
+    let mut out = Vec::new();
     let inline = |text: Option<&String>| {
         text.filter(|s| s.trim_start().starts_with('{'))
             .and_then(|s| serde_json::from_str::<serde_json::Value>(s).ok())
     };
     for (what, own, defaults) in [
-        ("settings", inline(t.settings.as_ref()), &settings),
+        ("settings", inline(t.settings.as_ref()), settings),
         (
             "OPENCODE_CONFIG_CONTENT",
             inline(t.env.get("OPENCODE_CONFIG_CONTENT")),
-            &config,
+            config,
         ),
     ] {
-        let Some(serde_json::Value::Object(own)) = own else {
-            continue;
-        };
-        let mut paths = Vec::new();
-        json_leaves(defaults, "", &mut paths);
-        for (path, value) in paths {
-            let mut node = Some(&own);
-            let mut found = None;
-            let parts: Vec<&str> = path.split('.').collect();
-            for (i, part) in parts.iter().enumerate() {
-                let next = node.and_then(|n| n.get(*part));
-                if i + 1 == parts.len() {
-                    found = next;
-                } else {
-                    node = next.and_then(|v| v.as_object());
-                }
-            }
-            if found == Some(&value) {
-                out.push(format!(
-                    "{who}: {what} {path} repeats the {kind} harness default; delete it"
-                ));
-            }
+        if let Some(serde_json::Value::Object(own)) = own {
+            out.extend(repeated_json_leaves(who, kind, what, &own, defaults));
         }
     }
     out
+}
+
+/// The teammate's `args` that repeat a harness default: a flag, or a `-c`
+/// pair.
+fn repeated_args(who: &str, kind: HarnessKind, own: &[String], defaults: &[&str]) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut own = own.iter();
+    while let Some(arg) = own.next() {
+        if arg == "-c" {
+            let Some(pair) = own.next() else { break };
+            if defaults.windows(2).any(|w| w[0] == "-c" && w[1] == pair) {
+                out.push(format!(
+                    "{who}: args -c {pair} repeats the {kind} harness default; delete the pair"
+                ));
+            }
+        } else if defaults.contains(&arg.as_str()) {
+            out.push(format!(
+                "{who}: args {arg} repeats the {kind} harness default; delete it"
+            ));
+        }
+    }
+    out
+}
+
+/// The leaves of `own` (inline JSON) that repeat a harness default.
+fn repeated_json_leaves(
+    who: &str,
+    kind: HarnessKind,
+    what: &str,
+    own: &serde_json::Map<String, serde_json::Value>,
+    defaults: &serde_json::Map<String, serde_json::Value>,
+) -> Vec<String> {
+    let mut paths = Vec::new();
+    json_leaves(defaults, "", &mut paths);
+    paths
+        .into_iter()
+        .filter(|(path, value)| json_leaf(own, path) == Some(value))
+        .map(|(path, _)| {
+            format!("{who}: {what} {path} repeats the {kind} harness default; delete it")
+        })
+        .collect()
+}
+
+/// The value at the dotted `path` below `obj`, if every step exists.
+fn json_leaf<'a>(
+    obj: &'a serde_json::Map<String, serde_json::Value>,
+    path: &str,
+) -> Option<&'a serde_json::Value> {
+    let parts: Vec<&str> = path.split('.').collect();
+    let (last, parents) = parts.split_last()?;
+    let mut node = obj;
+    for part in parents {
+        node = node.get(*part)?.as_object()?;
+    }
+    node.get(*last)
 }
 
 /// Every leaf of a JSON object as (dotted path, value).
@@ -1232,10 +1548,10 @@ fn json_leaves(
     }
 }
 
-/// What is wrong with one harness-default entry (check rule 3).
-fn harness_default_entry_problems(entry: &HarnessDefault) -> Vec<String> {
-    let mut out = Vec::new();
+/// Each harness-specific field is set only on the harness that owns it.
+fn field_owner_problems(entry: &HarnessDefault) -> Vec<String> {
     let kind = entry.harness;
+    let mut out = Vec::new();
     for (field, set, owner) in [
         ("settings", entry.settings.is_some(), HarnessKind::Claude),
         ("config", entry.config.is_some(), HarnessKind::OpenCode),
@@ -1249,10 +1565,13 @@ fn harness_default_entry_problems(entry: &HarnessDefault) -> Vec<String> {
             out.push(format!("{field} is only for harness {owner}"));
         }
     }
-    if entry.force.as_deref().is_some_and(|f| f.trim().is_empty()) {
-        out.push("force must give the reason and the decision that allowed it".into());
-    }
-    let mut args = entry.args.iter();
+    out
+}
+
+/// A harness default's `args` are `-c <key>=<value>` pairs and flags.
+fn args_problems(args: &[String]) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut args = args.iter();
     while let Some(arg) = args.next() {
         if arg == "-c" {
             match args.next() {
@@ -1265,7 +1584,13 @@ fn harness_default_entry_problems(entry: &HarnessDefault) -> Vec<String> {
             ));
         }
     }
-    for key in entry.env.keys() {
+    out
+}
+
+/// A harness default's `env` keys are allowed in a fleet launch.
+fn env_problems(kind: HarnessKind, env: &BTreeMap<String, String>) -> Vec<String> {
+    let mut out = Vec::new();
+    for key in env.keys() {
         if FORBIDDEN_ENV.contains(&key.as_str()) || key.starts_with("ANTHROPIC_") {
             out.push(format!("env {key} is forbidden in a fleet launch"));
         } else if kind != HarnessKind::Claude && !DEFAULT_ENV_YIELD.contains(&key.as_str()) {
@@ -1274,6 +1599,19 @@ fn harness_default_entry_problems(entry: &HarnessDefault) -> Vec<String> {
             ));
         }
     }
+    out
+}
+
+/// What is wrong with one harness-default entry (check rule 3).
+fn harness_default_entry_problems(entry: &HarnessDefault) -> Vec<String> {
+    let mut out = Vec::new();
+    let kind = entry.harness;
+    out.extend(field_owner_problems(entry));
+    if entry.force.as_deref().is_some_and(|f| f.trim().is_empty()) {
+        out.push("force must give the reason and the decision that allowed it".into());
+    }
+    out.extend(args_problems(&entry.args));
+    out.extend(env_problems(kind, &entry.env));
     let mut settings_paths = Vec::new();
     if let Some(settings) = &entry.settings {
         json_paths(settings, "", &mut settings_paths);
@@ -1349,39 +1687,53 @@ const CLAUDE_ONLY_TOOLS: [&str; 7] = [
 /// Section 13.3 rules 1-5, as `horch teammates --check` errors (BAL-02).
 pub fn fallback_problems(roster: &Roster) -> Vec<String> {
     let mut out = Vec::new();
-    for name in roster.names() {
-        let Some(t) = roster.get(name) else { continue };
+    for t in roster.teammates.values() {
         let pool = quota::pool_for(t.agent.as_str(), t.model.as_deref().unwrap_or_default());
         for fb in &t.fallbacks {
             let who = &t.name;
-            let Some(f) = roster.get(fb) else {
-                out.push(format!("{who}: fallback '{fb}' does not exist"));
-                continue;
-            };
-            if f.hidden {
-                out.push(format!("{who}: fallback '{fb}' is hidden"));
-            }
-            if let Err(e) = Roster::is_routable(f) {
-                out.push(format!("{who}: fallback '{fb}' is not spawnable: {e:#}"));
-            }
-            let fpool = quota::pool_for(f.agent.as_str(), f.model.as_deref().unwrap_or_default());
-            if fpool == pool {
-                out.push(format!(
-                    "{who}: fallback '{fb}' draws from the same pool ({pool}), so it cannot help"
-                ));
-            }
-            if trains_on_input(f) {
-                out.push(format!(
-                    "{who}: fallback '{fb}' trains on its input; free tiers are chosen by \
-                     the orchestrator, never automatically"
-                ));
-            }
-            let merged = merge(t, f);
-            for p in roster.check_teammate(&merged) {
-                out.push(format!("{who} via {fb}: {p}"));
+            match roster.get(fb) {
+                Some(f) => out.extend(fallback_pair_problems(roster, (t, f), fb, pool)),
+                None => out.push(format!("{who}: fallback '{fb}' does not exist")),
             }
         }
     }
+    out
+}
+
+/// What is wrong with fallback `f` (named `fb`) of teammate `t`.
+fn fallback_pair_problems(
+    roster: &Roster,
+    (t, f): (&Teammate, &Teammate),
+    fb: &str,
+    pool: &str,
+) -> Vec<String> {
+    let who = &t.name;
+    let mut out = Vec::new();
+    if f.hidden {
+        out.push(format!("{who}: fallback '{fb}' is hidden"));
+    }
+    if let Err(e) = Roster::is_routable(f) {
+        out.push(format!("{who}: fallback '{fb}' is not spawnable: {e:#}"));
+    }
+    let fpool = quota::pool_for(f.agent.as_str(), f.model.as_deref().unwrap_or_default());
+    if fpool == pool {
+        out.push(format!(
+            "{who}: fallback '{fb}' draws from the same pool ({pool}), so it cannot help"
+        ));
+    }
+    if trains_on_input(f) {
+        out.push(format!(
+            "{who}: fallback '{fb}' trains on its input; free tiers are chosen by \
+             the orchestrator, never automatically"
+        ));
+    }
+    let merged = merge(t, f);
+    out.extend(
+        roster
+            .check_teammate(&merged)
+            .into_iter()
+            .map(|p| format!("{who} via {fb}: {p}")),
+    );
     out
 }
 
@@ -1389,20 +1741,21 @@ pub fn fallback_problems(roster: &Roster) -> Vec<String> {
 /// on a fallback whose agent lacks it.
 pub fn fallback_warnings(roster: &Roster) -> Vec<String> {
     let mut out = Vec::new();
-    for name in roster.names() {
-        let Some(t) = roster.get(name) else { continue };
-        for fb in &t.fallbacks {
-            let Some(f) = roster.get(fb) else { continue };
-            if f.agent == HarnessKind::Claude {
-                continue;
-            }
-            for tool in CLAUDE_ONLY_TOOLS {
-                if names_tool(&t.persona, tool) {
-                    out.push(format!(
-                        "{}: the persona names the {tool} tool, which {} (fallback {fb}) lacks",
-                        t.name, f.agent
-                    ));
-                }
+    for t in roster.teammates.values() {
+        let fallbacks = t
+            .fallbacks
+            .iter()
+            .filter_map(|fb| Some((fb, roster.get(fb)?)))
+            .filter(|(_, f)| f.agent != HarnessKind::Claude);
+        for (fb, f) in fallbacks {
+            for tool in CLAUDE_ONLY_TOOLS
+                .iter()
+                .filter(|tool| names_tool(&t.persona, tool))
+            {
+                out.push(format!(
+                    "{}: the persona names the {tool} tool, which {} (fallback {fb}) lacks",
+                    t.name, f.agent
+                ));
             }
         }
     }
@@ -1414,22 +1767,28 @@ pub fn fallback_warnings(roster: &Roster) -> Vec<String> {
 /// its own copy with Xcode. A real problem with the field is an error in
 /// [`Roster::check`] instead.
 pub fn operator_skill_warnings(roster: &Roster) -> Vec<String> {
-    let mut out = Vec::new();
-    for name in roster.names() {
-        let Some(t) = roster.get(name) else { continue };
-        if t.operator_skills.is_none() {
-            continue;
-        }
-        let Ok(skills) = roster.skill_catalog().and_then(|c| {
-            SkillResolution::read(c, Some(t), roster.home.as_deref(), harness_support)
-        }) else {
-            continue;
-        };
-        for skipped in skills.catalog().skipped_operator() {
-            out.push(format!("{name}: {}", skipped.note()));
-        }
-    }
-    out
+    roster
+        .teammates
+        .values()
+        .filter(|t| t.operator_skills.is_some())
+        .filter_map(|t| {
+            let skills = roster
+                .skill_catalog()
+                .and_then(|c| {
+                    SkillResolution::read(c, Some(t), roster.home.as_deref(), harness_support)
+                })
+                .ok()?;
+            Some((t, skills))
+        })
+        .flat_map(|(t, skills)| {
+            skills
+                .catalog()
+                .skipped_operator()
+                .iter()
+                .map(|skipped| format!("{}: {}", t.name, skipped.note()))
+                .collect::<Vec<_>>()
+        })
+        .collect()
 }
 
 /// Whether `text` names `tool` as a tool: the name in backticks, or followed
@@ -1442,10 +1801,269 @@ pub(crate) fn names_tool(text: &str, tool: &str) -> bool {
 
 #[cfg(test)]
 mod spawnable_tests {
+    const EXPECTED_ENTRY: &str = "settings is only for harness claude\n\
+config is only for harness opencode\n\
+agent_settings is only for harness prime\n\
+force must give the reason and the decision that allowed it\n\
+args: -c needs a <key>=<value> after it\n\
+args: 'bare' is neither a -c <key>=<value> pair nor a flag\n\
+args: -c needs a <key>=<value> after it\n\
+env ANTHROPIC_FOO is forbidden in a fleet launch\n\
+env W3_NOT_YIELDED: add it to runtime::context::DEFAULT_ENV_YIELD\n\
+model_auto_compact_token_limit sets a compaction window; windows belong in _base/context-windows.md";
+    const EXPECTED_REPEATED: &str =
+        "opus: env W3_A repeats the claude harness default; delete the line\n\
+opus: args --f repeats the claude harness default; delete it\n\
+opus: args -c k=v repeats the claude harness default; delete the pair\n\
+opus: settings a.b repeats the claude harness default; delete it\n\
+opus: settings d repeats the claude harness default; delete it";
+    const EXPECTED_FALLBACK: &str = "w3-host: fallback 'nope' does not exist\n\
+w3-host: fallback 'opus' draws from the same pool (claude), so it cannot help\n\
+w3-host: fallback 'sonnet' draws from the same pool (claude), so it cannot help";
+    const EXPECTED_FALLBACK_WARN: &str = "godot-csharp-engineer: the persona names the Task tool, which codex (fallback codex-sol) lacks\n\
+w3-host: the persona names the Task tool, which codex (fallback codex-sol) lacks\n\
+w3-host: the persona names the WebFetch tool, which codex (fallback codex-sol) lacks";
+    const EXPECTED_BASES: &str = "_base/context-messages.md is missing\n\
+_base/w3-stray.md: windows belongs in _base/context-windows.md; delete it here\n\
+_base/w3-stray.md: in_place belongs in _base/context-windows.md; delete it here\n\
+_base/context-windows.md: in_place entry nonsense is not a harness name";
+    const EXPECTED_WINDOWS: &str = "_base/context-windows.md: windows key bogus is not <harness>/<teammate or model> with a harness name\n\
+_base/context-windows.md: windows key claude/ has no teammate or model name\n\
+_base/context-windows.md: windows codex/w3-tiny 10 leaves headroom 2 tokens, below the 20000 floor (native trigger 10, threshold 8)";
+    const EXPECTED_POLICY: &str = "_base/context-windows.md: windows key claude/w3-nobody names no teammate and no model of a teammate on claude\n\
+_base/context-windows.md: windows key codex/w3-tiny names no teammate and no model of a teammate on codex\n\
+_base/context-windows.md: windows key pi/w3-nobody names no teammate and no model of a teammate on pi";
+    const EXPECTED_MESSAGES: &str = "_base/context-messages.md: message request is missing\n\
+_base/context-messages.md: message resume has a newline; a newline submits the line early\n\
+_base/context-messages.md: message resume: unknown placeholder '{nope}' (known: handoff, log, post, pre, reason, role, step, threshold, tokens)\n\
+_base/context-messages.md: message warning is empty";
+    const EXPECTED_SKILLS_WHEN: &str = "w3-sw: skills_when '***' names unknown skill 'planning'\n\
+w3-sw: 'planning' is both in skills and in skills_when '***'\n\
+w3-sw: skills_when '*.rs' names unknown skill 'nosuch'\n\
+w3-sw: 'debug' is both in skills_when '*.rs' and in disabled_skills\n\
+w3-sw: skill 'skill-creator' belongs to the orchestrator only\n\
+w3-sw: skills_when 'empty' names no skill";
+    const EXPECTED_W3_PROBE: &str = "teammate 'w3-probe': unknown bundled skill 'planning'\n\
+teammate 'w3-probe': unknown bundled skill 'planning'\n\
+w3-probe: 'planning' is both in skills and in available_skills\n\
+w3-probe: brief_description is empty\n\
+w3-probe: base 'no-such-base' does not exist in _base/\n\
+w3-probe: agent is claude but no model is set\n\
+w3-probe: effort 'extreme' is not a claude level (expected one of: low, medium, high, xhigh, max)\n\
+w3-probe: a fleet pane must not spawn subagents; add disallowed_tools: [Agent] or set allow_subagents: true\n\
+w3-probe: remote_control belongs to the orchestrator only\n\
+w3-probe: worker_channel belongs to the orchestrator only\n\
+w3-probe: permission_mode is 'plan' but 'tools' does not include ExitPlanMode, so it can never leave plan mode\n\
+w3-probe: disable_skills turns off ALL skills, including the ones plugin_dirs loads - the plugins would be dead weight\n\
+w3-probe: disable_skills already turns off ALL skills, so the disabled_skills list does nothing\n\
+w3-probe: disabled_skills has a blank entry\n\
+w3-probe: trains_on_input is set but its base has no trains_on_input block to render, so the worker would never be told\n\
+w3-probe: declares skills or phase but also disable_skills\n\
+w3-probe: args ends with '--tools', a variadic flag that would swallow the prompt; put it earlier or use the dedicated field\n\
+w3-probe: plugin_dir '/no/such/plugin-dir' does not exist\n\
+w3-probe: mcp_config_files entry '/no/such/mcp.json' does not exist";
+    const EXPECTED_W3_AGY: &str = "teammate 'w3-agy': selected skills cannot load with disabled skills or no agent\n\
+w3-agy: 'allowed_tools' is not something antigravity can express; use args, or move this work to a claude teammate\n\
+w3-agy: 'disabled_skills' is not something antigravity can express; use args, or move this work to a claude teammate\n\
+w3-agy: 'disallowed_tools' is not something antigravity can express; use args, or move this work to a claude teammate\n\
+w3-agy: env must not set GEMINI_API_KEY; antigravity uses the Google login\n\
+w3-agy: antigravity model 'gemini-3.8-flash' needs an effort; a bare model id takes agy's default effort, which can change between CLI versions (set effort: low, medium or high)";
+    const EXPECTED_W3_CODEX: &str = "w3-codex: a codex teammate must set effort; without it the pane inherits model_reasoning_effort from ~/.codex/config.toml\n\
+w3-codex: 'allowed_tools' is not something codex can express; use args, or move this work to a claude teammate\n\
+w3-codex: 'disabled_skills' is not something codex can express; use args, or move this work to a claude teammate\n\
+w3-codex: 'disallowed_tools' is not something codex can express; use args, or move this work to a claude teammate\n\
+w3-codex: sandbox is Claude only; agent codex cannot honour it";
+
     use super::super::operator::effort_override_warnings;
     use super::super::parser::parse_teammate;
     use super::super::Phase;
     use super::*;
+
+    /// One teammate that breaks rules from every family at once. The exact
+    /// list pins the text and the order of the problems.
+    #[test]
+    fn w3_check_teammate_reports_every_family_in_a_fixed_order() {
+        let r = Roster::builtin().unwrap();
+        let mut t = r.require("opus").unwrap().clone();
+        t.name = "w3-probe".into();
+        t.hidden = false;
+        t.brief_description = String::new();
+        t.base = Some("no-such-base".into());
+        t.offer_when = vec!["***".into()];
+        t.model = None;
+        t.effort = Some("extreme".into());
+        t.skills = vec!["planning".into()];
+        t.available_skills = vec!["planning".into()];
+        t.disable_skills = true;
+        t.disabled_skills = vec![" ".into()];
+        t.plugin_dirs = vec!["/no/such/plugin-dir".into()];
+        t.mcp_config_files = vec!["/no/such/mcp.json".into()];
+        t.args = vec!["--tools".into()];
+        t.allow_subagents = false;
+        t.disallowed_tools.clear();
+        t.worker_channel = true;
+        t.remote_control = true;
+        t.trains_on_input = true;
+        t.setting_sources = Some(vec![]);
+        t.sandbox = None;
+        t.permission_mode = Some(PermissionMode::Plan);
+        t.tools = Some(vec!["Read".into()]);
+        let got = r.check_teammate(&t);
+        let expected: Vec<&str> = EXPECTED_W3_PROBE.lines().collect();
+        assert_eq!(got, expected, "{got:#?}");
+
+        // The agent-specific families: antigravity env and effort, a codex
+        // teammate without effort, prime's `tools`.
+        let mut agy = r.require("opus").unwrap().clone();
+        agy.name = "w3-agy".into();
+        agy.hidden = false;
+        agy.agent = HarnessKind::Antigravity;
+        agy.model = Some("gemini-3.8-flash".into());
+        agy.effort = None;
+        agy.env.insert("GEMINI_API_KEY".into(), "x".into());
+        let got = r.check_teammate(&agy);
+        let expected: Vec<&str> = EXPECTED_W3_AGY.lines().collect();
+        assert_eq!(got, expected, "{got:#?}");
+        let mut codex = r.require("opus").unwrap().clone();
+        codex.name = "w3-codex".into();
+        codex.hidden = false;
+        codex.agent = HarnessKind::Codex;
+        codex.model = Some("gpt-5.6-sol".into());
+        codex.effort = None;
+        codex.sandbox = Some(Default::default());
+        codex.permission_mode = Some(PermissionMode::AcceptEdits);
+        let got = r.check_teammate(&codex);
+        let expected: Vec<&str> = EXPECTED_W3_CODEX.lines().collect();
+        assert_eq!(got, expected, "{got:#?}");
+    }
+
+    /// The text and order of the problems of the rule families the other
+    /// tests do not reach. The expected lists were taken from the code before
+    /// it was split into helpers.
+    #[test]
+    fn w3_rule_families_keep_their_text_and_order() {
+        let pin = |name: &str, got: Vec<String>, expected: &str| {
+            let expected: Vec<&str> = expected.lines().collect();
+            assert_eq!(got, expected, "{name}: {got:#?}");
+        };
+        let r = Roster::builtin().unwrap();
+
+        // Harness default entries: owner, force, args, env, window key.
+        let entry = HarnessDefault {
+            harness: HarnessKind::Codex,
+            base: None,
+            env: [
+                ("ANTHROPIC_FOO".to_string(), "1".to_string()),
+                ("W3_NOT_YIELDED".to_string(), "1".to_string()),
+            ]
+            .into(),
+            args: [
+                "-c",
+                "nokey",
+                "bare",
+                "--flag",
+                "-c",
+                "model_auto_compact_token_limit=5",
+                "-c",
+            ]
+            .map(String::from)
+            .to_vec(),
+            settings: Some(serde_json::Map::new()),
+            config: Some(serde_json::Map::new()),
+            agent_settings: Some(serde_json::Map::new()),
+            force: Some(" ".into()),
+        };
+        pin(
+            "ENTRY",
+            harness_default_entry_problems(&entry),
+            EXPECTED_ENTRY,
+        );
+
+        // A teammate that repeats its harness defaults.
+        let default = HarnessDefault {
+            harness: HarnessKind::Claude,
+            base: None,
+            env: [("W3_A".to_string(), "1".to_string())].into(),
+            args: ["-c", "k=v", "--f"].map(String::from).to_vec(),
+            settings: serde_json::from_str(r#"{"a":{"b":1},"c":2,"d":{}}"#).ok(),
+            config: None,
+            agent_settings: None,
+            force: None,
+        };
+        let mut t = r.require("opus").unwrap().clone();
+        t.harness_defaults = vec![default];
+        t.env.insert("W3_A".into(), "1".into());
+        t.env.insert("W3_B".into(), "2".into());
+        t.args = ["--f", "-c", "k=v", "-c", "other=1", "-c"]
+            .map(String::from)
+            .to_vec();
+        t.settings = Some(r#"{"a":{"b":1},"c":3,"d":{}}"#.into());
+        pin("REPEATED", repeated_defaults(&t), EXPECTED_REPEATED);
+
+        // Fallbacks: missing, hidden, same pool; persona names a Claude tool.
+        let mut r2 = r.clone();
+        let mut host = r2.require("opus").unwrap().clone();
+        host.name = "w3-host".into();
+        host.persona = "Use the Task tool and the WebFetch tool.".into();
+        host.fallbacks = ["nope", "opus", "sonnet", "codex-sol"]
+            .map(String::from)
+            .to_vec();
+        r2.teammates.insert("w3-host".into(), host);
+        pin("FALLBACK", fallback_problems(&r2), EXPECTED_FALLBACK);
+        pin(
+            "FALLBACK_WARN",
+            fallback_warnings(&r2),
+            EXPECTED_FALLBACK_WARN,
+        );
+
+        // Context bases and windows keys.
+        let mut r3 = r.clone();
+        r3.bases.remove(CONTEXT_MESSAGES_BASE);
+        let windows = r3.bases.get_mut(CONTEXT_WINDOWS_BASE).unwrap();
+        windows.in_place = Some(vec!["nonsense".into(), "pi".into()]);
+        windows.windows.as_mut().unwrap().extend([
+            ("bogus".to_string(), 1),
+            ("claude/".to_string(), 1),
+            ("claude/w3-nobody".to_string(), 500_000),
+            ("pi/w3-nobody".to_string(), 500_000),
+            ("codex/w3-tiny".to_string(), 10),
+        ]);
+        let mut stray = r3.bases.get(CONTEXT_WINDOWS_BASE).unwrap().clone();
+        stray.name = "w3-stray".into();
+        r3.bases.insert("w3-stray".into(), stray);
+        pin("BASES", r3.context_base_problems(), EXPECTED_BASES);
+        pin("WINDOWS", r3.windows_key_problems(), EXPECTED_WINDOWS);
+        pin("POLICY", context_policy_warnings(&r3), EXPECTED_POLICY);
+
+        let mut r4 = r.clone();
+        let messages = r4.bases.get_mut(CONTEXT_MESSAGES_BASE).unwrap();
+        messages.messages.remove("request");
+        messages.messages.insert("warning".into(), " ".into());
+        messages
+            .messages
+            .insert("resume".into(), "two\nlines {nope}".into());
+        pin("MESSAGES", r4.context_base_problems(), EXPECTED_MESSAGES);
+
+        // skills_when: bad pattern, empty list, unknown, kept, disabled, orchestrator-only.
+        let mut t = r.require("opus").unwrap().clone();
+        t.name = "w3-sw".into();
+        t.skills = vec!["planning".into()];
+        t.disabled_skills = vec!["horch:debug".into()];
+        t.skills_when = [
+            ("***".to_string(), vec!["planning".to_string()]),
+            ("empty".to_string(), vec![]),
+            (
+                "*.rs".to_string(),
+                vec!["nosuch".into(), "debug".into(), "skill-creator".into()],
+            ),
+        ]
+        .into();
+        pin(
+            "SKILLS_WHEN",
+            r.skills_when_problems(&t),
+            EXPECTED_SKILLS_WHEN,
+        );
+    }
 
     #[test]
     fn phases_round_trip_and_legacy_teammates_have_no_phase() {

@@ -7,6 +7,8 @@
 
 mod cmd;
 
+use std::process::ExitCode;
+
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 use horch::{bootstrap, exit, output};
@@ -34,6 +36,30 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    #[command(flatten)]
+    Launch(LaunchCommand),
+
+    #[command(flatten)]
+    Messaging(MessagingCommand),
+
+    #[command(flatten)]
+    Session(SessionCommand),
+
+    #[command(flatten)]
+    Project(ProjectCommand),
+
+    #[command(flatten)]
+    Measure(MeasureCommand),
+
+    #[command(flatten)]
+    Grid(GridCommand),
+
+    #[command(flatten)]
+    Tool(ToolCommand),
+}
+
+#[derive(Subcommand)]
+enum LaunchCommand {
     /// Run the worker-report channel relay.
     #[command(hide = true)]
     Channel {
@@ -99,7 +125,10 @@ enum Command {
         #[arg(value_name = "NAME", value_parser = clap::builder::PossibleValuesParser::new(cmd::update::NAMES))]
         names: Vec<String>,
     },
+}
 
+#[derive(Subcommand)]
+enum MessagingCommand {
     /// Send a message into another pane's terminal.
     Tell {
         /// Registered role to deliver to, e.g. orchestrator or sonnet-1.
@@ -141,7 +170,10 @@ enum Command {
         #[arg(required = true, trailing_var_arg = true)]
         text: Vec<String>,
     },
+}
 
+#[derive(Subcommand)]
+enum SessionCommand {
     /// Show the context of each live session of this project, with its
     /// threshold and its state. The orchestrator is first.
     Context {
@@ -210,7 +242,10 @@ enum Command {
         #[arg(required = true, trailing_var_arg = true)]
         summary: Vec<String>,
     },
+}
 
+#[derive(Subcommand)]
+enum ProjectCommand {
     /// Create, land, or inspect worker worktrees.
     Worktree {
         #[command(subcommand)]
@@ -347,7 +382,10 @@ enum Command {
         #[arg(long = "run", value_name = "RUN")]
         run: Option<String>,
     },
+}
 
+#[derive(Subcommand)]
+enum MeasureCommand {
     /// Where the tokens went: every pane on this machine, from the telemetry
     /// event store. Runs one collector tick first when no collector is live.
     Usage {
@@ -407,7 +445,12 @@ enum Command {
         #[arg(long, value_name = "DIR", hide = true, global = true)]
         state_dir: Option<String>,
     },
+}
 
+#[derive(Subcommand)]
+// Parsed once per process, so the size of the ledger variant costs nothing.
+#[allow(clippy::large_enum_variant)]
+enum GridCommand {
     /// Report the worker grid of every tab in the workspace.
     Layout {
         #[arg(long, value_name = "ID")]
@@ -480,7 +523,10 @@ enum Command {
         #[command(subcommand)]
         command: cmd::marketplacecmd::MarketplaceCommand,
     },
+}
 
+#[derive(Subcommand)]
+enum ToolCommand {
     /// Check that herdr is installed and its server is reachable.
     Doctor,
 
@@ -697,42 +743,14 @@ fn run() -> Result<std::process::ExitCode> {
     // The one read of the process environment. Every command takes its
     // values from this context.
     let mut ctx = bootstrap::context()?;
-    match &cli.command {
-        Command::Doctor => cmd::selfupdate::doctor_warning(&ctx),
-        Command::Spawn { .. } | Command::Inbox { .. } => cmd::selfupdate::stale_warning(&ctx),
-        _ => {}
-    }
+    cli.command.warn_stale(&ctx);
     // A pane that herdr resumed after a restart has no HORCH_ROLE (#125).
-    if matches!(
-        &cli.command,
-        Command::Tell { .. }
-            | Command::Inbox { .. }
-            | Command::Note { .. }
-            | Command::Done { .. }
-            | Command::Ledger { .. }
-    ) {
+    if cli.command.adopts_identity() {
         cmd::restore::adopt_restored_identity(&mut ctx);
     }
-    let remind = !matches!(
-        &cli.command,
-        Command::Channel { .. }
-            | Command::Mail { .. }
-            | Command::Worker { .. }
-            | Command::Tile { .. }
-            | Command::Balance { .. }
-            | Command::Inbox { roles: false, .. }
-    );
-    // `install` restarts a watchdog on the binary it installed; `ensure`
-    // would move it back onto the binary that ran `install` (#216).
-    let watched = !matches!(
-        &cli.command,
-        Command::Worker { .. }
-            | Command::Install { .. }
-            | Command::Ledger {
-                command: cmd::taskledger::LedgerCommand::Watch { .. }
-            }
-    );
-    let result = dispatch(&mut ctx, cli.command);
+    let remind = cli.command.reminds();
+    let watched = cli.command.watched();
+    let result = cli.command.dispatch(&mut ctx);
     if remind {
         cmd::messaging::remind_pending(&ctx);
     }
@@ -743,65 +761,134 @@ fn run() -> Result<std::process::ExitCode> {
     result
 }
 
-fn dispatch(
-    ctx: &mut horch_core::runtime::RuntimeContext,
-    command: Command,
-) -> Result<std::process::ExitCode> {
-    match command {
-        Command::Channel { command } => match command {
-            ChannelSubcommand::Serve { agent } => cmd::channel::serve(ctx, agent)?,
-        },
-        Command::Mail { command } => match command {
-            MailSubcommand::Courier { workspace } => cmd::mail::courier(ctx, &workspace)?,
-        },
-        Command::Fleet {
-            cwd,
-            flavor,
-            no_update,
-            resume,
-        } => cmd::recipes::fleet_with(
-            ctx,
-            cwd.as_deref(),
-            flavor,
-            &cmd::recipes::FleetOptions {
+type Ctx = horch_core::runtime::RuntimeContext;
+
+/// A handler that returns no exit code succeeds when it returns.
+fn done(r: Result<()>) -> Result<ExitCode> {
+    r.map(|()| ExitCode::SUCCESS)
+}
+
+impl Command {
+    fn dispatch(self, ctx: &mut Ctx) -> Result<ExitCode> {
+        match self {
+            Command::Launch(c) => c.dispatch(ctx),
+            Command::Messaging(c) => c.dispatch(ctx),
+            Command::Session(c) => c.dispatch(ctx),
+            Command::Project(c) => c.dispatch(ctx),
+            Command::Measure(c) => c.dispatch(ctx),
+            Command::Grid(c) => c.dispatch(ctx),
+            Command::Tool(c) => c.dispatch(ctx),
+        }
+    }
+
+    /// `doctor` and `spawn` warn when the installed horch is stale.
+    fn warn_stale(&self, ctx: &Ctx) {
+        match self {
+            Command::Tool(ToolCommand::Doctor) => cmd::selfupdate::doctor_warning(ctx),
+            Command::Project(ProjectCommand::Spawn { .. })
+            | Command::Messaging(MessagingCommand::Inbox { .. }) => {
+                cmd::selfupdate::stale_warning(ctx)
+            }
+            _ => {}
+        }
+    }
+
+    fn adopts_identity(&self) -> bool {
+        matches!(
+            self,
+            Command::Messaging(
+                MessagingCommand::Tell { .. }
+                    | MessagingCommand::Inbox { .. }
+                    | MessagingCommand::Note { .. }
+            ) | Command::Session(SessionCommand::Done { .. })
+                | Command::Grid(GridCommand::Ledger { .. })
+        )
+    }
+
+    fn reminds(&self) -> bool {
+        !matches!(
+            self,
+            Command::Launch(LaunchCommand::Channel { .. } | LaunchCommand::Mail { .. })
+                | Command::Tool(ToolCommand::Worker { .. })
+                | Command::Grid(GridCommand::Tile { .. } | GridCommand::Balance { .. })
+                | Command::Messaging(MessagingCommand::Inbox { roles: false, .. })
+        )
+    }
+
+    /// `install` restarts a watchdog on the binary it installed; `ensure`
+    /// would move it back onto the binary that ran `install` (#216).
+    fn watched(&self) -> bool {
+        !matches!(
+            self,
+            Command::Tool(ToolCommand::Worker { .. } | ToolCommand::Install { .. })
+                | Command::Grid(GridCommand::Ledger {
+                    command: cmd::taskledger::LedgerCommand::Watch { .. }
+                })
+        )
+    }
+}
+
+impl LaunchCommand {
+    fn dispatch(self, ctx: &mut Ctx) -> Result<ExitCode> {
+        match self {
+            LaunchCommand::Channel { command } => match command {
+                ChannelSubcommand::Serve { agent } => done(cmd::channel::serve(ctx, agent)),
+            },
+            LaunchCommand::Mail { command } => match command {
+                MailSubcommand::Courier { workspace } => done(cmd::mail::courier(ctx, &workspace)),
+            },
+            LaunchCommand::Fleet {
+                cwd,
+                flavor,
                 no_update,
                 resume,
-                ..Default::default()
-            },
-        )?,
-        Command::Orchestration { cwd, no_update } => {
-            cmd::recipes::orchestration(ctx, cwd.as_deref(), no_update)?
-        }
-        Command::Update { names } => return cmd::update::update(ctx, &names),
-        Command::Tell { role, message } => cmd::messaging::tell(ctx, &role, &joined(&message))?,
-        Command::Inbox { roles, peek } => cmd::messaging::inbox(ctx, roles, peek)?,
-        Command::Peek { role, lines } => cmd::messaging::peek(ctx, &role, lines)?,
-        Command::Assign { role, task } => cmd::messaging::assign(ctx, &role, &joined(&task))?,
-        Command::Note { text, fact } => {
-            if fact {
-                let added = horch_core::project_notes::record(
-                    &ctx.paths.state_root,
-                    &ctx.paths.project()?,
-                    &joined(&text),
-                )?;
-                output::println(if added {
-                    "Project fact recorded."
-                } else {
-                    "Project fact already recorded."
-                });
-            } else {
-                cmd::messaging::note(ctx, &joined(&text))?;
+            } => done(cmd::recipes::fleet_with(
+                ctx,
+                cwd.as_deref(),
+                flavor,
+                &cmd::recipes::FleetOptions {
+                    no_update,
+                    resume,
+                    ..Default::default()
+                },
+            )),
+            LaunchCommand::Orchestration { cwd, no_update } => {
+                done(cmd::recipes::orchestration(ctx, cwd.as_deref(), no_update))
             }
+            LaunchCommand::Update { names } => cmd::update::update(ctx, &names),
         }
-        Command::Context {
-            over,
-            windows,
-            json,
-            all_workspaces,
-            live,
-            role,
-        } => {
-            return cmd::context::context_filtered(
+    }
+}
+
+impl MessagingCommand {
+    fn dispatch(self, ctx: &mut Ctx) -> Result<ExitCode> {
+        match self {
+            MessagingCommand::Tell { role, message } => {
+                done(cmd::messaging::tell(ctx, &role, &joined(&message)))
+            }
+            MessagingCommand::Inbox { roles, peek } => {
+                done(cmd::messaging::inbox(ctx, roles, peek))
+            }
+            MessagingCommand::Peek { role, lines } => done(cmd::messaging::peek(ctx, &role, lines)),
+            MessagingCommand::Assign { role, task } => {
+                done(cmd::messaging::assign(ctx, &role, &joined(&task)))
+            }
+            MessagingCommand::Note { text, fact } => done(note_command(ctx, &joined(&text), fact)),
+        }
+    }
+}
+
+impl SessionCommand {
+    fn dispatch(self, ctx: &mut Ctx) -> Result<ExitCode> {
+        match self {
+            SessionCommand::Context {
+                over,
+                windows,
+                json,
+                all_workspaces,
+                live,
+                role,
+            } => cmd::context::context_filtered(
                 ctx,
                 over,
                 windows,
@@ -809,16 +896,14 @@ fn dispatch(
                 all_workspaces,
                 live,
                 role.as_deref(),
-            )
-        }
-        Command::Compact {
-            role,
-            request,
-            force,
-            foreground,
-            timeout,
-        } => {
-            return cmd::compact::compact(
+            ),
+            SessionCommand::Compact {
+                role,
+                request,
+                force,
+                foreground,
+                timeout,
+            } => cmd::compact::compact(
                 ctx,
                 &cmd::compact::CompactArgs {
                     role,
@@ -827,78 +912,84 @@ fn dispatch(
                     foreground,
                     timeout,
                 },
-            )
+            ),
+            SessionCommand::Mode {
+                role,
+                mode,
+                timeout,
+            } => mode_command(ctx, role, &mode, timeout),
+            SessionCommand::Done { summary, unlanded } => {
+                done(done_command(ctx, &joined(&summary), unlanded.as_deref()))
+            }
         }
-        Command::Mode {
-            role,
-            mode,
-            timeout,
-        } => {
-            let mode = horch_core::harness::codex::PaneMode::parse(&mode)
-                .ok_or_else(|| anyhow::anyhow!("mode is write or plan"))?;
-            return cmd::mode::mode(
+    }
+}
+
+impl ProjectCommand {
+    fn dispatch(self, ctx: &mut Ctx) -> Result<ExitCode> {
+        match self {
+            ProjectCommand::Worktree { command } => done(worktree_command(ctx, command)),
+            ProjectCommand::Sessions {
+                json,
+                all,
+                all_workspaces,
+                live,
+                role,
+            } => done(cmd::ledgercmd::sessions_filtered(
                 ctx,
-                &cmd::mode::ModeArgs {
-                    role,
-                    mode,
-                    timeout,
+                json,
+                all,
+                all_workspaces,
+                live,
+                role.as_deref(),
+            )),
+            ProjectCommand::Teammates {
+                json,
+                check,
+                matrix,
+                new,
+                dir,
+            } => teammates_command(ctx, json, check, matrix, new.as_deref(), dir.as_deref()),
+            ProjectCommand::Cost {
+                json: _,
+                text,
+                dir,
+                reprice,
+                pricing,
+                since,
+                records,
+                sessions,
+            } => done(cmd::cost::cost(
+                ctx,
+                cmd::cost::CostArgs {
+                    text,
+                    dir,
+                    reprice,
+                    pricing,
+                    since,
+                    records,
+                    sessions,
                 },
-            );
-        }
-        Command::Done { summary, unlanded } => {
-            if cmd::taskledger::is_ledger_worker(ctx) {
-                let store = horch_core::taskledger::open(ctx)?;
-                cmd::taskledger::done_cmd(ctx, store, &joined(&summary), unlanded.as_deref())?
-            } else {
-                cmd::messaging::done(ctx, &joined(&summary), unlanded.as_deref())?
-            }
-        }
-        Command::Worktree { command } => match command {
-            WorktreeSubcommand::New { name } => cmd::worktree::new(ctx, &name)?,
-            WorktreeSubcommand::Land { name, check } => {
-                cmd::worktree::land(ctx, name.as_deref(), check.as_deref())?
-            }
-            WorktreeSubcommand::List => cmd::worktree::list(ctx)?,
-        },
-        Command::Sessions {
-            json,
-            all,
-            all_workspaces,
-            live,
-            role,
-        } => cmd::ledgercmd::sessions_filtered(
-            ctx,
-            json,
-            all,
-            all_workspaces,
-            live,
-            role.as_deref(),
-        )?,
-        Command::Skills {
-            command,
-            phase,
-            json,
-        } => return cmd::skillscmd::run(ctx, command, phase, json),
-        Command::Spawn {
-            args,
-            resume,
-            phase,
-            effort,
-            role,
-            from_pane,
-            direction,
-            untiled,
-            exact,
-            force,
-            replaces,
-            run,
-        } => {
-            let (teammate, task) = cmd::spawn::resolve_positionals(&args, resume.as_deref())?;
-            let pane = cmd::spawn::spawn(
+            )),
+            ProjectCommand::Spawn {
+                args,
+                resume,
+                phase,
+                effort,
+                role,
+                from_pane,
+                direction,
+                untiled,
+                exact,
+                force,
+                replaces,
+                run,
+            } => done(spawn_command(
                 ctx,
+                &args,
                 cmd::spawn::SpawnArgs {
-                    teammate,
-                    task,
+                    teammate: None,
+                    task: String::new(),
                     resume,
                     phase,
                     effort,
@@ -911,141 +1002,110 @@ fn dispatch(
                     replaces,
                     run,
                 },
-            )?;
-            output::println(&pane);
+            )),
         }
-        Command::Usage {
-            json,
-            since,
-            project,
-            by,
-            window,
-        } => cmd::usagecmd::usage(
-            ctx,
-            cmd::usagecmd::UsageArgs {
+    }
+}
+
+impl MeasureCommand {
+    fn dispatch(self, ctx: &mut Ctx) -> Result<ExitCode> {
+        match self {
+            MeasureCommand::Usage {
                 json,
                 since,
                 project,
                 by,
                 window,
-            },
-        )?,
-        Command::AgentList { json, no_probe } => cmd::agentlist::agent_list(ctx, json, no_probe)?,
-        Command::Quota { json, refresh } => cmd::quotacmd::quota(ctx, json, refresh)?,
-        Command::Route {
-            teammate,
-            json,
-            exact,
-            force,
-        } => return cmd::route::route(ctx, &teammate, json, exact, force),
-        Command::Telemetry { command, state_dir } => {
-            if let Some(dir) = state_dir {
-                ctx.paths.set_state_dir(dir);
-            }
-            use cmd::telemetry::TelemetryCommand as T;
-            let command = match command {
-                None => T::Run,
-                Some(TelemetrySub::Ensure) => T::Ensure,
-                Some(TelemetrySub::Collect { once }) => {
-                    if !once {
-                        anyhow::bail!(
-                            "`horch telemetry collect` needs --once; the long-running \
-                             collector is plain `horch telemetry`"
-                        );
-                    }
-                    T::CollectOnce
-                }
-                Some(TelemetrySub::Render {
-                    snapshot,
-                    size,
-                    group,
-                    window,
-                }) => T::Render {
-                    snapshot,
-                    size,
-                    group,
+            } => done(cmd::usagecmd::usage(
+                ctx,
+                cmd::usagecmd::UsageArgs {
+                    json,
+                    since,
+                    project,
+                    by,
                     window,
                 },
-            };
-            return cmd::telemetry::run(ctx, command);
-        }
-        Command::Cost {
-            json: _,
-            text,
-            dir,
-            reprice,
-            pricing,
-            since,
-            records,
-            sessions,
-        } => cmd::cost::cost(
-            ctx,
-            cmd::cost::CostArgs {
-                text,
-                dir,
-                reprice,
-                pricing,
-                since,
-                records,
-                sessions,
-            },
-        )?,
-        Command::Teammates {
-            json,
-            check,
-            matrix,
-            new,
-            dir,
-        } => {
-            if let Some(name) = new {
-                cmd::teammatescmd::new(ctx, &name, dir.as_deref())?;
-            } else if matrix {
-                cmd::teammatescmd::matrix(ctx, json)?;
-            } else if check {
-                return cmd::teammatescmd::check(ctx);
-            } else {
-                cmd::teammatescmd::list(ctx, json)?;
+            )),
+            MeasureCommand::AgentList { json, no_probe } => {
+                done(cmd::agentlist::agent_list(ctx, json, no_probe))
+            }
+            MeasureCommand::Quota { json, refresh } => {
+                done(cmd::quotacmd::quota(ctx, json, refresh))
+            }
+            MeasureCommand::Route {
+                teammate,
+                json,
+                exact,
+                force,
+            } => cmd::route::route(ctx, &teammate, json, exact, force),
+            MeasureCommand::Telemetry { command, state_dir } => {
+                telemetry_command(ctx, command, state_dir)
             }
         }
-        Command::Layout { pane, workspace } => {
-            cmd::layoutcmd::layout(ctx, pane.as_deref(), workspace.as_deref())?
+    }
+}
+
+impl GridCommand {
+    fn dispatch(self, ctx: &mut Ctx) -> Result<ExitCode> {
+        match self {
+            GridCommand::Layout { pane, workspace } => done(cmd::layoutcmd::layout(
+                ctx,
+                pane.as_deref(),
+                workspace.as_deref(),
+            )),
+            GridCommand::Tile {
+                plan,
+                pane,
+                workspace,
+                settle_ms,
+            } => done(cmd::tilecmd::tile(
+                ctx,
+                pane.as_deref(),
+                workspace.as_deref(),
+                plan,
+                settle_ms,
+            )),
+            GridCommand::Balance {
+                pane,
+                workspace,
+                dry_run,
+                settle_ms,
+            } => done(cmd::balancecmd::balance(
+                ctx,
+                pane.as_deref(),
+                workspace.as_deref(),
+                dry_run,
+                settle_ms,
+            )),
+            GridCommand::Ledger { command } => cmd::taskledger::run(ctx, command),
+            GridCommand::Skills {
+                command,
+                phase,
+                json,
+            } => cmd::skillscmd::run(ctx, command, phase, json),
+            GridCommand::Marketplace { command } => cmd::marketplacecmd::run(ctx, command),
         }
-        Command::Tile {
-            plan,
-            pane,
-            workspace,
-            settle_ms,
-        } => cmd::tilecmd::tile(ctx, pane.as_deref(), workspace.as_deref(), plan, settle_ms)?,
-        Command::Balance {
-            pane,
-            workspace,
-            dry_run,
-            settle_ms,
-        } => cmd::balancecmd::balance(
-            ctx,
-            pane.as_deref(),
-            workspace.as_deref(),
-            dry_run,
-            settle_ms,
-        )?,
-        Command::Ledger { command } => return cmd::taskledger::run(ctx, command),
-        Command::Marketplace { command } => return cmd::marketplacecmd::run(ctx, command),
-        Command::Doctor => cmd::doctor::doctor(ctx)?,
-        Command::Install { dir } => cmd::install::install(ctx, dir.as_deref())?,
-        Command::SelfUpdate { check } => return cmd::selfupdate::self_update(ctx, check),
-        Command::Smoke { command } => return cmd::smoke::run(ctx, command),
-        Command::Worker { role } => return cmd::worker::worker(ctx, &role),
-        Command::PaneLaunch {
-            role,
-            kind,
-            model,
-            teammates_dir,
-            record_id,
-            session_id,
-            resume,
-            state_dir,
-        } => {
-            return cmd::recipes::pane_launch(
+    }
+}
+
+impl ToolCommand {
+    fn dispatch(self, ctx: &mut Ctx) -> Result<ExitCode> {
+        match self {
+            ToolCommand::Doctor => done(cmd::doctor::doctor(ctx)),
+            ToolCommand::Install { dir } => done(cmd::install::install(ctx, dir.as_deref())),
+            ToolCommand::SelfUpdate { check } => cmd::selfupdate::self_update(ctx, check),
+            ToolCommand::Smoke { command } => cmd::smoke::run(ctx, command),
+            ToolCommand::Worker { role } => cmd::worker::worker(ctx, &role),
+            ToolCommand::PaneLaunch {
+                role,
+                kind,
+                model,
+                teammates_dir,
+                record_id,
+                session_id,
+                resume,
+                state_dir,
+            } => cmd::recipes::pane_launch(
                 ctx,
                 &role,
                 kind,
@@ -1057,11 +1117,121 @@ fn dispatch(
                     resume,
                     state_dir,
                 },
-            )
+            ),
+            ToolCommand::Register { role } => done(cmd::messaging::register(ctx, &role)),
         }
-        Command::Register { role } => cmd::messaging::register(ctx, &role)?,
     }
-    Ok(std::process::ExitCode::SUCCESS)
+}
+
+/// `horch note`: a note on the worker's record, or a project fact.
+fn note_command(ctx: &mut Ctx, text: &str, fact: bool) -> Result<()> {
+    if !fact {
+        return cmd::messaging::note(ctx, text);
+    }
+    let added =
+        horch_core::project_notes::record(&ctx.paths.state_root, &ctx.paths.project()?, text)?;
+    output::println(if added {
+        "Project fact recorded."
+    } else {
+        "Project fact already recorded."
+    });
+    Ok(())
+}
+
+fn mode_command(ctx: &mut Ctx, role: String, mode: &str, timeout: Option<u64>) -> Result<ExitCode> {
+    let mode = horch_core::harness::codex::PaneMode::parse(mode)
+        .ok_or_else(|| anyhow::anyhow!("mode is write or plan"))?;
+    cmd::mode::mode(
+        ctx,
+        &cmd::mode::ModeArgs {
+            role,
+            mode,
+            timeout,
+        },
+    )
+}
+
+/// `horch done`: the task ledger finishes a ledger worker, the mailbox the rest.
+fn done_command(ctx: &mut Ctx, summary: &str, unlanded: Option<&str>) -> Result<()> {
+    if cmd::taskledger::is_ledger_worker(ctx) {
+        let store = horch_core::taskledger::open(ctx)?;
+        cmd::taskledger::done_cmd(ctx, store, summary, unlanded)
+    } else {
+        cmd::messaging::done(ctx, summary, unlanded)
+    }
+}
+
+fn worktree_command(ctx: &mut Ctx, command: WorktreeSubcommand) -> Result<()> {
+    match command {
+        WorktreeSubcommand::New { name } => cmd::worktree::new(ctx, &name),
+        WorktreeSubcommand::Land { name, check } => {
+            cmd::worktree::land(ctx, name.as_deref(), check.as_deref())
+        }
+        WorktreeSubcommand::List => cmd::worktree::list(ctx),
+    }
+}
+
+/// `horch spawn`: split the positionals, spawn, and print the pane id.
+fn spawn_command(
+    ctx: &mut Ctx,
+    positionals: &[String],
+    mut args: cmd::spawn::SpawnArgs,
+) -> Result<()> {
+    (args.teammate, args.task) =
+        cmd::spawn::resolve_positionals(positionals, args.resume.as_deref())?;
+    output::println(&cmd::spawn::spawn(ctx, args)?);
+    Ok(())
+}
+
+fn teammates_command(
+    ctx: &mut Ctx,
+    json: bool,
+    check: bool,
+    matrix: bool,
+    new: Option<&str>,
+    dir: Option<&str>,
+) -> Result<ExitCode> {
+    if let Some(name) = new {
+        done(cmd::teammatescmd::new(ctx, name, dir))
+    } else if matrix {
+        done(cmd::teammatescmd::matrix(ctx, json))
+    } else if check {
+        cmd::teammatescmd::check(ctx)
+    } else {
+        done(cmd::teammatescmd::list(ctx, json))
+    }
+}
+
+fn telemetry_command(
+    ctx: &mut Ctx,
+    command: Option<TelemetrySub>,
+    state_dir: Option<String>,
+) -> Result<ExitCode> {
+    if let Some(dir) = state_dir {
+        ctx.paths.set_state_dir(dir);
+    }
+    use cmd::telemetry::TelemetryCommand as T;
+    let command = match command {
+        None => T::Run,
+        Some(TelemetrySub::Ensure) => T::Ensure,
+        Some(TelemetrySub::Collect { once: false }) => anyhow::bail!(
+            "`horch telemetry collect` needs --once; the long-running \
+             collector is plain `horch telemetry`"
+        ),
+        Some(TelemetrySub::Collect { once: true }) => T::CollectOnce,
+        Some(TelemetrySub::Render {
+            snapshot,
+            size,
+            group,
+            window,
+        }) => T::Render {
+            snapshot,
+            size,
+            group,
+            window,
+        },
+    };
+    cmd::telemetry::run(ctx, command)
 }
 
 #[cfg(test)]
@@ -1144,7 +1314,7 @@ mod tests {
             vec!["horch", "spawn", "--resume", "r1", "--phase", "research"],
         ] {
             match Cli::try_parse_from(argv).unwrap().command {
-                Command::Spawn { phase, .. } => {
+                Command::Project(ProjectCommand::Spawn { phase, .. }) => {
                     assert_eq!(phase, Some(horch_core::roster::Phase::Research))
                 }
                 _ => panic!("wrong command"),
@@ -1158,7 +1328,7 @@ mod tests {
     fn tell_joins_its_trailing_words() {
         let cli = Cli::try_parse_from(["horch", "tell", "sonnet-1", "fix", "the", "bug"]).unwrap();
         match cli.command {
-            Command::Tell { role, message } => {
+            Command::Messaging(MessagingCommand::Tell { role, message }) => {
                 assert_eq!(role, "sonnet-1");
                 assert_eq!(joined(&message), "fix the bug");
             }
@@ -1171,7 +1341,9 @@ mod tests {
     fn tell_preserves_a_single_quoted_message() {
         let cli = Cli::try_parse_from(["horch", "tell", "orchestrator", "[a] DONE: x, y"]).unwrap();
         match cli.command {
-            Command::Tell { message, .. } => assert_eq!(joined(&message), "[a] DONE: x, y"),
+            Command::Messaging(MessagingCommand::Tell { message, .. }) => {
+                assert_eq!(joined(&message), "[a] DONE: x, y")
+            }
             _ => panic!("wrong subcommand"),
         }
     }
@@ -1185,12 +1357,12 @@ mod tests {
     fn parse_spawn(argv: &[&str]) -> (Option<String>, String, Option<String>, Direction) {
         let cli = Cli::try_parse_from(argv).expect("should parse");
         match cli.command {
-            Command::Spawn {
+            Command::Project(ProjectCommand::Spawn {
                 args,
                 resume,
                 direction,
                 ..
-            } => {
+            }) => {
                 let (teammate, task) = cmd::spawn::resolve_positionals(&args, resume.as_deref())
                     .expect("should resolve");
                 (teammate, task, resume, direction)
@@ -1227,7 +1399,7 @@ mod tests {
     fn spawn_rejects_an_unknown_teammate_against_the_roster() {
         let cli = Cli::try_parse_from(["horch", "spawn", "haiku"]).unwrap();
         match cli.command {
-            Command::Spawn { args, resume, .. } => {
+            Command::Project(ProjectCommand::Spawn { args, resume, .. }) => {
                 let (name, _) = cmd::spawn::resolve_positionals(&args, resume.as_deref()).unwrap();
                 let roster = horch_core::roster::Roster::builtin().unwrap();
                 let err = roster
@@ -1250,44 +1422,139 @@ mod tests {
             .unwrap()
             .command
         {
-            Command::Spawn { exact, force, .. } => assert!(exact && force),
+            Command::Project(ProjectCommand::Spawn { exact, force, .. }) => assert!(exact && force),
             _ => panic!("wrong subcommand"),
         }
     }
 
-    #[test]
-    fn the_telemetry_commands_parse() {
-        for argv in [
-            vec!["horch", "telemetry"],
-            vec!["horch", "telemetry", "ensure"],
-            vec!["horch", "telemetry", "collect", "--once"],
-            vec![
-                "horch",
-                "telemetry",
-                "render",
-                "--size",
-                "80x24",
-                "--group",
-                "phase",
-                "--window",
-                "7d",
-            ],
-            vec![
-                "horch", "usage", "--json", "--by", "plan", "--window", "today",
-            ],
-            vec!["horch", "quota", "--refresh", "--json"],
-            vec!["horch", "route", "researcher", "--json"],
-            vec!["horch", "fleet", "auto"],
-            vec![
-                "horch",
-                "fleet",
-                "--resume",
-                "0b6f8c1e-6c0e-4a43-9d7e-3f2a1b4c5d6e",
-            ],
-            vec!["horch", "fleet", "sol", "--resume", "thread-1"],
-        ] {
-            assert!(Cli::try_parse_from(argv.clone()).is_ok(), "{argv:?}");
+    /// Which flattened group a parsed command landed in.
+    fn group_of(command: &Command) -> &'static str {
+        match command {
+            Command::Launch(_) => "launch",
+            Command::Messaging(_) => "messaging",
+            Command::Session(_) => "session",
+            Command::Project(_) => "project",
+            Command::Measure(_) => "measure",
+            Command::Grid(_) => "grid",
+            Command::Tool(_) => "tool",
         }
+    }
+
+    #[test]
+    fn the_telemetry_and_fleet_commands_parse_into_their_groups() {
+        for (argv, group) in [
+            (vec!["horch", "telemetry"], "measure"),
+            (vec!["horch", "telemetry", "ensure"], "measure"),
+            (vec!["horch", "telemetry", "collect", "--once"], "measure"),
+            (
+                vec![
+                    "horch",
+                    "telemetry",
+                    "render",
+                    "--size",
+                    "80x24",
+                    "--group",
+                    "phase",
+                    "--window",
+                    "7d",
+                ],
+                "measure",
+            ),
+            (
+                vec![
+                    "horch", "usage", "--json", "--by", "plan", "--window", "today",
+                ],
+                "measure",
+            ),
+            (vec!["horch", "quota", "--refresh", "--json"], "measure"),
+            (vec!["horch", "route", "researcher", "--json"], "measure"),
+            (vec!["horch", "fleet", "auto"], "launch"),
+            (
+                vec![
+                    "horch",
+                    "fleet",
+                    "--resume",
+                    "0b6f8c1e-6c0e-4a43-9d7e-3f2a1b4c5d6e",
+                ],
+                "launch",
+            ),
+            (
+                vec!["horch", "fleet", "sol", "--resume", "thread-1"],
+                "launch",
+            ),
+        ] {
+            let cli = Cli::try_parse_from(argv.clone()).unwrap_or_else(|e| panic!("{argv:?}: {e}"));
+            assert_eq!(group_of(&cli.command), group, "{argv:?}");
+        }
+    }
+
+    /// Grouping the variants into flattened sub-enums must not change what
+    /// `horch --help` lists: the same commands, in the same order, with the
+    /// internal ones still hidden.
+    #[test]
+    fn help_lists_the_same_commands_in_the_same_order() {
+        let cmd = Cli::command();
+        let listed: Vec<(&str, bool)> = cmd
+            .get_subcommands()
+            .map(|c| (c.get_name(), c.is_hide_set()))
+            .collect();
+        let expected = [
+            ("channel", true),
+            ("mail", true),
+            ("fleet", false),
+            ("orchestration", false),
+            ("update", false),
+            ("tell", false),
+            ("inbox", false),
+            ("peek", false),
+            ("assign", false),
+            ("note", false),
+            ("context", false),
+            ("compact", false),
+            ("mode", false),
+            ("done", false),
+            ("worktree", false),
+            ("sessions", false),
+            ("teammates", false),
+            ("cost", false),
+            ("spawn", false),
+            ("usage", false),
+            ("agent-list", false),
+            ("quota", false),
+            ("route", false),
+            ("telemetry", false),
+            ("layout", false),
+            ("tile", false),
+            ("balance", false),
+            ("ledger", false),
+            ("skills", false),
+            ("marketplace", false),
+            ("doctor", false),
+            ("install", false),
+            ("self-update", false),
+            ("smoke", false),
+            ("worker", true),
+            ("pane-launch", true),
+            ("register", true),
+        ];
+        assert_eq!(listed, expected);
+    }
+
+    /// The commands whose reminders, watchdog and identity handling differ.
+    #[test]
+    fn command_policies_follow_the_command() {
+        let parse = |argv: &[&str]| Cli::try_parse_from(argv).unwrap().command;
+        let inbox_roles = parse(&["horch", "inbox", "--roles"]);
+        let inbox_mail = parse(&["horch", "inbox"]);
+        assert!(inbox_roles.reminds() && !inbox_mail.reminds());
+        assert!(!parse(&["horch", "tile"]).reminds());
+        assert!(!parse(&["horch", "worker", "r"]).watched());
+        assert!(!parse(&["horch", "install"]).watched());
+        assert!(!parse(&["horch", "ledger", "watch"]).watched());
+        assert!(parse(&["horch", "ledger", "path"]).watched());
+        assert!(parse(&["horch", "done", "x"]).adopts_identity());
+        assert!(parse(&["horch", "ledger", "path"]).adopts_identity());
+        assert!(!parse(&["horch", "peek", "r"]).adopts_identity());
     }
 
     /// `horch fleet --resume` reaches the pane as `--session-id <id> --resume`;
