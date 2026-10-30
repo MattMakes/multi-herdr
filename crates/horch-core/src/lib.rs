@@ -16,6 +16,7 @@
 //! | [`roster`]      | `teammates/` files: parsing, layering, `--check` rules      |
 //! | [`prompts`]     | rendering briefings from `teammates/`                       |
 //! | [`skills`]      | skill catalogs, activation plans and launch bundles         |
+//! | [`sweep`]       | the removal of stale state whose owner is gone              |
 //! | [`harness`]     | the agent CLIs (claude, codex, OpenCode, pi, Prime, Antigravity) and launch |
 //! | [`routing`]     | quota-aware routing: policy, quota view, decisions          |
 //! | [`execution`]   | executions: model, session ledger record and store, spawn plan, lifecycle |
@@ -61,6 +62,7 @@ pub mod roster;
 pub mod routing;
 pub mod runtime;
 pub mod skills;
+pub mod sweep;
 pub mod taskledger;
 pub mod teacher;
 pub mod telemetry;

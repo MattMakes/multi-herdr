@@ -528,7 +528,13 @@ enum GridCommand {
 #[derive(Subcommand)]
 enum ToolCommand {
     /// Check that herdr is installed and its server is reachable.
-    Doctor,
+    Doctor {
+        /// Remove the stale state that doctor counts: spool files, sockets,
+        /// registries and mail of gone workspaces, finished bundles and codex
+        /// homes, dead temp files, and working records of closed panes.
+        #[arg(long)]
+        clean: bool,
+    },
 
     /// Copy this binary somewhere on your PATH.
     Install {
@@ -784,7 +790,7 @@ impl Command {
     /// `doctor` and `spawn` warn when the installed horch is stale.
     fn warn_stale(&self, ctx: &Ctx) {
         match self {
-            Command::Tool(ToolCommand::Doctor) => cmd::selfupdate::doctor_warning(ctx),
+            Command::Tool(ToolCommand::Doctor { .. }) => cmd::selfupdate::doctor_warning(ctx),
             Command::Project(ProjectCommand::Spawn { .. })
             | Command::Messaging(MessagingCommand::Inbox { .. }) => {
                 cmd::selfupdate::stale_warning(ctx)
@@ -1091,7 +1097,7 @@ impl GridCommand {
 impl ToolCommand {
     fn dispatch(self, ctx: &mut Ctx) -> Result<ExitCode> {
         match self {
-            ToolCommand::Doctor => done(cmd::doctor::doctor(ctx)),
+            ToolCommand::Doctor { clean } => done(cmd::doctor::doctor(ctx, clean)),
             ToolCommand::Install { dir } => done(cmd::install::install(ctx, dir.as_deref())),
             ToolCommand::SelfUpdate { check } => cmd::selfupdate::self_update(ctx, check),
             ToolCommand::Smoke { command } => cmd::smoke::run(ctx, command),

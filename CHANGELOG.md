@@ -4,6 +4,12 @@
 
 ## Unreleased
 
+- horch now removes stale state whose owner is gone: old spool files, dead
+  channel sockets, the registries and mail of closed workspaces, finished
+  skill bundles and Codex homes, and killed temp files. Records of closed
+  panes end as `PaneVanished`. `horch fleet` and `horch spawn` sweep at most
+  once an hour; `horch doctor` counts the stale state, and
+  `horch doctor --clean` removes it.
 - Worker reports and task-ledger wakes remain queued until `horch inbox`
   acknowledges them. Missing orchestrator registrations no longer drop
   mail, and the courier keeps retrying while the orchestrator is available.
