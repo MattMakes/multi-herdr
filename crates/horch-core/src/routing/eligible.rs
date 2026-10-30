@@ -42,22 +42,25 @@ pub enum ExclusionReason {
     Unpriced,
 }
 
+/// The snake_case name of each reason, in declaration order.
+const NAMES: [&str; 12] = [
+    "not_in_roster",
+    "hidden",
+    "reserved_tier",
+    "trains_on_input",
+    "pool_blocked",
+    "unspawnable",
+    "effort_unsupported",
+    "harness_unavailable",
+    "agent_none",
+    "excluded_by_config",
+    "over_budget",
+    "unpriced",
+];
+
 impl ExclusionReason {
     pub fn as_str(self) -> &'static str {
-        match self {
-            ExclusionReason::NotInRoster => "not_in_roster",
-            ExclusionReason::Hidden => "hidden",
-            ExclusionReason::ReservedTier => "reserved_tier",
-            ExclusionReason::TrainsOnInput => "trains_on_input",
-            ExclusionReason::PoolBlocked => "pool_blocked",
-            ExclusionReason::Unspawnable => "unspawnable",
-            ExclusionReason::EffortUnsupported => "effort_unsupported",
-            ExclusionReason::HarnessUnavailable => "harness_unavailable",
-            ExclusionReason::AgentNone => "agent_none",
-            ExclusionReason::ExcludedByConfig => "excluded_by_config",
-            ExclusionReason::OverBudget => "over_budget",
-            ExclusionReason::Unpriced => "unpriced",
-        }
+        NAMES[self as usize]
     }
 }
 
@@ -204,6 +207,28 @@ pub fn eligible_fallbacks(req: &Teammate, roster: &Roster, view: &QuotaView) -> 
     out
 }
 
+fn effort_unsupported(t: &Teammate, model: &str) -> bool {
+    t.effort
+        .as_deref()
+        .is_some_and(|eff| effort_problem(t.agent, Some(model), eff).is_some())
+}
+
+fn harness_unavailable(t: &Teammate, filter: &EligibilityFilter) -> bool {
+    filter
+        .available_harnesses
+        .as_ref()
+        .is_some_and(|h| !h.contains(&t.agent))
+}
+
+fn over_budget(e: &EligibleEntry, filter: &EligibilityFilter) -> bool {
+    filter.max_cost_microusd.is_some_and(|max| {
+        filter
+            .estimated_cost_microusd
+            .get(&e.teammate)
+            .is_some_and(|cost| *cost > max)
+    })
+}
+
 /// The first rule a roster teammate breaks for a planner that chooses on
 /// its own (B3).
 fn roster_rule(
@@ -222,28 +247,26 @@ fn roster_rule(
         Some(ExclusionReason::ReservedTier)
     } else if model.is_empty() {
         Some(ExclusionReason::Unspawnable)
-    } else if t
-        .effort
-        .as_deref()
-        .is_some_and(|eff| effort_problem(t.agent, Some(model), eff).is_some())
-    {
+    } else if effort_unsupported(t, model) {
         Some(ExclusionReason::EffortUnsupported)
     } else if trains_on_input(t) {
         Some(ExclusionReason::TrainsOnInput)
-    } else if filter
-        .available_harnesses
-        .as_ref()
-        .is_some_and(|h| !h.contains(&t.agent))
-    {
+    } else {
+        availability_rule(t, e, filter)
+    }
+}
+
+/// The last rules of `roster_rule`: the harness, the pool and the budget.
+fn availability_rule(
+    t: &Teammate,
+    e: &EligibleEntry,
+    filter: &EligibilityFilter,
+) -> Option<ExclusionReason> {
+    if harness_unavailable(t, filter) {
         Some(ExclusionReason::HarnessUnavailable)
     } else if e.pool_state.blocks() {
         Some(ExclusionReason::PoolBlocked)
-    } else if filter.max_cost_microusd.is_some_and(|max| {
-        filter
-            .estimated_cost_microusd
-            .get(&e.teammate)
-            .is_some_and(|cost| *cost > max)
-    }) {
+    } else if over_budget(e, filter) {
         Some(ExclusionReason::OverBudget)
     } else {
         None
@@ -417,7 +440,7 @@ mod tests {
             ExclusionReason::OverBudget,
             ExclusionReason::Unpriced,
         ];
-        assert_eq!(names.len(), 12);
+        assert_eq!(names.len(), NAMES.len());
         for r in names {
             let json = serde_json::to_string(&r).unwrap();
             assert_eq!(r.as_str(), json.trim_matches('"'));
