@@ -726,15 +726,21 @@ fn refusal_in_force(
     seen: DateTime<Utc>,
     now: DateTime<Utc>,
 ) -> bool {
+    match refused_window(r, windows).and_then(|w| Some((w.start()?, w.resets()?))) {
+        Some((start, resets)) => seen >= start && resets > now,
+        None => now - seen < Duration::hours(5),
+    }
+}
+
+/// The window the refusal named, else the shortest of `windows`.
+fn refused_window<'a>(r: &PoolReading, windows: &[&'a Window]) -> Option<&'a Window> {
     let named = r
         .refusal_window
         .as_deref()
         .and_then(|label| windows.iter().find(|w| w.label() == label));
-    let window = named.or_else(|| windows.iter().min_by_key(|w| w.minutes));
-    match window.and_then(|w| Some((w.start()?, w.resets()?))) {
-        Some((start, resets)) => seen >= start && resets > now,
-        None => now - seen < Duration::hours(5),
-    }
+    named
+        .or_else(|| windows.iter().min_by_key(|w| w.minutes))
+        .copied()
 }
 
 /// What a successful probe read.
