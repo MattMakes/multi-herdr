@@ -202,6 +202,37 @@ impl Roster {
     /// with a fallback.
     pub(crate) fn check_teammate(&self, t: &Teammate) -> Vec<String> {
         let mut problems = Vec::new();
+        problems.extend(self.skill_catalog_rules(t));
+        problems.extend(self.description_rules(t));
+        problems.extend(self.skills_when_problems(t));
+        problems.extend(self.seat_rules(t));
+        problems.extend(self.model_effort_rules(t));
+        problems.extend(self.plugin_skill_rules(t));
+        problems.extend(self.codex_effort_rules(t));
+        problems.extend(self.harness_field_rules(t));
+        problems.extend(self.subagent_switch_rules(t));
+        problems.extend(self.orchestrator_tool_rules(t));
+        problems.extend(self.forbidden_env_rules(t));
+        problems.extend(self.antigravity_rules(t));
+        problems.extend(self.orchestrator_only_rules(t));
+        problems.extend(self.worker_channel_rules(t));
+        problems.extend(self.sandbox_rules(t));
+        problems.extend(self.permission_mode_rules(t));
+        problems.extend(self.plan_mode_rules(t));
+        problems.extend(self.empty_setting_sources_rules(t));
+        problems.extend(self.disable_skills_rules(t));
+        problems.extend(self.disabled_skill_rules(t));
+        problems.extend(self.trains_rules(t));
+        problems.extend(self.args_rules(t));
+        problems.extend(self.plugin_dir_rules(t));
+        problems.extend(self.settings_rules(t));
+        problems.extend(self.mcp_file_rules(t));
+        problems
+    }
+
+    /// Skills: the catalog, unknown offered skills, and a skill both kept and offered.
+    fn skill_catalog_rules(&self, t: &Teammate) -> Vec<String> {
+        let mut problems = Vec::new();
         let who = &t.name;
         // Operator and plugin skills are read from the operator's machine, so
         // `--check` reads the same directories the launch will. It judges the
@@ -226,6 +257,13 @@ impl Roster {
                 ));
             }
         }
+        problems
+    }
+
+    /// The brief description, the base and the `offer_when` patterns.
+    fn description_rules(&self, t: &Teammate) -> Vec<String> {
+        let mut problems = Vec::new();
+        let who = &t.name;
         if t.brief_description.trim().is_empty() {
             problems.push(format!("{who}: brief_description is empty"));
         }
@@ -246,7 +284,13 @@ impl Roster {
                 problems.push(format!("{who}: offer_when pattern '{pattern}' {problem}"));
             }
         }
-        problems.extend(self.skills_when_problems(t));
+        problems
+    }
+
+    /// Top-tier seats take no fallbacks, and what the orchestrator may pick must spawn.
+    fn seat_rules(&self, t: &Teammate) -> Vec<String> {
+        let mut problems = Vec::new();
+        let who = &t.name;
         if TOP_TIER_SEATS
             .iter()
             .any(|(seat, _)| *seat == t.name.as_str())
@@ -266,6 +310,13 @@ impl Roster {
                 problems.push(format!("{e:#}"));
             }
         }
+        problems
+    }
+
+    /// A model for the agent, and an effort that agent and model take.
+    fn model_effort_rules(&self, t: &Teammate) -> Vec<String> {
+        let mut problems = Vec::new();
+        let who = &t.name;
         if t.agent != HarnessKind::None && t.model.is_none() && t.name != "orchestration-worker" {
             problems.push(format!("{who}: agent is {} but no model is set", t.agent));
         }
@@ -274,6 +325,13 @@ impl Roster {
                 problems.push(format!("{who}: {why}"));
             }
         }
+        problems
+    }
+
+    /// Reinforced plugin skills are loadable and named in a briefing.
+    fn plugin_skill_rules(&self, t: &Teammate) -> Vec<String> {
+        let mut problems = Vec::new();
+        let who = &t.name;
         // Reinforced plugin skills must exist, or the briefing promises a
         // skill the pane cannot load.
         if t.agent == HarnessKind::Claude && !t.plugin_skills.is_empty() {
@@ -297,6 +355,13 @@ impl Roster {
                 ));
             }
         }
+        problems
+    }
+
+    /// An offered codex teammate states its own effort.
+    fn codex_effort_rules(&self, t: &Teammate) -> Vec<String> {
+        let mut problems = Vec::new();
+        let who = &t.name;
         // A codex worker with no effort silently takes whatever the
         // operator's ~/.codex/config.toml says (the pane's private
         // CODEX_HOME links it). That made two workers run at "medium"
@@ -307,6 +372,13 @@ impl Roster {
                  inherits model_reasoning_effort from ~/.codex/config.toml"
             ));
         }
+        problems
+    }
+
+    /// Fields this agent cannot express, and Prime's `tools`.
+    fn harness_field_rules(&self, t: &Teammate) -> Vec<String> {
+        let mut problems = Vec::new();
+        let who = &t.name;
         // Every claude-shaped field this agent cannot express. Naming the
         // field beats a generic "unsupported": the author set it on purpose.
         for field in t.agent.unsupported_fields(t) {
@@ -325,6 +397,13 @@ impl Roster {
                  prime refuses --tools and --no-tools, so remove tools"
             ));
         }
+        problems
+    }
+
+    /// A fleet pane must not spawn subagents.
+    fn subagent_switch_rules(&self, t: &Teammate) -> Vec<String> {
+        let mut problems = Vec::new();
+        let who = &t.name;
         // A fleet pane must not spawn subagents. The prose rule in
         // `_base/fleet-worker.md` was not enough on its own, so the switch
         // carries it: `--disallowedTools Agent` takes the tool out of the
@@ -342,6 +421,13 @@ impl Roster {
                  disallowed_tools: [Agent] or set allow_subagents: true"
             ));
         }
+        problems
+    }
+
+    /// The orchestrator denies every tool that would not delegate to a worker.
+    fn orchestrator_tool_rules(&self, t: &Teammate) -> Vec<String> {
+        let mut problems = Vec::new();
+        let who = &t.name;
         // The orchestrator delegates to workers and nothing else: no
         // subagent and no background or cloud agent. `allow_subagents`
         // does not waive this one.
@@ -355,6 +441,13 @@ impl Roster {
                 }
             }
         }
+        problems
+    }
+
+    /// No teammate sets a forbidden environment variable.
+    fn forbidden_env_rules(&self, t: &Teammate) -> Vec<String> {
+        let mut problems = Vec::new();
+        let who = &t.name;
         // The operator's rule (CLAUDE.md): no teammate uses
         // ANTHROPIC_API_KEY. The launch removes it; a file that sets it is
         // a mistake to report, not to hide.
@@ -363,6 +456,13 @@ impl Roster {
                 problems.push(format!("{who}: env must not set {key}; never use it"));
             }
         }
+        problems
+    }
+
+    /// Antigravity: no login-bypass env, and a stated effort.
+    fn antigravity_rules(&self, t: &Teammate) -> Vec<String> {
+        let mut problems = Vec::new();
+        let who = &t.name;
         // An agy child signs in with the operator's Google login. These keys
         // bypass it, and the launch removes them from an agy child.
         if t.agent == HarnessKind::Antigravity {
@@ -391,6 +491,13 @@ impl Roster {
                 }
             }
         }
+        problems
+    }
+
+    /// Orchestrator-only skills, plugins and switches stay with the orchestrator.
+    fn orchestrator_only_rules(&self, t: &Teammate) -> Vec<String> {
+        let mut problems = Vec::new();
+        let who = &t.name;
         // Orchestrator-only capabilities stay with the orchestrator.
         if !FLEET_ORCHESTRATORS.contains(&who.as_str()) {
             for skill in ORCHESTRATOR_ONLY_SKILLS {
@@ -420,12 +527,26 @@ impl Roster {
                 ));
             }
         }
+        problems
+    }
+
+    /// The worker channel needs an agent that can host it.
+    fn worker_channel_rules(&self, t: &Teammate) -> Vec<String> {
+        let mut problems = Vec::new();
+        let who = &t.name;
         if t.worker_channel && !matches!(t.agent, HarnessKind::Claude | HarnessKind::Codex) {
             problems.push(format!(
                 "{who}: worker_channel needs agent claude or codex; agent {} cannot host it",
                 t.agent
             ));
         }
+        problems
+    }
+
+    /// The OS sandbox field is Claude only and excludes `settings`.
+    fn sandbox_rules(&self, t: &Teammate) -> Vec<String> {
+        let mut problems = Vec::new();
+        let who = &t.name;
         // Only Claude has an OS sandbox horch can switch on per launch. On any
         // other agent the field would promise a boundary that never exists.
         if let Some(block) = &t.sandbox {
@@ -445,6 +566,13 @@ impl Roster {
                 problems.push(format!("{who}: {problem}"));
             }
         }
+        problems
+    }
+
+    /// A permission mode needs an equivalent on this agent.
+    fn permission_mode_rules(&self, t: &Teammate) -> Vec<String> {
+        let mut problems = Vec::new();
+        let who = &t.name;
         if let Some(mode) = t.permission_mode {
             let ok = match t.agent {
                 HarnessKind::Codex => mode.codex_args().is_some(),
@@ -464,6 +592,13 @@ impl Roster {
                 ));
             }
         }
+        problems
+    }
+
+    /// A plan-mode Claude worker can leave plan mode.
+    fn plan_mode_rules(&self, t: &Teammate) -> Vec<String> {
+        let mut problems = Vec::new();
+        let who = &t.name;
         // A plan-mode worker that cannot leave plan mode stalls in a pane
         // nobody is watching. Denies normally beat allows, so naming the
         // tool in allowed_tools is not accepted as proof on its own.
@@ -471,18 +606,7 @@ impl Roster {
             // `--setting-sources ""` loads no settings file, so a
             // `permissions.deny` written for an attended session cannot
             // reach this worker.
-            let escapes_settings = t
-                .setting_sources
-                .as_ref()
-                .map(|v| v.is_empty())
-                .unwrap_or(false)
-                || t.settings.is_some();
-            let tool_available = t
-                .tools
-                .as_ref()
-                .map(|v| v.iter().any(|x| x == "ExitPlanMode" || x == "default"))
-                .unwrap_or(true);
-            if !escapes_settings {
+            if !plan_escapes_settings(t) {
                 problems.push(format!(
                     "{who}: permission_mode is 'plan' but it inherits the operator's \
                      settings, which may deny ExitPlanMode - set \
@@ -490,13 +614,20 @@ impl Roster {
                      for workers"
                 ));
             }
-            if !tool_available {
+            if !plan_tool_available(t) {
                 problems.push(format!(
                     "{who}: permission_mode is 'plan' but 'tools' does not include \
                      ExitPlanMode, so it can never leave plan mode"
                 ));
             }
         }
+        problems
+    }
+
+    /// Empty `setting_sources` must not quietly load more skills.
+    fn empty_setting_sources_rules(&self, t: &Teammate) -> Vec<String> {
+        let mut problems = Vec::new();
+        let who = &t.name;
         // Dropping the operator's settings also drops `disableBundledSkills`,
         // so "clean" can silently mean "more skills than before".
         if t.setting_sources
@@ -514,6 +645,13 @@ impl Roster {
                  will load. Set disable_skills: true, or name the plugins you want."
             ));
         }
+        problems
+    }
+
+    /// `disable_skills` turns off everything, so it excludes the rest.
+    fn disable_skills_rules(&self, t: &Teammate) -> Vec<String> {
+        let mut problems = Vec::new();
+        let who = &t.name;
         if t.disable_skills && !t.plugin_dirs.is_empty() {
             problems.push(format!(
                 "{who}: disable_skills turns off ALL skills, including the ones \
@@ -526,6 +664,13 @@ impl Roster {
                  disabled_skills list does nothing"
             ));
         }
+        problems
+    }
+
+    /// `disabled_skills` entries are named, and not also kept.
+    fn disabled_skill_rules(&self, t: &Teammate) -> Vec<String> {
+        let mut problems = Vec::new();
+        let who = &t.name;
         for name in &t.disabled_skills {
             if name.trim().is_empty() {
                 problems.push(format!("{who}: disabled_skills has a blank entry"));
@@ -539,6 +684,13 @@ impl Roster {
                 ));
             }
         }
+        problems
+    }
+
+    /// `trains_on_input` has a block to render; skills and phase need skills on.
+    fn trains_rules(&self, t: &Teammate) -> Vec<String> {
+        let mut problems = Vec::new();
+        let who = &t.name;
         if t.trains_on_input {
             let renders = t
                 .base
@@ -559,6 +711,13 @@ impl Roster {
                 "{who}: declares skills or phase but also disable_skills"
             ));
         }
+        problems
+    }
+
+    /// `args` does not end on a variadic flag.
+    fn args_rules(&self, t: &Teammate) -> Vec<String> {
+        let mut problems = Vec::new();
+        let who = &t.name;
         // `args` is emitted immediately before the prompt. These flags are
         // variadic and would take the prompt as one more value.
         if let Some(last) = t.args.last() {
@@ -578,11 +737,25 @@ impl Roster {
                 ));
             }
         }
+        problems
+    }
+
+    /// Every plugin directory exists.
+    fn plugin_dir_rules(&self, t: &Teammate) -> Vec<String> {
+        let mut problems = Vec::new();
+        let who = &t.name;
         for dir in &t.plugin_dirs {
             if !expand_home(dir, self.home.as_deref()).is_dir() {
                 problems.push(format!("{who}: plugin_dir '{dir}' does not exist"));
             }
         }
+        problems
+    }
+
+    /// A teammate's own settings parse and define a status line.
+    fn settings_rules(&self, t: &Teammate) -> Vec<String> {
+        let mut problems = Vec::new();
+        let who = &t.name;
         // A teammate that brings its own settings takes over the status line
         // too; one without a statusLine would be the only pane in the fleet
         // with none. `settings` is inline JSON (starts with `{`) or a file.
@@ -611,6 +784,13 @@ impl Roster {
                 Some(_) => {}
             }
         }
+        problems
+    }
+
+    /// Every MCP config file exists.
+    fn mcp_file_rules(&self, t: &Teammate) -> Vec<String> {
+        let mut problems = Vec::new();
+        let who = &t.name;
         for file in &t.mcp_config_files {
             if !expand_home(file, self.home.as_deref()).is_file() {
                 problems.push(format!(
@@ -1077,6 +1257,24 @@ fn below_floor(native: u64) -> Option<(u64, u64)> {
     (h < HEADROOM_FLOOR).then_some((t_watch, h))
 }
 
+/// `--setting-sources ""` loads no settings file, so a `permissions.deny`
+/// written for an attended session cannot reach this worker.
+fn plan_escapes_settings(t: &Teammate) -> bool {
+    t.setting_sources
+        .as_ref()
+        .map(|v| v.is_empty())
+        .unwrap_or(false)
+        || t.settings.is_some()
+}
+
+/// Whether the worker's `tools` list keeps `ExitPlanMode`.
+fn plan_tool_available(t: &Teammate) -> bool {
+    t.tools
+        .as_ref()
+        .map(|v| v.iter().any(|x| x == "ExitPlanMode" || x == "default"))
+        .unwrap_or(true)
+}
+
 /// Whether a `settings:` value is inline JSON rather than a file path.
 fn is_inline(settings: &str) -> bool {
     settings.trim_start().starts_with('{')
@@ -1442,10 +1640,99 @@ pub(crate) fn names_tool(text: &str, tool: &str) -> bool {
 
 #[cfg(test)]
 mod spawnable_tests {
+    const EXPECTED_W3_PROBE: &str = "teammate 'w3-probe': unknown bundled skill 'planning'\n\
+teammate 'w3-probe': unknown bundled skill 'planning'\n\
+w3-probe: 'planning' is both in skills and in available_skills\n\
+w3-probe: brief_description is empty\n\
+w3-probe: base 'no-such-base' does not exist in _base/\n\
+w3-probe: agent is claude but no model is set\n\
+w3-probe: effort 'extreme' is not a claude level (expected one of: low, medium, high, xhigh, max)\n\
+w3-probe: a fleet pane must not spawn subagents; add disallowed_tools: [Agent] or set allow_subagents: true\n\
+w3-probe: remote_control belongs to the orchestrator only\n\
+w3-probe: worker_channel belongs to the orchestrator only\n\
+w3-probe: permission_mode is 'plan' but 'tools' does not include ExitPlanMode, so it can never leave plan mode\n\
+w3-probe: disable_skills turns off ALL skills, including the ones plugin_dirs loads - the plugins would be dead weight\n\
+w3-probe: disable_skills already turns off ALL skills, so the disabled_skills list does nothing\n\
+w3-probe: disabled_skills has a blank entry\n\
+w3-probe: trains_on_input is set but its base has no trains_on_input block to render, so the worker would never be told\n\
+w3-probe: declares skills or phase but also disable_skills\n\
+w3-probe: args ends with '--tools', a variadic flag that would swallow the prompt; put it earlier or use the dedicated field\n\
+w3-probe: plugin_dir '/no/such/plugin-dir' does not exist\n\
+w3-probe: mcp_config_files entry '/no/such/mcp.json' does not exist";
+    const EXPECTED_W3_AGY: &str = "teammate 'w3-agy': selected skills cannot load with disabled skills or no agent\n\
+w3-agy: 'allowed_tools' is not something antigravity can express; use args, or move this work to a claude teammate\n\
+w3-agy: 'disabled_skills' is not something antigravity can express; use args, or move this work to a claude teammate\n\
+w3-agy: 'disallowed_tools' is not something antigravity can express; use args, or move this work to a claude teammate\n\
+w3-agy: env must not set GEMINI_API_KEY; antigravity uses the Google login\n\
+w3-agy: antigravity model 'gemini-3.8-flash' needs an effort; a bare model id takes agy's default effort, which can change between CLI versions (set effort: low, medium or high)";
+    const EXPECTED_W3_CODEX: &str = "w3-codex: a codex teammate must set effort; without it the pane inherits model_reasoning_effort from ~/.codex/config.toml\n\
+w3-codex: 'allowed_tools' is not something codex can express; use args, or move this work to a claude teammate\n\
+w3-codex: 'disabled_skills' is not something codex can express; use args, or move this work to a claude teammate\n\
+w3-codex: 'disallowed_tools' is not something codex can express; use args, or move this work to a claude teammate\n\
+w3-codex: sandbox is Claude only; agent codex cannot honour it";
+
     use super::super::operator::effort_override_warnings;
     use super::super::parser::parse_teammate;
     use super::super::Phase;
     use super::*;
+
+    /// One teammate that breaks rules from every family at once. The exact
+    /// list pins the text and the order of the problems.
+    #[test]
+    fn w3_check_teammate_reports_every_family_in_a_fixed_order() {
+        let r = Roster::builtin().unwrap();
+        let mut t = r.require("opus").unwrap().clone();
+        t.name = "w3-probe".into();
+        t.hidden = false;
+        t.brief_description = String::new();
+        t.base = Some("no-such-base".into());
+        t.offer_when = vec!["***".into()];
+        t.model = None;
+        t.effort = Some("extreme".into());
+        t.skills = vec!["planning".into()];
+        t.available_skills = vec!["planning".into()];
+        t.disable_skills = true;
+        t.disabled_skills = vec![" ".into()];
+        t.plugin_dirs = vec!["/no/such/plugin-dir".into()];
+        t.mcp_config_files = vec!["/no/such/mcp.json".into()];
+        t.args = vec!["--tools".into()];
+        t.allow_subagents = false;
+        t.disallowed_tools.clear();
+        t.worker_channel = true;
+        t.remote_control = true;
+        t.trains_on_input = true;
+        t.setting_sources = Some(vec![]);
+        t.sandbox = None;
+        t.permission_mode = Some(PermissionMode::Plan);
+        t.tools = Some(vec!["Read".into()]);
+        let got = r.check_teammate(&t);
+        let expected: Vec<&str> = EXPECTED_W3_PROBE.lines().collect();
+        assert_eq!(got, expected, "{got:#?}");
+
+        // The agent-specific families: antigravity env and effort, a codex
+        // teammate without effort, prime's `tools`.
+        let mut agy = r.require("opus").unwrap().clone();
+        agy.name = "w3-agy".into();
+        agy.hidden = false;
+        agy.agent = HarnessKind::Antigravity;
+        agy.model = Some("gemini-3.8-flash".into());
+        agy.effort = None;
+        agy.env.insert("GEMINI_API_KEY".into(), "x".into());
+        let got = r.check_teammate(&agy);
+        let expected: Vec<&str> = EXPECTED_W3_AGY.lines().collect();
+        assert_eq!(got, expected, "{got:#?}");
+        let mut codex = r.require("opus").unwrap().clone();
+        codex.name = "w3-codex".into();
+        codex.hidden = false;
+        codex.agent = HarnessKind::Codex;
+        codex.model = Some("gpt-5.6-sol".into());
+        codex.effort = None;
+        codex.sandbox = Some(Default::default());
+        codex.permission_mode = Some(PermissionMode::AcceptEdits);
+        let got = r.check_teammate(&codex);
+        let expected: Vec<&str> = EXPECTED_W3_CODEX.lines().collect();
+        assert_eq!(got, expected, "{got:#?}");
+    }
 
     #[test]
     fn phases_round_trip_and_legacy_teammates_have_no_phase() {
