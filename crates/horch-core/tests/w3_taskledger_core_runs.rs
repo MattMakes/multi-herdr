@@ -107,7 +107,10 @@ fn no_key_and_no_active_run_is_an_error() {
     let (_d, s) = store();
     let err = resolve(&s, None, None).unwrap_err().to_string();
     assert!(err.starts_with("no active run in "), "{err}");
-    assert!(err.ends_with("Create one: horch ledger run new <slug>"), "{err}");
+    assert!(
+        err.ends_with("Create one: horch ledger run new <slug>"),
+        "{err}"
+    );
 }
 
 #[test]
@@ -117,7 +120,10 @@ fn no_key_and_two_active_runs_is_an_error_that_lists_them() {
     new_run(&mut s, "/repo", "b", Some("ws1"));
     let err = resolve(&s, None, None).unwrap_err().to_string();
     assert!(err.starts_with("2 active runs in "), "{err}");
-    assert!(err.contains(": b (workspace ws1), a. Name one with --run <slug>"), "{err}");
+    assert!(
+        err.contains(": b (workspace ws1), a. Name one with --run <slug>"),
+        "{err}"
+    );
 }
 
 #[test]
