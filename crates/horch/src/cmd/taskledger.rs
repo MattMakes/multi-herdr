@@ -106,6 +106,16 @@ pub enum LedgerCommand {
         #[command(flatten)]
         run: RunArg,
     },
+    /// (orchestrator) Rule that 1 code-sweep finding of a task's current
+    /// round does not block. Never the author.
+    Waive {
+        task: String,
+        /// The finding id in the code-sweep report, e.g. F1.
+        finding: String,
+        reason: String,
+        #[command(flatten)]
+        run: RunArg,
+    },
     /// (worker) Take the next task meant for this worker's persona.
     Claim {
         #[arg(long)]
@@ -122,6 +132,9 @@ pub enum LedgerCommand {
     Finish {
         #[arg(long)]
         json: bool,
+        /// Start a new code-sweep round for the same tree.
+        #[arg(long)]
+        rereview: bool,
     },
     /// The finish steps of a task (default: this worker's) with evidence.
     Steps {
@@ -378,6 +391,9 @@ pub struct AddArgs {
     /// The check the finish steps run.
     #[arg(long)]
     check: Option<String>,
+    /// Seconds the check may run before it is killed (default 1200).
+    #[arg(long = "check-timeout")]
+    check_timeout: Option<u64>,
     #[arg(long)]
     phase: Option<String>,
     #[arg(long)]
@@ -584,6 +600,37 @@ pub fn run(ctx: &RuntimeContext, command: LedgerCommand) -> Result<ExitCode> {
             super::taskledger_wake::nudge_startable(ctx, &store, &r);
             Ok(ExitCode::SUCCESS)
         }
+        LedgerCommand::Waive {
+            task,
+            finding,
+            reason,
+            run,
+        } => {
+            let r = resolve_run(ctx, &store, &run)?;
+            // The caller: its worker id, else the run's worker in its pane, so
+            // a worker that unsets HORCH_WORKER_ID is still known.
+            let pane = ctx.herdr.pane.as_ref().map(|p| p.as_str().to_string());
+            let caller = worker_id_opt(ctx).or_else(|| {
+                finish::codesweep::worker_in_pane(store.conn(), &r.run_id, pane.as_deref())
+            });
+            if let Some(w) = caller {
+                let w = workers::get(store.conn(), &w)?;
+                if w.kind != WorkerKind::Orchestrator.as_str() {
+                    bail!("only the orchestrator waives a code-sweep finding; fix it, or answer an Important finding in the answers file");
+                }
+            }
+            let t = tasks::resolve(store.conn(), &r.run_id, &task)?;
+            let w =
+                finish::codesweep::waive(&store, &tools(ctx).evidence_root, &t, &finding, &reason)?;
+            output::println(&format!(
+                "{} round {}: {} waived. The next horch ledger finish of {} reads it.",
+                t.short(),
+                w.round,
+                w.id,
+                t.short()
+            ));
+            Ok(ExitCode::SUCCESS)
+        }
         LedgerCommand::Claim { json: as_json } => claim(ctx, &mut store, as_json),
         LedgerCommand::Worktree {
             command: WorktreeCommand::New { name, from },
@@ -641,7 +688,10 @@ pub fn run(ctx: &RuntimeContext, command: LedgerCommand) -> Result<ExitCode> {
             output::println(&format!("abandoned: {} ({reason})", wt.path));
             Ok(ExitCode::SUCCESS)
         }
-        LedgerCommand::Finish { json: as_json } => {
+        LedgerCommand::Finish {
+            json: as_json,
+            rereview,
+        } => {
             let wid = worker_id(ctx)?;
             // finish answers a reviews-in notice: its mail and wait end.
             if workers::waiting(store.conn(), &wid)?
@@ -653,8 +703,29 @@ pub fn run(ctx: &RuntimeContext, command: LedgerCommand) -> Result<ExitCode> {
             if let Some(role) = workers::get(store.conn(), &wid)?.role {
                 super::messaging::ack_role_mail(ctx, &role);
             }
-            let tools = tools(ctx);
+            let mut tools = tools(ctx);
+            tools.reviewers_down = reviewers_down(ctx);
+            if rereview {
+                finish::rereview(&mut store, &tools, &wid)?;
+            }
             let report = finish::finish(&mut store, &tools, &wid)?;
+            for w in &report.superseded_workers {
+                let stopped = stop::stop_worker(
+                    &mut store,
+                    w,
+                    StopRequester::Watchdog,
+                    "its review was superseded by a new code-sweep round",
+                    &HerdrPanes::new(ctx),
+                    &stop::Os,
+                    &stop::StopOptions {
+                        grace: stop_grace(),
+                        ..Default::default()
+                    },
+                );
+                if let Err(e) = stopped {
+                    eprintln!("horch ledger: could not stop reviewer {w}: {e:#}");
+                }
+            }
             if !report.queued_reviews.is_empty() {
                 let w = workers::get(store.conn(), &wid)?;
                 if let Some(r) = &w.run_id {
@@ -1368,6 +1439,13 @@ fn add(ctx: &RuntimeContext, store: &mut Store, a: AddArgs) -> Result<ExitCode> 
     };
     let _ = a.parallel;
     let t = store.immediate(|tx| tasks::add(tx, &run, &new, Actor::Orchestrator))?;
+    if let Some(secs) = a.check_timeout {
+        finish::land::set_check_timeout(
+            &tools(ctx).evidence_root,
+            &t.task_id,
+            std::time::Duration::from_secs(secs),
+        )?;
+    }
     output::println(&format!(
         "{} queued for {}: {}.",
         t.short(),
@@ -1407,7 +1485,14 @@ fn add_map(ctx: &RuntimeContext, store: &mut Store, path: &Path, arg: &RunArg) -
 
 fn claim(ctx: &RuntimeContext, store: &mut Store, as_json: bool) -> Result<ExitCode> {
     let wid = worker_id(ctx)?;
-    let mut outcome = store.immediate(|tx| tasks::claim(tx, &wid))?;
+    let tools = tools(ctx);
+    let mut outcome = store.immediate(|tx| {
+        let o = tasks::claim(tx, &wid)?;
+        if let ClaimOutcome::Claimed(c) = &o {
+            finish::shared_claim(&tools, &runs::get(tx, &c.task.run_id)?, &c.task)?;
+        }
+        Ok(o)
+    })?;
     if let ClaimOutcome::Claimed(c) = &mut outcome {
         absolute_ticket_if_missing(ctx, store, c);
     }
@@ -1469,6 +1554,38 @@ fn absolute_ticket_if_missing(ctx: &RuntimeContext, store: &Store, c: &mut Claim
     }
 }
 
+/// The code-sweep reviewer personas that cannot run here: not in the roster,
+/// or their harness CLI is not installed.
+fn reviewers_down(ctx: &RuntimeContext) -> Vec<(String, String)> {
+    let roster = super::load_roster_unwarned(ctx, None).ok();
+    ["codex-reviewer", "architect-reviewer"]
+        .into_iter()
+        .filter_map(|p| {
+            let why = match roster.as_ref().and_then(|r| r.get(p)) {
+                None => "not in the roster".to_string(),
+                Some(t) => {
+                    let bin = t.agent.binary(&ctx.bins.harness)?;
+                    let found = if bin.is_absolute() {
+                        bin.is_file()
+                    } else {
+                        horch_core::runtime::process::which(
+                            ctx.inherited.path.as_deref(),
+                            ctx.inherited.pathext.as_deref(),
+                            &bin.to_string_lossy(),
+                        )
+                        .is_some()
+                    };
+                    if found {
+                        return None;
+                    }
+                    format!("{} is not installed", bin.display())
+                }
+            };
+            Some((p.to_string(), why))
+        })
+        .collect()
+}
+
 /// The finish steps' tools: git, gh, node, the sweep skills.
 pub fn tools(ctx: &RuntimeContext) -> finish::Tools {
     let env = |k: &str| {
@@ -1476,19 +1593,27 @@ pub fn tools(ctx: &RuntimeContext) -> finish::Tools {
             .filter(|v| !v.is_empty())
             .map(PathBuf::from)
     };
-    let roots = [
+    let mut roots = vec![
         ctx.paths.home.join(".claude").join("plugins"),
         ctx.paths.data_root.clone(),
     ];
+    roots.extend(local_marketplaces(&ctx.paths.data_root));
+    // A plugin holds `<skill>/`; the skill store holds
+    // `skills/<skill>/<source>+<hash>/`.
+    let skill_dir = |p: &Path, skill: &str| {
+        p.file_name().is_some_and(|n| n == skill)
+            || p.parent()
+                .and_then(|d| d.file_name())
+                .is_some_and(|n| n == skill)
+    };
     let code_sweep_dir = env("HORCH_CODE_SWEEP_DIR").or_else(|| {
         find_dir(&roots, |p| {
-            p.file_name().is_some_and(|n| n == "code-sweep") && p.join("reviewers").is_dir()
+            skill_dir(p, "code-sweep") && p.join("reviewers").is_dir()
         })
     });
     let complexity_cli = env("HORCH_COMPLEXITY_CLI").or_else(|| {
         find_dir(&roots, |p| {
-            p.file_name().is_some_and(|n| n == "complexity-sweep")
-                && p.join("code/cli/dist/index.js").is_file()
+            skill_dir(p, "complexity-sweep") && p.join("code/cli/dist/index.js").is_file()
         })
         .map(|d| d.join("code/cli/dist/index.js"))
     });
@@ -1506,7 +1631,34 @@ pub fn tools(ctx: &RuntimeContext) -> finish::Tools {
             .unwrap_or_else(|| PathBuf::from("evidence")),
         // An absolute shell: a pane's PATH may not reach one.
         shell: PathBuf::from(if cfg!(unix) { "/bin/sh" } else { "sh" }),
+        reviewers_down: Vec::new(),
     }
+}
+
+/// The `plugins/` folder of each local marketplace checkout that the skill
+/// store installed a skill from. The store cannot hold complexity-sweep (its
+/// npm links are symlinks), but its checkout sits next to code-sweep's.
+fn local_marketplaces(data_root: &Path) -> Vec<PathBuf> {
+    let lock = horch_core::skills::catalog::marketplace::Store::new(data_root).lock_path();
+    let Ok(lock) = horch_core::skills::catalog::marketplace::Lockfile::read(&lock) else {
+        return Vec::new();
+    };
+    let mut out: Vec<PathBuf> = Vec::new();
+    for e in &lock.skills {
+        let source = Path::new(&e.source);
+        if !source.is_absolute() {
+            continue;
+        }
+        if let Some(p) = source
+            .ancestors()
+            .find(|a| a.file_name().is_some_and(|n| n == "plugins"))
+        {
+            if !out.iter().any(|o| o == p) {
+                out.push(p.to_path_buf());
+            }
+        }
+    }
+    out
 }
 
 /// The first directory under `roots` (at most 10 levels down) that `want`
@@ -1680,10 +1832,23 @@ pub fn render_claim(c: &Claimed) -> String {
         return out;
     }
     match (&c.worktree, t.uses_worktree()) {
-        (Some(path), _) => out.push_str(&format!(
-            "Worktree: {path} (branch {}). It holds the earlier attempt's work. Work there.\n",
-            c.worktree_branch.as_deref().unwrap_or("?")
-        )),
+        (Some(path), _) => {
+            out.push_str(&format!(
+                "Worktree: {path} (branch {}). It holds the earlier attempt's work. Work there.\n",
+                c.worktree_branch.as_deref().unwrap_or("?")
+            ));
+            if let Some(landed) = &c.landed_commit {
+                out.push_str(&format!(
+                    "Its work already landed at {}. The finish steps left: {}. A new commit is checked, reviewed and landed again.\n",
+                    &landed[..landed.len().min(12)],
+                    if c.steps_after_land.is_empty() {
+                        "none".to_string()
+                    } else {
+                        c.steps_after_land.join(", ")
+                    }
+                ));
+            }
+        }
         (None, true) => out.push_str(&format!(
             "Make your worktree first: horch ledger worktree new {}\n",
             slug(&t.title)

@@ -339,6 +339,41 @@ fn a_cancelled_task_is_finished_and_not_claimable() {
 }
 
 #[test]
+fn shared_checkout_tasks_run_one_at_a_time() {
+    use horch_core::taskledger::model::WorktreeMode;
+    let (_d, mut s, run) = ledger();
+    add(&mut s, &run, "a", "opus", |t| {
+        t.worktree_mode = WorktreeMode::Shared
+    });
+    add(&mut s, &run, "b", "opus", |t| {
+        t.worktree_mode = WorktreeMode::Shared
+    });
+    add(&mut s, &run, "c", "opus", |_| {});
+    let plan = tasks::plan_workers(s.conn(), &run.run_id).unwrap();
+    assert_eq!(
+        plan[0].startable, 2,
+        "T-1 and the worktree task T-3: {plan:?}"
+    );
+    let waits = tasks::waits(s.conn(), &run.run_id).unwrap();
+    assert_eq!(waits.len(), 1, "{waits:?}");
+    assert_eq!(waits[0].0.short(), "T-2");
+    assert!(
+        waits[0]
+            .1
+            .to_string()
+            .starts_with("exclusive: shared checkout"),
+        "{}",
+        waits[0].1
+    );
+    let w1 = worker(&mut s, &run, "opus");
+    assert_eq!(claimed_seq(&claim(&mut s, &w1)), Some(1));
+    let w2 = worker(&mut s, &run, "opus");
+    assert_eq!(claimed_seq(&claim(&mut s, &w2)), Some(3));
+    let w3 = worker(&mut s, &run, "opus");
+    assert_eq!(claimed_seq(&claim(&mut s, &w3)), None, "T-2 waits for T-1");
+}
+
+#[test]
 fn an_agent_that_exits_on_its_last_attempt_holds_the_task() {
     use horch_core::taskledger::supervisor::{self, Ended};
     let dir = tempfile::tempdir().unwrap();

@@ -2,6 +2,8 @@
 //!
 //! Every call names its directory with `-C`; nothing depends on the current
 //! directory. No call here ever forces: no `--force`, no `-D`, no `reset`.
+//! Each call runs without the caller's git repository variables (a
+//! `GIT_DIR` from a hook wins over `-C`), never prompts, and in the C locale.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -35,11 +37,14 @@ impl Git {
                 .any(|a| *a == "--force" || *a == "-D" || *a == "-f"),
             "the task ledger never forces git"
         );
-        let out = Command::new(&self.bin)
-            .arg("-C")
+        let mut cmd = Command::new(&self.bin);
+        cmd.arg("-C")
             .arg(dir)
             .args(args)
-            .env_remove("ANTHROPIC_API_KEY")
+            .env("GIT_TERMINAL_PROMPT", "0")
+            .env("LC_ALL", "C");
+        crate::runtime::process::scrub_child_env(&mut cmd);
+        let out = cmd
             .output()
             .with_context(|| format!("running {} {}", self.bin.display(), args.join(" ")))?;
         Ok(Out {
@@ -141,6 +146,17 @@ impl Git {
     /// untracked (ignored files are not listed).
     pub fn dirty(&self, dir: &Path) -> Result<Vec<String>> {
         let out = self.run(dir, &["status", "--porcelain", "--untracked-files=all"])?;
+        Ok(out
+            .lines()
+            .filter(|l| !l.trim().is_empty())
+            .map(|l| l.to_string())
+            .collect())
+    }
+
+    /// Like [`Git::dirty`], but only tracked files: changed, staged or
+    /// deleted. Untracked files do not count.
+    pub fn dirty_tracked(&self, dir: &Path) -> Result<Vec<String>> {
+        let out = self.run(dir, &["status", "--porcelain", "--untracked-files=no"])?;
         Ok(out
             .lines()
             .filter(|l| !l.trim().is_empty())

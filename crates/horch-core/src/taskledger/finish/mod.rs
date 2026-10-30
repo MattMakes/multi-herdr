@@ -5,7 +5,7 @@
 //! first that does not pass. A re-run starts again from the top: a step that
 //! passed is kept while the branch's tree is the one it judged, and runs
 //! again when a later fix changed it. Once `land` passed, the steps before
-//! it are final.
+//! it are final, until a commit arrives that the run branch lacks.
 
 pub mod codesweep;
 pub mod complexity;
@@ -43,6 +43,9 @@ pub struct Tools {
     pub evidence_root: PathBuf,
     /// The shell that runs a check command.
     pub shell: PathBuf,
+    /// Reviewer personas that cannot run on this host, with why (not in the
+    /// roster, harness not installed). Code-sweep queues their fallback.
+    pub reviewers_down: Vec<(String, String)>,
 }
 
 /// 1 step row.
@@ -71,6 +74,8 @@ pub struct Outcome {
     /// The tree this result judged; a change re-runs the step.
     pub judged_rev: Option<String>,
     pub review_task_ids: Option<Vec<String>>,
+    /// Reviewer workers whose review a new round superseded: stop them.
+    pub stop_workers: Vec<String>,
 }
 
 impl Outcome {
@@ -82,6 +87,7 @@ impl Outcome {
             note: note.into(),
             judged_rev: None,
             review_task_ids: None,
+            stop_workers: Vec::new(),
         }
     }
 
@@ -205,6 +211,57 @@ pub(crate) fn set_worktree(
         "UPDATE worktrees SET status = ?2, reason = ?3 WHERE worktree_id = ?1",
         params![id, status.as_str(), reason],
     )?;
+    Ok(())
+}
+
+/// The folder of 1 task's facts that outlive its workers (the start of a
+/// shared task, the code-sweep round, waivers).
+pub fn task_dir(evidence_root: &Path, task_id: &str) -> PathBuf {
+    evidence_root.join(task_id)
+}
+
+/// The file that holds the `HEAD` a shared-checkout task started from.
+fn shared_start_path(evidence_root: &Path, task_id: &str) -> PathBuf {
+    task_dir(evidence_root, task_id).join("shared-start")
+}
+
+/// The commit a shared-checkout task started from, when it was recorded.
+pub(crate) fn shared_start(evidence_root: &Path, task_id: &str) -> Option<String> {
+    std::fs::read_to_string(shared_start_path(evidence_root, task_id))
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+}
+
+/// The gate of a shared-checkout claim: the main checkout must be on the
+/// run branch, so the worker's commits go there. The first claim records
+/// `HEAD`; `land` later requires a commit after it. A worktree task or a
+/// review passes at once.
+pub fn shared_claim(tools: &Tools, run: &Run, task: &Task) -> Result<()> {
+    if task.uses_worktree() || task.is_review() {
+        return Ok(());
+    }
+    let Some(run_branch) = run.run_branch.as_deref() else {
+        return Ok(());
+    };
+    let root = Path::new(&run.project_root);
+    let on = tools.git.current_branch(root);
+    if on.as_deref() != Some(run_branch) {
+        bail!(
+            "{} works in the shared checkout, and {} is on {}, not {run_branch}. \
+             Ask the orchestrator to run this in {}: git switch {run_branch}",
+            task.short(),
+            root.display(),
+            on.as_deref().unwrap_or("a detached HEAD"),
+            root.display()
+        );
+    }
+    let path = shared_start_path(&tools.evidence_root, &task.task_id);
+    if !path.exists() {
+        let head = tools.git.rev(root, "HEAD")?;
+        std::fs::create_dir_all(path.parent().expect("a task folder"))?;
+        std::fs::write(&path, format!("{head}\n"))?;
+    }
     Ok(())
 }
 
@@ -375,6 +432,9 @@ pub struct FinishReport {
     pub message: String,
     /// Reviewer tasks queued by code-sweep that no worker holds yet.
     pub queued_reviews: Vec<String>,
+    /// Reviewer workers whose review a new round superseded: the caller
+    /// stops them.
+    pub superseded_workers: Vec<String>,
 }
 
 /// The tree the branch holds now: what a step judges.
@@ -431,9 +491,22 @@ pub fn finish(store: &mut Store, tools: &Tools, worker_id: &str) -> Result<Finis
         .iter()
         .position(|n| *n == StepName::Land)
         .map(|i| i as i64 + 1);
+    // Commits after a land: the steps before land judge them again (#154).
+    if let (Some(w0), Some(rb), Some(ls)) = (&wt, run.run_branch.as_deref(), land_seq) {
+        if land::reopen_if_new_commits(store, &tools.git, &root, w0, rb)? {
+            store.immediate(|tx| {
+                tx.execute(
+                    "UPDATE task_steps SET status = 'pending' WHERE task_id = ?1 AND worker_id = ?2 AND seq >= ?3",
+                    params![task.task_id, w.worker_id, ls],
+                )?;
+                Ok(())
+            })?;
+        }
+    }
     let mut stopped_at = None;
     let mut message = String::new();
     let mut queued_reviews = Vec::new();
+    let mut superseded_workers = Vec::new();
     for (i, name) in names.iter().enumerate() {
         let seq = i as i64 + 1;
         let rows = steps_of(store.conn(), &task.task_id, &w.worker_id)?;
@@ -488,6 +561,7 @@ pub fn finish(store: &mut Store, tools: &Tools, worker_id: &str) -> Result<Finis
         if let Some(ids) = &outcome.review_task_ids {
             queued_reviews = ids.clone();
         }
+        superseded_workers.extend(outcome.stop_workers.iter().cloned());
         if !outcome.status.is_through() {
             stopped_at = Some(name.as_str().to_string());
             message = format!("{}: {}", about(name.as_str()), outcome.note);
@@ -512,6 +586,22 @@ pub fn finish(store: &mut Store, tools: &Tools, worker_id: &str) -> Result<Finis
         stopped_at,
         message,
         queued_reviews,
+        superseded_workers,
+    })
+}
+
+/// `horch ledger finish --rereview`: the next finish queues a new
+/// code-sweep round for the same tree; the open reviews of the current one
+/// are cancelled as superseded.
+pub fn rereview(store: &mut Store, tools: &Tools, worker_id: &str) -> Result<()> {
+    let (w, task) = held_task(store.conn(), worker_id)?;
+    codesweep::forget_tree(store.conn(), &tools.evidence_root, &task.task_id)?;
+    store.immediate(|tx| {
+        tx.execute(
+            "UPDATE task_steps SET status = 'pending' WHERE task_id = ?1 AND worker_id = ?2 AND name = 'code-sweep'",
+            params![task.task_id, w.worker_id],
+        )?;
+        Ok(())
     })
 }
 
