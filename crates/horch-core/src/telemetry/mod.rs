@@ -13,6 +13,7 @@
 //! | [`store`] | the event files, the dedupe index, rollups |
 //! | [`collect`] | one tick: ledgers -> readers -> store -> snapshot |
 //! | [`lock`] | one collector per state root |
+//! | [`start`] | the start handshake between `ensure` and a new collector |
 //! | [`timing`] | one tick's time per phase and bytes written |
 
 pub mod collect;
@@ -20,6 +21,7 @@ pub mod context;
 pub(crate) mod cursor;
 pub mod lock;
 pub mod readers;
+pub mod start;
 pub mod store;
 pub mod timing;
 
