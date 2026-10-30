@@ -907,4 +907,183 @@ mod tests {
         );
         assert!(resolve_in(&[local], None, "dir-name", None).is_err());
     }
+    // ---- Pins for the named_skills and materialize_filtered splits (#145) ----
+
+    fn teammate_naming(dirs: &[&Path], skills: &[(&str, &[&str])]) -> Teammate {
+        Teammate {
+            plugin_dirs: dirs
+                .iter()
+                .map(|d| d.to_string_lossy().into_owned())
+                .collect(),
+            plugin_skills: skills
+                .iter()
+                .map(|(plugin, names)| (plugin.to_string(), wanted(names)))
+                .collect(),
+            ..Teammate::default()
+        }
+    }
+
+    /// A registry under `home` that installs `dir` as `key`, at `version`.
+    fn install_registry(home: &Path, key: &str, dir: &Path, version: &str) {
+        std::fs::create_dir_all(home.join(".claude/plugins")).unwrap();
+        std::fs::write(
+            home.join(".claude/plugins/installed_plugins.json"),
+            serde_json::json!({"plugins": {key: {"installPath": dir, "version": version}}})
+                .to_string(),
+        )
+        .unwrap();
+    }
+
+    /// A skills bundle that pins no plugin skill.
+    fn plain_bundle(state: &Path) -> crate::skills::Bundle {
+        let t = Teammate {
+            phase: Some(crate::roster::Phase::Plan),
+            ..Teammate::default()
+        };
+        crate::skills::Bundle::install(state, &t).unwrap().unwrap()
+    }
+
+    #[test]
+    fn named_skills_follow_the_plugins_in_name_order_and_the_skills_as_named() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path().join("home");
+        let local = plugin(
+            tmp.path(),
+            "code",
+            &[("review", "Review a diff."), ("tdd", "Red, green.")],
+        );
+        std::fs::write(
+            local.join(".claude-plugin/plugin.json"),
+            r#"{"name":"code","version":"1.2.0"}"#,
+        )
+        .unwrap();
+        let installed = plugin(&tmp.path().join("cache"), "dev", &[("deploy", "Deploy.")]);
+        install_registry(&home, "dev@market", &installed, "3.1");
+        let t = teammate_naming(
+            &[&local],
+            &[("dev", &["deploy"]), ("code", &["tdd", "review"])],
+        );
+
+        let got = named_skills(&t, Some(&home)).unwrap();
+        let ids: Vec<(&str, &str, &str)> = got
+            .iter()
+            .map(|n| (n.plugin.as_str(), n.skill.as_str(), n.plugin_key.as_str()))
+            .collect();
+        assert_eq!(
+            ids,
+            [
+                ("code", "tdd", "code@inline"),
+                ("code", "review", "code@inline"),
+                ("dev", "deploy", "dev@market"),
+            ]
+        );
+        // A plugin from plugin_dirs: the manifest's version, the skill's own
+        // directory, file size and digest.
+        let tdd = &got[0];
+        assert_eq!(tdd.version.as_deref(), Some("1.2.0"));
+        assert_eq!(tdd.description, "Red, green.");
+        assert_eq!(tdd.dir, local.join("skills/tdd"));
+        assert_eq!(
+            tdd.skill_file_bytes,
+            std::fs::read(tdd.dir.join("SKILL.md")).unwrap().len()
+        );
+        assert_eq!(tdd.digest, digest_of(&local.join("skills/tdd")));
+        assert_ne!(tdd.digest, got[1].digest);
+        // An installed plugin: its key, the record's version, its own files.
+        let deploy = &got[2];
+        assert_eq!(deploy.version.as_deref(), Some("3.1"));
+        assert_eq!(deploy.dir, installed.join("skills/deploy"));
+        assert_eq!(deploy.digest, digest_of(&installed.join("skills/deploy")));
+        // No plugin named, nothing to resolve.
+        assert_eq!(named_skills(&Teammate::default(), None).unwrap(), []);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn named_skills_refuse_a_skill_tree_the_digest_rules_refuse() {
+        let tmp = tempfile::tempdir().unwrap();
+        let src = plugin(tmp.path(), "code", &[("lint", "L."), ("review", "R.")]);
+        std::os::unix::fs::symlink("SKILL.md", src.join("skills/review/alias")).unwrap();
+        // The skill that is not named may hold a link; the named one may not.
+        let t = teammate_naming(&[&src], &[("code", &["lint"])]);
+        assert_eq!(named_skills(&t, None).unwrap().len(), 1);
+        let t = teammate_naming(&[&src], &[("code", &["lint", "review"])]);
+        let err = named_skills(&t, None).unwrap_err().to_string();
+        assert_eq!(err, "plugin skill 'code:review': 'alias' is a symlink");
+    }
+
+    #[test]
+    fn materialize_filtered_refuses_a_plugin_name_that_cannot_name_a_directory() {
+        let tmp = tempfile::tempdir().unwrap();
+        let bundle = plain_bundle(&tmp.path().join("state"));
+        for (at, bad) in ["", ".", "..", "a/b", "a\\b", "a\0b"]
+            .into_iter()
+            .enumerate()
+        {
+            let dir = plugin(tmp.path(), &format!("p{at}"), &[("review", "R.")]);
+            std::fs::write(
+                dir.join(".claude-plugin/plugin.json"),
+                serde_json::json!({ "name": bad }).to_string(),
+            )
+            .unwrap();
+            let t = teammate_naming(&[&dir], &[(bad, &["review"])]);
+            let err = materialize_filtered(&t, &bundle, None)
+                .unwrap_err()
+                .to_string();
+            assert_eq!(err, format!("plugin name '{bad}' cannot name a directory"));
+        }
+        assert!(
+            !bundle.root().join(FILTERED_DIR).exists(),
+            "a copy was written"
+        );
+    }
+
+    /// A plugin_dirs entry (written with `~/`) is swapped for its copy where
+    /// it stands; an installed plugin's copy follows, in name order; the
+    /// other entries stay as they are.
+    #[test]
+    fn materialize_filtered_swaps_a_plugin_dir_and_appends_an_installed_one() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path().join("home");
+        let bundle = plain_bundle(&tmp.path().join("state"));
+        let plugins = home.join("plugins");
+        plugin(&plugins, "other", &[("x", "X.")]);
+        plugin(&plugins, "code", &[("review", "R."), ("lint", "L.")]);
+        let installed = plugin(&tmp.path().join("cache"), "dev", &[("deploy", "D.")]);
+        install_registry(&home, "dev@market", &installed, "3.1");
+        let t = Teammate {
+            plugin_dirs: vec!["~/plugins/other".into(), "~/plugins/code".into()],
+            plugin_skills: [
+                ("dev".to_string(), wanted(&["deploy"])),
+                ("code".to_string(), wanted(&["review"])),
+            ]
+            .into(),
+            ..Teammate::default()
+        };
+
+        let dirs = materialize_filtered(&t, &bundle, Some(&home)).unwrap();
+        let copy = |name: &str| bundle.root().join(FILTERED_DIR).join(name);
+        let text = |path: PathBuf| path.to_string_lossy().into_owned();
+        assert_eq!(
+            dirs,
+            [
+                "~/plugins/other".to_string(),
+                text(copy("code")),
+                text(copy("dev"))
+            ]
+        );
+        assert!(copy("code").join("skills/review/SKILL.md").is_file());
+        assert!(!copy("code").join("skills/lint").exists());
+        assert!(copy("dev").join("skills/deploy/SKILL.md").is_file());
+        assert!(!bundle.root().join(FILTERED_DIR).join("other").exists());
+        // Nothing named, nothing copied: the entries come back as given.
+        let none = Teammate {
+            plugin_skills: Default::default(),
+            ..t
+        };
+        assert_eq!(
+            materialize_filtered(&none, &bundle, Some(&home)).unwrap(),
+            ["~/plugins/other", "~/plugins/code"]
+        );
+    }
 }
