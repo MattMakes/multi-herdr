@@ -34,7 +34,7 @@ use super::{
 use crate::compaction::window::OperatorWindow;
 use crate::fsx;
 use crate::prompts;
-use crate::roster::{ExecRule, HarnessDefault, PermissionMode, Teammate};
+use crate::roster::{ExecDecision, ExecRule, HarnessDefault, PermissionMode, Teammate};
 use crate::runtime::RuntimeContext;
 
 /// Path to codex's shared rules file: `~/.codex/rules/default.rules`.
@@ -357,6 +357,11 @@ fn install_rules(
 ///
 /// Idempotent: a rule whose pattern is already present is left alone, so the
 /// user's own rules and formatting survive.
+///
+/// Only allow rules go here. Every codex session reads this file, so a
+/// forbidden worker rule would also refuse the command to the codex
+/// orchestrator and to the operator's own sessions. The 1 broad ledger rule
+/// that v0.4.0 appended is removed, so the narrowed worker rules apply (#181).
 #[cfg_attr(not(windows), allow(dead_code))]
 pub(crate) fn ensure_rules(home: &Path, rules: &[ExecRule]) -> Result<()> {
     let path = rules_path(home);
@@ -364,17 +369,18 @@ pub(crate) fn ensure_rules(home: &Path, rules: &[ExecRule]) -> Result<()> {
         std::fs::create_dir_all(parent)
             .with_context(|| format!("creating {}", parent.display()))?;
     }
-    let existing = std::fs::read_to_string(&path).unwrap_or_default();
+    let read = std::fs::read_to_string(&path).unwrap_or_default();
+    let existing = read.replace(&prompts::codex_rule_block(&broad_ledger_rule()), "");
 
     let mut appended = String::new();
-    for rule in rules {
+    for rule in rules.iter().filter(|r| r.decision == ExecDecision::Allow) {
         // Match on the rendered pattern list, exactly as the bash `grep -qF` did.
         if existing.contains(&format!("[{}]", rule.pattern)) {
             continue;
         }
         appended.push_str(&prompts::codex_rule_block(rule));
     }
-    if appended.is_empty() {
+    if appended.is_empty() && existing == read {
         return Ok(());
     }
 
@@ -384,6 +390,16 @@ pub(crate) fn ensure_rules(home: &Path, rules: &[ExecRule]) -> Result<()> {
     }
     next.push_str(&appended);
     std::fs::write(&path, next).with_context(|| format!("writing {}", path.display()))
+}
+
+/// The broad worker rule that v0.4.0 appended to the shared rules file. It
+/// let a worker run every `horch ledger` subcommand outside its sandbox.
+fn broad_ledger_rule() -> ExecRule {
+    ExecRule {
+        pattern: r#""horch", "ledger""#.into(),
+        justification: "claim, report and finish tasks through the task ledger".into(),
+        decision: ExecDecision::Allow,
+    }
 }
 
 /// Pull the session uuid out of a rollout filename.
@@ -972,18 +988,20 @@ fn launch_sandbox(
     })
 }
 
-/// Whether a codex launch of `teammate` has the network, judged from the
-/// teammate file alone (the operator's `config.toml` is not read). The fleet
-/// write profile and full access have it. A workspace-write sandbox has it
-/// when the teammate's args turn `sandbox_workspace_write.network_access` on.
+/// Whether a codex launch of `teammate` can have the network, judged from
+/// the teammate file alone (the operator's `config.toml` is not read). It
+/// fails closed: only a read-only sandbox, or a workspace-write sandbox that
+/// does not turn `sandbox_workspace_write.network_access` on, has none. The
+/// fleet write profile, full access, a named profile and a sandbox the file
+/// leaves to codex or to the operator's config count as having it.
 pub(crate) fn launch_has_network(teammate: &Teammate) -> bool {
     match launch_sandbox(teammate, || None).as_deref() {
-        Some(FLEET_WRITE_PROFILE | "danger-full-access") => true,
+        Some(READ_ONLY) => false,
         Some(WORKSPACE_WRITE) => {
             config_pair_value(&teammate.args, "sandbox_workspace_write.network_access")
                 == Some("true")
         }
-        _ => false,
+        _ => true,
     }
 }
 
@@ -1187,7 +1205,7 @@ fn config_pair_value<'a>(args: &'a [String], key: &str) -> Option<&'a str> {
     let mut found = None;
     let mut args = args.iter();
     while let Some(arg) = args.next() {
-        if arg != "-c" {
+        if arg != "-c" && arg != "--config" {
             continue;
         }
         let Some((pair_key, value)) = args.next().and_then(|pair| pair.split_once('=')) else {
@@ -2106,6 +2124,9 @@ mod tests {
 
     /// A teammate whose own args choose the sandbox: workspace-write has the
     /// network only with `network_access` on; full access always has it.
+    /// A sandbox the teammate file does not decide (codex's default, the
+    /// operator's config, a named profile) counts as having the network, so
+    /// the network-safety check fails closed.
     #[test]
     fn a_teammates_own_sandbox_decides_its_network() {
         let with = |args: &[&str]| Teammate {
@@ -2122,6 +2143,18 @@ mod tests {
         ])));
         assert!(launch_has_network(&with(&["-s", "danger-full-access"])));
         assert!(!launch_has_network(&with(&["-s", "read-only"])));
+        assert!(launch_has_network(&with(&[
+            "-s",
+            "workspace-write",
+            "--config",
+            "sandbox_workspace_write.network_access=true"
+        ])));
+        let profile = Teammate {
+            args: vec!["-c".into(), "default_permissions=\"ops\"".into()],
+            ..Default::default()
+        };
+        assert!(launch_has_network(&profile));
+        assert!(launch_has_network(&Teammate::default()));
     }
 
     /// The load-bearing safety property: cleanup removes the LINKS, never what
@@ -2896,5 +2929,58 @@ mod tests {
         )
         .unwrap();
         assert!(dir.join("rules").is_dir());
+    }
+
+    /// Windows shares 1 rules file between every codex session. A forbidden
+    /// worker rule there would also refuse `horch ledger add` to the codex
+    /// orchestrator and to the operator's own sessions, so the shared file
+    /// gets only the allow rules.
+    #[test]
+    fn the_shared_rules_file_gets_no_forbidden_rule() {
+        let home = tempfile::tempdir().unwrap();
+        ensure_rules(home.path(), Roster::builtin().unwrap().exec_rules()).unwrap();
+        let text = std::fs::read_to_string(rules_path(home.path())).unwrap();
+        assert!(!text.contains("forbidden"), "{text}");
+        assert_eq!(
+            rule_decision(&text, &["horch", "ledger", "finish"]),
+            Some("allow".into())
+        );
+        assert_eq!(
+            rule_decision(&text, &["horch", "ledger", "add", "t.md"]),
+            None
+        );
+    }
+
+    /// v0.4.0 appended 1 broad `["horch", "ledger"]` allow to the shared file.
+    /// An upgrade removes exactly that block, so the narrowed rules apply on
+    /// Windows too, and keeps the operator's own rules.
+    #[test]
+    fn the_shared_rules_file_loses_the_old_broad_ledger_rule() {
+        let home = tempfile::tempdir().unwrap();
+        let path = rules_path(home.path());
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let own = "prefix_rule(\n    pattern = [\"horch\", \"ledger\"],\n    \
+                   decision = \"allow\",\n    justification = \"my own\",\n)\n";
+        let old = "prefix_rule(\n    pattern = [\"horch\", \"ledger\"],\n    \
+                   decision = \"allow\",\n    justification = \"herdr-fleet: claim, report \
+                   and finish tasks through the task ledger\",\n)\n";
+        std::fs::write(&path, format!("# the user's own\n{old}")).unwrap();
+        ensure_rules(home.path(), Roster::builtin().unwrap().exec_rules()).unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.starts_with("# the user's own\n"), "{text}");
+        assert!(!text.contains("claim, report and finish"), "{text}");
+        assert_eq!(
+            rule_decision(&text, &["horch", "ledger", "cancel", "T-1"]),
+            None
+        );
+        assert_eq!(
+            rule_decision(&text, &["horch", "ledger", "claim"]),
+            Some("allow".into())
+        );
+
+        // A rule the operator wrote with the same pattern is theirs: it stays.
+        std::fs::write(&path, own).unwrap();
+        ensure_rules(home.path(), Roster::builtin().unwrap().exec_rules()).unwrap();
+        assert!(std::fs::read_to_string(&path).unwrap().starts_with(own));
     }
 }

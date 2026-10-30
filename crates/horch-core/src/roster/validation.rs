@@ -665,12 +665,9 @@ impl Roster {
             if t.agent != HarnessKind::Codex {
                 continue;
             }
-            let base = t.base.as_deref();
-            let base_body = base
-                .and_then(|b| self.bases.get(b))
-                .map(|b| b.body.as_str());
-            let briefing = format!("{}{}", base_body.unwrap_or_default(), t.persona);
-            if base != Some("fleet-orchestrator") && !briefing.contains(LEDGER_ALONE) {
+            let is_worker = t.base.as_deref() != Some("fleet-orchestrator");
+            let briefing = self.rendered_briefing(t, is_worker);
+            if is_worker && !briefing.contains(LEDGER_ALONE) {
                 problems.push(format!(
                     "{}: a codex worker briefing must say {LEDGER_ALONE:?}: an execpolicy \
                      allow lifts the sandbox only for a command that is the whole exec call",
@@ -686,6 +683,28 @@ impl Roster {
             }
         }
         problems
+    }
+}
+
+impl Roster {
+    /// The briefing a pane of `t` reads, rendered by the same functions as a
+    /// launch: a worker's with no task, an orchestrator's whole. A briefing
+    /// that does not render is empty, so a required line counts as missing.
+    fn rendered_briefing(&self, t: &Teammate, is_worker: bool) -> String {
+        let rendered = if is_worker {
+            crate::prompts::worker_prompt_with_context(
+                self,
+                t,
+                "r-1",
+                "",
+                &crate::execution::SessionMode::Fresh(None),
+                "",
+                "",
+            )
+        } else {
+            crate::prompts::agent_prompt(self, t, "orchestrator")
+        };
+        rendered.unwrap_or_default()
     }
 }
 
@@ -1729,6 +1748,22 @@ mod spawnable_tests {
         assert!(named.contains(&"codex-reviewer"), "{problems:?}");
         assert!(!named.contains(&"sonnet"), "{problems:?}");
         assert!(!named.contains(&"orchestrator-codex"), "{problems:?}");
+    }
+
+    /// The check reads the briefing the pane renders, so a required line in a
+    /// teammate's `first_instruction` counts.
+    #[test]
+    fn a_required_line_in_first_instruction_counts() {
+        let mut r = without_line("fleet-worker", LEDGER_ALONE);
+        r.teammates.get_mut("codex-sol").unwrap().first_instruction = Some(LEDGER_ALONE.into());
+        let problems = r.check();
+        let flagged = |name: &str| {
+            problems
+                .iter()
+                .any(|p| p.starts_with(&format!("{name}:")) && p.contains(LEDGER_ALONE))
+        };
+        assert!(!flagged("codex-sol"), "{problems:?}");
+        assert!(flagged("codex-terra"), "{problems:?}");
     }
 
     /// #151: a codex pane with the network carries the network-safety rule.
