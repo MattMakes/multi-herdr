@@ -1293,4 +1293,427 @@ mod tests {
             );
         }
     }
+    // ---- Pins for the claude_command split (#191) ----
+
+    fn claude_default(settings: serde_json::Map<String, Value>, force: bool) -> HarnessDefault {
+        HarnessDefault {
+            harness: HarnessKind::Claude,
+            base: None,
+            env: Default::default(),
+            args: Vec::new(),
+            settings: Some(settings),
+            config: None,
+            agent_settings: None,
+            force: force.then(|| "test".to_string()),
+        }
+    }
+
+    fn obj(v: Value) -> serde_json::Map<String, Value> {
+        v.as_object().unwrap().clone()
+    }
+
+    fn quiet(model: &str) -> Teammate {
+        Teammate {
+            model: Some(model.into()),
+            inherit_plugins: true,
+            inherit_claudeai_skills: true,
+            ..Teammate::default()
+        }
+    }
+
+    fn built(env: &LaunchEnv, t: &Teammate, s: Session<'_>, prompt: &str) -> Vec<String> {
+        command_args(&claude_command(env, t, s, prompt, None).unwrap())
+    }
+
+    /// Every flag group at once, in the order the variadic fence needs.
+    #[test]
+    fn every_flag_group_keeps_its_place() {
+        let mut t = quiet("opus");
+        t.effort = Some("high".into());
+        t.permission_mode = Some(crate::roster::PermissionMode::AcceptEdits);
+        t.mcp_servers = Some([("srv".to_string(), json!({"command": "x"}))].into());
+        t.mcp_config_files = vec!["~/a.json".into()];
+        t.worker_channel = true;
+        t.tools = Some(vec!["Read".into()]);
+        t.allowed_tools = vec!["Read".into(), "Grep".into()];
+        t.disallowed_tools = vec!["Bash".into()];
+        t.setting_sources = Some(vec!["user".into()]);
+        t.disable_skills = true;
+        t.plugin_dirs = vec!["/p".into()];
+        t.args = vec!["--x".into()];
+        let a = built(&LaunchEnv::for_test(), &t, Session::Fresh("S"), "PROMPT");
+        let mcp = json!({"mcpServers": {
+            "horch": {"command": "horch", "args": ["channel", "serve", "--agent", "claude"]},
+            "srv": {"command": "x"}
+        }})
+        .to_string();
+        assert_eq!(a[..2], ["--mcp-config".to_string(), mcp]);
+        let settings = a.iter().position(|x| x == "--settings").unwrap();
+        let mut rest = a.clone();
+        rest.drain(settings..settings + 2);
+        assert_eq!(
+            rest[2..],
+            [
+                "--mcp-config",
+                "~/a.json",
+                "--strict-mcp-config",
+                "--tools",
+                "Read",
+                "--allowedTools",
+                "Read,Grep",
+                "--disallowedTools",
+                "Bash",
+                "--dangerously-load-development-channels",
+                "server:horch",
+                "--model",
+                "opus",
+                "--effort",
+                "high",
+                "--permission-mode",
+                "acceptEdits",
+                "--setting-sources",
+                "user",
+                "--disable-slash-commands",
+                "--plugin-dir",
+                "/p",
+                "--session-id",
+                "S",
+                "--x",
+                "PROMPT"
+            ]
+        );
+        assert!(settings > rest.iter().position(|x| x == "--plugin-dir").unwrap());
+    }
+
+    #[test]
+    fn mcp_flags_per_shape() {
+        let env = LaunchEnv::for_test();
+        let mcp_part = |t: &Teammate| {
+            let a = built(&env, t, Session::Unmanaged, "");
+            a[..a.iter().position(|x| x == "--model").unwrap()].to_vec()
+        };
+        assert!(mcp_part(&quiet("m")).is_empty());
+
+        // Files only: one variadic flag, not strict.
+        let mut t = quiet("m");
+        t.mcp_config_files = vec!["a.json".into(), "b.json".into()];
+        assert_eq!(mcp_part(&t), ["--mcp-config", "a.json", "b.json"]);
+
+        // Declared servers: strict, each file its own flag.
+        let mut t = quiet("m");
+        t.mcp_servers = Some(Default::default());
+        t.mcp_config_files = vec!["a.json".into(), "b.json".into()];
+        assert_eq!(
+            mcp_part(&t),
+            [
+                "--mcp-config",
+                r#"{"mcpServers":{}}"#,
+                "--mcp-config",
+                "a.json",
+                "--mcp-config",
+                "b.json",
+                "--strict-mcp-config"
+            ]
+        );
+
+        // Channel alone: not strict.
+        let mut t = quiet("m");
+        t.worker_channel = true;
+        let a = mcp_part(&t);
+        assert!(!a.contains(&"--strict-mcp-config".to_string()), "{a:?}");
+        assert_eq!(a.len(), 4, "{a:?}");
+
+        // `Some([])` tools is `--tools ""`.
+        let mut t = quiet("m");
+        t.tools = Some(vec![]);
+        assert_eq!(mcp_part(&t), ["--tools", ""]);
+    }
+
+    #[test]
+    fn a_session_resume_or_none_and_the_effort_drop() {
+        let env = LaunchEnv::for_test();
+        let t = quiet("haiku");
+        let mut with_effort = t.clone();
+        with_effort.effort = Some("high".into());
+        let fresh = built(&env, &with_effort, Session::Fresh("S"), "P");
+        assert!(!fresh.contains(&"--effort".to_string()), "{fresh:?}");
+        assert!(fresh.windows(2).any(|w| w == ["--session-id", "S"]));
+        let resumed = built(&env, &t, Session::Resume("S"), "");
+        assert!(resumed.windows(2).any(|w| w == ["--resume", "S"]));
+        assert_eq!(resumed.last().unwrap(), "S");
+        let unmanaged = built(&env, &t, Session::Unmanaged, "P");
+        assert!(!unmanaged
+            .iter()
+            .any(|a| a.starts_with("--session") || a == "--resume"));
+    }
+
+    #[test]
+    fn inline_settings_gain_defaults_and_window_or_stay_byte_for_byte() {
+        let mut env = LaunchEnv::for_test();
+        let mut t = quiet("m");
+        t.settings = Some(r#" { "a" : 1 } "#.into());
+        let value = |a: &[String]| -> String {
+            a[a.iter().position(|x| x == "--settings").unwrap() + 1].clone()
+        };
+        assert_eq!(
+            value(&built(&env, &t, Session::Unmanaged, "")),
+            r#" { "a" : 1 } "#
+        );
+
+        t.harness_defaults = vec![claude_default(obj(json!({"b": {"c": 2}, "a": 9})), false)];
+        let merged: Value =
+            serde_json::from_str(&value(&built(&env, &t, Session::Unmanaged, ""))).unwrap();
+        assert_eq!(merged, json!({"a": 1, "b": {"c": 2}}));
+
+        // A default that adds nothing leaves the text alone.
+        t.harness_defaults = vec![claude_default(obj(json!({"a": 9})), false)];
+        assert_eq!(
+            value(&built(&env, &t, Session::Unmanaged, "")),
+            r#" { "a" : 1 } "#
+        );
+
+        // The window merges in as env.CLAUDE_CODE_AUTO_COMPACT_WINDOW.
+        env.compact_window = Some(crate::compaction::window::WindowDecision {
+            tokens: Some(1234),
+            source: crate::compaction::window::WindowSource::Fleet,
+            detail: "d".into(),
+            applied: true,
+        });
+        let merged: Value =
+            serde_json::from_str(&value(&built(&env, &t, Session::Unmanaged, ""))).unwrap();
+        assert_eq!(
+            merged,
+            json!({"a": 1, "env": {"CLAUDE_CODE_AUTO_COMPACT_WINDOW": "1234"}})
+        );
+
+        // Invalid inline JSON that needs a merge is refused; a file is passed on.
+        t.settings = Some("{oops".into());
+        assert!(claude_command(&env, &t, Session::Unmanaged, "", None).is_err());
+        t.settings = Some("~/s.json".into());
+        env.home = Some("/home/x".into());
+        assert_eq!(
+            value(&built(&env, &t, Session::Unmanaged, "")),
+            "/home/x/s.json"
+        );
+    }
+
+    fn home_with(settings: &str) -> (tempfile::TempDir, LaunchEnv) {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(tmp.path().join(".claude")).unwrap();
+        std::fs::write(tmp.path().join(".claude/settings.json"), settings).unwrap();
+        let mut env = LaunchEnv::for_test();
+        env.home = Some(tmp.path().to_path_buf());
+        (tmp, env)
+    }
+
+    #[test]
+    fn the_default_overlay_sheds_plugins_and_keeps_the_status_line() {
+        let (_tmp, env) = home_with(
+            r#"{"enabledPlugins":{"a@m":true,"b@m":false},"statusLine":{"type":"command","command":"x"}}"#,
+        );
+        let mut t = quiet("m");
+        t.inherit_plugins = false;
+        t.setting_sources = Some(vec!["user".into()]);
+        let a = built(&env, &t, Session::Unmanaged, "");
+        let overlay = settings_overlay_of(&a);
+        assert_eq!(overlay["enabledPlugins"]["a@m"], false);
+        assert!(overlay["enabledPlugins"].get("b@m").is_none());
+        assert_eq!(overlay["statusLine"]["command"], "x");
+        assert_eq!(overlay["syncClaudeAiPlugins"], false);
+
+        // Without setting_sources the status line stays with the operator.
+        t.setting_sources = None;
+        let overlay = settings_overlay_of(&built(&env, &t, Session::Unmanaged, ""));
+        assert!(overlay.get("statusLine").is_none());
+    }
+
+    fn settings_overlay_of(a: &[String]) -> Value {
+        serde_json::from_str(&a[a.iter().position(|x| x == "--settings").unwrap() + 1]).unwrap()
+    }
+
+    #[test]
+    fn skills_settings_reads_its_source_and_adds_the_switches() {
+        let (tmp, _env) = home_with(
+            r#"{"enabledPlugins":{"a@m":true},"statusLine":{"type":"command","command":"op"}}"#,
+        );
+        let home = Some(tmp.path());
+        let mut t = quiet("m");
+        let v = skills_settings(&t, home).unwrap();
+        assert_eq!(v["disableBundledSkills"], true);
+        assert_eq!(v["disableWorkflows"], true);
+        assert!(v.get("statusLine").is_none());
+
+        // A file source is read, and its own keys win.
+        std::fs::write(
+            tmp.path().join("mine.json"),
+            r#"{"disableWorkflows":false,"statusLine":"mine"}"#,
+        )
+        .unwrap();
+        t.settings = Some(tmp.path().join("mine.json").to_string_lossy().into_owned());
+        t.inherit_plugins = false;
+        t.setting_sources = Some(vec![]);
+        let v = skills_settings(&t, home).unwrap();
+        assert_eq!(v["disableWorkflows"], false);
+        assert_eq!(v["statusLine"], "mine");
+        assert_eq!(v["enabledPlugins"]["a@m"], false);
+
+        // Without its own status line the operator's is copied.
+        t.settings = Some("{}".into());
+        let v = skills_settings(&t, home).unwrap();
+        assert_eq!(v["statusLine"]["command"], "op");
+
+        std::fs::write(tmp.path().join("list.json"), "[]").unwrap();
+        let list = tmp.path().join("list.json").to_string_lossy().into_owned();
+        for (source, why) in [
+            (list.as_str(), "teammate settings must be a JSON object"),
+            ("{oops", "invalid teammate settings JSON"),
+            ("/no/such/file.json", "reading teammate settings"),
+        ] {
+            t.settings = Some(source.into());
+            let err = format!("{:#}", skills_settings(&t, home).unwrap_err());
+            assert!(err.contains(why), "{source}: {err}");
+        }
+        t.settings = Some(r#"{"enabledPlugins":3}"#.into());
+        let err = format!("{:#}", skills_settings(&t, home).unwrap_err());
+        assert!(err.contains("enabledPlugins must be an object"), "{err}");
+    }
+
+    #[test]
+    fn operator_window_reads_the_first_source_then_the_process() {
+        let texts = ClaudeSettingsTexts {
+            managed: Some(r#"{"env":{"OTHER":"1"}}"#.into()),
+            local: Some("not json".into()),
+            project: Some(r#"{"env":{"CLAUDE_CODE_AUTO_COMPACT_WINDOW":"150000"}}"#.into()),
+            user: Some(
+                r#"{"env":{"CLAUDE_CODE_AUTO_COMPACT_WINDOW":"9","CLAUDE_AUTOCOMPACT_PCT_OVERRIDE":"50"}}"#
+                    .into(),
+            ),
+            user_path: "/u".into(),
+        };
+        let w = claude_operator_window(&texts, None, Some("77")).unwrap();
+        assert_eq!(w.tokens, Some(150000));
+        assert_eq!(w.detail, ".claude/settings.json");
+
+        // Narrowed to user: the percentage override hides the trigger.
+        let only_user = vec!["user".to_string()];
+        let w = claude_operator_window(&texts, Some(&only_user), Some("77")).unwrap();
+        assert_eq!(w.tokens, None);
+        assert_eq!(
+            w.detail,
+            "/u (CLAUDE_AUTOCOMPACT_PCT_OVERRIDE set; trigger unknown)"
+        );
+
+        // No file sets it: the process env counts; a non-number is flagged.
+        let none = ClaudeSettingsTexts::default();
+        let w = claude_operator_window(&none, None, Some("88")).unwrap();
+        assert_eq!(
+            (w.tokens, w.detail.as_str()),
+            (Some(88), "process env CLAUDE_CODE_AUTO_COMPACT_WINDOW")
+        );
+        let w = claude_operator_window(&none, None, Some("lots")).unwrap();
+        assert_eq!(w.tokens, None);
+        assert!(w.detail.ends_with("(not a number)"), "{}", w.detail);
+        assert_eq!(claude_operator_window(&none, None, None), None);
+
+        let bad = ClaudeSettingsTexts {
+            managed: Some(r#"{"env":{"CLAUDE_CODE_AUTO_COMPACT_WINDOW":true}}"#.into()),
+            ..Default::default()
+        };
+        let w = claude_operator_window(&bad, None, None).unwrap();
+        assert_eq!(w.tokens, None);
+        assert_eq!(w.detail, "managed settings (not a number)");
+    }
+
+    #[test]
+    fn overlay_window_respects_what_the_overlay_already_says() {
+        let mut o = obj(json!({}));
+        assert!(!overlay_window(None, &mut o));
+        assert!(o.is_empty());
+        assert!(overlay_window(Some(5), &mut o));
+        assert_eq!(o["env"]["CLAUDE_CODE_AUTO_COMPACT_WINDOW"], "5");
+        assert!(!overlay_window(Some(6), &mut o));
+        assert_eq!(o["env"]["CLAUDE_CODE_AUTO_COMPACT_WINDOW"], "5");
+
+        let mut o = obj(json!({"env": {"KEEP": "1"}}));
+        assert!(overlay_window(Some(7), &mut o));
+        assert_eq!(
+            o["env"],
+            json!({"KEEP": "1", "CLAUDE_CODE_AUTO_COMPACT_WINDOW": "7"})
+        );
+
+        // A non-object env is left alone.
+        let mut o = obj(json!({"env": 3}));
+        assert!(!overlay_window(Some(7), &mut o));
+        assert_eq!(o["env"], 3);
+    }
+
+    #[test]
+    fn overlay_blocks_walks_parents() {
+        let o = obj(json!({"a": {"b": {"c": 1}}, "s": 1}));
+        assert!(overlay_blocks(&o, &[], "s"));
+        assert!(!overlay_blocks(&o, &[], "z"));
+        assert!(overlay_blocks(&o, &["a", "b"], "c"));
+        assert!(!overlay_blocks(&o, &["a", "b"], "d"));
+        assert!(!overlay_blocks(&o, &["a", "x"], "c"));
+        assert!(!overlay_blocks(&o, &["x", "y"], "c"));
+        // A parent that is not an object blocks every child key.
+        assert!(overlay_blocks(&o, &["s"], "anything"));
+        assert!(overlay_blocks(&o, &["a", "b", "c"], "d"));
+    }
+
+    #[test]
+    fn merge_defaults_later_entry_wins_and_operator_yields() {
+        let (_tmp, env) = home_with(r#"{"fromOperator": 1, "nest": {"op": 1}}"#);
+        let read = || operator_settings(&env);
+        let mut t = quiet("m");
+        t.harness_defaults = vec![
+            claude_default(
+                obj(json!({"x": 1, "fromOperator": 2, "nest": {"op": 2, "new": 3}})),
+                false,
+            ),
+            claude_default(
+                obj(json!({"x": 5, "forced": 1, "deep": {"er": {"k": true}}})),
+                true,
+            ),
+        ];
+        let mut o = obj(json!({"present": 1}));
+        assert!(merge_settings_defaults(&t, &mut o, read).unwrap());
+        assert_eq!(
+            Value::Object(o.clone()),
+            json!({
+                "present": 1,
+                "x": 5,
+                "forced": 1,
+                "deep": {"er": {"k": true}},
+                "nest": {"new": 3}
+            })
+        );
+        // A second pass changes nothing.
+        assert!(!merge_settings_defaults(&t, &mut o, read).unwrap());
+
+        // The overlay's own key beats a default, even a forced one; a
+        // non-object parent blocks.
+        let mut o = obj(json!({"x": 0, "deep": 3}));
+        merge_settings_defaults(&t, &mut o, read).unwrap();
+        assert_eq!(o["x"], 0);
+        assert_eq!(o["deep"], 3);
+
+        // The operator files are read only when a non-forced key needs them.
+        let mut only_forced = quiet("m");
+        only_forced.harness_defaults = vec![claude_default(obj(json!({"f": 1})), true)];
+        let mut o = obj(json!({}));
+        assert!(merge_settings_defaults(&only_forced, &mut o, || panic!("read")).unwrap());
+    }
+
+    #[test]
+    fn skill_switches_refuse_non_object_sections() {
+        let t = quiet("m");
+        for key in ["skillOverrides", "enabledPlugins"] {
+            let mut o = obj(json!({ key: 3 }));
+            let err = overlay_skill_switches(&t, &mut o, None)
+                .unwrap_err()
+                .to_string();
+            assert_eq!(err, format!("{key} must be an object"));
+        }
+    }
 }
