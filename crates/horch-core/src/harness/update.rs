@@ -668,6 +668,16 @@ mod tests {
     }
 
     #[test]
+    fn strip_ansi_drops_an_unterminated_escape_to_the_end() {
+        assert_eq!(strip_ansi("a\u{1b}"), "a");
+        assert_eq!(strip_ansi("a\u{1b}[31"), "a");
+        assert_eq!(strip_ansi("a\u{1b}]0;title"), "a");
+        // A lone ESC inside an OSC is not a terminator; ESC \ is.
+        assert_eq!(strip_ansi("\u{1b}]0;ti\u{1b}tle\u{7}b"), "b");
+        assert_eq!(strip_ansi("\u{1b}]0;t\u{1b}\\b\u{1b}[1;2Hc"), "bc");
+    }
+
+    #[test]
     fn arc_33_the_reason_is_the_last_plain_line_cut_to_200_characters() {
         let spinner = "\u{1b}[?25l⠋ Upgrading\r\u{1b}[2K⠙ Upgrading\r\u{1b}[2K\
                        \u{1b}[31mError: network down\u{1b}[0m\n\n  \n";
