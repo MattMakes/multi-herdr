@@ -117,7 +117,7 @@ fn prepare_target(ctx: &mut RuntimeContext, command: &Command, cli_project: Opti
         ambient.as_deref(),
         |dir| repo_top(&git, ambient.as_deref(), dir),
     );
-    if command.prints_target() {
+    if cli::prints_target(command) {
         if let Some(project) = &ctx.paths.project_dir {
             let head = git.head(project).ok();
             println!("{}", target_line(project, head.as_deref()));

@@ -1,11 +1,11 @@
 //! `multi-herdr-dataset rebuild <exp>`: re-derive the projections from the
 //! events, and compare them byte for byte with the live, incremental fold.
 
-use anyhow::{bail, Result};
+use anyhow::{ensure, Context, Result};
 use horch_core::ids::ExperimentId;
 use horch_core::measure::digest::canonical_json;
 use horch_core::measure::event::EventEnvelope;
-use horch_core::measure::projection::{fold, Projection};
+use horch_core::measure::projection::{fold, ExperimentView, Projection};
 use horch_core::measure::store;
 use horch_core::runtime::RuntimeContext;
 
@@ -20,15 +20,17 @@ pub(crate) fn rebuild(ctx: &RuntimeContext, experiment: &str) -> Result<u8> {
         .into_iter()
         .filter(|e| e.experiment_id == exp)
         .collect();
-    if events.is_empty() {
-        bail!(
-            "no events for experiment {exp} in {}",
-            paths.root().display()
-        );
-    }
+    ensure!(
+        !events.is_empty(),
+        "no events for experiment {exp} in {}",
+        paths.root().display()
+    );
 
     let (rebuilt, rebuilt_json, identical) = fold_both(&events)?;
-    print_report(&exp, &events, read.torn_lines, &rebuilt)?;
+    let view = view_of(&rebuilt, &exp)?;
+    for line in report_lines(&exp, view, events.len(), read.torn_lines, &rebuilt) {
+        println!("{line}");
+    }
     if identical {
         println!(
             "projection: identical to the live fold ({} bytes)",
@@ -50,35 +52,55 @@ fn fold_both(events: &[EventEnvelope]) -> Result<(Projection, String, bool)> {
     for env in events {
         live.apply(env);
     }
-    let rebuilt_json = canonical_json(&serde_json::to_value(&rebuilt)?);
-    let live_json = canonical_json(&serde_json::to_value(&live)?);
-    let identical = rebuilt_json == live_json;
+    let rebuilt_json = canonical(&rebuilt)?;
+    let identical = rebuilt_json == canonical(&live)?;
     Ok((rebuilt, rebuilt_json, identical))
 }
 
-/// Print the experiment state, the counts, the rounds and the anomalies.
-fn print_report(
+/// The canonical JSON of a projection.
+fn canonical(projection: &Projection) -> Result<String> {
+    serde_json::to_value(projection)
+        .map(|value| canonical_json(&value))
+        .map_err(Into::into)
+}
+
+/// The experiment in the rebuilt projection: it needs its
+/// `experiment.created`.
+fn view_of<'a>(rebuilt: &'a Projection, exp: &ExperimentId) -> Result<&'a ExperimentView> {
+    rebuilt
+        .experiments
+        .get(exp)
+        .with_context(|| format!("experiment {exp} has events but no experiment.created"))
+}
+
+/// The report lines: the experiment state, the counts, the rounds and the
+/// anomalies.
+fn report_lines(
     exp: &ExperimentId,
-    events: &[EventEnvelope],
+    view: &ExperimentView,
+    event_count: usize,
     torn_lines: u32,
     rebuilt: &Projection,
-) -> Result<()> {
-    let Some(view) = rebuilt.experiments.get(exp) else {
-        bail!("experiment {exp} has events but no experiment.created");
-    };
-    println!("experiment {exp} {}", view.state.as_str());
-    println!("events: {}", events.len());
-    println!("torn lines skipped: {torn_lines}");
-    for round_id in &view.rounds {
-        if let Some(r) = rebuilt.rounds.get(round_id) {
-            println!("round {round_id} {}", r.state.as_str());
-        }
-    }
-    println!("anomalies: {}", rebuilt.anomalies.len());
-    for a in &rebuilt.anomalies {
-        println!("  {}: {}", a.event_id, a.reason);
-    }
-    Ok(())
+) -> Vec<String> {
+    let rounds = view
+        .rounds
+        .iter()
+        .flat_map(|id| rebuilt.rounds.get(id).map(|r| (id, r)))
+        .map(|(id, r)| format!("round {id} {}", r.state.as_str()));
+    let anomalies = rebuilt
+        .anomalies
+        .iter()
+        .map(|a| format!("  {}: {}", a.event_id, a.reason));
+    [
+        format!("experiment {exp} {}", view.state.as_str()),
+        format!("events: {event_count}"),
+        format!("torn lines skipped: {torn_lines}"),
+    ]
+    .into_iter()
+    .chain(rounds)
+    .chain([format!("anomalies: {}", rebuilt.anomalies.len())])
+    .chain(anomalies)
+    .collect()
 }
 
 #[cfg(test)]
@@ -140,7 +162,7 @@ mod tests {
     fn no_events_fold_to_an_empty_projection_and_the_report_refuses_it() {
         let (rebuilt, _, identical) = fold_both(&[]).unwrap();
         assert!(identical);
-        let err = print_report(&exp(), &[], 0, &rebuilt).unwrap_err();
+        let err = view_of(&rebuilt, &exp()).unwrap_err();
         assert_eq!(
             err.to_string(),
             format!("experiment {} has events but no experiment.created", exp())
@@ -148,9 +170,18 @@ mod tests {
     }
 
     #[test]
-    fn the_report_prints_for_a_created_experiment() {
+    fn the_report_lists_the_state_the_counts_and_no_anomalies() {
         let events = created_events();
         let (rebuilt, _, _) = fold_both(&events).unwrap();
-        print_report(&exp(), &events, 0, &rebuilt).unwrap();
+        let view = view_of(&rebuilt, &exp()).unwrap();
+        assert_eq!(
+            report_lines(&exp(), view, events.len(), 3, &rebuilt),
+            [
+                format!("experiment {} PREFLIGHT", exp()),
+                "events: 1".to_string(),
+                "torn lines skipped: 3".to_string(),
+                "anomalies: 0".to_string(),
+            ]
+        );
     }
 }

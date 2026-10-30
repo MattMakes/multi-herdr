@@ -125,22 +125,20 @@ pub enum OperatorCommand {
     Watch(WatchArgs),
 }
 
-impl Command {
-    /// The command prints the `target: <repo> @ <HEAD>` line first. `run
-    /// --detach` prints 1 line on a pass (FDS-10), so it does not.
-    pub fn prints_target(&self) -> bool {
-        match self {
-            Command::Run(args) => !args.detach,
-            Command::Resume { .. } | Command::Status { .. } => true,
-            Command::Operator(op) => matches!(
-                op,
+/// The command prints the `target: <repo> @ <HEAD>` line first. `run
+/// --detach` prints 1 line on a pass (FDS-10), so it does not.
+pub fn prints_target(command: &Command) -> bool {
+    matches!(
+        command,
+        Command::Run(RunArgs { detach: false, .. })
+            | Command::Resume { .. }
+            | Command::Status { .. }
+            | Command::Operator(
                 OperatorCommand::Promote(_)
                     | OperatorCommand::Rollback(_)
                     | OperatorCommand::Cleanup(_)
-            ),
-            _ => false,
-        }
-    }
+            )
+    )
 }
 
 /// `fleet` subcommands (fleet-dataset §4.2).
@@ -334,7 +332,7 @@ mod tests {
 
     fn prints(args: &[&str]) -> bool {
         let argv = std::iter::once("multi-herdr-dataset").chain(args.iter().copied());
-        Cli::try_parse_from(argv).unwrap().command.prints_target()
+        prints_target(&Cli::try_parse_from(argv).unwrap().command)
     }
 
     #[test]

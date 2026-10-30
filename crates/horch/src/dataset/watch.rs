@@ -47,10 +47,7 @@ pub(crate) fn watch(ctx: &RuntimeContext, args: &WatchArgs) -> Result<u8> {
 /// must go on: the events can be read, the experiment is not settled and the
 /// events directory is still there.
 fn tick(paths: &DatasetPaths, experiment: &ExperimentId) -> bool {
-    match store::read_all(paths) {
-        Err(_) => false,
-        Ok(read) => show(&read, experiment) && paths.events_dir().is_dir(),
-    }
+    store::read_all(paths).is_ok_and(|read| show(&read, experiment)) && paths.events_dir().is_dir()
 }
 
 /// Print the status of `experiment`. Gives `false` once it is settled.

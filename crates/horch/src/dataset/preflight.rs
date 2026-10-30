@@ -412,7 +412,7 @@ fn tree_bytes(dir: &Path, skip: &[&str]) -> u64 {
     let mut stack = vec![dir.to_path_buf()];
     while let Some(d) = stack.pop() {
         let entries = std::fs::read_dir(&d).into_iter().flatten().flatten();
-        let metas = entries.filter_map(|e| Some((e.path().symlink_metadata().ok()?, e)));
+        let metas = entries.filter_map(|e| e.path().symlink_metadata().ok().map(|meta| (meta, e)));
         for (meta, entry) in metas {
             if meta.is_dir() {
                 if !skip.iter().any(|s| entry.file_name() == *s) {
@@ -580,8 +580,8 @@ fn write_manifest(
     let json = serde_json::to_vec_pretty(&manifest)?;
     let file = paths.manifest(exp)?;
     fsx::create_immutable(&file, &json, 0o600)
-        .with_context(|| format!("writing {}", file.display()))?;
-    Ok(())
+        .with_context(|| format!("writing {}", file.display()))
+        .map(drop)
 }
 
 /// Record `experiment.aborted` when a check failed. Gives the failed check

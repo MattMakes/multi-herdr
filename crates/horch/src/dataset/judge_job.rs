@@ -13,7 +13,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use anyhow::{bail, Context, Result};
+use anyhow::{ensure, Context, Result};
 use horch_core::evaluation::rubric::schema_text;
 use horch_core::evaluation::scheduler::{
     ExitReason, JobExit, EXIT_FILE, OUTPUT_CAP_BYTES, OUTPUT_FILE,
@@ -70,15 +70,18 @@ pub(crate) fn judge_job(ctx: &RuntimeContext, args: &JudgeJobArgs) -> Result<u8>
 fn fresh_job_dir(ctx: &RuntimeContext, args: &JudgeJobArgs) -> Result<PathBuf> {
     let round: RoundId = args.round.parse().context("--round")?;
     let job_dir = super::dataset_paths(ctx)?.job_dir(&round, args.attempt)?;
-    if !job_dir.is_dir() {
-        bail!(
-            "{} does not exist; the coordinator creates it",
-            job_dir.display()
-        );
-    }
-    if job_dir.join(EXIT_FILE).exists() || job_dir.join(OUTPUT_FILE).exists() {
-        bail!("attempt {} of round {round} has run already", args.attempt);
-    }
+    ensure!(
+        job_dir.is_dir(),
+        "{} does not exist; the coordinator creates it",
+        job_dir.display()
+    );
+    ensure!(
+        ![EXIT_FILE, OUTPUT_FILE]
+            .iter()
+            .any(|name| job_dir.join(name).exists()),
+        "attempt {} of round {round} has run already",
+        args.attempt
+    );
     Ok(job_dir)
 }
 
@@ -146,18 +149,13 @@ fn start_judge(ctx: &RuntimeContext, args: &JudgeJobArgs) -> Result<(Child, Stri
 fn read_capped(mut stdout: impl Read, flag: &AtomicBool) -> Vec<u8> {
     let mut out = Vec::new();
     let mut buf = [0u8; 64 * 1024];
-    loop {
-        match stdout.read(&mut buf) {
-            Ok(0) | Err(_) => break,
-            Ok(n) => {
-                // The envelope adds a little to the answer; allow it.
-                if out.len() + n > OUTPUT_CAP_BYTES * 2 {
-                    flag.store(true, Ordering::SeqCst);
-                    break;
-                }
-                out.extend_from_slice(&buf[..n]);
-            }
+    while let Ok(n @ 1..) = stdout.read(&mut buf) {
+        // The envelope adds a little to the answer; allow it.
+        if out.len() + n > OUTPUT_CAP_BYTES * 2 {
+            flag.store(true, Ordering::SeqCst);
+            break;
         }
+        out.extend_from_slice(&buf[..n]);
     }
     out
 }
@@ -173,13 +171,10 @@ fn wait_capped(
         if let Some(status) = child.try_wait()? {
             return Ok(Ok(status));
         }
-        let failed = if over_cap.load(Ordering::SeqCst) {
-            Some(ExitReason::TooLarge)
-        } else if Instant::now() >= deadline {
-            Some(ExitReason::Timeout)
-        } else {
-            None
-        };
+        let failed = over_cap
+            .load(Ordering::SeqCst)
+            .then_some(ExitReason::TooLarge)
+            .or_else(|| (Instant::now() >= deadline).then_some(ExitReason::Timeout));
         if let Some(reason) = failed {
             let _ = child.kill();
             let _ = child.wait();
@@ -192,22 +187,20 @@ fn wait_capped(
 /// The result of a child that exited: too much output, a bad exit status,
 /// no answer or an answer over the cap each fail.
 fn grade(raw: &[u8], status: ExitStatus, over_cap: bool) -> RunResult {
-    let failed = |reason| {
-        RunResult::Failed(JobExit {
-            reason,
+    let text = answer_text(raw);
+    let reason = over_cap
+        .then_some(ExitReason::TooLarge)
+        .or_else(|| (!status.success() || text.is_none()).then_some(ExitReason::Crash))
+        .or_else(|| {
+            let oversize = text.as_ref().is_some_and(|t| t.len() > OUTPUT_CAP_BYTES);
+            oversize.then_some(ExitReason::TooLarge)
+        });
+    match (reason, text) {
+        (None, Some(text)) => RunResult::Answer(text),
+        (reason, _) => RunResult::Failed(JobExit {
+            reason: reason.unwrap_or(ExitReason::Crash),
             code: status.code(),
-        })
-    };
-    if over_cap {
-        failed(ExitReason::TooLarge)
-    } else if !status.success() {
-        failed(ExitReason::Crash)
-    } else {
-        match answer_text(raw) {
-            None => failed(ExitReason::Crash),
-            Some(text) if text.len() > OUTPUT_CAP_BYTES => failed(ExitReason::TooLarge),
-            Some(text) => RunResult::Answer(text),
-        }
+        }),
     }
 }
 
@@ -224,27 +217,25 @@ fn warn(roster: &Roster, out: &mut impl Write) {
 /// envelope. Stdout that is not an envelope is passed on as it is, so the
 /// coordinator's strict parser records it as malformed.
 fn answer_text(raw: &[u8]) -> Option<Vec<u8>> {
-    match serde_json::from_slice(raw) {
-        Ok(Value::Object(env)) => envelope_answer(&env, raw),
-        _ => Some(raw.to_vec()),
-    }
+    serde_json::from_slice::<Map<String, Value>>(raw)
+        .map_or_else(|_| Some(raw.to_vec()), |env| envelope_answer(&env, raw))
 }
 
 /// The answer in the envelope `env`, which came from `raw`: `None` for an
 /// error, else `structured_output`, else `result`, else `raw`.
 fn envelope_answer(env: &Map<String, Value>, raw: &[u8]) -> Option<Vec<u8>> {
-    let errored = env.get("is_error").and_then(Value::as_bool) == Some(true);
-    if errored {
+    if env.get("is_error").and_then(Value::as_bool) == Some(true) {
         return None;
     }
-    match (
-        env.get("structured_output").filter(|v| !v.is_null()),
-        env.get("result"),
-    ) {
-        (Some(v), _) => serde_json::to_vec(v).ok(),
-        (None, Some(Value::String(s))) => Some(s.as_bytes().to_vec()),
-        _ => Some(raw.to_vec()),
-    }
+    env.get("structured_output")
+        .filter(|v| !v.is_null())
+        .map_or_else(
+            || {
+                let result = env.get("result").and_then(Value::as_str);
+                Some(result.map_or(raw, str::as_bytes).to_vec())
+            },
+            |v| serde_json::to_vec(v).ok(),
+        )
 }
 
 #[cfg(test)]

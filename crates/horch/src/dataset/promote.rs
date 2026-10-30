@@ -99,11 +99,7 @@ fn check(
 
 /// `Err(why)` unless `ok`.
 fn require(ok: bool, why: impl FnOnce() -> String) -> Result<(), String> {
-    if ok {
-        Ok(())
-    } else {
-        Err(why())
-    }
+    ok.then_some(()).ok_or_else(why)
 }
 
 /// The round is COMPLETE or NEEDS_INTERVENTION, has a winner and did not
@@ -123,8 +119,8 @@ fn check_round<'a>(round: &RoundId, view: &'a RoundView) -> Result<&'a WinnerSel
             "round {round} rejected its winner: {}",
             view.rejected.map(|r| r.to_string()).unwrap_or_default()
         )
-    })?;
-    Ok(winner)
+    })
+    .map(|()| winner)
 }
 
 /// The round has no promotion receipt yet.

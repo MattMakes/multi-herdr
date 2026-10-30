@@ -91,22 +91,26 @@ pub(crate) fn run(
 /// pane by default; with no pane to report to, nothing is created (FDS-10):
 /// that gives the usage error.
 fn report_target(ctx: &RuntimeContext, args: &RunArgs) -> Result<Option<String>, &'static str> {
-    match (&args.report_to, args.detach, &ctx.herdr.pane) {
-        (Some(pane), _, _) => Ok(Some(pane.clone())),
-        (None, true, Some(internal)) => Ok(Some(public_pane(ctx, internal.as_str()))),
-        (None, true, None) => Err("run --detach needs a pane to report to: \
-                                   pass --report-to <PANE>, or run it in a herdr pane (HERDR_PANE_ID)"),
-        (None, false, _) => Ok(None),
-    }
+    args.report_to
+        .clone()
+        .map(Some)
+        .or_else(|| (!args.detach).then_some(None))
+        .or_else(|| {
+            let internal = ctx.herdr.pane.as_ref()?;
+            Some(Some(public_pane(ctx, internal.as_str())))
+        })
+        .ok_or(
+            "run --detach needs a pane to report to: \
+             pass --report-to <PANE>, or run it in a herdr pane (HERDR_PANE_ID)",
+        )
 }
 
 /// The task of the run: the `TASK` argument, else the plan's task.
 fn task_of(args: &RunArgs, plan: Option<&str>) -> Result<String> {
-    match (&args.task, plan) {
-        (Some(task), _) => Ok(task.clone()),
-        (None, Some(plan)) => Ok(plan_task(plan)),
-        (None, None) => bail!("run needs a TASK or --plan"),
-    }
+    args.task
+        .clone()
+        .or_else(|| plan.map(plan_task))
+        .context("run needs a TASK or --plan")
 }
 
 /// Where a round that passed preflight runs.
@@ -206,9 +210,9 @@ fn saved_for_resume(
     report_to: Option<&str>,
 ) -> Result<SavedRun> {
     let mut saved = SavedRun::read(paths, experiment)?;
-    if let Some(pane) = report_to {
-        saved.report_to = Some(pane.to_string());
-    }
+    saved.report_to = report_to
+        .map(str::to_string)
+        .or_else(|| saved.report_to.take());
     Ok(saved)
 }
 
@@ -258,13 +262,11 @@ fn continue_round(
         plan,
         mut planned_models,
     } = round_and_plan(ctx, &config, projection, x)?;
-    if let Some(p) = &plan {
-        planned_models.extend(
-            p.candidates
-                .iter()
-                .map(|c| (c.label.to_string(), c.model.to_string())),
-        );
-    }
+    planned_models.extend(
+        plan.iter()
+            .flat_map(|p| &p.candidates)
+            .map(|c| (c.label.to_string(), c.model.to_string())),
+    );
     let estimates = resumed_estimates(&report, &planned_models, &config.budget.expected_tokens);
     coordinate(
         ctx,
