@@ -429,7 +429,7 @@ ALTER TABLE worktrees_v5 RENAME TO worktrees;"
 /// this one would not know its columns.
 ///
 /// Foreign keys are off while it runs: a table that is built again
-/// ([`v5`]) is dropped while other rows point at it. They are checked before
+/// (`v5`) is dropped while other rows point at it. They are checked before
 /// the commit, and turned back on after it.
 pub fn migrate(conn: &mut Connection) -> Result<()> {
     // The pragma is a no-op inside a transaction, so it is set before one.
