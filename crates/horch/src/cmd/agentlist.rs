@@ -147,3 +147,119 @@ fn table(rows: &[AgentRow], no_probe: bool) -> String {
     }
     out
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use horch_core::harness::inventory::{CapabilitySummary, ModelUse, TeammateUse};
+
+    const HEADER: &str = "AGENT  STATUS       POOL       BINARY  VERSION\n";
+
+    fn row(agent: &str) -> AgentRow {
+        AgentRow {
+            agent: agent.into(),
+            found: true,
+            path: Some(format!("/bin/{agent}")),
+            version: None,
+            broken: None,
+            status: "available".into(),
+            efforts: Vec::new(),
+            capabilities: CapabilitySummary {
+                resume: true,
+                headless: false,
+                skills: "plugin-dir".into(),
+            },
+            models: Vec::new(),
+            pools: Vec::new(),
+            pool_state: "ok".into(),
+            available: true,
+        }
+    }
+
+    fn lines(lines: &[&str]) -> String {
+        lines.iter().map(|l| format!("{l}\n")).collect()
+    }
+
+    #[test]
+    fn an_empty_inventory_prints_the_header_alone() {
+        assert_eq!(table(&[], false), HEADER);
+        assert_eq!(table(&[], true), HEADER);
+    }
+
+    #[test]
+    fn a_row_prints_its_binary_efforts_capabilities_and_models() {
+        let mut agent = row("antigravity");
+        agent.efforts = vec!["low".into(), "high".into()];
+        agent.models = vec![
+            ModelUse {
+                model: Some("m1".into()),
+                teammates: vec![
+                    TeammateUse {
+                        name: "alice".into(),
+                        effort: Some("high".into()),
+                    },
+                    TeammateUse {
+                        name: "bob".into(),
+                        effort: None,
+                    },
+                ],
+            },
+            ModelUse {
+                model: None,
+                teammates: Vec::new(),
+            },
+        ];
+        // The agent column is as wide as the longest name.
+        assert_eq!(
+            table(&[agent], false),
+            lines(&[
+                "AGENT        STATUS       POOL       BINARY  VERSION",
+                "antigravity  available    ok         /bin/antigravity  (no answer)",
+                "               efforts: low high",
+                "               can: resume=true headless=false skills=plugin-dir",
+                "               model m1: alice (high), bob",
+                "               model -: ",
+            ])
+        );
+    }
+
+    #[test]
+    fn the_version_column_follows_what_the_probe_found() {
+        let mut shown = row("a-version");
+        shown.version = Some("1.2.3".into());
+        // A version wins over a broken note.
+        shown.broken = Some("ignored".into());
+        let mut broken = row("b-broken");
+        broken.broken = Some("exit 1".into());
+        let silent = row("c-silent");
+        let mut missing = row("d-missing");
+        missing.found = false;
+        missing.path = None;
+        missing.status = "unavailable".into();
+        // A missing binary is a dash, whatever else is known.
+        missing.broken = Some("stale".into());
+        let rows = [shown, broken, silent, missing];
+
+        let probed = lines(&[
+            "AGENT      STATUS       POOL       BINARY  VERSION",
+            "a-version  available    ok         /bin/a-version  1.2.3",
+            "             efforts: none",
+            "             can: resume=true headless=false skills=plugin-dir",
+            "b-broken   available    ok         /bin/b-broken  (broken: exit 1)",
+            "             efforts: none",
+            "             can: resume=true headless=false skills=plugin-dir",
+            "c-silent   available    ok         /bin/c-silent  (no answer)",
+            "             efforts: none",
+            "             can: resume=true headless=false skills=plugin-dir",
+            "d-missing  unavailable  ok         (not found)  -",
+            "             efforts: none",
+            "             can: resume=true headless=false skills=plugin-dir",
+        ]);
+        assert_eq!(table(&rows, false), probed);
+        // Without a probe, only the silent binary reads differently.
+        assert_eq!(
+            table(&rows, true),
+            probed.replace("(no answer)", "(not probed)")
+        );
+    }
+}
