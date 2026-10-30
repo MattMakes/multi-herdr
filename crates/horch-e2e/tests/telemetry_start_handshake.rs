@@ -226,3 +226,78 @@ fn spc_03_a_start_that_never_runs_is_reported_and_retried() {
         "the failed start's workspace is reused"
     );
 }
+
+/// Write a start request for pane `w9:p1`, `age` old, and optionally a
+/// marker of the same id with pid `marker_pid`.
+fn failed_start(h: &Harness, age: Duration, marker_pid: Option<u32>) {
+    use horch_core::telemetry::start;
+    let request = start::Request {
+        id: "q1".into(),
+        requested_at: "2026-10-30T05:00:00Z".into(),
+        workspace_id: "w9".into(),
+        pane_id: "w9:p1".into(),
+        herdr: h.bin.join("herdr"),
+    };
+    start::record(&h.state, &request).unwrap();
+    let file = std::fs::File::options()
+        .write(true)
+        .open(start::request_path(&h.state))
+        .unwrap();
+    file.set_modified(SystemTime::now() - age).unwrap();
+    if let Some(pid) = marker_pid {
+        let marker = start::Marker {
+            id: "q1".into(),
+            pid,
+            pid_start: Some(1),
+            started_at: "2026-10-30T05:00:01Z".into(),
+        };
+        std::fs::write(
+            start::marker_path(&h.state),
+            serde_json::to_vec(&marker).unwrap(),
+        )
+        .unwrap();
+    }
+}
+
+/// SPC-03: `horch quota` reports a failed collector start on stderr: a
+/// request no process marked within the bound, and a marker whose pid
+/// ended. A start in progress is not reported, and `--json` stays JSON.
+#[test]
+fn spc_03_quota_reports_a_failed_collector_start() {
+    let h = Harness::new("tstart-quota");
+    let bound = horch_core::telemetry::start::UNSEEN_AFTER;
+
+    failed_start(&h, Duration::ZERO, None);
+    let young = h.run(&["quota"]);
+    assert!(young.status.success(), "{}", text(&young));
+    assert!(
+        !String::from_utf8_lossy(&young.stderr).contains("failed"),
+        "a start in progress is no failure: {}",
+        text(&young)
+    );
+
+    failed_start(&h, bound + Duration::from_secs(60), None);
+    let unseen = h.run(&["quota", "--json"]);
+    assert!(unseen.status.success(), "{}", text(&unseen));
+    let err = String::from_utf8_lossy(&unseen.stderr);
+    assert!(
+        err.contains("the telemetry collector start in workspace w9 failed: no collector process started in pane w9:p1"),
+        "{}",
+        text(&unseen)
+    );
+    serde_json::from_slice::<Value>(&unseen.stdout).expect("stdout is still JSON");
+
+    let mut child = std::process::Command::new("/usr/bin/true").spawn().unwrap();
+    let dead = child.id();
+    child.wait().unwrap();
+    failed_start(&h, Duration::ZERO, Some(dead));
+    let ended = h.run(&["quota"]);
+    assert!(ended.status.success(), "{}", text(&ended));
+    assert!(
+        String::from_utf8_lossy(&ended.stderr).contains(&format!(
+            "collector pid {dead} ended before it took the lock"
+        )),
+        "{}",
+        text(&ended)
+    );
+}
