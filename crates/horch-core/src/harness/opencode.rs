@@ -413,6 +413,137 @@ mod tests {
         }
     }
 
+    fn pickle() -> crate::roster::Teammate {
+        let mut t = crate::roster::Roster::builtin()
+            .unwrap()
+            .require("opencode-pickle")
+            .unwrap()
+            .clone();
+        t.effort = None;
+        t.permission_mode = None;
+        t.inherit_plugins = true;
+        t.args = Vec::new();
+        t.env.clear();
+        t.harness_defaults.clear();
+        t
+    }
+
+    fn config_env(cmd: &Command) -> Option<String> {
+        cmd.get_envs()
+            .find(|(k, _)| *k == "OPENCODE_CONFIG_CONTENT")
+            .and_then(|(_, v)| v.map(|v| v.to_string_lossy().into_owned()))
+    }
+
+    fn defaults_with(config: serde_json::Value) -> Vec<HarnessDefault> {
+        vec![HarnessDefault {
+            harness: HarnessKind::OpenCode,
+            base: None,
+            env: Default::default(),
+            args: Vec::new(),
+            settings: None,
+            config: config.as_object().cloned(),
+            agent_settings: None,
+            force: None,
+        }]
+    }
+
+    #[test]
+    fn flags_come_in_order_pure_session_args_prompt() {
+        let mut t = pickle();
+        t.inherit_plugins = false;
+        t.permission_mode = Some(crate::roster::PermissionMode::Auto);
+        t.args = vec!["--extra".into()];
+        let env = LaunchEnv::for_test();
+        let fresh = argv(&opencode_command(&env, &t, Session::Unmanaged, "TASK", None).unwrap());
+        assert_eq!(fresh[0], "--model");
+        assert_eq!(
+            fresh[2..],
+            ["--auto", "--pure", "--extra", "--prompt", "TASK"]
+        );
+        let resumed =
+            argv(&opencode_command(&env, &t, Session::Resume("ses_1"), "TASK", None).unwrap());
+        assert_eq!(
+            resumed[2..],
+            ["--auto", "--pure", "--session", "ses_1", "--extra"]
+        );
+    }
+
+    #[test]
+    fn a_mode_without_an_opencode_equivalent_is_refused() {
+        let mut t = pickle();
+        t.permission_mode = Some(crate::roster::PermissionMode::Plan);
+        let err = opencode_command(&LaunchEnv::for_test(), &t, Session::Unmanaged, "x", None)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("has no opencode equivalent"), "{err}");
+        assert!(err.contains("'plan'"), "{err}");
+    }
+
+    #[test]
+    fn config_env_follows_effort_and_defaults() {
+        let env = LaunchEnv::for_test();
+        let launch = |t: &crate::roster::Teammate| {
+            config_env(&opencode_command(&env, t, Session::Unmanaged, "x", None).unwrap())
+        };
+        // Nothing to say: the env is left to the inherited layers.
+        assert_eq!(launch(&pickle()), None);
+
+        let mut t = pickle();
+        t.effort = Some("high".into());
+        let v: serde_json::Value = serde_json::from_str(&launch(&t).unwrap()).unwrap();
+        assert_eq!(v["agent"]["build"]["variant"], "high");
+
+        let mut t = pickle();
+        t.harness_defaults = defaults_with(serde_json::json!({"share":"disabled"}));
+        let v: serde_json::Value = serde_json::from_str(&launch(&t).unwrap()).unwrap();
+        assert_eq!(v, serde_json::json!({"share":"disabled"}));
+
+        // A default the teammate's own config already has changes nothing.
+        t.env.insert(
+            "OPENCODE_CONFIG_CONTENT".into(),
+            r#"{"share":"manual"}"#.into(),
+        );
+        assert_eq!(launch(&t), None);
+
+        // Effort on top of a teammate config and a default.
+        t.effort = Some("max".into());
+        t.env
+            .insert("OPENCODE_CONFIG_CONTENT".into(), r#"{"theme":"x"}"#.into());
+        let v: serde_json::Value = serde_json::from_str(&launch(&t).unwrap()).unwrap();
+        assert_eq!(v["theme"], "x");
+        assert_eq!(v["share"], "disabled");
+        assert_eq!(v["agent"]["build"]["variant"], "max");
+    }
+
+    #[test]
+    fn config_defaults_keep_the_base_bytes_when_nothing_is_added() {
+        let t = pickle();
+        assert_eq!(
+            with_config_defaults(Some(" {\"a\" : 1} "), &t).unwrap(),
+            Some(" {\"a\" : 1} ".to_string())
+        );
+        let mut t = pickle();
+        t.harness_defaults = defaults_with(serde_json::json!({"a":2}));
+        assert_eq!(
+            with_config_defaults(Some(r#"{"a":1}"#), &t)
+                .unwrap()
+                .as_deref(),
+            Some(r#"{"a":1}"#)
+        );
+        assert_eq!(
+            with_config_defaults(None, &t).unwrap().as_deref(),
+            Some(r#"{"a":2}"#)
+        );
+        assert!(with_config_defaults(Some("[]"), &t).is_err());
+        assert!(with_config_defaults(Some("oops"), &t).is_err());
+    }
+
+    #[test]
+    fn find_sessions_is_empty_when_the_binary_fails_or_is_missing() {
+        assert!(find_sessions(Path::new("/nonexistent/opencode"), "/tmp", at(0)).is_empty());
+        assert!(find_sessions(Path::new("false"), "/tmp", at(0)).is_empty());
+    }
+
     fn at(ms: u64) -> SystemTime {
         UNIX_EPOCH + Duration::from_millis(ms)
     }
