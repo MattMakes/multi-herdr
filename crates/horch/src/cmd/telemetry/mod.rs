@@ -533,7 +533,9 @@ fn ensure_current(
 ) -> Result<()> {
     let root = ctx.paths.state_root.clone();
     match lock::holder(&root) {
-        Holder::Live(info) if lock::runs_other_binary(&info, lock::exe_identity(exe).as_ref()) => {
+        Holder::Live(info)
+            if lock::runs_other_binary(&info, horch_core::exeid::exe_identity(exe).as_ref()) =>
+        {
             // A collector horch cannot prove it owns (no recorded start time,
             // a reused pid) is left running: `ensure` runs on fleet start and
             // must not fail because an old collector is live.
@@ -839,7 +841,7 @@ mod tests {
     #[cfg(unix)]
     fn fake_collector(
         state: &Path,
-        exe: Option<lock::ExeIdentity>,
+        exe: Option<horch_core::exeid::ExeIdentity>,
     ) -> (u32, std::sync::mpsc::Receiver<()>) {
         let mut child = std::process::Command::new("/bin/sleep")
             .arg("30")
@@ -889,7 +891,7 @@ mod tests {
         let herdr = Herdr::with_bin(tmp.path().join("no-herdr"));
         restart_if_stale(&ctx, &herdr, &bin).expect("none live: nothing to do");
 
-        let (pid, ended) = fake_collector(&state, lock::exe_identity(&bin));
+        let (pid, ended) = fake_collector(&state, horch_core::exeid::exe_identity(&bin));
         if horch_core::procid::start_time(pid).is_none() {
             return; // No start times on this platform.
         }
@@ -903,9 +905,9 @@ mod tests {
 
         for exe in [
             None,
-            Some(lock::ExeIdentity {
+            Some(horch_core::exeid::ExeIdentity {
                 len: 1,
-                ..lock::exe_identity(&bin).unwrap()
+                ..horch_core::exeid::exe_identity(&bin).unwrap()
             }),
         ] {
             let (_, ended) = fake_collector(&state, exe);
