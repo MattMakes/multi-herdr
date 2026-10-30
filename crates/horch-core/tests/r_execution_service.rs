@@ -2,7 +2,6 @@
 //! refusal and each arm of the record upsert (fresh push, resumed update,
 //! duplicate record, vanished record).
 
-use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 
 use horch_core::execution::legacy::LedgerRecordV1;
@@ -162,11 +161,18 @@ impl World {
 #[test]
 fn brief_failure_records_launch_failed_before_any_pane() {
     let w = world();
-    // Unwritable mailbox: the role is explicit, so only the brief write fails.
-    std::fs::create_dir_all(w.mailbox.dir()).unwrap();
-    std::fs::set_permissions(w.mailbox.dir(), std::fs::Permissions::from_mode(0o500)).unwrap();
+    // A plain file at the mailbox path: the brief has no dir to go in. A
+    // read-only mailbox no longer fails the write: the mailbox makes its own
+    // dir 0700 before it writes. The role is explicit, so only the brief
+    // write fails.
+    let mailbox = w.mailbox.dir();
+    std::fs::create_dir_all(mailbox.parent().unwrap()).unwrap();
+    std::fs::write(mailbox, "").unwrap();
     let out = w.spawn(fresh("exec-1"), Some("sonnet-9"));
-    std::fs::set_permissions(w.mailbox.dir(), std::fs::Permissions::from_mode(0o700)).unwrap();
+    assert!(
+        mailbox.is_file(),
+        "the spawn left the blocking file in place"
+    );
     match out.unwrap_err() {
         SpawnError::LaunchFailed { stage, id, .. } => {
             assert_eq!(stage, LaunchStage::Brief);
