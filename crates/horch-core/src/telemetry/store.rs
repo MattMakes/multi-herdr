@@ -207,6 +207,20 @@ fn event_files(dir: &Path) -> Vec<(String, PathBuf)> {
     out
 }
 
+/// The event files in `dir` the retention window keeps, oldest first. The
+/// files dated before `oldest` are deleted; an undated one stays.
+fn prune_event_files(dir: &Path, oldest: &str) -> Vec<(String, PathBuf)> {
+    let mut files = event_files(dir);
+    files.retain(|(date, path)| {
+        let keep = date.as_str() >= oldest || date == "undated";
+        if !keep {
+            let _ = std::fs::remove_file(path);
+        }
+        keep
+    });
+    files
+}
+
 impl Store {
     /// Open the store in `dir`, deleting files older than the retention
     /// window and loading the rest (keys and events).
@@ -220,14 +234,7 @@ impl Store {
             ..Store::default()
         };
         let prices = usage::builtin_prices();
-        let mut files = event_files(dir);
-        files.retain(|(date, path)| {
-            let keep = date.as_str() >= oldest.as_str() || date == "undated";
-            if !keep {
-                let _ = std::fs::remove_file(path);
-            }
-            keep
-        });
+        let files = prune_event_files(dir, &oldest);
         // NFR-02 peak RSS: size the table and the key index once, from the
         // line count, with room for the events of the next hours. Grown by
         // doubling, they left each old block in the allocator's cache of
