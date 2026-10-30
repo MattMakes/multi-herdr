@@ -320,25 +320,32 @@ const UPDATED_ENV: &str = "HORCH_SELF_UPDATED";
 /// notice instead. A failed update never stops the fleet: it starts on this
 /// version.
 pub fn update_before_fleet(ctx: &RuntimeContext, no_update: bool) {
-    if no_update
+    if skip_boot_update(ctx, no_update) {
+        return;
+    }
+    let fetch = || fetch_latest(BOOT_TIMEOUT);
+    if let Some(notice) = boot_notice(&ctx.paths.state_root, clock::now(), CURRENT, fetch) {
+        install_and_restart(ctx, &notice);
+    }
+}
+
+/// Whether the boot update step is off: a flag, a setting, the restarted
+/// process, or no terminal.
+fn skip_boot_update(ctx: &RuntimeContext, no_update: bool) -> bool {
+    no_update
         || ctx.settings.no_update
         || ctx.settings.no_self_check
         || std::env::var_os(UPDATED_ENV).is_some()
         || !std::io::stderr().is_terminal()
-    {
+}
+
+/// Install the newer release over this horch and restart on it. A source
+/// build prints `notice` instead.
+fn install_and_restart(ctx: &RuntimeContext, notice: &str) {
+    let Ok(dir) = target_dir(ctx) else {
+        // A source build: `git pull` and `just install` update it.
+        eprintln!("{notice}");
         return;
-    }
-    let fetch = || fetch_latest(BOOT_TIMEOUT);
-    let Some(notice) = boot_notice(&ctx.paths.state_root, clock::now(), CURRENT, fetch) else {
-        return;
-    };
-    let dir = match target_dir(ctx) {
-        Ok(dir) => dir,
-        Err(_) => {
-            // A source build: `git pull` and `just install` update it.
-            eprintln!("{notice}");
-            return;
-        }
     };
     eprintln!(
         "horch: a newer multi-herdr is out; installing it before the fleet starts \
@@ -399,57 +406,33 @@ fn target_dir(ctx: &RuntimeContext) -> Result<PathBuf> {
 
 /// `horch self-update [--check]`.
 pub fn self_update(ctx: &RuntimeContext, check: bool) -> Result<ExitCode> {
-    let Some(release) = fetch_latest(DOWNLOAD_TIMEOUT)? else {
-        println!("horch: no multi-herdr release is published yet (you have v{CURRENT})");
-        return Ok(ExitCode::SUCCESS);
-    };
-    if !is_newer(&release.tag, CURRENT) {
-        println!("horch is up to date (v{CURRENT})");
-        return Ok(ExitCode::SUCCESS);
-    }
-    if check {
-        println!(
+    match fetch_latest(DOWNLOAD_TIMEOUT)? {
+        None => println!("horch: no multi-herdr release is published yet (you have v{CURRENT})"),
+        Some(release) if !is_newer(&release.tag, CURRENT) => {
+            println!("horch is up to date (v{CURRENT})")
+        }
+        Some(release) if check => println!(
             "multi-herdr {} is out (you have v{CURRENT}): {}",
             release.tag, release.html_url
-        );
-        return Ok(ExitCode::SUCCESS);
+        ),
+        Some(release) => install_latest(ctx, &release)?,
     }
-
-    let dir = target_dir(ctx)?;
-    install_release(ctx, &release, &dir)?;
-    println!("updated horch v{CURRENT} -> {}", release.tag);
     Ok(ExitCode::SUCCESS)
+}
+
+fn install_latest(ctx: &RuntimeContext, release: &Release) -> Result<()> {
+    install_release(ctx, release, &target_dir(ctx)?)?;
+    println!("updated horch v{CURRENT} -> {}", release.tag);
+    Ok(())
 }
 
 /// Download `release` for this target, check its digest and its binaries,
 /// and run its `horch install --dir <dir>`. Clears the boot check's cache.
 fn install_release(ctx: &RuntimeContext, release: &Release, dir: &Path) -> Result<()> {
     let name = archive_name(&release.tag, TARGET);
-    let missing = |what: &str| {
-        anyhow::anyhow!(
-            "release {} has no {what} for target {TARGET}: {}",
-            release.tag,
-            release.html_url
-        )
-    };
-    let archive_url = release
-        .asset_url(&name)
-        .ok_or_else(|| missing(&format!("archive {name}")))?;
-    let sums_url = release
-        .asset_url(SUMS_NAME)
-        .ok_or_else(|| missing(SUMS_NAME))?;
-
-    let sums = String::from_utf8(download(sums_url)?).context("SHA256SUMS is not text")?;
-    let expected = parse_sums(&sums, &name)
-        .with_context(|| format!("SHA256SUMS of {} has no line for {name}", release.tag))?;
-    let archive = download(archive_url)?;
-    verify_digest(&archive, &expected)?;
-
+    let archive = verified_archive(release, &name)?;
     let tmp = tempfile::tempdir().context("cannot make a temp dir")?;
     extract(&archive, tmp.path())?;
-    let new_horch = tmp
-        .path()
-        .join(format!("horch{}", std::env::consts::EXE_SUFFIX));
     let absent = missing_binaries(tmp.path());
     if !absent.is_empty() {
         bail!(
@@ -458,7 +441,46 @@ fn install_release(ctx: &RuntimeContext, release: &Release, dir: &Path) -> Resul
             absent.join(", ")
         );
     }
-    let status = Command::new(&new_horch)
+    let new_horch = tmp
+        .path()
+        .join(format!("horch{}", std::env::consts::EXE_SUFFIX));
+    run_install(&new_horch, dir)?;
+    let _ = std::fs::remove_file(cache_path(&ctx.paths.state_root));
+    Ok(())
+}
+
+/// Download the archive `name` of `release` and check it against the
+/// release's SHA256SUMS.
+fn verified_archive(release: &Release, name: &str) -> Result<Vec<u8>> {
+    let missing = |what: &str| {
+        anyhow::anyhow!(
+            "release {} has no {what} for target {TARGET}: {}",
+            release.tag,
+            release.html_url
+        )
+    };
+    let archive_url = release
+        .asset_url(name)
+        .ok_or_else(|| missing(&format!("archive {name}")))?;
+    let sums_url = release
+        .asset_url(SUMS_NAME)
+        .ok_or_else(|| missing(SUMS_NAME))?;
+    let expected = expected_digest(release, name, sums_url)?;
+    let archive = download(archive_url)?;
+    verify_digest(&archive, &expected)?;
+    Ok(archive)
+}
+
+/// The digest that the release's SHA256SUMS gives for `name`.
+fn expected_digest(release: &Release, name: &str, sums_url: &str) -> Result<String> {
+    let sums = String::from_utf8(download(sums_url)?).context("SHA256SUMS is not text")?;
+    parse_sums(&sums, name)
+        .with_context(|| format!("SHA256SUMS of {} has no line for {name}", release.tag))
+}
+
+/// Run `<new_horch> install --dir <dir>`.
+fn run_install(new_horch: &Path, dir: &Path) -> Result<()> {
+    let status = Command::new(new_horch)
         .arg("install")
         .arg("--dir")
         .arg(dir)
@@ -470,7 +492,6 @@ fn install_release(ctx: &RuntimeContext, release: &Release, dir: &Path) -> Resul
             status.code().unwrap_or(1)
         );
     }
-    let _ = std::fs::remove_file(cache_path(&ctx.paths.state_root));
     Ok(())
 }
 
@@ -505,16 +526,19 @@ fn fetch_latest(timeout: Duration) -> Result<Option<Release>> {
         .header("User-Agent", &user_agent())
         .header("Accept", "application/vnd.github+json")
         .call();
-    let mut response = match response {
-        Ok(response) => response,
-        Err(ureq::Error::StatusCode(404)) => return Ok(None),
-        Err(e) => return Err(e).with_context(|| format!("cannot reach {url}")),
-    };
+    match response {
+        Ok(mut response) => read_release(&mut response, &url).map(Some),
+        Err(ureq::Error::StatusCode(404)) => Ok(None),
+        Err(e) => Err(e).with_context(|| format!("cannot reach {url}")),
+    }
+}
+
+fn read_release(response: &mut ureq::http::Response<ureq::Body>, url: &str) -> Result<Release> {
     let body = response
         .body_mut()
         .read_to_string()
         .with_context(|| format!("reading {url}"))?;
-    parse_release(&body).map(Some)
+    parse_release(&body)
 }
 
 /// Download 1 release asset into memory.
@@ -564,22 +588,31 @@ fn flat_name(name: &str) -> Result<&str> {
 
 #[cfg(unix)]
 fn extract(archive: &[u8], dir: &Path) -> Result<()> {
-    use std::os::unix::fs::PermissionsExt;
-
     let mut tar = tar::Archive::new(flate2::read::GzDecoder::new(archive));
     for entry in tar.entries().context("the archive is not a .tar.gz")? {
-        let mut entry = entry.context("reading the archive")?;
-        let raw = entry.path().context("reading the archive")?;
-        let name = flat_name(&raw.to_string_lossy())?.to_string();
-        if !entry.header().entry_type().is_file() {
-            bail!("the release archive entry {name:?} is not a file");
-        }
-        let dest = dir.join(&name);
-        let mut file = std::fs::File::create(&dest)
-            .with_context(|| format!("cannot write {}", dest.display()))?;
-        std::io::copy(&mut entry, &mut file).context("reading the archive")?;
-        std::fs::set_permissions(&dest, std::fs::Permissions::from_mode(0o755))?;
+        extract_entry(entry, dir)?;
     }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn extract_entry(
+    entry: std::io::Result<tar::Entry<'_, impl std::io::Read>>,
+    dir: &Path,
+) -> Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+
+    let mut entry = entry.context("reading the archive")?;
+    let raw = entry.path().context("reading the archive")?;
+    let name = flat_name(&raw.to_string_lossy())?.to_string();
+    if !entry.header().entry_type().is_file() {
+        bail!("the release archive entry {name:?} is not a file");
+    }
+    let dest = dir.join(&name);
+    let mut file =
+        std::fs::File::create(&dest).with_context(|| format!("cannot write {}", dest.display()))?;
+    std::io::copy(&mut entry, &mut file).context("reading the archive")?;
+    std::fs::set_permissions(&dest, std::fs::Permissions::from_mode(0o755))?;
     Ok(())
 }
 
