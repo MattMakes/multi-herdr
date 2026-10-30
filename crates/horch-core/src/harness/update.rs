@@ -16,7 +16,7 @@
 //! - An updater that passes its time limit is not killed: a package manager
 //!   stopped between the removal of the old build and the link of the new
 //!   one leaves no CLI. It is left to finish, and while it runs (at most
-//!   [`LOCK_STALE`]), every later horch skips that CLI. An updater that
+//!   `LOCK_STALE`), every later horch skips that CLI. An updater that
 //!   ended unseen counts as the CLI's last check.
 //!
 //! So a CLI can change under a running fleet: a detached updater, or the
@@ -66,7 +66,7 @@ pub const FRESH_FOR: chrono::TimeDelta = chrono::TimeDelta::hours(24);
 /// A lock holder that has exited is broken at once.
 const LOCK_STALE: Duration = Duration::from_secs(3600);
 
-/// The longest horch waits for 1 updater: under [`LOCK_STALE`], so a later
+/// The longest horch waits for 1 updater: under `LOCK_STALE`, so a later
 /// horch never breaks the lock of a horch that still waits.
 const MAX_TIMEOUT: Duration = Duration::from_secs(1800);
 
@@ -371,7 +371,7 @@ impl UpdateFiles {
     }
 
     /// Whether an updater a horch started still runs, for at most
-    /// [`LOCK_STALE`]. A mark of an updater that ended, or ran too long,
+    /// `LOCK_STALE`. A mark of an updater that ended, or ran too long,
     /// is removed. The updater ran, so its start counts as the last check.
     fn settle_running(&self, now: chrono::DateTime<chrono::Utc>) -> bool {
         let Some(mark) = self.running() else {
