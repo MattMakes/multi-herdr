@@ -2173,15 +2173,16 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let ledger = Ledger::for_project(tmp.path(), "/proj");
         ledger
-            .add(
-                "rec-1",
-                "opencode",
-                "opencode-pickle",
-                "m",
-                "pickle-1",
-                Some("ses_1"),
-                "t",
-            )
+            .add(crate::execution::records::NewRecord {
+                record_id: "rec-1",
+                agent: "opencode",
+                tier: "opencode-pickle",
+                model: "m",
+                role: "pickle-1",
+                session_id: Some("ses_1"),
+                task: "t",
+                phase: None,
+            })
             .unwrap();
         let ws = FakeWorkspace::new();
         let created = ws.workspace_create("fleet", None, false).unwrap();
