@@ -87,11 +87,8 @@ fn norm(key: &str) -> String {
     }
 }
 
-/// The keys in a `Blocked by` cell: `01, 02`, `#30 (title)`, `T-3`, `-`, `None`.
-fn blocker_tokens(cell: &str) -> Vec<String> {
-    let text = plain(cell);
-    let mut out = Vec::new();
-    // Drop parenthesised titles first.
+/// The text with parenthesised titles dropped.
+fn strip_parens(text: &str) -> String {
     let mut cleaned = String::new();
     let mut depth = 0;
     for ch in text.chars() {
@@ -102,40 +99,62 @@ fn blocker_tokens(cell: &str) -> Vec<String> {
             _ => {}
         }
     }
-    for raw in cleaned.split([',', ';', ' ']) {
-        let tok = raw.trim();
-        if tok.is_empty() || tok == "-" || tok.eq_ignore_ascii_case("none") {
-            continue;
-        }
-        if let Some(t) = tok.strip_prefix("T-").or_else(|| tok.strip_prefix("t-")) {
-            if t.parse::<u64>().is_ok() {
-                out.push(format!("T-{t}"));
-            }
-            continue;
-        }
-        // A range like #37-#40.
-        if let Some((a, b)) = tok.split_once('-') {
-            let (a, b) = (a.trim_start_matches('#'), b.trim_start_matches('#'));
-            if let (Ok(a), Ok(b)) = (a.parse::<u64>(), b.parse::<u64>()) {
-                if a <= b && b - a < 1000 {
-                    let hash = tok.starts_with('#');
-                    for n in a..=b {
-                        out.push(if hash { format!("#{n}") } else { n.to_string() });
-                    }
-                    continue;
-                }
-            }
-        }
-        let digits = tok.trim_start_matches('#');
-        if digits.parse::<u64>().is_ok() {
-            out.push(if tok.starts_with('#') {
-                format!("#{digits}")
-            } else {
-                digits.to_string()
-            });
-        }
+    cleaned
+}
+
+/// `T-<n>`: a task already in the run. `T-` with no number names nothing.
+fn task_ref(tok: &str) -> Option<Vec<String>> {
+    let t = tok.strip_prefix("T-").or(tok.strip_prefix("t-"))?;
+    Some(if t.parse::<u64>().is_ok() {
+        vec![format!("T-{t}")]
+    } else {
+        Vec::new()
+    })
+}
+
+/// A key as written: `#<n>` for an issue number, else `<n>`.
+fn keyed(n: impl std::fmt::Display, hash: bool) -> String {
+    if hash {
+        format!("#{n}")
+    } else {
+        n.to_string()
     }
-    out
+}
+
+/// A range like `#37-#40`, at most 1000 keys long.
+fn number_range(tok: &str, hash: bool) -> Option<Vec<String>> {
+    let (a, b) = tok.split_once('-')?;
+    let a = a.trim_start_matches('#').parse::<u64>().ok()?;
+    let b = b.trim_start_matches('#').parse::<u64>().ok()?;
+    if a > b || b - a >= 1000 {
+        return None;
+    }
+    Some((a..=b).map(|n| keyed(n, hash)).collect())
+}
+
+/// A single key: `01` or `#30`.
+fn plain_number(tok: &str, hash: bool) -> Option<Vec<String>> {
+    let digits = tok.trim_start_matches('#');
+    digits.parse::<u64>().ok()?;
+    Some(vec![keyed(digits, hash)])
+}
+
+/// The keys 1 token names; none when it names nothing, as `-` and `none`.
+fn expand_token(tok: &str) -> Vec<String> {
+    let hash = tok.starts_with('#');
+    task_ref(tok)
+        .or_else(|| number_range(tok, hash))
+        .or_else(|| plain_number(tok, hash))
+        .unwrap_or_default()
+}
+
+/// The keys in a `Blocked by` cell: `01, 02`, `#30 (title)`, `T-3`, `-`, `None`.
+fn blocker_tokens(cell: &str) -> Vec<String> {
+    strip_parens(&plain(cell))
+        .split([',', ';', ' '])
+        .map(str::trim)
+        .flat_map(expand_token)
+        .collect()
 }
 
 /// The first backticked word after `word` in `line`.
@@ -176,23 +195,41 @@ pub struct TicketFacts {
     pub no_touch: Vec<String>,
 }
 
+/// A heading's title: `03: Title` is `Title`.
+fn ticket_title(h: &str) -> String {
+    let h = h.trim();
+    match h.split_once(':') {
+        Some((num, rest)) if num.trim().chars().all(|c| c.is_ascii_digit()) => rest.trim(),
+        _ => h,
+    }
+    .to_string()
+}
+
+/// The value of a `**Parallel:**` field, lowercased and trimmed at its start.
+fn parse_parallel(v: &str) -> Option<bool> {
+    if v.starts_with("yes") || v.starts_with("true") {
+        Some(true)
+    } else if v.starts_with("no") || v.starts_with("false") {
+        Some(false)
+    } else {
+        None
+    }
+}
+
+/// The facts lines that hold a list of backticked items.
+type ListField = (&'static str, fn(&mut TicketFacts) -> &mut Vec<String>);
+const LIST_FIELDS: [ListField; 2] = [
+    ("**own:**", |f| &mut f.own),
+    ("**do not touch:**", |f| &mut f.no_touch),
+];
+
 /// Read the facts lines of a ticket's text.
 pub fn ticket_facts(text: &str) -> TicketFacts {
     let mut f = TicketFacts::default();
     for line in text.lines() {
         let l = line.trim();
         if f.title.is_none() {
-            if let Some(h) = l.strip_prefix("# ") {
-                // "# 03: Title" -> "Title"
-                let h = h.trim();
-                let title = match h.split_once(':') {
-                    Some((num, rest)) if num.trim().chars().all(|c| c.is_ascii_digit()) => {
-                        rest.trim()
-                    }
-                    _ => h,
-                };
-                f.title = Some(title.to_string());
-            }
+            f.title = l.strip_prefix("# ").map(ticket_title);
         }
         let lower = l.to_lowercase();
         if lower.contains("**persona:**") {
@@ -200,26 +237,236 @@ pub fn ticket_facts(text: &str) -> TicketFacts {
             f.fallback = ticked_after(l, "fallback");
         }
         if let Some(at) = lower.find("**parallel:**") {
-            let v = lower[at + "**parallel:**".len()..].trim_start();
-            f.parallel = if v.starts_with("yes") || v.starts_with("true") {
-                Some(true)
-            } else if v.starts_with("no") || v.starts_with("false") {
-                Some(false)
-            } else {
-                None
-            };
+            f.parallel = parse_parallel(lower[at + "**parallel:**".len()..].trim_start());
         }
         if lower.starts_with("**check:**") {
             f.check = ticked_after(l, "**check:**");
         }
-        if lower.starts_with("**own:**") {
-            f.own = ticked_list(l);
-        }
-        if lower.starts_with("**do not touch:**") {
-            f.no_touch = ticked_list(l);
+        for (prefix, field) in LIST_FIELDS {
+            if lower.starts_with(prefix) {
+                *field(&mut f) = ticked_list(l);
+            }
         }
     }
     f
+}
+
+/// The first table of a map, and the `Spec:` line before it.
+struct Table {
+    spec_ref: Option<String>,
+    header: Option<Vec<String>>,
+    rows: Vec<Vec<String>>,
+}
+
+/// The first link of `s`: its target.
+fn first_link(s: &str) -> Option<String> {
+    links(s).into_iter().next().map(|(_, t)| t)
+}
+
+/// The spec a `Spec:` line names: its first link, else its text.
+fn spec_ref_of(rest: &str) -> String {
+    let rest = rest.trim();
+    first_link(rest).unwrap_or(plain(rest.split('·').next().unwrap_or(rest)))
+}
+
+impl Table {
+    /// Take a table line: the header first, then the rows.
+    fn add(&mut self, c: Vec<String>) {
+        if self.header.is_none() {
+            self.header = Some(c.iter().map(|h| h.to_lowercase()).collect());
+        } else if !is_rule(&c) {
+            self.rows.push(c);
+        }
+    }
+
+    /// Whether the first table has a row, so a line that is not a table line ends it.
+    fn has_rows(&self) -> bool {
+        !self.rows.is_empty()
+    }
+}
+
+/// Find the `Spec:` line and the first table: its header and its rows.
+fn scan_table(text: &str) -> Table {
+    let mut t = Table {
+        spec_ref: None,
+        header: None,
+        rows: Vec::new(),
+    };
+    for l in text.lines().map(str::trim) {
+        if t.spec_ref.is_none() {
+            t.spec_ref = l.strip_prefix("Spec:").map(spec_ref_of);
+        }
+        match cells(l) {
+            Some(c) => t.add(c),
+            None if t.has_rows() => break,
+            None => {}
+        }
+    }
+    t
+}
+
+/// The column of each field, by header name.
+struct Columns {
+    key: usize,
+    title: Option<usize>,
+    blocked: Option<usize>,
+    wave: Option<usize>,
+    issue: Option<usize>,
+    persona: Option<usize>,
+    parallel: Option<usize>,
+}
+
+fn columns(header: &[String]) -> Result<Columns> {
+    let col = |name: &str| header.iter().position(|h| h == name);
+    Ok(Columns {
+        key: col("#")
+            .or(col("ticket"))
+            .context("the map table has no '#' column")?,
+        title: col("title"),
+        blocked: col("blocked by"),
+        wave: col("wave"),
+        issue: col("issue"),
+        persona: col("persona"),
+        parallel: col("parallel"),
+    })
+}
+
+/// What a row needs to become a ticket.
+struct RowContext<'a> {
+    cols: Columns,
+    dir: &'a Path,
+    relative_to: &'a Path,
+    path: &'a Path,
+}
+
+/// The text of cell `i` of `row`; empty when there is none.
+fn cell(row: &[String], i: Option<usize>) -> String {
+    i.and_then(|i| row.get(i)).cloned().unwrap_or_default()
+}
+
+/// The ticket file: the first link in the row to a `.md` file that exists.
+fn ticket_path(row: &[String], dir: &Path) -> Option<PathBuf> {
+    row.iter()
+        .flat_map(|c| links(c))
+        .map(|(_, t)| dir.join(t))
+        .find(|p| p.extension().is_some_and(|e| e == "md") && p.is_file())
+}
+
+/// `ticket` as written relative to `relative_to` when it resolves inside it.
+fn project_path(ticket: &Path, relative_to: &Path) -> String {
+    let canon = ticket.canonicalize().unwrap_or(ticket.to_path_buf());
+    let base = relative_to
+        .canonicalize()
+        .unwrap_or(relative_to.to_path_buf());
+    canon
+        .strip_prefix(&base)
+        .map(|p| p.to_string_lossy().into_owned())
+        .unwrap_or_else(|_| canon.to_string_lossy().into_owned())
+}
+
+/// The personas of a ticket; a `Persona` cell wins over the ticket's line.
+fn personas(facts: &TicketFacts, cell: Option<&str>) -> (Option<String>, Option<String>) {
+    let (mut primary, mut fallback) = (facts.primary.clone(), facts.fallback.clone());
+    if let Some(p) = cell {
+        let first_word = || {
+            Some(plain(p).split([' ', '(']).next().unwrap_or("").to_string())
+                .filter(|s| !s.is_empty())
+        };
+        primary = ticked_after(p, "primary").or_else(first_word).or(primary);
+        fallback = ticked_after(p, "fallback").or(fallback);
+    }
+    (primary, fallback)
+}
+
+/// Map one table row to a ticket and its raw blocker tokens. A row with an
+/// empty key is skipped. Issue numbers of the row go into `issue_to_key`.
+fn map_item(
+    row: &[String],
+    ctx: &RowContext,
+    issue_to_key: &mut BTreeMap<String, String>,
+) -> Result<Option<(MapItem, Vec<String>)>> {
+    let cols = &ctx.cols;
+    let key = norm(&plain(&cell(row, Some(cols.key))));
+    if key.is_empty() {
+        return Ok(None);
+    }
+    let issue = cell(row, cols.issue);
+    let issue_no = plain(&issue).trim_start_matches('#').to_string();
+    if !issue_no.is_empty() {
+        issue_to_key.insert(format!("#{issue_no}"), key.clone());
+    }
+    let Some(ticket) = ticket_path(row, ctx.dir) else {
+        bail!(
+            "ticket {key} in {} links no ticket file that exists",
+            ctx.path.display()
+        );
+    };
+    let facts = ticket_facts(&std::fs::read_to_string(&ticket)?);
+    let file = project_path(&ticket, ctx.relative_to);
+    let (primary, fallback) = personas(&facts, cols.persona.map(|i| cell(row, Some(i))).as_deref());
+    let Some(primary) = primary else {
+        bail!("ticket {key} ({file}) names no primary persona: add a **Persona:** line");
+    };
+    let title = Some(plain(&cell(row, cols.title)))
+        .filter(|t| !t.is_empty())
+        .or(facts.title.clone())
+        .unwrap_or_else(|| format!("Ticket {key}"));
+    let parallel = match cols.parallel {
+        Some(_) => !plain(&cell(row, cols.parallel))
+            .to_lowercase()
+            .starts_with("no"),
+        None => facts.parallel.unwrap_or(true),
+    };
+    let task = NewTask {
+        title,
+        task_file: file,
+        issue_url: first_link(&issue),
+        spec_ref: None,
+        primary,
+        fallback,
+        phase: None,
+        parallel,
+        priority: 100,
+        wave: plain(&cell(row, cols.wave)).parse::<i64>().ok(),
+        worktree_mode: WorktreeMode::Worktree,
+        land_check: facts.check.clone(),
+        kind: TaskKind::Work,
+        parent_task_id: None,
+        blocked_by: Vec::new(),
+        own: facts.own.clone(),
+        no_touch: facts.no_touch.clone(),
+    };
+    let blockers = blocker_tokens(&cell(row, cols.blocked));
+    Ok(Some((MapItem { key, task }, blockers)))
+}
+
+/// The key a blocker token names: issue numbers map to keys of this map,
+/// `T-<n>` stays, and plain numbers are keys.
+fn blocker_key(t: String, of: &str, issue_to_key: &BTreeMap<String, String>) -> Result<String> {
+    if t.starts_with('#') {
+        return issue_to_key
+            .get(&t)
+            .cloned()
+            .with_context(|| format!("ticket {of} is blocked by {t}, which is not in the map"));
+    }
+    Ok(if t.starts_with("T-") { t } else { norm(&t) })
+}
+
+/// Set the blockers and the spec of each item from its raw tokens.
+fn resolve_blockers(
+    items: &mut [MapItem],
+    raw: Vec<Vec<String>>,
+    issue_to_key: &BTreeMap<String, String>,
+    spec_ref: &Option<String>,
+) -> Result<()> {
+    for (item, tokens) in items.iter_mut().zip(raw) {
+        for t in tokens {
+            let key = blocker_key(t, &item.key, issue_to_key)?;
+            item.task.blocked_by.push(key);
+        }
+        item.task.spec_ref = spec_ref.clone();
+    }
+    Ok(())
 }
 
 /// Parse the map at `path`. Ticket paths are kept as written relative to
@@ -227,165 +474,31 @@ pub fn ticket_facts(text: &str) -> TicketFacts {
 pub fn read(path: &Path, relative_to: &Path) -> Result<Map> {
     let text = std::fs::read_to_string(path)
         .with_context(|| format!("reading the ticket map {}", path.display()))?;
-    let dir = path.parent().unwrap_or(Path::new("."));
-    let mut spec_ref = None;
-    let mut header: Option<Vec<String>> = None;
-    let mut rows: Vec<Vec<String>> = Vec::new();
-    for line in text.lines() {
-        let l = line.trim();
-        if spec_ref.is_none() {
-            if let Some(rest) = l.strip_prefix("Spec:") {
-                let rest = rest.trim();
-                spec_ref = Some(
-                    links(rest)
-                        .first()
-                        .map(|(_, t)| t.clone())
-                        .unwrap_or_else(|| plain(rest.split('·').next().unwrap_or(rest))),
-                );
-            }
-        }
-        let Some(c) = cells(l) else {
-            if header.is_some() && !rows.is_empty() {
-                // The first table ends here.
-                break;
-            }
-            continue;
-        };
-        if header.is_none() {
-            header = Some(c.iter().map(|h| h.to_lowercase()).collect());
-            continue;
-        }
-        if is_rule(&c) {
-            continue;
-        }
-        rows.push(c);
-    }
-    let Some(header) = header else {
+    let table = scan_table(&text);
+    let Some(header) = &table.header else {
         bail!("{} has no ticket table", path.display());
     };
-    let col = |name: &str| header.iter().position(|h| h == name);
-    let key_col = col("#")
-        .or_else(|| col("ticket"))
-        .context("the map table has no '#' column")?;
-    let title_col = col("title");
-    let blocked_col = col("blocked by");
-    let wave_col = col("wave");
-    let issue_col = col("issue");
-    let persona_col = col("persona");
-    let parallel_col = col("parallel");
-
-    let mut items = Vec::new();
-    let mut issue_to_key: BTreeMap<String, String> = BTreeMap::new();
-    let mut raw_blockers: Vec<Vec<String>> = Vec::new();
-    for row in &rows {
-        let get = |i: Option<usize>| i.and_then(|i| row.get(i)).cloned().unwrap_or_default();
-        let key = norm(&plain(&get(Some(key_col))));
-        if key.is_empty() {
-            continue;
-        }
-        let issue = get(issue_col);
-        let issue_url = links(&issue).first().map(|(_, t)| t.clone());
-        let issue_no = plain(&issue).trim_start_matches('#').to_string();
-        if !issue_no.is_empty() {
-            issue_to_key.insert(format!("#{issue_no}"), key.clone());
-        }
-        // The ticket file: the first link in the row to a file that exists.
-        let ticket: Option<PathBuf> = row
-            .iter()
-            .flat_map(|c| links(c))
-            .map(|(_, t)| dir.join(t))
-            .find(|p| p.extension().is_some_and(|e| e == "md") && p.is_file());
-        let Some(ticket) = ticket else {
-            bail!(
-                "ticket {key} in {} links no ticket file that exists",
-                path.display()
-            );
-        };
-        let facts = ticket_facts(&std::fs::read_to_string(&ticket)?);
-        let canon = ticket.canonicalize().unwrap_or(ticket.clone());
-        let base = relative_to
-            .canonicalize()
-            .unwrap_or(relative_to.to_path_buf());
-        let file = canon
-            .strip_prefix(&base)
-            .map(|p| p.to_string_lossy().into_owned())
-            .unwrap_or_else(|_| canon.to_string_lossy().into_owned());
-        let title = Some(plain(&get(title_col)))
-            .filter(|t| !t.is_empty())
-            .or(facts.title.clone())
-            .unwrap_or_else(|| format!("Ticket {key}"));
-        let (mut primary, mut fallback) = (facts.primary.clone(), facts.fallback.clone());
-        if persona_col.is_some() {
-            let p = get(persona_col);
-            if let Some(pr) = ticked_after(&p, "primary").or_else(|| {
-                Some(plain(&p).split([' ', '(']).next().unwrap_or("").to_string())
-                    .filter(|s| !s.is_empty())
-            }) {
-                primary = Some(pr);
-            }
-            if let Some(fb) = ticked_after(&p, "fallback") {
-                fallback = Some(fb);
-            }
-        }
-        let parallel = if parallel_col.is_some() {
-            !plain(&get(parallel_col)).to_lowercase().starts_with("no")
-        } else {
-            facts.parallel.unwrap_or(true)
-        };
-        let Some(primary) = primary else {
-            bail!(
-                "ticket {key} ({}) names no primary persona: add a **Persona:** line",
-                file
-            );
-        };
-        let wave = plain(&get(wave_col)).parse::<i64>().ok();
-        raw_blockers.push(blocker_tokens(&get(blocked_col)));
-        items.push(MapItem {
-            key: key.clone(),
-            task: NewTask {
-                title,
-                task_file: file,
-                issue_url,
-                spec_ref: None,
-                primary,
-                fallback,
-                phase: None,
-                parallel,
-                priority: 100,
-                wave,
-                worktree_mode: WorktreeMode::Worktree,
-                land_check: facts.check.clone(),
-                kind: TaskKind::Work,
-                parent_task_id: None,
-                blocked_by: Vec::new(),
-                own: facts.own.clone(),
-                no_touch: facts.no_touch.clone(),
-            },
-        });
-    }
-    // Blockers: issue numbers map to keys of this map; plain numbers are keys.
-    for (item, tokens) in items.iter_mut().zip(raw_blockers) {
-        for t in tokens {
-            let key = if t.starts_with('#') {
-                issue_to_key.get(&t).cloned().with_context(|| {
-                    format!(
-                        "ticket {} is blocked by {t}, which is not in the map",
-                        item.key
-                    )
-                })?
-            } else if t.starts_with("T-") {
-                t
-            } else {
-                norm(&t)
-            };
-            item.task.blocked_by.push(key);
-        }
-        item.task.spec_ref = spec_ref.clone();
-    }
+    let ctx = RowContext {
+        cols: columns(header)?,
+        dir: path.parent().unwrap_or(Path::new(".")),
+        relative_to,
+        path,
+    };
+    let mut issue_to_key = BTreeMap::new();
+    let mapped = table
+        .rows
+        .iter()
+        .filter_map(|row| map_item(row, &ctx, &mut issue_to_key).transpose())
+        .collect::<Result<Vec<_>>>()?;
+    let (mut items, raw): (Vec<MapItem>, Vec<Vec<String>>) = mapped.into_iter().unzip();
+    resolve_blockers(&mut items, raw, &issue_to_key, &table.spec_ref)?;
     if items.is_empty() {
         bail!("{} lists no tickets", path.display());
     }
-    Ok(Map { spec_ref, items })
+    Ok(Map {
+        spec_ref: table.spec_ref,
+        items,
+    })
 }
 
 #[cfg(test)]
