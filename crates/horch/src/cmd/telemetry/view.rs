@@ -903,20 +903,31 @@ fn range(offset: usize, shown: usize, n: usize) -> String {
     }
 }
 
-/// 1 scrollable table: a title line, a column header, and the rows from
-/// `table.offset`. `lines` holds each row's text and its own style; `note`
-/// shows under the header when there is no row.
-#[allow(clippy::too_many_arguments)]
-fn draw_table(
-    buf: &mut Buffer,
-    area: Rect,
-    title: &str,
+/// What [`draw_table`] shows: the title, the column header, the rows and the
+/// note for an empty table.
+struct TableBody<'a> {
+    title: &'a str,
     head: String,
     lines: Vec<(String, Style)>,
     note: Option<String>,
+}
+
+/// 1 scrollable table: a title line, a column header, and the rows from
+/// `table.offset`. `lines` holds each row's text and its own style; `note`
+/// shows under the header when there is no row.
+fn draw_table(
+    buf: &mut Buffer,
+    area: Rect,
+    body: TableBody<'_>,
     table: &TableState,
     focused: bool,
 ) {
+    let TableBody {
+        title,
+        head,
+        lines,
+        note,
+    } = body;
     if area.height == 0 {
         return;
     }
@@ -1057,10 +1068,12 @@ fn draw_live(
     draw_table(
         buf,
         r,
-        "live panes",
-        table_line(&heads, &widths, width),
-        lines,
-        None,
+        TableBody {
+            title: "live panes",
+            head: table_line(&heads, &widths, width),
+            lines,
+            note: None,
+        },
         &view.tables[LIVE],
         view.focus == LIVE,
     );
@@ -1104,10 +1117,12 @@ fn draw_rollup(
     draw_table(
         buf,
         r,
-        &title,
-        table_line(&heads, &widths, width),
-        lines,
-        note,
+        TableBody {
+            title: &title,
+            head: table_line(&heads, &widths, width),
+            lines,
+            note,
+        },
         &view.tables[ROLLUP],
         view.focus == ROLLUP,
     );

@@ -133,6 +133,7 @@ marketplace-refresh:
 # (docs/specs/telemetry.md, section 16.3).
 verify:
     cargo build --workspace --bins
+    RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --all-features
     cargo test --workspace
     ./scripts/check-req-coverage.sh
     ./scripts/verify-telemetry-e2e.sh
