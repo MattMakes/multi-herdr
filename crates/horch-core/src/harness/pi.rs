@@ -14,6 +14,7 @@ use std::process::Command;
 use anyhow::{Context as _, Result};
 use sha2::{Digest as _, Sha256};
 
+use super::capabilities::Capabilities;
 use super::launch::model_for;
 use super::{CommandSpec, Harness, HarnessKind, LaunchEnv, PrepareRequest, Prepared, Session};
 use crate::roster::Teammate;
@@ -53,20 +54,19 @@ pub(crate) fn install_compact_extension(state_root: &Path) -> Result<PathBuf> {
 
 /// A regular file (not a link) with mode 0600 and the embedded bytes.
 fn is_intact(path: &Path) -> bool {
-    let Ok(meta) = std::fs::symlink_metadata(path) else {
-        return false;
-    };
-    if !meta.is_file() {
-        return false;
-    }
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        if meta.permissions().mode() & 0o777 != 0o600 {
-            return false;
-        }
-    }
-    std::fs::read(path).is_ok_and(|bytes| bytes == COMPACT_EXTENSION.as_bytes())
+    std::fs::symlink_metadata(path).is_ok_and(|m| m.is_file() && private_mode(&m))
+        && std::fs::read(path).is_ok_and(|bytes| bytes == COMPACT_EXTENSION.as_bytes())
+}
+
+#[cfg(unix)]
+fn private_mode(meta: &std::fs::Metadata) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    meta.permissions().mode() & 0o777 == 0o600
+}
+
+#[cfg(not(unix))]
+fn private_mode(_meta: &std::fs::Metadata) -> bool {
+    true
 }
 
 pub(crate) struct Pi;
@@ -145,59 +145,65 @@ pub(super) fn pi_family_command(
         cmd.arg("--thinking").arg(effort);
     }
     let caps = teammate.agent.capabilities();
-    // The Rust build of Prime refuses every tool selection flag ("Unknown
-    // option", exit 1), and the roster check rejects `tools:` and
-    // `disallowed_tools` on a Prime teammate, so these only ever fire for pi.
-    if caps.tool_selection {
-        if let Some(tools) = &teammate.tools {
-            // `Some([])` means "no tools at all", which is its own flag here
-            // rather than an empty list.
-            if tools.is_empty() {
-                cmd.arg("--no-tools");
-            } else {
-                cmd.arg("--tools").arg(tools.join(","));
-            }
-        }
-        if !teammate.disallowed_tools.is_empty() && caps.tool_denylist {
-            cmd.arg("--exclude-tools")
-                .arg(teammate.disallowed_tools.join(","));
-        }
-    }
-    // Discovery of everything the repo or the operator might have lying around.
-    // Nothing here is on by default in a fleet: a worker with one narrow job
-    // should not inherit a project's extensions or the operator's skills.
-    // Prime 0.10.0 loads no extensions and refuses `--no-extensions`.
-    if !teammate.inherit_plugins {
-        if caps.extensions_flag {
-            cmd.arg("--no-extensions");
-        }
-        cmd.arg("--no-skills")
-            .arg("--no-prompt-templates")
-            .arg("--no-themes");
-    }
-
-    match session {
-        // pi's `--session-id` creates the session if it does not exist, so a
-        // fresh launch and a resume are the same flag with a different id.
-        // Prime has no such flag: `horch worker` gives it a `--session-dir` it
-        // owns instead, and reads back whatever session appears there.
-        Session::Fresh(id) if caps.caller_minted_session => {
-            cmd.arg("--session-id").arg(id);
-        }
-        Session::Resume(id) => {
-            if caps.caller_minted_session {
-                cmd.arg("--session-id").arg(id);
-            } else {
-                cmd.arg("--resume").arg(id);
-            }
-        }
-        Session::Fresh(_) | Session::Unmanaged => {}
-    }
+    push_tool_args(&mut cmd, teammate, caps);
+    push_isolation_args(&mut cmd, teammate, caps);
+    push_session_args(&mut cmd, session, caps);
     cmd.args(&teammate.args);
     // `--` ends option parsing: without it a prompt beginning with a dash would
     // be read as a flag.
     cmd.arg("--").arg(prompt);
     Ok(cmd)
+}
+
+/// The Rust build of Prime refuses every tool selection flag ("Unknown
+/// option", exit 1), and the roster check rejects `tools:` and
+/// `disallowed_tools` on a Prime teammate, so these only ever fire for pi.
+fn push_tool_args(cmd: &mut Command, teammate: &Teammate, caps: &Capabilities) {
+    if !caps.tool_selection {
+        return;
+    }
+    if let Some(tools) = &teammate.tools {
+        // `Some([])` means "no tools at all", which is its own flag here
+        // rather than an empty list.
+        if tools.is_empty() {
+            cmd.arg("--no-tools");
+        } else {
+            cmd.arg("--tools").arg(tools.join(","));
+        }
+    }
+    if !teammate.disallowed_tools.is_empty() && caps.tool_denylist {
+        cmd.arg("--exclude-tools")
+            .arg(teammate.disallowed_tools.join(","));
+    }
+}
+
+/// Discovery of everything the repo or the operator might have lying around.
+/// Nothing here is on by default in a fleet: a worker with one narrow job
+/// should not inherit a project's extensions or the operator's skills.
+/// Prime 0.10.0 loads no extensions and refuses `--no-extensions`.
+fn push_isolation_args(cmd: &mut Command, teammate: &Teammate, caps: &Capabilities) {
+    if teammate.inherit_plugins {
+        return;
+    }
+    if caps.extensions_flag {
+        cmd.arg("--no-extensions");
+    }
+    cmd.arg("--no-skills")
+        .arg("--no-prompt-templates")
+        .arg("--no-themes");
+}
+
+/// pi's `--session-id` creates the session if it does not exist, so a fresh
+/// launch and a resume are the same flag with a different id. Prime has no
+/// such flag: `horch worker` gives it a `--session-dir` it owns instead, and
+/// reads back whatever session appears there.
+fn push_session_args(cmd: &mut Command, session: Session<'_>, caps: &Capabilities) {
+    let (flag, id) = match (session, caps.caller_minted_session) {
+        (Session::Fresh(id) | Session::Resume(id), true) => ("--session-id", id),
+        (Session::Resume(id), false) => ("--resume", id),
+        _ => return,
+    };
+    cmd.arg(flag).arg(id);
 }
 
 #[cfg(all(test, unix))]
