@@ -22,7 +22,7 @@
 use std::cell::RefCell;
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, ExitCode, Stdio};
+use std::process::{Child, Command, ExitCode, ExitStatus, Stdio};
 use std::time::{Duration, Instant, SystemTime};
 
 use anyhow::{Context, Result};
@@ -119,6 +119,16 @@ impl Outcome {
             ..Outcome::default()
         }
     }
+
+    /// `ok` on an `Ok` line, `refused` on an `Err` reason.
+    fn from_result(r: Result<String, String>) -> Self {
+        r.map_or_else(Outcome::refused, Outcome::ok)
+    }
+}
+
+/// The text of an `anyhow` error for a refusal reason.
+fn why(e: anyhow::Error) -> String {
+    format!("{e:#}")
 }
 
 /// Everything `horch compact` works with. Tests pass the fake workspace,
@@ -354,30 +364,38 @@ fn target_for(env: &Env, role: &str, need_command: bool) -> Result<Target, Strin
 /// Steps 3 and 4: the in-place route and the handoff guard, unless forced.
 fn route_and_handoff(env: &Env, t: &Target, force: bool) -> Result<(), String> {
     if force {
-        return Ok(());
+        Ok(())
+    } else if !env.src.roster.compacts_in_place(t.row.kind) {
+        Err(format!(
+            "refused: {} uses the fresh route; tell {} to run horch done",
+            t.row.kind.as_str(),
+            t.row.record.role
+        ))
+    } else {
+        check_handoff(env, t)
     }
-    let role = &t.row.record.role;
-    if !env.src.roster.compacts_in_place(t.row.kind) {
-        return Err(format!(
-            "refused: {} uses the fresh route; tell {role} to run horch done",
-            t.row.kind.as_str()
-        ));
-    }
+}
+
+/// Step 4: the handoff file of the record is fresh enough.
+fn check_handoff(env: &Env, t: &Target) -> Result<(), String> {
     let path = handoff_file(env.src.ctx, &t.row.record);
     let mtime = std::fs::metadata(&path).and_then(|m| m.modified()).ok();
     let asked = policy::asked_at(&t.row.record.history);
-    policy::handoff_fresh(mtime, asked, SystemTime::now()).map_err(|p| {
-        let path = path.display();
-        match p {
-            HandoffProblem::Missing => format!("refused: handoff {path} is missing"),
-            HandoffProblem::BeforeAsk { asked_at } => {
-                format!("refused: handoff {path} is older than the request at {asked_at}")
-            }
-            HandoffProblem::Stale { minutes } => {
-                format!("refused: handoff {path} is {minutes} minutes old (limit 60)")
-            }
+    policy::handoff_fresh(mtime, asked, SystemTime::now())
+        .map_err(|p| handoff_problem_text(&path, p))
+}
+
+fn handoff_problem_text(path: &Path, p: HandoffProblem) -> String {
+    let path = path.display();
+    match p {
+        HandoffProblem::Missing => format!("refused: handoff {path} is missing"),
+        HandoffProblem::BeforeAsk { asked_at } => {
+            format!("refused: handoff {path} is older than the request at {asked_at}")
         }
-    })
+        HandoffProblem::Stale { minutes } => {
+            format!("refused: handoff {path} is {minutes} minutes old (limit 60)")
+        }
+    }
 }
 
 /// The handoff file of a record, resolved against its workdir (review
@@ -389,98 +407,111 @@ fn handoff_file(ctx: &RuntimeContext, record: &Record) -> PathBuf {
 // ─── --request ──────────────────────────────────────────────────────────────
 
 fn request(env: &Env, role: &str) -> Outcome {
+    Outcome::from_result(request_target(env, role).and_then(|t| {
+        already_asked_line(env, &t, role).map_or_else(|| send_request(env, &t, role), Ok)
+    }))
+}
+
+/// Step 1 of `--request`: the orchestrator is never asked; any other role
+/// needs a live record and a pane.
+fn request_target(env: &Env, role: &str) -> Result<Target, String> {
     if role == "orchestrator" {
-        return Outcome::refused(
-            "refused: the orchestrator is not asked; it compacts itself at its stopping point",
-        );
+        Err(
+            "refused: the orchestrator is not asked; it compacts itself at its stopping point"
+                .into(),
+        )
+    } else {
+        target_for(env, role, false)
     }
-    let t = match target_for(env, role, false) {
-        Ok(t) => t,
-        Err(why) => return Outcome::refused(why),
-    };
-    let record = &t.row.record;
-    // A Codex pane with `permission_mode: plan` in read-only cannot write
-    // its handoff (X6). It is switched to write below; a warning in this
-    // cycle does not stop that, as the warned pane could not act on it.
-    let read_only = mode::is_plan_pane(env.src.roster, record)
-        && mode::current_mode(&record.history) == PaneMode::Plan;
-    let warned_only = record
+}
+
+/// A Codex pane with `permission_mode: plan` in read-only cannot write its
+/// handoff (X6). It is switched to write before the send.
+fn read_only(env: &Env, t: &Target) -> bool {
+    mode::is_plan_pane(env.src.roster, &t.row.record)
+        && mode::current_mode(&t.row.record.history) == PaneMode::Plan
+}
+
+/// The "already asked" line, or None when the request goes out. A warning in
+/// this cycle does not stop a read-only pane: the warned pane could not act
+/// on it.
+fn already_asked_line(env: &Env, t: &Target, role: &str) -> Option<String> {
+    let warned_only = t
+        .row
+        .record
         .history
         .iter()
         .rev()
         .find(|e| e.event == EVENT_REQUESTED || e.event == EVENT_WARNED)
         .is_some_and(|e| e.event == EVENT_WARNED);
-    if let Some(line) = repeat_refusal(&t, role, read_only && warned_only) {
-        return Outcome::ok(line);
-    }
+    repeat_refusal(t, role, read_only(env, t) && warned_only)
+}
+
+/// The message, the mode switch, the send and the ledger event.
+fn send_request(env: &Env, t: &Target, role: &str) -> Result<String, String> {
+    let record = &t.row.record;
     let tokens = t
         .row
         .tokens()
         .map_or_else(|| "unknown".to_string(), |n| n.to_string());
     let threshold = t.row.threshold.to_string();
     let handoff = policy::handoff_path(role);
-    let line = match env.message(
-        "request",
-        &[
-            ("role", role),
-            ("tokens", &tokens),
-            ("threshold", &threshold),
-            ("handoff", &handoff),
-        ],
-    ) {
-        Ok(l) => l,
-        Err(e) => return Outcome::refused(format!("{e:#}")),
-    };
-    if read_only {
-        if let Err(e) = mode::switch_record(
+    let line = env
+        .message(
+            "request",
+            &[
+                ("role", role),
+                ("tokens", &tokens),
+                ("threshold", &threshold),
+                ("handoff", &handoff),
+            ],
+        )
+        .map_err(why)?;
+    if read_only(env, t) {
+        mode::switch_record(
             env.src.ledger,
             env.ws,
             record,
             &t.pane,
             PaneMode::Write,
             &env.mode_timing,
-        ) {
-            return Outcome::refused(format!("switching {role} to write: {e}"));
-        }
+        )
+        .map_err(|e| format!("switching {role} to write: {e}"))?;
     }
-    if let Err(e) = delivery::send_line_when_ready(
+    delivery::send_line_when_ready(
         env.ws,
         &t.pane,
         &line,
         Duration::ZERO,
         &Readiness::DEFAULT,
         &Timing::DEFAULT,
-    ) {
-        return Outcome::refused(format!("{e:#}"));
-    }
-    if let Err(e) = env.src.ledger.record_event(
-        &record.record_id,
-        EVENT_REQUESTED,
-        &format!("tokens {tokens} threshold {threshold}"),
-    ) {
-        return Outcome::refused(format!("{e:#}"));
-    }
-    Outcome::ok(format!("asked {role} to write {handoff}"))
+    )
+    .map_err(why)?;
+    env.src
+        .ledger
+        .record_event(
+            &record.record_id,
+            EVENT_REQUESTED,
+            &format!("tokens {tokens} threshold {threshold}"),
+        )
+        .map_err(why)?;
+    Ok(format!("asked {role} to write {handoff}"))
 }
 
 // ─── the parent: checks, start, handshake ──────────────────────────────────
 
 fn schedule(env: &Env, args: &CompactArgs) -> Outcome {
     let role = &args.role;
-    let t = match target(env, role) {
-        Ok(t) => t,
-        Err(why) => return Outcome::refused(why),
-    };
     let dir = env.job_dir(role);
-    let log = dir.join(LOG_FILE);
-    // A lost job was claimed by `build_row`; the start below clears its dir.
-    if t.row.job == JobLiveness::Live {
-        return Outcome::ok(already_running(role, &log));
+    match target(env, role) {
+        Err(reason) => Outcome::refused(reason),
+        // A lost job was claimed by `build_row`; the start below clears its dir.
+        Ok(t) if t.row.job == JobLiveness::Live => {
+            Outcome::ok(already_running(role, &dir.join(LOG_FILE)))
+        }
+        Ok(t) => route_and_handoff(env, &t, args.force)
+            .map_or_else(Outcome::refused, |()| start(env, args, &t.row.record, &dir)),
     }
-    if let Err(why) = route_and_handoff(env, &t, args.force) {
-        return Outcome::refused(why);
-    }
-    start(env, args, &t.row.record, &dir)
 }
 
 fn already_running(role: &str, log: &Path) -> String {
@@ -501,28 +532,49 @@ fn start(env: &Env, args: &CompactArgs, record: &Record, dir: &Path) -> Outcome 
         child = Some(c);
         Ok(pid)
     });
-    let reason = match (started, child) {
-        (Ok(Started::AlreadyRunning), _) => return Outcome::ok(already_running(role, &log)),
+    spawned(env, dir, role, &log, started, child)
+        .unwrap_or_else(|reason| start_failed(env, role, record, dir, &log, &reason))
+}
+
+/// The outcome of a start that did not fail; the reason when it failed.
+fn spawned(
+    env: &Env,
+    dir: &Path,
+    role: &str,
+    log: &Path,
+    started: Result<Started>,
+    child: Option<Child>,
+) -> Result<Outcome, String> {
+    match (started, child) {
+        (Ok(Started::AlreadyRunning), _) => Ok(Outcome::ok(already_running(role, log))),
         (Ok(Started::Spawned { .. }), Some(child)) => match handshake(env, dir, child) {
-            Handshake::Scheduled => {
-                return Outcome::ok(format!(
-                    "compaction of {role} scheduled; log {}",
-                    log.display()
-                ))
-            }
-            Handshake::AlreadyRunning => return Outcome::ok(already_running(role, &log)),
-            Handshake::Reported(line) => {
-                return Outcome {
-                    code: 1,
-                    out: vec![line],
-                    err: vec![],
-                }
-            }
-            Handshake::Failed(reason) => reason,
+            Handshake::Scheduled => Ok(Outcome::ok(format!(
+                "compaction of {role} scheduled; log {}",
+                log.display()
+            ))),
+            Handshake::AlreadyRunning => Ok(Outcome::ok(already_running(role, log))),
+            Handshake::Reported(line) => Ok(Outcome {
+                code: 1,
+                out: vec![line],
+                err: vec![],
+            }),
+            Handshake::Failed(reason) => Err(reason),
         },
-        (Ok(Started::Spawned { .. }), None) => "the job was not spawned".to_string(),
-        (Err(e), _) => format!("{e:#}"),
-    };
+        (Ok(Started::Spawned { .. }), None) => Err("the job was not spawned".to_string()),
+        (Err(e), _) => Err(why(e)),
+    }
+}
+
+/// A start that failed: clear the job dir, record `compact-failed`, print the
+/// `failed` line.
+fn start_failed(
+    env: &Env,
+    role: &str,
+    record: &Record,
+    dir: &Path,
+    log: &Path,
+    reason: &str,
+) -> Outcome {
     jobfile::clear_on_exit(dir);
     let text = format!("step {}: {reason}", Step::Start);
     let _ = env
@@ -530,7 +582,7 @@ fn start(env: &Env, args: &CompactArgs, record: &Record, dir: &Path) -> Outcome 
         .ledger
         .record_event(&record.record_id, EVENT_FAILED, &text);
     let line = env
-        .failed_line(role, Step::Start.as_str(), &reason, &log)
+        .failed_line(role, Step::Start.as_str(), reason, log)
         .unwrap_or_else(|_| {
             format!(
                 "[horch] BLOCKED: Compaction of {role} failed at step start: {reason}. Log: {}.",
@@ -591,45 +643,54 @@ enum Handshake {
 /// exits first says why by its code; past the timeout the child is stopped.
 fn handshake(env: &Env, dir: &Path, mut child: Child) -> Handshake {
     let begin = Instant::now();
-    loop {
-        if job_started(dir) {
-            reap(child);
-            return Handshake::Scheduled;
-        }
-        match child.try_wait() {
-            Ok(Some(status)) => {
-                return match status.code() {
-                    Some(0) => Handshake::AlreadyRunning,
-                    Some(c) if c == i32::from(EXIT_REPORTED) => {
-                        match last_blocked_line(&dir.join(LOG_FILE)) {
-                            Some(line) => Handshake::Reported(line),
-                            None => Handshake::Failed(format!(
-                                "the job exited with {c} and no report in its log"
-                            )),
-                        }
-                    }
-                    Some(c) => {
-                        Handshake::Failed(format!("the job exited with {c} before it started"))
-                    }
-                    None => {
-                        Handshake::Failed("the job exited with a signal before it started".into())
-                    }
-                };
-            }
-            Ok(None) => {}
-            Err(e) => return Handshake::Failed(format!("waiting for the job: {e}")),
-        }
-        if begin.elapsed() >= env.start_timeout {
-            // The handle is not reaped yet, so its pid is still this child.
-            let _ = child.kill();
-            let _ = child.wait();
-            return Handshake::Failed(format!(
-                "the job did not start in {} s",
-                env.start_timeout.as_secs_f64()
-            ));
+    let h = loop {
+        if let Some(h) = poll(env, dir, &mut child, begin) {
+            break h;
         }
         std::thread::sleep(START_POLL);
+    };
+    if matches!(h, Handshake::Scheduled) {
+        reap(child);
     }
+    h
+}
+
+/// One poll of the handshake: the result, or None to poll again.
+fn poll(env: &Env, dir: &Path, child: &mut Child, begin: Instant) -> Option<Handshake> {
+    if job_started(dir) {
+        return Some(Handshake::Scheduled);
+    }
+    match child.try_wait() {
+        Ok(Some(status)) => Some(exited(dir, status)),
+        Err(e) => Some(Handshake::Failed(format!("waiting for the job: {e}"))),
+        Ok(None) if begin.elapsed() >= env.start_timeout => Some(timed_out(env, child)),
+        Ok(None) => None,
+    }
+}
+
+/// The child exited before it started: its code says why.
+fn exited(dir: &Path, status: ExitStatus) -> Handshake {
+    match status.code() {
+        Some(0) => Handshake::AlreadyRunning,
+        Some(c) if c == i32::from(EXIT_REPORTED) => last_blocked_line(&dir.join(LOG_FILE))
+            .map_or_else(
+                || Handshake::Failed(format!("the job exited with {c} and no report in its log")),
+                Handshake::Reported,
+            ),
+        Some(c) => Handshake::Failed(format!("the job exited with {c} before it started")),
+        None => Handshake::Failed("the job exited with a signal before it started".into()),
+    }
+}
+
+/// Stop a child that did not start in time.
+fn timed_out(env: &Env, child: &mut Child) -> Handshake {
+    // The handle is not reaped yet, so its pid is still this child.
+    let _ = child.kill();
+    let _ = child.wait();
+    Handshake::Failed(format!(
+        "the job did not start in {} s",
+        env.start_timeout.as_secs_f64()
+    ))
 }
 
 /// The started child runs on; a thread reaps it if this process lives on.
@@ -657,6 +718,29 @@ fn last_blocked_line(log: &Path) -> Option<String> {
 
 // ─── the child: --foreground ───────────────────────────────────────────────
 
+/// Why the child stops before its job runs.
+enum Stop {
+    /// A second job for the role: it ends with no event.
+    Duplicate,
+    /// A refusal: `compact-failed` on `record` (when there is one) and the
+    /// `failed` report. `clear` removes the job dir of this child first.
+    Refused {
+        record: Option<Record>,
+        why: String,
+        clear: bool,
+    },
+}
+
+impl Stop {
+    fn refused(record: Option<&Record>, why: String, clear: bool) -> Stop {
+        Stop::Refused {
+            record: record.cloned(),
+            why,
+            clear,
+        }
+    }
+}
+
 fn foreground(env: &Env, args: &CompactArgs) -> Outcome {
     let role = &args.role;
     let dir = env.job_dir(role);
@@ -667,68 +751,98 @@ fn foreground(env: &Env, args: &CompactArgs) -> Outcome {
         .live_for_role(role, Some(env.workspace()))
         .ok()
         .flatten();
-    // `job.json` first, at step `start`: a second job for the role stops
-    // here with no event. The parent waits for step `wait-idle`.
-    let mut job = JobRecord {
+    let mut job = new_job(role, record.as_ref());
+    match prepare(env, args, &dir, record.as_ref(), &mut job) {
+        Ok((t, plan)) => run_job(env, &t, &plan, &dir, &log, job),
+        Err(Stop::Duplicate) => Outcome::code(0),
+        Err(Stop::Refused { record, why, clear }) => {
+            if clear {
+                jobfile::clear_on_exit(&dir);
+            }
+            refuse_child(env, role, record.as_ref(), &log, &why)
+        }
+    }
+}
+
+/// `job.json` at step `start`: a second job for the role stops at its
+/// creation with no event. The parent waits for step `wait-idle`.
+fn new_job(role: &str, record: Option<&Record>) -> JobRecord {
+    JobRecord {
         v: jobfile::JOB_VERSION,
-        role: role.clone(),
-        record_id: record
-            .as_ref()
-            .map(|r| r.record_id.clone())
-            .unwrap_or_default(),
+        role: role.into(),
+        record_id: record.map(|r| r.record_id.clone()).unwrap_or_default(),
         started_at: horch_core::clock::stamp(Utc::now()),
         step: Step::Start.as_str().into(),
-    };
+    }
+}
+
+/// The setup of the child: create `job.json`, check the route and the
+/// handoff, build the plan, write step `wait-idle`.
+fn prepare(
+    env: &Env,
+    args: &CompactArgs,
+    dir: &Path,
+    record: Option<&Record>,
+    job: &mut JobRecord,
+) -> Result<(Target, JobPlan), Stop> {
+    create_job_file(env, dir, record, job)?;
+    let (t, plan) = target(env, &args.role)
+        .and_then(|t| {
+            route_and_handoff(env, &t, args.force)?;
+            let plan = plan_for(env, &t, args.timeout).map_err(why)?;
+            Ok((t, plan))
+        })
+        .map_err(|reason| Stop::refused(record, reason, true))?;
+    job.step = Step::WaitIdle.as_str().into();
+    jobfile::write_step(dir, job).map_err(|e| Stop::refused(Some(&t.row.record), why(e), true))?;
+    Ok((t, plan))
+}
+
+/// Create the compact root, the job dir and `job.json`.
+fn create_job_file(
+    env: &Env,
+    dir: &Path,
+    record: Option<&Record>,
+    job: &JobRecord,
+) -> Result<(), Stop> {
     // The compact root first: `ensure_private_dir` sets the mode of its
     // last dir only, and a foreground job can be the first to make the root.
     let root = jobfile::compact_root(&env.src.ctx.paths.state_root);
-    let created = horch_core::fsx::ensure_private_dir(&root)
-        .and_then(|()| horch_core::fsx::ensure_private_dir(&dir))
-        .map_err(|e| format!("{e:#}"))
-        .and_then(|_| {
-            jobfile::create_job(&dir, &job).map_err(|e| {
-                if e.kind() == std::io::ErrorKind::AlreadyExists {
-                    String::new()
-                } else {
-                    format!("creating {}: {e}", dir.join(JOB_FILE).display())
-                }
-            })
-        });
-    match created {
-        Err(why) if why.is_empty() => return Outcome::code(0),
-        Err(why) => return refuse_child(env, role, record.as_ref(), &log, &why),
-        Ok(()) => {}
-    }
-    let ready = target(env, role).and_then(|t| {
-        route_and_handoff(env, &t, args.force)?;
-        let plan = plan_for(env, &t, args.timeout).map_err(|e| format!("{e:#}"))?;
-        Ok((t, plan))
-    });
-    let (t, plan) = match ready {
-        Ok(x) => x,
-        Err(why) => {
-            jobfile::clear_on_exit(&dir);
-            return refuse_child(env, role, record.as_ref(), &log, &why);
+    horch_core::fsx::ensure_private_dir(&root)
+        .and_then(|()| horch_core::fsx::ensure_private_dir(dir))
+        .map_err(|e| Stop::refused(record, format!("{e:#}"), false))?;
+    jobfile::create_job(dir, job).map_err(|e| {
+        if e.kind() == std::io::ErrorKind::AlreadyExists {
+            Stop::Duplicate
+        } else {
+            let reason = format!("creating {}: {e}", dir.join(JOB_FILE).display());
+            Stop::refused(record, reason, false)
         }
-    };
-    job.step = Step::WaitIdle.as_str().into();
-    if let Err(e) = jobfile::write_step(&dir, &job) {
-        jobfile::clear_on_exit(&dir);
-        return refuse_child(env, role, Some(&t.row.record), &log, &format!("{e:#}"));
-    }
-    let beat = horch_core::heartbeat::start(&dir);
+    })
+}
+
+/// Run the job with the real ports under a heartbeat.
+fn run_job(
+    env: &Env,
+    t: &Target,
+    plan: &JobPlan,
+    dir: &Path,
+    log: &Path,
+    job: JobRecord,
+) -> Outcome {
+    let beat = horch_core::heartbeat::start(dir);
     let ports = Ports {
         env,
         record: &t.row.record,
         pane: &t.pane,
-        log: &log,
-        dir: &dir,
+        log,
+        dir,
         job: RefCell::new(job),
         begin: Instant::now(),
     };
-    let result = job::run(&ports, &plan);
+    let result = job::run(&ports, plan);
     beat.stop();
-    jobfile::clear_on_exit(&dir);
+    jobfile::clear_on_exit(dir);
     match result {
         Ok(_) => Outcome::code(0),
         Err(_) => Outcome::code(EXIT_REPORTED),
