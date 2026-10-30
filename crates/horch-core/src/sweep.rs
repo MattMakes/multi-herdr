@@ -666,7 +666,7 @@ fn due(stamp: &Path, now: SystemTime) -> bool {
         .is_none_or(|d| d >= INTERVAL)
 }
 
-/// Sweep when the last sweep is [`INTERVAL`] old, within [`HOOK_BUDGET`].
+/// Sweep when the last sweep is an hour old, within 3 seconds.
 /// Best effort: it never fails, and it logs only errors and what it removed.
 pub fn run_due(ctx: &RuntimeContext) {
     let stamp = ctx.paths.state_root.join(STAMP);
