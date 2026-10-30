@@ -335,6 +335,164 @@ mod tests {
         }
     }
 
+    fn full_args(teammate: &Teammate, session: Session<'_>) -> Vec<String> {
+        pi_family_command("bin".into(), teammate, session, "PROMPT", None)
+            .unwrap()
+            .get_args()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect()
+    }
+
+    fn pi_with(f: impl FnOnce(&mut Teammate)) -> Teammate {
+        let mut t = Teammate {
+            agent: HarnessKind::Pi,
+            model: Some("ollama/qwen3.8".into()),
+            inherit_plugins: true,
+            args: vec!["--skill".into(), "/s".into()],
+            ..Teammate::default()
+        };
+        f(&mut t);
+        t
+    }
+
+    #[test]
+    fn pi_flags_per_tool_capability() {
+        let session = Session::Unmanaged;
+        let none = full_args(&pi_with(|_| {}), session);
+        assert_eq!(
+            none,
+            ["--model", "ollama/qwen3.8", "--skill", "/s", "--", "PROMPT"]
+        );
+
+        let empty = full_args(&pi_with(|t| t.tools = Some(vec![])), session);
+        assert_eq!(empty[2], "--no-tools");
+        assert!(!empty.iter().any(|a| a == "--tools"), "{empty:?}");
+
+        let some = full_args(
+            &pi_with(|t| t.tools = Some(vec!["read".into(), "grep".into()])),
+            session,
+        );
+        assert_eq!(some[2..4], ["--tools", "read,grep"]);
+
+        let deny = full_args(
+            &pi_with(|t| t.disallowed_tools = vec!["bash".into(), "edit".into()]),
+            session,
+        );
+        assert_eq!(deny[2..4], ["--exclude-tools", "bash,edit"]);
+
+        // Tools first, then the deny list, then isolation, then `args`.
+        let all = full_args(
+            &pi_with(|t| {
+                t.effort = Some("high".into());
+                t.tools = Some(vec!["read".into()]);
+                t.disallowed_tools = vec!["bash".into()];
+                t.inherit_plugins = false;
+            }),
+            session,
+        );
+        assert_eq!(
+            all,
+            [
+                "--model",
+                "ollama/qwen3.8",
+                "--thinking",
+                "high",
+                "--tools",
+                "read",
+                "--exclude-tools",
+                "bash",
+                "--no-extensions",
+                "--no-skills",
+                "--no-prompt-templates",
+                "--no-themes",
+                "--skill",
+                "/s",
+                "--",
+                "PROMPT"
+            ]
+        );
+    }
+
+    #[test]
+    fn prime_flags_skip_tool_and_extension_flags() {
+        let prime = Teammate {
+            agent: HarnessKind::Prime,
+            model: Some("anthropic/claude-opus-5-5".into()),
+            inherit_plugins: false,
+            tools: Some(vec![]),
+            disallowed_tools: vec!["bash".into()],
+            ..Teammate::default()
+        };
+        assert_eq!(
+            full_args(&prime, Session::Unmanaged),
+            [
+                "--model",
+                "anthropic/claude-opus-5-5",
+                "--no-skills",
+                "--no-prompt-templates",
+                "--no-themes",
+                "--",
+                "PROMPT"
+            ]
+        );
+    }
+
+    #[test]
+    fn session_flag_follows_who_mints_the_id() {
+        let pi = pi_with(|_| {});
+        let tail = |t: &Teammate, s| full_args(t, s)[2..].to_vec();
+        assert_eq!(
+            tail(&pi, Session::Fresh("s1")),
+            ["--session-id", "s1", "--skill", "/s", "--", "PROMPT"]
+        );
+        assert_eq!(
+            tail(&pi, Session::Resume("s1")),
+            ["--session-id", "s1", "--skill", "/s", "--", "PROMPT"]
+        );
+        assert_eq!(
+            tail(&pi, Session::Unmanaged),
+            ["--skill", "/s", "--", "PROMPT"]
+        );
+
+        let prime = Teammate {
+            agent: HarnessKind::Prime,
+            model: Some("m".into()),
+            inherit_plugins: true,
+            ..Teammate::default()
+        };
+        assert_eq!(tail(&prime, Session::Fresh("s1")), ["--", "PROMPT"]);
+        assert_eq!(
+            tail(&prime, Session::Resume("s1")),
+            ["--resume", "s1", "--", "PROMPT"]
+        );
+        assert_eq!(tail(&prime, Session::Unmanaged), ["--", "PROMPT"]);
+    }
+
+    #[test]
+    fn is_intact_rejects_missing_dir_link_and_wrong_mode() {
+        let tmp = tempfile::tempdir().unwrap();
+        let file = tmp.path().join("ext.ts");
+        assert!(!is_intact(&file), "missing file");
+        std::fs::create_dir(&file).unwrap();
+        assert!(!is_intact(&file), "directory");
+        std::fs::remove_dir(&file).unwrap();
+
+        std::fs::write(&file, COMPACT_EXTENSION).unwrap();
+        std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o644)).unwrap();
+        assert!(!is_intact(&file), "wrong mode");
+        std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o600)).unwrap();
+        assert!(is_intact(&file));
+
+        std::fs::write(&file, "other").unwrap();
+        std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o600)).unwrap();
+        assert!(!is_intact(&file), "other bytes");
+
+        let link = tmp.path().join("link.ts");
+        std::fs::write(&file, COMPACT_EXTENSION).unwrap();
+        std::os::unix::fs::symlink(&file, &link).unwrap();
+        assert!(!is_intact(&link), "symlink");
+    }
+
     #[test]
     fn x3_an_intact_file_is_left_as_it_is() {
         let tmp = tempfile::tempdir().unwrap();
