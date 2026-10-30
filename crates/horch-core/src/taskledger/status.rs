@@ -96,11 +96,11 @@ impl Parked {
         for path in super::runs::parked_worktrees(conn, run_id)? {
             parked.count += 1;
             let stored: Option<(i64, String)> = optional(conn.query_row(
-                    "SELECT bytes, bytes_measured_at FROM worktrees
+                "SELECT bytes, bytes_measured_at FROM worktrees
                      WHERE path = ?1 AND bytes IS NOT NULL AND bytes_measured_at IS NOT NULL",
-                    [&path],
-                    |r| Ok((r.get(0)?, r.get(1)?)),
-                ))?;
+                [&path],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            ))?;
             match stored {
                 Some((bytes, at)) => {
                     parked.bytes += bytes.max(0) as u64;

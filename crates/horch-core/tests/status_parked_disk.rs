@@ -83,7 +83,12 @@ fn status_sums_the_stored_bytes_and_walks_no_folder() {
     for i in 0..40 {
         write(&tree, &format!("d{}/f{i}.txt", i % 4), &"y".repeat(4096));
     }
-    parked(&store, &run, &locked, Some((5 * GB, ago(Duration::hours(2)))));
+    parked(
+        &store,
+        &run,
+        &locked,
+        Some((5 * GB, ago(Duration::hours(2)))),
+    );
     parked(&store, &run, &tree, Some((GB, ago(Duration::minutes(30)))));
 
     let started = Instant::now();

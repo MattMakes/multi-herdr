@@ -684,7 +684,10 @@ mod v6_tests {
                 |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
             )
             .unwrap();
-        assert_eq!(kept, ("check red".into(), 99, Some("KEEP".into()), None, None));
+        assert_eq!(
+            kept,
+            ("check red".into(), 99, Some("KEEP".into()), None, None)
+        );
         conn.execute(
             "UPDATE worktrees SET bytes = 5, bytes_measured_at = 'now' WHERE worktree_id = 'wt1'",
             [],
