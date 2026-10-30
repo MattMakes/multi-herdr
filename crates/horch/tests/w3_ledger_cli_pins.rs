@@ -443,7 +443,8 @@ fn the_unfinished_import_and_refusal_arms_print_their_pinned_text() {
     assert_eq!(stop.code, 1);
     assert!(stop.err.starts_with("horch: "), "{}", stop.err);
     let pid = w.run(&["ledger", "worker", "pid", "nobody", "--agent", "1"]);
-    assert_eq!(pid.code, 0, "{}", pid.err);
+    assert_eq!(pid.code, 1, "{}", pid.err);
+    assert_eq!(pid.err, "horch: no worker nobody in the task ledger\n");
 }
 
 /// A world with run `r1` (checks every 10 s) and 1 claimed task.
