@@ -10,8 +10,9 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
-/// The kind of the worker wait that covers a detached finish.
-pub const FINISH_WAIT: &str = "finish";
+/// The kind of the worker wait that covers a detached finish: a
+/// background run of horch, which a worker itself never starts.
+pub const FINISH_WAIT: &str = "background";
 
 /// How long a detached run waits for its run file to name it.
 const RECORD_WAIT: Duration = Duration::from_secs(10);

@@ -130,8 +130,6 @@ fn start_detached(
     run: &Path,
     rereview: bool,
 ) -> Result<ExitCode> {
-    let child = spawn_run_steps(run, rereview)?;
-    let recorded = detach::record(run, child.id())?;
     let task = workers::get(store.conn(), wid)?
         .task_id
         .context("this worker holds no task")?;
@@ -140,10 +138,15 @@ fn start_detached(
         store.conn(),
         wid,
         detach::FINISH_WAIT,
-        &format!("finish runs (PID {})", recorded.pid),
+        "horch ledger finish runs detached",
         &[],
         3 * check.as_secs() as i64 + 3600,
     )?;
+    let recorded = spawn_run_steps(run, rereview).and_then(|child| detach::record(run, child.id()));
+    if recorded.is_err() {
+        workers::clear_wait(store.conn(), wid, detach::FINISH_WAIT)?;
+    }
+    let recorded = recorded?;
     output::println(&runs_line(recorded.pid));
     Ok(ExitCode::SUCCESS)
 }
