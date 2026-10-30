@@ -4,7 +4,7 @@
 //! when no changed file is in a language the analyser reads.
 
 use std::collections::BTreeMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use anyhow::{Context, Result};
@@ -59,29 +59,23 @@ pub fn changed_lines(diff: &str) -> BTreeMap<String, Vec<(u64, u64)>> {
     for line in diff.lines() {
         if let Some(f) = line.strip_prefix("+++ ") {
             file = f.strip_prefix("b/").map(|s| s.to_string());
-            continue;
-        }
-        let Some(rest) = line.strip_prefix("@@ ") else {
-            continue;
-        };
-        let Some(plus) = rest.split_whitespace().find(|t| t.starts_with('+')) else {
-            continue;
-        };
-        let plus = &plus[1..];
-        let (start, count) = match plus.split_once(',') {
-            Some((s, c)) => (s.parse::<u64>().unwrap_or(0), c.parse::<u64>().unwrap_or(1)),
-            None => (plus.parse::<u64>().unwrap_or(0), 1),
-        };
-        if count == 0 {
-            continue;
-        }
-        if let Some(f) = &file {
-            out.entry(f.clone())
-                .or_default()
-                .push((start, start + count - 1));
+        } else if let (Some(f), Some(range)) = (&file, hunk_range(line)) {
+            out.entry(f.clone()).or_default().push(range);
         }
     }
     out
+}
+
+/// The new-side line range of 1 hunk header; `None` for any other line and
+/// for a hunk that adds no line.
+fn hunk_range(line: &str) -> Option<(u64, u64)> {
+    let rest = line.strip_prefix("@@ ")?;
+    let plus = &rest.split_whitespace().find(|t| t.starts_with('+'))?[1..];
+    let (start, count) = match plus.split_once(',') {
+        Some((s, c)) => (s.parse::<u64>().unwrap_or(0), c.parse::<u64>().unwrap_or(1)),
+        None => (plus.parse::<u64>().unwrap_or(0), 1),
+    };
+    (count > 0).then(|| (start, start + count - 1))
 }
 
 /// The violations in functions whose span (its line to the line before the
@@ -121,25 +115,9 @@ pub fn in_changed_functions(
     Ok(out)
 }
 
-/// The step.
-pub fn step(cx: &Ctx<'_>) -> Result<Outcome> {
-    let git = &cx.tools.git;
-    let base = cx
-        .run
-        .run_branch
-        .clone()
-        .or(cx.run.base_branch.clone())
-        .context("the run has no run branch")?;
-    let names = git.run(
-        &cx.dir,
-        &[
-            "diff",
-            "--name-only",
-            "--diff-filter=AMR",
-            &format!("{base}...HEAD"),
-        ],
-    )?;
-    let files: Vec<String> = names
+/// The files of `git diff --name-only` in a language the analyser reads.
+fn sources(names: &str) -> Vec<String> {
+    names
         .lines()
         .filter(|f| {
             Path::new(f)
@@ -148,21 +126,11 @@ pub fn step(cx: &Ctx<'_>) -> Result<Outcome> {
                 .is_some_and(|e| EXTENSIONS.contains(&e))
         })
         .map(|s| s.to_string())
-        .collect();
-    let tree = git.tree(&cx.dir).ok();
-    if files.is_empty() {
-        return Ok(
-            Outcome::not_applicable("no changed file is in a language the analyser reads")
-                .judged(tree),
-        );
-    }
-    let Some(cli) = &cx.tools.complexity_cli else {
-        return Ok(Outcome::fail(
-            "no analyser",
-            None,
-            "the complexity-sweep skill's analyser was not found. Install the code plugin's complexity-sweep skill (and run npm install in its code/core and code/cli), or set HORCH_COMPLEXITY_CLI to its code/cli/dist/index.js",
-        ));
-    };
+        .collect()
+}
+
+/// The command that runs the analyser on `files`.
+fn analyser(cx: &Ctx<'_>, cli: &Path, files: &[String]) -> Command {
     let mut cmd = if cli.extension().is_some_and(|e| e == "js") {
         let mut c = Command::new(&cx.tools.node);
         c.arg(cli);
@@ -171,9 +139,44 @@ pub fn step(cx: &Ctx<'_>) -> Result<Outcome> {
         Command::new(cli)
     };
     cmd.args(["--format", "json", "--threshold-action", "none"])
-        .args(&files)
+        .args(files)
         .current_dir(&cx.dir);
     crate::runtime::process::scrub_child_env(&mut cmd);
+    cmd
+}
+
+/// The failed outcome that names the first 10 violations.
+fn violations(found: &[Violation], evidence: PathBuf) -> Outcome {
+    let list: Vec<String> = found
+        .iter()
+        .take(10)
+        .map(|v| {
+            format!(
+                "{}:{} {} {}={} (max {})",
+                v.file_path, v.line, v.function_name, v.metric, v.value, v.threshold
+            )
+        })
+        .collect();
+    Outcome::fail(
+        &format!("{} violations", found.len()),
+        Some(evidence.clone()),
+        &format!(
+            "reduce the complexity of the functions you changed, commit, then run finish again: {}. Full analysis: {}",
+            list.join("; "),
+            evidence.display()
+        ),
+    )
+}
+
+/// Run the analyser on `files` and judge the functions the branch changed.
+fn analyse(
+    cx: &Ctx<'_>,
+    base: &str,
+    cli: &Path,
+    files: &[String],
+    tree: Option<String>,
+) -> Result<Outcome> {
+    let mut cmd = analyser(cx, cli, files);
     // The report goes to a file, not a pipe: node exits before a piped
     // stdout drains, and a pipe keeps only the first 64 KiB.
     let evidence = cx.evidence_dir.join(format!("{}-complexity.json", cx.seq));
@@ -192,37 +195,55 @@ pub fn step(cx: &Ctx<'_>) -> Result<Outcome> {
             ),
         ));
     }
+    let git = &cx.tools.git;
     let diff = git.run(&cx.dir, &["diff", "-U0", &format!("{base}...HEAD"), "--"])?;
-    let changed = changed_lines(&diff);
-    let found = in_changed_functions(&json, &changed, &cx.dir)?;
-    if found.is_empty() {
-        return Ok(Outcome::pass(
+    let found = in_changed_functions(&json, &changed_lines(&diff), &cx.dir)?;
+    let outcome = if found.is_empty() {
+        Outcome::pass(
             "0 violations",
             Some(evidence),
             &format!("{} files analysed", files.len()),
         )
-        .judged(tree));
+    } else {
+        violations(&found, evidence)
+    };
+    Ok(outcome.judged(tree))
+}
+
+/// The step.
+pub fn step(cx: &Ctx<'_>) -> Result<Outcome> {
+    let git = &cx.tools.git;
+    let base = cx
+        .run
+        .run_branch
+        .clone()
+        .or(cx.run.base_branch.clone())
+        .context("the run has no run branch")?;
+    let names = git.run(
+        &cx.dir,
+        &[
+            "diff",
+            "--name-only",
+            "--diff-filter=AMR",
+            &format!("{base}...HEAD"),
+        ],
+    )?;
+    let files = sources(&names);
+    let tree = git.tree(&cx.dir).ok();
+    if files.is_empty() {
+        return Ok(
+            Outcome::not_applicable("no changed file is in a language the analyser reads")
+                .judged(tree),
+        );
     }
-    let list: Vec<String> = found
-        .iter()
-        .take(10)
-        .map(|v| {
-            format!(
-                "{}:{} {} {}={} (max {})",
-                v.file_path, v.line, v.function_name, v.metric, v.value, v.threshold
-            )
-        })
-        .collect();
-    Ok(Outcome::fail(
-        &format!("{} violations", found.len()),
-        Some(evidence.clone()),
-        &format!(
-            "reduce the complexity of the functions you changed, commit, then run finish again: {}. Full analysis: {}",
-            list.join("; "),
-            evidence.display()
-        ),
-    )
-    .judged(tree))
+    let Some(cli) = &cx.tools.complexity_cli else {
+        return Ok(Outcome::fail(
+            "no analyser",
+            None,
+            "the complexity-sweep skill's analyser was not found. Install the code plugin's complexity-sweep skill (and run npm install in its code/core and code/cli), or set HORCH_COMPLEXITY_CLI to its code/cli/dist/index.js",
+        ));
+    };
+    analyse(cx, &base, cli, &files, tree)
 }
 
 #[cfg(test)]
@@ -241,5 +262,17 @@ mod tests {
         let v = in_changed_functions(json, &changed, Path::new("/repo")).unwrap();
         assert_eq!(v.len(), 1);
         assert_eq!(v[0].function_name, "g");
+    }
+
+    #[test]
+    fn changed_lines_reads_every_hunk_kind() {
+        let diff = "@@ -1 +1 @@ before any file\n\
+                    +++ b/a.ts\n@@ -1,0 +2 @@\n@@ -5,2 +7,0 @@ deleted only\n@@ -9 +10,2 @@\n\
+                    +++ /dev/null\n@@ -1,3 +0,0 @@\n\
+                    +++ b/b.py\n@@ -0,0 +1,4 @@\n";
+        let changed = changed_lines(diff);
+        assert_eq!(changed.len(), 2, "{changed:?}");
+        assert_eq!(changed["a.ts"], vec![(2, 2), (10, 11)]);
+        assert_eq!(changed["b.py"], vec![(1, 4)]);
     }
 }
