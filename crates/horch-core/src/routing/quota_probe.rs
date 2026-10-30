@@ -72,6 +72,11 @@ impl Drop for Child {
     }
 }
 
+/// Start the child that `cmd` describes, or say why it did not start.
+fn start(cmd: Command, bin: &Path) -> Result<Child, String> {
+    Child::spawn(cmd).map_err(|e| format!("starting {}: {e}", bin.display()))
+}
+
 /// Ask Claude Code for its plan limits (QUO-01). One stdin line, a
 /// `get_usage` control request; no user message; no `ANTHROPIC_API_KEY`.
 /// The scratch dir goes under `temp_root`.
@@ -82,6 +87,14 @@ pub(crate) fn probe_claude(
 ) -> Result<Probed, String> {
     let dir = temp_root.join(format!("horch-quota-{}", std::process::id()));
     let _ = std::fs::create_dir_all(&dir);
+    let result = ask_claude(claude_command(bin, &dir), bin, timeout);
+    let _ = std::fs::remove_dir_all(&dir);
+    result
+}
+
+/// The command that starts Claude Code in `dir`, to take `get_usage` requests
+/// on stdin.
+fn claude_command(bin: &Path, dir: &Path) -> Command {
     let mut cmd = Command::new(bin);
     cmd.args([
         "-p",
@@ -93,71 +106,86 @@ pub(crate) fn probe_claude(
         "stream-json",
         "--verbose",
     ])
-    .current_dir(&dir);
+    .current_dir(dir);
     for key in crate::harness::launch::FORBIDDEN_ENV {
         cmd.env_remove(key);
     }
-    let result = (|| {
-        let mut child =
-            Child::spawn(cmd).map_err(|e| format!("starting {}: {e}", bin.display()))?;
-        let id = "horch-quota-1";
-        let request = serde_json::json!({
-            "type": "control_request",
-            "request_id": id,
-            "request": {"subtype": "get_usage", "skip_behaviors": true}
-        });
-        child
-            .send(&request.to_string())
-            .map_err(|e| format!("writing to {}: {e}", bin.display()))?;
-        let reply = child
-            .wait_for(Instant::now() + timeout, |v| {
-                v.get("type").and_then(Value::as_str) == Some("control_response")
-                    && v.pointer("/response/request_id").and_then(Value::as_str) == Some(id)
-            })
-            .ok_or_else(|| format!("no get_usage reply within {} ms", timeout.as_millis()))?;
-        parse_claude_usage(&reply)
-    })();
-    let _ = std::fs::remove_dir_all(&dir);
-    result
+    cmd
+}
+
+/// Start the `claude` that `cmd` describes, send it the `get_usage` request
+/// and read its reply.
+fn ask_claude(cmd: Command, bin: &Path, timeout: StdDuration) -> Result<Probed, String> {
+    let mut child = start(cmd, bin)?;
+    let id = "horch-quota-1";
+    let request = serde_json::json!({
+        "type": "control_request",
+        "request_id": id,
+        "request": {"subtype": "get_usage", "skip_behaviors": true}
+    });
+    child
+        .send(&request.to_string())
+        .map_err(|e| format!("writing to {}: {e}", bin.display()))?;
+    let reply = child
+        .wait_for(Instant::now() + timeout, |v| {
+            v.get("type").and_then(Value::as_str) == Some("control_response")
+                && v.pointer("/response/request_id").and_then(Value::as_str) == Some(id)
+        })
+        .ok_or_else(|| format!("no get_usage reply within {} ms", timeout.as_millis()))?;
+    parse_claude_usage(&reply)
 }
 
 /// Ask Codex for its plan limits (QUO-02): `initialize`, `initialized`,
 /// `account/rateLimits/read`, and nothing else.
 pub(crate) fn probe_codex(bin: &Path, timeout: StdDuration) -> Result<Probed, String> {
+    let mut child = start(codex_command(bin), bin)?;
+    let deadline = Instant::now() + timeout;
+    send_codex(
+        &mut child,
+        bin,
+        serde_json::json!({"id": 1, "method": "initialize", "params": {
+            "clientInfo": {"name": "horch", "version": env!("CARGO_PKG_VERSION")}}}),
+    )?;
+    reply_to(&child, deadline, 1).ok_or("no initialize reply")?;
+    send_codex(
+        &mut child,
+        bin,
+        serde_json::json!({"method": "initialized"}),
+    )?;
+    send_codex(
+        &mut child,
+        bin,
+        serde_json::json!({"id": 2, "method": "account/rateLimits/read", "params": null}),
+    )?;
+    let reply = reply_to(&child, deadline, 2).ok_or_else(|| {
+        format!(
+            "no account/rateLimits/read reply within {} ms",
+            timeout.as_millis()
+        )
+    })?;
+    parse_codex_limits(&reply)
+}
+
+/// The command that starts the Codex app-server.
+fn codex_command(bin: &Path) -> Command {
     let mut cmd = Command::new(bin);
     cmd.arg("app-server");
     for key in crate::harness::launch::FORBIDDEN_ENV {
         cmd.env_remove(key);
     }
-    let mut child = Child::spawn(cmd).map_err(|e| format!("starting {}: {e}", bin.display()))?;
-    let deadline = Instant::now() + timeout;
-    let send = |child: &mut Child, v: Value| {
-        child
-            .send(&v.to_string())
-            .map_err(|e| format!("writing to {} app-server: {e}", bin.display()))
-    };
-    send(
-        &mut child,
-        serde_json::json!({"id": 1, "method": "initialize", "params": {
-            "clientInfo": {"name": "horch", "version": env!("CARGO_PKG_VERSION")}}}),
-    )?;
+    cmd
+}
+
+/// Write one JSON line to the app-server.
+fn send_codex(child: &mut Child, bin: &Path, v: Value) -> Result<(), String> {
     child
-        .wait_for(deadline, |v| v.get("id") == Some(&Value::from(1)))
-        .ok_or("no initialize reply")?;
-    send(&mut child, serde_json::json!({"method": "initialized"}))?;
-    send(
-        &mut child,
-        serde_json::json!({"id": 2, "method": "account/rateLimits/read", "params": null}),
-    )?;
-    let reply = child
-        .wait_for(deadline, |v| v.get("id") == Some(&Value::from(2)))
-        .ok_or_else(|| {
-            format!(
-                "no account/rateLimits/read reply within {} ms",
-                timeout.as_millis()
-            )
-        })?;
-    parse_codex_limits(&reply)
+        .send(&v.to_string())
+        .map_err(|e| format!("writing to {} app-server: {e}", bin.display()))
+}
+
+/// The next stdout line that answers request `id`, before `deadline`.
+fn reply_to(child: &Child, deadline: Instant, id: u64) -> Option<Value> {
+    child.wait_for(deadline, |v| v.get("id") == Some(&Value::from(id)))
 }
 
 /// Ask agy for its plan quotas: `agy -p /usage --output-format json`. A
