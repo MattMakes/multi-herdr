@@ -493,7 +493,7 @@ Only a collector that is down for weeks reaches either bound.
 
 ### 12.2 Singleton lock
 
-- The lock is `telemetry/collector.lock/`, created with `create_dir` (atomic), the same idiom as `Ledger::lock` [H].
+- The lock is `telemetry/collector.lock/`, created with `create_dir` (atomic), the same idiom as `SessionLedger::lock` [H].
 - The holder writes `collector.json` with `{pid, started_at, host, herdr_session, workspace_id, pane_id, pid_start, exe}`. `pid_start` is the process start time (`procid::start_time`). `exe` is the binary it runs: `{path, len, mtime_ns}`, the path with symlinks resolved.
 - Stale binary: a collector keeps running the binary it started with, so after `just install` it runs old prices and old readers. `horch telemetry ensure` compares the live holder's `exe` with the current executable; `horch install` compares it with the binary it just installed. A holder with another `exe`, or none (a horch older than the field), is stopped with SIGTERM through `procid::signal_same`, which signals only the pid that still has the recorded `pid_start`; a holder without `pid_start` is never signalled. A new collector then starts on the current binary. `horch install` starts none when none was live, and a failed restart only warns. Windows has no signal here: the stale collector is reported.
 - Liveness: on Unix, `kill(pid, 0)` succeeds and `started_at` matches the process start time. On Windows, `OpenProcess` succeeds. A lock whose pid is dead is broken, and the breaker prints `horch: removed stale telemetry lock of pid <n>`.
