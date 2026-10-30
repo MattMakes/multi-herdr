@@ -297,6 +297,8 @@ mod sys {
         }
     }
 
+    // The statvfs fields are `u32` on some unix targets, so the casts stay.
+    #[allow(clippy::unnecessary_cast)]
     fn disk(path: &Path) -> (Option<u64>, Option<u64>) {
         statvfs(path).map_or((None, None), |stat| {
             let unit = stat.f_frsize as u64;
