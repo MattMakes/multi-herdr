@@ -1187,4 +1187,54 @@ mod tests {
         assert_eq!(entry.description, "Fine.");
         assert!(catalog.skipped_operator().is_empty());
     }
+
+    #[test]
+    fn with_operator_dir_digests_the_directory_of_the_skill_it_loads() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().display().to_string();
+        for name in ["fine", "other"] {
+            std::fs::create_dir_all(tmp.path().join(name)).unwrap();
+            std::fs::write(
+                tmp.path().join(name).join("SKILL.md"),
+                skill_md(name, "Fine."),
+            )
+            .unwrap();
+        }
+        std::fs::write(tmp.path().join("fine").join("notes.txt"), "more\n").unwrap();
+        let catalog = SkillCatalog::bundled()
+            .unwrap()
+            .with_operator_dir(&operator_teammate(&dir, &["fine"]), None)
+            .unwrap();
+        let entry = catalog.lookup("fine").unwrap();
+        // The digest covers that skill's own tree: not its sibling, not the
+        // directory above.
+        let own = horch_marketplace::integrity::tree_digest(&tmp.path().join("fine")).unwrap();
+        let sibling = horch_marketplace::integrity::tree_digest(&tmp.path().join("other")).unwrap();
+        let above = horch_marketplace::integrity::tree_digest(tmp.path()).unwrap();
+        assert_eq!(entry.digest.to_string(), own);
+        assert_ne!(own, sibling);
+        assert_ne!(own, above);
+        assert_eq!(
+            entry.version.0,
+            format!("operator+{}", entry.digest.short12())
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn with_operator_dir_refuses_a_skill_tree_the_digest_rules_refuse() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().display().to_string();
+        std::fs::create_dir_all(tmp.path().join("linked")).unwrap();
+        std::fs::write(
+            tmp.path().join("linked").join("SKILL.md"),
+            skill_md("linked", "Fine."),
+        )
+        .unwrap();
+        std::os::unix::fs::symlink("SKILL.md", tmp.path().join("linked").join("alias")).unwrap();
+        assert_eq!(
+            operator_error(&operator_teammate(&dir, &["linked"])),
+            "probe: operator skill 'linked': 'alias' is a symlink"
+        );
+    }
 }
