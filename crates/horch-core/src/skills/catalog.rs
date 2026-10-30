@@ -849,4 +849,261 @@ mod tests {
         assert_eq!(states.len(), 1);
         assert_eq!(states[0].2, StoreState::Ok);
     }
+
+    fn skill_md(name: &str, description: &str) -> String {
+        format!("---\nname: {name}\ndescription: {description}\n---\nBody\n")
+    }
+
+    fn invalid(name: &str, md_name: &str, description: &str) -> bool {
+        match validate_skill_md(
+            "p/SKILL.md",
+            name,
+            skill_md(md_name, description).as_bytes(),
+        ) {
+            Ok(_) => false,
+            Err(e) => {
+                assert_eq!(
+                    e.to_string(),
+                    "p/SKILL.md: invalid skill name or description"
+                );
+                true
+            }
+        }
+    }
+
+    /// Each SKILL.md rule rejects on its own.
+    #[test]
+    fn validate_skill_md_rejects_each_rule_alone() {
+        let meta = validate_skill_md(
+            "p/SKILL.md",
+            "a-b2",
+            skill_md("a-b2", "Does a thing.").as_bytes(),
+        )
+        .unwrap();
+        assert_eq!(meta.description, "Does a thing.");
+        assert!(invalid("a-b2", "other", "Does a thing."), "name differs");
+        assert!(invalid("-ab", "-ab", "Does a thing."), "leading -");
+        assert!(invalid("ab-", "ab-", "Does a thing."), "trailing -");
+        assert!(invalid("a--b", "a--b", "Does a thing."), "doubled -");
+        assert!(invalid("Ab", "Ab", "Does a thing."), "uppercase");
+        assert!(invalid("a_b", "a_b", "Does a thing."), "underscore");
+        assert!(invalid("a-b", "a-b", "''"), "blank description");
+        assert!(invalid("a-b", "a-b", &"x".repeat(1025)), "long description");
+        assert!(validate_skill_md("p", "a", skill_md("a", &"x".repeat(1024)).as_bytes()).is_ok());
+    }
+
+    #[test]
+    fn validate_skill_md_names_a_missing_frontmatter() {
+        let e = validate_skill_md("p/SKILL.md", "a", b"no frontmatter").unwrap_err();
+        assert_eq!(e.to_string(), "p/SKILL.md: missing YAML frontmatter");
+        let e = validate_skill_md("p/SKILL.md", "a", &[0xff, 0xfe]).unwrap_err();
+        assert_eq!(e.to_string(), "skill is not UTF-8");
+    }
+
+    fn copied_error(json: &str) -> String {
+        parse_copied(json).unwrap_err().to_string()
+    }
+
+    #[test]
+    fn parse_copied_rejects_each_bad_entry() {
+        let one = |extra: &str, files: &str| {
+            format!(r#"{{"skills":[{{"name":"s","copied_files":[{files}]{extra}}}]}}"#)
+        };
+        for (json, shown) in [
+            (r#""""#, ""),
+            (r#""/abs""#, "/abs"),
+            (r#""a/../b""#, "a/../b"),
+        ] {
+            assert_eq!(
+                copied_error(&one("", json)),
+                format!("copied 's': '{shown}' is not a path inside the skill directory")
+            );
+        }
+        assert_eq!(
+            copied_error(&one(r#","budget_exempt":" ""#, "")),
+            "copied 's': budget_exempt needs a reason"
+        );
+        assert_eq!(
+            copied_error(&one(r#","budget_exempt":"why","verbatim":true"#, "")),
+            "copied 's': a verbatim skill is already exempt; drop budget_exempt"
+        );
+        let dup = format!(
+            r#"{{"skills":[{{"name":"s","copied_files":[]}},{{"name":"s","copied_files":[]}}]}}"#
+        );
+        assert_eq!(copied_error(&dup), "copied 's': duplicate entry");
+        let ok = parse_copied(&one(r#","budget_exempt":"why""#, r#""a/b.md""#)).unwrap();
+        assert_eq!(ok["s"].copied_files, ["a/b.md"]);
+        assert_eq!(ok["s"].budget_exempt.as_deref(), Some("why"));
+    }
+
+    fn lock_for(entries: Vec<LockEntry>, root: &Path) {
+        let lock = Lockfile {
+            skills: entries,
+            ..Lockfile::default()
+        };
+        lock.write(&Store::new(root).lock_path()).unwrap();
+    }
+
+    fn lock_entry(id: &str, version: &str, digest: &str) -> LockEntry {
+        LockEntry {
+            id: id.into(),
+            source: "https://example.com/r.git".into(),
+            requested_revision: None,
+            resolved_commit: Some("ab".repeat(20)),
+            version: version.into(),
+            digest: digest.into(),
+            installed_at: "2026-10-02T12:00:00Z".into(),
+        }
+    }
+
+    /// `check_store` reports a bad lock entry, a missing version
+    /// directory and changed files, each beside its own entry.
+    #[test]
+    fn check_store_reports_invalid_missing_and_tampered_entries() {
+        let tmp = tempfile::tempdir().unwrap();
+        let want = format!("sha256:{}", "cd".repeat(32));
+        let tampered = tmp.path().join("skills/changed/git+1");
+        std::fs::create_dir_all(&tampered).unwrap();
+        std::fs::write(tampered.join("SKILL.md"), "x").unwrap();
+        lock_for(
+            vec![
+                lock_entry("bad", "../up", &want),
+                lock_entry("gone", "git+1", &want),
+                lock_entry("changed", "git+1", &want),
+            ],
+            tmp.path(),
+        );
+        let mut got = check_store(tmp.path()).unwrap();
+        assert_eq!(got.len(), 3);
+        got.sort_by(|a, b| a.0.id.cmp(&b.0.id));
+        got.swap(1, 2);
+        assert!(
+            matches!(&got[0].2, StoreState::Invalid(m) if m.contains("version '../up' cannot name a directory")),
+            "{:?}",
+            got[0].2
+        );
+        assert_eq!(got[0].1, PathBuf::new());
+        assert_eq!(got[1].2, StoreState::Missing);
+        assert_eq!(got[1].1, tmp.path().join("skills/gone/git+1"));
+        let actual = horch_marketplace::integrity::tree_digest(&tampered).unwrap();
+        assert_eq!(got[2].2, StoreState::Tampered { actual });
+    }
+
+    #[test]
+    fn check_store_accepts_a_matching_digest_and_reports_a_bad_tree() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ok = tmp.path().join("skills/fine/git+1");
+        std::fs::create_dir_all(&ok).unwrap();
+        std::fs::write(ok.join("SKILL.md"), "x").unwrap();
+        let digest = horch_marketplace::integrity::tree_digest(&ok).unwrap();
+        lock_for(vec![lock_entry("fine", "git+1", &digest)], tmp.path());
+        assert_eq!(check_store(tmp.path()).unwrap()[0].2, StoreState::Ok);
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink("SKILL.md", ok.join("link")).unwrap();
+            let got = check_store(tmp.path()).unwrap();
+            assert!(
+                matches!(&got[0].2, StoreState::Tampered { actual } if !actual.starts_with("sha256:")),
+                "{:?}",
+                got[0].2
+            );
+        }
+    }
+
+    fn operator_teammate(dir: &str, names: &[&str]) -> Teammate {
+        Teammate {
+            name: "probe".into(),
+            operator_skills: Some(crate::roster::OperatorSkills {
+                dir: dir.into(),
+                names: names.iter().map(|n| (*n).to_owned()).collect(),
+            }),
+            ..Teammate::default()
+        }
+    }
+
+    fn operator_error(t: &Teammate) -> String {
+        SkillCatalog::bundled()
+            .unwrap()
+            .with_operator_dir(t, None)
+            .unwrap_err()
+            .to_string()
+    }
+
+    #[test]
+    fn with_operator_dir_refuses_bad_names_in_order() {
+        assert_eq!(
+            operator_error(&operator_teammate("/x", &[])),
+            "probe: operator_skills names no skill"
+        );
+        assert_eq!(
+            operator_error(&operator_teammate("/x", &["a", "a"])),
+            "probe: operator skill 'a' is named twice"
+        );
+        assert_eq!(
+            operator_error(&operator_teammate("/x", &["tdd"])),
+            "probe: operator skill 'tdd' has the name of a catalog skill; \
+             rename one, or name the catalog skill in skills:"
+        );
+        assert_eq!(
+            operator_error(&operator_teammate("/x", &["device-interaction"])),
+            "probe: operator skill 'device-interaction' is a subagent skill \
+             (device-interaction runs as a subagent); fleet panes start no subagents"
+        );
+        assert_eq!(
+            operator_error(&operator_teammate("/x", &["bad\u{1}name"])),
+            "probe: operator skill 'bad\u{1}name'"
+        );
+    }
+
+    #[test]
+    fn with_operator_dir_refuses_a_file_for_a_directory_and_skips_a_missing_one() {
+        let tmp = tempfile::tempdir().unwrap();
+        let file = tmp.path().join("afile");
+        std::fs::write(&file, "x").unwrap();
+        let shown = file.display().to_string();
+        assert_eq!(
+            operator_error(&operator_teammate(&shown, &["mine"])),
+            format!("probe: operator_skills dir '{shown}' is not a directory")
+        );
+        let gone = tmp.path().join("gone").display().to_string();
+        let catalog = SkillCatalog::bundled()
+            .unwrap()
+            .with_operator_dir(&operator_teammate(&gone, &["mine"]), None)
+            .unwrap();
+        assert_eq!(
+            catalog.skipped_operator(),
+            [SkippedOperatorSkill {
+                name: "mine".into(),
+                path: format!("{gone}/mine"),
+            }]
+        );
+    }
+
+    #[test]
+    fn with_operator_dir_refuses_a_subagent_skill_md_and_a_bad_skill_md() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().display().to_string();
+        let write = |name: &str, text: &str| {
+            std::fs::create_dir_all(tmp.path().join(name)).unwrap();
+            std::fs::write(tmp.path().join(name).join("SKILL.md"), text).unwrap();
+        };
+        write("agentic", &skill_md("agentic", "Use the Agent tool."));
+        assert_eq!(
+            operator_error(&operator_teammate(&dir, &["agentic"])),
+            "probe: operator skill 'agentic' is a subagent skill \
+             (its SKILL.md uses the \"Agent tool\"); fleet panes start no subagents"
+        );
+        write("wrong", &skill_md("other", "Fine."));
+        assert!(operator_error(&operator_teammate(&dir, &["wrong"]))
+            .ends_with("/wrong/SKILL.md: invalid skill name or description"));
+        write("fine", &skill_md("fine", "Fine."));
+        let catalog = SkillCatalog::bundled()
+            .unwrap()
+            .with_operator_dir(&operator_teammate(&dir, &["fine"]), None)
+            .unwrap();
+        let entry = catalog.lookup("fine").unwrap();
+        assert!(entry.version.0.starts_with("operator+"));
+        assert_eq!(entry.description, "Fine.");
+        assert!(catalog.skipped_operator().is_empty());
+    }
 }
