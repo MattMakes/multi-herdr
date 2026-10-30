@@ -599,9 +599,6 @@ fn limit_error(message: String, kind: std::io::ErrorKind) -> std::io::Error {
 /// A reader's channel and its thread.
 type Reader = (mpsc::Receiver<std::io::Result<Vec<u8>>>, JoinHandle<()>);
 
-/// Read at most [`OUTPUT_CAP`] + 1 bytes of `pipe`, then send them. The
-/// reader ends when the pipe closes or the cap is hit; a caller waits for it
-/// only for [`READER_GRACE`].
 /// The error for a stream that read past [`OUTPUT_CAP`], if one did.
 fn over_cap(collected: &[Option<Vec<u8>>]) -> Option<std::io::Error> {
     collected
@@ -616,6 +613,9 @@ fn over_cap(collected: &[Option<Vec<u8>>]) -> Option<std::io::Error> {
         })
 }
 
+/// Read at most [`OUTPUT_CAP`] + 1 bytes of `pipe`, then send them. The
+/// reader ends when the pipe closes or the cap is hit; a caller waits for it
+/// only for [`READER_GRACE`].
 fn read_capped(pipe: Option<impl Read + Send + 'static>) -> std::io::Result<Reader> {
     let (sender, receiver) = mpsc::channel();
     let handle = std::thread::Builder::new().spawn(move || {
@@ -985,6 +985,27 @@ mod tests {
         let bytes = receiver.recv().unwrap().unwrap();
         handle.join().unwrap();
         assert_eq!(bytes.len() as u64, OUTPUT_CAP + 1);
+    }
+
+    /// A herdr that prints past the cap on either stream fails the call with
+    /// InvalidData. The script runs once first: macOS scans a new executable
+    /// at its first exec for seconds, which would race the call's timeout.
+    #[cfg(unix)]
+    #[test]
+    fn a_herdr_that_prints_more_than_the_cap_fails_the_call() {
+        for stream in ["", ">&2"] {
+            let (_dir, script) = script_in(&format!("head -c 3000000 /dev/zero {stream}"));
+            let warm = Command::new(&script)
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status()
+                .unwrap();
+            assert!(warm.success(), "{stream}");
+            let error =
+                output_within(Command::new(&script), Duration::from_secs(5), None).unwrap_err();
+            assert_eq!(error.kind(), std::io::ErrorKind::InvalidData, "{stream}");
+            assert!(error.to_string().contains("more than"), "{error}");
+        }
     }
 
     /// Output past the cap on stdout or on stderr fails the call with
