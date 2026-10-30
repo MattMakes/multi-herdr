@@ -5,7 +5,9 @@
 //! holds and that are not `cleaned`, `archived` or `trashed`, and folders
 //! under `.worktrees/` that git knows and the ledger does not. Each row gets
 //! an ID (`W1`, `W2`, ...) in name order. The decisions are applied in
-//! [`apply`]; this module only reads.
+//! [`apply`]; [`collect`] only reads the repository and the folders. A full
+//! measure stores each ledger row's bytes, so `ledger status` can sum them
+//! without a walk.
 
 pub mod apply;
 mod facts;
@@ -427,7 +429,25 @@ pub fn collect(conn: &Connection, git: &Git, root: &Path, measure: Measure) -> R
         row.id = format!("W{}", i + 1);
         facts::measure(git, root, row, measure);
     }
+    if measure == Measure::Full {
+        store_bytes(conn, &rows)?;
+    }
     Ok(rows)
+}
+
+/// Keep each measured ledger row's bytes and the time, for `ledger status`.
+fn store_bytes(conn: &Connection, rows: &[Row]) -> Result<()> {
+    let at = super::util::now();
+    for row in rows {
+        let (Some(id), Some(disk)) = (&row.worktree_id, &row.disk) else {
+            continue;
+        };
+        conn.execute(
+            "UPDATE worktrees SET bytes = ?2, bytes_measured_at = ?3 WHERE worktree_id = ?1",
+            rusqlite::params![id, disk.bytes as i64, at],
+        )?;
+    }
+    Ok(())
 }
 
 /// [`collect`] on a machine with no ledger file: folder rows only. The scan

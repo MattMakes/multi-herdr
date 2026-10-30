@@ -10,7 +10,7 @@ use rusqlite::Connection;
 use super::model::*;
 
 /// The schema version this binary writes.
-pub const VERSION: i64 = 5;
+pub const VERSION: i64 = 6;
 
 /// A rule that applies to rows this ledger writes, not to imported ones
 /// (section 11.2): `CHECK (origin = 'import' OR <expr>)`.
@@ -425,6 +425,12 @@ ALTER TABLE worktrees_v5 RENAME TO worktrees;"
     )
 }
 
+/// Version 6: the disk a parked worktree held when `horch worktree triage`
+/// last measured it, so `ledger status` sums a stored value and never walks
+/// a folder (#308).
+const V6: &str = "ALTER TABLE worktrees ADD COLUMN bytes INTEGER;
+             ALTER TABLE worktrees ADD COLUMN bytes_measured_at TEXT;";
+
 /// Bring the database to [`VERSION`]. A file from a newer binary is refused:
 /// this one would not know its columns.
 ///
@@ -473,6 +479,9 @@ fn migrate_unchecked(conn: &mut Connection) -> Result<()> {
         if broken > 0 {
             bail!("the version 5 migration left {broken} rows with a broken reference");
         }
+    }
+    if current < 6 {
+        tx.execute_batch(V6)?;
     }
     tx.pragma_update(None, "user_version", VERSION)?;
     tx.commit()?;
@@ -586,7 +595,7 @@ mod v5_tests {
         let v: i64 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(v, 5);
+        assert_eq!(v, VERSION);
         let kept: (String, String, i64, Option<String>) = conn
             .query_row(
                 "SELECT status, reason, bytes_on_disk, decision FROM worktrees WHERE worktree_id = 'wt1'",
@@ -634,5 +643,63 @@ mod v5_tests {
         drop(store);
         // A second open migrates nothing.
         crate::taskledger::Store::open(&path).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod v6_tests {
+    use super::*;
+
+    /// A ledger file as version 5 left it, with 1 parked worktree.
+    fn version_5_file(path: &std::path::Path) {
+        let conn = Connection::open(path).unwrap();
+        conn.execute_batch(&v1()).unwrap();
+        for sql in [V2, V3, V4] {
+            conn.execute_batch(sql).unwrap();
+        }
+        conn.execute_batch(&v5()).unwrap();
+        conn.pragma_update(None, "user_version", 5).unwrap();
+        conn.execute_batch(
+            "INSERT INTO worktrees (worktree_id, repo_root, path, branch, base, status, created_at, reason, bytes_on_disk, decision)
+                VALUES ('wt1', '/r', '/r/.worktrees/a', 'a', 'main', 'unlanded', 'then', 'check red', 99, 'KEEP');",
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn migrate_from_version_5_keeps_rows_and_adds_the_measured_bytes_columns() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("ledger.sqlite3");
+        version_5_file(&path);
+        let store = crate::taskledger::Store::open(&path).unwrap();
+        let conn = store.conn();
+        let v: i64 = conn
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(v, 6);
+        let kept: (String, i64, Option<String>, Option<i64>, Option<String>) = conn
+            .query_row(
+                "SELECT reason, bytes_on_disk, decision, bytes, bytes_measured_at FROM worktrees WHERE worktree_id = 'wt1'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+            )
+            .unwrap();
+        assert_eq!(
+            kept,
+            ("check red".into(), 99, Some("KEEP".into()), None, None)
+        );
+        conn.execute(
+            "UPDATE worktrees SET bytes = 5, bytes_measured_at = 'now' WHERE worktree_id = 'wt1'",
+            [],
+        )
+        .unwrap();
+        drop(store);
+        // A second open migrates nothing and keeps the measurement.
+        let store = crate::taskledger::Store::open(&path).unwrap();
+        let bytes: i64 = store
+            .conn()
+            .query_row("SELECT bytes FROM worktrees", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(bytes, 5);
     }
 }
