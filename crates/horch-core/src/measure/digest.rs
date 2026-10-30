@@ -67,16 +67,19 @@ impl FromStr for Digest {
         if hex.len() != 64 {
             return Err(err());
         }
-        let nibble = |c: u8| match c {
-            b'0'..=b'9' => Some(c - b'0'),
-            b'a'..=b'f' => Some(c - b'a' + 10),
-            _ => None,
-        };
         let mut out = [0u8; 32];
         for (i, pair) in hex.as_bytes().chunks(2).enumerate() {
             out[i] = (nibble(pair[0]).ok_or_else(err)? << 4) | nibble(pair[1]).ok_or_else(err)?;
         }
         Ok(Digest(out))
+    }
+}
+
+fn nibble(c: u8) -> Option<u8> {
+    match c {
+        b'0'..=b'9' => Some(c - b'0'),
+        b'a'..=b'f' => Some(c - b'a' + 10),
+        _ => None,
     }
 }
 
@@ -239,6 +242,75 @@ mod tests {
             "sha256:zz7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
         ] {
             assert!(bad.parse::<Digest>().is_err(), "{bad}");
+        }
+    }
+
+    /// Each refusal names the whole text it was given, prefix included, in
+    /// the same words.
+    #[test]
+    fn digest_parse_error_names_the_whole_input() {
+        let digits = "a".repeat(64);
+        for bad in [
+            digits.clone(),
+            format!("sha256:{}", &digits[1..]),
+            format!("sha256:g{}", &digits[1..]),
+            format!("sha256:{}g", &digits[1..]),
+        ] {
+            assert_eq!(bad.parse::<Digest>(), Err(ParseDigestError(bad.clone())));
+        }
+        let err = "sha256:ba78".parse::<Digest>().unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "'sha256:ba78' is not a digest (expected sha256:<64 lowercase hex>)"
+        );
+    }
+
+    /// A digit is `0-9` or `a-f`, in either place of a pair: the edges of both
+    /// ranges pass, the chars just outside them and the capitals do not.
+    #[test]
+    fn digest_parse_takes_the_edges_of_the_digit_ranges_and_no_more() {
+        let with = |c: char, at: usize| {
+            let mut digits = "a".repeat(64);
+            digits.replace_range(at..=at, &c.to_string());
+            format!("sha256:{digits}").parse::<Digest>()
+        };
+        for at in [0, 1, 32, 63] {
+            for c in ['0', '9', 'a', 'f'] {
+                assert!(with(c, at).is_ok(), "{c:?} at {at}");
+            }
+            for c in ['/', ':', '@', 'A', 'F', '`', 'g', 'G', ' ', '-', '+'] {
+                assert!(with(c, at).is_err(), "{c:?} at {at}");
+            }
+        }
+    }
+
+    /// The text after the prefix is 64 bytes, counted in bytes, with no
+    /// trimming; the prefix is exact.
+    #[test]
+    fn digest_parse_wants_64_bytes_after_the_exact_prefix() {
+        let digits = "a".repeat(64);
+        assert!(format!("sha256:{digits}").parse::<Digest>().is_ok());
+        for n in [0, 1, 63, 65, 66, 128] {
+            let text = format!("sha256:{}", "a".repeat(n));
+            assert!(text.parse::<Digest>().is_err(), "{n} digits");
+        }
+        // Text that is not ASCII is refused, never sliced: 32 two-byte chars
+        // make 64 bytes, and a two-byte char at an odd offset splits a pair.
+        for text in [
+            format!("sha256:{}", "é".repeat(32)),
+            format!("sha256:{}éa", "a".repeat(61)),
+        ] {
+            assert!(text.parse::<Digest>().is_err(), "{text:?}");
+        }
+        for text in [
+            format!("sha256:{digits}\n"),
+            format!("sha256:{digits} "),
+            format!(" sha256:{digits}"),
+            format!("SHA256:{digits}"),
+            format!("sha512:{digits}"),
+            format!("sha256{digits}"),
+        ] {
+            assert!(text.parse::<Digest>().is_err(), "{text:?}");
         }
     }
 }

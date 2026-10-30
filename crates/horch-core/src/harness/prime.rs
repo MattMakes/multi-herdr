@@ -742,25 +742,28 @@ fn models_window(path: &str, text: &str, model: &str) -> Option<OperatorWindow> 
         });
     };
     let defined = doc.get("providers")?.get(provider)?;
-    let custom = || {
-        defined
-            .get("models")?
-            .as_array()?
-            .iter()
-            .find(|m| m.get("id").and_then(Value::as_str) == Some(id))?
-            .get("contextWindow")?
-            .as_u64()
-    };
     let tokens = defined
         .get("modelOverrides")
         .and_then(|o| o.get(id))
         .and_then(|o| o.get("contextWindow"))
         .and_then(Value::as_u64)
-        .or_else(custom);
+        .or_else(|| custom_window(defined, id));
     Some(OperatorWindow {
         tokens,
         detail: format!("{path} (provider {provider} defined)"),
     })
+}
+
+/// The `contextWindow` of the first custom model `id` in the `models` of a
+/// provider; None when that model has none.
+fn custom_window(provider: &Value, id: &str) -> Option<u64> {
+    provider
+        .get("models")?
+        .as_array()?
+        .iter()
+        .find(|m| m.get("id").and_then(Value::as_str) == Some(id))?
+        .get("contextWindow")?
+        .as_u64()
 }
 
 /// Whether a `settings.json` sets `compaction.reserveTokens` or
@@ -952,6 +955,50 @@ fn command_model(cmd: &Command) -> Option<String> {
         .map(|w| w[1].to_string())
 }
 
+/// The variable that points Prime at this launch's agent dir, built from the
+/// operator's. Without the operator's agent dir there is nothing to link, and
+/// a login would land in a directory nobody keeps: Prime runs on its own
+/// default dir, without a fleet window. A dir that cannot be built is removed
+/// and left out the same way.
+fn fleet_agent_dir_env(
+    ctx: &RuntimeContext,
+    req: &PrepareRequest<'_>,
+    daemon: &Daemon,
+) -> Option<(String, std::ffi::OsString)> {
+    let src = source_agent_dir(ctx, req.teammate);
+    if !src.is_dir() {
+        return None;
+    }
+    let dir = daemon.agent_dir();
+    match build_agent_dir(&src, &dir, req) {
+        Ok(()) => Some((AGENT_DIR_ENV.into(), dir.into_os_string())),
+        Err(e) => {
+            let _ = std::fs::remove_dir_all(&dir);
+            eprintln!(
+                "horch[{}]: Prime agent dir not built, the pane uses {}: {e:#}",
+                req.role,
+                src.display()
+            );
+            None
+        }
+    }
+}
+
+/// Name the pane in the launch dir, for [`finish_pane`]. A failed write
+/// costs `horch done` its way to the daemon; the launch goes on.
+fn write_pane_file(daemon: &Daemon, role: &str, pane: &str) {
+    if let Err(e) = crate::fsx::write_atomic(
+        &daemon.launch_dir().join(PANE),
+        format!("{pane}\n").as_bytes(),
+        crate::fsx::PRIVATE_FILE,
+    ) {
+        eprintln!(
+            "horch[{}]: Prime pane file not written, horch done cannot stop the daemon: {e:#}",
+            role
+        );
+    }
+}
+
 /// The Prime Agent adapter.
 pub struct Prime;
 
@@ -981,41 +1028,13 @@ impl Harness for Prime {
             sessions_dir: Some(daemon.sessions_dir().to_path_buf()),
             ..Prepared::default()
         };
-        // Without the operator's agent dir there is nothing to link, and a
-        // login would land in a directory nobody keeps: Prime runs on its
-        // own default dir, without a fleet window.
-        let src = source_agent_dir(ctx, req.teammate);
-        if src.is_dir() {
-            let dir = daemon.agent_dir();
-            match build_agent_dir(&src, &dir, req) {
-                Ok(()) => prepared
-                    .env
-                    .push((AGENT_DIR_ENV.into(), dir.into_os_string())),
-                Err(e) => {
-                    let _ = std::fs::remove_dir_all(&dir);
-                    eprintln!(
-                        "horch[{}]: Prime agent dir not built, the pane uses {}: {e:#}",
-                        req.role,
-                        src.display()
-                    )
-                }
-            }
-        }
+        prepared.env.extend(fleet_agent_dir_env(ctx, req, &daemon));
         // In a herdr pane only: `horch done` finds this launch by its pane
         // and stops the daemon (`finish_pane`). Prime's built-in reporter
         // reports the pane's agent state itself.
         let pane = ctx.herdr.pane.as_ref().map(|p| p.as_str().to_string());
         if let Some(pane) = &pane {
-            if let Err(e) = crate::fsx::write_atomic(
-                &daemon.launch_dir().join(PANE),
-                format!("{pane}\n").as_bytes(),
-                crate::fsx::PRIVATE_FILE,
-            ) {
-                eprintln!(
-                    "horch[{}]: Prime pane file not written, horch done cannot stop the daemon: {e:#}",
-                    req.role
-                );
-            }
+            write_pane_file(&daemon, req.role, pane);
         }
         // After the CLI has exited, not before: stopping the daemon early would
         // take the session it is still writing with it.
@@ -1716,6 +1735,70 @@ mod tests {
             .unwrap()
             .detail
             .starts_with(&user.display().to_string()));
+    }
+
+    /// An override of the model wins over a custom model with its id; the
+    /// first custom model with the id decides; a value that is not a whole
+    /// number is no window.
+    #[test]
+    fn models_window_takes_the_override_before_the_custom_model() {
+        let window = |text: &str, model: &str| models_window("/m.json", text, model);
+        let defined = |tokens: Option<u64>| {
+            Some(OperatorWindow {
+                tokens,
+                detail: "/m.json (provider p defined)".into(),
+            })
+        };
+        let both = r#"{"providers":{"p":{"modelOverrides":{"m":{"contextWindow":1000}},"models":[{"id":"m","contextWindow":2000}]}}}"#;
+        assert_eq!(window(both, "p/m"), defined(Some(1000)));
+        // An override without a window leaves it to the custom model.
+        let bare = r#"{"providers":{"p":{"modelOverrides":{"m":{}},"models":[{"id":"m","contextWindow":2000}]}}}"#;
+        assert_eq!(window(bare, "p/m"), defined(Some(2000)));
+        // So does an override whose window is no number.
+        let text = r#"{"providers":{"p":{"modelOverrides":{"m":{"contextWindow":"1000"}},"models":[{"id":"m","contextWindow":2000}]}}}"#;
+        assert_eq!(window(text, "p/m"), defined(Some(2000)));
+        // With no custom model either, there is no window.
+        let text = r#"{"providers":{"p":{"modelOverrides":{"m":{"contextWindow":-1}}}}}"#;
+        assert_eq!(window(text, "p/m"), defined(None));
+        // The first custom model with the id decides, with a window or not.
+        let twice =
+            r#"{"providers":{"p":{"models":[{"id":"m"},{"id":"m","contextWindow":3000}]}}}"#;
+        assert_eq!(window(twice, "p/m"), defined(None));
+        // `models` that is no array holds no model.
+        let object = r#"{"providers":{"p":{"models":{"id":"m","contextWindow":5}}}}"#;
+        assert_eq!(window(object, "p/m"), defined(None));
+        // The id is all that follows the first slash.
+        let slashed = r#"{"providers":{"p":{"modelOverrides":{"a/b":{"contextWindow":7}}}}}"#;
+        assert_eq!(window(slashed, "p/a/b"), defined(Some(7)));
+    }
+
+    /// A `models.json` is the operator's when it defines the provider, with
+    /// whatever value; or when it is no JSON and the model names a provider.
+    #[test]
+    fn models_window_is_none_unless_the_document_defines_the_provider() {
+        let window = |text: &str, model: &str| models_window("/m.json", text, model);
+        let defined = Some(OperatorWindow {
+            tokens: None,
+            detail: "/m.json (provider p defined)".into(),
+        });
+        assert_eq!(window(r#"{"providers":{"p":null}}"#, "p/m"), defined);
+        assert_eq!(window(r#"{"providers":{"p":{}}}"#, "p/m"), defined);
+        // Another provider, no `providers`, or a document that is no object.
+        assert_eq!(window(r#"{"providers":{"q":{}}}"#, "p/m"), None);
+        assert_eq!(window("{}", "p/m"), None);
+        assert_eq!(window(r#"{"providers":[]}"#, "p/m"), None);
+        assert_eq!(window("[1]", "p/m"), None);
+        // Text that is no JSON, for a model that names a provider.
+        assert_eq!(
+            window("{oops", "p/m"),
+            Some(OperatorWindow {
+                tokens: None,
+                detail: "/m.json (not valid JSON)".into(),
+            })
+        );
+        // A model with no provider is judged before the text is read.
+        assert_eq!(window("{oops", "no-slash"), None);
+        assert_eq!(window(r#"{"providers":{"p":{}}}"#, "no-slash"), None);
     }
 
     #[test]
