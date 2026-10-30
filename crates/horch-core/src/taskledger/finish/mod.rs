@@ -20,8 +20,11 @@ use rusqlite::{params, Connection};
 use serde::Serialize;
 
 use super::git::Git;
-use super::model::{Actor, EventKind, StepName, StepStatus, TaskStatus, WorktreeStatus};
+use super::model::{
+    Actor, EventKind, StepName, StepStatus, TaskStatus, WorkerStatus, WorktreeStatus,
+};
 use super::runs::{self, Run};
+use super::sql_words::{self, word};
 use super::store::{optional, Store};
 use super::tasks::{self, Task};
 use super::util::{self, About};
@@ -225,8 +228,9 @@ pub fn worktree_of(conn: &Connection, task_id: &str) -> Result<Option<WorktreeRo
     optional(conn.query_row(
         &format!(
             "SELECT {WORKTREE_COLUMNS} FROM worktrees
-             WHERE task_id = ?1 AND status NOT IN ('cleaned', 'abandoned')
-             ORDER BY created_at DESC, rowid DESC LIMIT 1"
+             WHERE task_id = ?1 AND status NOT IN ({gone})
+             ORDER BY created_at DESC, rowid DESC LIMIT 1",
+            gone = sql_words::list(sql_words::WORKTREES_GONE)
         ),
         [task_id],
         WorktreeRow::from_row,
@@ -453,9 +457,12 @@ fn create_worktree(
 fn insert_worktree(store: &mut Store, row: &WorktreeRow, run_id: &str) -> Result<WorktreeRow> {
     store.immediate(|tx| {
         tx.execute(
-            "INSERT INTO worktrees (worktree_id, task_id, worker_id, repo_root, path, branch, base,
-                base_commit, status, origin, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 'open', 'native', ?9)",
+            &format!(
+                "INSERT INTO worktrees (worktree_id, task_id, worker_id, repo_root, path, branch, base,
+                    base_commit, status, origin, created_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, {open}, 'native', ?9)",
+                open = word(WorktreeStatus::Open)
+            ),
             params![
                 row.worktree_id,
                 row.task_id,
@@ -638,8 +645,11 @@ impl<'a> Attempt<'a> {
         store.immediate(|tx| {
             for (i, n) in self.names.iter().enumerate() {
                 tx.execute(
-                    "INSERT OR IGNORE INTO task_steps (task_id, worker_id, seq, name, status)
-                     VALUES (?1, ?2, ?3, ?4, 'pending')",
+                    &format!(
+                        "INSERT OR IGNORE INTO task_steps (task_id, worker_id, seq, name, status)
+                         VALUES (?1, ?2, ?3, ?4, {pending})",
+                        pending = word(StepStatus::Pending)
+                    ),
                     params![
                         self.task.task_id,
                         self.w.worker_id,
@@ -650,8 +660,12 @@ impl<'a> Attempt<'a> {
             }
             if self.task.status == TaskStatus::Running.as_str() {
                 tx.execute(
-                    "UPDATE tasks SET status = 'landing', updated_at = ?2
-                     WHERE task_id = ?1 AND status = 'running'",
+                    &format!(
+                        "UPDATE tasks SET status = {landing}, updated_at = ?2
+                         WHERE task_id = ?1 AND status = {running}",
+                        landing = word(TaskStatus::Landing),
+                        running = word(TaskStatus::Running)
+                    ),
                     params![self.task.task_id, util::now()],
                 )?;
             }
@@ -671,7 +685,10 @@ impl<'a> Attempt<'a> {
         }
         store.immediate(|tx| {
             tx.execute(
-                "UPDATE task_steps SET status = 'pending' WHERE task_id = ?1 AND worker_id = ?2 AND seq >= ?3",
+                &format!(
+                    "UPDATE task_steps SET status = {pending} WHERE task_id = ?1 AND worker_id = ?2 AND seq >= ?3",
+                    pending = word(StepStatus::Pending)
+                ),
                 params![self.task.task_id, self.w.worker_id, ls],
             )?;
             Ok(())
@@ -714,9 +731,12 @@ impl<'a> Attempt<'a> {
         };
         store.immediate(|tx| {
             tx.execute(
-                "UPDATE task_steps SET status = 'running', rounds = rounds + 1,
-                    started_at = COALESCE(started_at, ?4)
-                 WHERE task_id = ?1 AND worker_id = ?2 AND seq = ?3",
+                &format!(
+                    "UPDATE task_steps SET status = {running}, rounds = rounds + 1,
+                        started_at = COALESCE(started_at, ?4)
+                     WHERE task_id = ?1 AND worker_id = ?2 AND seq = ?3",
+                    running = word(StepStatus::Running)
+                ),
                 params![self.task.task_id, self.w.worker_id, seq, util::now()],
             )?;
             Ok(())
@@ -796,7 +816,10 @@ pub fn rereview(store: &mut Store, tools: &Tools, worker_id: &str) -> Result<()>
     codesweep::forget_tree(store.conn(), &tools.evidence_root, &task.task_id)?;
     store.immediate(|tx| {
         tx.execute(
-            "UPDATE task_steps SET status = 'pending' WHERE task_id = ?1 AND worker_id = ?2 AND name = 'code-sweep'",
+            &format!(
+                "UPDATE task_steps SET status = {pending} WHERE task_id = ?1 AND worker_id = ?2 AND name = 'code-sweep'",
+                pending = word(StepStatus::Pending)
+            ),
             params![task.task_id, w.worker_id],
         )?;
         Ok(())
@@ -824,10 +847,17 @@ fn record(
 ) -> Result<()> {
     store.immediate(|tx| {
         tx.execute(
-            "UPDATE task_steps SET status = ?4, verdict = ?5, evidence_path = ?6, note = ?7,
-                judged_rev = ?8, review_task_ids = COALESCE(?9, review_task_ids),
-                ended_at = CASE WHEN ?4 IN ('passed', 'failed', 'not_applicable') THEN ?10 ELSE ended_at END
-             WHERE task_id = ?1 AND worker_id = ?2 AND seq = ?3",
+            &format!(
+                "UPDATE task_steps SET status = ?4, verdict = ?5, evidence_path = ?6, note = ?7,
+                    judged_rev = ?8, review_task_ids = COALESCE(?9, review_task_ids),
+                    ended_at = CASE WHEN ?4 IN ({ended}) THEN ?10 ELSE ended_at END
+                 WHERE task_id = ?1 AND worker_id = ?2 AND seq = ?3",
+                ended = sql_words::list(&[
+                    StepStatus::Passed,
+                    StepStatus::Failed,
+                    StepStatus::NotApplicable
+                ])
+            ),
             params![
                 task.task_id,
                 w.worker_id,
@@ -1041,8 +1071,11 @@ fn mark_done(
     let now = util::now();
     // Never turn a task cancelled meanwhile into done (#136).
     let n = tx.execute(
-        "UPDATE tasks SET status = ?2, summary = ?3, updated_at = ?4, finished_at = ?4
-         WHERE task_id = ?1 AND status IN ('running', 'landing')",
+        &format!(
+            "UPDATE tasks SET status = ?2, summary = ?3, updated_at = ?4, finished_at = ?4
+             WHERE task_id = ?1 AND status IN ({in_flight})",
+            in_flight = sql_words::list(sql_words::TASKS_IN_FLIGHT)
+        ),
         params![task.task_id, status, text, now],
     )?;
     if n == 0 {
@@ -1052,9 +1085,12 @@ fn mark_done(
         );
     }
     tx.execute(
-        "UPDATE workers SET status = 'done', summary = ?2, end_reason = ?3, ended_at = ?4,
-            last_progress_at = ?4
-         WHERE worker_id = ?1",
+        &format!(
+            "UPDATE workers SET status = {done}, summary = ?2, end_reason = ?3, ended_at = ?4,
+                last_progress_at = ?4
+             WHERE worker_id = ?1",
+            done = word(WorkerStatus::Done)
+        ),
         params![
             worker_id,
             text,
@@ -1082,8 +1118,11 @@ fn reviews_in_for(tx: &Connection, task: &Task) -> Result<Option<(String, Option
         return Ok(None);
     };
     let open: i64 = tx.query_row(
-        "SELECT count(*) FROM tasks WHERE parent_task_id = ?1 AND kind = 'review'
-           AND status NOT IN ('done', 'cancelled')",
+        &format!(
+            "SELECT count(*) FROM tasks WHERE parent_task_id = ?1 AND kind = 'review'
+               AND status NOT IN ({ended})",
+            ended = sql_words::list(sql_words::TASKS_ENDED)
+        ),
         [parent],
         |r| r.get(0),
     )?;

@@ -16,8 +16,12 @@ use serde::Serialize;
 use serde_json::Value;
 
 use super::git::{dir_bytes, Git};
-use super::model::{FindingKind, SourceKind};
+use super::model::SourceKind;
+use super::model::{
+    FindingKind, FindingStatus, RunStatus, TaskStatus, WorkerStatus, WorktreeStatus,
+};
 use super::runs;
+use super::sql_words::{self, word};
 use super::store::{optional, Store};
 use super::util;
 
@@ -147,9 +151,12 @@ fn finding(
     detail: &str,
 ) -> Result<()> {
     conn.execute(
-        "INSERT INTO import_findings (project_id, run_id, kind, task_id, worker_id, worktree_id,
-            detail, status, created_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'open', ?8)",
+        &format!(
+            "INSERT INTO import_findings (project_id, run_id, kind, task_id, worker_id, worktree_id,
+                detail, status, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, {open}, ?8)",
+            open = word(FindingStatus::Open)
+        ),
         params![
             project,
             run,
@@ -186,9 +193,12 @@ fn import_run(
     }
     let id = util::new_id();
     conn.execute(
-        "INSERT INTO runs (run_id, project_id, slug, workspace_id, finish_steps, status, origin,
-            started_at, ended_at)
-         VALUES (?1, ?2, ?3, ?4, '[]', 'done', 'import', ?5, ?5)",
+        &format!(
+            "INSERT INTO runs (run_id, project_id, slug, workspace_id, finish_steps, status, origin,
+                started_at, ended_at)
+             VALUES (?1, ?2, ?3, ?4, '[]', {done}, 'import', ?5, ?5)",
+            done = word(RunStatus::Done)
+        ),
         params![id, project_id, slug, workspace, util::now()],
     )?;
     Ok((project_id, id))
@@ -854,23 +864,33 @@ pub fn sync_native(conn: &Connection) -> Result<()> {
 
 /// A finding for each cancelled task that still has an open worktree.
 fn sync_worktrees(conn: &Connection) -> Result<()> {
-    let mut stmt = conn.prepare(
+    let mut stmt = conn.prepare(&format!(
         "SELECT t.task_id, t.run_id, r.project_id, w.worktree_id, w.path, t.seq
          FROM tasks t JOIN runs r ON r.run_id = t.run_id JOIN worktrees w ON w.task_id = t.task_id
-         WHERE t.origin = 'native' AND t.status = 'cancelled'
-           AND (w.status IN ('open', 'unlanded', 'cleanup_failed')
+         WHERE t.origin = 'native' AND t.status = {cancelled}
+           AND (w.status IN ({unfinished})
                 -- The cancel keeps the folder of the worktree it abandons (#136).
-                OR (w.status = 'abandoned' AND w.cleaned_at IS NULL))
+                OR (w.status = {abandoned} AND w.cleaned_at IS NULL))
            AND NOT EXISTS (SELECT 1 FROM import_findings f WHERE f.worktree_id = w.worktree_id
                            AND f.kind = 'task_cancelled_open_worktree')",
-    )?;
+        cancelled = word(TaskStatus::Cancelled),
+        unfinished = sql_words::list(&[
+            WorktreeStatus::Open,
+            WorktreeStatus::Unlanded,
+            WorktreeStatus::CleanupFailed
+        ]),
+        abandoned = word(WorktreeStatus::Abandoned)
+    ))?;
     let rows = stmt
         .query_map([], |r| r.try_into())?
         .collect::<rusqlite::Result<Vec<(String, String, String, String, String, i64)>>>()?;
     for (task, run, project, wt, path, seq) in rows {
         conn.execute(
-            "INSERT INTO import_findings (project_id, run_id, kind, task_id, worktree_id, detail, status, created_at)
-             VALUES (?1, ?2, 'task_cancelled_open_worktree', ?3, ?4, ?5, 'open', ?6)",
+            &format!(
+                "INSERT INTO import_findings (project_id, run_id, kind, task_id, worktree_id, detail, status, created_at)
+                 VALUES (?1, ?2, 'task_cancelled_open_worktree', ?3, ?4, ?5, {open}, ?6)",
+                open = word(FindingStatus::Open)
+            ),
             params![project, run, task, wt, format!("T-{seq} was cancelled with its worktree {path} still open"), util::now()],
         )?;
     }
@@ -879,21 +899,27 @@ fn sync_worktrees(conn: &Connection) -> Result<()> {
 
 /// A finding for each unfinished task of an ended run whose worker died on it.
 fn sync_tasks(conn: &Connection) -> Result<()> {
-    let mut stmt = conn.prepare(
+    let mut stmt = conn.prepare(&format!(
         "SELECT t.task_id, t.run_id, r.project_id, t.seq, t.status
          FROM tasks t JOIN runs r ON r.run_id = t.run_id
-         WHERE t.origin = 'native' AND r.status <> 'active' AND t.status NOT IN ('done', 'cancelled')
-           AND EXISTS (SELECT 1 FROM workers w WHERE w.task_id = t.task_id AND w.status = 'incomplete')
+         WHERE t.origin = 'native' AND r.status <> {active} AND t.status NOT IN ({ended})
+           AND EXISTS (SELECT 1 FROM workers w WHERE w.task_id = t.task_id AND w.status = {incomplete})
            AND NOT EXISTS (SELECT 1 FROM import_findings f WHERE f.task_id = t.task_id
                            AND f.kind = 'reaped_never_finished')",
-    )?;
+        active = word(RunStatus::Active),
+        ended = sql_words::list(sql_words::TASKS_ENDED),
+        incomplete = word(WorkerStatus::Incomplete)
+    ))?;
     let rows = stmt
         .query_map([], |r| r.try_into())?
         .collect::<rusqlite::Result<Vec<(String, String, String, i64, String)>>>()?;
     for (task, run, project, seq, status) in rows {
         conn.execute(
-            "INSERT INTO import_findings (project_id, run_id, kind, task_id, detail, status, created_at)
-             VALUES (?1, ?2, 'reaped_never_finished', ?3, ?4, 'open', ?5)",
+            &format!(
+                "INSERT INTO import_findings (project_id, run_id, kind, task_id, detail, status, created_at)
+                 VALUES (?1, ?2, 'reaped_never_finished', ?3, ?4, {open}, ?5)",
+                open = word(FindingStatus::Open)
+            ),
             params![project, run, task, format!("T-{seq} ({status}): a worker died on it and the run ended before another finished it"), util::now()],
         )?;
     }
@@ -903,14 +929,15 @@ fn sync_tasks(conn: &Connection) -> Result<()> {
 /// Every open finding, newest first; of 1 project when `root` is given.
 pub fn unfinished(conn: &Connection, root: Option<&Path>) -> Result<Vec<Unfinished>> {
     sync_native(conn)?;
-    let mut stmt = conn.prepare(
+    let mut stmt = conn.prepare(&format!(
         "SELECT f.finding_id, f.kind, r.slug, p.root, f.task_id, f.worktree_id, f.detail, f.created_at
          FROM import_findings f
          LEFT JOIN runs r ON r.run_id = f.run_id
          LEFT JOIN projects p ON p.project_id = f.project_id
-         WHERE f.status = 'open' AND (?1 IS NULL OR p.root = ?1)
+         WHERE f.status = {open} AND (?1 IS NULL OR p.root = ?1)
          ORDER BY r.started_at DESC, f.finding_id DESC",
-    )?;
+        open = word(FindingStatus::Open)
+    ))?;
     let rows = stmt
         .query_map([root.map(runs::root_key)], Unfinished::from_row)?
         .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -930,11 +957,20 @@ pub fn get_finding(conn: &Connection, id: i64) -> Result<Unfinished> {
 }
 
 /// Close a finding: `requeued` (with the new task) or `dismissed`.
-pub fn decide(conn: &Connection, id: i64, status: &str, by: &str, note: &str) -> Result<()> {
+pub fn decide(
+    conn: &Connection,
+    id: i64,
+    status: FindingStatus,
+    by: &str,
+    note: &str,
+) -> Result<()> {
     let n = conn.execute(
-        "UPDATE import_findings SET status = ?2, decided_by = ?3, decided_at = ?4, decision_note = ?5
-         WHERE finding_id = ?1 AND status = 'open'",
-        params![id, status, by, util::now(), note],
+        &format!(
+            "UPDATE import_findings SET status = ?2, decided_by = ?3, decided_at = ?4, decision_note = ?5
+             WHERE finding_id = ?1 AND status = {open}",
+            open = word(FindingStatus::Open)
+        ),
+        params![id, status.as_str(), by, util::now(), note],
     )?;
     if n == 0 {
         anyhow::bail!("finding {id} is not open");
@@ -967,7 +1003,10 @@ fn earlier_sessions(conn: &Connection, task_id: &str) -> Result<String> {
 /// earlier attempt's transcript.
 pub fn reopened_from(conn: &Connection, task_id: &str) -> Result<Option<String>> {
     let f: Option<(String, Option<String>)> = optional(conn.query_row(
-        "SELECT detail, task_id FROM import_findings WHERE status = 'requeued' AND decision_note = ?1",
+        &format!(
+            "SELECT detail, task_id FROM import_findings WHERE status = {requeued} AND decision_note = ?1",
+            requeued = word(FindingStatus::Requeued)
+        ),
         [task_id],
         |r| r.try_into(),
     ))?;

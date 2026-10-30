@@ -8,10 +8,11 @@ use rusqlite::{params, Connection, Row};
 use serde::Serialize;
 
 use super::model::{
-    Actor, EventKind, FileMode, Origin, StepName, TaskKind, TaskStatus, WorkerKind, WorkerStatus,
-    WorktreeMode,
+    Actor, EventKind, FileMode, FindingStatus, Origin, StepName, TaskKind, TaskStatus, WorkerKind,
+    WorkerStatus, WorktreeMode, WorktreeStatus,
 };
 use super::runs::Run;
+use super::sql_words::{self, word};
 use super::store::optional;
 use super::util::{self, About};
 use super::workers::{self, Worker};
@@ -213,13 +214,14 @@ pub fn blockers(conn: &Connection, task_id: &str) -> Result<Vec<Task>> {
 /// The open tasks that wait for `task_id`, directly or through another
 /// task, in `seq` order.
 pub fn dependents(conn: &Connection, task_id: &str) -> Result<Vec<Task>> {
-    let mut stmt = conn.prepare(
+    let mut stmt = conn.prepare(&format!(
         "WITH RECURSIVE down(id) AS (
             SELECT task_id FROM task_deps WHERE blocked_by = ?1
             UNION SELECT d.task_id FROM task_deps d JOIN down ON d.blocked_by = down.id)
          SELECT t.* FROM tasks t JOIN down ON t.task_id = down.id
-         WHERE t.status NOT IN ('done', 'cancelled') ORDER BY t.seq",
-    )?;
+         WHERE t.status NOT IN ({ended}) ORDER BY t.seq",
+        ended = sql_words::list(sql_words::TASKS_ENDED)
+    ))?;
     let rows = stmt
         .query_map([task_id], Task::from_row)?
         .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -920,23 +922,32 @@ fn take_task(conn: &Connection, w: &Worker, run_id: &str, task: &Task) -> Result
     let now = util::now();
     let attempt = task.attempts + 1;
     let n = conn.execute(
-        "UPDATE tasks SET status = 'running', current_worker_id = ?2, attempts = ?3, updated_at = ?4
-         WHERE task_id = ?1 AND status = 'queued'",
+        &format!(
+            "UPDATE tasks SET status = {running}, current_worker_id = ?2, attempts = ?3, updated_at = ?4
+             WHERE task_id = ?1 AND status = {queued}",
+            running = word(TaskStatus::Running),
+            queued = word(TaskStatus::Queued)
+        ),
         params![task.task_id, worker_id, attempt, now],
     )?;
     if n != 1 {
         bail!("{} was claimed by another worker", task.short());
     }
     conn.execute(
-        "UPDATE workers SET task_id = ?2, attempt = ?3, status = 'working', claimed_at = ?4,
-            last_progress_at = ?4, last_progress_source = 'agent', stall_rounds = 0
-         WHERE worker_id = ?1",
+        &format!(
+            "UPDATE workers SET task_id = ?2, attempt = ?3, status = {working}, claimed_at = ?4,
+                last_progress_at = ?4, last_progress_source = 'agent', stall_rounds = 0
+             WHERE worker_id = ?1",
+            working = word(WorkerStatus::Working)
+        ),
         params![worker_id, task.task_id, attempt, now],
     )?;
     // An open worktree from an earlier attempt becomes this worker's.
     conn.execute(
-        "UPDATE worktrees SET worker_id = ?2
-         WHERE task_id = ?1 AND status IN ('open', 'landing', 'landed', 'cleanup_failed')",
+        &format!(
+            "UPDATE worktrees SET worker_id = ?2 WHERE task_id = ?1 AND status IN ({held})",
+            held = sql_words::list(sql_words::WORKTREES_HELD)
+        ),
         params![task.task_id, worker_id],
     )?;
     util::event(
@@ -972,10 +983,13 @@ fn claimed(conn: &Connection, w: &Worker, task: Task) -> Result<Claimed> {
         })
         .collect();
     let wt: Option<(String, String, Option<String>)> = optional(conn.query_row(
-        "SELECT path, branch, CASE WHEN status IN ('landed', 'cleanup_failed') THEN landed_commit END
-         FROM worktrees WHERE task_id = ?1
-           AND status IN ('open', 'landing', 'landed', 'cleanup_failed')
-         ORDER BY created_at DESC LIMIT 1",
+        &format!(
+            "SELECT path, branch, CASE WHEN status IN ({landed}) THEN landed_commit END
+             FROM worktrees WHERE task_id = ?1 AND status IN ({held})
+             ORDER BY created_at DESC LIMIT 1",
+            landed = sql_words::list(sql_words::WORKTREES_LANDED),
+            held = sql_words::list(sql_words::WORKTREES_HELD)
+        ),
         [&task.task_id],
         |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
     ))?;
@@ -1040,18 +1054,22 @@ pub fn cancel(conn: &Connection, task: &Task, reason: &str) -> Result<Task> {
     }
     let why = format!("task cancelled: {reason}");
     conn.execute(
-        "UPDATE tasks SET status = 'cancelled', summary = COALESCE(summary, ?2), updated_at = ?3,
-            finished_at = ?3, current_worker_id = NULL, held_reason = NULL
-         WHERE task_id = ?1",
+        &format!(
+            "UPDATE tasks SET status = {cancelled}, summary = COALESCE(summary, ?2), updated_at = ?3,
+                finished_at = ?3, current_worker_id = NULL, held_reason = NULL
+             WHERE task_id = ?1",
+            cancelled = word(TaskStatus::Cancelled)
+        ),
         params![task.task_id, format!("cancelled: {reason}"), util::now()],
     )?;
     if let Some(w) = &task.current_worker_id {
         workers::end(conn, w, WorkerStatus::Stopped, &why, None)?;
     }
     let open: Vec<String> = {
-        let mut stmt = conn.prepare(
-            "SELECT worktree_id FROM worktrees WHERE task_id = ?1 AND status IN ('open', 'landing')",
-        )?;
+        let mut stmt = conn.prepare(&format!(
+            "SELECT worktree_id FROM worktrees WHERE task_id = ?1 AND status IN ({open})",
+            open = sql_words::list(sql_words::WORKTREES_OPEN)
+        ))?;
         let ids = stmt
             .query_map([&task.task_id], |r| r.get(0))?
             .collect::<rusqlite::Result<Vec<String>>>()?;
@@ -1108,9 +1126,12 @@ pub fn requeue(conn: &Connection, task_id: &str, why: &str) -> Result<Requeue> {
     if used >= max {
         let held = format!("{used} attempts failed");
         conn.execute(
-            "UPDATE tasks SET status = 'queued', current_worker_id = NULL, held_reason = ?2,
-                updated_at = ?3
-             WHERE task_id = ?1",
+            &format!(
+                "UPDATE tasks SET status = {queued}, current_worker_id = NULL, held_reason = ?2,
+                    updated_at = ?3
+                 WHERE task_id = ?1",
+                queued = word(TaskStatus::Queued)
+            ),
             params![task_id, held, util::now()],
         )?;
         util::event(
@@ -1128,9 +1149,12 @@ pub fn requeue(conn: &Connection, task_id: &str, why: &str) -> Result<Requeue> {
         return Ok(Requeue::Held);
     }
     conn.execute(
-        "UPDATE tasks SET status = 'queued', current_worker_id = NULL,
-            priority = priority - ?2, updated_at = ?3
-         WHERE task_id = ?1",
+        &format!(
+            "UPDATE tasks SET status = {queued}, current_worker_id = NULL,
+                priority = priority - ?2, updated_at = ?3
+             WHERE task_id = ?1",
+            queued = word(TaskStatus::Queued)
+        ),
         params![task_id, RETRY_PRIORITY_BOOST, util::now()],
     )?;
     util::event(
@@ -1168,28 +1192,42 @@ pub fn requeue_by_operator(conn: &Connection, task: &Task, reason: &str) -> Resu
     }
     let now = util::now();
     conn.execute(
-        "UPDATE tasks SET status = 'queued', held_reason = NULL, attempt_floor = attempts,
-            current_worker_id = NULL, summary = CASE WHEN status = 'cancelled' THEN NULL ELSE summary END,
-            finished_at = NULL, updated_at = ?2
-         WHERE task_id = ?1",
+        &format!(
+            "UPDATE tasks SET status = {queued}, held_reason = NULL, attempt_floor = attempts,
+                current_worker_id = NULL, summary = CASE WHEN status = {cancelled} THEN NULL ELSE summary END,
+                finished_at = NULL, updated_at = ?2
+             WHERE task_id = ?1",
+            queued = word(TaskStatus::Queued),
+            cancelled = word(TaskStatus::Cancelled)
+        ),
         params![task.task_id, now],
     )?;
     // The newest abandoned worktree whose folder is still there.
     let kept: Option<(String, String)> = optional(conn.query_row(
-        "SELECT worktree_id, path FROM worktrees WHERE task_id = ?1 AND status = 'abandoned'
-         ORDER BY created_at DESC, rowid DESC LIMIT 1",
+        &format!(
+            "SELECT worktree_id, path FROM worktrees WHERE task_id = ?1 AND status = {abandoned}
+             ORDER BY created_at DESC, rowid DESC LIMIT 1",
+            abandoned = word(WorktreeStatus::Abandoned)
+        ),
         [&task.task_id],
         |r| Ok((r.get(0)?, r.get(1)?)),
     ))?;
     if let Some((id, _)) = kept.filter(|(_, p)| std::path::Path::new(p).exists()) {
         conn.execute(
-            "UPDATE worktrees SET status = 'open', worker_id = NULL, reason = NULL WHERE worktree_id = ?1",
+            &format!(
+                "UPDATE worktrees SET status = {open}, worker_id = NULL, reason = NULL WHERE worktree_id = ?1",
+                open = word(WorktreeStatus::Open)
+            ),
             [&id],
         )?;
         conn.execute(
-            "UPDATE import_findings SET status = 'requeued', decided_by = 'orchestrator',
-                decided_at = ?2, decision_note = ?3
-             WHERE task_id = ?1 AND status = 'open' AND kind = 'task_cancelled_open_worktree'",
+            &format!(
+                "UPDATE import_findings SET status = {requeued}, decided_by = 'orchestrator',
+                    decided_at = ?2, decision_note = ?3
+                 WHERE task_id = ?1 AND status = {open} AND kind = 'task_cancelled_open_worktree'",
+                requeued = word(FindingStatus::Requeued),
+                open = word(FindingStatus::Open)
+            ),
             params![task.task_id, now, reason],
         )?;
     }
@@ -1264,7 +1302,10 @@ pub fn plan_workers(conn: &Connection, run_id: &str) -> Result<Vec<PersonaPlan>>
 /// Whether every task of the run is finished.
 pub fn all_finished(conn: &Connection, run_id: &str) -> Result<bool> {
     let open: i64 = conn.query_row(
-        "SELECT count(*) FROM tasks WHERE run_id = ?1 AND status NOT IN ('done', 'cancelled')",
+        &format!(
+            "SELECT count(*) FROM tasks WHERE run_id = ?1 AND status NOT IN ({ended})",
+            ended = sql_words::list(sql_words::TASKS_ENDED)
+        ),
         [run_id],
         |r| r.get(0),
     )?;

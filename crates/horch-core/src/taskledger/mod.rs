@@ -11,6 +11,7 @@ pub mod map;
 pub mod model;
 pub mod runs;
 pub mod schema;
+pub mod sql_words;
 pub mod status;
 pub mod stop;
 pub mod store;
