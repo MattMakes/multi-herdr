@@ -435,17 +435,10 @@ pub fn project_root(ctx: &RuntimeContext) -> Result<PathBuf> {
 /// The run a command means: `--run`, else `HORCH_RUN_ID`, else the worker's
 /// run, else the project's 1 active run.
 pub fn resolve_run(ctx: &RuntimeContext, store: &Store, arg: &RunArg) -> Result<Run> {
-    let explicit = arg
-        .run
-        .clone()
-        .or_else(|| std::env::var("HORCH_RUN_ID").ok().filter(|v| !v.is_empty()));
+    let explicit = named_run(arg);
     if explicit.is_none() {
-        if let Some(wid) = worker_id_opt(ctx) {
-            if let Some(w) = workers::find(store.conn(), &wid)? {
-                if let Some(r) = w.run_id {
-                    return runs::get(store.conn(), &r);
-                }
-            }
+        if let Some(run) = worker_run(ctx, store)? {
+            return Ok(run);
         }
     }
     let workspace = ctx.herdr.workspace.as_ref().map(|w| w.as_str().to_string());
@@ -459,6 +452,24 @@ pub fn resolve_run(ctx: &RuntimeContext, store: &Store, arg: &RunArg) -> Result<
         eprintln!("horch: {note}");
     }
     Ok(run)
+}
+
+/// The run `--run` or `HORCH_RUN_ID` names.
+fn named_run(arg: &RunArg) -> Option<String> {
+    arg.run
+        .clone()
+        .or_else(|| std::env::var("HORCH_RUN_ID").ok().filter(|v| !v.is_empty()))
+}
+
+/// The run of the ledger worker in `HORCH_WORKER_ID`, when it has one.
+fn worker_run(ctx: &RuntimeContext, store: &Store) -> Result<Option<Run>> {
+    let Some(wid) = worker_id_opt(ctx) else {
+        return Ok(None);
+    };
+    let Some(w) = workers::find(store.conn(), &wid)? else {
+        return Ok(None);
+    };
+    w.run_id.map(|r| runs::get(store.conn(), &r)).transpose()
 }
 
 /// Refuse `what` when the caller is a ledger worker: the orchestrator
