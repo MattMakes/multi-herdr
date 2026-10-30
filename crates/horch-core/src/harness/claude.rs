@@ -630,12 +630,12 @@ impl<F: FnOnce() -> ClaudeSettingsTexts> OperatorChain<'_, F> {
     }
 }
 
-/// The leaf key paths of the teammate's Claude harness-default `settings`
-/// as (path, value, forced). Among the defaults, a later entry wins.
-fn default_leaves(teammate: &Teammate) -> Vec<(String, Value, bool)> {
+/// The leaf key paths of harness-default settings objects as (path, value,
+/// forced), from entries of (settings, forced). A later entry wins.
+pub(super) fn default_leaves<'a>(
+    entries: impl Iterator<Item = (&'a serde_json::Map<String, Value>, bool)>,
+) -> Vec<(String, Value, bool)> {
     let mut leaves: Vec<(String, Value, bool)> = Vec::new();
-    let entries = HarnessDefault::for_harness(&teammate.harness_defaults, HarnessKind::Claude)
-        .filter_map(|entry| Some((entry.settings.as_ref()?, entry.force.is_some())));
     for (settings, forced) in entries {
         let mut paths = Vec::new();
         leaf_paths(settings, "", &mut paths);
@@ -664,33 +664,39 @@ pub(crate) fn merge_settings_defaults(
         sources: teammate.setting_sources.as_deref(),
     };
     let mut changed = false;
-    for (path, value, forced) in default_leaves(teammate) {
+    let entries = HarnessDefault::for_harness(&teammate.harness_defaults, HarnessKind::Claude)
+        .filter_map(|entry| Some((entry.settings.as_ref()?, entry.force.is_some())));
+    for (path, value, forced) in default_leaves(entries) {
         let mut parents: Vec<&str> = path.split('.').collect();
         let key = parents.pop().expect("a non-empty key path");
         let skipped = overlay_blocks(overlay, &parents, key) || (!forced && chain.sets(&path));
         if !skipped {
-            insert_at_path(overlay, &parents, key, value)?;
+            anyhow::ensure!(
+                insert_at_path(overlay, &parents, key, value),
+                "checked above: an object"
+            );
             changed = true;
         }
     }
     Ok(changed)
 }
 
-/// Set `parents.key` in `overlay`, making the parent objects.
-fn insert_at_path(
+/// Set `parents.key` in `overlay`, making the parent objects; whether it
+/// was set. A parent that is not an object is left alone, and so is the
+/// value.
+pub(super) fn insert_at_path(
     overlay: &mut serde_json::Map<String, Value>,
     parents: &[&str],
     key: &str,
     value: Value,
-) -> Result<()> {
+) -> bool {
     let node = parents.iter().try_fold(overlay, |node, parent| {
         node.entry(*parent)
             .or_insert_with(|| json!({}))
             .as_object_mut()
     });
-    node.context("checked above: an object")?
-        .insert(key.to_string(), value);
-    Ok(())
+    node.map(|node| node.insert(key.to_string(), value))
+        .is_some()
 }
 
 /// Where macOS keeps the Seatbelt launcher Claude Code's sandbox runs under.

@@ -49,6 +49,7 @@ use anyhow::{Context, Result};
 
 use serde_json::{json, Value};
 
+use super::claude::{default_leaves, insert_at_path};
 use super::{CommandSpec, Harness, HarnessKind, LaunchEnv, PrepareRequest, Prepared, WindowInputs};
 use crate::compaction::window::{OperatorWindow, WindowDecision};
 use crate::roster::{HarnessDefault, Teammate};
@@ -231,24 +232,31 @@ impl Daemon {
     /// daemon was left running, or None when it is gone and the files are
     /// removed.
     pub(crate) fn stop(&self) -> Option<String> {
-        if listening(&self.socket) {
-            match self.shutdown() {
-                Stop::Stopped => {}
-                // The stop process goes on alone; a later sweep cleans up.
-                Stop::TimedOut => {
-                    return Some(format!(
-                        "horch: the Prime stop for {} still runs after {} s; going on",
-                        self.socket.display(),
-                        STOP_WAIT.as_secs()
-                    ))
-                }
-                Stop::Failed => {
-                    if let Some(line) = self.terminate_supervisor() {
-                        return Some(line);
-                    }
-                }
-            }
+        let problem = listening(&self.socket)
+            .then(|| self.shutdown_problem())
+            .flatten();
+        if problem.is_none() {
+            self.remove_launch_files();
         }
+        problem
+    }
+
+    /// Why the daemon was left running after a stop, or None when it is
+    /// gone.
+    fn shutdown_problem(&self) -> Option<String> {
+        match self.shutdown() {
+            Stop::Stopped => None,
+            // The stop process goes on alone; a later sweep cleans up.
+            Stop::TimedOut => Some(format!(
+                "horch: the Prime stop for {} still runs after {} s; going on",
+                self.socket.display(),
+                STOP_WAIT.as_secs()
+            )),
+            Stop::Failed => self.terminate_supervisor(),
+        }
+    }
+
+    fn remove_launch_files(&self) {
         let _ = std::fs::remove_file(&self.socket);
         // The scan dir of the Rust layout, when it is empty now.
         if let Some(scan) = self.socket.parent().filter(|s| *s != self.launch) {
@@ -258,7 +266,6 @@ impl Daemon {
         // needed after the pane. `remove_dir_all` does not follow links. The
         // sessions stay for a resume.
         let _ = std::fs::remove_dir_all(self.agent_dir());
-        None
     }
 
     /// `TMPDIR=<launch>/ prime-agent shutdown --force --json`, at most
@@ -372,9 +379,9 @@ fn wait_for_stop(child: &mut std::process::Child, limit: std::time::Duration) ->
     let deadline = std::time::Instant::now() + limit;
     loop {
         match child.try_wait() {
-            Ok(Some(status)) => return Waited::Exited(status.success()),
-            Err(_) => return Waited::Exited(false),
-            Ok(None) if std::time::Instant::now() >= deadline => return Waited::TimedOut,
+            Ok(Some(status)) => break Waited::Exited(status.success()),
+            Err(_) => break Waited::Exited(false),
+            Ok(None) if std::time::Instant::now() >= deadline => break Waited::TimedOut,
             Ok(None) => std::thread::sleep(std::time::Duration::from_millis(50)),
         }
     }
@@ -441,22 +448,28 @@ pub(crate) fn may_stop(
     started_at: Option<SystemTime>,
     installed: SystemTime,
 ) -> std::result::Result<(), &'static str> {
-    let Some(again) = again else {
-        return Err("a second status call does not name it");
-    };
-    if again.0 != first.0 {
-        return Err("a second status call names another pid");
-    }
+    let again = again.ok_or("a second status call does not name it")?;
+    require(again.0 == first.0, "a second status call names another pid")?;
     if cfg!(windows) {
         // No start times here: the pid is all there is (see `procid`).
-        return Ok(());
+        Ok(())
+    } else {
+        require(
+            first.1.is_some() && again.1 == first.1,
+            "its start time is unknown or changed between 2 status calls",
+        )?;
+        require(
+            started_at.is_some_and(|t| t + START_SLACK >= installed),
+            "it started before this launch, so this launch did not start it",
+        )
     }
-    if first.1.is_none() || again.1 != first.1 {
-        return Err("its start time is unknown or changed between 2 status calls");
-    }
-    match started_at {
-        Some(t) if t + START_SLACK >= installed => Ok(()),
-        _ => Err("it started before this launch, so this launch did not start it"),
+}
+
+fn require(ok: bool, why: &'static str) -> std::result::Result<(), &'static str> {
+    if ok {
+        Ok(())
+    } else {
+        Err(why)
     }
 }
 
@@ -503,20 +516,18 @@ fn terminate(pid: i32, _started: Option<u64>) {
 /// No filtering by project or time: nothing else writes here, so whatever
 /// appears is this worker's session.
 pub fn find_session(sessions_dir: &Path) -> Option<PathBuf> {
-    let mut newest: Option<(std::time::SystemTime, PathBuf)> = None;
-    for entry in std::fs::read_dir(sessions_dir).ok()?.flatten() {
-        let path = entry.path();
-        if path.extension().and_then(|e| e.to_str()) != Some("jsonl") {
-            continue;
-        }
-        let Ok(modified) = entry.metadata().and_then(|m| m.modified()) else {
-            continue;
-        };
-        if newest.as_ref().is_none_or(|(t, _)| modified > *t) {
-            newest = Some((modified, path));
-        }
-    }
-    newest.map(|(_, p)| p)
+    std::fs::read_dir(sessions_dir)
+        .ok()?
+        .flatten()
+        .filter_map(|entry| {
+            let path = entry.path();
+            let is_session = path.extension().and_then(|e| e.to_str()) == Some("jsonl");
+            let modified = entry.metadata().and_then(|m| m.modified()).ok()?;
+            is_session.then_some((modified, path))
+        })
+        // The first of equally new files wins.
+        .min_by_key(|(modified, _)| std::cmp::Reverse(*modified))
+        .map(|(_, path)| path)
 }
 
 /// The variable Prime reads its agent dir from (0.9.4 `dist/config.js`).
@@ -608,19 +619,19 @@ pub fn finish_pane(state_root: &Path, bin: &Path, pane: &str) {
     let Ok(entries) = std::fs::read_dir(state_root.join("prime")) else {
         return;
     };
-    for entry in entries.flatten() {
-        let launch = entry.path();
-        let ran_here = std::fs::read_to_string(launch.join(PANE)).is_ok_and(|p| p.trim() == pane);
-        if !ran_here {
-            continue;
-        }
-        let Some(socket) = launch_socket(&launch) else {
-            continue;
-        };
-        if let Some(daemon) = Daemon::of_launch(&launch, socket, bin) {
-            daemon.finish();
-        }
-    }
+    entries
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|launch| ran_in_pane(launch, pane))
+        .filter_map(|launch| {
+            let socket = launch_socket(&launch)?;
+            Daemon::of_launch(&launch, socket, bin)
+        })
+        .for_each(|daemon| daemon.finish());
+}
+
+fn ran_in_pane(launch: &Path, pane: &str) -> bool {
+    std::fs::read_to_string(launch.join(PANE)).is_ok_and(|p| p.trim() == pane)
 }
 
 /// Keep this launcher alive when its pane closes. Closing a pane hangs up
@@ -660,15 +671,16 @@ fn release_seq() -> u64 {
 
 /// Whether the horch process that wrote `<launch>/launcher` still runs.
 fn launcher_alive(launch: &Path) -> bool {
-    let Ok(text) = std::fs::read_to_string(launch.join(LAUNCHER)) else {
-        return false;
-    };
+    read_launcher(launch).is_some_and(|(pid, started)| crate::procid::alive(pid, started))
+}
+
+/// The pid and start time (when recorded) in `<launch>/launcher`.
+fn read_launcher(launch: &Path) -> Option<(u32, Option<u64>)> {
+    let text = std::fs::read_to_string(launch.join(LAUNCHER)).ok()?;
     let mut fields = text.split_whitespace();
-    let Some(pid) = fields.next().and_then(|p| p.parse::<u32>().ok()) else {
-        return false;
-    };
+    let pid = fields.next()?.parse().ok()?;
     let started = fields.next().and_then(|t| t.parse().ok());
-    crate::procid::alive(pid, started)
+    Some((pid, started))
 }
 
 /// `<workdir>/.prime/agent/settings.json`: Prime's project settings.
@@ -688,36 +700,36 @@ fn prime_operator_window(
     settings: &[PathBuf],
     model: &str,
 ) -> Option<OperatorWindow> {
-    // A file horch refuses to read (a FIFO, over 1 MiB) is the operator's,
-    // trigger unknown.
-    let read = |path: &Path| {
-        crate::fsx::read_regular_bounded(path).map_err(|why| OperatorWindow {
+    models_override(models, model)
+        .or_else(|| settings.iter().find_map(|path| settings_override(path)))
+}
+
+/// A file horch refuses to read (a FIFO, over 1 MiB) is the operator's,
+/// trigger unknown.
+fn read_operator_file(path: &Path) -> std::result::Result<Option<String>, OperatorWindow> {
+    crate::fsx::read_regular_bounded(path).map_err(|why| OperatorWindow {
+        tokens: None,
+        detail: format!("{} ({})", path.display(), why.reason()),
+    })
+}
+
+fn models_override(models: &Path, model: &str) -> Option<OperatorWindow> {
+    match read_operator_file(models) {
+        Err(window) => Some(window),
+        Ok(Some(text)) => models_window(&models.to_string_lossy(), &text, model),
+        Ok(None) => None,
+    }
+}
+
+fn settings_override(path: &Path) -> Option<OperatorWindow> {
+    match read_operator_file(path) {
+        Err(window) => Some(window),
+        Ok(Some(text)) if compaction_set(&text) => Some(OperatorWindow {
             tokens: None,
-            detail: format!("{} ({})", path.display(), why.reason()),
-        })
-    };
-    match read(models) {
-        Err(window) => return Some(window),
-        Ok(Some(text)) => {
-            if let Some(window) = models_window(&models.to_string_lossy(), &text, model) {
-                return Some(window);
-            }
-        }
-        Ok(None) => {}
+            detail: format!("{} (compaction set; trigger unknown)", path.display()),
+        }),
+        Ok(_) => None,
     }
-    for path in settings {
-        match read(path) {
-            Err(window) => return Some(window),
-            Ok(Some(text)) if compaction_set(&text) => {
-                return Some(OperatorWindow {
-                    tokens: None,
-                    detail: format!("{} (compaction set; trigger unknown)", path.display()),
-                })
-            }
-            Ok(_) => {}
-        }
-    }
-    None
 }
 
 /// What a `models.json` says about `<p>/<m>`: None when it does not define
@@ -783,66 +795,49 @@ fn fleet_settings(
     project: Option<&str>,
     teammate: &Teammate,
 ) -> Option<serde_json::Map<String, Value>> {
-    let mut settings = match operator {
-        Some(text) => match serde_json::from_str::<Value>(text) {
-            Ok(Value::Object(map)) => map,
-            _ => return None,
-        },
-        None => serde_json::Map::new(),
-    };
+    let mut settings = operator.map_or(Some(serde_json::Map::new()), parse_object)?;
     let project: Option<Value> = project.and_then(|t| serde_json::from_str(t).ok());
-    let mut leaves: Vec<(String, Value, bool)> = Vec::new();
-    for entry in HarnessDefault::for_harness(&teammate.harness_defaults, HarnessKind::Prime) {
-        let Some(defaults) = &entry.agent_settings else {
-            continue;
-        };
-        let mut paths = Vec::new();
-        leaf_paths(defaults, "", &mut paths);
-        for (path, value) in paths {
-            leaves.retain(|(p, _, _)| *p != path);
-            leaves.push((path, value, entry.force.is_some()));
-        }
-    }
     let mut inserted = false;
-    for (path, value, forced) in leaves {
-        let set_by = |doc: &Value| {
-            let mut node = doc;
-            for key in path.split('.') {
-                match node.get(key) {
-                    Some(next) => node = next,
-                    // A parent that is not an object blocks the key too.
-                    None => return !node.is_object(),
-                }
-            }
-            true
-        };
-        let operator_sets = set_by(&Value::Object(settings.clone()));
-        if !forced && (operator_sets || project.as_ref().is_some_and(set_by)) {
-            continue;
+    for (path, value, forced) in prime_leaves(teammate) {
+        let operator_sets = sets_path(&Value::Object(settings.clone()), &path);
+        let blocked =
+            !forced && (operator_sets || project.as_ref().is_some_and(|doc| sets_path(doc, &path)));
+        if !blocked {
+            inserted |= insert_at(&mut settings, &path, value);
         }
-        inserted |= insert_at(&mut settings, &path, value);
     }
-    if !inserted {
-        return None;
-    }
-    settings.remove("apiKeys");
-    Some(settings)
+    inserted.then(|| {
+        settings.remove("apiKeys");
+        settings
+    })
 }
 
-/// Every leaf key path of an object, dotted: a nested object is walked, any
-/// other value (or an empty object) is a leaf.
-fn leaf_paths(obj: &serde_json::Map<String, Value>, prefix: &str, out: &mut Vec<(String, Value)>) {
-    for (key, value) in obj {
-        let path = if prefix.is_empty() {
-            key.clone()
-        } else {
-            format!("{prefix}.{key}")
-        };
-        match value {
-            Value::Object(inner) if !inner.is_empty() => leaf_paths(inner, &path, out),
-            _ => out.push((path, value.clone())),
-        }
+/// The leaf key paths of the teammate's Prime `agent_settings` defaults.
+fn prime_leaves(teammate: &Teammate) -> Vec<(String, Value, bool)> {
+    let entries = HarnessDefault::for_harness(&teammate.harness_defaults, HarnessKind::Prime)
+        .filter_map(|entry| Some((entry.agent_settings.as_ref()?, entry.force.is_some())));
+    default_leaves(entries)
+}
+
+/// The JSON object in `text`; None for any other text.
+fn parse_object(text: &str) -> Option<serde_json::Map<String, Value>> {
+    match serde_json::from_str(text) {
+        Ok(Value::Object(map)) => Some(map),
+        _ => None,
     }
+}
+
+/// Whether `doc` sets the dotted `path`. A parent that is not an object
+/// blocks the key too.
+fn sets_path(doc: &Value, path: &str) -> bool {
+    let mut node = doc;
+    for key in path.split('.') {
+        let Some(next) = node.get(key) else {
+            return !node.is_object();
+        };
+        node = next;
+    }
+    true
 }
 
 /// Set `value` at the dotted `path`; whether it was set. A parent that is
@@ -852,19 +847,7 @@ fn insert_at(obj: &mut serde_json::Map<String, Value>, path: &str, value: Value)
     let Some(key) = parts.pop() else {
         return false;
     };
-    let mut node = obj;
-    for parent in parts {
-        match node
-            .entry(parent)
-            .or_insert_with(|| json!({}))
-            .as_object_mut()
-        {
-            Some(next) => node = next,
-            None => return false,
-        }
-    }
-    node.insert(key.to_string(), value);
-    true
+    insert_at_path(obj, &parts, key, value)
 }
 
 #[cfg(unix)]
@@ -891,62 +874,76 @@ fn build_agent_dir(src: &Path, dir: &Path, req: &PrepareRequest<'_>) -> Result<(
     if std::fs::symlink_metadata(src.join(HARNESS_STATE)).is_err() {
         let _ = crate::fsx::ensure_private_dir(&src.join(HARNESS_STATE));
     }
+    link_operator_entries(src, dir)?;
+    write_or_link(
+        generated_settings(src, req).map(Value::Object),
+        &src.join(SETTINGS),
+        &dir.join(SETTINGS),
+    )?;
+    write_or_link(
+        fleet_models(req.compact_window, req.model),
+        &src.join(MODELS),
+        &dir.join(MODELS),
+    )
+}
+
+/// A link in `dir` to every entry of the operator's `src` but the files a
+/// launch generates, and `auth.json` always.
+fn link_operator_entries(src: &Path, dir: &Path) -> Result<()> {
     let entries = std::fs::read_dir(src).with_context(|| format!("reading {}", src.display()))?;
     for entry in entries {
         let name = entry
             .with_context(|| format!("reading {}", src.display()))?
             .file_name();
-        let text = name.to_string_lossy();
-        // A linked lock dir is one this pane can never take, and a temp
-        // file is another process's write in progress.
-        if name == SETTINGS || name == MODELS || text.ends_with(".lock") || text.ends_with(".tmp") {
-            continue;
+        if !is_launch_private(&name) {
+            let at = dir.join(&name);
+            link(&src.join(&name), &at).with_context(|| format!("linking {}", at.display()))?;
         }
-        let at = dir.join(&name);
-        link(&src.join(&name), &at).with_context(|| format!("linking {}", at.display()))?;
     }
+    link_auth(src, dir)
+}
+
+/// `auth.json` is linked also when the source has none: a login in the pane
+/// then lands in the operator's file, not in a dir that is removed.
+fn link_auth(src: &Path, dir: &Path) -> Result<()> {
     let auth = dir.join(AUTH);
     if std::fs::symlink_metadata(&auth).is_err() {
         // Dangling when the operator has no `auth.json` yet: Prime then
         // creates nothing here and writes a login through the link.
         link(&src.join(AUTH), &auth).with_context(|| format!("linking {}", auth.display()))?;
     }
-
-    let operator = src.join(SETTINGS);
-    let settings_at = dir.join(SETTINGS);
-    let operator_text = crate::fsx::read_regular_bounded(&operator);
-    let project_text = crate::fsx::read_regular_bounded(&project_settings(req.workdir));
-    // A file horch refuses to read sets everything as far as horch knows.
-    let settings = match (&operator_text, &project_text) {
-        (Ok(operator), Ok(project)) => {
-            fleet_settings(operator.as_deref(), project.as_deref(), req.teammate)
-        }
-        _ => None,
-    };
-    match settings {
-        Some(settings) => {
-            let text = serde_json::to_string_pretty(&Value::Object(settings))? + "\n";
-            crate::fsx::write_atomic(&settings_at, text.as_bytes(), 0o600)?;
-        }
-        None if std::fs::symlink_metadata(&operator).is_ok() => link(&operator, &settings_at)
-            .with_context(|| format!("linking {}", settings_at.display()))?,
-        None => {}
-    }
-
-    let models_at = dir.join(MODELS);
-    let operator_models = src.join(MODELS);
-    match fleet_models(req.compact_window, req.model) {
-        Some(models) => {
-            let text = serde_json::to_string_pretty(&models)? + "\n";
-            crate::fsx::write_atomic(&models_at, text.as_bytes(), 0o600)?;
-        }
-        None if std::fs::symlink_metadata(&operator_models).is_ok() => {
-            link(&operator_models, &models_at)
-                .with_context(|| format!("linking {}", models_at.display()))?
-        }
-        None => {}
-    }
     Ok(())
+}
+
+/// A generated file, a linked lock dir (one this pane can never take), or a
+/// temp file (another process's write in progress): never linked.
+fn is_launch_private(name: &std::ffi::OsStr) -> bool {
+    let text = name.to_string_lossy();
+    name == SETTINGS || name == MODELS || text.ends_with(".lock") || text.ends_with(".tmp")
+}
+
+/// The fleet `settings.json`; None when the operator's file is linked as it
+/// is. A file horch refuses to read sets everything as far as horch knows.
+fn generated_settings(
+    src: &Path,
+    req: &PrepareRequest<'_>,
+) -> Option<serde_json::Map<String, Value>> {
+    let operator = crate::fsx::read_regular_bounded(&src.join(SETTINGS)).ok()?;
+    let project = crate::fsx::read_regular_bounded(&project_settings(req.workdir)).ok()?;
+    fleet_settings(operator.as_deref(), project.as_deref(), req.teammate)
+}
+
+/// Write `generated` to `at`; else link the operator's file when it exists.
+fn write_or_link(generated: Option<Value>, operator: &Path, at: &Path) -> Result<()> {
+    if let Some(value) = generated {
+        let text = serde_json::to_string_pretty(&value)? + "\n";
+        crate::fsx::write_atomic(at, text.as_bytes(), 0o600)?;
+        Ok(())
+    } else if std::fs::symlink_metadata(operator).is_ok() {
+        link(operator, at).with_context(|| format!("linking {}", at.display()))
+    } else {
+        Ok(())
+    }
 }
 
 /// The value after `--model` in a built command.
