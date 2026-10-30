@@ -207,16 +207,12 @@ fn update_one(
     releases: &ReleaseLookup<'_>,
     skip_fresh: bool,
 ) -> UpdateResult {
-    let not_installed = UpdateResult {
-        harness: kind,
-        bin: None,
-        outcome: Outcome::NotInstalled,
-    };
-    let (Some(args), Some(launched)) = (update_args(kind), kind.binary(&ctx.bins.harness)) else {
-        return not_installed;
-    };
-    let Some(bin) = resolve(ctx, &update_bin(kind, &launched)) else {
-        return not_installed;
+    let Some((args, bin)) = updater(ctx, kind) else {
+        return UpdateResult {
+            harness: kind,
+            bin: None,
+            outcome: Outcome::NotInstalled,
+        };
     };
     let job = Job {
         kind,
@@ -230,6 +226,13 @@ fn update_one(
         bin: Some(bin),
         outcome,
     }
+}
+
+/// `kind`'s update arguments and the installed program that runs them.
+fn updater(ctx: &RuntimeContext, kind: HarnessKind) -> Option<(&'static [&'static str], PathBuf)> {
+    let args = update_args(kind)?;
+    let launched = kind.binary(&ctx.bins.harness)?;
+    Some((args, resolve(ctx, &update_bin(kind, &launched))?))
 }
 
 /// 1 CLI's updater, ready to run.
@@ -447,15 +450,18 @@ pub fn hold(
     let Some(package) = cooldown::npm_package(kind) else {
         return Some(Outcome::NoReleaseDates { days });
     };
-    let doc = match releases(package) {
-        Ok(doc) => doc,
-        Err(e) => {
-            return Some(Outcome::Failed {
-                reason: cut(&format!("release date check: {e}")),
-            })
-        }
-    };
-    match cooldown::judge(&doc, now, days) {
+    match releases(package) {
+        Err(e) => Some(Outcome::Failed {
+            reason: cut(&format!("release date check: {e}")),
+        }),
+        Ok(doc) => judged(&doc, now, days),
+    }
+}
+
+/// What the cooldown makes of the release dates in `doc`, if it holds the
+/// updater back.
+fn judged(doc: &Packument, now: chrono::DateTime<chrono::Utc>, days: u32) -> Option<Outcome> {
+    match cooldown::judge(doc, now, days) {
         Verdict::Clear => None,
         Verdict::TooNew { version, age } => Some(Outcome::Cooldown { version, age, days }),
         Verdict::Unknown { reason } => Some(Outcome::Failed {
@@ -512,16 +518,10 @@ fn run_updater(
 ) -> Ran {
     process::scrub_child_env(&mut cmd);
     let name = cmd.get_program().to_string_lossy().into_owned();
-    let logs = match (files.new_log("stdout.log"), files.new_log("stderr.log")) {
-        (Ok(out), Ok(err)) => (out, err),
-        (Err(e), _) | (_, Err(e)) => return Ran::Failed(cut(&format!("{name} log: {e}"))),
+    let (logs, mut tails) = match open_logs(files) {
+        Ok(opened) => opened,
+        Err(e) => return Ran::Failed(cut(&format!("{name} log: {e}"))),
     };
-    // horch keeps its own handles to read the tails from.
-    let mine = match (logs.0.try_clone(), logs.1.try_clone()) {
-        (Ok(out), Ok(err)) => (out, err),
-        (Err(e), _) | (_, Err(e)) => return Ran::Failed(cut(&format!("{name} log: {e}"))),
-    };
-    let (mut out_tail, mut err_tail) = mine;
     cmd.stdin(Stdio::null()).stdout(logs.0).stderr(logs.1);
     #[cfg(unix)]
     std::os::unix::process::CommandExt::process_group(&mut cmd, 0);
@@ -532,31 +532,59 @@ fn run_updater(
     // An unmarked updater must not outlive horch: a later horch would run a
     // second one beside it. It is stopped before it can change anything.
     if let Err(e) = files.set_running(child.id(), now) {
-        kill_group(&mut child);
-        let _ = child.wait();
+        stop_group(&mut child);
         return Ran::Failed(cut(&format!("{name} could not be marked as running: {e}")));
     }
+    wait_or_kill(&mut child, &name, timeout, &mut tails)
+}
+
+/// The stdout and stderr log files of `files`, and horch's own handles to
+/// them, which it reads the tails from.
+fn open_logs(files: &UpdateFiles) -> std::io::Result<(LogPair, LogPair)> {
+    // Both are created, whichever fails.
+    let (out, err) = (files.new_log("stdout.log"), files.new_log("stderr.log"));
+    let (out, err) = (out?, err?);
+    let tails = (out.try_clone()?, err.try_clone()?);
+    Ok(((out, err), tails))
+}
+
+/// A stdout log and a stderr log.
+type LogPair = (std::fs::File, std::fs::File);
+
+/// Wait for `child` until `timeout`. A child that still runs then is left
+/// alone: `Ran::Detached`. A wait that fails kills the child's group. A
+/// failed exit reads its reason from `tails`, the stdout and stderr logs.
+fn wait_or_kill(child: &mut Child, name: &str, timeout: Duration, tails: &mut LogPair) -> Ran {
     let deadline = Instant::now() + timeout;
-    let status = loop {
+    loop {
         match child.try_wait() {
-            Ok(Some(status)) => break status,
+            Ok(Some(status)) => return finished(status, name, tails),
             Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(50)),
             Ok(None) => return Ran::Detached,
             Err(e) => {
-                kill_group(&mut child);
-                let _ = child.wait();
+                stop_group(child);
                 return Ran::Failed(cut(&format!("waiting for {name}: {e}")));
             }
         }
-    };
+    }
+}
+
+/// How an updater that exited with `status` ran.
+fn finished(status: ExitStatus, name: &str, tails: &mut LogPair) -> Ran {
     if status.success() {
         return Ran::Done;
     }
     Ran::Failed(
-        reason_line(&log_tail(&mut err_tail))
-            .or_else(|| reason_line(&log_tail(&mut out_tail)))
-            .unwrap_or_else(|| exited(&name, status)),
+        reason_line(&log_tail(&mut tails.1))
+            .or_else(|| reason_line(&log_tail(&mut tails.0)))
+            .unwrap_or_else(|| exited(name, status)),
     )
+}
+
+/// Kill `child`'s process group and reap it.
+fn stop_group(child: &mut Child) {
+    kill_group(child);
+    let _ = child.wait();
 }
 
 /// `<name> exited <code>` for a failure that printed nothing.
@@ -607,34 +635,36 @@ pub fn strip_ansi(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
     let mut chars = text.chars().peekable();
     while let Some(c) = chars.next() {
-        if c != '\u{1b}' {
+        if c == '\u{1b}' {
+            match chars.next() {
+                Some('[') => skip_csi(&mut chars),
+                Some(']') => skip_osc(&mut chars),
+                _ => {}
+            }
+        } else {
             out.push(c);
-            continue;
-        }
-        match chars.next() {
-            Some('[') => {
-                // Parameters and intermediates, then 1 final byte in @..~.
-                for c in chars.by_ref() {
-                    if ('@'..='~').contains(&c) {
-                        break;
-                    }
-                }
-            }
-            Some(']') => {
-                while let Some(c) = chars.next() {
-                    if c == '\u{7}' {
-                        break;
-                    }
-                    if c == '\u{1b}' && chars.peek() == Some(&'\\') {
-                        chars.next();
-                        break;
-                    }
-                }
-            }
-            _ => {}
         }
     }
     out
+}
+
+/// Skip the rest of a CSI: parameters and intermediates, then 1 final byte
+/// in `@..~`.
+fn skip_csi(chars: &mut impl Iterator<Item = char>) {
+    for c in chars {
+        if ('@'..='~').contains(&c) {
+            break;
+        }
+    }
+}
+
+/// Skip the rest of an OSC, up to `BEL` or `ESC \`.
+fn skip_osc(chars: &mut std::iter::Peekable<impl Iterator<Item = char>>) {
+    while let Some(c) = chars.next() {
+        if c == '\u{7}' || (c == '\u{1b}' && chars.next_if_eq(&'\\').is_some()) {
+            break;
+        }
+    }
 }
 
 /// Run `<herdr> update` attached to the operator's terminal, with no time
