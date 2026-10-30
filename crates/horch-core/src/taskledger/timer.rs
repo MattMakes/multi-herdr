@@ -280,4 +280,17 @@ mod tests {
         assert_eq!(parse_duration("1x"), None);
         assert_eq!(parse_duration("m"), None);
     }
+
+    #[test]
+    fn durations_reject_bad_order_a_missing_unit_and_overflow() {
+        assert_eq!(parse_duration("1h30m"), Some(5400));
+        assert_eq!(parse_duration("30m1h"), None);
+        assert_eq!(parse_duration("5"), None);
+        assert_eq!(parse_duration("1h 5"), None);
+        assert_eq!(parse_duration("99999999999999999999s"), None);
+        assert_eq!(parse_duration("9999999999999999999h"), None);
+        assert_eq!(parse_duration("18446744073709551615s"), Some(u64::MAX));
+        assert_eq!(parse_duration("18446744073709551615m"), None);
+        assert_eq!(parse_duration("1m 18446744073709551615s"), None);
+    }
 }
