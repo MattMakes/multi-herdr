@@ -725,7 +725,7 @@ enum Stop {
     /// A refusal: `compact-failed` on `record` (when there is one) and the
     /// `failed` report. `clear` removes the job dir of this child first.
     Refused {
-        record: Option<Record>,
+        record: Option<Box<Record>>,
         why: String,
         clear: bool,
     },
@@ -734,7 +734,7 @@ enum Stop {
 impl Stop {
     fn refused(record: Option<&Record>, why: String, clear: bool) -> Stop {
         Stop::Refused {
-            record: record.cloned(),
+            record: record.cloned().map(Box::new),
             why,
             clear,
         }
@@ -759,7 +759,7 @@ fn foreground(env: &Env, args: &CompactArgs) -> Outcome {
             if clear {
                 jobfile::clear_on_exit(&dir);
             }
-            refuse_child(env, role, record.as_ref(), &log, &why)
+            refuse_child(env, role, record.as_deref(), &log, &why)
         }
     }
 }
