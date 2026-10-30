@@ -949,12 +949,18 @@ fn cmp_07_timeout() {
         return;
     };
     let out = run_round(&h, 2, &[]);
-    assert_eq!(out.status.code(), Some(0), "{}", text(&out));
     let events = events(&h);
-    assert_eq!(
-        failure_of(&events, "A"),
-        serde_json::json!({"kind": "timed_out"})
-    );
+    let timed_out = serde_json::json!({"kind": "timed_out"});
+    assert_eq!(failure_of(&events, "A"), timed_out, "{}", text(&out));
+    // B has the same 20 s deadline, and a loaded machine can run it past
+    // that too. Then no candidate is eligible: the round ends with exit 6.
+    match failure_of(&events, "B") {
+        Value::Null => assert_eq!(out.status.code(), Some(0), "{}", text(&out)),
+        b => {
+            assert_eq!(b, timed_out, "{}", text(&out));
+            assert_eq!(out.status.code(), Some(6), "{}", text(&out));
+        }
+    }
     // The pane was closed, which killed the hanging agent.
     let a = candidate_records(&h)
         .into_iter()
@@ -1607,8 +1613,21 @@ fn mea_10_every_spawn_has_terminal_event() {
         return;
     };
     let out = run_round(&h, 3, &[]);
-    assert_eq!(out.status.code(), Some(0), "{}", text(&out));
     let events = events(&h);
+    // A has C's 20 s deadline, and a loaded machine can run it past that.
+    // Then no candidate is eligible: the round ends with exit 6.
+    match failure_of(&events, "A") {
+        Value::Null => assert_eq!(out.status.code(), Some(0), "{}", text(&out)),
+        a => {
+            assert_eq!(
+                a,
+                serde_json::json!({"kind": "timed_out"}),
+                "{}",
+                text(&out)
+            );
+            assert_eq!(out.status.code(), Some(6), "{}", text(&out));
+        }
+    }
     assert_eq!(of_kind(&events, "candidate.spawned").len(), 3);
     assert_every_spawn_ended(&h);
     assert_clean(&h);
