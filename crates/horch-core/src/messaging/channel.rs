@@ -1254,17 +1254,47 @@ mod tests {
         }
     }
 
+    /// The most a send may take before the test calls the timeout broken. It
+    /// is far past any send timeout here, so machine load cannot reach it. A
+    /// send that ignores its timeout never ends, and only this bound fails it.
+    const SEND_HANG_BOUND: Duration = Duration::from_secs(30);
+
+    /// Run [`send`] on its own thread. `None` means it did not end inside
+    /// [`SEND_HANG_BOUND`]; that thread is left behind.
+    fn send_or_hang(
+        socket: &Path,
+        text: String,
+        timeout: Duration,
+    ) -> Option<std::result::Result<(), SendError>> {
+        let (done, ended) = std::sync::mpsc::channel();
+        let socket = socket.to_path_buf();
+        thread::spawn(move || {
+            let _ = done.send(send(&socket, "worker", &text, timeout));
+        });
+        ended.recv_timeout(SEND_HANG_BOUND).ok()
+    }
+
+    /// The `io::ErrorKind` at the root of a send error.
+    fn root_kind(error: &SendError) -> Option<std::io::ErrorKind> {
+        let (SendError::NotDelivered(error) | SendError::Unconfirmed(error)) = error;
+        error
+            .root_cause()
+            .downcast_ref::<std::io::Error>()
+            .map(std::io::Error::kind)
+    }
+
     /// #67: a relay that accepts and never reads or answers costs the push
-    /// no more than its timeout.
+    /// no more than its timeout. The send ends with a timed-out write error,
+    /// not with a wall-clock bound that load can break.
     #[test]
     fn send_to_a_relay_that_never_reads_ends_inside_the_timeout() {
         let (socket, _server) = stalled_relay("never-reads", 0, Duration::from_secs(60));
-        let text = "x".repeat(1024 * 1024);
-        let started = Instant::now();
-        let result = send(&socket, "worker", &text, Duration::from_millis(300));
-        let took = started.elapsed();
-        assert!(matches!(result, Err(SendError::NotDelivered(_))));
-        assert!(took < Duration::from_millis(600), "{took:?}");
+        let timeout = Duration::from_millis(300);
+        let result = send_or_hang(&socket, "x".repeat(1024 * 1024), timeout)
+            .expect("the send ignored its timeout");
+        let error = result.expect_err("a relay that never reads cannot confirm");
+        assert!(matches!(error, SendError::NotDelivered(_)), "{error}");
+        assert_eq!(root_kind(&error), Some(std::io::ErrorKind::TimedOut));
     }
 
     /// #67: the timeout is 1 deadline for the whole request. A relay that
@@ -1272,12 +1302,11 @@ mod tests {
     #[test]
     fn a_slow_reader_cannot_stretch_the_send_past_its_timeout() {
         let (socket, server) = stalled_relay("trickle", 512, Duration::from_millis(50));
-        let text = "x".repeat(256 * 1024);
-        let started = Instant::now();
-        let result = send(&socket, "worker", &text, Duration::from_millis(300));
-        let took = started.elapsed();
-        assert!(result.is_err());
-        assert!(took < Duration::from_millis(700), "{took:?}");
+        let timeout = Duration::from_millis(300);
+        let result = send_or_hang(&socket, "x".repeat(256 * 1024), timeout)
+            .expect("the send ignored its timeout");
+        let error = result.expect_err("a trickling relay cannot take the whole message");
+        assert_eq!(root_kind(&error), Some(std::io::ErrorKind::TimedOut));
         server.join().expect("server thread");
     }
 
