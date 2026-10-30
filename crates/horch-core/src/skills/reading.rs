@@ -185,3 +185,75 @@ pub fn outside_bundle(catalog: &SkillCatalog, activated: &[&str]) -> Vec<(String
     found.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
     found
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn count(text: &str, id: &str) -> usize {
+        let ids = BTreeSet::from([id]);
+        mentions([text.as_bytes()], &ids)
+            .get(id)
+            .copied()
+            .unwrap_or(0)
+    }
+
+    #[test]
+    fn a_hyphenated_id_counts_in_plain_prose() {
+        assert_eq!(
+            count("run code-review now, then code-review again", "code-review"),
+            2
+        );
+    }
+
+    #[test]
+    fn a_hyphenated_id_does_not_match_inside_a_longer_id() {
+        assert_eq!(
+            count("godot-code-review and code-review-all", "code-review"),
+            0
+        );
+    }
+
+    #[test]
+    fn a_bare_id_counts_in_backticks() {
+        assert_eq!(count("use `tdd` here", "tdd"), 1);
+    }
+
+    #[test]
+    fn a_bare_id_counts_between_slashes() {
+        assert_eq!(count("see ../tdd/SKILL.md", "tdd"), 1);
+    }
+
+    #[test]
+    fn a_bare_id_counts_after_a_namespace() {
+        assert_eq!(count("load horch:tdd first", "tdd"), 1);
+    }
+
+    #[test]
+    fn a_bare_id_in_prose_does_not_count() {
+        assert_eq!(count("check the build, tdd is fine", "tdd"), 0);
+        assert_eq!(count("`tdd and tdd/ and /tdd and :tdd", "tdd"), 0);
+    }
+
+    #[test]
+    fn a_colon_counts_only_after_a_word_byte() {
+        assert_eq!(count(" :tdd", "tdd"), 0);
+        assert_eq!(count(":tdd", "tdd"), 0);
+        assert_eq!(count("a:tdd", "tdd"), 1);
+    }
+
+    #[test]
+    fn id_at_the_text_edges_is_judged() {
+        assert_eq!(count("code-review", "code-review"), 1);
+        assert_eq!(count("tdd", "tdd"), 0);
+    }
+
+    #[test]
+    fn counts_add_up_across_texts_and_ids() {
+        let ids = BTreeSet::from(["tdd", "check-it"]);
+        let texts = [&b"`tdd` check-it"[..], &b"check-it `tdd` `tdd`"[..]];
+        let got = mentions(texts, &ids);
+        assert_eq!(got.get("tdd"), Some(&3));
+        assert_eq!(got.get("check-it"), Some(&2));
+    }
+}
