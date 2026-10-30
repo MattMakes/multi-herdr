@@ -95,28 +95,8 @@ pub(crate) enum Located {
 /// Find the inputs of session `sid` for `agent`.
 pub(crate) fn locate(loc: &Locations, agent: &str, sid: &str) -> Result<Located, Unreadable> {
     match agent {
-        "claude" => {
-            let main = crate::usage::find_claude_transcript(&loc.claude_projects, sid).ok_or_else(
-                || {
-                    Unreadable::NoTranscript(format!(
-                        "{sid}.jsonl under {}",
-                        loc.claude_projects.display()
-                    ))
-                },
-            )?;
-            let mut files = vec![main.clone()];
-            files.extend(claude_subagent_files(&main));
-            Ok(Located::Files(files))
-        }
-        "codex" => {
-            let path = find_codex_rollout(&loc.codex_sessions, sid).ok_or_else(|| {
-                Unreadable::NoTranscript(format!(
-                    "rollout-*-{sid}.jsonl under {}",
-                    loc.codex_sessions.display()
-                ))
-            })?;
-            Ok(Located::Files(vec![path]))
-        }
+        "claude" => locate_claude(loc, sid),
+        "codex" => locate_codex(loc, sid),
         "pi" | "prime" => {
             let path = find_pi_session(&loc.pi_sessions, sid)
                 .ok_or_else(|| Unreadable::NoTranscript(format!("a session file for {sid}")))?;
@@ -131,6 +111,31 @@ pub(crate) fn locate(loc: &Locations, agent: &str, sid: &str) -> Result<Located,
         // Seen live: docs/live-checks/harnesses.md.
         other => Err(Unreadable::NotRead(format!("unknown agent '{other}'"))),
     }
+}
+
+/// The main Claude transcript of `sid`, then its subagent files.
+fn locate_claude(loc: &Locations, sid: &str) -> Result<Located, Unreadable> {
+    let main =
+        crate::usage::find_claude_transcript(&loc.claude_projects, sid).ok_or_else(|| {
+            Unreadable::NoTranscript(format!(
+                "{sid}.jsonl under {}",
+                loc.claude_projects.display()
+            ))
+        })?;
+    let mut files = vec![main.clone()];
+    files.extend(claude_subagent_files(&main));
+    Ok(Located::Files(files))
+}
+
+/// The Codex rollout of `sid`.
+fn locate_codex(loc: &Locations, sid: &str) -> Result<Located, Unreadable> {
+    let path = find_codex_rollout(&loc.codex_sessions, sid).ok_or_else(|| {
+        Unreadable::NoTranscript(format!(
+            "rollout-*-{sid}.jsonl under {}",
+            loc.codex_sessions.display()
+        ))
+    })?;
+    Ok(Located::Files(vec![path]))
 }
 
 /// Read everything new for one record. `record_model` names the model when a
@@ -171,51 +176,63 @@ pub(crate) fn poll_located(
             opencode_poll(&db, &loc.sqlite3, sid, cursor, &mut polled.observations)?;
             polled.files.push(db);
         }
-        Located::Files(files) => {
-            for (i, path) in files.iter().enumerate() {
-                if polled.observations.len() >= limit {
-                    polled.more = true;
-                    break;
-                }
-                let limit = limit - polled.observations.len();
-                match agent {
-                    "claude" => {
-                        let subagent = i > 0;
-                        poll_file(
-                            agent,
-                            sid,
-                            path,
-                            cursors,
-                            &mut polled,
-                            limit,
-                            |c, at, line, out| claude_line(c, at, line, subagent, out),
-                        )?;
-                    }
-                    "codex" => {
-                        poll_file(agent, sid, path, cursors, &mut polled, limit, codex_line)?
-                    }
-                    _ => poll_file(agent, sid, path, cursors, &mut polled, limit, pi_line)?,
-                }
-            }
-        }
+        Located::Files(files) => poll_files(agent, sid, &files, cursors, &mut polled, limit)?,
     }
     Ok(polled)
+}
+
+/// Read each of `files` in turn, until the observations reach `limit`.
+fn poll_files(
+    agent: &str,
+    sid: &str,
+    files: &[PathBuf],
+    cursors: &mut Cursors,
+    polled: &mut Polled,
+    limit: usize,
+) -> Result<(), Unreadable> {
+    for (i, path) in files.iter().enumerate() {
+        if polled.observations.len() >= limit {
+            polled.more = true;
+            break;
+        }
+        let limit = limit - polled.observations.len();
+        // Only a Claude file after the main one is a subagent's.
+        let subagent = i > 0;
+        poll_file(agent, sid, path, subagent, cursors, polled, limit)?;
+    }
+    Ok(())
+}
+
+/// One transcript line of `agent`, by its harness's reader.
+fn read_line(
+    agent: &str,
+    subagent: bool,
+    c: &mut Cursor,
+    at: u64,
+    line: &str,
+    out: &mut Vec<Observation>,
+) {
+    match agent {
+        "claude" => claude_line(c, at, line, subagent, out),
+        "codex" => codex_line(c, at, line, out),
+        _ => pi_line(c, at, line, out),
+    }
 }
 
 fn poll_file(
     agent: &str,
     sid: &str,
     path: &Path,
+    subagent: bool,
     cursors: &mut Cursors,
     polled: &mut Polled,
     limit: usize,
-    mut line_fn: impl FnMut(&mut Cursor, u64, &str, &mut Vec<Observation>),
 ) -> Result<(), Unreadable> {
     let cursor = cursor_of(cursors, agent, sid, path);
     let out = &mut polled.observations;
     let (start, mut full) = (out.len(), false);
     poll_lines_until(path, cursor, |c, at, line| {
-        line_fn(c, at, line, out);
+        read_line(agent, subagent, c, at, line, out);
         full = out.len() - start >= limit;
         !full
     })
@@ -369,47 +386,32 @@ pub(crate) fn claude_line(
 
 /// [`claude_line`] from the whole parse.
 fn claude_whole(c: &mut Cursor, _at: u64, line: &str, subagent: bool, out: &mut Vec<Observation>) {
-    let Ok(v) = serde_json::from_str::<Value>(line) else {
-        return;
-    };
-    if v.get("type").and_then(Value::as_str) != Some("assistant") {
-        return;
+    if let Some(v) = claude_assistant(line) {
+        out.extend(claude_observation(c, &v, subagent));
     }
+}
+
+/// `line` parsed, when it is an `assistant` line.
+fn claude_assistant(line: &str) -> Option<Value> {
+    serde_json::from_str::<Value>(line)
+        .ok()
+        .filter(|v| v.get("type").and_then(Value::as_str) == Some("assistant"))
+}
+
+/// What an assistant line says: the refusal of a synthetic line, else the
+/// usage of the response.
+fn claude_observation(c: &mut Cursor, v: &Value, subagent: bool) -> Option<Observation> {
     let when = ts(v.get("timestamp").and_then(Value::as_str));
     let model = v
         .pointer("/message/model")
         .and_then(Value::as_str)
         .unwrap_or_default();
     if model == "<synthetic>" {
-        if v.get("error").and_then(Value::as_str) == Some("rate_limit") {
-            out.push(Observation::Quota(QuotaSignal::Refusal {
-                pool: "claude".into(),
-                at: when,
-                what: claude_refusal_label(&v),
-            }));
-        }
-        return;
+        return claude_refusal(v, when);
     }
-    let (Some(id), Some(u)) = (
-        v.pointer("/message/id").and_then(Value::as_str),
-        v.pointer("/message/usage").filter(|u| u.is_object()),
-    ) else {
-        return;
-    };
-    let written = first_n(u, &["cache_creation_input_tokens"]);
-    // The TTL split when present; a missing 5m count is what the 1h count
-    // leaves of the total written.
-    let (cw5m, cw1h) = match u.get("cache_creation").filter(|c| c.is_object()) {
-        Some(cc) => {
-            let one_hour = n(cc, "/ephemeral_1h_input_tokens");
-            let five = cc
-                .get("ephemeral_5m_input_tokens")
-                .and_then(Value::as_u64)
-                .unwrap_or(written.saturating_sub(one_hour));
-            (five, one_hour)
-        }
-        None => (written, 0),
-    };
+    let id = v.pointer("/message/id").and_then(Value::as_str)?;
+    let u = v.pointer("/message/usage").filter(|u| u.is_object())?;
+    let (cw5m, cw1h) = cache_write_split(u, first_n(u, &["cache_creation_input_tokens"]));
     let tokens = TokenClasses {
         input: first_n(u, &["input_tokens"]),
         cache_write_5m: cw5m,
@@ -419,20 +421,43 @@ fn claude_whole(c: &mut Cursor, _at: u64, line: &str, subagent: bool, out: &mut 
         reasoning: n(u, "/output_tokens_details/thinking_tokens"),
     };
     let effort = v.get("effort").and_then(Value::as_str).map(str::to_owned);
-    if let Some((event_id, tokens, delta, seen)) = emit_or_correct(c.recalled(id), id, tokens) {
-        c.remember(seen);
-        out.push(Observation::Usage(RawUsage {
-            ts: when,
-            event_id,
-            model: model.to_string(),
-            effort,
-            tokens,
-            subagent,
-            delta,
-            tool_nested: false,
-            harness_cost: None,
-        }));
-    }
+    let (event_id, tokens, delta, seen) = emit_or_correct(c.recalled(id), id, tokens)?;
+    c.remember(seen);
+    Some(Observation::Usage(RawUsage {
+        ts: when,
+        event_id,
+        model: model.to_string(),
+        effort,
+        tokens,
+        subagent,
+        delta,
+        tool_nested: false,
+        harness_cost: None,
+    }))
+}
+
+/// The refusal a synthetic line makes, when its error is a rate limit.
+fn claude_refusal(v: &Value, when: String) -> Option<Observation> {
+    (v.get("error").and_then(Value::as_str) == Some("rate_limit")).then(|| {
+        Observation::Quota(QuotaSignal::Refusal {
+            pool: "claude".into(),
+            at: when,
+            what: claude_refusal_label(v),
+        })
+    })
+}
+
+/// The 5m and 1h cache writes of `u`, `written` being the total written:
+/// the TTL split when present, a missing 5m count being what the 1h count
+/// leaves of the total.
+fn cache_write_split(u: &Value, written: u64) -> (u64, u64) {
+    let cc = u.get("cache_creation").unwrap_or(&Value::Null);
+    let one_hour = n(cc, "/ephemeral_1h_input_tokens");
+    let five = cc
+        .get("ephemeral_5m_input_tokens")
+        .and_then(Value::as_u64)
+        .unwrap_or(written.saturating_sub(one_hour));
+    (five, one_hour)
 }
 
 // ─── codex ──────────────────────────────────────────────────────────────────
@@ -481,23 +506,22 @@ fn codex_tokens(u: &Value) -> TokenClasses {
 /// A Codex `rate_limits` snapshot as windows, by duration (QUO-04). Codex
 /// reports 0-100 and epoch seconds.
 pub(crate) fn codex_rollout_windows(rl: &Value) -> Vec<Window> {
-    let mut out = Vec::new();
-    for slot in ["primary", "secondary"] {
-        let Some(w) = rl.get(slot).filter(|w| w.is_object()) else {
-            continue;
-        };
-        let Some(minutes) = w.get("window_minutes").and_then(Value::as_u64) else {
-            continue;
-        };
-        let used = w.get("used_percent").and_then(Value::as_f64).unwrap_or(0.0) / 100.0;
-        let resets = w
-            .get("resets_at")
-            .and_then(Value::as_i64)
-            .and_then(clock::from_epoch)
-            .map(clock::stamp);
-        out.push(Window::new(minutes, used, resets, None));
-    }
-    out
+    ["primary", "secondary"]
+        .iter()
+        .filter_map(|slot| rl.get(slot).and_then(rollout_window))
+        .collect()
+}
+
+/// One rate-limit window; a slot without a duration is none.
+fn rollout_window(w: &Value) -> Option<Window> {
+    let minutes = w.get("window_minutes")?.as_u64()?;
+    let used = w.get("used_percent").and_then(Value::as_f64).unwrap_or(0.0) / 100.0;
+    let resets = w
+        .get("resets_at")
+        .and_then(Value::as_i64)
+        .and_then(clock::from_epoch)
+        .map(clock::stamp);
+    Some(Window::new(minutes, used, resets, None))
 }
 
 /// The line types [`codex_line`] reads; it skips every other one.
@@ -524,83 +548,101 @@ fn codex_whole(c: &mut Cursor, at: u64, line: &str, out: &mut Vec<Observation>) 
     let kind = v.get("type").and_then(Value::as_str).unwrap_or_default();
     let payload = v.get("payload").unwrap_or(&Value::Null);
     match kind {
-        "session_meta" => {
-            if let Some(version) = payload.get("cli_version").and_then(Value::as_str) {
-                if let Some(ver) = parse_version(version) {
-                    c.records_mode = Some(ver >= CODEX_RECORDS_SINCE);
-                }
-            }
-        }
-        "turn_context" => {
-            if let Some(m) = payload.get("model").and_then(Value::as_str) {
-                c.model = m.to_string();
-            }
-            if let Some(e) = payload.get("effort").and_then(Value::as_str) {
-                c.effort = Some(e.to_string());
-            }
-        }
-        "token_usage_record" => {
-            // A record settles the question for a file that never said its
-            // version.
-            if c.records_mode.is_none() {
-                c.records_mode = Some(true);
-            }
-            if c.records_mode != Some(true) {
-                return;
-            }
-            let Some(u) = payload.get("usage") else {
-                return;
-            };
-            let event_id = payload
-                .get("response_id")
-                .and_then(Value::as_str)
-                .map(str::to_owned)
-                .unwrap_or_else(|| format!("rec@{at}"));
-            out.push(Observation::Usage(RawUsage {
-                ts: when,
-                event_id,
-                model: c.model.clone(),
-                effort: c.effort.clone(),
-                tokens: codex_tokens(u),
-                subagent: false,
-                delta: false,
-                tool_nested: false,
-                harness_cost: None,
-            }));
-        }
-        "event_msg" => {
-            let msg = payload
-                .get("type")
-                .and_then(Value::as_str)
-                .unwrap_or_default();
-            if msg == "token_count" {
-                if let Some(rl) = payload.get("rate_limits").filter(|r| r.is_object()) {
-                    let windows = codex_rollout_windows(rl);
-                    if !windows.is_empty() {
-                        out.push(Observation::Quota(QuotaSignal::Snapshot {
-                            pool: "codex".into(),
-                            at: when.clone(),
-                            windows,
-                            ordinary_usage_allowed: None,
-                        }));
-                    }
-                }
-                if c.records_mode != Some(true) {
-                    codex_fallback(c, payload, &when, out);
-                }
-            }
-            if find_key(payload, "codex_error_info").and_then(Value::as_str)
-                == Some("usage_limit_exceeded")
-            {
-                out.push(Observation::Quota(QuotaSignal::Refusal {
-                    pool: "codex".into(),
-                    at: when,
-                    what: "usage_limit_exceeded".into(),
-                }));
-            }
-        }
+        "session_meta" => codex_session_meta(c, payload),
+        "turn_context" => codex_turn_context(c, payload),
+        "token_usage_record" => codex_usage_record(c, payload, at, when, out),
+        "event_msg" => codex_event_msg(c, payload, &when, out),
         _ => {}
     }
+}
+
+/// The version the file names says whether it has `token_usage_record`
+/// lines.
+fn codex_session_meta(c: &mut Cursor, payload: &Value) {
+    let version = payload
+        .get("cli_version")
+        .and_then(Value::as_str)
+        .and_then(parse_version);
+    if let Some(ver) = version {
+        c.records_mode = Some(ver >= CODEX_RECORDS_SINCE);
+    }
+}
+
+/// The model and the effort of the turns that follow.
+fn codex_turn_context(c: &mut Cursor, payload: &Value) {
+    if let Some(m) = payload.get("model").and_then(Value::as_str) {
+        c.model = m.to_string();
+    }
+    if let Some(e) = payload.get("effort").and_then(Value::as_str) {
+        c.effort = Some(e.to_string());
+    }
+}
+
+/// A `token_usage_record`: 1 response, when the file has records.
+fn codex_usage_record(
+    c: &mut Cursor,
+    payload: &Value,
+    at: u64,
+    when: String,
+    out: &mut Vec<Observation>,
+) {
+    // A record settles the question for a file that never said its version.
+    let records = *c.records_mode.get_or_insert(true);
+    let Some(u) = payload.get("usage").filter(|_| records) else {
+        return;
+    };
+    let event_id = payload
+        .get("response_id")
+        .and_then(Value::as_str)
+        .map(str::to_owned)
+        .unwrap_or_else(|| format!("rec@{at}"));
+    out.push(Observation::Usage(RawUsage {
+        ts: when,
+        event_id,
+        model: c.model.clone(),
+        effort: c.effort.clone(),
+        tokens: codex_tokens(u),
+        subagent: false,
+        delta: false,
+        tool_nested: false,
+        harness_cost: None,
+    }));
+}
+
+/// An `event_msg`: a `token_count` brings a limits snapshot, and usage in a
+/// file without records; any message may carry a refusal.
+fn codex_event_msg(c: &mut Cursor, payload: &Value, when: &str, out: &mut Vec<Observation>) {
+    let msg = payload
+        .get("type")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    if msg == "token_count" {
+        out.extend(codex_quota_snapshot(payload, when));
+        if c.records_mode != Some(true) {
+            codex_fallback(c, payload, when, out);
+        }
+    }
+    if find_key(payload, "codex_error_info").and_then(Value::as_str) == Some("usage_limit_exceeded")
+    {
+        out.push(Observation::Quota(QuotaSignal::Refusal {
+            pool: "codex".into(),
+            at: when.to_string(),
+            what: "usage_limit_exceeded".into(),
+        }));
+    }
+}
+
+/// The limits snapshot of a `token_count`, when it has a window.
+fn codex_quota_snapshot(payload: &Value, when: &str) -> Option<Observation> {
+    let windows = codex_rollout_windows(payload.get("rate_limits")?);
+    (!windows.is_empty()).then(|| {
+        Observation::Quota(QuotaSignal::Snapshot {
+            pool: "codex".into(),
+            at: when.to_string(),
+            windows,
+            ordinary_usage_allowed: None,
+        })
+    })
 }
 
 /// Before `token_usage_record`: the difference of consecutive running
@@ -639,42 +681,77 @@ fn codex_fallback(c: &mut Cursor, payload: &Value, when: &str, out: &mut Vec<Obs
 /// `cacheWrite` includes `cacheWrite1h` in pi 0.87 ([S] pi), so the 1h part
 /// is split out. Anthropic spellings are accepted too.
 pub(crate) fn pi_line(_c: &mut Cursor, at: u64, line: &str, out: &mut Vec<Observation>) {
-    let Ok(v) = serde_json::from_str::<Value>(line) else {
+    let Some((v, tokens)) = pi_usage(line) else {
         return;
     };
     let message = v.get("message").unwrap_or(&v);
-    let role = message
-        .get("role")
+    let role = message.get("role").and_then(Value::as_str);
+    let event_id = v
+        .get("id")
         .and_then(Value::as_str)
-        .unwrap_or_default();
-    if !matches!(role, "assistant" | "toolResult") {
-        return;
-    }
-    let Some(u) = message.get("usage").filter(|u| u.is_object()) else {
-        return;
-    };
+        .map(str::to_owned)
+        .unwrap_or_else(|| format!("@{at}"));
+    out.push(Observation::Usage(RawUsage {
+        ts: pi_when(&v, message),
+        event_id,
+        model: pi_model(message),
+        effort: None,
+        tokens,
+        subagent: false,
+        delta: false,
+        tool_nested: role == Some("toolResult"),
+        harness_cost: None,
+    }));
+}
+
+/// `line` parsed, with its tokens, when it is a response or a tool result
+/// that has usage.
+fn pi_usage(line: &str) -> Option<(Value, TokenClasses)> {
+    let v: Value = serde_json::from_str(line).ok()?;
+    let message = v.get("message").unwrap_or(&v);
+    let tokens = Some(message)
+        .filter(|m| {
+            matches!(
+                m.get("role").and_then(Value::as_str),
+                Some("assistant" | "toolResult")
+            )
+        })
+        .and_then(|m| m.get("usage"))
+        .map(pi_tokens)
+        .filter(|t| !t.is_zero())?;
+    Some((v, tokens))
+}
+
+/// The token classes of a pi usage object.
+fn pi_tokens(u: &Value) -> TokenClasses {
     let written = first_n(u, &["cacheWrite", "cache_creation_input_tokens"]);
     let one_hour = first_n(u, &["cacheWrite1h"]).min(written);
-    let tokens = TokenClasses {
+    TokenClasses {
         input: first_n(u, &["input", "input_tokens"]),
         cache_write_5m: written - one_hour,
         cache_write_1h: one_hour,
         cache_read: first_n(u, &["cacheRead", "cache_read_input_tokens"]),
         output: first_n(u, &["output", "output_tokens"]),
         reasoning: first_n(u, &["reasoning"]),
-    };
-    if tokens.is_zero() {
-        return;
     }
+}
+
+/// The model of a message, with its provider when the name has none.
+fn pi_model(message: &Value) -> String {
     let model = message
         .get("model")
         .and_then(Value::as_str)
         .unwrap_or_default();
-    let model = match message.get("provider").and_then(Value::as_str) {
+    match message.get("provider").and_then(Value::as_str) {
         Some(p) if !model.is_empty() && !model.contains('/') => format!("{p}/{model}"),
         _ => model.to_string(),
-    };
-    let when = match v.get("timestamp").and_then(Value::as_str) {
+    }
+}
+
+/// The time of a line: its own timestamp, else the message's epoch
+/// milliseconds.
+fn pi_when(v: &Value, message: &Value) -> String {
+    match v.get("timestamp").and_then(Value::as_str) {
         Some(t) => ts(Some(t)),
         None => message
             .get("timestamp")
@@ -682,23 +759,7 @@ pub(crate) fn pi_line(_c: &mut Cursor, at: u64, line: &str, out: &mut Vec<Observ
             .and_then(clock::from_epoch_ms)
             .map(clock::stamp)
             .unwrap_or_default(),
-    };
-    let event_id = v
-        .get("id")
-        .and_then(Value::as_str)
-        .map(str::to_owned)
-        .unwrap_or_else(|| format!("@{at}"));
-    out.push(Observation::Usage(RawUsage {
-        ts: when,
-        event_id,
-        model,
-        effort: None,
-        tokens,
-        subagent: false,
-        delta: false,
-        tool_nested: role == "toolResult",
-        harness_cost: None,
-    }));
+    }
 }
 
 // ─── opencode ───────────────────────────────────────────────────────────────
@@ -736,8 +797,7 @@ pub(crate) fn check_opencode(
 pub(crate) fn row_data(row: &Value) -> Value {
     match row.get("data") {
         Some(Value::String(s)) => serde_json::from_str(s).unwrap_or(Value::Null),
-        Some(v) => v.clone(),
-        None => Value::Null,
+        other => other.cloned().unwrap_or(Value::Null),
     }
 }
 
@@ -753,17 +813,7 @@ pub(crate) fn opencode_poll(
     c: &mut Cursor,
     out: &mut Vec<Observation>,
 ) -> Result<(), Unreadable> {
-    if !safe_id(session_id) {
-        return Err(Unreadable::Failed(format!(
-            "unexpected opencode session id '{session_id}'"
-        )));
-    }
-    if !db.is_file() {
-        return Err(Unreadable::NoTranscript(format!(
-            "no opencode database at {}",
-            db.display()
-        )));
-    }
+    check_opencode(db, session_id, safe_id)?;
     let query = format!(
         "SELECT id, time_updated, data FROM message WHERE session_id = '{session_id}' \
          AND time_updated >= {} ORDER BY time_updated, id;",
@@ -779,12 +829,7 @@ pub(crate) fn opencode_poll(
             .to_string();
         let updated = row.get("time_updated").and_then(Value::as_i64).unwrap_or(0);
         c.since_ms = c.since_ms.max(updated);
-        let data: Value = match row.get("data") {
-            Some(Value::String(s)) => serde_json::from_str(s).unwrap_or(Value::Null),
-            Some(v) => v.clone(),
-            None => Value::Null,
-        };
-        opencode_message(c, &id, &data, out);
+        opencode_message(c, &id, &row_data(&row), out);
     }
     c.quiet_ticks = if grew {
         0
@@ -796,29 +841,34 @@ pub(crate) fn opencode_poll(
 
 /// One OpenCode `message.data` value.
 pub(crate) fn opencode_message(c: &mut Cursor, id: &str, data: &Value, out: &mut Vec<Observation>) {
-    if data
-        .get("error")
-        .is_some_and(|e| e.to_string().contains("FreeUsageLimitError"))
-    {
-        let at = data
-            .pointer("/time/completed")
-            .or_else(|| data.pointer("/time/created"))
-            .and_then(Value::as_i64)
-            .and_then(clock::from_epoch_ms)
-            .map(clock::stamp)
-            .unwrap_or_default();
-        out.push(Observation::Quota(QuotaSignal::Refusal {
-            pool: "opencode-zen".into(),
-            at,
-            what: "FreeUsageLimitError".into(),
-        }));
-    }
+    out.extend(opencode_refusal(data));
+    out.extend(opencode_usage(c, id, data));
+}
+
+/// The refusal an error message makes.
+fn opencode_refusal(data: &Value) -> Option<Observation> {
+    data.get("error")
+        .filter(|e| e.to_string().contains("FreeUsageLimitError"))?;
+    let at = data
+        .pointer("/time/completed")
+        .or_else(|| data.pointer("/time/created"))
+        .and_then(Value::as_i64)
+        .and_then(clock::from_epoch_ms)
+        .map(clock::stamp)
+        .unwrap_or_default();
+    Some(Observation::Quota(QuotaSignal::Refusal {
+        pool: "opencode-zen".into(),
+        at,
+        what: "FreeUsageLimitError".into(),
+    }))
+}
+
+/// The usage of a completed assistant message.
+fn opencode_usage(c: &mut Cursor, id: &str, data: &Value) -> Option<Observation> {
     if data.get("role").and_then(Value::as_str) != Some("assistant") {
-        return;
+        return None;
     }
-    let Some(completed) = data.pointer("/time/completed").and_then(Value::as_i64) else {
-        return;
-    };
+    let completed = data.pointer("/time/completed").and_then(Value::as_i64)?;
     let t = data.get("tokens").unwrap_or(&Value::Null);
     let tokens = TokenClasses {
         input: n(t, "/input"),
@@ -840,12 +890,9 @@ pub(crate) fn opencode_message(c: &mut Cursor, id: &str, data: &Value, out: &mut
         .map(clock::stamp)
         .unwrap_or_default();
     let harness_cost = data.get("cost").and_then(Value::as_f64);
-    let Some((event_id, tokens, delta, seen)) = emit_or_correct(c.emitted.get(id), id, tokens)
-    else {
-        return;
-    };
+    let (event_id, tokens, delta, seen) = emit_or_correct(c.emitted.get(id), id, tokens)?;
     c.emitted.insert(id.to_string(), seen);
-    out.push(Observation::Usage(RawUsage {
+    Some(Observation::Usage(RawUsage {
         ts: when,
         event_id,
         model,
@@ -855,7 +902,7 @@ pub(crate) fn opencode_message(c: &mut Cursor, id: &str, data: &Value, out: &mut
         delta,
         tool_nested: false,
         harness_cost,
-    }));
+    }))
 }
 
 /// Run a query through `sqlite3 -readonly -json`. No rows prints nothing.
@@ -882,10 +929,11 @@ pub(crate) fn sqlite_json(bin: &Path, db: &Path, query: &str) -> Result<Vec<Valu
     }
     let text = String::from_utf8_lossy(&output.stdout);
     if text.trim().is_empty() {
-        return Ok(Vec::new());
+        Ok(Vec::new())
+    } else {
+        serde_json::from_str(text.trim())
+            .map_err(|e| Unreadable::Failed(format!("sqlite3 output from {}: {e}", db.display())))
     }
-    serde_json::from_str(text.trim())
-        .map_err(|e| Unreadable::Failed(format!("sqlite3 output from {}: {e}", db.display())))
 }
 
 /// Read one record from the start with throwaway cursors: what `horch cost`
@@ -1220,7 +1268,7 @@ mod line_reader_tests {
     }
 
     fn pi(line: &str) -> Vec<Observation> {
-        run(|c, at, l, o| pi_line(c, at, l, o), &[line]).0
+        run(pi_line, &[line]).0
     }
 
     #[test]
@@ -1267,7 +1315,7 @@ mod line_reader_tests {
                 r#""role":"assistant","#,
                 r#""role":"assistant","timestamp":1790000000000,"#,
             );
-        let (obs, _) = run(|c, at, l, o| pi_line(c, at, l, o), &["x", &bare]);
+        let (obs, _) = run(pi_line, &["x", &bare]);
         let u = usages(&obs)[0];
         assert_eq!(
             (u.event_id.as_str(), u.ts.as_str()),
