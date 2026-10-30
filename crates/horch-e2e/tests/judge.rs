@@ -855,6 +855,9 @@ fn cmp_16_only_judge_and_compaction_jobs_detached() {
         // The task-ledger watchdog checks a run's workers after the pane of
         // the command that started it is gone (#42).
         "crates/horch/src/cmd/taskledger_watch.rs",
+        // The finish check runs in its own process group, so its timeout
+        // kills the build's children too. horch waits for it (#160).
+        "crates/horch-core/src/taskledger/finish/land.rs",
     ];
     let mut found = Vec::new();
     let mut stack = vec![root.join("crates")];

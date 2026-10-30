@@ -19,10 +19,10 @@ use crate::taskledger::store::Store;
 use crate::taskledger::util::{self, About};
 
 fn gh(bin: &Path, dir: &Path, args: &[&str]) -> Result<String> {
-    let out = Command::new(bin)
-        .args(args)
-        .current_dir(dir)
-        .env_remove("ANTHROPIC_API_KEY")
+    let mut cmd = Command::new(bin);
+    cmd.args(args).current_dir(dir);
+    crate::runtime::process::scrub_child_env(&mut cmd);
+    let out = cmd
         .output()
         .map_err(|e| {
             if e.kind() == std::io::ErrorKind::NotFound {
@@ -175,7 +175,7 @@ pub fn step(store: &mut Store, cx: &Ctx<'_>) -> Result<Outcome> {
             "PR head behind",
             None,
             &format!(
-                "PR #{n} head {} does not contain {landed} yet; run finish again after the push",
+                "PR #{n} head {} does not contain {landed}: the run branch is not pushed; run horch ledger finish to retry the push",
                 view.head
             ),
         ));
@@ -217,6 +217,12 @@ fn section_text(store: &Store, cx: &Ctx<'_>, landed: &str) -> Result<String> {
         verdict("complexity-sweep"),
         verdict("recheck")
     ));
+    for w in super::codesweep::waivers(&cx.tools.evidence_root, &cx.task.task_id) {
+        s.push_str(&format!(
+            "- code-sweep {} waived by the orchestrator: {}\n",
+            w.id, w.reason
+        ));
+    }
     if let Some(url) = &cx.task.issue_url {
         if let Some(n) = url
             .rsplit('/')

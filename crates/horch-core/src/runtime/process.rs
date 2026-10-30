@@ -130,7 +130,7 @@ fn normalize(p: &Path) -> OsString {
 /// A horch started under `git rebase -x` or a git hook has `GIT_DIR` set; an
 /// agent or judge that inherited it would run its git in that repository.
 /// Call it after any `env` call.
-pub(crate) fn scrub_child_env(cmd: &mut Command) {
+pub fn scrub_child_env(cmd: &mut Command) {
     for key in crate::harness::launch::FORBIDDEN_ENV {
         cmd.env_remove(key);
     }
