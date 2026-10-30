@@ -9,6 +9,7 @@
 
 pub mod codesweep;
 pub mod complexity;
+pub mod detach;
 pub mod land;
 pub mod pr;
 

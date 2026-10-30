@@ -22,6 +22,7 @@ pub mod skillscmd;
 pub mod smoke;
 pub mod spawn;
 pub mod taskledger;
+pub mod taskledger_finish;
 pub mod taskledger_spawn;
 pub mod taskledger_wake;
 pub mod taskledger_watch;

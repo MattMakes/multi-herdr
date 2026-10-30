@@ -495,6 +495,24 @@ work is complete it runs `horch ledger finish`. `finish` runs the steps of
 The worker fixes the cause and runs `finish` again; passed steps are not
 repeated unless a later fix changed the files they judged.
 
+`finish` detaches in the worker's own pane (#160). When the worker has a
+role whose registered pane is the pane that runs the command, a plain
+`finish` starts `horch ledger finish --run-steps` in its own process
+group. It records the PID and the process start time in
+`<evidence>/<task>/<worker>/finish-run.json` (the run's output goes to
+`finish-run.log` beside it), sets a `background` worker wait, and returns
+at once with `finish runs (PID <n>); horch tells you the result. End your
+turn now`. The detached run runs the same steps (the check of a Codex
+worker keeps its sandbox), then sends `[horch] NOTE: The finish of T-<n>
+ended. <message> Steps: <name status, ...>.` to the worker's role as
+durable mail, and ends its wait and run file. A `finish` while the run is
+alive prints the same line and starts nothing. When the recorded process
+is gone (`procid` compares the PID and its start time) and left no
+result, `finish` prints `the detached finish (PID <n>) ended without a
+result; finish runs again` and starts a new run. Outside the worker's
+pane, and with `--wait` or `--json`, the steps run in the foreground;
+without a flag, 1 line on stderr says why.
+
 1. **check** - runs the task's `land_check` in the worktree. Passes on
    exit 0. Evidence: the check log.
 2. **code-sweep** - the `code-sweep` skill's review, on the branch diff
