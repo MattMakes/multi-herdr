@@ -1950,8 +1950,15 @@ fn absolute_ticket_if_missing(ctx: &RuntimeContext, store: &Store, c: &mut Claim
     if !in_root.is_file() {
         return;
     }
-    let in_worktree = match (&c.worktree, &run.run_branch) {
-        (Some(w), _) => Path::new(w).join(&file).is_file(),
+    if !worktree_holds(ctx, c, &run, &file) {
+        c.task.task_file = Some(in_root.to_string_lossy().into_owned());
+    }
+}
+
+/// Whether the worktree of the claim, or the one cut for it, holds `file`.
+fn worktree_holds(ctx: &RuntimeContext, c: &Claimed, run: &Run, file: &str) -> bool {
+    match (&c.worktree, &run.run_branch) {
+        (Some(w), _) => Path::new(w).join(file).is_file(),
         // A new worktree is cut from the run branch: it holds the ticket
         // only when the branch tracks a file (a blob) at that path.
         (None, Some(b)) => Git::new(&ctx.bins.harness.git)
@@ -1961,9 +1968,6 @@ fn absolute_ticket_if_missing(ctx: &RuntimeContext, store: &Store, c: &mut Claim
             )
             .is_ok_and(|o| o.ok && o.stdout == "blob"),
         (None, None) => true,
-    };
-    if !in_worktree {
-        c.task.task_file = Some(in_root.to_string_lossy().into_owned());
     }
 }
 
