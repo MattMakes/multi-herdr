@@ -937,6 +937,7 @@ mod tests {
                 t.join().unwrap().expect("every thread gets the lock");
             }
             assert_eq!(most.load(Ordering::SeqCst), 1, "one holder at a time");
+            assert!(stages(tmp.path()).is_empty(), "{:?}", stages(tmp.path()));
         }
     }
 
@@ -1044,28 +1045,105 @@ mod tests {
         assert!(free, "the dropped guard is free while the child lives");
     }
 
-    /// The owner write includes an fsync, which on macOS is `F_FULLFSYNC`
-    /// and can take seconds under I/O load. A lock whose owner write
-    /// outlasts [`OWNERLESS_GRACE`] is still held: another process does not
-    /// break it, and the holder gets it. The hook stands for the slow write:
-    /// it ages what is at the lock path, then a second process tries.
+    /// The entries of `dir` that are lock staging directories.
+    fn stages(dir: &Path) -> Vec<String> {
+        std::fs::read_dir(dir)
+            .unwrap()
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .filter(|n| n.starts_with(".events.lock.new-"))
+            .collect()
+    }
+
+    /// While a holder writes its owner file, no lock without an owner is
+    /// visible, so a second process can neither take that write for a dead
+    /// holder (the old `create_dir`-first lock did: under I/O load its
+    /// fsynced owner write outlasted [`OWNERLESS_GRACE`] and the lock was
+    /// broken) nor see the path held. The hook runs during the write.
     #[cfg(unix)]
     #[test]
     fn dirlock_slow_owner_write_keeps_the_lock() {
         let tmp = tempfile::tempdir().unwrap();
         let hour = Duration::from_secs(3600);
         let first = DirLock::acquire_with(tmp.path(), "events", hour, hour, |lock| {
-            if let Ok(dir) = std::fs::File::open(lock) {
-                let old = std::time::SystemTime::now() - OWNERLESS_GRACE * 2;
-                dir.set_modified(old).unwrap();
-            }
-            let second = DirLock::acquire(tmp.path(), "events", hour, Duration::from_millis(50));
-            drop(second);
+            assert!(
+                std::fs::symlink_metadata(lock).is_err(),
+                "no lock is visible before its owner is written"
+            );
+            DirLock::acquire(tmp.path(), "events", hour, Duration::from_millis(50))
+                .expect("the lock is free until it is published");
         })
-        .expect("a slow owner write keeps its lock");
+        .expect("the writer gets the lock after the second holder released it");
         let owner = read_owner(first.path()).expect("the owner file is written");
         assert_eq!(owner.pid, std::process::id());
         assert_eq!(Some(&owner.nonce), first.nonce.as_ref());
+        assert!(stages(tmp.path()).is_empty(), "{:?}", stages(tmp.path()));
+    }
+
+    /// A writer whose rename loses to a holder that took the lock during
+    /// its owner write waits for that holder: it does not replace or break
+    /// the lock, and it removes its staging directory.
+    #[cfg(unix)]
+    #[test]
+    fn dirlock_writer_that_loses_the_rename_waits() {
+        let tmp = tempfile::tempdir().unwrap();
+        let hour = Duration::from_secs(3600);
+        let mut held = None;
+        let lost = DirLock::acquire_with(
+            tmp.path(),
+            "events",
+            hour,
+            Duration::from_millis(100),
+            |_| {
+                held = Some(
+                    DirLock::acquire(tmp.path(), "events", hour, Duration::from_millis(50))
+                        .unwrap(),
+                );
+            },
+        )
+        .unwrap_err();
+        assert!(matches!(lost, FsxError::LockTimeout { .. }), "{lost}");
+        let held = held.unwrap();
+        let owner = read_owner(held.path()).expect("the holder keeps its owner file");
+        assert_eq!(Some(&owner.nonce), held.nonce.as_ref());
+        assert!(stages(tmp.path()).is_empty(), "{:?}", stages(tmp.path()));
+    }
+
+    /// The rename that publishes a lock does not replace an empty lock
+    /// directory: an older binary's lock between its `create_dir` and its
+    /// owner write.
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    #[test]
+    fn rename_noreplace_keeps_an_empty_lock() {
+        let tmp = tempfile::tempdir().unwrap();
+        let lock = tmp.path().join("events.lock");
+        std::fs::create_dir(&lock).unwrap();
+        let stage = tmp.path().join(".events.lock.new-test");
+        std::fs::create_dir(&stage).unwrap();
+        std::fs::write(stage.join("owner"), b"{}").unwrap();
+        let err = rename_noreplace(&stage, &lock).unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::AlreadyExists, "{err}");
+        assert_eq!(std::fs::read_dir(&lock).unwrap().count(), 0);
+        assert!(stage.join("owner").is_file());
+    }
+
+    /// A fresh lock without an owner (an older binary's, mid-setup) is held
+    /// until it is older than [`OWNERLESS_GRACE`].
+    #[test]
+    fn dirlock_fresh_ownerless_lock_is_held() {
+        let tmp = tempfile::tempdir().unwrap();
+        let lock = tmp.path().join("events.lock");
+        std::fs::create_dir(&lock).unwrap();
+        let err = DirLock::acquire(
+            tmp.path(),
+            "events",
+            Duration::from_secs(3600),
+            Duration::from_millis(50),
+        )
+        .unwrap_err();
+        assert!(matches!(err, FsxError::LockTimeout { .. }), "{err}");
+        assert!(lock.is_dir());
+        assert_eq!(std::fs::read_dir(&lock).unwrap().count(), 0);
     }
 
     #[test]
