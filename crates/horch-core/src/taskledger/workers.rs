@@ -280,7 +280,7 @@ pub fn agent_started(
     pid: u32,
     started: Option<u64>,
 ) -> Result<()> {
-    conn.execute(
+    let n = conn.execute(
         &format!(
             "UPDATE workers SET agent_pid = ?2, agent_started = ?3,
                 status = CASE WHEN status = {starting} THEN {claiming} ELSE status END,
@@ -296,6 +296,9 @@ pub fn agent_started(
             util::now()
         ],
     )?;
+    if n == 0 {
+        bail!("no worker {worker_id} in the task ledger");
+    }
     Ok(())
 }
 
@@ -782,6 +785,32 @@ mod tests {
                 )
             })
             .unwrap()
+    }
+
+    /// An agent PID for a worker the ledger does not know is an error, as
+    /// for the supervisor PID. It used to exit 0 and change nothing.
+    #[test]
+    fn agent_started_refuses_an_unknown_worker() {
+        let dir = tempfile::tempdir().unwrap();
+        let s = Store::open(&dir.path().join("l.sqlite3")).unwrap();
+        let err = agent_started(s.conn(), "w-missing", 4243, Some(2)).unwrap_err();
+        assert_eq!(err.to_string(), "no worker w-missing in the task ledger");
+    }
+
+    /// The agent PID of a known worker is stored and the worker moves on to
+    /// claiming.
+    #[test]
+    fn agent_started_records_the_pid_and_moves_a_starting_worker_on() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut s = Store::open(&dir.path().join("l.sqlite3")).unwrap();
+        let id = author(&mut s);
+        supervisor_started(s.conn(), &id, 4242, Some(1)).unwrap();
+
+        agent_started(s.conn(), &id, 4243, Some(2)).unwrap();
+
+        let w = get(s.conn(), &id).unwrap();
+        assert_eq!(w.agent_pid, Some(4243));
+        assert_eq!(w.status().unwrap(), WorkerStatus::Claiming);
     }
 
     fn seconds_left(wait: &Wait) -> i64 {

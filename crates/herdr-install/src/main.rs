@@ -342,11 +342,12 @@ fn report_unix_path(dir: &Path) {
 }
 
 fn on_path(dir: &Path) -> bool {
-    let Some(paths) = std::env::var_os("PATH") else {
-        return false;
-    };
+    std::env::var_os("PATH").is_some_and(|paths| in_path_list(dir, &paths))
+}
+
+fn in_path_list(dir: &Path, paths: &std::ffi::OsStr) -> bool {
     let target = dir.to_string_lossy().trim_end_matches('/').to_string();
-    std::env::split_paths(&paths).any(|p| p.to_string_lossy().trim_end_matches('/') == target)
+    std::env::split_paths(paths).any(|p| p.to_string_lossy().trim_end_matches('/') == target)
 }
 
 fn home_dir() -> Result<PathBuf> {
@@ -444,17 +445,11 @@ mod tests {
     }
 
     #[test]
-    fn on_path_ignores_a_trailing_slash() {
+    fn in_path_list_ignores_a_trailing_slash() {
         let sep = if cfg!(windows) { ";" } else { ":" };
-        let saved = std::env::var_os("PATH");
-        std::env::set_var("PATH", format!("/a/bin/{sep}/b"));
-        let (hit, miss) = (on_path(Path::new("/a/bin")), on_path(Path::new("/c")));
-        match saved {
-            Some(v) => std::env::set_var("PATH", v),
-            None => std::env::remove_var("PATH"),
-        }
-        assert!(hit);
-        assert!(!miss);
+        let paths = std::ffi::OsString::from(format!("/a/bin/{sep}/b"));
+        assert!(in_path_list(Path::new("/a/bin"), &paths));
+        assert!(!in_path_list(Path::new("/c"), &paths));
     }
 
     fn target(os: Os) -> Target {
