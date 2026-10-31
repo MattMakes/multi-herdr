@@ -287,6 +287,26 @@ fn round_cfg(
     agent: Agent,
     tune: impl FnOnce(&mut config::DatasetConfig),
 ) -> (CrashRound, Vec<horch_core::workspace::testing::FakeCall>) {
+    let (ran, calls) = round_run(w, roster, shape, agent, tune, chrono::Duration::zero());
+    (ran.map_err(|(e, _)| e).unwrap(), calls)
+}
+
+/// A round that `start` failed: the error and the event log.
+type Failed = (anyhow::Error, JsonlRecorder);
+
+/// [`round_cfg`] with the coordinator's clock `skew` ahead of the real one,
+/// which returns the error of a round that fails.
+fn round_run(
+    w: &World,
+    roster: &Roster,
+    shape: impl FnOnce(&mut RoundPlan),
+    agent: Agent,
+    tune: impl FnOnce(&mut config::DatasetConfig),
+    skew: chrono::Duration,
+) -> (
+    Result<CrashRound, Failed>,
+    Vec<horch_core::workspace::testing::FakeCall>,
+) {
     let paths = DatasetPaths::new(&w.ctx.paths.state_root, &w.repo);
     let recorder = JsonlRecorder::open(&paths, StoreOptions::default()).unwrap();
     let store = ExecutionStore::open(&w.ctx.paths, &w.repo);
@@ -431,7 +451,7 @@ fn round_cfg(
         locations: Locations::under_home(&w.root.join("home"), &w.ctx.inherited),
     };
     let meter = UsageMeter::default();
-    let clock = monotonic(|| Utc::now() + offset.get());
+    let clock = monotonic(|| Utc::now() + skew + offset.get());
     let disk = || None;
     let faults = Faults::default();
     let coordinator = Coordinator {
@@ -466,20 +486,21 @@ fn round_cfg(
     if agent == Agent::Abandoned {
         plant_planned_record(w, roster, &recorder, &store, &spec, &plan);
     }
-    let outcome = coordinator.start(&spec, &plan).unwrap();
+    let outcome = coordinator.start(&spec, &plan);
     let calls = fake.calls();
     let raced = racing.raced.get();
-    (
-        CrashRound {
+    let ran = match outcome {
+        Ok(outcome) => Ok(CrashRound {
             recorder,
             store,
             experiment,
             round,
             outcome,
             raced,
-        },
-        calls,
-    )
+        }),
+        Err(e) => Err((e, recorder)),
+    };
+    (ran, calls)
 }
 
 /// The `Planned` record, with no pane, that a coordinator killed in the
@@ -947,6 +968,150 @@ fn idle_rule_off_waits_for_the_deadline() {
     }
 }
 
+/// How long a round test may run before [`within`] calls it a livelock.
+/// No round here takes a tenth of it.
+const LIVELOCK_GUARD: Duration = Duration::from_secs(300);
+
+/// Run `test`; abort the test binary when it does not return in `limit`, so
+/// a livelock fails the run instead of spinning forever.
+fn within<T>(limit: Duration, test: impl FnOnce() -> T) -> T {
+    let (done, wait) = std::sync::mpsc::channel::<()>();
+    std::thread::spawn(move || {
+        if wait.recv_timeout(limit) == Err(std::sync::mpsc::RecvTimeoutError::Timeout) {
+            // Past the test's output capture, which an abort discards.
+            let line = format!("a round test still runs after {limit:?}: a livelock\n");
+            let _ = std::io::Write::write_all(&mut std::io::stderr(), line.as_bytes());
+            std::process::abort();
+        }
+    });
+    let out = test();
+    drop(done);
+    out
+}
+
+/// The livelock of 2026-10-31: the coordinator's clock ran 10 min ahead of
+/// the real one across UTC midnight. Cleanup stamped its events with the
+/// real clock, so they went to the day file before `winner.rejected`; the
+/// projection refused them, each later append was a duplicate, and `decide`
+/// spun at 100% CPU. The round must end COMPLETE with no anomaly.
+#[test]
+fn a_coordinator_clock_ahead_across_midnight_completes_the_round() {
+    let Some(w) = world() else { return };
+    let roster = roster();
+    // 10 min past the next UTC midnight, whatever the time is now.
+    let now = Utc::now();
+    let midnight = (now.date_naive() + chrono::Days::new(1))
+        .and_hms_opt(0, 0, 0)
+        .unwrap()
+        .and_utc();
+    let skew = midnight - now + chrono::Duration::minutes(10);
+    let (ran, _) = within(LIVELOCK_GUARD, || {
+        round_run(&w, &roster, |_| {}, Agent::Crash, |_| {}, skew)
+    });
+    let CrashRound {
+        recorder,
+        round,
+        outcome,
+        ..
+    } = ran.map_err(|(e, _)| e).unwrap();
+    assert_eq!(outcome, RoundOutcome::Rejected { budget: false });
+    let events = recorder.read_all().unwrap().events;
+    // Cleanup stamps with the coordinator's clock, not the real one.
+    let at = |kind: &str| {
+        let e = events.iter().find(|e| e.kind == kind).unwrap();
+        e.occurred_at.clone()
+    };
+    assert!(at("round.cleanup_started") >= at("winner.rejected"));
+    assert!(at("round.completed") >= at("winner.rejected"));
+    let projection = fold(&events);
+    assert!(
+        projection.anomalies.is_empty(),
+        "{:?}",
+        projection.anomalies
+    );
+    let view = &projection.rounds[&round];
+    assert_eq!(view.state.to_string(), "COMPLETE");
+}
+
+/// A step that records nothing new is an error that names the round, the
+/// step, the view it left and the events the projection refused; it never
+/// loops. Here the log already holds the keys of both cleanup events, at a
+/// place where the projection refuses them, so each cleanup append is a
+/// duplicate and the round stays REJECTED.
+#[test]
+fn a_step_that_changes_nothing_is_an_error_not_a_loop() {
+    let Some(w) = world() else { return };
+    let roster = roster();
+    let round = fixed_round();
+    let planted = std::cell::RefCell::new(Vec::new());
+    let plant = |_: &mut RoundPlan| *planted.borrow_mut() = plant_refused_cleanup(&w, &round);
+    let (ran, _) = within(LIVELOCK_GUARD, || {
+        round_run(
+            &w,
+            &roster,
+            plant,
+            Agent::Crash,
+            |_| {},
+            chrono::Duration::zero(),
+        )
+    });
+    let Err((e, recorder)) = ran else {
+        panic!("the round ended")
+    };
+    let msg = format!("{e:#}");
+    let planted = planted.into_inner();
+    assert_eq!(planted.len(), 2);
+    for part in [
+        format!("round {round} made no progress"),
+        "the cleanup step left its view unchanged".into(),
+        "state REJECTED".into(),
+        "final_outcome None".into(),
+        format!("{}: ", planted[0]),
+        format!("{}: ", planted[1]),
+    ] {
+        assert!(msg.contains(&part), "{part:?} not in: {msg}");
+    }
+    let events = recorder.read_all().unwrap().events;
+    let cleanups = events
+        .iter()
+        .filter(|e| e.kind == "round.cleanup_started")
+        .count();
+    assert_eq!(cleanups, 1, "only the planted one");
+    assert_eq!(fold(&events).rounds[&round].state.to_string(), "REJECTED");
+}
+
+/// Record `round.cleanup_started` and `round.completed` of `round` from
+/// REJECTED before the round exists, so the projection refuses both; the
+/// ids of both.
+fn plant_refused_cleanup(w: &World, round: &RoundId) -> Vec<String> {
+    let paths = DatasetPaths::new(&w.ctx.paths.state_root, &w.repo);
+    let earlier = JsonlRecorder::open(&paths, StoreOptions::default()).unwrap();
+    let at = horch_core::clock::parse("2000-01-01T00:00:00Z").unwrap();
+    [
+        ("round.cleanup_started", json!({})),
+        ("round.completed", json!({"final_outcome": "rejected"})),
+    ]
+    .into_iter()
+    .map(|(kind, payload)| {
+        let appended = earlier
+            .append(NewEvent {
+                kind: EventKind::from_parts(kind, &payload).unwrap(),
+                actor: Actor::Coordinator,
+                experiment_id: ExperimentId::mint(at),
+                round_id: Some(round.clone()),
+                execution_id: None,
+                idempotency_key: format!("{kind}:{round}:REJECTED"),
+                occurred_at: at,
+            })
+            .unwrap();
+        match appended {
+            horch_core::measure::recorder::Appended::Recorded(env) => env.event_id.to_string(),
+            other => panic!("{other:?}"),
+        }
+    })
+    .collect()
+}
+
 /// D18 on the timeout path: a candidate whose record ends `Done` after the
 /// coordinator looked at it, and before the deadline end writes, keeps
 /// `Done`. `end_candidate` records the agent's end, not `TimedOut`.
@@ -1055,6 +1220,7 @@ fn provisioning_failure_needs_the_operator_and_cleans_up() {
         paths: &DatasetPaths::new(&w.ctx.paths.state_root, &w.repo),
         faults: &Faults::default(),
         repo: w.repo.clone(),
+        clock: &Utc::now,
     }
     .run(
         &round,

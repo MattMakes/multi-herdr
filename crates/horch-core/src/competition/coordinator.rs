@@ -39,7 +39,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use anyhow::{bail, Context, Result};
+use anyhow::{anyhow, bail, Context, Result};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
@@ -1428,24 +1428,52 @@ impl<G: GitClient> Coordinator<'_, G> {
 
     // ── the decision ────────────────────────────────────────────────────
 
+    /// Advance the round to an outcome. A step that leaves the view as it
+    /// was is an error: the next step would do the same, forever.
     fn decide(&self, spec: &RoundSpec) -> Result<RoundOutcome> {
+        let mut view = self.view(spec)?;
         loop {
-            if let Some(outcome) = self.decide_step(spec)? {
+            if let Some(outcome) = self.decide_step(spec, &view)? {
                 return Ok(outcome);
             }
+            let next = self.view(spec)?;
+            if next == view {
+                return Err(self.no_progress(spec, &next));
+            }
+            view = next;
         }
     }
 
     /// Advance the round one state; `Some` once it has an outcome.
-    fn decide_step(&self, spec: &RoundSpec) -> Result<Option<RoundOutcome>> {
-        let view = self.view(spec)?;
+    fn decide_step(&self, spec: &RoundSpec, view: &RoundView) -> Result<Option<RoundOutcome>> {
         match view.state {
             RoundState::JudgingBackground => self.judge(spec).map(Some),
-            RoundState::Complete | RoundState::NeedsIntervention => {
-                Ok(Some(settled_outcome(&view)))
-            }
-            _ => self.advance_round(spec, &view).map(|()| None),
+            RoundState::Complete | RoundState::NeedsIntervention => Ok(Some(settled_outcome(view))),
+            _ => self.advance_round(spec, view).map(|()| None),
         }
+    }
+
+    /// The error of a step that changed nothing: the round, the step, the
+    /// view it left, and the events the projection refused (the usual cause).
+    fn no_progress(&self, spec: &RoundSpec, view: &RoundView) -> anyhow::Error {
+        let refused = match self.recorder.read_all() {
+            Ok(read) => fold(&read.events)
+                .anomalies
+                .iter()
+                .map(|a| format!("{}: {}", a.event_id, a.reason))
+                .collect::<Vec<_>>()
+                .join("; "),
+            Err(e) => format!("unreadable: {e:#}"),
+        };
+        anyhow!(
+            "round {} made no progress: the {} step left its view unchanged \
+             (state {}, cleaned_from {:?}, final_outcome {:?}); refused events: [{refused}]",
+            spec.round,
+            step_name(view.state),
+            view.state,
+            view.cleaned_from,
+            view.final_outcome,
+        )
     }
 
     fn advance_round(&self, spec: &RoundSpec, view: &RoundView) -> Result<()> {
@@ -1492,6 +1520,7 @@ impl<G: GitClient> Coordinator<'_, G> {
             paths: self.paths,
             faults: self.faults,
             repo: spec.repo.clone(),
+            clock: self.clock,
         }
         .run(
             &spec.round,
@@ -1516,6 +1545,7 @@ impl<G: GitClient> Coordinator<'_, G> {
             faults: self.faults,
             repo: spec.repo.clone(),
             integration_root: integration_root(&spec.worktree_root),
+            clock: self.clock,
         }
     }
 
@@ -1729,6 +1759,8 @@ pub(crate) struct RoundPromoter<'a, G: GitClient> {
     /// The main repository; the target branch is in it.
     pub repo: PathBuf,
     pub integration_root: PathBuf,
+    /// The coordinator's clock.
+    pub clock: &'a dyn Fn() -> DateTime<Utc>,
 }
 
 impl<G: GitClient> RoundPromoter<'_, G> {
@@ -1738,7 +1770,7 @@ impl<G: GitClient> RoundPromoter<'_, G> {
     pub(crate) fn advance(&self, round: &RoundId, view: &RoundView) -> Result<PromotionResult> {
         let events = self.recorder.read_all()?.events;
         let (target, attempt) = promotion_request(&events, round, view)?;
-        let now = crate::clock::now();
+        let now = (self.clock)();
         let candidate = frozen_winner(view, now)?;
         let winner = view.winner.as_ref().context("the round has no winner")?;
         let target = BranchRef {
@@ -1823,6 +1855,15 @@ fn not_run_report(candidate: &FrozenCandidate, now: DateTime<Utc>) -> Validation
 }
 
 /// The outcome a COMPLETE or NEEDS_INTERVENTION round reports.
+/// The step [`Coordinator::advance_round`] takes from `state`.
+fn step_name(state: RoundState) -> &'static str {
+    match state {
+        RoundState::Validating => "reject",
+        RoundState::Revalidating | RoundState::Promoting => "promotion",
+        _ => "cleanup",
+    }
+}
+
 fn settled_outcome(view: &RoundView) -> RoundOutcome {
     if view.state == RoundState::NeedsIntervention {
         return RoundOutcome::NeedsIntervention;

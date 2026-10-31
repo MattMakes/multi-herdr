@@ -44,6 +44,7 @@ pub(crate) fn cleanup(ctx: &RuntimeContext, args: &CleanupArgs) -> Result<u8> {
         paths: &paths,
         faults: &ctx.settings.faults,
         repo: ctx.paths.project()?,
+        clock: &horch_core::clock::now,
     }
     .run(
         &round,
