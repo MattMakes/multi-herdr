@@ -261,9 +261,15 @@ fn an_unknown_blocker_is_refused() {
     let (_d, mut s, run) = ledger();
     let mut t = NewTask::work("a", "a.md", "opus");
     t.blocked_by = vec!["T-9".into()];
-    assert!(s
+    let err = s
         .immediate(|tx| tasks::add(tx, &run, &t, Actor::Orchestrator))
-        .is_err());
+        .unwrap_err();
+    assert_eq!(err.to_string(), "no task 'T-9' in this run");
+    let queued: i64 = s
+        .conn()
+        .query_row("SELECT COUNT(*) FROM tasks", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(queued, 0, "the refused task was not queued");
 }
 
 #[test]
