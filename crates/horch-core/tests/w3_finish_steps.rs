@@ -14,6 +14,7 @@ use horch_core::taskledger::model::{Actor, StepName, WorktreeMode};
 use horch_core::taskledger::runs::{self, NewRun, Run};
 use horch_core::taskledger::tasks::{self, NewTask};
 use horch_core::taskledger::workers::{self, NewWorker};
+use horch_core::taskledger::worktree_ops;
 use horch_core::taskledger::Store;
 
 const RUN_BRANCH: &str = "fleet/r1";
@@ -1304,4 +1305,101 @@ fn a_step_row_reads_back_every_column() {
     assert_eq!(wt.landed_commit, None);
     assert_eq!(wt.bytes_on_disk, None);
     assert_eq!(wt.reason, None);
+}
+
+// ---- `horch worktree drop`: what it refuses, and then removes nothing ------
+
+fn dropped(
+    w: &mut World,
+    name: &str,
+    reason: &str,
+    keep_branch: bool,
+) -> anyhow::Result<WorktreeRow> {
+    let run_id = w.run.run_id.clone();
+    worktree_ops::drop_worktree(
+        &mut w.store,
+        &w.tools.git,
+        &run_id,
+        name,
+        reason,
+        keep_branch,
+    )
+}
+
+/// Each check of `drop_worktree` refuses alone, with its own message, and
+/// leaves the folder and the branch where they were. Once the checks pass,
+/// the folder goes, the row is abandoned with the reason, and the branch
+/// stays because `--keep-branch` asked for it.
+#[test]
+fn a_drop_refuses_an_empty_reason_a_dirty_tree_and_a_stash_and_removes_nothing() {
+    let mut w = World::new(&[StepName::Land], false);
+    let (_id, path) = w.task(None, "feature.txt");
+
+    let err = dropped(&mut w, "T1-feat", "  ", true).unwrap_err();
+    assert_eq!(err.to_string(), "give a nonempty --reason");
+    assert!(path.is_dir(), "an empty reason removed the folder");
+
+    std::fs::write(path.join("scratch.txt"), "x\n").unwrap();
+    let err = dropped(&mut w, "T1-feat", "cleanup", true).unwrap_err();
+    assert_eq!(
+        err.to_string(),
+        "worktree has uncommitted or untracked changes; nothing removed"
+    );
+    assert!(path.is_dir(), "a dirty tree was removed");
+
+    git(
+        &path,
+        &[
+            "stash",
+            "push",
+            "--include-untracked",
+            "--quiet",
+            "-m",
+            "parked",
+        ],
+    );
+    let err = dropped(&mut w, "T1-feat", "cleanup", true).unwrap_err();
+    assert_eq!(
+        err.to_string(),
+        "worktree branch has a stash; nothing removed"
+    );
+    assert!(path.is_dir(), "a stash was lost with its worktree");
+    assert_eq!(w.worktree().status, "open");
+
+    git(&path, &["stash", "drop", "--quiet"]);
+    let row = dropped(&mut w, "T1-feat", "cleanup", true).unwrap();
+    assert!(!path.exists());
+    assert_eq!(
+        (row.status.as_str(), row.reason.as_deref()),
+        ("abandoned", Some("cleanup"))
+    );
+    git(&w.root, &["rev-parse", "--verify", BRANCH]);
+}
+
+/// A name that no registered worktree has is refused with the count, and a
+/// worktree that sits on another branch than its recorded one is refused
+/// even with `--keep-branch`, although it holds the same commit.
+#[test]
+fn a_drop_refuses_an_unknown_name_and_a_worktree_on_another_branch() {
+    let mut w = World::new(&[StepName::Land], false);
+    let (_id, path) = w.task(None, "feature.txt");
+
+    let err = dropped(&mut w, "nope", "cleanup", true).unwrap_err();
+    assert_eq!(
+        err.to_string(),
+        "expected one registered worktree named nope, found 0"
+    );
+
+    git(&path, &["checkout", "--quiet", "-b", "elsewhere"]);
+    for keep_branch in [true, false] {
+        let err = dropped(&mut w, "T1-feat", "cleanup", keep_branch).unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            format!(
+                "worktree is on elsewhere, not its recorded branch {BRANCH}; nothing removed (including with --keep-branch)"
+            ),
+            "keep_branch {keep_branch}"
+        );
+    }
+    assert!(path.is_dir());
 }
