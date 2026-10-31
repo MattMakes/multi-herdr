@@ -376,11 +376,20 @@ fn git_update_ref_cas_mismatch_is_false() {
         Some(next.as_str())
     );
 
-    // Option-shaped arguments never reach git.
-    assert!(f
-        .git
-        .update_ref_cas(&f.repo, "--stdin", &next, &base)
-        .is_err());
+    // Option-shaped arguments never reach git. Each of these, run by git,
+    // would succeed: `--no-deref` drops the compare, `-d` deletes the ref.
+    for (refname, new, old) in [
+        ("--no-deref", target, base.as_str()),
+        (target, "-d", next.as_str()),
+        (target, base.as_str(), "--no-deref"),
+    ] {
+        let tried = f.git.update_ref_cas(&f.repo, refname, new, old);
+        assert!(tried.is_err(), "{refname} {new} {old}: {tried:?}");
+    }
+    assert_eq!(
+        f.git.rev_parse(&f.repo, target).unwrap().as_deref(),
+        Some(next.as_str())
+    );
     assert!(f.git.rev_parse(&f.repo, "--all").is_err());
 
     assert!(f.git.version().unwrap().starts_with("git version "));
@@ -576,6 +585,36 @@ fn cmp_09_gates_per_candidate_with_timeouts() {
     );
     assert!(report.gates.is_empty());
     assert_eq!(report.mechanical_score, 0.0);
+}
+
+/// The label names a directory under the artifacts dir, so `validate`
+/// refuses a label that is not a plain name before it creates or runs
+/// anything. `plain_name` has its own unit test; this one proves `validate`
+/// asks it.
+#[test]
+fn cmp_09_a_label_that_is_not_a_plain_name_is_refused() {
+    for bad in ["", "-x", "../escape", "a/b", "a b", ".hidden"] {
+        let tmp = tempfile::tempdir().unwrap();
+        let worktree = tmp.path().join("wt");
+        let artifacts = tmp.path().join("artifacts");
+        std::fs::create_dir_all(&worktree).unwrap();
+        let v = CommandValidator::new(
+            vec![gate("touch", "touch ran", 10_000)],
+            artifacts.clone(),
+            BTreeSet::new(),
+        );
+        let mut c = candidate(&worktree);
+        c.label = bad.into();
+
+        let err = v.validate(&c).unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            format!("candidate label '{bad}' is not a plain name")
+        );
+        assert!(!artifacts.exists(), "{bad:?} created the artifacts dir");
+        assert!(!tmp.path().join("escape").exists(), "{bad:?} escaped");
+        assert!(!worktree.join("ran").exists(), "{bad:?} ran a gate");
+    }
 }
 
 /// G9: `gates[].required: false` lets a candidate stay eligible when that

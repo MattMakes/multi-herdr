@@ -1,6 +1,7 @@
 //! `assess_pool` keeps its state, reason, worst window and headroom for every
 //! reading in the quota fixtures. The golden file was written by the code
-//! before the #153 refactor.
+//! before the #153 refactor. The test only reads it: a test that rewrote the
+//! file could not fail.
 
 use std::fmt::Write;
 use std::path::Path;
@@ -72,9 +73,6 @@ fn dump() -> String {
 fn assess_pool_matches_the_golden_file() {
     let golden = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/golden/r_routing_assess.txt");
     let got = dump();
-    if std::env::var_os("R_ROUTING_WRITE_GOLDEN").is_some() {
-        std::fs::write(&golden, &got).unwrap();
-    }
     let want = std::fs::read_to_string(&golden).unwrap();
     assert!(
         want == got,

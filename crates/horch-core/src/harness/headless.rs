@@ -313,22 +313,43 @@ mod tests {
         let cmd = headless_command(&ctx(), &judge(), &session, Some(schema_text())).unwrap();
         let passed = value_of(&argv(&cmd), "--json-schema").unwrap();
         assert_eq!(passed, cli_schema(schema_text()));
-        // claude 2.1.289 failed every judge run on these keys (LA-8).
+        // claude 2.1.289 failed every judge run on these keys (LA-8). They
+        // are the refused keys the shipped schema carries, written out.
         let top: serde_json::Value = serde_json::from_str(&passed).unwrap();
-        for key in CLI_SCHEMA_DROPPED_KEYS {
+        for key in ["$schema", "$id", "allOf"] {
             assert!(top.get(key).is_none(), "{key} reached --json-schema");
         }
     }
 
+    /// All 8 refused keys are written out here, with a kept key beside each
+    /// and the same names one level down. A test that read
+    /// `CLI_SCHEMA_DROPPED_KEYS` passes when a key leaves that list.
     #[test]
     fn cli_schema_only_drops_the_refused_top_level_keys() {
-        let full: serde_json::Value = serde_json::from_str(schema_text()).unwrap();
-        let cli: serde_json::Value = serde_json::from_str(&cli_schema(schema_text())).unwrap();
-        let mut expected = full.as_object().unwrap().clone();
-        for key in CLI_SCHEMA_DROPPED_KEYS {
-            expected.remove(key);
-        }
-        assert_eq!(cli, serde_json::Value::Object(expected));
+        let text = r#"{
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "$id": "https://example.test/judgment",
+            "allOf": [{"required": ["a"]}],
+            "anyOf": [{"required": ["a"]}],
+            "oneOf": [{"required": ["a"]}],
+            "if": {"required": ["a"]},
+            "then": {"required": ["b"]},
+            "else": {"required": ["c"]},
+            "type": "object",
+            "required": ["a"],
+            "properties": {"a": {"allOf": [{"type": "string"}], "$id": "nested"}},
+            "$defs": {"d": {"if": {}, "then": {}}}
+        }"#;
+        let cli: serde_json::Value = serde_json::from_str(&cli_schema(text)).unwrap();
+        assert_eq!(
+            cli,
+            serde_json::json!({
+                "type": "object",
+                "required": ["a"],
+                "properties": {"a": {"allOf": [{"type": "string"}], "$id": "nested"}},
+                "$defs": {"d": {"if": {}, "then": {}}}
+            })
+        );
         assert_eq!(cli_schema("not json"), "not json");
     }
 

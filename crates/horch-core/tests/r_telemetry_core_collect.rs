@@ -5,7 +5,7 @@ mod common;
 
 use common::*;
 use horch_core::clock;
-use horch_core::routing::quota::QuotaFile;
+use horch_core::routing::quota::{PoolReading, QuotaFile, Window, POOL_CLAUDE};
 use horch_core::telemetry::collect::{Collector, Probing, TIDY_EVERY_MIN};
 
 fn now() -> chrono::DateTime<chrono::Utc> {
@@ -40,12 +40,33 @@ fn ledger(w: &World, file: &str, records: &[(&str, &str, &str, &str)]) {
 fn a_quota_file_override_is_read_and_never_written() {
     let w = world(Part::Whole);
     let over = w.state.join("override-quota.json");
-    let text = serde_json::to_string(&QuotaFile::default()).unwrap();
+    let mut file = QuotaFile::default();
+    file.pools.insert(
+        POOL_CLAUDE.to_string(),
+        PoolReading {
+            observed_at: Some("2026-09-28T18:00:00Z".into()),
+            windows: vec![Window {
+                name: "7d".into(),
+                minutes: 10080,
+                scope_model: None,
+                used: 0.25,
+                resets_at: None,
+            }],
+            ..PoolReading::default()
+        },
+    );
+    let text = serde_json::to_string(&file).unwrap();
     std::fs::write(&over, &text).unwrap();
     let mut c = collector(&w);
     c.quota_env.quota_file = Some(over.clone());
     let snap = c.tick(now()).unwrap();
-    assert!(snap.pools.is_empty());
+    // The pool the override holds is the pool the snapshot shows.
+    let shown: Vec<_> = snap
+        .pools
+        .iter()
+        .map(|(name, p)| (name.as_str(), p.windows[0].used))
+        .collect();
+    assert_eq!(shown, [(POOL_CLAUDE, 0.25)]);
     assert_eq!(std::fs::read_to_string(&over).unwrap(), text);
     assert!(
         !horch_core::telemetry::dir(&w.state)

@@ -79,6 +79,21 @@ fn a_finish_row_with_no_direction_is_refused_even_next_to_good_rows() {
     );
 }
 
+/// A row cut short is named with the columns it should have, and the good
+/// row next to it is still read.
+#[test]
+fn a_row_with_too_few_cells_is_named_with_the_columns() {
+    let problems = parse(
+        "| W1 | T7-cache |\n| W2 | lh-target-3 | | DELETE | |\n",
+        false,
+    )
+    .unwrap_err();
+    assert_eq!(
+        problems,
+        vec!["line 3: expected | ID | Worktree | Suggested | Decision | Direction |".to_string()]
+    );
+}
+
 #[test]
 fn pr_is_refused_without_gh_or_a_remote_and_offered_with_both() {
     let body = "| W1 | T7-cache | | PR | Cache the triage facts |\n";

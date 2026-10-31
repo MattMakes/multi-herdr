@@ -1,6 +1,7 @@
 //! The quota reply parsers keep their output for the odd replies as well as
 //! the real ones. The golden file was written by the code before the #153
-//! refactor.
+//! refactor. The test only reads it: a test that rewrote the file could not
+//! fail.
 
 use std::fmt::Write;
 use std::path::Path;
@@ -137,9 +138,6 @@ fn dump() -> String {
 fn the_parsers_match_the_golden_file() {
     let golden = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/golden/r_routing_parsers.txt");
     let got = dump();
-    if std::env::var_os("R_ROUTING_WRITE_GOLDEN").is_some() {
-        std::fs::write(&golden, &got).unwrap();
-    }
     let want = std::fs::read_to_string(&golden).unwrap();
     assert!(
         want == got,

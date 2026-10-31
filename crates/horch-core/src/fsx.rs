@@ -1136,7 +1136,9 @@ mod tests {
     fn dirlock_slow_owner_write_keeps_the_lock() {
         let tmp = tempfile::tempdir().unwrap();
         let hour = Duration::from_secs(3600);
+        let mut hook_ran = false;
         let first = DirLock::acquire_with(tmp.path(), "events", hour, hour, |lock| {
+            hook_ran = true;
             assert!(
                 std::fs::symlink_metadata(lock).is_err(),
                 "no lock is visible before its owner is written"
@@ -1145,6 +1147,7 @@ mod tests {
                 .expect("the lock is free until it is published");
         })
         .expect("the writer gets the lock after the second holder released it");
+        assert!(hook_ran, "the checks above run while the owner is written");
         let owner = read_owner(first.path()).expect("the owner file is written");
         assert_eq!(owner.pid, std::process::id());
         assert_eq!(Some(&owner.nonce), first.nonce.as_ref());

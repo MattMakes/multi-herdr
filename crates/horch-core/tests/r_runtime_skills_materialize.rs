@@ -53,7 +53,8 @@ fn error_of(
 
 #[test]
 fn a_bundled_skill_is_written_under_skills_id() {
-    let t = teammate(&["tdd"], None);
+    // `tdd` is 1 file; `app-store-changelog` is 2, one in a folder.
+    let t = teammate(&["tdd", "app-store-changelog"], None);
     let (catalog, plan) = resolve(SkillCatalog::bundled().unwrap(), &t);
     let state = tempfile::tempdir().unwrap();
     let out = MaterializedSkills::materialize(&plan, &catalog, state.path(), "run-1")
@@ -62,6 +63,19 @@ fn a_bundled_skill_is_written_under_skills_id() {
     let skill_md = std::fs::read_to_string(out.skills_dir().join("tdd/SKILL.md")).unwrap();
     assert!(skill_md.starts_with("---\n"), "{skill_md}");
     assert!(skill_md.contains("name: tdd"), "{skill_md}");
+    // The marketplace's own walk of each written folder gives the digest
+    // the plan pins, which build.rs took from the files under `skills/`. A
+    // file cut short or left out gives another digest.
+    assert_eq!(plan.activated.len(), 2);
+    for skill in &plan.activated {
+        let written = out.skills_dir().join(skill.id.as_str());
+        assert_eq!(
+            horch_marketplace::integrity::tree_digest(&written).unwrap(),
+            skill.digest.to_string(),
+            "{}",
+            skill.id
+        );
+    }
 }
 
 #[test]

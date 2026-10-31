@@ -969,4 +969,20 @@ mod tests {
         assert!(!temp.exists());
         assert!(!question.exists());
     }
+
+    /// An id names a file in `pending/` and in `acked/`. One that holds a
+    /// separator, a dot or a space is refused. Without the check, `a/b` would
+    /// read as a message that is already gone, and `ack` would say Ok.
+    #[test]
+    fn ack_refuses_an_id_that_could_name_another_path() {
+        let root = tempfile::tempdir().unwrap();
+        let mail = Mail::under(root.path(), "w1");
+        mail.enqueue("worker", "hello").unwrap();
+
+        for bad in ["../x", "a/b", "a.b", "a b"] {
+            let err = mail.ack(&Id(bad.into())).unwrap_err();
+            assert_eq!(err.to_string(), "invalid mail id", "{bad:?}");
+        }
+        assert_eq!(mail.pending().unwrap().len(), 1, "nothing was moved");
+    }
 }

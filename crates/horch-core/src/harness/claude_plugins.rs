@@ -692,6 +692,24 @@ mod tests {
         );
         assert_eq!(installed_keys(None, "sc", "sc@official"), ["sc@official"]);
     }
+    /// An empty skill list is refused before any plugin is looked up, and the
+    /// message says how to switch a whole plugin off.
+    #[test]
+    fn an_empty_skill_list_is_refused_with_the_way_out() {
+        let teammate = Teammate {
+            plugin_skills: [("code".to_string(), Vec::<String>::new())]
+                .into_iter()
+                .collect(),
+            ..Teammate::default()
+        };
+        let err = resolve_all_in(&teammate, None).unwrap_err().to_string();
+        assert_eq!(
+            err,
+            "plugin_skills.code: list at least one skill; to switch the whole plugin off, \
+             leave it out of plugin_skills"
+        );
+    }
+
     // ---- Pins for the filtered_copy split (#200) ----
 
     fn wanted(names: &[&str]) -> Vec<String> {

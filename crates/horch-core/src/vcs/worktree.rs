@@ -291,13 +291,33 @@ mod tests {
         assert!(s.check().is_ok());
     }
 
+    /// The label and the experiment prefix, and the base hash, are each
+    /// refused by their own rule. The message names the field and the value,
+    /// so a spec that fails for another reason does not pass here.
     #[test]
     fn unsafe_labels_are_refused() {
         for bad in ["", "-x", "a/b", "..", "a b", "a..b"] {
-            assert!(spec(bad).check().is_err(), "{bad:?}");
+            let want = |what: &str| {
+                format!("candidate {what} '{bad}' must be [A-Za-z0-9_-] and not start with '-'")
+            };
+            assert_eq!(spec(bad).check().unwrap_err().to_string(), want("label"));
+            let mut s = spec("c1");
+            s.exp8 = bad.into();
+            assert_eq!(s.check().unwrap_err().to_string(), want("exp8"));
         }
-        let mut s = spec("c1");
-        s.base_sha = "HEAD~1".into();
-        assert!(s.check().is_err());
+        for bad in ["", "HEAD~1", "abc12g", "-abc"] {
+            let mut s = spec("c1");
+            s.base_sha = bad.into();
+            assert_eq!(
+                s.check().unwrap_err().to_string(),
+                format!("base_sha '{bad}' is not a commit hash")
+            );
+        }
+        // The edges are valid: letters of both cases, digits, '_' and '-'
+        // inside a name; a hash of either hex case.
+        let mut s = spec("Cand_1-b");
+        s.exp8 = "A_9-z".into();
+        s.base_sha = "0123456789abcdefABCDEF".into();
+        assert!(s.check().is_ok());
     }
 }

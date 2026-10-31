@@ -1330,7 +1330,23 @@ mod tests {
             "tab order, then column, then top before bottom"
         );
         // c and d sit one cell apart: a drifted divider must not swap the column.
-        assert_eq!(order_workers(&f), order_workers(&f));
+        // A re-run sees the panes in another order, a divider drifted a cell
+        // the other way, and names that run against the layout: the order
+        // follows where the panes sit.
+        let mut rerun = fleet(0);
+        rerun.tabs = f.tabs.clone();
+        rerun.workers = vec![
+            worker("w", "t1", 60, 30),
+            worker("v", "t2", 0, 0),
+            worker("y", "t1", 11, 30),
+            worker("x", "t1", 61, 0),
+            worker("z", "t1", 10, 0),
+        ];
+        let again: Vec<&str> = order_workers(&rerun)
+            .iter()
+            .map(|w| w.pane.as_str())
+            .collect();
+        assert_eq!(again, ["z", "y", "x", "w", "v"]);
     }
 
     /// `horch spawn` splits the orchestrator's own pane, so the newcomer appears
