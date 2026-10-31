@@ -300,6 +300,7 @@ mod imp {
         let ticks = start_time(pid)?;
         // SAFETY: sysconf reads a constant.
         let hz = u64::try_from(unsafe { libc::sysconf(libc::_SC_CLK_TCK) }).ok()?;
+        // SAFETY: timespec is plain integers; all-zero bytes are a valid value.
         let mut ts: libc::timespec = unsafe { std::mem::zeroed() };
         // SAFETY: `ts` is a valid timespec to fill.
         if hz == 0 || unsafe { libc::clock_gettime(libc::CLOCK_BOOTTIME, &mut ts) } != 0 {

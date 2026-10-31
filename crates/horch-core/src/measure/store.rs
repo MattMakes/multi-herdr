@@ -230,7 +230,7 @@ fn open_private_append(file: &Path) -> Result<File> {
 /// not one.
 fn after_torn_tail(f: &mut File, mut line: String) -> Result<String> {
     let len = f.metadata()?.len();
-    let mut last = [b'\n'];
+    let mut last = *b"\n";
     if len > 0 {
         f.seek(SeekFrom::Start(len - 1))?;
         f.read_exact(&mut last)?;
