@@ -439,3 +439,121 @@ fn add_many_queues_in_dependency_order_and_returns_them_by_seq() {
         .unwrap();
     assert_eq!(text, "T-2 queued from ticket 01 for dev: late.");
 }
+
+fn fresh(store: &Store, task: &Task) -> Task {
+    tasks::get(store.conn(), &task.task_id).unwrap()
+}
+
+fn task_count(store: &Store) -> i64 {
+    store
+        .conn()
+        .query_row("SELECT COUNT(*) FROM tasks", [], |r| r.get(0))
+        .unwrap()
+}
+
+/// Each check of `add` refuses alone, with its own message, and writes
+/// nothing; a task that passes them all is still taken.
+#[test]
+fn add_refuses_a_missing_title_ticket_or_primary_and_a_fallback_equal_to_it() {
+    let (_d, mut s, run) = ledger();
+    let refused = |s: &mut Store, edit: &dyn Fn(&mut NewTask)| {
+        let mut t = NewTask::work("t", "tickets/t.md", "dev");
+        edit(&mut t);
+        s.immediate(|tx| tasks::add(tx, &run, &t, Actor::Orchestrator))
+            .unwrap_err()
+            .to_string()
+    };
+    assert_eq!(
+        refused(&mut s, &|t| t.title = "  ".into()),
+        "a task needs a title"
+    );
+    assert_eq!(
+        refused(&mut s, &|t| t.task_file = " ".into()),
+        "a task needs a ticket file"
+    );
+    assert_eq!(
+        refused(&mut s, &|t| t.primary = "".into()),
+        "a task needs a primary persona"
+    );
+    assert_eq!(
+        refused(&mut s, &|t| t.fallback = Some("dev".into())),
+        "the fallback persona is the primary persona"
+    );
+    assert_eq!(task_count(&s), 0, "a refused task writes nothing");
+
+    let ok = add(&mut s, &run, "good", |t| t.fallback = Some("other".into()));
+    assert_eq!(ok.fallback_persona.as_deref(), Some("other"));
+}
+
+#[test]
+fn unblock_refuses_a_blocker_the_task_does_not_wait_for() {
+    let (_d, mut s, run) = ledger();
+    let a = add(&mut s, &run, "a", |_| {});
+    let b = add(&mut s, &run, "b", |t| t.blocked_by = vec!["T-1".into()]);
+
+    // T-2 waits for T-1, not the other way round.
+    let err = tasks::unblock(s.conn(), &a, &b).unwrap_err().to_string();
+    assert_eq!(err, "T-1 does not wait for T-2");
+    tasks::unblock(s.conn(), &b, &a).unwrap();
+    let err = tasks::unblock(s.conn(), &b, &a).unwrap_err().to_string();
+    assert_eq!(err, "T-2 does not wait for T-1", "the wait is gone");
+}
+
+#[test]
+fn fallback_moves_only_a_queued_task_that_has_a_fallback() {
+    let (_d, mut s, run) = ledger();
+    let plain = add(&mut s, &run, "plain", |_| {});
+    let err = tasks::fallback(s.conn(), &plain, "slow")
+        .unwrap_err()
+        .to_string();
+    assert_eq!(err, "T-1 has no fallback persona");
+
+    let (_d, mut s, run) = ledger();
+    let t = add(&mut s, &run, "t", |t| t.fallback = Some("fb".into()));
+    let w = worker(&mut s, &run);
+    assert!(matches!(claim(&mut s, &w), Ok(ClaimOutcome::Claimed(_))));
+    let running = fresh(&s, &t);
+    let err = tasks::fallback(s.conn(), &running, "slow")
+        .unwrap_err()
+        .to_string();
+    assert_eq!(
+        err,
+        "T-1 is running; only a queued task moves to its fallback"
+    );
+    assert_eq!(fresh(&s, &t).claimable_by, t.claimable_by, "not moved");
+
+    let (_d, mut s, run) = ledger();
+    let t = add(&mut s, &run, "t", |t| t.fallback = Some("fb".into()));
+    let moved = s.immediate(|tx| tasks::fallback(tx, &t, "slow")).unwrap();
+    assert_eq!(moved.claimable_by.as_deref(), Some("fb"));
+}
+
+#[test]
+fn cancel_and_requeue_take_only_the_states_they_are_for() {
+    let (_d, mut s, run) = ledger();
+    let t = add(&mut s, &run, "t", |_| {});
+
+    // A queued task that nobody holds is not requeued: there is nothing to undo.
+    let err = tasks::requeue_by_operator(s.conn(), &t, "again")
+        .unwrap_err()
+        .to_string();
+    assert_eq!(
+        err,
+        "T-1 is queued; only a held or cancelled task is requeued"
+    );
+
+    let cancelled = s
+        .immediate(|tx| tasks::cancel(tx, &t, "no longer needed"))
+        .unwrap();
+    assert_eq!(cancelled.status, "cancelled");
+    let err = tasks::cancel(s.conn(), &cancelled, "twice")
+        .unwrap_err()
+        .to_string();
+    assert_eq!(err, "T-1 is already cancelled");
+
+    let back = s
+        .immediate(|tx| tasks::requeue_by_operator(tx, &cancelled, "again"))
+        .unwrap();
+    assert_eq!(back.status, "queued");
+    assert_eq!(back.finished_at, None);
+}
