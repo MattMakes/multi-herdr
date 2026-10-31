@@ -154,6 +154,10 @@
   workspace. A later `ensure` reports a start in progress and starts no
   other. `ensure`, `horch telemetry` and `horch quota` report a failed start
   on stderr, and the next `ensure` starts the collector again.
+- When `horch telemetry ensure` (and so `horch install`) replaces a collector
+  that runs an old binary, it now says why: the binary was rebuilt or
+  reinstalled at the same path, or the collector ran another path. It no
+  longer prints the same path twice.
 - A failed `horch fleet` or `horch orchestration` start leaves no workspace
   and no live orchestrator record. With `HORCH_STATE_DIR` set and
   `HORCH_LEDGER_DB` unset, `fleet`, `spawn` and `doctor` warn that the task
