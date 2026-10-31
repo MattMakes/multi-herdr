@@ -8,7 +8,7 @@ use std::time::{Duration, Instant, SystemTime};
 use anyhow::{Context, Result};
 use horch_core::messaging::channel;
 use horch_core::messaging::delivery;
-use horch_core::messaging::mail::{redelivery_due, redelivery_offset, Id, Mail, Message};
+use horch_core::messaging::mail::{redelivery_due, Id, Mail, Message};
 use horch_core::messaging::mailbox::Mailbox;
 use horch_core::runtime::RuntimeContext;
 use horch_core::workspace::herdr::Herdr;
@@ -336,7 +336,7 @@ fn due_at(created_at: SystemTime, attempt: usize) -> Option<SystemTime> {
     #[cfg(debug_assertions)]
     if let Ok(milliseconds) = std::env::var("HORCH_TEST_MAIL_REDELIVERY_MS") {
         if let Ok(first) = milliseconds.parse::<u64>() {
-            let offset = redelivery_offset(attempt)?;
+            let offset = horch_core::messaging::mail::redelivery_offset(attempt)?;
             let scaled = offset.as_millis() as u64 * first / 30_000;
             return created_at.checked_add(Duration::from_millis(scaled));
         }

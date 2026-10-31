@@ -606,17 +606,26 @@ fn replace_other_binary(root: &Path, info: &lock::LockInfo, exe: &Path, quiet: b
             );
             report_live(info, quiet);
         }
-        Ok(_) => output::println(&format!(
-            "stopped telemetry collector pid {}: it ran {}, not the build at {}",
-            info.pid,
-            info.exe
-                .as_ref()
-                .map(|e| format!("another build of {}", e.path))
-                .unwrap_or_else(|| "a binary it did not record".into()),
-            exe.display()
-        )),
+        Ok(_) => output::println(&replaced_line(info.pid, info.exe.as_ref(), exe)),
     }
     stopped.is_ok()
+}
+
+/// The line `ensure` prints after it stops a collector that ran another
+/// binary. `ran` is the binary the collector recorded at its start.
+fn replaced_line(pid: u32, ran: Option<&horch_core::exeid::ExeIdentity>, exe: &Path) -> String {
+    let now = exe.canonicalize().unwrap_or_else(|_| exe.to_path_buf());
+    let why = match ran {
+        None => "it did not record its binary".to_string(),
+        Some(r) if Path::new(&r.path) == now => {
+            format!(
+                "{} was rebuilt or reinstalled after it started",
+                now.display()
+            )
+        }
+        Some(r) => format!("it ran {}, not {}", r.path, now.display()),
+    };
+    format!("stopped telemetry collector pid {pid}: {why}")
 }
 
 /// Whether a start is in progress, which blocks a new one. A failed earlier
@@ -858,6 +867,41 @@ fn collector_command(ctx: &RuntimeContext, exe: &Path, id: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The replace line names what changed. A rebuild at the same path
+    /// used to print that path twice ("another build of X, not the build
+    /// at X").
+    #[test]
+    fn the_replace_line_says_what_changed() {
+        let dir = tempfile::tempdir().unwrap();
+        let bin = dir.path().canonicalize().unwrap().join("horch");
+        std::fs::write(&bin, b"new").unwrap();
+        let other = dir.path().canonicalize().unwrap().join("old-horch");
+        let id = |p: &Path| horch_core::exeid::ExeIdentity {
+            path: p.display().to_string(),
+            len: 3,
+            mtime_ns: 1,
+        };
+        assert_eq!(
+            replaced_line(7, Some(&id(&bin)), &bin),
+            format!(
+                "stopped telemetry collector pid 7: {} was rebuilt or reinstalled after it started",
+                bin.display()
+            )
+        );
+        assert_eq!(
+            replaced_line(7, Some(&id(&other)), &bin),
+            format!(
+                "stopped telemetry collector pid 7: it ran {}, not {}",
+                other.display(),
+                bin.display()
+            )
+        );
+        assert_eq!(
+            replaced_line(7, None, &bin),
+            "stopped telemetry collector pid 7: it did not record its binary"
+        );
+    }
     use horch_core::telemetry::store::GROUPS;
 
     /// A tiny negative share rounds to zero and prints `0%`, never `-0%`.
