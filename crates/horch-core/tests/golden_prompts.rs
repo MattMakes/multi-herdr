@@ -1097,6 +1097,16 @@ Communication and lifecycle (the `horch` command is on your PATH; these are
 "####;
     assert_eq!(expected.matches(anchor).count(), 1);
     expected = expected.replace(anchor, &format!("{addition}{anchor}"));
+    // Sanctioned tell-retry block (ported from fe9c5db6): a failed horch tell
+    // lost a worker's COMPACT-READY report. The worker tries 1 more time, then
+    // records the message with horch note, which the orchestrator reads.
+    let anchor = r####"- When your assigned work is TRULY complete - results reported, nothing
+"####;
+    let addition = r####"- If horch tell fails, run it 1 more time. If it fails again, run
+  horch note "<the same message>", then end your turn.
+"####;
+    assert_eq!(expected.matches(anchor).count(), 1);
+    expected = expected.replace(anchor, &format!("{addition}{anchor}"));
     // Sanctioned registered-worktree commands block: Recorded alternate-base, scratch and safe drop commands (#69).
     let was = r####"- horch ledger worktree new <name> - make your worktree when the claim says
   so. Work and commit there.

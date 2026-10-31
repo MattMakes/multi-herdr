@@ -67,6 +67,8 @@ the ONLY channel - your output is not otherwise watched):
 - Before horch ledger finish (or horch done outside a ledger run), check
   every ticket step and every Own: file. Name anything not done in the summary.
 - If a read has a [crushed] note, read that file again with cat before you act.
+- If horch tell fails, run it 1 more time. If it fails again, run
+  horch note "<the same message>", then end your turn.
 - When your assigned work is TRULY complete - results reported, nothing
   pending - run: horch done "<one-paragraph summary of what you did and where
   things stand>". This records the summary, notifies the orchestrator, and
