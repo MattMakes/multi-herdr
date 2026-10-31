@@ -99,10 +99,11 @@ sequenceDiagram
 
 `horch done` writes its worker report to pending mail before it pushes the
 DONE message. The report stays pending until the orchestrator runs
-`horch inbox`. That command prints the role list first. It then prints each
+`horch inbox` in the orchestrator pane. That command prints the role list first. It then prints each
 pending report, oldest first, acknowledges it, and ends with
 `N messages acknowledged`. `horch inbox --roles` prints only the role list.
-`horch inbox --peek` prints the reports and leaves them pending.
+`horch inbox --peek` prints the reports and leaves them pending. An `inbox`
+from another pane of the fleet prints the reports and leaves them pending too.
 
 - If the pending-mail write fails, `horch done` fails as a failed report.
   The ledger gets a `report-failed` event. The record stays live, and the
