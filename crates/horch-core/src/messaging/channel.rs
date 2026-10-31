@@ -846,6 +846,46 @@ mod tests {
         );
     }
 
+    /// A socket path of 104 bytes or more does not fit `sun_path` on macOS.
+    /// `prepare_socket_path` refuses it by name before it creates anything,
+    /// and `unix_address` refuses a path that overflows its own field
+    /// instead of cutting it.
+    #[cfg(unix)]
+    #[test]
+    fn arc_30_a_socket_path_that_does_not_fit_is_refused() {
+        use std::os::unix::ffi::OsStrExt;
+        let root = temp_root();
+        let channels = root.join("channels");
+        let of_len = |len: usize| channels.join("s".repeat(len - channels.as_os_str().len() - 1));
+
+        let long = of_len(104);
+        assert_eq!(long.as_os_str().len(), 104);
+        let err = prepare_socket_path(&long).unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            format!("channel socket path is too long: {}", long.display())
+        );
+        assert!(!channels.exists(), "a refused path creates nothing");
+        prepare_socket_path(&of_len(103)).unwrap();
+        assert!(channels.is_dir());
+
+        let fits = of_len(100);
+        let address = unix_address(&fits).unwrap();
+        let held: Vec<u8> = address
+            .sun_path
+            .iter()
+            .take(100)
+            .map(|c| *c as u8)
+            .collect();
+        assert_eq!(held, fits.as_os_str().as_bytes());
+        assert_eq!(address.sun_path[100], 0);
+        let overflow = unix_address(Path::new(&"s".repeat(300)));
+        assert_eq!(
+            overflow.err().map(|e| e.kind()),
+            Some(std::io::ErrorKind::InvalidInput)
+        );
+    }
+
     #[test]
     fn arc_30_initialize_declares_the_claude_channel_capability() {
         let output = SharedWriter::default();
