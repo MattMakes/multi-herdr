@@ -932,6 +932,15 @@ fn mkt_11_concurrent_installs_keep_every_lock_entry() {
     }
 }
 
+/// Wait until a caller on another thread is blocked on the held store lock.
+/// The thread finishing first means the lock did not block it.
+fn wait_until_blocked<T>(store: &Store, handle: &std::thread::ScopedJoinHandle<'_, T>, what: &str) {
+    while store.lock_contentions() == 0 {
+        assert!(!handle.is_finished(), "{what} ignored the store lock");
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+}
+
 /// U-10: an install waits while another process holds the store lock, and
 /// writes its entry once the lock is free.
 #[test]
@@ -942,8 +951,7 @@ fn mkt_11_install_waits_for_the_store_lock() {
     let held = installer.store().lock().unwrap();
     std::thread::scope(|scope| {
         let handle = scope.spawn(|| installer.install(&local(&dir), &opts(), None));
-        std::thread::sleep(std::time::Duration::from_millis(300));
-        assert!(!handle.is_finished(), "install ignored the store lock");
+        wait_until_blocked(installer.store(), &handle, "install");
         assert!(lock(installer.store()).skills.is_empty());
         drop(held);
         handle.join().unwrap().unwrap();
@@ -1026,8 +1034,7 @@ fn mkt_11_reinstall_waits_for_the_store_lock() {
     let held = installer.store().lock().unwrap();
     std::thread::scope(|scope| {
         let handle = scope.spawn(|| installer.reinstall_from_lock());
-        std::thread::sleep(std::time::Duration::from_millis(300));
-        assert!(!handle.is_finished(), "reinstall ignored the store lock");
+        wait_until_blocked(installer.store(), &handle, "reinstall");
         assert!(
             !version_dir.exists(),
             "reinstall materialized under the lock"

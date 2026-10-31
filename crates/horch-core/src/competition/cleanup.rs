@@ -20,7 +20,6 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{ensure, Result};
 
-use crate::clock;
 use crate::competition::model::RoundState;
 use crate::competition::promotion::{same_dir, FaultFired};
 use crate::ids::RoundId;
@@ -32,6 +31,7 @@ use crate::measure::projection::{CandidateView, RoundView};
 use crate::measure::recorder::{NewEvent, Recorder};
 use crate::runtime::fault::Faults;
 use crate::vcs::git::GitClient;
+use chrono::{DateTime, Utc};
 
 /// The fault prefix: `abort-during-cleanup:<n>` stops after removal `n`.
 pub(crate) const ABORT_DURING_CLEANUP: &str = "abort-during-cleanup";
@@ -62,6 +62,9 @@ pub struct RoundCleanup<'a, G: GitClient, R: Recorder> {
     pub paths: &'a DatasetPaths,
     pub faults: &'a Faults,
     pub repo: PathBuf,
+    /// Stamps `occurred_at`: the coordinator's clock, so cleanup events
+    /// never sort before the round events they follow.
+    pub clock: &'a dyn Fn() -> DateTime<Utc>,
 }
 
 impl<G: GitClient, R: Recorder> RoundCleanup<'_, G, R> {
@@ -222,7 +225,7 @@ impl<G: GitClient, R: Recorder> RoundCleanup<'_, G, R> {
             round_id: Some(pass.round.clone()),
             execution_id: None,
             idempotency_key: key,
-            occurred_at: clock::now(),
+            occurred_at: (self.clock)(),
         })?;
         Ok(())
     }

@@ -254,9 +254,20 @@ mod tests {
         }
     }
 
+    /// Env that keeps a host git config out of the test repos. `HOME` is the
+    /// repo's own temp dir, which holds no `.gitconfig`.
+    fn isolated_env(home: &Path) -> [(&'static str, String); 3] {
+        [
+            ("HOME", home.display().to_string()),
+            ("GIT_CONFIG_NOSYSTEM", "1".to_string()),
+            ("GIT_CONFIG_GLOBAL", "/dev/null".to_string()),
+        ]
+    }
+
     fn git(dir: &Path, args: &[&str]) -> String {
         let out = Command::new("git")
             .current_dir(dir)
+            .envs(isolated_env(dir))
             .args(["-c", "user.name=t", "-c", "user.email=t@t"])
             .args(args)
             .output()
@@ -273,7 +284,12 @@ mod tests {
         git(dir.path(), &["commit", "-q", "--allow-empty", "-m", "one"]);
         git(dir.path(), &["branch", "compete/a"]);
         let sha = git(dir.path(), &["rev-parse", "HEAD"]);
-        (dir, GitCli::new(PathBuf::from("git")), sha)
+        let client = isolated_env(dir.path())
+            .iter()
+            .fold(GitCli::new(PathBuf::from("git")), |c, (k, v)| {
+                c.with_env(k, v)
+            });
+        (dir, client, sha)
     }
 
     #[test]

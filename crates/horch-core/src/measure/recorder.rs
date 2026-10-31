@@ -117,7 +117,7 @@ impl JsonlRecorder {
 
 impl Recorder for JsonlRecorder {
     fn append(&self, event: NewEvent) -> Result<Appended> {
-        let file = self.paths.events_file(event.occurred_at.date_naive());
+        let day = event.occurred_at.date_naive();
         let env = event.into_envelope()?;
         let mut index = self
             .index
@@ -129,6 +129,7 @@ impl Recorder for JsonlRecorder {
         if let Some(earlier) = index.get(&env.idempotency_key) {
             return Ok(Appended::Duplicate(earlier.clone()));
         }
+        let file = store::append_file(&self.paths, day)?;
         store::append(&self.paths, &file, &env)?;
         if self.options.abort_after_append {
             std::process::abort();

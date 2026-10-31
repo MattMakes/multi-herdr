@@ -258,6 +258,7 @@ impl Fixture {
             paths: &self.paths,
             faults,
             repo: self.repo.clone(),
+            clock: &Utc::now,
         }
     }
 
