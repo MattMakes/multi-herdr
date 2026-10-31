@@ -281,6 +281,88 @@ fn ctx_05_prime_agent_dir_links_and_fleet_models() {
     drop(prepared);
 }
 
+/// The launch dir of a prepared launch: it holds `sessions/`, the pane file
+/// and (when built) `agent/`.
+fn launch_dir(prepared: &Prepared) -> PathBuf {
+    let sessions = prepared.sessions_dir.clone().expect("a sessions dir");
+    sessions.parent().unwrap().to_path_buf()
+}
+
+/// The daemon flags come first and in this order, with or without a fleet
+/// agent dir.
+fn assert_daemon_flags(prepared: &Prepared) {
+    let args = &prepared.extra_args;
+    assert_eq!(args.len(), 4, "{args:?}");
+    assert_eq!(
+        (args[0].as_str(), args[2].as_str()),
+        ("--daemon-socket", "--session-dir")
+    );
+    assert_eq!(
+        args[3],
+        launch_dir(prepared).join("sessions").to_string_lossy()
+    );
+}
+
+/// The operator has no agent dir: nothing to link, and a login would land in
+/// a dir nobody keeps. Prime runs on its own default dir, and horch creates
+/// nothing in the operator's home. Outside a herdr pane, no pane file.
+#[test]
+fn prime_launch_without_an_operator_agent_dir_builds_none() {
+    let w = World::new();
+    std::fs::remove_dir_all(w.source()).unwrap();
+    let ctx = w.ctx(&[]);
+    let (t, decision) = decide(&w, &ctx);
+    let prepared = prepare(&w, &ctx, &t, &decision);
+    assert!(
+        prepared.env.iter().all(|(k, _)| k != AGENT_DIR_ENV),
+        "{:?}",
+        prepared.env
+    );
+    let launch = launch_dir(&prepared);
+    assert!(
+        std::fs::symlink_metadata(launch.join("agent")).is_err(),
+        "an agent dir was built"
+    );
+    assert!(!w.source().exists(), "the operator's agent dir was created");
+    assert!(!launch.join("pane").exists(), "a pane file outside a pane");
+    assert_daemon_flags(&prepared);
+    // Dropped, not finished: no daemon runs.
+    drop(prepared);
+}
+
+/// An agent dir that cannot be built does not stop the launch: the half-built
+/// dir is removed, no variable points at it, and the pane uses the operator's
+/// own dir. The daemon is reserved all the same.
+#[cfg(unix)]
+#[test]
+fn prime_launch_goes_on_when_the_agent_dir_cannot_be_built() {
+    use std::os::unix::fs::PermissionsExt;
+    let w = World::new();
+    let ctx = w.ctx(&[]);
+    let (t, decision) = decide(&w, &ctx);
+    // The entries of an operator dir that cannot be read cannot be linked.
+    std::fs::set_permissions(w.source(), std::fs::Permissions::from_mode(0o000)).unwrap();
+    // Root reads anything; then there is nothing to test.
+    let readable = std::fs::read_dir(w.source()).is_ok();
+    let prepared = prepare(&w, &ctx, &t, &decision);
+    std::fs::set_permissions(w.source(), std::fs::Permissions::from_mode(0o755)).unwrap();
+    if readable {
+        return;
+    }
+    assert!(
+        prepared.env.iter().all(|(k, _)| k != AGENT_DIR_ENV),
+        "{:?}",
+        prepared.env
+    );
+    assert!(
+        std::fs::symlink_metadata(launch_dir(&prepared).join("agent")).is_err(),
+        "the half-built agent dir stayed"
+    );
+    assert_daemon_flags(&prepared);
+    // Dropped, not finished: no daemon runs.
+    drop(prepared);
+}
+
 #[test]
 fn ctx_05_prime_operator_override_wins() {
     // The operator's own window for this model.

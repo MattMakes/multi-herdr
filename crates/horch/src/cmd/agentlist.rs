@@ -10,7 +10,7 @@ use std::path::PathBuf;
 
 use anyhow::Result;
 use horch_core::clock;
-use horch_core::harness::inventory::{inventory, AgentRow, BinaryFacts};
+use horch_core::harness::inventory::{inventory, AgentRow, BinaryFacts, ModelUse};
 use horch_core::harness::HarnessKind;
 use horch_core::routing::quota::QuotaView;
 use horch_core::routing::quota_probe::{probe_version, VersionProbe};
@@ -100,20 +100,13 @@ fn table(rows: &[AgentRow], no_probe: bool) -> String {
         "AGENT", "STATUS", "POOL", "BINARY  VERSION",
     ));
     for r in rows {
-        let version = match (&r.version, &r.broken, r.found, no_probe) {
-            (Some(v), _, _, _) => v.clone(),
-            (None, Some(why), true, _) => format!("(broken: {why})"),
-            (None, None, true, true) => "(not probed)".into(),
-            (None, None, true, false) => "(no answer)".into(),
-            (None, _, false, _) => "-".into(),
-        };
         out.push_str(&format!(
             "{:<agent_w$}  {:<status_w$}  {:<9}  {}  {}\n",
             r.agent,
             status(r),
             r.pool_state,
             r.path.as_deref().unwrap_or("(not found)"),
-            version,
+            version_label(r, no_probe),
         ));
         out.push_str(&format!(
             "{:<agent_w$}    efforts: {}\n",
@@ -129,21 +122,154 @@ fn table(rows: &[AgentRow], no_probe: bool) -> String {
             "", r.capabilities.resume, r.capabilities.headless, r.capabilities.skills
         ));
         for m in &r.models {
-            let users: Vec<String> = m
-                .teammates
-                .iter()
-                .map(|t| match &t.effort {
-                    Some(e) => format!("{} ({e})", t.name),
-                    None => t.name.clone(),
-                })
-                .collect();
-            out.push_str(&format!(
-                "{:<agent_w$}    model {}: {}\n",
-                "",
-                m.model.as_deref().unwrap_or("-"),
-                users.join(", ")
-            ));
+            out.push_str(&model_line(agent_w, m));
         }
     }
     out
+}
+
+/// The last column of a harness row: its version, or why it has none.
+fn version_label(r: &AgentRow, no_probe: bool) -> String {
+    match (&r.version, &r.broken, r.found, no_probe) {
+        (Some(v), _, _, _) => v.clone(),
+        (None, Some(why), true, _) => format!("(broken: {why})"),
+        (None, None, true, true) => "(not probed)".into(),
+        (None, None, true, false) => "(no answer)".into(),
+        (None, _, false, _) => "-".into(),
+    }
+}
+
+/// The line of one model and the teammates that run on it, indented under
+/// the agent column.
+fn model_line(agent_w: usize, m: &ModelUse) -> String {
+    let users: Vec<String> = m
+        .teammates
+        .iter()
+        .map(|t| match &t.effort {
+            Some(e) => format!("{} ({e})", t.name),
+            None => t.name.clone(),
+        })
+        .collect();
+    format!(
+        "{:<agent_w$}    model {}: {}\n",
+        "",
+        m.model.as_deref().unwrap_or("-"),
+        users.join(", ")
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use horch_core::harness::inventory::{CapabilitySummary, TeammateUse};
+
+    const HEADER: &str = "AGENT  STATUS       POOL       BINARY  VERSION\n";
+
+    fn row(agent: &str) -> AgentRow {
+        AgentRow {
+            agent: agent.into(),
+            found: true,
+            path: Some(format!("/bin/{agent}")),
+            version: None,
+            broken: None,
+            status: "available".into(),
+            efforts: Vec::new(),
+            capabilities: CapabilitySummary {
+                resume: true,
+                headless: false,
+                skills: "plugin-dir".into(),
+            },
+            models: Vec::new(),
+            pools: Vec::new(),
+            pool_state: "ok".into(),
+            available: true,
+        }
+    }
+
+    fn lines(lines: &[&str]) -> String {
+        lines.iter().map(|l| format!("{l}\n")).collect()
+    }
+
+    #[test]
+    fn an_empty_inventory_prints_the_header_alone() {
+        assert_eq!(table(&[], false), HEADER);
+        assert_eq!(table(&[], true), HEADER);
+    }
+
+    #[test]
+    fn a_row_prints_its_binary_efforts_capabilities_and_models() {
+        let mut agent = row("antigravity");
+        agent.efforts = vec!["low".into(), "high".into()];
+        agent.models = vec![
+            ModelUse {
+                model: Some("m1".into()),
+                teammates: vec![
+                    TeammateUse {
+                        name: "alice".into(),
+                        effort: Some("high".into()),
+                    },
+                    TeammateUse {
+                        name: "bob".into(),
+                        effort: None,
+                    },
+                ],
+            },
+            ModelUse {
+                model: None,
+                teammates: Vec::new(),
+            },
+        ];
+        // The agent column is as wide as the longest name.
+        assert_eq!(
+            table(&[agent], false),
+            lines(&[
+                "AGENT        STATUS       POOL       BINARY  VERSION",
+                "antigravity  available    ok         /bin/antigravity  (no answer)",
+                "               efforts: low high",
+                "               can: resume=true headless=false skills=plugin-dir",
+                "               model m1: alice (high), bob",
+                "               model -: ",
+            ])
+        );
+    }
+
+    #[test]
+    fn the_version_column_follows_what_the_probe_found() {
+        let mut shown = row("a-version");
+        shown.version = Some("1.2.3".into());
+        // A version wins over a broken note.
+        shown.broken = Some("ignored".into());
+        let mut broken = row("b-broken");
+        broken.broken = Some("exit 1".into());
+        let silent = row("c-silent");
+        let mut missing = row("d-missing");
+        missing.found = false;
+        missing.path = None;
+        missing.status = "unavailable".into();
+        // A missing binary is a dash, whatever else is known.
+        missing.broken = Some("stale".into());
+        let rows = [shown, broken, silent, missing];
+
+        let probed = lines(&[
+            "AGENT      STATUS       POOL       BINARY  VERSION",
+            "a-version  available    ok         /bin/a-version  1.2.3",
+            "             efforts: none",
+            "             can: resume=true headless=false skills=plugin-dir",
+            "b-broken   available    ok         /bin/b-broken  (broken: exit 1)",
+            "             efforts: none",
+            "             can: resume=true headless=false skills=plugin-dir",
+            "c-silent   available    ok         /bin/c-silent  (no answer)",
+            "             efforts: none",
+            "             can: resume=true headless=false skills=plugin-dir",
+            "d-missing  unavailable  ok         (not found)  -",
+            "             efforts: none",
+            "             can: resume=true headless=false skills=plugin-dir",
+        ]);
+        assert_eq!(table(&rows, false), probed);
+        // Without a probe, only the silent binary reads differently.
+        assert_eq!(
+            table(&rows, true),
+            probed.replace("(no answer)", "(not probed)")
+        );
+    }
 }

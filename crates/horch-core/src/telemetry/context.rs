@@ -339,26 +339,9 @@ fn codex_usable(v: &Value, offset: u64) -> Option<Usable> {
 /// The context is `totalTokens` when it is above 0, else the sum of the
 /// token classes. A `toolResult` line is not a response.
 fn pi_usable(v: &Value, offset: u64) -> Option<Usable> {
-    let message = v.get("message")?;
-    if v.get("type").and_then(Value::as_str) != Some("message")
-        || message.get("role").and_then(Value::as_str) != Some("assistant")
-        || matches!(
-            message.get("stopReason").and_then(Value::as_str),
-            Some("aborted" | "error")
-        )
-    {
-        return None;
-    }
+    let message = pi_response(v)?;
     let usage = message.get("usage").filter(|u| u.is_object())?;
-    let tokens = match n(usage, "/totalTokens") {
-        0 => {
-            n(usage, "/input")
-                + n(usage, "/output")
-                + n(usage, "/cacheRead")
-                + n(usage, "/cacheWrite")
-        }
-        total => total,
-    };
+    let tokens = pi_tokens(usage);
     let model = message.get("model").and_then(Value::as_str);
     (tokens > 0).then(|| Usable {
         offset,
@@ -366,6 +349,33 @@ fn pi_usable(v: &Value, offset: u64) -> Option<Usable> {
         window: None,
         model: model.map(str::to_owned),
     })
+}
+
+/// The `message` of a `message` line that is an assistant response not
+/// ended by an abort or an error.
+fn pi_response(v: &Value) -> Option<&Value> {
+    let message = v.get("message")?;
+    let failed = matches!(
+        message.get("stopReason").and_then(Value::as_str),
+        Some("aborted" | "error")
+    );
+    (v.get("type").and_then(Value::as_str) == Some("message")
+        && message.get("role").and_then(Value::as_str) == Some("assistant")
+        && !failed)
+        .then_some(message)
+}
+
+/// `totalTokens` when it is above 0, else the sum of the token classes.
+fn pi_tokens(usage: &Value) -> u64 {
+    match n(usage, "/totalTokens") {
+        0 => {
+            n(usage, "/input")
+                + n(usage, "/output")
+                + n(usage, "/cacheRead")
+                + n(usage, "/cacheWrite")
+        }
+        total => total,
+    }
 }
 
 // ─── opencode ───────────────────────────────────────────────────────────────

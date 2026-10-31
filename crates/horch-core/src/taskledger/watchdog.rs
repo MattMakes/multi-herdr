@@ -28,8 +28,9 @@ use anyhow::Result;
 use rusqlite::{params, Connection};
 use serde::Serialize;
 
-use super::model::{EventKind, ProgressSource, Verdict};
+use super::model::{EventKind, ProgressSource, RunStatus, Verdict};
 use super::runs::Run;
+use super::sql_words::{self, word};
 use super::store::{optional, Store};
 use super::timer;
 use super::util;
@@ -771,7 +772,10 @@ pub fn record_start(conn: &Connection, run_id: &str, pid: u32, started: Option<u
 /// Every active run of the ledger, of any project: `horch install` checks
 /// the watchdog of each (#216).
 pub fn active_runs(conn: &Connection) -> Result<Vec<Run>> {
-    let mut stmt = conn.prepare("SELECT run_id FROM runs WHERE status = 'active'")?;
+    let mut stmt = conn.prepare(&format!(
+        "SELECT run_id FROM runs WHERE status = {active}",
+        active = word(RunStatus::Active)
+    ))?;
     let ids = stmt
         .query_map([], |r| r.get::<_, String>(0))?
         .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -782,7 +786,10 @@ pub fn active_runs(conn: &Connection) -> Result<Vec<Run>> {
 /// in 2 check intervals (or never), and its recorded process is not alive.
 pub fn needs_restart(conn: &Connection, run: &Run) -> Result<bool> {
     let running: i64 = conn.query_row(
-        "SELECT count(*) FROM tasks WHERE run_id = ?1 AND status IN ('running', 'landing')",
+        &format!(
+            "SELECT count(*) FROM tasks WHERE run_id = ?1 AND status IN ({in_flight})",
+            in_flight = sql_words::list(sql_words::TASKS_IN_FLIGHT)
+        ),
         [&run.run_id],
         |r| r.get(0),
     )?;

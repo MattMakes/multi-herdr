@@ -5,6 +5,7 @@ use rusqlite::{params, Connection, Row};
 use serde::Serialize;
 
 use super::model::{Actor, EventKind, Origin, ProgressSource, WorkerKind, WorkerStatus};
+use super::sql_words::{self, word};
 use super::store::optional;
 use super::util::{self, About};
 
@@ -230,8 +231,11 @@ pub fn set_launch(
 /// The spawn failed before `horch worker` ran.
 pub fn launch_failed(conn: &Connection, worker_id: &str, reason: &str) -> Result<()> {
     conn.execute(
-        "UPDATE workers SET status = ?2, end_reason = ?3, ended_at = ?4
-         WHERE worker_id = ?1 AND status IN ('spawning', 'starting')",
+        &format!(
+            "UPDATE workers SET status = ?2, end_reason = ?3, ended_at = ?4
+             WHERE worker_id = ?1 AND status IN ({unclaimed})",
+            unclaimed = sql_words::list(sql_words::WORKERS_UNCLAIMED)
+        ),
         params![
             worker_id,
             WorkerStatus::LaunchFailed.as_str(),
@@ -277,10 +281,14 @@ pub fn agent_started(
     started: Option<u64>,
 ) -> Result<()> {
     conn.execute(
-        "UPDATE workers SET agent_pid = ?2, agent_started = ?3,
-            status = CASE WHEN status = 'starting' THEN 'claiming' ELSE status END,
-            last_checkin_at = ?4
-         WHERE worker_id = ?1",
+        &format!(
+            "UPDATE workers SET agent_pid = ?2, agent_started = ?3,
+                status = CASE WHEN status = {starting} THEN {claiming} ELSE status END,
+                last_checkin_at = ?4
+             WHERE worker_id = ?1",
+            starting = word(WorkerStatus::Starting),
+            claiming = word(WorkerStatus::Claiming)
+        ),
         params![
             worker_id,
             pid as i64,
@@ -387,9 +395,12 @@ pub fn end(
     exit_code: Option<i32>,
 ) -> Result<bool> {
     let n = conn.execute(
-        "UPDATE workers SET status = ?2, end_reason = COALESCE(end_reason, ?3),
-            exit_code = COALESCE(?4, exit_code), ended_at = COALESCE(ended_at, ?5)
-         WHERE worker_id = ?1 AND status IN ('spawning', 'starting', 'claiming', 'working')",
+        &format!(
+            "UPDATE workers SET status = ?2, end_reason = COALESCE(end_reason, ?3),
+                exit_code = COALESCE(?4, exit_code), ended_at = COALESCE(ended_at, ?5)
+             WHERE worker_id = ?1 AND status IN ({live})",
+            live = sql_words::list(sql_words::WORKERS_LIVE)
+        ),
         params![worker_id, status.as_str(), reason, exit_code, util::now()],
     )?;
     Ok(n > 0)
@@ -676,8 +687,10 @@ pub fn waiting(conn: &Connection, worker: &str) -> Result<Vec<Wait>> {
 /// Project the messaging layer's authoritative questions into ledger waits.
 pub fn sync_questions(conn: &Connection, state: &std::path::Path, workspace: &str) -> Result<()> {
     let questions = crate::messaging::mail::Mail::under(state, workspace).open_questions()?;
-    let mut stmt =
-        conn.prepare("SELECT * FROM workers WHERE workspace_id=?1 AND status='working'")?;
+    let mut stmt = conn.prepare(&format!(
+        "SELECT * FROM workers WHERE workspace_id=?1 AND status={working}",
+        working = word(WorkerStatus::Working)
+    ))?;
     let roster = stmt
         .query_map([workspace], Worker::from_row)?
         .collect::<rusqlite::Result<Vec<_>>>()?;

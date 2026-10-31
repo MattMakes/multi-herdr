@@ -2,7 +2,9 @@
 use super::{
     finish::{self, WorktreeRow},
     git::Git,
+    model::WorktreeStatus,
     runs,
+    sql_words::{self, word},
     store::{optional, Store},
     tasks, util, workers,
 };
@@ -102,7 +104,7 @@ pub fn create(
     store.immediate(|tx| {
         git.run(root,&["worktree","add","-b",&branch,&path_text,&commit])?;
         let persisted=(|| -> Result<()> {
-            tx.execute("INSERT INTO worktrees (worktree_id,task_id,worker_id,repo_root,path,branch,base,base_commit,status,origin,created_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,'open','native',?9)",params![id,if scratch {None}else{task.as_ref().map(|t|t.task_id.as_str())},worker_id,run.project_root,path_text,branch,base,commit,util::now()])?;
+            tx.execute(&format!("INSERT INTO worktrees (worktree_id,task_id,worker_id,repo_root,path,branch,base,base_commit,status,origin,created_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,{open},'native',?9)",open=word(WorktreeStatus::Open)),params![id,if scratch {None}else{task.as_ref().map(|t|t.task_id.as_str())},worker_id,run.project_root,path_text,branch,base,commit,util::now()])?;
             tx.execute("INSERT INTO worktree_modes(worktree_id,run_id,name,scratch) VALUES (?1,?2,?3,?4)",params![id,run.run_id,name,scratch])?;
             Ok(())
         })();
@@ -118,7 +120,7 @@ pub fn create(
 
 /// Resolve one registered tree by id, exact mode name or final directory component in this run.
 pub fn find(store: &Store, run_id: &str, name: &str) -> Result<WorktreeRow> {
-    let mut stmt=store.conn().prepare("SELECT w.worktree_id,w.path,m.name FROM worktrees w LEFT JOIN tasks t ON t.task_id=w.task_id LEFT JOIN worktree_modes m ON m.worktree_id=w.worktree_id WHERE (t.run_id=?1 OR m.run_id=?1) AND w.status NOT IN ('cleaned','abandoned')")?;
+    let mut stmt=store.conn().prepare(&format!("SELECT w.worktree_id,w.path,m.name FROM worktrees w LEFT JOIN tasks t ON t.task_id=w.task_id LEFT JOIN worktree_modes m ON m.worktree_id=w.worktree_id WHERE (t.run_id=?1 OR m.run_id=?1) AND w.status NOT IN ({gone})",gone=sql_words::list(sql_words::WORKTREES_GONE)))?;
     let rows = stmt
         .query_map([run_id], |r| {
             Ok((
@@ -227,7 +229,7 @@ pub fn drop_worktree(
             let _ = git.try_run(&root, &["branch", "-d", &wt.branch]);
         }
         tx.execute(
-            "UPDATE worktrees SET status='abandoned',reason=?2,cleaned_at=?3 WHERE worktree_id=?1",
+            &format!("UPDATE worktrees SET status={abandoned},reason=?2,cleaned_at=?3 WHERE worktree_id=?1",abandoned=word(WorktreeStatus::Abandoned)),
             params![wt.worktree_id, reason, util::now()],
         )?;
         Ok(())

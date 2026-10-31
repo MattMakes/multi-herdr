@@ -62,22 +62,30 @@ pub fn parse_sessions(json: &str, project_dir: &str, since: SystemTime) -> Vec<S
     let workdir = Workdir::new(project_dir);
     let mut found: Vec<SessionCandidate> = records
         .iter()
-        .filter(|r| {
-            r.get("directory")
-                .and_then(|d| d.as_str())
-                .is_some_and(|d| workdir.matches(Path::new(d)))
-        })
-        .filter_map(|r| {
-            let created = millis(r.get("created")?)?;
-            Some(SessionCandidate {
-                session_id: r.get("id")?.as_str()?.to_string(),
-                created,
-            })
-        })
+        .filter(|r| in_project(r, &workdir))
+        .filter_map(candidate)
         .filter(|c| c.created >= since)
         .collect();
     found.sort_by_key(|c| std::cmp::Reverse(c.created));
     found
+}
+
+/// Whether the `directory` of a record is the project's.
+fn in_project(record: &serde_json::Value, workdir: &Workdir) -> bool {
+    record
+        .get("directory")
+        .and_then(|d| d.as_str())
+        .is_some_and(|d| workdir.matches(Path::new(d)))
+}
+
+/// The session a record names; None without a whole-number `created` or a
+/// text `id`.
+fn candidate(record: &serde_json::Value) -> Option<SessionCandidate> {
+    let created = millis(record.get("created")?)?;
+    Some(SessionCandidate {
+        session_id: record.get("id")?.as_str()?.to_string(),
+        created,
+    })
 }
 
 fn millis(value: &serde_json::Value) -> Option<SystemTime> {
@@ -619,5 +627,45 @@ mod tests {
         assert!(parse_sessions("not json", "/proj/mine", at(0)).is_empty());
         assert!(parse_sessions("[]", "/proj/mine", at(0)).is_empty());
         assert!(parse_sessions(r#"[{"id":"x"}]"#, "/proj/mine", at(0)).is_empty());
+        // One record is no list.
+        let one = r#"{"id":"ses_a","created":5000,"directory":"/proj/mine"}"#;
+        assert!(parse_sessions(one, "/proj/mine", at(0)).is_empty());
+    }
+
+    /// A record of this project needs a whole-number `created` and a text
+    /// `id`; one that lacks either is skipped, not fatal. Stamps that tie keep
+    /// the order of the list.
+    #[test]
+    fn a_record_of_this_project_needs_a_numeric_created_and_a_text_id() {
+        let json = r#"[
+            {"id":"ses_ok1","created":5000,"directory":"/proj/mine"},
+            {"id":"ses_nocreated","directory":"/proj/mine"},
+            {"id":"ses_text","created":"5000","directory":"/proj/mine"},
+            {"id":"ses_float","created":5000.5,"directory":"/proj/mine"},
+            {"id":"ses_negative","created":-5000,"directory":"/proj/mine"},
+            {"created":5000,"directory":"/proj/mine"},
+            {"id":7,"created":5000,"directory":"/proj/mine"},
+            {"id":"ses_nodir","created":5000},
+            {"id":"ses_dirnum","created":5000,"directory":5},
+            {"id":"ses_ok2","created":5000,"directory":"/proj/mine"}
+        ]"#;
+        let found = parse_sessions(json, "/proj/mine", at(0));
+        let ids: Vec<&str> = found.iter().map(|c| c.session_id.as_str()).collect();
+        assert_eq!(ids, ["ses_ok1", "ses_ok2"]);
+        assert!(found.iter().all(|c| c.created == at(5000)), "{found:#?}");
+    }
+
+    /// The cut is 1 s before the launch marker, which some filesystems round
+    /// down to the second: a session at the cut counts, 1 ms before it does
+    /// not.
+    #[test]
+    fn the_cut_is_one_second_before_the_marker_and_includes_it() {
+        let json = r#"[
+            {"id":"ses_edge","created":9000,"directory":"/proj/mine"},
+            {"id":"ses_early","created":8999,"directory":"/proj/mine"}
+        ]"#;
+        let found = parse_sessions(json, "/proj/mine", at(10_000));
+        let ids: Vec<&str> = found.iter().map(|c| c.session_id.as_str()).collect();
+        assert_eq!(ids, ["ses_edge"]);
     }
 }

@@ -396,6 +396,65 @@ fn git_update_ref_cas_mismatch_is_false() {
     assert_eq!(f.git.toplevel(&f.repo).unwrap(), f.repo);
 }
 
+/// A refused update is a lost race when the ref no longer holds the value the
+/// caller expected, and an error when it still does. An absent ref holds the
+/// all-zero value.
+#[test]
+fn git_update_ref_cas_tells_a_failure_from_a_lost_race() {
+    let Some(f) = Fixture::new() else { return };
+    let base = f.git.head(&f.repo).unwrap();
+    f.git_in(&f.repo, &["branch", "target"]);
+    std::fs::write(f.repo.join("c.txt"), "sea\n").unwrap();
+    let next = f.commit_in(&f.repo, "next");
+    let target = "refs/heads/target";
+    let ghost = "refs/heads/ghost";
+    let zero = "0".repeat(40);
+    // Well formed, but no such object: git refuses to write it into a ref.
+    let missing = "1".repeat(40);
+
+    // The ref holds `base`, as expected, and git still refuses: an error.
+    let err = f
+        .git
+        .update_ref_cas(&f.repo, target, &missing, &base)
+        .unwrap_err()
+        .to_string();
+    let (status, detail) = err
+        .strip_prefix("git update-ref refs/heads/target failed (")
+        .and_then(|rest| rest.split_once("): "))
+        .unwrap_or_else(|| panic!("unexpected message: {err}"));
+    assert_ne!(status.parse::<i32>().unwrap(), 0, "{err}");
+    assert!(!detail.is_empty(), "git's own message is kept: {err}");
+    assert_eq!(
+        f.git.rev_parse(&f.repo, target).unwrap().as_deref(),
+        Some(base.as_str())
+    );
+
+    // No such ref, and the caller expects it absent (all zeros): an error.
+    let err = f
+        .git
+        .update_ref_cas(&f.repo, ghost, &missing, &zero)
+        .unwrap_err()
+        .to_string();
+    assert!(
+        err.starts_with("git update-ref refs/heads/ghost failed ("),
+        "{err}"
+    );
+    assert_eq!(f.git.rev_parse(&f.repo, ghost).unwrap(), None);
+
+    // No such ref, but the caller expected `base`: a lost race, no error.
+    assert!(!f.git.update_ref_cas(&f.repo, ghost, &next, &base).unwrap());
+    assert_eq!(f.git.rev_parse(&f.repo, ghost).unwrap(), None);
+
+    // All zeros mean "absent": create the ref, then delete it.
+    assert!(f.git.update_ref_cas(&f.repo, ghost, &next, &zero).unwrap());
+    assert_eq!(
+        f.git.rev_parse(&f.repo, ghost).unwrap().as_deref(),
+        Some(next.as_str())
+    );
+    assert!(f.git.update_ref_cas(&f.repo, ghost, &zero, &next).unwrap());
+    assert_eq!(f.git.rev_parse(&f.repo, ghost).unwrap(), None);
+}
+
 /// A frozen candidate over a plain temp dir: the validator needs no git.
 fn candidate(worktree: &Path) -> FrozenCandidate {
     FrozenCandidate {

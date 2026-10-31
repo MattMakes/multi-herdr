@@ -41,6 +41,7 @@ use horch_core::messaging::mailbox::Mailbox;
 use horch_core::prompts;
 use horch_core::runtime::process::spawn_detached;
 use horch_core::runtime::RuntimeContext;
+use horch_core::taskledger::sql_words;
 use horch_core::telemetry::context::{read_current, Reading};
 use horch_core::telemetry::readers::Unreadable;
 use horch_core::usage::Locations;
@@ -1029,7 +1030,10 @@ impl JobPorts for Ports<'_> {
         if event == policy::EVENT_COMPACTED {
             let ctx = self.env.src.ctx;
             let store = horch_core::taskledger::open(ctx)?;
-            let mut statement = store.conn().prepare("SELECT worker_id FROM workers WHERE legacy_record_id = ?1 AND status IN ('spawning','starting','claiming','working')")?;
+            let mut statement = store.conn().prepare(&format!(
+                "SELECT worker_id FROM workers WHERE legacy_record_id = ?1 AND status IN ({live})",
+                live = sql_words::list(sql_words::WORKERS_LIVE)
+            ))?;
             let ids = statement
                 .query_map([&self.record.record_id], |r| r.get::<_, String>(0))?
                 .collect::<Result<Vec<_>, _>>()?;
