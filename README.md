@@ -173,7 +173,7 @@ pane's terminal and submitted, as if you switched panes and typed it by hand.
 | command                            | who runs it  | what it does                          |
 |------------------------------------|--------------|---------------------------------------|
 | `horch tell <role> "<message>"`    | anyone       | Type a message into another pane      |
-| `horch inbox`                      | anyone       | List roles; the orchestrator prints and acknowledges pending worker messages |
+| `horch inbox`                      | anyone       | List roles; the orchestrator's pane prints and acknowledges pending worker messages, a worker its own mail |
 | `horch peek <role> --lines 20`      | anyone       | Read the recent output of a registered worker |
 | `horch assign <role> "<task>"`     | orchestrator | Record a task on the ledger, then send it |
 | `horch spawn <teammate> "<task>"`  | orchestrator | New pane, new agent session           |
@@ -851,6 +851,13 @@ Workers may create a worktree with `horch ledger worktree new <name> --from
 `horch ledger worktree drop <name> --reason "<why>"` abandons a clean tree and
 refuses unique commits; `--keep-branch` keeps the branch when removing the
 folder. Scratch and abandoned trees do not block task completion.
+
+In the worker's own pane, `horch ledger finish` runs its steps detached and
+returns at once; the result arrives as horch mail. `--wait` (or `--json`)
+runs them in the foreground. Worktrees that no step takes to an outcome are
+*parked*: `horch worktree triage` lists them with the facts for a decision,
+and `horch worktree triage apply` runs the operator's decisions. See
+[docs/fleet-workflow.md](docs/fleet-workflow.md#worktree-triage).
 
 `horch ledger progress "waiting: <command>"` records a bounded background wait.
 The watchdog also recognizes pending reviews and unanswered questions; these

@@ -17,11 +17,13 @@ use horch_core::taskledger::finish::{self, land};
 use horch_core::taskledger::git::Git;
 use horch_core::taskledger::import;
 use horch_core::taskledger::map;
-use horch_core::taskledger::model::StopRequester;
 use horch_core::taskledger::model::{
-    Actor, EventKind, ProgressSource, StepName, TaskKind, WorkerKind, WorktreeMode,
+    Actor, EventKind, ProgressSource, StepName, TaskKind, WorkerKind, WorkerStatus, WorktreeMode,
+    WorktreeStatus,
 };
+use horch_core::taskledger::model::{FindingStatus, StopRequester};
 use horch_core::taskledger::runs::{self, NewRun, Run};
+use horch_core::taskledger::sql_words::word;
 use horch_core::taskledger::status;
 use horch_core::taskledger::stop;
 use horch_core::taskledger::tasks::{self, ClaimOutcome, Claimed, NewTask};
@@ -1208,12 +1210,21 @@ fn queue_reopened(
 ) -> Result<tasks::Task> {
     store.immediate(|tx| {
         let task = tasks::add(tx, run, new, Actor::Orchestrator)?;
-        import::decide(tx, finding.finding_id, "requeued", "orchestrator", &task.task_id)?;
+        import::decide(
+            tx,
+            finding.finding_id,
+            FindingStatus::Requeued,
+            "orchestrator",
+            &task.task_id,
+        )?;
         // The old worktree, when it is still on disk, is this task's now.
         if let Some(wt) = &finding.worktree_id {
             if reusable(&finish::worktree(tx, wt)?) {
                 tx.execute(
-                    "UPDATE worktrees SET task_id = ?2, worker_id = NULL, status = 'open' WHERE worktree_id = ?1",
+                    &format!(
+                        "UPDATE worktrees SET task_id = ?2, worker_id = NULL, status = {open} WHERE worktree_id = ?1",
+                        open = word(WorktreeStatus::Open)
+                    ),
                     [wt, &task.task_id],
                 )?;
             }
@@ -1265,7 +1276,13 @@ fn dismiss_cmd(
         }
         output::println(&o.note);
     }
-    import::decide(store.conn(), finding, "dismissed", "orchestrator", reason)?;
+    import::decide(
+        store.conn(),
+        finding,
+        FindingStatus::Dismissed,
+        "orchestrator",
+        reason,
+    )?;
     output::println(&format!("Finding F{finding} dismissed."));
     Ok(ExitCode::SUCCESS)
 }
@@ -1777,7 +1794,10 @@ fn insert_run(ctx: &RuntimeContext, store: &mut Store, root: &Path, new: &NewRun
             },
         )?;
         tx.execute(
-            "UPDATE workers SET status = 'working', started_at = spawned_at WHERE worker_id = ?1",
+            &format!(
+                "UPDATE workers SET status = {working}, started_at = spawned_at WHERE worker_id = ?1",
+                working = word(WorkerStatus::Working)
+            ),
             [&id],
         )?;
         runs::set_orchestrator(tx, &r.run_id, &id)?;

@@ -6,6 +6,7 @@ use std::process::Command;
 
 use horch_core::taskledger::git::Git;
 use horch_core::taskledger::import::{self, ImportReport};
+use horch_core::taskledger::model::FindingStatus;
 use horch_core::taskledger::Store;
 use serde_json::{json, Value};
 
@@ -420,10 +421,10 @@ fn unfinished_lists_native_leftovers_once_and_get_finding_reads_one() {
         import::unfinished(c, Some(Path::new("/other"))).unwrap(),
         vec![]
     );
-    import::decide(c, one.finding_id, "dismissed", "me", "n").unwrap();
+    import::decide(c, one.finding_id, FindingStatus::Dismissed, "me", "n").unwrap();
     assert_eq!(import::unfinished(c, None).unwrap().len(), 1);
     assert_eq!(
-        import::decide(c, one.finding_id, "dismissed", "me", "n")
+        import::decide(c, one.finding_id, FindingStatus::Dismissed, "me", "n")
             .unwrap_err()
             .to_string(),
         format!("finding {} is not open", one.finding_id)
