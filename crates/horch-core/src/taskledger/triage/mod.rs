@@ -22,7 +22,8 @@ use rusqlite::Connection;
 use serde::Serialize;
 
 use super::git::Git;
-use super::model::{TaskStatus, WorkerStatus};
+use super::model::{FindingStatus, TaskStatus, WorkerStatus, WorktreeStatus};
+use super::sql_words::{self, word};
 use super::store::optional;
 
 pub use facts::{Age, Diff, Disk, Uncommitted};
@@ -98,17 +99,22 @@ struct LedgerRow {
 }
 
 /// The statuses of a worktree that is done with, one way or another.
-pub const SETTLED: [&str; 3] = ["cleaned", "archived", "trashed"];
+pub const SETTLED: [WorktreeStatus; 3] = [
+    WorktreeStatus::Cleaned,
+    WorktreeStatus::Archived,
+    WorktreeStatus::Trashed,
+];
 
 fn ledger_rows(conn: &Connection) -> Result<Vec<LedgerRow>> {
-    let mut stmt = conn.prepare(
+    let mut stmt = conn.prepare(&format!(
         "SELECT w.worktree_id, w.path, w.branch, w.base, w.status, w.decision, w.created_at,
                 w.cleaned_at, w.reason, w.worker_id, w.task_id, t.seq, t.title, t.status, t.summary,
                 COALESCE(t.run_id, m.run_id), w.repo_root
          FROM worktrees w LEFT JOIN tasks t ON t.task_id = w.task_id
          LEFT JOIN worktree_modes m ON m.worktree_id = w.worktree_id
-         WHERE w.status NOT IN ('cleaned', 'archived', 'trashed')",
-    )?;
+         WHERE w.status NOT IN ({settled})",
+        settled = sql_words::list(&SETTLED)
+    ))?;
     let rows = stmt
         .query_map([], |r| {
             let seq: Option<i64> = r.get(11)?;
@@ -274,12 +280,13 @@ pub fn default_branch(git: &Git, root: &Path) -> Option<String> {
 
 /// The open findings about the worktree `id` at `path`.
 fn findings_of(conn: &Connection, id: Option<&str>, path: &str) -> Result<Vec<i64>> {
-    let mut stmt = conn.prepare(
-        "SELECT finding_id FROM import_findings WHERE status = 'open'
+    let mut stmt = conn.prepare(&format!(
+        "SELECT finding_id FROM import_findings WHERE status = {open}
            AND ((?1 IS NOT NULL AND worktree_id = ?1)
                 OR (kind = 'worktree_orphan' AND detail LIKE ?2))
          ORDER BY finding_id",
-    )?;
+        open = word(FindingStatus::Open)
+    ))?;
     let ids = stmt
         .query_map(rusqlite::params![id, format!("{path} %")], |r| r.get(0))?
         .collect::<rusqlite::Result<Vec<i64>>>()?;

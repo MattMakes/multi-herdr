@@ -18,7 +18,10 @@ starts a subagent. A worker that needs more hands sends `QUESTION:` to the
 orchestrator, and the orchestrator spawns another pane.
 `horch inbox` lists the reachable roles, then prints and acknowledges pending
 messages, and ends with `N messages acknowledged`. `--roles` lists roles only.
-`--peek` prints messages and leaves them pending.
+`--peek` prints messages and leaves them pending. Inside a fleet, only the
+registered orchestrator pane acknowledges the orchestrator's mail: another pane
+gets the messages as with `--peek`, and 1 stderr line that says so. A worker's
+`inbox` prints and acknowledges only the mail to its own role.
 
 The role list includes agent state and unanswered questions. `horch peek
 <role> --lines 20` reads recent pane output without typing. A relay write does
@@ -138,7 +141,11 @@ open `import_findings` row of the worktree closes: `requeued` for `FINISH`,
 disk with no decision, and names `horch worktree triage`. `--abandon` cancels
 the open tasks first, then refuses the same way; the run stays active until
 each worktree has a decision. `horch ledger status` prints a
-`Parked worktrees: <count> (<disk>)` line.
+`Parked worktrees: <count> (<disk>, measured <age> ago)` line. The disk is the
+size `horch worktree triage` stored at its last run, and `<age>` is the age
+of the oldest measurement; `status` walks no folder. Rows that triage has not
+measured add `; <n> not measured`. With no measurement the line says
+`(disk not measured; run horch worktree triage)`.
 
 ## Plan files
 

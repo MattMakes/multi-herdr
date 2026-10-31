@@ -6,7 +6,8 @@ use anyhow::{bail, Context, Result};
 use rusqlite::{params, Connection, Row};
 use serde::Serialize;
 
-use super::model::{Actor, EventKind, Origin, RunStatus, StepName};
+use super::model::{Actor, EventKind, Origin, RunStatus, StepName, WorktreeStatus};
+use super::sql_words::{self, word};
 use super::store::optional;
 use super::util::{self, About};
 use crate::exeid::ExeIdentity;
@@ -159,7 +160,10 @@ pub fn create(conn: &Connection, root: &Path, new: &NewRun) -> Result<Run> {
     }
     let project = ensure_project(conn, root)?;
     let clash: Option<String> = optional(conn.query_row(
-        "SELECT run_id FROM runs WHERE project_id = ?1 AND slug = ?2 AND status = 'active'",
+        &format!(
+            "SELECT run_id FROM runs WHERE project_id = ?1 AND slug = ?2 AND status = {active}",
+            active = word(RunStatus::Active)
+        ),
         params![project, new.slug],
         |r| r.get(0),
     ))?;
@@ -392,7 +396,12 @@ pub fn open_items(conn: &Connection, run_id: &str) -> Result<Vec<String>> {
 }
 
 /// The statuses of a worktree that no step takes to an outcome.
-const PARKED: &str = "'landed', 'cleanup_failed', 'unlanded', 'abandoned'";
+const PARKED: &[WorktreeStatus] = &[
+    WorktreeStatus::Landed,
+    WorktreeStatus::CleanupFailed,
+    WorktreeStatus::Unlanded,
+    WorktreeStatus::Abandoned,
+];
 
 /// The folders of the run's parked worktrees that are on disk, with their
 /// decision (#308).
@@ -400,8 +409,9 @@ fn parked_on_disk(conn: &Connection, run_id: &str) -> Result<Vec<(String, Option
     let mut stmt = conn.prepare(&format!(
         "SELECT w.path, w.decision FROM worktrees w LEFT JOIN tasks t ON t.task_id = w.task_id
          LEFT JOIN worktree_modes m ON m.worktree_id = w.worktree_id
-         WHERE (t.run_id = ?1 OR m.run_id = ?1) AND w.status IN ({PARKED})
-         ORDER BY w.created_at, w.rowid"
+         WHERE (t.run_id = ?1 OR m.run_id = ?1) AND w.status IN ({parked})
+         ORDER BY w.created_at, w.rowid",
+        parked = sql_words::list(PARKED)
     ))?;
     let rows = stmt
         .query_map([run_id], |r| Ok((r.get(0)?, r.get(1)?)))?
@@ -473,9 +483,13 @@ pub fn close_run(conn: &Connection, run: &Run, abandon: Option<&str>) -> Result<
         }
         // A worktree no task holds open any more.
         conn.execute(
-            "UPDATE worktrees SET status = 'abandoned', reason = ?2
-             WHERE status IN ('open', 'landing') AND task_id IN
-                (SELECT task_id FROM tasks WHERE run_id = ?1)",
+            &format!(
+                "UPDATE worktrees SET status = {abandoned}, reason = ?2
+                 WHERE status IN ({open}) AND task_id IN
+                    (SELECT task_id FROM tasks WHERE run_id = ?1)",
+                abandoned = word(WorktreeStatus::Abandoned),
+                open = sql_words::list(sql_words::WORKTREES_OPEN)
+            ),
             params![run.run_id, format!("run abandoned: {reason}")],
         )?;
     }
