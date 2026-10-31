@@ -910,6 +910,8 @@ impl DoneSteps for CliDone<'_> {
             self.ctx.bins.harness.git.clone(),
             self.ctx.paths.state_root.clone(),
         );
+        // A landed claim whose worktree still holds work is open again.
+        landing.reopen_landed_for_record(record_id)?;
         if !landing.record_has_open_claims(record_id)? {
             return Ok(Vec::new());
         }

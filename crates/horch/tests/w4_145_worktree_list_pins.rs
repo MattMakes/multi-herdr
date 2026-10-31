@@ -166,3 +166,38 @@ fn list_prints_a_claim_with_its_state() {
     );
     assert_eq!(lines[1], "unregistered:");
 }
+
+/// A land whose `worktree remove` fails after the fast-forward still lands
+/// and prints the failure as a `horch: NOTE:` line. When the leftover
+/// worktree then gets an uncommitted file, `list` shows the claim open again.
+#[test]
+fn arc_31_land_cleanup_note_then_list_reopens_the_leftover() {
+    let w = World::new();
+    let made = w.horch(&["worktree", "new", "mine"]);
+    assert!(made.status.success(), "{}", text(&made));
+    let mine = w.repo.join(".worktrees/orchestrator-mine");
+    std::fs::write(mine.join("m.txt"), "m\n").unwrap();
+    git(&w.root, &mine, &["add", "m.txt"]);
+    git(&w.root, &mine, &["commit", "--quiet", "-m", "mine"]);
+    git(&w.root, &w.repo, &["worktree", "lock", mine.to_str().unwrap()]);
+
+    let landed = w.horch(&["worktree", "land"]);
+    assert!(landed.status.success(), "{}", text(&landed));
+    let stdout = String::from_utf8(landed.stdout.clone()).unwrap();
+    assert!(stdout.contains("LANDED wt/orchestrator-mine -> main"), "{}", text(&landed));
+    assert!(
+        stdout.contains("horch: NOTE: cleanup step worktree remove failed"),
+        "{}",
+        text(&landed)
+    );
+    assert!(w.repo.join("m.txt").is_file());
+
+    std::fs::write(mine.join("draft.txt"), "draft\n").unwrap();
+    let out = w.list();
+    assert!(out.status.success(), "{}", text(&out));
+    let stdout = String::from_utf8(out.stdout).unwrap();
+    assert!(
+        stdout.starts_with("mine orchestrator open wt/orchestrator-mine main"),
+        "{stdout}"
+    );
+}

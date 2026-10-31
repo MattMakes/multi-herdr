@@ -85,6 +85,9 @@ pub fn land(ctx: &RuntimeContext, name: Option<&str>, check: Option<&str>) -> Re
         result.branch, result.base, short, result.commits
     );
     println!("{line}");
+    if let Some(note) = &result.cleanup_note {
+        println!("horch: NOTE: {note}");
+    }
     if let Err(error) = messaging::tell(ctx, "orchestrator", &format!("NOTE: {line}")) {
         eprintln!("horch worktree land: could not report landing ({error:#})");
     }
@@ -94,7 +97,7 @@ pub fn land(ctx: &RuntimeContext, name: Option<&str>, check: Option<&str>) -> Re
 pub fn list(ctx: &RuntimeContext) -> Result<()> {
     let dir = ctx.paths.current_dir()?;
     let landing = landing(ctx);
-    for claim in landing.claims(&dir)? {
+    for claim in landing.reconcile(&dir)? {
         let status = landing.status(&claim)?;
         println!(
             "{} {} {} {} {} ahead={} dirty={} contained={}",
