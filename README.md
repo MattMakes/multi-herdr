@@ -59,7 +59,7 @@ on it. On Windows the default install directory is
 Then check your setup and verify the machinery end to end:
 
 ```bash
-horch doctor            # herdr reachable? roster ok? host tools, effort overrides
+horch doctor            # herdr reachable? roster ok? host tools, effort overrides, stale state
 horch smoke messaging   # 2-pane check of the messaging primitives, no agents
 horch smoke fleet       # full spawn -> ledger -> report -> self-close check
 ```
@@ -70,6 +70,22 @@ for a host tool that an offered teammate needs (`xcodebuild` for the Swift
 team), and for a setting that overrides every teammate's effort. Run it from
 your project directory: it counts the teammates the orchestrator would be
 offered there.
+
+Doctor also tests delivery in a temporary two-pane workspace and checks the
+Docker, MCP commands and sandbox support that offered teammates need. It warns
+about a non-Anthropic Claude proxy host. Fleet startup queues an acknowledgement
+probe; a warning leaves that probe pending for the courier. Startup prints the
+running version, and `doctor`, `spawn` and `inbox` warn about known stale binaries
+without a network check. `HORCH_NO_SELF_CHECK=1` silences that warning.
+
+Doctor ends with a count of stale state, by kind: spool files older than 7
+days, sockets that no relay answers, the registry and mail dirs of workspaces
+that herdr no longer lists, the skill bundles and Codex homes of finished
+workers, `write_atomic` temp files of dead processes, and `working` records
+whose pane is gone. It removes nothing. `horch doctor --clean` removes them at
+once. `horch fleet` and `horch spawn` run the same sweep at most once an hour,
+for at most 3 seconds. The sweep keeps everything when herdr does not answer,
+and keeps state whose owner is live or unknown.
 
 Both smoke checks spend no LLM tokens and clean up after themselves. They leave
 the scratch workspace open when they fail, so you can look at it.
@@ -157,7 +173,8 @@ pane's terminal and submitted, as if you switched panes and typed it by hand.
 | command                            | who runs it  | what it does                          |
 |------------------------------------|--------------|---------------------------------------|
 | `horch tell <role> "<message>"`    | anyone       | Type a message into another pane      |
-| `horch inbox`                      | anyone       | List roles; the orchestrator prints and acknowledges pending worker messages |
+| `horch inbox`                      | anyone       | List roles; the orchestrator's pane prints and acknowledges pending worker messages, a worker its own mail |
+| `horch peek <role> --lines 20`      | anyone       | Read the recent output of a registered worker |
 | `horch assign <role> "<task>"`     | orchestrator | Record a task on the ledger, then send it |
 | `horch spawn <teammate> "<task>"`  | orchestrator | New pane, new agent session           |
 | `horch spawn --resume <id> "<task>"` | orchestrator | New pane, resuming an old session   |
@@ -166,6 +183,7 @@ pane's terminal and submitted, as if you switched panes and typed it by hand.
 | `horch tile`                       | orchestrator | Rearrange every pane into the grid    |
 | `horch balance`                    | orchestrator | Make every worker column the same width |
 | `horch note "<update>"`            | worker       | Record progress on its ledger record  |
+| `horch note --fact "<fact>"`       | anyone       | Share one project fact with later worker briefs and claims |
 | `horch done "<summary>"`           | worker       | Record a summary, report, close its pane |
 
 `horch tile` puts every pane where it belongs: the orchestrator full height down
@@ -801,6 +819,7 @@ cold. Workers close their own pane when done, but their sessions stay resumable.
 ```bash
 horch sessions              # readable summary, newest first
 horch sessions --json       # the raw records
+horch sessions --all-workspaces --live --role sonnet-2
 horch ledger legacy path           # where the file lives
 ```
 
@@ -808,6 +827,10 @@ The ledger lives at `$HORCH_STATE_DIR`, else
 `${XDG_STATE_HOME:-~/.local/state}/horch/<slugified-project-path>.json`. The
 format is unchanged from the previous bash implementation, so existing ledgers
 stay readable and their sessions stay resumable.
+
+`sessions` and `context` show only the caller's workspace by default; outside a
+workspace they show the project. Both support `--all-workspaces`, `--live` and
+`--role`. A live record whose pane has disappeared is marked `(pane gone)`.
 
 ## The task ledger
 
@@ -822,6 +845,24 @@ cleanup that refuses to lose work. Workers check in every 30 s, a watchdog
 reaps a worker that stops making progress, and workers are stopped only by
 the PIDs the ledger recorded (`horch ledger stop`). See
 [docs/specs/task-ledger.md](docs/specs/task-ledger.md).
+
+Workers may create a worktree with `horch ledger worktree new <name> --from
+<ref>`, or a disposable one with `horch ledger worktree scratch <name>`.
+`horch ledger worktree drop <name> --reason "<why>"` abandons a clean tree and
+refuses unique commits; `--keep-branch` keeps the branch when removing the
+folder. Scratch and abandoned trees do not block task completion.
+
+In the worker's own pane, `horch ledger finish` runs its steps detached and
+returns at once; the result arrives as horch mail. `--wait` (or `--json`)
+runs them in the foreground. Worktrees that no step takes to an outcome are
+*parked*: `horch worktree triage` lists them with the facts for a decision,
+and `horch worktree triage apply` runs the operator's decisions. See
+[docs/fleet-workflow.md](docs/fleet-workflow.md#worktree-triage).
+
+`horch ledger progress "waiting: <command>"` records a bounded background wait.
+The watchdog also recognizes pending reviews and unanswered questions; these
+waits reset stall counting when they end. Missing agent processes are still
+detected immediately. Status shows each waiting reason and age.
 
 ## Skills, domain teams and the contributor handbook
 
@@ -884,7 +925,7 @@ command, which knows how it was installed (native, Homebrew, npm):
 | prime       | `prime-agent update`  |
 
 ```bash
-horch update                 # the same step, on demand; exits 1 if 1 updater fails
+horch update                 # the same step, on demand; exits 1 if 1 CLI is not updated
 horch update codex pi        # only these
 horch update herdr           # herdr too - read the warning below
 horch fleet --no-update      # start a fleet without the update step
@@ -892,15 +933,29 @@ horch fleet --no-update      # start a fleet without the update step
 
 The updaters run at the same time. Each one gets `HORCH_UPDATE_TIMEOUT_MS`
 (default 180000; a Homebrew `codex update` alone can take a minute). A CLI
-that is not on `PATH` is skipped. A failed or timed-out updater prints 1
+that is not on `PATH` is skipped. A failed updater prints 1
 `horch: NOTE: update:` line, and the fleet still starts on the build it has.
+An updater that still runs at the time limit is not killed, because a
+package manager stopped mid-install can leave no CLI. horch prints
+`still running after N s, not waited for` and goes on.
+
+Several fleets can start on 1 host. Each CLI has 1 lock and 1 mark under
+`${XDG_STATE_HOME:-~/.local/state}/horch/update/`, so only 1 updater of a
+CLI runs at a time, for at most 1 h. This folder does not follow
+`HORCH_STATE_DIR`: a scratch fleet updates the same installed CLIs. The fleet step skips a CLI that another horch updates
+(`another horch is updating it`) and a CLI whose last update succeeded
+less than 24 h ago (`updated at <time>, less than 24 h ago`).
+`horch update` skips only the first: you asked for it. It exits 1 when 1 CLI
+failed, still runs, or is updated by another horch. The updater output is
+in `update/<cli>.stdout.log` and `.stderr.log` in that folder.
 When `cpx` is the Claude launcher, `claude` updates, because `cpx` only
 launches it. `HORCH_NO_UPDATE=1` skips the step like `--no-update`.
 
 Panes do not update during a fleet run: Claude panes get
 `DISABLE_AUTOUPDATER=1` and Codex panes `check_for_update_on_startup=false`.
-So every pane of 1 fleet runs the same build of each CLI, and no CLI changes
-under a running worker.
+A pane never updates its own CLI. A CLI can still change under a running
+fleet: an updater left running, or the update step of a later fleet start,
+replaces it.
 
 herdr is never in the default list. A herdr release can change the
 client/server protocol, and then `herdr update` offers to stop the herdr

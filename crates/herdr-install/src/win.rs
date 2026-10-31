@@ -21,32 +21,30 @@ pub fn prepend_path_entry(current: &str, entry: &str) -> Option<String> {
     let normalize = |s: &str| s.trim().trim_end_matches('\\').to_ascii_lowercase();
     let target = normalize(entry);
 
-    let mut kept: Vec<&str> = Vec::new();
-    let mut already_first = false;
-    for (index, part) in current.split(';').enumerate() {
-        if part.trim().is_empty() {
-            continue;
-        }
-        if normalize(part) == target {
-            if index == 0 {
-                already_first = true;
-            }
-            continue;
-        }
-        kept.push(part);
-    }
-    if already_first
-        && kept.len() + 1 == current.split(';').filter(|p| !p.trim().is_empty()).count()
-    {
+    let parts: Vec<&str> = current
+        .split(';')
+        .filter(|p| !p.trim().is_empty())
+        .collect();
+    let kept: Vec<&str> = parts
+        .iter()
+        .copied()
+        .filter(|p| normalize(p) != target)
+        .collect();
+    // A leading empty part means the entry is not first, so test the raw first part.
+    let already_first = current
+        .split(';')
+        .next()
+        .is_some_and(|p| !p.trim().is_empty() && normalize(p) == target);
+    if already_first && kept.len() + 1 == parts.len() {
         return None;
     }
 
-    let mut next = String::from(entry);
-    for part in kept {
-        next.push(';');
-        next.push_str(part);
-    }
-    Some(next)
+    Some(
+        std::iter::once(entry)
+            .chain(kept)
+            .collect::<Vec<_>>()
+            .join(";"),
+    )
 }
 
 /// What to do about a path that should become a junction.
@@ -102,6 +100,17 @@ fn is_reparse_point(_meta: &std::fs::Metadata) -> bool {
 /// built-in, so no extra tooling is required.
 #[cfg(windows)]
 pub fn set_junction(link: &Path, target: &Path) -> Result<()> {
+    clear_link(link)?;
+    if let Some(parent) = link.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    mklink_junction(link, target)
+}
+
+/// Remove what is at `link` so a junction can take its place, refusing to delete
+/// real content.
+#[cfg(windows)]
+fn clear_link(link: &Path) -> Result<()> {
     use anyhow::{bail, Context};
 
     match inspect_junction_target(link) {
@@ -117,12 +126,15 @@ pub fn set_junction(link: &Path, target: &Path) -> Result<()> {
                 std::fs::remove_dir_all(link)
                     .with_context(|| format!("clearing {}", link.display()))?;
             }
+            Ok(())
         }
-        JunctionAction::Create => {}
+        JunctionAction::Create => Ok(()),
     }
-    if let Some(parent) = link.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
+}
+
+#[cfg(windows)]
+fn mklink_junction(link: &Path, target: &Path) -> Result<()> {
+    use anyhow::{bail, Context};
 
     let output = std::process::Command::new("cmd")
         .args(["/C", "mklink", "/J"])
@@ -214,6 +226,25 @@ mod tests {
         assert_eq!(
             prepend_path_entry(r";;C:\Windows;", r"C:\h\bin").unwrap(),
             r"C:\h\bin;C:\Windows"
+        );
+    }
+
+    /// Only an entry at index 0 of the raw list counts as first: a leading empty
+    /// part pushes it to index 1, so the list is rewritten.
+    #[test]
+    fn prepend_rewrites_when_a_leading_empty_part_precedes_the_entry() {
+        assert_eq!(
+            prepend_path_entry(r";C:\herdr\bin;C:\Windows", r"C:\herdr\bin").unwrap(),
+            r"C:\herdr\bin;C:\Windows"
+        );
+    }
+
+    /// First is not enough: a later duplicate must still be removed.
+    #[test]
+    fn prepend_removes_a_later_duplicate_of_the_first_entry() {
+        assert_eq!(
+            prepend_path_entry(r"C:\herdr\bin;C:\Windows;c:\herdr\bin\", r"C:\herdr\bin").unwrap(),
+            r"C:\herdr\bin;C:\Windows"
         );
     }
 

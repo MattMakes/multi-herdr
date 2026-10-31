@@ -48,6 +48,42 @@ pub struct Claim {
     pub reason: Option<String>,
 }
 
+impl Claim {
+    /// A new open claim, created now.
+    fn open(
+        role: &str,
+        name: &str,
+        record_id: Option<&str>,
+        path: PathBuf,
+        branch: String,
+        base: String,
+        base_commit: String,
+    ) -> Claim {
+        Claim {
+            id: uuid::Uuid::new_v4().simple().to_string(),
+            name: name.to_owned(),
+            role: role.to_owned(),
+            record_id: record_id.map(str::to_owned),
+            path,
+            branch,
+            base,
+            base_commit,
+            created_at: Utc::now(),
+            state: ClaimState::Open,
+            landed_commit: None,
+            reason: None,
+        }
+    }
+
+    fn is_open_for_role(&self, role: &str) -> bool {
+        self.role == role && self.state == ClaimState::Open
+    }
+
+    fn is_open_for_record(&self, record_id: &str) -> bool {
+        self.state == ClaimState::Open && self.record_id.as_deref() == Some(record_id)
+    }
+}
+
 /// Live facts about a registered claim.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ClaimStatus {
@@ -66,6 +102,39 @@ pub struct Unregistered {
     pub dirty: usize,
 }
 
+/// A linked worktree the scan could not read, and why.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Skipped {
+    pub path: PathBuf,
+    /// `prunable` (git cannot reach its gitdir) or `folder missing`.
+    pub reason: &'static str,
+}
+
+/// What [`Landing::unregistered`] found, and what it had to leave out.
+///
+/// A skipped path is named, never dropped in silence: a deleted folder used
+/// to fail the whole scan, and `done` then reported nothing at all.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct UnregisteredScan {
+    pub entries: Vec<Unregistered>,
+    pub skipped: Vec<Skipped>,
+}
+
+impl UnregisteredScan {
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+}
+
+/// A linked worktree as `git worktree list --porcelain` describes it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Worktree {
+    path: PathBuf,
+    branch: Option<String>,
+    /// git's reason, when the folder or its gitdir is gone.
+    prunable: Option<String>,
+}
+
 /// The result of a successful landing.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Landed {
@@ -81,6 +150,8 @@ pub struct Landing {
     runner: GitRunner,
     state_root: PathBuf,
     env: Vec<(OsString, OsString)>,
+    /// Worktree paths the task ledger owns, which the scan never reports.
+    recorded: Vec<PathBuf>,
     lock_stale_after: Duration,
     lock_timeout: Duration,
     lock_heartbeat: Duration,
@@ -99,10 +170,19 @@ impl Landing {
             runner: GitRunner::new(git_bin),
             state_root,
             env: Vec::new(),
+            recorded: Vec::new(),
             lock_stale_after: LOCK_STALE_AFTER,
             lock_timeout: LOCK_TIMEOUT,
             lock_heartbeat: LOCK_HEARTBEAT,
         }
+    }
+
+    /// Paths the task ledger records as worktrees. Its worktrees are not in
+    /// the claim registry, so without this every worker's `done` lists the
+    /// other workers' in-flight worktrees as unregistered.
+    pub fn with_recorded_worktrees(mut self, paths: Vec<PathBuf>) -> Self {
+        self.recorded = paths;
+        self
     }
 
     /// Add an environment variable to every git child process.
@@ -131,15 +211,40 @@ impl Landing {
         validate_component("role", role)?;
         validate_component("name", name)?;
         let repo = self.repo(dir)?;
-        let base = self
-            .current_branch(dir)?
-            .ok_or_else(|| anyhow!("cannot create a worktree from a detached HEAD"))?;
+        let base = self.attached_branch(dir, "create a worktree")?;
         let base_commit = self.text(dir, &["rev-parse", "--verify", "HEAD"])?;
         let branch = format!("wt/{role}-{name}");
         let path = repo.top.join(".worktrees").join(format!("{role}-{name}"));
 
-        let _guard = self.lock(&repo)?;
-        let mut claims = self.load_unlocked(&repo)?;
+        let (_guard, claims) = self.lock_and_load(&repo)?;
+        self.check_free(&repo, &claims, role, name, &path, &branch)?;
+        self.add_worktree(&repo, &path, &branch, &base)?;
+        let claim = Claim::open(role, name, record_id, path, branch, base, base_commit);
+        self.register(&repo, claims, claim)
+    }
+
+    /// Add `claim` to the registry `claims` and write it.
+    fn register(&self, repo: &Repo, mut claims: Vec<Claim>, claim: Claim) -> Result<Claim> {
+        claims.push(claim.clone());
+        self.write_unlocked(repo, &claims).with_context(|| {
+            format!(
+                "the worktree and branch were kept, but the claim registry was not written; inspect with: git -C {} worktree list",
+                repo.top.display()
+            )
+        })?;
+        Ok(claim)
+    }
+
+    /// Refuse a name that a claim, a folder or a branch already uses.
+    fn check_free(
+        &self,
+        repo: &Repo,
+        claims: &[Claim],
+        role: &str,
+        name: &str,
+        path: &Path,
+        branch: &str,
+    ) -> Result<()> {
         if claims
             .iter()
             .any(|claim| claim.role == role && claim.name == name)
@@ -152,10 +257,15 @@ impl Landing {
                 path.display()
             );
         }
-        let path_arg = path_text(&path)?;
+        Ok(())
+    }
+
+    /// `git worktree add -b <branch> <path> <base>`, with a retry hint.
+    fn add_worktree(&self, repo: &Repo, path: &Path, branch: &str, base: &str) -> Result<()> {
+        let path_arg = path_text(path)?;
         self.run(
             &repo.top,
-            &["worktree", "add", "-b", &branch, path_arg, &base],
+            &["worktree", "add", "-b", branch, path_arg, base],
         )
         .with_context(|| {
             format!(
@@ -165,28 +275,7 @@ impl Landing {
                 path.display()
             )
         })?;
-        let claim = Claim {
-            id: uuid::Uuid::new_v4().simple().to_string(),
-            name: name.to_owned(),
-            role: role.to_owned(),
-            record_id: record_id.map(str::to_owned),
-            path,
-            branch,
-            base,
-            base_commit,
-            created_at: Utc::now(),
-            state: ClaimState::Open,
-            landed_commit: None,
-            reason: None,
-        };
-        claims.push(claim.clone());
-        self.write_unlocked(&repo, &claims).with_context(|| {
-            format!(
-                "the worktree and branch were kept, but the claim registry was not written; inspect with: git -C {} worktree list",
-                repo.top.display()
-            )
-        })?;
-        Ok(claim)
+        Ok(())
     }
 
     /// Land one open claim owned by `role` into its base branch.
@@ -198,108 +287,85 @@ impl Landing {
         check: Option<&str>,
     ) -> Result<Landed> {
         let repo = self.repo(dir)?;
-        let guard = self.lock(&repo)?;
-        let mut claims = self.load_unlocked(&repo)?;
-        let matches: Vec<usize> = claims
-            .iter()
-            .enumerate()
-            .filter(|(_, claim)| {
-                claim.role == role
-                    && claim.state == ClaimState::Open
-                    && name.is_none_or(|wanted| claim.name == wanted)
-            })
-            .map(|(index, _)| index)
-            .collect();
-        if matches.len() != 1 {
-            let names = claims
-                .iter()
-                .filter(|claim| claim.role == role && claim.state == ClaimState::Open)
-                .map(|claim| claim.name.as_str())
-                .collect::<Vec<_>>()
-                .join(", ");
-            bail!(
-                "cannot select one open claim for role '{role}'; found {}: [{}]",
-                matches.len(),
-                names
-            );
-        }
-        let index = matches[0];
+        let (guard, mut claims) = self.lock_and_load(&repo)?;
+        let index = select_open(&claims, role, name)?;
         let claim = claims[index].clone();
-        let result = self.land_locked(&repo, &claim, check, &guard).map_err(|error| {
-            anyhow!(
-                "{error}\nKept branch {} and worktree when they still exist. Continue by hand:\ngit -C {} status\ngit -C {} rebase {}\ngit -C {} merge --ff-only {}\ngit -C {} worktree remove {}\ngit -C {} branch -d {}",
-                claim.branch,
-                claim.path.display(),
-                claim.path.display(),
-                claim.base,
-                repo.top.display(),
-                claim.branch,
-                repo.top.display(),
-                claim.path.display(),
-                repo.top.display(),
-                claim.branch
-            )
-        })?;
+        let result = self
+            .land_locked(&repo, &claim, check, &guard)
+            .map_err(|error| anyhow!("{error}\n{}", hand_land_hint(&claim, &repo)))?;
         claims[index].state = ClaimState::Landed;
         claims[index].landed_commit = Some(result.commit.clone());
         claims[index].reason = None;
-        self.write_unlocked(&repo, &claims).with_context(|| {
-            format!(
-                "landed {} at {}, but the registry update failed; inspect {}",
-                claim.branch,
-                result.commit,
-                self.registry_path(&repo).display()
-            )
-        })?;
+        self.write_unlocked(&repo, &claims)
+            .with_context(|| self.registry_hint(&claim, &repo, &result.commit))?;
         Ok(result)
+    }
+
+    /// The error context when a landing is done but its registry write
+    /// failed.
+    fn registry_hint(&self, claim: &Claim, repo: &Repo, commit: &str) -> String {
+        format!(
+            "landed {} at {}, but the registry update failed; inspect {}",
+            claim.branch,
+            commit,
+            self.registry_path(repo).display()
+        )
     }
 
     /// Read live status for `claim`.
     pub fn status(&self, claim: &Claim) -> Result<ClaimStatus> {
-        let exists = claim.path.is_dir();
-        if !exists {
-            let repo = claim.path.parent().and_then(Path::parent).ok_or_else(|| {
-                anyhow!(
-                    "claim path {} has no repository parent",
-                    claim.path.display()
-                )
-            })?;
-            let branch_exists = self.ref_exists(repo, &format!("refs/heads/{}", claim.branch))?;
-            let ahead = if branch_exists {
-                self.lines(
-                    repo,
-                    &["rev-list", &format!("{}..{}", claim.base, claim.branch)],
-                )?
-                .len()
-            } else {
-                0
-            };
-            let contained = if branch_exists {
-                self.is_ancestor(repo, &claim.branch, &claim.base)?
-            } else {
-                claim.state == ClaimState::Landed
-            };
-            return Ok(ClaimStatus {
-                ahead,
-                dirty: 0,
-                contained,
-                exists: false,
-            });
+        if claim.path.is_dir() {
+            self.status_of_live(claim)
+        } else {
+            self.status_of_removed(claim)
         }
+    }
+
+    fn status_of_live(&self, claim: &Claim) -> Result<ClaimStatus> {
         let dirty = line_count(&self.text(&claim.path, &["status", "--porcelain"])?);
-        let ahead = self
-            .lines(
-                &claim.path,
-                &["rev-list", &format!("{}..{}", claim.base, claim.branch)],
-            )?
-            .len();
+        let ahead = self.commits_ahead(&claim.path, claim)?;
         let contained = self.is_ancestor(&claim.path, &claim.branch, &claim.base)?;
         Ok(ClaimStatus {
             ahead,
             dirty,
             contained,
-            exists,
+            exists: true,
         })
+    }
+
+    /// Status of a claim whose folder is gone: its branch may still exist.
+    fn status_of_removed(&self, claim: &Claim) -> Result<ClaimStatus> {
+        let repo = claim.path.parent().and_then(Path::parent).ok_or_else(|| {
+            anyhow!(
+                "claim path {} has no repository parent",
+                claim.path.display()
+            )
+        })?;
+        let (ahead, contained) =
+            if self.ref_exists(repo, &format!("refs/heads/{}", claim.branch))? {
+                (
+                    self.commits_ahead(repo, claim)?,
+                    self.is_ancestor(repo, &claim.branch, &claim.base)?,
+                )
+            } else {
+                (0, claim.state == ClaimState::Landed)
+            };
+        Ok(ClaimStatus {
+            ahead,
+            dirty: 0,
+            contained,
+            exists: false,
+        })
+    }
+
+    /// The number of commits on the claim branch that its base lacks.
+    fn commits_ahead(&self, dir: &Path, claim: &Claim) -> Result<usize> {
+        Ok(self
+            .lines(
+                dir,
+                &["rev-list", &format!("{}..{}", claim.base, claim.branch)],
+            )?
+            .len())
     }
 
     /// Return all registered claims for the repository containing `dir`.
@@ -314,38 +380,22 @@ impl Landing {
         Ok(self
             .claims(dir)?
             .into_iter()
-            .filter(|claim| {
-                claim.state == ClaimState::Open && claim.record_id.as_deref() == Some(record_id)
-            })
+            .filter(|claim| claim.is_open_for_record(record_id))
             .collect())
     }
 
     /// Return whether any registry has an open claim owned by one ledger record.
     pub fn record_has_open_claims(&self, record_id: &str) -> Result<bool> {
         let registry_dir = self.state_root.join("worktrees");
-        let entries = match std::fs::read_dir(&registry_dir) {
-            Ok(entries) => entries,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
-            Err(error) => {
-                return Err(error).with_context(|| format!("reading {}", registry_dir.display()))
-            }
-        };
         let mut found = false;
-        for entry in entries {
+        for entry in read_dir_if_exists(&registry_dir)?.into_iter().flatten() {
             let path = entry
                 .with_context(|| format!("reading {}", registry_dir.display()))?
                 .path();
-            if path.extension().and_then(|extension| extension.to_str()) != Some("json") {
-                continue;
-            }
-            let bytes = std::fs::read(&path)
-                .with_context(|| format!("reading claim registry {}", path.display()))?;
-            let claims: Vec<Claim> = serde_json::from_slice(&bytes)
-                .with_context(|| format!("reading claim registry {}", path.display()))?;
-            if claims.iter().any(|claim| {
-                claim.state == ClaimState::Open && claim.record_id.as_deref() == Some(record_id)
-            }) {
-                found = true;
+            if path.extension().and_then(|extension| extension.to_str()) == Some("json") {
+                found |= registry_claims(&path)?
+                    .iter()
+                    .any(|claim| claim.is_open_for_record(record_id));
             }
         }
         Ok(found)
@@ -354,8 +404,7 @@ impl Landing {
     /// Mark a claim unlanded without removing its branch or worktree.
     pub fn mark_unlanded(&self, dir: &Path, claim_id: &str, reason: &str) -> Result<Claim> {
         let repo = self.repo(dir)?;
-        let _guard = self.lock(&repo)?;
-        let mut claims = self.load_unlocked(&repo)?;
+        let (_guard, mut claims) = self.lock_and_load(&repo)?;
         let claim = claims
             .iter_mut()
             .find(|claim| claim.id == claim_id)
@@ -371,43 +420,78 @@ impl Landing {
     }
 
     /// List changed linked worktrees which have no registry claim.
-    pub fn unregistered(&self, dir: &Path) -> Result<Vec<Unregistered>> {
+    ///
+    /// Only worktrees under the repo's `.worktrees/` folder are fleet
+    /// worktrees: the operator's own checkouts anywhere on disk are not
+    /// reported. A path git cannot read is skipped and named, so one deleted
+    /// folder does not fail the scan.
+    pub fn unregistered(&self, dir: &Path) -> Result<UnregisteredScan> {
         let repo = self.repo(dir)?;
-        let base = self
-            .current_branch(dir)?
-            .ok_or_else(|| anyhow!("cannot scan unregistered worktrees from a detached HEAD"))?;
+        let base = self.attached_branch(dir, "scan unregistered worktrees")?;
         let registered = self.claims(dir)?;
-        let mut result = Vec::new();
-        for (path, branch) in self.worktrees(&repo.top)? {
-            if path == repo.top || registered.iter().any(|claim| claim.path == path) {
-                continue;
-            }
-            if path
-                .strip_prefix(repo.top.join(".worktrees"))
-                .ok()
-                .and_then(|relative| relative.components().next())
-                .is_some_and(|part| part.as_os_str().to_string_lossy().starts_with('_'))
-            {
-                continue;
-            }
-            let dirty = line_count(&self.text(&path, &["status", "--porcelain"])?);
-            if branch.is_none() && dirty == 0 {
-                continue;
-            }
-            let ahead = self
-                .lines(&path, &["rev-list", &format!("{base}..HEAD")])?
-                .len();
-            if ahead != 0 || dirty != 0 {
-                result.push(Unregistered {
-                    path,
-                    branch,
-                    ahead,
-                    dirty,
-                });
-            }
+        let mut scan = UnregisteredScan::default();
+        for worktree in self.fleet_worktrees(&repo)? {
+            self.scan_worktree(&mut scan, worktree, &repo, &registered, &base)?;
         }
-        result.sort_by(|a, b| a.path.cmp(&b.path));
-        Ok(result)
+        scan.entries.sort_by(|a, b| a.path.cmp(&b.path));
+        Ok(scan)
+    }
+
+    /// The linked worktrees under the `.worktrees/` folder of `repo`.
+    fn fleet_worktrees(&self, repo: &Repo) -> Result<Vec<Worktree>> {
+        let root = repo.top.join(".worktrees");
+        Ok(self
+            .worktrees(&repo.top)?
+            .into_iter()
+            .filter(|worktree| worktree.path != repo.top && worktree.path.starts_with(&root))
+            .collect())
+    }
+
+    /// Add `worktree` to `scan`: skipped when git cannot read it, left out
+    /// when it is claimed or private, an entry when it holds a change.
+    fn scan_worktree(
+        &self,
+        scan: &mut UnregisteredScan,
+        worktree: Worktree,
+        repo: &Repo,
+        registered: &[Claim],
+        base: &str,
+    ) -> Result<()> {
+        let root = repo.top.join(".worktrees");
+        match unreadable(&worktree) {
+            Some(reason) => scan.skipped.push(Skipped {
+                path: worktree.path,
+                reason,
+            }),
+            None if self.is_claimed(registered, &worktree.path)
+                || is_private_worktree(&root, &worktree.path) => {}
+            None => scan.entries.extend(self.changed_worktree(worktree, base)?),
+        }
+        Ok(())
+    }
+
+    /// Whether a registry claim or the task ledger owns the worktree `path`.
+    fn is_claimed(&self, registered: &[Claim], path: &Path) -> bool {
+        registered.iter().any(|claim| claim.path == path)
+            || self.recorded.contains(&path.to_path_buf())
+    }
+
+    /// `worktree` as an [`Unregistered`] entry, or `None` when it holds no
+    /// change: no commit past `base` and no dirty entry.
+    fn changed_worktree(&self, worktree: Worktree, base: &str) -> Result<Option<Unregistered>> {
+        let dirty = line_count(&self.text(&worktree.path, &["status", "--porcelain"])?);
+        if worktree.branch.is_none() && dirty == 0 {
+            return Ok(None);
+        }
+        let ahead = self
+            .lines(&worktree.path, &["rev-list", &format!("{base}..HEAD")])?
+            .len();
+        Ok((ahead != 0 || dirty != 0).then_some(Unregistered {
+            path: worktree.path,
+            branch: worktree.branch,
+            ahead,
+            dirty,
+        }))
     }
 
     fn land_locked(
@@ -417,6 +501,22 @@ impl Landing {
         check: Option<&str>,
         guard: &fsx::DirLockGuard,
     ) -> Result<Landed> {
+        let base_checkout = self.check_landable(repo, claim)?;
+        let old_branch = self.text(&claim.path, &["rev-parse", "--verify", &claim.branch])?;
+        let base_tip = self.text(&repo.top, &["rev-parse", "--verify", &claim.base])?;
+        let rebase = self.output(&claim.path, &["rebase", &claim.base])?;
+        if rebase.status != 0 {
+            return Err(self.abort_rebase(claim, &old_branch, &rebase));
+        }
+        let new_branch = self.text(&claim.path, &["rev-parse", "--verify", &claim.branch])?;
+        self.run_landing_check(claim, check, guard)
+            .and_then(|()| self.finish_land(repo, claim, &base_tip, &new_branch, base_checkout))
+            .map_err(|error| note_rebased(error, claim, &old_branch, &new_branch))
+    }
+
+    /// Refuse a missing or dirty worktree, and a base checked out in more
+    /// than 1 worktree. Returns the checkout of the base, if any.
+    fn check_landable(&self, repo: &Repo, claim: &Claim) -> Result<Option<PathBuf>> {
         if !claim.path.is_dir() {
             bail!("worktree {} does not exist", claim.path.display());
         }
@@ -428,12 +528,11 @@ impl Landing {
                 line_count(&dirty)
             );
         }
-
         let base_checkouts = self
             .worktrees(&repo.top)?
             .into_iter()
-            .filter(|(_, branch)| branch.as_deref() == Some(claim.base.as_str()))
-            .map(|(path, _)| path)
+            .filter(|worktree| worktree.branch.as_deref() == Some(claim.base.as_str()))
+            .map(|worktree| worktree.path)
             .collect::<Vec<_>>();
         if base_checkouts.len() > 1 {
             bail!(
@@ -447,101 +546,111 @@ impl Landing {
                     .join(", ")
             );
         }
+        Ok(base_checkouts.into_iter().next())
+    }
 
-        let old_branch = self.text(&claim.path, &["rev-parse", "--verify", &claim.branch])?;
-        let base_tip = self.text(&repo.top, &["rev-parse", "--verify", &claim.base])?;
-        let rebase = self.output(&claim.path, &["rebase", &claim.base])?;
-        if rebase.status != 0 {
-            let conflicts = self
-                .text_allow_failure(&claim.path, &["diff", "--name-only", "--diff-filter=U"])
-                .unwrap_or_default();
-            let abort = self.output(&claim.path, &["rebase", "--abort"])?;
-            if abort.status != 0 {
-                bail!(
-                    "git rebase failed and git rebase --abort also failed: {}",
-                    stderr(&abort)
-                );
-            }
-            let restored = self.text(&claim.path, &["rev-parse", "--verify", &claim.branch])?;
-            if restored != old_branch {
-                bail!("git rebase --abort did not restore branch {}", claim.branch);
-            }
-            let detail = if conflicts.is_empty() {
-                stderr(&rebase)
-            } else {
-                format!(
-                    "conflicting files: {}",
-                    conflicts.lines().collect::<Vec<_>>().join(", ")
-                )
-            };
-            bail!("git rebase {} failed: {detail}", claim.base);
+    /// Abort the failed `rebase` and check that the branch is back at
+    /// `old_branch`. Returns the error that names the failure.
+    fn abort_rebase(&self, claim: &Claim, old_branch: &str, rebase: &GitOutput) -> anyhow::Error {
+        let conflicts = self
+            .text_allow_failure(&claim.path, &["diff", "--name-only", "--diff-filter=U"])
+            .unwrap_or_default();
+        match self.restore_after_rebase(claim, old_branch) {
+            Err(error) => error,
+            Ok(()) => anyhow!(
+                "git rebase {} failed: {}",
+                claim.base,
+                rebase_detail(&conflicts, rebase)
+            ),
         }
-        let new_branch = self.text(&claim.path, &["rev-parse", "--verify", &claim.branch])?;
-        let after_rebase = (|| {
-            if let Some(command) = check {
-                let status = self.run_check_with_heartbeat(&claim.path, command, guard)?;
-                if !status.success() {
-                    bail!("check failed with status {status}: {command}");
-                }
-            }
+    }
 
-            let commits = self
-                .lines(
-                    &claim.path,
-                    &["rev-list", &format!("{base_tip}..{new_branch}")],
-                )?
-                .len();
-            let base_checkout = base_checkouts.into_iter().next();
-            let base_was_checked_out = base_checkout.is_some();
-            match base_checkout {
-                Some(path) => {
-                    self.run(&path, &["merge", "--ff-only", &claim.branch])?;
-                }
-                None => {
-                    self.run(
-                        &repo.top,
-                        &["fetch", ".", &format!("{}:{}", claim.branch, claim.base)],
-                    )?;
-                }
-            }
-            let contains = self.is_ancestor(&repo.top, &claim.branch, &claim.base)?;
-            if !contains {
-                bail!(
-                    "base {} does not contain {} after fast-forward",
-                    claim.base,
-                    claim.branch
-                );
-            }
-            // `branch -d` checks the upstream when one exists. Set it when the
-            // repository's current checkout is unrelated to the landed base.
-            if !base_was_checked_out {
-                self.run(
-                    &repo.top,
-                    &["branch", "--set-upstream-to", &claim.base, &claim.branch],
-                )?;
-            }
-            self.run(&repo.top, &["worktree", "remove", path_text(&claim.path)?])?;
-            self.run(&repo.top, &["branch", "-d", &claim.branch])?;
-            Ok(Landed {
-                branch: claim.branch.clone(),
-                base: claim.base.clone(),
-                commit: new_branch.clone(),
-                commits,
-            })
-        })();
-        after_rebase.map_err(|error| {
-            if old_branch == new_branch {
-                error
-            } else {
-                anyhow!(
-                    "{error}\nbranch {} was rebased from {} to {}; the old tip is {} in the reflog",
-                    claim.branch,
-                    old_branch,
-                    new_branch,
-                    old_branch
-                )
-            }
+    fn restore_after_rebase(&self, claim: &Claim, old_branch: &str) -> Result<()> {
+        let abort = self.output(&claim.path, &["rebase", "--abort"])?;
+        if abort.status != 0 {
+            bail!(
+                "git rebase failed and git rebase --abort also failed: {}",
+                stderr(&abort)
+            );
+        }
+        let restored = self.text(&claim.path, &["rev-parse", "--verify", &claim.branch])?;
+        if restored != old_branch {
+            bail!("git rebase --abort did not restore branch {}", claim.branch);
+        }
+        Ok(())
+    }
+
+    /// Run the landing check `check`, if any, in the claim worktree.
+    fn run_landing_check(
+        &self,
+        claim: &Claim,
+        check: Option<&str>,
+        guard: &fsx::DirLockGuard,
+    ) -> Result<()> {
+        let Some(command) = check else {
+            return Ok(());
+        };
+        let status = self.run_check_with_heartbeat(&claim.path, command, guard)?;
+        if status.success() {
+            Ok(())
+        } else {
+            Err(anyhow!("check failed with status {status}: {command}"))
+        }
+    }
+
+    /// Fast-forward the base to the rebased branch, then remove the
+    /// worktree and the branch.
+    fn finish_land(
+        &self,
+        repo: &Repo,
+        claim: &Claim,
+        base_tip: &str,
+        new_branch: &str,
+        base_checkout: Option<PathBuf>,
+    ) -> Result<Landed> {
+        let commits = self
+            .lines(
+                &claim.path,
+                &["rev-list", &format!("{base_tip}..{new_branch}")],
+            )?
+            .len();
+        self.fast_forward(repo, claim, base_checkout.as_deref())?;
+        self.run(&repo.top, &["worktree", "remove", path_text(&claim.path)?])?;
+        self.run(&repo.top, &["branch", "-d", &claim.branch])?;
+        Ok(Landed {
+            branch: claim.branch.clone(),
+            base: claim.base.clone(),
+            commit: new_branch.to_owned(),
+            commits,
         })
+    }
+
+    /// Move the base to the claim branch: a `merge --ff-only` in the base
+    /// checkout, or a `fetch .` when no worktree has the base checked out.
+    fn fast_forward(&self, repo: &Repo, claim: &Claim, base_checkout: Option<&Path>) -> Result<()> {
+        match base_checkout {
+            Some(path) => self.run(path, &["merge", "--ff-only", &claim.branch])?,
+            None => self.run(
+                &repo.top,
+                &["fetch", ".", &format!("{}:{}", claim.branch, claim.base)],
+            )?,
+        };
+        if !self.is_ancestor(&repo.top, &claim.branch, &claim.base)? {
+            bail!(
+                "base {} does not contain {} after fast-forward",
+                claim.base,
+                claim.branch
+            );
+        }
+        // `branch -d` checks the upstream when one exists. Set it when the
+        // repository's current checkout is unrelated to the landed base.
+        if base_checkout.is_none() {
+            self.run(
+                &repo.top,
+                &["branch", "--set-upstream-to", &claim.base, &claim.branch],
+            )?;
+        }
+        Ok(())
     }
 
     fn run_check_with_heartbeat(
@@ -579,7 +688,7 @@ impl Landing {
             .worktrees(dir)?
             .into_iter()
             .next()
-            .map(|(path, _)| path)
+            .map(|worktree| worktree.path)
             .ok_or_else(|| anyhow!("git worktree list returned no main worktree"))?;
         let common_text = self.text(&top, &["rev-parse", "--git-common-dir"])?;
         let common = PathBuf::from(common_text);
@@ -656,6 +765,19 @@ impl Landing {
             .collect())
     }
 
+    /// The branch checked out at `dir`. A detached HEAD is the error
+    /// "cannot <doing> from a detached HEAD".
+    fn attached_branch(&self, dir: &Path, doing: &str) -> Result<String> {
+        self.current_branch(dir)?
+            .ok_or_else(|| anyhow!("cannot {doing} from a detached HEAD"))
+    }
+
+    /// Take the registry lock of `repo` and read its claims.
+    fn lock_and_load(&self, repo: &Repo) -> Result<(fsx::DirLockGuard, Vec<Claim>)> {
+        let guard = self.lock(repo)?;
+        Ok((guard, self.load_unlocked(repo)?))
+    }
+
     fn current_branch(&self, dir: &Path) -> Result<Option<String>> {
         let out = self.output(dir, &["symbolic-ref", "--quiet", "--short", "HEAD"])?;
         match out.status {
@@ -683,12 +805,13 @@ impl Landing {
         }
     }
 
-    fn worktrees(&self, repo: &Path) -> Result<Vec<(PathBuf, Option<String>)>> {
+    fn worktrees(&self, repo: &Path) -> Result<Vec<Worktree>> {
         let text = self.text(repo, &["worktree", "list", "--porcelain"])?;
         let mut result = Vec::new();
         for block in text.split("\n\n") {
             let mut path = None;
             let mut branch = None;
+            let mut prunable = None;
             for line in block.lines() {
                 if let Some(value) = line.strip_prefix("worktree ") {
                     path = Some(PathBuf::from(value));
@@ -699,10 +822,17 @@ impl Landing {
                             .unwrap_or(value)
                             .to_owned(),
                     );
+                } else if let Some(value) = line.strip_prefix("prunable") {
+                    // `prunable <reason>` on git 2.36 and later.
+                    prunable = Some(value.trim().to_owned());
                 }
             }
             if let Some(path) = path {
-                result.push((path, branch));
+                result.push(Worktree {
+                    path,
+                    branch,
+                    prunable,
+                });
             }
         }
         Ok(result)
@@ -722,6 +852,115 @@ impl Landing {
             .status()
             .with_context(|| format!("running check: {command}"))
     }
+}
+
+/// The 1 open claim of `role`, named `name` when given. Its index in
+/// `claims`.
+fn select_open(claims: &[Claim], role: &str, name: Option<&str>) -> Result<usize> {
+    let matches: Vec<usize> = claims
+        .iter()
+        .enumerate()
+        .filter(|(_, claim)| {
+            claim.is_open_for_role(role) && name.is_none_or(|wanted| claim.name == wanted)
+        })
+        .map(|(index, _)| index)
+        .collect();
+    if let [index] = matches[..] {
+        return Ok(index);
+    }
+    let names = claims
+        .iter()
+        .filter(|claim| claim.is_open_for_role(role))
+        .map(|claim| claim.name.as_str())
+        .collect::<Vec<_>>()
+        .join(", ");
+    Err(anyhow!(
+        "cannot select one open claim for role '{role}'; found {}: [{}]",
+        matches.len(),
+        names
+    ))
+}
+
+/// The commands that finish a failed landing by hand.
+fn hand_land_hint(claim: &Claim, repo: &Repo) -> String {
+    format!(
+        "Kept branch {} and worktree when they still exist. Continue by hand:\ngit -C {} status\ngit -C {} rebase {}\ngit -C {} merge --ff-only {}\ngit -C {} worktree remove {}\ngit -C {} branch -d {}",
+        claim.branch,
+        claim.path.display(),
+        claim.path.display(),
+        claim.base,
+        repo.top.display(),
+        claim.branch,
+        repo.top.display(),
+        claim.path.display(),
+        repo.top.display(),
+        claim.branch
+    )
+}
+
+/// Add the old tip to `error` when the rebase moved the branch.
+fn note_rebased(error: anyhow::Error, claim: &Claim, old: &str, new: &str) -> anyhow::Error {
+    if old == new {
+        error
+    } else {
+        anyhow!(
+            "{error}\nbranch {} was rebased from {} to {}; the old tip is {} in the reflog",
+            claim.branch,
+            old,
+            new,
+            old
+        )
+    }
+}
+
+/// What a failed rebase says: its conflicting files, else git's stderr.
+fn rebase_detail(conflicts: &str, rebase: &GitOutput) -> String {
+    if conflicts.is_empty() {
+        stderr(rebase)
+    } else {
+        format!(
+            "conflicting files: {}",
+            conflicts.lines().collect::<Vec<_>>().join(", ")
+        )
+    }
+}
+
+/// A worktree git cannot read, and why: every git call inside a worktree
+/// whose folder or gitdir is gone exits 128.
+fn unreadable(worktree: &Worktree) -> Option<&'static str> {
+    if worktree.prunable.is_some() {
+        Some("prunable")
+    } else if !worktree.path.is_dir() {
+        Some("folder missing")
+    } else {
+        None
+    }
+}
+
+/// Whether `path` is under a `_`-prefixed folder of the fleet worktrees
+/// folder `root`: a private worktree, never reported.
+fn is_private_worktree(root: &Path, path: &Path) -> bool {
+    path.strip_prefix(root)
+        .ok()
+        .and_then(|relative| relative.components().next())
+        .is_some_and(|part| part.as_os_str().to_string_lossy().starts_with('_'))
+}
+
+/// The entries of `dir`, or `None` when it does not exist.
+fn read_dir_if_exists(dir: &Path) -> Result<Option<std::fs::ReadDir>> {
+    match std::fs::read_dir(dir) {
+        Ok(entries) => Ok(Some(entries)),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error).with_context(|| format!("reading {}", dir.display())),
+    }
+}
+
+/// The claims in the registry file `path`.
+fn registry_claims(path: &Path) -> Result<Vec<Claim>> {
+    let bytes = std::fs::read(path)
+        .with_context(|| format!("reading claim registry {}", path.display()))?;
+    serde_json::from_slice(&bytes)
+        .with_context(|| format!("reading claim registry {}", path.display()))
 }
 
 fn validate_component(label: &str, value: &str) -> Result<()> {
@@ -1067,11 +1306,12 @@ mod tests {
 
     #[test]
     fn arc_31_long_check_keeps_the_lock() {
-        // The check holds until the test releases it, so it outlives the
-        // stale age by a known margin; wall-clock races under a loaded test
-        // run made the 0.3 s version flaky.
+        // The check holds until the test releases it. The test ages the
+        // lock past its stale age by hand and waits for the heartbeat to
+        // refresh it: no wall-clock margin, which a loaded test run (a slow
+        // fsync in the refresh) broke at a 0.4 s stale age.
         let fixture = Fixture::new();
-        let stale = Duration::from_millis(400);
+        let stale = Duration::from_secs(3600);
         let landing = configured_landing(&fixture.state, &fixture.config).with_lock_timing(
             stale,
             Duration::from_millis(200),
@@ -1093,13 +1333,31 @@ mod tests {
         let land = std::thread::spawn(move || {
             worker_landing.land(&worker_path, "worker", Some("one"), Some(&command))
         });
-        let deadline = std::time::Instant::now() + Duration::from_secs(60);
-        while !marker.exists() && std::time::Instant::now() < deadline {
-            std::thread::sleep(Duration::from_millis(5));
-        }
-        assert!(marker.exists(), "the check started");
-        // Without the heartbeat the lock would be stale by now.
-        std::thread::sleep(stale * 5 / 2);
+        let wait_for = |what: &str, done: &dyn Fn() -> bool| {
+            let deadline = std::time::Instant::now() + Duration::from_secs(60);
+            while !done() && std::time::Instant::now() < deadline {
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            if !done() {
+                // A failed assert must not leave the check looping forever.
+                fs::write(&release, "").unwrap();
+                panic!("{what}");
+            }
+        };
+        wait_for("the check started", &|| marker.exists());
+        let lock = fs::read_dir(fixture.state.join("worktrees"))
+            .unwrap()
+            .flatten()
+            .map(|e| e.path())
+            .find(|p| p.extension().is_some_and(|x| x == "lock"))
+            .expect("the land holds the registry lock");
+        let mtime = || fs::metadata(&lock).and_then(|m| m.modified()).ok();
+        let aged = std::time::SystemTime::now() - stale * 2;
+        fs::File::open(&lock).unwrap().set_modified(aged).unwrap();
+        // Without the heartbeat the lock stays stale.
+        wait_for("the heartbeat refreshed the lock", &|| {
+            mtime().is_some_and(|t| t > aged + stale)
+        });
         let second = landing.create(&fixture.repo, "worker-2", None, "two");
         // Release before any assert: a failed assert must not leave the
         // check looping forever.
@@ -1257,10 +1515,118 @@ mod tests {
         );
         fixture.commit_file(&path, "raw.txt", "raw\n", "raw");
         let found = fixture.landing.unregistered(&fixture.repo).unwrap();
-        assert_eq!(found.len(), 1);
-        assert_eq!(found[0].path, path.canonicalize().unwrap());
-        assert_eq!(found[0].branch.as_deref(), Some("raw"));
-        assert_eq!(found[0].ahead, 1);
+        assert_eq!(found.entries.len(), 1);
+        assert!(found.skipped.is_empty());
+        assert_eq!(found.entries[0].path, path.canonicalize().unwrap());
+        assert_eq!(found.entries[0].branch.as_deref(), Some("raw"));
+        assert_eq!(found.entries[0].ahead, 1);
+    }
+
+    /// P27: one deleted folder used to fail the whole scan, so `done` reported
+    /// nothing at all. It is skipped and named, and the rest is still read.
+    #[test]
+    fn arc_31_unregistered_skips_a_deleted_folder_and_names_it() {
+        let fixture = Fixture::new();
+        let gone = fixture.repo.join(".worktrees/gone");
+        fixture.git(
+            &fixture.repo,
+            &[
+                "worktree",
+                "add",
+                "-b",
+                "gone",
+                gone.to_str().unwrap(),
+                "main",
+            ],
+        );
+        let gone_path = gone.canonicalize().unwrap();
+        let kept = fixture.repo.join(".worktrees/kept");
+        fixture.git(
+            &fixture.repo,
+            &[
+                "worktree",
+                "add",
+                "-b",
+                "kept",
+                kept.to_str().unwrap(),
+                "main",
+            ],
+        );
+        fixture.commit_file(&kept, "kept.txt", "kept\n", "kept");
+        std::fs::remove_dir_all(&gone).unwrap();
+
+        let found = fixture.landing.unregistered(&fixture.repo).unwrap();
+        assert_eq!(
+            found.entries.len(),
+            1,
+            "the readable worktree is still read"
+        );
+        assert_eq!(found.entries[0].path, kept.canonicalize().unwrap());
+        assert_eq!(found.skipped.len(), 1, "the deleted one is named");
+        assert_eq!(found.skipped[0].path, gone_path);
+        assert!(
+            matches!(found.skipped[0].reason, "prunable" | "folder missing"),
+            "reason: {}",
+            found.skipped[0].reason
+        );
+    }
+
+    /// P30: the operator's own checkouts anywhere on disk are not fleet
+    /// worktrees, however dirty they are.
+    #[test]
+    fn arc_31_unregistered_ignores_worktrees_outside_the_worktrees_folder() {
+        let fixture = Fixture::new();
+        let operator = fixture._temp.path().join("operator-checkout");
+        fixture.git(
+            &fixture.repo,
+            &[
+                "worktree",
+                "add",
+                "-b",
+                "operator",
+                operator.to_str().unwrap(),
+                "main",
+            ],
+        );
+        fixture.commit_file(&operator, "operator.txt", "operator\n", "operator");
+        std::fs::write(operator.join("operator.txt"), "dirty\n").unwrap();
+        let found = fixture.landing.unregistered(&fixture.repo).unwrap();
+        assert!(found.is_empty(), "entries: {:?}", found.entries);
+        assert!(found.skipped.is_empty(), "skipped: {:?}", found.skipped);
+    }
+
+    /// A task-ledger worktree is not in the claim registry, so without the
+    /// ledger's paths every worker's `done` lists its peers' work as
+    /// UNREGISTERED.
+    #[test]
+    fn arc_31_unregistered_skips_recorded_worktrees() {
+        let fixture = Fixture::new();
+        let path = fixture.repo.join(".worktrees/T1-ledger");
+        fixture.git(
+            &fixture.repo,
+            &[
+                "worktree",
+                "add",
+                "-b",
+                "ledger",
+                path.to_str().unwrap(),
+                "main",
+            ],
+        );
+        fixture.commit_file(&path, "ledger.txt", "ledger\n", "ledger");
+        let landing = configured_landing(&fixture.state, &fixture.config)
+            .with_recorded_worktrees(vec![path.canonicalize().unwrap()]);
+        assert!(landing.unregistered(&fixture.repo).unwrap().is_empty());
+        // Without the ledger's paths it is still reported.
+        assert_eq!(
+            fixture
+                .landing
+                .unregistered(&fixture.repo)
+                .unwrap()
+                .entries
+                .len(),
+            1
+        );
     }
 
     #[test]
@@ -1295,5 +1661,143 @@ mod tests {
             .unregistered(&fixture.repo)
             .unwrap()
             .is_empty());
+    }
+
+    #[test]
+    fn status_reads_a_live_and_a_removed_worktree() {
+        let fixture = Fixture::new();
+        let mut claim = fixture.create("worker", None, "one");
+        fixture.commit_file(&claim.path, "worker.txt", "work\n", "worker");
+        fs::write(claim.path.join("untracked.txt"), "new\n").unwrap();
+        let live = fixture.landing.status(&claim).unwrap();
+        assert_eq!(
+            live,
+            ClaimStatus {
+                ahead: 1,
+                dirty: 1,
+                contained: false,
+                exists: true
+            }
+        );
+
+        let path = claim.path.to_str().unwrap().to_owned();
+        fixture.git(&fixture.repo, &["worktree", "remove", "--force", &path]);
+        let kept = fixture.landing.status(&claim).unwrap();
+        assert_eq!(
+            kept,
+            ClaimStatus {
+                ahead: 1,
+                dirty: 0,
+                contained: false,
+                exists: false
+            },
+            "the branch outlives the folder"
+        );
+
+        fixture.git(&fixture.repo, &["branch", "-D", &claim.branch]);
+        let gone = fixture.landing.status(&claim).unwrap();
+        assert_eq!((gone.ahead, gone.contained, gone.exists), (0, false, false));
+        claim.state = ClaimState::Landed;
+        assert!(
+            fixture.landing.status(&claim).unwrap().contained,
+            "a landed claim without its branch counts as contained"
+        );
+
+        claim.path = PathBuf::from("w3-no-such-folder");
+        let error = fixture.landing.status(&claim).unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "claim path w3-no-such-folder has no repository parent"
+        );
+    }
+
+    #[test]
+    fn land_needs_exactly_one_open_claim_of_the_role() {
+        let fixture = Fixture::new();
+        let error = fixture
+            .landing
+            .land(&fixture.repo, "worker", None, None)
+            .unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "cannot select one open claim for role 'worker'; found 0: []"
+        );
+        fixture.create("worker", None, "one");
+        fixture.create("worker", None, "two");
+        fixture.create("other", None, "three");
+        let error = fixture
+            .landing
+            .land(&fixture.repo, "worker", None, None)
+            .unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "cannot select one open claim for role 'worker'; found 2: [one, two]"
+        );
+        let error = fixture
+            .landing
+            .land(&fixture.repo, "worker", Some("nine"), None)
+            .unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "cannot select one open claim for role 'worker'; found 0: [one, two]"
+        );
+    }
+
+    #[test]
+    fn create_refuses_an_existing_branch() {
+        let fixture = Fixture::new();
+        fixture.git(&fixture.repo, &["branch", "wt/worker-one"]);
+        let error = fixture
+            .landing
+            .create(&fixture.repo, "worker", None, "one")
+            .unwrap_err();
+        let path = fixture
+            .repo
+            .canonicalize()
+            .unwrap()
+            .join(".worktrees/worker-one");
+        assert_eq!(
+            error.to_string(),
+            format!(
+                "worktree name 'one' already exists at {} or branch wt/worker-one exists",
+                path.display()
+            )
+        );
+        assert!(!path.exists());
+    }
+
+    #[test]
+    fn land_refuses_a_missing_worktree_and_keeps_the_claim_open() {
+        let fixture = Fixture::new();
+        let claim = fixture.create("worker", None, "one");
+        let path = claim.path.to_str().unwrap().to_owned();
+        fixture.git(&fixture.repo, &["worktree", "remove", "--force", &path]);
+        let error = fixture
+            .landing
+            .land(&fixture.repo, "worker", Some("one"), None)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.starts_with(&format!("worktree {path} does not exist\nKept branch")),
+            "{error}"
+        );
+        assert_eq!(
+            fixture.landing.claims(&fixture.repo).unwrap()[0].state,
+            ClaimState::Open
+        );
+    }
+
+    #[test]
+    fn record_has_open_claims_reads_every_registry_and_skips_other_files() {
+        let fixture = Fixture::new();
+        fixture.create("worker", Some("record-1"), "one");
+        let registries = fixture.state.join("worktrees");
+        fs::write(registries.join("notes.txt"), b"not json").unwrap();
+        assert!(fixture.landing.record_has_open_claims("record-1").unwrap());
+        fs::write(registries.join("broken.json"), b"not json").unwrap();
+        assert!(
+            fixture.landing.record_has_open_claims("record-1").is_err(),
+            "a broken registry fails the read even after a match"
+        );
     }
 }

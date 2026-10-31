@@ -99,13 +99,13 @@ impl FakeWorkspace {
             args: args.iter().map(|a| (*a).to_owned()).collect(),
         });
         if st.unreachable {
-            return Err(anyhow!("herdr: no server is running"));
-        }
-        if let Some(i) = st.failures.iter().position(|(m, _)| *m == method) {
+            Err(anyhow!("herdr: no server is running"))
+        } else if let Some(i) = st.failures.iter().position(|(m, _)| *m == method) {
             let (_, message) = st.failures.remove(i);
-            return Err(anyhow!(message));
+            Err(anyhow!(message))
+        } else {
+            Ok(())
         }
-        Ok(())
     }
 
     fn pane(&self, id: &str, workspace: &str) -> Pane {
@@ -317,6 +317,47 @@ mod tests {
         fake.fail_next("pane_run", "boom");
         let err = fake.pane_run("p1", "ls").unwrap_err();
         assert_eq!(err.to_string(), "boom");
+        fake.pane_run("p1", "ls").unwrap();
+    }
+
+    /// While the server does not answer, that error comes first and a
+    /// queued failure waits for the server to answer again. Every call is
+    /// logged, the ones that fail too.
+    #[test]
+    fn an_unreachable_server_hides_a_queued_failure_and_every_call_is_logged() {
+        let fake = FakeWorkspace::new();
+        fake.workspace_create("w", None, false).unwrap();
+        fake.fail_next("pane_run", "boom");
+        fake.set_reachable(false);
+        let err = fake.pane_run("p1", "ls").unwrap_err();
+        assert_eq!(err.to_string(), "herdr: no server is running");
+        fake.set_reachable(true);
+        let err = fake.pane_run("p1", "ls").unwrap_err();
+        assert_eq!(err.to_string(), "boom");
+        fake.pane_run("p1", "ls").unwrap();
+
+        let runs: Vec<FakeCall> = fake
+            .calls()
+            .into_iter()
+            .filter(|c| c.method == "pane_run")
+            .collect();
+        assert_eq!(runs.len(), 3);
+        assert!(runs.iter().all(|c| c.args == ["p1", "ls"]), "{runs:?}");
+    }
+
+    /// A queued failure fires for the method it names, the first time that
+    /// method is called, and for no other.
+    #[test]
+    fn a_queued_failure_waits_for_its_own_method() {
+        let fake = FakeWorkspace::new();
+        fake.workspace_create("w", None, false).unwrap();
+        fake.fail_next("pane_run", "first");
+        fake.fail_next("pane_run", "second");
+        assert_eq!(fake.pane_read("p1", "visible").unwrap(), "");
+        let err = fake.pane_run("p1", "ls").unwrap_err();
+        assert_eq!(err.to_string(), "first");
+        let err = fake.pane_run("p1", "ls").unwrap_err();
+        assert_eq!(err.to_string(), "second");
         fake.pane_run("p1", "ls").unwrap();
     }
 

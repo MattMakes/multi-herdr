@@ -126,6 +126,86 @@ fn record(
     Ok(())
 }
 
+impl From<StopRequester> for Actor {
+    fn from(by: StopRequester) -> Actor {
+        match by {
+            StopRequester::Watchdog => Actor::Watchdog,
+            StopRequester::SelfExit => Actor::Supervisor,
+            StopRequester::Operator => Actor::Operator,
+            StopRequester::Orchestrator => Actor::Orchestrator,
+        }
+    }
+}
+
+/// The recorded PID and start time, when that process still runs. Otherwise
+/// the result to record: nothing is sent to a PID that cannot be proved to
+/// be this worker's process.
+fn live_identity(
+    procs: &dyn Processes,
+    pid: Option<i64>,
+    started: Option<i64>,
+) -> Result<(u32, u64), StopResult> {
+    let pid = pid
+        .and_then(|p| u32::try_from(p).ok())
+        .ok_or(StopResult::AlreadyGone)?;
+    // No recorded start time: the PID cannot be proved to be this worker's.
+    let started = started
+        .and_then(|s| u64::try_from(s).ok())
+        .ok_or(StopResult::NotSameProcess)?;
+    if procs.is_same(pid, started) {
+        return Ok((pid, started));
+    }
+    // The PID is free, or another program has it now.
+    Err(if procs.exists(pid) {
+        StopResult::NotSameProcess
+    } else {
+        StopResult::AlreadyGone
+    })
+}
+
+/// Wait up to the grace period for the process to go. Whether it went.
+fn wait_gone(procs: &dyn Processes, pid: u32, started: u64, opts: &StopOptions) -> bool {
+    let until = Instant::now() + opts.grace;
+    while Instant::now() < until {
+        if !procs.is_same(pid, started) {
+            return true;
+        }
+        std::thread::sleep(opts.poll);
+    }
+    !procs.is_same(pid, started)
+}
+
+/// TERM, wait, then KILL if the same process still runs.
+fn signal_and_wait(
+    procs: &dyn Processes,
+    pid: u32,
+    started: u64,
+    opts: &StopOptions,
+    step: &dyn Fn(Option<StopSignal>, StopResult) -> StopStep,
+) -> Vec<StopStep> {
+    let term_sent = procs.stop_same(pid, started, procid::Stop::Term);
+    let mut steps = vec![step(
+        Some(StopSignal::Term),
+        if term_sent {
+            StopResult::Sent
+        } else {
+            StopResult::NotSameProcess
+        },
+    )];
+    if term_sent && !wait_gone(procs, pid, started, opts) {
+        let sent = procs.stop_same(pid, started, procid::Stop::Kill);
+        steps.push(step(
+            Some(StopSignal::Kill),
+            if sent {
+                StopResult::Sent
+            } else {
+                StopResult::AlreadyGone
+            },
+        ));
+    }
+    steps
+}
+
 /// Stop 1 process: TERM, wait up to the grace period, then KILL if the same
 /// process still runs. Returns the steps taken.
 fn stop_process(
@@ -142,51 +222,134 @@ fn stop_process(
         pane_id: None,
         result: result.as_str().into(),
     };
-    let Some(pid) = pid.and_then(|p| u32::try_from(p).ok()) else {
-        return vec![step(None, StopResult::AlreadyGone)];
-    };
-    let Some(started) = started.and_then(|s| u64::try_from(s).ok()) else {
-        // No recorded start time: the PID cannot be proved to be this
-        // worker's process, so nothing is sent.
-        return vec![step(None, StopResult::NotSameProcess)];
-    };
-    if !procs.is_same(pid, started) {
-        // The PID is free, or another program has it now: nothing is sent.
-        return vec![step(
-            None,
-            if procs.exists(pid) {
-                StopResult::NotSameProcess
-            } else {
-                StopResult::AlreadyGone
-            },
-        )];
+    match live_identity(procs, pid, started) {
+        Err(result) => vec![step(None, result)],
+        Ok((pid, started)) => signal_and_wait(procs, pid, started, opts, &step),
     }
+}
+
+/// Refuse the workers that `stop_worker` must not touch: the orchestrator,
+/// and a worker of another host (recorded as a step).
+fn check_stoppable(store: &Store, w: &Worker, by: StopRequester, reason: &str) -> Result<()> {
+    if w.kind == WorkerKind::Orchestrator.as_str() {
+        bail!("horch ledger stop does not stop the orchestrator; the operator does");
+    }
+    let here = util::host_name();
+    if w.host.as_deref().is_some_and(|h| h != here) {
+        let step = StopStep {
+            target: StopTarget::Agent.as_str().into(),
+            pid: w.agent_pid,
+            signal: None,
+            pane_id: None,
+            result: StopResult::RefusedOtherHost.as_str().into(),
+        };
+        record(store.conn(), w, by, reason, &step, w.agent_started)?;
+        bail!(
+            "worker {} runs on host {}, not {here}: its PIDs mean nothing here",
+            w.label(),
+            w.host.as_deref().unwrap_or("?")
+        );
+    }
+    Ok(())
+}
+
+/// Queue the task `task_id` again when `worker_id` still holds it. Returns
+/// the task as it was read, and whether it was queued.
+fn requeue_if_held(
+    conn: &Connection,
+    task_id: &str,
+    worker_id: &str,
+    why: &str,
+) -> Result<(tasks::Task, bool)> {
+    let task = tasks::get(conn, task_id)?;
+    let held = matches!(task.status.as_str(), "running" | "landing")
+        && task.current_worker_id.as_deref() == Some(worker_id);
+    if held {
+        tasks::requeue(conn, task_id, why)?;
+    }
+    Ok((task, held))
+}
+
+/// Settle the worker's row first: the supervisor sees a worker that is no
+/// longer working and records only the exit code. Returns the task queued
+/// again.
+fn end_row(
+    store: &mut Store,
+    w: &Worker,
+    by: StopRequester,
+    reason: &str,
+    opts: &StopOptions,
+) -> Result<Option<String>> {
+    store.immediate(|tx| {
+        let about = About {
+            run: w.run_id.as_deref(),
+            task: w.task_id.as_deref(),
+            worker: Some(&w.worker_id),
+        };
+        workers::end(tx, &w.worker_id, opts.final_status, reason, None)?;
+        util::event(
+            tx,
+            &about,
+            by.into(),
+            EventKind::Stopped,
+            &format!("Stopping {}: {reason}", w.label()),
+        )?;
+        let Some(t) = &w.task_id else {
+            return Ok(None);
+        };
+        let why = format!("{} was stopped: {reason}", w.label());
+        let (task, held) = requeue_if_held(tx, t, &w.worker_id, &why)?;
+        Ok(held.then(|| task.short()))
+    })
+}
+
+/// Stop the agent, then the supervisor, each by its recorded PID and start
+/// time. Every step is recorded.
+fn stop_processes(
+    store: &Store,
+    w: &Worker,
+    by: StopRequester,
+    reason: &str,
+    procs: &dyn Processes,
+    opts: &StopOptions,
+) -> Result<Vec<StopStep>> {
     let mut steps = Vec::new();
-    if procs.stop_same(pid, started, procid::Stop::Term) {
-        steps.push(step(Some(StopSignal::Term), StopResult::Sent));
-    } else {
-        steps.push(step(Some(StopSignal::Term), StopResult::NotSameProcess));
-        return steps;
-    }
-    let until = Instant::now() + opts.grace;
-    while Instant::now() < until {
-        if !procs.is_same(pid, started) {
-            return steps;
+    for (target, pid, started) in [
+        (StopTarget::Agent, w.agent_pid, w.agent_started),
+        (
+            StopTarget::Supervisor,
+            w.supervisor_pid,
+            w.supervisor_started,
+        ),
+    ] {
+        for s in stop_process(procs, target, pid, started, opts) {
+            record(store.conn(), w, by, reason, &s, started)?;
+            steps.push(s);
         }
-        std::thread::sleep(opts.poll);
     }
-    if procs.is_same(pid, started) {
-        let sent = procs.stop_same(pid, started, procid::Stop::Kill);
-        steps.push(step(
-            Some(StopSignal::Kill),
-            if sent {
-                StopResult::Sent
+    Ok(steps)
+}
+
+/// Close the worker's pane by its id.
+fn close_pane(panes: &dyn Panes, pane: Option<&String>) -> StopStep {
+    let (pane_id, result) = match pane {
+        Some(p) if panes.exists(p) => (
+            Some(p.clone()),
+            if panes.close(p).is_ok() {
+                StopResult::PaneClosed
             } else {
-                StopResult::AlreadyGone
+                StopResult::Error
             },
-        ));
+        ),
+        other => (other.cloned(), StopResult::AlreadyGone),
+    };
+    StopStep {
+        target: StopTarget::Pane.as_str().into(),
+        pid: None,
+        signal: None,
+        pane_id,
+        result: result.as_str().into(),
     }
-    steps
 }
 
 /// Stop worker `worker_id`: its agent, then its supervisor, each by the PID
@@ -203,94 +366,10 @@ pub fn stop_worker(
     opts: &StopOptions,
 ) -> Result<StopReport> {
     let w = workers::get(store.conn(), worker_id)?;
-    if w.kind == WorkerKind::Orchestrator.as_str() {
-        bail!("horch ledger stop does not stop the orchestrator; the operator does");
-    }
-    let here = util::host_name();
-    if w.host.as_deref().is_some_and(|h| h != here) {
-        let step = StopStep {
-            target: StopTarget::Agent.as_str().into(),
-            pid: w.agent_pid,
-            signal: None,
-            pane_id: None,
-            result: StopResult::RefusedOtherHost.as_str().into(),
-        };
-        record(store.conn(), &w, by, reason, &step, w.agent_started)?;
-        bail!(
-            "worker {} runs on host {}, not {here}: its PIDs mean nothing here",
-            w.label(),
-            w.host.as_deref().unwrap_or("?")
-        );
-    }
-    // Settle the row first: the supervisor sees a worker that is no longer
-    // working and records only the exit code.
-    let requeued = store.immediate(|tx| {
-        let about = About {
-            run: w.run_id.as_deref(),
-            task: w.task_id.as_deref(),
-            worker: Some(worker_id),
-        };
-        workers::end(tx, worker_id, opts.final_status, reason, None)?;
-        util::event(
-            tx,
-            &about,
-            match by {
-                StopRequester::Watchdog => Actor::Watchdog,
-                StopRequester::SelfExit => Actor::Supervisor,
-                StopRequester::Operator => Actor::Operator,
-                StopRequester::Orchestrator => Actor::Orchestrator,
-            },
-            EventKind::Stopped,
-            &format!("Stopping {}: {reason}", w.label()),
-        )?;
-        let mut requeued = None;
-        if let Some(t) = &w.task_id {
-            let task = tasks::get(tx, t)?;
-            if matches!(task.status.as_str(), "running" | "landing")
-                && task.current_worker_id.as_deref() == Some(worker_id)
-            {
-                tasks::requeue(tx, t, &format!("{} was stopped: {reason}", w.label()))?;
-                requeued = Some(task.short());
-            }
-        }
-        Ok(requeued)
-    })?;
-    let mut steps = Vec::new();
-    for (target, pid, started) in [
-        (StopTarget::Agent, w.agent_pid, w.agent_started),
-        (
-            StopTarget::Supervisor,
-            w.supervisor_pid,
-            w.supervisor_started,
-        ),
-    ] {
-        for s in stop_process(procs, target, pid, started, opts) {
-            record(store.conn(), &w, by, reason, &s, started)?;
-            steps.push(s);
-        }
-    }
-    let pane_step = match &w.pane_id {
-        Some(pane) if panes.exists(pane) => {
-            let result = match panes.close(pane) {
-                Ok(()) => StopResult::PaneClosed,
-                Err(_) => StopResult::Error,
-            };
-            StopStep {
-                target: StopTarget::Pane.as_str().into(),
-                pid: None,
-                signal: None,
-                pane_id: Some(pane.clone()),
-                result: result.as_str().into(),
-            }
-        }
-        other => StopStep {
-            target: StopTarget::Pane.as_str().into(),
-            pid: None,
-            signal: None,
-            pane_id: other.clone(),
-            result: StopResult::AlreadyGone.as_str().into(),
-        },
-    };
+    check_stoppable(store, &w, by, reason)?;
+    let requeued = end_row(store, &w, by, reason, opts)?;
+    let mut steps = stop_processes(store, &w, by, reason, procs, opts)?;
+    let pane_step = close_pane(panes, w.pane_id.as_ref());
     record(store.conn(), &w, by, reason, &pane_step, None)?;
     steps.push(pane_step);
     Ok(StopReport {
@@ -430,6 +509,451 @@ mod tests {
         assert!(procs.sent.borrow().is_empty());
         assert_eq!(r.steps[0].result, "not_same_process");
     }
+
+    /// A process whose answers the test sets.
+    struct Scripted {
+        alive: RefCell<bool>,
+        term_ok: bool,
+        term_kills: bool,
+        kill_ok: bool,
+        sent: RefCell<Vec<procid::Stop>>,
+    }
+    impl Scripted {
+        fn new(term_ok: bool, term_kills: bool, kill_ok: bool) -> Self {
+            Scripted {
+                alive: RefCell::new(true),
+                term_ok,
+                term_kills,
+                kill_ok,
+                sent: RefCell::new(vec![]),
+            }
+        }
+    }
+    impl Processes for Scripted {
+        fn is_same(&self, _: u32, started: u64) -> bool {
+            started == 7 && *self.alive.borrow()
+        }
+        fn exists(&self, _: u32) -> bool {
+            *self.alive.borrow()
+        }
+        fn stop_same(&self, pid: u32, started: u64, how: procid::Stop) -> bool {
+            if !self.is_same(pid, started) {
+                return false;
+            }
+            self.sent.borrow_mut().push(how);
+            let ok = match how {
+                procid::Stop::Term => self.term_ok,
+                procid::Stop::Kill => self.kill_ok,
+            };
+            if ok && (how == procid::Stop::Kill || self.term_kills) {
+                *self.alive.borrow_mut() = false;
+            }
+            ok
+        }
+    }
+
+    struct Pane {
+        exists: bool,
+        close_ok: bool,
+    }
+    impl Panes for Pane {
+        fn exists(&self, _: &str) -> bool {
+            self.exists
+        }
+        fn close(&self, _: &str) -> Result<()> {
+            if self.close_ok {
+                Ok(())
+            } else {
+                bail!("herdr refused")
+            }
+        }
+    }
+
+    fn fast() -> StopOptions {
+        StopOptions {
+            grace: Duration::from_millis(30),
+            poll: Duration::from_millis(5),
+            ..Default::default()
+        }
+    }
+
+    fn stop_with(
+        s: &mut Store,
+        id: &str,
+        panes: &dyn Panes,
+        procs: &dyn Processes,
+    ) -> Result<StopReport> {
+        stop_worker(
+            s,
+            id,
+            StopRequester::Orchestrator,
+            "t",
+            panes,
+            procs,
+            &fast(),
+        )
+    }
+
+    fn agent_steps(r: &StopReport) -> Vec<(Option<&str>, &str)> {
+        r.steps
+            .iter()
+            .filter(|s| s.target == "agent")
+            .map(|s| (s.signal.as_deref(), s.result.as_str()))
+            .collect()
+    }
+
+    fn open() -> (tempfile::TempDir, Store) {
+        let dir = tempfile::tempdir().unwrap();
+        let s = Store::open(&dir.path().join("l.sqlite3")).unwrap();
+        (dir, s)
+    }
+
+    #[test]
+    fn a_worker_without_a_pid_is_already_gone() {
+        let (_d, mut s) = open();
+        let id = worker(&mut s, 7);
+        s.conn()
+            .execute("UPDATE workers SET agent_pid = NULL", [])
+            .unwrap();
+        let procs = Scripted::new(true, true, true);
+        let r = stop_with(&mut s, &id, &NoPanes, &procs).unwrap();
+        assert_eq!(agent_steps(&r), vec![(None, "already_gone")]);
+        assert!(procs.sent.borrow().is_empty());
+    }
+
+    #[test]
+    fn a_worker_without_a_start_time_is_not_signalled() {
+        let (_d, mut s) = open();
+        let id = worker(&mut s, 7);
+        s.conn()
+            .execute("UPDATE workers SET agent_started = NULL", [])
+            .unwrap();
+        let procs = Scripted::new(true, true, true);
+        let r = stop_with(&mut s, &id, &NoPanes, &procs).unwrap();
+        assert_eq!(agent_steps(&r), vec![(None, "not_same_process")]);
+        assert!(procs.sent.borrow().is_empty());
+    }
+
+    #[test]
+    fn a_free_pid_is_already_gone() {
+        let (_d, mut s) = open();
+        let id = worker(&mut s, 7);
+        let procs = Scripted::new(true, true, true);
+        *procs.alive.borrow_mut() = false;
+        let r = stop_with(&mut s, &id, &NoPanes, &procs).unwrap();
+        assert_eq!(agent_steps(&r), vec![(None, "already_gone")]);
+        assert!(procs.sent.borrow().is_empty());
+    }
+
+    #[test]
+    fn a_refused_term_ends_the_process_steps() {
+        let (_d, mut s) = open();
+        let id = worker(&mut s, 7);
+        let procs = Scripted::new(false, false, true);
+        let r = stop_with(&mut s, &id, &NoPanes, &procs).unwrap();
+        assert_eq!(agent_steps(&r), vec![(Some("TERM"), "not_same_process")]);
+        assert_eq!(*procs.sent.borrow(), vec![procid::Stop::Term]);
+    }
+
+    #[test]
+    fn a_process_that_exits_on_term_gets_no_kill() {
+        let (_d, mut s) = open();
+        let id = worker(&mut s, 7);
+        let procs = Scripted::new(true, true, true);
+        let r = stop_with(&mut s, &id, &NoPanes, &procs).unwrap();
+        assert_eq!(agent_steps(&r), vec![(Some("TERM"), "sent")]);
+        assert_eq!(*procs.sent.borrow(), vec![procid::Stop::Term]);
+    }
+
+    #[test]
+    fn a_kill_that_finds_no_process_is_already_gone() {
+        let (_d, mut s) = open();
+        let id = worker(&mut s, 7);
+        let procs = Scripted::new(true, false, false);
+        let r = stop_with(&mut s, &id, &NoPanes, &procs).unwrap();
+        assert_eq!(
+            agent_steps(&r),
+            vec![(Some("TERM"), "sent"), (Some("KILL"), "already_gone")]
+        );
+    }
+
+    #[test]
+    fn every_step_leaves_a_stops_row() {
+        let (_d, mut s) = open();
+        let id = worker(&mut s, 7);
+        let procs = Scripted::new(true, true, true);
+        let r = stop_with(&mut s, &id, &NoPanes, &procs).unwrap();
+        let rows: i64 = s
+            .conn()
+            .query_row(
+                "SELECT COUNT(*) FROM stops WHERE worker_id = ?1",
+                [&id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(rows as usize, r.steps.len());
+        let agent_pid: i64 = s
+            .conn()
+            .query_row(
+                "SELECT pid_started FROM stops WHERE target = 'agent'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(agent_pid, 7);
+    }
+
+    fn pane_step(r: &StopReport) -> &StopStep {
+        r.steps.last().unwrap()
+    }
+
+    #[test]
+    fn a_live_pane_is_closed() {
+        let (_d, mut s) = open();
+        let id = worker(&mut s, 7);
+        workers::set_pane(s.conn(), &id, "p1").unwrap();
+        let procs = Scripted::new(true, true, true);
+        let panes = Pane {
+            exists: true,
+            close_ok: true,
+        };
+        let r = stop_with(&mut s, &id, &panes, &procs).unwrap();
+        let p = pane_step(&r);
+        assert_eq!(p.target, "pane");
+        assert_eq!(p.pane_id.as_deref(), Some("p1"));
+        assert_eq!(p.result, "pane_closed");
+    }
+
+    #[test]
+    fn a_pane_that_will_not_close_is_an_error_step() {
+        let (_d, mut s) = open();
+        let id = worker(&mut s, 7);
+        workers::set_pane(s.conn(), &id, "p1").unwrap();
+        let procs = Scripted::new(true, true, true);
+        let panes = Pane {
+            exists: true,
+            close_ok: false,
+        };
+        let r = stop_with(&mut s, &id, &panes, &procs).unwrap();
+        assert_eq!(pane_step(&r).result, "error");
+        assert_eq!(pane_step(&r).pane_id.as_deref(), Some("p1"));
+    }
+
+    #[test]
+    fn a_missing_pane_is_already_gone_and_keeps_its_id() {
+        let (_d, mut s) = open();
+        let id = worker(&mut s, 7);
+        workers::set_pane(s.conn(), &id, "p1").unwrap();
+        let procs = Scripted::new(true, true, true);
+        let panes = Pane {
+            exists: false,
+            close_ok: true,
+        };
+        let r = stop_with(&mut s, &id, &panes, &procs).unwrap();
+        assert_eq!(pane_step(&r).result, "already_gone");
+        assert_eq!(pane_step(&r).pane_id.as_deref(), Some("p1"));
+    }
+
+    #[test]
+    fn a_worker_without_a_pane_is_already_gone() {
+        let (_d, mut s) = open();
+        let id = worker(&mut s, 7);
+        let procs = Scripted::new(true, true, true);
+        let r = stop_with(&mut s, &id, &NoPanes, &procs).unwrap();
+        assert_eq!(pane_step(&r).result, "already_gone");
+        assert_eq!(pane_step(&r).pane_id, None);
+    }
+
+    #[test]
+    fn the_orchestrator_is_not_stopped() {
+        let (_d, mut s) = open();
+        let id = worker(&mut s, 7);
+        s.conn()
+            .execute("UPDATE workers SET kind = 'orchestrator'", [])
+            .unwrap();
+        let procs = Scripted::new(true, true, true);
+        let e = stop_with(&mut s, &id, &NoPanes, &procs).unwrap_err();
+        assert_eq!(
+            e.to_string(),
+            "horch ledger stop does not stop the orchestrator; the operator does"
+        );
+        assert!(procs.sent.borrow().is_empty());
+    }
+
+    #[test]
+    fn a_worker_of_another_host_is_refused_and_recorded() {
+        let (_d, mut s) = open();
+        let id = worker(&mut s, 7);
+        s.conn()
+            .execute("UPDATE workers SET host = 'elsewhere.invalid'", [])
+            .unwrap();
+        let procs = Scripted::new(true, true, true);
+        let e = stop_with(&mut s, &id, &NoPanes, &procs).unwrap_err();
+        let here = util::host_name();
+        assert!(
+            e.to_string().ends_with(&format!(
+                "runs on host elsewhere.invalid, not {here}: its PIDs mean nothing here"
+            )),
+            "{e}"
+        );
+        assert!(procs.sent.borrow().is_empty());
+        let result: String = s
+            .conn()
+            .query_row("SELECT result FROM stops", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(result, "refused_other_host");
+        assert_eq!(workers::get(s.conn(), &id).unwrap().status, "claiming");
+    }
+
+    /// Queue a task and mark it running under `worker`.
+    fn hold_task(s: &mut Store, worker: &str, holder: &str, status: &str) -> String {
+        let run_id = workers::get(s.conn(), worker).unwrap().run_id.unwrap();
+        let run = runs::get(s.conn(), &run_id).unwrap();
+        let t = tasks::add(
+            s.conn(),
+            &run,
+            &tasks::NewTask::work("T", "t.md", "opus"),
+            Actor::Orchestrator,
+        )
+        .unwrap();
+        s.conn()
+            .execute(
+                "UPDATE tasks SET status = ?2, current_worker_id = ?3 WHERE task_id = ?1",
+                params![t.task_id, status, holder],
+            )
+            .unwrap();
+        s.conn()
+            .execute(
+                "UPDATE workers SET task_id = ?2 WHERE worker_id = ?1",
+                params![worker, t.task_id],
+            )
+            .unwrap();
+        t.task_id
+    }
+
+    #[test]
+    fn a_stop_queues_the_task_the_worker_held() {
+        let (_d, mut s) = open();
+        let id = worker(&mut s, 7);
+        let task = hold_task(&mut s, &id, &id, "running");
+        let procs = Scripted::new(true, true, true);
+        let r = stop_with(&mut s, &id, &NoPanes, &procs).unwrap();
+        let t = tasks::get(s.conn(), &task).unwrap();
+        assert_eq!(t.status, "queued");
+        assert_eq!(r.requeued, Some(t.short()));
+    }
+
+    #[test]
+    fn a_stop_leaves_a_task_that_another_worker_holds() {
+        let (_d, mut s) = open();
+        let id = worker(&mut s, 7);
+        let run_id = workers::get(s.conn(), &id).unwrap().run_id.unwrap();
+        let other = workers::insert(
+            s.conn(),
+            &NewWorker {
+                run_id,
+                persona: "opus".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let task = hold_task(&mut s, &id, &other, "running");
+        let procs = Scripted::new(true, true, true);
+        let r = stop_with(&mut s, &id, &NoPanes, &procs).unwrap();
+        assert_eq!(tasks::get(s.conn(), &task).unwrap().status, "running");
+        assert_eq!(r.requeued, None);
+    }
+
+    fn event_actors(s: &Store, kind: &str) -> Vec<String> {
+        let mut q = s
+            .conn()
+            .prepare("SELECT actor FROM events WHERE kind = ?1 ORDER BY event_id")
+            .unwrap();
+        q.query_map([kind], |r| r.get(0))
+            .unwrap()
+            .map(|a| a.unwrap())
+            .collect()
+    }
+
+    #[test]
+    fn a_stop_names_its_requester_in_the_event() {
+        for (by, actor) in [
+            (StopRequester::Watchdog, "watchdog"),
+            (StopRequester::SelfExit, "supervisor"),
+            (StopRequester::Operator, "operator"),
+            (StopRequester::Orchestrator, "orchestrator"),
+        ] {
+            let (_d, mut s) = open();
+            let id = worker(&mut s, 7);
+            let procs = Scripted::new(true, true, true);
+            stop_worker(&mut s, &id, by, "t", &NoPanes, &procs, &fast()).unwrap();
+            assert_eq!(event_actors(&s, "stopped"), vec![actor], "{by:?}");
+        }
+    }
+
+    #[test]
+    fn a_reap_ends_the_worker_incomplete_and_reports_the_persona() {
+        let (_d, mut s) = open();
+        let id = worker(&mut s, 7);
+        let task = hold_task(&mut s, &id, &id, "running");
+        let procs = Scripted::new(true, true, true);
+        let r = reap(
+            &mut s,
+            &id,
+            StopRequester::Watchdog,
+            "silent",
+            &NoPanes,
+            &procs,
+            Duration::from_millis(30),
+        )
+        .unwrap();
+        assert_eq!(workers::get(s.conn(), &id).unwrap().status, "incomplete");
+        assert_eq!(tasks::get(s.conn(), &task).unwrap().status, "queued");
+        assert_eq!(r.persona.as_deref(), Some("opus"));
+        assert_eq!(event_actors(&s, "reaped"), vec!["watchdog"]);
+    }
+
+    #[test]
+    fn a_reap_by_the_operator_is_an_orchestrator_event_and_keeps_a_workers_persona() {
+        let (_d, mut s) = open();
+        let id = worker(&mut s, 7);
+        let procs = Scripted::new(true, true, true);
+        let r = reap(
+            &mut s,
+            &id,
+            StopRequester::Operator,
+            "dead",
+            &NoPanes,
+            &procs,
+            Duration::from_millis(30),
+        )
+        .unwrap();
+        assert_eq!(r.persona.as_deref(), Some("opus"));
+        assert_eq!(event_actors(&s, "reaped"), vec!["orchestrator"]);
+    }
+
+    #[test]
+    fn a_finished_worker_is_not_reaped() {
+        let (_d, mut s) = open();
+        let id = worker(&mut s, 7);
+        s.conn()
+            .execute("UPDATE workers SET status = 'done'", [])
+            .unwrap();
+        let procs = Scripted::new(true, true, true);
+        let e = reap(
+            &mut s,
+            &id,
+            StopRequester::Watchdog,
+            "x",
+            &NoPanes,
+            &procs,
+            Duration::from_millis(30),
+        )
+        .unwrap_err();
+        assert!(e
+            .to_string()
+            .ends_with("is done; only a live or incomplete worker is reaped"));
+    }
 }
 
 /// What [`reap`] did: the stop, and the persona to spawn for the requeued
@@ -438,6 +962,28 @@ mod tests {
 pub struct ReapReport {
     pub stop: StopReport,
     pub persona: Option<String>,
+}
+
+/// Refuse a worker that already finished: there is nothing to reap.
+fn check_reapable(w: &Worker) -> Result<()> {
+    let status = w.status()?;
+    if !status.is_live() && status != WorkerStatus::Incomplete {
+        bail!(
+            "worker {} is {}; only a live or incomplete worker is reaped",
+            w.label(),
+            w.status
+        );
+    }
+    Ok(())
+}
+
+/// Who a reap is recorded as: the watchdog, or else the orchestrator.
+fn reap_actor(by: StopRequester) -> Actor {
+    if matches!(by, StopRequester::Watchdog) {
+        Actor::Watchdog
+    } else {
+        Actor::Orchestrator
+    }
 }
 
 /// Reap a dead worker (section 5.4): stop it by its recorded PIDs and pane,
@@ -454,14 +1000,7 @@ pub fn reap(
     grace: Duration,
 ) -> Result<ReapReport> {
     let w = workers::get(store.conn(), worker_id)?;
-    let status = w.status()?;
-    if !status.is_live() && status != WorkerStatus::Incomplete {
-        bail!(
-            "worker {} is {}; only a live or incomplete worker is reaped",
-            w.label(),
-            w.status
-        );
-    }
+    check_reapable(&w)?;
     let opts = StopOptions {
         grace,
         final_status: WorkerStatus::Incomplete,
@@ -480,12 +1019,7 @@ pub fn reap(
     // requeued) still gets its pane closed above; the task is checked here.
     let persona = match &w.task_id {
         Some(t) => {
-            let task = tasks::get(store.conn(), t)?;
-            if matches!(task.status.as_str(), "running" | "landing")
-                && task.current_worker_id.as_deref() == Some(worker_id)
-            {
-                store.immediate(|tx| tasks::requeue(tx, t, reason))?;
-            }
+            let (task, _) = store.immediate(|tx| requeue_if_held(tx, t, worker_id, reason))?;
             task.claimable_by
         }
         None => w.persona.clone(),
@@ -497,10 +1031,7 @@ pub fn reap(
             task: w.task_id.as_deref(),
             worker: Some(worker_id),
         },
-        match by {
-            StopRequester::Watchdog => Actor::Watchdog,
-            _ => Actor::Orchestrator,
-        },
+        reap_actor(by),
         EventKind::Reaped,
         &format!("{} reaped: {reason}", w.label()),
     )?;

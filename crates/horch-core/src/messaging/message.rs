@@ -11,7 +11,7 @@
 
 use std::path::{Path, PathBuf};
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 
 /// Longest message typed into a pane as is. Anything longer goes by reference.
 pub const MAX_INLINE: usize = 600;
@@ -48,24 +48,26 @@ pub(crate) fn strip_done_prefix<'a>(summary: &'a str, role: &str) -> &'a str {
 /// holds the messages of one workspace delivered by reference. A fleet never
 /// lists another fleet's messages: role names repeat across fleets.
 pub fn spool_dir(state_root: &Path, workspace: &str) -> PathBuf {
-    state_root.join("messages").join(file_safe(workspace))
+    state_root
+        .join("messages")
+        .join(super::file_safe(workspace))
 }
 
 /// Write `message` to a new file under `dir` and return its path. The file
 /// opens with a line that names `workspace`, `from` and `to`, so a reader that
 /// finds it by chance can see whom it is for.
 pub fn spool(dir: &Path, workspace: &str, from: &str, to: &str, message: &str) -> Result<PathBuf> {
-    std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
+    crate::messaging::private::ensure_dir(dir)?;
     let stamp = chrono::Utc::now().format("%Y%m%dT%H%M%SZ");
     let id = uuid::Uuid::new_v4().simple().to_string();
     let path = dir.join(format!(
         "{stamp}-{}-to-{}-{}.md",
-        file_safe(from),
-        file_safe(to),
+        super::file_safe(from),
+        super::file_safe(to),
         &id[..8]
     ));
     let contents = format!("<!-- horch workspace={workspace} from={from} to={to} -->\n{message}");
-    std::fs::write(&path, contents).with_context(|| format!("writing {}", path.display()))?;
+    crate::messaging::private::write(&path, contents.as_bytes())?;
     Ok(path)
 }
 
@@ -97,20 +99,21 @@ fn cut(s: &str, max: usize) -> &str {
     }
 }
 
-fn file_safe(s: &str) -> String {
-    s.chars()
-        .map(|c| {
-            if c.is_ascii_alphanumeric() || c == '-' {
-                c
-            } else {
-                '_'
-            }
-        })
-        .collect()
-}
-
 #[cfg(test)]
 mod tests {
+    /// #77: a new spool dir is 0700 and a spool file 0600.
+    #[cfg(unix)]
+    #[test]
+    fn spool_dir_is_0700_and_file_0600() {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = |p: &Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+        let root = tempfile::tempdir().unwrap();
+        let dir = spool_dir(root.path(), "w1");
+        let path = spool(&dir, "w1", "opus-1", "orchestrator", "long report").unwrap();
+        assert_eq!(mode(&dir), 0o700);
+        assert_eq!(mode(&path), 0o600);
+    }
+
     use super::*;
 
     #[test]

@@ -1,0 +1,17 @@
+{
+  "cli": "agy",
+  "version": "1.4.10",
+  "captured_at": "2026-10-29T03:52:28.064887+00:00",
+  "source": "real installed CLI; subscription login; quota protocol only; no model prompt",
+  "exit_code": 0,
+  "reply_file": "agy-1.4.10.json",
+  "top_level_keys": [
+    "conversation_id",
+    "status",
+    "response",
+    "duration_seconds",
+    "num_turns",
+    "usage",
+    "command"
+  ]
+}

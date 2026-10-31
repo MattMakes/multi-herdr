@@ -25,7 +25,7 @@ use std::process::Command;
 use anyhow::{bail, Context, Result};
 use clap::Parser;
 
-use manifest::{Channel, Format, Manifest, Os, Target};
+use manifest::{Asset, Channel, Format, Manifest, Os, Target};
 
 #[derive(Parser)]
 #[command(
@@ -89,6 +89,30 @@ fn run() -> Result<()> {
     println!("{BANNER}");
 
     let target = Target::detect()?;
+    let channel = resolve_channel(&cli, target)?;
+    step(&format!(
+        "detected {} ({} channel)",
+        target.describe(),
+        channel.as_str()
+    ));
+
+    let (version, asset) = resolve_release(&cli, channel, target)?;
+    if cli.dry_run {
+        return print_dry_run(&cli, target, &version, &asset);
+    }
+
+    step(&format!("downloading herdr {version}..."));
+    let bytes = download_verified(&asset)?;
+
+    let installed = install(&cli, target, &version, &asset, &bytes)?;
+    step(&format!("installed herdr to {}", installed.display()));
+    verify_installed(&installed)?;
+    report_path(installed.parent().unwrap_or(&installed));
+    Ok(())
+}
+
+/// The requested channel, or the platform default; Windows has no stable build yet.
+fn resolve_channel(cli: &Cli, target: Target) -> Result<Channel> {
     let channel = cli
         .channel
         .unwrap_or_else(|| Channel::default_for(target.os));
@@ -98,12 +122,32 @@ fn run() -> Result<()> {
              --channel preview."
         );
     }
-    step(&format!(
-        "detected {} ({} channel)",
-        target.describe(),
-        channel.as_str()
-    ));
+    Ok(channel)
+}
 
+fn install(
+    cli: &Cli,
+    target: Target,
+    version: &str,
+    asset: &Asset,
+    bytes: &[u8],
+) -> Result<PathBuf> {
+    if target.os == Os::Windows {
+        install_windows(
+            bytes,
+            &asset.format,
+            cli.install_dir.as_deref(),
+            version,
+            target,
+            cli.retain,
+        )
+    } else {
+        install_unix(bytes, cli.install_dir.as_deref())
+    }
+}
+
+/// Fetch the manifest and pick this platform's version and asset.
+fn resolve_release(cli: &Cli, channel: Channel, target: Target) -> Result<(String, Asset)> {
     let url = cli
         .manifest_url
         .clone()
@@ -113,17 +157,19 @@ fn run() -> Result<()> {
         .with_context(|| format!("parsing the release manifest from {url}"))?;
     let version = manifest.version_identity(channel)?;
     let asset = manifest.asset(target)?;
+    Ok((version, asset))
+}
 
-    if cli.dry_run {
-        step(&format!("would install herdr {version} from {}", asset.url));
-        step(&format!(
-            "would install to {}",
-            describe_destination(target, cli.install_dir.as_deref(), &version)?.display()
-        ));
-        return Ok(());
-    }
+fn print_dry_run(cli: &Cli, target: Target, version: &str, asset: &Asset) -> Result<()> {
+    step(&format!("would install herdr {version} from {}", asset.url));
+    step(&format!(
+        "would install to {}",
+        describe_destination(target, cli.install_dir.as_deref(), version)?.display()
+    ));
+    Ok(())
+}
 
-    step(&format!("downloading herdr {version}..."));
+fn download_verified(asset: &Asset) -> Result<Vec<u8>> {
     let bytes = net::download(&asset.url)?;
     match &asset.sha256 {
         Some(expected) => {
@@ -133,23 +179,7 @@ fn run() -> Result<()> {
         // Stable manifests publish no digests; TLS is the integrity guarantee there.
         None => step("no checksum published for this channel; skipping verification"),
     }
-
-    let installed = match target.os {
-        Os::Windows => install_windows(
-            &bytes,
-            &asset.format,
-            cli.install_dir.as_deref(),
-            &version,
-            target,
-            cli.retain,
-        )?,
-        Os::MacOs | Os::Linux => install_unix(&bytes, cli.install_dir.as_deref())?,
-    };
-
-    step(&format!("installed herdr to {}", installed.display()));
-    verify_installed(&installed)?;
-    report_path(installed.parent().unwrap_or(&installed))?;
-    Ok(())
+    Ok(bytes)
 }
 
 /// Where the binary will end up, for `--dry-run`.
@@ -158,13 +188,12 @@ fn describe_destination(
     install_dir: Option<&Path>,
     version: &str,
 ) -> Result<PathBuf> {
-    Ok(match target.os {
-        Os::Windows => win_layout(install_dir, version, target)?
+    Ok(if target.os == Os::Windows {
+        win_layout(install_dir, version, target)?
             .visible_bin
-            .join(place::exe_name()),
-        Os::MacOs | Os::Linux => {
-            place::unix_install_dir(&home_dir()?, install_dir).join(place::exe_name())
-        }
+            .join(place::exe_name())
+    } else {
+        place::unix_install_dir(&home_dir()?, install_dir).join(place::exe_name())
     })
 }
 
@@ -209,10 +238,28 @@ fn install_windows(
     std::fs::create_dir_all(&layout.releases_dir)
         .with_context(|| format!("creating {}", layout.releases_dir.display()))?;
 
-    let staging = layout.releases_dir.join(format!(
+    let staging = stage_package(bytes, format, &layout.releases_dir, &layout.release_dir)?;
+    place::promote_release(&staging, &layout.release_dir)?;
+    step(&format!("unpacked to {}", layout.release_dir.display()));
+
+    win::set_junction(&layout.current_dir, &layout.release_dir)
+        .and_then(|()| win::set_junction(&layout.visible_bin, &layout.release_dir))?;
+    place::prune_old_releases(&layout.releases_dir, &layout.release_dir, retain);
+
+    Ok(layout.visible_bin.join(place::exe_name()))
+}
+
+/// Unpack the package into a fresh staging directory beside the releases and check
+/// that it carries the executable.
+fn stage_package(
+    bytes: &[u8],
+    format: &Format,
+    releases_dir: &Path,
+    release_dir: &Path,
+) -> Result<PathBuf> {
+    let staging = releases_dir.join(format!(
         ".staging.{}.{}",
-        layout
-            .release_dir
+        release_dir
             .file_name()
             .unwrap_or_default()
             .to_string_lossy(),
@@ -223,26 +270,17 @@ fn install_windows(
 
     match format {
         // The zip carries herdr.exe plus the app-local ConPTY runtime it needs.
-        Format::Zip => place::extract_zip(bytes, &staging)?,
-        Format::Binary => place::place_binary(bytes, &staging.join(place::exe_name()))?,
-    }
-    let staged_exe = staging.join(place::exe_name());
-    if !staged_exe.is_file() {
+        Format::Zip => place::extract_zip(bytes, &staging),
+        Format::Binary => place::place_binary(bytes, &staging.join(place::exe_name())),
+    }?;
+    if !staging.join(place::exe_name()).is_file() {
         let _ = std::fs::remove_dir_all(&staging);
         bail!(
             "the downloaded package does not contain {}; refusing to install",
             place::exe_name()
         );
     }
-
-    place::promote_release(&staging, &layout.release_dir)?;
-    step(&format!("unpacked to {}", layout.release_dir.display()));
-
-    win::set_junction(&layout.current_dir, &layout.release_dir)?;
-    win::set_junction(&layout.visible_bin, &layout.release_dir)?;
-    place::prune_old_releases(&layout.releases_dir, &layout.release_dir, retain);
-
-    Ok(layout.visible_bin.join(place::exe_name()))
+    Ok(staging)
 }
 
 /// Run the freshly installed binary. A release that cannot report its own version
@@ -265,46 +303,51 @@ fn verify_installed(path: &Path) -> Result<()> {
 }
 
 /// Make sure the install directory is reachable, and say what to do if not.
-fn report_path(dir: &Path) -> Result<()> {
+fn report_path(dir: &Path) {
     if cfg!(windows) {
-        match win::ensure_user_path(dir) {
-            Ok(true) => {
-                step("PATH updated for future terminals.");
-                println!("\n  Open a new terminal, then run: herdr");
-                return Ok(());
-            }
-            Ok(false) => {
-                step(&format!("{} is already first on PATH.", dir.display()));
-                println!("\n  Ready. Run: herdr");
-                return Ok(());
-            }
-            Err(e) => {
-                warn(&format!("could not update PATH automatically: {e:#}"));
-                println!("\n  Add it yourself, in PowerShell:");
-                println!("    $env:Path = \"{};$env:Path\"", dir.display());
-                return Ok(());
-            }
+        report_windows_path(dir);
+    } else {
+        report_unix_path(dir);
+    }
+}
+
+fn report_windows_path(dir: &Path) {
+    match win::ensure_user_path(dir) {
+        Ok(true) => {
+            step("PATH updated for future terminals.");
+            println!("\n  Open a new terminal, then run: herdr");
+        }
+        Ok(false) => {
+            step(&format!("{} is already first on PATH.", dir.display()));
+            println!("\n  Ready. Run: herdr");
+        }
+        Err(e) => {
+            warn(&format!("could not update PATH automatically: {e:#}"));
+            println!("\n  Add it yourself, in PowerShell:");
+            println!("    $env:Path = \"{};$env:Path\"", dir.display());
         }
     }
+}
 
+fn report_unix_path(dir: &Path) {
     if on_path(dir) {
         println!("\n  Ready. Run: herdr");
-        return Ok(());
+    } else {
+        println!();
+        warn(&format!("{} is not in your PATH", dir.display()));
+        println!("  add it to your shell config:\n");
+        println!("    export PATH=\"{}:$PATH\"", dir.display());
+        println!();
     }
-    println!();
-    warn(&format!("{} is not in your PATH", dir.display()));
-    println!("  add it to your shell config:\n");
-    println!("    export PATH=\"{}:$PATH\"", dir.display());
-    println!();
-    Ok(())
 }
 
 fn on_path(dir: &Path) -> bool {
-    let Some(paths) = std::env::var_os("PATH") else {
-        return false;
-    };
+    std::env::var_os("PATH").is_some_and(|paths| in_path_list(dir, &paths))
+}
+
+fn in_path_list(dir: &Path, paths: &std::ffi::OsStr) -> bool {
     let target = dir.to_string_lossy().trim_end_matches('/').to_string();
-    std::env::split_paths(&paths).any(|p| p.to_string_lossy().trim_end_matches('/') == target)
+    std::env::split_paths(paths).any(|p| p.to_string_lossy().trim_end_matches('/') == target)
 }
 
 fn home_dir() -> Result<PathBuf> {
@@ -338,5 +381,108 @@ mod tests {
         assert_eq!(cli.channel, None, "channel is chosen per platform");
         assert_eq!(cli.retain, 2);
         assert!(!cli.dry_run);
+    }
+
+    fn zip_of(name: &str, contents: &[u8]) -> Vec<u8> {
+        use std::io::Write;
+        let mut buf = Vec::new();
+        {
+            let mut writer = zip::ZipWriter::new(std::io::Cursor::new(&mut buf));
+            let options: zip::write::FileOptions<'_, ()> = zip::write::FileOptions::default()
+                .compression_method(zip::CompressionMethod::Stored);
+            writer.start_file(name, options).unwrap();
+            writer.write_all(contents).unwrap();
+            writer.finish().unwrap();
+        }
+        buf
+    }
+
+    #[test]
+    fn stage_package_returns_a_staging_dir_holding_the_executable() {
+        let tmp = tempfile::tempdir().unwrap();
+        let releases = tmp.path().join("releases");
+        let release = releases.join("1.0-x86_64");
+        std::fs::create_dir_all(&releases).unwrap();
+        let bytes = zip_of(place::exe_name(), b"binary");
+
+        let staging = stage_package(&bytes, &Format::Zip, &releases, &release).unwrap();
+        assert_eq!(staging.parent(), Some(releases.as_path()));
+        assert_eq!(
+            std::fs::read(staging.join(place::exe_name())).unwrap(),
+            b"binary"
+        );
+    }
+
+    #[test]
+    fn stage_package_places_a_bare_binary_under_the_executable_name() {
+        let tmp = tempfile::tempdir().unwrap();
+        let releases = tmp.path().join("releases");
+        let release = releases.join("1.0-x86_64");
+        std::fs::create_dir_all(&releases).unwrap();
+
+        let staging = stage_package(b"raw", &Format::Binary, &releases, &release).unwrap();
+        assert_eq!(
+            std::fs::read(staging.join(place::exe_name())).unwrap(),
+            b"raw"
+        );
+    }
+
+    /// A package without the executable must be refused and its staging removed.
+    #[test]
+    fn stage_package_refuses_a_package_without_the_executable() {
+        let tmp = tempfile::tempdir().unwrap();
+        let releases = tmp.path().join("releases");
+        let release = releases.join("1.0-x86_64");
+        std::fs::create_dir_all(&releases).unwrap();
+        let bytes = zip_of("readme.txt", b"no binary here");
+
+        let err = stage_package(&bytes, &Format::Zip, &releases, &release)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("does not contain"), "{err}");
+        let left: Vec<_> = std::fs::read_dir(&releases).unwrap().collect();
+        assert!(left.is_empty(), "staging must be removed: {left:?}");
+    }
+
+    #[test]
+    fn in_path_list_ignores_a_trailing_slash() {
+        let sep = if cfg!(windows) { ";" } else { ":" };
+        let paths = std::ffi::OsString::from(format!("/a/bin/{sep}/b"));
+        assert!(in_path_list(Path::new("/a/bin"), &paths));
+        assert!(!in_path_list(Path::new("/c"), &paths));
+    }
+
+    fn target(os: Os) -> Target {
+        Target {
+            os,
+            arch: manifest::Arch::X86_64,
+        }
+    }
+
+    #[test]
+    fn resolve_channel_refuses_stable_on_windows() {
+        let cli = Cli::try_parse_from(["herdr-install", "--channel", "stable"]).unwrap();
+        let err = resolve_channel(&cli, target(Os::Windows))
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("preview-only"), "{err}");
+    }
+
+    #[test]
+    fn resolve_channel_defaults_per_platform_and_honours_an_override() {
+        let bare = Cli::try_parse_from(["herdr-install"]).unwrap();
+        assert_eq!(
+            resolve_channel(&bare, target(Os::Linux)).unwrap(),
+            Channel::Stable
+        );
+        assert_eq!(
+            resolve_channel(&bare, target(Os::Windows)).unwrap(),
+            Channel::Preview
+        );
+        let preview = Cli::try_parse_from(["herdr-install", "--channel", "preview"]).unwrap();
+        assert_eq!(
+            resolve_channel(&preview, target(Os::MacOs)).unwrap(),
+            Channel::Preview
+        );
     }
 }

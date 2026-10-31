@@ -135,6 +135,7 @@ const SKIP_NEW_TEAMMATES: &[&str] = &[
     "ue-ui-engineer",
     "ue-world-engineer",
     "visual-prototyper",
+    "worktree-steward",
 ];
 
 fn is_hex(s: &str) -> bool {
@@ -886,10 +887,15 @@ fn skl_08_materialize_rejects_path_like_execution_ids() {
     };
     let plan = plan_for(&t, &catalog).unwrap();
     let tmp = tempfile::tempdir().unwrap();
+    // The id check refuses each one with its own error. Without it, the file
+    // system alone refuses "", "." and ".." (they exist) with another error.
     for bad in ["", ".", "..", "../x", "a/b", "a\\b"] {
-        assert!(
-            MaterializedSkills::materialize(&plan, &catalog, tmp.path(), bad).is_err(),
-            "{bad:?}"
+        let err = MaterializedSkills::materialize(&plan, &catalog, tmp.path(), bad)
+            .err()
+            .unwrap_or_else(|| panic!("{bad:?} was accepted"));
+        assert_eq!(
+            err.to_string(),
+            format!("execution id '{bad}' cannot name a skill bundle directory")
         );
     }
     let a = MaterializedSkills::materialize(&plan, &catalog, tmp.path(), "x").unwrap();

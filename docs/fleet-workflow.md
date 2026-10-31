@@ -18,7 +18,15 @@ starts a subagent. A worker that needs more hands sends `QUESTION:` to the
 orchestrator, and the orchestrator spawns another pane.
 `horch inbox` lists the reachable roles, then prints and acknowledges pending
 messages, and ends with `N messages acknowledged`. `--roles` lists roles only.
-`--peek` prints messages and leaves them pending.
+`--peek` prints messages and leaves them pending. Inside a fleet, only the
+registered orchestrator pane acknowledges the orchestrator's mail: another pane
+gets the messages as with `--peek`, and 1 stderr line that says so. A worker's
+`inbox` prints and acknowledges only the mail to its own role.
+
+The role list includes agent state and unanswered questions. `horch peek
+<role> --lines 20` reads recent pane output without typing. A relay write does
+not acknowledge a message; only `inbox` does. The courier keeps retrying pending
+mail and pauses with an operator notification when Claude needs `/login`.
 
 The operator starts the orchestrator with no task. Its briefing ends with
 "Acknowledge and await further instruction.", so it acknowledges the briefing
@@ -51,6 +59,94 @@ worker. `horch ledger unfinished` lists past work that never landed,
 including the history imported from the old JSON ledgers
 (`horch ledger import`).
 
+An outstanding review, unanswered question or `progress "waiting: ..."` note
+gives a worker a waiting reason and deadline. These waits suspend stall counting
+while valid. The counter starts fresh after the wait ends; a gone agent is
+still reaped immediately. Status lists the reason and age.
+
+Use `horch ledger worktree new <name> --from <ref>` for a different base, and
+`horch ledger worktree scratch <name>` for work that will not land. Drop a clean
+tree with `horch ledger worktree drop <name> --reason "<why>"`; use
+`--keep-branch` to retain unique commits. No command forces removal.
+A worktree that no step takes to an outcome is decided in a worktree triage
+(see "Worktree triage").
+
+## Worktree triage
+
+A worktree is *parked* when no step takes it to an outcome: its worker did
+not land it (`horch ledger done --unlanded`), its task was cancelled, its run
+was abandoned, its cleanup failed, or git knows a folder under `.worktrees/`
+that the ledger does not. A parked worktree is often the only copy of work
+that cost real time, and each one holds a full checkout and its build output.
+The operator decides what happens to each one. Code collects the facts and
+applies the decisions; the `worktree-steward` teammate adds judgement.
+
+| step | who | command |
+|---|---|---|
+| list the parked worktrees with their facts | steward | `horch worktree triage` (`--json` for machines) |
+| show the facts, a relevance, a suggestion and a reply table | steward | (in its pane) |
+| fill `Decision` (and `Direction` for `FINISH` and `PR`) | operator | (in the steward's pane) |
+| run the decisions | steward | `horch worktree triage apply <file>` (`-` reads stdin) |
+| bring an archived or trashed folder back | anyone | `horch worktree restore <name>` |
+| delete trash refs older than 30 days | anyone | `horch ledger gc` |
+
+`horch fleet` runs the triage at start. When it finds 1 or more parked
+worktrees, it spawns `worktree-steward` in a pane beside the orchestrator.
+With none, no steward starts. The orchestrator does not run the triage.
+
+Each row of `horch worktree triage` has an ID (`W1`, `W2`, ... in name order)
+and: the task, findings and origin; the branch, path and base; the created,
+last commit and newest file times; the disk use and its ignored share (build
+output); ahead and behind the base; the diffstat and its 3 largest paths; the
+modified, staged and untracked counts, with the 3 largest untracked files;
+`superseded` (every commit has a patch-equivalent commit in the base, from
+`git cherry`); the conflict count of a merge into the base (`git merge-tree`);
+the last finish step; and why it is parked.
+
+The reply is a markdown table with the columns `ID`, `Worktree`, `Suggested`,
+`Decision` and `Direction`. Code parses it, never a model. `apply` refuses the
+whole reply, and runs nothing, when a line has an unknown ID, a `Worktree`
+that no longer matches its ID, an empty or unknown decision, a `FINISH` or
+`PR` with no `Direction`, a `PR` with no `gh` or no git remote, or an ID that
+appears twice. Each error names its line.
+
+| decision | effect |
+|---|---|
+| `LAND` | Commits the uncommitted files, then rebases the branch onto the branch that the main checkout has checked out. On the default branch (`main`, `master` or `origin/HEAD`) that branch does not move: the work goes to a new branch `land/<name>`. On a feature branch, that branch fast-forwards under the land lock. Then the folder is removed. A conflict changes nothing and reports `conflicts: choose FINISH`. |
+| `PR` | Pushes the branch, opens a pull request with the first line of `Direction` as its title and `Direction` as its body, then archives the folder. Offered only when `gh` and a git remote exist. |
+| `FINISH` | Writes `Direction` to `ai_docs/triage/<name>.md` and queues a task with it as the brief (`--primary <persona>`, default `opus`). The task inherits the worktree, and the orchestrator is woken. Needs an active run. |
+| `ARCHIVE` | Commits the uncommitted files, writes `refs/horch/archive/<name>` at the tip, removes the folder and keeps the branch. `horch worktree restore <name>` makes the folder again. |
+| `KEEP` | Changes nothing. The row comes back at the next triage. |
+| `DELETE` | Commits the uncommitted files, writes `refs/horch/trash/<name>/<UTC time>` at the tip, removes the folder, then deletes the branch once the trash ref is read back at the tip. `horch ledger gc` deletes the trash ref after 30 days; until then `horch worktree restore <name>` brings it back. |
+
+A superseded row suggests `DELETE`. A row that does not merge clean suggests
+`FINISH` or `ARCHIVE`, never `LAND`. Ignored files are never committed: an
+`ARCHIVE` or `DELETE` drops build output and keeps everything else.
+
+The rules: no git call forces (`git worktree remove` without `--force`,
+never `git branch -D`). Before a folder is removed, `unsafe_to_remove`, or an
+archive or trash ref that holds the tip, proves that no commit and no
+uncommitted file is lost. A failed decision deletes nothing: the row becomes
+`cleanup_failed` with the reason, and has no decision. `LAND` never moves the
+default branch. Only `gc` deletes a ref that may hold the only copy of a
+commit, and only a trash ref older than 30 days.
+
+Each decision is recorded on the worktree row (`decision`, `decided_at`, and
+`archive_ref` and `bytes_freed` where they apply) and as a ledger event. An
+open `import_findings` row of the worktree closes: `requeued` for `FINISH`,
+`dismissed` for the others. `ARCHIVE` and `PR` leave the row `archived`;
+`DELETE` leaves it `trashed`.
+
+`horch ledger run close` refuses while a parked worktree of the run is on
+disk with no decision, and names `horch worktree triage`. `--abandon` cancels
+the open tasks first, then refuses the same way; the run stays active until
+each worktree has a decision. `horch ledger status` prints a
+`Parked worktrees: <count> (<disk>, measured <age> ago)` line. The disk is the
+size `horch worktree triage` stored at its last run, and `<age>` is the age
+of the oldest measurement; `status` walks no folder. Rows that triage has not
+measured add `; <n> not measured`. With no measurement the line says
+`(disk not measured; run horch worktree triage)`.
+
 ## Plan files
 
 `ai_docs/` is local scratch. It is not in git (no commit holds it), so a
@@ -81,17 +177,51 @@ executor in the implementation phase.
 
 ## Branch modes
 
-### Single-branch mode (current)
+### Ledger worktree mode (current)
 
-All workers share 1 checkout and 1 branch. For the design-skills run, the
-checkout is the main checkout and the branch is `design-skills`.
+In a task ledger run, each task gets its own worktree and branch, and
+`horch ledger finish` lands it.
 
-- Nobody creates a worktree for a unit. Scratch repos for experiments go in
-  `.worktrees/_scratch/`, which is git-ignored and inside the trusted project
-  folder. Never use `/tmp`.
+- The claim tells the worker when to make the worktree. The worker runs
+  `horch ledger worktree new <name>` and works in the path it prints. The
+  branch starts from the run branch, or from `--from <ref>`. The ledger
+  records the row, so `finish` can check, land and clean it up.
+- A worker never runs `git worktree add` or the plain `horch worktree new`
+  in a ledger run. A worktree that the ledger does not record is never
+  checked or landed.
+- `horch ledger worktree scratch <name>` makes recorded throwaway work that
+  never lands. `horch ledger worktree drop <name> --reason "<why>"` drops a
+  clean worktree that will not land.
+- Worktrees live under `.worktrees/` in the main checkout. Each builds its
+  own `target/` (2 to 8 GB). Never share one `CARGO_TARGET_DIR` between
+  worktrees.
+- A worker commits exact files in its worktree, then runs
+  `horch ledger finish`. Its `land` step rebases the branch on the run
+  branch, runs the check again, and fast-forwards the run branch. Its
+  `pr` step writes the task's section in the run's 1 pull request. Its
+  `cleanup` step removes the worktree.
+- Nobody runs `git checkout` or `git switch` in the shared main checkout.
+
+### Shared-checkout mode (`horch ledger add --shared`)
+
+A task queued with `--shared` works in the main checkout, not a worktree.
+It is for repositories where worktrees are impractical (large game assets,
+Godot imports). The ledger enforces these limits (#166):
+
+- At most 1 shared task runs at a time. A 2nd shared task waits with
+  "exclusive: shared checkout".
+- The main checkout must be on the run branch. Otherwise `finish` refuses
+  and prints the `git switch <run branch>` line for the orchestrator.
+- `check` needs a clean checkout, and `land` needs at least 1 commit since
+  the claim.
+
+In this mode:
+
+- Scratch repos for experiments go in `.worktrees/_scratch/`, which is
+  git-ignored and inside the trusted project folder. Never use `/tmp`.
 - A worker edits only the files in the `FILES` section of its plan.
-- The tree must compile at every commit, because other workers build it.
-  Never leave a half-edited `.rs` file while you wait.
+- The tree must compile at every commit. Never leave a half-edited `.rs`
+  file while you wait.
 - A worker commits only its own paths:
 
   ```bash
@@ -105,22 +235,12 @@ checkout is the main checkout and the branch is `design-skills`.
 - After each commit, the worker runs `git show --stat HEAD`. Every file in it
   must be the worker's own.
 - If git reports that `index.lock` exists, wait 2 s and retry. Never delete it.
-- Nobody pushes. The orchestrator pushes after the gate passes.
-- While it works, a worker runs only the tests it touches. The orchestrator
-  runs the full gate once on the tip, in `.worktrees/_gate`, and sends a red
-  gate back to the worker whose commit broke it. See
-  [testing-and-gates.md](testing-and-gates.md).
 - Warning: never run tests or the gate under `git rebase -x` or a git hook.
-- A Codex worker can commit: its folder, `.git` included, is writable in the
-  `fleet_write` profile. Writes outside that folder still fail.
 
-The worker reports with `[<role>] NOTE: COMMITTED <short-sha>. Targeted checks
-green.` and then runs `horch done`.
+### Plain worktree mode (no ledger run)
 
-### Worktree mode (older alternative)
-
-The first runs gave each unit its own branch and worktree. Use it only when
-the operator asks for it.
+A fleet that does not use a ledger run gives each unit its own branch and
+worktree with the plain `horch worktree` commands.
 
 - The orchestrator owns 1 integration worktree on the run's branch. Nobody
   else edits, commits or builds there.
@@ -132,10 +252,7 @@ the operator asks for it.
   cd <the path that horch prints>
   ```
 
-- Unit worktrees live under `.worktrees/` in the main checkout. Each builds
-  its own `target/` (2 to 8 GB), so the orchestrator removes a worktree as soon
-  as its unit merges. Never share one `CARGO_TARGET_DIR` between worktrees.
-- Nobody runs `git checkout` or `git switch` in the shared main checkout.
+- The orchestrator removes a worktree as soon as its unit merges.
 
 When a unit is complete, the worker runs
 `horch worktree land --check "<gate command>"`. The command rebases the
@@ -151,10 +268,9 @@ in alphabetical order and keeps both sides at a rebase conflict.
 
 ## Reports
 
-Each unit writes a report to `ai_docs/reports/<run>/<unit>.md`. In
-single-branch mode the report is local scratch and the worker does not commit
-it; the `horch done` summary carries the result. In worktree mode the unit
-commits it. A report
+Each unit writes a report to `ai_docs/reports/<run>/<unit>.md`. The
+report is local scratch and the worker does not commit it; the `horch done`
+summary carries the result. A report
 holds: what changed, decisions and why, what was dropped, every oracle or
 golden change with a diff summary, gotchas, what was verified only against a
 fake, and follow-ups outside the unit's scope. Reports are the best place to

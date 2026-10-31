@@ -21,7 +21,7 @@
 
 use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::{Child, Command, ExitStatus, Stdio};
 use std::time::{Duration, Instant, SystemTime};
 
 use anyhow::{bail, Context, Result};
@@ -34,8 +34,8 @@ use super::{
 use crate::compaction::window::OperatorWindow;
 use crate::fsx;
 use crate::prompts;
-use crate::roster::{ExecRule, HarnessDefault, PermissionMode, Teammate};
-use crate::runtime::RuntimeContext;
+use crate::roster::{ExecDecision, ExecRule, HarnessDefault, PermissionMode, Teammate};
+use crate::runtime::{process, RuntimeContext};
 
 /// Path to codex's shared rules file: `~/.codex/rules/default.rules`.
 pub(crate) fn rules_path(home: &Path) -> PathBuf {
@@ -83,19 +83,29 @@ pub(crate) fn write_v1_catalog(codex_bin: &Path, state_root: &Path) -> Result<Pa
         serde_json::Value::Array(models) => models,
         _ => bail!("model catalog is neither an object nor an array"),
     };
-    for model in models {
-        let Some(model) = model.as_object_mut() else {
-            continue;
-        };
+    pin_multi_agent_v1(models);
+
+    write_catalog(&catalog, state_root)
+}
+
+/// Pin every model that carries a multi-agent version to `v1`.
+fn pin_multi_agent_v1(models: &mut [serde_json::Value]) {
+    for model in models
+        .iter_mut()
+        .filter_map(serde_json::Value::as_object_mut)
+    {
         if model.contains_key("multi_agent_version") {
             model.insert("multi_agent_version".into(), serde_json::json!("v1"));
         }
     }
+}
 
+/// Write the catalog under `<state_root>/codex/` and return its path.
+fn write_catalog(catalog: &serde_json::Value, state_root: &Path) -> Result<PathBuf> {
     let dir = state_root.join("codex");
     std::fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
     let path = dir.join("model-catalog-v1.json");
-    let bytes = serde_json::to_vec_pretty(&catalog).context("encoding v1 model catalog")?;
+    let bytes = serde_json::to_vec_pretty(catalog).context("encoding v1 model catalog")?;
     fsx::write_atomic(&path, &bytes, fsx::PRIVATE_FILE)
         .with_context(|| format!("writing {}", path.display()))?;
     Ok(path)
@@ -121,24 +131,37 @@ fn run_with_deadline(mut cmd: Command, timeout: Duration) -> Result<std::process
     };
     let out = read(Box::new(stdout));
     let err = read(Box::new(stderr));
-    let deadline = Instant::now() + timeout;
-    let status = loop {
-        match child.try_wait() {
-            Ok(Some(status)) => break status,
-            Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(20)),
-            Ok(None) => {
-                let _ = child.kill();
-                let _ = child.wait();
-                bail!("codex debug models timed out after {}s", timeout.as_secs());
-            }
-            Err(e) => return Err(e).context("waiting for codex catalog command"),
-        }
-    };
+    let status = wait_until(&mut child, Instant::now() + timeout, timeout)?;
     Ok(std::process::Output {
         status,
         stdout: out.join().unwrap_or_default(),
         stderr: err.join().unwrap_or_default(),
     })
+}
+
+/// Wait for `child` until `deadline`; kill it on a timeout.
+fn wait_until(child: &mut Child, deadline: Instant, timeout: Duration) -> Result<ExitStatus> {
+    match process::wait_until(child, deadline, Duration::from_millis(20)) {
+        Ok(Some(status)) => Ok(status),
+        Ok(None) => {
+            let _ = child.kill();
+            let _ = child.wait();
+            bail!("codex debug models timed out after {}s", timeout.as_secs());
+        }
+        Err(e) => Err(e).context("waiting for codex catalog command"),
+    }
+}
+
+/// Remove an existing skills symlink; refuse anything that is not one.
+#[cfg(not(windows))]
+fn clear_skills_link(target: &Path) -> Result<()> {
+    match std::fs::symlink_metadata(target) {
+        Ok(meta) if meta.file_type().is_symlink() => std::fs::remove_file(target)?,
+        Ok(_) => anyhow::bail!("refusing to replace non-symlink {}", target.display()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => return Err(e.into()),
+    }
+    Ok(())
 }
 
 /// One codex launch's execpolicy rules.
@@ -162,15 +185,17 @@ impl Rules {
     /// left behind says which pane it belonged to.
     ///
     /// `codex_home` is the inherited codex home ([`codex_home`]) the private
-    /// one mirrors, and `state_root` is where the private one is built.
+    /// one mirrors, and `root` is where the private one is built. `root` must
+    /// be outside every writable root of the sandbox, or a worker can rewrite
+    /// the rules of a pane before codex reads them.
     pub fn install(
         home: &Path,
         codex_home: &Path,
-        state_root: &Path,
+        root: &Path,
         role: &str,
         rules: &[ExecRule],
     ) -> Result<Rules> {
-        install_rules(home, codex_home, state_root, role, rules)
+        install_rules(home, codex_home, root, role, rules)
     }
 
     /// Point the agent's command at these rules.
@@ -184,20 +209,19 @@ impl Rules {
 
     /// Replace only the private home's skills link. Never follow it into the
     /// operator's skills directory. Codex discovers these files natively.
+    #[cfg(not(windows))]
     pub(crate) fn attach_skills(&self, skills_dir: &Path) -> Result<()> {
-        #[cfg(not(windows))]
-        if let Rules::Private { dir } = self {
-            let target = dir.join("skills");
-            match std::fs::symlink_metadata(&target) {
-                Ok(meta) if meta.file_type().is_symlink() => std::fs::remove_file(&target)?,
-                Ok(_) => anyhow::bail!("refusing to replace non-symlink {}", target.display()),
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-                Err(e) => return Err(e.into()),
-            }
-            std::os::unix::fs::symlink(skills_dir, &target)?;
-            return Ok(());
-        }
-        let _ = skills_dir;
+        let Rules::Private { dir } = self else {
+            anyhow::bail!("Codex phase skills require a private CODEX_HOME; use WSL on Windows");
+        };
+        let target = dir.join("skills");
+        clear_skills_link(&target)?;
+        std::os::unix::fs::symlink(skills_dir, &target)?;
+        Ok(())
+    }
+
+    #[cfg(windows)]
+    pub(crate) fn attach_skills(&self, _skills_dir: &Path) -> Result<()> {
         anyhow::bail!("Codex phase skills require a private CODEX_HOME; use WSL on Windows")
     }
 
@@ -239,18 +263,24 @@ impl Drop for Rules {
     }
 }
 
-/// Top-level entries of a private home that are not symlinks and not `rules/`.
+/// Caches codex writes at the top of every home it runs in (#140). They hold
+/// nothing the real codex home needs.
+const CODEX_CACHE_FILES: [&str; 2] = ["cloud-config-bundle-cache.json", ".hook-trust"];
+
+/// Top-level entries of a private home that are not symlinks, not `rules/`
+/// and not one of [`CODEX_CACHE_FILES`].
 ///
 /// Everything the overlay creates is a symlink or `rules/`, so anything else is
 /// something codex made: a file that did not exist in the real codex home when
 /// the overlay was built.
-fn stranded_entries(dir: &Path) -> Vec<String> {
+pub(crate) fn stranded_entries(dir: &Path) -> Vec<String> {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return Vec::new();
     };
     let mut out: Vec<String> = entries
         .flatten()
         .filter(|e| e.file_name() != "rules")
+        .filter(|e| !CODEX_CACHE_FILES.iter().any(|f| e.file_name() == *f))
         .filter(|e| {
             !e.path()
                 .symlink_metadata()
@@ -272,17 +302,17 @@ fn render(rules: &[ExecRule]) -> String {
 fn install_rules(
     _home: &Path,
     codex_home: &Path,
-    state_root: &Path,
+    root: &Path,
     role: &str,
     rules: &[ExecRule],
 ) -> Result<Rules> {
-    let dir = build_private_home(codex_home, state_root, role)?;
+    let dir = build_private_home(codex_home, root, role)?;
     std::fs::write(dir.join("rules").join("horch.rules"), render(rules))
         .with_context(|| format!("writing this launch's rules under {}", dir.display()))?;
     Ok(Rules::Private { dir })
 }
 
-/// Assemble a private codex home under `state_root`, mirroring `source`.
+/// Assemble a private codex home under `root`, mirroring `source`.
 ///
 /// Rebuilt on every launch rather than cached, so an entry added to the real
 /// codex home since the last fleet is linked rather than missing.
@@ -292,7 +322,7 @@ fn install_rules(
 /// symlinks and one rules file, harmless to delete, and legible about which
 /// pane they came from.
 #[cfg(not(windows))]
-fn build_private_home(source: &Path, state_root: &Path, role: &str) -> Result<PathBuf> {
+fn build_private_home(source: &Path, root: &Path, role: &str) -> Result<PathBuf> {
     let slug: String = role
         .chars()
         .map(|c| {
@@ -303,7 +333,7 @@ fn build_private_home(source: &Path, state_root: &Path, role: &str) -> Result<Pa
             }
         })
         .collect();
-    let dir = state_root
+    let dir = root
         .join("codex-home")
         .join(format!("{slug}-{}", crate::mint_uuid()));
     std::fs::create_dir_all(dir.join("rules"))
@@ -336,7 +366,7 @@ fn build_private_home(source: &Path, state_root: &Path, role: &str) -> Result<Pa
 fn install_rules(
     home: &Path,
     _codex_home: &Path,
-    _state_root: &Path,
+    _root: &Path,
     _role: &str,
     rules: &[ExecRule],
 ) -> Result<Rules> {
@@ -357,6 +387,11 @@ fn install_rules(
 ///
 /// Idempotent: a rule whose pattern is already present is left alone, so the
 /// user's own rules and formatting survive.
+///
+/// Only allow rules go here. Every codex session reads this file, so a
+/// forbidden worker rule would also refuse the command to the codex
+/// orchestrator and to the operator's own sessions. The 1 broad ledger rule
+/// that v0.4.0 appended is removed, so the narrowed worker rules apply (#181).
 #[cfg_attr(not(windows), allow(dead_code))]
 pub(crate) fn ensure_rules(home: &Path, rules: &[ExecRule]) -> Result<()> {
     let path = rules_path(home);
@@ -364,26 +399,51 @@ pub(crate) fn ensure_rules(home: &Path, rules: &[ExecRule]) -> Result<()> {
         std::fs::create_dir_all(parent)
             .with_context(|| format!("creating {}", parent.display()))?;
     }
-    let existing = std::fs::read_to_string(&path).unwrap_or_default();
+    let read = read_rules_text(&path)?;
+    let existing = read.replace(&prompts::codex_rule_block(&broad_ledger_rule()), "");
 
-    let mut appended = String::new();
-    for rule in rules {
-        // Match on the rendered pattern list, exactly as the bash `grep -qF` did.
-        if existing.contains(&format!("[{}]", rule.pattern)) {
-            continue;
-        }
-        appended.push_str(&prompts::codex_rule_block(rule));
+    // Match on the rendered pattern list, exactly as the bash `grep -qF` did.
+    let appended: String = rules
+        .iter()
+        .filter(|r| r.decision == ExecDecision::Allow)
+        .filter(|r| !existing.contains(&format!("[{}]", r.pattern)))
+        .map(prompts::codex_rule_block)
+        .collect();
+    if appended.is_empty() && existing == read {
+        Ok(())
+    } else {
+        write_rules(&path, existing, &appended)
     }
-    if appended.is_empty() {
-        return Ok(());
-    }
+}
 
+/// Only a missing file is empty. A file that is not UTF-8 text is an
+/// error: rewriting it from "" would drop the operator's own rules.
+fn read_rules_text(path: &Path) -> Result<String> {
+    match std::fs::read_to_string(path) {
+        Ok(text) => Ok(text),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(String::new()),
+        Err(e) => Err(e).with_context(|| format!("reading {}", path.display())),
+    }
+}
+
+/// Write `existing` plus `appended`, starting `appended` on its own line.
+fn write_rules(path: &Path, existing: String, appended: &str) -> Result<()> {
     let mut next = existing;
     if !next.is_empty() && !next.ends_with('\n') {
         next.push('\n');
     }
-    next.push_str(&appended);
-    std::fs::write(&path, next).with_context(|| format!("writing {}", path.display()))
+    next.push_str(appended);
+    std::fs::write(path, next).with_context(|| format!("writing {}", path.display()))
+}
+
+/// The broad worker rule that v0.4.0 appended to the shared rules file. It
+/// let a worker run every `horch ledger` subcommand outside its sandbox.
+fn broad_ledger_rule() -> ExecRule {
+    ExecRule {
+        pattern: r#""horch", "ledger""#.into(),
+        justification: "claim, report and finish tasks through the task ledger".into(),
+        decision: ExecDecision::Allow,
+    }
 }
 
 /// Pull the session uuid out of a rollout filename.
@@ -440,6 +500,61 @@ pub(crate) fn find_rollouts(
     found
 }
 
+/// Stable unique marker shared by launch-time and done-time discovery.
+pub fn launch_token(record_id: &str) -> String {
+    format!("HORCH-LAUNCH:{record_id}:END")
+}
+
+/// Candidates must carry this launch's token in their first user message.
+pub fn find_launch_rollouts(
+    sessions: &Path,
+    project: &str,
+    since: SystemTime,
+    record_id: &str,
+) -> Vec<RolloutCandidate> {
+    let token = launch_token(record_id);
+    find_rollouts(sessions, project, since)
+        .into_iter()
+        .filter(|candidate| {
+            let Ok(file) = std::fs::File::open(&candidate.path) else {
+                return false;
+            };
+            use std::io::BufRead;
+            let mut first_response_user = None;
+            for line in std::io::BufReader::new(file.take(1024 * 1024))
+                .lines()
+                .map_while(Result::ok)
+            {
+                let Ok(value) = serde_json::from_str::<serde_json::Value>(&line) else {
+                    continue;
+                };
+                let payload = &value["payload"];
+                if first_response_user.is_none()
+                    && value["type"] == "response_item"
+                    && payload["role"] == "user"
+                {
+                    first_response_user =
+                        Some(payload["content"].as_array().is_some_and(|parts| {
+                            parts.iter().any(|part| {
+                                part["text"]
+                                    .as_str()
+                                    .is_some_and(|text| text.contains(&token))
+                            })
+                        }));
+                }
+                // The event records the actual submitted prompt; response items can
+                // include preceding AGENTS/environment context represented as user text.
+                if value["type"] == "event_msg" && payload["type"] == "user_message" {
+                    return payload["message"]
+                        .as_str()
+                        .is_some_and(|text| text.contains(&token));
+                }
+            }
+            first_response_user.unwrap_or(false)
+        })
+        .collect()
+}
+
 fn collect_rollouts(
     dir: &Path,
     since: SystemTime,
@@ -450,60 +565,130 @@ fn collect_rollouts(
         return;
     };
     for entry in entries.filter_map(|e| e.ok()) {
-        let path = entry.path();
-        let Ok(meta) = entry.metadata() else { continue };
-        if meta.is_dir() {
-            collect_rollouts(&path, since, workdir, out);
-            continue;
+        if entry.metadata().is_ok_and(|meta| meta.is_dir()) {
+            collect_rollouts(&entry.path(), since, workdir, out);
+        } else {
+            out.extend(rollout_candidate(&entry, since, workdir));
         }
-        if !meta.is_file() {
-            continue;
-        }
-        let Ok(modified) = meta.modified() else {
-            continue;
-        };
-        // An equal mtime is this launch's: mtimes come from a coarse clock,
-        // so a rollout written in the marker's tick has the marker's mtime.
-        if modified < since {
-            continue;
-        }
-        let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
-            continue;
-        };
-        let Some(session_id) = session_id_from_rollout(name) else {
-            continue;
-        };
-        if !head_names_cwd(&path, workdir) {
-            continue;
-        }
-        out.push(RolloutCandidate {
-            session_id: session_id.to_string(),
-            path,
-            modified,
-        });
     }
+}
+
+/// The rollout file `entry` names, if it is a recent file of this workdir.
+fn rollout_candidate(
+    entry: &std::fs::DirEntry,
+    since: SystemTime,
+    workdir: &Workdir,
+) -> Option<RolloutCandidate> {
+    let meta = entry.metadata().ok()?;
+    meta.is_file().then_some(())?;
+    let modified = meta.modified().ok()?;
+    // An equal mtime is this launch's: mtimes come from a coarse clock,
+    // so a rollout written in the marker's tick has the marker's mtime.
+    (modified >= since).then_some(())?;
+    let path = entry.path();
+    let session_id = session_id_from_rollout(path.file_name()?.to_str()?)?.to_string();
+    head_names_cwd(&path, workdir).then_some(())?;
+    Some(RolloutCandidate {
+        session_id,
+        path,
+        modified,
+    })
 }
 
 /// Does the first 16KB of `path` record `workdir` as a `"cwd"`?
 fn head_names_cwd(path: &Path, workdir: &Workdir) -> bool {
-    use std::io::Read;
-    let Ok(mut file) = std::fs::File::open(path) else {
-        return false;
-    };
-    let mut buf = vec![0u8; 16 * 1024];
-    let Ok(read) = file.read(&mut buf) else {
-        return false;
-    };
-    buf.truncate(read);
-    let head = String::from_utf8_lossy(&buf);
-    head.match_indices("\"cwd\":").any(|(i, key)| {
-        let rest = head[i + key.len()..].trim_start();
-        serde_json::Deserializer::from_str(rest)
-            .into_iter::<String>()
-            .next()
-            .and_then(|v| v.ok())
-            .is_some_and(|cwd| workdir.matches(Path::new(&cwd)))
+    read_head(path).is_some_and(|head| {
+        head.match_indices("\"cwd\":").any(|(i, key)| {
+            let rest = head[i + key.len()..].trim_start();
+            serde_json::Deserializer::from_str(rest)
+                .into_iter::<String>()
+                .next()
+                .and_then(|v| v.ok())
+                .is_some_and(|cwd| workdir.matches(Path::new(&cwd)))
+        })
     })
+}
+
+/// The first 16KB of `path`, lossily decoded.
+fn read_head(path: &Path) -> Option<String> {
+    use std::io::Read;
+    let mut file = std::fs::File::open(path).ok()?;
+    let mut buf = vec![0u8; 16 * 1024];
+    let read = file.read(&mut buf).ok()?;
+    buf.truncate(read);
+    Some(String::from_utf8_lossy(&buf).into_owned())
+}
+
+/// The extra launch args the sandbox needs.
+///
+/// Codex 0.160.0 exits 1 when `--add-dir` meets a read-only sandbox ("the
+/// effective permissions do not allow additional writable roots"), and full
+/// access needs no extra root.
+fn launch_sandbox_args(
+    ctx: &RuntimeContext,
+    req: &PrepareRequest<'_>,
+    sandbox: Option<&str>,
+    prepared: &mut Prepared,
+) -> Result<()> {
+    let state_root = ctx.paths.state_root.to_string_lossy().into_owned();
+    let profile_form = write_profile_form(req.teammate) || plan_profile_form(req.teammate);
+    match sandbox {
+        // A write pane runs the fleet write profile; a plan pane defines
+        // it for `horch mode <role> write` (X6 repro 5). The profile holds
+        // the state root and the pane's own TMPDIR.
+        _ if profile_form => profile_form_args(ctx, req.role, prepared)?,
+        None | Some(WORKSPACE_WRITE) => {
+            prepared.extra_args = vec!["--add-dir".into(), state_root];
+        }
+        // Another read-only launch names it as a workspace-write root:
+        // codex reads it only after a switch to workspace-write, and
+        // starts normally with it (X6 repro 2).
+        Some(READ_ONLY)
+            if !HarnessDefault::config_keys(&req.teammate.args).contains(&WRITABLE_ROOTS_KEY) =>
+        {
+            prepared.extra_args = vec![
+                "-c".into(),
+                format!("{WRITABLE_ROOTS_KEY}=[{}]", toml_string(&state_root)),
+            ];
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+/// The fleet write profile, with a private TMPDIR that `finish` removes.
+fn profile_form_args(ctx: &RuntimeContext, role: &str, prepared: &mut Prepared) -> Result<()> {
+    let state_root = ctx.paths.state_root.to_string_lossy().into_owned();
+    let tmpdir = pane_tmpdir(&ctx.paths.state_root, role);
+    std::fs::create_dir_all(&tmpdir).with_context(|| format!("creating {}", tmpdir.display()))?;
+    prepared.extra_args = fleet_write_profile_args(&state_root);
+    let value = serde_json::to_string(&tmpdir.to_string_lossy()).context("encoding TMPDIR")?;
+    prepared.extra_args.push("-c".into());
+    prepared
+        .extra_args
+        .push(format!("shell_environment_policy.set.TMPDIR={value}"));
+    prepared.on_finish(move || {
+        let _ = std::fs::remove_dir_all(&tmpdir);
+    });
+    Ok(())
+}
+
+/// Whether `key` is a shell variable name codex can take as a config key.
+fn is_env_name(key: &str) -> bool {
+    !key.is_empty() && key.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
+}
+
+/// One `shell_environment_policy.set` pair per valid variable. A JSON string
+/// is a valid TOML basic string, newlines escaped too.
+fn shell_env_args(shell_env: &[(String, String)], prepared: &mut Prepared) -> Result<()> {
+    for (key, value) in shell_env.iter().filter(|(key, _)| is_env_name(key)) {
+        let value = serde_json::to_string(value).context("encoding a shell variable")?;
+        prepared.extra_args.push("-c".into());
+        prepared
+            .extra_args
+            .push(format!("shell_environment_policy.set.{key}={value}"));
+    }
+    Ok(())
 }
 
 /// The operator's `config.toml`, read bounded (a FIFO, a device or a file
@@ -556,10 +741,12 @@ impl Harness for Codex {
     /// switch; full access needs none.
     fn prepare(&self, ctx: &RuntimeContext, req: &PrepareRequest<'_>) -> Result<Prepared> {
         let home = codex_home(&ctx.paths.home, ctx.inherited.codex_home.as_deref());
+        // The data root, not the state root: every pane may write the
+        // state root (review F13 of T-7).
         let rules = Rules::install(
             &ctx.paths.home,
             &home,
-            &ctx.paths.state_root,
+            &ctx.paths.data_root,
             req.role,
             req.exec_rules,
         )?;
@@ -570,58 +757,8 @@ impl Harness for Codex {
             ConfigLayers::read(&home, args_profile(&req.teammate.args))
         });
         let mut prepared = Prepared::default();
-        // Codex 0.160.0 exits 1 when `--add-dir` meets a read-only sandbox
-        // ("the effective permissions do not allow additional writable
-        // roots"), and full access needs no extra root.
-        let state_root = ctx.paths.state_root.to_string_lossy().into_owned();
-        let profile_form = write_profile_form(req.teammate) || plan_profile_form(req.teammate);
-        match sandbox.as_deref() {
-            // A write pane runs the fleet write profile; a plan pane defines
-            // it for `horch mode <role> write` (X6 repro 5). The profile holds
-            // the state root and the pane's own TMPDIR.
-            _ if profile_form => {
-                let tmpdir = pane_tmpdir(&ctx.paths.state_root, req.role);
-                std::fs::create_dir_all(&tmpdir)
-                    .with_context(|| format!("creating {}", tmpdir.display()))?;
-                prepared.extra_args = fleet_write_profile_args(&state_root);
-                let value =
-                    serde_json::to_string(&tmpdir.to_string_lossy()).context("encoding TMPDIR")?;
-                prepared.extra_args.push("-c".into());
-                prepared
-                    .extra_args
-                    .push(format!("shell_environment_policy.set.TMPDIR={value}"));
-                prepared.on_finish(move || {
-                    let _ = std::fs::remove_dir_all(&tmpdir);
-                });
-            }
-            None | Some(WORKSPACE_WRITE) => {
-                prepared.extra_args = vec!["--add-dir".into(), state_root];
-            }
-            // Another read-only launch names it as a workspace-write root:
-            // codex reads it only after a switch to workspace-write, and
-            // starts normally with it (X6 repro 2).
-            Some(READ_ONLY)
-                if !HarnessDefault::config_keys(&req.teammate.args)
-                    .contains(&WRITABLE_ROOTS_KEY) =>
-            {
-                prepared.extra_args = vec![
-                    "-c".into(),
-                    format!("{WRITABLE_ROOTS_KEY}=[{}]", toml_string(&state_root)),
-                ];
-            }
-            _ => {}
-        }
-        // A JSON string is a valid TOML basic string, newlines escaped too.
-        for (key, value) in req.shell_env {
-            if key.is_empty() || !key.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_') {
-                continue;
-            }
-            let value = serde_json::to_string(value).context("encoding a shell variable")?;
-            prepared.extra_args.push("-c".into());
-            prepared
-                .extra_args
-                .push(format!("shell_environment_policy.set.{key}={value}"));
-        }
+        launch_sandbox_args(ctx, req, sandbox.as_deref(), &mut prepared)?;
+        shell_env_args(req.shell_env, &mut prepared)?;
         if let Rules::Private { dir } = &rules {
             // On the child only. This process keeps the real CODEX_HOME, so the
             // session discovery still reads the real sessions directory.
@@ -686,7 +823,7 @@ impl Harness for Codex {
 /// The value of `key` (dotted, for example `tui.auto_recap`) in a codex
 /// `config.toml`, at its top level and in its tables. The legacy
 /// `[profiles.<p>]` table and the top-level `profile` key are not read: Codex
-/// 0.163.0 refuses them; [`ConfigLayers`] reads `<name>.config.toml`. A
+/// 0.163.0 refuses them; `ConfigLayers` reads `<name>.config.toml`. A
 /// string loses its quotes and a number its `_` separators. A line scanner
 /// like `trust::codex_trust`, not a TOML parser: no TOML crate.
 pub fn codex_config_value(text: &str, key: &str) -> Option<String> {
@@ -787,33 +924,35 @@ pub(crate) fn codex_operator_limit(
 /// The key includes its `[table]`; quotes around key parts are dropped. An
 /// array-of-tables (`[[x]]`) section is skipped.
 fn toml_entries(text: &str) -> Vec<(String, String)> {
-    let mut out = Vec::new();
     let mut table: Option<String> = Some(String::new());
-    for line in text.lines() {
-        let line = strip_toml_comment(line).trim();
-        if line.is_empty() {
-            continue;
-        }
-        if line.starts_with("[[") {
-            table = None;
-            continue;
-        }
-        if let Some(header) = line.strip_prefix('[').and_then(|h| h.strip_suffix(']')) {
-            table = Some(toml_key(header));
-            continue;
-        }
-        let (Some(table), Some((key, value))) = (&table, line.split_once('=')) else {
-            continue;
-        };
-        let key = toml_key(key);
-        let full = if table.is_empty() {
-            key
-        } else {
-            format!("{table}.{key}")
-        };
-        out.push((full, value.trim().to_string()));
+    text.lines()
+        .filter_map(|line| toml_line(line, &mut table))
+        .collect()
+}
+
+/// One line's entry, if it is a `key = value` line. A `[table]` header or an
+/// array-of-tables header changes `table` and gives no entry.
+fn toml_line(line: &str, table: &mut Option<String>) -> Option<(String, String)> {
+    let line = strip_toml_comment(line).trim();
+    if line.is_empty() {
+        return None;
     }
-    out
+    if line.starts_with("[[") {
+        *table = None;
+        return None;
+    }
+    if let Some(header) = line.strip_prefix('[').and_then(|h| h.strip_suffix(']')) {
+        *table = Some(toml_key(header));
+        return None;
+    }
+    let (table, (key, value)) = (table.as_ref()?, line.split_once('=')?);
+    let key = toml_key(key);
+    let full = if table.is_empty() {
+        key
+    } else {
+        format!("{table}.{key}")
+    };
+    Some((full, value.trim().to_string()))
 }
 
 /// A dotted TOML key with its parts unquoted and trimmed.
@@ -842,15 +981,16 @@ fn strip_toml_comment(line: &str) -> &str {
 /// `_` separators, anything else as written.
 fn toml_scalar(raw: &str) -> String {
     let raw = raw.trim();
-    for q in ['"', '\''] {
-        if let Some(inner) = raw.strip_prefix(q).and_then(|r| r.strip_suffix(q)) {
-            return inner.to_string();
-        }
+    let unquoted = ['"', '\'']
+        .into_iter()
+        .find_map(|q| raw.strip_prefix(q).and_then(|r| r.strip_suffix(q)));
+    if let Some(inner) = unquoted {
+        inner.to_string()
+    } else if raw.starts_with(|c: char| c.is_ascii_digit() || c == '-' || c == '+') {
+        raw.replace('_', "")
+    } else {
+        raw.to_string()
     }
-    if raw.starts_with(|c: char| c.is_ascii_digit() || c == '-' || c == '+') {
-        return raw.replace('_', "");
-    }
-    raw.to_string()
 }
 
 /// Codex's sandbox name that allows extra writable roots.
@@ -884,37 +1024,77 @@ fn launch_sandbox(
     while let Some(arg) = it.next() {
         match arg.as_str() {
             "-s" | "--sandbox" => flag = it.next().cloned(),
-            "--full-auto" | "--approve-for-me" | "--not-so-yolo" => {
-                flag = Some(WORKSPACE_WRITE.into())
-            }
-            "--dangerously-bypass-approvals-and-sandbox" | "--yolo" => {
-                flag = Some("danger-full-access".into())
-            }
-            "-c" | "--config" => {
-                let Some((key, value)) = it.next().and_then(|p| p.split_once('=')) else {
-                    continue;
-                };
-                match key.trim() {
-                    "sandbox_mode" => pair = Some(toml_scalar(value)),
-                    "default_permissions" => pair = Some(profile_sandbox(&toml_scalar(value))),
-                    _ => {}
-                }
-            }
+            "-c" | "--config" => pair = it.next().and_then(|p| config_sandbox(p)).or(pair),
             other => {
-                if let Some(s) = other.strip_prefix("--sandbox=") {
-                    flag = Some(s.to_string());
-                }
+                flag = sandbox_alias(other)
+                    .map(str::to_string)
+                    .or_else(|| other.strip_prefix("--sandbox=").map(str::to_string))
+                    .or(flag)
             }
         }
     }
-    flag.or(pair).or_else(|| {
-        let layers = config()?;
-        layers.value("sandbox_mode").or_else(|| {
-            layers
-                .value("default_permissions")
-                .map(|p| profile_sandbox(&p))
-        })
+    flag.or(pair)
+        .or_else(|| config().and_then(|layers| layers_sandbox(&layers)))
+}
+
+/// The sandbox the inherited config names: `sandbox_mode`, else the profile
+/// named by `default_permissions`.
+fn layers_sandbox(layers: &ConfigLayers) -> Option<String> {
+    layers.value("sandbox_mode").or_else(|| {
+        layers
+            .value("default_permissions")
+            .map(|p| profile_sandbox(&p))
     })
+}
+
+/// The sandbox a convenience flag stands for.
+fn sandbox_alias(arg: &str) -> Option<&'static str> {
+    const SANDBOX_ALIASES: [(&str, &str); 5] = [
+        ("--full-auto", WORKSPACE_WRITE),
+        ("--approve-for-me", WORKSPACE_WRITE),
+        ("--not-so-yolo", WORKSPACE_WRITE),
+        (
+            "--dangerously-bypass-approvals-and-sandbox",
+            "danger-full-access",
+        ),
+        ("--yolo", "danger-full-access"),
+    ];
+    SANDBOX_ALIASES
+        .iter()
+        .find_map(|&(flag, mode)| (flag == arg).then_some(mode))
+}
+
+/// The sandbox a `sandbox_mode=` or `default_permissions=` config pair names.
+fn config_sandbox(pair: &str) -> Option<String> {
+    let (key, value) = pair.split_once('=')?;
+    match key.trim() {
+        "sandbox_mode" => Some(toml_scalar(value)),
+        "default_permissions" => Some(profile_sandbox(&toml_scalar(value))),
+        _ => None,
+    }
+}
+
+/// Whether a codex launch of `teammate` can have the network, judged from
+/// the teammate file and the harness defaults. The operator's `config.toml`
+/// is not read, and it can turn the network on, so the answer fails closed:
+/// only a read-only sandbox, or a workspace-write sandbox whose args or
+/// forced harness defaults turn `sandbox_workspace_write.network_access`
+/// off, has none. A default without `force` yields to `config.toml`.
+pub(crate) fn launch_has_network(teammate: &Teammate) -> bool {
+    const KEY: &str = "sandbox_workspace_write.network_access";
+    match launch_sandbox(teammate, || None).as_deref() {
+        Some(READ_ONLY) => false,
+        Some(WORKSPACE_WRITE) => {
+            let forced: Vec<String> =
+                HarnessDefault::for_harness(&teammate.harness_defaults, HarnessKind::Codex)
+                    .filter(|d| d.force.is_some())
+                    .flat_map(|d| d.args.iter().cloned())
+                    .collect();
+            config_pair_value(&teammate.args, KEY).or_else(|| config_pair_value(&forced, KEY))
+                != Some("false")
+        }
+        _ => true,
+    }
 }
 
 /// The sandbox of a `default_permissions` profile: the built-in ones by
@@ -930,7 +1110,7 @@ fn profile_sandbox(profile: &str) -> String {
 
 /// The fleet's write profile. A write pane launches in it; a plan pane
 /// defines it so `horch mode <role> write` can select it in `/permissions`
-/// (X6 repro 5). See [`fleet_write_profile_args`].
+/// (X6 repro 5). See `fleet_write_profile_args`.
 pub const FLEET_WRITE_PROFILE: &str = "fleet_write";
 
 /// The `-c` pairs that define [`FLEET_WRITE_PROFILE`]:
@@ -967,9 +1147,27 @@ fn fleet_write_profile_args(state_root: &str) -> Vec<String> {
     .collect()
 }
 
+/// The args after `codex` that run a command in the sandbox of a Codex
+/// write pane (#181): [`FLEET_WRITE_PROFILE`] with `dir` as its project
+/// root and `state_root` as its 1 extra writable root. The command follows
+/// the last arg, `--`. `codex sandbox` keeps the command in its own process
+/// group, so killing the group of `codex` kills the command too.
+pub fn sandbox_args(state_root: &Path, dir: &Path) -> Vec<String> {
+    let mut args = vec!["sandbox".to_string()];
+    args.extend(fleet_write_profile_args(&state_root.to_string_lossy()));
+    args.extend([
+        "-P".into(),
+        FLEET_WRITE_PROFILE.into(),
+        "-C".into(),
+        dir.to_string_lossy().into_owned(),
+        "--".into(),
+    ]);
+    args
+}
+
 /// The pane's private temp dir, `<state root>/tmp/<role>`: `/tmp` and the
 /// system temp dir are read-only in [`FLEET_WRITE_PROFILE`].
-fn pane_tmpdir(state_root: &Path, role: &str) -> PathBuf {
+pub(crate) fn pane_tmpdir(state_root: &Path, role: &str) -> PathBuf {
     let safe: String = role
         .chars()
         .map(|c| {
@@ -1060,16 +1258,13 @@ fn permission_args(teammate: &Teammate) -> Option<Vec<String>> {
 /// The profile a codex launch runs: the value after `-p` or `--profile` in
 /// the teammate's args. `None` lets the config's own `profile` decide.
 fn args_profile(args: &[String]) -> Option<&str> {
-    let mut it = args.iter();
-    while let Some(arg) = it.next() {
+    args.iter().enumerate().find_map(|(i, arg)| {
         if arg == "-p" || arg == "--profile" {
-            return it.next().map(String::as_str);
+            args.get(i + 1).map(String::as_str)
+        } else {
+            arg.strip_prefix("--profile=")
         }
-        if let Some(p) = arg.strip_prefix("--profile=") {
-            return Some(p);
-        }
-    }
-    None
+    })
 }
 
 /// The harness-default args of a codex launch, which go before the
@@ -1114,20 +1309,12 @@ pub(crate) fn default_args(
 }
 
 fn config_pair_value<'a>(args: &'a [String], key: &str) -> Option<&'a str> {
-    let mut found = None;
-    let mut args = args.iter();
-    while let Some(arg) = args.next() {
-        if arg != "-c" {
-            continue;
-        }
-        let Some((pair_key, value)) = args.next().and_then(|pair| pair.split_once('=')) else {
-            continue;
-        };
-        if pair_key.trim() == key {
-            found = Some(value.trim());
-        }
-    }
-    found
+    args.windows(2)
+        .filter(|w| w[0] == "-c" || w[0] == "--config")
+        .filter_map(|w| w[1].split_once('='))
+        .filter(|(pair_key, _)| pair_key.trim() == key)
+        .map(|(_, value)| value.trim())
+        .next_back()
 }
 
 /// Whether the final Codex `-c` pairs turn native multi-agent support off.
@@ -1158,101 +1345,25 @@ pub(super) fn codex_command(
         cmd.arg("resume");
     }
     if teammate.worker_channel {
-        const CHANNEL_ENV_VARS: [&str; 14] = [
-            "HORCH_WORKSPACE_ID",
-            "HORCH_RECORD_ID",
-            "HORCH_STATE_DIR",
-            "HORCH_DATA_DIR",
-            "HORCH_TEAMMATES_DIR",
-            "HORCH_CODEX_BIN",
-            "HERDR_PANE_ID",
-            "HERDR_SOCKET_PATH",
-            "HERDR_BIN_PATH",
-            "HORCH_HERDR_BIN",
-            "XDG_STATE_HOME",
-            "XDG_DATA_HOME",
-            "HOME",
-            "PATH",
-        ];
-        let horch = env.horch_exe.to_string_lossy();
-        let workdir = env
-            .workdir
-            .as_deref()
-            .context("the worker channel needs a launch workdir")?
-            .to_string_lossy();
-        let channel_args = ["channel", "serve", "--agent", "codex"]
-            .map(toml_string)
-            .join(",");
-        let env_vars = CHANNEL_ENV_VARS.map(toml_string).join(",");
-        for pair in [
-            format!("mcp_servers.horch.command={}", toml_string(&horch)),
-            format!("mcp_servers.horch.args=[{channel_args}]"),
-            format!("mcp_servers.horch.cwd={}", toml_string(&workdir)),
-            format!("mcp_servers.horch.env_vars=[{env_vars}]"),
-        ] {
-            cmd.arg("-c").arg(pair);
-        }
+        push_channel_args(&mut cmd, env)?;
     }
     cmd.arg("-c").arg(&model);
     // Fleet panes must reach their briefing without startup dialogs. Keep
     // sandbox/command approval policy separate from trust for enabled hooks.
     cmd.args(["-c", "check_for_update_on_startup=false"]);
     cmd.args(["-c", "tui.resume_cwd=\"current\""]);
-    if !teammate
-        .args
-        .iter()
-        .any(|arg| arg == "--dangerously-bypass-hook-trust")
-    {
-        cmd.arg("--dangerously-bypass-hook-trust");
-    }
+    push_hook_trust(&mut cmd, teammate);
 
-    if let Some(mode) = teammate.permission_mode {
-        match permission_args(teammate) {
-            Some(args) => {
-                cmd.args(args);
-            }
-            None => bail!(
-                "teammate '{}' sets permission_mode '{}', which has no codex equivalent",
-                teammate.name,
-                mode.as_str()
-            ),
-        }
-    }
+    push_permission_args(&mut cmd, teammate)?;
     if let Some(effort) = &teammate.effort {
         cmd.arg("-c")
             .arg(format!("model_reasoning_effort=\"{effort}\""));
     }
-    // Harness defaults first, so the teammate's own args come later and win.
-    let defaults = default_args(teammate, || {
-        let home = env.home()?;
-        let dir = codex_home(home, env.codex_home.as_deref());
-        ConfigLayers::read(&dir, args_profile(&teammate.args))
-    });
-    let multi_agent_off = config_pair_value(&teammate.args, "features.multi_agent")
-        .or_else(|| config_pair_value(&defaults, "features.multi_agent"))
-        == Some("false");
-    cmd.args(defaults);
-    // The fleet window, with the defaults: only when the decision applies
-    // it, and not over the teammate's own pair.
-    let window = env.compact_window.as_ref().filter(|d| d.applied);
-    if let Some(n) = window.and_then(|d| d.tokens) {
-        if !HarnessDefault::config_keys(&teammate.args).contains(&LIMIT_KEY) {
-            cmd.arg("-c").arg(format!("{LIMIT_KEY}={n}"));
-        }
-    }
+    let multi_agent_off = push_defaults(&mut cmd, env, teammate);
+    push_window_limit(&mut cmd, env, teammate);
     cmd.args(&teammate.args);
     if multi_agent_off {
-        if let Some(path) = env
-            .state_root
-            .as_ref()
-            .map(|root| root.join("codex/model-catalog-v1.json"))
-            .filter(|path| path.is_file())
-        {
-            cmd.arg("-c").arg(format!(
-                "model_catalog_json={}",
-                toml_string(&path.to_string_lossy())
-            ));
-        }
+        push_v1_catalog(&mut cmd, env);
     }
     if let Session::Resume(id) = session {
         cmd.arg(id);
@@ -1262,6 +1373,115 @@ pub(super) fn codex_command(
         cmd.arg(prompt);
     }
     Ok(cmd)
+}
+
+/// Hooks trust is separate from the sandbox policy; the teammate may set it.
+fn push_hook_trust(cmd: &mut Command, teammate: &Teammate) {
+    if !teammate
+        .args
+        .iter()
+        .any(|arg| arg == "--dangerously-bypass-hook-trust")
+    {
+        cmd.arg("--dangerously-bypass-hook-trust");
+    }
+}
+
+/// Harness defaults first, so the teammate's own args come later and win.
+/// Returns whether the merged config turns `features.multi_agent` off.
+fn push_defaults(cmd: &mut Command, env: &LaunchEnv, teammate: &Teammate) -> bool {
+    let defaults = default_args(teammate, || {
+        let home = env.home()?;
+        let dir = codex_home(home, env.codex_home.as_deref());
+        ConfigLayers::read(&dir, args_profile(&teammate.args))
+    });
+    let multi_agent_off = config_pair_value(&teammate.args, "features.multi_agent")
+        .or_else(|| config_pair_value(&defaults, "features.multi_agent"))
+        == Some("false");
+    cmd.args(defaults);
+    multi_agent_off
+}
+
+/// The `-c` pairs that register the worker channel MCP server.
+fn push_channel_args(cmd: &mut Command, env: &LaunchEnv) -> Result<()> {
+    const CHANNEL_ENV_VARS: [&str; 14] = [
+        "HORCH_WORKSPACE_ID",
+        "HORCH_RECORD_ID",
+        "HORCH_STATE_DIR",
+        "HORCH_DATA_DIR",
+        "HORCH_TEAMMATES_DIR",
+        "HORCH_CODEX_BIN",
+        "HERDR_PANE_ID",
+        "HERDR_SOCKET_PATH",
+        "HERDR_BIN_PATH",
+        "HORCH_HERDR_BIN",
+        "XDG_STATE_HOME",
+        "XDG_DATA_HOME",
+        "HOME",
+        "PATH",
+    ];
+    let horch = env.horch_exe.to_string_lossy();
+    let workdir = env
+        .workdir
+        .as_deref()
+        .context("the worker channel needs a launch workdir")?
+        .to_string_lossy();
+    let channel_args = ["channel", "serve", "--agent", "codex"]
+        .map(toml_string)
+        .join(",");
+    let env_vars = CHANNEL_ENV_VARS.map(toml_string).join(",");
+    for pair in [
+        format!("mcp_servers.horch.command={}", toml_string(&horch)),
+        format!("mcp_servers.horch.args=[{channel_args}]"),
+        format!("mcp_servers.horch.cwd={}", toml_string(&workdir)),
+        format!("mcp_servers.horch.env_vars=[{env_vars}]"),
+    ] {
+        cmd.arg("-c").arg(pair);
+    }
+    Ok(())
+}
+
+/// A permission mode needs a codex equivalent; one without is a roster error.
+fn push_permission_args(cmd: &mut Command, teammate: &Teammate) -> Result<()> {
+    let Some(mode) = teammate.permission_mode else {
+        return Ok(());
+    };
+    match permission_args(teammate) {
+        Some(args) => {
+            cmd.args(args);
+            Ok(())
+        }
+        None => bail!(
+            "teammate '{}' sets permission_mode '{}', which has no codex equivalent",
+            teammate.name,
+            mode.as_str()
+        ),
+    }
+}
+
+/// The fleet window, with the defaults: only when the decision applies it,
+/// and not over the teammate's own pair.
+fn push_window_limit(cmd: &mut Command, env: &LaunchEnv, teammate: &Teammate) {
+    let window = env.compact_window.as_ref().filter(|d| d.applied);
+    if let Some(n) = window.and_then(|d| d.tokens) {
+        if !HarnessDefault::config_keys(&teammate.args).contains(&LIMIT_KEY) {
+            cmd.arg("-c").arg(format!("{LIMIT_KEY}={n}"));
+        }
+    }
+}
+
+/// Point codex at the pinned v1 catalog, when `write_v1_catalog` made one.
+fn push_v1_catalog(cmd: &mut Command, env: &LaunchEnv) {
+    let path = env
+        .state_root
+        .as_ref()
+        .map(|root| root.join("codex/model-catalog-v1.json"))
+        .filter(|path| path.is_file());
+    if let Some(path) = path {
+        cmd.arg("-c").arg(format!(
+            "model_catalog_json={}",
+            toml_string(&path.to_string_lossy())
+        ));
+    }
 }
 
 // ─── run-time permission switch (`horch mode`, X6) ─────────────────────────
@@ -1332,20 +1552,7 @@ pub fn parse_permissions_menu(screen: &str) -> Option<PermissionsMenu> {
     let start = screen.rfind(PERMISSIONS_MENU_TITLE)?;
     let mut items = Vec::new();
     let mut cursor = None;
-    for line in screen[start..].lines().skip(1) {
-        let mut rest = line.trim_start();
-        let here = rest.starts_with('›');
-        if here {
-            rest = rest.trim_start_matches('›').trim_start();
-        }
-        let Some((num, label)) = rest.split_once(". ") else {
-            continue;
-        };
-        if num.is_empty() || !num.chars().all(|c| c.is_ascii_digit()) {
-            continue;
-        }
-        let label = label.split("  ").next().unwrap_or("").trim();
-        let label = label.strip_suffix("(current)").unwrap_or(label).trim();
+    for (here, label) in screen[start..].lines().skip(1).filter_map(menu_item) {
         if here {
             cursor = Some(items.len());
         }
@@ -1356,6 +1563,25 @@ pub fn parse_permissions_menu(screen: &str) -> Option<PermissionsMenu> {
         items,
     })
     .filter(|m| !m.items.is_empty())
+}
+
+/// One menu line: whether the cursor is on it, and its label. `None` for a
+/// line that is not a numbered item.
+fn menu_item(line: &str) -> Option<(bool, &str)> {
+    let mut rest = line.trim_start();
+    let here = rest.starts_with('›');
+    if here {
+        rest = rest.trim_start_matches('›').trim_start();
+    }
+    let (num, label) = rest.split_once(". ")?;
+    if num.is_empty() || !num.chars().all(|c| c.is_ascii_digit()) {
+        return None;
+    }
+    let label = label.split("  ").next().unwrap_or("").trim();
+    Some((
+        here,
+        label.strip_suffix("(current)").unwrap_or(label).trim(),
+    ))
 }
 
 /// The value of the newest `Permissions:` line of a `/status` block, with
@@ -1447,6 +1673,56 @@ mod tests {
         let path = write_v1_catalog(&array, &tmp.path().join("state-array")).unwrap();
         let value: Value = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
         assert_eq!(value[0]["multi_agent_version"], "v1");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn w3_attach_skills_replaces_a_symlink_and_refuses_a_real_directory() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (home, old, new) = (
+            tmp.path().join("home"),
+            tmp.path().join("old"),
+            tmp.path().join("new"),
+        );
+        for d in [&home, &old, &new] {
+            std::fs::create_dir_all(d).unwrap();
+        }
+        let rules = Rules::Private { dir: home.clone() };
+        // No link yet: the link is created.
+        rules.attach_skills(&old).unwrap();
+        assert_eq!(std::fs::read_link(home.join("skills")).unwrap(), old);
+        // An old link is replaced, never followed.
+        rules.attach_skills(&new).unwrap();
+        assert_eq!(std::fs::read_link(home.join("skills")).unwrap(), new);
+        // A real directory is the operator's: refuse and leave it alone.
+        std::fs::remove_file(home.join("skills")).unwrap();
+        std::fs::create_dir_all(home.join("skills")).unwrap();
+        let err = rules.attach_skills(&new).unwrap_err().to_string();
+        assert_eq!(
+            err,
+            format!(
+                "refusing to replace non-symlink {}",
+                home.join("skills").display()
+            )
+        );
+        assert!(home.join("skills").is_dir());
+        // Without a private home there is nowhere to attach.
+        let err = Rules::Shared.attach_skills(&new).unwrap_err().to_string();
+        assert_eq!(
+            err,
+            "Codex phase skills require a private CODEX_HOME; use WSL on Windows"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn w3_a_command_past_its_deadline_is_killed_and_named() {
+        let tmp = tempfile::tempdir().unwrap();
+        let slow = fake_codex(tmp.path(), "slow", "sleep 30");
+        let started = Instant::now();
+        let err = run_with_deadline(Command::new(&slow), Duration::from_millis(300)).unwrap_err();
+        assert_eq!(err.to_string(), "codex debug models timed out after 0s");
+        assert!(started.elapsed() < Duration::from_secs(20));
     }
 
     #[cfg(unix)]
@@ -1633,16 +1909,6 @@ mod tests {
             .expect("the read blocked")
     }
 
-    #[cfg(unix)]
-    fn mkfifo(path: &Path) {
-        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        let made = std::process::Command::new("mkfifo")
-            .arg(path)
-            .status()
-            .unwrap();
-        assert!(made.success());
-    }
-
     /// A FIFO at `config.toml` neither blocks the operator-window read nor
     /// counts as a value (u9b step 10).
     #[cfg(unix)]
@@ -1650,7 +1916,7 @@ mod tests {
     fn codex_config_fifo_does_not_block() {
         let tmp = tempfile::tempdir().unwrap();
         let path = tmp.path().join("codex/config.toml");
-        mkfifo(&path);
+        crate::test_support::mkfifo(&path);
         let read = path.clone();
         assert_eq!(within_1s(move || read_config(&read)), None);
         drop(tmp);
@@ -1883,6 +2149,280 @@ mod tests {
         );
     }
 
+    /// The decision codex takes for `argv` under the `prefix_rule` blocks in
+    /// `rules`: the strictest decision of every rule whose pattern is a
+    /// prefix of `argv`, or `None` (the command runs in the sandbox).
+    /// A block that does not parse, or an unknown decision, fails the test.
+    fn rule_decision(rules: &str, argv: &[&str]) -> Option<String> {
+        let rank = |d: &str| {
+            ["allow", "prompt", "forbidden"]
+                .iter()
+                .position(|x| *x == d)
+                .unwrap_or_else(|| panic!("unknown decision {d:?}"))
+        };
+        rules
+            .split("prefix_rule(")
+            .skip(1)
+            .filter_map(|block| {
+                let field = |name: &str| {
+                    let line = block
+                        .lines()
+                        .find(|l| l.trim().starts_with(name))
+                        .unwrap_or_else(|| panic!("no {name} in {block}"));
+                    let value = line.split_once('=').unwrap().1.trim();
+                    serde_json::from_str::<serde_json::Value>(value.trim_end_matches(','))
+                        .unwrap_or_else(|e| panic!("{name} in {block}: {e}"))
+                };
+                let pattern: Vec<String> = serde_json::from_value(field("pattern")).unwrap();
+                let decision: String = serde_json::from_value(field("decision")).unwrap();
+                let matches =
+                    pattern.len() <= argv.len() && pattern.iter().zip(argv).all(|(p, a)| p == a);
+                matches.then_some(decision)
+            })
+            .max_by_key(|d| rank(d))
+    }
+
+    /// #181: a codex worker reaches the task ledger outside its sandbox only
+    /// through the subcommands a worker runs. `finish` lifts the sandbox;
+    /// `add` and `reopen`, which take any `--check` command, are refused; a
+    /// subcommand no rule names runs in the sandbox.
+    #[cfg(unix)]
+    #[test]
+    fn a_worker_launch_allows_ledger_finish_and_forbids_ledger_add() {
+        let tmp = tempfile::tempdir().unwrap();
+        let roster = Roster::builtin().unwrap();
+        let teammate = roster.require("codex-sol").unwrap();
+        let (_, prepared) = prepare_with_rules(tmp.path(), teammate, roster.exec_rules());
+        let home = &prepared
+            .env
+            .iter()
+            .find(|(k, _)| k == "CODEX_HOME")
+            .expect("a private codex home")
+            .1;
+        let rules = std::fs::read_to_string(Path::new(home).join("rules/horch.rules")).unwrap();
+        let allow = Some("allow".to_string());
+        let forbidden = Some("forbidden".to_string());
+        for (argv, want) in [
+            (&["horch", "ledger", "finish"][..], &allow),
+            (&["horch", "ledger", "claim"], &allow),
+            (&["horch", "ledger", "progress", "step 1 done"], &allow),
+            (&["horch", "ledger", "worktree", "new", "x"], &allow),
+            (&["horch", "ledger", "done", "summary"], &allow),
+            (&["horch", "ledger", "status"], &allow),
+            (&["horch", "ledger", "show", "T-1"], &allow),
+            (&["horch", "ledger", "steps"], &allow),
+            (
+                &["horch", "ledger", "add", "t.md", "--check", "sh x"],
+                &forbidden,
+            ),
+            (&["horch", "ledger", "add-map", "MAP.md"], &forbidden),
+            (
+                &["horch", "ledger", "reopen", "1", "--check", "sh x"],
+                &forbidden,
+            ),
+            (&["horch", "ledger", "cancel", "T-1"], &None),
+            (&["horch", "ledger"], &None),
+            (&["horch", "done", "summary"], &allow),
+        ] {
+            assert_eq!(&rule_decision(&rules, argv), want, "{argv:?} in\n{rules}");
+        }
+    }
+
+    /// Whether the codex argv of a launch of `teammate` turns the network on:
+    /// the `-c` pairs of the built command and of `prepare`, read for the
+    /// permissions profile the launch selects.
+    #[cfg(unix)]
+    fn argv_has_network(teammate: &Teammate) -> bool {
+        use crate::harness::launch::{command_in, LaunchEnv, Session};
+        let tmp = tempfile::tempdir().unwrap();
+        let (_, prepared) = prepare_in(tmp.path(), teammate);
+        let cmd = command_in(
+            &LaunchEnv::for_test(),
+            teammate,
+            Session::Unmanaged,
+            "p",
+            None,
+        )
+        .unwrap();
+        let mut argv = command_args(&cmd);
+        argv.extend(prepared.extra_args.iter().cloned());
+        match config_pair_value(&argv, "default_permissions") {
+            Some("\"fleet_write\"") => {
+                config_pair_value(&argv, "permissions.fleet_write.network.enabled") == Some("true")
+            }
+            Some("\":read-only\"") => false,
+            other => panic!(
+                "{}: unexpected profile {other:?} in {argv:?}",
+                teammate.name
+            ),
+        }
+    }
+
+    /// #151: the orchestrator routes work by `brief_description`, so each
+    /// codex teammate's description names the network setting its launch
+    /// really has. Every bundled codex teammate launches in the fleet write
+    /// profile, which has the network; a plan pane has none.
+    #[cfg(unix)]
+    #[test]
+    fn each_codex_teammate_states_the_network_its_launch_has() {
+        let roster = Roster::builtin().unwrap();
+        // Every bundled codex teammate launches with the network.
+        let expected = [
+            "astra-creative",
+            "codex-luna",
+            "codex-network",
+            "codex-reviewer",
+            "codex-sol",
+            "codex-swift-reviewer",
+            "codex-terra",
+            "orchestrator-codex",
+            "visual-prototyper",
+        ];
+        let codex: Vec<&str> = roster
+            .names()
+            .into_iter()
+            .filter(|n| roster.require(n).unwrap().agent == HarnessKind::Codex)
+            .collect();
+        assert_eq!(codex, expected, "a new codex teammate needs a row");
+        for name in expected {
+            let t = roster.require(name).unwrap();
+            assert!(argv_has_network(t), "{name}: argv");
+            assert!(launch_has_network(t), "{name}: launch_has_network");
+            assert!(
+                t.brief_description.contains("+ network"),
+                "{name}: {:?} does not say \"+ network\"",
+                t.brief_description
+            );
+        }
+        let plan = Teammate {
+            permission_mode: Some(PermissionMode::Plan),
+            ..roster.require("codex-sol").unwrap().clone()
+        };
+        assert!(!argv_has_network(&plan));
+        assert!(!launch_has_network(&plan));
+    }
+
+    /// A teammate whose own args choose the sandbox: workspace-write has the
+    /// network unless the args or a forced harness default set
+    /// `network_access=false`; full access always has it.
+    /// A sandbox the teammate file does not decide (codex's default, the
+    /// operator's config, a named profile) counts as having the network, so
+    /// the network-safety check fails closed.
+    #[test]
+    fn a_teammates_own_sandbox_decides_its_network() {
+        let with = |args: &[&str]| Teammate {
+            permission_mode: Some(PermissionMode::Auto),
+            args: args.iter().map(|s| s.to_string()).collect(),
+            ..Default::default()
+        };
+        // workspace-write counts as having the network unless the args turn
+        // it off: codex's config.toml can turn it on, and is not read here.
+        assert!(launch_has_network(&with(&["-s", "workspace-write"])));
+        assert!(!launch_has_network(&with(&[
+            "-s",
+            "workspace-write",
+            "-c",
+            "sandbox_workspace_write.network_access=false"
+        ])));
+        assert!(!launch_has_network(&with(&[
+            "-s",
+            "workspace-write",
+            "--config",
+            "sandbox_workspace_write.network_access=false"
+        ])));
+        assert!(launch_has_network(&with(&[
+            "-s",
+            "workspace-write",
+            "-c",
+            "sandbox_workspace_write.network_access=true"
+        ])));
+        assert!(launch_has_network(&with(&["-s", "danger-full-access"])));
+        assert!(!launch_has_network(&with(&["-s", "read-only"])));
+        assert!(launch_has_network(&with(&[
+            "-s",
+            "workspace-write",
+            "--config",
+            "sandbox_workspace_write.network_access=true"
+        ])));
+        let profile = Teammate {
+            args: vec!["-c".into(), "default_permissions=\"ops\"".into()],
+            ..Default::default()
+        };
+        assert!(launch_has_network(&profile));
+        assert!(launch_has_network(&Teammate::default()));
+
+        // A harness default decides only when the teammate's args leave the
+        // key unset, and it turns the network off only with `force`: a
+        // default without it yields to the operator's config.toml.
+        let with_default = |args: &[&str], force: Option<&str>| Teammate {
+            harness_defaults: vec![HarnessDefault {
+                harness: HarnessKind::Codex,
+                base: None,
+                env: Default::default(),
+                args: vec![
+                    "-c".into(),
+                    "sandbox_workspace_write.network_access=false".into(),
+                ],
+                settings: None,
+                config: None,
+                agent_settings: None,
+                force: force.map(str::to_string),
+            }],
+            ..with(args)
+        };
+        assert!(!launch_has_network(&with_default(
+            &["-s", "workspace-write"],
+            Some("test")
+        )));
+        assert!(launch_has_network(&with_default(
+            &[
+                "-s",
+                "workspace-write",
+                "-c",
+                "sandbox_workspace_write.network_access=true"
+            ],
+            Some("test")
+        )));
+        assert!(launch_has_network(&with_default(
+            &["-s", "workspace-write"],
+            None
+        )));
+    }
+
+    /// Review F13 of T-7: the private codex homes lived under the state
+    /// root, which every pane may write, so a sandboxed worker could rewrite
+    /// the rules (and drop the `forbidden` blocks) of a pane horch launches
+    /// later. A private home is now built outside every writable root.
+    #[cfg(unix)]
+    #[test]
+    fn the_private_codex_home_is_outside_every_writable_root() {
+        let roster = Roster::builtin().unwrap();
+        for teammate in [roster.require("codex-sol").unwrap(), &Teammate::default()] {
+            let tmp = tempfile::tempdir().unwrap();
+            let (ctx, prepared) = prepare_in(tmp.path(), teammate);
+            let home = Path::new(
+                &prepared
+                    .env
+                    .iter()
+                    .find(|(k, _)| k == "CODEX_HOME")
+                    .expect("a private codex home")
+                    .1,
+            )
+            .to_path_buf();
+            assert!(home.join("rules/horch.rules").is_file(), "{home:?}");
+            assert!(home.starts_with(&ctx.paths.data_root), "{home:?}");
+            assert!(!home.starts_with(&ctx.paths.state_root), "{home:?}");
+            let added = prepared
+                .extra_args
+                .windows(2)
+                .filter(|w| w[0] == "--add-dir")
+                .map(|w| Path::new(&w[1]));
+            for root in added {
+                assert!(!home.starts_with(root), "{home:?} is under {root:?}");
+            }
+        }
+    }
+
     /// The load-bearing safety property: cleanup removes the LINKS, never what
     /// they point at. If this regressed it would delete the operator's real
     /// codex home - auth, sessions and all - when a codex pane exited.
@@ -1938,6 +2478,16 @@ mod tests {
     /// Prepare one codex pane under a state root in `tmp`, for `teammate`.
     #[cfg(unix)]
     fn prepare_in(tmp: &Path, teammate: &Teammate) -> (RuntimeContext, Prepared) {
+        prepare_with_rules(tmp, teammate, &[])
+    }
+
+    /// [`prepare_in`], with `exec_rules` installed in the pane's rules file.
+    #[cfg(unix)]
+    fn prepare_with_rules(
+        tmp: &Path,
+        teammate: &Teammate,
+        exec_rules: &[ExecRule],
+    ) -> (RuntimeContext, Prepared) {
         let home = tmp.join("home");
         std::fs::create_dir_all(home.join(".codex")).unwrap();
         let env = crate::runtime::MapEnv::new(tmp)
@@ -1949,7 +2499,7 @@ mod tests {
                 &ctx,
                 &PrepareRequest {
                     role: "codex-1",
-                    exec_rules: &[],
+                    exec_rules,
                     skills: None,
                     compact_window: None,
                     teammate,
@@ -2304,6 +2854,134 @@ mod tests {
         );
     }
 
+    fn strings(args: &[&str]) -> Vec<String> {
+        args.iter().map(|a| a.to_string()).collect()
+    }
+
+    #[test]
+    fn w3_sandbox_flags_beat_config_pairs_beat_the_config_file() {
+        let sandbox = |args: &[&str], config: Option<&str>| {
+            let t = Teammate {
+                args: strings(args),
+                ..Default::default()
+            };
+            launch_sandbox(&t, || config.map(ConfigLayers::base))
+        };
+        let cfg = Some("sandbox_mode = \"read-only\"\n");
+        assert_eq!(sandbox(&[], cfg).as_deref(), Some("read-only"));
+        assert_eq!(sandbox(&[], None), None);
+        // A pair beats the file; an unrelated pair or a lone `-c` changes nothing.
+        let pair = ["-c", "sandbox_mode=\"workspace-write\""];
+        assert_eq!(sandbox(&pair, cfg).as_deref(), Some("workspace-write"));
+        assert_eq!(
+            sandbox(&["-c", "model=\"x\""], cfg).as_deref(),
+            Some("read-only")
+        );
+        assert_eq!(sandbox(&["-c"], cfg).as_deref(), Some("read-only"));
+        assert_eq!(sandbox(&["-c", "nokey"], cfg).as_deref(), Some("read-only"));
+        // A flag beats a pair, in any order; the later flag wins.
+        for flag in [
+            &["-s", "danger-full-access"][..],
+            &["--sandbox=danger-full-access"],
+        ] {
+            let mut args = strings(flag);
+            args.extend(strings(&pair));
+            let t = Teammate {
+                args,
+                ..Default::default()
+            };
+            assert_eq!(
+                launch_sandbox(&t, || None).as_deref(),
+                Some("danger-full-access"),
+                "{flag:?}"
+            );
+        }
+        assert_eq!(
+            sandbox(&["--sandbox", "a", "-s", "b"], None).as_deref(),
+            Some("b")
+        );
+        for (alias, mode) in [
+            ("--full-auto", "workspace-write"),
+            ("--approve-for-me", "workspace-write"),
+            ("--not-so-yolo", "workspace-write"),
+            ("--yolo", "danger-full-access"),
+            (
+                "--dangerously-bypass-approvals-and-sandbox",
+                "danger-full-access",
+            ),
+        ] {
+            assert_eq!(sandbox(&[alias], cfg).as_deref(), Some(mode), "{alias}");
+        }
+        assert_eq!(
+            sandbox(&["--config", "sandbox_mode=x"], None).as_deref(),
+            Some("x")
+        );
+    }
+
+    #[test]
+    fn w3_args_profile_and_config_pairs_scan_the_argv() {
+        assert_eq!(args_profile(&strings(&["-p", "fleet"])), Some("fleet"));
+        assert_eq!(
+            args_profile(&strings(&["--profile", "a", "-p", "b"])),
+            Some("a")
+        );
+        assert_eq!(args_profile(&strings(&["x", "--profile=zed"])), Some("zed"));
+        assert_eq!(args_profile(&strings(&["-p"])), None);
+        assert_eq!(args_profile(&strings(&["--search"])), None);
+
+        let argv = strings(&[
+            "-c", "k=1", "--model", "m", "--config", " k = 2 ", "-c", "other=3",
+        ]);
+        assert_eq!(config_pair_value(&argv, "k"), Some("2"));
+        assert_eq!(config_pair_value(&argv, "other"), Some("3"));
+        assert_eq!(config_pair_value(&argv, "absent"), None);
+        // A `k=v` that is not behind a `-c` is not a pair.
+        assert_eq!(config_pair_value(&strings(&["k=9"]), "k"), None);
+        assert_eq!(
+            config_pair_value(&strings(&["-c", "nopair"]), "nopair"),
+            None
+        );
+    }
+
+    #[test]
+    fn w3_toml_scanners_read_entries_and_scalars() {
+        let text = "top = 1_000 # note\n\
+                    [tbl]\n\
+                    \"quoted\" = 'x'\n\
+                    # whole-line comment\n\
+                    \n\
+                    [[arr]]\n\
+                    skipped = true\n\
+                    [a.\"b\"]\n\
+                    c = \"has # inside\"\n\
+                    no_equals_here\n";
+        assert_eq!(
+            toml_entries(text),
+            vec![
+                ("top".to_string(), "1_000".to_string()),
+                ("tbl.quoted".to_string(), "'x'".to_string()),
+                ("a.b.c".to_string(), "\"has # inside\"".to_string()),
+            ]
+        );
+        assert_eq!(toml_scalar(" \"abc\" "), "abc");
+        assert_eq!(toml_scalar("'abc'"), "abc");
+        assert_eq!(toml_scalar("1_000"), "1000");
+        assert_eq!(toml_scalar("-5"), "-5");
+        assert_eq!(toml_scalar("true"), "true");
+        assert_eq!(toml_scalar("\"open"), "\"open");
+    }
+
+    #[test]
+    fn w3_the_permissions_menu_skips_lines_that_are_not_numbered_items() {
+        let screen = format!(
+            "{PERMISSIONS_MENU_TITLE}\n\n  1. Read Only (current)  detail\n  note. not an item\n  x1. bad\n› 2. Default\n  3. Full Access\n"
+        );
+        let m = parse_permissions_menu(&screen).unwrap();
+        assert_eq!(m.items, ["Read Only", "Default", "Full Access"]);
+        assert_eq!(m.cursor_label(), Some("Default"));
+        assert!(parse_permissions_menu(&format!("{PERMISSIONS_MENU_TITLE}\n  1. A\n")).is_none());
+    }
+
     /// A path with a quote or a backslash stays 1 TOML string.
     #[test]
     fn a_writable_root_is_quoted_as_a_toml_string() {
@@ -2645,5 +3323,90 @@ mod tests {
         )
         .unwrap();
         assert!(dir.join("rules").is_dir());
+    }
+
+    /// Windows shares 1 rules file between every codex session. A forbidden
+    /// worker rule there would also refuse `horch ledger add` to the codex
+    /// orchestrator and to the operator's own sessions, so the shared file
+    /// gets only the allow rules.
+    #[test]
+    fn the_shared_rules_file_gets_no_forbidden_rule() {
+        let home = tempfile::tempdir().unwrap();
+        ensure_rules(home.path(), Roster::builtin().unwrap().exec_rules()).unwrap();
+        let text = std::fs::read_to_string(rules_path(home.path())).unwrap();
+        assert!(!text.contains("forbidden"), "{text}");
+        assert_eq!(
+            rule_decision(&text, &["horch", "ledger", "finish"]),
+            Some("allow".into())
+        );
+        assert_eq!(
+            rule_decision(&text, &["horch", "ledger", "add", "t.md"]),
+            None
+        );
+    }
+
+    /// A shared rules file that cannot be read as text (UTF-16 from
+    /// PowerShell, 1 bad byte) is an error, never an empty file to overwrite:
+    /// the operator's own rules stay.
+    #[test]
+    fn an_unreadable_shared_rules_file_is_left_alone() {
+        let home = tempfile::tempdir().unwrap();
+        let path = rules_path(home.path());
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let utf16: Vec<u8> = [0xFF, 0xFE]
+            .into_iter()
+            .chain("# mine\n".encode_utf16().flat_map(u16::to_le_bytes))
+            .collect();
+        std::fs::write(&path, &utf16).unwrap();
+        let err = ensure_rules(home.path(), Roster::builtin().unwrap().exec_rules());
+        assert!(err.is_err(), "an unreadable file must not be rewritten");
+        assert_eq!(std::fs::read(&path).unwrap(), utf16);
+    }
+
+    /// v0.4.0 appended 1 broad `["horch", "ledger"]` allow to the shared file.
+    /// An upgrade removes exactly that block, so the narrowed rules apply on
+    /// Windows too, and keeps the operator's own rules.
+    #[test]
+    fn the_shared_rules_file_loses_the_old_broad_ledger_rule() {
+        let home = tempfile::tempdir().unwrap();
+        let path = rules_path(home.path());
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let own = "prefix_rule(\n    pattern = [\"horch\", \"ledger\"],\n    \
+                   decision = \"allow\",\n    justification = \"my own\",\n)\n";
+        let old = "prefix_rule(\n    pattern = [\"horch\", \"ledger\"],\n    \
+                   decision = \"allow\",\n    justification = \"herdr-fleet: claim, report \
+                   and finish tasks through the task ledger\",\n)\n";
+        std::fs::write(&path, format!("# the user's own\n{old}")).unwrap();
+        ensure_rules(home.path(), Roster::builtin().unwrap().exec_rules()).unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.starts_with("# the user's own\n"), "{text}");
+        assert!(!text.contains("claim, report and finish"), "{text}");
+        assert_eq!(
+            rule_decision(&text, &["horch", "ledger", "cancel", "T-1"]),
+            None
+        );
+        assert_eq!(
+            rule_decision(&text, &["horch", "ledger", "claim"]),
+            Some("allow".into())
+        );
+
+        // The next launch finds the narrowed rules already there and writes
+        // nothing.
+        ensure_rules(home.path(), Roster::builtin().unwrap().exec_rules()).unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), text);
+
+        // A file that already holds the narrowed rules still loses the old
+        // broad block, and a second launch leaves it byte for byte.
+        std::fs::write(&path, format!("{text}{old}")).unwrap();
+        ensure_rules(home.path(), Roster::builtin().unwrap().exec_rules()).unwrap();
+        let migrated = std::fs::read(&path).unwrap();
+        assert_eq!(String::from_utf8(migrated.clone()).unwrap(), text);
+        ensure_rules(home.path(), Roster::builtin().unwrap().exec_rules()).unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), migrated);
+
+        // A rule the operator wrote with the same pattern is theirs: it stays.
+        std::fs::write(&path, own).unwrap();
+        ensure_rules(home.path(), Roster::builtin().unwrap().exec_rules()).unwrap();
+        assert!(std::fs::read_to_string(&path).unwrap().starts_with(own));
     }
 }

@@ -8,6 +8,9 @@ description = "Fake harness binaries and hermetic end-to-end tests for horch."
 
 # Each fake stands in for one external program. They record every call to
 # $HORCH_FAKE_LOG so a test can assert exactly what horch asked of them.
+[lints]
+workspace = true
+
 [[bin]]
 name = "fake-claude"
 path = "src/bin/fake-claude.rs"
@@ -46,6 +49,8 @@ path = "src/bin/fake-ollama.rs"
 horch-core.workspace = true
 # `git::scrub_repo_env`: every git child of the harness and the fakes.
 horch-marketplace.workspace = true
+# `kill`: teardown and fake-herdr signal process groups without a fork.
+libc = "0.2"
 serde_json.workspace = true
 
 [dev-dependencies]

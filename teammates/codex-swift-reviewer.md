@@ -1,6 +1,6 @@
 ---
 name: codex-swift-reviewer
-brief_description: Cross-vendor Swift review on Codex Sol - concurrency and modern SwiftUI. Use on Claude-built Swift changes.
+brief_description: "Swift review. fleet_write: project/.git writes + network; other paths sandboxed. plan: read-only."
 base: fleet-worker
 agent: codex
 phase: validation

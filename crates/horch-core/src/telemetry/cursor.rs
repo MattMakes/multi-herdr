@@ -171,20 +171,7 @@ pub(crate) fn poll_lines_until(
     let meta = file.metadata()?;
     let (dev, ino) = file_identity(&meta);
     let path_str = path.to_string_lossy().into_owned();
-    if cursor.dev != dev
-        || cursor.ino != ino
-        || meta.len() < cursor.offset
-        || cursor.path != path_str
-    {
-        *cursor = Cursor {
-            path: path_str,
-            agent: std::mem::take(&mut cursor.agent),
-            session_id: std::mem::take(&mut cursor.session_id),
-            dev,
-            ino,
-            ..Cursor::default()
-        };
-    }
+    reset_if_moved(cursor, dev, ino, meta.len(), path_str);
     let mut reader = BufReader::with_capacity(1 << 20, file);
     reader.seek(SeekFrom::Start(cursor.offset))?;
     let mut buf = LINE.take();
@@ -232,6 +219,23 @@ fn read_lines(
         }
     }
     Ok(consumed_any)
+}
+
+/// Start `cursor` over when it belongs to another file (`dev`, `ino` or
+/// `path` differ) or to the earlier, longer state of this one (`len` is below
+/// its offset). The agent and the session id stay: they name the owner of
+/// the input, not its contents.
+fn reset_if_moved(cursor: &mut Cursor, dev: u64, ino: u64, len: u64, path: String) {
+    if cursor.dev != dev || cursor.ino != ino || len < cursor.offset || cursor.path != path {
+        *cursor = Cursor {
+            path,
+            agent: std::mem::take(&mut cursor.agent),
+            session_id: std::mem::take(&mut cursor.session_id),
+            dev,
+            ino,
+            ..Cursor::default()
+        };
+    }
 }
 
 #[cfg(test)]
@@ -310,6 +314,48 @@ mod tests {
         std::fs::write(&q, "fresh\nlines\n").unwrap();
         std::fs::rename(&q, &p).unwrap();
         assert_eq!(lines_of(&p, &mut c).len(), 2);
+    }
+
+    /// A reset keeps whose cursor it is (agent and session), takes the
+    /// file's identity and path, drops the reader state and restarts the
+    /// count of quiet ticks. A cursor for another path resets too, even on
+    /// the same file identity.
+    #[test]
+    fn tel_07_a_reset_keeps_the_owner_and_restarts_the_quiet_count() {
+        let tmp = tempfile::tempdir().unwrap();
+        let p = tmp.path().join("t.jsonl");
+        std::fs::write(&p, "one\ntwo\n").unwrap();
+        let mut c = Cursor {
+            agent: "claude".into(),
+            session_id: "s-1".into(),
+            ..Cursor::default()
+        };
+        assert_eq!(lines_of(&p, &mut c).len(), 2);
+        let (dev, ino) = (c.dev, c.ino);
+        assert_eq!(c.path, p.to_string_lossy());
+
+        // The same file, nothing new: no reset, 1 more quiet tick.
+        c.model = "kept while the file is the same".into();
+        c.quiet_ticks = 4;
+        assert_eq!(lines_of(&p, &mut c), vec![]);
+        assert_eq!((c.offset, c.quiet_ticks), (8, 5));
+        assert_eq!(c.model, "kept while the file is the same");
+
+        // Only the path differs: start over.
+        c.path = "/elsewhere".into();
+        assert_eq!(lines_of(&p, &mut c).len(), 2);
+        assert_eq!(c.path, p.to_string_lossy());
+        assert_eq!((c.dev, c.ino), (dev, ino));
+        assert_eq!((c.agent.as_str(), c.session_id.as_str()), ("claude", "s-1"));
+        assert!(c.model.is_empty());
+        assert_eq!((c.offset, c.quiet_ticks), (8, 0));
+
+        // An emptied file resets too, and its first quiet tick counts as 1.
+        c.quiet_ticks = 5;
+        std::fs::write(&p, "").unwrap();
+        assert_eq!(lines_of(&p, &mut c), vec![]);
+        assert_eq!((c.offset, c.quiet_ticks), (0, 1));
+        assert_eq!((c.agent.as_str(), c.session_id.as_str()), ("claude", "s-1"));
     }
 
     #[test]

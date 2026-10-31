@@ -7,7 +7,7 @@ use chrono::{DateTime, Utc};
 use horch_core::competition::budget::UsageMeter;
 use horch_core::competition::observe::TelemetryUsage;
 use horch_core::execution::legacy::LedgerRecordV1;
-use horch_core::execution::records::Ledger;
+use horch_core::execution::records::SessionLedger;
 use horch_core::fleet_runs::facts::{
     build_run_row, plan_file, record_run, record_start, RunSources, RunWrite, PLAN_TEXT_CAP,
 };
@@ -72,8 +72,8 @@ impl World {
         }
     }
 
-    fn ledger(&self) -> Ledger {
-        Ledger::for_project(&self.state, &self.project.to_string_lossy())
+    fn ledger(&self) -> SessionLedger {
+        SessionLedger::for_project(&self.state, &self.project.to_string_lossy())
     }
 
     /// Install the Claude usage fixture as the transcript of `session`.
@@ -137,8 +137,8 @@ fn finished(id: &str, role: &str) -> Value {
     })
 }
 
-/// Append a record as given: `Ledger::insert` restamps it as a new spawn.
-fn raw_insert(ledger: &Ledger, r: LedgerRecordV1) -> anyhow::Result<()> {
+/// Append a record as given: `SessionLedger::insert` restamps it as a new spawn.
+fn raw_insert(ledger: &SessionLedger, r: LedgerRecordV1) -> anyhow::Result<()> {
     ledger.store().insert(r)
 }
 

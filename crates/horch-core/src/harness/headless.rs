@@ -8,19 +8,18 @@
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::{Child, Command, Stdio};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use anyhow::{bail, Result};
 
-use super::claude::overlay_skill_switches;
+use super::claude::{disable_operator_plugins, overlay_skill_switches};
 use super::launch::{teammate_env, LaunchEnv};
 use crate::evaluation::rubric::{rubric_text, schema_text};
 use crate::ids::SessionId;
-use crate::roster::operator_enabled_plugins;
 use crate::roster::Teammate;
-use crate::runtime::RuntimeContext;
+use crate::runtime::{process, RuntimeContext};
 
 /// The only tools a headless judge may have. They read; none writes or runs.
 pub(crate) const READ_ONLY_TOOLS: [&str; 3] = ["Read", "Grep", "Glob"];
@@ -64,6 +63,46 @@ pub fn headless_command(
     session: &SessionId,
     schema: Option<&str>,
 ) -> Result<Command> {
+    let tools = read_only_tools(teammate)?;
+    let env = LaunchEnv::from_context(ctx);
+    let mut cmd = Command::new(&env.bins.claude);
+    cmd.arg("-p")
+        .arg("--output-format")
+        .arg("json")
+        .arg("--session-id")
+        .arg(session.as_str());
+    // The variadic flags first, then `--model` fences them off (claude.rs).
+    // `--strict-mcp-config` with an empty object: no MCP server at all.
+    cmd.arg("--mcp-config")
+        .arg(serde_json::json!({ "mcpServers": {} }).to_string())
+        .arg("--strict-mcp-config");
+    cmd.arg("--tools").arg(tools.join(","));
+    cmd.arg("--allowedTools").arg(tools.join(","));
+    cmd.arg("--disallowedTools")
+        .arg(denied_tools(teammate).join(","));
+    let model = super::launch::model_for(teammate, None)?;
+    cmd.arg("--model").arg(model);
+    if let Some(effort) = &teammate.effort {
+        if teammate.agent.model_takes_effort(model) {
+            cmd.arg("--effort").arg(effort);
+        }
+    }
+    // No skills: the judge reads files and answers.
+    cmd.arg("--disable-slash-commands");
+    cmd.arg("--settings").arg(headless_overlay(teammate, &env)?);
+    if let Some(schema) = schema {
+        cmd.arg("--json-schema").arg(cli_schema(schema));
+    }
+    cmd.stdin(Stdio::piped());
+    crate::runtime::process::inherit_env(&mut cmd, teammate_env(teammate, &env));
+    crate::runtime::process::scrub_child_env(&mut cmd);
+    Ok(cmd)
+}
+
+/// The tools of a headless run: the teammate's own list, which must be
+/// non-empty and inside [`READ_ONLY_TOOLS`], on a harness that has a
+/// headless mode.
+fn read_only_tools(teammate: &Teammate) -> Result<&[String]> {
     if !teammate.agent.capabilities().headless {
         bail!(
             "teammate '{}' runs {}, which has no headless mode",
@@ -87,61 +126,32 @@ pub fn headless_command(
             READ_ONLY_TOOLS.join(", ")
         );
     }
+    Ok(tools)
+}
+
+/// [`HEADLESS_DENIED_TOOLS`], then the teammate's own denials not yet named.
+fn denied_tools(teammate: &Teammate) -> Vec<String> {
     let mut denied: Vec<String> = HEADLESS_DENIED_TOOLS
         .iter()
-        .map(|t| t.to_string())
+        .map(ToString::to_string)
         .collect();
     for t in &teammate.disallowed_tools {
         if !denied.contains(t) {
             denied.push(t.clone());
         }
     }
+    denied
+}
 
-    let env = LaunchEnv::from_context(ctx);
-    let mut cmd = Command::new(&env.bins.claude);
-    cmd.arg("-p")
-        .arg("--output-format")
-        .arg("json")
-        .arg("--session-id")
-        .arg(session.as_str());
-    // The variadic flags first, then `--model` fences them off (claude.rs).
-    // `--strict-mcp-config` with an empty object: no MCP server at all.
-    cmd.arg("--mcp-config")
-        .arg(serde_json::json!({ "mcpServers": {} }).to_string())
-        .arg("--strict-mcp-config");
-    cmd.arg("--tools").arg(tools.join(","));
-    cmd.arg("--allowedTools").arg(tools.join(","));
-    cmd.arg("--disallowedTools").arg(denied.join(","));
-    let model = super::launch::model_for(teammate, None)?;
-    cmd.arg("--model").arg(model);
-    if let Some(effort) = &teammate.effort {
-        if teammate.agent.model_takes_effort(model) {
-            cmd.arg("--effort").arg(effort);
-        }
-    }
-    // No skills: the judge reads files and answers.
-    cmd.arg("--disable-slash-commands");
-    let mut overlay = serde_json::Map::new();
-    let off: serde_json::Map<String, serde_json::Value> = operator_enabled_plugins(env.home())
-        .into_iter()
-        .map(|name| (name, serde_json::Value::Bool(false)))
-        .collect();
-    if !off.is_empty() {
-        overlay.insert("enabledPlugins".into(), serde_json::Value::Object(off));
-    }
-    // A headless judge never inherits plugins, whatever its file says.
+/// The `--settings` JSON: the operator's enabled plugins off, and the skill
+/// switches. A headless judge never inherits plugins, whatever its file says.
+fn headless_overlay(teammate: &Teammate, env: &LaunchEnv) -> Result<String> {
     let mut sealed = teammate.clone();
     sealed.inherit_plugins = false;
+    let mut overlay = serde_json::Map::new();
+    disable_operator_plugins(&mut overlay, &sealed, env.home())?;
     overlay_skill_switches(&sealed, &mut overlay, env.home())?;
-    cmd.arg("--settings")
-        .arg(serde_json::Value::Object(overlay).to_string());
-    if let Some(schema) = schema {
-        cmd.arg("--json-schema").arg(cli_schema(schema));
-    }
-    cmd.stdin(Stdio::piped());
-    crate::runtime::process::inherit_env(&mut cmd, teammate_env(teammate, &env));
-    crate::runtime::process::scrub_child_env(&mut cmd);
-    Ok(cmd)
+    Ok(serde_json::Value::Object(overlay).to_string())
 }
 
 /// `schema` without the top-level keys `--json-schema` cannot take
@@ -192,26 +202,24 @@ fn help_lists(bin: &Path, flag: &str) -> bool {
         text
     });
     let deadline = Instant::now() + HELP_PROBE_TIMEOUT;
-    loop {
-        match child.try_wait() {
-            Ok(Some(_)) => break,
-            Ok(None) if Instant::now() < deadline => {
-                std::thread::sleep(Duration::from_millis(20));
-            }
-            _ => {
-                let _ = child.kill();
-                let _ = child.wait();
-                return false;
-            }
-        }
-    }
-    reader
-        .join()
-        .map(|text| {
+    exited_before(&mut child, deadline)
+        && reader.join().is_ok_and(|text| {
             text.split_whitespace()
                 .any(|w| w.trim_end_matches(',') == flag)
         })
-        .unwrap_or(false)
+}
+
+/// Whether `child` exits before `deadline`; a child that does not is killed.
+fn exited_before(child: &mut Child, deadline: Instant) -> bool {
+    let exited = matches!(
+        process::wait_until(child, deadline, Duration::from_millis(20)),
+        Ok(Some(_))
+    );
+    if !exited {
+        let _ = child.kill();
+        let _ = child.wait();
+    }
+    exited
 }
 
 #[cfg(test)]
@@ -305,22 +313,43 @@ mod tests {
         let cmd = headless_command(&ctx(), &judge(), &session, Some(schema_text())).unwrap();
         let passed = value_of(&argv(&cmd), "--json-schema").unwrap();
         assert_eq!(passed, cli_schema(schema_text()));
-        // claude 2.1.289 failed every judge run on these keys (LA-8).
+        // claude 2.1.289 failed every judge run on these keys (LA-8). They
+        // are the refused keys the shipped schema carries, written out.
         let top: serde_json::Value = serde_json::from_str(&passed).unwrap();
-        for key in CLI_SCHEMA_DROPPED_KEYS {
+        for key in ["$schema", "$id", "allOf"] {
             assert!(top.get(key).is_none(), "{key} reached --json-schema");
         }
     }
 
+    /// All 8 refused keys are written out here, with a kept key beside each
+    /// and the same names one level down. A test that read
+    /// `CLI_SCHEMA_DROPPED_KEYS` passes when a key leaves that list.
     #[test]
     fn cli_schema_only_drops_the_refused_top_level_keys() {
-        let full: serde_json::Value = serde_json::from_str(schema_text()).unwrap();
-        let cli: serde_json::Value = serde_json::from_str(&cli_schema(schema_text())).unwrap();
-        let mut expected = full.as_object().unwrap().clone();
-        for key in CLI_SCHEMA_DROPPED_KEYS {
-            expected.remove(key);
-        }
-        assert_eq!(cli, serde_json::Value::Object(expected));
+        let text = r#"{
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "$id": "https://example.test/judgment",
+            "allOf": [{"required": ["a"]}],
+            "anyOf": [{"required": ["a"]}],
+            "oneOf": [{"required": ["a"]}],
+            "if": {"required": ["a"]},
+            "then": {"required": ["b"]},
+            "else": {"required": ["c"]},
+            "type": "object",
+            "required": ["a"],
+            "properties": {"a": {"allOf": [{"type": "string"}], "$id": "nested"}},
+            "$defs": {"d": {"if": {}, "then": {}}}
+        }"#;
+        let cli: serde_json::Value = serde_json::from_str(&cli_schema(text)).unwrap();
+        assert_eq!(
+            cli,
+            serde_json::json!({
+                "type": "object",
+                "required": ["a"],
+                "properties": {"a": {"allOf": [{"type": "string"}], "$id": "nested"}},
+                "$defs": {"d": {"if": {}, "then": {}}}
+            })
+        );
         assert_eq!(cli_schema("not json"), "not json");
     }
 
@@ -384,6 +413,124 @@ mod tests {
         assert!(err.to_string().contains("'Edit'"), "{err}");
         t.tools = None;
         assert!(headless_command(&ctx(), &t, &SessionId::new("s").unwrap(), None).is_err());
+    }
+
+    fn session() -> SessionId {
+        SessionId::new("s").unwrap()
+    }
+
+    #[test]
+    fn headless_refuses_a_harness_without_a_headless_mode() {
+        let mut t = judge();
+        t.agent = crate::harness::HarnessKind::Pi;
+        let err = headless_command(&ctx(), &t, &session(), None)
+            .unwrap_err()
+            .to_string();
+        assert_eq!(
+            err,
+            format!("teammate '{}' runs pi, which has no headless mode", t.name)
+        );
+    }
+
+    #[test]
+    fn headless_refuses_an_empty_tool_list_and_names_the_allowed_set() {
+        let mut t = judge();
+        t.tools = Some(vec![]);
+        let err = headless_command(&ctx(), &t, &session(), None)
+            .unwrap_err()
+            .to_string();
+        assert_eq!(
+            err,
+            format!(
+                "teammate '{}' names no tools; a headless run needs the read-only list",
+                t.name
+            )
+        );
+        t.tools = Some(vec!["Read".into(), "Bash".into()]);
+        let err = headless_command(&ctx(), &t, &session(), None)
+            .unwrap_err()
+            .to_string();
+        assert_eq!(
+            err,
+            format!(
+                "teammate '{}' asks for 'Bash'; a headless run allows only Read, Grep, Glob",
+                t.name
+            )
+        );
+    }
+
+    #[test]
+    fn headless_denies_the_teammates_own_list_after_the_fixed_one_once() {
+        let mut t = judge();
+        t.disallowed_tools = vec!["Edit".into(), "WebFetch".into(), "WebFetch".into()];
+        let a = argv(&headless_command(&ctx(), &t, &session(), None).unwrap());
+        assert_eq!(
+            value_of(&a, "--disallowedTools").as_deref(),
+            Some("Agent,Edit,Write,NotebookEdit,Bash,WebFetch")
+        );
+    }
+
+    #[test]
+    fn headless_drops_effort_for_a_model_without_one() {
+        let mut t = judge();
+        t.model = Some("haiku".into());
+        let a = argv(&headless_command(&ctx(), &t, &session(), None).unwrap());
+        assert_eq!(value_of(&a, "--model").as_deref(), Some("haiku"));
+        assert!(!a.contains(&"--effort".to_string()), "{a:?}");
+    }
+
+    /// The operator's enabled plugins go off in the overlay, and a judge
+    /// that says it inherits plugins is sealed anyway.
+    #[test]
+    fn headless_overlay_switches_the_operators_plugins_off() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(tmp.path().join(".claude")).unwrap();
+        std::fs::write(
+            tmp.path().join(".claude/settings.json"),
+            r#"{"enabledPlugins":{"a@m":true,"b@m":false}}"#,
+        )
+        .unwrap();
+        let env = MapEnv::new("/proj")
+            .with("HOME", &tmp.path().to_string_lossy())
+            .with("PATH", "/nowhere-b4")
+            .with("HORCH_CLAUDE_BIN", "/fake/claude");
+        let ctx = RuntimeContext::from_env(&env).unwrap();
+        let mut t = judge();
+        t.inherit_plugins = true;
+        let a = argv(&headless_command(&ctx, &t, &session(), None).unwrap());
+        let settings: serde_json::Value =
+            serde_json::from_str(&value_of(&a, "--settings").unwrap()).unwrap();
+        assert_eq!(settings["enabledPlugins"]["a@m"], false);
+        assert!(settings["enabledPlugins"].get("b@m").is_none());
+        assert_eq!(settings["syncClaudeAiPlugins"], false);
+    }
+
+    /// Existing system programs only: a freshly written fake would pay the
+    /// first-exec scan inside the probe's deadline.
+    #[test]
+    fn help_lists_reads_the_flag_from_the_help_text() {
+        // `echo --help` prints `--help`.
+        assert!(help_lists(Path::new("/bin/echo"), "--help"));
+        assert!(!help_lists(Path::new("/bin/echo"), "--json-schema"));
+        assert!(!help_lists(Path::new("/nonexistent/claude"), "--help"));
+    }
+
+    #[test]
+    fn exited_before_kills_a_child_that_runs_past_the_deadline() {
+        let mut quick = Command::new("/usr/bin/true").spawn().unwrap();
+        assert!(exited_before(
+            &mut quick,
+            Instant::now() + Duration::from_secs(30)
+        ));
+
+        let mut slow = Command::new("/bin/sleep").arg("30").spawn().unwrap();
+        assert!(!exited_before(
+            &mut slow,
+            Instant::now() + Duration::from_millis(200)
+        ));
+        // Killed and reaped, not left running.
+        let status = slow.try_wait().unwrap().expect("reaped");
+        assert!(!status.success());
     }
 
     #[test]

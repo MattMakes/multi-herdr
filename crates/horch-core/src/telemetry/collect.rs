@@ -17,6 +17,7 @@ use anyhow::{Context, Result};
 use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
 
+use super::cursor::Cursor;
 use super::readers::{self, Cursors, Located, Polled, Unreadable};
 use super::store::{self, GroupSums, Kept, Rollup, Store, Table, UnpricedRow};
 use super::timing::TickTiming;
@@ -26,7 +27,7 @@ use crate::execution::legacy::{Record, KIND_ORCHESTRATOR};
 use crate::execution::model::ExecutionStatus;
 use crate::execution::store as execution_store;
 use crate::routing::policy::Policy;
-use crate::routing::quota::{self, QuotaFile, QuotaView};
+use crate::routing::quota::{self, Assessment, QuotaFile, QuotaView};
 use crate::routing::quota_probe::{self, ProbeBins};
 use crate::routing::snapshot::QuotaEnv;
 use crate::usage::{self, Locations, Price};
@@ -173,7 +174,7 @@ pub struct Collector {
     pub quota_env: QuotaEnv,
     pub info: CollectorInfo,
     /// Each ledger's last good records, read again only when it changes.
-    last_good: BTreeMap<PathBuf, Ledger>,
+    last_good: BTreeMap<PathBuf, LedgerSnapshot>,
     /// Where each session's inputs are, kept across ticks.
     places: HashMap<(String, String), Place>,
     /// Each session's inputs as they were when last polled.
@@ -353,7 +354,8 @@ impl Collector {
                 continue;
             }
             if let Some(records) = execution_store::read_ledger_file(&path) {
-                self.last_good.insert(path, Ledger { stamp, records });
+                self.last_good
+                    .insert(path, LedgerSnapshot { stamp, records });
             }
         }
     }
@@ -379,74 +381,92 @@ impl Collector {
         let oldest = clock::stamp(now - Duration::days(self.policy.retention_days));
         self.store.advance(now);
         let batch = self.batch.max(1);
-        let mut pending = Vec::new();
-        let mut signals: Vec<QuotaSignal> = Vec::new();
-        let mut unread = Vec::new();
-        let mut moved = false;
+        let mut pass = TickPass::default();
         for r in records
             .iter()
             .filter(|r| r.updated_at.as_str() >= oldest.as_str())
         {
-            let Some(sid) = r.session_id.as_deref().filter(|s| !s.is_empty()) else {
-                unread.push(unread_row(r, Unreadable::NoSessionId));
-                continue;
-            };
-            // A read stops when the batch is full; store it, then read on.
-            loop {
-                let polled = match self.poll(r, sid, now, batch - pending.len()) {
-                    Ok(None) => break,
-                    Ok(Some(polled)) => polled,
-                    Err(why) => {
-                        unread.push(unread_row(r, why));
-                        break;
-                    }
-                };
-                moved = true;
-                for o in polled.observations {
-                    match o {
-                        Observation::Usage(u) => pending.push(event_for(r, u, &self.prices)),
-                        Observation::Quota(s) => signals.push(s),
-                    }
-                }
-                self.peak_pending = self.peak_pending.max(pending.len());
-                if pending.len() >= batch {
-                    self.store_batch(std::mem::take(&mut pending), Some(false))?;
-                    moved = false;
-                }
-                if !polled.more {
-                    break;
-                }
+            if let Some(sid) = r.session_id.as_deref().filter(|s| !s.is_empty()) {
+                self.drain_record(r, sid, now, batch, &mut pass)?;
+            } else {
+                pass.unread.push(unread_row(r, Unreadable::NoSessionId));
             }
         }
         // The tidy's changes are saved with the last batch, after its events
         // (its time counts as cursor_save).
-        if self
-            .tidied_at
-            .is_none_or(|t| now - t >= Duration::minutes(TIDY_EVERY_MIN))
-        {
-            self.tidied_at = Some(now);
-            let at = Instant::now();
-            moved |= self.tidy_cursors(records, &oldest, now);
-            self.timing.lap("cursor_save", at);
-        }
+        pass.moved |= self.tidy_if_due(records, &oldest, now);
         // A cursor moves only when its input is polled or tidied.
-        self.store_batch(pending, moved.then_some(true))?;
+        self.store_batch(pass.pending, pass.moved.then_some(true))?;
 
         let at = Instant::now();
-        let quota = self.update_quota(now, &signals)?;
+        let quota = self.update_quota(now, &pass.signals)?;
         let at = self.timing.lap("quota", at);
         let snapshot = build_indexed(
             records,
             &self.store.table,
             quota,
-            unread,
+            pass.unread,
             now,
             self.info.clone(),
         );
         let at = self.timing.lap("build", at);
-        // NFR-02: write the file only when its content changed.
+        self.write_snapshot_if_changed(&snapshot, at)?;
+        Ok(snapshot)
+    }
+
+    /// Read the inputs of record `r` until they are read to the end, storing
+    /// each full batch of `pass` on the way.
+    fn drain_record(
+        &mut self,
+        r: &Record,
+        sid: &str,
+        now: DateTime<Utc>,
+        batch: usize,
+        pass: &mut TickPass,
+    ) -> Result<()> {
+        // A read stops when the batch is full; store it, then read on.
+        loop {
+            let polled = match self.poll(r, sid, now, batch - pass.pending.len()) {
+                Ok(None) => break,
+                Ok(Some(polled)) => polled,
+                Err(why) => {
+                    pass.unread.push(unread_row(r, why));
+                    break;
+                }
+            };
+            pass.moved = true;
+            pass.absorb(r, polled.observations, &self.prices);
+            self.peak_pending = self.peak_pending.max(pass.pending.len());
+            if pass.pending.len() >= batch {
+                self.store_batch(std::mem::take(&mut pass.pending), Some(false))?;
+                pass.moved = false;
+            }
+            if !polled.more {
+                break;
+            }
+        }
+        Ok(())
+    }
+
+    /// Tidy the cursors when the last tidy is old enough. Returns whether a
+    /// cursor changed.
+    fn tidy_if_due(&mut self, records: &[&Record], oldest: &str, now: DateTime<Utc>) -> bool {
+        let due = (self.tidied_at).is_none_or(|t| now - t >= Duration::minutes(TIDY_EVERY_MIN));
+        if !due {
+            return false;
+        }
+        self.tidied_at = Some(now);
+        let at = Instant::now();
+        let changed = self.tidy_cursors(records, oldest, now);
+        self.timing.lap("cursor_save", at);
+        changed
+    }
+
+    /// NFR-02: write the snapshot file only when its content changed. `at`
+    /// is when the build ended.
+    fn write_snapshot_if_changed(&mut self, snapshot: &Snapshot, at: Instant) -> Result<()> {
         let path = snapshot_path(&self.state_root);
-        let hash = content_hash(&snapshot)?;
+        let hash = content_hash(snapshot)?;
         let known = *self
             .snapshot_hash
             .get_or_insert_with(|| file_hash(&path).unwrap_or(!hash));
@@ -454,14 +474,14 @@ impl Collector {
         if known != hash {
             // The output's serialization counts as `serialize` too; `write`
             // is the file replace alone.
-            let json = serde_json::to_vec(&snapshot)?;
+            let json = serde_json::to_vec(snapshot)?;
             let at = self.timing.lap("serialize", at);
             store::replace_private(&path, &json)?;
             self.snapshot_hash = Some(hash);
             self.timing.lap("write", at);
             self.timing.wrote("snapshot", json.len() as u64);
         }
-        Ok(snapshot)
+        Ok(())
     }
 
     /// Append and sync `events`, then save the cursors when `save` is
@@ -542,31 +562,57 @@ impl Collector {
             return readers::locate(&self.loc, &r.agent, sid);
         }
         let key = (r.agent.clone(), sid.to_string());
-        match self.places.get_mut(&key) {
+        let cached = self.cached(&key, r, now);
+        cached.unwrap_or_else(|| self.search(key, r, sid, now))
+    }
+
+    /// What an earlier tick found for `key`, when it still holds: a found
+    /// file that is still a file, or a miss that is too recent to search again.
+    fn cached(
+        &mut self,
+        key: &(String, String),
+        r: &Record,
+        now: DateTime<Utc>,
+    ) -> Option<Result<Located, Unreadable>> {
+        match self.places.get_mut(key) {
             Some(Place::File { main, subagents }) if main.is_file() => {
-                let mut files = vec![main.clone()];
-                if r.agent == "claude" {
-                    if !subagents.as_ref().is_some_and(Listing::unchanged) {
-                        *subagents = Some(Listing::of(main));
-                    }
-                    files.extend(subagents.iter().flat_map(|l| l.files.iter().cloned()));
-                }
-                return Ok(Located::Files(files));
+                Some(Ok(Located::Files(cached_files(main, subagents, &r.agent))))
             }
             Some(Place::Missing { why, again }) => {
                 let fresh = clock::stamp(now - Duration::minutes(FRESH_MIN));
-                if now < *again && r.updated_at.as_str() < fresh.as_str() {
-                    return Err(why.clone());
-                }
+                (now < *again && r.updated_at.as_str() < fresh.as_str()).then(|| Err(why.clone()))
             }
-            _ => {}
+            _ => None,
         }
+    }
+
+    /// Search the transcript trees for session `sid`, and keep what is found.
+    fn search(
+        &mut self,
+        key: (String, String),
+        r: &Record,
+        sid: &str,
+        now: DateTime<Utc>,
+    ) -> Result<Located, Unreadable> {
         self.searches += 1;
         let found = readers::locate(&self.loc, &r.agent, sid);
-        match &found {
+        self.remember(key, &r.agent, &found, now);
+        found
+    }
+
+    /// Keep `found` for `key`: a transcript, or a miss to search for again
+    /// later. Any other result keeps nothing.
+    fn remember(
+        &mut self,
+        key: (String, String),
+        agent: &str,
+        found: &Result<Located, Unreadable>,
+        now: DateTime<Utc>,
+    ) {
+        match found {
             Ok(Located::Files(files)) if !files.is_empty() => {
                 let main = files[0].clone();
-                let subagents = (r.agent == "claude").then(|| Listing::of(&main));
+                let subagents = (agent == "claude").then(|| Listing::of(&main));
                 self.places.insert(key, Place::File { main, subagents });
             }
             Err(why @ Unreadable::NoTranscript(_)) => {
@@ -578,7 +624,6 @@ impl Collector {
                 self.places.remove(&key);
             }
         }
-        found
     }
 
     /// Keep `cursors.json` small (NFR-02): it is rewritten whole whenever an
@@ -598,48 +643,13 @@ impl Collector {
     /// start, a tidied one from its offset. The store drops the events
     /// it already holds (section 8.2).
     fn tidy_cursors(&mut self, records: &[&Record], oldest: &str, now: DateTime<Utc>) -> bool {
-        // (agent, session) -> whether every record of it is done: the records
-        // in the window, and every live one (a live record can keep an old
-        // `updated_at`).
-        let mut owners: HashMap<(&str, &str), bool> = HashMap::new();
-        let owns = |r: &&&Record| r.updated_at.as_str() >= oldest || r.execution_status().is_live();
-        for r in records.iter().filter(owns) {
-            let Some(sid) = r.session_id.as_deref().filter(|s| !s.is_empty()) else {
-                continue;
-            };
-            let done = r.execution_status().is_terminal();
-            *owners.entry((&r.agent, sid)).or_insert(true) &= done;
-        }
+        let owners = session_owners(records, oldest);
         let quiet_since = std::time::SystemTime::from(now - Duration::hours(QUIET_H));
         let mut changed = false;
         self.cursors.retain(|_, c| {
-            if c.path.is_empty() || c.agent.is_empty() {
-                return true;
-            }
-            let modified = match std::fs::metadata(&c.path).and_then(|m| m.modified()) {
-                Ok(m) => m,
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                    changed = true;
-                    return false;
-                }
-                Err(_) => return true,
-            };
-            if modified >= quiet_since {
-                return true;
-            }
-            match owners.get(&(c.agent.as_str(), c.session_id.as_str())) {
-                None => {
-                    changed = true;
-                    false
-                }
-                Some(true) if c.recent.len() > QUIET_RECENT_IDS => {
-                    let extra = c.recent.len() - QUIET_RECENT_IDS;
-                    c.recent.drain(..extra);
-                    changed = true;
-                    true
-                }
-                Some(_) => true,
-            }
+            let tidy = tidy_cursor(c, &owners, quiet_since);
+            changed |= tidy != Tidy::Keep;
+            tidy != Tidy::Drop
         });
         changed
     }
@@ -647,10 +657,18 @@ impl Collector {
     /// Fold signals into `quota.json`, probing when due. A file override
     /// is read, never written.
     fn update_quota(&mut self, now: DateTime<Utc>, signals: &[QuotaSignal]) -> Result<QuotaView> {
-        if let Some(p) = &self.quota_env.quota_file {
-            let file = QuotaFile::load(&self.state_root, Some(p))?;
-            return Ok(QuotaView::new(file, now, self.policy.clone(), true));
+        match &self.quota_env.quota_file {
+            Some(p) => {
+                let file = QuotaFile::load(&self.state_root, Some(p))?;
+                Ok(QuotaView::new(file, now, self.policy.clone(), true))
+            }
+            None => self.merged_quota(now, signals),
         }
+    }
+
+    /// The quota file with `signals` folded in and the probes that are due
+    /// run, written when its content changed.
+    fn merged_quota(&mut self, now: DateTime<Utc>, signals: &[QuotaSignal]) -> Result<QuotaView> {
         let path = quota::quota_path(&self.state_root);
         let on_disk = path
             .is_file()
@@ -674,27 +692,119 @@ impl Collector {
         }
         // NFR-02: write only when the content, all but `written_at`, changed.
         let next = refreshed(&file, now, &self.policy);
-        if on_disk.is_some_and(|old| old == next) {
-            return Ok(QuotaView::new(file, now, self.policy.clone(), false));
+        if on_disk.as_ref() != Some(&next) {
+            file.write(&self.state_root, now, &self.policy)?;
+            let bytes = std::fs::metadata(&path).map_or(0, |m| m.len());
+            self.timing.wrote("quota", bytes);
         }
-        file.write(&self.state_root, now, &self.policy)?;
-        let bytes = std::fs::metadata(&path).map_or(0, |m| m.len());
-        self.timing.wrote("quota", bytes);
         Ok(QuotaView::new(file, now, self.policy.clone(), false))
+    }
+}
+
+/// The files of a found session: the main one, and for Claude its subagent
+/// files, listed again when a directory of the last listing changed.
+fn cached_files(main: &Path, subagents: &mut Option<Listing>, agent: &str) -> Vec<PathBuf> {
+    let mut files = vec![main.to_path_buf()];
+    if agent == "claude" {
+        if !subagents.as_ref().is_some_and(Listing::unchanged) {
+            *subagents = Some(Listing::of(main));
+        }
+        files.extend(subagents.iter().flat_map(|l| l.files.iter().cloned()));
+    }
+    files
+}
+
+/// What a tick has read so far.
+#[derive(Default)]
+struct TickPass {
+    /// The events not stored yet.
+    pending: Vec<Event>,
+    signals: Vec<QuotaSignal>,
+    unread: Vec<Unread>,
+    /// An input was polled since the last stored batch.
+    moved: bool,
+}
+
+impl TickPass {
+    /// Take the observations of record `r`: usage as events, quota signals
+    /// as they are.
+    fn absorb(
+        &mut self,
+        r: &Record,
+        observations: Vec<Observation>,
+        prices: &BTreeMap<String, Price>,
+    ) {
+        for o in observations {
+            match o {
+                Observation::Usage(u) => self.pending.push(event_for(r, u, prices)),
+                Observation::Quota(s) => self.signals.push(s),
+            }
+        }
+    }
+}
+
+/// What a tidy did to 1 cursor.
+#[derive(PartialEq)]
+enum Tidy {
+    Keep,
+    Trimmed,
+    Drop,
+}
+
+/// (agent, session) -> whether every record of it is done: the records in
+/// the window, and every live one (a live record can keep an old
+/// `updated_at`).
+fn session_owners<'r>(records: &[&'r Record], oldest: &str) -> HashMap<(&'r str, &'r str), bool> {
+    let mut owners = HashMap::new();
+    let owns = |r: &&&Record| r.updated_at.as_str() >= oldest || r.execution_status().is_live();
+    for r in records.iter().filter(owns) {
+        let Some(sid) = r.session_id.as_deref().filter(|s| !s.is_empty()) else {
+            continue;
+        };
+        let done = r.execution_status().is_terminal();
+        *owners.entry((&*r.agent, sid)).or_insert(true) &= done;
+    }
+    owners
+}
+
+/// Tidy 1 cursor: drop it when its input is gone, or quiet with no owner;
+/// trim its recent ids when it is quiet and every owner is done.
+fn tidy_cursor(
+    c: &mut Cursor,
+    owners: &HashMap<(&str, &str), bool>,
+    quiet_since: std::time::SystemTime,
+) -> Tidy {
+    if c.path.is_empty() || c.agent.is_empty() {
+        return Tidy::Keep;
+    }
+    match std::fs::metadata(&c.path).and_then(|m| m.modified()) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Tidy::Drop,
+        Ok(modified) if modified < quiet_since => tidy_quiet(c, owners),
+        _ => Tidy::Keep,
+    }
+}
+
+/// Tidy the cursor of an input quiet for [`QUIET_H`] hours.
+fn tidy_quiet(c: &mut Cursor, owners: &HashMap<(&str, &str), bool>) -> Tidy {
+    match owners.get(&(c.agent.as_str(), c.session_id.as_str())) {
+        None => Tidy::Drop,
+        Some(true) if c.recent.len() > QUIET_RECENT_IDS => {
+            let extra = c.recent.len() - QUIET_RECENT_IDS;
+            c.recent.drain(..extra);
+            Tidy::Trimmed
+        }
+        Some(_) => Tidy::Keep,
     }
 }
 
 /// `file` as [`QuotaFile::write`] would write it, each pool's display state
 /// refreshed at `now`, with `written_at` kept as it is.
 fn refreshed(file: &QuotaFile, now: DateTime<Utc>, policy: &Policy) -> QuotaFile {
-    let mut next = file.clone();
     let view = QuotaView::new(file.clone(), now, policy.clone(), false);
-    for (name, reading) in next.pools.iter_mut() {
-        let a = view.assess_shown(name);
-        reading.state = a.state.as_str().to_string();
-        reading.reason = Some(a.reason);
+    QuotaFile {
+        pools: shown_pools(&view),
+        ..file.clone()
     }
-    next
 }
 
 /// The hash of `snapshot`'s compact JSON with `generated_at` empty: 2
@@ -731,7 +841,7 @@ fn file_hash(path: &Path) -> Option<u64> {
 
 /// One ledger file's last good records, and the file's stamp when they
 /// were read.
-struct Ledger {
+struct LedgerSnapshot {
     stamp: Option<Stamp>,
     records: Vec<Record>,
 }
@@ -1048,132 +1158,15 @@ fn build_indexed(
     now: DateTime<Utc>,
     collector: CollectorInfo,
 ) -> Snapshot {
-    let names = index.names.len();
     let mut fold = RollupFold::new(index, &done_ids(records.iter().copied()), now);
     let recent = clock::stamp(now - Duration::minutes(5));
-
-    // Per record: totals, last event, and the last 5 minutes for the rate.
-    #[derive(Default)]
-    struct Acc<'e> {
-        events: u64,
-        tokens: TokenClasses,
-        cost: f64,
-        unpriced: u64,
-        last: Option<&'e str>,
-        recent_tokens: u64,
-        recent_cost: f64,
-    }
-    let mut per: Vec<Acc> = (0..names).map(|_| Acc::default()).collect();
-    // Insights over the 7-day window.
-    let (mut total, mut orch, mut idle) = (0.0f64, 0.0f64, 0.0f64);
-    let mut week_tokens = TokenClasses::default();
-    let is_orch: Vec<bool> = index
-        .rows
-        .iter()
-        .map(|r| &*index.names.names[r.groups[5] as usize] == KIND_ORCHESTRATOR)
-        .collect();
-
-    for e in &index.kept {
-        let row = e.row as usize;
-        let r = index.rows[row];
-        let record = r.record as usize;
-        let ts = &*e.ts;
-        let cost = e.cost.unwrap_or(0.0);
-        let no_price = e.cost.is_none();
-        let a = &mut per[record];
-        a.events += 1;
-        a.tokens.add(&e.tokens);
-        a.cost += cost;
-        a.unpriced += u64::from(no_price);
-        if a.last.is_none_or(|l| ts > l) {
-            a.last = Some(ts);
-        }
-        if ts >= recent.as_str() {
-            a.recent_tokens += e.tokens.total();
-            a.recent_cost += cost;
-        }
-        fold.add(e);
-        if ts >= fold.since[2].as_str() {
-            total += cost;
-            if is_orch[row] {
-                orch += cost;
-            }
-            if e.idle {
-                idle += cost;
-            }
-            week_tokens.add(&e.tokens);
-        }
-    }
-
+    let (per, week) = fold_events(index, &mut fold, &recent);
     let rollups = fold.finish();
-
-    let ten_min_ago = clock::stamp(now - Duration::minutes(10));
-    let mut live = Vec::new();
-    for r in records {
-        let a = index
-            .names
-            .get(&r.record_id)
-            .map(|id| &per[id as usize])
-            .filter(|a| a.events > 0);
-        let last = a.and_then(|a| a.last.map(str::to_string));
-        let recent_event = last.as_deref().is_some_and(|l| l >= ten_min_ago.as_str());
-        // A live execution always shows; a finished one while its last
-        // event is recent. A failed one never does: no agent runs for it.
-        let status = r.execution_status();
-        let failed = matches!(
-            status,
-            ExecutionStatus::Failed { .. } | ExecutionStatus::LaunchFailed { .. }
-        );
-        if failed || (!status.is_live() && !recent_event) {
-            continue;
-        }
-        let idle = r.task == IDLE_TASK || (status.is_live() && !recent_event);
-        let assessment = quota.assess(&r.agent, &r.model);
-        live.push(LiveRow {
-            project: r.project.clone(),
-            record_id: r.record_id.clone(),
-            role: r.role.clone(),
-            teammate: r.tier.clone(),
-            via: r.via.clone(),
-            kind: r.kind.clone(),
-            agent: r.agent.clone(),
-            model: r.model.clone(),
-            effort: r.effort.clone(),
-            phase: r.phase.map(|p| p.to_string()),
-            plan: r.plan.clone(),
-            status: r.status.clone(),
-            task_head: r.task.chars().take(60).collect(),
-            tokens: a.map(|a| a.tokens).unwrap_or_default(),
-            cost_usd: a.map(|a| a.cost).unwrap_or(0.0),
-            unpriced_events: a.map(|a| a.unpriced).unwrap_or(0),
-            rate_tokens_per_min: a.map(|a| a.recent_tokens as f64 / 5.0).unwrap_or(0.0),
-            rate_usd_per_hour: a.map(|a| a.recent_cost * 12.0).unwrap_or(0.0),
-            last_event_at: last,
-            idle,
-            pool: assessment.pool,
-            pool_state: assessment.state.as_str().to_string(),
-        });
-    }
-    // Orchestrators first, then by project and role.
-    live.sort_by(|a, b| {
-        (a.kind != KIND_ORCHESTRATOR, &a.project, &a.role).cmp(&(
-            b.kind != KIND_ORCHESTRATOR,
-            &b.project,
-            &b.role,
-        ))
-    });
-
+    let live = live_rows(records, index, &per, &quota, now);
     let top_plan = rollups
         .get("7d")
         .and_then(|r| r.by_plan.iter().find(|row| row.key != "-"))
         .map(|row| row.key.clone());
-
-    let mut pools = quota.file.pools.clone();
-    for (name, reading) in pools.iter_mut() {
-        let a = quota.assess_shown(name);
-        reading.state = a.state.as_str().to_string();
-        reading.reason = Some(a.reason);
-    }
     let projects = live
         .iter()
         .filter_map(|l| l.project.as_deref())
@@ -1183,18 +1176,183 @@ fn build_indexed(
         schema: 1,
         generated_at: clock::stamp(now),
         collector,
-        pools,
+        pools: shown_pools(&quota),
         live,
         rollups,
         insights: Insights {
-            orchestrator_share: share(orch, total),
-            cache_hit: week_tokens.cache_hit(),
-            idle_spend_share: share(idle, total),
+            orchestrator_share: share(week.orch, week.total),
+            cache_hit: week.tokens.cache_hit(),
+            idle_spend_share: share(week.idle, week.total),
             top_plan,
         },
         unread,
         projects,
     }
+}
+
+/// Per record: totals, last event, and the last 5 minutes for the rate.
+#[derive(Default)]
+struct Acc<'e> {
+    events: u64,
+    tokens: TokenClasses,
+    cost: f64,
+    unpriced: u64,
+    last: Option<&'e str>,
+    recent_tokens: u64,
+    recent_cost: f64,
+}
+
+impl<'e> Acc<'e> {
+    /// Add `e`; `recent` is the start of the rate window.
+    fn add(&mut self, e: &'e Kept, recent: &str) {
+        let ts = &*e.ts;
+        let cost = e.cost.unwrap_or(0.0);
+        self.events += 1;
+        self.tokens.add(&e.tokens);
+        self.cost += cost;
+        self.unpriced += u64::from(e.cost.is_none());
+        if self.last.is_none_or(|l| ts > l) {
+            self.last = Some(ts);
+        }
+        if ts >= recent {
+            self.recent_tokens += e.tokens.total();
+            self.recent_cost += cost;
+        }
+    }
+}
+
+/// Insights over the 7-day window.
+#[derive(Default)]
+struct WeekTotals {
+    total: f64,
+    orch: f64,
+    idle: f64,
+    tokens: TokenClasses,
+}
+
+/// Fold every kept event, in store order, into `fold` and the per-record
+/// totals, and the 7-day totals. `recent` is the start of the rate window.
+fn fold_events<'e>(
+    index: &'e Table,
+    fold: &mut RollupFold<'e>,
+    recent: &str,
+) -> (Vec<Acc<'e>>, WeekTotals) {
+    let mut per: Vec<Acc> = (0..index.names.len()).map(|_| Acc::default()).collect();
+    let mut week = WeekTotals::default();
+    let is_orch: Vec<bool> = index
+        .rows
+        .iter()
+        .map(|r| &*index.names.names[r.groups[5] as usize] == KIND_ORCHESTRATOR)
+        .collect();
+    for e in &index.kept {
+        let row = e.row as usize;
+        let record = index.rows[row].record as usize;
+        let ts = &*e.ts;
+        let cost = e.cost.unwrap_or(0.0);
+        per[record].add(e, recent);
+        fold.add(e);
+        if ts >= fold.since[2].as_str() {
+            week.total += cost;
+            if is_orch[row] {
+                week.orch += cost;
+            }
+            if e.idle {
+                week.idle += cost;
+            }
+            week.tokens.add(&e.tokens);
+        }
+    }
+    (per, week)
+}
+
+/// The records that show as live rows: orchestrators first, then by project
+/// and role. A live execution always shows; a finished one while its last
+/// event is recent. A failed one never does: no agent runs for it.
+fn live_rows(
+    records: &[&Record],
+    index: &Table,
+    per: &[Acc],
+    quota: &QuotaView,
+    now: DateTime<Utc>,
+) -> Vec<LiveRow> {
+    let ten_min_ago = clock::stamp(now - Duration::minutes(10));
+    let mut live = Vec::new();
+    for r in records {
+        let a = record_acc(index, per, &r.record_id);
+        let recent_event = a
+            .and_then(|a| a.last)
+            .is_some_and(|l| l >= ten_min_ago.as_str());
+        let status = r.execution_status();
+        if !shows_live(&status, recent_event) {
+            continue;
+        }
+        let idle = r.task == IDLE_TASK || (status.is_live() && !recent_event);
+        live.push(live_row(r, a, idle, quota.assess(&r.agent, &r.model)));
+    }
+    live.sort_by(|a, b| {
+        (a.kind != KIND_ORCHESTRATOR, &a.project, &a.role).cmp(&(
+            b.kind != KIND_ORCHESTRATOR,
+            &b.project,
+            &b.role,
+        ))
+    });
+    live
+}
+
+/// The totals of record `record_id`, when it has events.
+fn record_acc<'a>(index: &Table, per: &'a [Acc], record_id: &str) -> Option<&'a Acc<'a>> {
+    let id = index.names.get(record_id)?;
+    Some(&per[id as usize]).filter(|a| a.events > 0)
+}
+
+/// Whether a record with this status shows as a live row.
+fn shows_live(status: &ExecutionStatus, recent_event: bool) -> bool {
+    let failed = matches!(
+        status,
+        ExecutionStatus::Failed { .. } | ExecutionStatus::LaunchFailed { .. }
+    );
+    !failed && (status.is_live() || recent_event)
+}
+
+/// The live row of record `r`, with its totals `a` when it has events.
+fn live_row(r: &Record, a: Option<&Acc>, idle: bool, assessment: Assessment) -> LiveRow {
+    let none = Acc::default();
+    let a = a.unwrap_or(&none);
+    LiveRow {
+        project: r.project.clone(),
+        record_id: r.record_id.clone(),
+        role: r.role.clone(),
+        teammate: r.tier.clone(),
+        via: r.via.clone(),
+        kind: r.kind.clone(),
+        agent: r.agent.clone(),
+        model: r.model.clone(),
+        effort: r.effort.clone(),
+        phase: r.phase.map(|p| p.to_string()),
+        plan: r.plan.clone(),
+        status: r.status.clone(),
+        task_head: r.task.chars().take(60).collect(),
+        tokens: a.tokens,
+        cost_usd: a.cost,
+        unpriced_events: a.unpriced,
+        rate_tokens_per_min: a.recent_tokens as f64 / 5.0,
+        rate_usd_per_hour: a.recent_cost * 12.0,
+        last_event_at: a.last.map(str::to_string),
+        idle,
+        pool: assessment.pool,
+        pool_state: assessment.state.as_str().to_string(),
+    }
+}
+
+/// The pools with each one's state shown now, and why.
+fn shown_pools(quota: &QuotaView) -> BTreeMap<String, quota::PoolReading> {
+    let mut pools = quota.file.pools.clone();
+    for (name, reading) in pools.iter_mut() {
+        let a = quota.assess_shown(name);
+        reading.state = a.state.as_str().to_string();
+        reading.reason = Some(a.reason);
+    }
+    pools
 }
 
 #[cfg(test)]

@@ -82,20 +82,7 @@ impl std::error::Error for SendError {
 pub fn socket_path(state_root: &Path, workspace: &str) -> PathBuf {
     state_root
         .join("channels")
-        .join(format!("{}.sock", file_safe(workspace)))
-}
-
-fn file_safe(value: &str) -> String {
-    value
-        .chars()
-        .map(|character| {
-            if character.is_ascii_alphanumeric() || matches!(character, '.' | '_' | '-') {
-                character
-            } else {
-                '_'
-            }
-        })
-        .collect()
+        .join(format!("{}.sock", super::file_safe(workspace)))
 }
 
 /// Send one message to a relay and wait for its answer.
@@ -167,8 +154,36 @@ fn time_left(deadline: Instant) -> std::io::Result<Duration> {
 /// only until `deadline`. No helper thread outlives the request.
 #[cfg(unix)]
 fn connect_by(socket: &Path, deadline: Instant) -> std::io::Result<UnixStream> {
+    use std::os::unix::io::AsRawFd;
+
+    let address = unix_address(socket)?;
+    let stream = new_nonblocking_socket()?;
+    let length = std::mem::size_of::<libc::sockaddr_un>() as libc::socklen_t;
+    // SAFETY: `address` is a valid sockaddr_un of `length` bytes.
+    let connected = unsafe {
+        libc::connect(
+            stream.as_raw_fd(),
+            (&address as *const libc::sockaddr_un).cast(),
+            length,
+        )
+    };
+    if connected != 0 {
+        let error = std::io::Error::last_os_error();
+        if error.raw_os_error() != Some(libc::EINPROGRESS) {
+            return Err(error);
+        }
+        wait_ready(&stream, libc::POLLOUT, deadline)?;
+        if let Some(error) = stream.take_error()? {
+            return Err(error);
+        }
+    }
+    Ok(stream)
+}
+
+/// The socket address of `socket`, or an error when the path does not fit.
+#[cfg(unix)]
+fn unix_address(socket: &Path) -> std::io::Result<libc::sockaddr_un> {
     use std::os::unix::ffi::OsStrExt;
-    use std::os::unix::io::{AsRawFd, FromRawFd};
 
     // SAFETY: sockaddr_un is plain data; all zeroes is a valid value.
     let mut address: libc::sockaddr_un = unsafe { std::mem::zeroed() };
@@ -183,6 +198,14 @@ fn connect_by(socket: &Path, deadline: Instant) -> std::io::Result<UnixStream> {
     for (to, from) in address.sun_path.iter_mut().zip(path) {
         *to = *from as libc::c_char;
     }
+    Ok(address)
+}
+
+/// A new Unix stream socket that is close-on-exec and nonblocking.
+#[cfg(unix)]
+fn new_nonblocking_socket() -> std::io::Result<UnixStream> {
+    use std::os::unix::io::{AsRawFd, FromRawFd};
+
     // SAFETY: plain syscall; a negative answer is checked before use.
     let fd = unsafe { libc::socket(libc::AF_UNIX, libc::SOCK_STREAM, 0) };
     if fd < 0 {
@@ -195,27 +218,7 @@ fn connect_by(socket: &Path, deadline: Instant) -> std::io::Result<UnixStream> {
         return Err(std::io::Error::last_os_error());
     }
     stream.set_nonblocking(true)?;
-    let length = std::mem::size_of::<libc::sockaddr_un>() as libc::socklen_t;
-    // SAFETY: `address` is a valid sockaddr_un of `length` bytes.
-    let connected = unsafe {
-        libc::connect(
-            stream.as_raw_fd(),
-            (&address as *const libc::sockaddr_un).cast(),
-            length,
-        )
-    };
-    if connected == 0 {
-        return Ok(stream);
-    }
-    let error = std::io::Error::last_os_error();
-    if error.raw_os_error() != Some(libc::EINPROGRESS) {
-        return Err(error);
-    }
-    wait_ready(&stream, libc::POLLOUT, deadline)?;
-    match stream.take_error()? {
-        Some(error) => Err(error),
-        None => Ok(stream),
-    }
+    Ok(stream)
 }
 
 /// A blocking socket write keeps going while a slow reader frees space, past
@@ -227,17 +230,27 @@ fn write_by(stream: &mut UnixStream, mut bytes: &[u8], deadline: Instant) -> std
         match stream.write(bytes) {
             Ok(0) => return Err(std::io::ErrorKind::WriteZero.into()),
             Ok(written) => bytes = &bytes[written..],
-            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                wait_ready(stream, libc::POLLOUT, deadline)?
-            }
-            // An interrupted call tries again only while time is left.
-            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {
-                time_left(deadline)?;
-            }
-            Err(error) => return Err(error),
+            Err(error) => retry_after(error, stream, libc::POLLOUT, deadline)?,
         }
     }
     Ok(())
+}
+
+/// What a failed nonblocking read or write does next. `Ok(())` means try
+/// again: a `WouldBlock` waits for `events`, and an interrupted call tries
+/// again only while time is left. Any other error is final.
+#[cfg(unix)]
+fn retry_after(
+    error: std::io::Error,
+    stream: &UnixStream,
+    events: libc::c_short,
+    deadline: Instant,
+) -> std::io::Result<()> {
+    match error.kind() {
+        std::io::ErrorKind::WouldBlock => wait_ready(stream, events, deadline),
+        std::io::ErrorKind::Interrupted => time_left(deadline).map(drop),
+        _ => Err(error),
+    }
 }
 
 /// One answer line, up to and with its newline, or what came before EOF.
@@ -249,14 +262,7 @@ fn read_line_by(stream: &mut UnixStream, deadline: Instant) -> std::io::Result<S
         match stream.read(&mut buffer) {
             Ok(0) => break,
             Ok(read) => answer.extend_from_slice(&buffer[..read]),
-            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                wait_ready(stream, libc::POLLIN, deadline)?
-            }
-            // An interrupted call tries again only while time is left.
-            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {
-                time_left(deadline)?;
-            }
-            Err(error) => return Err(error),
+            Err(error) => retry_after(error, stream, libc::POLLIN, deadline)?,
         }
     }
     String::from_utf8(answer)
@@ -297,12 +303,16 @@ fn wait_ready(
 
 /// Run the MCP stdio server until `input` reaches EOF.
 pub fn serve<R: BufRead, W: Write + Send + 'static>(
-    opts: ServeOptions,
+    mut opts: ServeOptions,
     mut input: R,
     output: W,
 ) -> Result<()> {
     let output = Arc::new(Mutex::new(output));
-    let delivery = Arc::new(opts.output);
+    // `opts.output` moves into `delivery`; the placeholder is never read.
+    let delivery = Arc::new(std::mem::replace(
+        &mut opts.output,
+        Output::ClaudeNotification,
+    ));
     let mut relay = None;
 
     let result = (|| -> Result<()> {
@@ -312,41 +322,52 @@ pub fn serve<R: BufRead, W: Write + Send + 'static>(
             if input.read_line(&mut line).context("read MCP input")? == 0 {
                 return Ok(());
             }
-            let message: Value = match serde_json::from_str(&line) {
-                Ok(message) => message,
-                Err(error) => {
-                    eprintln!("invalid MCP JSON: {error}");
-                    continue;
-                }
-            };
-
-            let method = message.get("method").and_then(Value::as_str);
-            if method == Some("notifications/initialized") && relay.is_none() {
-                relay = Some(start_relay(
-                    &opts.socket,
-                    Arc::clone(&delivery),
-                    Arc::clone(&output),
-                    opts.connection_timeout,
-                )?);
-            }
-
-            let Some(id) = message.get("id") else {
-                continue;
-            };
-            let response = mcp_response(
-                id,
-                method,
-                &message,
-                &opts.instructions,
-                &opts.version,
-                matches!(&*delivery, Output::ClaudeNotification),
-            );
-            write_json_line(&output, &response)?;
+            handle_mcp_line(&line, &opts, &delivery, &output, &mut relay)?;
         }
     })();
 
     drop(relay);
     result
+}
+
+/// Answer one MCP input line, and start the relay on `initialized`.
+fn handle_mcp_line<W: Write + Send + 'static>(
+    line: &str,
+    opts: &ServeOptions,
+    delivery: &Arc<Output>,
+    output: &Arc<Mutex<W>>,
+    relay: &mut Option<Relay>,
+) -> Result<()> {
+    let message: Value = match serde_json::from_str(line) {
+        Ok(message) => message,
+        Err(error) => {
+            eprintln!("invalid MCP JSON: {error}");
+            return Ok(());
+        }
+    };
+
+    let method = message.get("method").and_then(Value::as_str);
+    if method == Some("notifications/initialized") && relay.is_none() {
+        *relay = Some(start_relay(
+            &opts.socket,
+            Arc::clone(delivery),
+            Arc::clone(output),
+            opts.connection_timeout,
+        )?);
+    }
+
+    let Some(id) = message.get("id") else {
+        return Ok(());
+    };
+    let response = mcp_response(
+        id,
+        method,
+        &message,
+        &opts.instructions,
+        &opts.version,
+        matches!(&**delivery, Output::ClaudeNotification),
+    );
+    write_json_line(output, &response)
 }
 
 fn mcp_response(
@@ -488,24 +509,7 @@ where
     W: Write + Send + 'static,
     F: FnOnce() -> Result<()>,
 {
-    if socket.as_os_str().as_encoded_bytes().len() >= 104 {
-        bail!("channel socket path is too long: {}", socket.display());
-    }
-    let parent = socket
-        .parent()
-        .ok_or_else(|| anyhow!("channel socket has no parent: {}", socket.display()))?;
-    fs::create_dir_all(parent)
-        .with_context(|| format!("create channel directory {}", parent.display()))?;
-    fs::set_permissions(parent, fs::Permissions::from_mode(0o700))
-        .with_context(|| format!("set channel directory mode on {}", parent.display()))?;
-
-    if socket.exists() {
-        if is_live(socket) {
-            bail!("a channel relay already serves {}", socket.display());
-        }
-        fs::remove_file(socket)
-            .with_context(|| format!("remove stale channel socket {}", socket.display()))?;
-    }
+    prepare_socket_path(socket)?;
 
     let listener = UnixListener::bind(socket)
         .with_context(|| format!("bind channel socket {}", socket.display()))?;
@@ -520,29 +524,13 @@ where
     let stop = Arc::new(AtomicBool::new(false));
     let thread_stop = Arc::clone(&stop);
     let accept_thread = thread::spawn(move || {
-        while !thread_stop.load(Ordering::Acquire) {
-            match listener.accept() {
-                Ok((stream, _)) => {
-                    let timeout_result = stream
-                        .set_read_timeout(Some(connection_timeout))
-                        .and_then(|()| stream.set_write_timeout(Some(connection_timeout)));
-                    if let Err(error) = timeout_result {
-                        eprintln!("cannot set channel connection timeout: {error}");
-                        continue;
-                    }
-                    let delivery = Arc::clone(&delivery);
-                    let output = Arc::clone(&output);
-                    thread::spawn(move || handle_connection(stream, &delivery, &output));
-                }
-                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                    thread::sleep(Duration::from_millis(5));
-                }
-                Err(error) => {
-                    eprintln!("channel socket accept failed: {error}");
-                    thread::sleep(Duration::from_millis(5));
-                }
-            }
-        }
+        accept_loop(
+            listener,
+            &thread_stop,
+            &delivery,
+            &output,
+            connection_timeout,
+        )
     });
 
     socket_guard.disarm();
@@ -552,6 +540,71 @@ where
         stop,
         accept_thread: Some(accept_thread),
     })
+}
+
+/// Make the socket directory, and clear a stale socket file. Fails when the
+/// path is too long or a live relay already serves it.
+#[cfg(unix)]
+fn prepare_socket_path(socket: &Path) -> Result<()> {
+    if socket.as_os_str().as_encoded_bytes().len() >= 104 {
+        bail!("channel socket path is too long: {}", socket.display());
+    }
+    let parent = socket
+        .parent()
+        .ok_or_else(|| anyhow!("channel socket has no parent: {}", socket.display()))?;
+    fs::create_dir_all(parent)
+        .with_context(|| format!("create channel directory {}", parent.display()))?;
+    fs::set_permissions(parent, fs::Permissions::from_mode(0o700))
+        .with_context(|| format!("set channel directory mode on {}", parent.display()))?;
+    clear_stale_socket(socket)
+}
+
+/// Remove a socket file that no relay serves. Fails when a live one exists.
+#[cfg(unix)]
+fn clear_stale_socket(socket: &Path) -> Result<()> {
+    if !socket.exists() {
+        return Ok(());
+    }
+    if is_live(socket) {
+        bail!("a channel relay already serves {}", socket.display());
+    }
+    fs::remove_file(socket)
+        .with_context(|| format!("remove stale channel socket {}", socket.display()))
+}
+
+#[cfg(unix)]
+fn set_timeouts(stream: &UnixStream, timeout: Duration) -> std::io::Result<()> {
+    stream.set_read_timeout(Some(timeout))?;
+    stream.set_write_timeout(Some(timeout))
+}
+
+/// Accept connections until `stop` is set. Each one gets its own thread.
+#[cfg(unix)]
+fn accept_loop<W: Write + Send + 'static>(
+    listener: UnixListener,
+    stop: &AtomicBool,
+    delivery: &Arc<Output>,
+    output: &Arc<Mutex<W>>,
+    connection_timeout: Duration,
+) {
+    while !stop.load(Ordering::Acquire) {
+        match listener.accept() {
+            Ok((stream, _)) => match set_timeouts(&stream, connection_timeout) {
+                Ok(()) => {
+                    let delivery = Arc::clone(delivery);
+                    let output = Arc::clone(output);
+                    thread::spawn(move || handle_connection(stream, &delivery, &output));
+                }
+                Err(error) => eprintln!("cannot set channel connection timeout: {error}"),
+            },
+            Err(error) => {
+                if error.kind() != std::io::ErrorKind::WouldBlock {
+                    eprintln!("channel socket accept failed: {error}");
+                }
+                thread::sleep(Duration::from_millis(5));
+            }
+        }
+    }
 }
 
 #[cfg(unix)]
@@ -591,6 +644,18 @@ enum SocketReadError {
 
 #[cfg(unix)]
 fn read_socket_request(stream: &UnixStream) -> std::result::Result<SocketRequest, SocketReadError> {
+    let bytes = read_request_line(stream)?;
+    let value: Value = serde_json::from_slice(&bytes).map_err(|_| SocketReadError::BadRequest)?;
+    if value.get("ping") == Some(&Value::Bool(true)) {
+        Ok(SocketRequest::Ping)
+    } else {
+        message_request(&value)
+    }
+}
+
+/// One request line without its line ending, at most `MAX_LINE_BYTES` long.
+#[cfg(unix)]
+fn read_request_line(stream: &UnixStream) -> std::result::Result<Vec<u8>, SocketReadError> {
     let mut bytes = Vec::new();
     let mut limited = BufReader::new(stream).take((MAX_LINE_BYTES + 2) as u64);
     limited.read_until(b'\n', &mut bytes).map_err(|error| {
@@ -603,20 +668,21 @@ fn read_socket_request(stream: &UnixStream) -> std::result::Result<SocketRequest
             SocketReadError::BadRequest
         }
     })?;
-    if !bytes.ends_with(b"\n") {
-        return Err(SocketReadError::BadRequest);
-    }
+    bytes
+        .ends_with(b"\n")
+        .then_some(())
+        .ok_or(SocketReadError::BadRequest)?;
     bytes.pop();
     if bytes.last() == Some(&b'\r') {
         bytes.pop();
     }
-    if bytes.len() > MAX_LINE_BYTES {
-        return Err(SocketReadError::BadRequest);
-    }
-    let value: Value = serde_json::from_slice(&bytes).map_err(|_| SocketReadError::BadRequest)?;
-    if value.get("ping") == Some(&Value::Bool(true)) {
-        return Ok(SocketRequest::Ping);
-    }
+    (bytes.len() <= MAX_LINE_BYTES)
+        .then_some(bytes)
+        .ok_or(SocketReadError::BadRequest)
+}
+
+#[cfg(unix)]
+fn message_request(value: &Value) -> std::result::Result<SocketRequest, SocketReadError> {
     let from = value
         .get("from")
         .and_then(Value::as_str)
@@ -772,6 +838,51 @@ mod tests {
         assert_eq!(
             socket_path(Path::new("/tmp/root"), "w4W:p1"),
             Path::new("/tmp/root/channels/w4W_p1.sock")
+        );
+        // `.` is mapped to `_` like every other file name (messaging::file_safe).
+        assert_eq!(
+            socket_path(Path::new("/tmp/root"), "w4.p1"),
+            Path::new("/tmp/root/channels/w4_p1.sock")
+        );
+    }
+
+    /// A socket path of 104 bytes or more does not fit `sun_path` on macOS.
+    /// `prepare_socket_path` refuses it by name before it creates anything,
+    /// and `unix_address` refuses a path that overflows its own field
+    /// instead of cutting it.
+    #[cfg(unix)]
+    #[test]
+    fn arc_30_a_socket_path_that_does_not_fit_is_refused() {
+        use std::os::unix::ffi::OsStrExt;
+        let root = temp_root();
+        let channels = root.join("channels");
+        let of_len = |len: usize| channels.join("s".repeat(len - channels.as_os_str().len() - 1));
+
+        let long = of_len(104);
+        assert_eq!(long.as_os_str().len(), 104);
+        let err = prepare_socket_path(&long).unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            format!("channel socket path is too long: {}", long.display())
+        );
+        assert!(!channels.exists(), "a refused path creates nothing");
+        prepare_socket_path(&of_len(103)).unwrap();
+        assert!(channels.is_dir());
+
+        let fits = of_len(100);
+        let address = unix_address(&fits).unwrap();
+        let held: Vec<u8> = address
+            .sun_path
+            .iter()
+            .take(100)
+            .map(|c| *c as u8)
+            .collect();
+        assert_eq!(held, fits.as_os_str().as_bytes());
+        assert_eq!(address.sun_path[100], 0);
+        let overflow = unix_address(Path::new(&"s".repeat(300)));
+        assert_eq!(
+            overflow.err().map(|e| e.kind()),
+            Some(std::io::ErrorKind::InvalidInput)
         );
     }
 
@@ -1013,6 +1124,108 @@ mod tests {
         ));
     }
 
+    /// Send `bytes` to the relay, close the write side, and read its answer.
+    fn raw_answer(socket: &Path, bytes: &[u8]) -> String {
+        let mut stream = UnixStream::connect(socket).expect("connect raw client");
+        stream
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .expect("set client timeout");
+        // The relay may answer and close before it has read every byte of an
+        // oversized line, so a broken pipe here is not an error.
+        let _ = stream.write_all(bytes);
+        let _ = stream.shutdown(std::net::Shutdown::Write);
+        let mut answer = String::new();
+        BufReader::new(stream)
+            .read_line(&mut answer)
+            .expect("read raw answer");
+        answer
+    }
+
+    #[test]
+    fn a_malformed_socket_request_gets_one_error_answer() {
+        let (socket, mut input, output, server) = start_server(Output::ClaudeNotification);
+        initialize(&mut input, &socket);
+        let cases: [(&str, &[u8]); 5] = [
+            ("no newline", b"{\"ping\":true}"),
+            ("not json", b"nope\n"),
+            ("no from", b"{\"text\":\"hi\"}\n"),
+            ("no text", b"{\"from\":\"a\"}\n"),
+            ("text not a string", b"{\"from\":\"a\",\"text\":1}\n"),
+        ];
+        for (name, bytes) in cases {
+            assert_eq!(raw_answer(&socket, bytes), "error: bad request\n", "{name}");
+        }
+        assert!(output.lines().is_empty(), "no case may reach the output");
+        drop(input);
+        server
+            .join()
+            .expect("server thread")
+            .expect("server result");
+    }
+
+    /// Parse `bytes` as one socket request on a blocking socket pair.
+    fn parse_request(bytes: Vec<u8>) -> std::result::Result<SocketRequest, SocketReadError> {
+        let (reader, mut writer) = UnixStream::pair().expect("socket pair");
+        let sender = thread::spawn(move || {
+            let _ = writer.write_all(&bytes);
+        });
+        let parsed = read_socket_request(&reader);
+        drop(reader);
+        sender.join().expect("sender thread");
+        parsed
+    }
+
+    #[test]
+    fn a_line_over_the_limit_is_a_bad_request_and_one_at_the_limit_is_not() {
+        // `len` counts the newline too.
+        let line = |len: usize| {
+            let mut line = String::from("{\"ping\":true,\"pad\":\"").into_bytes();
+            let pad = len - line.len() - 3;
+            line.extend(std::iter::repeat_n(b'x', pad));
+            line.extend_from_slice(b"\"}\n");
+            line
+        };
+        assert!(matches!(
+            parse_request(line(MAX_LINE_BYTES + 2)),
+            Err(SocketReadError::BadRequest)
+        ));
+        assert!(matches!(
+            parse_request(line(MAX_LINE_BYTES + 1)),
+            Ok(SocketRequest::Ping)
+        ));
+    }
+
+    #[test]
+    fn a_ping_and_a_crlf_message_are_answered_ok() {
+        let (socket, mut input, output, server) = start_server(Output::ClaudeNotification);
+        initialize(&mut input, &socket);
+        assert_eq!(raw_answer(&socket, b"{\"ping\":true}\n"), "ok\n");
+        assert!(output.lines().is_empty(), "a ping delivers nothing");
+        assert_eq!(
+            raw_answer(&socket, b"{\"from\":\"a\",\"text\":\"hi\"}\r\n"),
+            "ok\n"
+        );
+        assert_eq!(output.lines().len(), 1, "the message is delivered once");
+        drop(input);
+        server
+            .join()
+            .expect("server thread")
+            .expect("server result");
+    }
+
+    #[test]
+    fn invalid_mcp_json_is_skipped_and_serving_goes_on() {
+        let (socket, mut input, _output, server) = start_server(Output::ClaudeNotification);
+        input.write_all(b"not json\n").expect("write garbage");
+        initialize(&mut input, &socket);
+        assert_eq!(raw_answer(&socket, b"{\"ping\":true}\n"), "ok\n");
+        drop(input);
+        server
+            .join()
+            .expect("server thread")
+            .expect("server result");
+    }
+
     #[test]
     fn arc_30_silent_client_is_dropped_after_the_timeout() {
         let (socket, mut input, _output, server) =
@@ -1081,17 +1294,47 @@ mod tests {
         }
     }
 
+    /// The most a send may take before the test calls the timeout broken. It
+    /// is far past any send timeout here, so machine load cannot reach it. A
+    /// send that ignores its timeout never ends, and only this bound fails it.
+    const SEND_HANG_BOUND: Duration = Duration::from_secs(30);
+
+    /// Run [`send`] on its own thread. `None` means it did not end inside
+    /// [`SEND_HANG_BOUND`]; that thread is left behind.
+    fn send_or_hang(
+        socket: &Path,
+        text: String,
+        timeout: Duration,
+    ) -> Option<std::result::Result<(), SendError>> {
+        let (done, ended) = std::sync::mpsc::channel();
+        let socket = socket.to_path_buf();
+        thread::spawn(move || {
+            let _ = done.send(send(&socket, "worker", &text, timeout));
+        });
+        ended.recv_timeout(SEND_HANG_BOUND).ok()
+    }
+
+    /// The `io::ErrorKind` at the root of a send error.
+    fn root_kind(error: &SendError) -> Option<std::io::ErrorKind> {
+        let (SendError::NotDelivered(error) | SendError::Unconfirmed(error)) = error;
+        error
+            .root_cause()
+            .downcast_ref::<std::io::Error>()
+            .map(std::io::Error::kind)
+    }
+
     /// #67: a relay that accepts and never reads or answers costs the push
-    /// no more than its timeout.
+    /// no more than its timeout. The send ends with a timed-out write error,
+    /// not with a wall-clock bound that load can break.
     #[test]
     fn send_to_a_relay_that_never_reads_ends_inside_the_timeout() {
         let (socket, _server) = stalled_relay("never-reads", 0, Duration::from_secs(60));
-        let text = "x".repeat(1024 * 1024);
-        let started = Instant::now();
-        let result = send(&socket, "worker", &text, Duration::from_millis(300));
-        let took = started.elapsed();
-        assert!(matches!(result, Err(SendError::NotDelivered(_))));
-        assert!(took < Duration::from_millis(600), "{took:?}");
+        let timeout = Duration::from_millis(300);
+        let result = send_or_hang(&socket, "x".repeat(1024 * 1024), timeout)
+            .expect("the send ignored its timeout");
+        let error = result.expect_err("a relay that never reads cannot confirm");
+        assert!(matches!(error, SendError::NotDelivered(_)), "{error}");
+        assert_eq!(root_kind(&error), Some(std::io::ErrorKind::TimedOut));
     }
 
     /// #67: the timeout is 1 deadline for the whole request. A relay that
@@ -1099,12 +1342,11 @@ mod tests {
     #[test]
     fn a_slow_reader_cannot_stretch_the_send_past_its_timeout() {
         let (socket, server) = stalled_relay("trickle", 512, Duration::from_millis(50));
-        let text = "x".repeat(256 * 1024);
-        let started = Instant::now();
-        let result = send(&socket, "worker", &text, Duration::from_millis(300));
-        let took = started.elapsed();
-        assert!(result.is_err());
-        assert!(took < Duration::from_millis(700), "{took:?}");
+        let timeout = Duration::from_millis(300);
+        let result = send_or_hang(&socket, "x".repeat(256 * 1024), timeout)
+            .expect("the send ignored its timeout");
+        let error = result.expect_err("a trickling relay cannot take the whole message");
+        assert_eq!(root_kind(&error), Some(std::io::ErrorKind::TimedOut));
         server.join().expect("server thread");
     }
 

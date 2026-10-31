@@ -3,9 +3,11 @@
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
-use anyhow::{bail, Result};
+use anyhow::{bail, ensure, Result};
+use horch_core::exeid::exe_identity;
 use horch_core::runtime::RuntimeContext;
 use horch_core::taskledger::finish::land;
 use horch_core::taskledger::git::Git;
@@ -21,6 +23,35 @@ use super::taskledger::{stop_grace, HerdrPanes};
 use super::taskledger_wake;
 use crate::output;
 
+/// A SIGTERM came: the watchdog loop ends after the pass it runs.
+static TERM: AtomicBool = AtomicBool::new(false);
+
+#[cfg(unix)]
+extern "C" fn on_term(_: libc::c_int) {
+    TERM.store(true, Ordering::SeqCst);
+}
+
+/// SIGTERM ends the watchdog loop between passes, never inside one: a pass
+/// can be in a reap, which requeues the task before it stops the agent
+/// (#216 restart, review of T-3).
+fn exit_between_passes() {
+    #[cfg(unix)]
+    // SAFETY: the handler only stores to an atomic, which is
+    // async-signal-safe.
+    unsafe {
+        let handler = on_term as extern "C" fn(libc::c_int) as libc::sighandler_t;
+        libc::signal(libc::SIGTERM, handler);
+    }
+}
+
+/// Sleep `d`, or less when a SIGTERM comes.
+fn sleep_unless_term(d: Duration) {
+    let until = std::time::Instant::now() + d;
+    while !TERM.load(Ordering::SeqCst) && std::time::Instant::now() < until {
+        std::thread::sleep(Duration::from_millis(100));
+    }
+}
+
 /// What the watchdog reads: herdr for the pane, the disk for the transcript.
 struct Live {
     herdr: Herdr,
@@ -28,11 +59,7 @@ struct Live {
 
 impl Observer for Live {
     fn observe(&self, w: &Worker) -> Observation {
-        let agent_alive = match (w.agent_pid, w.agent_started) {
-            (Some(p), Some(s)) => horch_core::procid::is_same(p as u32, s as u64),
-            (Some(p), None) => horch_core::procid::alive(p as u32, None),
-            _ => false,
-        };
+        let agent_alive = agent_alive(w);
         let pane = w
             .pane_id
             .as_deref()
@@ -41,21 +68,39 @@ impl Observer for Live {
             .pane_id
             .as_deref()
             .and_then(|p| self.herdr.pane_read(p, "visible").ok());
-        let meta = w
-            .transcript_path
-            .as_deref()
-            .and_then(|t| std::fs::metadata(t).ok());
+        let (transcript_bytes, transcript_mtime) = transcript_facts(w);
         Observation {
             agent_alive,
             herdr_status: pane.as_ref().and_then(|p| p.agent_status.clone()),
             herdr_seq: pane.as_ref().and_then(|p| p.state_change_seq),
-            transcript_bytes: meta.as_ref().map(|m| m.len() as i64),
-            transcript_mtime: meta
-                .and_then(|m| m.modified().ok())
-                .map(|t| horch_core::clock::stamp(chrono::DateTime::<chrono::Utc>::from(t))),
+            transcript_bytes,
+            transcript_mtime,
             screen,
         }
     }
+}
+
+/// Whether the agent PID of `w` runs with its recorded start time. An old
+/// record has no start time: the PID alone counts.
+fn agent_alive(w: &Worker) -> bool {
+    match (w.agent_pid, w.agent_started) {
+        (Some(p), Some(s)) => horch_core::procid::is_same(p as u32, s as u64),
+        (Some(p), None) => horch_core::procid::alive(p as u32, None),
+        _ => false,
+    }
+}
+
+/// The size and the write time of the transcript of `w`, when it can be read.
+fn transcript_facts(w: &Worker) -> (Option<i64>, Option<String>) {
+    let meta = w
+        .transcript_path
+        .as_deref()
+        .and_then(|t| std::fs::metadata(t).ok());
+    (
+        meta.as_ref().map(|m| m.len() as i64),
+        meta.and_then(|m| m.modified().ok())
+            .map(|t| horch_core::clock::stamp(chrono::DateTime::<chrono::Utc>::from(t))),
+    )
 }
 
 /// The single-instance lock of a run's watchdog.
@@ -68,13 +113,7 @@ fn lock_dir(ctx: &RuntimeContext) -> PathBuf {
 }
 
 fn lock_held(ctx: &RuntimeContext, run: &Run) -> Option<u32> {
-    let owner = lock_dir(ctx)
-        .join(format!("watchdog-{}.lock", run.run_id))
-        .join("owner");
-    let v: serde_json::Value = serde_json::from_slice(&std::fs::read(owner).ok()?).ok()?;
-    let pid = v["pid"].as_u64()? as u32;
-    let started = v["started"].as_u64();
-    horch_core::procid::alive(pid, started).then_some(pid)
+    watchdog::holder(&lock_dir(ctx), &run.run_id).map(|h| h.pid)
 }
 
 /// 1 pass: check, reap the dead, wake on changes, retry cleanups.
@@ -94,38 +133,79 @@ fn pass(
     let live = Live {
         herdr: Herdr::with_bin(&ctx.bins.harness.herdr),
     };
-    let checked = watchdog::check_run(store, run, &live, force)?;
-    for c in &checked {
-        let who = c.role.as_deref().unwrap_or(&c.worker_id);
-        let on = c.task.as_deref().unwrap_or("its task");
-        match c.verdict.as_str() {
-            "dead" => {
-                let panes = HerdrPanes::new(ctx);
-                match stop::reap(store, &c.worker_id, StopRequester::Watchdog, &c.note, &panes, &stop::Os, stop_grace()) {
-                    Ok(report) => taskledger_wake::after_reap(ctx, store, run, &report),
-                    Err(e) => eprintln!("horch ledger watch: reaping {who} failed: {e:#}"),
-                }
-            }
-            "no_progress" if c.first_stall => taskledger_wake::wake(
-                ctx,
-                store,
-                run,
-                &format!(
-                    "NOTE: {who} on {on} shows no progress ({}). Ask it for an update: horch tell {who} \"[orchestrator] QUESTION: What is your status?\"",
-                    c.note
-                ),
-            ),
-            "progress" | "proxy_checkin" if c.changed => {
-                // Back to normal after a stall: nothing to do, no wake.
-            }
-            _ => {}
-        }
+    if let Some(workspace) = run.workspace_id.as_deref() {
+        horch_core::taskledger::workers::sync_questions(
+            store.conn(),
+            &ctx.paths.state_root,
+            workspace,
+        )?;
     }
+    let checked = watchdog::check_run(store, run, &live, force)?;
+    // 1 push budget for every wake of this pass (#67, #177): an orchestrator
+    // pane that is not ready holds the pass no longer, and the courier
+    // delivers the queued wakes.
+    let _budget = horch_core::messaging::delivery::start_push_budget(
+        horch_core::messaging::delivery::DONE_PUSH_BUDGET,
+    );
+    for c in &checked {
+        act_on(ctx, store, run, c);
+    }
+    taskledger_wake::after_watch(ctx, store, run);
     let git = Git::new(&ctx.bins.harness.git);
     for (path, o) in land::retry_cleanup(store, &git)? {
         eprintln!("horch ledger watch: cleanup of {path}: {}", o.note);
     }
     Ok(checked)
+}
+
+/// What the watchdog does about 1 verdict: reap the dead, wake the
+/// orchestrator on a first stall or a suspect.
+fn act_on(ctx: &RuntimeContext, store: &mut Store, run: &Run, c: &watchdog::Checked) {
+    let who = c.role.as_deref().unwrap_or(&c.worker_id);
+    let on = c.task.as_deref().unwrap_or("its task");
+    match c.verdict.as_str() {
+        "dead" => reap_dead(ctx, store, run, c),
+        "no_progress" if c.first_stall => taskledger_wake::wake(
+            ctx,
+            store,
+            run,
+            &format!(
+                "NOTE: {who} on {on} shows no progress ({}). Ask it for an update: horch tell {who} \"[orchestrator] QUESTION: What is your status?\"",
+                c.note
+            ),
+        ),
+        "suspect" => taskledger_wake::wake(
+            ctx,
+            store,
+            run,
+            &format!(
+                "NOTE: {who} on {on} may be stuck in pane {}: {}. The watchdog reaps it at the next check unless something else moves.",
+                c.pane_id.as_deref().unwrap_or("unknown"),
+                c.note
+            ),
+        ),
+        // A worker back to normal after a stall needs no wake.
+        _ => {}
+    }
+}
+
+/// Reap a worker the check found dead, and wake on the result.
+fn reap_dead(ctx: &RuntimeContext, store: &mut Store, run: &Run, c: &watchdog::Checked) {
+    let who = c.role.as_deref().unwrap_or(&c.worker_id);
+    let panes = HerdrPanes::new(ctx);
+    let reaped = stop::reap(
+        store,
+        &c.worker_id,
+        StopRequester::Watchdog,
+        &c.note,
+        &panes,
+        &stop::Os,
+        stop_grace(),
+    );
+    match reaped {
+        Ok(report) => taskledger_wake::after_reap(ctx, store, run, &report),
+        Err(e) => eprintln!("horch ledger watch: reaping {who} failed: {e:#}"),
+    }
 }
 
 /// `horch ledger watch`.
@@ -137,92 +217,236 @@ pub fn watch(
     force: bool,
     as_json: bool,
 ) -> Result<ExitCode> {
-    if let Some(pid) = lock_held(ctx, run) {
-        if pid != std::process::id() {
-            bail!("the watchdog of run {} already runs (PID {pid})", run.slug);
-        }
-    }
-    let guard = watchdog::lock(&lock_dir(ctx), &run.run_id)?;
-    let Some(_guard) = guard else {
-        bail!("the watchdog of run {} already runs", run.slug);
-    };
+    let _guard = take_lock(ctx, run)?;
     if once {
         let checked = pass(ctx, &mut store, run, force)?;
-        if as_json {
-            output::println(&serde_json::to_string_pretty(&checked)?);
-        } else if checked.is_empty() {
-            output::println("No worker was due for a check.");
-        } else {
-            for c in &checked {
-                output::println(&format!(
-                    "{} {}: {} (round {}): {}",
-                    c.role.as_deref().unwrap_or(&c.worker_id),
-                    c.task.as_deref().unwrap_or("-"),
-                    c.verdict,
-                    c.round,
-                    c.note
-                ));
-            }
-        }
+        print_checked(&checked, as_json)?;
         return Ok(ExitCode::SUCCESS);
     }
-    // The loop: a pass on every tick; each worker is checked when it is due.
+    watch_loop(ctx, &mut store, run)
+}
+
+/// Wait out the start fault, refuse a second watchdog, and take the lock of
+/// the run. The starter compares the recorded binary with the one it would
+/// start (#216).
+fn take_lock(ctx: &RuntimeContext, run: &Run) -> Result<horch_core::fsx::DirLockGuard> {
+    // A slow start, as on a loaded machine: the e2e tests of `ensure` hold
+    // a new watchdog before its lock with `HORCH_FAULT=watchdog-start-ms:<n>`.
+    if let Some(ms) = ctx
+        .settings
+        .faults
+        .indexed("watchdog-start-ms")
+        .and_then(|s| s.parse::<u64>().ok())
+    {
+        std::thread::sleep(Duration::from_millis(ms.min(120_000)));
+    }
+    if let Some(pid) = lock_held(ctx, run) {
+        ensure!(
+            pid == std::process::id(),
+            "the watchdog of run {} already runs (PID {pid})",
+            run.slug
+        );
+    }
+    let Some(guard) = watchdog::lock(&lock_dir(ctx), &run.run_id)? else {
+        bail!("the watchdog of run {} already runs", run.slug);
+    };
+    let exe = std::env::current_exe().ok().and_then(|p| exe_identity(&p));
+    watchdog::record_exe(&guard, exe.as_ref())?;
+    Ok(guard)
+}
+
+/// The report of `watch --once`: JSON, or 1 line per checked worker.
+fn print_checked(checked: &[watchdog::Checked], as_json: bool) -> Result<()> {
+    if as_json {
+        output::println(&serde_json::to_string_pretty(checked)?);
+        return Ok(());
+    }
+    if checked.is_empty() {
+        output::println("No worker was due for a check.");
+    }
+    for c in checked {
+        output::println(&format!(
+            "{} {}: {} (round {}): {}",
+            c.role.as_deref().unwrap_or(&c.worker_id),
+            c.task.as_deref().unwrap_or("-"),
+            c.verdict,
+            c.round,
+            c.note
+        ));
+    }
+    Ok(())
+}
+
+/// The loop: a pass on every tick; each worker is checked when it is due.
+/// It ends when the run is no longer active or on SIGTERM.
+fn watch_loop(ctx: &RuntimeContext, store: &mut Store, run: &Run) -> Result<ExitCode> {
+    exit_between_passes();
     loop {
         let run_now = runs::get(store.conn(), &run.run_id)?;
-        if run_now.status != "active" {
+        if run_now.status != "active" || TERM.load(Ordering::SeqCst) {
             return Ok(ExitCode::SUCCESS);
         }
-        if let Err(e) = pass(ctx, &mut store, &run_now, false) {
+        if let Err(e) = pass(ctx, store, &run_now, false) {
             eprintln!("horch ledger watch: {e:#}");
         }
         let tick = (run_now.check_every_s / 10).clamp(1, 30) as u64;
-        std::thread::sleep(Duration::from_secs(tick));
+        sleep_unless_term(Duration::from_secs(tick));
     }
 }
 
 /// Restart the watchdog of each active run of this project that has gone
 /// quiet while a task runs. Best effort, silent unless it restarts one.
 pub fn ensure(ctx: &RuntimeContext) {
-    if std::env::var("HORCH_NO_WATCHDOG").is_ok_and(|v| v == "1") {
-        return;
-    }
-    // Never create the ledger just to look.
-    if !ctx.paths.ledger_db.exists() {
-        return;
-    }
-    let Ok(root) = super::taskledger::project_root(ctx) else {
+    let Some((root, store, runs)) = quiet_runs(ctx) else {
         return;
     };
-    let Ok(store) = taskledger::open(ctx) else {
+    let Ok(exe) = std::env::current_exe() else {
         return;
     };
-    let Ok(all) = runs::of_project(store.conn(), &root) else {
-        return;
-    };
-    for run in all.into_iter().filter(|r| r.status == "active") {
-        if lock_held(ctx, &run).is_some() {
-            continue;
-        }
-        if !watchdog::needs_restart(store.conn(), &run).unwrap_or(false) {
-            continue;
-        }
-        match start_detached(ctx, &run, &root) {
-            Ok(pid) => eprintln!(
-                "horch: warning: the watchdog of run {} was not running; started it (PID {pid})",
-                run.slug
-            ),
-            Err(e) => eprintln!(
-                "horch: warning: could not start the watchdog of run {}: {e:#}",
-                run.slug
-            ),
+    for run in runs {
+        match watchdog::holder(&lock_dir(ctx), &run.run_id) {
+            Some(h) => keep_or_replace(ctx, &store, &run, &root, &h, &exe),
+            None => restart(ctx, &store, &run, &root, &exe),
         }
     }
 }
 
-/// `horch ledger watch --run <id>`, detached in its own session so a pane
-/// close does not end it. Its output goes to `<ledger dir>/watchdog-<run>.log`.
-fn start_detached(ctx: &RuntimeContext, run: &Run, root: &Path) -> Result<u32> {
-    let exe = std::env::current_exe()?;
+/// The active runs of this project, with its root and the ledger. None when
+/// the watchdog is off, the ledger file is missing (it is never created
+/// just to look) or unreadable.
+fn quiet_runs(ctx: &RuntimeContext) -> Option<(PathBuf, Store, Vec<Run>)> {
+    if std::env::var("HORCH_NO_WATCHDOG").is_ok_and(|v| v == "1") || !ctx.paths.ledger_db.exists() {
+        return None;
+    }
+    let Ok(root) = super::taskledger::project_root(ctx) else {
+        return None;
+    };
+    let Ok(store) = taskledger::open(ctx) else {
+        return None;
+    };
+    let Ok(all) = runs::of_project(store.conn(), &root) else {
+        return None;
+    };
+    let active = all.into_iter().filter(|r| r.status == "active").collect();
+    Some((root, store, active))
+}
+
+/// A live watchdog stays, unless its own binary file changed: it then moves
+/// onto that file. A horch at another path does not take it over.
+fn keep_or_replace(
+    ctx: &RuntimeContext,
+    store: &Store,
+    run: &Run,
+    root: &Path,
+    h: &watchdog::LockHolder,
+    exe: &Path,
+) {
+    if !h.binary_replaced() {
+        return;
+    }
+    let target = h
+        .exe
+        .as_ref()
+        .map(|e| PathBuf::from(&e.path))
+        .filter(|p| p.is_file())
+        .unwrap_or_else(|| exe.to_path_buf());
+    replace(ctx, store, run, root, h, &target, true);
+}
+
+/// Start a watchdog for a run that has none and needs one, and say so.
+fn restart(ctx: &RuntimeContext, store: &Store, run: &Run, root: &Path, exe: &Path) {
+    if !watchdog::needs_restart(store.conn(), run).unwrap_or(false) {
+        return;
+    }
+    match start_detached(ctx, store, run, root, exe) {
+        Ok(pid) => eprintln!(
+            "horch: warning: the watchdog of run {} was not running; started it (PID {pid})",
+            run.slug
+        ),
+        Err(e) => eprintln!(
+            "horch: warning: could not start the watchdog of run {}: {e:#}",
+            run.slug
+        ),
+    }
+}
+
+/// After `horch install`: restart the watchdog of every active run that
+/// runs another binary than the one just installed at `installed` (#216).
+/// Prints 1 line per restarted watchdog. Starts none that is not live.
+pub fn restart_if_stale(ctx: &RuntimeContext, installed: &Path) {
+    if !ctx.paths.ledger_db.exists() {
+        return;
+    }
+    let Ok(store) = taskledger::open(ctx) else {
+        return;
+    };
+    let Ok(all) = watchdog::active_runs(store.conn()) else {
+        return;
+    };
+    let want = exe_identity(installed);
+    for run in all {
+        if let Some(h) = watchdog::holder(&lock_dir(ctx), &run.run_id) {
+            if h.runs_other_binary(want.as_ref()) {
+                let root = PathBuf::from(&run.project_root);
+                replace(ctx, &store, &run, &root, &h, installed, false);
+            }
+        }
+    }
+}
+
+/// Stop the live watchdog `h` of `run`, which runs another binary, by its
+/// exact PID and start time, then start one on `exe`. A watchdog keeps no
+/// state between passes, so the restart loses nothing. It ends after its
+/// current pass, and a reap in that pass waits up to the stop grace.
+fn replace(
+    ctx: &RuntimeContext,
+    store: &Store,
+    run: &Run,
+    root: &Path,
+    h: &watchdog::LockHolder,
+    exe: &Path,
+    as_warning: bool,
+) {
+    if let Err(e) = h.stop(stop_grace() + Duration::from_secs(5)) {
+        eprintln!(
+            "horch: warning: the watchdog of run {} (PID {}) runs another build of horch, but horch did not stop it: {e:#}",
+            run.slug, h.pid
+        );
+        return;
+    }
+    let line = match start_detached(ctx, store, run, root, exe) {
+        Ok(pid) => format!(
+            "restarted the watchdog of run {} on {}: PID {} ran another build of horch, PID {pid} runs the new one",
+            run.slug,
+            exe.display(),
+            h.pid
+        ),
+        Err(e) => {
+            eprintln!(
+                "horch: warning: stopped the old watchdog of run {}, but could not start a new one: {e:#}",
+                run.slug
+            );
+            return;
+        }
+    };
+    if as_warning {
+        eprintln!("horch: warning: {line}");
+    } else {
+        output::println(&line);
+    }
+}
+
+/// `horch ledger watch --run <id>` of `exe`, detached in its own session so
+/// a pane close does not end it. Its output goes to
+/// `<ledger dir>/watchdog-<run>.log`. The run records the new process at
+/// once, so a command before its first checkin does not start another.
+fn start_detached(
+    ctx: &RuntimeContext,
+    store: &Store,
+    run: &Run,
+    root: &Path,
+    exe: &Path,
+) -> Result<u32> {
     let log_path = ctx
         .paths
         .ledger_db
@@ -236,7 +460,6 @@ fn start_detached(ctx: &RuntimeContext, run: &Run, root: &Path) -> Result<u32> {
     let mut cmd = std::process::Command::new(exe);
     cmd.args(["ledger", "watch", "--run", &run.run_id])
         .current_dir(root)
-        .env_remove("ANTHROPIC_API_KEY")
         .env("HORCH_PROJECT_DIR", root)
         .env("HORCH_LEDGER_DB", &ctx.paths.ledger_db)
         .stdin(std::process::Stdio::null())
@@ -246,5 +469,188 @@ fn start_detached(ctx: &RuntimeContext, run: &Run, root: &Path) -> Result<u32> {
         cmd.env("HORCH_WORKSPACE_ID", ws);
     }
     let child = horch_core::runtime::process::spawn_detached(&mut cmd)?;
-    Ok(child.id())
+    let pid = child.id();
+    // It runs either way; without the record, the next command can start a
+    // second one, which finds the lock taken and ends.
+    if let Err(e) = watchdog::record_start(
+        store.conn(),
+        &run.run_id,
+        pid,
+        horch_core::procid::start_time(pid),
+    ) {
+        eprintln!(
+            "horch: warning: the run {} did not record its new watchdog (PID {pid}): {e:#}",
+            run.slug
+        );
+    }
+    Ok(pid)
+}
+
+#[cfg(unix)]
+#[cfg(test)]
+mod tests {
+    use super::Live;
+    use horch_core::taskledger::runs::{self, NewRun};
+    use horch_core::taskledger::watchdog::{Observation, Observer};
+    use horch_core::taskledger::workers::{self, NewWorker, Worker};
+    use horch_core::taskledger::Store;
+    use horch_core::workspace::herdr::Herdr;
+    use std::os::unix::fs::PermissionsExt;
+    use std::path::Path;
+    use std::time::{Duration, UNIX_EPOCH};
+
+    /// A worker row of a new run in `dir`. The tests set the fields `observe`
+    /// reads and leave the others as the ledger made them.
+    fn worker(dir: &Path) -> Worker {
+        let mut store = Store::open(&dir.join("ledger.sqlite3")).unwrap();
+        let new_run = NewRun {
+            slug: "r1".into(),
+            ..Default::default()
+        };
+        let run = store
+            .immediate(|tx| runs::create(tx, dir, &new_run))
+            .unwrap();
+        let new_worker = NewWorker {
+            run_id: run.run_id.clone(),
+            persona: "dev".into(),
+            ..Default::default()
+        };
+        let id = store
+            .immediate(|tx| workers::insert(tx, &new_worker))
+            .unwrap();
+        workers::find(store.conn(), &id).unwrap().unwrap()
+    }
+
+    /// A herdr that answers by pane: `p1` has a status, a change count and a
+    /// screen; `p2` has a screen but no status; `p3` has a status but no
+    /// screen; any other pane fails both.
+    fn herdr(dir: &Path) -> Herdr {
+        let bin = dir.join("herdr");
+        std::fs::write(
+            &bin,
+            "#!/bin/sh\n\
+             case \"$*\" in\n\
+             'pane get p1') echo '{\"result\":{\"pane\":{\"pane_id\":\"p1\",\"agent_status\":\"working\",\"state_change_seq\":7}}}' ;;\n\
+             'pane read p1 --source visible') echo 'the visible text' ;;\n\
+             'pane read p2 --source visible') echo 'only the screen' ;;\n\
+             'pane get p3') echo '{\"result\":{\"pane\":{\"pane_id\":\"p3\",\"agent_status\":\"idle\",\"state_change_seq\":9}}}' ;;\n\
+             warm*) ;;\n\
+             *) exit 1 ;;\n\
+             esac\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+        // macOS scans a new executable at its first exec: warm it.
+        assert!(std::process::Command::new(&bin)
+            .arg("warm")
+            .status()
+            .unwrap()
+            .success());
+        Herdr::with_bin(bin)
+    }
+
+    #[test]
+    fn the_agent_is_alive_when_its_pid_runs_with_the_recorded_start_time() {
+        let dir = tempfile::tempdir().unwrap();
+        let live = Live {
+            herdr: herdr(dir.path()),
+        };
+        let mut w = worker(dir.path());
+        let me = std::process::id();
+        let start = horch_core::procid::start_time(me).unwrap() as i64;
+        let alive = |w: &Worker| live.observe(w).agent_alive;
+
+        (w.agent_pid, w.agent_started) = (Some(me as i64), Some(start));
+        assert!(alive(&w), "the pid and its start time match");
+        w.agent_started = Some(start + 1);
+        assert!(!alive(&w), "the pid runs, but it started at another time");
+        // An old record has no start time: the pid alone counts.
+        w.agent_started = None;
+        assert!(alive(&w), "the pid runs");
+        w.agent_pid = Some(2_000_000_000);
+        assert!(!alive(&w), "no process has this pid");
+        (w.agent_pid, w.agent_started) = (None, Some(start));
+        assert!(!alive(&w), "a start time without a pid");
+        w.agent_started = None;
+        assert!(!alive(&w), "no pid");
+    }
+
+    #[test]
+    fn the_pane_and_the_screen_are_read_apart_and_only_for_a_worker_with_a_pane() {
+        let dir = tempfile::tempdir().unwrap();
+        let live = Live {
+            herdr: herdr(dir.path()),
+        };
+        let mut w = worker(dir.path());
+        let on = |w: &mut Worker, pane: Option<&str>| {
+            w.pane_id = pane.map(str::to_string);
+            live.observe(w)
+        };
+
+        assert_eq!(
+            on(&mut w, Some("p1")),
+            Observation {
+                herdr_status: Some("working".into()),
+                herdr_seq: Some(7),
+                screen: Some("the visible text\n".into()),
+                ..Default::default()
+            }
+        );
+        assert_eq!(
+            on(&mut w, Some("p2")),
+            Observation {
+                screen: Some("only the screen\n".into()),
+                ..Default::default()
+            },
+            "a pane that cannot be read as a pane still has its screen"
+        );
+        assert_eq!(
+            on(&mut w, Some("p3")),
+            Observation {
+                herdr_status: Some("idle".into()),
+                herdr_seq: Some(9),
+                ..Default::default()
+            },
+            "a pane whose screen cannot be read still has its status"
+        );
+        assert_eq!(on(&mut w, Some("p4")), Observation::default());
+        assert_eq!(on(&mut w, None), Observation::default());
+    }
+
+    #[test]
+    fn the_transcript_gives_its_size_and_the_time_it_was_written() {
+        let dir = tempfile::tempdir().unwrap();
+        let live = Live {
+            herdr: herdr(dir.path()),
+        };
+        let mut w = worker(dir.path());
+        let transcript = dir.path().join("transcript.jsonl");
+        std::fs::write(&transcript, "12345").unwrap();
+        let written = UNIX_EPOCH + Duration::from_secs(1_700_000_000);
+        std::fs::File::options()
+            .write(true)
+            .open(&transcript)
+            .unwrap()
+            .set_modified(written)
+            .unwrap();
+
+        w.transcript_path = Some(transcript.to_string_lossy().into_owned());
+        assert_eq!(
+            live.observe(&w),
+            Observation {
+                transcript_bytes: Some(5),
+                transcript_mtime: Some("2023-11-14T22:13:20Z".into()),
+                ..Default::default()
+            }
+        );
+        w.transcript_path = Some(
+            dir.path()
+                .join("missing.jsonl")
+                .to_string_lossy()
+                .into_owned(),
+        );
+        assert_eq!(live.observe(&w), Observation::default());
+        w.transcript_path = None;
+        assert_eq!(live.observe(&w), Observation::default());
+    }
 }

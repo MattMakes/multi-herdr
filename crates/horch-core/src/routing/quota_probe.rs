@@ -14,8 +14,8 @@ use serde_json::Value;
 
 use crate::clock;
 use crate::routing::quota::{
-    parse_agy_usage, parse_claude_usage, parse_codex_limits, HarnessHealth, Probed, QuotaFile,
-    Window, POOL_CLAUDE, POOL_CODEX, POOL_GOOGLE, POOL_LOCAL, POOL_ZEN,
+    parse_agy_usage, parse_claude_usage, parse_codex_limits, HarnessHealth, PoolReading, Probed,
+    QuotaFile, Window, POOL_CLAUDE, POOL_CODEX, POOL_GOOGLE, POOL_LOCAL, POOL_ZEN,
 };
 
 /// A child process whose stdout is read line by line with a deadline.
@@ -72,6 +72,11 @@ impl Drop for Child {
     }
 }
 
+/// Start the child that `cmd` describes, or say why it did not start.
+fn start(cmd: Command, bin: &Path) -> Result<Child, String> {
+    Child::spawn(cmd).map_err(|e| format!("starting {}: {e}", bin.display()))
+}
+
 /// Ask Claude Code for its plan limits (QUO-01). One stdin line, a
 /// `get_usage` control request; no user message; no `ANTHROPIC_API_KEY`.
 /// The scratch dir goes under `temp_root`.
@@ -82,6 +87,14 @@ pub(crate) fn probe_claude(
 ) -> Result<Probed, String> {
     let dir = temp_root.join(format!("horch-quota-{}", std::process::id()));
     let _ = std::fs::create_dir_all(&dir);
+    let result = ask_claude(claude_command(bin, &dir), bin, timeout);
+    let _ = std::fs::remove_dir_all(&dir);
+    result
+}
+
+/// The command that starts Claude Code in `dir`, to take `get_usage` requests
+/// on stdin.
+fn claude_command(bin: &Path, dir: &Path) -> Command {
     let mut cmd = Command::new(bin);
     cmd.args([
         "-p",
@@ -93,71 +106,86 @@ pub(crate) fn probe_claude(
         "stream-json",
         "--verbose",
     ])
-    .current_dir(&dir);
+    .current_dir(dir);
     for key in crate::harness::launch::FORBIDDEN_ENV {
         cmd.env_remove(key);
     }
-    let result = (|| {
-        let mut child =
-            Child::spawn(cmd).map_err(|e| format!("starting {}: {e}", bin.display()))?;
-        let id = "horch-quota-1";
-        let request = serde_json::json!({
-            "type": "control_request",
-            "request_id": id,
-            "request": {"subtype": "get_usage", "skip_behaviors": true}
-        });
-        child
-            .send(&request.to_string())
-            .map_err(|e| format!("writing to {}: {e}", bin.display()))?;
-        let reply = child
-            .wait_for(Instant::now() + timeout, |v| {
-                v.get("type").and_then(Value::as_str) == Some("control_response")
-                    && v.pointer("/response/request_id").and_then(Value::as_str) == Some(id)
-            })
-            .ok_or_else(|| format!("no get_usage reply within {} ms", timeout.as_millis()))?;
-        parse_claude_usage(&reply)
-    })();
-    let _ = std::fs::remove_dir_all(&dir);
-    result
+    cmd
+}
+
+/// Start the `claude` that `cmd` describes, send it the `get_usage` request
+/// and read its reply.
+fn ask_claude(cmd: Command, bin: &Path, timeout: StdDuration) -> Result<Probed, String> {
+    let mut child = start(cmd, bin)?;
+    let id = "horch-quota-1";
+    let request = serde_json::json!({
+        "type": "control_request",
+        "request_id": id,
+        "request": {"subtype": "get_usage", "skip_behaviors": true}
+    });
+    child
+        .send(&request.to_string())
+        .map_err(|e| format!("writing to {}: {e}", bin.display()))?;
+    let reply = child
+        .wait_for(Instant::now() + timeout, |v| {
+            v.get("type").and_then(Value::as_str) == Some("control_response")
+                && v.pointer("/response/request_id").and_then(Value::as_str) == Some(id)
+        })
+        .ok_or_else(|| format!("no get_usage reply within {} ms", timeout.as_millis()))?;
+    parse_claude_usage(&reply)
 }
 
 /// Ask Codex for its plan limits (QUO-02): `initialize`, `initialized`,
 /// `account/rateLimits/read`, and nothing else.
 pub(crate) fn probe_codex(bin: &Path, timeout: StdDuration) -> Result<Probed, String> {
+    let mut child = start(codex_command(bin), bin)?;
+    let deadline = Instant::now() + timeout;
+    send_codex(
+        &mut child,
+        bin,
+        serde_json::json!({"id": 1, "method": "initialize", "params": {
+            "clientInfo": {"name": "horch", "version": env!("CARGO_PKG_VERSION")}}}),
+    )?;
+    reply_to(&child, deadline, 1).ok_or("no initialize reply")?;
+    send_codex(
+        &mut child,
+        bin,
+        serde_json::json!({"method": "initialized"}),
+    )?;
+    send_codex(
+        &mut child,
+        bin,
+        serde_json::json!({"id": 2, "method": "account/rateLimits/read", "params": null}),
+    )?;
+    let reply = reply_to(&child, deadline, 2).ok_or_else(|| {
+        format!(
+            "no account/rateLimits/read reply within {} ms",
+            timeout.as_millis()
+        )
+    })?;
+    parse_codex_limits(&reply)
+}
+
+/// The command that starts the Codex app-server.
+fn codex_command(bin: &Path) -> Command {
     let mut cmd = Command::new(bin);
     cmd.arg("app-server");
     for key in crate::harness::launch::FORBIDDEN_ENV {
         cmd.env_remove(key);
     }
-    let mut child = Child::spawn(cmd).map_err(|e| format!("starting {}: {e}", bin.display()))?;
-    let deadline = Instant::now() + timeout;
-    let send = |child: &mut Child, v: Value| {
-        child
-            .send(&v.to_string())
-            .map_err(|e| format!("writing to {} app-server: {e}", bin.display()))
-    };
-    send(
-        &mut child,
-        serde_json::json!({"id": 1, "method": "initialize", "params": {
-            "clientInfo": {"name": "horch", "version": env!("CARGO_PKG_VERSION")}}}),
-    )?;
+    cmd
+}
+
+/// Write one JSON line to the app-server.
+fn send_codex(child: &mut Child, bin: &Path, v: Value) -> Result<(), String> {
     child
-        .wait_for(deadline, |v| v.get("id") == Some(&Value::from(1)))
-        .ok_or("no initialize reply")?;
-    send(&mut child, serde_json::json!({"method": "initialized"}))?;
-    send(
-        &mut child,
-        serde_json::json!({"id": 2, "method": "account/rateLimits/read", "params": null}),
-    )?;
-    let reply = child
-        .wait_for(deadline, |v| v.get("id") == Some(&Value::from(2)))
-        .ok_or_else(|| {
-            format!(
-                "no account/rateLimits/read reply within {} ms",
-                timeout.as_millis()
-            )
-        })?;
-    parse_codex_limits(&reply)
+        .send(&v.to_string())
+        .map_err(|e| format!("writing to {} app-server: {e}", bin.display()))
+}
+
+/// The next stdout line that answers request `id`, before `deadline`.
+fn reply_to(child: &Child, deadline: Instant, id: u64) -> Option<Value> {
+    child.wait_for(deadline, |v| v.get("id") == Some(&Value::from(id)))
 }
 
 /// Ask agy for its plan quotas: `agy -p /usage --output-format json`. A
@@ -177,12 +205,7 @@ pub(crate) fn probe_google(
         cmd.env_remove(key);
     }
     let name = format!("{} -p /usage", bin.display());
-    let out = match run_with_deadline(cmd, timeout) {
-        Err(e) => return Err(format!("{name} could not start: {e}")),
-        Ok(None) => return Err(format!("{name} timed out after {}s", timeout.as_secs())),
-        Ok(Some((status, out, _))) if status.success() => out,
-        Ok(Some((status, out, err))) => return Err(failure(&name, status, &err, &out)),
-    };
+    let out = run_output(&name, cmd, timeout)?;
     let reply: Value =
         serde_json::from_str(out.trim()).map_err(|e| format!("{name}: not JSON: {e}"))?;
     parse_agy_usage(&reply)
@@ -199,11 +222,17 @@ fn run_short(bin: &Path, args: &[&str], timeout: StdDuration) -> Result<String, 
     );
     let mut cmd = Command::new(bin);
     cmd.args(args);
+    run_output(&name, cmd, timeout)
+}
+
+/// Run `cmd` with a deadline; its stdout, or why it failed. `name` leads the
+/// error text.
+fn run_output(name: &str, cmd: Command, timeout: StdDuration) -> Result<String, String> {
     match run_with_deadline(cmd, timeout) {
         Err(e) => Err(format!("{name} could not start: {e}")),
         Ok(None) => Err(format!("{name} timed out after {}s", timeout.as_secs())),
         Ok(Some((status, out, _))) if status.success() => Ok(out),
-        Ok(Some((status, out, err))) => Err(failure(&name, status, &err, &out)),
+        Ok(Some((status, out, err))) => Err(failure(name, status, &err, &out)),
     }
 }
 
@@ -226,24 +255,22 @@ fn run_with_deadline(
     let out = read_on_thread(child.stdout.take());
     let err = read_on_thread(child.stderr.take());
     let deadline = Instant::now() + timeout;
-    loop {
-        match child.try_wait() {
-            Ok(Some(status)) => {
-                let text = |r: std::thread::JoinHandle<String>| r.join().unwrap_or_default();
-                return Ok(Some((status, text(out), text(err))));
-            }
-            Ok(None) if Instant::now() < deadline => {
-                std::thread::sleep(StdDuration::from_millis(20))
-            }
-            // The readers are not joined: a process the child started can
-            // still hold the pipes open.
-            _ => {
-                let _ = child.kill();
-                let _ = child.wait();
-                return Ok(None);
-            }
+    // The readers are not joined: a process the child started can still
+    // hold the pipes open.
+    let status = match crate::runtime::process::wait_until(
+        &mut child,
+        deadline,
+        StdDuration::from_millis(20),
+    ) {
+        Ok(Some(status)) => Some(status),
+        _ => {
+            let _ = child.kill();
+            let _ = child.wait();
+            None
         }
-    }
+    };
+    let text = |r: std::thread::JoinHandle<String>| r.join().unwrap_or_default();
+    Ok(status.map(|status| (status, text(out), text(err))))
 }
 
 /// The local pool's health (QUO-06): `pi --version`, then `ollama list`.
@@ -307,23 +334,24 @@ fn probe_version_within(bin: &Path, timeout: StdDuration) -> VersionProbe {
     let Ok(Some((status, out, err))) = run_with_deadline(cmd, timeout) else {
         return VersionProbe::NoAnswer;
     };
-    if !status.success() {
+    if status.success() {
+        // Some harnesses (Prime) print their version on stderr.
+        [out, err]
+            .iter()
+            .find_map(|t| {
+                t.lines()
+                    .map(str::trim)
+                    .find(|l| !l.is_empty())
+                    .map(str::to_string)
+            })
+            .map_or(VersionProbe::NoAnswer, VersionProbe::Version)
+    } else {
         let name = bin
             .file_name()
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_default();
-        return VersionProbe::Broken(failure(&format!("{name} --version"), status, &err, &out));
+        VersionProbe::Broken(failure(&format!("{name} --version"), status, &err, &out))
     }
-    // Some harnesses (Prime) print their version on stderr.
-    [out, err]
-        .iter()
-        .find_map(|t| {
-            t.lines()
-                .map(str::trim)
-                .find(|l| !l.is_empty())
-                .map(str::to_string)
-        })
-        .map_or(VersionProbe::NoAnswer, VersionProbe::Version)
 }
 
 /// Read `pipe` to its end on a new thread. No pipe reads as empty text.
@@ -383,13 +411,20 @@ pub(crate) fn newest_rollout_snapshot(sessions: &Path) -> Option<(String, Vec<Wi
     let mut files = Vec::new();
     collect_rollouts(sessions, &mut files);
     files.sort_by_key(|(t, _)| std::cmp::Reverse(*t));
-    for (_, path) in files.into_iter().take(20) {
-        // An unreadable file, or a cut multi-byte tail, skips that file only.
-        let Ok(bytes) = std::fs::read(&path) else {
-            continue;
-        };
-        let text = String::from_utf8_lossy(&bytes);
-        let found = text.lines().rev().find_map(|line| {
+    // An unreadable file, or a cut multi-byte tail, skips that file only.
+    files
+        .into_iter()
+        .take(20)
+        .find_map(|(_, path)| snapshot_in(&std::fs::read(&path).ok()?))
+}
+
+/// The newest line of a rollout that holds a `rate_limits` snapshot, with
+/// the time it was written.
+fn snapshot_in(bytes: &[u8]) -> Option<(String, Vec<Window>)> {
+    String::from_utf8_lossy(bytes)
+        .lines()
+        .rev()
+        .find_map(|line| {
             let v: Value = serde_json::from_str(line).ok()?;
             let rl = v
                 .pointer("/payload/rate_limits")
@@ -400,12 +435,7 @@ pub(crate) fn newest_rollout_snapshot(sessions: &Path) -> Option<(String, Vec<Wi
                 .and_then(Value::as_str)
                 .and_then(clock::parse)?;
             (!windows.is_empty()).then(|| (clock::stamp(at), windows))
-        });
-        if found.is_some() {
-            return found;
-        }
-    }
-    None
+        })
 }
 
 fn collect_rollouts(dir: &Path, out: &mut Vec<(std::time::SystemTime, PathBuf)>) {
@@ -495,43 +525,17 @@ pub(crate) fn probe_all(
     let antigravity_version = version_of("antigravity");
 
     let claude = file.pools.entry(POOL_CLAUDE.into()).or_default();
-    claude.probed_at = Some(stamp.clone());
-    claude.harness_version = claude_version.or(claude.harness_version.take());
-    match probe_claude(&bins.claude, timeout, temp_root) {
-        Ok(p) => {
-            claude.windows = p.windows;
-            claude.observed_at = Some(stamp.clone());
-            claude.source = Some("get_usage".into());
-            claude.error = None;
-        }
-        Err(e) => claude.error = Some(e),
-    }
+    let found = probe_claude(&bins.claude, timeout, temp_root);
+    record(claude, &stamp, claude_version, "get_usage", found);
 
     let codex = file.pools.entry(POOL_CODEX.into()).or_default();
-    codex.probed_at = Some(stamp.clone());
-    codex.harness_version = codex_version.or(codex.harness_version.take());
+    stamp_probe(codex, &stamp, codex_version);
     match probe_codex(&bins.codex, timeout) {
         Ok(p) => {
-            codex.windows = p.windows;
             codex.ordinary_usage_allowed = p.ordinary_usage_allowed;
-            codex.observed_at = Some(stamp.clone());
-            codex.source = Some("app-server".into());
-            codex.error = None;
+            record_windows(codex, &stamp, "app-server", p.windows);
         }
-        Err(e) => {
-            codex.error = Some(e);
-            if let Some((at, windows)) = newest_rollout_snapshot(&bins.codex_sessions) {
-                if codex
-                    .observed_at
-                    .as_deref()
-                    .is_none_or(|prev| at.as_str() > prev)
-                {
-                    codex.windows = windows;
-                    codex.observed_at = Some(at);
-                    codex.source = Some("rollout".into());
-                }
-            }
-        }
+        Err(e) => codex_rollout_fallback(codex, e, &bins.codex_sessions),
     }
 
     let zen = file.pools.entry(POOL_ZEN.into()).or_default();
@@ -544,23 +548,66 @@ pub(crate) fn probe_all(
     // Without agy the probe records a start failure, the pool assesses
     // `unknown`, and routing substitutes an Antigravity teammate's fallback.
     let google = file.pools.entry(POOL_GOOGLE.into()).or_default();
-    google.probed_at = Some(stamp.clone());
-    google.harness_version = antigravity_version.or(google.harness_version.take());
-    match probe_google(&bins.antigravity, timeout, temp_root) {
-        Ok(p) => {
-            google.windows = p.windows;
-            google.observed_at = Some(stamp.clone());
-            google.source = Some("usage".into());
-            google.error = None;
-        }
-        Err(e) => google.error = Some(e),
-    }
+    let found = probe_google(&bins.antigravity, timeout, temp_root);
+    record(google, &stamp, antigravity_version, "usage", found);
 
     let local = file.pools.entry(POOL_LOCAL.into()).or_default();
-    local.probed_at = Some(stamp.clone());
-    local.observed_at = Some(stamp);
+    record_local(local, &stamp, probe_local(&bins.pi, &bins.ollama));
+}
+
+/// Mark `reading` as probed now, and take the harness's version when known.
+fn stamp_probe(reading: &mut PoolReading, stamp: &str, version: Option<String>) {
+    reading.probed_at = Some(stamp.to_string());
+    reading.harness_version = version.or(reading.harness_version.take());
+}
+
+/// Keep a probe's windows, read now from `source`, and clear the error.
+fn record_windows(reading: &mut PoolReading, stamp: &str, source: &str, windows: Vec<Window>) {
+    reading.windows = windows;
+    reading.observed_at = Some(stamp.to_string());
+    reading.source = Some(source.into());
+    reading.error = None;
+}
+
+/// Fold one probe into `reading`: its windows, or the error with the last
+/// windows kept.
+fn record(
+    reading: &mut PoolReading,
+    stamp: &str,
+    version: Option<String>,
+    source: &str,
+    found: Result<Probed, String>,
+) {
+    stamp_probe(reading, stamp, version);
+    match found {
+        Ok(p) => record_windows(reading, stamp, source, p.windows),
+        Err(e) => reading.error = Some(e),
+    }
+}
+
+/// A failed Codex probe: record the error, and take the newest rollout
+/// snapshot when it is newer than the reading.
+fn codex_rollout_fallback(codex: &mut PoolReading, error: String, sessions: &Path) {
+    codex.error = Some(error);
+    let newer = newest_rollout_snapshot(sessions).filter(|(at, _)| {
+        codex
+            .observed_at
+            .as_deref()
+            .is_none_or(|prev| at.as_str() > prev)
+    });
+    if let Some((at, windows)) = newer {
+        codex.windows = windows;
+        codex.observed_at = Some(at);
+        codex.source = Some("rollout".into());
+    }
+}
+
+/// Fold the local pool's health check into `local`.
+fn record_local(local: &mut PoolReading, stamp: &str, found: Result<Vec<String>, String>) {
+    local.probed_at = Some(stamp.to_string());
+    local.observed_at = Some(stamp.to_string());
     local.source = Some("health".into());
-    match probe_local(&bins.pi, &bins.ollama) {
+    match found {
         Ok(models) => {
             local.models = Some(models);
             local.error = None;
@@ -799,5 +846,222 @@ mod tests {
             VersionProbe::Version("1.2.3".into())
         );
         assert!(started.elapsed() < timeout, "{:?}", started.elapsed());
+    }
+
+    /// The fakes below always answer or exit, so the probes wait for them: a
+    /// fake starved by a loaded test run (the first-exec scan takes 14 to
+    /// 35 s on macOS) must not give a timeout.
+    #[cfg(unix)]
+    const UNTIL_THE_FAKE_ANSWERS: StdDuration = StdDuration::from_secs(600);
+
+    /// The shell script `script` as the executable `name` under `dir`.
+    #[cfg(unix)]
+    fn fake(dir: &Path, name: &str, script: &str) -> PathBuf {
+        let bin = dir.join(name);
+        std::fs::write(&bin, script).unwrap();
+        crate::runtime::process::make_executable(&bin).unwrap();
+        bin
+    }
+
+    /// A fake that writes to files in `log`: `script` with `@LOG@` filled in.
+    #[cfg(unix)]
+    fn logging_fake(dir: &Path, name: &str, script: &str, log: &Path) -> PathBuf {
+        fake(
+            dir,
+            name,
+            &script.replace("@LOG@", &log.display().to_string()),
+        )
+    }
+
+    /// The `get_usage` probe starts `claude` in a scratch dir of its own, sends
+    /// the one request, skips every line that is not the reply to it, and
+    /// removes the scratch dir.
+    #[cfg(unix)]
+    #[test]
+    fn probe_claude_asks_for_usage_from_a_scratch_dir_and_skips_other_lines() {
+        let tmp = tempfile::tempdir().unwrap();
+        let log = tmp.path().join("log");
+        std::fs::create_dir(&log).unwrap();
+        let bin = logging_fake(
+            tmp.path(),
+            "claude",
+            r#"#!/bin/sh
+printf '%s\n' "$*" > '@LOG@/argv'
+pwd -P > '@LOG@/cwd'
+read line
+printf '%s\n' "$line" > '@LOG@/stdin'
+echo 'not json'
+echo '{"type":"system","subtype":"init"}'
+echo '{"type":"control_response","response":{"request_id":"other"}}'
+echo '{"type":"other","response":{"request_id":"horch-quota-1"}}'
+echo '{"type":"control_response","response":{"subtype":"success","request_id":"horch-quota-1","response":{"rate_limits_available":true,"rate_limits":{"five_hour":{"utilization":12,"resets_at":"2026-09-28T19:19:59Z"},"seven_day":{"utilization":40,"resets_at":"2026-10-02T13:59:59Z"}}}}}'
+"#,
+            &log,
+        );
+        let root = tmp.path().join("scratch");
+        std::fs::create_dir(&root).unwrap();
+
+        let got = probe_claude(&bin, UNTIL_THE_FAKE_ANSWERS, &root).unwrap();
+        let windows: Vec<_> = got
+            .windows
+            .iter()
+            .map(|w| (w.name.as_str(), w.used))
+            .collect();
+        assert_eq!(windows, [("5h", 0.12), ("7d", 0.4)]);
+        assert_eq!(got.ordinary_usage_allowed, None);
+
+        let read = |name: &str| std::fs::read_to_string(log.join(name)).unwrap();
+        assert_eq!(
+            read("argv"),
+            "-p --model haiku --input-format stream-json --output-format stream-json --verbose\n"
+        );
+        let request: Value = serde_json::from_str(&read("stdin")).unwrap();
+        assert_eq!(
+            request,
+            serde_json::json!({
+                "type": "control_request",
+                "request_id": "horch-quota-1",
+                "request": {"subtype": "get_usage", "skip_behaviors": true}
+            })
+        );
+        let scratch = format!("horch-quota-{}", std::process::id());
+        let cwd = read("cwd");
+        assert_eq!(
+            Path::new(cwd.trim_end()),
+            std::fs::canonicalize(&root).unwrap().join(&scratch)
+        );
+        assert!(!root.join(&scratch).exists(), "the scratch dir is removed");
+    }
+
+    /// A harness that does not start, or ends with no reply, gives its
+    /// reason; the scratch dir goes either way.
+    #[cfg(unix)]
+    #[test]
+    fn probe_claude_says_why_it_got_no_usage_and_removes_its_scratch_dir() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("scratch");
+        std::fs::create_dir(&root).unwrap();
+        let scratch = root.join(format!("horch-quota-{}", std::process::id()));
+
+        let absent = tmp.path().join("absent");
+        let err = probe_claude(&absent, UNTIL_THE_FAKE_ANSWERS, &root).unwrap_err();
+        assert!(
+            err.starts_with(&format!("starting {}: ", absent.display())),
+            "{err}"
+        );
+        assert!(!scratch.exists());
+
+        let bin = fake(tmp.path(), "claude", "#!/bin/sh\nread line\nexit 0\n");
+        assert_eq!(
+            probe_claude(&bin, UNTIL_THE_FAKE_ANSWERS, &root),
+            Err("no get_usage reply within 600000 ms".to_string())
+        );
+        assert!(!scratch.exists());
+    }
+
+    /// The app-server probe sends `initialize`, then `initialized` and the
+    /// limits request once the `initialize` reply is in, and skips every line
+    /// that is not the reply to the request it waits for.
+    #[cfg(unix)]
+    #[test]
+    fn probe_codex_sends_the_three_requests_and_skips_other_lines() {
+        let tmp = tempfile::tempdir().unwrap();
+        let log = tmp.path().join("log");
+        std::fs::create_dir(&log).unwrap();
+        let bin = logging_fake(
+            tmp.path(),
+            "codex",
+            r#"#!/bin/sh
+printf '%s\n' "$*" > '@LOG@/argv'
+read line
+printf '%s\n' "$line" >> '@LOG@/stdin'
+echo 'not json'
+echo '{"id":"1","result":{}}'
+echo '{"id":2,"result":{}}'
+echo '{"id":1,"result":{}}'
+read line
+printf '%s\n' "$line" >> '@LOG@/stdin'
+read line
+printf '%s\n' "$line" >> '@LOG@/stdin'
+echo '{"method":"account/rateLimits/updated","params":{}}'
+echo '{"id":3,"result":{}}'
+echo '{"id":2,"result":{"rateLimits":{"primary":{"windowDurationMins":300,"usedPercent":12.0,"resetsAt":"2026-09-28T19:19:59Z"},"secondary":{"windowDurationMins":10080,"usedPercent":40.0,"resetsAt":"2026-10-02T13:59:59Z"}}}}'
+"#,
+            &log,
+        );
+
+        let got = probe_codex(&bin, UNTIL_THE_FAKE_ANSWERS).unwrap();
+        let windows: Vec<_> = got
+            .windows
+            .iter()
+            .map(|w| (w.name.as_str(), w.used))
+            .collect();
+        assert_eq!(windows, [("5h", 0.12), ("7d", 0.4)]);
+
+        assert_eq!(
+            std::fs::read_to_string(log.join("argv")).unwrap(),
+            "app-server\n"
+        );
+        let stdin = std::fs::read_to_string(log.join("stdin")).unwrap();
+        let sent: Vec<Value> = stdin
+            .lines()
+            .map(|l| serde_json::from_str(l).unwrap())
+            .collect();
+        assert_eq!(
+            sent,
+            [
+                serde_json::json!({"id": 1, "method": "initialize", "params": {
+                    "clientInfo": {"name": "horch", "version": env!("CARGO_PKG_VERSION")}}}),
+                serde_json::json!({"method": "initialized"}),
+                serde_json::json!({"id": 2, "method": "account/rateLimits/read", "params": null}),
+            ]
+        );
+    }
+
+    /// Neither probe starts its harness with a forbidden variable
+    /// (CLAUDE.md): each command removes every one, whatever the shell that
+    /// started horch exports.
+    #[test]
+    fn the_probe_commands_remove_the_forbidden_env() {
+        let commands = [
+            claude_command(Path::new("claude"), Path::new("scratch")),
+            codex_command(Path::new("codex")),
+        ];
+        for cmd in &commands {
+            for key in crate::harness::launch::FORBIDDEN_ENV {
+                let removed = cmd.get_envs().any(|(k, v)| k == key && v.is_none());
+                assert!(removed, "{:?} does not remove {key}", cmd.get_program());
+            }
+        }
+    }
+
+    /// A harness that does not start, or ends before it answers the request
+    /// the probe waits for, gives its reason.
+    #[cfg(unix)]
+    #[test]
+    fn probe_codex_says_where_the_app_server_gave_no_reply() {
+        let tmp = tempfile::tempdir().unwrap();
+        let absent = tmp.path().join("absent");
+        let err = probe_codex(&absent, UNTIL_THE_FAKE_ANSWERS).unwrap_err();
+        assert!(
+            err.starts_with(&format!("starting {}: ", absent.display())),
+            "{err}"
+        );
+
+        let silent = fake(tmp.path(), "silent", "#!/bin/sh\nread line\nexit 0\n");
+        assert_eq!(
+            probe_codex(&silent, UNTIL_THE_FAKE_ANSWERS),
+            Err("no initialize reply".to_string())
+        );
+
+        let half = fake(
+            tmp.path(),
+            "half",
+            "#!/bin/sh\nread line\necho '{\"id\":1,\"result\":{}}'\nread line\nread line\nexit 0\n",
+        );
+        assert_eq!(
+            probe_codex(&half, UNTIL_THE_FAKE_ANSWERS),
+            Err("no account/rateLimits/read reply within 600000 ms".to_string())
+        );
     }
 }

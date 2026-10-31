@@ -5,8 +5,9 @@
 //! It also checks the host tools (`requires:`) of the teammates this project
 //! is offered.
 
+use std::collections::BTreeMap;
 use std::ffi::OsStr;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use anyhow::{bail, Result};
@@ -15,17 +16,85 @@ use horch_core::harness::HarnessKind;
 use horch_core::roster::{operator_effort_warnings, Requirement, Roster};
 use horch_core::runtime::bins::{host_tool_bin, BLENDER_APP, GODOT_APP, GODOT_MONO_APP};
 use horch_core::runtime::{process, RuntimeContext};
+use horch_core::sweep;
+use horch_core::taskledger::timer::Agent;
+use horch_core::usage::has_transcript;
 use horch_core::workspace::herdr::Herdr;
 
-pub fn doctor(ctx: &RuntimeContext) -> Result<()> {
-    super::selfupdate::notice(ctx, false);
+pub fn doctor(ctx: &RuntimeContext, clean: bool) -> Result<()> {
     check(ctx)?;
     println!("herdr is installed and its server is reachable.");
+    super::delivery_probe::doctor(ctx);
+    super::restore::warn_if_resume_on(ctx);
     let mut roster = super::load_roster_unwarned(ctx, None)?;
     // Count and check what a fleet started here would offer (`offer_when`).
     if let Ok(project) = ctx.paths.project() {
         roster = roster.with_project_facts(horch::project::project_facts(&project));
     }
+    for problem in service_problems(ctx, &roster) {
+        eprintln!("warning: {problem}");
+    }
+    if let Some(warning) = ctx.paths.ledger_isolation_warning() {
+        eprintln!("warning: {warning}");
+    }
+    report_roster(&roster);
+    let (notes, warnings) = host_warnings(ctx, &roster);
+    for n in &notes {
+        println!("note: {n}");
+    }
+    for w in &warnings {
+        eprintln!("warning: {w}");
+    }
+    report_stale_state(ctx, clean);
+    Ok(())
+}
+
+/// The stale state the sweep finds, per kind (#140). `clean` removes it;
+/// otherwise nothing is removed.
+fn report_stale_state(ctx: &RuntimeContext, clean: bool) {
+    let (lines, warnings) = stale_state(ctx, clean);
+    for w in &warnings {
+        eprintln!("warning: stale state: {w}");
+    }
+    for line in &lines {
+        println!("{line}");
+    }
+}
+
+/// The lines of [`report_stale_state`], and its warnings.
+fn stale_state(ctx: &RuntimeContext, clean: bool) -> (Vec<String>, Vec<String>) {
+    let herdr = Herdr::with_bin(&ctx.bins.harness.herdr);
+    let per_kind = |counts: &BTreeMap<sweep::Kind, usize>| {
+        counts
+            .iter()
+            .map(|(kind, n)| format!("  {n} {}", kind.label()))
+            .collect::<Vec<_>>()
+    };
+    if clean {
+        let applied = sweep::clean_in(ctx, &herdr, sweep::DOCTOR_BUDGET);
+        let mut lines = vec![format!("stale state: removed {}", applied.total())];
+        lines.extend(per_kind(&applied.removed));
+        return (lines, applied.errors);
+    }
+    let (plan, listed) = sweep::plan_in(ctx, &herdr, sweep::DOCTOR_BUDGET);
+    if listed.is_none() {
+        let line = "stale state: not checked, as herdr does not answer".to_string();
+        return (vec![line], Vec::new());
+    }
+    let counts = plan.counts();
+    let total: usize = counts.values().sum();
+    let mut lines = vec![match total {
+        0 => "stale state: none".to_string(),
+        n => format!("stale state: {n} (`horch doctor --clean` removes it)"),
+    }];
+    lines.extend(per_kind(&counts));
+    (lines, Vec::new())
+}
+
+/// The roster line, or its problems. Problems are not fatal: a fleet still
+/// launches, but at least one teammate would misbehave in a pane nobody is
+/// watching.
+fn report_roster(roster: &Roster) {
     let problems = roster.check();
     if problems.is_empty() {
         println!(
@@ -33,71 +102,68 @@ pub fn doctor(ctx: &RuntimeContext) -> Result<()> {
             roster.names().len(),
             roster.offered().len()
         );
-    } else {
-        // Not fatal: a fleet still launches, but at least one teammate would
-        // misbehave in a pane nobody is watching.
-        eprintln!(
-            "roster has {} problem(s) (see horch teammates --check):",
-            problems.len()
-        );
-        for p in &problems {
-            eprintln!("  {p}");
-        }
+        return;
     }
-    // Not fatal either: the fleet launches, but the teammate that needs the
-    // tool stalls in its pane.
-    let tool_problems = requirement_problems(
-        &roster,
-        ctx.inherited.path.as_deref(),
-        ctx.inherited.pathext.as_deref(),
-        HostTools {
-            blender_path: ctx.inherited.blender_path.as_deref(),
-            blender_app: BLENDER_APP.map(Path::new),
-            godot_path: ctx.inherited.godot_path.as_deref(),
-            godot_mono_path: ctx.inherited.godot_mono_path.as_deref(),
-            godot_mono_app: GODOT_MONO_APP.map(Path::new),
-        },
-        &ctx.bins.harness.git,
-        ctx.paths.project().ok().as_deref(),
+    eprintln!(
+        "roster has {} problem(s) (see horch teammates --check):",
+        problems.len()
     );
-    for p in &tool_problems {
-        eprintln!("warning: {p}");
+    for p in &problems {
+        eprintln!("  {p}");
     }
-    if let Some(p) = antigravity_problem(
-        &roster,
-        ctx.inherited.path.as_deref(),
-        ctx.inherited.pathext.as_deref(),
-        &ctx.bins.harness.antigravity,
-    ) {
-        eprintln!("warning: {p}");
-    }
-    match xcode_export_check(
-        &roster,
-        ctx.inherited.path.as_deref(),
-        ctx.inherited.pathext.as_deref(),
-    ) {
-        Some(ExportCheck::Note(n)) => println!("note: {n}"),
-        Some(ExportCheck::Problem(p)) => eprintln!("warning: {p}"),
-        None => {}
-    }
-    // Not fatal: the harness's teammates are unusable, the rest work.
-    for w in broken_harness_warnings(&super::agentlist::gather(ctx, true)) {
-        eprintln!("warning: {w}");
-    }
+}
+
+/// The notes and the warnings about the host. None is fatal: the fleet
+/// launches, but the teammate that needs the tool stalls in its pane, or the
+/// harness's teammates are unusable and the rest work.
+fn host_warnings(ctx: &RuntimeContext, roster: &Roster) -> (Vec<String>, Vec<String>) {
+    let path = ctx.inherited.path.as_deref();
+    let pathext = ctx.inherited.pathext.as_deref();
+    let tools = HostTools {
+        blender_path: ctx.inherited.blender_path.as_deref(),
+        blender_app: BLENDER_APP.map(Path::new),
+        godot_path: ctx.inherited.godot_path.as_deref(),
+        godot_mono_path: ctx.inherited.godot_mono_path.as_deref(),
+        godot_mono_app: GODOT_MONO_APP.map(Path::new),
+    };
+    let (note, export_problem) = match xcode_export_check(roster, path, pathext) {
+        Some(ExportCheck::Note(n)) => (Some(n), None),
+        Some(ExportCheck::Problem(p)) => (None, Some(p)),
+        None => (None, None),
+    };
     // Settings that quietly override the effort in every teammate file.
-    let home = ctx.inherited.home_var.as_deref().map(std::path::Path::new);
+    let home = ctx.inherited.home_var.as_deref().map(Path::new);
     let codex_home = horch_core::harness::codex::codex_home(
         &ctx.paths.home,
         ctx.inherited.codex_home.as_deref(),
     );
-    for w in operator_effort_warnings(
+    let facts = super::agentlist::gather(ctx, true);
+    let warnings = requirement_problems(
+        roster,
+        path,
+        pathext,
+        tools,
+        &ctx.bins.harness.git,
+        ctx.paths.project().ok().as_deref(),
+    )
+    .into_iter()
+    .chain(antigravity_problem(
+        roster,
+        path,
+        pathext,
+        &ctx.bins.harness.antigravity,
+    ))
+    .chain(export_problem)
+    .chain(broken_harness_warnings(&facts))
+    .chain(reviewer_warnings(roster, &facts))
+    .chain(watchdog_blind_warnings(roster))
+    .chain(operator_effort_warnings(
         home,
         &codex_home,
         ctx.inherited.claude_code_effort_level.as_deref(),
-    ) {
-        eprintln!("warning: {w}");
-    }
-    Ok(())
+    ))
+    .collect();
+    (note.into_iter().collect(), warnings)
 }
 
 /// The precondition every recipe shares. Deliberately does NOT validate the
@@ -147,6 +213,64 @@ fn broken_harness_warnings(
         .collect()
 }
 
+/// The code-sweep reviewers (#158): the persona for a non-Codex author, then
+/// the one for a Codex author.
+const REVIEWERS: [&str; 2] = ["codex-reviewer", "architect-reviewer"];
+
+/// One line per code-sweep reviewer that cannot run on this host: it is not
+/// in the roster, or its harness binary is missing or broken. Nothing is
+/// started; `facts` come from the binary lookup.
+fn reviewer_warnings(
+    roster: &Roster,
+    facts: &std::collections::BTreeMap<&'static str, BinaryFacts>,
+) -> Vec<String> {
+    REVIEWERS
+        .into_iter()
+        .filter_map(|name| {
+            let why = match roster.get(name) {
+                None => "it is not in the roster".to_string(),
+                Some(t) => {
+                    let harness = t.agent.as_str();
+                    let f = facts.get(harness)?;
+                    match (&f.path, &f.broken) {
+                        (None, _) => format!("the {harness} binary is not installed"),
+                        (_, Some(_)) => format!("the {harness} binary is broken"),
+                        _ => return None,
+                    }
+                }
+            };
+            Some(format!(
+                "reviewer {name} cannot run on this host: {why}. Code-sweep reviews \
+                 for it cannot start."
+            ))
+        })
+        .collect()
+}
+
+/// One line per offered harness that has no timer format and no transcript
+/// lookup (#203): the watchdog cannot see that its workers progress.
+fn watchdog_blind_warnings(roster: &Roster) -> Vec<String> {
+    let mut seen = Vec::new();
+    for t in roster.offered() {
+        let kind = t.agent;
+        let blind = kind != HarnessKind::None
+            && !has_transcript(kind)
+            && Agent::of_harness(kind.as_str()).is_none();
+        if blind && !seen.contains(&kind) {
+            seen.push(kind);
+        }
+    }
+    seen.into_iter()
+        .map(|k| {
+            format!(
+                "harness {} has no timer format and no transcript lookup, so the watchdog \
+                 cannot see the progress of its workers.",
+                k.as_str()
+            )
+        })
+        .collect()
+}
+
 /// Where doctor looks for the host tools, after PATH: the operator's
 /// variables, which win over PATH, and the app bundle, tried last.
 #[derive(Debug, Clone, Copy, Default)]
@@ -178,51 +302,63 @@ pub(crate) fn requirement_problems(
     project: Option<&Path>,
 ) -> Vec<String> {
     let offered = roster.offered();
-    let mut problems = Vec::new();
-    for requirement in [
+    [
         Requirement::Xcode,
         Requirement::Blender,
         Requirement::Godot,
         Requirement::GitLfs,
-    ] {
+        Requirement::Docker,
+    ]
+    .into_iter()
+    .filter_map(|requirement| {
         let needed_by: Vec<&str> = offered
             .iter()
             .filter(|t| t.requires.contains(&requirement))
             .map(|t| t.name.as_str())
             .collect();
-        if needed_by.is_empty() {
-            continue;
+        (!needed_by.is_empty()).then_some((requirement, needed_by.join(", ")))
+    })
+    .flat_map(|(requirement, needed_by)| {
+        problems_for(requirement, path, pathext, tools, git, project)
+            .into_iter()
+            .map(move |problem| {
+                format!(
+                    "{} (needed by {needed_by}): {problem}",
+                    requirement.as_str()
+                )
+            })
+    })
+    .collect()
+}
+
+/// What is wrong with one needed `requirement`, in the words of its check.
+fn problems_for(
+    requirement: Requirement,
+    path: Option<&OsStr>,
+    pathext: Option<&str>,
+    tools: HostTools<'_>,
+    git: &Path,
+    project: Option<&Path>,
+) -> Vec<String> {
+    let problem = match requirement {
+        Requirement::Docker => docker_problem(path, pathext),
+        Requirement::Xcode => xcode_problem(path, pathext),
+        Requirement::Blender => {
+            blender_problem(path, pathext, tools.blender_path, tools.blender_app)
         }
-        let problem = match requirement {
-            Requirement::Xcode => xcode_problem(path, pathext),
-            Requirement::Blender => {
-                blender_problem(path, pathext, tools.blender_path, tools.blender_app)
-            }
-            Requirement::Godot => {
-                godot_problem(path, pathext, tools.godot_path, GODOT_APP.map(Path::new))
-            }
-            Requirement::GitLfs => {
-                git_lfs_problem(path, pathext, git).or_else(|| project.and_then(lfs_rule_problem))
-            }
-        };
-        let mut found: Vec<String> = problem.into_iter().collect();
-        if requirement == Requirement::Godot && project.is_some_and(csharp_project) {
-            found.extend(godot_csharp_problems(
-                path,
-                pathext,
-                tools.godot_mono_path,
-                tools.godot_mono_app,
-            ));
+        Requirement::Godot => {
+            godot_problem(path, pathext, tools.godot_path, GODOT_APP.map(Path::new))
         }
-        for problem in found {
-            problems.push(format!(
-                "{} (needed by {}): {problem}",
-                requirement.as_str(),
-                needed_by.join(", ")
-            ));
+        Requirement::GitLfs => {
+            git_lfs_problem(path, pathext, git).or_else(|| project.and_then(lfs_rule_problem))
         }
-    }
-    problems
+    };
+    let csharp = (requirement == Requirement::Godot && project.is_some_and(csharp_project))
+        .then(|| godot_csharp_problems(path, pathext, tools.godot_mono_path, tools.godot_mono_app));
+    problem
+        .into_iter()
+        .chain(csharp.into_iter().flatten())
+        .collect()
 }
 
 /// The Antigravity CLI's own installer.
@@ -262,6 +398,13 @@ fn antigravity_problem(
     })
 }
 
+/// `" <tool> said: <line>"` for the first non-empty line of `text`, else `""`.
+fn said(tool: &str, text: &str) -> String {
+    text.lines()
+        .find(|l| !l.trim().is_empty())
+        .map_or_else(String::new, |line| format!(" {tool} said: {}", line.trim()))
+}
+
 /// `git lfs version` must run with the fleet's git, or a new worktree of an
 /// Unreal project holds LFS pointer files instead of assets and `git lfs
 /// lock` fails. A bare `git` is looked up on PATH; a path is used as given.
@@ -281,21 +424,13 @@ fn git_lfs_problem(path: Option<&OsStr>, pathext: Option<&str>, git: &Path) -> O
     };
     match Command::new(&bin).args(["lfs", "version"]).output() {
         Ok(out) if out.status.success() => None,
-        Ok(out) => {
-            let stderr = String::from_utf8_lossy(&out.stderr);
-            let detail = stderr.lines().find(|l| !l.trim().is_empty()).unwrap_or("");
-            Some(format!(
-                "`{} lfs version` failed ({}). Install Git LFS (macOS: `brew install \
+        Ok(out) => Some(format!(
+            "`{} lfs version` failed ({}). Install Git LFS (macOS: `brew install \
                  git-lfs`), then run `git lfs install` once.{}",
-                bin.display(),
-                out.status,
-                if detail.is_empty() {
-                    String::new()
-                } else {
-                    format!(" git said: {}", detail.trim())
-                }
-            ))
-        }
+            bin.display(),
+            out.status,
+            said("git", &String::from_utf8_lossy(&out.stderr))
+        )),
         Err(e) => Some(format!("could not run {}: {e}", bin.display())),
     }
 }
@@ -304,29 +439,33 @@ fn git_lfs_problem(path: Option<&OsStr>, pathext: Option<&str>, git: &Path) -> O
 /// send `*.uasset` to LFS, or the first asset commit puts binary bytes in
 /// git history. `None` outside an Unreal project.
 fn lfs_rule_problem(project: &Path) -> Option<String> {
-    let unreal = std::fs::read_dir(project)
+    let attributes = project.join(".gitattributes");
+    (is_unreal(project) && !has_lfs_rule(&std::fs::read_to_string(&attributes).unwrap_or_default()))
+        .then(|| {
+            format!(
+                "{} has no Git LFS rule for *.uasset. Run `git lfs track \"*.uasset\" \
+                 \"*.umap\" --lockable` and commit .gitattributes; see \
+                 skills/ue-build-verify/references/git-lfs.md.",
+                attributes.display()
+            )
+        })
+}
+
+/// A `*.uproject` at the top of `project`.
+fn is_unreal(project: &Path) -> bool {
+    std::fs::read_dir(project)
         .into_iter()
         .flatten()
         .flatten()
-        .any(|e| e.path().extension().is_some_and(|x| x == "uproject"));
-    if !unreal {
-        return None;
-    }
-    let attributes = project.join(".gitattributes");
-    let text = std::fs::read_to_string(&attributes).unwrap_or_default();
-    let has_rule = text.lines().any(|line| {
+        .any(|e| e.path().extension().is_some_and(|x| x == "uproject"))
+}
+
+/// Whether `.gitattributes` text sends `*.uasset` to LFS.
+fn has_lfs_rule(text: &str) -> bool {
+    text.lines().any(|line| {
         let mut fields = line.split_whitespace();
         fields.next().is_some_and(|p| p.ends_with("*.uasset")) && fields.any(|f| f == "filter=lfs")
-    });
-    if has_rule {
-        return None;
-    }
-    Some(format!(
-        "{} has no Git LFS rule for *.uasset. Run `git lfs track \"*.uasset\" \
-         \"*.umap\" --lockable` and commit .gitattributes; see \
-         skills/ue-build-verify/references/git-lfs.md.",
-        attributes.display()
-    ))
+    })
 }
 
 /// `xcodebuild` must be on PATH and past its first launch, or the first build
@@ -339,22 +478,14 @@ fn xcode_problem(path: Option<&OsStr>, pathext: Option<&str>) -> Option<String> 
     };
     match Command::new(&bin).arg("-checkFirstLaunchStatus").output() {
         Ok(out) if out.status.success() => None,
-        Ok(out) => {
-            let stderr = String::from_utf8_lossy(&out.stderr);
-            let detail = stderr.lines().find(|l| !l.trim().is_empty()).unwrap_or("");
-            Some(format!(
-                "`{} -checkFirstLaunchStatus` failed ({}). Run `sudo xcodebuild -runFirstLaunch`, \
+        Ok(out) => Some(format!(
+            "`{} -checkFirstLaunchStatus` failed ({}). Run `sudo xcodebuild -runFirstLaunch`, \
                  and `sudo xcode-select -s /Applications/Xcode.app` if only the Command Line \
                  Tools are selected.{}",
-                bin.display(),
-                out.status,
-                if detail.is_empty() {
-                    String::new()
-                } else {
-                    format!(" xcodebuild said: {}", detail.trim())
-                }
-            ))
-        }
+            bin.display(),
+            out.status,
+            said("xcodebuild", &String::from_utf8_lossy(&out.stderr))
+        )),
         Err(e) => Some(format!("could not run {}: {e}", bin.display())),
     }
 }
@@ -381,75 +512,87 @@ pub(crate) fn xcode_export_check(
     path: Option<&OsStr>,
     pathext: Option<&str>,
 ) -> Option<ExportCheck> {
-    let needed_by: Vec<&str> = roster
-        .offered()
-        .iter()
-        .filter(|t| t.requires.contains(&Requirement::Xcode) && t.operator_skills.is_some())
-        .map(|t| t.name.as_str())
-        .collect();
+    let needed_by = export_needed_by(roster);
     if needed_by.is_empty() {
         return None;
     }
     let head = format!("xcode skills export (needed by {})", needed_by.join(", "));
     let xcodebuild = process::which(path, pathext, "xcodebuild")?;
-    let version = Command::new(&xcodebuild)
+    match xcode_major(&xcodebuild) {
+        None => Some(ExportCheck::Note(format!(
+            "{head}: `xcodebuild -version` gave no Xcode version, so \
+             `xcrun agent skills export` is not verifiable here."
+        ))),
+        Some((major, text)) if major < XCODE_EXPORT_MIN => Some(ExportCheck::Note(format!(
+            "{head}: Xcode {text} has no `xcrun agent skills export` (Xcode \
+             {XCODE_EXPORT_MIN} or later), so it is not verifiable here."
+        ))),
+        Some((_, text)) => export_problem(path, pathext, &head, &text).map(ExportCheck::Problem),
+    }
+}
+
+/// The offered teammates that need Xcode and name operator skills.
+fn export_needed_by(roster: &Roster) -> Vec<&str> {
+    roster
+        .offered()
+        .iter()
+        .filter(|t| t.requires.contains(&Requirement::Xcode) && t.operator_skills.is_some())
+        .map(|t| t.name.as_str())
+        .collect()
+}
+
+/// The major version and the full version that `xcodebuild -version` prints.
+fn xcode_major(xcodebuild: &Path) -> Option<(u32, String)> {
+    Command::new(xcodebuild)
         .arg("-version")
         .output()
         .ok()
         .filter(|o| o.status.success())
-        .and_then(|o| xcode_version(&String::from_utf8_lossy(&o.stdout)));
-    let Some((major, text)) = version else {
-        return Some(ExportCheck::Note(format!(
-            "{head}: `xcodebuild -version` gave no Xcode version, so \
-             `xcrun agent skills export` is not verifiable here."
-        )));
-    };
-    if major < XCODE_EXPORT_MIN {
-        return Some(ExportCheck::Note(format!(
-            "{head}: Xcode {text} has no `xcrun agent skills export` (Xcode \
-             {XCODE_EXPORT_MIN} or later), so it is not verifiable here."
-        )));
-    }
+        .and_then(|o| xcode_version(&String::from_utf8_lossy(&o.stdout)))
+}
+
+/// On Xcode 27 or later: `xcrun` must be on PATH and its export `--help`
+/// must run and name `--output-dir`.
+fn export_problem(
+    path: Option<&OsStr>,
+    pathext: Option<&str>,
+    head: &str,
+    text: &str,
+) -> Option<String> {
     let Some(xcrun) = process::which(path, pathext, "xcrun") else {
-        return Some(ExportCheck::Problem(format!(
+        return Some(format!(
             "{head}: xcrun not found on PATH beside Xcode {text}."
-        )));
+        ));
     };
+    export_help_problem(&xcrun, head, text)
+}
+
+fn export_help_problem(xcrun: &Path, head: &str, text: &str) -> Option<String> {
     let args = ["agent", "skills", "export", "--help"];
-    match Command::new(&xcrun).args(args).output() {
-        Ok(out) => {
-            let help = format!(
-                "{}{}",
-                String::from_utf8_lossy(&out.stdout),
-                String::from_utf8_lossy(&out.stderr)
-            );
-            if out.status.success() && help.contains("--output-dir") {
-                None
-            } else {
-                let detail = help.lines().find(|l| !l.trim().is_empty()).unwrap_or("");
-                Some(ExportCheck::Problem(format!(
-                    "{head}: `{} {}` on Xcode {text} {} or does not name --output-dir. \
-                     Check docs/skills-and-teams.md against it.{}",
-                    xcrun.display(),
-                    args.join(" "),
-                    if out.status.success() {
-                        "ran"
-                    } else {
-                        "failed"
-                    },
-                    if detail.is_empty() {
-                        String::new()
-                    } else {
-                        format!(" xcrun said: {}", detail.trim())
-                    }
-                )))
-            }
-        }
-        Err(e) => Some(ExportCheck::Problem(format!(
-            "{head}: could not run {}: {e}",
-            xcrun.display()
-        ))),
+    let out = match Command::new(xcrun).args(args).output() {
+        Ok(out) => out,
+        Err(e) => return Some(format!("{head}: could not run {}: {e}", xcrun.display())),
+    };
+    let help = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    if out.status.success() && help.contains("--output-dir") {
+        return None;
     }
+    Some(format!(
+        "{head}: `{} {}` on Xcode {text} {} or does not name --output-dir. \
+         Check docs/skills-and-teams.md against it.{}",
+        xcrun.display(),
+        args.join(" "),
+        if out.status.success() {
+            "ran"
+        } else {
+            "failed"
+        },
+        said("xcrun", &help)
+    ))
 }
 
 /// The major version and the full version from `xcodebuild -version`, whose
@@ -474,54 +617,92 @@ fn blender_problem(
     blender_path: Option<&OsStr>,
     app: Option<&Path>,
 ) -> Option<String> {
-    let Some(bin) = host_tool_bin(blender_path, path, pathext, "blender", app) else {
-        return Some(
-            "blender not found on PATH and BLENDER_PATH is not set. Install Blender \
-             5.1 or later, then put `blender` on PATH or set BLENDER_PATH (macOS: \
-             /Applications/Blender.app/Contents/MacOS/Blender)."
-                .into(),
-        );
-    };
-    let out = match Command::new(&bin).arg("--version").output() {
-        Ok(out) => out,
-        Err(e) => {
-            return Some(format!(
-                "could not run {}: {e}. Set BLENDER_PATH to the Blender executable \
-                 (macOS: /Applications/Blender.app/Contents/MacOS/Blender).",
-                bin.display()
-            ))
-        }
-    };
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    if !out.status.success() {
-        let stderr = String::from_utf8_lossy(&out.stderr);
-        let detail = stderr.lines().find(|l| !l.trim().is_empty()).unwrap_or("");
-        return Some(format!(
-            "`{} --version` failed ({}). Reinstall Blender 5.1 or later, or point \
-             BLENDER_PATH at a working one.{}",
-            bin.display(),
-            out.status,
-            if detail.is_empty() {
-                String::new()
-            } else {
-                format!(" blender said: {}", detail.trim())
-            }
-        ));
+    let bin = host_tool_bin(blender_path, path, pathext, "blender", app);
+    match run_version(bin, &BLENDER) {
+        Err(problem) => Some(problem),
+        Ok((bin, stdout)) => blender_too_old(&bin, &stdout),
     }
-    match blender_version(&stdout) {
-        Some(v) if v < BLENDER_LIVE_MIN => Some(format!(
-            "{} is Blender {}.{}. The live MCP tools need {}.{} or later; only the \
-             `*_for_cli` tools work. Install Blender {}.{} or later.",
-            bin.display(),
-            v.0,
-            v.1,
-            BLENDER_LIVE_MIN.0,
-            BLENDER_LIVE_MIN.1,
-            BLENDER_LIVE_MIN.0,
-            BLENDER_LIVE_MIN.1
-        )),
-        _ => None,
+}
+
+/// The texts of one host tool's check that differ from another's.
+struct ToolText {
+    /// The name in prose: `Blender`.
+    name: &'static str,
+    /// The variable that points at the executable.
+    env: &'static str,
+    /// Where a macOS install puts the executable.
+    mac_path: &'static str,
+    /// The oldest version, as text.
+    min: &'static str,
+}
+
+const BLENDER: ToolText = ToolText {
+    name: "Blender",
+    env: "BLENDER_PATH",
+    mac_path: "/Applications/Blender.app/Contents/MacOS/Blender",
+    min: "5.1",
+};
+
+const GODOT: ToolText = ToolText {
+    name: "Godot",
+    env: "GODOT_PATH",
+    mac_path: "/Applications/Godot.app/Contents/MacOS/Godot",
+    min: "4.3",
+};
+
+/// Runs `bin --version`: the executable and its stdout, or the problem when
+/// there is no `bin`, it cannot run, or it fails.
+fn run_version(bin: Option<PathBuf>, tool: &ToolText) -> Result<(PathBuf, String), String> {
+    let ToolText {
+        name,
+        env,
+        mac_path,
+        min,
+    } = tool;
+    let lower = name.to_lowercase();
+    let bin = bin.ok_or_else(|| {
+        format!(
+            "{lower} not found on PATH and {env} is not set. Install {name} \
+             {min} or later, then put `{lower}` on PATH or set {env} (macOS: \
+             {mac_path})."
+        )
+    })?;
+    let out = Command::new(&bin).arg("--version").output().map_err(|e| {
+        format!(
+            "could not run {}: {e}. Set {env} to the {name} executable \
+             (macOS: {mac_path}).",
+            bin.display()
+        )
+    })?;
+    if out.status.success() {
+        return Ok((bin, String::from_utf8_lossy(&out.stdout).into_owned()));
     }
+    Err(format!(
+        "`{} --version` failed ({}). Reinstall {name} {min} or later, or point \
+         {env} at a working one.{}",
+        bin.display(),
+        out.status,
+        said(&lower, &String::from_utf8_lossy(&out.stderr))
+    ))
+}
+
+/// A problem when the Blender at `bin` is older than [`BLENDER_LIVE_MIN`].
+fn blender_too_old(bin: &Path, stdout: &str) -> Option<String> {
+    blender_version(stdout)
+        .filter(|v| *v < BLENDER_LIVE_MIN)
+        .map(|v| {
+            format!(
+                "{} is Blender {}.{}. The live MCP tools need {}.{} or later; only the \
+                 `*_for_cli` tools work. Install Blender {}.{} or later.",
+                bin.display(),
+                v.0,
+                v.1,
+                BLENDER_LIVE_MIN.0,
+                BLENDER_LIVE_MIN.1,
+                BLENDER_LIVE_MIN.0,
+                BLENDER_LIVE_MIN.1
+            )
+        })
 }
 
 /// `(major, minor)` from the first `Blender X.Y[.Z]` line of `--version`.
@@ -547,41 +728,17 @@ fn godot_problem(
     godot_path: Option<&OsStr>,
     app: Option<&Path>,
 ) -> Option<String> {
-    let Some(bin) = host_tool_bin(godot_path, path, pathext, "godot", app) else {
-        return Some(
-            "godot not found on PATH and GODOT_PATH is not set. Install Godot 4.3 \
-             or later, then put `godot` on PATH or set GODOT_PATH (macOS: \
-             /Applications/Godot.app/Contents/MacOS/Godot)."
-                .into(),
-        );
-    };
-    let out = match Command::new(&bin).arg("--version").output() {
-        Ok(out) => out,
-        Err(e) => {
-            return Some(format!(
-                "could not run {}: {e}. Set GODOT_PATH to the Godot executable \
-                 (macOS: /Applications/Godot.app/Contents/MacOS/Godot).",
-                bin.display()
-            ))
-        }
-    };
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    if !out.status.success() {
-        let stderr = String::from_utf8_lossy(&out.stderr);
-        let detail = stderr.lines().find(|l| !l.trim().is_empty()).unwrap_or("");
-        return Some(format!(
-            "`{} --version` failed ({}). Reinstall Godot 4.3 or later, or point \
-             GODOT_PATH at a working one.{}",
-            bin.display(),
-            out.status,
-            if detail.is_empty() {
-                String::new()
-            } else {
-                format!(" godot said: {}", detail.trim())
-            }
-        ));
+    let bin = host_tool_bin(godot_path, path, pathext, "godot", app);
+    match run_version(bin, &GODOT) {
+        Err(problem) => Some(problem),
+        Ok((bin, stdout)) => godot_too_old(&bin, &stdout),
     }
-    match godot_version(&stdout) {
+}
+
+/// A problem when the Godot at `bin` is older than [`GODOT_MIN`], or prints
+/// no version.
+fn godot_too_old(bin: &Path, stdout: &str) -> Option<String> {
+    match godot_version(stdout) {
         Some(v) if v < GODOT_MIN => Some(format!(
             "{} is Godot {}.{}. The godot-* teammates need {}.{} or later. Install \
              Godot {}.{} or later.",
@@ -903,6 +1060,45 @@ mod tests {
         assert_eq!(export_check(empty.path()), None);
     }
 
+    /// U-54: each way the export check cannot verify the command says so.
+    #[test]
+    fn xcode_export_names_a_missing_xcrun_and_an_unreadable_version() {
+        let dir = fake_xcode("27.0", "", 0);
+        std::fs::remove_file(dir.path().join("xcrun")).unwrap();
+        let Some(ExportCheck::Problem(p)) = export_check(dir.path()) else {
+            panic!("expected a problem");
+        };
+        assert!(
+            p.contains("xcrun not found on PATH beside Xcode 27.0"),
+            "{p}"
+        );
+        assert!(p.contains("swift-developer"), "{p}");
+
+        let dir = fake_xcode("27.0", "", 0);
+        std::fs::write(dir.path().join("xcodebuild"), "#!/bin/sh\necho nothing\n").unwrap();
+        let Some(ExportCheck::Note(n)) = export_check(dir.path()) else {
+            panic!("expected a note");
+        };
+        assert!(n.contains("gave no Xcode version"), "{n}");
+
+        let dir = fake_xcode("27.0", "  --dest <dir>", 0);
+        let Some(ExportCheck::Problem(p)) = export_check(dir.path()) else {
+            panic!("expected a problem");
+        };
+        assert!(p.contains(" ran or does not name"), "{p}");
+        assert!(p.contains(" xcrun said: --dest <dir>"), "{p}");
+    }
+
+    #[test]
+    fn said_quotes_the_first_non_empty_line() {
+        assert_eq!(
+            said("git", "\n  \n fatal: no lfs \nsecond\n"),
+            " git said: fatal: no lfs"
+        );
+        assert_eq!(said("git", " \n\n"), "");
+        assert_eq!(said("git", ""), "");
+    }
+
     #[test]
     fn xcode_version_reads_the_first_line() {
         assert_eq!(
@@ -1020,6 +1216,18 @@ mod tests {
         assert_eq!(problems.len(), 1, "{problems:?}");
         assert!(problems[0].contains("Blender 4.2"), "{}", problems[0]);
         assert!(problems[0].contains("5.1 or later"), "{}", problems[0]);
+    }
+
+    /// A `BLENDER_PATH` that cannot run is reported with its fix.
+    #[test]
+    fn a_blender_that_cannot_run_is_reported() {
+        let dir = tempfile::tempdir().unwrap();
+        let bin = dir.path().join("blender");
+        std::fs::write(&bin, "not executable").unwrap();
+        let problems = blender_problems(dir.path(), Some(bin.as_os_str()));
+        assert_eq!(problems.len(), 1, "{problems:?}");
+        assert!(problems[0].contains("could not run"), "{}", problems[0]);
+        assert!(problems[0].contains("Set BLENDER_PATH"), "{}", problems[0]);
     }
 
     #[test]
@@ -1178,6 +1386,22 @@ mod tests {
         assert!(problem.contains("godot not found"), "{problem}");
         assert!(problem.contains("GODOT_PATH"), "{problem}");
         assert!(problem.contains("4.3 or later"), "{problem}");
+    }
+
+    /// A broken Godot's stderr is quoted; one that cannot run names the fix.
+    #[test]
+    fn a_godot_that_cannot_run_or_fails_is_reported_with_its_detail() {
+        let broken = fake_godot("godot", "4.7.2.stable.official.e4f5a6b7c", 3);
+        let problem = godot_at(broken.path(), None, None).unwrap();
+        assert!(problem.contains("Reinstall Godot 4.3"), "{problem}");
+        assert!(problem.contains(" godot said: no display"), "{problem}");
+
+        let dir = tempfile::tempdir().unwrap();
+        let bin = dir.path().join("godot");
+        std::fs::write(&bin, "not executable").unwrap();
+        let problem = godot_at(dir.path(), Some(&bin), None).unwrap();
+        assert!(problem.contains("could not run"), "{problem}");
+        assert!(problem.contains("Set GODOT_PATH"), "{problem}");
     }
 
     #[test]
@@ -1461,6 +1685,85 @@ mod tests {
         assert!(!problems[0].contains("ue-code-reviewer"), "{}", problems[0]);
     }
 
+    fn facts(
+        entries: &[(&'static str, Option<&str>, Option<&str>)],
+    ) -> std::collections::BTreeMap<&'static str, BinaryFacts> {
+        entries
+            .iter()
+            .map(|(name, path, broken)| {
+                (
+                    *name,
+                    BinaryFacts {
+                        path: path.map(Into::into),
+                        version: None,
+                        broken: broken.map(Into::into),
+                    },
+                )
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_reviewer_without_its_binary_is_a_doctor_warning() {
+        let r = Roster::builtin().unwrap();
+        let warnings = reviewer_warnings(
+            &r,
+            &facts(&[("codex", None, None), ("claude", Some("/bin/claude"), None)]),
+        );
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+        assert!(
+            warnings[0].starts_with("reviewer codex-reviewer cannot run on this host: the codex binary is not installed."),
+            "{}",
+            warnings[0]
+        );
+    }
+
+    #[test]
+    fn a_broken_reviewer_binary_is_a_doctor_warning() {
+        let r = Roster::builtin().unwrap();
+        let warnings = reviewer_warnings(
+            &r,
+            &facts(&[
+                ("codex", Some("/bin/codex"), None),
+                (
+                    "claude",
+                    Some("/bin/claude"),
+                    Some("claude --version exited 1"),
+                ),
+            ]),
+        );
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+        assert!(
+            warnings[0].contains("architect-reviewer")
+                && warnings[0].contains("claude binary is broken"),
+            "{}",
+            warnings[0]
+        );
+    }
+
+    #[test]
+    fn reviewers_that_can_run_get_no_warning() {
+        let r = Roster::builtin().unwrap();
+        let ok = facts(&[
+            ("codex", Some("/bin/codex"), None),
+            ("claude", Some("/bin/claude"), None),
+        ]);
+        assert!(reviewer_warnings(&r, &ok).is_empty());
+    }
+
+    #[test]
+    fn a_harness_with_no_timer_and_no_transcript_is_a_doctor_warning() {
+        let r = Roster::builtin().unwrap();
+        let warnings = watchdog_blind_warnings(&r);
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+        assert!(
+            warnings[0]
+                .starts_with("harness antigravity has no timer format and no transcript lookup"),
+            "{}",
+            warnings[0]
+        );
+    }
+
     #[test]
     fn a_broken_harness_is_a_doctor_warning() {
         let why = "pi --version exited 1: Error [ERR_REQUIRE_ESM]: require() of ES Module.";
@@ -1493,5 +1796,165 @@ mod tests {
             warnings[0]
         );
         assert!(warnings[0].contains("Fix `pi --version` first."));
+    }
+
+    /// A context whose state root is in `dir` and whose herdr is a warmed
+    /// script that lists workspace `w1` with pane `p1`.
+    fn sweep_ctx(dir: &Path) -> RuntimeContext {
+        use std::os::unix::fs::PermissionsExt;
+        let herdr = dir.join("herdr");
+        std::fs::write(
+            &herdr,
+            "#!/bin/sh\ncase \"$1 $2\" in\n\
+             'workspace list') echo '{\"result\":{\"workspaces\":[{\"workspace_id\":\"w1\"}]}}' ;;\n\
+             'pane list') echo '{\"result\":{\"panes\":[{\"pane_id\":\"p1\"}]}}' ;;\n\
+             warm*) ;;\n\
+             *) exit 1 ;;\nesac\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&herdr, std::fs::Permissions::from_mode(0o755)).unwrap();
+        // macOS scans a new executable at its first exec: warm it.
+        assert!(Command::new(&herdr).arg("warm").status().unwrap().success());
+        let env = horch_core::runtime::MapEnv::new(dir)
+            .with("HOME", &dir.to_string_lossy())
+            .with("HORCH_STATE_DIR", &dir.join("state").to_string_lossy())
+            .with("HORCH_HERDR_BIN", &herdr.to_string_lossy());
+        RuntimeContext::from_env(&env).unwrap()
+    }
+
+    #[test]
+    fn doctor_counts_stale_state_by_kind_and_clean_removes_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let ctx = sweep_ctx(dir.path());
+        let state = dir.path().join("state");
+        let ledger = horch_core::execution::records::SessionLedger::for_project(&state, "/proj");
+        for (id, pane) in [("done-1", "p1"), ("closed-1", "p7")] {
+            ledger
+                .insert(horch_core::execution::legacy::Record {
+                    record_id: id.into(),
+                    role: format!("opus-{id}"),
+                    workspace_id: Some("w1".into()),
+                    pane_id: Some(pane.into()),
+                    ..Default::default()
+                })
+                .unwrap();
+        }
+        ledger.done("done-1", "finished").unwrap();
+        let bundle = state.join("skill-bundles").join("done-1");
+        std::fs::create_dir_all(&bundle).unwrap();
+        let socket = horch_core::messaging::channel::socket_path(&state, "w9");
+        std::fs::create_dir_all(socket.parent().unwrap()).unwrap();
+        drop(std::os::unix::net::UnixListener::bind(&socket).unwrap());
+
+        let (lines, warnings) = stale_state(&ctx, false);
+        assert_eq!(
+            lines,
+            [
+                "stale state: 3 (`horch doctor --clean` removes it)",
+                "  1 working records with a closed pane",
+                "  1 channel sockets",
+                "  1 skill bundles",
+            ]
+        );
+        assert!(warnings.is_empty(), "{warnings:?}");
+        assert!(
+            bundle.exists() && socket.exists(),
+            "doctor alone removes nothing"
+        );
+        assert!(ledger.get("closed-1").unwrap().execution_status().is_live());
+
+        let (lines, warnings) = stale_state(&ctx, true);
+        assert_eq!(lines[0], "stale state: removed 3", "{lines:?}");
+        assert!(warnings.is_empty(), "{warnings:?}");
+        assert!(!bundle.exists() && !socket.exists());
+        assert!(ledger
+            .get("closed-1")
+            .unwrap()
+            .execution_status()
+            .is_terminal());
+        assert_eq!(stale_state(&ctx, false).0, ["stale state: none"]);
+    }
+}
+
+/// Offered services are diagnosed without launching MCP servers.
+fn service_problems(ctx: &RuntimeContext, roster: &Roster) -> Vec<String> {
+    let mut problems = Vec::new();
+    if let Some(host) = &ctx.inherited.claude_base_url_host {
+        if host != "api.anthropic.com"
+            && host != "anthropic.com"
+            && !host.ends_with(".anthropic.com")
+        {
+            problems.push(format!("Claude base URL overrides Anthropic with host {host}; plan reads may come back cut short"));
+        }
+    }
+    for teammate in roster.offered() {
+        if teammate.sandbox.is_some() {
+            if let Some(why) = horch_core::harness::launch::sandbox_host_problem(ctx) {
+                problems.push(format!(
+                    "{}: refusing to launch without a sandbox: {why}",
+                    teammate.name
+                ));
+            }
+        }
+        for (name, server) in teammate.mcp_servers.iter().flatten() {
+            if server
+                .get("type")
+                .and_then(serde_json::Value::as_str)
+                .is_some_and(|kind| kind != "stdio")
+            {
+                continue;
+            }
+            if let Some(command) = server.get("command").and_then(serde_json::Value::as_str) {
+                if process::which(
+                    ctx.inherited.path.as_deref(),
+                    ctx.inherited.pathext.as_deref(),
+                    command,
+                )
+                .is_none()
+                {
+                    problems.push(format!(
+                        "{}: MCP server {name} command {command} is missing from PATH",
+                        teammate.name
+                    ));
+                }
+            }
+        }
+    }
+    problems
+}
+
+fn docker_problem(path: Option<&OsStr>, pathext: Option<&str>) -> Option<String> {
+    let Some(bin) = process::which(path, pathext, "docker") else {
+        return Some("docker not found on PATH".into());
+    };
+    let mut cmd = Command::new(bin);
+    cmd.args(["version", "--format", "{{.Server.Version}}"]);
+    for key in horch_core::harness::launch::FORBIDDEN_ENV {
+        cmd.env_remove(key);
+    }
+    use std::process::Stdio;
+    let mut child = match cmd
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+    {
+        Ok(child) => child,
+        Err(e) => return Some(format!("Docker daemon version could not run: {e}")),
+    };
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) if status.success() => return None,
+            Ok(Some(status)) => return Some(format!("Docker daemon version failed: {status}")),
+            Ok(None) if std::time::Instant::now() < deadline => {
+                std::thread::sleep(std::time::Duration::from_millis(20))
+            }
+            _ => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Some("Docker daemon version timed out after 2s".into());
+            }
+        }
     }
 }

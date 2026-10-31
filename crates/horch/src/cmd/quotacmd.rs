@@ -3,7 +3,8 @@
 //! Plain `horch quota` never probes. `--refresh` probes when no live
 //! collector holds the lock and the last probe is older than
 //! `probe_on_demand_age_min` (QUO-07); with a live collector it reads what
-//! the collector last wrote.
+//! the collector last wrote. A failed collector start is reported on
+//! stderr (SPC-03, section 12.1.1).
 
 use anyhow::Result;
 use horch_core::clock;
@@ -39,6 +40,7 @@ pub fn assessed(view: &QuotaView) -> QuotaFile {
 
 pub fn quota(ctx: &RuntimeContext, json: bool, refresh: bool) -> Result<()> {
     let root = ctx.paths.state_root.clone();
+    super::telemetry::report_failed_start(&root);
     let policy = load_policy(ctx, &root)?;
     let view = snapshot::obtain(&root, clock::now(), &policy, refresh, &quota_env(ctx))?;
     if json {
@@ -55,6 +57,11 @@ pub fn quota(ctx: &RuntimeContext, json: bool, refresh: bool) -> Result<()> {
                         .map(|t| format!(", {} min old", (view.now - t).num_minutes().max(0)))
                         .unwrap_or_default();
                     output::println(&format!("{name}: from a rollout written {at}{age}"));
+                }
+            }
+            if r.state == "unknown" {
+                if let Some(reason) = &r.reason {
+                    output::println(&format!("{name}: {reason}"));
                 }
             }
             if let Some(e) = &r.error {

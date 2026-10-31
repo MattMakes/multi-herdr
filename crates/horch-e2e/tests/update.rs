@@ -293,8 +293,10 @@ fn arc_33_a_failed_updater_gives_one_note_and_the_fleet_starts() {
     assert!(workspace_created(&h));
 }
 
+/// #205: an updater that passes the time limit is not killed, so a package
+/// manager can finish its own install. The fleet does not wait for it.
 #[test]
-fn arc_33_a_hung_updater_is_killed_at_the_timeout() {
+fn arc_33_a_hung_updater_is_left_running_at_the_timeout() {
     let mut h = harness("arc33-hang");
     h.set("HORCH_FAKE_SCENARIO", "update_hang:opencode");
     h.set("HORCH_UPDATE_TIMEOUT_MS", "5000");
@@ -304,7 +306,7 @@ fn arc_33_a_hung_updater_is_killed_at_the_timeout() {
     assert!(out.status.success(), "{}\n{}", stdout(&out), stderr(&out));
     assert_eq!(
         notes(&out),
-        ["horch: NOTE: update: opencode: timed out after 5 s"],
+        ["horch: NOTE: update: opencode: still running after 5 s, not waited for"],
         "{}",
         stderr(&out)
     );
@@ -312,17 +314,98 @@ fn arc_33_a_hung_updater_is_killed_at_the_timeout() {
     assert!(took < Duration::from_secs(50), "the fleet took {took:?}");
     assert!(workspace_created(&h));
 
-    // The killed updater is gone.
+    // The updater outlived the fleet start: horch did not kill it.
     #[cfg(unix)]
     {
         let call = update_calls(&h, "opencode", &["upgrade"]);
         let pid = call[0]["pid"].as_u64().unwrap().to_string();
+        // Made before the assert, so a failed assert still stops the group.
+        let _kill = KillGroup(pid.clone());
         let alive = Command::new("kill")
             .args(["-0", &pid])
             .output()
             .is_ok_and(|o| o.status.success());
-        assert!(!alive, "updater {pid} outlived its timeout");
+        assert!(alive, "updater {pid} was killed at its timeout");
     }
+}
+
+/// Kills the process group `-<pid>` when dropped: horch starts each updater
+/// as the leader of its own group.
+#[cfg(unix)]
+struct KillGroup(String);
+
+#[cfg(unix)]
+impl Drop for KillGroup {
+    fn drop(&mut self) {
+        let _ = Command::new("kill")
+            .args(["-9", "--", &format!("-{}", self.0)])
+            .output();
+    }
+}
+
+/// #205: a second fleet start within 24 h runs no updater and says so for
+/// each CLI; the operator's `horch update` still runs every updater.
+#[test]
+fn arc_33_a_second_fleet_within_24_h_skips_the_updated_clis() {
+    let h = harness("arc33-fresh");
+    let first = fleet(&h, &[]);
+    assert!(
+        first.status.success(),
+        "{}\n{}",
+        stdout(&first),
+        stderr(&first)
+    );
+    let second = fleet(&h, &[]);
+    assert!(
+        second.status.success(),
+        "{}\n{}",
+        stdout(&second),
+        stderr(&second)
+    );
+    let lines = result_lines(&second);
+    for (fake, _, args) in UPDATERS {
+        assert_eq!(update_calls(&h, fake, args).len(), 1, "{fake} ran again");
+        let skipped = lines.iter().any(|l| {
+            l.starts_with(&format!("update: {fake}: updated at "))
+                && l.ends_with("less than 24 h ago (skipped)")
+        });
+        assert!(skipped, "{fake}: {lines:?}");
+    }
+    let out = h.run(&["update"]);
+    assert!(out.status.success(), "{}\n{}", stdout(&out), stderr(&out));
+    for (fake, _, args) in UPDATERS {
+        assert_eq!(update_calls(&h, fake, args).len(), 2, "{fake} {args:?}");
+    }
+}
+
+/// ARC-35: `horch update` exits 1 when an updater still runs at the time
+/// limit, and when another updater of the CLI still runs.
+#[test]
+fn arc_35_horch_update_exits_1_on_a_detached_or_busy_cli() {
+    let mut h = harness("arc35-busy");
+    h.set("HORCH_FAKE_SCENARIO", "update_hang:pi");
+    h.set("HORCH_UPDATE_TIMEOUT_MS", "1000");
+    let first = h.run(&["update", "pi"]);
+    #[cfg(unix)]
+    let _kill = update_calls(&h, "pi", &["update", "--self"])
+        .first()
+        .map(|c| KillGroup(c["pid"].as_u64().unwrap().to_string()));
+    assert_eq!(first.status.code(), Some(1), "{}", stderr(&first));
+    assert_eq!(
+        notes(&first),
+        ["horch: NOTE: update: pi: still running after 1 s, not waited for"],
+        "{}",
+        stderr(&first)
+    );
+    let second = h.run(&["update", "pi"]);
+    assert_eq!(second.status.code(), Some(1), "{}", stdout(&second));
+    assert_eq!(
+        result_lines(&second),
+        ["update: pi: another horch is updating it (skipped)"],
+        "{}",
+        stdout(&second)
+    );
+    assert_eq!(update_calls(&h, "pi", &["update", "--self"]).len(), 1);
 }
 
 #[test]

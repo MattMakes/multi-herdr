@@ -62,8 +62,15 @@ fn mail_u1_courier_redelivers_to_an_idle_orchestrator_until_inbox_acks() {
             harness.calls_of("herdr").into_iter().find_map(|call| {
                 let args = call["argv"].as_array()?;
                 let line = args.get(3)?.as_str()?;
-                line.contains("(redelivery 1: not acknowledged; run horch inbox)")
-                    .then(|| line.to_string())
+                // A cold start may miss the first scaled retry slot. The
+                // courier skips missed slots instead of replaying a burst.
+                let retry = line.split_once("(redelivery ")?.1;
+                let attempt = retry
+                    .split_once(": not acknowledged; run horch inbox)")?
+                    .0
+                    .parse::<usize>()
+                    .ok()?;
+                (attempt > 0).then(|| line.to_string())
             })
         },
         || format!("calls: {:?}", harness.calls_of("herdr")),

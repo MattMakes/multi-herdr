@@ -17,6 +17,12 @@
 //! `$HOME/.codex/sessions/`, then the launch sleeps until killed. The session
 //! id is a UUID derived from the canonical cwd, recorded as `session_id`; a
 //! `resume <id>` launch records `resumed` and writes nothing.
+//!
+//! As `codex sandbox ... -C <dir> -- <command>` it runs the command as a
+//! child with writes confined to `dir` and the profile's workspace roots,
+//! records them as `sandbox_writable`, and exits with the command's code.
+//! On macOS the confinement is Seatbelt, as in the real CLI; elsewhere the
+//! command runs unconfined.
 
 use std::io::BufRead;
 use std::path::{Path, PathBuf};
@@ -41,6 +47,9 @@ fn main() {
         return;
     }
     let mut call = Call::start("codex");
+    if call.argv.first().map(String::as_str) == Some("sandbox") {
+        sandbox(&mut call);
+    }
     if call.argv.iter().any(|a| a == "--version") {
         say("codex-cli 0.158.0");
         call.flush();
@@ -164,7 +173,11 @@ fn list_files(root: &Path, dir: &Path, out: &mut Vec<String>) {
 /// The `stay` launch: record or write the session, then block until killed.
 fn stay(call: &mut Call) {
     if call.argv.first().map(String::as_str) == Some("resume") {
-        if let Some(id) = call.argv.get(1) {
+        if let Some(id) = call.argv.iter().skip(1).find(|arg| {
+            arg.len() == 36
+                && arg.split('-').map(str::len).eq([8, 4, 4, 4, 12])
+                && arg.bytes().all(|b| b == b'-' || b.is_ascii_hexdigit())
+        }) {
             call.extra.insert("resumed".into(), json!(id));
         }
     } else {
@@ -181,7 +194,9 @@ fn stay(call: &mut Call) {
 fn write_rollout() -> String {
     let cwd = std::env::current_dir().unwrap_or_default();
     let cwd = std::fs::canonicalize(&cwd).unwrap_or(cwd);
-    let h = format!("{}{}", hash16(&cwd.to_string_lossy()), hash16("codex"));
+    let prompt = std::env::args().skip(1).last().unwrap_or_default();
+    let launch = format!("{}:{}:{}", cwd.display(), std::process::id(), prompt);
+    let h = format!("{}{}", hash16(&launch), hash16("codex"));
     let id = format!(
         "{}-{}-4{}-8{}-{}",
         &h[0..8],
@@ -198,7 +213,10 @@ fn write_rollout() -> String {
     let line = json!({"type": "session_meta", "payload": {"id": id, "cwd": cwd.to_string_lossy()}});
     let _ = std::fs::write(
         dir.join(format!("rollout-2026-10-02T00-00-00-{id}.jsonl")),
-        format!("{line}\n"),
+        format!(
+            "{line}\n{}\n",
+            json!({"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":prompt}]}})
+        ),
     );
     id
 }
@@ -218,4 +236,66 @@ fn update(call: &Call) -> ! {
     }
     horch_e2e::say("codex-cli 0.158.0 is the latest version");
     std::process::exit(0);
+}
+
+/// `codex sandbox [opts] -- <command>`: see the module doc.
+fn sandbox(call: &mut Call) -> ! {
+    let args = call.argv[1..].to_vec();
+    let Some(split) = args.iter().position(|a| a == "--") else {
+        call.violate("codex sandbox without -- before the command");
+        call.flush();
+        std::process::exit(2);
+    };
+    let (opts, command) = (&args[..split], &args[split + 1..]);
+    let mut writable: Vec<String> = Vec::new();
+    let mut opts = opts.iter();
+    while let Some(opt) = opts.next() {
+        let value = opts.next();
+        match opt.as_str() {
+            "-C" => writable.extend(value.cloned()),
+            // `permissions.<p>.workspace_roots={"<root>"=true}`
+            "-c" => writable.extend(
+                value
+                    .and_then(|pair| pair.split_once(".workspace_roots="))
+                    .and_then(|(_, roots)| roots.split('"').nth(1))
+                    .map(str::to_string),
+            ),
+            _ => {}
+        }
+    }
+    call.extra
+        .insert("sandbox_writable".into(), json!(writable.clone()));
+    call.flush();
+    let code = match confined(command, &writable).status() {
+        Ok(status) => status.code().unwrap_or(1),
+        Err(_) => 127,
+    };
+    std::process::exit(code);
+}
+
+/// `command` under a Seatbelt profile that denies every write outside
+/// `writable` and `/dev`.
+#[cfg(target_os = "macos")]
+fn confined(command: &[String], writable: &[String]) -> std::process::Command {
+    let allow: String = writable
+        .iter()
+        .map(|p| {
+            // Seatbelt matches resolved paths: /var is /private/var.
+            let real = std::fs::canonicalize(p).unwrap_or_else(|_| PathBuf::from(p));
+            format!(" (subpath {:?})", real.to_string_lossy())
+        })
+        .collect();
+    let profile = format!(
+        "(version 1)(allow default)(deny file-write*)(allow file-write*{allow} (subpath \"/dev\"))"
+    );
+    let mut cmd = std::process::Command::new("/usr/bin/sandbox-exec");
+    cmd.arg("-p").arg(profile).args(command);
+    cmd
+}
+
+#[cfg(not(target_os = "macos"))]
+fn confined(command: &[String], _writable: &[String]) -> std::process::Command {
+    let mut cmd = std::process::Command::new(&command[0]);
+    cmd.args(&command[1..]);
+    cmd
 }

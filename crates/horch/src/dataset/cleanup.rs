@@ -12,32 +12,22 @@
 use anyhow::Result;
 use horch_core::competition::cleanup::{CleanupOptions, CleanupOutcome, RoundCleanup};
 use horch_core::competition::model::RoundState;
-use horch_core::competition::promotion::FaultFired;
+use horch_core::ids::RoundId;
 use horch_core::measure::recorder::JsonlRecorder;
 use horch_core::measure::store::StoreOptions;
-use horch_core::runtime::fault::ABORT_EXIT_CODE;
 use horch_core::runtime::RuntimeContext;
 use horch_core::vcs::git::GitCli;
 
 use super::cli::CleanupArgs;
 use super::promote::find_round;
-use super::{dataset_paths, exit};
+use super::{abort_on_fault, dataset_paths, exit};
 
 pub(crate) fn cleanup(ctx: &RuntimeContext, args: &CleanupArgs) -> Result<u8> {
     let paths = dataset_paths(ctx)?;
     let (round, view, _) = find_round(&paths, &args.round)?;
-    match view.state {
-        RoundState::Complete => {
-            println!("round {round} is already COMPLETE");
-            return Ok(exit::SUCCESS);
-        }
-        RoundState::NeedsIntervention if !args.force => {
-            println!(
-                "REFUSED: round {round} needs intervention; `cleanup --force` removes its worktrees"
-            );
-            return Ok(exit::NEEDS_INTERVENTION);
-        }
-        _ => {}
+    if let Some((line, code)) = refusal(&round, view.state, args.force) {
+        println!("{line}");
+        return Ok(code);
     }
     // A frozen worktree or a judge bundle can be read-only (0500):
     // `git worktree remove` needs to write in it.
@@ -54,6 +44,7 @@ pub(crate) fn cleanup(ctx: &RuntimeContext, args: &CleanupArgs) -> Result<u8> {
         paths: &paths,
         faults: &ctx.settings.faults,
         repo: ctx.paths.project()?,
+        clock: &horch_core::clock::now,
     }
     .run(
         &round,
@@ -63,17 +54,35 @@ pub(crate) fn cleanup(ctx: &RuntimeContext, args: &CleanupArgs) -> Result<u8> {
             force: args.force,
         },
     );
+    report(&round, outcome)
+}
+
+/// The line and exit code that refuse a cleanup, or `None` when it may run.
+/// A COMPLETE round has nothing to remove. A round that needs intervention
+/// needs `--force`.
+fn refusal(round: &RoundId, state: RoundState, force: bool) -> Option<(String, u8)> {
+    match state {
+        RoundState::Complete => Some((format!("round {round} is already COMPLETE"), exit::SUCCESS)),
+        RoundState::NeedsIntervention if !force => Some((
+            format!(
+                "REFUSED: round {round} needs intervention; `cleanup --force` removes its worktrees"
+            ),
+            exit::NEEDS_INTERVENTION,
+        )),
+        _ => None,
+    }
+}
+
+/// Print the outcome of the cleanup and give its exit code. An injected
+/// fault aborts the process.
+fn report(round: &RoundId, outcome: Result<CleanupOutcome>) -> Result<u8> {
     match outcome {
         Ok(CleanupOutcome::Done { removed, failed }) => {
             println!(
                 "round {round} COMPLETE: removed {} worktrees ({}){}",
                 removed.len(),
                 removed.join(", "),
-                if failed.is_empty() {
-                    String::new()
-                } else {
-                    format!("; could not remove {}", failed.join(", "))
-                }
+                failed_suffix(&failed)
             );
             Ok(exit::SUCCESS)
         }
@@ -82,12 +91,18 @@ pub(crate) fn cleanup(ctx: &RuntimeContext, args: &CleanupArgs) -> Result<u8> {
             Ok(exit::FAILURE)
         }
         Err(e) => {
-            if let Some(f) = e.downcast_ref::<FaultFired>() {
-                eprintln!("multi-herdr-dataset: {f}: aborting");
-                std::process::exit(ABORT_EXIT_CODE);
-            }
+            abort_on_fault(&e);
             Err(e)
         }
+    }
+}
+
+/// The report text that names the worktrees that could not be removed.
+fn failed_suffix(failed: &[String]) -> String {
+    if failed.is_empty() {
+        String::new()
+    } else {
+        format!("; could not remove {}", failed.join(", "))
     }
 }
 
@@ -116,3 +131,84 @@ fn make_writable(dir: &std::path::Path) {
 
 #[cfg(not(unix))]
 fn make_writable(_dir: &std::path::Path) {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn r1() -> RoundId {
+        RoundId::new("r1").unwrap()
+    }
+
+    #[test]
+    fn a_complete_round_is_refused_with_success_even_with_force() {
+        for force in [false, true] {
+            assert_eq!(
+                refusal(&r1(), RoundState::Complete, force),
+                Some(("round r1 is already COMPLETE".to_string(), 0))
+            );
+        }
+    }
+
+    #[test]
+    fn a_round_that_needs_intervention_is_refused_without_force() {
+        assert_eq!(
+            refusal(&r1(), RoundState::NeedsIntervention, false),
+            Some((
+                "REFUSED: round r1 needs intervention; `cleanup --force` removes its worktrees"
+                    .to_string(),
+                5
+            ))
+        );
+    }
+
+    #[test]
+    fn a_round_that_needs_intervention_runs_with_force() {
+        assert_eq!(refusal(&r1(), RoundState::NeedsIntervention, true), None);
+    }
+
+    #[test]
+    fn a_round_in_cleanup_state_runs() {
+        assert_eq!(refusal(&r1(), RoundState::Cleanup, false), None);
+    }
+
+    #[test]
+    fn a_skipped_cleanup_reports_the_reason_and_fails() {
+        let code = report(
+            &r1(),
+            Ok(CleanupOutcome::Skipped {
+                reason: "no worktrees".into(),
+            }),
+        )
+        .unwrap();
+        assert_eq!(code, exit::FAILURE);
+    }
+
+    #[test]
+    fn a_done_cleanup_succeeds_even_with_a_failed_removal() {
+        let code = report(
+            &r1(),
+            Ok(CleanupOutcome::Done {
+                removed: vec!["a".into()],
+                failed: vec!["b".into()],
+            }),
+        )
+        .unwrap();
+        assert_eq!(code, exit::SUCCESS);
+    }
+
+    #[test]
+    fn an_ordinary_error_is_returned_not_aborted() {
+        let err = report(&r1(), Err(anyhow::anyhow!("boom"))).unwrap_err();
+        assert_eq!(err.to_string(), "boom");
+    }
+
+    #[test]
+    fn failed_suffix_names_the_worktrees_or_is_empty() {
+        assert_eq!(failed_suffix(&[]), "");
+        assert_eq!(
+            failed_suffix(&["a".into(), "b".into()]),
+            "; could not remove a, b"
+        );
+    }
+}

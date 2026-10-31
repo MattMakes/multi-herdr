@@ -51,110 +51,157 @@ pub struct Resolver<'a> {
     pub scratch: &'a Path,
 }
 
+/// What a source resolves to, before it is joined with the source itself.
+struct Origin {
+    origin: ResolvedOrigin,
+    expected_name: Option<String>,
+    requested_revision: Option<String>,
+    resolved_commit: Option<String>,
+}
+
+/// What a git revision asks the remote for.
+enum Lookup<'a> {
+    /// A full commit: no remote lookup.
+    Commit(String),
+    /// A branch or tag: the ref names to look for, in order.
+    Refs { wanted: Vec<String>, name: &'a str },
+}
+
 impl Resolver<'_> {
     pub fn resolve(&self, source: &SkillSource) -> Result<ResolvedSource> {
-        let (origin, expected_name, requested_revision, resolved_commit) = match source {
-            SkillSource::Bundled { name } => {
-                let id = SkillId::parse(name)?;
-                let skill = self.catalog.bundled(&id).ok_or_else(|| {
-                    MarketplaceError::BadSource(format!("unknown bundled skill '{name}'"))
-                })?;
-                (
-                    ResolvedOrigin::Bundled(skill.clone()),
-                    Some(name.clone()),
-                    None,
-                    None,
-                )
-            }
-            SkillSource::Local { path } => {
-                if !path.is_absolute() {
-                    return Err(MarketplaceError::BadSource(format!(
-                        "local path '{}' is not absolute",
-                        path.display()
-                    )));
-                }
-                let name = path.file_name().and_then(|n| n.to_str()).map(str::to_owned);
-                (ResolvedOrigin::Local(path.clone()), name, None, None)
-            }
+        let found = match source {
+            SkillSource::Bundled { name } => self.resolve_bundled(name),
+            SkillSource::Local { path } => resolve_local(path),
             SkillSource::Git {
                 url,
                 revision,
                 subdir,
-            } => {
-                check_url(url)?;
-                if let Some(dir) = subdir {
-                    check_relative_path(dir)?;
-                }
-                let commit = self.resolve_git(url, revision)?;
-                let name = subdir
-                    .as_deref()
-                    .and_then(|d| d.rsplit('/').next())
-                    .map(str::to_owned);
-                (
-                    ResolvedOrigin::Git {
-                        url: url.clone(),
-                        commit: commit.clone(),
-                        subdir: subdir.clone(),
-                    },
-                    name,
-                    Some(revision.requested().to_owned()),
-                    Some(commit),
-                )
-            }
-        };
+            } => self.resolve_git_source(url, revision, subdir.as_deref()),
+        }?;
         Ok(ResolvedSource {
             source: source.clone(),
-            origin,
-            expected_name,
-            requested_revision,
-            resolved_commit,
+            origin: found.origin,
+            expected_name: found.expected_name,
+            requested_revision: found.requested_revision,
+            resolved_commit: found.resolved_commit,
+        })
+    }
+
+    fn resolve_bundled(&self, name: &str) -> Result<Origin> {
+        let id = SkillId::parse(name)?;
+        let skill = self.catalog.bundled(&id).ok_or_else(|| {
+            MarketplaceError::BadSource(format!("unknown bundled skill '{name}'"))
+        })?;
+        Ok(Origin {
+            origin: ResolvedOrigin::Bundled(skill.clone()),
+            expected_name: Some(name.to_owned()),
+            requested_revision: None,
+            resolved_commit: None,
+        })
+    }
+
+    fn resolve_git_source(
+        &self,
+        url: &str,
+        revision: &GitRevision,
+        subdir: Option<&str>,
+    ) -> Result<Origin> {
+        check_url(url)?;
+        subdir.map(check_relative_path).transpose()?;
+        let commit = self.resolve_git(url, revision)?;
+        Ok(Origin {
+            origin: ResolvedOrigin::Git {
+                url: url.to_owned(),
+                commit: commit.clone(),
+                subdir: subdir.map(str::to_owned),
+            },
+            expected_name: subdir.and_then(|d| d.rsplit('/').next()).map(str::to_owned),
+            requested_revision: Some(revision.requested().to_owned()),
+            resolved_commit: Some(commit),
         })
     }
 
     /// A branch or tag becomes a full commit through `git ls-remote`. A
     /// commit is returned as is; the fetch verifies it exists.
     fn resolve_git(&self, url: &str, revision: &GitRevision) -> Result<String> {
-        let (wanted, name): (Vec<String>, &str) = match revision {
-            GitRevision::Commit(sha) if is_full_sha(sha) => return Ok(sha.to_ascii_lowercase()),
-            GitRevision::Commit(sha) => {
-                return Err(MarketplaceError::BadSource(format!(
+        match wanted_refs(revision)? {
+            Lookup::Commit(sha) => Ok(sha),
+            Lookup::Refs { wanted, name } => self.lookup_remote(url, &wanted, name),
+        }
+    }
+
+    fn lookup_remote(&self, url: &str, wanted: &[String], name: &str) -> Result<String> {
+        check_ref_name(name)?;
+        let out = self.git.run(self.scratch, &["ls-remote", url])?;
+        let text = out.stdout_text();
+        let refs: Vec<(&str, &str)> = text.lines().filter_map(|l| l.split_once('\t')).collect();
+        wanted
+            .iter()
+            .find_map(|want| {
+                refs.iter()
+                    .find_map(|(sha, r)| (r == want).then_some(*sha))
+                    .filter(|sha| is_full_sha(sha))
+            })
+            .map(str::to_ascii_lowercase)
+            .ok_or_else(|| MarketplaceError::RevisionNotFound {
+                url: url.to_owned(),
+                revision: name.to_owned(),
+            })
+    }
+}
+
+fn resolve_local(path: &Path) -> Result<Origin> {
+    if !path.is_absolute() {
+        return Err(MarketplaceError::BadSource(format!(
+            "local path '{}' is not absolute",
+            path.display()
+        )));
+    }
+    Ok(Origin {
+        origin: ResolvedOrigin::Local(path.to_owned()),
+        expected_name: path.file_name().and_then(|n| n.to_str()).map(str::to_owned),
+        requested_revision: None,
+        resolved_commit: None,
+    })
+}
+
+fn wanted_refs(revision: &GitRevision) -> Result<Lookup<'_>> {
+    match revision {
+        GitRevision::Commit(sha) => {
+            if is_full_sha(sha) {
+                Ok(Lookup::Commit(sha.to_ascii_lowercase()))
+            } else {
+                Err(MarketplaceError::BadSource(format!(
                     "commit '{sha}' is not 40 hex characters"
                 )))
             }
-            GitRevision::Branch(b) if b == "HEAD" => (vec!["HEAD".to_owned()], b),
-            GitRevision::Branch(b) => (vec![format!("refs/heads/{b}")], b),
-            GitRevision::Tag(t) => (
-                vec![
-                    format!("refs/tags/{t}^{{}}"),
-                    format!("refs/tags/{t}"),
-                    format!("refs/heads/{t}"),
-                ],
-                t,
-            ),
-        };
-        if name != "HEAD" && !crate::model::is_safe_ref_name(name) {
-            return Err(MarketplaceError::BadSource(format!(
-                "'{name}' is not a valid revision"
-            )));
         }
-        let out = self.git.run(self.scratch, &["ls-remote", url])?;
-        let refs: Vec<(String, String)> = out
-            .stdout_text()
-            .lines()
-            .filter_map(|l| l.split_once('\t'))
-            .map(|(sha, r)| (sha.to_owned(), r.to_owned()))
-            .collect();
-        for want in &wanted {
-            if let Some((sha, _)) = refs.iter().find(|(_, r)| r == want) {
-                if is_full_sha(sha) {
-                    return Ok(sha.to_ascii_lowercase());
-                }
-            }
-        }
-        Err(MarketplaceError::RevisionNotFound {
-            url: url.to_owned(),
-            revision: name.to_owned(),
-        })
+        GitRevision::Branch(b) => Ok(Lookup::Refs {
+            wanted: vec![if b == "HEAD" {
+                "HEAD".to_owned()
+            } else {
+                format!("refs/heads/{b}")
+            }],
+            name: b,
+        }),
+        GitRevision::Tag(t) => Ok(Lookup::Refs {
+            wanted: vec![
+                format!("refs/tags/{t}^{{}}"),
+                format!("refs/tags/{t}"),
+                format!("refs/heads/{t}"),
+            ],
+            name: t,
+        }),
+    }
+}
+
+fn check_ref_name(name: &str) -> Result<()> {
+    if name == "HEAD" || crate::model::is_safe_ref_name(name) {
+        Ok(())
+    } else {
+        Err(MarketplaceError::BadSource(format!(
+            "'{name}' is not a valid revision"
+        )))
     }
 }
 
@@ -199,5 +246,140 @@ impl SkillSource {
             } => format!("{url}#{dir}"),
             SkillSource::Git { url, .. } => url.clone(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::catalog::BundledFile;
+
+    const SHA: &str = "d47670328c59a3311a9b4149bc5f8f33f0a92754";
+
+    fn resolve(source: &SkillSource) -> Result<ResolvedSource> {
+        let catalog = Catalog::new().with_bundled(BundledSkill {
+            id: SkillId::parse("tdd").unwrap(),
+            files: vec![BundledFile {
+                path: "SKILL.md".into(),
+                bytes: b"x"[..].into(),
+                executable: false,
+            }],
+        });
+        // The commit and refused cases never start git, so the binary is
+        // never run.
+        let git = GitRunner::new("git-is-never-run");
+        let scratch = std::env::temp_dir();
+        Resolver {
+            git: &git,
+            catalog: &catalog,
+            scratch: &scratch,
+        }
+        .resolve(source)
+    }
+
+    fn git_source(revision: GitRevision, subdir: Option<&str>) -> SkillSource {
+        SkillSource::Git {
+            url: "https://example.com/r".into(),
+            revision,
+            subdir: subdir.map(str::to_owned),
+        }
+    }
+
+    #[test]
+    fn bundled_resolves_with_its_name() {
+        let r = resolve(&SkillSource::Bundled { name: "tdd".into() }).unwrap();
+        assert!(matches!(r.origin, ResolvedOrigin::Bundled(_)));
+        assert_eq!(r.expected_name.as_deref(), Some("tdd"));
+        assert_eq!((r.requested_revision, r.resolved_commit), (None, None));
+    }
+
+    #[test]
+    fn unknown_bundled_is_refused() {
+        let err = resolve(&SkillSource::Bundled {
+            name: "nope".into(),
+        })
+        .unwrap_err();
+        assert!(
+            err.to_string().contains("unknown bundled skill 'nope'"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn local_resolves_with_its_directory_name() {
+        let r = resolve(&SkillSource::Local {
+            path: "/x/demo".into(),
+        })
+        .unwrap();
+        assert!(matches!(&r.origin, ResolvedOrigin::Local(p) if p == Path::new("/x/demo")));
+        assert_eq!(r.expected_name.as_deref(), Some("demo"));
+        assert_eq!((r.requested_revision, r.resolved_commit), (None, None));
+    }
+
+    #[test]
+    fn relative_local_path_is_refused() {
+        let err = resolve(&SkillSource::Local {
+            path: "x/demo".into(),
+        })
+        .unwrap_err();
+        assert!(
+            err.to_string().contains("'x/demo' is not absolute"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn full_commit_resolves_lowercase_without_git() {
+        let upper = SHA.to_ascii_uppercase();
+        let source = git_source(GitRevision::Commit(upper.clone()), Some("skills/tdd"));
+        let r = resolve(&source).unwrap();
+        assert_eq!(r.resolved_commit.as_deref(), Some(SHA));
+        assert_eq!(r.requested_revision.as_deref(), Some(upper.as_str()));
+        assert_eq!(r.expected_name.as_deref(), Some("tdd"));
+        assert!(matches!(
+            &r.origin,
+            ResolvedOrigin::Git { commit, subdir, .. }
+                if commit == SHA && subdir.as_deref() == Some("skills/tdd")
+        ));
+    }
+
+    #[test]
+    fn short_commit_is_refused() {
+        let err = resolve(&git_source(GitRevision::Commit("abc123".into()), None)).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("'abc123' is not 40 hex characters"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn unsafe_ref_name_is_refused_before_git_runs() {
+        for revision in [
+            GitRevision::Branch("a..b".into()),
+            GitRevision::Tag("-x".into()),
+        ] {
+            let err = resolve(&git_source(revision, None)).unwrap_err();
+            assert!(matches!(err, MarketplaceError::BadSource(_)), "{err:?}");
+            assert!(err.to_string().contains("is not a valid revision"), "{err}");
+        }
+    }
+
+    #[test]
+    fn git_source_checks_url_and_subdir() {
+        let bad_url = SkillSource::Git {
+            url: "http://example.com/r".into(),
+            revision: GitRevision::Commit(SHA.into()),
+            subdir: None,
+        };
+        assert!(matches!(
+            resolve(&bad_url).unwrap_err(),
+            MarketplaceError::BadSource(_)
+        ));
+        let bad_dir = git_source(GitRevision::Commit(SHA.into()), Some("../x"));
+        assert!(matches!(
+            resolve(&bad_dir).unwrap_err(),
+            MarketplaceError::Traversal(_)
+        ));
     }
 }

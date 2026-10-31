@@ -258,6 +258,7 @@ impl Fixture {
             paths: &self.paths,
             faults,
             repo: self.repo.clone(),
+            clock: &Utc::now,
         }
     }
 
@@ -622,12 +623,24 @@ fn pro_03_checked_out_dirty_needs_intervention() {
     assert_eq!(f.temp_branches(), "");
 }
 
-/// The real client, with one hook: `race` runs once, just before the first
-/// compare-and-swap on `refs/heads/main`. That is the window between the
-/// publish's check of the checkout and its move.
+/// The real client, with one hook: `race` runs once, at `point`. The point
+/// is `cas:<refname>` (just before the first compare-and-swap on that ref),
+/// `current_branch` (the publish's first check of a checkout) or
+/// `read_tree_update` (between the ref swap and the tree update).
 struct Racy<'a> {
     git: &'a GitCli,
+    point: &'static str,
     race: RefCell<Option<Box<dyn FnOnce() + 'a>>>,
+}
+
+impl Racy<'_> {
+    fn at(&self, point: &str) {
+        if self.point == point {
+            if let Some(race) = self.race.borrow_mut().take() {
+                race();
+            }
+        }
+    }
 }
 
 impl GitClient for Racy<'_> {
@@ -638,6 +651,7 @@ impl GitClient for Racy<'_> {
         self.git.head(dir)
     }
     fn current_branch(&self, dir: &Path) -> anyhow::Result<Option<String>> {
+        self.at("current_branch");
         self.git.current_branch(dir)
     }
     fn status_porcelain(&self, dir: &Path) -> anyhow::Result<String> {
@@ -700,17 +714,14 @@ impl GitClient for Racy<'_> {
         new: &str,
         expected_old: &str,
     ) -> anyhow::Result<bool> {
-        if refname == "refs/heads/main" {
-            if let Some(race) = self.race.borrow_mut().take() {
-                race();
-            }
-        }
+        self.at(&format!("cas:{refname}"));
         self.git.update_ref_cas(repo, refname, new, expected_old)
     }
     fn cherry_pick(&self, dir: &Path, range: &str, id: &GitIdentity) -> anyhow::Result<CherryPick> {
         self.git.cherry_pick(dir, range, id)
     }
     fn read_tree_update(&self, dir: &Path, old: &str, new: &str) -> anyhow::Result<()> {
+        self.at("read_tree_update");
         self.git.read_tree_update(dir, old, new)
     }
     fn branch_checkout_location(
@@ -722,11 +733,17 @@ impl GitClient for Racy<'_> {
     }
 }
 
-/// Promote into `main`, checked out clean in `f.repo`, with `race` run in
-/// the window between the publish's check and its move.
-fn promote_racing<'a>(f: &'a Fixture, race: impl FnOnce() + 'a) -> PromotionResult {
+/// Promote into `branch` (`main` is checked out clean in `f.repo`), with
+/// `race` run at `point`.
+fn promote_racing_at<'a>(
+    f: &'a Fixture,
+    branch: &str,
+    point: &'static str,
+    race: impl FnOnce() + 'a,
+) -> PromotionResult {
     let racy = Racy {
         git: &f.git,
+        point,
         race: RefCell::new(Some(Box::new(race))),
     };
     let v = f.validator(true);
@@ -739,10 +756,16 @@ fn promote_racing<'a>(f: &'a Fixture, race: impl FnOnce() + 'a) -> PromotionResu
         faults: &faults,
     };
     let got = engine
-        .promote(&f.candidate, &f.target("main"), &f.plan())
+        .promote(&f.candidate, &f.target(branch), &f.plan())
         .unwrap();
     assert!(racy.race.borrow().is_none(), "the race ran");
     got
+}
+
+/// Promote into `main` with `race` run in the window between the publish's
+/// check and its move.
+fn promote_racing<'a>(f: &'a Fixture, race: impl FnOnce() + 'a) -> PromotionResult {
+    promote_racing_at(f, "main", "cas:refs/heads/main", race)
 }
 
 #[test]
@@ -1113,6 +1136,92 @@ fn pro_05_cleanup_after_receipt_only() {
     assert_eq!(f.events()[3].payload["final_outcome"], "promoted");
 }
 
+/// The skip reasons, and the final outcome each starting state records.
+#[test]
+fn cleanup_outcome_per_starting_state() {
+    let Some(f) = Fixture::new() else { return };
+    let round = f.plan().round;
+    let faults = no_faults();
+    let skip = |state: RoundState, options: CleanupOptions| match f
+        .cleanup(&faults)
+        .run(&round, &round_view(state, &[&f.candidate]), options)
+        .unwrap()
+    {
+        CleanupOutcome::Skipped { reason } => reason,
+        other => panic!("{state}: {other:?}"),
+    };
+    assert_eq!(
+        skip(RoundState::Promoted, CleanupOptions::default()),
+        "round r-1 is PROMOTED but has no receipt yet"
+    );
+    assert_eq!(
+        skip(RoundState::NeedsIntervention, CleanupOptions::default()),
+        "round r-1 needs intervention; only the operator's cleanup removes its worktrees"
+    );
+    assert_eq!(
+        skip(RoundState::Running, CleanupOptions::default()),
+        "round r-1 is RUNNING; cleanup waits for its end"
+    );
+    assert!(f.candidate.worktree.exists());
+    assert!(f.kinds().is_empty());
+
+    // A rejected round: removed, recorded `rejected`.
+    let out = f
+        .cleanup(&faults)
+        .run(
+            &round,
+            &round_view(RoundState::Rejected, &[&f.candidate]),
+            CleanupOptions::default(),
+        )
+        .unwrap();
+    assert_eq!(
+        out,
+        CleanupOutcome::Done {
+            removed: vec!["A".into()],
+            failed: vec![]
+        }
+    );
+    assert_eq!(f.kinds(), ["round.cleanup_started", "round.completed"]);
+    assert_eq!(f.events()[1].payload["final_outcome"], "rejected");
+
+    // A restart in CLEANUP from NEEDS_INTERVENTION records no second
+    // `round.cleanup_started`, and completes as `needs_intervention`.
+    let Some(g) = Fixture::new() else { return };
+    let mut view = round_view(RoundState::Cleanup, &[&g.candidate]);
+    view.cleaned_from = None;
+    let out = g
+        .cleanup(&faults)
+        .run(&round, &view, CleanupOptions::default())
+        .unwrap();
+    assert!(matches!(out, CleanupOutcome::Done { .. }), "{out:?}");
+    assert_eq!(g.kinds(), ["round.completed"]);
+    assert_eq!(g.events()[0].payload["final_outcome"], "needs_intervention");
+
+    // A decided round records `winner`; a forced NEEDS_INTERVENTION round
+    // `needs_intervention`.
+    let Some(h) = Fixture::new() else { return };
+    h.cleanup(&faults)
+        .run(
+            &round,
+            &round_view(RoundState::Decided, &[&h.candidate]),
+            CleanupOptions::default(),
+        )
+        .unwrap();
+    assert_eq!(h.events()[1].payload["final_outcome"], "winner");
+    let Some(k) = Fixture::new() else { return };
+    k.cleanup(&faults)
+        .run(
+            &round,
+            &round_view(RoundState::NeedsIntervention, &[&k.candidate]),
+            CleanupOptions {
+                prune_branches: false,
+                force: true,
+            },
+        )
+        .unwrap();
+    assert_eq!(k.events()[1].payload["final_outcome"], "needs_intervention");
+}
+
 // ─── PRO-06 ─────────────────────────────────────────────────────────────────
 
 /// How many times the reflog saw `refname` change (creation included).
@@ -1458,4 +1567,221 @@ fn operator_promote_reenters_revalidation() {
         p.rounds.values().next().unwrap().state,
         RoundState::Complete
     );
+}
+
+// ─── promote exits and publish losses ───────────────────────────────────────
+
+fn reason_of(got: PromotionResult) -> String {
+    let PromotionResult::NeedsIntervention { reason } = got else {
+        panic!("{got:?}")
+    };
+    reason
+}
+
+#[test]
+fn promote_refuses_a_round_that_has_a_receipt() {
+    let Some(f) = Fixture::new() else { return };
+    let v = f.validator(true);
+    let faults = no_faults();
+    let engine = f.engine(&v, &faults);
+    let target = f.target("target");
+    engine.promote(&f.candidate, &target, &f.plan()).unwrap();
+    let err = engine
+        .promote(&f.candidate, &target, &f.plan())
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("round r-1 is already promoted"), "{err}");
+    assert_eq!(f.rev("refs/heads/target"), f.candidate.head_sha);
+    assert_eq!(f.kinds(), ["promotion.started", "promotion.completed"]);
+}
+
+#[test]
+fn an_unchecked_out_target_that_moves_before_the_swap_is_lost() {
+    let Some(f) = Fixture::new() else { return };
+    let other = f.freeze("B", "other.txt");
+    let got = promote_racing_at(&f, "target", "cas:refs/heads/target", || {
+        f.sh(&f.repo, &["branch", "-f", "target", &other.head_sha]);
+    });
+    let reason = reason_of(got);
+    assert_eq!(
+        reason,
+        format!("refs/heads/target moved from {} before the update", f.base)
+    );
+    assert_eq!(f.rev("refs/heads/target"), other.head_sha);
+    assert_eq!(f.kinds(), ["promotion.started", "round.needs_intervention"]);
+    assert_eq!(f.temp_branches(), "");
+}
+
+#[test]
+fn a_checkout_edited_before_the_publish_check_is_lost() {
+    let Some(f) = Fixture::new() else { return };
+    let got = promote_racing_at(&f, "main", "current_branch", || {
+        std::fs::write(f.repo.join("b.txt"), "late edit\n").unwrap();
+    });
+    let reason = reason_of(got);
+    assert!(
+        reason.contains("of refs/heads/main changed before the publish"),
+        "{reason}"
+    );
+    assert_eq!(f.rev("refs/heads/main"), f.base);
+    assert!(!f.repo.join("new.txt").exists());
+    assert_eq!(f.kinds(), ["promotion.started", "round.needs_intervention"]);
+}
+
+#[test]
+fn a_commit_between_the_swap_and_the_tree_update_is_lost() {
+    let Some(f) = Fixture::new() else { return };
+    let got = promote_racing_at(&f, "main", "read_tree_update", || {
+        f.sh(&f.repo, &["commit", "-q", "--allow-empty", "-m", "racer"]);
+    });
+    let reason = reason_of(got);
+    assert!(
+        reason.contains("of refs/heads/main is not at")
+            && reason.contains(&f.candidate.head_sha)
+            && reason.contains("after the publish"),
+        "{reason}"
+    );
+    assert_eq!(f.kinds(), ["promotion.started", "round.needs_intervention"]);
+    assert!(!f.paths.promotion(&f.plan().round).unwrap().exists());
+}
+
+#[test]
+fn a_restart_finds_a_target_that_is_neither_before_nor_after() {
+    let Some(f) = Fixture::new() else { return };
+    let v = f.validator(true);
+    let crash = Faults::parse(Some(ABORT_AFTER_PROMOTION_STARTED));
+    let target = f.target("target");
+    f.engine(&v, &crash)
+        .promote(&f.candidate, &target, &f.plan())
+        .unwrap_err();
+    let started = started_of(&f.events());
+    let other = f.freeze("B", "other.txt");
+    f.sh(&f.repo, &["branch", "-f", "target", &other.head_sha]);
+    let got = f
+        .engine(&v, &no_faults())
+        .resume_promotion(&f.candidate, &target, &f.plan(), &started)
+        .unwrap();
+    assert_eq!(
+        reason_of(got),
+        format!(
+            "refs/heads/target is at {}, neither dest_before {} nor planned_after {}",
+            other.head_sha, f.base, f.candidate.head_sha
+        )
+    );
+    assert_eq!(f.rev("refs/heads/target"), other.head_sha);
+    assert_eq!(f.temp_branches(), "");
+}
+
+#[test]
+fn a_restart_at_dest_before_with_a_dirty_checkout_needs_the_operator() {
+    let Some(f) = Fixture::new() else { return };
+    let v = f.validator(true);
+    let crash = Faults::parse(Some(ABORT_AFTER_PROMOTION_STARTED));
+    let target = f.target("main");
+    f.engine(&v, &crash)
+        .promote(&f.candidate, &target, &f.plan())
+        .unwrap_err();
+    let started = started_of(&f.events());
+    std::fs::write(f.repo.join("a.txt"), "dirty\n").unwrap();
+    let got = f
+        .engine(&v, &no_faults())
+        .resume_promotion(&f.candidate, &target, &f.plan(), &started)
+        .unwrap();
+    assert!(reason_of(got).contains("checked out with local changes"));
+    assert_eq!(f.rev("refs/heads/main"), f.base);
+}
+
+// ─── rollback refusals ──────────────────────────────────────────────────────
+
+#[test]
+fn rollback_refusal_reasons() {
+    let Some(f) = Fixture::new() else { return };
+    let target = f.target("target");
+    let exp = f.plan().experiment;
+    let round = f.plan().round;
+    let v = f.validator(true);
+    let faults = no_faults();
+    f.engine(&v, &faults)
+        .promote(&f.candidate, &target, &f.plan())
+        .unwrap();
+
+    // A receipt for another ref is an error, not a refusal.
+    let err = f
+        .engine(&v, &faults)
+        .rollback(&exp, &round, &f.target("main"))
+        .unwrap_err()
+        .to_string();
+    assert!(
+        err.contains("is for refs/heads/target, not refs/heads/main"),
+        "{err}"
+    );
+
+    // The target moved after the promotion.
+    let other = f.freeze("B", "other.txt");
+    f.sh(&f.repo, &["branch", "-f", "target", &other.head_sha]);
+    let RollbackResult::NeedsIntervention { reason } = f
+        .engine(&v, &faults)
+        .rollback(&exp, &round, &target)
+        .unwrap()
+    else {
+        panic!("not refused")
+    };
+    assert_eq!(
+        reason,
+        format!(
+            "refs/heads/target moved to {} after the promotion to {}",
+            other.head_sha, f.candidate.head_sha
+        )
+    );
+    assert_eq!(f.rev("refs/heads/target"), other.head_sha);
+
+    // The target is checked out in a worktree.
+    f.sh(&f.repo, &["branch", "-f", "target", &f.candidate.head_sha]);
+    let held = f.root.join("held");
+    f.sh(
+        &f.repo,
+        &["worktree", "add", "-q", held.to_str().unwrap(), "target"],
+    );
+    let RollbackResult::NeedsIntervention { reason } = f
+        .engine(&v, &faults)
+        .rollback(&exp, &round, &target)
+        .unwrap()
+    else {
+        panic!("not refused")
+    };
+    assert!(
+        reason.contains("refs/heads/target is checked out in")
+            && reason.contains("a rollback would leave its files behind the branch"),
+        "{reason}"
+    );
+    assert_eq!(f.rev("refs/heads/target"), f.candidate.head_sha);
+    assert!(!f.kinds().contains(&"promotion.rolled_back".to_string()));
+    f.sh(
+        &f.repo,
+        &["worktree", "remove", "--force", held.to_str().unwrap()],
+    );
+
+    // The target moves during the rollback.
+    let racy = Racy {
+        git: &f.git,
+        point: "cas:refs/heads/target",
+        race: RefCell::new(Some(Box::new(|| {
+            f.sh(&f.repo, &["branch", "-f", "target", &other.head_sha]);
+        }))),
+    };
+    let engine = GitPromotionEngine {
+        git: &racy,
+        validator: &v,
+        recorder: &f.recorder,
+        paths: &f.paths,
+        faults: &faults,
+    };
+    let RollbackResult::NeedsIntervention { reason } =
+        engine.rollback(&exp, &round, &target).unwrap()
+    else {
+        panic!("not refused")
+    };
+    assert_eq!(reason, "refs/heads/target moved during the rollback");
+    assert_eq!(f.rev("refs/heads/target"), other.head_sha);
+    assert!(!f.kinds().contains(&"promotion.rolled_back".to_string()));
 }

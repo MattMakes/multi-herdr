@@ -122,27 +122,54 @@ fn stop_collector_in(state: &Path) {
     }
 }
 
-#[cfg(unix)]
-fn stop_collector(h: &Harness) {
-    stop_collector_in(&h.state);
-}
-
 /// Stops the collector when dropped, so a failing assert cannot leak it.
+/// `ensure` does not wait for the collector it starts, so this first waits
+/// for an outstanding start to end (the new collector removes
+/// `telemetry/start.json` once it holds the lock).
 #[cfg(unix)]
 struct CollectorGuard(PathBuf);
 
 #[cfg(unix)]
 impl Drop for CollectorGuard {
     fn drop(&mut self) {
+        let until = Instant::now() + harness::DEADLINE;
+        while self.0.join("telemetry/start.json").exists() && Instant::now() < until {
+            std::thread::sleep(Duration::from_millis(100));
+        }
         stop_collector_in(&self.0);
     }
+}
+
+/// Wait until the collector `ensure` started holds the lock and has ended
+/// its start: it closed the old workspaces and removed
+/// `telemetry/start.json`. No fixed time: the start takes what it takes.
+#[cfg(unix)]
+fn wait_started(h: &Harness) {
+    let start = h.state.join("telemetry/start.json");
+    let info = h.state.join("telemetry/collector.json");
+    harness::wait_for_or(
+        "the started collector to hold the lock",
+        || {
+            let record: Value = serde_json::from_str(&std::fs::read_to_string(&info).ok()?).ok()?;
+            let pid = u32::try_from(record["pid"].as_u64()?).ok()?;
+            let live = horch_core::procid::alive(pid, record["pid_start"].as_u64());
+            (live && !start.exists()).then_some(())
+        },
+        || {
+            format!(
+                "start.json: {:?}\nstarting.json: {:?}",
+                std::fs::read_to_string(&start).ok(),
+                std::fs::read_to_string(h.state.join("telemetry/starting.json")).ok()
+            )
+        },
+    );
 }
 
 /// Hold the collector lock as if a live collector (this test process) ran
 /// the horch binary under test: it records that binary and its own start
 /// time, as a current collector does.
 fn hold_lock(h: &Harness) {
-    let identity = horch_core::telemetry::lock::exe_identity(&Harness::horch_bin())
+    let identity = horch_core::exeid::exe_identity(&Harness::horch_bin())
         .expect("the horch binary under test has an identity");
     let mut record = serde_json::json!({
         "pid": std::process::id(),
@@ -752,8 +779,11 @@ fn spc_02_viewer_when_locked() {
 fn spc_03_ensure_argv() {
     let mut h = corpus("spc03");
     h.set("HORCH_FAKE_SCENARIO", "exec");
+    let _guard = CollectorGuard(h.state.clone());
     let out = h.run(&["telemetry", "ensure"]);
     assert!(out.status.success(), "{}\n{}", stdout(&out), stderr(&out));
+    // The collector closes nothing: there is no old collector workspace.
+    wait_started(&h);
     // Besides the read-only `workspace list` that looks for an old
     // collector workspace (W17), only these 2 calls.
     let calls: Vec<Vec<String>> = h
@@ -770,7 +800,6 @@ fn spc_03_ensure_argv() {
     assert!(calls[0].contains(&"--no-focus".to_string()), "{calls:?}");
     assert_eq!(calls[1][..2], ["pane", "run"]);
     assert!(h.violations().is_empty(), "{:?}", h.violations());
-    stop_collector(&h);
 }
 
 #[test]
@@ -885,7 +914,8 @@ fn herdr_violations(h: &Harness) -> Vec<String> {
 }
 
 /// W17 (SPC-03): a restart after a dead collector runs the new one in the
-/// old collector workspace and closes the other old one. herdr then holds 1
+/// old collector workspace, and the new one closes the other old one once
+/// it holds the lock. herdr then holds 1
 /// `horch telemetry` workspace. A workspace with another label stays.
 #[cfg(unix)]
 #[test]
@@ -904,6 +934,7 @@ fn spc_03_restart_after_a_dead_collector_leaves_1_telemetry_workspace() {
     let _guard = CollectorGuard(h.state.clone());
     let out = h.run(&["telemetry", "ensure"]);
     assert!(out.status.success(), "{}\n{}", stdout(&out), stderr(&out));
+    wait_started(&h);
     assert_eq!(
         workspaces_of(&h),
         [
@@ -923,7 +954,8 @@ fn spc_03_restart_after_a_dead_collector_leaves_1_telemetry_workspace() {
 }
 
 /// W17: an old collector workspace that cannot be reused (it has 2 panes)
-/// is closed after the new collector, in a new workspace, holds the lock.
+/// is closed by the new collector, in a new workspace, once it holds the
+/// lock.
 #[cfg(unix)]
 #[test]
 fn spc_03_restart_closes_an_old_workspace_it_cannot_reuse() {
@@ -933,6 +965,7 @@ fn spc_03_restart_closes_an_old_workspace_it_cannot_reuse() {
     let _guard = CollectorGuard(h.state.clone());
     let out = h.run(&["telemetry", "ensure"]);
     assert!(out.status.success(), "{}\n{}", stdout(&out), stderr(&out));
+    wait_started(&h);
     assert_eq!(
         workspaces_of(&h),
         [

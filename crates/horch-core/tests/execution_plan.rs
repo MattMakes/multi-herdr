@@ -222,7 +222,7 @@ fn row(result: Result<ExecutionPlan, PlanError>) -> Row {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments)] // test row builder: the arguments are the row columns
 fn ok(
     decision: &str,
     teammate: &str,

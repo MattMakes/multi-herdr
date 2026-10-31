@@ -12,18 +12,18 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use anyhow::Result;
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use horch_core::compaction::jobfile::{self, LOG_FILE};
 use horch_core::compaction::policy::{self, JobLiveness, RowInputs, RowState, EVENT_FAILED};
 use horch_core::compaction::window::{self, WindowDecision, WindowSource, HEADROOM_FLOOR};
 use horch_core::execution::legacy::Record;
-use horch_core::execution::records::Ledger;
+use horch_core::execution::records::SessionLedger;
 use horch_core::harness::codex::PaneMode;
 use horch_core::harness::{launch, HarnessKind};
 use horch_core::roster::{Roster, Teammate};
 use horch_core::routing::decision::merge;
 use horch_core::runtime::RuntimeContext;
-use horch_core::telemetry::context::{read_current, Reading};
+use horch_core::telemetry::context::{read_current, CompactionMark, Reading};
 use horch_core::telemetry::readers::Unreadable;
 use horch_core::usage::Locations;
 use horch_core::workspace::client::WorkspaceClient;
@@ -38,7 +38,7 @@ const NONE_OVER: &str = "no session is over its threshold";
 /// temp ledger and a fixture home.
 pub(crate) struct Sources<'a> {
     pub ctx: &'a RuntimeContext,
-    pub ledger: &'a Ledger,
+    pub ledger: &'a SessionLedger,
     pub roster: &'a Roster,
     pub loc: &'a Locations,
     /// `<state_root>/context`: the marker cache.
@@ -67,6 +67,8 @@ pub(crate) struct Row {
     pub job: JobLiveness,
     pub job_dir: PathBuf,
     pub state: RowState,
+    /// When the row was built; the age of an ask is measured to it.
+    pub now: DateTime<Utc>,
     /// The mode of a Codex pane with `permission_mode: plan` (X6); None for
     /// every other row.
     pub mode: Option<PaneMode>,
@@ -79,6 +81,7 @@ impl Row {
             threshold: self.threshold,
             history: &self.record.history,
             job: &self.job,
+            now: self.now,
         }
     }
 
@@ -111,9 +114,28 @@ impl Row {
                 _,
                 Err(why),
             ) => why.to_string(),
+            (RowState::CompactFailed, _, Ok(_)) => {
+                let failed =
+                    policy::failed_after_ask(&self.record.history, self.last_compaction())?;
+                // The text can hold subprocess output: 1 line, no control characters.
+                let text: String = failed
+                    .text
+                    .chars()
+                    .map(|c| if c.is_control() { ' ' } else { c })
+                    .collect();
+                format!("the compaction failed at {}: {text}", failed.at)
+            }
             (RowState::Unknown, _, Ok(_)) => "the transcript has no usable response".into(),
             _ => return None,
         })
+    }
+
+    /// The newest compaction marker of the transcript, when it reads.
+    pub fn last_compaction(&self) -> Option<&CompactionMark> {
+        self.reading
+            .as_ref()
+            .ok()
+            .and_then(|r| r.last_compaction.as_ref())
     }
 
     /// The token count, when the reading has one.
@@ -234,6 +256,7 @@ pub(crate) fn build_row(src: &Sources, record: Record, workspace: Option<&str>) 
         job,
         job_dir,
         state: RowState::Ok,
+        now: horch_core::clock::now(),
     };
     row.state = policy::classify(&row.inputs());
     row
@@ -273,14 +296,16 @@ fn decide_now(src: &Sources, record: &Record) -> WindowDecision {
 }
 
 /// The records `horch context` shows: live orchestrators, newest first, then
-/// 1 live record per worker role (the newest `updated_at`), by role.
+/// 1 live record per workspace and worker role (the newest `updated_at`), by role.
 pub(crate) fn shown_records(records: &[Record]) -> Vec<Record> {
     let live = || records.iter().filter(|r| r.execution_status().is_live());
     let mut orchestrators: Vec<&Record> = live().filter(|r| r.is_orchestrator()).collect();
     orchestrators.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
-    let mut workers: std::collections::BTreeMap<&str, &Record> = Default::default();
+    let mut workers: std::collections::BTreeMap<(Option<&str>, &str), &Record> = Default::default();
     for r in live().filter(|r| !r.is_orchestrator()) {
-        let slot = workers.entry(r.role.as_str()).or_insert(r);
+        let slot = workers
+            .entry((r.workspace_id.as_deref(), r.role.as_str()))
+            .or_insert(r);
         if r.updated_at > slot.updated_at {
             *slot = r;
         }
@@ -293,31 +318,30 @@ pub(crate) fn shown_records(records: &[Record]) -> Vec<Record> {
 }
 
 /// `horch context [--over] [--windows] [--json]`.
+#[allow(dead_code)]
 pub fn context(ctx: &RuntimeContext, over: bool, windows: bool, json: bool) -> Result<ExitCode> {
-    let roster = match super::load_roster(ctx, None) {
-        Ok(r) => r,
-        Err(_) => Roster::builtin()?,
+    context_filtered(ctx, over, windows, json, false, false, None)
+}
+
+pub fn context_filtered(
+    ctx: &RuntimeContext,
+    over: bool,
+    windows: bool,
+    json: bool,
+    all_workspaces: bool,
+    live: bool,
+    role: Option<&str>,
+) -> Result<ExitCode> {
+    let filter = super::sessionscmd::SessionFilter {
+        all_workspaces,
+        live,
+        role,
     };
-    if windows {
-        let workdir = ctx.paths.current_dir()?;
-        crate::output::print(&windows_table(ctx, &roster, &workdir));
-        return Ok(ExitCode::SUCCESS);
-    }
-    let ledger = Ledger::open_in(ctx)?;
-    let loc = Locations::from_context(ctx);
-    let cache = cache_dir(ctx);
-    let src = Sources {
-        ctx,
-        ledger: &ledger,
-        roster: &roster,
-        loc: &loc,
-        cache_dir: &cache,
-    };
-    let herdr = Herdr::with_bin(&ctx.bins.harness.herdr);
-    let out = if json {
-        context_json(&src, &herdr)
+    let roster = super::load_roster(ctx, None).or_else(|_| Roster::builtin())?;
+    let out = if windows {
+        Ok(windows_table(ctx, &roster, &ctx.paths.current_dir()?))
     } else {
-        context_text(&src, over)
+        report(ctx, &roster, over, json, filter)?
     };
     match out {
         Ok(text) => {
@@ -331,16 +355,75 @@ pub fn context(ctx: &RuntimeContext, over: bool, windows: bool, json: bool) -> R
     }
 }
 
+/// The text or JSON report of the ledger. The outer `Err` is a setup that
+/// failed (the ledger does not open); the inner one is a report that did not
+/// read, which `context_filtered` prints.
+fn report(
+    ctx: &RuntimeContext,
+    roster: &Roster,
+    over: bool,
+    json: bool,
+    filter: super::sessionscmd::SessionFilter<'_>,
+) -> Result<Result<String>> {
+    let ledger = SessionLedger::open_in(ctx)?;
+    let loc = Locations::from_context(ctx);
+    let cache = cache_dir(ctx);
+    let src = Sources {
+        ctx,
+        ledger: &ledger,
+        roster,
+        loc: &loc,
+        cache_dir: &cache,
+    };
+    let herdr = Herdr::with_bin(&ctx.bins.harness.herdr);
+    Ok(if json {
+        context_json_matching(&src, &herdr, filter)
+    } else {
+        context_text_matching(&src, over, filter).map(|text| {
+            match context_json_matching(&src, &herdr, filter) {
+                Ok(json) => append_pane_gone(text, &json),
+                Err(_) => text,
+            }
+        })
+    })
+}
+
+/// `<role>: (pane gone)` for each row of the JSON report whose pane is gone
+/// and whose role starts a line of `text`.
+fn append_pane_gone(mut text: String, json: &str) -> String {
+    let rows: Vec<serde_json::Value> = serde_json::from_str(json).unwrap_or_default();
+    let gone = rows.iter().filter(|r| r["pane_gone"] == true);
+    for role in gone.filter_map(|r| r["role"].as_str()) {
+        if text.lines().any(|line| line.starts_with(role)) {
+            text.push_str(&format!("{role}: (pane gone)\n"));
+        }
+    }
+    text
+}
+
 /// The text of `horch context` (`--over`: only rows in `over`, `requested`
 /// or `compact-lost`). Err only when the ledger does not read.
+#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn context_text(src: &Sources, over: bool) -> Result<String> {
-    let rows: Vec<Row> = shown_rows(src)?
+    context_text_matching(src, over, super::sessionscmd::SessionFilter::default())
+}
+
+fn context_text_matching(
+    src: &Sources,
+    over: bool,
+    filter: super::sessionscmd::SessionFilter<'_>,
+) -> Result<String> {
+    let rows: Vec<Row> = shown_rows_matching(src, filter)?
         .into_iter()
         .filter(|row| {
             !over
                 || matches!(
                     row.state,
-                    RowState::Over | RowState::Requested | RowState::CompactLost
+                    RowState::Over
+                        | RowState::Requested
+                        | RowState::RequestStale
+                        | RowState::CompactLost
+                        | RowState::CompactFailed
                 )
         })
         .collect();
@@ -351,9 +434,17 @@ pub(crate) fn context_text(src: &Sources, over: bool) -> Result<String> {
 }
 
 /// The rows of every shown record. Err only when the ledger does not read.
-fn shown_rows(src: &Sources) -> Result<Vec<Row>> {
-    let records = src.ledger.read()?;
+fn shown_rows_matching(
+    src: &Sources,
+    filter: super::sessionscmd::SessionFilter<'_>,
+) -> Result<Vec<Row>> {
     let workspace = caller_workspace(src.ctx);
+    let records: Vec<_> = src
+        .ledger
+        .read()?
+        .into_iter()
+        .filter(|r| filter.matches(workspace.as_deref(), r))
+        .collect();
     Ok(shown_records(&records)
         .into_iter()
         .map(|r| build_row(src, r, workspace.as_deref()))
@@ -362,7 +453,7 @@ fn shown_rows(src: &Sources) -> Result<Vec<Row>> {
 
 /// The herdr workspace of the caller, if it runs in one.
 fn caller_workspace(ctx: &RuntimeContext) -> Option<String> {
-    ctx.herdr.workspace.as_ref().map(|w| w.to_string())
+    super::sessionscmd::caller_workspace(ctx)
 }
 
 /// 1 object of `horch context --json` (CTX-24, design §6.10). The field
@@ -379,6 +470,7 @@ pub(crate) struct JsonRow {
     pub pane: Option<String>,
     /// herdr's `agent_status` of that pane.
     pub pane_status: Option<String>,
+    pub pane_gone: bool,
     pub tokens: Option<u64>,
     /// None when the transcript does not read.
     pub provisional: Option<bool>,
@@ -421,8 +513,17 @@ pub(crate) struct JsonCompaction {
 
 /// The `--json` array: 1 object per row, in the order of the text table.
 /// Err only when the ledger does not read.
+#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn context_json(src: &Sources, ws: &dyn WorkspaceClient) -> Result<String> {
-    let rows = shown_rows(src)?;
+    context_json_matching(src, ws, super::sessionscmd::SessionFilter::default())
+}
+
+fn context_json_matching(
+    src: &Sources,
+    ws: &dyn WorkspaceClient,
+    filter: super::sessionscmd::SessionFilter<'_>,
+) -> Result<String> {
+    let rows = shown_rows_matching(src, filter)?;
     let caller = caller_workspace(src.ctx);
     // 1 `pane list` per workspace; None: herdr did not answer.
     let mut panes: BTreeMap<String, Option<Vec<Pane>>> = BTreeMap::new();
@@ -438,7 +539,17 @@ pub(crate) fn context_json(src: &Sources, ws: &dyn WorkspaceClient) -> Result<St
                     .and_then(|list| list.iter().find(|p| p.pane_id == id)),
                 _ => None,
             };
-            json_row(src, row, pane)
+            let mut json = json_row(src, row, pane);
+            json.pane_gone = row.record.pane_id.is_some()
+                && pane.is_none()
+                && row
+                    .record
+                    .workspace_id
+                    .as_ref()
+                    .or(caller.as_ref())
+                    .and_then(|w| panes.get(w))
+                    .is_some_and(Option::is_some);
+            json
         })
         .collect();
     Ok(format!("{}\n", serde_json::to_string_pretty(&out)?))
@@ -456,6 +567,7 @@ fn json_row(src: &Sources, row: &Row, pane: Option<&Pane>) -> JsonRow {
         transcript: reading.map(|r| r.transcript.clone()),
         pane: pane.map(|p| p.pane_id.clone()),
         pane_status: pane.and_then(|p| p.agent_status.clone()),
+        pane_gone: false,
         tokens: row.tokens(),
         provisional: reading.map(|r| r.provisional),
         pending: reading.map(|r| r.pending),
@@ -490,10 +602,24 @@ fn json_row(src: &Sources, row: &Row, pane: Option<&Pane>) -> JsonRow {
 /// STATE of the text table: a plan pane left in write mode gets ` [write]`,
 /// so the orchestrator sees a pane to switch back (X6).
 fn state_text(row: &Row) -> String {
-    match row.mode {
-        Some(PaneMode::Write) => format!("{} [write]", row.state.as_str()),
+    let name = match row.state {
+        RowState::Requested | RowState::RequestStale => match ask_age_text(row) {
+            Some(age) => format!("{} ({age})", row.state.as_str()),
+            None => row.state.as_str().into(),
+        },
         _ => row.state.as_str().into(),
+    };
+    match row.mode {
+        Some(PaneMode::Write) => format!("{name} [write]"),
+        _ => name,
     }
+}
+
+/// `asked 12m ago` for the newest ask of the cycle.
+fn ask_age_text(row: &Row) -> Option<String> {
+    let age = policy::ask_age(&row.record.history, row.last_compaction(), row.now)?;
+    // The age rounds down to whole minutes.
+    Some(format!("asked {}m ago", age.as_secs() / 60))
 }
 
 /// The table of rows and its `reasons:` block.
@@ -571,56 +697,70 @@ pub(crate) fn windows_table(ctx: &RuntimeContext, roster: &Roster, workdir: &Pat
     ]);
     let mut names = roster.names();
     names.sort_unstable();
-    for name in names {
-        let Some(teammate) = roster.get(name) else {
-            continue;
-        };
-        let kind = teammate.agent;
-        let trigger = kind.capabilities().compaction.trigger;
-        if trigger == horch_core::harness::capabilities::TriggerRule::Unknown {
-            continue;
-        }
-        let model = teammate.model.clone().unwrap_or_default();
-        let decision = launch::window_decision(
-            ctx,
-            teammate,
-            &model,
-            workdir,
-            roster.fleet_window(teammate, &model),
-        );
-        let native = window::native_trigger(trigger, kind.as_str(), &model, decision.tokens, None);
-        let threshold = window::threshold(policy::watch_base(teammate.compact_at), native);
-        let headroom = native.map_or_else(
-            || "-".to_string(),
-            |n| {
-                let h = window::headroom(n, threshold);
-                if h < HEADROOM_FLOOR {
-                    format!("{} WARN", grouped(h))
-                } else {
-                    grouped(h)
-                }
-            },
-        );
-        t.push(vec![
-            teammate.name.clone(),
-            kind.as_str().into(),
-            if model.is_empty() { "-".into() } else { model },
-            number(decision.tokens),
-            source_text(decision.source, false),
-            number(native),
-            grouped(policy::watch_base(teammate.compact_at)),
-            if teammate.compact_at.is_some() {
-                "teammate"
-            } else {
-                "fleet base"
-            }
-            .into(),
-            grouped(threshold),
-            headroom,
-            home_relative(&decision.detail, &ctx.paths.home),
-        ]);
+    let shown = names
+        .into_iter()
+        .filter_map(|name| roster.get(name))
+        .filter(|teammate| {
+            teammate.agent.capabilities().compaction.trigger
+                != horch_core::harness::capabilities::TriggerRule::Unknown
+        });
+    for teammate in shown {
+        t.push(window_row(ctx, roster, teammate, workdir));
     }
     t.render()
+}
+
+/// The 11 cells of 1 teammate in the `--windows` table.
+fn window_row(
+    ctx: &RuntimeContext,
+    roster: &Roster,
+    teammate: &Teammate,
+    workdir: &Path,
+) -> Vec<String> {
+    let kind = teammate.agent;
+    let trigger = kind.capabilities().compaction.trigger;
+    let model = teammate.model.clone().unwrap_or_default();
+    let decision = launch::window_decision(
+        ctx,
+        teammate,
+        &model,
+        workdir,
+        roster.fleet_window(teammate, &model),
+    );
+    let native = window::native_trigger(trigger, kind.as_str(), &model, decision.tokens, None);
+    let threshold = window::threshold(policy::watch_base(teammate.compact_at), native);
+    vec![
+        teammate.name.clone(),
+        kind.as_str().into(),
+        if model.is_empty() { "-".into() } else { model },
+        number(decision.tokens),
+        source_text(decision.source, false),
+        number(native),
+        grouped(policy::watch_base(teammate.compact_at)),
+        base_source(teammate.compact_at).into(),
+        grouped(threshold),
+        headroom_cell(native, threshold),
+        home_relative(&decision.detail, &ctx.paths.home),
+    ]
+}
+
+/// The HEADROOM cell: `-` with no native trigger, else the headroom with
+/// ` WARN` under [`HEADROOM_FLOOR`].
+fn headroom_cell(native: Option<u64>, threshold: u64) -> String {
+    match native.map(|n| window::headroom(n, threshold)) {
+        None => "-".into(),
+        Some(h) if h < HEADROOM_FLOOR => format!("{} WARN", grouped(h)),
+        Some(h) => grouped(h),
+    }
+}
+
+/// The FROM cell: where the watch base comes from.
+fn base_source(compact_at: Option<u64>) -> &'static str {
+    if compact_at.is_some() {
+        "teammate"
+    } else {
+        "fleet base"
+    }
 }
 
 /// The SOURCE column: `operator`, `fleet` or `harness`, with ` (now)` when
@@ -752,7 +892,7 @@ pub(crate) mod testkit {
     pub struct World {
         pub tmp: tempfile::TempDir,
         pub ctx: RuntimeContext,
-        pub ledger: Ledger,
+        pub ledger: SessionLedger,
         pub roster: Roster,
         pub loc: Locations,
         pub cache: PathBuf,
@@ -791,7 +931,7 @@ pub(crate) mod testkit {
             )
             .unwrap();
             let ctx = RuntimeContext::from_env(&f(env)).unwrap();
-            let ledger = Ledger::open_in(&ctx).unwrap();
+            let ledger = SessionLedger::open_in(&ctx).unwrap();
             let loc = Locations::from_context(&ctx);
             let cache = cache_dir(&ctx);
             World {
@@ -913,6 +1053,11 @@ pub(crate) mod testkit {
             .unwrap();
             dir
         }
+    }
+
+    /// The stamp of `m` minutes ago.
+    pub fn minutes_ago(m: i64) -> String {
+        horch_core::clock::stamp(horch_core::clock::now() - chrono::Duration::minutes(m))
     }
 
     /// A pid that ran and has exited.
@@ -1124,7 +1269,13 @@ mod tests {
             .collect();
         assert_eq!(roles, ["sonnet-1", "sonnet-3"], "{out}");
         assert!(out.lines().nth(1).unwrap().ends_with("over"));
-        assert!(out.lines().nth(2).unwrap().ends_with("requested"));
+        assert!(
+            out.lines()
+                .nth(2)
+                .unwrap()
+                .ends_with("requested (asked 0m ago)"),
+            "{out}"
+        );
     }
 
     /// CTX-09, CTX-15: a lost job shows in `--over` with its reason.
@@ -1144,6 +1295,44 @@ mod tests {
                 "  sonnet-1: compact-lost: the compaction job is lost at step wait-marker; log {}",
                 dir.join("job.log").display()
             )
+        );
+    }
+
+    /// #75: `--over` lists a stale ask with its age.
+    #[test]
+    fn over_prints_the_age_of_a_requested_and_a_stale_ask() {
+        let w = World::new();
+        w.worker("r-1", "sonnet-1", "claude", "sonnet", Some(OVER));
+        w.worker("r-2", "sonnet-2", "claude", "sonnet", Some(OVER));
+        let ago = minutes_ago;
+        w.event_at("r-1", &ago(5), "compact-requested", "");
+        w.event_at("r-2", &ago(25), "compact-requested", "");
+        let out = text(&w, true);
+        let state = |role: &str| {
+            let line = out.lines().find(|l| l.starts_with(role)).expect(role);
+            line.split("  ").last().unwrap().trim().to_string()
+        };
+        assert_eq!(state("sonnet-1"), "requested (asked 5m ago)", "{out}");
+        assert_eq!(state("sonnet-2"), "request-stale (asked 25m ago)", "{out}");
+    }
+
+    /// #75: a failure after the ask lists the role with the failed step.
+    #[test]
+    fn over_lists_a_compact_failed_row_with_its_step() {
+        let w = World::new();
+        w.worker("r-1", "sonnet-1", "claude", "sonnet", Some(OVER));
+        let ago = minutes_ago;
+        w.event_at("r-1", &ago(10), "compact-requested", "");
+        w.event_at("r-1", &ago(5), EVENT_FAILED, "step wait-idle: timed out");
+        let out = text(&w, true);
+        let lines: Vec<&str> = out.lines().collect();
+        assert_eq!(lines.len(), 4, "{out}");
+        assert!(lines[1].ends_with("compact-failed"), "{out}");
+        assert_eq!(lines[2], "reasons:");
+        assert!(
+            lines[3].starts_with("  sonnet-1: compact-failed: the compaction failed at ")
+                && lines[3].ends_with(": step wait-idle: timed out"),
+            "{out}"
         );
     }
 
@@ -1237,5 +1426,43 @@ mod tests {
         assert_eq!(grouped(1_000), "1,000");
         assert_eq!(grouped(311_225), "311,225");
         assert_eq!(grouped(1_000_000), "1,000,000");
+    }
+
+    #[test]
+    fn headroom_cell_marks_a_thin_margin_and_an_unknown_trigger() {
+        assert_eq!(headroom_cell(None, 100_000), "-");
+        assert_eq!(headroom_cell(Some(1_000_000), 100_000), "900,000");
+        let thin = HEADROOM_FLOOR - 1;
+        assert_eq!(
+            headroom_cell(Some(100_000 + thin), 100_000),
+            format!("{} WARN", grouped(thin))
+        );
+        // The floor itself is not thin.
+        assert_eq!(
+            headroom_cell(Some(100_000 + HEADROOM_FLOOR), 100_000),
+            grouped(HEADROOM_FLOOR)
+        );
+    }
+
+    #[test]
+    fn base_source_names_the_teammate_or_the_fleet() {
+        assert_eq!(base_source(Some(250_000)), "teammate");
+        assert_eq!(base_source(None), "fleet base");
+    }
+
+    #[test]
+    fn pane_gone_rows_are_appended_only_for_roles_the_text_shows() {
+        let json = r#"[
+            {"role":"sonnet-1","pane_gone":true},
+            {"role":"sonnet-2","pane_gone":false},
+            {"role":"ghost-9","pane_gone":true},
+            {"role":null,"pane_gone":true}
+        ]"#;
+        let text = "sonnet-1  claude  ok\nsonnet-2  claude  ok\n".to_string();
+        assert_eq!(
+            append_pane_gone(text.clone(), json),
+            format!("{text}sonnet-1: (pane gone)\n")
+        );
+        assert_eq!(append_pane_gone(text.clone(), "not json"), text);
     }
 }

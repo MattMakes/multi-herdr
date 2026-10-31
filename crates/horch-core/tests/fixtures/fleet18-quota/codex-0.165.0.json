@@ -1,0 +1,73 @@
+{
+  "id": 2,
+  "result": {
+    "ordinaryUsageAllowed": true,
+    "rateLimits": {
+      "limitId": "codex",
+      "limitName": null,
+      "normalModelSlug": null,
+      "primary": {
+        "usedPercent": 85,
+        "windowDurationMins": 10080,
+        "resetsAt": 1793783734
+      },
+      "secondary": null,
+      "credits": {
+        "hasCredits": false,
+        "unlimited": false,
+        "balance": "0"
+      },
+      "individualLimit": null,
+      "spendControlReached": false,
+      "planType": "pro",
+      "rateLimitReachedType": null
+    },
+    "rateLimitsByLimitId": {
+      "codex": {
+        "limitId": "codex",
+        "limitName": null,
+        "normalModelSlug": null,
+        "primary": {
+          "usedPercent": 85,
+          "windowDurationMins": 10080,
+          "resetsAt": 1793783734
+        },
+        "secondary": null,
+        "credits": {
+          "hasCredits": false,
+          "unlimited": false,
+          "balance": "0"
+        },
+        "individualLimit": null,
+        "spendControlReached": false,
+        "planType": "pro",
+        "rateLimitReachedType": null
+      }
+    },
+    "rateLimitResetCredits": {
+      "availableCount": 2,
+      "credits": [
+        {
+          "id": "scrubbed-reset-credit-1",
+          "resetType": "codexRateLimits",
+          "status": "available",
+          "grantedAt": 1790708138,
+          "expiresAt": 1793300138,
+          "title": "Full reset",
+          "description": "Thanks for using Codex! You've been granted one free rate limit reset."
+        },
+        {
+          "id": "scrubbed-reset-credit-2",
+          "resetType": "codexRateLimits",
+          "status": "available",
+          "grantedAt": 1791415496,
+          "expiresAt": 1794007496,
+          "title": "Full reset",
+          "description": "Thanks for using Codex! You've been granted one free rate limit reset."
+        }
+      ]
+    },
+    "accountId": "scrubbed",
+    "rateLimitUpsell": null
+  }
+}

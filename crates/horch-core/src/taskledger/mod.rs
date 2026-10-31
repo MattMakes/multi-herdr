@@ -11,15 +11,18 @@ pub mod map;
 pub mod model;
 pub mod runs;
 pub mod schema;
+pub mod sql_words;
 pub mod status;
 pub mod stop;
 pub mod store;
 pub mod supervisor;
 pub mod tasks;
 pub mod timer;
+pub mod triage;
 pub mod util;
 pub mod watchdog;
 pub mod workers;
+pub mod worktree_ops;
 
 pub use store::Store;
 
@@ -27,7 +30,17 @@ use anyhow::Result;
 
 use crate::runtime::RuntimeContext;
 
-/// Open the ledger this context names.
+/// Open the ledger this context names. It creates the file when it does not
+/// exist; a caller that only reads uses [`open_existing`].
 pub fn open(ctx: &RuntimeContext) -> Result<Store> {
     Store::open(&ctx.paths.ledger_db)
+}
+
+/// Open the ledger this context names only when its file exists. A ledger
+/// that does not exist has no runs, and a read must not create it (#199).
+pub fn open_existing(ctx: &RuntimeContext) -> Result<Option<Store>> {
+    if !ctx.paths.ledger_db.is_file() {
+        return Ok(None);
+    }
+    open(ctx).map(Some)
 }
