@@ -1557,6 +1557,27 @@ mod tests {
         assert_eq!(std::fs::read_to_string(&real).unwrap(), "{}");
     }
 
+    /// opencode, pi, prime and the smoke harness show no trust dialog: the
+    /// skip names the harness, and no store is created.
+    #[test]
+    fn arc_29_a_harness_without_a_trust_step_is_skipped_by_name() {
+        let f = Fake::new();
+        for (harness, name) in [
+            (HarnessKind::OpenCode, "opencode"),
+            (HarnessKind::Pi, "pi"),
+            (HarnessKind::Prime, "prime"),
+            (HarnessKind::None, "none"),
+        ] {
+            assert_eq!(
+                f.ensure(harness, &f.project),
+                TrustWrite::Skipped(format!("{name} has no trust step")),
+                "{name}"
+            );
+        }
+        assert!(!f.claude_file().exists());
+        assert!(!f.codex_file().exists());
+    }
+
     #[test]
     fn arc_29_codex_table_appended_and_rest_of_file_byte_identical() {
         let f = Fake::new();
