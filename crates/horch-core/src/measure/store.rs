@@ -2,7 +2,10 @@
 //!
 //! `events/YYYY-MM-DD.jsonl`, one [`EventEnvelope`] per `\n`-terminated
 //! line, files 0600. Appends happen under the `events.lock` `DirLock`
-//! and are `sync_data`'d one by one. A crash can leave a torn last line;
+//! and are `sync_data`'d one by one. Readers fold the day files in name
+//! order, so read order must be append order: an event stamped on an
+//! earlier day than the newest day file goes to that newest file (see
+//! [`append_file`]). A crash can leave a torn last line;
 //! readers skip and count it, and the next append terminates it first so it
 //! never swallows a whole event.
 //!
@@ -15,6 +18,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use anyhow::{Context, Result};
+use chrono::NaiveDate;
 
 use crate::fsx::{self, DirLock, DirLockGuard};
 use crate::measure::event::EventEnvelope;
@@ -159,6 +163,25 @@ impl EventIndex {
     pub fn is_empty(&self) -> bool {
         self.by_key.is_empty()
     }
+}
+
+/// The day file an event of `day` goes to: its own, or the newest day file
+/// when that one is later. A writer whose clock is behind another's, across
+/// UTC midnight, would otherwise put its event before the events it
+/// follows, and the projection would refuse it. The caller holds the
+/// events lock.
+pub fn append_file(paths: &DatasetPaths, day: NaiveDate) -> Result<PathBuf> {
+    let newest = event_files(paths)?
+        .into_iter()
+        .filter_map(|file| day_of(&file))
+        .max();
+    Ok(paths.events_file(newest.map_or(day, |newest| newest.max(day))))
+}
+
+/// The UTC day a `YYYY-MM-DD.jsonl` file holds; `None` for another file.
+fn day_of(file: &Path) -> Option<NaiveDate> {
+    let stem = file.file_stem()?.to_str()?;
+    NaiveDate::parse_from_str(stem, "%Y-%m-%d").ok()
 }
 
 /// Take the events lock. Hold it across refresh, check and append.
