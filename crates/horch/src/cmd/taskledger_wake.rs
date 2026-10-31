@@ -4,8 +4,9 @@
 
 use horch_core::ids::WorkspaceId;
 use horch_core::runtime::RuntimeContext;
-use horch_core::taskledger::model::{Actor, EventKind};
+use horch_core::taskledger::model::{Actor, EventKind, WorktreeStatus};
 use horch_core::taskledger::runs::Run;
+use horch_core::taskledger::sql_words;
 use horch_core::taskledger::stop::Panes;
 use horch_core::taskledger::tasks;
 use horch_core::taskledger::util::{self, About};
@@ -79,8 +80,15 @@ pub fn after_done(ctx: &RuntimeContext, store: &Store, run: &Run) {
             let open_worktrees: i64 = store
                 .conn()
                 .query_row(
-                    "SELECT count(*) FROM worktrees w JOIN tasks t ON t.task_id = w.task_id
-                     WHERE t.run_id = ?1 AND w.status NOT IN ('cleaned', 'unlanded', 'abandoned')",
+                    &format!(
+                        "SELECT count(*) FROM worktrees w JOIN tasks t ON t.task_id = w.task_id
+                         WHERE t.run_id = ?1 AND w.status NOT IN ({settled})",
+                        settled = sql_words::list(&[
+                            WorktreeStatus::Cleaned,
+                            WorktreeStatus::Unlanded,
+                            WorktreeStatus::Abandoned
+                        ])
+                    ),
                     [&run.run_id],
                     |r| r.get(0),
                 )

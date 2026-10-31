@@ -19,7 +19,8 @@ use super::{human_bytes, listed_worktrees, refs, Row};
 use crate::runtime::process::scrub_child_env;
 use crate::taskledger::finish::{self, land, WorktreeRow};
 use crate::taskledger::git::{dir_bytes, Git};
-use crate::taskledger::model::{Actor, EventKind, TriageDecision, WorktreeStatus};
+use crate::taskledger::model::{Actor, EventKind, FindingStatus, TriageDecision, WorktreeStatus};
+use crate::taskledger::sql_words::word;
 use crate::taskledger::store::{optional, Store};
 use crate::taskledger::tasks::{self, NewTask};
 use crate::taskledger::util::{self, About};
@@ -171,11 +172,14 @@ fn adopt(conn: &Connection, root: &Path, row: &Row) -> Result<WorktreeRow> {
         |r| r.get(0),
     ))?;
     let id = existing.unwrap_or_else(util::new_id);
+    let abandoned = word(WorktreeStatus::Abandoned);
     conn.execute(
-        "INSERT INTO worktrees (worktree_id, repo_root, path, branch, base, base_commit, status, origin, created_at, reason)
-         VALUES (?1, ?2, ?3, ?4, ?5, NULL, 'abandoned', 'import', ?6, ?7)
-         ON CONFLICT(path) DO UPDATE SET status = 'abandoned', branch = ?4, base = ?5, reason = ?7,
-            decision = NULL, decided_at = NULL, cleaned_at = NULL",
+        &format!(
+            "INSERT INTO worktrees (worktree_id, repo_root, path, branch, base, base_commit, status, origin, created_at, reason)
+             VALUES (?1, ?2, ?3, ?4, ?5, NULL, {abandoned}, 'import', ?6, ?7)
+             ON CONFLICT(path) DO UPDATE SET status = {abandoned}, branch = ?4, base = ?5, reason = ?7,
+                decision = NULL, decided_at = NULL, cleaned_at = NULL"
+        ),
         params![
             id,
             root.to_string_lossy(),
@@ -218,11 +222,14 @@ fn record(
 ) -> Result<()> {
     let cleaned = done.bytes_freed.is_some();
     conn.execute(
-        "UPDATE worktrees SET decision = ?2, decided_at = ?3, status = COALESCE(?4, status),
-            archive_ref = COALESCE(?5, archive_ref),
-            bytes_freed = COALESCE(?6, bytes_freed, CASE WHEN status = 'cleaned' THEN bytes_on_disk END),
-            cleaned_at = CASE WHEN ?7 THEN ?3 ELSE cleaned_at END
-         WHERE worktree_id = ?1",
+        &format!(
+            "UPDATE worktrees SET decision = ?2, decided_at = ?3, status = COALESCE(?4, status),
+                archive_ref = COALESCE(?5, archive_ref),
+                bytes_freed = COALESCE(?6, bytes_freed, CASE WHEN status = {cleaned} THEN bytes_on_disk END),
+                cleaned_at = CASE WHEN ?7 THEN ?3 ELSE cleaned_at END
+             WHERE worktree_id = ?1",
+            cleaned = word(WorktreeStatus::Cleaned)
+        ),
         params![
             wt.worktree_id,
             d.as_str(),
@@ -242,8 +249,8 @@ fn record(
     )?;
     for f in &row.findings {
         let (status, note) = match &done.queued {
-            Some(q) => ("requeued", q.task_id.clone()),
-            None => ("dismissed", format!("worktree triage: {d}")),
+            Some(q) => (FindingStatus::Requeued, q.task_id.clone()),
+            None => (FindingStatus::Dismissed, format!("worktree triage: {d}")),
         };
         import::decide(conn, *f, status, "operator", &note)?;
     }
@@ -668,8 +675,11 @@ fn finish_decision(
     let task = store.immediate(|tx| {
         let task = tasks::add(tx, &run, &new, Actor::Operator)?;
         tx.execute(
-            "UPDATE worktrees SET task_id = ?2, worker_id = NULL, status = 'open', reason = NULL
-             WHERE worktree_id = ?1",
+            &format!(
+                "UPDATE worktrees SET task_id = ?2, worker_id = NULL, status = {open}, reason = NULL
+                 WHERE worktree_id = ?1",
+                open = word(WorktreeStatus::Open)
+            ),
             [&wt.worktree_id, &task.task_id],
         )?;
         Ok(task)
@@ -765,8 +775,11 @@ pub fn restore(store: &Store, git: &Git, root: &Path, name: &str) -> Result<Stri
     }
     if let Some((id, _)) = &row {
         store.conn().execute(
-            "UPDATE worktrees SET status = 'open', decision = NULL, decided_at = NULL, cleaned_at = NULL,
-                worker_id = NULL, reason = ?2 WHERE worktree_id = ?1",
+            &format!(
+                "UPDATE worktrees SET status = {open}, decision = NULL, decided_at = NULL, cleaned_at = NULL,
+                    worker_id = NULL, reason = ?2 WHERE worktree_id = ?1",
+                open = word(WorktreeStatus::Open)
+            ),
             params![id, format!("restored from {r}")],
         )?;
     }

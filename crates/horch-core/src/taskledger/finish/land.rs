@@ -10,6 +10,7 @@ use rusqlite::params;
 use super::{set_worktree, worktree_of, Ctx, Outcome, WorktreeRow};
 use crate::taskledger::git::{dir_bytes, Git};
 use crate::taskledger::model::{Actor, EventKind, StepName, WorktreeStatus};
+use crate::taskledger::sql_words::word;
 use crate::taskledger::store::Store;
 use crate::taskledger::util::{self, About};
 
@@ -610,8 +611,11 @@ fn red(
 /// The worktree's work is on the run branch at `new`.
 fn record_landed(store: &Store, wt: &WorktreeRow, new: &str) -> Result<()> {
     store.conn().execute(
-        "UPDATE worktrees SET status = 'landed', landed_commit = ?2, landed_at = ?3, reason = NULL
-         WHERE worktree_id = ?1",
+        &format!(
+            "UPDATE worktrees SET status = {landed}, landed_commit = ?2, landed_at = ?3, reason = NULL
+             WHERE worktree_id = ?1",
+            landed = word(WorktreeStatus::Landed)
+        ),
         params![wt.worktree_id, new, util::now()],
     )?;
     Ok(())
@@ -941,8 +945,11 @@ fn cleanup_failed(store: &Store, wt: &WorktreeRow, why: &str) -> Result<Outcome>
 
 fn removed(store: &Store, wt: &WorktreeRow, bytes: i64) -> Result<Outcome> {
     store.conn().execute(
-        "UPDATE worktrees SET status = 'cleaned', cleaned_at = ?2, bytes_on_disk = ?3, reason = NULL
-         WHERE worktree_id = ?1",
+        &format!(
+            "UPDATE worktrees SET status = {cleaned}, cleaned_at = ?2, bytes_on_disk = ?3, reason = NULL
+             WHERE worktree_id = ?1",
+            cleaned = word(WorktreeStatus::Cleaned)
+        ),
         params![wt.worktree_id, util::now(), bytes],
     )?;
     util::event(
