@@ -1,6 +1,7 @@
 //! MAIL-U1 durable delivery through the detached courier.
 
 use std::fs::File;
+use std::path::Path;
 use std::process::Output;
 
 use horch_e2e::harness::{wait_for_or, Harness};
@@ -12,6 +13,20 @@ fn text(output: &Output) -> String {
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     )
+}
+
+/// Whether a courier holds the lock at `path`; `None` before the file exists.
+/// A probe that takes the lock unlocks it before the close: a process that
+/// another test thread spawns at the close holds a copy of the file until it
+/// execs, the flock stays held while any copy is open, and a courier that
+/// starts then exits at once.
+fn courier_holds(path: &Path) -> Option<bool> {
+    let lock = File::options().read(true).write(true).open(path).ok()?;
+    if lock.try_lock().is_err() {
+        return Some(true);
+    }
+    let _ = lock.unlock();
+    Some(false)
 }
 
 fn fleet() -> Harness {
@@ -46,14 +61,7 @@ fn mail_u1_courier_redelivers_to_an_idle_orchestrator_until_inbox_acks() {
     let lock_path = harness.state.join("mail/w1/courier.lock");
     wait_for_or(
         "the courier lock",
-        || {
-            let lock = File::options()
-                .read(true)
-                .write(true)
-                .open(&lock_path)
-                .ok()?;
-            lock.try_lock().is_err().then_some(())
-        },
+        || courier_holds(&lock_path)?.then_some(()),
         || format!("calls: {:?}", harness.calls_of("herdr")),
     );
     let redelivery = wait_for_or(
@@ -82,15 +90,7 @@ fn mail_u1_courier_redelivers_to_an_idle_orchestrator_until_inbox_acks() {
     assert!(String::from_utf8_lossy(&inbox.stdout).contains("[sonnet-1] NOTE: do not lose this"));
     wait_for_or(
         "the courier to exit",
-        || {
-            let lock = File::options()
-                .read(true)
-                .write(true)
-                .open(&lock_path)
-                .ok()?;
-            lock.try_lock().ok()?;
-            Some(())
-        },
+        || (!courier_holds(&lock_path)?).then_some(()),
         || format!("calls: {:?}", harness.calls_of("herdr")),
     );
 }
@@ -113,27 +113,12 @@ fn mail_u1_courier_exits_when_the_orchestrator_pane_is_gone() {
     let lock_path = harness.state.join("mail/w1/courier.lock");
     wait_for_or(
         "the courier lock",
-        || {
-            let lock = File::options()
-                .read(true)
-                .write(true)
-                .open(&lock_path)
-                .ok()?;
-            lock.try_lock().is_err().then_some(())
-        },
+        || courier_holds(&lock_path)?.then_some(()),
         || format!("calls: {:?}", harness.calls_of("herdr")),
     );
     wait_for_or(
         "the courier to exit",
-        || {
-            let lock = File::options()
-                .read(true)
-                .write(true)
-                .open(&lock_path)
-                .ok()?;
-            lock.try_lock().ok()?;
-            Some(())
-        },
+        || (!courier_holds(&lock_path)?).then_some(()),
         || format!("calls: {:?}", harness.calls_of("herdr")),
     );
     let pending = std::fs::read_dir(harness.state.join("mail/w1/pending")).unwrap();

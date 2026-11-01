@@ -506,7 +506,17 @@ mod tests {
         assert!(first.is_some());
         assert!(super::acquire_lock(&mail).unwrap().is_none());
         drop(first);
-        assert!(super::acquire_lock(&mail).unwrap().is_some());
+        // The fork window: a process that another test thread spawns at the
+        // drop holds a copy of the lock file until it execs, and the flock
+        // stays held while any copy is open. The release comes, ms late.
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while super::acquire_lock(&mail).unwrap().is_none() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the dropped lock stayed held for 5 s"
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
     }
 
     #[test]

@@ -336,7 +336,14 @@ fn done_retried_after_a_kill_during_the_push_records_one_done() {
             .write(true)
             .open(&lock_path)
             .ok()?;
-        lock.try_lock().is_err().then_some(())
+        if lock.try_lock().is_err() {
+            return Some(());
+        }
+        // Unlock before the close: a process that another test thread
+        // spawns at the close holds a copy of the file until it execs, and
+        // a courier that starts while the flock stays held exits at once.
+        let _ = lock.unlock();
+        None
     });
 
     let o = as_worker(&h, &["done", "finished the work"])
