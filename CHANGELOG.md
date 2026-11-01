@@ -4,6 +4,8 @@
 
 ## Unreleased
 
+## v0.4.1 - 2026-11-01
+
 - horch now removes stale state whose owner is gone: old spool files, dead
   channel sockets, the registries and mail of closed workspaces, finished
   skill bundles and Codex homes, and killed temp files. Records of closed
