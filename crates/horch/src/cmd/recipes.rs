@@ -24,6 +24,7 @@ use horch_core::roster::{ExecRule, Roster, Teammate};
 use horch_core::routing::quota::{self, QuotaView, State};
 use horch_core::runtime::RuntimeContext;
 use horch_core::skills::{harness_support, SkillResolution};
+use horch_core::taskledger::model::{VerifyProfile, VERIFY_ENV};
 use horch_core::workspace::herdr::Herdr;
 use horch_core::workspace::model::{Direction, NewWorkspace};
 use horch_core::workspace::paneshell::PaneShell;
@@ -203,7 +204,7 @@ fn pane_command(
     kind: PaneKind,
     model: Option<&str>,
 ) -> Result<String> {
-    pane_command_for(ctx, role, kind, model, None, None)
+    pane_command_for(ctx, role, kind, model, None, None, None)
 }
 
 /// The ledger identity an orchestrator pane runs under.
@@ -222,6 +223,7 @@ fn pane_command_for(
     model: Option<&str>,
     record: Option<PaneRecord<'_>>,
     compete: Option<&CompeteSettings>,
+    verify: Option<VerifyProfile>,
 ) -> Result<String> {
     let exe = ctx.bins.exe()?;
     let mut args = vec![
@@ -277,6 +279,11 @@ fn pane_command_for(
     if let (Some(c), Some(rounds)) = (compete, rounds.as_deref()) {
         env.push((COMPETE_ROUNDS_ENV, rounds));
         env.push((COMPETE_BUDGET_ENV, c.budget_usd.as_str()));
+    }
+    // The verification profile: the briefing names it, and the
+    // orchestrator's `horch ledger run new` takes its steps from it.
+    if let Some(verify) = verify {
+        env.push((VERIFY_ENV, verify.as_str()));
     }
     Ok(PaneShell::host().command_line_with_env(&exe, &env, &args))
 }
@@ -335,6 +342,69 @@ pub struct FleetOptions {
     pub no_update: bool,
     /// Some: the orchestrator resumes this session instead of starting fresh.
     pub resume: Option<String>,
+    /// `--verify`: the run's finish steps. None is [`VerifyProfile::DEFAULT`].
+    pub verify: Option<VerifyProfile>,
+}
+
+impl FleetOptions {
+    /// The verification profile this fleet starts with.
+    pub fn verify(&self) -> VerifyProfile {
+        self.verify.unwrap_or(VerifyProfile::DEFAULT)
+    }
+}
+
+/// The briefing section that tells a fleet orchestrator its verification
+/// profile, so it neither overrides it nor expects steps the run skips.
+fn verify_briefing(profile: VerifyProfile) -> String {
+    let steps: Vec<&str> = profile.steps().iter().map(|s| s.as_str()).collect();
+    format!(
+        "== Verification ==\n\
+         The operator started this fleet with verification profile `{profile}`: \
+         {summary}. `horch ledger run new` takes the run's finish steps from it \
+         ({steps}); do not pass --steps or --verify unless the operator asks. \
+         A task is finished when `horch ledger finish` passed every step of its \
+         run. An existing run keeps the steps it was created with.",
+        summary = profile.summary(),
+        steps = steps.join(", "),
+    )
+}
+
+/// The 1 startup line that names the profile, with how to change it.
+fn verify_line(profile: VerifyProfile) -> String {
+    format!(
+        "Verification: {profile} ({}). Change with --verify full|light|minimal or HORCH_VERIFY.",
+        profile.summary()
+    )
+}
+
+/// Active runs of the project whose steps are not `profile`'s: the
+/// orchestrator may go on with one, and it keeps its own steps.
+fn warn_about_other_run_steps(ctx: &RuntimeContext, cwd: &str, profile: VerifyProfile) {
+    // Only a ledger that exists: a fleet start creates none.
+    if !ctx.paths.ledger_db.is_file() {
+        return;
+    }
+    let Ok(store) = horch_core::taskledger::Store::open(&ctx.paths.ledger_db) else {
+        return;
+    };
+    let Ok(all) = horch_core::taskledger::runs::of_project(store.conn(), Path::new(cwd)) else {
+        return;
+    };
+    let wanted = profile.steps();
+    let active = horch_core::taskledger::model::RunStatus::Active.as_str();
+    for r in all.iter().filter(|r| r.status == active) {
+        let Ok(steps) = r.steps() else { continue };
+        if steps != wanted {
+            let theirs = VerifyProfile::of_steps(&steps)
+                .map(|p| p.to_string())
+                .unwrap_or_else(|| r.finish_steps.join(","));
+            println!(
+                "note: run {} is still active with verify {theirs}; a new run uses {profile}, \
+                 an orchestrator that continues {} keeps {theirs}.",
+                r.slug, r.slug
+            );
+        }
+    }
 }
 
 /// The briefing of a fleet orchestrator: the base briefing, then with
@@ -383,6 +453,7 @@ pub fn fleet_with(
     options: &FleetOptions,
 ) -> Result<()> {
     println!("horch {}", super::selfupdate::CURRENT);
+    println!("{}", verify_line(options.verify()));
     super::update::before_fleet(ctx, options.no_update);
     doctor::check(ctx)?;
     let herdr = Herdr::with_bin(&ctx.bins.harness.herdr);
@@ -395,6 +466,7 @@ pub fn fleet_with(
     super::restore::warn_if_resume_on(ctx);
 
     let flavor = choose_flavor(ctx, flavor)?;
+    warn_about_other_run_steps(ctx, &cwd, options.verify());
 
     // Every step that can fail without herdr runs before the workspace
     // exists, so such a failure leaves nothing to close (#217).
@@ -620,6 +692,7 @@ fn start_orchestrator(
                 resume: options.resume.is_some(),
             }),
             options.compete.as_ref(),
+            Some(options.verify()),
         )?,
     )
 }
@@ -915,12 +988,30 @@ fn briefing_for(
     teammate: &Teammate,
     role: &str,
 ) -> Result<String> {
-    let compete = if kind.is_fleet() {
-        CompeteSettings::from_env()?
-    } else {
-        None
-    };
-    orchestrator_briefing(roster, teammate, role, compete.as_ref())
+    if !kind.is_fleet() {
+        return orchestrator_briefing(roster, teammate, role, None);
+    }
+    let compete = CompeteSettings::from_env()?;
+    let briefing = orchestrator_briefing(roster, teammate, role, compete.as_ref())?;
+    match verify_from_env()? {
+        Some(profile) => Ok(format!(
+            "{}\n\n{}",
+            briefing.trim_end(),
+            verify_briefing(profile)
+        )),
+        None => Ok(briefing),
+    }
+}
+
+/// The profile `horch fleet` put in this pane's environment, if any.
+fn verify_from_env() -> Result<Option<VerifyProfile>> {
+    match std::env::var(VERIFY_ENV) {
+        Ok(v) if !v.trim().is_empty() => v
+            .parse()
+            .map(Some)
+            .with_context(|| format!("{VERIFY_ENV}='{v}' is not a verification profile")),
+        _ => Ok(None),
+    }
 }
 
 /// An orchestrator runs a different set of commands than a worker, and codex
@@ -974,6 +1065,11 @@ fn child_env(
     // Like a worker, the orchestrator knows its own record.
     if let Some(record_id) = &identity.record_id {
         env.push(("HORCH_RECORD_ID".into(), record_id.clone()));
+    }
+    // Set explicitly, not inherited: a Codex shell policy can drop it, and
+    // the orchestrator's `horch ledger run new` reads it.
+    if let Ok(verify) = std::env::var(VERIFY_ENV) {
+        env.push((VERIFY_ENV.into(), verify));
     }
     // Re-export it: the orchestrator runs `horch spawn` from this pane, and
     // those spawns must resolve the same roster this pane was launched with.
@@ -1322,6 +1418,55 @@ mod tests {
         )
         .unwrap();
         assert!(!cmd.contains("HORCH_LEDGER_DB"), "{cmd}");
+    }
+
+    #[test]
+    fn pane_command_carries_the_verify_profile_only_when_given() {
+        let set = if cfg!(windows) {
+            "$env:HORCH_VERIFY = 'minimal'; ".to_string()
+        } else {
+            " 'HORCH_VERIFY=minimal' ".to_string()
+        };
+        let ctx = test_ctx();
+        let kind = PaneKind::FleetOrchestrator;
+        let with = pane_command_for(
+            &ctx,
+            "orchestrator",
+            kind,
+            None,
+            None,
+            None,
+            Some(VerifyProfile::Minimal),
+        )
+        .unwrap();
+        assert!(with.contains(&set), "{with}");
+        let without = pane_command(&ctx, "orchestrator", kind, None).unwrap();
+        assert!(!without.contains("HORCH_VERIFY"), "{without}");
+    }
+
+    #[test]
+    fn fleet_defaults_to_light_and_names_it_at_startup() {
+        assert_eq!(FleetOptions::default().verify(), VerifyProfile::Light);
+        let line = verify_line(FleetOptions::default().verify());
+        assert!(
+            line.starts_with("Verification: light (check and complexity-sweep;"),
+            "{line}"
+        );
+        assert!(line.contains("--verify full|light|minimal"), "{line}");
+    }
+
+    #[test]
+    fn verify_briefing_names_the_profile_and_its_steps() {
+        let text = verify_briefing(VerifyProfile::Light);
+        assert!(text.starts_with("== Verification ==\n"), "{text}");
+        assert!(text.contains("profile `light`"), "{text}");
+        assert!(
+            text.contains("(check, complexity-sweep, land, pr, cleanup)"),
+            "{text}"
+        );
+        assert!(!text.contains("code-sweep,"), "{text}");
+        let full = verify_briefing(VerifyProfile::Full);
+        assert!(full.contains("check, code-sweep, complexity-sweep, recheck, land, pr, cleanup"));
     }
 
     #[test]

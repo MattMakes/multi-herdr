@@ -97,6 +97,12 @@ enum LaunchCommand {
         /// starting a new one. Give the flavor it ran as (e.g. `sol` for Codex).
         #[arg(long, value_name = "SESSION_ID")]
         resume: Option<String>,
+        /// How much each task is verified before it lands; the default for
+        /// the run the orchestrator creates. `full`: check, AI code review
+        /// (code-sweep), complexity-sweep, recheck. `light` (the default):
+        /// check and complexity-sweep, no AI reviewers. `minimal`: check only.
+        #[arg(long, value_name = "PROFILE", env = "HORCH_VERIFY")]
+        verify: Option<horch_core::taskledger::model::VerifyProfile>,
     },
 
     /// Launch the fixed 5-pane orchestration workspace: 1 orchestrator (Fable) +
@@ -873,6 +879,7 @@ impl LaunchCommand {
                 flavor,
                 no_update,
                 resume,
+                verify,
             } => done(cmd::recipes::fleet_with(
                 ctx,
                 cwd.as_deref(),
@@ -880,6 +887,7 @@ impl LaunchCommand {
                 &cmd::recipes::FleetOptions {
                     no_update,
                     resume,
+                    verify,
                     ..Default::default()
                 },
             )),

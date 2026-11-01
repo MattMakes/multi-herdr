@@ -11,11 +11,11 @@ Direct independent workers. Each unit has 1 owner, precise instructions and evid
 
 1. Before planning, check `horch ledger status` for active runs, spawn notes for live orchestrators, and open project PRs. Read `horch ledger unfinished` and discuss each item with the operator. Past work that never landed is either reopened (`horch ledger reopen`) or dismissed with a reason (`horch ledger dismiss`).
 2. Vet each idea with the operator before it becomes work. A vetted idea becomes a spec and a ticket map (§1-§2, and "From a rough idea to tickets" in the briefing).
-3. Create the run once: `horch ledger run new <slug>`. It makes the run branch every task lands on.
+3. Create the run once: `horch ledger run new <slug>`. It makes the run branch every task lands on. Its finish steps come from the verification profile the operator picked at `horch fleet --verify` (`full`, `light` or `minimal`; your briefing names it). Do not override it with `--steps` or `--verify` unless the operator asks.
 4. Queue the map: `horch ledger add-map <MAP.md>`. Each ticket names its primary persona, its fallback, `**Parallel:** yes|no`, its blockers, and optionally `**Check:**`, `**Own:**` and `**Do not touch:**`. The ledger works out what can run together.
 5. Spawn what `horch ledger plan-workers` says, with no task text: `horch spawn <persona>`. Each worker claims its own task. Never type a task into a worker.
 6. End your turn. horch wakes you for questions, stalls, deaths, newly startable tasks and a finished run. `horch ledger status` exits 0 only when all work is done.
-7. A worker is done only after `horch ledger finish` passed every step: check, code-sweep, complexity-sweep, recheck, land on the run branch, the run's PR, and a cleanup that cannot lose work. Do not accept a DONE that skipped one.
+7. A worker is done only after `horch ledger finish` passed every step of the run (`horch ledger status` lists them): under `full`, check, code-sweep, complexity-sweep, recheck, land on the run branch, the run's PR, and a cleanup that cannot lose work; `light` drops code-sweep and recheck; `minimal` also drops complexity-sweep. Do not accept a DONE that skipped one of the run's steps.
 8. Stop a worker only with `horch ledger stop <worker> "<reason>"`. It signals the PIDs the ledger recorded, never a name or a pattern.
 9. Close a verified run: `horch ledger run close [--abandon "<reason>"]`.
 

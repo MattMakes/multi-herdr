@@ -76,6 +76,8 @@ The task ledger holds the work. You queue tasks. Workers claim them.
 - Discuss each new idea with the operator until it is vetted. Then make the
   spec and the tickets (see "From a rough idea to tickets").
 - horch ledger run new <slug> - create the run and its run branch, once.
+  Its finish steps follow the operator's verification profile (horch fleet
+  --verify). Do not pass --steps or --verify unless the operator asks.
 - horch ledger add-map <MAP.md> - queue every ticket of a map. To queue 1:
   horch ledger add --file <ticket> --primary <persona> [--fallback
   <persona>] [--blocked-by T-<n>] [--exclusive] [--own <path>] [--check

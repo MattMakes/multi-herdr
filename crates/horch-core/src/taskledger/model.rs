@@ -317,6 +317,67 @@ pub fn default_finish_steps() -> Vec<StepName> {
     StepName::ALL.to_vec()
 }
 
+ledger_enum!(
+    /// How much a run verifies before a task lands: a named set of finish
+    /// steps, picked at `horch fleet` start (`--verify`). Only the steps are
+    /// stored; the profile is the name for them.
+    VerifyProfile {
+        Full = "full",
+        Light = "light",
+        Minimal = "minimal",
+    }
+);
+
+/// The variable that carries the profile from `horch fleet` into the
+/// orchestrator's pane, where `horch ledger run new` reads it. An operator
+/// can also set it in their shell as their own default.
+pub const VERIFY_ENV: &str = "HORCH_VERIFY";
+
+impl VerifyProfile {
+    /// The profile `horch fleet` and `horch ledger run new` use when none is
+    /// named: tests must pass, but no AI reviewer workers are queued.
+    pub const DEFAULT: VerifyProfile = VerifyProfile::Light;
+
+    /// The finish steps of the profile, in pipeline order.
+    pub fn steps(self) -> Vec<StepName> {
+        use StepName::*;
+        match self {
+            VerifyProfile::Full => default_finish_steps(),
+            // No code-sweep, so no recheck: nothing commits between check
+            // and land but a fix, and a fix re-runs check from the top.
+            VerifyProfile::Light => vec![Check, ComplexitySweep, Land, Pr, Cleanup],
+            VerifyProfile::Minimal => vec![Check, Land, Pr, Cleanup],
+        }
+    }
+
+    /// 1 line for the operator: what the profile runs before a task lands.
+    pub fn summary(self) -> &'static str {
+        match self {
+            VerifyProfile::Full => {
+                "check, code-sweep (AI reviewer workers), complexity-sweep, recheck"
+            }
+            VerifyProfile::Light => "check and complexity-sweep; no AI reviewer workers",
+            VerifyProfile::Minimal => "check only",
+        }
+    }
+
+    /// The profile whose steps are exactly `steps`, if one is.
+    pub fn of_steps(steps: &[StepName]) -> Option<VerifyProfile> {
+        VerifyProfile::ALL
+            .iter()
+            .copied()
+            .find(|p| p.steps() == steps)
+    }
+}
+
+impl std::str::FromStr for VerifyProfile {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> Result<Self> {
+        VerifyProfile::parse(s.trim())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -330,6 +391,32 @@ mod tests {
             assert_eq!(StepName::parse(s.as_str()).unwrap(), *s);
         }
         assert!(WorkerStatus::parse("dead").is_err());
+    }
+
+    #[test]
+    fn verify_profiles_keep_pipeline_order_and_always_land() {
+        assert_eq!(VerifyProfile::Full.steps(), default_finish_steps());
+        for p in VerifyProfile::ALL {
+            let steps = p.steps();
+            assert_eq!(steps[0], StepName::Check, "{p} gates on the check");
+            for tail in [StepName::Land, StepName::Pr, StepName::Cleanup] {
+                assert!(steps.contains(&tail), "{p} lacks {tail}");
+            }
+            let order: Vec<usize> = steps
+                .iter()
+                .map(|s| StepName::ALL.iter().position(|a| a == s).unwrap())
+                .collect();
+            assert!(order.windows(2).all(|w| w[0] < w[1]), "{p}: {steps:?}");
+            assert_eq!(VerifyProfile::of_steps(&steps), Some(*p));
+        }
+        assert!(!VerifyProfile::DEFAULT
+            .steps()
+            .contains(&StepName::CodeSweep));
+        assert_eq!(
+            " light".parse::<VerifyProfile>().unwrap(),
+            VerifyProfile::Light
+        );
+        assert!("strict".parse::<VerifyProfile>().is_err());
     }
 
     #[test]

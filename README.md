@@ -839,9 +839,10 @@ file per machine at `~/.horch/ledger.sqlite3` (`HORCH_LEDGER_DB` overrides
 it). The orchestrator queues tickets (`horch ledger run new`, `add-map`,
 `plan-workers`) and spawns workers with no task; each worker claims its own
 (`horch ledger claim`), reports (`progress`), and cannot finish until
-`horch ledger finish` has run every step: check, code-sweep,
+`horch ledger finish` has run every step of the run: check, code-sweep,
 complexity-sweep, recheck, land on the run branch, the run's PR, and a
-cleanup that refuses to lose work. Workers check in every 30 s, a watchdog
+cleanup that refuses to lose work. The verification profile picks which of
+the checking steps a run uses (see below). Workers check in every 30 s, a watchdog
 reaps a worker that stops making progress, and workers are stopped only by
 the PIDs the ledger recorded (`horch ledger stop`). See
 [docs/specs/task-ledger.md](docs/specs/task-ledger.md).
@@ -851,6 +852,28 @@ Workers may create a worktree with `horch ledger worktree new <name> --from
 `horch ledger worktree drop <name> --reason "<why>"` abandons a clean tree and
 refuses unique commits; `--keep-branch` keeps the branch when removing the
 folder. Scratch and abandoned trees do not block task completion.
+
+### Verification profiles
+
+`horch fleet --verify <profile>` picks how much each task is checked before
+it lands. The orchestrator's `horch ledger run new` takes the run's finish
+steps from it, and `horch fleet` prints it at startup. Every profile ends
+with land, pr and cleanup.
+
+| profile | steps before land | token cost |
+|---|---|---|
+| `full` | check, code-sweep, complexity-sweep, recheck | highest: code-sweep queues 3 to 12 AI reviewer workers per change, and again after each fix |
+| `light` (default) | check, complexity-sweep | low: the check is the task's own command; complexity-sweep is a local analyser for TS/JS/Python |
+| `minimal` | check | lowest |
+
+```sh
+horch fleet --verify full       # AI code review for risky work
+horch fleet --verify minimal    # only the task's check gates landing
+export HORCH_VERIFY=full        # your own default for every fleet
+```
+
+A run keeps the steps it was created with; `horch ledger run new --verify
+<profile>` or `--steps` sets them for 1 run.
 
 In the worker's own pane, `horch ledger finish` runs its steps detached and
 returns at once; the result arrives as horch mail. `--wait` (or `--json`)
@@ -1012,6 +1035,7 @@ less often: only when their newest release has been out for a week.
 | `HORCH_NOW`          | Pin the clock (RFC 3339), for tests; announced on stderr       |
 | `HORCH_QUOTA_FILE`   | Read pool states from this file and never probe (tests, drills) |
 | `HORCH_NO_UPDATE`    | `1` skips the agent CLI update step of `horch fleet`, like `--no-update` |
+| `HORCH_VERIFY`       | The verification profile of `horch fleet` and `horch ledger run new`: `full`, `light` (default) or `minimal`, like `--verify` |
 | `HORCH_UPDATE_TIMEOUT_MS` | The time limit of 1 agent CLI updater. Defaults to 180000 |
 | `HORCH_UPDATE_COOLDOWN_DAYS` | How old an agent CLI release must be before the update step installs it. Defaults to 7; `0` turns the cooldown off |
 | `HORCH_HERDR_BIN`    | Which herdr CLI to drive. Defaults to `herdr`                  |

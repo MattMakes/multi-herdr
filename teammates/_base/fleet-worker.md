@@ -102,8 +102,9 @@ work. These commands are on your PATH:
   redirect. Read its exit code from the tool result. In a Codex sandbox,
   only a horch ledger command that is the whole command reaches the ledger.
 - horch ledger finish - run it when the work is complete and committed. It
-  runs the finish steps in order: check, code-sweep, complexity-sweep,
-  recheck, land, pr, cleanup. It stops at the first step that does not
+  runs the finish steps of your run in order, from check, code-sweep,
+  complexity-sweep, recheck, land, pr, cleanup. Its output names the
+  steps your run uses. It stops at the first step that does not
   pass. Fix the cause, commit, and run it again. Never skip a step.
   In your pane, finish runs detached and prints "finish runs (PID <n>);
   horch tells you the result. End your turn now". End your turn then.

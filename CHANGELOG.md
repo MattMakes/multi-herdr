@@ -4,6 +4,16 @@
 
 ## Unreleased
 
+- `horch fleet --verify full|light|minimal` picks how much each task is
+  verified before it lands, for the whole run. `light` is the new default:
+  the task's check and complexity-sweep, with no AI reviewer workers.
+  `full` is the old behaviour, with code-sweep's AI reviewers and recheck;
+  `minimal` runs only the check. `horch fleet` prints the profile at
+  startup, the orchestrator's briefing names it, and its `horch ledger run
+  new` uses it. `HORCH_VERIFY` sets your own default, and `horch ledger run
+  new --verify` sets it for 1 run. A run created before keeps its steps;
+  `horch fleet` names an active run whose steps differ.
+
 ## v0.4.1 - 2026-11-01
 
 - horch now removes stale state whose owner is gone: old spool files, dead
