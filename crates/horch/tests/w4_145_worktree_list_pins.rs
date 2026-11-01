@@ -179,12 +179,20 @@ fn arc_31_land_cleanup_note_then_list_reopens_the_leftover() {
     std::fs::write(mine.join("m.txt"), "m\n").unwrap();
     git(&w.root, &mine, &["add", "m.txt"]);
     git(&w.root, &mine, &["commit", "--quiet", "-m", "mine"]);
-    git(&w.root, &w.repo, &["worktree", "lock", mine.to_str().unwrap()]);
+    git(
+        &w.root,
+        &w.repo,
+        &["worktree", "lock", mine.to_str().unwrap()],
+    );
 
     let landed = w.horch(&["worktree", "land"]);
     assert!(landed.status.success(), "{}", text(&landed));
     let stdout = String::from_utf8(landed.stdout.clone()).unwrap();
-    assert!(stdout.contains("LANDED wt/orchestrator-mine -> main"), "{}", text(&landed));
+    assert!(
+        stdout.contains("LANDED wt/orchestrator-mine -> main"),
+        "{}",
+        text(&landed)
+    );
     assert!(
         stdout.contains("horch: NOTE: cleanup step worktree remove failed"),
         "{}",
