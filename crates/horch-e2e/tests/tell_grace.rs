@@ -60,11 +60,46 @@ fn within(limit: Duration, mut f: impl FnMut() -> bool) -> bool {
     f()
 }
 
-/// U-70: with the default grace, the smoke worker's pane closes in under
-/// 5 s after its `horch done` records the session as done.
+/// The `pane get` calls on `pane` that the process which typed the first
+/// line holding `marker` into `pane` made just before it: the polls of its
+/// grace wait. Each fake-herdr call logs its `caller` pid, so the polls of
+/// other processes on the same pane (the mail courier) do not count.
+fn polls_before_line(h: &Harness, pane: &str, marker: &str) -> Option<usize> {
+    let calls: Vec<Value> = h
+        .calls()
+        .into_iter()
+        .filter(|c| c["fake"] == "herdr")
+        .collect();
+    let argv = |c: &Value| -> Vec<String> {
+        c["argv"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|a| a.as_str().map(str::to_string))
+            .collect()
+    };
+    let typed = calls.iter().position(|c| {
+        let a = argv(c);
+        a.len() > 3 && a[1] != "get" && a[2] == pane && a[3..].join(" ").contains(marker)
+    })?;
+    let caller = &calls[typed]["caller"];
+    let polls = calls[..typed]
+        .iter()
+        .rev()
+        .filter(|c| &c["caller"] == caller)
+        .take_while(|c| argv(c) == ["pane", "get", pane])
+        .count();
+    Some(polls)
+}
+
+/// U-70: with the default grace, the smoke worker's `horch done` reports to
+/// the orchestrator without the grace wait: it looks at the orchestrator's
+/// pane once and types the report. A grace wait polls that pane until an
+/// agent shows or the grace ends, at least 3 looks. The count does not
+/// depend on how fast the machine is, unlike the 5 s limit this test had.
 #[cfg(unix)]
 #[test]
-fn worker_pane_closes_within_5_s_of_done_with_the_default_tell_grace() {
+fn worker_done_reports_without_the_default_tell_grace() {
     let mut h = Harness::new("tell-grace");
     // `seal` sets the variable to 0; an empty value is the default grace.
     h.set("HORCH_TELL_GRACE_MS", "");
@@ -108,7 +143,6 @@ fn worker_pane_closes_within_5_s_of_done_with_the_default_tell_grace() {
         "the smoke session never reached done: {:?}",
         records(&h)
     );
-    let done_at = Instant::now();
     assert!(
         within(Duration::from_secs(40), || !herdr(
             &h,
@@ -118,9 +152,10 @@ fn worker_pane_closes_within_5_s_of_done_with_the_default_tell_grace() {
         .success()),
         "the worker pane {pane} never closed"
     );
-    let waited = done_at.elapsed();
-    assert!(
-        waited < Duration::from_secs(5),
-        "the pane closed {waited:?} after done; tell waited for its grace"
+    let polls = polls_before_line(&h, "w1:p1", "DONE:").expect("done typed its report");
+    assert_eq!(
+        polls, 1,
+        "done looked at the orchestrator pane {polls} times before its report: \
+         tell waited for its grace"
     );
 }

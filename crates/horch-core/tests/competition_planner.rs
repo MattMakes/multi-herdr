@@ -718,6 +718,40 @@ fn cmp_06_baseline_routed_through_gate() {
     assert!(plan.candidates.iter().all(|c| c.slot != SlotKind::Baseline));
 }
 
+#[test]
+fn cmp_06_baseline_edge_cases() {
+    let f = Fixture::new("all-ok");
+    // An unknown name says why, and the name is still not planned.
+    let plan = f.plan("rnd-1", 3, Some("ghost"));
+    assert_eq!(
+        plan.baseline,
+        Baseline::Unusable {
+            requested: "ghost".into(),
+            reason: "not in the roster".into()
+        }
+    );
+    assert_eq!(
+        plan.baseline.missing_reason().unwrap(),
+        "ghost: not in the roster"
+    );
+    assert_eq!(plan.candidates.len(), 3);
+
+    // n = 0 plans nothing, a routed baseline included.
+    let plan = f.plan("rnd-1", 0, Some("sonnet"));
+    assert!(plan.candidates.is_empty());
+    assert!(matches!(plan.baseline, Baseline::Routed(_)));
+
+    // A routed baseline keeps its name out of the other slots.
+    let plan = f.plan("rnd-1", 6, Some("sonnet"));
+    let sonnets = plan
+        .candidates
+        .iter()
+        .filter(|c| c.teammate.as_str() == "sonnet")
+        .count();
+    assert_eq!(sonnets, 1);
+    assert_eq!(plan.candidates[0].slot, SlotKind::Baseline);
+}
+
 // ─── EXP-02 ─────────────────────────────────────────────────────────────────
 
 #[test]

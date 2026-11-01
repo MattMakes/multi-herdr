@@ -3,8 +3,10 @@
 //!
 //! Lives under horch's state folder keyed by workspace id, so the OS cannot
 //! clear it from under an idle fleet. A fleet started before that move still
-//! has its registry in the system temp dir; reads fall back to it, writes
-//! never go there, and only [`Mailbox::unregister`] deletes from it.
+//! has its registry in the system temp dir. The first use copies it once
+//! into the state folder, when this user owns it and others cannot write it
+//! (#77); after that it is never read. Only [`Mailbox::unregister`] deletes
+//! from it. The registry dir is mode 0700 and its files 0600.
 
 use std::path::{Path, PathBuf};
 
@@ -15,9 +17,7 @@ use anyhow::{bail, Context, Result};
 
 /// The brief moved to [`crate::messaging::brief`] in A2.
 use crate::messaging::brief::Brief;
-
-/// A brief's file mode: what `std::fs::write` gave it under the usual umask.
-const BRIEF_MODE: u32 = 0o644;
+use crate::messaging::private;
 
 /// Whether herdr still has a registered role's pane.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -41,7 +41,7 @@ pub struct RoleEntry {
 #[derive(Debug, Clone)]
 pub struct Mailbox {
     dir: PathBuf,
-    /// The pre-upgrade mailbox in the temp dir, read when `dir` lacks a file.
+    /// The pre-upgrade mailbox in the temp dir, copied once into `dir`.
     /// Nothing is written to it; `unregister` removes a role's files from it.
     legacy_dir: Option<PathBuf>,
     workspace_id: String,
@@ -104,7 +104,7 @@ impl Mailbox {
         Ok(open(&ws))
     }
 
-    /// [`Mailbox::resolve`] with the context's dirs, workspace and pane.
+    /// `Mailbox::resolve` with the context's dirs, workspace and pane.
     pub fn resolve_in(herdr: &Herdr, ctx: &RuntimeContext) -> Result<Self> {
         Self::resolve(
             herdr,
@@ -124,17 +124,95 @@ impl Mailbox {
     }
 
     pub fn exists(&self) -> bool {
-        self.dir.is_dir() || self.legacy_dir.as_ref().is_some_and(|d| d.is_dir())
+        self.settle();
+        self.dir.is_dir()
     }
 
-    /// Where to read `file`: the state folder, else the old temp location
-    /// when only that has it. Writes use `self.dir` directly.
+    /// Where to read `file`, after the one-time copy of an old registry.
     fn read_path(&self, file: &str) -> PathBuf {
-        let path = self.dir.join(file);
-        match &self.legacy_dir {
-            Some(legacy) if !path.exists() && legacy.join(file).exists() => legacy.join(file),
-            _ => path,
+        self.settle();
+        self.dir.join(file)
+    }
+
+    /// Copy the old temp registry into the state folder, once, and only
+    /// when this user owns the old dir, it is not a link, and no other user
+    /// can write it. A registry the state folder already has gets only the
+    /// old files it lacks: a fleet that started before the move keeps its
+    /// roles. A marker file ends the copy for good. A refusal is printed
+    /// once.
+    fn settle(&self) {
+        let Some(legacy) = &self.legacy_dir else {
+            return;
+        };
+        if self.dir.join(LEGACY_COPIED).exists() || !legacy.exists() {
+            return;
         }
+        if let Err(e) = self.copy_legacy(legacy) {
+            static WARNED: std::sync::Once = std::sync::Once::new();
+            WARNED.call_once(|| {
+                eprintln!(
+                    "horch: the old registry {} is not used: {e:#}",
+                    legacy.display()
+                );
+            });
+        }
+    }
+
+    fn copy_legacy(&self, legacy: &Path) -> Result<()> {
+        private::check_shared(legacy)?;
+        if self.dir.is_dir() {
+            private::check(&self.dir)?;
+            copy_plain_files(legacy, &self.dir, false)?;
+            return private::write(&self.dir.join(LEGACY_COPIED), b"");
+        }
+        let parent = self
+            .dir
+            .parent()
+            .context("the registry has no parent dir")?;
+        // The state root is the user's: create it, but leave its mode.
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("creating {}", parent.display()))?;
+        let staging = parent.join(format!(
+            ".{}.copy-{}",
+            self.dir
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("registry"),
+            uuid::Uuid::new_v4().simple()
+        ));
+        let copied = (|| {
+            private::ensure_dir(&staging)?;
+            copy_plain_files(legacy, &staging, true)?;
+            private::write(&staging.join(LEGACY_COPIED), b"")?;
+            std::fs::rename(&staging, &self.dir)
+                .with_context(|| format!("moving the copy to {}", self.dir.display()))
+        })();
+        if copied.is_err() {
+            let _ = std::fs::remove_dir_all(&staging);
+            // Another process copied it first.
+            if self.dir.is_dir() {
+                return Ok(());
+            }
+        }
+        copied
+    }
+
+    /// Whether the registry dir may be read: a dir that another user owns
+    /// or can write is not, and that is printed.
+    fn trusted(&self) -> bool {
+        match private::check(&self.dir) {
+            Ok(()) => true,
+            Err(e) => {
+                eprintln!("horch: {e:#}");
+                false
+            }
+        }
+    }
+
+    /// Create the registry dir mode 0700, or check the existing one.
+    fn ensure_dir(&self) -> Result<()> {
+        self.settle();
+        private::ensure_dir(&self.dir).with_context(|| format!("mailbox {}", self.dir.display()))
     }
 
     fn id_file(role: &str) -> String {
@@ -175,14 +253,16 @@ impl Mailbox {
             .clone()
             .with_context(|| format!("herdr did not report a workspace_id for pane {internal}"))?;
         let mailbox = Self::under(state_root, &ws).with_legacy_root(temp_root);
-        std::fs::create_dir_all(&mailbox.dir)
-            .with_context(|| format!("creating mailbox {}", mailbox.dir.display()))?;
-        std::fs::write(mailbox.dir.join(Self::id_file(role)), &pane.pane_id)
-            .with_context(|| format!("registering role '{role}'"))?;
+        mailbox.ensure_dir()?;
+        private::write(
+            &mailbox.dir.join(Self::id_file(role)),
+            pane.pane_id.as_bytes(),
+        )
+        .with_context(|| format!("registering role '{role}'"))?;
         Ok((mailbox, pane.pane_id))
     }
 
-    /// [`Mailbox::register`] this context's pane, then record the workspace
+    /// `Mailbox::register` this context's pane, then record the workspace
     /// in the context, so everything this process does next, and every child
     /// it starts, belongs to that workspace.
     pub fn register_in(
@@ -204,7 +284,11 @@ impl Mailbox {
 
     /// The pane id registered for `role`, if any.
     pub fn pane_for(&self, role: &str) -> Option<String> {
-        let raw = std::fs::read_to_string(self.id_read_path(role)).ok()?;
+        let path = self.id_read_path(role);
+        if !self.trusted() {
+            return None;
+        }
+        let raw = std::fs::read_to_string(path).ok()?;
         let trimmed = raw.trim().to_string();
         (!trimmed.is_empty()).then_some(trimmed)
     }
@@ -219,14 +303,11 @@ impl Mailbox {
 
     /// Every registered `(role, pane_id)`, sorted by role.
     pub fn roles(&self) -> Vec<(String, String)> {
-        let mut out = Self::roles_in(&self.dir);
-        if let Some(legacy) = &self.legacy_dir {
-            for (role, pane) in Self::roles_in(legacy) {
-                if !self.dir.join(Self::id_file(&role)).exists() {
-                    out.push((role, pane));
-                }
-            }
+        self.settle();
+        if !self.trusted() {
+            return Vec::new();
         }
+        let mut out = Self::roles_in(&self.dir);
         out.sort();
         out
     }
@@ -279,16 +360,17 @@ impl Mailbox {
 
     /// Write `brief` atomically: the worker never reads half of one.
     pub fn write_brief(&self, brief: &Brief) -> Result<()> {
-        std::fs::create_dir_all(&self.dir)
-            .with_context(|| format!("creating mailbox {}", self.dir.display()))?;
+        self.ensure_dir()?;
         let path = self.dir.join(Self::brief_file(&brief.role));
         let json = serde_json::to_string_pretty(brief)?;
-        crate::fsx::write_atomic(&path, json.as_bytes(), BRIEF_MODE)
-            .with_context(|| format!("writing brief {}", path.display()))
+        private::write(&path, json.as_bytes()).context("writing the brief")
     }
 
+    /// A brief names the binaries the worker runs: one in a dir that
+    /// another user can write is refused.
     pub fn read_brief(&self, role: &str) -> Result<Brief> {
         let path = self.brief_read_path(role);
+        private::check(&self.dir)?;
         let raw = std::fs::read_to_string(&path).with_context(|| {
             format!(
                 "no brief at {} (spawn this worker with `horch spawn`)",
@@ -350,16 +432,16 @@ impl Mailbox {
 
     /// Next per-teammate ordinal for auto-naming a role `<teammate>-<n>`.
     pub(crate) fn next_seq(&self, teammate: &str) -> Result<u32> {
-        std::fs::create_dir_all(&self.dir)?;
+        // The copy of an old registry continues the old fleet's count.
+        self.ensure_dir()?;
         let file = format!(".seq-{teammate}");
         let path = self.dir.join(&file);
-        // The first count after the upgrade continues the old fleet's count.
-        let current: u32 = std::fs::read_to_string(self.read_path(&file))
+        let current: u32 = std::fs::read_to_string(&path)
             .ok()
             .and_then(|s| s.trim().parse().ok())
             .unwrap_or(0);
         let next = current + 1;
-        std::fs::write(&path, next.to_string())?;
+        private::write(&path, next.to_string().as_bytes())?;
         Ok(next)
     }
 
@@ -369,8 +451,8 @@ impl Mailbox {
         self.dir.join(Self::launch_marker_file(role))
     }
 
-    /// The marker to read: a worker launched before the upgrade left its
-    /// marker in the old temp location.
+    /// The marker to read: one a worker launched before the upgrade left
+    /// in the old temp location arrives with the one-time copy.
     pub(crate) fn launch_marker_read_path(&self, role: &str) -> PathBuf {
         self.read_path(&Self::launch_marker_file(role))
     }
@@ -386,6 +468,28 @@ impl Mailbox {
     fn harvest_log_file(role: &str) -> String {
         format!("{role}.harvest.log")
     }
+}
+
+/// In the state registry: the old temp registry was copied in.
+const LEGACY_COPIED: &str = ".legacy-copied";
+
+/// Copy each plain file of `from` into `to`, mode 0600. A link is skipped:
+/// it could point anywhere. Without `replace`, a file `to` has is kept.
+fn copy_plain_files(from: &Path, to: &Path, replace: bool) -> Result<()> {
+    for entry in std::fs::read_dir(from).with_context(|| format!("reading {}", from.display()))? {
+        let entry = entry?;
+        if !entry.file_type()?.is_file() {
+            continue;
+        }
+        let target = to.join(entry.file_name());
+        if !replace && target.exists() {
+            continue;
+        }
+        let bytes = std::fs::read(entry.path())
+            .with_context(|| format!("reading {}", entry.path().display()))?;
+        private::write(&target, &bytes)?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -544,13 +648,16 @@ mod tests {
         assert!(!legacy.join(".seq-sonnet").exists());
     }
 
+    /// #77: once the state folder has a registry, the old location is
+    /// never read: a file planted there later reaches nobody.
     #[test]
-    fn roles_merge_across_the_state_and_old_locations() {
+    fn the_old_location_is_not_read_once_the_state_folder_has_a_registry() {
         let state = tempfile::tempdir().unwrap();
         let temp = tempfile::tempdir().unwrap();
         let (mb, legacy) = legacy_mailbox(state.path(), temp.path());
         std::fs::write(legacy.join("old-1.id"), "w1-2").unwrap();
-        std::fs::create_dir_all(mb.dir()).unwrap();
+        assert_eq!(mb.pane_for("old-1").as_deref(), Some("w1-2"), "copied");
+        std::fs::write(legacy.join("orchestrator.id"), "planted").unwrap();
         std::fs::write(mb.dir().join("new-1.id"), "w1-3").unwrap();
 
         assert_eq!(
@@ -560,8 +667,113 @@ mod tests {
                 ("old-1".to_string(), "w1-2".to_string()),
             ]
         );
-        assert_eq!(mb.pane_for("old-1").as_deref(), Some("w1-2"));
-        assert_eq!(mb.pane_for("new-1").as_deref(), Some("w1-3"));
+        assert_eq!(mb.pane_for("orchestrator"), None);
+    }
+
+    /// A fleet that started before the move can have a split registry: the
+    /// orchestrator in the old temp dir, newer workers in the state folder.
+    /// The files the state folder lacks are copied once; its own win.
+    #[test]
+    fn a_split_registry_gets_the_old_files_it_lacks_once() {
+        let state = tempfile::tempdir().unwrap();
+        let temp = tempfile::tempdir().unwrap();
+        let legacy = temp.path().join("herdr-orchestration-w1");
+        std::fs::create_dir_all(&legacy).unwrap();
+        std::fs::write(legacy.join("orchestrator.id"), "w1-1").unwrap();
+        std::fs::write(legacy.join("sonnet-1.id"), "old-pane").unwrap();
+        let split = state.path().join("herdr-orchestration-w1");
+        std::fs::create_dir_all(&split).unwrap();
+        std::fs::write(split.join("sonnet-1.id"), "w1-2").unwrap();
+        let mb = Mailbox::under(state.path(), "w1").with_legacy_root(temp.path());
+
+        assert_eq!(mb.pane_for("orchestrator").as_deref(), Some("w1-1"));
+        assert_eq!(mb.pane_for("sonnet-1").as_deref(), Some("w1-2"));
+        std::fs::write(legacy.join("planted.id"), "w1-9").unwrap();
+        assert_eq!(mb.pane_for("planted"), None, "the copy ran only once");
+    }
+
+    /// #77: the old temp dir is in a dir all users share. A link there is
+    /// not followed, even to a dir this user owns.
+    #[cfg(unix)]
+    #[test]
+    fn an_old_registry_that_is_a_link_is_not_copied() {
+        let state = tempfile::tempdir().unwrap();
+        let temp = tempfile::tempdir().unwrap();
+        let elsewhere = temp.path().join("elsewhere");
+        private::ensure_dir(&elsewhere).unwrap();
+        std::fs::write(elsewhere.join("orchestrator.id"), "planted").unwrap();
+        std::os::unix::fs::symlink(&elsewhere, temp.path().join("herdr-orchestration-w1")).unwrap();
+        let mb = Mailbox::under(state.path(), "w1").with_legacy_root(temp.path());
+
+        assert_eq!(mb.pane_for("orchestrator"), None);
+        assert!(!mb.dir().exists(), "nothing was copied");
+    }
+
+    /// #77: an old registry that other users can write is not copied, and
+    /// nothing in it is read.
+    #[cfg(unix)]
+    #[test]
+    fn an_old_registry_others_can_write_is_not_copied() {
+        use std::os::unix::fs::PermissionsExt;
+        let state = tempfile::tempdir().unwrap();
+        let temp = tempfile::tempdir().unwrap();
+        let (mb, legacy) = legacy_mailbox(state.path(), temp.path());
+        std::fs::write(legacy.join("orchestrator.id"), "planted").unwrap();
+        std::fs::set_permissions(&legacy, std::fs::Permissions::from_mode(0o777)).unwrap();
+
+        assert_eq!(mb.pane_for("orchestrator"), None);
+        assert!(mb.roles().is_empty());
+        assert!(!mb.exists());
+        assert!(!mb.dir().exists(), "nothing was copied");
+        assert!(mb.read_brief("orchestrator").is_err());
+    }
+
+    /// #77: a registry in the state folder that others can write is refused
+    /// with an error that names it.
+    #[cfg(unix)]
+    #[test]
+    fn a_registry_others_can_write_is_refused_by_name() {
+        use std::os::unix::fs::PermissionsExt;
+        let state = tempfile::tempdir().unwrap();
+        let mb = Mailbox::under(state.path(), "w1");
+        mb.write_brief(&brief("sonnet-1")).unwrap();
+        std::fs::write(mb.dir().join("orchestrator.id"), "w1-1").unwrap();
+        std::fs::set_permissions(mb.dir(), std::fs::Permissions::from_mode(0o777)).unwrap();
+
+        let err = format!("{:#}", mb.read_brief("sonnet-1").unwrap_err());
+        assert!(err.contains(&mb.dir().display().to_string()), "{err}");
+        assert!(err.contains("writable by other users"), "{err}");
+        assert_eq!(mb.pane_for("orchestrator"), None);
+        assert!(mb.write_brief(&brief("sonnet-2")).is_err());
+    }
+
+    /// #77: a new registry dir is 0700, and its id, brief and count files
+    /// are 0600. A copied old registry gets the same modes.
+    #[cfg(unix)]
+    #[test]
+    fn registry_dirs_are_0700_and_files_0600() {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = |p: &Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+        let state = tempfile::tempdir().unwrap();
+        let mb = Mailbox::under(state.path(), "w1");
+        mb.write_brief(&brief("sonnet-1")).unwrap();
+        mb.next_seq("sonnet").unwrap();
+        assert_eq!(mode(mb.dir()), 0o700);
+        assert_eq!(mode(&mb.dir().join("sonnet-1.brief.json")), 0o600);
+        assert_eq!(mode(&mb.dir().join(".seq-sonnet")), 0o600);
+
+        let temp = tempfile::tempdir().unwrap();
+        let state = tempfile::tempdir().unwrap();
+        let (mb, legacy) = legacy_mailbox(state.path(), temp.path());
+        std::fs::write(legacy.join("orchestrator.id"), "w1-1").unwrap();
+        std::fs::set_permissions(
+            legacy.join("orchestrator.id"),
+            std::fs::Permissions::from_mode(0o644),
+        )
+        .unwrap();
+        assert!(mb.exists());
+        assert_eq!(mode(mb.dir()), 0o700);
+        assert_eq!(mode(&mb.dir().join("orchestrator.id")), 0o600);
     }
 
     #[test]
@@ -688,16 +900,15 @@ mod tests {
     }
 
     #[test]
-    fn launch_marker_read_path_finds_the_old_location() {
+    fn launch_marker_of_the_old_location_arrives_with_the_copy() {
         let state = tempfile::tempdir().unwrap();
         let temp = tempfile::tempdir().unwrap();
         let (mb, legacy) = legacy_mailbox(state.path(), temp.path());
         std::fs::write(legacy.join(".sonnet-1.launch-marker"), "").unwrap();
 
-        assert_eq!(
-            mb.launch_marker_read_path("sonnet-1"),
-            legacy.join(".sonnet-1.launch-marker")
-        );
+        let read = mb.launch_marker_read_path("sonnet-1");
+        assert_eq!(read, mb.dir().join(".sonnet-1.launch-marker"));
+        assert!(read.exists());
         assert_eq!(
             mb.launch_marker("sonnet-1"),
             mb.dir().join(".sonnet-1.launch-marker")

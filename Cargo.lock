@@ -764,6 +764,7 @@ dependencies = [
  "anyhow",
  "horch-core",
  "horch-marketplace",
+ "libc",
  "serde_json",
  "tempfile",
 ]
@@ -777,6 +778,7 @@ dependencies = [
  "serde_yaml",
  "sha2",
  "tempfile",
+ "thiserror",
 ]
 
 [[package]]

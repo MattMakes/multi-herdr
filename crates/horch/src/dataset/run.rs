@@ -24,9 +24,8 @@ use horch_core::competition::model::RoundState;
 use horch_core::competition::observe::{self, TelemetryUsage};
 use horch_core::competition::planner::{plan_round, PlanInput, RoundPlan};
 use horch_core::competition::preflight::{
-    evaluate, recorded_estimates, PreflightCandidate, PreflightReport, TokenEstimate,
+    evaluate, recorded_estimates, PreflightCandidate, PreflightPlan, PreflightReport, TokenEstimate,
 };
-use horch_core::competition::promotion::FaultFired;
 use horch_core::competition::report::{self, RoundReport};
 use horch_core::evaluation::validator::{CommandValidator, GateSpec};
 use horch_core::execution::store::ExecutionStore;
@@ -34,7 +33,7 @@ use horch_core::fsx;
 use horch_core::ids::{ExperimentId, RoundId, TeammateName};
 use horch_core::measure::event::EventEnvelope;
 use horch_core::measure::paths::{component, DatasetPaths};
-use horch_core::measure::projection::{fold, RoundView};
+use horch_core::measure::projection::{fold, ExperimentView, Projection, RoundView};
 use horch_core::measure::recorder::JsonlRecorder;
 use horch_core::measure::redact::redact;
 use horch_core::measure::store::{self, StoreOptions};
@@ -43,7 +42,6 @@ use horch_core::routing::eligible::EligibilityFilter;
 use horch_core::routing::policy::Policy;
 use horch_core::routing::quota::QuotaView;
 use horch_core::routing::snapshot::{obtain, QuotaEnv};
-use horch_core::runtime::fault::ABORT_EXIT_CODE;
 use horch_core::runtime::machine::{self, Known};
 use horch_core::runtime::RuntimeContext;
 use horch_core::usage::Locations;
@@ -56,7 +54,7 @@ use serde::{Deserialize, Serialize};
 
 use super::cli::{plan_task, RunArgs};
 use super::preflight::{self, ExperimentFacts, GatherInput};
-use super::{dataset_paths, exit};
+use super::{abort_on_fault, dataset_paths, exit};
 use crate::project::project_facts;
 
 pub(crate) fn run(
@@ -64,21 +62,12 @@ pub(crate) fn run(
     env: &BTreeMap<String, String>,
     args: &RunArgs,
 ) -> Result<u8> {
-    // `--detach` reports to the caller's pane by default; with no pane to
-    // report to, nothing is created (FDS-10).
-    let report_to = match (&args.report_to, args.detach) {
-        (Some(pane), _) => Some(pane.clone()),
-        (None, true) => match &ctx.herdr.pane {
-            Some(internal) => Some(public_pane(ctx, internal.as_str())),
-            None => {
-                eprintln!(
-                    "multi-herdr-dataset: run --detach needs a pane to report to: \
-                     pass --report-to <PANE>, or run it in a herdr pane (HERDR_PANE_ID)"
-                );
-                return Ok(exit::USAGE);
-            }
-        },
-        (None, false) => None,
+    let report_to = match report_target(ctx, args) {
+        Ok(report_to) => report_to,
+        Err(usage) => {
+            eprintln!("multi-herdr-dataset: {usage}");
+            return Ok(exit::USAGE);
+        }
     };
     let paths = dataset_paths(ctx)?;
     let project = ctx.paths.project()?;
@@ -86,11 +75,7 @@ pub(crate) fn run(
         .plan
         .as_deref()
         .map(|p| plan_in_project(&project, ctx.paths.cwd.as_deref(), p));
-    let task = match (&args.task, &plan) {
-        (Some(task), _) => task.clone(),
-        (None, Some(plan)) => plan_task(plan),
-        (None, None) => bail!("run needs a TASK or --plan"),
-    };
+    let task = task_of(args, plan.as_deref())?;
     let experiment = ExperimentId::mint(clock::now());
     let saved = SavedRun::from_args(args, &task, plan, report_to);
     saved.write(&paths, &experiment)?;
@@ -100,6 +85,32 @@ pub(crate) fn run(
         Start::Here
     };
     preflight_and_run(ctx, env, &paths, &experiment, &task, &saved, start)
+}
+
+/// The pane that gets the report line. `--detach` reports to the caller's
+/// pane by default; with no pane to report to, nothing is created (FDS-10):
+/// that gives the usage error.
+fn report_target(ctx: &RuntimeContext, args: &RunArgs) -> Result<Option<String>, &'static str> {
+    args.report_to
+        .clone()
+        .map(Some)
+        .or_else(|| (!args.detach).then_some(None))
+        .or_else(|| {
+            let internal = ctx.herdr.pane.as_ref()?;
+            Some(Some(public_pane(ctx, internal.as_str())))
+        })
+        .ok_or(
+            "run --detach needs a pane to report to: \
+             pass --report-to <PANE>, or run it in a herdr pane (HERDR_PANE_ID)",
+        )
+}
+
+/// The task of the run: the `TASK` argument, else the plan's task.
+fn task_of(args: &RunArgs, plan: Option<&str>) -> Result<String> {
+    args.task
+        .clone()
+        .or_else(|| plan.map(plan_task))
+        .context("run needs a TASK or --plan")
 }
 
 /// Where a round that passed preflight runs.
@@ -172,13 +183,9 @@ pub(crate) fn resume_reporting(
     let paths = dataset_paths(ctx)?;
     let experiment = ExperimentId::new(exp)?;
     let projection = fold(&store::read_all(&paths)?.events);
-    let mut saved = SavedRun::read(&paths, &experiment)?;
-    if let Some(pane) = report_to {
-        saved.report_to = Some(pane.to_string());
-    }
-    let Some(x) = projection.experiments.get(&experiment) else {
-        // Killed before `experiment.created`: start over under the same id.
-        return preflight_and_run(
+    let saved = saved_for_resume(&paths, &experiment, report_to)?;
+    match resume_plan(&projection, &experiment)? {
+        Resume::Fresh => preflight_and_run(
             ctx,
             env,
             &paths,
@@ -186,77 +193,136 @@ pub(crate) fn resume_reporting(
             &saved.task,
             &saved,
             Start::Here,
-        );
+        ),
+        Resume::Aborted => {
+            println!("experiment {experiment} was aborted by preflight");
+            Ok(exit::PREFLIGHT_FAILED)
+        }
+        Resume::Continue(x) => continue_round(ctx, &paths, &experiment, &saved, &projection, x),
+    }
+}
+
+/// The run the experiment saved, with `report_to` (`--report-to`) as its
+/// report target when given.
+fn saved_for_resume(
+    paths: &DatasetPaths,
+    experiment: &ExperimentId,
+    report_to: Option<&str>,
+) -> Result<SavedRun> {
+    let mut saved = SavedRun::read(paths, experiment)?;
+    saved.report_to = report_to
+        .map(str::to_string)
+        .or_else(|| saved.report_to.take());
+    Ok(saved)
+}
+
+/// Where `resume` re-enters an experiment.
+#[derive(Debug)]
+enum Resume<'a> {
+    /// Preflight never completed: it runs again under the same id.
+    Fresh,
+    /// Preflight aborted the experiment: nothing to resume.
+    Aborted,
+    /// Preflight passed: its round goes on.
+    Continue(&'a ExperimentView),
+}
+
+/// Where the events of `experiment` stop.
+fn resume_plan<'a>(projection: &'a Projection, experiment: &ExperimentId) -> Result<Resume<'a>> {
+    // Killed before `experiment.created`: start over under the same id.
+    let Some(x) = projection.experiments.get(experiment) else {
+        return Ok(Resume::Fresh);
     };
     match x.state {
-        RoundState::Aborted => {
-            println!("experiment {experiment} was aborted by preflight");
-            return Ok(exit::PREFLIGHT_FAILED);
-        }
-        RoundState::Preflight if x.preflight.is_none() => {
-            return preflight_and_run(
-                ctx,
-                env,
-                &paths,
-                &experiment,
-                &saved.task,
-                &saved,
-                Start::Here,
-            );
-        }
+        RoundState::Aborted => Ok(Resume::Aborted),
+        RoundState::Preflight if x.preflight.is_none() => Ok(Resume::Fresh),
         RoundState::Preflight => {
             bail!("experiment {experiment} failed preflight but was not aborted")
         }
-        _ => {}
+        _ => Ok(Resume::Continue(x)),
     }
+}
+
+/// Run the round of `x` again from where its events stop.
+fn continue_round(
+    ctx: &RuntimeContext,
+    paths: &DatasetPaths,
+    experiment: &ExperimentId,
+    saved: &SavedRun,
+    projection: &Projection,
+    x: &ExperimentView,
+) -> Result<u8> {
     let report = x
         .preflight
         .clone()
         .context("the experiment has no preflight report")?;
-    let base_sha = x.created.base_sha.clone();
-    let config = manifest_config(&paths, &experiment)?;
-    let task = saved.task.clone();
-    let (round, plan, mut planned_models) = match x.rounds.last() {
-        Some(round) => {
-            let view = &projection.rounds[round];
-            let plan = (view.state == RoundState::Planned)
-                .then(|| plan_for(ctx, &config, round, &base_sha))
-                .transpose()?;
-            let models = view
-                .candidates
-                .iter()
-                .filter_map(|(l, c)| Some((l.clone(), c.planned.as_ref()?.model.to_string())))
-                .collect();
-            (round.clone(), plan, models)
-        }
-        None => {
-            let round = RoundId::mint(clock::now());
-            let plan = plan_for(ctx, &config, &round, &base_sha)?;
-            (round, Some(plan), Vec::new())
-        }
-    };
-    if let Some(p) = &plan {
-        planned_models.extend(
-            p.candidates
-                .iter()
-                .map(|c| (c.label.to_string(), c.model.to_string())),
-        );
-    }
+    let config = manifest_config(paths, experiment)?;
+    let ResumedRound {
+        round,
+        plan,
+        mut planned_models,
+    } = round_and_plan(ctx, &config, projection, x)?;
+    planned_models.extend(
+        plan.iter()
+            .flat_map(|p| &p.candidates)
+            .map(|c| (c.label.to_string(), c.model.to_string())),
+    );
     let estimates = resumed_estimates(&report, &planned_models, &config.budget.expected_tokens);
     coordinate(
         ctx,
-        &paths,
+        paths,
         &Round {
-            experiment: &experiment,
+            experiment,
             round: &round,
             config: &config,
-            task: &task,
+            task: &saved.task,
             safe_n: report.safe_n,
             estimates,
             report_to: saved.report_to.as_deref(),
         },
         plan.as_ref(),
     )
+}
+
+/// The round that `resume` drives, its plan when it is still planned or
+/// new, and the model planned for each label of the round so far.
+struct ResumedRound {
+    round: RoundId,
+    plan: Option<RoundPlan>,
+    planned_models: Vec<(String, String)>,
+}
+
+/// The round that `resume` drives: the latest round of `x`, or a new one.
+fn round_and_plan(
+    ctx: &RuntimeContext,
+    config: &DatasetConfig,
+    projection: &Projection,
+    x: &ExperimentView,
+) -> Result<ResumedRound> {
+    let base_sha = &x.created.base_sha;
+    let Some(round) = x.rounds.last() else {
+        let round = RoundId::mint(clock::now());
+        let plan = plan_for(ctx, config, &round, base_sha)?;
+        return Ok(ResumedRound {
+            round,
+            plan: Some(plan),
+            planned_models: Vec::new(),
+        });
+    };
+    let view = &projection.rounds[round];
+    let plan = (view.state == RoundState::Planned)
+        .then(|| plan_for(ctx, config, round, base_sha))
+        .transpose()?;
+    let models = view
+        .candidates
+        .iter()
+        .filter_map(|(l, c)| Some((l.clone(), c.planned.as_ref()?.model.to_string())))
+        .collect();
+    Ok(ResumedRound {
+        round: round.clone(),
+        plan,
+        planned_models: models,
+    })
 }
 
 /// Preflight, then the round. `run` calls it for a new experiment, and
@@ -270,11 +336,67 @@ fn preflight_and_run(
     saved: &SavedRun,
     start: Start,
 ) -> Result<u8> {
+    let now = clock::now();
+    let round_id = RoundId::mint(now);
+    let gathered = gather_report(ctx, paths, experiment, task, saved, &round_id)?;
+
+    let recorder = JsonlRecorder::open(paths, StoreOptions::from_faults(&ctx.settings.faults))?;
+    let failed = preflight::record(
+        &recorder,
+        paths,
+        &ExperimentFacts {
+            experiment,
+            task,
+            plan: &gathered.pre_plan,
+            report: &gathered.report,
+            env: snapshot_env(ctx, env),
+            at: now,
+        },
+        &ctx.settings.faults,
+    )?;
+    drop(recorder);
+
+    // A detached pass prints its 1 line only (FDS-10); a refusal prints all.
+    if start == Start::Here || !failed.is_empty() {
+        println!("experiment {experiment}");
+        print!("{}", render_plan(&gathered.plan));
+        print!("{}", preflight::render(&gathered.report));
+    }
+    if let Some((line, code)) = refusal(gathered.plan.candidates.is_empty(), &failed) {
+        println!("{line}");
+        Ok(code)
+    } else {
+        let attempt = Attempt {
+            experiment,
+            round: &round_id,
+            task,
+            saved,
+            start,
+        };
+        launch(ctx, paths, &attempt, &gathered)
+    }
+}
+
+/// What preflight looked at and found.
+struct Gathered {
+    config: DatasetConfig,
+    plan: RoundPlan,
+    pre_plan: PreflightPlan,
+    report: PreflightReport,
+}
+
+/// Plan the round and run the preflight checks on the plan.
+fn gather_report(
+    ctx: &RuntimeContext,
+    paths: &DatasetPaths,
+    experiment: &ExperimentId,
+    task: &str,
+    saved: &SavedRun,
+    round_id: &RoundId,
+) -> Result<Gathered> {
     let project = ctx.paths.project()?;
     let flags = saved.flags()?;
     let mut config = config::load(&project, &flags)?;
-    let now = clock::now();
-    let round_id = RoundId::mint(now);
 
     // PRE-13 checks the root against the trusted directories, so it must be
     // absolute. A relative root is relative to the project. Each experiment
@@ -289,7 +411,7 @@ fn preflight_and_run(
 
     let git = GitCli::new(ctx.bins.harness.git.clone());
     let head = preflight::repo_facts(&git, &project, &[], None).base_sha;
-    let (plan, view) = plan_with_view(ctx, &config, &round_id, head.as_deref().unwrap_or(""))?;
+    let (plan, view) = plan_with_view(ctx, &config, round_id, head.as_deref().unwrap_or(""))?;
 
     let branches = planned_branches(experiment, &plan, &config);
     let git_facts = preflight::repo_facts(&git, &project, &branches, config.promote_to.as_deref());
@@ -316,83 +438,100 @@ fn preflight_and_run(
         },
     );
     let mut report = evaluate(&pre_plan, &snapshot);
-    if let Some(plan) = &saved.plan {
-        let dir = pre_plan
-            .git
-            .toplevel
-            .clone()
-            .unwrap_or_else(|| project.clone());
-        let base = pre_plan.git.base_sha.as_deref();
-        if let Some(problem) = preflight::plan_problem(&git, &dir, base, plan) {
-            preflight::fail_pre_01(&mut report, &problem);
-        }
+    let problem = saved
+        .plan
+        .as_deref()
+        .and_then(|plan| plan_file_problem(&git, &project, &pre_plan, plan));
+    if let Some(problem) = problem {
+        preflight::fail_pre_01(&mut report, &problem);
     }
+    Ok(Gathered {
+        config,
+        plan,
+        pre_plan,
+        report,
+    })
+}
 
-    let recorder = JsonlRecorder::open(paths, StoreOptions::from_faults(&ctx.settings.faults))?;
-    let failed = preflight::record(
-        &recorder,
-        paths,
-        &ExperimentFacts {
-            experiment,
-            task,
-            plan: &pre_plan,
-            report: &report,
-            env: snapshot_env(ctx, env),
-            at: now,
-        },
-        &ctx.settings.faults,
-    )?;
-    drop(recorder);
+/// Why the `--plan` file cannot go with the round, if it cannot.
+fn plan_file_problem(
+    git: &GitCli,
+    project: &Path,
+    pre_plan: &PreflightPlan,
+    plan: &str,
+) -> Option<String> {
+    let dir = pre_plan.git.toplevel.as_deref().unwrap_or(project);
+    preflight::plan_problem(git, dir, pre_plan.git.base_sha.as_deref(), plan)
+}
 
-    // A detached pass prints its 1 line only (FDS-10); a refusal prints all.
-    if start == Start::Here || !failed.is_empty() {
-        println!("experiment {experiment}");
-        print!("{}", render_plan(&plan));
-        print!("{}", preflight::render(&report));
+/// The line and exit code that refuse a round after preflight, or `None`
+/// when the round may start. An empty plan fails PRE-08, but the planner
+/// refused every candidate (excluded, or over its usage limits): that is
+/// the budget/quota refusal, exit 3 (dataset design §6 B2), not a failed
+/// machine check. The report is recorded and the experiment aborted all the
+/// same.
+fn refusal(no_candidates: bool, failed: &[String]) -> Option<(String, u8)> {
+    const NOTHING_STARTED: &str = "No worktree was created and no model was called.";
+    if no_candidates && failed.iter().all(|id| id == "PRE-08") {
+        Some((
+            format!("REFUSED: no candidate can run within the usage limits. {NOTHING_STARTED}"),
+            exit::BUDGET_REFUSED,
+        ))
+    } else if !failed.is_empty() {
+        Some((
+            format!(
+                "REFUSED: preflight failed ({}). {NOTHING_STARTED}",
+                failed.join(", ")
+            ),
+            exit::PREFLIGHT_FAILED,
+        ))
+    } else {
+        None
     }
-    // An empty plan fails PRE-08, but the planner refused every candidate
-    // (excluded, or over its usage limits): that is the budget/quota
-    // refusal, exit 3 (dataset design §6 B2), not a failed machine check.
-    // The report is recorded and the experiment aborted all the same.
-    if plan.candidates.is_empty() && failed.iter().all(|id| id == "PRE-08") {
-        println!(
-            "REFUSED: no candidate can run within the usage limits. \
-             No worktree was created and no model was called."
-        );
-        return Ok(exit::BUDGET_REFUSED);
-    }
-    if !failed.is_empty() {
-        println!(
-            "REFUSED: preflight failed ({}). No worktree was created and no model was called.",
-            failed.join(", ")
-        );
-        return Ok(exit::PREFLIGHT_FAILED);
-    }
+}
+
+/// One attempt of an experiment's first round.
+struct Attempt<'a> {
+    experiment: &'a ExperimentId,
+    round: &'a RoundId,
+    task: &'a str,
+    saved: &'a SavedRun,
+    start: Start,
+}
+
+/// Start the round that passed preflight, in a new pane or here.
+fn launch(
+    ctx: &mut RuntimeContext,
+    paths: &DatasetPaths,
+    a: &Attempt<'_>,
+    g: &Gathered,
+) -> Result<u8> {
     ctx.settings.faults.abort_if("abort-after-preflight");
-    if start == Start::Detached {
-        return start_detached(ctx, paths, experiment, &round_id, &plan, saved);
+    if a.start == Start::Detached {
+        return start_detached(ctx, paths, a.experiment, a.round, &g.plan, a.saved);
     }
+    let pre_plan = &g.pre_plan;
     coordinate(
         ctx,
         paths,
         &Round {
-            experiment,
-            round: &round_id,
-            config: &config,
-            task,
-            safe_n: report.safe_n,
+            experiment: a.experiment,
+            round: a.round,
+            config: &g.config,
+            task: a.task,
+            safe_n: g.report.safe_n,
             estimates: meter_estimates(
                 pre_plan
                     .candidates
                     .iter()
                     .map(|c| (c.label.as_str(), c.model.as_str())),
                 &pre_plan.expected_tokens,
-                &config.budget.expected_tokens,
+                &g.config.budget.expected_tokens,
                 &pre_plan.measured_tokens,
             ),
-            report_to: saved.report_to.as_deref(),
+            report_to: a.saved.report_to.as_deref(),
         },
-        Some(&plan),
+        Some(&g.plan),
     )
 }
 
@@ -414,30 +553,14 @@ fn start_detached(
         .report_to
         .as_deref()
         .context("a detached round has no pane to report to")?;
-    let recorder = JsonlRecorder::open(paths, StoreOptions::from_faults(&ctx.settings.faults))?;
-    record_round_plan(&recorder, experiment, round, plan, &monotonic(clock::now))?;
-    drop(recorder);
+    record_plan(ctx, paths, experiment, round, plan)?;
     let herdr = Herdr::with_bin(&ctx.bins.harness.herdr);
     let watch = watch_command(ctx, &project, experiment)?;
     let ws = dataset_workspace(&herdr, paths, experiment, &project, &watch)?;
     let pane = herdr
         .pane_split(&ws.root_pane, Direction::Down)
         .context("opening the coordinator pane in the dataset workspace")?;
-    let exe = ctx.bins.exe()?;
-    let env = pane_env(ctx);
-    let env: Vec<(&str, &str)> = env.iter().map(|(k, v)| (*k, v.as_str())).collect();
-    let command = PaneShell::host().command_line_with_env(
-        &exe,
-        &env,
-        &[
-            "resume".to_string(),
-            experiment.to_string(),
-            "--report-to".to_string(),
-            report_to.to_string(),
-            "--project".to_string(),
-            project.to_string_lossy().into_owned(),
-        ],
-    );
+    let command = resume_command(ctx, &project, experiment, report_to)?;
     if let Err(e) = herdr.pane_run(&pane, &command) {
         let _ = herdr.pane_close(&pane);
         return Err(e.context(format!(
@@ -449,6 +572,43 @@ fn start_detached(
         workspace_name(experiment)
     );
     Ok(exit::SUCCESS)
+}
+
+/// Record the round's plan before the detached coordinator resumes it.
+fn record_plan(
+    ctx: &RuntimeContext,
+    paths: &DatasetPaths,
+    experiment: &ExperimentId,
+    round: &RoundId,
+    plan: &RoundPlan,
+) -> Result<()> {
+    let recorder = JsonlRecorder::open(paths, StoreOptions::from_faults(&ctx.settings.faults))?;
+    record_round_plan(&recorder, experiment, round, plan, &monotonic(clock::now))
+}
+
+/// The shell command that runs `resume <experiment> --report-to <pane>` in
+/// the new pane, with the settings a pane does not inherit.
+fn resume_command(
+    ctx: &RuntimeContext,
+    project: &Path,
+    experiment: &ExperimentId,
+    report_to: &str,
+) -> Result<String> {
+    let exe = ctx.bins.exe()?;
+    let env = pane_env(ctx);
+    let env: Vec<(&str, &str)> = env.iter().map(|(k, v)| (*k, v.as_str())).collect();
+    Ok(PaneShell::host().command_line_with_env(
+        &exe,
+        &env,
+        &[
+            "resume".to_string(),
+            experiment.to_string(),
+            "--report-to".to_string(),
+            report_to.to_string(),
+            "--project".to_string(),
+            project.to_string_lossy().into_owned(),
+        ],
+    ))
 }
 
 /// What the dataset workspace's root pane runs: `watch <experiment>`.
@@ -584,24 +744,7 @@ fn coordinate(
     let herdr = Herdr::with_bin(&ctx.bins.harness.herdr);
     let store = ExecutionStore::open_in(ctx)?;
     let roster = load_roster(ctx)?;
-    let artifacts = paths
-        .artifacts_dir(r.experiment, r.round)?
-        .join("validation");
-    observe::ensure_dirs(paths, &artifacts)?;
-    let gates = r
-        .config
-        .gates
-        .iter()
-        .map(|g| GateSpec {
-            name: g.name.clone(),
-            command: g.command.clone(),
-            timeout: Duration::from_secs(g.timeout_s),
-            required: g.required,
-        })
-        .collect();
-    // `fail-gate:<name>` reaches the gates from `run` (and from promotion's
-    // revalidation, which uses this validator too).
-    let validator = CommandValidator::new(gates, artifacts, ctx.settings.faults.points().clone());
+    let validator = round_validator(ctx, paths, r)?;
     let usage = TelemetryUsage {
         locations: Locations::from_context(ctx),
     };
@@ -609,26 +752,10 @@ fn coordinate(
         estimates: r.estimates.clone(),
         ..UsageMeter::default()
     };
-    let worktree_root = r
-        .config
-        .worktree_root
-        .clone()
-        .context("the config has no worktree root")?;
-    let disk_dir = existing_ancestor(&worktree_root);
-    let machine_file = ctx.settings.machine_file.clone();
-    let disk_free = move || match machine::probe(
-        &disk_dir,
-        &machine::ProbeBins::default(),
-        machine_file.as_deref(),
-    )
-    .disk_free_bytes
-    {
-        Known::Known(free) => Some(free),
-        Known::Unknown => None,
-    };
+    let spec = round_spec(ctx, r, project)?;
+    let disk_free = disk_probe(ctx, &spec.worktree_root);
     let clock = monotonic(clock::now);
     let sleep = |d: Duration| std::thread::sleep(d);
-    let watch_command = watch_command(ctx, &project, r.experiment)?;
     let coordinator = Coordinator {
         ctx: &spawn_ctx,
         recorder: &recorder,
@@ -646,48 +773,129 @@ fn coordinate(
         faults: &ctx.settings.faults,
         launcher: &DetachedLauncher(ctx),
     };
-    let spec = RoundSpec {
+    drive_round(&coordinator, &spec, r, &herdr, plan)
+}
+
+/// Start the planned round, or drive the one that has events. A coordinator
+/// that stops on an error reports it; one that ends the round finishes it.
+fn drive_round(
+    coordinator: &Coordinator<'_, GitCli>,
+    spec: &RoundSpec,
+    r: &Round,
+    herdr: &Herdr,
+    plan: Option<&RoundPlan>,
+) -> Result<u8> {
+    let outcome = match plan {
+        Some(plan) => coordinator.start(spec, plan),
+        None => coordinator.drive(spec),
+    };
+    match outcome {
+        Ok(outcome) => finish_round(coordinator, spec, r, herdr, &outcome),
+        Err(e) => Err(report_stopped(herdr, r, e)),
+    }
+}
+
+/// The round the coordinator runs, in `project`.
+fn round_spec(ctx: &RuntimeContext, r: &Round, project: PathBuf) -> Result<RoundSpec> {
+    let worktree_root = r
+        .config
+        .worktree_root
+        .clone()
+        .context("the config has no worktree root")?;
+    Ok(RoundSpec {
         experiment: r.experiment.clone(),
         round: r.round.clone(),
         index: 0,
         config: r.config.clone(),
         task: r.task.to_string(),
+        watch_command: watch_command(ctx, &project, r.experiment)?,
         repo: project,
         worktree_root,
         safe_n: r.safe_n,
         tick: TICK,
-        watch_command,
-    };
-    let outcome = match plan {
-        Some(plan) => coordinator.start(&spec, plan),
-        None => coordinator.drive(&spec),
-    };
-    let outcome = match outcome {
-        Ok(o) => o,
-        Err(e) => {
-            if let Some(f) = e.downcast_ref::<FaultFired>() {
-                eprintln!("multi-herdr-dataset: {f}: aborting");
-                std::process::exit(ABORT_EXIT_CODE);
-            }
-            if let Some(pane) = r.report_to {
-                let stopped = RoundReport::stopped(r.experiment, r.round, &format!("{e:#}"));
-                report::deliver(&herdr, pane, &stopped);
-            }
-            return Err(e);
+    })
+}
+
+/// The validator of the round: the config's gates, logging under the
+/// round's artifacts. `fail-gate:<name>` reaches the gates from `run` (and
+/// from promotion's revalidation, which uses this validator too).
+fn round_validator(
+    ctx: &RuntimeContext,
+    paths: &DatasetPaths,
+    r: &Round,
+) -> Result<CommandValidator> {
+    let artifacts = paths
+        .artifacts_dir(r.experiment, r.round)?
+        .join("validation");
+    observe::ensure_dirs(paths, &artifacts)?;
+    let gates = r
+        .config
+        .gates
+        .iter()
+        .map(|g| GateSpec {
+            name: g.name.clone(),
+            command: g.command.clone(),
+            timeout: Duration::from_secs(g.timeout_s),
+            required: g.required,
+        })
+        .collect();
+    Ok(CommandValidator::new(
+        gates,
+        artifacts,
+        ctx.settings.faults.points().clone(),
+    ))
+}
+
+/// Free bytes on the disk that the worktree root lands on; `None` when the
+/// probe does not know.
+fn disk_probe(ctx: &RuntimeContext, worktree_root: &Path) -> impl Fn() -> Option<u64> {
+    let disk_dir = existing_ancestor(worktree_root);
+    let machine_file = ctx.settings.machine_file.clone();
+    move || {
+        let probe = machine::probe(
+            &disk_dir,
+            &machine::ProbeBins::default(),
+            machine_file.as_deref(),
+        );
+        match probe.disk_free_bytes {
+            Known::Known(free) => Some(free),
+            Known::Unknown => None,
         }
-    };
-    let view = coordinator.view(&spec)?;
-    let events = store::read_all(paths)?.events;
+    }
+}
+
+/// The coordinator stopped on an error: abort the process on a fault point,
+/// else report to the pane that waits. Gives the error back.
+fn report_stopped(herdr: &Herdr, r: &Round, e: anyhow::Error) -> anyhow::Error {
+    abort_on_fault(&e);
+    if let Some(pane) = r.report_to {
+        let stopped = RoundReport::stopped(r.experiment, r.round, &format!("{e:#}"));
+        report::deliver(herdr, pane, &stopped);
+    }
+    e
+}
+
+/// The round ended: report it, close its workspace, print its line. Gives
+/// the exit code.
+fn finish_round(
+    coordinator: &Coordinator<'_, GitCli>,
+    spec: &RoundSpec,
+    r: &Round,
+    herdr: &Herdr,
+    outcome: &RoundOutcome,
+) -> Result<u8> {
+    let view = coordinator.view(spec)?;
+    let events = store::read_all(coordinator.paths)?.events;
     let reason = latest_intervention(&events, r.round);
     // The report goes before the workspace closes: a detached coordinator
     // runs in a pane of that workspace.
     if let Some(pane) = r.report_to {
         let report =
-            RoundReport::from_view(r.experiment, r.round, &outcome, &view, reason.as_deref());
-        report::deliver(&herdr, pane, &report);
+            RoundReport::from_view(r.experiment, r.round, outcome, &view, reason.as_deref());
+        report::deliver(herdr, pane, &report);
     }
-    coordinator.close_workspace(&spec);
-    let (line, code) = outcome_line(&outcome, &view, reason.as_deref());
+    coordinator.close_workspace(spec);
+    let (line, code) = outcome_line(outcome, &view, reason.as_deref());
     println!("round {} {line}", r.round);
     Ok(code)
 }
@@ -703,35 +911,42 @@ pub(super) fn outcome_line(
     reason: Option<&str>,
 ) -> (String, u8) {
     match outcome {
-        RoundOutcome::Decided => {
-            let p = &view.promotion;
-            let line = match (&p.started, &p.completed, &view.winner) {
-                (Some(started), Some(done), _) => {
-                    format!("PROMOTED: {} is at {}", started.target, done.dest_after)
-                }
-                (_, _, Some(w)) => format!("DECIDED: winner {}", w.label),
-                _ => "DECIDED".to_string(),
-            };
-            (line, exit::SUCCESS)
-        }
+        RoundOutcome::Decided => (decided_line(view), exit::SUCCESS),
         RoundOutcome::Rejected { budget: true } => (
             "REJECTED: the budget stopped the candidates".to_string(),
             exit::BUDGET_REFUSED,
         ),
-        RoundOutcome::Rejected { budget: false } => (
-            match view.rejected {
-                Some(reason) => format!("REJECTED: {reason}"),
-                None => "REJECTED".to_string(),
-            },
-            exit::REJECTED,
-        ),
+        RoundOutcome::Rejected { budget: false } => {
+            (with_reason("REJECTED", view.rejected), exit::REJECTED)
+        }
         RoundOutcome::NeedsIntervention => (
-            match reason.or(view.needs_intervention.as_ref().map(|n| n.reason.as_str())) {
-                Some(reason) => format!("NEEDS_INTERVENTION: {reason}"),
-                None => "NEEDS_INTERVENTION".to_string(),
-            },
+            with_reason(
+                "NEEDS_INTERVENTION",
+                reason.or(view.needs_intervention.as_ref().map(|n| n.reason.as_str())),
+            ),
             exit::NEEDS_INTERVENTION,
         ),
+    }
+}
+
+/// The line of a decided round: where the promotion put the winner, else the
+/// winner, else no more than the state.
+fn decided_line(view: &RoundView) -> String {
+    let p = &view.promotion;
+    match (&p.started, &p.completed, &view.winner) {
+        (Some(started), Some(done), _) => {
+            format!("PROMOTED: {} is at {}", started.target, done.dest_after)
+        }
+        (_, _, Some(w)) => format!("DECIDED: winner {}", w.label),
+        _ => "DECIDED".to_string(),
+    }
+}
+
+/// `head: reason`, or `head` when there is no reason.
+fn with_reason(head: &str, reason: Option<impl std::fmt::Display>) -> String {
+    match reason {
+        Some(reason) => format!("{head}: {reason}"),
+        None => head.to_string(),
     }
 }
 
@@ -1027,6 +1242,7 @@ fn render_plan(plan: &RoundPlan) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::dataset::test_fixtures::{exp, experiment, projection, round_view};
 
     /// The meter gets PRE-09's estimate per model: the plan's per-label value
     /// first, then the config; 2 labels of 1 model keep the per-kind maximum.
@@ -1272,6 +1488,209 @@ mod tests {
             launched.skills.iter().any(|s| s == "godot-csharp-godot"),
             "{:?}",
             launched.skills
+        );
+    }
+
+    fn decided() -> RoundView {
+        round_view(RoundState::Complete, Vec::new())
+    }
+
+    #[test]
+    fn outcome_line_for_a_decided_round_names_the_winner_or_the_promotion() {
+        let mut view = decided();
+        assert_eq!(
+            outcome_line(&RoundOutcome::Decided, &view, None),
+            ("DECIDED".to_string(), 0)
+        );
+        view.winner = Some(
+            serde_json::from_value(serde_json::json!({
+                "label": "B",
+                "execution_id": "0199a5b0-0000-7000-8000-000000000c01",
+                "head_sha": "h",
+                "judgment_id": "0199a5b0-0000-7000-8000-000000000d01",
+                "promotion": "not_requested",
+            }))
+            .unwrap(),
+        );
+        assert_eq!(
+            outcome_line(&RoundOutcome::Decided, &view, None),
+            ("DECIDED: winner B".to_string(), 0)
+        );
+        view.promotion = serde_json::from_value(serde_json::json!({
+            "started": {"target": "main", "dest_before": "a", "planned_after": "b",
+                        "strategy": "fast_forward"},
+            "completed": {"receipt_digest": horch_core::measure::digest::sha256_bytes(b"r"),
+                          "dest_after": "bbb"},
+            "conflicted": null,
+            "rolled_back": [],
+        }))
+        .unwrap();
+        assert_eq!(
+            outcome_line(&RoundOutcome::Decided, &view, None),
+            ("PROMOTED: main is at bbb".to_string(), 0)
+        );
+    }
+
+    #[test]
+    fn outcome_line_for_a_rejected_round() {
+        use horch_core::evaluation::winner::RejectReason;
+        let mut view = decided();
+        assert_eq!(
+            outcome_line(&RoundOutcome::Rejected { budget: true }, &view, None),
+            ("REJECTED: the budget stopped the candidates".to_string(), 3)
+        );
+        assert_eq!(
+            outcome_line(&RoundOutcome::Rejected { budget: false }, &view, None),
+            ("REJECTED".to_string(), 6)
+        );
+        view.rejected = Some(RejectReason::BelowConfidence);
+        assert_eq!(
+            outcome_line(&RoundOutcome::Rejected { budget: false }, &view, None),
+            ("REJECTED: below_confidence".to_string(), 6)
+        );
+    }
+
+    #[test]
+    fn outcome_line_for_a_round_that_needs_the_operator_prefers_the_latest_reason() {
+        let mut view = decided();
+        assert_eq!(
+            outcome_line(&RoundOutcome::NeedsIntervention, &view, None),
+            ("NEEDS_INTERVENTION".to_string(), 5)
+        );
+        view.needs_intervention = serde_json::from_value(serde_json::json!(
+            {"reason": "first", "source": "judge"}
+        ))
+        .ok();
+        assert_eq!(
+            outcome_line(&RoundOutcome::NeedsIntervention, &view, None),
+            ("NEEDS_INTERVENTION: first".to_string(), 5)
+        );
+        assert_eq!(
+            outcome_line(&RoundOutcome::NeedsIntervention, &view, Some("latest")),
+            ("NEEDS_INTERVENTION: latest".to_string(), 5)
+        );
+    }
+
+    #[test]
+    fn resume_starts_over_for_an_experiment_with_no_events() {
+        let p = Projection::default();
+        assert!(matches!(resume_plan(&p, &exp()).unwrap(), Resume::Fresh));
+    }
+
+    #[test]
+    fn resume_does_not_restart_an_aborted_experiment() {
+        let p = projection(RoundState::Aborted, &[]);
+        assert!(matches!(resume_plan(&p, &exp()).unwrap(), Resume::Aborted));
+    }
+
+    #[test]
+    fn resume_runs_preflight_again_when_it_never_completed() {
+        let p = projection(RoundState::Preflight, &[]);
+        assert!(matches!(resume_plan(&p, &exp()).unwrap(), Resume::Fresh));
+    }
+
+    #[test]
+    fn resume_refuses_a_failed_preflight_that_was_not_aborted() {
+        let mut p = projection(RoundState::Preflight, &[]);
+        p.experiments.get_mut(&exp()).unwrap().preflight =
+            serde_json::from_value(serde_json::json!({
+                "schema_version": "1.0.0", "checks": [], "safe_n": 1, "waves": 1,
+                "projected_cost_microusd": 0,
+                "machine": {"os": "macos", "arch": "aarch64", "cpus": 10,
+                            "mem_total_bytes": null, "mem_available_bytes": null,
+                            "disk_free_bytes": null, "disk_total_bytes": null,
+                            "gpu": "apple_silicon", "max_open_files": null,
+                            "max_processes": null},
+                "environment_digest": horch_core::measure::digest::sha256_bytes(b"e"),
+                "passed": false,
+            }))
+            .unwrap();
+        assert_eq!(
+            resume_plan(&p, &exp()).unwrap_err().to_string(),
+            format!("experiment {} failed preflight but was not aborted", exp())
+        );
+    }
+
+    #[test]
+    fn resume_continues_a_planned_experiment() {
+        let p = projection(RoundState::Planned, &[RoundState::Running]);
+        let Resume::Continue(x) = resume_plan(&p, &exp()).unwrap() else {
+            panic!("not continue");
+        };
+        assert_eq!(x, &experiment(RoundState::Planned, x.rounds.clone()));
+    }
+
+    fn ids(ids: &[&str]) -> Vec<String> {
+        ids.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn refusal_is_none_for_a_plan_that_passed() {
+        assert_eq!(refusal(false, &[]), None);
+    }
+
+    #[test]
+    fn refusal_is_the_budget_refusal_when_only_the_empty_plan_failed() {
+        assert_eq!(
+            refusal(true, &ids(&["PRE-08"])),
+            Some((
+                "REFUSED: no candidate can run within the usage limits. \
+                 No worktree was created and no model was called."
+                    .to_string(),
+                3
+            ))
+        );
+    }
+
+    #[test]
+    fn refusal_names_every_failed_check_of_a_failed_preflight() {
+        let expected = Some((
+            "REFUSED: preflight failed (PRE-01, PRE-08). \
+             No worktree was created and no model was called."
+                .to_string(),
+            4,
+        ));
+        assert_eq!(refusal(true, &ids(&["PRE-01", "PRE-08"])), expected);
+        assert_eq!(refusal(false, &ids(&["PRE-01", "PRE-08"])), expected);
+    }
+
+    fn run_args(argv: &[&str]) -> RunArgs {
+        use clap::Parser;
+        let cli = crate::dataset::cli::Cli::try_parse_from(
+            ["multi-herdr-dataset", "run"]
+                .into_iter()
+                .chain(argv.iter().copied()),
+        )
+        .unwrap();
+        let crate::dataset::cli::Command::Run(args) = cli.command else {
+            panic!("not run");
+        };
+        args
+    }
+
+    #[test]
+    fn the_task_comes_from_the_argument_before_the_plan() {
+        let args = run_args(&["fix the bug"]);
+        assert_eq!(task_of(&args, Some("plan.md")).unwrap(), "fix the bug");
+    }
+
+    #[test]
+    fn the_task_comes_from_the_plan_without_an_argument() {
+        let args = run_args(&["--plan", "plan.md"]);
+        assert_eq!(
+            task_of(&args, Some("plan.md")).unwrap(),
+            "Read and follow plan.md exactly."
+        );
+    }
+
+    #[test]
+    fn a_run_with_no_task_and_no_plan_is_refused() {
+        // clap requires one of them; the plan can still be missing after
+        // `plan_in_project`.
+        let args = run_args(&["--plan", "plan.md"]);
+        assert_eq!(
+            task_of(&args, None).unwrap_err().to_string(),
+            "run needs a TASK or --plan"
         );
     }
 }

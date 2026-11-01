@@ -959,6 +959,11 @@
       "verbatim": false
     },
     {
+      "name": "godot-save-security",
+      "copied_files": [],
+      "verbatim": false
+    },
+    {
       "name": "godot-scene-files",
       "copied_files": [],
       "verbatim": false

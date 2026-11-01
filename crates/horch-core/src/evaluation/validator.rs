@@ -152,6 +152,16 @@ impl CommandValidator {
     ) -> anyhow::Result<GateStatus> {
         let out = private_file(raw)?;
         let err = out.try_clone()?;
+        match self.gate_command(gate, worktree, out, err).spawn() {
+            Ok(mut child) => wait_gate(&mut child, gate.timeout),
+            Err(e) => Ok(GateStatus::Error {
+                reason: format!("cannot start sh: {e}"),
+            }),
+        }
+    }
+
+    /// The `sh -c` command of one gate, writing to `out` and `err`.
+    fn gate_command(&self, gate: &GateSpec, worktree: &Path, out: File, err: File) -> Command {
         let mut cmd = Command::new("sh");
         cmd.arg("-c")
             .arg(&gate.command)
@@ -159,9 +169,7 @@ impl CommandValidator {
             .stdin(Stdio::null())
             .stdout(out)
             .stderr(err);
-        for (k, v) in &self.env {
-            cmd.env(k, v);
-        }
+        cmd.envs(self.env.iter().cloned());
         cmd.env("CARGO_TARGET_DIR", worktree.join("target"));
         for key in FORBIDDEN_ENV {
             cmd.env_remove(key);
@@ -173,31 +181,29 @@ impl CommandValidator {
         // started, not just `sh`.
         #[cfg(unix)]
         std::os::unix::process::CommandExt::process_group(&mut cmd, 0);
-        let mut child = match cmd.spawn() {
-            Ok(c) => c,
-            Err(e) => {
-                return Ok(GateStatus::Error {
-                    reason: format!("cannot start sh: {e}"),
-                })
-            }
-        };
-        let deadline = Instant::now() + gate.timeout;
-        loop {
-            if leader_exited(&mut child)? {
-                // Stragglers the gate left in the background go too. The
-                // leader is not reaped yet, so its pid, and with it the
-                // group id, cannot be given to another program.
-                kill_group(&mut child);
-                return Ok(exit_status(child.wait()?));
-            }
-            if Instant::now() >= deadline {
-                kill_group(&mut child);
-                child.wait()?;
-                return Ok(GateStatus::TimedOut);
-            }
-            std::thread::sleep(POLL);
-        }
+        cmd
     }
+}
+
+/// Poll the gate leader until it exits or `timeout` passes.
+fn wait_gate(child: &mut Child, timeout: Duration) -> anyhow::Result<GateStatus> {
+    let deadline = Instant::now() + timeout;
+    let status = loop {
+        if leader_exited(child)? {
+            // Stragglers the gate left in the background go too. The
+            // leader is not reaped yet, so its pid, and with it the
+            // group id, cannot be given to another program.
+            crate::runtime::process::kill_group(child);
+            break exit_status(child.wait()?);
+        }
+        if Instant::now() >= deadline {
+            crate::runtime::process::kill_group(child);
+            child.wait()?;
+            break GateStatus::TimedOut;
+        }
+        std::thread::sleep(POLL);
+    };
+    Ok(status)
 }
 
 impl Validator for CommandValidator {
@@ -271,26 +277,12 @@ fn private_file(path: &Path) -> anyhow::Result<File> {
         .with_context(|| format!("creating {}", path.display()))
 }
 
-#[cfg(unix)]
-fn kill_group(child: &mut Child) {
-    // The group id is the child's pid (`process_group(0)`). The child is
-    // not reaped yet, so its pid and group id are still its own. A group
-    // that is already gone gives ESRCH, which is fine.
-    unsafe {
-        libc::killpg(child.id() as libc::pid_t, libc::SIGKILL);
-    }
-}
-
-#[cfg(not(unix))]
-fn kill_group(child: &mut Child) {
-    let _ = child.kill();
-}
-
 /// Whether the gate leader has exited, without reaping it: `waitid` with
-/// `WNOWAIT` leaves the zombie, so [`kill_group`] still names the gate's
+/// `WNOWAIT` leaves the zombie, so [`process::kill_group`](crate::runtime::process::kill_group) still names the gate's
 /// own group.
 #[cfg(unix)]
 fn leader_exited(child: &mut Child) -> std::io::Result<bool> {
+    // SAFETY: `siginfo_t` is plain data, and an all-zero value is valid.
     let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
     // SAFETY: `info` is a valid siginfo_t to fill; the pid is this
     // process's own unreaped child.
@@ -306,6 +298,7 @@ fn leader_exited(child: &mut Child) -> std::io::Result<bool> {
         return Err(std::io::Error::last_os_error());
     }
     // With WNOHANG and no exit yet, the pid field stays 0.
+    // SAFETY: `waitid` succeeded, so `info` is initialised and `si_pid` reads a valid field.
     Ok(unsafe { info.si_pid() } != 0)
 }
 
@@ -316,16 +309,22 @@ fn leader_exited(child: &mut Child) -> std::io::Result<bool> {
 
 fn exit_status(exit: ExitStatus) -> GateStatus {
     if exit.success() {
-        return GateStatus::Passed;
+        GateStatus::Passed
+    } else {
+        GateStatus::Failed {
+            code: exit.code().or_else(|| signal_code(&exit)).unwrap_or(-1),
+        }
     }
-    if let Some(code) = exit.code() {
-        return GateStatus::Failed { code };
-    }
-    #[cfg(unix)]
-    if let Some(sig) = std::os::unix::process::ExitStatusExt::signal(&exit) {
-        return GateStatus::Failed { code: 128 + sig };
-    }
-    GateStatus::Failed { code: -1 }
+}
+
+#[cfg(unix)]
+fn signal_code(exit: &ExitStatus) -> Option<i32> {
+    std::os::unix::process::ExitStatusExt::signal(exit).map(|sig| 128 + sig)
+}
+
+#[cfg(not(unix))]
+fn signal_code(_exit: &ExitStatus) -> Option<i32> {
+    None
 }
 
 /// Redact and cap the raw output in `raw`, write it to `log` (0600) and
@@ -338,43 +337,58 @@ fn store_log(raw: &Path, log: &Path) -> anyhow::Result<(Digest, bool)> {
     let mut file = File::open(raw).with_context(|| format!("opening {}", raw.display()))?;
     let len = file.metadata()?.len();
     let (text, truncated) = if len <= LOG_CAP as u64 {
-        let mut bytes = Vec::new();
-        file.read_to_end(&mut bytes)?;
-        let text = redact(&String::from_utf8_lossy(&bytes)).into_owned();
-        if text.len() <= LOG_CAP {
-            (text, false)
-        } else {
-            // Redaction can lengthen a short `key=v`; cut the end.
-            let marker = "\n[horch: log cut at 256 KiB]\n";
-            let kept = cut_utf8(&text, LOG_CAP - marker.len());
-            (format!("{kept}{marker}"), true)
-        }
+        read_whole(&mut file)
     } else {
-        let half = (LOG_CAP - 128) / 2;
-        let mut head = vec![0u8; half];
-        file.read_exact(&mut head)?;
-        if let Some(nl) = head.iter().rposition(|&c| c == b'\n') {
-            head.truncate(nl + 1);
-        }
-        let mut tail = vec![0u8; half];
-        file.seek(SeekFrom::End(-(half as i64)))?;
-        file.read_exact(&mut tail)?;
-        if let Some(nl) = tail.iter().position(|&c| c == b'\n') {
-            tail.drain(..=nl);
-        }
-        let omitted = len - head.len() as u64 - tail.len() as u64;
-        let mut text = redact(&String::from_utf8_lossy(&head)).into_owned();
-        if !text.ends_with('\n') {
-            text.push('\n');
-        }
-        text.push_str(&format!(
-            "[horch: {omitted} bytes omitted from the middle of this log]\n"
-        ));
-        text.push_str(&redact(&String::from_utf8_lossy(&tail)));
-        (cut_utf8(&text, LOG_CAP).to_owned(), true)
-    };
+        read_head_tail(&mut file, len)
+    }?;
     fsx::write_atomic(log, text.as_bytes(), fsx::PRIVATE_FILE)?;
     Ok((sha256_bytes(text.as_bytes()), truncated))
+}
+
+/// A raw log that fits the cap: redacted whole, and cut at the cap when
+/// redaction made it longer.
+fn read_whole(file: &mut File) -> anyhow::Result<(String, bool)> {
+    let mut bytes = Vec::new();
+    file.read_to_end(&mut bytes)?;
+    let text = redact(&String::from_utf8_lossy(&bytes)).into_owned();
+    if text.len() <= LOG_CAP {
+        return Ok((text, false));
+    }
+    // Redaction can lengthen a short `key=v`; cut the end.
+    let marker = "\n[horch: log cut at 256 KiB]\n";
+    let kept = cut_utf8(&text, LOG_CAP - marker.len());
+    Ok((format!("{kept}{marker}"), true))
+}
+
+/// A raw log over the cap: its head and tail with a marker between them.
+fn read_head_tail(file: &mut File, len: u64) -> anyhow::Result<(String, bool)> {
+    let half = (LOG_CAP - 128) / 2;
+    let mut head = vec![0u8; half];
+    file.read_exact(&mut head)?;
+    let mut tail = vec![0u8; half];
+    file.seek(SeekFrom::End(-(half as i64)))?;
+    file.read_exact(&mut tail)?;
+    trim_to_lines(&mut head, &mut tail);
+    let omitted = len - head.len() as u64 - tail.len() as u64;
+    let mut text = redact(&String::from_utf8_lossy(&head)).into_owned();
+    if !text.ends_with('\n') {
+        text.push('\n');
+    }
+    text.push_str(&format!(
+        "[horch: {omitted} bytes omitted from the middle of this log]\n"
+    ));
+    text.push_str(&redact(&String::from_utf8_lossy(&tail)));
+    Ok((cut_utf8(&text, LOG_CAP).to_owned(), true))
+}
+
+/// Drop the partial line at the end of `head` and at the start of `tail`.
+fn trim_to_lines(head: &mut Vec<u8>, tail: &mut Vec<u8>) {
+    if let Some(nl) = head.iter().rposition(|&c| c == b'\n') {
+        head.truncate(nl + 1);
+    }
+    if let Some(nl) = tail.iter().position(|&c| c == b'\n') {
+        tail.drain(..=nl);
+    }
 }
 
 #[cfg(test)]
@@ -438,5 +452,107 @@ mod tests {
         assert!(fsx::pid_alive(child.id()), "the zombie keeps the pid");
         assert!(child.wait().unwrap().success(), "the exit status is kept");
         assert!(!fsx::pid_alive(child.id()), "reaped");
+    }
+
+    #[test]
+    fn a_small_log_that_redaction_lengthens_is_cut_at_the_cap() {
+        // 8 bytes become 18, so the raw log fits and the stored one does not.
+        let raw = "token=x\n".repeat(LOG_CAP / 8);
+        assert!(raw.len() <= LOG_CAP);
+        let (text, truncated) = stored(raw.as_bytes());
+        assert!(truncated);
+        assert_eq!(text.len(), LOG_CAP);
+        assert!(text.ends_with("\n[horch: log cut at 256 KiB]\n"));
+        assert!(text.starts_with("token=[REDACTED]\n"));
+    }
+
+    #[test]
+    fn a_large_log_is_cut_on_line_boundaries_at_both_ends() {
+        // Every line is 12 bytes, so a cut inside a line shows as a short one.
+        let raw: String = (0..60_000).map(|i| format!("line {i:06}\n")).collect();
+        let (text, truncated) = stored(raw.as_bytes());
+        assert!(truncated);
+        let lines: Vec<&str> = text.lines().collect();
+        let marker = lines
+            .iter()
+            .position(|l| l.starts_with("[horch: "))
+            .expect("a marker line");
+        assert!(marker > 0 && marker < lines.len() - 1);
+        for line in lines.iter().enumerate().filter(|(i, _)| *i != marker) {
+            assert!(
+                line.1.len() == 11 && line.1.starts_with("line "),
+                "partial line {:?}",
+                line.1
+            );
+        }
+        assert_eq!(lines[0], "line 000000");
+        assert_eq!(lines[lines.len() - 1], "line 059999");
+        let kept = (lines.len() - 1) as u64 * 12;
+        assert!(
+            lines[marker].contains(&format!("{} bytes omitted", raw.len() as u64 - kept)),
+            "{}",
+            lines[marker]
+        );
+    }
+
+    fn gate(command: &str, timeout_ms: u64) -> GateSpec {
+        GateSpec {
+            name: "g".into(),
+            command: command.into(),
+            timeout: Duration::from_millis(timeout_ms),
+            required: true,
+        }
+    }
+
+    fn run_gate_status(spec: &GateSpec, worktree: &Path) -> (GateStatus, String) {
+        let dir = tempfile::tempdir().unwrap();
+        let raw = dir.path().join("raw");
+        let v = CommandValidator::new(vec![], dir.path().to_path_buf(), BTreeSet::new());
+        let status = v.spawn_and_wait(spec, worktree, &raw).unwrap();
+        (status, std::fs::read_to_string(&raw).unwrap_or_default())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_gate_ends_as_passed_failed_signalled_or_timed_out() {
+        let wt = tempfile::tempdir().unwrap();
+        let (status, out) = run_gate_status(&gate("echo out; echo err >&2", 5000), wt.path());
+        assert_eq!(status, GateStatus::Passed);
+        assert_eq!(out, "out\nerr\n");
+        let (status, _) = run_gate_status(&gate("exit 3", 5000), wt.path());
+        assert_eq!(status, GateStatus::Failed { code: 3 });
+        // The shell kills itself with SIGKILL: reported as 128 + 9.
+        let (status, _) = run_gate_status(&gate("kill -9 $$", 5000), wt.path());
+        assert_eq!(status, GateStatus::Failed { code: 137 });
+        let started = Instant::now();
+        let (status, _) = run_gate_status(&gate("sleep 30", 150), wt.path());
+        assert_eq!(status, GateStatus::TimedOut);
+        assert!(started.elapsed() < Duration::from_secs(10));
+    }
+
+    #[test]
+    fn a_gate_in_a_missing_worktree_is_an_error_status_not_a_failure() {
+        let (status, _) = run_gate_status(&gate("true", 5000), Path::new("/nonexistent/horch-wt"));
+        match status {
+            GateStatus::Error { reason } => {
+                assert!(reason.starts_with("cannot start sh"), "{reason}")
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn exit_status_maps_success_codes_and_signals() {
+        use std::os::unix::process::ExitStatusExt;
+        assert_eq!(exit_status(ExitStatus::from_raw(0)), GateStatus::Passed);
+        assert_eq!(
+            exit_status(ExitStatus::from_raw(5 << 8)),
+            GateStatus::Failed { code: 5 }
+        );
+        assert_eq!(
+            exit_status(ExitStatus::from_raw(15)),
+            GateStatus::Failed { code: 143 }
+        );
     }
 }

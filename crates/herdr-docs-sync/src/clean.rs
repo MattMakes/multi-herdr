@@ -122,18 +122,15 @@ fn write_node(node: NodeRef<'_, Node>, out: &mut String, tables: &mut Vec<String
         Node::Text(text) => escape_into(text, out),
         Node::Element(element) => {
             if is_dropped(element) {
-                return;
-            }
-            if has_class(element, "expressive-code") {
+                // Dropped wholesale: nothing is written.
+            } else if has_class(element, "expressive-code") {
                 write_code_block(node, out);
-                return;
-            }
-            if element.name() == "table" {
+            } else if element.name() == "table" {
                 let _ = write!(out, "<p>{}</p>", table_placeholder(tables.len()));
                 tables.push(render_table(node));
-                return;
+            } else {
+                write_element(node, element, out, tables);
             }
-            write_element(node, element, out, tables);
         }
         // Comments, doctype and processing instructions carry nothing.
         _ => {}
@@ -213,33 +210,37 @@ fn inline_markdown(node: NodeRef<'_, Node>) -> String {
     for child in node.children() {
         match child.value() {
             Node::Text(text) => out.push_str(text),
-            Node::Element(element) => match element.name() {
-                "code" | "kbd" | "samp" => {
-                    let _ = write!(out, "`{}`", text_of(child));
-                }
-                "strong" | "b" => {
-                    let _ = write!(out, "**{}**", inline_markdown(child));
-                }
-                "em" | "i" => {
-                    let _ = write!(out, "*{}*", inline_markdown(child));
-                }
-                "a" => {
-                    let label = inline_markdown(child);
-                    match element.attr("href") {
-                        Some(href) => {
-                            let _ = write!(out, "[{label}]({href})");
-                        }
-                        None => out.push_str(&label),
-                    }
-                }
-                "br" => out.push(' '),
-                _ if is_dropped(element) => {}
-                _ => out.push_str(&inline_markdown(child)),
-            },
+            Node::Element(element) => inline_element(child, element, &mut out),
             _ => {}
         }
     }
     out
+}
+
+fn inline_element(child: NodeRef<'_, Node>, element: &scraper::node::Element, out: &mut String) {
+    match element.name() {
+        "code" | "kbd" | "samp" => {
+            let _ = write!(out, "`{}`", text_of(child));
+        }
+        "strong" | "b" => {
+            let _ = write!(out, "**{}**", inline_markdown(child));
+        }
+        "em" | "i" => {
+            let _ = write!(out, "*{}*", inline_markdown(child));
+        }
+        "a" => out.push_str(&link_markdown(child, element)),
+        "br" => out.push(' '),
+        _ if is_dropped(element) => {}
+        _ => out.push_str(&inline_markdown(child)),
+    }
+}
+
+/// A link as `[label](href)`, or just the label when it has no `href`.
+fn link_markdown(child: NodeRef<'_, Node>, element: &scraper::node::Element) -> String {
+    let label = inline_markdown(child);
+    element
+        .attr("href")
+        .map_or(label.clone(), |href| format!("[{label}]({href})"))
 }
 
 /// Attributes worth keeping. Everything else is styling or framework bookkeeping
@@ -323,15 +324,10 @@ fn find_descendant<'a>(
     node: NodeRef<'a, Node>,
     predicate: impl Fn(&scraper::node::Element) -> bool + Copy,
 ) -> Option<NodeRef<'a, Node>> {
-    for child in node.children() {
-        if child.value().as_element().is_some_and(predicate) {
-            return Some(child);
-        }
-        if let Some(found) = find_descendant(child, predicate) {
-            return Some(found);
-        }
-    }
-    None
+    // `descendants` walks in document order and starts with `node` itself.
+    node.descendants()
+        .skip(1)
+        .find(|n| n.value().as_element().is_some_and(predicate))
 }
 
 /// All text under a node, concatenated.
@@ -648,5 +644,46 @@ mod table_tests {
         );
         assert!(page.tables[0].contains("**bold**"), "{}", page.tables[0]);
         assert!(page.tables[0].contains("*it*"), "{}", page.tables[0]);
+    }
+
+    /// Cell content the common cases above do not reach: an anchor without an
+    /// href keeps its label, `br` becomes a space, `kbd` is code, a dropped
+    /// element vanishes and an unknown tag contributes its text.
+    #[test]
+    fn cell_edge_elements_convert() {
+        let page = clean(&table_page(
+            r#"<table><tr><th>H</th></tr>
+               <tr><td><a>plain</a> a<br>b <kbd>Ctrl</kbd> <span>wrapped</span><svg>icon</svg></td></tr>
+               </table>"#,
+        ))
+        .unwrap();
+        assert_eq!(
+            page.tables[0],
+            "| H |\n| --- |\n| plain a b `Ctrl` wrapped |"
+        );
+    }
+
+    /// An expressive-code block with no `pre` writes nothing, and the outermost
+    /// `pre` in document order supplies the language.
+    #[test]
+    fn code_block_without_a_pre_is_dropped_and_the_first_pre_wins() {
+        let page = clean(&table_page(
+            r#"<div class="expressive-code"><p>no pre</p></div>
+               <div class="expressive-code"><pre data-language="sh"><code>one</code></pre>
+               <pre data-language="py"><code>two</code></pre></div>"#,
+        ))
+        .unwrap();
+        assert!(
+            !page.content_html.contains("no pre"),
+            "{}",
+            page.content_html
+        );
+        assert!(
+            page.content_html
+                .contains(r#"<code class="language-sh">one</code>"#),
+            "{}",
+            page.content_html
+        );
+        assert!(!page.content_html.contains("two"), "{}", page.content_html);
     }
 }

@@ -143,17 +143,29 @@ fn wait_for(
     ready: impl Fn(&Pane) -> bool,
 ) -> bool {
     let deadline = within_budget(Instant::now() + wait.timeout);
+    poll_until(deadline, wait.poll, wait.poll, || {
+        ws.pane_get(pane).is_ok_and(|p| ready(&p))
+    })
+}
+
+/// Test `done`, then sleep (cut to the time left), until `done` holds or
+/// `deadline` passes. The sleep starts at `delay` and doubles up to
+/// `max_delay`. False when `deadline` passes first.
+fn poll_until(
+    deadline: Instant,
+    mut delay: Duration,
+    max_delay: Duration,
+    mut done: impl FnMut() -> bool,
+) -> bool {
     loop {
-        if ws.pane_get(pane).is_ok_and(|p| ready(&p)) {
-            return true;
+        if done() {
+            break true;
         }
         if Instant::now() >= deadline {
-            return false;
+            break false;
         }
-        std::thread::sleep(
-            wait.poll
-                .min(deadline.saturating_duration_since(Instant::now())),
-        );
+        std::thread::sleep(delay.min(deadline.saturating_duration_since(Instant::now())));
+        delay = (delay * 2).min(max_delay);
     }
 }
 
@@ -290,19 +302,10 @@ fn wait_for_tail(ws: &dyn WorkspaceClient, pane: &str, message: &str, timing: &T
         return true;
     }
     let deadline = within_budget(Instant::now() + timing.tail_timeout);
-    let mut delay = timing.poll_start;
-    loop {
-        if let Ok(screen) = ws.pane_read(pane, "visible") {
-            if squash(&screen).contains(&needle) {
-                return true;
-            }
-        }
-        if Instant::now() >= deadline {
-            return false;
-        }
-        std::thread::sleep(delay.min(deadline.saturating_duration_since(Instant::now())));
-        delay = (delay * 2).min(timing.poll_max);
-    }
+    poll_until(deadline, timing.poll_start, timing.poll_max, || {
+        ws.pane_read(pane, "visible")
+            .is_ok_and(|screen| squash(&screen).contains(&needle))
+    })
 }
 
 /// Drop what a TUI adds or moves when it draws an input box: whitespace (soft
@@ -326,6 +329,60 @@ mod tests {
 
     use crate::workspace::model::{Direction, NewWorkspace};
     use crate::workspace::testing::FakeWorkspace;
+
+    #[test]
+    fn poll_until_stops_at_the_first_true_and_sleeps_between_tests() {
+        let mut calls = 0;
+        let started = Instant::now();
+        let delay = Duration::from_millis(20);
+        let done = poll_until(started + Duration::from_secs(30), delay, delay, || {
+            calls += 1;
+            calls == 3
+        });
+        assert!(done);
+        assert_eq!(calls, 3);
+        assert!(
+            started.elapsed() >= 2 * delay,
+            "2 sleeps came before the 3rd test"
+        );
+        assert!(started.elapsed() < Duration::from_secs(30));
+    }
+
+    #[test]
+    fn poll_until_gives_up_at_the_deadline_and_tests_once_more_first() {
+        let mut calls = 0;
+        let started = Instant::now();
+        let done = poll_until(
+            started + Duration::from_millis(60),
+            Duration::from_millis(10),
+            Duration::from_millis(20),
+            || {
+                calls += 1;
+                false
+            },
+        );
+        assert!(!done);
+        assert!(started.elapsed() >= Duration::from_millis(60));
+        // Sleeps of 10, 20, 20 and 10 ms (cut to the deadline) allow at most
+        // 5 tests; a loaded machine can only make it fewer.
+        assert!((2..=5).contains(&calls), "{calls} polls");
+    }
+
+    #[test]
+    fn wait_for_tail_sees_the_message_tail_across_a_wrap_and_a_border() {
+        let ws = FakeWorkspace::new();
+        let pane = ws.workspace_create("w", None, false).unwrap().root_pane_id;
+        ws.set_screen(&pane, "│ hello wor │\n│ ld, again │");
+        let timing = Timing {
+            tail_timeout: Duration::from_millis(100),
+            poll_start: Duration::from_millis(5),
+            poll_max: Duration::from_millis(10),
+            ..Timing::DEFAULT
+        };
+        assert!(wait_for_tail(&ws, &pane, "hello world, again", &timing));
+        assert!(!wait_for_tail(&ws, &pane, "never shown anywhere", &timing));
+        assert!(wait_for_tail(&ws, &pane, "", &timing));
+    }
 
     /// #67: one budget bounds the grace and readiness waits together. An
     /// agent appears on the first grace poll and stays `unknown`; after

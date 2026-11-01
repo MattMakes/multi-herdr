@@ -1,6 +1,6 @@
 ---
 name: visual-prototyper
-brief_description: Image-led UI prototype on Codex. Generates hero and mood images, then builds a static mockup around them.
+brief_description: "Visual prototypes. fleet_write: project/.git writes + network; other paths sandboxed. plan: read-only."
 base: fleet-worker
 agent: codex
 phase: implementation

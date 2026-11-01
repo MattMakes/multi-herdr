@@ -58,9 +58,10 @@ cargo clippy -p <crate>
 rustfmt --check <files>
 ```
 
-In single-branch mode (see [fleet-workflow.md](fleet-workflow.md)), a worker
-runs only the tests it touches and takes no gate slot. The orchestrator runs 1
-full gate on the tip, in `.worktrees/_gate`.
+In a ledger run (see [fleet-workflow.md](fleet-workflow.md)), a worker runs
+only the tests it touches while it works. The `check` and `recheck` steps of
+`horch ledger finish` run the task's gate. In shared-checkout mode, the
+worker takes no gate slot.
 
 The rest of this section applies to parallel worktree runs. Run the full gate
 once, just before you report ready. The slot wrapper `.worktrees/gate-slot.sh`

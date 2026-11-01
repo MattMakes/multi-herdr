@@ -6,7 +6,7 @@ use std::process::Command;
 
 use chrono::{DateTime, Duration, TimeZone, Utc};
 use clap::Parser;
-use horch::dataset::cli::{Cli, Command as DatasetCommand, OutcomeArg};
+use horch::dataset::cli::{Cli, Command as DatasetCommand, OperatorCommand, OutcomeArg};
 use horch::dataset::outcome::check_round;
 use horch::dataset::status::render;
 use horch::dataset::{resolve_project, spelled_as, target_line};
@@ -109,12 +109,12 @@ fn cmp_01_cli_args() {
             ..
         }
     ));
-    let DatasetCommand::Outcome {
+    let DatasetCommand::Operator(OperatorCommand::Outcome {
         round,
         kind,
         score,
         note,
-    } = parse(&[
+    }) = parse(&[
         "outcome",
         "r1",
         "--kind",
@@ -137,7 +137,7 @@ fn cmp_01_cli_args() {
     assert!(parse(&["outcome", "r1"]).is_err());
     assert!(matches!(
         parse(&["rebuild", "e1"]).unwrap().command,
-        DatasetCommand::Rebuild { .. }
+        DatasetCommand::Operator(OperatorCommand::Rebuild { .. })
     ));
 
     // `--help` lists every public subcommand and hides the placeholders.

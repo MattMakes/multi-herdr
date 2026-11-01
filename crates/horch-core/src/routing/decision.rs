@@ -115,22 +115,26 @@ pub fn merge(original: &Teammate, fallback: &Teammate) -> Teammate {
 
 /// `7d 88%, pace 1.4x, resets Fri 14:00Z`: an assessment in a few words.
 pub fn summary(a: &Assessment, view: &QuotaView) -> String {
-    let Some(w) = &a.worst else {
-        return a.reason.clone();
-    };
-    let mut s = format!("{} {}", w.label(), quota::pct(w.used_at(view.now)));
-    if let Some(pace) = w.pace(view.now) {
-        if a.state == State::Tight && pace > view.policy.pace_factor {
-            s.push_str(&format!(", pace {pace:.1}x"));
+    match &a.worst {
+        Some(w) if a.state != State::Exhausted || a.reason.contains('%') => {
+            let pace = w
+                .pace(view.now)
+                .filter(|p| a.state == State::Tight && *p > view.policy.pace_factor)
+                .map(|p| format!(", pace {p:.1}x"))
+                .unwrap_or_default();
+            let resets = w
+                .resets_at
+                .as_ref()
+                .map(|r| format!(", resets {}", quota::short_time(r)))
+                .unwrap_or_default();
+            format!(
+                "{} {}{pace}{resets}",
+                w.label(),
+                quota::pct(w.used_at(view.now))
+            )
         }
+        _ => a.reason.clone(),
     }
-    if let Some(r) = &w.resets_at {
-        s.push_str(&format!(", resets {}", quota::short_time(r)));
-    }
-    if a.state == State::Exhausted && !a.reason.contains('%') {
-        return a.reason.clone();
-    }
-    s
 }
 
 /// The one-line reason a substitution records: `claude 7d 100%, resets
@@ -186,6 +190,120 @@ fn pool_line(a: &Assessment, view: &QuotaView) -> PoolLine {
     }
 }
 
+/// One gate run: the request, its pool's assessment and the usable fallbacks.
+struct Gate<'a> {
+    req: &'a Teammate,
+    view: &'a QuotaView,
+    a: Assessment,
+    cands: Vec<Candidate>,
+}
+
+impl Gate<'_> {
+    fn spawn(&self, note: Option<String>) -> Decision {
+        Decision::Spawn {
+            teammate: self.req.name.clone(),
+            note,
+        }
+    }
+
+    fn pool_note(&self, extra: Option<&Candidate>) -> String {
+        let a = &self.a;
+        let mut n = format!("{} pool {} ({}).", a.pool, a.state, summary(a, self.view));
+        if let Some(c) = extra {
+            n.push_str(&format!(" Fallback {} is {}.", c.name, c.state));
+        }
+        n
+    }
+
+    fn substitute(&self, c: &Candidate) -> Decision {
+        Decision::Substitute {
+            original: self.req.name.clone(),
+            via: c.name.clone(),
+            reason: reason_line(&self.a, self.view),
+        }
+    }
+
+    fn refuse(&self) -> Decision {
+        let mut pools = vec![pool_line(&self.a, self.view)];
+        for c in &self.cands {
+            if !pools.iter().any(|p| p.pool == c.assessment.pool) {
+                pools.push(pool_line(&c.assessment, self.view));
+            }
+        }
+        Decision::Refuse {
+            teammate: self.req.name.clone(),
+            reason: reason_line(&self.a, self.view),
+            pools,
+        }
+    }
+
+    fn refuse_or_force(&self, flags: GateFlags) -> Decision {
+        if flags.force {
+            self.spawn(Some(format!(
+                "{} Spawned anyway (--force).",
+                self.pool_note(None)
+            )))
+        } else {
+            self.refuse()
+        }
+    }
+
+    /// `auto` mode, tight pool: switch only to a fallback with enough more
+    /// headroom.
+    fn tight(&self, flags: GateFlags, first_ok: Option<&Candidate>) -> Decision {
+        match first_ok {
+            None => self.spawn(Some(self.pool_note(None))),
+            Some(c) => {
+                let theirs = c.assessment.headroom_per_h.unwrap_or(0.0);
+                let ours = self.a.headroom_per_h.unwrap_or(0.0);
+                if theirs >= self.view.policy.headroom_ratio * ours && !flags.exact {
+                    self.substitute(c)
+                } else {
+                    self.spawn(Some(self.pool_note(Some(c))))
+                }
+            }
+        }
+    }
+
+    /// `auto` mode, pool out of reach: any fallback with room, else refuse.
+    fn depleted(&self, flags: GateFlags) -> Decision {
+        let usable = self
+            .cands
+            .iter()
+            .find(|c| matches!(c.state, State::Ok | State::Tight));
+        match usable {
+            Some(c) if !flags.exact => self.substitute(c),
+            _ => self.refuse_or_force(flags),
+        }
+    }
+
+    fn unknown(&self, flags: GateFlags, first_ok: Option<&Candidate>) -> Decision {
+        match first_ok {
+            Some(c) if !flags.exact => self.substitute(c),
+            c => self.spawn(Some(self.pool_note(c))),
+        }
+    }
+
+    fn by_state(&self, flags: GateFlags, first_ok: Option<&Candidate>) -> Decision {
+        match self.a.state {
+            State::Ok => self.spawn(None),
+            State::Tight => self.tight(flags, first_ok),
+            State::Exhausted | State::Broken | State::Cooling => self.depleted(flags),
+            State::Unknown => self.unknown(flags, first_ok),
+        }
+    }
+
+    fn route(&self, mode: BalanceMode, flags: GateFlags) -> Decision {
+        let first_ok = self.cands.iter().find(|c| c.state == State::Ok);
+        if mode == BalanceMode::Advise {
+            let hint = first_ok.or_else(|| self.cands.iter().find(|c| c.state == State::Tight));
+            self.spawn(Some(self.pool_note(hint)))
+        } else {
+            self.by_state(flags, first_ok)
+        }
+    }
+}
+
 /// What the spawn gate does with a request (section 13.4, BAL-03).
 pub fn decide(
     req: &Teammate,
@@ -194,87 +312,20 @@ pub fn decide(
     mode: BalanceMode,
     flags: GateFlags,
 ) -> Decision {
-    let spawn = |note: Option<String>| Decision::Spawn {
-        teammate: req.name.clone(),
-        note,
-    };
-    if mode == BalanceMode::Off {
-        return spawn(None);
-    }
-    let a = view.assess(req.agent.as_str(), req.model.as_deref().unwrap_or_default());
-    if a.state == State::Ok {
-        return spawn(None);
-    }
-    let cands = candidates(req, roster, view);
-    let first_ok = cands.iter().find(|c| c.state == State::Ok);
-    let pool_note = |extra: Option<&Candidate>| {
-        let mut n = format!("{} pool {} ({}).", a.pool, a.state, summary(&a, view));
-        if let Some(c) = extra {
-            n.push_str(&format!(" Fallback {} is {}.", c.name, c.state));
+    let assessed = (mode != BalanceMode::Off)
+        .then(|| view.assess(req.agent.as_str(), req.model.as_deref().unwrap_or_default()))
+        .filter(|a| a.state != State::Ok);
+    match assessed {
+        Some(a) => Gate {
+            req,
+            view,
+            a,
+            cands: candidates(req, roster, view),
         }
-        n
-    };
-    let substitute = |c: &Candidate| Decision::Substitute {
-        original: req.name.clone(),
-        via: c.name.clone(),
-        reason: reason_line(&a, view),
-    };
-    let refuse = || {
-        let mut pools = vec![pool_line(&a, view)];
-        for c in &cands {
-            if !pools.iter().any(|p| p.pool == c.assessment.pool) {
-                pools.push(pool_line(&c.assessment, view));
-            }
-        }
-        Decision::Refuse {
+        .route(mode, flags),
+        None => Decision::Spawn {
             teammate: req.name.clone(),
-            reason: reason_line(&a, view),
-            pools,
-        }
-    };
-    let refuse_or_force = || {
-        if flags.force {
-            spawn(Some(format!(
-                "{} Spawned anyway (--force).",
-                pool_note(None)
-            )))
-        } else {
-            refuse()
-        }
-    };
-
-    if mode == BalanceMode::Advise {
-        let hint = first_ok.or_else(|| cands.iter().find(|c| c.state == State::Tight));
-        return spawn(Some(pool_note(hint)));
-    }
-
-    // mode auto
-    match a.state {
-        State::Ok => spawn(None),
-        State::Tight => {
-            let Some(c) = first_ok else {
-                return spawn(Some(pool_note(None)));
-            };
-            let theirs = c.assessment.headroom_per_h.unwrap_or(0.0);
-            let ours = a.headroom_per_h.unwrap_or(0.0);
-            if theirs >= view.policy.headroom_ratio * ours && !flags.exact {
-                substitute(c)
-            } else {
-                spawn(Some(pool_note(Some(c))))
-            }
-        }
-        State::Exhausted | State::Broken | State::Cooling => {
-            let usable = cands
-                .iter()
-                .find(|c| matches!(c.state, State::Ok | State::Tight));
-            match usable {
-                Some(c) if !flags.exact => substitute(c),
-                _ => refuse_or_force(),
-            }
-        }
-        State::Unknown => match first_ok {
-            Some(c) if !flags.exact => substitute(c),
-            c => spawn(Some(pool_note(c))),
+            note: None,
         },
     }
 }
@@ -352,6 +403,20 @@ fn fallback_index(req: &Teammate, name: &str) -> Option<u32> {
         .map(|i| i as u32)
 }
 
+/// The teammate a decision launches, with its `fallbacks` index when it is a
+/// substitute; `None` when nothing launches.
+fn launch_of<'a>(
+    req: &'a Teammate,
+    roster: &'a Roster,
+    decision: &Decision,
+) -> Option<(&'a Teammate, Option<u32>)> {
+    match decision {
+        Decision::Spawn { .. } => Some((req, None)),
+        Decision::Substitute { via, .. } => roster.get(via).map(|f| (f, fallback_index(req, via))),
+        Decision::Refuse { .. } => None,
+    }
+}
+
 impl RoutingProvenance {
     /// The provenance of a gate decision; `None` for a refusal, which
     /// writes no record.
@@ -362,13 +427,13 @@ impl RoutingProvenance {
         decision: &Decision,
         mode: RoutingMode,
     ) -> Result<Option<RoutingProvenance>, IdError> {
-        let (launch, reason) = match decision {
-            Decision::Spawn { note, .. } => (req, note.clone()),
-            Decision::Substitute { via, reason, .. } => match roster.get(via) {
-                Some(f) => (f, Some(reason.clone())),
-                None => return Ok(None),
-            },
-            Decision::Refuse { .. } => return Ok(None),
+        let Some((launch, fallback_index)) = launch_of(req, roster, decision) else {
+            return Ok(None);
+        };
+        let reason = match decision {
+            Decision::Spawn { note, .. } => note.clone(),
+            Decision::Substitute { reason, .. } => Some(reason.clone()),
+            Decision::Refuse { .. } => None,
         };
         let a = view.assess(
             launch.agent.as_str(),
@@ -377,10 +442,7 @@ impl RoutingProvenance {
         Ok(Some(RoutingProvenance {
             requested: TeammateName::new(req.name.as_str())?,
             resolved: TeammateName::new(launch.name.as_str())?,
-            fallback_index: match decision {
-                Decision::Substitute { via, .. } => fallback_index(req, via),
-                _ => None,
-            },
+            fallback_index,
             pool: a.pool,
             pool_state: a.state,
             reason,

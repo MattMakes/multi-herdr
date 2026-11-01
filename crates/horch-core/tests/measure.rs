@@ -560,6 +560,42 @@ fn mea_03_two_process_appends_ordered() {
     }
 }
 
+/// MEA-03: read order is append order, across day files too. An event
+/// stamped on an earlier day than the newest day file (a writer whose clock
+/// is behind another's, across UTC midnight) goes to the newest day file,
+/// after the events it follows. Every reader reads every day file, so none
+/// misses it.
+#[test]
+fn mea_03_an_append_stamped_before_the_newest_day_reads_after_it() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (paths, rec) = open_dataset(tmp.path());
+    let ahead = Utc.with_ymd_and_hms(2026, 10, 3, 0, 5, 0).unwrap();
+    let behind = Utc.with_ymd_and_hms(2026, 10, 2, 23, 55, 0).unwrap();
+    let later = Utc.with_ymd_and_hms(2026, 10, 4, 9, 0, 0).unwrap();
+    // A foreign `*.jsonl` sorts after the day files; it is no day file.
+    std::fs::write(paths.events_dir().join("notes.jsonl"), "").unwrap();
+    for (key, at) in [("ahead", ahead), ("behind", behind), ("later", later)] {
+        let out = rec.append(new_event(judge_started(1, 1), key, at)).unwrap();
+        assert!(matches!(out, Appended::Recorded(_)), "{key}: {out:?}");
+    }
+
+    let read = rec.read_all().unwrap();
+    let keys: Vec<_> = keys_of(&read.events).into_iter().map(|k| k.0).collect();
+    assert_eq!(keys, ["ahead", "behind", "later"]);
+    assert_eq!(read.events[1].occurred_at, format_occurred_at(behind));
+    assert!(!paths.events_file(behind.date_naive()).exists());
+    assert_eq!(
+        std::fs::read_to_string(paths.events_dir().join("notes.jsonl")).unwrap(),
+        ""
+    );
+    // A fresh index sees it too.
+    let (_, rec2) = open_dataset(tmp.path());
+    let again = rec2
+        .append(new_event(judge_started(9, 9), "behind", behind))
+        .unwrap();
+    assert!(matches!(again, Appended::Duplicate(_)), "{again:?}");
+}
+
 #[test]
 fn mea_04_duplicate_key_noop() {
     let tmp = tempfile::tempdir().unwrap();

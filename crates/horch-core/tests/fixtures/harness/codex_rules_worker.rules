@@ -19,7 +19,57 @@ prefix_rule(
     justification = "herdr-fleet: mark session done and close own pane",
 )
 prefix_rule(
-    pattern = ["horch", "ledger"],
+    pattern = ["horch", "ledger", "claim"],
     decision = "allow",
-    justification = "herdr-fleet: claim, report and finish tasks through the task ledger",
+    justification = "herdr-fleet: take the next task for this worker",
+)
+prefix_rule(
+    pattern = ["horch", "ledger", "worktree"],
+    decision = "allow",
+    justification = "herdr-fleet: make, scratch or drop the worker's own worktree",
+)
+prefix_rule(
+    pattern = ["horch", "ledger", "progress"],
+    decision = "allow",
+    justification = "herdr-fleet: record a milestone of the worker's task",
+)
+prefix_rule(
+    pattern = ["horch", "ledger", "status"],
+    decision = "allow",
+    justification = "herdr-fleet: read the board of the run",
+)
+prefix_rule(
+    pattern = ["horch", "ledger", "show"],
+    decision = "allow",
+    justification = "herdr-fleet: read 1 task or worker with its history",
+)
+prefix_rule(
+    pattern = ["horch", "ledger", "steps"],
+    decision = "allow",
+    justification = "herdr-fleet: read the finish steps of the worker's task",
+)
+prefix_rule(
+    pattern = ["horch", "ledger", "finish"],
+    decision = "allow",
+    justification = "herdr-fleet: run the finish steps, then land and push the worker's work",
+)
+prefix_rule(
+    pattern = ["horch", "ledger", "done"],
+    decision = "allow",
+    justification = "herdr-fleet: finish the worker's task and close its pane",
+)
+prefix_rule(
+    pattern = ["horch", "ledger", "add"],
+    decision = "forbidden",
+    justification = "herdr-fleet: a worker never queues a task, and its check command would run unsandboxed",
+)
+prefix_rule(
+    pattern = ["horch", "ledger", "add-map"],
+    decision = "forbidden",
+    justification = "herdr-fleet: a worker never queues tasks, and their check commands would run unsandboxed",
+)
+prefix_rule(
+    pattern = ["horch", "ledger", "reopen"],
+    decision = "forbidden",
+    justification = "herdr-fleet: a worker never reopens a task, and its check command would run unsandboxed",
 )

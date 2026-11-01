@@ -1,6 +1,6 @@
 ---
 name: codex-luna
-brief_description: Cheapest worker, Codex flavor. Mechanical runs - commands, renames, lookups, test reruns. No judgement.
+brief_description: "Mechanical code. fleet_write: project/.git writes + network; other paths sandboxed. plan: read-only."
 generic: true
 base: fleet-worker
 agent: codex

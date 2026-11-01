@@ -647,6 +647,71 @@ fn mkt_08_offline_reinstall_from_lock() {
     assert_eq!(lock(&repo.store()).skills, vec![entry]);
 }
 
+/// A locked skill whose version directory is gone is rebuilt from its
+/// source, and the rebuild must match the lock's id and digest.
+#[test]
+fn mkt_08_rebuild_checks_id_and_digest() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = local_skill(tmp.path(), "demo");
+    let installer = installer_at(tmp.path(), no_git());
+    let entry = installer.install(&local(&dir), &opts(), None).unwrap();
+    let store = installer.store();
+    let installed = entry_dir(store, &entry);
+
+    // A missing local copy is rebuilt from its current files.
+    fs::remove_dir_all(&installed).unwrap();
+    assert_eq!(
+        installer.reinstall_from_lock().unwrap(),
+        std::slice::from_ref(&entry)
+    );
+    assert!(installed.join("SKILL.md").is_file());
+
+    // The rebuilt files must hash to the locked digest.
+    fs::remove_dir_all(&installed).unwrap();
+    fs::write(dir.join("extra.md"), "changed since the lock").unwrap();
+    let r = installer.reinstall_from_lock();
+    assert!(
+        matches!(r, Err(MarketplaceError::DigestMismatch { .. })),
+        "{r:?}"
+    );
+    assert!(!installed.exists(), "a mismatch must not materialize");
+    fs::remove_file(dir.join("extra.md")).unwrap();
+
+    // The rebuilt SKILL.md name must equal the locked id.
+    let mut wrong = lock(store);
+    wrong.skills[0].id = "other".to_owned();
+    wrong.write(&store.lock_path()).unwrap();
+    let err = installer.reinstall_from_lock().unwrap_err();
+    assert!(
+        matches!(&err, MarketplaceError::SkillMd(_))
+            && err
+                .to_string()
+                .contains("name 'demo' does not match the locked id 'other'"),
+        "{err:?}"
+    );
+}
+
+/// The lock is input: a version that is not one clean path component is
+/// refused before any directory is looked at.
+#[test]
+fn mkt_08_reinstall_refuses_an_unclean_locked_version() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = local_skill(tmp.path(), "demo");
+    let installer = installer_at(tmp.path(), no_git());
+    installer.install(&local(&dir), &opts(), None).unwrap();
+    let store = installer.store();
+    for bad in ["../x", "a/b"] {
+        let mut tampered = lock(store);
+        tampered.skills[0].version = bad.to_owned();
+        tampered.write(&store.lock_path()).unwrap();
+        let err = installer.reinstall_from_lock().unwrap_err();
+        assert!(
+            matches!(err, MarketplaceError::Traversal(_)),
+            "{bad}: {err:?}"
+        );
+    }
+}
+
 /// A pattern position: what follows a `Type::Variant` (after its braces or
 /// parens) is `=>`, `|`, `if`, or a single `=` (in `if let` / `let else`).
 fn is_pattern(after: &str) -> bool {
@@ -867,6 +932,15 @@ fn mkt_11_concurrent_installs_keep_every_lock_entry() {
     }
 }
 
+/// Wait until a caller on another thread is blocked on the held store lock.
+/// The thread finishing first means the lock did not block it.
+fn wait_until_blocked<T>(store: &Store, handle: &std::thread::ScopedJoinHandle<'_, T>, what: &str) {
+    while store.lock_contentions() == 0 {
+        assert!(!handle.is_finished(), "{what} ignored the store lock");
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+}
+
 /// U-10: an install waits while another process holds the store lock, and
 /// writes its entry once the lock is free.
 #[test]
@@ -877,8 +951,7 @@ fn mkt_11_install_waits_for_the_store_lock() {
     let held = installer.store().lock().unwrap();
     std::thread::scope(|scope| {
         let handle = scope.spawn(|| installer.install(&local(&dir), &opts(), None));
-        std::thread::sleep(std::time::Duration::from_millis(300));
-        assert!(!handle.is_finished(), "install ignored the store lock");
+        wait_until_blocked(installer.store(), &handle, "install");
         assert!(lock(installer.store()).skills.is_empty());
         drop(held);
         handle.join().unwrap().unwrap();
@@ -924,6 +997,30 @@ fn mkt_11_store_lock_timeout_stale_and_release() {
     assert!(installer.store().lock().is_ok(), "a fault kept the lock");
 }
 
+/// The lock fails at once, without waiting, on an I/O error other than
+/// "the guard exists".
+#[cfg(unix)]
+#[test]
+fn mkt_11_store_lock_io_error_is_not_retried() {
+    use std::os::unix::fs::PermissionsExt;
+    use std::time::{Duration, Instant};
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().join("store");
+    fs::create_dir(&root).unwrap();
+    fs::set_permissions(&root, fs::Permissions::from_mode(0o555)).unwrap();
+    let started = Instant::now();
+    let result = Store::new(&root).lock_within(Duration::from_secs(30), Duration::from_secs(30));
+    fs::set_permissions(&root, fs::Permissions::from_mode(0o755)).unwrap();
+    let Err(err) = result else {
+        return; // running as a user that ignores directory modes
+    };
+    assert!(
+        matches!(&err, MarketplaceError::Io(e) if e.kind() == std::io::ErrorKind::PermissionDenied),
+        "{err:?}"
+    );
+    assert!(started.elapsed() < Duration::from_secs(5));
+}
+
 /// U-10: a reinstall that rebuilds a missing version directory waits while
 /// another process holds the store lock, as an install does.
 #[test]
@@ -937,8 +1034,7 @@ fn mkt_11_reinstall_waits_for_the_store_lock() {
     let held = installer.store().lock().unwrap();
     std::thread::scope(|scope| {
         let handle = scope.spawn(|| installer.reinstall_from_lock());
-        std::thread::sleep(std::time::Duration::from_millis(300));
-        assert!(!handle.is_finished(), "reinstall ignored the store lock");
+        wait_until_blocked(installer.store(), &handle, "reinstall");
         assert!(
             !version_dir.exists(),
             "reinstall materialized under the lock"

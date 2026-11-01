@@ -40,65 +40,64 @@ pub struct BinOverrides {
     pub git: Option<PathBuf>,
 }
 
+/// The accessor of one override field.
+type Slot = fn(&mut BinOverrides) -> &mut Option<PathBuf>;
+
 impl BinOverrides {
-    /// Every override variable, in a fixed order.
-    pub(crate) const VARS: [&'static str; 10] = [
-        "HORCH_CLAUDE_BIN",
-        "HORCH_CODEX_BIN",
-        "HORCH_OPENCODE_BIN",
-        "HORCH_PI_BIN",
-        "HORCH_PRIME_BIN",
-        "HORCH_ANTIGRAVITY_BIN",
-        "HORCH_HERDR_BIN",
-        "HORCH_SQLITE3_BIN",
-        "HORCH_OLLAMA_BIN",
-        "HORCH_GIT_BIN",
+    /// Each override variable with the field it fills, in a fixed order.
+    const SLOTS: [(&'static str, Slot); 10] = [
+        ("HORCH_CLAUDE_BIN", |o| &mut o.claude),
+        ("HORCH_CODEX_BIN", |o| &mut o.codex),
+        ("HORCH_OPENCODE_BIN", |o| &mut o.opencode),
+        ("HORCH_PI_BIN", |o| &mut o.pi),
+        ("HORCH_PRIME_BIN", |o| &mut o.prime),
+        ("HORCH_ANTIGRAVITY_BIN", |o| &mut o.antigravity),
+        ("HORCH_HERDR_BIN", |o| &mut o.herdr),
+        ("HORCH_SQLITE3_BIN", |o| &mut o.sqlite3),
+        ("HORCH_OLLAMA_BIN", |o| &mut o.ollama),
+        ("HORCH_GIT_BIN", |o| &mut o.git),
     ];
+
+    /// Every override variable, in the order of `SLOTS`.
+    #[cfg(test)]
+    pub(crate) const VARS: [&'static str; 10] = {
+        let mut names = [""; 10];
+        let mut i = 0;
+        while i < 10 {
+            names[i] = Self::SLOTS[i].0;
+            i += 1;
+        }
+        names
+    };
 
     /// The overrides an environment sets. An empty value is treated as unset,
     /// not as an empty command.
     pub fn from_env(env: &dyn EnvSource) -> BinOverrides {
         let mut out = BinOverrides::default();
-        for key in Self::VARS {
+        for (key, slot) in Self::SLOTS {
             if let Some(value) = super::paths::nonempty_path(env, key) {
-                *out.slot(key) = Some(value);
+                *slot(&mut out) = Some(value);
             }
         }
         out
-    }
-
-    fn slot(&mut self, key: &str) -> &mut Option<PathBuf> {
-        match key {
-            "HORCH_CLAUDE_BIN" => &mut self.claude,
-            "HORCH_CODEX_BIN" => &mut self.codex,
-            "HORCH_OPENCODE_BIN" => &mut self.opencode,
-            "HORCH_PI_BIN" => &mut self.pi,
-            "HORCH_PRIME_BIN" => &mut self.prime,
-            "HORCH_ANTIGRAVITY_BIN" => &mut self.antigravity,
-            "HORCH_HERDR_BIN" => &mut self.herdr,
-            "HORCH_SQLITE3_BIN" => &mut self.sqlite3,
-            "HORCH_OLLAMA_BIN" => &mut self.ollama,
-            "HORCH_GIT_BIN" => &mut self.git,
-            other => unreachable!("not a bin override: {other}"),
-        }
     }
 
     /// `(variable, value)` for every override that is set, in `Self::VARS`
     /// order.
     pub fn env_pairs(&self) -> Vec<(&'static str, PathBuf)> {
         let mut copy = self.clone();
-        Self::VARS
-            .iter()
-            .filter_map(|key| copy.slot(key).take().map(|v| (*key, v)))
+        Self::SLOTS
+            .into_iter()
+            .filter_map(|(key, slot)| slot(&mut copy).take().map(|v| (key, v)))
             .collect()
     }
 
     /// Take every override `other` sets; keep the rest.
     pub fn merge(&mut self, other: &BinOverrides) {
         let mut other = other.clone();
-        for key in Self::VARS {
-            if let Some(value) = other.slot(key).take() {
-                *self.slot(key) = Some(value);
+        for (_, slot) in Self::SLOTS {
+            if let Some(value) = slot(&mut other).take() {
+                *slot(self) = Some(value);
             }
         }
     }
@@ -154,13 +153,13 @@ fn or_default(value: &Option<PathBuf>, name: &str) -> PathBuf {
 ///   2. `cpx` on PATH - preserves the proxy setup where it is already installed.
 ///   3. `claude` - the plain Claude Code CLI.
 pub fn claude_bin(o: &BinOverrides, path: Option<&OsStr>, pathext: Option<&str>) -> PathBuf {
-    if let Some(explicit) = &o.claude {
-        return explicit.clone();
-    }
-    if process::which(path, pathext, "cpx").is_some() {
-        return PathBuf::from("cpx");
-    }
-    PathBuf::from("claude")
+    o.claude.clone().unwrap_or_else(|| {
+        if process::which(path, pathext, "cpx").is_some() {
+            PathBuf::from("cpx")
+        } else {
+            PathBuf::from("claude")
+        }
+    })
 }
 
 /// Which Codex CLI to launch. `$HORCH_CODEX_BIN` overrides.

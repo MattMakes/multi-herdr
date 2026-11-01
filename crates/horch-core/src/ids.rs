@@ -53,12 +53,12 @@ impl std::error::Error for IdError {}
 /// would interpret.
 fn validate_plain(kind: &'static str, value: &str) -> Result<(), IdError> {
     if value.is_empty() {
-        return Err(IdError::Empty { kind });
+        Err(IdError::Empty { kind })
+    } else if value.chars().any(char::is_control) {
+        Err(IdError::ControlChar { kind })
+    } else {
+        Ok(())
     }
-    if value.chars().any(char::is_control) {
-        return Err(IdError::ControlChar { kind });
-    }
-    Ok(())
 }
 
 /// Any UUID, or a legacy hand-made id such as `rec-o1` (OD7): the plain rule.

@@ -1,6 +1,6 @@
 ---
 name: codex-reviewer
-brief_description: Cross-vendor code review on Codex Sol. Use on Claude-built changes; a second model family catches other bugs.
+brief_description: "Independent code review. fleet_write: project/.git writes + network; other paths sandboxed. plan: read-only."
 base: fleet-worker
 agent: codex
 phase: validation

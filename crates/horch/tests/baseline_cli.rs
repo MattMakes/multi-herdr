@@ -121,7 +121,13 @@ impl World {
 
     fn horch(&self, args: &[&str]) -> String {
         let teammates = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../teammates");
-        let out = Command::new(env!("CARGO_BIN_EXE_horch"))
+        let mut cmd = Command::new(env!("CARGO_BIN_EXE_horch"));
+        // A test run inside a herdr pane must not see that pane's workspace:
+        // sessions are filtered by workspace, which would hide the fixtures.
+        for (key, _) in std::env::vars().filter(|(k, _)| k.starts_with("HERDR_")) {
+            cmd.env_remove(key);
+        }
+        let out = cmd
             .args(args)
             .current_dir(&self.root)
             .env("HOME", self.root.join("home"))
@@ -172,7 +178,7 @@ fn oracle_cli_sessions_match() {
         Path::new(env!("CARGO_MANIFEST_DIR")).join("../horch-core/tests/oracles/ledgers");
     for name in ["bash-era", "pre-effort", "pr14-substituted", "orchestrator"] {
         let w = World::new();
-        let ledger = horch_core::execution::records::Ledger::for_project(w.state(), PROJECT);
+        let ledger = horch_core::execution::records::SessionLedger::for_project(w.state(), PROJECT);
         std::fs::copy(fixtures.join(format!("{name}.json")), ledger.path()).unwrap();
         check_oracle(
             &format!("sessions/sessions-{name}.txt"),

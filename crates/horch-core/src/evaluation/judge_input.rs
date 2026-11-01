@@ -218,26 +218,18 @@ fn seal_dir(_dir: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Build (or verify) the judge input bundle of one round.
-///
-/// `candidates` holds `(original label, frozen candidate, validation)` for
-/// every candidate the judge compares; each label must be one of the round's.
-/// `repo` is the MAIN repository: the patch is read from there, never from a
-/// candidate worktree, whose `.git` file the candidate controls.
-pub fn build_judge_input(
+type Candidate = (String, FrozenCandidate, ValidationReport);
+
+/// The candidates by original label, after the checks that keep a wrong
+/// label or a stale validation out of the bundle.
+fn index_candidates<'a>(
     round_id: &RoundId,
     round: &RoundView,
-    task_text: &str,
-    candidates: &[(String, FrozenCandidate, ValidationReport)],
-    paths: &DatasetPaths,
-    git: &dyn GitClient,
-    repo: &Path,
-) -> anyhow::Result<JudgeInput> {
+    candidates: &'a [Candidate],
+) -> anyhow::Result<BTreeMap<String, &'a Candidate>> {
     if candidates.is_empty() {
         bail!("round {round_id}: no candidates to judge");
     }
-    // Round order first, so the caller's slice order cannot change the
-    // shuffle.
     let mut by_label = BTreeMap::new();
     for entry @ (label, frozen, report) in candidates {
         if !round.created.labels.contains(label) {
@@ -262,6 +254,108 @@ pub fn build_judge_input(
             bail!("round {round_id}: candidate '{label}' is given twice");
         }
     }
+    Ok(by_label)
+}
+
+/// The bundle files and what the blinding found while it made them.
+struct BundleFiles {
+    files: BTreeMap<String, Vec<u8>>,
+    blindness: Vec<BlindnessFlag>,
+    truncated_diffs: Vec<String>,
+}
+
+/// Every file's bytes, before anything touches the disk.
+fn collect_files(
+    task_text: &str,
+    pairs: &[(String, String)],
+    by_label: &BTreeMap<String, &Candidate>,
+    git: &dyn GitClient,
+    repo: &Path,
+) -> anyhow::Result<BundleFiles> {
+    let mut files: BTreeMap<String, Vec<u8>> = BTreeMap::new();
+    files.insert("task.md".into(), task_text.as_bytes().to_vec());
+    files.insert("rubric.md".into(), rubric_text().as_bytes().to_vec());
+    files.insert("schema.json".into(), schema_text().as_bytes().to_vec());
+    let mut blindness = Vec::new();
+    let mut truncated_diffs = Vec::new();
+    for (blind, original) in pairs {
+        let (_, frozen, report) = by_label[original];
+        let (patch, cut) = git
+            .diff_patch(repo, &frozen.base_sha, &frozen.head_sha, DIFF_CAP_BYTES)
+            .with_context(|| format!("reading the patch of candidate '{original}'"))?;
+        truncated_diffs.extend(cut.then_some(blind.clone()));
+        blindness.extend(scan_blindness(blind, &patch));
+        files.insert(format!("candidates/{blind}/diff.patch"), patch.into_bytes());
+        files.insert(
+            format!("candidates/{blind}/validation.json"),
+            to_json(&BlindValidation::new(blind, report)),
+        );
+    }
+    Ok(BundleFiles {
+        files,
+        blindness,
+        truncated_diffs,
+    })
+}
+
+/// A sealed bundle exists: every file must match, nothing is written.
+fn verify_bundle(dir: &Path, files: &BTreeMap<String, Vec<u8>>) -> anyhow::Result<()> {
+    for (rel, bytes) in files {
+        let path = dir.join(rel);
+        let existing =
+            std::fs::read(&path).with_context(|| format!("verifying {}", path.display()))?;
+        if existing != *bytes {
+            return Err(fsx::FsxError::Conflict { path }.into());
+        }
+    }
+    Ok(())
+}
+
+fn write_and_seal(
+    dir: &Path,
+    labels: &[String],
+    files: &BTreeMap<String, Vec<u8>>,
+    manifest_bytes: &[u8],
+) -> anyhow::Result<()> {
+    fsx::ensure_private_dir(dir)?;
+    for label in labels {
+        fsx::ensure_private_dir(&dir.join("candidates").join(label))?;
+    }
+    for (rel, bytes) in files {
+        fsx::create_immutable(&dir.join(rel), bytes, BUNDLE_FILE_MODE)?;
+    }
+    // The manifest goes last: its presence means the bundle is whole.
+    fsx::create_immutable(&dir.join("manifest.json"), manifest_bytes, BUNDLE_FILE_MODE)?;
+    seal_bundle(dir, labels)
+}
+
+/// Make the bundle read-only, innermost directory first.
+fn seal_bundle(dir: &Path, labels: &[String]) -> anyhow::Result<()> {
+    for label in labels {
+        seal_dir(&dir.join("candidates").join(label))?;
+    }
+    seal_dir(&dir.join("candidates"))?;
+    seal_dir(dir)
+}
+
+/// Build (or verify) the judge input bundle of one round.
+///
+/// `candidates` holds `(original label, frozen candidate, validation)` for
+/// every candidate the judge compares; each label must be one of the round's.
+/// `repo` is the MAIN repository: the patch is read from there, never from a
+/// candidate worktree, whose `.git` file the candidate controls.
+pub fn build_judge_input(
+    round_id: &RoundId,
+    round: &RoundView,
+    task_text: &str,
+    candidates: &[Candidate],
+    paths: &DatasetPaths,
+    git: &dyn GitClient,
+    repo: &Path,
+) -> anyhow::Result<JudgeInput> {
+    let by_label = index_candidates(round_id, round, candidates)?;
+    // Round order first, so the caller's slice order cannot change the
+    // shuffle.
     let originals: Vec<String> = round
         .created
         .labels
@@ -270,30 +364,12 @@ pub fn build_judge_input(
         .cloned()
         .collect();
     let pairs = blind_labels(round_id, &originals);
-
-    // Every file's bytes, before anything touches the disk.
-    let mut files: BTreeMap<String, Vec<u8>> = BTreeMap::new();
-    files.insert("task.md".into(), task_text.as_bytes().to_vec());
-    files.insert("rubric.md".into(), rubric_text().as_bytes().to_vec());
-    files.insert("schema.json".into(), schema_text().as_bytes().to_vec());
-    let mut blindness = Vec::new();
-    let mut truncated_diffs = Vec::new();
-    for (blind, original) in &pairs {
-        let (_, frozen, report) = by_label[original];
-        let (patch, cut) = git
-            .diff_patch(repo, &frozen.base_sha, &frozen.head_sha, DIFF_CAP_BYTES)
-            .with_context(|| format!("reading the patch of candidate '{original}'"))?;
-        if cut {
-            truncated_diffs.push(blind.clone());
-        }
-        blindness.extend(scan_blindness(blind, &patch));
-        files.insert(format!("candidates/{blind}/diff.patch"), patch.into_bytes());
-        files.insert(
-            format!("candidates/{blind}/validation.json"),
-            to_json(&BlindValidation::new(blind, report)),
-        );
-    }
-    let labels: Vec<String> = pairs.iter().map(|(b, _)| b.clone()).collect();
+    let BundleFiles {
+        mut files,
+        blindness,
+        truncated_diffs,
+    } = collect_files(task_text, &pairs, &by_label, git, repo)?;
+    let (labels, _): (Vec<String>, Vec<String>) = pairs.iter().cloned().unzip();
     let manifest = JudgeInputManifest {
         schema_version: JUDGE_INPUT_SCHEMA_VERSION.into(),
         round_id: round_id.clone(),
@@ -308,39 +384,12 @@ pub fn build_judge_input(
     };
     let manifest_bytes = to_json(&manifest);
     let dir = paths.judge_input_dir(&round.experiment_id, round_id)?;
-
     if dir.join("manifest.json").exists() {
-        // Already sealed: verify, write nothing.
         files.insert("manifest.json".into(), manifest_bytes.clone());
-        for (rel, bytes) in &files {
-            let path = dir.join(rel);
-            let existing =
-                std::fs::read(&path).with_context(|| format!("verifying {}", path.display()))?;
-            if existing != *bytes {
-                return Err(fsx::FsxError::Conflict { path }.into());
-            }
-        }
+        verify_bundle(&dir, &files)
     } else {
-        fsx::ensure_private_dir(&dir)?;
-        for label in &labels {
-            fsx::ensure_private_dir(&dir.join("candidates").join(label))?;
-        }
-        for (rel, bytes) in &files {
-            fsx::create_immutable(&dir.join(rel), bytes, BUNDLE_FILE_MODE)?;
-        }
-        // The manifest goes last: its presence means the bundle is whole.
-        fsx::create_immutable(
-            &dir.join("manifest.json"),
-            &manifest_bytes,
-            BUNDLE_FILE_MODE,
-        )?;
-        for label in &labels {
-            seal_dir(&dir.join("candidates").join(label))?;
-        }
-        seal_dir(&dir.join("candidates"))?;
-        seal_dir(&dir)?;
-    }
-
+        write_and_seal(&dir, &labels, &files, &manifest_bytes)
+    }?;
     Ok(JudgeInput {
         dir,
         labels,

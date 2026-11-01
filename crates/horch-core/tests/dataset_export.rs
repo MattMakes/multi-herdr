@@ -1029,3 +1029,27 @@ fn exp_04_round_id_with_a_path_is_refused() {
     let err = export(&paths, &InMemoryFacts::default(), LPV).unwrap_err();
     assert!(format!("{err:#}").contains("not a plain name"), "{err:#}");
 }
+
+#[test]
+fn exp_03_a_judgment_file_of_another_judgment_is_refused() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (paths, _rec, facts) = build_fixture(tmp.path());
+    let file = paths.judgement(&round(1)).unwrap();
+    let mut record: Value = serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
+    let logged = record["judgment_id"].clone();
+    record["judgment_id"] = json!(judgment_id(99).to_string());
+    std::fs::write(&file, record.to_string()).unwrap();
+    let err = format!("{:#}", export(&paths, &facts, LPV).unwrap_err());
+    assert!(
+        err.contains("exporting round")
+            && err.contains(&format!(
+                "the log names judgment {}",
+                logged.as_str().unwrap()
+            )),
+        "{err}"
+    );
+
+    std::fs::remove_file(&file).unwrap();
+    let err = format!("{:#}", export(&paths, &facts, LPV).unwrap_err());
+    assert!(err.contains("reading"), "{err}");
+}

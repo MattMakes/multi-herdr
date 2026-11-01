@@ -102,27 +102,13 @@ pub fn usage(ctx: &RuntimeContext, args: UsageArgs) -> Result<()> {
         bail!("--by takes one of: {}", GROUPS.join(", "));
     }
     let now = clock::now();
-    let since =
-        match (&args.since, &args.window) {
-            (Some(s), _) => Some(clock::parse(s).map(clock::stamp).ok_or_else(|| {
-                anyhow::anyhow!("--since: '{s}' is not a date or an RFC 3339 time")
-            })?),
-            (None, Some(w)) => Some(
-                collect::window_start(w, now)
-                    .ok_or_else(|| anyhow::anyhow!("--window takes 5h, today or 7d"))?,
-            ),
-            (None, None) => None,
-        };
+    let since = since_stamp(&args, now)?;
     let (snap, source) = catch_up(ctx)?;
-    let events: Vec<Event> = store::read_all(&horch_core::telemetry::dir(&ctx.paths.state_root))
-        .into_iter()
-        .filter(|e| since.as_deref().is_none_or(|s| e.ts.as_str() >= s))
-        .filter(|e| {
-            args.project
-                .as_deref()
-                .is_none_or(|p| e.project.as_deref() == Some(p))
-        })
-        .collect();
+    let events = stored_events(
+        &ctx.paths.state_root,
+        since.as_deref(),
+        args.project.as_deref(),
+    );
     let report = build(
         &ctx.paths.state_root,
         &args,
@@ -138,6 +124,35 @@ pub fn usage(ctx: &RuntimeContext, args: UsageArgs) -> Result<()> {
         output::print(&render(&report));
     }
     Ok(())
+}
+
+/// The stamp that `--since` or `--window` starts the report at. `--since`
+/// wins when both are given. `None` when neither is.
+fn since_stamp(args: &UsageArgs, now: chrono::DateTime<chrono::Utc>) -> Result<Option<String>> {
+    match (&args.since, &args.window) {
+        (Some(s), _) => clock::parse(s)
+            .map(clock::stamp)
+            .map(Some)
+            .ok_or_else(|| anyhow::anyhow!("--since: '{s}' is not a date or an RFC 3339 time")),
+        (None, Some(w)) => collect::window_start(w, now)
+            .map(Some)
+            .ok_or_else(|| anyhow::anyhow!("--window takes 5h, today or 7d")),
+        (None, None) => Ok(None),
+    }
+}
+
+/// The events of the store stamped at or after `since`, and of `project`
+/// when one is given.
+fn stored_events(
+    state_root: &std::path::Path,
+    since: Option<&str>,
+    project: Option<&str>,
+) -> Vec<Event> {
+    store::read_all(&horch_core::telemetry::dir(state_root))
+        .into_iter()
+        .filter(|e| since.is_none_or(|s| e.ts.as_str() >= s))
+        .filter(|e| project.is_none_or(|p| e.project.as_deref() == Some(p)))
+        .collect()
 }
 
 pub fn build(

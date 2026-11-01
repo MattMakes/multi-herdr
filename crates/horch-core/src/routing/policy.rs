@@ -136,6 +136,41 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(err.contains("tight_usd"), "{err}");
-        assert!(Policy::parse(r#"{"tight_used": 1.5}"#).is_err());
+    }
+
+    /// Each rule of `validate` refuses on its own. `tight_used: 1.5` also
+    /// breaks the cross-field rule, so the range rule needs inputs that
+    /// break no other.
+    #[test]
+    fn quo_05_each_validation_rule_refuses_alone() {
+        for (text, why) in [
+            (
+                r#"{"tight_used": -0.1}"#,
+                "tight_used must be between 0 and 1, got -0.1",
+            ),
+            (
+                r#"{"exhausted_used": 1.5}"#,
+                "exhausted_used must be between 0 and 1, got 1.5",
+            ),
+            (
+                r#"{"pace_min_used": 2}"#,
+                "pace_min_used must be between 0 and 1, got 2",
+            ),
+            (
+                r#"{"tight_used": 0.9, "exhausted_used": 0.8}"#,
+                "tight_used must not exceed exhausted_used",
+            ),
+            (r#"{"tick_ms": 99}"#, "tick_ms must be at least 100"),
+        ] {
+            let err = Policy::parse(text).unwrap_err().to_string();
+            assert_eq!(err, format!("policy.json: {why}"), "{text}");
+        }
+        // The edges of every rule are valid.
+        let edge = r#"{"tight_used": 0, "exhausted_used": 0, "pace_min_used": 1, "tick_ms": 100}"#;
+        let p = Policy::parse(edge).unwrap();
+        assert_eq!(
+            (p.tight_used, p.exhausted_used, p.pace_min_used, p.tick_ms),
+            (0.0, 0.0, 1.0, 100)
+        );
     }
 }

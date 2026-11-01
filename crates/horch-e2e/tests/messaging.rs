@@ -145,18 +145,19 @@ fn running_worker(h: &Harness) -> (String, String, String) {
     (pane, role, id)
 }
 
-/// G5: in a workspace with no registered orchestrator, a worker's `tell` to
-/// it fails and says that `horch done` still works; `done` records the
-/// summary, tells nobody, says why, and exits 0.
+/// G5/#60: without registration both tell and done retain durable reports.
+/// A later orchestrator can acknowledge them; finishing still closes the worker.
 #[test]
 fn g5_done_without_an_orchestrator() {
-    let h = fleet("g5-done", "exec,stay");
+    let mut h = fleet("g5-done", "exec,stay");
+    h.set("HORCH_TEST_MAIL_NO_ORCHESTRATOR_MS", "20");
+    h.set("HORCH_TEST_MAIL_POLL_MS", "10");
     let (pane, role, id) = running_worker(&h);
 
     let tell = as_worker(&h, &["tell", "orchestrator", "DONE: x"], &pane, &role, &id);
-    assert!(!tell.status.success(), "{}", text(&tell));
+    assert!(tell.status.success(), "{}", text(&tell));
     assert!(
-        text(&tell).contains("still records your summary"),
+        text(&tell).contains("queued, not yet acknowledged"),
         "{}",
         text(&tell)
     );
@@ -164,16 +165,44 @@ fn g5_done_without_an_orchestrator() {
     let done = as_worker(&h, &["done", "finished the work"], &pane, &role, &id);
     assert!(done.status.success(), "{}", text(&done));
     assert!(
-        text(&done).contains("no orchestrator is registered in this workspace"),
+        text(&done).contains("queued, not yet acknowledged"),
         "{}",
         text(&done)
     );
     let r = record(&h, &id);
     assert_eq!(r["status"], "done", "{r}");
-    assert!(
-        !h.state.join("mail/w1/pending").exists(),
-        "no recipient means no durable report"
+    assert_eq!(
+        std::fs::read_dir(h.state.join("mail/w1/pending"))
+            .unwrap()
+            .count(),
+        2,
+        "tell and done both remain pending without registration"
     );
+}
+
+/// #201: `horch done` in a project that is not a git work tree, with a real
+/// git, reports no unregistered worktrees and no scan error. git says
+/// "not a git repository" with status 128, which `done` finds as a typed
+/// `GitError`, not by its text.
+#[test]
+fn done_outside_a_git_work_tree_reports_no_scan_error() {
+    let mut h = fleet("done-no-repo", "exec,stay").with_git();
+    if h.git_bin().is_none() {
+        return;
+    }
+    std::fs::remove_dir_all(h.project.join(".git")).unwrap();
+    h.set("HORCH_TEST_MAIL_NO_ORCHESTRATOR_MS", "20");
+    h.set("HORCH_TEST_MAIL_POLL_MS", "10");
+    let (pane, role, id) = running_worker(&h);
+
+    let done = as_worker(&h, &["done", "finished the work"], &pane, &role, &id);
+    assert!(done.status.success(), "{}", text(&done));
+    assert!(
+        !text(&done).contains("could not inspect unregistered worktrees"),
+        "{}",
+        text(&done)
+    );
+    assert_eq!(record(&h, &id)["status"], "done");
 }
 
 /// G5: a worker pane closed without `horch done`. `horch inbox` marks the
@@ -310,7 +339,8 @@ fn mail_u1_done_push_failure_records_queued_and_closes() {
 
     assert!(done.status.success(), "{}", text(&done));
     assert!(
-        String::from_utf8_lossy(&done.stderr).contains("horch done: the push did not land ("),
+        String::from_utf8_lossy(&done.stderr)
+            .contains("horch done: queued, not yet acknowledged ("),
         "{}",
         text(&done)
     );
@@ -347,7 +377,7 @@ fn mail_u1_tell_push_failure_leaves_pending_mail() {
 
     assert!(tell.status.success(), "{}", text(&tell));
     assert!(
-        String::from_utf8_lossy(&tell.stderr).contains("the courier will redeliver it"),
+        String::from_utf8_lossy(&tell.stderr).contains("queued, not yet acknowledged"),
         "{}",
         text(&tell)
     );
@@ -599,6 +629,85 @@ fn mail_u1_worker_inbox_does_not_print_or_ack_pending_mail() {
     );
 }
 
+/// #177: a worker's inbox prints the notices horch queued for its role.
+/// `--peek` leaves them pending; a plain inbox acknowledges them. The
+/// orchestrator's mail is never shown or acknowledged.
+#[test]
+fn a_worker_inbox_prints_and_acks_its_own_role_mail_only() {
+    let mut h = fleet("mail-worker-role", "exec,stay");
+    // The tell below starts a courier. A fast poll makes it see the role
+    // mail at once: it must leave the mail of a registered role alone.
+    h.set("HORCH_TEST_MAIL_POLL_MS", "10");
+    let mailbox = h.state.join("herdr-orchestration-w1");
+    std::fs::create_dir_all(&mailbox).unwrap();
+    std::fs::write(mailbox.join("orchestrator.id"), "w1:p1").unwrap();
+    // A courier acknowledges the mail of a role no one holds (`done` freed
+    // it), so the worker is registered, as a spawned worker is.
+    std::fs::write(mailbox.join("sonnet-1.id"), "w1:p2").unwrap();
+    let tell = as_worker(
+        &h,
+        &["tell", "orchestrator", "NOTE: private"],
+        "w1:p2",
+        "sonnet-1",
+        "r1",
+    );
+    assert!(tell.status.success(), "{}", text(&tell));
+    horch_core::messaging::mail::Mail::to_role(&h.state, "w1", "sonnet-1")
+        .enqueue("horch", "NOTE: the reviews are in")
+        .unwrap();
+    let pending = |dir: &str| std::fs::read_dir(h.state.join(dir)).unwrap().count();
+
+    let peek = as_worker(&h, &["inbox", "--peek"], "w1:p2", "sonnet-1", "r1");
+    assert!(peek.status.success(), "{}", text(&peek));
+    assert!(
+        text(&peek).contains("NOTE: the reviews are in"),
+        "{}",
+        text(&peek)
+    );
+    assert_eq!(pending("mail/w1/roles/sonnet-1/pending"), 1);
+
+    let inbox = as_worker(&h, &["inbox"], "w1:p2", "sonnet-1", "r1");
+    let stdout = String::from_utf8_lossy(&inbox.stdout);
+    assert!(inbox.status.success(), "{}", text(&inbox));
+    assert!(
+        stdout.contains("NOTE: the reviews are in"),
+        "{}",
+        text(&inbox)
+    );
+    assert!(!stdout.contains("NOTE: private"), "{}", text(&inbox));
+    assert_eq!(pending("mail/w1/roles/sonnet-1/pending"), 0);
+    assert_eq!(
+        pending("mail/w1/pending"),
+        1,
+        "the orchestrator's mail stays"
+    );
+}
+
+/// The notices of a role that `done` freed reach no one: the courier
+/// acknowledges them and exits. They do not keep it polling, and a later
+/// worker that takes the role name does not get them.
+#[test]
+fn a_courier_drops_the_mail_of_a_role_no_pane_holds_and_exits() {
+    let h = fleet("mail-gone-role", "exec,stay");
+    let mailbox = h.state.join("herdr-orchestration-w1");
+    std::fs::create_dir_all(&mailbox).unwrap();
+    std::fs::write(mailbox.join("sonnet-2.id"), "w1:p3").unwrap();
+    horch_core::messaging::mail::Mail::to_role(&h.state, "w1", "sonnet-1")
+        .enqueue("horch", "NOTE: the reviews are in")
+        .unwrap();
+
+    let courier = h
+        .horch(&["mail", "courier", "--workspace", "w1"])
+        .env("HORCH_TEST_MAIL_POLL_MS", "10")
+        .env("HORCH_TEST_MAIL_NO_ORCHESTRATOR_MS", "600000")
+        .output()
+        .unwrap();
+
+    assert!(courier.status.success(), "{}", text(&courier));
+    let pending = h.state.join("mail/w1/roles/sonnet-1/pending");
+    assert_eq!(std::fs::read_dir(pending).unwrap().count(), 0);
+}
+
 #[test]
 fn mail_u1_orchestrator_command_reminds_without_acking() {
     let h = fleet("mail-remind", "exec,stay");
@@ -796,17 +905,25 @@ fn p09_registry_lives_in_the_state_folder() {
     assert!(tell.status.success(), "{}", text(&tell));
 }
 
-/// P09: a registry that exists only in the old temp location is still found
-/// by `inbox`, `tell` and `done`, and nothing is written back to it.
+/// P09, #77: a registry that exists only in the old temp location, owned
+/// by this user and mode 0700, is copied once into the state folder, then
+/// found by `inbox`, `tell` and `done`. Nothing is written back to it.
+#[cfg(unix)]
 #[test]
 fn p09_registry_in_the_old_temp_location_still_resolves() {
+    use std::os::unix::fs::PermissionsExt;
     let h = fleet("p09-legacy", "exec,stay");
     let (pane, role, id) = running_worker(&h);
     let state_mailbox = h.state.join("herdr-orchestration-w1");
     let legacy_mailbox = h.tmp.join("herdr-orchestration-w1");
     std::fs::rename(&state_mailbox, &legacy_mailbox).unwrap();
+    std::fs::set_permissions(&legacy_mailbox, std::fs::Permissions::from_mode(0o700)).unwrap();
 
     let inbox = h.run(&["inbox"]);
+    assert!(
+        state_mailbox.join(format!("{role}.id")).is_file(),
+        "the first command copies the registry"
+    );
     assert!(inbox.status.success(), "{}", text(&inbox));
     assert!(
         String::from_utf8_lossy(&inbox.stdout)
@@ -822,6 +939,40 @@ fn p09_registry_in_the_old_temp_location_still_resolves() {
     assert_eq!(record(&h, &id)["status"], "done");
     assert!(!legacy_mailbox.join(format!("{role}.id")).exists());
     assert!(!state_mailbox.join(format!("{role}.id")).exists());
+}
+
+/// #77: the same old registry with mode 0777 is not copied, and the
+/// command says why.
+#[cfg(unix)]
+#[test]
+fn an_old_registry_others_can_write_is_not_copied_and_inbox_says_why() {
+    use std::os::unix::fs::PermissionsExt;
+    let h = fleet("p09-legacy-open", "exec,stay");
+    let (_pane, role, _id) = running_worker(&h);
+    let state_mailbox = h.state.join("herdr-orchestration-w1");
+    let legacy_mailbox = h.tmp.join("herdr-orchestration-w1");
+    std::fs::rename(&state_mailbox, &legacy_mailbox).unwrap();
+    std::fs::set_permissions(&legacy_mailbox, std::fs::Permissions::from_mode(0o777)).unwrap();
+
+    let inbox = h.run(&["inbox"]);
+    assert!(inbox.status.success(), "{}", text(&inbox));
+    let stderr = String::from_utf8_lossy(&inbox.stderr);
+    assert!(
+        stderr.contains(&legacy_mailbox.display().to_string())
+            && stderr.contains("writable by other users"),
+        "{}",
+        text(&inbox)
+    );
+    assert!(
+        !String::from_utf8_lossy(&inbox.stdout)
+            .lines()
+            .any(|l| l.starts_with(&role)),
+        "{}",
+        text(&inbox)
+    );
+    assert!(!state_mailbox.exists(), "nothing was copied");
+    let tell = h.run(&["tell", &role, "NOTE: old registry"]);
+    assert!(!tell.status.success(), "{}", text(&tell));
 }
 
 /// A fleet with a custom `HORCH_STATE_DIR`: the orchestrator pane does not

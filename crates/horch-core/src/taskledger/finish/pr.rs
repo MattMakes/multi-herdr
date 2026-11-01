@@ -19,10 +19,10 @@ use crate::taskledger::store::Store;
 use crate::taskledger::util::{self, About};
 
 fn gh(bin: &Path, dir: &Path, args: &[&str]) -> Result<String> {
-    let out = Command::new(bin)
-        .args(args)
-        .current_dir(dir)
-        .env_remove("ANTHROPIC_API_KEY")
+    let mut cmd = Command::new(bin);
+    cmd.args(args).current_dir(dir);
+    crate::runtime::process::scrub_child_env(&mut cmd);
+    let out = cmd
         .output()
         .map_err(|e| {
             if e.kind() == std::io::ErrorKind::NotFound {
@@ -77,9 +77,139 @@ struct PrView {
     head: String,
 }
 
+/// The commit the task landed: its worktree's, or the run branch's for a
+/// shared-checkout task.
+fn landed_commit(store: &Store, cx: &Ctx<'_>, run_branch: &str) -> Result<String> {
+    match worktree_of(store.conn(), &cx.task.task_id)? {
+        Some(w) => w.landed_commit.context("the task has not landed"),
+        None => cx.tools.git.rev(&cx.root, run_branch),
+    }
+}
+
+/// Open the run's PR with the task's section, and record its number.
+fn create_pr(
+    store: &Store,
+    cx: &Ctx<'_>,
+    run: &runs::Run,
+    run_branch: &str,
+    base: &str,
+    short: &str,
+    section: &str,
+) -> Result<i64> {
+    let body = with_section(
+        &format!(
+            "Run `{}`: tasks land on `{run_branch}`; this PR brings them to `{base}`.",
+            run.slug
+        ),
+        short,
+        section,
+    );
+    let url = gh(
+        &cx.tools.gh,
+        &cx.root,
+        &[
+            "pr",
+            "create",
+            "--base",
+            base,
+            "--head",
+            run_branch,
+            "--title",
+            &format!("{}: fleet run", run.slug),
+            "--body",
+            &body,
+        ],
+    )?;
+    let url = url.lines().last().unwrap_or_default().trim().to_string();
+    let n: i64 = url
+        .rsplit('/')
+        .next()
+        .unwrap_or_default()
+        .parse()
+        .ok()
+        .with_context(|| format!("gh pr create printed no PR URL: {url}"))?;
+    runs::set_pr(store.conn(), &run.run_id, n, &url)?;
+    Ok(n)
+}
+
+/// The number of the run's PR; the first task to get here opens it.
+fn pr_number(
+    store: &Store,
+    cx: &Ctx<'_>,
+    run_branch: &str,
+    base: &str,
+    short: &str,
+    section: &str,
+) -> Result<i64> {
+    let run = runs::get(store.conn(), &cx.run.run_id)?;
+    match run.pr_number {
+        Some(n) => Ok(n),
+        None => create_pr(store, cx, &run, run_branch, base, short, section),
+    }
+}
+
+/// Write the task's section into the body of the run's PR when it differs,
+/// and record it. The PR's number, and the PR as it was read.
+fn sync_pr_body(
+    store: &Store,
+    cx: &Ctx<'_>,
+    run_branch: &str,
+    base: &str,
+    short: &str,
+    section: &str,
+) -> Result<(String, PrView)> {
+    let n = pr_number(store, cx, run_branch, base, short, section)?.to_string();
+    let n = n.as_str();
+    let view: PrView = serde_json::from_str(&gh(
+        &cx.tools.gh,
+        &cx.root,
+        &["pr", "view", n, "--json", "body,headRefOid"],
+    )?)
+    .context("reading gh pr view --json body,headRefOid")?;
+    let body = with_section(&view.body, short, section);
+    if body != view.body {
+        let file = cx.evidence_dir.join(format!("{}-pr-body.md", cx.seq));
+        std::fs::write(&file, &body)?;
+        gh(
+            &cx.tools.gh,
+            &cx.root,
+            &["pr", "edit", n, "--body-file", &file.to_string_lossy()],
+        )?;
+    }
+    util::event(
+        store.conn(),
+        &About {
+            run: Some(&cx.run.run_id),
+            task: Some(&cx.task.task_id),
+            worker: Some(&cx.worker.worker_id),
+        },
+        Actor::Worker,
+        EventKind::PrUpdated,
+        &format!("PR #{n} has the section of {short}."),
+    )?;
+    Ok((n.to_string(), view))
+}
+
+/// Pass when the head of PR `n` holds the landed commit.
+fn verdict(cx: &Ctx<'_>, view: &PrView, landed: &str, n: &str, short: &str) -> Outcome {
+    let has_it = view.head == landed || cx.tools.git.is_ancestor(&cx.root, landed, &view.head);
+    if has_it {
+        Outcome::pass(&format!("PR #{n}"), None, &format!("PR #{n} holds {short}"))
+    } else {
+        Outcome::fail(
+            "PR head behind",
+            None,
+            &format!(
+                "PR #{n} head {} does not contain {landed}: the run branch is not pushed; run horch ledger finish to retry the push",
+                view.head
+            ),
+        )
+    }
+}
+
 /// The pr step.
 pub fn step(store: &mut Store, cx: &Ctx<'_>) -> Result<Outcome> {
-    let Some(remote) = cx.run.remote.clone() else {
+    let Some(_remote) = &cx.run.remote else {
         return Ok(Outcome::not_applicable(
             "the run has no remote, so it has no pull request",
         ));
@@ -94,97 +224,13 @@ pub fn step(store: &mut Store, cx: &Ctx<'_>) -> Result<Outcome> {
         .base_branch
         .clone()
         .context("the run has no main branch")?;
-    let landed = match worktree_of(store.conn(), &cx.task.task_id)? {
-        Some(w) => w.landed_commit.context("the task has not landed")?,
-        None => cx.tools.git.rev(&cx.root, &run_branch)?,
-    };
-    let _ = remote;
+    let landed = landed_commit(store, cx, &run_branch)?;
     let section = section_text(store, cx, &landed)?;
     let short = cx.task.short();
     // 1 writer at a time: the landing lock of this repository.
     let _lock = land::land_lock(cx)?;
-    let run = runs::get(store.conn(), &cx.run.run_id)?;
-    let number = match run.pr_number {
-        Some(n) => n,
-        None => {
-            let body = with_section(
-                &format!(
-                    "Run `{}`: tasks land on `{run_branch}`; this PR brings them to `{base}`.",
-                    run.slug
-                ),
-                &short,
-                &section,
-            );
-            let url = gh(
-                &cx.tools.gh,
-                &cx.root,
-                &[
-                    "pr",
-                    "create",
-                    "--base",
-                    &base,
-                    "--head",
-                    &run_branch,
-                    "--title",
-                    &format!("{}: fleet run", run.slug),
-                    "--body",
-                    &body,
-                ],
-            )?;
-            let url = url.lines().last().unwrap_or_default().trim().to_string();
-            let n: i64 = url
-                .rsplit('/')
-                .next()
-                .and_then(|n| n.parse().ok())
-                .with_context(|| format!("gh pr create printed no PR URL: {url}"))?;
-            runs::set_pr(store.conn(), &run.run_id, n, &url)?;
-            n
-        }
-    };
-    let n = number.to_string();
-    let view: PrView = serde_json::from_str(&gh(
-        &cx.tools.gh,
-        &cx.root,
-        &["pr", "view", &n, "--json", "body,headRefOid"],
-    )?)
-    .context("reading gh pr view --json body,headRefOid")?;
-    let body = with_section(&view.body, &short, &section);
-    if body != view.body {
-        let file = cx.evidence_dir.join(format!("{}-pr-body.md", cx.seq));
-        std::fs::write(&file, &body)?;
-        gh(
-            &cx.tools.gh,
-            &cx.root,
-            &["pr", "edit", &n, "--body-file", &file.to_string_lossy()],
-        )?;
-    }
-    util::event(
-        store.conn(),
-        &About {
-            run: Some(&cx.run.run_id),
-            task: Some(&cx.task.task_id),
-            worker: Some(&cx.worker.worker_id),
-        },
-        Actor::Worker,
-        EventKind::PrUpdated,
-        &format!("PR #{n} has the section of {short}."),
-    )?;
-    let has_it = view.head == landed || cx.tools.git.is_ancestor(&cx.root, &landed, &view.head);
-    if !has_it {
-        return Ok(Outcome::fail(
-            "PR head behind",
-            None,
-            &format!(
-                "PR #{n} head {} does not contain {landed} yet; run finish again after the push",
-                view.head
-            ),
-        ));
-    }
-    Ok(Outcome::pass(
-        &format!("PR #{n}"),
-        None,
-        &format!("PR #{n} holds {short}"),
-    ))
+    let (n, view) = sync_pr_body(store, cx, &run_branch, &base, &short, &section)?;
+    Ok(verdict(cx, &view, &landed, &n, &short))
 }
 
 fn section_text(store: &Store, cx: &Ctx<'_>, landed: &str) -> Result<String> {
@@ -217,6 +263,12 @@ fn section_text(store: &Store, cx: &Ctx<'_>, landed: &str) -> Result<String> {
         verdict("complexity-sweep"),
         verdict("recheck")
     ));
+    for w in super::codesweep::waivers(&cx.tools.evidence_root, &cx.task.task_id) {
+        s.push_str(&format!(
+            "- code-sweep {} waived by the orchestrator: {}\n",
+            w.id, w.reason
+        ));
+    }
     if let Some(url) = &cx.task.issue_url {
         if let Some(n) = url
             .rsplit('/')

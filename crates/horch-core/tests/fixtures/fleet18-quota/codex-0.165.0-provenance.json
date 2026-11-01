@@ -1,0 +1,15 @@
+{
+  "cli": "codex",
+  "version": "codex-cli 0.165.0",
+  "captured_at": "2026-10-29T03:52:26.716045+00:00",
+  "source": "real installed CLI; subscription login; quota protocol only; no model prompt",
+  "reply_file": "codex-0.165.0.json",
+  "top_level_keys": [
+    "id",
+    "result"
+  ],
+  "scrubbed_fields": [
+    "result.accountId",
+    "result.rateLimitResetCredits.credits[*].id"
+  ]
+}

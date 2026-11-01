@@ -33,7 +33,7 @@
 //! interleaved passes converge on the next pass instead of oscillating, which is
 //! why the driver needs no locking. See `interleaved_passes_converge`.
 
-use crate::workspace::model::Layout;
+use crate::workspace::model::{Layout, LayoutPane};
 
 /// A column boundary within one cell of its target is left alone. Absorbs both
 /// border rows and herdr's rounding of a split ratio to four decimal places.
@@ -77,80 +77,87 @@ struct Row {
     panes: Vec<(String, i64, i64)>,
 }
 
+impl Row {
+    /// The left edge of the first pane and the right edge of the last.
+    fn extent(&self) -> (i64, i64) {
+        let first = &self.panes[0];
+        let last = &self.panes[self.panes.len() - 1];
+        (first.1, last.1 + last.2)
+    }
+}
+
 /// Split the tab into its two worker rows, or `None` when this is not a settled
 /// 2-row grid.
 ///
 /// Rows are grouped by `y`, never by `x`, so this stays correct precisely when
 /// the columns have drifted - which is the case that needs repairing.
 fn worker_rows(layout: &Layout, orchestrator: Option<&str>) -> Option<Vec<Row>> {
-    let height = layout.area.height;
-    let is_full = |h: i64| h >= height - 1;
+    let rows = two_rows(&grid_workers(layout, orchestrator)?)?;
+    rows_match(&rows).then_some(rows)
+}
 
-    // The orchestrator is whatever the mailbox registered, else the leftmost
-    // full-height pane. Same rule as `layout::analyze`, so both agree on which
-    // panes form the grid.
-    let orch: Option<String> = match orchestrator.filter(|s| !s.is_empty()) {
+/// The orchestrator is whatever the mailbox registered, else the leftmost
+/// full-height pane. Same rule as `layout::analyze`, so both agree on which
+/// panes form the grid.
+fn grid_orchestrator(layout: &Layout, orchestrator: Option<&str>) -> Option<String> {
+    match orchestrator.filter(|s| !s.is_empty()) {
         Some(id) => Some(id.to_string()),
         None => layout
             .panes
             .iter()
-            .filter(|p| is_full(p.rect.height))
+            .filter(|p| is_full(layout, p.rect.height))
             .min_by_key(|p| p.rect.x)
             .map(|p| p.pane_id.clone()),
-    };
+    }
+}
 
-    let workers: Vec<&crate::workspace::model::LayoutPane> = layout
+fn is_full(layout: &Layout, height: i64) -> bool {
+    height >= layout.area.height - 1
+}
+
+/// Every pane but the orchestrator, or `None` when there is none or one owns a
+/// full-height column: the grid is mid-build and the advisor's `unpaired`
+/// handling should run before anything is equalised.
+fn grid_workers<'l>(layout: &'l Layout, orchestrator: Option<&str>) -> Option<Vec<&'l LayoutPane>> {
+    let orch = grid_orchestrator(layout, orchestrator);
+    let workers: Vec<&LayoutPane> = layout
         .panes
         .iter()
         .filter(|p| Some(&p.pane_id) != orch.as_ref())
         .collect();
+    Some(workers).filter(|w| !w.is_empty() && !w.iter().any(|p| is_full(layout, p.rect.height)))
+}
 
-    if workers.is_empty() {
-        return None;
-    }
-    // A full-height worker owns an unpaired column; the grid is mid-build and the
-    // advisor's `unpaired` handling should run before anything is equalised.
-    if workers.iter().any(|p| is_full(p.rect.height)) {
-        return None;
-    }
-
+/// The workers grouped by `y` into 2 rows, each left to right.
+fn two_rows(workers: &[&LayoutPane]) -> Option<Vec<Row>> {
     let mut ys: Vec<i64> = workers.iter().map(|p| p.rect.y).collect();
     ys.sort_unstable();
     ys.dedup();
-    if ys.len() != 2 {
-        return None;
-    }
+    (ys.len() == 2).then(|| {
+        ys.into_iter()
+            .map(|y| {
+                let mut panes: Vec<(String, i64, i64)> = workers
+                    .iter()
+                    .filter(|p| p.rect.y == y)
+                    .map(|p| (p.pane_id.clone(), p.rect.x, p.rect.width))
+                    .collect();
+                panes.sort_by_key(|(_, x, _)| *x);
+                Row { panes }
+            })
+            .collect()
+    })
+}
 
-    let mut rows = Vec::with_capacity(2);
-    for y in ys {
-        let mut panes: Vec<(String, i64, i64)> = workers
-            .iter()
-            .filter(|p| p.rect.y == y)
-            .map(|p| (p.pane_id.clone(), p.rect.x, p.rect.width))
-            .collect();
-        panes.sort_by_key(|(_, x, _)| *x);
-        rows.push(Row { panes });
-    }
-
+/// Whether the 2 rows hold the same number of panes (at least 2) over the
+/// same extent.
+///
+/// Unequal row lengths mean the grid is genuinely ragged - a column is half
+/// built or half drained. Equalising one row alone would move it off the other
+/// row's integers and manufacture exactly the phantom raggedness this module
+/// exists to prevent. Leave it for the advisor's ragged handling.
+fn rows_match(rows: &[Row]) -> bool {
     let n = rows[0].panes.len();
-    // Unequal row lengths mean the grid is genuinely ragged - a column is half
-    // built or half drained. Equalising one row alone would move it off the other
-    // row's integers and manufacture exactly the phantom raggedness this module
-    // exists to prevent. Leave it for the advisor's ragged handling.
-    if n < 2 || rows[1].panes.len() != n {
-        return None;
-    }
-
-    let extent = |r: &Row| {
-        let first = &r.panes[0];
-        let last = &r.panes[n - 1];
-        (first.1, last.1 + last.2)
-    };
-    if extent(&rows[0]) != extent(&rows[1]) {
-        return None;
-    }
-
-    Some(rows)
+    n >= 2 && rows[1].panes.len() == n && rows[0].extent() == rows[1].extent()
 }
 
 /// Whether this tab is a settled 2-row worker grid, and so something [`plan`] is
@@ -170,62 +177,66 @@ pub fn balanceable(layout: &Layout, orchestrator: Option<&str>) -> bool {
 /// positions the earlier ones will produce. Empty when the grid is already even,
 /// or when it is not a settled 2-row grid.
 pub fn plan(layout: &Layout, orchestrator: Option<&str>) -> Vec<ResizeOp> {
-    let Some(rows) = worker_rows(layout, orchestrator) else {
-        return Vec::new();
-    };
+    worker_rows(layout, orchestrator)
+        .map(|rows| rows.iter().flat_map(row_ops).collect())
+        .unwrap_or_default()
+}
 
+/// The resizes that make 1 row's columns equal.
+fn row_ops(row: &Row) -> Vec<ResizeOp> {
+    let n = row.panes.len();
+    let (x0, x1) = row.extent();
     let mut ops = Vec::new();
-    for row in &rows {
-        let n = row.panes.len();
-        let x0 = row.panes[0].1;
-        let x1 = row.panes[n - 1].1 + row.panes[n - 1].2;
-        let w = x1 - x0;
-        if w <= 0 {
-            continue;
-        }
+    if x1 - x0 <= 0 {
+        return ops;
+    }
 
-        // `pos[k]` is the left edge of column k, so `pos[k]` for k >= 1 is
-        // divider k. Updated as we go to mirror what herdr will have done.
-        let mut pos: Vec<i64> = row.panes.iter().map(|(_, x, _)| *x).collect();
+    // `pos[k]` is the left edge of column k, so `pos[k]` for k >= 1 is
+    // divider k. Updated as we go to mirror what herdr will have done.
+    let mut pos: Vec<i64> = row.panes.iter().map(|(_, x, _)| *x).collect();
 
-        for k in 1..n {
-            let target = x0 + ((k as f64) * (w as f64) / (n as f64)).round() as i64;
-            let current = pos[k];
-            let delta = target - current;
-            if delta.abs() <= TOLERANCE {
-                continue;
-            }
-
-            // Right-leaning chain: divider k is owned by a split spanning
-            // [pos[k-1], x1], and `--amount` is a fraction of that span.
-            let container = x1 - pos[k - 1];
-            if container <= 0 {
-                continue;
-            }
-
-            let (pane, direction) = if delta > 0 {
-                (row.panes[k - 1].0.clone(), ResizeDir::Right)
-            } else {
-                (row.panes[k].0.clone(), ResizeDir::Left)
-            };
-            ops.push(ResizeOp {
-                pane,
-                direction,
-                amount: delta.abs() as f64 / container as f64,
-                from_x: current,
-                to_x: target,
-            });
-
+    for k in 1..n {
+        if let Some(op) = divider_op(row, &pos, k, (x0, x1)) {
             // Moving divider k rescales the subtree to its right proportionally.
-            let before = x1 - current;
-            let after = x1 - target;
+            let before = x1 - op.from_x;
+            let after = x1 - op.to_x;
             for p in pos.iter_mut().skip(k + 1) {
-                *p = target + ((*p - current) as f64 * after as f64 / before as f64).round() as i64;
+                *p = op.to_x
+                    + ((*p - op.from_x) as f64 * after as f64 / before as f64).round() as i64;
             }
-            pos[k] = target;
+            pos[k] = op.to_x;
+            ops.push(op);
         }
     }
     ops
+}
+
+/// The resize that puts divider `k` on its target, or `None` when it is
+/// within the tolerance or its container has no width.
+fn divider_op(row: &Row, pos: &[i64], k: usize, (x0, x1): (i64, i64)) -> Option<ResizeOp> {
+    let n = row.panes.len();
+    let w = x1 - x0;
+    let target = x0 + ((k as f64) * (w as f64) / (n as f64)).round() as i64;
+    let current = pos[k];
+    let delta = target - current;
+    // Right-leaning chain: divider k is owned by a split spanning
+    // [pos[k-1], x1], and `--amount` is a fraction of that span.
+    let container = x1 - pos[k - 1];
+    if delta.abs() <= TOLERANCE || container <= 0 {
+        return None;
+    }
+    let (pane, direction) = if delta > 0 {
+        (row.panes[k - 1].0.clone(), ResizeDir::Right)
+    } else {
+        (row.panes[k].0.clone(), ResizeDir::Left)
+    };
+    Some(ResizeOp {
+        pane,
+        direction,
+        amount: delta.abs() as f64 / container as f64,
+        from_x: current,
+        to_x: target,
+    })
 }
 
 #[cfg(test)]
@@ -479,5 +490,60 @@ mod tests {
             "the orchestrator/worker boundary is not ours to move"
         );
         assert!(ops.iter().all(|o| o.from_x > 179 && o.to_x > 179));
+    }
+
+    #[test]
+    fn the_orchestrator_is_guessed_when_none_is_named() {
+        let named = plan(&fresh_2x3(), Some("orch"));
+        assert!(!named.is_empty());
+        assert_eq!(plan(&fresh_2x3(), None), named);
+        // An empty name counts as none.
+        assert_eq!(plan(&fresh_2x3(), Some("")), named);
+    }
+
+    #[test]
+    fn only_a_settled_two_row_grid_is_balanceable() {
+        assert!(balanceable(&fresh_2x3(), Some("orch")));
+        // No workers at all.
+        let mut alone = fresh_2x3();
+        alone.panes.truncate(1);
+        assert!(!balanceable(&alone, Some("orch")));
+        // Three worker rows.
+        let mut three = fresh_2x3();
+        three.panes.push(LayoutPane {
+            pane_id: "third".into(),
+            rect: Rect {
+                x: 179,
+                y: 15,
+                width: 40,
+                height: 10,
+            },
+        });
+        assert!(!balanceable(&three, Some("orch")));
+        // Rows that end at different edges.
+        let uneven = grid(306, 153, &[179, 256, 332], &[179, 256, 300]);
+        assert!(!balanceable(&uneven, Some("orch")));
+        assert!(plan(&uneven, Some("orch")).is_empty());
+    }
+
+    #[test]
+    fn a_divider_right_of_its_target_moves_left_and_one_left_of_it_moves_right() {
+        // 2 columns over [179, 332): the even divider is at 256.
+        let right_of = grid(306, 153, &[179, 290, 332], &[179, 290, 332]);
+        let ops = plan(&right_of, Some("orch"));
+        assert_eq!(ops.len(), 2);
+        assert!(ops.iter().all(|o| o.direction == ResizeDir::Left));
+        assert!(ops.iter().all(|o| o.from_x == 290 && o.to_x == 256));
+        let left_of = grid(306, 153, &[179, 200, 332], &[179, 200, 332]);
+        let ops = plan(&left_of, Some("orch"));
+        assert_eq!(ops.len(), 2);
+        assert!(ops.iter().all(|o| o.direction == ResizeDir::Right));
+        assert!(ops.iter().all(|o| o.from_x == 200 && o.to_x == 256));
+    }
+
+    #[test]
+    fn a_divider_within_the_tolerance_is_left_alone() {
+        let near = grid(306, 153, &[179, 257, 332], &[179, 255, 332]);
+        assert!(plan(&near, Some("orch")).is_empty());
     }
 }

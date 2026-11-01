@@ -118,8 +118,8 @@ pub trait GitClient {
     ) -> anyhow::Result<CheckoutLocation>;
 }
 
-/// Wraps [`GitRunner`]. `GIT_TERMINAL_PROMPT=0`, `LC_ALL=C`, `FORBIDDEN_ENV`
-/// stripped. The caller passes the git binary (later from `RuntimeContext`,
+/// Wraps [`GitRunner`], which sets `GIT_TERMINAL_PROMPT=0` and `LC_ALL=C`
+/// and strips `FORBIDDEN_ENV` and the repository variables. The caller passes the git binary (later from `RuntimeContext`,
 /// `HORCH_GIT_BIN`); nothing here reads the environment.
 #[derive(Debug, Clone)]
 pub struct GitCli {
@@ -145,9 +145,7 @@ static SCRATCH: AtomicU64 = AtomicU64::new(0);
 impl GitCli {
     pub fn new(git_bin: PathBuf) -> Self {
         Self {
-            runner: GitRunner::new(git_bin)
-                .with_env("GIT_TERMINAL_PROMPT", "0")
-                .with_env("LC_ALL", "C"),
+            runner: GitRunner::new(git_bin),
         }
     }
 
@@ -216,6 +214,15 @@ fn refuse_option(arg: &str) -> anyhow::Result<()> {
         bail!("'{arg}' is not a git revision or ref name");
     }
     Ok(())
+}
+
+/// Whether a ref that holds `current` now (`None`: no such ref) still holds
+/// `expected_old`. An absent ref holds the all-zero value.
+fn still_holds(current: Option<&str>, expected_old: &str) -> bool {
+    match current {
+        None => expected_old.bytes().all(|c| c == b'0'),
+        Some(c) => c == expected_old,
+    }
 }
 
 fn path_str(path: &Path) -> anyhow::Result<&str> {
@@ -489,22 +496,19 @@ impl GitClient for GitCli {
             .runner
             .output(repo, &["update-ref", refname, new, expected_old])?;
         if out.status == 0 {
-            return Ok(true);
+            Ok(true)
+        } else {
+            // Tell a lost race from a real failure by what the ref holds now.
+            let current = self.rev_parse(repo, refname)?;
+            if still_holds(current.as_deref(), expected_old) {
+                bail!(
+                    "git update-ref {refname} failed ({}): {}",
+                    out.status,
+                    String::from_utf8_lossy(&out.stderr).trim()
+                );
+            }
+            Ok(false)
         }
-        // Tell a lost race from a real failure by what the ref holds now.
-        let current = self.rev_parse(repo, refname)?;
-        let held = match &current {
-            None => expected_old.bytes().all(|c| c == b'0'),
-            Some(c) => c == expected_old,
-        };
-        if held {
-            bail!(
-                "git update-ref {refname} failed ({}): {}",
-                out.status,
-                String::from_utf8_lossy(&out.stderr).trim()
-            );
-        }
-        Ok(false)
     }
 
     fn cherry_pick(&self, dir: &Path, range: &str, id: &GitIdentity) -> anyhow::Result<CherryPick> {
@@ -582,6 +586,19 @@ mod tests {
         // 'é' is 2 bytes; a cap inside it drops it whole.
         assert_eq!(cut_utf8("aé", 2), "a");
         assert_eq!(cut_utf8("aé", 3), "aé");
+    }
+
+    #[test]
+    fn an_absent_ref_holds_only_the_all_zero_value() {
+        let zero = "0".repeat(40);
+        let sha = "a".repeat(40);
+        let almost_zero = format!("{}1", "0".repeat(39));
+        assert!(still_holds(None, &zero));
+        assert!(!still_holds(None, &sha));
+        assert!(!still_holds(None, &almost_zero));
+        assert!(still_holds(Some(&sha), &sha));
+        assert!(!still_holds(Some(&sha), &zero));
+        assert!(!still_holds(Some(&sha), &almost_zero));
     }
 
     #[test]

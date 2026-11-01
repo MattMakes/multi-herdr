@@ -14,7 +14,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::Read;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
@@ -26,7 +26,7 @@ use crate::evaluation::judgment::{Judgment, JudgmentRecord};
 use crate::evaluation::parser::{parse_judgment, ParseError};
 use crate::evaluation::rubric::{judge_policy_digest, rubric_text, schema_text};
 use crate::evaluation::scheduler::{
-    discover, job_facts, kill_job, kill_lost_job, ExitReason, JobState, JudgeJobSpec,
+    discover, job_facts, kill_job, kill_lost_job, ExitReason, JobExit, JobState, JudgeJobSpec,
     OUTPUT_CAP_BYTES,
 };
 use crate::evaluation::validator::ValidationReport;
@@ -145,120 +145,168 @@ pub fn start(env: &JudgeEnv, round_id: &RoundId) -> Result<()> {
 /// with the job's heartbeat and the job dir's file times.
 pub fn poll(env: &JudgeEnv, round_id: &RoundId, now: DateTime<Utc>) -> Result<JudgingStatus> {
     let round = view(env, round_id)?;
-    if let Some(done) = settled(&round) {
-        return Ok(done);
-    }
-    if round.state != RoundState::JudgingBackground {
-        bail!("round {round_id} is {}, not judging", round.state);
-    }
-    if let Some(judgment_id) = round.judge.judgment_id.clone() {
-        // A restart after `judge.completed`: finish the decision.
-        return decide(env, round_id, &round, round.judge.attempt, &judgment_id);
-    }
     let attempt = round.judge.attempt;
-    if attempt == 0 {
-        start(env, round_id)?;
-        return Ok(JudgingStatus::Waiting);
-    }
-    if round.judge.failures >= attempt {
+    if let Some(done) = settled(&round) {
+        Ok(done)
+    } else if round.state != RoundState::JudgingBackground {
+        Err(anyhow::anyhow!(
+            "round {round_id} is {}, not judging",
+            round.state
+        ))
+    } else if let Some(judgment_id) = &round.judge.judgment_id {
+        // A restart after `judge.completed`: finish the decision.
+        decide(env, round_id, &round, attempt, judgment_id)
+    } else if attempt == 0 {
+        start(env, round_id).and(Ok(JudgingStatus::Waiting))
+    } else if round.judge.failures >= attempt {
         // A restart after `judge.failed`, before the retry was scheduled.
-        return retry_or_stop(env, round_id, attempt);
+        retry_or_stop(env, round_id, attempt)
+    } else {
+        poll_job(env, round_id, &round, now)
     }
+}
+
+/// Act on what the job dir of the current attempt shows.
+fn poll_job(
+    env: &JudgeEnv,
+    round_id: &RoundId,
+    round: &RoundView,
+    now: DateTime<Utc>,
+) -> Result<JudgingStatus> {
+    let attempt = round.judge.attempt;
     let job_dir = env.paths.job_dir(round_id, attempt)?;
     match discover(&job_dir, now, env.stale_after) {
         JobState::NotStarted => {
             // A restart between `judge.scheduled` and the spawn.
-            schedule_attempt(env, round_id, &round, attempt)?;
-            Ok(JudgingStatus::Waiting)
+            schedule_attempt(env, round_id, round, attempt).and(Ok(JudgingStatus::Waiting))
         }
-        JobState::Running { pid } => {
-            if pid != 0 && !round.judge.started {
-                mark_started(env, round_id, &round, attempt, pid)?;
-            }
-            // The job kills the judge at the timeout. A job that is stuck
-            // itself while its heartbeat thread still beats is killed here.
-            let limit = env.timeout + env.stale_after * 2;
-            let overdue = job_facts(&job_dir).spawned_at.is_some_and(|at| {
-                chrono::Duration::from_std(limit).is_ok_and(|limit| now - at > limit)
-            });
-            if overdue {
-                if let Some(hb) = job_facts(&job_dir).heartbeat {
-                    kill_job(&hb);
-                }
-                return fail(env, round_id, &round, attempt, JudgeFailure::TimedOut, None);
-            }
-            Ok(JudgingStatus::Waiting)
-        }
-        JobState::Exited(exit) => {
-            let cause = match exit.reason {
-                ExitReason::Timeout => JudgeFailure::TimedOut,
-                ExitReason::TooLarge => JudgeFailure::OverCap,
-                ExitReason::Crash | ExitReason::Ok => JudgeFailure::Crashed { code: exit.code },
-            };
-            fail(env, round_id, &round, attempt, cause, exit.code)
-        }
+        JobState::Running { pid } => poll_running(env, round_id, round, &job_dir, pid, now),
+        JobState::Exited(exit) => fail(
+            env,
+            round_id,
+            round,
+            attempt,
+            JudgeFailure::from(&exit),
+            exit.code,
+        ),
         JobState::Lost => {
-            // Lost covers a stale job that still runs, a dead job whose
-            // judge CLI may still run, and a pid that now names another
-            // program: `kill_lost_job` signals only the job's own processes.
-            let kill = kill_lost_job(&job_dir);
-            if !kill.killed.is_empty() || !kill.kept.is_empty() {
-                eprintln!(
-                    "horch: judge attempt {attempt} of round {round_id} was lost; \
-                     killed its orphans {:?}; kept {:?}, which started after its \
-                     last heartbeat",
-                    kill.killed, kill.kept
-                );
-            }
-            fail(env, round_id, &round, attempt, JudgeFailure::Lost, None)
+            kill_orphans(round_id, attempt, &job_dir);
+            fail(env, round_id, round, attempt, JudgeFailure::Lost, None)
         }
-        JobState::OutputPresent(path) => {
-            let raw = read_capped(&path)?;
-            let labels = bundle_pairs(round_id, &round)
-                .into_iter()
-                .map(|(b, _)| b)
-                .collect::<Vec<_>>();
-            match parse_judgment(&raw, &labels, OUTPUT_CAP_BYTES) {
-                Ok(_) => complete(env, round_id, &round, attempt, &raw),
-                Err(ParseError::TooLarge(_)) => fail(
-                    env,
-                    round_id,
-                    &round,
-                    attempt,
-                    JudgeFailure::OverCap,
-                    Some(0),
-                ),
-                Err(e) => fail(
-                    env,
-                    round_id,
-                    &round,
-                    attempt,
-                    JudgeFailure::Malformed {
-                        error: e.to_string(),
-                    },
-                    Some(0),
-                ),
-            }
+        JobState::OutputPresent(path) => judge_output(env, round_id, round, attempt, &path),
+    }
+}
+
+impl From<&JobExit> for JudgeFailure {
+    fn from(exit: &JobExit) -> Self {
+        match exit.reason {
+            ExitReason::Timeout => JudgeFailure::TimedOut,
+            ExitReason::TooLarge => JudgeFailure::OverCap,
+            ExitReason::Crash | ExitReason::Ok => JudgeFailure::Crashed { code: exit.code },
         }
+    }
+}
+
+/// The job runs: record its start, and kill it when it is overdue.
+fn poll_running(
+    env: &JudgeEnv,
+    round_id: &RoundId,
+    round: &RoundView,
+    job_dir: &Path,
+    pid: u32,
+    now: DateTime<Utc>,
+) -> Result<JudgingStatus> {
+    let attempt = round.judge.attempt;
+    if pid != 0 && !round.judge.started {
+        mark_started(env, round_id, round, attempt, pid)?;
+    }
+    if is_overdue(env, job_dir, now) {
+        if let Some(hb) = job_facts(job_dir).heartbeat {
+            kill_job(&hb);
+        }
+        fail(env, round_id, round, attempt, JudgeFailure::TimedOut, None)
+    } else {
+        Ok(JudgingStatus::Waiting)
+    }
+}
+
+/// The job kills the judge at the timeout. A job that is stuck itself while
+/// its heartbeat thread still beats is overdue after the timeout plus 2
+/// stale periods.
+fn is_overdue(env: &JudgeEnv, job_dir: &Path, now: DateTime<Utc>) -> bool {
+    let limit = env.timeout + env.stale_after * 2;
+    job_facts(job_dir)
+        .spawned_at
+        .is_some_and(|at| chrono::Duration::from_std(limit).is_ok_and(|limit| now - at > limit))
+}
+
+/// Lost covers a stale job that still runs, a dead job whose judge CLI may
+/// still run, and a pid that now names another program: `kill_lost_job`
+/// signals only the job's own processes.
+fn kill_orphans(round_id: &RoundId, attempt: u32, job_dir: &Path) {
+    let kill = kill_lost_job(job_dir);
+    if !kill.killed.is_empty() || !kill.kept.is_empty() {
+        eprintln!(
+            "horch: judge attempt {attempt} of round {round_id} was lost; \
+             killed its orphans {:?}; kept {:?}, which started after its \
+             last heartbeat",
+            kill.killed, kill.kept
+        );
+    }
+}
+
+/// The job left an answer: a parsed one completes the attempt, any other
+/// fails it.
+fn judge_output(
+    env: &JudgeEnv,
+    round_id: &RoundId,
+    round: &RoundView,
+    attempt: u32,
+    path: &Path,
+) -> Result<JudgingStatus> {
+    let raw = read_capped(path)?;
+    let labels = bundle_pairs(round_id, round)
+        .into_iter()
+        .map(|(b, _)| b)
+        .collect::<Vec<_>>();
+    match parse_judgment(&raw, &labels, OUTPUT_CAP_BYTES) {
+        Ok(_) => complete(env, round_id, round, attempt, &raw),
+        Err(ParseError::TooLarge(_)) => fail(
+            env,
+            round_id,
+            round,
+            attempt,
+            JudgeFailure::OverCap,
+            Some(0),
+        ),
+        Err(e) => fail(
+            env,
+            round_id,
+            round,
+            attempt,
+            JudgeFailure::Malformed {
+                error: e.to_string(),
+            },
+            Some(0),
+        ),
     }
 }
 
 /// The answer a round already has, if any.
 fn settled(round: &RoundView) -> Option<JudgingStatus> {
     if let Some(w) = &round.winner {
-        return Some(JudgingStatus::Decided(WinnerOutcome::Winner {
+        Some(JudgingStatus::Decided(WinnerOutcome::Winner {
             label: w.label.clone(),
-        }));
-    }
-    if let Some(reason) = &round.rejected {
-        return Some(JudgingStatus::Decided(WinnerOutcome::Rejected {
+        }))
+    } else if let Some(reason) = &round.rejected {
+        Some(JudgingStatus::Decided(WinnerOutcome::Rejected {
             reason: *reason,
-        }));
+        }))
+    } else if round.needs_intervention.is_some() || round.state == RoundState::NeedsIntervention {
+        Some(JudgingStatus::NeedsIntervention)
+    } else {
+        None
     }
-    if round.needs_intervention.is_some() || round.state == RoundState::NeedsIntervention {
-        return Some(JudgingStatus::NeedsIntervention);
-    }
-    None
 }
 
 fn view(env: &JudgeEnv, round_id: &RoundId) -> Result<RoundView> {
@@ -470,30 +518,42 @@ fn schedule_attempt(
         }),
     )?;
     if job_facts(&job_dir).spawned_at.is_none() {
-        let (model, effort) = model_effort(env.judge)?;
-        let SessionState::Known(session) = record.session.clone() else {
-            bail!("the judge execution {execution} has no session id");
-        };
-        env.launcher.launch(&JudgeJobSpec {
-            round: round_id.clone(),
-            attempt,
-            input_dir: input.dir.clone(),
-            job_dir,
-            session,
-            model,
-            effort,
-            timeout: env.timeout,
-        })?;
-        // Starting, not Planned: `recover_abandoned` closes a Planned record
-        // without a pane, and a judge never has one.
-        env.store
-            .set_state(execution.as_str(), ExecutionStatus::Starting)?;
+        spawn_attempt(env, round_id, attempt, &input.dir, &record, job_dir)?;
     }
     env.ctx
         .settings
         .faults
         .abort_if(ABORT_AFTER_JUDGE_SCHEDULED);
     Ok(())
+}
+
+/// Launch the job of `attempt`, then mark its record Starting.
+fn spawn_attempt(
+    env: &JudgeEnv,
+    round_id: &RoundId,
+    attempt: u32,
+    input_dir: &Path,
+    record: &Execution,
+    job_dir: PathBuf,
+) -> Result<()> {
+    let (model, effort) = model_effort(env.judge)?;
+    let SessionState::Known(session) = record.session.clone() else {
+        bail!("the judge execution {} has no session id", record.id);
+    };
+    env.launcher.launch(&JudgeJobSpec {
+        round: round_id.clone(),
+        attempt,
+        input_dir: input_dir.to_path_buf(),
+        job_dir,
+        session,
+        model,
+        effort,
+        timeout: env.timeout,
+    })?;
+    // Starting, not Planned: `recover_abandoned` closes a Planned record
+    // without a pane, and a judge never has one.
+    env.store
+        .set_state(record.id.as_str(), ExecutionStatus::Starting)
 }
 
 fn record_of(env: &JudgeEnv, round_id: &RoundId, attempt: u32) -> Result<ExecutionId> {
@@ -626,8 +686,68 @@ fn decide(
     judgment_id: &JudgmentId,
 ) -> Result<JudgingStatus> {
     let pairs = bundle_pairs(round_id, round);
-    let labels: Vec<String> = pairs.iter().map(|(b, _)| b.clone()).collect();
+    let (judgment, execution) = store_judgment(env, round_id, attempt, judgment_id, &pairs)?;
     let to_original: BTreeMap<String, String> = pairs.into_iter().collect();
+    let eligible = eligible_labels(round, &to_original);
+    let outcome = decide_winner(Some(&judgment), &eligible, env.policy);
+    match outcome {
+        WinnerOutcome::Winner { label } => {
+            let original = to_original
+                .get(&label)
+                .with_context(|| format!("judge picked unknown label {label}"))?;
+            select_winner(env, round_id, round, &execution, judgment_id, original)
+        }
+        WinnerOutcome::Rejected { reason } => {
+            let kind = EventKind::WinnerRejected(WinnerRejected { reason });
+            emit(
+                env,
+                round_id,
+                round,
+                Some(&execution),
+                format!("winner:{round_id}"),
+                kind,
+            )
+            .and(Ok(JudgingStatus::Decided(WinnerOutcome::Rejected {
+                reason,
+            })))
+        }
+        WinnerOutcome::NeedsIntervention { reason } => {
+            let kind = EventKind::RoundNeedsIntervention(RoundNeedsIntervention {
+                reason,
+                source: InterventionSource::Judge,
+            });
+            emit(
+                env,
+                round_id,
+                round,
+                Some(&execution),
+                format!("needs_intervention:{round_id}"),
+                kind,
+            )
+            .and(Ok(JudgingStatus::NeedsIntervention))
+        }
+    }
+}
+
+/// The bundle labels of the candidates that passed every gate.
+fn eligible_labels(round: &RoundView, to_original: &BTreeMap<String, String>) -> BTreeSet<String> {
+    to_original
+        .iter()
+        .filter(|(_, original)| round.candidates[*original].is_eligible())
+        .map(|(bundle, _)| bundle.clone())
+        .collect()
+}
+
+/// Parse the job's output again, and write the judgment record once. Gives
+/// the judgment and the judge execution.
+fn store_judgment(
+    env: &JudgeEnv,
+    round_id: &RoundId,
+    attempt: u32,
+    judgment_id: &JudgmentId,
+    pairs: &[(String, String)],
+) -> Result<(Judgment, ExecutionId)> {
+    let labels: Vec<String> = pairs.iter().map(|(b, _)| b.clone()).collect();
     let job_dir = env.paths.job_dir(round_id, attempt)?;
     let raw = read_capped(&job_dir.join(crate::evaluation::scheduler::OUTPUT_FILE))?;
     let judgment: Judgment = parse_judgment(&raw, &labels, OUTPUT_CAP_BYTES)
@@ -643,7 +763,12 @@ fn decide(
         execution_id: execution.clone(),
         judgment: judgment.clone(),
     };
-    let mut bytes = serde_json::to_vec_pretty(&record)?;
+    write_record(env, round_id, &record).and(Ok((judgment, execution)))
+}
+
+/// `judgements/<round>.json`, once: the same bytes again are accepted.
+fn write_record(env: &JudgeEnv, round_id: &RoundId, record: &JudgmentRecord) -> Result<()> {
+    let mut bytes = serde_json::to_vec_pretty(record)?;
     bytes.push(b'\n');
     fsx::ensure_private_dir(&env.paths.judgements_dir())?;
     fsx::create_immutable(&env.paths.judgement(round_id)?, &bytes, fsx::PRIVATE_FILE)?;
@@ -651,74 +776,47 @@ fn decide(
         .settings
         .faults
         .abort_if(ABORT_AFTER_JUDGMENT_WRITTEN);
+    Ok(())
+}
 
-    let eligible: BTreeSet<String> = to_original
-        .iter()
-        .filter(|(_, original)| round.candidates[*original].is_eligible())
-        .map(|(bundle, _)| bundle.clone())
-        .collect();
-    match decide_winner(Some(&judgment), &eligible, env.policy) {
-        WinnerOutcome::Winner { label } => {
-            let original = to_original
-                .get(&label)
-                .with_context(|| format!("judge picked unknown label {label}"))?
-                .clone();
-            let c = &round.candidates[&original];
-            emit(
-                env,
-                round_id,
-                round,
-                Some(&execution),
-                format!("winner:{round_id}"),
-                EventKind::WinnerSelected(WinnerSelected {
-                    label: original.clone(),
-                    execution_id: c
-                        .execution_id
-                        .clone()
-                        .with_context(|| format!("candidate {original} has no execution"))?,
-                    head_sha: c
-                        .frozen
-                        .as_ref()
-                        .map(|f| f.head_sha.clone())
-                        .unwrap_or_default(),
-                    judgment_id: judgment_id.clone(),
-                    promotion: env.promotion.clone(),
-                }),
-            )?;
-            env.ctx
-                .settings
-                .faults
-                .abort_if(ABORT_AFTER_WINNER_SELECTED);
-            Ok(JudgingStatus::Decided(WinnerOutcome::Winner {
-                label: original,
-            }))
-        }
-        WinnerOutcome::Rejected { reason } => {
-            emit(
-                env,
-                round_id,
-                round,
-                Some(&execution),
-                format!("winner:{round_id}"),
-                EventKind::WinnerRejected(WinnerRejected { reason }),
-            )?;
-            Ok(JudgingStatus::Decided(WinnerOutcome::Rejected { reason }))
-        }
-        WinnerOutcome::NeedsIntervention { reason } => {
-            emit(
-                env,
-                round_id,
-                round,
-                Some(&execution),
-                format!("needs_intervention:{round_id}"),
-                EventKind::RoundNeedsIntervention(RoundNeedsIntervention {
-                    reason,
-                    source: InterventionSource::Judge,
-                }),
-            )?;
-            Ok(JudgingStatus::NeedsIntervention)
-        }
-    }
+/// `winner.selected` for the candidate `original`.
+fn select_winner(
+    env: &JudgeEnv,
+    round_id: &RoundId,
+    round: &RoundView,
+    execution: &ExecutionId,
+    judgment_id: &JudgmentId,
+    original: &str,
+) -> Result<JudgingStatus> {
+    let c = &round.candidates[original];
+    emit(
+        env,
+        round_id,
+        round,
+        Some(execution),
+        format!("winner:{round_id}"),
+        EventKind::WinnerSelected(WinnerSelected {
+            label: original.to_string(),
+            execution_id: c
+                .execution_id
+                .clone()
+                .with_context(|| format!("candidate {original} has no execution"))?,
+            head_sha: c
+                .frozen
+                .as_ref()
+                .map(|f| f.head_sha.clone())
+                .unwrap_or_default(),
+            judgment_id: judgment_id.clone(),
+            promotion: env.promotion.clone(),
+        }),
+    )?;
+    env.ctx
+        .settings
+        .faults
+        .abort_if(ABORT_AFTER_WINNER_SELECTED);
+    Ok(JudgingStatus::Decided(WinnerOutcome::Winner {
+        label: original.to_string(),
+    }))
 }
 
 fn scheduled_event(env: &JudgeEnv, round_id: &RoundId, attempt: u32) -> Result<JudgeScheduled> {

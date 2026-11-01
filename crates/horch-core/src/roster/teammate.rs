@@ -326,6 +326,30 @@ fn yes() -> bool {
 pub struct ExecRule {
     pub pattern: String,
     pub justification: String,
+    /// What codex does with a matching command. When several rules match,
+    /// codex takes the strictest, so a `forbidden` rule beats any `allow`.
+    #[serde(default)]
+    pub decision: ExecDecision,
+}
+
+/// The `decision` of a codex `prefix_rule`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ExecDecision {
+    /// Run the command outside the sandbox.
+    #[default]
+    Allow,
+    /// Refuse the command.
+    Forbidden,
+}
+
+impl ExecDecision {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ExecDecision::Allow => "allow",
+            ExecDecision::Forbidden => "forbidden",
+        }
+    }
 }
 
 /// A file in `_base/`: a shared prompt shell, or shared data like the
@@ -388,13 +412,14 @@ pub(crate) const CONTEXT_WINDOWS_BASE: &str = "context-windows";
 pub(crate) const CONTEXT_MESSAGES_BASE: &str = "context-messages";
 
 /// Every key `_base/context-messages.md` must set.
-pub(crate) const CONTEXT_MESSAGE_KEYS: [&str; 8] = [
+pub(crate) const CONTEXT_MESSAGE_KEYS: [&str; 9] = [
     "request",
     "warning",
     "warning-orchestrator",
     "instructions",
     "instructions-orchestrator",
     "resume",
+    "resume-orchestrator",
     "reported",
     "failed",
 ];

@@ -14,6 +14,7 @@ use std::process::Command;
 use anyhow::{Context as _, Result};
 use sha2::{Digest as _, Sha256};
 
+use super::capabilities::Capabilities;
 use super::launch::model_for;
 use super::{CommandSpec, Harness, HarnessKind, LaunchEnv, PrepareRequest, Prepared, Session};
 use crate::roster::Teammate;
@@ -53,20 +54,19 @@ pub(crate) fn install_compact_extension(state_root: &Path) -> Result<PathBuf> {
 
 /// A regular file (not a link) with mode 0600 and the embedded bytes.
 fn is_intact(path: &Path) -> bool {
-    let Ok(meta) = std::fs::symlink_metadata(path) else {
-        return false;
-    };
-    if !meta.is_file() {
-        return false;
-    }
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        if meta.permissions().mode() & 0o777 != 0o600 {
-            return false;
-        }
-    }
-    std::fs::read(path).is_ok_and(|bytes| bytes == COMPACT_EXTENSION.as_bytes())
+    std::fs::symlink_metadata(path).is_ok_and(|m| m.is_file() && private_mode(&m))
+        && std::fs::read(path).is_ok_and(|bytes| bytes == COMPACT_EXTENSION.as_bytes())
+}
+
+#[cfg(unix)]
+fn private_mode(meta: &std::fs::Metadata) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    meta.permissions().mode() & 0o777 == 0o600
+}
+
+#[cfg(not(unix))]
+fn private_mode(_meta: &std::fs::Metadata) -> bool {
+    true
 }
 
 pub(crate) struct Pi;
@@ -145,59 +145,65 @@ pub(super) fn pi_family_command(
         cmd.arg("--thinking").arg(effort);
     }
     let caps = teammate.agent.capabilities();
-    // The Rust build of Prime refuses every tool selection flag ("Unknown
-    // option", exit 1), and the roster check rejects `tools:` and
-    // `disallowed_tools` on a Prime teammate, so these only ever fire for pi.
-    if caps.tool_selection {
-        if let Some(tools) = &teammate.tools {
-            // `Some([])` means "no tools at all", which is its own flag here
-            // rather than an empty list.
-            if tools.is_empty() {
-                cmd.arg("--no-tools");
-            } else {
-                cmd.arg("--tools").arg(tools.join(","));
-            }
-        }
-        if !teammate.disallowed_tools.is_empty() && caps.tool_denylist {
-            cmd.arg("--exclude-tools")
-                .arg(teammate.disallowed_tools.join(","));
-        }
-    }
-    // Discovery of everything the repo or the operator might have lying around.
-    // Nothing here is on by default in a fleet: a worker with one narrow job
-    // should not inherit a project's extensions or the operator's skills.
-    // Prime 0.10.0 loads no extensions and refuses `--no-extensions`.
-    if !teammate.inherit_plugins {
-        if caps.extensions_flag {
-            cmd.arg("--no-extensions");
-        }
-        cmd.arg("--no-skills")
-            .arg("--no-prompt-templates")
-            .arg("--no-themes");
-    }
-
-    match session {
-        // pi's `--session-id` creates the session if it does not exist, so a
-        // fresh launch and a resume are the same flag with a different id.
-        // Prime has no such flag: `horch worker` gives it a `--session-dir` it
-        // owns instead, and reads back whatever session appears there.
-        Session::Fresh(id) if caps.caller_minted_session => {
-            cmd.arg("--session-id").arg(id);
-        }
-        Session::Resume(id) => {
-            if caps.caller_minted_session {
-                cmd.arg("--session-id").arg(id);
-            } else {
-                cmd.arg("--resume").arg(id);
-            }
-        }
-        Session::Fresh(_) | Session::Unmanaged => {}
-    }
+    push_tool_args(&mut cmd, teammate, caps);
+    push_isolation_args(&mut cmd, teammate, caps);
+    push_session_args(&mut cmd, session, caps);
     cmd.args(&teammate.args);
     // `--` ends option parsing: without it a prompt beginning with a dash would
     // be read as a flag.
     cmd.arg("--").arg(prompt);
     Ok(cmd)
+}
+
+/// The Rust build of Prime refuses every tool selection flag ("Unknown
+/// option", exit 1), and the roster check rejects `tools:` and
+/// `disallowed_tools` on a Prime teammate, so these only ever fire for pi.
+fn push_tool_args(cmd: &mut Command, teammate: &Teammate, caps: &Capabilities) {
+    if !caps.tool_selection {
+        return;
+    }
+    if let Some(tools) = &teammate.tools {
+        // `Some([])` means "no tools at all", which is its own flag here
+        // rather than an empty list.
+        if tools.is_empty() {
+            cmd.arg("--no-tools");
+        } else {
+            cmd.arg("--tools").arg(tools.join(","));
+        }
+    }
+    if !teammate.disallowed_tools.is_empty() && caps.tool_denylist {
+        cmd.arg("--exclude-tools")
+            .arg(teammate.disallowed_tools.join(","));
+    }
+}
+
+/// Discovery of everything the repo or the operator might have lying around.
+/// Nothing here is on by default in a fleet: a worker with one narrow job
+/// should not inherit a project's extensions or the operator's skills.
+/// Prime 0.10.0 loads no extensions and refuses `--no-extensions`.
+fn push_isolation_args(cmd: &mut Command, teammate: &Teammate, caps: &Capabilities) {
+    if teammate.inherit_plugins {
+        return;
+    }
+    if caps.extensions_flag {
+        cmd.arg("--no-extensions");
+    }
+    cmd.arg("--no-skills")
+        .arg("--no-prompt-templates")
+        .arg("--no-themes");
+}
+
+/// pi's `--session-id` creates the session if it does not exist, so a fresh
+/// launch and a resume are the same flag with a different id. Prime has no
+/// such flag: `horch worker` gives it a `--session-dir` it owns instead, and
+/// reads back whatever session appears there.
+fn push_session_args(cmd: &mut Command, session: Session<'_>, caps: &Capabilities) {
+    let (flag, id) = match (session, caps.caller_minted_session) {
+        (Session::Fresh(id) | Session::Resume(id), true) => ("--session-id", id),
+        (Session::Resume(id), false) => ("--resume", id),
+        _ => return,
+    };
+    cmd.arg(flag).arg(id);
 }
 
 #[cfg(all(test, unix))]
@@ -333,6 +339,164 @@ mod tests {
                 assert!(args.iter().any(|a| a == flag), "{flag} missing: {args:?}");
             }
         }
+    }
+
+    fn full_args(teammate: &Teammate, session: Session<'_>) -> Vec<String> {
+        pi_family_command("bin".into(), teammate, session, "PROMPT", None)
+            .unwrap()
+            .get_args()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect()
+    }
+
+    fn pi_with(f: impl FnOnce(&mut Teammate)) -> Teammate {
+        let mut t = Teammate {
+            agent: HarnessKind::Pi,
+            model: Some("ollama/qwen3.8".into()),
+            inherit_plugins: true,
+            args: vec!["--skill".into(), "/s".into()],
+            ..Teammate::default()
+        };
+        f(&mut t);
+        t
+    }
+
+    #[test]
+    fn pi_flags_per_tool_capability() {
+        let session = Session::Unmanaged;
+        let none = full_args(&pi_with(|_| {}), session);
+        assert_eq!(
+            none,
+            ["--model", "ollama/qwen3.8", "--skill", "/s", "--", "PROMPT"]
+        );
+
+        let empty = full_args(&pi_with(|t| t.tools = Some(vec![])), session);
+        assert_eq!(empty[2], "--no-tools");
+        assert!(!empty.iter().any(|a| a == "--tools"), "{empty:?}");
+
+        let some = full_args(
+            &pi_with(|t| t.tools = Some(vec!["read".into(), "grep".into()])),
+            session,
+        );
+        assert_eq!(some[2..4], ["--tools", "read,grep"]);
+
+        let deny = full_args(
+            &pi_with(|t| t.disallowed_tools = vec!["bash".into(), "edit".into()]),
+            session,
+        );
+        assert_eq!(deny[2..4], ["--exclude-tools", "bash,edit"]);
+
+        // Tools first, then the deny list, then isolation, then `args`.
+        let all = full_args(
+            &pi_with(|t| {
+                t.effort = Some("high".into());
+                t.tools = Some(vec!["read".into()]);
+                t.disallowed_tools = vec!["bash".into()];
+                t.inherit_plugins = false;
+            }),
+            session,
+        );
+        assert_eq!(
+            all,
+            [
+                "--model",
+                "ollama/qwen3.8",
+                "--thinking",
+                "high",
+                "--tools",
+                "read",
+                "--exclude-tools",
+                "bash",
+                "--no-extensions",
+                "--no-skills",
+                "--no-prompt-templates",
+                "--no-themes",
+                "--skill",
+                "/s",
+                "--",
+                "PROMPT"
+            ]
+        );
+    }
+
+    #[test]
+    fn prime_flags_skip_tool_and_extension_flags() {
+        let prime = Teammate {
+            agent: HarnessKind::Prime,
+            model: Some("anthropic/claude-opus-5-5".into()),
+            inherit_plugins: false,
+            tools: Some(vec![]),
+            disallowed_tools: vec!["bash".into()],
+            ..Teammate::default()
+        };
+        assert_eq!(
+            full_args(&prime, Session::Unmanaged),
+            [
+                "--model",
+                "anthropic/claude-opus-5-5",
+                "--no-skills",
+                "--no-prompt-templates",
+                "--no-themes",
+                "--",
+                "PROMPT"
+            ]
+        );
+    }
+
+    #[test]
+    fn session_flag_follows_who_mints_the_id() {
+        let pi = pi_with(|_| {});
+        let tail = |t: &Teammate, s| full_args(t, s)[2..].to_vec();
+        assert_eq!(
+            tail(&pi, Session::Fresh("s1")),
+            ["--session-id", "s1", "--skill", "/s", "--", "PROMPT"]
+        );
+        assert_eq!(
+            tail(&pi, Session::Resume("s1")),
+            ["--session-id", "s1", "--skill", "/s", "--", "PROMPT"]
+        );
+        assert_eq!(
+            tail(&pi, Session::Unmanaged),
+            ["--skill", "/s", "--", "PROMPT"]
+        );
+
+        let prime = Teammate {
+            agent: HarnessKind::Prime,
+            model: Some("m".into()),
+            inherit_plugins: true,
+            ..Teammate::default()
+        };
+        assert_eq!(tail(&prime, Session::Fresh("s1")), ["--", "PROMPT"]);
+        assert_eq!(
+            tail(&prime, Session::Resume("s1")),
+            ["--resume", "s1", "--", "PROMPT"]
+        );
+        assert_eq!(tail(&prime, Session::Unmanaged), ["--", "PROMPT"]);
+    }
+
+    #[test]
+    fn is_intact_rejects_missing_dir_link_and_wrong_mode() {
+        let tmp = tempfile::tempdir().unwrap();
+        let file = tmp.path().join("ext.ts");
+        assert!(!is_intact(&file), "missing file");
+        std::fs::create_dir(&file).unwrap();
+        assert!(!is_intact(&file), "directory");
+        std::fs::remove_dir(&file).unwrap();
+
+        std::fs::write(&file, COMPACT_EXTENSION).unwrap();
+        std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o644)).unwrap();
+        assert!(!is_intact(&file), "wrong mode");
+        std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o600)).unwrap();
+        assert!(is_intact(&file));
+
+        std::fs::write(&file, "other").unwrap();
+        std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o600)).unwrap();
+        assert!(!is_intact(&file), "other bytes");
+
+        let link = tmp.path().join("link.ts");
+        std::fs::write(&file, COMPACT_EXTENSION).unwrap();
+        std::os::unix::fs::symlink(&file, &link).unwrap();
+        assert!(!is_intact(&link), "symlink");
     }
 
     #[test]

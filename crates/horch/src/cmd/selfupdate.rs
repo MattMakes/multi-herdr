@@ -240,21 +240,72 @@ fn boot_notice(
     is_newer(&cache.latest_tag, current).then(|| notice_text(&cache.latest_tag, &cache.html_url))
 }
 
-/// The boot check of `horch fleet`, `horch orchestration` and `horch doctor`:
-/// a 2-line NOTE on stderr when a newer release is out. Never prompts, never
-/// fails, never waits longer than [`BOOT_TIMEOUT`].
-pub fn notice(ctx: &RuntimeContext, no_update: bool) {
-    if no_update
-        || ctx.settings.no_update
-        || ctx.settings.no_self_check
-        || !std::io::stderr().is_terminal()
+/// Warn on hot paths using only local state, independent of agent update policy.
+/// Both reasons share one line, even when the cache is arbitrarily old.
+pub fn stale_warning(ctx: &RuntimeContext) {
+    if let Some(line) = stale_warning_text(ctx) {
+        eprintln!("{line}");
+    }
+}
+
+/// Doctor preserves the boot check's bounded cache refresh, but coalesces its
+/// result with installed-binary evidence into the single offline warning.
+pub fn doctor_warning(ctx: &RuntimeContext) {
+    if let Some(line) = doctor_warning_text(ctx, std::io::stderr().is_terminal(), || {
+        fetch_latest(BOOT_TIMEOUT)
+    }) {
+        eprintln!("{line}");
+    }
+}
+
+fn doctor_warning_text(
+    ctx: &RuntimeContext,
+    terminal: bool,
+    fetch: impl FnOnce() -> Result<Option<Release>>,
+) -> Option<String> {
+    if terminal && !ctx.settings.no_update && !ctx.settings.no_self_check {
+        // Preserve refresh/cache side effects without printing the old two-line notice.
+        let _ = boot_notice(&ctx.paths.state_root, clock::now(), CURRENT, fetch);
+    }
+    stale_warning_text(ctx)
+}
+
+fn stale_warning_text(ctx: &RuntimeContext) -> Option<String> {
+    if ctx.settings.no_self_check {
+        return None;
+    }
+    let mut reasons = Vec::new();
+    if let Some(cache) = std::fs::read_to_string(cache_path(&ctx.paths.state_root))
+        .ok()
+        .and_then(|s| serde_json::from_str::<Cache>(&s).ok())
+        .filter(|c| is_newer(&c.latest_tag, CURRENT))
     {
-        return;
+        reasons.push(format!(
+            "running v{CURRENT}; cached latest {}",
+            cache.latest_tag
+        ));
     }
-    let fetch = || fetch_latest(BOOT_TIMEOUT);
-    if let Some(text) = boot_notice(&ctx.paths.state_root, clock::now(), CURRENT, fetch) {
-        eprintln!("{text}");
+    if let (Some(running), Some(installed)) = (&ctx.bins.current_exe, &ctx.bins.installed_horch) {
+        // Distinct paths are compared by content to ignore identical copies.
+        let same_path = running
+            .canonicalize()
+            .ok()
+            .zip(installed.canonicalize().ok())
+            .is_some_and(|(a, b)| a == b);
+        if !same_path
+            && std::fs::read(running)
+                .ok()
+                .zip(std::fs::read(installed).ok())
+                .is_some_and(|(a, b)| a != b)
+        {
+            reasons.push(format!(
+                "running {} differs from installed {}",
+                running.display(),
+                installed.display()
+            ));
+        }
     }
+    (!reasons.is_empty()).then(|| format!("horch: WARNING: stale horch: {}", reasons.join("; ")))
 }
 
 /// Set on the horch that [`update_before_fleet`] restarts into, so the new
@@ -269,25 +320,32 @@ const UPDATED_ENV: &str = "HORCH_SELF_UPDATED";
 /// notice instead. A failed update never stops the fleet: it starts on this
 /// version.
 pub fn update_before_fleet(ctx: &RuntimeContext, no_update: bool) {
-    if no_update
+    if skip_boot_update(ctx, no_update) {
+        return;
+    }
+    let fetch = || fetch_latest(BOOT_TIMEOUT);
+    if let Some(notice) = boot_notice(&ctx.paths.state_root, clock::now(), CURRENT, fetch) {
+        install_and_restart(ctx, &notice);
+    }
+}
+
+/// Whether the boot update step is off: a flag, a setting, the restarted
+/// process, or no terminal.
+fn skip_boot_update(ctx: &RuntimeContext, no_update: bool) -> bool {
+    no_update
         || ctx.settings.no_update
         || ctx.settings.no_self_check
         || std::env::var_os(UPDATED_ENV).is_some()
         || !std::io::stderr().is_terminal()
-    {
+}
+
+/// Install the newer release over this horch and restart on it. A source
+/// build prints `notice` instead.
+fn install_and_restart(ctx: &RuntimeContext, notice: &str) {
+    let Ok(dir) = target_dir(ctx) else {
+        // A source build: `git pull` and `just install` update it.
+        eprintln!("{notice}");
         return;
-    }
-    let fetch = || fetch_latest(BOOT_TIMEOUT);
-    let Some(notice) = boot_notice(&ctx.paths.state_root, clock::now(), CURRENT, fetch) else {
-        return;
-    };
-    let dir = match target_dir(ctx) {
-        Ok(dir) => dir,
-        Err(_) => {
-            // A source build: `git pull` and `just install` update it.
-            eprintln!("{notice}");
-            return;
-        }
     };
     eprintln!(
         "horch: a newer multi-herdr is out; installing it before the fleet starts \
@@ -354,19 +412,15 @@ pub fn self_update(ctx: &RuntimeContext, check: bool) -> Result<ExitCode> {
     };
     if !is_newer(&release.tag, CURRENT) {
         println!("horch is up to date (v{CURRENT})");
-        return Ok(ExitCode::SUCCESS);
-    }
-    if check {
+    } else if check {
         println!(
             "multi-herdr {} is out (you have v{CURRENT}): {}",
             release.tag, release.html_url
         );
-        return Ok(ExitCode::SUCCESS);
+    } else {
+        install_release(ctx, &release, &target_dir(ctx)?)?;
+        println!("updated horch v{CURRENT} -> {}", release.tag);
     }
-
-    let dir = target_dir(ctx)?;
-    install_release(ctx, &release, &dir)?;
-    println!("updated horch v{CURRENT} -> {}", release.tag);
     Ok(ExitCode::SUCCESS)
 }
 
@@ -374,31 +428,9 @@ pub fn self_update(ctx: &RuntimeContext, check: bool) -> Result<ExitCode> {
 /// and run its `horch install --dir <dir>`. Clears the boot check's cache.
 fn install_release(ctx: &RuntimeContext, release: &Release, dir: &Path) -> Result<()> {
     let name = archive_name(&release.tag, TARGET);
-    let missing = |what: &str| {
-        anyhow::anyhow!(
-            "release {} has no {what} for target {TARGET}: {}",
-            release.tag,
-            release.html_url
-        )
-    };
-    let archive_url = release
-        .asset_url(&name)
-        .ok_or_else(|| missing(&format!("archive {name}")))?;
-    let sums_url = release
-        .asset_url(SUMS_NAME)
-        .ok_or_else(|| missing(SUMS_NAME))?;
-
-    let sums = String::from_utf8(download(sums_url)?).context("SHA256SUMS is not text")?;
-    let expected = parse_sums(&sums, &name)
-        .with_context(|| format!("SHA256SUMS of {} has no line for {name}", release.tag))?;
-    let archive = download(archive_url)?;
-    verify_digest(&archive, &expected)?;
-
+    let archive = verified_archive(release, &name)?;
     let tmp = tempfile::tempdir().context("cannot make a temp dir")?;
     extract(&archive, tmp.path())?;
-    let new_horch = tmp
-        .path()
-        .join(format!("horch{}", std::env::consts::EXE_SUFFIX));
     let absent = missing_binaries(tmp.path());
     if !absent.is_empty() {
         bail!(
@@ -407,6 +439,9 @@ fn install_release(ctx: &RuntimeContext, release: &Release, dir: &Path) -> Resul
             absent.join(", ")
         );
     }
+    let new_horch = tmp
+        .path()
+        .join(format!("horch{}", std::env::consts::EXE_SUFFIX));
     let status = Command::new(&new_horch)
         .arg("install")
         .arg("--dir")
@@ -421,6 +456,35 @@ fn install_release(ctx: &RuntimeContext, release: &Release, dir: &Path) -> Resul
     }
     let _ = std::fs::remove_file(cache_path(&ctx.paths.state_root));
     Ok(())
+}
+
+/// Download the archive `name` of `release` and check it against the
+/// release's SHA256SUMS.
+fn verified_archive(release: &Release, name: &str) -> Result<Vec<u8>> {
+    let missing = |what: &str| {
+        anyhow::anyhow!(
+            "release {} has no {what} for target {TARGET}: {}",
+            release.tag,
+            release.html_url
+        )
+    };
+    let archive_url = release
+        .asset_url(name)
+        .ok_or_else(|| missing(&format!("archive {name}")))?;
+    let sums_url = release
+        .asset_url(SUMS_NAME)
+        .ok_or_else(|| missing(SUMS_NAME))?;
+    let expected = expected_digest(release, name, sums_url)?;
+    let archive = download(archive_url)?;
+    verify_digest(&archive, &expected)?;
+    Ok(archive)
+}
+
+/// The digest that the release's SHA256SUMS gives for `name`.
+fn expected_digest(release: &Release, name: &str, sums_url: &str) -> Result<String> {
+    let sums = String::from_utf8(download(sums_url)?).context("SHA256SUMS is not text")?;
+    parse_sums(&sums, name)
+        .with_context(|| format!("SHA256SUMS of {} has no line for {name}", release.tag))
 }
 
 // The network code below is the twin of `crates/herdr-install/src/net.rs`.
@@ -454,16 +518,19 @@ fn fetch_latest(timeout: Duration) -> Result<Option<Release>> {
         .header("User-Agent", &user_agent())
         .header("Accept", "application/vnd.github+json")
         .call();
-    let mut response = match response {
-        Ok(response) => response,
-        Err(ureq::Error::StatusCode(404)) => return Ok(None),
-        Err(e) => return Err(e).with_context(|| format!("cannot reach {url}")),
-    };
+    match response {
+        Ok(mut response) => read_release(&mut response, &url).map(Some),
+        Err(ureq::Error::StatusCode(404)) => Ok(None),
+        Err(e) => Err(e).with_context(|| format!("cannot reach {url}")),
+    }
+}
+
+fn read_release(response: &mut ureq::http::Response<ureq::Body>, url: &str) -> Result<Release> {
     let body = response
         .body_mut()
         .read_to_string()
         .with_context(|| format!("reading {url}"))?;
-    parse_release(&body).map(Some)
+    parse_release(&body)
 }
 
 /// Download 1 release asset into memory.
@@ -513,22 +580,30 @@ fn flat_name(name: &str) -> Result<&str> {
 
 #[cfg(unix)]
 fn extract(archive: &[u8], dir: &Path) -> Result<()> {
+    let mut tar = tar::Archive::new(flate2::read::GzDecoder::new(archive));
+    tar.entries()
+        .context("the archive is not a .tar.gz")?
+        .try_for_each(|entry| extract_entry(entry, dir))
+}
+
+#[cfg(unix)]
+fn extract_entry(
+    entry: std::io::Result<tar::Entry<'_, impl std::io::Read>>,
+    dir: &Path,
+) -> Result<()> {
     use std::os::unix::fs::PermissionsExt;
 
-    let mut tar = tar::Archive::new(flate2::read::GzDecoder::new(archive));
-    for entry in tar.entries().context("the archive is not a .tar.gz")? {
-        let mut entry = entry.context("reading the archive")?;
-        let raw = entry.path().context("reading the archive")?;
-        let name = flat_name(&raw.to_string_lossy())?.to_string();
-        if !entry.header().entry_type().is_file() {
-            bail!("the release archive entry {name:?} is not a file");
-        }
-        let dest = dir.join(&name);
-        let mut file = std::fs::File::create(&dest)
-            .with_context(|| format!("cannot write {}", dest.display()))?;
-        std::io::copy(&mut entry, &mut file).context("reading the archive")?;
-        std::fs::set_permissions(&dest, std::fs::Permissions::from_mode(0o755))?;
+    let mut entry = entry.context("reading the archive")?;
+    let raw = entry.path().context("reading the archive")?;
+    let name = flat_name(&raw.to_string_lossy())?.to_string();
+    if !entry.header().entry_type().is_file() {
+        bail!("the release archive entry {name:?} is not a file");
     }
+    let dest = dir.join(&name);
+    let mut file =
+        std::fs::File::create(&dest).with_context(|| format!("cannot write {}", dest.display()))?;
+    std::io::copy(&mut entry, &mut file).context("reading the archive")?;
+    std::fs::set_permissions(&dest, std::fs::Permissions::from_mode(0o755))?;
     Ok(())
 }
 
@@ -555,6 +630,49 @@ mod tests {
     use std::cell::Cell;
 
     use super::*;
+
+    #[test]
+    fn g49_doctor_refreshes_expired_cache_and_coalesces_one_warning() {
+        let dir = tempfile::tempdir().unwrap();
+        let ctx = horch_core::runtime::RuntimeContext::from_env(
+            &horch_core::runtime::MapEnv::new(dir.path())
+                .with("HORCH_STATE_DIR", &dir.path().to_string_lossy()),
+        )
+        .unwrap();
+        let old = Cache {
+            checked_at: "2020-01-01T00:00:00Z".into(),
+            latest_tag: "v98.0.0".into(),
+            html_url: "https://example.invalid/old".into(),
+        };
+        std::fs::write(cache_path(dir.path()), serde_json::to_vec(&old).unwrap()).unwrap();
+        let line = doctor_warning_text(&ctx, true, || {
+            Ok(Some(Release {
+                tag: "v99.0.0".into(),
+                html_url: "https://example.invalid/new".into(),
+                assets: vec![],
+            }))
+        })
+        .unwrap();
+        assert_eq!(line.lines().count(), 1);
+        assert!(line.contains("v99.0.0"));
+        let fresh: Cache =
+            serde_json::from_slice(&std::fs::read(cache_path(dir.path())).unwrap()).unwrap();
+        assert!(is_fresh(clock::now(), &fresh.checked_at));
+        assert_eq!(fresh.latest_tag, "v99.0.0");
+        assert!(
+            doctor_warning_text(&ctx, true, || panic!("fresh 24h cache must not fetch")).is_some()
+        );
+        let mut disabled = ctx.clone();
+        disabled.settings.no_update = true;
+        assert!(
+            doctor_warning_text(&disabled, true, || panic!("no-update must not fetch")).is_some()
+        );
+        assert!(
+            doctor_warning_text(&ctx, false, || panic!("piped doctor stays offline")).is_some()
+        );
+        disabled.settings.no_self_check = true;
+        assert!(doctor_warning_text(&disabled, true, || panic!("pin must not fetch")).is_none());
+    }
 
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     #[test]

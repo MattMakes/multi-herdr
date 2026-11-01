@@ -117,25 +117,24 @@ impl Bundle {
         let resolution = SkillResolution::read(catalog, Some(teammate), home, harness_support)?;
         let plan = resolution.plan(teammate)?;
         let catalog = resolution.into_catalog();
-        let Some(files) =
-            MaterializedSkills::materialize(&plan, &catalog, state_root, execution_id)?
-        else {
-            if catalog.skipped_operator().is_empty() {
-                return Ok(None);
-            }
-            return Ok(Some(Self {
+        let files = MaterializedSkills::materialize(&plan, &catalog, state_root, execution_id)?;
+        if let Some(files) = files {
+            Ok(Some(Self {
+                root: files.root.clone(),
+                catalog,
+                plan,
+                _files: Some(files),
+            }))
+        } else if catalog.skipped_operator().is_empty() {
+            Ok(None)
+        } else {
+            Ok(Some(Self {
                 root: state_root.join("skill-bundles").join(execution_id),
                 catalog,
                 plan,
                 _files: None,
-            }));
-        };
-        Ok(Some(Self {
-            root: files.root.clone(),
-            catalog,
-            plan,
-            _files: Some(files),
-        }))
+            }))
+        }
     }
 
     /// The activation plan this bundle materialized.
@@ -463,5 +462,49 @@ mod tests {
                 "anthropic-skills:skill-creator": "off"
             })
         );
+    }
+
+    /// Nothing activated and nothing skipped: no bundle and no directory.
+    /// Nothing activated but an operator skill skipped: a bundle that holds
+    /// only the briefing's note, with no directory (U-53). An activated
+    /// skill: a directory whose root is canonical, as the files made it.
+    #[test]
+    fn install_from_has_no_bundle_a_hollow_one_or_a_directory() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = tmp.path().join("state");
+        let install = |t: &Teammate, id: &str| {
+            Bundle::install_from(&state, t, SkillCatalog::bundled().unwrap(), id, None).unwrap()
+        };
+
+        assert!(install(&Teammate::default(), "none").is_none());
+        assert!(!state.exists(), "no bundle, no directory");
+
+        let skipped = Teammate {
+            operator_skills: Some(crate::roster::OperatorSkills {
+                dir: tmp.path().join("exported").to_string_lossy().into_owned(),
+                names: vec!["no-such-skill".into()],
+            }),
+            ..Teammate::default()
+        };
+        let hollow = install(&skipped, "hollow").expect("a bundle for the note");
+        assert_eq!(hollow.root(), state.join("skill-bundles").join("hollow"));
+        assert!(!hollow.root().exists(), "no directory");
+        assert!(hollow.plan().activated.is_empty());
+        let brief = hollow.briefing_in(&skipped, None);
+        assert!(
+            brief.contains("Skipped: operator skill no-such-skill is not installed on this host"),
+            "{brief}"
+        );
+        assert!(!brief.contains("fleet copy"), "{brief}");
+
+        let phased = Teammate {
+            phase: Some(Phase::Plan),
+            ..Teammate::default()
+        };
+        let full = install(&phased, "full").expect("a bundle");
+        let parent = state.join("skill-bundles").canonicalize().unwrap();
+        assert_eq!(full.root(), parent.join("full"));
+        assert!(full.skills_dir().join("create-plan/SKILL.md").is_file());
+        assert!(full.plan().activated_ids().contains(&"create-plan"));
     }
 }

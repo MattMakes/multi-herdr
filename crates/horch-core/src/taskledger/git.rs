@@ -2,16 +2,19 @@
 //!
 //! Every call names its directory with `-C`; nothing depends on the current
 //! directory. No call here ever forces: no `--force`, no `-D`, no `reset`.
+//! Each call goes through [`GitRunner`], the 1 git runner of horch: it runs
+//! without the caller's git repository variables (a `GIT_DIR` from a hook
+//! wins over `-C`), never prompts, and in the C locale.
 
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 use anyhow::{bail, Context, Result};
+use horch_marketplace::git::GitRunner;
 
 /// A git binary.
 #[derive(Debug, Clone)]
 pub struct Git {
-    bin: PathBuf,
+    runner: GitRunner,
 }
 
 /// What 1 git call printed.
@@ -24,7 +27,9 @@ pub struct Out {
 
 impl Git {
     pub fn new(bin: impl Into<PathBuf>) -> Git {
-        Git { bin: bin.into() }
+        Git {
+            runner: GitRunner::new(bin),
+        }
     }
 
     /// Run git in `dir`; never fails on a non-zero exit.
@@ -35,15 +40,11 @@ impl Git {
                 .any(|a| *a == "--force" || *a == "-D" || *a == "-f"),
             "the task ledger never forces git"
         );
-        let out = Command::new(&self.bin)
-            .arg("-C")
-            .arg(dir)
-            .args(args)
-            .env_remove("ANTHROPIC_API_KEY")
-            .output()
-            .with_context(|| format!("running {} {}", self.bin.display(), args.join(" ")))?;
+        let out = self.runner.output(dir, args).with_context(|| {
+            format!("running {} {}", self.runner.bin().display(), args.join(" "))
+        })?;
         Ok(Out {
-            ok: out.status.success(),
+            ok: out.status == 0,
             stdout: String::from_utf8_lossy(&out.stdout).trim_end().to_string(),
             stderr: String::from_utf8_lossy(&out.stderr).trim_end().to_string(),
         })
@@ -141,6 +142,17 @@ impl Git {
     /// untracked (ignored files are not listed).
     pub fn dirty(&self, dir: &Path) -> Result<Vec<String>> {
         let out = self.run(dir, &["status", "--porcelain", "--untracked-files=all"])?;
+        Ok(out
+            .lines()
+            .filter(|l| !l.trim().is_empty())
+            .map(|l| l.to_string())
+            .collect())
+    }
+
+    /// Like [`Git::dirty`], but only tracked files: changed, staged or
+    /// deleted. Untracked files do not count.
+    pub fn dirty_tracked(&self, dir: &Path) -> Result<Vec<String>> {
+        let out = self.run(dir, &["status", "--porcelain", "--untracked-files=no"])?;
         Ok(out
             .lines()
             .filter(|l| !l.trim().is_empty())

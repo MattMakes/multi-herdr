@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard};
 
 use horch_core::execution::legacy::Record;
-use horch_core::execution::records::Ledger;
+use horch_core::execution::records::SessionLedger;
 use horch_core::execution::store::ExecutionStore;
 use horch_core::harness::launch::{self, LaunchEnv, Session};
 use horch_core::harness::CommandSpec;
@@ -119,6 +119,7 @@ const SKIP_NEW_TEAMMATES: &[&str] = &[
     "ue-ui-engineer",
     "ue-world-engineer",
     "visual-prototyper",
+    "worktree-steward",
 ];
 
 /// The roster names the oracles cover: every teammate except a listed new
@@ -147,7 +148,8 @@ fn pretty(v: &Value) -> String {
 static ENV_LOCK: Mutex<()> = Mutex::new(());
 
 /// Variables the builders and loaders read today, and what each is pinned to.
-/// `<TMP>` and `<HOME>` stand for the temp dirs below.
+/// `<TMP>` and `<HOME>` stand for the temp dirs below. [`World::new`] also
+/// pins the state and data roots, outside this list.
 const PINNED: [(&str, Option<&str>); 20] = [
     ("HOME", Some("<HOME>")),
     ("PATH", Some("<TMP>/bin")),
@@ -221,6 +223,23 @@ impl World {
                     v.replace("<HOME>", &home.to_string_lossy())
                         .replace("<TMP>", &root.to_string_lossy()),
                 ),
+                None => std::env::remove_var(key),
+            }
+        }
+        // The state and data roots point into the temp world, so no launch
+        // reads the host's real state (a Codex v1 model catalog, for one).
+        // Kept out of PINNED: `pinned_header` writes PINNED into every frozen
+        // oracle as `_pinned_env`, so a new key there changes every oracle.
+        let roots = [
+            ("HORCH_STATE_DIR", Some(state.clone())),
+            ("HORCH_DATA_DIR", Some(root.join("data"))),
+            ("XDG_STATE_HOME", None),
+            ("XDG_DATA_HOME", None),
+        ];
+        for (key, value) in roots {
+            saved.push((key, std::env::var_os(key)));
+            match value {
+                Some(v) => std::env::set_var(key, v),
                 None => std::env::remove_var(key),
             }
         }
@@ -612,7 +631,7 @@ fn oracle_ledgers_match() {
     let tmp = tempfile::tempdir().unwrap();
     for name in LEDGERS {
         let fixture = oracles().join(format!("ledgers/{name}.json"));
-        let ledger = Ledger::for_project(tmp.path(), &format!("/oracle/{name}"));
+        let ledger = SessionLedger::for_project(tmp.path(), &format!("/oracle/{name}"));
         std::fs::copy(&fixture, ledger.path()).unwrap_or_else(|e| {
             panic!("{}: {e}", fixture.display());
         });

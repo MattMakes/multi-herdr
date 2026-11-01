@@ -1,0 +1,11 @@
+{
+  "cli": "claude",
+  "version": "2.1.312 (Claude Code)",
+  "captured_at": "2026-10-29T03:52:26.712453+00:00",
+  "source": "real installed CLI; subscription login; quota protocol only; no model prompt",
+  "reply_file": "claude-2.1.312.json",
+  "top_level_keys": [
+    "type",
+    "response"
+  ]
+}

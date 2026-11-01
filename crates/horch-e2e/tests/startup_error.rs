@@ -9,11 +9,10 @@
 //! fake-herdr runs in the `exec` scenario, so the pane really runs
 //! `horch worker`. For the missing brief, a herdr wrapper gives that pane
 //! another `HORCH_WORKSPACE_ID`, so the worker looks for its brief in a
-//! mailbox that does not have it. For the late worker, a wrapper starts the
-//! pane line 2 s late.
+//! mailbox that does not have it. For the late worker, a wrapper holds the
+//! pane line until the spawn has returned.
 
-use std::path::Path;
-use std::process::{Command, Output};
+use std::process::Output;
 use std::time::{Duration, Instant};
 
 use horch_e2e::harness::{fixtures, Harness};
@@ -26,21 +25,6 @@ fn text(o: &Output) -> String {
         String::from_utf8_lossy(&o.stdout),
         String::from_utf8_lossy(&o.stderr)
     )
-}
-
-/// A concurrent fork on Linux can briefly inherit the script's write
-/// descriptor. Retry only that exec error until the child closes it.
-fn warm(path: &Path) {
-    for _ in 0..100 {
-        match Command::new(path).arg("warm").status() {
-            Ok(status) => return assert!(status.success()),
-            Err(e) if e.kind() == std::io::ErrorKind::ExecutableFileBusy => {
-                std::thread::sleep(Duration::from_millis(20));
-            }
-            Err(e) => panic!("warm {}: {e}", path.display()),
-        }
-    }
-    panic!("{} stayed busy", path.display());
 }
 
 fn records(h: &Harness) -> Vec<Value> {
@@ -126,24 +110,28 @@ fn spawn_waits_for_a_worker_that_registers_and_prints_only_the_pane() {
 #[test]
 fn a_worker_that_registers_after_the_wait_still_works() {
     let mut h = workspace("startup-late", "300");
-    // The pane starts its line 2 s late, after the wait ends.
+    // The pane holds its line until the gate file exists, for at most 30 s.
+    // The test makes it after the spawn returns, so the worker registers
+    // after the wait.
     let fake = h.bin.join("herdr");
-    let wrapper = h.write_bin(
+    let gate = h.root.join("gate");
+    let wrapper = h.write_warmed(
         "herdr-slow",
         format!(
             "#!/bin/sh\n\
              if [ \"$1\" = warm ]; then exit 0; fi\n\
              if [ \"$1\" = pane ] && [ \"$2\" = run ]; then\n\
-             \x20 exec '{fake}' pane run \"$3\" \"/bin/sleep 2; $4\"\n\
+             \x20 exec '{fake}' pane run \"$3\" \"i=0; while [ ! -e '{gate}' ] && [ \\$i -lt 600 ]; do /bin/sleep 0.05; i=\\$((i+1)); done; $4\"\n\
              fi\n\
              exec '{fake}' \"$@\"\n",
-            fake = fake.display()
+            fake = fake.display(),
+            gate = gate.display()
         )
         .as_bytes(),
     );
-    warm(&wrapper);
     h.set("HORCH_HERDR_BIN", wrapper.to_string_lossy());
     let out = spawn_smoke(&h);
+    std::fs::write(&gate, "").unwrap();
     assert!(out.status.success(), "{}", text(&out));
     assert_eq!(String::from_utf8_lossy(&out.stdout), "w1:p2\n");
     assert!(
@@ -166,9 +154,13 @@ fn a_worker_that_registers_after_the_wait_still_works() {
 #[cfg(unix)]
 #[test]
 fn spawn_fails_with_the_error_of_a_worker_whose_brief_is_missing() {
-    let mut h = workspace("startup-error", "20000");
+    // A spawn that waits out its wait succeeds with a "has not registered"
+    // warning. So a failure with the worker's error shows that spawn read
+    // the error while it waited, with no wall-clock bound: a loaded machine
+    // took over 15 s for this spawn. The wait only bounds a broken run.
+    let mut h = workspace("startup-error", "60000");
     let fake = h.bin.join("herdr");
-    let wrapper = h.write_bin(
+    let wrapper = h.write_warmed(
         "herdr-elsewhere",
         format!(
             "#!/bin/sh\n\
@@ -181,10 +173,8 @@ fn spawn_fails_with_the_error_of_a_worker_whose_brief_is_missing() {
         )
         .as_bytes(),
     );
-    warm(&wrapper);
     h.set("HORCH_HERDR_BIN", wrapper.to_string_lossy());
 
-    let started = Instant::now();
     let out = h.run(&[
         "spawn",
         "smoke",
@@ -205,10 +195,7 @@ fn spawn_fails_with_the_error_of_a_worker_whose_brief_is_missing() {
         "{}",
         text(&out)
     );
-    assert!(
-        started.elapsed() < Duration::from_secs(15),
-        "spawn reads the error as soon as it appears, not at the timeout"
-    );
+    assert!(!stderr.contains("has not registered"), "{}", text(&out));
     assert!(
         String::from_utf8_lossy(&out.stdout).trim().is_empty(),
         "no pane id on stdout for a worker that never started: {}",

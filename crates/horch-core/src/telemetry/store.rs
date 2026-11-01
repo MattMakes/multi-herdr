@@ -207,6 +207,20 @@ fn event_files(dir: &Path) -> Vec<(String, PathBuf)> {
     out
 }
 
+/// The event files in `dir` the retention window keeps, oldest first. The
+/// files dated before `oldest` are deleted; an undated one stays.
+fn prune_event_files(dir: &Path, oldest: &str) -> Vec<(String, PathBuf)> {
+    let mut files = event_files(dir);
+    files.retain(|(date, path)| {
+        let keep = date.as_str() >= oldest || date == "undated";
+        if !keep {
+            let _ = std::fs::remove_file(path);
+        }
+        keep
+    });
+    files
+}
+
 impl Store {
     /// Open the store in `dir`, deleting files older than the retention
     /// window and loading the rest (keys and events).
@@ -220,14 +234,7 @@ impl Store {
             ..Store::default()
         };
         let prices = usage::builtin_prices();
-        let mut files = event_files(dir);
-        files.retain(|(date, path)| {
-            let keep = date.as_str() >= oldest.as_str() || date == "undated";
-            if !keep {
-                let _ = std::fs::remove_file(path);
-            }
-            keep
-        });
+        let files = prune_event_files(dir, &oldest);
         // NFR-02 peak RSS: size the table and the key index once, from the
         // line count, with room for the events of the next hours. Grown by
         // doubling, they left each old block in the allocator's cache of
@@ -298,34 +305,9 @@ impl Store {
     /// appended. An event older than the retention window is dropped: its
     /// key may be gone with its file, and the store never takes it back.
     pub fn append(&mut self, events: Vec<Event>) -> Result<usize> {
-        let mut by_file: BTreeMap<PathBuf, Vec<Event>> = BTreeMap::new();
-        for event in events {
-            if self.expired(&event.ts) {
-                self.expired_dropped += 1;
-                continue;
-            }
-            if self.insert_key(&event) {
-                by_file
-                    .entry(file_for(&self.dir, &event.ts))
-                    .or_default()
-                    .push(event);
-            }
-        }
         let mut n = 0;
-        for (path, batch) in by_file {
-            let mut text = String::new();
-            for e in &batch {
-                text.push_str(&serde_json::to_string(e)?);
-                text.push('\n');
-            }
-            let mut f = private_options()
-                .create(true)
-                .append(true)
-                .open(&path)
-                .with_context(|| format!("opening {}", path.display()))?;
-            f.write_all(text.as_bytes())?;
-            f.sync_all()?;
-            self.bytes_written += text.len() as u64;
+        for (path, batch) in self.group_new(events) {
+            self.bytes_written += write_batch(&path, &batch)?;
             n += batch.len();
             for e in &batch {
                 self.table.push(e);
@@ -333,6 +315,40 @@ impl Store {
         }
         Ok(n)
     }
+
+    /// The events whose keys are new, grouped by file; an expired event is
+    /// counted in `expired_dropped` and left out.
+    fn group_new(&mut self, events: Vec<Event>) -> BTreeMap<PathBuf, Vec<Event>> {
+        let (expired, live): (Vec<Event>, Vec<Event>) =
+            events.into_iter().partition(|e| self.expired(&e.ts));
+        self.expired_dropped += expired.len() as u64;
+        let fresh: Vec<Event> = live.into_iter().filter(|e| self.insert_key(e)).collect();
+        let mut by_file: BTreeMap<PathBuf, Vec<Event>> = BTreeMap::new();
+        for event in fresh {
+            by_file
+                .entry(file_for(&self.dir, &event.ts))
+                .or_default()
+                .push(event);
+        }
+        by_file
+    }
+}
+
+/// Write one file's batch, one line each, and sync. Returns the bytes
+/// written.
+fn write_batch(path: &Path, batch: &[Event]) -> Result<u64> {
+    let text = batch
+        .iter()
+        .map(|e| serde_json::to_string(e).map(|line| line + "\n"))
+        .collect::<Result<String, _>>()?;
+    let mut f = private_options()
+        .create(true)
+        .append(true)
+        .open(path)
+        .with_context(|| format!("opening {}", path.display()))?;
+    f.write_all(text.as_bytes())?;
+    f.sync_all()?;
+    Ok(text.len() as u64)
 }
 
 /// Every event in one file, an event stored without a cost priced from
@@ -346,18 +362,17 @@ pub(crate) fn read_file(path: &Path, prices: &BTreeMap<String, Price>) -> Vec<Ev
 
 /// How many lines `path` holds (its `\n` bytes), 0 when it does not open.
 fn count_lines(path: &Path) -> usize {
+    std::fs::File::open(path).map_or(0, count_newlines)
+}
+
+/// The `\n` bytes `file` holds; a read error ends the count.
+fn count_newlines(file: std::fs::File) -> usize {
     use std::io::Read;
-    let Ok(mut file) = std::fs::File::open(path) else {
-        return 0;
-    };
-    let mut buf = vec![0u8; 64 << 10];
-    let mut n = 0;
-    loop {
-        match file.read(&mut buf) {
-            Ok(0) | Err(_) => return n,
-            Ok(got) => n += buf[..got].iter().filter(|b| **b == b'\n').count(),
-        }
-    }
+    std::io::BufReader::with_capacity(64 << 10, file)
+        .bytes()
+        .map_while(Result::ok)
+        .filter(|b| *b == b'\n')
+        .count()
 }
 
 /// [`read_file`], one event at a time: the file is never in memory whole.
@@ -752,6 +767,57 @@ mod tests {
         let s = Store::open(tmp.path(), now(), 35).unwrap();
         assert_eq!(s.len(), 1);
         assert!(!tmp.path().join("events-2026-08-01.jsonl").exists());
+    }
+
+    /// The window keeps the file of its oldest day and an undated one,
+    /// deletes the file of the day before with its events, and leaves every
+    /// file that is not an event file alone.
+    #[test]
+    fn open_deletes_only_the_event_files_dated_before_the_oldest_day() {
+        let tmp = tempfile::tempdir().unwrap();
+        let before = ev("before", "2026-08-23T23:59:59Z", "r1", 1, 0.0);
+        let edge = ev("edge", "2026-08-24T00:00:00Z", "r1", 1, 0.0);
+        let undated = ev("undated", "soon", "r1", 1, 0.0);
+        let line = |e: &Event| serde_json::to_string(e).unwrap() + "\n";
+        for (name, text) in [
+            ("events-2026-08-23.jsonl", line(&before)),
+            ("events-2026-08-24.jsonl", line(&edge)),
+            ("events-undated.jsonl", line(&undated)),
+            ("events-2026-08-01.jsonl.bak", "kept".to_string()),
+            ("cursors.json", "{}".to_string()),
+        ] {
+            std::fs::write(tmp.path().join(name), text).unwrap();
+        }
+        let s = Store::open(tmp.path(), now(), 35).unwrap();
+        assert_eq!(s.len(), 2);
+        assert!(s.contains(&edge.key()) && s.contains(&undated.key()));
+        assert!(!s.contains(&before.key()));
+        for (name, kept) in [
+            ("events-2026-08-23.jsonl", false),
+            ("events-2026-08-24.jsonl", true),
+            ("events-undated.jsonl", true),
+            ("events-2026-08-01.jsonl.bak", true),
+            ("cursors.json", true),
+        ] {
+            assert_eq!(tmp.path().join(name).exists(), kept, "{name}");
+        }
+    }
+
+    /// The open makes the directory, with its parents, and names it when it
+    /// cannot.
+    #[test]
+    fn open_makes_the_directory_and_names_it_when_it_cannot() {
+        let tmp = tempfile::tempdir().unwrap();
+        let nested = tmp.path().join("a/b");
+        let s = Store::open(&nested, now(), 35).unwrap();
+        assert!(nested.is_dir());
+        assert_eq!((s.dir(), s.len()), (nested.as_path(), 0));
+
+        let file = tmp.path().join("file");
+        std::fs::write(&file, "x").unwrap();
+        let blocked = file.join("sub");
+        let err = Store::open(&blocked, now(), 35).unwrap_err();
+        assert_eq!(err.to_string(), format!("creating {}", blocked.display()));
     }
 
     /// R2 review: the store never takes an event older than its retention

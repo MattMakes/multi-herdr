@@ -19,6 +19,8 @@ use super::Teammate;
 pub enum Requirement {
     /// `xcodebuild` on PATH, with Xcode's first launch done.
     Xcode,
+    /// Docker CLI and a reachable daemon.
+    Docker,
     /// `blender` on PATH, or `BLENDER_PATH`, and `--version` runs.
     Blender,
     /// `GODOT_PATH`, `godot` on PATH, or the macOS app bundle, and
@@ -37,6 +39,7 @@ impl Requirement {
     pub fn as_str(self) -> &'static str {
         match self {
             Requirement::Xcode => "xcode",
+            Requirement::Docker => "docker",
             Requirement::Blender => "blender",
             Requirement::Godot => "godot",
             Requirement::GitLfs => "git-lfs",

@@ -11,7 +11,7 @@ use std::str::FromStr;
 use chrono::{DateTime, Utc};
 
 use crate::execution::legacy::LedgerRecordV1;
-use crate::execution::records::Ledger;
+use crate::execution::records::SessionLedger;
 use crate::fleet_runs::rows::{VerdictRow, VERDICT_SCHEMA};
 use crate::fleet_runs::store::{self, FleetFile};
 use crate::measure::paths::DatasetPaths;
@@ -118,7 +118,7 @@ pub fn resolve<'a>(records: &'a [LedgerRecordV1], key: &str) -> Option<&'a Ledge
 /// Record `verdict` on the record `key` names. `by` is the orchestrator's
 /// record id, when known.
 pub fn record_verdict(
-    ledger: &Ledger,
+    ledger: &SessionLedger,
     paths: &DatasetPaths,
     key: &str,
     verdict: &str,

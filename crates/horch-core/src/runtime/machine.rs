@@ -47,13 +47,16 @@ pub enum GpuClass {
     Unknown,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct MachineSnapshot {
     /// `"macos"`, `"linux"`, `"windows"` or another `std::env::consts::OS` value.
     pub os: String,
     pub arch: String,
     pub cpus: Known<u32>,
+    /// One minute host load; absent on platforms without getloadavg.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub load_average_1m: Option<f64>,
     pub mem_total_bytes: Known<u64>,
     pub mem_available_bytes: Known<u64>,
     pub disk_free_bytes: Known<u64>,
@@ -102,6 +105,7 @@ pub fn probe(path: &Path, bins: &ProbeBins, fixture: Option<&Path>) -> MachineSn
             .ok()
             .map(|n| n.get() as u32)
             .into(),
+        load_average_1m: sys::load_average(),
         mem_total_bytes: parts.mem_total.into(),
         mem_available_bytes: parts.mem_available.into(),
         disk_free_bytes: parts.disk_free.into(),
@@ -117,6 +121,7 @@ fn all_unknown() -> MachineSnapshot {
         os: "unknown".to_string(),
         arch: "unknown".to_string(),
         cpus: Known::Unknown,
+        load_average_1m: None,
         mem_total_bytes: Known::Unknown,
         mem_available_bytes: Known::Unknown,
         disk_free_bytes: Known::Unknown,
@@ -140,6 +145,11 @@ struct Parts {
 
 #[cfg(unix)]
 mod sys {
+    pub(super) fn load_average() -> Option<f64> {
+        let mut value = 0.0;
+        // SAFETY: getloadavg writes one double to a valid out pointer.
+        (unsafe { libc::getloadavg(&mut value, 1) } == 1).then_some(value)
+    }
     /// The OS host name (gethostname), if it has one.
     pub(super) fn host_name() -> Option<String> {
         let mut buf = [0u8; 256];
@@ -223,18 +233,17 @@ mod sys {
             let _ = stdout.read_to_string(&mut text);
             text
         });
-        let start = Instant::now();
-        let status = loop {
-            match child.try_wait() {
-                Ok(Some(status)) => break Some(status),
-                Ok(None) if start.elapsed() < COMMAND_TIMEOUT => {
-                    std::thread::sleep(Duration::from_millis(10));
-                }
-                _ => {
-                    let _ = child.kill();
-                    let _ = child.wait();
-                    break None;
-                }
+        let deadline = Instant::now() + COMMAND_TIMEOUT;
+        let status = match crate::runtime::process::wait_until(
+            &mut child,
+            deadline,
+            Duration::from_millis(10),
+        ) {
+            Ok(Some(status)) => Some(status),
+            _ => {
+                let _ = child.kill();
+                let _ = child.wait();
+                None
             }
         };
         let text = reader.join().ok()?;
@@ -277,24 +286,26 @@ mod sys {
         (total, available, gpu)
     }
 
-    fn disk(path: &Path) -> (Option<u64>, Option<u64>) {
-        let Ok(c_path) = CString::new(path.as_os_str().as_bytes()) else {
-            return (None, None);
-        };
+    fn statvfs(path: &Path) -> Option<libc::statvfs> {
+        let c_path = CString::new(path.as_os_str().as_bytes()).ok()?;
         // SAFETY: `c_path` is a valid NUL-terminated string and `stat` is a
         // zeroed out-parameter that `statvfs` fills in.
-        let stat = unsafe {
+        unsafe {
             let mut stat: libc::statvfs = std::mem::zeroed();
-            if libc::statvfs(c_path.as_ptr(), &mut stat) != 0 {
-                return (None, None);
-            }
-            stat
-        };
-        let unit = stat.f_frsize as u64;
-        (
-            Some((stat.f_bavail as u64).saturating_mul(unit)),
-            Some((stat.f_blocks as u64).saturating_mul(unit)),
-        )
+            (libc::statvfs(c_path.as_ptr(), &mut stat) == 0).then_some(stat)
+        }
+    }
+
+    // The statvfs fields are `u32` on some unix targets, so the casts stay.
+    #[allow(clippy::unnecessary_cast)]
+    fn disk(path: &Path) -> (Option<u64>, Option<u64>) {
+        statvfs(path).map_or((None, None), |stat| {
+            let unit = stat.f_frsize as u64;
+            (
+                Some((stat.f_bavail as u64).saturating_mul(unit)),
+                Some((stat.f_blocks as u64).saturating_mul(unit)),
+            )
+        })
     }
 
     #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -310,6 +321,9 @@ mod sys {
 
 #[cfg(not(unix))]
 mod sys {
+    pub(super) fn load_average() -> Option<f64> {
+        None
+    }
     /// No gethostname here: the caller reads `COMPUTERNAME`.
     pub(super) fn host_name() -> Option<String> {
         None
@@ -368,18 +382,21 @@ fn parse_meminfo(text: &str, key: &str) -> Option<u64> {
 /// else `COMPUTERNAME` or `HOSTNAME`, else `localhost`. The task ledger
 /// records it beside every PID: a PID names a process only on its host.
 pub fn host_name() -> String {
-    if let Some(h) = std::env::var_os("HORCH_HOSTNAME").filter(|v| !v.is_empty()) {
-        return h.to_string_lossy().into_owned();
-    }
-    if let Some(name) = sys::host_name() {
-        return name;
-    }
-    for key in ["COMPUTERNAME", "HOSTNAME"] {
-        if let Some(v) = std::env::var_os(key).filter(|v| !v.is_empty()) {
-            return v.to_string_lossy().into_owned();
-        }
-    }
-    "localhost".to_string()
+    env_nonempty("HORCH_HOSTNAME")
+        .or_else(sys::host_name)
+        .or_else(|| {
+            ["COMPUTERNAME", "HOSTNAME"]
+                .into_iter()
+                .find_map(env_nonempty)
+        })
+        .unwrap_or(String::from("localhost"))
+}
+
+/// The value of an environment variable, or `None` when it is unset or empty.
+fn env_nonempty(key: &str) -> Option<String> {
+    std::env::var_os(key)
+        .filter(|v| !v.is_empty())
+        .map(|v| v.to_string_lossy().into_owned())
 }
 
 #[cfg(test)]
@@ -467,10 +484,16 @@ mod tests {
         }
     }
 
+    /// A whole snapshot parses; the same snapshot with one extra key does not.
+    /// A partial snapshot would fail on its missing fields either way.
     #[test]
     fn machine_fixture_rejects_unknown_fields() {
-        let text = r#"{"os":"linux","bogus":1}"#;
-        assert!(serde_json::from_str::<MachineSnapshot>(text).is_err());
+        let text = std::fs::read_to_string(fixture_dir().join("mac-m5-128g.json")).unwrap();
+        serde_json::from_str::<MachineSnapshot>(&text).unwrap();
+        let mut value: serde_json::Value = serde_json::from_str(&text).unwrap();
+        value["bogus"] = serde_json::json!(1);
+        let err = serde_json::from_value::<MachineSnapshot>(value).unwrap_err();
+        assert!(err.to_string().contains("unknown field `bogus`"), "{err}");
     }
 
     #[test]

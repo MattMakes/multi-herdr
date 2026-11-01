@@ -26,7 +26,7 @@ use crate::roster::{effort_problem, Phase, Roster, Teammate};
 use crate::routing::decision::{self, Decision, RoutingDecision, RoutingMode, RoutingProvenance};
 use crate::routing::policy::BalanceMode;
 use crate::routing::quota::QuotaView;
-use crate::skills::SkillResolution;
+use crate::skills::{SkillActivationPlan, SkillResolution};
 
 /// The task a worker spawned without one records. The same text as the
 /// placeholder in `execution::records`.
@@ -134,12 +134,11 @@ fn require<'r>(roster: &'r Roster, name: &str) -> Result<&'r Teammate, PlanError
 /// quota view first. Only a fresh, unpinned spawn of a spawnable teammate
 /// that spends something is gated; a resume keeps the harness it ran on.
 pub fn needs_gate(req: &SpawnRequest, roster: &Roster) -> bool {
-    if req.pinned || req.resume.is_some() {
-        return false;
-    }
-    let Some(t) = req.teammate.as_ref().and_then(|n| roster.get(n.as_str())) else {
-        return false;
-    };
+    let teammate = req.teammate.as_ref().and_then(|n| roster.get(n.as_str()));
+    !req.pinned && req.resume.is_none() && teammate.is_some_and(spends)
+}
+
+fn spends(t: &Teammate) -> bool {
     t.agent != HarnessKind::None && Roster::is_spawnable(t).is_ok()
 }
 
@@ -175,28 +174,33 @@ struct Draft {
     resumed: Option<Execution>,
 }
 
-/// Resume: teammate, model and session all come from the record.
-fn draft_resume(key: &str, req: &SpawnRequest, inputs: &PlanInputs) -> Result<Draft, PlanError> {
-    let record = inputs.existing.ok_or_else(|| PlanError::NotResumable {
-        id: key.to_string(),
-        reason: format!("no record matches {key}"),
-    })?;
-    let refuse = |reason: String| PlanError::NotResumable {
+fn refusal(record: &LedgerRecordV1, reason: String) -> PlanError {
+    PlanError::NotResumable {
         id: record.record_id.clone(),
         reason,
-    };
+    }
+}
+
+/// The three refusals of a resume; returns the session id to resume.
+fn check_resumable(record: &LedgerRecordV1) -> Result<String, PlanError> {
     if record.is_orchestrator() {
-        return Err(refuse(format!(
-            "record {} is an orchestrator; restart it with horch fleet",
-            record.record_id
-        )));
+        return Err(refusal(
+            record,
+            format!(
+                "record {} is an orchestrator; restart it with horch fleet",
+                record.record_id
+            ),
+        ));
     }
     let session_id = record.session_id.clone().unwrap_or_default();
     if session_id.is_empty() {
-        return Err(refuse(format!(
-            "record {} has no captured session id; spawn a fresh {} instead",
-            record.record_id, record.tier
-        )));
+        return Err(refusal(
+            record,
+            format!(
+                "record {} has no captured session id; spawn a fresh {} instead",
+                record.record_id, record.tier
+            ),
+        ));
     }
     // The legacy status: a `Planned` record is not live, but its spawner
     // may still be on its way to a pane. The shell has already ended a
@@ -208,14 +212,43 @@ fn draft_resume(key: &str, req: &SpawnRequest, inputs: &PlanInputs) -> Result<Dr
             .as_deref()
             .map(|p| format!(" in pane {p}"))
             .unwrap_or_default();
-        return Err(refuse(format!(
-            "session {session_id} is still marked working{pane} (a live worker may own it); \
-             refusing to resume. If that pane is open, tell its worker instead. \
-             If you know the pane is gone, run: horch ledger legacy done {} \"{PANE_CLOSED}\"",
-            record.record_id
-        )));
+        return Err(refusal(
+            record,
+            format!(
+                "session {session_id} is still marked working{pane} (a live worker may own it); \
+                 refusing to resume. If that pane is open, tell its worker instead. \
+                 If you know the pane is gone, run: horch ledger legacy done {} \"{PANE_CLOSED}\"",
+                record.record_id
+            ),
+        ));
     }
-    let roster = inputs.roster;
+    Ok(session_id)
+}
+
+/// A record from before A5 has no routing; rebuild it from `via`.
+fn resume_routing(
+    record: &LedgerRecordV1,
+    roster: &Roster,
+) -> Result<RoutingProvenance, PlanError> {
+    let routing = match &record.routing {
+        Some(r) => r.clone(),
+        None => RoutingProvenance::legacy(
+            &record.tier,
+            record.via.as_deref(),
+            &record.agent,
+            &record.model,
+            record.substitution_reason.as_deref(),
+            roster.get(&record.tier),
+        )?,
+    };
+    Ok(routing.resumed())
+}
+
+fn resume_teammate(
+    record: &LedgerRecordV1,
+    req: &SpawnRequest,
+    roster: &Roster,
+) -> Result<Teammate, PlanError> {
     let mut teammate = require(roster, &record.tier)?.clone();
     // A substituted session resumes on the harness it ran on (BAL-05): the
     // same fallback's launch settings, never a new gate decision.
@@ -228,20 +261,19 @@ fn draft_resume(key: &str, req: &SpawnRequest, inputs: &PlanInputs) -> Result<Dr
         teammate.effort = record.effort.clone();
     }
     Roster::is_spawnable(&teammate).map_err(unspawnable)?;
-    // A record from before A5 has no routing; rebuild it from `via`.
-    let routing = match &record.routing {
-        Some(r) => r.clone(),
-        None => RoutingProvenance::legacy(
-            &record.tier,
-            record.via.as_deref(),
-            &record.agent,
-            &record.model,
-            record.substitution_reason.as_deref(),
-            roster.get(&record.tier),
-        )?,
-    }
-    .resumed();
-    let resumed = to_execution(record).map_err(|e| refuse(format!("{e}")))?;
+    Ok(teammate)
+}
+
+/// Resume: teammate, model and session all come from the record.
+fn draft_resume(key: &str, req: &SpawnRequest, inputs: &PlanInputs) -> Result<Draft, PlanError> {
+    let record = inputs.existing.ok_or_else(|| PlanError::NotResumable {
+        id: key.to_string(),
+        reason: format!("no record matches {key}"),
+    })?;
+    let session_id = check_resumable(record)?;
+    let teammate = resume_teammate(record, req, inputs.roster)?;
+    let routing = resume_routing(record, inputs.roster)?;
+    let resumed = to_execution(record).map_err(|e| refusal(record, e.to_string()))?;
     Ok(Draft {
         model: record.model.clone(),
         session: SessionMode::Resume(SessionId::new(session_id)?),
@@ -317,6 +349,138 @@ fn gate(
     Ok(line)
 }
 
+fn draft_for(req: &SpawnRequest, inputs: &PlanInputs) -> Result<Draft, PlanError> {
+    match (&req.resume, &req.teammate) {
+        (Some(key), _) => draft_resume(key, req, inputs),
+        (None, Some(name)) => draft_fresh(name.as_str(), req, inputs),
+        (None, None) => Err(PlanError::NothingToSpawn),
+    }
+}
+
+fn gate_if_needed(
+    draft: &mut Draft,
+    req: &SpawnRequest,
+    inputs: &PlanInputs,
+) -> Result<Option<String>, PlanError> {
+    if needs_gate(req, inputs.roster) {
+        gate(draft, req, inputs)
+    } else {
+        Ok(None)
+    }
+}
+
+fn launch_skills(draft: &mut Draft, inputs: &PlanInputs) -> Result<SkillActivationPlan, PlanError> {
+    // `skills_when` skills of this project join `skills:` here, so the
+    // record, the brief's resolved teammate and the launch bundle agree.
+    draft.teammate = inputs.roster.for_launch(draft.teammate.clone());
+    // Unusable catalogs fail before a role or a record exists, by the rule
+    // the launch applies (SKL-12).
+    inputs
+        .skills
+        .plan(&draft.teammate)
+        .map_err(|e| PlanError::SkillUnsupported(format!("{e:#}")))
+}
+
+/// The request's effort wins; what will launch must be able to take it, so a
+/// `--effort` typo or a level this agent and model cannot take fails here, not
+/// in an unwatched pane.
+fn apply_effort(draft: &mut Draft, req: &SpawnRequest) -> Result<(), PlanError> {
+    draft.teammate.effort = req.effort.clone().or(draft.teammate.effort.take());
+    let Some(effort) = &draft.teammate.effort else {
+        return Ok(());
+    };
+    match effort_problem(draft.teammate.agent, Some(&draft.model), effort) {
+        Some(why) => Err(PlanError::BadEffort(format!(
+            "{}: {why}",
+            draft.teammate.name
+        ))),
+        None => Ok(()),
+    }
+}
+
+/// The record a resume reopens, back to `Planned`.
+fn resumed_execution(
+    mut e: Execution,
+    draft: &Draft,
+    req: &SpawnRequest,
+    skills: &SkillActivationPlan,
+    now: String,
+) -> Execution {
+    e.phase = draft.teammate.phase;
+    if !req.task.is_empty() {
+        e.task.text = req.task.clone();
+        e.task.plan = crate::telemetry::plan_slug(&req.task);
+    }
+    e.effort = draft.teammate.effort.clone();
+    e.routing = Some(draft.routing.clone());
+    e.status = ExecutionStatus::Planned;
+    e.typed_status = true;
+    e.exit_code = None;
+    e.pane = None;
+    e.finished_at = None;
+    e.updated_at = now.clone();
+    e.skills = skills.activated.clone();
+    e.history.push(HistoryEntry {
+        at: now,
+        event: "resumed".to_string(),
+        text: req.task.clone(),
+    });
+    e
+}
+
+/// The record of a fresh spawn, `Planned`.
+fn fresh_execution(
+    draft: &Draft,
+    req: &SpawnRequest,
+    inputs: &PlanInputs,
+    skills: &SkillActivationPlan,
+    now: String,
+) -> Result<Execution, PlanError> {
+    Ok(Execution {
+        id: inputs.ids.execution.clone(),
+        kind: req.kind.clone(),
+        teammate: draft.teammate.name.parse()?,
+        harness: draft.teammate.agent,
+        model: draft.model.clone(),
+        effort: draft.teammate.effort.clone(),
+        phase: draft.teammate.phase,
+        // A placeholder until `finish_plan`.
+        role: draft.teammate.name.parse()?,
+        task: Task {
+            id: None,
+            text: if req.task.is_empty() {
+                IDLE_TASK.to_string()
+            } else {
+                req.task.clone()
+            },
+            plan: crate::telemetry::plan_slug(&req.task),
+        },
+        status: ExecutionStatus::Planned,
+        typed_status: true,
+        session: draft
+            .session
+            .id()
+            .map_or(SessionState::Pending, |id| SessionState::Known(id.clone())),
+        exit_code: None,
+        project: Some(inputs.project.to_path_buf()),
+        workdir: req.workdir.clone(),
+        workspace: None,
+        pane: None,
+        skills: skills.activated.clone(),
+        routing: Some(draft.routing.clone()),
+        via: draft.via.clone(),
+        substitution_reason: draft.substitution_reason.clone(),
+        history: vec![HistoryEntry {
+            at: now.clone(),
+            event: "spawned".to_string(),
+            text: req.task.clone(),
+        }],
+        created_at: now.clone(),
+        updated_at: now,
+        finished_at: None,
+    })
+}
+
 /// Plan a spawn. Pure: the same request and inputs give an equal plan.
 ///
 /// The order is the one `horch spawn` always had: the resume rules or the
@@ -324,11 +488,7 @@ fn gate(
 /// gate (fresh spawns only), effort, then skill support. The plan's record is
 /// `Planned`; [`finish_plan`] adds the role.
 pub fn plan_launch(req: &SpawnRequest, inputs: &PlanInputs) -> Result<ExecutionPlan, PlanError> {
-    let mut draft = match (&req.resume, &req.teammate) {
-        (Some(key), _) => draft_resume(key, req, inputs)?,
-        (None, Some(name)) => draft_fresh(name.as_str(), req, inputs)?,
-        (None, None) => return Err(PlanError::NothingToSpawn),
-    };
+    let mut draft = draft_for(req, inputs)?;
 
     // The last gate before launch, and the only one that sees what will
     // ACTUALLY start: a resume takes its model from the ledger record, so a
@@ -336,102 +496,14 @@ pub fn plan_launch(req: &SpawnRequest, inputs: &PlanInputs) -> Result<ExecutionP
     // session behind an ordinary tier name.
     Roster::model_is_spawnable(&draft.model, &draft.teammate.name).map_err(unspawnable)?;
 
-    let gate_line = if needs_gate(req, inputs.roster) && draft.teammate.agent != HarnessKind::None {
-        gate(&mut draft, req, inputs)?
-    } else {
-        None
-    };
-
-    if let Some(effort) = &req.effort {
-        draft.teammate.effort = Some(effort.clone());
-    }
-    // Checked against what will launch, so a `--effort` typo or a level this
-    // agent and model cannot take fails here, not in an unwatched pane.
-    if let Some(effort) = &draft.teammate.effort {
-        if let Some(why) = effort_problem(draft.teammate.agent, Some(&draft.model), effort) {
-            return Err(PlanError::BadEffort(format!(
-                "{}: {why}",
-                draft.teammate.name
-            )));
-        }
-    }
-    // `skills_when` skills of this project join `skills:` here, so the
-    // record, the brief's resolved teammate and the launch bundle agree.
-    draft.teammate = inputs.roster.for_launch(draft.teammate);
-    // Unusable catalogs fail before a role or a record exists, by the rule
-    // the launch applies (SKL-12).
-    let skills = inputs
-        .skills
-        .plan(&draft.teammate)
-        .map_err(|e| PlanError::SkillUnsupported(format!("{e:#}")))?;
+    let gate_line = gate_if_needed(&mut draft, req, inputs)?;
+    apply_effort(&mut draft, req)?;
+    let skills = launch_skills(&mut draft, inputs)?;
 
     let now = crate::clock::stamp(inputs.now);
     let execution = match draft.resumed.take() {
-        Some(mut e) => {
-            e.phase = draft.teammate.phase;
-            if !req.task.is_empty() {
-                e.task.text = req.task.clone();
-                e.task.plan = crate::telemetry::plan_slug(&req.task);
-            }
-            e.effort = draft.teammate.effort.clone();
-            e.routing = Some(draft.routing.clone());
-            e.status = ExecutionStatus::Planned;
-            e.typed_status = true;
-            e.exit_code = None;
-            e.pane = None;
-            e.finished_at = None;
-            e.updated_at = now.clone();
-            e.skills = skills.activated.clone();
-            e.history.push(HistoryEntry {
-                at: now,
-                event: "resumed".to_string(),
-                text: req.task.clone(),
-            });
-            e
-        }
-        None => Execution {
-            id: inputs.ids.execution.clone(),
-            kind: req.kind.clone(),
-            teammate: draft.teammate.name.parse()?,
-            harness: draft.teammate.agent,
-            model: draft.model.clone(),
-            effort: draft.teammate.effort.clone(),
-            phase: draft.teammate.phase,
-            // A placeholder until `finish_plan`.
-            role: draft.teammate.name.parse()?,
-            task: Task {
-                id: None,
-                text: if req.task.is_empty() {
-                    IDLE_TASK.to_string()
-                } else {
-                    req.task.clone()
-                },
-                plan: crate::telemetry::plan_slug(&req.task),
-            },
-            status: ExecutionStatus::Planned,
-            typed_status: true,
-            session: match draft.session.id() {
-                Some(id) => SessionState::Known(id.clone()),
-                None => SessionState::Pending,
-            },
-            exit_code: None,
-            project: Some(inputs.project.to_path_buf()),
-            workdir: req.workdir.clone(),
-            workspace: None,
-            pane: None,
-            skills: skills.activated.clone(),
-            routing: Some(draft.routing.clone()),
-            via: draft.via.clone(),
-            substitution_reason: draft.substitution_reason.clone(),
-            history: vec![HistoryEntry {
-                at: now.clone(),
-                event: "spawned".to_string(),
-                text: req.task.clone(),
-            }],
-            created_at: now.clone(),
-            updated_at: now,
-            finished_at: None,
-        },
+        Some(e) => resumed_execution(e, &draft, req, &skills, now),
+        None => fresh_execution(&draft, req, inputs, &skills, now)?,
     };
 
     Ok(ExecutionPlan {

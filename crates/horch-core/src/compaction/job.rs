@@ -97,20 +97,24 @@ pub enum Step {
     Report,
 }
 
+/// [`Step::as_str`] by variant order. The `step_names_are_kebab_case_in_order`
+/// test pins it.
+const STEP_NAMES: [&str; 9] = [
+    "start",
+    "wait-idle",
+    "send",
+    "wait-marker",
+    "wait-idle-after",
+    "restore-mode",
+    "resume",
+    "wait-reading",
+    "report",
+];
+
 impl Step {
     /// The kebab-case name in `job.json`, the log and the event text.
     pub fn as_str(self) -> &'static str {
-        match self {
-            Step::Start => "start",
-            Step::WaitIdle => "wait-idle",
-            Step::Send => "send",
-            Step::WaitMarker => "wait-marker",
-            Step::WaitIdleAfter => "wait-idle-after",
-            Step::RestoreMode => "restore-mode",
-            Step::Resume => "resume",
-            Step::WaitReading => "wait-reading",
-            Step::Report => "report",
-        }
+        STEP_NAMES[self as usize]
     }
 }
 
@@ -172,10 +176,9 @@ fn steps(
     plan: &JobPlan,
     pre_out: &mut Option<u64>,
 ) -> Result<JobOutcome, JobFailure> {
-    let first = ports.reading().map_err(|e| JobFailure {
-        step: Step::Start,
-        reason: format!("no reading of the session: {e}"),
-    })?;
+    let first = ports
+        .reading()
+        .map_err(|e| failed(Step::Start, format!("no reading of the session: {e}")))?;
     let pre = first.tokens;
     *pre_out = pre;
     // A marker at or after `start` is new. Every marker already in the
@@ -183,83 +186,156 @@ fn steps(
     // job reads no file itself.
     let start = first.last_compaction.as_ref().map_or(0, |m| m.offset + 1);
 
-    let max_sends = plan.max_sends.max(1);
-    let mut sends = 0u8;
-    let mut marker_since = None;
-    let mark = 'send: loop {
-        wait_idle(ports, plan, Step::WaitIdle, plan.idle_timeout)?;
-        let before = pane_before(ports, plan);
-        ports.log(Step::Send, &plan.compact_line);
-        ports.send(&plan.compact_line).map_err(|e| JobFailure {
-            step: Step::Send,
-            reason: format!("{e:#}"),
-        })?;
-        sends += 1;
-        let since = ports.elapsed();
-        let first_send = *marker_since.get_or_insert(since);
-        ports.log(Step::WaitMarker, &format!("send {sends} of {max_sends}"));
-        loop {
-            if let Ok(r) = ports.reading() {
-                if let Some(m) = r.last_compaction.filter(|m| m.offset >= start) {
-                    break 'send m;
-                }
-            }
-            if let Some(line) = before.as_ref().and_then(|b| new_failure(ports, plan, b)) {
-                return Err(JobFailure {
-                    step: Step::WaitMarker,
-                    reason: format!("{} said \"{line}\"", plan.harness),
-                });
-            }
-            let now = ports.elapsed();
-            if now.saturating_sub(first_send) >= plan.marker_timeout {
-                return Err(JobFailure {
-                    step: Step::WaitMarker,
-                    reason: format!("no compaction marker after {sends} sends"),
-                });
-            }
-            if sends < max_sends && now.saturating_sub(since) >= plan.resend_after {
-                continue 'send;
-            }
-            ports.sleep(plan.poll);
-        }
-    };
+    let mark = send_until_marker(ports, plan, start)?;
     ports.log(Step::WaitMarker, &format!("marker at byte {}", mark.offset));
-
-    wait_idle(ports, plan, Step::WaitIdleAfter, plan.settle_timeout)?;
-    // Before the resume line: the switch needs the pane at its prompt.
-    if let Some(restored) = ports.restore_mode() {
-        ports.log(Step::RestoreMode, "back to the launch mode");
-        restored.map_err(|e| JobFailure {
-            step: Step::RestoreMode,
-            reason: format!("{e:#}"),
-        })?;
-    }
-    ports.log(Step::Resume, &plan.resume_line);
-    ports.send(&plan.resume_line).map_err(|e| JobFailure {
-        step: Step::Resume,
-        reason: format!("{e:#}"),
-    })?;
-
-    ports.log(Step::WaitReading, "waiting for a response after the marker");
-    let begin = ports.elapsed();
-    let mut post = None;
-    loop {
-        if let Ok(r) = ports.reading() {
-            if !r.pending {
-                post = r.tokens;
-                break;
-            }
-        }
-        if ports.elapsed().saturating_sub(begin) >= plan.reading_timeout {
-            break;
-        }
-        ports.sleep(plan.poll);
-    }
+    resume(ports, plan)?;
+    let post = wait_post_tokens(ports, plan);
     Ok(JobOutcome {
         pre,
         post: post.or(mark.post_tokens),
         mark,
     })
+}
+
+fn failed(step: Step, reason: String) -> JobFailure {
+    JobFailure { step, reason }
+}
+
+/// One send of the compact line, and what the wait for its marker needs.
+struct Sent {
+    /// The pane text before the send.
+    before: Option<String>,
+    /// The first byte offset of a new marker.
+    start: u64,
+    /// When the first send happened.
+    first: Duration,
+    /// When this send happened.
+    at: Duration,
+    /// This send's number, from 1.
+    n: u8,
+    max: u8,
+}
+
+/// What 1 poll of the wait for the marker found.
+enum Poll {
+    Marked(CompactionMark),
+    Failed(JobFailure),
+    /// No marker after `resend_after`, and more sends are allowed.
+    Resend,
+    Wait,
+}
+
+/// Send the compact line, and send it again when no marker comes within
+/// `resend_after` and more sends are allowed.
+fn send_until_marker(
+    ports: &dyn JobPorts,
+    plan: &JobPlan,
+    start: u64,
+) -> Result<CompactionMark, JobFailure> {
+    let max = plan.max_sends.max(1);
+    let mut first = None;
+    let mut n = 0u8;
+    loop {
+        n += 1;
+        wait_idle(ports, plan, Step::WaitIdle, plan.idle_timeout)?;
+        let before = pane_before(ports, plan);
+        ports.log(Step::Send, &plan.compact_line);
+        ports
+            .send(&plan.compact_line)
+            .map_err(|e| failed(Step::Send, format!("{e:#}")))?;
+        let at = ports.elapsed();
+        let first = *first.get_or_insert(at);
+        ports.log(Step::WaitMarker, &format!("send {n} of {max}"));
+        let sent = Sent {
+            before,
+            start,
+            first,
+            at,
+            n,
+            max,
+        };
+        match await_marker(ports, plan, &sent) {
+            Poll::Marked(mark) => break Ok(mark),
+            Poll::Failed(fail) => break Err(fail),
+            Poll::Resend | Poll::Wait => {}
+        }
+    }
+}
+
+/// Poll until a marker, a failure, or the time for a resend.
+fn await_marker(ports: &dyn JobPorts, plan: &JobPlan, sent: &Sent) -> Poll {
+    loop {
+        let poll = poll_marker(ports, plan, sent);
+        if !matches!(poll, Poll::Wait) {
+            break poll;
+        }
+        ports.sleep(plan.poll);
+    }
+}
+
+fn poll_marker(ports: &dyn JobPorts, plan: &JobPlan, sent: &Sent) -> Poll {
+    let marked = ports
+        .reading()
+        .ok()
+        .and_then(|r| r.last_compaction)
+        .filter(|m| m.offset >= sent.start);
+    if let Some(mark) = marked {
+        Poll::Marked(mark)
+    } else if let Some(line) = sent
+        .before
+        .as_ref()
+        .and_then(|b| new_failure(ports, plan, b))
+    {
+        let reason = format!("{} said \"{line}\"", plan.harness);
+        Poll::Failed(failed(Step::WaitMarker, reason))
+    } else {
+        poll_clock(ports, plan, sent)
+    }
+}
+
+/// The poll of a wait with no marker and no failure line: the timeout, the
+/// resend, or on.
+fn poll_clock(ports: &dyn JobPorts, plan: &JobPlan, sent: &Sent) -> Poll {
+    let now = ports.elapsed();
+    if now.saturating_sub(sent.first) >= plan.marker_timeout {
+        let reason = format!("no compaction marker after {} sends", sent.n);
+        Poll::Failed(failed(Step::WaitMarker, reason))
+    } else if sent.n < sent.max && now.saturating_sub(sent.at) >= plan.resend_after {
+        Poll::Resend
+    } else {
+        Poll::Wait
+    }
+}
+
+/// Wait for idle, put a switched pane back in its launch mode, and type the
+/// resume line.
+fn resume(ports: &dyn JobPorts, plan: &JobPlan) -> Result<(), JobFailure> {
+    wait_idle(ports, plan, Step::WaitIdleAfter, plan.settle_timeout)?;
+    // Before the resume line: the switch needs the pane at its prompt.
+    if let Some(restored) = ports.restore_mode() {
+        ports.log(Step::RestoreMode, "back to the launch mode");
+        restored.map_err(|e| failed(Step::RestoreMode, format!("{e:#}")))?;
+    }
+    ports.log(Step::Resume, &plan.resume_line);
+    ports
+        .send(&plan.resume_line)
+        .map_err(|e| failed(Step::Resume, format!("{e:#}")))
+}
+
+/// The token count of the first reading that is not pending, or None at
+/// `reading_timeout`.
+fn wait_post_tokens(ports: &dyn JobPorts, plan: &JobPlan) -> Option<u64> {
+    ports.log(Step::WaitReading, "waiting for a response after the marker");
+    let begin = ports.elapsed();
+    loop {
+        if let Some(reading) = ports.reading().ok().filter(|r| !r.pending) {
+            break reading.tokens;
+        }
+        if ports.elapsed().saturating_sub(begin) >= plan.reading_timeout {
+            break None;
+        }
+        ports.sleep(plan.poll);
+    }
 }
 
 /// Wait for `idle_polls` polls in a row whose status is at the prompt
@@ -275,19 +351,16 @@ fn wait_idle(
     let begin = ports.elapsed();
     let mut idle = 0u8;
     loop {
-        let ready = match ports.pane_status() {
-            Ok(status) => at_prompt(status.as_deref()),
-            Err(_) => false,
-        };
+        let ready = ports.pane_status().is_ok_and(|s| at_prompt(s.as_deref()));
         idle = if ready { idle + 1 } else { 0 };
         if idle >= plan.idle_polls.max(1) {
-            return Ok(());
+            break Ok(());
         }
         if ports.elapsed().saturating_sub(begin) >= timeout {
-            return Err(JobFailure {
+            break Err(failed(
                 step,
-                reason: format!("no idle status in {} s", timeout.as_secs()),
-            });
+                format!("no idle status in {} s", timeout.as_secs()),
+            ));
         }
         ports.sleep(plan.poll);
     }
@@ -360,18 +433,30 @@ mod tests {
     /// effect is 1 entry in `trail`.
     struct Fake {
         trail: RefCell<Vec<String>>,
-        sent: Cell<bool>,
+        sent: Cell<u8>,
         clock: Cell<Duration>,
         restore: Option<Result<(), String>>,
+        /// The marker shows from this send on; 0: never.
+        marker_on_send: u8,
+        idle: bool,
+        pending: bool,
+        tokens_after: u64,
+        /// The pane text per `pane_text` call; the last one repeats.
+        texts: RefCell<Vec<String>>,
     }
 
     impl Fake {
         fn new(restore: Option<Result<(), String>>) -> Fake {
             Fake {
                 trail: RefCell::new(vec![]),
-                sent: Cell::new(false),
+                sent: Cell::new(0),
                 clock: Cell::new(Duration::ZERO),
                 restore,
+                marker_on_send: 1,
+                idle: true,
+                pending: false,
+                tokens_after: 5,
+                texts: RefCell::new(vec![String::new()]),
             }
         }
 
@@ -382,18 +467,25 @@ mod tests {
 
     impl JobPorts for Fake {
         fn pane_status(&self) -> Result<Option<String>> {
-            Ok(Some("idle".into()))
+            Ok(Some(if self.idle { "idle" } else { "working" }.into()))
         }
         fn send(&self, line: &str) -> Result<()> {
             self.trail.borrow_mut().push(format!("send {line}"));
-            self.sent.set(true);
+            self.sent.set(self.sent.get() + 1);
             Ok(())
         }
         fn pane_text(&self) -> Result<String> {
-            Ok(String::new())
+            let mut texts = self.texts.borrow_mut();
+            Ok(if texts.len() > 1 {
+                texts.remove(0)
+            } else {
+                texts[0].clone()
+            })
         }
         fn reading(&self) -> Result<Reading, Unreadable> {
-            let mark = self.sent.get().then(|| CompactionMark {
+            let sent = self.sent.get();
+            let marked = self.marker_on_send > 0 && sent >= self.marker_on_send;
+            let mark = marked.then(|| CompactionMark {
                 at: "2026-10-07T00:00:00Z".into(),
                 offset: 10,
                 trigger: None,
@@ -401,9 +493,13 @@ mod tests {
                 post_tokens: Some(5),
             });
             Ok(Reading {
-                tokens: Some(if mark.is_some() { 5 } else { 100 }),
+                tokens: Some(if mark.is_some() {
+                    self.tokens_after
+                } else {
+                    100
+                }),
                 provisional: false,
-                pending: false,
+                pending: self.pending && mark.is_some(),
                 window: None,
                 model: None,
                 last_compaction: mark,
@@ -495,5 +591,128 @@ mod tests {
         let fake = Fake::new(None);
         assert!(run(&fake, &plan()).is_ok());
         assert_eq!(fake.trail()[..2], ["send /compact", "send resume"]);
+    }
+
+    /// With more sends allowed, a send with no marker is repeated after
+    /// `resend_after`, and the marker of the second send ends the wait.
+    #[test]
+    fn a_missing_marker_sends_the_line_again_after_the_resend_wait() {
+        let mut fake = Fake::new(None);
+        fake.marker_on_send = 2;
+        let mut p = plan();
+        p.max_sends = 2;
+        assert!(run(&fake, &p).is_ok());
+        assert_eq!(
+            fake.trail()[..3],
+            ["send /compact", "send /compact", "send resume"]
+        );
+    }
+
+    /// With 1 send allowed, no marker fails the job at `wait-marker`.
+    #[test]
+    fn no_marker_fails_the_job_at_wait_marker_after_the_timeout() {
+        let mut fake = Fake::new(None);
+        fake.marker_on_send = 0;
+        let fail = run(&fake, &plan()).unwrap_err();
+        assert_eq!(fail.step, Step::WaitMarker);
+        assert_eq!(fail.reason, "no compaction marker after 1 sends");
+        assert_eq!(
+            fake.trail()
+                .iter()
+                .filter(|t| *t == "send /compact")
+                .count(),
+            1
+        );
+        // 1 s to idle (2 polls), then the 60 s marker wait.
+        assert_eq!(fake.elapsed(), Duration::from_secs(61));
+    }
+
+    /// A failure line that is new after the send stops the job at once and
+    /// names the harness.
+    #[test]
+    fn a_new_failure_line_stops_the_wait_for_the_marker() {
+        let mut fake = Fake::new(None);
+        fake.marker_on_send = 0;
+        *fake.texts.borrow_mut() = vec!["ready".into(), "ready\n  boom: no room  ".into()];
+        let mut p = plan();
+        p.failure_lines = vec!["boom".into()];
+        let fail = run(&fake, &p).unwrap_err();
+        assert_eq!(fail.step, Step::WaitMarker);
+        assert_eq!(fail.reason, "codex said \"boom: no room\"");
+        // Only the 1 s to idle: the first marker poll sees the failure.
+        assert_eq!(fake.elapsed(), Duration::from_secs(1));
+    }
+
+    /// A failure line that was in the pane before the send is not new.
+    #[test]
+    fn an_old_failure_line_does_not_stop_the_job() {
+        let fake = Fake::new(None);
+        *fake.texts.borrow_mut() = vec!["boom".into()];
+        let mut p = plan();
+        p.failure_lines = vec!["boom".into()];
+        assert!(run(&fake, &p).is_ok());
+    }
+
+    #[test]
+    fn a_pane_that_never_idles_fails_the_job_at_wait_idle() {
+        let mut fake = Fake::new(None);
+        fake.idle = false;
+        let fail = run(&fake, &plan()).unwrap_err();
+        assert_eq!(fail.step, Step::WaitIdle);
+        assert_eq!(fail.reason, "no idle status in 10 s");
+        assert!(fake.trail().iter().all(|t| !t.starts_with("send")));
+    }
+
+    #[test]
+    fn the_outcome_carries_the_reading_after_the_resume_line() {
+        let mut fake = Fake::new(None);
+        fake.tokens_after = 7;
+        let done = run(&fake, &plan()).unwrap();
+        assert_eq!((done.pre, done.post), (Some(100), Some(7)));
+        assert_eq!(done.mark.offset, 10);
+        assert_eq!(fake.trail().last().unwrap(), "report ok 100 -> 7");
+    }
+
+    /// A reading that stays pending past `reading_timeout` falls back to the
+    /// marker's own post count.
+    #[test]
+    fn a_pending_reading_falls_back_to_the_marker_post_tokens() {
+        let mut fake = Fake::new(None);
+        fake.pending = true;
+        fake.tokens_after = 7;
+        let done = run(&fake, &plan()).unwrap();
+        assert_eq!(done.post, Some(5));
+        // 1 s to idle before the send, 1 s after the marker, 10 s reading wait.
+        assert_eq!(fake.elapsed(), Duration::from_secs(12));
+    }
+
+    #[test]
+    fn step_names_are_kebab_case_in_order() {
+        let all = [
+            Step::Start,
+            Step::WaitIdle,
+            Step::Send,
+            Step::WaitMarker,
+            Step::WaitIdleAfter,
+            Step::RestoreMode,
+            Step::Resume,
+            Step::WaitReading,
+            Step::Report,
+        ];
+        let names: Vec<_> = all.iter().map(|s| s.as_str()).collect();
+        assert_eq!(
+            names,
+            [
+                "start",
+                "wait-idle",
+                "send",
+                "wait-marker",
+                "wait-idle-after",
+                "restore-mode",
+                "resume",
+                "wait-reading",
+                "report"
+            ]
+        );
     }
 }

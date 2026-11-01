@@ -6,9 +6,10 @@
 //! write-once variant for content-addressed files.
 //!
 //! `DirLock` generalizes the ledger's mkdir spinlock and the telemetry pid
-//! lock: `create_dir` is atomic on every platform, the holder records who it
-//! is in an `owner` file, and a lock whose owner is dead or that is older
-//! than `stale_after` is broken.
+//! lock: the holder records who it is in an `owner` file, the lock directory
+//! appears with that file by an atomic rename that does not replace an
+//! existing lock, and a lock whose owner is dead or that is older than
+//! `stale_after` is broken.
 
 use std::fmt;
 use std::io::Write;
@@ -170,7 +171,16 @@ impl Refused {
 /// followed. `Ok(None)`: nothing to read there (no file, no access, or not
 /// UTF-8 text).
 pub(crate) fn read_regular_bounded(path: &Path) -> std::result::Result<Option<String>, Refused> {
-    use std::io::Read;
+    match open_regular(path)?.and_then(read_bounded) {
+        None => Ok(None),
+        Some(bytes) if bytes.len() as u64 > READ_LIMIT => Err(Refused::TooLarge),
+        Some(bytes) => Ok(String::from_utf8(bytes).ok()),
+    }
+}
+
+/// Open `path` for [`read_regular_bounded`]. `Ok(None)`: no file or no
+/// access.
+fn open_regular(path: &Path) -> std::result::Result<Option<std::fs::File>, Refused> {
     let mut o = std::fs::OpenOptions::new();
     o.read(true);
     #[cfg(unix)]
@@ -179,22 +189,25 @@ pub(crate) fn read_regular_bounded(path: &Path) -> std::result::Result<Option<St
         // A FIFO opens at once instead of waiting for a writer.
         o.custom_flags(libc::O_NONBLOCK);
     }
-    let Ok(file) = o.open(path) else {
-        return Ok(None);
-    };
-    match file.metadata() {
-        Ok(m) if m.is_file() => {}
-        Ok(_) => return Err(Refused::NotRegular),
-        Err(_) => return Ok(None),
+    match o
+        .open(path)
+        .and_then(|file| file.metadata().map(|m| (file, m.is_file())))
+    {
+        Ok((file, true)) => Ok(Some(file)),
+        Ok((_, false)) => Err(Refused::NotRegular),
+        Err(_) => Ok(None),
     }
+}
+
+/// Read at most 1 byte over [`READ_LIMIT`] from `file`, so the caller can
+/// tell an oversized file. `None` on a read error.
+fn read_bounded(file: std::fs::File) -> Option<Vec<u8>> {
+    use std::io::Read;
     let mut bytes = Vec::new();
-    if file.take(READ_LIMIT + 1).read_to_end(&mut bytes).is_err() {
-        return Ok(None);
-    }
-    if bytes.len() as u64 > READ_LIMIT {
-        return Err(Refused::TooLarge);
-    }
-    Ok(String::from_utf8(bytes).ok())
+    file.take(READ_LIMIT + 1)
+        .read_to_end(&mut bytes)
+        .ok()
+        .map(|_| bytes)
 }
 
 /// Replace `path` with `bytes` atomically and durably, with file mode `mode`.
@@ -208,20 +221,22 @@ pub fn write_atomic(path: &Path, bytes: &[u8], mode: u32) -> Result<()> {
         std::process::id(),
         &nonce[..12]
     ));
-    let written = (|| {
-        let mut f = io(&tmp, create_new_file(&tmp, mode))?;
-        // The umask may have cleared bits the caller asked for.
-        set_mode(&tmp, mode)?;
-        io(&tmp, f.write_all(bytes))?;
-        io(&tmp, f.sync_all())?;
-        drop(f);
-        io(path, std::fs::rename(&tmp, path))
-    })();
+    let written =
+        write_temp(&tmp, bytes, mode).and_then(|()| io(path, std::fs::rename(&tmp, path)));
     if written.is_err() {
         let _ = std::fs::remove_file(&tmp);
     }
     written?;
     sync_dir(parent)
+}
+
+/// Create the temp file `tmp` with `bytes` and mode `mode`, synced to disk.
+fn write_temp(tmp: &Path, bytes: &[u8], mode: u32) -> Result<()> {
+    let mut f = io(tmp, create_new_file(tmp, mode))?;
+    // The umask may have cleared bits the caller asked for.
+    set_mode(tmp, mode)?;
+    io(tmp, f.write_all(bytes))?;
+    io(tmp, f.sync_all())
 }
 
 /// What [`create_immutable`] did.
@@ -260,32 +275,38 @@ fn create_immutable_with(
         std::process::id(),
         &nonce[..12]
     ));
-    let linked: Result<std::io::Result<()>> = (|| {
-        let mut f = io(&tmp, create_new_file(&tmp, mode))?;
-        set_mode(&tmp, mode)?;
-        io(&tmp, f.write_all(bytes))?;
-        io(&tmp, f.sync_all())?;
-        drop(f);
-        written();
-        Ok(std::fs::hard_link(&tmp, path))
-    })();
+    let linked = write_and_link(&tmp, path, bytes, mode, written);
     let _ = std::fs::remove_file(&tmp);
     match linked? {
-        Ok(()) => {}
-        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
-            let existing = io(path, std::fs::read(path))?;
-            return if existing == bytes {
-                Ok(Created::AlreadyIdentical)
-            } else {
-                Err(FsxError::Conflict {
-                    path: path.to_path_buf(),
-                })
-            };
-        }
-        Err(e) => return io(path, Err(e)),
+        Ok(()) => sync_dir(parent).map(|()| Created::Written),
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => compare_existing(path, bytes),
+        Err(e) => io(path, Err(e)),
     }
-    sync_dir(parent)?;
-    Ok(Created::Written)
+}
+
+/// Write `bytes` to `tmp`, run `written`, then hard-link `tmp` to `path`.
+/// The outer error is the temp write; the inner one is the link.
+fn write_and_link(
+    tmp: &Path,
+    path: &Path,
+    bytes: &[u8],
+    mode: u32,
+    written: impl FnOnce(),
+) -> Result<std::io::Result<()>> {
+    write_temp(tmp, bytes, mode)?;
+    written();
+    Ok(std::fs::hard_link(tmp, path))
+}
+
+/// The [`create_immutable`] result for a `path` that already exists.
+fn compare_existing(path: &Path, bytes: &[u8]) -> Result<Created> {
+    if io(path, std::fs::read(path))? == bytes {
+        Ok(Created::AlreadyIdentical)
+    } else {
+        Err(FsxError::Conflict {
+            path: path.to_path_buf(),
+        })
+    }
 }
 
 /// Create `path` and its parents; set `path` itself to mode 0700 on unix.
@@ -305,6 +326,7 @@ pub fn pid_alive(pid: u32) -> bool {
     #[cfg(unix)]
     {
         // Signal 0 checks existence and permission without sending anything.
+        // SAFETY: `kill` with signal 0 sends nothing and touches no memory; `os` is a pid value.
         let r = unsafe { libc::kill(os, 0) };
         r == 0 || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
     }
@@ -326,6 +348,8 @@ fn host_name() -> String {
     #[cfg(unix)]
     {
         let mut buf = [0u8; 256];
+        // SAFETY: `buf` is a live 256-byte buffer and the length passed is `buf.len()`;
+        // `gethostname` writes at most that many bytes.
         let r = unsafe { libc::gethostname(buf.as_mut_ptr().cast(), buf.len()) };
         if r != 0 {
             return String::new();
@@ -377,30 +401,33 @@ impl DirLockGuard {
 
     /// Refresh the lock directory age while a long operation still owns it.
     pub fn refresh(&self) -> Result<()> {
-        let Some(nonce) = &self.nonce else {
-            return io(
-                &self.path,
-                Err(std::io::Error::other("lock owner is not initialized")),
-            );
-        };
-        if read_owner(&self.path).is_none_or(|owner| &owner.nonce != nonce) {
-            return io(
-                &self.path,
-                Err(std::io::Error::other(
-                    "lock is no longer owned by this guard",
-                )),
-            );
-        }
+        let nonce = self
+            .nonce
+            .as_deref()
+            .ok_or_else(|| self.lock_error("lock owner is not initialized"))?;
+        self.ensure_owned(nonce, "lock is no longer owned by this guard")?;
         let heartbeat = self.path.join(format!("heartbeat-{nonce}"));
         write_atomic(&heartbeat, b"live\n", PRIVATE_FILE)?;
-        if read_owner(&self.path).is_none_or(|owner| &owner.nonce != nonce) {
-            let _ = std::fs::remove_file(&heartbeat);
-            return io(
-                &self.path,
-                Err(std::io::Error::other("lock changed while it was refreshed")),
-            );
+        self.ensure_owned(nonce, "lock changed while it was refreshed")
+            .inspect_err(|_| {
+                let _ = std::fs::remove_file(&heartbeat);
+            })
+    }
+
+    /// `Ok` while the owner file still names `nonce`; else the error `why`.
+    fn ensure_owned(&self, nonce: &str, why: &'static str) -> Result<()> {
+        if read_owner(&self.path).is_some_and(|owner| owner.nonce == nonce) {
+            Ok(())
+        } else {
+            Err(self.lock_error(why))
         }
-        Ok(())
+    }
+
+    fn lock_error(&self, why: &'static str) -> FsxError {
+        FsxError::Io {
+            path: self.path.clone(),
+            source: std::io::Error::other(why),
+        }
     }
 
     /// Release now (the same as dropping it).
@@ -453,49 +480,172 @@ impl DirLock {
         stale_after: Duration,
         timeout: Duration,
     ) -> Result<DirLockGuard> {
+        Self::acquire_with(dir, name, stale_after, timeout, no_hook)
+    }
+
+    /// [`DirLock::acquire`], with `writing` run once while the owner file
+    /// is being written, with the lock path.
+    fn acquire_with(
+        dir: &Path,
+        name: &str,
+        stale_after: Duration,
+        timeout: Duration,
+        writing: impl FnOnce(&Path),
+    ) -> Result<DirLockGuard> {
+        let mut writing = Some(writing);
         io(dir, std::fs::create_dir_all(dir))?;
         let path = dir.join(format!("{name}.lock"));
         let start = Instant::now();
         let mut backoff = Duration::from_millis(5);
         loop {
-            match std::fs::create_dir(&path) {
-                Ok(()) => {
-                    let mut guard = DirLockGuard { path, nonce: None };
-                    let owner = LockOwner {
-                        pid: std::process::id(),
-                        host: host_name(),
-                        acquired_at: crate::clock::stamp(chrono::Utc::now()),
-                        nonce: uuid::Uuid::new_v4().simple().to_string(),
-                        started: crate::procid::start_time(std::process::id()),
-                    };
-                    let json = serde_json::to_vec(&owner).expect("LockOwner serializes");
-                    write_atomic(&guard.path.join("owner"), &json, PRIVATE_FILE)?;
-                    guard.nonce = Some(owner.nonce);
-                    return Ok(guard);
-                }
-                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
-                    if is_stale(&path, stale_after) && break_lock(&path, stale_after) {
-                        continue;
-                    }
-                }
-                Err(e) => return io(&path, Err(e)),
+            if let Some(done) = publish(&path, &mut writing).transpose() {
+                break done;
             }
-            let waited = start.elapsed();
-            if waited >= timeout {
-                return Err(FsxError::LockTimeout { path, waited });
+            let broke = is_stale(&path, stale_after) && break_lock(&path, stale_after);
+            if let Err(e) = wait_or_timeout(broke, &path, start, timeout, &mut backoff) {
+                break Err(e);
             }
-            std::thread::sleep(backoff.min(timeout - waited));
-            backoff = (backoff * 2).min(Duration::from_millis(100));
         }
     }
 }
 
-/// Whether the lock at `path` may be broken.
-fn is_stale(path: &Path, stale_after: Duration) -> bool {
-    let age = std::fs::metadata(path)
+/// Wait `backoff` before the next try, and double it up to 100 ms. No wait
+/// after a broken lock. A [`FsxError::LockTimeout`] once `timeout` is over.
+fn wait_or_timeout(
+    broke: bool,
+    path: &Path,
+    start: Instant,
+    timeout: Duration,
+    backoff: &mut Duration,
+) -> Result<()> {
+    if broke {
+        Ok(())
+    } else if start.elapsed() >= timeout {
+        let waited = start.elapsed();
+        Err(FsxError::LockTimeout {
+            path: path.to_path_buf(),
+            waited,
+        })
+    } else {
+        std::thread::sleep((*backoff).min(timeout.saturating_sub(start.elapsed())));
+        *backoff = (*backoff * 2).min(Duration::from_millis(100));
+        Ok(())
+    }
+}
+
+/// The `acquire_with` hook of every caller but the tests.
+fn no_hook(_lock: &Path) {}
+
+/// Make the lock at `path` with its owner file in one step, or return
+/// `None` when another process holds it.
+///
+/// The owner is written into a staging directory first, and the staging
+/// directory is renamed to `path`. A lock is never seen without its owner:
+/// a holder whose owner write is slow (an `F_FULLFSYNC` on macOS under I/O
+/// load can take seconds) is not taken for one that died before writing it.
+fn publish(path: &Path, writing: &mut Option<impl FnOnce(&Path)>) -> Result<Option<DirLockGuard>> {
+    // A held lock: no staging work that can only lose the rename.
+    if std::fs::symlink_metadata(path).is_ok() {
+        return Ok(None);
+    }
+    let (parent, name) = parent_and_name(path)?;
+    let nonce = uuid::Uuid::new_v4().simple().to_string();
+    let stage = parent.join(format!(".{name}.new-{}", &nonce[..12]));
+    io(&stage, std::fs::create_dir(&stage))?;
+    let owner = LockOwner {
+        pid: std::process::id(),
+        host: host_name(),
+        acquired_at: crate::clock::stamp(chrono::Utc::now()),
+        nonce,
+        started: crate::procid::start_time(std::process::id()),
+    };
+    let json = serde_json::to_vec(&owner).expect("LockOwner serializes");
+    if let Some(writing) = writing.take() {
+        writing(path);
+    }
+    let staged = write_owner(&stage.join("owner"), &json).map(|()| rename_noreplace(&stage, path));
+    match staged {
+        Ok(Ok(())) => Ok(Some(DirLockGuard {
+            path: path.to_path_buf(),
+            nonce: Some(owner.nonce),
+        })),
+        Ok(Err(e)) => {
+            let _ = std::fs::remove_dir_all(&stage);
+            // Another holder, which may have released it since.
+            let taken = matches!(
+                e.kind(),
+                std::io::ErrorKind::AlreadyExists | std::io::ErrorKind::DirectoryNotEmpty
+            );
+            if taken || std::fs::symlink_metadata(path).is_ok() {
+                return Ok(None);
+            }
+            io(path, Err(e))
+        }
+        Err(e) => {
+            let _ = std::fs::remove_dir_all(&stage);
+            Err(e)
+        }
+    }
+}
+
+/// Write the owner file of a staged lock. Nobody reads it before the
+/// rename, so it needs no temp file; and no fsync: a lock lives no longer
+/// than its holder, and after a crash every holder is dead.
+fn write_owner(path: &Path, bytes: &[u8]) -> Result<()> {
+    let mut f = io(path, create_new_file(path, PRIVATE_FILE))?;
+    set_mode(path, PRIVATE_FILE)?;
+    io(path, f.write_all(bytes))
+}
+
+/// Rename the directory `from` to `to`, and fail when `to` exists. A plain
+/// `rename` replaces an empty directory: the lock of an older binary
+/// between its `create_dir` and its owner write.
+fn rename_noreplace(from: &Path, to: &Path) -> std::io::Result<()> {
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    {
+        use std::os::unix::ffi::OsStrExt;
+        let from_c = std::ffi::CString::new(from.as_os_str().as_bytes())?;
+        let to_c = std::ffi::CString::new(to.as_os_str().as_bytes())?;
+        // SAFETY: both arguments are NUL-terminated paths that outlive the call.
+        #[cfg(target_os = "macos")]
+        let r = unsafe { libc::renamex_np(from_c.as_ptr(), to_c.as_ptr(), libc::RENAME_EXCL) };
+        // SAFETY: as above.
+        #[cfg(target_os = "linux")]
+        let r = unsafe {
+            libc::renameat2(
+                libc::AT_FDCWD,
+                from_c.as_ptr(),
+                libc::AT_FDCWD,
+                to_c.as_ptr(),
+                libc::RENAME_NOREPLACE,
+            )
+        };
+        if r == 0 {
+            return Ok(());
+        }
+        let e = std::io::Error::last_os_error();
+        // A filesystem without the flag: the plain rename below.
+        if !matches!(
+            e.raw_os_error(),
+            Some(libc::EINVAL | libc::ENOSYS | libc::ENOTSUP)
+        ) {
+            return Err(e);
+        }
+    }
+    std::fs::rename(from, to)
+}
+
+/// How long ago `path` was last modified. `None` when that is unknown.
+fn age(path: &Path) -> Option<Duration> {
+    std::fs::metadata(path)
         .and_then(|m| m.modified())
         .ok()
-        .and_then(|t| t.elapsed().ok());
+        .and_then(|t| t.elapsed().ok())
+}
+
+/// Whether the lock at `path` may be broken.
+fn is_stale(path: &Path, stale_after: Duration) -> bool {
+    let age = age(path);
     if age.is_some_and(|a| a >= stale_after) {
         return true;
     }
@@ -524,21 +674,29 @@ impl BreakerGuard {
     /// holds it. Where `flock` is not available (not unix, or a filesystem
     /// without it) the guard holds nothing and the breaker directory alone
     /// excludes, as before the guard.
+    #[cfg(unix)]
     fn take(lock: &Path) -> Option<BreakerGuard> {
-        #[cfg(unix)]
-        {
-            use std::os::unix::io::AsRawFd;
-            let Some(dir) = lock.parent().and_then(|d| std::fs::File::open(d).ok()) else {
-                return Some(BreakerGuard { _dir: None });
-            };
-            if unsafe { libc::flock(dir.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0 {
-                return Some(BreakerGuard { _dir: Some(dir) });
-            }
-            if std::io::Error::last_os_error().raw_os_error() == Some(libc::EWOULDBLOCK) {
-                return None;
-            }
+        use std::os::unix::io::AsRawFd;
+        match lock.parent().and_then(|d| std::fs::File::open(d).ok()) {
+            // SAFETY: `dir` is an open directory `File` that outlives the call, so its raw fd is valid;
+            // `flock` touches no memory.
+            Some(dir) => match unsafe {
+                libc::flock(dir.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB)
+            } {
+                0 => Some(BreakerGuard { _dir: Some(dir) }),
+                _ if std::io::Error::last_os_error().raw_os_error() == Some(libc::EWOULDBLOCK) => {
+                    None
+                }
+                _ => Some(BreakerGuard { _dir: None }),
+            },
+            None => Some(BreakerGuard { _dir: None }),
         }
-        #[cfg(not(unix))]
+    }
+
+    /// [`BreakerGuard::take`] where `flock` does not exist: the guard holds
+    /// nothing.
+    #[cfg(not(unix))]
+    fn take(lock: &Path) -> Option<BreakerGuard> {
         let _ = lock;
         Some(BreakerGuard { _dir: None })
     }
@@ -552,6 +710,8 @@ impl Drop for BreakerGuard {
         #[cfg(unix)]
         if let Some(dir) = &self._dir {
             use std::os::unix::io::AsRawFd;
+            // SAFETY: `dir` is the open directory `File` this guard owns, so its raw fd is valid until drop;
+            // `flock` touches no memory.
             unsafe { libc::flock(dir.as_raw_fd(), libc::LOCK_UN) };
         }
     }
@@ -577,22 +737,26 @@ fn break_lock(path: &Path, stale_after: Duration) -> bool {
     let mut breaker = path.as_os_str().to_owned();
     breaker.push(".break");
     let breaker = PathBuf::from(breaker);
-    if std::fs::create_dir(&breaker).is_err() {
-        let age = std::fs::metadata(&breaker)
-            .and_then(|m| m.modified())
-            .ok()
-            .and_then(|t| t.elapsed().ok());
-        if age.is_some_and(|a| a >= BREAKER_STALE_AFTER) {
-            let _ = std::fs::remove_dir(&breaker);
-        }
-        return false;
-    }
-    let broke = is_stale(path, stale_after) && remove_lock(path);
-    let _ = std::fs::remove_dir(&breaker);
+    let broke = if std::fs::create_dir(&breaker).is_ok() {
+        let broke = is_stale(path, stale_after) && remove_lock(path);
+        let _ = std::fs::remove_dir(&breaker);
+        broke
+    } else {
+        clear_stale_breaker(&breaker);
+        false
+    };
     if broke {
         eprintln!("horch: broke stale lock {}", path.display());
     }
     broke
+}
+
+/// Remove a breaker directory left by a killed process. Call it only under
+/// the [`BreakerGuard`].
+fn clear_stale_breaker(breaker: &Path) {
+    if age(breaker).is_some_and(|a| a >= BREAKER_STALE_AFTER) {
+        let _ = std::fs::remove_dir(breaker);
+    }
 }
 
 #[cfg(test)]
@@ -841,6 +1005,7 @@ mod tests {
                 t.join().unwrap().expect("every thread gets the lock");
             }
             assert_eq!(most.load(Ordering::SeqCst), 1, "one holder at a time");
+            assert!(stages(tmp.path()).is_empty(), "{:?}", stages(tmp.path()));
         }
     }
 
@@ -934,6 +1099,7 @@ mod tests {
         let child = unsafe { libc::fork() };
         assert!(child >= 0, "fork failed");
         if child == 0 {
+            // SAFETY: the forked child runs only `pause` and `_exit`, both async-signal-safe.
             unsafe {
                 libc::pause();
                 libc::_exit(0);
@@ -941,11 +1107,117 @@ mod tests {
         }
         drop(held);
         let free = BreakerGuard::take(&lock).is_some();
+        // SAFETY: `child` is the pid of the child forked above, which this test has not yet reaped;
+        // SIGKILL and `waitpid` with a null status pointer touch no memory.
         unsafe {
             libc::kill(child, libc::SIGKILL);
             libc::waitpid(child, std::ptr::null_mut(), 0);
         }
         assert!(free, "the dropped guard is free while the child lives");
+    }
+
+    /// The entries of `dir` that are lock staging directories.
+    fn stages(dir: &Path) -> Vec<String> {
+        std::fs::read_dir(dir)
+            .unwrap()
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .filter(|n| n.starts_with(".events.lock.new-"))
+            .collect()
+    }
+
+    /// While a holder writes its owner file, no lock without an owner is
+    /// visible, so a second process can neither take that write for a dead
+    /// holder (the old `create_dir`-first lock did: under I/O load its
+    /// fsynced owner write outlasted [`OWNERLESS_GRACE`] and the lock was
+    /// broken) nor see the path held. The hook runs during the write.
+    #[cfg(unix)]
+    #[test]
+    fn dirlock_slow_owner_write_keeps_the_lock() {
+        let tmp = tempfile::tempdir().unwrap();
+        let hour = Duration::from_secs(3600);
+        let mut hook_ran = false;
+        let first = DirLock::acquire_with(tmp.path(), "events", hour, hour, |lock| {
+            hook_ran = true;
+            assert!(
+                std::fs::symlink_metadata(lock).is_err(),
+                "no lock is visible before its owner is written"
+            );
+            DirLock::acquire(tmp.path(), "events", hour, Duration::from_millis(50))
+                .expect("the lock is free until it is published");
+        })
+        .expect("the writer gets the lock after the second holder released it");
+        assert!(hook_ran, "the checks above run while the owner is written");
+        let owner = read_owner(first.path()).expect("the owner file is written");
+        assert_eq!(owner.pid, std::process::id());
+        assert_eq!(Some(&owner.nonce), first.nonce.as_ref());
+        assert!(stages(tmp.path()).is_empty(), "{:?}", stages(tmp.path()));
+    }
+
+    /// A writer whose rename loses to a holder that took the lock during
+    /// its owner write waits for that holder: it does not replace or break
+    /// the lock, and it removes its staging directory.
+    #[cfg(unix)]
+    #[test]
+    fn dirlock_writer_that_loses_the_rename_waits() {
+        let tmp = tempfile::tempdir().unwrap();
+        let hour = Duration::from_secs(3600);
+        let mut held = None;
+        let lost = DirLock::acquire_with(
+            tmp.path(),
+            "events",
+            hour,
+            Duration::from_millis(100),
+            |_| {
+                held = Some(
+                    DirLock::acquire(tmp.path(), "events", hour, Duration::from_millis(50))
+                        .unwrap(),
+                );
+            },
+        )
+        .unwrap_err();
+        assert!(matches!(lost, FsxError::LockTimeout { .. }), "{lost}");
+        let held = held.unwrap();
+        let owner = read_owner(held.path()).expect("the holder keeps its owner file");
+        assert_eq!(Some(&owner.nonce), held.nonce.as_ref());
+        assert!(stages(tmp.path()).is_empty(), "{:?}", stages(tmp.path()));
+    }
+
+    /// The rename that publishes a lock does not replace an empty lock
+    /// directory: an older binary's lock between its `create_dir` and its
+    /// owner write.
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    #[test]
+    fn rename_noreplace_keeps_an_empty_lock() {
+        let tmp = tempfile::tempdir().unwrap();
+        let lock = tmp.path().join("events.lock");
+        std::fs::create_dir(&lock).unwrap();
+        let stage = tmp.path().join(".events.lock.new-test");
+        std::fs::create_dir(&stage).unwrap();
+        std::fs::write(stage.join("owner"), b"{}").unwrap();
+        let err = rename_noreplace(&stage, &lock).unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::AlreadyExists, "{err}");
+        assert_eq!(std::fs::read_dir(&lock).unwrap().count(), 0);
+        assert!(stage.join("owner").is_file());
+    }
+
+    /// A fresh lock without an owner (an older binary's, mid-setup) is held
+    /// until it is older than [`OWNERLESS_GRACE`].
+    #[test]
+    fn dirlock_fresh_ownerless_lock_is_held() {
+        let tmp = tempfile::tempdir().unwrap();
+        let lock = tmp.path().join("events.lock");
+        std::fs::create_dir(&lock).unwrap();
+        let err = DirLock::acquire(
+            tmp.path(),
+            "events",
+            Duration::from_secs(3600),
+            Duration::from_millis(50),
+        )
+        .unwrap_err();
+        assert!(matches!(err, FsxError::LockTimeout { .. }), "{err}");
+        assert!(lock.is_dir());
+        assert_eq!(std::fs::read_dir(&lock).unwrap().count(), 0);
     }
 
     #[test]
@@ -960,5 +1232,106 @@ mod tests {
             Duration::from_secs(1),
         )
         .expect("a lock older than stale_after is broken");
+    }
+
+    #[test]
+    fn read_regular_bounded_reads_text_up_to_the_limit() {
+        let tmp = tempfile::tempdir().unwrap();
+        let p = tmp.path().join("settings.json");
+        assert_eq!(
+            read_regular_bounded(&p),
+            Ok(None),
+            "no file: nothing to read"
+        );
+        std::fs::write(&p, "{\"a\":1}").unwrap();
+        assert_eq!(read_regular_bounded(&p), Ok(Some("{\"a\":1}".to_string())));
+        std::fs::write(&p, vec![b'x'; READ_LIMIT as usize]).unwrap();
+        let full = read_regular_bounded(&p)
+            .unwrap()
+            .expect("exactly the limit is read");
+        assert_eq!(full.len() as u64, READ_LIMIT);
+        std::fs::write(&p, vec![b'x'; READ_LIMIT as usize + 1]).unwrap();
+        assert_eq!(read_regular_bounded(&p), Err(Refused::TooLarge));
+        std::fs::write(&p, [0xff, 0xfe, 0x00]).unwrap();
+        assert_eq!(
+            read_regular_bounded(&p),
+            Ok(None),
+            "not UTF-8: nothing to read"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn read_regular_bounded_refuses_a_directory_and_a_fifo() {
+        let tmp = tempfile::tempdir().unwrap();
+        assert_eq!(read_regular_bounded(tmp.path()), Err(Refused::NotRegular));
+        let fifo = tmp.path().join("pipe");
+        let c = std::ffi::CString::new(fifo.to_str().unwrap()).unwrap();
+        // SAFETY: a NUL-terminated path that outlives the call.
+        assert_eq!(unsafe { libc::mkfifo(c.as_ptr(), 0o600) }, 0);
+        assert_eq!(read_regular_bounded(&fifo), Err(Refused::NotRegular));
+    }
+
+    #[test]
+    fn refresh_writes_a_heartbeat_only_while_owned() {
+        let tmp = tempfile::tempdir().unwrap();
+        let stale = Duration::from_secs(60);
+        let held = DirLock::acquire(tmp.path(), "events", stale, Duration::from_secs(1)).unwrap();
+        held.refresh().expect("the holder refreshes its own lock");
+        let nonce = held.nonce.clone().unwrap();
+        assert!(held.path().join(format!("heartbeat-{nonce}")).is_file());
+
+        let mut other = read_owner(held.path()).unwrap();
+        other.nonce = "someone-else".into();
+        std::fs::write(
+            held.path().join("owner"),
+            serde_json::to_vec(&other).unwrap(),
+        )
+        .unwrap();
+        let err = held.refresh().unwrap_err();
+        assert!(
+            err.to_string()
+                .ends_with("lock is no longer owned by this guard"),
+            "{err}"
+        );
+        drop(held);
+        assert!(
+            tmp.path().join("events.lock").exists(),
+            "a guard does not remove a lock it no longer owns"
+        );
+
+        let unowned = DirLockGuard {
+            path: tmp.path().join("other.lock"),
+            nonce: None,
+        };
+        let err = unowned.refresh().unwrap_err();
+        assert!(
+            err.to_string().ends_with("lock owner is not initialized"),
+            "{err}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn breaker_guard_without_a_parent_dir_holds_nothing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let lock = tmp.path().join("missing").join("events.lock");
+        let guard = BreakerGuard::take(&lock).expect("no directory to lock: free");
+        assert!(guard._dir.is_none());
+    }
+
+    #[test]
+    fn break_lock_keeps_a_fresh_breaker_and_the_lock() {
+        let tmp = tempfile::tempdir().unwrap();
+        let lock = tmp.path().join("events.lock");
+        std::fs::create_dir(&lock).unwrap();
+        let breaker = tmp.path().join("events.lock.break");
+        std::fs::create_dir(&breaker).unwrap();
+        assert!(!break_lock(&lock, Duration::ZERO));
+        assert!(
+            breaker.is_dir(),
+            "a fresh breaker belongs to a live process"
+        );
+        assert!(lock.is_dir());
     }
 }

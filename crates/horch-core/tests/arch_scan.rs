@@ -178,18 +178,39 @@ fn error_text_match(line: &str) -> Option<&'static str> {
     if line.contains(".contains(\"error") {
         return Some(".contains(\"error");
     }
-    let mut rest = line;
-    while let Some(at) = rest.find(".to_string() ==") {
-        let receiver = rest[..at]
-            .rsplit(|c: char| !(c.is_alphanumeric() || c == '_'))
-            .next()
-            .unwrap_or_default();
-        if RECEIVERS.contains(&receiver) {
-            return Some(".to_string() ==");
+    for needle in [
+        ".to_string() ==",
+        ".to_string().starts_with(",
+        ".to_string().ends_with(",
+    ] {
+        let mut rest = line;
+        while let Some(at) = rest.find(needle) {
+            let before = &rest[..at];
+            let receiver = before
+                .rsplit(|c: char| !(c.is_alphanumeric() || c == '_'))
+                .next()
+                .unwrap_or_default();
+            if RECEIVERS.contains(&receiver) || before.ends_with(".root_cause()") {
+                return Some(needle);
+            }
+            rest = &rest[at + 1..];
         }
-        rest = &rest[at + 1..];
     }
     None
+}
+
+/// `lines` with each line that starts with `.` joined to the line before
+/// it, so a method chain that spans lines is matched as 1 line.
+fn chained(lines: Vec<(usize, String)>) -> Vec<(usize, String)> {
+    let mut out: Vec<(usize, String)> = Vec::new();
+    for (n, line) in lines {
+        let trimmed = line.trim_start();
+        match out.last_mut() {
+            Some((_, prev)) if trimmed.starts_with('.') => prev.push_str(trimmed),
+            _ => out.push((n, line)),
+        }
+    }
+    out
 }
 
 /// Application code branches on typed errors, never on their message text:
@@ -206,7 +227,7 @@ fn arc_22_no_error_string_matching() {
         scanned += files.len();
         for path in &files {
             let rel = format!("{name}/{}", relative(path, &root));
-            for (n, line) in code_lines(path) {
+            for (n, line) in chained(code_lines(path)) {
                 let Some(needle) = error_text_match(&line) else {
                     continue;
                 };
@@ -254,6 +275,28 @@ fn arc_22_matcher_finds_error_text_checks() {
     ] {
         assert_eq!(error_text_match(miss), None, "false hit: {miss}");
     }
+    let split = chained(vec![
+        (
+            7,
+            "let not_work_tree = error.root_cause().to_string()".to_string(),
+        ),
+        (
+            8,
+            "    .starts_with(\"git rev-parse --show-toplevel failed (128):\");".to_string(),
+        ),
+        (9, "if err.to_string()".to_string()),
+        (10, "    .ends_with(\"(128)\") {".to_string()),
+    ]);
+    assert_eq!(split.len(), 2, "{split:?}");
+    assert_eq!((split[0].0, split[1].0), (7, 9));
+    for (_, hit) in &split {
+        assert!(error_text_match(hit).is_some(), "missed: {hit}");
+    }
+    let miss = chained(vec![
+        (1, "if name.to_string()".to_string()),
+        (2, "    .starts_with(\"fleet/\") {".to_string()),
+    ]);
+    assert_eq!(error_text_match(&miss[0].1), None, "false hit: {miss:?}");
 }
 
 /// Files outside `harness/` that still match on a harness variant, with the
@@ -689,6 +732,41 @@ fn ctx_07_compaction_pure_modules_do_no_io() {
     assert!(
         found.is_empty(),
         "I/O in the pure compaction modules:\n{}",
+        found.join("\n")
+    );
+}
+
+/// A child's environment is cleaned in 1 place, `scrub_child_env` (#88): a
+/// hand-built removal of the API key is the sign of a child that keeps the
+/// caller's `GIT_DIR`. Only the runtime and the launch builder name it.
+#[test]
+fn arc_88_children_are_scrubbed_in_one_place() {
+    let needle = concat!("env_remove(\"ANTHROPIC", "_API_KEY\")");
+    let mut found = Vec::new();
+    for krate in [
+        "horch-core",
+        "horch",
+        "horch-marketplace",
+        "herdr-install",
+        "herdr-docs-sync",
+    ] {
+        let root = crate_src(krate);
+        if !root.is_dir() {
+            continue;
+        }
+        let mut files = Vec::new();
+        rust_files(&root, &mut files);
+        files.retain(|f| {
+            let rel = relative(f, &root);
+            !(krate == "horch-core" && (rel.starts_with("runtime/") || rel == "harness/launch.rs"))
+        });
+        for line in forbidden_lines(&root, &files, &[needle]) {
+            found.push(format!("{krate}/{line}"));
+        }
+    }
+    assert!(
+        found.is_empty(),
+        "use runtime::process::scrub_child_env:\n{}",
         found.join("\n")
     );
 }

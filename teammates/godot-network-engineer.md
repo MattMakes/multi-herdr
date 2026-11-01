@@ -3,6 +3,8 @@ name: godot-network-engineer
 brief_description: "Godot 4 multiplayer: MultiplayerAPI, RPCs, spawners and synchronizers, prediction, dedicated servers."
 base: fleet-worker
 agent: claude
+# Sanctioned #58: subscription auto-mode read-only pre-approval; see live-check results.
+allowed_tools: ["Read", "Grep", "Glob", "Bash(git status)", "Bash(git status *)", "Bash(git log)", "Bash(git log --oneline -10)", "Bash(git diff)", "Bash(git diff --stat)", "Bash(git diff --cached)", "Bash(git show)", "Bash(git ls-files)", "Bash(horch ledger status)", "Bash(horch ledger status *)", "Bash(horch ledger show *)", "Bash(horch ledger steps *)", "Bash(horch ledger events)", "Bash(horch ledger events *)", "Bash(aws sts get-caller-identity)", "Bash(aws s3 ls)", "Bash(gcloud projects list)", "Bash(az account show)", "Bash(kubectl get pods)", "Bash(docker ps)"]
 phase: implementation
 model: opus
 # Offered only on a Godot project (roster/offer.rs). `horch spawn` still
@@ -33,7 +35,7 @@ skills:
   - godot-build-verify
   - godot-scene-files
 # Named by name only: related skills.
-available_skills: [godot-state-machine, godot-export-pipeline, godot-event-bus, godot-language-choice]
+available_skills: [godot-state-machine, godot-export-pipeline, godot-event-bus, godot-language-choice, godot-save-security]
 # A C# project (a *.csproj next to project.godot) adds the C# skills to this
 # builder (GW11, roster/offer.rs project_skills). godot-csharp-engineer owns
 # interop, .NET builds and source-generator problems.

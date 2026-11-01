@@ -53,6 +53,22 @@ pub(crate) struct BrokenFile {
 }
 
 impl BrokenFile {
+    /// The record of the file `path` that failed with `error`, when `name`
+    /// was `loaded` from an earlier source: [`fallback_for`] says which.
+    fn new(
+        origins: &BTreeMap<String, PathBuf>,
+        name: &str,
+        loaded: bool,
+        path: PathBuf,
+        error: String,
+    ) -> BrokenFile {
+        BrokenFile {
+            path,
+            error,
+            fallback: fallback_for(origins, name, loaded),
+        }
+    }
+
     fn warning(&self, kind: &str, name: &str) -> String {
         let used = match &self.fallback {
             Some(f) => format!("using {f} instead"),
@@ -171,29 +187,35 @@ impl Roster {
     pub fn overlay(&mut self, dir: &Path) -> Result<()> {
         let base_dir = dir.join("_base");
         if base_dir.is_dir() {
-            for (stem, path) in md_files(&base_dir)? {
-                match read_parsed(&path, |text| parse_base(&stem, text)) {
-                    Ok(base) => {
-                        self.bases.insert(stem.clone(), base);
-                        self.broken_bases.remove(&stem);
-                        self.base_origins.insert(stem, path);
-                    }
-                    Err(error) => {
-                        let loaded = self.bases.contains_key(&stem);
-                        let fallback = fallback_for(&self.base_origins, &stem, loaded);
-                        self.broken_bases.insert(
-                            stem,
-                            BrokenFile {
-                                path,
-                                error,
-                                fallback,
-                            },
-                        );
-                    }
+            self.overlay_bases(md_files(&base_dir)?);
+        }
+        self.overlay_teammates(md_files(dir)?);
+        self.attach_harness_defaults();
+        Ok(())
+    }
+
+    /// Load the `_base/` files `files` over the bases already loaded.
+    fn overlay_bases(&mut self, files: Vec<(String, PathBuf)>) {
+        for (stem, path) in files {
+            match read_parsed(&path, |text| parse_base(&stem, text)) {
+                Ok(base) => {
+                    self.bases.insert(stem.clone(), base);
+                    self.broken_bases.remove(&stem);
+                    self.base_origins.insert(stem, path);
+                }
+                Err(error) => {
+                    let loaded = self.bases.contains_key(&stem);
+                    let file = BrokenFile::new(&self.base_origins, &stem, loaded, path, error);
+                    self.broken_bases.insert(stem, file);
                 }
             }
         }
-        for (stem, path) in md_files(dir)? {
+    }
+
+    /// Load the teammate files `files` over the teammates already loaded. A
+    /// file whose name begins with `_` is no teammate.
+    fn overlay_teammates(&mut self, files: Vec<(String, PathBuf)>) {
+        for (stem, path) in files {
             if stem.starts_with('_') {
                 continue;
             }
@@ -205,20 +227,11 @@ impl Roster {
                 }
                 Err(error) => {
                     let loaded = self.teammates.contains_key(&stem);
-                    let fallback = fallback_for(&self.teammate_origins, &stem, loaded);
-                    self.broken_teammates.insert(
-                        stem,
-                        BrokenFile {
-                            path,
-                            error,
-                            fallback,
-                        },
-                    );
+                    let file = BrokenFile::new(&self.teammate_origins, &stem, loaded, path, error);
+                    self.broken_teammates.insert(stem, file);
                 }
             }
         }
-        self.attach_harness_defaults();
-        Ok(())
     }
 
     /// One line per overlay file that did not load: the file, the error and
@@ -423,4 +436,135 @@ pub(crate) fn overlay_dirs(home: Option<&Path>, roster_override: Option<&Path>) 
         }
     }
     dirs
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Write `<dir>/_base/<stem>.md` as `text` says.
+    fn write_base(dir: &Path, stem: &str, text: &str) -> PathBuf {
+        std::fs::create_dir_all(dir.join("_base")).unwrap();
+        let path = dir.join("_base").join(format!("{stem}.md"));
+        std::fs::write(&path, text).unwrap();
+        path
+    }
+
+    fn base_text(name: &str, body: &str) -> String {
+        format!("---\nname: {name}\n---\n{body}\n")
+    }
+
+    const NO_FENCE: &str = "file does not start with a '---' frontmatter fence";
+
+    #[test]
+    fn a_good_base_replaces_the_builtin_and_names_its_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("layer");
+        let text = base_text("fleet-worker", "from the layer");
+        let path = write_base(&dir, "fleet-worker", &text);
+
+        let mut r = Roster::builtin().unwrap();
+        assert_eq!(r.base_origin("fleet-worker"), None);
+        r.overlay(&dir).unwrap();
+        assert_eq!(r.base("fleet-worker").unwrap().body, "from the layer");
+        assert_eq!(r.base_origin("fleet-worker"), Some(path.as_path()));
+        assert!(r.load_warnings().is_empty(), "{:?}", r.load_warnings());
+    }
+
+    #[test]
+    fn a_later_good_base_heals_an_earlier_broken_one() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (first, second) = (tmp.path().join("first"), tmp.path().join("second"));
+        write_base(&first, "fleet-worker", "no frontmatter here\n");
+        write_base(
+            &second,
+            "fleet-worker",
+            &base_text("fleet-worker", "from the second layer"),
+        );
+
+        let mut r = Roster::builtin().unwrap();
+        r.overlay(&first).unwrap();
+        assert_eq!(r.load_warnings().len(), 1, "{:?}", r.load_warnings());
+        r.overlay(&second).unwrap();
+        assert_eq!(
+            r.base("fleet-worker").unwrap().body,
+            "from the second layer"
+        );
+        assert!(r.load_warnings().is_empty(), "{:?}", r.load_warnings());
+    }
+
+    #[test]
+    fn a_broken_base_says_what_is_used_instead() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (first, second, third) = (
+            tmp.path().join("first"),
+            tmp.path().join("second"),
+            tmp.path().join("third"),
+        );
+        let good = write_base(
+            &first,
+            "fleet-worker",
+            &base_text("fleet-worker", "from the first layer"),
+        );
+        let wrong_name = write_base(&second, "fleet-worker", &base_text("other", "x"));
+        let builtin = write_base(&second, "channel", "no frontmatter here\n");
+        let unknown = write_base(&third, "no-such-base", "no frontmatter here\n");
+
+        let mut r = Roster::builtin().unwrap();
+        let channel = r.base("channel").unwrap().body.clone();
+        r.overlay(&first).unwrap();
+        r.overlay(&second).unwrap();
+        r.overlay(&third).unwrap();
+
+        // The earlier layer's file stays in use over the broken later one.
+        assert_eq!(r.base("fleet-worker").unwrap().body, "from the first layer");
+        // The built-in stays in use when no earlier layer set the base.
+        assert_eq!(r.base("channel").unwrap().body, channel);
+        // A base with no earlier definition is not available at all.
+        assert!(r.base("no-such-base").is_none());
+        assert_eq!(
+            r.load_warnings(),
+            vec![
+                format!(
+                    "base 'channel' did not load from {}: {NO_FENCE}; using the built-in 'channel' instead",
+                    builtin.display()
+                ),
+                format!(
+                    "base 'fleet-worker' did not load from {}: name is 'other' but the filename says 'fleet-worker'; using the earlier {} instead",
+                    wrong_name.display(),
+                    good.display()
+                ),
+                format!(
+                    "base 'no-such-base' did not load from {}: {NO_FENCE}; base 'no-such-base' is not available",
+                    unknown.display()
+                ),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_file_that_starts_with_an_underscore_is_no_teammate() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("layer");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("_scratch.md"), "not a teammate\n").unwrap();
+
+        let mut r = Roster::builtin().unwrap();
+        let before = r.names().len();
+        r.overlay(&dir).unwrap();
+        assert_eq!(r.names().len(), before);
+        assert!(r.load_warnings().is_empty(), "{:?}", r.load_warnings());
+    }
+
+    #[test]
+    fn overlaying_a_directory_that_cannot_be_read_fails() {
+        let tmp = tempfile::tempdir().unwrap();
+        let missing = tmp.path().join("missing");
+        let error = Roster::builtin().unwrap().overlay(&missing).unwrap_err();
+        let message = format!("{error:#}");
+        assert!(
+            message.starts_with(&format!("reading {}: ", missing.display())),
+            "{message}"
+        );
+    }
 }

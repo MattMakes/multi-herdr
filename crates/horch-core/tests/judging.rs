@@ -3,8 +3,10 @@
 //! rule (CMP-12) and the judge execution record (JDG-09). Dataset design
 //! §4.7 and §5.1.
 
+#[path = "common/warm.rs"]
+mod warm;
+
 use std::path::Path;
-use std::process::Command;
 use std::time::Duration;
 
 use chrono::{DateTime, Utc};
@@ -328,6 +330,8 @@ enum FakeJob {
     Answer(String),
     /// Writes `job.log`, a heartbeat and `exit.json{crash}`.
     Crash,
+    /// The job exits with this reason (`timeout`, `too_large`) and no output.
+    Exit(&'static str),
     /// As `Answer`, but with no heartbeat: the job ended before its first.
     AnswerNoHeartbeat(String),
     /// As `Crash`, but with no heartbeat.
@@ -374,6 +378,11 @@ impl JobLauncher for FakeLauncher {
                 write(dir, OUTPUT_FILE, &text);
                 write(dir, EXIT_FILE, r#"{"reason":"ok","code":0}"#);
             }
+            Some(FakeJob::Exit(reason)) => write(
+                dir,
+                EXIT_FILE,
+                &format!(r#"{{"reason":"{reason}","code":null}}"#),
+            ),
             Some(FakeJob::Crash | FakeJob::CrashNoHeartbeat) => {
                 write(dir, EXIT_FILE, r#"{"reason":"crash","code":3}"#)
             }
@@ -1025,9 +1034,9 @@ fn jdg_09_schedule_detaches_and_strips_env() {
     std::fs::create_dir_all(&bin).unwrap();
     let out = tmp.path().join("out");
     let script = bin.join(DATASET_BIN);
-    std::fs::write(
+    let warm = warm::write_warmed(
         &script,
-        format!(
+        &format!(
             "#!/bin/sh\n\
              if [ \"$1\" = warm ]; then exit 0; fi\n\
              printf '%s\\n' \"$@\" > {out}.args\n\
@@ -1040,14 +1049,9 @@ fn jdg_09_schedule_detaches_and_strips_env() {
              touch {out}.done\n",
             out = out.display()
         ),
-    )
-    .unwrap();
-    horch_core::runtime::process::make_executable(&script).unwrap();
-    assert!(Command::new(&script)
-        .arg("warm")
-        .status()
-        .unwrap()
-        .success());
+        &["warm"],
+    );
+    assert!(warm.status.success());
     let state = tmp.path().join("state");
     let project = tmp.path().join("project");
     std::fs::create_dir_all(&project).unwrap();
@@ -1313,5 +1317,210 @@ fn jdg_08_lost_job_kills_its_orphaned_judge_cli() {
     assert!(
         later_kept,
         "a member that started after the heartbeat was killed"
+    );
+}
+
+/// The `judge.failed` payloads of the log, in order.
+fn failures(w: &World) -> Vec<Value> {
+    w.events()
+        .iter()
+        .filter(|e| e.kind == "judge.failed")
+        .map(|e| e.payload.clone())
+        .collect()
+}
+
+/// Each way a job can end without a valid answer is recorded as its own
+/// cause, and the attempt is retried.
+#[test]
+fn jdg_08_each_failed_end_has_its_cause() {
+    let w = World::new();
+    w.round(true);
+    let launcher = FakeLauncher::new(vec![FakeJob::Exit("timeout"), FakeJob::Exit("too_large")]);
+    let clock = || w.now();
+    let env = w.env(&launcher, &clock);
+    start(&env, &round_id()).unwrap();
+    assert_eq!(
+        poll(&env, &round_id(), Utc::now()).unwrap(),
+        JudgingStatus::Waiting
+    );
+    assert_eq!(
+        poll(&env, &round_id(), Utc::now()).unwrap(),
+        JudgingStatus::NeedsIntervention
+    );
+    assert_eq!(
+        failures(&w),
+        [
+            json!({"attempt": 1, "cause": {"kind": "timed_out"}}),
+            json!({"attempt": 2, "cause": {"kind": "over_cap"}}),
+        ]
+    );
+    let records = w.judge_records();
+    assert_eq!(
+        records[0].execution_status(),
+        ExecutionStatus::Failed {
+            failure: FailureKind::TimedOut
+        }
+    );
+    assert_eq!(
+        records[1].execution_status(),
+        ExecutionStatus::Failed {
+            failure: FailureKind::AgentExited { code: None }
+        }
+    );
+}
+
+/// An answer over the cap is `over_cap`, not `malformed`.
+#[test]
+fn jdg_08_an_oversize_answer_is_over_cap() {
+    let w = World::new();
+    w.round(true);
+    let launcher = FakeLauncher::new(vec![
+        FakeJob::Answer("x".repeat(1024 * 1024 + 1)),
+        FakeJob::Answer(answer()),
+    ]);
+    let clock = || w.now();
+    let env = w.env(&launcher, &clock);
+    start(&env, &round_id()).unwrap();
+    assert_eq!(
+        poll(&env, &round_id(), Utc::now()).unwrap(),
+        JudgingStatus::Waiting
+    );
+    assert_eq!(
+        failures(&w),
+        [json!({"attempt": 1, "cause": {"kind": "over_cap"}})]
+    );
+    assert_eq!(
+        w.judge_records()[0].execution_status(),
+        ExecutionStatus::Failed {
+            failure: FailureKind::AgentExited { code: Some(0) }
+        }
+    );
+}
+
+/// A restart between `judge.scheduled` and the spawn: the next poll spawns
+/// again, and `judge.scheduled` is not recorded twice.
+#[test]
+fn jdg_08_restart_before_the_spawn_spawns_again() {
+    struct NoTrace(RefCell<u32>);
+    impl JobLauncher for NoTrace {
+        fn launch(&self, spec: &JudgeJobSpec) -> anyhow::Result<u32> {
+            std::fs::create_dir_all(&spec.job_dir)?;
+            *self.0.borrow_mut() += 1;
+            Ok(1)
+        }
+    }
+    let w = World::new();
+    w.round(true);
+    let launcher = NoTrace(RefCell::new(0));
+    let clock = || w.now();
+    let env = w.env(&launcher, &clock);
+    start(&env, &round_id()).unwrap();
+    assert_eq!(*launcher.0.borrow(), 1);
+    assert_eq!(
+        poll(&env, &round_id(), Utc::now()).unwrap(),
+        JudgingStatus::Waiting
+    );
+    assert_eq!(*launcher.0.borrow(), 2);
+    assert_eq!(w.kinds(), ["judge.scheduled"]);
+    assert_eq!(w.judge_records().len(), 1);
+}
+
+/// A job that is running and not overdue is waited for; `judge.started`
+/// carries its pid, once.
+#[test]
+fn jdg_08_a_running_job_is_waited_for() {
+    let w = World::new();
+    w.round(true);
+    let launcher = FakeLauncher::new(Vec::new());
+    let clock = || w.now();
+    let env = w.env(&launcher, &clock);
+    start(&env, &round_id()).unwrap();
+    for _ in 0..2 {
+        assert_eq!(
+            poll(&env, &round_id(), Utc::now()).unwrap(),
+            JudgingStatus::Waiting
+        );
+    }
+    assert_eq!(w.kinds(), ["judge.scheduled", "judge.started"]);
+    let started = w
+        .events()
+        .into_iter()
+        .find(|e| e.kind == "judge.started")
+        .unwrap();
+    assert_eq!(started.payload["pid"], std::process::id());
+    assert_eq!(
+        w.judge_records()[0].execution_status(),
+        ExecutionStatus::Running
+    );
+}
+
+/// The decision step: a `reject_all` verdict ends the round `Rejected`; an
+/// `abstain` verdict needs the operator. Both write the judgment first.
+#[test]
+fn jdg_06_reject_all_and_abstain_decisions() {
+    let with_verdict = |verdict: &str| {
+        let mut v: Value = serde_json::from_str(&answer()).unwrap();
+        v["verdict"] = json!(verdict);
+        v["winner"] = Value::Null;
+        v.to_string()
+    };
+
+    let w = World::new();
+    w.round(true);
+    let launcher = FakeLauncher::new(vec![FakeJob::Answer(with_verdict("reject_all"))]);
+    let clock = || w.now();
+    let env = w.env(&launcher, &clock);
+    start(&env, &round_id()).unwrap();
+    assert_eq!(
+        poll(&env, &round_id(), Utc::now()).unwrap(),
+        JudgingStatus::Decided(WinnerOutcome::Rejected {
+            reason: horch_core::evaluation::winner::RejectReason::JudgeRejected
+        })
+    );
+    assert_eq!(
+        w.kinds(),
+        [
+            "judge.scheduled",
+            "judge.started",
+            "judge.completed",
+            "winner.rejected"
+        ]
+    );
+    assert!(w.paths.judgement(&round_id()).unwrap().exists());
+    assert_eq!(
+        fold(&w.events()).rounds[&round_id()].state,
+        RoundState::Rejected
+    );
+
+    let w = World::new();
+    w.round(true);
+    let launcher = FakeLauncher::new(vec![FakeJob::Answer(with_verdict("abstain"))]);
+    let clock = || w.now();
+    let env = w.env(&launcher, &clock);
+    start(&env, &round_id()).unwrap();
+    assert_eq!(
+        poll(&env, &round_id(), Utc::now()).unwrap(),
+        JudgingStatus::NeedsIntervention
+    );
+    assert_eq!(
+        w.kinds(),
+        [
+            "judge.scheduled",
+            "judge.started",
+            "judge.completed",
+            "round.needs_intervention"
+        ]
+    );
+    let event = w
+        .events()
+        .into_iter()
+        .find(|e| e.kind == "round.needs_intervention")
+        .unwrap();
+    assert_eq!(event.payload["source"], "judge");
+    assert_eq!(event.payload["reason"], "the judge abstained");
+    assert!(w.paths.judgement(&round_id()).unwrap().exists());
+    assert_eq!(
+        fold(&w.events()).rounds[&round_id()].state,
+        RoundState::NeedsIntervention
     );
 }

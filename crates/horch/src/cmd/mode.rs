@@ -24,7 +24,7 @@ use std::time::Duration;
 
 use anyhow::Result;
 use horch_core::execution::legacy::{HistoryEntry, Record};
-use horch_core::execution::records::Ledger;
+use horch_core::execution::records::SessionLedger;
 use horch_core::harness::codex::{
     parse_permissions_menu, status_permissions, status_shows, PaneMode,
 };
@@ -107,14 +107,20 @@ pub(crate) fn switch(
     mode: PaneMode,
     timing: &Timing,
 ) -> Result<(), SwitchError> {
+    wait_for_prompt(ws, pane, timing)?;
+    select_in_menu(ws, pane, mode.menu_label(), timing)
+        .and_then(|()| confirm_status(ws, pane, mode, timing))
+        .map_err(SwitchError::Failed)
+}
+
+/// Poll until the pane has been at its prompt twice in a row.
+fn wait_for_prompt(
+    ws: &dyn WorkspaceClient,
+    pane: &str,
+    timing: &Timing,
+) -> Result<(), SwitchError> {
     let mut idle = 0;
-    let mut polls = 0;
-    while idle < 2 {
-        if polls >= timing.idle_polls {
-            return Err(SwitchError::Refused(format!(
-                "the pane {pane} is not at its prompt"
-            )));
-        }
+    for _ in 0..timing.idle_polls {
         let status = ws
             .pane_get(pane)
             .map_err(|e| SwitchError::Refused(format!("{e:#}")))?
@@ -124,59 +130,103 @@ pub(crate) fn switch(
         } else {
             0
         };
-        polls += 1;
-        if idle < 2 {
-            std::thread::sleep(timing.poll);
+        if idle == 2 {
+            return Ok(());
         }
+        std::thread::sleep(timing.poll);
     }
-    let failed = |r: String| SwitchError::Failed(r);
-    let label = mode.menu_label();
+    Err(SwitchError::Refused(format!(
+        "the pane {pane} is not at its prompt"
+    )))
+}
 
-    type_line(ws, pane, "/permissions").map_err(failed)?;
-    let menu = poll_screen(ws, pane, "visible", timing, parse_permissions_menu)
-        .ok_or_else(|| failed("the /permissions menu did not open".into()))?;
-    let Some(downs) = menu.downs_to(label) else {
-        let _ = ws.pane_send_keys(pane, "esc");
-        return Err(failed(format!(
-            "the /permissions menu has no item {label:?}; it has {}",
-            menu.items.join(", ")
-        )));
-    };
+/// Press escape and give `reason` back, so a refused step never leaves the
+/// menu open.
+fn cancel_menu(ws: &dyn WorkspaceClient, pane: &str, reason: String) -> String {
+    let _ = ws.pane_send_keys(pane, "esc");
+    reason
+}
+
+/// Open `/permissions`, move to `label` and pick it.
+fn select_in_menu(
+    ws: &dyn WorkspaceClient,
+    pane: &str,
+    label: &str,
+    timing: &Timing,
+) -> Result<(), String> {
+    let downs = open_menu(ws, pane, label, timing)?;
     for _ in 0..downs {
-        key(ws, pane, "down").map_err(failed)?;
+        key(ws, pane, "down")?;
     }
-    let at = ws
-        .pane_read(pane, "visible")
-        .ok()
-        .and_then(|s| parse_permissions_menu(&s));
-    let under = at.as_ref().and_then(|m| m.cursor_label()).unwrap_or("");
-    if under != label {
-        let _ = ws.pane_send_keys(pane, "esc");
-        return Err(failed(format!(
-            "the /permissions cursor is on {under:?}, not {label:?}"
-        )));
-    }
-    key(ws, pane, "enter").map_err(failed)?;
+    let under = cursor_label(ws, pane);
+    (under == label).then_some(()).ok_or_else(|| {
+        cancel_menu(
+            ws,
+            pane,
+            format!("the /permissions cursor is on {under:?}, not {label:?}"),
+        )
+    })?;
+    key(ws, pane, "enter")?;
     poll_screen(ws, pane, "visible", timing, |s| {
         parse_permissions_menu(s).is_none().then_some(())
     })
-    .ok_or_else(|| failed("the /permissions menu did not close".into()))?;
+    .ok_or_else(|| "the /permissions menu did not close".to_string())
+}
 
+/// Open `/permissions` and count the downs from its cursor to `label`.
+fn open_menu(
+    ws: &dyn WorkspaceClient,
+    pane: &str,
+    label: &str,
+    timing: &Timing,
+) -> Result<usize, String> {
+    type_line(ws, pane, "/permissions")?;
+    let menu = poll_screen(ws, pane, "visible", timing, parse_permissions_menu)
+        .ok_or_else(|| "the /permissions menu did not open".to_string())?;
+    menu.downs_to(label).ok_or_else(|| {
+        cancel_menu(
+            ws,
+            pane,
+            format!(
+                "the /permissions menu has no item {label:?}; it has {}",
+                menu.items.join(", ")
+            ),
+        )
+    })
+}
+
+/// The item under the menu cursor, or an empty string when it cannot be read.
+fn cursor_label(ws: &dyn WorkspaceClient, pane: &str) -> String {
+    ws.pane_read(pane, "visible")
+        .ok()
+        .and_then(|s| parse_permissions_menu(&s))
+        .and_then(|m| m.cursor_label().map(str::to_string))
+        .unwrap_or_default()
+}
+
+/// Run `/status` and check that its Permissions line shows `mode`.
+fn confirm_status(
+    ws: &dyn WorkspaceClient,
+    pane: &str,
+    mode: PaneMode,
+    timing: &Timing,
+) -> Result<(), String> {
     let seen = ws
         .pane_read(pane, "recent")
         .map(|s| s.matches("Permissions:").count())
         .unwrap_or(0);
-    type_line(ws, pane, "/status").map_err(failed)?;
+    type_line(ws, pane, "/status")?;
     let value = poll_screen(ws, pane, "recent", timing, |s| {
         (s.matches("Permissions:").count() > seen)
             .then(|| status_permissions(s))
             .flatten()
     })
-    .ok_or_else(|| failed("/status printed no Permissions line".into()))?;
-    if !status_shows(mode, &value) {
-        return Err(failed(format!("/status shows Permissions: {value}")));
+    .ok_or_else(|| "/status printed no Permissions line".to_string())?;
+    if status_shows(mode, &value) {
+        Ok(())
+    } else {
+        Err(format!("/status shows Permissions: {value}"))
     }
-    Ok(())
 }
 
 fn type_line(ws: &dyn WorkspaceClient, pane: &str, line: &str) -> Result<(), String> {
@@ -229,7 +279,7 @@ pub(crate) fn is_plan_pane(roster: &Roster, record: &Record) -> bool {
 /// [`switch`] on a record, with its event: `mode-changed` on success,
 /// `mode-failed` when keys were typed and the check failed.
 pub(crate) fn switch_record(
-    ledger: &Ledger,
+    ledger: &SessionLedger,
     ws: &dyn WorkspaceClient,
     record: &Record,
     pane: &str,
@@ -254,7 +304,7 @@ pub(crate) fn switch_record(
 
 /// Everything `horch mode` works with. Tests pass a simulated pane.
 pub(crate) struct Env<'a> {
-    pub ledger: &'a Ledger,
+    pub ledger: &'a SessionLedger,
     pub roster: &'a Roster,
     pub ws: &'a dyn WorkspaceClient,
     pub mailbox: &'a Mailbox,
@@ -264,30 +314,33 @@ pub(crate) struct Env<'a> {
 /// 1 run: the exit code and the lines for stdout and stderr.
 pub(crate) fn run(env: &Env, args: &ModeArgs) -> (u8, String) {
     let role = &args.role;
-    let workspace = env.mailbox.workspace_id();
     let refused = |r: String| (1, format!("horch mode: refused: {r}"));
-    let record = match env.ledger.live_for_role(role, Some(workspace)) {
-        Ok(Some(r)) => r,
-        Ok(None) => {
-            return refused(format!(
-                "no live record for role {role} in workspace {workspace}"
-            ))
-        }
-        Err(e) => return refused(format!("{e:#}")),
-    };
-    if !is_plan_pane(env.roster, &record) {
-        return refused(format!(
-            "role {role} is not a Codex pane with permission_mode plan"
-        ));
-    }
-    let Some(pane) = env.mailbox.pane_for(role) else {
-        return refused(format!("role {role} has no pane in workspace {workspace}"));
-    };
-    match switch_record(env.ledger, env.ws, &record, &pane, args.mode, &env.timing) {
+    let planned = plan_pane(env, role).map_err(SwitchError::Refused);
+    match planned.and_then(|(record, pane)| {
+        switch_record(env.ledger, env.ws, &record, &pane, args.mode, &env.timing)
+    }) {
         Ok(()) => (0, format!("{role} is in {} mode", args.mode.as_str())),
         Err(SwitchError::Refused(r)) => refused(r),
         Err(SwitchError::Failed(r)) => (1, format!("horch mode: {r}")),
     }
+}
+
+/// The live record and the pane of `role`, or why `horch mode` refuses it.
+fn plan_pane(env: &Env, role: &str) -> Result<(Record, String), String> {
+    let workspace = env.mailbox.workspace_id();
+    let record = env
+        .ledger
+        .live_for_role(role, Some(workspace))
+        .map_err(|e| format!("{e:#}"))?
+        .ok_or_else(|| format!("no live record for role {role} in workspace {workspace}"))?;
+    is_plan_pane(env.roster, &record)
+        .then_some(())
+        .ok_or_else(|| format!("role {role} is not a Codex pane with permission_mode plan"))?;
+    let pane = env
+        .mailbox
+        .pane_for(role)
+        .ok_or_else(|| format!("role {role} has no pane in workspace {workspace}"))?;
+    Ok((record, pane))
 }
 
 /// `horch mode`.
@@ -300,7 +353,7 @@ pub fn mode(ctx: &RuntimeContext, args: &ModeArgs) -> Result<ExitCode> {
             return Ok(ExitCode::from(1));
         }
     };
-    let ledger = Ledger::open_in(ctx)?;
+    let ledger = SessionLedger::open_in(ctx)?;
     let roster = match super::load_roster_unwarned(ctx, None) {
         Ok(r) => r,
         Err(_) => Roster::builtin()?,
@@ -643,6 +696,29 @@ mod tests {
         }
         assert!(sim.typed().is_empty());
         assert!(f.events("claude-1").is_empty());
+    }
+
+    /// Each refusal names its cause, word for word.
+    #[test]
+    fn each_refusal_gives_its_exact_reason() {
+        let f = Fleet::new();
+        f.worker("claude-1", "claude", "codex-plan");
+        f.w.worker("rec-lost", "lost", "codex", "codex-plan", None);
+        let sim = SimCodex::new(PaneMode::Plan);
+        let line = |role: &str| f.run(&sim, role, PaneMode::Write).1;
+        assert_eq!(
+            line("nobody"),
+            "horch mode: refused: no live record for role nobody in workspace w1"
+        );
+        assert_eq!(
+            line("claude-1"),
+            "horch mode: refused: role claude-1 is not a Codex pane with permission_mode plan"
+        );
+        assert_eq!(
+            line("lost"),
+            "horch mode: refused: role lost has no pane in workspace w1"
+        );
+        assert!(sim.typed().is_empty());
     }
 
     /// A pane that stays busy is refused before any key.

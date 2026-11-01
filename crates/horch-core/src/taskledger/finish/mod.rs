@@ -5,10 +5,11 @@
 //! first that does not pass. A re-run starts again from the top: a step that
 //! passed is kept while the branch's tree is the one it judged, and runs
 //! again when a later fix changed it. Once `land` passed, the steps before
-//! it are final.
+//! it are final, until a commit arrives that the run branch lacks.
 
 pub mod codesweep;
 pub mod complexity;
+pub mod detach;
 pub mod land;
 pub mod pr;
 
@@ -19,8 +20,11 @@ use rusqlite::{params, Connection};
 use serde::Serialize;
 
 use super::git::Git;
-use super::model::{Actor, EventKind, StepName, StepStatus, TaskStatus, WorktreeStatus};
+use super::model::{
+    Actor, EventKind, StepName, StepStatus, TaskStatus, WorkerStatus, WorktreeStatus,
+};
 use super::runs::{self, Run};
+use super::sql_words::{self, word};
 use super::store::{optional, Store};
 use super::tasks::{self, Task};
 use super::util::{self, About};
@@ -43,6 +47,37 @@ pub struct Tools {
     pub evidence_root: PathBuf,
     /// The shell that runs a check command.
     pub shell: PathBuf,
+    /// Reviewer personas that cannot run on this host, with why (not in the
+    /// roster, harness not installed). Code-sweep queues their fallback.
+    pub reviewers_down: Vec<(String, String)>,
+    /// What runs the check of a Codex worker inside its pane's sandbox.
+    pub codex: CodexSandbox,
+}
+
+/// The check of a Codex worker runs in the sandbox of its pane, not with
+/// the operator's full rights (#181): `finish` itself runs outside the
+/// sandbox, and the check runs code the worker wrote.
+#[derive(Debug, Clone, Default)]
+pub struct CodexSandbox {
+    /// The `codex` CLI.
+    pub bin: PathBuf,
+    /// The state root: the pane's 1 extra writable root, and the parent of
+    /// its TMPDIR.
+    pub state_root: PathBuf,
+    /// The roster's Codex teammates. A worker with 1 of these personas is a
+    /// Codex worker, also when the ledger has no harness for it.
+    pub personas: Vec<String>,
+}
+
+impl CodexSandbox {
+    /// Whether `worker` runs in a Codex pane.
+    pub fn runs(&self, worker: &Worker) -> bool {
+        worker.harness.as_deref() == Some("codex")
+            || worker
+                .persona
+                .as_ref()
+                .is_some_and(|p| self.personas.contains(p))
+    }
 }
 
 /// 1 step row.
@@ -71,6 +106,8 @@ pub struct Outcome {
     /// The tree this result judged; a change re-runs the step.
     pub judged_rev: Option<String>,
     pub review_task_ids: Option<Vec<String>>,
+    /// Reviewer workers whose review a new round superseded: stop them.
+    pub stop_workers: Vec<String>,
 }
 
 impl Outcome {
@@ -82,6 +119,7 @@ impl Outcome {
             note: note.into(),
             judged_rev: None,
             review_task_ids: None,
+            stop_workers: Vec::new(),
         }
     }
 
@@ -147,21 +185,40 @@ pub struct WorktreeRow {
     pub reason: Option<String>,
 }
 
+/// The columns [`WorktreeRow::from_row`] reads, in its field order.
+const WORKTREE_COLUMNS: &str = "worktree_id, task_id, worker_id, repo_root, path, branch, base, \
+     base_commit, status, landed_commit, bytes_on_disk, reason";
+
 impl WorktreeRow {
+    /// 1 row of `SELECT {WORKTREE_COLUMNS}`, read by position.
     fn from_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<WorktreeRow> {
+        let (
+            worktree_id,
+            task_id,
+            worker_id,
+            repo_root,
+            path,
+            branch,
+            base,
+            base_commit,
+            status,
+            landed_commit,
+            bytes_on_disk,
+            reason,
+        ) = r.try_into()?;
         Ok(WorktreeRow {
-            worktree_id: r.get("worktree_id")?,
-            task_id: r.get("task_id")?,
-            worker_id: r.get("worker_id")?,
-            repo_root: r.get("repo_root")?,
-            path: r.get("path")?,
-            branch: r.get("branch")?,
-            base: r.get("base")?,
-            base_commit: r.get("base_commit")?,
-            status: r.get("status")?,
-            landed_commit: r.get("landed_commit")?,
-            bytes_on_disk: r.get("bytes_on_disk")?,
-            reason: r.get("reason")?,
+            worktree_id,
+            task_id,
+            worker_id,
+            repo_root,
+            path,
+            branch,
+            base,
+            base_commit,
+            status,
+            landed_commit,
+            bytes_on_disk,
+            reason,
         })
     }
 }
@@ -169,8 +226,12 @@ impl WorktreeRow {
 /// The newest worktree of a task that is not cleaned or abandoned.
 pub fn worktree_of(conn: &Connection, task_id: &str) -> Result<Option<WorktreeRow>> {
     optional(conn.query_row(
-        "SELECT * FROM worktrees WHERE task_id = ?1 AND status NOT IN ('cleaned', 'abandoned')
-         ORDER BY created_at DESC, rowid DESC LIMIT 1",
+        &format!(
+            "SELECT {WORKTREE_COLUMNS} FROM worktrees
+             WHERE task_id = ?1 AND status NOT IN ({gone})
+             ORDER BY created_at DESC, rowid DESC LIMIT 1",
+            gone = sql_words::list(sql_words::WORKTREES_GONE)
+        ),
         [task_id],
         WorktreeRow::from_row,
     ))
@@ -179,7 +240,7 @@ pub fn worktree_of(conn: &Connection, task_id: &str) -> Result<Option<WorktreeRo
 /// 1 worktree by id.
 pub fn worktree(conn: &Connection, id: &str) -> Result<WorktreeRow> {
     conn.query_row(
-        "SELECT * FROM worktrees WHERE worktree_id = ?1",
+        &format!("SELECT {WORKTREE_COLUMNS} FROM worktrees WHERE worktree_id = ?1"),
         [id],
         WorktreeRow::from_row,
     )
@@ -188,7 +249,9 @@ pub fn worktree(conn: &Connection, id: &str) -> Result<WorktreeRow> {
 
 /// Every worktree row with `status`.
 pub fn worktrees_with(conn: &Connection, status: WorktreeStatus) -> Result<Vec<WorktreeRow>> {
-    let mut stmt = conn.prepare("SELECT * FROM worktrees WHERE status = ?1 ORDER BY created_at")?;
+    let mut stmt = conn.prepare(&format!(
+        "SELECT {WORKTREE_COLUMNS} FROM worktrees WHERE status = ?1 ORDER BY created_at"
+    ))?;
     let rows = stmt
         .query_map([status.as_str()], WorktreeRow::from_row)?
         .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -208,6 +271,57 @@ pub(crate) fn set_worktree(
     Ok(())
 }
 
+/// The folder of 1 task's facts that outlive its workers (the start of a
+/// shared task, the code-sweep round, waivers).
+pub fn task_dir(evidence_root: &Path, task_id: &str) -> PathBuf {
+    evidence_root.join(task_id)
+}
+
+/// The file that holds the `HEAD` a shared-checkout task started from.
+fn shared_start_path(evidence_root: &Path, task_id: &str) -> PathBuf {
+    task_dir(evidence_root, task_id).join("shared-start")
+}
+
+/// The commit a shared-checkout task started from, when it was recorded.
+pub(crate) fn shared_start(evidence_root: &Path, task_id: &str) -> Option<String> {
+    std::fs::read_to_string(shared_start_path(evidence_root, task_id))
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+}
+
+/// The gate of a shared-checkout claim: the main checkout must be on the
+/// run branch, so the worker's commits go there. The first claim records
+/// `HEAD`; `land` later requires a commit after it. A worktree task or a
+/// review passes at once.
+pub fn shared_claim(tools: &Tools, run: &Run, task: &Task) -> Result<()> {
+    if task.uses_worktree() || task.is_review() {
+        return Ok(());
+    }
+    let Some(run_branch) = run.run_branch.as_deref() else {
+        return Ok(());
+    };
+    let root = Path::new(&run.project_root);
+    let on = tools.git.current_branch(root);
+    if on.as_deref() != Some(run_branch) {
+        bail!(
+            "{} works in the shared checkout, and {} is on {}, not {run_branch}. \
+             Ask the orchestrator to run this in {}: git switch {run_branch}",
+            task.short(),
+            root.display(),
+            on.as_deref().unwrap_or("a detached HEAD"),
+            root.display()
+        );
+    }
+    let path = shared_start_path(&tools.evidence_root, &task.task_id);
+    if !path.exists() {
+        let head = tools.git.rev(root, "HEAD")?;
+        std::fs::create_dir_all(path.parent().expect("a task folder"))?;
+        std::fs::write(&path, format!("{head}\n"))?;
+    }
+    Ok(())
+}
+
 /// The worker's current task, or an error a worker can act on.
 fn held_task(conn: &Connection, worker_id: &str) -> Result<(Worker, Task)> {
     let w = workers::get(conn, worker_id)?;
@@ -215,6 +329,13 @@ fn held_task(conn: &Connection, worker_id: &str) -> Result<(Worker, Task)> {
         bail!("this worker holds no task: run horch ledger claim first");
     };
     let task = tasks::get(conn, t)?;
+    if task.status == TaskStatus::Cancelled.as_str() {
+        bail!(
+            "{} was cancelled: {}. Stop work, then run horch done",
+            task.short(),
+            task.summary.as_deref().unwrap_or("no reason given")
+        );
+    }
     if task.current_worker_id.as_deref() != Some(worker_id) {
         bail!(
             "{} is no longer this worker's ({}); stop work and end your turn",
@@ -256,16 +377,36 @@ pub fn worktree_new(
             task.short()
         );
     }
-    if let Some(existing) = worktree_of(store.conn(), &task.task_id)? {
-        store.immediate(|tx| {
-            tx.execute(
-                "UPDATE worktrees SET worker_id = ?2 WHERE worktree_id = ?1",
-                params![existing.worktree_id, worker_id],
-            )?;
-            Ok(())
-        })?;
-        return worktree(store.conn(), &existing.worktree_id);
+    match worktree_of(store.conn(), &task.task_id)? {
+        Some(existing) => reuse_worktree(store, &existing, worker_id),
+        None => create_worktree(store, git, &w, &task, name),
     }
+}
+
+/// The task's open worktree, now the worker's.
+fn reuse_worktree(
+    store: &mut Store,
+    existing: &WorktreeRow,
+    worker_id: &str,
+) -> Result<WorktreeRow> {
+    store.immediate(|tx| {
+        tx.execute(
+            "UPDATE worktrees SET worker_id = ?2 WHERE worktree_id = ?1",
+            params![existing.worktree_id, worker_id],
+        )?;
+        Ok(())
+    })?;
+    worktree(store.conn(), &existing.worktree_id)
+}
+
+/// A new worktree for the task, on a new branch from the run branch.
+fn create_worktree(
+    store: &mut Store,
+    git: &Git,
+    w: &Worker,
+    task: &Task,
+    name: &str,
+) -> Result<WorktreeRow> {
     let run = runs::get(store.conn(), &task.run_id)?;
     let root = PathBuf::from(&run.project_root);
     let base = run
@@ -295,38 +436,94 @@ pub fn worktree_new(
         &root,
         &["worktree", "add", "-b", &branch, &path_text, &base_commit],
     )?;
-    let id = util::new_id();
+    let row = WorktreeRow {
+        worktree_id: util::new_id(),
+        task_id: Some(task.task_id.clone()),
+        worker_id: Some(w.worker_id.clone()),
+        repo_root: root.to_string_lossy().into_owned(),
+        path: path_text,
+        branch,
+        base,
+        base_commit: Some(base_commit),
+        status: WorktreeStatus::Open.as_str().to_string(),
+        landed_commit: None,
+        bytes_on_disk: None,
+        reason: None,
+    };
+    insert_worktree(store, &row, &task.run_id)
+}
+
+/// Record a new worktree of the task in `row.task_id`.
+fn insert_worktree(store: &mut Store, row: &WorktreeRow, run_id: &str) -> Result<WorktreeRow> {
     store.immediate(|tx| {
         tx.execute(
-            "INSERT INTO worktrees (worktree_id, task_id, worker_id, repo_root, path, branch, base,
-                base_commit, status, origin, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 'open', 'native', ?9)",
+            &format!(
+                "INSERT INTO worktrees (worktree_id, task_id, worker_id, repo_root, path, branch, base,
+                    base_commit, status, origin, created_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, {open}, 'native', ?9)",
+                open = word(WorktreeStatus::Open)
+            ),
             params![
-                id,
-                task.task_id,
-                worker_id,
-                root.to_string_lossy(),
-                path_text,
-                branch,
-                base,
-                base_commit,
+                row.worktree_id,
+                row.task_id,
+                row.worker_id,
+                row.repo_root,
+                row.path,
+                row.branch,
+                row.base,
+                row.base_commit,
                 util::now()
             ],
         )?;
         util::event(
             tx,
             &About {
-                run: Some(&task.run_id),
-                task: Some(&task.task_id),
-                worker: Some(&w.worker_id),
+                run: Some(run_id),
+                task: row.task_id.as_deref(),
+                worker: row.worker_id.as_deref(),
             },
             Actor::Worker,
             EventKind::Progress,
-            &format!("Worktree {path_text} on branch {branch} from {base}."),
+            &format!(
+                "Worktree {} on branch {} from {}.",
+                row.path, row.branch, row.base
+            ),
         )?;
         Ok(())
     })?;
-    worktree(store.conn(), &id)
+    worktree(store.conn(), &row.worktree_id)
+}
+
+impl Step {
+    /// 1 row of the `task_steps` SELECT of [`steps_of`], read by position.
+    fn from_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<Step> {
+        let (
+            seq,
+            name,
+            status,
+            rounds,
+            evidence_path,
+            verdict,
+            review_task_ids,
+            judged_rev,
+            started_at,
+            ended_at,
+            note,
+        ) = r.try_into()?;
+        Ok(Step {
+            seq,
+            name,
+            status,
+            rounds,
+            evidence_path,
+            verdict,
+            review_task_ids,
+            judged_rev,
+            started_at,
+            ended_at,
+            note,
+        })
+    }
 }
 
 /// The steps of 1 attempt, in order.
@@ -337,23 +534,15 @@ pub fn steps_of(conn: &Connection, task_id: &str, worker_id: &str) -> Result<Vec
          FROM task_steps WHERE task_id = ?1 AND worker_id = ?2 ORDER BY seq",
     )?;
     let rows = stmt
-        .query_map(params![task_id, worker_id], |r| {
-            Ok(Step {
-                seq: r.get(0)?,
-                name: r.get(1)?,
-                status: r.get(2)?,
-                rounds: r.get(3)?,
-                evidence_path: r.get(4)?,
-                verdict: r.get(5)?,
-                review_task_ids: r.get(6)?,
-                judged_rev: r.get(7)?,
-                started_at: r.get(8)?,
-                ended_at: r.get(9)?,
-                note: r.get(10)?,
-            })
-        })?
+        .query_map(params![task_id, worker_id], Step::from_row)?
         .collect::<rusqlite::Result<Vec<_>>>()?;
     Ok(rows)
+}
+
+/// Whether a step's status lets the pipeline go on: passed or not
+/// applicable. An unknown status does not.
+fn through(status: &str) -> bool {
+    StepStatus::parse(status).is_ok_and(|s| s.is_through())
 }
 
 /// What `finish` did.
@@ -368,6 +557,9 @@ pub struct FinishReport {
     pub message: String,
     /// Reviewer tasks queued by code-sweep that no worker holds yet.
     pub queued_reviews: Vec<String>,
+    /// Reviewer workers whose review a new round superseded: the caller
+    /// stops them.
+    pub superseded_workers: Vec<String>,
 }
 
 /// The tree the branch holds now: what a step judges.
@@ -375,135 +567,262 @@ fn tree_of(git: &Git, dir: &Path) -> Option<String> {
     git.tree(dir).ok()
 }
 
-/// Run the finish steps of the worker's task.
-pub fn finish(store: &mut Store, tools: &Tools, worker_id: &str) -> Result<FinishReport> {
-    let (w, task) = held_task(store.conn(), worker_id)?;
-    if task.is_review() {
-        bail!(
-            "{} is a review task: it has no finish steps; run horch ledger done",
-            task.short()
-        );
-    }
-    let run = runs::get(store.conn(), &task.run_id)?;
-    let names = run.steps()?;
-    let root = PathBuf::from(&run.project_root);
-    let wt = worktree_of(store.conn(), &task.task_id)?;
+/// 1 attempt's finish: the task, its worker and where its work is.
+struct Attempt<'a> {
+    tools: &'a Tools,
+    run: Run,
+    task: Task,
+    w: Worker,
+    names: Vec<StepName>,
+    root: PathBuf,
+    /// Where the work is: the worktree, or the shared checkout.
+    dir: PathBuf,
+    evidence_dir: PathBuf,
+    wt: Option<WorktreeRow>,
+    /// The seq of the land step, when the run has one.
+    land_seq: Option<i64>,
+}
+
+/// The seq of the land step among `names`.
+fn land_seq(names: &[StepName]) -> Option<i64> {
+    names
+        .iter()
+        .position(|n| *n == StepName::Land)
+        .map(|i| i as i64 + 1)
+}
+
+/// The work's folder: the worktree when it exists, else the checkout.
+fn work_dir(wt: Option<&WorktreeRow>, root: &Path) -> PathBuf {
+    wt.filter(|w| Path::new(&w.path).exists())
+        .map(|w| PathBuf::from(&w.path))
+        .unwrap_or_else(|| root.to_path_buf())
+}
+
+/// A task that uses a worktree finishes only once it has one.
+fn require_worktree(task: &Task, wt: Option<&WorktreeRow>) -> Result<()> {
     if task.uses_worktree() && wt.is_none() {
         bail!(
             "{} has no worktree. Make it with horch ledger worktree new <name>, work and commit there, then run finish",
             task.short()
         );
     }
-    let dir = wt
-        .as_ref()
-        .filter(|w| Path::new(&w.path).exists())
-        .map(|w| PathBuf::from(&w.path))
-        .unwrap_or_else(|| root.clone());
-    let evidence_dir = tools.evidence_root.join(&task.task_id).join(&w.worker_id);
-    std::fs::create_dir_all(&evidence_dir)?;
-    // Make sure every step has its row.
-    store.immediate(|tx| {
-        for (i, n) in names.iter().enumerate() {
-            tx.execute(
-                "INSERT OR IGNORE INTO task_steps (task_id, worker_id, seq, name, status)
-                 VALUES (?1, ?2, ?3, ?4, 'pending')",
-                params![task.task_id, w.worker_id, i as i64 + 1, n.as_str()],
-            )?;
+    Ok(())
+}
+
+impl<'a> Attempt<'a> {
+    fn open(store: &Store, tools: &'a Tools, worker_id: &str) -> Result<Attempt<'a>> {
+        let (w, task) = held_task(store.conn(), worker_id)?;
+        if task.is_review() {
+            bail!(
+                "{} is a review task: it has no finish steps; run horch ledger done",
+                task.short()
+            );
         }
-        if task.status == TaskStatus::Running.as_str() {
-            tx.execute(
-                "UPDATE tasks SET status = 'landing', updated_at = ?2 WHERE task_id = ?1",
-                params![task.task_id, util::now()],
-            )?;
-        }
-        Ok(())
-    })?;
-    let about = |s: &str| format!("{} {s}", task.short());
-    let land_seq = names
-        .iter()
-        .position(|n| *n == StepName::Land)
-        .map(|i| i as i64 + 1);
-    let mut stopped_at = None;
-    let mut message = String::new();
-    let mut queued_reviews = Vec::new();
-    for (i, name) in names.iter().enumerate() {
-        let seq = i as i64 + 1;
-        let rows = steps_of(store.conn(), &task.task_id, &w.worker_id)?;
-        let row = rows
-            .iter()
-            .find(|r| r.seq == seq)
-            .cloned()
-            .expect("inserted above");
-        let land_passed = land_seq.is_some_and(|ls| {
-            rows.iter()
-                .any(|r| r.seq == ls && StepStatus::parse(&r.status).is_ok_and(|s| s.is_through()))
-        });
-        let through = StepStatus::parse(&row.status)?.is_through();
-        let before_land = land_seq.is_some_and(|ls| seq < ls);
-        // A passed step stands while the tree it judged is the tree now,
-        // and always once the work landed.
-        if through {
-            let frozen = before_land && land_passed;
-            let still = row.judged_rev.is_none()
-                || frozen
-                || row.judged_rev.as_deref() == tree_of(&tools.git, &dir).as_deref();
-            if still {
-                continue;
-            }
-        }
-        let wt_now = worktree_of(store.conn(), &task.task_id)?;
-        let cx = Ctx {
+        let run = runs::get(store.conn(), &task.run_id)?;
+        let names = run.steps()?;
+        let root = PathBuf::from(&run.project_root);
+        let wt = worktree_of(store.conn(), &task.task_id)?;
+        require_worktree(&task, wt.as_ref())?;
+        let dir = work_dir(wt.as_ref(), &root);
+        let evidence_dir = tools.evidence_root.join(&task.task_id).join(&w.worker_id);
+        std::fs::create_dir_all(&evidence_dir)?;
+        Ok(Attempt {
             tools,
-            run: &run,
-            task: &task,
-            worker: &w,
-            worktree: wt_now,
-            dir: dir.clone(),
-            root: root.clone(),
-            evidence_dir: evidence_dir.clone(),
+            land_seq: land_seq(&names),
+            run,
+            task,
+            w,
+            names,
+            root,
+            dir,
+            evidence_dir,
+            wt,
+        })
+    }
+
+    /// Make sure every step has its row; the task is landing now.
+    fn seed_steps(&self, store: &mut Store) -> Result<()> {
+        store.immediate(|tx| {
+            for (i, n) in self.names.iter().enumerate() {
+                tx.execute(
+                    &format!(
+                        "INSERT OR IGNORE INTO task_steps (task_id, worker_id, seq, name, status)
+                         VALUES (?1, ?2, ?3, ?4, {pending})",
+                        pending = word(StepStatus::Pending)
+                    ),
+                    params![
+                        self.task.task_id,
+                        self.w.worker_id,
+                        i as i64 + 1,
+                        n.as_str()
+                    ],
+                )?;
+            }
+            if self.task.status == TaskStatus::Running.as_str() {
+                tx.execute(
+                    &format!(
+                        "UPDATE tasks SET status = {landing}, updated_at = ?2
+                         WHERE task_id = ?1 AND status = {running}",
+                        landing = word(TaskStatus::Landing),
+                        running = word(TaskStatus::Running)
+                    ),
+                    params![self.task.task_id, util::now()],
+                )?;
+            }
+            Ok(())
+        })
+    }
+
+    /// Commits after a land: the steps from land on judge them again (#154).
+    fn reopen_after_land(&self, store: &mut Store) -> Result<()> {
+        let (Some(w0), Some(rb), Some(ls)) =
+            (&self.wt, self.run.run_branch.as_deref(), self.land_seq)
+        else {
+            return Ok(());
+        };
+        if !land::reopen_if_new_commits(store, &self.tools.git, &self.root, w0, rb)? {
+            return Ok(());
+        }
+        store.immediate(|tx| {
+            tx.execute(
+                &format!(
+                    "UPDATE task_steps SET status = {pending} WHERE task_id = ?1 AND worker_id = ?2 AND seq >= ?3",
+                    pending = word(StepStatus::Pending)
+                ),
+                params![self.task.task_id, self.w.worker_id, ls],
+            )?;
+            Ok(())
+        })
+    }
+
+    /// Whether step `seq` passed and still stands: while the tree it judged
+    /// is the tree now, and always once the work landed.
+    fn still_passes(&self, store: &Store, seq: i64) -> Result<bool> {
+        let rows = steps_of(store.conn(), &self.task.task_id, &self.w.worker_id)?;
+        let row = rows.iter().find(|r| r.seq == seq).expect("inserted above");
+        if !StepStatus::parse(&row.status)?.is_through() {
+            return Ok(false);
+        }
+        let frozen = self.frozen(&rows, seq);
+        Ok(row.judged_rev.is_none()
+            || frozen
+            || row.judged_rev.as_deref() == tree_of(&self.tools.git, &self.dir).as_deref())
+    }
+
+    /// Whether step `seq` comes before the land and the land passed: then
+    /// it is final.
+    fn frozen(&self, rows: &[Step], seq: i64) -> bool {
+        self.land_seq
+            .is_some_and(|ls| seq < ls && rows.iter().any(|r| r.seq == ls && through(&r.status)))
+    }
+
+    /// Run step `seq` and record its outcome; an error fails the step.
+    fn run_and_record(&self, store: &mut Store, seq: i64, name: StepName) -> Result<Outcome> {
+        let cx = Ctx {
+            tools: self.tools,
+            run: &self.run,
+            task: &self.task,
+            worker: &self.w,
+            worktree: worktree_of(store.conn(), &self.task.task_id)?,
+            dir: self.dir.clone(),
+            root: self.root.clone(),
+            evidence_dir: self.evidence_dir.clone(),
             seq,
         };
         store.immediate(|tx| {
             tx.execute(
-                "UPDATE task_steps SET status = 'running', rounds = rounds + 1,
-                    started_at = COALESCE(started_at, ?4)
-                 WHERE task_id = ?1 AND worker_id = ?2 AND seq = ?3",
-                params![task.task_id, w.worker_id, seq, util::now()],
+                &format!(
+                    "UPDATE task_steps SET status = {running}, rounds = rounds + 1,
+                        started_at = COALESCE(started_at, ?4)
+                     WHERE task_id = ?1 AND worker_id = ?2 AND seq = ?3",
+                    running = word(StepStatus::Running)
+                ),
+                params![self.task.task_id, self.w.worker_id, seq, util::now()],
             )?;
             Ok(())
         })?;
-        let outcome = match run_step(store, &cx, *name) {
-            Ok(o) => o,
-            Err(e) => Outcome::fail("error", None, &format!("{e:#}")),
+        let outcome = run_step(store, &cx, name)
+            .unwrap_or_else(|e| Outcome::fail("error", None, &format!("{e:#}")));
+        record(store, &self.task, &self.w, seq, name, &outcome)?;
+        Ok(outcome)
+    }
+}
+
+/// What the steps that ran in 1 finish left for its report.
+#[derive(Default)]
+struct Ran {
+    stopped_at: Option<String>,
+    message: String,
+    queued_reviews: Vec<String>,
+    superseded_workers: Vec<String>,
+}
+
+impl Ran {
+    fn add(&mut self, task: &Task, name: StepName, o: Outcome) {
+        if let Some(ids) = o.review_task_ids {
+            self.queued_reviews = ids;
+        }
+        self.superseded_workers.extend(o.stop_workers);
+        if !o.status.is_through() {
+            self.stopped_at = Some(name.as_str().to_string());
+            self.message = format!("{} {}: {}", task.short(), name.as_str(), o.note);
+        }
+    }
+
+    fn report(self, store: &Store, task: &Task, worker_id: &str) -> Result<FinishReport> {
+        let steps = steps_of(store.conn(), &task.task_id, worker_id)?;
+        let complete = self.stopped_at.is_none() && steps.iter().all(|s| through(&s.status));
+        let message = if complete {
+            format!(
+                "{}: every finish step passed. Run: horch ledger done \"<summary>\"",
+                task.short()
+            )
+        } else {
+            self.message
         };
-        record(store, &task, &w, seq, *name, &outcome)?;
-        if let Some(ids) = &outcome.review_task_ids {
-            queued_reviews = ids.clone();
-        }
-        if !outcome.status.is_through() {
-            stopped_at = Some(name.as_str().to_string());
-            message = format!("{}: {}", about(name.as_str()), outcome.note);
-            break;
+        Ok(FinishReport {
+            task: task.short(),
+            steps,
+            complete,
+            stopped_at: self.stopped_at,
+            message,
+            queued_reviews: self.queued_reviews,
+            superseded_workers: self.superseded_workers,
+        })
+    }
+}
+
+/// Run the finish steps of the worker's task. A step that still passes is
+/// kept; the first step that does not pass stops the run.
+pub fn finish(store: &mut Store, tools: &Tools, worker_id: &str) -> Result<FinishReport> {
+    let a = Attempt::open(store, tools, worker_id)?;
+    a.seed_steps(store)?;
+    a.reopen_after_land(store)?;
+    let mut ran = Ran::default();
+    for (seq, name) in (1..).zip(a.names.iter().copied()) {
+        if ran.stopped_at.is_none() && !a.still_passes(store, seq)? {
+            let outcome = a.run_and_record(store, seq, name)?;
+            ran.add(&a.task, name, outcome);
         }
     }
-    let steps = steps_of(store.conn(), &task.task_id, &w.worker_id)?;
-    let complete = stopped_at.is_none()
-        && steps
-            .iter()
-            .all(|s| StepStatus::parse(&s.status).is_ok_and(|s| s.is_through()));
-    if complete {
-        message = format!(
-            "{}: every finish step passed. Run: horch ledger done \"<summary>\"",
-            task.short()
-        );
-    }
-    Ok(FinishReport {
-        task: task.short(),
-        steps,
-        complete,
-        stopped_at,
-        message,
-        queued_reviews,
+    ran.report(store, &a.task, &a.w.worker_id)
+}
+
+/// `horch ledger finish --rereview`: the next finish queues a new
+/// code-sweep round for the same tree; the open reviews of the current one
+/// are cancelled as superseded.
+pub fn rereview(store: &mut Store, tools: &Tools, worker_id: &str) -> Result<()> {
+    let (w, task) = held_task(store.conn(), worker_id)?;
+    codesweep::forget_tree(store.conn(), &tools.evidence_root, &task.task_id)?;
+    store.immediate(|tx| {
+        tx.execute(
+            &format!(
+                "UPDATE task_steps SET status = {pending} WHERE task_id = ?1 AND worker_id = ?2 AND name = 'code-sweep'",
+                pending = word(StepStatus::Pending)
+            ),
+            params![task.task_id, w.worker_id],
+        )?;
+        Ok(())
     })
 }
 
@@ -528,10 +847,17 @@ fn record(
 ) -> Result<()> {
     store.immediate(|tx| {
         tx.execute(
-            "UPDATE task_steps SET status = ?4, verdict = ?5, evidence_path = ?6, note = ?7,
-                judged_rev = ?8, review_task_ids = COALESCE(?9, review_task_ids),
-                ended_at = CASE WHEN ?4 IN ('passed', 'failed', 'not_applicable') THEN ?10 ELSE ended_at END
-             WHERE task_id = ?1 AND worker_id = ?2 AND seq = ?3",
+            &format!(
+                "UPDATE task_steps SET status = ?4, verdict = ?5, evidence_path = ?6, note = ?7,
+                    judged_rev = ?8, review_task_ids = COALESCE(?9, review_task_ids),
+                    ended_at = CASE WHEN ?4 IN ({ended}) THEN ?10 ELSE ended_at END
+                 WHERE task_id = ?1 AND worker_id = ?2 AND seq = ?3",
+                ended = sql_words::list(&[
+                    StepStatus::Passed,
+                    StepStatus::Failed,
+                    StepStatus::NotApplicable
+                ])
+            ),
             params![
                 task.task_id,
                 w.worker_id,
@@ -585,7 +911,7 @@ pub fn all_through(conn: &Connection, run: &Run, task_id: &str, worker_id: &str)
         steps
             .iter()
             .find(|s| s.seq == i as i64 + 1)
-            .is_some_and(|s| StepStatus::parse(&s.status).is_ok_and(|st| st.is_through()))
+            .is_some_and(|s| through(&s.status))
     }))
 }
 
@@ -613,127 +939,250 @@ pub fn complete(
     summary: &str,
     unlanded: Option<&str>,
 ) -> Result<Completed> {
-    let w = workers::get(store.conn(), worker_id)?;
-    // A retry after a crash between the write and the report.
-    if w.status == "done" {
-        let t = w
-            .task_id
-            .clone()
-            .context("this worker finished without a task")?;
-        let task = tasks::get(store.conn(), &t)?;
-        return Ok(Completed {
-            task: task.short(),
-            task_id: task.task_id.clone(),
-            run_id: task.run_id.clone(),
-            review: task.is_review(),
-            unlanded: false,
-            reviews_in_for: None,
-            already: true,
-        });
+    if let Some(done) = already_completed(store.conn(), worker_id)? {
+        return Ok(done);
     }
-    let (w, task) = held_task(store.conn(), worker_id)?;
-    let run = runs::get(store.conn(), &task.run_id)?;
-    if summary.trim().is_empty() {
-        bail!("give a summary: horch ledger done \"<what you did, files, decisions, gotchas>\"");
-    }
-    if task.is_review() {
-        let findings = task.spec_ref.clone().unwrap_or_default();
-        if findings.is_empty() || !Path::new(&findings).is_file() {
-            bail!("write your findings file first: {findings}");
-        }
-    } else if unlanded.is_none() && !all_through(store.conn(), &run, &task.task_id, worker_id)? {
-        let steps = steps_of(store.conn(), &task.task_id, worker_id)?;
-        let open: Vec<String> = steps
-            .iter()
-            .filter(|s| !StepStatus::parse(&s.status).is_ok_and(|st| st.is_through()))
-            .map(|s| format!("{} ({})", s.name, s.status))
-            .collect();
-        bail!(
-            "{} is not finished: {}. Run horch ledger finish until every step passes. \
-             Only if the work truly cannot land: horch ledger done --unlanded \"<reason>\" \"<summary>\"",
-            task.short(),
-            if open.is_empty() {
-                "no finish step ran yet".to_string()
-            } else {
-                open.join(", ")
-            }
-        );
-    }
-    let out = store.immediate(|tx| {
-        let now = util::now();
-        let about = About {
-            run: Some(&task.run_id),
-            task: Some(&task.task_id),
-            worker: Some(worker_id),
-        };
-        let (status, text, kind) = match unlanded {
-            Some(reason) => {
-                if let Some(wt) = worktree_of(tx, &task.task_id)? {
-                    set_worktree(tx, &wt.worktree_id, WorktreeStatus::Unlanded, Some(reason))?;
-                }
-                (
-                    "cancelled",
-                    format!("UNLANDED: {reason} | {summary}"),
-                    EventKind::Unlanded,
-                )
-            }
-            None => ("done", summary.to_string(), EventKind::Done),
-        };
-        tx.execute(
-            "UPDATE tasks SET status = ?2, summary = ?3, updated_at = ?4, finished_at = ?4
-             WHERE task_id = ?1",
-            params![task.task_id, status, text, now],
-        )?;
-        tx.execute(
-            "UPDATE workers SET status = 'done', summary = ?2, end_reason = ?3, ended_at = ?4,
-                last_progress_at = ?4
-             WHERE worker_id = ?1",
-            params![
-                worker_id,
-                text,
-                if unlanded.is_some() {
-                    "unlanded"
-                } else {
-                    "done"
-                },
-                now
-            ],
-        )?;
-        util::event(
+    let (_, task) = held_task(store.conn(), worker_id)?;
+    check_completable(store.conn(), &task, worker_id, summary, unlanded)?;
+    store.immediate(|tx| {
+        let (status, text, kind) = final_state(tx, &task, summary, unlanded)?;
+        mark_done(
             tx,
-            &about,
-            Actor::Worker,
-            kind,
-            &format!("{} {}: {text}", task.short(), status),
+            &task,
+            worker_id,
+            (status, &text, kind),
+            unlanded.is_some(),
         )?;
-        // A review task: are all reviews of its parent in?
-        let mut reviews_in_for = None;
-        if let Some(parent) = task.parent_task_id.clone().filter(|_| task.is_review()) {
-            let open: i64 = tx.query_row(
-                "SELECT count(*) FROM tasks WHERE parent_task_id = ?1 AND kind = 'review'
-                   AND status NOT IN ('done', 'cancelled')",
-                [&parent],
-                |r| r.get(0),
-            )?;
-            if open == 0 {
-                let p = tasks::get(tx, &parent)?;
-                let role = match &p.current_worker_id {
-                    Some(id) => workers::get(tx, id)?.role,
-                    None => None,
-                };
-                reviews_in_for = Some((p.short(), role));
-            }
-        }
         Ok(Completed {
             task: task.short(),
             task_id: task.task_id.clone(),
             run_id: task.run_id.clone(),
             review: task.is_review(),
             unlanded: unlanded.is_some(),
-            reviews_in_for,
+            reviews_in_for: reviews_in_for(tx, &task)?,
             already: false,
         })
-    })?;
-    let _ = w;
-    Ok(out)
+    })
+}
+
+/// A retry after a crash between the write and the report: what the first
+/// `done` recorded, or `None` when the worker is not done.
+fn already_completed(conn: &Connection, worker_id: &str) -> Result<Option<Completed>> {
+    let w = workers::get(conn, worker_id)?;
+    if w.status != "done" {
+        return Ok(None);
+    }
+    let t = w
+        .task_id
+        .clone()
+        .context("this worker finished without a task")?;
+    let task = tasks::get(conn, &t)?;
+    Ok(Some(Completed {
+        task: task.short(),
+        task_id: task.task_id.clone(),
+        run_id: task.run_id.clone(),
+        review: task.is_review(),
+        unlanded: false,
+        reviews_in_for: None,
+        already: true,
+    }))
+}
+
+/// The preconditions of `done`: a summary; for a review, its findings
+/// file; for work that lands, every finish step through.
+fn check_completable(
+    conn: &Connection,
+    task: &Task,
+    worker_id: &str,
+    summary: &str,
+    unlanded: Option<&str>,
+) -> Result<()> {
+    let run = runs::get(conn, &task.run_id)?;
+    if summary.trim().is_empty() {
+        bail!("give a summary: horch ledger done \"<what you did, files, decisions, gotchas>\"");
+    }
+    if task.is_review() {
+        require_findings(task)
+    } else if unlanded.is_some() {
+        Ok(())
+    } else {
+        require_through(conn, &run, task, worker_id)
+    }
+}
+
+fn require_findings(task: &Task) -> Result<()> {
+    let findings = task.spec_ref.clone().unwrap_or_default();
+    if findings.is_empty() || !Path::new(&findings).is_file() {
+        bail!("write your findings file first: {findings}");
+    }
+    Ok(())
+}
+
+fn require_through(conn: &Connection, run: &Run, task: &Task, worker_id: &str) -> Result<()> {
+    if all_through(conn, run, &task.task_id, worker_id)? {
+        return Ok(());
+    }
+    let open: Vec<String> = steps_of(conn, &task.task_id, worker_id)?
+        .iter()
+        .filter(|s| !through(&s.status))
+        .map(|s| format!("{} ({})", s.name, s.status))
+        .collect();
+    bail!(
+        "{} is not finished: {}. Run horch ledger finish until every step passes. \
+         Only if the work truly cannot land: horch ledger done --unlanded \"<reason>\" \"<summary>\"",
+        task.short(),
+        if open.is_empty() {
+            "no finish step ran yet".to_string()
+        } else {
+            open.join(", ")
+        }
+    );
+}
+
+/// The task's final status, summary and event. An unlanded task parks its
+/// worktree.
+fn final_state(
+    tx: &Connection,
+    task: &Task,
+    summary: &str,
+    unlanded: Option<&str>,
+) -> Result<(&'static str, String, EventKind)> {
+    let Some(reason) = unlanded else {
+        return Ok(("done", summary.to_string(), EventKind::Done));
+    };
+    if let Some(wt) = worktree_of(tx, &task.task_id)? {
+        set_worktree(tx, &wt.worktree_id, WorktreeStatus::Unlanded, Some(reason))?;
+    }
+    Ok((
+        "cancelled",
+        format!("UNLANDED: {reason} | {summary}"),
+        EventKind::Unlanded,
+    ))
+}
+
+/// Write the task's and the worker's final state, and its event.
+fn mark_done(
+    tx: &Connection,
+    task: &Task,
+    worker_id: &str,
+    (status, text, kind): (&str, &str, EventKind),
+    unlanded: bool,
+) -> Result<()> {
+    let now = util::now();
+    // Never turn a task cancelled meanwhile into done (#136).
+    let n = tx.execute(
+        &format!(
+            "UPDATE tasks SET status = ?2, summary = ?3, updated_at = ?4, finished_at = ?4
+             WHERE task_id = ?1 AND status IN ({in_flight})",
+            in_flight = sql_words::list(sql_words::TASKS_IN_FLIGHT)
+        ),
+        params![task.task_id, status, text, now],
+    )?;
+    if n == 0 {
+        bail!(
+            "{} is no longer running: stop work, then run horch done",
+            task.short()
+        );
+    }
+    tx.execute(
+        &format!(
+            "UPDATE workers SET status = {done}, summary = ?2, end_reason = ?3, ended_at = ?4,
+                last_progress_at = ?4
+             WHERE worker_id = ?1",
+            done = word(WorkerStatus::Done)
+        ),
+        params![
+            worker_id,
+            text,
+            if unlanded { "unlanded" } else { "done" },
+            now
+        ],
+    )?;
+    util::event(
+        tx,
+        &About {
+            run: Some(&task.run_id),
+            task: Some(&task.task_id),
+            worker: Some(worker_id),
+        },
+        Actor::Worker,
+        kind,
+        &format!("{} {}: {text}", task.short(), status),
+    )
+}
+
+/// For a review task whose parent's reviews are now all in: the parent,
+/// with the role of its worker to tell.
+fn reviews_in_for(tx: &Connection, task: &Task) -> Result<Option<(String, Option<String>)>> {
+    let Some(parent) = task.parent_task_id.as_deref().filter(|_| task.is_review()) else {
+        return Ok(None);
+    };
+    let open: i64 = tx.query_row(
+        &format!(
+            "SELECT count(*) FROM tasks WHERE parent_task_id = ?1 AND kind = 'review'
+               AND status NOT IN ({ended})",
+            ended = sql_words::list(sql_words::TASKS_ENDED)
+        ),
+        [parent],
+        |r| r.get(0),
+    )?;
+    if open > 0 {
+        return Ok(None);
+    }
+    let p = tasks::get(tx, parent)?;
+    let role = match &p.current_worker_id {
+        Some(id) => workers::get(tx, id)?.role,
+        None => None,
+    };
+    Ok(Some((p.short(), role)))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::taskledger::runs::NewRun;
+    use crate::taskledger::workers::NewWorker;
+
+    /// #181: a worker's check runs in a Codex sandbox when the ledger
+    /// records its harness as codex (a spawned worker), or when its persona
+    /// is a Codex teammate (a worker the ledger has no harness for).
+    #[test]
+    fn a_codex_worker_is_known_by_its_harness_or_its_persona() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = Store::open(&dir.path().join("ledger.sqlite3")).unwrap();
+        let worker = |store: &mut Store, persona: &str, harness: Option<&str>| {
+            store
+                .immediate(|tx| {
+                    let run = runs::create(
+                        tx,
+                        Path::new("/repo"),
+                        &NewRun {
+                            slug: format!("r-{persona}-{}", harness.unwrap_or("none")),
+                            ..Default::default()
+                        },
+                    )?;
+                    let id = workers::insert(
+                        tx,
+                        &NewWorker {
+                            run_id: run.run_id,
+                            persona: persona.into(),
+                            ..Default::default()
+                        },
+                    )?;
+                    if let Some(h) = harness {
+                        workers::set_launch(tx, &id, "r-1", h, "m", None)?;
+                    }
+                    workers::get(tx, &id)
+                })
+                .unwrap()
+        };
+        let codex = CodexSandbox {
+            personas: vec!["codex-sol".into()],
+            ..Default::default()
+        };
+        assert!(codex.runs(&worker(&mut store, "codex-sol", None)));
+        assert!(codex.runs(&worker(&mut store, "custom", Some("codex"))));
+        assert!(!codex.runs(&worker(&mut store, "opus", Some("claude"))));
+        assert!(!codex.runs(&worker(&mut store, "opus", None)));
+    }
 }

@@ -104,19 +104,19 @@ pub(crate) fn effort_override_warnings(
 /// A line scan rather than a TOML parser: only the root table counts, so the
 /// scan stops at the first `[section]`.
 fn codex_default_effort(toml: &str) -> Option<String> {
-    for line in toml.lines() {
-        let line = line.trim();
-        if line.starts_with('[') {
-            return None;
-        }
-        if let Some((key, value)) = line.split_once('=') {
-            if key.trim() == "model_reasoning_effort" {
-                let value = value.split('#').next().unwrap_or_default().trim();
-                return Some(value.trim_matches(|c| c == '"' || c == '\'').to_string());
-            }
-        }
-    }
-    None
+    toml.lines()
+        .map(str::trim)
+        .take_while(|line| !line.starts_with('['))
+        .find_map(|line| {
+            let (key, value) = line.split_once('=')?;
+            (key.trim() == "model_reasoning_effort").then(|| unquote(value))
+        })
+}
+
+/// A config value without its `#` comment, its blanks and its quotes.
+fn unquote(value: &str) -> String {
+    let value = value.split('#').next().unwrap_or_default().trim();
+    value.trim_matches(|c| c == '"' || c == '\'').to_string()
 }
 
 fn operator_settings(home: Option<&Path>) -> Option<serde_json::Value> {
@@ -138,5 +138,65 @@ pub(crate) fn expand_home(path: &str, home: Option<&Path>) -> PathBuf {
             None => PathBuf::from(path),
         },
         None => PathBuf::from(path),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_root_effort_is_read_without_quotes_or_comment() {
+        for (toml, want) in [
+            ("model_reasoning_effort = \"high\"\n", "high"),
+            ("model_reasoning_effort = 'low'\n", "low"),
+            ("model_reasoning_effort = medium\n", "medium"),
+            ("model_reasoning_effort=\"xhigh\"", "xhigh"),
+            ("  model_reasoning_effort  =  \"high\"   # why\n", "high"),
+            ("model_reasoning_effort = \"\"\n", ""),
+            (
+                "model = \"gpt\"\n# a comment\n\nmodel_reasoning_effort = \"low\"\n",
+                "low",
+            ),
+        ] {
+            assert_eq!(
+                codex_default_effort(toml).as_deref(),
+                Some(want),
+                "{toml:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_first_root_effort_wins() {
+        let toml = "model_reasoning_effort = \"low\"\nmodel_reasoning_effort = \"high\"\n";
+        assert_eq!(codex_default_effort(toml).as_deref(), Some("low"));
+    }
+
+    #[test]
+    fn the_first_section_ends_the_root_table() {
+        // An effort under a profile or an array of tables is not the default.
+        for header in ["[profiles.x]", "[tui]", "[[hooks]]", "  [tui]"] {
+            let toml = format!("model = \"gpt\"\n{header}\nmodel_reasoning_effort = \"low\"\n");
+            assert_eq!(codex_default_effort(&toml), None, "{header}");
+        }
+        // One above the first section still counts.
+        let toml = "model_reasoning_effort = \"high\"\n[tui]\nmodel_reasoning_effort = \"low\"\n";
+        assert_eq!(codex_default_effort(toml).as_deref(), Some("high"));
+    }
+
+    #[test]
+    fn lines_that_are_not_the_effort_key_are_skipped() {
+        for toml in [
+            "",
+            "\n\n",
+            "model = \"gpt\"\n",
+            "no equals sign\n",
+            "# model_reasoning_effort = \"low\"\n",
+            "my_model_reasoning_effort = \"low\"\n",
+            "model_reasoning_effort_extra = \"low\"\n",
+        ] {
+            assert_eq!(codex_default_effort(toml), None, "{toml:?}");
+        }
     }
 }

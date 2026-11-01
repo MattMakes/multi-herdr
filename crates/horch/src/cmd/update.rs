@@ -33,35 +33,40 @@ const MAX_PACKUMENT_BYTES: u64 = 256 * 1024 * 1024;
 const HERDR_WARNING: &str = "horch: NOTE: herdr update can stop the herdr server. \
                              That closes every pane, a running fleet included.";
 
-/// Update `harnesses` and print 1 line per result. Returns whether 1
-/// updater failed or timed out.
-pub fn run_step(ctx: &RuntimeContext, harnesses: &[HarnessKind]) -> bool {
+/// Update `harnesses` and print 1 line per result. With `skip_fresh`, skip
+/// a harness updated less than [`update::FRESH_FOR`] ago. Returns whether 1
+/// harness is not known to be updated: its updater failed, still runs, or
+/// another horch updates it.
+pub fn run_step(ctx: &RuntimeContext, harnesses: &[HarnessKind], skip_fresh: bool) -> bool {
     println!("Updating agent CLIs (horch fleet --no-update skips this)...");
-    let results = update::update_all(ctx, harnesses, &npm_packument);
+    let results = update::update_all(ctx, harnesses, &npm_packument, skip_fresh);
     // A NOTE goes to stderr, as every other `horch: NOTE:` line does.
     for result in &results {
-        if result.failed() {
+        if result.is_note() {
             eprintln!("{}", line(result));
         } else {
             println!("{}", line(result));
         }
     }
-    results.iter().any(UpdateResult::failed)
+    results.iter().any(UpdateResult::unfinished)
 }
 
 /// The update step of `horch fleet` and `horch orchestration`: a newer
 /// horch release is installed and the command restarts on it, then every
 /// agent CLI is updated, unless `--no-update` or `HORCH_NO_UPDATE=1`. A
+/// CLI updated less than [`update::FRESH_FOR`] ago is skipped (#205). A
 /// failed updater never fails the command.
 pub fn before_fleet(ctx: &RuntimeContext, no_update: bool) {
     super::selfupdate::update_before_fleet(ctx, no_update);
     if no_update || ctx.settings.no_update {
         return;
     }
-    run_step(ctx, &update::ORDER);
+    run_step(ctx, &update::ORDER, true);
 }
 
-/// `horch update [NAME...]`: exit 1 when 1 updater failed or timed out.
+/// `horch update [NAME...]`: exit 1 when 1 updater failed or still runs,
+/// or another horch updates 1 of the CLIs. The operator asked, so a recent
+/// update does not skip a CLI.
 /// `herdr` runs last, attached to the terminal, and its exit code wins.
 pub fn update(ctx: &RuntimeContext, names: &[String]) -> Result<std::process::ExitCode> {
     let herdr = names.iter().any(|n| n == "herdr");
@@ -76,7 +81,7 @@ pub fn update(ctx: &RuntimeContext, names: &[String]) -> Result<std::process::Ex
     };
     let mut failed = false;
     if !agents.is_empty() {
-        failed = run_step(ctx, &agents);
+        failed = run_step(ctx, &agents, false);
     }
     if herdr {
         eprintln!("{HERDR_WARNING}");
@@ -145,6 +150,18 @@ pub fn line(result: &UpdateResult) -> String {
     match &result.outcome {
         Outcome::NotInstalled => format!("update: {name}: not installed (skipped)"),
         Outcome::Failed { reason } => format!("horch: NOTE: update: {name}: {reason}"),
+        Outcome::Busy => {
+            format!("update: {name}: another horch is updating it (skipped)")
+        }
+        Outcome::Fresh { checked_at } => format!(
+            "update: {name}: updated at {}, less than {} h ago (skipped)",
+            horch_core::clock::stamp(*checked_at),
+            update::FRESH_FOR.num_hours()
+        ),
+        Outcome::Detached { after } => format!(
+            "horch: NOTE: update: {name}: still running after {} s, not waited for",
+            after.as_secs()
+        ),
         Outcome::Cooldown { version, age, days } => format!(
             "update: {name}: {version} is {}, under the {days}-day cooldown (skipped)",
             cooldown::age_text(*age)
@@ -219,6 +236,26 @@ mod tests {
                 Outcome::NoReleaseDates { days: 7 }
             )),
             "update: prime: no release dates to check against the 7-day cooldown (skipped)"
+        );
+        assert_eq!(
+            line(&result(HarnessKind::Codex, Outcome::Busy)),
+            "update: codex: another horch is updating it (skipped)"
+        );
+        let checked_at = chrono::DateTime::parse_from_rfc3339("2026-10-29T08:00:00Z")
+            .unwrap()
+            .with_timezone(&chrono::Utc);
+        assert_eq!(
+            line(&result(HarnessKind::Claude, Outcome::Fresh { checked_at })),
+            "update: claude: updated at 2026-10-29T08:00:00Z, less than 24 h ago (skipped)"
+        );
+        assert_eq!(
+            line(&result(
+                HarnessKind::OpenCode,
+                Outcome::Detached {
+                    after: Duration::from_secs(180)
+                }
+            )),
+            "horch: NOTE: update: opencode: still running after 180 s, not waited for"
         );
     }
 

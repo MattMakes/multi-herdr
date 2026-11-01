@@ -30,6 +30,8 @@ fn peak_reset() -> i64 {
 /// The system allocator, counting each thread's allocations and live bytes.
 struct Counting;
 
+// SAFETY: every method forwards to the `System` allocator with the caller's arguments,
+// so `GlobalAlloc`'s contract holds; the counters use `try_with` and never allocate.
 unsafe impl GlobalAlloc for Counting {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
         let _ = ALLOCS.try_with(|n| n.set(n.get() + 1));
@@ -39,11 +41,13 @@ unsafe impl GlobalAlloc for Counting {
         }) {
             let _ = PEAK.try_with(|p| p.set(p.get().max(live)));
         }
+        // SAFETY: `layout` comes from the caller of `alloc`, whose contract `System` upholds.
         unsafe { System.alloc(layout) }
     }
 
     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
         let _ = LIVE.try_with(|n| n.set(n.get() - layout.size() as i64));
+        // SAFETY: `ptr` and `layout` come from the caller, who got `ptr` from `alloc` with this layout.
         unsafe { System.dealloc(ptr, layout) }
     }
 }
@@ -201,7 +205,14 @@ fn assert_no_workspace_dep(banned: &[&str], exempt: &[&str], why: &str) {
 fn nfr_06_dependency_allowlist() {
     let manifest = repo().join("crates/horch-marketplace/Cargo.toml");
     if manifest.is_file() {
-        let allowed = ["anyhow", "serde", "serde_json", "serde_yaml", "sha2"];
+        let allowed = [
+            "anyhow",
+            "serde",
+            "serde_json",
+            "serde_yaml",
+            "sha2",
+            "thiserror",
+        ];
         for d in deps(&manifest) {
             assert!(
                 allowed.contains(&d.as_str()),
@@ -593,6 +604,7 @@ fn rss_mib() -> f64 {
 fn max_rss_mib() -> f64 {
     // SAFETY: an all-zero `rusage` is valid, and `u` is a valid out pointer.
     let mut u: libc::rusage = unsafe { std::mem::zeroed() };
+    // SAFETY: `u` is the zeroed `rusage` above, a valid out pointer for the call.
     unsafe { libc::getrusage(libc::RUSAGE_SELF, &mut u) };
     // Bytes on macOS, KiB on Linux.
     let div = if cfg!(target_os = "macos") {

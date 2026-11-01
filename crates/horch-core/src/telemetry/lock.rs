@@ -1,7 +1,7 @@
 //! The collector singleton (section 12.2, SPC-01).
 //!
 //! `telemetry/collector.lock/` is created with `create_dir`, which is atomic,
-//! the same idiom as `Ledger::lock`. The holder writes `collector.json` next
+//! the same idiom as `SessionLedger::lock`. The holder writes `collector.json` next
 //! to it. A lock whose pid is dead is broken, and the breaker says so.
 //!
 //! Liveness is "the pid exists and has the recorded start time"
@@ -10,7 +10,7 @@
 //! existed), or a platform without start times (Windows), falls back to
 //! "the pid exists". The lock is also removed on every normal exit.
 //!
-//! The holder also records its binary ([`ExeIdentity`]: path, size and
+//! The holder also records its binary ([`crate::exeid::ExeIdentity`]: path, size and
 //! modification time). A collector keeps running the binary it started
 //! with, so after `just install` replaces that file it runs old code: old
 //! prices, old readers. [`runs_other_binary`] finds it, and [`stop`] ends
@@ -44,29 +44,7 @@ pub struct LockInfo {
     pub exe: Option<ExeIdentity>,
 }
 
-/// A binary file as it is now: a rebuilt or reinstalled binary at the same
-/// path has another size or modification time.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ExeIdentity {
-    /// The path, symlinks resolved when they resolve.
-    pub path: String,
-    pub len: u64,
-    /// Nanoseconds since the Unix epoch.
-    pub mtime_ns: u64,
-}
-
-/// The identity of the file at `path` now, or `None` when it cannot be read.
-pub fn exe_identity(path: &Path) -> Option<ExeIdentity> {
-    let real = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
-    let meta = std::fs::metadata(&real).ok()?;
-    let mtime = meta.modified().ok()?;
-    let mtime_ns = mtime.duration_since(std::time::UNIX_EPOCH).ok()?.as_nanos();
-    Some(ExeIdentity {
-        path: real.to_string_lossy().into_owned(),
-        len: meta.len(),
-        mtime_ns: u64::try_from(mtime_ns).ok()?,
-    })
-}
+use crate::exeid::{exe_identity, ExeIdentity};
 
 /// Whether the live holder `info` runs another binary than `current`, the
 /// binary that should collect now. A holder that recorded no binary was
@@ -196,6 +174,55 @@ impl CollectorLock {
     pub fn release(self) {}
 }
 
+/// The result of one try to take the lock.
+enum Attempt {
+    Taken(CollectorLock),
+    Held(LockInfo),
+    /// A stale lock was broken or the holder left; try again.
+    Retry,
+}
+
+/// Break the lock of a holder that is gone.
+fn break_stale(state_root: &Path, dir: &Path, old: Option<&LockInfo>) {
+    eprintln!(
+        "horch: removed stale telemetry lock {}",
+        old.map_or("(no holder recorded)".to_string(), |o| format!(
+            "of pid {}",
+            o.pid
+        ))
+    );
+    let _ = std::fs::remove_file(info_path(state_root));
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// The lock directory exists: find out who holds it.
+fn on_exists(state_root: &Path, dir: &Path) -> Attempt {
+    match holder(state_root) {
+        Holder::Live(other) => Attempt::Held(other),
+        Holder::Stale(old) => {
+            break_stale(state_root, dir, old.as_ref());
+            Attempt::Retry
+        }
+        Holder::Free => Attempt::Retry,
+    }
+}
+
+/// One try to take the lock.
+fn try_take(state_root: &Path, dir: &Path, info: &LockInfo) -> Result<Attempt> {
+    match std::fs::create_dir(dir) {
+        Ok(()) => {
+            let json = serde_json::to_vec_pretty(info)?;
+            super::store::replace_private(&info_path(state_root), &json)?;
+            Ok(Attempt::Taken(CollectorLock {
+                dir: dir.to_path_buf(),
+                info: info_path(state_root),
+            }))
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Ok(on_exists(state_root, dir)),
+        Err(e) => Err(e).with_context(|| format!("creating {}", dir.display())),
+    }
+}
+
 /// Take the lock, breaking a stale one. `Ok(Err(info))` when a live
 /// collector holds it.
 pub fn acquire(
@@ -205,37 +232,16 @@ pub fn acquire(
     let dir = lock_dir(state_root);
     std::fs::create_dir_all(super::dir(state_root))
         .with_context(|| format!("creating {}", super::dir(state_root).display()))?;
-    for _ in 0..2 {
-        match std::fs::create_dir(&dir) {
-            Ok(()) => {
-                let json = serde_json::to_vec_pretty(info)?;
-                super::store::replace_private(&info_path(state_root), &json)?;
-                return Ok(Ok(CollectorLock {
-                    dir,
-                    info: info_path(state_root),
-                }));
-            }
-            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => match holder(state_root) {
-                Holder::Live(other) => return Ok(Err(other)),
-                Holder::Stale(old) => {
-                    match &old {
-                        Some(o) => {
-                            eprintln!("horch: removed stale telemetry lock of pid {}", o.pid)
-                        }
-                        None => {
-                            eprintln!("horch: removed stale telemetry lock (no holder recorded)")
-                        }
-                    }
-                    let _ = std::fs::remove_file(info_path(state_root));
-                    let _ = std::fs::remove_dir_all(&dir);
-                }
-                Holder::Free => {}
-            },
-            Err(e) => return Err(e).with_context(|| format!("creating {}", dir.display())),
-        }
-    }
-    // Lost a race twice: someone else holds it now.
-    Ok(Err(read_info(state_root).unwrap_or_default()))
+    let last = (0..2)
+        .map(|_| try_take(state_root, &dir, info))
+        .find(|a| !matches!(a, Ok(Attempt::Retry)))
+        .unwrap_or(Ok(Attempt::Retry))?;
+    Ok(match last {
+        Attempt::Taken(lock) => Ok(lock),
+        Attempt::Held(other) => Err(other),
+        // Lost a race twice: someone else holds it now.
+        Attempt::Retry => Err(read_info(state_root).unwrap_or_default()),
+    })
 }
 
 /// This process's lock info: its host, herdr session, workspace and pane
@@ -292,6 +298,34 @@ mod tests {
         let lock = acquire(tmp.path(), &this_process("now", &test_ctx())).unwrap();
         assert!(lock.is_ok(), "the stale lock is broken and taken");
         assert_eq!(read_info(tmp.path()).unwrap().pid, std::process::id());
+    }
+
+    /// An old lock directory with no info file has no recorded holder; it
+    /// is broken and taken.
+    #[test]
+    fn an_old_lock_with_no_holder_info_is_broken() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = lock_dir(tmp.path());
+        std::fs::create_dir_all(&dir).unwrap();
+        let old = std::time::SystemTime::now() - std::time::Duration::from_secs(60);
+        std::fs::File::open(&dir)
+            .unwrap()
+            .set_modified(old)
+            .unwrap();
+        assert_eq!(holder(tmp.path()), Holder::Stale(None));
+        let lock = acquire(tmp.path(), &this_process("now", &test_ctx())).unwrap();
+        assert!(lock.is_ok(), "the empty stale lock is broken and taken");
+        assert_eq!(read_info(tmp.path()).unwrap().pid, std::process::id());
+    }
+
+    /// A young lock directory with no info is a holder mid-write: live.
+    #[test]
+    fn a_young_lock_with_no_holder_info_is_refused() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(lock_dir(tmp.path())).unwrap();
+        let second = acquire(tmp.path(), &this_process("now", &test_ctx())).unwrap();
+        assert_eq!(second.unwrap_err(), LockInfo::default());
+        assert!(lock_dir(tmp.path()).is_dir(), "the young lock is kept");
     }
 
     /// A pid that names no single process (it would turn into -1, every

@@ -611,3 +611,91 @@ fn jdg_10_identity_leak_flagged() {
     let stored = std::fs::read_to_string(input.dir.join(format!("candidates/{blind}/diff.patch")));
     assert_eq!(stored.unwrap(), leaky);
 }
+
+// ─── the candidate checks and the cut diff ──────────────────────────────────
+
+fn full_git() -> FakeGit {
+    FakeGit::new(&[
+        ("xq", &plain_patch("q")),
+        ("xr", &plain_patch("r")),
+        ("xs", &plain_patch("s")),
+    ])
+}
+
+fn build_err(state: &State, candidates: &[(String, FrozenCandidate, ValidationReport)]) -> String {
+    let err = build_judge_input(
+        &round_id(),
+        &round_view(&LABELS),
+        "task\n",
+        candidates,
+        &state.paths(),
+        &full_git(),
+        Path::new("/main/repo"),
+    )
+    .unwrap_err();
+    format!("{err:#}")
+}
+
+#[test]
+fn the_candidate_checks_refuse_a_bad_list_and_write_nothing() {
+    let state = State::new();
+
+    assert!(build_err(&state, &[]).contains("no candidates to judge"));
+
+    let mut stranger = inputs(&LABELS);
+    stranger[0].0 = "zz".into();
+    stranger[0].1.label = "zz".into();
+    stranger[0].2.label = "zz".into();
+    assert!(build_err(&state, &stranger).contains("'zz' is not one of the round's labels"));
+
+    let mut mislabeled = inputs(&LABELS);
+    mislabeled[1].2.label = "xs".into();
+    let msg = build_err(&state, &mislabeled);
+    assert!(
+        msg.contains("candidate 'xr' carries frozen label 'xr' and validation label 'xs'"),
+        "{msg}"
+    );
+
+    let mut stale = inputs(&LABELS);
+    stale[2].2.head_sha = "f".repeat(40);
+    let msg = build_err(&state, &stale);
+    assert!(
+        msg.contains(&format!(
+            "candidate 'xs' was validated at {} but frozen at {}",
+            "f".repeat(40),
+            head("xs")
+        )),
+        "{msg}"
+    );
+
+    let mut twice = inputs(&LABELS);
+    twice.push(twice[0].clone());
+    assert!(build_err(&state, &twice).contains("candidate 'xq' is given twice"));
+
+    let dir = state
+        .paths()
+        .judge_input_dir(&round_view(&LABELS).experiment_id, &round_id())
+        .unwrap();
+    assert!(!dir.exists(), "a refused build writes no bundle");
+}
+
+#[test]
+fn a_patch_over_the_cap_is_cut_and_its_blind_label_is_listed() {
+    let state = State::new();
+    let big = "+x\n".repeat(400_000);
+    let git = FakeGit::new(&[
+        ("xq", &big),
+        ("xr", &plain_patch("r")),
+        ("xs", &plain_patch("s")),
+    ]);
+    let input = build(&state, &git, &LABELS);
+    let blind = input
+        .label_map
+        .iter()
+        .find(|(_, original)| original.as_str() == "xq")
+        .map(|(b, _)| b.clone())
+        .unwrap();
+    assert_eq!(input.manifest.truncated_diffs, std::slice::from_ref(&blind));
+    let stored = std::fs::read(input.dir.join(format!("candidates/{blind}/diff.patch"))).unwrap();
+    assert_eq!(stored.len(), 1024 * 1024);
+}

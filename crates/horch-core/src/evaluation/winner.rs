@@ -101,46 +101,69 @@ pub fn decide_winner(
     let Some(j) = j else {
         return needs("no valid judgment");
     };
+    verdict_outcome(j, eligible, policy)
+}
+
+fn verdict_outcome(
+    j: &Judgment,
+    eligible: &BTreeSet<String>,
+    policy: &WinnerPolicy,
+) -> WinnerOutcome {
     match j.verdict {
         JudgmentVerdict::RejectAll => WinnerOutcome::Rejected {
             reason: RejectReason::JudgeRejected,
         },
         JudgmentVerdict::Abstain => needs("the judge abstained"),
-        JudgmentVerdict::Tie => match &policy.tie_break {
-            TieBreak::Disabled => needs("the judge declared a tie and tie_break is disabled"),
-            TieBreak::Utility { v } if v != UTILITY_RULE_V1 => {
-                needs(&format!("the utility rule {v:?} is unknown"))
-            }
-            TieBreak::Utility { .. } => match utility_winner(j, eligible) {
-                Some(label) => WinnerOutcome::Winner { label },
-                None => needs("the judge declared a tie and no tied label is acceptable"),
-            },
+        JudgmentVerdict::Tie => tie_outcome(j, eligible, policy),
+        JudgmentVerdict::Winner => named_winner(j, eligible, policy),
+    }
+}
+
+fn tie_outcome(j: &Judgment, eligible: &BTreeSet<String>, policy: &WinnerPolicy) -> WinnerOutcome {
+    match &policy.tie_break {
+        TieBreak::Disabled => needs("the judge declared a tie and tie_break is disabled"),
+        TieBreak::Utility { v } if v != UTILITY_RULE_V1 => {
+            needs(&format!("the utility rule {v:?} is unknown"))
+        }
+        TieBreak::Utility { .. } => match utility_winner(j, eligible) {
+            Some(label) => WinnerOutcome::Winner { label },
+            None => needs("the judge declared a tie and no tied label is acceptable"),
         },
-        JudgmentVerdict::Winner => {
-            let Some(label) = &j.winner else {
-                return needs("the verdict is winner but no winner is named");
-            };
-            if !eligible.contains(label) {
-                WinnerOutcome::Rejected {
-                    reason: RejectReason::JudgeRejected,
-                }
-            } else if !j.candidates.get(label).is_some_and(|a| a.acceptable) {
-                // The judge contradicts itself: a winner must be acceptable.
-                needs(&format!("the winner {label:?} is not marked acceptable"))
-            } else if !matches!(
-                j.confidence.partial_cmp(&policy.min_confidence),
-                Some(Ordering::Greater | Ordering::Equal)
-            ) {
-                // A NaN on either side is not confident.
-                needs(&format!(
-                    "confidence {} is below {}",
-                    j.confidence, policy.min_confidence
-                ))
-            } else {
-                WinnerOutcome::Winner {
-                    label: label.clone(),
-                }
-            }
+    }
+}
+
+fn named_winner(j: &Judgment, eligible: &BTreeSet<String>, policy: &WinnerPolicy) -> WinnerOutcome {
+    let Some(label) = &j.winner else {
+        return needs("the verdict is winner but no winner is named");
+    };
+    labelled_winner(label, j, eligible, policy)
+}
+
+fn labelled_winner(
+    label: &String,
+    j: &Judgment,
+    eligible: &BTreeSet<String>,
+    policy: &WinnerPolicy,
+) -> WinnerOutcome {
+    if !eligible.contains(label) {
+        WinnerOutcome::Rejected {
+            reason: RejectReason::JudgeRejected,
+        }
+    } else if !j.candidates.get(label).is_some_and(|a| a.acceptable) {
+        // The judge contradicts itself: a winner must be acceptable.
+        needs(&format!("the winner {label:?} is not marked acceptable"))
+    } else if !matches!(
+        j.confidence.partial_cmp(&policy.min_confidence),
+        Some(Ordering::Greater | Ordering::Equal)
+    ) {
+        // A NaN on either side is not confident.
+        needs(&format!(
+            "confidence {} is below {}",
+            j.confidence, policy.min_confidence
+        ))
+    } else {
+        WinnerOutcome::Winner {
+            label: label.clone(),
         }
     }
 }
@@ -253,6 +276,120 @@ mod tests {
         assert!(
             matches!(outcome, WinnerOutcome::NeedsIntervention { ref reason } if reason.contains("u2")),
             "{outcome:?}"
+        );
+    }
+
+    fn needs_reason(outcome: WinnerOutcome) -> String {
+        match outcome {
+            WinnerOutcome::NeedsIntervention { reason } => reason,
+            other => panic!("expected NeedsIntervention, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn no_eligible_label_rejects_before_any_judgment_is_read() {
+        let j = judgment(JudgmentVerdict::Winner, Some("A"));
+        for given in [Some(&j), None] {
+            assert_eq!(
+                decide_winner(given, &BTreeSet::new(), &WinnerPolicy::default()),
+                WinnerOutcome::Rejected {
+                    reason: RejectReason::NoEligible
+                }
+            );
+        }
+    }
+
+    #[test]
+    fn a_missing_judgment_needs_the_operator() {
+        let reason = needs_reason(decide_winner(None, &eligible(), &WinnerPolicy::default()));
+        assert_eq!(reason, "no valid judgment");
+    }
+
+    #[test]
+    fn reject_all_rejects_and_abstain_needs_the_operator() {
+        let policy = WinnerPolicy::default();
+        let j = judgment(JudgmentVerdict::RejectAll, None);
+        assert_eq!(
+            decide_winner(Some(&j), &eligible(), &policy),
+            WinnerOutcome::Rejected {
+                reason: RejectReason::JudgeRejected
+            }
+        );
+        let j = judgment(JudgmentVerdict::Abstain, None);
+        let reason = needs_reason(decide_winner(Some(&j), &eligible(), &policy));
+        assert_eq!(reason, "the judge abstained");
+    }
+
+    #[test]
+    fn a_tie_with_tie_break_disabled_needs_the_operator() {
+        let j = judgment(JudgmentVerdict::Tie, None);
+        let reason = needs_reason(decide_winner(
+            Some(&j),
+            &eligible(),
+            &WinnerPolicy::default(),
+        ));
+        assert_eq!(reason, "the judge declared a tie and tie_break is disabled");
+    }
+
+    #[test]
+    fn a_tie_with_no_acceptable_eligible_label_needs_the_operator() {
+        let j = judgment(JudgmentVerdict::Tie, None);
+        let policy = WinnerPolicy {
+            tie_break: TieBreak::Utility {
+                v: UTILITY_RULE_V1.into(),
+            },
+            ..WinnerPolicy::default()
+        };
+        // Only B is eligible and the judge marked B not acceptable.
+        let only_b: BTreeSet<String> = ["B".to_string()].into_iter().collect();
+        let reason = needs_reason(decide_winner(Some(&j), &only_b, &policy));
+        assert_eq!(
+            reason,
+            "the judge declared a tie and no tied label is acceptable"
+        );
+    }
+
+    #[test]
+    fn a_winner_verdict_without_a_named_winner_needs_the_operator() {
+        let j = judgment(JudgmentVerdict::Winner, None);
+        let reason = needs_reason(decide_winner(
+            Some(&j),
+            &eligible(),
+            &WinnerPolicy::default(),
+        ));
+        assert_eq!(reason, "the verdict is winner but no winner is named");
+    }
+
+    #[test]
+    fn a_winner_that_failed_validation_is_rejected() {
+        let j = judgment(JudgmentVerdict::Winner, Some("A"));
+        let only_b: BTreeSet<String> = ["B".to_string()].into_iter().collect();
+        assert_eq!(
+            decide_winner(Some(&j), &only_b, &WinnerPolicy::default()),
+            WinnerOutcome::Rejected {
+                reason: RejectReason::JudgeRejected
+            }
+        );
+    }
+
+    #[test]
+    fn confidence_below_the_minimum_or_not_a_number_needs_the_operator() {
+        let policy = WinnerPolicy {
+            min_confidence: 0.8,
+            ..WinnerPolicy::default()
+        };
+        let mut j = judgment(JudgmentVerdict::Winner, Some("A"));
+        j.confidence = 0.5;
+        let reason = needs_reason(decide_winner(Some(&j), &eligible(), &policy));
+        assert_eq!(reason, "confidence 0.5 is below 0.8");
+        j.confidence = f64::NAN;
+        let reason = needs_reason(decide_winner(Some(&j), &eligible(), &policy));
+        assert!(reason.starts_with("confidence NaN is below"), "{reason}");
+        // Exactly the minimum passes.
+        j.confidence = 0.8;
+        assert_eq!(
+            decide_winner(Some(&j), &eligible(), &policy),
+            WinnerOutcome::Winner { label: "A".into() }
         );
     }
 }

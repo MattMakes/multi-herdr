@@ -96,9 +96,10 @@ impl World {
             codex,
             record("rec-s2", "sonnet-2", "claude", "sonnet", MISSING),
         ]);
-        let path = horch_core::execution::records::Ledger::for_project(root.join("state"), PROJECT)
-            .path()
-            .to_path_buf();
+        let path =
+            horch_core::execution::records::SessionLedger::for_project(root.join("state"), PROJECT)
+                .path()
+                .to_path_buf();
         std::fs::write(path, serde_json::to_string_pretty(&ledger).unwrap()).unwrap();
         World { _tmp: tmp, root }
     }
@@ -131,8 +132,10 @@ impl World {
     }
 
     fn history(&self, id: &str) -> Vec<(String, String)> {
-        let ledger =
-            horch_core::execution::records::Ledger::for_project(self.root.join("state"), PROJECT);
+        let ledger = horch_core::execution::records::SessionLedger::for_project(
+            self.root.join("state"),
+            PROJECT,
+        );
         ledger
             .get(id)
             .unwrap()
@@ -180,11 +183,19 @@ This horch note call is your stopping point. Do not start new work. \
 Write ai_docs/handoffs/sonnet-1-whats-next.md with the horch:handoff skill. \
 Then run: horch note \"handoff: ai_docs/handoffs/sonnet-1-whats-next.md\". \
 Then send: horch tell orchestrator \"[sonnet-1] NOTE: COMPACT-READY ai_docs/handoffs/sonnet-1-whats-next.md\". \
-Then end your turn.\n";
+Then end your turn. If DONE WHEN is met, run horch ledger finish, then horch ledger done (or horch done) instead.\n";
     let me = [("HORCH_RECORD_ID", "rec-s1")];
     assert_eq!(w.stdout(&["note", "step 1 done"], &me), warning);
     let handoff = "handoff: ai_docs/handoffs/sonnet-1-whats-next.md";
-    assert_eq!(w.stdout(&["note", handoff], &me), "", "1 warning per cycle");
+    // A handoff now attempts automatic compaction. This offline fixture has
+    // no workspace; keep the note and expose that scheduling refusal.
+    let handoff_out = w.horch(&["note", handoff], &me);
+    assert!(handoff_out.status.success());
+    assert_eq!(handoff_out.stdout, b"", "1 warning per cycle");
+    assert_eq!(
+        String::from_utf8(handoff_out.stderr).unwrap(),
+        "horch note: context follow-up: not inside a herdr pane (HERDR_PANE_ID is unset) and HORCH_WORKSPACE_ID is not set\n"
+    );
     let history = w.history("rec-s1");
     let notes: Vec<&str> = history
         .iter()
@@ -205,7 +216,7 @@ Then end your turn.\n";
         .find(|l| l.starts_with("sonnet-1 "))
         .unwrap();
     assert!(
-        row.ends_with(" requested"),
+        row.ends_with(" requested (asked 0m ago)"),
         "a warned row is requested:\n{requested}"
     );
 }
@@ -511,7 +522,8 @@ impl<'de> serde::Deserialize<'de> for Keys {
 #[test]
 fn ctx_24_json_has_every_key_and_nulls() {
     let w = World::new();
-    let ledger = horch_core::execution::records::Ledger::for_project(w.root.join("state"), PROJECT);
+    let ledger =
+        horch_core::execution::records::SessionLedger::for_project(w.root.join("state"), PROJECT);
     let mut records: Vec<serde_json::Value> =
         serde_json::from_str(&std::fs::read_to_string(ledger.path()).unwrap()).unwrap();
     let mut pi = record(
@@ -537,6 +549,7 @@ fn ctx_24_json_has_every_key_and_nulls() {
         "transcript",
         "pane",
         "pane_status",
+        "pane_gone",
         "tokens",
         "provisional",
         "pending",
@@ -652,8 +665,10 @@ fn ctx_24_json_has_every_key_and_nulls() {
 impl World {
     /// Add `rec` to the ledger.
     fn add_record(&self, rec: serde_json::Value) {
-        let ledger =
-            horch_core::execution::records::Ledger::for_project(self.root.join("state"), PROJECT);
+        let ledger = horch_core::execution::records::SessionLedger::for_project(
+            self.root.join("state"),
+            PROJECT,
+        );
         let mut records: Vec<serde_json::Value> =
             serde_json::from_str(&std::fs::read_to_string(ledger.path()).unwrap()).unwrap();
         records.push(rec);
@@ -856,7 +871,8 @@ fn ctx_21_windows_table_names_the_compact_at_source() {
 #[test]
 fn ctx_25_cli_counts_native_and_horch_compactions() {
     let w = World::new();
-    let ledger = horch_core::execution::records::Ledger::for_project(w.root.join("state"), PROJECT);
+    let ledger =
+        horch_core::execution::records::SessionLedger::for_project(w.root.join("state"), PROJECT);
     let mut records: Vec<serde_json::Value> =
         serde_json::from_str(&std::fs::read_to_string(ledger.path()).unwrap()).unwrap();
     let opus = records.iter_mut().find(|r| r["role"] == "opus-1").unwrap();

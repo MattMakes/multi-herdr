@@ -96,38 +96,35 @@ pub fn read_rows<T: DeserializeOwned>(
     file: FleetFile,
 ) -> Result<ReadRows<T>> {
     let path = file.path(paths);
-    let bytes = match std::fs::read(&path) {
-        Ok(bytes) => bytes,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(ReadRows::default()),
-        Err(e) => return Err(e).with_context(|| format!("reading {}", path.display())),
-    };
+    match std::fs::read(&path) {
+        Ok(bytes) => Ok(parse_rows(&bytes)),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(ReadRows::default()),
+        Err(e) => Err(e).with_context(|| format!("reading {}", path.display())),
+    }
+}
+
+/// Split `bytes` into `\n`-terminated lines and parse each. Blank lines
+/// are ignored; a line that is not a row counts as torn.
+fn parse_rows<T: DeserializeOwned>(bytes: &[u8]) -> ReadRows<T> {
     let mut out = ReadRows::default();
-    let mut rest: &[u8] = &bytes;
-    while !rest.is_empty() {
-        let (line, terminated) = match rest.iter().position(|&b| b == b'\n') {
-            Some(n) => {
-                let line = &rest[..n];
-                rest = &rest[n + 1..];
-                (line, true)
-            }
-            None => {
-                let line = rest;
-                rest = &[];
-                (line, false)
-            }
-        };
-        if line.iter().all(u8::is_ascii_whitespace) {
-            continue;
-        }
-        match serde_json::from_slice::<T>(line)
-            .ok()
-            .filter(|_| terminated)
-        {
+    let lines = bytes
+        .split_inclusive(|&b| b == b'\n')
+        .filter(|l| !l.iter().all(u8::is_ascii_whitespace));
+    for line in lines {
+        match parse_row(line) {
             Some(row) => out.rows.push(row),
             None => out.torn_lines += 1,
         }
     }
-    Ok(out)
+    out
+}
+
+/// The row on `line`. A line without its final `\n` is torn even when it
+/// parses, so the result is `None` for it.
+fn parse_row<T: DeserializeOwned>(line: &[u8]) -> Option<T> {
+    line.ends_with(b"\n")
+        .then(|| serde_json::from_slice(line).ok())
+        .flatten()
 }
 
 /// Append `row` to `file` under the fleet lock.

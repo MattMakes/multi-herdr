@@ -171,32 +171,75 @@ pub enum RoundState {
     Complete,
 }
 
+/// The design §5 spelling of each state, in declaration order.
+const ROUND_STATE_NAMES: [&str; 16] = [
+    "CREATED",
+    "PREFLIGHT",
+    "ABORTED",
+    "PLANNED",
+    "PROVISIONING",
+    "RUNNING",
+    "VALIDATING",
+    "JUDGING_BACKGROUND",
+    "DECIDED",
+    "REVALIDATING",
+    "PROMOTING",
+    "PROMOTED",
+    "NEEDS_INTERVENTION",
+    "REJECTED",
+    "CLEANUP",
+    "COMPLETE",
+];
+
 impl RoundState {
     /// The spelling in design §5, such as `JUDGING_BACKGROUND`.
     pub fn as_str(self) -> &'static str {
-        match self {
-            RoundState::Created => "CREATED",
-            RoundState::Preflight => "PREFLIGHT",
-            RoundState::Aborted => "ABORTED",
-            RoundState::Planned => "PLANNED",
-            RoundState::Provisioning => "PROVISIONING",
-            RoundState::Running => "RUNNING",
-            RoundState::Validating => "VALIDATING",
-            RoundState::JudgingBackground => "JUDGING_BACKGROUND",
-            RoundState::Decided => "DECIDED",
-            RoundState::Revalidating => "REVALIDATING",
-            RoundState::Promoting => "PROMOTING",
-            RoundState::Promoted => "PROMOTED",
-            RoundState::NeedsIntervention => "NEEDS_INTERVENTION",
-            RoundState::Rejected => "REJECTED",
-            RoundState::Cleanup => "CLEANUP",
-            RoundState::Complete => "COMPLETE",
-        }
+        ROUND_STATE_NAMES[self as usize]
     }
 }
 
 impl std::fmt::Display for RoundState {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(self.as_str())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const ALL: [(RoundState, &str); 16] = [
+        (RoundState::Created, "CREATED"),
+        (RoundState::Preflight, "PREFLIGHT"),
+        (RoundState::Aborted, "ABORTED"),
+        (RoundState::Planned, "PLANNED"),
+        (RoundState::Provisioning, "PROVISIONING"),
+        (RoundState::Running, "RUNNING"),
+        (RoundState::Validating, "VALIDATING"),
+        (RoundState::JudgingBackground, "JUDGING_BACKGROUND"),
+        (RoundState::Decided, "DECIDED"),
+        (RoundState::Revalidating, "REVALIDATING"),
+        (RoundState::Promoting, "PROMOTING"),
+        (RoundState::Promoted, "PROMOTED"),
+        (RoundState::NeedsIntervention, "NEEDS_INTERVENTION"),
+        (RoundState::Rejected, "REJECTED"),
+        (RoundState::Cleanup, "CLEANUP"),
+        (RoundState::Complete, "COMPLETE"),
+    ];
+
+    #[test]
+    fn as_str_gives_the_design_name_of_every_state() {
+        for (state, name) in ALL {
+            assert_eq!(state.as_str(), name);
+            assert_eq!(state.to_string(), name);
+        }
+    }
+
+    #[test]
+    fn as_str_agrees_with_the_serde_name_of_every_state() {
+        for (state, _) in ALL {
+            let json = serde_json::to_value(state).unwrap();
+            assert_eq!(json, serde_json::Value::String(state.as_str().into()));
+        }
     }
 }

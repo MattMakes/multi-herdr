@@ -35,12 +35,12 @@
 use std::fmt;
 use std::path::PathBuf;
 
-use anyhow::{bail, Context, Result};
+use anyhow::{bail, ensure, Context, Result};
 use chrono::SecondsFormat;
 use serde::{Deserialize, Serialize};
 
 use crate::clock;
-use crate::evaluation::validator::Validator;
+use crate::evaluation::validator::{ValidationReport, Validator};
 use crate::evaluation::winner::RejectReason;
 use crate::fsx;
 use crate::ids::{ExperimentId, JudgmentId, RoundId};
@@ -209,6 +209,21 @@ pub struct GitPromotionEngine<'a, G: GitClient, V: Validator, R: Recorder> {
     pub faults: &'a Faults,
 }
 
+/// What the integration step planned: how the target moves, from where to
+/// where.
+struct Landing {
+    strategy: PromotionStrategy,
+    dest_before: String,
+    planned_after: String,
+}
+
+/// What the integration step did.
+enum Integrated {
+    Ready(Landing),
+    /// The cherry-pick conflicted: the result to give, already recorded.
+    Conflict(Box<PromotionResult>),
+}
+
 /// What the publish step did.
 enum Published {
     Moved,
@@ -223,105 +238,209 @@ impl<G: GitClient, V: Validator, R: Recorder> PromotionEngine for GitPromotionEn
         target: &BranchRef,
         plan: &PromotionPlan,
     ) -> Result<PromotionResult> {
-        let repo = &target.repo;
-        let receipt_path = self.paths.promotion(&plan.round)?;
-        if receipt_path.exists() {
-            bail!(
-                "round {} is already promoted: {} exists",
-                plan.round,
-                receipt_path.display()
-            );
-        }
-
+        self.ensure_unpromoted(plan)?;
         // 1. The judged commit is still the candidate's commit (PRO-01).
-        if !self.is_fresh(candidate, target)? {
-            return self.reject(candidate, plan, RejectReason::StaleJudgment);
+        if self.is_fresh(candidate, target)? {
+            self.promote_fresh(candidate, target, plan)
+        } else {
+            self.reject(candidate, plan, RejectReason::StaleJudgment)
         }
+    }
+}
 
-        // 2. A target that does not exist is created (fleet-dataset §7.3).
-        let refname = target.refname();
+impl<G: GitClient, V: Validator, R: Recorder> GitPromotionEngine<'_, G, V, R> {
+    fn ensure_unpromoted(&self, plan: &PromotionPlan) -> Result<()> {
+        let receipt_path = self.paths.promotion(&plan.round)?;
+        ensure!(
+            !receipt_path.exists(),
+            "round {} is already promoted: {} exists",
+            plan.round,
+            receipt_path.display()
+        );
+        Ok(())
+    }
+
+    /// 2. The target's commit; a target that does not exist is created
+    ///    (fleet-dataset §7.3). Then integrate, revalidate and publish.
+    fn promote_fresh(
+        &self,
+        candidate: &FrozenCandidate,
+        target: &BranchRef,
+        plan: &PromotionPlan,
+    ) -> Result<PromotionResult> {
         let dest_before = self
             .git
-            .rev_parse(repo, &refname)?
+            .rev_parse(&target.repo, &target.refname())?
             .unwrap_or_else(|| absent(&candidate.head_sha));
-
-        // 3. Integrate in a temp worktree on a temp branch.
         let temp = TempIntegration::new(target, plan)?;
+        match self.integrate(candidate, target, plan, dest_before, &temp)? {
+            Integrated::Ready(landing) => {
+                self.promote_integrated(candidate, target, plan, &temp, landing)
+            }
+            Integrated::Conflict(result) => Ok(*result),
+        }
+    }
+
+    /// 3. Integrate in a temp worktree on a temp branch.
+    fn integrate(
+        &self,
+        candidate: &FrozenCandidate,
+        target: &BranchRef,
+        plan: &PromotionPlan,
+        dest_before: String,
+        temp: &TempIntegration,
+    ) -> Result<Integrated> {
+        let repo = &target.repo;
         let fast_forward = is_absent(&dest_before)
             || self
                 .git
                 .is_ancestor(repo, &dest_before, &candidate.base_sha)?;
-        let (strategy, start) = if fast_forward {
-            (PromotionStrategy::FastForward, candidate.head_sha.as_str())
+        let start = if fast_forward {
+            candidate.head_sha.as_str()
         } else {
-            (PromotionStrategy::CherryPick, dest_before.as_str())
+            dest_before.as_str()
         };
         temp.discard(self.git)?;
         self.git
             .worktree_add(repo, &temp.path, &temp.branch, start)
             .context("creating the promotion integration worktree")?;
-        let planned_after = match strategy {
-            PromotionStrategy::FastForward => candidate.head_sha.clone(),
-            PromotionStrategy::CherryPick => {
-                let range = format!("{}..{}", candidate.base_sha, candidate.head_sha);
-                match self.git.cherry_pick(&temp.path, &range, &plan.identity)? {
-                    CherryPick::Clean { head } => head,
-                    CherryPick::Conflict { paths } => {
-                        temp.discard(self.git)?;
-                        self.emit(
-                            candidate,
-                            plan,
-                            format!("promotion.conflicted:{}:{}", plan.round, plan.attempt),
-                            EventKind::PromotionConflicted(PromotionConflicted {
-                                paths: paths.clone(),
-                            }),
-                        )?;
-                        return Ok(PromotionResult::NeedsIntervention {
-                            reason: format!(
-                                "cherry-pick onto {refname} conflicts in {}",
-                                paths.join(", ")
-                            ),
-                        });
-                    }
-                }
-            }
-        };
+        if fast_forward {
+            Ok(Integrated::Ready(Landing {
+                strategy: PromotionStrategy::FastForward,
+                planned_after: candidate.head_sha.clone(),
+                dest_before,
+            }))
+        } else {
+            self.cherry_pick_onto(candidate, target, plan, dest_before, temp)
+        }
+    }
 
-        // 4. Revalidate the integrated commit, in the temp worktree (PRO-02).
+    /// `base..head` cherry-picked onto the moved target. A conflict needs
+    /// the operator, and every candidate worktree is kept (PRO-04).
+    fn cherry_pick_onto(
+        &self,
+        candidate: &FrozenCandidate,
+        target: &BranchRef,
+        plan: &PromotionPlan,
+        dest_before: String,
+        temp: &TempIntegration,
+    ) -> Result<Integrated> {
+        let range = format!("{}..{}", candidate.base_sha, candidate.head_sha);
+        match self.git.cherry_pick(&temp.path, &range, &plan.identity)? {
+            CherryPick::Clean { head } => Ok(Integrated::Ready(Landing {
+                strategy: PromotionStrategy::CherryPick,
+                planned_after: head,
+                dest_before,
+            })),
+            CherryPick::Conflict { paths } => {
+                temp.discard(self.git)?;
+                self.emit(
+                    candidate,
+                    plan,
+                    format!("promotion.conflicted:{}:{}", plan.round, plan.attempt),
+                    EventKind::PromotionConflicted(PromotionConflicted {
+                        paths: paths.clone(),
+                    }),
+                )?;
+                Ok(Integrated::Conflict(Box::new(
+                    PromotionResult::NeedsIntervention {
+                        reason: format!(
+                            "cherry-pick onto {} conflicts in {}",
+                            target.refname(),
+                            paths.join(", ")
+                        ),
+                    },
+                )))
+            }
+        }
+    }
+
+    /// 4. Revalidate the integrated commit, in the temp worktree (PRO-02).
+    fn promote_integrated(
+        &self,
+        candidate: &FrozenCandidate,
+        target: &BranchRef,
+        plan: &PromotionPlan,
+        temp: &TempIntegration,
+        landing: Landing,
+    ) -> Result<PromotionResult> {
+        if let Some(report) = self.revalidate(candidate, temp, &landing.planned_after)? {
+            self.promote_validated(candidate, target, plan, temp, landing, report)
+        } else {
+            self.abandon(temp, || {
+                self.reject(candidate, plan, RejectReason::RevalidationFailed)
+            })
+        }
+    }
+
+    /// The integrated commit's report, or `None` when it is not eligible.
+    fn revalidate(
+        &self,
+        candidate: &FrozenCandidate,
+        temp: &TempIntegration,
+        planned_after: &str,
+    ) -> Result<Option<ValidationReport>> {
         let mut integrated = candidate.clone();
         integrated.worktree = temp.path.clone();
         integrated.branch = temp.branch.clone();
-        integrated.head_sha = planned_after.clone();
+        integrated.head_sha = planned_after.to_string();
         let report = self.validator.validate(&integrated);
         let worktree_removed = self
             .git
-            .worktree_remove(repo, &temp.path, true)
+            .worktree_remove(&temp.repo, &temp.path, true)
             .context("removing the promotion integration worktree");
         let report = report?;
         worktree_removed?;
-        if !report.eligible {
-            temp.discard(self.git)?;
-            return self.reject(candidate, plan, RejectReason::RevalidationFailed);
-        }
+        Ok(report.eligible.then_some(report))
+    }
 
-        // 5. How the target moves. A dirty checkout is never touched.
-        let mode = match self.publish_mode(target)? {
-            Ok(mode) => mode,
-            Err(reason) => {
-                temp.discard(self.git)?;
-                return self.needs_intervention(candidate, plan, reason);
+    /// Discard the temp worktree, then give `result`: every exit that stops
+    /// before the publish goes through here.
+    fn abandon(
+        &self,
+        temp: &TempIntegration,
+        result: impl FnOnce() -> Result<PromotionResult>,
+    ) -> Result<PromotionResult> {
+        temp.discard(self.git)?;
+        result()
+    }
+
+    /// 5. How the target moves. A dirty checkout is never touched.
+    fn promote_validated(
+        &self,
+        candidate: &FrozenCandidate,
+        target: &BranchRef,
+        plan: &PromotionPlan,
+        temp: &TempIntegration,
+        landing: Landing,
+        report: ValidationReport,
+    ) -> Result<PromotionResult> {
+        match self.publish_mode(target)? {
+            Err(reason) => self.abandon(temp, || self.needs_intervention(candidate, plan, reason)),
+            Ok(mode) => {
+                let started = PromotionStarted {
+                    target: target.refname(),
+                    dest_before: landing.dest_before,
+                    planned_after: landing.planned_after,
+                    strategy: landing.strategy,
+                    publish: mode.as_str().to_string(),
+                    validation_ids: vec![report.validation_id],
+                };
+                self.start_and_publish(candidate, target, plan, &started, &mode, temp)
             }
-        };
+        }
+    }
 
-        // 6. started → publish → receipt → completed.
-        let started = PromotionStarted {
-            target: refname.clone(),
-            dest_before: dest_before.clone(),
-            planned_after: planned_after.clone(),
-            strategy,
-            publish: mode.as_str().to_string(),
-            validation_ids: vec![report.validation_id],
-        };
+    /// 6. started → publish → receipt → completed.
+    fn start_and_publish(
+        &self,
+        candidate: &FrozenCandidate,
+        target: &BranchRef,
+        plan: &PromotionPlan,
+        started: &PromotionStarted,
+        mode: &PublishMode,
+        temp: &TempIntegration,
+    ) -> Result<PromotionResult> {
         self.emit(
             candidate,
             plan,
@@ -329,11 +448,9 @@ impl<G: GitClient, V: Validator, R: Recorder> PromotionEngine for GitPromotionEn
             EventKind::PromotionStarted(started.clone()),
         )?;
         self.fault(ABORT_AFTER_PROMOTION_STARTED)?;
-        self.publish_and_finish(candidate, target, plan, &started, &mode, &temp)
+        self.publish_and_finish(candidate, target, plan, started, mode, temp)
     }
-}
 
-impl<G: GitClient, V: Validator, R: Recorder> GitPromotionEngine<'_, G, V, R> {
     /// Finish an attempt that recorded `promotion.started` and then stopped.
     ///
     /// The restart rule (design §6 B5): the target at `planned_after` means
@@ -355,34 +472,55 @@ impl<G: GitClient, V: Validator, R: Recorder> GitPromotionEngine<'_, G, V, R> {
             .clone()
             .unwrap_or_else(|| absent(&started.planned_after));
         if held == started.planned_after {
-            if let Some(reason) = self.settle_checkout(target, started)? {
-                temp.discard(self.git)?;
-                return self.needs_intervention(candidate, plan, reason);
-            }
-            return self.finish(candidate, target, plan, started, &started.publish, &temp);
+            self.resume_published(candidate, target, plan, started, &temp)
+        } else if held == started.dest_before {
+            self.resume_unpublished(candidate, target, plan, started, &temp)
+        } else {
+            let at = current.as_deref().unwrap_or("nothing");
+            self.abandon(&temp, || {
+                self.needs_intervention(
+                    candidate,
+                    plan,
+                    format!(
+                        "{} is at {at}, neither dest_before {} nor planned_after {}",
+                        started.target, started.dest_before, started.planned_after
+                    ),
+                )
+            })
         }
-        if held == started.dest_before {
-            let mode = match self.publish_mode(target)? {
-                Ok(mode) => mode,
-                Err(reason) => {
-                    temp.discard(self.git)?;
-                    return self.needs_intervention(candidate, plan, reason);
-                }
-            };
-            return self.publish_and_finish(candidate, target, plan, started, &mode, &temp);
+    }
+
+    /// The target holds `planned_after`: only the checkout's files, the
+    /// receipt and `promotion.completed` can be missing.
+    fn resume_published(
+        &self,
+        candidate: &FrozenCandidate,
+        target: &BranchRef,
+        plan: &PromotionPlan,
+        started: &PromotionStarted,
+        temp: &TempIntegration,
+    ) -> Result<PromotionResult> {
+        if let Some(reason) = self.settle_checkout(target, started)? {
+            self.abandon(temp, || self.needs_intervention(candidate, plan, reason))
+        } else {
+            self.finish(candidate, target, plan, started, &started.publish, temp)
         }
-        temp.discard(self.git)?;
-        self.needs_intervention(
-            candidate,
-            plan,
-            format!(
-                "{} is at {}, neither dest_before {} nor planned_after {}",
-                started.target,
-                current.as_deref().unwrap_or("nothing"),
-                started.dest_before,
-                started.planned_after
-            ),
-        )
+    }
+
+    /// The target holds `dest_before`: the publish did not happen, so it
+    /// runs again.
+    fn resume_unpublished(
+        &self,
+        candidate: &FrozenCandidate,
+        target: &BranchRef,
+        plan: &PromotionPlan,
+        started: &PromotionStarted,
+        temp: &TempIntegration,
+    ) -> Result<PromotionResult> {
+        match self.publish_mode(target)? {
+            Err(reason) => self.abandon(temp, || self.needs_intervention(candidate, plan, reason)),
+            Ok(mode) => self.publish_and_finish(candidate, target, plan, started, &mode, temp),
+        }
     }
 
     /// A checked-out publish that stopped between its ref swap and its tree
@@ -427,6 +565,32 @@ impl<G: GitClient, V: Validator, R: Recorder> GitPromotionEngine<'_, G, V, R> {
         round: &RoundId,
         target: &BranchRef,
     ) -> Result<RollbackResult> {
+        let receipt = self.load_receipt(round, target)?;
+        let current = self.git.rev_parse(&target.repo, &receipt.dest_ref)?;
+        // A created target is rolled back by deleting it: its `dest_before`
+        // is all zeros, as an absent ref reads here.
+        let held = current
+            .clone()
+            .unwrap_or_else(|| absent(&receipt.dest_after));
+        let restored = RollbackResult::RolledBack {
+            restored: receipt.dest_before.clone(),
+        };
+        // A restart after the swap records it and moves nothing.
+        let blocker = if held == receipt.dest_before {
+            None
+        } else {
+            self.rollback_blocker(target, &receipt, &held, current.as_deref())?
+        };
+        if let Some(reason) = blocker {
+            Ok(RollbackResult::NeedsIntervention { reason })
+        } else {
+            self.record_rollback(experiment, round, &receipt)?;
+            Ok(restored)
+        }
+    }
+
+    /// The receipt of `round`, which must be for `target`.
+    fn load_receipt(&self, round: &RoundId, target: &BranchRef) -> Result<PromotionReceipt> {
         let path = self.paths.promotion(round)?;
         let bytes = std::fs::read(&path)
             .with_context(|| format!("round {round} has no receipt at {}", path.display()))?;
@@ -439,17 +603,54 @@ impl<G: GitClient, V: Validator, R: Recorder> GitPromotionEngine<'_, G, V, R> {
                 target.refname()
             );
         }
+        Ok(receipt)
+    }
+
+    /// Why the target must not move back, or `None` after it moved back by
+    /// compare-and-swap. The 3 refusals: the branch moved since the
+    /// promotion, a worktree has it checked out, the swap lost a race.
+    fn rollback_blocker(
+        &self,
+        target: &BranchRef,
+        receipt: &PromotionReceipt,
+        held: &str,
+        current: Option<&str>,
+    ) -> Result<Option<String>> {
         let refname = &receipt.dest_ref;
-        let current = self.git.rev_parse(&target.repo, refname)?;
-        // A created target is rolled back by deleting it: its `dest_before`
-        // is all zeros, as an absent ref reads here.
-        let held = current
-            .clone()
-            .unwrap_or_else(|| absent(&receipt.dest_after));
-        let emit = || {
-            self.recorder.append(NewEvent {
+        if held != receipt.dest_after {
+            return Ok(Some(format!(
+                "{refname} moved to {} after the promotion to {}",
+                current.unwrap_or("nothing"),
+                receipt.dest_after
+            )));
+        }
+        if let CheckoutLocation::CheckedOut { path, .. } =
+            self.git.branch_checkout_location(&target.repo, refname)?
+        {
+            return Ok(Some(format!(
+                "{refname} is checked out in {}; a rollback would leave its files behind the branch",
+                path.display()
+            )));
+        }
+        let swapped = self.git.update_ref_cas(
+            &target.repo,
+            refname,
+            &receipt.dest_before,
+            &receipt.dest_after,
+        )?;
+        Ok((!swapped).then(|| format!("{refname} moved during the rollback")))
+    }
+
+    fn record_rollback(
+        &self,
+        experiment: &ExperimentId,
+        round: &RoundId,
+        receipt: &PromotionReceipt,
+    ) -> Result<()> {
+        self.recorder
+            .append(NewEvent {
                 kind: EventKind::PromotionRolledBack(PromotionRolledBack {
-                    target: refname.clone(),
+                    target: receipt.dest_ref.clone(),
                     restored: receipt.dest_before.clone(),
                 }),
                 actor: Actor::Operator,
@@ -459,46 +660,7 @@ impl<G: GitClient, V: Validator, R: Recorder> GitPromotionEngine<'_, G, V, R> {
                 idempotency_key: format!("promotion.rolled_back:{round}"),
                 occurred_at: clock::now(),
             })
-        };
-        let restored = RollbackResult::RolledBack {
-            restored: receipt.dest_before.clone(),
-        };
-        // A restart after the swap: record it, move nothing.
-        if held == receipt.dest_before {
-            emit()?;
-            return Ok(restored);
-        }
-        if held != receipt.dest_after {
-            return Ok(RollbackResult::NeedsIntervention {
-                reason: format!(
-                    "{refname} moved to {} after the promotion to {}",
-                    current.as_deref().unwrap_or("nothing"),
-                    receipt.dest_after
-                ),
-            });
-        }
-        if let CheckoutLocation::CheckedOut { path, .. } =
-            self.git.branch_checkout_location(&target.repo, refname)?
-        {
-            return Ok(RollbackResult::NeedsIntervention {
-                reason: format!(
-                    "{refname} is checked out in {}; a rollback would leave its files behind the branch",
-                    path.display()
-                ),
-            });
-        }
-        if !self.git.update_ref_cas(
-            &target.repo,
-            refname,
-            &receipt.dest_before,
-            &receipt.dest_after,
-        )? {
-            return Ok(RollbackResult::NeedsIntervention {
-                reason: format!("{refname} moved during the rollback"),
-            });
-        }
-        emit()?;
-        Ok(restored)
+            .map(drop)
     }
 
     /// The worktree (when it is still there) and the branch both hold the
@@ -585,59 +747,124 @@ impl<G: GitClient, V: Validator, R: Recorder> GitPromotionEngine<'_, G, V, R> {
         checkout: &std::path::Path,
         started: &PromotionStarted,
     ) -> Result<Published> {
-        let target = &started.target;
+        let steps: [&dyn Fn() -> Result<Option<String>>; 4] = [
+            &|| self.checkout_unchanged(checkout, started),
+            &|| self.swap_ref(checkout, started),
+            &|| self.move_files(checkout, started),
+            &|| self.checkout_at_planned(checkout, started),
+        ];
+        let lost = steps
+            .iter()
+            .find_map(|step| step().transpose())
+            .transpose()?;
+        Ok(lost.map_or(Published::Moved, Published::Lost))
+    }
+
+    /// The checkout is on `target` at `at`.
+    fn on_target(&self, checkout: &std::path::Path, target: &str, at: &str) -> Result<bool> {
         let short = target.strip_prefix("refs/heads/").unwrap_or(target);
-        let on_target = |at: &str| -> Result<bool> {
-            Ok(self.git.current_branch(checkout)?.as_deref() == Some(short)
-                && self.git.head(checkout)? == at)
-        };
-        if !on_target(&started.dest_before)? || !self.git.status_porcelain(checkout)?.is_empty() {
-            return Ok(Published::Lost(format!(
+        Ok(self.git.current_branch(checkout)?.as_deref() == Some(short)
+            && self.git.head(checkout)? == at)
+    }
+
+    /// Step 1: `Some(reason)` when the checkout is not on the target at
+    /// `dest_before`, or not clean.
+    fn checkout_unchanged(
+        &self,
+        checkout: &std::path::Path,
+        started: &PromotionStarted,
+    ) -> Result<Option<String>> {
+        let target = &started.target;
+        let changed = !self.on_target(checkout, target, &started.dest_before)?
+            || !self.git.status_porcelain(checkout)?.is_empty();
+        Ok(changed.then(|| {
+            format!(
                 "the checkout {} of {target} changed before the publish",
                 checkout.display()
-            )));
-        }
-        if !self.git.update_ref_cas(
+            )
+        }))
+    }
+
+    /// Step 2: the ref swap. `Some(reason)` when it lost a race.
+    fn swap_ref(
+        &self,
+        checkout: &std::path::Path,
+        started: &PromotionStarted,
+    ) -> Result<Option<String>> {
+        let swapped = self.git.update_ref_cas(
             checkout,
-            target,
+            &started.target,
             &started.planned_after,
             &started.dest_before,
-        )? {
-            return Ok(Published::Lost(format!(
-                "{target} moved from {} before the publish into {}",
+        )?;
+        Ok((!swapped).then(|| {
+            format!(
+                "{} moved from {} before the publish into {}",
+                started.target,
                 started.dest_before,
                 checkout.display()
-            )));
-        }
-        if let Err(e) =
-            self.git
-                .read_tree_update(checkout, &started.dest_before, &started.planned_after)
+            )
+        }))
+    }
+
+    /// Step 3: the tree update. `Some(reason)` when git refuses it.
+    fn move_files(
+        &self,
+        checkout: &std::path::Path,
+        started: &PromotionStarted,
+    ) -> Result<Option<String>> {
+        match self
+            .git
+            .read_tree_update(checkout, &started.dest_before, &started.planned_after)
         {
-            let undone = self.git.update_ref_cas(
-                checkout,
-                target,
-                &started.dest_before,
-                &started.planned_after,
-            )?;
-            let state = if undone {
-                format!("{target} is back at {}", started.dest_before)
-            } else {
-                format!("{target} moved again and is not restored")
-            };
-            return Ok(Published::Lost(format!(
-                "the files of {} could not move to {} ({e:#}); {state}",
-                checkout.display(),
-                started.planned_after
-            )));
+            Ok(()) => Ok(None),
+            Err(e) => self.undo_publish(checkout, started, &e).map(Some),
         }
-        if !on_target(&started.planned_after)? {
-            return Ok(Published::Lost(format!(
+    }
+
+    /// The tree update failed: put the ref back by compare-and-swap, and say
+    /// whether that worked.
+    fn undo_publish(
+        &self,
+        checkout: &std::path::Path,
+        started: &PromotionStarted,
+        e: &anyhow::Error,
+    ) -> Result<String> {
+        let target = &started.target;
+        let undone = self.git.update_ref_cas(
+            checkout,
+            target,
+            &started.dest_before,
+            &started.planned_after,
+        )?;
+        let state = if undone {
+            format!("{target} is back at {}", started.dest_before)
+        } else {
+            format!("{target} moved again and is not restored")
+        };
+        Ok(format!(
+            "the files of {} could not move to {} ({e:#}); {state}",
+            checkout.display(),
+            started.planned_after
+        ))
+    }
+
+    /// Step 4: the checkout is on the target at `planned_after`. This
+    /// catches a commit made between steps 2 and 3.
+    fn checkout_at_planned(
+        &self,
+        checkout: &std::path::Path,
+        started: &PromotionStarted,
+    ) -> Result<Option<String>> {
+        let target = &started.target;
+        let moved = !self.on_target(checkout, target, &started.planned_after)?;
+        Ok(moved.then(|| {
+            format!(
                 "the checkout {} of {target} is not at {} after the publish",
                 checkout.display(),
                 started.planned_after
-            )));
-        }
-        Ok(Published::Moved)
+            )
+        }))
     }
 
     fn publish_and_finish(
@@ -650,14 +877,14 @@ impl<G: GitClient, V: Validator, R: Recorder> GitPromotionEngine<'_, G, V, R> {
         temp: &TempIntegration,
     ) -> Result<PromotionResult> {
         match self.publish(target, started, mode)? {
-            Published::Moved => {}
+            Published::Moved => {
+                self.fault(ABORT_AFTER_UPDATE_REF)?;
+                self.finish(candidate, target, plan, started, mode.as_str(), temp)
+            }
             Published::Lost(reason) => {
-                temp.discard(self.git)?;
-                return self.needs_intervention(candidate, plan, reason);
+                self.abandon(temp, || self.needs_intervention(candidate, plan, reason))
             }
         }
-        self.fault(ABORT_AFTER_UPDATE_REF)?;
-        self.finish(candidate, target, plan, started, mode.as_str(), temp)
     }
 
     /// Write the receipt (or accept the one a crashed run wrote), then record
@@ -671,51 +898,8 @@ impl<G: GitClient, V: Validator, R: Recorder> GitPromotionEngine<'_, G, V, R> {
         publish: &str,
         temp: &TempIntegration,
     ) -> Result<PromotionResult> {
-        let path = self.paths.promotion(&plan.round)?;
-        let (receipt, bytes) = match std::fs::read(&path) {
-            Ok(bytes) => {
-                let receipt: PromotionReceipt = serde_json::from_slice(&bytes)
-                    .with_context(|| format!("parsing {}", path.display()))?;
-                if receipt.dest_after != started.planned_after
-                    || receipt.dest_before != started.dest_before
-                {
-                    bail!(
-                        "{} records {}..{}, not this promotion",
-                        path.display(),
-                        receipt.dest_before,
-                        receipt.dest_after
-                    );
-                }
-                (receipt, bytes)
-            }
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                let mut source_shas = self.git.rev_list(
-                    &target.repo,
-                    &format!("{}..{}", candidate.base_sha, candidate.head_sha),
-                )?;
-                source_shas.reverse();
-                let receipt = PromotionReceipt {
-                    schema_version: RECEIPT_SCHEMA_VERSION.to_string(),
-                    round_id: plan.round.clone(),
-                    label: candidate.label.clone(),
-                    source_shas,
-                    dest_ref: started.target.clone(),
-                    dest_before: started.dest_before.clone(),
-                    dest_after: started.planned_after.clone(),
-                    strategy: started.strategy,
-                    publish: publish.to_string(),
-                    validation_ids: started.validation_ids.clone(),
-                    judgment_id: plan.judgment_id.clone(),
-                    promoted_at: clock::now().to_rfc3339_opts(SecondsFormat::Secs, true),
-                };
-                let mut bytes = serde_json::to_vec_pretty(&receipt)?;
-                bytes.push(b'\n');
-                fsx::ensure_private_dir(&self.paths.promotions_dir())?;
-                fsx::create_immutable(&path, &bytes, fsx::PRIVATE_FILE)?;
-                (receipt, bytes)
-            }
-            Err(e) => return Err(e).with_context(|| format!("reading {}", path.display())),
-        };
+        let (receipt, bytes) =
+            self.read_or_write_receipt(candidate, target, plan, started, publish)?;
         self.fault(ABORT_AFTER_RECEIPT)?;
         self.emit(
             candidate,
@@ -729,6 +913,63 @@ impl<G: GitClient, V: Validator, R: Recorder> GitPromotionEngine<'_, G, V, R> {
         // The target holds the commits now; the temp branch can go.
         temp.discard(self.git)?;
         Ok(PromotionResult::Promoted(receipt))
+    }
+
+    /// The receipt a crashed run wrote, or a new one.
+    fn read_or_write_receipt(
+        &self,
+        candidate: &FrozenCandidate,
+        target: &BranchRef,
+        plan: &PromotionPlan,
+        started: &PromotionStarted,
+        publish: &str,
+    ) -> Result<(PromotionReceipt, Vec<u8>)> {
+        let path = self.paths.promotion(&plan.round)?;
+        match std::fs::read(&path) {
+            Ok(bytes) => {
+                let receipt = check_receipt(&bytes, started, &path)?;
+                Ok((receipt, bytes))
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                self.write_receipt(&path, candidate, &target.repo, plan, started, publish)
+            }
+            Err(e) => Err(e).with_context(|| format!("reading {}", path.display())),
+        }
+    }
+
+    fn write_receipt(
+        &self,
+        path: &std::path::Path,
+        candidate: &FrozenCandidate,
+        repo: &std::path::Path,
+        plan: &PromotionPlan,
+        started: &PromotionStarted,
+        publish: &str,
+    ) -> Result<(PromotionReceipt, Vec<u8>)> {
+        let mut source_shas = self.git.rev_list(
+            repo,
+            &format!("{}..{}", candidate.base_sha, candidate.head_sha),
+        )?;
+        source_shas.reverse();
+        let receipt = PromotionReceipt {
+            schema_version: RECEIPT_SCHEMA_VERSION.to_string(),
+            round_id: plan.round.clone(),
+            label: candidate.label.clone(),
+            source_shas,
+            dest_ref: started.target.clone(),
+            dest_before: started.dest_before.clone(),
+            dest_after: started.planned_after.clone(),
+            strategy: started.strategy,
+            publish: publish.to_string(),
+            validation_ids: started.validation_ids.clone(),
+            judgment_id: plan.judgment_id.clone(),
+            promoted_at: clock::now().to_rfc3339_opts(SecondsFormat::Secs, true),
+        };
+        let mut bytes = serde_json::to_vec_pretty(&receipt)?;
+        bytes.push(b'\n');
+        fsx::ensure_private_dir(&self.paths.promotions_dir())?;
+        fsx::create_immutable(path, &bytes, fsx::PRIVATE_FILE)?;
+        Ok((receipt, bytes))
     }
 
     fn reject(
@@ -792,6 +1033,25 @@ impl<G: GitClient, V: Validator, R: Recorder> GitPromotionEngine<'_, G, V, R> {
         }
         Ok(())
     }
+}
+
+/// The receipt a crashed run wrote must record this promotion.
+fn check_receipt(
+    bytes: &[u8],
+    started: &PromotionStarted,
+    path: &std::path::Path,
+) -> Result<PromotionReceipt> {
+    let receipt: PromotionReceipt =
+        serde_json::from_slice(bytes).with_context(|| format!("parsing {}", path.display()))?;
+    if receipt.dest_after != started.planned_after || receipt.dest_before != started.dest_before {
+        bail!(
+            "{} records {}..{}, not this promotion",
+            path.display(),
+            receipt.dest_before,
+            receipt.dest_after
+        );
+    }
+    Ok(receipt)
 }
 
 /// The all-zero object id as long as `like`: what `update-ref` takes as the

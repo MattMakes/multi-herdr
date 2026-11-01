@@ -77,6 +77,19 @@ pub enum Command {
     #[command(subcommand)]
     Fleet(FleetCommand),
 
+    #[command(flatten)]
+    Operator(OperatorCommand),
+
+    /// The detached judge run of one attempt. The coordinator starts it.
+    #[command(hide = true, name = "judge-job")]
+    JudgeJob(JudgeJobArgs),
+}
+
+/// The commands that record or move the result of a round: one group, so
+/// that [`super::dispatch`] routes them in one place. `flatten` keeps each
+/// a top-level subcommand.
+#[derive(Debug, Subcommand)]
+pub enum OperatorCommand {
     /// Record what happened to a decided round's change after the merge.
     Outcome {
         #[arg(value_name = "ROUND")]
@@ -96,9 +109,6 @@ pub enum Command {
         experiment: String,
     },
 
-    /// The detached judge run of one attempt. The coordinator starts it.
-    #[command(hide = true, name = "judge-job")]
-    JudgeJob(JudgeJobArgs),
     /// Promote a round's winner onto a branch: from COMPLETE, or from
     /// NEEDS_INTERVENTION when the round has a winner.
     #[command(hide = true)]
@@ -113,6 +123,22 @@ pub enum Command {
     /// seconds until the candidates are done. Reads no input.
     #[command(hide = true)]
     Watch(WatchArgs),
+}
+
+/// The command prints the `target: <repo> @ <HEAD>` line first. `run
+/// --detach` prints 1 line on a pass (FDS-10), so it does not.
+pub fn prints_target(command: &Command) -> bool {
+    matches!(
+        command,
+        Command::Run(RunArgs { detach: false, .. })
+            | Command::Resume { .. }
+            | Command::Status { .. }
+            | Command::Operator(
+                OperatorCommand::Promote(_)
+                    | OperatorCommand::Rollback(_)
+                    | OperatorCommand::Cleanup(_)
+            )
+    )
 }
 
 /// `fleet` subcommands (fleet-dataset §4.2).
@@ -302,5 +328,35 @@ mod tests {
         assert_eq!(OutcomeArg::Verified.default_score(), 1.0);
         assert_eq!(OutcomeArg::Regression.default_score(), 0.0);
         assert_eq!(OutcomeArg::Revert.default_score(), 0.0);
+    }
+
+    fn prints(args: &[&str]) -> bool {
+        let argv = std::iter::once("multi-herdr-dataset").chain(args.iter().copied());
+        prints_target(&Cli::try_parse_from(argv).unwrap().command)
+    }
+
+    #[test]
+    fn the_target_line_is_printed_for_these_commands_only() {
+        for args in [
+            &["run", "task"][..],
+            &["resume", "e1"],
+            &["status"],
+            &["promote", "r1", "--to", "main"],
+            &["rollback", "r1"],
+            &["cleanup", "r1"],
+        ] {
+            assert!(prints(args), "{args:?}");
+        }
+        for args in [
+            &["run", "task", "--detach", "--report-to", "p1"][..],
+            &["export"],
+            &["readiness"],
+            &["fleet", "sync"],
+            &["outcome", "r1", "--kind", "verified"],
+            &["rebuild", "e1"],
+            &["watch", "e1"],
+        ] {
+            assert!(!prints(args), "{args:?}");
+        }
     }
 }

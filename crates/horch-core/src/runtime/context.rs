@@ -127,6 +127,8 @@ pub struct Bins {
     pub roster_override: Option<PathBuf>,
     /// This binary, when the platform can say.
     pub current_exe: Option<PathBuf>,
+    /// The installed horch on the original PATH, before launch prepends its directory.
+    pub installed_horch: Option<PathBuf>,
     /// The `horch` beside this binary, else the one on PATH, else `horch`.
     pub horch_exe: PathBuf,
     pub harness: HarnessBins,
@@ -147,6 +149,9 @@ impl Bins {
 pub struct Settings {
     /// `HORCH_NOW`, when it parses.
     pub now: Option<DateTime<Utc>>,
+    /// Debug-only mutable pinned clock for hermetic courier timing tests.
+    #[cfg(debug_assertions)]
+    pub test_mail_clock_file: Option<PathBuf>,
     /// `HORCH_NOW`, when it is set but does not parse. The clock warns once.
     pub now_unparsable: Option<String>,
     /// `HORCH_TILE`: `0`, `false`, `no` or `off` disable automatic tiling.
@@ -174,7 +179,7 @@ pub struct Settings {
     /// release.
     pub no_self_check: bool,
     /// `HORCH_UPDATE_TIMEOUT_MS`: the time limit of 1 agent CLI updater.
-    /// [`DEFAULT_UPDATE_TIMEOUT`] when unset or not a number.
+    /// `DEFAULT_UPDATE_TIMEOUT` when unset or not a number.
     pub update_timeout: Duration,
     /// `HORCH_UPDATE_COOLDOWN_DAYS`: how old an agent CLI release must be
     /// before the update step installs it. `0` turns the cooldown off.
@@ -197,6 +202,8 @@ pub struct Inherited {
     pub home_var: Option<OsString>,
     /// `PATH`.
     pub path: Option<OsString>,
+    /// Host of the Claude base URL override, without credentials or path.
+    pub claude_base_url_host: Option<String>,
     /// `PATHEXT` (Windows).
     pub pathext: Option<String>,
     /// `BLENDER_PATH`: the Blender Lab MCP server's variable. `horch doctor`
@@ -263,6 +270,7 @@ impl Inherited {
         Inherited {
             home_var: env.var_os("HOME"),
             path: env.var_os("PATH"),
+            claude_base_url_host: nonempty("ANTHROPIC_BASE_URL").map(|url| base_url_host(&url)),
             pathext: env.var("PATHEXT"),
             blender_path: env.var_os("BLENDER_PATH").filter(|p| !p.is_empty()),
             godot_path: env.var_os("GODOT_PATH").filter(|p| !p.is_empty()),
@@ -360,6 +368,11 @@ impl RuntimeContext {
         let current_exe = env.current_exe();
         let bins = Bins {
             roster_override: nonempty_path(env, "HORCH_TEAMMATES_DIR"),
+            installed_horch: process::which(
+                inherited.path.as_deref(),
+                inherited.pathext.as_deref(),
+                "horch",
+            ),
             horch_exe: horch_exe(current_exe.as_deref(), &inherited),
             harness: HarnessBins::resolve(
                 &overrides,
@@ -375,6 +388,8 @@ impl RuntimeContext {
         let settings = Settings {
             now_unparsable: raw_now.filter(|_| now.is_none()),
             now,
+            #[cfg(debug_assertions)]
+            test_mail_clock_file: nonempty_path(env, "HORCH_TEST_MAIL_CLOCK_FILE"),
             tiling: tiling(env.var("HORCH_TILE").as_deref()),
             balance_override: env.var("HORCH_BALANCE"),
             quota_file: nonempty_path(env, "HORCH_QUOTA_FILE"),
@@ -461,6 +476,22 @@ fn horch_exe(current_exe: Option<&std::path::Path>, inherited: &Inherited) -> Pa
         "horch",
     )
     .unwrap_or_else(|| PathBuf::from(name))
+}
+
+/// Keep diagnostic output free of userinfo and URL query secrets.
+fn base_url_host(url: &str) -> String {
+    url.split_once("://")
+        .map_or(url, |(_, rest)| rest)
+        .split(['/', '?', '#'])
+        .next()
+        .unwrap_or("")
+        .rsplit('@')
+        .next()
+        .unwrap_or("")
+        .split(':')
+        .next()
+        .unwrap_or("")
+        .to_ascii_lowercase()
 }
 
 #[cfg(test)]

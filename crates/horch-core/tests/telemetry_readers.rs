@@ -247,7 +247,10 @@ fn tel_01_unread_has_reason() {
     );
     // opencode without a database file.
     let empty = locations(&w.home.join("nowhere"));
-    assert!(poll_record(&empty, "opencode", Some("ses_beta1"), &mut c).is_err());
+    assert!(matches!(
+        poll_record(&empty, "opencode", Some("ses_beta1"), &mut c).unwrap_err(),
+        Unreadable::NoTranscript(why) if why.contains("no opencode database")
+    ));
 }
 
 /// Every input file of the corpus, with the record it belongs to.

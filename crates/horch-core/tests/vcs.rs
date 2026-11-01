@@ -376,15 +376,83 @@ fn git_update_ref_cas_mismatch_is_false() {
         Some(next.as_str())
     );
 
-    // Option-shaped arguments never reach git.
-    assert!(f
-        .git
-        .update_ref_cas(&f.repo, "--stdin", &next, &base)
-        .is_err());
+    // Option-shaped arguments never reach git. Each of these, run by git,
+    // would succeed: `--no-deref` drops the compare, `-d` deletes the ref.
+    for (refname, new, old) in [
+        ("--no-deref", target, base.as_str()),
+        (target, "-d", next.as_str()),
+        (target, base.as_str(), "--no-deref"),
+    ] {
+        let tried = f.git.update_ref_cas(&f.repo, refname, new, old);
+        assert!(tried.is_err(), "{refname} {new} {old}: {tried:?}");
+    }
+    assert_eq!(
+        f.git.rev_parse(&f.repo, target).unwrap().as_deref(),
+        Some(next.as_str())
+    );
     assert!(f.git.rev_parse(&f.repo, "--all").is_err());
 
     assert!(f.git.version().unwrap().starts_with("git version "));
     assert_eq!(f.git.toplevel(&f.repo).unwrap(), f.repo);
+}
+
+/// A refused update is a lost race when the ref no longer holds the value the
+/// caller expected, and an error when it still does. An absent ref holds the
+/// all-zero value.
+#[test]
+fn git_update_ref_cas_tells_a_failure_from_a_lost_race() {
+    let Some(f) = Fixture::new() else { return };
+    let base = f.git.head(&f.repo).unwrap();
+    f.git_in(&f.repo, &["branch", "target"]);
+    std::fs::write(f.repo.join("c.txt"), "sea\n").unwrap();
+    let next = f.commit_in(&f.repo, "next");
+    let target = "refs/heads/target";
+    let ghost = "refs/heads/ghost";
+    let zero = "0".repeat(40);
+    // Well formed, but no such object: git refuses to write it into a ref.
+    let missing = "1".repeat(40);
+
+    // The ref holds `base`, as expected, and git still refuses: an error.
+    let err = f
+        .git
+        .update_ref_cas(&f.repo, target, &missing, &base)
+        .unwrap_err()
+        .to_string();
+    let (status, detail) = err
+        .strip_prefix("git update-ref refs/heads/target failed (")
+        .and_then(|rest| rest.split_once("): "))
+        .unwrap_or_else(|| panic!("unexpected message: {err}"));
+    assert_ne!(status.parse::<i32>().unwrap(), 0, "{err}");
+    assert!(!detail.is_empty(), "git's own message is kept: {err}");
+    assert_eq!(
+        f.git.rev_parse(&f.repo, target).unwrap().as_deref(),
+        Some(base.as_str())
+    );
+
+    // No such ref, and the caller expects it absent (all zeros): an error.
+    let err = f
+        .git
+        .update_ref_cas(&f.repo, ghost, &missing, &zero)
+        .unwrap_err()
+        .to_string();
+    assert!(
+        err.starts_with("git update-ref refs/heads/ghost failed ("),
+        "{err}"
+    );
+    assert_eq!(f.git.rev_parse(&f.repo, ghost).unwrap(), None);
+
+    // No such ref, but the caller expected `base`: a lost race, no error.
+    assert!(!f.git.update_ref_cas(&f.repo, ghost, &next, &base).unwrap());
+    assert_eq!(f.git.rev_parse(&f.repo, ghost).unwrap(), None);
+
+    // All zeros mean "absent": create the ref, then delete it.
+    assert!(f.git.update_ref_cas(&f.repo, ghost, &next, &zero).unwrap());
+    assert_eq!(
+        f.git.rev_parse(&f.repo, ghost).unwrap().as_deref(),
+        Some(next.as_str())
+    );
+    assert!(f.git.update_ref_cas(&f.repo, ghost, &zero, &next).unwrap());
+    assert_eq!(f.git.rev_parse(&f.repo, ghost).unwrap(), None);
 }
 
 /// A frozen candidate over a plain temp dir: the validator needs no git.
@@ -429,13 +497,13 @@ fn validate_in(
 
 #[cfg(unix)]
 fn pid_alive(pid: i32) -> bool {
+    // SAFETY: signal 0 only tests that the pid exists.
     unsafe { libc::kill(pid, 0) == 0 }
 }
 
 #[test]
 fn cmp_09_gates_per_candidate_with_timeouts() {
     let tmp = tempfile::tempdir().unwrap();
-    let started = Instant::now();
     let (report, worktree, artifacts) = validate_in(
         &tmp,
         |_| {},
@@ -451,10 +519,6 @@ fn cmp_09_gates_per_candidate_with_timeouts() {
             )
         },
     );
-    assert!(
-        started.elapsed() < Duration::from_secs(4),
-        "the timeout fired"
-    );
     let statuses: Vec<_> = report.gates.iter().map(|g| g.status.clone()).collect();
     assert_eq!(
         statuses,
@@ -464,6 +528,11 @@ fn cmp_09_gates_per_candidate_with_timeouts() {
             GateStatus::TimedOut
         ]
     );
+    // The slow gate's own time, not the whole run's, so machine load on the
+    // other gates cannot fail it. Without the 300 ms timeout, `sleep 5`
+    // makes it at least 5000 ms.
+    let slow_ms = report.gates[2].duration_ms;
+    assert!(slow_ms < 4_000, "the timeout fired late: {slow_ms} ms");
     assert_eq!(report.label, "c1");
     assert_eq!(report.head_sha, "b".repeat(40));
     assert!((report.mechanical_score - 1.0 / 3.0).abs() < 1e-9);
@@ -516,6 +585,36 @@ fn cmp_09_gates_per_candidate_with_timeouts() {
     );
     assert!(report.gates.is_empty());
     assert_eq!(report.mechanical_score, 0.0);
+}
+
+/// The label names a directory under the artifacts dir, so `validate`
+/// refuses a label that is not a plain name before it creates or runs
+/// anything. `plain_name` has its own unit test; this one proves `validate`
+/// asks it.
+#[test]
+fn cmp_09_a_label_that_is_not_a_plain_name_is_refused() {
+    for bad in ["", "-x", "../escape", "a/b", "a b", ".hidden"] {
+        let tmp = tempfile::tempdir().unwrap();
+        let worktree = tmp.path().join("wt");
+        let artifacts = tmp.path().join("artifacts");
+        std::fs::create_dir_all(&worktree).unwrap();
+        let v = CommandValidator::new(
+            vec![gate("touch", "touch ran", 10_000)],
+            artifacts.clone(),
+            BTreeSet::new(),
+        );
+        let mut c = candidate(&worktree);
+        c.label = bad.into();
+
+        let err = v.validate(&c).unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            format!("candidate label '{bad}' is not a plain name")
+        );
+        assert!(!artifacts.exists(), "{bad:?} created the artifacts dir");
+        assert!(!tmp.path().join("escape").exists(), "{bad:?} escaped");
+        assert!(!worktree.join("ran").exists(), "{bad:?} ran a gate");
+    }
 }
 
 /// G9: `gates[].required: false` lets a candidate stay eligible when that

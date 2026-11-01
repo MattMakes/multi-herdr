@@ -16,7 +16,7 @@ use crate::dataset::export::ExportRow;
 use crate::evaluation::validator::GateStatus;
 use crate::harness::HarnessKind;
 use crate::ids::{ModelId, TaskId, TeammateName};
-use crate::measure::worker_run::RunConfig;
+use crate::measure::worker_run::{RunConfig, WorkerRun};
 
 /// The built-in `dataset-policy.json`.
 pub(crate) const DEFAULT_POLICY: &str = include_str!("../../assets/dataset-policy.json");
@@ -131,100 +131,138 @@ pub struct ReadinessReport {
     pub gaps: Vec<String>,
 }
 
+/// One arm's counts while the rows are walked.
+#[derive(Default)]
+struct Tally {
+    cov: ArmCoverage,
+    gates: u32,
+    passed: u32,
+    tasks: BTreeSet<TaskId>,
+}
+
+impl Tally {
+    fn add_run(&mut self, run: &WorkerRun, winner: Option<&str>, task_id: &TaskId) {
+        self.cov.runs += 1;
+        if run.facts.status.is_terminal() {
+            self.cov.terminal_runs += 1;
+        }
+        if winner == Some(run.config.config_id.as_str()) {
+            self.cov.wins += 1;
+        }
+        self.gates += count(run.scores.gates.len());
+        self.passed += count(
+            run.scores
+                .gates
+                .iter()
+                .filter(|g| g.status == GateStatus::Passed)
+                .count(),
+        );
+        self.tasks.insert(task_id.clone());
+    }
+
+    fn finish(mut self) -> ArmCoverage {
+        if self.gates > 0 {
+            self.cov.gate_pass_rate = f64::from(self.passed) / f64::from(self.gates);
+        }
+        self.cov.distinct_tasks = count(self.tasks.len());
+        self.cov
+    }
+}
+
+/// What the rows hold, before any threshold is read.
+struct Tallies {
+    arms: BTreeMap<String, Tally>,
+    judged_rounds: u32,
+    tasks: BTreeSet<TaskId>,
+}
+
+fn tally(rows: &[ExportRow]) -> Tallies {
+    let mut out = Tallies {
+        arms: BTreeMap::new(),
+        judged_rounds: 0,
+        tasks: BTreeSet::new(),
+    };
+    for row in rows {
+        // A judgment scores every judged candidate's components.
+        let judged = !row.component_quality.is_empty();
+        out.judged_rounds += u32::from(judged);
+        out.tasks.insert(row.task_id.clone());
+        let mut arms_in_row = BTreeSet::new();
+        for run in &row.worker_runs {
+            let key = ArmKey::of(&run.config).key();
+            let tally = out.arms.entry(key.clone()).or_default();
+            tally.add_run(run, row.winner.as_deref(), &row.task_id);
+            if judged && arms_in_row.insert(key) {
+                tally.cov.judged_rounds += 1;
+            }
+        }
+    }
+    out
+}
+
+/// The unmet thresholds of one tier. Clef also checks distinct tasks
+/// (`tasks` is `(have, need)`); both tiers check judged rounds and the arms
+/// with `runs_per_arm` runs.
+fn tier_gaps(
+    tier: &str,
+    judged_rounds: (u32, u32),
+    arms_with: impl Fn(u32) -> u32,
+    runs_per_arm: u32,
+    min_arms: u32,
+    tasks: Option<(u32, u32)>,
+) -> Vec<String> {
+    let mut gaps = Vec::new();
+    if judged_rounds.0 < judged_rounds.1 {
+        gaps.push(format!(
+            "{tier}: judged rounds {}/{}",
+            judged_rounds.0, judged_rounds.1
+        ));
+    }
+    let arms = arms_with(runs_per_arm);
+    if arms < min_arms {
+        gaps.push(format!(
+            "{tier}: arms with >= {runs_per_arm} runs {arms}/{min_arms}"
+        ));
+    }
+    if let Some((have, need)) = tasks.filter(|(have, need)| have < need) {
+        gaps.push(format!("{tier}: distinct tasks {have}/{need}"));
+    }
+    gaps
+}
+
 /// Count `rows` and judge them against `t`.
 ///
 /// "≥ 50 runs per arm" for Laya is "at least `clef_min_arms` arms with
 /// ≥ `laya_runs_per_arm` runs each", the same arm count as Clef, so a rarely
 /// explored arm does not block Laya (dataset design 4.10.1).
 pub fn readiness(rows: &[ExportRow], t: &ReadinessThresholds) -> ReadinessReport {
-    #[derive(Default)]
-    struct Tally {
-        cov: ArmCoverage,
-        gates: u32,
-        passed: u32,
-        tasks: BTreeSet<TaskId>,
-    }
-    let mut tallies: BTreeMap<String, Tally> = BTreeMap::new();
-    let mut judged_rounds = 0;
-    let mut tasks = BTreeSet::new();
-    for row in rows {
-        // A judgment scores every judged candidate's components.
-        let judged = !row.component_quality.is_empty();
-        if judged {
-            judged_rounds += 1;
-        }
-        tasks.insert(row.task_id.clone());
-        let mut arms_in_row = BTreeSet::new();
-        for run in &row.worker_runs {
-            let key = ArmKey::of(&run.config).key();
-            let tally = tallies.entry(key.clone()).or_default();
-            tally.cov.runs += 1;
-            if run.facts.status.is_terminal() {
-                tally.cov.terminal_runs += 1;
-            }
-            if row.winner.as_deref() == Some(run.config.config_id.as_str()) {
-                tally.cov.wins += 1;
-            }
-            for gate in &run.scores.gates {
-                tally.gates += 1;
-                if gate.status == GateStatus::Passed {
-                    tally.passed += 1;
-                }
-            }
-            tally.tasks.insert(row.task_id.clone());
-            if judged && arms_in_row.insert(key) {
-                tally.cov.judged_rounds += 1;
-            }
-        }
-    }
-    let arms: BTreeMap<String, ArmCoverage> = tallies
+    let Tallies {
+        arms,
+        judged_rounds,
+        tasks,
+    } = tally(rows);
+    let arms: BTreeMap<String, ArmCoverage> = arms
         .into_iter()
-        .map(|(key, mut tally)| {
-            if tally.gates > 0 {
-                tally.cov.gate_pass_rate = f64::from(tally.passed) / f64::from(tally.gates);
-            }
-            tally.cov.distinct_tasks = count(tally.tasks.len());
-            (key, tally.cov)
-        })
+        .map(|(k, tally)| (k, tally.finish()))
         .collect();
     let distinct_tasks = count(tasks.len());
     let arms_with = |runs: u32| count(arms.values().filter(|a| a.runs >= runs).count());
-
-    let mut clef_gaps = Vec::new();
-    if judged_rounds < t.clef_judged_rounds {
-        clef_gaps.push(format!(
-            "clef: judged rounds {judged_rounds}/{}",
-            t.clef_judged_rounds
-        ));
-    }
-    let clef_arms = arms_with(t.clef_runs_per_arm);
-    if clef_arms < t.clef_min_arms {
-        clef_gaps.push(format!(
-            "clef: arms with >= {} runs {clef_arms}/{}",
-            t.clef_runs_per_arm, t.clef_min_arms
-        ));
-    }
-    if distinct_tasks < t.clef_distinct_tasks {
-        clef_gaps.push(format!(
-            "clef: distinct tasks {distinct_tasks}/{}",
-            t.clef_distinct_tasks
-        ));
-    }
-    let mut laya_gaps = Vec::new();
-    if judged_rounds < t.laya_judged_rounds {
-        laya_gaps.push(format!(
-            "laya: judged rounds {judged_rounds}/{}",
-            t.laya_judged_rounds
-        ));
-    }
-    let laya_arms = arms_with(t.laya_runs_per_arm);
-    if laya_arms < t.clef_min_arms {
-        laya_gaps.push(format!(
-            "laya: arms with >= {} runs {laya_arms}/{}",
-            t.laya_runs_per_arm, t.clef_min_arms
-        ));
-    }
-
+    let clef_gaps = tier_gaps(
+        "clef",
+        (judged_rounds, t.clef_judged_rounds),
+        arms_with,
+        t.clef_runs_per_arm,
+        t.clef_min_arms,
+        Some((distinct_tasks, t.clef_distinct_tasks)),
+    );
+    let laya_gaps = tier_gaps(
+        "laya",
+        (judged_rounds, t.laya_judged_rounds),
+        arms_with,
+        t.laya_runs_per_arm,
+        t.clef_min_arms,
+        None,
+    );
     let (verdict, gaps) = if !clef_gaps.is_empty() {
         (ReadinessVerdict::NotReady, clef_gaps)
     } else if !laya_gaps.is_empty() {

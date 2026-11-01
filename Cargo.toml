@@ -25,5 +25,9 @@ serde_yaml = "0.9"
 # The task ledger (docs/specs/task-ledger.md). Bundled: no system SQLite.
 rusqlite = { version = "0.37", features = ["bundled"] }
 
+# Every `unsafe` block states why it is sound in a `// SAFETY:` note.
+[workspace.lints.clippy]
+undocumented_unsafe_blocks = "warn"
+
 [profile.release]
 strip = true

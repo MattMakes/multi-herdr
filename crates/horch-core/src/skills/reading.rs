@@ -126,37 +126,44 @@ pub fn mentions<'a>(
     texts: impl IntoIterator<Item = &'a [u8]>,
     ids: &BTreeSet<&str>,
 ) -> BTreeMap<String, usize> {
-    let word = |b: u8| b.is_ascii_alphanumeric() || b == b'_' || b == b'-';
     let mut out = BTreeMap::new();
     for text in texts {
-        let mut i = 0;
-        while i < text.len() {
-            if !word(text[i]) {
-                i += 1;
-                continue;
-            }
-            let start = i;
-            while i < text.len() && word(text[i]) {
-                i += 1;
-            }
-            let Ok(name) = std::str::from_utf8(&text[start..i]) else {
-                continue;
-            };
-            if !ids.contains(name) {
-                continue;
-            }
-            let before = start.checked_sub(1).map(|j| text[j]);
-            let after = text.get(i).copied();
-            let counts = name.contains('-')
-                || (before == Some(b'`') && after == Some(b'`'))
-                || (before == Some(b'/') && after == Some(b'/'))
-                || (before == Some(b':') && start >= 2 && word(text[start - 2]));
-            if counts {
-                *out.entry(name.to_owned()).or_insert(0) += 1;
-            }
+        let named = words(text)
+            .filter_map(|(s, e)| Some((s, e, std::str::from_utf8(&text[s..e]).ok()?)))
+            .filter(|(_, _, name)| ids.contains(name))
+            .filter(|(s, e, name)| is_mention(text, *s, *e, name));
+        for (_, _, name) in named {
+            *out.entry(name.to_owned()).or_insert(0) += 1;
         }
     }
     out
+}
+
+/// A byte of a name: `[A-Za-z0-9_-]`.
+fn is_word(b: u8) -> bool {
+    b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-')
+}
+
+/// The `(start, end)` of each maximal run of name bytes in `text`.
+fn words(text: &[u8]) -> impl Iterator<Item = (usize, usize)> + '_ {
+    let mut at = 0;
+    text.split(|&b| !is_word(b)).filter_map(move |run| {
+        let start = at;
+        at += run.len() + 1;
+        (!run.is_empty()).then_some((start, start + run.len()))
+    })
+}
+
+/// Whether the name at `text[start..end]` counts as a mention of the skill.
+fn is_mention(text: &[u8], start: usize, end: usize, name: &str) -> bool {
+    let before = start.checked_sub(1).map(|j| text[j]);
+    let after = text.get(end).copied();
+    name.contains('-')
+        || match (before, after) {
+            (Some(b'`'), Some(b'`')) | (Some(b'/'), Some(b'/')) => true,
+            (Some(b':'), _) => start >= 2 && is_word(text[start - 2]),
+            _ => false,
+        }
 }
 
 /// The catalog skills that the `.md` files of the `activated` skills name
@@ -184,4 +191,81 @@ pub fn outside_bundle(catalog: &SkillCatalog, activated: &[&str]) -> Vec<(String
     let mut found: Vec<(String, usize)> = mentions(texts, &ids).into_iter().collect();
     found.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
     found
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn count(text: &str, id: &str) -> usize {
+        let ids = BTreeSet::from([id]);
+        mentions([text.as_bytes()], &ids)
+            .get(id)
+            .copied()
+            .unwrap_or(0)
+    }
+
+    #[test]
+    fn a_hyphenated_id_counts_in_plain_prose() {
+        assert_eq!(
+            count("run code-review now, then code-review again", "code-review"),
+            2
+        );
+    }
+
+    #[test]
+    fn a_hyphenated_id_does_not_match_inside_a_longer_id() {
+        assert_eq!(
+            count("godot-code-review and code-review-all", "code-review"),
+            0
+        );
+    }
+
+    #[test]
+    fn a_bare_id_counts_in_backticks() {
+        assert_eq!(count("use `tdd` here", "tdd"), 1);
+    }
+
+    #[test]
+    fn a_bare_id_counts_between_slashes() {
+        assert_eq!(count("see ../tdd/SKILL.md", "tdd"), 1);
+    }
+
+    #[test]
+    fn a_bare_id_counts_after_a_namespace() {
+        assert_eq!(count("load horch:tdd first", "tdd"), 1);
+    }
+
+    #[test]
+    fn a_bare_id_in_prose_does_not_count() {
+        assert_eq!(count("check the build, tdd is fine", "tdd"), 0);
+        assert_eq!(count("`tdd and tdd/ and /tdd and :tdd", "tdd"), 0);
+    }
+
+    #[test]
+    fn a_colon_counts_only_after_a_word_byte() {
+        assert_eq!(count(" :tdd", "tdd"), 0);
+        assert_eq!(count(":tdd", "tdd"), 0);
+        assert_eq!(count("a:tdd", "tdd"), 1);
+    }
+
+    #[test]
+    fn a_hyphenated_id_counts_after_a_lone_colon() {
+        assert_eq!(count(" :code-review", "code-review"), 1);
+    }
+
+    #[test]
+    fn id_at_the_text_edges_is_judged() {
+        assert_eq!(count("code-review", "code-review"), 1);
+        assert_eq!(count("tdd", "tdd"), 0);
+    }
+
+    #[test]
+    fn counts_add_up_across_texts_and_ids() {
+        let ids = BTreeSet::from(["tdd", "check-it"]);
+        let texts = [&b"`tdd` check-it"[..], &b"check-it `tdd` `tdd`"[..]];
+        let got = mentions(texts, &ids);
+        assert_eq!(got.get("tdd"), Some(&3));
+        assert_eq!(got.get("check-it"), Some(&2));
+    }
 }

@@ -18,9 +18,10 @@ use anyhow::{bail, Context, Result};
 
 use crate::compaction::window::{self, WindowDecision, WindowSource};
 use crate::execution::legacy::LedgerWindow;
-use crate::execution::records::Ledger;
+use crate::execution::records::SessionLedger;
 use crate::execution::SessionMode;
 use crate::messaging::delivery::{self, Readiness, Timing};
+use crate::messaging::mail;
 use crate::messaging::mailbox::Mailbox;
 use crate::roster::{ExecRule, HarnessDefault, Teammate};
 use crate::runtime::bins::{host_tool_bin, BLENDER_APP};
@@ -183,36 +184,49 @@ pub fn teammate_env(teammate: &Teammate, env: &LaunchEnv) -> Vec<(String, String
     if let Some(sub) = &teammate.subagent_model {
         out.insert("CLAUDE_CODE_SUBAGENT_MODEL".to_string(), sub.clone());
     }
-    for (key, value) in &teammate.env {
-        let value = if let Some(tool) = path_of(value) {
-            match env.host_tool(tool) {
-                Some(bin) => bin.to_string_lossy().into_owned(),
-                None => continue,
-            }
-        } else if value.starts_with("~/") {
-            env.expand_home(value).to_string_lossy().into_owned()
-        } else {
-            value.clone()
-        };
-        out.insert(key.clone(), value);
-    }
-    // Harness defaults of the final harness, under the teammate's own keys.
-    // A later entry wins over an earlier one. A non-Claude default yields to
-    // the operator's own value (Claude's settings `env` already beats the
-    // process env).
-    let mut defaults = BTreeMap::new();
-    for entry in HarnessDefault::for_harness(&teammate.harness_defaults, teammate.agent) {
-        for (key, value) in &entry.env {
-            if out.contains_key(key)
-                || (teammate.agent != HarnessKind::Claude && env.operator_env.contains_key(key))
-            {
-                continue;
-            }
-            defaults.insert(key.clone(), value.clone());
-        }
-    }
+    out.extend(
+        teammate
+            .env
+            .iter()
+            .filter_map(|(key, value)| Some((key.clone(), resolve_env_value(env, value)?))),
+    );
+    let defaults = harness_default_env(teammate, env, &out);
     out.extend(defaults);
     out.into_iter().collect()
+}
+
+/// The value of 1 teammate `env` entry: a `{path_of:<tool>}` host tool, a
+/// `~/` path against the launch's home, or the text itself. `None` leaves
+/// the variable out (the tool is not found).
+fn resolve_env_value(env: &LaunchEnv, value: &str) -> Option<String> {
+    if let Some(tool) = path_of(value) {
+        env.host_tool(tool)
+            .map(|bin| bin.to_string_lossy().into_owned())
+    } else if value.starts_with("~/") {
+        Some(env.expand_home(value).to_string_lossy().into_owned())
+    } else {
+        Some(value.to_string())
+    }
+}
+
+/// Harness defaults of the final harness, under the teammate's own keys
+/// `own`. A later entry wins over an earlier one. A non-Claude default
+/// yields to the operator's own value (Claude's settings `env` already
+/// beats the process env).
+fn harness_default_env(
+    teammate: &Teammate,
+    env: &LaunchEnv,
+    own: &BTreeMap<String, String>,
+) -> BTreeMap<String, String> {
+    let yields = |key: &String| {
+        own.contains_key(key)
+            || (teammate.agent != HarnessKind::Claude && env.operator_env.contains_key(key))
+    };
+    HarnessDefault::for_harness(&teammate.harness_defaults, teammate.agent)
+        .flat_map(|entry| entry.env.iter())
+        .filter(|(key, _)| !yields(key))
+        .map(|(key, value)| (key.clone(), value.clone()))
+        .collect()
 }
 
 /// The tool a `{path_of:<tool>}` env value names.
@@ -470,63 +484,67 @@ pub fn run_flow(ctx: &RuntimeContext, req: LaunchRequest<'_>) -> Result<ExitCode
 /// a signal ended it. The worker records it (ARC-18).
 pub(crate) fn run_flow_code(ctx: &RuntimeContext, req: LaunchRequest<'_>) -> Result<Option<i32>> {
     let adapter = req.teammate.agent.adapter();
-    let caps = adapter.capabilities();
-    // Held across the launch, so lazy reads of the bundle remain valid.
-    let skills = install_skills(ctx, &req)?;
+    let launch = prepare_launch(ctx, &req)?;
+    let (mut cmd, teammate) = launch_command(ctx, &req, &launch)?;
+    // What the command really carries is what the record says.
+    let decision = window_in_effect(launch.decision.clone(), &teammate, &cmd);
+    record_window(ctx, &req, &decision);
+    crate::runtime::process::scrub_child_env(&mut cmd);
+    let name = format!("{:?}", cmd.get_program());
+
+    // A resume on a CLI that drops its command-line prompt gets the prompt
+    // typed in, in the background, once the agent is idle.
+    if req.session.is_resume() && adapter.resume_prompt_typed() {
+        start_typed_prompt(ctx, req.role, req.prompt, req.record.as_ref());
+    }
+
+    let discovery = start_discovery_for(
+        ctx,
+        &req,
+        adapter.capabilities(),
+        launch.prepared.sessions_dir.clone(),
+    );
+    let code = run_agent_code(cmd, name.trim_matches('"'));
+    // Discovery is best-effort: a finished agent needs no session id captured.
+    if let Some(d) = discovery {
+        d.stop();
+    }
+    launch.prepared.finish();
+    code
+}
+
+/// What a launch holds from its preparation until the agent exits.
+struct PreparedLaunch {
+    /// Held across the launch, so lazy reads of the bundle remain valid.
+    skills: Option<crate::skills::Bundle>,
+    prepared: super::Prepared,
+    decision: WindowDecision,
+    /// Whether the v1 model catalog for codex is current.
+    v1_catalog_ready: bool,
+}
+
+/// Everything before the command: skills, briefing, trust, the codex v1
+/// catalog, the window decision and the adapter's `prepare`.
+fn prepare_launch(ctx: &RuntimeContext, req: &LaunchRequest<'_>) -> Result<PreparedLaunch> {
+    let skills = install_skills(ctx, req)?;
     if let Some(briefing) = req.briefing_skill {
-        match skills.as_ref().filter(|b| !b.plan().activated.is_empty()) {
-            Some(bundle) => write_briefing_skill(&bundle.skills_dir(), briefing)?,
-            None => eprintln!(
-                "horch[{}]: NOTE: no skills bundle, so /{BRIEFING_SKILL} is not offered",
-                req.role
-            ),
-        }
+        offer_briefing_skill(req, skills.as_ref(), briefing)?;
     }
     // The intended window decision, before `prepare` (Prime's reads it).
     let model = req
         .model_override
         .or(req.teammate.model.as_deref())
         .unwrap_or_default();
-    let workdir = match &req.record {
-        Some(target) => PathBuf::from(target.workdir),
-        None => ctx.paths.cwd.clone().unwrap_or_default(),
-    };
+    let workdir = launch_workdir(ctx, req);
     // The agent must not stop at a trust dialog (ARC-29). Before `prepare`:
     // a codex private home links the operator's `config.toml` as it is then.
     if super::trust::asks_for_trust(req.teammate.agent) {
         trust_workdir(ctx, req.teammate.agent, &workdir);
     }
-    let v1_catalog_ready = if req.teammate.agent == HarnessKind::Codex {
-        let env = LaunchEnv::from_context(ctx);
-        if super::codex::multi_agent_off(&env, req.teammate) {
-            match super::codex::write_v1_catalog(&env.bins.codex, &ctx.paths.state_root) {
-                Ok(_) => true,
-                Err(e) => {
-                    eprintln!(
-                        "horch: NOTE: no v1 model catalog for codex ({e:#}); multi-agent tools stay on for v2 models"
-                    );
-                    false
-                }
-            }
-        } else {
-            true
-        }
-    } else {
-        true
-    };
+    let v1_catalog_ready = codex_v1_catalog_ready(ctx, req.teammate);
     let decision = window_decision(ctx, req.teammate, model, &workdir, req.fleet_window.clone());
-    // What `horch tell`, `note` and `done` read in the agent's shell tool.
-    // PATH is the operator's to shape; the agent inherits it.
-    let mut shell_env: Vec<(String, String)> = req
-        .child_env
-        .iter()
-        .filter(|(key, _)| key != "PATH")
-        .cloned()
-        .collect();
-    if let Some(pane) = &ctx.herdr.pane {
-        shell_env.push(("HERDR_PANE_ID".into(), pane.to_string()));
-    }
-    let prepared = adapter.prepare(
+    let shell_env = agent_shell_env(ctx, req);
+    let prepared = req.teammate.agent.adapter().prepare(
         ctx,
         &PrepareRequest {
             role: req.role,
@@ -540,85 +558,160 @@ pub(crate) fn run_flow_code(ctx: &RuntimeContext, req: LaunchRequest<'_>) -> Res
             shell_env: &shell_env,
         },
     )?;
+    Ok(PreparedLaunch {
+        skills,
+        prepared,
+        decision,
+        v1_catalog_ready,
+    })
+}
 
+/// The directory the agent works in.
+fn launch_workdir(ctx: &RuntimeContext, req: &LaunchRequest<'_>) -> PathBuf {
+    match &req.record {
+        Some(target) => PathBuf::from(target.workdir),
+        None => ctx.paths.cwd.clone().unwrap_or_default(),
+    }
+}
+
+/// What `horch tell`, `note` and `done` read in the agent's shell tool.
+/// PATH is the operator's to shape; the agent inherits it.
+fn agent_shell_env(ctx: &RuntimeContext, req: &LaunchRequest<'_>) -> Vec<(String, String)> {
+    let mut shell_env: Vec<(String, String)> = req
+        .child_env
+        .iter()
+        .filter(|(key, _)| key != "PATH")
+        .cloned()
+        .collect();
+    if let Some(pane) = &ctx.herdr.pane {
+        shell_env.push(("HERDR_PANE_ID".into(), pane.to_string()));
+    }
+    shell_env
+}
+
+/// Write the `/<briefing>` skill into the bundle, or say there is no bundle
+/// to hold it.
+fn offer_briefing_skill(
+    req: &LaunchRequest<'_>,
+    skills: Option<&crate::skills::Bundle>,
+    briefing: &str,
+) -> Result<()> {
+    match skills.filter(|b| !b.plan().activated.is_empty()) {
+        Some(bundle) => write_briefing_skill(&bundle.skills_dir(), briefing)?,
+        None => eprintln!(
+            "horch[{}]: NOTE: no skills bundle, so /{BRIEFING_SKILL} is not offered",
+            req.role
+        ),
+    }
+    Ok(())
+}
+
+/// Whether a codex launch has the v1 model catalog it needs. Other harnesses
+/// need none.
+fn codex_v1_catalog_ready(ctx: &RuntimeContext, teammate: &Teammate) -> bool {
+    if teammate.agent != HarnessKind::Codex {
+        return true;
+    }
+    let env = LaunchEnv::from_context(ctx);
+    if !super::codex::multi_agent_off(&env, teammate) {
+        return true;
+    }
+    match super::codex::write_v1_catalog(&env.bins.codex, &ctx.paths.state_root) {
+        Ok(_) => true,
+        Err(e) => {
+            eprintln!(
+                "horch: NOTE: no v1 model catalog for codex ({e:#}); multi-agent tools stay on for v2 models"
+            );
+            false
+        }
+    }
+}
+
+/// The agent command of a prepared launch, and the teammate copy it was
+/// built from (the pane's model and the prepared extra arguments on it).
+fn launch_command(
+    ctx: &RuntimeContext,
+    req: &LaunchRequest<'_>,
+    launch: &PreparedLaunch,
+) -> Result<(Command, Teammate)> {
     let mut teammate = req.teammate.clone();
     // The pane's model goes on the teammate: the builders read an override
     // first and the teammate's model second, so the argv is the same.
     if let Some(model) = req.model_override {
         teammate.model = Some(model.to_string());
     }
-    teammate.args.extend(prepared.extra_args.iter().cloned());
-    let session = session_for(caps, req.session);
+    teammate
+        .args
+        .extend(launch.prepared.extra_args.iter().cloned());
+    let session = session_for(req.teammate.agent.adapter().capabilities(), req.session);
     let mut env = LaunchEnv::from_context(ctx);
-    if !v1_catalog_ready {
+    if !launch.v1_catalog_ready {
         // Do not reuse an older catalog after regeneration failed. Codex can
         // auto-update between launches, so that file may no longer match it.
         env.state_root = None;
     }
-    env.compact_window = Some(decision.clone());
+    env.compact_window = Some(launch.decision.clone());
+    let tagged_prompt = if req.teammate.agent == HarnessKind::Codex && !req.session.is_resume() {
+        req.record.as_ref().map(|r| {
+            format!(
+                "[{}]\n{}",
+                super::codex::launch_token(r.record_id),
+                req.prompt
+            )
+        })
+    } else {
+        None
+    };
     let mut cmd = agent_command_in(
         &env,
         &teammate,
         session,
-        req.prompt,
-        skills.as_ref(),
-        req.child_env,
+        tagged_prompt.as_deref().unwrap_or(req.prompt),
+        launch.skills.as_ref(),
+        req.child_env.clone(),
     )?;
     // Last, so a value the harness prepared (codex's private home) wins.
     // Before the read-back: Prime's window is in the agent dir its
     // `prepare` names in the environment.
-    for (key, value) in &prepared.env {
+    for (key, value) in &launch.prepared.env {
         cmd.env(key, value);
     }
-    // What the command really carries is what the record says.
-    let decision = window_in_effect(decision, &teammate, &cmd);
-    if let Some(target) = &req.record {
-        let recorded = crate::execution::store::ExecutionStore::open_in(ctx).and_then(|store| {
-            store.set_compact_window(target.record_id, &LedgerWindow::from(&decision))
-        });
-        if let Err(e) = recorded {
-            eprintln!("horch[{}]: window decision not recorded: {e:#}", req.role);
+    Ok((cmd, teammate))
+}
+
+/// Record the window decision on the launch's ledger record, if it has one.
+fn record_window(ctx: &RuntimeContext, req: &LaunchRequest<'_>, decision: &WindowDecision) {
+    let Some(target) = &req.record else { return };
+    let recorded = crate::execution::store::ExecutionStore::open_in(ctx).and_then(|store| {
+        store.set_compact_window(target.record_id, &LedgerWindow::from(decision))
+    });
+    if let Err(e) = recorded {
+        eprintln!("horch[{}]: window decision not recorded: {e:#}", req.role);
+    }
+}
+
+/// Discovery runs only for a fresh session the agent mints itself, in the
+/// background, while the agent holds the foreground.
+fn start_discovery_for(
+    ctx: &RuntimeContext,
+    req: &LaunchRequest<'_>,
+    caps: &Capabilities,
+    sessions_dir: Option<PathBuf>,
+) -> Option<Discovery> {
+    let target = req
+        .record
+        .as_ref()
+        .filter(|_| caps.discovers_session() && !req.session.is_resume())?;
+    match start_discovery(ctx, req.role, req.teammate.agent, target, sessions_dir) {
+        Ok(d) => Some(d),
+        Err(e) => {
+            eprintln!(
+                "horch[{}]: session discovery did not start: {e:#}",
+                req.role
+            );
+            None
         }
     }
-    crate::runtime::process::scrub_child_env(&mut cmd);
-    let name = format!("{:?}", cmd.get_program());
-
-    // A resume on a CLI that drops its command-line prompt gets the prompt
-    // typed in, in the background, once the agent is idle.
-    if req.session.is_resume() && adapter.resume_prompt_typed() {
-        start_typed_prompt(ctx, req.role, req.prompt, req.record.as_ref());
-    }
-
-    // Discovery runs only for a fresh session the agent mints itself, in the
-    // background, while the agent holds the foreground.
-    let discovery = match &req.record {
-        Some(target) if caps.discovers_session() && !req.session.is_resume() => {
-            match start_discovery(
-                ctx,
-                req.role,
-                req.teammate.agent,
-                target,
-                prepared.sessions_dir.clone(),
-            ) {
-                Ok(d) => Some(d),
-                Err(e) => {
-                    eprintln!(
-                        "horch[{}]: session discovery did not start: {e:#}",
-                        req.role
-                    );
-                    None
-                }
-            }
-        }
-        _ => None,
-    };
-    let code = run_agent_code(cmd, name.trim_matches('"'));
-    // Discovery is best-effort: a finished agent needs no session id captured.
-    if let Some(d) = discovery {
-        d.stop();
-    }
-    prepared.finish();
-    code
 }
 
 /// Write `harness`'s trust in `workdir` when it is missing (ARC-29), with
@@ -787,30 +880,56 @@ const POLL_SCHEDULE: [Duration; 62] = {
     schedule
 };
 
+/// What one session-id search looks at: the pane, the ledger and the
+/// harness's own records.
+#[derive(Clone, Copy)]
+struct Search<'a> {
+    ctx: &'a RuntimeContext,
+    agent: HarnessKind,
+    herdr: &'a Herdr,
+    pane: &'a str,
+    ledger: &'a SessionLedger,
+    workdir: &'a Path,
+    since: SystemTime,
+    sessions_dir: Option<&'a Path>,
+}
+
 /// One discovery attempt: herdr's native `agent_session_id` for the pane,
 /// else the harness's own records for `workdir`, newest first, skipping ids
 /// already claimed by a concurrently spawned worker.
-#[allow(clippy::too_many_arguments)]
-fn discover_once(
-    ctx: &RuntimeContext,
-    agent: HarnessKind,
-    herdr: &Herdr,
-    pane: &str,
-    ledger: &Ledger,
-    workdir: &Path,
-    since: SystemTime,
-    sessions_dir: Option<&Path>,
-) -> Option<String> {
+fn discover_once(search: &Search<'_>, record_id: &str) -> Option<String> {
+    let Search {
+        ctx,
+        agent,
+        herdr,
+        pane,
+        ledger,
+        workdir,
+        since,
+        sessions_dir,
+    } = *search;
     (!pane.is_empty())
         .then(|| herdr.pane_get(pane).ok())
         .flatten()
         .and_then(|p| p.agent_session_id())
         .or_else(|| {
-            agent
-                .adapter()
-                .discover_sessions(ctx, workdir, since, sessions_dir)
+            if agent == HarnessKind::Codex {
+                super::codex::find_launch_rollouts(
+                    &crate::usage::Locations::from_context(ctx).codex_sessions,
+                    &workdir.to_string_lossy(),
+                    since,
+                    record_id,
+                )
                 .into_iter()
-                .find(|id| !ledger.has_session(id).unwrap_or(false))
+                .map(|c| c.session_id)
+                .collect::<Vec<_>>()
+            } else {
+                agent
+                    .adapter()
+                    .discover_sessions(ctx, workdir, since, sessions_dir)
+            }
+            .into_iter()
+            .find(|id| !ledger.has_session(id).unwrap_or(false))
         })
 }
 
@@ -830,10 +949,23 @@ pub fn discover_now(
     if !agent.adapter().capabilities().discovers_session() || brief.session.is_resume() {
         return Ok(());
     }
-    let ledger = Ledger::open_in(ctx)?;
-    if ledger.get(record_id)?.session_id.is_some() {
-        return Ok(());
+    let ledger = SessionLedger::open_in(ctx)?;
+    if ledger.get(record_id)?.session_id.is_none() {
+        discover_into_ledger(ctx, &ledger, mailbox, role, record_id, (agent, &brief))?;
     }
+    Ok(())
+}
+
+/// One discovery attempt for `record_id`; a session id found goes to the
+/// ledger and the launch marker is removed.
+fn discover_into_ledger(
+    ctx: &RuntimeContext,
+    ledger: &SessionLedger,
+    mailbox: &Mailbox,
+    role: &str,
+    record_id: &str,
+    (agent, brief): (HarnessKind, &crate::messaging::brief::Brief),
+) -> Result<()> {
     let marker = mailbox.launch_marker_read_path(role);
     let since = std::fs::metadata(&marker).and_then(|m| m.modified())?;
     let sessions_dir = marker_sessions_dir(&marker);
@@ -846,14 +978,17 @@ pub fn discover_now(
         .unwrap_or_default();
     let workdir = PathBuf::from(brief.workdir_or_project());
     if let Some(session_id) = discover_once(
-        ctx,
-        agent,
-        &herdr,
-        &pane,
-        &ledger,
-        &workdir,
-        since,
-        sessions_dir.as_deref(),
+        &Search {
+            ctx,
+            agent,
+            herdr: &herdr,
+            pane: &pane,
+            ledger,
+            workdir: &workdir,
+            since,
+            sessions_dir: sessions_dir.as_deref(),
+        },
+        record_id,
     ) {
         ledger.set_session(record_id, &session_id)?;
         let _ = std::fs::remove_file(&marker);
@@ -895,7 +1030,7 @@ fn start_typed_prompt(
     target: Option<&DiscoveryTarget<'_>>,
 ) {
     let ledger = target.and_then(|t| {
-        Ledger::open_in(ctx)
+        SessionLedger::open_in(ctx)
             .ok()
             .map(|l| (l, t.record_id.to_string()))
     });
@@ -904,8 +1039,16 @@ fn start_typed_prompt(
     let role = role.to_string();
     let prompt = prompt.to_string();
     let pane = ctx.herdr.pane.as_ref().map(|p| p.to_string());
+    let workspace = target.map(|t| t.mailbox.workspace_id().to_string());
+    let ctx = ctx.clone();
     std::thread::spawn(move || {
         let ledger = ledger.as_ref().map(|(l, id)| (l, id.as_str()));
+        let queue = |line: &str| -> Result<()> {
+            let workspace = workspace
+                .as_deref()
+                .context("the workspace of this worker is unknown")?;
+            mail::queue_notice(&ctx, workspace, "orchestrator", line).map(|_| ())
+        };
         type_resumed_prompt(
             &herdr,
             pane.as_deref(),
@@ -913,24 +1056,31 @@ fn start_typed_prompt(
             &role,
             ledger,
             orchestrator.as_deref(),
+            Some(&queue),
             &Readiness::DEFAULT,
             &Timing::DEFAULT,
         );
     });
 }
 
+/// Queues 1 line as durable orchestrator mail.
+pub(crate) type QueueLine<'a> = &'a dyn Fn(&str) -> Result<()>;
+
 /// Type `prompt` into `pane` once its agent is idle. When that fails, the
 /// worker's record gets a note that says why, and the orchestrator pane, if
 /// one is registered, gets a `BLOCKED` line: a resumed pane never sits idle
-/// with no task and no word. True when the prompt was typed.
-#[allow(clippy::too_many_arguments)]
+/// with no task and no word. `queue` first queues that line as durable
+/// orchestrator mail (#177), so a failed push still reaches it. True when
+/// the prompt was typed.
+#[allow(clippy::too_many_arguments)] // each argument is a separate delivery input; grouping would only hide them
 pub(crate) fn type_resumed_prompt(
     ws: &dyn WorkspaceClient,
     pane: Option<&str>,
     prompt: &str,
     role: &str,
-    ledger: Option<(&Ledger, &str)>,
+    ledger: Option<(&SessionLedger, &str)>,
     orchestrator: Option<&str>,
+    queue: Option<QueueLine<'_>>,
     wait: &Readiness,
     timing: &Timing,
 ) -> bool {
@@ -950,11 +1100,16 @@ pub(crate) fn type_resumed_prompt(
             eprintln!("horch worker[{role}]: recording the failure failed: {e:#}");
         }
     }
+    let line = format!(
+        "[{role}] BLOCKED: My resumed task did not reach my pane. Reason: {e:#}. \
+         Send it again with horch assign {role} \"<task>\"."
+    );
+    if let Some(queue) = queue {
+        if let Err(e) = queue(&line) {
+            eprintln!("horch worker[{role}]: queueing the BLOCKED line failed: {e:#}");
+        }
+    }
     if let Some(orchestrator) = orchestrator {
-        let line = format!(
-            "[{role}] BLOCKED: My resumed task did not reach my pane. Reason: {e:#}. \
-             Send it again with horch assign {role} \"<task>\"."
-        );
         if let Err(e) = delivery::send_line_with(ws, orchestrator, &line, timing) {
             eprintln!("horch worker[{role}]: telling the orchestrator failed: {e:#}");
         }
@@ -988,7 +1143,7 @@ fn start_discovery(
     let role = role.to_string();
     let record_id = target.record_id.to_string();
     let workdir = PathBuf::from(target.workdir);
-    let ledger = Ledger::open_in(ctx)?;
+    let ledger = SessionLedger::open_in(ctx)?;
     let herdr = Herdr::with_bin(&ctx.bins.harness.herdr);
     let ctx = ctx.clone();
 
@@ -1000,14 +1155,17 @@ fn start_discovery(
             }
 
             let found = discover_once(
-                &ctx,
-                agent,
-                &herdr,
-                &pane,
-                &ledger,
-                &workdir,
-                since,
-                sessions_dir.as_deref(),
+                &Search {
+                    ctx: &ctx,
+                    agent,
+                    herdr: &herdr,
+                    pane: &pane,
+                    ledger: &ledger,
+                    workdir: &workdir,
+                    since,
+                    sessions_dir: sessions_dir.as_deref(),
+                },
+                &record_id,
             );
             if let Some(session_id) = found {
                 if let Err(e) = ledger.set_session(&record_id, &session_id) {
@@ -1078,6 +1236,15 @@ fn run_agent_code(mut cmd: Command, name: &str) -> Result<Option<i32>> {
         .wait()
         .with_context(|| format!("waiting for {name}"))?;
     Ok(status.code())
+}
+
+/// The same host sandbox check used when preparing a Claude launch.
+pub fn sandbox_host_problem(ctx: &RuntimeContext) -> Option<String> {
+    super::claude::sandbox_host_problem(
+        std::env::consts::OS,
+        ctx.inherited.path.as_deref(),
+        Path::new("/usr/bin/sandbox-exec").is_file(),
+    )
 }
 
 #[cfg(test)]
@@ -1391,6 +1558,9 @@ mod tests {
         assert_eq!(
             a,
             vec![
+                // Sanctioned #58: read-only pre-approvals precede variadic tool denials.
+                "--allowedTools",
+                "Read,Grep,Glob,Bash(git status),Bash(git status *),Bash(git log),Bash(git log --oneline -10),Bash(git diff),Bash(git diff --stat),Bash(git diff --cached),Bash(git show),Bash(git ls-files),Bash(horch ledger status),Bash(horch ledger status *),Bash(horch ledger show *),Bash(horch ledger steps *),Bash(horch ledger events),Bash(horch ledger events *),Bash(aws sts get-caller-identity),Bash(aws s3 ls),Bash(gcloud projects list),Bash(az account show),Bash(kubectl get pods),Bash(docker ps)",
                 // The fleet rule: opus, like every claude fleet pane, denies
                 // the subagent tool.
                 "--disallowedTools",
@@ -2018,17 +2188,18 @@ mod tests {
             poll: Duration::from_millis(1),
         };
         let tmp = tempfile::tempdir().unwrap();
-        let ledger = Ledger::for_project(tmp.path(), "/proj");
+        let ledger = SessionLedger::for_project(tmp.path(), "/proj");
         ledger
-            .add(
-                "rec-1",
-                "opencode",
-                "opencode-pickle",
-                "m",
-                "pickle-1",
-                Some("ses_1"),
-                "t",
-            )
+            .add(crate::execution::records::NewRecord {
+                record_id: "rec-1",
+                agent: "opencode",
+                tier: "opencode-pickle",
+                model: "m",
+                role: "pickle-1",
+                session_id: Some("ses_1"),
+                task: "t",
+                phase: None,
+            })
             .unwrap();
         let ws = FakeWorkspace::new();
         let created = ws.workspace_create("fleet", None, false).unwrap();
@@ -2045,6 +2216,7 @@ mod tests {
             "pickle-1",
             Some((&ledger, "rec-1")),
             Some(&orchestrator),
+            None,
             &wait,
             &fast,
         );
@@ -2062,6 +2234,37 @@ mod tests {
         assert_eq!(prompts[0].args[0], orchestrator);
         assert!(prompts[0].args[1].starts_with("[pickle-1] BLOCKED: "));
 
+        // #177: with no orchestrator pane to type into, the BLOCKED line
+        // still waits as orchestrator mail.
+        let state = tempfile::tempdir().unwrap();
+        let mail = mail::Mail::under(state.path(), "w1");
+        let queue = |line: &str| mail.enqueue("horch", line).map(|_| ());
+        let ws = FakeWorkspace::new();
+        let worker = ws
+            .workspace_create("fleet", None, false)
+            .unwrap()
+            .root_pane_id;
+        ws.set_agent_states(&worker, &[(Some("opencode"), Some("unknown"))]);
+        assert!(!type_resumed_prompt(
+            &ws,
+            Some(&worker),
+            "TASK",
+            "pickle-1",
+            None,
+            None,
+            Some(&queue),
+            &wait,
+            &fast,
+        ));
+        let pending = mail.pending().unwrap();
+        assert_eq!(pending.len(), 1, "{pending:?}");
+        assert!(
+            pending[0]
+                .text
+                .starts_with("[pickle-1] BLOCKED: My resumed task did not reach my pane. Reason: "),
+            "{pending:?}"
+        );
+
         // An idle agent gets the prompt and nothing is recorded.
         let ws = FakeWorkspace::new();
         let worker = ws
@@ -2074,6 +2277,7 @@ mod tests {
             Some(&worker),
             "TASK",
             "pickle-1",
+            None,
             None,
             None,
             &wait,

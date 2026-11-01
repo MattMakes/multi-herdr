@@ -4,7 +4,7 @@
 //! when no changed file is in a language the analyser reads.
 
 use std::collections::BTreeMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use anyhow::{Context, Result};
@@ -12,11 +12,11 @@ use serde::Deserialize;
 
 use super::{Ctx, Outcome};
 
-/// The extensions the analyser reads (TypeScript/JavaScript, Python, Rust,
-/// GDScript), as the skill documents them.
-pub const EXTENSIONS: &[&str] = &[
-    "ts", "tsx", "mts", "cts", "js", "jsx", "mjs", "cjs", "py", "rs", "gd",
-];
+/// The extensions the analyser parses: TypeScript and JavaScript (its core
+/// is `ts-morph`), and Python. It has no Rust or GDScript parser: it reads
+/// those files as TypeScript and reports functions that do not exist, so
+/// they are not sent to it (#204).
+pub const EXTENSIONS: &[&str] = &["ts", "tsx", "mts", "cts", "js", "jsx", "mjs", "cjs", "py"];
 
 #[derive(Debug, Deserialize)]
 struct Analysis {
@@ -59,29 +59,23 @@ pub fn changed_lines(diff: &str) -> BTreeMap<String, Vec<(u64, u64)>> {
     for line in diff.lines() {
         if let Some(f) = line.strip_prefix("+++ ") {
             file = f.strip_prefix("b/").map(|s| s.to_string());
-            continue;
-        }
-        let Some(rest) = line.strip_prefix("@@ ") else {
-            continue;
-        };
-        let Some(plus) = rest.split_whitespace().find(|t| t.starts_with('+')) else {
-            continue;
-        };
-        let plus = &plus[1..];
-        let (start, count) = match plus.split_once(',') {
-            Some((s, c)) => (s.parse::<u64>().unwrap_or(0), c.parse::<u64>().unwrap_or(1)),
-            None => (plus.parse::<u64>().unwrap_or(0), 1),
-        };
-        if count == 0 {
-            continue;
-        }
-        if let Some(f) = &file {
-            out.entry(f.clone())
-                .or_default()
-                .push((start, start + count - 1));
+        } else if let (Some(f), Some(range)) = (&file, hunk_range(line)) {
+            out.entry(f.clone()).or_default().push(range);
         }
     }
     out
+}
+
+/// The new-side line range of 1 hunk header; `None` for any other line and
+/// for a hunk that adds no line.
+fn hunk_range(line: &str) -> Option<(u64, u64)> {
+    let rest = line.strip_prefix("@@ ")?;
+    let plus = &rest.split_whitespace().find(|t| t.starts_with('+'))?[1..];
+    let (start, count) = match plus.split_once(',') {
+        Some((s, c)) => (s.parse::<u64>().unwrap_or(0), c.parse::<u64>().unwrap_or(1)),
+        None => (plus.parse::<u64>().unwrap_or(0), 1),
+    };
+    (count > 0).then(|| (start, start + count - 1))
 }
 
 /// The violations in functions whose span (its line to the line before the
@@ -121,6 +115,101 @@ pub fn in_changed_functions(
     Ok(out)
 }
 
+/// The files of `git diff --name-only` in a language the analyser reads.
+fn sources(names: &str) -> Vec<String> {
+    names
+        .lines()
+        .filter(|f| {
+            Path::new(f)
+                .extension()
+                .and_then(|e| e.to_str())
+                .is_some_and(|e| EXTENSIONS.contains(&e))
+        })
+        .map(|s| s.to_string())
+        .collect()
+}
+
+/// The command that runs the analyser on `files`.
+fn analyser(cx: &Ctx<'_>, cli: &Path, files: &[String]) -> Command {
+    let mut cmd = if cli.extension().is_some_and(|e| e == "js") {
+        let mut c = Command::new(&cx.tools.node);
+        c.arg(cli);
+        c
+    } else {
+        Command::new(cli)
+    };
+    cmd.args(["--format", "json", "--threshold-action", "none"])
+        .args(files)
+        .current_dir(&cx.dir);
+    crate::runtime::process::scrub_child_env(&mut cmd);
+    cmd
+}
+
+/// The failed outcome that names the first 10 violations.
+fn violations(found: &[Violation], evidence: PathBuf) -> Outcome {
+    let list: Vec<String> = found
+        .iter()
+        .take(10)
+        .map(|v| {
+            format!(
+                "{}:{} {} {}={} (max {})",
+                v.file_path, v.line, v.function_name, v.metric, v.value, v.threshold
+            )
+        })
+        .collect();
+    Outcome::fail(
+        &format!("{} violations", found.len()),
+        Some(evidence.clone()),
+        &format!(
+            "reduce the complexity of the functions you changed, commit, then run finish again: {}. Full analysis: {}",
+            list.join("; "),
+            evidence.display()
+        ),
+    )
+}
+
+/// Run the analyser on `files` and judge the functions the branch changed.
+fn analyse(
+    cx: &Ctx<'_>,
+    base: &str,
+    cli: &Path,
+    files: &[String],
+    tree: Option<String>,
+) -> Result<Outcome> {
+    let mut cmd = analyser(cx, cli, files);
+    // The report goes to a file, not a pipe: node exits before a piped
+    // stdout drains, and a pipe keeps only the first 64 KiB.
+    let evidence = cx.evidence_dir.join(format!("{}-complexity.json", cx.seq));
+    cmd.stdout(std::fs::File::create(&evidence)?);
+    let out = cmd
+        .output()
+        .with_context(|| format!("running {}", cli.display()))?;
+    let json = std::fs::read_to_string(&evidence)?;
+    if json.trim().is_empty() {
+        return Ok(Outcome::fail(
+            "no output",
+            Some(evidence),
+            &format!(
+                "the analyser printed nothing: {}",
+                String::from_utf8_lossy(&out.stderr).trim()
+            ),
+        ));
+    }
+    let git = &cx.tools.git;
+    let diff = git.run(&cx.dir, &["diff", "-U0", &format!("{base}...HEAD"), "--"])?;
+    let found = in_changed_functions(&json, &changed_lines(&diff), &cx.dir)?;
+    let outcome = if found.is_empty() {
+        Outcome::pass(
+            "0 violations",
+            Some(evidence),
+            &format!("{} files analysed", files.len()),
+        )
+    } else {
+        violations(&found, evidence)
+    };
+    Ok(outcome.judged(tree))
+}
+
 /// The step.
 pub fn step(cx: &Ctx<'_>) -> Result<Outcome> {
     let git = &cx.tools.git;
@@ -139,16 +228,7 @@ pub fn step(cx: &Ctx<'_>) -> Result<Outcome> {
             &format!("{base}...HEAD"),
         ],
     )?;
-    let files: Vec<String> = names
-        .lines()
-        .filter(|f| {
-            Path::new(f)
-                .extension()
-                .and_then(|e| e.to_str())
-                .is_some_and(|e| EXTENSIONS.contains(&e))
-        })
-        .map(|s| s.to_string())
-        .collect();
+    let files = sources(&names);
     let tree = git.tree(&cx.dir).ok();
     if files.is_empty() {
         return Ok(
@@ -163,64 +243,7 @@ pub fn step(cx: &Ctx<'_>) -> Result<Outcome> {
             "the complexity-sweep skill's analyser was not found. Install the code plugin's complexity-sweep skill (and run npm install in its code/core and code/cli), or set HORCH_COMPLEXITY_CLI to its code/cli/dist/index.js",
         ));
     };
-    let mut cmd = if cli.extension().is_some_and(|e| e == "js") {
-        let mut c = Command::new(&cx.tools.node);
-        c.arg(cli);
-        c
-    } else {
-        Command::new(cli)
-    };
-    cmd.args(["--format", "json", "--threshold-action", "none"])
-        .args(&files)
-        .current_dir(&cx.dir)
-        .env_remove("ANTHROPIC_API_KEY");
-    let out = cmd
-        .output()
-        .with_context(|| format!("running {}", cli.display()))?;
-    let json = String::from_utf8_lossy(&out.stdout).into_owned();
-    let evidence = cx.evidence_dir.join(format!("{}-complexity.json", cx.seq));
-    std::fs::write(&evidence, &json)?;
-    if json.trim().is_empty() {
-        return Ok(Outcome::fail(
-            "no output",
-            Some(evidence),
-            &format!(
-                "the analyser printed nothing: {}",
-                String::from_utf8_lossy(&out.stderr).trim()
-            ),
-        ));
-    }
-    let diff = git.run(&cx.dir, &["diff", "-U0", &format!("{base}...HEAD"), "--"])?;
-    let changed = changed_lines(&diff);
-    let found = in_changed_functions(&json, &changed, &cx.dir)?;
-    if found.is_empty() {
-        return Ok(Outcome::pass(
-            "0 violations",
-            Some(evidence),
-            &format!("{} files analysed", files.len()),
-        )
-        .judged(tree));
-    }
-    let list: Vec<String> = found
-        .iter()
-        .take(10)
-        .map(|v| {
-            format!(
-                "{}:{} {} {}={} (max {})",
-                v.file_path, v.line, v.function_name, v.metric, v.value, v.threshold
-            )
-        })
-        .collect();
-    Ok(Outcome::fail(
-        &format!("{} violations", found.len()),
-        Some(evidence.clone()),
-        &format!(
-            "reduce the complexity of the functions you changed, commit, then run finish again: {}. Full analysis: {}",
-            list.join("; "),
-            evidence.display()
-        ),
-    )
-    .judged(tree))
+    analyse(cx, &base, cli, &files, tree)
 }
 
 #[cfg(test)]
@@ -229,15 +252,27 @@ mod tests {
 
     #[test]
     fn only_violations_in_changed_functions_count() {
-        let diff = "diff --git a/src/a.rs b/src/a.rs\n--- a/src/a.rs\n+++ b/src/a.rs\n@@ -10,0 +11,3 @@ fn x\n+a\n+b\n+c\n";
+        let diff = "diff --git a/src/a.ts b/src/a.ts\n--- a/src/a.ts\n+++ b/src/a.ts\n@@ -10,0 +11,3 @@ fn x\n+a\n+b\n+c\n";
         let changed = changed_lines(diff);
-        assert_eq!(changed["src/a.rs"], vec![(11, 13)]);
-        let json = r#"{"files":[{"filePath":"src/a.rs","language":"rust","functions":[{"name":"f","line":1},{"name":"g","line":9},{"name":"h","line":30}]}],
+        assert_eq!(changed["src/a.ts"], vec![(11, 13)]);
+        let json = r#"{"files":[{"filePath":"src/a.ts","functions":[{"name":"f","line":1},{"name":"g","line":9},{"name":"h","line":30}]}],
           "violations":[
-            {"functionName":"g","filePath":"src/a.rs","line":9,"metric":"cyclomaticComplexity","value":12,"threshold":10,"severity":"warn"},
-            {"functionName":"h","filePath":"src/a.rs","line":30,"metric":"abcScore","value":40,"threshold":30,"severity":"warn"}]}"#;
+            {"functionName":"g","filePath":"src/a.ts","line":9,"metric":"cyclomaticComplexity","value":12,"threshold":10,"severity":"warn"},
+            {"functionName":"h","filePath":"src/a.ts","line":30,"metric":"abcScore","value":40,"threshold":30,"severity":"warn"}]}"#;
         let v = in_changed_functions(json, &changed, Path::new("/repo")).unwrap();
         assert_eq!(v.len(), 1);
         assert_eq!(v[0].function_name, "g");
+    }
+
+    #[test]
+    fn changed_lines_reads_every_hunk_kind() {
+        let diff = "@@ -1 +1 @@ before any file\n\
+                    +++ b/a.ts\n@@ -1,0 +2 @@\n@@ -5,2 +7,0 @@ deleted only\n@@ -9 +10,2 @@\n\
+                    +++ /dev/null\n@@ -1,3 +0,0 @@\n\
+                    +++ b/b.py\n@@ -0,0 +1,4 @@\n";
+        let changed = changed_lines(diff);
+        assert_eq!(changed.len(), 2, "{changed:?}");
+        assert_eq!(changed["a.ts"], vec![(2, 2), (10, 11)]);
+        assert_eq!(changed["b.py"], vec![(1, 4)]);
     }
 }

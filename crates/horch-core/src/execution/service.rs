@@ -117,20 +117,9 @@ impl ExecutionService<'_> {
             .map_err(SpawnError::Store)?;
         faults.abort_if("abort-after-execution-insert");
 
-        if let Err(e) = self.write_brief(&plan) {
-            return Err(self.launch_failed(&plan, LaunchStage::Brief, e, None));
-        }
-        faults.abort_if("abort-after-brief");
-
-        let pane = match self.split(&plan) {
-            Ok(pane) => pane,
-            Err(e) => return Err(self.launch_failed(&plan, LaunchStage::Split, e, None)),
-        };
-        faults.abort_if("abort-after-pane-split");
-
-        if let Err(e) = self.run(&pane, &role) {
-            return Err(self.launch_failed(&plan, LaunchStage::Run, e, Some(&pane)));
-        }
+        let pane = self
+            .launch_stages(&plan, &role)
+            .map_err(|(stage, e, pane)| self.launch_failed(&plan, stage, e, pane.as_deref()))?;
         // The worker is running in its pane; a ledger hiccup here must not
         // fail the spawn. The worker sets `Running` itself.
         if let Err(e) = self.store.mark_starting(id.as_str(), &pane) {
@@ -138,6 +127,28 @@ impl ExecutionService<'_> {
         }
         (self.tile)(&pane, plan.workspace.tiling);
         Ok(SpawnOutcome { plan, pane })
+    }
+
+    /// Brief, split and run, with the crash fault points between them. A
+    /// failure names its stage and the pane to close, if one exists.
+    fn launch_stages(
+        &self,
+        plan: &ExecutionPlan,
+        role: &str,
+    ) -> Result<String, (LaunchStage, anyhow::Error, Option<String>)> {
+        let faults = &self.ctx.settings.faults;
+        self.write_brief(plan)
+            .map_err(|e| (LaunchStage::Brief, e, None))?;
+        faults.abort_if("abort-after-brief");
+
+        let pane = self
+            .split(plan)
+            .map_err(|e| (LaunchStage::Split, e, None))?;
+        faults.abort_if("abort-after-pane-split");
+
+        self.run(&pane, role)
+            .map_err(|e| (LaunchStage::Run, e, Some(pane.clone())))?;
+        Ok(pane)
     }
 
     /// Close what earlier spawners abandoned, and free their roles. Best
@@ -160,39 +171,39 @@ impl ExecutionService<'_> {
     fn insert(&self, plan: ExecutionPlan, role: Option<&str>) -> Result<ExecutionPlan, SpawnError> {
         let workspace = WorkspaceId::new(self.mailbox.workspace_id())
             .map_err(|e| SpawnError::Store(e.into()))?;
-        let outcome = self.store.update(|records| {
-            let role = match role {
-                Some(role) => role.to_string(),
-                None => {
-                    let name = &plan.launch.teammate.name;
-                    format!("{name}-{}", self.mailbox.next_seq(name)?)
-                }
-            };
-            if self.mailbox.role_taken(&role) || planned_role(records, &workspace, &role) {
-                return Ok(Err(PlanError::RoleTaken(role)));
-            }
-            let plan = finish_plan(plan, RoleName::new(role)?, &workspace);
-            let record = from_execution(&plan.execution);
-            match records.iter_mut().find(|r| r.record_id == record.record_id) {
-                // A resume: the record as planned, with any history written
-                // since the plan read it.
-                Some(old) if plan.resumed => {
-                    let mut history = old.history.clone();
-                    history.extend(plan.execution.history.last().cloned());
-                    *old = LedgerRecordV1 { history, ..record };
-                }
-                Some(_) => anyhow::bail!("record {} exists already", record.record_id),
-                None if plan.resumed => {
-                    anyhow::bail!("record {} vanished before the resume", record.record_id)
-                }
-                None => records.push(record),
-            }
-            Ok(Ok(plan))
-        });
+        let outcome = self
+            .store
+            .update(|records| self.claim(records, plan, role, &workspace));
         match outcome {
             Ok(Ok(plan)) => Ok(plan),
             Ok(Err(e)) => Err(e.into()),
             Err(e) => Err(SpawnError::Store(e)),
+        }
+    }
+
+    /// Name the role, check that it is free and write the record, inside the
+    /// ledger lock. A taken role is the inner error.
+    fn claim(
+        &self,
+        records: &mut Vec<LedgerRecordV1>,
+        plan: ExecutionPlan,
+        role: Option<&str>,
+        workspace: &WorkspaceId,
+    ) -> Result<Result<ExecutionPlan, PlanError>> {
+        let role = self.role_name(role, &plan.launch.teammate.name)?;
+        if self.mailbox.role_taken(&role) || planned_role(records, workspace, &role) {
+            return Ok(Err(PlanError::RoleTaken(role)));
+        }
+        let plan = finish_plan(plan, RoleName::new(role)?, workspace);
+        upsert(records, from_execution(&plan.execution), plan.resumed)?;
+        Ok(Ok(plan))
+    }
+
+    /// The explicit role, or the next `<teammate>-<n>`.
+    fn role_name(&self, role: Option<&str>, teammate: &str) -> Result<String> {
+        match role {
+            Some(role) => Ok(role.to_string()),
+            None => Ok(format!("{teammate}-{}", self.mailbox.next_seq(teammate)?)),
         }
     }
 
@@ -311,4 +322,22 @@ fn planned_role(records: &[LedgerRecordV1], workspace: &WorkspaceId, role: &str)
             && r.workspace_id.as_deref() == Some(workspace.as_str())
             && r.state == Some(ExecutionStatus::Planned)
     })
+}
+
+/// Write `record` into the ledger rows. A resume replaces its row in place,
+/// keeping any history written since the plan read it; a fresh spawn pushes.
+fn upsert(records: &mut Vec<LedgerRecordV1>, record: LedgerRecordV1, resumed: bool) -> Result<()> {
+    match records.iter_mut().find(|r| r.record_id == record.record_id) {
+        Some(old) if resumed => {
+            let mut history = old.history.clone();
+            history.extend(record.history.last().cloned());
+            *old = LedgerRecordV1 { history, ..record };
+        }
+        Some(_) => anyhow::bail!("record {} exists already", record.record_id),
+        None if resumed => {
+            anyhow::bail!("record {} vanished before the resume", record.record_id)
+        }
+        None => records.push(record),
+    }
+    Ok(())
 }

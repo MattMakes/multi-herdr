@@ -1,6 +1,9 @@
 # Spec: the task ledger
 
-Status: draft for operator review. Nothing here is built yet.
+Status: shipped in v0.3.0 as `horch ledger`. Every item of section 8 is
+built. Later releases added the commands that section 6 marks as added
+after v0.3.0. 1 part differs from this design: `horch assign` is not
+retired. It stays for fleets that do not use a ledger run.
 
 ## 1. Why
 
@@ -41,7 +44,9 @@ One SQLite file for every project on the machine:
 - `$HORCH_LEDGER_DB` overrides the path. Tests use it.
 - The same place on every OS, so a human or an agent can find it without
   knowing XDG rules.
-- Opened in WAL mode with `busy_timeout = 5000`. Every write that reads
+- Opened in WAL mode with a busy timeout of 30 s (`store::BUSY_TIMEOUT`).
+  A claim or a checkin holds the lock for milliseconds, so 30 s gives room
+  for many workers at once on a slow disk. Every write that reads
   first (claim, reap, land) uses `BEGIN IMMEDIATE`, so 2 workers can never
   claim the same task.
 - The file must be on a local disk. SQLite locking is not safe on a
@@ -145,7 +150,7 @@ contract; the row is the routing and state around it.
 | `parallel` | INTEGER 0/1 | 1: may run at the same time as other tasks. 0: runs alone - no other task of the run may be `running` while it runs. |
 | `priority` | INTEGER | lower runs first among claimable tasks. Default 100. A requeued task gets its old priority minus 1000, so a retry goes first. |
 | `wave` | INTEGER NULL | copied from `MAP.md`, for display only. Order comes from `task_deps`. |
-| `worktree_mode` | TEXT | `shared` (single-branch mode) or `worktree` (own branch and worktree) |
+| `worktree_mode` | TEXT | `shared` (shared-checkout mode, `add --shared`) or `worktree` (own branch and worktree) |
 | `land_check` | TEXT NULL | the gate command the `check`, `recheck` and `land` finish steps run, e.g. `cargo test -p horch-core` |
 | `status` | TEXT | see below |
 | `attempts` | INTEGER | how many `workers` rows have claimed it. Starts 0. |
@@ -430,13 +435,28 @@ courier) checks each `working` worker every `check_every_s` and writes 1
    (example: 10m then 15m, 10 min apart: it stopped or restarted about
    5 min ago), or herdr says `idle` while the task is `running`. The
    watchdog verifies at once: PID alive, herdr status, transcript mtime.
-   If the transcript was written after the timer stopped, or herdr shows
-   `working`, it is `proxy_checkin`. Else verdict `no_progress`.
-5. **Nothing moved:** verdict `no_progress`, `stall_rounds + 1`. On the
+   If the transcript was written after the timer stopped, it is
+   `proxy_checkin`. If herdr shows `working`, go to step 5: a frozen timer
+   under a `working` spinner has the same cap. Else verdict `no_progress`.
+5. **Herdr fallback.** Nothing above moved, but herdr shows `working`
+   (a harness with no timer format, a session with no transcript, or 1
+   long tool call): verdict `proxy_checkin` with source `herdr_state`,
+   at most `2 * runs.stall_rounds` checks in a row (6 checks, 60 min with
+   the defaults). The next such check is `suspect`, and the watchdog wakes
+   the orchestrator once with the pane id. The check after a `suspect`
+   is `dead`, so a stuck spinner cannot hold a task forever. Go to 5.4.
+   Herdr `idle` or no herdr status goes on to step 6.
+6. **Nothing moved:** verdict `no_progress`, `stall_rounds + 1`. On the
    first `no_progress` the watchdog tells the orchestrator, and the
    orchestrator asks the worker for an update with `horch tell`.
-6. At `stall_rounds = runs.stall_rounds` (3 checks, 30 min with the
+7. At `stall_rounds = runs.stall_rounds` (3 checks, 30 min with the
    defaults): verdict `dead`. Go to 5.4.
+
+A worker in a waiting state (reviewer tasks, an open question, a
+background command) skips steps 2 to 7 while the wait holds; step 1
+still applies. Each `checks.note` names the signals the watchdog could
+not read, for example "no timer format for harness pi; no transcript",
+so `ledger show` explains a reap.
 
 The watchdog tells the orchestrator only when a verdict changes, so a
 healthy fleet makes no noise.
@@ -475,6 +495,24 @@ work is complete it runs `horch ledger finish`. `finish` runs the steps of
 The worker fixes the cause and runs `finish` again; passed steps are not
 repeated unless a later fix changed the files they judged.
 
+`finish` detaches in the worker's own pane (#160). When the worker has a
+role whose registered pane is the pane that runs the command, a plain
+`finish` starts `horch ledger finish --run-steps` in its own process
+group. It records the PID and the process start time in
+`<evidence>/<task>/<worker>/finish-run.json` (the run's output goes to
+`finish-run.log` beside it), sets a `background` worker wait, and returns
+at once with `finish runs (PID <n>); horch tells you the result. End your
+turn now`. The detached run runs the same steps (the check of a Codex
+worker keeps its sandbox), then sends `[horch] NOTE: The finish of T-<n>
+ended. <message> Steps: <name status, ...>.` to the worker's role as
+durable mail, and ends its wait and run file. A `finish` while the run is
+alive prints the same line and starts nothing. When the recorded process
+is gone (`procid` compares the PID and its start time) and left no
+result, `finish` prints `the detached finish (PID <n>) ended without a
+result; finish runs again` and starts a new run. Outside the worker's
+pane, and with `--wait` or `--json`, the steps run in the foreground;
+without a flag, 1 line on stderr says why.
+
 1. **check** - runs the task's `land_check` in the worktree. Passes on
    exit 0. Evidence: the check log.
 2. **code-sweep** - the `code-sweep` skill's review, on the branch diff
@@ -485,20 +523,38 @@ repeated unless a later fix changed the files they judged.
    `architect-reviewer` for Codex-built work, `blocked_by` nothing). Each
    reviewer writes its findings file and ends. `finish` merges them into
    the report with the skill's verdict rules. The author worker fixes every
-   Critical and Important finding, or answers it in the report with a
-   reason, then runs `finish` again, which re-reviews the changed files.
-   Passes when the verdict is `PASS`, or `WARN` with every Important
-   finding answered. Evidence: the report.
+   Critical and Important finding, or answers an Important finding in the
+   answers file with a reason, then runs `finish` again, which re-reviews
+   the changed files. The author never answers a Critical finding. Only the
+   orchestrator waives a Critical or an Important finding
+   (`horch ledger waive T-<n> F<k> "<reason>"`); the report and the PR body
+   name each waiver and its reason. Passes when the verdict is `PASS`, or
+   `WARN` with every Important finding answered or waived and every
+   Critical finding waived. Each reviewer task has the other reviewer
+   persona as its fallback; when the usual reviewer cannot run on this
+   host, the round goes to the fallback at once. A review that the
+   orchestrator cancels in the current round is queued again; a new round
+   cancels the open reviews of the old one as superseded.
+   `finish --rereview` starts a new round for the same tree. The round
+   state belongs to the task, so a replacement worker reuses it.
+   Evidence: the report.
 3. **complexity-sweep** - the worker runs the `complexity-sweep` skill
    itself on the changed files and refactors what it flags. Passes when
    the analysis JSON has 0 violations in functions the branch changed.
    Evidence: the analysis JSON. `not_applicable` when no changed file is in
    a language the analyser reads.
 4. **recheck** - the `land_check` again, because steps 2 and 3 changed code.
-5. **land** - rebases on `run_branch`, runs `land_check`, fast-forwards
-   `run_branch`, pushes it to `remote`, writes `landed_commit`. Concurrent
-   lands queue on the landing lock. A red gate fails the step; the branch,
+5. **land** - rebases on `run_branch`, runs `land_check` outside the
+   landing lock, then under the lock fast-forwards `run_branch` (only when
+   it did not move meanwhile; else it rebases and checks again), pushes it
+   to `remote`, writes `landed_commit`. Concurrent lands queue on the
+   landing lock. A check runs at most its timeout
+   (`horch ledger add --check-timeout`, default 20 minutes). A red gate fails the step; the branch,
    the worktree and `run_branch` stay unchanged.
+   The check of a Codex worker (its recorded harness, or a Codex persona)
+   runs inside `codex sandbox` with the `fleet_write` profile of its pane:
+   it can write only the worktree and the state root, and its TMPDIR is the
+   pane's (#181). This holds for check, recheck and land.
 6. **pr** - makes sure the run's PR exists (creates it from `run_branch`
    into `base_branch` if `runs.pr_number` is empty) and updates its
    description: 1 section per task between markers
@@ -567,11 +623,21 @@ All under `horch ledger`. `--json` on every read command.
 | `claim` | worker | take the next matching task, or record `no_task` |
 | `progress "<text>"` | worker | a milestone; moves `last_progress_at` |
 | `note "<text>"` | worker | same as today's `horch note` |
-| `worktree new <name>` | worker | create the worktree and its row, branched from the run branch |
+| `worktree new <name> [--from <ref>]` | worker | create the worktree and its row, branched from the run branch or `<ref>` (`--from` added after v0.3.0) |
+| `worktree scratch <name>` | worker | a recorded throwaway worktree that never lands (added after v0.3.0) |
+| `worktree drop <name> --reason "<why>" [--keep-branch]` | worker | drop a clean worktree that will not land (added after v0.3.0) |
 | `finish` | worker | run the finish pipeline from the first step not passed (5.5) |
 | `steps [<task>]` | anyone | the finish steps of a task with their evidence |
 | `add-map <MAP.md>` | orchestrator | queue every ticket of a ticket map (5.5a) |
 | `run new <slug>` | orchestrator | create the run and its run branch from the main branch |
+| `run close`, `run list` | orchestrator | close a run whose work is done; list the project's runs (added after v0.3.0) |
+| `unblock <task> --from <task>` | orchestrator | drop 1 dependency (added after v0.3.0) |
+| `requeue <task>` | orchestrator | queue a held or cancelled task again (added after v0.3.0) |
+| `waive <task> <finding> "<reason>"` | orchestrator | rule that 1 code-sweep finding does not block (added after v0.3.0) |
+| `events` | anyone | the run's history, oldest first |
+| `path` | anyone | print the ledger file path |
+| `worker` | tests, debugging | worker rows (plumbing) |
+| `legacy` | anyone | the JSON session ledger plumbing (see `GLOSSARY.md`) |
 | `done "<summary>" [--unlanded "<reason>"]` | worker | finish the task |
 | `checkin` | `horch worker` (internal) | write `last_checkin_at = now` |
 | `watch` | the watchdog (internal) | the check loop of 5.3 |
@@ -582,8 +648,9 @@ All under `horch ledger`. `--json` on every read command.
 | `reap <worker>` | watchdog, orchestrator | 5.4 |
 | `stop <worker> "<reason>"` | orchestrator | stop 1 worker by its recorded PIDs and pane |
 
-`horch spawn`, `horch tell` and `horch inbox` stay. `horch assign` is
-retired: assignment is the claim.
+`horch spawn`, `horch tell` and `horch inbox` stay. In a ledger run,
+assignment is the claim. `horch assign` stays only for fleets without a
+ledger run.
 
 ## 7. Deterministic stop
 

@@ -91,9 +91,7 @@ pub(crate) fn plan_activation(
     catalog: &SkillCatalog,
 ) -> Result<SkillActivationPlan> {
     let mut explicit: BTreeSet<String> = teammate.skills.iter().cloned().collect();
-    let phased: BTreeSet<String> = phase
-        .map(|p| phase_skills(p).iter().map(|s| (*s).to_owned()).collect())
-        .unwrap_or_default();
+    let phased = phased_names(phase);
     let offered: BTreeSet<String> = teammate.available_skills.iter().cloned().collect();
     let names: BTreeSet<String> = explicit
         .iter()
@@ -107,11 +105,42 @@ pub(crate) fn plan_activation(
             .filter(|n| catalog.lookup(n).is_some_and(CatalogEntry::is_operator))
             .map(str::to_owned),
     );
-    let plugin: BTreeSet<String> = teammate
+    let plugin = plugin_names(teammate);
+    let (activated, available) = split_catalog(catalog, &explicit, &phased, &offered, &plugin);
+    Ok(SkillActivationPlan {
+        activated,
+        available,
+        plugin_skills: teammate.plugin_skills.clone(),
+    })
+}
+
+/// The skills the phase selector brings in for `phase`. None without a phase.
+fn phased_names(phase: Option<Phase>) -> BTreeSet<String> {
+    phase
+        .map(|p| phase_skills(p).iter().map(|s| (*s).to_owned()).collect())
+        .unwrap_or_default()
+}
+
+/// `<plugin>:<skill>` for every plugin skill the teammate names.
+fn plugin_names(teammate: &Teammate) -> BTreeSet<String> {
+    teammate
         .plugin_skills
         .iter()
         .flat_map(|(p, skills)| skills.iter().map(move |s| format!("{p}:{s}")))
-        .collect();
+        .collect()
+}
+
+/// The catalog as `(activated, available)`, each in catalog order. A name
+/// takes the first of `explicit`, `phased` and `offered` that holds it, and
+/// is `Available` when none does. A plugin entry is `Explicit` when
+/// `plugin` names it, and in neither list when it does not.
+fn split_catalog(
+    catalog: &SkillCatalog,
+    explicit: &BTreeSet<String>,
+    phased: &BTreeSet<String>,
+    offered: &BTreeSet<String>,
+    plugin: &BTreeSet<String>,
+) -> (Vec<ResolvedSkillRef>, Vec<ResolvedSkillRef>) {
     let mut activated = Vec::new();
     let mut available = Vec::new();
     for entry in catalog.entries() {
@@ -120,23 +149,18 @@ pub(crate) fn plan_activation(
             if plugin.contains(name) {
                 activated.push(ResolvedSkillRef::new(entry, InvocationPolicy::Explicit));
             }
-            continue;
-        }
-        let policy = if explicit.contains(name) {
-            InvocationPolicy::Explicit
+        } else if explicit.contains(name) {
+            activated.push(ResolvedSkillRef::new(entry, InvocationPolicy::Explicit));
         } else if phased.contains(name) {
-            InvocationPolicy::Deterministic
+            activated.push(ResolvedSkillRef::new(
+                entry,
+                InvocationPolicy::Deterministic,
+            ));
         } else if offered.contains(name) {
-            InvocationPolicy::Offered
+            activated.push(ResolvedSkillRef::new(entry, InvocationPolicy::Offered));
         } else {
             available.push(ResolvedSkillRef::new(entry, InvocationPolicy::Available));
-            continue;
-        };
-        activated.push(ResolvedSkillRef::new(entry, policy));
+        }
     }
-    Ok(SkillActivationPlan {
-        activated,
-        available,
-        plugin_skills: teammate.plugin_skills.clone(),
-    })
+    (activated, available)
 }

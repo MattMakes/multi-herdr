@@ -210,28 +210,34 @@ pub fn load_prices(path: Option<&Path>) -> Result<BTreeMap<String, Price>> {
 /// provider prefix, `[1m]` suffix and date stamp removed, Claude aliases
 /// resolved to the model they currently point at.
 pub(crate) fn canonical_model(model: &str) -> String {
-    let mut m = model.trim().to_ascii_lowercase();
-    if let Some(rest) = m.strip_suffix("[1m]") {
-        m = rest.to_string();
-    }
-    for prefix in ["anthropic/", "openai/"] {
-        if let Some(rest) = m.strip_prefix(prefix) {
-            m = rest.to_string();
+    let lowered = model.trim().to_ascii_lowercase();
+    let m = strip_model_noise(&lowered);
+    let alias = MODEL_ALIASES.iter().find(|(name, _)| *name == m);
+    alias.map_or(m, |(_, key)| key).to_string()
+}
+
+/// Short model names and the price-table key each currently points at.
+const MODEL_ALIASES: [(&str, &str); 4] = [
+    ("fable", "claude-fable-5-1"),
+    ("opus", "claude-opus-5-5"),
+    // Claude Code resolves `sonnet` to Sonnet 5.5: its transcripts name
+    // claude-sonnet-5-5 (seen 2026-10-04).
+    ("sonnet", "claude-sonnet-5-5"),
+    ("haiku", "claude-haiku-4-5"),
+];
+
+/// A lower-case model name without its `[1m]` suffix, provider prefix and
+/// date stamp (claude-haiku-4-5-20251001 -> claude-haiku-4-5).
+fn strip_model_noise(m: &str) -> &str {
+    let m = m.strip_suffix("[1m]").unwrap_or(m);
+    let m = ["anthropic/", "openai/"]
+        .iter()
+        .find_map(|prefix| m.strip_prefix(prefix))
+        .unwrap_or(m);
+    match m.rsplit_once('-') {
+        Some((head, tail)) if tail.len() == 8 && tail.as_bytes().iter().all(u8::is_ascii_digit) => {
+            head
         }
-    }
-    // claude-haiku-4-5-20251001 -> claude-haiku-4-5
-    if let Some((head, tail)) = m.rsplit_once('-') {
-        if tail.len() == 8 && tail.bytes().all(|b| b.is_ascii_digit()) {
-            m = head.to_string();
-        }
-    }
-    match m.as_str() {
-        "fable" => "claude-fable-5-1".into(),
-        "opus" => "claude-opus-5-5".into(),
-        // Claude Code resolves `sonnet` to Sonnet 5.5: its transcripts name
-        // claude-sonnet-5-5 (seen 2026-10-04).
-        "sonnet" => "claude-sonnet-5-5".into(),
-        "haiku" => "claude-haiku-4-5".into(),
         _ => m,
     }
 }
@@ -297,21 +303,14 @@ pub(crate) fn find_pi_session(sessions_dir: &Path, session_id: &str) -> Option<P
 }
 
 fn find_file(dir: &Path, matches: &dyn Fn(&str) -> bool) -> Option<PathBuf> {
-    for entry in std::fs::read_dir(dir).ok()?.flatten() {
-        let path = entry.path();
-        if path.is_dir() {
-            if let Some(found) = find_file(&path, matches) {
-                return Some(found);
-            }
-        } else if path
-            .file_name()
-            .and_then(|n| n.to_str())
-            .is_some_and(matches)
-        {
-            return Some(path);
+    let entries = std::fs::read_dir(dir).ok()?;
+    entries.flatten().map(|e| e.path()).find_map(|path| {
+        let name = path.file_name().and_then(|n| n.to_str());
+        match path.is_dir() {
+            true => find_file(&path, matches),
+            false => name.is_some_and(matches).then_some(path),
         }
-    }
-    None
+    })
 }
 
 // ─── readers ────────────────────────────────────────────────────────────────
@@ -412,63 +411,85 @@ fn line_ts(record: &Value) -> String {
 /// calls that read a `skills/<name>/SKILL.md`. pi and Prime: assistant
 /// messages that read one.
 pub(crate) fn skill_loads_in(agent: &str, text: &str) -> Vec<SkillLoad> {
+    let read = skill_reader(agent);
+    let mut seen = BTreeSet::new();
     let mut out = Vec::new();
-    let mut seen: BTreeSet<String> = BTreeSet::new();
     for line in text.lines() {
         let Ok(record) = serde_json::from_str::<Value>(line) else {
             continue;
         };
         let ts = line_ts(&record);
-        let mut push = |skill: String| {
+        for skill in read(&record, line, &mut seen) {
             out.push(SkillLoad {
                 ts: ts.clone(),
                 skill,
-            })
-        };
-        match agent {
-            "claude" => {
-                if record.get("type").and_then(Value::as_str) != Some("assistant") {
-                    continue;
-                }
-                let Some(content) = record.pointer("/message/content").and_then(Value::as_array)
-                else {
-                    continue;
-                };
-                for block in content {
-                    if block.get("type").and_then(Value::as_str) == Some("tool_use")
-                        && block.get("name").and_then(Value::as_str) == Some("Skill")
-                    {
-                        let id = block.get("id").and_then(Value::as_str).unwrap_or_default();
-                        if let Some(skill) = block.pointer("/input/skill").and_then(Value::as_str) {
-                            if seen.insert(id.to_string()) {
-                                push(skill.to_string());
-                            }
-                        }
-                    }
-                }
-            }
-            "codex" => {
-                let kind = record
-                    .pointer("/payload/type")
-                    .and_then(Value::as_str)
-                    .unwrap_or_default();
-                if matches!(
-                    kind,
-                    "function_call" | "local_shell_call" | "custom_tool_call"
-                ) {
-                    skill_reads(line).into_iter().for_each(&mut push);
-                }
-            }
-            "pi" | "prime" => {
-                let message = record.get("message").unwrap_or(&record);
-                if message.get("role").and_then(Value::as_str) == Some("assistant") {
-                    skill_reads(line).into_iter().for_each(&mut push);
-                }
-            }
-            _ => {}
+            });
         }
     }
     out
+}
+
+/// Reads the skills one parsed transcript line loads: the record, its raw
+/// text, and the set of `tool_use` ids already counted.
+type SkillReader = fn(&Value, &str, &mut BTreeSet<String>) -> Vec<String>;
+
+fn skill_reader(agent: &str) -> SkillReader {
+    match agent {
+        "claude" => claude_skills,
+        "codex" => codex_skills,
+        "pi" | "prime" => pi_skills,
+        _ => no_skills,
+    }
+}
+
+fn no_skills(_: &Value, _: &str, _: &mut BTreeSet<String>) -> Vec<String> {
+    Vec::new()
+}
+
+/// The skill of each `Skill` tool call on an assistant line, once per id.
+fn claude_skills(record: &Value, _line: &str, seen: &mut BTreeSet<String>) -> Vec<String> {
+    let mut out = Vec::new();
+    if record.get("type").and_then(Value::as_str) != Some("assistant") {
+        return out;
+    }
+    let blocks = record.pointer("/message/content").and_then(Value::as_array);
+    for block in blocks.into_iter().flatten() {
+        let id = block.get("id").and_then(Value::as_str).unwrap_or_default();
+        if let Some(skill) = skill_call(block).filter(|_| seen.insert(id.to_string())) {
+            out.push(skill.to_string());
+        }
+    }
+    out
+}
+
+/// The skill a `Skill` tool_use block loads.
+fn skill_call(block: &Value) -> Option<&str> {
+    let tool = block.get("name").and_then(Value::as_str);
+    let call = block.get("type").and_then(Value::as_str) == Some("tool_use");
+    let skill = block.pointer("/input/skill").and_then(Value::as_str);
+    if call && tool == Some("Skill") {
+        skill
+    } else {
+        None
+    }
+}
+
+/// Skill reads in a Codex shell or tool call line.
+fn codex_skills(record: &Value, line: &str, _seen: &mut BTreeSet<String>) -> Vec<String> {
+    let kind = record.pointer("/payload/type").and_then(Value::as_str);
+    match kind {
+        Some("function_call" | "local_shell_call" | "custom_tool_call") => skill_reads(line),
+        _ => Vec::new(),
+    }
+}
+
+/// Skill reads in a pi or Prime assistant message line.
+fn pi_skills(record: &Value, line: &str, _seen: &mut BTreeSet<String>) -> Vec<String> {
+    let message = record.get("message").unwrap_or(record);
+    match message.get("role").and_then(Value::as_str) {
+        Some("assistant") => skill_reads(line),
+        _ => Vec::new(),
+    }
 }
 
 /// Skill names in text that reads a `skills/<name>/SKILL.md` file.
@@ -744,6 +765,14 @@ impl Session {
     }
 }
 
+/// Whether horch can find the transcript of a `kind` worker (the arms of
+/// `telemetry::readers::locate` that read a session). The doctor's watchdog
+/// check asks this instead of keeping its own list.
+pub fn has_transcript(kind: crate::harness::HarnessKind) -> bool {
+    use crate::harness::HarnessKind as K;
+    matches!(kind, K::Claude | K::Codex | K::OpenCode | K::Pi | K::Prime)
+}
+
 /// Find and read one session for `agent`: its usage events and skill loads.
 ///
 /// Tokens come from the telemetry readers, from offset 0 with throwaway
@@ -756,13 +785,8 @@ pub fn read_session_events(
     agent: &str,
     session_id: Option<&str>,
 ) -> std::result::Result<Session, Missing> {
-    use crate::telemetry::readers::{read_whole, Unreadable};
-    let (events, files) = read_whole(loc, agent, session_id).map_err(|e| match e {
-        Unreadable::NoSessionId => Missing::NoSessionId,
-        Unreadable::NoTranscript(_) => Missing::NoTranscript,
-        Unreadable::NotRead(_) => Missing::NotRead,
-        Unreadable::Failed(why) => Missing::Failed(why),
-    })?;
+    let (events, files) =
+        crate::telemetry::readers::read_whole(loc, agent, session_id).map_err(missing_for)?;
     let mut skill_loads = Vec::new();
     for file in &files {
         if let Ok(text) = std::fs::read_to_string(file) {
@@ -775,6 +799,17 @@ pub fn read_session_events(
         events,
         skill_loads,
     })
+}
+
+/// The [`Missing`] that a reader's refusal is reported as.
+fn missing_for(why: crate::telemetry::readers::Unreadable) -> Missing {
+    use crate::telemetry::readers::Unreadable;
+    match why {
+        Unreadable::NoSessionId => Missing::NoSessionId,
+        Unreadable::NoTranscript(_) => Missing::NoTranscript,
+        Unreadable::NotRead(_) => Missing::NotRead,
+        Unreadable::Failed(why) => Missing::Failed(why),
+    }
 }
 
 /// Find and read one session's whole usage for `agent`:
@@ -930,6 +965,122 @@ mod tests {
         );
     }
 
+    /// Every noise form and alias `canonical_model` strips or resolves, alone
+    /// and stacked, and the names it must leave as they are.
+    #[test]
+    fn canonical_model_strips_each_noise_form_and_resolves_every_alias() {
+        for (raw, key) in [
+            ("  Claude-Opus-5-5  ", "claude-opus-5-5"),
+            ("openai/gpt-5.6-sol", "gpt-5.6-sol"),
+            (
+                "anthropic/claude-haiku-4-5-20251001[1m]",
+                "claude-haiku-4-5",
+            ),
+            ("fable", "claude-fable-5-1"),
+            ("haiku", "claude-haiku-4-5"),
+            ("claude-opus-5-5-2025101", "claude-opus-5-5-2025101"),
+            ("claude-opus-5-5-2025101x", "claude-opus-5-5-2025101x"),
+            ("gpt-5.6-sol", "gpt-5.6-sol"),
+            ("nodashname", "nodashname"),
+        ] {
+            assert_eq!(canonical_model(raw), key, "{raw}");
+        }
+    }
+
+    /// `find_file` walks into sub-directories, skips files the matcher
+    /// rejects, and gives `None` for a missing directory or no match.
+    #[test]
+    fn find_file_walks_sub_directories_and_applies_the_matcher() {
+        let tmp = tempfile::tempdir().unwrap();
+        let deep = tmp.path().join("a/b");
+        std::fs::create_dir_all(&deep).unwrap();
+        std::fs::create_dir_all(tmp.path().join("empty")).unwrap();
+        std::fs::write(tmp.path().join("a/skip.txt"), "").unwrap();
+        std::fs::write(deep.join("want.jsonl"), "").unwrap();
+        let found = find_file(tmp.path(), &|n| n.ends_with(".jsonl"));
+        assert_eq!(found, Some(deep.join("want.jsonl")));
+        assert_eq!(find_file(tmp.path(), &|n| n == "nope"), None);
+        assert_eq!(find_file(&tmp.path().join("missing"), &|_| true), None);
+    }
+
+    /// The skill scan per harness: Claude counts a `Skill` tool call once per
+    /// id on assistant lines only; Codex counts reads in call records; pi and
+    /// Prime count reads in assistant messages; an unknown harness and an
+    /// unparsable line count nothing.
+    #[test]
+    fn skill_loads_in_reads_each_harness_format() {
+        let skill = |id: &str, name: &str| {
+            format!(
+                r#"{{"type":"tool_use","id":"{id}","name":"Skill","input":{{"skill":"{name}"}}}}"#
+            )
+        };
+        let claude = [
+            format!(
+                r#"{{"type":"assistant","timestamp":"2026-10-06T12:00:00Z","message":{{"content":[{},{},{{"type":"tool_use","id":"o","name":"Bash","input":{{"skill":"no"}}}}]}}}}"#,
+                skill("t1", "one"),
+                skill("t1", "one-again")
+            ),
+            "not json".to_string(),
+            format!(
+                r#"{{"type":"user","message":{{"content":[{}]}}}}"#,
+                skill("t2", "user-line")
+            ),
+            r#"{"type":"assistant","message":{"content":"text"}}"#.to_string(),
+            format!(
+                r#"{{"type":"assistant","message":{{"content":[{}]}}}}"#,
+                skill("t1", "repeat-id")
+            ),
+            format!(
+                r#"{{"type":"assistant","message":{{"content":[{},{{"type":"tool_use","name":"Skill","input":{{}}}}]}}}}"#,
+                skill("t3", "three")
+            ),
+        ]
+        .join("\n");
+        let names = |loads: Vec<SkillLoad>| loads.into_iter().map(|l| l.skill).collect::<Vec<_>>();
+        let loads = skill_loads_in("claude", &claude);
+        assert_eq!(loads[0].ts, "2026-10-06T12:00:00Z");
+        assert_eq!(names(loads), ["one", "three"]);
+
+        let read = "cat /h/skills/tdd/SKILL.md";
+        let codex = [
+            format!(r#"{{"payload":{{"type":"function_call","arguments":"{read}"}}}}"#),
+            format!(r#"{{"payload":{{"type":"local_shell_call","command":"{read}"}}}}"#),
+            format!(r#"{{"payload":{{"type":"custom_tool_call","input":"{read}"}}}}"#),
+            format!(r#"{{"payload":{{"type":"message","text":"{read}"}}}}"#),
+            format!(r#"{{"text":"{read}"}}"#),
+        ]
+        .join("\n");
+        assert_eq!(names(skill_loads_in("codex", &codex)), ["tdd"; 3]);
+
+        let pi = [
+            format!(r#"{{"message":{{"role":"assistant","content":"{read}"}}}}"#),
+            format!(r#"{{"message":{{"role":"user","content":"{read}"}}}}"#),
+            format!(r#"{{"role":"assistant","content":"{read}"}}"#),
+            format!(r#"{{"role":"user","content":"{read}"}}"#),
+        ]
+        .join("\n");
+        assert_eq!(names(skill_loads_in("pi", &pi)), ["tdd"; 2]);
+        assert_eq!(names(skill_loads_in("prime", &pi)), ["tdd"; 2]);
+        assert!(skill_loads_in("opencode", &pi).is_empty());
+    }
+
+    /// `has_transcript` must follow `locate`: a harness it names reads a
+    /// session, and one it does not name is refused as `none` or unknown.
+    #[test]
+    fn has_transcript_agrees_with_the_telemetry_locator() {
+        use crate::harness::HarnessKind;
+        use crate::telemetry::readers::{locate, Unreadable};
+        let home = tempfile::tempdir().unwrap();
+        let loc = Locations::under_home(home.path(), &crate::runtime::Inherited::default());
+        for &kind in HarnessKind::ALL {
+            let refused = matches!(
+                locate(&loc, kind.as_str(), "sid"),
+                Err(Unreadable::NotRead(why)) if why != "sqlite3 not found"
+            );
+            assert_eq!(has_transcript(kind), !refused, "{}", kind.as_str());
+        }
+    }
+
     #[test]
     fn transcripts_are_found_by_session_id_per_harness() {
         let tmp = tempfile::tempdir().unwrap();
@@ -977,6 +1128,77 @@ mod tests {
             read_session(&loc, "none", Some("x")).unwrap_err(),
             Missing::NotRead
         );
+    }
+
+    /// A session that cannot be read is missing for the reason of the reader
+    /// that refused it.
+    #[test]
+    fn a_session_that_cannot_be_read_is_missing_for_the_readers_reason() {
+        let home = tempfile::tempdir().unwrap();
+        let loc = Locations::under_home(home.path(), &crate::runtime::Inherited::default());
+        let missing =
+            |agent: &str, id: Option<&str>| read_session_events(&loc, agent, id).unwrap_err();
+        assert_eq!(missing("claude", None), Missing::NoSessionId);
+        assert_eq!(missing("claude", Some("gone")), Missing::NoTranscript);
+        assert_eq!(missing("none", Some("x")), Missing::NotRead);
+        assert_eq!(
+            missing("opencode", Some("not safe")),
+            Missing::Failed("unexpected opencode session id 'not safe'".into())
+        );
+    }
+
+    /// The session's path is its main transcript; the calls and the skill
+    /// loads of a subagent's transcript count with it.
+    #[test]
+    fn a_session_is_its_main_transcript_with_the_subagent_ones() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join(".claude/projects/-proj");
+        let subagents = dir.join("sid-s/subagents");
+        std::fs::create_dir_all(&subagents).unwrap();
+        let line = |at: &str, id: &str, skill: &str| claude_line(at, id, 100, Some(skill)) + "\n";
+        std::fs::write(
+            dir.join("sid-s.jsonl"),
+            line("2026-10-06T12:00:00Z", "m1", "horch:tdd"),
+        )
+        .unwrap();
+        std::fs::write(
+            subagents.join("agent-a.jsonl"),
+            line("2026-10-06T12:05:00Z", "m2", "horch:check"),
+        )
+        .unwrap();
+        let loc = Locations::under_home(tmp.path(), &crate::runtime::Inherited::default());
+        let session = read_session_events(&loc, "claude", Some("sid-s")).unwrap();
+        assert_eq!(session.path, dir.join("sid-s.jsonl"));
+        assert_eq!(session.events.len(), 2);
+        let loads: Vec<(&str, &str)> = session
+            .skill_loads
+            .iter()
+            .map(|l| (l.ts.as_str(), l.skill.as_str()))
+            .collect();
+        assert_eq!(
+            loads,
+            [
+                ("2026-10-06T12:00:00Z", "horch:tdd"),
+                ("2026-10-06T12:05:00Z", "horch:check")
+            ]
+        );
+    }
+
+    /// A transcript that is not valid text still gives its usage: only the
+    /// scan for skill loads, which reads text, finds nothing in it.
+    #[test]
+    fn a_transcript_that_is_not_text_gives_its_usage_but_no_skill_loads() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join(".claude/projects/-proj");
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut bytes =
+            (claude_line("2026-10-06T12:00:00Z", "m1", 100, Some("horch:tdd")) + "\n").into_bytes();
+        bytes.extend_from_slice(b"\xff\xfe not text\n");
+        std::fs::write(dir.join("sid-b.jsonl"), bytes).unwrap();
+        let loc = Locations::under_home(tmp.path(), &crate::runtime::Inherited::default());
+        let session = read_session_events(&loc, "claude", Some("sid-b")).unwrap();
+        assert_eq!(session.events.len(), 1);
+        assert!(session.skill_loads.is_empty(), "{:?}", session.skill_loads);
     }
 
     #[test]
