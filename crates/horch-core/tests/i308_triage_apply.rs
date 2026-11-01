@@ -412,16 +412,11 @@ fn pr_pushes_opens_a_pull_request_and_archives_the_folder() {
     );
     let gh = w.top.join("fake-gh");
     let gh_log = w.top.join("gh.log");
-    std::fs::write(
-        &gh,
-        format!(
-            "#!/bin/sh\n[ \"$1\" = --version ] && exit 0\necho \"$*\" >> '{}'\necho https://example.com/pr/7\n",
-            gh_log.display()
-        ),
-    )
-    .unwrap();
-    use std::os::unix::fs::PermissionsExt;
-    std::fs::set_permissions(&gh, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let script = format!(
+        "#!/bin/sh\n[ \"$1\" = warm ] && exit 0\n[ \"$1\" = --version ] && exit 0\necho \"$*\" >> '{}'\necho https://example.com/pr/7\n",
+        gh_log.display()
+    );
+    assert!(warm::write_warmed(&gh, &script, &["warm"]).status.success());
     assert_eq!(
         apply::pr_remote(&w.git, &w.root, &gh).as_deref(),
         Some("origin")
@@ -453,9 +448,9 @@ fn pr_pushes_opens_a_pull_request_and_archives_the_folder() {
 fn pr_is_not_offered_without_gh_or_without_a_remote() {
     let w = World::new();
     let gh = w.top.join("fake-gh");
-    std::fs::write(&gh, "#!/bin/sh\nexit 0\n").unwrap();
-    use std::os::unix::fs::PermissionsExt;
-    std::fs::set_permissions(&gh, std::fs::Permissions::from_mode(0o755)).unwrap();
+    assert!(warm::write_warmed(&gh, "#!/bin/sh\nexit 0\n", &["warm"])
+        .status
+        .success());
     // A gh, but no remote.
     assert_eq!(apply::pr_remote(&w.git, &w.root, &gh), None);
     // A remote, but no gh.

@@ -264,9 +264,9 @@ fn pane_command_removes_a_forbidden_key_before_horch_starts() {
     let end = start + 1 + ran[start + 1..].find('\'').unwrap();
     let horch = &ran[start..=end];
     let out_file = h.tmp.join("pane-probe.env");
-    let probe = h.write_bin(
+    let probe = h.write_warmed(
         "pane-probe",
-        b"#!/bin/sh\n/usr/bin/env > \"$PANE_PROBE_OUT\"\n",
+        b"#!/bin/sh\nif [ \"$1\" = warm ]; then exit 0; fi\n/usr/bin/env > \"$PANE_PROBE_OUT\"\n",
     );
     let line = ran.replacen(horch, &format!("'{}'", probe.display()), 1);
     let mut shell = std::process::Command::new("/bin/sh");

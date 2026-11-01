@@ -901,12 +901,10 @@ mod tests {
     fn fake_xcodebuild(code: i32) -> tempfile::TempDir {
         let dir = tempfile::tempdir().unwrap();
         let bin = dir.path().join("xcodebuild");
-        std::fs::write(
-            &bin,
-            format!("#!/bin/sh\n[ \"$1\" = -checkFirstLaunchStatus ] || exit 99\necho 'first launch pending' >&2\nexit {code}\n"),
-        )
-        .unwrap();
-        process::make_executable(&bin).unwrap();
+        let script = format!("#!/bin/sh\nif [ \"$1\" = warm ]; then exit 0; fi\n[ \"$1\" = -checkFirstLaunchStatus ] || exit 99\necho 'first launch pending' >&2\nexit {code}\n");
+        assert!(crate::test_support::write_warmed(&bin, &script, &["warm"])
+            .status
+            .success());
         dir
     }
 
@@ -989,19 +987,19 @@ mod tests {
     fn fake_xcode(version: &str, help: &str, code: i32) -> tempfile::TempDir {
         let dir = tempfile::tempdir().unwrap();
         let xcodebuild = dir.path().join("xcodebuild");
-        std::fs::write(
-            &xcodebuild,
-            format!("#!/bin/sh\n[ \"$1\" = -version ] || exit 99\nprintf 'Xcode {version}\\nBuild version 1A1\\n'\n"),
-        )
-        .unwrap();
-        process::make_executable(&xcodebuild).unwrap();
+        let script = format!("#!/bin/sh\nif [ \"$1\" = warm ]; then exit 0; fi\n[ \"$1\" = -version ] || exit 99\nprintf 'Xcode {version}\\nBuild version 1A1\\n'\n");
+        assert!(
+            crate::test_support::write_warmed(&xcodebuild, &script, &["warm"])
+                .status
+                .success()
+        );
         let xcrun = dir.path().join("xcrun");
-        std::fs::write(
-            &xcrun,
-            format!("#!/bin/sh\n[ \"$*\" = 'agent skills export --help' ] || exit 99\necho '{help}'\nexit {code}\n"),
-        )
-        .unwrap();
-        process::make_executable(&xcrun).unwrap();
+        let script = format!("#!/bin/sh\nif [ \"$1\" = warm ]; then exit 0; fi\n[ \"$*\" = 'agent skills export --help' ] || exit 99\necho '{help}'\nexit {code}\n");
+        assert!(
+            crate::test_support::write_warmed(&xcrun, &script, &["warm"])
+                .status
+                .success()
+        );
         dir
     }
 
@@ -1125,16 +1123,14 @@ mod tests {
     fn fake_blender(version: &str, code: i32) -> tempfile::TempDir {
         let dir = tempfile::tempdir().unwrap();
         let bin = dir.path().join("blender");
-        std::fs::write(
-            &bin,
-            format!(
-                "#!/bin/sh\n[ \"$1\" = --version ] || exit 99\n\
-                 echo 'Blender {version}'\necho '\tbuild date: 2026-09-01'\n\
-                 echo 'cannot open display' >&2\nexit {code}\n"
-            ),
-        )
-        .unwrap();
-        process::make_executable(&bin).unwrap();
+        let script = format!(
+            "#!/bin/sh\nif [ \"$1\" = warm ]; then exit 0; fi\n[ \"$1\" = --version ] || exit 99\n\
+             echo 'Blender {version}'\necho '\tbuild date: 2026-09-01'\n\
+             echo 'cannot open display' >&2\nexit {code}\n"
+        );
+        assert!(crate::test_support::write_warmed(&bin, &script, &["warm"])
+            .status
+            .success());
         dir
     }
 
@@ -1292,15 +1288,13 @@ mod tests {
     fn fake_godot(name: &str, version: &str, code: i32) -> tempfile::TempDir {
         let dir = tempfile::tempdir().unwrap();
         let bin = dir.path().join(name);
-        std::fs::write(
-            &bin,
-            format!(
-                "#!/bin/sh\n[ \"$1\" = --version ] || exit 99\n\
-                 echo '{version}'\necho 'no display' >&2\nexit {code}\n"
-            ),
-        )
-        .unwrap();
-        process::make_executable(&bin).unwrap();
+        let script = format!(
+            "#!/bin/sh\nif [ \"$1\" = warm ]; then exit 0; fi\n[ \"$1\" = --version ] || exit 99\n\
+             echo '{version}'\necho 'no display' >&2\nexit {code}\n"
+        );
+        assert!(crate::test_support::write_warmed(&bin, &script, &["warm"])
+            .status
+            .success());
         dir
     }
 
@@ -1554,15 +1548,13 @@ mod tests {
     fn fake_git(code: i32) -> tempfile::TempDir {
         let dir = tempfile::tempdir().unwrap();
         let bin = dir.path().join("git");
-        std::fs::write(
-            &bin,
-            format!(
-                "#!/bin/sh\n[ \"$1 $2\" = 'lfs version' ] || exit 99\n\
-                 echo 'git-lfs/3.7.0'\necho \"git: 'lfs' is not a git command.\" >&2\nexit {code}\n"
-            ),
-        )
-        .unwrap();
-        process::make_executable(&bin).unwrap();
+        let script = format!(
+            "#!/bin/sh\nif [ \"$1\" = warm ]; then exit 0; fi\n[ \"$1 $2\" = 'lfs version' ] || exit 99\n\
+             echo 'git-lfs/3.7.0'\necho \"git: 'lfs' is not a git command.\" >&2\nexit {code}\n"
+        );
+        assert!(crate::test_support::write_warmed(&bin, &script, &["warm"])
+            .status
+            .success());
         dir
     }
 

@@ -484,10 +484,9 @@ fn ctx_05_prime_inherited_agent_dir_is_the_source() {
 #[cfg(unix)]
 #[test]
 fn ctx_05_prime_launch_records_the_applied_window() {
-    use std::os::unix::fs::PermissionsExt;
     let w = World::new();
-    write(&w.fake_prime(), "#!/bin/sh\nexit 0\n");
-    std::fs::set_permissions(w.fake_prime(), std::fs::Permissions::from_mode(0o755)).unwrap();
+    let warm = warm::write_warmed(&w.fake_prime(), "#!/bin/sh\nexit 0\n", &["warm"]);
+    assert!(warm.status.success());
     let ctx = w.ctx(&[]);
     let (roster, mut t) = prime_teammate();
     // No skills: a resume checks them against the record, which has none.
@@ -679,11 +678,10 @@ fn ctx_05_prime_project_fifo_does_not_block() {
 #[cfg(unix)]
 #[test]
 fn ctx_05_prime_finish_removes_the_agent_dir() {
-    use std::os::unix::fs::PermissionsExt;
     let w = World::new();
     // `status --json` names no daemon.
-    write(&w.fake_prime(), "#!/bin/sh\necho '[]'\n");
-    std::fs::set_permissions(w.fake_prime(), std::fs::Permissions::from_mode(0o755)).unwrap();
+    let warm = warm::write_warmed(&w.fake_prime(), "#!/bin/sh\necho '[]'\n", &["warm"]);
+    assert!(warm.status.success());
     let ctx = w.ctx(&[]);
     let (t, decision) = decide(&w, &ctx);
     let prepared = prepare(&w, &ctx, &t, &decision);

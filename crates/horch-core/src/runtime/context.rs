@@ -149,8 +149,8 @@ impl Bins {
 pub struct Settings {
     /// `HORCH_NOW`, when it parses.
     pub now: Option<DateTime<Utc>>,
-    /// Debug-only mutable pinned clock for hermetic courier timing tests.
-    #[cfg(debug_assertions)]
+    /// Mutable pinned clock for hermetic courier timing tests. Only a debug
+    /// build or the horch unit-test build reads it (see `mail_now`).
     pub test_mail_clock_file: Option<PathBuf>,
     /// `HORCH_NOW`, when it is set but does not parse. The clock warns once.
     pub now_unparsable: Option<String>,
@@ -388,7 +388,6 @@ impl RuntimeContext {
         let settings = Settings {
             now_unparsable: raw_now.filter(|_| now.is_none()),
             now,
-            #[cfg(debug_assertions)]
             test_mail_clock_file: nonempty_path(env, "HORCH_TEST_MAIL_CLOCK_FILE"),
             tiling: tiling(env.var("HORCH_TILE").as_deref()),
             balance_override: env.var("HORCH_BALANCE"),

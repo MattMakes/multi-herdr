@@ -863,7 +863,7 @@ fn g53_ledger_handoff_compacts_resumes_and_records_progress_once() {
 #[test]
 fn g49_spawn_doctor_and_inbox_warn_once_and_name_installed_binary() {
     let h = fleet("g49-path", "");
-    h.write_bin("horch", b"#!/bin/sh\nexit 0\n");
+    h.write_warmed("horch", b"#!/bin/sh\nexit 0\n");
     std::fs::write(h.state.join("self-check.json"),json!({"checked_at":"2020-01-01T00:00:00Z","latest_tag":"v99.0.0","html_url":"https://example.invalid"}).to_string()).unwrap();
     for argv in [
         &[
