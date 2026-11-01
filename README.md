@@ -15,6 +15,184 @@ herdr-fleet`, but it's optional sugar over `horch`, not a dependency.
 | `herdr-install`   | Install the latest Herdr CLI                              |
 | `herdr-docs-sync` | Mirror the Herdr docs into `herdr-docs/`                  |
 
+## How it works
+
+### How work is done
+
+You give 1 orchestrator pane a brief. It queues the work on the task ledger,
+spawns the workers the work needs, and each worker lands its own branch. The
+run ends in 1 pull request to `main`; a merge with a changelog line becomes a
+release.
+
+```text
+operator: a brief, or a rough idea
+  |
+  v
++-----------------------------+  rough idea  +-----------------------------+
+| orchestrator pane           |------------->| spec-writer   -> spec.md    |
+|   horch fleet               |<-------------| ticket-writer -> MAP.md     |
++-----------------------------+   tickets    +-----------------------------+
+  | horch ledger run new <slug>         run branch fleet/<slug>
+  | horch ledger add-map MAP.md   (or horch ledger add --file <ticket> ...)
+  | horch ledger plan-workers           how many workers of each persona
+  | horch spawn <persona>               1 pane per worker, no task text
+  v
++--------------------------------------------------------------------------+
+| task ledger  ~/.horch/ledger.sqlite3: tasks, workers, steps, events      |
++--------------------------------------------------------------------------+
+  | horch ledger claim                        ^ horch ledger progress
+  v                                           |
++-------------------------+  +-------------------------+
+| worker                  |  | worker                  |  ...
+| horch ledger worktree   |  | its own worktree under  |
+|   new | scratch | drop  |  | .worktrees/             |
++-------------------------+  +-------------------------+
+  | horch tell orchestrator "..." --> channel relay, else a typed line
+  |                               --> horch inbox in the orchestrator pane
+  | the run's watchdog wakes the orchestrator: a question, a stall,
+  | a dead worker, tasks that can start, all tasks done
+  v
+  horch ledger finish   check, code-sweep, complexity-sweep, recheck,
+                        land (onto fleet/<slug>), pr, cleanup
+  horch ledger done "<summary>"         closes the worker's pane
+  |
+  v
+  fleet/<slug> -- 1 pull request to main; each task writes its section
+  | orchestrator: 1 full gate on the run branch, run by 1 worker
+  | horch ledger run close
+  v
+  you merge --> CI --> auto-release, only when CHANGELOG.md has
+                       entries under ## Unreleased --> release
+
+  parked worktrees (not landed, cancelled, cleanup failed, unknown):
+  horch fleet starts worktree-steward --> horch worktree triage
+  --> you fill in each Decision --> horch worktree triage apply
+  (horch ledger run close refuses while 1 has no decision)
+```
+
+Outside a ledger run, a worker uses `horch worktree new <name>` and
+`horch worktree land --check "<command>"`, and the orchestrator hands out work
+with `horch assign`. The deep sections: [The task ledger](#the-task-ledger),
+[How the panes talk](#how-the-panes-talk),
+[From a rough idea to tickets](#from-a-rough-idea-to-tickets),
+[Releases](#releases), [docs/fleet-workflow.md](docs/fleet-workflow.md) and
+[docs/command-flow.md](docs/command-flow.md).
+
+### How work is checked
+
+Work goes to the next layer only when its layer passes. Layers 1 to 4 run
+on your machine; layers 5 and 6 run on GitHub.
+
+```text
++--------------------------------------------------------------------------+
+| 1 focused tests        worker, while it works                            |
+|   cargo test -p <crate> --test <file>; only the tests it touches         |
++--------------------------------------------------------------------------+
+  v
++--------------------------------------------------------------------------+
+| 2 horch ledger finish  horch, in the worker's worktree                   |
+|   check             the task's --check "<command>" (horch ledger add)    |
+|   code-sweep        reviewer tasks that fleet workers claim; Critical    |
+|                     fails, Important fails until fixed or answered       |
+|   complexity-sweep  the analyser on the changed files; no changed        |
+|                     function may have a violation                        |
+|   recheck           the check again                                      |
+|   land              rebase onto the run branch, the check, fast-forward  |
+|                     under the land lock, push                            |
+|   pr / cleanup      the task's PR section; remove the worktree safely    |
++--------------------------------------------------------------------------+
+  v
++--------------------------------------------------------------------------+
+| 3 done guards          horch, when the worker runs done                  |
+|   horch ledger done refuses until every finish step passed               |
+|   horch done refuses an open worktree claim (--unlanded is the last      |
+|   resort) and reports unregistered worktrees that hold commits           |
+|   a landed claim whose folder still holds work reopens                   |
++--------------------------------------------------------------------------+
+  v
++--------------------------------------------------------------------------+
+| 4 full gate            1 worker, for the orchestrator, before the merge  |
+|   HORCH_REQUIRE_GIT=1 HORCH_REQUIRE_SQLITE=1 just gate                   |
+|   scripts/phase-gate.sh, 13 steps: the spec-marker scan, fmt, build,     |
+|   clippy (debug and --release), rustdoc, every test, teammates --check,  |
+|   check-req-coverage.sh, check-deps.sh, the telemetry e2e, the Godot     |
+|   skill checks                                                           |
++--------------------------------------------------------------------------+
+  v
++--------------------------------------------------------------------------+
+| 5 CI on the PR         GitHub, .github/workflows/ci.yml                  |
+|   test (ubuntu-latest), test (macos-15)  cargo test --workspace --locked |
+|   build-windows       cargo build --workspace --locked                   |
+|   docs                cargo doc --workspace --no-deps --all-features     |
+|                       --locked, with RUSTDOCFLAGS=-D warnings            |
+|   release-lint        cargo clippy --workspace --bins --release          |
+|                       --locked -- -D warnings                            |
++--------------------------------------------------------------------------+
+  v
++--------------------------------------------------------------------------+
+| 6 release              GitHub, after the merge to main                   |
+|   auto-release.yml  bump from the PR labels, scripts/release-prepare.sh, |
+|                     commit "Release vX.Y.Z", tag, push                   |
+|   release.yml       tag = Cargo.toml version; cargo build --release      |
+|                     --locked for 5 targets; SHA256SUMS; notes from       |
+|                     CHANGELOG.md; gh release create                      |
++--------------------------------------------------------------------------+
+```
+
+- The check of a ledger task runs at `check`, at `recheck` and again inside
+  `land`, after the rebase. It is killed after 1200 s unless the task sets
+  `--check-timeout`.
+- Outside a ledger run, `horch worktree land --check "<command>"` does layer
+  2 in 1 command: rebase, the check, fast-forward, then cleanup. A cleanup
+  that fails after the fast-forward prints `horch: NOTE:` with the command to
+  finish it. The work counts as landed.
+- `scripts/check-req-coverage.sh` runs only locally, in `just gate` and
+  `just verify`. CI does not run it, so run the gate before the PR.
+- Run the full gate on the run branch tip in its own checkout, not in the
+  shared main checkout, where other workers have uncommitted edits. Never run
+  it under `git rebase -x`.
+
+See [docs/testing-and-gates.md](docs/testing-and-gates.md) and
+[Tests](#tests).
+
+### What you can turn on and off
+
+| capability | default | turn it on | turn it off | where |
+|---|---|---|---|---|
+| Update horch and the agent CLIs at fleet start | on | - | `--no-update`, or `HORCH_NO_UPDATE=1` | `horch fleet` / `horch orchestration` flag, environment |
+| Release cooldown of the agent CLI updates | 7 days | `HORCH_UPDATE_COOLDOWN_DAYS=<days>` | `HORCH_UPDATE_COOLDOWN_DAYS=0` | environment |
+| Stale-binary warning of `doctor`, `spawn`, `inbox` | on | - | `HORCH_NO_SELF_CHECK=1` | environment |
+| Automatic tiling after spawn and done | on | - | `HORCH_TILE=0` (or `false`, `no`, `off`); `horch spawn --no-tile` | environment, flag |
+| Usage-limit gate of `horch spawn` | `auto` | - | `HORCH_BALANCE=advise` or `off`; `balance_mode` in `<state root>/policy.json`; `--force` for 1 spawn | environment, file, flag |
+| Fallback teammate when a pool is short | on | - | `horch spawn --exact` | flag |
+| Stale-state sweep | at most once an hour, 3 s, at `fleet` and `spawn` | `horch doctor --clean` sweeps now | no switch | flag |
+| Project facts in later briefs and claims | none | `horch note --fact "<fact>"` | no switch | command |
+| Phase skill catalog | the teammate's `phase:` | `horch spawn --phase <phase>`, or `phase:` | no `phase:` and no `--phase` | flag, teammate file |
+| The operator's Claude plugins | on (`inherit_plugins: true`) | `plugin_dirs`, `plugin_skills` add back what a teammate needs | `inherit_plugins: false` | teammate file |
+| All slash commands and skills | on | - | `disable_skills: true` | teammate file |
+| 1 skill, by name | on | - | `disabled_skills: [<name>]` | teammate file |
+| Skills synced from claude.ai | off | `inherit_claudeai_skills: true` | default | teammate file |
+| MCP servers | the operator's config | `mcp_servers: {...}`, `mcp_config_files` | `mcp_servers: {}` (exactly 0) | teammate file |
+| Tools | the agent's own set | `tools:`, `allowed_tools:` | `disallowed_tools:` | teammate file |
+| Subagents in a fleet pane | off (`disallowed_tools: [Agent]`) | `allow_subagents: true` (nothing shipped sets it) | default | teammate file |
+| Worker reports through the channel relay | on for both orchestrators | `worker_channel: true` (orchestrators only) | `worker_channel: false`: reports are typed | teammate file |
+| Claude Remote Control | on in `orchestrator`, off in every worker | `remote_control: true` (orchestrators only) | `remote_control: false` | teammate file |
+| Context-watch base of 1 teammate | the fleet base | `compact_at: <tokens>` (50,000 to 1,000,000) | no `compact_at` | teammate file |
+| Native auto-compact window | your own setting, else `compact_window` or `_base/context-windows.md` | `compact_window: <tokens>` | set your own (`CLAUDE_CODE_AUTO_COMPACT_WINDOW`, `model_auto_compact_token_limit`): horch then applies nothing | teammate file, your config |
+| "Trains on your input" warning | off | `trains_on_input: true` | default | teammate file |
+| Offer a teammate only in matching projects | offered everywhere | `offer_when: [<glob>]` | no `offer_when` | teammate file |
+| Your own or changed teammates | the compiled-in roster | a file in `~/.config/horch/teammates/` or `$HORCH_TEAMMATES_DIR` (same name wins) | remove the file | directory |
+| Finish steps of a run | all 7 | `horch ledger run new <slug> --steps <list>` | leave a step out of `--steps` | flag |
+| Shared checkout instead of a worktree | worktree | `horch ledger add --shared` | default | flag |
+| Dataset promotion (paid model calls) | off: a round only decides | `multi-herdr-dataset run --promote-to <branch>` | default | flag |
+| A release on merge | only with `## Unreleased` entries | a `CHANGELOG.md` line | an empty `## Unreleased` | `CHANGELOG.md` |
+| Release size | patch | PR label `release:minor` or `release:major` | no label | GitHub label |
+
+The deep sections: [Starting agents clean](#starting-agents-clean),
+[Context watch](#context-watch),
+[Updating the agent CLIs](#updating-the-agent-clis),
+[Release cooldown](#release-cooldown) and [Environment](#environment).
+
 ## Getting started
 
 Install a prebuilt release. No Rust toolchain needed.
