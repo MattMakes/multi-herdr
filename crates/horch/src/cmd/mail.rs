@@ -354,7 +354,7 @@ fn test_duration(name: &str, default: Duration) -> Duration {
 }
 
 fn mail_now(ctx: &RuntimeContext) -> SystemTime {
-    #[cfg(debug_assertions)]
+    #[cfg(any(test, debug_assertions))]
     if let Some(at) = ctx
         .settings
         .test_mail_clock_file
