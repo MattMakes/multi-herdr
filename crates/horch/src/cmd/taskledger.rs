@@ -21,7 +21,7 @@ use horch_core::taskledger::model::{
     Actor, EventKind, ProgressSource, StepName, TaskKind, WorkerKind, WorkerStatus, WorktreeMode,
     WorktreeStatus,
 };
-use horch_core::taskledger::model::{FindingStatus, StopRequester};
+use horch_core::taskledger::model::{FindingStatus, StopRequester, VerifyProfile, VERIFY_ENV};
 use horch_core::taskledger::runs::{self, NewRun, Run};
 use horch_core::taskledger::sql_words::word;
 use horch_core::taskledger::status;
@@ -128,9 +128,9 @@ pub enum LedgerCommand {
         #[command(subcommand)]
         command: WorktreeCommand,
     },
-    /// (worker) Run the finish steps in order: check, code-sweep,
-    /// complexity-sweep, recheck, land, pr, cleanup. Stops at the first
-    /// that does not pass; fix it and run finish again.
+    /// (worker) Run the run's finish steps in order (under `--verify full`:
+    /// check, code-sweep, complexity-sweep, recheck, land, pr, cleanup).
+    /// Stops at the first that does not pass; fix it and run finish again.
     Finish {
         #[arg(long)]
         json: bool,
@@ -318,9 +318,14 @@ pub struct NewRunArgs {
     /// exists.
     #[arg(long)]
     remote: Option<String>,
-    /// The finish steps, comma-separated; default all 7.
+    /// The finish steps, comma-separated. Overrides `--verify`.
     #[arg(long, value_delimiter = ',')]
     steps: Vec<String>,
+    /// The verification profile, which picks the finish steps: `full`,
+    /// `light` or `minimal`. Default: `HORCH_VERIFY` (set by `horch fleet
+    /// --verify`), else `light`.
+    #[arg(long, value_name = "PROFILE", conflicts_with = "steps")]
+    verify: Option<VerifyProfile>,
     /// Seconds between watchdog checks (default 600).
     #[arg(long, hide = true)]
     check_every: Option<i64>,
@@ -1674,7 +1679,8 @@ fn new_run_cmd(
     root: &Path,
     a: NewRunArgs,
 ) -> Result<ExitCode> {
-    let steps = parse_steps(&a.steps)?;
+    let env = std::env::var(VERIFY_ENV).ok();
+    let steps = run_steps(&a.steps, a.verify, env.as_deref())?;
     let git = Git::new(&ctx.bins.harness.git);
     let is_repo = git.main_root(root).is_some();
     let (run_branch, base, remote) = default_branches(&git, root, is_repo, &a);
@@ -1702,6 +1708,29 @@ fn new_run_cmd(
     Ok(ExitCode::SUCCESS)
 }
 
+/// The finish steps of a new run: `--steps` as given, else the steps of
+/// `--verify`, else of `HORCH_VERIFY` (`env`), else of the default profile.
+/// A bad `HORCH_VERIFY` is an error, not a silent default: it would change
+/// what lands unchecked.
+fn run_steps(
+    steps: &[String],
+    verify: Option<VerifyProfile>,
+    env: Option<&str>,
+) -> Result<Vec<StepName>> {
+    let steps = parse_steps(steps)?;
+    if !steps.is_empty() {
+        return Ok(steps);
+    }
+    let profile = match (verify, env.filter(|v| !v.trim().is_empty())) {
+        (Some(p), _) => p,
+        (None, Some(v)) => v
+            .parse()
+            .with_context(|| format!("{VERIFY_ENV}='{v}' is not a verification profile"))?,
+        (None, None) => VerifyProfile::DEFAULT,
+    };
+    Ok(profile.steps())
+}
+
 fn parse_steps(steps: &[String]) -> Result<Vec<StepName>> {
     steps
         .iter()
@@ -1726,8 +1755,14 @@ fn default_branches(
 }
 
 fn report_created(r: &Run) {
+    let profile = r
+        .steps()
+        .ok()
+        .and_then(|s| VerifyProfile::of_steps(&s))
+        .map(|p| format!(" (verify: {p})"))
+        .unwrap_or_default();
     output::println(&format!(
-        "Run {} created ({}). Run branch: {}. Finish steps: {}.",
+        "Run {} created ({}). Run branch: {}. Finish steps: {}{profile}.",
         r.slug,
         r.run_id,
         r.run_branch.as_deref().unwrap_or("(no git repository)"),
@@ -2586,6 +2621,38 @@ mod tests {
     use horch_core::taskledger::workers::{self, NewWorker};
     use horch_core::taskledger::Store;
     use std::path::Path;
+
+    #[test]
+    fn run_steps_prefer_steps_then_flag_then_env_then_light() {
+        use super::run_steps;
+        use horch_core::taskledger::model::{StepName, VerifyProfile};
+        let words = |w: &[&str]| w.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert_eq!(
+            run_steps(&words(&["check"]), None, Some("full")).unwrap(),
+            vec![StepName::Check]
+        );
+        assert_eq!(
+            run_steps(&[], Some(VerifyProfile::Minimal), Some("full")).unwrap(),
+            VerifyProfile::Minimal.steps()
+        );
+        assert_eq!(
+            run_steps(&[], None, Some("full")).unwrap(),
+            VerifyProfile::Full.steps()
+        );
+        assert_eq!(
+            run_steps(&[], None, Some(" ")).unwrap(),
+            VerifyProfile::Light.steps()
+        );
+        assert_eq!(
+            run_steps(&[], None, None).unwrap(),
+            VerifyProfile::Light.steps()
+        );
+        let err = run_steps(&[], None, Some("strict")).unwrap_err();
+        assert!(
+            format!("{err:#}").contains("HORCH_VERIFY='strict'"),
+            "{err:#}"
+        );
+    }
 
     /// The task "t" (ticket `tickets/t.md`, shaped by `shape`) of the run "r1"
     /// of project root `root` (run branch `branch`), claimed by a new worker,

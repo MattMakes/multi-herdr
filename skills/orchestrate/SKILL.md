@@ -15,7 +15,7 @@ Direct independent workers. Each unit has 1 owner, precise instructions and evid
 4. Queue the map: `horch ledger add-map <MAP.md>`. Each ticket names its primary persona, its fallback, `**Parallel:** yes|no`, its blockers, and optionally `**Check:**`, `**Own:**` and `**Do not touch:**`. The ledger works out what can run together.
 5. Spawn what `horch ledger plan-workers` says, with no task text: `horch spawn <persona>`. Each worker claims its own task. Never type a task into a worker.
 6. End your turn. horch wakes you for questions, stalls, deaths, newly startable tasks and a finished run. `horch ledger status` exits 0 only when all work is done.
-7. A worker is done only after `horch ledger finish` passed every step: check, code-sweep, complexity-sweep, recheck, land on the run branch, the run's PR, and a cleanup that cannot lose work. Do not accept a DONE that skipped one.
+7. A worker is done only after `horch ledger finish` passed every step of its run (set by --verify; full: check, code-sweep, complexity-sweep, recheck, land on the run branch, the PR, a safe cleanup). Accept no DONE that skipped 1.
 8. Stop a worker only with `horch ledger stop <worker> "<reason>"`. It signals the PIDs the ledger recorded, never a name or a pattern.
 9. Close a verified run: `horch ledger run close [--abandon "<reason>"]`.
 

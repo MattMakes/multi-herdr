@@ -309,7 +309,7 @@ fn the_board_commands_print_their_pinned_text() {
 #[test]
 fn a_worker_claims_makes_a_worktree_and_finishes() {
     let w = World::new();
-    w.ok(&["ledger", "run", "new", "r1"]);
+    w.ok(&["ledger", "run", "new", "r1", "--verify", "full"]);
     w.ok(&["ledger", "add", "--file", "t1.md", "--primary", "dev"]);
     let id = w
         .ok(&[

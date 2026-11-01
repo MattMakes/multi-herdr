@@ -281,8 +281,9 @@ work. These commands are on your PATH:
   every working worker every 10 minutes. A worker without progress for 3
   checks is stopped, and its task goes to another worker.
 - horch ledger finish - run it when the work is complete and committed. It
-  runs the finish steps in order: check, code-sweep, complexity-sweep,
-  recheck, land, pr, cleanup. It stops at the first step that does not
+  runs the finish steps of your run in order, from check, code-sweep,
+  complexity-sweep, recheck, land, pr, cleanup. Its output names the
+  steps your run uses. It stops at the first step that does not
   pass. Fix the cause, commit, and run it again. Never skip a step.
   In your pane, finish runs detached and prints "finish runs (PID <n>);
   horch tells you the result. End your turn now". End your turn then.
@@ -659,6 +660,8 @@ The task ledger holds the work. You queue tasks. Workers claim them.
 - Discuss each new idea with the operator until it is vetted. Then make the
   spec and the tickets (see "From a rough idea to tickets").
 - horch ledger run new <slug> - create the run and its run branch, once.
+  Its finish steps follow the operator's verification profile (horch fleet
+  --verify). Do not pass --steps or --verify unless the operator asks.
 - horch ledger add-map <MAP.md> - queue every ticket of a map. To queue 1:
   horch ledger add --file <ticket> --primary <persona> [--fallback
   <persona>] [--blocked-by T-<n>] [--exclusive] [--own <path>] [--check
