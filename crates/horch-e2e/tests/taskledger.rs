@@ -655,7 +655,7 @@ fn finish_json(h: &Harness, worker: &str) -> (Option<i32>, Value) {
 #[test]
 fn a_task_finishes_through_review_land_pr_and_cleanup() {
     let h = finish_world("tl-finish");
-    ok(&h, &["ledger", "run", "new", "alpha"]);
+    ok(&h, &["ledger", "run", "new", "alpha", "--verify", "full"]);
     let p = ticket(&h, "01-a", "# 01: Feature\n");
     ok(
         &h,
@@ -1705,7 +1705,16 @@ fn the_whole_flow_on_the_fake_herdr() {
     // 1. The orchestrator queues 3 tasks: A and B parallel, C blocked by A.
     ok(
         &h,
-        &["ledger", "run", "new", "alpha", "--heartbeat-every", "1"],
+        &[
+            "ledger",
+            "run",
+            "new",
+            "alpha",
+            "--heartbeat-every",
+            "1",
+            "--verify",
+            "full",
+        ],
     );
     for (n, t, persona) in [
         ("a", "A", "opus"),
