@@ -4,6 +4,8 @@
 
 ## Unreleased
 
+## v0.4.2 - 2026-11-01
+
 - `horch fleet --verify full|light|minimal` picks how much each task is
   verified before it lands, for the whole run. `light` is the new default:
   the task's check and complexity-sweep, with no AI reviewer workers.
