@@ -552,8 +552,9 @@ fn libc_sigterm() -> i32 {
 
 /// A fake `gh`: `pr create` prints a URL and keeps the body, `pr view`
 /// prints the body and the remote run branch's head, `pr edit` replaces
-/// the body. Calls go to `<dir>/calls`.
+/// the body. Calls go to `<dir>/calls`. `warm` does nothing.
 const FAKE_GH: &str = r#"#!/bin/sh
+if [ "$1" = warm ]; then exit 0; fi
 st="$FAKE_GH_DIR"
 cmd="$1 $2"
 shift 2
@@ -608,11 +609,11 @@ fn finish_world(name: &str) -> Harness {
     );
     let gh_dir = h.root.join("gh");
     std::fs::create_dir_all(&gh_dir).unwrap();
-    h.write_bin("gh", FAKE_GH.as_bytes());
+    h.write_warmed("gh", FAKE_GH.as_bytes());
     h.set("HORCH_GH_BIN", h.bin.join("gh").to_string_lossy());
     h.set("FAKE_GH_DIR", gh_dir.to_string_lossy());
     h.set("FAKE_GH_BRANCH", "fleet/alpha");
-    let cli = h.write_bin(
+    let cli = h.write_warmed(
         "fake-complexity",
         b"#!/bin/sh\necho '{\"files\":[],\"violations\":[]}'\n",
     );
@@ -2025,8 +2026,20 @@ fn lock_worktree(h: &Harness, path: &Path, on: bool) {
 fn reject_pushes(h: &Harness, on: bool) {
     let hook = h.root.join("remote.git/hooks/pre-receive");
     if on {
-        std::fs::write(&hook, "#!/bin/sh\necho rejected >&2\nexit 1\n").unwrap();
+        // git runs the hook with no arguments, so `warm` never reaches it
+        // from a push.
+        std::fs::write(
+            &hook,
+            "#!/bin/sh\nif [ \"$1\" = warm ]; then exit 0; fi\necho rejected >&2\nexit 1\n",
+        )
+        .unwrap();
         horch_core::runtime::process::make_executable(&hook).unwrap();
+        let warmed =
+            horch_e2e::harness::warm(std::process::Command::new(&hook).arg("warm")).unwrap();
+        assert!(
+            warmed.status.success(),
+            "warming the pre-receive hook failed"
+        );
     } else {
         let _ = std::fs::remove_file(&hook);
     }
@@ -2626,10 +2639,10 @@ fn a_missing_reviewer_prompt_queues_no_review() {
 fn a_rust_only_change_is_not_sent_to_the_complexity_analyser() {
     let mut h = finish_world("tl-complexity-rs");
     let called = h.root.join("analyser-called");
-    let cli = h.write_bin(
+    let cli = h.write_warmed(
         "marking-complexity",
         format!(
-            "#!/bin/sh\n/usr/bin/touch {}\necho '{{\"files\":[],\"violations\":[]}}'\n",
+            "#!/bin/sh\nif [ \"$1\" = warm ]; then exit 0; fi\n/usr/bin/touch {}\necho '{{\"files\":[],\"violations\":[]}}'\n",
             called.display()
         )
         .as_bytes(),
@@ -2706,7 +2719,7 @@ fn a_complexity_report_past_64_kib_is_read_whole() {
     assert!(report.len() > 65_536);
     let report_path = h.root.join("report.json");
     std::fs::write(&report_path, &report).unwrap();
-    let cli = h.write_bin(
+    let cli = h.write_warmed(
         "node-like-complexity",
         format!(
             "#!/bin/sh\nif [ -p /dev/stdout ]; then /usr/bin/head -c 65536 {r}; else /bin/cat {r}; fi\nexit 0\n",
@@ -2743,19 +2756,19 @@ fn an_outer_git_dir_reaches_no_child_of_finish() {
     let dumps = h.root.join("env");
     std::fs::create_dir_all(&dumps).unwrap();
     let gh = h.bin.join("gh").to_string_lossy().into_owned();
-    let gh_env = h.write_bin(
+    let gh_env = h.write_warmed(
         "gh-env",
         format!(
-            "#!/bin/sh\n/usr/bin/env > {}/gh.env\nexec {gh} \"$@\"\n",
+            "#!/bin/sh\nif [ \"$1\" = warm ]; then exit 0; fi\n/usr/bin/env > {}/gh.env\nexec {gh} \"$@\"\n",
             dumps.display()
         )
         .as_bytes(),
     );
     h.set("HORCH_GH_BIN", gh_env.to_string_lossy());
-    let cli = h.write_bin(
+    let cli = h.write_warmed(
         "complexity-env",
         format!(
-            "#!/bin/sh\n/usr/bin/env > {}/complexity.env\necho '{{\"files\":[],\"violations\":[]}}'\n",
+            "#!/bin/sh\nif [ \"$1\" = warm ]; then exit 0; fi\n/usr/bin/env > {}/complexity.env\necho '{{\"files\":[],\"violations\":[]}}'\n",
             dumps.display()
         )
         .as_bytes(),

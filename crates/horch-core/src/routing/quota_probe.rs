@@ -773,21 +773,18 @@ mod tests {
     #[test]
     fn a_crashing_harness_is_broken_until_it_recovers() {
         const UNTIL_IT_EXITS: StdDuration = StdDuration::from_secs(600);
-        use std::os::unix::fs::PermissionsExt;
         let tmp = tempfile::tempdir().unwrap();
         let fixed = tmp.path().join("fixed");
-        let bin = tmp.path().join("pi");
-        std::fs::write(
-            &bin,
-            format!(
+        let bin = fake(
+            tmp.path(),
+            "pi",
+            &format!(
                 "#!/bin/sh\nif [ -e {} ]; then echo 0.70.0; exit 0; fi\n\
                  echo 'node:internal/modules/cjs/loader:1669' >&2\n\
                  echo 'Error [ERR_REQUIRE_ESM]: require() of ES Module' >&2\nexit 1\n",
                 fixed.display()
             ),
-        )
-        .unwrap();
-        std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+        );
 
         let broken = "pi --version exited 1: Error [ERR_REQUIRE_ESM]: require() of ES Module";
         assert_eq!(
@@ -852,12 +849,17 @@ mod tests {
     #[cfg(unix)]
     const UNTIL_THE_FAKE_ANSWERS: StdDuration = StdDuration::from_secs(600);
 
-    /// The shell script `script` as the executable `name` under `dir`.
+    /// The shell script `script` as the executable `name` under `dir`,
+    /// warmed. The argument `warm` ends it before its first line.
     #[cfg(unix)]
     fn fake(dir: &Path, name: &str, script: &str) -> PathBuf {
         let bin = dir.join(name);
-        std::fs::write(&bin, script).unwrap();
-        crate::runtime::process::make_executable(&bin).unwrap();
+        let body = script
+            .strip_prefix("#!/bin/sh\n")
+            .expect("a fake is a /bin/sh script");
+        let script = format!("#!/bin/sh\nif [ \"$1\" = warm ]; then exit 0; fi\n{body}");
+        let warm = crate::test_support::write_warmed(&bin, &script, &["warm"]);
+        assert!(warm.status.success(), "warming {} failed", bin.display());
         bin
     }
 

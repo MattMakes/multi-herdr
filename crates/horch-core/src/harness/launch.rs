@@ -2777,8 +2777,12 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let seen = tmp.path().join("env.txt");
         let fake = tmp.path().join("claude");
-        std::fs::write(&fake, format!("#!/bin/sh\nenv > '{}'\n", seen.display())).unwrap();
-        crate::runtime::process::make_executable(&fake).unwrap();
+        let script = format!(
+            "#!/bin/sh\nif [ \"$1\" = warm ]; then exit 0; fi\nenv > '{}'\n",
+            seen.display()
+        );
+        let warm = crate::test_support::write_warmed(&fake, &script, &["warm"]);
+        assert!(warm.status.success(), "warming {} failed", fake.display());
         let env = LaunchEnv {
             bins: HarnessBins::resolve(
                 &BinOverrides {
@@ -2894,12 +2898,13 @@ mod tests {
         let fake = |name: &str, store: &Path| {
             let bin = root.join(name);
             let seen = root.join(format!("{name}-saw"));
-            std::fs::write(
-                &bin,
-                format!("#!/bin/sh\ncp '{}' '{}'\n", store.display(), seen.display()),
-            )
-            .unwrap();
-            crate::runtime::process::make_executable(&bin).unwrap();
+            let script = format!(
+                "#!/bin/sh\nif [ \"$1\" = warm ]; then exit 0; fi\ncp '{}' '{}'\n",
+                store.display(),
+                seen.display()
+            );
+            let warm = crate::test_support::write_warmed(&bin, &script, &["warm"]);
+            assert!(warm.status.success(), "warming {} failed", bin.display());
             (bin, seen)
         };
         let (claude, claude_saw) = fake("claude", &home.join(".claude.json"));

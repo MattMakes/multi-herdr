@@ -31,6 +31,7 @@ fn prefixed_herdr(h: &mut Harness, prefix: &str) {
     let real = h.bin.join("herdr");
     let script = format!(
         "#!/bin/sh\n\
+         if [ \"$1\" = warm ]; then exit 0; fi\n\
          if [ \"$1\" = pane ] && [ \"$2\" = run ]; then\n\
          \x20 exec '{}' pane run \"$3\" \"{prefix} $4\"\n\
          fi\n\
@@ -38,7 +39,7 @@ fn prefixed_herdr(h: &mut Harness, prefix: &str) {
         real.display(),
         real.display()
     );
-    let path = h.write_bin("prefixed-herdr", script.as_bytes());
+    let path = h.write_warmed("prefixed-herdr", script.as_bytes());
     h.set("HORCH_HERDR_BIN", path.to_string_lossy());
 }
 

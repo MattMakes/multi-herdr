@@ -364,11 +364,11 @@ fn done_returns_in_time_when_herdr_hangs_on_pane_get() {
     let flag = h.root.join("hang-pane-get");
     std::fs::write(&flag, "").unwrap();
     let stub = format!(
-        "#!/bin/sh\nif [ \"$1\" = pane ] && [ \"$2\" = get ] && [ -f '{}' ]; then exec /bin/sleep 60; fi\nexec '{}' \"$@\"\n",
+        "#!/bin/sh\nif [ \"$1\" = warm ]; then exit 0; fi\nif [ \"$1\" = pane ] && [ \"$2\" = get ] && [ -f '{}' ]; then exec /bin/sleep 60; fi\nexec '{}' \"$@\"\n",
         flag.display(),
         fake.display()
     );
-    h.write_bin("herdr", stub.as_bytes());
+    h.write_warmed("herdr", stub.as_bytes());
     let started = Instant::now();
     let o = as_worker(&h, &["done", "finished the work"])
         .output()

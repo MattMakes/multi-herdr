@@ -258,9 +258,13 @@ fn arc_32_a_cpx_launch_updates_claude_not_cpx() {
     let mut h = harness("arc32-cpx");
     h.without("HORCH_CLAUDE_BIN");
     let cpx_log = h.root.join("cpx.log");
-    h.write_bin(
+    h.write_warmed(
         "cpx",
-        format!("#!/bin/sh\necho \"$*\" >> '{}'\n", cpx_log.display()).as_bytes(),
+        format!(
+            "#!/bin/sh\nif [ \"$1\" = warm ]; then exit 0; fi\necho \"$*\" >> '{}'\n",
+            cpx_log.display()
+        )
+        .as_bytes(),
     );
     let out = fleet(&h, &[]);
     assert!(out.status.success(), "{}\n{}", stdout(&out), stderr(&out));

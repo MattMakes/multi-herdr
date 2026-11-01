@@ -455,12 +455,8 @@ impl Landing {
             {
                 continue;
             }
-            let _guard = DirLock::acquire(
-                &registry_dir,
-                key,
-                self.lock_stale_after,
-                self.lock_timeout,
-            )?;
+            let _guard =
+                DirLock::acquire(&registry_dir, key, self.lock_stale_after, self.lock_timeout)?;
             let mut claims = registry_claims(&path)?;
             if self.reopen_landed(&mut claims, of_record) {
                 let bytes = serde_json::to_vec_pretty(&claims)?;
@@ -1983,7 +1979,10 @@ mod tests {
     fn land_leftover(fixture: &Fixture, record: Option<&str>, name: &str) -> Claim {
         let claim = fixture.create("worker", record, name);
         fixture.commit_file(&claim.path, &format!("{name}.txt"), "landed\n", "landed");
-        fixture.git(&fixture.repo, &["worktree", "lock", claim.path.to_str().unwrap()]);
+        fixture.git(
+            &fixture.repo,
+            &["worktree", "lock", claim.path.to_str().unwrap()],
+        );
         let landed = fixture
             .landing
             .land(&fixture.repo, "worker", Some(name), None)
@@ -2013,7 +2012,10 @@ mod tests {
         let claim = fixture.create("worker", None, "one");
         fixture.commit_file(&claim.path, "worker.txt", "work\n", "worker");
         let expected = fixture.git(&claim.path, &["rev-parse", "HEAD"]);
-        fixture.git(&fixture.repo, &["worktree", "lock", claim.path.to_str().unwrap()]);
+        fixture.git(
+            &fixture.repo,
+            &["worktree", "lock", claim.path.to_str().unwrap()],
+        );
 
         let landed = fixture
             .landing
@@ -2023,7 +2025,10 @@ mod tests {
         assert_eq!(landed.commit, expected);
         assert_eq!(fixture.git(&fixture.repo, &["rev-parse", "main"]), expected);
         let note = landed.cleanup_note.expect("a cleanup note");
-        assert!(note.contains("cleanup step worktree remove failed"), "{note}");
+        assert!(
+            note.contains("cleanup step worktree remove failed"),
+            "{note}"
+        );
         assert!(note.contains("worktree remove"), "{note}");
         assert!(!note.contains('\n'), "{note}");
         assert!(claim.path.is_dir());
@@ -2163,7 +2168,10 @@ mod tests {
         assert!(!fixture.landing.record_has_open_claims("record-1").unwrap());
         fs::write(claim.path.join("draft.txt"), "draft\n").unwrap();
 
-        fixture.landing.reopen_landed_for_record("record-1").unwrap();
+        fixture
+            .landing
+            .reopen_landed_for_record("record-1")
+            .unwrap();
 
         assert!(fixture.landing.record_has_open_claims("record-1").unwrap());
         assert!(!fixture.landing.record_has_open_claims("record-2").unwrap());

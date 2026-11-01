@@ -354,10 +354,10 @@ fn worker_reads_the_skill_store_its_spawner_read() {
     // The agent: a probe records its environment, then runs fake claude.
     let agent_env = h.tmp.join("agent.env");
     let claude = h.bin.join("claude");
-    let probe = h.write_bin(
+    let probe = h.write_warmed(
         "claude-probe",
         format!(
-            "#!/bin/sh\n/usr/bin/env > '{}'\nexec '{}' \"$@\"\n",
+            "#!/bin/sh\nif [ \"$1\" = warm ]; then exit 0; fi\n/usr/bin/env > '{}'\nexec '{}' \"$@\"\n",
             agent_env.display(),
             claude.display()
         )
@@ -446,9 +446,13 @@ fn worker_reads_the_skill_store_its_spawner_read() {
         .expect("horch fleet ran a pane-launch command");
     assert!(ran.contains(&set), "{ran}");
     let pane_env = h.tmp.join("orchestrator.env");
-    let pane_probe = h.write_bin(
+    let pane_probe = h.write_warmed(
         "pane-probe",
-        format!("#!/bin/sh\n/usr/bin/env > '{}'\n", pane_env.display()).as_bytes(),
+        format!(
+            "#!/bin/sh\nif [ \"$1\" = warm ]; then exit 0; fi\n/usr/bin/env > '{}'\n",
+            pane_env.display()
+        )
+        .as_bytes(),
     );
     let horch = format!("'{}'", Harness::horch_bin().display());
     assert!(ran.contains(&horch), "{ran}");

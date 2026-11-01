@@ -7,6 +7,9 @@
 //! gate tests run the Python checks in `scripts/godot/` with `python3`,
 //! against the test fixtures, so no test needs Godot or dotnet.
 
+#[path = "common/warm.rs"]
+mod warm;
+
 use std::collections::BTreeSet;
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
@@ -565,12 +568,12 @@ fn godot_run_version(project: &Path, standard: &Path, mono: &Path) -> (i32, Stri
 #[cfg(unix)]
 #[test]
 fn gdw_12_a_csharp_project_runs_only_the_dotnet_engine() {
-    use std::os::unix::fs::PermissionsExt;
     let tmp = tempfile::tempdir().unwrap();
+    // A fake only prints its version, so the warm has no effect.
     let fake = |name: &str, version: &str| {
         let bin = tmp.path().join(name);
-        std::fs::write(&bin, format!("#!/bin/sh\necho {version}\n")).unwrap();
-        std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let warm = warm::write_warmed(&bin, &format!("#!/bin/sh\necho {version}\n"), &["warm"]);
+        assert!(warm.status.success());
         bin
     };
     let standard = fake("godot", "4.7.2.stable.official.fake");

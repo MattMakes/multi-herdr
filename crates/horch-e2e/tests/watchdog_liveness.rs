@@ -325,6 +325,10 @@ fn install_copy(h: &Harness, path: &std::path::Path, mtime: std::time::SystemTim
         .unwrap()
         .set_modified(mtime)
         .unwrap();
+    // `--version` exits before any command runs.
+    let warmed =
+        horch_e2e::harness::warm(std::process::Command::new(&tmp).arg("--version")).unwrap();
+    assert!(warmed.status.success(), "warming {} failed", tmp.display());
     std::fs::rename(&tmp, path).unwrap();
 }
 

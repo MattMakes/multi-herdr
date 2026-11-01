@@ -491,7 +491,7 @@ fn inbox_with_broken_pane_list(name: &str, on_pane_list: &str) -> Option<String>
     std::fs::write(
         &script,
         format!(
-            "#!/bin/sh\nif [ \"$1 $2\" = \"pane list\" ]; then echo $$ > {pid}; {body}; fi\nexec {fake} \"$@\"\n",
+            "#!/bin/sh\nif [ \"$1\" = warm ]; then exit 0; fi\nif [ \"$1 $2\" = \"pane list\" ]; then echo $$ > {pid}; {body}; fi\nexec {fake} \"$@\"\n",
             pid = pidfile.display(),
             body = on_pane_list.replace(PIDFILE_TOKEN, &pidfile.to_string_lossy()),
             fake = h.bin.join("herdr").display()
@@ -499,6 +499,12 @@ fn inbox_with_broken_pane_list(name: &str, on_pane_list: &str) -> Option<String>
     )
     .unwrap();
     std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let warmed = horch_e2e::harness::warm(std::process::Command::new(&script).arg("warm")).unwrap();
+    assert!(
+        warmed.status.success(),
+        "warming {} failed",
+        script.display()
+    );
     h.set("HORCH_HERDR_BIN", script.to_string_lossy());
     h.set("HORCH_TEST_PANE_LIST_MS", "1500");
 
