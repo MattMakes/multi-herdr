@@ -752,21 +752,18 @@ fn teardown_stops_the_mail_courier_of_its_state() {
 fn teardown_stops_a_process_that_starts_after_its_first_signal() {
     let h = Harness::new("teardown-late");
     let warm = "if [ \"$1\" = warm ]; then\n  exit 0\nfi\n";
-    let late = h.write_bin(
+    // macOS scans a new executable at its first exec, for seconds.
+    let late = h.write_warmed(
         "late",
         format!("#!/bin/sh\n{warm}while :; do /bin/sleep 1; done\n").as_bytes(),
     );
-    let starter = h.write_bin(
+    let starter = h.write_warmed(
         "starter",
         format!(
             "#!/bin/sh\n{warm}trap ': > \"$3\"; \"$2\" & exit 0' TERM\n: > \"$1\"\nwhile :; do /bin/sleep 1; done\n"
         )
         .as_bytes(),
     );
-    // macOS scans a new executable at its first exec, for seconds.
-    for script in [&late, &starter] {
-        assert!(Command::new(script).arg("warm").status().unwrap().success());
-    }
     let ready = h.tmp.join("starter.ready");
     // Outside the harness root: teardown removes the root.
     let outside = tempfile::tempdir().unwrap();
@@ -828,15 +825,14 @@ fn teardown_stops_a_process_that_leaves_its_group_before_the_signal() {
     let h = Harness::new("teardown-mover");
     // The first SIGTERM moves it to a group of its own, as `setsid` before
     // that SIGTERM would; the next one ends it.
-    let mover = h.write_bin(
+    // macOS scans a new executable at its first exec, for seconds.
+    let mover = h.write_warmed(
         "mover",
         b"#!/usr/bin/perl\nuse POSIX ();\nexit 0 if $ARGV[0] eq 'warm';\n\
           $SIG{TERM} = sub { POSIX::setsid(); $SIG{TERM} = 'DEFAULT' };\n\
           open(my $f, '>', $ARGV[0]) or die; print $f $$; close $f;\n\
           sleep 1 while 1;\n",
     );
-    // macOS scans a new executable at its first exec, for seconds.
-    assert!(Command::new(&mover).arg("warm").status().unwrap().success());
     let pidfile = h.tmp.join("mover.pid");
     // A member of a group whose leader, the outer shell, exits: `setsid`
     // fails for a group leader.
@@ -868,14 +864,12 @@ fn teardown_stops_a_process_that_leaves_its_group_before_the_signal() {
 fn teardown_fails_a_test_that_leaks_a_process() {
     let h = Harness::new("teardown-leak");
     // Named by the harness root, in its own process group, deaf to SIGTERM.
-    let stubborn = h.write_bin(
+    // macOS scans a new executable at its first exec, for up to 35 s under
+    // load: past the 10 s that pid_in waits for the pid.
+    let stubborn = h.write_warmed(
         "stubborn",
         b"#!/bin/sh\nif [ \"$1\" = warm ]; then\n  exit 0\nfi\ntrap '' TERM\necho $$ > \"$1\"\nwhile :; do /bin/sleep 1; done\n",
     );
-    // macOS scans a new executable at its first exec, for up to 35 s under
-    // load: past the 10 s that pid_in waits for the pid.
-    let warmed = Command::new(&stubborn).arg("warm").status().unwrap();
-    assert!(warmed.success(), "warming the stubborn script failed");
     let pidfile = h.tmp.join("stubborn.pid");
     let mut cmd = Command::new(&stubborn);
     // Not the test's own output: a pipe it held open would stall the run.

@@ -16,6 +16,23 @@ use serde_json::Value;
 
 use crate::bin_dir;
 
+/// Run `cmd` once, untimed, and return its output. macOS scans a new
+/// executable at its first exec, for seconds: a warm keeps that scan out of
+/// the call under test. On Linux a test thread that forks while another
+/// writes a script can hold it open for writing, so exec fails with "Text
+/// file busy" until that child execs; retry only that error until it does.
+pub fn warm(cmd: &mut Command) -> std::io::Result<Output> {
+    for _ in 0..100 {
+        match cmd.output() {
+            Err(e) if e.kind() == std::io::ErrorKind::ExecutableFileBusy => {
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            done => return done,
+        }
+    }
+    cmd.output()
+}
+
 /// The fakes, by the name of the program each stands in for.
 pub const FAKES: [(&str, &str); 8] = [
     ("agy", "fake-antigravity"),
@@ -358,6 +375,16 @@ impl Harness {
             std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))
                 .expect("making a harness bin executable");
         }
+        path
+    }
+
+    /// [`Harness::write_bin`], then [`warm`] it with the argument `warm`,
+    /// which the script must answer with exit 0.
+    pub fn write_warmed(&self, name: &str, contents: &[u8]) -> PathBuf {
+        let path = self.write_bin(name, contents);
+        let out = warm(Command::new(&path).arg("warm"))
+            .unwrap_or_else(|e| panic!("warm {}: {e}", path.display()));
+        assert!(out.status.success(), "warming {} failed", path.display());
         path
     }
 

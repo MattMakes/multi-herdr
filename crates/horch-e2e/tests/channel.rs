@@ -209,12 +209,7 @@ fn install_codex_queue(h: &mut Harness, exit: i32) -> PathBuf {
     let script = format!(
         "#!/bin/sh\nif [ \"$1\" = warm ]; then\n  exit 0\nfi\nprintf '%s\\n' \"$@\" > \"$HORCH_QUEUE_LOG\"\nexit {exit}\n"
     );
-    let path = h.write_bin("queue-codex", script.as_bytes());
-    let warmed = Command::new(&path)
-        .arg("warm")
-        .status()
-        .expect("warming the Codex queue script");
-    assert!(warmed.success(), "warming the Codex queue script failed");
+    let path = h.write_warmed("queue-codex", script.as_bytes());
     h.set("HORCH_CODEX_BIN", path.to_string_lossy().into_owned());
     h.set(
         "HORCH_QUEUE_LOG",

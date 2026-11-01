@@ -1629,18 +1629,10 @@ mod tests {
 
     #[cfg(unix)]
     fn fake_codex(dir: &Path, name: &str, body: &str) -> PathBuf {
-        use std::os::unix::fs::PermissionsExt;
-
         let path = dir.join(name);
-        std::fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700)).unwrap();
         // Warm the new script without a deadline. macOS can spend tens of
         // seconds on its first exec while syspolicyd inspects it.
-        let _ = Command::new(&path)
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status()
-            .unwrap();
+        let _ = crate::test_support::write_warmed(&path, &format!("#!/bin/sh\n{body}\n"), &[]);
         path
     }
 

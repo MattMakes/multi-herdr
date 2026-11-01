@@ -751,7 +751,6 @@ fn run_codex_queue(codex_bin: &Path, thread_id: &str, text: &str) -> Result<()> 
 #[cfg(test)]
 mod tests {
     use std::io::{BufReader, Cursor};
-    use std::os::unix::fs::PermissionsExt;
     use std::os::unix::net::{UnixListener, UnixStream};
     use std::sync::{Arc, Mutex};
 
@@ -1055,20 +1054,15 @@ mod tests {
         let root = temp_root();
         let args_file = root.join("args");
         let script = root.join("codex");
-        fs::write(
+        let warm = crate::test_support::write_warmed(
             &script,
-            format!(
+            &format!(
                 "#!/bin/sh\nif [ \"$1\" = warm ]; then\n  exit 0\nfi\nprintf '%s\\n' \"$@\" >> '{}'\n",
                 args_file.display()
             ),
-        )
-        .expect("write codex script");
-        fs::set_permissions(&script, fs::Permissions::from_mode(0o700)).expect("chmod script");
-        assert!(Command::new(&script)
-            .arg("warm")
-            .status()
-            .expect("warm codex script")
-            .success());
+            &["warm"],
+        );
+        assert!(warm.status.success());
         let (socket, mut input, _output, server) = start_server(Output::CodexQueue {
             codex_bin: script,
             thread: Box::new(|| Ok("T1".to_owned())),
@@ -1090,17 +1084,12 @@ mod tests {
     fn arc_30_codex_failure_answers_error() {
         let root = temp_root();
         let script = root.join("codex");
-        fs::write(
+        let warm = crate::test_support::write_warmed(
             &script,
             "#!/bin/sh\nif [ \"$1\" = warm ]; then\n  exit 0\nfi\nexit 1\n",
-        )
-        .expect("write codex script");
-        fs::set_permissions(&script, fs::Permissions::from_mode(0o700)).expect("chmod script");
-        assert!(Command::new(&script)
-            .arg("warm")
-            .status()
-            .expect("warm codex script")
-            .success());
+            &["warm"],
+        );
+        assert!(warm.status.success());
         let (socket, mut input, _output, server) = start_server(Output::CodexQueue {
             codex_bin: script,
             thread: Box::new(|| Ok("T1".to_owned())),

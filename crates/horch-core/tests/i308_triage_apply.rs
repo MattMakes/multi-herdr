@@ -2,6 +2,8 @@
 //! a temp dir, with a git that records every call (#308, sections 3 and 5).
 
 mod i308_support;
+#[path = "common/warm.rs"]
+mod warm;
 
 use std::path::{Path, PathBuf};
 
@@ -22,22 +24,13 @@ fn recording_git(top: &Path, fail_trash: bool) -> (Git, PathBuf) {
     } else {
         ""
     };
-    std::fs::write(
-        &bin,
-        format!(
-            "#!/bin/sh\necho \"$*\" >> '{}'\n{fail}exec git \"$@\"\n",
-            log.display()
-        ),
-    )
-    .unwrap();
-    use std::os::unix::fs::PermissionsExt;
-    std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let script = format!(
+        "#!/bin/sh\necho \"$*\" >> '{}'\n{fail}exec git \"$@\"\n",
+        log.display()
+    );
     // macOS scans a new executable at its first exec: warm it here.
-    assert!(std::process::Command::new(&bin)
-        .arg("--version")
-        .status()
-        .unwrap()
-        .success());
+    let warm = warm::write_warmed(&bin, &script, &["--version"]);
+    assert!(warm.status.success());
     std::fs::write(&log, "").unwrap();
     (Git::new(&bin), log)
 }

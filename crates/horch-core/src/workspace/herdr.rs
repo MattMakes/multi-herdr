@@ -974,14 +974,15 @@ mod tests {
     /// which would race every timed call. The warm run exits before `body`.
     #[cfg(unix)]
     fn script_in(body: &str) -> (tempfile::TempDir, PathBuf) {
-        use std::os::unix::fs::PermissionsExt;
         let dir = tempfile::tempdir().unwrap();
         let script = dir.path().join("herdr");
         let warm_guard = "if [ \"$1\" = warm ]; then\n  exit 0\nfi";
-        std::fs::write(&script, format!("#!/bin/sh\n{warm_guard}\n{body}\n")).unwrap();
-        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
-        let warm = Command::new(&script).arg("warm").status().unwrap();
-        assert!(warm.success(), "warming {}", script.display());
+        let warm = crate::test_support::write_warmed(
+            &script,
+            &format!("#!/bin/sh\n{warm_guard}\n{body}\n"),
+            &["warm"],
+        );
+        assert!(warm.status.success(), "warming {}", script.display());
         (dir, script)
     }
 

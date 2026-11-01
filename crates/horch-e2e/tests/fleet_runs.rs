@@ -69,7 +69,7 @@ exec '{}' \"$@\"
     let claude = h.write_bin("claude", stub.as_bytes());
     let mut warm = std::process::Command::new(claude);
     h.seal(&mut warm);
-    let out = warm.arg("--version").output().unwrap();
+    let out = horch_e2e::harness::warm(warm.arg("--version")).unwrap();
     assert!(out.status.success(), "{}", text(&out));
 }
 

@@ -16,6 +16,9 @@ use horch_core::taskledger::git::Git;
 use horch_core::vcs::git::{GitCli, GitClient};
 use horch_core::vcs::landing::Landing;
 
+#[path = "common/warm.rs"]
+mod warm;
+
 /// The directory of the fake git, which a child test reads.
 const FAKE_DIR: &str = "W3_VCS_FSX_FAKE_DIR";
 
@@ -23,16 +26,14 @@ const FAKE_DIR: &str = "W3_VCS_FSX_FAKE_DIR";
 /// next to itself. It is run once here: macOS scans a new executable at its
 /// first exec.
 fn fake_git(dir: &Path) -> PathBuf {
-    use std::os::unix::fs::PermissionsExt;
     let git = dir.join("git");
-    std::fs::write(
+    let warm = warm::write_warmed(
         &git,
         "#!/bin/sh\nif [ \"$1\" = warm ]; then\n  exit 0\nfi\n\
          { printf 'ARGS %s\\n' \"$*\"; env; } > \"$(dirname \"$0\")/call-$$\"\n",
-    )
-    .unwrap();
-    std::fs::set_permissions(&git, std::fs::Permissions::from_mode(0o755)).unwrap();
-    assert!(Command::new(&git).arg("warm").status().unwrap().success());
+        &["warm"],
+    );
+    assert!(warm.status.success());
     git
 }
 

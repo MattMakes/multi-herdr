@@ -3,6 +3,9 @@
 //! #144, #146). Each test pins the outcome text of 1 path, so a refactor
 //! that changes a path fails here.
 
+#[path = "common/warm.rs"]
+mod warm;
+
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -666,15 +669,10 @@ esac
 
 /// A fake gh, warmed once, whose `pr view` prints `ghstate/view.json`.
 fn fake_gh(w: &World) -> PathBuf {
-    use std::os::unix::fs::PermissionsExt;
     let state = w.top().join("ghstate");
     std::fs::create_dir_all(state.join("calls")).unwrap();
-    std::fs::write(&w.tools.gh, FAKE_GH).unwrap();
-    std::fs::set_permissions(&w.tools.gh, std::fs::Permissions::from_mode(0o755)).unwrap();
-    assert!(Command::new(&w.tools.gh)
-        .arg("warm")
-        .status()
-        .unwrap()
+    assert!(warm::write_warmed(&w.tools.gh, FAKE_GH, &["warm"])
+        .status
         .success());
     std::fs::remove_dir_all(state.join("calls")).unwrap();
     std::fs::create_dir_all(state.join("calls")).unwrap();

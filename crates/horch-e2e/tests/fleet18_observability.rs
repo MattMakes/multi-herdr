@@ -459,7 +459,8 @@ fn g54_doctor_missing_mcp_and_hanging_docker_are_warnings() {
     );
     let mut warm = std::process::Command::new(h.bin.join("docker"));
     h.seal(&mut warm);
-    assert!(warm.arg("warm").output().unwrap().status.success());
+    let warmed = horch_e2e::harness::warm(warm.arg("warm")).unwrap();
+    assert!(warmed.status.success());
     // Observe the daemon warning before later version checks complete.
     // Their own 15s budgets are independent of Docker's 2s timeout.
     use std::io::BufRead;

@@ -4,6 +4,9 @@
 //! only the override, and yields to every value the operator sets. A temp
 //! home with a fake `~/.prime/agent/` tree; no real Prime.
 
+#[path = "common/warm.rs"]
+mod warm;
+
 use std::path::{Path, PathBuf};
 
 use horch_core::compaction::window::{WindowDecision, WindowSource};
@@ -768,7 +771,6 @@ fn scan_dir() -> String {
 /// so the first-exec scan of macOS does not fall inside a test's wait.
 #[cfg(unix)]
 fn fake_rust_prime(w: &World) -> PathBuf {
-    use std::os::unix::fs::PermissionsExt;
     let dir = w.tmp.path();
     let script = format!(
         r#"#!/bin/sh
@@ -787,12 +789,8 @@ esac
         dir = dir.display(),
         scan = scan_dir()
     );
-    write(&w.fake_prime(), &script);
-    std::fs::set_permissions(w.fake_prime(), std::fs::Permissions::from_mode(0o755)).unwrap();
-    std::process::Command::new(w.fake_prime())
-        .arg("warm")
-        .output()
-        .unwrap();
+    std::fs::create_dir_all(w.fake_prime().parent().unwrap()).unwrap();
+    let _ = warm::write_warmed(&w.fake_prime(), &script, &["warm"]);
     let _ = std::fs::remove_file(dir.join("prime.log"));
     w.fake_prime()
 }
@@ -895,19 +893,17 @@ fn arc_10_prime_launch_in_a_herdr_pane_has_no_refused_flag() {
 /// subcommand (`pane release-agent --source x ...` exits 2).
 #[cfg(unix)]
 fn fake_herdr(w: &World) -> (PathBuf, PathBuf) {
-    use std::os::unix::fs::PermissionsExt;
     let bin = w.tmp.path().join("herdr");
     let log = w.tmp.path().join("herdr.log");
-    write(
+    // The first run of a new executable on macOS can be slow.
+    let _ = warm::write_warmed(
         &bin,
         &format!(
             "#!/bin/sh\ncase \"$3\" in --*) echo \"unknown option: $4\" >&2; exit 2;; esac\necho \"$@\" >> '{}'\n",
             log.display()
         ),
+        &[],
     );
-    std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
-    // The first run of a new executable on macOS can be slow.
-    std::process::Command::new(&bin).status().unwrap();
     std::fs::remove_file(&log).unwrap();
     (bin, log)
 }

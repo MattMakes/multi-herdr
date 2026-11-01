@@ -6,6 +6,8 @@
 //! agent CLI a worker pane launches.
 
 mod cmd;
+#[cfg(all(test, unix))]
+mod test_support;
 
 use std::process::ExitCode;
 

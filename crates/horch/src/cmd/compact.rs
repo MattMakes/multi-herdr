@@ -1614,17 +1614,13 @@ mod tests {
         let bin = f.w.tmp.path().join("bin");
         std::fs::create_dir_all(&bin).unwrap();
         let exe = bin.join("sleeper");
-        std::fs::write(
+        // macOS scans a new executable at its first exec: warm it.
+        let warm = crate::test_support::write_warmed(
             &exe,
             "#!/bin/sh\nif [ \"$1\" = warm ]; then exit 0; fi\nexec sleep 30\n",
-        )
-        .unwrap();
-        horch_core::runtime::process::make_executable(&exe).unwrap();
-        assert!(std::process::Command::new(&exe)
-            .arg("warm")
-            .status()
-            .unwrap()
-            .success());
+            &["warm"],
+        );
+        assert!(warm.status.success());
         f.exe = exe;
         f.start_timeout = Duration::from_millis(1500);
         f.pane("sonnet-1");
@@ -1676,20 +1672,16 @@ mod tests {
         let bin = f.w.tmp.path().join("bin");
         std::fs::create_dir_all(&bin).unwrap();
         let exe = bin.join("slow-starter");
-        std::fs::write(
+        // macOS scans a new executable at its first exec: warm it.
+        let warm = crate::test_support::write_warmed(
             &exe,
-            format!(
+            &format!(
                 "#!/bin/sh\nif [ \"$1\" = warm ]; then exit 0; fi\nsleep 6\nprintf '%s' '{{\"v\":1,\"role\":\"sonnet-1\",\"record_id\":\"r-1\",\"started_at\":\"x\",\"step\":\"wait-idle\"}}' > '{}/job.json'\n",
                 dir.display()
             ),
-        )
-        .unwrap();
-        horch_core::runtime::process::make_executable(&exe).unwrap();
-        assert!(std::process::Command::new(&exe)
-            .arg("warm")
-            .status()
-            .unwrap()
-            .success());
+            &["warm"],
+        );
+        assert!(warm.status.success());
         f.exe = exe;
         // `f.start_timeout` stays at START_TIMEOUT.
         f.pane("sonnet-1");
@@ -1715,20 +1707,16 @@ mod tests {
         let bin = f.w.tmp.path().join("bin");
         std::fs::create_dir_all(&bin).unwrap();
         let exe = bin.join("starter");
-        std::fs::write(
+        // macOS scans a new executable at its first exec: warm it.
+        let warm = crate::test_support::write_warmed(
             &exe,
-            format!(
+            &format!(
                 "#!/bin/sh\nif [ \"$1\" = warm ]; then exit 0; fi\nsleep 0.2\nprintf '%s' '{{\"v\":1,\"role\":\"sonnet-1\",\"record_id\":\"r-1\",\"started_at\":\"x\",\"step\":\"wait-idle\"}}' > '{}/job.json'\n",
                 dir.display()
             ),
-        )
-        .unwrap();
-        horch_core::runtime::process::make_executable(&exe).unwrap();
-        assert!(std::process::Command::new(&exe)
-            .arg("warm")
-            .status()
-            .unwrap()
-            .success());
+            &["warm"],
+        );
+        assert!(warm.status.success());
         f.exe = exe;
         // The success path does not depend on the timeout; a loaded test
         // machine can start a shell slowly.
@@ -1977,17 +1965,13 @@ mod tests {
         let bin = f.w.tmp.path().join("bin");
         std::fs::create_dir_all(&bin).unwrap();
         let exe = bin.join("child");
-        std::fs::write(
+        // macOS scans a new executable at its first exec: warm it.
+        let warm = crate::test_support::write_warmed(
             &exe,
-            format!("#!/bin/sh\nif [ \"$1\" = warm ]; then exit 0; fi\n{body}\n"),
-        )
-        .unwrap();
-        horch_core::runtime::process::make_executable(&exe).unwrap();
-        assert!(std::process::Command::new(&exe)
-            .arg("warm")
-            .status()
-            .unwrap()
-            .success());
+            &format!("#!/bin/sh\nif [ \"$1\" = warm ]; then exit 0; fi\n{body}\n"),
+            &["warm"],
+        );
+        assert!(warm.status.success());
         f.exe = exe;
         f.start_timeout = Duration::from_secs(20);
         f.pane("sonnet-1");

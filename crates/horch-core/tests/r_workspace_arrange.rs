@@ -2,12 +2,12 @@
 //! the plan report, the refusals, the fast path and the move path. The script
 //! answers each herdr call with canned JSON and moves nothing.
 
-use std::os::unix::fs::PermissionsExt;
-use std::path::Path;
-
 use horch_core::runtime::{MapEnv, RuntimeContext};
 use horch_core::workspace::arrange;
 use horch_core::workspace::herdr::Herdr;
+
+#[path = "common/warm.rs"]
+mod warm;
 
 /// One tab's layout JSON: `(pane, x, y, width, height)` in a 120x40 area.
 fn layout(tab: &str, zoomed: bool, panes: &[(&str, i64, i64, i64, i64)]) -> String {
@@ -85,8 +85,9 @@ fn world(label: &str, tabs: &[(&str, String, &[&str])]) -> World {
          *) echo \"unscripted: $*\" >&2; exit 1;;\nesac\n",
     );
     let script = dir.path().join("herdr");
-    std::fs::write(&script, format!("#!/bin/sh\n{body}")).unwrap();
-    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+    // macOS scans a new executable at its first exec; do it here, not in the
+    // call under test. The script has no warm case, so its exit is ignored.
+    let _ = warm::write_warmed(&script, &format!("#!/bin/sh\n{body}"), &["warm"]);
     let state = dir.path().join("state");
     std::fs::create_dir(&state).unwrap();
     let env = MapEnv::new(dir.path())
@@ -94,21 +95,11 @@ fn world(label: &str, tabs: &[(&str, String, &[&str])]) -> World {
         .with("TMPDIR", dir.path().to_str().unwrap());
     let ctx = RuntimeContext::from_env(&env).unwrap();
     let herdr = Herdr::with_bin(&script);
-    warm(&script);
     World {
         _dir: dir,
         ctx,
         herdr,
     }
-}
-
-/// macOS scans a new executable at its first exec; do it here, not in the
-/// call under test.
-fn warm(script: &Path) {
-    std::process::Command::new(script)
-        .arg("warm")
-        .output()
-        .unwrap();
 }
 
 /// Orchestrator on the left, 2 workers stacked on the right.

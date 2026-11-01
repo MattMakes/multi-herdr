@@ -495,7 +495,6 @@ mod tests {
     use horch_core::taskledger::workers::{self, NewWorker, Worker};
     use horch_core::taskledger::Store;
     use horch_core::workspace::herdr::Herdr;
-    use std::os::unix::fs::PermissionsExt;
     use std::path::Path;
     use std::time::{Duration, UNIX_EPOCH};
 
@@ -526,7 +525,8 @@ mod tests {
     /// screen; any other pane fails both.
     fn herdr(dir: &Path) -> Herdr {
         let bin = dir.join("herdr");
-        std::fs::write(
+        // macOS scans a new executable at its first exec: warm it.
+        let warm = crate::test_support::write_warmed(
             &bin,
             "#!/bin/sh\n\
              case \"$*\" in\n\
@@ -537,15 +537,9 @@ mod tests {
              warm*) ;;\n\
              *) exit 1 ;;\n\
              esac\n",
-        )
-        .unwrap();
-        std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
-        // macOS scans a new executable at its first exec: warm it.
-        assert!(std::process::Command::new(&bin)
-            .arg("warm")
-            .status()
-            .unwrap()
-            .success());
+            &["warm"],
+        );
+        assert!(warm.status.success());
         Herdr::with_bin(bin)
     }
 

@@ -782,7 +782,6 @@ mod tests {
         }
 
         fn with_wait(wait: &str, exit: u8, timeout_ms: u64) -> Self {
-            use std::os::unix::fs::PermissionsExt;
             let dir = tempfile::tempdir().unwrap();
             let bin = dir.path().join("codex");
             let runs = dir.path().join("runs");
@@ -793,11 +792,9 @@ mod tests {
                 runs.display(),
                 finished.display()
             );
-            std::fs::write(&bin, script).unwrap();
-            std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
             // macOS scans a new executable at its first exec. Warm it here,
             // without a limit, so the scan never counts against a timeout.
-            let warm = Command::new(&bin).arg("--version").output().unwrap();
+            let warm = crate::test_support::write_warmed(&bin, &script, &["--version"]);
             assert!(warm.status.success());
             let env = crate::runtime::context::MapEnv::new(dir.path())
                 .with(

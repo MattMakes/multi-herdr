@@ -98,7 +98,7 @@ fn warm(h: &Harness) {
         cmd.arg("--version");
         h.seal(&mut cmd);
         cmd.env_remove("HORCH_FAKE_LOG");
-        let _ = cmd.output();
+        let _ = horch_e2e::harness::warm(&mut cmd);
     }
 }
 
@@ -417,7 +417,7 @@ fn pre_07_probe_no_secret_persisted() {
     first.arg("--version");
     h.seal(&mut first);
     first.env_remove("HORCH_FAKE_LOG");
-    let _ = first.output();
+    let _ = horch_e2e::harness::warm(&mut first);
     let machine = machine_fixture(&h, 500_000_000_000);
 
     let out = run(

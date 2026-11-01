@@ -1228,24 +1228,18 @@ mod tests {
     /// first-exec scan of macOS does not fall inside a test's wait.
     #[cfg(unix)]
     fn fake_bin(dir: &Path, shutdown_json: &str, status_json: &str) -> (PathBuf, PathBuf) {
-        use std::os::unix::fs::PermissionsExt;
         let bin = dir.join("prime-agent");
         let log = dir.join("calls.log");
-        std::fs::write(
+        let _ = crate::test_support::write_warmed(
             &bin,
-            format!(
+            &format!(
                 "#!/bin/sh\necho \"$1 $TMPDIR\" >> '{log}'\ncase \"$1\" in\n\
                  shutdown) cat <<'JSON'\n{shutdown_json}\nJSON\n;;\n\
                  status) cat <<'JSON'\n{status_json}\nJSON\n;;\nesac\n",
                 log = log.display()
             ),
-        )
-        .unwrap();
-        std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
-        std::process::Command::new(&bin)
-            .arg("warm")
-            .output()
-            .unwrap();
+            &["warm"],
+        );
         std::fs::remove_file(&log).unwrap();
         (bin, log)
     }

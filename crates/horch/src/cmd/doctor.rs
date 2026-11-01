@@ -1801,20 +1801,18 @@ mod tests {
     /// A context whose state root is in `dir` and whose herdr is a warmed
     /// script that lists workspace `w1` with pane `p1`.
     fn sweep_ctx(dir: &Path) -> RuntimeContext {
-        use std::os::unix::fs::PermissionsExt;
         let herdr = dir.join("herdr");
-        std::fs::write(
+        // macOS scans a new executable at its first exec: warm it.
+        let warm = crate::test_support::write_warmed(
             &herdr,
             "#!/bin/sh\ncase \"$1 $2\" in\n\
              'workspace list') echo '{\"result\":{\"workspaces\":[{\"workspace_id\":\"w1\"}]}}' ;;\n\
              'pane list') echo '{\"result\":{\"panes\":[{\"pane_id\":\"p1\"}]}}' ;;\n\
              warm*) ;;\n\
              *) exit 1 ;;\nesac\n",
-        )
-        .unwrap();
-        std::fs::set_permissions(&herdr, std::fs::Permissions::from_mode(0o755)).unwrap();
-        // macOS scans a new executable at its first exec: warm it.
-        assert!(Command::new(&herdr).arg("warm").status().unwrap().success());
+            &["warm"],
+        );
+        assert!(warm.status.success());
         let env = horch_core::runtime::MapEnv::new(dir)
             .with("HOME", &dir.to_string_lossy())
             .with("HORCH_STATE_DIR", &dir.join("state").to_string_lossy())

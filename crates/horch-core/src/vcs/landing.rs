@@ -422,7 +422,7 @@ impl Landing {
     }
 
     /// Return all registered claims for the repository containing `dir`,
-    /// after [`Landing::reopen_landed`] ran on them.
+    /// after `reopen_landed` ran on them.
     pub fn reconcile(&self, dir: &Path) -> Result<Vec<Claim>> {
         let repo = self.repo(dir)?;
         let (_guard, mut claims) = self.lock_and_load(&repo)?;
