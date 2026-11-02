@@ -372,9 +372,41 @@ fn skills_bundled_size_budget() {
     }
 }
 
-/// `skill-creator` is a verbatim copy that ships Python scripts and HTML
-/// assets. It is the only skill exempt from the text-only rule.
-const EXEMPT_FROM_TEXT_ONLY: &[&str] = &["skill-creator"];
+/// Verbatim copies that ship files other than `.md` and `.txt`; they are the
+/// only skills exempt from the text-only rule. `skill-creator` ships Python
+/// scripts and HTML assets. The 27 Blender skills ship Python scripts, and
+/// `blender-addon-development` also ships 1 `.toml` manifest.
+/// `blender-workflow-recipes` holds `.md` files only, so it is not listed.
+const EXEMPT_FROM_TEXT_ONLY: &[&str] = &[
+    "blender-addon-development",
+    "blender-animation",
+    "blender-asset-qa",
+    "blender-character-rigging",
+    "blender-clothing",
+    "blender-core",
+    "blender-environment-kits",
+    "blender-export-pipelines",
+    "blender-facial-shapekeys",
+    "blender-game-optimization",
+    "blender-geometry-nodes",
+    "blender-hair-grooming",
+    "blender-hardsurface-modeling",
+    "blender-lighting-lookdev",
+    "blender-pbr-materials",
+    "blender-pipeline-automation",
+    "blender-rendering",
+    "blender-retopology-uv",
+    "blender-scene-setup",
+    "blender-sculpting",
+    "blender-simulation",
+    "blender-stylized-npr",
+    "blender-texture-baking",
+    "blender-texturing",
+    "blender-time-of-day",
+    "blender-video-editing",
+    "blender-weather-fx",
+    "skill-creator",
+];
 
 /// Single files exempt from the text-only rule; the rest of their skill is
 /// still checked. `godot-run.sh` is the fleet wrapper for every Godot call,
@@ -382,8 +414,8 @@ const EXEMPT_FROM_TEXT_ONLY: &[&str] = &["skill-creator"];
 const EXEMPT_FILES: &[&str] = &["godot-build-verify/scripts/godot-run.sh"];
 
 /// Skill files are `.md` or `.txt`, except the skills in
-/// `EXEMPT_FROM_TEXT_ONLY` and the single files in `EXEMPT_FILES`. Verbatim
-/// skills are not exempt from this rule.
+/// `EXEMPT_FROM_TEXT_ONLY` and the single files in `EXEMPT_FILES`. A verbatim
+/// skill is exempt only when `EXEMPT_FROM_TEXT_ONLY` lists it.
 #[test]
 fn skills_bundled_text_only() {
     for (path, _) in BUNDLED_SKILL_FILES {
