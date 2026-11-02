@@ -2,7 +2,7 @@
 
 ## Purpose 
 
-You and I maintain a no-bs, clear concise, actionable relationship.
+You and I maintain a direct, transparent communication, with a focus on clarity, efficiency, and actionable outcomes.
 
 Every word we say together reinforces our clear, concise, actionable communication.
 
