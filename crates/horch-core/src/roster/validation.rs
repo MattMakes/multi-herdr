@@ -198,7 +198,23 @@ impl Roster {
         problems.extend(self.plugin_dir_rules(t));
         problems.extend(self.settings_rules(t));
         problems.extend(self.mcp_file_rules(t));
+        problems.extend(self.system_prompt_rules(t));
         problems
+    }
+
+    /// `system_prompt` names a file in `system_prompt/`.
+    fn system_prompt_rules(&self, t: &Teammate) -> Vec<String> {
+        match &t.system_prompt {
+            Some(name) if !self.system_prompts.contains_key(name) => {
+                let known: Vec<&str> = self.system_prompts.keys().map(String::as_str).collect();
+                vec![format!(
+                    "{}: system_prompt '{name}' is not a file in system_prompt/ (have: {})",
+                    t.name,
+                    known.join(", ")
+                )]
+            }
+            _ => Vec::new(),
+        }
     }
 
     /// Skills: the catalog, unknown offered skills, and a skill both kept and offered.
@@ -1866,12 +1882,14 @@ w3-probe: mcp_config_files entry '/no/such/mcp.json' does not exist";
 w3-agy: 'allowed_tools' is not something antigravity can express; use args, or move this work to a claude teammate\n\
 w3-agy: 'disabled_skills' is not something antigravity can express; use args, or move this work to a claude teammate\n\
 w3-agy: 'disallowed_tools' is not something antigravity can express; use args, or move this work to a claude teammate\n\
+w3-agy: 'system_prompt' is not something antigravity can express; use args, or move this work to a claude teammate\n\
 w3-agy: env must not set GEMINI_API_KEY; antigravity uses the Google login\n\
 w3-agy: antigravity model 'gemini-3.8-flash' needs an effort; a bare model id takes agy's default effort, which can change between CLI versions (set effort: low, medium or high)";
     const EXPECTED_W3_CODEX: &str = "w3-codex: a codex teammate must set effort; without it the pane inherits model_reasoning_effort from ~/.codex/config.toml\n\
 w3-codex: 'allowed_tools' is not something codex can express; use args, or move this work to a claude teammate\n\
 w3-codex: 'disabled_skills' is not something codex can express; use args, or move this work to a claude teammate\n\
 w3-codex: 'disallowed_tools' is not something codex can express; use args, or move this work to a claude teammate\n\
+w3-codex: 'system_prompt' is not something codex can express; use args, or move this work to a claude teammate\n\
 w3-codex: sandbox is Claude only; agent codex cannot honour it";
 
     use super::super::operator::effort_override_warnings;

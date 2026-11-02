@@ -8,6 +8,7 @@ allowed_tools: ["Read", "Grep", "Glob", "Bash(git status)", "Bash(git status *)"
 phase: plan
 # Opus 5.5 today; the alias follows the latest Opus.
 model: opus
+system_prompt: sr_eng_system_prompt
 # No fallbacks: a substitute model would give the council 2 designs from 1
 # model. The orchestrator runs with the seats that start (orchestrate §10).
 # high: open design is where reasoning depth pays. Raise one spawn with

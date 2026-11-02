@@ -361,10 +361,12 @@ mod tests {
             .next()
             .unwrap();
         let documented: serde_yaml::Mapping = serde_yaml::from_str(front).unwrap();
-        // `fallbacks`, `offer_when`, `skills_when`, `requires`, `compact_window`
-        // and `compact_at` are skipped when empty, so give each a value.
+        // `fallbacks`, `offer_when`, `skills_when`, `requires`, `compact_window`,
+        // `compact_at` and `system_prompt` are skipped when empty, so give each
+        // a value. `system_prompt_text` is attached by the roster, never written.
         let actual = serde_yaml::to_value(Teammate {
             fallbacks: vec![String::new()],
+            system_prompt: Some(String::new()),
             compact_window: Some(1),
             compact_at: Some(1),
             offer_when: vec![String::new()],

@@ -18,6 +18,8 @@ include!(concat!(env!("OUT_DIR"), "/builtin_teammates.rs"));
 pub struct Roster {
     pub(crate) teammates: BTreeMap<String, Teammate>,
     pub(crate) bases: BTreeMap<String, Base>,
+    /// The files of `system_prompt/`, keyed on stem: raw text, no frontmatter.
+    pub(crate) system_prompts: BTreeMap<String, String>,
     /// Directories that were overlaid, lowest precedence first. For `doctor`.
     pub sources: Vec<PathBuf>,
     /// The home directory this roster was loaded under, for `~/` paths in
@@ -113,7 +115,11 @@ impl Roster {
                 .with_context(|| format!("compiled-in teammate '{name}'"))?;
             r.insert_parsed(name.to_string(), t);
         }
+        for (name, text) in BUILTIN_SYSTEM_PROMPTS {
+            r.system_prompts.insert(name.to_string(), text.to_string());
+        }
         r.attach_harness_defaults();
+        r.attach_system_prompts();
         Ok(r)
     }
 
@@ -145,6 +151,18 @@ impl Roster {
                 .filter(|d| d.matches_base(t.base.as_deref()))
                 .cloned()
                 .collect();
+        }
+    }
+
+    /// Give every teammate the text of the `system_prompt/` file it names,
+    /// or none. Run after every load, like [`Roster::attach_harness_defaults`],
+    /// so an overlaid file is seen and a text a teammate file set is replaced.
+    fn attach_system_prompts(&mut self) {
+        for t in self.teammates.values_mut() {
+            t.system_prompt_text = t
+                .system_prompt
+                .as_ref()
+                .and_then(|name| self.system_prompts.get(name).cloned());
         }
     }
 
@@ -183,14 +201,25 @@ impl Roster {
     /// can be ahead of this binary (a new field value), and one such file
     /// must not take every other teammate down. The file is recorded instead,
     /// the earlier definition of its name stays, and [`Roster::load_warnings`]
-    /// and [`Roster::check`] report it. Only an unreadable directory fails.
+    /// and [`Roster::check`] report it. Only an unreadable directory, or an
+    /// unreadable `system_prompt/` file (plain text, so never ahead of this
+    /// binary), fails.
     pub fn overlay(&mut self, dir: &Path) -> Result<()> {
         let base_dir = dir.join("_base");
         if base_dir.is_dir() {
             self.overlay_bases(md_files(&base_dir)?);
         }
+        let prompt_dir = dir.join("system_prompt");
+        if prompt_dir.is_dir() {
+            for (stem, path) in md_files(&prompt_dir)? {
+                let text = std::fs::read_to_string(&path)
+                    .with_context(|| format!("reading {}", path.display()))?;
+                self.system_prompts.insert(stem, text);
+            }
+        }
         self.overlay_teammates(md_files(dir)?);
         self.attach_harness_defaults();
+        self.attach_system_prompts();
         Ok(())
     }
 

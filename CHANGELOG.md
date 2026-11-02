@@ -4,6 +4,13 @@
 
 ## Unreleased
 
+- Teammates can set `system_prompt: <name>` to start Claude with
+  `teammates/system_prompt/<name>.md` appended to its system prompt
+  (`--append-system-prompt-file`). Every Opus teammate now starts with
+  `sr_eng_system_prompt`, a clear and concise communication guide. A
+  fallback to another harness drops it, and `horch teammates --check` fails
+  an unknown name.
+
 ## v0.4.2 - 2026-11-01
 
 - `horch fleet --verify full|light|minimal` picks how much each task is

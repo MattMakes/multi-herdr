@@ -212,6 +212,14 @@ pub struct Teammate {
     pub trains_on_input: bool,
     #[serde(default)]
     pub first_instruction: Option<String>,
+    /// Names a file in `system_prompt/`. Claude only: the launch appends it
+    /// to Claude's own system prompt with `--append-system-prompt-file`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub system_prompt: Option<String>,
+    /// The text of that file. The roster attaches it at load, over anything
+    /// a file sets, so the brief carries it to the pane.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub system_prompt_text: Option<String>,
     /// Teammates whose launch settings a spawn borrows when this one's usage
     /// pool cannot serve it, in order of preference. The persona, base,
     /// phase and skills stay this teammate's. See `balance_policy.rs`.
@@ -294,6 +302,8 @@ impl Default for Teammate {
             env: BTreeMap::new(),
             trains_on_input: false,
             first_instruction: None,
+            system_prompt: None,
+            system_prompt_text: None,
             fallbacks: Vec::new(),
             offer_when: Vec::new(),
             skills_when: BTreeMap::new(),
