@@ -8,6 +8,7 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::harness::HarnessKind;
 use crate::ids::{IdError, TeammateName};
 use crate::roster::{effort_problem, Roster, Teammate};
 use crate::routing::eligible::eligible_fallbacks;
@@ -86,7 +87,7 @@ impl Decision {
 /// args, env, tool lists, permission mode, plugins, MCP, settings, and the
 /// rest of the Claude-shaped fields. From the original: name, description,
 /// base, persona, phase, skills (with available and operator skills),
-/// generic, hidden. Effort stays the
+/// generic, hidden, and `system_prompt` when the fallback is also Claude. Effort stays the
 /// original's when the fallback's agent and model accept it.
 pub fn merge(original: &Teammate, fallback: &Teammate) -> Teammate {
     let mut m = fallback.clone();
@@ -101,6 +102,14 @@ pub fn merge(original: &Teammate, fallback: &Teammate) -> Teammate {
     m.generic = original.generic;
     m.hidden = original.hidden;
     m.first_instruction = original.first_instruction.clone();
+    // Claude only: a fallback on another harness has nowhere to put it.
+    if fallback.agent == HarnessKind::Claude {
+        m.system_prompt = original.system_prompt.clone();
+        m.system_prompt_text = original.system_prompt_text.clone();
+    } else {
+        m.system_prompt = None;
+        m.system_prompt_text = None;
+    }
     m.fallbacks = original.fallbacks.clone();
     m.effort = match &original.effort {
         Some(e) if effort_problem(fallback.agent, fallback.model.as_deref(), e).is_none() => {
@@ -707,6 +716,19 @@ mod bal_tables {
         assert_eq!(m.available_skills, r.available_skills);
         assert_eq!(m.operator_skills, r.operator_skills);
         assert_eq!(merge(&f, &r).operator_skills, None);
+    }
+
+    /// The system prompt follows the persona onto a Claude fallback and is
+    /// dropped on any other harness.
+    #[test]
+    fn merge_keeps_the_system_prompt_only_on_claude() {
+        let o = t("opus");
+        assert!(o.system_prompt_text.is_some());
+        let m = merge(&o, &t("codex-sol"));
+        assert_eq!((m.system_prompt, m.system_prompt_text), (None, None));
+        let m = merge(&o, &t("sonnet"));
+        assert_eq!(m.system_prompt, o.system_prompt);
+        assert_eq!(m.system_prompt_text, o.system_prompt_text);
     }
 
     #[test]

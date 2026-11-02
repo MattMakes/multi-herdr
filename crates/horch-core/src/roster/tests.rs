@@ -268,3 +268,68 @@ fn f7_bad_base_file_keeps_the_builtin_base() {
     );
     assert!(r.check().contains(&warnings[0]), "{:?}", r.check());
 }
+
+/// Every built-in teammate on `model: opus` carries the compiled-in
+/// `sr_eng_system_prompt`, and an overlay `system_prompt/` file replaces it.
+#[test]
+fn opus_teammates_carry_the_sr_eng_system_prompt() {
+    let source =
+        std::fs::read_to_string(repo_teammates().join("system_prompt/sr_eng_system_prompt.md"))
+            .unwrap();
+    let builtin = Roster::builtin().unwrap();
+    let opus: Vec<_> = builtin
+        .teammates
+        .values()
+        .filter(|t| t.model.as_deref() == Some("opus"))
+        .collect();
+    assert!(!opus.is_empty());
+    for t in opus {
+        assert_eq!(
+            t.system_prompt.as_deref(),
+            Some("sr_eng_system_prompt"),
+            "{}",
+            t.name
+        );
+        assert_eq!(
+            t.system_prompt_text.as_deref(),
+            Some(source.as_str()),
+            "{}",
+            t.name
+        );
+    }
+
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path().join("teammates");
+    std::fs::create_dir_all(dir.join("system_prompt")).unwrap();
+    std::fs::write(
+        dir.join("system_prompt/sr_eng_system_prompt.md"),
+        "overlaid\n",
+    )
+    .unwrap();
+    let r = Roster::load_layered(None, Some(&dir), None).unwrap();
+    assert_eq!(
+        r.require("opus").unwrap().system_prompt_text.as_deref(),
+        Some("overlaid\n")
+    );
+}
+
+/// `--check` fails a prompt name with no file, and a non-Claude agent.
+#[test]
+fn check_refuses_an_unknown_or_non_claude_system_prompt() {
+    let mut r = Roster::builtin().unwrap();
+    r.teammates.get_mut("opus").unwrap().system_prompt = Some("nope".into());
+    r.teammates.get_mut("codex-sol").unwrap().system_prompt = Some("sr_eng_system_prompt".into());
+    let problems = r.check();
+    assert!(
+        problems
+            .iter()
+            .any(|p| p.starts_with("opus: system_prompt 'nope' is not a file")),
+        "{problems:#?}"
+    );
+    assert!(
+        problems
+            .iter()
+            .any(|p| p.starts_with("codex-sol:") && p.contains("system_prompt")),
+        "{problems:#?}"
+    );
+}

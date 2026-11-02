@@ -4,6 +4,7 @@ brief_description: Blind evaluator for dataset rounds. Headless only; never spaw
 hidden: true
 agent: claude
 model: opus
+system_prompt: sr_eng_system_prompt
 effort: high
 compact_window: 200000
 compact_at: 300000

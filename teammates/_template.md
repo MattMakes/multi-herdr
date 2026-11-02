@@ -363,6 +363,15 @@ args: []
 # Harness-wide defaults: _base/harness-defaults.md.
 env: {}
 
+# ─── system prompt ───────────────────────────────────────────────────────────
+# claude only. Names a file in system_prompt/ (the stem, no .md). The launch
+# appends that file to Claude's own system prompt with
+# --append-system-prompt-file, on spawn and on resume. The file is plain text,
+# no frontmatter, compiled in and overlaid like _base/. A fallback on another
+# harness drops it. `horch teammates --check` fails an unknown name.
+#   system_prompt: sr_eng_system_prompt
+system_prompt:
+
 # ─── first instruction ───────────────────────────────────────────────────────
 # Optional. Rendered as the very last line the teammate reads, after the task.
 # Use it for a mandatory first move. Placeholders: {role} {task} {model}

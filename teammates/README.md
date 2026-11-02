@@ -25,6 +25,14 @@ choose from** — there is no registry to update and nothing to recompile.
   quietly-wrong roster.
 - **A leading `_` means "not parsed."** `_template.md` and `_base/` are not
   teammates and are never read as such.
+- **`system_prompt/` holds Claude system prompts.** A Claude teammate that
+  sets `system_prompt: <stem>` starts with `system_prompt/<stem>.md` appended
+  to Claude's own system prompt (`--append-system-prompt-file`). The file is
+  plain text with no frontmatter, compiled in and overlaid like `_base/`. The
+  launch copies it to `<state root>/claude/system-prompts/`, named by its
+  content hash, so a resumed pane reads the same text. Every `model: opus`
+  teammate uses `sr_eng_system_prompt`. A fallback on another harness drops
+  it. `horch teammates --check` fails an unknown name or a non-Claude agent.
 - **`hidden: true` means "loaded, but not offered."** The teammate never
   appears in the roster. `smoke.md` uses this, so `horch smoke fleet` keeps
   working without costing the orchestrator a roster line for a fake agent; the

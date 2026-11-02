@@ -5,18 +5,22 @@
 //! overlay.
 
 use std::ffi::OsString;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
+use sha2::{Digest as _, Sha256};
 
 use super::launch::model_for;
 use serde_json::{json, Value};
 
-use super::{CommandSpec, Harness, HarnessKind, LaunchEnv, Session, WindowInputs};
+use super::{
+    CommandSpec, Harness, HarnessKind, LaunchEnv, PrepareRequest, Prepared, Session, WindowInputs,
+};
 use crate::compaction::window::OperatorWindow;
 use crate::roster::{expand_home, operator_enabled_plugins, operator_status_line};
 use crate::roster::{HarnessDefault, Teammate};
+use crate::runtime::RuntimeContext;
 use crate::skills::Bundle;
 
 /// The plugin the skills bundle loads as. Its skills show as `horch:<id>`.
@@ -32,6 +36,19 @@ impl Harness for Claude {
     /// Every teammate field is Claude-shaped.
     fn validate(&self, _t: &Teammate) -> Vec<&'static str> {
         Vec::new()
+    }
+
+    /// `--append-system-prompt-file <path>` for a teammate's `system_prompt`.
+    /// A teammate that names one never starts without it.
+    fn prepare(&self, ctx: &RuntimeContext, req: &PrepareRequest<'_>) -> Result<Prepared> {
+        let mut prepared = Prepared::default();
+        if let Some(path) = install_system_prompt(&ctx.paths.state_root, req.teammate)? {
+            prepared.extra_args.extend([
+                "--append-system-prompt-file".to_owned(),
+                path.to_string_lossy().into_owned(),
+            ]);
+        }
+        Ok(prepared)
     }
 
     /// Haiku 4.5 has no effort setting, so claude rejects `--effort` for it.
@@ -106,6 +123,33 @@ impl Harness for Claude {
             spec.model_override,
         )
     }
+}
+
+/// Write the teammate's `system_prompt` text under the state root, named by
+/// the prompt and the first 12 hex digits of its SHA-256, and return the
+/// path. The name is content-addressed, so a live or resumed pane's file
+/// never changes under it. `None` when the teammate names no prompt.
+pub(crate) fn install_system_prompt(state_root: &Path, t: &Teammate) -> Result<Option<PathBuf>> {
+    let Some(name) = &t.system_prompt else {
+        return Ok(None);
+    };
+    let Some(text) = &t.system_prompt_text else {
+        bail!(
+            "{}: system_prompt '{name}' is not a file in system_prompt/",
+            t.name
+        );
+    };
+    let digest = Sha256::digest(text.as_bytes());
+    let hex: String = digest[..6].iter().map(|b| format!("{b:02x}")).collect();
+    let dir = state_root.join("claude").join("system-prompts");
+    crate::fsx::ensure_private_dir(&state_root.join("claude"))?;
+    crate::fsx::ensure_private_dir(&dir)?;
+    let path = dir.join(format!("{name}-{hex}.md"));
+    if std::fs::read(&path).ok().as_deref() != Some(text.as_bytes()) {
+        crate::fsx::write_atomic(&path, text.as_bytes(), 0o600)
+            .with_context(|| format!("write {}", path.display()))?;
+    }
+    Ok(Some(path))
 }
 
 pub(super) fn claude_command(
@@ -1841,5 +1885,61 @@ mod tests {
                 .to_string();
             assert_eq!(err, format!("{key} must be an object"));
         }
+    }
+
+    /// The opus pane starts with `--append-system-prompt-file`, and the file
+    /// holds `system_prompt/sr_eng_system_prompt.md` byte for byte. A new
+    /// text gets a new file, so a live pane's file never changes.
+    #[test]
+    fn opus_starts_with_the_sr_eng_system_prompt_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path().join("home");
+        std::fs::create_dir_all(&home).unwrap();
+        let env = crate::runtime::MapEnv::new(tmp.path())
+            .with("HOME", &home.to_string_lossy())
+            .with(
+                "HORCH_STATE_DIR",
+                &tmp.path().join("state").to_string_lossy(),
+            );
+        let ctx = RuntimeContext::from_env(&env).unwrap();
+        let roster = crate::roster::Roster::builtin().unwrap();
+        let opus = roster.require("opus").unwrap().clone();
+        let prepare = |t: &Teammate| {
+            Claude.prepare(
+                &ctx,
+                &PrepareRequest {
+                    role: "opus-1",
+                    exec_rules: &[],
+                    skills: None,
+                    compact_window: None,
+                    teammate: t,
+                    model: "opus",
+                    workdir: tmp.path(),
+                    shell_env: &[],
+                },
+            )
+        };
+
+        let args = prepare(&opus).unwrap().extra_args;
+        assert_eq!(args[0], "--append-system-prompt-file");
+        let path = Path::new(&args[1]);
+        assert!(path.starts_with(tmp.path().join("state/claude/system-prompts")));
+        let source = include_str!("../../../../teammates/system_prompt/sr_eng_system_prompt.md");
+        assert_eq!(std::fs::read_to_string(path).unwrap(), source);
+        assert_eq!(prepare(&opus).unwrap().extra_args, args);
+
+        let mut edited = opus.clone();
+        edited.system_prompt_text = Some("edited\n".into());
+        let other = prepare(&edited).unwrap().extra_args;
+        assert_ne!(other[1], args[1]);
+        assert_eq!(std::fs::read_to_string(path).unwrap(), source);
+
+        let mut missing = opus.clone();
+        missing.system_prompt_text = None;
+        assert!(prepare(&missing).is_err());
+
+        let mut none = opus;
+        none.system_prompt = None;
+        assert!(prepare(&none).unwrap().extra_args.is_empty());
     }
 }

@@ -26,6 +26,10 @@ fn main() {
         "cargo:rerun-if-changed={}",
         teammates.join("_base").display()
     );
+    println!(
+        "cargo:rerun-if-changed={}",
+        teammates.join("system_prompt").display()
+    );
     println!("cargo:rerun-if-changed=build.rs");
 
     let mut out = String::new();
@@ -37,6 +41,12 @@ fn main() {
     emit(&mut out, "BUILTIN_BASES", &teammates.join("_base"), |_| {
         true
     });
+    emit(
+        &mut out,
+        "BUILTIN_SYSTEM_PROMPTS",
+        &teammates.join("system_prompt"),
+        |_| true,
+    );
 
     let template = teammates.join("_template.md");
     println!("cargo:rerun-if-changed={}", template.display());

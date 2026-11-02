@@ -274,6 +274,7 @@ pub(crate) fn generic_validate<H: Harness + ?Sized>(
         ("disabled_skills", !t.disabled_skills.is_empty()),
         ("plugin_skills", !t.plugin_skills.is_empty()),
         ("remote_control", t.remote_control),
+        ("system_prompt", t.system_prompt.is_some()),
         ("mcp_servers", t.mcp_servers.is_some()),
         ("mcp_config_files", !t.mcp_config_files.is_empty()),
     ] {
