@@ -4,6 +4,8 @@
 
 ## Unreleased
 
+## v0.4.3 - 2026-11-02
+
 - Teammates can set `system_prompt: <name>` to start Claude with
   `teammates/system_prompt/<name>.md` appended to its system prompt
   (`--append-system-prompt-file`). Every Opus teammate now starts with
