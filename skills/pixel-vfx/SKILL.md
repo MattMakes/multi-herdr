@@ -72,7 +72,7 @@ The full contract, with four complete examples, is in `references/effect-contrac
 3. **References.** Read the closest library and project effects. Borrow techniques, not
    designs. `references/techniques.md` has recipes.
 4. **Draft.** `node pxfx.mjs new fx/<name>.mjs` (`--loop` for a pure loop) writes a starter
-   that passes check. When the direction is open, write 3 to 5 really different drafts
+   that passes check. If the task leaves the look open, write 3 to 5 really different drafts
    (`<name>-a.mjs`, `<name>-b.mjs`, ...) and put them side by side:
    `node pxfx.mjs compare 'fx/<name>-*.mjs'` writes `pxfx-out/compare.png`. Pick one. Send
    the pick and the runner-up to the orchestrator (`horch tell orchestrator "[<role>] pick: ..."`)

@@ -78,17 +78,17 @@ those frames, fix the keys before you touch the effect.
 - Heavier hits freeze longer (0.06 light, 0.1 sword, up to 0.2 heavy) and shake more.
 - Follow-through overshoots the strike pose (lower, further, weapon past the target), then
   settles over 0.3 to 0.4 s.
-- Line the hand up with where the effect fires from: arc centres on the shoulder, muzzle
+- Put the hand where the effect starts: arc centres on the shoulder, muzzle
   flashes and casts at `o.actor.hand`.
 - Arms reach about 15 px: step the body in with `x` for long strikes.
-- The blade lags the hand on a swing: keep `wa` behind for one key, then let it whip past.
+- On a swing the blade trails the wrist: keep `wa` behind for one key, then let it whip past.
 
 ## On-body effects
 
 Status, spawn, death, teleport and aura effects set `meta.actor: true` and receive
 `o.actor = { w, h, x, y, mask, pixels, head, chest, hand }`: the character's silhouette
 (`mask[j * w + i]` is 1 where opaque) and its own colours (`pixels[k]` is `[r, g, b]`), in
-local space with the feet at (0, 0); `x, y` is the top-left; `head`, `chest`, `hand` are
+local space, origin between the feet; `x, y` is the top-left; `head`, `chest`, `hand` are
 points. It is a live object: in an act it changes every frame, so read it in `draw`, not in
 `create`. The effect may export:
 

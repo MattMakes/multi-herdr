@@ -36,8 +36,8 @@ export const act = {
 - `t`: start time in the move. Before it the cue is not created.
 - `until`: when it stops drawing (default: its own duration for one-shots, never for loops;
   give loops an `until`).
-- `x`, `y`: placement in the move's local space, numbers or functions of the move's time.
-  A projectile is just an effect whose x moves: `x: (t) => 20 + (t - THROW) * SPEED`.
+- `x`, `y`: placement in the move's local space, a number, or a function of time since the move began.
+  A projectile needs nothing special; give it a moving x: `x: (t) => 20 + (t - THROW) * SPEED`.
 - `flip`: mirror the cue. Cues live inside the move's own space, so flipping or turning the
   move flips and turns every cue with it.
 - Anything else is an option for that cue (`palette`, `light`, `size` options and so on).

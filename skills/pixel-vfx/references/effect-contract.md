@@ -81,7 +81,7 @@ A simulated effect keeps its own clock: add `dt` to a local `t` in `update` and 
 ## Rules
 
 - **Ends empty**: a one-shot draws nothing at `t = duration`, neither colour nor light. Make
-  the duration long enough for the last smoke to clear, and fade everything before the end.
+  a duration that lets the final puff of smoke vanish, and fade everything before the end.
 - **Seamless loop**: the frame at `t = duration` equals the frame at `t = 0`. Build every
   moving term from `phase = t / duration`: `sin(phase * TAU * n)` with whole `n`, `noise` with
   a whole period that scrolls exactly one period per loop, and `cycle()` particles.

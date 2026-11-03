@@ -59,7 +59,7 @@ everywhere. Painter alpha `a` (default 1) below 1 is drawn with the 4x4 ordered 
 | `noise(x, y, seed, px, py)`, `fbm(x, y, seed, octaves, px, py)`, `loopNoise(x, phase, seed, P)`, `tileFbm(x, y, px, py, seed)` | Value noise; `px`/`py` make it repeat. `loopNoise` repeats when phase goes 0 to 1; `tileFbm` tiles for seamless scrolling. |
 | `ease.*`, `clamp`, `lerp`, `smoothstep`, `fract`, `TAU` | `linear`, `inQuad`, `outQuad`, `inOutQuad`, `inCubic`, `outCubic`, `outQuart`, `outExpo`, `inOutSine`, `outBack`. Inputs are clamped to 0..1. |
 | `fly(t, x0, y0, vx, vy, g, drag)`, `burst(n, r, s0, s1, a0, a1, jitter)` | Closed-form `[x, y]` of a thrown point with gravity and linear drag. `n` launch velocities `[vx, vy]` spread over angles a0..a1 (r is an rng). |
-| `RAMPS`, `palette(p)`, `ramp(p, n, mix)`, `shade(p, u)`, `rgb(c)`, `toHex(c)` | 27 ramps, dark to bright: fire ember lava smoke dust ice water electric volt poison holy heal arcane shadow blood earth stone gold leaf wood metal bone neon cyber matrix candy night. `ramp` resamples to n steps; `shade(p, u)` picks the hard step for u in 0..1. |
+| `RAMPS`, `palette(p)`, `ramp(p, n, mix)`, `shade(p, u)`, `rgb(c)`, `toHex(c)` | 27 ramps, dark to bright: arcane blood bone candy cyber dust earth electric ember fire gold heal holy ice lava leaf matrix metal neon night poison shadow smoke stone volt water wood. `ramp` resamples to n steps; `shade(p, u)` picks the hard step for u in 0..1. |
 | `particles(r)` | `spawn(x, y, vx, vy, life, opts)`, `update(dt)`, `draw(p)` (front), `drawBack(p)` (particles with `back: true`), `list`, `alive`. Opts: `kind`, `size`, `ramp`, `gravity`, `drag` (negative accelerates), `bounce`, `floor` (default 0; `null` none), `delay`, `glow`, `wander`, `grow`, `alpha`, `spin`, `shade`, `back`, `tail`, `to`, `haze`, `smokes`, `onLand(x, y)`. |
 | | Kinds: `spark` (speed-stretched streak, falls, bounces, glows), `ember` (rises, wanders, cools), `smoke` (blended puff, rises, swells, thins), `debris` (tumbles, bounces, settles), `mote` (head and a dark tail that dithers out), `streak` (accelerating dotted line; aim it inward with `to: [x, y]` for gathering), `flake` (drifting speck, a cross at size 2), `vapour` (soft puff that swells and thins; `haze` adds glow), `dust` (dense low puff that rolls along the floor), `fire` (flame ball cooling as it rises; `smokes` turns it to smoke), `brand` (burning chunk trailing flame; `onLand`), `grit` (tiny bits, bounce once, settle), `star` (twinkling cross). |
 | `lights()`, `blazes(ps, ramp)` | `lights`: `add(x, y, r, c, k, life)` flares a glow that falls off with life squared; `update(dt)`, `draw(p)`. `blazes`: `add(x, y, life, power)` keeps feeding `fire` particles into `ps` with a floor glow; `update(dt)`, `draw(p)`. |
@@ -1157,7 +1157,7 @@ async function cli(argv) {
       if (!e) die(`lib: no effect '${id}' in ${dir} (try: lib ${dir} list)`);
       done.add(id);
       const code = e.code.replace(/(['"])\.\/(pxfx|pxact)\.mjs\1/g, (_, q, n) => `'${rel(path.join(path.dirname(tool), n + '.mjs'))}'`);
-      for (const m of code.matchAll(/from\s+['"]\.\/([\w-]+)\.mjs['"]/g)) {
+      for (const m of code.matchAll(/from\s+['"]\.\/(?!px(?:fx|act)\.mjs)([\w-]+)\.mjs['"]/g)) {
         const d = all.find((x) => x.file === m[1]);
         if (d) want.push(d.id); else console.error(`warning: ${id} imports ./${m[1]}.mjs, which is not in the library`);
       }

@@ -237,7 +237,7 @@ export function checkAct(mod) {
 
 // ---------------------------------------------------------------- moves
 // chain(cues): a create(o) that plays effect modules as one. A cue is { fx, t, until, x, y,
-// flip, ...options }; x and y may be functions of the move's time. Cue i gets seed o.seed + i.
+// flip, ...options }; x and y may be functions of move time. Cue i gets seed o.seed + i.
 export function chain(cues) {
   const create = (o) => {
     let t = 0;
