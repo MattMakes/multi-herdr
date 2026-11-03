@@ -26,11 +26,11 @@ export function create(o) {
   return {
     update(dt) {
       t += dt; ps.update(dt);
-      if (n === 0 && t >= HIT) { n = 1; spray(14); }
-      if (n === 1 && t >= RE) { n = 2; spray(6); }
+      if (n === 0 && t >= HIT - 1e-6) { n = 1; spray(14); }
+      if (n === 1 && t >= RE - 1e-6) { n = 2; spray(6); }
     },
     drawBack(p) {
-      if (t < HIT) return;
+      if (t < HIT - 1e-6) return;
       const s = 1 - clamp((t - 0.5) / 0.85), rx = 12 * s;
       if (rx < 1) return;
       p.oval(0, 0, rx, rx * 0.3, shade(o.scorch, 0));
@@ -39,11 +39,11 @@ export function create(o) {
     },
     draw(p) {
       const [pts, fk] = S[t < RE - 0.04 ? 0 : 1];
-      if (t < HIT) {                                     // the leader feels its way down
+      if (t < HIT - 1e-6) {                              // the leader feels its way down
         const k = Math.max(2, Math.ceil((pts.length * t) / HIT));
         p.polyline(pts.slice(0, k), C(0.7), 0.8); if (k > 9) p.glow(...pts[k - 1], 6, C(0.8), 0.4);
       } else {
-        const hot = t < HIT + 0.05 || (t >= RE && t < RE + 0.05), a = hot ? 1 : 1 - clamp((t - HIT - 0.07) / (t > RE ? 0.3 : 0.5));
+        const hot = t < HIT + 0.05 || (t >= RE - 1e-6 && t < RE + 0.05), a = hot ? 1 : 1 - clamp((t - HIT - 0.07) / (t > RE ? 0.3 : 0.5));
         if (a > 0) {
           for (const f of fk) p.polyline(f, C(hot ? 0.85 : 0.6), a);
           p.polyline(pts.map(([x, y]) => [x - 1, y]), C(hot ? 0.9 : 0.5), a);

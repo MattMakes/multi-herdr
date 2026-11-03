@@ -55,20 +55,20 @@ A floor glyph draws itself and brightens, a column of fire bursts up with a whit
 // id: fire/flame-pillar
 import { rng, particles, fbm, ease, clamp, shade, TAU } from './pxfx.mjs';
 
-const REL = 0.35, ROAR = 0.8, FALL = 0.35, H = 64, RX = 18, SQ = 0.26; // phase times, height, glyph
+const REL = 1 / 3, ROAR = 0.8, FALL = 0.35, H = 64, RX = 18, SQ = 0.26;
 export const meta = {
   name: 'flame-pillar', size: [96, 128], origin: [48, 112], duration: 3, loop: false, fps: 30,
-  options: { palette: 'fire', seed: 4 }, tags: ['fire', 'pillar', 'ground', 'spell'],
+  options: { palette: 'fire', seed: 4 }, tags: ['fire', 'pillar', 'ground'],
   timing: { windup: REL, hits: [{ t: REL, freeze: 0.06, shake: 0.3, amp: 3 }], recovery: 0.6 },
 };
 
 export function create(o) {
   const r = rng(o.seed), ps = particles(r), C = (u) => shade(o.palette, u), W = "#ffffff";
   let t = 0, burst = false, fell = false;
-  const height = () => t < REL ? 0 : t < REL + ROAR ? H * ease.outExpo((t - REL) / 0.1) * (0.94 + 0.06 * Math.sin(t * 40))
+  const height = () => t < REL - 1e-6 ? 0 : t < REL + ROAR ? H * ease.outExpo((t - REL) / 0.1) * (0.94 + 0.06 * Math.sin(t * 40))
     : H * (1 - ease.inQuad((t - REL - ROAR) / FALL));
   const glyph = (p, back) => {
-    const g = clamp(t / REL), fade = 1 - clamp((t - REL - ROAR) / 0.6), hot = t >= REL ? 1 - clamp((t - REL) / 0.4) : 0, dim = back ? 0.15 : 0;
+    const g = clamp(t / REL), fade = 1 - clamp((t - REL - ROAR) / 0.6), hot = t >= REL - 1e-6 ? 1 - clamp((t - REL) / 0.4) : 0, dim = back ? 0.15 : 0;
     if (fade <= 0) return;
     for (const rr of [RX, RX - 4]) for (let a = 0; a < TAU * ease.outQuad(g); a += 0.05) {
       const s = Math.sin(a + rr);
@@ -96,7 +96,7 @@ export function create(o) {
   return {
     update(dt) {
       t += dt;
-      if (!burst && t >= REL) {
+      if (!burst && t >= REL - 1e-6) {
         burst = true;
         for (let i = 0; i < 18; i++) {
           const a = -Math.PI * r.range(0.1, 0.9), s = r.range(60, 190);
@@ -104,7 +104,7 @@ export function create(o) {
         }
       }
       if (t > REL && t < REL + ROAR && r.chance(dt * 30)) ps.spawn(r.range(-6, 6), -r.range(10, 50), r.range(-10, 10), -r.range(30, 50), r.range(0.6, 1), { kind: 'ember', ramp: o.palette });
-      if (!fell && t >= REL + ROAR) {
+      if (!fell && t >= REL + ROAR - 1e-6) {
         fell = true;
         for (let i = 0; i < 14; i++) ps.spawn(r.range(-6, 6), -r.range(4, H * 0.8), r.range(-12, 12), -r.range(5, 20), r.range(0.9, 1.3),
           { kind: 'smoke', size: r.range(3, 5), grow: 2, alpha: 0.5, delay: r.range(0, FALL) });
@@ -114,7 +114,7 @@ export function create(o) {
     drawBack(p) { glyph(p, true); column(p, true); },
     draw(p) {
       column(p, false); glyph(p, false);
-      if (t >= REL && t < REL + 0.07) { p.rect(-3, -H, 7, H, W); p.oval(0, 0, RX, RX * SQ, W); p.glow(0, -30, 40, C(0.8), 0.8); }
+      if (t >= REL - 1e-6 && t < REL + 0.05) { p.rect(-3, -H, 7, H, W); p.oval(0, 0, RX, RX * SQ, W); p.glow(0, -30, 40, C(0.8), 0.8); }
       ps.draw(p);
     },
   };

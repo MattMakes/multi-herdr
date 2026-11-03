@@ -98,7 +98,7 @@ export function create(o) {
   return {
     update(dt) {
       t += dt; ps.update(dt);
-      if (!broke && t >= BREAK) {
+      if (!broke && t >= BREAK - 1e-6) {
         broke = true;
         for (let i = 0; i < 4; i++) ps.spawn(r.range(x0, -x0), -r.range(2, H), r.range(-25, 25), -r.range(5, 20), r.range(0.9, 1.3), { kind: 'vapour', ramp: [C(0.6), C(0.8), C(1)], size: r.range(2, 3.5), alpha: 0.16, haze: 0.06 });
         for (let i = 0; i < 12; i++) ps.spawn(r.range(x0, -x0), -r.range(2, H), r.range(-90, 90), -r.range(40, 140), r.range(0.4, 0.8), { kind: 'grit', ramp: o.palette, shade: 0.9 });
@@ -110,14 +110,14 @@ export function create(o) {
     },
     drawBack(p) { p.glow(0, 0, W + 10, C(0.7), 0.3 * (1 - clamp((t - BREAK) / 1.2)), 0.3); },
     draw(p) {
-      const fl = (t >= CRACK && t < CRACK + 0.04) || t >= BREAK - 0.04;
-      if (t < BREAK) {
+      const fl = (t >= CRACK - 1e-6 && t < CRACK + 0.04) || t >= BREAK - 0.04;
+      if (t < BREAK - 1e-6) {
         for (let y = -H + 1; y < 0; y++) for (let x = Math.ceil(x0) + 1; x < -x0; x++)
           p.puff(x, y, 0.4, C(y < -H + 4 ? 0.8 : x > -x0 * 0.4 ? 0.3 : 0.5), y < -H + 4 ? 0.75 : 0.5);
         const e = (u) => (fl ? '#fff' : C(u));
         p.line(x0, 0, x0, -H, e(0.95)); p.line(x0, -H, -x0, -H, e(1)); p.line(-x0, -H, -x0, 0, e(0.55)); p.line(x0, 0, -x0, 0, C(0.35));
         p.line(x0 + 3, -H + 6, x0 + 7, -H + 2, C(1)); p.line(x0 + 3, -H + 10, x0 + 5, -H + 8, C(0.9));
-        if (t >= CRACK) {
+        if (t >= CRACK - 1e-6) {
           const k = ease.outQuart((t - CRACK) / 0.1) * 5, pts = crack.slice(0, Math.floor(k) + 1);
           p.polyline(pts, '#fff'); for (const [x, y] of pts) p.lit(x, y, C(1), 0.5);
         }
@@ -129,7 +129,7 @@ export function create(o) {
         p.tri(...pt(0), ...pt(2.3), ...pt(4), C(0.55)); p.line(...pt(0), ...pt(2.3), C(0.95));
         if (u < 0.3) p.lit(...pt(0), C(1), 0.5);
       }
-      if (t >= BREAK && t < BREAK + 0.07) { p.rect(x0, -H, W + 1, 2, '#fff'); p.glow(0, -H / 2, W * 1.4, C(1), 0.7); sparkle(p, 0, -H / 2, 7, '#fff', C(0.8)); }
+      if (t >= BREAK - 1e-6 && t < BREAK + 0.05) { p.rect(x0, -H, W + 1, 2, '#fff'); p.glow(0, -H / 2, W * 1.4, C(1), 0.7); sparkle(p, 0, -H / 2, 7, '#fff', C(0.8)); }
       ps.draw(p);
     },
   };

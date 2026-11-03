@@ -55,7 +55,7 @@ export function create(o) {
   return {
     update(dt) {
       t += dt;
-      if (!bit && t >= HIT) {
+      if (!bit && t >= HIT - 1e-6) {
         bit = true;
         for (const [vx, vy] of burst(10, r, 40, 150, -1.3, 1.1)) ps.spawn(hx, hy, vx, vy - 20, r.range(0.15, 0.35), { kind: 'spark', ramp: o.spark, bounce: 0.4 });
         ls.add(hx, hy, 18, shade(o.spark, 0.7), 1, 0.25);
@@ -65,7 +65,7 @@ export function create(o) {
     drawBack(p) { arc(p, true); },
     draw(p) {
       arc(p, false);
-      if (t >= HIT && t < HIT + 0.07) { sparkle(p, hx, hy, 4, '#ffffff', shade(o.spark, 0.8)); p.line(hx - 2, hy - 7, hx + 2, hy + 7, '#ffffff'); }
+      if (t >= HIT - 1e-6 && t < HIT + 0.07) { sparkle(p, hx, hy, 4, '#ffffff', shade(o.spark, 0.8)); p.line(hx - 2, hy - 7, hx + 2, hy + 7, '#ffffff'); }
       ls.draw(p); ps.draw(p);
     },
   };
