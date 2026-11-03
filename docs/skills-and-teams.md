@@ -359,6 +359,14 @@ Claude with no fallback, needs `blender` (`requires: [blender]`) and sets
 - Taste notes stay on this host, in the project and in a fleet copy under
   the horch state folder. 1 operator's taste never becomes a shipped rule.
 
+### Pixel art VFX
+
+`pixel-vfx-artist` makes pixel art effects and sprite animations as code with
+the bundled `pixel-vfx` skill: it drafts, renders a contact sheet, looks at it,
+fixes the worst thing and renders again, then exports sprite sheets with
+Aseprite-style JSON for any engine. The skill is own text, written clean-room
+from a behaviour spec (see [skills/README.md](../skills/README.md)).
+
 ## `horch agent-list`: which harnesses can this machine run
 
 ```bash

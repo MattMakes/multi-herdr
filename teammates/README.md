@@ -306,6 +306,19 @@ sibling skill, and a bundle holds only the teammate's own skills.
 `video-critic` denies `Edit` and `NotebookEdit` but keeps `Write` for its
 `qa/` reports. Spawn a new `video-critic` for each review round.
 
+## The pixel VFX teammate
+
+| teammate | phase | agent, model, effort | fallback | use for |
+|---|---|---|---|---|
+| `pixel-vfx-artist` | implementation | claude, opus, medium | `codex-sol` | pixel art effects and sprite animations as code; sprite sheets and JSON for any engine |
+
+It carries `pixel-vfx` and names `art-direction`. A Godot project adds
+`godot-pixel-art-pipeline` and `godot-particles-vfx` through `skills_when`.
+It is offered in every project, because pixel games ship on many engines and
+on the web. It needs only `node` and the Read tool, which shows PNG files, so
+it has no MCP servers and `requires:` nothing. Every effect goes through at
+least 3 rounds of render, look and fix before `DONE:`.
+
 ## The Swift and Apple team
 
 Seven specialists staff Swift and Apple-platform work. Each sets
