@@ -56,6 +56,7 @@ const REPO_ORIGINAL: &[&str] = &[
     "godot-version-migration",
     "orchestrate",
     "pixel-vfx",
+    "pixel-vfx-library",
     "product-requirements",
     "system-design",
     "ue-build-verify",

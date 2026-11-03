@@ -104,13 +104,18 @@ These skills attach by name to the Swift teammates and belong to no phase. The A
 
 ## Pixel art VFX skill
 
-`pixel-vfx` belongs to no phase; it attaches by name to `pixel-vfx-artist`. It teaches effects as code (a colour buffer with ordered dither and an additive light buffer), a draft, render, look and refine loop, a quality bar, game-feel timing data for hit-stop, and sprite-sheet export for any engine. Its tool, `pxfx.mjs`, is a code block on `references/script-pxfx.md`: Node 18 or later, standard library only. It renders contact sheets, writes sprite sheets with Aseprite-style JSON, checks effects and starts new ones.
+`pixel-vfx` and `pixel-vfx-library` belong to no phase; they attach by name to `pixel-vfx-artist`. It teaches effects as code (a colour buffer with ordered dither and an additive light buffer), a draft, render, look and refine loop, a quality bar, game-feel timing data for hit-stop, and sprite-sheet export for any engine. Its tool, `pxfx.mjs`, is a code block on `references/script-pxfx.md`: Node 18 or later, standard library only. It renders contact sheets, writes sprite sheets with Aseprite-style JSON, checks effects and starts new ones.
 
 It is own text, written clean-room. One person read [patch-gg/pixelfx](https://github.com/patch-gg/pixelfx) (MIT, commit `a841596`) and wrote a behaviour spec in their own words. A second writer, who never saw that project, wrote the skill and the tool from the spec alone. No text or code was copied, so the skill needs no notice file and no runtime download.
+
+`pixel-vfx-library` holds original example effects in 21 categories (fire, explosions, water, ice, lightning, sci-fi, melee, impacts, projectiles, spawn, arcane, holy, shadow, status, nature, weather, UI, pickups, transitions, critters and moves), one Markdown page per category. The tool's `lib list` and `lib get` commands search them and copy one into a project. They were written clean-room from one-line briefs.
+
+The specs the clean writers worked from are in [docs/cleanroom/pixel-vfx/](../docs/cleanroom/pixel-vfx/).
 
 | Skill | Kind |
 | --- | --- |
 | [pixel-vfx](pixel-vfx/SKILL.md) | own text (clean-room) |
+| [pixel-vfx-library](pixel-vfx-library/SKILL.md) | own text (clean-room) |
 
 ## Engineering and product skills
 

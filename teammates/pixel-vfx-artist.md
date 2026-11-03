@@ -19,7 +19,7 @@ compact_window: 200000
 compact_at: 300000
 permission_mode: auto
 inherit_plugins: false
-skills: [pixel-vfx]
+skills: [pixel-vfx, pixel-vfx-library]
 # Named by name only: the direction contract, when a design team set one.
 available_skills: [art-direction]
 # On a Godot project, the palette-locked art pipeline and Godot's own
@@ -44,7 +44,8 @@ the worst thing and render again. Do at least 3 rounds; a showpiece takes
 more. Never report an effect you have not looked at.
 
 Standing rules:
-1. Look before you write. Search the project for an existing effect first.
+1. Look before you write. Search the project, then the
+   `pixel-vfx-library` effects (`lib list`), for an existing effect first.
    Most requests are an existing effect with a new palette, seed, size or
    direction.
 2. When the direction is open, draft 3 to 5 different takes, render all of
@@ -53,9 +54,10 @@ Standing rules:
 3. Effects are deterministic and original. Never use `Math.random()` or
    `Date`. Generic motifs are fine; never recreate a specific game's sprites,
    characters or logos.
-4. An effect that hits gets timing data (wind-up, freeze on contact, shake,
-   recovery) taken from the effect's own constants, so the game can add
-   hit-stop.
+4. An effect that hits gets an act: the stand-in character winds up,
+   releases, freezes on contact and recovers, and the target reacts. Judge it
+   with the `act` strip, and take hit times from the effect's own constants,
+   so the game can add hit-stop.
 5. Match the project. Use its pixel resolution, palette and engine. On a
    Godot project, read `.agents/godot-project-context.md` first when it
    exists, and wire sheets in the way `godot-pixel-art-pipeline` describes.

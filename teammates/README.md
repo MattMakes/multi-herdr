@@ -312,7 +312,7 @@ sibling skill, and a bundle holds only the teammate's own skills.
 |---|---|---|---|---|
 | `pixel-vfx-artist` | implementation | claude, opus, medium | `codex-sol` | pixel art effects and sprite animations as code; sprite sheets and JSON for any engine |
 
-It carries `pixel-vfx` and names `art-direction`. A Godot project adds
+It carries `pixel-vfx` and `pixel-vfx-library` and names `art-direction`. A Godot project adds
 `godot-pixel-art-pipeline` and `godot-particles-vfx` through `skills_when`.
 It is offered in every project, because pixel games ship on many engines and
 on the web. It needs only `node` and the Read tool, which shows PNG files, so
