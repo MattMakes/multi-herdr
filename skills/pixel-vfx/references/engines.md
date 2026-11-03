@@ -38,6 +38,9 @@ export function tick(dt, ctx, drawSprites) {
 - Hit-stop: when an effect's time passes a hit `t`, stop calling `advance` for every effect
   and character for `freeze` seconds, then shake the camera by `amp` px for `shake` s.
 - Loops never finish (`done` stays false); remove them when their owner goes away.
+- On-body effects (`meta.actor`) need your sprite: pass `actor: { w, h, x, y, mask, pixels,
+  head, chest, hand }` in the options (local to the feet), call `inst.drawActor(p)` instead of
+  drawing the sprite, or apply `inst.alpha()` to it yourself.
 
 ## Sprite sheets for any engine
 
@@ -59,6 +62,8 @@ export function tick(dt, ctx, drawSprites) {
 }
 ```
 
+Acted effects add `act` (poses, target, hits; the timing is derived from it), and
+`actorAlpha` lists the character's opacity per frame for spawn and death effects.
 `pivot` is the anchor in frame pixels: place it on the character's feet, the impact point or
 the muzzle. `hits[].frame` is the frame index nearest each hit time.
 

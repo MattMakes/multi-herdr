@@ -86,80 +86,46 @@ ice ramp along its length. Add mist puffs and a cold floor pool while they stand
 
 ## Lightning
 
-Midpoint displacement: start with the two end points, split each segment at its middle and
-push the middle sideways by a random amount that halves at each level. Seed the rng with the
-time slot, so the bolt re-rolls every few frames but stays deterministic.
+`bolt(r, x0, y0, x1, y1, rough, depth)` splits each segment at its middle and pushes the
+middle sideways by a random amount that halves at each level (midpoint displacement).
+`forks(r, pts, n)` adds side branches. Seed the rng with a time slot, so the bolt re-rolls
+every few frames but stays deterministic.
 
 ```js
-function bolt(x0, y0, x1, y1, seed, rough = 0.35, levels = 5) {
-  const r = rng(seed); let pts = [[x0, y0], [x1, y1]], amp = Math.hypot(x1 - x0, y1 - y0) * rough;
-  for (let l = 0; l < levels; l++, amp /= 2) {
-    const out = [pts[0]];
-    for (let i = 1; i < pts.length; i++) {
-      const [ax, ay] = pts[i - 1], [bx, by] = pts[i], d = Math.hypot(bx - ax, by - ay) || 1;
-      const off = r.range(-amp, amp);
-      out.push([(ax + bx) / 2 - ((by - ay) / d) * off, (ay + by) / 2 + ((bx - ax) / d) * off], pts[i]);
-    }
-    pts = out;
-  }
-  return pts;
-}
-const slot = Math.floor(t * meta.fps / 2);        // new shape every 2 frames
-const pts = bolt(0, -60, 0, 0, o.seed * 1000 + slot);
-for (let i = 1; i < pts.length; i++) {
-  const [ax, ay] = pts[i - 1], [bx, by] = pts[i];
-  p.line(ax - 1, ay, bx - 1, by, shade(o.palette, 0.5));     // coloured edge
-  p.line(ax, ay, bx, by, '#ffffff');                          // white core
-  p.glow(bx, by, 6, shade(o.palette, 0.7), 0.15);             // glow along the line
-}
+const r = rng(o.seed * 1000 + Math.floor((t * meta.fps) / 2));   // new shape every 2 frames
+const pts = bolt(r, 0, -60, 0, 0, 0.3, 5);
+p.polyline(pts.map(([x, y]) => [x - 1, y]), shade(o.palette, 0.5));   // coloured edge
+p.polyline(pts, '#ffffff');                                            // white core
+for (const f of forks(r, pts, 2)) p.polyline(f, shade(o.palette, 0.7));
+for (const [x, y] of pts.filter((_, i) => i % 4 === 0)) p.glow(x, y, 6, shade(o.palette, 0.7), 0.15);
 ```
 
-- Branches: at 2 or 3 random points, run a shorter `bolt` off to the side with fewer levels.
-- Strike timing: the first 2 frames are the full white bolt plus a big flare; then the core
+- Strike timing: the first 2 frames are the full white bolt plus a big `flare`; then the core
   goes to a ramp colour and the bolt dithers out over 3 to 5 frames. Put `HIT` at the first frame.
 - For a loop (a crackling orb), make the slot wrap: `slot % slotsPerLoop`.
 
 ## Slash arcs
 
-A crescent: an `arc` band whose width is a function of position along the arc, widest just
-behind the leading edge and tapering to 0 at the tail. A white leading edge, a ramp-coloured
-body, and a trail that fades from the tail first.
-
-```js
-const SWING = 0.12, HIT = 0.06;                   // swing time; the hit lands mid-swing
-const u = clamp(t / SWING), head = lerp(-2.2, 1.0, ease.outQuart(u));   // leading angle
-const tail = head - lerp(0.4, 2.2, ease.outQuad(u)) * (1 - clamp((t - SWING) / 0.2));
-const width = (k) => 1 + 5 * Math.sin(Math.PI * k ** 1.6);          // k: 0 tail -> 1 head
-if (head > tail) {
-  p.arc(0, -16, 22, tail, head, width, shade(o.palette, 0.7), 1 - clamp((t - SWING) / 0.25));
-  p.arc(0, -16, 22, head - 0.25, head, 2, '#ffffff');                   // leading edge
-  p.glow(Math.cos(head) * 20, -16 + Math.sin(head) * 20, 10, shade(o.palette, 0.8), 0.5 * (1 - u));
-}
-```
-
-It faces right, so the caller flips it for a left swing. Add 3 to 5 sparks at the hit point
-on `HIT` and a short, bright line along the cut.
+A crescent: an `arc` band whose width is a function of position along the arc (0 at the
+tail, 1 at the head), widest just behind the leading edge. A white leading edge, a
+ramp-coloured body, a trail that shrinks from the tail. Centre the arc on the shoulder of the
+strike pose and make it already long on the release frame. Effect-contract example 3 is a
+complete, acted slash; compute `HIT` from the arc's constants as it does.
 
 ## Pickups and sparkles
 
-A sparkle is a plus-shaped cross whose arms grow and shrink: centre pixel in white, arms in
-the top ramp steps, a `lit` centre. Twinkle each one on its own cycle.
+`sparkle(p, x, y, arm, c, tip)` draws a plus-shaped glint; grow and shrink `arm` on its own
+cycle to twinkle. `star` particles twinkle by themselves.
 
 ```js
-const sparkle = (x, y, s) => {                    // s: 0..1 size
-  if (s <= 0.05) return;
-  const arm = Math.round(s * 3);
-  p.px(x, y, '#ffffff'); p.lit(x, y, shade(o.palette, 1), s);
-  for (let k = 1; k <= arm; k++) {
-    const c = shade(o.palette, 1 - k / (arm + 1));
-    p.px(x + k, y, c); p.px(x - k, y, c); p.px(x, y + k, c); p.px(x, y - k, c);
-  }
-};
-cycle(t, meta.duration, 4, (q, i, r) => sparkle(r.int(-8, 8), r.int(-12, 0), Math.sin(q * Math.PI) ** 3), { seed: o.seed });
+cycle(t, meta.duration, 4, (q, i, r) => {
+  const s = Math.sin(q * Math.PI) ** 3;
+  if (s > 0.05) sparkle(p, r.int(-8, 8), r.int(-12, 0), Math.floor(s * 3.5), '#ffffff', shade(o.palette, 0.7));
+}, { seed: o.seed });
 ```
 
-For the collect burst: a quick white ring, 6 to 8 sparkles thrown outward that shrink, and
-an upward rising `+1`-style shimmer (draw your own glyph pixels).
+For the collect burst: a quick white ring, 6 to 8 `star` particles thrown outward with
+`burst`, and a `+1` from `p.text(..., { font: 'big', outline })` that pops up with `outBack`.
 
 ## Screen transitions
 
@@ -208,6 +174,18 @@ drift with `sin` wander. Both are pure loops sized to the screen.
 Button press flash (2 frames of white rim, then a ramp step), a damage number pop
 (`outBack` scale by redrawing glyph pixels), a coin burst (sparkles plus debris with the gold
 ramp). Keep them short (0.15 to 0.4 s) and small.
+
+## The particle kinds in practice
+
+- Gathering energy: `streak` particles spawned on a ring, aimed inward with `to: [x, y]`;
+  they accelerate (negative `drag`) and die at the hand. Add `mote`s that orbit and fall in.
+- Fireballs and burning debris: `fire` particles (`smokes: true` for a few), `brand` chunks
+  whose `onLand` starts a `blazes` fire; `lights()` flares at each landing.
+- Frost and mist: `vapour` with `haze` for a coloured glow, `flake` for drifting crystals.
+- Ground impacts: `dust` rolls along the floor, `grit` bounces once and settles, `debris`
+  tumbles; put far ones in the back layer with `back: true` (drawn by `ps.drawBack`).
+- Rings on the floor: `band(p, ..., FAR)` in `drawBack`, `band(p, ..., NEAR)` in `draw`.
+- Ice: `crystal` spikes along a `band`; shatter them into `debris` with the ice ramp.
 
 ## Recolouring
 

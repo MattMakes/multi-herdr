@@ -45,6 +45,9 @@ render again. A round that fixes three small things and leaves the big one is a 
   palette the game uses.
 - Look at every frame (`--all`, or `--frames a-b --zoom 6`) before you call it done. Samples
   hide one-frame glitches.
+- For acted effects, read `act.png` as a flip book: ready, wind-up away, held coil, one
+  release drawing, freeze with the target white, follow-through, settle.
+- Put drafts and the best library effect of the category side by side with `compare`.
 
 ## Symptom -> fix
 
@@ -63,7 +66,9 @@ render again. A round that fixes three small things and leaves the big one is a 
 | Ends-empty check fails | A puff or light still alive at the end. | Shorter lives or a longer duration; fade light to 0 before the end. |
 | Writes outside the canvas | Glow radius, rising smoke or bounced debris leaves the canvas. | Bigger canvas, smaller or squashed glow, less speed, more drag. |
 | Great effect, no impact in game | Nothing ties it to the hit. | Add `meta.timing`: windup, freeze, shake. Check that the game reads it. |
-| Hit out of sync | The hit time was guessed from frames. | Derive `timing.hits[].t` from the same constant the drawing uses. |
+| Great effect on a dead character | No body performs it. | Add an `act` and judge `node pxfx.mjs act`. See `acts.md`. |
+| Act feels weightless | Small pose changes, no hold, no stop. | Wind-up opposite the blow, a held coiled frame, a big silhouette change on release (`snap`), freeze up to 0.2 s, shake, follow-through. |
+| Hit out of sync | The hit time was guessed from frames. | Take hit `t` from the effect's constant (`t: HIT`), in `timing` and in `act.hits`. |
 | Sticker look | The effect ignores the scene. | Add a floor pool of light, a back layer behind the character, dust where it meets the floor. |
 | Too busy | Every phase at full strength at once. | Stagger phases. Let the release own 2 to 3 frames, then quieten. |
 | Slow frame time | Big glows every frame, per-pixel noise on a big area. | Fewer and smaller glows, coarser noise, skip pixels outside the flame profile early. |

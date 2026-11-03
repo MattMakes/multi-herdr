@@ -18,7 +18,9 @@ export const meta = {
   options: { palette: 'fire', seed: 1 },   // defaults; palette and seed are required
   tags: ['impact'],           // optional, for search
   timing: { windup: 0.12, hits: [{ t: 0, freeze: 0.05, shake: 0.12, amp: 2 }], recovery: 0.2 },
+  actor: false,               // true: the effect works on the character's body (o.actor)
 };
+export const act = { poses: [], target: false, hits: [] };   // optional: see acts.md
 
 // EITHER pure:
 export function draw(p, t, o) { /* frame at time t, from t only */ }
@@ -31,6 +33,8 @@ export function create(o) {
 ```
 
 Export `draw` or `create`, never both. `check` fails on a module with both or neither.
+On-body effects may also export `actorAlpha(t, o)` (0..1) and `actorPaint(p, t, o)`;
+`references/acts.md` has the details.
 
 ## Pure or simulated
 
@@ -58,8 +62,8 @@ A simulated effect keeps its own clock: add `dt` to a local `t` in `update` and 
 - Ground effects stand on y = 0. Floor rings, scorch marks and light pools sit on a flat
   ellipse around y = 0 and may go a few px below it for perspective.
 - Size the canvas so everything stays inside it: glows, rising smoke, bounced sparks and
-  sliding debris too. `check` counts every write outside the canvas (light counts when it is
-  above 4 of 255).
+  sliding debris too. `check` counts every colour write outside the canvas, and reports light
+  off the canvas separately: bright light (r + g + b above 90) fails, faint light warns.
 
 ## Options
 
@@ -71,7 +75,8 @@ A simulated effect keeps its own clock: add `dt` to a local `t` in `update` and 
   (`rock`, `dust`, `logs` below).
 - `seed` feeds `rng(o.seed)`. Same seed, same frames. A new seed gives a new variant.
 - Reserved names, never in `meta.options`: `x`, `y` (offset from the origin), `flip`,
-  `angle`, `light` (glow strength multiplier). The runner applies them.
+  `angle`, `light` (glow strength multiplier), `actor` (the body, for `meta.actor`). The
+  runner applies them.
 
 ## Rules
 
@@ -99,7 +104,8 @@ Anything that hits carries `meta.timing = { windup, hits: [{ t, freeze, shake, a
 Define the hit time as a constant in the effect (`const HIT = 0.12`) and use it both in the
 drawing code and in `timing.hits`, so they never drift apart. `check` fails if hits are not
 sorted, lie outside 0..duration, or freeze for more than 0.3 s. The sheet JSON copies the
-block into `meta.vfx.timing` and adds the frame index of each hit.
+block into `meta.vfx.timing` and adds the frame index of each hit. An effect with an `act`
+and no `meta.timing` gets its timing from the act (example 3).
 
 | Weight | freeze | shake | amp |
 | --- | --- | --- | --- |
@@ -288,11 +294,144 @@ export function draw(p, t, o) {
 Things to copy from it: `P` (the noise period) and the scroll `ph * P` make the loop exact;
 every flicker term uses `ph * TAU * n` with whole n; `cycle()` gives particles that wrap.
 
-## Running both
+## Example 3: sword slash (one-shot, simulated, acted)
+
+The character readies, winds the sword back and holds coiled, then releases in one snapped
+drawing with after-images. A steel crescent, already long on the release frame, sweeps from
+over the shoulder down through the dummy; its centre is the shoulder of the strike pose, so
+blade and arc line up. On contact everything freezes for 0.1 s, the dummy flashes white and
+is pushed, sparks and a flare fly from the bite; then a follow-through below the strike pose
+and a settle back to ready. Timing comes from the act.
+
+```js
+// slash: a fast sword slash, acted. A crescent sweeps from over the shoulder down through the
+// target with a white leading edge and a trail that thins; sparks and a flash where it bites.
+import { rng, particles, lights, burst, ease, clamp, lerp, shade, sparkle } from './pxfx.mjs';
+import { READY, WINDUP_BACK, STRIKE_FORWARD } from './pxact.mjs';
+
+const A0 = -0.7, A1 = 1.0;          // the leading edge sweeps from A0 to A1 (radians, 0 = forward)
+const SWING = 0.12;                 // sweep time (outQuart)
+const HIT = SWING * (1 - (A1 / (A1 - A0)) ** 0.25);   // the edge crosses angle 0: into the target
+const CX = 7, CY = -21, RAD = 21;   // arc centre (the shoulder in STRIKE_FORWARD) and radius
+const S = { weapon: 'sword' };
+
+export const meta = {
+  name: 'slash', size: [96, 64], origin: [30, 58], duration: 0.6, loop: false, fps: 30,
+  options: { palette: 'metal', spark: 'holy', seed: 2 }, tags: ['melee', 'slash', 'sword'],
+};
+
+export const act = {
+  poses: [
+    [-0.5, { ...READY, ...S }],
+    [-0.25, { ...WINDUP_BACK, ...S }],                       // wind up away from the blow
+    [-1 / 12, { ...WINDUP_BACK, ...S, crouch: 4, wa: -2.8 }],  // hold, coiled
+    [0, { ...STRIKE_FORWARD, ...S, ghost: true }, 'snap'],   // release in one drawing
+    [0.25, { ...STRIKE_FORWARD, ...S, x: 4, crouch: 5, hx: 15, hy: -12, wa: 1.0 }, 'out'],  // follow-through
+    [7 / 12, { ...READY, ...S }],
+  ],
+  target: { x: 27 },
+  hits: [{ t: HIT, freeze: 0.1, shake: 0.18, amp: 2, push: 5, flash: 2 }],
+};
+
+export function create(o) {
+  const r = rng(o.seed), ps = particles(r), ls = lights(), hx = CX + RAD - 1, hy = CY;
+  let t = 0, bit = false;
+  return {
+    update(dt) {
+      t += dt;
+      if (!bit && t >= HIT) {
+        bit = true;
+        for (const [vx, vy] of burst(10, r, 50, 150, -1.0, 0.8)) ps.spawn(hx, hy, vx, vy, r.range(0.15, 0.35), { kind: 'spark', ramp: o.spark, bounce: 0.4 });
+        ls.add(hx, hy, 20, shade(o.spark, 0.8), 1.1, 0.25);
+      }
+      ps.update(dt); ls.update(dt);
+    },
+    draw(p) {
+      const u = clamp(t / SWING), head = lerp(A0, A1, ease.outQuart(u)), fade = clamp((t - SWING) / 0.16);
+      const tail = head - lerp(1.7, 2.4, u) * (1 - fade) ** 2;      // already long on the release frame
+      if (fade < 1 && head > tail + 0.05) {
+        const wd = (k) => 0.5 + 5 * Math.sin(Math.PI * k ** 1.6) * (1 - fade);
+        p.arc(CX, CY, RAD, tail, head, wd, shade(o.palette, 0.55), 1 - fade);
+        p.arc(CX, CY, RAD, tail + (head - tail) * 0.45, head, 2, shade(o.palette, 0.75), 1 - fade);
+        p.arc(CX, CY, RAD + 1, head - 0.35, head, 1, '#ffffff', 1 - fade);
+        p.glow(CX + Math.cos(head) * RAD, CY + Math.sin(head) * RAD, 10, shade(o.spark, 0.7), 0.35 * (1 - fade));
+      }
+      if (t >= HIT && t < HIT + 0.08) {
+        sparkle(p, hx, hy, 5, '#ffffff', shade(o.spark, 0.7));
+        p.line(hx - 4, hy - 7, hx + 3, hy + 6, '#ffffff');
+      }
+      ls.draw(p); ps.draw(p);
+    },
+  };
+}
+```
+
+Things to copy from it: `HIT` computed from the arc's own constants; the release reached
+with `snap` and `ghost`; a held wind-up key one 12 fps step before the release; an extra
+ramp option (`spark`) for the sparks.
+
+## Example 4: frozen (pure loop, on the body)
+
+A status loop with `meta.actor: true`. `actorPaint` redraws the character's own pixels in
+the ice ramp by brightness, with a shine that sweeps across once per loop and starts and
+ends off the body (so the loop is seamless). `draw` adds a pale rim from the body's mask,
+crystals crusting the feet, twinkles, drifting flakes and a cold floor pool. The small act
+shows the cold arriving: a flinch that stays locked.
+
+```js
+// frozen: a status loop on the body. The character's own pixels turn to ice by brightness, a
+// shine sweeps across once per loop, a pale rim and twinkles sit on the silhouette, ice
+// crystals crust the feet, flakes drift down, a cold pool lights the floor.
+import { cycle, shade, sparkle, crystal, clamp, lerp, TAU } from './pxfx.mjs';
+import { READY, HURT } from './pxact.mjs';
+
+export const meta = {
+  name: 'frozen', size: [56, 60], origin: [28, 54], duration: 2, loop: true, fps: 12, actor: true,
+  options: { palette: 'ice', seed: 4 }, tags: ['status', 'ice', 'body'],
+};
+
+// The act: the cold hits, the body flinches once and stays locked in that pose.
+export const act = {
+  poses: [[-1 / 3, READY], [0, HURT, 'snap'], [1, HURT]],
+  hits: [{ t: 0, freeze: 0.1, shake: 0.12, amp: 1 }],
+};
+
+export function actorPaint(p, t, o) {
+  const A = o.actor, pos = lerp(-44, 30, t / meta.duration);  // the shine starts and ends off the body
+  p.body(A, (c, x, y) => {
+    const lum = (0.3 * c[0] + 0.55 * c[1] + 0.15 * c[2]) / 255, shine = Math.abs(x + y * 0.5 - pos) < 1.5 ? 0.3 : 0;
+    return shade(o.palette, clamp(0.12 + lum * 0.85 + shine));
+  });
+}
+
+export function draw(p, t, o) {
+  const A = o.actor, ph = t / meta.duration;
+  p.glow(0, 0, 18, shade(o.palette, 0.6), 0.35, 0.3);
+  p.glow(A.chest[0], A.chest[1], 16, shade(o.palette, 0.5), 0.12);
+  p.outline(A, A.x, A.y, shade(o.palette, 0.7));
+  crystal(p, -6, 0, 6, 4, -2, o.palette);
+  crystal(p, 6, 0, 8, 4, 2, o.palette);
+  crystal(p, 1, 0, 4, 3, 0, o.palette);
+  cycle(t, meta.duration, 3, (q, i, r) => {      // twinkles on the rim
+    const s = Math.sin(q * Math.PI) ** 2;
+    if (s > 0.2) sparkle(p, r.int(-6, 6), r.int(-34, -6), Math.floor(s * 2.5), '#ffffff', shade(o.palette, 0.8));
+  }, { seed: o.seed, speed: 2 });
+  cycle(t, meta.duration, 9, (q, i, r) => {      // flakes drift down and sway
+    const x = r.range(-18, 18) + Math.sin(q * TAU + i) * 2, y = -46 + q * 46, c = shade(o.palette, r.range(0.7, 1));
+    if (r.chance(0.3)) sparkle(p, x, y, 1, c, shade(o.palette, 0.6), 1 - q * q); else p.px(x, y, c, 1 - q * q);
+  }, { seed: o.seed + 1 });
+}
+```
+
+Things to copy from it: reading `o.actor` in `draw`, never caching it; recolouring by
+brightness so any sprite works; the mask outline as a rim.
+
+## Running them
 
 ```sh
-node pxfx.mjs check slam.mjs          # every line PASS
-node pxfx.mjs render slam.mjs         # pxfx-out/slam/contact.png
-node pxfx.mjs sheet slam.mjs --columns 8
-node pxfx.mjs render campfire.mjs --opts '{"palette":"ice"}' --out recolour
+node pxfx.mjs check fx                 # all four: every line PASS
+node pxfx.mjs render slam.mjs --gif --bg ground
+node pxfx.mjs act slash.mjs            # pxfx-out/slash/act.png
+node pxfx.mjs render frozen.mjs        # the stock character, frozen
+node pxfx.mjs sheet campfire.mjs --opts '{"palette":"ice"}' --out recolour
 ```
