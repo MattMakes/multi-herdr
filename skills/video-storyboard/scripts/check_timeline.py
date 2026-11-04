@@ -101,6 +101,22 @@ def check_meta(meta, report):
         report.add("schema", "meta.lufs_target must be a number")
     if "allow_dark_intro" in meta and not isinstance(meta["allow_dark_intro"], bool):
         report.add("schema", "meta.allow_dark_intro must be a boolean when present")
+    if "allowed_silences" in meta:
+        check_allowed_silences(meta["allowed_silences"], meta.get("duration_sec"), report)
+
+
+def check_allowed_silences(ranges, duration, report):
+    message = "meta.allowed_silences must be a list of [start_sec, end_sec] with 0 <= start_sec < end_sec <= meta.duration_sec"
+    if not isinstance(ranges, list):
+        report.add("schema", message)
+        return
+    for item in ranges:
+        ok = check_box(item, 2) and 0 <= item[0] < item[1]
+        if ok and is_number(duration):
+            ok = item[1] <= duration
+        if not ok:
+            report.add("schema", message)
+            return
 
 
 def check_box(value, size):
@@ -556,6 +572,14 @@ def self_test():
             self.scenes[2]["static_hold"] = "yes"
             self.assertEqual(rules_of(self.timeline), {"schema"})
 
+        def test_8_allowed_silences(self):
+            self.timeline["meta"]["allowed_silences"] = [[2.0, 3.5]]
+            self.assertEqual(rules_of(self.timeline), set())
+            self.timeline["meta"]["allowed_silences"] = [[3.5, 2.0]]
+            self.assertEqual(rules_of(self.timeline), {"schema"})
+            self.timeline["meta"]["allowed_silences"] = [[2.0, 99.0]]
+            self.assertEqual(rules_of(self.timeline), {"schema"})
+
         def test_8_unreadable_json(self):
             with tempfile.TemporaryDirectory() as tmp:
                 path = os.path.join(tmp, "timeline.json")
@@ -568,7 +592,9 @@ def self_test():
         def test_skill_files_under_byte_cap(self):
             for skill in ("video-direction", "video-storyboard"):
                 path = os.path.join(skills_dir, skill, "SKILL.md")
-                self.assertLess(os.path.getsize(path), 12288, path)
+                # A fleet bundle holds only the teammate's own skills.
+                if os.path.exists(path):
+                    self.assertLess(os.path.getsize(path), 12288, path)
 
     suite = unittest.defaultTestLoader.loadTestsFromTestCase(CheckTimelineTest)
     result = unittest.TextTestRunner(verbosity=2).run(suite)

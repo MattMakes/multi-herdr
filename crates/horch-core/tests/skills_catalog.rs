@@ -58,6 +58,15 @@ const REPO_ORIGINAL: &[&str] = &[
     "system-design",
     "ue-build-verify",
     "ue-editor-scripting",
+    "video-audio",
+    "video-capture",
+    "video-character",
+    "video-direction",
+    "video-motion",
+    "video-qa",
+    "video-reanimate",
+    "video-render",
+    "video-storyboard",
 ];
 
 const PHASES: [Option<Phase>; 5] = [
@@ -135,6 +144,12 @@ const SKIP_NEW_TEAMMATES: &[&str] = &[
     "ue-tools-engineer",
     "ue-ui-engineer",
     "ue-world-engineer",
+    "video-animator",
+    "video-audio",
+    "video-capture",
+    "video-critic",
+    "video-director",
+    "video-editor",
     "visual-prototyper",
     "worktree-steward",
 ];
@@ -373,8 +388,17 @@ fn skills_bundled_size_budget() {
 }
 
 /// `skill-creator` is a verbatim copy that ships Python scripts and HTML
-/// assets. It is the only skill exempt from the text-only rule.
-const EXEMPT_FROM_TEXT_ONLY: &[&str] = &["skill-creator"];
+/// assets. The `video-*` skills listed here ship their own runnable
+/// checker, capture and render scripts.
+const EXEMPT_FROM_TEXT_ONLY: &[&str] = &[
+    "skill-creator",
+    "video-audio",
+    "video-capture",
+    "video-qa",
+    "video-reanimate",
+    "video-render",
+    "video-storyboard",
+];
 
 /// Single files exempt from the text-only rule; the rest of their skill is
 /// still checked. `godot-run.sh` is the fleet wrapper for every Godot call,

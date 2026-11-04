@@ -1732,6 +1732,51 @@
       "verbatim": false
     },
     {
+      "name": "video-audio",
+      "copied_files": [],
+      "verbatim": false
+    },
+    {
+      "name": "video-capture",
+      "copied_files": [],
+      "verbatim": false
+    },
+    {
+      "name": "video-character",
+      "copied_files": [],
+      "verbatim": false
+    },
+    {
+      "name": "video-direction",
+      "copied_files": [],
+      "verbatim": false
+    },
+    {
+      "name": "video-motion",
+      "copied_files": [],
+      "verbatim": false
+    },
+    {
+      "name": "video-qa",
+      "copied_files": [],
+      "verbatim": false
+    },
+    {
+      "name": "video-reanimate",
+      "copied_files": [],
+      "verbatim": false
+    },
+    {
+      "name": "video-render",
+      "copied_files": [],
+      "verbatim": false
+    },
+    {
+      "name": "video-storyboard",
+      "copied_files": [],
+      "verbatim": false
+    },
+    {
       "name": "widgets",
       "copied_files": [
         "SKILL.md",

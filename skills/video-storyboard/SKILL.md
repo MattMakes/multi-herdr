@@ -13,6 +13,9 @@ read it. Only this phase and the audio timing reconciliation write it.
 Inputs: `BRIEF.md`, `DIRECTION.md` (from `video-direction`).
 Outputs: `STORYBOARD.md`, `timeline.json`, `qa/plan-check.json`.
 
+`<skill-dir>` is the folder that holds this SKILL.md. Run every command from
+the video project folder.
+
 ## Order of work
 
 1. Read `BRIEF.md` and `DIRECTION.md`. Take the archetype beat list and
@@ -24,10 +27,10 @@ Outputs: `STORYBOARD.md`, `timeline.json`, `qa/plan-check.json`.
 5. Run the checker. Fix every error. Run it again until it passes.
 
 ```bash
-python3 skills/video-storyboard/scripts/check_timeline.py timeline.json
+python3 "<skill-dir>/scripts/check_timeline.py" timeline.json
 # writes qa/plan-check.json next to timeline.json; exit 0 = pass
-python3 skills/video-storyboard/scripts/check_timeline.py timeline.json --out qa/plan-check.json
-python3 skills/video-storyboard/scripts/check_timeline.py --self-test
+python3 "<skill-dir>/scripts/check_timeline.py" timeline.json --out qa/plan-check.json
+python3 "<skill-dir>/scripts/check_timeline.py" --self-test
 ```
 
 Do not hand off with a failing `qa/plan-check.json`.
@@ -101,6 +104,7 @@ bottom edge.
 | `duration_sec` | number | Greater than 0. The sum of scene durations, within 0.05 s. |
 | `lufs_target` | number | `-14` unless the brief says otherwise. |
 | `allow_dark_intro` | boolean | Optional. `true` only when the direction asks for a dark open. Render QA reads it. |
+| `allowed_silences` | list | Optional. Planned silent ranges as `[start_sec, end_sec]` pairs, `0 <= start_sec < end_sec <= duration_sec`. `check_audio.py` does not flag a silence inside one. |
 
 ### scenes[]
 
