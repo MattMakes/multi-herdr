@@ -22,6 +22,7 @@ from mathutils import Matrix, Vector
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import print_check as pc  # noqa: E402  (same folder; the skill is self-contained)
+import threemf  # noqa: E402
 
 LOG = []
 
@@ -232,27 +233,44 @@ def drop_to_bed(bm):
     log("drop-to-bed", f"moved by {tuple(round(x, 3) for x in shift)} mm: centred on X/Y, lowest Z = 0")
 
 
-def export(bm, path, exporter):
-    """Write `bm` (mm) to `path` with 1 file unit = 1 mm. `exporter` is the 3MF operator, or None for STL."""
+def write_3mf(bm, path):
+    """Write `bm` (mm) as 3MF with threemf.py: triangulated, 1 object per shell, unit millimeter."""
+    tri = bm.copy()
+    bmesh.ops.triangulate(tri, faces=tri.faces[:])
+    tri.verts.index_update()
+    tri.verts.ensure_lookup_table()
+    tri.faces.index_update()
+    shells = []
+    for isl in pc.shells(tri):
+        used = sorted({v.index for f in isl for v in f.verts})
+        remap = {old: new for new, old in enumerate(used)}
+        verts = [tuple(tri.verts[i].co) for i in used]
+        shells.append((verts, [tuple(remap[v.index] for v in f.verts) for f in isl]))
+    tri.free()
+    threemf.write_3mf(path, shells)
+    log("export", f"{path} (3MF, {len(shells)} shells, unit millimeter, no add-on)")
+
+
+def export(bm, path):
+    """Write `bm` (mm) to `path` with 1 file unit = 1 mm: binary STL, or 3MF for .3mf."""
+    if path.lower().endswith(".3mf"):
+        write_3mf(bm, path)
+        return
     bpy.ops.wm.read_factory_settings(use_empty=True)
     us = bpy.context.scene.unit_settings
     us.system, us.scale_length, us.length_unit = "METRIC", 0.001, "MILLIMETERS"
     o = to_object(bm, os.path.splitext(os.path.basename(path))[0])
     o.select_set(True)
     bpy.context.view_layer.objects.active = o
-    if exporter is None:
-        bpy.ops.wm.stl_export(filepath=path, ascii_format=False, export_selected_objects=True,
-                              global_scale=1.0, use_scene_unit=False, apply_modifiers=True)
-        log("export", f"{path} (binary STL, 1 unit = 1 mm)")
-    else:
-        exporter(filepath=path)
-        log("export", f"{path} (3MF, add-on exporter)")
+    bpy.ops.wm.stl_export(filepath=path, ascii_format=False, export_selected_objects=True,
+                          global_scale=1.0, use_scene_unit=False, apply_modifiers=True)
+    log("export", f"{path} (binary STL, 1 unit = 1 mm)")
 
 
 def main():
     p = argparse.ArgumentParser(prog="print_fix.py")
     p.add_argument("--in", dest="inp", required=True)
-    p.add_argument("--out", required=True, help=".stl, or .3mf when a 3MF exporter is enabled")
+    p.add_argument("--out", required=True, help=".stl or .3mf")
     p.add_argument("--json")
     p.add_argument("--md")
     p.add_argument("--scale", type=float, help="multiply the size, for example 1000 for a model in m read as mm")
@@ -275,12 +293,7 @@ def main():
         if src == out:
             raise pc.LoadError("--out is the input file; the fix never overwrites its input")
         ext = os.path.splitext(out)[1].lower()
-        exporter = None
-        if ext == ".3mf":
-            exporter = pc.find_3mf_op("export")
-            if exporter is None:
-                raise pc.LoadError(f"Blender {bpy.app.version_string} has no 3MF exporter: use --out <file>.stl")
-        elif ext != ".stl":
+        if ext not in (".stl", ".3mf"):
             raise pc.LoadError("--out must end in .stl or .3mf")
         pc.limits(args)
         objs = pc.load_scene(src)
@@ -329,7 +342,7 @@ def main():
     if args.orient:
         orient(bm, args.overhang_deg)
     drop_to_bed(bm)
-    export(bm, out, exporter)
+    export(bm, out)
     bm.free()
 
     print("RECHECK", out)

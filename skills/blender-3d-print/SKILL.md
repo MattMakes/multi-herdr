@@ -64,7 +64,7 @@ Options of `print_fix.py` only; each is off unless given:
 3. **Check.** Read every `FAIL`. The hard checks decide the exit code. The `WARN` checks tell the slicer or the human what to expect.
 4. **Fix.** Run `print_fix.py` with no options first: it runs only the safe fixes. Add a lossy option only for the check it fixes, 1 at a time, and record why.
 5. **Re-check.** `print_fix.py` re-checks its own output. Run `print_check.py` on the output too when another tool changed it.
-6. **Export.** Binary STL in millimetres is the default and always works. Write 3MF only when an exporter exists (see Export).
+6. **Export.** Binary STL in millimetres is the default and always works. Write 3MF when the slicer prefers it (see Export).
 7. **Report.** Give the JSON and the Markdown report to the QA teammate or the orchestrator, with every `WARN` line and every lossy option you used.
 
 ## Checks
@@ -116,7 +116,7 @@ The 3D-Print Toolbox is an extension from extensions.blender.org since Blender 4
 ## Export
 
 - STL: `print_fix.py` writes binary STL with 1 unit = 1 mm (`bpy.ops.wm.stl_export(ascii_format=False, global_scale=1.0, use_scene_unit=False)`). STL holds no unit; every slicer reads mm.
-- 3MF: Blender 5.1.2 has no built-in 3MF importer or exporter. `print_fix.py --out part.3mf` uses the operator of an enabled 3MF add-on, and exits 2 with `no 3MF exporter` when there is none. To check by hand: `[o for o in dir(bpy.ops.export_mesh) + dir(bpy.ops.wm) if "3mf" in o.lower()]`. Without an exporter, give STL and let the slicer save 3MF.
+- 3MF: `print_fix.py --out part.3mf` writes 3MF with no add-on, through `scripts/threemf.py` (Python standard library only): unit millimeter, 1 object per shell, 1 build item. `print_check.py --in part.3mf` reads it, including files from slicers (units, build and component transforms). 3MF holds the unit, so it has no scale ambiguity. Colour and material data are not written.
 - The output is a new file. `print_fix.py` exits 2 when `--out` is the input file.
 
 ## Report

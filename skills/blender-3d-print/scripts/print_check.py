@@ -19,6 +19,9 @@ import bpy
 from mathutils import Matrix
 from mathutils.bvhtree import BVHTree
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import threemf  # noqa: E402  (same folder; the skill is self-contained)
+
 UNIT_MM = {"mm": 1.0, "cm": 10.0, "m": 1000.0, "in": 25.4}
 WALL_DEFAULT_MM = {"fdm": 0.8, "resin": 0.4}
 AREA_EPS_MM2 = 1e-6  # a face below this area is degenerate
@@ -57,14 +60,17 @@ def limits(args):
 
 # ---- loading -------------------------------------------------------------
 
-def find_3mf_op(kind):
-    """The 3MF import or export operator of an enabled add-on, or None. Blender 5.1 has none built in."""
-    for mod in ("wm", "import_mesh", "export_mesh", "import_scene", "export_scene"):
-        for name in dir(getattr(bpy.ops, mod)):
-            low = name.lower()
-            if ("3mf" in low or "threemf" in low) and (kind in mod or kind in low):
-                return getattr(getattr(bpy.ops, mod), name)
-    return None
+def import_3mf(path):
+    """Read a 3MF file with threemf.py (no add-on) into 1 mesh object per shell. Numbers are mm."""
+    try:
+        shells = threemf.read_3mf(path)
+    except threemf.ThreeMFError as e:
+        raise LoadError(f"{path}: {e}")
+    for i, (verts, tris) in enumerate(shells):
+        me = bpy.data.meshes.new(f"shell{i}")
+        me.from_pydata(verts, [], tris)
+        me.update()
+        bpy.context.scene.collection.objects.link(bpy.data.objects.new(f"shell{i}", me))
 
 
 def load_scene(path):
@@ -85,11 +91,7 @@ def load_scene(path):
         elif ext in (".gltf", ".glb"):
             bpy.ops.import_scene.gltf(filepath=path)
         elif ext == ".3mf":
-            op = find_3mf_op("import")
-            if op is None:
-                raise LoadError(f"Blender {bpy.app.version_string} has no 3MF importer: "
-                                "enable a 3MF add-on or convert to STL")
-            op(filepath=path)
+            import_3mf(path)
         else:
             raise LoadError(f"unsupported file type {ext}: use .stl .obj .ply .3mf .gltf .glb .blend")
     objs = [o for o in bpy.context.scene.objects if o.type == "MESH" and o.visible_get()]

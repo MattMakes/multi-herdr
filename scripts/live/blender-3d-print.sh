@@ -154,7 +154,7 @@ fix   fix-decimate sphere.stl 0 'r["stats"]["tris"]<=1000' --target-tris 1000
 fix   fix-hollow clean_cube.stl 0 'r["stats"]["volume_mm3"]<8000*0.6 and r["stats"]["shells"]==1' --process resin --hollow-mm 2 --drain-mm 3
 fix   fix-voxel-remesh two_cubes.stl 0 'r["stats"]["shells"]==1' --remesh-voxel-mm 0.5
 
-# 5. The fix never writes to its input, and 3MF needs an exporter.
+# 5. The fix never writes to its input.
 cp "$SCRATCH/in/clean_cube.stl" "$SCRATCH/out/same.stl"
 before=$(shasum "$SCRATCH/out/same.stl")
 out=$(run_blender "$SKILL/print_fix.py" -- --in "$SCRATCH/out/same.stl" --out "$SCRATCH/out/same.stl"; echo "EXIT $?")
@@ -163,13 +163,53 @@ if grep -q '^EXIT 2' <<<"$out" && [ "$before" = "$(shasum "$SCRATCH/out/same.stl
 else
   fail "fix-refuses-input" "$(grep -E '^(ERROR|EXIT)' <<<"$out" | tr '\n' ' ')"
 fi
-out=$(run_blender "$SKILL/print_fix.py" -- --in "$SCRATCH/in/clean_cube.stl" --out "$SCRATCH/out/cube.3mf"; echo "EXIT $?")
-if grep -q '^EXIT 2' <<<"$out" && grep -q 'no 3MF exporter' <<<"$out"; then
-  pass "3mf-export: absent in this Blender, the fix stops with exit 2"
-elif grep -q '^EXIT 0' <<<"$out"; then
-  pass "3mf-export: an enabled exporter wrote cube.3mf"
-else
+# 6. 3MF needs no add-on: write it, check the 3 parts, read it again, compare with the STL export.
+fix   export-stl sphere.stl 0 'r["stats"]["tris"]>100'
+js3="$SCRATCH/out/export-3mf.json"
+out=$(run_blender "$SKILL/print_fix.py" -- --in "$SCRATCH/in/sphere.stl" --out "$SCRATCH/out/sphere.3mf" --json "$js3"; echo "EXIT $?")
+if ! grep -q '^EXIT 0' <<<"$out"; then
   fail "3mf-export" "$(grep -E '^(ERROR|EXIT)' <<<"$out" | tr '\n' ' ')"
+else
+  cmp=$(python3 -I - "$SKILL" "$SCRATCH/out/export-stl.stl" "$SCRATCH/out/sphere.3mf" <<'PY'
+import struct, sys, zipfile
+sys.path.insert(0, sys.argv[1])
+import threemf
+stl, mf = sys.argv[2], sys.argv[3]
+names = set(zipfile.ZipFile(mf).namelist())
+assert set(threemf.PARTS) <= names, f"parts: {sorted(names)}"
+assert 'unit="millimeter"' in zipfile.ZipFile(mf).read(threemf.MODEL_PART).decode(), "unit"
+data = open(stl, "rb").read()
+n = struct.unpack("<I", data[80:84])[0]
+welded, tris = {}, 0
+lo, hi = [1e30] * 3, [-1e30] * 3
+for i in range(n):
+    rec = struct.unpack("<12fH", data[84 + 50 * i:134 + 50 * i])
+    tris += 1
+    for k in range(3):
+        v = tuple(round(c, 5) for c in rec[3 + 3 * k:6 + 3 * k])
+        welded.setdefault(v, len(welded))
+        lo = [min(a, b) for a, b in zip(lo, v)]
+        hi = [max(a, b) for a, b in zip(hi, v)]
+shells = threemf.read_3mf(mf)
+verts = [v for vs, _ in shells for v in vs]
+t3 = sum(len(t) for _, t in shells)
+lo3 = [min(v[i] for v in verts) for i in range(3)]
+hi3 = [max(v[i] for v in verts) for i in range(3)]
+assert t3 == tris, f"triangles {t3} vs STL {tris}"
+assert len(verts) == len(welded), f"vertices {len(verts)} vs STL {len(welded)}"
+for a, b in zip(lo + hi, lo3 + hi3):
+    assert abs(a - b) <= 0.001, f"bbox {lo3} {hi3} vs STL {lo} {hi}"
+print(f"3MF: 3 parts, {len(verts)} vertices, {t3} triangles, bbox within 0.001 mm of the STL")
+PY
+  ) || true
+  if ! [[ $cmp == 3MF:* ]]; then
+    fail "3mf-export" "compare with STL: $cmp"
+  else
+    pass "3mf-export: $cmp"
+    cp "$SCRATCH/out/sphere.3mf" "$SCRATCH/in/sphere.3mf"
+    tris=$(python3 -I -c 'import json,sys; print(json.load(open(sys.argv[1]))["stats"]["tris"])' "$SCRATCH/out/export-stl.json")
+    check check-3mf-input sphere.3mf 0 "r[\"stats\"][\"tris\"]==$tris and r[\"units_source\"].startswith(\"3MF\")"
+  fi
 fi
 
 rm -rf "$SCRATCH"/out/*.stl "$SCRATCH"/out/*.3mf

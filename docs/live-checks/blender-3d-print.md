@@ -1,7 +1,8 @@
 # Live check: blender-3d-print
 
 The `blender-3d-print` skill's 2 scripts, `print_check.py` and
-`print_fix.py`, run headless on the installed Blender. Each fixture fails the
+`print_fix.py`, run headless on the installed Blender. They share the
+standard-library module `threemf.py`, which reads and writes 3MF. Each fixture fails the
 check it targets, and the fix makes it pass.
 
 ## How to run
@@ -48,4 +49,6 @@ UV sphere; a 20 x 20 mm open sheet.
 | fix-hollow | `--process resin --hollow-mm 2 --drain-mm 3` | Blender 5.1.2 | PASS | exit 0, 1 shell, volume under 60 % of the cube |
 | fix-voxel-remesh | `--remesh-voxel-mm 0.5` | Blender 5.1.2 | PASS | exit 0, 1 shell |
 | fix-refuses-input | `print_fix.py` never writes its input | Blender 5.1.2 | PASS | exit 2, input checksum unchanged |
-| 3mf-export | 3MF needs an add-on exporter, `SKILL.md` Export | Blender 5.1.2 | PASS | no 3MF operator in Blender 5.1.2, exit 2 |
+| export-stl | binary STL export, the reference for 3MF | Blender 5.1.2 | PASS | exit 0, 3968 triangles |
+| 3mf-export | `print_fix.py --out x.3mf` needs no add-on: 3 parts, `unit="millimeter"`, vertices, triangles and bounding box match the STL within 0.001 mm, `SKILL.md` Export | Blender 5.1.2 | PASS | 3 parts, 1986 vertices, 3968 triangles |
+| check-3mf-input | `print_check.py --in x.3mf` reads the 3MF with `threemf.py` | Blender 5.1.2 | PASS | exit 0, 3968 triangles, units source 3MF |
