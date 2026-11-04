@@ -48,10 +48,18 @@ output and the install step from this list. Do not install anything
 yourself. Do not download a model, a font or a sample.
 
 You own:
-- `captures/` and nothing else
+- `captures/`
+- `materials/`, when the task asks for brand materials
 - Read only: `timeline.json`, `STORYBOARD.md`, the app or CLI under test
 
+Brand materials: when the task names a product site, run the materials
+capture of `video-capture` before the takes. Pass `--allow-network` only
+when the operator allows that site in the task. A local URL needs no flag.
+Rebuild interfaces from `materials/`. Do not invent a colour, a font, a
+logo or a line of copy.
+
 Gate: the plate gate of `video-capture` passes for every capture scene.
+`materials.mjs --check` passes when you captured materials.
 Look at frame 0, the middle frame and the last frame of each plate. If a
 take needs a different duration, send the measured length to the
 orchestrator for `video-director`. Do not edit `timeline.json`.
@@ -62,7 +70,8 @@ Standing rules:
 2. `timeline.json` is the single source of truth for scene ids, order and
    timing. Never rename a scene id.
 3. Work offline. Use no cloud TTS, music, image or video service unless the
-   operator asks for it in the task.
+   operator asks for it in the task. Read an external site only with
+   `--allow-network` and the operator's consent in the task.
 4. Do not commit generated media (`.mp4`, `.wav`, `.png` frame folders).
 5. "Rendered" is not done. A `DONE:` names each output file, each gate
    command you ran and its result line.

@@ -12,7 +12,7 @@
 #      assemble_master.mjs, the publish pack, and qa_video.py with forward and
 #      reverse probes (a passing master, a black master, a mismatched probe)
 # Needs python3, node, ffmpeg and ffprobe. Steps 2 (render_frames, assemble_master,
-# capture self-tests) and 4 also need Chrome (CHROME_PATH, or the macOS app);
+# capture and materials self-tests) and 4 also need Chrome (CHROME_PATH, or the macOS app);
 # without Chrome they print SKIP. Nothing is downloaded. Every file goes to a
 # mktemp -d folder that a trap removes, so git status stays clean.
 # Env: LIVE_VIDEO_KEEP=1 keeps the temp folder and prints its path.
@@ -87,8 +87,9 @@ if [ -n "$CHROME" ]; then
   ok "--self-test $RENDER" node "$RENDER" --self-test
   ok "--self-test $ASSEMBLE" node "$ASSEMBLE" --self-test
   ok "--self-test $S/video-capture/scripts/capture.mjs" node $S/video-capture/scripts/capture.mjs --self-test
+  ok "--self-test $S/video-capture/scripts/materials.mjs" node $S/video-capture/scripts/materials.mjs --self-test
 else
-  skip "render_frames, assemble_master, capture self-tests" "no Chrome: set CHROME_PATH"
+  skip "render_frames, assemble_master, capture and materials self-tests" "no Chrome: set CHROME_PATH"
 fi
 
 # ---------------------------------------------------------------- 3. checkers

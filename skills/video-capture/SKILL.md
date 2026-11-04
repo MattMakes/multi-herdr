@@ -1,6 +1,6 @@
 ---
 name: video-capture
-description: Use when a video project's timeline.json has capture scenes and needs deterministic browser or terminal footage. Drives headless Chrome over the DevTools Protocol at the target size, 60 fps and deviceScaleFactor 2 with a locked clock, seeded random, local fonts and mocked network; choreographs a spline cursor, click ripples and human-cadence typing; writes captures/<scene-id>.mp4 plus captures/<scene-id>.json telemetry (cursor, clicks, keys, zoom_keyframes, speed_ramps); speed-ramps dead time of 500 ms or more; and proves each plate with ffprobe and ffmpeg gates.
+description: Use when a video project's timeline.json has capture scenes and needs deterministic browser or terminal footage. Drives headless Chrome over the DevTools Protocol at the target size, 60 fps and deviceScaleFactor 2 with a locked clock, seeded random, local fonts and mocked network; choreographs a spline cursor, click ripples and human-cadence typing; writes captures/<scene-id>.mp4 plus captures/<scene-id>.json telemetry (cursor, clicks, keys, zoom_keyframes, speed_ramps); speed-ramps dead time of 500 ms or more; proves each plate with ffprobe and ffmpeg gates; and captures a product page's colours, fonts, logos, screenshots and wording into materials/ with a source list.
 ---
 
 # Deterministic browser and terminal capture
@@ -23,7 +23,8 @@ API (`h`) and the gotchas.
   `captures/<scene-id>.json`, and the take script
   `captures/src/<scene-id>.mjs`. The scene's `plate` in `timeline.json` is
   `captures/<scene-id>.mp4`.
-- Do not write outside `captures/`. Do not edit `timeline.json`. If a take
+- Brand materials, when the task asks for them: `materials/` (see below).
+- Do not write outside `captures/` and `materials/`. Do not edit `timeline.json`. If a take
   needs a different duration, tell the director the measured length.
 
 ## Tools
@@ -191,8 +192,28 @@ It prints 1 JSON line: `{"scene_id", "duration_sec", "fails": [...]}`.
 Also run the take 2 times and compare `ffmpeg -i <plate> -f framemd5 -`
 output. Equal hashes prove the take is deterministic.
 
+## Brand and material capture
+
+When the brief names a product site, capture its materials before you
+write a take, so the interface is rebuilt from them and not invented:
+
+```sh
+node "<skill-dir>/scripts/materials.mjs" . <url>
+node "<skill-dir>/scripts/materials.mjs" --check .
+```
+
+It writes `materials/` with `first-screen.png`, `full-page.png`,
+`colors.json`, `fonts.json`, `wording.md`, `logo-<n>.<ext>` and
+`materials.md`, which lists every file with its source URL. A local URL
+(`file:`, `localhost`, `127.0.0.1`) needs no flag. Any other site needs
+`--allow-network`: pass it only when the operator allows that site in the
+task. Without the flag, requests to other hosts are blocked and listed.
+`<skill-dir>/references/materials.md` explains each file and the gotchas.
+
 ## Hand-off
 
 Report to the orchestrator: each plate path, its gate JSON line, the
 telemetry counts (clicks, keys, zoom keyframes, speed ramps), and any scene
-whose take does not fit its `duration_sec`, with the measured length.
+whose take does not fit its `duration_sec`, with the measured length. When
+you captured materials, also report the `materials.md` path and the
+`--check` JSON line.
