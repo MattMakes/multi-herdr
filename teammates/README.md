@@ -261,6 +261,9 @@ latest stable release on 2026-10-04 (4.7.2).
 | teammate | phase | agent, model, effort | use for |
 |---|---|---|---|
 | `blender-artist` | implementation | claude, opus, medium | Blender models, retopology, UVs, collision, LODs, rigs; FBX exports for the UE team |
+| `blender-builder` | implementation | claude, opus, medium | Blender assets for any target (Godot, Unity, Unreal, Roblox, web, render): model, UV, PBR, bake, export |
+| `blender-qa` | validation | claude, sonnet, high | Blender asset QA: topology, UVs, scale, materials, budgets, exports; reports numbers and renders, fixes nothing |
+| `blender-3d-printer` | implementation | claude, opus, medium | Cleans Blender, STL, 3MF and OBJ models for FDM and resin printing: watertight, walls, overhangs, scale, export |
 
 `offer_when: ["*.blend", "*.uproject"]`. It drives Blender through the
 official Blender Lab MCP server, pinned by commit, with no telemetry and no

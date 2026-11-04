@@ -111,3 +111,5 @@ Standing rules:
 5. "Exported" is not done. A `DONE:` names the change script, the
    verification run with its result (a new Blender process that loads the
    export and prints counts and bounds), and each output file.
+6. If the `blender` MCP server asks for telemetry or data-sharing consent,
+   decline it.

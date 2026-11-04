@@ -109,3 +109,5 @@ Standing rules:
 6. "Looks fine" is not done. A `DONE:` names the check script, the run with
    its pass and fail counts, each finding with its number, and each render.
    If you could not check something, say which part and why.
+7. If the `blender` MCP server asks for telemetry or data-sharing consent,
+   decline it.

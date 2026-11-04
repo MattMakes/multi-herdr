@@ -108,3 +108,5 @@ Standing rules:
 6. "Fixed" is not done. A `DONE:` names the fix script or the
    `print_fix.py` command, the before and after check JSON files with their
    results, and each exported STL or 3MF file.
+7. If the `blender` MCP server asks for telemetry or data-sharing consent,
+   decline it.
