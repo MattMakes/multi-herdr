@@ -13,340 +13,351 @@
  * seek(t) is a pure function of t: it computes every animated property from
  * t alone and writes it, so frames can be rendered in any order.
  */
-(function (root) {
-  "use strict";
+{
+  // A block, not a function: every name below is block-scoped with const.
+
+  const fail = function (message) { throw new Error("SeekTimeline: " + message); };
+  const has = function (obj, key) { return Object.prototype.hasOwnProperty.call(obj, key); };
+  const orDefault = function (v, d) { return v === undefined || isNaN(v) ? d : v; };
+  const clamp = function (x, lo, hi) { return Math.min(hi, Math.max(lo, x)); };
+  const round4 = function (x) { return +x.toFixed(4); };
 
   // ------------------------------------------------------------ easing
-  // Each family is an "in" curve. out(p) = 1 - in(1 - p), and inOut joins
-  // the two halves.
-  var TAU = Math.PI * 2;
-  var FAMILIES = {
-    power1: function () { return function (p) { return p * p; }; },
-    power2: function () { return function (p) { return p * p * p; }; },
-    power3: function () { return function (p) { return p * p * p * p; }; },
-    power4: function () { return function (p) { return p * p * p * p * p; }; },
-    sine: function () { return function (p) { return 1 - Math.cos(p * Math.PI / 2); }; },
-    expo: function () { return function (p) { return p === 0 ? 0 : Math.pow(2, 10 * (p - 1)); }; },
-    back: function (overshoot) {
-      var s = overshoot === undefined ? 1.70158 : overshoot;
-      return function (p) { return p * p * ((s + 1) * p - s); };
-    },
-    elastic: function (amplitude, period) {
-      var a = Math.max(1, amplitude === undefined ? 1 : amplitude);
-      var per = period === undefined ? 0.3 : period;
-      var s = per / TAU * Math.asin(1 / a);
-      return function (p) {
-        if (p === 0 || p === 1) return p;
-        return -a * Math.pow(2, 10 * (p - 1)) * Math.sin((p - 1 - s) * TAU / per);
-      };
+  // A family makes an "in" curve. out(p) = 1 - in(1 - p); inOut joins halves.
+  const power = function (n, p) { return Math.pow(p, n); };
+  const sineIn = function (p) { return 1 - Math.cos(p * Math.PI / 2); };
+  const expoIn = function (p) { return p === 0 ? 0 : Math.pow(2, 10 * (p - 1)); };
+  const backIn = function (s, p) { return p * p * ((s + 1) * p - s); };
+  const elasticIn = function (a, period, p) {
+    var s = period / (2 * Math.PI) * Math.asin(1 / a);
+    var wave = -a * Math.pow(2, 10 * (p - 1)) * Math.sin((p - 1 - s) * 2 * Math.PI / period);
+    return p === 0 || p === 1 ? p : wave;
+  };
+
+  const FAMILIES = {
+    power1: function () { return power.bind(null, 2); },
+    power2: function () { return power.bind(null, 3); },
+    power3: function () { return power.bind(null, 4); },
+    power4: function () { return power.bind(null, 5); },
+    sine: function () { return sineIn; },
+    expo: function () { return expoIn; },
+    back: function (args) { return backIn.bind(null, orDefault(args[0], 1.70158)); },
+    elastic: function (args) {
+      return elasticIn.bind(null, Math.max(1, orDefault(args[0], 1)), orDefault(args[1], 0.3));
     }
   };
 
-  function variant(easeIn, kind) {
-    if (kind === "in") return easeIn;
-    if (kind === "out") return function (p) { return 1 - easeIn(1 - p); };
-    return function (p) {
-      return p < 0.5 ? easeIn(p * 2) / 2 : 1 - easeIn((1 - p) * 2) / 2;
-    };
-  }
+  const easeOut = function (easeIn, p) { return 1 - easeIn(1 - p); };
+  const easeInOut = function (easeIn, p) { return p < 0.5 ? easeIn(p * 2) / 2 : 1 - easeIn((1 - p) * 2) / 2; };
+  const VARIANTS = {
+    in: function (easeIn) { return easeIn; },
+    out: function (easeIn) { return easeOut.bind(null, easeIn); },
+    inOut: function (easeIn) { return easeInOut.bind(null, easeIn); }
+  };
 
-  // cubic-bezier(x1, y1, x2, y2) as in CSS: solve x(u) = p, return y(u).
-  function cubicBezier(x1, y1, x2, y2) {
-    function curve(a, b, u) {
-      var v = 1 - u;
-      return 3 * v * v * u * a + 3 * v * u * u * b + u * u * u;
-    }
-    function slope(a, b, u) {
-      var v = 1 - u;
-      return 3 * v * v * a + 6 * v * u * (b - a) + 3 * u * u * (1 - b);
-    }
-    return function (p) {
-      if (p <= 0 || p >= 1) return p <= 0 ? 0 : 1;
-      var u = p;
-      for (var i = 0; i < 8; i++) {
-        var d = slope(x1, x2, u);
-        if (Math.abs(d) < 1e-7) break;
-        var next = u - (curve(x1, x2, u) - p) / d;
-        if (next < 0 || next > 1) break;
-        u = next;
-      }
-      if (Math.abs(curve(x1, x2, u) - p) > 1e-7) {
-        var lo = 0, hi = 1;
-        for (var j = 0; j < 60; j++) {
-          u = (lo + hi) / 2;
-          if (curve(x1, x2, u) < p) lo = u; else hi = u;
-        }
-      }
-      return curve(y1, y2, u);
-    };
-  }
+  // cubic-bezier(x1, y1, x2, y2) as in CSS: find u with x(u) = p, return y(u).
+  // x(u) rises from 0 to 1, so bisection finds u.
+  const bezier = function (a, b, u) {
+    var v = 1 - u;
+    return 3 * v * v * u * a + 3 * v * u * u * b + u * u * u;
+  };
+  // goal is { x1, x2, p }. Each step halves the range [lo, hi] that holds u.
+  const bisectBezierX = function (goal, lo, hi, steps) {
+    var mid = (lo + hi) / 2;
+    var below = bezier(goal.x1, goal.x2, mid) < goal.p;
+    return steps === 0 ? mid : bisectBezierX(goal, below ? mid : lo, below ? hi : mid, steps - 1);
+  };
+  const solveBezierX = function (x1, x2, p) { return bisectBezierX({ x1: x1, x2: x2, p: p }, 0, 1, 50); };
+  const bezierEase = function (x1, y1, x2, y2, p) {
+    var inside = p > 0 && p < 1;
+    return inside ? bezier(y1, y2, solveBezierX(x1, x2, p)) : clamp(Math.round(p), 0, 1);
+  };
 
-  var easeCache = {};
-  function ease(spec) {
+  const linear = function (p) { return p; };
+  const EASE_NAME = /^([\w-]+)(?:\.(in|out|inOut))?(?:\(([^)]*)\))?$/;
+
+  const familyEase = function (m, args) {
+    return has(FAMILIES, m[1]) ? VARIANTS[m[2] || "out"](FAMILIES[m[1]](args)) : null;
+  };
+  const cubicBezierEase = function (m, args) {
+    return args.length === 4 ? bezierEase.bind(null, args[0], args[1], args[2], args[3]) : null;
+  };
+  const NAMED_EASES = {
+    linear: function () { return linear; },
+    none: function () { return linear; },
+    "cubic-bezier": cubicBezierEase
+  };
+  const parseEase = function (name) {
+    var m = EASE_NAME.exec(name) || [];
+    var args = m[3] ? m[3].split(",").map(Number) : [];
+    var make = has(NAMED_EASES, m[1]) ? NAMED_EASES[m[1]] : familyEase;
+    return make(m, args) || fail("unknown ease " + JSON.stringify(name));
+  };
+
+  const easeCache = Object.create(null);
+  const ease = function (spec) {
     if (typeof spec === "function") return spec;
     var name = String(spec === undefined ? "power1.out" : spec).replace(/\s+/g, "");
-    if (easeCache[name]) return easeCache[name];
-    var fn;
-    var args = [];
-    var m = /^([\w-]+)(?:\.(in|out|inOut))?(?:\(([^)]*)\))?$/.exec(name);
-    if (m && m[3]) args = m[3].split(",").map(Number);
-    if (name === "linear" || name === "none") {
-      fn = function (p) { return p; };
-    } else if (m && m[1] === "cubic-bezier" && args.length === 4) {
-      fn = cubicBezier(args[0], args[1], args[2], args[3]);
-    } else if (m && FAMILIES[m[1]]) {
-      fn = variant(FAMILIES[m[1]].apply(null, args), m[2] || "out");
-    } else {
-      throw new Error("SeekTimeline: unknown ease " + JSON.stringify(spec));
-    }
-    easeCache[name] = fn;
-    return fn;
-  }
+    easeCache[name] = easeCache[name] || parseEase(name);
+    return easeCache[name];
+  };
 
   // ------------------------------------------------------------ values
-  // A value is { n: [numbers], unit } or { c: [r, g, b, a] }.
-  var NAMED = { transparent: [0, 0, 0, 0], black: [0, 0, 0, 1], white: [255, 255, 255, 1] };
+  // A value is { n: number, unit: string } or { c: [r, g, b, a] }.
+  const NAMED = { transparent: [0, 0, 0, 0], black: [0, 0, 0, 1], white: [255, 255, 255, 1] };
 
-  function parseColor(s) {
-    if (NAMED[s]) return NAMED[s].slice();
+  const hexColor = function (h) {
+    var full = h.length < 6 ? h.replace(/./g, "$&$&") : h;
+    var c = [0, 2, 4, 6].map(function (i) { return parseInt(full.slice(i, i + 2) || "ff", 16); });
+    c[3] /= 255;
+    return full.length === 6 || full.length === 8 ? c : null;
+  };
+  const rgbColor = function (body) {
+    var n = body.split(/[\s,/]+/).filter(Boolean).map(Number);
+    return [n[0], n[1], n[2], n.length > 3 ? n[3] : 1];
+  };
+  const namedColor = function (s) { return has(NAMED, s) ? NAMED[s].slice() : null; };
+  const parseColor = function (s) {
     var hex = /^#([0-9a-f]{3,8})$/i.exec(s);
-    if (hex) {
-      var h = hex[1];
-      if (h.length === 3 || h.length === 4) h = h.replace(/./g, "$&$&");
-      if (h.length !== 6 && h.length !== 8) return null;
-      var c = [0, 2, 4].map(function (i) { return parseInt(h.slice(i, i + 2), 16); });
-      c.push(h.length === 8 ? parseInt(h.slice(6, 8), 16) / 255 : 1);
-      return c;
-    }
     var fn = /^rgba?\(([^)]+)\)$/i.exec(s);
-    if (fn) {
-      var parts = fn[1].split(/[\s,/]+/).filter(Boolean).map(Number);
-      return [parts[0], parts[1], parts[2], parts.length > 3 ? parts[3] : 1];
-    }
-    return null;
-  }
+    return hex ? hexColor(hex[1]) : fn ? rgbColor(fn[1]) : namedColor(s);
+  };
 
-  function parseValue(v) {
-    if (typeof v === "number") return { n: [v], unit: "" };
+  // A value from a string or number, or null when it is not a colour or a number.
+  const NUMBER = /^(-?\d*\.?\d+(?:e[+-]?\d+)?)([a-z%]*)$/i;
+  const readValue = function (v) {
     var s = String(v).trim();
     var c = parseColor(s);
-    if (c) return { c: c };
-    var m = /^(-?\d*\.?\d+(?:e[+-]?\d+)?)([a-z%]*)$/i.exec(s);
-    if (m) return { n: [Number(m[1])], unit: m[2] };
-    throw new Error("SeekTimeline: cannot animate the value " + JSON.stringify(v));
-  }
+    var m = NUMBER.exec(s);
+    return c ? { c: c } : m ? { n: Number(m[1]), unit: m[2] } : null;
+  };
+  const parseValue = function (v) { return readValue(v) || fail("cannot animate the value " + JSON.stringify(v)); };
+  const tryParse = function (raw) {
+    var empty = raw === undefined || raw === null || raw === "";
+    return empty ? null : readValue(raw);
+  };
 
-  function mix(a, b, k) {
-    if (b.c) {
-      var from = a.c || b.c;
-      return { c: b.c.map(function (x, i) { return from[i] + (x - from[i]) * k; }) };
-    }
-    var f = a.n ? a.n[0] : b.n[0];
-    return { n: [f + (b.n[0] - f) * k], unit: b.unit || a.unit || "" };
-  }
+  const lerp = function (a, b, k) { return a + (b - a) * k; };
+  const mixColor = function (a, b, k) {
+    return b.map(function (x, i) { return lerp(a[i], x, k); });
+  };
+  const mixNumber = function (a, b, k) {
+    return { n: lerp(a.n === undefined ? b.n : a.n, b.n, k), unit: b.unit || a.unit };
+  };
+  const mix = function (a, b, k) { return b.c ? { c: mixColor(a.c || b.c, b.c, k) } : mixNumber(a, b, k); };
 
-  function format(v, defaultUnit) {
-    if (v.c) {
-      var c = v.c.map(function (x, i) { return i < 3 ? Math.round(Math.min(255, Math.max(0, x))) : +Math.min(1, Math.max(0, x)).toFixed(4); });
-      return "rgba(" + c.join(", ") + ")";
-    }
-    return +v.n[0].toFixed(4) + (v.unit || defaultUnit || "");
-  }
+  const channel = function (x, i) { return i < 3 ? Math.round(clamp(x, 0, 255)) : round4(clamp(x, 0, 1)); };
+  const format = function (v, defaultUnit) {
+    var color = v.c && "rgba(" + v.c.map(channel).join(", ") + ")";
+    return color || round4(v.n) + (v.unit || defaultUnit || "");
+  };
 
   // ------------------------------------------------------------ properties
-  var TRANSFORM = { x: 0, y: 0, scale: 1, scaleX: 1, scaleY: 1, rotate: 0, skewX: 0, skewY: 0 };
-  var UNITLESS = { opacity: 1, zIndex: 1, fontWeight: 1, lineHeight: 1, flexGrow: 1, flexShrink: 1, order: 1 };
-  var RESERVED = { duration: 1, ease: 1, stagger: 1, attr: 1, immediateRender: 1 };
+  // A track animates 1 property of 1 target. Its kind says how to read and
+  // write it: an element style, an attribute, a transform part, or a plain
+  // object property (for Canvas drawing).
+  const UNITLESS = { opacity: 1, zIndex: 1, fontWeight: 1, lineHeight: 1, flexGrow: 1, flexShrink: 1, order: 1 };
 
-  function isElement(t) { return t && typeof t === "object" && t.style !== undefined; }
+  const computedStyle = function (el, k) {
+    var gcs = globalThis.getComputedStyle;
+    return typeof gcs === "function" ? gcs(el)[k] : undefined;
+  };
+  const putAttr = function (el, k, raw) {
+    return raw === null ? el.removeAttribute(k) : el.setAttribute(k, raw);
+  };
 
-  // What a property holds before the timeline touches it, read once: the
-  // raw value to restore, and the value to tween from.
-  function readRaw(target, kind, prop) {
-    if (kind === "attr") return target.getAttribute(prop);
-    if (kind === "style") return target.style[prop];
-    return kind === "prop" ? target[prop] : null;
-  }
-
-  function restore(tr) {
-    if (tr.kind === "attr" && tr.raw === null) tr.target.removeAttribute(tr.prop);
-    else if (tr.kind === "attr") tr.target.setAttribute(tr.prop, tr.raw);
-    else if (tr.kind === "style") tr.target.style[tr.prop] = tr.raw || "";
-    else if (tr.kind === "prop") tr.target[tr.prop] = tr.raw;
-  }
-
-  function readBase(target, kind, prop) {
-    var raw;
-    if (kind === "transform") return { n: [TRANSFORM[prop]], unit: "" };
-    if (kind === "attr") raw = target.getAttribute(prop);
-    else if (kind === "prop") raw = target[prop];
-    else {
-      raw = target.style[prop];
-      if ((raw === undefined || raw === "") && typeof root.getComputedStyle === "function") {
-        raw = root.getComputedStyle(target)[prop];
-      }
+  const TRANSFORM = { x: 0, y: 0, scale: 1, scaleX: 1, scaleY: 1, rotate: 0, skewX: 0, skewY: 0 };
+  const KINDS = {
+    attr: {
+      raw: function (el, k) { return el.getAttribute(k); },
+      base: function (el, k) { return tryParse(el.getAttribute(k)); },
+      put: putAttr,
+      text: function (v) { return format(v); }
+    },
+    style: {
+      raw: function (el, k) { return el.style[k]; },
+      base: function (el, k) { return tryParse(el.style[k]) || tryParse(computedStyle(el, k)); },
+      put: function (el, k, raw) { el.style[k] = raw || ""; },
+      text: function (v, k) { return format(v, has(UNITLESS, k) ? "" : "px"); }
+    },
+    prop: {
+      raw: function (el, k) { return el[k]; },
+      base: function (el, k) { return tryParse(el[k]); },
+      put: function (el, k, raw) { el[k] = raw; },
+      text: function (v) { return v.c ? format(v) : v.n; }
+    },
+    transform: {
+      raw: function () { return null; },
+      base: function (el, k) { return { n: TRANSFORM[k], unit: "" }; }
     }
-    if (raw === undefined || raw === null || raw === "") return null;
-    try { return parseValue(raw); } catch (e) { return null; }
-  }
+  };
 
-  function write(target, kind, prop, v) {
-    if (kind === "attr") target.setAttribute(prop, format(v));
-    else if (kind === "prop") target[prop] = v.c ? format(v) : v.n[0];
-    else target.style[prop] = format(v, UNITLESS[prop] ? "" : "px");
-  }
+  const defaultTransform = function () {
+    var parts = {};
+    Object.keys(TRANSFORM).forEach(function (k) { parts[k] = KINDS.transform.base(null, k); });
+    return parts;
+  };
+  const transformString = function (t) {
+    var sx = round4(t.scaleX.n * t.scale.n), sy = round4(t.scaleY.n * t.scale.n);
+    var move = "translate(" + format(t.x, "px") + ", " + format(t.y, "px") + ")";
+    var turn = " rotate(" + format(t.rotate, "deg") + ") skew(" + format(t.skewX, "deg") + ", " + format(t.skewY, "deg") + ")";
+    return move + turn + " scale(" + sx + ", " + sy + ")";
+  };
 
-  function transformString(t) {
-    var sx = t.scaleX.n[0] * t.scale.n[0], sy = t.scaleY.n[0] * t.scale.n[0];
-    return "translate(" + format(t.x, "px") + ", " + format(t.y, "px") + ") rotate(" + format(t.rotate, "deg") +
-      ") skew(" + format(t.skewX, "deg") + ", " + format(t.skewY, "deg") + ") scale(" + +sx.toFixed(4) + ", " + +sy.toFixed(4) + ")";
-  }
+  const isElement = function (t) { return !!t && typeof t === "object" && t.style !== undefined; };
+  const isList = function (t) { return !!t && typeof t === "object" && typeof t.length === "number" && !isElement(t); };
+  const toTargets = function (targets) {
+    var found = typeof targets === "string" ? globalThis.document.querySelectorAll(targets) : targets;
+    return isList(found) ? Array.from(found) : [found];
+  };
 
-  function toTargets(targets) {
-    if (typeof targets === "string") return Array.prototype.slice.call(root.document.querySelectorAll(targets));
-    if (Array.isArray(targets)) return targets.slice();
-    if (targets && typeof targets.length === "number" && !isElement(targets) && typeof targets !== "function") {
-      return Array.prototype.slice.call(targets);
-    }
-    return [targets];
-  }
+  const RESERVED = { duration: 1, ease: 1, stagger: 1, attr: 1 };
+  const kindOf = function (target, k) {
+    var elementKind = has(TRANSFORM, k) ? "transform" : "style";
+    return isElement(target) ? elementKind : "prop";
+  };
+  // The [kind, prop, value] list a vars object animates on 1 target.
+  const entries = function (target, vars) {
+    var own = Object.keys(vars || {}).filter(function (k) { return !has(RESERVED, k); });
+    var attr = (vars && vars.attr) || {};
+    var plain = own.map(function (k) { return [kindOf(target, k), k, vars[k]]; });
+    return plain.concat(Object.keys(attr).map(function (k) { return ["attr", k, attr[k]]; }));
+  };
 
-  // The list of (kind, prop, value) a vars object animates.
-  function entries(target, vars) {
-    var out = [];
-    Object.keys(vars || {}).forEach(function (k) {
-      if (RESERVED[k]) return;
-      var kind = !isElement(target) ? "prop" : TRANSFORM.hasOwnProperty(k) ? "transform" : "style";
-      out.push([kind, k, vars[k]]);
-    });
-    Object.keys((vars && vars.attr) || {}).forEach(function (k) { out.push(["attr", k, vars.attr[k]]); });
-    return out;
-  }
+  const STAGGER_FROM = {
+    start: function (i) { return i; },
+    end: function (i, n) { return n - 1 - i; },
+    center: function (i, n) { return Math.abs(i - (n - 1) / 2); }
+  };
+  const staggerOffset = function (stagger, i, n) {
+    var s = stagger && typeof stagger === "object" ? stagger : { each: stagger };
+    var from = STAGGER_FROM[s.from] || STAGGER_FROM.start;
+    return (s.each || 0) * from(i, n);
+  };
 
-  function staggerOffset(stagger, i, n) {
-    if (!stagger) return 0;
-    var each = typeof stagger === "number" ? stagger : stagger.each || 0;
-    var from = typeof stagger === "object" ? stagger.from : "start";
-    if (from === "end") return (n - 1 - i) * each;
-    if (from === "center") return Math.abs(i - (n - 1) / 2) * each;
-    return i * each;
-  }
+  // ------------------------------------------------------------ track values
+  const byStart = function (a, b) { return a.start - b.start || a.order - b.order; };
+
+  const tweenAt = function (w, from, t) {
+    var p = w.duration > 0 ? clamp((t - w.start) / w.duration, 0, 1) : 1;
+    return mix(from, w.to, p >= 1 ? 1 : w.ease(p));
+  };
+  // A tween without a from value starts at the value its track has at its
+  // start, so a later tween takes over smoothly from an earlier one.
+  const chain = function (base, state, w) {
+    var from = w.from || (state ? tweenAt(state.w, state.from, w.start) : base) || w.to;
+    return { w: w, from: from };
+  };
+  // Before its first tween, a track shows that tween's from value, else its base.
+  const valueAt = function (tr, t) {
+    var started = tr.tweens.filter(function (w) { return w.start <= t; }).sort(byStart);
+    var state = started.reduce(chain.bind(null, tr.base), null);
+    return state ? tweenAt(state.w, state.from, t) : tr.tweens.slice().sort(byStart)[0].from || tr.base;
+  };
+
+  // A track with no value restores the raw value it had before the timeline.
+  const putValue = function (tr, v) {
+    var kind = KINDS[tr.kind];
+    kind.put(tr.target, tr.prop, v ? kind.text(v, tr.prop) : tr.raw);
+  };
+  const setTransformPart = function (tr, v, transforms) {
+    var parts = transforms.get(tr.target) || defaultTransform();
+    parts[tr.prop] = v;
+    transforms.set(tr.target, parts);
+  };
+  const applyTrack = function (tr, v, transforms) {
+    return tr.kind === "transform" ? setTransformPart(tr, v, transforms) : putValue(tr, v);
+  };
 
   // ------------------------------------------------------------ timeline
-  function timeline(options) {
-    options = options || {};
-    var tracks = [];      // one per (target, kind, prop): { target, kind, prop, base, tweens }
-    var labels = {};
-    var end = 0;          // end time of the whole timeline, in seconds
-    var last = { start: 0, end: 0 };
-    var order = 0;
-    var tl = {};
+  // position: undefined (the end), seconds, "+=s", "-=s", "<" (start of the
+  // previous add), ">" (its end), or a label, each optionally followed by
+  // "+=s" or "-=s".
+  const POSITION = /^(<|>|[A-Za-z_][\w-]*)?(?:([+-])=(\d*\.?\d+))?$/;
+  const ANCHORS = {
+    "<": function (tl) { return tl.last.start; },
+    ">": function (tl) { return tl.last.end; }
+  };
+  const offset = function (sign, amount) { return sign ? (sign === "-" ? -1 : 1) * Number(amount) : 0; };
 
-    function track(target, kind, prop) {
-      for (var i = 0; i < tracks.length; i++) {
-        var t = tracks[i];
-        if (t.target === target && t.kind === kind && t.prop === prop) return t;
-      }
-      var created = { target: target, kind: kind, prop: prop, base: readBase(target, kind, prop), raw: readRaw(target, kind, prop), tweens: [] };
-      tracks.push(created);
-      return created;
-    }
+  const Timeline = function (options) {
+    this.tracks = [];
+    this.labelTimes = Object.create(null);
+    this.end = 0;
+    this.last = { start: 0, end: 0 };
+    this.order = 0;
+    this.onSeek = typeof options.onSeek === "function" ? options.onSeek : function () {};
+  };
 
-    // position: undefined (the end), seconds, "+=s", "-=s", "<", ">", "label", or any of
-    // "<", ">", "label" followed by "+=s" or "-=s".
-    function resolve(position) {
-      if (position === undefined) return end;
-      if (typeof position === "number") return position;
-      var m = /^(<|>|[A-Za-z_][\w-]*)?(?:([+-])=(\d*\.?\d+))?$/.exec(String(position).trim());
-      if (!m) throw new Error("SeekTimeline: bad position " + JSON.stringify(position));
-      var at = end;
-      if (m[1] === "<") at = last.start;
-      else if (m[1] === ">") at = last.end;
-      else if (m[1] !== undefined) {
-        if (!labels.hasOwnProperty(m[1])) throw new Error("SeekTimeline: unknown label " + m[1]);
-        at = labels[m[1]];
-      }
-      if (m[2]) at += (m[2] === "-" ? -1 : 1) * Number(m[3]);
-      return at;
-    }
+  Timeline.prototype._anchor = function (name) {
+    var at = name === undefined ? this.end : has(ANCHORS, name) ? ANCHORS[name](this) : this.labelTimes[name];
+    return at === undefined ? fail("unknown label " + name) : at;
+  };
 
-    function add(targets, fromVars, toVars, position, isSet) {
-      var list = toTargets(targets);
-      var start = resolve(position);
-      var duration = isSet ? 0 : toVars.duration === undefined ? 0.5 : toVars.duration;
-      var easeFn = ease(toVars.ease);
-      var groupEnd = start;
-      list.forEach(function (target, i) {
-        var at = start + staggerOffset(toVars.stagger, i, list.length);
-        var from = {};
-        entries(target, fromVars).forEach(function (e) { from[e[0] + ":" + e[1]] = parseValue(e[2]); });
-        entries(target, toVars).forEach(function (e) {
-          track(target, e[0], e[1]).tweens.push({
-            start: at, duration: duration, ease: easeFn, order: order++,
-            from: from[e[0] + ":" + e[1]], to: parseValue(e[2])
-          });
-        });
-        groupEnd = Math.max(groupEnd, at + duration);
-      });
-      last = { start: start, end: groupEnd };
-      end = Math.max(end, groupEnd);
-      return tl;
-    }
+  Timeline.prototype._resolve = function (position) {
+    return typeof position === "number" ? position : this._resolveText(String(position === undefined ? "" : position).trim());
+  };
 
-    function tweenAt(w, from, t) {
-      var p = w.duration > 0 ? Math.min(1, Math.max(0, (t - w.start) / w.duration)) : 1;
-      return mix(from, w.to, p >= 1 ? 1 : w.ease(p));
-    }
+  Timeline.prototype._resolveText = function (text) {
+    var m = POSITION.exec(text);
+    return m ? this._anchor(m[1]) + offset(m[2], m[3]) : fail("bad position " + JSON.stringify(text));
+  };
 
-    // The value of one track at time t. Tweens run in start order. A tween
-    // without a from value starts at the value its track has at its start, so
-    // a later tween takes over smoothly from an earlier one. Before the first
-    // tween the track shows that tween's from value, else its base value.
-    function valueAt(tr, t) {
-      var sorted = tr.tweens.slice().sort(function (a, b) { return a.start - b.start || a.order - b.order; });
-      var active = null, activeFrom = null;
-      for (var i = 0; i < sorted.length && sorted[i].start <= t; i++) {
-        var w = sorted[i];
-        activeFrom = w.from || (active ? tweenAt(active, activeFrom, w.start) : tr.base) || w.to;
-        active = w;
-      }
-      if (!active) return sorted[0].from || tr.base;
-      return tweenAt(active, activeFrom, t);
-    }
+  Timeline.prototype._track = function (target, kind, prop) {
+    var found = this.tracks.filter(function (t) { return t.target === target && t.kind === kind && t.prop === prop; })[0];
+    var k = KINDS[kind];
+    if (found) return found;
+    var created = { target: target, kind: kind, prop: prop, base: k.base(target, prop), raw: k.raw(target, prop), tweens: [] };
+    this.tracks.push(created);
+    return created;
+  };
 
-    tl.to = function (targets, vars, position) { return add(targets, null, vars, position, false); };
-    tl.fromTo = function (targets, fromVars, toVars, position) { return add(targets, fromVars, toVars, position, false); };
-    tl.set = function (targets, vars, position) { return add(targets, null, vars, position, true); };
-    tl.addLabel = function (name, position) {
-      labels[name] = resolve(position);
-      end = Math.max(end, labels[name]);
-      return tl;
-    };
-    tl.labels = function () { return Object.assign({}, labels); };
-    tl.duration = function () { return end; };
+  Timeline.prototype._addTweens = function (target, fromVars, toVars, timing) {
+    var from = {};
+    entries(target, fromVars).forEach(function (e) { from[e[0] + ":" + e[1]] = parseValue(e[2]); });
+    entries(target, toVars).forEach(function (e) {
+      var tween = { order: this.order++, from: from[e[0] + ":" + e[1]], to: parseValue(e[2]) };
+      this._track(target, e[0], e[1]).tweens.push(Object.assign(tween, timing));
+    }, this);
+  };
 
-    tl.seek = function (t) {
-      var transforms = [];
-      tracks.forEach(function (tr) {
-        var v = valueAt(tr, t);
-        if (!v) return restore(tr);
-        if (tr.kind !== "transform") return write(tr.target, tr.kind, tr.prop, v);
-        var rec = null;
-        for (var i = 0; i < transforms.length; i++) if (transforms[i].el === tr.target) rec = transforms[i];
-        if (!rec) {
-          rec = { el: tr.target, parts: {} };
-          Object.keys(TRANSFORM).forEach(function (k) { rec.parts[k] = { n: [TRANSFORM[k]], unit: "" }; });
-          transforms.push(rec);
-        }
-        rec.parts[tr.prop] = v;
-      });
-      transforms.forEach(function (rec) { rec.el.style.transform = transformString(rec.parts); });
-      if (typeof options.onSeek === "function") options.onSeek(t);
-      return tl;
-    };
+  Timeline.prototype._add = function (targets, fromVars, toVars, position, isSet) {
+    var list = toTargets(targets);
+    var start = this._resolve(position);
+    var timing = { duration: isSet ? 0 : orDefault(toVars.duration, 0.5), ease: ease(toVars.ease) };
+    var ends = list.map(function (target, i) {
+      var at = start + staggerOffset(toVars.stagger, i, list.length);
+      this._addTweens(target, fromVars, toVars, Object.assign({ start: at }, timing));
+      return at + timing.duration;
+    }, this);
+    this.last = { start: start, end: Math.max.apply(null, ends.concat(start)) };
+    this.end = Math.max(this.end, this.last.end);
+    return this;
+  };
 
-    return tl;
-  }
+  Timeline.prototype.to = function (targets, vars, position) { return this._add(targets, null, vars, position, false); };
+  Timeline.prototype.fromTo = function (targets, fromVars, toVars, position) {
+    return this._add(targets, fromVars, toVars, position, false);
+  };
+  Timeline.prototype.set = function (targets, vars, position) { return this._add(targets, null, vars, position, true); };
+  Timeline.prototype.addLabel = function (name, position) {
+    this.labelTimes[name] = this._resolve(position);
+    this.end = Math.max(this.end, this.labelTimes[name]);
+    return this;
+  };
+  Timeline.prototype.labels = function () { return Object.assign({}, this.labelTimes); };
+  Timeline.prototype.duration = function () { return this.end; };
 
-  root.SeekTimeline = { timeline: timeline, ease: ease };
-})(typeof window !== "undefined" ? window : globalThis);
+  Timeline.prototype.seek = function (t) {
+    var transforms = new Map();
+    this.tracks.forEach(function (tr) { applyTrack(tr, valueAt(tr, t), transforms); });
+    transforms.forEach(function (parts, el) { el.style.transform = transformString(parts); });
+    this.onSeek(t);
+    return this;
+  };
+
+  globalThis.SeekTimeline = {
+    timeline: function (options) { return new Timeline(options || {}); },
+    ease: ease
+  };
+}
