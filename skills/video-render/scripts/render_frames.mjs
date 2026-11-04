@@ -255,18 +255,23 @@ function killChildren(proc) {
   spawnSync("pkill", ["-KILL", "-P", String(proc.pid)]); // only the children of this stuck Chrome, never by name
 }
 
+const isStartTimeout = (error) => error instanceof ChromeStartTimeout;
+const killIfStuck = (browser, error) => isStartTimeout(error) && killChildren(browser.proc);
+
 async function abortLaunch(browser, error) {
-  if (error instanceof ChromeStartTimeout) killChildren(browser.proc);
+  killIfStuck(browser, error);
   await stopChrome(browser);
   throw error;
 }
 
-const retryStart = (error, width, height, tries) => (error instanceof ChromeStartTimeout
-  ? (tries > 1 ? launchChrome(width, height, tries - 1) : fail(`${error.message}, ${CHROME_TRIES} tries`))
-  : Promise.reject(error));
+function retryStart(width, height, tries, error) {
+  if (!isStartTimeout(error)) return Promise.reject(error);
+  if (tries <= 1) return fail(`${error.message}, ${CHROME_TRIES} tries`);
+  return launchChrome(width, height, tries - 1);
+}
 
 function launchChrome(width, height, tries = CHROME_TRIES) {
-  return startChrome(width, height).catch((error) => retryStart(error, width, height, tries));
+  return startChrome(width, height).catch(retryStart.bind(null, width, height, tries));
 }
 
 async function startChrome(width, height) {
