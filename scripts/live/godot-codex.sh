@@ -114,32 +114,32 @@ run_step() {
   local first_error
   first_error=$(grep -E -m1 "$error_pattern" "$log" || true)
   if [ "$code" -ne 0 ]; then
-    fail "$mode-$step" "exit $code${first_error:+; $first_error}; log ${log#$repo/}"
+    fail "$mode-$step" "exit $code${first_error:+; $first_error}; log ${log#"$repo"/}"
   elif [ -n "$first_error" ]; then
-    fail "$mode-$step" "exit 0; $first_error; log ${log#$repo/}"
+    fail "$mode-$step" "exit 0; $first_error; log ${log#"$repo"/}"
   else
     case "$step" in
       version)
         grep -q '^4\.7\.2\.stable\.official\.' "$log" || {
-          fail "$mode-$step" "exit 0; unexpected version; log ${log#$repo/}"
+          fail "$mode-$step" "exit 0; unexpected version; log ${log#"$repo"/}"
           return
         }
         ;;
       import)
         [ -d "$work/.godot/imported" ] || {
-          fail "$mode-$step" "exit 0; .godot/imported is missing; log ${log#$repo/}"
+          fail "$mode-$step" "exit 0; .godot/imported is missing; log ${log#"$repo"/}"
           return
         }
         ;;
       parse)
         grep -q '^PARSE_CHECK checked=[0-9][0-9]* failed=0$' "$log" || {
-          fail "$mode-$step" "exit 0; parse summary is missing; log ${log#$repo/}"
+          fail "$mode-$step" "exit 0; parse summary is missing; log ${log#"$repo"/}"
           return
         }
         ;;
       run)
         grep -q '^GODOT_CODEX_MAIN_READY$' "$log" || {
-          fail "$mode-$step" "exit 0; main scene marker is missing; log ${log#$repo/}"
+          fail "$mode-$step" "exit 0; main scene marker is missing; log ${log#"$repo"/}"
           return
         }
         ;;
@@ -147,7 +147,7 @@ run_step() {
         local docs
         docs=$(find "$work/doctool-$mode" -type f -name '*.xml' | wc -l | tr -d ' ')
         [ "$docs" -gt 1000 ] || {
-          fail "$mode-$step" "exit 0; generated $docs XML files; log ${log#$repo/}"
+          fail "$mode-$step" "exit 0; generated $docs XML files; log ${log#"$repo"/}"
           return
         }
         ;;
@@ -284,7 +284,7 @@ if [ "$health_import_code" -eq 0 ] && [ "$health_parse_code" -eq 0 ] && \
    grep -q '^HEALTH_TEST passed=7 failed=0$' "$work/logs/fixed/health-test.log"; then
   pass "health-task import=0 parse=0 test=0; 7 of 7 assertions passed"
 else
-  fail health-task "import=$health_import_code parse=$health_parse_code test=$health_test_code${health_error:+; $health_error}; logs ${work#$repo/}/logs/fixed/health-*.log"
+  fail health-task "import=$health_import_code parse=$health_parse_code test=$health_test_code${health_error:+; $health_error}; logs ${work#"$repo"/}/logs/fixed/health-*.log"
 fi
 
 rm -rf "$work/doctool-A" "$work/doctool-B" "$work/doctool-B-fixed"

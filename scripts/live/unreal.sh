@@ -223,7 +223,7 @@ rm -rf "$REPORT"
 rc=0
 run_bg "$EDITOR_TIMEOUT" "$RUN_LOG" "$CMD" "$PROJ" -ExecCmds="Automation RunTest LiveUE.Smoke;Quit" \
   "${EDITOR_FLAGS[@]}" -ReportExportPath="$REPORT" -abslog="$LOGS/automation-run.abs.log" || rc=$?
-report_files="$(ls "$REPORT" 2>/dev/null | tr '\n' ' ')"
+report_files="$(shopt -s nullglob; for p in "$REPORT"/*; do printf '%s ' "${p##*/}"; done)"
 if [ -f "$REPORT/index.json" ]; then
   counts="$(python3 -c '
 import json, sys

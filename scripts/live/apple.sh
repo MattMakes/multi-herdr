@@ -89,6 +89,7 @@ else
 
   # Every tool name the Swift skills and teammates cite in backticks. The
   # snake_case names are tool names; the 4 one-word tools are listed here.
+  # shellcheck disable=SC2016 # the backticks in the pattern are literal characters
   NAMES=$( { git grep -h -o -E '`[a-z]+(_[a-z]+)+`' -- skills/ios-simulator-run skills/swift-code-audit \
                teammates/swift-*.md teammates/apple-*.md | tr -d '`'
              printf '%s\n' tap batch gesture screenshot; } | sort -u)

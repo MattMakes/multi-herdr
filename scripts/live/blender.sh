@@ -701,7 +701,7 @@ else
   "$BLENDER" --background --factory-startup --python-expr \
     "import bpy; bpy.ops.mesh.primitive_cube_add(); bpy.ops.wm.save_mainfile(filepath='$SCRATCH/mcp_probe.blend')" >/dev/null 2>&1
   if out=$(BLENDER_PATH=$BLENDER python3 -I "$SCRATCH/mcp.py" "$ROOT/teammates/blender-artist.md" "$SCRATCH/mcp_probe.blend" 2>"$SCRATCH/mcp_stderr.log"); then
-    echo "$out" | sed 's/^/  /'
+    printf '  %s\n' "${out//$'\n'/$'\n'  }"
     if grep -q '^MCP call search_api_docs isError=False' <<<"$out" \
        && grep -q '^MCP call get_blendfile_summary_datablocks_for_cli isError=False' <<<"$out"; then
       pass "mcp-headless: $(grep '^MCP tools' <<<"$out" | cut -d' ' -f3) tools; search_api_docs and get_blendfile_summary_datablocks_for_cli answer"

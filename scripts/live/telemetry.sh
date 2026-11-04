@@ -44,7 +44,7 @@ record_of_pane() { horch sessions --json | jq -r --arg p "$1" '[.[] | select(.pa
 wait_done() { # <record> <seconds>
   local end=$(( $(date +%s) + $2 ))
   while [ "$(date +%s)" -lt "$end" ]; do
-    [ "$(horch sessions --json | jq -r --arg r "$1" '.[] | select(.record_id == $r) | .status')" = done ] && return 0
+    [ "$(horch sessions --json | jq -r --arg r "$1" '.[] | select(.record_id == $r) | .status')" = "done" ] && return 0
     sleep 3
   done
   return 1
@@ -81,6 +81,7 @@ l1_harness() { # <name> <real file> <fixture file> <jq select+paths> <required p
 }
 USAGE_PATHS='select(.message.usage?) | [paths(scalars) | map(select(type == "string")) | join(".")] | .[]'
 claude_real=""
+# shellcheck disable=SC2012 # ls -t sorts by mtime, which find cannot; the names are session ids
 for f in $(ls -t "$HOME"/.claude/projects/*/*.jsonl 2>/dev/null | head -40); do
   [ "$(stat -f %z "$f")" -lt 30000000 ] || continue
   if grep -q '"cache_creation"' "$f" 2>/dev/null && grep -q '"usage"' "$f"; then claude_real=$f; break; fi
@@ -92,12 +93,13 @@ if [ -n "$claude_real" ]; then
     message.usage.cache_creation.ephemeral_5m_input_tokens message.usage.cache_creation.ephemeral_1h_input_tokens \
     timestamp sessionId
 else skip "L1 claude" "no Claude transcript with usage lines"; fi
-codex_real=$(find "${CODEX_HOME:-$HOME/.codex}/sessions" -name 'rollout-*.jsonl' -type f 2>/dev/null | xargs ls -t 2>/dev/null | head -1 || true)
+codex_real=$(find "${CODEX_HOME:-$HOME/.codex}/sessions" -name 'rollout-*.jsonl' -type f -print0 2>/dev/null | xargs -0 ls -t 2>/dev/null | head -1 || true)
+# shellcheck disable=SC2016 # $t is a jq variable, not a shell one
 CODEX_PATHS='select(.type == "token_usage_record" or .type == "session_meta" or .type == "turn_context" or (.type == "event_msg" and .payload.type == "token_count"))
   | .type as $t | [paths(scalars) | map(select(type == "string")) | join(".")] | .[] | "\($t): " + .'
 if [ -n "$codex_real" ]; then
   # the newest rollout may be a 1-turn file: take the newest one that has a record
-  for f in $(find "${CODEX_HOME:-$HOME/.codex}/sessions" -name 'rollout-*.jsonl' -type f | xargs ls -t 2>/dev/null | head -20); do
+  for f in $(find "${CODEX_HOME:-$HOME/.codex}/sessions" -name 'rollout-*.jsonl' -type f -print0 | xargs -0 ls -t 2>/dev/null | head -20); do
     grep -q '"token_usage_record"' "$f" && grep -q '"turn_context"' "$f" && { codex_real=$f; break; }
   done
   l1_harness codex "$codex_real" "$FX/codex/sessions/2026/09/27/rollout-2026-09-27T20-44-04-01a0e61c-d73e-74a3-837c-b5aade8b1c38.jsonl" "$CODEX_PATHS" \
@@ -109,7 +111,7 @@ if [ -n "$codex_real" ]; then
   # Codex 0.160 has only a weekly `primary`, a null `secondary` and no 5-hour window, and a
   # rollout may hold `rate_limits: null`. Any snapshot with at least 1 window passes.
   rl_file=""; rl_windows=""
-  for f in $(find "${CODEX_HOME:-$HOME/.codex}/sessions" -name 'rollout-*.jsonl' -type f | xargs ls -t 2>/dev/null | head -40); do
+  for f in $(find "${CODEX_HOME:-$HOME/.codex}/sessions" -name 'rollout-*.jsonl' -type f -print0 | xargs -0 ls -t 2>/dev/null | head -40); do
     rl_windows=$(tail -n 3000 "$f" | jq -R -r 'fromjson? | select(.type == "event_msg" and .payload.type == "token_count")
       | .payload.rate_limits | objects | [to_entries[] | select(.value | type == "object" and has("window_minutes"))
       | "\(.key)=\(.value.window_minutes)min used_percent=\(.value.used_percent // "MISSING") resets_at=\(.value.resets_at // "MISSING")"] | select(length > 0) | join("; ")' | tail -1)
@@ -119,6 +121,7 @@ if [ -n "$codex_real" ]; then
   elif printf '%s' "$rl_windows" | grep -q MISSING; then fail "L1 codex rate_limits" "a window lacks used_percent or resets_at in $(basename "$rl_file"): $rl_windows"
   else pass "L1 codex rate_limits" "$(printf "%s" "$rl_windows" | grep -o "min used_percent" | wc -l | tr -d " ") window(s) in $(basename "$rl_file"): $rl_windows"; fi
 else skip "L1 codex" "no Codex rollout"; fi
+# shellcheck disable=SC2012 # ls -t sorts by mtime, which find cannot; the names are session ids
 pi_real=$(ls -t "$HOME"/.pi/agent/sessions/*/*.jsonl 2>/dev/null | head -1 || true)
 PI_PATHS='select(.type == "message" and .message.role == "assistant" and .message.usage?) | [paths(scalars) | map(select(type == "string")) | join(".")] | .[]'
 if [ -n "$pi_real" ] && grep -q '"usage"' "$pi_real"; then
@@ -195,9 +198,9 @@ done
 claude_new=$(find "$HOME/.claude/projects" -maxdepth 1 -name '*horch-quota-*' -newer "$marker" 2>/dev/null | wc -l | tr -d ' ')
 claude_all=$(find "$HOME/.claude/projects" -maxdepth 1 -name '*horch-quota-*' 2>/dev/null | wc -l | tr -d ' ')
 codex_hit=0
-for f in $(find "${CODEX_HOME:-$HOME/.codex}/sessions" -name 'rollout-*.jsonl' -newer "$marker" 2>/dev/null); do
+while IFS= read -r -d '' f; do
   grep -q "\"cwd\":\"$S/probe-cwd\"" "$f" && codex_hit=$((codex_hit + 1))
-done
+done < <(find "${CODEX_HOME:-$HOME/.codex}/sessions" -name 'rollout-*.jsonl' -newer "$marker" -print0 2>/dev/null)
 quota_n=$(XDG_STATE_HOME=$STATE horch quota --json | jq '[.pools[] | select(.source == "get_usage" or .source == "app-server")] | length')
 if [ "$quota_n" -lt 2 ]; then fail "L4 probe hygiene" "the probes did not run (only $quota_n real readings)"
 elif [ "$claude_new" -eq 0 ] && [ "$codex_hit" -eq 0 ]; then
@@ -220,7 +223,9 @@ l6() {
   # is printed as INFO only.
   transcript=""; on_disk=""
   for _ in $(seq 1 450); do
-    [ -n "$transcript" ] || transcript=$(ls "$HOME"/.claude/projects/*/"$sid".jsonl 2>/dev/null | head -1 || true)
+    if [ -z "$transcript" ]; then
+      for found in "$HOME"/.claude/projects/*/"$sid".jsonl; do [ -e "$found" ] && transcript=$found; break; done
+    fi
     if [ -n "$transcript" ] && grep -q '"usage"' "$transcript" 2>/dev/null; then on_disk=$(now); break; fi
     sleep 0.2
   done
@@ -229,6 +234,7 @@ l6() {
   if [ -n "$on_disk" ]; then
     # Only the 2 newest event files: the event is dated today (UTC).
     for _ in $(seq 1 150); do
+      # shellcheck disable=SC2012 # events-<date>.jsonl names are alphanumeric: the date order is the name order
       if ls "$TEL"/events-*.jsonl | tail -2 | xargs grep -q "\"record_id\":\"$rec\""; then seen=$(now); break; fi
       sleep 0.2
     done
@@ -334,7 +340,7 @@ else fail "L9 real gate" "pools $states but route said: $first"; fi
 if need just L10; then
   # Workers share this checkout: a half-edited tree fails to compile. Retry, then SKIP.
   perf_ok=1
-  for try in 1 2 3; do
+  for _ in 1 2 3; do
     just verify-perf > "$S/perf.txt" 2>&1 && { perf_ok=0; break; }
     grep -q 'could not compile' "$S/perf.txt" || break
     sleep 60
