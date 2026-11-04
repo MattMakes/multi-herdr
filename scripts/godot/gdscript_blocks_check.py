@@ -50,8 +50,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from api_check import REPO, find_godot  # noqa: E402
-import copied_ratchet  # noqa: E402
+import copied_ratchet
+from api_check import REPO, find_godot
 
 LANGS = {"gdscript", "gd"}
 FENCE = re.compile(r"^(\s*)(`{3,}|~{3,})\s*([^\s`]*)")
@@ -164,8 +164,8 @@ def class_cache(entries: list[tuple[str, str, str]]) -> str:
     items = []
     for name, base, res in entries:
         items.append(
-            '{\n"base": &"%s",\n"class": &"%s",\n"icon": "",\n"is_abstract": false,\n'
-            '"is_tool": false,\n"language": &"GDScript",\n"path": "%s"\n}' % (base, name, res)
+            f'{{\n"base": &"{base}",\n"class": &"{name}",\n"icon": "",\n"is_abstract": false,\n'
+            f'"is_tool": false,\n"language": &"GDScript",\n"path": "{res}"\n}}'
         )
     return "list=[" + ", ".join(items) + "]\n"
 
@@ -175,7 +175,7 @@ def run_godot(godot: str, project: Path, files: list[str], timeout: int) -> dict
     (project / "list.txt").write_text("\n".join(files) + "\n")
     proc = subprocess.run(
         [godot, "--headless", "--path", str(project), "--script", "res://check.gd"],
-        capture_output=True, text=True, timeout=timeout,
+        capture_output=True, text=True, timeout=timeout, check=False,
     )
     errors: dict[str, str] = {}
     current = None

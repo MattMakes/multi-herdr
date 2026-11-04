@@ -56,7 +56,7 @@ class GodotRunTest(unittest.TestCase):
         if mono is not None:
             env["GODOT_MONO_PATH"] = mono
         return subprocess.run(["bash", str(SCRIPT), *args], cwd=cwd or self.project, env=env,
-                              capture_output=True, text=True, timeout=60)
+                              capture_output=True, text=True, timeout=60, check=False)
 
     def test_script_is_executable(self):
         self.assertTrue(os.access(SCRIPT, os.X_OK), SCRIPT)

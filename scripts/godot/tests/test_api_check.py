@@ -13,7 +13,7 @@ from unittest import mock
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent))
 
-import api_check  # noqa: E402
+import api_check
 
 FIXTURE = HERE / "fixtures" / "api_check"
 DOCTOOL = FIXTURE / "doctool"
@@ -162,11 +162,11 @@ class ApiCheckTest(unittest.TestCase):
             self.assertEqual(out, f"{md}:2: deprecated Node.add_child (Gone.)\n")
 
     def test_auto_mode_without_pinned_deprecations_fails(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            with mock.patch.object(api_check, "find_godot", return_value="godot"), \
-                    mock.patch.object(api_check, "godot_version", return_value="9.9.9"), \
-                    mock.patch.object(api_check, "pinned_deprecations", return_value=Path(tmp) / "none.json"):
-                code, _, err = run_err(CONTENT)
+        with tempfile.TemporaryDirectory() as tmp, \
+                mock.patch.object(api_check, "find_godot", return_value="godot"), \
+                mock.patch.object(api_check, "godot_version", return_value="9.9.9"), \
+                mock.patch.object(api_check, "pinned_deprecations", return_value=Path(tmp) / "none.json"):
+            code, _, err = run_err(CONTENT)
         self.assertEqual(code, 2)
         self.assertIn("no deprecation data for Godot 9.9.9", err)
 

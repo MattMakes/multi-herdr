@@ -59,7 +59,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-import copied_ratchet  # noqa: E402
+import copied_ratchet
 
 REPO = Path(__file__).resolve().parents[2]
 DEFAULT_SCRATCH = REPO / ".worktrees" / "_scratch" / "godot-csblockcheck"
@@ -211,7 +211,7 @@ def build(project: Path, scratch: Path, timeout: int) -> tuple[int, str]:
     env.pop("MSBuildSDKsPath", None)
     out = subprocess.run(
         ["dotnet", "build", "-nologo", "-clp:NoSummary", "-v:q", "-p:GenerateFullPaths=true", str(project / "Check.csproj")],
-        cwd=project, env=env, capture_output=True, text=True, timeout=timeout,
+        cwd=project, env=env, capture_output=True, text=True, timeout=timeout, check=False,
     )
     return out.returncode, out.stdout + out.stderr
 

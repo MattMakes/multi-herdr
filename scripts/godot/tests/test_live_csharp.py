@@ -13,14 +13,14 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent))
 
-from api_check import find_godot  # noqa: E402
+from api_check import find_godot
 
 SCRIPT = HERE.parent / "live_csharp.sh"
 
 
 def run(godot: str) -> subprocess.CompletedProcess:
     env = dict(os.environ, GODOT_MONO_PATH=godot)
-    return subprocess.run(["bash", str(SCRIPT)], env=env, capture_output=True, text=True, timeout=60)
+    return subprocess.run(["bash", str(SCRIPT)], env=env, capture_output=True, text=True, timeout=60, check=False)
 
 
 class LiveCsharpTest(unittest.TestCase):
@@ -31,7 +31,9 @@ class LiveCsharpTest(unittest.TestCase):
 
     @unittest.skipIf(find_godot() is None, "no Godot")
     def test_a_build_without_dotnet_fails(self):
-        version = subprocess.run([find_godot(), "--headless", "--version"], capture_output=True, text=True).stdout
+        version = subprocess.run(
+            [find_godot(), "--headless", "--version"], capture_output=True, text=True, check=False
+        ).stdout
         if "mono" in version:
             self.skipTest("the Godot found is a .NET build")
         r = run(find_godot())

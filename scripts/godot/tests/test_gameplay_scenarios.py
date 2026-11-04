@@ -15,7 +15,7 @@ from unittest import mock
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent))
 
-import gameplay_scenarios as gs  # noqa: E402
+import gameplay_scenarios as gs
 
 GW9 = ["godot-combat-system", "godot-economy-system", "godot-gameplay-loops", "godot-quest-system"]
 
