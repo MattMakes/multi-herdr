@@ -172,22 +172,26 @@ const pause = (ms) => new Promise((ok) => setTimeout(ok, ms));
 const heldOnly = (n) => n <= held.length; // no request is in flight except the held ones
 const isDue = (d) => d.at <= vt + 1e-6;
 const sendHeld = (d) => { held.splice(held.indexOf(d), 1); return fulfil(d); };
-async function pageCalm(isCalm, tries = 200) { // poll the page request count for up to 2 s of real time
-  const calm = tries === 0 || isCalm(await evaluate('__cap.inflight()'));
-  return calm ? undefined : pause(10).then(() => pageCalm(isCalm, tries - 1));
-}
-async function release() { // send the delayed responses that are due, then let the page take them
-  const due = held.filter(isDue);
-  for (const d of due) await sendHeld(d);
-  if (due.length) await pageCalm(heldOnly);
-}
-async function shoot() { // advance the page 1 frame of virtual time, return a PNG
-  await pageCalm(heldOnly); // every request the page issued has reached route()
+const inflightCalm = async (isCalm) => isCalm(await evaluate('__cap.inflight()'));
+const retryCalm = (isCalm, tries) => pause(10).then(() => pageCalm(isCalm, tries - 1));
+// Poll the page request count for up to 2 s of real time.
+const pageCalm = async (isCalm, tries = 200) => (tries === 0 || (await inflightCalm(isCalm)) ? undefined : retryCalm(isCalm, tries));
+const sendAll = (list) => list.reduce((chain, d) => chain.then(() => sendHeld(d)), Promise.resolve());
+const settleAfter = (due) => (due.length ? pageCalm(heldOnly) : undefined);
+// Send the delayed responses that are due, then let the page take them.
+const release = () => Promise.resolve(held.filter(isDue)).then((due) => sendAll(due).then(() => settleAfter(due)));
+const ripplesNow = () => ripples.filter((r) => vt - r.t0 < 240).map((r) => ({ x: r.x, y: r.y, p: (vt - r.t0) / 240 }));
+const stepPage = () => evaluate(`__cap.step(${frameMs}, ${pos.x}, ${pos.y}, ${JSON.stringify(ripplesNow())})`);
+const screenshot = async () => Buffer.from((await send('Page.captureScreenshot', { format: 'png' })).data, 'base64');
+async function advance() { // every request the page issued has reached route(), then the clock moves 1 frame
+  await pageCalm(heldOnly);
   vt += frameMs;
   await release();
-  const rip = ripples.filter((r) => vt - r.t0 < 240).map((r) => ({ x: r.x, y: r.y, p: (vt - r.t0) / 240 }));
-  await evaluate(`__cap.step(${frameMs}, ${pos.x}, ${pos.y}, ${JSON.stringify(rip)})`);
-  return Buffer.from((await send('Page.captureScreenshot', { format: 'png' })).data, 'base64');
+}
+async function shoot() { // advance the page 1 frame of virtual time, return a PNG
+  await advance();
+  await stepPage();
+  return screenshot();
 }
 async function emit(png) {
   if (out >= totalFrames) throw new Error(`scene is longer than timeline duration_sec ${scene.duration_sec} s`);
