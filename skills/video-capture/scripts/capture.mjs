@@ -27,19 +27,20 @@ const cfg = { dsf: 2, seed: 1, clockIso: '2026-01-15T10:00:00Z', cursor: true, f
 const { fps, width: W, height: H } = timeline.meta;
 const frameMs = 1000 / fps, totalFrames = Math.round(scene.duration_sec * fps);
 
+function mulberry32(state) { // 1 step: advance state.s, return a float in [0, 1)
+  state.s = (state.s + 0x6d2b79f5) >>> 0; let t = state.s;
+  t = Math.imul(t ^ (t >>> 15), t | 1); t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+  return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+}
 function prng(seed) { // mulberry32: same seed, same sequence
-  let s = seed >>> 0;
-  return () => {
-    s = (s + 0x6d2b79f5) >>> 0; let t = s;
-    t = Math.imul(t ^ (t >>> 15), t | 1); t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-  };
+  return mulberry32.bind(null, { s: seed >>> 0 });
 }
 const rand = prng(cfg.seed + 1);
 
 // ---- page prelude: virtual clock, seeded Math.random, CSS locks, cursor overlay ----
 const prelude = `(() => {
   const s0 = ${cfg.seed}, t0 = ${Date.parse(cfg.clockIso)};
+  ${mulberry32.toString()}
   Math.random = (${prng.toString()})(s0);
   let now = 0, nextId = 1; const timers = new Map(), rafs = new Map(), R = Date;
   class D extends R { constructor(...a) { a.length ? super(...a) : super(t0 + now); } static now() { return t0 + now; } }
@@ -145,29 +146,37 @@ function chromeMissing(e) { // a missing Chrome binary is a usage error: exit 2,
 const { chrome, wsUrl } = await timed('chrome-start', () => startChrome(3)).catch(chromeMissing);
 const ws = new WebSocket(wsUrl);
 await new Promise((ok, fail) => { ws.onopen = ok; ws.onerror = fail; });
-let msgId = 0, sessionId; const pending = new Map(), events = [];
-ws.onmessage = (e) => {
-  const m = JSON.parse(e.data);
-  if (m.id) { const p = pending.get(m.id); pending.delete(m.id); m.error ? p.fail(new Error(m.error.message)) : p.ok(m.result); }
-  else for (const fn of events) fn(m);
-};
-const send = (method, params = {}) => new Promise((ok, fail) => {
-  const id = ++msgId; pending.set(id, { ok, fail }); ws.send(JSON.stringify({ id, method, params, sessionId }));
-});
-const evaluate = async (expression) => {
-  const r = await send('Runtime.evaluate', { expression, awaitPromise: true, returnByValue: true });
-  if (r.exceptionDetails) throw new Error(r.exceptionDetails.exception?.description || r.exceptionDetails.text);
-  return r.result.value;
-};
+const cdp = { ws, msgId: 0, sessionId: undefined, pending: new Map(), events: [] };
+function settle(m) { // a reply: resolve or reject the send that waits for it
+  const p = cdp.pending.get(m.id); cdp.pending.delete(m.id);
+  return m.error ? p.fail(new Error(m.error.message)) : p.ok(m.result);
+}
+const callWith = (m, fn) => fn(m);
+function dispatch(m) { // an event: give it to every listener
+  cdp.events.forEach(callWith.bind(null, m));
+}
+ws.onmessage = (e) => { const m = JSON.parse(e.data); return m.id ? settle(m) : dispatch(m); };
+function enqueue(method, params, ok, fail) {
+  const id = ++cdp.msgId; cdp.pending.set(id, { ok, fail });
+  cdp.ws.send(JSON.stringify({ id, method, params, sessionId: cdp.sessionId }));
+}
+const send = (method, params = {}) => new Promise(enqueue.bind(null, method, params));
+function pageThrew(d) {
+  throw new Error(d.exception?.description || d.text);
+}
+const evalValue = (r) => (r.exceptionDetails ? pageThrew(r.exceptionDetails) : r.result.value);
+const evaluate = (expression) => send('Runtime.evaluate', { expression, awaitPromise: true, returnByValue: true }).then(evalValue);
 
 const { targetId } = await send('Target.createTarget', { url: 'about:blank' });
-sessionId = (await send('Target.attachToTarget', { targetId, flatten: true })).sessionId;
+cdp.sessionId = (await send('Target.attachToTarget', { targetId, flatten: true })).sessionId;
 const errors = [];
-events.push((m) => {
-  if (m.method === 'Runtime.exceptionThrown') errors.push(`pageerror: ${m.params.exceptionDetails.exception?.description || m.params.exceptionDetails.text}`);
-  if (m.method === 'Runtime.consoleAPICalled' && m.params.type === 'error') errors.push(`console.error: ${m.params.args.map((a) => a.value ?? a.description).join(' ')}`);
-  if (m.method === 'Fetch.requestPaused') route(m.params);
-});
+const argText = (a) => a.value ?? a.description;
+const ON_EVENT = { // CDP event method -> handler of its params
+  'Runtime.exceptionThrown': (p) => errors.push(`pageerror: ${p.exceptionDetails.exception?.description || p.exceptionDetails.text}`),
+  'Runtime.consoleAPICalled': (p) => p.type === 'error' && errors.push(`console.error: ${p.args.map(argText).join(' ')}`),
+  'Fetch.requestPaused': (p) => route(p),
+};
+cdp.events.push((m) => ON_EVENT[m.method]?.(m.params));
 const held = []; // fixture responses with delay_ms, sent when the virtual clock reaches `at`
 const fulfil = ({ requestId, fx }) => {
   const body = Buffer.from(typeof fx.body === 'string' ? fx.body : JSON.stringify(fx.json ?? {})).toString('base64');
@@ -225,7 +234,7 @@ const ripplesNow = () => ripples.filter((r) => vt - r.t0 < 240).map((r) => ({ x:
 const stepPage = () => evaluate(`__cap.step(${frameMs}, ${pos.x}, ${pos.y}, ${JSON.stringify(ripplesNow())})`);
 const screenshot = async () => Buffer.from((await send('Page.captureScreenshot', { format: 'png' })).data, 'base64');
 async function advance() { // every request the page issued has reached route(), then the clock moves 1 frame
-  await timed('calm', () => pageCalm(heldOnly));
+  await timed('calm', pageCalm.bind(null, heldOnly));
   vt += frameMs;
   await timed('release', release);
 }
@@ -234,10 +243,23 @@ async function shoot() { // advance the page 1 frame of virtual time, return a P
   await timed('step', stepPage);
   return timed('screenshot', screenshot);
 }
-async function emit(png) {
-  if (out >= totalFrames) throw new Error(`scene is longer than timeline duration_sec ${scene.duration_sec} s`);
-  out++; if (!ff.stdin.write(png)) await timed('encode-backpressure', () => new Promise((ok) => ff.stdin.once('drain', ok)));
+function tooLong() {
+  throw new Error(`scene is longer than timeline duration_sec ${scene.duration_sec} s`);
 }
+function onDrain(ok) {
+  ff.stdin.once('drain', ok);
+}
+const drained = () => new Promise(onDrain);
+async function emit(png) {
+  out < totalFrames || tooLong();
+  out++;
+  return ff.stdin.write(png) || timed('encode-backpressure', drained);
+}
+async function shootOne() { // shoot 1 frame and send it to the encoder
+  return emit(await shoot());
+}
+// Run fn on each item of list, one after the other.
+const inOrder = (list, fn) => list.reduce((chain, x) => chain.then(() => fn(x)), Promise.resolve());
 const isLoaded = async () => (await evaluate('document.readyState')) === 'complete';
 const retryLoaded = (tries) => pause(25).then(waitLoaded.bind(null, tries - 1));
 // Poll document.readyState for up to 5 s of real time.
@@ -250,47 +272,138 @@ async function loadPage(url) {
 const easeInOut = (u) => (u < 0.5 ? 4 * u * u * u : 1 - (-2 * u + 2) ** 3 / 2);
 const smooth = (u) => u * u * (3 - 2 * u);
 
+// ---- helpers of the scene API below ----
+function takeFrame() { // 1 frame of the owed hold time is due: take it
+  const due = owed >= frameMs - 1e-6;
+  owed -= due ? frameMs : 0;
+  return due;
+}
+function holdOwed() { // shoot frames while hold time is owed
+  return takeFrame() ? shootOne().then(holdOwed) : undefined;
+}
+function control(p0, d, m, w) { // Bezier control point at m/3 of the way, bowed by w
+  return { x: p0.x + (m * d.dx) / 3 + d.nx * d.bow * w, y: p0.y + (m * d.dy) / 3 + d.ny * d.bow * w };
+}
+function bend(p0, x, y) { // the straight line from p0 to (x, y), its unit normal and a seeded bow
+  const dx = x - p0.x, dy = y - p0.y, dist = Math.hypot(dx, dy);
+  return { dx, dy, dist, bow: (rand() < 0.5 ? -1 : 1) * Math.min(80, dist * 0.12), nx: dist ? -dy / dist : 0, ny: dist ? dx / dist : 0 };
+}
+function bowPath(x, y) { // cubic Bezier from pos to (x, y), bowed to a seeded side
+  const p0 = { ...pos }, d = bend(p0, x, y);
+  return { dist: d.dist, p0, c1: control(p0, d, 1, 1), c2: control(p0, d, 2, 0.6), p3: { x, y } };
+}
+function cubic(a, b, c, d, u, v) {
+  return v * v * v * a + 3 * v * v * u * b + 3 * v * u * u * c + u * u * u * d;
+}
+function pathPoint({ p0, c1, c2, p3 }, u) {
+  const v = 1 - u;
+  return { x: cubic(p0.x, c1.x, c2.x, p3.x, u, v), y: cubic(p0.y, c1.y, c2.y, p3.y, u, v) };
+}
+const cursorNow = () => ({ t_sec: tNow(), x: px(pos.x), y: px(pos.y) }); // telemetry of the cursor
+async function moveStep(path, n, i) { // 1 frame of the cursor along the path
+  Object.assign(pos, pathPoint(path, easeInOut(i / n)));
+  await send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: pos.x, y: pos.y });
+  tel.cursor.push(cursorNow());
+  await shootOne();
+}
+const stepNumber = (_, k) => k + 1;
+const stepNumbers = (n) => Array.from({ length: n }, stepNumber); // 1..n
+function noElement(sel) {
+  throw new Error(`no element ${sel}`);
+}
+const pressAt = (button, type) => send('Input.dispatchMouseEvent', { type, x: pos.x, y: pos.y, button, clickCount: 1 });
+const cursorXY = () => ({ x: pos.x, y: pos.y });
+const addRipple = () => ripples.push({ ...cursorXY(), t0: vt });
+function recordClick(button) {
+  tel.clicks.push({ ...cursorNow(), button });
+  addRipple();
+}
+async function typeChar(ch) { // 35-55 ms per char, seeded variance
+  await send('Input.dispatchKeyEvent', { type: 'keyDown', key: ch, text: ch });
+  await send('Input.dispatchKeyEvent', { type: 'keyUp', key: ch });
+  tel.keys.push({ t_sec: tNow(), key: ch });
+  await h.hold(35 + 20 * rand());
+}
+function zoomFrom(last) { // hold the last zoom until now, so the next ease starts here
+  return tNow() > last.t_sec ? [{ ...last, t_sec: tNow(), ease: 'linear' }] : [];
+}
+async function termChar(ch) { // terminal page: echo 1 typed char at 35-55 ms
+  await evaluate(`termWrite(${JSON.stringify(ch)})`);
+  tel.keys.push({ t_sec: tNow(), key: ch });
+  await h.hold(35 + 20 * rand());
+}
+const parseLine = (line) => JSON.parse(line);
+const isOutput = ([, kind]) => kind === 'o';
+// asciicast v2: header line, then [t_sec, "o", data] lines; only output events replay.
+const castEvents = (file) => readFileSync(file, 'utf8').trim().split('\n').slice(1).map(parseLine).filter(isOutput);
+async function castStep(last, [t, , data]) { // replay 1 output event; return its time
+  const gap = (t - last) * 1000;
+  await (gap >= 500 ? h.wait(gap) : h.hold(gap));
+  await h.term(data);
+  return t;
+}
+const nextCast = (chain, e) => chain.then((last) => castStep(last, e));
+const waitDone = async (w, v, frames) => (typeof w.until === 'number' ? v >= w.until - 1e-6 : frames.length && (await evaluate(w.until)));
+function timedOut(w) {
+  throw new Error(`wait timed out: ${w.until}`);
+}
+async function shootInto(frames) {
+  frames.push(await shoot());
+}
+async function waitFrames(w, frames, v) { // shoot frames until the wait ends; v is the virtual ms waited
+  const done = await waitDone(w, v, frames);
+  return done ? frames : v > w.timeoutMs ? timedOut(w) : shootInto(frames).then(waitFrames.bind(null, w, frames, v + frameMs));
+}
+function rampOf(D) { // speed-ramp shape for D s of dead time
+  const [F, P] = D < 1 ? [2, 0.15] : D < 2 ? [3, 0.2] : [4, 0.25];
+  const T = 2 * P + (D - P * (F + 1)) / F;
+  return { F, P, T, N: Math.max(1, Math.round(T * fps)) };
+}
+function rampSpeed(r, u) {
+  return 1 + (r.F - 1) * smooth(Math.min(1, u / r.P, (r.T - u) / r.P));
+}
+function addStep(r, cum, _, j) { // cum[j + 1]: the source time used up after output frame j
+  cum.push(cum[j] + rampSpeed(r, ((j + 0.5) / r.N) * r.T));
+  return cum;
+}
+const cumulative = (r) => Array.from({ length: r.N }).reduce(addStep.bind(null, r), [0]);
+function pickFrame(frames, cum, r, c) {
+  return frames[Math.min(frames.length - 1, Math.floor((c / cum[r.N]) * frames.length))];
+}
+async function emitRamp(frames) { // emit the waited frames faster in the middle, at 1x at both ends
+  const r = rampOf((frames.length * frameMs) / 1000), cum = cumulative(r), t0 = tNow();
+  await inOrder(cum.slice(0, r.N).map(pickFrame.bind(null, frames, cum, r)), emit);
+  tel.speed_ramps.push({ in_sec: t0, out_sec: tNow(), factor: r.F, pad_in_sec: r.P, pad_out_sec: r.P });
+}
+
 const h = {
   W, H, fps, rand,
   termUrl: pathToFileURL(join(scriptsDir, 'term.html')).href, // the terminal page next to this script
   async goto(url) {
-    await timed('navigate', () => loadPage(url));
+    await timed('navigate', loadPage.bind(null, url));
   },
   async hold(ms) { // interactive pause at 1x
     owed += ms;
-    while (owed >= frameMs - 1e-6) { owed -= frameMs; await emit(await shoot()); }
+    await holdOwed();
   },
   async move(x, y, ms) { // cubic Bezier path, eased timing, 400-700 ms
-    const dx = x - pos.x, dy = y - pos.y, dist = Math.hypot(dx, dy);
-    ms ??= Math.min(700, Math.max(400, 400 + dist * 0.3));
-    const bow = (rand() < 0.5 ? -1 : 1) * Math.min(80, dist * 0.12), nx = dist ? -dy / dist : 0, ny = dist ? dx / dist : 0;
-    const p0 = { ...pos }, c1 = { x: p0.x + dx / 3 + nx * bow, y: p0.y + dy / 3 + ny * bow }, c2 = { x: p0.x + (2 * dx) / 3 + nx * bow * 0.6, y: p0.y + (2 * dy) / 3 + ny * bow * 0.6 };
+    const path = bowPath(x, y);
+    ms ??= Math.min(700, Math.max(400, 400 + path.dist * 0.3));
     const n = Math.max(1, Math.round(ms / frameMs));
-    for (let i = 1; i <= n; i++) {
-      const u = easeInOut(i / n), v = 1 - u;
-      pos.x = v * v * v * p0.x + 3 * v * v * u * c1.x + 3 * v * u * u * c2.x + u * u * u * x;
-      pos.y = v * v * v * p0.y + 3 * v * v * u * c1.y + 3 * v * u * u * c2.y + u * u * u * y;
-      await send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: pos.x, y: pos.y });
-      tel.cursor.push({ t_sec: tNow(), x: px(pos.x), y: px(pos.y) });
-      await emit(await shoot());
-    }
+    await inOrder(stepNumbers(n), moveStep.bind(null, path, n));
   },
   async box(sel) {
     const b = await evaluate(`(() => { const r = document.querySelector(${JSON.stringify(sel)})?.getBoundingClientRect(); return r && { x: r.x + r.width / 2, y: r.y + r.height / 2 }; })()`);
-    if (!b) throw new Error(`no element ${sel}`); return b;
+    return b || noElement(sel);
   },
   async click(sel, button = 'left') {
     const b = await h.box(sel); await h.move(b.x, b.y);
-    for (const type of ['mousePressed', 'mouseReleased']) await send('Input.dispatchMouseEvent', { type, x: pos.x, y: pos.y, button, clickCount: 1 });
-    tel.clicks.push({ t_sec: tNow(), x: px(pos.x), y: px(pos.y), button }); ripples.push({ x: pos.x, y: pos.y, t0: vt });
+    await inOrder(['mousePressed', 'mouseReleased'], pressAt.bind(null, button));
+    recordClick(button);
     await h.hold(240);
   },
   async type(text) { // 35-55 ms per char, seeded variance
-    for (const ch of text) {
-      await send('Input.dispatchKeyEvent', { type: 'keyDown', key: ch, text: ch });
-      await send('Input.dispatchKeyEvent', { type: 'keyUp', key: ch });
-      tel.keys.push({ t_sec: tNow(), key: ch }); await h.hold(35 + 20 * rand());
-    }
+    await inOrder([...text], typeChar);
   },
   async press(key) {
     const k = { Enter: [13, '\r'], Tab: [9, '\t'], Backspace: [8, ''], Escape: [27, ''] }[key];
@@ -299,41 +412,19 @@ const h = {
     tel.keys.push({ t_sec: tNow(), key }); await h.hold(120);
   },
   zoom(scale, cx = 0.5, cy = 0.5, ms = 500, ease = 'cubic-bezier(0.22, 1, 0.36, 1)') { // compositor applies it
-    const last = tel.zoom_keyframes.at(-1);
-    if (tNow() > last.t_sec) tel.zoom_keyframes.push({ ...last, t_sec: tNow(), ease: 'linear' });
-    tel.zoom_keyframes.push({ t_sec: +(tNow() + ms / 1000).toFixed(4), scale, cx, cy, ease });
+    tel.zoom_keyframes.push(...zoomFrom(tel.zoom_keyframes.at(-1)), { t_sec: +(tNow() + ms / 1000).toFixed(4), scale, cx, cy, ease });
   },
   async zoomTo(sel, scale = 1.6) { const b = await h.box(sel); h.zoom(scale, +(b.x / W).toFixed(4), +(b.y / H).toFixed(4)); },
   term: (data) => evaluate(`termWrite(${JSON.stringify(data)})`), // terminal page: print output now
   async termType(text) { // terminal page: echo a typed command at 35-55 ms per char
-    for (const ch of text) { await evaluate(`termWrite(${JSON.stringify(ch)})`); tel.keys.push({ t_sec: tNow(), key: ch }); await h.hold(35 + 20 * rand()); }
+    await inOrder([...text], termChar);
   },
-  async termCast(file) { // asciicast v2 replay: header line, then [t_sec, "o", data] lines
-    let last = 0;
-    for (const line of readFileSync(file, 'utf8').trim().split('\n').slice(1)) {
-      const [t, kind, data] = JSON.parse(line); if (kind !== 'o') continue;
-      const gap = (t - last) * 1000; last = t;
-      await (gap >= 500 ? h.wait(gap) : h.hold(gap));
-      await h.term(data);
-    }
+  async termCast(file) { // asciicast v2 replay
+    await castEvents(file).reduce(nextCast, Promise.resolve(0));
   },
   async wait(msOrExpr, timeoutMs = 30000) { // dead time: no input. >= 500 ms is speed-ramped
-    const frames = [];
-    for (let v = 0; ; v += frameMs) {
-      const done = typeof msOrExpr === 'number' ? v >= msOrExpr - 1e-6 : frames.length && (await evaluate(msOrExpr));
-      if (done) break;
-      if (v > timeoutMs) throw new Error(`wait timed out: ${msOrExpr}`);
-      frames.push(await shoot());
-    }
-    const D = (frames.length * frameMs) / 1000;
-    if (D < 0.5) { for (const f of frames) await emit(f); return; }
-    const [F, P] = D < 1 ? [2, 0.15] : D < 2 ? [3, 0.2] : [4, 0.25];
-    const T = 2 * P + (D - P * (F + 1)) / F, N = Math.max(1, Math.round(T * fps));
-    const speed = (u) => 1 + (F - 1) * smooth(Math.min(1, u / P, (T - u) / P));
-    const cum = [0]; for (let j = 0; j < N; j++) cum.push(cum[j] + speed(((j + 0.5) / N) * T));
-    const t0 = tNow();
-    for (let j = 0; j < N; j++) await emit(frames[Math.min(frames.length - 1, Math.floor((cum[j] / cum[N]) * frames.length))]);
-    tel.speed_ramps.push({ in_sec: t0, out_sec: tNow(), factor: F, pad_in_sec: P, pad_out_sec: P });
+    const frames = await waitFrames({ until: msOrExpr, timeoutMs }, [], 0);
+    await ((frames.length * frameMs) / 1000 < 0.5 ? inOrder(frames, emit) : emitRamp(frames));
   },
 };
 
