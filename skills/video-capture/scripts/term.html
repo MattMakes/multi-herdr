@@ -1,0 +1,33 @@
+<!doctype html>
+<meta charset="utf-8">
+<style>
+  html, body { margin: 0; height: 100%; background: #0d1117; }
+  #t { box-sizing: border-box; height: 100%; margin: 0; padding: 48px 56px; color: #e6edf3;
+       font: 26px/1.45 "SF Mono", Menlo, monospace; white-space: pre-wrap; overflow: hidden; }
+  .cur { background: #e6edf3; color: #0d1117; }
+</style>
+<pre id="t"></pre>
+<script>
+  // termWrite(data): append terminal output. Handles \n, \r, \b and SGR colours; drops other escapes.
+  const PAL = ['#484f58', '#ff7b72', '#3fb950', '#d29922', '#58a6ff', '#bc8cff', '#39c5cf', '#b1bac4'];
+  const t = document.getElementById('t'); let lines = [[]], style = {};
+  const sgr = (codes) => { for (const c of codes.split(';').map(Number)) {
+    if (c === 0) style = {}; else if (c === 1) style.b = 1; else if (c === 39) delete style.c;
+    else if (c >= 30 && c <= 37) style.c = PAL[c - 30]; else if (c >= 90 && c <= 97) style.c = PAL[c - 90]; } };
+  window.termWrite = (data) => {
+    let row = lines.at(-1);
+    for (let i = 0; i < data.length; i++) {
+      const ch = data[i];
+      if (ch === '\x1b') { const m = data.slice(i).match(/^\x1b\[([0-9;?]*)([A-Za-z])/); if (m) { if (m[2] === 'm') sgr(m[1] || '0'); i += m[0].length - 1; } continue; }
+      if (ch === '\n') { lines.push(row = []); continue; }
+      if (ch === '\r') { if (data[i + 1] !== '\n') row.length = 0; continue; }
+      if (ch === '\b') { row.pop(); continue; }
+      row.push({ ch, ...style });
+    }
+    t.replaceChildren(...lines.flatMap((r, n) => [...r.map((g) => {
+      const s = document.createElement('span'); s.textContent = g.ch;
+      if (g.c) s.style.color = g.c; if (g.b) s.style.fontWeight = 700; return s;
+    }), n < lines.length - 1 ? '\n' : (() => { const c = document.createElement('span'); c.className = 'cur'; c.textContent = ' '; return c; })()]));
+  };
+  termWrite('');
+</script>

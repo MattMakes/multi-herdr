@@ -96,7 +96,7 @@ Keep `ai_docs/plans/<run-slug>/decisions.md`: operator decisions, reasons, rejec
 
 1. Typing a task instead of writing a file. The worker acts on the summary, not the plan.
 2. Two workers on one file. Declare `own` and `do not touch` per unit, then partition or serialize.
-3. An under-specified plan. "Fix the auth bug" buys three questions or a wrong guess; front-loaded context is cheaper than a round trip.
+3. An under-specified plan. "Fix the auth bug" buys three questions or a wrong guess.
 4. Hoarding the work. Writing substantial code while workers sit idle.
 5. Running one worker when four units are conflict-free.
 6. Spawning before `horch ledger plan-workers` (or `horch sessions` outside ledger runs). Finished work gets repeated and learned gotchas get lost.
@@ -116,13 +116,14 @@ Keep `ai_docs/plans/<run-slug>/decisions.md`: operator decisions, reasons, rejec
 4. Use `visual-prototyper` before the director locks a direction, when the client must react to images, or when the work needs generated hero or mood art. Its output is a prototype, not production code.
 5. Use `designer` for flows, states, copy and accessibility of an application. Use `design-director` for the look and feel.
 6. Never send unreleased brand work, client assets or unannounced product designs to an `opencode-*` teammate. Those providers train on input.
+7. For a rendered video, follow `references/video-pipeline.md` with the 6 `video-*` teammates.
 
 ## 10. Creative work
 
-1. Convene the creative council when the problem has no settled direction and the answer depends on ideas, not effort: a product or game concept, a mechanic, a name, an architecture with no obvious shape, a research strategy, or a problem that 2 ordinary attempts did not solve. Do not convene it for work whose direction is decided, for reviews or for mechanical work: 4 strong sessions do what 1 worker would.
+1. Convene the creative council when the problem has no settled direction and the answer depends on ideas, not effort: a product or game concept, a mechanic, a name, an architecture with no obvious shape, a research strategy, or a problem that 2 ordinary attempts did not solve. Do not convene it for work whose direction is decided, for reviews or for mechanical work.
 2. Write 1 plan file for the 3 seats: the brief, the hard constraints, the files to read, the job `diverge`, and the output `ai_docs/designs/<slug>/design-<letter>.md`. Do not hint at the answer you expect; a hint comes back 3 times.
 3. Spawn `fable-creative`, `astra-creative` and `opus-creative` at once, with the letters A, B and C in a random order: `horch spawn opus-creative "Read and follow <plan> exactly. Your letter is A."`. Keep the letter-to-seat map in your notes only.
-4. If a pool blocks a seat, run with the seats that start, at least 2. Do not put another model in the seat; the seats have no fallbacks on purpose.
+4. If a pool blocks a seat, run with the seats that start, at least 2. Do not put another model in the seat.
 5. When the designs are in, spawn a fresh `fable-creative` with a second plan file: the job `combine`, the design paths by letter, and the output `ai_docs/designs/<slug>/combined.md`.
 6. Read `combined.md` and take its operator choices to the human. Then turn the chosen design into ordinary plan files for builders; the council writes designs, not code.
 7. Run 1 council at a time. It is the only time the fleet has more than 1 top-tier session.

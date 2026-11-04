@@ -121,6 +121,12 @@ const SKIP_NEW_TEAMMATES: &[&str] = &[
     "ue-tools-engineer",
     "ue-ui-engineer",
     "ue-world-engineer",
+    "video-animator",
+    "video-audio",
+    "video-capture",
+    "video-critic",
+    "video-director",
+    "video-editor",
     "visual-prototyper",
     "worktree-steward",
 ];

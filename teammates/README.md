@@ -278,6 +278,32 @@ and `blender-baking`, and names `ue-editor-scripting`. It
 exports to a source-art folder and never writes `.uasset`; `ue-technical-artist`
 or `ue-tools-engineer` imports. No fallback: Codex has no MCP parity here.
 
+## The video team
+
+Six specialists make a rendered video: a launch film, product demo, CLI
+walkthrough, concept explainer or social cut. They carry the 9 own-text
+`video-*` skills by name. The orchestrator runs them in 6 waves from
+`skills/orchestrate/references/video-pipeline.md`.
+
+| teammate | phase | agent, model, effort | skills | use for |
+|---|---|---|---|---|
+| `video-director` | plan | claude, opus, high | `video-direction`, `video-storyboard` | brief, direction, storyboard, `timeline.json` and the plan gate |
+| `video-capture` | implementation | claude, sonnet, medium | `video-capture` | deterministic browser and terminal plates with telemetry |
+| `video-audio` | implementation | claude, sonnet, medium | `video-audio`, `video-storyboard` | voice-over, timing reconciliation, beat grid, SFX, -14 LUFS master |
+| `video-animator` | implementation | claude, opus, medium | `video-motion`, `video-character`, `video-reanimate`, `motion-gsap` | deterministic HTML scenes, character rigs, reference matching |
+| `video-editor` | implementation | claude, sonnet, medium | `video-render` | frame-stepped render, `render/master.mp4`, aspect variants, publish pack |
+| `video-critic` | validation | claude, opus, high | `video-qa`, `video-direction` | numeric render QA and a blind 8-axis review |
+
+No `offer_when`: an ordinary code repo asks for a launch video before any
+`timeline.json` exists. No `requires`: each persona checks `ffmpeg`,
+`ffprobe`, `node`, `python3`, Chrome and macOS `say` as it needs them, and
+reports `BLOCKED:` with the install step. No fallback: Chrome, `ffmpeg` and
+`say` are not live-checked in the Codex sandbox. `video-audio` also carries
+`video-storyboard`, because its gate runs `check_timeline.py` from that
+sibling skill, and a bundle holds only the teammate's own skills.
+`video-critic` denies `Edit` and `NotebookEdit` but keeps `Write` for its
+`qa/` reports. Spawn a new `video-critic` for each review round.
+
 ## The Swift and Apple team
 
 Seven specialists staff Swift and Apple-platform work. Each sets

@@ -59,6 +59,15 @@ const REPO_ORIGINAL: &[&str] = &[
     "system-design",
     "ue-build-verify",
     "ue-editor-scripting",
+    "video-audio",
+    "video-capture",
+    "video-character",
+    "video-direction",
+    "video-motion",
+    "video-qa",
+    "video-reanimate",
+    "video-render",
+    "video-storyboard",
 ];
 
 const PHASES: [Option<Phase>; 5] = [
@@ -139,6 +148,12 @@ const SKIP_NEW_TEAMMATES: &[&str] = &[
     "ue-tools-engineer",
     "ue-ui-engineer",
     "ue-world-engineer",
+    "video-animator",
+    "video-audio",
+    "video-capture",
+    "video-critic",
+    "video-director",
+    "video-editor",
     "visual-prototyper",
     "worktree-steward",
 ];
@@ -382,6 +397,8 @@ fn skills_bundled_size_budget() {
 /// and `blender-addon-development` also ships 1 `.toml` manifest. The own-text
 /// `blender-3d-print` ships 2 Python scripts that its `SKILL.md` runs.
 /// `blender-workflow-recipes` holds `.md` files only, so it is not listed.
+/// The `video-*` skills listed here ship their own runnable checker,
+/// capture and render scripts.
 const EXEMPT_FROM_TEXT_ONLY: &[&str] = &[
     "blender-3d-print",
     "blender-addon-development",
@@ -412,6 +429,13 @@ const EXEMPT_FROM_TEXT_ONLY: &[&str] = &[
     "blender-video-editing",
     "blender-weather-fx",
     "skill-creator",
+    "video-audio",
+    "video-capture",
+    "video-motion",
+    "video-qa",
+    "video-reanimate",
+    "video-render",
+    "video-storyboard",
 ];
 
 /// Single files exempt from the text-only rule; the rest of their skill is

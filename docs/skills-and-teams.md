@@ -200,6 +200,7 @@ each team.
 | Design (6 new, 2 changed) | no gate: always offered | 8 design skills | brand inputs override the palettes and font pairings in the skills |
 | Blender (`blender-artist`) | `*.blend` or `*.uproject` | `blender-ue-pipeline`, `blender-modeling`, `blender-rigging`, `blender-baking` | Blender Lab MCP server; hands FBX exports to the Unreal team |
 | Blender (`blender-builder`, `blender-qa`, `blender-3d-printer`) | `*.blend`; the printer also `*.stl`, `*.3mf` or `*.obj` | the 28 copied EL4CTEO `blender-*` skills and the own-text `blender-3d-print` | ahujasid MCP server, pinned, telemetry off, network asset tools denied; headless by default; QA reports and fixes nothing |
+| Video (6 `video-*`) | no gate: always offered | 9 own-text `video-*` skills: `video-direction`, `video-storyboard`, `video-capture`, `video-audio`, `video-motion`, `video-character`, `video-reanimate`, `video-render`, `video-qa` | work offline with local `ffmpeg`, Chrome and macOS `say`; `timeline.json` is the single source of truth; every wave passes a numeric gate; a fresh `video-critic` for each review round |
 
 ### Unreal Engine and Git LFS
 
@@ -330,6 +331,25 @@ Claude with no fallback, needs `blender` (`requires: [blender]`) and sets
 - `visual-prototyper` runs on Codex. It cannot take screenshots unless a
   browser tool works in the Codex sandbox, so a Claude teammate screenshots
   for it.
+
+### The video team
+
+`video-director` (plan), `video-capture`, `video-audio`, `video-animator`,
+`video-editor` (implementation) and `video-critic` (validation) make a
+rendered video from 1 project folder that holds `timeline.json`.
+
+- The orchestrator runs 6 waves. The recipe is in the `orchestrate` skill,
+  in `references/video-pipeline.md`: the teammate, inputs, outputs, gate
+  command and pass rule of each wave.
+- The plan gate (`check_timeline.py`), the audio gate (`check_audio.py`) and
+  the render gate (`qa_video.py`) are scripts with numeric rules. 7 of the 9
+  skills ship scripts, so `skills_catalog.rs` lists them in
+  `EXEMPT_FROM_TEXT_ONLY`.
+- Scripts use the Python standard library, Node built-ins, `ffmpeg` and
+  `ffprobe` only. They install nothing and download nothing.
+- `video-critic` never edits project files. Each review round is a new
+  session that has not seen earlier rounds, and the loop stops after 3
+  rounds.
 
 ## `horch agent-list`: which harnesses can this machine run
 
