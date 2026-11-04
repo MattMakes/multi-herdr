@@ -309,7 +309,7 @@ rendered video from 1 project folder that holds `timeline.json`.
   in `references/video-pipeline.md`: the teammate, inputs, outputs, gate
   command and pass rule of each wave.
 - The plan gate (`check_timeline.py`), the audio gate (`check_audio.py`) and
-  the render gate (`qa_video.py`) are scripts with numeric rules. 6 of the 9
+  the render gate (`qa_video.py`) are scripts with numeric rules. 7 of the 9
   skills ship scripts, so `skills_catalog.rs` lists them in
   `EXEMPT_FROM_TEXT_ONLY`.
 - Scripts use the Python standard library, Node built-ins, `ffmpeg` and

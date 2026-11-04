@@ -31,7 +31,9 @@ window.__videoMeta = { width: 1920, height: 1080, fps: 60, duration: 6.0 };
 
 ## 2. Scene template
 
-Write the scene as 1 file. Put the GSAP library file next to it (for example `scenes/<scene-id>/gsap.min.js`) or inline it. Do not load it from a CDN.
+Write the scene as 1 HTML file. Copy `<skill-dir>/scripts/seek-timeline.js` into the scene folder as `scenes/<scene-id>/seek-timeline.js`. `<skill-dir>` is the folder that holds the `video-motion` SKILL.md. The file has no dependencies and loads nothing from the network.
+
+GSAP is an option only when the user project already ships its own GSAP file. Then load that local file, build `gsap.timeline({ paused: true })`, and seek it with `tl.time(t)`.
 
 ```html
 <!doctype html>
@@ -49,7 +51,7 @@ Write the scene as 1 file. Put the GSAP library file next to it (for example `sc
 <body>
 <div class="title" id="title"></div>
 <svg id="fx" width="1920" height="1080" style="position:absolute;inset:0"></svg>
-<script src="gsap.min.js"></script>
+<script src="seek-timeline.js"></script>
 <script>
 (function () {
   var META = { width: 1920, height: 1080, fps: 60, duration: 6.0 };
@@ -74,12 +76,11 @@ Write the scene as 1 file. Put the GSAP library file next to it (for example `sc
     return s;
   });
 
-  // GSAP's "expo.out" is close to the enter bezier. A CustomEase with the
-  // exact curve is also fine when the plugin file is bundled.
-  var master = gsap.timeline({ paused: true });
+  // The ease strings are the ease.enter and ease.exit tokens.
+  var master = SeekTimeline.timeline();
   master.fromTo(title, { y: 40, opacity: 0 },
-                { y: 0, opacity: 1, duration: ENTER_S, ease: "expo.out", immediateRender: true }, 0.0);
-  master.to(title, { opacity: 0, duration: EXIT_S, ease: "power2.in" }, META.duration - EXIT_S);
+                { y: 0, opacity: 1, duration: ENTER_S, ease: "cubic-bezier(0.22, 1, 0.36, 1)" }, 0.0);
+  master.to(title, { opacity: 0, duration: EXIT_S, ease: "cubic-bezier(0.4, 0, 1, 1)" }, META.duration - EXIT_S);
 
   // Seeded PRNG: same seed, same sequence, on every machine.
   function mulberry32(seed) {
@@ -114,7 +115,7 @@ Write the scene as 1 file. Put the GSAP library file next to it (for example `sc
 
   window.__seekToFrame = function (frameIndex, fps) {
     var t = frameIndex / fps;
-    master.time(t);
+    master.seek(t);
     renderComputed(t);
   };
 
@@ -128,11 +129,12 @@ Write the scene as 1 file. Put the GSAP library file next to it (for example `sc
 
 ## 3. Rules for timelines
 
-- Put every tween at an absolute position: `master.to(el, vars, 1.25)`. Do not chain by `onComplete`. A seek can jump over a callback, so a callback must never start motion.
-- `fromTo()` is safer than `from()`. With `from()`, set `immediateRender: true` so frame 0 shows the start state.
-- Do not call `master.play()`, `master.restart()` or `gsap.ticker` methods that start the clock.
-- If a library ticks GSAP by itself, stop it with `gsap.ticker.sleep()` and drive the timeline only through `master.time(t)`.
-- Nest a child timeline at a fixed time: `master.add(child, 2.0)`. A child is also paused by its parent.
+- Put every tween at a fixed position: `master.to(el, vars, 1.25)`, a label (`"cta"`, `"cta+=0.2"`), or `"<"`, `">"`, `"+=0.1"`, `"-=0.1"` relative to the previous tween. Do not chain motion by callbacks. A seek can jump over a callback, so a callback must never start motion.
+- Use `fromTo()` to give a start state. Before its start time, a `fromTo()` shows its start values, so frame 0 shows the start state.
+- Use `set(el, vars, at)` for an instant change at a time.
+- The timeline has no clock and no play call. Only `master.seek(t)` moves it.
+- Name each beat with `master.addLabel("beat-2", 2.0)` and place its tweens relative to the label.
+- For Canvas, pass `SeekTimeline.timeline({ onSeek: function (t) { draw(t); } })`. The callback runs after each seek. Tween a plain object (`{ x: 0 }`) and read it in `draw`.
 - Stagger with `stagger: 0.06` (60 ms). Keep a group at `<= 5` items.
 - Do not use ScrollTrigger in a video scene. There is no scroll.
 
@@ -180,8 +182,8 @@ A QA scan searches `scenes/**/*.{html,js,mjs,ts}` for these patterns. Each hit f
 
 | Token | Default | Notes |
 | --- | --- | --- |
-| `ease.enter` | `cubic-bezier(0.22, 1, 0.36, 1)` | Fast start, soft landing. GSAP: `expo.out` is close. |
-| `ease.exit` | `cubic-bezier(0.4, 0, 1, 1)` | Slow start, fast leave. GSAP: `power2.in`. |
+| `ease.enter` | `cubic-bezier(0.22, 1, 0.36, 1)` | Fast start, soft landing. `expo.out` is close. |
+| `ease.exit` | `cubic-bezier(0.4, 0, 1, 1)` | Slow start, fast leave. `power2.in` is close. |
 | `duration.enter` | 400-700 ms | Larger elements take the longer end. |
 | `duration.exit` | 200-350 ms | Shorter than the enter. |
 | `duration.min` | 100 ms | 6 frames at 60 fps. |

@@ -280,7 +280,7 @@ def compare(ref_path, rendered_path, spec_path=None, out=None, diff_strip=None,
 
 SKILL_BUDGET_BYTES = 12288
 SKILLS = ("video-motion", "video-character", "video-reanimate")
-TEXT_ONLY = ("video-motion", "video-character")
+TEXT_ONLY = ("video-character",)
 
 
 def make_frames(dirpath, xs, y=60, size=(320, 180), noise=False):

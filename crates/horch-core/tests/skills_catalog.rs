@@ -394,6 +394,7 @@ const EXEMPT_FROM_TEXT_ONLY: &[&str] = &[
     "skill-creator",
     "video-audio",
     "video-capture",
+    "video-motion",
     "video-qa",
     "video-reanimate",
     "video-render",

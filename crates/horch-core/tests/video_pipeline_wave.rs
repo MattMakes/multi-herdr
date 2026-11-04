@@ -356,3 +356,54 @@ fn vpw_06_the_lowercase_name_matcher_is_exact() {
     assert!(!names_file_lowercase("see sub-brief.md", "brief"));
     assert!(!names_file_lowercase("a_brief.md", "brief"));
 }
+
+/// The GSAP script files `text` names, such as `gsap.min.js` or
+/// `vendor/gsap.js`: every path-like word that holds `gsap` and ends in
+/// `.js` or `.mjs`.
+fn gsap_files_named(text: &str) -> Vec<&str> {
+    text.split(|c: char| !(c.is_ascii_alphanumeric() || "./-_".contains(c)))
+        .map(|word| word.trim_end_matches('.'))
+        .filter(|word| {
+            word.to_ascii_lowercase().contains("gsap")
+                && (word.ends_with(".js") || word.ends_with(".mjs"))
+        })
+        .collect()
+}
+
+/// A scene loads its timeline from a file the skill ships. No file under
+/// `skills/video-*/` names a GSAP file that its own skill does not bundle.
+#[test]
+fn vpw_07_no_video_skill_requires_an_unshipped_gsap_file() {
+    for (path, bytes) in BUNDLED_SKILL_FILES {
+        let Some((skill, _)) = path.split_once('/') else {
+            continue;
+        };
+        if !skill.starts_with("video-") {
+            continue;
+        }
+        for named in gsap_files_named(&String::from_utf8_lossy(bytes)) {
+            let file = named.rsplit('/').next().unwrap();
+            let shipped = BUNDLED_SKILL_FILES.iter().any(|(p, _)| {
+                p.starts_with(&format!("{skill}/")) && p.rsplit('/').next() == Some(file)
+            });
+            assert!(
+                shipped,
+                "skills/{path} names {named}, but skills/{skill} does not ship it"
+            );
+        }
+    }
+}
+
+#[test]
+fn vpw_07_the_gsap_file_matcher_finds_script_names() {
+    assert_eq!(
+        gsap_files_named("<script src=\"gsap.min.js\"></script>"),
+        ["gsap.min.js"]
+    );
+    assert_eq!(
+        gsap_files_named("put `vendor/GSAP.js` next to it."),
+        ["vendor/GSAP.js"]
+    );
+    assert!(gsap_files_named("use gsap.timeline({ paused: true })").is_empty());
+    assert!(gsap_files_named("the motion-gsap skill").is_empty());
+}

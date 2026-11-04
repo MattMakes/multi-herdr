@@ -144,7 +144,7 @@ function withAnticipation(t, t0, dur, a, b, fps) {
 }
 ```
 
-`easeEnter` samples `cubic-bezier(0.22, 1, 0.36, 1)`. GSAP's `gsap.parseEase("expo.out")` returns a close function.
+`easeEnter` samples `cubic-bezier(0.22, 1, 0.36, 1)`. `SeekTimeline.ease("cubic-bezier(0.22, 1, 0.36, 1)")` from the `video-motion` skill's `seek-timeline.js` returns this exact function.
 
 ### Squash and stretch
 

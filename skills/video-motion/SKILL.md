@@ -1,6 +1,6 @@
 ---
 name: video-motion
-description: Use when building a video scene as HTML, CSS, SVG, Canvas or GSAP that a headless browser renders frame by frame - the window.__seekToFrame contract, paused timelines, seeded randomness, motion grammar, kinetic typography and step-by-step diagram reveals.
+description: Use when building a video scene as HTML, CSS, SVG or Canvas that a headless browser renders frame by frame - the window.__seekToFrame contract, a zero-dependency seekable timeline, seeded randomness, motion grammar, kinetic typography and step-by-step diagram reveals.
 ---
 
 # Deterministic video motion
@@ -13,7 +13,7 @@ A video scene is a web page that a renderer photographs one frame at a time. The
 - You add motion, kinetic type, a diagram walkthrough or particles to such a scene.
 - A render shows jitter, dropped motion, or frames that differ between 2 renders.
 
-For a character or mascot rig, also use the `video-character` skill. To copy the motion of a reference clip, also use the `video-reanimate` skill. For general GSAP API detail, use the `motion-gsap` skill, but the rules in this skill win for video.
+For a character or mascot rig, also use the `video-character` skill. To copy the motion of a reference clip, also use the `video-reanimate` skill. `<skill-dir>` is the folder that holds this SKILL.md.
 
 ## Inputs
 
@@ -30,10 +30,12 @@ Read `references/seek-contract.md` for the full contract, a complete scene templ
    - It is a pure function of `(frameIndex, fps)`. The same arguments give the same frame, in any call order.
    - It computes `t = frameIndex / fps` in seconds and sets all visual state from `t`.
    - It returns nothing, or a Promise that resolves when the frame is painted.
-2. Every GSAP timeline runs paused.
-   - Build it with `gsap.timeline({ paused: true })`. If other code starts the GSAP ticker, stop it with `gsap.ticker.sleep()` so that only manual seeks move time.
-   - Seek it with `tl.time(frameIndex / fps)`. Do not call `tl.play()`.
-   - Use 1 master timeline per scene. Nest child timelines with `master.add(child, atSeconds)`.
+2. Build motion on the timeline in `<skill-dir>/scripts/seek-timeline.js`. Copy that file into the scene folder and load it with `<script src="seek-timeline.js">`.
+   - Build it with `SeekTimeline.timeline()`. It has `to`, `fromTo`, `set`, `addLabel`, position offsets, `stagger`, and an `onSeek(t)` callback for Canvas.
+   - Seek it with `master.seek(frameIndex / fps)`. It has no clock, so only a seek moves time.
+   - Use 1 master timeline per scene. Mark each beat with `master.addLabel(name, atSeconds)`.
+   - Eases: `linear`, `power1`-`power4`, `sine`, `expo`, `back`, `elastic` with `.in`, `.out` or `.inOut`, and `cubic-bezier(x1, y1, x2, y2)`.
+   - GSAP is an option only when the user project already ships its own GSAP file. Then use `gsap.timeline({ paused: true })` and `tl.time(t)`, and the `motion-gsap` skill for API detail.
 3. These APIs are forbidden in scene code, because they read the wall clock or random state:
    - `requestAnimationFrame` loops
    - `setTimeout` and `setInterval`
@@ -78,8 +80,8 @@ Take every value from `MOTION.md` or `BRAND.md` tokens when they exist. These ar
 ## Workflow
 
 1. Read the inputs. List the beats of the scene, each with a start time, a focal point and its tokens.
-2. Copy the template in `references/seek-contract.md` into `scenes/<scene-id>/index.html`.
-3. Build all motion as tweens on the paused master timeline, at absolute times in seconds.
+2. Copy the template in `references/seek-contract.md` into `scenes/<scene-id>/index.html`. Copy `<skill-dir>/scripts/seek-timeline.js` to `scenes/<scene-id>/seek-timeline.js`.
+3. Build all motion as tweens on the master timeline, at times in seconds or at labels.
 4. Put any computed motion (noise, particles, character idle) in a function of `t` that `__seekToFrame` calls.
 5. Run the self-check in `references/seek-contract.md`. Search the scene for every forbidden API. Fix each hit.
 6. Render 3 sample frames twice: forward, then in reverse order. The images must be identical.
@@ -92,6 +94,6 @@ Take every value from `MOTION.md` or `BRAND.md` tokens when they exist. These ar
 ## Common mistakes
 
 - A tween uses `onComplete` to start the next tween. A seek skips callbacks, so use absolute positions on the timeline instead.
-- `gsap.from()` on a paused timeline flashes the end state at frame 0. Use `immediateRender: true` or `fromTo()`.
+- A `to()` tween on a property with no start value jumps. Give the start state with `fromTo()`.
 - Particles call `Math.random()` per frame. Seed the PRNG once per particle index, then compute the position from `t`.
 - Text reflows while fonts load. Seek only after `document.fonts.ready`.

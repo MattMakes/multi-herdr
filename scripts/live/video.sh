@@ -6,7 +6,8 @@
 #   2. every script's --self-test
 #   3. check_timeline.py, check_audio.py and compare_frames.py, each with a
 #      passing and a failing fixture
-#   4. the HTML scene template of skills/video-motion rendered by
+#   4. the HTML scene template of skills/video-motion, with its real
+#      seek-timeline.js, rendered by
 #      render_frames.mjs in real headless Chrome, master.mp4 from
 #      assemble_master.mjs, the publish pack, and qa_video.py with forward and
 #      reverse probes (a passing master, a black master, a mismatched probe)
@@ -59,12 +60,14 @@ RENDER=$S/video-render/scripts/render_frames.mjs
 ASSEMBLE=$S/video-render/scripts/assemble_master.mjs
 QA=$S/video-qa/scripts/qa_video.py
 SEEK_DOC=$S/video-motion/references/seek-contract.md
+SEEK_LIB=$S/video-motion/scripts/seek-timeline.js
 
 # ---------------------------------------------------------------- 1. guards
 py_files=$(ls $S/video-*/scripts/*.py)
 mjs_files=$(ls $S/video-*/scripts/*.mjs)
 for f in $py_files; do ok "py_compile $f" python3 -m py_compile "$f"; done
 for f in $mjs_files; do ok "node --check $f" node --check "$f"; done
+ok "node --check $SEEK_LIB" node --check "$SEEK_LIB"
 
 if hits=$(grep -rn "__renderAt" $S/video-* teammates/video-*.md); then
   fail "seek name" "found __renderAt (the name is __seekToFrame): $hits"
@@ -78,6 +81,7 @@ else pass "hand-off file names are uppercase"; fi
 
 # ---------------------------------------------------------------- 2. self-tests
 for f in $py_files; do ok "--self-test $f" python3 -I "$f" --self-test; done
+ok "seek-timeline self-test" node $S/video-motion/scripts/seek-timeline.selftest.mjs
 if [ -n "$CHROME" ]; then
   export CHROME_PATH=$CHROME
   ok "--self-test $RENDER" node "$RENDER" --self-test
@@ -166,43 +170,11 @@ if [ -z "$CHROME" ]; then
 fi
 
 # The scene is the template of skills/video-motion, the first html block of
-# seek-contract.md. It loads gsap.min.js from its own folder, and nothing is
-# downloaded, so a small stand-in sits there. It covers what the template calls
-# (timeline, fromTo, to, time) and nothing else; the seek code under test is the
-# template's own.
+# seek-contract.md. It loads seek-timeline.js from its own folder, so the real
+# file from skills/video-motion/scripts is copied there.
 awk '/^```html$/ {f = 1; next} /^```$/ {if (f) exit} f' "$SEEK_DOC" >"$P/scenes/s01-hook/index.html"
 test -s "$P/scenes/s01-hook/index.html" || { fail "template" "no html block in $SEEK_DOC"; exit 1; }
-cat >"$P/scenes/s01-hook/gsap.min.js" <<'JS'
-(function () {
-  var EASE = { "expo.out": function (p) { return p >= 1 ? 1 : 1 - Math.pow(2, -10 * p); }, "power2.in": function (p) { return p * p; } };
-  var PROPS = { opacity: function (el, v) { el.style.opacity = v; }, y: function (el, v) { el.style.transform = "translateY(" + v + "px)"; } };
-  var START = { opacity: 1, y: 0 };
-  window.gsap = { timeline: function () {
-    var tweens = [], last = new Map();
-    function key(el, k) { return el.id + ":" + k; }
-    function add(el, from, vars, at) {
-      Object.keys(PROPS).forEach(function (k) {
-        if (vars[k] === undefined) return;
-        var f = from && from[k] !== undefined ? from[k] : (last.has(key(el, k)) ? last.get(key(el, k)) : START[k]);
-        tweens.push({ el: el, k: k, f: f, t: vars[k], at: at, d: vars.duration, ease: EASE[vars.ease] || function (p) { return p; } });
-        last.set(key(el, k), vars[k]);
-      });
-    }
-    var tl = {
-      fromTo: function (el, from, vars, at) { add(el, from, vars, at); return tl; },
-      to: function (el, vars, at) { add(el, null, vars, at); return tl; },
-      time: function (t) {
-        tweens.forEach(function (w) {
-          var p = Math.min(1, Math.max(0, (t - w.at) / w.d));
-          if (t < w.at && w.at > 0 && w.k !== "opacity") p = 0;
-          PROPS[w.k](w.el, w.f + (w.t - w.f) * w.ease(p));
-        });
-      }
-    };
-    return tl;
-  } };
-})();
-JS
+cp "$SEEK_LIB" "$P/scenes/s01-hook/seek-timeline.js"
 # Fixture captured plate for s02-cta: testsrc2, 2 s of tail handle is not needed.
 ffmpeg -hide_banner -v error -y -f lavfi -i "testsrc2=s=${WIDTH}x${HEIGHT}:r=$FPS:d=3.0" \
   -c:v libx264 -preset ultrafast -pix_fmt yuv420p "$P/captures/s02-cta.mp4"
