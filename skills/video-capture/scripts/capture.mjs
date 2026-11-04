@@ -555,12 +555,13 @@ function testTelemetry(dir) {
 }
 
 function testPlates(dir, term) {
-  const results = [outcome(term.status === 0, `term capture exits 0${exitNote(term)}`)];
-  for (const id of ['web', 'term']) {
-    const g = runIn(dir, 'python3', [join(scriptsDir, 'check_plate.py'), id]);
-    results.push(outcome(g.status === 0, `${id} plate gate: ${g.stdout.trim()}`));
-  }
-  return results;
+  const termOk = outcome(term.status === 0, `term capture exits 0${exitNote(term)}`);
+  return [termOk, ...['web', 'term'].map(plateGate.bind(null, dir))];
+}
+
+function plateGate(dir, id) {
+  const g = runIn(dir, 'python3', [join(scriptsDir, 'check_plate.py'), id]);
+  return outcome(g.status === 0, `${id} plate gate: ${g.stdout.trim()}`);
 }
 
 function testErrors(err) {
