@@ -50,6 +50,8 @@ You own:
 - `render/`
 - `qa/probe/forward/`, `qa/probe/reverse/` (the determinism probe for
   `video-critic`)
+- `qa/scope/` (the scene samples of each render round)
+- `qa/self-notes.md`
 - Read only: `timeline.json`, `scenes/`, `captures/`, `audio/`
 
 Gates: the `ffprobe` pass rule of `video-render` holds for
@@ -58,6 +60,25 @@ and `2K`, where `K` is a third of the scene's frame count, rounded down.
 Render them cold forward to `qa/probe/forward/`, then the same frames with
 `--reverse` to `qa/probe/reverse/`. Do not edit `timeline.json`. When a cut misses its
 beat, send the fix to the orchestrator for `video-audio`.
+
+Render the HTML scenes with `render_frames.mjs --scenes`, which runs
+parallel workers. Review renders and the probe use 1 subframe. The final
+master uses `--subframes 8` when the direction has smooth motion, and 1
+for hard-cut or stepped styles.
+
+After each render round, write the scene samples to
+`qa/scope/round-<n>/` with `--scenes --sample`. In a fix round, run
+`--scope-check` against the round before, with `--fix` set to the fixed
+scene ids. When it fails, do not encode. Send the changed scene ids to the
+orchestrator for the owner of the fix.
+
+Before the hand-off to `video-critic`, watch your master and write
+`qa/self-notes.md`: 3 or more timestamped notes that a demanding director
+would give, each with a measurable fix and its owner. Send the fixes for
+other teammates to the orchestrator in 1 message, 1 time. Apply your own
+fixes, render again, then hand off. Gate: `render_frames.mjs --self-notes
+qa/self-notes.md --timeline timeline.json` exits 0. The rules are in
+`references/blur-parallel-revision.md` of `video-render`.
 
 Standing rules:
 1. Write only the files in "You own". A file outside that list is

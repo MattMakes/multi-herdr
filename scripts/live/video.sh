@@ -263,5 +263,25 @@ bad "qa_video fails probes that differ" python3 "$QA" --video "$P/render/master.
   --contact-sheet "$W/drift-sheet.png" --hook-strip "$W/drift-strip.png" \
   --probe-forward "$P/probe-forward" --probe-reverse "$W/probe-drift"
 
+# Self-notes gate: 3 timestamped notes pass, 2 fail.
+printf -- '- 0:00.5 s01-hook: title lands early.\n- 0:02 s01-hook: fade is flat.\n- [0:04] s02-cta: label is small.\n' >"$P/qa/self-notes.md"
+head -n 2 "$P/qa/self-notes.md" >"$W/self-notes-short.md"
+ok "self-notes gate passes 3 timestamped notes" node "$RENDER" --self-notes "$P/qa/self-notes.md" --timeline "$P/timeline.json"
+bad "self-notes gate fails 2 notes" node "$RENDER" --self-notes "$W/self-notes-short.md" --timeline "$P/timeline.json"
+
+# Revision scope check: a fix in s02-cta keeps s01-hook samples; a hook change fails.
+ok "scope samples, round 1" node "$RENDER" --scenes "$P/timeline.json" --sample --out-dir "$P/qa/scope/round-1"
+ok "scope samples, round 2" node "$RENDER" --scenes "$P/timeline.json" --sample --out-dir "$P/qa/scope/round-2"
+ok "scope check passes an unchanged hook" node "$RENDER" --scope-check "$P/timeline.json" \
+  --before "$P/qa/scope/round-1" --after "$P/qa/scope/round-2" --fix s02-cta
+printf '<style>html{filter:invert(1)}</style>\n' >>"$P/scenes/s01-hook/index.html"
+ok "scope samples, round 3" node "$RENDER" --scenes "$P/timeline.json" --sample --out-dir "$P/qa/scope/round-3"
+if scope=$(node "$RENDER" --scope-check "$P/timeline.json" --before "$P/qa/scope/round-2" \
+  --after "$P/qa/scope/round-3" --fix s02-cta 2>&1); then
+  fail "scope check" "exited 0 for a changed hook outside the fix"
+elif printf '%s' "$scope" | grep -q '"id": "s01-hook"'; then
+  pass "scope check fails a changed hook outside the fix and names s01-hook"
+else fail "scope check" "the report does not name s01-hook: $(printf '%s' "$scope" | tail -n 6)"; fi
+
 if [ "$FAILED" = 0 ]; then echo "video live check: all steps passed"; else echo "video live check: FAILED"; fi
 exit "$FAILED"

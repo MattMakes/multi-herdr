@@ -63,6 +63,13 @@ Frame count comes from `--frames`, else `--duration` x `--fps`, else
 | `--frames 0,15,30` | only those frames (write one index as `30,`) |
 | `--reverse` | capture in descending order, same file names |
 | `--transparent` | clear page background, RGBA PNGs (frames directory only) |
+| `--subframes 8` | motion blur: average 8 seeks per frame (1, 2, 4 or 8) |
+
+Render all HTML scenes in parallel workers (60 % of CPUs, at most 8), each
+with its tail handle:
+`render_frames.mjs --scenes timeline.json --out-dir render/scenes [--subframes 8]`.
+Review renders and probes use 1 subframe. The final master uses 8 for smooth
+motion. Rules: `references/blur-parallel-revision.md`.
 
 Tail handle: render each clip `transition_out` seconds longer than
 `duration_sec`, so the next transition has frames to blend (Step 3).
@@ -179,6 +186,18 @@ Chapter warnings repeat the YouTube rules: 3 or more chapters, each 10 s or
 longer. Scenes are 2-8 s, so give `title` only to the scene that opens each
 chapter.
 
+## Step 5 - self-notes and revision scope
+
+Rules and formats: `references/blur-parallel-revision.md`.
+
+1. Every round: `--scenes timeline.json --sample --out-dir qa/scope/round-<n>`.
+2. Fix round, before encoding: `--scope-check timeline.json --before
+   qa/scope/round-<n-1> --after qa/scope/round-<n> --fix <ids>`. A changed
+   scene outside `--fix` fails with its id.
+3. Before the critic: write `qa/self-notes.md`, 3 or more timestamped
+   notes. Route the fixes 1 time. Gate: `--self-notes qa/self-notes.md
+   --timeline timeline.json`.
+
 ## Self-test
 
 ```sh
@@ -192,7 +211,8 @@ It runs in a temporary directory and removes it after. It checks exact `.srt`,
 `.vtt` and `chapters.txt` text, crop math, frame parsing, CFR H.264 encoding,
 a full `--package` run on a synthetic master, and, when Chrome is present,
 forward/reverse byte-identical frames, `.mp4` scene output, transparent
-frames and the missing `__seekToFrame` failure.
+frames, the missing `__seekToFrame` failure, blur width at 1 and 8
+subframes, parallel scenes, the scope check and the self-notes gate.
 
 The `assemble_master.mjs` self-test builds a 3-scene project from colour
 plates, 1 transparent text layer, a sine `mix.wav` and a `beats.json`. It
