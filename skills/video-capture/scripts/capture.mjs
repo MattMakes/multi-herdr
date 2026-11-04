@@ -133,14 +133,20 @@ const fulfil = ({ requestId, fx }) => {
   return send('Fetch.fulfillRequest', { requestId, responseCode: fx.status ?? 200, body,
     responseHeaders: [{ name: 'Content-Type', value: fx.type ?? 'application/json' }, { name: 'Access-Control-Allow-Origin', value: '*' }] });
 };
-async function route({ requestId, request }) { // fixtures answer, local URLs pass, the rest fail
-  const fx = cfg.fixtures[request.url];
-  if (fx?.delay_ms > 0) return held.push({ requestId, fx, at: vt + fx.delay_ms });
-  if (fx) return fulfil({ requestId, fx });
-  if (/^(file:|data:|about:)/.test(request.url) || cfg.allow.some((p) => request.url.startsWith(p))) return send('Fetch.continueRequest', { requestId });
+const isLocal = (url) => /^(file:|data:|about:)/.test(url) || cfg.allow.some((p) => url.startsWith(p));
+const hold = ({ requestId }, fx) => held.push({ requestId, fx, at: vt + fx.delay_ms });
+const passThrough = ({ requestId }) => send('Fetch.continueRequest', { requestId });
+function block({ requestId, request }) {
   errors.push(`blocked live request: ${request.url}`);
   return send('Fetch.failRequest', { requestId, errorReason: 'BlockedByClient' });
 }
+const ROUTES = [ // first match wins: a delayed fixture, a fixture, a local URL, then everything else fails
+  [(r, fx) => fx?.delay_ms > 0, hold],
+  [(r, fx) => fx, ({ requestId }, fx) => fulfil({ requestId, fx })],
+  [(r) => isLocal(r.request.url), passThrough],
+  [() => true, block],
+];
+const route = (r) => { const fx = cfg.fixtures[r.request.url]; return ROUTES.find(([when]) => when(r, fx))[1](r, fx); };
 for (const d of ['Page', 'Runtime', 'Animation']) await send(`${d}.enable`);
 await send('Animation.setPlaybackRate', { playbackRate: 0 }); // the page clock alone moves CSS animations
 await send('Fetch.enable', { patterns: [{ urlPattern: '*' }] });
@@ -163,16 +169,20 @@ let out = 0, vt = 0, owed = 0; const pos = { x: W / 2, y: H / 2 }, ripples = [];
 const tNow = () => +(out / fps).toFixed(4);
 const px = (v) => Math.round(v * cfg.dsf);
 const pause = (ms) => new Promise((ok) => setTimeout(ok, ms));
-async function pageCalm(isCalm) { // poll the page request count for up to 2 s of real time
-  for (let i = 0; i < 200 && !isCalm(await evaluate('__cap.inflight()')); i++) await pause(10);
+const heldOnly = (n) => n <= held.length; // no request is in flight except the held ones
+const isDue = (d) => d.at <= vt + 1e-6;
+const sendHeld = (d) => { held.splice(held.indexOf(d), 1); return fulfil(d); };
+async function pageCalm(isCalm, tries = 200) { // poll the page request count for up to 2 s of real time
+  const calm = tries === 0 || isCalm(await evaluate('__cap.inflight()'));
+  return calm ? undefined : pause(10).then(() => pageCalm(isCalm, tries - 1));
 }
 async function release() { // send the delayed responses that are due, then let the page take them
-  const due = held.filter((d) => d.at <= vt + 1e-6);
-  for (const d of due) { held.splice(held.indexOf(d), 1); await fulfil(d); }
-  if (due.length) await pageCalm((n) => n <= held.length);
+  const due = held.filter(isDue);
+  for (const d of due) await sendHeld(d);
+  if (due.length) await pageCalm(heldOnly);
 }
 async function shoot() { // advance the page 1 frame of virtual time, return a PNG
-  await pageCalm((n) => n <= held.length); // every request the page issued has reached route()
+  await pageCalm(heldOnly); // every request the page issued has reached route()
   vt += frameMs;
   await release();
   const rip = ripples.filter((r) => vt - r.t0 < 240).map((r) => ({ x: r.x, y: r.y, p: (vt - r.t0) / 240 }));
