@@ -6,6 +6,11 @@
 //   render_frames.mjs --scene <path-or-url> --out <mp4-or-frames-dir> [--fps 60]
 //                     [--width 1920] [--height 1080] [--duration <sec>]
 //                     [--frames <count> | --frames <i,j,k>] [--reverse] [--transparent]
+//                     [--subframes 1|2|4|8]
+//   render_frames.mjs --scenes <timeline.json> --out-dir <dir> [--workers <n>]
+//                     [--subframes 1|2|4|8] [--sample]
+//   render_frames.mjs --scope-check <timeline.json> --before <dir> --after <dir> --fix <id,id>
+//   render_frames.mjs --self-notes <qa/self-notes.md> [--timeline <timeline.json>]
 //   render_frames.mjs --package <timeline.json> --master <render/master.mp4>
 //                     --out-dir <render/> [--aspects 16x9,9x16,1x1] [--cover-sec <sec>]
 //                     [--scene-clips <dir>]
@@ -15,8 +20,9 @@
 
 import { spawn, spawnSync } from "node:child_process";
 import { once } from "node:events";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { availableParallelism, tmpdir } from "node:os";
 import { dirname, extname, join, resolve } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -245,10 +251,27 @@ async function killChrome(proc) {
   return ended || proc.kill("SIGKILL");
 }
 
+const pidList = (out) => out.split(/\s+/).filter(Boolean);
+const childPids = (pid) => pidList(spawnSync("pgrep", ["-P", String(pid)], { encoding: "utf8" }).stdout ?? "");
+const livePids = (pids) => (pids.length ? pidList(spawnSync("ps", ["-o", "pid=", "-p", pids.join(",")], { encoding: "utf8" }).stdout ?? "") : []);
+const forceKill = (pids) => pids.length && spawnSync("kill", ["-KILL", ...pids]);
+
+// Poll for up to 5 s of real time, then SIGKILL the helpers that are still alive.
+async function helpersGone(pids, tries = 500) {
+  const alive = livePids(pids);
+  if (!alive.length || tries === 0) return forceKill(alive);
+  await sleep(10);
+  return helpersGone(alive, tries - 1);
+}
+
+// The Chrome helpers (network service, GPU, renderers) outlive the main process for some ms,
+// and the network service writes into userDataDir as it exits. Wait for them, then remove the dir.
 async function stopChrome(browser) {
   browser.ws?.close();
+  const helpers = childPids(browser.proc.pid);
   await killChrome(browser.proc);
-  rmSync(browser.userDataDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+  await helpersGone(helpers);
+  rmSync(browser.userDataDir, { recursive: true, force: true });
 }
 
 function killChildren(proc) {
@@ -378,12 +401,55 @@ function warnMeta(meta, opts) {
   process.stderr.write(lines.join(""));
 }
 
-async function captureFrame(page, f) {
-  await evaluate(page.cdp, page.sessionId, frameScript(f, page.fps));
+async function captureAt(page, time, file) {
+  await evaluate(page.cdp, page.sessionId, frameScript(time, page.fps));
   const params = { format: "png", fromSurface: true, captureBeyondViewport: false, clip: page.clip };
   const shot = await page.cdp.send("Page.captureScreenshot", params, page.sessionId);
-  writeFileSync(join(page.framesDir, frameName(f)), Buffer.from(shot.data, "base64"));
+  writeFileSync(file, Buffer.from(shot.data, "base64"));
 }
+
+const captureFrame = (page, f) => captureAt(page, f, join(page.framesDir, frameName(f)));
+
+// ---------------------------------------------------------------- subframe motion blur
+
+export const SUBFRAME_COUNTS = [1, 2, 4, 8];
+export const subName = (i) => `sub_${String(i).padStart(6, "0")}.png`;
+const avgName = (i) => `avg_${String(i).padStart(6, "0")}.png`;
+
+// The shutter of frame k opens at k and spans 1 frame: subframe j seeks k + j / n.
+// n is a power of 2, so every seek time is exact in binary.
+export const subframeTimes = (f, n) => range(n).map((j) => f + j / n);
+
+// Subframe file of frame f: by its rank in the sorted frame list, so a --reverse
+// capture writes the same files.
+function captureSubframes(page, sorted, f) {
+  const base = sorted.indexOf(f) * page.subframes;
+  const shots = subframeTimes(f, page.subframes).map((t, j) => [t, join(page.subDir, subName(base + j))]);
+  return inSequence(shots, ([t, file]) => captureAt(page, t, file));
+}
+
+// ffmpeg tmix averages each window of n subframes; select keeps the last frame of each
+// window, the first one with a full window. Output frame i belongs to sorted[i].
+export async function averageSubframes(subDir, n, sorted, framesDir) {
+  const filter = `tmix=frames=${n},select='eq(mod(n,${n}),${n - 1})'`;
+  const input = ["-framerate", String(n), "-start_number", "0", "-i", join(subDir, "sub_%06d.png")];
+  await ffmpeg([...input, "-vf", filter, "-fps_mode", "passthrough", "-start_number", "0", join(subDir, "avg_%06d.png")]);
+  sorted.forEach((f, i) => renameSync(join(subDir, avgName(i)), join(framesDir, frameName(f))));
+}
+
+async function blurInto(page, order) {
+  const sorted = [...order].sort((a, b) => a - b);
+  await inSequence(order, (f) => captureSubframes(page, sorted, f));
+  await averageSubframes(page.subDir, page.subframes, sorted, page.framesDir);
+}
+
+function captureBlurred(page, order) {
+  page.subDir = mkdtempSync(join(tmpdir(), "video-render-sub-"));
+  return blurInto(page, order).finally(() => rmSync(page.subDir, { recursive: true, force: true }));
+}
+
+const captureAll = (page, order) =>
+  page.subframes > 1 ? captureBlurred(page, order) : inSequence(order, (f) => captureFrame(page, f));
 
 async function encodeTarget(target, fps) {
   mkdirSync(dirname(target.out), { recursive: true });
@@ -397,7 +463,8 @@ async function renderInBrowser(cdp, opts, target) {
   const order = frameList({ ...opts, metaDuration: meta.duration });
   check(!target.toMp4 || order.every((f) => f < order.length), "an .mp4 --out needs contiguous frames 0..N-1; write a frames directory instead", UsageError);
   const clip = { x: 0, y: 0, width: opts.width, height: opts.height, scale: 1 };
-  await inSequence(order, (f) => captureFrame({ cdp, sessionId, fps: opts.fps, clip, framesDir: target.framesDir }, f));
+  const page = { cdp, sessionId, fps: opts.fps, clip, framesDir: target.framesDir, subframes: opts.subframes ?? 1 };
+  await captureAll(page, order);
   await (target.toMp4 ? encodeTarget(target, opts.fps) : null);
   return { frames: order, out: target.out };
 }
@@ -512,6 +579,120 @@ export function chapters(timeline) {
   const total = Number(timeline.meta.duration_sec) || 0;
   const stamp = total >= 3600 ? longStamp : shortStamp;
   return { text: list.map((c) => `${stamp(c.sec)} ${c.title}\n`).join(""), warnings: chapterWarnings(list, total) };
+}
+
+// ---------------------------------------------------------------- parallel scenes and scope samples
+
+// About 60 % of the CPUs, at least 1 and at most 8. Each worker runs its own Chrome.
+export const defaultWorkers = (cpus = availableParallelism()) => Math.max(1, Math.min(8, Math.floor(cpus * 0.6)));
+
+const isHtml = (path) => /\.html?(\?|$)/i.test(path);
+const platePath = (s) => (typeof s.plate === "string" && s.plate ? s.plate : null);
+
+// The source of a scene: an HTML page that renders frames, or a file that is compared as bytes.
+export function sceneSource(root, s) {
+  const plate = platePath(s);
+  const html = plate && isHtml(plate) ? plate : `scenes/${s.id}/index.html`;
+  const page = (plate && isHtml(plate)) || existsSync(join(root, html.split("?")[0]));
+  return page ? { kind: "html", path: join(root, html) } : { kind: "file", path: join(root, plate ?? `captures/${s.id}.mp4`) };
+}
+
+// 5 frames per scene: first, quarters and last, inside the scene's own frames.
+export const sampleFrames = (count) => [...new Set([0, Math.floor(count / 4), Math.floor(count / 2), Math.floor((3 * count) / 4), count - 1])];
+
+function sceneJob(root, plan, s, opts) {
+  const frames = plan.scenes.find((p) => p.id === s.id).frames;
+  const list = opts.sample ? `${sampleFrames(frames).join(",")},` : String(frames);
+  const out = join(opts.outDir, opts.sample ? s.id : `${s.id}.mp4`);
+  return { id: s.id, source: sceneSource(root, s), frames: list, out };
+}
+
+function workerArgs(job, plan, opts) {
+  const size = ["--fps", plan.fps, "--width", plan.width, "--height", plan.height].map(String);
+  const blur = ["--subframes", String(opts.sample ? 1 : opts.subframes)];
+  return [fileURLToPath(import.meta.url), "--scene", job.source.path, "--out", job.out, ...size, "--frames", job.frames, ...blur];
+}
+
+function hashPlate(job) {
+  check(existsSync(job.source.path), `scene ${job.id}: no HTML page and no plate at ${job.source.path}`);
+  mkdirSync(job.out, { recursive: true });
+  const digest = createHash("sha256").update(readFileSync(job.source.path)).digest("hex");
+  writeFileSync(join(job.out, "plate.sha256"), `${digest}\n`);
+}
+
+const runJob = (plan, opts) => (job) =>
+  job.source.kind === "html" ? run(process.execPath, workerArgs(job, plan, opts)) : hashPlate(job);
+
+// A lane takes the next job when its last one ends. Jobs keep their timeline order in the report.
+const lane = (queue, fn, settled) => {
+  const job = queue.shift();
+  return job ? Promise.allSettled([fn(job)]).then(([r]) => settled.set(job, r)).then(() => lane(queue, fn, settled)) : null;
+};
+
+async function runPool(jobs, size, fn) {
+  const queue = [...jobs];
+  const settled = new Map();
+  await Promise.all(range(Math.min(size, jobs.length)).map(() => lane(queue, fn, settled)));
+  return jobs.map((job) => ({ job, result: settled.get(job) }));
+}
+
+const jobFailure = ({ job, result }) => `scene ${job.id}: ${result.reason?.message ?? result.reason}`;
+const jobLine = ({ job }) => ({ id: job.id, kind: job.source.kind, out: job.out, frames: job.frames });
+
+// --scenes renders every HTML scene to <out-dir>/<id>.mp4 with its tail handle. With --sample
+// it writes 5 sampled frames per HTML scene and a plate hash per file scene to <out-dir>/<id>/.
+export async function renderScenes(opts) {
+  const { planMaster } = await import("./assemble_master.mjs");
+  const root = dirname(resolve(opts.timelineFile));
+  const timeline = loadTimeline(opts.timelineFile);
+  const plan = planMaster(timeline);
+  const jobs = timeline.scenes.map((s) => sceneJob(root, plan, s, opts)).filter((j) => opts.sample || j.source.kind === "html");
+  const done = await runPool(jobs, opts.workers, runJob(plan, opts));
+  const failures = done.filter((d) => d.result.status === "rejected").map(jobFailure);
+  check(failures.length === 0, failures.join("\n"));
+  return { workers: opts.workers, subframes: opts.sample ? 1 : opts.subframes, sample: opts.sample, scenes: done.map(jobLine) };
+}
+
+const filesIn = (dir) => (existsSync(dir) ? readdirSync(dir).sort() : null);
+
+function sceneChange(before, after, id) {
+  const [a, b] = [filesIn(join(before, id)), filesIn(join(after, id))];
+  const missing = !a?.length || !b?.length;
+  if (missing) return `no samples in ${!a?.length ? before : after}`;
+  if (json(a) !== json(b)) return `sample files differ: ${json(a)} vs ${json(b)}`;
+  const differs = a.filter((f) => !sameBytes(join(before, id, f), join(after, id, f)));
+  return differs.length ? `changed: ${differs.join(", ")}` : null;
+}
+
+// Revision scope check: every scene outside the fix must keep byte-identical samples.
+export function scopeCheck({ timelineFile, before, after, fix }) {
+  const ids = loadTimeline(timelineFile).scenes.map((s) => s.id);
+  const unknown = fix.filter((id) => !ids.includes(id));
+  check(unknown.length === 0, `--fix names unknown scene ids: ${unknown.join(", ")}`, UsageError);
+  const checked = ids.filter((id) => !fix.includes(id));
+  const changed = checked.map((id) => ({ id, reason: sceneChange(before, after, id) })).filter((c) => c.reason);
+  return { passed: changed.length === 0, fix, checked, changed };
+}
+
+// ---------------------------------------------------------------- self-notes gate
+
+export const SELF_NOTES_MIN = 3;
+// A note is a list item that starts with a film time, M:SS or M:SS.s, bare or in brackets.
+const NOTE_LINE = /^\s*(?:[-*]|\d+\.)\s+\[?(\d+):([0-5]\d(?:\.\d+)?)\]?\s+\S/;
+
+const noteTime = (line) => {
+  const m = NOTE_LINE.exec(line);
+  return m ? Number(m[1]) * 60 + Number(m[2]) : null;
+};
+
+export function selfNotes(text, durationSec) {
+  const times = text.split("\n").map(noteTime).filter((t) => t !== null);
+  const late = durationSec === undefined ? [] : times.filter((t) => t > durationSec);
+  const errors = [
+    ...(times.length < SELF_NOTES_MIN ? [`${times.length} timestamped notes, need ${SELF_NOTES_MIN} or more`] : []),
+    ...late.map((t) => `note at ${t} s is after the film end at ${durationSec} s`),
+  ];
+  return { passed: errors.length === 0, notes: times.length, times, errors };
 }
 
 // ---------------------------------------------------------------- reframing
@@ -700,14 +881,38 @@ One command
 Install it today.
 `;
 
-const SCENE_HTML = `<!doctype html><html><head><style>
-html,body{margin:0;background:#101820}#b{position:absolute;top:10px;width:16px;height:16px;background:#f2aa4c}
+const sceneHtml = (box = "#f2aa4c") => `<!doctype html><html><head><style>
+html,body{margin:0;background:#101820}#b{position:absolute;top:10px;width:16px;height:16px;background:${box}}
 </style></head><body><div id="b"></div><script>
 window.__videoMeta = { width: 64, height: 48, fps: 10, duration: 0.5 };
 window.__seekToFrame = function (frameIndex, fps) {
   document.getElementById("b").style.left = (frameIndex * 9) + "px";
 };
 </script></body></html>`;
+const SCENE_HTML = sceneHtml();
+
+// 2 HTML scenes and 1 capture plate. Scene a has a 0.3 s crossfade tail handle.
+const SCOPE_TIMELINE = {
+  meta: { id: "scope", fps: 10, width: 64, height: 48, duration_sec: 1.5 },
+  scenes: [
+    { id: "a", start_sec: 0, duration_sec: 0.5, plate: "scenes/a/index.html", transition_out: "crossfade" },
+    { id: "b", start_sec: 0.5, duration_sec: 0.5, plate: "scenes/b/index.html", transition_out: "cut" },
+    { id: "c", start_sec: 1.0, duration_sec: 0.5, plate: "captures/c.mp4" },
+  ],
+};
+
+const NOTES_OK = `# Self-notes
+- 0:00.4 s01-hook: the title lands 2 frames before the downbeat. Fix: video-animator.
+- [0:02] s02-cta: the button text is small at phone width. Fix: video-animator.
+1. 0:03.5 s02-cta: the fade ends on a flat frame. Fix: video-editor.
+- no time on this line, so it does not count
+`;
+const NOTE_CASES = [
+  [[NOTES_OK, 5.5], { passed: true, notes: 3 }, "3 timestamped notes"],
+  [[NOTES_OK.replace("1. 0:03.5", "1. later"), 5.5], { passed: false, notes: 2 }, "2 timestamped notes"],
+  [[NOTES_OK, 3.0], { passed: false, notes: 3 }, "a note after the film end"],
+  [["- 0:01 one\n- 0:02 two\n- 0:03 three\n"], { passed: true, notes: 3 }, "no timeline"],
+];
 
 const CAPTION_HTML = '<!doctype html><p style="margin:0;color:#fff">Hi</p><script>window.__seekToFrame=()=>{};</script>';
 
@@ -861,6 +1066,98 @@ async function testMissingSeek(root) {
   check(error?.message.includes('typeof window.__seekToFrame is "undefined"'), `error was: ${error?.message}`);
 }
 
+
+const testSubframeTimes = () => {
+  assertEq(subframeTimes(3, 1), [3], "1 subframe");
+  assertEq(subframeTimes(3, 4), [3, 3.25, 3.5, 3.75], "4 subframes");
+};
+
+const testWorkers = () => {
+  assertEq([1, 4, 10, 14, 64].map(defaultWorkers), [1, 2, 6, 8, 8], "60 % of CPUs, 1 to 8");
+};
+
+const testSamples = () => {
+  assertEq(sampleFrames(8), [0, 2, 4, 6, 7], "8 frames");
+  assertEq(sampleFrames(2), [0, 1], "2 frames");
+};
+
+const pick = (r) => ({ passed: r.passed, notes: r.notes });
+const testSelfNotes = () => NOTE_CASES.forEach(([args, want, what]) => assertEq(pick(selfNotes(...args)), want, what));
+
+// A raw row of a PNG, as bytes: gray by default, or 3 bytes a pixel for rgb24.
+function grayRow(png, y, width, format = "gray") {
+  const args = ["-v", "error", "-i", png, "-vf", `crop=${width}:1:0:${y},format=${format}`, "-f", "rawvideo", "-"];
+  return [...spawnSync("ffmpeg", args).stdout];
+}
+
+async function testAverage(root) {
+  const sub = join(root, "avg-sub"), out = join(root, "avg-out");
+  [sub, out].forEach((d) => mkdirSync(d));
+  const grey = (i) => ["-f", "lavfi", "-i", `color=c=0x${pad((i * 30).toString(16)).repeat(3)}:s=4x4,format=rgb24`, "-frames:v", "1", join(sub, subName(i))];
+  await inSequence(range(8), (i) => ffmpeg(grey(i)));
+  await averageSubframes(sub, 4, [3, 9], out);
+  const red = (f) => grayRow(join(out, frameName(f)), 0, 1, "rgb24")[0];
+  assertEq([red(3), red(9)], [45, 165], "window means");
+}
+
+// Pixels between the background (22) and the box (180) on the row through the box.
+const blurWidth = (png) => grayRow(png, 18, 64).filter((v) => v > 32 && v < 170).length;
+
+async function testBlurWidth(root) {
+  const widths = await inSequence([1, 8], async (n) => {
+    await renderScene({ ...sceneBase(root), out: join(root, `blur${n}`), frames: "2,", subframes: n });
+  }).then(() => [1, 8].map((n) => blurWidth(join(root, `blur${n}`, frameName(2)))));
+  check(widths[0] === 0 && widths[1] > 1, `blur width at 1 and 8 subframes: ${widths.join(", ")} px`);
+  return `${widths[1]} px at 8 subframes`;
+}
+
+async function testBlurMp4(root) {
+  const out = join(root, "blur.mp4");
+  await renderScene({ ...sceneBase(root), out, subframes: 4 });
+  const p = await probe(out);
+  assertEq([p.video.r_frame_rate, p.video.avg_frame_rate, p.video.nb_frames], ["10/1", "10/1", "5"], "blurred mp4 frames");
+}
+
+async function testBlurReverse(root) {
+  const [fwd, rev] = [join(root, "bfwd"), join(root, "brev")];
+  await renderScene({ ...sceneBase(root), out: fwd, frames: "1,3", subframes: 4 });
+  await renderScene({ ...sceneBase(root), out: rev, frames: "1,3", subframes: 4, reverse: true });
+  [1, 3].forEach((f) => check(sameBytes(join(fwd, frameName(f)), join(rev, frameName(f))), `blurred frame ${f} differs`));
+}
+
+function scopeProject(root) {
+  const dir = join(root, "scope");
+  ["scenes/a", "scenes/b", "captures"].forEach((d) => mkdirSync(join(dir, d), { recursive: true }));
+  writeFileSync(join(dir, "timeline.json"), json(SCOPE_TIMELINE));
+  writeFileSync(join(dir, "scenes/a/index.html"), sceneHtml());
+  writeFileSync(join(dir, "scenes/b/index.html"), sceneHtml());
+  writeFileSync(join(dir, "captures/c.mp4"), "plate bytes");
+  return { dir, timelineFile: join(dir, "timeline.json") };
+}
+
+async function testParallelScenes(root) {
+  const { dir, timelineFile } = scopeProject(root);
+  const report = await renderScenes({ timelineFile, outDir: join(dir, "render/scenes"), workers: 2, subframes: 1, sample: false });
+  assertEq(report.scenes.map((s) => s.id), ["a", "b"], "HTML scenes only");
+  const counts = await Promise.all(["a", "b"].map(async (id) => (await probe(join(dir, "render/scenes", `${id}.mp4`))).video.nb_frames));
+  assertEq(counts, ["8", "5"], "frames with the tail handle");
+}
+
+const sampleInto = (timelineFile, outDir) => renderScenes({ timelineFile, outDir, workers: 2, subframes: 1, sample: true });
+
+async function testScope(root) {
+  const { dir, timelineFile } = scopeProject(root);
+  await sampleInto(timelineFile, join(dir, "before"));
+  writeFileSync(join(dir, "scenes/a/index.html"), sceneHtml("#4cf2aa"));
+  await sampleInto(timelineFile, join(dir, "fix1"));
+  const one = scopeCheck({ timelineFile, before: join(dir, "before"), after: join(dir, "fix1"), fix: ["a"] });
+  assertEq([one.passed, one.checked], [true, ["b", "c"]], "a fix inside scope a");
+  writeFileSync(join(dir, "scenes/b/index.html"), sceneHtml("#4c4cf2"));
+  await sampleInto(timelineFile, join(dir, "fix2"));
+  const two = scopeCheck({ timelineFile, before: join(dir, "before"), after: join(dir, "fix2"), fix: ["a"] });
+  assertEq([two.passed, two.changed.map((c) => c.id)], [false, ["b"]], "a change outside scope a");
+}
+
 const BASE_TESTS = [
   ["SKILL.md is under 12288 bytes with name: video-render", testSkillMd],
   ["skill folder holds only .md and .mjs text files", testTextOnly],
@@ -872,6 +1169,11 @@ const BASE_TESTS = [
   ["ffmpeg encodes PNG frames to CFR H.264 High yuv420p", testEncode],
   ["--package writes captions, chapters, cover, previews and 3 aspects", testPackage],
   ["a missing Chrome binary gives a usage error with a clear message", testMissingChrome],
+  ["subframe n of frame k seeks k + n / count", testSubframeTimes],
+  ["default workers are 60 % of CPUs, 1 to 8", testWorkers],
+  ["scope samples are first, quarters and last", testSamples],
+  ["--self-notes needs 3 timestamped notes inside the film", testSelfNotes],
+  ["tmix averages each window of subframes into 1 frame", testAverage],
 ];
 
 const CHROME_TESTS = [
@@ -879,6 +1181,11 @@ const CHROME_TESTS = [
   ["Chrome render to .mp4 uses __videoMeta.duration", testSceneMp4],
   ["Chrome --transparent writes RGBA frames with a clear background", testTransparent],
   ["Chrome render fails without window.__seekToFrame", testMissingSeek],
+  ["8 subframes blur a moving square, 1 subframe keeps it sharp", testBlurWidth],
+  ["a blurred .mp4 keeps CFR and duration x fps frames", testBlurMp4],
+  ["blurred frames are byte-identical forward and reverse", testBlurReverse],
+  ["--scenes renders HTML scenes in parallel workers with tail handles", testParallelScenes],
+  ["scope check passes a fix inside scope and names a changed scene outside it", testScope],
 ];
 
 const skipChrome = () => [[`headless Chrome render # SKIP no Chrome at ${chromePath()}`, () => undefined]];
@@ -913,6 +1220,9 @@ const OPTIONS = {
   frames: { type: "string" }, reverse: { type: "boolean" }, transparent: { type: "boolean" },
   package: { type: "string" }, master: { type: "string" }, "out-dir": { type: "string" },
   aspects: { type: "string" }, "cover-sec": { type: "string" }, "scene-clips": { type: "string" },
+  subframes: { type: "string" }, scenes: { type: "string" }, workers: { type: "string" }, sample: { type: "boolean" },
+  "scope-check": { type: "string" }, before: { type: "string" }, after: { type: "string" }, fix: { type: "string" },
+  "self-notes": { type: "string" }, timeline: { type: "string" },
   "self-test": { type: "boolean" }, help: { type: "boolean", short: "h" },
 };
 
@@ -927,7 +1237,40 @@ function sceneOptions(v) {
   check(Number.isInteger(fps), "--fps must be an integer", UsageError);
   const size = { width: positive(v.width, "--width", 1920), height: positive(v.height, "--height", 1080) };
   const flags = { frames: v.frames, reverse: Boolean(v.reverse), transparent: Boolean(v.transparent) };
-  return { scene: v.scene, out: v.out, fps, ...size, duration: positive(v.duration, "--duration"), ...flags };
+  return { scene: v.scene, out: v.out, fps, ...size, duration: positive(v.duration, "--duration"), ...flags, subframes: subframes(v) };
+}
+
+function subframes(v) {
+  const n = positive(v.subframes, "--subframes", 1);
+  return SUBFRAME_COUNTS.includes(n) ? n : fail(`--subframes must be one of ${SUBFRAME_COUNTS.join(", ")}`, UsageError);
+}
+
+function workers(v) {
+  const n = positive(v.workers, "--workers", defaultWorkers());
+  return Number.isInteger(n) ? n : fail("--workers must be an integer", UsageError);
+}
+
+async function scenesMode(v) {
+  check(v["out-dir"], "--scenes needs --out-dir", UsageError);
+  const opts = { timelineFile: v.scenes, outDir: resolve(v["out-dir"]), workers: workers(v), subframes: subframes(v), sample: Boolean(v.sample) };
+  console.log(JSON.stringify(await renderScenes(opts), null, 2));
+  return 0;
+}
+
+const idList = (text) => (text ?? "").split(",").map((s) => s.trim()).filter(Boolean);
+
+function scopeMode(v) {
+  check(v.before && v.after, "--scope-check needs --before and --after", UsageError);
+  const report = scopeCheck({ timelineFile: v["scope-check"], before: resolve(v.before), after: resolve(v.after), fix: idList(v.fix) });
+  console.log(JSON.stringify(report, null, 2));
+  return report.passed ? 0 : 1;
+}
+
+function selfNotesMode(v) {
+  const duration = v.timeline ? loadTimeline(v.timeline).meta.duration_sec : undefined;
+  const report = selfNotes(readFileSync(v["self-notes"], "utf8"), duration);
+  console.log(JSON.stringify(report, null, 2));
+  return report.passed ? 0 : 1;
 }
 
 async function sceneMode(v) {
@@ -955,19 +1298,22 @@ async function packageMode(v) {
 const uncomment = (line) => line.replace(/^\/\/ ?/, "");
 
 function showHelp() {
-  const header = readFileSync(fileURLToPath(import.meta.url), "utf8").split("\n").slice(1, 14);
+  const header = readFileSync(fileURLToPath(import.meta.url), "utf8").split("\n").slice(1, 19);
   process.stdout.write(`${header.map(uncomment).join("\n")}\n`);
   return 0;
 }
 
 const selfTestMode = async () => ((await selfTest()) ? 0 : 1);
-const MODES = [["help", showHelp], ["self-test", selfTestMode], ["scene", sceneMode], ["package", packageMode]];
+const MODES = [
+  ["help", showHelp], ["self-test", selfTestMode], ["scene", sceneMode], ["package", packageMode],
+  ["scenes", scenesMode], ["scope-check", scopeMode], ["self-notes", selfNotesMode],
+];
 
 const modeIn = (values) => ([flag]) => values[flag];
 
 function main() {
   const { values } = parseArgs({ options: OPTIONS, strict: true });
-  const mode = MODES.find(modeIn(values)) ?? fail("pass --scene, --package or --self-test (see --help)", UsageError);
+  const mode = MODES.find(modeIn(values)) ?? fail("pass --scene, --scenes, --package, --scope-check, --self-notes or --self-test (see --help)", UsageError);
   return mode[1](values);
 }
 
