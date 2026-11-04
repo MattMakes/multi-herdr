@@ -147,6 +147,31 @@ ok "check_audio passes -14 LUFS stereo" python3 "$AUDIO_CHECK" "$P/audio/mix.wav
 bad "check_audio fails a clipped mix" python3 "$AUDIO_CHECK" "$W/hot.wav" --out "$W/audio-hot.json"
 bad "check_audio fails a silent mix" python3 "$AUDIO_CHECK" "$W/silent.wav" --out "$W/audio-silent.json"
 
+# Sync sheet: 1 voice file per scene (macOS say when present, else a tone), then
+# sync_sheet.py, then the gate. A sheet with the words reversed must fail.
+for scene in "s01-hook:Ship every frame." "s02-cta:Try it today."; do
+  id=${scene%%:*} text=${scene#*:}
+  if command -v say >/dev/null 2>&1; then
+    say -o "$W/vo-$id.aiff" "$text"
+    ffmpeg -hide_banner -v error -y -i "$W/vo-$id.aiff" -ar 48000 -ac 1 -c:a pcm_s16le "$P/audio/vo-$id.wav"
+  else
+    ffmpeg -hide_banner -v error -y -f lavfi -i "aevalsrc=exprs='0.4*sin(2*PI*220*t)':s=48000:d=1.2" \
+      -c:a pcm_s16le "$P/audio/vo-$id.wav"
+  fi
+done
+ok "sync_sheet writes audio/sync-sheet.json" python3 "$S/video-audio/scripts/sync_sheet.py" --timeline "$P/timeline.json" \
+  --audio-dir "$P/audio" --beats "$P/audio/beats.json" --out "$P/audio/sync-sheet.json"
+ok "check_audio passes the sync sheet" python3 "$AUDIO_CHECK" "$P/audio/mix.wav" --timeline "$P/timeline.json" \
+  --sync-sheet "$P/audio/sync-sheet.json" --out "$W/audio-sync.json"
+python3 - "$P/audio/sync-sheet.json" "$W/sync-bad.json" <<'PY'
+import json, sys
+sheet = json.load(open(sys.argv[1]))
+sheet["vo_segments"][0]["words"].reverse()
+json.dump(sheet, open(sys.argv[2], "w"))
+PY
+bad "check_audio fails words out of order" python3 "$AUDIO_CHECK" "$P/audio/mix.wav" --timeline "$P/timeline.json" \
+  --sync-sheet "$W/sync-bad.json" --out "$W/audio-sync-bad.json"
+
 # compare_frames: a reference set, the same set with 1 px of drift and noise, and a shifted set.
 mkframes() { # DIR X_OFFSET Y NOISE
   local i=0 x

@@ -19,7 +19,7 @@ Do not use it for UI motion or type. Use `video-motion` for those.
 
 - `MOTION.md`: character identity tokens (palette, proportions, personality, motion tokens).
 - `timeline.json`: the scenes where the character appears and its reaction cues.
-- `audio/sync-sheet.json` and the voice-over WAV files: word timings and the amplitude envelope.
+- `audio/sync-sheet.json` (`vo_segments[].words[]` with `word`, `start_sec`, `end_sec`, in project time) and the voice-over WAV files: word timings and the amplitude envelope.
 
 Read `references/rig-and-visemes.md` for the full layer tree, the formulas, the viseme table format and a rig check.
 

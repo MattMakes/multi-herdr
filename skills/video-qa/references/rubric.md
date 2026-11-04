@@ -123,7 +123,9 @@ illustrations; then score `5` and write `N/A - no characters` in the axis row.
 ## Axis 7: Audio-Visual Sync
 
 Evidence: narration and on-screen events at the extracted frames, checks 8
-and 9, `audio/sync-sheet.json` when present.
+and 9, `audio/sync-sheet.json` when present (word times in
+`vo_segments[].words[]`, beats in `beats_sec`, and `timing`: `estimated`
+or `measured`).
 
 - 5: Each visual reveal lands with its word or beat (within 1 frame by eye).
   Music, voice and effects are clear and balanced.

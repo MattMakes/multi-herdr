@@ -229,7 +229,7 @@ Tune the 2 thresholds per voice by looking at 5-10 frames. This option needs no 
 
 ### Option B: viseme table
 
-Build `visemes.json` from word timings in `audio/sync-sheet.json`. Map each word to a short viseme run by its letters:
+Build `visemes.json` from word timings in `audio/sync-sheet.json`: `vo_segments[].words[]`, each with `word`, `start_sec` and `end_sec` in project time. Subtract the scene `start_sec` for scene time. Use `rest` between `vo_segments[].phrases`. When `timing` is `estimated`, word times inside a phrase are approximate: let the amplitude envelope decide open or closed. Map each word to a short viseme run by its letters:
 
 | Viseme | Letters or sounds | Shape |
 | --- | --- | --- |

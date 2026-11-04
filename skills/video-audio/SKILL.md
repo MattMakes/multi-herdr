@@ -7,8 +7,8 @@ description: Use when a video project needs its sound - per-scene voice-over fro
 
 Phase 3 of the video pipeline. Input: `timeline.json`, `DIRECTION.md`,
 `captures/<scene-id>.json` and an optional music bed. Output: `audio/vo-*.wav`,
-`audio/beats.json`, `audio/sfx-cues.json`, `audio/mix.wav`, and
-`qa/audio-check.json`. The editor in Phase 5 uses only `audio/mix.wav` and the
+`audio/beats.json`, `audio/sync-sheet.json`, `audio/sfx-cues.json`,
+`audio/bed.wav`, `audio/mix.wav`, and `qa/audio-check.json`. The editor in Phase 5 uses only `audio/mix.wav` and the
 reconciled `timeline.json`.
 
 `<skill-dir>` is the folder that holds this SKILL.md. Run every command from
@@ -25,11 +25,14 @@ Generated `.wav`, `.aiff` and `.mp3` files are build output. Do not commit them.
 1. Voice-over per scene -> `audio/vo-<scene-id>.wav`.
 2. Reconcile timings in `timeline.json`, then run the plan checker again.
 3. Beat grid -> `audio/beats.json`.
+   3b. Sync sheet -> `audio/sync-sheet.json` (word times and beats).
 4. SFX cues -> `audio/sfx/*.wav` and `audio/sfx-bus.wav`.
 5. Duck and master -> `audio/mix.wav`.
 6. Gate -> `<skill-dir>/scripts/check_audio.py`. Fix and repeat until it passes.
 
 Recipes for steps 3 to 5 are in `<skill-dir>/references/lavfi-sfx-recipes.md`.
+The sync sheet, the effect placement and the arc rules are in
+`<skill-dir>/references/sync-and-placement.md`.
 
 ## 1. Voice-over
 
@@ -130,6 +133,23 @@ cuts and hero reveals to a beat when the beat is within `40 ms` (`2` frames at
 Trim or loop the bed to `meta.duration_sec`. Fade it out over the last `1.0 s`
 with `afade=t=out`.
 
+## 3b. Sync sheet
+
+`video-motion`, `video-character` and the critic read word times from
+`audio/sync-sheet.json`. Write it after steps 2 and 3, because it needs the
+final scene `start_sec` and the beats:
+
+```bash
+python3 "<skill-dir>/scripts/sync_sheet.py" --timeline timeline.json \
+  --audio-dir audio --beats audio/beats.json --out audio/sync-sheet.json
+```
+
+It splits each voice file into phrases with `ffmpeg silencedetect` and gives
+each word a time in proportion to its syllables (`"timing": "estimated"`).
+Add `--whisper-model <file>` only when a whisper.cpp binary and model are
+already on disk (`"timing": "measured"`). Write it again after any change to
+a voice file or a scene start.
+
 ## 4. SFX
 
 Sources, in this order:
@@ -146,8 +166,11 @@ Cue sources:
 - Callout reveals -> `chime` or `pop`. The CTA or hero drop -> `riser` + `impact-sub`.
 
 Write every cue to `audio/sfx-cues.json` as
-`{ "time_sec", "kind", "scene_id", "gain_db" }`. Build the SFX bus with 1
-`adelay` per cue. Rules: keep SFX `12-20 dB` under the voice, put a fade on
+`{ "time_sec", "kind", "scene_id", "gain_db", "sync", "start_sec" }`. Place
+each effect by its measured sync point, not by its first sample: run
+`check_audio.py --measure-sfx audio/sfx`, then set
+`start_sec = time_sec - <onset, peak or end of the file>`. A riser ends on
+the drop (`sync: end`). Build the SFX bus with 1 `adelay` of `start_sec` per cue. Rules: keep SFX `12-20 dB` under the voice, put a fade on
 every edge, and do not use more than 1 key sound per `60 ms`.
 
 ## 5. Ducking and master
@@ -158,6 +181,8 @@ every edge, and do not use more than 1 key sound per `60 ms`.
    `sidechaincompress=threshold=0.02:ratio=8:attack=30:release=250`. The attack
    is `30 ms` and the release is `250 ms`. Volume automation with `volume` and
    `enable` is the alternative.
+   Also write the ducked bed alone to `audio/bed.wav` for the effect margin
+   check.
 3. Mix voice, ducked music and SFX with `amix ... normalize=0` into
    `audio/premix.wav`.
 4. Master in 2 passes with `loudnorm=I=-14:TP=-1.0:LRA=7`: measure first, then
@@ -173,8 +198,12 @@ Pad or trim the master to `meta.duration_sec`. The gate allows `+-0.05 s`.
 
 ```bash
 python3 "<skill-dir>/scripts/check_audio.py" audio/mix.wav \
-  --timeline timeline.json --beats audio/beats.json --out qa/audio-check.json
+  --timeline timeline.json --beats audio/beats.json --sync-sheet audio/sync-sheet.json \
+  --sfx-cues audio/sfx-cues.json --sfx-bus audio/sfx-bus.wav --bed audio/bed.wav \
+  --out qa/audio-check.json
 ```
+
+Add `--music audio/music.wav` when the project has a supplied music bed.
 
 Exit `0`: every gate passes. Exit `1`: a gate fails, and `errors[]` names the rule.
 Exit `2`: an input or a tool is missing.
@@ -190,6 +219,15 @@ Exit `2`: an input or a tool is missing.
 | `silence.trailing` | `<= 0.20 s` | Let the bed fade to the last frame |
 | `silence.dropout` | no internal gap `> 0.80 s` below `-50 dBFS` | Extend the bed, or list the gap |
 | `beats.bpm`, `beats.order`, `beats.range`, `beats.schema` | `bpm > 0`, both lists strictly increasing in `[0, duration]` | Make the grid again |
+| `sync.*` | Words in order, inside their segment, segment inside its scene, every narrated scene present | Run `sync_sheet.py` again |
+| `sfx.sync` | Each cue's sync point lands within `40 ms` of `time_sec` | Set `start_sec` from `--measure-sfx` |
+| `sfx.margin` | Each effect `>= 3 dB` over the bed in its band | Raise `gain_db` or duck the bed |
+| `mix.hero_loudest` | Loudest moment inside `meta.hero_sec` | Lift the hero |
+| `mix.payoff_silence` | `>= 0.4 s` quiet run inside `meta.payoff_silence_sec` | Cut bed and SFX there |
+| `music.drop` | The bed's drop within 1 beat of the hero start | Offset the bed |
+
+When `meta.bpm` is set, the film has music, and `meta.hero_sec` and
+`meta.payoff_silence_sec` are required.
 
 A planned silence (a dramatic pause) is allowed only when
 `timeline.json` lists it: `"meta": { "allowed_silences": [[12.4, 13.6]] }`, in seconds.
@@ -203,9 +241,10 @@ change the script. It makes its test audio in a temporary directory.
 ## Done means
 
 - `qa/audio-check.json` has `"passed": true`.
+- `audio/sync-sheet.json` exists and the gate ran with `--sync-sheet`.
 - `qa/plan-check.json` passes on the reconciled `timeline.json`.
 
 `<skill-dir>` is the folder that holds this SKILL.md. Run every command from
 the root of the video project.
 - `DONE:` states the LUFS, the true peak, the final duration, the TTS engine
-  and voice, and each scene whose duration changed.
+  and voice, the sync sheet `timing`, and each scene whose duration changed.

@@ -20,7 +20,7 @@ For a character or mascot rig, also use the `video-character` skill. To copy the
 - `timeline.json`: scene id, `start_sec`, `duration_sec`, `focal_point`, `text_overlays`, transitions.
 - `DIRECTION.md` and `BRAND.md` when present: colour, type and motion tokens.
 - `MOTION.md`: motion grammar tokens and character identity tokens.
-- `audio/sync-sheet.json`: word timings (`words[].start_sec`) and beats (`beats_sec`).
+- `audio/sync-sheet.json`: word timings (`vo_segments[].words[]` with `word`, `start_sec`, `end_sec`, in project time) and beats (`beats_sec`, `downbeats_sec`). Subtract the scene `start_sec` for scene time. When `timing` is `estimated`, phrase starts are within about 0.1 s.
 
 ## The seek contract
 
