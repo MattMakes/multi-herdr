@@ -19,7 +19,7 @@ For a character or mascot rig, also use the `video-character` skill. To copy the
 
 - `timeline.json`: scene id, `start_sec`, `duration_sec`, `focal_point`, `text_overlays`, transitions.
 - `DIRECTION.md` and `BRAND.md` when present: colour, type and motion tokens.
-- `MOTION.md`: motion grammar tokens and character identity tokens.
+- `MOTION.md`: the motion rule book. Read it in full before you build. When it is missing, create it from `references/motion-md-template.md`.
 - `audio/sync-sheet.json`: word timings (`vo_segments[].words[]` with `word`, `start_sec`, `end_sec`, in project time) and beats (`beats_sec`, `downbeats_sec`). Subtract the scene `start_sec` for scene time. When `timing` is `estimated`, phrase starts are within about 0.1 s.
 
 ## The seek contract
@@ -51,9 +51,10 @@ Read `references/seek-contract.md` for the full contract, a complete scene templ
 Take every value from `MOTION.md` or `BRAND.md` tokens when they exist. These are the defaults when no token exists.
 
 1. Easing. Use spring or custom bezier curves, not linear or the browser default.
+   - Pick a spring preset by the role of the element: `spring-ui` (buttons, cards, labels), `spring-camera` (pans and zooms, no overshoot), `spring-heavy` (large panels, devices), `spring-playful` (icons, mascots). A preset sets the duration when the tween sets none. `references/motion-md-template.md` lists what each is for.
    - Enter: `cubic-bezier(0.22, 1, 0.36, 1)`, 400-700 ms.
    - Exit: `cubic-bezier(0.4, 0, 1, 1)`, 200-350 ms. An exit is shorter than its enter.
-   - Linear is allowed only for constant motion such as a slow camera drift or a progress bar.
+   - Linear is allowed only for constant motion such as a slow camera drift or a progress bar. Mark that line with the comment `motion-ok: linear <reason>`. `scripts/scan_linear_motion.py` fails every other linear move.
    - A move lasts at least 100 ms (6 frames at 60 fps).
 2. Staggered reveals.
    - Offset items by 40-80 ms each.
@@ -79,17 +80,18 @@ Take every value from `MOTION.md` or `BRAND.md` tokens when they exist. These ar
 
 ## Workflow
 
-1. Read the inputs. List the beats of the scene, each with a start time, a focal point and its tokens.
+1. Read `MOTION.md` in full, then the other inputs. List the beats of the scene, each with a start time, a focal point and its tokens.
 2. Copy the template in `references/seek-contract.md` into `scenes/<scene-id>/index.html`. Copy `<skill-dir>/scripts/seek-timeline.js` to `scenes/<scene-id>/seek-timeline.js`.
 3. Build all motion as tweens on the master timeline, at times in seconds or at labels.
-4. Put any computed motion (noise, particles, character idle) in a function of `t` that `__seekToFrame` calls.
+4. Put any computed motion (noise, particles, character idle) in a function of `t` that `__seekToFrame` calls. For idle life on drawn things (breath, blink, sway, flicker, ripple), use the recipes in `references/idle-life.md` of the `video-character` skill.
 5. Run the self-check in `references/seek-contract.md`. Search the scene for every forbidden API. Fix each hit.
+   Run `python3 <skill-dir>/scripts/scan_linear_motion.py scenes/<scene-id>`. It must exit 0. Run every other check that a `MOTION.md` rule names.
 6. Render 3 sample frames twice: forward, then in reverse order. The images must be identical.
 
 ## Output
 
 - `scenes/<scene-id>/index.html`, with all scripts and styles inline or in that folder.
-- New or changed tokens in `MOTION.md`.
+- New or changed tokens and rules in `MOTION.md`, with a change log line for each fix round.
 
 ## Common mistakes
 

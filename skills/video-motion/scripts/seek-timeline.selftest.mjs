@@ -180,3 +180,42 @@ test("plain objects animate as properties, for Canvas drawing", () => {
   const tl = load().ST.timeline().to(ball, { x: 200, duration: 2, ease: "linear" }, 1);
   assert.deepEqual([tl.seek(2) && ball.x, tl.seek(0) && ball.x], [100, 0]);
 });
+
+// [preset, value at p = 0.1, 0.25, 0.5, 0.75, peak over [0, 1]]
+const SPRING_POINTS = [
+  ["ui", [0.2035, 0.6510, 0.9663, 1.0035], 1.0035],
+  ["camera", [0.1090, 0.4079, 0.7752, 0.9378], 1.0],
+  ["heavy", [0.1201, 0.4706, 0.8770, 0.9946], 1.0030],
+  ["playful", [0.5087, 1.2217, 0.9575, 1.0062], 1.2337],
+];
+const peakOf = (f) => Math.max(...[...Array(1001).keys()].map((i) => f(i / 1000)));
+
+test("spring presets: values, peaks and end points", () => {
+  const { ease, springs } = load().ST;
+  assert.deepEqual(Object.keys(springs), SPRING_POINTS.map(([name]) => name));
+  SPRING_POINTS.forEach(function ([name, values, peak]) {
+    const f = ease(`spring-${name}`);
+    [0.1, 0.25, 0.5, 0.75].forEach(function (p, i) { close(f(p), values[i], 1e-3); });
+    close(f(0), 0, 1e-9);
+    assert.equal(f(1), 1);
+    close(peakOf(f), peak, 1e-3);
+  });
+  assert.throws(function () { ease("spring-wobbly"); }, /unknown ease/);
+});
+
+test("the camera spring never overshoots, the playful one bounces", () => {
+  const { ease } = load().ST;
+  const camera = [...Array(101).keys()].map((i) => ease("spring-camera")(i / 100));
+  assert.ok(camera.every((v, i) => i === 0 || v >= camera[i - 1]), "camera is monotonic");
+  assert.ok(peakOf(ease("spring-playful")) > 1.15, "playful overshoots by more than 15 %");
+});
+
+test("a spring tween with no duration takes the preset duration", () => {
+  const { ST, add } = load();
+  const card = add("card");
+  const tl = ST.timeline().to("#card", { y: 100, ease: "spring-heavy" }, 0)
+    .to("#card", { x: 50, duration: 0.2, ease: "spring-ui" }, 0);
+  close(tl.duration(), ST.springs.heavy.duration);
+  tl.seek(0.45);
+  close(Number(/translate\(([-\d.]+)px, ([-\d.]+)px/.exec(card.style.transform)[2]), 100 * ST.ease("spring-heavy")(0.5), 1e-3);
+});

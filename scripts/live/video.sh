@@ -4,8 +4,8 @@
 # bundled skills/video-* script on it, with positive and negative fixtures:
 #   1. static guards and compile checks over skills/video-* (no real media)
 #   2. every script's --self-test
-#   3. check_timeline.py, check_audio.py and compare_frames.py, each with a
-#      passing and a failing fixture
+#   3. check_timeline.py, check_audio.py, compare_frames.py and
+#      scan_linear_motion.py, each with a passing and a failing fixture
 #   4. the HTML scene template of skills/video-motion, with its real
 #      seek-timeline.js, rendered by
 #      render_frames.mjs in real headless Chrome, master.mp4 from
@@ -201,6 +201,14 @@ mkframes "$P/rendered" 1 60 ",noise=alls=3:allf=t"
 mkframes "$P/rendered-bad" 120 100 ""
 ok "compare_frames passes matching keyframes" python3 "$COMPARE" --ref "$P/ref" --rendered "$P/rendered" --out "$P/qa/reanimate-check.json"
 bad "compare_frames fails mismatched keyframes" python3 "$COMPARE" --ref "$P/ref" --rendered "$P/rendered-bad" --out "$W/reanimate-bad.json"
+
+# scan_linear_motion: the video-motion template scene is clean, a linear move fails.
+SCAN=$S/video-motion/scripts/scan_linear_motion.py
+mkdir -p "$W/scan-template" "$W/scan-linear"
+awk '/^```html$/ {f = 1; next} /^```$/ {if (f) exit} f' "$SEEK_DOC" >"$W/scan-template/index.html"
+printf '%s\n' '<script>' 'tl.to("#card", { x: 300, duration: 1, ease: "linear" }, 0);' '</script>' >"$W/scan-linear/index.html"
+ok "scan_linear_motion passes the video-motion template" python3 "$SCAN" "$W/scan-template"
+bad "scan_linear_motion fails a linear move" python3 "$SCAN" "$W/scan-linear"
 
 # ---------------------------------------------------------------- 4. render and gate
 if [ -z "$CHROME" ]; then

@@ -10,6 +10,10 @@
  *   tl.set("#badge", { attr: { fill: "#F2C14E" } }, "cta");
  *   window.__seekToFrame = function (frameIndex, fps) { tl.seek(frameIndex / fps); };
  *
+ * Spring presets by role: ease "spring-ui", "spring-camera", "spring-heavy"
+ * or "spring-playful". A tween with a preset and no duration takes the
+ * preset's duration. SeekTimeline.springs lists the preset numbers.
+ *
  * seek(t) is a pure function of t: it computes every animated property from
  * t alone and writes it, so frames can be rendered in any order.
  */
@@ -73,6 +77,38 @@
     return inside ? bezier(y1, y2, solveBezierX(x1, x2, p)) : clamp(Math.round(p), 0, 1);
   };
 
+  // Spring presets by role. Each is the step response of a damped spring,
+  // stretched over the tween duration. damping is the damping ratio: 1 never
+  // overshoots, lower values overshoot and ring. settle is the distance left
+  // to the target at the end of the tween; a smaller value makes the start
+  // faster. duration is the tween length a preset uses when a tween sets none.
+  //   ui:      buttons, cards, labels. Quick, a hair of overshoot.
+  //   camera:  pans, zooms, push-ins. No overshoot, slow soft landing.
+  //   heavy:   big panels, product shots, devices. Slow, small settle.
+  //   playful: icons, mascots, stickers. Clear bounce that rings out.
+  const SPRINGS = {
+    ui: { damping: 0.86, settle: 0.001, duration: 0.45 },
+    camera: { damping: 1, settle: 0.004, duration: 1.2 },
+    heavy: { damping: 0.8, settle: 0.01, duration: 0.9 },
+    playful: { damping: 0.42, settle: 0.005, duration: 0.75 }
+  };
+  // Position of a spring released at 0 toward 1, at time w (natural-frequency units).
+  const springAt = function (zeta, w) {
+    var wd = Math.sqrt(Math.max(0, 1 - zeta * zeta));
+    var ring = wd > 0 ? Math.cos(wd * w) + zeta / wd * Math.sin(wd * w) : 1 + w;
+    return 1 - Math.exp(-zeta * w) * ring;
+  };
+  // p in [0, 1] maps to w in [0, end]. The last term spreads the small
+  // remaining gap over the tween, so the ease ends at exactly 1.
+  const springEase = function (preset, p) {
+    var end = Math.log(1 / preset.settle) / preset.damping;
+    return p >= 1 ? 1 : springAt(preset.damping, p * end) + p * (1 - springAt(preset.damping, end));
+  };
+  const springPreset = function (name) {
+    var m = /^spring-(\w+)$/.exec(String(name).replace(/\s+/g, ""));
+    return m && has(SPRINGS, m[1]) ? SPRINGS[m[1]] : null;
+  };
+
   const linear = function (p) { return p; };
   const EASE_NAME = /^([\w-]+)(?:\.(in|out|inOut))?(?:\(([^)]*)\))?$/;
 
@@ -88,6 +124,8 @@
     "cubic-bezier": cubicBezierEase
   };
   const parseEase = function (name) {
+    var spring = springPreset(name);
+    if (spring) return springEase.bind(null, spring);
     var m = EASE_NAME.exec(name) || [];
     var args = m[3] ? m[3].split(",").map(Number) : [];
     var make = has(NAMED_EASES, m[1]) ? NAMED_EASES[m[1]] : familyEase;
@@ -324,7 +362,8 @@
   Timeline.prototype._add = function (targets, fromVars, toVars, position, isSet) {
     var list = toTargets(targets);
     var start = this._resolve(position);
-    var timing = { duration: isSet ? 0 : orDefault(toVars.duration, 0.5), ease: ease(toVars.ease) };
+    var preset = springPreset(toVars.ease) || { duration: 0.5 };
+    var timing = { duration: isSet ? 0 : orDefault(toVars.duration, preset.duration), ease: ease(toVars.ease) };
     var ends = list.map(function (target, i) {
       var at = start + staggerOffset(toVars.stagger, i, list.length);
       this._addTweens(target, fromVars, toVars, Object.assign({ start: at }, timing));
@@ -358,6 +397,7 @@
 
   globalThis.SeekTimeline = {
     timeline: function (options) { return new Timeline(options || {}); },
-    ease: ease
+    ease: ease,
+    springs: JSON.parse(JSON.stringify(SPRINGS))
   };
 }

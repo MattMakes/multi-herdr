@@ -54,8 +54,15 @@ You own:
 - `reanimate/`, `qa/reanimate-check.json`, `qa/reanimate-diff-strip.png`
 - Read only: `timeline.json`, `DIRECTION.md`, `STORYBOARD.md`, `audio/`
 
+Read `MOTION.md` in full before you build or fix any scene. When it is
+missing, create it from `references/motion-md-template.md` of `video-motion`.
+After each critic round, update its rules and its change log before you fix
+the scenes.
+
 Gates: render 3 sample frames of each scene forward and then in reverse;
-the images must be byte-identical. For a reference scene,
+the images must be byte-identical.
+`<skill-dir>/scripts/scan_linear_motion.py scenes/<scene-id>` of
+`video-motion` exits 0. Every check that a `MOTION.md` rule names passes. For a reference scene,
 `compare_frames.py` of `video-reanimate` passes. No `Math.random()`,
 `Date.now()`, `performance.now()`, `setTimeout` or `setInterval` in render
 code. When 2 animators run at once, each owns only the scene folders in its
