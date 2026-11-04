@@ -42,7 +42,7 @@ Write the scene as 1 file. Put the GSAP library file next to it (for example `sc
   html, body { margin: 0; width: 1920px; height: 1080px; overflow: hidden; background: #0B1020; }
   /* No animation: or transition: rules here. All motion comes from the timeline. */
   .title { position: absolute; left: 192px; top: 380px; font: 700 96px/1.1 "Inter", sans-serif; color: #F5F7FA; }
-  .word { display: inline-block; opacity: 0.45; }
+  .word { display: inline-block; margin-right: 0.28em; opacity: 0.45; }
   .word.on { opacity: 1; }
 </style>
 </head>
@@ -60,16 +60,16 @@ Write the scene as 1 file. Put the GSAP library file next to it (for example `sc
 
   // Word timings copied from audio/sync-sheet.json for this scene, in scene time.
   var WORDS = [
-    { word: "Ship", start_s: 0.20, end_s: 0.48 },
-    { word: "every", start_s: 0.48, end_s: 0.80 },
-    { word: "frame.", start_s: 0.80, end_s: 1.30 }
+    { word: "Ship", start_sec: 0.20, end_sec: 0.48 },
+    { word: "every", start_sec: 0.48, end_sec: 0.80 },
+    { word: "frame.", start_sec: 0.80, end_sec: 1.30 }
   ];
 
   var title = document.getElementById("title");
   var spans = WORDS.map(function (w) {
     var s = document.createElement("span");
     s.className = "word";
-    s.textContent = w.word + " ";
+    s.textContent = w.word;
     title.appendChild(s);
     return s;
   });
@@ -108,7 +108,7 @@ Write the scene as 1 file. Put the GSAP library file next to it (for example `sc
       d.el.setAttribute("cy", d.y + 12 * Math.sin(d.phase + t * 2 * Math.PI * 0.3));
     });
     WORDS.forEach(function (w, i) {
-      spans[i].classList.toggle("on", t >= w.start_s && t < w.end_s + 0.15);
+      spans[i].classList.toggle("on", t >= w.start_sec && t < w.end_sec + 0.15);
     });
   }
 
@@ -195,7 +195,7 @@ A spring is allowed in place of the enter bezier. Use a critically damped or sli
 
 ## 8. Kinetic typography steps
 
-1. Read the scene's words from `audio/sync-sheet.json` (`vo_segments[].words`). Convert each time to scene time: `word.start_s - scene.start_s`.
+1. Read the scene's words from `audio/sync-sheet.json` (`vo_segments[].words`). Convert each time to scene time: `word.start_sec - scene.start_sec`.
 2. Split the line into word spans once, at load.
 3. In `__seekToFrame`, mark the words whose window holds `t` as active. Keep at most 3 active.
 4. Animate the active state by opacity, weight or colour. Keep size changes `<= 8%` so the line does not reflow.

@@ -14,7 +14,7 @@ only when both parts pass.
 
 ## Blind review rules
 
-- Read only these inputs: `brief.md`, `direction.md`, `storyboard.md`,
+- Read only these inputs: `BRIEF.md`, `DIRECTION.md`, `STORYBOARD.md`,
   `timeline.json`, `render/`, `scenes/` and `qa/`.
 - Do not read builder notes, chat history, commit messages or earlier
   `qa/critique-round-*.md` files. Each round is a fresh session.
@@ -68,7 +68,7 @@ and `timestamp` when the defect has a time).
 | 3 | `stream_integrity` | No video or audio stream; `r_frame_rate`, `avg_frame_rate` and `meta.fps` differ; `pix_fmt` is not `yuv420p`; size is not `meta.width x meta.height`; a stream duration is more than `0.05 s` from `meta.duration_sec`; `nb_frames` is not `round(duration_sec * fps) +-1` |
 | 4 | `frame0_readiness` | Frame 0 `YAVG` outside `[18, 240]` (unless `meta.allow_dark_intro` is `true`), or `YMIN == YMAX` |
 | 5 | `hook_motion` | No pair of adjacent `0.5 s` samples in `0.0-3.0 s` has a mean absolute pixel difference `>= 0.03` |
-| 6 | `black_frames` | `blackdetect=d=0.05:pic_th=0.98` finds black outside a declared fade |
+| 6 | `black_frames` | `blackdetect=d=0.05:pic_th=0.98:pix_th=0.03` finds black outside a declared fade; a dark brand background such as `#0B1020` is not black |
 | 7 | `freeze_frames` | `freezedetect=n=-60dB:d=1.5` finds a freeze longer than `1.5 s` outside a `static_hold` scene |
 | 8 | `audio_loudness` | Integrated loudness is outside `meta.lufs_target` (default `-14.0 LUFS`) `+-1.0 LU`, or true peak is above `-1.0 dBTP` |
 | 9 | `audio_boundary_pops` | Audio peak within `20 ms` of a scene cut is above `-3.0 dBFS` |

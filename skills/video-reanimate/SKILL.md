@@ -39,17 +39,17 @@ Work in `reanimate/<scene-id>/`.
    - Capture it with headless Chrome: `"<chrome>" --headless=new --screenshot=contact-sheet.png --window-size=1920,1080 file://$PWD/contact-sheet.html`.
 6. Write `motion-spec.json` (format below).
 
-`tau` is normalized time in [0, 1]: `tau = t / duration_s` of the clip. A rebuilt scene of a different length maps its times by the same `tau`.
+`tau` is normalized time in [0, 1]: `tau = t / duration_sec` of the clip. A rebuilt scene of a different length maps its times by the same `tau`.
 
 ## 2. motion-spec.json
 
 ```json
 {
   "schema_version": 1,
-  "source": { "width": 1280, "height": 720, "fps": 30, "duration_s": 2.4 },
+  "source": { "width": 1280, "height": 720, "fps": 30, "duration_sec": 2.4 },
   "keyframes": [
-    { "tau": 0.0,  "frame": 0,  "t_s": 0.0,  "foreground_bbox": [0.31, 0.38, 0.38, 0.24] },
-    { "tau": 0.25, "frame": 18, "t_s": 0.6,  "foreground_bbox": [0.22, 0.30, 0.56, 0.40] }
+    { "tau": 0.0,  "frame": 0,  "t_sec": 0.0,  "foreground_bbox": [0.31, 0.38, 0.38, 0.24] },
+    { "tau": 0.25, "frame": 18, "t_sec": 0.6,  "foreground_bbox": [0.22, 0.30, 0.56, 0.40] }
   ],
   "layers": [
     {
@@ -77,7 +77,7 @@ Work in `reanimate/<scene-id>/`.
 ## 3. Rebuild
 
 1. Build `scenes/<scene-id>/index.html` with `window.__seekToFrame` and a paused GSAP timeline.
-2. Place every tween at `tau * duration_s` of the scene. Use the `motion-spec.json` boxes, opacity, transforms and easing.
+2. Place every tween at `tau * duration_sec` of the scene. Use the `motion-spec.json` boxes, opacity, transforms and easing.
 3. Use the project's tokens for colour and type. Copy timing, layout, easing and choreography from the spec.
 
 ## 4. Compare and iterate

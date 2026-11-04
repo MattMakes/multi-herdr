@@ -51,7 +51,7 @@ FRAME0_YAVG_RANGE = (18.0, 240.0)
 HOOK_WINDOW_SEC = 3.0
 HOOK_STEP_SEC = 0.5
 HOOK_MIN_DIFF = 0.03
-BLACK_FILTER = "blackdetect=d=0.05:pic_th=0.98"
+BLACK_FILTER = "blackdetect=d=0.05:pic_th=0.98:pix_th=0.03"
 FREEZE_FILTER = "freezedetect=n=-60dB:d=1.5"
 FREEZE_MAX_SEC = 1.5
 LUFS_TOL = 1.0
@@ -794,6 +794,8 @@ def self_test():
             ("pass", {}, set()),
             ("black-frame", {"video_vf": "drawbox=x=0:y=0:w=iw:h=ih:color=black:t=fill:enable='between(t,1.2,1.7)'"},
              {"black_frames"}),
+            ("dark-background", {"video_vf": "drawbox=x=0:y=0:w=iw:h=ih:color=0x0B1020:t=fill:enable='between(t,1.2,1.7)'"},
+             set()),
             ("frozen", {"video_vf": "trim=end=2,tpad=stop_mode=clone:stop_duration=2"}, {"freeze_frames"}),
             ("raf-scene", {"scene_html": SCENE_RAF}, {"scene_determinism"}),
             ("clipped-audio", {"clip": True}, {"audio_loudness", "audio_boundary_pops"}),

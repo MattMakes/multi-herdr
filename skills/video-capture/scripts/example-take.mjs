@@ -1,5 +1,7 @@
 // Example take. Copy it to captures/src/<scene-id>.mjs in the video project.
-export const config = { dsf: 1, fixtures: { 'https://api.example.test/items': { json: { count: 3 } } } };
+// delay_ms is virtual time: the harness answers the request when the page clock has moved 900 ms,
+// so the frame count of the wait() below is the same on every run.
+export const config = { dsf: 1, fixtures: { 'https://api.example.test/items': { json: { count: 3 }, delay_ms: 900 } } };
 export default async (h) => {
   await h.goto(new URL('../../app/index.html', import.meta.url).href);
   await h.hold(300);

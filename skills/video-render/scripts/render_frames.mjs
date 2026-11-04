@@ -167,10 +167,14 @@ class Cdp {
 
 // Flags that remove the main sources of pixel drift between runs: software raster,
 // fixed device scale, sRGB output, grayscale font antialiasing, no background throttling.
+// A window below Chrome's minimum size can stall Page.captureScreenshot for good, so the
+// window never goes below WINDOW_MIN; Emulation.setDeviceMetricsOverride sets the viewport.
+const WINDOW_MIN = { width: 800, height: 600 };
+
 function chromeArgs(userDataDir, width, height) {
   return [
     "--headless=new", "--remote-debugging-port=0", `--user-data-dir=${userDataDir}`,
-    `--window-size=${width},${height}`, "--force-device-scale-factor=1",
+    `--window-size=${Math.max(width, WINDOW_MIN.width)},${Math.max(height, WINDOW_MIN.height)}`, "--force-device-scale-factor=1",
     "--disable-gpu", "--force-color-profile=srgb", "--disable-lcd-text",
     "--font-render-hinting=none", "--hide-scrollbars", "--mute-audio",
     "--disable-background-timer-throttling", "--disable-renderer-backgrounding",

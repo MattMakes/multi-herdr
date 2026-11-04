@@ -17,10 +17,10 @@ For a character or mascot rig, also use the `video-character` skill. To copy the
 
 ## Inputs
 
-- `timeline.json`: scene id, `start_s`, `duration_s`, `focal_point`, `text_overlays`, transitions.
-- `direction.md` and `BRAND.md` when present: colour, type and motion tokens.
+- `timeline.json`: scene id, `start_sec`, `duration_sec`, `focal_point`, `text_overlays`, transitions.
+- `DIRECTION.md` and `BRAND.md` when present: colour, type and motion tokens.
 - `MOTION.md`: motion grammar tokens and character identity tokens.
-- `audio/sync-sheet.json`: word timings (`words[].start_s`) and beats (`beats_s`).
+- `audio/sync-sheet.json`: word timings (`words[].start_sec`) and beats (`beats_sec`).
 
 ## The seek contract
 

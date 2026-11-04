@@ -86,7 +86,7 @@ tpad=stop_mode=clone:stop=-1,trim=end_frame=360,setpts=PTS-STARTPTS" \
   -c:v libx264 -preset slow -crf 12 -r 60 -fps_mode cfr render/scenes/s02-demo.mp4
 ```
 
-Use the scene background colour from `direction.md` for `pad`, not black, so
+Use the scene background colour from `DIRECTION.md` for `pad`, not black, so
 a letterboxed plate does not flash.
 
 Check every intermediate before you join:

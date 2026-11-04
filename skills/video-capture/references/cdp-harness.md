@@ -69,7 +69,7 @@ in about 25 s.
 
 `config` keys: `dsf` (1 or 2, default 2), `seed` (default 1), `clockIso`
 (default `2026-01-15T10:00:00Z`), `cursor` (default `true`; set `false` for
-terminal scenes), `fixtures` (`{ url: { status?, json? | body?, type? } }`),
+terminal scenes), `fixtures` (`{ url: { status?, json? | body?, type?, delay_ms? } }`),
 `allow` (URL prefixes that may reach a local server, for example
 `http://127.0.0.1:5173/`).
 
@@ -124,10 +124,12 @@ ffmpeg -y -i in.mov -vsync cfr -r 60 -c:v libx264 -preset slow -crf 14 -pix_fmt 
   callbacks (the page sees only the virtual one). Without this wait, a
   screenshot under CPU load can show the state of the step before: 3 of 12
   parallel runs gave different spinner and text frames.
-- A fixture request still takes real time. If a `wait()` predicate waits
-  for it, the frame count of the wait can change between runs. Load the
-  data before frame 0 (the self-test page uses a synchronous request in its
-  page script), and let `wait()` cover only virtual-clock timers.
+- A fixture request takes real time unless it has `delay_ms`. With
+  `delay_ms` the harness holds the response until the page clock has moved
+  that many ms, sends it, and waits until the page has taken it. A `wait()`
+  predicate on the result then covers the same frame count on every run.
+  `delay_ms` needs an async `fetch` or `XMLHttpRequest`: a synchronous
+  request blocks the page, so keep it to a fixture with no `delay_ms`.
 - A `<video>` element and a live `ttyd` page play in real time. Replace
   them with a still or a cast replay.
 - ffmpeg 8.1 warns that `-vsync` is deprecated. `-fps_mode cfr` is equal.

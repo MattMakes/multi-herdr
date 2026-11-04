@@ -27,7 +27,7 @@ fits 2 levels, give the lower score and write the reason in the report.
 
 ## Axis 1: Hook & First-Frame Read
 
-Evidence: `qa/hook-strip.png`, frame 0, checks 4 and 5, `brief.md`.
+Evidence: `qa/hook-strip.png`, frame 0, checks 4 and 5, `BRIEF.md`.
 
 - 5: Frame 0 already shows the subject and a readable claim. Clear motion
   starts before `1.0 s`. The core promise is clear by `3.0 s`.
@@ -44,7 +44,7 @@ Owners: weak claim or order of beats - `video-director`; late or weak motion -
 
 ## Axis 2: Narrative & Pacing
 
-Evidence: `qa/contact-sheet-360p.png`, `storyboard.md`, scene durations in
+Evidence: `qa/contact-sheet-360p.png`, `STORYBOARD.md`, scene durations in
 `timeline.json`, narration audio.
 
 - 5: Each scene adds 1 new idea. Scene lengths follow the narration. The end
@@ -61,7 +61,7 @@ Owners: story, order and scene length - `video-director`; cut points -
 
 ## Axis 3: Typography & Safe Zones
 
-Evidence: contact sheet tiles (`360 px` high), check 11, `direction.md` type
+Evidence: contact sheet tiles (`360 px` high), check 11, `DIRECTION.md` type
 scale, the `9x16.mp4` variant when present.
 
 - 5: All text is readable on every tile. Hierarchy is clear. No text or key
@@ -92,7 +92,7 @@ Owners: scene and character motion - `video-animator`; transition timing -
 
 ## Axis 5: Product/Demo Clarity
 
-Evidence: capture plates in the contact sheet, extracted frames, `brief.md`.
+Evidence: capture plates in the contact sheet, extracted frames, `BRIEF.md`.
 
 - 5: The viewer can follow every product action. The cursor, clicks and zooms
   lead the eye to the result. UI text is readable.
@@ -107,7 +107,7 @@ score `5` and write `N/A - no demo in brief` in the axis row.
 
 ## Axis 6: Character/Illustration Cohesion
 
-Evidence: contact sheet, `MOTION.md` when present, `direction.md`.
+Evidence: contact sheet, `MOTION.md` when present, `DIRECTION.md`.
 
 - 5: Characters and illustrations keep the same proportions, line weight,
   palette and style in every scene. Idle motion is alive.
@@ -137,7 +137,7 @@ reveal - `video-animator`; the position of a cut - `video-editor`.
 
 ## Axis 8: Brand & Aesthetic Cohesion
 
-Evidence: contact sheet as a whole, `direction.md` palette and type tokens.
+Evidence: contact sheet as a whole, `DIRECTION.md` palette and type tokens.
 
 - 5: Every scene uses the declared palette, fonts and grid. The video looks
   like 1 piece.

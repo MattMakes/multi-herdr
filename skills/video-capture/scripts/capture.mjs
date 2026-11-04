@@ -44,6 +44,10 @@ const prelude = `(() => {
   globalThis.requestAnimationFrame = (fn) => { const id = nextId++; rafs.set(id, fn); return id; };
   globalThis.cancelAnimationFrame = (id) => rafs.delete(id);
   const run = (fn, a) => { try { typeof fn === 'function' && fn(...a); } catch (e) { reportError(e); } };
+  let inflight = 0; const landed = () => { inflight--; }; // the harness waits on this count
+  const realFetch = fetch.bind(globalThis), realSend = XMLHttpRequest.prototype.send;
+  globalThis.fetch = (...a) => { inflight++; return realFetch(...a).finally(landed); };
+  XMLHttpRequest.prototype.send = function (...a) { inflight++; this.addEventListener('loadend', landed, { once: true }); return realSend.apply(this, a); };
   const css = '*,*::before,*::after{caret-color:transparent!important;cursor:none!important}' +
     '::-webkit-scrollbar{display:none!important}html{scrollbar-width:none!important}';
   const ARROW = '<svg width="28" height="28" viewBox="0 0 28 28"><path d="M4 2 L4 22 L9.5 17 L13 25 L16.5 23.5 L13 15.8 L20.5 15.8 Z" fill="#111" stroke="#fff" stroke-width="1.6" stroke-linejoin="round"/></svg>';
@@ -81,6 +85,7 @@ const prelude = `(() => {
       }
       return new Promise((done) => realRaf(() => realRaf(done))); // resolve after a real frame holds this state
     },
+    inflight: () => inflight,
     ready: async () => { await document.fonts.ready; await Promise.all([...document.images].map((i) => i.decode().catch(() => {}))); return document.fonts.status; },
   };
 })();`;
@@ -122,13 +127,16 @@ events.push((m) => {
   if (m.method === 'Runtime.consoleAPICalled' && m.params.type === 'error') errors.push(`console.error: ${m.params.args.map((a) => a.value ?? a.description).join(' ')}`);
   if (m.method === 'Fetch.requestPaused') route(m.params);
 });
+const held = []; // fixture responses with delay_ms, sent when the virtual clock reaches `at`
+const fulfil = ({ requestId, fx }) => {
+  const body = Buffer.from(typeof fx.body === 'string' ? fx.body : JSON.stringify(fx.json ?? {})).toString('base64');
+  return send('Fetch.fulfillRequest', { requestId, responseCode: fx.status ?? 200, body,
+    responseHeaders: [{ name: 'Content-Type', value: fx.type ?? 'application/json' }, { name: 'Access-Control-Allow-Origin', value: '*' }] });
+};
 async function route({ requestId, request }) { // fixtures answer, local URLs pass, the rest fail
   const fx = cfg.fixtures[request.url];
-  if (fx) {
-    const body = Buffer.from(typeof fx.body === 'string' ? fx.body : JSON.stringify(fx.json ?? {})).toString('base64');
-    return send('Fetch.fulfillRequest', { requestId, responseCode: fx.status ?? 200, body,
-      responseHeaders: [{ name: 'Content-Type', value: fx.type ?? 'application/json' }, { name: 'Access-Control-Allow-Origin', value: '*' }] });
-  }
+  if (fx?.delay_ms > 0) return held.push({ requestId, fx, at: vt + fx.delay_ms });
+  if (fx) return fulfil({ requestId, fx });
   if (/^(file:|data:|about:)/.test(request.url) || cfg.allow.some((p) => request.url.startsWith(p))) return send('Fetch.continueRequest', { requestId });
   errors.push(`blocked live request: ${request.url}`);
   return send('Fetch.failRequest', { requestId, errorReason: 'BlockedByClient' });
@@ -154,8 +162,19 @@ const tel = { scene_id: sceneId, fps, width: W * cfg.dsf, height: H * cfg.dsf, d
 let out = 0, vt = 0, owed = 0; const pos = { x: W / 2, y: H / 2 }, ripples = [];
 const tNow = () => +(out / fps).toFixed(4);
 const px = (v) => Math.round(v * cfg.dsf);
+const pause = (ms) => new Promise((ok) => setTimeout(ok, ms));
+async function pageCalm(isCalm) { // poll the page request count for up to 2 s of real time
+  for (let i = 0; i < 200 && !isCalm(await evaluate('__cap.inflight()')); i++) await pause(10);
+}
+async function release() { // send the delayed responses that are due, then let the page take them
+  const due = held.filter((d) => d.at <= vt + 1e-6);
+  for (const d of due) { held.splice(held.indexOf(d), 1); await fulfil(d); }
+  if (due.length) await pageCalm((n) => n <= held.length);
+}
 async function shoot() { // advance the page 1 frame of virtual time, return a PNG
+  await pageCalm((n) => n <= held.length); // every request the page issued has reached route()
   vt += frameMs;
+  await release();
   const rip = ripples.filter((r) => vt - r.t0 < 240).map((r) => ({ x: r.x, y: r.y, p: (vt - r.t0) / 240 }));
   await evaluate(`__cap.step(${frameMs}, ${pos.x}, ${pos.y}, ${JSON.stringify(rip)})`);
   return Buffer.from((await send('Page.captureScreenshot', { format: 'png' })).data, 'base64');
@@ -336,9 +355,9 @@ input,button{font:inherit}@keyframes spin{to{transform:rotate(360deg)}}
 <script>
   const x = new XMLHttpRequest(); x.open('GET', 'https://api.example.test/items', false); x.send();
   document.getElementById('api').textContent = 'items: ' + JSON.parse(x.responseText).count;
-  document.getElementById('go').onclick = () => setTimeout(() => {
-    document.getElementById('res').textContent = Math.random().toFixed(4) + ' ' + new Date().toISOString();
-  }, 800);
+  document.getElementById('go').onclick = () => fetch('https://api.example.test/slow').then((r) => r.json()).then((j) => {
+    document.getElementById('res').textContent = j.n + ' ' + Math.random().toFixed(4) + ' ' + new Date().toISOString();
+  });
 </script>`;
 }
 
@@ -347,7 +366,8 @@ function fixtureErrPage() {
 }
 
 function fixtureWebTake() {
-  return `export const config = { fixtures: { 'https://api.example.test/items': { json: { count: 3 } } } };
+  return `export const config = { fixtures: { 'https://api.example.test/items': { json: { count: 3 } },
+  'https://api.example.test/slow': { json: { n: 7 }, delay_ms: 800 } } };
 export default async (h) => {
   await h.goto(new URL('../../app/index.html', import.meta.url).href);
   await h.hold(200);
