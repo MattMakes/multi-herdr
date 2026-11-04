@@ -13,7 +13,7 @@
 //
 // Exit codes: 0 success, 1 render or package failure, 2 usage error.
 
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { once } from "node:events";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -24,6 +24,8 @@ import { parseArgs } from "node:util";
 
 const DEFAULT_CHROME = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
 const CDP_TIMEOUT_MS = 60_000;
+const CHROME_START_MS = 15_000;
+const CHROME_TRIES = 3;
 const SKILL_DIR = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const SKILL_MD_MAX_BYTES = 12288;
 const CLEAR = { r: 0, g: 0, b: 0, a: 0 };
@@ -112,6 +114,22 @@ function timeoutAfter(what) {
 
 function withTimeout(promise, what) {
   const deadline = timeoutAfter(what);
+  return Promise.race([promise, deadline.promise]).finally(deadline.cancel);
+}
+
+// Chrome can deadlock in its own start-up fork before it prints the DevTools URL.
+// Each start gets CHROME_START_MS. A stuck Chrome is killed and started again, CHROME_TRIES in all.
+class ChromeStartTimeout extends Error {}
+
+function chromeStartDeadline() {
+  const { promise, reject } = Promise.withResolvers();
+  const error = new ChromeStartTimeout(`Chrome did not print its DevTools URL in ${CHROME_START_MS / 1000} s`);
+  const timer = setTimeout(reject, CHROME_START_MS, error);
+  return { promise, cancel: clearTimeout.bind(null, timer) };
+}
+
+function withStartTimeout(promise) {
+  const deadline = chromeStartDeadline();
   return Promise.race([promise, deadline.promise]).finally(deadline.cancel);
 }
 
@@ -210,7 +228,7 @@ function watchSocket(ws, url, ok, no) {
 async function connect(proc) {
   const started = Promise.withResolvers();
   watchChrome(proc, started.resolve, started.reject);
-  const url = await withTimeout(started.promise, "Chrome DevTools URL");
+  const url = await withStartTimeout(started.promise);
   const ws = new WebSocket(url);
   const opened = Promise.withResolvers();
   watchSocket(ws, url, opened.resolve, opened.reject);
@@ -233,14 +251,27 @@ async function stopChrome(browser) {
   rmSync(browser.userDataDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
 }
 
+function killChildren(proc) {
+  spawnSync("pkill", ["-KILL", "-P", String(proc.pid)]); // only the children of this stuck Chrome, never by name
+}
+
 async function abortLaunch(browser, error) {
+  if (error instanceof ChromeStartTimeout) killChildren(browser.proc);
   await stopChrome(browser);
   throw error;
 }
 
-async function launchChrome(width, height) {
+const retryStart = (error, width, height, tries) => (error instanceof ChromeStartTimeout
+  ? (tries > 1 ? launchChrome(width, height, tries - 1) : fail(`${error.message}, ${CHROME_TRIES} tries`))
+  : Promise.reject(error));
+
+function launchChrome(width, height, tries = CHROME_TRIES) {
+  return startChrome(width, height).catch((error) => retryStart(error, width, height, tries));
+}
+
+async function startChrome(width, height) {
   const binary = chromePath();
-  check(existsSync(binary), `Chrome not found at ${binary}. Set CHROME_PATH.`);
+  check(existsSync(binary), `Chrome not found at ${binary}. Set CHROME_PATH or install Google Chrome.`, UsageError);
   const userDataDir = mkdtempSync(join(tmpdir(), "video-render-chrome-"));
   const proc = spawn(binary, chromeArgs(userDataDir, width, height), { stdio: ["ignore", "ignore", "pipe"] });
   const browser = { proc, userDataDir, ws: null };
@@ -807,6 +838,16 @@ async function testTransparent(root) {
   assertEq(Buffer.from(alpha, "latin1")[0], 0, "corner alpha");
 }
 
+async function testMissingChrome() {
+  const saved = process.env.CHROME_PATH, missing = "/nonexistent/chrome-for-self-test";
+  process.env.CHROME_PATH = missing;
+  const error = await launchChrome(64, 48).then(() => null, (e) => e).finally(() => restoreEnv("CHROME_PATH", saved));
+  check(error instanceof UsageError, `expected a UsageError, got: ${error}`);
+  assertEq(error.message, `Chrome not found at ${missing}. Set CHROME_PATH or install Google Chrome.`, "message");
+}
+
+const restoreEnv = (key, value) => (value === undefined ? delete process.env[key] : (process.env[key] = value));
+
 async function testMissingSeek(root) {
   const bad = join(sceneBase(root).scene, "..", "bad.html");
   writeFileSync(bad, "<!doctype html><p>no clock</p>");
@@ -824,6 +865,7 @@ const BASE_TESTS = [
   ["--frames parses counts, lists and --reverse", testFrames],
   ["ffmpeg encodes PNG frames to CFR H.264 High yuv420p", testEncode],
   ["--package writes captions, chapters, cover, previews and 3 aspects", testPackage],
+  ["a missing Chrome binary gives a usage error with a clear message", testMissingChrome],
 ];
 
 const CHROME_TESTS = [

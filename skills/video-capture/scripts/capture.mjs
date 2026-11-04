@@ -116,6 +116,7 @@ function onChromeExit(fail, code) {
 }
 function watchChrome(p, ok, fail) { // resolves '' when the start times out
   p.stderr.on('data', onChromeLog.bind(null, { text: '' }, ok));
+  p.on('error', fail); // spawn failure, for example ENOENT when the binary is missing
   p.on('exit', onChromeExit.bind(null, fail));
   setTimeout(ok, 15000, '').unref();
 }
@@ -135,7 +136,13 @@ async function startChrome(tries) {
   const c = launchChrome(), url = await c.url;
   return url ? { chrome: c.p, wsUrl: url } : retryChrome(c, tries);
 }
-const { chrome, wsUrl } = await timed('chrome-start', () => startChrome(3));
+function chromeMissing(e) { // a missing Chrome binary is a usage error: exit 2, no stack trace
+  if (e.code !== 'ENOENT') throw e;
+  console.error(`Chrome not found at ${chromePath}. Set CHROME_PATH or install Google Chrome.`);
+  rmSync(userDir, { recursive: true, force: true });
+  process.exit(2);
+}
+const { chrome, wsUrl } = await timed('chrome-start', () => startChrome(3)).catch(chromeMissing);
 const ws = new WebSocket(wsUrl);
 await new Promise((ok, fail) => { ws.onopen = ok; ws.onerror = fail; });
 let msgId = 0, sessionId; const pending = new Map(), events = [];
@@ -380,7 +387,7 @@ async function runChecks(dirs) {
   const [main] = dirs, webs = Promise.all(dirs.map(captureWeb)), err = captureIn(main, 'err');
   const rec = testRecCast(await runAsync(main, process.execPath, recCastArgs()), main); // term replays this cast
   const term = await captureIn(main, 'term');
-  return [...rec, ...testDeterminism(dirs, await webs), ...testTelemetry(main), ...testPlates(main, term), ...testErrors(await err)];
+  return [...rec, ...testDeterminism(dirs, await webs), ...testTelemetry(main), ...testPlates(main, term), ...testErrors(await err), ...testMissingChrome(main)];
 }
 
 function captureWeb(dir) {
@@ -562,6 +569,13 @@ function testPlates(dir, term) {
 function plateGate(dir, id) {
   const g = runIn(dir, 'python3', [join(scriptsDir, 'check_plate.py'), id]);
   return outcome(g.status === 0, `${id} plate gate: ${g.stdout.trim()}`);
+}
+
+function testMissingChrome(dir) {
+  const missing = '/nonexistent/chrome-for-self-test';
+  const r = spawnSync(process.execPath, [fileURLToPath(import.meta.url), '.', 'web'], { cwd: dir, encoding: 'utf8', env: { ...process.env, CHROME_PATH: missing } });
+  const ok = r.status === 2 && r.stderr.trim() === `Chrome not found at ${missing}. Set CHROME_PATH or install Google Chrome.`;
+  return [outcome(ok, `a missing Chrome binary exits 2 with a clear message (exit ${r.status})`)];
 }
 
 function testErrors(err) {

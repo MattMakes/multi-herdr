@@ -26,8 +26,9 @@ in about 25 s.
 - `node "<skill-dir>/scripts/capture.mjs" --self-test` builds a web scene
   and a terminal scene in a temp folder. Each must pass `check_plate.py`. A
   page with `console.error` and a live request must make the capture exit
-  1. 3 runs of the web scene must give identical decoded frames. It runs in
-  about 70 s.
+  1. 3 runs of the web scene must give identical decoded frames. A missing
+  Chrome binary (`CHROME_PATH` set to a missing file) must exit 2. It runs in
+  about 10 s. `--timings` prints the real time of each phase.
 - `python3 "<skill-dir>/scripts/check_plate.py" --self-test` gates 6
   synthetic plates (pass at 1x and 2x, blank, short, wrong rate, wrong size)
   in under 2 s.
