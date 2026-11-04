@@ -199,6 +199,7 @@ each team.
 | Swift and Apple (7) | `*.xcodeproj`, `*.xcworkspace` or `Package.swift` | 28 Swift and Apple skills | check the toolchain first; the builders carry `mobilebuildmcp` |
 | Design (6 new, 2 changed) | no gate: always offered | 8 design skills | brand inputs override the palettes and font pairings in the skills |
 | Blender (`blender-artist`) | `*.blend` or `*.uproject` | `blender-ue-pipeline`, `blender-modeling`, `blender-rigging`, `blender-baking` | Blender Lab MCP server; hands FBX exports to the Unreal team |
+| Blender (`blender-builder`, `blender-qa`, `blender-3d-printer`) | `*.blend`; the printer also `*.stl`, `*.3mf` or `*.obj` | the 28 copied EL4CTEO `blender-*` skills and the own-text `blender-3d-print` | ahujasid MCP server, pinned, telemetry off, network asset tools denied; headless by default; QA reports and fixes nothing |
 
 ### Unreal Engine and Git LFS
 
@@ -263,6 +264,36 @@ ORM maps). The helper functions in the last 3 were run against the `bpy`
   `ue-tools-engineer` import the files; they send Blender work to
   `blender-artist`.
 - The Git LFS lock rules from the Unreal section apply to the exports.
+
+### Blender for any target and for 3D printing
+
+3 teammates sit beside `blender-artist` and do not replace it. Each runs on
+Claude with no fallback, needs `blender` (`requires: [blender]`) and sets
+`BLENDER_PATH: "{path_of:blender}"`.
+
+| teammate | phase, model, effort | skills | named by name |
+|---|---|---|---|
+| `blender-builder` | implementation, opus, medium | `blender-core`, `blender-hardsurface-modeling`, `blender-retopology-uv`, `blender-pbr-materials`, `blender-texturing`, `blender-texture-baking`, `blender-export-pipelines`, `blender-workflow-recipes`, `blender-scene-setup` | the other 18 copied skills, not `blender-asset-qa` |
+| `blender-qa` | validation, sonnet, high | `check`, `debug`, `blender-core`, `blender-asset-qa`, `blender-game-optimization`, `blender-scene-setup`, `blender-lighting-lookdev` | `blender-3d-print`, `blender-export-pipelines`, `blender-retopology-uv`, `blender-character-rigging`, `blender-animation` |
+| `blender-3d-printer` | implementation, opus, medium | `blender-core`, `blender-3d-print`, `blender-hardsurface-modeling`, `blender-retopology-uv`, `blender-sculpting`, `blender-asset-qa` | `blender-geometry-nodes`, `blender-pipeline-automation` |
+
+- The 28 `blender-*` skills are copied verbatim from EL4CTEO/blender-skills
+  and target Blender 5.2. `blender-3d-print` is own text; its
+  `print_check.py` and `print_fix.py` run headless.
+- The MCP server is ahujasid `mcp-for-blender`, pinned to commit
+  `992233bb` (v2.2.6) with Python 3.12, `mcp==1.30.0`, `httpx==0.28.1` and
+  `--exclude-newer`. Its `env` sets `DISABLE_TELEMETRY=true`.
+- `disallowed_tools` denies `mcp__blender__generate_3d`,
+  `mcp__blender__search_assets` and `mcp__blender__import_asset`: they
+  generate models with paid providers or download assets.
+- Every tool of this server is live and needs the `ahujasid` add-on in a
+  running Blender. The teammates work headless with
+  `"$BLENDER_PATH" --background` and use the live tools only when the
+  operator says so.
+- The `ahujasid` add-on and the Blender Lab add-on both default to port 9876.
+  Run only 1.
+- `scripts/live/blender-mcp.sh` checks the pin, the telemetry gate and the
+  denied tool names. Results: `docs/live-checks/blender-mcp.md`.
 
 ### Swift and Apple, MobileBuildMCP, App Store Connect
 

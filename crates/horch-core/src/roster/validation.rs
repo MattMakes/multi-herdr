@@ -2177,7 +2177,8 @@ w3-codex: sandbox is Claude only; agent codex cannot honour it";
                 | "apple-accessibility-auditor"
                 | "codex-swift-reviewer"
                 | "godot-qa-engineer"
-                | "godot-code-reviewer" => Some(Phase::Validation),
+                | "godot-code-reviewer"
+                | "blender-qa" => Some(Phase::Validation),
                 _ => Some(Phase::Implementation),
             };
             assert_eq!(t.phase, expected, "{}", t.name);
@@ -2721,7 +2722,7 @@ w3-codex: sandbox is Claude only; agent codex cannot honour it";
             .values()
             .filter(|t| t.agent == HarnessKind::Claude && (!t.hidden || t.name == "orchestrator"))
             .count();
-        assert_eq!(covered, 63, "the rule should cover 63 claude teammates");
+        assert_eq!(covered, 66, "the rule should cover 66 claude teammates");
 
         // Take the deny away from a worker and the check fails by name.
         r.teammates.get_mut("opus").unwrap().disallowed_tools = Vec::new();
