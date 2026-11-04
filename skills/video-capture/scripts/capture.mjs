@@ -7,13 +7,15 @@ import { mkdirSync, mkdtempSync, rmSync, readFileSync, writeFileSync } from 'nod
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { promisify } from 'node:util';
 
 const scriptsDir = dirname(fileURLToPath(import.meta.url));
 if (process.argv[2] === '--self-test') process.exit(await selfTest(process.argv.includes('--timings')));
 const tm = {}, tStart = performance.now(); // --timings: real ms spent in each phase
-async function timed(phase, fn) {
+const addTime = (phase, t) => (tm[phase] = (tm[phase] || 0) + performance.now() - t);
+function timed(phase, fn) {
   const t = performance.now();
-  try { return await fn(); } finally { tm[phase] = (tm[phase] || 0) + performance.now() - t; }
+  return Promise.resolve().then(fn).finally(addTime.bind(null, phase, t));
 }
 
 const [projectDir, sceneId] = process.argv.slice(2).map(String);
@@ -104,23 +106,34 @@ const chromeArgs = ['--headless=new', '--remote-debugging-port=0', `--user-data-
   '--force-color-profile=srgb', '--font-render-hinting=none', '--disable-lcd-text', 'about:blank'];
 // Chrome can deadlock in its own start-up fork, before it prints the DevTools URL. Give each start 15 s,
 // then kill that Chrome and its child processes and start again, 3 tries in total.
+function onChromeLog(log, ok, chunk) { // resolve with the DevTools URL once Chrome prints it
+  log.text += chunk;
+  const m = log.text.match(/DevTools listening on (ws:\/\/\S+)/);
+  return m && ok(m[1]);
+}
+function onChromeExit(fail, code) {
+  fail(new Error(`chrome exited ${code}`));
+}
+function watchChrome(p, ok, fail) { // resolves '' when the start times out
+  p.stderr.on('data', onChromeLog.bind(null, { text: '' }, ok));
+  p.on('exit', onChromeExit.bind(null, fail));
+  setTimeout(ok, 15000, '').unref();
+}
 function launchChrome() {
   const p = spawn(chromePath, chromeArgs, { stdio: ['ignore', 'ignore', 'pipe'] });
-  const url = new Promise((ok, fail) => {
-    let buf = '';
-    p.stderr.on('data', (d) => { buf += d; const m = buf.match(/DevTools listening on (ws:\/\/\S+)/); if (m) ok(m[1]); });
-    p.on('exit', (c) => fail(new Error(`chrome exited ${c}`)));
-    setTimeout(ok, 15000, '').unref();
-  });
-  return { p, url };
+  return { p, url: new Promise(watchChrome.bind(null, p)) };
+}
+function killChrome(p) {
+  spawnSync('pkill', ['-KILL', '-P', String(p.pid)]); // only the children of this stuck Chrome
+  p.kill('SIGKILL');
+}
+function retryChrome(c, tries) {
+  killChrome(c.p);
+  return tries > 1 ? startChrome(tries - 1) : Promise.reject(new Error('chrome did not print its DevTools URL in 15 s, 3 tries'));
 }
 async function startChrome(tries) {
   const c = launchChrome(), url = await c.url;
-  if (url) return { chrome: c.p, wsUrl: url };
-  spawnSync('pkill', ['-KILL', '-P', String(c.p.pid)]); // only the children of this stuck Chrome
-  c.p.kill('SIGKILL');
-  if (tries <= 1) throw new Error('chrome did not print its DevTools URL in 15 s, 3 tries');
-  return startChrome(tries - 1);
+  return url ? { chrome: c.p, wsUrl: url } : retryChrome(c, tries);
 }
 const { chrome, wsUrl } = await timed('chrome-start', () => startChrome(3));
 const ws = new WebSocket(wsUrl);
@@ -218,9 +231,13 @@ async function emit(png) {
   if (out >= totalFrames) throw new Error(`scene is longer than timeline duration_sec ${scene.duration_sec} s`);
   out++; if (!ff.stdin.write(png)) await timed('encode-backpressure', () => new Promise((ok) => ff.stdin.once('drain', ok)));
 }
+const isLoaded = async () => (await evaluate('document.readyState')) === 'complete';
+const retryLoaded = (tries) => pause(25).then(waitLoaded.bind(null, tries - 1));
+// Poll document.readyState for up to 5 s of real time.
+const waitLoaded = async (tries) => (tries === 0 || (await isLoaded()) ? undefined : retryLoaded(tries));
 async function loadPage(url) {
   await send('Page.navigate', { url });
-  for (let i = 0; i < 200 && (await evaluate('document.readyState')) !== 'complete'; i++) await new Promise((r) => setTimeout(r, 25));
+  await waitLoaded(200);
   await evaluate('__cap.ready()');
 }
 const easeInOut = (u) => (u < 0.5 ? 4 * u * u * u : 1 - (-2 * u + 2) ** 3 / 2);
@@ -327,9 +344,12 @@ if (errors.length) { console.error(errors.join('\n')); process.exit(1); }
 console.log(`captures/${sceneId}.mp4: ${out} frames at ${fps} fps`);
 if (process.argv.includes('--timings')) printTimings();
 
+function phaseText([phase, ms]) {
+  return `${phase} ${(ms / 1000).toFixed(2)} s`;
+}
 function printTimings() {
-  const parts = Object.entries(tm).map(([k, v]) => `${k} ${(v / 1000).toFixed(2)} s`);
-  console.log(`timing ${sceneId}: total ${((performance.now() - tStart) / 1000).toFixed(2)} s; ${parts.join('; ')}`);
+  const total = ((performance.now() - tStart) / 1000).toFixed(2);
+  console.log(`timing ${sceneId}: total ${total} s; ${Object.entries(tm).map(phaseText).join('; ')}`);
 }
 
 // ---- self-test: a web scene and a terminal scene pass the plate gate, console.error fails, 3 runs match ----
@@ -338,17 +358,33 @@ function printTimings() {
 // so the 3 identical runs check determinism under load.
 async function selfTest(timings) {
   selfTest.timings = timings;
-  const t0 = Date.now(), dir = mkdtempSync(join(tmpdir(), 'cap-selftest-'));
-  process.on('exit', rmSync.bind(null, dir, { recursive: true, force: true })); // remove the temp dir on every exit
-  const dirs = [1, 2, 3].map((i) => join(dir, `run-${i}`));
-  dirs.forEach(writeFixtures);
-  const [main] = dirs, webs = Promise.all(dirs.map((d) => captureIn(d, 'web'))), err = captureIn(main, 'err');
-  const rec = testRecCast(await runAsync(main, process.execPath, recCastArgs()), main); // term replays this cast
-  const term = await captureIn(main, 'term');
-  const results = [...rec, ...testDeterminism(dirs, await webs), ...testTelemetry(main), ...testPlates(main, term), ...testErrors(await err)];
+  const t0 = Date.now(), results = await runChecks(makeRunDirs());
   const passed = results.filter(Boolean).length;
   console.log(`capture self-test: ${passed} of ${results.length} checks pass in ${((Date.now() - t0) / 1000).toFixed(1)} s`);
   return passed === results.length ? 0 : 1;
+}
+
+function makeRunDirs() {
+  const dir = mkdtempSync(join(tmpdir(), 'cap-selftest-'));
+  process.on('exit', rmSync.bind(null, dir, { recursive: true, force: true })); // remove the temp dir on every exit
+  const dirs = [1, 2, 3].map(runDir.bind(null, dir));
+  dirs.forEach(writeFixtures);
+  return dirs;
+}
+
+function runDir(dir, i) {
+  return join(dir, `run-${i}`);
+}
+
+async function runChecks(dirs) {
+  const [main] = dirs, webs = Promise.all(dirs.map(captureWeb)), err = captureIn(main, 'err');
+  const rec = testRecCast(await runAsync(main, process.execPath, recCastArgs()), main); // term replays this cast
+  const term = await captureIn(main, 'term');
+  return [...rec, ...testDeterminism(dirs, await webs), ...testTelemetry(main), ...testPlates(main, term), ...testErrors(await err)];
+}
+
+function captureWeb(dir) {
+  return captureIn(dir, 'web');
 }
 
 function outcome(ok, what) {
@@ -357,24 +393,40 @@ function outcome(ok, what) {
 }
 
 function runIn(dir, cmd, args) {
-  const t = Date.now(), r = spawnSync(cmd, args, { cwd: dir, encoding: 'utf8' });
-  if (selfTest.timings) printStepTiming(cmd, args, r, Date.now() - t);
-  return r;
+  const t = Date.now();
+  return noteTiming(cmd, args, t, spawnSync(cmd, args, { cwd: dir, encoding: 'utf8' }));
 }
 
 function runAsync(dir, cmd, args) { // resolves to the spawnSync result shape: { status, stdout, stderr }
-  const t = Date.now();
-  return new Promise((ok) => execFile(cmd, args, { cwd: dir, encoding: 'utf8' }, (e, stdout, stderr) => {
-    const r = { status: e ? e.code ?? 1 : 0, stdout, stderr };
-    if (selfTest.timings) printStepTiming(cmd, args, r, Date.now() - t);
-    ok(r);
-  }));
+  const t = Date.now(), run = promisify(execFile)(cmd, args, { cwd: dir, encoding: 'utf8' });
+  return run.then(asResult, asResult).then(noteTiming.bind(null, cmd, args, t));
+}
+
+function asResult(r) { // execFile resolves { stdout, stderr } or rejects an Error that also has them
+  return { status: r instanceof Error ? r.code ?? 1 : 0, stdout: r.stdout, stderr: r.stderr };
+}
+
+function noteTiming(cmd, args, t, r) {
+  selfTest.timings && printStepTiming(cmd, args, r, Date.now() - t);
+  return r;
 }
 
 function printStepTiming(cmd, args, r, ms) {
-  const name = [cmd, ...args].map((a) => a.split('/').at(-1)).join(' ').slice(0, 60);
-  for (const line of r.stdout.split('\n')) if (line.startsWith('timing ')) console.log(`  ${line}`);
+  const name = [cmd, ...args].map(baseName).join(' ').slice(0, 60);
+  r.stdout.split('\n').filter(isTimingLine).forEach(printIndented); // the child capture's own phase line
   console.log(`timing: ${name}: ${(ms / 1000).toFixed(2)} s`);
+}
+
+function baseName(path) {
+  return path.split('/').at(-1);
+}
+
+function isTimingLine(line) {
+  return line.startsWith('timing ');
+}
+
+function printIndented(line) {
+  console.log(`  ${line}`);
 }
 
 function captureIn(dir, id) {
