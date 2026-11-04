@@ -15,7 +15,7 @@
 
 import { spawn } from "node:child_process";
 import { once } from "node:events";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, extname, join, resolve } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
@@ -34,13 +34,13 @@ export const ASPECTS = {
   "1x1": { width: 1080, height: 1080 },
 };
 
-class UsageError extends Error {}
+export class UsageError extends Error {}
 
-function fail(message, Kind = Error) {
+export function fail(message, Kind = Error) {
   throw new Kind(message);
 }
 
-const check = (cond, message, Kind) => cond || fail(message, Kind);
+export const check = (cond, message, Kind) => cond || fail(message, Kind);
 const chromePath = () => process.env.CHROME_PATH || DEFAULT_CHROME;
 const range = (n) => Array.from({ length: n }, (_, i) => i);
 const sum = (list) => list.reduce((a, b) => a + b, 0);
@@ -62,7 +62,7 @@ function collect(stream) {
 
 const runError = (cmd, code, stderr) => `${cmd} exited ${code}: ${stderr.trim().split("\n").slice(-8).join("\n")}`;
 
-async function run(cmd, args) {
+export async function run(cmd, args) {
   const child = spawn(cmd, args, { stdio: ["ignore", "pipe", "pipe"] });
   const stdout = collect(child.stdout);
   const stderr = collect(child.stderr);
@@ -70,11 +70,11 @@ async function run(cmd, args) {
   return code === 0 ? stdout() : fail(runError(cmd, code, stderr()));
 }
 
-const ffmpeg = (args) => run("ffmpeg", ["-hide_banner", "-loglevel", "error", "-y", ...args]);
+export const ffmpeg = (args) => run("ffmpeg", ["-hide_banner", "-loglevel", "error", "-y", ...args]);
 const streamOf = (data, type) => data.streams.find((s) => s.codec_type === type) ?? null;
 const rate = (text) => text.split("/").map(Number).reduce((num, den) => num / den);
 
-async function probe(file) {
+export async function probe(file) {
   const data = JSON.parse(await run("ffprobe", ["-v", "error", "-show_streams", "-show_format", "-of", "json", file]));
   const video = streamOf(data, "video") ?? fail(`${file}: no video stream`);
   const audio = streamOf(data, "audio");
@@ -924,4 +924,6 @@ function die(e) {
   process.exit(e instanceof UsageError || String(e.code).startsWith("ERR_PARSE_ARGS") ? 2 : 1);
 }
 
-Promise.resolve().then(main).then((code) => process.exit(code), die);
+// Run the CLI only when this file is the entry point, so assemble_master.mjs can import it.
+const isEntry = process.argv[1] && realpathSync(process.argv[1]) === fileURLToPath(import.meta.url);
+if (isEntry) Promise.resolve().then(main).then((code) => process.exit(code), die);

@@ -1,7 +1,8 @@
 # ffmpeg compositing and publish reference
 
-Commands for Steps 3 and 4 of the video-render skill. Every command runs from
-the video project directory. The example film is `60 fps`, `1920x1080`,
+Commands for Steps 3 and 4 of the video-render skill. `scripts/assemble_master.mjs`
+runs Sections 2 to 6 for you. Read them to understand or debug its filter
+graph. Every command runs from the video project directory. The example film is `60 fps`, `1920x1080`,
 3 scenes:
 
 | id | kind | start_sec | duration_sec | transition_out |

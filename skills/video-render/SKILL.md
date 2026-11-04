@@ -90,23 +90,46 @@ caption, label, lower third and title card is HTML:
 Keep caption text inside the safe zone that the plan checker enforces (bottom
 `18%` stays clear of `critical_regions`, right `15%` on `9:16`).
 
-## Step 3 - composite render/master.mp4
+## Step 3 - assemble render/master.mp4
 
-Full filter graphs are in `references/ffmpeg-compositing.md`. The order:
+```sh
+node "<skill-dir>/scripts/assemble_master.mjs" --master timeline.json --out render/master.mp4
+```
 
-1. Normalize every capture plate and scene clip: `fps=60`, scale and pad to
-   `1920x1080`, `setsar=1`, trim to `duration_sec` plus tail handle by frame
-   count, `tpad=stop_mode=clone` when short.
-2. Join scenes in timeline order. A `cut` is `concat`. `fade`, `wipeleft`,
-   `smoothleft` and `circleopen` are `xfade` with `duration` `0.25-0.40 s`
-   (default `0.30 s`) and `offset` = the next scene's `start_sec`. That
-   offset keeps the film length equal to `meta.duration_sec`.
-3. Beat snap: every boundary `start_sec` must sit within `1` frame
-   (`1/fps` s, `16.7 ms` at `60 fps`) of a value in `beats_sec` or
-   `downbeats_sec`. Check before you encode. Prefer downbeats for hero cuts.
-4. `overlay` each transparent text sequence over the joined video.
-5. Mux `audio/mix.wav`: AAC `320 kbps`, `48 kHz`, stereo.
-6. Encode H.264 High@L4.2, `-crf 16`, `yuv420p`, CFR, `-movflags +faststart`.
+Every input path is relative to the folder of `timeline.json`:
+
+1. Scene clip, first match wins: `render/scenes/<scene-id>.mp4` (the Step 1
+   render), then `captures/<scene-id>.mp4`. Each clip is normalized to
+   `meta.fps`, fitted and padded to `meta.width` x `meta.height`, and trimmed
+   by frame count. A short clip holds its last frame.
+2. Transitions from each scene's `transition_out`, a string or
+   `{"type": ..., "duration_sec": ...}`. The duration is clamped to
+   `0.25-0.40 s`, default `0.30 s`. The last scene's value is ignored.
+
+   | `transition_out` | ffmpeg |
+   |---|---|
+   | `cut` | `concat` |
+   | `fade`, `crossfade` | `xfade` `fade` |
+   | `wipeleft`, `wipe` | `xfade` `wipeleft` |
+   | `smoothleft`, `push-left` | `xfade` `smoothleft` |
+   | `circleopen` | `xfade` `circleopen` |
+
+   Any other name fails. The transition starts at the next scene's
+   `start_sec`, so render each clip with its tail handle (Step 1).
+3. Beat check: when `audio/beats.json` exists, every scene start after the
+   first must be within `1` frame of a value in `beats_sec` or
+   `downbeats_sec`. A miss fails. The script never shifts a cut.
+4. Text layers: every `render/overlays/<name>/frame_%06d.png` sequence (Step
+   2), frame 0 at film time 0, overlaid back to front in name order.
+5. `audio/mix.wav`, padded or cut to the film length.
+
+Output: CFR H.264 High@L4.2, `-crf 16`, `yuv420p`, AAC `320 kbps`,
+`48 kHz`, stereo, `round(meta.duration_sec x meta.fps)` frames. A missing
+clip or `audio/mix.wav` exits `1` with a list of each missing path. The
+script prints a JSON report: `frames`, `duration_sec`, `beat_checked`, the
+source and transition of each scene, and the overlays used.
+
+The filter graph is explained in `references/ffmpeg-compositing.md`.
 
 Verify before you hand off:
 
@@ -161,6 +184,8 @@ chapter.
 ```sh
 node --check "<skill-dir>/scripts/render_frames.mjs"
 node "<skill-dir>/scripts/render_frames.mjs" --self-test
+node --check "<skill-dir>/scripts/assemble_master.mjs"
+node "<skill-dir>/scripts/assemble_master.mjs" --self-test
 ```
 
 It runs in a temporary directory and removes it after. It checks exact `.srt`,
@@ -169,6 +194,12 @@ a full `--package` run on a synthetic master, and, when Chrome is present,
 forward/reverse byte-identical frames, `.mp4` scene output, transparent
 frames and the missing `__seekToFrame` failure.
 
+The `assemble_master.mjs` self-test builds a 3-scene project from colour
+plates, 1 transparent text layer, a sine `mix.wav` and a `beats.json`. It
+assembles the master and probes stream specs, frame count, duration, the
+xfade blend, the overlay and the clip lookup order. It also checks the
+off-beat failure and the exit `1` on missing inputs.
+
 ## Gotchas
 
 - `requestAnimationFrame` does not fire for the renderer's page. A scene that
@@ -176,7 +207,7 @@ frames and the missing `__seekToFrame` failure.
   timeout. Make `__seekToFrame` synchronous or await only fonts and images.
 - `yuv420p` needs even width and height. Crop windows are rounded to even.
 - `xfade` needs both inputs at the same size, frame rate, pixel format and
-  timebase. Normalize first (Step 3.1).
+  timebase. `assemble_master.mjs` normalizes every clip first (Step 3, item 1).
 - An `.mp4` from `--scene` needs frames `0..N-1`. Sparse `--frames` lists
   write a directory.
 - Exit codes: `0` success, `1` render or package failure, `2` usage error.
