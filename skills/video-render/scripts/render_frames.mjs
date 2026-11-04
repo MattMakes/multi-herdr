@@ -264,10 +264,11 @@ async function abortLaunch(browser, error) {
   throw error;
 }
 
+const giveUp = (error) => Promise.reject(isStartTimeout(error) ? new Error(`${error.message}, ${CHROME_TRIES} tries`) : error);
+
 function retryStart(width, height, tries, error) {
-  if (!isStartTimeout(error)) return Promise.reject(error);
-  if (tries <= 1) return fail(`${error.message}, ${CHROME_TRIES} tries`);
-  return launchChrome(width, height, tries - 1);
+  const again = isStartTimeout(error) && tries > 1;
+  return again ? launchChrome(width, height, tries - 1) : giveUp(error);
 }
 
 function launchChrome(width, height, tries = CHROME_TRIES) {
