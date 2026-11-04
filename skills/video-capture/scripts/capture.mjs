@@ -428,6 +428,25 @@ const h = {
   },
 };
 
+function isAlive(pid) {
+  try { return process.kill(pid, 0); } catch { return false; }
+}
+// Poll for up to 5 s of real time, then SIGKILL the helpers that are still alive.
+async function helpersGone(pids, tries = 500) {
+  const alive = pids.filter(isAlive);
+  if (!alive.length) return;
+  if (tries === 0) return alive.forEach((pid) => process.kill(pid, 'SIGKILL'));
+  await pause(10);
+  return helpersGone(alive, tries - 1);
+}
+// The Chrome helpers (network service, GPU, renderers) outlive the main process for some ms, and the
+// network service writes its cache index into userDir as it exits. Wait for them before userDir is removed.
+async function stopChrome() {
+  const helpers = spawnSync('pgrep', ['-P', String(chrome.pid)], { encoding: 'utf8' }).stdout.split('\n').filter(Boolean).map(Number);
+  await new Promise((ok) => { chrome.once('exit', ok); chrome.kill(); });
+  await helpersGone(helpers);
+}
+
 try {
   await mod.default(h);
   while (out < totalFrames) await emit(await shoot()); // hold the last state to the timeline duration
@@ -435,7 +454,7 @@ try {
   ff.stdin.end(); const code = await timed('encode-finish', () => ffDone);
   tel.duration_sec = +(out / fps).toFixed(4);
   writeFileSync(join(projectDir, 'captures', `${sceneId}.json`), JSON.stringify(tel, null, 2) + '\n');
-  ws.close(); await timed('chrome-exit', () => new Promise((ok) => { chrome.once('exit', ok); chrome.kill(); })); rmSync(userDir, { recursive: true, force: true });
+  ws.close(); await timed('chrome-exit', stopChrome); rmSync(userDir, { recursive: true, force: true });
   if (code !== 0) errors.push(`ffmpeg exited ${code}`);
 }
 if (errors.length) { console.error(errors.join('\n')); process.exit(1); }
