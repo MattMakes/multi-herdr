@@ -131,7 +131,7 @@ elif ! command -v uvx >/dev/null; then
   skip "mcp-server" "uvx not found"
   skip "mcp-denied-tools" "uvx not found"
 elif out=$(python3 -I "$SCRATCH/mcp.py" "$SPEC" 2>"$SCRATCH/mcp_stderr.log"); then
-  echo "$out" | sed 's/^/  /'
+  printf '  %s\n' "${out//$'\n'/$'\n'  }"
   tools=" $(grep '^MCP tools' <<<"$out" | cut -d' ' -f4-) "
   if grep -q '^MCP call get_addon_status isError=False' <<<"$out"; then
     pass "mcp-server: $(grep '^MCP server' <<<"$out" | cut -d' ' -f3-), $(grep '^MCP tools' <<<"$out" | cut -d' ' -f3) tools; get_addon_status answers"
