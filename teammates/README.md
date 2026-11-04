@@ -459,6 +459,7 @@ For each key, the first value of this list wins:
 |---|---|---|
 | claude | `CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION: "false"` | a fork of the conversation after each turn |
 | claude | `DISABLE_AUTOUPDATER: "1"` | a mid-fleet update. `horch fleet` updates every agent CLI before the first pane starts (`horch update`) |
+| claude | `includeCoAuthoredBy: false`, `attribution` all off (`settings`, `force`) | commit and PR attribution |
 | codex | `-c tui.auto_recap=false` | a hidden recap thread when the pane loses focus |
 | codex (fleet workers) | `-c notify=[]` (`force`) | the operator's `notify` command after every worker turn |
 | opencode | `{"agent":{"title":{"disable":true}}}` (`config`) | a title call to the operator's paid `small_model` |

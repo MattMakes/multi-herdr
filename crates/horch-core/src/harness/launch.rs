@@ -1572,7 +1572,7 @@ mod tests {
                 "--permission-mode",
                 "auto",
                 "--settings",
-                r#"{"enabledPlugins":{"skill-creator@claude-plugins-official":false},"remoteControlAtStartup":false,"skillOverrides":{"anthropic-skills:skill-creator":"off","herdr-orchestrator":"off","herdr-worker":"off","herdr:herdr-orchestrator":"off","herdr:herdr-worker":"off","skill-creator":"off"},"syncClaudeAiSkills":false}"#,
+                r#"{"attribution":{"commit":"","pr":"","sessionUrl":false},"enabledPlugins":{"skill-creator@claude-plugins-official":false},"includeCoAuthoredBy":false,"remoteControlAtStartup":false,"skillOverrides":{"anthropic-skills:skill-creator":"off","herdr-orchestrator":"off","herdr-worker":"off","herdr:herdr-orchestrator":"off","herdr:herdr-worker":"off","skill-creator":"off"},"syncClaudeAiSkills":false}"#,
                 "--session-id",
                 "sid",
                 "p"
@@ -2598,6 +2598,8 @@ mod tests {
             serde_json::json!({
                 "syncClaudeAiSkills": false,
                 "remoteControlAtStartup": false,
+                "includeCoAuthoredBy": false,
+                "attribution": {"commit": "", "pr": "", "sessionUrl": false},
                 "enabledPlugins": {"herdr@m": false, "skill-creator@claude-plugins-official": false},
                 "skillOverrides": {
                     "herdr-orchestrator": "off",
@@ -2625,6 +2627,8 @@ mod tests {
         assert_eq!(
             overlay,
             serde_json::json!({"remoteControlAtStartup": false,
+                "includeCoAuthoredBy": false,
+                "attribution": {"commit": "", "pr": "", "sessionUrl": false},
                 "enabledPlugins": {"herdr@m": false, "skill-creator@claude-plugins-official": false},
                 "skillOverrides": {
                 "herdr-orchestrator": "off",
@@ -2662,6 +2666,8 @@ mod tests {
             serde_json::json!({
                 "syncClaudeAiSkills": false,
                 "remoteControlAtStartup": false,
+                "includeCoAuthoredBy": false,
+                "attribution": {"commit": "", "pr": "", "sessionUrl": false},
                 "enabledPlugins": {"skill-creator@claude-plugins-official": false},
                 "skillOverrides": {
                     "dev-prime": "off",
