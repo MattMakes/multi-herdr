@@ -57,19 +57,27 @@ function filmShape(meta) {
   return { fps, width, height, frames: Math.round(meta.duration_sec * fps) };
 }
 
-function scenePlan(s, i, scenes, film) {
-  const start = Math.round(s.start_sec * film.fps);
-  const end = i + 1 < scenes.length ? Math.round(scenes[i + 1].start_sec * film.fps) : film.frames;
-  const isLast = i + 1 === scenes.length;
-  const transition = isLast ? { type: "cut", sec: 0 } : parseTransition(s.transition_out, s.id);
-  const handle = Math.round(transition.sec * film.fps);
-  check(end > start, `scene ${s.id}: start_sec ${s.start_sec} leaves it no frames before the next scene or meta.duration_sec`);
-  return { id: s.id, start, frames: end - start + handle, handle, transition };
+const LAST_CUT = { type: "cut", sec: 0 };
+const toFrame = (sec, fps) => Math.round(sec * fps);
+const sceneEnd = (next, film) => (next ? toFrame(next.start_sec, film.fps) : film.frames);
+const sceneTransition = (s, next) => (next ? parseTransition(s.transition_out, s.id) : LAST_CUT);
+const noFrames = (s) => `scene ${s.id}: start_sec ${s.start_sec} leaves it no frames before the next scene or meta.duration_sec`;
+
+// A scene clip spans its own frames plus a tail handle as long as its outgoing transition.
+function scenePlan(s, next, film) {
+  const start = toFrame(s.start_sec, film.fps);
+  const length = sceneEnd(next, film) - start;
+  check(length > 0, noFrames(s));
+  const transition = sceneTransition(s, next);
+  const handle = toFrame(transition.sec, film.fps);
+  return { id: s.id, start, frames: length + handle, handle, transition };
 }
+
+const planWith = (film) => (s, i, all) => scenePlan(s, all[i + 1], film);
 
 export function planMaster(timeline) {
   const film = filmShape(timeline.meta);
-  const scenes = timeline.scenes.map((s, i, all) => scenePlan(s, i, all, film));
+  const scenes = timeline.scenes.map(planWith(film));
   check(scenes[0].start === 0, `scene ${scenes[0].id}: start_sec must be 0`);
   return { ...film, scenes };
 }
@@ -77,14 +85,17 @@ export function planMaster(timeline) {
 // ---------------------------------------------------------------- inputs
 
 const beatGrid = (g) => [...(g.beats_sec ?? []), ...(g.downbeats_sec ?? [])];
-const nearest = (grid, t) => Math.min(...grid.map((b) => Math.abs(b - t)));
+const distanceTo = (t) => (b) => Math.abs(b - t);
+const nearest = (grid, t) => Math.min(...grid.map(distanceTo(t)));
+const ms = (sec) => (sec * 1000).toFixed(1);
+const beatMiss = (grid, fps) => (s) => ({ s, err: nearest(grid, s.start_sec), limit: 1 / fps });
+const isMiss = (m) => m.err > m.limit + 1e-9;
+const missText = (m) => `scene ${m.s.id} start_sec ${m.s.start_sec}: ${ms(m.err)} ms off the beat grid (limit ${ms(m.limit)} ms)`;
 
 export function beatErrors(timeline, beats, fps) {
   const grid = beatGrid(beats);
   check(grid.length > 0, "audio/beats.json: beats_sec and downbeats_sec are both empty");
-  const offGrid = (s) => nearest(grid, s.start_sec) > 1 / fps + 1e-9;
-  const message = (s) => `scene ${s.id} start_sec ${s.start_sec}: ${(nearest(grid, s.start_sec) * 1000).toFixed(1)} ms off the beat grid (limit ${(1000 / fps).toFixed(1)} ms)`;
-  return timeline.scenes.slice(1).filter(offGrid).map(message);
+  return timeline.scenes.slice(1).map(beatMiss(grid, fps)).filter(isMiss).map(missText);
 }
 
 function checkBeats(root, timeline, fps) {
@@ -95,23 +106,34 @@ function checkBeats(root, timeline, fps) {
   return true;
 }
 
-const findClip = (root, id) => clipCandidates(id).find((rel) => existsSync(join(root, rel))) ?? null;
-const missingClip = (id) => `scene ${id}: none of ${clipCandidates(id).join(", ")}`;
+const MIX = "audio/mix.wav";
+const OVERLAYS = "render/overlays";
+const existsIn = (root) => (rel) => existsSync(join(root, rel));
+const clipIn = (root) => (s) => clipCandidates(s.id).find(existsIn(root)) ?? null;
+const missingClip = (s) => `scene ${s.id}: none of ${clipCandidates(s.id).join(", ")}`;
+const isDir = (d) => d.isDirectory();
+const overlayPath = (d) => `${OVERLAYS}/${d.name}`;
+const hasFirstFrame = (root) => (rel) => existsSync(join(root, rel, FIRST_FRAME));
+const byName = (a, b) => (a.name < b.name ? -1 : 1);
 
 function overlayDirs(root) {
-  const base = join(root, "render/overlays");
-  if (!existsSync(base)) return [];
-  const names = readdirSync(base, { withFileTypes: true }).filter((d) => d.isDirectory()).map((d) => d.name).sort();
-  return names.map((n) => `render/overlays/${n}`).filter((rel) => existsSync(join(root, rel, FIRST_FRAME)));
+  const base = join(root, OVERLAYS);
+  const entries = existsSync(base) ? readdirSync(base, { withFileTypes: true }) : [];
+  return entries.filter(isDir).sort(byName).map(overlayPath).filter(hasFirstFrame(root));
+}
+
+const withoutClip = (clips) => (_, i) => !clips[i];
+const mixMissing = (root) => (existsSync(join(root, MIX)) ? [] : [`audio: ${MIX}`]);
+
+function missingInputs(root, scenes, clips) {
+  return [...scenes.filter(withoutClip(clips)).map(missingClip), ...mixMissing(root)];
 }
 
 export function findInputs(root, plan) {
-  const clips = plan.scenes.map((s) => findClip(root, s.id));
-  const missing = plan.scenes.filter((_, i) => !clips[i]).map((s) => missingClip(s.id));
-  const mix = "audio/mix.wav";
-  if (!existsSync(join(root, mix))) missing.push(`audio: ${mix}`);
+  const clips = plan.scenes.map(clipIn(root));
+  const missing = missingInputs(root, plan.scenes, clips);
   check(missing.length === 0, `missing input in ${root}:\n  ${missing.join("\n  ")}`);
-  return { clips, overlays: overlayDirs(root), mix };
+  return { clips, overlays: overlayDirs(root), mix: MIX };
 }
 
 // ---------------------------------------------------------------- filter graph
@@ -132,31 +154,44 @@ function joinChain(p, i) {
   return `${left}[c${i}]${op}[j${i}]`;
 }
 
+const range = (from, to) => Array.from({ length: Math.max(0, to - from) }, (_, i) => from + i);
 const joinedLabel = (n) => (n === 1 ? "[c0]" : `[j${n - 1}]`);
-const overlayChain = (base, input, k) => `${base}[${input}:v]overlay=0:0:format=auto:eof_action=pass[o${k}]`;
+const overlayTop = (n, count) => (count === 0 ? joinedLabel(n) : `[o${count - 1}]`);
+const overlayChain = (n) => (k) => `${overlayTop(n, k)}[${n + k}:v]overlay=0:0:format=auto:eof_action=pass[o${k}]`;
+const normalizeWith = (p) => (s, i) => normalizeChain(s, i, p);
+const joinWith = (p) => (i) => joinChain(p, i);
+const finalChain = (top, frames) => `${top}format=yuv420p,trim=end_frame=${frames},setpts=PTS-STARTPTS[v]`;
 
+function audioChain(plan, input) {
+  const samples = Math.round((plan.frames / plan.fps) * SAMPLE_RATE);
+  return `[${input}:a]aresample=${SAMPLE_RATE},apad,atrim=end_sample=${samples}[a]`;
+}
+
+// Inputs: scene clips 0..n-1, then the text layers, then audio/mix.wav.
 export function filterGraph(plan, overlayCount) {
   const n = plan.scenes.length;
-  const chains = plan.scenes.map((s, i) => normalizeChain(s, i, plan));
-  for (let i = 1; i < n; i++) chains.push(joinChain(plan, i));
-  let top = joinedLabel(n);
-  for (let k = 0; k < overlayCount; k++) {
-    chains.push(overlayChain(top, n + k, k));
-    top = `[o${k}]`;
-  }
-  chains.push(`${top}format=yuv420p,trim=end_frame=${plan.frames},setpts=PTS-STARTPTS[v]`);
-  const samples = Math.round((plan.frames / plan.fps) * SAMPLE_RATE);
-  chains.push(`[${n + overlayCount}:a]aresample=${SAMPLE_RATE},apad,atrim=end_sample=${samples}[a]`);
-  return chains.join(";\n");
+  const video = [
+    ...plan.scenes.map(normalizeWith(plan)),
+    ...range(1, n).map(joinWith(plan)),
+    ...range(0, overlayCount).map(overlayChain(n)),
+  ];
+  const tail = [finalChain(overlayTop(n, overlayCount), plan.frames), audioChain(plan, n + overlayCount)];
+  return [...video, ...tail].join(";\n");
+}
+
+const clipArg = (root) => (rel) => ["-i", join(root, rel)];
+const frameArg = (root, fps) => (rel) => ["-framerate", String(fps), "-start_number", "0", "-i", join(root, rel, "frame_%06d.png")];
+const MAPS = ["-map", "[v]", "-map", "[a]"];
+
+function inputArgs(root, plan, inputs) {
+  const clips = inputs.clips.flatMap(clipArg(root));
+  const overlays = inputs.overlays.flatMap(frameArg(root, plan.fps));
+  return [...clips, ...overlays, "-i", join(root, inputs.mix)];
 }
 
 function ffmpegArgs(root, plan, inputs, out) {
-  const clipArgs = inputs.clips.flatMap((rel) => ["-i", join(root, rel)]);
-  const frameArgs = (rel) => ["-framerate", String(plan.fps), "-start_number", "0", "-i", join(root, rel, "frame_%06d.png")];
-  const overlayArgs = inputs.overlays.flatMap(frameArgs);
   const graph = filterGraph(plan, inputs.overlays.length);
-  const maps = ["-map", "[v]", "-map", "[a]"];
-  return [...clipArgs, ...overlayArgs, "-i", join(root, inputs.mix), "-filter_complex", graph, ...maps, ...h264Args(plan.fps), ...AAC_ARGS, out];
+  return [...inputArgs(root, plan, inputs), "-filter_complex", graph, ...MAPS, ...h264Args(plan.fps), ...AAC_ARGS, out];
 }
 
 const sceneReport = (inputs, fps) => (s, i) => ({ id: s.id, source: inputs.clips[i], frames: s.frames, transition_out: s.transition.type, transition_sec: s.handle / fps });
@@ -180,9 +215,6 @@ const assertEq = (actual, expected, what) => check(json(actual) === json(expecte
 const W = 640;
 const H = 360;
 const FPS = 30;
-const RED = [255, 0, 0];
-const GREEN = [0, 255, 0];
-const BLUE = [0, 0, 255];
 
 const TIMELINE = {
   meta: { id: "selftest", title: "Self test", aspect: "16:9", fps: FPS, width: W, height: H, duration_sec: 3.0 },
@@ -215,16 +247,25 @@ const TRANSITION_CASES = [
   [undefined, { type: "cut", sec: 0 }],
 ];
 
-function testTransitions() {
-  TRANSITION_CASES.forEach(([input, want]) => assertEq(parseTransition(input, "s"), want, `transition ${json(input)}`));
-  const error = (() => { try { parseTransition("spin", "s09"); } catch (e) { return e.message; } return ""; })();
+const transitionCase = ([input, want]) => assertEq(parseTransition(input, "s"), want, `transition ${json(input)}`);
+
+const noError = () => "";
+const messageOf = (e) => e.message;
+const errorOf = (fn) => Promise.resolve().then(fn).then(noError, messageOf);
+const parseSpin = () => parseTransition("spin", "s09");
+
+async function testTransitions() {
+  TRANSITION_CASES.forEach(transitionCase);
+  const error = await errorOf(parseSpin);
   check(error.includes('scene s09: transition_out "spin"'), `unknown type error was: ${error}`);
 }
+
+const frameCounts = (s) => [s.start, s.frames, s.handle];
 
 function testPlan() {
   const p = planMaster(TIMELINE);
   assertEq(p.frames, 90, "film frames");
-  assertEq(p.scenes.map((s) => [s.start, s.frames, s.handle]), [[0, 39, 9], [30, 30, 0], [60, 30, 0]], "scene frames and handles");
+  assertEq(p.scenes.map(frameCounts), [[0, 39, 9], [30, 30, 0], [60, 30, 0]], "scene frames and handles");
 }
 
 function testBeats() {
@@ -240,6 +281,9 @@ async function writePlate(root, plate) {
   await ffmpeg([...plateArgs(plate), "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p", join(root, plate[0])]);
 }
 
+const plateWriter = (root) => (plate) => writePlate(root, plate);
+const writePlates = (root) => Promise.all(PLATES.map(plateWriter(root)));
+
 // A transparent layer with an opaque white 64x36 box at the top-left corner.
 async function writeOverlay(root) {
   const dir = join(root, "render/overlays/captions");
@@ -248,12 +292,17 @@ async function writeOverlay(root) {
   await ffmpeg(["-f", "lavfi", "-i", `color=c=black:s=${W}x${H}:r=${FPS}`, "-vf", `format=rgba,${box}`, "-frames:v", "90", "-start_number", "0", join(dir, "frame_%06d.png")]);
 }
 
+// mix.wav is 2.8 s at 44.1 kHz, so the master must resample it and pad it to 3.0 s.
+async function writeAudio(root, beats) {
+  mkdirSync(join(root, "audio"), { recursive: true });
+  writeFileSync(join(root, "audio/beats.json"), json(beats));
+  await ffmpeg(["-f", "lavfi", "-i", "sine=frequency=440:sample_rate=44100:duration=2.8", "-ac", "2", join(root, "audio/mix.wav")]);
+}
+
 async function writeProject(root) {
   writeFileSync(join(root, "timeline.json"), json(TIMELINE));
-  mkdirSync(join(root, "audio"), { recursive: true });
-  writeFileSync(join(root, "audio/beats.json"), json(BEATS));
-  await ffmpeg(["-f", "lavfi", "-i", "sine=frequency=440:sample_rate=44100:duration=2.8", "-ac", "2", join(root, "audio/mix.wav")]);
-  for (const plate of PLATES) await writePlate(root, plate);
+  await writeAudio(root, BEATS);
+  await writePlates(root);
   await writeOverlay(root);
 }
 
@@ -266,20 +315,32 @@ async function meanColour(file, k, area = "crop=iw/2:ih/2") {
 
 const near = (a, b, tol = 24) => a.every((v, i) => Math.abs(v - b[i]) <= tol);
 
+const VIDEO_SPEC = ["h264", "High", 42, "yuv420p", W, H, `${FPS}/1`, `${FPS}/1`, "90"];
+const AUDIO_SPEC = ["aac", "48000", 2];
+const videoSpec = (v) => [v.codec_name, v.profile, v.level, v.pix_fmt, v.width, v.height, v.r_frame_rate, v.avg_frame_rate, v.nb_frames];
+const audioSpec = (a) => [a?.codec_name, a?.sample_rate, a?.channels];
+const secText = (v) => Number(v).toFixed(3);
+
 async function checkStreams(file) {
   const p = await probe(file);
-  const v = p.video;
-  assertEq([v.codec_name, v.profile, v.level, v.pix_fmt, v.width, v.height], ["h264", "High", 42, "yuv420p", W, H], "video stream");
-  assertEq([v.r_frame_rate, v.avg_frame_rate, v.nb_frames], [`${FPS}/1`, `${FPS}/1`, "90"], "CFR frame count");
-  assertEq([p.audio?.codec_name, p.audio?.sample_rate, p.audio?.channels], ["aac", "48000", 2], "audio stream");
-  check(Math.abs(Number(v.duration) - 3.0) <= 1 / FPS, `video duration ${v.duration} s is not 3.0 s within 1 frame`);
-  return `${v.nb_frames} frames, ${Number(v.duration).toFixed(3)} s, audio ${Number(p.audio.duration).toFixed(3)} s`;
+  assertEq(videoSpec(p.video), VIDEO_SPEC, "video stream");
+  assertEq(audioSpec(p.audio), AUDIO_SPEC, "audio stream");
+  const off = Math.abs(Number(p.video.duration) - 3.0);
+  check(off <= 1 / FPS, `video duration ${p.video.duration} s is not 3.0 s within 1 frame`);
+  return `${p.video.nb_frames} frames, ${secText(p.video.duration)} s, audio ${secText(p.audio.duration)} s`;
 }
 
+// Frames 25, 45 and 85 sit inside s01, s02 and s03; frame 34 is mid-way through the 9-frame xfade.
+const PROBE_FRAMES = [25, 34, 45, 85];
+const SCENE_COLOURS = [[255, 0, 0], [0, 255, 0], [0, 0, 255]];
+const colourAt = (file) => (k) => meanColour(file, k);
+const allNear = (got, want) => got.every((c, i) => near(c, want[i]));
+const isBlend = (mid, a, b) => !near(mid, a, 40) && !near(mid, b, 40) && mid[0] > 40 && mid[1] > 40;
+
 async function checkPictures(file) {
-  const [red, mid, green, blue] = await Promise.all([25, 34, 45, 85].map((k) => meanColour(file, k)));
-  check(near(red, RED) && near(green, GREEN) && near(blue, BLUE), `scene colours ${json([red, green, blue])}; s03 must come from render/scenes`);
-  check(!near(mid, red, 40) && !near(mid, green, 40) && mid[0] > 40 && mid[1] > 40, `frame 34 ${json(mid)} is not a red-green blend`);
+  const [red, mid, green, blue] = await Promise.all(PROBE_FRAMES.map(colourAt(file)));
+  check(allNear([red, green, blue], SCENE_COLOURS), `scene colours ${json([red, green, blue])}; s03 must come from render/scenes`);
+  check(isBlend(mid, red, green), `frame 34 ${json(mid)} is not a red-green blend`);
   const corner = await meanColour(file, 50, "crop=32:18:8:8");
   check(near(corner, [255, 255, 255]), `overlay corner is ${json(corner)}, not white`);
   return `xfade frame 34 ${json(mid)}`;
@@ -293,12 +354,15 @@ async function testAssemble(root) {
   return `${await checkStreams(file)}; ${await checkPictures(file)}`;
 }
 
+const assembledOffBeat = () => fail("an off-grid cut assembled");
+
+function offBeatError(e) {
+  check(e.message.includes("scene s02-demo start_sec 1: 100.0 ms off the beat grid"), `error was: ${e.message}`);
+}
+
 function testOffBeat(root) {
   writeFileSync(join(root, "audio/beats.json"), json({ beats_sec: [0, 0.9, 2.0] }));
-  return assembleMaster(join(root, "timeline.json"), join(root, "render/off.mp4")).then(
-    () => fail("an off-grid cut assembled"),
-    (e) => void check(e.message.includes("scene s02-demo start_sec 1: 100.0 ms off the beat grid"), `error was: ${e.message}`),
-  );
+  return assembleMaster(join(root, "timeline.json"), join(root, "render/off.mp4")).then(assembledOffBeat, offBeatError);
 }
 
 function testMissingInput(root) {
@@ -319,9 +383,14 @@ const TESTS = [
   ["--master exits 1 and names each missing input", testMissingInput],
 ];
 
+const passedWith = (note) => ({ ok: true, note });
+const failedWith = (e) => ({ ok: false, note: e.message });
+const attempt = async (fn, arg) => fn(arg);
+const testLine = (name, o) => (o.ok ? `ok - ${name}${o.note ? ` (${o.note})` : ""}` : `not ok - ${name}: ${o.note}`);
+
 async function runTest(root, [name, fn]) {
-  const outcome = await Promise.resolve().then(() => fn(root)).then((note) => ({ ok: true, note }), (e) => ({ ok: false, note: e.message }));
-  console.log(outcome.ok ? `ok - ${name}${outcome.note ? ` (${outcome.note})` : ""}` : `not ok - ${name}: ${outcome.note}`);
+  const outcome = await attempt(fn, root).then(passedWith, failedWith);
+  console.log(testLine(name, outcome));
   return outcome.ok;
 }
 
@@ -339,9 +408,11 @@ async function selfTest() {
 
 const OPTIONS = { master: { type: "string" }, out: { type: "string" }, "self-test": { type: "boolean" }, help: { type: "boolean", short: "h" } };
 
+const uncomment = (line) => line.replace(/^\/\/ ?/, "");
+
 function showHelp() {
   const header = readFileSync(SCRIPT, "utf8").split("\n").slice(1, 9);
-  process.stdout.write(`${header.map((l) => l.replace(/^\/\/ ?/, "")).join("\n")}\n`);
+  process.stdout.write(`${header.map(uncomment).join("\n")}\n`);
   return 0;
 }
 
@@ -352,12 +423,13 @@ async function masterMode(v) {
   return 0;
 }
 
+const MODES = [["help", showHelp], ["self-test", selfTest], ["master", masterMode]];
+const modeIn = (values) => ([flag]) => values[flag];
+
 function main() {
   const { values } = parseArgs({ options: OPTIONS, strict: true });
-  if (values.help) return showHelp();
-  if (values["self-test"]) return selfTest();
-  check(values.master, "pass --master <timeline.json> --out <mp4> or --self-test (see --help)", UsageError);
-  return masterMode(values);
+  const mode = MODES.find(modeIn(values)) ?? fail("pass --master <timeline.json> --out <mp4> or --self-test (see --help)", UsageError);
+  return mode[1](values);
 }
 
 function die(e) {
