@@ -253,6 +253,30 @@ fn a_checked_out_run_branch_is_fast_forwarded_by_a_merge() {
 }
 
 #[test]
+fn a_branch_with_a_merge_commit_on_the_run_branch_lands_by_fast_forward() {
+    let mut w = World::new(&[StepName::Land], false);
+    let (id, path) = w.task(None, "feature.txt");
+    git(&path, &["switch", "--quiet", "-c", "side", &w.base]);
+    commit(&path, "side.txt", "side\n");
+    git(&path, &["switch", "--quiet", BRANCH]);
+    git(
+        &path,
+        &["merge", "--quiet", "--no-ff", "-m", "merge side", "side"],
+    );
+    let head = git(&path, &["rev-parse", "HEAD"]);
+    let parents = git(&path, &["rev-list", "--parents", "-n", "1", "HEAD"]);
+    let r = w.finish(&id);
+    assert!(r.complete, "{r:?}");
+    assert_eq!(w.rev(RUN_BRANCH), head, "the merge commit lands as it is");
+    assert_eq!(
+        git(&w.root, &["rev-list", "--parents", "-n", "1", RUN_BRANCH]),
+        parents,
+        "the merge keeps both parents"
+    );
+    assert_eq!(w.worktree().landed_commit.as_deref(), Some(head.as_str()));
+}
+
+#[test]
 fn a_rebase_conflict_lands_nothing_and_aborts_the_rebase() {
     let mut w = World::new(&[StepName::Land], false);
     let (id, path) = w.task(None, "feature.txt");
