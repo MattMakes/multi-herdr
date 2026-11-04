@@ -7,6 +7,8 @@ description: Use when a video scene must recreate the motion of a reference clip
 
 Recreate the motion of a reference video as a deterministic scene. First measure the reference. Then build a candidate, render the same moments, and compare numbers. Repeat until the numbers pass. Do not judge a match by eye alone.
 
+`<skill-dir>` is the folder that holds this SKILL.md. Run every command from the video project folder.
+
 ## When to use
 
 - The operator gives a reference video, GIF or frame folder and asks for "motion like this".
@@ -84,7 +86,7 @@ Work in `reanimate/<scene-id>/`.
 2. Run the check:
 
 ```sh
-python3 skills/video-reanimate/scripts/compare_frames.py \
+python3 "<skill-dir>/scripts/compare_frames.py" \
   --ref reanimate/<scene-id>/ref/keyframes \
   --rendered reanimate/<scene-id>/rendered \
   --spec reanimate/<scene-id>/motion-spec.json \
@@ -100,7 +102,7 @@ python3 skills/video-reanimate/scripts/compare_frames.py \
 
 ## The script
 
-`scripts/compare_frames.py` needs only Python 3 and `ffmpeg` / `ffprobe`.
+`<skill-dir>/scripts/compare_frames.py` needs only Python 3 and `ffmpeg` / `ffprobe`.
 
 - `--ref` and `--rendered` each take a frame folder (PNG or JPEG, name order) or a video file. Frames pair by `tau`.
 - Without `--spec`, a folder reference uses all its frames. A video reference uses `--samples` keyframes (default 8).
