@@ -40,17 +40,31 @@ holds `timeline.json`. Do not copy the scripts into the project.
 
 Preflight, before you read the task in depth. Run each command:
 - `python3 --version` (missing: `brew install python`)
+- `test -x "${CHROME_PATH:-/Applications/Google Chrome.app/Contents/MacOS/Google Chrome}"`
+  (missing: install Google Chrome, or set `CHROME_PATH`). Chrome renders
+  the direction key frames.
 If a command fails, report `BLOCKED:` with the failed command, its
 output and the install step from this list. Do not install anything
 yourself. Do not download a model, a font or a sample.
 
+Read `.video/NOTES.md` in the video project folder first when it exists.
+Write `Loaded notes: .video/NOTES.md` or `Loaded notes: none` in `BRIEF.md`.
+
+Wave 1 has 2 steps. First write `BRIEF.md` and 3 directions in
+`DIRECTION.md`, each with a key frame in `qa/directions/`. Send the
+orchestrator the 3 PNG paths and end your turn. The orchestrator or the
+operator picks 1. Then write the `chosen:` line, the rest of
+`DIRECTION.md`, `STORYBOARD.md` and `timeline.json`.
+
 You own:
 - `BRIEF.md`, `DIRECTION.md`, `STORYBOARD.md`
+- `directions/` and `qa/directions/` (key frame pages and PNGs)
 - `timeline.json`, except the timing fields that `video-audio` reconciles
 - `qa/plan-check.json`
 
 Gate: `python3 "<skill-dir>/scripts/check_timeline.py" timeline.json` exits 0
-(`<skill-dir>` of `video-storyboard`). Do not hand off with a failing
+(`<skill-dir>` of `video-storyboard`). It also checks the 3 directions
+in `DIRECTION.md` and their PNGs. Do not hand off with a failing
 `qa/plan-check.json`. In a fix round, change only the scenes that the
 critique names.
 

@@ -7,13 +7,15 @@ Usage:
 
 Exit 0 when every gate passes, 1 when a gate fails, 2 on a usage error.
 The JSON report goes to --out (default: <timeline dir>/qa/plan-check.json)
-and to stdout. Python 3 standard library only.
+and to stdout. The CLI also checks DIRECTION.md and its key frames in the
+timeline folder. Python 3 standard library only.
 """
 
 import argparse
 import json
 import math
 import os
+import re
 import sys
 
 RULES = [
@@ -24,6 +26,12 @@ RULES = [
     "visual_variety",
     "safe_zone",
     "contiguous_timing",
+    "read_hold",
+    "terms",
+    "rhythm",
+    "event_gap",
+    "hero",
+    "directions",
     "schema",
 ]
 
@@ -43,6 +51,14 @@ CAPTION_ZONE_TOP = 0.82
 VERTICAL_UI_EDGE = 0.85
 START_TOLERANCE_SEC = 1e-3
 TOTAL_TOLERANCE_SEC = 0.05
+READ_MIN_SEC, READ_BASE_SEC, READ_PER_WORD_SEC = 1.5, 1.0, 0.3
+ENERGY_MIN, ENERGY_MAX = 0, 10
+MAX_GAP_BARS = 2
+BEATS_PER_BAR = 4
+HERO_EARLIEST, HERO_LATEST = 0.30, 0.90
+MIN_DIRECTIONS = 3
+PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
+HEX_COLOR = re.compile(r"#[0-9A-Fa-f]{6}\b")
 
 
 def is_number(value):
@@ -103,6 +119,21 @@ def check_meta(meta, report):
         report.add("schema", "meta.allow_dark_intro must be a boolean when present")
     if "allowed_silences" in meta:
         check_allowed_silences(meta["allowed_silences"], meta.get("duration_sec"), report)
+    if "bpm" in meta and not (is_number(meta["bpm"]) and meta["bpm"] > 0):
+        report.add("schema", "meta.bpm must be a number > 0 when present")
+    if "terms" in meta and not (isinstance(meta["terms"], list) and all(non_empty_str(t) for t in meta["terms"])):
+        report.add("schema", "meta.terms must be a list of non-empty strings when present")
+    for key in ("hero_sec", "payoff_silence_sec"):
+        if key in meta and not is_range(meta[key], meta.get("duration_sec")):
+            report.add("schema", "meta.%s must be [start_sec, end_sec] with 0 <= start_sec < end_sec <= meta.duration_sec" % key)
+    if "payoff_silence_sec" in meta and "hero_sec" not in meta:
+        report.add("schema", "meta.payoff_silence_sec needs meta.hero_sec")
+
+
+def is_range(value, duration):
+    if not (check_box(value, 2) and 0 <= value[0] < value[1]):
+        return False
+    return not is_number(duration) or value[1] <= duration
 
 
 def check_allowed_silences(ranges, duration, report):
@@ -138,6 +169,9 @@ def check_scene_schema(scene, label, report):
         report.add("schema", "duration_override_reason must be a string when present", label)
     if "static_hold" in scene and not isinstance(scene["static_hold"], bool):
         report.add("schema", "static_hold must be a boolean when present", label)
+    text = scene.get("on_screen_text", [])
+    if not (isinstance(text, list) and all(non_empty_str(t) for t in text)):
+        report.add("schema", "on_screen_text must be a list of non-empty strings when present", label)
     beat_in, beat_out = scene.get("beat_in"), scene.get("beat_out")
     if not (is_int(beat_in) and is_int(beat_out) and 0 <= beat_in <= beat_out):
         report.add("schema", "beat_in and beat_out must be integers with 0 <= beat_in <= beat_out", label)
@@ -177,6 +211,28 @@ def check_schema(timeline, report):
             if scene["id"] in seen:
                 report.add("schema", "scene id is not unique", label)
             seen.add(scene["id"])
+    if "rhythm" in timeline:
+        check_rhythm_schema(timeline["rhythm"], timeline.get("meta"), report)
+
+
+def check_rhythm_schema(rhythm, meta, report):
+    if not (isinstance(meta, dict) and "bpm" in meta):
+        report.add("schema", "rhythm needs meta.bpm (the bar length)")
+    if not isinstance(rhythm, list):
+        report.add("schema", "rhythm must be a list of stretches")
+        return
+    for index, item in enumerate(rhythm):
+        where = "rhythm[%d]" % index
+        if not isinstance(item, dict):
+            report.add("schema", "%s must be an object" % where)
+            continue
+        if not all(is_number(item.get(k)) for k in ("start_sec", "end_sec", "energy")):
+            report.add("schema", "%s needs numbers start_sec, end_sec and energy" % where)
+        events = item.get("events_sec", [])
+        if not (isinstance(events, list) and all(is_number(e) for e in events)):
+            report.add("schema", "%s.events_sec must be a list of numbers when present" % where)
+        if "stop" in item and not isinstance(item["stop"], bool):
+            report.add("schema", "%s.stop must be a boolean when present" % where)
 
 
 def check_hook(scenes, report):
@@ -331,6 +387,169 @@ def check_timing(meta, scenes, report):
         )
 
 
+def shown_text(scene):
+    texts = [scene["caption"]] if scene["caption"].strip() else []
+    return texts + scene.get("on_screen_text", [])
+
+
+def check_read_hold(scenes, report):
+    for scene in scenes:
+        hold = scene["duration_sec"] - scene["motion"].get("reveal_sec", 0.0)
+        for text in shown_text(scene):
+            words = word_count(text)
+            need = max(READ_MIN_SEC, READ_BASE_SEC + READ_PER_WORD_SEC * words)
+            if hold + START_TOLERANCE_SEC < need:
+                report.add(
+                    "read_hold",
+                    "%r (%d words) holds %.2f s after the reveal; it needs %.2f s" % (text, words, hold, need),
+                    scene["id"],
+                )
+
+
+def normalized(text):
+    return " " + " ".join(re.findall(r"\w+", text.lower())) + " "
+
+
+def check_terms(meta, scenes, report):
+    said = "".join(normalized(scene["narration"]) for scene in scenes)
+    shown = "".join(normalized(text) for scene in scenes for text in shown_text(scene))
+    for term in meta.get("terms", []):
+        key = normalized(term)
+        missing = [where for where, text in (("said", said), ("shown", shown)) if key not in text]
+        if missing:
+            report.add("terms", "term %r is not %s" % (term, " or ".join(missing)))
+
+
+def check_rhythm(meta, rhythm, report):
+    if "bpm" in meta and not rhythm:
+        report.add("rhythm", "a film with music (meta.bpm) needs a rhythm sheet")
+    previous_end = 0.0
+    for index, item in enumerate(rhythm):
+        where = "rhythm[%d]" % index
+        start, end, energy = item["start_sec"], item["end_sec"], item["energy"]
+        if not (is_int(energy) and ENERGY_MIN <= energy <= ENERGY_MAX):
+            report.add("rhythm", "%s.energy %s must be an integer %d to %d" % (where, energy, ENERGY_MIN, ENERGY_MAX))
+        if start + START_TOLERANCE_SEC < previous_end or end <= start or end > meta["duration_sec"] + TOTAL_TOLERANCE_SEC:
+            report.add("rhythm", "%s [%.3f, %.3f] s overlaps the stretch before or leaves the film" % (where, start, end))
+        if any(not start <= event <= end for event in item.get("events_sec", [])):
+            report.add("rhythm", "%s has an event outside its stretch" % where)
+        previous_end = max(previous_end, end)
+
+
+def open_pieces(start, end, stops):
+    """The parts of [start, end] that no stop range covers."""
+    pieces = [(start, end)]
+    for stop_start, stop_end in stops:
+        cut = []
+        for a, b in pieces:
+            if stop_end <= a or stop_start >= b:
+                cut.append((a, b))
+                continue
+            if stop_start > a:
+                cut.append((a, stop_start))
+            if stop_end < b:
+                cut.append((stop_end, b))
+        pieces = cut
+    return pieces
+
+
+def check_event_gap(meta, scenes, rhythm, report):
+    if "bpm" not in meta:
+        return
+    limit = MAX_GAP_BARS * BEATS_PER_BAR * 60.0 / meta["bpm"]
+    events = {0.0, meta["duration_sec"]} | {scene["start_sec"] for scene in scenes}
+    events |= {event for item in rhythm for event in item.get("events_sec", [])}
+    stops = [(item["start_sec"], item["end_sec"]) for item in rhythm if item.get("stop")]
+    if "payoff_silence_sec" in meta:
+        stops.append(tuple(meta["payoff_silence_sec"]))
+    ordered = sorted(events)
+    for a, b in zip(ordered, ordered[1:]):
+        for start, end in open_pieces(a, b, stops):
+            if end - start > limit + START_TOLERANCE_SEC:
+                report.add(
+                    "event_gap",
+                    "%.3f s to %.3f s has no event for %.2f s; the limit is %d bars (%.2f s) outside a declared stop"
+                    % (start, end, end - start, MAX_GAP_BARS, limit),
+                )
+
+
+def check_hero(meta, report):
+    duration = meta["duration_sec"]
+    hero = meta.get("hero_sec")
+    if hero is None:
+        if "bpm" in meta:
+            report.add("hero", "a film with music (meta.bpm) needs meta.hero_sec")
+        return
+    if hero[0] < HERO_EARLIEST * duration or hero[1] > HERO_LATEST * duration:
+        report.add(
+            "hero",
+            "meta.hero_sec [%.3f, %.3f] s must sit inside %.3f s to %.3f s (30 %% to 90 %% of the film)"
+            % (hero[0], hero[1], HERO_EARLIEST * duration, HERO_LATEST * duration),
+        )
+    silence = meta.get("payoff_silence_sec")
+    if silence is None:
+        if "bpm" in meta:
+            report.add("hero", "a film with music (meta.bpm) needs meta.payoff_silence_sec before the hero")
+    elif silence[1] > hero[0] + START_TOLERANCE_SEC:
+        report.add("hero", "meta.payoff_silence_sec ends at %.3f s, after the hero start %.3f s" % (silence[1], hero[0]))
+
+
+def direction_blocks(text):
+    """Map each `### D<n>` heading under `## Directions` to its `- Key: value` lines."""
+    section = re.search(r"^## Directions[ \t]*$(.*?)(?=^## |\Z)", text, re.M | re.S)
+    blocks = {}
+    for match in re.finditer(r"^### (D\d+)\b[^\n]*\n(.*?)(?=^### |\Z)", section.group(1) if section else "", re.M | re.S):
+        fields = dict(re.findall(r"^- ([A-Za-z ]+?):[ \t]*(.*?)[ \t]*$", match.group(2), re.M))
+        blocks[match.group(1)] = {key.lower(): value for key, value in fields.items()}
+    return blocks
+
+
+def check_direction_block(folder, code, fields, report):
+    for key in ("motion language", "material", "palette source"):
+        if not fields.get(key):
+            report.add("directions", "%s needs a '- %s:' line" % (code, key.capitalize()))
+    if not HEX_COLOR.search(fields.get("palette", "")):
+        report.add("directions", "%s needs a '- Palette:' line with hex colors" % code)
+    frame = fields.get("key frame", "")
+    path = os.path.join(folder, frame)
+    if not (frame.startswith("qa/directions/") and frame.endswith(".png") and os.path.isfile(path)):
+        report.add("directions", "%s key frame %r is not a file under qa/directions/" % (code, frame))
+        return
+    with open(path, "rb") as handle:
+        if handle.read(len(PNG_SIGNATURE)) != PNG_SIGNATURE:
+            report.add("directions", "%s key frame %s is not a PNG" % (code, frame))
+
+
+def check_directions(folder):
+    """Return the `directions` errors for DIRECTION.md and its key frames in `folder`."""
+    report = Report()
+    path = os.path.join(folder, "DIRECTION.md")
+    try:
+        with open(path, encoding="utf-8") as handle:
+            text = handle.read()
+    except OSError as exc:
+        report.add("directions", "cannot read DIRECTION.md: %s" % exc)
+        return report.errors
+    blocks = direction_blocks(text)
+    if len(blocks) < MIN_DIRECTIONS:
+        report.add("directions", "DIRECTION.md lists %d directions under '## Directions'; it needs %d" % (len(blocks), MIN_DIRECTIONS))
+    for code, fields in blocks.items():
+        check_direction_block(folder, code, fields, report)
+    frames = {fields.get("key frame") for fields in blocks.values()}
+    if len(frames) < len(blocks):
+        report.add("directions", "each direction needs its own key frame")
+    depth = [code for code, fields in blocks.items() if fields.get("depth", "").lower() == "yes"]
+    if len(depth) != 1:
+        report.add("directions", "exactly 1 direction has 'Depth: yes'; found %d" % len(depth))
+    looks = {(f.get("motion language", "").lower(), f.get("material", "").lower()) for f in blocks.values()}
+    if len(looks) < len(blocks):
+        report.add("directions", "2 directions share both motion language and material")
+    chosen = re.findall(r"^chosen:[ \t]*(D\d+)\b", text, re.M)
+    if len(chosen) != 1 or chosen[0] not in blocks:
+        report.add("directions", "DIRECTION.md needs 1 'chosen: D<n>' line that names a listed direction")
+    return report.errors
+
+
 def check_timeline(timeline):
     """Return the list of rule-keyed errors for a parsed timeline."""
     report = Report()
@@ -345,6 +564,12 @@ def check_timeline(timeline):
     check_variety(scenes, report)
     check_safe_zone(meta, scenes, report)
     check_timing(meta, scenes, report)
+    rhythm = timeline.get("rhythm", [])
+    check_read_hold(scenes, report)
+    check_terms(meta, scenes, report)
+    check_rhythm(meta, rhythm, report)
+    check_event_gap(meta, scenes, rhythm, report)
+    check_hero(meta, report)
     return report.errors
 
 
@@ -355,6 +580,7 @@ def run(timeline_path, out_path):
         errors = check_timeline(timeline)
     except (OSError, ValueError) as exc:
         errors = [{"rule": "schema", "message": "cannot read timeline: %s" % exc}]
+    errors += check_directions(os.path.dirname(os.path.abspath(timeline_path)))
     result = {
         "passed": not errors,
         "timeline": os.path.abspath(timeline_path),
@@ -426,6 +652,76 @@ def self_test():
     def rules_of(timeline):
         return {error["rule"] for error in check_timeline(timeline)}
 
+    def tiny_png(width=4, height=4):
+        import struct
+        import zlib
+
+        def chunk(kind, data):
+            body = kind + data
+            return struct.pack(">I", len(data)) + body + struct.pack(">I", zlib.crc32(body) & 0xFFFFFFFF)
+
+        rows = b"".join(b"\x00" + b"\x80\x80\x80" * width for _ in range(height))
+        header = struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0)
+        return PNG_SIGNATURE + chunk(b"IHDR", header) + chunk(b"IDAT", zlib.compress(rows)) + chunk(b"IEND", b"")
+
+    def direction_md(chosen="D2"):
+        blocks = [
+            ("D1", "Calm drift", "slow springs and long holds", "paper cut-outs", "no", "#F4F1EA #1D1F24 #E4572E"),
+            ("D2", "Hard cuts", "snap cuts on every downbeat", "flat UI captures", "no", "#111318 #F5F5F2 #4F7CFF"),
+            ("D3", "Glass stack", "parallax camera push", "layered glass panels", "yes", "#0B1020 #E8ECF8 #7CD4FF"),
+        ]
+        lines = ["# Direction", "", "## Directions", ""]
+        for code, name, motion, material, depth, colors in blocks:
+            lines += [
+                "### %s: %s" % (code, name),
+                "- Motion language: %s" % motion,
+                "- Material: %s" % material,
+                "- Depth: %s" % depth,
+                "- Key frame: qa/directions/%s.png" % code.lower(),
+                "- Palette: %s" % colors,
+                "- Palette source: BRAND.md color tokens",
+                "",
+            ]
+        if chosen:
+            lines.append("chosen: %s" % chosen)
+        return "\n".join(lines) + "\n"
+
+    def write_project(folder, timeline, direction=None, pngs=("d1", "d2", "d3")):
+        with open(os.path.join(folder, "timeline.json"), "w", encoding="utf-8") as handle:
+            json.dump(timeline, handle)
+        with open(os.path.join(folder, "DIRECTION.md"), "w", encoding="utf-8") as handle:
+            handle.write(direction_md() if direction is None else direction)
+        os.makedirs(os.path.join(folder, "qa", "directions"), exist_ok=True)
+        for name in pngs:
+            with open(os.path.join(folder, "qa", "directions", name + ".png"), "wb") as handle:
+                handle.write(tiny_png())
+        return os.path.join(folder, "timeline.json")
+
+    def directions_rules(direction=None, pngs=("d1", "d2", "d3")):
+        with tempfile.TemporaryDirectory() as tmp:
+            write_project(tmp, valid_timeline(), direction, pngs)
+            return {error["rule"] for error in check_directions(tmp)}
+
+    def music_timeline():
+        """valid_timeline() with music: bpm 120 (1 bar = 2 s), rhythm, hero, silence and terms."""
+        timeline = valid_timeline()
+        timeline["meta"].update({
+            "bpm": 120,
+            "terms": ["flaky tests"],
+            "hero_sec": [12.0, 13.5],
+            "payoff_silence_sec": [11.5, 12.0],
+        })
+        timeline["scenes"][0]["narration"] = "Flaky tests waste hours."
+        timeline["scenes"][0]["caption"] = "Stop flaky tests"
+        timeline["rhythm"] = [
+            {"start_sec": 0.0, "end_sec": 2.5, "energy": 8},
+            {"start_sec": 2.5, "end_sec": 7.5, "energy": 5, "events_sec": [5.0]},
+            {"start_sec": 7.5, "end_sec": 11.5, "energy": 6, "events_sec": [10.0]},
+            {"start_sec": 11.5, "end_sec": 12.0, "energy": 0, "stop": True},
+            {"start_sec": 12.0, "end_sec": 15.0, "energy": 10},
+        ]
+        return timeline
+
     class CheckTimelineTest(unittest.TestCase):
         def setUp(self):
             self.timeline = valid_timeline()
@@ -433,9 +729,7 @@ def self_test():
 
         def assert_cli_fails_with(self, rule):
             with tempfile.TemporaryDirectory() as tmp:
-                path = os.path.join(tmp, "timeline.json")
-                with open(path, "w", encoding="utf-8") as handle:
-                    json.dump(self.timeline, handle)
+                path = write_project(tmp, self.timeline)
                 proc = subprocess.run([sys.executable, script, path], capture_output=True, text=True, timeout=60)
                 self.assertNotEqual(proc.returncode, 0, proc.stdout)
                 with open(os.path.join(tmp, "qa", "plan-check.json"), encoding="utf-8") as handle:
@@ -445,9 +739,7 @@ def self_test():
 
         def test_valid_timeline_passes_and_writes_report(self):
             with tempfile.TemporaryDirectory() as tmp:
-                path = os.path.join(tmp, "timeline.json")
-                with open(path, "w", encoding="utf-8") as handle:
-                    json.dump(self.timeline, handle)
+                path = write_project(tmp, self.timeline)
                 proc = subprocess.run([sys.executable, script, path], capture_output=True, text=True, timeout=60)
                 self.assertEqual(proc.returncode, 0, proc.stdout)
                 out = os.path.join(tmp, "qa", "plan-check.json")
@@ -459,20 +751,20 @@ def self_test():
 
         def test_out_flag_writes_given_path(self):
             with tempfile.TemporaryDirectory() as tmp:
-                path = os.path.join(tmp, "timeline.json")
+                path = write_project(tmp, self.timeline)
                 out = os.path.join(tmp, "reports", "check.json")
-                with open(path, "w", encoding="utf-8") as handle:
-                    json.dump(self.timeline, handle)
                 proc = subprocess.run([sys.executable, script, path, "--out", out],
                                       capture_output=True, text=True, timeout=60)
                 self.assertEqual(proc.returncode, 0, proc.stdout)
                 self.assertTrue(os.path.isfile(out))
 
         def test_1_hook_window(self):
+            # The caption still holds 2.0 s after the late reveal, so only the hook fails.
             self.scenes[0]["motion"]["reveal_sec"] = 3.2
-            self.scenes[0]["duration_sec"] = 3.5
-            self.scenes[1]["start_sec"] = 3.5
-            self.scenes[1]["duration_sec"] = 4.0
+            self.scenes[0]["duration_sec"] = 5.2
+            self.scenes[1]["start_sec"] = 5.2
+            self.scenes[1]["duration_sec"] = 2.3
+            self.scenes[1]["narration"] = "Run one command."
             self.assertEqual(rules_of(self.timeline), {"hook_window"})
             self.assert_cli_fails_with("hook_window")
 
@@ -588,6 +880,163 @@ def self_test():
                 proc = subprocess.run([sys.executable, script, path], capture_output=True, text=True, timeout=60)
             self.assertEqual(proc.returncode, 1)
             self.assertEqual(json.loads(proc.stdout)["errors"][0]["rule"], "schema")
+
+        def test_9_read_hold(self):
+            # 4 words need max(1.5, 1.0 + 4 x 0.3) = 2.2 s after the reveal.
+            self.scenes[1]["motion"]["reveal_sec"] = 3.0
+            self.assertEqual(rules_of(self.timeline), {"read_hold"})
+            self.assert_cli_fails_with("read_hold")
+
+        def test_9_read_hold_counts_on_screen_text(self):
+            self.scenes[2]["on_screen_text"] = ["Rerun", "Compare every result"]
+            self.scenes[2]["motion"]["reveal_sec"] = 2.4
+            self.assertEqual(rules_of(self.timeline), set())
+            self.scenes[2]["motion"]["reveal_sec"] = 2.7
+            self.assertEqual(rules_of(self.timeline), {"read_hold"})
+
+        def test_9_read_hold_floor_is_1_5_s(self):
+            self.scenes[3]["caption"] = "Go"
+            self.scenes[3]["motion"]["reveal_sec"] = 1.6
+            self.assertEqual(rules_of(self.timeline), {"read_hold"})
+
+        def test_10_terms(self):
+            self.timeline["meta"]["terms"] = ["flaky tests", "one command"]
+            self.assertEqual(rules_of(self.timeline), set())
+            self.timeline["meta"]["terms"] = ["rerun"]
+            self.assertEqual(rules_of(self.timeline), {"terms"})
+            self.assert_cli_fails_with("terms")
+
+        def test_10_term_said_but_not_shown(self):
+            self.timeline["meta"]["terms"] = ["hours"]
+            self.assertEqual(rules_of(self.timeline), {"terms"})
+            self.scenes[2]["on_screen_text"] = ["Hours saved"]
+            self.assertEqual(rules_of(self.timeline), set())
+
+        def test_10_term_matches_whole_words(self):
+            self.timeline["meta"]["terms"] = ["test"]
+            self.assertEqual(rules_of(self.timeline), {"terms"})
+
+        def test_11_music_timeline_passes(self):
+            self.timeline = music_timeline()
+            self.assertEqual(rules_of(self.timeline), set())
+            with tempfile.TemporaryDirectory() as tmp:
+                proc = subprocess.run([sys.executable, script, write_project(tmp, self.timeline)],
+                                      capture_output=True, text=True, timeout=60)
+            self.assertEqual(proc.returncode, 0, proc.stdout)
+
+        def test_11_rhythm_energy_range(self):
+            self.timeline = music_timeline()
+            self.timeline["rhythm"][1]["energy"] = 11
+            self.assertEqual(rules_of(self.timeline), {"rhythm"})
+            self.assert_cli_fails_with("rhythm")
+
+        def test_11_rhythm_overlap(self):
+            self.timeline = music_timeline()
+            self.timeline["rhythm"][2]["start_sec"] = 7.0
+            self.assertEqual(rules_of(self.timeline), {"rhythm"})
+
+        def test_11_rhythm_needed_with_music(self):
+            self.timeline = music_timeline()
+            del self.timeline["rhythm"]
+            # The rhythm events go too, so the 5.0 s scene also breaks event_gap.
+            self.assertIn("rhythm", rules_of(self.timeline))
+
+        def test_12_event_gap(self):
+            # bpm 120: 2 bars = 4.0 s. s02-demo runs 5.0 s; its mid event is removed.
+            self.timeline = music_timeline()
+            del self.timeline["rhythm"][1]["events_sec"]
+            self.assertEqual(rules_of(self.timeline), {"event_gap"})
+            self.assert_cli_fails_with("event_gap")
+
+        def test_12_event_gap_skips_a_declared_stop(self):
+            self.timeline = music_timeline()
+            del self.timeline["rhythm"][1]["events_sec"]
+            self.timeline["rhythm"][1]["stop"] = True
+            self.assertEqual(rules_of(self.timeline), set())
+
+        def test_13_hero_window(self):
+            # 30 % of 15 s is 4.5 s, 90 % is 13.5 s.
+            self.timeline = music_timeline()
+            self.timeline["meta"]["hero_sec"] = [13.0, 14.0]
+            self.timeline["meta"]["payoff_silence_sec"] = [12.5, 13.0]
+            self.timeline["rhythm"][3:] = [
+                {"start_sec": 11.5, "end_sec": 12.5, "energy": 4},
+                {"start_sec": 12.5, "end_sec": 13.0, "energy": 0, "stop": True},
+                {"start_sec": 13.0, "end_sec": 15.0, "energy": 10},
+            ]
+            self.assertEqual(rules_of(self.timeline), {"hero"})
+            self.assert_cli_fails_with("hero")
+
+        def test_13_hero_needs_silence_with_music(self):
+            self.timeline = music_timeline()
+            del self.timeline["meta"]["payoff_silence_sec"]
+            self.timeline["rhythm"][3]["stop"] = False
+            self.timeline["rhythm"][3]["events_sec"] = [11.75]
+            self.assertEqual(rules_of(self.timeline), {"hero"})
+
+        def test_13_silence_must_end_by_hero_start(self):
+            self.timeline = music_timeline()
+            self.timeline["meta"]["payoff_silence_sec"] = [11.5, 12.5]
+            self.assertEqual(rules_of(self.timeline), {"hero"})
+
+        def test_13_hero_without_music_needs_no_silence(self):
+            self.timeline["meta"]["hero_sec"] = [12.0, 13.5]
+            self.assertEqual(rules_of(self.timeline), set())
+
+        def test_13_hero_needed_with_music(self):
+            self.timeline = music_timeline()
+            del self.timeline["meta"]["hero_sec"]
+            del self.timeline["meta"]["payoff_silence_sec"]
+            self.timeline["rhythm"][3]["stop"] = False
+            self.timeline["rhythm"][3]["events_sec"] = [11.75]
+            self.assertEqual(rules_of(self.timeline), {"hero"})
+
+        def test_14_schema_of_new_fields(self):
+            for key, value in (("bpm", 0), ("terms", "flaky"), ("hero_sec", [3.0]),
+                               ("payoff_silence_sec", [1.0, 0.5])):
+                timeline = music_timeline()
+                timeline["meta"][key] = value
+                self.assertEqual(rules_of(timeline), {"schema"}, key)
+            timeline = valid_timeline()
+            timeline["rhythm"] = [{"start_sec": 0.0, "end_sec": 2.0, "energy": 3}]
+            self.assertEqual(rules_of(timeline), {"schema"}, "rhythm without meta.bpm")
+            timeline = valid_timeline()
+            timeline["scenes"][0]["on_screen_text"] = "Stop"
+            self.assertEqual(rules_of(timeline), {"schema"}, "on_screen_text")
+
+        def test_15_directions_pass(self):
+            self.assertEqual(directions_rules(), set())
+
+        def test_15_directions_fewer_than_3(self):
+            text = direction_md().split("### D3")[0] + "chosen: D2\n"
+            self.assertEqual(directions_rules(text), {"directions"})
+
+        def test_15_directions_missing_png(self):
+            self.assertEqual(directions_rules(pngs=("d1", "d2")), {"directions"})
+
+        def test_15_directions_need_exactly_1_with_depth(self):
+            self.assertEqual(directions_rules(direction_md().replace("Depth: no", "Depth: yes", 1)), {"directions"})
+
+        def test_15_directions_must_differ(self):
+            text = direction_md().replace("snap cuts on every downbeat", "slow springs and long holds")
+            text = text.replace("flat UI captures", "paper cut-outs")
+            self.assertEqual(directions_rules(text), {"directions"})
+
+        def test_15_directions_need_palette_source(self):
+            text = direction_md().replace("- Palette source: BRAND.md color tokens\n", "", 1)
+            self.assertEqual(directions_rules(text), {"directions"})
+
+        def test_15_directions_need_chosen_line(self):
+            self.assertEqual(directions_rules(direction_md(chosen=None)), {"directions"})
+            self.assertEqual(directions_rules(direction_md(chosen="D7")), {"directions"})
+
+        def test_15_cli_fails_without_direction_file(self):
+            with tempfile.TemporaryDirectory() as tmp:
+                path = write_project(tmp, self.timeline)
+                os.remove(os.path.join(tmp, "DIRECTION.md"))
+                proc = subprocess.run([sys.executable, script, path], capture_output=True, text=True, timeout=60)
+            self.assertEqual(proc.returncode, 1)
+            self.assertEqual({e["rule"] for e in json.loads(proc.stdout)["errors"]}, {"directions"})
 
         def test_skill_files_under_byte_cap(self):
             for skill in ("video-direction", "video-storyboard"):

@@ -1,6 +1,6 @@
 ---
 name: video-direction
-description: "Use when a video project starts - a launch film, product demo, CLI walkthrough, concept explainer or short social cut - and you must fix the creative direction before anyone storyboards, captures, animates or records audio. Writes BRIEF.md (audience, 1 takeaway, format) and DIRECTION.md (palette with WCAG AA contrast, type scale, motion grammar, audio mood at -14 LUFS), reusing MOTION.md or BRAND.md tokens when the project has them. Picks a narrative archetype from references/archetypes.md."
+description: "Use when a video project starts - a launch film, product demo, CLI walkthrough, concept explainer or short social cut - and you must fix the creative direction before anyone storyboards, captures, animates or records audio. Writes BRIEF.md (audience, 1 takeaway, format, loaded taste notes) and DIRECTION.md (3 directions with rendered key frames and a chosen line, then the palette with WCAG AA contrast, type scale, motion grammar, audio mood at -14 LUFS), reusing MOTION.md or BRAND.md tokens when the project has them. Picks a narrative archetype from references/archetypes.md."
 ---
 
 # Video Direction
@@ -14,16 +14,22 @@ animated or recorded until both exist.
 
 ## Order of work
 
-1. Read the request and the product. Run the product or read its README
+1. Read `.video/NOTES.md` in the video project folder when it exists.
+   It holds taste notes from earlier films. Follow them unless the brief
+   says otherwise.
+2. Read the request and the product. Run the product or read its README
    when you can. A direction for a product you did not see is a guess.
-2. Look for existing tokens: `MOTION.md`, `BRAND.md`, a design-system
+3. Look for existing tokens: `MOTION.md`, `BRAND.md`, a design-system
    token file, or brand colors in the product's CSS. Reuse them (see
    "Reuse existing tokens").
-3. Write `BRIEF.md`.
-4. Pick 1 archetype from `references/archetypes.md`. Its duration range
+4. Write `BRIEF.md`.
+5. Pick 1 archetype from `references/archetypes.md`. Its duration range
    must contain the target duration.
-5. Write `DIRECTION.md`.
-6. Check every number in the "Direction checklist" below. Fix a value
+6. Write 3 directions and render 1 key frame for each (see "Three
+   directions"). Send them to the orchestrator and stop. The orchestrator
+   or the operator picks 1. Write the pick as a `chosen:` line.
+7. Write the rest of `DIRECTION.md` for the chosen direction.
+8. Check every number in the "Direction checklist" below. Fix a value
    that fails before you hand off.
 
 ## BRIEF.md
@@ -40,6 +46,7 @@ under 1 page. Required sections:
 | Format | Aspect, resolution, frame rate and target duration, from the table below. |
 | Channel | Where the video plays (landing page hero, social feed, docs page, talk). It sets sound-off defaults and the safe zones. |
 | Constraints | Brand rules, banned claims, legal text, deadlines. Write "none" when there are none. |
+| Loaded notes | 1 line: `Loaded notes: .video/NOTES.md` when you read it, or `Loaded notes: none` when it does not exist. |
 
 Format values. Use only these:
 
@@ -59,6 +66,56 @@ Format values. Use only these:
 
 `DIRECTION.md` is a token sheet plus short reasons. Each section holds
 values a checker or a teammate can use without asking.
+
+### Three directions
+
+Before the build, show 3 different directions as real frames. The plan
+gate (`check_timeline.py` of `video-storyboard`) reads this section and
+fails when it is wrong. Write it in this exact form:
+
+```markdown
+## Directions
+
+### D1: Calm drift
+- Motion language: slow springs, long holds
+- Material: paper cut-outs on a warm ground
+- Depth: no
+- Key frame: qa/directions/d1.png
+- Palette: #F4F1EA #1D1F24 #E4572E
+- Palette source: BRAND.md color tokens
+
+### D2: ...
+### D3: ...
+
+chosen: D2
+```
+
+- 3 directions or more, headed `### D<n>: <name>`.
+- No 2 directions share both motion language and material. Change at
+  least 1 of the 2.
+- Exactly 1 direction has `Depth: yes` (parallax, layered planes, a
+  camera move in space). The others have `Depth: no`.
+- Each direction has its own key frame: a PNG under `qa/directions/`.
+- The palette lists hex colors. The source names where they come from:
+  a brand file and token, a page of the product site, or `new`.
+- `chosen: D<n>` names 1 listed direction. Write it only after the
+  orchestrator or the operator picks.
+
+Render a key frame: write 1 static HTML page per direction at the film
+size, for example `directions/d1/index.html`, with the hook headline in
+that direction's palette, type and material. Then screenshot it with
+headless Chrome:
+
+```bash
+"$CHROME" --headless=new --disable-gpu --hide-scrollbars \
+  --window-size=1920,1080 --screenshot=qa/directions/d1.png \
+  "file://$PWD/directions/d1/index.html"
+```
+
+`$CHROME` is `CHROME_PATH`, or on macOS
+`/Applications/Google Chrome.app/Contents/MacOS/Google Chrome`. Open each
+PNG and look at it before you send it. The sections below describe the
+chosen direction only.
 
 ### Archetype and beats
 
@@ -108,8 +165,8 @@ target duration. State the hook pattern you picked and the first 3 s in
   other transition types.
 - Element entrances: 200 ms to 600 ms. Stagger related elements by 40 ms
   to 80 ms.
-- Hold every text element long enough to read: 0.3 s per word, 1.2 s
-  minimum, after it settles.
+- Hold every text element long enough to read: max(1.5 s, 1.0 s + 0.3 s
+  per word), after it settles. The plan gate checks it.
 - Cursor motion in captures follows the `move` curve. No teleporting
   cursor.
 - State what never moves (logo position, caption band) so the eye has an
@@ -157,6 +214,8 @@ under "Checks".
 - [ ] Audio mood names bpm, key, voice persona, voice WPM and -14 LUFS.
 - [ ] Every reused token names its source file.
 - [ ] The first 3 s are described: what moves and what headline lands.
+- [ ] 3 directions, exactly 1 with depth, each with a key frame PNG and a palette source. 1 `chosen:` line.
+- [ ] `BRIEF.md` has a `Loaded notes:` line.
 
 ## Hand-off
 

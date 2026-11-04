@@ -120,7 +120,8 @@ cat >"$P/audio/beats.json" <<'JSON'
  "downbeats_sec": [0.0, 2.0, 4.0], "source": "synthetic"}
 JSON
 
-# Negative timelines: a 12 s scene, and a hook that starts after 3 s.
+# Negative timelines: a 12 s scene, and a hook that starts after 3 s. They sit
+# in $W, which has no DIRECTION.md, so the directions gate fails there too.
 python3 - "$P/timeline.json" "$W" <<'PY'
 import copy, json, sys
 t = json.load(open(sys.argv[1]))
@@ -132,6 +133,18 @@ late_hook["scenes"][0]["kind"] = "capture"
 late_hook["scenes"][1]["kind"] = "hook"
 json.dump(late_hook, open(f"{sys.argv[2]}/timeline-late-hook.json", "w"))
 PY
+# DIRECTION.md with 3 directions, 1 key frame PNG each and a chosen line.
+mkdir -p "$P/qa/directions"
+{
+  printf '# Direction\n\n## Directions\n\n'
+  for d in "1|slow springs|paper|no|F4F1EA" "2|snap cuts|flat UI captures|no|111318" "3|parallax push|glass panels|yes|0B1020"; do
+    IFS='|' read -r n motion material depth hex <<<"$d"
+    printf '### D%s: fixture %s\n- Motion language: %s\n- Material: %s\n- Depth: %s\n' "$n" "$n" "$motion" "$material" "$depth"
+    printf -- '- Key frame: qa/directions/d%s.png\n- Palette: #%s #F5F5F2\n- Palette source: new\n\n' "$n" "$hex"
+    ffmpeg -hide_banner -v error -y -f lavfi -i "color=c=0x$hex:s=320x180:d=1" -frames:v 1 "$P/qa/directions/d$n.png"
+  done
+  printf 'chosen: D2\n'
+} >"$P/DIRECTION.md"
 ok "check_timeline passes the fixture" python3 "$TL_CHECK" "$P/timeline.json" --out "$P/qa/plan-check.json"
 bad "check_timeline fails a 12 s scene" python3 "$TL_CHECK" "$W/timeline-long.json" --out "$W/plan-long.json"
 bad "check_timeline fails a late hook" python3 "$TL_CHECK" "$W/timeline-late-hook.json" --out "$W/plan-late.json"
