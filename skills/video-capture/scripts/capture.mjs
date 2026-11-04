@@ -40,6 +40,7 @@ const prelude = `(() => {
   globalThis.setTimeout = (fn, ms, ...a) => add(fn, ms, a, 0);
   globalThis.setInterval = (fn, ms, ...a) => add(fn, ms, a, Math.max(1, +ms || 0));
   globalThis.clearTimeout = globalThis.clearInterval = (id) => timers.delete(id);
+  const realRaf = requestAnimationFrame.bind(globalThis); // the harness waits on real frames, the page never sees them
   globalThis.requestAnimationFrame = (fn) => { const id = nextId++; rafs.set(id, fn); return id; };
   globalThis.cancelAnimationFrame = (id) => rafs.delete(id);
   const run = (fn, a) => { try { typeof fn === 'function' && fn(...a); } catch (e) { reportError(e); } };
@@ -78,6 +79,7 @@ const prelude = `(() => {
           'left:' + (r.x - rad) + 'px;top:' + (r.y - rad) + 'px;width:' + 2 * rad + 'px;height:' + 2 * rad + 'px;box-sizing:border-box';
         ov.append(d);
       }
+      return new Promise((done) => realRaf(() => realRaf(done))); // resolve after a real frame holds this state
     },
     ready: async () => { await document.fonts.ready; await Promise.all([...document.images].map((i) => i.decode().catch(() => {}))); return document.fonts.status; },
   };
@@ -271,13 +273,9 @@ console.log(`captures/${sceneId}.mp4: ${out} frames at ${fps} fps`);
 // Function declarations only: the self-test runs before the module-level constants above are set.
 function selfTest() {
   const t0 = Date.now(), dir = mkdtempSync(join(tmpdir(), 'cap-selftest-'));
-  let results;
-  try {
-    writeFixtures(dir);
-    results = [testRecCast, testDeterminism, testTelemetry, testPlates, testErrors].flatMap((step) => step(dir));
-  } finally {
-    rmSync(dir, { recursive: true, force: true });
-  }
+  process.on('exit', rmSync.bind(null, dir, { recursive: true, force: true })); // remove the temp dir on every exit
+  writeFixtures(dir);
+  const results = [...testRecCast(dir), ...testDeterminism(dir), ...testTelemetry(dir), ...testPlates(dir), ...testErrors(dir)];
   const passed = results.filter(Boolean).length;
   console.log(`capture self-test: ${passed} of ${results.length} checks pass in ${((Date.now() - t0) / 1000).toFixed(1)} s`);
   return passed === results.length ? 0 : 1;
@@ -301,24 +299,36 @@ function exitNote(r) {
 }
 
 function frameHash(dir, id) {
-  const lines = runIn(dir, 'ffmpeg', ['-v', 'error', '-i', `captures/${id}.mp4`, '-f', 'framemd5', '-']).stdout.split('\n');
-  return lines.filter((l) => l && !l.startsWith('#')).join('\n');
+  return runIn(dir, 'ffmpeg', ['-v', 'error', '-i', `captures/${id}.mp4`, '-f', 'framemd5', '-']).stdout.replace(/^#.*\n/gm, '');
 }
 
 function writeFixtures(dir) {
-  for (const [rel, text] of Object.entries(fixtureFiles())) {
-    mkdirSync(dirname(join(dir, rel)), { recursive: true });
-    writeFileSync(join(dir, rel), text);
-  }
+  mkdirSync(join(dir, 'app'));
+  mkdirSync(join(dir, 'captures/src'), { recursive: true });
+  const files = fixtureFiles();
+  for (const rel of Object.keys(files)) writeFileSync(join(dir, rel), files[rel]);
 }
 
 function fixtureFiles() {
   return {
-    'timeline.json': JSON.stringify({ meta: { fps: 60, width: 640, height: 360 }, scenes: [
+    'timeline.json': fixtureTimeline(),
+    'app/index.html': fixtureWebPage(),
+    'app/err.html': fixtureErrPage(),
+    'captures/src/web.mjs': fixtureWebTake(),
+    'captures/src/term.mjs': fixtureTermTake(),
+    'captures/src/err.mjs': fixtureErrTake(),
+  };
+}
+
+function fixtureTimeline() {
+  return JSON.stringify({ meta: { fps: 60, width: 640, height: 360 }, scenes: [
       { id: 'web', kind: 'capture', duration_sec: 4.0 },
       { id: 'term', kind: 'capture', duration_sec: 2.0 },
-      { id: 'err', kind: 'capture', duration_sec: 0.5 }] }),
-    'app/index.html': `<!doctype html><meta charset="utf-8">
+      { id: 'err', kind: 'capture', duration_sec: 0.5 }] });
+}
+
+function fixtureWebPage() {
+  return `<!doctype html><meta charset="utf-8">
 <style>html,body{margin:0;height:100%;background:#0d1117;color:#e6edf3;font:24px/1.4 Menlo,monospace}
 input,button{font:inherit}@keyframes spin{to{transform:rotate(360deg)}}
 #s{width:24px;height:24px;margin:16px;background:#3fb950;animation:spin 1s linear infinite}</style>
@@ -329,9 +339,15 @@ input,button{font:inherit}@keyframes spin{to{transform:rotate(360deg)}}
   document.getElementById('go').onclick = () => setTimeout(() => {
     document.getElementById('res').textContent = Math.random().toFixed(4) + ' ' + new Date().toISOString();
   }, 800);
-</script>`,
-    'app/err.html': '<!doctype html><p>err</p><img src="https://live.example.test/x.png"><script>console.error("boom")</script>',
-    'captures/src/web.mjs': `export const config = { fixtures: { 'https://api.example.test/items': { json: { count: 3 } } } };
+</script>`;
+}
+
+function fixtureErrPage() {
+  return '<!doctype html><p>err</p><img src="https://live.example.test/x.png"><script>console.error("boom")</script>';
+}
+
+function fixtureWebTake() {
+  return `export const config = { fixtures: { 'https://api.example.test/items': { json: { count: 3 } } } };
 export default async (h) => {
   await h.goto(new URL('../../app/index.html', import.meta.url).href);
   await h.hold(200);
@@ -342,17 +358,22 @@ export default async (h) => {
   await h.wait('document.querySelector("#res").textContent !== ""');
   h.zoom(1);
   await h.hold(200);
-};`,
-    'captures/src/term.mjs': `export const config = { dsf: 1, cursor: false };
+};`;
+}
+
+function fixtureTermTake() {
+  return `export const config = { dsf: 1, cursor: false };
 export default async (h) => {
   await h.goto(h.termUrl);
   await h.term('$ ');
   await h.termType('make');
   await h.term('\\r\\n');
   await h.termCast('captures/src/term.cast');
-};`,
-    'captures/src/err.mjs': `export default async (h) => { await h.goto(new URL('../../app/err.html', import.meta.url).href); await h.hold(100); };`,
-  };
+};`;
+}
+
+function fixtureErrTake() {
+  return `export default async (h) => { await h.goto(new URL('../../app/err.html', import.meta.url).href); await h.hold(100); };`;
 }
 
 function testRecCast(dir) {
@@ -362,15 +383,24 @@ function testRecCast(dir) {
 }
 
 function testDeterminism(dir) {
-  const results = [], hashes = [];
-  for (let i = 1; i <= 3; i++) {
-    const r = captureIn(dir, 'web');
-    results.push(outcome(r.status === 0, `web capture run ${i} exits 0${exitNote(r)}`));
-    hashes.push(frameHash(dir, 'web'));
-  }
-  const same = hashes[0].length > 0 && hashes.every((x) => x === hashes[0]);
-  results.push(outcome(same, `3 web runs give identical decoded frames (${hashes[0].split('\n').length} frames)`));
-  return results;
+  const runs = [webRun(dir, 1), webRun(dir, 2), webRun(dir, 3)];
+  const hashes = new Set(runs.map(hashOf));
+  const frames = runs[0].hash.split('\n').length - 1;
+  const same = hashes.size === 1 && frames > 0;
+  return [...runs.map(okOf), outcome(same, `3 web runs give identical decoded frames (${frames} frames)`)];
+}
+
+function webRun(dir, i) {
+  const r = captureIn(dir, 'web');
+  return { ok: outcome(r.status === 0, `web capture run ${i} exits 0${exitNote(r)}`), hash: frameHash(dir, 'web') };
+}
+
+function hashOf(run) {
+  return run.hash;
+}
+
+function okOf(run) {
+  return run.ok;
 }
 
 function testTelemetry(dir) {

@@ -27,7 +27,7 @@ in about 25 s.
   and a terminal scene in a temp folder. Each must pass `check_plate.py`. A
   page with `console.error` and a live request must make the capture exit
   1. 3 runs of the web scene must give identical decoded frames. It runs in
-  about 55 s.
+  about 70 s.
 - `python3 "<skill-dir>/scripts/check_plate.py" --self-test` gates 6
   synthetic plates (pass at 1x and 2x, blank, short, wrong rate, wrong size)
   in under 2 s.
@@ -120,6 +120,10 @@ ffmpeg -y -i in.mov -vsync cfr -r 60 -c:v libx264 -preset slow -crf 14 -pix_fmt 
   clock, and each frame then moves every running CSS animation by exactly 1
   frame. Without it, compositor animations (`transform`, `opacity`) drift
   by a few ms between runs and the frame hashes differ.
+- Each `__cap.step` resolves only after 2 real `requestAnimationFrame`
+  callbacks (the page sees only the virtual one). Without this wait, a
+  screenshot under CPU load can show the state of the step before: 3 of 12
+  parallel runs gave different spinner and text frames.
 - A fixture request still takes real time. If a `wait()` predicate waits
   for it, the frame count of the wait can change between runs. Load the
   data before frame 0 (the self-test page uses a synchronous request in its

@@ -48,7 +48,7 @@ harness drives Chrome through the DevTools Protocol (CDP) directly.
 5. Fix and run again until the gate passes. Then report the plates.
 
 If the harness fails for a reason that is not the take, run
-`node "<skill-dir>/scripts/capture.mjs" --self-test` (about 55 s).
+`node "<skill-dir>/scripts/capture.mjs" --self-test` (about 70 s).
 
 ## Rule 1: size, rate and output
 
