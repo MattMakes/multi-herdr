@@ -1,11 +1,12 @@
 """Check a mesh for FDM or resin 3D printing. Blender headless only:
 
-  "$BLENDER" --background --factory-startup --python print_check.py -- \
+  "$BLENDER" --background --factory-startup --python-exit-code 2 --python print_check.py -- \
       --in model.stl [--process fdm|resin] [--wall-mm 0.8] [--overhang-deg 45] \
       [--printer-mm 256x256x256] [--units auto|mm|cm|m|in] [--json out.json] [--md out.md]
 
 Prints 1 line per check and a RESULT line. Exit 0: every hard check passes.
-Exit 1: a hard check fails. Exit 2: bad arguments, or the file does not load.
+Exit 1: a hard check fails. Exit 2: bad arguments, the file does not load, or
+the script crashes (Blender returns 2 for that only with --python-exit-code 2).
 Reads the file only. print_fix.py imports this module.
 """
 import argparse
@@ -20,7 +21,7 @@ from mathutils import Matrix
 from mathutils.bvhtree import BVHTree
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-import threemf  # noqa: E402  (same folder; the skill is self-contained)
+import threemf  # same folder; the skill is self-contained
 
 UNIT_MM = {"mm": 1.0, "cm": 10.0, "m": 1000.0, "in": 25.4}
 WALL_DEFAULT_MM = {"fdm": 0.8, "resin": 0.4}
@@ -334,10 +335,10 @@ def print_report(rep):
 def markdown(rep):
     s = rep["stats"]
     lines = [f"# Print check: {os.path.basename(rep['input'])}", "",
-             f"Result: **{rep['result']}**. Process {rep['limits']['process']}, wall {rep['limits']['wall_mm']:g} mm, "
-             f"overhang {rep['limits']['overhang_deg']:g} deg. Units: {rep['units_source']}.", "",
-             f"Size {' x '.join(str(d) for d in s['bbox_mm'])} mm, {s['tris']} triangles, {s['shells']} shells, "
-             f"volume {s['volume_mm3']} mm3.", ""]
+             (f"Result: **{rep['result']}**. Process {rep['limits']['process']}, wall {rep['limits']['wall_mm']:g} mm, "
+              f"overhang {rep['limits']['overhang_deg']:g} deg. Units: {rep['units_source']}."), "",
+             (f"Size {' x '.join(str(d) for d in s['bbox_mm'])} mm, {s['tris']} triangles, {s['shells']} shells, "
+              f"volume {s['volume_mm3']} mm3."), ""]
     for f in rep.get("fixes", []):
         lines.append(f"- fix `{f['step']}`: {f['detail']}")
     if rep.get("fixes"):

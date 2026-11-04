@@ -1,6 +1,6 @@
 """Write a print-ready copy of a mesh, then check the copy. Blender headless only:
 
-  "$BLENDER" --background --factory-startup --python print_fix.py -- \
+  "$BLENDER" --background --factory-startup --python-exit-code 2 --python print_fix.py -- \
       --in model.obj --out model_print.stl [--scale F] [--merge-mm 0.01] \
       [--remesh-voxel-mm X] [--target-tris N] [--solidify-mm X] [--thicken-mm X] \
       [--hollow-mm X] [--drain-mm 2.5] [--orient] [--json out.json] [--md out.md] \
@@ -21,8 +21,8 @@ import bpy
 from mathutils import Matrix, Vector
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-import print_check as pc  # noqa: E402  (same folder; the skill is self-contained)
-import threemf  # noqa: E402
+import print_check as pc  # same folder; the skill is self-contained
+import threemf
 
 LOG = []
 

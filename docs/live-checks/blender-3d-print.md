@@ -52,3 +52,4 @@ UV sphere; a 20 x 20 mm open sheet.
 | export-stl | binary STL export, the reference for 3MF | Blender 5.1.2 | PASS | exit 0, 3968 triangles |
 | 3mf-export | `print_fix.py --out x.3mf` needs no add-on: 3 parts, `unit="millimeter"`, vertices, triangles and bounding box match the STL within 0.001 mm, `SKILL.md` Export | Blender 5.1.2 | PASS | 3 parts, 1986 vertices, 3968 triangles |
 | check-3mf-input | `print_check.py --in x.3mf` reads the 3MF with `threemf.py` | Blender 5.1.2 | PASS | exit 0, 3968 triangles, units source 3MF |
+| crashed-script-exit | `--python-exit-code 2` makes a script that raises return non-zero | Blender 5.1.2 | PASS | exit 2 |

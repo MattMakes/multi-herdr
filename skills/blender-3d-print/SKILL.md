@@ -7,7 +7,7 @@ description: Use when a mesh must become printable on an FDM or resin 3D printer
 
 Take any mesh and make a copy that a slicer prints without repair: closed, outward-facing, no self-intersections, at its real size in millimetres, with walls a nozzle or a resin layer can build. Two scripts do the work headless and never change the input file:
 
-- `scripts/print_check.py`: reads a file and runs every check. Exit 0 when all hard checks pass, 1 when 1 fails, 2 when the arguments or the file are bad.
+- `scripts/print_check.py`: reads a file and runs every check. Exit 0 when all hard checks pass, 1 when 1 fails, 2 when the arguments or the file are bad, or when the script crashes. `--python-exit-code 2` makes Blender return 2 on an uncaught exception; without it Blender returns 0.
 - `scripts/print_fix.py`: writes a fixed copy, then loads that copy again and runs the same checks. Same exit codes.
 
 The scripts use only `bpy`, `bmesh` and `mathutils`. They import nothing from other skills and do not need the 3D-Print Toolbox add-on. Every check and fix ran on Blender 5.1.2 (`scripts/live/blender-3d-print.sh`, results in `docs/live-checks/blender-3d-print.md`). How each check measures and what each fix changes is in `references/checks-and-fixes.md`. The report fields are in `references/report-format.md`.
@@ -25,9 +25,9 @@ The scripts use only `bpy`, `bmesh` and `mathutils`. They import nothing from ot
 ```bash
 BLENDER="${BLENDER_PATH:-/Applications/Blender.app/Contents/MacOS/Blender}"
 S=<this skill>/scripts
-"$BLENDER" --background --factory-startup --python "$S/print_check.py" -- \
+"$BLENDER" --background --factory-startup --python-exit-code 2 --python "$S/print_check.py" -- \
     --in part.stl --json part.check.json --md part.check.md
-"$BLENDER" --background --factory-startup --python "$S/print_fix.py" -- \
+"$BLENDER" --background --factory-startup --python-exit-code 2 --python "$S/print_fix.py" -- \
     --in part.stl --out part_print.stl --json part.fix.json --md part.fix.md
 ```
 

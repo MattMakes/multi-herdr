@@ -29,7 +29,7 @@ if [ -z "$BLENDER" ]; then
   exit 0
 fi
 pass "blender-version: $("$BLENDER" --version 2>/dev/null | head -1) at $BLENDER"
-run_blender() { "$BLENDER" --background --factory-startup --python "$@" 2>&1; }
+run_blender() { "$BLENDER" --background --factory-startup --python-exit-code 2 --python "$@" 2>&1; }
 
 # 2. Fixtures. Each is 1 STL (or .blend) in $SCRATCH/in.
 cat >"$SCRATCH/fixtures.py" <<'PY'
@@ -211,6 +211,11 @@ PY
     check check-3mf-input sphere.3mf 0 "r[\"stats\"][\"tris\"]==$tris and r[\"units_source\"].startswith(\"3MF\")"
   fi
 fi
+
+# 7. A script that raises must not look like success: Blender returns 0 for it unless --python-exit-code is set.
+echo 'raise RuntimeError("deliberate crash")' >"$SCRATCH/crash.py"
+got=0; run_blender "$SCRATCH/crash.py" >/dev/null || got=$?
+if [ "$got" = 2 ]; then pass "crashed-script-exit: exit 2"; else fail "crashed-script-exit" "exit $got, want 2"; fi
 
 rm -rf "$SCRATCH"/out/*.stl "$SCRATCH"/out/*.3mf
 exit $FAILED
