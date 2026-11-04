@@ -1,83 +1,14 @@
-# Capture harness: templates and commands
-
-Templates for `video-capture`. They ran on Chrome 156, Node v26.12.1 and
-ffmpeg 8.1: 10 of 10 runs gave identical frames.
-
-The harness drives Chrome through the Chrome DevTools Protocol (CDP) with
-Node built-ins only: no `playwright` import, no `npm install`. Its prelude
-replaces Playwright's `page.clock.install({ time })`.
-
-## Files
-
-Put these files in the video project under `captures/src/`: `capture.mjs`
-(the harness, copy it unchanged), 1 take script `<scene-id>.mjs` per capture
-scene, and for CLI scenes `term.html` and `rec-cast.mjs`.
-
-Run 1 take: `node captures/src/capture.mjs . <scene-id>`. The harness reads
-`timeline.json` (`meta.fps`, `meta.width`, `meta.height` and the scene's
-`duration_sec`), writes `captures/<scene-id>.mp4` and
-`captures/<scene-id>.json`, and exits 1 on any page error. A 6 s take runs
-in about 25 s.
-
-## How the harness works
-
-- The prelude freezes `Date` at `clockIso` and runs `setTimeout`,
-  `setInterval`, `requestAnimationFrame` and `performance.now` on a virtual
-  clock. Each frame advances it by exactly `1000 / fps` ms.
-- `Animation.setPlaybackRate` 0 stops the real animation clock, and each
-  frame moves every running CSS animation by 1 frame. Without it,
-  compositor animations drift by a few ms between runs.
-- `Fetch.enable` sends fixtures for `config.fixtures` URLs, passes `file:`,
-  `data:`, `about:` and `config.allow` prefixes, and fails the take on any
-  other request.
-- `wait()` buffers dead-time frames, then keeps a subset on the speed curve.
-  The plate is already ramped. After the take script ends, the last state
-  holds until `round(duration_sec * fps)` frames.
-
-## Take script API (`h`)
-
-| Call | Effect | Telemetry |
-|---|---|---|
-| `goto(url)` | Navigate, wait for load, `document.fonts.ready` and image decode. | - |
-| `hold(ms)` | Interactive pause at 1x. | - |
-| `move(x, y, ms?)` | Cubic Bezier path in CSS px, ease-in-out timing. Default `ms` is 400-700 by distance. | `cursor[]` per frame |
-| `click(selector, button?)` | Move to the element centre, press and release, 240 ms ripple, 240 ms hold. | `cursor[]`, `clicks[]` |
-| `type(text)` | Key events per character, 35-55 ms apart (seeded). | `keys[]` |
-| `press(key)` | `Enter`, `Tab`, `Backspace` or `Escape`, then a 120 ms hold. | `keys[]` |
-| `zoom(scale, cx?, cy?, ms?, ease?)` | Records a camera move. Default 500 ms `cubic-bezier(0.22, 1, 0.36, 1)`. The plate does not zoom. | `zoom_keyframes[]` |
-| `zoomTo(selector, scale?)` | `zoom` centred on an element. Default 1.6x. | `zoom_keyframes[]` |
-| `wait(ms \| jsExpression, timeoutMs?)` | Dead time with no input. 500 ms or longer is speed-ramped. | `speed_ramps[]` |
-| `term(data)` | Terminal page: print output now. | - |
-| `termType(text)` | Terminal page: echo a typed command at 35-55 ms per character. | `keys[]` |
-| `termCast(file)` | Terminal page: replay an asciicast v2 file. Gaps of 500 ms or longer go through `wait`. | `keys[]`, `speed_ramps[]` |
-
-`config` keys: `dsf` (1 or 2, default 2), `seed` (default 1), `clockIso`
-(default `2026-01-15T10:00:00Z`), `cursor` (default `true`; set `false` for
-terminal scenes), `fixtures` (`{ url: { status?, json? | body?, type? } }`),
-`allow` (URL prefixes that may reach a local server, for example
-`http://127.0.0.1:5173/`).
-
-Speed ramp table (dead span `D` is virtual time):
-
-| D | Factor | Pad in and pad out |
-|---|---|---|
-| 500 ms to under 1 s | 2x | 150 ms |
-| 1 s to under 2 s | 3x | 200 ms |
-| 2 s or more | 4x | 250 ms |
-
-The speed rises from 1x to the factor over the pad in, holds, and falls back
-to 1x over the pad out (smoothstep).
-
-## `captures/src/capture.mjs`
-
-```js
 // capture.mjs - deterministic CDP capture. Node built-ins only.
-// Usage: node captures/src/capture.mjs <project-dir> <scene-id>
-import { spawn } from 'node:child_process';
-import { mkdtempSync, rmSync, readFileSync, writeFileSync } from 'node:fs';
+// Usage: node "<skill-dir>/scripts/capture.mjs" <project-dir> <scene-id>
+//        node "<skill-dir>/scripts/capture.mjs" --self-test
+import { spawn, spawnSync } from 'node:child_process';
+import { mkdirSync, mkdtempSync, rmSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
-import { pathToFileURL } from 'node:url';
+import { dirname, join, resolve } from 'node:path';
+import { fileURLToPath, pathToFileURL } from 'node:url';
+
+const scriptsDir = dirname(fileURLToPath(import.meta.url));
+if (process.argv[2] === '--self-test') process.exit(selfTest());
 
 const [projectDir, sceneId] = process.argv.slice(2).map(String);
 const timeline = JSON.parse(readFileSync(join(projectDir, 'timeline.json'), 'utf8'));
@@ -236,6 +167,7 @@ const smooth = (u) => u * u * (3 - 2 * u);
 
 const h = {
   W, H, fps, rand,
+  termUrl: pathToFileURL(join(scriptsDir, 'term.html')).href, // the terminal page next to this script
   async goto(url) {
     await send('Page.navigate', { url });
     for (let i = 0; i < 200 && (await evaluate('document.readyState')) !== 'complete'; i++) await new Promise((r) => setTimeout(r, 25));
@@ -334,122 +266,84 @@ try {
 }
 if (errors.length) { console.error(errors.join('\n')); process.exit(1); }
 console.log(`captures/${sceneId}.mp4: ${out} frames at ${fps} fps`);
-```
 
-## Example take: web app (`captures/src/s02-demo.mjs`)
-
-```js
-export const config = { dsf: 1, fixtures: { 'https://api.example.test/items': { json: { count: 3 } } } };
+// ---- self-test: a web scene and a terminal scene pass the plate gate, console.error fails, 3 runs match ----
+function selfTest() {
+  const t0 = Date.now(), dir = mkdtempSync(join(tmpdir(), 'cap-selftest-')), results = [];
+  const check = (ok, what) => { results.push(ok); console.log(`${ok ? 'pass' : 'FAIL'}: ${what}`); };
+  const put = (rel, text) => { mkdirSync(dirname(join(dir, rel)), { recursive: true }); writeFileSync(join(dir, rel), text); };
+  const run = (cmd, args) => spawnSync(cmd, args, { cwd: dir, encoding: 'utf8' });
+  const capture = (id) => run(process.execPath, [fileURLToPath(import.meta.url), '.', id]);
+  const frameHash = (id) => run('ffmpeg', ['-v', 'error', '-i', `captures/${id}.mp4`, '-f', 'framemd5', '-'])
+    .stdout.split('\n').filter((l) => l && !l.startsWith('#')).join('\n');
+  try {
+    put('timeline.json', JSON.stringify({ meta: { fps: 60, width: 640, height: 360 }, scenes: [
+      { id: 'web', kind: 'capture', duration_sec: 4.0 },
+      { id: 'term', kind: 'capture', duration_sec: 2.0 },
+      { id: 'err', kind: 'capture', duration_sec: 0.5 }] }));
+    put('app/index.html', `<!doctype html><meta charset="utf-8">
+<style>html,body{margin:0;height:100%;background:#0d1117;color:#e6edf3;font:24px/1.4 Menlo,monospace}
+input,button{font:inherit}@keyframes spin{to{transform:rotate(360deg)}}
+#s{width:24px;height:24px;margin:16px;background:#3fb950;animation:spin 1s linear infinite}</style>
+<input id="q" size="10"> <button id="go">Go</button><div id="s"></div><p id="api"></p><p id="res"></p>
+<script>
+  const x = new XMLHttpRequest(); x.open('GET', 'https://api.example.test/items', false); x.send();
+  document.getElementById('api').textContent = 'items: ' + JSON.parse(x.responseText).count;
+  document.getElementById('go').onclick = () => setTimeout(() => {
+    document.getElementById('res').textContent = Math.random().toFixed(4) + ' ' + new Date().toISOString();
+  }, 800);
+</script>`);
+    put('app/err.html', '<!doctype html><p>err</p><img src="https://live.example.test/x.png"><script>console.error("boom")</script>');
+    put('captures/src/web.mjs', `export const config = { fixtures: { 'https://api.example.test/items': { json: { count: 3 } } } };
 export default async (h) => {
   await h.goto(new URL('../../app/index.html', import.meta.url).href);
-  await h.hold(300);
+  await h.hold(200);
   await h.click('#q');
   await h.zoomTo('#q', 1.6);
-  await h.type('flaky tests');
+  await h.type('ab');
   await h.click('#go');
   await h.wait('document.querySelector("#res").textContent !== ""');
   h.zoom(1);
-  await h.hold(500);
-};
-```
+  await h.hold(200);
+};`);
+    put('captures/src/term.mjs', `export const config = { dsf: 1, cursor: false };
+export default async (h) => {
+  await h.goto(h.termUrl);
+  await h.term('$ ');
+  await h.termType('make');
+  await h.term('\\r\\n');
+  await h.termCast('captures/src/term.cast');
+};`);
+    put('captures/src/err.mjs', `export default async (h) => { await h.goto(new URL('../../app/err.html', import.meta.url).href); await h.hold(100); };`);
 
-## Terminal scenes
+    const rec = run(process.execPath, [join(scriptsDir, 'rec-cast.mjs'), 'captures/src/term.cast', '--', 'sh', '-c', 'echo building; sleep 0.6; echo done']);
+    check(rec.status === 0 && readFileSync(join(dir, 'captures/src/term.cast'), 'utf8').includes('done'), 'rec-cast.mjs records an asciicast v2 file');
 
-Default recipe: record the real command once, then replay it in
-`term.html`. The replay is deterministic, and a long build becomes a ramped
-`wait`.
-
-```sh
-node captures/src/rec-cast.mjs captures/src/s03-cli.cast -- sh -c 'npm test'
-node captures/src/capture.mjs . s03-cli
-```
-
-An existing `asciinema` `.cast` file (v2) replays the same way. A live
-`ttyd` session in the browser is not deterministic: its output arrives in
-real time, outside the virtual clock. Use it only when the operator accepts
-a take that can differ between runs.
-
-`captures/src/rec-cast.mjs`:
-
-```js
-// node rec-cast.mjs <out.cast> -- <command> [args...]: run a command, save its output and timing as asciicast v2
-import { spawn } from 'node:child_process';
-import { writeFileSync } from 'node:fs';
-const [out, , cmd, ...args] = process.argv.slice(2);
-const t0 = performance.now(), ev = [];
-const p = spawn(cmd, args, { env: { ...process.env, FORCE_COLOR: '1', CLICOLOR_FORCE: '1' } });
-for (const s of [p.stdout, p.stderr]) s.on('data', (d) => ev.push([+((performance.now() - t0) / 1000).toFixed(3), 'o', d.toString().replace(/\r?\n/g, '\r\n')]));
-p.on('close', (code) => {
-  writeFileSync(out, [JSON.stringify({ version: 2, width: 100, height: 30 }), ...ev.map((e) => JSON.stringify(e))].join('\n') + '\n');
-  process.exit(code ?? 1);
-});
-```
-
-`captures/src/term.html`:
-
-```html
-<!doctype html>
-<meta charset="utf-8">
-<style>
-  html, body { margin: 0; height: 100%; background: #0d1117; }
-  #t { box-sizing: border-box; height: 100%; margin: 0; padding: 48px 56px; color: #e6edf3;
-       font: 26px/1.45 "SF Mono", Menlo, monospace; white-space: pre-wrap; overflow: hidden; }
-  .cur { background: #e6edf3; color: #0d1117; }
-</style>
-<pre id="t"></pre>
-<script>
-  // termWrite(data): append terminal output. Handles \n, \r, \b and SGR colours; drops other escapes.
-  const PAL = ['#484f58', '#ff7b72', '#3fb950', '#d29922', '#58a6ff', '#bc8cff', '#39c5cf', '#b1bac4'];
-  const t = document.getElementById('t'); let lines = [[]], style = {};
-  const sgr = (codes) => { for (const c of codes.split(';').map(Number)) {
-    if (c === 0) style = {}; else if (c === 1) style.b = 1; else if (c === 39) delete style.c;
-    else if (c >= 30 && c <= 37) style.c = PAL[c - 30]; else if (c >= 90 && c <= 97) style.c = PAL[c - 90]; } };
-  window.termWrite = (data) => {
-    let row = lines.at(-1);
-    for (let i = 0; i < data.length; i++) {
-      const ch = data[i];
-      if (ch === '\x1b') { const m = data.slice(i).match(/^\x1b\[([0-9;?]*)([A-Za-z])/); if (m) { if (m[2] === 'm') sgr(m[1] || '0'); i += m[0].length - 1; } continue; }
-      if (ch === '\n') { lines.push(row = []); continue; }
-      if (ch === '\r') { if (data[i + 1] !== '\n') row.length = 0; continue; }
-      if (ch === '\b') { row.pop(); continue; }
-      row.push({ ch, ...style });
+    const hashes = [];
+    for (let i = 1; i <= 3; i++) {
+      const r = capture('web');
+      check(r.status === 0, `web capture run ${i} exits 0${r.status ? `: ${r.stderr.trim()}` : ''}`);
+      hashes.push(frameHash('web'));
     }
-    t.replaceChildren(...lines.flatMap((r, n) => [...r.map((g) => {
-      const s = document.createElement('span'); s.textContent = g.ch;
-      if (g.c) s.style.color = g.c; if (g.b) s.style.fontWeight = 700; return s;
-    }), n < lines.length - 1 ? '\n' : (() => { const c = document.createElement('span'); c.className = 'cur'; c.textContent = ' '; return c; })()]));
-  };
-  termWrite('');
-</script>
-```
+    check(hashes[0].length > 0 && hashes.every((x) => x === hashes[0]), `3 web runs give identical decoded frames (${hashes[0].split('\n').length} frames)`);
+    const tel = JSON.parse(readFileSync(join(dir, 'captures/web.json'), 'utf8'));
+    check(tel.width === 1280 && tel.clicks.length === 2 && tel.keys.length === 2 && tel.speed_ramps.length === 1 && tel.zoom_keyframes.length >= 3,
+      `web telemetry: ${tel.width}x${tel.height}, ${tel.clicks.length} clicks, ${tel.keys.length} keys, ${tel.zoom_keyframes.length} zoom keyframes, ${tel.speed_ramps.length} speed ramps`);
 
-A terminal take: `goto` of `term.html`, `term('$ ')` before the first frame,
-`termType('npm test')`, `term('\r\n')`, `termCast(<cast path>)`, and
-`config.cursor: false`.
+    const term = capture('term');
+    check(term.status === 0, `term capture exits 0${term.status ? `: ${term.stderr.trim()}` : ''}`);
+    for (const id of ['web', 'term']) {
+      const g = run('python3', [join(scriptsDir, 'check_plate.py'), id]);
+      check(g.status === 0, `${id} plate gate: ${g.stdout.trim()}`);
+    }
 
-## ffmpeg CFR transcode
-
-The harness encodes PNG frames from stdin:
-
-```sh
-ffmpeg -f image2pipe -c:v png -framerate 60 -i - \
-  -vsync cfr -r 60 -c:v libx264 -preset slow -crf 14 -pix_fmt yuv420p captures/<scene-id>.mp4
-```
-
-Convert any other recording (a QuickTime screen recording) to a constant
-60 fps plate before it goes into `captures/`:
-
-```sh
-ffmpeg -y -i in.mov -vsync cfr -r 60 -c:v libx264 -preset slow -crf 14 -pix_fmt yuv420p \
-  -an captures/<scene-id>.mp4
-```
-
-ffmpeg 8.1 warns that `-vsync` is deprecated. `-fps_mode cfr` is equal. Do not burn text into a plate with `drawtext`: the local ffmpeg has
-no `drawtext`, `subtitles` or `ass` filter. Render text in Chrome as HTML.
-
-## Self-test
-
-Run the example take 2 times in a temp folder. The decoded frame hashes
-(`ffmpeg -v error -i <plate> -f framemd5 - | grep -v '^#' | md5`) must be
-equal. A difference means a real-time source that the take does not lock:
-a CSS animation, a live request or a `<video>` element.
+    const err = capture('err');
+    check(err.status === 1 && err.stderr.includes('console.error: boom') && err.stderr.includes('blocked live request'),
+      `console.error and a live request make the capture exit 1 (exit ${err.status})`);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+  const passed = results.filter(Boolean).length;
+  console.log(`capture self-test: ${passed} of ${results.length} checks pass in ${((Date.now() - t0) / 1000).toFixed(1)} s`);
+  return passed === results.length ? 0 : 1;
+}

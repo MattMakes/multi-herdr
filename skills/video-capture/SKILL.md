@@ -9,10 +9,10 @@ Record product UI and CLI walkthroughs as plates that are the same on every
 run, and record every interaction as telemetry. The audio phase places click
 and key sounds from the telemetry. The editor applies camera zoom from it.
 
-`<skill-dir>` is the folder that holds this SKILL.md. The harness, take
-templates and ffmpeg commands are in
-`<skill-dir>/references/playwright-harness.md`. Copy them into the video
-project. Do not run them from the skill folder.
+`<skill-dir>` is the folder that holds this SKILL.md. The harness and the
+plate gate are in `<skill-dir>/scripts/`. Run them from there. Do not copy
+them. `<skill-dir>/references/cdp-harness.md` explains the harness, the take
+API (`h`) and the gotchas.
 
 ## Inputs and outputs
 
@@ -37,14 +37,18 @@ harness drives Chrome through the DevTools Protocol (CDP) directly.
 
 1. Read the capture scenes in `timeline.json` and their notes in
    `STORYBOARD.md`. List the actions of each scene with a time budget.
-2. Copy `capture.mjs` from the reference to `captures/src/capture.mjs`.
-3. Write `captures/src/<scene-id>.mjs`: a `config` object and 1 async
-   function that calls the `h` helpers. Record fixtures for every API call.
-4. Run `node captures/src/capture.mjs . <scene-id>` from the project root.
-   It exits 1 on any uncaught page error, `console.error` or blocked request.
-5. Run the plate gate below. Look at frame 0, the middle frame and the last
+2. Write `captures/src/<scene-id>.mjs`: a `config` object and 1 async
+   function that calls the `h` helpers. Start from
+   `<skill-dir>/scripts/example-take.mjs`. Record fixtures for every API call.
+3. Run `node "<skill-dir>/scripts/capture.mjs" . <scene-id>` from the project
+   root. It exits 1 on any uncaught page error, `console.error` or blocked
+   request.
+4. Run the plate gate below. Look at frame 0, the middle frame and the last
    frame as PNGs.
-6. Fix and run again until the gate passes. Then report the plates.
+5. Fix and run again until the gate passes. Then report the plates.
+
+If the harness fails for a reason that is not the take, run
+`node "<skill-dir>/scripts/capture.mjs" --self-test` (about 55 s).
 
 ## Rule 1: size, rate and output
 
@@ -90,11 +94,11 @@ first frame:
   ms (`h.hold`) before an important click or after a result appears.
 - Keep 1 action in focus at a time. Move to the target, act, let the result
   land, then move on.
-- Terminal walkthroughs: record the real command once with `rec-cast.mjs`
-  into an asciicast v2 file, then replay it in `term.html` with
-  `h.termType` and `h.termCast`. Print the prompt before the first frame so
-  frame 0 is not blank. An existing `asciinema` `.cast` file
-  replays the same way. A live `ttyd` page is not deterministic. Use it only
+- Terminal walkthroughs: record the real command once with
+  `<skill-dir>/scripts/rec-cast.mjs` into an asciicast v2 file, then replay
+  it in `h.termUrl` (`term.html`) with `h.termType` and `h.termCast`.
+  Print the prompt before the first frame so frame 0 is not blank. An
+  existing `asciinema` `.cast` file replays the same way. A live `ttyd` page is not deterministic. Use it only
   when the operator accepts takes that differ between runs.
 - All on-screen text is HTML in the page. Never burn text into a plate with
   ffmpeg: the local ffmpeg has no `drawtext`, `subtitles` or `ass` filter.
@@ -167,31 +171,13 @@ bottom edge.
 ## Plate gate
 
 Run from the project root for each capture scene. It passes when the capture
-command exited 0 and this script exits 0:
+command exited 0 and this command exits 0:
 
 ```sh
-ID=s02-demo python3 - "$ID" <<'PY'
-import json, re, subprocess, sys
-sid = sys.argv[1]; p = f"captures/{sid}.mp4"
-t = json.load(open("timeline.json")); s = next(x for x in t["scenes"] if x["id"] == sid)
-tel = json.load(open(f"captures/{sid}.json")); m = t["meta"]
-run = lambda *a: subprocess.run(a, capture_output=True, text=True).stdout
-st = json.loads(run("ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries",
-    "stream=codec_type,width,height,r_frame_rate:format=duration", "-of", "json", p))
-v = (st.get("streams") or [{}])[0]; dur = float(st.get("format", {}).get("duration", 0))
-y = dict(re.findall(r"signalstats\.(YMIN|YMAX)=(\d+)", run("ffmpeg", "-v", "error", "-i", p, "-vf",
-    r"select=eq(n\,0),signalstats,metadata=print:file=-", "-frames:v", "1", "-f", "null", "-")))
-fails = [msg for ok, msg in [
-    (v.get("codec_type") == "video", "G1 no video stream"),
-    (v.get("r_frame_rate") == f"{m['fps']}/1", f"G1 rate {v.get('r_frame_rate')}"),
-    ((v.get("width"), v.get("height")) == (tel["width"], tel["height"]) and tel["width"] in (m["width"], 2 * m["width"]),
-     f"G1 size {v.get('width')}x{v.get('height')}"),
-    (abs(dur - s["duration_sec"]) <= 0.05, f"G2 duration {dur} s, timeline {s['duration_sec']} s"),
-    (int(y.get("YMAX", 0)) - int(y.get("YMIN", 0)) >= 24, f"G3 frame 0 is blank: {y}")] if not ok]
-print(json.dumps({"scene_id": sid, "duration_sec": dur, "fails": fails}))
-sys.exit(1 if fails else 0)
-PY
+python3 "<skill-dir>/scripts/check_plate.py" <scene-id>
 ```
+
+It prints 1 JSON line: `{"scene_id", "duration_sec", "fails": [...]}`.
 
 | Gate | Pass rule |
 |---|---|
