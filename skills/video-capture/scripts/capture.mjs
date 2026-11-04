@@ -268,20 +268,57 @@ if (errors.length) { console.error(errors.join('\n')); process.exit(1); }
 console.log(`captures/${sceneId}.mp4: ${out} frames at ${fps} fps`);
 
 // ---- self-test: a web scene and a terminal scene pass the plate gate, console.error fails, 3 runs match ----
+// Function declarations only: the self-test runs before the module-level constants above are set.
 function selfTest() {
-  const t0 = Date.now(), dir = mkdtempSync(join(tmpdir(), 'cap-selftest-')), results = [];
-  const check = (ok, what) => { results.push(ok); console.log(`${ok ? 'pass' : 'FAIL'}: ${what}`); };
-  const put = (rel, text) => { mkdirSync(dirname(join(dir, rel)), { recursive: true }); writeFileSync(join(dir, rel), text); };
-  const run = (cmd, args) => spawnSync(cmd, args, { cwd: dir, encoding: 'utf8' });
-  const capture = (id) => run(process.execPath, [fileURLToPath(import.meta.url), '.', id]);
-  const frameHash = (id) => run('ffmpeg', ['-v', 'error', '-i', `captures/${id}.mp4`, '-f', 'framemd5', '-'])
-    .stdout.split('\n').filter((l) => l && !l.startsWith('#')).join('\n');
+  const t0 = Date.now(), dir = mkdtempSync(join(tmpdir(), 'cap-selftest-'));
+  let results;
   try {
-    put('timeline.json', JSON.stringify({ meta: { fps: 60, width: 640, height: 360 }, scenes: [
+    writeFixtures(dir);
+    results = [testRecCast, testDeterminism, testTelemetry, testPlates, testErrors].flatMap((step) => step(dir));
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+  const passed = results.filter(Boolean).length;
+  console.log(`capture self-test: ${passed} of ${results.length} checks pass in ${((Date.now() - t0) / 1000).toFixed(1)} s`);
+  return passed === results.length ? 0 : 1;
+}
+
+function outcome(ok, what) {
+  console.log(`${ok ? 'pass' : 'FAIL'}: ${what}`);
+  return ok;
+}
+
+function runIn(dir, cmd, args) {
+  return spawnSync(cmd, args, { cwd: dir, encoding: 'utf8' });
+}
+
+function captureIn(dir, id) {
+  return runIn(dir, process.execPath, [fileURLToPath(import.meta.url), '.', id]);
+}
+
+function exitNote(r) {
+  return r.status ? `: ${r.stderr.trim()}` : '';
+}
+
+function frameHash(dir, id) {
+  const lines = runIn(dir, 'ffmpeg', ['-v', 'error', '-i', `captures/${id}.mp4`, '-f', 'framemd5', '-']).stdout.split('\n');
+  return lines.filter((l) => l && !l.startsWith('#')).join('\n');
+}
+
+function writeFixtures(dir) {
+  for (const [rel, text] of Object.entries(fixtureFiles())) {
+    mkdirSync(dirname(join(dir, rel)), { recursive: true });
+    writeFileSync(join(dir, rel), text);
+  }
+}
+
+function fixtureFiles() {
+  return {
+    'timeline.json': JSON.stringify({ meta: { fps: 60, width: 640, height: 360 }, scenes: [
       { id: 'web', kind: 'capture', duration_sec: 4.0 },
       { id: 'term', kind: 'capture', duration_sec: 2.0 },
-      { id: 'err', kind: 'capture', duration_sec: 0.5 }] }));
-    put('app/index.html', `<!doctype html><meta charset="utf-8">
+      { id: 'err', kind: 'capture', duration_sec: 0.5 }] }),
+    'app/index.html': `<!doctype html><meta charset="utf-8">
 <style>html,body{margin:0;height:100%;background:#0d1117;color:#e6edf3;font:24px/1.4 Menlo,monospace}
 input,button{font:inherit}@keyframes spin{to{transform:rotate(360deg)}}
 #s{width:24px;height:24px;margin:16px;background:#3fb950;animation:spin 1s linear infinite}</style>
@@ -292,9 +329,9 @@ input,button{font:inherit}@keyframes spin{to{transform:rotate(360deg)}}
   document.getElementById('go').onclick = () => setTimeout(() => {
     document.getElementById('res').textContent = Math.random().toFixed(4) + ' ' + new Date().toISOString();
   }, 800);
-</script>`);
-    put('app/err.html', '<!doctype html><p>err</p><img src="https://live.example.test/x.png"><script>console.error("boom")</script>');
-    put('captures/src/web.mjs', `export const config = { fixtures: { 'https://api.example.test/items': { json: { count: 3 } } } };
+</script>`,
+    'app/err.html': '<!doctype html><p>err</p><img src="https://live.example.test/x.png"><script>console.error("boom")</script>',
+    'captures/src/web.mjs': `export const config = { fixtures: { 'https://api.example.test/items': { json: { count: 3 } } } };
 export default async (h) => {
   await h.goto(new URL('../../app/index.html', import.meta.url).href);
   await h.hold(200);
@@ -305,45 +342,57 @@ export default async (h) => {
   await h.wait('document.querySelector("#res").textContent !== ""');
   h.zoom(1);
   await h.hold(200);
-};`);
-    put('captures/src/term.mjs', `export const config = { dsf: 1, cursor: false };
+};`,
+    'captures/src/term.mjs': `export const config = { dsf: 1, cursor: false };
 export default async (h) => {
   await h.goto(h.termUrl);
   await h.term('$ ');
   await h.termType('make');
   await h.term('\\r\\n');
   await h.termCast('captures/src/term.cast');
-};`);
-    put('captures/src/err.mjs', `export default async (h) => { await h.goto(new URL('../../app/err.html', import.meta.url).href); await h.hold(100); };`);
+};`,
+    'captures/src/err.mjs': `export default async (h) => { await h.goto(new URL('../../app/err.html', import.meta.url).href); await h.hold(100); };`,
+  };
+}
 
-    const rec = run(process.execPath, [join(scriptsDir, 'rec-cast.mjs'), 'captures/src/term.cast', '--', 'sh', '-c', 'echo building; sleep 0.6; echo done']);
-    check(rec.status === 0 && readFileSync(join(dir, 'captures/src/term.cast'), 'utf8').includes('done'), 'rec-cast.mjs records an asciicast v2 file');
+function testRecCast(dir) {
+  const rec = runIn(dir, process.execPath, [join(scriptsDir, 'rec-cast.mjs'), 'captures/src/term.cast', '--', 'sh', '-c', 'echo building; sleep 0.6; echo done']);
+  const cast = rec.status === 0 ? readFileSync(join(dir, 'captures/src/term.cast'), 'utf8') : '';
+  return [outcome(cast.includes('done'), 'rec-cast.mjs records an asciicast v2 file')];
+}
 
-    const hashes = [];
-    for (let i = 1; i <= 3; i++) {
-      const r = capture('web');
-      check(r.status === 0, `web capture run ${i} exits 0${r.status ? `: ${r.stderr.trim()}` : ''}`);
-      hashes.push(frameHash('web'));
-    }
-    check(hashes[0].length > 0 && hashes.every((x) => x === hashes[0]), `3 web runs give identical decoded frames (${hashes[0].split('\n').length} frames)`);
-    const tel = JSON.parse(readFileSync(join(dir, 'captures/web.json'), 'utf8'));
-    check(tel.width === 1280 && tel.clicks.length === 2 && tel.keys.length === 2 && tel.speed_ramps.length === 1 && tel.zoom_keyframes.length >= 3,
-      `web telemetry: ${tel.width}x${tel.height}, ${tel.clicks.length} clicks, ${tel.keys.length} keys, ${tel.zoom_keyframes.length} zoom keyframes, ${tel.speed_ramps.length} speed ramps`);
-
-    const term = capture('term');
-    check(term.status === 0, `term capture exits 0${term.status ? `: ${term.stderr.trim()}` : ''}`);
-    for (const id of ['web', 'term']) {
-      const g = run('python3', [join(scriptsDir, 'check_plate.py'), id]);
-      check(g.status === 0, `${id} plate gate: ${g.stdout.trim()}`);
-    }
-
-    const err = capture('err');
-    check(err.status === 1 && err.stderr.includes('console.error: boom') && err.stderr.includes('blocked live request'),
-      `console.error and a live request make the capture exit 1 (exit ${err.status})`);
-  } finally {
-    rmSync(dir, { recursive: true, force: true });
+function testDeterminism(dir) {
+  const results = [], hashes = [];
+  for (let i = 1; i <= 3; i++) {
+    const r = captureIn(dir, 'web');
+    results.push(outcome(r.status === 0, `web capture run ${i} exits 0${exitNote(r)}`));
+    hashes.push(frameHash(dir, 'web'));
   }
-  const passed = results.filter(Boolean).length;
-  console.log(`capture self-test: ${passed} of ${results.length} checks pass in ${((Date.now() - t0) / 1000).toFixed(1)} s`);
-  return passed === results.length ? 0 : 1;
+  const same = hashes[0].length > 0 && hashes.every((x) => x === hashes[0]);
+  results.push(outcome(same, `3 web runs give identical decoded frames (${hashes[0].split('\n').length} frames)`));
+  return results;
+}
+
+function testTelemetry(dir) {
+  const tel = JSON.parse(readFileSync(join(dir, 'captures/web.json'), 'utf8'));
+  const counts = [tel.width, tel.clicks.length, tel.keys.length, tel.speed_ramps.length];
+  const ok = JSON.stringify(counts) === JSON.stringify([1280, 2, 2, 1]) && tel.zoom_keyframes.length >= 3;
+  return [outcome(ok, `web telemetry: ${tel.width}x${tel.height}, ${tel.clicks.length} clicks, ${tel.keys.length} keys, ` +
+    `${tel.zoom_keyframes.length} zoom keyframes, ${tel.speed_ramps.length} speed ramps`)];
+}
+
+function testPlates(dir) {
+  const term = captureIn(dir, 'term');
+  const results = [outcome(term.status === 0, `term capture exits 0${exitNote(term)}`)];
+  for (const id of ['web', 'term']) {
+    const g = runIn(dir, 'python3', [join(scriptsDir, 'check_plate.py'), id]);
+    results.push(outcome(g.status === 0, `${id} plate gate: ${g.stdout.trim()}`));
+  }
+  return results;
+}
+
+function testErrors(dir) {
+  const err = captureIn(dir, 'err');
+  const ok = err.status === 1 && err.stderr.includes('console.error: boom') && err.stderr.includes('blocked live request');
+  return [outcome(ok, `console.error and a live request make the capture exit 1 (exit ${err.status})`)];
 }
