@@ -2,7 +2,7 @@
 
 Load at step 1. Paste the functions you need at the top of your task script, or keep them in `Scripts/Blender/mesh_helpers.py` and import it. Every function was run against the `bpy` 5.0.1 module in a background process: a 64x32 UV sphere was measured, unwrapped (0 UVs out of bounds), given a lightmap channel, decimated to a 2,000-triangle LOD1 (1,984 after fitting) and given a 148-face convex hull that `is_convex` accepted; a torus was correctly reported concave. On 2026-10-06 they ran again on Blender 3.5.1 (`docs/live-checks/blender.md`): the same checks passed, and a crate asset found 2 bugs that are now fixed: `unwrap_smart` failed when no object was active (an object made with `bpy.data.objects.new`), and `make_convex_collision` failed on 2 stacked chamfered boxes, where the hull's interior and unused lists share a vertex.
 
-Run the code in object mode. `unwrap_smart` and `add_lightmap_uv` enter and leave edit mode themselves.
+Run the code in object mode. `unwrap_smart`, `set_texel_density` and `add_lightmap_uv` enter and leave edit mode themselves.
 
 ```python
 import bpy
@@ -151,6 +151,33 @@ def texel_density(ob, texture_px, uv_index=0):
         bm.free()
 
 
+def set_texel_density(ob, target_px_per_m, texture_px, margin=0.004, uv_index=0):
+    """Scale UV channel uv_index to target_px_per_m, then repack it at that size.
+
+    Returns the density measured after the repack. The packer decides how much
+    of the square the islands fill, and that differs by Blender version (the
+    same crate packs to 423 px/m with Blender 3.5 and 487 with 5.1), so scale
+    to the target instead of reading the number the packer gave. The target
+    has to fit: check uv_out_of_bounds after the call.
+    """
+    scale = target_px_per_m / texel_density(ob, texture_px, uv_index)
+    uv = ob.data.uv_layers[uv_index].data
+    flat = [0.0] * (2 * len(uv))
+    uv.foreach_get("uv", flat)
+    uv.foreach_set("uv", [c * scale for c in flat])
+    ob.data.uv_layers.active_index = uv_index
+    bpy.ops.object.select_all(action='DESELECT')
+    ob.select_set(True)
+    bpy.context.view_layer.objects.active = ob
+    bpy.ops.object.mode_set(mode='EDIT')
+    bpy.ops.mesh.select_all(action='SELECT')
+    # scale=False keeps the island sizes; only the positions and margins change.
+    bpy.ops.uv.pack_islands(margin=margin, margin_method='FRACTION', scale=False)
+    bpy.ops.object.mode_set(mode='OBJECT')
+    ob.data.uv_layers.active_index = 0
+    return texel_density(ob, texture_px, uv_index)
+
+
 def uv_out_of_bounds(ob, uv_index=0):
     """Count UV loops outside 0..1 (wrong for a unique bake layout)."""
     uv = ob.data.uv_layers[uv_index].data
@@ -217,5 +244,6 @@ def is_convex(ob, eps=1e-5):
 - `make_lod` copies the mesh data, so editing a LOD never changes LOD0, and moves an existing Triangulate modifier back to the end of the stack.
 - `fit_lod_ratio` binary-searches the Decimate ratio; 12 steps reach a 3 % tolerance on any mesh with more than a few hundred triangles.
 - `texel_density` measures in world space, so apply scale first. The result is pixels per metre; divide by 100 for pixels per centimetre.
+- `set_texel_density` multiplies every UV by one factor (target over measured), so all islands keep their relative sizes, and then packs again with `scale=False`, so the margin stays at the pixel width you chose. The factor is below 1 when the packer filled the square more than the brief needs. A target above what the islands can reach inside 0..1 leaves UVs out of bounds: `uv_out_of_bounds` shows it.
 - `make_convex_collision` hulls a vertex-only bmesh and deletes each interior or unused vertex once; `bmesh.ops.delete` rejects a list that holds an element twice. `bmesh.ops.convex_hull` on the full mesh would keep the source faces beside the hull. It also builds the mesh without UVs instead of removing them, because removing a UV layer from a new mesh can fail on an internal layer in Blender 5.0.
 - `is_convex` tests every vertex against every face plane: O(vertices x faces). It is fine for collision hulls (tens of faces), not for render meshes.
