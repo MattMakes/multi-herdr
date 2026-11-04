@@ -20,8 +20,8 @@ set -euo pipefail
 cd "$(dirname "$0")/../.."
 unset ANTHROPIC_API_KEY 2>/dev/null || true
 
-ROOT=$PWD
 W=$(mktemp -d "${TMPDIR:-/tmp}/live-video.XXXXXX")
+# shellcheck disable=SC2329 # run by the EXIT trap
 cleanup() {
   if [ "${LIVE_VIDEO_KEEP:-0}" = 1 ]; then echo "kept $W"; else rm -rf "$W"; fi
 }
@@ -152,7 +152,7 @@ mkframes() { # DIR X_OFFSET Y NOISE
   local i=0 x
   for x in 40 70 100 130 160; do
     ffmpeg -hide_banner -v error -y -f lavfi -i "color=c=0x14213D:s=320x180:d=1" \
-      -vf "drawbox=x=$(($x + $2)):y=$3:w=80:h=60:color=0xF2C14E:t=fill$4" -frames:v 1 "$1/$(printf 'f%03d' $i).png"
+      -vf "drawbox=x=$((x + $2)):y=$3:w=80:h=60:color=0xF2C14E:t=fill$4" -frames:v 1 "$1/$(printf 'f%03d' $i).png"
     i=$((i + 1))
   done
 }
@@ -188,7 +188,7 @@ ok "assemble_master builds render/master.mp4" node "$ASSEMBLE" --master "$P/time
 ok "render_frames --package writes captions and the 3 aspect variants" \
   node "$RENDER" --package "$P/timeline.json" --master "$P/render/master.mp4" --out-dir "$P/render"
 for f in captions.srt captions.vtt 16x9.mp4 9x16.mp4 1x1.mp4; do
-  test -s "$P/render/$f" && pass "render/$f exists" || fail "render/$f" "missing or empty"
+  if test -s "$P/render/$f"; then pass "render/$f exists"; else fail "render/$f" "missing or empty"; fi
 done
 
 # Determinism probes: frames 0, 15, 30 forward, then the same frames in reverse.
@@ -200,7 +200,7 @@ ok "qa_video passes the master" python3 "$QA" --video "$P/render/master.mp4" --t
 if python3 -c 'import json,sys; sys.exit(0 if json.load(open(sys.argv[1]))["passed"] is True else 1)' "$P/qa/render-check.json"; then
   pass "qa/render-check.json has passed: true"; else fail "qa/render-check.json" "passed is not true"; fi
 for f in contact-sheet-360p.png hook-strip.png; do
-  test -s "$P/qa/$f" && pass "qa/$f exists" || fail "qa/$f" "missing or empty"
+  if test -s "$P/qa/$f"; then pass "qa/$f exists"; else fail "qa/$f" "missing or empty"; fi
 done
 
 # Negative: a black master, and a reverse probe that differs from the forward probe.
