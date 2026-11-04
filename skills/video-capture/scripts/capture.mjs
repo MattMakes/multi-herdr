@@ -1,14 +1,20 @@
 // capture.mjs - deterministic CDP capture. Node built-ins only.
-// Usage: node "<skill-dir>/scripts/capture.mjs" <project-dir> <scene-id>
-//        node "<skill-dir>/scripts/capture.mjs" --self-test
-import { spawn, spawnSync } from 'node:child_process';
+// Usage: node "<skill-dir>/scripts/capture.mjs" <project-dir> <scene-id> [--timings]
+//        node "<skill-dir>/scripts/capture.mjs" --self-test [--timings]
+// --timings prints the real time of each phase (Chrome start, page step, screenshot, encode).
+import { execFile, spawn, spawnSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, rmSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const scriptsDir = dirname(fileURLToPath(import.meta.url));
-if (process.argv[2] === '--self-test') process.exit(selfTest());
+if (process.argv[2] === '--self-test') process.exit(await selfTest(process.argv.includes('--timings')));
+const tm = {}, tStart = performance.now(); // --timings: real ms spent in each phase
+async function timed(phase, fn) {
+  const t = performance.now();
+  try { return await fn(); } finally { tm[phase] = (tm[phase] || 0) + performance.now() - t; }
+}
 
 const [projectDir, sceneId] = process.argv.slice(2).map(String);
 const timeline = JSON.parse(readFileSync(join(projectDir, 'timeline.json'), 'utf8'));
@@ -93,15 +99,30 @@ const prelude = `(() => {
 // ---- Chrome + CDP ----
 const userDir = mkdtempSync(join(tmpdir(), 'cap-chrome-'));
 const chromePath = process.env.CHROME_PATH || '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
-const chrome = spawn(chromePath, ['--headless=new', '--remote-debugging-port=0', `--user-data-dir=${userDir}`,
+const chromeArgs = ['--headless=new', '--remote-debugging-port=0', `--user-data-dir=${userDir}`,
   '--hide-scrollbars', '--mute-audio', '--no-first-run', '--no-default-browser-check',
-  '--force-color-profile=srgb', '--font-render-hinting=none', '--disable-lcd-text', 'about:blank'],
-  { stdio: ['ignore', 'ignore', 'pipe'] });
-const wsUrl = await new Promise((ok, fail) => {
-  let buf = '';
-  chrome.stderr.on('data', (d) => { buf += d; const m = buf.match(/DevTools listening on (ws:\/\/\S+)/); if (m) ok(m[1]); });
-  chrome.on('exit', (c) => fail(new Error(`chrome exited ${c}`)));
-});
+  '--force-color-profile=srgb', '--font-render-hinting=none', '--disable-lcd-text', 'about:blank'];
+// Chrome can deadlock in its own start-up fork, before it prints the DevTools URL. Give each start 15 s,
+// then kill that Chrome and its child processes and start again, 3 tries in total.
+function launchChrome() {
+  const p = spawn(chromePath, chromeArgs, { stdio: ['ignore', 'ignore', 'pipe'] });
+  const url = new Promise((ok, fail) => {
+    let buf = '';
+    p.stderr.on('data', (d) => { buf += d; const m = buf.match(/DevTools listening on (ws:\/\/\S+)/); if (m) ok(m[1]); });
+    p.on('exit', (c) => fail(new Error(`chrome exited ${c}`)));
+    setTimeout(ok, 15000, '').unref();
+  });
+  return { p, url };
+}
+async function startChrome(tries) {
+  const c = launchChrome(), url = await c.url;
+  if (url) return { chrome: c.p, wsUrl: url };
+  spawnSync('pkill', ['-KILL', '-P', String(c.p.pid)]); // only the children of this stuck Chrome
+  c.p.kill('SIGKILL');
+  if (tries <= 1) throw new Error('chrome did not print its DevTools URL in 15 s, 3 tries');
+  return startChrome(tries - 1);
+}
+const { chrome, wsUrl } = await timed('chrome-start', () => startChrome(3));
 const ws = new WebSocket(wsUrl);
 await new Promise((ok, fail) => { ws.onopen = ok; ws.onerror = fail; });
 let msgId = 0, sessionId; const pending = new Map(), events = [];
@@ -184,18 +205,23 @@ const ripplesNow = () => ripples.filter((r) => vt - r.t0 < 240).map((r) => ({ x:
 const stepPage = () => evaluate(`__cap.step(${frameMs}, ${pos.x}, ${pos.y}, ${JSON.stringify(ripplesNow())})`);
 const screenshot = async () => Buffer.from((await send('Page.captureScreenshot', { format: 'png' })).data, 'base64');
 async function advance() { // every request the page issued has reached route(), then the clock moves 1 frame
-  await pageCalm(heldOnly);
+  await timed('calm', () => pageCalm(heldOnly));
   vt += frameMs;
-  await release();
+  await timed('release', release);
 }
 async function shoot() { // advance the page 1 frame of virtual time, return a PNG
   await advance();
-  await stepPage();
-  return screenshot();
+  await timed('step', stepPage);
+  return timed('screenshot', screenshot);
 }
 async function emit(png) {
   if (out >= totalFrames) throw new Error(`scene is longer than timeline duration_sec ${scene.duration_sec} s`);
-  out++; if (!ff.stdin.write(png)) await new Promise((ok) => ff.stdin.once('drain', ok));
+  out++; if (!ff.stdin.write(png)) await timed('encode-backpressure', () => new Promise((ok) => ff.stdin.once('drain', ok)));
+}
+async function loadPage(url) {
+  await send('Page.navigate', { url });
+  for (let i = 0; i < 200 && (await evaluate('document.readyState')) !== 'complete'; i++) await new Promise((r) => setTimeout(r, 25));
+  await evaluate('__cap.ready()');
 }
 const easeInOut = (u) => (u < 0.5 ? 4 * u * u * u : 1 - (-2 * u + 2) ** 3 / 2);
 const smooth = (u) => u * u * (3 - 2 * u);
@@ -204,9 +230,7 @@ const h = {
   W, H, fps, rand,
   termUrl: pathToFileURL(join(scriptsDir, 'term.html')).href, // the terminal page next to this script
   async goto(url) {
-    await send('Page.navigate', { url });
-    for (let i = 0; i < 200 && (await evaluate('document.readyState')) !== 'complete'; i++) await new Promise((r) => setTimeout(r, 25));
-    await evaluate('__cap.ready()');
+    await timed('navigate', () => loadPage(url));
   },
   async hold(ms) { // interactive pause at 1x
     owed += ms;
@@ -293,22 +317,35 @@ try {
   await mod.default(h);
   while (out < totalFrames) await emit(await shoot()); // hold the last state to the timeline duration
 } finally {
-  ff.stdin.end(); const code = await ffDone;
+  ff.stdin.end(); const code = await timed('encode-finish', () => ffDone);
   tel.duration_sec = +(out / fps).toFixed(4);
   writeFileSync(join(projectDir, 'captures', `${sceneId}.json`), JSON.stringify(tel, null, 2) + '\n');
-  ws.close(); await new Promise((ok) => { chrome.once('exit', ok); chrome.kill(); }); rmSync(userDir, { recursive: true, force: true });
+  ws.close(); await timed('chrome-exit', () => new Promise((ok) => { chrome.once('exit', ok); chrome.kill(); })); rmSync(userDir, { recursive: true, force: true });
   if (code !== 0) errors.push(`ffmpeg exited ${code}`);
 }
 if (errors.length) { console.error(errors.join('\n')); process.exit(1); }
 console.log(`captures/${sceneId}.mp4: ${out} frames at ${fps} fps`);
+if (process.argv.includes('--timings')) printTimings();
+
+function printTimings() {
+  const parts = Object.entries(tm).map(([k, v]) => `${k} ${(v / 1000).toFixed(2)} s`);
+  console.log(`timing ${sceneId}: total ${((performance.now() - tStart) / 1000).toFixed(2)} s; ${parts.join('; ')}`);
+}
 
 // ---- self-test: a web scene and a terminal scene pass the plate gate, console.error fails, 3 runs match ----
 // Function declarations only: the self-test runs before the module-level constants above are set.
-function selfTest() {
+// The captures run in parallel, each web run in its own project folder. Parallel runs also load the host,
+// so the 3 identical runs check determinism under load.
+async function selfTest(timings) {
+  selfTest.timings = timings;
   const t0 = Date.now(), dir = mkdtempSync(join(tmpdir(), 'cap-selftest-'));
   process.on('exit', rmSync.bind(null, dir, { recursive: true, force: true })); // remove the temp dir on every exit
-  writeFixtures(dir);
-  const results = [...testRecCast(dir), ...testDeterminism(dir), ...testTelemetry(dir), ...testPlates(dir), ...testErrors(dir)];
+  const dirs = [1, 2, 3].map((i) => join(dir, `run-${i}`));
+  dirs.forEach(writeFixtures);
+  const [main] = dirs, webs = Promise.all(dirs.map((d) => captureIn(d, 'web'))), err = captureIn(main, 'err');
+  const rec = testRecCast(await runAsync(main, process.execPath, recCastArgs()), main); // term replays this cast
+  const term = await captureIn(main, 'term');
+  const results = [...rec, ...testDeterminism(dirs, await webs), ...testTelemetry(main), ...testPlates(main, term), ...testErrors(await err)];
   const passed = results.filter(Boolean).length;
   console.log(`capture self-test: ${passed} of ${results.length} checks pass in ${((Date.now() - t0) / 1000).toFixed(1)} s`);
   return passed === results.length ? 0 : 1;
@@ -320,11 +357,29 @@ function outcome(ok, what) {
 }
 
 function runIn(dir, cmd, args) {
-  return spawnSync(cmd, args, { cwd: dir, encoding: 'utf8' });
+  const t = Date.now(), r = spawnSync(cmd, args, { cwd: dir, encoding: 'utf8' });
+  if (selfTest.timings) printStepTiming(cmd, args, r, Date.now() - t);
+  return r;
+}
+
+function runAsync(dir, cmd, args) { // resolves to the spawnSync result shape: { status, stdout, stderr }
+  const t = Date.now();
+  return new Promise((ok) => execFile(cmd, args, { cwd: dir, encoding: 'utf8' }, (e, stdout, stderr) => {
+    const r = { status: e ? e.code ?? 1 : 0, stdout, stderr };
+    if (selfTest.timings) printStepTiming(cmd, args, r, Date.now() - t);
+    ok(r);
+  }));
+}
+
+function printStepTiming(cmd, args, r, ms) {
+  const name = [cmd, ...args].map((a) => a.split('/').at(-1)).join(' ').slice(0, 60);
+  for (const line of r.stdout.split('\n')) if (line.startsWith('timing ')) console.log(`  ${line}`);
+  console.log(`timing: ${name}: ${(ms / 1000).toFixed(2)} s`);
 }
 
 function captureIn(dir, id) {
-  return runIn(dir, process.execPath, [fileURLToPath(import.meta.url), '.', id]);
+  const extra = selfTest.timings ? ['--timings'] : [];
+  return runAsync(dir, process.execPath, [fileURLToPath(import.meta.url), '.', id, ...extra]);
 }
 
 function exitNote(r) {
@@ -336,7 +391,7 @@ function frameHash(dir, id) {
 }
 
 function writeFixtures(dir) {
-  mkdirSync(join(dir, 'app'));
+  mkdirSync(join(dir, 'app'), { recursive: true });
   mkdirSync(join(dir, 'captures/src'), { recursive: true });
   const files = fixtureFiles();
   for (const rel of Object.keys(files)) writeFileSync(join(dir, rel), files[rel]);
@@ -354,9 +409,9 @@ function fixtureFiles() {
 }
 
 function fixtureTimeline() {
-  return JSON.stringify({ meta: { fps: 60, width: 640, height: 360 }, scenes: [
-      { id: 'web', kind: 'capture', duration_sec: 4.0 },
-      { id: 'term', kind: 'capture', duration_sec: 2.0 },
+  return JSON.stringify({ meta: { fps: 30, width: 640, height: 360 }, scenes: [
+      { id: 'web', kind: 'capture', duration_sec: 2.5 },
+      { id: 'term', kind: 'capture', duration_sec: 1.5 },
       { id: 'err', kind: 'capture', duration_sec: 0.5 }] });
 }
 
@@ -410,22 +465,24 @@ function fixtureErrTake() {
   return `export default async (h) => { await h.goto(new URL('../../app/err.html', import.meta.url).href); await h.hold(100); };`;
 }
 
-function testRecCast(dir) {
-  const rec = runIn(dir, process.execPath, [join(scriptsDir, 'rec-cast.mjs'), 'captures/src/term.cast', '--', 'sh', '-c', 'echo building; sleep 0.6; echo done']);
+function recCastArgs() {
+  return [join(scriptsDir, 'rec-cast.mjs'), 'captures/src/term.cast', '--', 'sh', '-c', 'echo building; sleep 0.6; echo done'];
+}
+
+function testRecCast(rec, dir) {
   const cast = rec.status === 0 ? readFileSync(join(dir, 'captures/src/term.cast'), 'utf8') : '';
   return [outcome(cast.includes('done'), 'rec-cast.mjs records an asciicast v2 file')];
 }
 
-function testDeterminism(dir) {
-  const runs = [webRun(dir, 1), webRun(dir, 2), webRun(dir, 3)];
+function testDeterminism(dirs, webs) {
+  const runs = webs.map((r, i) => webRun(dirs[i], r, i + 1));
   const hashes = new Set(runs.map(hashOf));
   const frames = runs[0].hash.split('\n').length - 1;
   const same = hashes.size === 1 && frames > 0;
   return [...runs.map(okOf), outcome(same, `3 web runs give identical decoded frames (${frames} frames)`)];
 }
 
-function webRun(dir, i) {
-  const r = captureIn(dir, 'web');
+function webRun(dir, r, i) {
   return { ok: outcome(r.status === 0, `web capture run ${i} exits 0${exitNote(r)}`), hash: frameHash(dir, 'web') };
 }
 
@@ -445,8 +502,7 @@ function testTelemetry(dir) {
     `${tel.zoom_keyframes.length} zoom keyframes, ${tel.speed_ramps.length} speed ramps`)];
 }
 
-function testPlates(dir) {
-  const term = captureIn(dir, 'term');
+function testPlates(dir, term) {
   const results = [outcome(term.status === 0, `term capture exits 0${exitNote(term)}`)];
   for (const id of ['web', 'term']) {
     const g = runIn(dir, 'python3', [join(scriptsDir, 'check_plate.py'), id]);
@@ -455,8 +511,7 @@ function testPlates(dir) {
   return results;
 }
 
-function testErrors(dir) {
-  const err = captureIn(dir, 'err');
+function testErrors(err) {
   const ok = err.status === 1 && err.stderr.includes('console.error: boom') && err.stderr.includes('blocked live request');
   return [outcome(ok, `console.error and a live request make the capture exit 1 (exit ${err.status})`)];
 }
