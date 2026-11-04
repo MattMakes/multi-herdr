@@ -428,22 +428,25 @@ const h = {
   },
 };
 
-function isAlive(pid) {
-  try { return process.kill(pid, 0); } catch { return false; }
-}
+const pidList = (out) => out.split(/\s+/).filter(Boolean); // pgrep or ps output -> pid strings
+const childPids = (pid) => pidList(spawnSync('pgrep', ['-P', String(pid)], { encoding: 'utf8' }).stdout);
+const livePids = (pids) => (pids.length ? pidList(spawnSync('ps', ['-o', 'pid=', '-p', pids.join(',')], { encoding: 'utf8' }).stdout) : []);
+const forceKill = (pids) => pids.length && spawnSync('kill', ['-KILL', ...pids]);
 // Poll for up to 5 s of real time, then SIGKILL the helpers that are still alive.
 async function helpersGone(pids, tries = 500) {
-  const alive = pids.filter(isAlive);
-  if (!alive.length) return;
-  if (tries === 0) return alive.forEach((pid) => process.kill(pid, 'SIGKILL'));
+  const alive = livePids(pids);
+  if (!alive.length || tries === 0) return forceKill(alive);
   await pause(10);
   return helpersGone(alive, tries - 1);
+}
+function killMain(ok) {
+  chrome.once('exit', ok); chrome.kill();
 }
 // The Chrome helpers (network service, GPU, renderers) outlive the main process for some ms, and the
 // network service writes its cache index into userDir as it exits. Wait for them before userDir is removed.
 async function stopChrome() {
-  const helpers = spawnSync('pgrep', ['-P', String(chrome.pid)], { encoding: 'utf8' }).stdout.split('\n').filter(Boolean).map(Number);
-  await new Promise((ok) => { chrome.once('exit', ok); chrome.kill(); });
+  const helpers = childPids(chrome.pid);
+  await new Promise(killMain);
   await helpersGone(helpers);
 }
 
