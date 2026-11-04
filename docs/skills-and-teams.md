@@ -80,9 +80,9 @@ Rules that the tests enforce (`crates/horch-core/tests/skills_catalog.rs`):
 - A skill over the size budget is verbatim or has a `budget_exempt` reason.
   A `budget_exempt` reason on a skill within the budget fails, and so does
   an empty reason or a reason on a verbatim skill.
-- A skill directory holds only `.md` and `.txt` files. `skill-creator` and the
-  27 Blender skills that ship scripts are the exceptions: each is a verbatim
-  copy, listed in `EXEMPT_FROM_TEXT_ONLY`. No skill holds a licence or notice
+- A skill directory holds only `.md` and `.txt` files. `skill-creator`, the
+  27 copied Blender skills that ship scripts and the own-text
+  `blender-3d-print` are the exceptions, listed in `EXEMPT_FROM_TEXT_ONLY`. No skill holds a licence or notice
   file.
 - The build skips every file and directory whose name starts with `.`.
 

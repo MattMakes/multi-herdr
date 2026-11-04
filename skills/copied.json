@@ -125,6 +125,11 @@
       "verbatim": true
     },
     {
+      "name": "blender-3d-print",
+      "copied_files": [],
+      "verbatim": false
+    },
+    {
       "name": "blender-addon-development",
       "copied_files": [
         "SKILL.md",

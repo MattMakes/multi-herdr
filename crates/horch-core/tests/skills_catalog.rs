@@ -34,6 +34,7 @@ fn plan_for(t: &Teammate, base: &SkillCatalog) -> anyhow::Result<SkillActivation
 const REPO_ORIGINAL: &[&str] = &[
     "api-contracts",
     "architecture-review",
+    "blender-3d-print",
     "blender-baking",
     "blender-modeling",
     "blender-rigging",
@@ -372,12 +373,14 @@ fn skills_bundled_size_budget() {
     }
 }
 
-/// Verbatim copies that ship files other than `.md` and `.txt`; they are the
-/// only skills exempt from the text-only rule. `skill-creator` ships Python
-/// scripts and HTML assets. The 27 Blender skills ship Python scripts, and
-/// `blender-addon-development` also ships 1 `.toml` manifest.
+/// Skills that ship files other than `.md` and `.txt`; they are the only
+/// skills exempt from the text-only rule. `skill-creator` ships Python
+/// scripts and HTML assets. The 27 copied Blender skills ship Python scripts,
+/// and `blender-addon-development` also ships 1 `.toml` manifest. The own-text
+/// `blender-3d-print` ships 2 Python scripts that its `SKILL.md` runs.
 /// `blender-workflow-recipes` holds `.md` files only, so it is not listed.
 const EXEMPT_FROM_TEXT_ONLY: &[&str] = &[
+    "blender-3d-print",
     "blender-addon-development",
     "blender-animation",
     "blender-asset-qa",
