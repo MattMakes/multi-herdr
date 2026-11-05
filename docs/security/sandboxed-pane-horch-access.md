@@ -87,6 +87,9 @@ herdr API. A sandboxed pane that can connect to it can:
 the spawned process is outside the caller's sandbox by the process chain
 above).
 
+**Status: C1 done in commit `f5bfc2eb` (ticket T-20).** See "C1 to C3 as
+built" below.
+
 **Proposed change (C1).** Do not give a role pane the herdr socket or the
 state-root socket subpath. Add a teammate key `horch_access: report`
 (default stays `full`). For `report`, `overlay_horch_paths` grants only 1
@@ -220,6 +223,8 @@ project:
 **Severity.** Critical. Status: CONFIRMED by code (`land_check` path).
 Not reproduced against the live ledger.
 
+**Status: C2 done in commit `f5bfc2eb` (ticket T-20).**
+
 **Proposed change (C2).** For `horch_access: report`, do not add the ledger
 folder to `allowRead` or `allowWrite`. `progress` and `done` go through the
 report socket (C1); the unsandboxed parent writes the ledger.
@@ -315,6 +320,8 @@ later by an unsandboxed process or agent:
 
 **Severity.** Critical (skill bundles and brief binaries). The `.id` file is
 High. The system prompt file is Low (a race). Status: CONFIRMED by code.
+
+**Status: C3 done in commit `f5bfc2eb` (ticket T-20).**
 
 **Proposed change (C3).** For `horch_access: report`, do not add the state
 root to `allowRead` or `allowWrite`. With C1 the pane writes nothing there.
@@ -454,6 +461,34 @@ signals recorded PIDs); fill the state root disk.
 
 ---
 
+## C1 to C3 as built (T-20, commit `f5bfc2eb`)
+
+- `horch_access: full | report` on `Teammate` (`roster/teammate.rs`).
+  Default `full`. `horch teammates --check` fails `report` without
+  `sandbox:` (`roster/validation.rs`).
+- `overlay_horch_paths` (`harness/claude.rs`): `full` is unchanged.
+  `report` adds no state root and no ledger folder, and only
+  `<state_root>/report/<record_id>.sock` to `network.allowUnixSockets`. The
+  launch also sets `HORCH_REPORT_SOCKET` to that path. A `report` launch
+  with no ledger record gets no socket and no variable.
+- The `horch worker` parent (`execution/lifecycle.rs`) binds the socket
+  (mode 0600, folder 0700) before the agent starts and removes it when the
+  agent exits. It runs each checked request as `horch` with the brief's
+  environment, so the role and record come from the brief.
+- Protocol (`messaging/report.rs`): 1 JSON line per connection, at most
+  16384 bytes, then 1 JSON reply line. Verbs: `progress {text}`,
+  `tell {to, text}`, `done {text}`. Unknown verbs, unknown keys, an empty
+  text and an oversize line are refused. `tell` names its target so the CLI
+  keeps its `horch tell <role> <text>` shape. The parent refuses every `to`
+  except the brief's report target: `orchestrator` when the brief reports to
+  the orchestrator, none otherwise. The brief has no other controller field.
+- CLI (`crates/horch/src/main.rs`, `cmd/messaging.rs`, `cmd/taskledger.rs`):
+  with `HORCH_REPORT_SOCKET` set, `horch ledger progress`, `horch tell` and
+  `horch done` (without `--unlanded`) go to the socket. Every other command
+  exits 1 before it reads any horch state.
+- The 5 `teammates/intake-*.md` set `horch_access: report`.
+  `teammates/skill-importer.md` keeps `full`.
+
 ## C6: The controller keeps full access (follow-up)
 
 `skill-importer` needs `horch spawn`, so it keeps `horch_access: full` and
@@ -469,16 +504,16 @@ from such a caller. Files: `crates/horch/src/cmd/spawn.rs`,
 
 | rank | risk | severity | change | when |
 |---|---|---|---|---|
-| 1 | R1 run any command outside the sandbox (herdr socket, `horch spawn`) | Critical | C1 report socket, no herdr or relay socket for `report` panes | needed before skill-intake ships |
-| 2 | R4 ledger edit (`land_check` runs unsandboxed, `task_file` redirect) | Critical | C2 no ledger folder for `report` panes | needed before skill-intake ships |
-| 3 | R6 skill bundles and brief binaries of other workers | Critical | C3 no state root for `report` panes | needed before skill-intake ships |
-| 4 | R8 clean-room wall breach | High | C1 + C3, `horch_access: report` on the 5 intake roles | needed before skill-intake ships |
-| 5 | R2 type into any pane, forged or untagged sender | High | C1 | needed before skill-intake ships (same change as rank 1) |
-| 6 | R7 forge or hide mail and relay messages | High | C1 + C3 | needed before skill-intake ships (same change as ranks 1 and 3) |
+| 1 | R1 run any command outside the sandbox (herdr socket, `horch spawn`) | Critical | C1 report socket, no herdr or relay socket for `report` panes | done, `f5bfc2eb` |
+| 2 | R4 ledger edit (`land_check` runs unsandboxed, `task_file` redirect) | Critical | C2 no ledger folder for `report` panes | done, `f5bfc2eb` |
+| 3 | R6 skill bundles and brief binaries of other workers | Critical | C3 no state root for `report` panes | done, `f5bfc2eb` |
+| 4 | R8 clean-room wall breach | High | C1 + C3, `horch_access: report` on the 5 intake roles | done, `f5bfc2eb` |
+| 5 | R2 type into any pane, forged or untagged sender | High | C1 | done, `f5bfc2eb` |
+| 6 | R7 forge or hide mail and relay messages | High | C1 + C3 | done, `f5bfc2eb` |
 | 7 | R5 environment-asserted identity in `horch` | High | C4 caller from herdr pane | follow-up (out of the role threat model after C1 and C2) |
-| 8 | R3 read any pane | Medium | C1 | needed before skill-intake ships (same change as rank 1) |
-| 9 | R9 read other sessions' state and ledger data | Medium | C2 + C3 | needed before skill-intake ships (same change as ranks 2 and 3) |
-| 10 | R10 stop or block fleet work | Medium | C1 + C2 + C3 | needed before skill-intake ships (same change) |
+| 8 | R3 read any pane | Medium | C1 | done, `f5bfc2eb` |
+| 9 | R9 read other sessions' state and ledger data | Medium | C2 + C3 | done, `f5bfc2eb` |
+| 10 | R10 stop or block fleet work | Medium | C1 + C2 + C3 | done, `f5bfc2eb` |
 | - | R6 integrity for unsandboxed readers (Codex panes) | - | C5 | follow-up |
 | - | controller keeps full access | - | C6 spawn allowlist | follow-up |
 

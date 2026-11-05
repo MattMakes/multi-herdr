@@ -165,3 +165,61 @@ Cost: 4 more sonnet low-effort sessions (2 per round) and 1 `smoke` pane,
 which runs no model. Round 1 panes were stopped with `horch ledger stop`.
 Round 1 results files are kept as `*-results-round1.txt` beside the round 2
 files under `~/.local/state/skill-intake/`.
+
+### Re-probe after ticket 20 (`horch_access: report`)
+
+**Verdict: 3 allowed commands exit 0, 4 denials hold.** Date: 2026-11-05.
+The probe teammate `probe-report` is a copy of `intake-sanitizer` with
+`effort: low` (sonnet), so it has `horch_access: report`. It ran from
+`.worktrees/_scratch/probe-t20/probe-teammates`, spawned by a debug build
+of the T-20 branch with `--exact --run skill-intake`. The pane's `horch`
+was the same debug build. The task text named the commands, as above.
+
+The launched `--settings` of `probe-report-1` (read from the `claude`
+process arguments) hold only the role's side root and 1 socket:
+
+| key | entries |
+|---|---|
+| `filesystem.allowRead`, `filesystem.allowWrite` | `~/.local/state/skill-intake/drafts` |
+| `network.allowUnixSockets` | `/Users/matthewscott/.local/state/horch/report/<record id>.sock` |
+
+No state root, ledger folder, relay socket or herdr socket. The `claude`
+process had `HORCH_REPORT_SOCKET` set to the same path. The socket file was
+mode 0600.
+
+Round 1 (`probe-report-1`, commit `f5bfc2eb`) and round 2
+(`probe-report-2`, commit `ef7958d3`):
+
+| # | command | round 1 | round 2 | output |
+|---|---|---|---|---|
+| 1 | `horch ledger progress "..."` | 0 | 0 | none; the ledger event shows the text for the pane's worker row |
+| 2 | `horch tell orchestrator "..."` | 0 | 0 | none; the orchestrator mail has `from: probe-report-2` and the text tagged `[probe-report-2]` by the parent |
+| 3 | `herdr pane list` | 1 | 1 | `Error: Os { code: 1, kind: PermissionDenied, message: "Operation not permitted" }` |
+| 4 | `horch spawn smoke` | 1 | 1 | `horch: this pane has horch_access: report. Only ... work here` |
+| 5 | `env -u HORCH_REPORT_SOCKET horch spawn smoke` | 1 | not run | `horch: opening the task ledger /Users/matthewscott/.horch/ledger.sqlite3: unable to open database file ... Error code 14` |
+| 6 | `: >> ~/.horch/ledger.sqlite3` | 1 | 1 | the shell's open for write failed |
+| 7 | `touch ~/.local/state/horch/probe-t20-write` | 1 | 1 | `touch: ... Operation not permitted`; the file does not exist |
+| 8 | `horch done "..."` | 1 | 0 | round 1: `the report socket closed without an answer`; round 2: `horch done: the worker is closing this pane` |
+
+The 4 denials of the ticket: the herdr socket (3), `horch spawn` (4, and 5
+without the report variable), a write to the ledger database (6) and a
+write under the state root (7).
+
+Round 1 found 1 defect. The parent ran `horch done`, the record went to
+`done` and the pane closed, but the parent died with the pane before it
+could answer. The client read end of file and exited 1. Commit `ef7958d3`
+makes end of file after `done` a success; after any other verb it stays an
+error. Round 2 shows exit 0. The record file shows status `done` for
+`probe-report-1` and `probe-report-2`, and both panes are gone.
+
+Round 2 did not run command 5: no line for it is in the results file. Round
+1 shows its result.
+
+Not fixed: the parent dies with the pane, so it does not remove its socket
+file after `horch done`. The 2 probe socket files were removed by hand. The
+next launch of the same record replaces the file.
+
+Cost: 2 sonnet low-effort sessions. No `smoke` pane started. The watchdog
+recorded each probe worker as `no_task` (it claimed no task). Results files:
+`~/.local/state/skill-intake/drafts/probe/report-results-round1.txt` and
+`report-results.txt`.
