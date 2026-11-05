@@ -734,3 +734,25 @@ Cost: 2 sonnet low-effort panes, 1 `smoke` pane (no tokens) and 1 short
 `claude -p` sonnet session. Results files:
 `~/.local/state/skill-intake/drafts/probe/t35-before-results.txt` and
 `t35-after-results.txt`.
+
+## Live checks (ticket 17, spec 12.5 steps 1 to 5)
+
+Date: 2026-11-05. Code: branch `fleet/skill-intake` at commit `66a3c3e9`, with
+the writer rule of T-17 on top. Every `claude` run removes
+`ANTHROPIC_API_KEY` from its environment. Source of steps 1, 2 and 5:
+`MNICKZ/docs-driven-workflow` at commit
+`de8494f3b9b4c622f29a3dc0e6d8eb9162c7a8db` (public, MIT).
+`ls ~/.claude/skills` before step 1: 191 entries.
+
+### Step 1, attempt 1: FAILED (permission prompt)
+
+| field | value |
+|---|---|
+| command | `env -u ANTHROPIC_API_KEY <worktree>/target/debug/horch spawn skill-importer --exact --run skill-intake "<task>"`, run in the git-initialised scratch project `.worktrees/_scratch/live-skill-intake/step1-project` |
+| task id | T-17 (worker `skill-importer-1`, pane `w29:p1C`, run `skill-intake`, spawned 2026-11-05T11:30Z) |
+| outcome | FAILED. The pane waited at a permission prompt. The orchestrator stopped it. |
+| cause | The Claude setting `blockReadsOutsideWorkingDirectories` blocked the read of the controller's own skill bundle under the state root. The controller could not load `skill-intake`. Ticket 27 fixes the cause in `crates/horch-core/src/harness/claude.rs`. |
+| report path | none: `intake` never ran |
+| side effects | none. No `skill-intake` task folder exists. `ls ~/.claude/skills` is unchanged (191 entries). |
+
+The step is not retried until ticket 27 lands. It is not counted as passed.
