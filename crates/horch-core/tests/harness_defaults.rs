@@ -722,7 +722,20 @@ fn hdf_05_every_claude_launch_turns_attribution_off() {
         &home.path().join(".claude/settings.json"),
         r#"{"includeCoAuthoredBy": true, "attribution": {"commit": "operator text"}}"#,
     );
-    let env = launch_env(home.path());
+    // A sandboxed teammate refuses to launch on Linux unless bwrap and socat
+    // are on PATH. Stubs let the builder run on every host.
+    let bin = home.path().join("bin");
+    for tool in ["bwrap", "socat"] {
+        let path = bin.join(tool);
+        write(&path, "#!/bin/sh\nexit 0\n");
+        std::fs::set_permissions(&path, std::os::unix::fs::PermissionsExt::from_mode(0o755))
+            .unwrap();
+    }
+    let env = LaunchEnv::from_context(&ctx_with(
+        home.path(),
+        home.path(),
+        &[("PATH", &bin.to_string_lossy())],
+    ));
     let roster = Roster::builtin().unwrap();
     let mut bases = BTreeSet::new();
     for name in roster.names() {
