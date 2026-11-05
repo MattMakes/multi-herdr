@@ -1,6 +1,6 @@
 ---
 name: video-qa
-description: "Use when a rendered video (render/master.mp4) must pass the final quality gate - runs scripts/qa_video.py for 11 numeric render checks (determinism, stream integrity, frame 0, hook motion, black and freeze frames, -14 LUFS loudness and true peak, cut pops, aspect variants and captions, safe zones and flashes), draws a 360 px contact sheet and a 0-3 s hook strip, then scores the video blind on 8 axes and writes qa/critique-round-<N>.md with timestamped fixes per owner."
+description: "Use when a rendered video (render/master.mp4) must pass the final quality gate - runs scripts/qa_video.py for 18 numeric render checks (determinism, stream integrity, frame 0, hook motion, black and freeze frames, -14 LUFS loudness and true peak, cut pops, aspect variants and captions, safe zones and flashes, 1-frame pops, unplanned cuts, dead time, flat opening, motion contrast, loop seam, raster upscale), draws a 360 px contact sheet, a 360 px wide phone sheet and a 0-3 s hook strip, then scores the video blind on 8 axes and writes qa/critique-round-<N>.md with timestamped fixes per owner."
 ---
 
 # Video QA: numeric gate and blind critic
@@ -39,9 +39,11 @@ Optional flags:
 | `--out` | `qa/render-check.json` | Report path |
 | `--contact-sheet` | `qa/contact-sheet-360p.png` | Contact sheet path |
 | `--hook-strip` | `qa/hook-strip.png` | Hook strip path |
+| `--phone-sheet` | `qa/phone-sheet-360w.png` | Phone sheet path |
+| `--raster-sizes` | `raster-sizes.json` in the render dir | Image natural vs drawn sizes for check 18 |
 | `--probe-forward`, `--probe-reverse` | not set | Probe PNG folders for the render determinism check |
 
-Exit codes: `0` all 11 checks pass, `1` at least 1 check fails, `2` the input
+Exit codes: `0` all 18 checks pass, `1` at least 1 check fails, `2` the input
 is bad (missing file, unreadable `timeline.json`, missing `ffmpeg`).
 
 The probe folders hold the same file names, for frames `0`, `K` and `2K`. The
@@ -72,8 +74,9 @@ is a fix line for `video-animator`. Rules, flags and limits are in
 ## Step 2: read qa/render-check.json
 
 The report has `passed` (bool), `checks` (1 object per check, each with
-`passed` and its measured values) and `errors` (list of `check`, `message`,
-and `timestamp` when the defect has a time).
+`passed` and its measured values), `errors` (list of `check`, `message`,
+and `timestamp` when the defect has a time) and `warnings` (same form; a
+warning does not fail the gate, but put it in the critique report).
 
 | # | Check | Fails when |
 | :--- | :--- | :--- |
@@ -88,6 +91,13 @@ and `timestamp` when the defect has a time).
 | 9 | `audio_boundary_pops` | Audio peak within `20 ms` of a scene cut is above `-3.0 dBFS` |
 | 10 | `variants_captions` | A present aspect variant has the wrong size or a duration more than `0.05 s` off; a present caption file does not parse, has an empty cue, overlapping cues, or a cue outside `[0, meta.duration_sec]` |
 | 11 | `safe_zone_flash` | A `critical_regions` box leaves `[0, 1]`, crosses the caption zone (`y + h > 0.82`) or, for `9:16`, the right UI zone (`x + w > 0.85`); more than 3 full-frame luminance transitions above `20%` occur in 1 s |
+| 12 | `frame_pops` | 1 frame jumps away from its neighbours and the next frame comes back (a pop, or a flash when mean luma changes by more than `20%`) |
+| 13 | `cuts_vs_plan` | A hard cut is more than `0.5 s` from every scene boundary (`transition_out` time) |
+| 14 | `dead_time` | No motion for more than `2.0 s` outside a `static_hold` scene |
+| 15 | `flat_opening` | Motion per second in `0-5 s` is under `0.5x` the rest of the film (films of `7 s` or more) |
+| 16 | `motion_contrast` | The busiest seconds have under `1.5x` the motion of the calmest (90th vs 10th percentile, films of `6 s` or more) |
+| 17 | `loop_seam` | `meta.loop` is `true` and the last frame to frame 0 step is above `max(0.02, 3x` the typical step near the ends`)` |
+| 18 | `raster_upscale` | A raster image is drawn at `1.2x` its natural size or more; above `1.12x` for `0.5 s` or more is a warning |
 
 Variant sizes follow the master's short side `S` and long side `L`:
 `16x9.mp4` is `L x S`, `9x16.mp4` is `S x L`, `1x1.mp4` is `S x S`. For a
@@ -97,10 +107,15 @@ Scan scope for check 1: files under `node_modules/`, `vendor/` or `lib/`
 folders and `*.min.js` files are vendored libraries and are not scanned.
 Comments are not scanned.
 
+Checks 12 to 17 read every frame in grey at `96 px` on the long side. The measures, the
+thresholds and the `raster-sizes.json` format for check 18 are in
+`<skill-dir>/references/motion-checks.md`. Without that file check 18
+reports `skipped` and passes.
+
 `timeline.json` fields the gate reads:
 
 - `meta`: `fps`, `width`, `height`, `duration_sec` (required);
-  `lufs_target`, `aspect`, `allow_dark_intro` (optional).
+  `lufs_target`, `aspect`, `allow_dark_intro`, `loop` (optional).
 - `scenes[]`: `id`, `start_sec`, `duration_sec` (required);
   `transition_out` (string or `{type, duration_sec}`; a type that contains
   `fade` permits black within `duration_sec` of the cut, default `0.4 s`),
@@ -116,6 +131,8 @@ the critique report with its timestamp and owner.
   video, `360 px` high, 6 tiles per row. Each tile shows its time
   (`MM:SS.mmm`) and scene ID in the top left corner.
 - `qa/hook-strip.png`: 12 tiles at `4 fps` for `0.0-2.75 s`, same layout.
+- `qa/phone-sheet-360w.png`: the contact sheet tiles at `360 px` wide, the
+  width of a phone screen. Use it to judge text size and detail on a phone.
 
 Read both images at full size. At `360 px` high, text that you cannot read is
 too small for a phone. Use the hook strip for axis 1 and the contact sheet for

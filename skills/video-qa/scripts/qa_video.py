@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Numeric render QA gate for a video project.
 
-Runs 11 numeric checks on render/master.mp4 against timeline.json, writes
-qa/render-check.json, and draws 2 inspection sheets:
-qa/contact-sheet-360p.png and qa/hook-strip.png.
+Runs 18 numeric checks on render/master.mp4 against timeline.json, writes
+qa/render-check.json, and draws 3 inspection sheets:
+qa/contact-sheet-360p.png, qa/phone-sheet-360w.png and qa/hook-strip.png.
 
 Python 3 standard library only. Needs ffmpeg and ffprobe on PATH.
 Exit 0: every check passed. Exit 1: a check failed. Exit 2: bad input.
@@ -14,6 +14,8 @@ Usage:
               [--out qa/render-check.json]
               [--contact-sheet qa/contact-sheet-360p.png]
               [--hook-strip qa/hook-strip.png]
+              [--phone-sheet qa/phone-sheet-360w.png]
+              [--raster-sizes render/raster-sizes.json]
               [--probe-forward DIR --probe-reverse DIR]
   qa_video.py --self-test
 """
@@ -21,12 +23,14 @@ Usage:
 import argparse
 import json
 import math
+import operator
 import re
 import shutil
 import struct
 import subprocess
 import sys
 import tempfile
+import types
 import zlib
 from fractions import Fraction
 from pathlib import Path
@@ -43,6 +47,13 @@ CHECKS = (
     "audio_boundary_pops",
     "variants_captions",
     "safe_zone_flash",
+    "frame_pops",
+    "cuts_vs_plan",
+    "dead_time",
+    "flat_opening",
+    "motion_contrast",
+    "loop_seam",
+    "raster_upscale",
 )
 
 DURATION_TOL_SEC = 0.05
@@ -68,6 +79,30 @@ SHEET_COLUMNS = 6
 CONTACT_FPS = 2
 HOOK_FPS = 4
 SKILL_MD_MAX_BYTES = 12288
+
+# Motion and cut analysis: grey frames, 96 px on the long side, every frame.
+# A frame difference is the mean absolute pixel difference in [0, 1].
+MOTION_LONG_SIDE = 96
+POP_MIN_DIFF = 0.08          # a 1-frame pop jumps away and back by at least this
+POP_RETURN_RATIO = 0.5       # frame before vs frame after differ by at most this x the jump
+CUT_MIN_DIFF = 0.10
+CUT_MEDIAN_RATIO = 3.0       # a cut is this many times the local median difference
+CUT_MEDIAN_RADIUS = 8        # frames on each side for the local median
+CUT_MATCH_SEC = 0.5          # a cut within this of a scene boundary is planned
+DEAD_DIFF = 0.002            # below this a frame step counts as no motion
+DEAD_MAX_SEC = 2.0
+OPENING_SEC = 5.0
+OPENING_MIN_RATIO = 0.5      # opening motion per second vs the rest of the film
+OPENING_MIN_REST_SEC = 2.0
+CONTRAST_MIN_SECONDS = 6     # whole seconds needed to judge motion contrast
+CONTRAST_MIN_RATIO = 1.5     # 90th / 10th percentile of motion per second
+LOOP_SEAM_FACTOR = 3.0
+LOOP_SEAM_FLOOR = 0.02
+RASTER_WARN_SCALE = 1.12
+RASTER_WARN_SEC = 0.5
+RASTER_FAIL_SCALE = 1.2
+RASTER_DEFAULT_STEP_SEC = 0.1
+PHONE_TILE_W = 360
 
 SCAN_SUFFIXES = {".html", ".js", ".mjs", ".ts"}
 SCAN_SKIP_DIRS = {"node_modules", "vendor", "lib"}
@@ -145,6 +180,11 @@ def fade_windows(scenes):
     return windows
 
 
+def transition_kind(scene):
+    tr = scene.get("transition_out")
+    return str(tr if isinstance(tr, str) else (tr or {}).get("type", "")).lower()
+
+
 def hold_windows(scenes):
     return [(float(s["start_sec"]), scene_end(s)) for s in scenes if s.get("static_hold") is True]
 
@@ -218,6 +258,25 @@ def sampled_frames(video, rate, width, height, end_sec, pix_fmt):
                   "-fps_mode", "passthrough", "-f", "rawvideo", "-pix_fmt", pix_fmt, "-", binary=True)
     size = width * height * (3 if pix_fmt == "rgb24" else 1)
     return [proc.stdout[i:i + size] for i in range(0, len(proc.stdout) - size + 1, size)]
+
+
+def frame_diff(a, b):
+    return sum(map(abs, map(operator.sub, a, b))) / (255.0 * len(a))
+
+
+def motion_frames(video, meta):
+    """Every frame as small grey raw bytes, plus diffs[i] = diff(frame i-1, frame i), diffs[0] = 0."""
+    width, height = float(meta["width"]), float(meta["height"])
+    scale = MOTION_LONG_SIDE / max(width, height)
+    w, h = max(2, round(width * scale)), max(2, round(height * scale))
+    proc = ffmpeg("-i", str(video), "-map", "0:v:0", "-vf", f"scale={w}:{h}:flags=area", "-fps_mode", "passthrough",
+                  "-f", "rawvideo", "-pix_fmt", "gray", "-", binary=True)
+    if proc.returncode != 0:
+        raise InputError(f"ffmpeg cannot decode grey frames of {video}")
+    size = w * h
+    frames = [proc.stdout[i:i + size] for i in range(0, len(proc.stdout) - size + 1, size)]
+    diffs = [0.0] + [frame_diff(a, b) for a, b in zip(frames, frames[1:])]
+    return types.SimpleNamespace(frames=frames, diffs=diffs, fps=float(meta["fps"]))
 
 
 # ---------------------------------------------------------------- checks
@@ -520,6 +579,195 @@ def check_safe_zone_flash(ctx):
     return {"luma_transitions": len(flips), "max_per_second": worst}, errors
 
 
+def find_pops(motion):
+    """Frames that jump away for exactly 1 frame and come back."""
+    f, d = motion.frames, motion.diffs
+    pops = []
+    for i in range(1, len(f) - 1):
+        jump = min(d[i], d[i + 1])
+        if jump >= POP_MIN_DIFF and frame_diff(f[i - 1], f[i + 1]) <= POP_RETURN_RATIO * jump:
+            pops.append(i)
+    return pops
+
+
+def mean_luma(frame):
+    return sum(frame) / (255.0 * len(frame))
+
+
+def check_frame_pops(ctx):
+    m, errors = ctx.motion, []
+    pops = find_pops(m)
+    for i in pops:
+        delta = mean_luma(m.frames[i]) - mean_luma(m.frames[i - 1])
+        kind = "flash" if abs(delta) > FLASH_DELTA else "pop"
+        t = i / m.fps
+        errors.append((f"1-frame {kind} at frame {i} in scene {scene_at(ctx.scenes, t)} "
+                       f"(jump {m.diffs[i]:.3f}, mean luma change {delta:+.2f})", t))
+    return {"pop_frames": pops, "min_jump": POP_MIN_DIFF}, errors
+
+
+def find_cuts(motion, skip):
+    d, r = motion.diffs, CUT_MEDIAN_RADIUS
+    cuts = []
+    for i in range(1, len(d)):
+        if i in skip or d[i] < CUT_MIN_DIFF:
+            continue
+        local = sorted(d[max(1, i - r):i] + d[i + 1:i + 1 + r])
+        median = local[len(local) // 2] if local else 0.0
+        if d[i] >= CUT_MEDIAN_RATIO * median:
+            cuts.append(i)
+    return cuts
+
+
+def check_cuts_vs_plan(ctx):
+    m = ctx.motion
+    pops = find_pops(m)
+    skip = set(pops) | {i + 1 for i in pops}
+    boundaries = [float(s["start_sec"]) for s in ctx.scenes[1:]]
+    cuts, errors = [], []
+    for i in find_cuts(m, skip):
+        t = i / m.fps
+        near = min((abs(t - b) for b in boundaries), default=math.inf)
+        planned = near <= CUT_MATCH_SEC
+        cuts.append({"time_sec": round(t, 3), "diff": round(m.diffs[i], 3), "planned": planned})
+        if not planned:
+            errors.append((f"unplanned cut at {stamp(t)} in scene {scene_at(ctx.scenes, t)}: no scene "
+                           f"boundary within {CUT_MATCH_SEC} s", t))
+    hard = [float(s["start_sec"]) for prev, s in zip(ctx.scenes, ctx.scenes[1:]) if transition_kind(prev) == "cut"]
+    missing = [stamp(b) for b in hard if not any(abs(c["time_sec"] - b) <= CUT_MATCH_SEC for c in cuts)]
+    return {"cuts": cuts, "match_sec": CUT_MATCH_SEC, "planned_cuts_not_seen": missing}, errors
+
+
+def still_runs(motion):
+    """(start_sec, end_sec) of runs where every frame step is below DEAD_DIFF."""
+    runs, start = [], None
+    for i, value in enumerate(motion.diffs[1:] + [math.inf], start=1):
+        if value < DEAD_DIFF:
+            start = i - 1 if start is None else start
+        elif start is not None:
+            runs.append((start / motion.fps, (i - 1) / motion.fps))
+            start = None
+    return runs
+
+
+def check_dead_time(ctx):
+    tol = 1.0 / ctx.motion.fps
+    windows = hold_windows(ctx.scenes)
+    found, errors = [], []
+    for start, end in still_runs(ctx.motion):
+        if end - start <= DEAD_MAX_SEC:
+            continue
+        planned = inside(start, end, windows, tol)
+        found.append({"start_sec": round(start, 3), "end_sec": round(end, 3), "planned": planned})
+        if not planned:
+            errors.append((f"dead time {stamp(start)}-{stamp(end)} ({end - start:.2f} s without motion) "
+                           f"in scene {scene_at(ctx.scenes, start)} outside a static_hold scene", start))
+    return {"max_sec": DEAD_MAX_SEC, "still_diff": DEAD_DIFF, "intervals": found}, errors
+
+
+def motion_per_second(motion):
+    """Sum of frame differences in each whole second of the video."""
+    seconds = int(len(motion.diffs) / motion.fps)
+    per = [0.0] * seconds
+    for i, value in enumerate(motion.diffs):
+        s = int(i / motion.fps)
+        if s < seconds:
+            per[s] += value
+    return [round(v, 4) for v in per]
+
+
+def check_flat_opening(ctx):
+    per = motion_per_second(ctx.motion)
+    head = int(OPENING_SEC)
+    if len(per) < head + OPENING_MIN_REST_SEC:
+        return {"skipped": True, "reason": f"shorter than {OPENING_SEC + OPENING_MIN_REST_SEC:g} s"}, []
+    opening, rest = sum(per[:head]) / head, sum(per[head:]) / len(per[head:])
+    details = {"opening_per_sec": round(opening, 4), "rest_per_sec": round(rest, 4), "min_ratio": OPENING_MIN_RATIO}
+    if opening < OPENING_MIN_RATIO * rest:
+        return details, [(f"flat opening: motion {opening:.3f}/s in 0-{OPENING_SEC:g} s is under "
+                          f"{OPENING_MIN_RATIO:g} x the rest of the film ({rest:.3f}/s)", 0.0)]
+    return details, []
+
+
+def check_motion_contrast(ctx):
+    per = motion_per_second(ctx.motion)
+    if len(per) < CONTRAST_MIN_SECONDS:
+        return {"skipped": True, "reason": f"shorter than {CONTRAST_MIN_SECONDS} s", "per_second": per}, []
+    ranked = sorted(per)
+    low, high = ranked[int(0.1 * (len(ranked) - 1))], ranked[int(math.ceil(0.9 * (len(ranked) - 1)))]
+    details = {"per_second": per, "p10": low, "p90": high, "min_ratio": CONTRAST_MIN_RATIO}
+    if high > 0 and high < CONTRAST_MIN_RATIO * low:
+        return details, [(f"flat motion: 90th percentile {high:.3f}/s is under {CONTRAST_MIN_RATIO:g} x the "
+                          f"10th percentile {low:.3f}/s; no calm or busy stretch stands out", None)]
+    return details, []
+
+
+def check_loop_seam(ctx):
+    if ctx.meta.get("loop") is not True:
+        return {"skipped": True, "reason": "meta.loop is not true"}, []
+    m = ctx.motion
+    n = max(1, int(m.fps))
+    near = sorted(m.diffs[1:n + 1] + m.diffs[-n:])
+    typical = near[len(near) // 2]
+    seam = frame_diff(m.frames[-1], m.frames[0])
+    limit = max(LOOP_SEAM_FLOOR, LOOP_SEAM_FACTOR * typical)
+    details = {"seam_diff": round(seam, 4), "typical_diff": round(typical, 4), "max_diff": round(limit, 4)}
+    if seam > limit:
+        t = (len(m.frames) - 1) / m.fps
+        return details, [(f"loop seam: last frame to frame 0 differs by {seam:.3f}, above {limit:.3f} "
+                          f"({LOOP_SEAM_FACTOR:g} x the typical step {typical:.3f})", t)]
+    return details, []
+
+
+def load_raster_sizes(path):
+    try:
+        data = json.loads(path.read_text())
+        step = float(data.get("step_sec", RASTER_DEFAULT_STEP_SEC))
+        samples = [(float(s["t_sec"]), str(s["src"]), [float(v) for v in s["natural_px"]],
+                    [float(v) for v in s["drawn_px"]]) for s in data["samples"]]
+    except (OSError, ValueError, KeyError, TypeError, AttributeError) as exc:
+        raise InputError(f"cannot read raster sizes {path}: {exc}") from exc
+    if any(min(n) <= 0 for _, _, n, _ in samples):
+        raise InputError(f"{path}: natural_px must be positive")
+    return step, samples
+
+
+def longest_run(series, step):
+    """Longest span (samples x step) of consecutive samples above the warn scale, and its start time."""
+    longest, start, count, first = 0.0, None, 0, None
+    for t, scale in series:
+        if scale <= RASTER_WARN_SCALE:
+            count = 0
+            continue
+        first = t if count == 0 else first
+        count += 1
+        if count * step > longest:
+            longest, start = count * step, first
+    return longest, start
+
+
+def check_raster_upscale(ctx):
+    path = ctx.raster_sizes
+    if path is None or not path.is_file():
+        return {"skipped": True, "reason": f"no raster size report at {path}"}, []
+    step, samples = load_raster_sizes(path)
+    by_src = {}
+    for t, src, natural, drawn in sorted(samples):
+        by_src.setdefault(src, []).append((t, max(drawn[0] / natural[0], drawn[1] / natural[1])))
+    worst, errors = {}, []
+    for src, series in sorted(by_src.items()):
+        t_max, peak = max(series, key=lambda p: p[1])
+        worst[src] = round(peak, 3)
+        if peak >= RASTER_FAIL_SCALE:
+            errors.append((f"{src} drawn at {peak:.2f}x its natural size (fail at {RASTER_FAIL_SCALE:g}x)", t_max))
+        longest, start = longest_run(series, step)
+        if peak < RASTER_FAIL_SCALE and longest >= RASTER_WARN_SEC:
+            ctx.warnings.append(("raster_upscale", f"{src} drawn above {RASTER_WARN_SCALE:g}x for {longest:.2f} s "
+                                 f"(warn at {RASTER_WARN_SEC:g} s)", start))
+    return {"report": str(path), "samples": len(samples), "max_scale": worst,
+            "warn_scale": RASTER_WARN_SCALE, "fail_scale": RASTER_FAIL_SCALE}, errors
+
+
 CHECK_FUNCS = {
     "scene_determinism": check_scene_determinism,
     "render_determinism": check_render_determinism,
@@ -532,6 +780,13 @@ CHECK_FUNCS = {
     "audio_boundary_pops": check_boundary_pops,
     "variants_captions": check_variants_captions,
     "safe_zone_flash": check_safe_zone_flash,
+    "frame_pops": check_frame_pops,
+    "cuts_vs_plan": check_cuts_vs_plan,
+    "dead_time": check_dead_time,
+    "flat_opening": check_flat_opening,
+    "motion_contrast": check_motion_contrast,
+    "loop_seam": check_loop_seam,
+    "raster_upscale": check_raster_upscale,
 }
 
 
@@ -592,9 +847,13 @@ def write_png(path, width, height, rgb):
                      + chunk(b"IDAT", zlib.compress(raw, 6)) + chunk(b"IEND", b""))
 
 
-def make_sheet(ctx, out, fps, end_sec, max_tiles=None):
-    th = SHEET_TILE_H
-    tw = max(2, 2 * round(ctx.meta["width"] * th / ctx.meta["height"] / 2))
+def make_sheet(ctx, out, fps, end_sec, max_tiles=None, tile_w=None):
+    """Tiles SHEET_TILE_H px high, or tile_w px wide when tile_w is set."""
+    w, h = ctx.meta["width"], ctx.meta["height"]
+    if tile_w:
+        tw, th = tile_w, max(2, 2 * round(tile_w * h / w / 2))
+    else:
+        th, tw = SHEET_TILE_H, max(2, 2 * round(w * SHEET_TILE_H / h / 2))
     frames = sampled_frames(ctx.video, fps, tw, th, end_sec, "rgb24")[:max_tiles]
     if not frames:
         raise InputError(f"no frames decoded for {out}")
@@ -628,6 +887,9 @@ class Context:
         self.out = Path(args.out) if args.out else project / "qa" / "render-check.json"
         self.contact_sheet = Path(args.contact_sheet) if args.contact_sheet else project / "qa" / "contact-sheet-360p.png"
         self.hook_strip = Path(args.hook_strip) if args.hook_strip else project / "qa" / "hook-strip.png"
+        self.phone_sheet = Path(args.phone_sheet) if args.phone_sheet else project / "qa" / "phone-sheet-360w.png"
+        self.raster_sizes = Path(args.raster_sizes) if args.raster_sizes else self.render_dir / "raster-sizes.json"
+        self.warnings = []
         if (args.probe_forward is None) != (args.probe_reverse is None):
             raise InputError("--probe-forward and --probe-reverse go together")
         self.probe_forward = Path(args.probe_forward) if args.probe_forward else None
@@ -636,6 +898,7 @@ class Context:
         if stream(self.info, "video") is None:
             raise InputError(f"{self.video} has no video stream")
         self.analysis = analyse(self.video, stream(self.info, "audio") is not None)
+        self.motion = motion_frames(self.video, self.meta)
 
 
 def run_gate(args):
@@ -652,11 +915,15 @@ def run_gate(args):
                 entry["timestamp"] = stamp(t)
             report["errors"].append(entry)
     report["passed"] = not report["errors"]
+    report["warnings"] = [{"check": name, "message": message, **({"time_sec": round(t, 3), "timestamp": stamp(t)}
+                                                                  if t is not None else {})}
+                          for name, message, t in ctx.warnings]
     duration = float(ctx.meta["duration_sec"])
     report["artifacts"] = {
         "contact_sheet": make_sheet(ctx, ctx.contact_sheet, CONTACT_FPS, duration),
         "hook_strip": make_sheet(ctx, ctx.hook_strip, HOOK_FPS, HOOK_WINDOW_SEC,
                                  max_tiles=int(HOOK_WINDOW_SEC * HOOK_FPS)),
+        "phone_sheet": make_sheet(ctx, ctx.phone_sheet, CONTACT_FPS, duration, tile_w=PHONE_TILE_W),
     }
     ctx.out.parent.mkdir(parents=True, exist_ok=True)
     ctx.out.write_text(json.dumps(report, indent=2) + "\n")
@@ -789,13 +1056,15 @@ def self_test():
 
     with tempfile.TemporaryDirectory(prefix="qa-video-") as tmp_name:
         tmp = Path(tmp_name)
+        self_test_motion(tmp)
+        self_test_raster(tmp)
         gain = tone_gain_db(tmp)
         cases = [
             ("pass", {}, set()),
             ("black-frame", {"video_vf": "drawbox=x=0:y=0:w=iw:h=ih:color=black:t=fill:enable='between(t,1.2,1.7)'"},
-             {"black_frames"}),
+             {"black_frames", "cuts_vs_plan"}),
             ("dark-background", {"video_vf": "drawbox=x=0:y=0:w=iw:h=ih:color=0x0B1020:t=fill:enable='between(t,1.2,1.7)'"},
-             set()),
+             {"cuts_vs_plan"}),  # the jump to the dark plate is a cut, but not black
             ("frozen", {"video_vf": "trim=end=2,tpad=stop_mode=clone:stop_duration=2"}, {"freeze_frames"}),
             ("raf-scene", {"scene_html": SCENE_RAF}, {"scene_determinism"}),
             ("clipped-audio", {"clip": True}, {"audio_loudness", "audio_boundary_pops"}),
@@ -810,6 +1079,7 @@ def self_test():
             assert report["passed"] is (not expected), f"{name}: passed flag wrong"
             assert_png(root / "qa" / "contact-sheet-360p.png", 6 * 640, 2 * 360)
             assert_png(root / "qa" / "hook-strip.png", 6 * 640, 2 * 360)
+            assert_png(root / "qa" / "phone-sheet-360w.png", 6 * PHONE_TILE_W, 2 * 202)
             print(f"ok {name}: failed={sorted(failed)} exit={code}")
 
         root = tmp / "frozen"
@@ -835,6 +1105,86 @@ def self_test():
     return 0
 
 
+MOTION_CHECKS = ("frame_pops", "cuts_vs_plan", "dead_time", "flat_opening", "motion_contrast", "loop_seam")
+AMP_BUSY_THEN_CALM = "if(lt(t,5),50,if(lt(t,6),50-38*(t-5),12))"
+AMP_CALM_THEN_BUSY = "if(lt(t,5),12,if(lt(t,6),12+38*(t-5),50))"
+
+
+def motion_clip(path, amp, cut_at=None, flash_frame=None, freeze=None):
+    """8 s, 160x90, 30 fps: a white box swings left and right with amplitude amp(t), 1 cycle per second.
+
+    cut_at swaps the background colour (a hard cut), flash_frame paints 1 frame white, freeze=(a, b)
+    holds the box still from a to b s (both whole or half seconds, so the box does not jump).
+    """
+    phase = f"if(between(t,{freeze[0]},{freeze[1]}),{freeze[0]},t)" if freeze else "t"
+    x = f"60+({amp})*sin(2*PI*({phase}))".replace(",", "\\,")
+    bg = "color=c=0x203040:s=160x90:r=30:d=8"
+    if cut_at is not None:
+        bg += f",drawbox=x=0:y=0:w=iw:h=ih:color=0x606878:t=fill:enable='gte(t,{cut_at})'"
+    graph = f"{bg}[bg];color=c=white:s=40x40:r=30:d=8[box];[bg][box]overlay=x='{x}':y=25"
+    if flash_frame is not None:
+        graph += f",drawbox=x=0:y=0:w=iw:h=ih:color=white:t=fill:enable='eq(n,{flash_frame})'"
+    sh("-f", "lavfi", "-i", graph + "[out0]", "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p",
+       str(path))
+
+
+def motion_failures(path, loop=False):
+    meta = {"fps": 30, "width": 160, "height": 90, "duration_sec": 8.0, "loop": loop}
+    scenes = [{"id": "s01", "start_sec": 0.0, "duration_sec": 4.0, "transition_out": "cut"},
+              {"id": "s02", "start_sec": 4.0, "duration_sec": 4.0}]
+    ctx = types.SimpleNamespace(meta=meta, scenes=scenes, motion=motion_frames(path, meta))
+    results = {name: CHECK_FUNCS[name](ctx) for name in MOTION_CHECKS}
+    return {name for name, (_, errors) in results.items() if errors}, results
+
+
+def self_test_motion(tmp):
+    cases = [
+        ("clean", {"amp": AMP_BUSY_THEN_CALM, "cut_at": 4.0}, False, set()),
+        ("flash", {"amp": AMP_BUSY_THEN_CALM, "cut_at": 4.0, "flash_frame": 45}, False, {"frame_pops"}),
+        ("freeze-3s", {"amp": AMP_BUSY_THEN_CALM, "cut_at": 4.0, "freeze": (0.5, 3.5)}, False, {"dead_time"}),
+        ("unplanned-cut", {"amp": AMP_BUSY_THEN_CALM, "cut_at": 2.0}, False, {"cuts_vs_plan"}),
+        ("flat-opening", {"amp": AMP_CALM_THEN_BUSY, "cut_at": 4.0}, False, {"flat_opening"}),
+        ("flat-motion", {"amp": "50"}, False, {"motion_contrast"}),
+        ("loop-clean", {"amp": AMP_BUSY_THEN_CALM}, True, set()),
+        ("loop-seam", {"amp": AMP_BUSY_THEN_CALM, "cut_at": 4.0}, True, {"loop_seam"}),
+    ]
+    for name, clip, loop, expected in cases:
+        path = tmp / f"motion-{name}.mp4"
+        motion_clip(path, **clip)
+        failed, results = motion_failures(path, loop)
+        assert failed == expected, f"motion {name}: failed {sorted(failed)}, expected {sorted(expected)}\n" \
+                                   f"{json.dumps({k: v[1] for k, v in results.items()}, indent=1)}"
+        print(f"ok motion {name}: failed={sorted(failed)}")
+
+
+def raster_result(tmp, name, samples):
+    path = tmp / f"raster-{name}.json"
+    path.write_text(json.dumps({"step_sec": 0.1, "samples": samples}))
+    ctx = types.SimpleNamespace(raster_sizes=path, warnings=[])
+    _, errors = check_raster_upscale(ctx)
+    return errors, ctx.warnings
+
+
+def self_test_raster(tmp):
+    def series(scale, start, count):
+        return [{"t_sec": round(start + 0.1 * i, 3), "src": "materials/shot.png", "natural_px": [800, 600],
+                 "drawn_px": [800 * scale, 600 * scale]} for i in range(count)]
+    errors, warnings = raster_result(tmp, "clean", series(1.0, 0.0, 10) + series(1.12, 1.0, 10))
+    assert not errors and not warnings, f"raster clean: {errors} {warnings}"
+    errors, warnings = raster_result(tmp, "brief-warn", series(1.0, 0.0, 10) + series(1.15, 1.0, 4))
+    assert not errors and not warnings, f"raster 0.4 s at 1.15x must not warn: {errors} {warnings}"
+    errors, warnings = raster_result(tmp, "warn", series(1.0, 0.0, 10) + series(1.15, 1.0, 6))
+    assert not errors and len(warnings) == 1 and warnings[0][2] == 1.0, f"raster warn: {errors} {warnings}"
+    errors, _ = raster_result(tmp, "fail", series(1.0, 0.0, 10) + series(1.3, 1.0, 1))
+    assert len(errors) == 1 and "1.30x" in errors[0][0], f"raster 1.3x must fail: {errors}"
+    try:
+        raster_result(tmp, "bad", [{"t_sec": 0, "src": "a.png", "natural_px": [0, 10], "drawn_px": [5, 5]}])
+        raise AssertionError("raster report with a zero natural size must be an input error")
+    except InputError:
+        pass
+    print("ok raster: clean, brief, warn, fail at 1.3x, bad input")
+
+
 def check_captions_text(text):
     with tempfile.TemporaryDirectory(prefix="qa-captions-") as tmp:
         path = Path(tmp) / "captions.srt"
@@ -852,6 +1202,8 @@ def main(argv=None):
     parser.add_argument("--out", help="report path (default: <timeline dir>/qa/render-check.json)")
     parser.add_argument("--contact-sheet", help="default: <timeline dir>/qa/contact-sheet-360p.png")
     parser.add_argument("--hook-strip", help="default: <timeline dir>/qa/hook-strip.png")
+    parser.add_argument("--phone-sheet", help="default: <timeline dir>/qa/phone-sheet-360w.png")
+    parser.add_argument("--raster-sizes", help="image natural vs drawn sizes (default: <render dir>/raster-sizes.json)")
     parser.add_argument("--probe-forward", help="cold-forward probe PNG frames (0, K, 2K)")
     parser.add_argument("--probe-reverse", help="warm-reverse probe PNG frames, same file names")
     args = parser.parse_args(argv)
@@ -865,6 +1217,9 @@ def main(argv=None):
     except InputError as exc:
         print(f"qa_video: {exc}", file=sys.stderr)
         return 2
+    for warn in report["warnings"]:
+        where = f"[{warn['timestamp']}] " if "timestamp" in warn else ""
+        print(f"WARN {warn['check']}: {where}{warn['message']}")
     for err in report["errors"]:
         where = f"[{err['timestamp']}] " if "timestamp" in err else ""
         print(f"FAIL {err['check']}: {where}{err['message']}")
