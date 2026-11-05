@@ -1,0 +1,29 @@
+# 33: Full gate on the run branch
+
+<!-- horch-ticket: 1 -->
+**Persona:** primary `opus`, fallback `backend-developer` · **Parallel:** yes
+**Kind:** report
+**Review:** none
+**Check:** `HORCH_REQUIRE_GIT=1 HORCH_REQUIRE_SQLITE=1 just gate`
+
+Spec: `docs/specs/trace-fixes.md` (contracts in section 3, schema in 4, timings in 5, conventions in 8).
+Waits for: 30 (Rewrite the briefings and docs for the new behaviour); 31 (Review: delivery, supervision and respawn); 32 (Review: session ledger retirement). Wave 11.
+
+## Goal
+
+Prove the run branch is releasable (D4: this ticket is the run gate until ticket 13's `run gate` exists, then it runs that).
+
+## Steps
+
+1. Run `horch ledger run gate --check "HORCH_REQUIRE_GIT=1 HORCH_REQUIRE_SQLITE=1 just gate"` on the run-branch tip.
+2. Confirm `scripts/check-req-coverage.sh` finds a test for every TRF id.
+3. On a failure, send QUESTION with the failing step and the ticket that owns the file. Do not fix it here.
+4. Confirm that 31 and 32 have no open Critical finding.
+
+## Done when
+
+The gate passes on the tip and the run gate row is recorded.
+
+## Report
+
+Write `ai_docs/reports/trace-fixes/33.md` (spec section 8). Then run `horch ledger finish`; when every step passed, run `horch ledger done "<summary>"`.
