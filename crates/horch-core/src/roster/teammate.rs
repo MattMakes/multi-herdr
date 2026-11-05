@@ -195,7 +195,7 @@ pub struct Teammate {
     /// `horch spawn` only for a teammate whose name matches 1 of them, and
     /// never with `--resume` or its own `HORCH_TEAMMATES_DIR`. The spawned
     /// worker reports to this pane's role. Empty: no limit.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[serde(default)]
     pub spawn_only: Vec<String>,
     /// Inline MCP server definitions. `None` leaves the operator's MCP
     /// configuration alone; `Some` renders `--mcp-config <json>

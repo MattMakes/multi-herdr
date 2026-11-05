@@ -581,7 +581,15 @@ fn g58_claude_workers_share_read_only_preapprovals() {
     for name in r.names() {
         let t = r.require(name).unwrap();
         if t.agent.as_str() == "claude" && t.base.as_deref() == Some("fleet-worker") {
-            assert_eq!(&t.allowed_tools, expected, "{name}");
+            // A report pane runs no `horch` command but progress, tell and
+            // done, so it pre-approves none of the others.
+            let report = t.horch_access == horch_core::roster::HorchAccess::Report;
+            let want: Vec<String> = expected
+                .iter()
+                .filter(|p| !(report && p.starts_with("Bash(horch ")))
+                .cloned()
+                .collect();
+            assert_eq!(t.allowed_tools, want, "{name}");
             count += 1;
         }
     }

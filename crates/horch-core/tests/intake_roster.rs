@@ -155,7 +155,17 @@ fn assert_common(t: &Teammate) {
 #[test]
 fn t26_the_role_teammates_match_the_spec_table() {
     let r = Roster::builtin().unwrap();
-    let sonnet = &r.require("sonnet").unwrap().allowed_tools;
+    // sonnet's pre-approvals without `horch` commands: report mode refuses
+    // every `horch` command but progress, tell and done.
+    let sonnet: Vec<String> = r
+        .require("sonnet")
+        .unwrap()
+        .allowed_tools
+        .iter()
+        .filter(|p| !p.starts_with("Bash(horch "))
+        .cloned()
+        .collect();
+    let sonnet = &sonnet;
     for role in &ROLES {
         let t = r.require(role.name).unwrap();
         let who = role.name;
