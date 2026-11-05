@@ -4,6 +4,10 @@
 
 ## Unreleased
 
+- Unread mail no longer floods the orchestrator. The courier resends a
+  message's full text 1 time only when its first push can have missed. Then
+  a NOTE gets nothing, and other unread mail gets 1 digest line after 5 min
+  and every 15 min after that. Worker panes keep their per-message redelivery.
 - The `skill-importer` teammate imports a skill repo with the new `skill-intake`
   skill: a security sweep, a clean-room rewrite by 5 hidden, sandboxed role
   workers (`intake-auditor`, `intake-analyst`, `intake-sanitizer`,

@@ -499,6 +499,47 @@ pub fn redelivery_offset(attempt: usize) -> Option<Duration> {
     Some(Duration::from_secs(early.checked_add(late)?))
 }
 
+/// The orchestrator's first digest of unread mail: when the oldest is 5 min old.
+pub const DIGEST_FIRST: Duration = Duration::from_secs(5 * 60);
+/// The least time between 2 digests to the orchestrator.
+pub const DIGEST_GAP: Duration = Duration::from_secs(15 * 60);
+
+/// Whether `text` is a `[<role>] NOTE:` line. The orchestrator gets no
+/// redelivery of it.
+pub fn is_note(text: &str) -> bool {
+    text.strip_prefix('[')
+        .and_then(|rest| rest.split_once("] "))
+        .is_some_and(|(_, body)| body.starts_with("NOTE:"))
+}
+
+/// The keyword of a `[<role>] KEYWORD: ...` line, such as `DONE`.
+fn keyword(text: &str) -> Option<&str> {
+    let (_, body) = text.strip_prefix('[')?.split_once("] ")?;
+    let (word, _) = body.split_once(':')?;
+    (!word.is_empty() && word.bytes().all(|b| b.is_ascii_uppercase())).then_some(word)
+}
+
+/// 1 line that names the unread `messages` without their text.
+pub fn digest_line(messages: &[Message]) -> String {
+    let senders: Vec<String> = messages
+        .iter()
+        .map(|m| match keyword(&m.text) {
+            Some(word) => format!("{} {word}", m.from),
+            None => m.from.clone(),
+        })
+        .collect();
+    let noun = if messages.len() == 1 {
+        "message"
+    } else {
+        "messages"
+    };
+    format!(
+        "[horch] NOTE: {} unread {noun} ({}). Run horch inbox.",
+        messages.len(),
+        senders.join(", ")
+    )
+}
+
 /// Claude Code login screen match strings; fixtures cover every table row.
 pub const LOGIN_PROMPTS: &[&str] = &["Please run /login"];
 pub fn needs_login(screen: &str) -> bool {
@@ -984,5 +1025,35 @@ mod tests {
             assert_eq!(err.to_string(), "invalid mail id", "{bad:?}");
         }
         assert_eq!(mail.pending().unwrap().len(), 1, "nothing was moved");
+    }
+
+    #[test]
+    fn a_note_line_is_tagged_note() {
+        assert!(is_note("[sonnet-1] NOTE: tests pass"));
+        assert!(is_note("[horch] NOTE: All tasks are done."));
+        assert!(!is_note("[sonnet-1] DONE: NOTE: tests pass"));
+        assert!(!is_note("[sonnet-1] QUESTION: which file?"));
+        assert!(!is_note("NOTE: untagged"));
+    }
+
+    #[test]
+    fn a_digest_counts_the_mail_and_names_each_sender_and_keyword() {
+        let root = tempfile::tempdir().unwrap();
+        let mail = Mail::under(root.path(), "w1");
+        mail.enqueue("opus-1", "[opus-1] DONE: the full report text")
+            .unwrap();
+        mail.enqueue("qa-3", "[qa-3] QUESTION: which file?").unwrap();
+        mail.enqueue("horch", "plain notice").unwrap();
+        let line = digest_line(&mail.pending().unwrap());
+        assert_eq!(
+            line,
+            "[horch] NOTE: 3 unread messages (opus-1 DONE, qa-3 QUESTION, horch). Run horch inbox."
+        );
+        assert!(!line.contains("full report text"));
+        let one = digest_line(&mail.pending().unwrap()[..1]);
+        assert_eq!(
+            one,
+            "[horch] NOTE: 1 unread message (opus-1 DONE). Run horch inbox."
+        );
     }
 }
