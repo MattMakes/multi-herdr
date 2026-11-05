@@ -1521,6 +1521,16 @@
     {
       "name": "skill-intake",
       "copied_files": [
+        "schemas/behavior-spec.schema.json",
+        "schemas/handoff.schema.json",
+        "schemas/incident.schema.json",
+        "schemas/preflight.schema.json",
+        "schemas/report.schema.json",
+        "scripts/intakelib/guard.py",
+        "scripts/intakelib/handoff.py",
+        "scripts/intakelib/index.py",
+        "scripts/intakelib/sandbox.py",
+        "scripts/intakelib/scan.py",
         "scripts/intakelib/schema.py",
         "scripts/intakelib/task.py"
       ],

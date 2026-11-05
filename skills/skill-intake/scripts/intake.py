@@ -26,6 +26,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from intakelib.task import TaskError  # noqa: E402
 
 COMMANDS = (
+    "cr",
+    "guard",
+    "hook-config",
 )
 
 

@@ -1,0 +1,158 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Provenance",
+  "description": "Contaminated side (C/provenance.json). Written by `intake acquire`, completed by `intake install` (spec 3.8).",
+  "type": "object",
+  "required": [
+    "task_id",
+    "fetched_at",
+    "source",
+    "content_sha256",
+    "licence"
+  ],
+  "$defs": {
+    "sha": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    }
+  },
+  "properties": {
+    "task_id": {
+      "type": "string",
+      "pattern": "^[0-9]{8}-[0-9]{6}-[0-9a-f]{6}$"
+    },
+    "fetched_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "source": {
+      "type": "object",
+      "required": [
+        "kind",
+        "input"
+      ],
+      "properties": {
+        "kind": {
+          "enum": [
+            "github",
+            "local",
+            "archive"
+          ]
+        },
+        "input": {
+          "type": "string",
+          "minLength": 1
+        },
+        "url": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "ref": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "commit": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "subdir": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "content_sha256": {
+      "$ref": "#/$defs/sha"
+    },
+    "archive_sha256": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "licence": {
+      "type": "object",
+      "required": [
+        "spdx",
+        "files",
+        "class"
+      ],
+      "properties": {
+        "spdx": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "files": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "class": {
+          "enum": [
+            "permissive",
+            "copyleft",
+            "none",
+            "restrictive"
+          ]
+        },
+        "flag": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "skills": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "intake_version": {
+      "type": "string"
+    },
+    "sweep": {
+      "type": "object"
+    },
+    "installed": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "name",
+          "target",
+          "sha256"
+        ],
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "target": {
+            "type": "string"
+          },
+          "renamed_from": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "sha256": {
+            "type": "string"
+          }
+        }
+      }
+    }
+  }
+}

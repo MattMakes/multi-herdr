@@ -1,8 +1,7 @@
 """Minimal JSON Schema validator (subset of draft 2020-12) so we need no jsonschema package.
 
 Ported from clean-room crlib/schema.py. The schemas live in
-skills/skill-intake/schemas/ (none yet: ticket 08 ports them), so `kinds()`
-is empty until then.
+skills/skill-intake/schemas/ (ported and extended by ticket 08).
 
 Supported: type, required, properties, additionalProperties (bool or schema), items,
 enum, const, pattern, minLength, maxLength, minItems, minimum, maximum, format: date-time,
