@@ -962,7 +962,10 @@ fn g51_pane_gone_context_filters_and_completed_summaries() {
 fn g55_unparseable_probe_reports_parser_error_in_quota() {
     let mut h = Harness::new("g55-unparse");
     h.set("HORCH_FAKE_SCENARIO", "error");
-    h.set("HORCH_PROBE_TIMEOUT_MS", "2000");
+    h.set(
+        "HORCH_PROBE_TIMEOUT_MS",
+        horch_e2e::harness::DEADLINE.as_millis().to_string(),
+    );
     for name in ["claude", "codex", "agy"] {
         let mut cmd = std::process::Command::new(h.bin.join(name));
         h.seal(&mut cmd);

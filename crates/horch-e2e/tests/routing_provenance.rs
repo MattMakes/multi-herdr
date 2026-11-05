@@ -24,7 +24,10 @@ fn quota_fixture(name: &str) -> String {
 fn gated(name: &str, fixture: &str) -> Harness {
     let mut h = Harness::new(name);
     h.set("HORCH_NOW", "2026-09-28T18:00:00Z");
-    h.set("HORCH_PROBE_TIMEOUT_MS", "1500");
+    h.set(
+        "HORCH_PROBE_TIMEOUT_MS",
+        horch_e2e::harness::DEADLINE.as_millis().to_string(),
+    );
     h.set("HORCH_QUOTA_FILE", quota_fixture(fixture));
     h.set("HORCH_PROJECT_DIR", "/work/alpha");
     h.set("HORCH_WORKSPACE_ID", "w1");
