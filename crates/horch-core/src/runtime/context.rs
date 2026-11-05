@@ -164,6 +164,9 @@ pub struct Settings {
     pub machine_file: Option<PathBuf>,
     /// `HORCH_PROBE_TIMEOUT_MS`.
     pub probe_timeout: Option<Duration>,
+    /// `HORCH_LOCAL_PROBE_TIMEOUT_MS`: the deadline of each command of the
+    /// local pool's health check. `None` is the 5 s default.
+    pub local_probe_timeout: Option<Duration>,
     /// `HORCH_TELL_GRACE_MS`: how long `horch tell` waits for herdr to see an
     /// agent in a pane whose role registered that recently. `None` is the
     /// default ([`crate::messaging::delivery::TELL_GRACE`]).
@@ -405,6 +408,9 @@ impl RuntimeContext {
             probe_timeout: nonempty("HORCH_PROBE_TIMEOUT_MS")
                 .and_then(|ms| ms.parse::<u64>().ok())
                 .map(Duration::from_millis),
+            local_probe_timeout: nonempty("HORCH_LOCAL_PROBE_TIMEOUT_MS")
+                .and_then(|ms| ms.parse::<u64>().ok())
+                .map(Duration::from_millis),
             tell_grace: nonempty("HORCH_TELL_GRACE_MS")
                 .and_then(|ms| ms.parse::<u64>().ok())
                 .map(Duration::from_millis),
@@ -526,6 +532,7 @@ mod tests {
             .with("HORCH_QUOTA_FILE", "/q.json")
             .with("HORCH_MACHINE_FILE", "/m.json")
             .with("HORCH_PROBE_TIMEOUT_MS", "250")
+            .with("HORCH_LOCAL_PROBE_TIMEOUT_MS", "120000")
             .with("HORCH_TELL_GRACE_MS", "0")
             .with("HORCH_SPAWN_WAIT_MS", "1500")
             .with("HORCH_FAULT", "after-append,abort-after-append")
@@ -592,6 +599,7 @@ mod tests {
         assert_eq!(s.quota_file, Some(PathBuf::from("/q.json")));
         assert_eq!(s.machine_file, Some(PathBuf::from("/m.json")));
         assert_eq!(s.probe_timeout, Some(Duration::from_millis(250)));
+        assert_eq!(s.local_probe_timeout, Some(Duration::from_secs(120)));
         assert_eq!(s.tell_grace, Some(Duration::ZERO));
         assert_eq!(s.spawn_wait, Some(Duration::from_millis(1500)));
         assert!(s.faults.has("after-append") && s.faults.has("abort-after-append"));
@@ -632,6 +640,7 @@ mod tests {
         assert_eq!(ctx.settings.now, None);
         assert_eq!(ctx.settings.tiling, TilingMode::Automatic);
         assert_eq!(ctx.settings.probe_timeout, None);
+        assert_eq!(ctx.settings.local_probe_timeout, None);
         assert_eq!(ctx.settings.tell_grace, None);
         assert_eq!(ctx.settings.spawn_wait, None);
         assert!(ctx.settings.faults.is_empty());
@@ -732,6 +741,21 @@ mod tests {
             RuntimeContext::from_env(&MapEnv::new("/").with("HORCH_NOW", "yesterday")).unwrap();
         assert_eq!(ctx.settings.now, None);
         assert_eq!(ctx.settings.now_unparsable.as_deref(), Some("yesterday"));
+    }
+
+    #[test]
+    fn the_local_probe_timeout_parses_milliseconds_and_ignores_the_rest() {
+        for (value, want) in [
+            ("7000", Some(Duration::from_secs(7))),
+            ("0", Some(Duration::ZERO)),
+            ("", None),
+            ("5s", None),
+            ("-1", None),
+        ] {
+            let env = MapEnv::new("/").with("HORCH_LOCAL_PROBE_TIMEOUT_MS", value);
+            let ctx = RuntimeContext::from_env(&env).unwrap();
+            assert_eq!(ctx.settings.local_probe_timeout, want, "{value:?}");
+        }
     }
 
     #[test]
