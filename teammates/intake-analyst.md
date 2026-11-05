@@ -4,7 +4,7 @@ brief_description: Hidden skill-intake analyst. Started only by skill-importer.
 # skill-importer spawns it by name through `intake spawn`; the orchestrator
 # never picks it (spec section 6.4, H-2).
 hidden: true
-base: fleet-worker
+base: report-worker
 agent: claude
 # Sanctioned #58: subscription auto-mode read-only pre-approval; see live-check results.
 allowed_tools: ["Read", "Grep", "Glob", "Bash(git status)", "Bash(git status *)", "Bash(git log)", "Bash(git log --oneline -10)", "Bash(git diff)", "Bash(git diff --stat)", "Bash(git diff --cached)", "Bash(git show)", "Bash(git ls-files)", "Bash(aws sts get-caller-identity)", "Bash(aws s3 ls)", "Bash(gcloud projects list)", "Bash(az account show)", "Bash(kubectl get pods)", "Bash(docker ps)"]

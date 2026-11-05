@@ -5,8 +5,10 @@
 
 use std::path::Path;
 
+use horch_core::execution::SessionMode;
 use horch_core::harness::launch;
 use horch_core::harness::{HarnessKind, LaunchEnv, Session};
+use horch_core::prompts;
 use horch_core::roster::{HorchAccess, Roster, Teammate};
 use horch_core::runtime::{MapEnv, RuntimeContext};
 use serde_json::{json, Value};
@@ -138,10 +140,10 @@ fn sandbox(t: &Teammate) -> Value {
 }
 
 /// The common frontmatter of spec 6.4 and 9.2.
-fn assert_common(t: &Teammate) {
+fn assert_common(t: &Teammate, base: &str) {
     let who = &t.name;
     assert_eq!(t.agent, HarnessKind::Claude, "{who}");
-    assert_eq!(t.base.as_deref(), Some("fleet-worker"), "{who}");
+    assert_eq!(t.base.as_deref(), Some(base), "{who}");
     assert_eq!(t.skills, ["skill-intake"], "{who}");
     assert!(!t.allow_subagents, "{who}");
     for tool in COMMON_DENIES {
@@ -169,7 +171,7 @@ fn t26_the_role_teammates_match_the_spec_table() {
     for role in &ROLES {
         let t = r.require(role.name).unwrap();
         let who = role.name;
-        assert_common(t);
+        assert_common(t, "report-worker");
         assert!(t.hidden, "{who}");
         assert!(t.fallbacks.is_empty(), "{who}");
         assert_eq!(&t.allowed_tools, sonnet, "{who}");
@@ -209,7 +211,7 @@ fn t26_the_role_teammates_match_the_spec_table() {
 fn t26_the_skill_importer_is_the_offered_controller() {
     let r = Roster::builtin().unwrap();
     let t = r.require("skill-importer").unwrap();
-    assert_common(t);
+    assert_common(t, "fleet-worker");
     assert!(!t.hidden);
     assert!(t.offer_when.is_empty(), "offered everywhere");
     assert_eq!(t.model.as_deref(), Some("opus"));
@@ -369,4 +371,62 @@ fn t20_the_roles_launch_with_only_the_report_socket() {
         assert!(sockets.contains(&path.to_string_lossy().into_owned()));
     }
     assert!(!sockets.contains(&socket.to_string_lossy().into_owned()));
+}
+
+/// The horch commands report mode refuses (T-20). A briefing that names one
+/// tells the worker to run a command that fails in its pane.
+const REFUSED: [&str; 21] = [
+    "horch note",
+    "horch skills",
+    "horch ledger claim",
+    "horch ledger worktree",
+    "horch ledger status",
+    "horch ledger show",
+    "horch ledger steps",
+    "horch ledger finish",
+    "horch ledger done",
+    "horch worktree",
+    "horch spawn",
+    "horch assign",
+    "horch inbox",
+    "horch compact",
+    "horch context",
+    "horch mode",
+    "horch teammates",
+    "horch route",
+    "horch tell orchestrator",
+    "horch done --unlanded",
+    "horch fleet",
+];
+
+/// T-22: each role renders a briefing that names no command report mode
+/// refuses, for a fresh task and an idle start.
+#[test]
+fn t22_the_role_briefings_name_no_refused_horch_command() {
+    let r = Roster::builtin().unwrap();
+    let sessions = [
+        ("task", "Read the brief", SessionMode::Fresh(None)),
+        ("idle", "", SessionMode::Fresh(None)),
+    ];
+    for name in ROLES.iter().map(|r| r.name) {
+        let t = r.require(name).unwrap();
+        for (label, task, session) in &sessions {
+            let p = prompts::worker_prompt(&r, t, "w-1", task, session).unwrap();
+            for cmd in REFUSED {
+                assert!(!p.contains(cmd), "{name} {label}: names `{cmd}`");
+            }
+            assert!(
+                p.contains("horch ledger progress \"<milestone>\""),
+                "{name}"
+            );
+            assert!(p.contains("horch tell <controller>"), "{name}");
+            assert!(p.contains("horch done \"<summary>\""), "{name}");
+        }
+    }
+    // The check catches the old base: fleet-worker names refused commands.
+    let mut t = r.require("intake-writer").unwrap().clone();
+    t.base = Some("fleet-worker".into());
+    let p =
+        prompts::worker_prompt(&r, &t, "w-1", "Read the brief", &SessionMode::Fresh(None)).unwrap();
+    assert!(REFUSED.iter().any(|cmd| p.contains(cmd)));
 }

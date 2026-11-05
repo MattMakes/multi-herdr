@@ -34,6 +34,9 @@ use crate::skills::{harness_support, SkillCatalog, SkillResolution};
 const COMPACT_AT_RANGE: std::ops::RangeInclusive<u64> = 50_000..=1_000_000;
 
 /// The line for a teammate on a watched harness without `compact_at`.
+/// The base every `horch_access: report` teammate uses, and only they.
+const REPORT_WORKER_BASE: &str = "report-worker";
+
 fn compact_at_missing(name: &str) -> String {
     format!(
         "{name}: compact_at is missing (the token count where horch asks it to hand off; see teammates/README.md)"
@@ -188,6 +191,7 @@ impl Roster {
         problems.extend(self.orchestrator_only_rules(t));
         problems.extend(self.worker_channel_rules(t));
         problems.extend(self.sandbox_rules(t));
+        problems.extend(self.report_base_rules(t));
         problems.extend(self.permission_mode_rules(t));
         problems.extend(self.plan_mode_rules(t));
         problems.extend(self.empty_setting_sources_rules(t));
@@ -572,6 +576,26 @@ impl Roster {
             ));
         }
         problems
+    }
+
+    /// `horch_access: report` and `base: report-worker` go together. Any
+    /// other base tells the worker to run horch commands report mode refuses,
+    /// and the report base names only the 3 commands of report mode.
+    fn report_base_rules(&self, t: &Teammate) -> Vec<String> {
+        let who = &t.name;
+        let report = t.horch_access == HorchAccess::Report;
+        let on_report_base = t.base.as_deref() == Some(REPORT_WORKER_BASE);
+        match (report, on_report_base) {
+            (true, false) => vec![format!(
+                "{who}: horch_access: report needs base: {REPORT_WORKER_BASE} (any other \
+                 base names horch commands that report mode refuses)"
+            )],
+            (false, true) => vec![format!(
+                "{who}: base: {REPORT_WORKER_BASE} needs horch_access: report (the base \
+                 names only the 3 commands of report mode)"
+            )],
+            _ => Vec::new(),
+        }
     }
 
     /// A permission mode needs an equivalent on this agent.
@@ -2618,10 +2642,49 @@ w3-codex: sandbox is Claude only; agent codex cannot honour it";
         let sonnet = r.teammates.get_mut("sonnet").unwrap();
         sonnet.sandbox = Some(serde_json::Map::new());
         assert!(
-            !r.check().iter().any(|p| p.contains("horch_access")),
+            !r.check().iter().any(|p| p.contains("needs a sandbox")),
             "{:?}",
             r.check()
         );
+    }
+
+    /// `horch_access: report` needs `base: report-worker`.
+    #[test]
+    fn horch_access_report_needs_the_report_worker_base() {
+        let r = Roster::builtin().unwrap();
+        let mut t = r.require("intake-writer").unwrap().clone();
+        assert!(r.report_base_rules(&t).is_empty());
+        t.base = Some("fleet-worker".into());
+        assert_eq!(
+            r.report_base_rules(&t),
+            [
+                "intake-writer: horch_access: report needs base: report-worker (any other \
+              base names horch commands that report mode refuses)"
+            ]
+        );
+        assert!(r
+            .check_teammate(&t)
+            .iter()
+            .any(|p| p.contains("needs base: report-worker")));
+    }
+
+    /// `base: report-worker` needs `horch_access: report`.
+    #[test]
+    fn the_report_worker_base_needs_horch_access_report() {
+        let r = Roster::builtin().unwrap();
+        let mut t = r.require("intake-writer").unwrap().clone();
+        t.horch_access = HorchAccess::Full;
+        assert_eq!(
+            r.report_base_rules(&t),
+            [
+                "intake-writer: base: report-worker needs horch_access: report (the base \
+              names only the 3 commands of report mode)"
+            ]
+        );
+        assert!(r
+            .check_teammate(&t)
+            .iter()
+            .any(|p| p.contains("needs horch_access: report")));
     }
 
     /// `spawn_only` parses as a list of name globs, `may_spawn` matches a
