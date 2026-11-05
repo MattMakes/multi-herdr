@@ -19,6 +19,9 @@ from . import evidence, frontmatter
 
 SKIP_DIRS = frozenset({".git", "node_modules", ".github", "dist", "build", "vendor", "site-packages", "__pycache__"})
 NAME = re.compile(r"^[a-z0-9][a-z0-9-]{0,63}$")
+# A skill folder path is stored raw in skills.json (orchestrator decision), so
+# every component must be safe: [A-Za-z0-9._-]+, and never "." or "..".
+COMPONENT = re.compile(r"^[A-Za-z0-9._-]+$")
 TEXT_LIMIT = 1024 * 1024
 
 
@@ -41,6 +44,10 @@ def normalize(text: str) -> str | None:
     s = re.sub(r"[^a-z0-9]+", "-", ascii_text.lower()).strip("-")
     s = s[:64].rstrip("-")
     return s if NAME.match(s) else None
+
+
+def safe_path(rel: PurePosixPath) -> bool:
+    return all(COMPONENT.match(c) and c not in (".", "..") for c in rel.parts)
 
 
 def find(src: Path) -> list[PurePosixPath]:
@@ -82,12 +89,21 @@ def discover(src: Path, root_name: str) -> dict:
     """Return {"skills": [...], "out_of_scope": [...], "findings": [...]}.
 
     `root_name` is the folder name to use for a skill at the source root.
-    Every source text in the result is escaped.
+    `rel_path` and `dropped_variants` hold raw relative paths (every component
+    matches COMPONENT; a skill at the source root is "."). A skill folder with
+    any other component is skipped with an ACQ-05 finding. All other source
+    text in the result is escaped.
     """
     candidates = []
     findings = []
     unnamed = 0
     for rel in find(src):
+        if str(rel) != "." and not safe_path(rel):
+            findings.append({
+                "rule": "ACQ-05", "severity": "medium", "file": evidence.escape(str(rel)),
+                "detail": "a skill folder path component is not [A-Za-z0-9._-]+ or is '.' or '..'; the skill is skipped",
+            })
+            continue
         d = src / rel
         fm = frontmatter.read(d / "SKILL.md")
         dir_name = root_name if str(rel) == "." else rel.name
@@ -119,11 +135,11 @@ def discover(src: Path, root_name: str) -> dict:
         files = _files(src / rel)
         skills.append({
             "name": name,
-            "rel_path": evidence.escape(str(rel)),
+            "rel_path": str(rel),
             "description": evidence.untrusted(fm.get("description", "")),
             "files": len(files),
             "bytes": sum(p.stat().st_size for p in files),
-            "dropped_variants": sorted(evidence.escape(v) for v in dropped.get(name, [])),
+            "dropped_variants": sorted(dropped.get(name, [])),
         })
     return {
         "skills": skills,

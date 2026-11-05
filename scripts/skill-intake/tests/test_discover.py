@@ -55,30 +55,48 @@ class DiscoverTest(DiscoverCase):
 
     def test_name_normalization(self):
         src = fixtures.build(self.tmp / "n", {
-            "My Cool_Skill/SKILL.md": "---\ndescription: x\n---\n",
-            "Bad Front/SKILL.md": "---\nname: Not Valid!\n---\n",
-            "caf\u00e9-t\u00f6ol/SKILL.md": "no frontmatter\n",
-            "\u4e2d\u6587/SKILL.md": "---\nname: \u4e2d\n---\n",
-            "\u65e5\u672c/SKILL.md": "---\ndescription: \"quoted \u200b desc\"\n---\n",
+            "My.Cool_Skill/SKILL.md": "---\ndescription: x\n---\n",
+            "Bad-Front/SKILL.md": "---\nname: Not Valid!\n---\n",
             "fm/SKILL.md": "---\nname: good-name\n---\n",
+            "___/SKILL.md": "---\ndescription: \"quoted \u200b desc\"\n---\n",
         })
         d, c, out = self.acquire_and_discover(src)
         self.assertEqual(d.returncode, 0, d.stderr)
         names = {s["name"]: s["rel_path"] for s in out["skills"]}
-        self.assertEqual(names["my-cool-skill"], "My Cool_Skill")
-        self.assertEqual(names["bad-front"], "Bad Front")
-        self.assertEqual(names["cafe-tool"], "caf\u00e9-t\u00f6ol")
-        self.assertEqual(names["good-name"], "fm")
-        # 2 names cannot be normalized: INJ-09, and skill-<n>; rel_path is escaped.
-        self.assertEqual(names["skill-1"], "\\u{4E2D}\\u{6587}")
-        self.assertEqual(names["skill-2"], "\\u{65E5}\\u{672C}")
+        self.assertEqual(names, {"my-cool-skill": "My.Cool_Skill", "bad-front": "Bad-Front",
+                                 "good-name": "fm", "skill-1": "___"})
+        # "___" cannot be normalized: INJ-09, and the name skill-<n>.
         by_name = {s["name"]: s for s in out["skills"]}
-        self.assertEqual(by_name["skill-2"]["description"], {"untrusted": "quoted \\u{200B} desc"})
+        self.assertEqual(by_name["skill-1"]["description"], {"untrusted": "quoted \\u{200B} desc"})
         rows = [json.loads(x) for x in (c / "sweep" / "discover.jsonl").read_text().splitlines()]
-        self.assertEqual([r["rule"] for r in rows], ["INJ-09", "INJ-09"])
-        self.assertEqual(rows[0]["severity"], "medium")
+        self.assertEqual([(r["rule"], r["severity"]) for r in rows], [("INJ-09", "medium")])
+
+    def test_unsafe_folder_names_are_skipped_with_acq05(self):
+        src = fixtures.build(self.tmp / "u", {
+            "My Skill/SKILL.md": fixtures.skill_md("spaced"),
+            "caf\u00e9/SKILL.md": fixtures.skill_md("latin"),
+            "\u4e2d\u6587/SKILL.md": fixtures.skill_md("cjk"),
+            "ok dir/inner/SKILL.md": fixtures.skill_md("parent-bad"),
+            "skills/good/SKILL.md": fixtures.skill_md("good"),
+        })
+        d, c, out = self.acquire_and_discover(src)
+        self.assertEqual(d.returncode, 0, d.stderr)
+        self.assertEqual([(s["name"], s["rel_path"]) for s in out["skills"]], [("good", "skills/good")])
+        rows = [json.loads(x) for x in (c / "sweep" / "discover.jsonl").read_text().splitlines()]
+        self.assertEqual(sorted(r["file"] for r in rows),
+                         ["My Skill", "\\u{4E2D}\\u{6587}", "caf\u00e9", "ok dir/inner"])
+        self.assertEqual({r["rule"] for r in rows}, {"ACQ-05"})
+        # The skipped skills' files are in no skill, so they are out of scope.
+        self.assertIn("My Skill/SKILL.md", out["out_of_scope"])
+
+    def test_rel_path_is_raw_and_opens_under_the_quarantine(self):
+        d, c, out = self.acquire_and_discover(fixtures.f_variants(self.tmp / "v"))
+        q = (c / "quarantine" / "src").resolve()
         for s in out["skills"]:
-            self.assertRegex(s["name"], discover.NAME.pattern)
+            self.assertTrue(discover.safe_path(discover.PurePosixPath(s["rel_path"])))
+            self.assertTrue((q / s["rel_path"] / "SKILL.md").is_file())
+        self.assertFalse(discover.safe_path(discover.PurePosixPath("a/../b")))
+        self.assertFalse(discover.safe_path(discover.PurePosixPath("..")))
 
     def test_normalize(self):
         self.assertEqual(discover.normalize("--Hello  World--"), "hello-world")

@@ -1,6 +1,7 @@
 """`intake discover --task T`: stage 2 (spec 3.7).
 
-Writes C/skills.json and the INJ-09 findings to C/sweep/discover.jsonl, and
+Writes C/skills.json and the INJ-09 and ACQ-05 findings to
+C/sweep/discover.jsonl, and
 records the skill names in provenance.json. Exit 0, or 6 when no skill is found.
 """
 
