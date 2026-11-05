@@ -7,6 +7,7 @@ exits: SKIP without Godot .NET, FAIL on a Godot build without .NET.
 import os
 import subprocess
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -18,8 +19,10 @@ from api_check import find_godot
 SCRIPT = HERE.parent / "live_csharp.sh"
 
 
-def run(godot: str) -> subprocess.CompletedProcess:
+def run(godot: str, path_first: str | None = None) -> subprocess.CompletedProcess:
     env = dict(os.environ, GODOT_MONO_PATH=godot)
+    if path_first:
+        env["PATH"] = path_first + os.pathsep + env.get("PATH", "")
     return subprocess.run(["bash", str(SCRIPT)], env=env, capture_output=True, text=True, timeout=60, check=False)
 
 
@@ -36,8 +39,15 @@ class LiveCsharpTest(unittest.TestCase):
         ).stdout
         if "mono" in version:
             self.skipTest("the Godot found is a .NET build")
-        r = run(find_godot())
-        self.assertEqual(r.returncode, 1)
+        # live_csharp.sh checks for dotnet on PATH before the Godot version,
+        # so a stub dotnet that exits 0 lets the version check run on a host
+        # without dotnet.
+        with tempfile.TemporaryDirectory() as stub_dir:
+            stub = Path(stub_dir) / "dotnet"
+            stub.write_text("#!/bin/sh\nexit 0\n")
+            stub.chmod(0o755)
+            r = run(find_godot(), path_first=stub_dir)
+        self.assertEqual(r.returncode, 1, r.stdout)
         self.assertIn("FAIL godot-dotnet: want a 4.7 mono build", r.stdout)
 
 
