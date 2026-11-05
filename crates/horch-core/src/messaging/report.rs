@@ -11,7 +11,8 @@
 //! - `{"verb":"progress","text":..}`: the parent records ledger progress
 //!   for its own worker row.
 //! - `{"verb":"tell","to":..,"text":..}`: the parent tells the brief's
-//!   report target, tagged with the brief's role. Any other `to` is refused.
+//!   controller, or else its report target ([`target`]), tagged with the
+//!   brief's role. Any other `to` is refused.
 //! - `{"verb":"done","text":..}`: the parent runs `horch done` for its own
 //!   record.
 //!
@@ -38,6 +39,9 @@ use std::time::Duration;
 use anyhow::Context;
 use anyhow::{bail, Result};
 use serde::{Deserialize, Serialize};
+
+use super::brief::Brief;
+use crate::execution::ReportTarget;
 
 /// The variable that puts the `horch` CLI in report mode. Its value is the
 /// socket path.
@@ -93,6 +97,16 @@ impl Reply {
             error: Some(error.into()),
         }
     }
+}
+
+/// The only role a `report` pane may `tell`: the controller that spawned
+/// it under `spawn_only`, else the orchestrator when the brief reports to
+/// it, else none.
+pub fn target(brief: &Brief) -> Option<String> {
+    if let Some(controller) = &brief.controller {
+        return Some(controller.clone());
+    }
+    (brief.report_to == ReportTarget::Orchestrator).then(|| "orchestrator".to_string())
 }
 
 /// Carries out a checked request in the parent.
@@ -279,6 +293,39 @@ mod tests {
 
     fn line(v: serde_json::Value) -> Vec<u8> {
         serde_json::to_vec(&v).unwrap()
+    }
+
+    fn brief(report_to: crate::execution::ReportTarget, controller: Option<&str>) -> Brief {
+        let raw = serde_json::json!({
+            "role": "intake-auditor-1", "teammate": "intake-auditor", "agent": "claude",
+            "model": "opus", "record_id": "r1", "session_id": "", "resume": false,
+            "project_dir": "/p", "report_to": report_to, "controller": controller,
+        });
+        Brief::from_json(&raw.to_string()).unwrap()
+    }
+
+    /// A worker the controller spawned tells only the controller, and is
+    /// refused for the orchestrator. A worker the orchestrator spawned is
+    /// unchanged: it tells only the orchestrator.
+    #[test]
+    fn the_controller_is_the_only_tell_target_of_its_roles() {
+        use crate::execution::ReportTarget;
+        let spawned = brief(ReportTarget::Orchestrator, Some("skill-importer-1"));
+        assert_eq!(target(&spawned).as_deref(), Some("skill-importer-1"));
+        let tell = |to: &str| line(serde_json::json!({"verb": "tell", "to": to, "text": "x"}));
+        let (seen, exec) = recorder();
+        let to = target(&spawned);
+        assert!(handle(&tell("skill-importer-1"), to.as_deref(), exec.as_ref()).ok);
+        let reply = handle(&tell("orchestrator"), to.as_deref(), exec.as_ref());
+        assert_eq!(
+            reply.error.as_deref(),
+            Some("this pane reports only to skill-importer-1, not to orchestrator")
+        );
+        assert_eq!(seen.lock().unwrap().len(), 1);
+
+        let plain = brief(ReportTarget::Orchestrator, None);
+        assert_eq!(target(&plain).as_deref(), Some("orchestrator"));
+        assert_eq!(target(&brief(ReportTarget::None, None)), None);
     }
 
     #[test]

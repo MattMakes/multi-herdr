@@ -1001,9 +1001,9 @@ impl WorkerSteps for PaneWorker<'_> {
     }
 }
 
-/// The only role a `report` pane may tell: the brief's report target.
+/// The only role a `report` pane may tell (`report::target`).
 fn report_target(brief: &Brief) -> Option<String> {
-    (brief.report_to == ReportTarget::Orchestrator).then(|| "orchestrator".to_string())
+    report::target(brief)
 }
 
 /// The `horch` command the parent runs for 1 checked report request.
@@ -1534,6 +1534,7 @@ mod tests {
             report_to,
             worker_id: None,
             ledger_db: None,
+            controller: None,
         }
     }
 
@@ -1633,6 +1634,7 @@ mod tests {
             report_to: crate::execution::ReportTarget::Orchestrator,
             worker_id: None,
             ledger_db: None,
+            controller: None,
         };
         let mut env = MapEnv::new("/");
         for key in BinOverrides::VARS {
@@ -2055,6 +2057,7 @@ mod tests {
                     report_to: ReportTarget::Orchestrator,
                     worker_id: None,
                     ledger_db: None,
+                    controller: None,
                 }
             }
         }

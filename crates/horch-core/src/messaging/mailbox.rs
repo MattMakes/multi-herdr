@@ -520,6 +520,7 @@ mod tests {
             report_to: crate::execution::ReportTarget::Orchestrator,
             worker_id: None,
             ledger_db: None,
+            controller: None,
         }
     }
 
