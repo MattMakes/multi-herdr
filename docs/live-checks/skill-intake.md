@@ -826,3 +826,11 @@ Other observations from the same run (not defects of T-17):
 | report path | none |
 
 Ticket 30 fixes `_git_env`. The step is not retried until it lands.
+
+Addition to attempt 2: `skill-importer-2` also stopped at a Claude permission
+prompt ("Reads outside the working directories are blocked") on
+`intake spawn auditor --task ~/.local/state/skill-intake/contaminated/20261105-122527-7af466`.
+The sandbox `allowRead` paths are not Claude `additionalDirectories`. The
+orchestrator stopped the pane. Ticket 31 fixes it. Task
+`20261105-122527-7af466` is not reused. The GitHub steps (1, 2, 4) wait for
+tickets 30 and 31.
