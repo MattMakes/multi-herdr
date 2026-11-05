@@ -734,3 +734,47 @@ Cost: 2 sonnet low-effort panes, 1 `smoke` pane (no tokens) and 1 short
 `claude -p` sonnet session. Results files:
 `~/.local/state/skill-intake/drafts/probe/t35-before-results.txt` and
 `t35-after-results.txt`.
+
+### Ticket 43: the sandboxed controller cannot write `~/.claude/skills`
+
+T-17 live (task `20261105-150809-f88b2e`, controller `skill-importer-7`)
+passed GATE 2. Then `intake install --target standalone` exited 1 with
+`PermissionError` on `mkdir` in `/Users/matthewscott/.claude/skills`.
+
+#### Probe
+
+2 headless `claude -p` haiku runs, Claude Code 2.1.318, in a scratch
+worktree. Each run had the skill-importer `sandbox:` block, the forced keys,
+`blockReadsOutsideWorkingDirectories` and both paths in
+`permissions.additionalDirectories`. Run A gives `allowRead` and
+`allowWrite` with `~`. Run B gives them as absolute paths.
+
+| run | command | result |
+|---|---|---|
+| A (`~`) | `mkdir ~/.claude/skills/probe-t43-a6284` | exit 1, `Operation not permitted` |
+| A (`~`) | `mkdir ~/.local/state/skill-intake/probe-t43-a6284` | exit 0 |
+| A (`~`) | `mkdir /Users/matthewscott/.claude/skills/probe-t43-b6284` | exit 1, `Operation not permitted` |
+| B (absolute) | `mkdir /Users/matthewscott/.claude/skills/probe-t43-c6284` | exit 1, `Operation not permitted` |
+| B (absolute) | `mkdir /Users/matthewscott/.local/state/skill-intake/probe-t43-c6284` | exit 0 |
+| B (absolute) | `mkdir /Users/matthewscott/.claude/probe-t43-d6284` | exit 1, `Operation not permitted` |
+
+The 2 folders under `~/.local/state/skill-intake` were removed after the
+probe. No probe folder was made under `~/.claude`.
+
+#### Cause
+
+The `~` expansion is not the cause: a `~` path in `allowWrite` is writable
+(run A, row 2). Claude Code itself denies the write. Its sandbox config
+builder in the 2.1.318 binary adds each of these entries of its config home
+(`$CLAUDE_CONFIG_DIR`, else `~/.claude`) to `sandbox.filesystem.denyWrite`:
+`shell-snapshots`, `session-env`, `plugins`, `hooks`, `skills`,
+`workflows`, `commands`, `agents`, `routines`, `rules`, `output-styles`,
+`scheduled_tasks.json`, `launch.json`, `CLAUDE.md`, `projects`,
+`daemon.json`, `policy-limits.json` and `backups`. It also denies
+`.claude/skills` and `.claude/hooks` of the working folder. The sandbox
+runtime applies `denyWrite` inside `allowWrite`
+(`denyWithinAllow`), so no `allowWrite` entry opens these paths. A
+sandboxed Bash command can never write `~/.claude/skills` in 2.1.318.
+
+The `~/.claude/skills` entry of the skill-importer `allowWrite` has no
+effect. A sandboxed pane cannot do a standalone install.
