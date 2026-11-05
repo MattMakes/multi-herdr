@@ -489,16 +489,16 @@ fn g54_doctor_missing_mcp_and_hanging_docker_are_warnings() {
     while std::time::Instant::now() < deadline {
         if let Ok(line) = rx.recv_timeout(std::time::Duration::from_millis(100)) {
             if line.contains("Docker daemon version timed out") {
-                let since = std::fs::metadata(&marker)
-                    .unwrap()
-                    .modified()
-                    .unwrap()
-                    .elapsed()
-                    .unwrap();
-                assert!(
-                    since < std::time::Duration::from_secs(4),
-                    "Docker warning took {since:?}"
-                );
+                // Doctor kills Docker 2s after it spawns it. Under load the
+                // fake's shell may not run before that kill, so the marker
+                // can be absent. Check the delay only when Docker started.
+                if let Ok(modified) = std::fs::metadata(&marker).and_then(|m| m.modified()) {
+                    let since = modified.elapsed().unwrap_or_default();
+                    assert!(
+                        since < std::time::Duration::from_secs(4),
+                        "Docker warning took {since:?}"
+                    );
+                }
                 saw_timeout = true;
                 break;
             }
