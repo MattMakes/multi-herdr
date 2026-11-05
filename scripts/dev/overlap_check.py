@@ -9,6 +9,7 @@ Adjacent matching n-grams merge into one hit. Each hit prints both paths and
 the shared text. Exit 1 when any hit is not a common phrase.
 
 Usage: overlap_check.py [--upstream DIR] [--specs DIR] [--root DIR] [FILE ...]
+       overlap_check.py --self-test
 With no FILE, the files are every tracked skills/video-*, teammates/video-* and
 skills/orchestrate/references/video-pipeline.md under --root.
 Python standard library only.
@@ -17,6 +18,7 @@ import argparse
 import re
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 WORD_N = 8
@@ -95,6 +97,10 @@ MIN_FREE = 3
 # a 12 to 19 token window with fewer is one fragment of idiom, not expression.
 CODE_SHORT = 20
 CODE_SHORT_MIN_FREE = 6
+# The allowlist only covers a short shared text. A longer one is a hit however
+# plain its words are, unless the idiom rule below clears it: 16 words, 40 tokens.
+WORD_ALLOW_MAX = 16
+CODE_ALLOW_MAX = 40
 # A shared text whose every n-gram occurs in at least this many different
 # upstream projects is a common idiom (boilerplate, a standard algorithm), not
 # one project's expression.
@@ -107,8 +113,15 @@ def is_free(word):
 
 def is_common(text, kind="word"):
     """True when the shared text carries too few free words to be expression."""
+    if not re.search(r"[A-Za-z0-9]", text.replace("FLAG", "")):
+        return True  # only punctuation and flag placeholders: a ruler line, a flag list
+    if "4294967296" in text:
+        return True  # 2 to the 32: the divisor of every 32-bit seeded PRNG (mulberry32)
+    size = len(text.split())
+    if size > (CODE_ALLOW_MAX if kind == "code" else WORD_ALLOW_MAX):
+        return False
     free = sum(1 for w in re.findall(r"[a-z0-9]+", text.lower()) if is_free(w))
-    if kind == "code" and len(text.split()) < CODE_SHORT:
+    if kind == "code" and size < CODE_SHORT:
         return free < CODE_SHORT_MIN_FREE
     return free < MIN_FREE
 
@@ -137,8 +150,14 @@ FLAG = re.compile(r"(?<![\w-])--[a-z][a-z0-9-]+(?:=[^\s'\",`]+)?"
                   r"|(?<=[\s\"'`\[,])-[A-Za-z][A-Za-z_]*(?=[\s\"'`,\]])")
 
 
+# Comment rulers (a row of dashes or equals) and import statements carry no
+# expression: the first is decoration, the second only names APIs.
+RULER = re.compile(r"[-=#*_~/]{4,}")
+IMPORT = re.compile(r"\bimport\s+(?:[\w$]+\s*,?\s*)?(?:\{[^}]*\}|\*\s+as\s+\w+)?\s*from\s*['\"][^'\"]+['\"]")
+
+
 def normalise(text):
-    return FLAG.sub(" FLAG ", text)
+    return FLAG.sub(" FLAG ", IMPORT.sub(" import ", RULER.sub(" ", text)))
 
 
 def words(text):
@@ -228,6 +247,53 @@ def load(paths, base):
     return out
 
 
+SELF_PROSE = ("A scene holds its last caption on screen until the narrator finishes the "
+              "closing clause, then the cut lands on the next downbeat of the bed.")
+SELF_CODE = """function settle(frames, limit) {
+  let streak = 0;
+  for (const f of frames) {
+    streak = f.delta < limit ? streak + 1 : 0;
+    if (streak === 4) return f.index;
+  }
+  return -1;
+}
+"""
+SELF_COMMON = "ffprobe -v error -show_entries stream=width,height,r_frame_rate -of json"
+
+
+def self_test():
+    """Plant upstream text in temp files. A copy must exit 1, clean text must exit 0."""
+    me = str(Path(__file__).resolve())
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp = Path(tmp)
+        (tmp / "up" / "proj-a").mkdir(parents=True)
+        (tmp / "up" / "proj-a" / "guide.md").write_text(
+            f"# Guide\n\nIntro text.\n\n{SELF_PROSE}\n\nMore text.\n", encoding="utf-8")
+        (tmp / "up" / "proj-a" / "lib.js").write_text(SELF_CODE + f"// {SELF_COMMON}\n", encoding="utf-8")
+        (tmp / "ours").mkdir()
+        cases = {
+            # a sentence copied with other case and punctuation: must be caught
+            "sentence.md": ("My notes.\n\n" + SELF_PROSE.upper().replace(",", ";") + "\n", 1, "HIT [word]"),
+            # a code block copied with other spacing: must be caught
+            "block.js": (SELF_CODE.replace("  ", "\t"), 1, "HIT [code]"),
+            # own words: must pass
+            "clean.md": ("Hold the final caption until speech ends. Cut on the next beat.\n", 0, "hits: 0"),
+            # a command line made only of tool flags: allowlisted, must pass
+            "common.md": (f"Probe with `{SELF_COMMON}` first.\n", 0, "hits: 0"),
+        }
+        failed = 0
+        for name, (text, want, marker) in cases.items():
+            (tmp / "ours" / name).write_text(text, encoding="utf-8")
+            res = subprocess.run([sys.executable, "-I", me, "--upstream", str(tmp / "up"), "--root",
+                                  str(tmp / "ours"), str(tmp / "ours" / name)],
+                                 capture_output=True, text=True)
+            ok = res.returncode == want and marker in res.stdout
+            failed += not ok
+            print(f"{'ok  ' if ok else 'FAIL'} {name}: exit {res.returncode}, expected {want}")
+    print("self-test passed" if not failed else f"self-test failed: {failed} case(s)")
+    return 1 if failed else 0
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--upstream", default="/tmp/video-upstream")
@@ -235,8 +301,11 @@ def main():
     ap.add_argument("--root", default=".")
     ap.add_argument("--show-common", action="store_true",
                     help="also print the allowlisted hits, longest first, for a manual read")
+    ap.add_argument("--self-test", action="store_true")
     ap.add_argument("files", nargs="*")
     a = ap.parse_args()
+    if a.self_test:
+        return self_test()
     root = Path(a.root).resolve()
     up_root = Path(a.upstream)
     if not up_root.is_dir():
