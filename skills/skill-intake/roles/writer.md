@@ -81,6 +81,10 @@ copy) or `rule` (a scanner rule id such as `INJ-04`).
 
 Never write `K/fixes.json`. Only `intake verify` writes it.
 
+GATE 2 uses `K/report.json` `spec_ids` and `changed_files` to map specs to
+output folders (`verify.spec_map`). The `changed_files` of the specs of 1
+skill must name exactly 1 output folder, `out/<skill>/`.
+
 ## Test
 
 Run each test in your own shell, with cwd `K/out`. Your sandbox has no

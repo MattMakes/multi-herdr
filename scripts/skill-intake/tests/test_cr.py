@@ -16,7 +16,7 @@ from base import IntakeTestCase
 import fixtures
 from intakelib import guard, handoff, index, sandbox, scan, schema
 from intakelib import task as tasklib
-from intakelib.cmd_cr import preflight
+from intakelib.cmd_cr import kind_for, preflight
 from intakelib.task import read_json, write_json
 
 SOURCE_FILE = '''
@@ -527,6 +527,9 @@ class CliTests(Base):
         other = self.tmp / "preflight.json"
         write_json(other, read_json(Path(pre)))
         self.assertEqual(self.run_intake("cr", "validate", "--task", str(self.task.c), str(other)).returncode, 1)
+
+    def test_validate_detects_fixes_json(self):
+        self.assertEqual(kind_for(Path("fixes.json")), "fixes")
 
     def test_status_reports_tampered_handoff(self):
         handoff.handoff(self.task, [str(self.draft(GOOD_SPEC))])

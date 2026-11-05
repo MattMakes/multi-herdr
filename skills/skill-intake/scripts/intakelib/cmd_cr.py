@@ -34,7 +34,7 @@ FLEET_REFUSED = 10
 ARTIFACT_KINDS = {  # file name -> schema kind, for `cr status` and `cr validate` auto-detection
     "preflight.json": "preflight", "report.json": "report", "review.json": "report",
     "package.json": "handoff", "findings.json": "findings", "mitigation.json": "mitigation",
-    "provenance.json": "provenance", "verify.json": "verify",
+    "provenance.json": "provenance", "verify.json": "verify", "fixes.json": "fixes",
 }
 
 

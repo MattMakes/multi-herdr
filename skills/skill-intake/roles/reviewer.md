@@ -39,6 +39,9 @@ when it is there, and record it in `findings`.
 7. Fix small defects in `K/out/<skill>/` yourself. Record anything larger as
    a finding, and give its item a `fail` verdict.
 8. Run every test again (below). Each script needs at least 1 test.
+   Confirm that `K/report.json` `spec_ids` and `changed_files` match the
+   output: `changed_files` names exactly 1 output folder, and that folder is
+   the one that holds your skill.
 9. When `K/fixes.json` lists entries, a writer fix run came before you.
    Check that each listed line is in new words and keeps the behavior. A
    line that is not fixed is a finding and a `fail` verdict for its item.

@@ -22,7 +22,8 @@ SHORT = {"contaminated": "C", "drafts": "D", "clean": "K"}
 CHECK = "domain-snapshot"
 
 # Write set per role, as patterns on "<C|D|K>/<path in that side root>".
-# Each role also writes its status file next to its brief (spec 6.6).
+# Each role also writes its status file in the status/ folder of its own side
+# (spec 6.6; the analyst brief is in C/briefs/, its status file in D/status/).
 WRITE_SETS = {
     "auditor": ("C/sweep/audit.jsonl", "C/sweep/opaque/*.md", "C/status/auditor-*.json"),
     "analyst": ("D/drafts/*", "D/status/analyst-*.json"),
