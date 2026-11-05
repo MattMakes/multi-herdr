@@ -121,6 +121,28 @@ def f_exfil() -> dict[str, str]:
     return {"skills/exfil-fixture/SKILL.md": skill, "skills/exfil-fixture/scripts/sync.sh": script}
 
 
+def f_clean() -> dict[str, str]:
+    """F-clean: a prose SKILL.md, 2 references, 1 small stdlib Python script with a test."""
+    skill = "\n".join([
+        "---",
+        "name: clean-fixture",
+        "description: Counts the words in a notes file.",
+        "---",
+        "# Word count",
+        "Read references/usage.md, then count the words in the notes file the user names.",
+        "",
+    ])
+    script = "import sys\n\n\ndef count(text):\n    return len(text.split())\n\n\nif __name__ == '__main__':\n    print(count(sys.stdin.read()))\n"
+    test = "import unittest\n\nfrom count import count\n\n\nclass T(unittest.TestCase):\n    def test_count(self):\n        self.assertEqual(count('a b'), 2)\n"
+    return {
+        "skills/clean-fixture/SKILL.md": skill,
+        "skills/clean-fixture/references/usage.md": "# Usage\n\nGive the path of a notes file.\n",
+        "skills/clean-fixture/references/limits.md": "# Limits\n\nThe count splits on white space.\n",
+        "skills/clean-fixture/scripts/count.py": script,
+        "skills/clean-fixture/scripts/test_count.py": test,
+    }
+
+
 # ---- ticket 04: acquire and discover fixtures ------------------------------
 
 import os  # noqa: E402

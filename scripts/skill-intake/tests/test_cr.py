@@ -82,6 +82,9 @@ class Base(IntakeTestCase):
     def setUp(self):
         super().setUp()
         self.task = tasklib.create(str(self.tmp / "base"))
+        # Later stages need GATE 1 pass (intake triage); these tests start after it.
+        self.task.manifest["gate1"] = "pass"
+        tasklib.set_phase(self.task, "triaged")
         self.src = index.source_root(self.task)
         fixtures.build(self.src, {
             "skills/manifest-tool/SKILL.md": SKILL_MD,
@@ -128,7 +131,7 @@ class SchemaTests(Base):
 
     def test_all_schemas_load(self):
         self.assertEqual(set(schema.kinds()), {
-            "behavior-spec", "findings", "handoff", "incident", "mitigation", "preflight", "provenance",
+            "audit-line", "behavior-spec", "findings", "handoff", "incident", "mitigation", "preflight", "provenance",
             "report", "verify"})
         for k in schema.kinds():
             schema.validate({}, schema.load_schema(k))  # must not raise on keywords

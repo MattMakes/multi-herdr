@@ -32,6 +32,9 @@ COMMANDS = (
     "scan",
     "acquire",
     "discover",
+    "triage",
+    "report",
+    "run",
 )
 
 

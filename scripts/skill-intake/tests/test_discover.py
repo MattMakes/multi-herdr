@@ -21,6 +21,13 @@ class DiscoverCase(IntakeTestCase):
         skills = json.loads((c / "skills.json").read_text()) if (c / "skills.json").exists() else None
         return d, c, skills
 
+    def pass_gate1(self, c: Path) -> None:
+        """cr index needs GATE 1 pass: scan, an empty canned audit.jsonl, triage."""
+        self.assertEqual(self.run_intake("scan", "--task", str(c)).returncode, 0)
+        (c / "sweep" / "audit.jsonl").write_text("")
+        t = self.run_intake("triage", "--task", str(c))
+        self.assertEqual(t.returncode, 0, t.stdout + t.stderr)
+
 
 class DiscoverTest(DiscoverCase):
     def test_variants_keep_the_claude_copy(self):
@@ -156,9 +163,11 @@ class CrCompatibilityTest(DiscoverCase):
         src = fixtures.build(self.tmp / "Root Skill", {"SKILL.md": fixtures.skill_md("root"), "ref.md": "r\n"})
         d, c, out = self.acquire_and_discover(src)
         self.assertEqual(d.returncode, 0, d.stderr)
+        self.pass_gate1(c)
         i = self.run_intake("cr", "index", "--task", str(c))
         self.assertEqual(i.returncode, 0, i.stderr)
         _, c2, _ = self.acquire_and_discover(fixtures.f_variants(self.tmp / "v"))
+        self.pass_gate1(c2)
         i = self.run_intake("cr", "index", "--task", str(c2))
         self.assertEqual(i.returncode, 0, i.stderr)
 

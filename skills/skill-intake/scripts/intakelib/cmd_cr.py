@@ -13,6 +13,9 @@ Changes from clean-room (spec 6.3, 6.10, 9.3):
 Exit codes: 0 ok; 1 leak, invalid artifact, rejected handoff or failed
 integrity; 2 bad input; 10 refused in fleet mode; 13 verify unverified;
 otherwise the verified command's own exit code.
+
+`cr init`, `cr index`, `cr handoff` and `cr verify` refuse (exit 2) a task whose
+GATE 1 result is not pass (`intake triage`).
 """
 
 from __future__ import annotations
@@ -22,7 +25,7 @@ import json
 import sys
 from pathlib import Path
 
-from . import evidence, guard, handoff, index, sandbox, scan, schema
+from . import evidence, guard, handoff, index, sandbox, scan, schema, triage
 from . import task as tasklib
 from .task import is_within, read_json, resolve, write_json
 
@@ -81,6 +84,7 @@ def preflight(task: tasklib.Task) -> dict:
 
 def cmd_init(a) -> int:
     t = tasklib.load(a.task)
+    triage.require_gate1_pass(t)
     path = t.c / "contaminated" / "preflight.json"
     write_json(path, preflight(t))
     tasklib.set_phase(t, "preflight")
@@ -90,6 +94,7 @@ def cmd_init(a) -> int:
 
 def cmd_index(a) -> int:
     t = tasklib.load(a.task)
+    triage.require_gate1_pass(t)
     idx = index.build(t)
     tasklib.set_phase(t, "decompose")
     _out({"source_index": str(t.c / "contaminated" / "source-index.json"),
@@ -144,6 +149,7 @@ def cmd_scan(a) -> int:
 
 def cmd_handoff(a) -> int:
     t = tasklib.load(a.task)
+    triage.require_gate1_pass(t)
     done, failures = handoff.handoff(t, a.drafts)
     if done:
         tasklib.set_phase(t, "clean")
@@ -161,7 +167,9 @@ def cmd_context(a) -> int:
 
 def cmd_verify(a) -> int:
     argv = a.argv[1:] if a.argv[:1] == ["--"] else a.argv
-    code, entry = sandbox.run(tasklib.load(a.task), argv, a.timeout)
+    t = tasklib.load(a.task)
+    triage.require_gate1_pass(t)
+    code, entry = sandbox.run(t, argv, a.timeout)
     _out({k: entry[k] for k in ("status", "sandbox", "exit_code")})
     if entry["output_tail"]:
         _err(entry["output_tail"])
