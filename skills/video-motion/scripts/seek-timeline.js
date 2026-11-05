@@ -359,11 +359,16 @@
     }, this);
   };
 
+  // A spring preset gives the duration when the tween sets none.
+  const tweenTiming = function (toVars, isSet) {
+    var preset = springPreset(toVars.ease) || { duration: 0.5 };
+    return { duration: isSet ? 0 : orDefault(toVars.duration, preset.duration), ease: ease(toVars.ease) };
+  };
+
   Timeline.prototype._add = function (targets, fromVars, toVars, position, isSet) {
     var list = toTargets(targets);
     var start = this._resolve(position);
-    var preset = springPreset(toVars.ease) || { duration: 0.5 };
-    var timing = { duration: isSet ? 0 : orDefault(toVars.duration, preset.duration), ease: ease(toVars.ease) };
+    var timing = tweenTiming(toVars, isSet);
     var ends = list.map(function (target, i) {
       var at = start + staggerOffset(toVars.stagger, i, list.length);
       this._addTweens(target, fromVars, toVars, Object.assign({ start: at }, timing));

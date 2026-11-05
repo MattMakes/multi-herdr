@@ -188,25 +188,28 @@ const SPRING_POINTS = [
   ["heavy", [0.1201, 0.4706, 0.8770, 0.9946], 1.0030],
   ["playful", [0.5087, 1.2217, 0.9575, 1.0062], 1.2337],
 ];
-const peakOf = (f) => Math.max(...[...Array(1001).keys()].map((i) => f(i / 1000)));
+// f at n + 1 even steps from 0 to 1.
+const samples = (f, n) => [...Array(n + 1).keys()].map((i) => f(i / n));
+const peakOf = (f) => Math.max(...samples(f, 1000));
+const rising = (values) => values.every((v, i) => i === 0 || v >= values[i - 1]);
+
+function checkSpring(f, values, peak) {
+  [0.1, 0.25, 0.5, 0.75].forEach(function (p, i) { close(f(p), values[i], 1e-3); });
+  close(f(0), 0, 1e-9);
+  assert.equal(f(1), 1);
+  close(peakOf(f), peak, 1e-3);
+}
 
 test("spring presets: values, peaks and end points", () => {
   const { ease, springs } = load().ST;
   assert.deepEqual(Object.keys(springs), SPRING_POINTS.map(([name]) => name));
-  SPRING_POINTS.forEach(function ([name, values, peak]) {
-    const f = ease(`spring-${name}`);
-    [0.1, 0.25, 0.5, 0.75].forEach(function (p, i) { close(f(p), values[i], 1e-3); });
-    close(f(0), 0, 1e-9);
-    assert.equal(f(1), 1);
-    close(peakOf(f), peak, 1e-3);
-  });
+  SPRING_POINTS.forEach(function ([name, values, peak]) { checkSpring(ease(`spring-${name}`), values, peak); });
   assert.throws(function () { ease("spring-wobbly"); }, /unknown ease/);
 });
 
 test("the camera spring never overshoots, the playful one bounces", () => {
   const { ease } = load().ST;
-  const camera = [...Array(101).keys()].map((i) => ease("spring-camera")(i / 100));
-  assert.ok(camera.every((v, i) => i === 0 || v >= camera[i - 1]), "camera is monotonic");
+  assert.ok(rising(samples(ease("spring-camera"), 100)), "camera is monotonic");
   assert.ok(peakOf(ease("spring-playful")) > 1.15, "playful overshoots by more than 15 %");
 });
 
