@@ -430,3 +430,55 @@ fn t22_the_role_briefings_name_no_refused_horch_command() {
         prompts::worker_prompt(&r, &t, "w-1", "Read the brief", &SessionMode::Fresh(None)).unwrap();
     assert!(REFUSED.iter().any(|cmd| p.contains(cmd)));
 }
+
+/// T-27: each intake teammate launches with its own skills bundle open to
+/// read (a working directory for Read, `allowRead` for Bash) and closed to
+/// write (deny rules for Edit and Write, `denyWrite` for Bash). No other
+/// bundle path is opened, and a `report` role still gets no state root.
+#[test]
+fn t27_every_intake_teammate_reads_but_does_not_write_its_bundle() {
+    let home = tempfile::tempdir().unwrap();
+    let env = launch_env(home.path());
+    let state_root = env.state_root.clone().unwrap();
+    let r = Roster::builtin().unwrap();
+    for name in ROLES.iter().map(|r| r.name).chain(["skill-importer"]) {
+        let t = r.require(name).unwrap();
+        let bundle = horch_core::skills::Bundle::install(&state_root, t)
+            .unwrap()
+            .unwrap_or_else(|| panic!("{name}: no skills bundle"));
+        assert!(!bundle.plan().activated.is_empty(), "{name}: no skills");
+        let cmd = launch::command_with_skills_in(
+            &env,
+            t,
+            Session::Unmanaged,
+            "PROMPT",
+            None,
+            Some(&bundle),
+        )
+        .unwrap();
+        let args: Vec<String> = cmd
+            .get_args()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        let i = args.iter().position(|a| a == "--settings").unwrap();
+        let settings: Value = serde_json::from_str(&args[i + 1]).unwrap();
+        let dir = bundle.root().to_string_lossy().into_owned();
+        let fs = &settings["sandbox"]["filesystem"];
+        assert!(strings(&fs["allowRead"]).contains(&dir), "{name}");
+        assert!(!strings(&fs["allowWrite"]).contains(&dir), "{name}");
+        assert_eq!(fs["denyWrite"], json!([dir]), "{name}");
+        let perms = &settings["permissions"];
+        assert_eq!(perms["blockReadsOutsideWorkingDirectories"], true, "{name}");
+        assert_eq!(perms["additionalDirectories"], json!([dir]), "{name}");
+        let deny = strings(&perms["deny"]);
+        for tool in ["Edit", "Write"] {
+            assert!(
+                deny.contains(&format!("{tool}(/{dir}/**)")),
+                "{name}: {deny:?}"
+            );
+        }
+        let root = state_root.to_string_lossy().into_owned();
+        let opened = strings(&fs["allowRead"]).contains(&root);
+        assert_eq!(opened, t.horch_access == HorchAccess::Full, "{name}");
+    }
+}

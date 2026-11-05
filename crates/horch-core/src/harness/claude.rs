@@ -874,6 +874,53 @@ fn overlay_horch_paths(
             }
         }
     }
+    if let Some(bundle) = &env.skill_bundle {
+        changed |= overlay_bundle_paths(bundle, settings)?;
+    }
+    Ok(changed)
+}
+
+/// Open the launch's own skills bundle to read and close it to write, for
+/// every tool (ticket 27; `docs/security/sandboxed-pane-horch-access.md`,
+/// R6). The Read tool reads it as a working directory
+/// (`permissions.additionalDirectories`), and deny rules close it to Edit
+/// and Write. Bash gets it in `sandbox.filesystem.allowRead` and
+/// `denyWrite`; `denyWrite` wins over the state root in a `full` pane's
+/// `allowWrite`. A `Read(...)` allow rule does not pass
+/// `blockReadsOutsideWorkingDirectories` (live probe, Claude Code
+/// 2.1.318). Returns whether an entry was added.
+fn overlay_bundle_paths(
+    bundle: &Path,
+    settings: &mut serde_json::Map<String, Value>,
+) -> Result<bool> {
+    let dir = bundle.to_string_lossy();
+    // A rule path that starts with `//` is absolute.
+    let rule = |tool: &str| format!("{tool}(/{dir}/**)");
+    let mut changed = false;
+    let fs: &[&str] = &["sandbox", "filesystem"];
+    let perms: &[&str] = &["permissions"];
+    for (parents, key, entry) in [
+        (fs, "allowRead", dir.to_string()),
+        (fs, "denyWrite", dir.to_string()),
+        (perms, "additionalDirectories", dir.to_string()),
+        (perms, "deny", rule("Edit")),
+        (perms, "deny", rule("Write")),
+    ] {
+        let mut node = &mut *settings;
+        for parent in parents {
+            node = object_entry(node, parent)?;
+        }
+        let list = node
+            .entry(key)
+            .or_insert_with(|| json!([]))
+            .as_array_mut()
+            .with_context(|| format!("{}.{key} must be a list", parents.join(".")))?;
+        let entry = Value::String(entry);
+        if !list.contains(&entry) {
+            list.push(entry);
+            changed = true;
+        }
+    }
     Ok(changed)
 }
 
@@ -1414,6 +1461,101 @@ mod tests {
                 Some(std::ffi::OsStr::new("/state/horch/report/r1.sock"))
             );
         }
+    }
+
+    /// T-27: a sandboxed launch with a skills bundle opens that bundle, and
+    /// no other path, to read: a working directory for the Read tool and
+    /// `allowRead` for Bash. Deny rules close it to Edit and Write, and
+    /// `denyWrite` closes it to Bash, also over a `full` pane's state root.
+    /// Through the skills overlay too, for a `full` and a `report` teammate.
+    #[test]
+    fn a_sandboxed_launch_reads_but_does_not_write_its_bundle() {
+        let tmp = tempfile::tempdir().unwrap();
+        let [env, _] = sandbox_envs(tmp.path());
+        if !host_can_sandbox(&env) {
+            return;
+        }
+        let bundle = "/state/horch/skill-bundles/r1";
+        let env = LaunchEnv {
+            report_socket: Some(PathBuf::from("/state/horch/report/r1.sock")),
+            skill_bundle: Some(PathBuf::from(bundle)),
+            ..env
+        };
+        for access in [HorchAccess::Full, HorchAccess::Report] {
+            let mut t = sandboxed(json!({"filesystem": {"allowRead": ["/side"]}}));
+            t.horch_access = access;
+            let mut via_skills = t.clone();
+            via_skills.settings = Some(skills_settings(&t, None).unwrap().to_string());
+            for t in [&t, &via_skills] {
+                let built =
+                    super::super::launch::command_in(&env, t, Session::Fresh("id"), "go", None)
+                        .unwrap();
+                let settings = settings_arg(&built);
+                let fs = &settings["sandbox"]["filesystem"];
+                let reads = fs["allowRead"].as_array().unwrap();
+                assert_eq!(reads.first(), Some(&json!("/side")), "{access:?}");
+                assert_eq!(reads.last(), Some(&json!(bundle)), "{access:?}");
+                assert_eq!(fs["denyWrite"], json!([bundle]), "{access:?}");
+                let writes = fs["allowWrite"].as_array().unwrap();
+                assert!(!writes.contains(&json!(bundle)), "{access:?}");
+                let perms = &settings["permissions"];
+                assert_eq!(perms["blockReadsOutsideWorkingDirectories"], true);
+                assert_eq!(perms["additionalDirectories"], json!([bundle]));
+                assert_eq!(
+                    perms["deny"],
+                    json!([
+                        format!("Edit(/{bundle}/**)"),
+                        format!("Write(/{bundle}/**)")
+                    ]),
+                    "{access:?}"
+                );
+            }
+        }
+    }
+
+    /// A sandboxed launch with no skills bundle opens no bundle path, and a
+    /// launch with no `sandbox:` block opens none even with a bundle.
+    #[test]
+    fn only_a_sandboxed_bundle_launch_opens_the_bundle() {
+        let tmp = tempfile::tempdir().unwrap();
+        let [env, _] = sandbox_envs(tmp.path());
+        if !host_can_sandbox(&env) {
+            return;
+        }
+        let built = super::super::launch::command_in(
+            &env,
+            &sandboxed(json!({})),
+            Session::Fresh("id"),
+            "go",
+            None,
+        )
+        .unwrap();
+        let settings = settings_arg(&built);
+        assert!(settings["sandbox"]["filesystem"].get("denyWrite").is_none());
+        assert!(settings["permissions"]
+            .get("additionalDirectories")
+            .is_none());
+        assert!(settings["permissions"].get("deny").is_none());
+
+        let plain = Teammate {
+            name: "plain".into(),
+            model: Some("sonnet".into()),
+            ..Teammate::default()
+        };
+        let env = LaunchEnv {
+            skill_bundle: Some(PathBuf::from("/state/horch/skill-bundles/r1")),
+            ..env
+        };
+        let argv: Vec<String> =
+            super::super::launch::command_in(&env, &plain, Session::Fresh("id"), "go", None)
+                .unwrap()
+                .get_args()
+                .map(|a| a.to_string_lossy().into_owned())
+                .collect();
+        assert!(
+            !argv.iter().any(|a| a.contains("skill-bundles")),
+            "{argv:?}"
+        );
     }
 
     /// A `report` launch with no ledger record has no socket: it opens no

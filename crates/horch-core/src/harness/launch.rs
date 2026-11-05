@@ -76,6 +76,11 @@ pub struct LaunchEnv {
     /// opens only this socket to Bash, and gets no state root, ledger
     /// folder or other socket.
     pub report_socket: Option<PathBuf>,
+    /// The root of this launch's skills bundle
+    /// (`<state_root>/skill-bundles/<id>/`). [`command_with_skills_in`]
+    /// sets it for a bundle with activated skills. A sandboxed Claude launch
+    /// opens it to read and closes it to write.
+    pub skill_bundle: Option<PathBuf>,
     /// `$CLAUDE_CONFIG_DIR`: where the operator's Claude user settings live.
     pub claude_config_dir: Option<PathBuf>,
     /// `RuntimeContext.paths.claude_managed_settings`. `None` reads no
@@ -110,6 +115,7 @@ impl LaunchEnv {
             ledger_dir: ctx.paths.ledger_db.parent().map(Path::to_path_buf),
             herdr_socket: ctx.inherited.herdr_socket_path.clone(),
             report_socket: None,
+            skill_bundle: None,
             claude_config_dir: ctx.inherited.claude_config_dir.clone(),
             claude_managed_settings: Some(ctx.paths.claude_managed_settings.clone()),
             workdir: ctx.paths.cwd.clone(),
@@ -136,6 +142,7 @@ impl LaunchEnv {
             ledger_dir: None,
             herdr_socket: None,
             report_socket: None,
+            skill_bundle: None,
             claude_config_dir: None,
             claude_managed_settings: None,
             workdir: Some(PathBuf::from("/workdir")),
@@ -314,6 +321,10 @@ pub fn command_with_skills_in(
         );
     }
     let adjusted = adapter.expose_skills(teammate, bundle, env.home())?;
+    let env = &LaunchEnv {
+        skill_bundle: Some(bundle.root().to_path_buf()),
+        ..env.clone()
+    };
     let mut cmd = command_in(env, &adjusted, session, &prompt, model_override)?;
     adapter.expose_skills_env(
         &mut cmd,
