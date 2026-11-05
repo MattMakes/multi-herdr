@@ -834,3 +834,29 @@ The sandbox `allowRead` paths are not Claude `additionalDirectories`. The
 orchestrator stopped the pane. Ticket 31 fixes it. Task
 `20261105-122527-7af466` is not reused. The GitHub steps (1, 2, 4) wait for
 tickets 30 and 31.
+
+### Step 5, attempt 2: FAILED (defect)
+
+| field | value |
+|---|---|
+| command | the attempt 1 command with `PATH` led by `/opt/homebrew/bin` (python3 3.14), run in `.worktrees/_scratch/live-skill-intake/plain-project`, after the rebase on commit `854e5ea3` |
+| task id | T-17 (Claude session started 12:25:58Z, 14 turns, 1.62 USD list price). `intake` task `20261105-122624-776999` |
+| outcome | FAILED at the auditor. `intake mode` printed `plain`. `intake run` (GitHub clone at the pinned commit worked in the plain session) found 1 skill, `docs-driven-workflow`, and 47 scan hits (41 high, 6 medium, 0 malicious, 0 opaque). The auditor ran as 1 `general-purpose` subagent and wrote `sweep/audit.jsonl` (1 purpose line, 7 findings, none malicious). `intake role-result` then exited 12: `output outside the auditor write paths: .../status/auditor-1.json`. The session also ran `intake triage` in the same shell command, which printed GATE 1 pass. That result does not count: the role result was never accepted. |
+| report | `~/.local/state/skill-intake/contaminated/20261105-122624-776999/report.md` |
+| installed | nothing. `ls ~/.claude/skills` equals the list before step 1. |
+
+#### Defect found (code, not fixed in T-17)
+
+Ticket 29 made `role_result` check each `outputs` path against the `_io`
+write paths. The generated brief says the opposite:
+
+- `briefs/auditor-1.md` lists the status file `status/auditor-1.json` under
+  `Write only these paths` and says `outputs` is "a list of the absolute
+  paths you wrote".
+- The auditor listed the status file in `outputs`, as its brief told it to.
+  `_io(t, "auditor", None)` does not hold the status file, so
+  `role_result` rejects it. Any role that lists its status file fails the
+  same way, and a fresh role fails again.
+- A likely fix: allow the role's own status file in `role_result`, or change
+  `render` so that the brief says `outputs` excludes the status file. Add a
+  regression test with a status file that lists itself.
