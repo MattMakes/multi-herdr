@@ -23,6 +23,8 @@ Do not use it for UI motion or type. Use `video-motion` for those.
 
 Read `references/rig-and-visemes.md` for the full layer tree, the formulas, the viseme table format and a rig check.
 
+Read `references/idle-life.md` for idle motion recipes (breath, blink, sway, flicker, ripple) for things other than a character rig.
+
 ## 1. Rig hierarchy
 
 Build the character as nested SVG groups (or a Canvas draw tree with the same names):

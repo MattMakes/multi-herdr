@@ -182,8 +182,9 @@ The audio phase measures each voice-over file. When a file plus the 0.25 s
 pad is longer than its scene, it sets
 `duration_sec = max(planned, vo + 0.25)`, recomputes every later
 `start_sec` and `meta.duration_sec`, and runs the checker again. Plan
-narration at 2.2 to 2.5 words/s so this change stays small. It does not
-move `rhythm`, `hero_sec` or `payoff_silence_sec`.
+narration at 2.2 to 2.5 words/s so this change stays small. The same step
+moves `rhythm`, `hero_sec`, `payoff_silence_sec` and `allowed_silences` with
+the scenes. A time inside a scene that grew scales with that scene.
 
 ## Hand-off
 

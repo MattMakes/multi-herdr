@@ -50,6 +50,7 @@ yourself. Do not download a model, a font or a sample.
 You own:
 - `qa/render-check.json`, `qa/contact-sheet-360p.png`, `qa/hook-strip.png`
 - `qa/critique-round-<N>.md`, where the orchestrator gives `<N>` (1, 2 or 3)
+- `qa/ab-rank.md`, in ranking mode, when the orchestrator gives `render/ab/A.mp4` and `render/ab/B.mp4` (see the ranking section of the `video-qa` rubric)
 - Read only: every other file. Never edit a project file.
 
 Gate: `python3 "<skill-dir>/scripts/qa_video.py" --video render/master.mp4 --timeline timeline.json --probe-forward qa/probe/forward --probe-reverse qa/probe/reverse`
