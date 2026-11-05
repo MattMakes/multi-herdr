@@ -327,6 +327,8 @@ T-27 (`769dd9cf`): a sandboxed pane reads its own bundle (`additionalDirectories
 
 T-28 (`d22e110d`): a sandboxed `full` pane gets `<state>/skill-bundles` in `denyWrite` and `Edit`/`Write` deny rules, so it writes no bundle with any tool; its `horch spawn` skips the state sweep and writes no stamp.
 
+T-35 (`0b69bb56`): a sandboxed `full` pane reads the roster folders `horch spawn` loads (`$HORCH_TEAMMATES_DIR`, `~/.config/horch/teammates`) through `allowRead` and `additionalDirectories`, and cannot write them (`denyWrite`, `Edit` deny).
+
 **Proposed change (C3).** For `horch_access: report`, do not add the state
 root to `allowRead` or `allowWrite`. With C1 the pane writes nothing there.
 

@@ -657,3 +657,80 @@ to the test HOME. For each of the 5 roles it checks:
 
 Before the fix the test failed for the analyst only. After the fix it
 passes for all 5 roles.
+
+### Re-probe after ticket 35 (a sandboxed `full` pane reads its roster)
+
+**Verdict: fixed.** Date: 2026-11-05. Claude Code 2.1.318, macOS
+(Seatbelt). T-17 live, pane `skill-importer-5`, task
+`20261105-133927-c967a7`: `intake spawn auditor` ran `horch spawn`, which
+exited 1 with `reading /Users/matthewscott/repo/multi-herdr/teammates/_base:
+Operation not permitted (os error 1)`.
+
+#### Cause
+
+The brief carries `teammates_dir`, and the pane gets `HORCH_TEAMMATES_DIR`.
+`overlay_horch_paths` opened only the state root, the ledger folder and the
+sockets to a `full` pane. With `blockReadsOutsideWorkingDirectories`, Bash
+could not read a roster folder outside the pane's working directories.
+
+#### Fix
+
+Commit `0b69bb56`. `overlay_roster_dirs` in
+`crates/horch-core/src/harness/claude.rs` runs for a sandboxed `full`
+pane. For `$HORCH_TEAMMATES_DIR` and `~/.config/horch/teammates`, each when
+it is a folder, it adds:
+
+- `sandbox.filesystem.allowRead` and `permissions.additionalDirectories`
+  (read, ticket 31 rule);
+- `sandbox.filesystem.denyWrite` (Bash cannot write, R6);
+- the deny rule `Edit(//<dir>/**)` (Edit and Write tools). No `Write(...)`
+  rule: it has no effect (T-28 finding).
+
+`LaunchEnv.roster_dir` is the `HORCH_TEAMMATES_DIR` of the agent: the
+briefed value in `child_env`, else the value of the launching process. A
+`report` pane gets nothing new. Tests:
+`a_full_sandboxed_launch_reads_but_does_not_write_its_roster` (red before
+the fix) and `only_a_full_launch_with_a_roster_opens_one`.
+
+#### Probe
+
+The probe teammate `probe-t35` is a copy of `skill-importer` with
+`hidden: true`, `model: sonnet`, `effort: low`, `skills: []`, no
+`system_prompt` and no `spawn_only`. `R` = `~/.local/state/probe-t35-roster`,
+the probe roster (`probe-t35.md` and an empty `_base/`), outside every
+sandbox list of the teammate. Copies of the debug build before and after the
+fix spawned it with `HORCH_TEAMMATES_DIR=R --exact`, outside a ledger run.
+The `horch` in the pane is the installed 0.4.3. The launched `--settings`
+after the fix add `R` to `allowRead`, `denyWrite` and
+`additionalDirectories`, and add `Edit(//<home>/.local/state/probe-t35-roster/**)`.
+
+| # | step | before (`probe-t35-before`) | after (`probe-t35-after`) |
+|---|---|---|---|
+| 1 | `echo $HORCH_TEAMMATES_DIR` | `R` | `R` |
+| 2 | `horch teammates` | exit 1, `reading R/_base: Operation not permitted (os error 1)` | exit 0 |
+| 3 | `horch spawn smoke --exact --no-tile ...` | exit 1, as step 2 | exit 0, `spawned smoke-4` |
+| 4 | Edit `R/probe-t35.md` | not run | denied, `File is in a directory that is denied by your permission settings.` |
+| 5 | Write `R/probe-written.txt` | not run | denied, as step 4 |
+| 6 | `echo probe > R/probe-echoed.txt` | not run | denied by the auto mode classifier |
+| 7 | `horch tell orchestrator ...` | not run | exit 0 |
+| 8 | `horch note ...` | not run | exit 0 |
+| 9 | `horch ledger progress ...` | not run | exit 1, `HORCH_WORKER_ID is not set` (no ledger run, not the sandbox) |
+
+Steps 6 and 9 did not reach the sandbox. A headless `claude -p` run with the
+after pane's launched `--settings` and pre-approved Bash rules checked them
+at the OS layer:
+
+| command | result |
+|---|---|
+| `echo probe > R/headless-echoed.txt` | denied, `operation not permitted`, exit 1 |
+| `horch ledger progress ...` (worker id of `opus-hardening-14`) | exit 0 |
+| `cat R/probe-t35.md` | exit 0 |
+
+After the probe, `R/probe-t35.md` holds its first text and `R` has no probe
+file. Every `horch` command in the pane printed a warning that the
+`skill-intake` watchdog runs another build of horch.
+
+Cost: 2 sonnet low-effort panes, 1 `smoke` pane (no tokens) and 1 short
+`claude -p` sonnet session. Results files:
+`~/.local/state/skill-intake/drafts/probe/t35-before-results.txt` and
+`t35-after-results.txt`.

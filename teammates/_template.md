@@ -339,7 +339,10 @@ settings:
 #   full (below), horch also adds its own state root and task ledger folder to filesystem.allowRead and
 #   allowWrite, and the state root and $HERDR_SOCKET_PATH to
 #   network.allowUnixSockets, from the roots it resolves at launch, so `horch tell`,
-#   `horch done`, `horch ledger` and `horch spawn` work in the pane. Do not
+#   `horch done`, `horch ledger` and `horch spawn` work in the pane. For
+#   `horch spawn`, horch opens $HORCH_TEAMMATES_DIR and
+#   ~/.config/horch/teammates, when they exist, to read only: allowRead, a
+#   working directory, denyWrite and an Edit(//<path>/**) deny. Do not
 #   list those machine paths here. The launch refuses a
 #   host that cannot sandbox. `horch teammates --check` fails a non-claude
 #   agent, a settings file, a value against a forced key, excludedCommands
