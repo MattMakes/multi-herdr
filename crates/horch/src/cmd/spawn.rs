@@ -107,7 +107,11 @@ pub fn spawn(ctx: &RuntimeContext, mut args: SpawnArgs) -> Result<String> {
     let sandboxed = sandboxed(caller.as_ref());
     // The task ledger: when this spawn joins a run, the worker gets a row,
     // and a spawn with no task tells it to claim one.
-    let ledger = super::taskledger_spawn::prepare(ctx, &args)?;
+    let controller_row = controller
+        .as_ref()
+        .and(caller.as_ref())
+        .and_then(|c| c.worker_id.as_deref());
+    let ledger = super::taskledger_spawn::prepare(ctx, &args, controller_row)?;
     if ledger.is_some() && args.task.trim().is_empty() && args.resume.is_none() {
         args.task = super::taskledger_spawn::CLAIM_TASK.to_string();
     }
@@ -155,6 +159,8 @@ struct Caller {
     role: String,
     teammate: Teammate,
     teammates_dir: Option<String>,
+    /// The caller's task-ledger row, from its brief.
+    worker_id: Option<String>,
 }
 
 fn caller(ctx: &RuntimeContext) -> Option<Caller> {
@@ -176,6 +182,7 @@ fn caller(ctx: &RuntimeContext) -> Option<Caller> {
         role,
         teammate: brief.resolved?,
         teammates_dir: brief.teammates_dir,
+        worker_id: brief.worker_id,
     })
 }
 
@@ -718,6 +725,7 @@ mod tests {
                 ..Default::default()
             },
             teammates_dir: Some("/repo/teammates".into()),
+            worker_id: None,
         }
     }
 

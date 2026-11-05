@@ -155,3 +155,196 @@ fn a_worker_spawns_a_role_worker_that_joins_its_ledger_run() {
         );
     }
 }
+
+/// A ledger harness with 1 workspace (`w1`, root pane `w1:p1`) and its own
+/// roster: `ctl` may spawn only `intake-*`, `intake-smoke` and `smoke` start
+/// no agent. No pane runs a command, so every spawned worker stays as the
+/// spawn left it: its role registered, its brief on disk.
+fn roster_harness(label: &str) -> Harness {
+    let mut h = Harness::new(label).with_git();
+    let db = h.root.join("ledger.sqlite3");
+    h.set("HORCH_LEDGER_DB", db.to_string_lossy());
+    h.set("HORCH_NO_WAKE", "1");
+    h.set("HORCH_NO_WATCHDOG", "1");
+    let quota = fixtures().join("quota/all-ok.json");
+    h.set("HORCH_QUOTA_FILE", quota.to_string_lossy());
+    h.set("HORCH_WORKSPACE_ID", "w1");
+    let teammates = h.root.join("teammates");
+    std::fs::create_dir_all(&teammates).unwrap();
+    let smoke = |name: &str, extra: &str| {
+        format!(
+            "---\nname: {name}\nbrief_description: Test-only {name}.\nhidden: true\n\
+             base: fleet-worker\nagent: none\nmodel: none\n{extra}---\nTest-only teammate.\n"
+        )
+    };
+    for (name, extra) in [
+        ("ctl", "spawn_only: [\"intake-*\"]\n"),
+        ("intake-smoke", ""),
+        ("smoke", ""),
+    ] {
+        std::fs::write(teammates.join(format!("{name}.md")), smoke(name, extra)).unwrap();
+    }
+    h.set("HORCH_TEAMMATES_DIR", teammates.to_string_lossy());
+    let mut create = std::process::Command::new(h.bin.join("herdr"));
+    h.seal(&mut create);
+    let o = create
+        .args(["workspace", "create", "--label", label])
+        .output()
+        .unwrap();
+    assert!(o.status.success(), "{}", text(&o));
+    h
+}
+
+/// Spawn `args` from the operator pane `w1:p1`; return the new pane id.
+fn spawn_pane(h: &Harness, args: &[&str]) -> String {
+    let mut all = vec!["spawn"];
+    all.extend_from_slice(args);
+    all.extend_from_slice(&["--from-pane", "w1:p1", "--no-tile"]);
+    let o = h.run(&all);
+    assert!(o.status.success(), "{}", text(&o));
+    String::from_utf8_lossy(&o.stdout)
+        .lines()
+        .last()
+        .expect("spawn prints the pane id")
+        .trim()
+        .to_string()
+}
+
+/// Register `role` on `pane`, as its `horch worker` does when the pane
+/// starts (no pane runs a command here).
+fn register(h: &Harness, role: &str, pane: &str) {
+    use std::io::Write;
+    use std::os::unix::fs::OpenOptionsExt;
+    let path = h.state.join(format!("herdr-orchestration-w1/{role}.id"));
+    let mut f = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(&path)
+        .unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+    f.write_all(pane.as_bytes()).unwrap();
+}
+
+/// Run the `intake spawn` argv for `teammate` from inside pane `pane`, the
+/// way a worker in that pane runs it. No `HORCH_RUN_ID` is set.
+fn spawn_from(h: &Harness, pane: &str, teammate: &str) -> Output {
+    let brief = h.project.join("brief.md");
+    std::fs::write(&brief, "# brief\n").unwrap();
+    let argv = fixture_argv(teammate, &brief.to_string_lossy());
+    let args: Vec<&str> = argv.iter().map(String::as_str).collect();
+    let mut cmd = h.horch(&args);
+    cmd.env("HERDR_PANE_ID", pane);
+    cmd.output().expect("running horch spawn")
+}
+
+fn run_id(h: &Harness) -> String {
+    let o = h.run(&["ledger", "run", "new", "intake-run"]);
+    assert!(o.status.success(), "{}", text(&o));
+    let run = json_of(h, &["ledger", "status", "--json"]);
+    run["run"]["run_id"].as_str().expect("a run id").to_string()
+}
+
+/// The ledger worker rows (kind `worker`) of the active run.
+fn ledger_workers(h: &Harness) -> Vec<Value> {
+    let st = json_of(h, &["ledger", "status", "--json"]);
+    st["workers"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|w| w["worker"].clone())
+        .filter(|w| w["kind"] == "worker")
+        .collect()
+}
+
+fn brief_of(h: &Harness, role: &str) -> Value {
+    let path = h
+        .state
+        .join(format!("herdr-orchestration-w1/{role}.brief.json"));
+    let raw = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+    serde_json::from_str(&raw).expect("the brief is JSON")
+}
+
+/// T-38: a `spawn_only` controller that is a worker of a ledger run spawns
+/// a role with task text, and no one set `HORCH_RUN_ID`: the role has a
+/// worker row in the controller's run, and its brief carries the row id,
+/// which its pane gets as `HORCH_WORKER_ID`.
+#[test]
+fn a_controller_in_a_run_spawns_a_role_that_joins_the_run() {
+    let h = roster_harness("intake-join");
+    let run = run_id(&h);
+    let ctl = spawn_pane(&h, &["ctl", "--exact"]);
+    register(&h, "ctl-1", &ctl);
+    let ctl_row = ledger_workers(&h)
+        .into_iter()
+        .find(|w| w["persona"] == "ctl")
+        .expect("the controller has a worker row");
+
+    let o = spawn_from(&h, &ctl, "intake-smoke");
+    assert!(o.status.success(), "{}", text(&o));
+
+    let row = ledger_workers(&h)
+        .into_iter()
+        .find(|w| w["persona"] == "intake-smoke")
+        .unwrap_or_else(|| panic!("the role has no worker row: {}", text(&o)));
+    assert_eq!(row["run_id"], run.as_str(), "{row}");
+    assert_eq!(row["kind"], "worker", "{row}");
+    assert_ne!(row["worker_id"], ctl_row["worker_id"]);
+    let brief = brief_of(&h, "intake-smoke-1");
+    assert_eq!(brief["worker_id"], row["worker_id"], "{brief}");
+    assert_eq!(brief["controller"], "ctl-1", "{brief}");
+    assert_eq!(
+        brief["task"],
+        "Read and follow ".to_string()
+            + &h.project.join("brief.md").to_string_lossy()
+            + " exactly.",
+        "the role keeps its task text and is not told to claim"
+    );
+}
+
+/// T-38: a controller outside every run spawns its role outside every run,
+/// with exit 0, also while the project has an active run.
+#[test]
+fn a_controller_outside_every_run_spawns_a_role_outside_every_run() {
+    let h = roster_harness("intake-outside");
+    run_id(&h);
+    // Task text: the controller runs outside the active run (#89).
+    let ctl = spawn_pane(&h, &["ctl", "--exact", "import a skill"]);
+    register(&h, "ctl-1", &ctl);
+    assert!(ledger_workers(&h).iter().all(|w| w["persona"] != "ctl"));
+
+    let o = spawn_from(&h, &ctl, "intake-smoke");
+    assert!(o.status.success(), "{}", text(&o));
+    assert!(
+        ledger_workers(&h)
+            .iter()
+            .all(|w| w["persona"] != "intake-smoke"),
+        "the role joined a run: {}",
+        text(&o)
+    );
+    assert!(brief_of(&h, "intake-smoke-1").get("worker_id").is_none());
+}
+
+/// T-38 keeps #89: a run worker without `spawn_only` that spawns a pane
+/// with task text does not pull it into its run.
+#[test]
+fn a_worker_without_spawn_only_spawns_task_text_outside_its_run() {
+    let h = roster_harness("intake-plain");
+    run_id(&h);
+    let plain = spawn_pane(&h, &["smoke", "--exact"]);
+    register(&h, "smoke-1", &plain);
+    assert_eq!(ledger_workers(&h).len(), 1, "the plain worker has a row");
+
+    let o = spawn_from(&h, &plain, "smoke");
+    assert!(o.status.success(), "{}", text(&o));
+    assert_eq!(
+        ledger_workers(&h).len(),
+        1,
+        "the probe joined the run: {}",
+        text(&o)
+    );
+    assert!(
+        String::from_utf8_lossy(&o.stderr).contains("runs outside task-ledger run intake-run"),
+        "{}",
+        text(&o)
+    );
+}
