@@ -464,15 +464,27 @@ async function encodeTarget(target, fps) {
   await encodeFrames(target.framesDir, fps, target.out);
 }
 
-async function renderInBrowser(cdp, opts, target) {
+async function openScene(cdp, opts) {
   const sessionId = await openPage(cdp, opts);
   await (opts.rasterSizes ? installRasterProbe(cdp, sessionId) : null);
   const meta = await loadScene(cdp, sessionId, opts.scene);
   warnMeta(meta, opts);
-  const order = frameList({ ...opts, metaDuration: meta.duration });
+  return { sessionId, meta };
+}
+
+const checkContiguous = (order, target) =>
   check(!target.toMp4 || order.every((f) => f < order.length), "an .mp4 --out needs contiguous frames 0..N-1; write a frames directory instead", UsageError);
+
+function capturePage(cdp, sessionId, opts, target) {
   const clip = { x: 0, y: 0, width: opts.width, height: opts.height, scale: 1 };
-  const page = { cdp, sessionId, fps: opts.fps, clip, framesDir: target.framesDir, subframes: opts.subframes ?? 1 };
+  return { cdp, sessionId, fps: opts.fps, clip, framesDir: target.framesDir, subframes: opts.subframes ?? 1 };
+}
+
+async function renderInBrowser(cdp, opts, target) {
+  const { sessionId, meta } = await openScene(cdp, opts);
+  const order = frameList({ ...opts, metaDuration: meta.duration });
+  checkContiguous(order, target);
+  const page = capturePage(cdp, sessionId, opts, target);
   await captureAll(page, order);
   await (opts.rasterSizes ? measureRasterSizes(page, order, opts.rasterSizes) : null);
   await (target.toMp4 ? encodeTarget(target, opts.fps) : null);
@@ -501,48 +513,64 @@ export async function renderScene(opts) {
 // render samples them: references/raster-sizes.md.
 export const RASTER_STEP_SEC = 0.1;
 
-// Runs in the page before the scene scripts. It keeps the <img> draws of every 2D canvas
-// for the current seek: the first drawImage or clearRect after a seek drops older draws.
+// The probe runs in the page before the scene scripts. It keeps the <img> draws of every 2D
+// canvas for the current seek: the first drawImage or clearRect after a seek drops older draws.
+function canvasDraws(probe, canvas) {
+  const entry = probe.canvases.get(canvas);
+  if (entry?.gen === probe.gen) return entry.draws;
+  const fresh = { gen: probe.gen, draws: [] };
+  probe.canvases.set(canvas, fresh);
+  return fresh.draws;
+}
+
+// drawImage(img, dx, dy), (img, dx, dy, dw, dh) or (img, sx, sy, sw, sh, dx, dy, dw, dh).
+function drawSource(img, rest) {
+  return rest.length === 8 ? [rest[2], rest[3]] : [img.naturalWidth, img.naturalHeight];
+}
+
+function drawDest(rest, source) {
+  const at = { 4: 2, 8: 6 }[rest.length];
+  return at === undefined ? source : [rest[at], rest[at + 1]];
+}
+
+function drawRecord(ctx, img, rest) {
+  const source = drawSource(img, rest).map(Math.abs);
+  const m = ctx.getTransform();
+  const scale = [Math.hypot(m.a, m.b), Math.hypot(m.c, m.d)];
+  const size = drawDest(rest, source).map((v, k) => Math.abs(v) * scale[k]);
+  return { src: img.currentSrc || img.src, natural: source, size };
+}
+
+function recordDraw(probe, ctx, img, rest) {
+  const draws = canvasDraws(probe, ctx.canvas);
+  if (img instanceof HTMLImageElement && img.naturalWidth > 0) draws.push(drawRecord(ctx, img, rest));
+}
+
 function rasterProbe() {
-  const probe = { gen: 0, canvases: new Map() };
-  probe.nextFrame = () => { probe.gen += 1; };
-  const drawsOf = (canvas) => {
-    const entry = probe.canvases.get(canvas);
-    if (entry && entry.gen === probe.gen) return entry.draws;
-    const fresh = { gen: probe.gen, draws: [] };
-    probe.canvases.set(canvas, fresh);
-    return fresh.draws;
-  };
+  const probe = { gen: 0, canvases: new Map(), nextFrame() { this.gen += 1; } };
   const proto = CanvasRenderingContext2D.prototype;
   const { drawImage, clearRect } = proto;
   proto.clearRect = function (...args) {
-    drawsOf(this.canvas);
+    canvasDraws(probe, this.canvas);
     return clearRect.apply(this, args);
   };
   proto.drawImage = function (img, ...rest) {
-    const draws = drawsOf(this.canvas);
-    if (img instanceof HTMLImageElement && img.naturalWidth > 0) {
-      const crop = rest.length === 8;
-      const source = crop ? [rest[2], rest[3]] : [img.naturalWidth, img.naturalHeight];
-      const dest = crop ? [rest[6], rest[7]] : rest.length === 4 ? [rest[2], rest[3]] : source;
-      const m = this.getTransform();
-      const size = [Math.abs(dest[0]) * Math.hypot(m.a, m.b), Math.abs(dest[1]) * Math.hypot(m.c, m.d)];
-      draws.push({ src: img.currentSrc || img.src, natural: source.map(Math.abs), size });
-    }
+    recordDraw(probe, this, img, rest);
     return drawImage.call(this, img, ...rest);
   };
   window.__rasterProbe = probe;
 }
 
-const installRasterProbe = (cdp, sessionId) =>
-  cdp.send("Page.addScriptToEvaluateOnNewDocument", { source: `(${rasterProbe})();` }, sessionId);
+const PROBE_FUNCTIONS = [canvasDraws, drawSource, drawDest, drawRecord, recordDraw, rasterProbe];
+const PROBE_SCRIPT = `(() => {\n${PROBE_FUNCTIONS.map(String).join("\n")}\nrasterProbe();\n})();`;
+const installRasterProbe = (cdp, sessionId) => cdp.send("Page.addScriptToEvaluateOnNewDocument", { source: PROBE_SCRIPT }, sessionId);
 
 // The functions below run in the page (measureScript sends their source). They use only
 // browser globals and each other.
 function rasterName(url) {
   const base = new URL(".", location.href).href;
-  if (url.startsWith(base)) return decodeURIComponent(url.slice(base.length));
-  return url.startsWith("data:") ? `${url.slice(0, 40)}...` : url;
+  const other = url.startsWith("data:") ? `${url.slice(0, 40)}...` : url;
+  return url.startsWith(base) ? decodeURIComponent(url.slice(base.length)) : other;
 }
 
 function isRaster(url) {
