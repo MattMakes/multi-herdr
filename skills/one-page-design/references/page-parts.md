@@ -13,17 +13,17 @@ The parts a page can use, and when each one fits. This is a menu, not a layout. 
 
 ## Picture form by kind of design
 
-| Kind of design | Picture form |
+| What the reader asks | What to draw |
 |---|---|
-| A space or a level | Top-down plan, or isometric tiles and blocks |
-| An object or a building | A picture of the object, with a small plan inset |
-| A journey over time | A map with numbered stops, plus an elapsed-time ruler |
-| A procedure that happens in the world | The world, with a numbered circle at each moment |
-| A group of similar items | Cards that share one layout, each with a small picture |
-| Two attributes crossed | A matrix filled from the top, an x in each empty cell |
-| Items that affect each other | A triangle with an axis on each edge, a ring, or a line |
-| Action frame by frame | A storyboard strip that uses one set of marks |
-| Screen and menu flow (only this) | A flowchart with small screen thumbnails in its boxes |
+| Where is everything in this space or level? | A plan from above, or isometric tiles and blocks |
+| What does this object or building look like? | The object itself, with a small plan in a corner |
+| Where does the trip go, and when? | A map with numbered stops and a ruler of elapsed time |
+| What happens, in order, at which spot? | The world, with a numbered circle at each moment |
+| How do these similar items differ? | Cards with one shared layout, each with a small picture |
+| Which pairs of two attributes exist? | A matrix filled from the top, with an x in each empty cell |
+| How do these items act on each other? | A triangle with one axis on each edge, a ring, or a line |
+| What happens frame by frame? | A storyboard strip drawn with one set of marks |
+| How does one screen or menu lead to the next? (only this) | A flowchart with a small screen thumbnail in each box |
 
 Most pages use two forms together, for example a map with a storyboard strip along the bottom. When no form fits on one surface, the design is probably too complex for one page.
 
@@ -83,4 +83,4 @@ Pale fills with dark outlines, like a printed table mat. One accent colour marks
 
 ## Space for reviewers
 
-A page that people will review keeps open space for hand marks: circles, crossings-out, short red notes.
+When people will review the page, leave some areas empty on purpose. Reviewers fill them with pen: they ring a part, strike one out, or add a short note in red.

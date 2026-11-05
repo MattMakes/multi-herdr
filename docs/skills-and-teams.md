@@ -328,6 +328,10 @@ Claude with no fallback, needs `blender` (`requires: [blender]`) and sets
   builders build, critic reviews at 390, 768 and 1440 px. The "Design work"
   section of the `orchestrate` skill says how.
 - `design-critic` never edits code. It writes its critique to a file.
+- `one-page-design` (research) carries the `one-page-design` skill. It turns
+  a design into one self-contained, printable HTML sheet with the designed
+  thing drawn in the centre. It runs the skill's page checker and looks at
+  the preview image before it reports done.
 - `visual-prototyper` runs on Codex. It cannot take screenshots unless a
   browser tool works in the Codex sandbox, so a Claude teammate screenshots
   for it.

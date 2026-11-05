@@ -1,6 +1,6 @@
 ---
 name: one-page-design
-description: Use when someone asks for a one-page design, or wants a design (game, level, system, feature, building, play) turned into a single sheet - a one-sheet summary, a poster or table-mat version, something to pin on the wall or hand out at a meeting - or says a design document is too long or nobody reads it. Produces one self-contained, printable HTML page in the Stone Librande style - a picture of the designed thing in the centre, short linked text around it. Not for reports, slide decks or dashboards.
+description: Use when the requested output is a one-page design or a one-pager - from a person or from a task or orchestrator ticket that names a one-page design as its deliverable - or when a design (game, level, mission, system, feature, building) must fit on one sheet, be laid out as a poster or a table-mat, be pinned to a wall or handed round at a meeting, or be cut down because its design document is too long and nobody reads it. Makes one self-contained, printable HTML page after Stone Librande - the designed thing drawn in the centre, short text tied to it. Do not use it for reports, slide decks or dashboards.
 ---
 
 # One-page design
@@ -11,9 +11,15 @@ The deliverable is exactly one self-contained HTML file. Its sheet size fits the
 
 ## Scope
 
-Use it for designs that people will read: game systems, levels, missions, worlds, mechanics, product features, spaces, procedures.
+Use this skill when:
 
-Do not use it for status reports, API reference documents, slide decks or dashboards. Those have their own formats.
+- the reader wants a design to keep on a wall or a table and read it there;
+- a design document has grown too long for the people who must read it;
+- a team or fleet task asks for a one-page design as its output.
+
+It fits designs that people read: game systems, levels, missions, worlds, mechanics, product features, spaces and procedures.
+
+Leave it out for slide decks, dashboards, status reports and API reference documents. Each of those has a format of its own.
 
 ## Supporting files
 
@@ -52,15 +58,15 @@ There are two ways.
 - **Commissioned.** Fill in the form in `references/illustrator-request.md` and give it to whatever can make images: an image model, another agent with drawing tools, or a human artist. Embed the returned PNG as a `data:` URI so the page stays one file. Store the filled form next to the image as an HTML comment. If the returned image has any text in it, refuse it and request it again. Never edit the text out. This way suits scenes and objects.
 - **Drawn.** Write inline SVG with `references/drawing-parts.md`. Use this way when no image source is available, or when the picture must be precise and editable: placed maps, matrices, card grids.
 
-On both ways, every label, number, leader line, card and legend sits in SVG or HTML layered over the picture. None of it is drawn into an image.
+Whichever way you choose, the labels, numbers, leader lines, cards and legends all live in SVG or HTML that sits on top of the picture. The image itself carries none of them.
 
 ### 4. Add the text, in three levels
 
-- **Level 1**, legible from across a room: the title and the big labels on the picture (28 pt in the starter).
-- **Level 2**, legible at reading distance: callouts linked to the picture by leader lines or matching numbers, and cards that all share one layout (11 pt or less).
-- **Level 3**, the smallest: short italic parameter lists, and formulas in monospace inside a box (7 pt in the starter).
+- **Level 1**, readable by someone on the far side of the room: only the title and the large labels on the picture use it (28 pt in the starter, class `far`).
+- **Level 2**, legible at reading distance: callouts linked to the picture by leader lines or matching numbers, and cards that all share one layout (11 pt or less, class `near`).
+- **Level 3**, the smallest: short italic parameter lists, and formulas in monospace inside a box (7 pt in the starter, class `fine`).
 
-Inside a callout or card, story text is italic, rule text is upright, and parameters are one small italic line. In the drawing layer, SVG font sizes are in drawing units: at 100 units per inch the floor is about 8.4 units (6 pt). Anything that would need a fourth level is cut.
+Inside a callout or card, story text is italic (`flavor`), rule text is upright (`mechanic`), parameters are one small italic line (`tuning`), and a formula sits in a monospace box (`math`). In the drawing layer, SVG font sizes are in drawing units: at 100 units per inch the floor is about 8.4 units (6 pt). Anything that would need a fourth level is cut.
 
 Draw time and difficulty: rulers, phase dividers, shaded zones, levels stacked down the page. Do not describe them in sentences.
 

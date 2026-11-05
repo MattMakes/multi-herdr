@@ -109,7 +109,7 @@ not permission mode or tool access.
 
 ## The design team
 
-Six more specialists cover visual design. Each carries bundled design skills
+Seven more specialists cover visual design. Each carries bundled design skills
 by name, not by phase, so `--phase` never hands them to another teammate.
 
 | teammate | phase | agent, model, effort | MCP servers | use for |
@@ -120,6 +120,7 @@ by name, not by phase, so `--phase` never hands them to another teammate.
 | `design-system-engineer` | implementation | claude, sonnet, medium | playwright, context7 | tokens, themes, components, brand kit |
 | `motion-engineer` | implementation | claude, opus, medium | playwright, chrome-devtools, context7 | GSAP scroll scenes and transitions |
 | `visual-prototyper` | implementation | codex, gpt-5.6-sol, medium | none | generated images and a static prototype |
+| `one-page-design` | research | claude, opus, medium | none | one printable one-page design sheet (HTML) of a game or feature design, picture first |
 
 `design-critic` denies `Edit` and `NotebookEdit` but keeps `Write` for its one
 critique file. Every builder takes screenshots at 390, 768 and 1440 px before

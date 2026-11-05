@@ -13,82 +13,119 @@ import check_page  # noqa: E402
 
 STARTER = SKILL / "assets" / "starter.html"
 
+# Names from the first build. spec-rewrite-starter-p2 t2: none may remain.
+OLD_NAMES = ("--ink", "--paper", "--rule", "--accent", "--wash-", "--muted",
+             "t1", "t2", "t3", "story", "param", "formula", "title",
+             "callout", "card", "sub", "row", "legend", "outline", "lead",
+             "stamp")
 
-def media_box_inches(pdf_bytes):
-    boxes = re.findall(rb"/MediaBox\s*\[\s*([\d.\s]+)\]", pdf_bytes)
-    return [tuple(round(float(v) / 72, 2) for v in b.split()[2:4])
-            for b in boxes]
+
+def rule_body(css, selector):
+    hit = re.search(r"(?:^|[\s}])" + re.escape(selector) + r"\s*\{([^}]*)\}",
+                    css)
+    return hit.group(1) if hit else None
 
 
-class StarterTests(unittest.TestCase):
+def page_sizes_in_pdf(data):
+    boxes = re.findall(rb"/MediaBox\s*\[\s*([\d.\s]+)\]", data)
+    return [tuple(round(float(v) / 72, 2) for v in box.split()[2:4])
+            for box in boxes]
+
+
+class Starter(unittest.TestCase):
     def setUp(self):
-        self.html = STARTER.read_text(encoding="utf-8")
+        self.text = STARTER.read_text(encoding="utf-8")
+        self.code = re.sub(r"<!--.*?-->", "", self.text, flags=re.S)
+        self.css = re.search(r"<style>(.*)</style>", self.code, re.S).group(1)
 
-    def test_checker_passes(self):  # spec-page-starter t1
-        findings, size, callouts = check_page.check_page(self.html)
-        self.assertEqual(findings, [])
-        self.assertEqual(size, (17.0, 11.0))
-        self.assertEqual(callouts, 0)
+    def test_checker_passes(self):  # spec-page-starter t1, spec-rewrite-starter-p2 t1
+        self.assertEqual(check_page.check_page(self.text), ([], (17.0, 11.0), 0))
 
-    def test_text_level_rules(self):  # spec-page-starter t2
-        html = re.sub(r"<!--.*?-->", "", self.html, flags=re.S)
-        self.assertRegex(html, r"@page\s*\{[^}]*size:\s*var\(--sheet-w\)\s+"
-                               r"var\(--sheet-h\)")
-        self.assertRegex(html, r"@page\s*\{[^}]*margin:\s*0")
-        self.assertRegex(html, r"html,\s*body\s*\{[^}]*overflow:\s*auto")
-        self.assertNotRegex(html, r"(?i)<script|<link")
-        self.assertNotRegex(html, r"(?i)https?://|@import|url\(")
-        sheet = re.search(r'<main class="sheet"[^>]*>', html).group(0)
-        self.assertEqual(sheet, '<main class="sheet">')
+    def test_file_level_rules(self):  # spec-page-starter t2
+        page = rule_body(self.css, "@page")
+        self.assertRegex(page, r"size:\s*var\(--sheet-w\)\s+var\(--sheet-h\)")
+        self.assertRegex(page, r"margin:\s*0")
+        self.assertRegex(rule_body(self.css, "html"), r"overflow:\s*auto")
+        self.assertNotRegex(self.code, r"(?i)<script|<link")
+        self.assertNotRegex(self.code, r"(?i)https?://|@import|url\(")
+        surface = re.search(r'<main class="sheet"[^>]*>', self.code).group(0)
+        self.assertEqual(surface, '<main class="sheet">')
 
-    def test_size_set_only_at_root(self):
-        sizes = re.findall(r"--sheet-[wh]:\s*[\d.]+in", self.html)
-        self.assertEqual(len(sizes), 2)
-        self.assertRegex(self.html, r"\.sheet\s*\{[^}]*width:\s*var\(--sheet-w\)")
-        self.assertRegex(self.html, r"\.sheet\s*\{[^}]*height:\s*var\(--sheet-h\)")
+    def test_size_only_on_root(self):
+        self.assertEqual(len(re.findall(r"--sheet-[wh]:\s*[\d.]+in",
+                                        self.text)), 2)
+        sheet = rule_body(self.css, ".sheet")
+        self.assertIn("width: var(--sheet-w)", sheet)
+        self.assertIn("height: var(--sheet-h)", sheet)
 
-    def test_print_hides_backdrop(self):
-        block = re.search(r"@media print\s*\{(.*?)\n  \}", self.html, re.S)
-        self.assertIsNotNone(block)
-        self.assertIn("box-shadow: none", block.group(1))
-        self.assertIn("padding: 0", block.group(1))
-        self.assertIn("background: none", block.group(1))
+    def test_print_drops_the_desk(self):
+        printed = re.search(r"@media print\s*\{(.*)\}\s*$", self.css, re.S)
+        self.assertIsNotNone(printed)
+        body = printed.group(1)
+        for needed in ("background: none", "padding: 0", "box-shadow: none"):
+            self.assertIn(needed, body)
 
-    def test_text_levels_and_styles(self):
-        self.assertRegex(self.html, r"\.t1\s*\{[^}]*font-size:\s*28pt[^}]*bold")
-        self.assertRegex(self.html, r"\.t2\s*\{[^}]*font-size:\s*11pt")
-        self.assertRegex(self.html, r"\.t3\s*\{[^}]*font-size:\s*7pt")
-        self.assertRegex(self.html, r"\.story\s*\{[^}]*italic")
-        self.assertRegex(self.html, r"\.param\s*\{[^}]*italic")
-        self.assertRegex(self.html, r"\.formula\s*\{[^}]*monospace")
+    def test_levels_and_voices(self):
+        self.assertRegex(rule_body(self.css, ".far"), r"font-size:\s*28pt")
+        self.assertRegex(rule_body(self.css, ".far"), r"font-weight:\s*700")
+        self.assertRegex(rule_body(self.css, ".near"), r"font-size:\s*11pt")
+        self.assertRegex(rule_body(self.css, ".fine"), r"font-size:\s*7pt")
+        self.assertIn("italic", rule_body(self.css, ".flavor"))
+        self.assertIn("normal", rule_body(self.css, ".mechanic"))
+        self.assertIn("italic", rule_body(self.css, ".tuning"))
+        self.assertIn("monospace", rule_body(self.css, ".math"))
+
+    def test_tokens(self):
+        root = rule_body(self.css, ":root")
+        for token in ("--c-text", "--c-sheet", "--c-line", "--c-hot",
+                      "--c-fill-a", "--c-fill-b", "--c-fill-c"):
+            self.assertIn(token + ":", root)
 
     def test_head_comment_and_placeholders(self):
-        head = self.html.split("</head>")[0]
+        head = self.text.split("</head>")[0]
         self.assertIn("<!--", head)
-        self.assertIn("ONE place", head)
-        self.assertRegex(self.html, r'class="title t1"')
-        self.assertIn("CENTRE PICTURE", self.html)
-        self.assertRegex(self.html, r'class="stamp">\w+ · \d{4}-\d{2}-\d{2}<')
+        self.assertIn("only place", head)
+        self.assertIn('class="headline far"', self.text)
+        self.assertIn("before you write any prose", self.text)
+        self.assertRegex(self.text,
+                         r'class="dateline">\w+ · \d{4}-\d{2}-\d{2}<')
 
-    def test_changed_size_prints_at_that_size(self):  # spec-page-starter t3
-        # Static half: the print size reads only the two root properties.
-        resized = self.html.replace("--sheet-w: 17in", "--sheet-w: 30in") \
-                           .replace("--sheet-h: 11in", "--sheet-h: 20in")
-        findings, size, _ = check_page.check_page(resized)
-        self.assertEqual((findings, size), ([], (30.0, 20.0)))
-        # Rendered half: needs a local headless Chrome.
+    def test_old_names_gone(self):  # spec-rewrite-starter-p2 t2
+        for path in SKILL.rglob("*"):
+            if not path.is_file() or path.suffix not in (".md", ".html",
+                                                         ".py"):
+                continue
+            if path.suffix == ".py" and path.name != "check_page.py":
+                continue  # tests use these words as prose, not as names
+            text = path.read_text(encoding="utf-8")
+            for old in OLD_NAMES:
+                if old.startswith("--"):
+                    pattern = re.escape(old)
+                elif path.suffix == ".py":
+                    # In code an old class name would be a string literal.
+                    pattern = r"[\"']" + re.escape(old) + r"[\"']"
+                else:
+                    pattern = (r'class="[^"]*\b' + re.escape(old) + r'\b'
+                               r'|\.' + re.escape(old) + r'\b(?![-.])')
+                hit = re.search(pattern, text)
+                self.assertIsNone(hit, f"old name {old} in {path.name}")
+
+    def test_new_size_prints_at_that_size(self):  # spec-page-starter t3
+        bigger = (self.text.replace("--sheet-w: 17in", "--sheet-w: 30in")
+                  .replace("--sheet-h: 11in", "--sheet-h: 20in"))
+        self.assertEqual(check_page.check_page(bigger), ([], (30.0, 20.0), 0))
         chrome = check_page.find_chrome()
         if chrome is None:
             self.skipTest("no headless Chrome on this machine")
         with tempfile.TemporaryDirectory() as tmp:
-            src = Path(tmp) / "page.html"
-            pdf = Path(tmp) / "page.pdf"
-            src.write_text(resized, encoding="utf-8")
+            source = Path(tmp) / "big.html"
+            pdf = Path(tmp) / "big.pdf"
+            source.write_text(bigger, encoding="utf-8")
             subprocess.run([chrome, "--headless", "--no-pdf-header-footer",
-                            f"--print-to-pdf={pdf}", src.as_uri()],
-                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                           timeout=120, check=True)
-            self.assertEqual(media_box_inches(pdf.read_bytes()), [(30.0, 20.0)])
+                            f"--print-to-pdf={pdf}", source.as_uri()],
+                           stdout=subprocess.DEVNULL,
+                           stderr=subprocess.DEVNULL, timeout=120, check=True)
+            self.assertEqual(page_sizes_in_pdf(pdf.read_bytes()), [(30.0, 20.0)])
 
 
 if __name__ == "__main__":

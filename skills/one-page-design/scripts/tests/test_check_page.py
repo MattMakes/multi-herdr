@@ -1,4 +1,4 @@
-"""Tests for scripts/check_page.py: the static rules and the command line."""
+"""Tests for scripts/check_page.py: each page rule and the command line."""
 
 import contextlib
 import io
@@ -10,342 +10,443 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-SCRIPTS = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(SCRIPTS))
+HERE = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(HERE))
 import check_page  # noqa: E402
 
-SCRIPT = SCRIPTS / "check_page.py"
+CHECKER = HERE / "check_page.py"
 
 
-def page(width="24in", height="16in", head="", body="", sheet_attrs="",
-         root=True):
-    """A minimal valid page; each test changes one part of it."""
-    root_rule = (f":root {{ --sheet-w: {width}; --sheet-h: {height}; }}"
-                 if root else "")
-    return f"""<!doctype html>
-<html><head><style>
-{root_rule}
-@page {{ size: var(--sheet-w) var(--sheet-h); margin: 0; }}
-.sheet {{ width: var(--sheet-w); height: var(--sheet-h); }}
-p {{ font-size: 9pt; }}
-{head}
-</style></head><body>
-<main class="sheet"{sheet_attrs}>
-<h1 class="title">The point of the page</h1>
-<p>One paragraph.</p>
-{body}
-<p class="stamp">Draft 2026-01-01</p>
-</main></body></html>"""
+def sheet_html(size=("24in", "16in"), css="", inside="", surface_style=None,
+               root_rule=True):
+    """A small page that passes every rule. A test changes one piece."""
+    root = (f":root {{ --sheet-h: {size[1]}; --sheet-w: {size[0]}; }}"
+            if root_rule else "")
+    style = f' style="{surface_style}"' if surface_style is not None else ""
+    return "\n".join([
+        "<!DOCTYPE html>",
+        '<html lang="en">',
+        "<head>",
+        '<meta charset="utf-8">',
+        "<style>",
+        root,
+        ".sheet { height: var(--sheet-h); width: var(--sheet-w); }",
+        "@page { margin: 0; size: var(--sheet-w) var(--sheet-h); }",
+        ".body-copy { font-size: 10pt; }",
+        css,
+        "</style>",
+        "</head>",
+        "<body>",
+        f'<main class="sheet"{style}>',
+        '  <h1 class="headline far">Ferry routes meet at the lighthouse</h1>',
+        '  <section class="body-copy">Three boats, one dock.</section>',
+        inside,
+        '  <div class="dateline">Proposal 2026-03-14</div>',
+        "</main>",
+        "</body>",
+        "</html>",
+    ])
 
 
-def layer(view_box, inner):
-    return (f'<svg viewBox="{view_box}" style="position:absolute;inset:0">'
-            f"{inner}</svg>")
+def svg_layer(box, content, where="position:absolute;inset:0"):
+    return f'<svg style="{where}" viewBox="{box}">{content}</svg>'
 
 
-def has(findings, *words):
-    return [f for f in findings if all(w.lower() in f.lower() for w in words)]
+def matching(findings, *needles):
+    """The findings that contain every needle, ignoring case."""
+    return [f for f in findings
+            if all(n.lower() in f.lower() for n in needles)]
 
 
-class RuleTests(unittest.TestCase):
+def check(html, **kw):
+    return check_page.check_page(html, **kw)
+
+
+class SizeRules(unittest.TestCase):
     def test_smallest_valid_page(self):  # spec-page-checks t1
-        findings, size, callouts = check_page.check_page(page())
-        self.assertEqual(findings, [])
+        self.assertEqual(check(sheet_html()), ([], (24.0, 16.0), 0))
+
+    def test_metric_units_and_last_root_rule(self):
+        html = sheet_html(css=":root { --sheet-h: 254mm; --sheet-w: 45.72cm; }")
+        _, size, _ = check(html)
+        self.assertAlmostEqual(size[0], 18.0)
+        self.assertAlmostEqual(size[1], 10.0)
+
+    def test_pixel_size_is_not_accepted(self):
+        findings, size, _ = check(sheet_html(("1800px", "1200px")))
+        self.assertIsNone(size)
+        self.assertTrue(matching(findings, "not declared"))
+
+    def test_size_only_on_surface(self):  # spec-page-checks t3
+        html = sheet_html(root_rule=False,
+                          surface_style="--sheet-w:24in;--sheet-h:16in")
+        findings, size, _ = check(html)
+        self.assertIsNone(size)
+        self.assertEqual(len(matching(findings, "only inline", ":root")), 1)
+
+    def test_two_different_sizes(self):  # spec-page-checks t4
+        html = sheet_html(surface_style="--sheet-w: 22in; --sheet-h: 14in")
+        findings, size, _ = check(html)
         self.assertEqual(size, (24.0, 16.0))
-        self.assertEqual(callouts, 0)
+        self.assertTrue(matching(findings, "conflicting", "24 x 16",
+                                 "22 x 14"))
 
-    def test_missing_sheet(self):
-        html = page().replace('<main class="sheet">', "<main>")
-        findings, size, _ = check_page.check_page(html)
-        self.assertTrue(has(findings, "no sheet element"))
-        self.assertIsNone(size)
-
-    def test_units_converted_and_last_root_rule_wins(self):
-        html = page(head=":root { --sheet-w: 508mm; --sheet-h: 30.48cm; }")
-        _, size, _ = check_page.check_page(html)
-        self.assertAlmostEqual(size[0], 20.0)
-        self.assertAlmostEqual(size[1], 12.0)
-
-    def test_other_units_not_accepted(self):
-        findings, size, _ = check_page.check_page(page("2400px", "1600px"))
-        self.assertIsNone(size)
-        self.assertTrue(has(findings, "not declared"))
-
-    def test_hidden_content(self):  # spec-page-checks t2
-        body = ('<a href="appendix.html">more</a><details><summary>x</summary>'
-                '</details><section style="Display : NONE">s</section>'
-                '<p hidden>h</p>')
-        findings, _, _ = check_page.check_page(page(body=body))
-        self.assertTrue(has(findings, "appendix.html"))
-        self.assertTrue(has(findings, "details", "collapsible"))
-        self.assertTrue(has(findings, "<section>", "display: none"))
-        self.assertTrue(has(findings, "<p>", "hidden attribute"))
-
-    def test_empty_href_is_not_a_link(self):
-        findings, _, _ = check_page.check_page(page(body='<a href=" ">x</a>'))
-        self.assertEqual(findings, [])
-
-    def test_inline_visibility_hidden_and_iframe(self):
-        body = ('<span style="visibility:hidden">v</span>'
-                '<iframe src="inner.html"></iframe>')
-        findings, _, _ = check_page.check_page(page(body=body))
-        self.assertTrue(has(findings, "<span>", "visibility"))
-        self.assertTrue(has(findings, "iframe", "another page"))
-
-    def test_display_none_in_style_block(self):
-        findings, _, _ = check_page.check_page(page(head=".x { display:none }"))
-        self.assertTrue(has(findings, "style block", "display: none"))
-
-    def test_size_only_on_sheet(self):  # spec-page-checks t3
-        html = page(root=False,
-                    sheet_attrs=' style="--sheet-w: 24in; --sheet-h: 16in"')
-        findings, size, _ = check_page.check_page(html)
-        self.assertIsNone(size)
-        self.assertTrue(has(findings, "only inline", ":root"))
-
-    def test_conflicting_sizes(self):  # spec-page-checks t4
-        html = page(sheet_attrs=' style="--sheet-w: 22in; --sheet-h: 14in"')
-        findings, size, _ = check_page.check_page(html)
-        self.assertEqual(size, (24.0, 16.0))
-        self.assertTrue(has(findings, "conflicting", "24 x 16", "22 x 14"))
-
-    def test_equal_sizes_no_finding(self):
-        html = page(sheet_attrs=' style="--sheet-w: 24in; --sheet-h: 16in"')
-        findings, _, _ = check_page.check_page(html)
-        self.assertEqual(findings, [])
-
-    def test_hover(self):  # spec-page-checks t5
-        findings, _, _ = check_page.check_page(
-            page(head=".note:hover .more { display: block; }"))
-        self.assertEqual(len(findings), 1)
-        self.assertTrue(has(findings, ":hover"))
-
-    def test_small_text(self):  # spec-page-checks t6
-        html = page(head=".tiny { font-size: 3pt; }",
-                    body='<p style="font-size: 6px">x</p>')
-        findings, _, _ = check_page.check_page(html)
-        self.assertTrue(has(findings, "3pt", "3.0 pt", "style block", "6 pt"))
-        self.assertTrue(has(findings, "6px", "4.5 pt", "inline on <p>"))
-
-    def test_text_at_minimum_passes(self):
-        html = page(head=".fine { font-size: 6pt; } .px { font-size: 8px; }")
-        findings, _, _ = check_page.check_page(html)
-        self.assertEqual(findings, [])
-
-    def test_leading_decimal_and_shorthand(self):  # spec-page-checks t7
-        html = page(head=".a { font-size: .3pt; } "
-                         ".b { font: bold 4px/1.3 monospace; }")
-        findings, _, _ = check_page.check_page(html)
-        self.assertTrue(has(findings, ".3pt"))
-        self.assertTrue(has(findings, "4px"))
-
-    def test_relative_unit(self):  # spec-page-checks t8
-        findings, _, _ = check_page.check_page(
-            page(head=".a { font-size: 0.9em; }"))
-        self.assertTrue(has(findings, "0.9em", "cannot be verified for print"))
-
-    def test_two_external_resources(self):  # spec-page-checks t9
-        body = ('<link rel="stylesheet" href="https://example.com/a.css">'
-                '<img src="//cdn.example.com/b.png" alt="">'
-                '<img src="data:image/png;base64,AAAA" alt="">')
-        findings, _, _ = check_page.check_page(page(body=body))
-        self.assertEqual(len(has(findings, "external resource")), 2)
-        self.assertTrue(has(findings, "<link>", "https://example.com/a.css"))
-        self.assertTrue(has(findings, "<img>", "//cdn.example.com/b.png"))
+    def test_same_size_twice_is_fine(self):
+        html = sheet_html(surface_style="--sheet-w: 24in; --sheet-h: 16in")
+        self.assertEqual(check(html)[0], [])
 
     def test_too_large(self):  # spec-page-checks t10, spec-page-contract t4
-        findings, size, _ = check_page.check_page(page("48in", "16in"))
+        findings, size, _ = check(sheet_html(("48in", "16in")))
         self.assertEqual(size, (48.0, 16.0))
-        self.assertTrue(has(findings, "44", "plotter"))
+        self.assertTrue(matching(findings, "44", "plotter"))
 
-    def test_max_side_option(self):
-        findings, _, _ = check_page.check_page(page(), max_in=20)
-        self.assertTrue(has(findings, "20 in", "plotter"))
+    def test_longest_side_parameter(self):
+        findings, _, _ = check(sheet_html(), longest_side=20)
+        self.assertTrue(matching(findings, "20 in", "plotter"))
 
+
+class SurfaceRules(unittest.TestCase):
+    def test_no_surface_size_at_root(self):  # spec-checker-rule-fixes-p2 t1
+        html = sheet_html(("48in", "10in")).replace('class="sheet"', "")
+        findings, size, _ = check(html)
+        self.assertEqual(size, (48.0, 10.0))
+        self.assertEqual(len(findings), 2, findings)
+        self.assertTrue(matching(findings, "no sheet element"))
+        self.assertTrue(matching(findings, "44 in", "plotter"))
+
+    def test_no_surface_no_size(self):  # spec-checker-rule-fixes-p2 t2
+        findings, size, _ = check("<html><body><p>Just a note.</p>"
+                                  "</body></html>")
+        self.assertIsNone(size)
+        self.assertEqual(len(findings), 2, findings)
+        self.assertTrue(matching(findings, "no sheet element"))
+        self.assertTrue(matching(findings, "not declared", ":root"))
+
+    def test_size_on_html_element_only(self):  # spec-checker-rule-fixes-p2 t3
+        html = sheet_html(root_rule=False,
+                          css="html { --sheet-w: 18in; --sheet-h: 9in; }")
+        findings, size, _ = check(html)
+        self.assertIsNone(size)
+        self.assertEqual(len(findings), 1, findings)
+        self.assertTrue(matching(findings, "not declared", ":root"))
+
+    def test_no_surface_layer_scale_still_checked(self):
+        html = sheet_html(inside=svg_layer("0 0 1200 800", "")) \
+            .replace('class="sheet"', 'class="paper"')
+        findings, _, _ = check(html)
+        self.assertTrue(matching(findings, "1200 x 800", "2400 x 1600"))
+
+
+class HiddenContentRules(unittest.TestCase):
+    def test_hidden_content(self):  # spec-page-checks t2
+        inside = ('<a href="appendix.html">see appendix</a>'
+                  '<details><summary>Tide tables</summary>low, high</details>'
+                  '<aside style="DISPLAY:  None">crew list</aside>'
+                  '<span hidden>spare text</span>')
+        findings, _, _ = check(sheet_html(inside=inside))
+        self.assertTrue(matching(findings, "appendix.html"))
+        self.assertTrue(matching(findings, "<details>", "collapsible"))
+        self.assertTrue(matching(findings, "<aside>", "display: none"))
+        self.assertTrue(matching(findings, "<span>", "hidden attribute"))
+        self.assertEqual(len(findings), 4, findings)
+
+    def test_blank_href_is_not_a_link(self):
+        self.assertEqual(check(sheet_html(inside='<a href="  ">x</a>'))[0], [])
+
+    def test_inline_visibility_and_iframe(self):
+        inside = ('<em style="Visibility : Hidden">ghost</em>'
+                  '<iframe src="harbour-map.html"></iframe>')
+        findings, _, _ = check(sheet_html(inside=inside))
+        self.assertTrue(matching(findings, "<em>", "visibility"))
+        self.assertTrue(matching(findings, "iframe", "another page"))
+
+    def test_display_none_in_style_block(self):
+        findings, _, _ = check(sheet_html(css=".spare { display: none; }"))
+        self.assertTrue(matching(findings, "style block", "display: none"))
+
+    def test_hover(self):  # spec-page-checks t5
+        findings, _, _ = check(
+            sheet_html(css=".dock:hover .timetable { display: block; }"))
+        self.assertEqual(len(findings), 1, findings)
+        self.assertTrue(matching(findings, ":hover"))
+
+    def test_repeats_give_one_finding(self):  # spec-checker-rule-fixes-p2 t4
+        css = (".buoy:hover { color: red; } .pier:hover { color: blue; }"
+               " .old { display: none; } .older { display:none }")
+        findings, _, _ = check(sheet_html(css=css))
+        self.assertEqual(len(matching(findings, ":hover")), 1)
+        self.assertEqual(len(matching(findings, "style block",
+                                      "display: none")), 1)
+        self.assertEqual(len(findings), 2, findings)
+
+    def test_inline_findings_stay_per_element(self):
+        inside = '<b style="display:none">a</b><i style="display:none">b</i>'
+        findings, _, _ = check(sheet_html(inside=inside))
+        self.assertEqual(len(matching(findings, "inline display: none")), 2)
+
+    def test_visibility_in_style_block(self):  # spec-checker-rule-fixes-p2 t5
+        findings, _, _ = check(sheet_html(css=".dimmed { visibility: hidden; }"))
+        self.assertEqual(findings, [])
+
+
+class ExternalRules(unittest.TestCase):
+    def test_two_external_resources(self):  # spec-page-checks t9
+        inside = ('<link href="https://styles.example.org/harbour.css" '
+                  'rel="stylesheet">'
+                  '<img alt="" src="//pics.example.net/boat.png">'
+                  '<img alt="" src="data:image/png;base64,iVBOR">')
+        findings, _, _ = check(sheet_html(inside=inside))
+        self.assertEqual(len(matching(findings, "external resource")), 2)
+        self.assertTrue(matching(findings, "<link>",
+                                 "https://styles.example.org/harbour.css"))
+        self.assertTrue(matching(findings, "<img>",
+                                 "//pics.example.net/boat.png"))
+
+
+class TextSizeRules(unittest.TestCase):
+    def test_small_text(self):  # spec-page-checks t6
+        html = sheet_html(css=".footnote { font-size: 3pt; }",
+                          inside='<small style="font-size:6px">tiny</small>')
+        findings, _, _ = check(html)
+        self.assertTrue(matching(findings, "3pt", "3.0 pt", "style block",
+                                 "6 pt"))
+        self.assertTrue(matching(findings, "6px", "4.5 pt", "inline on <small>"))
+
+    def test_at_the_minimum(self):
+        html = sheet_html(css=".a { font-size: 6pt } .b { font-size: 8px }")
+        self.assertEqual(check(html)[0], [])
+
+    def test_leading_point_and_shorthand(self):  # spec-page-checks t7
+        html = sheet_html(css=".a { font-size: .3pt; } "
+                              ".b { font: bold 4px/1.3 monospace; }")
+        findings, _, _ = check(html)
+        self.assertTrue(matching(findings, ".3pt"))
+        self.assertTrue(matching(findings, "4px"))
+
+    def test_relative_unit(self):  # spec-page-checks t8
+        findings, _, _ = check(sheet_html(css=".a { font-size: 0.9em; }"))
+        self.assertTrue(matching(findings, "0.9em",
+                                 "cannot be verified for print"))
+
+    def test_relative_inline_on_svg_still_found(self):
+        svg = svg_layer("0 0 2400 1600", '<text style="font-size:2rem">r</text>')
+        findings, _, _ = check(sheet_html(inside=svg))
+        self.assertTrue(matching(findings, "2rem", "cannot be verified"))
+
+    def test_min_pt_parameter(self):
+        findings, _, _ = check(sheet_html(), min_pt=12)
+        self.assertTrue(matching(findings, "10pt", "12 pt"))
+
+
+class DrawingLayerRules(unittest.TestCase):
     def test_svg_text_too_small(self):  # spec-page-checks t11
-        svg = layer("0 0 2400 1600", '<text font-size="6">a</text>')
-        findings, _, _ = check_page.check_page(page(body=svg))
-        hits = has(findings, "svg text below the minimum", "font-size 6",
-                   "4.3 pt", "100 units per inch", "<text>")
-        self.assertEqual(len(hits), 1)
-        self.assertEqual(len(findings), 1)
+        svg = svg_layer("0 0 2400 1600", '<text font-size="6">a</text>')
+        findings, _, _ = check(sheet_html(inside=svg))
+        self.assertEqual(len(findings), 1, findings)
+        self.assertTrue(matching(findings, "svg text below the minimum",
+                                 "font-size 6", "4.3 pt",
+                                 "100 units per inch", "<text>"))
 
     def test_svg_text_at_minimum(self):  # spec-page-checks t12
-        svg = layer("0 0 2400 1600", '<text font-size="9">a</text>'
-                                     '<text style="font-size: 9">b</text>')
-        findings, _, _ = check_page.check_page(page(body=svg))
-        self.assertEqual(findings, [])
+        svg = svg_layer("0 0 2400 1600", '<text font-size="9">a</text>'
+                                         '<text style="font-size: 9">b</text>')
+        self.assertEqual(check(sheet_html(inside=svg))[0], [])
 
     def test_svg_inline_unitless_too_small(self):
-        svg = layer("0 0 2400 1600", '<text style="font-size:5">b</text>')
-        findings, _, _ = check_page.check_page(page(body=svg))
-        self.assertTrue(has(findings, "svg text below", "font-size 5"))
+        svg = svg_layer("0 0 2400 1600", '<tspan style="font-size:5">b</tspan>')
+        findings, _, _ = check(sheet_html(inside=svg))
+        self.assertTrue(matching(findings, "svg text below", "font-size 5",
+                                 "<tspan>"))
 
     def test_layer_wrong_scale(self):  # spec-page-checks t13
-        svg = layer("0 0 4800 3200", '<text font-size="12">a</text>')
-        findings, _, _ = check_page.check_page(page(body=svg))
-        self.assertTrue(has(findings, "4800 x 3200", "2400 x 1600"))
-        self.assertTrue(has(findings, "svg text below", "font-size 12",
-                            "4.3 pt", "200 units per inch"))
+        svg = svg_layer("0 0 4800 3200", '<text font-size="12">a</text>')
+        findings, _, _ = check(sheet_html(inside=svg))
+        self.assertTrue(matching(findings, "4800 x 3200", "2400 x 1600"))
+        self.assertTrue(matching(findings, "svg text below", "font-size 12",
+                                 "4.3 pt", "200 units per inch"))
 
-    def test_layer_viewbox_for_30_by_20(self):  # spec-drawing-parts t1
-        svg = layer("0 0 3000 2000", '<text font-size="9">a</text>')
-        findings, size, _ = check_page.check_page(
-            page("30in", "20in", body=svg))
-        self.assertEqual(size, (30.0, 20.0))
-        self.assertEqual(findings, [])
+    def test_view_box_for_30_by_20(self):  # spec-drawing-parts t1
+        svg = svg_layer("0 0 3000 2000", '<text font-size="9">a</text>')
+        self.assertEqual(check(sheet_html(("30in", "20in"), inside=svg)),
+                         ([], (30.0, 20.0), 0))
 
     def test_fixed_width_svg_is_not_a_layer(self):
-        svg = ('<svg viewBox="0 0 100 100" width="200">'
+        svg = ('<svg width="300" viewBox="0 0 50 50">'
                '<text font-size="9">a</text></svg>')
-        findings, _, _ = check_page.check_page(page(body=svg))
-        self.assertEqual(findings, [])
+        self.assertEqual(check(sheet_html(inside=svg))[0], [])
 
-    def test_nested_layer_used_when_none_direct(self):
-        svg = '<div>' + layer("0 0 4800 3200", "") + '</div>'
-        findings, _, _ = check_page.check_page(page(body=svg))
-        self.assertTrue(has(findings, "4800 x 3200"))
+    def test_px_attribute_checked_as_text(self):
+        svg = svg_layer("0 0 2400 1600", '<text font-size="7px">a</text>')
+        findings, _, _ = check(sheet_html(inside=svg))
+        self.assertTrue(matching(findings, "7px", "5.2 pt"))
 
-    def test_svg_attribute_with_px(self):
-        svg = layer("0 0 2400 1600", '<text font-size="7px">a</text>')
-        findings, _, _ = check_page.check_page(page(body=svg))
-        self.assertTrue(has(findings, "7px", "5.2 pt"))
+    def test_first_candidate_inside_a_div(self):  # spec-checker-rule-fixes-p2 t6
+        first = ('<div class="inset">'
+                 + svg_layer("0 0 4800 2400", '<text font-size="10">a</text>')
+                 + "</div>")
+        second = svg_layer("0 0 1600 800", "")
+        findings, _, _ = check(sheet_html(("16in", "8in"),
+                                          inside=first + second))
+        self.assertEqual(len(findings), 2, findings)
+        self.assertTrue(matching(findings, "4800 x 2400", "1600 x 800"))
+        self.assertTrue(matching(findings, "svg text below", "font-size 10",
+                                 "2.4 pt", "300 units per inch"))
 
+    def test_later_nested_candidate_is_not_a_layer(self):
+        first = svg_layer("0 0 2400 1600", "")
+        later = '<div>' + svg_layer("0 0 900 900", "") + '</div>'
+        self.assertEqual(check(sheet_html(inside=first + later))[0], [])
+
+    def test_relative_svg_attribute(self):  # spec-checker-rule-fixes-p2 t7
+        svg = svg_layer("0 0 2400 1600", '<text font-size="150%">a</text>')
+        self.assertEqual(check(sheet_html(inside=svg))[0], [])
+
+
+class CalloutRules(unittest.TestCase):
     def test_callout_limit(self):  # spec-page-checks t14, spec-page-contract t1
-        nine = '<div class="callout left">c</div>' * 9
-        findings, _, callouts = check_page.check_page(page(body=nine))
-        self.assertEqual(callouts, 9)
-        self.assertEqual(len(has(findings, "9 callouts", "limit of 8")), 1)
-        eight = '<div class="left callout">c</div>' * 8
-        findings, _, callouts = check_page.check_page(page(body=eight))
-        self.assertEqual(callouts, 8)
-        self.assertEqual(findings, [])
+        nine = '<div class="note west">n</div>' * 9
+        findings, _, count = check(sheet_html(inside=nine))
+        self.assertEqual(count, 9)
+        self.assertEqual(len(matching(findings, "9 callouts", "limit of 8")), 1)
+        eight = '<div class="east note">n</div>' * 8
+        self.assertEqual(check(sheet_html(inside=eight)),
+                         ([], (24.0, 16.0), 8))
 
 
-class CommandTests(unittest.TestCase):
+class CommandLine(unittest.TestCase):
     def setUp(self):
-        self.tmp = tempfile.TemporaryDirectory()
-        self.dir = Path(self.tmp.name)
+        self._tmp = tempfile.TemporaryDirectory()
+        self.folder = Path(self._tmp.name)
 
     def tearDown(self):
-        self.tmp.cleanup()
+        self._tmp.cleanup()
 
-    def write(self, html, name="page.html"):
-        path = self.dir / name
-        path.write_text(html, encoding="utf-8")
-        return path
+    def save(self, text, name="design.html"):
+        target = self.folder / name
+        target.write_text(text, encoding="utf-8")
+        return target
 
-    def run_cli(self, *args):
-        env = dict(os.environ, PYTHONDONTWRITEBYTECODE="1")
-        return subprocess.run([sys.executable, str(SCRIPT), *map(str, args)],
+    def invoke(self, *argv):
+        env = {**os.environ, "PYTHONDONTWRITEBYTECODE": "1"}
+        return subprocess.run([sys.executable, str(CHECKER)]
+                              + [str(a) for a in argv],
                               capture_output=True, text=True, env=env,
                               timeout=60)
 
     def test_clean_page(self):  # spec-checker-command t1
-        r = self.run_cli(self.write(page()))
-        self.assertEqual(r.returncode, 0, r.stdout)
-        self.assertEqual(r.stdout.splitlines(),
+        done = self.invoke(self.save(sheet_html()))
+        self.assertEqual(done.returncode, 0, done.stdout)
+        self.assertEqual(done.stdout.splitlines(),
                          ["callouts: 0", "size: 24.0 x 16.0 in"])
 
     def test_findings_set_exit_status(self):  # spec-checker-command t2
-        r = self.run_cli(self.write(page("48in", "16in")))
-        self.assertEqual(r.returncode, 1)
-        lines = r.stdout.splitlines()
-        self.assertTrue(lines[0].startswith("- "))
-        self.assertEqual(lines[-2:], ["callouts: 0", "size: 48.0 x 16.0 in"])
+        done = self.invoke(self.save(sheet_html(("48in", "16in"))))
+        self.assertEqual(done.returncode, 1)
+        out = done.stdout.splitlines()
+        self.assertTrue(out[0].startswith("- "))
+        self.assertEqual(out[-2:], ["callouts: 0", "size: 48.0 x 16.0 in"])
 
     def test_callouts_at_limit(self):  # spec-checker-command t3
-        body = '<div class="callout">c</div>' * 8
-        r = self.run_cli(self.write(page(body=body)))
-        self.assertEqual(r.returncode, 0)
-        self.assertIn("callouts: 8", r.stdout.splitlines())
+        done = self.invoke(self.save(sheet_html(
+            inside='<p class="note">n</p>' * 8)))
+        self.assertEqual(done.returncode, 0)
+        self.assertIn("callouts: 8", done.stdout.splitlines())
 
     def test_callouts_over_limit(self):  # spec-checker-command t4
-        body = '<div class="callout">c</div>' * 9
-        r = self.run_cli(self.write(page(body=body)))
-        self.assertEqual(r.returncode, 1)
-        self.assertIn("callouts: 9", r.stdout.splitlines())
-        self.assertTrue(any(l.startswith("- ") and "limit of 8" in l
-                            for l in r.stdout.splitlines()))
+        done = self.invoke(self.save(sheet_html(
+            inside='<p class="note">n</p>' * 9)))
+        self.assertEqual(done.returncode, 1)
+        out = done.stdout.splitlines()
+        self.assertIn("callouts: 9", out)
+        self.assertTrue([l for l in out
+                         if l.startswith("- ") and "limit of 8" in l])
 
-    def test_no_size_line_when_unknown(self):
-        r = self.run_cli(self.write(page(root=False)))
-        self.assertEqual(r.returncode, 1)
-        self.assertFalse(any(l.startswith("size:")
-                             for l in r.stdout.splitlines()))
-        self.assertIn("callouts: 0", r.stdout.splitlines())
+    def test_size_line_left_out_when_unknown(self):
+        done = self.invoke(self.save(sheet_html(root_rule=False)))
+        self.assertEqual(done.returncode, 1)
+        out = done.stdout.splitlines()
+        self.assertFalse([l for l in out if l.startswith("size:")])
+        self.assertIn("callouts: 0", out)
 
     def test_min_pt_option(self):
-        r = self.run_cli(self.write(page()), "--min-pt", "10")
-        self.assertEqual(r.returncode, 1)
-        self.assertIn("9pt", r.stdout)
+        done = self.invoke(self.save(sheet_html()), "--min-pt", "12")
+        self.assertEqual(done.returncode, 1)
+        self.assertIn("10pt", done.stdout)
+
+    def test_longest_side_option(self):
+        done = self.invoke(self.save(sheet_html()), "--longest-side", "20")
+        self.assertEqual(done.returncode, 1)
+        self.assertIn("plotter", done.stdout)
 
     def test_file_not_found(self):  # spec-checker-command t5
-        r = self.run_cli(self.dir / "missing.html")
-        self.assertEqual(r.returncode, 2)
-        self.assertTrue(r.stderr.startswith("check_page.py: "))
-        self.assertEqual(r.stdout, "")
+        done = self.invoke(self.folder / "absent.html")
+        self.assertEqual(done.returncode, 2)
+        self.assertTrue(done.stderr.startswith("check_page.py: "))
+        self.assertEqual(done.stdout, "")
 
     def test_bad_arguments(self):
-        r = self.run_cli(self.write(page()), "--min-pt", "small")
-        self.assertEqual(r.returncode, 2)
-        self.assertEqual(self.run_cli().returncode, 2)
+        self.assertEqual(self.invoke(self.save(sheet_html()), "--min-pt",
+                                     "tiny").returncode, 2)
+        self.assertEqual(self.invoke().returncode, 2)
 
     def test_preview_without_chrome(self):  # spec-checker-command t6
-        path = self.write(page())
-        out = io.StringIO()
+        target = self.save(sheet_html())
+        buffer = io.StringIO()
         with mock.patch.object(check_page, "find_chrome", return_value=None), \
-                contextlib.redirect_stdout(out):
-            code = check_page.main([str(path), "--preview",
-                                    str(self.dir / "p.png")])
-        self.assertEqual(code, 0)
-        lines = out.getvalue().splitlines()
-        self.assertIn("skipped", lines[-1])
-        self.assertIn("no headless Chrome", lines[-1])
+                contextlib.redirect_stdout(buffer):
+            status = check_page.main([str(target), "--preview",
+                                      str(self.folder / "shot.png")])
+        self.assertEqual(status, 0)
+        last = buffer.getvalue().splitlines()[-1]
+        self.assertIn("skipped", last)
+        self.assertIn("no headless Chrome", last)
 
-    def test_preview_runs_chrome_with_window_size(self):
-        path = self.write(page())
-        png = self.dir / "p.png"
+    def test_preview_command_and_window(self):
+        target = self.save(sheet_html())
+        shot = self.folder / "shot.png"
+        seen = {}
 
-        def fake_run(cmd, **kwargs):
-            self.assertIs(kwargs["stdout"], subprocess.DEVNULL)
-            self.assertIs(kwargs["stderr"], subprocess.DEVNULL)
-            png.write_bytes(b"png")
-            fake_run.cmd = cmd
+        def pretend_chrome(argv, **options):
+            self.assertIs(options["stdout"], subprocess.DEVNULL)
+            self.assertIs(options["stderr"], subprocess.DEVNULL)
+            seen["argv"] = argv
+            shot.write_bytes(b"\x89PNG")
 
-        out = io.StringIO()
+        buffer = io.StringIO()
         with mock.patch.object(check_page, "find_chrome",
-                               return_value="/opt/chrome"), \
-                mock.patch.object(check_page.subprocess, "run", fake_run), \
-                contextlib.redirect_stdout(out):
-            code = check_page.main([str(path), "--min-pt", "10",
-                                    "--preview", str(png)])
-        self.assertEqual(code, 1)  # the preview never changes the status
-        cmd = fake_run.cmd
-        self.assertIn("--headless", cmd)
-        self.assertIn("--hide-scrollbars", cmd)
-        self.assertIn("--window-size=2400,1632", cmd)  # (24+1)*96, (16+1)*96
-        self.assertIn(f"--screenshot={png.resolve()}", cmd)
-        self.assertEqual(out.getvalue().splitlines()[-1],
-                         f"preview: {png.resolve()}")
-
-    def test_preview_default_size_when_unknown(self):
-        path = self.write(page(root=False))
-        cmds = []
-        with mock.patch.object(check_page, "find_chrome",
-                               return_value="/opt/chrome"), \
+                               return_value="/usr/local/bin/chromium"), \
                 mock.patch.object(check_page.subprocess, "run",
-                                  lambda cmd, **k: cmds.append(cmd)), \
-                contextlib.redirect_stdout(io.StringIO()):
-            check_page.main([str(path), "--preview", str(self.dir / "p.png")])
-        self.assertIn("--window-size=1728,1152", cmds[0])  # 18 x 12 in at 96
+                                  pretend_chrome), \
+                contextlib.redirect_stdout(buffer):
+            status = check_page.main([str(target), "--min-pt", "12",
+                                      "--preview", str(shot)])
+        self.assertEqual(status, 1)  # the preview never changes the status
+        argv = seen["argv"]
+        self.assertIn("--headless", argv)
+        self.assertIn("--hide-scrollbars", argv)
+        self.assertIn("--window-size=2400,1632", argv)  # (24+1)*96, (16+1)*96
+        self.assertIn(f"--screenshot={shot.resolve()}", argv)
+        self.assertEqual(buffer.getvalue().splitlines()[-1],
+                         f"preview: {shot.resolve()}")
 
-    def test_find_chrome_searches_path_first(self):
+    def test_preview_window_when_size_unknown(self):
+        target = self.save(sheet_html(root_rule=False))
+        calls = []
+        with mock.patch.object(check_page, "find_chrome",
+                               return_value="/usr/local/bin/chromium"), \
+                mock.patch.object(check_page.subprocess, "run",
+                                  lambda argv, **o: calls.append(argv)), \
+                contextlib.redirect_stdout(io.StringIO()):
+            check_page.main([str(target), "--preview",
+                             str(self.folder / "shot.png")])
+        self.assertIn("--window-size=1728,1152", calls[0])  # 18 x 12 in
+
+    def test_chrome_search_order(self):
         with mock.patch.object(check_page.shutil, "which",
-                               lambda n: "/x/chromium" if n == "chromium"
-                               else None):
-            self.assertEqual(check_page.find_chrome(), "/x/chromium")
-        with mock.patch.object(check_page.shutil, "which", lambda n: None), \
+                               lambda p: "/opt/bin/chromium"
+                               if p == "chromium" else None):
+            self.assertEqual(check_page.find_chrome(), "/opt/bin/chromium")
+        with mock.patch.object(check_page.shutil, "which", lambda p: None), \
                 mock.patch.object(check_page.os.path, "isfile",
                                   lambda p: False):
             self.assertIsNone(check_page.find_chrome())

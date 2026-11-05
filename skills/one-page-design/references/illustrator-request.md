@@ -1,6 +1,6 @@
 # Illustrator request
 
-Use this form to commission the centre picture from any source that can make it: an image model, an agent with image tools, or a person. Fill in every field; none is optional. Send the whole form, including the fixed parts, unchanged.
+Fill in this form when someone else will make the centre picture. That can be a person who draws, a model that makes images, or another agent that has image tools. Fill in every field; none is optional. Send the whole form, including the fixed parts, unchanged.
 
 ## Form
 
@@ -11,7 +11,7 @@ Page title: <the point sentence of the page, so the picture supports it>
 
 Subject: <one sentence naming the one thing to show, including the point of view>
 
-View type: <one of: isometric | plan | side view | three-quarter scene | storyboard frame>
+View type: <choose one: plan (straight down) | isometric | side view | three-quarter scene | storyboard frame>
 
 Must be visible:
 - <part 1>

@@ -1,215 +1,245 @@
 # Drawing parts
 
-Small inline SVG and HTML parts to copy and adapt when you draw the centre picture yourself. They use the classes and colour tokens of `assets/starter.html` (`--ink`, `--paper`, `--rule`, `--accent`, `--wash-1..3`, `.lead`, `.outline`, `.callout`, `.card`, `.legend`, `.story`, `.rule`, `.param`). Change sizes, positions and content freely; keep the rules.
+Use these parts when you draw the centre picture yourself. Copy a part, then change its positions, sizes and words to fit your design. The parts depend on the style sheet in `assets/starter.html`:
 
-Text over a drawing is HTML positioned in inches, or SVG text. It is never part of an image.
+- Colour tokens: `--c-text`, `--c-sheet`, `--c-line`, `--c-hot` (the accent), `--c-soft`, `--c-fill-a`, `--c-fill-b`, `--c-fill-c`.
+- SVG stroke classes: `.edge` (outlines) and `.pointer` (leader lines).
+- HTML classes: `.note` (callout), `.plate`, `.plate-tag`, `.plate-line` (card), `.key` (legend), `.flavor`, `.mechanic`, `.tuning`, `.math` (text voices), `.far`, `.near`, `.fine` (text levels).
 
-## Drawing layer
+All words over a drawing are SVG text or HTML placed in inches. No word is ever part of an image.
 
-One SVG covers the whole sheet, pinned to all four edges, at 100 drawing units per inch. For a sheet of W x H in the view box is `0 0 (100 x W) (100 x H)`:
+## Rules for every part
 
-- 17 x 11 in: `viewBox="0 0 1700 1100"`
-- 30 x 20 in: `viewBox="0 0 3000 2000"`
+- The drawing layer has 100 drawing units for each inch of the sheet. Its view box follows the sheet size.
+- Draw from back to front. A later shape covers an earlier one.
+- A leader line is straight or has one bend. It is never curved, and two leader lines never cross.
+- All cards on one page use one layout.
+- One set of marks for the page. The legend lists it.
 
-When the sheet size changes, change the view box with it. Leave out the `width` attribute. Leader lines and drawings go in this layer; longer text goes in absolutely positioned HTML on top of it. Screen readers skip the layer.
+## The drawing layer
+
+Put one SVG directly inside the sheet, pinned to its four edges. Do not give it a `width` attribute. The view box is `0 0 (W x 100) (H x 100)` for a sheet of W by H inches:
+
+| Sheet | View box |
+|---|---|
+| 17 x 11 in | `viewBox="0 0 1700 1100"` |
+| 30 x 20 in | `viewBox="0 0 3000 2000"` |
+| 24 x 18 in | `viewBox="0 0 2400 1800"` |
+
+Change the view box each time you change the sheet size. The layer is decoration for screen readers. Shapes and leader lines go in the layer. Longer text goes in HTML on top of it.
 
 ```html
-<svg viewBox="0 0 1700 1100" aria-hidden="true"
-     style="position:absolute; inset:0; width:100%; height:100%">
-  <!-- drawings, then leader lines -->
+<svg aria-hidden="true" viewBox="0 0 1700 1100"
+     style="inset:0; position:absolute; height:100%; width:100%">
+  <!-- shapes first, leader lines last -->
 </svg>
 ```
 
-SVG `font-size` is in drawing units: 100 units = 1 in = 72 pt, so 8.4 units is about 6 pt, the floor. Use 9 units or more.
+Font sizes in the layer are drawing units. 100 units is 1 in, which is 72 pt, so 6 pt is about 8.4 units. Write 9 units or more.
 
-## Isometric tiles and blocks
+## Route with stops
 
-A tile is a diamond twice as wide as it is tall, pale fill, dark outline. Here the tile is 120 wide and 60 tall, centred on `(cx, cy)`.
-
-```html
-<polygon class="outline" fill="var(--wash-2)"
-         points="600,400 660,430 600,460 540,430"/>
-```
-
-A block is a tile used as the top face plus two side faces of one fixed block height (here 40), each side a slightly darker neutral tone:
+A line in the text colour, with no fill, runs through the stops. A stop is a small white circle with an outline and a bold number in its centre. Number from 0 or from 1, and keep to one choice on the page.
 
 ```html
-<g class="block">
-  <polygon class="outline" fill="#cfcac0" points="540,430 600,460 600,500 540,470"/>
-  <polygon class="outline" fill="#b9b3a7" points="600,460 660,430 660,470 600,500"/>
-  <polygon class="outline" fill="var(--wash-2)" points="600,400 660,430 600,460 540,430"/>
+<g data-part="route">
+  <path d="M260 840 L470 760 L690 805 L930 650 L1180 610" fill="none"
+        stroke-linejoin="round" stroke-width="4" stroke="var(--c-text)"/>
+  <g data-part="stops" text-anchor="middle" font-weight="700" font-size="16">
+    <circle r="16" cy="840" cx="260" fill="#fff" class="edge"/>
+    <text y="846" x="260">0</text>
+    <circle r="16" cy="805" cx="690" fill="#fff" class="edge"/>
+    <text y="811" x="690">1</text>
+    <circle r="16" cy="610" cx="1180" fill="#fff" class="edge"/>
+    <text y="616" x="1180">2</text>
+  </g>
 </g>
 ```
 
-Stacking: each layer moves up by one block height. Draw from the back of the scene to the front, and inside a stack from the lowest block to the highest, so nearer faces cover farther ones. Four blocks stacked on one tile: draw the block at offset 0, then `transform="translate(0,-40)"`, then `-80`, then `-120`.
+## Isometric tiles and blocks
 
-## Room in plan view
-
-A rectangle with a pale fill and an outline, a small white outlined rectangle on one wall for the door, and a small centred label.
+A tile is a diamond that is two times as wide as it is tall: pale fill, dark outline. This tile is 160 units wide and 80 tall, with its top point at (800, 300):
 
 ```html
-<rect class="outline" fill="var(--wash-1)" x="300" y="300" width="260" height="180"/>
-<rect class="outline" fill="#fff" x="410" y="472" width="40" height="16"/>
-<text x="430" y="395" text-anchor="middle" font-size="14">Workshop</text>
+<polygon class="edge" fill="var(--c-fill-b)" points="800,300 880,340 800,380 720,340"/>
+```
+
+A block is that tile as its top face, plus a left face and a right face of one fixed block height (here 50). Each side face is a slightly darker neutral tone. Draw the side faces first, then the top:
+
+```html
+<g data-part="block">
+  <polygon class="edge" fill="#bdb6aa" points="880,340 880,390 800,430 800,380"/>
+  <polygon class="edge" fill="#d3cdc2" points="720,340 800,380 800,430 720,390"/>
+  <polygon class="edge" fill="var(--c-fill-b)" points="800,300 880,340 800,380 720,340"/>
+</g>
+```
+
+To stack blocks, move each layer up by one block height. Draw the lowest block first and the highest block last. For four blocks on one tile, use the block above four times, with `transform="translate(0,0)"`, then `translate(0,-50)`, then `translate(0,-100)`, then `translate(0,-150)`. Across the whole scene, draw the rows at the back before the rows at the front.
+
+## Room seen from above
+
+A rectangle with a pale fill and an outline. A small white rectangle with an outline sits on one wall as the door. A small label in the centre names the room.
+
+```html
+<g data-part="room">
+  <rect class="edge" fill="var(--c-fill-a)" height="210" width="320" y="420" x="980"/>
+  <rect class="edge" fill="#fff" height="14" width="48" y="623" x="1116"/>
+  <text text-anchor="middle" font-size="15" y="530" x="1140">Chart room</text>
+</g>
 ```
 
 ## Land and zones
 
-Land is a closed, smooth curved path with a pale fill. Zones are semi-transparent white circles, each with a small grey centred label.
+Land is one closed, smooth, curved shape with a pale fill. A zone is a white circle that you can partly see through, with a small grey label in its centre.
 
 ```html
-<path class="outline" fill="var(--wash-2)"
-      d="M420,300 C560,180 860,200 980,330 C1100,460 1010,690 820,730
-         C620,770 380,700 330,560 C290,450 330,370 420,300 Z"/>
-<circle cx="700" cy="460" r="110" fill="#fff" fill-opacity="0.55"/>
-<text x="700" y="464" text-anchor="middle" font-size="12" fill="var(--rule)">Marsh</text>
-```
-
-## Route with stops
-
-An unfilled line in the text colour through the stops. Each stop is a small white outlined circle with a bold centred number. Start the numbering at 0 or at 1.
-
-```html
-<polyline fill="none" stroke="var(--ink)" stroke-width="3"
-          points="380,620 520,540 700,560 880,430"/>
-<g font-size="14" font-weight="bold" text-anchor="middle">
-  <circle class="outline" fill="#fff" cx="380" cy="620" r="14"/><text x="380" y="625">1</text>
-  <circle class="outline" fill="#fff" cx="520" cy="540" r="14"/><text x="520" y="545">2</text>
-</g>
+<path class="edge" fill="var(--c-fill-b)"
+      d="M300 520 Q330 330 560 300 Q820 260 980 380 Q1120 500 1010 680
+         Q900 860 620 840 Q360 820 310 680 Q290 600 300 520 Z"/>
+<circle fill-opacity="0.5" fill="#fff" r="125" cy="560" cx="640"/>
+<text fill="var(--c-soft)" font-size="13" text-anchor="middle" y="565" x="640">Salt flats</text>
 ```
 
 ## Time ruler and phase dividers
 
-A horizontal line in the line colour near the bottom, short ticks at equal spacing, small grey numbers under the ticks, and a centred caption under those that names the unit. Phase dividers are dashed vertical lines in a muted cool grey, the full height of the drawing.
+A horizontal line in the line colour near the bottom edge. Short ticks sit at equal steps along it, with small grey numbers below them. A caption below the numbers names the unit. A phase divider is a dashed vertical line in a muted cool grey that runs the full height of the drawing.
 
 ```html
-<g stroke="var(--rule)" stroke-width="2">
-  <line x1="200" y1="1000" x2="1500" y2="1000"/>
-  <line x1="200" y1="1000" x2="200" y2="1012"/>
-  <line x1="460" y1="1000" x2="460" y2="1012"/>
-  <!-- one tick every 260 units -->
+<g data-part="ruler" stroke-width="2" stroke="var(--c-line)">
+  <path d="M150 1010 H1550"/>
+  <path d="M150 1010 v14 M430 1010 v14 M710 1010 v14 M990 1010 v14 M1270 1010 v14 M1550 1010 v14"/>
 </g>
-<g font-size="11" fill="var(--rule)" text-anchor="middle">
-  <text x="200" y="1030">0</text><text x="460" y="1030">5</text>
+<g fill="var(--c-soft)" font-size="12" text-anchor="middle">
+  <text y="1042" x="150">0</text><text y="1042" x="430">4</text><text y="1042" x="710">8</text>
+  <text y="1042" x="990">12</text><text y="1042" x="1270">16</text><text y="1042" x="1550">20</text>
+  <text y="1070" x="850">turns</text>
 </g>
-<text x="850" y="1055" text-anchor="middle" font-size="12">minutes</text>
-<line x1="720" y1="0" x2="720" y2="1100" stroke="#8fa0b0" stroke-width="2" stroke-dasharray="10 8"/>
+<path data-part="phase" d="M570 0 V1100" stroke-dasharray="14 6" stroke-width="2" stroke="#93a3b4"/>
 ```
 
 ## Marks
 
-Pick a small set and keep to it; list it in the legend.
+Choose a few marks for the page and use only those. Each mark below is a group whose `data-mark` attribute names it, so the legend and the drawing use the same words.
 
 ```html
-<circle cx="500" cy="500" r="9" fill="var(--accent)" stroke="var(--ink)" stroke-width="2"/>  <!-- token -->
-<g stroke="var(--ink)" stroke-width="3" fill="none">                                         <!-- figure -->
-  <circle cx="600" cy="470" r="9"/><path d="M600,479 V510 M584,492 H616 M600,510 L588,532 M600,510 L612,532"/>
+<g data-mark="player"><text font-size="30" font-weight="700" text-anchor="middle" y="420" x="300">O</text></g>
+<g data-mark="enemy"><text font-size="30" font-weight="700" text-anchor="middle" y="420" x="380">X</text></g>
+<g data-mark="token"><circle stroke-width="2.5" stroke="var(--c-text)" fill="var(--c-hot)" r="10" cy="410" cx="460"/></g>
+<g data-mark="figure" stroke-linecap="round" stroke-width="3" stroke="var(--c-text)" fill="none">
+  <circle r="8" cy="392" cx="540"/>
+  <path d="M540 400 V426 M526 410 H554 M540 426 L530 446 M540 426 L550 446"/>
 </g>
-<text x="700" y="510" font-size="28" font-weight="bold" text-anchor="middle">O</text>          <!-- player -->
-<text x="760" y="510" font-size="28" font-weight="bold" text-anchor="middle">X</text>          <!-- enemy -->
-<polygon fill="#f2a516" stroke="var(--ink)" stroke-width="1"
-  points="850,470 857,488 876,484 864,499 878,512 859,513 856,532 846,516 829,524 836,506 820,496 840,492"/>  <!-- hit -->
-<path d="M950,500 L1060,450 A120,120 0 0 1 1060,550 Z" fill="#7fb2e5" fill-opacity="0.4"/>   <!-- cone area -->
+<g data-mark="hit">
+  <polygon stroke="var(--c-text)" fill="#f0a91e"
+           points="640,380 646,398 664,392 654,408 670,418 652,422 656,440 642,428 630,442 628,424 610,420 626,408 618,392 634,398"/>
+</g>
+<g data-mark="cone"><path d="M720 410 L840 360 A130 130 0 0 1 840 460 Z" fill-opacity="0.35" fill="#79ade0"/></g>
 ```
 
 ## Leader line
 
-A thin unfilled line in the line colour from the callout to the target, straight or with one bend only, ending in a small dot on the target. Never curved. Leader lines never cross each other: when two would cross, swap their callouts or move one to another margin.
+A thin line in the line colour, with no fill, goes from the callout to its target. It is straight or it has one bend. It ends in a small dot on the target itself, not on a label or a panel. It is never curved. When two leader lines would cross, swap their callouts or move one callout to another margin.
 
 ```html
-<polyline class="lead" points="230,310 420,310 610,520"/>
-<circle cx="610" cy="520" r="5" fill="var(--rule)"/>
+<g data-part="leader">
+  <path class="pointer" d="M200 260 H460 L720 470"/>
+  <circle fill="var(--c-line)" r="5" cy="470" cx="720"/>
+</g>
 ```
 
-Example: a callout in the left margin points at a well near the centre. Run the line level out of the callout, bend it once toward the well, and end it with the dot on the well itself, not on a label next to it.
+Example: a callout in the left margin points at a well near the centre. The line leaves the callout level, bends once toward the well, and its dot sits on the well.
 
 ## Callout
 
-An absolutely positioned HTML block placed in inches: a short heading, a story line in italic, a rule line upright, a small italic parameter line.
+An HTML block placed in inches on the sheet. It has a short heading, then one story line in italic, one rule line in upright text, and one small italic parameter line.
 
 ```html
-<div class="callout" style="left:0.5in; top:2.6in">
-  <h3>1 · The well</h3>
-  <div class="story">Villagers trade gossip here at dawn.</div>
-  <div class="rule">Drinking restores 2 stamina once per day.</div>
-  <div class="param">radius 3 m · cooldown 1 day</div>
+<div class="note" style="top:3.1in; left:0.6in">
+  <h3>2 · Signal fire</h3>
+  <div class="flavor">Keepers light it when the fog rolls in.</div>
+  <div class="mechanic">Ships within range see the dock on their map.</div>
+  <div class="tuning">range 40 m · burns 3 turns · 1 log</div>
 </div>
 ```
 
 ## Card
 
-An absolutely positioned box: a bold heading (number and name), a coloured second line, then rows that each have a small icon, a bold name and a small italic note. All cards on one page use the same layout.
+A box placed in inches. It has a bold heading with a number and a name, a coloured second line, and rows. Each row has a small icon, a bold name and a small italic note. Every card on the page uses this one layout.
 
 ```html
-<div class="card" style="left:13.2in; top:1.4in">
-  <h4>3 · Ember Moth</h4>
-  <p class="sub">Tier 2 · night only</p>
-  <div class="row"><span>◆</span><b>Swarm</b><i>splits into 3 on hit</i></div>
-  <div class="row"><span>●</span><b>Glow</b><i>lights a 2 m circle</i></div>
+<div class="plate" style="top:1.2in; left:12.9in">
+  <h4>4 · Reef Lantern</h4>
+  <div class="plate-tag">Rank 3 · tide out</div>
+  <div class="plate-line"><span>▲</span><b>Beam</b><i>shows hidden rocks for 2 turns</i></div>
+  <div class="plate-line"><span>■</span><b>Oil</b><i>one flask lasts a whole tide</i></div>
 </div>
 ```
 
 ## Matrix
 
-An absolutely positioned HTML table in fine print: a header row, a header column, thin cell borders in the line colour, small padding, and an x in each empty cell. Fill it from the top.
+An HTML table placed in inches, in fine print. It has a header row and a header column, thin cell borders in the line colour, a little padding, and an x in every empty cell. Fill it from the top.
 
 ```html
-<table style="position:absolute; left:10in; top:6in; border-collapse:collapse; font-size:7pt">
-  <tr><th></th><th>Cloth</th><th>Plate</th></tr>
-  <tr><th>Blade</th><td>bleeds</td><td>x</td></tr>
-  <tr><th>Hammer</th><td>x</td><td>dents</td></tr>
+<table class="fine" style="border-collapse:collapse; top:6.4in; left:9.6in; position:absolute">
+  <tr><th></th><th>Hide</th><th>Mail</th><th>Ward</th></tr>
+  <tr><th>Spear</th><td>pierces</td><td>x</td><td>x</td></tr>
+  <tr><th>Mace</th><td>x</td><td>cracks</td><td>x</td></tr>
+  <tr><th>Wand</th><td>x</td><td>x</td><td>breaks</td></tr>
 </table>
-<!-- give th and td: border:0.5pt solid var(--rule); padding:2pt 4pt -->
+<!-- each th and td: padding:2pt 4pt; border:0.5pt solid var(--c-line) -->
 ```
 
 ## Trade-off triangle
 
-A white outlined triangle divided from its centre into three regions, each a different soft tint, with small axis labels along each edge, rotated to follow it.
+A white triangle with an outline, cut from its centre into three regions. Each region has its own soft tint. A small label sits along each edge and turns to follow it.
 
 ```html
-<g transform="translate(1200,600)">
-  <path d="M0,-200 L173,100 L0,0 Z" fill="var(--wash-1)"/>
-  <path d="M173,100 L-173,100 L0,0 Z" fill="var(--wash-2)"/>
-  <path d="M-173,100 L0,-200 L0,0 Z" fill="var(--wash-3)"/>
-  <polygon class="outline" fill="none" points="0,-200 173,100 -173,100"/>
-  <text font-size="12" text-anchor="middle" transform="translate(100,-60) rotate(60)">fast</text>
-  <text font-size="12" text-anchor="middle" transform="translate(0,122)">armoured</text>
-  <text font-size="12" text-anchor="middle" transform="translate(-100,-60) rotate(-60)">long range</text>
+<g data-part="triangle" transform="translate(1300 640)">
+  <path fill="var(--c-fill-a)" d="M0 0 L0 -230 L199 115 Z"/>
+  <path fill="var(--c-fill-b)" d="M0 0 L199 115 L-199 115 Z"/>
+  <path fill="var(--c-fill-c)" d="M0 0 L-199 115 L0 -230 Z"/>
+  <path class="edge" fill="none" d="M0 -230 L199 115 L-199 115 Z"/>
+  <text transform="translate(-118 -70) rotate(-60)" text-anchor="middle" font-size="13">hidden</text>
+  <text transform="translate(118 -70) rotate(60)" text-anchor="middle" font-size="13">tough</text>
+  <text transform="translate(0 140)" text-anchor="middle" font-size="13">quick</text>
 </g>
 ```
 
 ## Storyboard
 
-A horizontal row of equal-width frames with thin borders and small gaps. Each frame holds a small SVG drawn with the page's marks and a one-sentence caption in fine print.
+A row of frames side by side. All frames have one width, a thin border and a small gap between them. Each frame holds a small SVG drawn with the page's marks and a caption of one sentence in fine print.
 
 ```html
-<div style="position:absolute; left:1in; bottom:0.8in; display:flex; gap:0.15in">
-  <figure style="margin:0; width:1.6in; border:0.5pt solid var(--rule)">
-    <svg viewBox="0 0 160 100"><text x="40" y="60" font-size="28" font-weight="bold">O</text></svg>
-    <figcaption class="t3">0.0 s: the player raises the shield.</figcaption>
+<div style="gap:0.12in; display:flex; bottom:0.9in; left:1.2in; position:absolute">
+  <figure style="border:0.5pt solid var(--c-line); width:1.8in; margin:0">
+    <svg viewBox="0 0 180 110">
+      <text font-weight="700" font-size="30" y="70" x="30">O</text>
+      <text font-weight="700" font-size="30" y="70" x="130">X</text>
+    </svg>
+    <figcaption class="fine">Turn 1: the player spots the guard.</figcaption>
   </figure>
-  <!-- more frames of the same width -->
+  <!-- the next frames, all with the same width -->
 </div>
 ```
 
 ## Legend
 
-An absolutely positioned white box with a border, usually near a bottom corner. One line per mark: the mark, then its meaning.
+A white box with a border, placed in inches, usually near a bottom corner. It has one line for each mark: the mark, then what it means.
 
 ```html
-<div class="legend" style="left:0.5in; bottom:0.5in">
-  <div><b>O</b> player</div>
-  <div><b>X</b> enemy</div>
-  <div><span style="color:var(--accent)">●</span> key</div>
+<div class="key" style="bottom:0.6in; left:0.6in">
+  <div><b>O</b> = player</div>
+  <div><b>X</b> = guard</div>
+  <div><span style="color:var(--c-hot)">●</span> = lantern oil</div>
 </div>
 ```
 
 ## Step number
 
-For a procedure: a bold number of about 10 pt inside a small inline circle with a border in the text colour.
+For a procedure, each step gets a bold number of about 10 pt inside a small circle with a border in the text colour. The circle sits in the line of text.
 
 ```html
-<span style="display:inline-block; width:16pt; height:16pt; border:1pt solid var(--ink);
-             border-radius:50%; text-align:center; line-height:16pt; font-size:10pt;
-             font-weight:bold">3</span>
+<b style="font-size:10pt; border-radius:999px; border:1pt solid var(--c-text);
+          block-size:1.5em; inline-size:1.5em; place-items:center;
+          display:inline-grid; vertical-align:middle">5</b>
 ```

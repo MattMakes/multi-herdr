@@ -2,10 +2,13 @@
 skill text states each rule the scenarios depend on."""
 
 import re
+import sys
 import unittest
 from pathlib import Path
 
 SKILL = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(SKILL / "scripts"))
+import check_page  # noqa: E402
 
 
 def read(rel):
@@ -35,16 +38,35 @@ class SkillTextTests(unittest.TestCase):
 
     def test_trigger_match(self):  # spec-skill-workflow t1
         desc = front_matter()["description"].lower()
-        for phrase in ("too long", "nobody reads", "wall", "one-sheet",
+        for phrase in ("too long", "nobody reads", "wall", "one sheet",
                        "poster", "table-mat", "meeting"):
             self.assertIn(phrase, desc)
 
-    def test_trigger_exclusion(self):  # spec-skill-workflow t2
+    def test_trigger_ticket_deliverable(self):  # spec-skill-trigger-p2 t1
         desc = front_matter()["description"].lower()
-        self.assertIn("not for reports, slide decks or dashboards", desc)
+        self.assertIn("orchestrator ticket", desc)
+        self.assertIn("deliverable", desc)
         body = squash(read("SKILL.md"))
-        self.assertIn("status reports, api reference documents, slide decks "
-                      "or dashboards", body)
+        self.assertIn("a team or fleet task asks for a one-page design as its "
+                      "output", body)
+
+    def test_trigger_one_pager(self):  # spec-skill-trigger-p2 t2
+        desc = front_matter()["description"].lower()
+        self.assertIn("one-pager", desc)
+        self.assertIn("must fit on one sheet", desc)
+
+    def test_scope_when_to_use(self):  # spec-skill-trigger-p2 b2
+        body = squash(read("SKILL.md"))
+        self.assertIn("keep on a wall or a table and read it there", body)
+        self.assertIn("grown too long for the people who must read it", body)
+
+    def test_trigger_exclusion(self):  # spec-skill-workflow t2, spec-skill-trigger-p2 t3
+        desc = front_matter()["description"].lower()
+        self.assertIn("do not use it for reports, slide decks or dashboards",
+                      desc)
+        body = squash(read("SKILL.md"))
+        self.assertIn("leave it out for slide decks, dashboards, status "
+                      "reports and api reference documents", body)
 
     def test_no_point_sentence(self):  # spec-skill-workflow t3
         body = squash(read("SKILL.md"))
@@ -56,7 +78,7 @@ class SkillTextTests(unittest.TestCase):
         body = squash(read("SKILL.md"))
         self.assertIn("when no image source is available", body)
         self.assertIn("inline svg", body)
-        self.assertIn("sits in svg or html layered over the picture", body)
+        self.assertIn("svg or html that sits on top of the picture", body)
 
     def test_supporting_files_named_and_present(self):
         body = read("SKILL.md")
@@ -115,7 +137,8 @@ class PartsTests(unittest.TestCase):
         self.assertIn("an x in each unused cell", self.parts)
 
     def test_screen_flow(self):  # spec-visual-grammar t3
-        self.assertIn("screen and menu flow (only this)", self.parts)
+        self.assertIn("how does one screen or menu lead to the next? "
+                      "(only this) | a flowchart", self.parts)
         self.assertIn("only case for a flowchart", self.parts)
 
     def test_wrong_ring(self):  # spec-visual-grammar t4
@@ -123,19 +146,45 @@ class PartsTests(unittest.TestCase):
         self.assertIn("refuse that shape and use a matrix or cards", self.parts)
 
     def test_stacked_blocks(self):  # spec-drawing-parts t2
-        self.assertIn("each layer moves up by one block height", self.drawing)
-        self.assertIn("from the lowest block to the highest", self.drawing)
-        self.assertIn("draw from the back of the scene to the front",
-                      self.drawing)
+        self.assertIn("move each layer up by one block height", self.drawing)
+        self.assertIn("draw the lowest block first and the highest block "
+                      "last", self.drawing)
+        self.assertIn("draw from back to front", self.drawing)
 
     def test_leader_line_shape(self):  # spec-drawing-parts t3
-        self.assertIn("straight or with one bend only", self.drawing)
-        self.assertIn("never curved", self.drawing)
-        self.assertIn("never cross each other", self.drawing)
-        self.assertIn("ending in a small dot on the target", self.drawing)
+        self.assertIn("it is straight or it has one bend", self.drawing)
+        self.assertIn("it is never curved", self.drawing)
+        self.assertIn("two leader lines never cross", self.drawing)
+        self.assertIn("ends in a small dot on the target itself", self.drawing)
+        self.assertIn("100 drawing units for each inch", self.drawing)
+        self.assertIn("all cards on one page use one layout", self.drawing)
 
     def test_layer_view_box_rule(self):  # spec-drawing-parts t1 (text half)
         self.assertIn('viewbox="0 0 3000 2000"', self.drawing)
+
+
+class SnippetTests(unittest.TestCase):
+    """spec-rewrite-drawing-parts-p2 t2: the parts still pass the checker."""
+
+    def snippet(self, heading):
+        section = read("references/drawing-parts.md").split(
+            "## " + heading + "\n")[1].split("\n## ")[0]
+        return re.search(r"```html\n(.*?)```", section, re.S).group(1)
+
+    def test_layer_route_and_legend_in_starter(self):
+        layer = self.snippet("The drawing layer")
+        route = self.snippet("Route with stops")
+        legend = self.snippet("Legend")
+        self.assertIn("<!-- shapes first, leader lines last -->", layer)
+        layer = layer.replace("<!-- shapes first, leader lines last -->",
+                              route)
+        starter = read("assets/starter.html")
+        mark = '<p class="dateline">'
+        self.assertIn(mark, starter)
+        page = starter.replace(mark, layer + legend + mark, 1)
+        findings, size, _ = check_page.check_page(page)
+        self.assertEqual((findings, size), ([], (17.0, 11.0)))
+        self.assertIn("<svg", page)
 
 
 class RequestTests(unittest.TestCase):
