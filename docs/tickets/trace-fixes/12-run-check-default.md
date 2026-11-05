@@ -26,6 +26,8 @@ Stop work landing untested (G3) and give shared tasks real review input (G5) (D5
 2. `check_command` (land.rs) returns the task's check, else the run's; with neither and no `check_none`, check fails with a message that names `**Check:** none`.
 3. For a shared-checkout task, compute the diff base from the commit at claim time, not `run_branch...HEAD`.
 
+Amendment (report 07): complexity-sweep now covers Rust. In `finish/mod.rs`, update the `Tools::complexity_cli` doc and the not-applicable note so they name the Rust clippy path. Add 1 `step()` test with a Rust fixture crate to `crates/horch-core/tests/w3_finish_steps.rs` (approved outside Own). Test name starts with `trf_07_`.
+
 ## Done when
 
 The 3 tests pass.

@@ -25,6 +25,8 @@ Make the prompts describe what the code now does, in 1 pass (U1, U3, U4).
 3. Docs and specs: the new commands, contracts C1-C7, timings. README and CHANGELOG: the removal from ticket 02's report, and 1 user-visible CHANGELOG line for the run.
 4. Re-bless only the goldens these edits change. Write `trf_46_*`: no push phrase in the briefings; every state id has an instruction.
 
+Amendment (report 04): `teammates/_base/fleet-orchestrator.md` lines 160-173, its golden in `crates/horch-core/tests/golden_prompts.rs`, and `README.md` lines 430-436 still name `ai_docs/specs` and `ai_docs/tickets`. Change them to `docs/specs/<slug>.md` and `docs/tickets/<slug>/`. Bless only that golden.
+
 ## Done when
 
 TRF-46 and the golden tests pass.
