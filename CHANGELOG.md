@@ -4,6 +4,8 @@
 
 ## Unreleased
 
+## v0.4.4 - 2026-11-05
+
 - New teammate `pixel-vfx-artist` makes pixel art effects and sprite
   animations as code: impacts, slashes, spells, fire, pickups, transitions.
   Its new `pixel-vfx` skill drafts an effect, renders a contact sheet, looks at
