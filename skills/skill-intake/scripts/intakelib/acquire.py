@@ -177,6 +177,10 @@ def _git_config(file_allowed: bool) -> list[str]:
         "-c", "core.symlinks=false",
         "-c", f"protocol.file.allow={'always' if file_allowed else 'never'}",
         "-c", "submodule.recurse=false",
+        # The sandbox proxy closes a CONNECT without credentials and sends no
+        # 407, so git must send the proxy URL's credentials at once (T-33).
+        # The sandbox sets this in GIT_CONFIG_PARAMETERS, which _git_env drops.
+        "-c", "http.proxyAuthMethod=basic",
     ]
 
 

@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 import socket
+import threading
 import unittest
 from pathlib import Path
 
@@ -164,6 +165,47 @@ class GitHubCloneTest(AcquireCase):
             self.assertEqual(env.get(k), "v-" + k)
         self.assertNotIn("UNRELATED_VAR", env)
         self.assertNotIn("FOO_API_KEY", env)
+
+    def test_git_sends_proxy_credentials_on_the_first_connect(self):
+        # T-33: the Claude sandbox proxy closes a CONNECT that has no
+        # Proxy-Authorization instead of sending a 407 challenge. Without
+        # http.proxyAuthMethod=basic, git fails with "Proxy CONNECT aborted".
+        server = socket.socket()
+        server.bind(("127.0.0.1", 0))
+        server.listen(1)
+        server.settimeout(30)
+        self.addCleanup(server.close)
+        requests: list[bytes] = []
+
+        def serve():
+            try:
+                conn, _ = server.accept()
+            except OSError:
+                return
+            with conn:
+                data = b""
+                while b"\r\n\r\n" not in data:
+                    chunk = conn.recv(4096)
+                    if not chunk:
+                        break
+                    data += chunk
+                requests.append(data)
+                if b"proxy-authorization:" in data.lower():
+                    conn.sendall(b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\n\r\n")
+
+        thread = threading.Thread(target=serve, daemon=True)
+        thread.start()
+        proxy = f"http://user:pw@127.0.0.1:{server.getsockname()[1]}"
+        for key in ("HTTPS_PROXY", "https_proxy"):
+            os.environ[key] = proxy
+        for key in ("NO_PROXY", "no_proxy", "ALL_PROXY", "all_proxy"):
+            os.environ.pop(key, None)
+        with self.assertRaises(BadSource) as caught:
+            acquire._git(["ls-remote", "https://github.com/o/r"], acquire._git_config(False))
+        thread.join(30)
+        self.assertNotIn("CONNECT aborted", str(caught.exception))
+        self.assertEqual(len(requests), 1)
+        self.assertIn(b"Proxy-Authorization: Basic dXNlcjpwdw==", requests[0])
 
     def test_seam_must_be_file_url(self):
         r, c = self.acquire("o/r", env={acquire.BASE_ENV: "https://evil.invalid/"})
