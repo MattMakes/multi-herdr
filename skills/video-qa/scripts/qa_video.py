@@ -779,7 +779,7 @@ def self_test():
     skill_dir = Path(__file__).resolve().parent.parent
     skill_md = skill_dir / "SKILL.md"
     assert skill_md.stat().st_size < SKILL_MD_MAX_BYTES, f"SKILL.md is {skill_md.stat().st_size} bytes"
-    stray = [p for p in skill_dir.rglob("*") if p.is_file() and p.suffix not in (".md", ".py")
+    stray = [p for p in skill_dir.rglob("*") if p.is_file() and p.suffix not in (".md", ".py", ".mjs", ".html")
              and "__pycache__" not in p.parts]
     assert not stray, f"non-text files in skill: {stray}"
     assert (parse_captions(SRT_OK, False)[1] == (2.1, 3.8)), "SRT parser"

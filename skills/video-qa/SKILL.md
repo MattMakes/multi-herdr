@@ -55,6 +55,20 @@ Self-test (synthesizes all fixtures in a temp folder, about 10 s):
 python3 "<skill-dir>/scripts/qa_video.py" --self-test
 ```
 
+## Step 1b: run the text audit on each HTML scene
+
+```bash
+node "<skill-dir>/scripts/text_audit.mjs" \
+  --scene scenes/<id>/index.html --out qa/text-audit-<id>.json
+```
+
+It steps the scene every `0.1 s` in headless Chrome and fails text that is
+too small at 360 px phone width, shown too short, overlapping, off the frame,
+in the caption or app zone, or showing `NaN`, `undefined` or
+`[object Object]`. Exit `1` means findings, `2` means no Chrome. Each finding
+is a fix line for `video-animator`. Rules, flags and limits are in
+`<skill-dir>/references/text-audit.md`.
+
 ## Step 2: read qa/render-check.json
 
 The report has `passed` (bool), `checks` (1 object per check, each with

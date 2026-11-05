@@ -1,0 +1,18 @@
+<!doctype html>
+<!-- Text audit fixture: fails exactly 2 rules (off_frame, safe_zone). -->
+<html><head><meta charset="utf-8"><style>
+html, body { margin: 0; width: 1920px; height: 1080px; background: #101820; color: #f4f4f4; font-family: sans-serif; overflow: hidden; }
+.t { position: absolute; margin: 0; white-space: nowrap; line-height: 1; font-size: 96px; }
+#title { left: 160px; top: 120px; }
+#edge { left: 1600px; top: 400px; }
+#low { left: 160px; top: 940px; }
+</style></head><body>
+<p class="t" id="title">Ship every frame</p>
+<p class="t" id="edge">Launch day</p>
+<p class="t" id="low">Swipe up</p>
+<script>
+window.__videoMeta = { width: 1920, height: 1080, fps: 30, duration: 2.0 };
+window.__seekToFrame = function (frameIndex, fps) {
+  document.getElementById("title").style.opacity = String(Math.min(1, frameIndex / fps / 0.3));
+};
+</script></body></html>

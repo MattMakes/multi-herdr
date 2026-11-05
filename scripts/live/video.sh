@@ -88,8 +88,9 @@ if [ -n "$CHROME" ]; then
   ok "--self-test $ASSEMBLE" node "$ASSEMBLE" --self-test
   ok "--self-test $S/video-capture/scripts/capture.mjs" node $S/video-capture/scripts/capture.mjs --self-test
   ok "--self-test $S/video-capture/scripts/materials.mjs" node $S/video-capture/scripts/materials.mjs --self-test
+  ok "--self-test $S/video-qa/scripts/text_audit.mjs" node $S/video-qa/scripts/text_audit.mjs --self-test
 else
-  skip "render_frames, assemble_master, capture and materials self-tests" "no Chrome: set CHROME_PATH"
+  skip "render_frames, assemble_master, capture, materials and text_audit self-tests" "no Chrome: set CHROME_PATH"
 fi
 
 # ---------------------------------------------------------------- 3. checkers
