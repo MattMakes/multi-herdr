@@ -1073,3 +1073,21 @@ persona. The controller's causes (checked against `verify.json`):
 
 The step is not retried until T-36, T-37 and T-38 land. Defects 1, 2 and 4 are
 new and have no ticket yet.
+
+### Step 1, attempt 7: pipeline PASS, install BLOCKED (ticket 43)
+
+| field | value |
+|---|---|
+| command | the attempt 6 command, on the build of `435e11ea` (T-36 to T-39) |
+| task id | T-17 (worker `skill-importer-7`, pane `w29:p2N`, spawned 2026-11-05T15:07Z). `intake` task `20261105-150809-f88b2e` |
+| pane cwd and mode | cwd `step1-project`; `targets.detect` gave `standalone` |
+| outcome | GATE 1 passed. GATE 2 passed (10 checks pass: spec-map, resweep, findings, handoff-integrity, overlap, review-coverage, scripts, target-rules, domain-snapshot, persona). `intake install` failed: `PermissionError` on `mkdir` in `~/.claude/skills` inside the sandboxed pane, although the teammate `allowWrite` lists that folder. Ticket 43 finds the cause. Nothing was installed. `ls ~/.claude/skills` still has 191 entries and there is no `installed.jsonl`. |
+| output skill | `docs-first-change-tracking` (the source name `docs-driven-workflow` is refused by the writer brief) |
+| report | `~/.local/state/skill-intake/contaminated/20261105-150809-f88b2e/report.md`: `stopped before install (GATE 2 passed)`, `mode: fleet`, `script-test sandbox: none on this host (scripts are not run and stay unverified)` |
+| fix loop (T-37) | 2 of 3 iterations: the first `intake verify` listed 7 fixes, the second listed 1 (counts from the controller; the final `K/fixes.json` is `{"fixes": []}`). After it: `intake spawn writer --fix`, then a fresh reviewer each time |
+| roles | 9 role runs one at a time (`roles.jsonl`): auditor-1, analyst-1, sanitizer-1, writer-1, reviewer-1, writer-2 (fix), reviewer-2, writer-3 (fix), reviewer-3, from 15:08:16Z to 15:58:37Z. Every role ended `done`. The 2 reviewers of the loop each ran 15 to 22 minutes. |
+| scripts unverified | none: the output has no script (`verify.json` `scripts: []`, `flags: []`) |
+| run capacity | not applicable: the controller has no ledger run (no `--run`; the scratch project has no run). Step 2 records the run facts. |
+
+The controller pane stays open until ticket 43 lands, so it can retry the
+install. Step 1 is not marked passed: the install is the claim of the step.
