@@ -883,6 +883,41 @@ fn overlay_horch_paths(
     if let Some(bundle) = &env.skill_bundle {
         changed |= overlay_bundle_paths(bundle, settings)?;
     }
+    if teammate.horch_access == HorchAccess::Full {
+        changed |= overlay_roster_dirs(env, settings)?;
+    }
+    Ok(changed)
+}
+
+/// Open each roster folder `horch spawn` reads in the pane to read, and
+/// close it to write (ticket 35): `~/.config/horch/teammates` and the
+/// briefed `$HORCH_TEAMMATES_DIR`, each when it exists. A pane that could
+/// edit the roster could re-brief the roles it spawns (R6). Bash gets
+/// `allowRead` and `denyWrite`, the Read tool a working directory
+/// (ticket 31), and an `Edit(...)` deny closes it to Edit and Write. A
+/// `Write(...)` deny has no effect (ticket 28 finding). Returns whether an
+/// entry was added.
+fn overlay_roster_dirs(
+    env: &LaunchEnv,
+    settings: &mut serde_json::Map<String, Value>,
+) -> Result<bool> {
+    let mut changed = false;
+    for dir in crate::roster::repository::overlay_dirs(env.home(), env.roster_dir.as_deref()) {
+        if !dir.is_dir() {
+            continue;
+        }
+        let dir = dir.to_string_lossy();
+        changed |= add_entries(
+            settings,
+            [
+                (FS, "allowRead", dir.to_string()),
+                (FS, "denyWrite", dir.to_string()),
+                (PERMS, "additionalDirectories", dir.to_string()),
+                // A rule path that starts with `//` is absolute.
+                (PERMS, "deny", format!("Edit(/{dir}/**)")),
+            ],
+        )?;
+    }
     Ok(changed)
 }
 
@@ -1690,6 +1725,95 @@ mod tests {
             let text = settings_arg(&built).to_string();
             assert!(!text.contains(&format!("{bundles}\"")), "{text}");
             assert!(!text.contains(&format!("{bundles}/**")), "{text}");
+        }
+    }
+
+    /// T-35: a sandboxed `full` launch reads the roster it was briefed from
+    /// and `~/.config/horch/teammates`, so `horch spawn` works in the pane.
+    /// It writes neither (R6): `denyWrite` for Bash, an `Edit(...)` deny for
+    /// the Edit and Write tools, and no `Write(...)` rule (T-28 finding).
+    /// Through the skills overlay too.
+    #[test]
+    fn a_full_sandboxed_launch_reads_but_does_not_write_its_roster() {
+        let tmp = tempfile::tempdir().unwrap();
+        let [env, _] = sandbox_envs(tmp.path());
+        if !host_can_sandbox(&env) {
+            return;
+        }
+        let home = tmp.path().join("home");
+        let user = home.join(".config/horch/teammates");
+        let roster = tmp.path().join("roster");
+        std::fs::create_dir_all(&user).unwrap();
+        std::fs::create_dir_all(&roster).unwrap();
+        let env = LaunchEnv {
+            home: Some(home),
+            roster_dir: Some(roster.clone()),
+            ..env
+        };
+        let t = sandboxed(json!({}));
+        let mut via_skills = t.clone();
+        via_skills.settings = Some(skills_settings(&t, None).unwrap().to_string());
+        for t in [&t, &via_skills] {
+            let built = super::super::launch::command_in(&env, t, Session::Fresh("id"), "go", None)
+                .unwrap();
+            let settings = settings_arg(&built);
+            let fs = &settings["sandbox"]["filesystem"];
+            let perms = &settings["permissions"];
+            let has = |list: &Value, entry: &str| list.as_array().unwrap().contains(&json!(entry));
+            for dir in [&user, &roster] {
+                let dir = dir.to_string_lossy();
+                assert!(has(&fs["allowRead"], &dir), "{settings}");
+                assert!(has(&fs["denyWrite"], &dir), "{settings}");
+                assert!(!has(&fs["allowWrite"], &dir), "{settings}");
+                assert!(has(&perms["additionalDirectories"], &dir), "{settings}");
+                assert!(
+                    has(&perms["deny"], &format!("Edit(/{dir}/**)")),
+                    "{settings}"
+                );
+                assert!(
+                    !has(&perms["deny"], &format!("Write(/{dir}/**)")),
+                    "{settings}"
+                );
+            }
+        }
+    }
+
+    /// T-35: a `report` launch gets no roster path, and a `full` launch with
+    /// no roster dir and no `~/.config/horch/teammates` gets none either.
+    #[test]
+    fn only_a_full_launch_with_a_roster_opens_one() {
+        let tmp = tempfile::tempdir().unwrap();
+        let [env, _] = sandbox_envs(tmp.path());
+        if !host_can_sandbox(&env) {
+            return;
+        }
+        let home = tmp.path().join("home");
+        let user = home.join(".config/horch/teammates");
+        let roster = tmp.path().join("roster");
+        std::fs::create_dir_all(&user).unwrap();
+        std::fs::create_dir_all(&roster).unwrap();
+        let mut report = sandboxed(json!({}));
+        report.horch_access = HorchAccess::Report;
+        let with_roster = LaunchEnv {
+            home: Some(home),
+            roster_dir: Some(roster),
+            report_socket: Some(PathBuf::from("/state/horch/report/r1.sock")),
+            ..env.clone()
+        };
+        let no_roster = LaunchEnv {
+            home: Some(tmp.path().join("empty-home")),
+            ..env
+        };
+        for (env, t) in [(&with_roster, &report), (&no_roster, &sandboxed(json!({})))] {
+            let built =
+                super::super::launch::command_in(env, t, Session::Fresh("id"), "go", None).unwrap();
+            let settings = settings_arg(&built);
+            let text = settings.to_string();
+            assert!(!text.contains("teammates"), "{text}");
+            assert!(!text.contains("roster"), "{text}");
+            assert!(settings["permissions"]
+                .get("additionalDirectories")
+                .is_none());
         }
     }
 

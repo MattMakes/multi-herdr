@@ -81,6 +81,10 @@ pub struct LaunchEnv {
     /// sets it for a bundle with activated skills. A sandboxed Claude launch
     /// opens it to read and closes it to write.
     pub skill_bundle: Option<PathBuf>,
+    /// The `$HORCH_TEAMMATES_DIR` the agent sees: the roster it was briefed
+    /// from. A sandboxed `full` Claude launch opens it to read and closes it
+    /// to write, so `horch spawn` works in the pane (ticket 35).
+    pub roster_dir: Option<PathBuf>,
     /// `$CLAUDE_CONFIG_DIR`: where the operator's Claude user settings live.
     pub claude_config_dir: Option<PathBuf>,
     /// `RuntimeContext.paths.claude_managed_settings`. `None` reads no
@@ -116,6 +120,7 @@ impl LaunchEnv {
             herdr_socket: ctx.inherited.herdr_socket_path.clone(),
             report_socket: None,
             skill_bundle: None,
+            roster_dir: ctx.bins.roster_override.clone(),
             claude_config_dir: ctx.inherited.claude_config_dir.clone(),
             claude_managed_settings: Some(ctx.paths.claude_managed_settings.clone()),
             workdir: ctx.paths.cwd.clone(),
@@ -143,6 +148,7 @@ impl LaunchEnv {
             herdr_socket: None,
             report_socket: None,
             skill_bundle: None,
+            roster_dir: None,
             claude_config_dir: None,
             claude_managed_settings: None,
             workdir: Some(PathBuf::from("/workdir")),
@@ -680,6 +686,14 @@ fn launch_command(
     }
     env.compact_window = Some(launch.decision.clone());
     env.report_socket = report_socket(ctx, req);
+    // The agent sees the briefed roster over the one this process has.
+    if let Some((_, dir)) = req
+        .child_env
+        .iter()
+        .rfind(|(key, value)| key == "HORCH_TEAMMATES_DIR" && !value.is_empty())
+    {
+        env.roster_dir = Some(PathBuf::from(dir));
+    }
     let tagged_prompt = if req.teammate.agent == HarnessKind::Codex && !req.session.is_resume() {
         req.record.as_ref().map(|r| {
             format!(
