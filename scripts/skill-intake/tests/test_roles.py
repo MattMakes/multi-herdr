@@ -9,12 +9,14 @@ from __future__ import annotations
 import io
 import json
 import os
+import runpy
 import sys
 import time
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
+from unittest import mock
 
-from base import TESTS, IntakeTestCase
+from base import INTAKE, TESTS, IntakeTestCase
 
 import fixtures
 from intakelib import index, roles
@@ -387,3 +389,89 @@ class PlainTest(RolesCase):
         stray.parent.mkdir()
         stray.write_text("x\n")
         self.assertEqual(self.prompt("writer", str(stray))[0], 2)
+
+
+SKILL_NAME = "clean-fixture"
+
+
+class RealWritePathsTest(RolesCase):
+    """T-29: role-result checks each role's outputs at the paths `_io` gives that role."""
+
+    def outputs(self, t: tasklib.Task, role: str) -> list[Path]:
+        """A correct output at each write path of `role` (roles._io), written to disk."""
+        c, d, k = t.c, t.d, t.k
+        paths = {
+            "auditor": [c / "sweep" / "audit.jsonl", c / "sweep" / "opaque" / "a.md"],
+            "analyst": [d / "drafts" / "unit-1.json"],
+            "sanitizer": [d / "drafts" / "unit-1.json", d / "quarantine-cr" / "note.md"],
+            "writer": [k / "out" / SKILL_NAME / "SKILL.md", k / "report.json", k / "persona.md"],
+            "reviewer": [k / "out" / SKILL_NAME / "SKILL.md", k / "review.json"],
+        }[role]
+        for p in paths:
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_text("{}\n" if p.suffix in (".json", ".jsonl") else "x\n")
+        return paths
+
+    def start(self, t: tasklib.Task, role: str, plain: bool) -> str:
+        """Start `role` in fleet or plain mode; return its status file path."""
+        extra = ("--skill", SKILL_NAME) if role in ("writer", "reviewer") else ()
+        if not plain:
+            return self.spawn(t, role, *extra)["status_file"]
+        env = {"SKILL_INTAKE_MODE": "plain"}
+        r = self.run_intake("brief", role, "--task", str(t.c), *extra, env=env)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        b = json.loads(r.stdout)
+        r = self.run_intake("subagent-prompt", role, "--brief", b["brief"], env=env)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        return b["status_file"]
+
+    def check(self, role: str, plain: bool):
+        t = self.task()
+        status = self.start(t, role, plain)
+        outs = self.outputs(t, role)
+        self.status(status, role=role, status="ok", outputs=[str(p) for p in outs], error=None)
+        env = {"SKILL_INTAKE_MODE": "plain"} if plain else {}
+        r = self.run_intake("role-result", status, env=env)
+        self.assertEqual(r.returncode, 0, f"{role} plain={plain}: {r.stdout}{r.stderr}")
+        self.assertEqual(json.loads(r.stdout)["outputs"], [str(p) for p in outs])
+        self.assertEqual(self.roles(t)[0]["state"], "done")
+
+    def test_each_role_result_passes_in_fleet_mode(self):
+        for role in roles.ROLES:
+            with self.subTest(role=role):
+                self.check(role, plain=False)
+
+    def test_each_role_result_passes_in_plain_mode(self):
+        for role in roles.ROLES:
+            with self.subTest(role=role):
+                self.check(role, plain=True)
+
+    def test_an_output_outside_the_role_io_paths_fails(self):
+        for role in roles.ROLES:
+            for plain in (False, True):
+                with self.subTest(role=role, plain=plain):
+                    t = self.task()
+                    status = self.start(t, role, plain)
+                    outs = [str(p) for p in self.outputs(t, role)] + [str(t.c / "task.json")]
+                    self.status(status, role=role, status="ok", outputs=outs, error=None)
+                    env = {"SKILL_INTAKE_MODE": "plain"} if plain else {}
+                    r = self.run_intake("role-result", status, env=env)
+                    self.assertEqual(r.returncode, roles.BAD_RESULT, r.stdout + r.stderr)
+                    self.assertIn("output outside the", r.stderr)
+
+
+class PythonVersionTest(RolesCase):
+    """T-29: intake needs Python 3.11 or later."""
+
+    def run_old(self) -> tuple[int, str]:
+        err = io.StringIO()
+        old = (3, 10, 4, "final", 0)
+        with mock.patch.object(sys, "version_info", old), redirect_stderr(err):
+            with self.assertRaises(SystemExit) as cm:
+                runpy.run_path(str(INTAKE), run_name="intake_old_python")
+        return cm.exception.code, err.getvalue()
+
+    def test_python_older_than_3_11_exits_2(self):
+        code, err = self.run_old()
+        self.assertEqual(code, 2)
+        self.assertEqual(err.strip(), "intake needs Python 3.11 or later; found 3.10.4")

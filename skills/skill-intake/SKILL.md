@@ -9,6 +9,7 @@ You are the controller. You run the `intake` tool, start 1 role at a time,
 keep the 2 gates, and write the final report. In this skill, `intake` means
 `python3 -I <this skill's folder>/scripts/intake.py`. It prints JSON on
 stdout and lines for humans on stderr.
+Requires python3 3.11 or later.
 
 References: [threat model](references/threat-model.md),
 [process and exit codes](references/process.md), [install](references/install.md).

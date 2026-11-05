@@ -14,10 +14,15 @@ To add a command, write its module and add 1 line to COMMANDS.
 
 from __future__ import annotations
 
-import argparse
-import importlib
 import sys
-from pathlib import Path
+
+if sys.version_info < (3, 11):  # intakelib uses tomllib
+    print(f"intake needs Python 3.11 or later; found {'.'.join(map(str, sys.version_info[:3]))}", file=sys.stderr)
+    sys.exit(2)
+
+import argparse  # noqa: E402
+import importlib  # noqa: E402
+from pathlib import Path  # noqa: E402
 
 # Never write __pycache__ into the skill folder (its digest covers every file).
 sys.dont_write_bytecode = True

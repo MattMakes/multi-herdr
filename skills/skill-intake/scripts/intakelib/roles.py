@@ -306,7 +306,7 @@ def _status_task(path: Path) -> Task:
     return tasklib.load(str(root.parent.parent / "contaminated" / root.name))
 
 
-def _schema_problems(doc, w: dict, root: Path) -> list[str]:
+def _schema_problems(doc, w: dict, allowed: list[Path]) -> list[str]:
     if not isinstance(doc, dict):
         return ["the status file is not a JSON object"]
     problems = []
@@ -333,8 +333,8 @@ def _schema_problems(doc, w: dict, root: Path) -> list[str]:
         problems.append("outputs is not a list of paths")
     else:
         for p in outputs:
-            if not os.path.isabs(p) or not is_within(resolve(p), root):
-                problems.append(f"output outside the {w['role']} side root: {evidence.escape(p)}")
+            if not os.path.isabs(p) or not any(is_within(resolve(p), a) for a in allowed):
+                problems.append(f"output outside the {w['role']} write paths: {evidence.escape(p)}")
     return problems
 
 
@@ -357,7 +357,8 @@ def role_result(status_path: str) -> dict:
     except (OSError, ValueError) as e:
         doc, problems = None, [f"unreadable status file: {evidence.escape(str(e))}"]
     if doc is not None:
-        problems = _schema_problems(doc, w, side_root(t, w["role"]))
+        # The write paths the brief names (`_io`); K/out covers every skill folder.
+        problems = _schema_problems(doc, w, _io(t, w["role"], None)[1])
     if incident:
         problems.append(f"domain incident {incident['incident_id']}: {incident['notes']}")
     state = "error" if problems or doc.get("status") != "ok" else "done"
