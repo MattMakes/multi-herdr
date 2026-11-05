@@ -82,3 +82,12 @@ aborts at GATE 1, whatever its disposition.
 A re-sweep hit on the output is accepted only inside a declared capability
 (see [install](install.md#declared-capabilities)). These rules are never
 accepted: SCR-03, SCR-05, SCR-07, INJ-01, INJ-02, INJ-04, INJ-06, SUP-02.
+
+INJ-04 is text that tells the agent to hide an action from the user, drop
+earlier instructions, or take a new role. "silently" counts only as an order
+("silently delete the entries", "run it silently"). A negation earlier in the
+same clause ("do not delete items silently", "never fail silently") or a
+failure description ("fails silently", "ignored silently") is not INJ-04. A
+clause ends at `. ; ! ? : ,`, a newline, or and/but/or/then/so. An INJ-04
+phrase in hidden text, split by invisible code points, on a bidi line or in
+tag characters is critical and malicious.

@@ -75,13 +75,24 @@ TAGS = _cp_class((0xE0000, 0xE007F))
 
 # ---- INJ patterns -----------------------------------------------------------
 
+# "silently" counts only as an order. A negation earlier in the same clause
+# ("do not delete items silently") or a failure description ("fails silently",
+# "ignored silently") does not count. A clause starts at the text start, after
+# . ; ! ? : , or a newline, or at and/but/or/then/so.
+_CLAUSE_START = r"(?:(?<![^.;!?:,\n])|\b(?:and|but|or|then|so)\b)"
+_NEGATION = r"\b(?:not|never|dont)\b|n't\b"
+SILENT_ORDER = (
+    _CLAUSE_START + r"(?:(?!" + _NEGATION + r")[^.;!?:,\n])*?"
+    r"(?<!\bfail\s)(?<!\bfails\s)(?<!\bfailed\s)(?<!\bignored\s)\bsilently\b"
+)
+
 AGENT_IMPERATIVE = re.compile(
     r"\b(?:ignore|disregard|forget|override)\b[^\n]{0,40}?"
     r"\b(?:previous|prior|above|earlier|all|any|system|developer)\b[^\n]{0,20}?"
     r"\b(?:instructions?|prompts?|rules|directions|guidelines)\b"
     r"|\b(?:do\s+not|don'?t|never)\s+(?:tell|mention|show|inform|notify|alert)\b[^\n]{0,30}?"
     r"\b(?:user|operator|human)\b"
-    r"|\bsilently\b|\bwithout\s+asking\b|\byou\s+are\s+now\b|\bnew\s+instructions\b"
+    r"|" + SILENT_ORDER + r"|\bwithout\s+asking\b|\byou\s+are\s+now\b|\bnew\s+instructions\b"
     r"|\bsystem\s+prompt\b|\bdeveloper\s+message\b",
     re.I,
 )
