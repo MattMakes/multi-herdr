@@ -27,7 +27,7 @@ At each point it reads every visible raster image:
 
 | Source | Natural size | Drawn size |
 |---|---|---|
-| `<img>` | `naturalWidth` x `naturalHeight` | box after `object-fit` |
+| `<img>` | decoded image | box after `object-fit` |
 | CSS `background-image: url()` | decoded image | `background-size` in the padding box, times the CSS transform scale |
 | `<canvas>` `drawImage` of an `<img>` | source rectangle | destination size times the context transform and the canvas CSS scale |
 | `<video poster>` | decoded poster | box after `object-fit`, while the poster shows |

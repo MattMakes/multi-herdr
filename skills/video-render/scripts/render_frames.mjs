@@ -535,15 +535,15 @@ function drawDest(rest, source) {
 
 function drawRecord(ctx, img, rest) {
   const source = drawSource(img, rest).map(Math.abs);
+  const dest = drawDest(rest, source);
   const m = ctx.getTransform();
-  const scale = [Math.hypot(m.a, m.b), Math.hypot(m.c, m.d)];
-  const size = drawDest(rest, source).map((v, k) => Math.abs(v) * scale[k]);
+  const size = [Math.abs(dest[0]) * Math.hypot(m.a, m.b), Math.abs(dest[1]) * Math.hypot(m.c, m.d)];
   return { src: img.currentSrc || img.src, natural: source, size };
 }
 
 function recordDraw(probe, ctx, img, rest) {
   const draws = canvasDraws(probe, ctx.canvas);
-  if (img instanceof HTMLImageElement && img.naturalWidth > 0) draws.push(drawRecord(ctx, img, rest));
+  return img instanceof HTMLImageElement && img.naturalWidth > 0 && draws.push(drawRecord(ctx, img, rest));
 }
 
 function rasterProbe() {
@@ -566,7 +566,7 @@ const PROBE_SCRIPT = `(() => {\n${PROBE_FUNCTIONS.map(String).join("\n")}\nraste
 const installRasterProbe = (cdp, sessionId) => cdp.send("Page.addScriptToEvaluateOnNewDocument", { source: PROBE_SCRIPT }, sessionId);
 
 // The functions below run in the page (measureScript sends their source). They use only
-// browser globals and each other.
+// browser globals and each other. A sample is [url, natural size, drawn CSS size], or null.
 function rasterName(url) {
   const base = new URL(".", location.href).href;
   const other = url.startsWith("data:") ? `${url.slice(0, 40)}...` : url;
@@ -582,39 +582,37 @@ function isShown(el, r) {
   return onScreen && el.checkVisibility({ opacityProperty: true, visibilityProperty: true });
 }
 
+async function loadNatural(url) {
+  const img = new Image();
+  img.src = url;
+  await img.decode().catch(Boolean);
+  return img.naturalWidth > 0 ? [img.naturalWidth, img.naturalHeight] : null;
+}
+
+// The pixel size of the image file, decoded once per url.
 function naturalSize(url) {
   const cache = (window.__rasterNatural ??= new Map());
-  if (!cache.has(url)) {
-    cache.set(url, new Promise((ok) => {
-      const img = new Image();
-      img.onload = () => ok([img.naturalWidth, img.naturalHeight]);
-      img.onerror = () => ok(null);
-      img.src = url;
-    }));
-  }
-  return cache.get(url);
+  return cache.get(url) ?? cache.set(url, loadNatural(url)).get(url);
+}
+
+function fitScales(box, n) {
+  const contain = Math.min(box[0] / n[0], box[1] / n[1]);
+  return { contain, cover: Math.max(box[0] / n[0], box[1] / n[1]), none: 1, "scale-down": Math.min(1, contain) };
 }
 
 // The drawn size of an image of natural size n in a box, by object-fit rules.
 function fitSize(mode, box, n) {
-  const contain = Math.min(box[0] / n[0], box[1] / n[1]);
-  const scales = { contain, cover: Math.max(box[0] / n[0], box[1] / n[1]), none: 1, "scale-down": Math.min(1, contain) };
-  return mode in scales ? [n[0] * scales[mode], n[1] * scales[mode]] : box;
+  const k = fitScales(box, n)[mode];
+  return k === undefined ? box : [n[0] * k, n[1] * k];
 }
 
-// Split a computed CSS list at its top-level commas.
+function trimmed(text) {
+  return text.trim();
+}
+
+// Split a computed CSS list at the commas that are not inside parentheses.
 function splitLayers(text) {
-  const layers = [""];
-  let depth = 0;
-  for (const ch of text) {
-    if (ch === "," && depth === 0) {
-      layers.push("");
-      continue;
-    }
-    depth += ch === "(" ? 1 : ch === ")" ? -1 : 0;
-    layers[layers.length - 1] += ch;
-  }
-  return layers.map((s) => s.trim());
+  return text.split(/,(?![^(]*\))/).map(trimmed);
 }
 
 function layerUrl(layer) {
@@ -623,94 +621,118 @@ function layerUrl(layer) {
 }
 
 function axisLength(token, boxLen) {
-  if (token === "auto") return null;
-  return token.endsWith("%") ? (parseFloat(token) / 100) * boxLen : parseFloat(token);
+  const length = token.endsWith("%") ? (parseFloat(token) / 100) * boxLen : parseFloat(token);
+  return token === "auto" ? null : length;
 }
 
-function backgroundSize(text, box, n) {
-  if (text === "cover" || text === "contain") return fitSize(text, box, n);
-  const [a, b = "auto"] = text.split(/\s+/);
-  const w = axisLength(a, box[0]);
-  const h = axisLength(b, box[1]);
-  if (w === null && h === null) return n;
+function keepRatio(w, h, n) {
   return [w ?? (h * n[0]) / n[1], h ?? (w * n[1]) / n[0]];
 }
 
-function imageSamples(add) {
-  for (const img of document.images) {
-    const r = img.getBoundingClientRect();
-    const n = [img.naturalWidth, img.naturalHeight];
-    const url = img.currentSrc || img.src;
-    if (isRaster(url) && n[0] > 0 && isShown(img, r)) add(url, n, fitSize(getComputedStyle(img).objectFit, [r.width, r.height], n));
-  }
+function lengthSize(text, box, n) {
+  const [a, b = "auto"] = text.split(/\s+/);
+  const w = axisLength(a, box[0]);
+  const h = axisLength(b, box[1]);
+  return w === null && h === null ? n : keepRatio(w, h, n);
 }
 
-function canvasSamples(add) {
-  for (const [canvas, entry] of window.__rasterProbe?.canvases ?? []) {
-    const r = canvas.getBoundingClientRect();
-    if (!canvas.isConnected || !canvas.width || !canvas.height || !isShown(canvas, r)) continue;
-    const k = [r.width / canvas.width, r.height / canvas.height];
-    for (const d of entry.draws) add(d.src, d.natural, [d.size[0] * k[0], d.size[1] * k[1]]);
-  }
+function backgroundSize(text, box, n) {
+  return text === "cover" || text === "contain" ? fitSize(text, box, n) : lengthSize(text, box, n);
 }
 
-async function svgImageSamples(add) {
-  for (const el of document.querySelectorAll("image")) {
-    const r = el.getBoundingClientRect();
-    const url = el instanceof SVGImageElement ? new URL(el.href.baseVal, document.baseURI).href : null;
-    if (!isRaster(url) || !isShown(el, r)) continue;
-    const par = el.preserveAspectRatio.baseVal;
-    const mode = par.align === SVGPreserveAspectRatio.SVG_PRESERVEASPECTRATIO_NONE ? "fill" : par.meetOrSlice === SVGPreserveAspectRatio.SVG_MEETORSLICE_SLICE ? "cover" : "contain";
-    const n = await naturalSize(url);
-    if (n) add(url, n, fitSize(mode, [r.width, r.height], n));
-  }
+// An element box that shows the image at url with the fit mode.
+async function boxSample(el, url, mode) {
+  const r = el.getBoundingClientRect();
+  const n = isRaster(url) && isShown(el, r) ? await naturalSize(url) : null;
+  return n && [url, n, fitSize(mode, [r.width, r.height], n)];
+}
+
+function imageSample(img) {
+  return boxSample(img, img.currentSrc || img.src, getComputedStyle(img).objectFit);
+}
+
+function svgFit(el) {
+  const par = el.preserveAspectRatio.baseVal;
+  const meet = par.meetOrSlice === SVGPreserveAspectRatio.SVG_MEETORSLICE_SLICE ? "cover" : "contain";
+  return par.align === SVGPreserveAspectRatio.SVG_PRESERVEASPECTRATIO_NONE ? "fill" : meet;
+}
+
+function svgImageSample(el) {
+  return el instanceof SVGImageElement ? boxSample(el, new URL(el.href.baseVal, document.baseURI).href, svgFit(el)) : null;
 }
 
 // A poster shows until the video has a frame, or while it is paused at 0 and never played.
-async function posterSamples(add) {
-  for (const v of document.querySelectorAll("video[poster]")) {
-    const r = v.getBoundingClientRect();
-    const posterUp = v.readyState < 2 || (v.paused && v.played.length === 0 && v.currentTime === 0);
-    if (!posterUp || !isRaster(v.poster) || !isShown(v, r)) continue;
-    const n = await naturalSize(v.poster);
-    if (n) add(v.poster, n, fitSize(getComputedStyle(v).objectFit, [r.width, r.height], n));
-  }
+function posterSample(v) {
+  const posterUp = v.readyState < 2 || (v.paused && v.played.length === 0 && v.currentTime === 0);
+  return posterUp ? boxSample(v, v.poster, getComputedStyle(v).objectFit) : null;
 }
 
-async function elementBackgrounds(el, add) {
-  const style = getComputedStyle(el);
+// `this` is the canvas scale, CSS px per canvas px.
+function scaledDraw(d) {
+  return [d.src, d.natural, [d.size[0] * this[0], d.size[1] * this[1]]];
+}
+
+function canvasSamples([canvas, entry]) {
+  const r = canvas.getBoundingClientRect();
+  const drawn = canvas.isConnected && canvas.width > 0 && canvas.height > 0 && isShown(canvas, r);
+  return drawn ? entry.draws.map(scaledDraw, [r.width / canvas.width, r.height / canvas.height]) : [];
+}
+
+// `this` is the background box of 1 element.
+async function layerSample(layer, i) {
+  const url = layerUrl(layer);
+  const n = isRaster(url) ? await naturalSize(url) : null;
+  const size = n && backgroundSize(this.sizes[i % this.sizes.length], this.box, n);
+  return n && [url, n, [size[0] * this.scale[0], size[1] * this.scale[1]]];
+}
+
+function axisScale(drawn, layout) {
+  return layout ? drawn / layout : 1;
+}
+
+function backgroundBox(el, style) {
   const r = el.getBoundingClientRect();
-  if (style.backgroundImage === "none" || !isShown(el, r)) return;
-  const sizes = splitLayers(style.backgroundSize);
-  const box = [el.clientWidth, el.clientHeight];
-  const scale = [el.offsetWidth ? r.width / el.offsetWidth : 1, el.offsetHeight ? r.height / el.offsetHeight : 1];
-  for (const [i, layer] of splitLayers(style.backgroundImage).entries()) {
-    const url = layerUrl(layer);
-    const n = isRaster(url) ? await naturalSize(url) : null;
-    if (n) add(url, n, backgroundSize(sizes[i % sizes.length], box, n).map((v, k) => v * scale[k]));
-  }
+  const scale = [axisScale(r.width, el.offsetWidth), axisScale(r.height, el.offsetHeight)];
+  return { sizes: splitLayers(style.backgroundSize), box: [el.clientWidth, el.clientHeight], scale, shown: isShown(el, r) };
 }
 
-async function backgroundSamples(add) {
-  for (const el of document.querySelectorAll("*")) await elementBackgrounds(el, add);
+function backgroundSamples(el) {
+  const style = getComputedStyle(el);
+  const bg = style.backgroundImage === "none" ? null : backgroundBox(el, style);
+  return bg?.shown ? splitLayers(style.backgroundImage).map(layerSample, bg) : [];
+}
+
+function roundTenth(v) {
+  return Math.round(v * 10) / 10;
+}
+
+function deviceTenth(v) {
+  return roundTenth(v * devicePixelRatio);
+}
+
+function usableSample(s) {
+  return Boolean(s) && s[1][0] > 0 && s[1][1] > 0;
+}
+
+function sampleRecord([url, n, size]) {
+  return { src: rasterName(url), natural_px: n.map(roundTenth), drawn_px: size.map(deviceTenth) };
 }
 
 async function measureRasters() {
-  const found = [];
-  const round = (v) => Math.round(v * 10) / 10;
-  const add = (url, n, size) => {
-    if (n[0] > 0 && n[1] > 0) found.push({ src: rasterName(url), natural_px: n.map(round), drawn_px: size.map((v) => round(v * devicePixelRatio)) });
-  };
-  imageSamples(add);
-  canvasSamples(add);
-  await svgImageSamples(add);
-  await posterSamples(add);
-  await backgroundSamples(add);
-  return found;
+  const found = await Promise.all([
+    ...[...document.images].map(imageSample),
+    ...[...document.querySelectorAll("image")].map(svgImageSample),
+    ...[...document.querySelectorAll("video[poster]")].map(posterSample),
+    ...[...(window.__rasterProbe?.canvases ?? [])].flatMap(canvasSamples),
+    ...[...document.querySelectorAll("*")].flatMap(backgroundSamples),
+  ]);
+  return found.filter(usableSample).map(sampleRecord);
 }
 
-const PAGE_FUNCTIONS = [rasterName, isRaster, isShown, naturalSize, fitSize, splitLayers, layerUrl, axisLength, backgroundSize,
-  imageSamples, canvasSamples, svgImageSamples, posterSamples, elementBackgrounds, backgroundSamples, measureRasters];
+const PAGE_FUNCTIONS = [rasterName, isRaster, isShown, loadNatural, naturalSize, fitScales, fitSize, trimmed, splitLayers, layerUrl,
+  axisLength, keepRatio, lengthSize, backgroundSize, boxSample, imageSample, svgFit, svgImageSample, posterSample, scaledDraw,
+  canvasSamples, layerSample, axisScale, backgroundBox, backgroundSamples, roundTenth, deviceTenth, usableSample, sampleRecord,
+  measureRasters];
 
 const measureScript = (f, fps) => `(async () => {
 ${PAGE_FUNCTIONS.map(String).join("\n")}
@@ -718,10 +740,13 @@ await (${frameScript(f, fps)});
 return measureRasters();
 })()`;
 
+const gridFrame = (fps) => (k) => Math.round(k * RASTER_STEP_SEC * fps);
+const below = (count) => (f) => f < count;
+
 // The frames nearest the RASTER_STEP_SEC grid, inside frames 0..count-1.
 export function rasterFrames(count, fps) {
   const steps = Math.ceil(count / fps / RASTER_STEP_SEC - 1e-9);
-  return [...new Set(range(steps).map((k) => Math.round(k * RASTER_STEP_SEC * fps)))].filter((f) => f < count);
+  return [...new Set(range(steps).map(gridFrame(fps)))].filter(below(count));
 }
 
 const roundTime = (t) => Math.round(t * 1000) / 1000;
@@ -738,12 +763,16 @@ function keepLargest(best, s) {
 // 1 sample per image per time, the largest scale, so 2 copies of 1 image do not double a run.
 export const largestPerSource = (samples) => [...samples.reduce(keepLargest, new Map()).values()].sort(byTimeThenSrc);
 
+const sampleLine = (s) => `    ${JSON.stringify(s)}`;
+const samplesBlock = (lines) => (lines ? `\n${lines}\n  ` : "");
+
 // 1 sample a line, so a long film stays readable and small.
 function writeRasterReport(file, samples) {
-  const lines = largestPerSource(samples).map((s) => `    ${JSON.stringify(s)}`).join(",\n");
+  const lines = largestPerSource(samples).map(sampleLine).join(",\n");
   mkdirSync(dirname(file), { recursive: true });
-  writeFileSync(file, `{\n  "step_sec": ${RASTER_STEP_SEC},\n  "samples": [${lines ? `\n${lines}\n  ` : ""}]\n}\n`);
+  writeFileSync(file, `{\n  "step_sec": ${RASTER_STEP_SEC},\n  "samples": [${samplesBlock(lines)}]\n}\n`);
 }
+
 const atTime = (t) => (s) => ({ t_sec: t, ...s });
 
 async function measureFrame(page, f) {
@@ -751,25 +780,26 @@ async function measureFrame(page, f) {
   return found.map(atTime(roundTime(f / page.fps)));
 }
 
+const measureInto = (page, samples) => async (f) => samples.push(...(await measureFrame(page, f)));
+
 // After the capture, the same page seeks the grid frames again and reads sizes only, with
 // no screenshot, so the report costs about 1 seek per 0.1 s of scene.
 async function measureRasterSizes(page, order, file) {
   const samples = [];
-  await inSequence(rasterFrames(Math.max(...order) + 1, page.fps), async (f) => samples.push(...(await measureFrame(page, f))));
+  await inSequence(rasterFrames(Math.max(...order) + 1, page.fps), measureInto(page, samples));
   writeRasterReport(file, samples);
 }
 
 // Scene samples move to film time. Samples in the tail handle are dropped: the next
 // scene covers that time.
-function filmSamples(s, file) {
-  if (!existsSync(file)) return [];
-  const inScene = (x) => x.t_sec < s.duration_sec - 1e-9;
-  return JSON.parse(readFileSync(file, "utf8")).samples.filter(inScene).map((x) => ({ ...x, t_sec: roundTime(s.start_sec + x.t_sec) }));
-}
+const inScene = (s) => (x) => x.t_sec < s.duration_sec - 1e-9;
+const toFilm = (s) => (x) => ({ ...x, t_sec: roundTime(s.start_sec + x.t_sec) });
+const readSamples = (file) => (existsSync(file) ? JSON.parse(readFileSync(file, "utf8")).samples : []);
+const filmSamples = (dir) => (s) => readSamples(join(dir, `${s.id}.json`)).filter(inScene(s)).map(toFilm(s));
 
-function writeFilmRaster(root, timeline, dir) {
-  const file = join(root, "render", "raster-sizes.json");
-  writeRasterReport(file, timeline.scenes.flatMap((s) => filmSamples(s, join(dir, `${s.id}.json`))));
+function writeFilmRaster(timelineFile, dir) {
+  const file = join(dirname(resolve(timelineFile)), "render", "raster-sizes.json");
+  writeRasterReport(file, loadTimeline(timelineFile).scenes.flatMap(filmSamples(dir)));
   return file;
 }
 
@@ -945,8 +975,12 @@ async function runScenes(opts) {
   const done = await runPool(jobs, opts.workers, runJob(plan, opts));
   const failures = done.filter((d) => d.result.status === "rejected").map(jobFailure);
   check(failures.length === 0, failures.join("\n"));
-  const rasterSizes = opts.rasterDir ? writeFilmRaster(root, timeline, opts.rasterDir) : undefined;
-  return { workers: opts.workers, subframes: opts.sample ? 1 : opts.subframes, sample: opts.sample, scenes: done.map(jobLine), raster_sizes: rasterSizes };
+  return { workers: opts.workers, subframes: opts.sample ? 1 : opts.subframes, sample: opts.sample, scenes: done.map(jobLine) };
+}
+
+async function scenesWithRaster(opts) {
+  const report = await runScenes(opts);
+  return opts.rasterDir ? { ...report, raster_sizes: writeFilmRaster(opts.timelineFile, opts.rasterDir) } : report;
 }
 
 // --scenes renders every HTML scene to <out-dir>/<id>.mp4 with its tail handle, and writes
@@ -954,7 +988,7 @@ async function runScenes(opts) {
 // per HTML scene and a plate hash per file scene to <out-dir>/<id>/, and no raster report.
 export async function renderScenes(opts) {
   const rasterDir = opts.sample ? null : mkdtempSync(join(tmpdir(), "video-render-raster-"));
-  return runScenes({ ...opts, rasterDir }).finally(() => rasterDir && rmSync(rasterDir, { recursive: true, force: true }));
+  return scenesWithRaster({ ...opts, rasterDir }).finally(rasterDir ? removeDir(rasterDir) : ignore);
 }
 
 const filesIn = (dir) => (existsSync(dir) ? readdirSync(dir).sort() : null);
@@ -1504,10 +1538,11 @@ const testRasterFrames = () => {
   assertEq([at30.length, at30[1], at30.at(-1)], [28, 3, 81], "30 fps, 2.8 s");
 };
 
+const rasterSample = (t, src, w) => ({ t_sec: t, src, natural_px: [100, 100], drawn_px: [w, w] });
+
 const testLargestPerSource = () => {
-  const s = (t, src, w) => ({ t_sec: t, src, natural_px: [100, 100], drawn_px: [w, w] });
-  const got = largestPerSource([s(0.1, "b.png", 100), s(0.1, "a.png", 110), s(0.1, "a.png", 130), s(0, "a.png", 100)]);
-  assertEq(got, [s(0, "a.png", 100), s(0.1, "a.png", 130), s(0.1, "b.png", 100)], "largest scale per image and time");
+  const got = largestPerSource([rasterSample(0.1, "b.png", 100), rasterSample(0.1, "a.png", 110), rasterSample(0.1, "a.png", 130), rasterSample(0, "a.png", 100)]);
+  assertEq(got, [rasterSample(0, "a.png", 100), rasterSample(0.1, "a.png", 130), rasterSample(0.1, "b.png", 100)], "largest scale per image and time");
 };
 
 // Each fixture draws a 100 px PNG. One <img> scene, and one scene with every other image kind.
@@ -1583,24 +1618,39 @@ const RASTER_TIMELINE = {
   ],
 };
 
-// --scene with a 100 px image at 100 px passes; --scenes with one at 130 px in scene b fails.
-async function testRasterQa(root) {
-  const dir = await rasterDir(root, "raster-qa", ["img.png"]);
+const noQa = () => !existsSync(join(QA_SCRIPTS, "qa_video.py"));
+const NO_QA = "qa_video.py is not next to this skill; report format checked only";
+
+// --scene with a 100 px image drawn at 100 px passes raster_upscale.
+async function testRasterClean(root) {
+  const dir = await rasterDir(root, "raster-clean", ["img.png"]);
   writeFileSync(join(dir, "clean.html"), imgHtml(100));
   await rasterRender(join(dir, "clean.html"), join(dir, "clean"), join(dir, "clean.json"));
+  assertEq(readJson(join(dir, "clean.json")).samples.length, 5, "5 samples in 0.5 s");
+  if (noQa()) return NO_QA;
+  check(qaRasterPasses(join(dir, "clean.json")), "qa_video raster_upscale fails the clean 1x report");
+}
+
+async function rasterProject(root) {
+  const dir = await rasterDir(root, "raster-scenes", ["img.png"]);
   ["scenes/a", "scenes/b"].forEach((d) => mkdirSync(join(dir, d), { recursive: true }));
   writeFileSync(join(dir, "scenes/a/index.html"), imgHtml(100, "../../img.png"));
   writeFileSync(join(dir, "scenes/b/index.html"), imgHtml(130, "../../img.png"));
   writeFileSync(join(dir, "timeline.json"), json(RASTER_TIMELINE));
+  return dir;
+}
+
+const timeAndWidth = (x) => `${x.t_sec} ${x.drawn_px[0]}`;
+const FILM_SAMPLES = ["0 100", "0.1 100", "0.2 100", "0.3 100", "0.4 100", "0.5 130", "0.6 130", "0.7 130", "0.8 130", "0.9 130"];
+
+// --scenes with a 100 px image drawn at 130 px in scene b fails raster_upscale.
+async function testRasterScenes(root) {
+  const dir = await rasterProject(root);
   const report = await renderScenes({ timelineFile: join(dir, "timeline.json"), outDir: join(dir, "render/scenes"), workers: 2, subframes: 1, sample: false });
-  const film = readJson(report.raster_sizes);
   assertEq(report.raster_sizes, join(dir, "render", "raster-sizes.json"), "report path");
-  assertEq(film.samples.map((s) => `${s.t_sec} ${s.drawn_px[0]}`), [0, 0.1, 0.2, 0.3, 0.4].map((t) => `${t} 100`).concat(
-    [0.5, 0.6, 0.7, 0.8, 0.9].map((t) => `${t} 130`)), "film times, tail handle dropped");
-  if (!existsSync(join(QA_SCRIPTS, "qa_video.py"))) return "qa_video.py is not next to this skill; report format checked only";
-  check(qaRasterPasses(join(dir, "clean.json")), "qa_video raster_upscale fails the clean 1x report");
+  assertEq(readJson(report.raster_sizes).samples.map(timeAndWidth), FILM_SAMPLES, "film times, tail handle dropped");
+  if (noQa()) return NO_QA;
   check(!qaRasterPasses(report.raster_sizes), "qa_video raster_upscale passes a 1.3x image");
-  return "1x passes, 1.3x fails in qa_video.py";
 }
 
 const BASE_TESTS = [
@@ -1634,7 +1684,8 @@ const CHROME_TESTS = [
   ["--scenes renders HTML scenes in parallel workers with tail handles", testParallelScenes],
   ["scope check passes a fix inside scope and names a changed scene outside it", testScope],
   ["raster sizes cover background, canvas, poster and SVG image, not SVG files", testRasterKinds],
-  ["raster_upscale passes a 1x image and fails a 1.3x image from --scenes", testRasterQa],
+  ["qa_video raster_upscale passes a 1x image from --scene --raster-sizes", testRasterClean],
+  ["qa_video raster_upscale fails a 1.3x image in render/raster-sizes.json from --scenes", testRasterScenes],
 ];
 
 const skipChrome = () => [[`headless Chrome render # SKIP no Chrome at ${chromePath()}`, () => undefined]];
