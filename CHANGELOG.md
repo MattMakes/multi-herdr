@@ -4,6 +4,17 @@
 
 ## Unreleased
 
+- New teammate `pixel-vfx-artist` makes pixel art effects and sprite
+  animations as code: impacts, slashes, spells, fire, pickups, transitions.
+  Its new `pixel-vfx` skill drafts an effect, renders a contact sheet, looks at
+  it and refines it at least 3 times, adds hit-stop timing, and exports sprite
+  sheets with Aseprite-style JSON for Godot, Unity, Phaser and other engines.
+  Hits are acted out on a stand-in character with a reacting target, effects
+  chain into whole moves, and previews come as contact sheets, GIFs and
+  side-by-side comparisons. A second skill, `pixel-vfx-library`, holds
+  ready-made example effects in 21 categories to search, copy and recolour.
+  The skill's tool needs only Node 18 or later.
+
 ## v0.4.3 - 2026-11-02
 
 - Teammates can set `system_prompt: <name>` to start Claude with
