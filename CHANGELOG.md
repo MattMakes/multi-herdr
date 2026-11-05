@@ -4,6 +4,8 @@
 
 ## Unreleased
 
+## v0.4.5 - 2026-11-05
+
 - A new `one-page-design` teammate and skill turn a design into a one-page
   design document in Stone Librande's style, with a starter page and a page
   checker. The pr finish step is now not applicable for a task that landed
