@@ -24,6 +24,8 @@ Switch every reader of the JSON session ledger to the task ledger (D10, step 1 o
 2. Serve `SessionLedger` reads from SQLite worker rows behind the same API, then switch each caller.
 3. Writers stay as they are; ticket 29 removes them.
 
+Amendment (report 01): orchestrator worker rows have `harness` NULL. Write the harness on every orchestrator row, so the session readers you port show it. Add 1 test whose name starts with `trf_44_`.
+
 ## Done when
 
 TRF-44 passes; `horch sessions` shows ledger workers with their claimed task.

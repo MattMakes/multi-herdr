@@ -20,6 +20,8 @@ Prove the run branch is releasable (D4: this ticket is the run gate until ticket
 3. On a failure, send QUESTION with the failing step and the ticket that owns the file. Do not fix it here.
 4. Confirm that 31 and 32 have no open Critical finding.
 
+Amendment: drop the scratch worktree `.worktrees/_scratch/t01` with `horch ledger worktree drop`. Its 1 uncommitted test is evidence for ticket 08 only. Name the result in your report.
+
 ## Done when
 
 The gate passes on the tip and the run gate row is recorded.
