@@ -676,12 +676,21 @@ function sampleChange(before, after, id, names) {
   return differs.length ? `changed: ${differs.join(", ")}` : null;
 }
 
+const isHit = ([hit]) => hit;
+
+// The first problem with the 2 sample lists of a scene, or null when they match by name.
+function listProblem(before, after, a, b) {
+  const rules = [
+    [!hasFiles(a), `no samples in ${before}`],
+    [!hasFiles(b), `no samples in ${after}`],
+    [json(a) !== json(b), `sample files differ: ${json(a)} vs ${json(b)}`],
+  ];
+  return rules.find(isHit)?.[1] ?? null;
+}
+
 function sceneChange(before, after, id) {
   const [a, b] = [filesIn(join(before, id)), filesIn(join(after, id))];
-  if (!hasFiles(a)) return `no samples in ${before}`;
-  if (!hasFiles(b)) return `no samples in ${after}`;
-  if (json(a) !== json(b)) return `sample files differ: ${json(a)} vs ${json(b)}`;
-  return sampleChange(before, after, id, a);
+  return listProblem(before, after, a, b) ?? sampleChange(before, after, id, a);
 }
 
 const sceneId = (s) => s.id;
@@ -1134,10 +1143,12 @@ async function testAverage(root) {
 // Pixels between the background (22) and the box (180) on the row through the box.
 const blurWidth = (png) => grayRow(png, 18, 64).filter((v) => v > 32 && v < 170).length;
 
+const renderBlur = (root) => (n) => renderScene({ ...sceneBase(root), out: join(root, `blur${n}`), frames: "2,", subframes: n });
+const blurOf = (root) => (n) => blurWidth(join(root, `blur${n}`, frameName(2)));
+
 async function testBlurWidth(root) {
-  const widths = await inSequence([1, 8], async (n) => {
-    await renderScene({ ...sceneBase(root), out: join(root, `blur${n}`), frames: "2,", subframes: n });
-  }).then(() => [1, 8].map((n) => blurWidth(join(root, `blur${n}`, frameName(2)))));
+  await inSequence([1, 8], renderBlur(root));
+  const widths = [1, 8].map(blurOf(root));
   check(widths[0] === 0 && widths[1] > 1, `blur width at 1 and 8 subframes: ${widths.join(", ")} px`);
   return `${widths[1]} px at 8 subframes`;
 }
@@ -1166,27 +1177,33 @@ function scopeProject(root) {
   return { dir, timelineFile: join(dir, "timeline.json") };
 }
 
+const frameCountOf = (dir) => async (id) => (await probe(join(dir, `${id}.mp4`))).video.nb_frames;
+
 async function testParallelScenes(root) {
   const { dir, timelineFile } = scopeProject(root);
   const report = await renderScenes({ timelineFile, outDir: join(dir, "render/scenes"), workers: 2, subframes: 1, sample: false });
-  assertEq(report.scenes.map((s) => s.id), ["a", "b"], "HTML scenes only");
-  const counts = await Promise.all(["a", "b"].map(async (id) => (await probe(join(dir, "render/scenes", `${id}.mp4`))).video.nb_frames));
+  assertEq(report.scenes.map(sceneId), ["a", "b"], "HTML scenes only");
+  const counts = await Promise.all(["a", "b"].map(frameCountOf(join(dir, "render/scenes"))));
   assertEq(counts, ["8", "5"], "frames with the tail handle");
 }
 
 const sampleInto = (timelineFile, outDir) => renderScenes({ timelineFile, outDir, workers: 2, subframes: 1, sample: true });
 
+// Recolour the box of scene `id`, sample every scene into <dir>/<round>, and check
+// the samples against <dir>/before with a fix in scene a.
+async function recolourRound({ dir, timelineFile }, id, colour, round) {
+  writeFileSync(join(dir, `scenes/${id}/index.html`), sceneHtml(colour));
+  await sampleInto(timelineFile, join(dir, round));
+  return scopeCheck({ timelineFile, before: join(dir, "before"), after: join(dir, round), fix: ["a"] });
+}
+
 async function testScope(root) {
-  const { dir, timelineFile } = scopeProject(root);
-  await sampleInto(timelineFile, join(dir, "before"));
-  writeFileSync(join(dir, "scenes/a/index.html"), sceneHtml("#4cf2aa"));
-  await sampleInto(timelineFile, join(dir, "fix1"));
-  const one = scopeCheck({ timelineFile, before: join(dir, "before"), after: join(dir, "fix1"), fix: ["a"] });
+  const project = scopeProject(root);
+  await sampleInto(project.timelineFile, join(project.dir, "before"));
+  const one = await recolourRound(project, "a", "#4cf2aa", "fix1");
   assertEq([one.passed, one.checked], [true, ["b", "c"]], "a fix inside scope a");
-  writeFileSync(join(dir, "scenes/b/index.html"), sceneHtml("#4c4cf2"));
-  await sampleInto(timelineFile, join(dir, "fix2"));
-  const two = scopeCheck({ timelineFile, before: join(dir, "before"), after: join(dir, "fix2"), fix: ["a"] });
-  assertEq([two.passed, two.changed.map((c) => c.id)], [false, ["b"]], "a change outside scope a");
+  const two = await recolourRound(project, "b", "#4c4cf2", "fix2");
+  assertEq([two.passed, two.changed.map(sceneId)], [false, ["b"]], "a change outside scope a");
 }
 
 const BASE_TESTS = [
