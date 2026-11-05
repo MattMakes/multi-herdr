@@ -1,18 +1,21 @@
 """The deterministic scanner of `intake scan` (spec 4.2): the rule framework, plus
-the INJ rules (text aimed at the agent) and the SCR rules (scripts).
+the INJ rules (text aimed at the agent) and the SCR rules (scripts). The SUP
+rules are in `supply`, the OPQ detection in `opaque`.
 
 The scanner reads quarantined files as bytes and text only. It never executes,
 imports or loads them, and it starts no process.
 
 Text rules apply to every text file. Script rules apply to a "code unit": a
-file with a script extension or a shebang, or a fenced Markdown code block
-whose language is a shell or programming language. A hit is
+file with a script extension or a shebang, a fenced Markdown code block whose
+language is a shell or programming language or is not given, or the inline
+code spans of 1 Markdown line. A hit is
 
     {id, rule, severity, file, line, evidence, malicious}
 
 `rule` is the rule id (INJ-04), `id` is the hit id (scan-0001). `file` and
 `evidence` go through the evidence-escape function; `evidence` is wrapped as
-{"untrusted": ...}. One hit per rule, file and line: the most severe wins.
+{"untrusted": ...}. One hit per rule, file and line: the most severe wins. The
+per-dependency rules (SUP-01, SUP-03, SUP-04) keep 1 hit per item on a line.
 
 Hostile code points are built with chr() or \\U escapes made at run time, so
 this file stays printable ASCII. The Anthropic key variable name is built from
@@ -29,7 +32,7 @@ import tempfile
 from collections import namedtuple
 from pathlib import Path
 
-from . import evidence
+from . import evidence, opaque, supply
 
 SEVERITIES = ("critical", "high", "medium", "low", "info")
 _RANK = {s: i for i, s in enumerate(SEVERITIES)}
@@ -39,7 +42,7 @@ KEY_SUFFIX = "_API_KEY"
 KEY_NAME = KEY_PREFIX + KEY_SUFFIX
 
 Source = namedtuple("Source", "rel name lines")
-Unit = namedtuple("Unit", "lines makefile")  # lines: [(line number, text)]
+Unit = namedtuple("Unit", "lines makefile inline", defaults=(False,))  # lines: [(line number, text)]
 
 SCRIPT_EXTS = frozenset(
     ".sh .bash .zsh .fish .ksh .py .pyw .js .mjs .cjs .ts .tsx .jsx .rb .pl .pm .php "
@@ -122,6 +125,7 @@ BASE64_RUN = re.compile(r"[A-Za-z0-9+/_-]{200,}={0,2}")
 HEX_RUN = re.compile(r"(?:[0-9a-fA-F]{2}){100,}")
 DATA_URI = re.compile(r"\bdata:(?!image/)[\w.+-]+/[\w.+-]+[;,]", re.I)
 INLINE_CODE = re.compile(r"`([^`\n]+)`")
+CODE_SPAN = re.compile(r"(?<!`)(`+)(?!`)(.+?)(?<!`)\1(?!`)")
 LETTERS = re.compile(r"[^\W\d_]+")
 
 FRONT_KEY = re.compile(r"^([A-Za-z_][\w-]*)\s*:(.*)$")
@@ -249,11 +253,16 @@ def _better(a: dict, b: dict) -> dict:
     return b if kb < ka else a
 
 
+PER_ITEM = frozenset(("SUP-01", "SUP-03", "SUP-04"))
+
+
 def finish(hits: list[dict]) -> list[dict]:
-    """One hit per (rule, file, line), sorted, with ids scan-0001, scan-0002, ..."""
+    """One hit per (rule, file, line), sorted, with ids scan-0001, scan-0002, ...
+    A per-dependency rule keeps 1 hit per evidence text on a line."""
     kept: dict[tuple, dict] = {}
     for h in hits:
-        key = (h["file"], h["line"], h["rule"])
+        item = h["evidence"]["untrusted"] if h["rule"] in PER_ITEM else ""
+        key = (h["file"], h["line"], h["rule"], item)
         kept[key] = _better(kept[key], h) if key in kept else h
     out = []
     for i, key in enumerate(sorted(kept), 1):
@@ -264,7 +273,10 @@ def finish(hits: list[dict]) -> list[dict]:
 def read_text(path: Path) -> str | None:
     """The file as text, or None for binary data (a NUL byte in the first 8 KB)."""
     with open(path, "rb") as f:
-        data = f.read()
+        return as_text(f.read())
+
+
+def as_text(data: bytes) -> str | None:
     if b"\0" in data[:8192]:
         return None
     return data.decode("utf-8", errors="replace")
@@ -284,22 +296,38 @@ def walk(root: Path) -> list[tuple[str, Path]]:
 
 
 def scan_tree(root: Path) -> list[dict]:
+    """Every hit in the tree. Every file is classified by content (OPQ), and
+    every text file is scanned by the text rules, whatever its class. OPQ hits
+    carry `_path` and `_type` for `opaque.write_records`."""
+    files = walk(root)
+    tree = frozenset(rel for rel, _ in files)
     hits: list[dict] = []
-    for rel, path in walk(root):
-        text = read_text(path)
+    for rel, path in files:
+        data = path.read_bytes()
+        text = as_text(data)
+        kind = opaque.classify(rel, data, text)
+        if kind is None and text is not None and supply.vendored_root(rel) is None:
+            if supply.licence_header(rel, text.split("\n")):
+                kind = ("OPQ-05", "third-party code (licence header)")
+        if kind:
+            hits.append(opaque.opaque_hit(kind[0], kind[1], rel))
         if text is not None:
-            hits.extend(scan_file(rel, text))
+            hits.extend(scan_file(rel, text, tree))
+    for sup07, folder in supply.vendored_hits(tree):
+        hits += [sup07, opaque.opaque_hit("OPQ-05", "vendored folder", folder)]
     return finish(hits)
 
 
-def scan_file(rel: str, text: str) -> list[dict]:
-    """Every INJ and SCR hit in one text file (not yet numbered: see `finish`)."""
+def scan_file(rel: str, text: str, tree: frozenset | None = None) -> list[dict]:
+    """Every INJ, SCR and SUP hit in one text file (not yet numbered: see
+    `finish`). `tree`, every path in the tree, enables the SUP lockfile check."""
     if text.startswith(BOM):
         text = text[1:]  # U+FEFF at byte 0 is a BOM, not INJ-01
     lines = [ln[:-1] if ln.endswith("\r") else ln for ln in text.split("\n")]
     src = Source(rel, rel.rsplit("/", 1)[-1], lines)
     units, code_lines = code_units(src)
-    return text_hits(src, code_lines) + script_hits(src, units)
+    sup = supply.file_hits(rel, src.name, text, lines, tree)
+    return text_hits(src, code_lines) + script_hits(src, units) + sup
 
 
 def write_jsonl(path: Path, hits: list[dict]) -> None:
@@ -308,7 +336,8 @@ def write_jsonl(path: Path, hits: list[dict]) -> None:
     fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=".tmp-", suffix=".jsonl")
     with os.fdopen(fd, "w", encoding="utf-8") as f:
         for h in hits:
-            f.write(json.dumps(h, ensure_ascii=True) + "\n")
+            public = {k: v for k, v in h.items() if not k.startswith("_")}
+            f.write(json.dumps(public, ensure_ascii=True) + "\n")
     os.replace(tmp, path)
 
 
@@ -354,7 +383,9 @@ def fenced_blocks(lines: list[str]) -> list[tuple[str, list[tuple[int, str]]]]:
 
 
 def code_units(src: Source) -> tuple[list[Unit], set[int]]:
-    """The code units of a file and the line numbers inside any code (for INJ-08)."""
+    """The code units of a file and the line numbers inside any code (for INJ-08).
+    In Markdown, a fence with no language is code, and so are the inline code
+    spans of each prose line (1 unit per line)."""
     if is_script(src):
         lines = _numbered(src)
         return [Unit(lines, src.name in MAKEFILE_NAMES or _suffix(src.name) == ".mk")], {n for n, _ in lines}
@@ -363,8 +394,13 @@ def code_units(src: Source) -> tuple[list[Unit], set[int]]:
     units, code_lines = [], set()
     for lang, body in fenced_blocks(src.lines):
         code_lines.update(n for n, _ in body)
-        if lang in FENCE_LANGS:
+        if lang in FENCE_LANGS or not lang:
             units.append(Unit(body, lang in ("makefile", "make", "mk")))
+    fence_lines = code_lines | {n for n, line in _numbered(src) if FENCE.match(line)}
+    for n, line in _numbered(src):
+        spans = [m.group(2).strip() for m in CODE_SPAN.finditer(line)] if n not in fence_lines else []
+        if spans:
+            units.append(Unit([(n, s) for s in spans], False, True))
     return units, code_lines
 
 
@@ -596,7 +632,8 @@ LINE_CHECKS = (
 class UnitFacts:
     """What one code unit holds, for the rules that join lines (SCR-03/04/07)."""
 
-    def __init__(self) -> None:
+    def __init__(self, inline: bool = False) -> None:
+        self.inline = inline
         self.network: list[tuple[int, str]] = []
         self.secrets: list[tuple[int, str, str]] = []
 
@@ -605,7 +642,7 @@ def script_hits(src: Source, units: list[Unit]) -> list[dict]:
     hits: list[dict] = []
     facts = []
     for unit in units:
-        f = UnitFacts()
+        f = UnitFacts(unit.inline)
         hits += _unit_lines(src, unit, f)
         hits += _exfil(src, f.secrets, f.network)
         hits += _key_sent(src, f)
@@ -650,7 +687,9 @@ def _exfil(src: Source, secrets: list[tuple[int, str, str]], network: list[tuple
 
 def _flow_between_units(src: Source, facts: list[UnitFacts]) -> list[dict]:
     """SCR-04 across the code blocks of one file: a credential-file, keychain or
-    whole-env read in one block and a network call in another."""
+    whole-env read in one block and a network call in another. Inline code spans
+    join only within their own line."""
+    facts = [f for f in facts if not f.inline]
     for i, a in enumerate(facts):
         creds = [s for s in a.secrets if s[2] in MALICIOUS_SECRETS]
         for j, b in enumerate(facts):
