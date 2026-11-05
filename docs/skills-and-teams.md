@@ -359,6 +359,26 @@ Claude with no fallback, needs `blender` (`requires: [blender]`) and sets
 - Taste notes stay on this host, in the project and in a fleet copy under
   the horch state folder. 1 operator's taste never becomes a shipped rule.
 
+### Skill intake
+
+`skill-importer` runs the `skill-intake` skill: it fetches a skill source
+into quarantine, sweeps it for security risks, rewrites it clean-room, and
+installs only what passes 2 gates.
+
+- The controller is `skill-importer` (opus, high, offered everywhere). It
+  never opens a file under `quarantine/` (a Read deny rule too), never runs
+  the source, and writes to the workspace only through `intake`.
+- In a horch fleet, each clean-room role is a separate hidden fleet worker:
+  `intake-auditor`, `intake-analyst`, `intake-sanitizer`, `intake-writer`
+  and `intake-reviewer`. `skill-importer` starts them with `intake spawn`,
+  always with `--exact`, and each one gets a row in the ledger run. Each
+  role's OS sandbox has no network and reads and writes only its own side
+  root under `~/.local/state/skill-intake/`.
+- In a plain Claude session with no horch fleet (`intake mode` prints
+  `plain`), the controller runs each role as a fresh subagent with the same
+  brief file. No OS sandbox applies to the subagents unless the session has
+  one, and the report says so.
+
 ## `horch agent-list`: which harnesses can this machine run
 
 ```bash

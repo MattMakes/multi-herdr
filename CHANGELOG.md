@@ -4,6 +4,11 @@
 
 ## Unreleased
 
+- The `skill-importer` teammate imports a skill repo with the new `skill-intake`
+  skill: a security sweep, a clean-room rewrite by 5 hidden, sandboxed role
+  workers (`intake-auditor`, `intake-analyst`, `intake-sanitizer`,
+  `intake-writer`, `intake-reviewer`), a verify gate, and an install.
+
 ## v0.4.3 - 2026-11-02
 
 - Teammates can set `system_prompt: <name>` to start Claude with
