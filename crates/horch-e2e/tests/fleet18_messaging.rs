@@ -1357,16 +1357,78 @@ fn wait_for_pass_after_last_prompt(h: &Harness) {
     });
 }
 
+/// A world for a courier that runs under a pinned clock. The orchestrator
+/// exists, so the courier must live until its mail is acknowledged. The
+/// 20 ms no-orchestrator limit of [`world`] would stop it after 2 failed
+/// `pane get` calls in a row, which a loaded machine produces.
+fn pinned_clock_world(name: &str) -> (Harness, std::path::PathBuf) {
+    let mut h = world(name);
+    h.set("HORCH_NOW", "2030-01-01T00:00:00Z");
+    h.set("HORCH_TEST_MAIL_POLL_MS", "20");
+    h.set("HORCH_TEST_MAIL_NO_ORCHESTRATOR_MS", "60000");
+    let clock = h.root.join("clock.txt");
+    clock_file_set(&clock, "2030-01-01T00:00:00Z");
+    h.set("HORCH_TEST_MAIL_CLOCK_FILE", clock.to_string_lossy());
+    (h, clock)
+}
+
+#[test]
+fn g60_pinned_courier_survives_a_herdr_outage() {
+    let (h, _clock) = pinned_clock_world("g60-outage");
+    fake(&h, &["workspace", "create", "--label", "resume"]);
+    fake(
+        &h,
+        &[
+            "pane",
+            "test-state",
+            "w1:p1",
+            "--text",
+            "Ready",
+            "--status",
+            "idle",
+            "--agent",
+            "claude",
+        ],
+    );
+    let mb = h.state.join("herdr-orchestration-w1");
+    std::fs::create_dir_all(&mb).unwrap();
+    std::fs::write(mb.join("orchestrator.id"), "w1:p1").unwrap();
+    Mail::under(&h.state, "w1")
+        .enqueue("worker-1", "NOTE: outage")
+        .unwrap();
+    let mut courier = Agent(
+        h.horch(&["mail", "courier", "--workspace", "w1"])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .unwrap(),
+    );
+    wait_for_pane_state_observed(&h);
+    // The fake herdr answers `pane get` with an error while its state file
+    // is away: the courier sees its orchestrator vanish for a moment.
+    let state = std::path::PathBuf::from(format!("{}.state.json", h.log.display()));
+    let away = state.with_extension("away");
+    std::fs::rename(&state, &away).unwrap();
+    let before = h.calls_of("herdr").len();
+    horch_e2e::harness::wait_for("courier polls during the outage", || {
+        (h.calls_of("herdr").len() >= before + 3).then_some(())
+    });
+    std::fs::rename(&away, &state).unwrap();
+    let after = h.calls_of("herdr").len();
+    horch_e2e::harness::wait_for("courier polls after the outage", || {
+        (h.calls_of("herdr").len() >= after + 3).then_some(())
+    });
+    assert!(
+        courier.0.try_wait().unwrap().is_none(),
+        "the courier must outlive a herdr outage"
+    );
+}
+
 #[test]
 fn g60_pinned_running_courier_skips_busy_and_login_backlog_without_burst() {
     use horch_e2e::harness::wait_for;
     for held in ["busy", "login"] {
-        let mut h = world(&format!("g60-resume-{held}"));
-        h.set("HORCH_NOW", "2030-01-01T00:00:00Z");
-        h.set("HORCH_TEST_MAIL_POLL_MS", "20");
-        let clock = h.root.join("clock.txt");
-        clock_file_set(&clock, "2030-01-01T00:00:00Z");
-        h.set("HORCH_TEST_MAIL_CLOCK_FILE", clock.to_string_lossy());
+        let (h, clock) = pinned_clock_world(&format!("g60-resume-{held}"));
         fake(&h, &["workspace", "create", "--label", "resume"]);
         fake(
             &h,
@@ -1404,10 +1466,9 @@ fn g60_pinned_running_courier_skips_busy_and_login_backlog_without_burst() {
         );
         wait_for_pane_state_observed(&h);
         clock_file_set(&clock, "2030-01-01T00:00:30Z");
-        let until = std::time::Instant::now() + Duration::from_secs(5);
-        while prompt_count(&h) < 1 && std::time::Instant::now() < until {
-            std::thread::sleep(Duration::from_millis(20));
-        }
+        wait_for("courier reads the pinned clock file", || {
+            (prompt_count(&h) >= 1).then_some(())
+        });
         assert_eq!(
             prompt_count(&h),
             1,
@@ -1853,11 +1914,18 @@ fn g62_ledger_wake_uses_run_workspace_and_records_login_queue_cause() {
         note.contains("queued, not yet acknowledged") && note.contains("needs /login"),
         "{note}"
     );
-    let calls = h.calls_of("herdr");
-    let notifications: Vec<_> = calls
-        .iter()
-        .filter(|c| c["argv"][0] == "notification")
-        .collect();
+    // `done` starts the courier before it pushes, so the courier and the
+    // push race for the login marker. The winner shows the notification: the
+    // courier shows it after `done` returned. Wait for the call, then check
+    // that the marker allowed exactly 1.
+    let notifications = horch_e2e::harness::wait_for("login notification", || {
+        let found: Vec<_> = h
+            .calls_of("herdr")
+            .into_iter()
+            .filter(|c| c["argv"][0] == "notification")
+            .collect();
+        (!found.is_empty()).then_some(found)
+    });
     assert_eq!(notifications.len(), 1);
     let args = notifications[0]["argv"].as_array().unwrap();
     assert!(args[2].as_str().unwrap().contains("/login"));
