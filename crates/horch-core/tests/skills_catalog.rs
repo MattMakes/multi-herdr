@@ -400,7 +400,9 @@ fn skills_bundled_size_budget() {
 /// `blender-3d-print` ships 2 Python scripts that its `SKILL.md` runs.
 /// `blender-workflow-recipes` holds `.md` files only, so it is not listed.
 /// The `video-*` skills listed here ship their own runnable checker,
-/// capture and render scripts.
+/// capture and render scripts. `skill-intake` ships its `intake` tool as real
+/// `.py` files, so the gate's tests and the skill digest cover the tool
+/// itself.
 const EXEMPT_FROM_TEXT_ONLY: &[&str] = &[
     "blender-3d-print",
     "blender-addon-development",
@@ -431,6 +433,7 @@ const EXEMPT_FROM_TEXT_ONLY: &[&str] = &[
     "blender-video-editing",
     "blender-weather-fx",
     "skill-creator",
+    "skill-intake",
     "video-audio",
     "video-capture",
     "video-motion",

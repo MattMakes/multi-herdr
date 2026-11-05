@@ -1519,6 +1519,14 @@
       "verbatim": true
     },
     {
+      "name": "skill-intake",
+      "copied_files": [
+        "scripts/intakelib/schema.py",
+        "scripts/intakelib/task.py"
+      ],
+      "verbatim": false
+    },
+    {
       "name": "swift-code-audit",
       "copied_files": [
         "SKILL.md",
