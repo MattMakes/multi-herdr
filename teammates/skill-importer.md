@@ -46,6 +46,10 @@ sandbox:
       - "objects.githubusercontent.com"
 # Stale external copies of the fleet briefing; the repo carries the real one.
 disabled_skills: [herdr-orchestrator, herdr-worker]
+# This pane keeps horch_access: full to run `horch spawn`. It may spawn only
+# the intake roles, never --resume, never another HORCH_TEAMMATES_DIR, and
+# each role reports to it (C6, docs/security/sandboxed-pane-horch-access.md).
+spawn_only: ["intake-*"]
 ---
 You are the fleet's SKILL IMPORTER. You take a skill source, sweep it for
 security risks, rewrite it clean-room through role workers, verify it, and
