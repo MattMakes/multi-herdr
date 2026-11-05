@@ -214,3 +214,48 @@ Example lines:
 [00:07.500] Scene s03-demo: cursor jumps 600 px in 1 frame -> video-capture: re-record with the smooth cursor path between the 2 clicks
 [00:12.033] Scene s04-arch: audio peak -1.8 dBFS within 20 ms of the cut -> video-audio: add a 10 ms fade at the cut and lower the whoosh by 4 dB
 ```
+
+## Ranking mode: qa/ab-rank.md
+
+Use this mode when the plan gives you 2 masters, `render/ab/A.mp4` and
+`render/ab/B.mp4`, and asks for a rank. You do not know which direction made
+which master. Do not try to find out: do not open `DIRECTION.md`, a fork
+folder or `.video/`.
+
+1. Watch both masters in full. Run the numeric gate on each, with its own
+   output files, for `A` and then `B`:
+   `python3 "<skill-dir>/scripts/qa_video.py" --video render/ab/A.mp4 --timeline timeline.json --out qa/ab-A-check.json --contact-sheet qa/ab-A-sheet.png --hook-strip qa/ab-A-hook.png`.
+   Exit 1 does not stop the rank. Use the errors as evidence for both
+   masters in the same way.
+2. Score each master on the 8 axes with the anchors above.
+3. Pick 1 master. A tie is not allowed: when the scores are equal, prefer
+   the master whose core takeaway in `BRIEF.md` a viewer restates sooner.
+4. Name the weakest shot of each master with its time.
+
+Margin per axis: `A +<n>` when A scores `n` more, `B +<n>` when B scores
+`n` more, `0` when equal.
+
+```markdown
+# A/B rank
+
+PREFERENCE: <A|B>
+Reason: <1 sentence, about what a viewer sees>
+
+| # | Axis | A | B | Margin |
+| :--- | :--- | :--- | :--- | :--- |
+| 1 | Hook & First-Frame Read | <1-5> | <1-5> | <A +n, B +n or 0> |
+| 2 | Narrative & Pacing | <1-5> | <1-5> | <margin> |
+| 3 | Typography & Safe Zones | <1-5> | <1-5> | <margin> |
+| 4 | Motion Craft & Physics | <1-5> | <1-5> | <margin> |
+| 5 | Product/Demo Clarity | <1-5> | <1-5> | <margin> |
+| 6 | Character/Illustration Cohesion | <1-5> | <1-5> | <margin> |
+| 7 | Audio-Visual Sync | <1-5> | <1-5> | <margin> |
+| 8 | Brand & Aesthetic Cohesion | <1-5> | <1-5> | <margin> |
+
+Weakest shot A: [MM:SS.mmm] Scene <id>: <what a viewer sees>
+Weakest shot B: [MM:SS.mmm] Scene <id>: <what a viewer sees>
+```
+
+Use only the labels A and B in the report. The producer checks it with
+`ab_blind.py check-rank` of the `video-produce` skill. A rank gives no
+`VERDICT:` line: the preferred master still goes through the critic loop.

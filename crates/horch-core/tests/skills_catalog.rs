@@ -64,6 +64,7 @@ const REPO_ORIGINAL: &[&str] = &[
     "video-character",
     "video-direction",
     "video-motion",
+    "video-produce",
     "video-qa",
     "video-reanimate",
     "video-render",
@@ -154,6 +155,7 @@ const SKIP_NEW_TEAMMATES: &[&str] = &[
     "video-critic",
     "video-director",
     "video-editor",
+    "video-producer",
     "visual-prototyper",
     "worktree-steward",
 ];
@@ -432,6 +434,7 @@ const EXEMPT_FROM_TEXT_ONLY: &[&str] = &[
     "video-audio",
     "video-capture",
     "video-motion",
+    "video-produce",
     "video-qa",
     "video-reanimate",
     "video-render",

@@ -280,13 +280,15 @@ or `ue-tools-engineer` imports. No fallback: Codex has no MCP parity here.
 
 ## The video team
 
-Six specialists make a rendered video: a launch film, product demo, CLI
-walkthrough, concept explainer or social cut. They carry the 9 own-text
-`video-*` skills by name. The orchestrator runs them in 6 waves from
+Seven specialists make a rendered video: a launch film, product demo, CLI
+walkthrough, concept explainer or social cut. They carry the 10 own-text
+`video-*` skills by name. The orchestrator runs them in wave 0 and 6 build
+waves from
 `skills/orchestrate/references/video-pipeline.md`.
 
 | teammate | phase | agent, model, effort | skills | use for |
 |---|---|---|---|---|
+| `video-producer` | plan | claude, opus, high | `video-produce` | workflow pick, `PRODUCTION.md`, blind A/B labels, taste notes, batch summary, share kit |
 | `video-director` | plan | claude, opus, high | `video-direction`, `video-storyboard` | brief, direction, storyboard, `timeline.json` and the plan gate |
 | `video-capture` | implementation | claude, sonnet, medium | `video-capture` | deterministic browser and terminal plates with telemetry |
 | `video-audio` | implementation | claude, sonnet, medium | `video-audio`, `video-storyboard` | voice-over, timing reconciliation, beat grid, SFX, -14 LUFS master |

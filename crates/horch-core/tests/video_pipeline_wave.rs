@@ -1,4 +1,4 @@
-//! The video pipeline wave: the 6 `video-*` teammates, the 9 `video-*`
+//! The video pipeline wave: the 7 `video-*` teammates, the 10 `video-*`
 //! skills with their script entrypoints, the orchestrator recipe and the
 //! checker self-tests.
 //!
@@ -23,7 +23,14 @@ type Seat = (
     &'static [&'static str],
 );
 
-const SEATS: [Seat; 6] = [
+const SEATS: [Seat; 7] = [
+    (
+        "video-producer",
+        Phase::Plan,
+        "opus",
+        "high",
+        &["video-produce"],
+    ),
     (
         "video-director",
         Phase::Plan,
@@ -73,7 +80,8 @@ const SEATS: [Seat; 6] = [
     ),
 ];
 
-const VIDEO_SKILLS: [&str; 9] = [
+const VIDEO_SKILLS: [&str; 10] = [
+    "video-produce",
     "video-direction",
     "video-storyboard",
     "video-capture",
@@ -86,7 +94,11 @@ const VIDEO_SKILLS: [&str; 9] = [
 ];
 
 /// The script entrypoints the pipeline calls, each with an execute bit.
-const ENTRYPOINTS: [&str; 5] = [
+const ENTRYPOINTS: [&str; 9] = [
+    "video-produce/scripts/lint_notes.py",
+    "video-produce/scripts/validate_batch.py",
+    "video-produce/scripts/ab_blind.py",
+    "video-produce/scripts/check_share.py",
     "video-storyboard/scripts/check_timeline.py",
     "video-audio/scripts/check_audio.py",
     "video-reanimate/scripts/compare_frames.py",
@@ -95,7 +107,11 @@ const ENTRYPOINTS: [&str; 5] = [
 ];
 
 /// The checkers whose `--self-test` needs only python3 and ffmpeg.
-const PYTHON_SELF_TESTS: [&str; 4] = [
+const PYTHON_SELF_TESTS: [&str; 8] = [
+    "skills/video-produce/scripts/lint_notes.py",
+    "skills/video-produce/scripts/validate_batch.py",
+    "skills/video-produce/scripts/ab_blind.py",
+    "skills/video-produce/scripts/check_share.py",
     "skills/video-storyboard/scripts/check_timeline.py",
     "skills/video-audio/scripts/check_audio.py",
     "skills/video-reanimate/scripts/compare_frames.py",
@@ -166,7 +182,7 @@ fn names_file_lowercase(text: &str, stem: &str) -> bool {
 }
 
 #[test]
-fn vpw_01_six_video_seats_have_the_pinned_shape() {
+fn vpw_01_seven_video_seats_have_the_pinned_shape() {
     let roster = roster();
     let found: BTreeSet<&str> = roster
         .names()
