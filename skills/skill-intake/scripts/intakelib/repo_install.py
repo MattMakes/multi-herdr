@@ -23,6 +23,7 @@ The new teammate's persona body is K/persona.md, written by the writer role.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -249,12 +250,18 @@ def parse_mapping(path: Path, repo: Path) -> dict:
     return out
 
 
-def read_persona(t: task.Task) -> str:
-    """K/persona.md: the writer role's persona body for the new teammate."""
+def read_persona(t: task.Task, vdoc: dict) -> str:
+    """K/persona.md: the writer role's persona body for the new teammate. GATE 2
+    must have checked these exact bytes (the sha256 in verify.json `persona`)."""
     p = t.k / PERSONA
     if not p.is_file() or p.is_symlink():
         raise task.TaskError(f"no K/{PERSONA}: the writer role writes the new teammate's persona body")
     raw = p.read_bytes()
+    rec = vdoc.get("persona")
+    if not rec:
+        raise task.TaskError(f"GATE 2 did not check K/{PERSONA}: run intake verify --target repo again")
+    if hashlib.sha256(raw).hexdigest() != rec.get("sha256"):
+        raise task.TaskError(f"K/{PERSONA} changed after GATE 2: run intake verify --target repo again")
     if len(raw) > PERSONA_MAX:
         raise task.TaskError(f"K/{PERSONA} is over {PERSONA_MAX} bytes")
     try:
@@ -652,7 +659,7 @@ def run(t: task.Task, repo: Path, mapping_path: str | None, resolve_text: str | 
                             "make a feature branch first")
     vdoc = install.load_verify(t, "repo")
     mapping = parse_mapping(Path(mapping_path), repo) if mapping_path else None
-    persona = read_persona(t) if mapping and mapping["option"] in (1, 2) else None
+    persona = read_persona(t, vdoc) if mapping and mapping["option"] in (1, 2) else None
     prov = task.read_json(t.c / "provenance.json")
     state = load_state(t, repo)
     installed, skipped, fresh = install_skills(t, repo, state, prov, vdoc, resolve_text)

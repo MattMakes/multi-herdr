@@ -63,6 +63,9 @@ domain incident fails GATE 2.
   `AUD-INVALID` (medium). `intake report` writes 1 incident file for each.
 - Only `intake verify` closes a scanner finding, by a mechanical re-sweep of
   the output.
+- `K/persona.md` loads into every session of the new teammate. GATE 2 sweeps
+  it (SCR on every line), overlap-checks it and needs a reviewer `persona`
+  pass; install uses it only when its sha256 matches `C/verify.json`.
 
 ## Malicious intent
 

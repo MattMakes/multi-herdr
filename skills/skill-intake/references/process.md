@@ -15,7 +15,7 @@
 | 8 | scan, sanitize | `intake cr scan`, sanitizer | `D/drafts/`, `D/quarantine-cr/` | at most 2 sanitizer passes per draft |
 | 9 | handoff | `intake cr handoff` | `K/handoff/` | hashes recorded |
 | 10 | write | writer, 1 per skill | `K/out/<skill>/`, `K/report.json`, `K/persona.md` | - |
-| 11 | review | reviewer, 1 fresh per skill | `K/out/<skill>/`, `K/review.json` | - |
+| 11 | review | reviewer, 1 fresh per skill | `K/out/<skill>/`, `K/review.json` (a `persona` verdict when `K/persona.md` exists) | - |
 | 12 | verify | `intake cr verify`, `intake verify` | `K/verify-log/log.json`, `C/verify.json` | GATE 2 |
 | 13 | install | `intake install` | the target | collision rules |
 | 14 | report | `intake report` | `C/report.md` | - |
@@ -26,6 +26,11 @@ code of the first stage that stops.
 
 Units: `intake cr index` makes 1 unit per skill and 1 more unit per script
 over 300 lines. 1 analyst works on 1 unit.
+
+GATE 2 also checks `K/persona.md` when it exists. It fails on an INJ or SCR
+hit of medium or higher, on overlap with the source, or when a reviewer
+`persona` verdict is missing or not `pass`. `C/verify.json` records the
+persona sha256, and install refuses a persona that does not match it.
 
 ## Exit codes
 

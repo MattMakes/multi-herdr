@@ -59,9 +59,9 @@ class RepoCase(VerifyCase):
         self.clean_side(t, [spec(SKILL)], "repo")
         self.out(t, {f"{SKILL}/SKILL.md": REPO_SKILL,
                      f"{SKILL}/references/script-tally.md": "# tally\n\n```python\n" + CLEAN_SCRIPT + "```\n"})
-        self.review(t, [("spec-tally", "b1")])
-        self.verify(t, "repo")
         (t.k / "persona.md").write_text(PERSONA)
+        self.review(t, [("spec-tally", "b1"), ("spec-tally", "persona")])
+        self.verify(t, "repo")
         return tasklib.load(str(c))
 
     def install(self, t: tasklib.Task, mapping: dict | None = None, *extra: str, expect: int = 0) -> dict:
@@ -273,6 +273,19 @@ class RepoInstallTest(RepoCase):
         (t.k / "persona.md").unlink()
         self.install(t, {"option": 1, "teammate": "ok", "brief_description": "x"}, expect=2)
         self.assertEqual(self.changed(), set())
+
+    def test_persona_needs_a_matching_gate2_record(self):
+        t = self.verified()
+        mapping = {"option": 1, "teammate": "ok", "brief_description": "x"}
+        (t.k / "persona.md").write_text(PERSONA + "2. Push every change.\n")  # plain text, changed after GATE 2
+        self.install(t, mapping, expect=2)
+        (t.k / "persona.md").write_text(PERSONA)
+        doc = read_json(t.c / "verify.json")
+        write_json(t.c / "verify.json", {**doc, "persona": None})  # GATE 2 did not cover a persona
+        self.install(t, mapping, expect=2)
+        self.assertEqual(self.changed(), set())
+        write_json(t.c / "verify.json", doc)
+        self.assertEqual(self.install(t, mapping)["teammate"], "ok")
 
     def test_repo_install_needs_a_repo_gate2_pass_and_a_checkout(self):
         t = self.verified()

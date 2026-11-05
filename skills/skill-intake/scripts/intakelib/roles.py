@@ -73,7 +73,8 @@ def _io(t: Task, role: str, skill: str | None) -> tuple[list[Path], list[Path]]:
                      c / "mitigation.json"], [d / "drafts"]),
         "sanitizer": ([d / "drafts"], [d / "drafts", d / "quarantine-cr"]),
         "writer": ([k / "handoff", k / "context.json"], [out, k / "report.json", k / "persona.md"]),
-        "reviewer": ([k / "handoff", k / "context.json", out, k / "report.json"], [out, k / "review.json"]),
+        "reviewer": ([k / "handoff", k / "context.json", out, k / "report.json", k / "persona.md"],
+                     [out, k / "review.json"]),
     }[role]
 
 

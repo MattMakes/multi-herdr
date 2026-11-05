@@ -100,7 +100,7 @@
     },
     "verdicts": {
       "type": "array",
-      "description": "Reviewer only: 1 verdict per spec requirement (behavior id), replace_or_remove id, and declared capability (`capability:<key>`). `intake verify` needs `pass` for each (spec 7.1, 7.4).",
+      "description": "Reviewer only: 1 verdict per spec requirement (behavior id), replace_or_remove id, and declared capability (`capability:<key>`), and `persona` when K/persona.md exists. `intake verify` needs `pass` for each (spec 7.1, 7.4).",
       "items": {
         "type": "object",
         "required": [
@@ -116,7 +116,7 @@
           },
           "item": {
             "type": "string",
-            "pattern": "^(b[0-9]{1,4}|R-[0-9]{1,4}|capability:(network|reads|writes|runs))$"
+            "pattern": "^(b[0-9]{1,4}|R-[0-9]{1,4}|capability:(network|reads|writes|runs)|persona)$"
           },
           "result": {
             "enum": [

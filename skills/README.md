@@ -216,7 +216,7 @@ These 10 skills are own text and belong to no phase; a `video-*` teammate attach
 
 ## Skill intake
 
-`skill-intake` is under construction. It will take a skill source (a GitHub repo, a local folder or an archive) through a security sweep, a clean-room rewrite and an install, and it belongs to no phase. It is combined: own text plus the `task` and `schema` modules ported from the `clean-room` skill (`copied_files` in `copied.json`). It ships its `intake` tool as standard-library Python in `scripts/`, so it is exempt from the text-only rule. Its tests are in `scripts/skill-intake/tests/` and run in the gate. The skill uses subagents only in a plain session; in a fleet it starts its clean-room roles as fleet workers.
+`skill-intake` takes a skill source (a GitHub repo, a local folder or an archive) through a security sweep, a clean-room rewrite, 2 gates and an install, and it belongs to no phase. It is combined: own text plus the `task` and `schema` modules ported from the `clean-room` skill (`copied_files` in `copied.json`). It ships its `intake` tool as standard-library Python in `scripts/`, so it is exempt from the text-only rule. Its tests are in `scripts/skill-intake/tests/` and run in the gate. The skill uses subagents only in a plain session; in a fleet it starts its clean-room roles as fleet workers.
 
 | Skill | Kind |
 | --- | --- |

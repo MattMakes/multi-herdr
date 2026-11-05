@@ -14,6 +14,9 @@ Steps, each one check row in C/verify.json:
 5. scripts: every rewritten script has a test run through `intake cr verify`.
 6. target-rules (7.3), read from K/context.json.
 7. domain-snapshot: no domain incident was recorded (6.10).
+8. persona, when K/persona.md exists: no INJ or SCR hit of medium or higher
+   (SCR runs on every line, prose included), no overlap with the source, and
+   every reviewer `persona` verdict is `pass`. verify.json records its sha256.
 
 GATE 2 aborts when any check fails. Failing conditions: a critical or high
 finding unresolved; a new high+ hit outside a declared capability; a leakage
@@ -335,6 +338,48 @@ def target_rules(t: task.Task, target: str) -> tuple[dict | None, str]:
     return ctx["target_rules"], ""
 
 
+# ---- 8. the teammate persona ---------------------------------------------------
+
+PERSONA = "persona.md"
+PERSONA_FAIL = ("critical", "high", "medium")
+
+
+def persona_hits(text: str) -> list[dict]:
+    """INJ hits of K/persona.md, and SCR hits with every line read as a command:
+    the persona loads into every session of the teammate, so a command in its
+    prose is still a command."""
+    hits = [h for h in sweep.scan_file(PERSONA, text) if h["rule"].startswith("INJ-")]
+    lines = [ln[:-1] if ln.endswith("\r") else ln for ln in text.split("\n")]
+    src = sweep.Source(PERSONA, PERSONA, lines)
+    hits += [h for h in sweep.script_hits(src, [sweep.Unit(list(enumerate(lines, 1)), False)])
+             if h["rule"].startswith("SCR-")]
+    return sweep.finish(hits)
+
+
+def persona_check(t: task.Task, src: Path, review: dict | None) -> tuple[dict, dict] | None:
+    """(check row, verify.json record) for K/persona.md, or None when there is none."""
+    p = t.k / PERSONA
+    if not p.is_file() or p.is_symlink():
+        return None
+    data = p.read_bytes()
+    text = sweep.as_text(data)
+    fails, hits, overlaps = [], [], []
+    if text is None:
+        fails.append("K/persona.md is not text")
+    else:
+        hits = [{"rule": h["rule"], "severity": h["severity"], "line": h["line"]} for h in persona_hits(text)]
+        fails += [f"{h['rule']} {h['severity']} at line {h['line']}" for h in hits if h["severity"] in PERSONA_FAIL]
+        overlaps = overlap_hits(src, [], [("K/persona.md", text)])
+        fails += sorted({f"shares {h['kind']} text with {h['source']}" for h in overlaps})
+    verdicts = [v["result"] for v in (review or {}).get("verdicts", []) if v["item"] == "persona"]
+    if not verdicts:
+        fails.append("no reviewer persona verdict")
+    elif any(r != "pass" for r in verdicts):
+        fails.append("a reviewer persona verdict is not pass")
+    record = {"sha256": hashlib.sha256(data).hexdigest(), "hits": hits, "overlap": overlaps}
+    return _check("persona", not fails, _join(fails)), record
+
+
 # ---- the stage -----------------------------------------------------------------
 
 def run(t: task.Task, target: str, budget_exempt: dict[str, str]) -> dict:
@@ -428,6 +473,11 @@ def run(t: task.Task, target: str, budget_exempt: dict[str, str]) -> dict:
             incidents.append(inc["incident_id"])
     checks.append(_check("domain-snapshot", not incidents, _join(incidents)))
 
+    # 8. the teammate persona
+    persona = persona_check(t, src, review)
+    if persona:
+        checks.append(persona[0])
+
     gate = ABORT if any(ch["result"] == "fail" for ch in checks) else PASS
     listed = [r["finding"] for r in rows if r["status"] == "unresolved" and r["severity"] not in SEVERE]
     result_doc = {
@@ -442,6 +492,8 @@ def run(t: task.Task, target: str, budget_exempt: dict[str, str]) -> dict:
         "budget_exempt": {k: evidence.escape(v) for k, v in sorted(budget_exempt.items())},
         # install checks every file it copies against these (spec 8.5).
         "files": {rel: hashlib.sha256(data).hexdigest() for rel, data in out_files},
+        # repo install reads K/persona.md only when its sha256 matches this record.
+        "persona": persona[1] if persona else None,
     }
     task.write_json(c / "verify.json", result_doc)
     t.manifest["gate2"] = gate
