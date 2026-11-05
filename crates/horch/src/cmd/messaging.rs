@@ -121,7 +121,7 @@ fn queue_as<'a>(
     let herdr = Herdr::with_bin(&ctx.bins.harness.herdr).until(delivery::push_deadline());
     let mailbox = Mailbox::resolve_in(&herdr, ctx)
         .context("horch tell must run inside a herdr pane, or with HORCH_WORKSPACE_ID set")?;
-    let line = render_line(ctx, mailbox.workspace_id(), sender.as_deref(), role, text)?;
+    let mut line = render_line(ctx, mailbox.workspace_id(), sender.as_deref(), role, text)?;
     let target = mailbox.pane_for(role);
     let durable = is_durable(sender.as_deref(), role);
     // Inside a push budget (`horch done`), the courier starts now, before
@@ -131,7 +131,7 @@ fn queue_as<'a>(
     let courier_now = durable && delivery::push_time_left().is_some();
     if durable {
         let from = sender.as_deref().expect("durable mail has a sender");
-        enqueue_durable(
+        let id = enqueue_durable(
             ctx,
             mailbox.workspace_id(),
             role,
@@ -141,6 +141,8 @@ fn queue_as<'a>(
             courier_now,
             take_back,
         )?;
+        // The first push shows the mail id too, as every redelivery does.
+        line = message::with_mail_id(&line, from, &id.short());
         if role != "orchestrator" {
             // Worker mail holds no question for the orchestrator.
         } else if let Err(error) = sync_question_waits(ctx, mailbox.workspace_id()) {
@@ -203,18 +205,18 @@ fn enqueue_durable(
     original: &str,
     courier_now: bool,
     take_back: bool,
-) -> Result<()> {
+) -> Result<horch_core::messaging::mail::Id> {
     let mail = Mail::for_role(&ctx.paths.state_root, workspace, role);
     let id = mail.enqueue_with_questions(from, line, original)?;
     if !courier_now {
-        return Ok(());
+        return Ok(id);
     }
     let Err(error) = super::mail::start_courier(ctx, workspace) else {
-        return Ok(());
+        return Ok(id);
     };
     if !take_back {
         eprintln!("horch tell: {error:#}; `horch inbox` still shows the mail");
-        return Ok(());
+        return Ok(id);
     }
     if let Err(ack_error) = mail.ack(&id) {
         eprintln!("horch tell: could not take back the queued line ({ack_error:#})");

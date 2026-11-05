@@ -3,7 +3,7 @@
 use std::collections::HashMap;
 use std::fs::{File, OpenOptions};
 use std::path::PathBuf;
-use std::time::{Duration, Instant, SystemTime};
+use std::time::{Duration, SystemTime};
 
 use anyhow::{Context, Result};
 use horch_core::messaging::channel;
@@ -14,7 +14,6 @@ use horch_core::runtime::RuntimeContext;
 use horch_core::workspace::herdr::Herdr;
 
 const POLL: Duration = Duration::from_secs(5);
-const NO_ORCHESTRATOR_LIMIT: Duration = Duration::from_secs(10 * 60);
 
 pub fn start_courier(ctx: &RuntimeContext, workspace: &str) -> Result<()> {
     horch_core::messaging::mail::start_courier(ctx, workspace)
@@ -44,9 +43,7 @@ struct Courier<'a> {
     mailbox: Mailbox,
     socket: PathBuf,
     poll: Duration,
-    no_orchestrator_limit: Duration,
     attempts: Attempts,
-    no_orchestrator_since: Option<Instant>,
 }
 
 pub fn courier(ctx: &RuntimeContext, workspace: &str) -> Result<()> {
@@ -96,12 +93,7 @@ impl<'a> Courier<'a> {
             mailbox: Mailbox::in_context(ctx, workspace),
             socket: channel::socket_path(&ctx.paths.state_root, workspace),
             poll: test_duration("HORCH_TEST_MAIL_POLL_MS", POLL),
-            no_orchestrator_limit: test_duration(
-                "HORCH_TEST_MAIL_NO_ORCHESTRATOR_MS",
-                NO_ORCHESTRATOR_LIMIT,
-            ),
             attempts: HashMap::new(),
-            no_orchestrator_since: None,
         }
     }
 
@@ -128,10 +120,11 @@ impl<'a> Courier<'a> {
         let roles_reachable = self.deliver_roles(role_mail);
         let (pane, relay_live) = self.orchestrator_target(pending);
         let has_target = pane.is_some() || relay_live;
+        // No target is reachable: wait for one. Pending mail never ends the
+        // courier (TRF-04); only an empty queue does (`settle_empty`).
         if !(roles_reachable || has_target) {
-            return Ok(self.wait_for_orchestrator());
+            return Ok(Step::Wait);
         }
-        self.no_orchestrator_since = None;
         if !has_target || check_login(&self.herdr, &self.mailbox, &self.mail)? {
             return Ok(Step::Wait);
         }
@@ -165,16 +158,6 @@ impl<'a> Courier<'a> {
             return Ok(Step::Stop);
         }
         Ok(Step::Retry)
-    }
-
-    /// No target is reachable: stop once that has lasted past the limit.
-    fn wait_for_orchestrator(&mut self) -> Step {
-        let since = self.no_orchestrator_since.get_or_insert_with(Instant::now);
-        if since.elapsed() >= self.no_orchestrator_limit {
-            Step::Stop
-        } else {
-            Step::Wait
-        }
     }
 
     /// Redeliver the mail of each worker role. Returns whether a role pane
@@ -296,7 +279,7 @@ fn redeliver_due(
         let attempt = next.0.max(latest_due);
         let line = format!(
             "{} (redelivery {attempt}: not acknowledged; run horch inbox)",
-            message.text
+            message.line()
         );
         if send(message, &line) {
             let following = attempt.saturating_add(1);
@@ -458,7 +441,10 @@ mod tests {
         assert_eq!(busy, 1);
         assert_eq!(
             sent,
-            ["the reviews are in (redelivery 1: not acknowledged; run horch inbox)"]
+            [format!(
+                "[horch #{}] the reviews are in (redelivery 1: not acknowledged; run horch inbox)",
+                messages[0].id.short()
+            )]
         );
         assert_eq!(again, 0, "redelivery 2 is not due 31 s after the mail");
     }
@@ -536,16 +522,56 @@ mod tests {
         assert!(super::acquire_lock(&mail).unwrap().is_none());
     }
 
+    /// Every redelivery of one message repeats the same mail id.
     #[test]
-    fn a_courier_with_no_target_waits_until_the_limit_then_stops() {
+    fn trf_03_a_redelivery_repeats_the_same_mail_id() {
+        use horch_core::runtime::{MapEnv, RuntimeContext};
+        let tmp = tempfile::tempdir().unwrap();
+        let clock = tmp.path().join("clock");
+        let ctx = RuntimeContext::from_env(
+            &MapEnv::new("/").with("HORCH_TEST_MAIL_CLOCK_FILE", clock.to_str().unwrap()),
+        )
+        .unwrap();
+        let mail = Mail::under(tmp.path(), "w1");
+        let id = mail.enqueue("sonnet-1", "[sonnet-1] NOTE: x").unwrap();
+        let messages = mail.pending().unwrap();
+        let created: chrono::DateTime<chrono::Utc> = messages[0].created_at.into();
+        let mut attempts = super::Attempts::new();
+        let mut sent = Vec::new();
+        // The courier sees the mail when it is new. Redelivery 1 is due
+        // 30 s on, redelivery 2 is due 90 s on.
+        for seconds in [0, 31, 91] {
+            let at = created + chrono::Duration::seconds(seconds);
+            std::fs::write(&clock, horch_core::clock::stamp(at)).unwrap();
+            super::redeliver_due(&ctx, &mut attempts, &messages, |_, line| {
+                sent.push(line.to_string());
+                true
+            });
+        }
+
+        let tag = format!("[sonnet-1 #{}] NOTE: x (redelivery ", id.short());
+        assert_eq!(sent.len(), 2, "{sent:?}");
+        assert!(sent[0].starts_with(&format!("{tag}1:")), "{sent:?}");
+        assert!(sent[1].starts_with(&format!("{tag}2:")), "{sent:?}");
+    }
+
+    /// A courier with pending mail and no target waits: it does not exit.
+    /// Only an empty queue ends it ([`super::Courier::settle_empty`]).
+    #[test]
+    fn trf_04_a_courier_with_pending_mail_and_no_target_does_not_exit() {
         let tmp = tempfile::tempdir().unwrap();
         let (ctx, mail) = courier_for(tmp.path());
         let lock = super::acquire_lock(&mail).unwrap().unwrap();
-        let mut courier = super::Courier::new(&ctx, "w1", mail, lock);
-        courier.no_orchestrator_limit = Duration::from_secs(3600);
-        assert!(matches!(courier.wait_for_orchestrator(), super::Step::Wait));
-        assert!(courier.no_orchestrator_since.is_some());
-        courier.no_orchestrator_limit = Duration::ZERO;
-        assert!(matches!(courier.wait_for_orchestrator(), super::Step::Stop));
+        let mut courier = super::Courier::new(&ctx, "w1", mail.clone(), lock);
+        mail.enqueue("sonnet-1", "[sonnet-1] NOTE: x").unwrap();
+        let pending = mail.pending().unwrap();
+        for _ in 0..3 {
+            let step = courier.next_step(&pending, &Vec::new()).unwrap();
+            assert!(matches!(step, super::Step::Wait));
+        }
+
+        mail.ack_all().unwrap();
+        let step = courier.next_step(&[], &Vec::new()).unwrap();
+        assert!(matches!(step, super::Step::Stop));
     }
 }

@@ -18,12 +18,31 @@ static NEXT_ID: AtomicU64 = AtomicU64::new(0);
 #[derive(Clone, Debug, Eq, PartialEq, Hash, Deserialize, Serialize)]
 pub struct Id(String);
 
+impl Id {
+    /// The id a mail line shows: 8 hex characters, a 32-bit FNV-1a hash of
+    /// the full id. Every process computes the same value from the file name.
+    pub fn short(&self) -> String {
+        let hash = self.0.bytes().fold(0x811c_9dc5_u32, |hash, byte| {
+            (hash ^ u32::from(byte)).wrapping_mul(0x0100_0193)
+        });
+        format!("{hash:08x}")
+    }
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct Message {
     pub id: Id,
     pub from: String,
     pub text: String,
     pub created_at: SystemTime,
+}
+
+impl Message {
+    /// The line a delivery types: the text, with the short mail id in the
+    /// sender tag (C2). Every delivery of this message shows the same id.
+    pub fn line(&self) -> String {
+        crate::messaging::message::with_mail_id(&self.text, &self.from, &self.id.short())
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -984,5 +1003,35 @@ mod tests {
             assert_eq!(err.to_string(), "invalid mail id", "{bad:?}");
         }
         assert_eq!(mail.pending().unwrap().len(), 1, "nothing was moved");
+    }
+
+    #[test]
+    fn trf_03_a_mail_id_shortens_to_8_hex_characters() {
+        let root = tempfile::tempdir().unwrap();
+        let mail = Mail::under(root.path(), "w1");
+        let first = mail.enqueue("worker", "one").unwrap();
+        let second = mail.enqueue("worker", "two").unwrap();
+
+        let short = first.short();
+        assert_eq!(short.len(), 8, "{short}");
+        assert!(short.chars().all(|c| c.is_ascii_hexdigit()), "{short}");
+        assert_ne!(short, second.short());
+        // The short id comes from the file name, so every reader agrees.
+        assert_eq!(mail.pending().unwrap()[0].id.short(), short);
+        assert_eq!(Id(first.0.clone()).short(), short);
+    }
+
+    #[test]
+    fn trf_03_a_mail_line_carries_its_mail_id() {
+        let root = tempfile::tempdir().unwrap();
+        let mail = Mail::under(root.path(), "w1");
+        let id = mail.enqueue("sonnet-1", "[sonnet-1] NOTE: x").unwrap();
+
+        let message = &mail.pending().unwrap()[0];
+        assert_eq!(
+            message.line(),
+            format!("[sonnet-1 #{}] NOTE: x", id.short())
+        );
+        assert_eq!(message.text, "[sonnet-1] NOTE: x", "the stored text is unchanged");
     }
 }
