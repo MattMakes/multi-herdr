@@ -935,3 +935,10 @@ skill-importer --exact "<task>"` from the scratch project, with no `--run`
   `.worktrees/_scratch/live-skill-intake/step1-project` (`lsof -d cwd`).
 - `targets.detect(<that cwd>)` gives `target: standalone`, rule `detected:
   skills/copied.json is not a regular file in the git top level`.
+
+### Step 1, attempt 5: held (analyst status file)
+
+`intake-analyst-1` of `skill-importer-5` could not write its status file:
+`roles.py` puts the analyst status file under `contaminated/<task>/status/`,
+but the `intake-analyst` teammate may write only under `drafts/`. Ticket 34
+fixes it. Steps 1, 2 and 4 wait for ticket 34. Step 5 runs in the meantime.
