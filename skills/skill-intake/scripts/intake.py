@@ -36,6 +36,7 @@ COMMANDS = (
     "report",
     "run",
     "verify",
+    "install",
 )
 
 

@@ -152,6 +152,10 @@ class ArgvTest(IntakeTestCase):
         self.assertEqual(self.intake("hook-config")[0], 0)
         code, out = self.intake("verify", "--task", str(c), "--target", "standalone")
         self.assertEqual(code, 0, out)
+        skills = self.tmp / "skills"
+        code, out = self.intake("install", "--task", str(c), "--target", "standalone", "--skills-dir", str(skills))
+        self.assertEqual(code, 0, out)
+        self.assertTrue((skills / "bin-fixture" / "SKILL.md").is_file())
 
         # Every command that exists at this point ran.
         commands = set(self.cli.COMMANDS) - {"cr"}

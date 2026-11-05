@@ -440,6 +440,8 @@ def run(t: task.Task, target: str, budget_exempt: dict[str, str]) -> dict:
         "overlap": overlaps,
         "flags": flags,
         "budget_exempt": {k: evidence.escape(v) for k, v in sorted(budget_exempt.items())},
+        # install checks every file it copies against these (spec 8.5).
+        "files": {rel: hashlib.sha256(data).hexdigest() for rel, data in out_files},
     }
     task.write_json(c / "verify.json", result_doc)
     t.manifest["gate2"] = gate
