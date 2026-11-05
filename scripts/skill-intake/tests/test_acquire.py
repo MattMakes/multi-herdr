@@ -267,17 +267,17 @@ class LicenceTest(AcquireCase):
             self.assertEqual(lic["files"], [] if kind == "none" else ["LICENSE"], kind)
 
     def test_manifest_and_frontmatter_fields(self):
-        from intakelib import licence
+        from intakelib import licensing
 
         src = fixtures.build(self.tmp / "m", {
             "package.json": json.dumps({"license": "Apache-2.0"}),
             "s/SKILL.md": "---\nname: s\nlicense: AGPL-3.0\n---\n",
         })
-        found = licence.detect(src, [src, src / "s"])
+        found = licensing.detect(src, [src, src / "s"])
         self.assertEqual((found["class"], found["spdx"]), ("copyleft", "AGPL-3.0"))
         self.assertEqual(found["files"], ["package.json", "s/SKILL.md"])
-        self.assertEqual(licence.classify_spdx("CC-BY-ND-4.0"), "restrictive")
-        self.assertEqual(licence.classify_text("Copyright (c) X. All rights reserved.\nRedistribution and use "
+        self.assertEqual(licensing.classify_spdx("CC-BY-ND-4.0"), "restrictive")
+        self.assertEqual(licensing.classify_text("Copyright (c) X. All rights reserved.\nRedistribution and use "
                                                "in source and binary forms, with or without modification"),
                          ("permissive", "BSD"))
 

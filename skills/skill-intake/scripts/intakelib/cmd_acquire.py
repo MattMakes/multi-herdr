@@ -12,7 +12,7 @@ import shutil
 import sys
 from pathlib import Path
 
-from . import acquire, evidence, licence, task
+from . import acquire, evidence, licensing, task
 from .acquire import BadSource, Caps, Refused
 
 HELP = "fetch a skill source into a read-only quarantine and write provenance.json"
@@ -89,7 +89,7 @@ def run(args) -> int:
                     raise BadSource(f"--path {src.subdir!r} is not a folder in the repo")
                 skipped = acquire.copy_tree(root, q, caps, skip_git=True)
                 if src.subdir:
-                    repo_licence = licence.detect(staging, [staging])
+                    repo_licence = licensing.detect(staging, [staging])
             finally:
                 shutil.rmtree(staging, ignore_errors=True)
         elif src.kind == "folder":
@@ -116,9 +116,9 @@ def run(args) -> int:
         return 3
     write_findings(t, [finding(i, r, f, d) for i, (r, f, d) in enumerate(skipped.items, 1)])
     prov["content_sha256"] = acquire.tree_sha256(q)
-    found = licence.detect(q, [q, *_skill_dirs(q)])
+    found = licensing.detect(q, [q, *_skill_dirs(q)])
     if repo_licence and repo_licence["files"] and (
-        not found["files"] or licence.RANK[repo_licence["class"]] > licence.RANK[found["class"]]
+        not found["files"] or licensing.RANK[repo_licence["class"]] > licensing.RANK[found["class"]]
     ):
         found = repo_licence
     prov["licence"] = found
