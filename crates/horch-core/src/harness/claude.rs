@@ -874,6 +874,11 @@ fn overlay_horch_paths(
             }
         }
     }
+    // The state root holds every worker's skills bundle, which the pane's
+    // `horch` commands never write (ticket 28; R6).
+    if let (HorchAccess::Full, Some(root)) = (teammate.horch_access, &env.state_root) {
+        changed |= deny_writes(&root.join("skill-bundles"), settings)?;
+    }
     if let Some(bundle) = &env.skill_bundle {
         changed |= overlay_bundle_paths(bundle, settings)?;
     }
@@ -894,18 +899,44 @@ fn overlay_bundle_paths(
     settings: &mut serde_json::Map<String, Value>,
 ) -> Result<bool> {
     let dir = bundle.to_string_lossy();
+    let changed = add_entries(
+        settings,
+        [
+            (FS, "allowRead", dir.to_string()),
+            (PERMS, "additionalDirectories", dir.to_string()),
+        ],
+    )?;
+    Ok(deny_writes(bundle, settings)? | changed)
+}
+
+const FS: &[&str] = &["sandbox", "filesystem"];
+const PERMS: &[&str] = &["permissions"];
+
+/// Close `dir` to writes for every tool: Bash by
+/// `sandbox.filesystem.denyWrite`, which wins over `allowWrite`, and Edit
+/// and Write by deny rules. Returns whether an entry was added.
+fn deny_writes(dir: &Path, settings: &mut serde_json::Map<String, Value>) -> Result<bool> {
+    let dir = dir.to_string_lossy();
     // A rule path that starts with `//` is absolute.
     let rule = |tool: &str| format!("{tool}(/{dir}/**)");
+    add_entries(
+        settings,
+        [
+            (FS, "denyWrite", dir.to_string()),
+            (PERMS, "deny", rule("Edit")),
+            (PERMS, "deny", rule("Write")),
+        ],
+    )
+}
+
+/// Append each `(parents, key, entry)` to the list at `parents.key`, once.
+/// Returns whether an entry was added.
+fn add_entries<const N: usize>(
+    settings: &mut serde_json::Map<String, Value>,
+    entries: [(&[&str], &str, String); N],
+) -> Result<bool> {
     let mut changed = false;
-    let fs: &[&str] = &["sandbox", "filesystem"];
-    let perms: &[&str] = &["permissions"];
-    for (parents, key, entry) in [
-        (fs, "allowRead", dir.to_string()),
-        (fs, "denyWrite", dir.to_string()),
-        (perms, "additionalDirectories", dir.to_string()),
-        (perms, "deny", rule("Edit")),
-        (perms, "deny", rule("Write")),
-    ] {
+    for (parents, key, entry) in entries {
         let mut node = &mut *settings;
         for parent in parents {
             node = object_entry(node, parent)?;
@@ -1406,7 +1437,8 @@ mod tests {
                     },
                     "filesystem": {
                         "allowRead": ["~/.config/horch/asc", "/state/horch", "/home/op/.horch"],
-                        "allowWrite": ["/state/horch", "/home/op/.horch"]
+                        "allowWrite": ["/state/horch", "/home/op/.horch"],
+                        "denyWrite": ["/state/horch/skill-bundles"]
                     }
                 })
             );
@@ -1495,21 +1527,75 @@ mod tests {
                 let reads = fs["allowRead"].as_array().unwrap();
                 assert_eq!(reads.first(), Some(&json!("/side")), "{access:?}");
                 assert_eq!(reads.last(), Some(&json!(bundle)), "{access:?}");
-                assert_eq!(fs["denyWrite"], json!([bundle]), "{access:?}");
+                let denied = fs["denyWrite"].as_array().unwrap();
+                assert_eq!(denied.last(), Some(&json!(bundle)), "{access:?}");
                 let writes = fs["allowWrite"].as_array().unwrap();
                 assert!(!writes.contains(&json!(bundle)), "{access:?}");
                 let perms = &settings["permissions"];
                 assert_eq!(perms["blockReadsOutsideWorkingDirectories"], true);
                 assert_eq!(perms["additionalDirectories"], json!([bundle]));
+                let rules = perms["deny"].as_array().unwrap();
                 assert_eq!(
-                    perms["deny"],
-                    json!([
-                        format!("Edit(/{bundle}/**)"),
-                        format!("Write(/{bundle}/**)")
-                    ]),
+                    rules[rules.len() - 2..],
+                    [
+                        json!(format!("Edit(/{bundle}/**)")),
+                        json!(format!("Write(/{bundle}/**)"))
+                    ],
                     "{access:?}"
                 );
             }
+        }
+    }
+
+    /// A sandboxed `full` launch closes every skills bundle under the state
+    /// root to writes, with or without a bundle of its own and through the
+    /// skills overlay too (ticket 28; R6). A `report` launch has no state
+    /// root to close.
+    #[test]
+    fn a_full_sandboxed_launch_writes_no_skills_bundle() {
+        let tmp = tempfile::tempdir().unwrap();
+        let [env, _] = sandbox_envs(tmp.path());
+        if !host_can_sandbox(&env) {
+            return;
+        }
+        let bundles = "/state/horch/skill-bundles";
+        let own = format!("{bundles}/r1");
+        for skill_bundle in [None, Some(PathBuf::from(&own))] {
+            let env = LaunchEnv {
+                report_socket: Some(PathBuf::from("/state/horch/report/r1.sock")),
+                skill_bundle: skill_bundle.clone(),
+                ..env.clone()
+            };
+            let t = sandboxed(json!({}));
+            let mut via_skills = t.clone();
+            via_skills.settings = Some(skills_settings(&t, None).unwrap().to_string());
+            for t in [&t, &via_skills] {
+                let built =
+                    super::super::launch::command_in(&env, t, Session::Fresh("id"), "go", None)
+                        .unwrap();
+                let settings = settings_arg(&built);
+                let fs = &settings["sandbox"]["filesystem"];
+                assert_eq!(fs["allowWrite"], json!(["/state/horch", "/home/op/.horch"]));
+                let denied = fs["denyWrite"].as_array().unwrap();
+                assert_eq!(denied.first(), Some(&json!(bundles)), "{skill_bundle:?}");
+                let rules = &settings["permissions"]["deny"].as_array().unwrap()[..2];
+                assert_eq!(
+                    rules,
+                    [
+                        json!(format!("Edit(/{bundles}/**)")),
+                        json!(format!("Write(/{bundles}/**)"))
+                    ],
+                    "{skill_bundle:?}"
+                );
+            }
+            let mut report = sandboxed(json!({}));
+            report.horch_access = HorchAccess::Report;
+            let built =
+                super::super::launch::command_in(&env, &report, Session::Fresh("id"), "go", None)
+                    .unwrap();
+            let text = settings_arg(&built).to_string();
+            assert!(!text.contains(&format!("{bundles}\"")), "{text}");
+            assert!(!text.contains(&format!("{bundles}/**")), "{text}");
         }
     }
 
@@ -1531,11 +1617,15 @@ mod tests {
         )
         .unwrap();
         let settings = settings_arg(&built);
-        assert!(settings["sandbox"]["filesystem"].get("denyWrite").is_none());
+        // Only the state root's bundle folder (ticket 28), no bundle of its own.
+        assert_eq!(
+            settings["sandbox"]["filesystem"]["denyWrite"],
+            json!(["/state/horch/skill-bundles"])
+        );
         assert!(settings["permissions"]
             .get("additionalDirectories")
             .is_none());
-        assert!(settings["permissions"].get("deny").is_none());
+        assert_eq!(settings["permissions"]["deny"].as_array().unwrap().len(), 2);
 
         let plain = Teammate {
             name: "plain".into(),

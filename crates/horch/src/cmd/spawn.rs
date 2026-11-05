@@ -102,14 +102,16 @@ pub fn resolve_positionals(
 pub fn spawn(ctx: &RuntimeContext, mut args: SpawnArgs) -> Result<String> {
     // Before the ledger row: a refused caller leaves nothing behind.
     let roster_dir = super::path_text(ctx.bins.roster_override.as_deref());
-    let controller = spawn_only_check(caller(ctx).as_ref(), &args, roster_dir.as_deref())?;
+    let caller = caller(ctx);
+    let controller = spawn_only_check(caller.as_ref(), &args, roster_dir.as_deref())?;
+    let sandboxed = sandboxed(caller.as_ref());
     // The task ledger: when this spawn joins a run, the worker gets a row,
     // and a spawn with no task tells it to claim one.
     let ledger = super::taskledger_spawn::prepare(ctx, &args)?;
     if ledger.is_some() && args.task.trim().is_empty() && args.resume.is_none() {
         args.task = super::taskledger_spawn::CLAIM_TASK.to_string();
     }
-    let result = spawn_worker(ctx, args, ledger.as_ref(), controller);
+    let result = spawn_worker(ctx, args, ledger.as_ref(), controller, sandboxed);
     // No row outlives a spawn that failed before its worker ran (#190).
     if let (Err(e), Some(l)) = (&result, &ledger) {
         let reason = match e.downcast_ref::<SpawnError>() {
@@ -135,13 +137,14 @@ fn spawn_worker(
     args: SpawnArgs,
     ledger: Option<&super::taskledger_spawn::LedgerSpawn>,
     controller: Option<String>,
+    sandboxed: bool,
 ) -> Result<String> {
     let req = build_request(&args)?;
     let sc = spawn_context(ctx)?;
     let existing = resume_record(&req, &sc)?;
     let mut plan = plan_request(ctx, &req, &sc, existing.as_ref())?;
     plan.controller = controller;
-    launch(ctx, &sc, plan, args.role.as_deref(), ledger)
+    launch(ctx, &sc, plan, args.role.as_deref(), ledger, sandboxed)
 }
 
 /// The worker that runs this `horch spawn`: the role registered on this
@@ -174,6 +177,21 @@ fn caller(ctx: &RuntimeContext) -> Option<Caller> {
         teammate: brief.resolved?,
         teammates_dir: brief.teammates_dir,
     })
+}
+
+/// Whether a sandboxed worker runs this spawn.
+fn sandboxed(caller: Option<&Caller>) -> bool {
+    caller.is_some_and(|c| c.teammate.sandbox.is_some())
+}
+
+/// Run the state sweep, unless a sandboxed worker runs this spawn: its
+/// sandbox denies the removal of skill bundles (ticket 28). A skipped
+/// sweep writes no stamp, so the next spawn outside a sandbox sweeps on
+/// time.
+fn sweep_state(ctx: &RuntimeContext, sandboxed: bool) {
+    if !sandboxed {
+        horch_core::sweep::run_due(ctx);
+    }
 }
 
 /// Refuse what the caller's `spawn_only` does not allow: a name that
@@ -258,6 +276,7 @@ fn launch(
     plan: ExecutionPlan,
     role: Option<&str>,
     ledger: Option<&super::taskledger_spawn::LedgerSpawn>,
+    sandboxed: bool,
 ) -> Result<String> {
     // Advisory probes belong after validation: a refused/headless request
     // must not contact herdr or create diagnostic state.
@@ -278,7 +297,7 @@ fn launch(
             l.launch_failed(&format!("{e:#}"));
         }
     })?;
-    horch_core::sweep::run_due(ctx);
+    sweep_state(ctx, sandboxed);
     let launch = &out.plan.launch;
     if let Some(l) = ledger {
         l.spawned(
@@ -700,6 +719,41 @@ mod tests {
             },
             teammates_dir: Some("/repo/teammates".into()),
         }
+    }
+
+    /// A spawn skips the state sweep only when a sandboxed worker runs it
+    /// (ticket 28): an operator shell, the orchestrator and an unsandboxed
+    /// worker sweep.
+    #[test]
+    fn only_a_sandboxed_caller_skips_the_sweep() {
+        let mut boxed = importer(&[]);
+        boxed.teammate.sandbox = Some(serde_json::Map::new());
+        assert!(sandboxed(Some(&boxed)));
+        assert!(!sandboxed(Some(&importer(&[]))));
+        assert!(!sandboxed(None));
+    }
+
+    /// A skipped sweep writes no stamp, so the next unsandboxed spawn
+    /// sweeps on time; a sweep that runs writes it.
+    #[test]
+    fn a_skipped_sweep_writes_no_stamp() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = tmp.path().join("state");
+        std::fs::create_dir(&state).unwrap();
+        // A herdr that does not answer leaves all state alone.
+        let env = horch_core::runtime::MapEnv::new(tmp.path())
+            .with("HOME", &tmp.path().to_string_lossy())
+            .with("HORCH_STATE_DIR", &state.to_string_lossy())
+            .with(
+                "HORCH_HERDR_BIN",
+                &tmp.path().join("no-herdr").to_string_lossy(),
+            );
+        let ctx = RuntimeContext::from_env(&env).unwrap();
+        let stamp = state.join(".sweep-stamp");
+        sweep_state(&ctx, true);
+        assert!(!stamp.exists(), "a sandboxed spawn must not stamp");
+        sweep_state(&ctx, false);
+        assert!(stamp.exists(), "an unsandboxed spawn sweeps and stamps");
     }
 
     /// A caller with `spawn_only` spawns a matching teammate, and the new

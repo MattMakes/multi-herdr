@@ -466,7 +466,8 @@ fn t27_every_intake_teammate_reads_but_does_not_write_its_bundle() {
         let fs = &settings["sandbox"]["filesystem"];
         assert!(strings(&fs["allowRead"]).contains(&dir), "{name}");
         assert!(!strings(&fs["allowWrite"]).contains(&dir), "{name}");
-        assert_eq!(fs["denyWrite"], json!([dir]), "{name}");
+        let denied = strings(&fs["denyWrite"]);
+        assert_eq!(denied.last(), Some(&dir), "{name}");
         let perms = &settings["permissions"];
         assert_eq!(perms["blockReadsOutsideWorkingDirectories"], true, "{name}");
         assert_eq!(perms["additionalDirectories"], json!([dir]), "{name}");
@@ -480,5 +481,55 @@ fn t27_every_intake_teammate_reads_but_does_not_write_its_bundle() {
         let root = state_root.to_string_lossy().into_owned();
         let opened = strings(&fs["allowRead"]).contains(&root);
         assert_eq!(opened, t.horch_access == HorchAccess::Full, "{name}");
+    }
+}
+
+/// T-28: each full sandboxed teammate (skill-importer, app-release-preparer)
+/// launches with the state root's whole `skill-bundles` folder closed to
+/// write for every tool (`denyWrite` for Bash, deny rules for Edit and
+/// Write), with or without a bundle of its own. The state root stays open
+/// to write, so its `horch` commands work. A `report` role gets no such
+/// path: it has no state root.
+#[test]
+fn t28_a_full_sandboxed_teammate_writes_no_skills_bundle() {
+    let home = tempfile::tempdir().unwrap();
+    let env = launch_env(home.path());
+    let state_root = env.state_root.clone().unwrap();
+    let root = state_root.to_string_lossy().into_owned();
+    let bundles = state_root
+        .join("skill-bundles")
+        .to_string_lossy()
+        .into_owned();
+    let r = Roster::builtin().unwrap();
+    for name in ["skill-importer", "app-release-preparer"] {
+        let t = r.require(name).unwrap();
+        assert!(t.sandbox.is_some(), "{name}");
+        assert_eq!(t.horch_access, HorchAccess::Full, "{name}");
+        let bundle = horch_core::skills::Bundle::install(&state_root, t).unwrap();
+        for own in [None, bundle.as_ref()] {
+            let cmd =
+                launch::command_with_skills_in(&env, t, Session::Unmanaged, "PROMPT", None, own)
+                    .unwrap();
+            let args: Vec<String> = cmd
+                .get_args()
+                .map(|a| a.to_string_lossy().into_owned())
+                .collect();
+            let i = args.iter().position(|a| a == "--settings").unwrap();
+            let settings: Value = serde_json::from_str(&args[i + 1]).unwrap();
+            let fs = &settings["sandbox"]["filesystem"];
+            assert!(strings(&fs["allowWrite"]).contains(&root), "{name}");
+            assert!(strings(&fs["denyWrite"]).contains(&bundles), "{name}");
+            let deny = strings(&settings["permissions"]["deny"]);
+            for tool in ["Edit", "Write"] {
+                assert!(
+                    deny.contains(&format!("{tool}(/{bundles}/**)")),
+                    "{name}: {deny:?}"
+                );
+            }
+        }
+    }
+    for name in ROLES.iter().map(|r| r.name) {
+        let text = launched_settings(&env, r.require(name).unwrap()).to_string();
+        assert!(!text.contains(&bundles), "{name}: {text}");
     }
 }
