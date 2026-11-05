@@ -1001,3 +1001,8 @@ Findings, not fixed in T-17:
   refused (exit 14, another role active). The controller built the prompt by
   hand from the first one. This is the controller's error, and it makes the
   second reviewer run less reliable as evidence.
+
+Note: the writer persona rule (no shell command, URL or `horch` command in
+`K/persona.md`) that T-17 added to `roles/writer.md` is reverted in the T-17
+branch. Ticket 37 owns `roles/writer.md`. The `skill-importer-6` run and the
+plain run 4 used the build or the worktree with that rule in place.
