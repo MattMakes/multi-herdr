@@ -35,10 +35,10 @@ sandbox:
   filesystem:
     allowRead:
       - "~/.local/state/skill-intake"
-    # The workspace base, and the standalone install target.
+    # The workspace base. Claude Code always denies sandboxed writes to
+    # ~/.claude/skills (ticket 43), so it is not listed.
     allowWrite:
       - "~/.local/state/skill-intake"
-      - "~/.claude/skills"
   network:
     allowedDomains:
       - "github.com"

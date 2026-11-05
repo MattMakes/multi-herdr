@@ -235,7 +235,7 @@ fn t26_the_skill_importer_is_the_offered_controller() {
     );
     let fs = &block["filesystem"];
     assert_eq!(strings(&fs["allowRead"]), [B]);
-    assert_eq!(strings(&fs["allowWrite"]), [B, "~/.claude/skills"]);
+    assert_eq!(strings(&fs["allowWrite"]), [B]);
     for spawn_target in ROLES.iter().map(|r| r.name) {
         assert!(
             t.persona.contains(spawn_target),
