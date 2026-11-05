@@ -127,6 +127,7 @@ const SKIP_NEW_TEAMMATES: &[&str] = &[
     "video-critic",
     "video-director",
     "video-editor",
+    "video-producer",
     "visual-prototyper",
     "worktree-steward",
 ];

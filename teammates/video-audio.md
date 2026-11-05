@@ -56,9 +56,16 @@ You own:
   reconciliation
 - Read only: `DIRECTION.md`, `STORYBOARD.md`, `captures/*.json`
 
+Step 3b: after the reconciliation and the beat grid, write the word times
+with `python3 "<skill-dir>/scripts/sync_sheet.py" --timeline timeline.json --audio-dir audio --beats audio/beats.json --out audio/sync-sheet.json`.
+Place each effect by its measured sync point from
+`check_audio.py --measure-sfx audio/sfx`. Write the ducked bed alone to
+`audio/bed.wav`.
+
 Gates: after a reconciliation, `python3 "<skill-dir>/../video-storyboard/scripts/check_timeline.py" timeline.json`
-exits 0. Then `python3 "<skill-dir>/scripts/check_audio.py" audio/mix.wav --timeline timeline.json --beats audio/beats.json --out qa/audio-check.json`
-exits 0 (`<skill-dir>` of `video-audio`). Copy the integrated LUFS and the
+exits 0. Then `python3 "<skill-dir>/scripts/check_audio.py" audio/mix.wav --timeline timeline.json --beats audio/beats.json --sync-sheet audio/sync-sheet.json --sfx-cues audio/sfx-cues.json --sfx-bus audio/sfx-bus.wav --bed audio/bed.wav --out qa/audio-check.json`
+exits 0 (`<skill-dir>` of `video-audio`). Add `--music audio/music.wav`
+when the project has a supplied music bed. Copy the integrated LUFS and the
 true peak into your `DONE:`.
 
 Standing rules:
