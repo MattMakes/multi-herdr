@@ -860,3 +860,15 @@ write paths. The generated brief says the opposite:
 - A likely fix: allow the role's own status file in `role_result`, or change
   `render` so that the brief says `outputs` excludes the status file. Add a
   regression test with a status file that lists itself.
+
+### Step 1, attempt 3: FAILED (clone refused by the sandbox proxy)
+
+| field | value |
+|---|---|
+| command | the attempt 1 command, with a task text that asks for a real `github.com` clone, after the rebase on commit `42330122` (tickets 27 to 32) |
+| task id | T-17 (worker `skill-importer-3`, pane `w29:p1X`, run `skill-intake`, spawned 2026-11-05T12:59Z) |
+| outcome | FAILED at acquire: `Proxy CONNECT aborted` on the `git clone` of `github.com`, inside the controller's sandbox. The orchestrator stopped the pane. |
+| cause | not proven. The launched `--settings` of the pane list `github.com` in `network.allowedDomains`, so the pane's own explanation (a missing domain) does not hold. Ticket 33 finds the root cause. |
+| installed | nothing. `ls ~/.claude/skills` still has 191 entries. |
+
+The GitHub steps (1, 2, 4) wait for ticket 33.
