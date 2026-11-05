@@ -64,7 +64,8 @@ You own:
 
 Gate: `python3 "<skill-dir>/scripts/check_timeline.py" timeline.json` exits 0
 (`<skill-dir>` of `video-storyboard`). It also checks the 3 directions
-in `DIRECTION.md` and their PNGs. Do not hand off with a failing
+in `DIRECTION.md` and their PNGs, and `materials/materials.md` when a scene
+has kind `capture`. Do not hand off with a failing
 `qa/plan-check.json`. In a fix round, change only the scenes that the
 critique names.
 

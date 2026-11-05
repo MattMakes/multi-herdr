@@ -8,7 +8,8 @@ Usage:
 Exit 0 when every gate passes, 1 when a gate fails, 2 on a usage error.
 The JSON report goes to --out (default: <timeline dir>/qa/plan-check.json)
 and to stdout. The CLI also checks DIRECTION.md and its key frames in the
-timeline folder. Python 3 standard library only.
+timeline folder, and materials/materials.md when a scene has kind capture.
+Python 3 standard library only.
 """
 
 import argparse
@@ -32,6 +33,7 @@ RULES = [
     "event_gap",
     "hero",
     "directions",
+    "materials",
     "schema",
 ]
 
@@ -550,6 +552,36 @@ def check_directions(folder):
     return report.errors
 
 
+def listed_materials(text):
+    """File names in the `| File | Source URL | What |` table of materials.md."""
+    names = []
+    for line in text.splitlines():
+        cells = [cell.strip().strip("`") for cell in line.strip().strip("|").split("|")]
+        if line.startswith("|") and len(cells) == 3 and cells[0] not in ("", "File") and set(cells[0]) != {"-"}:
+            names.append(cells[0])
+    return names
+
+
+def check_materials(timeline, folder):
+    """Return the `materials` errors: a capture scene needs materials/materials.md and every file it lists."""
+    report = Report()
+    scenes = timeline.get("scenes") if isinstance(timeline, dict) else None
+    captures = [s.get("id") for s in scenes or [] if isinstance(s, dict) and s.get("kind") == "capture"]
+    if not captures:
+        return report.errors
+    path = os.path.join(folder, "materials", "materials.md")
+    try:
+        with open(path, encoding="utf-8") as handle:
+            names = listed_materials(handle.read())
+    except OSError:
+        report.add("materials", "capture scenes %s need materials/materials.md (video-capture materials.mjs)" % ", ".join(captures))
+        return report.errors
+    for name in names:
+        if not os.path.isfile(os.path.join(folder, "materials", name)):
+            report.add("materials", "materials/materials.md lists %s, but the file is missing" % name)
+    return report.errors
+
+
 def check_timeline(timeline):
     """Return the list of rule-keyed errors for a parsed timeline."""
     report = Report()
@@ -574,13 +606,15 @@ def check_timeline(timeline):
 
 
 def run(timeline_path, out_path):
+    timeline = None
     try:
         with open(timeline_path, encoding="utf-8") as handle:
             timeline = json.load(handle)
         errors = check_timeline(timeline)
     except (OSError, ValueError) as exc:
         errors = [{"rule": "schema", "message": "cannot read timeline: %s" % exc}]
-    errors += check_directions(os.path.dirname(os.path.abspath(timeline_path)))
+    folder = os.path.dirname(os.path.abspath(timeline_path))
+    errors += check_directions(folder) + check_materials(timeline, folder)
     result = {
         "passed": not errors,
         "timeline": os.path.abspath(timeline_path),
@@ -686,9 +720,19 @@ def self_test():
             lines.append("chosen: %s" % chosen)
         return "\n".join(lines) + "\n"
 
+    def write_materials(folder, listed=("first-screen.png", "colors.json"), present=("first-screen.png", "colors.json")):
+        os.makedirs(os.path.join(folder, "materials"), exist_ok=True)
+        rows = "".join("| `%s` | http://localhost:8000/ | fixture |\n" % name for name in listed)
+        with open(os.path.join(folder, "materials", "materials.md"), "w", encoding="utf-8") as handle:
+            handle.write("# Materials\n\n| File | Source URL | What |\n|---|---|---|\n" + rows)
+        for name in present:
+            with open(os.path.join(folder, "materials", name), "wb") as handle:
+                handle.write(b"x")
+
     def write_project(folder, timeline, direction=None, pngs=("d1", "d2", "d3")):
         with open(os.path.join(folder, "timeline.json"), "w", encoding="utf-8") as handle:
             json.dump(timeline, handle)
+        write_materials(folder)
         with open(os.path.join(folder, "DIRECTION.md"), "w", encoding="utf-8") as handle:
             handle.write(direction_md() if direction is None else direction)
         os.makedirs(os.path.join(folder, "qa", "directions"), exist_ok=True)
@@ -1037,6 +1081,31 @@ def self_test():
                 proc = subprocess.run([sys.executable, script, path], capture_output=True, text=True, timeout=60)
             self.assertEqual(proc.returncode, 1)
             self.assertEqual({e["rule"] for e in json.loads(proc.stdout)["errors"]}, {"directions"})
+
+        def test_16_materials_pass(self):
+            with tempfile.TemporaryDirectory() as tmp:
+                write_materials(tmp)
+                self.assertEqual(check_materials(self.timeline, tmp), [])
+
+        def test_16_capture_scene_needs_materials_list(self):
+            with tempfile.TemporaryDirectory() as tmp:
+                path = write_project(tmp, self.timeline)
+                os.remove(os.path.join(tmp, "materials", "materials.md"))
+                proc = subprocess.run([sys.executable, script, path], capture_output=True, text=True, timeout=60)
+            self.assertEqual(proc.returncode, 1)
+            self.assertEqual({e["rule"] for e in json.loads(proc.stdout)["errors"]}, {"materials"})
+
+        def test_16_listed_material_is_missing(self):
+            with tempfile.TemporaryDirectory() as tmp:
+                write_materials(tmp, present=("colors.json",))
+                errors = check_materials(self.timeline, tmp)
+            self.assertEqual([e["rule"] for e in errors], ["materials"])
+            self.assertIn("first-screen.png", errors[0]["message"])
+
+        def test_16_no_capture_scene_needs_no_materials(self):
+            self.scenes[1]["kind"] = "motion"
+            with tempfile.TemporaryDirectory() as tmp:
+                self.assertEqual(check_materials(self.timeline, tmp), [])
 
         def test_skill_files_under_byte_cap(self):
             for skill in ("video-direction", "video-storyboard"):

@@ -1,6 +1,6 @@
 ---
 name: video-storyboard
-description: "Use when a video project has BRIEF.md and DIRECTION.md and needs a beat-timed plan before capture, animation, audio or render start. Writes STORYBOARD.md and the canonical timeline.json (meta plus scenes with timing, beats, narration, captions, plates, motion, safe-zone regions and focal points), then proves it with scripts/check_timeline.py: 14 gates for the 3 s hook, 2-8 s scenes, caption density, 2.7 words/s narration, visual variety, safe zones, contiguous timing, read holds, key terms, the rhythm sheet, event gaps, the hero and payoff silence, the 3 directions in DIRECTION.md, and schema."
+description: "Use when a video project has BRIEF.md and DIRECTION.md and needs a beat-timed plan before capture, animation, audio or render start. Writes STORYBOARD.md and the canonical timeline.json (meta plus scenes with timing, beats, narration, captions, plates, motion, safe-zone regions and focal points), then proves it with scripts/check_timeline.py: 15 gates for the 3 s hook, 2-8 s scenes, caption density, 2.7 words/s narration, visual variety, safe zones, contiguous timing, read holds, key terms, the rhythm sheet, event gaps, the hero and payoff silence, the 3 directions in DIRECTION.md, captured materials for capture scenes, and schema."
 ---
 
 # Video Storyboard
@@ -32,7 +32,7 @@ the video project folder.
 ```bash
 python3 "<skill-dir>/scripts/check_timeline.py" timeline.json
 # writes qa/plan-check.json next to timeline.json; exit 0 = pass
-# also checks DIRECTION.md and qa/directions/*.png in the same folder
+# also checks DIRECTION.md, qa/directions/*.png and materials/ in the same folder
 python3 "<skill-dir>/scripts/check_timeline.py" timeline.json --out qa/plan-check.json
 python3 "<skill-dir>/scripts/check_timeline.py" --self-test
 ```
@@ -149,7 +149,7 @@ the film, in time order, with no overlap.
 Extra fields are allowed. The checker ignores them. Add them only when a
 later phase reads them, and write them into `STORYBOARD.md` too.
 
-## The 14 plan gates
+## The 15 plan gates
 
 `check_timeline.py` checks these. Each error in `qa/plan-check.json` has a
 `rule`, a `message` and, when it applies, a `scene` id.
@@ -169,32 +169,12 @@ later phase reads them, and write them into `STORYBOARD.md` too.
 | 11 | `event_gap` | With `meta.bpm`: no part of the film longer than 2 bars has no event (a scene start or an `events_sec` time), except inside a `stop` stretch or `payoff_silence_sec`. |
 | 12 | `hero` | `meta.hero_sec` is inside 30 % to 90 % of `meta.duration_sec`. With `meta.bpm`, `hero_sec` and `payoff_silence_sec` exist and the silence ends at or before the hero start. |
 | 13 | `directions` | `DIRECTION.md` next to `timeline.json` passes the direction rules of `video-direction` (3 directions, key frames, 1 `chosen:` line). |
-| 14 | `schema` | Every field in the tables above has the right type. IDs are non-empty and unique. A schema error stops the other gates, so fix it first. |
+| 14 | `materials` | When a scene has kind `capture`, `materials/materials.md` exists (written by `materials.mjs` of `video-capture`) and every file in its table exists in `materials/`. |
+| 15 | `schema` | Every field in the tables above has the right type. IDs are non-empty and unique. A schema error stops the other gates, so fix it first. |
 
 ## Fix a failing gate
 
-- `hook_window`: cut the hook text to 3 to 5 words, or set
-  `motion.reveal_sec` lower and make the motion land sooner.
-- `scene_duration`: split a long scene at a beat, or merge a short one
-  into its neighbor. Use an override reason only for a deliberate choice.
-- `caption_density`: the caption is a headline, not the narration. Cut
-  it to the 1 idea of the scene.
-- `speaking_rate`: cut words before you add seconds. 2.2 words/s sounds
-  calm. 2.7 words/s is the limit, not the goal.
-- `visual_variety`: change the framing (zoom, new plate, new template)
-  or move the focal point to the other third of the frame.
-- `safe_zone`: move content up, or for `9:16` move it left. Captions own
-  the bottom 18%.
-- `contiguous_timing`: recompute every `start_sec` from scene 1 in order.
-  Do not edit 1 start by hand.
-- `read_hold`: cut words, land the motion sooner (`reveal_sec`), or give
-  the scene more time.
-- `terms`: say the term in the narration and put the same words on screen.
-- `event_gap`: add an event (a reveal, a cut, a hit), or declare the
-  stretch a `stop` when the stillness is the point.
-- `hero`: move the payoff into the middle part of the film, and end the
-  silence before the hero starts.
-- `directions`: see "Three directions" in `video-direction`.
+See `references/fix-gates.md`: 1 fix per `rule`.
 
 ## Timing after audio
 
