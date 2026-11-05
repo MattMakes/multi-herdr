@@ -1,6 +1,6 @@
 # Idle life for drawn things
 
-A drawn thing that holds perfectly still between moves looks dead. Idle life is a small, slow, endless motion on top of the main animation: a breath, a blink, a sway, a flicker, a ripple. This file gives 1 recipe for each. Every recipe is a pure function of `t` (seconds) and a seed, so it runs inside `window.__seekToFrame(frameIndex, fps)` and gives the same frame in any render order.
+A drawn thing that holds perfectly still between moves looks dead. Idle life is a small, slow, endless motion on top of the main animation: a breath, a blink, a sway, a flicker, a ripple. This file gives 1 recipe for each. Every recipe computes its value from `t` (seconds) and a seed alone, so it runs inside `window.__seekToFrame(frameIndex, fps)` and gives the same frame in any render order.
 
 For a character rig, the breath and blink formulas with their `MOTION.md` tokens are in `rig-and-visemes.md`. Use the recipes here for everything else: plants, flames, flags, water, badges, screens, background props.
 

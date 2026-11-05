@@ -23,6 +23,11 @@ from pathlib import Path
 
 WORD_N = 8
 CODE_N = 12
+# Prose (our .md and .txt files) is read with a shorter window: a phrase of 6 words
+# is enough to be someone's wording, while 8 let 6 and 7 word phrases through.
+PROSE_N = 6
+# kind -> (how the text is split, window size)
+KINDS = {"prose": ("word", PROSE_N), "word": ("word", WORD_N), "code": ("code", CODE_N)}
 MAX_BYTES = 1_000_000
 TEXT_EXT = {".md", ".txt", ".ts", ".tsx", ".js", ".mjs", ".cjs", ".py", ".html",
             ".css", ".sh", ".json", ".yml", ".yaml", ".toml", ".hs", ".rs", ".mdx"}
@@ -89,6 +94,11 @@ ALLOW_WORDS = {
     # walk, and a GSAP tween with a named ease: standard API names and options
     "action", "store", "help", "default", "int", "seed", "0x6d2b79f5", "continue", "range",
     "opacity", "ease", "power2",
+    # ffmpeg scale and paletteuse options: fixed by the tool
+    "original", "aspect", "ratio", "dither", "bayer",
+    # names of our own storyboard gate, scripts/check_timeline.py, and its input
+    # timeline.json: the same names occur upstream, reported in the audit DONE
+    "scripts", "timeline", "py",
     # macos install path of Google Chrome: a path fixed by the vendor
     "applications", "google", "chrome", "app", "contents", "macos",
 }
@@ -186,12 +196,8 @@ def build_index(files, kind):
     index = {}
     projects = {}
     for fi, (_, text) in enumerate(files):
-        if kind == "word":
-            seq = words(text)
-            n = WORD_N
-        else:
-            seq = tokens(text)
-            n = CODE_N
+        split, n = KINDS[kind]
+        seq = words(text) if split == "word" else tokens(text)
         for g in set(grams(seq, n)):
             lst = index.setdefault(g, [])
             if len(lst) < 8:
@@ -203,7 +209,8 @@ def build_index(files, kind):
 def find_hits(label, text, kind, indexes, sources):
     """Merge adjacent n-gram matches per source file into hits."""
     index, projects = indexes
-    seq, n = (words(text), WORD_N) if kind == "word" else (tokens(text), CODE_N)
+    split, n = KINDS[kind]
+    seq = words(text) if split == "word" else tokens(text)
     gs = grams(seq, n)
     runs = {}  # source index -> [start, last]
     hits = []
@@ -273,7 +280,7 @@ def self_test():
         (tmp / "ours").mkdir()
         cases = {
             # a sentence copied with other case and punctuation: must be caught
-            "sentence.md": ("My notes.\n\n" + SELF_PROSE.upper().replace(",", ";") + "\n", 1, "HIT [word]"),
+            "sentence.md": ("My notes.\n\n" + SELF_PROSE.upper().replace(",", ";") + "\n", 1, "HIT [prose]"),
             # a code block copied with other spacing: must be caught
             "block.js": (SELF_CODE.replace("  ", "\t"), 1, "HIT [code]"),
             # own words: must pass
@@ -319,18 +326,16 @@ def main():
     if a.specs:
         sp = load(list(walk(Path(a.specs))), Path(a.specs).parent)
         sources["word"] = up_files + sp
-    word_idx = build_index(sources["word"], "word")
-    code_idx = build_index(sources["code"], "code")
+    sources["prose"] = sources["word"]
+    idx_of = {k: build_index(sources[k], k) for k in KINDS}
 
     found = {}  # (kind, ours, shared) -> upstream paths
     skipped = {}  # the same for allowlisted hits, kept for --show-common
     common = 0
     for label, text in ours:
-        kinds = [("word", word_idx)]
-        if Path(label).suffix.lower() in CODE_EXT:
-            kinds.append(("code", code_idx))
-        for kind, idx in kinds:
-            for k, ours_l, src_l, shared, idiom in find_hits(label, text, kind, idx, sources[kind]):
+        kinds = ["word", "code"] if Path(label).suffix.lower() in CODE_EXT else ["prose"]
+        for kind in kinds:
+            for k, ours_l, src_l, shared, idiom in find_hits(label, text, kind, idx_of[kind], sources[kind]):
                 if idiom or is_common(shared, k):
                     common += 1
                     if a.show_common:

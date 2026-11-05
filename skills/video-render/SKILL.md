@@ -55,7 +55,7 @@ What the script does, in order:
    named by frame index.
 
 Frame count comes from `--frames`, else `--duration` x `--fps`, else
-`window.__videoMeta.duration`. Width and height must be even.
+`window.__videoMeta.duration`. Both sizes need an even number of pixels.
 
 | Flag | Meaning |
 |---|---|
@@ -123,14 +123,14 @@ Every input path is relative to the folder of `timeline.json`:
    | `smoothleft`, `push-left` | `xfade` `smoothleft` |
    | `circleopen` | `xfade` `circleopen` |
 
-   Any other name fails. The transition starts at the next scene's
-   `start_sec`, so render each clip with its tail handle (Step 1).
+   Any other name fails. The transition starts at the `start_sec` of
+   the next scene, so render each clip with its tail handle (Step 1).
 3. Beat check: when `audio/beats.json` exists, every scene start after the
    first must be within `1` frame of a value in `beats_sec` or
    `downbeats_sec`. A miss fails. The script never shifts a cut.
 4. Text layers: every `render/overlays/<name>/frame_%06d.png` sequence (Step
    2), frame 0 at film time 0, overlaid back to front in name order.
-5. `audio/mix.wav`, padded or cut to the film length.
+5. `audio/mix.wav`, trimmed or padded to the film length.
 
 Output: CFR H.264 High@L4.2, `-crf 16`, `yuv420p`, AAC `320 kbps`,
 `48 kHz`, stereo, `round(meta.duration_sec x meta.fps)` frames. A missing

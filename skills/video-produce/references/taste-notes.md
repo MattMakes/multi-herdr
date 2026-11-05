@@ -38,7 +38,7 @@ also rejects a notes file inside a `skills/` folder.
 
 - `preference`: the operator's own words, in double quotes. It is taste. It
   holds for this operator only.
-- `observed`: something 1 film showed. It is a lead, not a rule.
+- `observed`: something 1 film showed. Treat it as a hint. It proves nothing yet.
 - `verified`: the same result in 2 or more films, or a measurement. The
   evidence starts with `measured` when it is a measurement.
 
@@ -49,8 +49,8 @@ notes on the film, and the gate files in `qa/`.
 
 1. Fix first. When this film contradicts an entry, change or delete that
    entry, in the project copy and in the fleet copy.
-2. Keep a new entry only when all 3 are true: it is not obvious, it saves
-   time on the next film, and this film produced the evidence.
+2. Add an entry only when all 3 hold: a reader would not guess it, it spares
+   the next film a detour, and the current film gives proof for it.
 3. Prefer a check over a note. When a finding can be measured, send it to
    the orchestrator as a proposed check with a test. Do not add an entry
    for it.

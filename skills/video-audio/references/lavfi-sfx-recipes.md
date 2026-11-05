@@ -1,7 +1,7 @@
 # Procedural SFX, beat grid and bus recipes
 
 Every recipe here renders with `ffmpeg -f lavfi` and needs no download. Each
-command writes a `48 kHz` stereo 16-bit PCM file. Render the SFX into
+command outputs a stereo PCM file at `48 kHz` and 16 bits. Render the SFX into
 `audio/sfx/` at build time. Do not commit the `.wav` output to git.
 
 Common tail for every render command:

@@ -8,7 +8,7 @@ description: "Use when a rendered video (render/master.mp4) must pass the final 
 `<skill-dir>` means the directory where this SKILL.md sits. Run every command from
 the video project root (the folder that holds `timeline.json`).
 
-The gate has 2 parts. Part 1 is numeric and decides itself: a failed check is
+The gate runs in 2 parts. The 1st is numeric and decides itself: a failed check is
 a failed video. Part 2 is a blind visual review on 8 axes. The video passes
 only when both parts pass.
 

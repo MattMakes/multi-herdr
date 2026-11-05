@@ -1,6 +1,6 @@
 ---
 name: video-motion-match
-description: Use when a video scene must recreate the motion of a reference clip or GIF - decompose it into keyframes, a numbered contact sheet and a motion-spec.json of layers, boxes, opacity, transforms and easing, then rebuild it as a deterministic scene and loop scripts/compare_frames.py until SSIM and box IoU pass.
+description: Use when a video scene must rebuild the movement of a reference clip or GIF - decompose it into keyframes, a numbered contact sheet and a motion-spec.json of layers, boxes, opacity, transforms and easing, then rebuild it as a deterministic scene and loop scripts/compare_frames.py until SSIM and box IoU pass.
 ---
 
 # Reference reanimation

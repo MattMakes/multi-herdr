@@ -174,7 +174,7 @@ function follow(valueAt, t, fps) {
 ear.style.transform = "rotate(" + follow(headAngle, t, fps) + "deg)";
 ```
 
-`valueAt` must itself be a pure function of `t`, so this stays order-free.
+`valueAt` must depend on `t` alone, so this stays order-free.
 
 ## 4. Reaction states
 

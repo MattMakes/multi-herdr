@@ -214,7 +214,7 @@ Exit `2`: an input or a tool is missing.
 | `beats.bpm`, `beats.order`, `beats.range`, `beats.schema` | `bpm > 0`, both lists strictly increasing in `[0, duration]` | Make the grid again |
 | `sync.*` | Words in order, inside their segment, segment inside its scene, every narrated scene present | Run `sync_sheet.py` again |
 | `sfx.sync` | Each cue's sync point lands within `40 ms` of `time_sec` | Set `start_sec` from `--measure-sfx` |
-| `sfx.margin` | Each effect `>= 3 dB` over the bed in its band | Raise `gain_db` or duck the bed |
+| `sfx.margin` | Effect level minus bed level in the effect's band is `>= 3 dB` | Raise `gain_db` or duck the bed |
 | `mix.hero_loudest` | Loudest moment inside `meta.hero_sec` | Lift the hero |
 | `mix.payoff_silence` | `>= 0.4 s` quiet run inside `meta.payoff_silence_sec` | Cut bed and SFX there |
 | `music.drop` | The bed's drop within 1 beat of the hero start | Offset the bed |

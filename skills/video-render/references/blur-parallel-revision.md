@@ -33,7 +33,7 @@ node "<skill-dir>/scripts/render_frames.mjs" --scenes timeline.json \
 - It renders every HTML scene to `render/scenes/<scene-id>.mp4`. A scene is
   HTML when its `plate` ends in `.html`, or when `scenes/<scene-id>/index.html`
   exists. Capture plates are not rendered.
-- Frame count per scene: the frames to the next scene's start, plus the tail
+- Frame count per scene: the frames up to the `start_sec` of the next scene, plus the tail
   handle of its `transition_out` (the same plan as `assemble_master.mjs`).
   Size and fps come from `meta`.
 - Each worker is a child `node` process with its own Chrome. The default
@@ -76,7 +76,7 @@ give. Each note is 1 list item that starts with a film time:
 
 ```md
 - 0:00.4 s01-hook: the title lands 2 frames before the downbeat. Fix: video-animator.
-- [0:02] s02-cta: the button label is too small at phone width. Fix: video-animator.
+- [0:02] s02-cta: the button text is illegible at phone size. Fix: video-animator.
 - 0:03.5 s02-cta: the fade ends on a flat frame. Fix: video-editor.
 ```
 

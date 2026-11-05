@@ -27,9 +27,9 @@ For a character or mascot rig, also use the `video-character` skill. To copy the
 Read `references/seek-contract.md` for the full contract, a complete scene template and a self-check.
 
 1. Every scene exposes `window.__seekToFrame = function (frameIndex, fps) { ... }`.
-   - It is a pure function of `(frameIndex, fps)`. The same arguments give the same frame, in any call order.
+   - Its output depends on `(frameIndex, fps)` only. The same arguments give the same frame, in any call order.
    - It computes `t = frameIndex / fps` in seconds and sets all visual state from `t`.
-   - It returns nothing, or a Promise that resolves when the frame is painted.
+   - It returns nothing, or a Promise that settles once the frame is painted.
 2. Build motion on the timeline in `<skill-dir>/scripts/seek-timeline.js`. Copy that file into the scene folder and load it with `<script src="seek-timeline.js">`.
    - Build it with `SeekTimeline.timeline()`. It has `to`, `fromTo`, `set`, `addLabel`, position offsets, `stagger`, and an `onSeek(t)` callback for Canvas.
    - Seek it with `master.seek(frameIndex / fps)`. It has no clock, so only a seek moves time.

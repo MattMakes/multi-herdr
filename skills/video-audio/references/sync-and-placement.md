@@ -15,7 +15,7 @@ python3 "<skill-dir>/scripts/sync_sheet.py" --timeline timeline.json \
   --audio-dir audio --beats audio/beats.json --out audio/sync-sheet.json
 ```
 
-Every time is in project time: seconds from the start of the video. To get
+Every time is in project time: seconds counted from the first frame of the film. To get
 scene time, subtract the scene `start_sec`.
 
 ```json
@@ -127,8 +127,8 @@ second output file.
 
 For each cue, the gate finds the band of the effect (low under `150 Hz`, mid
 `150 Hz - 2 kHz`, high over `2 kHz`). It then compares the SFX bus and the bed
-in that band over the effect span, from onset to end. The effect must be at
-least `3 dB` over the bed (`sfx.margin`). Fix: raise the cue `gain_db`, move
+in that band over the effect span, from onset to end. The effect level minus
+the bed level must be `3 dB` or more (`sfx.margin`). Fix: raise the cue `gain_db`, move
 the effect to a band where the bed is quiet, or duck the bed for the cue.
 
 ## 4. The arc: hero, planned silence, drop
