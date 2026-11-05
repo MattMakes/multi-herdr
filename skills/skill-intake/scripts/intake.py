@@ -29,6 +29,7 @@ COMMANDS = (
     "cr",
     "guard",
     "hook-config",
+    "scan",
 )
 
 
