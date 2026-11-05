@@ -1032,6 +1032,9 @@ mod tests {
             message.line(),
             format!("[sonnet-1 #{}] NOTE: x", id.short())
         );
-        assert_eq!(message.text, "[sonnet-1] NOTE: x", "the stored text is unchanged");
+        assert_eq!(
+            message.text, "[sonnet-1] NOTE: x",
+            "the stored text is unchanged"
+        );
     }
 }

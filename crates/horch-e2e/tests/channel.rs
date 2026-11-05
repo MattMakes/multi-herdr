@@ -11,6 +11,7 @@ use std::time::{Duration, Instant};
 use horch_core::execution::legacy::Record;
 use horch_core::execution::records::SessionLedger;
 use horch_core::messaging::channel;
+use horch_core::messaging::mail::Mail;
 use horch_e2e::harness::Harness;
 use serde_json::Value;
 use tempfile::TempDir;
@@ -27,6 +28,14 @@ through it.";
 
 fn stderr(output: &Output) -> String {
     String::from_utf8_lossy(&output.stderr).into_owned()
+}
+
+/// `[sonnet-1 #<id>] <rest>`: the line of the newest pending orchestrator
+/// mail, with its mail id (TRF-03).
+fn mail_line(h: &Harness, rest: &str) -> String {
+    let pending = Mail::under(&h.state, WORKSPACE).pending().unwrap();
+    let id = pending.last().expect("the line is pending mail").id.short();
+    format!("[sonnet-1 #{id}] {rest}")
 }
 
 fn channel_socket(h: &Harness) -> PathBuf {
@@ -248,7 +257,7 @@ fn arc_30_e2e_tell_reaches_a_claude_relay() {
     assert!(sent.status.success(), "{}", stderr(&sent));
     let delivered = relay.read_json();
     assert_eq!(delivered["method"], "notifications/claude/channel");
-    assert_eq!(delivered["params"]["content"], "[sonnet-1] DONE: e2e");
+    assert_eq!(delivered["params"]["content"], mail_line(&h, "DONE: e2e"));
     assert_eq!(delivered["params"]["meta"]["role"], "sonnet-1");
     assert!(typed_lines(&h).is_empty());
     let (lines, _) = relay.stop();
@@ -270,7 +279,10 @@ fn arc_30_e2e_codex_relay_runs_codex_queue() {
     assert!(typed_lines(&h).is_empty());
     assert_eq!(
         std::fs::read_to_string(h.root.join("queue.log")).unwrap(),
-        "queue\n--thread\nthread-e2e\n--message\n[sonnet-1] DONE: e2e\n"
+        format!(
+            "queue\n--thread\nthread-e2e\n--message\n{}\n",
+            mail_line(&h, "DONE: e2e")
+        )
     );
     let (lines, _) = relay.stop();
     assert_eq!(lines.len(), 1, "each relay stdout line parses as JSON");
@@ -283,7 +295,7 @@ fn arc_30_e2e_tell_types_when_no_relay_runs() {
     assert!(sent.status.success(), "{}", stderr(&sent));
     let typed = typed_lines(&h);
     assert_eq!(typed.len(), 1, "{typed:?}");
-    assert!(typed[0].to_string().contains("[sonnet-1] DONE: e2e"));
+    assert!(typed[0].to_string().contains(&mail_line(&h, "DONE: e2e")));
 }
 
 #[test]
@@ -302,7 +314,7 @@ fn arc_30_e2e_tell_types_when_the_relay_fails() {
     ));
     let typed = typed_lines(&h);
     assert_eq!(typed.len(), 1, "{typed:?}");
-    assert!(typed[0].to_string().contains("[sonnet-1] DONE: e2e"));
+    assert!(typed[0].to_string().contains(&mail_line(&h, "DONE: e2e")));
     let (lines, _) = relay.stop();
     assert_eq!(lines.len(), 1, "each relay stdout line parses as JSON");
 }
@@ -329,13 +341,14 @@ fn arc_30_e2e_unconfirmed_tell_types_with_the_resent_suffix() {
     assert!(stderr(&sent).contains("the channel relay did not confirm the message"));
     let typed = typed_lines(&h);
     assert_eq!(typed.len(), 1, "{typed:?}");
-    assert!(typed[0]
-        .to_string()
-        .contains("[sonnet-1] DONE: e2e (sent again: the channel relay did not confirm)"));
+    let line = mail_line(&h, "DONE: e2e");
+    assert!(typed[0].to_string().contains(&format!(
+        "{line} (sent again: the channel relay did not confirm)"
+    )));
     assert!(fake_relay
         .join()
         .expect("fake relay thread")
-        .contains("[sonnet-1] DONE: e2e"));
+        .contains(&line));
 }
 
 #[test]
@@ -390,7 +403,7 @@ fn w2_e2e_done_reports_through_a_relay_without_a_registered_pane() {
     let delivered = relay.read_json();
     assert_eq!(
         delivered["params"]["content"],
-        "[sonnet-1] DONE: finished the work"
+        mail_line(&h, "DONE: finished the work")
     );
     relay.stop();
 }
