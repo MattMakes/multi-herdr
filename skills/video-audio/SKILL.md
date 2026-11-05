@@ -70,31 +70,22 @@ the caption text.
 
 ## 2. Timing reconciliation
 
-The spoken length decides the scene length. Measure each file with `ffprobe`,
-then extend any scene that is too short. This rule is fixed:
+The spoken length decides the scene length. `scripts/reconcile_timing.py`
+measures each file with `ffprobe` and extends any scene that is too short.
+This rule is fixed:
 
 `duration_sec = max(planned duration_sec, vo_duration_sec + 0.25)`
 
-The `0.25 s` is the breath pad before the next scene. After a change, recompute
-every later `start_sec` and `meta.duration_sec`.
+The `0.25 s` is the breath pad before the next scene. The script applies it,
+recomputes every `start_sec` and `meta.duration_sec`, and moves the other
+project times with the scenes: `rhythm[]` `start_sec`, `end_sec` and
+`events_sec`, `meta.hero_sec`, `meta.payoff_silence_sec` and
+`meta.allowed_silences`. A time inside a scene that grew keeps its fraction of
+that scene. A time after it moves by the same change. It records
+`vo_duration_sec` on each narrated scene and prints each changed scene.
 
-```python
-import json, subprocess
-path = "timeline.json"
-tl = json.load(open(path))
-start = 0.0
-for scene in tl["scenes"]:
-    if scene.get("narration"):
-        vo = f"audio/vo-{scene['id']}.wav"
-        out = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration",
-                              "-of", "csv=p=0", vo], capture_output=True, text=True, check=True)
-        scene["vo_duration_sec"] = round(float(out.stdout), 3)
-        scene["duration_sec"] = round(max(scene["duration_sec"],
-                                          scene["vo_duration_sec"] + 0.25), 3)
-    scene["start_sec"] = round(start, 3)
-    start += scene["duration_sec"]
-tl["meta"]["duration_sec"] = round(start, 3)
-json.dump(tl, open(path, "w"), indent=2)
+```bash
+python3 "<skill-dir>/scripts/reconcile_timing.py" timeline.json --audio-dir audio
 ```
 
 Then run the plan checker from the sibling `video-storyboard` skill. It must
