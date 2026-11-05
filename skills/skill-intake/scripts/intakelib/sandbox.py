@@ -90,6 +90,43 @@ def _wrap(sandbox: str, argv: list[str], out: str, tmp: str, hidden: list[str]) 
     return cmd + argv
 
 
+# ---- static readers (nm, otool, objdump) on 1 hostile file ----------------------
+# System folders a reader needs to start (its binary, dyld, the toolchain). Every
+# other path is unreadable, except the artifact and the reader's own temp dir.
+READER_SYSTEM = ("/usr", "/System", "/Library", "/Applications/Xcode.app", "/private/var/db", "/dev")
+READER_LINUX_RO = ("/usr", "/bin", "/sbin", "/lib", "/lib32", "/lib64", "/etc/alternatives", "/etc/ld.so.cache")
+
+
+def reader_profile(artifact: str, tmp: str) -> str:
+    """sandbox-exec profile: deny by default; no network; reads of system folders,
+    the artifact and `tmp` only; writes to `tmp` and /dev/null only."""
+    system = " ".join(f"(subpath {_q(p)})" for p in READER_SYSTEM)
+    return (
+        "(version 1)\n(deny default)\n"
+        "(allow process-exec* process-fork)\n"
+        "(allow sysctl-read mach-lookup signal)\n"
+        "(allow file-read-metadata)\n"
+        f"(allow file-read* {system} (literal \"/\") (literal \"/private\") (literal \"/private/var\")"
+        f" (literal {_q(artifact)}) (subpath {_q(tmp)}))\n"
+        f"(allow file-write* (subpath {_q(tmp)}) (literal \"/dev/null\"))\n"
+    )
+
+
+def wrap_reader(sandbox: str, argv: list[str], artifact: str, tmp: str) -> list[str]:
+    """argv of 1 static reader run, wrapped in the sandbox. `artifact` and `tmp` are real paths."""
+    if sandbox == "sandbox-exec":
+        prof = Path(tmp) / "reader.sb"
+        prof.write_text(reader_profile(artifact, tmp))
+        return [SANDBOX_EXEC, "-f", str(prof), *argv]
+    cmd = [shutil.which("bwrap") or "bwrap", "--unshare-all", "--die-with-parent", "--new-session",
+           "--clearenv", "--setenv", "PATH", "/usr/bin:/bin", "--setenv", "LANG", "C"]
+    for p in READER_LINUX_RO:
+        cmd += ["--ro-bind-try", p, p]
+    cmd += ["--proc", "/proc", "--dev", "/dev", "--bind", tmp, tmp, "--ro-bind", artifact, artifact,
+            "--chdir", tmp, "--"]
+    return cmd + argv
+
+
 def _check_argv(task: Task, argv: list[str]) -> None:
     """A verify run never names a file of C or D (no script from quarantine ever runs)."""
     for arg in argv:

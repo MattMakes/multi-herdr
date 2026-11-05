@@ -17,7 +17,7 @@ from base import IntakeTestCase
 
 import fixtures
 from fixtures import ELF_64, MACHO_64, PYC_312, RLO, ZWSP, binary, host, minified_js, secret, tags
-from intakelib import opaque, supply, sweep, task
+from intakelib import opaque, sandbox, supply, sweep, task
 
 # Built from 2 parts (spec 12.4), as sweep.py does.
 KEY_NAME = "ANTHROPIC" + "_API_KEY"
@@ -649,25 +649,68 @@ class StaticReadersTest(IntakeTestCase):
                                                "SKILL.md": "Run `bin/fmt`.\n"})
         return root, sweep.finish(sweep.scan_tree(root))
 
-    def test_readers_get_the_file_only_as_the_file_to_read(self):
+    def test_readers_run_only_through_the_sandbox_wrapper(self):
         root, hits = self.tree()
         calls = []
 
         def record(argv, **kwargs):
-            calls.append(list(argv))
+            calls.append((list(argv), kwargs))
             return subprocess.CompletedProcess(argv, 0, b"_main\n", b"")
 
-        with mock.patch.object(opaque.subprocess, "run", side_effect=record):
+        with mock.patch.object(opaque.sandbox, "kind", return_value="sandbox-exec"), \
+                mock.patch.object(opaque.subprocess, "run", side_effect=record):
             self.assertEqual(opaque.write_records(root, hits, self.tmp / "out"), 2)
         allowed = {("nm", "-gU"), ("otool", "-L"), ("objdump", "-T"), ("objdump", "-h")}
         self.assertEqual(len(calls), 5)
-        for argv in calls:
-            self.assertEqual(len(argv), 3, argv)
-            self.assertIn((Path(argv[0]).name, argv[1]), allowed)
-            self.assertFalse(argv[0].startswith(str(root)), argv)
-            self.assertTrue(argv[2].startswith(str(root.resolve())), argv)
+        for argv, kwargs in calls:
+            self.assertEqual(argv[:2], [sandbox.SANDBOX_EXEC, "-f"], argv)
+            profile = Path(argv[2])
+            inner = argv[3:]
+            self.assertEqual(len(inner), 3, argv)
+            self.assertIn((Path(inner[0]).name, inner[1]), allowed)
+            self.assertTrue(inner[0].startswith(("/usr/bin/", "/bin/")), argv)
+            self.assertTrue(inner[2].startswith(os.path.realpath(root)), argv)
+            self.assertEqual(profile.parent, Path(kwargs["cwd"]))
+            self.assertFalse(Path(kwargs["cwd"]).exists(), "the temp dir is removed after the run")
         rec = json.loads(next((self.tmp / "out").glob("*.json")).read_text(encoding="utf-8"))
         self.assertIn("_main", rec["untrusted"]["symbols"])
+        self.assertEqual({r["status"] for r in rec["readers"]}, {"ok"})
+
+    def test_bwrap_wrapper_has_no_network_and_binds_only_the_artifact_and_temp_dir(self):
+        argv = sandbox.wrap_reader("bwrap", ["/usr/bin/nm", "-gU", "/q/a.bin"], "/q/a.bin", "/t/x")
+        self.assertIn("--unshare-all", argv)
+        self.assertEqual(argv[argv.index("--") + 1:], ["/usr/bin/nm", "-gU", "/q/a.bin"])
+        rw = [argv[i + 1] for i, a in enumerate(argv) if a == "--bind"]
+        ro = [argv[i + 1] for i, a in enumerate(argv) if a == "--ro-bind"]
+        self.assertEqual((rw, ro), (["/t/x"], ["/q/a.bin"]))
+
+    def test_no_sandbox_skips_every_reader_and_runs_nothing(self):
+        os.environ["SKILL_INTAKE_NO_SANDBOX"] = "1"
+        root, hits = self.tree()
+        with mock.patch.object(opaque.subprocess, "run", side_effect=AssertionError("ran")):
+            opaque.write_records(root, hits, self.tmp / "out")
+        recs = [json.loads(p.read_text(encoding="utf-8")) for p in (self.tmp / "out").glob("*.json")]
+        self.assertEqual(len(recs), 2)
+        for rec in recs:
+            self.assertTrue(rec["readers"])
+            self.assertEqual({r["status"] for r in rec["readers"]}, {"skipped-no-sandbox"})
+            self.assertEqual(rec["untrusted"].get("symbols", []), [])
+
+    @unittest.skipUnless(sandbox.kind() == "sandbox-exec", "needs a usable sandbox-exec")
+    def test_real_reader_sandbox_reads_only_the_artifact(self):
+        root, hits = self.tree()
+        other = self.tmp / "secret.txt"
+        other.write_text("x\n")
+        tmp = self.tmp / "rt"
+        tmp.mkdir()
+        art = os.path.realpath(root / "bin" / "fmt")
+        for target, want in ((art, 0), (str(other), 1)):
+            argv = sandbox.wrap_reader("sandbox-exec", ["/bin/cat", target], art, str(tmp))
+            r = subprocess.run(argv, capture_output=True, env={"PATH": "/usr/bin:/bin"})
+            self.assertEqual(r.returncode != 0, bool(want), (target, r.stderr))
+        argv = sandbox.wrap_reader("sandbox-exec", ["/bin/sh", "-c", f"echo x > {self.tmp}/w"], art, str(tmp))
+        self.assertNotEqual(subprocess.run(argv, capture_output=True).returncode, 0)
+        self.assertFalse((self.tmp / "w").exists())
 
     def test_a_missing_reader_is_recorded(self):
         root, hits = self.tree()

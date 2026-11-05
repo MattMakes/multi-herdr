@@ -4,7 +4,9 @@
 Nothing opaque is executed, imported, loaded or extracted: a file is read as
 bytes, and an archive is never opened. The only programs that ever get a
 quarantine path are the static readers `nm -gU`, `otool -L`, `objdump -T` and
-`objdump -h`, and only as the file they read. A missing reader is recorded.
+`objdump -h`, and only as the file they read. They parse hostile binaries, so
+each runs in the OS sandbox of `sandbox.wrap_reader`; with no usable sandbox a
+reader does not run. A missing or skipped reader is recorded.
 """
 
 from __future__ import annotations
@@ -18,13 +20,14 @@ import subprocess
 import tempfile
 from pathlib import Path
 
-from . import evidence, supply
+from . import evidence, sandbox, supply
 
 SEVERITY = {"OPQ-01": "high", "OPQ-02": "high", "OPQ-03": "high", "OPQ-04": "high", "OPQ-05": "high",
             "OPQ-06": "low"}
 CAP = 500  # strings, list items and reader lines kept per record
 CALL_SITES_CAP = 200
 READER_TIMEOUT = 20
+READER_PATH = "/usr/bin:/bin"  # readers come from the system folders only
 
 NATIVE_EXTS = frozenset(".so .dylib .dll .node .exe .a .o".split())
 BYTECODE_EXTS = frozenset(".pyc .pyo .class .jar .war .ear .wasm .beam .luac".split())
@@ -215,20 +218,29 @@ def _readers(kind: str) -> tuple[tuple[str, tuple[str, ...], str], ...]:
 
 
 def run_reader(tool: str, args: tuple[str, ...], path: Path) -> tuple[dict, list[str]]:
-    """Run 1 static reader on `path` (its only file argument): (status, output lines)."""
+    """Run 1 static reader on `path` (its only file argument) inside the OS sandbox:
+    no network, reads of system folders and `path` only, writes to 1 temp dir only.
+    With no usable sandbox the reader does not run: status `skipped-no-sandbox`."""
     status = {"tool": tool, "args": list(args)}
-    exe = shutil.which(tool)
+    exe = shutil.which(tool, path=READER_PATH)
     if exe is None:
         return {**status, "status": "missing"}, []
+    box = sandbox.kind()
+    if box is None:
+        return {**status, "status": "skipped-no-sandbox"}, []
+    tmp = os.path.realpath(tempfile.mkdtemp(prefix="intake-reader-"))
     try:
+        argv = sandbox.wrap_reader(box, [exe, *args, os.path.realpath(path)], os.path.realpath(path), tmp)
         r = subprocess.run(
-            [exe, *args, str(path.resolve())], stdin=subprocess.DEVNULL, capture_output=True,
-            timeout=READER_TIMEOUT, env={"PATH": "/usr/bin:/bin", "LANG": "C"}, check=False,
+            argv, stdin=subprocess.DEVNULL, capture_output=True, cwd=tmp, timeout=READER_TIMEOUT,
+            env={"PATH": READER_PATH, "LANG": "C", "HOME": tmp, "TMPDIR": tmp}, check=False,
         )
     except subprocess.TimeoutExpired:
         return {**status, "status": "timeout"}, []
     except OSError as e:
         return {**status, "status": f"error: {e.strerror}"}, []
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
     lines = r.stdout.decode("utf-8", "replace").splitlines()[:CAP]
     return {**status, "status": "ok" if r.returncode == 0 else f"exit {r.returncode}"}, lines
 
