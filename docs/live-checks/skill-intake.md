@@ -936,9 +936,24 @@ skill-importer --exact "<task>"` from the scratch project, with no `--run`
 - `targets.detect(<that cwd>)` gives `target: standalone`, rule `detected:
   skills/copied.json is not a regular file in the git top level`.
 
-### Step 1, attempt 5: held (analyst status file)
+### Step 1, attempt 5: PARTIAL, then blocked at the auditor spawn (2 defects)
 
-`intake-analyst-1` of `skill-importer-5` could not write its status file:
+| field | value |
+|---|---|
+| command | `env -u ANTHROPIC_API_KEY -u HORCH_PROJECT_DIR <build>/horch spawn skill-importer --exact "<task>"` from `.worktrees/_scratch/live-skill-intake/step1-project`, with no `--run` (there is no run `skill-intake` in that project) |
+| task id | T-17 (worker `skill-importer-5`, pane `w29:p23`, spawned 2026-11-05T13:39Z). `intake` task `20261105-133927-c967a7` |
+| pane cwd | `.worktrees/_scratch/live-skill-intake/step1-project` (`lsof -d cwd`, and `herdr pane get`) |
+| mode | `targets.detect(<that cwd>)`: `target: standalone`, rule `detected: skills/copied.json is not a regular file in the git top level` |
+| passed | stages 1 to 4 inside the sandboxed pane: a real `github.com` clone of `MNICKZ/docs-driven-workflow` at `de8494f3b9b4c622f29a3dc0e6d8eb9162c7a8db` (T-33 fix holds), licence MIT with no flag, 1 skill `docs-driven-workflow`, 47 scanner hits (41 high, 6 medium, 0 malicious), `phase: pending-audit` |
+| outcome | BLOCKED at `intake spawn auditor`. It exited 11 because `horch spawn` exited 1: `reading /Users/matthewscott/repo/multi-herdr/teammates/_base: Operation not permitted (os error 1)`. The sandbox of the pane allows reads only in its cwd, and `horch spawn` reads the teammates folder of the project. Ticket 35 fixes it. |
+| installed | nothing. `ls ~/.claude/skills` still has 191 entries. |
+| closed | I closed the idle pane with `herdr pane close w29:p23` after its report. It was not a worker of a ledger run, so `horch ledger stop` could not reach it. |
+
+Earlier in attempt 5 (found by `skill-importer-4`, in the run `skill-intake`
+of the main checkout): `intake-analyst-1` could not write its status file.
 `roles.py` puts the analyst status file under `contaminated/<task>/status/`,
 but the `intake-analyst` teammate may write only under `drafts/`. Ticket 34
-fixes it. Steps 1, 2 and 4 wait for ticket 34. Step 5 runs in the meantime.
+fixes it. `intake-analyst-1` is not a worker of the ledger run, so it ended by
+itself or is still to close: see the check before `horch done`.
+
+Steps 1, 2 and 4 wait for tickets 34 and 35. Step 5 runs in the meantime.
