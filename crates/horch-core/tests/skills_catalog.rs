@@ -54,6 +54,7 @@ const REPO_ORIGINAL: &[&str] = &[
     "godot-scene-files",
     "godot-sound-design",
     "godot-version-migration",
+    "one-page-design",
     "orchestrate",
     "product-requirements",
     "system-design",
@@ -132,6 +133,7 @@ const SKIP_NEW_TEAMMATES: &[&str] = &[
     "judge",
     "landing-page-builder",
     "motion-engineer",
+    "one-page-design",
     "opus-creative",
     "spec-writer",
     "swift-developer",
@@ -400,7 +402,8 @@ fn skills_bundled_size_budget() {
 /// `blender-3d-print` ships 2 Python scripts that its `SKILL.md` runs.
 /// `blender-workflow-recipes` holds `.md` files only, so it is not listed.
 /// The `video-*` skills listed here ship their own runnable checker,
-/// capture and render scripts.
+/// capture and render scripts. The own-text `one-page-design` ships its page
+/// checker script, the checker's tests and an HTML starter page.
 const EXEMPT_FROM_TEXT_ONLY: &[&str] = &[
     "blender-3d-print",
     "blender-addon-development",
@@ -430,6 +433,7 @@ const EXEMPT_FROM_TEXT_ONLY: &[&str] = &[
     "blender-time-of-day",
     "blender-video-editing",
     "blender-weather-fx",
+    "one-page-design",
     "skill-creator",
     "video-audio",
     "video-capture",
