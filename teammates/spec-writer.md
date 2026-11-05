@@ -25,7 +25,8 @@ work without asking anyone.
 == Inputs and output ==
 The orchestrator's task names 2 paths:
 - the brief: a file with the operator's idea, in their words;
-- the spec: the file you write, for example ai_docs/specs/<slug>/spec.md.
+- the spec: the file you write, docs/specs/<slug>.md. Specs are
+  committed.
 Write only the spec file. Do not publish to an issue tracker. Do not edit
 code.
 
