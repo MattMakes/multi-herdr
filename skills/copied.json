@@ -1534,7 +1534,8 @@
         "scripts/intakelib/schema.py",
         "scripts/intakelib/task.py"
       ],
-      "verbatim": false
+      "verbatim": false,
+      "budget_exempt": "bundles the ported clean-room tooling, its schemas and the whole intake pipeline (spec 9.1, decision Q2)"
     },
     {
       "name": "swift-code-audit",
