@@ -1,0 +1,188 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width">
+<title>Untitled one-page design</title>
+<!--
+  How to use this file: make a copy for each new page, keep the style sheet,
+  and build the content of <main class="sheet"> from nothing.
+
+  Keep these rules while you work:
+  * The two properties on :root, --sheet-w and --sheet-h, are the only place
+    that says how big the sheet is. Write them in inches. The sheet on screen
+    and the printed page read them. <main class="sheet"> gets no style
+    attribute at all.
+  * Pick the smallest size that keeps the centre picture readable, then grow
+    it only as far as the three text levels need. A side over 44in is too
+    big: cut the design or split it.
+  * One file only. Do not add <script>, <link>, web fonts or images from the
+    network. A commissioned picture goes in as a data: URI.
+  * Show everything. No links, tabs, folding sections, hover effects or
+    rules that hide an element.
+  * Before you hand the page over, run scripts/check_page.py on it.
+-->
+<style>
+  /* Size and colour. Change the size here and nowhere else. */
+  :root {
+    --sheet-w: 17in;
+    --sheet-h: 11in;
+    --c-hot: #b8321f;
+    --c-text: #22201c;
+    --c-soft: #5a564f;
+    --c-line: #908b83;
+    --c-sheet: #faf6ee;
+    --c-fill-a: #e4ecf3;
+    --c-fill-b: #ebf1df;
+    --c-fill-c: #f5e8d5;
+  }
+
+  @page {
+    margin: 0;
+    size: var(--sheet-w) var(--sheet-h);
+  }
+
+  /* The desk around the sheet: grey, scrolls both ways. */
+  html {
+    overflow: auto;
+    background: #d9d8d3;
+  }
+  body {
+    padding: 0.5in;
+    margin: 0;
+  }
+
+  /* The sheet: fixed size, paper colour, clips its edges. */
+  .sheet {
+    width: var(--sheet-w);
+    height: var(--sheet-h);
+    margin: 0 auto;
+    position: relative;
+    overflow: hidden;
+    box-sizing: border-box;
+    color: var(--c-text);
+    background: var(--c-sheet);
+    box-shadow: 0 3px 16px rgba(0, 0, 0, 0.2);
+    font: 11pt/1.3 "Iowan Old Style", Palatino, "Palatino Linotype",
+          "Book Antiqua", serif;
+  }
+
+  /* Text levels: far (across the room), near (reading distance), fine. */
+  .far {
+    letter-spacing: 0.02em;
+    font-weight: 700;
+    line-height: 1.1;
+    font-size: 28pt;
+  }
+  .near { font-size: 11pt; }
+  .fine { font-size: 7pt; }
+
+  /* Voices inside a callout or card. */
+  .flavor { font-style: italic; }
+  .mechanic { font-style: normal; }
+  .tuning {
+    color: var(--c-soft);
+    font-style: italic;
+    font-size: 7pt;
+  }
+  .math {
+    padding: 2pt 4pt;
+    border: 0.5pt solid var(--c-line);
+    background: #fff;
+    font-size: 7pt;
+    font-family: "SF Mono", Menlo, Consolas, monospace;
+    display: inline-block;
+  }
+
+  /* Parts placed in inches on the sheet. */
+  .headline {
+    margin: 0;
+    left: 0.6in;
+    top: 0.45in;
+    max-width: 60%;
+    position: absolute;
+  }
+  .dateline {
+    margin: 0;
+    color: var(--c-soft);
+    font-size: 7.5pt;
+    bottom: 0.35in;
+    right: 0.6in;
+    position: absolute;
+  }
+  .note {
+    font-size: 9pt;
+    width: 2in;
+    position: absolute;
+  }
+  .note > h3 {
+    font-size: 11pt;
+    margin: 0 0 2pt;
+  }
+  .plate {
+    font-size: 7pt;
+    padding: 5pt 6pt;
+    border-radius: 6pt;
+    border: 0.75pt solid var(--c-text);
+    background: #fff;
+    width: 2.2in;
+    box-sizing: border-box;
+    position: absolute;
+  }
+  .plate > h4 {
+    font-weight: 700;
+    font-size: 10pt;
+    margin: 0;
+  }
+  .plate-tag {
+    color: var(--c-hot);
+    font-size: 8pt;
+    margin: 0 0 3pt;
+  }
+  .plate-line {
+    font-size: 7pt;
+    align-items: baseline;
+    gap: 4pt;
+    display: flex;
+  }
+  .key {
+    font-size: 7pt;
+    padding: 4pt 6pt;
+    border: 0.5pt solid var(--c-line);
+    background: #fff;
+    position: absolute;
+  }
+
+  /* Strokes for the SVG drawing layer. */
+  .pointer { stroke-width: 1.2; stroke: var(--c-line); fill: none; }
+  .edge { stroke-width: 2; stroke: var(--c-text); }
+
+  /* On paper the sheet is the whole page: no desk, gap or shadow. */
+  @media print {
+    html { background: none; }
+    body { padding: 0; }
+    .sheet { box-shadow: none; margin: 0; }
+  }
+</style>
+</head>
+<body>
+<main class="sheet">
+  <h1 class="headline far">Replace this line with the one claim the page makes</h1>
+
+  <!-- This spot holds the centre picture.
+       It comes first: finish the picture, and only then write any text.
+       To insert a picture you draw in the page, add one inline SVG pinned
+       to all four sheet edges; its viewBox is 0 0 (width in x 100)
+       (height in x 100).
+       To insert a picture ordered from an illustrator, add one <img> whose
+       src is a data: URI, and keep the filled picture request in a comment
+       beside it. -->
+
+  <!-- Margin parts go here: callouts (.note, no more than 8), card sets
+       (.plate, no more than 3, on one or two edges), and a .key legend when
+       a mark is used more than once. -->
+
+  <p class="dateline">Draft · 2026-01-01</p>
+</main>
+</body>
+</html>

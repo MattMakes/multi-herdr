@@ -225,6 +225,12 @@ pub fn step(store: &mut Store, cx: &Ctx<'_>) -> Result<Outcome> {
         .clone()
         .context("the run has no main branch")?;
     let landed = landed_commit(store, cx, &run_branch)?;
+    // `gh pr create` refuses a head with no commit ahead of the base.
+    if cx.tools.git.is_ancestor(&cx.root, &landed, &base) {
+        return Ok(Outcome::not_applicable(&format!(
+            "the task landed no commit that {base} lacks, so it needs no pull request"
+        )));
+    }
     let section = section_text(store, cx, &landed)?;
     let short = cx.task.short();
     // 1 writer at a time: the landing lock of this repository.

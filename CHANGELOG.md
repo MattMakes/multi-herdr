@@ -4,6 +4,11 @@
 
 ## Unreleased
 
+- A new `one-page-design` teammate and skill turn a design into a one-page
+  design document in Stone Librande's style, with a starter page and a page
+  checker. The pr finish step is now not applicable for a task that landed
+  no commit the main branch lacks.
+
 ## v0.4.4 - 2026-11-05
 
 - New teammate `pixel-vfx-artist` makes pixel art effects and sprite

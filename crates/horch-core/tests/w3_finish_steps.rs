@@ -807,6 +807,40 @@ fn pr_creates_the_pull_request_and_writes_the_section_of_the_task() {
 }
 
 #[test]
+fn pr_is_not_applicable_when_the_task_landed_no_commit_the_base_lacks() {
+    let mut w = World::new(&[StepName::Land, StepName::Pr], true);
+    let state = fake_gh(&w);
+    // A research task: its worktree holds no commit beyond the base.
+    let id = w.claimed("opus", |_| {});
+    finish::worktree_new(&mut w.store, &w.tools.git, &id, "feat").unwrap();
+    let r = w.finish(&id);
+    assert!(r.complete, "{r:?}");
+    assert_eq!(step(&r, "land").status, "passed", "{r:?}");
+    assert_eq!(w.worktree().landed_commit.as_deref(), Some(w.base.as_str()));
+    assert_eq!(step(&r, "pr").status, "not_applicable", "{r:?}");
+    assert_eq!(
+        note(&r, "pr"),
+        "the task landed no commit that main lacks, so it needs no pull request"
+    );
+    assert!(
+        gh_calls(&state).is_empty(),
+        "no gh call: {:?}",
+        gh_calls(&state)
+    );
+}
+
+#[test]
+fn pr_still_opens_the_pull_request_when_the_task_landed_a_new_commit() {
+    let mut w = World::new(&[StepName::Land, StepName::Pr], true);
+    let state = fake_gh(&w);
+    let (id, path) = w.task(None, "feature.txt");
+    view(&state, "", &git(&path, &["rev-parse", "HEAD"]));
+    let r = w.finish(&id);
+    assert_eq!(step(&r, "pr").status, "passed", "{r:?}");
+    assert_eq!(gh_calls(&state)[0][..2], ["pr", "create"]);
+}
+
+#[test]
 fn pr_fails_when_its_head_lacks_the_landed_commit() {
     let mut w = World::new(&[StepName::Land, StepName::Pr], true);
     let state = fake_gh(&w);
