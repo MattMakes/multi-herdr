@@ -325,6 +325,8 @@ High. The system prompt file is Low (a race). Status: CONFIRMED by code.
 
 T-27 (`769dd9cf`): a sandboxed pane reads its own bundle (`additionalDirectories`, `allowRead`) and cannot write it (`deny` Edit/Write, `denyWrite`); a `full` pane can still write other bundles through the state root.
 
+T-28 (`d22e110d`): a sandboxed `full` pane gets `<state>/skill-bundles` in `denyWrite` and `Edit`/`Write` deny rules, so it writes no bundle with any tool; its `horch spawn` skips the state sweep and writes no stamp.
+
 **Proposed change (C3).** For `horch_access: report`, do not add the state
 root to `allowRead` or `allowWrite`. With C1 the pane writes nothing there.
 

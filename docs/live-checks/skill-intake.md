@@ -362,3 +362,89 @@ Cost: 4 short `claude -p` sonnet sessions and 4 sonnet low-effort panes.
 Results files: `~/.local/state/skill-intake/drafts/probe/t27-report-results.txt`,
 `t27-full-results.txt`, `t27-report-results-round2.txt` and
 `t27-full-results-round2.txt`.
+
+### Re-probe after ticket 28 (every skill bundle, `full` pane)
+
+**Verdict: a `full` pane reads its own bundle, fails to write its own
+bundle and another bundle with Edit, Write and Bash, and its `horch tell`,
+`horch ledger progress`, `horch spawn smoke` and `horch done` work.**
+Date: 2026-11-05. Claude Code 2.1.318, macOS (Seatbelt). Code at commit
+`d22e110d`.
+
+The probe teammate `probe-t28-full` is a copy of `skill-importer` with
+`hidden: true`, `model: sonnet`, `effort: low`, no `system_prompt` and no
+`spawn_only` (`horch_access: full`, `permission_mode: auto`,
+`skills: [skill-intake]`). It ran from
+`.worktrees/_scratch/probe-t28/probe-teammates`. A copy of the T-28 debug
+build at `~/.local/state/skill-intake/drafts/probe/t28-bin/horch` spawned it
+with `--exact --run skill-intake`, and the pane ran that copy by its full
+path. "Another bundle" is `<state>/skill-bundles/probe-t28-other/`, made
+by hand with 1 `SKILL.md`.
+
+The launched `--settings` (read from the `claude` process arguments) add 3
+entries for the state root's bundle folder, before the T-27 entries for
+the pane's own bundle:
+
+| key | entry |
+|---|---|
+| `sandbox.filesystem.denyWrite` | `<state>/skill-bundles` |
+| `permissions.deny` | `Edit(//<state>/skill-bundles/**)`, `Write(//<state>/skill-bundles/**)` |
+
+`sandbox.filesystem.allowWrite` still holds the state root and the ledger
+folder.
+
+#### Live pane `probe-t28-full-1` (pane `w29:p1M`)
+
+`O` is the pane's own bundle, `X` is the other bundle.
+
+| # | step | result | output |
+|---|---|---|---|
+| 1 | Read `O/skill-intake/SKILL.md` | allowed | `name: skill-intake` |
+| 2 | `head -3 O/skill-intake/SKILL.md` | allowed | `---` |
+| 3 | Edit `O/skill-intake/SKILL.md` | denied | `File is in a directory that is denied by your permission settings.` |
+| 4 | Write `O/probe-written.txt` | denied | as step 3 |
+| 5 | `echo probe > O/probe-echoed.txt` | denied | the auto mode classifier |
+| 6 | Read `X/SKILL.md` | denied | `blockReadsOutsideWorkingDirectories` |
+| 7 | Edit `X/SKILL.md` | denied | as step 3 |
+| 8 | Write `X/probe-written.txt` | denied | as step 3 |
+| 9 | `echo probe > X/probe-echoed.txt` | denied | the auto mode classifier |
+| 10 | `horch tell opus-hardening-10 "..."` | exit 0 | the text reached the spawner pane |
+| 11 | `horch ledger progress "..."` | exit 0 | none |
+| 12 | `horch spawn smoke --exact` | exit 0 | `spawned smoke-3 (pane w29:p1N)` |
+| 13 | `horch done "..."` | exit 0 | the pane closed; record status `done` |
+
+Steps 10 to 12 also print a warning that the run's watchdog runs another
+build of horch (the installed 0.4.3). Nothing was signalled.
+
+The sweep stamp `<state>/.sweep-stamp` was set 2 hours back before the
+pane started, so the sweep was due. After step 12 the stamp kept its old
+time and the output had no `state sweep` line: a sandboxed caller skips
+the sweep and writes no stamp (`sweep_state` in
+`crates/horch/src/cmd/spawn.rs`).
+
+#### Sandbox layer (`claude -p`)
+
+In the live pane the auto mode classifier stops steps 5 and 9 first, as in
+T-27. 2 headless `claude -p --permission-mode acceptEdits` runs used the
+pane's launched `--settings` file, so no classifier ran:
+
+| step | result | output |
+|---|---|---|
+| Edit `X/SKILL.md` | denied | `File is in a directory that is denied by your permission settings.` |
+| Write `X/headless-written.txt` | denied | as Edit |
+| `echo probe > X/headless-echoed.txt` | denied | `operation not permitted`, exit 1 |
+| `rm -rf X` | denied | `rm: X/SKILL.md: Operation not permitted` |
+| `echo probe > <state>/probe-t28-control.txt` | allowed | exit 0 |
+
+The control shows that the rest of the state root stays writable. After
+all runs, `X/SKILL.md` had its `name: probe-other` line and no probe file
+was in `X` or `O`.
+
+Claude Code 2.1.318 warns at start, for each `Write(...)` deny rule: `is
+not matched by file permission checks — only Edit(path) rules are`. The
+`Edit(...)` rule covers the Write tool (step 8 and the headless Write). The
+`Write(...)` rules of T-27 and T-28 have no effect.
+
+Cost: 1 sonnet low-effort pane, 1 `smoke` pane (no model) and 2 short
+`claude -p` sonnet sessions. Results file:
+`~/.local/state/skill-intake/drafts/probe/t28-full-results.txt`.
