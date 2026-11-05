@@ -489,16 +489,40 @@ signals recorded PIDs); fill the state root disk.
 - The 5 `teammates/intake-*.md` set `horch_access: report`.
   `teammates/skill-importer.md` keeps `full`.
 
-## C6: The controller keeps full access (follow-up)
+## C6: The controller keeps full access
+
+**Status: C6 done in commit `0726747f` (ticket T-21).** The roster key is in
+`19c2d53f` and the brief controller field in `e0e2e12e`. Live check:
+`docs/live-checks/skill-intake.md`, "Re-probe after ticket 21".
 
 `skill-importer` needs `horch spawn`, so it keeps `horch_access: full` and
 R1 to R10 apply to it if it is steered. It reads only `intake` output and
 status files through `intake role-result` (spec 6.3, 6.6), so hostile text
-reaches it only through a gap in those commands. Follow-up: a spawn
-allowlist for a teammate (`spawn_only: [intake-*]`) that `horch spawn`
-checks against the caller's brief, and a refusal of `HORCH_TEAMMATES_DIR`
-from such a caller. Files: `crates/horch/src/cmd/spawn.rs`,
-`crates/horch-core/src/roster/`.
+reaches it only through a gap in those commands.
+
+As built:
+
+- `spawn_only: [<glob>, ...]` on `Teammate` (`roster/teammate.rs`).
+  `horch teammates --check` fails an empty pattern, a path separator and a
+  pattern that matches no teammate. `skill-importer` sets
+  `spawn_only: ["intake-*"]`.
+- `horch spawn` (`cmd/spawn.rs`) finds the caller from herdr: the role
+  registered on the caller's pane, in the pane's own workspace, then that
+  role's brief. It does not read `HORCH_ROLE`. A caller with `spawn_only`
+  is refused, before any ledger row, for a name that matches no glob, for
+  `--resume`, and for a `HORCH_TEAMMATES_DIR` other than the one its brief
+  names. A caller without the key, and a pane with no registered role (the
+  orchestrator, an operator shell), are unchanged.
+- The spawned worker's brief has `controller: <caller role>`
+  (`messaging/brief.rs`). `report::target` (`messaging/report.rs`) makes it
+  the only `tell` target of a `report` pane. `horch done` still reports to
+  the orchestrator, as `report_to` says.
+
+Limit: a steered controller still has `full` access. It can unset
+`HERDR_PANE_ID`, delete its brief, or call the herdr socket directly, and
+`horch spawn` then sees no caller. C6 stops a steered controller that uses
+`horch spawn` as written. C4 (caller identity from herdr, not the
+environment) and a `report`-like mode for the controller close the rest.
 
 ## Ranked list
 
@@ -515,7 +539,7 @@ from such a caller. Files: `crates/horch/src/cmd/spawn.rs`,
 | 9 | R9 read other sessions' state and ledger data | Medium | C2 + C3 | done, `f5bfc2eb` |
 | 10 | R10 stop or block fleet work | Medium | C1 + C2 + C3 | done, `f5bfc2eb` |
 | - | R6 integrity for unsandboxed readers (Codex panes) | - | C5 | follow-up |
-| - | controller keeps full access | - | C6 spawn allowlist | follow-up |
+| - | controller keeps full access | - | C6 spawn allowlist | done, `0726747f` |
 
 C1, C2 and C3 are 1 change: the `horch_access: report` mode. It replaces
 the 4 T-2 grants for a role pane with 1 per-pane socket that the

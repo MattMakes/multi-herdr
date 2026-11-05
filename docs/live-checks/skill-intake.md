@@ -223,3 +223,50 @@ Cost: 2 sonnet low-effort sessions. No `smoke` pane started. The watchdog
 recorded each probe worker as `no_task` (it claimed no task). Results files:
 `~/.local/state/skill-intake/drafts/probe/report-results-round1.txt` and
 `report-results.txt`.
+
+### Re-probe after ticket 21 (`spawn_only`)
+
+**Verdict: 3 controller refusals hold, the allowed spawn works, the role's
+`tell` reaches the controller, and its `tell` to the orchestrator is
+refused.** Date: 2026-11-05. Code at commit `b79bc663`.
+
+The probe controller `probe-importer` is a copy of `skill-importer` with
+`hidden: true`, `model: sonnet`, `effort: low`, no `system_prompt` and
+`spawn_only: ["probe-report"]`. The role is the T-20 `probe-report`
+(`horch_access: report`). Both ran from
+`.worktrees/_scratch/probe-t20/probe-teammates`. A copy of the T-21 debug
+build at `~/.local/state/skill-intake/drafts/probe/t21-bin/horch` spawned the
+controller with `--exact --run skill-intake`. Each pane ran that copy by its
+full path, because the installed horch 0.4.3 has no report mode.
+
+Controller `probe-importer-5` (pane `w29:pY`):
+
+| # | command | exit | output |
+|---|---|---|---|
+| 1 | `horch spawn smoke --exact` | 1 | `horch spawn refused: probe-importer-5 (teammate probe-importer) may spawn only [probe-report], and 'smoke' matches none` |
+| 2 | `HORCH_TEAMMATES_DIR=/tmp horch spawn probe-report --exact` | 1 | `horch spawn refused: probe-importer-5 (teammate probe-importer) has spawn_only [probe-report], so HORCH_TEAMMATES_DIR=/tmp is refused; its brief names <scratch>/probe-teammates` |
+| 3 | `horch spawn --resume probe-x` | 1 | `horch spawn refused: probe-importer-5 (teammate probe-importer) has spawn_only [probe-report], so --resume is refused` |
+| 4 | `horch spawn probe-report --exact --run skill-intake "<task>"` | 0 | `spawned probe-report-3 (pane w29:pZ)` |
+| 5 | (received) | - | `[probe-report-3] probe-report hello controller` reached the controller pane |
+
+Role `probe-report-3` (pane `w29:pZ`):
+
+| # | command | exit | output |
+|---|---|---|---|
+| 1 | `horch tell probe-importer-5 "..."` | 0 | none |
+| 2 | `horch tell orchestrator "..."` | 1 | `horch: this pane reports only to probe-importer-5, not to orchestrator` |
+| 3 | `horch done "..."` | 0 | the pane closed |
+
+The record file shows status `done` for `probe-importer-5` and
+`probe-report-3`, and both panes are gone. The orchestrator mail of `w29`
+has `[probe-report-3] DONE: probe-report done`: `horch done` of a role still
+reports as before. No mail has the text of the refused `tell`.
+
+Side effects: each spawn by the debug build printed 2 warnings that the
+watchdogs of runs `skill-intake` and `one-page-design` run another build.
+Both say nothing was signalled. The role's report socket file stayed after
+`horch done` (the T-20 "not fixed" item) and was removed by hand.
+
+Cost: 2 sonnet low-effort sessions. No `smoke` pane started. Results files:
+`~/.local/state/skill-intake/workspace/probe/t21-importer-results.txt` and
+`~/.local/state/skill-intake/drafts/probe/t21-report-results.txt`.
