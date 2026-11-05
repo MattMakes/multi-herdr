@@ -1475,6 +1475,16 @@
       "verbatim": false
     },
     {
+      "name": "pixel-vfx",
+      "copied_files": [],
+      "verbatim": false
+    },
+    {
+      "name": "pixel-vfx-library",
+      "copied_files": [],
+      "verbatim": false
+    },
+    {
       "name": "pre-flight",
       "copied_files": [
         "SKILL.md"

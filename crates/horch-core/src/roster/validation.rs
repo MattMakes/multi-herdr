@@ -2724,7 +2724,7 @@ w3-codex: sandbox is Claude only; agent codex cannot honour it";
             .values()
             .filter(|t| t.agent == HarnessKind::Claude && (!t.hidden || t.name == "orchestrator"))
             .count();
-        assert_eq!(covered, 74, "the rule should cover 74 claude teammates");
+        assert_eq!(covered, 75, "the rule should cover 75 claude teammates");
 
         // Take the deny away from a worker and the check fails by name.
         r.teammates.get_mut("opus").unwrap().disallowed_tools = Vec::new();

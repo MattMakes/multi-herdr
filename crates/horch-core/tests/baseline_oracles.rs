@@ -106,6 +106,7 @@ const SKIP_NEW_TEAMMATES: &[&str] = &[
     "motion-engineer",
     "one-page-design",
     "opus-creative",
+    "pixel-vfx-artist",
     "spec-writer",
     "swift-developer",
     "swift-qa-engineer",

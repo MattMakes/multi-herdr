@@ -103,6 +103,21 @@ These skills attach by name to the Swift teammates and belong to no phase. The A
 | [widgets](widgets/SKILL.md) | verbatim |
 | [writing-for-interfaces](writing-for-interfaces/SKILL.md) | adapted SKILL.md, verbatim references |
 
+## Pixel art VFX skill
+
+`pixel-vfx` and `pixel-vfx-library` belong to no phase; they attach by name to `pixel-vfx-artist`. It teaches effects as code (a colour buffer with ordered dither and an additive light buffer), a draft, render, look and refine loop, a quality bar, game-feel timing data for hit-stop, and sprite-sheet export for any engine. Its tool, `pxfx.mjs`, is a code block on `references/script-pxfx.md`: Node 18 or later, standard library only. It renders contact sheets, writes sprite sheets with Aseprite-style JSON, checks effects and starts new ones.
+
+It is own text, written clean-room. One person read [patch-gg/pixelfx](https://github.com/patch-gg/pixelfx) (MIT, commit `a841596`) and wrote a behaviour spec in their own words. A second writer, who never saw that project, wrote the skill and the tool from the spec alone. No text or code was copied, so the skill needs no notice file and no runtime download.
+
+`pixel-vfx-library` holds original example effects in 21 categories (fire, explosions, water, ice, lightning, sci-fi, melee, impacts, projectiles, spawn, arcane, holy, shadow, status, nature, weather, UI, pickups, transitions, critters and moves), one Markdown page per category. The tool's `lib list` and `lib get` commands search them and copy one into a project. They were written clean-room from one-line briefs.
+
+The specs the clean writers worked from are in [docs/cleanroom/pixel-vfx/](../docs/cleanroom/pixel-vfx/).
+
+| Skill | Kind |
+| --- | --- |
+| [pixel-vfx](pixel-vfx/SKILL.md) | own text (clean-room) |
+| [pixel-vfx-library](pixel-vfx-library/SKILL.md) | own text (clean-room) |
+
 ## Engineering and product skills
 
 These skills belong to no phase; each attaches by name to the specialist whose work it covers. 6 are own text: `product-requirements` is for `product-lead`, `system-design` for `staff-engineer`, `architecture-review` for `architect-reviewer`, `creative-council` is for the 3 council seats, and `api-contracts` and `data-migrations` are for `backend-developer` (`staff-engineer` names both under `available_skills`). 2 are adapted: `codebase-design` is the shared vocabulary for module design (deep modules, interfaces, seams) and is carried by `architect-reviewer`, `staff-engineer` and `opus-architect`; `backend-developer`, `frontend-developer`, `opus-domain`, `opus`, `codex-sol` and `codex-reviewer` name it under `available_skills`. `improve-codebase-architecture` is a review procedure that finds deepening candidates and writes an HTML report. `opus-architect` carries it because it has Write and no Edit: it writes the report and edits no code. `staff-engineer` names it under `available_skills`. `architect-reviewer` does not carry it, because that seat is read-only on purpose. The own-text skills are language- and framework-neutral: each tells the worker to follow the repository's own tools and to check library behaviour with a docs tool.
