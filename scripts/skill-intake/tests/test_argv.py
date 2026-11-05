@@ -24,7 +24,7 @@ from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from unittest import mock
 
-from base import INTAKE, IntakeTestCase
+from base import INTAKE, REPO, IntakeTestCase
 
 import fixtures
 from intakelib import acquire, roles, sandbox
@@ -160,6 +160,21 @@ class ArgvTest(IntakeTestCase):
         code, out = self.intake("install", "--task", str(c), "--target", "standalone", "--skills-dir", str(skills))
         self.assertEqual(code, 0, out)
         self.assertTrue((skills / "bin-fixture" / "SKILL.md").is_file())
+
+        # The repo target: candidates, then install without and with a mapping (ticket 11).
+        repo = fixtures.f_repo(self.tmp / "checkout", REPO)
+        code, out = self.intake("candidates", "--task", str(c), "--repo", str(repo))
+        self.assertEqual(code, 0, out)
+        self.assertEqual(self.intake("cr", "context", "--task", str(c), "--target", "repo")[0], 0)
+        code, out = self.intake("verify", "--task", str(c), "--target", "repo")
+        self.assertEqual(code, 0, out)
+        code, out = self.intake("install", "--task", str(c), "--target", "repo", "--repo", str(repo))
+        self.assertEqual(code, 0, out)
+        mapping = self.tmp / "mapping.json"
+        write_json(mapping, {"option": 3, "existing": ["sonnet"]})
+        code, out = self.intake("install", "--task", str(c), "--repo", str(repo), "--mapping", str(mapping))
+        self.assertEqual(code, 0, out)
+        self.assertTrue((repo / "skills" / "bin-fixture" / "SKILL.md").is_file())
 
         # Role orchestration: fleet mode by the real rule, with a stub horch.
         horch = self.tmp / "bin" / "horch"

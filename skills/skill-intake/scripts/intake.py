@@ -43,6 +43,7 @@ COMMANDS = (
     "roles",
     "role-result",
     "subagent-prompt",
+    "candidates",
 )
 
 

@@ -279,3 +279,35 @@ def f_deps() -> dict[str, str]:
         "skills/deps-fixture/package.json": package,
         "skills/deps-fixture/requirements.txt": requirements,
     }
+
+
+# ---- multi-herdr checkout (spec 12.2: F-repo) ----
+
+REPO_MARKERS = ("skills/copied.json", "teammates/_template.md", "crates/horch-core/tests/skills_catalog.rs")
+BOOKKEEPING = REPO_MARKERS + ("skills/README.md", "crates/horch-core/tests/baseline_oracles.rs",
+                              "teammates/README.md", "docs/skills-and-teams.md", "CHANGELOG.md",
+                              "teammates/sonnet.md")
+
+
+def teammate_md(name: str, brief: str, extra: str = "") -> str:
+    return (f'---\nname: {name}\nbrief_description: "{brief}"\nbase: fleet-worker\nagent: claude\n'
+            f"model: opus\n{extra}---\nYou are a fixture teammate.\n")
+
+
+def f_repo(root: Path, source: Path, catalog: bool = True, roster: dict[str, str] | None = None) -> Path:
+    """A git-initialised copy of the multi-herdr bookkeeping files of `source`, with 1 commit.
+    `catalog=False` leaves out skills_catalog.rs (standalone mode). `roster` adds teammate files."""
+    files: dict[str, str | bytes] = {}
+    for rel in BOOKKEEPING:
+        if catalog or not rel.endswith("skills_catalog.rs"):
+            files[rel] = (source / rel).read_bytes()
+    for name, text in (roster or {}).items():
+        files[f"teammates/{name}.md"] = text
+    # Copies of this repo's own files, not hostile fixtures: no inert check.
+    for rel, content in files.items():
+        (root / rel).parent.mkdir(parents=True, exist_ok=True)
+        (root / rel).write_bytes(_as_bytes(content))
+    git(root, "init", "-q")
+    git(root, "add", "-A")
+    git(root, "commit", "-q", "-m", "fixture")
+    return root

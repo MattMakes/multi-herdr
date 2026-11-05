@@ -160,7 +160,10 @@ def copy_checked(src: Path, tmp: Path, skill: str, files: dict[str, str]) -> Non
             raise task.TaskError(f"K/out/{skill}/{evidence.escape(rel)} differs from verify.json: run intake verify again")
 
 
-def install_one(t: task.Task, prov: dict, step: dict, skills_dir: Path, files: dict[str, str]) -> dict:
+def install_one(t: task.Task, prov: dict, step: dict, skills_dir: Path, files: dict[str, str],
+                target: str = "standalone") -> dict:
+    """Copy, check, rename and move 1 skill into place. The standalone target also gets
+    .intake-provenance.json; the repo target keeps its provenance in docs/cleanroom/."""
     skill, name = step["skill"], step["name"]
     final = skills_dir / name
     tmp = skills_dir / f".intake-tmp-{t.id}-{name}"
@@ -173,11 +176,12 @@ def install_one(t: task.Task, prov: dict, step: dict, skills_dir: Path, files: d
         digest = tree_sha256(tmp)
         record = {
             "task_id": t.id, "name": name, "renamed_from": skill if name != skill else None,
-            "target": "standalone", "path": str(final), "sha256": digest, "installed_at": task.now(),
+            "target": target, "path": str(final), "sha256": digest, "installed_at": task.now(),
             "source": {k: prov["source"].get(k) for k in ("kind", "input", "url", "ref", "commit")},
             "licence": prov.get("licence"),
         }
-        task.write_json(tmp / PROVENANCE, record)
+        if target == "standalone":
+            task.write_json(tmp / PROVENANCE, record)
         backup = None
         if step["action"] == "replace" and os.path.lexists(final):
             backup = t.c / "replaced" / name
@@ -197,25 +201,47 @@ def install_one(t: task.Task, prov: dict, step: dict, skills_dir: Path, files: d
     return record
 
 
-def run(t: task.Task, skills_dir: Path, resolve_text: str | None) -> dict:
-    """Install every skill of K/out. Returns {"installed", "skipped"}."""
+def load_verify(t: task.Task, target: str) -> dict:
+    """C/verify.json, when it is a GATE 2 pass for `target`."""
     if t.manifest.get("gate2") != "pass":
         raise task.TaskError("install needs a GATE 2 pass: run intake verify first")
     vpath = t.c / "verify.json"
     if not vpath.is_file():
         raise task.TaskError("no C/verify.json: run intake verify first")
     vdoc = task.read_json(vpath)
-    if vdoc.get("gate") != "pass" or vdoc.get("target") != "standalone" or "files" not in vdoc:
-        raise task.TaskError("C/verify.json is not a standalone GATE 2 pass: run intake verify --target standalone")
-    skills_dir = task.resolve(skills_dir)
-    if task.overlaps(skills_dir, t.base):
-        raise task.TaskError("the skills dir and the workspace base overlap")
+    if vdoc.get("gate") != "pass" or vdoc.get("target") != target or "files" not in vdoc:
+        raise task.TaskError(f"C/verify.json is not a {target} GATE 2 pass: run intake verify --target {target}")
+    return vdoc
+
+
+def out_skills(t: task.Task) -> list[str]:
+    """The skill folders of K/out, sorted. Refuses an empty K/out or a bad name."""
     out = t.k / "out"
     skills = sorted(p.name for p in out.iterdir() if p.is_dir() and not p.is_symlink()) if out.is_dir() else []
     bad = [s for s in skills if not discover.NAME.match(s)]
     if bad or not skills:
         raise task.TaskError("K/out holds no skill folder" if not skills else
                              f"K/out holds a folder with a bad skill name: {evidence.escape(bad[0])}")
+    return skills
+
+
+def log(t: task.Task, prov: dict, rec: dict) -> None:
+    """Append the install record to installed.jsonl and C/provenance.json `installed`."""
+    with open(t.base / LOG, "a", encoding="utf-8") as f:
+        f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+    prov.setdefault("installed", []).append(
+        {"name": rec["name"], "target": rec["target"], "renamed_from": rec["renamed_from"],
+         "sha256": rec["sha256"], "path": rec["path"]})
+    task.write_json(t.c / "provenance.json", prov)
+
+
+def run(t: task.Task, skills_dir: Path, resolve_text: str | None) -> dict:
+    """Install every skill of K/out. Returns {"installed", "skipped"}."""
+    vdoc = load_verify(t, "standalone")
+    skills_dir = task.resolve(skills_dir)
+    if task.overlaps(skills_dir, t.base):
+        raise task.TaskError("the skills dir and the workspace base overlap")
+    skills = out_skills(t)
     prov = task.read_json(t.c / "provenance.json")
     skills_dir.mkdir(parents=True, exist_ok=True)
     steps = plan(skills, skills_dir, owner(prov), parse_resolve(resolve_text, skills), t.c / "replaced")
@@ -226,11 +252,6 @@ def run(t: task.Task, skills_dir: Path, resolve_text: str | None) -> dict:
             continue
         rec = install_one(t, prov, step, skills_dir, vdoc["files"])
         installed.append(rec)
-        with open(t.base / LOG, "a", encoding="utf-8") as f:
-            f.write(json.dumps(rec, ensure_ascii=False) + "\n")
-        prov.setdefault("installed", []).append(
-            {"name": rec["name"], "target": "standalone", "renamed_from": rec["renamed_from"],
-             "sha256": rec["sha256"], "path": rec["path"]})
-        task.write_json(t.c / "provenance.json", prov)
+        log(t, prov, rec)
     task.set_phase(t, "installed")
     return {"installed": installed, "skipped": skipped}

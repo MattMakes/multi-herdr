@@ -8,6 +8,7 @@ table, so a changed context file cannot loosen them.
 
 from __future__ import annotations
 
+import subprocess
 from pathlib import Path
 
 from . import evidence, frontmatter
@@ -101,3 +102,38 @@ def check_skill(folder: Path, rules: dict, budget_exempt: str | None) -> tuple[l
         else:
             fails.append(msg + " and has no budget_exempt reason")
     return fails, flags
+
+
+# ---- mode detection (spec 8.1) ----------------------------------------------
+
+MARKERS = ("skills/copied.json", "teammates/_template.md", "crates/horch-core/tests/skills_catalog.rs")
+
+
+def git_toplevel(cwd: Path) -> Path | None:
+    """`git rev-parse --show-toplevel` in `cwd`, or None outside a git work tree."""
+    try:
+        r = subprocess.run(["git", "rev-parse", "--show-toplevel"], cwd=str(cwd), capture_output=True,
+                           text=True, timeout=30, stdin=subprocess.DEVNULL)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    top = r.stdout.strip()
+    return Path(top) if r.returncode == 0 and top else None
+
+
+def is_multi_herdr(root: Path) -> bool:
+    return all((root / m).is_file() and not (root / m).is_symlink() for m in MARKERS)
+
+
+def detect(cwd: Path, flag: str | None = None) -> dict:
+    """{"target", "repo", "rule"}: the 8.1 rule run in `cwd`. `flag` (--target) overrides it;
+    `rule` says which rule decided. A linked worktree is its own top level, so it is repo mode."""
+    top = git_toplevel(cwd)
+    if flag is not None:
+        return {"target": flag, "repo": str(top) if top else None, "rule": f"flag: --target {flag}"}
+    if top is None:
+        return {"target": "standalone", "repo": None, "rule": "detected: not a git work tree"}
+    missing = [m for m in MARKERS if not ((top / m).is_file() and not (top / m).is_symlink())]
+    if missing:
+        return {"target": "standalone", "repo": str(top),
+                "rule": f"detected: {missing[0]} is not a regular file in the git top level"}
+    return {"target": "repo", "repo": str(top), "rule": "detected: the git top level holds the 3 marker files"}
