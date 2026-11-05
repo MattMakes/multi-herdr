@@ -896,3 +896,42 @@ Causes, both in `skills/skill-intake/` text, fixed in T-17:
 
 The step 5 retry uses a new task. The intake suite passes after the edit
 (376 tests).
+
+### Step 1, attempt 4: INVALID (wrong project directory)
+
+| field | value |
+|---|---|
+| command | the attempt 3 command, after the rebase on commit `4da5bc0e` and the analyst prompt fix |
+| task id | T-17 (worker `skill-importer-4`, pane `w29:p10`, run `skill-intake`, spawned 2026-11-05T13:34Z). `intake` task `20261105-133523-1d17be` (not reused) |
+| outcome | The clone worked inside the sandboxed pane, and GATE 1 passed. The run was not standalone: the pane ran in the main checkout `/Users/matthewscott/repo/multi-herdr` (branch `main`), so `intake` chose repo mode and asked the mapping question. The orchestrator stopped the pane and its `intake-analyst-1`. Nothing was installed. |
+
+The mapping question arrived once. `intake candidates` recommended option 3
+(`apple-accessibility-auditor`) on only 2 shared words (audit, edits): a weak
+match. The orchestrator answered option 1 (new teammate
+`docs-workflow-engineer`).
+
+Finding (not fixed): a worker's `HORCH_PROJECT_DIR` passes to the panes it
+spawns. `horch spawn` run from a scratch directory still gave the pane the
+project dir of the spawning worker (`Paths::project_dir`: `$HORCH_PROJECT_DIR`,
+else the cwd). Skill-importer attempts 1 to 4 all ran in the main checkout.
+Their results do not show standalone behaviour. Attempts 1 to 3 failed before
+any mode choice, so those failure causes still stand. The step 3 abort run
+used `intake` by hand with no pane, so the project directory did not matter
+for it.
+
+The orchestrator also noted that `intake-analyst-1` (spawned by
+`skill-importer-4`) is not a worker of the ledger run, so `horch ledger stop`
+cannot reach it. It is a sandboxed report-mode role that writes only under its
+task dir. Its output is not used.
+
+### Step 1, attempt 5: started
+
+Spawn: `env -u ANTHROPIC_API_KEY -u HORCH_PROJECT_DIR <build>/horch spawn
+skill-importer --exact "<task>"` from the scratch project, with no `--run`
+(there is no run `skill-intake` in that project). `skill-importer-5`, pane
+`w29:p23`, spawned 2026-11-05T13:39Z. Checks before it went on:
+
+- The `claude` process cwd is
+  `.worktrees/_scratch/live-skill-intake/step1-project` (`lsof -d cwd`).
+- `targets.detect(<that cwd>)` gives `target: standalone`, rule `detected:
+  skills/copied.json is not a regular file in the git top level`.
