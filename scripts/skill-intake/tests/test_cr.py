@@ -132,7 +132,7 @@ class SchemaTests(Base):
     def test_all_schemas_load(self):
         self.assertEqual(set(schema.kinds()), {
             "audit-line", "behavior-spec", "findings", "handoff", "incident", "mitigation", "preflight", "provenance",
-            "report", "verify"})
+            "report", "verify", "fixes"})
         for k in schema.kinds():
             schema.validate({}, schema.load_schema(k))  # must not raise on keywords
 

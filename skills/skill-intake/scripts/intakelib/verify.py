@@ -255,10 +255,60 @@ def overlap_hits(src: Path, specs: list[dict], out_texts: list[tuple[str, str]])
     index = overlap.Index(sources, code)
     hits = []
     for rel, text in out_texts:
-        for h in index.hits(rel, without_front_keys(text)):
+        body = without_front_keys(text)  # keeps the line count, so line numbers stay true
+        for h in index.hits(rel, body):
             hits.append({"file": evidence.escape(rel), "kind": h["kind"], "source": h["source"],
-                         "words": len(h["shared"].split())})
+                         "words": len(h["shared"].split()), "lines": shared_lines(body, h["kind"], h["shared"])})
     return hits
+
+
+def shared_lines(text: str, kind: str, shared: str) -> list[list[int]]:
+    """The [start, end] line ranges of `text` that hold the shared run. The run is
+    matched on the same word (or token) sequence the overlap scan uses, read line
+    by line; when a run crosses lines in a way that per-line reading cannot see,
+    the whole file is the range."""
+    seq_of = overlap.tokens if overlap.KINDS[kind][0] == "code" else overlap.words
+    flat, at = [], []
+    lines = text.split("\n")
+    for n, line in enumerate(lines, 1):
+        seq = seq_of("\n" + line + "\n")
+        flat += seq
+        at += [n] * len(seq)
+    want = shared.split()
+    size = len(want)
+    found = [[at[i], at[i + size - 1]] for i in range(len(flat) - size + 1)
+             if flat[i] == want[0] and flat[i:i + size] == want]
+    return found or [[1, len(lines)]]
+
+
+# ---- the fix list (K/fixes.json) -----------------------------------------------
+
+FIXES = "fixes.json"
+FIX_SEVERITY = ("critical", "high", "medium")
+
+
+def fix_list(new_hits: list[dict], overlaps: list[dict], persona: dict | None, sizes: dict[str, int]) -> dict:
+    """The clean-side lines GATE 2 asks the writer to change (K/fixes.json).
+    Each entry is only a K-relative file, a line range, the reason class and a rule
+    id: no matched text, no source label, no C or D path, no score. A hit on line 0
+    is about the whole file (an OPQ class), so its range is every line: `sizes`
+    gives the line count of each K/out file."""
+    entries = set()
+    for h in new_hits:
+        if h["severity"] in FIX_SEVERITY:
+            a, b = (h["line"], h["line"]) if h["line"] > 0 else (1, sizes.get(h["file"], 1))
+            entries.add(("out/" + h["file"], a, b, "rule", h["rule"]))
+    for h in overlaps:
+        for a, b in h["lines"]:
+            entries.add(("out/" + h["file"], a, b, "overlap", None))
+    for h in (persona or {}).get("hits", []):
+        if h["severity"] in PERSONA_FAIL:
+            entries.add((PERSONA, h["line"], h["line"], "rule", h["rule"]))
+    for h in (persona or {}).get("overlap", []):
+        for a, b in h["lines"]:
+            entries.add((PERSONA, a, b, "overlap", None))
+    order = sorted(entries, key=lambda e: (e[0], e[1], e[2], e[3], e[4] or ""))
+    return {"fixes": [{"file": f, "lines": [a, b], "kind": k, "rule": r} for f, a, b, k, r in order]}
 
 
 # ---- 5. script tests -----------------------------------------------------------
@@ -496,6 +546,9 @@ def run(t: task.Task, target: str, budget_exempt: dict[str, str]) -> dict:
         "persona": persona[1] if persona else None,
     }
     task.write_json(c / "verify.json", result_doc)
+    # Written on every run, so a stale list never outlives the verify that made it.
+    sizes = {rel: text.count("\n") + 1 for rel, text in out_texts}
+    task.write_json(t.k / FIXES, fix_list(rs["new"], overlaps, persona[1] if persona else None, sizes))
     t.manifest["gate2"] = gate
     task.set_phase(t, "verified" if gate == PASS else "aborted-gate-2")
     return result_doc

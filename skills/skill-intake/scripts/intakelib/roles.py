@@ -10,7 +10,8 @@ snapshot. An `end` line closes 1 start with `done`, `error` or `lost`. An
 
 A brief comes from a fixed template per role. It takes no free text: only the
 task's paths, the controller's role name (HORCH_ROLE), and an optional unit
-id or skill name that must be a plain name.
+id or skill name that must be a plain name. A writer fix brief (`fix`) adds a
+fixed section that names K/fixes.json, the fix list that `intake verify` wrote.
 """
 
 from __future__ import annotations
@@ -21,7 +22,7 @@ import re
 import subprocess
 from pathlib import Path
 
-from . import domain, evidence, guard, scan
+from . import domain, evidence, guard, scan, schema
 from . import task as tasklib
 from .task import Task, TaskError, is_within, now, read_json, resolve, write_json
 
@@ -34,6 +35,7 @@ STATUS_SIDE = {**SIDE, "analyst": "drafts"}
 ROLES_DIR = guard.SKILL_DIR / "roles"
 TEAMMATE_ENV = "SKILL_INTAKE_ROLE_TEAMMATE"
 LOG = "roles.jsonl"
+FIXES = "fixes.json"  # K/fixes.json: written only by intake verify (verify.FIXES)
 STATUS_KEYS = {"role", "status", "outputs", "error"}
 NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
 SPAWNED = re.compile(r"^spawned (\S+) \(pane ", re.M)
@@ -80,8 +82,8 @@ def _io(t: Task, role: str, skill: str | None) -> tuple[list[Path], list[Path]]:
         "analyst": ([c / "contaminated" / "source-index.json", c / "quarantine" / "src", c / "sweep",
                      c / "mitigation.json"], [d / "drafts"]),
         "sanitizer": ([d / "drafts"], [d / "drafts", d / "quarantine-cr"]),
-        "writer": ([k / "handoff", k / "context.json"], [out, k / "report.json", k / "persona.md"]),
-        "reviewer": ([k / "handoff", k / "context.json", out, k / "report.json", k / "persona.md"],
+        "writer": ([k / "handoff", k / "context.json", k / FIXES], [out, k / "report.json", k / "persona.md"]),
+        "reviewer": ([k / "handoff", k / "context.json", out, k / "report.json", k / "persona.md", k / FIXES],
                      [out, k / "review.json"]),
     }[role]
 
@@ -93,8 +95,9 @@ def _next_number(t: Task, role: str) -> int:
     return max(used, default=0) + 1
 
 
-def render(t: Task, role: str, n: int, unit: str | None, skill: str | None, controller: str | None) -> str:
-    """The fixed brief template of `role`."""
+def render(t: Task, role: str, n: int, unit: str | None, skill: str | None, controller: str | None,
+           fix: bool = False) -> str:
+    """The fixed brief template of `role`; `fix` adds the fix list section (writer only)."""
     reads, writes = _io(t, role, skill)
     status = status_path(t, role, f"{role}-{n}")
     lines = [f"# Brief {role}-{n}", "", f"- Role: {role}", f"- Task: {t.id}",
@@ -105,6 +108,13 @@ def render(t: Task, role: str, n: int, unit: str | None, skill: str | None, cont
         lines.append(f"- Skill: {skill}")
     lines += ["", "## Read only these paths", ""] + [f"- {p}" for p in reads]
     lines += ["", "## Write only these paths", ""] + [f"- {p}" for p in writes] + [f"- {status}"]
+    if fix:
+        lines += ["", "## Fix list", "", f"- {t.k / FIXES}", "",
+                  "intake verify found lines in your output that must change. Read the fix list.",
+                  "Each entry names a file (relative to K), a line range [start, end] and the reason:",
+                  "overlap (the wording is too close to text you must not copy) or rule (the scanner rule id).",
+                  "Rewrite only the lines it names, in new words, and keep the behavior.",
+                  "Change no other line. List each file you changed in report.json changed_files."]
     lines += ["", "## Status file", "", f"- {status}", "",
               'Write it as JSON with exactly these keys: "role" ("' + role + '"), "status" ("ok" or "error"),'
               ' "outputs" (a list of the absolute paths you wrote), "error" (null, or 1 line).',
@@ -131,19 +141,45 @@ def _check_clean(t: Task, text: str, template: str) -> list[str]:
     return problems
 
 
-def brief(t: Task, role: str, unit: str | None = None, skill: str | None = None) -> dict:
+def _require_fixes(t: Task, role: str) -> None:
+    """A fix brief is a writer brief, and K/fixes.json must be a valid, non-empty
+    fix list whose every file is inside K."""
+    if role != "writer":
+        raise TaskError(f"--fix is for the writer only, not the {role}: only the writer writes K/persona.md")
+    path = t.k / FIXES
+    if not path.is_file() or path.is_symlink():
+        raise TaskError(f"--fix needs {path}: run intake verify first")
+    try:
+        doc = read_json(path)
+    except (OSError, ValueError):
+        raise TaskError(f"--fix: {path} is not JSON") from None
+    errors = schema.validate(doc, schema.load_schema("fixes"))
+    if errors:
+        raise TaskError(f"--fix: {path}: " + evidence.escape(errors[0]))
+    if not doc["fixes"]:
+        raise TaskError(f"--fix: {path} lists no fix; GATE 2 has nothing for the writer to change")
+    for e in doc["fixes"]:
+        lines = e["lines"]
+        if len(lines) != 2 or lines[0] > lines[1] or not is_within(resolve(t.k / e["file"]), t.k):
+            raise TaskError(f"--fix: {path} has a bad entry: {evidence.escape(json.dumps(e))}")
+
+
+def brief(t: Task, role: str, unit: str | None = None, skill: str | None = None, fix: bool = False) -> dict:
     """Write the next brief of `role`. Returns {"brief", "status_file"}. Exit 9 when a
-    clean-side brief fails the leakage checks; nothing is written then."""
+    clean-side brief fails the leakage checks; nothing is written then. `fix` makes a
+    writer fix brief, which needs a non-empty K/fixes.json."""
     if role not in ROLES:
         raise TaskError(f"unknown role {role!r}; roles: {', '.join(ROLES)}")
     _plain_name("--unit", unit)
     _plain_name("--skill", skill)
+    if fix:
+        _require_fixes(t, role)
     controller = os.environ.get("HORCH_ROLE") if tasklib.fleet_mode() else None
     _plain_name("HORCH_ROLE", controller)
     n = _next_number(t, role)
-    text = render(t, role, n, unit, skill, controller)
+    text = render(t, role, n, unit, skill, controller, fix)
     if SIDE[role] == "clean":
-        problems = _check_clean(t, text, render(t, role, n, None, None, controller))
+        problems = _check_clean(t, text, render(t, role, n, None, None, controller, fix))
         if problems:
             raise RoleError(BRIEF_LEAK, "the clean brief failed the leakage checks: " + "; ".join(problems))
     root = side_root(t, role)
@@ -240,11 +276,11 @@ def _require_fleet(what: str) -> None:
         raise RoleError(WRONG_MODE, f"refused: {what} runs in fleet mode only (intake mode prints plain)")
 
 
-def spawn(t: Task, role: str, unit: str | None = None, skill: str | None = None) -> dict:
+def spawn(t: Task, role: str, unit: str | None = None, skill: str | None = None, fix: bool = False) -> dict:
     """Brief + domain snapshot + horch spawn; records the start (spec 6.5)."""
     _require_fleet("intake spawn")
     _require_idle(t)
-    b = Path(brief(t, role, unit, skill)["brief"])
+    b = Path(brief(t, role, unit, skill, fix)["brief"])
     snap = _snapshot(t, b)
     worker = _run_spawn(role, b)
     return _start(t, role, worker, b, "fleet", 1, snap)

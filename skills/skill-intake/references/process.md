@@ -16,7 +16,7 @@
 | 9 | handoff | `intake cr handoff` | `K/handoff/` | hashes recorded |
 | 10 | write | writer, 1 per skill | `K/out/<skill>/`, `K/report.json`, `K/persona.md` | - |
 | 11 | review | reviewer, 1 fresh per skill | `K/out/<skill>/`, `K/review.json` (a `persona` verdict when `K/persona.md` exists) | - |
-| 12 | verify | `intake cr verify`, `intake verify` | `K/verify-log/log.json`, `C/verify.json` | GATE 2 |
+| 12 | verify | `intake cr verify`, `intake verify` | `K/verify-log/log.json`, `C/verify.json`, `K/fixes.json` | GATE 2 |
 | 13 | install | `intake install` | the target | collision rules |
 | 14 | report | `intake report` | `C/report.md` | - |
 
@@ -31,6 +31,17 @@ GATE 2 also checks `K/persona.md` when it exists. It fails on an INJ or SCR
 hit of medium or higher, on overlap with the source, or when a reviewer
 `persona` verdict is missing or not `pass`. `C/verify.json` records the
 persona sha256, and install refuses a persona that does not match it.
+
+`intake verify` also writes `K/fixes.json` on every run (schema
+`schemas/fixes.schema.json`). It lists each clean-side location to change:
+each medium+ rule hit outside a declared capability, each overlap hit, in
+`K/out/` and in `K/persona.md`. An entry has only `file` (relative to `K`),
+`lines` ([start, end], 1-based), `kind` (`overlap` or `rule`) and `rule` (the
+rule id, or null). A hit on a whole file (an OPQ class) covers every line. No
+matched text, source path, `C` or `D` path or score is in it, so the clean
+side learns which of its lines must change and the reason class, never what
+they resembled. A pass writes an empty list. The writer fix brief
+(`--fix`) names it; see the feedback loop in SKILL.md.
 
 ## Exit codes
 
@@ -54,8 +65,8 @@ different things in different commands (for example 14).
 | `install` | installed | 2 bad input, or GATE 2 is not pass; 7 a name collision no rule resolves; 15 the repo is on its default branch, nothing written |
 | `report` | ok | - |
 | `mode` | prints `fleet` or `plain` | - |
-| `brief` | prints `{"brief", "status_file"}` | 2 bad input; 9 a clean brief failed the leakage scan |
-| `spawn` | role worker started | 2 bad input; 8 the role stage aborted (a brief was lost twice); 9 brief leak; 10 not in fleet mode; 11 `horch spawn` failed; 14 another role of the task is active |
+| `brief` | prints `{"brief", "status_file"}` | 2 bad input, or `--fix` for a role that is not the writer, or with a missing, invalid or empty `K/fixes.json`; 9 a clean brief failed the leakage scan |
+| `spawn` | role worker started | 2 bad input (the `--fix` rules of `brief` apply); 8 the role stage aborted (a brief was lost twice); 9 brief leak; 10 not in fleet mode; 11 `horch spawn` failed; 14 another role of the task is active |
 | `roles` | lists role workers | 2 bad input; with `--lost`: 8 the brief is lost a second time, abort; 10 not in fleet mode; 11 `horch spawn` failed |
 | `role-result` | the result | 12 a bad status file, a missing status file (the role stays `running`), or a domain incident |
 | `subagent-prompt` | prints the prompt | 2 bad input or no role file; 8 aborted; 10 in fleet mode; 14 another role is active |

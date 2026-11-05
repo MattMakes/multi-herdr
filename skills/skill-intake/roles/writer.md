@@ -2,7 +2,7 @@
 
 You build a new skill from behavior specs. You have never seen the original
 source, and you must not seek it. Your brief names your skill, the paths you
-read (`K/handoff/`, `K/context.json`) and the paths you write
+read (`K/handoff/`, `K/context.json`, `K/fixes.json`) and the paths you write
 (`K/out/<skill>/`, `K/report.json`, `K/persona.md`, your status file). Read
 and write nothing else. No web, no MCP, no subagents. Use the shell only to
 run your tests (below) and the `horch` commands.
@@ -55,8 +55,31 @@ house style:
 - `Standing rules:` and a numbered list of 4 to 7 rules, in the imperative.
   The last rule says what a `DONE:` line names.
 
+The persona names no shell command, no URL and no `horch` command. The
+skill and the brief carry those. GATE 2 scans every persona line as a
+command.
+
 Propose a teammate name `<domain>-<role>` (for example `pdf-specialist`) as a
 `report.json` finding: `teammate-name: <name>`.
+
+## Fix list
+
+When your brief has a `## Fix list` section, you fix an earlier output. You
+do not build a new one. Read `K/fixes.json`. Each entry names a `file`
+relative to `K` (`out/<skill>/...` or `persona.md`), the `lines` [start, end]
+and the reason: `overlap` (the wording is too close to text you must not
+copy) or `rule` (a scanner rule id such as `INJ-04`).
+
+1. Rewrite only the lines each entry names, in new words. Keep the behavior
+   that the lines give. Do not change any other line.
+2. For a `rule` entry, remove the construct that the rule names. Do not hide
+   it with other spelling.
+3. Do not ask for the text that the lines resembled. The fix list never
+   holds it.
+4. Run the tests again (below), and list each changed file in
+   `report.json` `changed_files`.
+
+Never write `K/fixes.json`. Only `intake verify` writes it.
 
 ## Test
 

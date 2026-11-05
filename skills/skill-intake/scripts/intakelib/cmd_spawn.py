@@ -1,4 +1,4 @@
-"""`intake spawn <role> --task T [--unit U] [--skill S]`: start a role worker (spec 6.5).
+"""`intake spawn <role> --task T [--unit U] [--skill S] [--fix]`: start a role worker (spec 6.5).
 
 Writes the brief, takes the domain snapshot, runs
 `horch spawn intake-<role> --exact "Read and follow <brief> exactly."` and
@@ -23,11 +23,13 @@ def add_arguments(p) -> None:
     p.add_argument("--task", required=True, help="the task dir that acquire printed")
     p.add_argument("--unit", help="a unit id from cr index")
     p.add_argument("--skill", help="the skill name the role works on")
+    p.add_argument("--fix", action="store_true",
+                   help="writer only: a fix brief that names K/fixes.json from intake verify")
 
 
 def run(args) -> int:
     try:
-        out = roles.spawn(task.load(args.task), args.role, args.unit, args.skill)
+        out = roles.spawn(task.load(args.task), args.role, args.unit, args.skill, args.fix)
     except roles.RoleError as e:
         print(f"intake: {e}", file=sys.stderr)
         return e.code

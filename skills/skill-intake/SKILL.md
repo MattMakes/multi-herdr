@@ -100,22 +100,34 @@ GATE 2 result is not pass (exit 2).
 
 ## Feedback loop
 
-When verify finds a fixable gap (a requirement without a `pass` verdict, a
-medium+ rule hit, an overlap hit), send it back in 1 of 2 ways only:
+Every `intake verify` run writes `K/fixes.json`: 1 entry per clean-side
+location to change, `{"file", "lines": [start, end], "kind": "overlap" |
+"rule", "rule"}`. `file` is relative to `K` (`out/<skill>/...` or
+`persona.md`). It holds no matched text, no source path, no `C` or `D` path
+and no score. Only `intake verify` writes it. No role may write it.
 
-- a revised spec: a new analyst, `cr scan`, a new sanitizer, `cr handoff`;
-- a new reviewer run. A brief takes no free text and a clean brief cannot
-  name a `C` path, so the fresh reviewer gets no verify output. It re-checks
-  every item against the current output and fixes what it finds.
+When verify finds a fixable gap, send it back in 1 of 3 ways only:
 
-At most 3 iterations. Then GATE 2 decides.
+- a medium+ rule hit or an overlap hit (the list in `K/fixes.json` is not
+  empty): a writer fix run, `intake spawn writer --task T --fix` (plain:
+  `intake brief writer --task T --fix`). The brief names `K/fixes.json`, and
+  the writer rewrites only those lines in new words. Then a fresh reviewer
+  run, `cr verify` and `intake verify` again. `--fix` exits 2 when
+  `K/fixes.json` is missing, invalid or empty;
+- a requirement without a `pass` verdict: a new reviewer run. It re-checks
+  every item against the current output and fixes what it finds;
+- a defect in the spec itself: a revised spec (a new analyst, `cr scan`, a
+  new sanitizer, `cr handoff`).
+
+A brief takes no free text. A clean brief cannot name a `C` path, so no
+clean role reads `C/verify.json`. At most 3 iterations. Then GATE 2 decides.
 
 ## Roles: fleet mode
 
 Roles run 1 at a time per task. A second `intake spawn` while a role is
 active exits 14.
 
-1. `intake spawn <role> --task T [--unit U] [--skill S]`. It writes the
+1. `intake spawn <role> --task T [--unit U] [--skill S] [--fix]`. It writes the
    brief, takes the domain snapshot, and runs
    `horch spawn intake-<role> --exact "Read and follow <brief> exactly."`.
    Never call `horch spawn` yourself, and never without `--exact`.
@@ -143,7 +155,7 @@ resumes. Spawn a fresh role of the same kind with the same `--unit` or
 
 `intake spawn` exits 10 in plain mode. For each role:
 
-1. `intake brief <role> --task T [--unit U] [--skill S]`. It prints
+1. `intake brief <role> --task T [--unit U] [--skill S] [--fix]`. It prints
    `{"brief", "status_file"}`.
 2. `intake subagent-prompt <role> --brief <brief>`. It takes the domain
    snapshot, sets the guard role, and prints the prompt.

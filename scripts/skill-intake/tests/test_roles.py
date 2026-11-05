@@ -186,6 +186,72 @@ class BriefTest(RolesCase):
         self.assertNotIn(SOURCE, self.brief(t, "writer")["brief"])
 
 
+FIXES = {"fixes": [
+    {"file": "out/clean-fixture/SKILL.md", "lines": [7, 7], "kind": "rule", "rule": "INJ-01"},
+    {"file": "persona.md", "lines": [4, 5], "kind": "overlap", "rule": None},
+]}
+
+
+class FixBriefTest(RolesCase):
+    """T-37: `--fix` gives the writer a brief that names K/fixes.json, the fix list
+    that intake verify wrote. It still takes no free text."""
+
+    def brief(self, t, role: str, *extra: str, expect: int = 0) -> dict | None:
+        r = self.fleet("brief", role, "--task", str(t.c), *extra)
+        self.assertEqual(r.returncode, expect, r.stdout + r.stderr)
+        return json.loads(r.stdout) if expect == 0 else None
+
+    def test_the_fix_brief_names_the_fix_list_and_only_k_paths(self):
+        t = self.task()
+        write_json(t.k / "fixes.json", FIXES)
+        out = self.brief(t, "writer", "--fix")
+        text = Path(out["brief"]).read_text()
+        self.assertIn("## Fix list", text)
+        self.assertIn(str(t.k / "fixes.json"), text)
+        self.assertIn("Rewrite only the lines it names", text)
+        for d in (str(t.c), str(t.d), SOURCE, "INJ-01", "persona.md\""):
+            self.assertNotIn(d, text)
+        paths = [p for p in text.split() if p.startswith("/")]
+        self.assertTrue(paths)
+        for p in paths:
+            self.assertTrue(tasklib.is_within(Path(p), t.k), p)
+        scan = self.run_intake("cr", "scan", "--task", str(t.c), out["brief"])
+        self.assertEqual(scan.returncode, 0, scan.stdout)
+
+    def test_a_plain_brief_has_no_fix_section(self):
+        t = self.task()
+        write_json(t.k / "fixes.json", FIXES)
+        text = Path(self.brief(t, "writer")["brief"]).read_text()
+        self.assertNotIn("## Fix list", text)
+
+    def test_a_fix_brief_without_a_fix_list_exits_non_zero(self):
+        t = self.task()
+        self.brief(t, "writer", "--fix", expect=2)
+        write_json(t.k / "fixes.json", {"fixes": []})
+        self.brief(t, "writer", "--fix", expect=2)
+        write_json(t.k / "fixes.json", {"fixes": [{"file": "/etc/passwd", "lines": [1, 1], "kind": "rule",
+                                                   "rule": "INJ-01"}]})
+        self.brief(t, "writer", "--fix", expect=2)
+        (t.k / "fixes.json").write_text("not json")
+        self.brief(t, "writer", "--fix", expect=2)
+        self.assertFalse((t.k / "briefs").exists() and list((t.k / "briefs").iterdir()))
+
+    def test_only_the_writer_takes_a_fix_brief(self):
+        t = self.task()
+        write_json(t.k / "fixes.json", FIXES)
+        for role in ("auditor", "analyst", "sanitizer", "reviewer"):
+            self.brief(t, role, "--fix", expect=2)
+
+    def test_spawn_with_fix_starts_the_writer_on_the_fix_brief(self):
+        t = self.task()
+        write_json(t.k / "fixes.json", FIXES)
+        self.spawn(t, "writer", "--fix")
+        brief = t.k / "briefs" / "writer-1.md"
+        self.assertEqual(self.calls(), [expected_argv("intake-writer", str(brief))])
+        self.assertIn("## Fix list", brief.read_text())
+        self.spawn(t, "writer", "--fix", expect=roles.ROLE_ACTIVE)
+
+
 class SpawnTest(RolesCase):
     """T-21."""
 
