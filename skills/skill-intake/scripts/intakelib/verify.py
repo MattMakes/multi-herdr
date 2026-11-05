@@ -110,6 +110,56 @@ def skill_of_hit(hit: dict) -> str:
 
 # ---- 1. re-sweep and declared capabilities -----------------------------------
 
+def writer_record(t: task.Task) -> tuple[list[str], set[str]]:
+    """(spec ids, K/out folders) of the writer's K/report.json: the specs it
+    implemented and the output folders of its changed files. Empty without a
+    valid writer report."""
+    path = t.k / "report.json"
+    try:
+        rep = task.read_json(path) if path.is_file() else None
+    except ValueError:
+        rep = None
+    if not rep or schema.validate(rep, schema.load_schema("report")) or rep["role"] != "writer":
+        return [], set()
+    out = task.resolve(t.k / "out")
+    folders = set()
+    for f in rep["changed_files"]:
+        p = task.resolve(f if Path(f).is_absolute() else t.k / f)
+        if p != out and task.is_within(p, out):
+            folders.add(p.relative_to(out).parts[0])
+    return rep["spec_ids"], folders
+
+
+def spec_map(t: task.Task, specs: list[dict], folders: list[str]) -> tuple[dict[str, list[dict]], list[str]]:
+    """(output folder -> its specs, problems). A spec maps to the folder of its
+    skill name, unless K/report.json names exactly 1 output folder: then its
+    spec_ids map to that folder (the writer brief can force a new name). The
+    record fails when it names a spec not handed off, specs of 2 skills, a
+    skill that has its own output folder, or a folder another spec is named for."""
+    by_name: dict[str, list[dict]] = {}
+    for s in specs:
+        by_name.setdefault(s["skill"]["name"], []).append(s)
+    ids, claimed = writer_record(t)
+    if not ids or len(claimed) != 1:
+        return by_name, []
+    (folder,) = claimed
+    by_id = {s["spec_id"]: s for s in specs}
+    problems = [f"K/report.json names spec {evidence.escape(i)}, which is not handed off" for i in ids if i not in by_id]
+    mine = [by_id[i] for i in ids if i in by_id]
+    names = sorted({s["skill"]["name"] for s in mine})
+    if len(names) > 1:
+        problems.append(f"output {evidence.escape(folder)} claims the specs of {len(names)} skills: {', '.join(names)}")
+    problems += [f"skill {n} has its own output folder, and K/report.json maps its specs to {evidence.escape(folder)}"
+                 for n in names if n != folder and n in folders]
+    problems += [f"output {evidence.escape(folder)} is the skill name of {s['spec_id']}, which K/report.json does not name"
+                 for s in by_name.get(folder, []) if s["spec_id"] not in ids]
+    if problems:
+        return by_name, problems
+    mapped = {name: [s for s in group if s["spec_id"] not in ids] for name, group in by_name.items()}
+    mapped[folder] = mapped.get(folder, []) + mine
+    return {k: v for k, v in mapped.items() if v}, []
+
+
 def touches(out: Path, skill: str) -> bool:
     p = out / skill / "SKILL.md"
     return p.is_file() and bool(TOUCHES.search(p.read_text(encoding="utf-8", errors="replace")))
@@ -127,13 +177,11 @@ def accepted_by(hit: dict, specs: list[dict], passed: set, has_touches: bool) ->
     return None
 
 
-def resweep(out: Path, specs: list[dict], passed: set) -> dict:
-    """Scan K/out/. Returns {"hits", "accepted", "new"}: every hit is either accepted
-    (with the spec that declares it) or new."""
+def resweep(out: Path, by_skill: dict[str, list[dict]], passed: set) -> dict:
+    """Scan K/out/. `by_skill` maps each output folder to its specs (spec_map).
+    Returns {"hits", "accepted", "new"}: every hit is either accepted (with the
+    spec that declares it) or new."""
     hits = sweep.scan_tree(out) if out.is_dir() else []
-    by_skill: dict[str, list[dict]] = {}
-    for s in specs:
-        by_skill.setdefault(s["skill"]["name"], []).append(s)
     has_touches = {name: touches(out, name) for name in out_skills(out)}
     accepted, new = [], []
     for h in hits:
@@ -443,17 +491,22 @@ def run(t: task.Task, target: str, budget_exempt: dict[str, str]) -> dict:
     specs = load_specs(t)
     review, review_problems = load_review(t)
     passed = passed_items(review)
+    removed = targets.drop_harness_folder(out)
     out_files = [(rel, p.read_bytes()) for rel, p in sweep.walk(out)] if out.is_dir() else []
     checks = []
 
-    # 1. re-sweep
-    rs = resweep(out, specs, passed)
+    # 1. re-sweep, with each output folder matched to its specs
+    by_skill, map_problems = spec_map(t, specs, out_skills(out))
+    checks.append(_check("spec-map", not map_problems, _join(map_problems)))
+    rs = resweep(out, by_skill, passed)
     severe_new = [h for h in rs["new"] if h["severity"] in SEVERE]
     checks.append(_check("resweep", not severe_new, _join(
         [f"{h['rule']} {h['severity']} in {h['file']}:{h['line']}" for h in severe_new])))
 
-    # 2. close findings
-    fired = {(h["skill"], h["rule"]) for h in rs["new"]}
+    # 2. close findings. A source finding names the spec's skill, so a hit in a
+    # renamed output folder fires for that skill too.
+    source_names = {folder: {s["skill"]["name"] for s in group} for folder, group in by_skill.items()}
+    fired = {(name, h["rule"]) for h in rs["new"] for name in {h["skill"]} | source_names.get(h["skill"], set())}
     present = {}
     for f in findings:
         if f["rule"].startswith("OPQ-"):
@@ -540,6 +593,10 @@ def run(t: task.Task, target: str, budget_exempt: dict[str, str]) -> dict:
         "overlap": overlaps,
         "flags": flags,
         "budget_exempt": {k: evidence.escape(v) for k, v in sorted(budget_exempt.items())},
+        # output folder -> the spec ids its re-sweep hits were matched against.
+        "spec_map": {k: [s["spec_id"] for s in v] for k, v in sorted(by_skill.items())},
+        # harness leftovers verify removed from K/out before the checks (targets.drop_harness_folder).
+        "removed": removed,
         # install checks every file it copies against these (spec 8.5).
         "files": {rel: hashlib.sha256(data).hexdigest() for rel, data in out_files},
         # repo install reads K/persona.md only when its sha256 matches this record.

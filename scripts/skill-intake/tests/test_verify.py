@@ -522,6 +522,110 @@ class MediumTest(VerifyCase):
         self.assertTrue(out["listed"]["new_hits"])
 
 
+class RenamedOutputTest(VerifyCase):
+    """T-39: the writer brief can force an output folder name that is not the
+    spec's skill name. K/report.json (spec_ids, changed_files) maps them."""
+
+    def writer_report(self, t: tasklib.Task, spec_ids: list[str], folders: list[str]) -> None:
+        write_json(t.k / "report.json", {
+            "role": "writer", "status": "complete", "spec_ids": spec_ids,
+            "changed_files": [str(t.k / "out" / f / "SKILL.md") for f in folders], "verification": []})
+
+    def renamed_cap_task(self, folder: str = "tally-words") -> tasklib.Task:
+        t = self.front(fixtures.f_clean(), "clean-fixture")
+        self.clean_side(t, [spec("clean-fixture", capabilities={"reads": ["1 environment variable the user names"]})])
+        self.out(t, {f"{folder}/SKILL.md": CLEAN_SKILL + TOUCHES,
+                     f"{folder}/scripts/peek.py": CapabilityTest.ENV_LINE})
+        self.review(t, [("spec-tally", "b1"), ("spec-tally", "capability:reads")])
+        return t
+
+    def test_renamed_output_gets_its_spec_acceptance(self):
+        t = self.renamed_cap_task()
+        self.writer_report(t, ["spec-tally"], ["tally-words"])
+        out = self.verify(t)
+        self.assertEqual(out["gate2"], "pass", out["reasons"])
+        acc = self.doc(t)["accepted"]
+        self.assertEqual([(a["rule"], a["skill"], a["spec_id"]) for a in acc], [("SCR-02", "tally-words", "spec-tally")])
+        self.assertEqual(self.doc(t)["spec_map"], {"tally-words": ["spec-tally"]})
+
+    def test_renamed_output_without_a_writer_record_aborts(self):
+        t = self.renamed_cap_task()
+        self.verify(t, "standalone", ABORT)
+        self.assertIn("SCR-02", self.checks(t)["resweep"]["detail"])
+
+    def test_record_naming_2_folders_maps_by_name(self):
+        t = self.renamed_cap_task()
+        self.writer_report(t, ["spec-tally"], ["tally-words", "other-words"])
+        self.verify(t, "standalone", ABORT)
+        self.assertIn("SCR-02", self.checks(t)["resweep"]["detail"])
+
+    def test_name_collision_aborts(self):
+        t = self.renamed_cap_task()
+        self.out(t, {"clean-fixture/SKILL.md": CLEAN_SKILL})  # the spec's own name is an output folder too
+        self.writer_report(t, ["spec-tally"], ["tally-words"])
+        self.verify(t, "standalone", ABORT)
+        self.assertIn("clean-fixture has its own output folder", self.checks(t)["spec-map"]["detail"])
+
+    def test_1_output_claiming_specs_of_2_skills_aborts(self):
+        t = self.renamed_cap_task()
+        other = spec("other-skill", "spec-other")
+        p = t.k / "handoff" / "spec-other.json"
+        write_json(p, {k: v for k, v in other.items() if k not in ("provenance", "review")})
+        pkg = read_json(t.k / "handoff" / "package.json")
+        pkg["items"].append({**pkg["items"][0], "file": "spec-other.json", "spec_id": "spec-other",
+                             "sha256": hashlib.sha256(p.read_bytes()).hexdigest()})
+        write_json(t.k / "handoff" / "package.json", pkg)
+        self.writer_report(t, ["spec-tally", "spec-other"], ["tally-words"])
+        self.verify(t, "standalone", ABORT)
+        self.assertIn("tally-words claims the specs of 2 skills", self.checks(t)["spec-map"]["detail"])
+
+    def test_record_naming_an_unknown_spec_aborts(self):
+        t = self.renamed_cap_task()
+        self.writer_report(t, ["spec-tally", "spec-ghost"], ["tally-words"])
+        self.verify(t, "standalone", ABORT)
+        self.assertIn("spec-ghost", self.checks(t)["spec-map"]["detail"])
+
+    def test_rule_firing_in_a_renamed_output_keeps_the_source_finding_open(self):
+        t = self.front(fixtures.f_inject_soft(), "soft-fixture")
+        self.clean_side(t, [spec("soft-fixture")])
+        self.out(t, {"prose-tidy/SKILL.md": "---\nname: prose-tidy\ndescription: Always use this skill to"
+                                            " tidy prose.\n---\n# Tidy\n\nShorten long sentences.\n"})
+        self.review(t, [("spec-tally", "b1")])
+        self.writer_report(t, ["spec-tally"], ["prose-tidy"])
+        self.verify(t)
+        rows = {r["finding"]: r["status"] for r in self.doc(t)["findings"]}
+        self.assertEqual(sorted(rows.values()), ["unresolved", "unresolved"], rows)
+
+
+class HarnessFolderTest(VerifyCase):
+    """T-39: the Claude harness can leave an empty K/out/.claude/.cc-writes."""
+
+    def test_empty_cc_writes_is_removed_and_recorded(self):
+        t = self.clean_task()
+        (t.k / "out" / ".claude" / ".cc-writes").mkdir(parents=True)
+        out = self.verify(t)
+        self.assertEqual(out["gate2"], "pass", out["reasons"])
+        self.assertFalse((t.k / "out" / ".claude").exists())
+        self.assertEqual(self.doc(t)["removed"], ["out/.claude/.cc-writes", "out/.claude"])
+
+    def test_anything_else_in_the_harness_folder_still_fails(self):
+        cases = {
+            "a file in .cc-writes": {".claude/.cc-writes/x.md": "x\n"},
+            "settings.json": {".claude/settings.json": "{}\n"},
+            "a file beside an empty .cc-writes": {".claude/notes.md": "x\n"},
+        }
+        for label, files in cases.items():
+            with self.subTest(label):
+                t = self.clean_task()
+                (t.k / "out" / ".claude" / ".cc-writes").mkdir(parents=True)
+                self.out(t, files)
+                out = self.verify(t, "standalone", ABORT)
+                self.assertEqual(out["checks"]["target-rules"], "fail")
+                self.assertIn(".claude", self.checks(t)["target-rules"]["detail"])
+                self.assertTrue((t.k / "out" / ".claude").is_dir())
+                self.assertEqual(self.doc(t)["removed"], [])
+
+
 class ReviewCoverageTest(VerifyCase):
     def test_missing_verdict_or_review_aborts(self):
         t = self.clean_task()

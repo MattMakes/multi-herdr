@@ -52,6 +52,25 @@ RULES = {
 }
 
 
+HARNESS_DIR, HARNESS_MARK = ".claude", ".cc-writes"
+
+
+def drop_harness_folder(out: Path) -> list[str]:
+    """Remove K/out/.claude when it holds only an empty .cc-writes folder, and
+    return the K-relative paths removed. The Claude harness makes that folder in
+    a role's working folder, and the writer works in K/out. Anything else in
+    .claude stays, so the target rules still fail it."""
+    d, mark = out / HARNESS_DIR, out / HARNESS_DIR / HARNESS_MARK
+    for p in (d, mark):
+        if p.is_symlink() or not p.is_dir():
+            return []
+    if [p.name for p in d.iterdir()] != [HARNESS_MARK] or any(mark.iterdir()):
+        return []
+    mark.rmdir()
+    d.rmdir()
+    return [f"out/{HARNESS_DIR}/{HARNESS_MARK}", f"out/{HARNESS_DIR}"]
+
+
 def files(folder: Path) -> list[tuple[str, Path]]:
     """Every entry under `folder` that is not a directory, sorted, as (rel path, path)."""
     return sorted((p.relative_to(folder).as_posix(), p) for p in folder.rglob("*")
