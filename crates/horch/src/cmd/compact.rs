@@ -669,8 +669,13 @@ fn poll(env: &Env, dir: &Path, child: &mut Child, begin: Instant) -> Option<Hand
     }
 }
 
-/// The child exited before it started: its code says why.
+/// The child exited. `poll` read the job file before it saw the exit, so the
+/// child may have written it in between: read it again, then let the code
+/// say why a child that never started exited.
 fn exited(dir: &Path, status: ExitStatus) -> Handshake {
+    if job_started(dir) {
+        return Handshake::Scheduled;
+    }
     match status.code() {
         Some(0) => Handshake::AlreadyRunning,
         Some(c) if c == i32::from(EXIT_REPORTED) => last_blocked_line(&dir.join(LOG_FILE))
@@ -1735,6 +1740,26 @@ mod tests {
         );
         assert!(f.w.events("r-1", EVENT_FAILED).is_empty());
         assert!(dir.join(jobfile::SPAWNED_FILE).exists());
+    }
+
+    /// CTX-15: a child that wrote `job.json` past `start` and then exited 0
+    /// before the parent polled `try_wait` has started. `poll` reads the job
+    /// file first, so a loaded parent can see the exit without the file it
+    /// just missed; `exited` must read the file again.
+    #[cfg(unix)]
+    #[test]
+    fn ctx_15_exit_after_the_job_file_is_a_start_not_already_running() {
+        let f = Fleet::new();
+        let dir = f.env().job_dir("sonnet-1");
+        std::fs::create_dir_all(&dir).unwrap();
+        let status = Command::new("true").status().unwrap();
+        assert!(matches!(exited(&dir, status), Handshake::AlreadyRunning));
+        std::fs::write(
+            dir.join(JOB_FILE),
+            r#"{"v":1,"role":"sonnet-1","record_id":"r-1","started_at":"x","step":"wait-idle"}"#,
+        )
+        .unwrap();
+        assert!(matches!(exited(&dir, status), Handshake::Scheduled));
     }
 
     /// CTX-15 (review finding 1 b): a child that refuses records 1 event,

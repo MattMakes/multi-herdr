@@ -11,7 +11,7 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent))
 
-import rename  # noqa: E402
+import rename
 
 FIXTURE = HERE / "fixtures" / "rename"
 

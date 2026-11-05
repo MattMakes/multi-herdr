@@ -41,7 +41,7 @@ case "$version" in
 esac
 sdk=$(echo "$version" | cut -d. -f1-3)
 
-rm -rf "$work/project" "$work/home"
+rm -rf "${work:?}/project" "${work:?}/home"
 mkdir -p "$work/project" "$work/home" "$work/nuget"
 cd "$work/project"
 cat > project.godot <<'EOF'
@@ -229,8 +229,16 @@ fi
 
 bounded 300 "$godot" --headless --path . --import > "$work/import.log" 2>&1 || true
 if bounded 120 "$godot" --headless --path . > "$work/run.log" 2>&1; then
-  grep -q '^LIVE_CS_SCENE ' "$work/run.log" && pass "csharp-scene" || fail "csharp-scene" "no LIVE_CS_SCENE line"
-  grep -q '^LIVE_CS_SIGNAL 7$' "$work/run.log" && pass "csharp-signal" || fail "csharp-signal" "no LIVE_CS_SIGNAL 7 line"
+  if grep -q '^LIVE_CS_SCENE ' "$work/run.log"; then
+    pass "csharp-scene"
+  else
+    fail "csharp-scene" "no LIVE_CS_SCENE line"
+  fi
+  if grep -q '^LIVE_CS_SIGNAL 7$' "$work/run.log"; then
+    pass "csharp-signal"
+  else
+    fail "csharp-signal" "no LIVE_CS_SIGNAL 7 line"
+  fi
 else
   fail "csharp-scene" "exit $? (see $work/run.log)"
 fi
@@ -242,16 +250,32 @@ fi
 
 # Mixed scene: GDScript and C# call each other and connect each other's signals.
 if bounded 120 "$godot" --headless --path . --quit-after 10 res://mixed.tscn > "$work/mixed.log" 2>&1; then
-  grep -q '^LIVE_MIX_GD_CALLS_CS 2$' "$work/mixed.log" && pass "mixed-gd-calls-cs" || fail "mixed-gd-calls-cs" "no LIVE_MIX_GD_CALLS_CS 2 line"
-  grep -q '^LIVE_MIX_CS_SIGNAL_TO_GD 2$' "$work/mixed.log" && pass "mixed-cs-signal-to-gd" || fail "mixed-cs-signal-to-gd" "no LIVE_MIX_CS_SIGNAL_TO_GD 2 line"
-  grep -q '^LIVE_MIX_CS_CALLS_GD 3$' "$work/mixed.log" && pass "mixed-cs-calls-gd" || fail "mixed-cs-calls-gd" "no LIVE_MIX_CS_CALLS_GD 3 line"
+  if grep -q '^LIVE_MIX_GD_CALLS_CS 2$' "$work/mixed.log"; then
+    pass "mixed-gd-calls-cs"
+  else
+    fail "mixed-gd-calls-cs" "no LIVE_MIX_GD_CALLS_CS 2 line"
+  fi
+  if grep -q '^LIVE_MIX_CS_SIGNAL_TO_GD 2$' "$work/mixed.log"; then
+    pass "mixed-cs-signal-to-gd"
+  else
+    fail "mixed-cs-signal-to-gd" "no LIVE_MIX_CS_SIGNAL_TO_GD 2 line"
+  fi
+  if grep -q '^LIVE_MIX_CS_CALLS_GD 3$' "$work/mixed.log"; then
+    pass "mixed-cs-calls-gd"
+  else
+    fail "mixed-cs-calls-gd" "no LIVE_MIX_CS_CALLS_GD 3 line"
+  fi
   # Both the Hud.OnItemAdded handler of the skill (prints the bare id) and the marker handler must run.
   if grep -q '^LIVE_MIX_GD_SIGNAL_TO_CS sword$' "$work/mixed.log" && grep -q '^sword$' "$work/mixed.log"; then
     pass "mixed-gd-signal-to-cs"
   else
     fail "mixed-gd-signal-to-cs" "no LIVE_MIX_GD_SIGNAL_TO_CS sword line or no bare sword line"
   fi
-  grep -q '^LIVE_MIX_UNTYPED_ARRAY 2$' "$work/mixed.log" && pass "mixed-untyped-array" || fail "mixed-untyped-array" "no LIVE_MIX_UNTYPED_ARRAY 2 line"
+  if grep -q '^LIVE_MIX_UNTYPED_ARRAY 2$' "$work/mixed.log"; then
+    pass "mixed-untyped-array"
+  else
+    fail "mixed-untyped-array" "no LIVE_MIX_UNTYPED_ARRAY 2 line"
+  fi
 else
   fail "mixed-gd-calls-cs" "exit $? (see $work/mixed.log)"
 fi
@@ -460,5 +484,5 @@ else
 fi
 
 rm -rf "$work/project/.godot" "$work/project/bin" "$work/project/obj"
-rm -rf "$gdunit/.godot" "$gdunit/bin" "$gdunit/obj" "$gdunit/TestResults"
+rm -rf "${gdunit:?}/.godot" "${gdunit:?}/bin" "${gdunit:?}/obj" "${gdunit:?}/TestResults"
 exit "$failed"

@@ -61,7 +61,7 @@ pivot at the base centre.
 | modeling 2, shape | dimensions within 1 % of the brief | 0.6 x 0.6 x 0.581 m |
 | modeling 3, topology | `mesh_problems` all 0 | 0 non-manifold, 0 boundary, 0 n-gons, 196 faces |
 | modeling 5-6, seams and UV 0 | every sharp edge splits the UVs; 0 UVs out of bounds; margin 8 px | 0 sharp edges (3-segment chamfers), 0 out of bounds |
-| modeling 7, texel density | 400 px/m +-10 % | 423 px/m (4.2 px/cm) at 1024 |
+| modeling 7, texel density | 400 px/m +-10 % | 400.0 px/m (4.0 px/cm) at 1024, scaled by `set_texel_density` (423 on 3.5.1 with the packer's own fill, 486.5 on 5.1.2) |
 | modeling 8, lightmap UV | channel 1 inside 0..1; channel 0 active | `UVMap`, `Lightmap` |
 | modeling 4 and 9, LODs | LOD0 under 1,200; LOD1 and LOD2 within 3 % of 50 % and 25 %; slot order and UV channels kept | 376, 188, 94 triangles |
 | modeling 10, collision | `UCX_SM_Crate_LOD0_00` convex, closed, no UVs or material | 24 faces, convex |
@@ -125,3 +125,16 @@ git (a build dependency).
    Then run `scripts/live/blender.sh` again.
 3. Set `BLENDER_PATH=/Applications/Blender.app/Contents/MacOS/Blender` in the
    environment that starts the fleet, so the `*_for_cli` tools find Blender.
+
+## 2026-11-04
+
+`LIVE_BLENDER_SKIP_MCP=1 scripts/live/blender.sh`, Blender 5.1.2 (build 2026-05-19).
+
+| Step | Claim it proves | Tool version | Result | Evidence |
+|------|-----------------|--------------|--------|----------|
+| asset-build, `modeling.7 texel_density` | The crate meets the brief's 400 px/m +-10 % at 1024. | 5.1.2 | FAIL before the fix (486.5 px/m), PASS after (400.0 px/m) | Cause: Blender 4 and later `uv.pack_islands` defaults to `shape_method='CONCAVE'` and packs islands tighter than the 3.5.1 packer. The same Smart UV layout fills 0.469 of the square with `smart_project` alone (422.9 px/m, the 423 of the 2026-10-06 run), 0.412 with `AABB` plus rotation (396.4), 0.448 with `CONVEX` (413.3), and 0.621 with the helper's default repack (486.5). The 2026-10-06 target band fitted the 3.5.1 packer by accident. Fix: new helper `set_texel_density` scales the UVs to the target and repacks with `scale=False`; the band 360 to 440 stays. |
+| helper mesh.set_texel_density | The new helper reaches a target and keeps the UVs in bounds. | 5.1.2 | PASS | UV sphere scaled to 0.8 of its packed density within 1 %, 0 UVs out of bounds. The crate gives 400.0 px/m, 0 out of bounds, at an 8 px margin. |
+| all other steps | | 5.1.2 | PASS | 0 FAIL: 28 skill-step checks, `asset-verify` PASS, `mcp-pin` PASS (38 packages). `mcp-headless` and `mcp-live` skipped. |
+
+Only Blender 5.1.2 is installed now. `set_texel_density` was not run on 3.5.1, so
+`pack_islands(scale=False)` there is unconfirmed.

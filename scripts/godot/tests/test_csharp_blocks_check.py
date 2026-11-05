@@ -12,8 +12,8 @@ from unittest import mock
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent))
 
-import csharp_blocks_check as cbc  # noqa: E402
-from check_once import once  # noqa: E402
+import csharp_blocks_check as cbc
+from check_once import once
 
 FIXTURE = HERE / "fixtures" / "csharp"
 SAMPLE = FIXTURE / "sample.md"
@@ -58,11 +58,15 @@ class BuildTest(unittest.TestCase):
         code, out, _ = run(SAMPLE)
         self.assertEqual(code, 1)
         self.assertEqual(out.splitlines(), [
-            f"{SAMPLE}:4: CS0266: Cannot implicitly convert type 'double' to 'int'. "
-            "An explicit conversion exists (are you missing a cast?)",
-            f"{SAMPLE}:38: CS1061: 'Node' does not contain a definition for 'NoSuchMethod' and no accessible "
-            "extension method 'NoSuchMethod' accepting a first argument of type 'Node' could be found "
-            "(are you missing a using directive or an assembly reference?)",
+            (
+                f"{SAMPLE}:4: CS0266: Cannot implicitly convert type 'double' to 'int'. "
+                "An explicit conversion exists (are you missing a cast?)"
+            ),
+            (
+                f"{SAMPLE}:38: CS1061: 'Node' does not contain a definition for 'NoSuchMethod' and no accessible "
+                "extension method 'NoSuchMethod' accepting a first argument of type 'Node' could be found "
+                "(are you missing a using directive or an assembly reference?)"
+            ),
         ])
 
     def test_copied_blocks_are_counted_against_the_baseline(self):

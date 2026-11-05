@@ -45,8 +45,8 @@ from dataclasses import dataclass
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from api_check import REPO, find_godot  # noqa: E402
-from gdscript_blocks_check import CLASS_NAME, class_cache, extract, script_base  # noqa: E402
+from api_check import REPO, find_godot
+from gdscript_blocks_check import CLASS_NAME, class_cache, extract, script_base
 
 FIXTURES = Path(__file__).resolve().parent / "tests" / "fixtures" / "gameplay"
 SKILLS = REPO / "skills"
@@ -108,7 +108,7 @@ def run_one(godot: str, skill: str, timeout: int, keep: bool = False) -> Result:
                    XDG_CONFIG_HOME=str(home / "config"), XDG_CACHE_HOME=str(home / "cache"))
         try:
             run = subprocess.run([godot, "--headless", "--path", str(project), "--script", "res://check.gd"],
-                                 env=env, capture_output=True, text=True, timeout=timeout)
+                                 env=env, capture_output=True, text=True, timeout=timeout, check=False)
         except subprocess.TimeoutExpired as e:
             return Result(skill, False, f"timed out after {timeout} s", str(e.stdout or "") + str(e.stderr or ""))
         output = run.stdout + run.stderr

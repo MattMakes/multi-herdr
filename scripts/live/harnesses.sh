@@ -168,11 +168,13 @@ else
     # (harness/antigravity.rs). The TUI must run <p> as a new turn of <id>.
     # OpenCode ignored the same pair (opencode-resume-prompt).
     if [ "$AGY_TRUST_SCRATCH" = "1" ] || trusted; then
+      # shellcheck disable=SC2016 # $1 and $@ expand in the child sh, not here
       tui_screen 45 "$SCR/agy-resume.txt" sh -c 'cd "$1" && shift && exec "$@"' _ "$REPO" \
         agy --model "$AGY_MODEL" --effort low --conversation "$CID" \
         --prompt-interactive "What is 17 times 23? Reply with the number only."
       # Control: the same resume without a prompt shows the history and runs
       # no turn. The 17 x 23 turn in that history proves it is in <id>.
+      # shellcheck disable=SC2016 # $1 and $@ expand in the child sh, not here
       tui_screen 30 "$SCR/agy-control.txt" sh -c 'cd "$1" && shift && exec "$@"' _ "$REPO" \
         agy --model "$AGY_MODEL" --effort low --conversation "$CID"
       if ! grep -q ZEBRA "$SCR/agy-control.txt"; then

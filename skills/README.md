@@ -25,7 +25,7 @@ A bundle is one of these kinds:
 
 ## Copied files
 
-[copied.json](copied.json) has one entry per bundled skill: `{"name", "copied_files", "verbatim"}` and, when needed, `"budget_exempt"`, sorted by name. `copied_files` lists the files, relative to the skill directory, that were copied into this repository; an own-text skill has `"copied_files": []`. The Godot checks (`scripts/godot/*_check.py --strict-own skills/copied.json`) report a problem in a copied file but do not fail on it; a problem in any other file fails. `"verbatim": true` marks an unchanged copy: `copied_files` lists every file in the directory, and nobody edited them. A test fails a verbatim skill that holds a file outside `copied_files`. A verbatim skill is exempt from the bundled size budget. A renamed, adapted or combined skill over the budget is not verbatim: its entry gives the reason in `"budget_exempt": "<reason>"` instead. Set `budget_exempt` only on a skill over the budget; a test fails a stale one. Every bundled skill needs an entry. A new skill keeps `SKILL.md` at or under 12 KB and its whole directory at or under 160 KB, in `.md` and `.txt` files only; every verbatim skill and every skill with a `budget_exempt` reason is exempt from the size budget, and only `skill-creator` is exempt from the text-only rule, plus 1 file: `godot-build-verify/scripts/godot-run.sh`, the wrapper for every Godot call (SKL-11 keeps its execute bit). No skill directory holds a licence or notice file. `horch skills show <id>` prints the copied files. The build never bundles a file or directory whose name starts with `.`.
+[copied.json](copied.json) has one entry per bundled skill: `{"name", "copied_files", "verbatim"}` and, when needed, `"budget_exempt"`, sorted by name. `copied_files` lists the files, relative to the skill directory, that were copied into this repository; an own-text skill has `"copied_files": []`. The Godot checks (`scripts/godot/*_check.py --strict-own skills/copied.json`) report a problem in a copied file but do not fail on it; a problem in any other file fails. `"verbatim": true` marks an unchanged copy: `copied_files` lists every file in the directory, and nobody edited them. A test fails a verbatim skill that holds a file outside `copied_files`. A verbatim skill is exempt from the bundled size budget. A renamed, adapted or combined skill over the budget is not verbatim: its entry gives the reason in `"budget_exempt": "<reason>"` instead. Set `budget_exempt` only on a skill over the budget; a test fails a stale one. Every bundled skill needs an entry. A new skill keeps `SKILL.md` at or under 12 KB and its whole directory at or under 160 KB, in `.md` and `.txt` files only; every verbatim skill and every skill with a `budget_exempt` reason is exempt from the size budget, and only `skill-creator`, the 27 copied [Blender skills that ship scripts](#blender-skills), the own-text `blender-3d-print` (2 Python scripts) and the 8 [`video-*` skills that ship scripts](#video-skills) are exempt from the text-only rule, plus 1 file: `godot-build-verify/scripts/godot-run.sh`, the wrapper for every Godot call (SKL-11 keeps its execute bit). No skill directory holds a licence or notice file. `horch skills show <id>` prints the copied files. The build never bundles a file or directory whose name starts with `.`.
 
 To refresh a copied skill:
 
@@ -160,6 +160,59 @@ These skills belong to no phase; an Unreal Engine teammate attaches them by name
 | [ue-testing-debugging](ue-testing-debugging/SKILL.md) | verbatim |
 | [ue-ui-umg-slate](ue-ui-umg-slate/SKILL.md) | verbatim |
 | [ue-world-level-streaming](ue-world-level-streaming/SKILL.md) | verbatim |
+
+## Blender skills
+
+These 29 skills belong to no phase; a teammate attaches them by name. 28 of them are verbatim copies of a whole skill directory, so each copy's `references/`, `scripts/` and `assets/` files are unchanged. 26 of them ship Python helper scripts in `scripts/`. `blender-addon-development` ships an add-on template in `assets/addon_template/`: 3 `.py` files and 1 `.toml` manifest. These 27 copied skills are exempt from the text-only rule. `blender-workflow-recipes` holds `SKILL.md` only. The 4 own-text `blender-*` skills in the Unreal Engine table above are separate. `blender-3d-print` is own text: it makes a mesh printable on an FDM or resin printer, and its 2 scripts (`print_check.py`, `print_fix.py`) are exempt from the text-only rule. `scripts/live/blender-3d-print.sh` runs them on fixture meshes on the installed Blender.
+
+| Skill | Kind |
+| --- | --- |
+| [blender-3d-print](blender-3d-print/SKILL.md) | own text |
+| [blender-addon-development](blender-addon-development/SKILL.md) | verbatim |
+| [blender-animation](blender-animation/SKILL.md) | verbatim |
+| [blender-asset-qa](blender-asset-qa/SKILL.md) | verbatim |
+| [blender-character-rigging](blender-character-rigging/SKILL.md) | verbatim |
+| [blender-clothing](blender-clothing/SKILL.md) | verbatim |
+| [blender-core](blender-core/SKILL.md) | verbatim |
+| [blender-environment-kits](blender-environment-kits/SKILL.md) | verbatim |
+| [blender-export-pipelines](blender-export-pipelines/SKILL.md) | verbatim |
+| [blender-facial-shapekeys](blender-facial-shapekeys/SKILL.md) | verbatim |
+| [blender-game-optimization](blender-game-optimization/SKILL.md) | verbatim |
+| [blender-geometry-nodes](blender-geometry-nodes/SKILL.md) | verbatim |
+| [blender-hair-grooming](blender-hair-grooming/SKILL.md) | verbatim |
+| [blender-hardsurface-modeling](blender-hardsurface-modeling/SKILL.md) | verbatim |
+| [blender-lighting-lookdev](blender-lighting-lookdev/SKILL.md) | verbatim |
+| [blender-pbr-materials](blender-pbr-materials/SKILL.md) | verbatim |
+| [blender-pipeline-automation](blender-pipeline-automation/SKILL.md) | verbatim |
+| [blender-rendering](blender-rendering/SKILL.md) | verbatim |
+| [blender-retopology-uv](blender-retopology-uv/SKILL.md) | verbatim |
+| [blender-scene-setup](blender-scene-setup/SKILL.md) | verbatim |
+| [blender-sculpting](blender-sculpting/SKILL.md) | verbatim |
+| [blender-simulation](blender-simulation/SKILL.md) | verbatim |
+| [blender-stylized-npr](blender-stylized-npr/SKILL.md) | verbatim |
+| [blender-texture-baking](blender-texture-baking/SKILL.md) | verbatim |
+| [blender-texturing](blender-texturing/SKILL.md) | verbatim |
+| [blender-time-of-day](blender-time-of-day/SKILL.md) | verbatim |
+| [blender-video-editing](blender-video-editing/SKILL.md) | verbatim |
+| [blender-weather-fx](blender-weather-fx/SKILL.md) | verbatim |
+| [blender-workflow-recipes](blender-workflow-recipes/SKILL.md) | verbatim |
+
+## Video skills
+
+These 10 skills are own text and belong to no phase; a `video-*` teammate attaches them by name (see [`teammates/README.md`](../teammates/README.md)). 8 ship runnable scripts that use only the Python standard library, Node built-ins, `ffmpeg` and `ffprobe`: `video-audio`, `video-capture`, `video-motion`, `video-produce`, `video-qa`, `video-motion-match`, `video-render` and `video-storyboard`. A script calls a sibling skill only when the same teammate carries it. The orchestrator's wave recipe is in [`orchestrate/references/video-pipeline.md`](orchestrate/references/video-pipeline.md).
+
+| Skill | Kind |
+| --- | --- |
+| [video-audio](video-audio/SKILL.md) | own text |
+| [video-capture](video-capture/SKILL.md) | own text |
+| [video-character](video-character/SKILL.md) | own text |
+| [video-direction](video-direction/SKILL.md) | own text |
+| [video-motion](video-motion/SKILL.md) | own text |
+| [video-motion-match](video-motion-match/SKILL.md) | own text |
+| [video-produce](video-produce/SKILL.md) | own text |
+| [video-qa](video-qa/SKILL.md) | own text |
+| [video-render](video-render/SKILL.md) | own text |
+| [video-storyboard](video-storyboard/SKILL.md) | own text |
 
 ## Godot skills
 

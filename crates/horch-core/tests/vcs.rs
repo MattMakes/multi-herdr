@@ -565,10 +565,15 @@ fn cmp_09_gates_per_candidate_with_timeouts() {
         .collect();
     assert!(leftovers.is_empty(), "raw logs removed: {leftovers:?}");
 
-    // The sleep the timed-out gate started is gone too.
+    // The sleep the timed-out gate started is gone too. Under heavy load the
+    // 300 ms timeout can fire before `sh` reaches `echo $! > sleep.pid`. Then
+    // the gate never started a sleep, so there is nothing that could outlive it.
+    // The kill can also land between the file's truncate and its write.
     #[cfg(unix)]
+    if let Some(pid) = std::fs::read_to_string(worktree.join("sleep.pid"))
+        .ok()
+        .and_then(|text| text.trim().parse::<i32>().ok())
     {
-        let pid: i32 = read(&worktree.join("sleep.pid")).trim().parse().unwrap();
         let deadline = Instant::now() + Duration::from_secs(2);
         while pid_alive(pid) && Instant::now() < deadline {
             std::thread::sleep(Duration::from_millis(20));

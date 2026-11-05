@@ -34,6 +34,7 @@ fn plan_for(t: &Teammate, base: &SkillCatalog) -> anyhow::Result<SkillActivation
 const REPO_ORIGINAL: &[&str] = &[
     "api-contracts",
     "architecture-review",
+    "blender-3d-print",
     "blender-baking",
     "blender-modeling",
     "blender-rigging",
@@ -58,6 +59,16 @@ const REPO_ORIGINAL: &[&str] = &[
     "system-design",
     "ue-build-verify",
     "ue-editor-scripting",
+    "video-audio",
+    "video-capture",
+    "video-character",
+    "video-direction",
+    "video-motion",
+    "video-motion-match",
+    "video-produce",
+    "video-qa",
+    "video-render",
+    "video-storyboard",
 ];
 
 const PHASES: [Option<Phase>; 5] = [
@@ -90,7 +101,10 @@ const SKIP_NEW_TEAMMATES: &[&str] = &[
     "apple-accessibility-auditor",
     "apple-platform-developer",
     "astra-creative",
+    "blender-3d-printer",
     "blender-artist",
+    "blender-builder",
+    "blender-qa",
     "codex-swift-reviewer",
     "design-critic",
     "design-director",
@@ -135,6 +149,13 @@ const SKIP_NEW_TEAMMATES: &[&str] = &[
     "ue-tools-engineer",
     "ue-ui-engineer",
     "ue-world-engineer",
+    "video-animator",
+    "video-audio",
+    "video-capture",
+    "video-critic",
+    "video-director",
+    "video-editor",
+    "video-producer",
     "visual-prototyper",
     "worktree-steward",
 ];
@@ -372,9 +393,53 @@ fn skills_bundled_size_budget() {
     }
 }
 
-/// `skill-creator` is a verbatim copy that ships Python scripts and HTML
-/// assets. It is the only skill exempt from the text-only rule.
-const EXEMPT_FROM_TEXT_ONLY: &[&str] = &["skill-creator"];
+/// Skills that ship files other than `.md` and `.txt`; they are the only
+/// skills exempt from the text-only rule. `skill-creator` ships Python
+/// scripts and HTML assets. The 27 copied Blender skills ship Python scripts,
+/// and `blender-addon-development` also ships 1 `.toml` manifest. The own-text
+/// `blender-3d-print` ships 2 Python scripts that its `SKILL.md` runs.
+/// `blender-workflow-recipes` holds `.md` files only, so it is not listed.
+/// The `video-*` skills listed here ship their own runnable checker,
+/// capture and render scripts.
+const EXEMPT_FROM_TEXT_ONLY: &[&str] = &[
+    "blender-3d-print",
+    "blender-addon-development",
+    "blender-animation",
+    "blender-asset-qa",
+    "blender-character-rigging",
+    "blender-clothing",
+    "blender-core",
+    "blender-environment-kits",
+    "blender-export-pipelines",
+    "blender-facial-shapekeys",
+    "blender-game-optimization",
+    "blender-geometry-nodes",
+    "blender-hair-grooming",
+    "blender-hardsurface-modeling",
+    "blender-lighting-lookdev",
+    "blender-pbr-materials",
+    "blender-pipeline-automation",
+    "blender-rendering",
+    "blender-retopology-uv",
+    "blender-scene-setup",
+    "blender-sculpting",
+    "blender-simulation",
+    "blender-stylized-npr",
+    "blender-texture-baking",
+    "blender-texturing",
+    "blender-time-of-day",
+    "blender-video-editing",
+    "blender-weather-fx",
+    "skill-creator",
+    "video-audio",
+    "video-capture",
+    "video-motion",
+    "video-motion-match",
+    "video-produce",
+    "video-qa",
+    "video-render",
+    "video-storyboard",
+];
 
 /// Single files exempt from the text-only rule; the rest of their skill is
 /// still checked. `godot-run.sh` is the fleet wrapper for every Godot call,
@@ -382,8 +447,8 @@ const EXEMPT_FROM_TEXT_ONLY: &[&str] = &["skill-creator"];
 const EXEMPT_FILES: &[&str] = &["godot-build-verify/scripts/godot-run.sh"];
 
 /// Skill files are `.md` or `.txt`, except the skills in
-/// `EXEMPT_FROM_TEXT_ONLY` and the single files in `EXEMPT_FILES`. Verbatim
-/// skills are not exempt from this rule.
+/// `EXEMPT_FROM_TEXT_ONLY` and the single files in `EXEMPT_FILES`. A verbatim
+/// skill is exempt only when `EXEMPT_FROM_TEXT_ONLY` lists it.
 #[test]
 fn skills_bundled_text_only() {
     for (path, _) in BUNDLED_SKILL_FILES {

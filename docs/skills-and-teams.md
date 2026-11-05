@@ -80,8 +80,10 @@ Rules that the tests enforce (`crates/horch-core/tests/skills_catalog.rs`):
 - A skill over the size budget is verbatim or has a `budget_exempt` reason.
   A `budget_exempt` reason on a skill within the budget fails, and so does
   an empty reason or a reason on a verbatim skill.
-- A skill directory holds only `.md` and `.txt` files. `skill-creator` is the
-  one exception. No skill holds a licence or notice file.
+- A skill directory holds only `.md` and `.txt` files. `skill-creator`, the
+  27 copied Blender skills that ship scripts and the own-text
+  `blender-3d-print` are the exceptions, listed in `EXEMPT_FROM_TEXT_ONLY`. No skill holds a licence or notice
+  file.
 - The build skips every file and directory whose name starts with `.`.
 
 The Godot checks in the gate (`scripts/godot/*_check.py --strict-own
@@ -197,6 +199,8 @@ each team.
 | Swift and Apple (7) | `*.xcodeproj`, `*.xcworkspace` or `Package.swift` | 28 Swift and Apple skills | check the toolchain first; the builders carry `mobilebuildmcp` |
 | Design (6 new, 2 changed) | no gate: always offered | 8 design skills | brand inputs override the palettes and font pairings in the skills |
 | Blender (`blender-artist`) | `*.blend` or `*.uproject` | `blender-ue-pipeline`, `blender-modeling`, `blender-rigging`, `blender-baking` | Blender Lab MCP server; hands FBX exports to the Unreal team |
+| Blender (`blender-builder`, `blender-qa`, `blender-3d-printer`) | `*.blend`; the printer also `*.stl`, `*.3mf` or `*.obj` | the 28 copied EL4CTEO `blender-*` skills and the own-text `blender-3d-print` | ahujasid MCP server, pinned, telemetry off, network asset tools denied; headless by default; QA reports and fixes nothing |
+| Video (7 `video-*`) | no gate: always offered | 10 own-text `video-*` skills: `video-produce`, `video-direction`, `video-storyboard`, `video-capture`, `video-audio`, `video-motion`, `video-character`, `video-motion-match`, `video-render`, `video-qa` | work offline with local `ffmpeg`, Chrome and macOS `say`; `timeline.json` is the single source of truth; every wave passes a numeric gate; a fresh `video-critic` for each review round |
 
 ### Unreal Engine and Git LFS
 
@@ -262,6 +266,36 @@ ORM maps). The helper functions in the last 3 were run against the `bpy`
   `blender-artist`.
 - The Git LFS lock rules from the Unreal section apply to the exports.
 
+### Blender for any target and for 3D printing
+
+3 teammates sit beside `blender-artist` and do not replace it. Each runs on
+Claude with no fallback, needs `blender` (`requires: [blender]`) and sets
+`BLENDER_PATH: "{path_of:blender}"`.
+
+| teammate | phase, model, effort | skills | named by name |
+|---|---|---|---|
+| `blender-builder` | implementation, opus, medium | `blender-core`, `blender-hardsurface-modeling`, `blender-retopology-uv`, `blender-pbr-materials`, `blender-texturing`, `blender-texture-baking`, `blender-export-pipelines`, `blender-workflow-recipes`, `blender-scene-setup` | the other 18 copied skills, not `blender-asset-qa` |
+| `blender-qa` | validation, sonnet, high | `check`, `debug`, `blender-core`, `blender-asset-qa`, `blender-game-optimization`, `blender-scene-setup`, `blender-lighting-lookdev` | `blender-3d-print`, `blender-export-pipelines`, `blender-retopology-uv`, `blender-character-rigging`, `blender-animation` |
+| `blender-3d-printer` | implementation, opus, medium | `blender-core`, `blender-3d-print`, `blender-hardsurface-modeling`, `blender-retopology-uv`, `blender-sculpting`, `blender-asset-qa` | `blender-geometry-nodes`, `blender-pipeline-automation` |
+
+- The 28 `blender-*` skills are copied verbatim from EL4CTEO/blender-skills
+  and target Blender 5.2. `blender-3d-print` is own text; its
+  `print_check.py` and `print_fix.py` run headless.
+- The MCP server is ahujasid `mcp-for-blender`, pinned to commit
+  `992233bb` (v2.2.6) with Python 3.12, `mcp==1.30.0`, `httpx==0.28.1` and
+  `--exclude-newer`. Its `env` sets `DISABLE_TELEMETRY=true`.
+- `disallowed_tools` denies `mcp__blender__generate_3d`,
+  `mcp__blender__search_assets` and `mcp__blender__import_asset`: they
+  generate models with paid providers or download assets.
+- Every tool of this server is live and needs the `ahujasid` add-on in a
+  running Blender. The teammates work headless with
+  `"$BLENDER_PATH" --background` and use the live tools only when the
+  operator says so.
+- The `ahujasid` add-on and the Blender Lab add-on both default to port 9876.
+  Run only 1.
+- `scripts/live/blender-mcp.sh` checks the pin, the telemetry gate and the
+  denied tool names. Results: `docs/live-checks/blender-mcp.md`.
+
 ### Swift and Apple, MobileBuildMCP, App Store Connect
 
 - The panes that build carry `mobilebuildmcp` (formerly XcodeBuildMCP),
@@ -297,6 +331,33 @@ ORM maps). The helper functions in the last 3 were run against the `bpy`
 - `visual-prototyper` runs on Codex. It cannot take screenshots unless a
   browser tool works in the Codex sandbox, so a Claude teammate screenshots
   for it.
+
+### The video team
+
+`video-producer` and `video-director` (plan), `video-capture`, `video-audio`,
+`video-animator`, `video-editor` (implementation) and `video-critic`
+(validation) make a rendered video from 1 project folder that holds
+`timeline.json`.
+
+- `video-producer` runs wave 0. It picks the workflow (launch film, app
+  explainer, A/B on 1 brief, or a batch of films) and writes
+  `PRODUCTION.md`. It keeps the blind A/B label map, the taste notes in
+  `.video/NOTES.md` and the share kit `render/share.md`.
+- The orchestrator then runs 6 waves. The recipe is in the `orchestrate` skill,
+  in `references/video-pipeline.md`: the teammate, inputs, outputs, gate
+  command and pass rule of each wave.
+- The plan gate (`check_timeline.py`), the audio gate (`check_audio.py`) and
+  the render gate (`qa_video.py`) are scripts with numeric rules. 8 of the 10
+  skills ship scripts, so `skills_catalog.rs` lists them in
+  `EXEMPT_FROM_TEXT_ONLY`.
+- Scripts use the Python standard library, Node built-ins, `ffmpeg` and
+  `ffprobe` only. They install nothing and download nothing.
+- `video-critic` never edits project files. Each review round is a new
+  session that has not seen earlier rounds, and the loop stops after 3
+  rounds. In an A/B run, a fresh critic ranks 2 masters under the labels A
+  and B and never learns which direction made which.
+- Taste notes stay on this host, in the project and in a fleet copy under
+  the horch state folder. 1 operator's taste never becomes a shipped rule.
 
 ## `horch agent-list`: which harnesses can this machine run
 

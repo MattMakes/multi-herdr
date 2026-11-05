@@ -537,7 +537,10 @@ fn rebased_and_checked(
     }
 }
 
-/// Rebase on `target`; a conflict aborts the rebase.
+/// Rebase on `target`; a conflict aborts the rebase. When `target` is an
+/// ancestor of the branch head already, nothing is rebased: a rebase would
+/// flatten the merge commits of the branch, and a fast-forward lands them as
+/// they are.
 fn rebase(
     cx: &Ctx<'_>,
     dir: &Path,
@@ -546,6 +549,9 @@ fn rebase(
     log: &Path,
 ) -> Result<(), Stop> {
     let git = &cx.tools.git;
+    if git.is_ancestor(dir, target, "HEAD") {
+        return Ok(());
+    }
     let rebase = git.try_run(dir, &["rebase", target])?;
     if rebase.ok {
         return Ok(());

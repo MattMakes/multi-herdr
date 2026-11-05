@@ -261,6 +261,9 @@ latest stable release on 2026-10-04 (4.7.2).
 | teammate | phase | agent, model, effort | use for |
 |---|---|---|---|
 | `blender-artist` | implementation | claude, opus, medium | Blender models, retopology, UVs, collision, LODs, rigs; FBX exports for the UE team |
+| `blender-builder` | implementation | claude, opus, medium | Blender assets for any target (Godot, Unity, Unreal, Roblox, web, render): model, UV, PBR, bake, export |
+| `blender-qa` | validation | claude, sonnet, high | Blender asset QA: topology, UVs, scale, materials, budgets, exports; reports numbers and renders, fixes nothing |
+| `blender-3d-printer` | implementation | claude, opus, medium | Cleans Blender, STL, 3MF and OBJ models for FDM and resin printing: watertight, walls, overhangs, scale, export |
 
 `offer_when: ["*.blend", "*.uproject"]`. It drives Blender through the
 official Blender Lab MCP server, pinned by commit, with no telemetry and no
@@ -274,6 +277,34 @@ variable is left out and the launch still works. It carries `blender-ue-pipeline
 and `blender-baking`, and names `ue-editor-scripting`. It
 exports to a source-art folder and never writes `.uasset`; `ue-technical-artist`
 or `ue-tools-engineer` imports. No fallback: Codex has no MCP parity here.
+
+## The video team
+
+Seven specialists make a rendered video: a launch film, product demo, CLI
+walkthrough, concept explainer or social cut. They carry the 10 own-text
+`video-*` skills by name. The orchestrator runs them in wave 0 and 6 build
+waves from
+`skills/orchestrate/references/video-pipeline.md`.
+
+| teammate | phase | agent, model, effort | skills | use for |
+|---|---|---|---|---|
+| `video-producer` | plan | claude, opus, high | `video-produce` | workflow pick, `PRODUCTION.md`, blind A/B labels, taste notes, batch summary, share kit |
+| `video-director` | plan | claude, opus, high | `video-direction`, `video-storyboard` | brief, direction, storyboard, `timeline.json` and the plan gate |
+| `video-capture` | implementation | claude, sonnet, medium | `video-capture` | deterministic browser and terminal plates with telemetry |
+| `video-audio` | implementation | claude, sonnet, medium | `video-audio`, `video-storyboard` | voice-over, timing reconciliation, beat grid, SFX, -14 LUFS master |
+| `video-animator` | implementation | claude, opus, medium | `video-motion`, `video-character`, `video-motion-match`, `motion-gsap` | deterministic HTML scenes, character rigs, reference matching |
+| `video-editor` | implementation | claude, sonnet, medium | `video-render` | frame-stepped render, `render/master.mp4`, aspect variants, publish pack |
+| `video-critic` | validation | claude, opus, high | `video-qa`, `video-direction` | numeric render QA and a blind 8-axis review |
+
+No `offer_when`: an ordinary code repo asks for a launch video before any
+`timeline.json` exists. No `requires`: each persona checks `ffmpeg`,
+`ffprobe`, `node`, `python3`, Chrome and macOS `say` as it needs them, and
+reports `BLOCKED:` with the install step. No fallback: Chrome, `ffmpeg` and
+`say` are not live-checked in the Codex sandbox. `video-audio` also carries
+`video-storyboard`, because its gate runs `check_timeline.py` from that
+sibling skill, and a bundle holds only the teammate's own skills.
+`video-critic` denies `Edit` and `NotebookEdit` but keeps `Write` for its
+`qa/` reports. Spawn a new `video-critic` for each review round.
 
 ## The Swift and Apple team
 
@@ -459,6 +490,7 @@ For each key, the first value of this list wins:
 |---|---|---|
 | claude | `CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION: "false"` | a fork of the conversation after each turn |
 | claude | `DISABLE_AUTOUPDATER: "1"` | a mid-fleet update. `horch fleet` updates every agent CLI before the first pane starts (`horch update`) |
+| claude | `includeCoAuthoredBy: false`, `attribution` all off (`settings`, `force`) | commit and PR attribution |
 | codex | `-c tui.auto_recap=false` | a hidden recap thread when the pane loses focus |
 | codex (fleet workers) | `-c notify=[]` (`force`) | the operator's `notify` command after every worker turn |
 | opencode | `{"agent":{"title":{"disable":true}}}` (`config`) | a title call to the operator's paid `small_model` |

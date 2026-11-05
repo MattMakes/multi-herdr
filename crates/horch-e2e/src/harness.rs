@@ -418,8 +418,9 @@ impl Harness {
         crate::read_log(&self.log)
     }
 
-    /// Calls of one fake (`"herdr"`, `"claude"`, ...), one per process: a
-    /// fake that logs as it goes writes several lines, and the last is whole.
+    /// Calls of one fake (`"herdr"`, `"claude"`, ...), one per call: a fake
+    /// that logs as it goes writes several lines with one `call_id`, and the
+    /// last is whole. A record without a `call_id` is keyed by its pid.
     pub fn calls_of(&self, fake: &str) -> Vec<Value> {
         let mut out: Vec<Value> = Vec::new();
         for call in self
@@ -427,7 +428,11 @@ impl Harness {
             .into_iter()
             .filter(|c| c["fake"].as_str() == Some(fake))
         {
-            match out.iter_mut().find(|c| c["pid"] == call["pid"]) {
+            let same = |c: &Value| match (c.get("call_id"), call.get("call_id")) {
+                (Some(a), Some(b)) => a == b,
+                _ => c["pid"] == call["pid"],
+            };
+            match out.iter_mut().find(|c| same(c)) {
                 Some(slot) => *slot = call,
                 None => out.push(call),
             }

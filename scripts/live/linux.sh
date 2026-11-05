@@ -44,6 +44,7 @@ for tool in colima docker; do
 done
 
 started=0
+# shellcheck disable=SC2329 # the EXIT trap below runs it; shellcheck 0.11 misses that when the script ends with exit
 cleanup() {
     if [ "${SRC_MODE:-}" = head ]; then rm -rf "$SCRATCH/src"; fi
     if [ "$started" = 1 ]; then
@@ -97,6 +98,7 @@ if want cargo-test; then
     # make a directory read-only to force a failure. bubblewrap and socat are
     # what Claude Code's sandbox needs on Linux; a test checks the host for them.
     # /bin/sh stays dash, the Debian and Ubuntu default.
+    # shellcheck disable=SC2016 # the container's bash expands $ in the script, not this shell
     run '
         apt-get update -qq >/dev/null
         apt-get install -y -qq sqlite3 bubblewrap socat >/dev/null
@@ -124,6 +126,7 @@ fi
 if want godot; then
     log="$SCRATCH/godot.log"
     rc=0
+    # shellcheck disable=SC2016 # the container's bash expands $ in the script, not this shell
     run '
         S=/work/scratch; mkdir -p $S/dl $S/home $S/xdg/data $S/xdg/config $S/xdg/cache $S/proj
         cd $S/dl
@@ -167,10 +170,17 @@ EOF
         test ! -s $S/elsewhere || { echo "STEP godot-xdg bad: files outside the scratch dirs"; exit 1; }
         echo "STEP godot-xdg ok"
     ' >"$log" 2>&1 || rc=$?
-    grep -q '^STEP godot-sha ok' "$log" && pass godot-sha "SHA-512 matches SHA512-SUMS.txt" \
-        || fail godot-sha "see $log"
+    if grep -q '^STEP godot-sha ok' "$log"; then
+        pass godot-sha "SHA-512 matches SHA512-SUMS.txt"
+    else
+        fail godot-sha "see $log"
+    fi
     v=$(sed -n 's/^STEP godot-version //p' "$log")
-    [ -n "$v" ] && pass godot-version "$v" || fail godot-version "see $log"
+    if [ -n "$v" ]; then
+        pass godot-version "$v"
+    else
+        fail godot-version "see $log"
+    fi
     if grep -q '^STEP godot-xdg ok' "$log"; then
         pass godot-xdg "writes only under XDG_* (see $log)"
     else

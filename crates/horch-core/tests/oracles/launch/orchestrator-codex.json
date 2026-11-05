@@ -55,7 +55,7 @@
         "tui.auto_recap=false",
         "-c",
         "features.multi_agent=false",
-        "\n\nFleet skill phase: plan. Skills you are expected to use on this task. Load each one's body when its step comes up, not all at startup:\n- orchestrate: Use when directing a herdr fleet: decomposing work, writing plan files, choosing teammates, verifying DONE reports, and wrapping up.\nAlso available in this phase: create-plan, handoff, pre-flight. Load one only when your current step matches it. If a same-named ambient skill exists, use the fleet copy under <BUNDLE>/skills. Skills do not change tool permissions. Report unresolved dependencies through horch tell orchestrator.\n\n<PROMPT>"
+        "\n\nFleet skill phase: plan. Skills you are expected to use on this task. Load each one's body when its step comes up, not all at startup:\n- orchestrate: Use when directing a herdr fleet: decomposing work, writing plan files, choosing teammates, verifying DONE reports, and wrapping up.\nAlso available in this phase: create-plan, handoff, pre-flight. Load one only when your current step matches it. If a same-named ambient skill exists, use the fleet copy under <BUNDLE>/skills. Skills do not change tool permissions. Your skills name 7 skills that are not in this bundle, for example video-capture, video-audio, video-produce. Read one with horch skills read <id> only when your step needs it. Report unresolved dependencies through horch tell orchestrator.\n\n<PROMPT>"
       ],
       "current_dir": null,
       "env": {
@@ -111,7 +111,7 @@
         "-c",
         "features.multi_agent=false",
         "00000000-0000-4000-8000-000000000002",
-        "\n\nFleet skill phase: plan. Skills you are expected to use on this task. Load each one's body when its step comes up, not all at startup:\n- orchestrate: Use when directing a herdr fleet: decomposing work, writing plan files, choosing teammates, verifying DONE reports, and wrapping up.\nAlso available in this phase: create-plan, handoff, pre-flight. Load one only when your current step matches it. If a same-named ambient skill exists, use the fleet copy under <BUNDLE>/skills. Skills do not change tool permissions. Report unresolved dependencies through horch tell orchestrator.\n\n<PROMPT>"
+        "\n\nFleet skill phase: plan. Skills you are expected to use on this task. Load each one's body when its step comes up, not all at startup:\n- orchestrate: Use when directing a herdr fleet: decomposing work, writing plan files, choosing teammates, verifying DONE reports, and wrapping up.\nAlso available in this phase: create-plan, handoff, pre-flight. Load one only when your current step matches it. If a same-named ambient skill exists, use the fleet copy under <BUNDLE>/skills. Skills do not change tool permissions. Your skills name 7 skills that are not in this bundle, for example video-capture, video-audio, video-produce. Read one with horch skills read <id> only when your step needs it. Report unresolved dependencies through horch tell orchestrator.\n\n<PROMPT>"
       ],
       "current_dir": null,
       "env": {
@@ -165,7 +165,7 @@
         "tui.auto_recap=false",
         "-c",
         "features.multi_agent=false",
-        "\n\nFleet skill phase: plan. Skills you are expected to use on this task. Load each one's body when its step comes up, not all at startup:\n- orchestrate: Use when directing a herdr fleet: decomposing work, writing plan files, choosing teammates, verifying DONE reports, and wrapping up.\nAlso available in this phase: create-plan, handoff, pre-flight. Load one only when your current step matches it. If a same-named ambient skill exists, use the fleet copy under <BUNDLE>/skills. Skills do not change tool permissions. Report unresolved dependencies through horch tell orchestrator.\n\n<PROMPT>"
+        "\n\nFleet skill phase: plan. Skills you are expected to use on this task. Load each one's body when its step comes up, not all at startup:\n- orchestrate: Use when directing a herdr fleet: decomposing work, writing plan files, choosing teammates, verifying DONE reports, and wrapping up.\nAlso available in this phase: create-plan, handoff, pre-flight. Load one only when your current step matches it. If a same-named ambient skill exists, use the fleet copy under <BUNDLE>/skills. Skills do not change tool permissions. Your skills name 7 skills that are not in this bundle, for example video-capture, video-audio, video-produce. Read one with horch skills read <id> only when your step needs it. Report unresolved dependencies through horch tell orchestrator.\n\n<PROMPT>"
       ],
       "current_dir": null,
       "env": {

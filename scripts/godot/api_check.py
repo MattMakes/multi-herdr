@@ -76,7 +76,8 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-import copied_ratchet  # noqa: E402
+import copied_ratchet
+
 MAC_GODOT = "/Applications/Godot.app/Contents/MacOS/Godot"
 
 GD_LANGS = {"gdscript", "gd"}
@@ -138,7 +139,7 @@ class Api:
         self._everywhere: dict[str, tuple[str, str]] | None = None
 
     @classmethod
-    def load(cls, doctool: Path, sidecar: bool = True) -> "Api":
+    def load(cls, doctool: Path, sidecar: bool = True) -> Api:
         classes: dict[str, EngineClass] = {}
 
         def get(name: str) -> EngineClass:
@@ -383,7 +384,8 @@ def check_file(api: Api, path: Path, known: dict[str, set[str]] | None = None) -
         allow |= block_allow.get(block, set())
         seen: set[str] = set()
 
-        def deprecated(name: str, msg: str) -> None:
+        # seen and n are defaults so each line keeps its own: the loop rebinds both (ruff B023).
+        def deprecated(name: str, msg: str, seen: set[str] = seen, n: int = n) -> None:
             if name not in seen:
                 seen.add(name)
                 unknown.append(Unknown(path, n, name, "deprecated", msg))

@@ -47,7 +47,7 @@ Tested helper functions for every step are in `references/mesh-helpers.md`. They
    - Straighten islands of hard-surface parts where you can, so texture pixels line up and do not alias.
    Check: no out-of-bounds UVs, and no stretching you can see in a checker test, if you can render one.
 
-7. **Set the texel density.** Compute it with `texel_density(ob, texture_px)` in pixels per metre. Scale islands so the asset matches the target, within about 10 %. Parts seen up close may get more; hidden parts less. Write the measured value in the hand-off. Check: the density is within the target range.
+7. **Set the texel density.** Compute it with `texel_density(ob, texture_px)` in pixels per metre. Scale islands so the asset matches the target, within about 10 %: `set_texel_density(ob, target, texture_px)` does it and packs again, because the packer's own fill differs by Blender version. Parts seen up close may get more; hidden parts less. Write the measured value in the hand-off. Check: the density is within the target range.
 
 8. **Add a lightmap UV when needed.** If the project uses baked lighting, `add_lightmap_uv` makes channel 1: non-overlapping, all islands inside 0..1, with a larger margin, because lightmaps are low resolution. Otherwise say in the hand-off that Unreal should generate it. Check: channel 0 is still the active and render UV.
 

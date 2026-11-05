@@ -17,8 +17,8 @@ from unittest import mock
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent))
 
-import gdscript_blocks_check as gbc  # noqa: E402
-from check_once import once  # noqa: E402
+import gdscript_blocks_check as gbc
+from check_once import once
 
 SAMPLE = HERE / "fixtures" / "blocks" / "sample.md"
 

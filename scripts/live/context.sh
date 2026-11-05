@@ -50,6 +50,7 @@ claude_() { env -u ANTHROPIC_API_KEY claude "$@" </dev/null; }
 CV=$(claude_ --version 2>/dev/null || echo none)
 XV=$(codex --version 2>/dev/null || echo none)
 # The claim each step proves (a column of the result table).
+# shellcheck disable=SC2016 # the backticks in the claim texts are literal Markdown code spans
 claim_of() {
   case ${1%% *} in
     A1) echo 'the versions the steps ran on' ;;
@@ -101,7 +102,10 @@ kilo() { perl -e '$_ = lc shift; /^([\d.]+)([km]?)$/ or exit 1; printf "%d\n", $
 ledger_of() { printf '%s/%s.json' "$1" "$(printf '%s' "$2" | LC_ALL=C sed 's/[^A-Za-z0-9]/-/g')"; }
 # The text around the canary in stdin (perl: grep -o fails on long JSON lines).
 around() { CANARY=$1 perl -ne 'if (/(.{0,60}\Q$ENV{CANARY}\E.{0,20})/) { print "$1\n"; exit }'; }
-claude_transcript() { ls "$HOME"/.claude/projects/*/"$1".jsonl 2>/dev/null | head -1 || true; }
+# The first of the paths that exist among the arguments (a glob expanded by the caller); nothing if none does.
+first_of() { local f; for f in "$@"; do [ -e "$f" ] && { echo "$f"; return 0; }; done; return 0; }
+claude_transcript() { first_of "$HOME"/.claude/projects/*/"$1".jsonl; }
+# shellcheck disable=SC2012 # ls -t sorts by mtime, which find cannot; the names are session ids
 codex_rollout() { ls -t "${CODEX_HOME:-$HOME/.codex}"/sessions/*/*/*/rollout-*"$1".jsonl 2>/dev/null | head -1 || true; }
 section() { # <part letter>: append the dated result table of the part to $DOC
   [ -s "$ROWS" ] || return 0
@@ -143,8 +147,8 @@ part_a() {
   [ -x "$HORCH_BIN" ] || { fail A1 "$HORCH_BIN is not built; run cargo build --workspace --bins"; return; }
 
   # ---- A1 versions -----------------------------------------------------------
-  [ "$CV" != none ] && [ "$XV" != none ] && pass "A1 versions" "claude $CV, codex $XV" \
-    || fail "A1 versions" "claude: $CV, codex: $XV"
+  if [ "$CV" != none ] && [ "$XV" != none ]; then pass "A1 versions" "claude $CV, codex $XV"
+  else fail "A1 versions" "claude: $CV, codex: $XV"; fi
 
   # ---- A2 windows (CTX-05, CTX-06) ---------------------------------------------
   # The tier loop: 1 /autocompact per distinct (model, setting, source) of the
@@ -201,7 +205,9 @@ part_a() {
         fail "A2 scratch ${key%%:*}" "horch decides '$s $src' for $tm, want $want fleet"
         continue
       fi
-      local got; got=$(env -u CLAUDE_CODE_AUTO_COMPACT_WINDOW CLAUDE_CONFIG_DIR="$cc" bash -c \
+      local got
+      # shellcheck disable=SC2016 # $0 and $1 expand in the child shell, not here
+      got=$(env -u CLAUDE_CODE_AUTO_COMPACT_WINDOW CLAUDE_CONFIG_DIR="$cc" bash -c \
         'env -u ANTHROPIC_API_KEY claude -p "/autocompact" --model "$0" --settings "$1" </dev/null 2>&1' \
         "$m" "{\"env\":{\"CLAUDE_CODE_AUTO_COMPACT_WINDOW\":\"$want\"}}" | grep -m1 'Auto-compact window' || true)
       check_tier "A2 scratch ${key%%:*} ($tm, $m)" "$want" "$got"
@@ -212,6 +218,7 @@ part_a() {
   # A --settings env object must not replace the operator's other env keys.
   local advisor; advisor=$(jq -r '.env.CLAUDE_CODE_DISABLE_ADVISOR_TOOL // empty' "$HOME/.claude/settings.json" 2>/dev/null || true)
   if [ -z "$advisor" ]; then
+    # shellcheck disable=SC2088 # the tilde is literal text in the message, not a path to expand
     skip "A3 env merge" "~/.claude/settings.json sets no env.CLAUDE_CODE_DISABLE_ADVISOR_TOOL to compare with"
   else
     mkdir -p "$S/a3"
@@ -220,8 +227,8 @@ part_a() {
     local said; said=$(unset CLAUDE_CODE_DISABLE_ADVISOR_TOOL && cd "$S/a3" && claude_ -p 'Run this exact command with your Bash tool: printenv CLAUDE_CODE_DISABLE_ADVISOR_TOOL. Then reply with ADV= followed by its output, and nothing else.' \
       --model haiku --allowedTools 'Bash(printenv:*)' \
       --settings '{"env":{"CLAUDE_CODE_AUTO_COMPACT_WINDOW":"200000"}}' 2>&1 | grep -o 'ADV=[^ `]*' | head -1 || true)
-    [ "$said" = "ADV=$advisor" ] && pass "A3 env merge" "the overlay keeps the operator's env key: $said" \
-      || fail "A3 env merge" "want ADV=$advisor, the Bash tool printed '${said:-nothing}'"
+    if [ "$said" = "ADV=$advisor" ]; then pass "A3 env merge" "the overlay keeps the operator's env key: $said"
+    else fail "A3 env merge" "want ADV=$advisor, the Bash tool printed '${said:-nothing}'"; fi
   fi
 
   # ---- A4 Codex limit ----------------------------------------------------------
@@ -270,8 +277,8 @@ JSON
     local h c d tol
     h=$(digits "$t"); c=$(kilo "$ctok"); tol=$(( ${out:-0} + 2000 + 100 ))
     d=$(( h > c ? h - c : c - h ))
-    [ "$h" -gt 0 ] && [ "$d" -le "$tol" ] && pass "A5 claude reader" "horch $t, /context ${ctok} ($c); difference $d <= $tol" \
-      || fail "A5 claude reader" "horch '$t', /context ${ctok} ($c); difference $d > $tol"
+    if [ "$h" -gt 0 ] && [ "$d" -le "$tol" ]; then pass "A5 claude reader" "horch $t, /context ${ctok} ($c); difference $d <= $tol"
+    else fail "A5 claude reader" "horch '$t', /context ${ctok} ($c); difference $d > $tol"; fi
   fi
   t=$(awk '$1 == "a5-codex" { print $4 }' "$a5/context.txt")
   if [ -z "${xsid:-}" ] || [ -z "${xtok:-}" ]; then
@@ -283,8 +290,8 @@ JSON
     local cached; cached=$( [ -n "$rf" ] && jq -r 'select(.type == "event_msg" and .payload.type == "token_count" and .payload.info)
       | .payload.info.last_token_usage.cached_input_tokens // 0' "$rf" 2>/dev/null | tail -1 || true)
     local h d want; h=$(digits "$t"); want=$(( xtok + ${cached:-0} )); d=$(( h > want ? h - want : want - h ))
-    [ "$h" -gt 0 ] && [ "$d" -le 2000 ] && pass "A5 codex reader" "horch $t, codex 'tokens used' $xtok + cached input ${cached:-0} = $want; difference $d <= 2000" \
-      || fail "A5 codex reader" "horch '$t', codex 'tokens used' $xtok + cached input ${cached:-0} = $want; difference $d > 2000"
+    if [ "$h" -gt 0 ] && [ "$d" -le 2000 ]; then pass "A5 codex reader" "horch $t, codex 'tokens used' $xtok + cached input ${cached:-0} = $want; difference $d <= 2000"
+    else fail "A5 codex reader" "horch '$t', codex 'tokens used' $xtok + cached input ${cached:-0} = $want; difference $d > 2000"; fi
     if [ -n "$rf" ] && grep -q 'auto_compact' "$rf"; then
       pass "A4 codex reports the limit" "the rollout names it: $(grep -o '"[a-z_]*auto_compact[a-z_]*":[^,}]*' "$rf" | sort -u | head -3 | tr '\n' ' ')"
     else
@@ -293,8 +300,8 @@ JSON
   fi
 
   # ---- A6 canary (CTX-20) --------------------------------------------------------
-  local canary="KEEP-CANARY-$(od -An -N4 -tx4 /dev/urandom | tr -d ' ')"
-  local block
+  local canary block
+  canary="KEEP-CANARY-$(od -An -N4 -tx4 /dev/urandom | tr -d ' ')"
   block=$(awk '/^== Compact instructions ==/{p=1} p&&/^== /&&!/Compact instructions/{exit} p' \
     "$ROOT/teammates/_base/fleet-worker.md" | sed 's/{role}/live-check-1/g')
   block="$block
@@ -339,8 +346,8 @@ Reply with the single word OK." </dev/null > "$a6/codex.out" 2> "$a6/codex.err")
   local t0 t1 ms rows
   t0=$(now); rows=$("$HORCH_BIN" context 2>/dev/null | wc -l | tr -d ' '); t1=$(now)
   ms=$(perl -e "printf '%d', ($t1 - $t0) * 1000")
-  [ "$ms" -lt 1000 ] && pass "A7 speed" "horch context on the real ledger: ${ms} ms, $rows lines" \
-    || fail "A7 speed" "horch context took ${ms} ms (limit 1000 ms)"
+  if [ "$ms" -lt 1000 ]; then pass "A7 speed" "horch context on the real ledger: ${ms} ms, $rows lines"
+  else fail "A7 speed" "horch context took ${ms} ms (limit 1000 ms)"; fi
 
   # ---- A8 detached survival (CTX-15) -------------------------------------------------
   # A start_new_session child appends to beat.log every 2 s. It must still
@@ -366,8 +373,8 @@ SH
     local log=$2/beat.log n1 n2
     [ -f "$log" ] || { fail "$1" "no beat.log: the child never started"; return; }
     sleep 10; n1=$(wc -l < "$log" | tr -d ' '); sleep 6; n2=$(wc -l < "$log" | tr -d ' ')
-    [ "$n2" -gt "$n1" ] && pass "$1" "beat.log grows after the call ended ($n1 -> $n2 lines in 6 s)" \
-      || fail "$1" "beat.log stopped at $n2 lines: the child died with the call; the compaction job cannot rely on spawn_detached"
+    if [ "$n2" -gt "$n1" ]; then pass "$1" "beat.log grows after the call ended ($n1 -> $n2 lines in 6 s)"
+    else fail "$1" "beat.log stopped at $n2 lines: the child died with the call; the compaction job cannot rely on spawn_detached"; fi
   }
   (cd "$a8/claude" && claude_ -p "Run this exact command with your Bash tool: sh $a8/start-beat.sh $a8/claude . Then reply with the single word DONE." \
     --model haiku --allowedTools 'Bash(sh:*)' > "$a8/claude.out" 2>&1) || true
@@ -421,8 +428,8 @@ part_b() {
      5. The worker pane shows '/compact Keep in the summary: ...', then the resume line.
         This pane gets exactly 1 '[horch] NOTE: sonnet-1 compacted. Context <pre> -> <post> tokens. ...' line.
      Then: LIVE_CONTEXT_PANES=1 LIVE_CONTEXT_PART=b LIVE_CONTEXT_B1_ROLE=sonnet-1 scripts/live/context.sh"
-  [ -n "${LIVE_CONTEXT_B1_ROLE:-}" ] && round_trip "B1 claude worker round trip" "$LIVE_CONTEXT_B1_ROLE" \
-    || skip "B1 claude worker round trip" "operator step; set LIVE_CONTEXT_B1_ROLE to check the ledger"
+  if [ -n "${LIVE_CONTEXT_B1_ROLE:-}" ]; then round_trip "B1 claude worker round trip" "$LIVE_CONTEXT_B1_ROLE"
+  else skip "B1 claude worker round trip" "operator step; set LIVE_CONTEXT_B1_ROLE to check the ledger"; fi
   echo "
   B2 Codex worker round trip and busy rejection (CTX-13.1, CTX-13.3; review finding 2):
      1. horch spawn codex-sol 'Read README.md. Run horch note \"x\". Then wait for instructions.'
@@ -436,10 +443,10 @@ part_b() {
      Then: LIVE_CONTEXT_PANES=1 LIVE_CONTEXT_PART=b LIVE_CONTEXT_B2_ROLE=codex-sol-1 scripts/live/context.sh"
   if [ -n "${LIVE_CONTEXT_B2_ROLE:-}" ] && has_record "B2 codex horch note records" "$P" "$LIVE_CONTEXT_B2_ROLE"; then
     local n; n=$(events "$LIVE_CONTEXT_B2_ROLE" note | grep -cx 'x' || true)
-    [ "$n" -ge 1 ] && pass "B2 codex horch note records" "$LIVE_CONTEXT_B2_ROLE has $n note 'x'" \
-      || fail "B2 codex horch note records" "$LIVE_CONTEXT_B2_ROLE has no note 'x': horch note fails in the codex sandbox"
-    [ -n "$(events "$LIVE_CONTEXT_B2_ROLE" context-warned | tail -1)" ] && pass "B2 codex horch note warns" "context-warned recorded" \
-      || fail "B2 codex horch note warns" "no context-warned event on $LIVE_CONTEXT_B2_ROLE"
+    if [ "$n" -ge 1 ]; then pass "B2 codex horch note records" "$LIVE_CONTEXT_B2_ROLE has $n note 'x'"
+    else fail "B2 codex horch note records" "$LIVE_CONTEXT_B2_ROLE has no note 'x': horch note fails in the codex sandbox"; fi
+    if [ -n "$(events "$LIVE_CONTEXT_B2_ROLE" context-warned | tail -1)" ]; then pass "B2 codex horch note warns" "context-warned recorded"
+    else fail "B2 codex horch note warns" "no context-warned event on $LIVE_CONTEXT_B2_ROLE"; fi
     round_trip "B2 codex worker round trip" "$LIVE_CONTEXT_B2_ROLE"
   else
     skip "B2 codex worker round trip" "operator step; set LIVE_CONTEXT_B2_ROLE to check the ledger"
@@ -454,7 +461,8 @@ part_b() {
   if [ -n "${LIVE_CONTEXT_B3_PROJECT:-}" ]; then
     has_record "B3 orchestrator self-compaction" "$LIVE_CONTEXT_B3_PROJECT" orchestrator || return 0
     local c; c=$(events_of "$LIVE_CONTEXT_B3_PROJECT" orchestrator compacted | tail -1 || true)
-    [ -n "$c" ] && pass "B3 orchestrator self-compaction" "compacted '$c'" || fail "B3 orchestrator self-compaction" "no compacted event on the orchestrator record"
+    if [ -n "$c" ]; then pass "B3 orchestrator self-compaction" "compacted '$c'"
+    else fail "B3 orchestrator self-compaction" "no compacted event on the orchestrator record"; fi
   else
     skip "B3 orchestrator self-compaction" "operator step"; skip "B4 codex orchestrator self-compaction" "operator step"
   fi
@@ -525,7 +533,8 @@ part_c() {
   trap stop_prime EXIT
   # The canary is the first turn: the worker's compact-instructions block
   # with 1 more line. A second turn follows, so there is a turn to compact.
-  local canary="KEEP-CANARY-$(od -An -N4 -tx4 /dev/urandom | tr -d ' ')" block
+  local canary block
+  canary="KEEP-CANARY-$(od -An -N4 -tx4 /dev/urandom | tr -d ' ')"
   block=$(awk '/^== Compact instructions ==/{p=1} p&&/^== /&&!/Compact instructions/{exit} p' \
     "$ROOT/teammates/_base/fleet-worker.md" | sed 's/{role}/live-check-1/g')
   block="$block
@@ -540,7 +549,7 @@ Reply with the single word OK."
     ocsid=$(jq -r 'select(.type == "step_finish") | .sessionID // .part.sessionID // empty' "$c/opencode.jsonl" 2>/dev/null | tail -1 || true)
   fi
   local pif prf
-  pif=$(ls "$c"/pi/*.jsonl 2>/dev/null | head -1 || true); prf=$(ls "$c"/prime/*.jsonl 2>/dev/null | head -1 || true)
+  pif=$(first_of "$c"/pi/*.jsonl); prf=$(first_of "$c"/prime/*.jsonl)
 
   # ---- C2 readers (CTX-17 slice 2, CTX-02) ----------------------------------------------
   # 1 ledger record per session; pi and Prime records name the session file.
@@ -635,6 +644,7 @@ part_c5() {
   local pdir=${LIVE_CONTEXT_C4_AGENT_DIR:-}
   if [ -z "$pdir" ] && [ -n "${LIVE_CONTEXT_C5_PRIME_ROLE:-}" ]; then
     local st_root; st_root=${HORCH_STATE_DIR:-$HOME/.local/state/horch}
+    # shellcheck disable=SC2012 # ls -dt sorts by mtime, which find cannot; the names are <role>-<uuid>
     pdir=$(ls -dt "$st_root"/prime/"$LIVE_CONTEXT_C5_PRIME_ROLE"-*/agent 2>/dev/null | head -1 || true)
   fi
   if [ -z "$pdir" ]; then
@@ -644,8 +654,8 @@ part_c5() {
     ar=$(jq -c '.autoRefine // "unset"' "$pdir/settings.json" 2>/dev/null || echo missing)
     win=$(PRIME_AGENT_CODING_AGENT_DIR=$pdir prime-agent model list "${PRM#*/}" 2>&1 \
       | awk -v p="${PRM%%/*}" -v m="${PRM#*/}" '$1 == p && $2 == m { print $3 }' | head -1 || true)
-    [ "$ar" = '{"enabled":false}' ] && pass "C4 prime autoRefine off" "$pdir/settings.json has autoRefine $ar" \
-      || fail "C4 prime autoRefine off" "$pdir/settings.json has autoRefine $ar"
+    if [ "$ar" = '{"enabled":false}' ]; then pass "C4 prime autoRefine off" "$pdir/settings.json has autoRefine $ar"
+    else fail "C4 prime autoRefine off" "$pdir/settings.json has autoRefine $ar"; fi
     # The window horch decided for the pane: 200,000 fleet (prime.md
     # compact_window) unless the operator's Prime files set one. Prime
     # prints 1 decimal of thousands (262.1K), so the check allows 100.
@@ -656,8 +666,8 @@ part_c5() {
     fi
     want=${want:-200000}; wsrc=${wsrc:-fleet}
     got=$(kilo "${win:-x}" 2>/dev/null || echo 0)
-    [ $(( got > want ? got - want : want - got )) -le 100 ] && pass "C4 prime window" "prime-agent model list with PRIME_AGENT_CODING_AGENT_DIR=$pdir: $PRM context $win; horch decided $want $wsrc" \
-      || fail "C4 prime window" "prime-agent model list with PRIME_AGENT_CODING_AGENT_DIR=$pdir: $PRM context '${win:-no row}'; horch decided $want $wsrc"
+    if [ $(( got > want ? got - want : want - got )) -le 100 ]; then pass "C4 prime window" "prime-agent model list with PRIME_AGENT_CODING_AGENT_DIR=$pdir: $PRM context $win; horch decided $want $wsrc"
+    else fail "C4 prime window" "prime-agent model list with PRIME_AGENT_CODING_AGENT_DIR=$pdir: $PRM context '${win:-no row}'; horch decided $want $wsrc"; fi
   fi
 
   # ---- C5 panes (installed horch, a herdr server, the scratch fleet) --------------------
@@ -677,10 +687,10 @@ part_c5() {
   # Samples herdr agent_status of the role's pane for 120 s, 1 per second (an
   # OpenCode turn after a 20 s sleep took 66 s).
   statuses() { # <role> -> the distinct values seen, in order
-    local rec ws pane i seen=
+    local rec ws pane seen=
     rec=$(record_of "$P" "$1"); ws=$(jq -r '.workspace_id // empty' <<<"$rec"); pane=$(jq -r '.pane_id // empty' <<<"$rec")
     [ -n "$pane" ] || return 0
-    for i in $(seq 120); do
+    for _ in $(seq 120); do
       local s; s=$(herdr pane list --workspace "$ws" 2>/dev/null | jq -r --arg p "$pane" '.result.panes[]? | select(.pane_id == $p) | .agent_status // "none"' || true)
       case " $seen " in *" ${s:-gone} "*) ;; *) seen="$seen ${s:-gone}" ;; esac
       case $seen in *working*idle*|*working*done*) break ;; esac
@@ -714,10 +724,10 @@ part_c5() {
     if [ -z "$role" ]; then skip "C5 $h pane" "operator step; set $var to check the ledger and the pane"; continue; fi
     has_record "C5 $h horch note records" "$P" "$role" || continue
     local n; n=$(events_of "$P" "$role" note | grep -cx 'x' || true)
-    [ "$n" -ge 1 ] && pass "C5 $h horch note records" "$role has $n note 'x'" \
-      || fail "C5 $h horch note records" "$role has no note 'x': horch note fails in the $h pane"
-    [ -n "$(events_of "$P" "$role" context-warned | tail -1)" ] && pass "C5 $h horch note warns" "context-warned recorded" \
-      || skip "C5 $h horch note warns" "no context-warned event on $role (step 3 not run)"
+    if [ "$n" -ge 1 ]; then pass "C5 $h horch note records" "$role has $n note 'x'"
+    else fail "C5 $h horch note records" "$role has no note 'x': horch note fails in the $h pane"; fi
+    if [ -n "$(events_of "$P" "$role" context-warned | tail -1)" ]; then pass "C5 $h horch note warns" "context-warned recorded"
+    else skip "C5 $h horch note warns" "no context-warned event on $role (step 3 not run)"; fi
     local seen; seen=$(cat "$S/c5-status-$role.txt" 2>/dev/null || true)
     case $seen in *working*idle*|*working*done*) pass "C5 $h agent_status" "herdr read: $seen" ;;
       unknown) skip "C5 $h agent_status" "known gap: herdr does not detect the agent in the pane (agent null), so agent_status stays unknown; the compaction job cannot see the pane go idle, so $h stays on the fresh route" ;;

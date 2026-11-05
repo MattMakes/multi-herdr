@@ -85,9 +85,9 @@ echo "     coordinator exit $code; events: $(jq -r .kind <<<"$events" | tr '\n' 
 said=$(grep -c 'nudging it once' "$LOG/run.err" || true)
 wt=$(printf '%s\n' "$events" | jq -r 'select(.kind == "worktree.created") | .payload.path' | head -1)
 rollout=""
-for f in $(find "${CODEX_HOME:-$HOME/.codex}/sessions" -name 'rollout-*.jsonl' -newermt "$start" 2>/dev/null); do
+while IFS= read -r -d '' f; do
   grep -qF "$wt" "$f" && { rollout=$f; break; }
-done
+done < <(find "${CODEX_HOME:-$HOME/.codex}/sessions" -name 'rollout-*.jsonl' -newermt "$start" -print0 2>/dev/null)
 typed=0; first_idle=""; nudged_at=""
 if [ -n "$rollout" ]; then
   typed=$(jq -r 'select(.type == "response_item" and .payload.type == "message" and .payload.role == "user") | .payload.content[0].text // empty' "$rollout" | grep -c '^If you are finished, run: horch done' || true)

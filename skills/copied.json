@@ -125,9 +125,159 @@
       "verbatim": true
     },
     {
+      "name": "blender-3d-print",
+      "copied_files": [],
+      "verbatim": false
+    },
+    {
+      "name": "blender-addon-development",
+      "copied_files": [
+        "SKILL.md",
+        "assets/addon_template/__init__.py",
+        "assets/addon_template/blender_manifest.toml",
+        "assets/addon_template/operators.py",
+        "assets/addon_template/ui.py"
+      ],
+      "verbatim": true
+    },
+    {
+      "name": "blender-animation",
+      "copied_files": [
+        "SKILL.md",
+        "scripts/_bpyx.py",
+        "scripts/bake_action.py",
+        "scripts/loop_check.py",
+        "scripts/retarget.py"
+      ],
+      "verbatim": true
+    },
+    {
+      "name": "blender-asset-qa",
+      "copied_files": [
+        "SKILL.md",
+        "scripts/_bpyx.py",
+        "scripts/qa_check.py",
+        "scripts/review_shots.py"
+      ],
+      "verbatim": true
+    },
+    {
       "name": "blender-baking",
       "copied_files": [],
       "verbatim": false
+    },
+    {
+      "name": "blender-character-rigging",
+      "copied_files": [
+        "SKILL.md",
+        "scripts/_bpyx.py",
+        "scripts/bind_mesh.py",
+        "scripts/rig_check.py",
+        "scripts/rigify_build.py",
+        "scripts/stress_poses.py"
+      ],
+      "verbatim": true
+    },
+    {
+      "name": "blender-clothing",
+      "copied_files": [
+        "SKILL.md",
+        "scripts/_bpyx.py",
+        "scripts/garment.py"
+      ],
+      "verbatim": true
+    },
+    {
+      "name": "blender-core",
+      "copied_files": [
+        "SKILL.md",
+        "references/api-changes-5x.md",
+        "references/bpy-patterns.md",
+        "scripts/_bpyx.py",
+        "scripts/env_report.py",
+        "scripts/run_in_blender.py"
+      ],
+      "verbatim": true
+    },
+    {
+      "name": "blender-environment-kits",
+      "copied_files": [
+        "SKILL.md",
+        "scripts/_bpyx.py",
+        "scripts/kit_check.py",
+        "scripts/scatter.py",
+        "scripts/terrain.py"
+      ],
+      "verbatim": true
+    },
+    {
+      "name": "blender-export-pipelines",
+      "copied_files": [
+        "SKILL.md",
+        "references/godot-web.md",
+        "references/roblox.md",
+        "references/unity.md",
+        "references/unreal.md",
+        "scripts/_bpyx.py",
+        "scripts/export_asset.py"
+      ],
+      "verbatim": true
+    },
+    {
+      "name": "blender-facial-shapekeys",
+      "copied_files": [
+        "SKILL.md",
+        "scripts/_bpyx.py",
+        "scripts/shapekeys.py"
+      ],
+      "verbatim": true
+    },
+    {
+      "name": "blender-game-optimization",
+      "copied_files": [
+        "SKILL.md",
+        "scripts/_bpyx.py",
+        "scripts/make_lods.py",
+        "scripts/mesh_stats.py"
+      ],
+      "verbatim": true
+    },
+    {
+      "name": "blender-geometry-nodes",
+      "copied_files": [
+        "SKILL.md",
+        "references/recipes.md",
+        "scripts/_bpyx.py",
+        "scripts/gn_builder.py"
+      ],
+      "verbatim": true
+    },
+    {
+      "name": "blender-hair-grooming",
+      "copied_files": [
+        "SKILL.md",
+        "scripts/_bpyx.py",
+        "scripts/groom.py"
+      ],
+      "verbatim": true
+    },
+    {
+      "name": "blender-hardsurface-modeling",
+      "copied_files": [
+        "SKILL.md",
+        "scripts/_bpyx.py",
+        "scripts/apply_stack.py"
+      ],
+      "verbatim": true
+    },
+    {
+      "name": "blender-lighting-lookdev",
+      "copied_files": [
+        "SKILL.md",
+        "scripts/_bpyx.py",
+        "scripts/turntable.py"
+      ],
+      "verbatim": true
     },
     {
       "name": "blender-modeling",
@@ -135,14 +285,152 @@
       "verbatim": false
     },
     {
+      "name": "blender-pbr-materials",
+      "copied_files": [
+        "SKILL.md",
+        "references/pbr-values.md",
+        "scripts/_bpyx.py",
+        "scripts/build_pbr_material.py"
+      ],
+      "verbatim": true
+    },
+    {
+      "name": "blender-pipeline-automation",
+      "copied_files": [
+        "SKILL.md",
+        "scripts/_bpyx.py",
+        "scripts/batch_process.py"
+      ],
+      "verbatim": true
+    },
+    {
+      "name": "blender-rendering",
+      "copied_files": [
+        "SKILL.md",
+        "scripts/_bpyx.py",
+        "scripts/render_batch.py"
+      ],
+      "verbatim": true
+    },
+    {
+      "name": "blender-retopology-uv",
+      "copied_files": [
+        "SKILL.md",
+        "scripts/_bpyx.py",
+        "scripts/auto_retopo.py",
+        "scripts/texel_density.py",
+        "scripts/uv_pack.py"
+      ],
+      "verbatim": true
+    },
+    {
       "name": "blender-rigging",
       "copied_files": [],
       "verbatim": false
     },
     {
+      "name": "blender-scene-setup",
+      "copied_files": [
+        "SKILL.md",
+        "scripts/_bpyx.py",
+        "scripts/scene_audit.py"
+      ],
+      "verbatim": true
+    },
+    {
+      "name": "blender-sculpting",
+      "copied_files": [
+        "SKILL.md",
+        "references/forms-and-bake-sources.md",
+        "scripts/_bpyx.py",
+        "scripts/sculpt_ops.py"
+      ],
+      "verbatim": true
+    },
+    {
+      "name": "blender-simulation",
+      "copied_files": [
+        "SKILL.md",
+        "scripts/_bpyx.py",
+        "scripts/sim_setup.py"
+      ],
+      "verbatim": true
+    },
+    {
+      "name": "blender-stylized-npr",
+      "copied_files": [
+        "SKILL.md",
+        "scripts/_bpyx.py",
+        "scripts/toon_setup.py"
+      ],
+      "verbatim": true
+    },
+    {
+      "name": "blender-texture-baking",
+      "copied_files": [
+        "SKILL.md",
+        "scripts/_bpyx.py",
+        "scripts/bake_maps.py"
+      ],
+      "verbatim": true
+    },
+    {
+      "name": "blender-texturing",
+      "copied_files": [
+        "SKILL.md",
+        "references/trims-tiling-painting.md",
+        "scripts/_bpyx.py",
+        "scripts/decal.py",
+        "scripts/smart_material.py"
+      ],
+      "verbatim": true
+    },
+    {
+      "name": "blender-time-of-day",
+      "copied_files": [
+        "SKILL.md",
+        "references/fog-volumetrics.md",
+        "references/light-values.md",
+        "references/night-and-moods.md",
+        "scripts/_bpyx.py",
+        "scripts/scene_mood.py"
+      ],
+      "verbatim": true
+    },
+    {
       "name": "blender-ue-pipeline",
       "copied_files": [],
       "verbatim": false
+    },
+    {
+      "name": "blender-video-editing",
+      "copied_files": [
+        "SKILL.md",
+        "scripts/_bpyx.py",
+        "scripts/track_camera.py",
+        "scripts/vse_edit.py"
+      ],
+      "verbatim": true
+    },
+    {
+      "name": "blender-weather-fx",
+      "copied_files": [
+        "SKILL.md",
+        "references/realtime-engines.md",
+        "references/weather-values.md",
+        "scripts/_bpyx.py",
+        "scripts/lightning.py",
+        "scripts/precipitation.py",
+        "scripts/surface_weather.py"
+      ],
+      "verbatim": true
+    },
+    {
+      "name": "blender-workflow-recipes",
+      "copied_files": [
+        "SKILL.md"
+      ],
+      "verbatim": true
     },
     {
       "name": "brainstorm",
@@ -1729,6 +2017,56 @@
         "SKILL.md",
         "checklist.md"
       ],
+      "verbatim": false
+    },
+    {
+      "name": "video-audio",
+      "copied_files": [],
+      "verbatim": false
+    },
+    {
+      "name": "video-capture",
+      "copied_files": [],
+      "verbatim": false
+    },
+    {
+      "name": "video-character",
+      "copied_files": [],
+      "verbatim": false
+    },
+    {
+      "name": "video-direction",
+      "copied_files": [],
+      "verbatim": false
+    },
+    {
+      "name": "video-motion",
+      "copied_files": [],
+      "verbatim": false
+    },
+    {
+      "name": "video-motion-match",
+      "copied_files": [],
+      "verbatim": false
+    },
+    {
+      "name": "video-produce",
+      "copied_files": [],
+      "verbatim": false
+    },
+    {
+      "name": "video-qa",
+      "copied_files": [],
+      "verbatim": false
+    },
+    {
+      "name": "video-render",
+      "copied_files": [],
+      "verbatim": false
+    },
+    {
+      "name": "video-storyboard",
+      "copied_files": [],
       "verbatim": false
     },
     {

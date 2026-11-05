@@ -69,6 +69,14 @@ def uv():
     H.unwrap_smart(sph); n = H.uv_out_of_bounds(sph); assert n == 0, n; return n
 step("unwrap_smart+uv_out_of_bounds", uv)
 step("texel_density", lambda: round(H.texel_density(sph, 1024), 1))
+def td_target():
+    # Regression case from the 2026-11-04 run: the packer decides the filled share of the square (Blender 5.1 packs
+    # tighter than 3.5), so the density must be scaled to the target, not read after packing.
+    target = 0.8 * H.texel_density(sph, 1024)
+    got = H.set_texel_density(sph, target, 1024); assert abs(got - target) <= 0.01 * target, (got, target)
+    n = H.uv_out_of_bounds(sph); assert n == 0, n
+    return (round(target, 1), round(got, 1))
+step("set_texel_density", td_target)
 def lm():
     H.add_lightmap_uv(sph); assert len(sph.data.uv_layers) == 2 and sph.data.uv_layers.active_index == 0
     return H.uv_out_of_bounds(sph, 1)
@@ -252,7 +260,8 @@ LID_H = 0.08
 GAP = 0.001                      # lid sits 1 mm above the body: touching corners weld in remove_doubles
 LID_Z = BODY[2] + GAP
 BUDGET = {0: 1200}               # LOD0 triangle cap; LOD1 and LOD2 are 50 % and 25 % of the measured LOD0 (modeling step 9 default)
-TEXEL = (360.0, 440.0)           # brief: 400 px/m (4 px/cm) +-10 %. 500 px/m does not fit: full packing of 2.9 m2 at 1024 gives 423
+TEXEL_TARGET = 400.0             # brief: 400 px/m (4 px/cm) +-10 %. set_texel_density scales to it; the packer's fill differs by Blender version
+TEXEL = (round(TEXEL_TARGET * 0.9, 1), round(TEXEL_TARGET * 1.1, 1))
 
 
 def log(step, **kw):
@@ -333,8 +342,9 @@ check(sharp_not_seam == 0 and MH.uv_out_of_bounds(low) == 0, "modeling.5-6 seams
       uv_oob=MH.uv_out_of_bounds(low), margin_px=8)
 
 # ---- modeling step 7: texel density ----
-td = MH.texel_density(low, TEX)
-check(TEXEL[0] <= td <= TEXEL[1], "modeling.7 texel_density", px_per_m=round(td, 1), target=TEXEL)
+td = MH.set_texel_density(low, TEXEL_TARGET, TEX, margin=8 / TEX)
+check(TEXEL[0] <= td <= TEXEL[1] and MH.uv_out_of_bounds(low) == 0, "modeling.7 texel_density",
+      px_per_m=round(td, 1), target=TEXEL, uv_oob=MH.uv_out_of_bounds(low))
 
 # ---- modeling step 8: lightmap UV ----
 MH.add_lightmap_uv(low)
@@ -701,7 +711,7 @@ else
   "$BLENDER" --background --factory-startup --python-expr \
     "import bpy; bpy.ops.mesh.primitive_cube_add(); bpy.ops.wm.save_mainfile(filepath='$SCRATCH/mcp_probe.blend')" >/dev/null 2>&1
   if out=$(BLENDER_PATH=$BLENDER python3 -I "$SCRATCH/mcp.py" "$ROOT/teammates/blender-artist.md" "$SCRATCH/mcp_probe.blend" 2>"$SCRATCH/mcp_stderr.log"); then
-    echo "$out" | sed 's/^/  /'
+    printf '  %s\n' "${out//$'\n'/$'\n'  }"
     if grep -q '^MCP call search_api_docs isError=False' <<<"$out" \
        && grep -q '^MCP call get_blendfile_summary_datablocks_for_cli isError=False' <<<"$out"; then
       pass "mcp-headless: $(grep '^MCP tools' <<<"$out" | cut -d' ' -f3) tools; search_api_docs and get_blendfile_summary_datablocks_for_cli answer"

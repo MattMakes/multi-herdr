@@ -10,7 +10,7 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent))
 
-import xref_check  # noqa: E402
+import xref_check
 
 
 class XrefCheckTest(unittest.TestCase):

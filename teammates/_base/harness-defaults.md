@@ -10,6 +10,9 @@ defaults:
     env:
       CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION: "false"
       DISABLE_AUTOUPDATER: "1"
+  - harness: claude
+    settings: {"includeCoAuthoredBy": false, "attribution": {"commit": "", "pr": "", "sessionUrl": false}}
+    force: "operator request 2026-11-04: no commit or PR attribution in any Claude pane horch launches"
   - harness: codex
     args: ["-c", "tui.auto_recap=false"]
   - harness: codex
@@ -45,6 +48,7 @@ the harness the teammate runs on. Merge order, first value wins:
 |---|---|---|
 | claude | `CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION: "false"` | a fork of the full conversation after each turn, to suggest the next prompt (2.1.292) |
 | claude | `DISABLE_AUTOUPDATER: "1"` | a pane that updates its own CLI mid-fleet. `horch fleet` updates every agent CLI before the first pane starts (`horch update`); an updater left running, or a later fleet start, can still replace a CLI |
+| claude | `includeCoAuthoredBy: false` and `attribution: {"commit": "", "pr": "", "sessionUrl": false}` (`settings`, `force`) | the `Co-Authored-By` commit trailer, the PR attribution text and the session link (operator request 2026-11-04). `includeCoAuthoredBy` is deprecated since 2.0.62, and Claude Code ignores it once `attribution.commit` or `attribution.pr` is set, so both are set. `attribution: false` needs 2.1.281 and makes an older CLI skip the whole settings file, so the object form is used. `force`: it wins over the operator's own `attribution`. A teammate key only drops it when the teammate sets the same key path, and a teammate settings file (not inline JSON) replaces the whole overlay |
 | codex | `-c tui.auto_recap=false` | a hidden recap thread on the pane's model when the pane loses focus (0.160.0). It yields to `tui.auto_recap` in the operator's `config.toml` |
 | codex, fleet workers | `-c notify=[]` | the operator's `notify` command after every worker turn. `force`: it applies even when `config.toml` sets `notify`. Orchestrators keep the operator's command |
 | opencode | `{"agent":{"title":{"disable":true}}}` in `OPENCODE_CONFIG_CONTENT` | a title call that sends the briefing to the operator's paid `small_model` (1.18.34) |
