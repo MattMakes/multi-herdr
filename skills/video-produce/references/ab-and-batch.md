@@ -7,11 +7,14 @@ look and the motion differ. A fresh critic ranks the 2 masters without
 knowing which direction made which.
 
 1. Waves 1 to 3 run once in the project folder `video/<slug>/`. In wave 1
-   pick 2 of the 3 directions. Use the direction ids of `DIRECTION.md`.
-   Write both in `PRODUCTION.md`.
+   pick 2 of the 3 directions by their ids in `DIRECTION.md` (`D1`, `D2`,
+   `D3`). Write both in `PRODUCTION.md`. The `chosen:` line of the project
+   folder names the 1st pick, because the plan gate needs exactly 1.
 2. Fork after wave 3: copy the project folder to `video/<slug>-<id>/` once
-   for each direction id. In each fork, the director keeps only that
-   direction in `DIRECTION.md`. Do not copy `.video/` into a fork.
+   for each direction id, for example `video/launch-v3-d2/`. Each fork keeps
+   all 3 directions in `DIRECTION.md`, because the plan gate checks them.
+   Ask the orchestrator to set the fork's `chosen:` line to its own
+   direction. Do not copy `.video/` into a fork.
 3. Run waves 4 and 5 in each fork. Each fork must pass its own wave 4 and
    wave 5 gates.
 4. Assign the labels, from the project folder. Pick any integer seed:
@@ -19,7 +22,7 @@ knowing which direction made which.
    ```bash
    python3 "<skill-dir>/scripts/ab_blind.py" assign --seed <n> \
      --map .video/ab-labels.json --out-dir render/ab \
-     <id-1>=../<slug>-<id-1>/render/master.mp4 <id-2>=../<slug>-<id-2>/render/master.mp4
+     D1=../<slug>-d1/render/master.mp4 D3=../<slug>-d3/render/master.mp4
    ```
 
    The seed gives the same labels every time. `.video/ab-labels.json`
@@ -48,9 +51,9 @@ knowing which direction made which.
 8. The preferred fork goes on to the wave 6 critic loop. Keep the other
    fork until the film ships, then tell the orchestrator it can go.
 
-Choose direction ids that are not common words, for example `d1-ink` and
-`d2-glass`. `lint-plan` matches the id as a whole word, so the id `calm`
-fails a plan that says "a calm voice".
+`lint-plan` matches each direction id and each source path as a whole
+word, in any case. Use the `D<n>` ids. A direction's name, such as
+"Calm drift", never goes into a ranker's plan either: check it by eye.
 
 ### A new version of 1 film
 

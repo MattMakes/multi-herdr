@@ -39,6 +39,8 @@ plan as it is.
 <project>/
   PRODUCTION.md  BRIEF.md  DIRECTION.md  STORYBOARD.md  timeline.json  MOTION.md
   .video/     NOTES.md, ab-labels.json (producer only)
+  directions/ d<n>/index.html (key frame pages)
+  materials/  materials.md, first-screen.png, full-page.png, colors.json, ...
   captures/   <scene-id>.mp4, <scene-id>.json, src/
   audio/      vo-<scene-id>.wav, beats.json, sync-sheet.json, sfx-cues.json,
               sfx/, sfx-bus.wav, bed.wav, mix.wav
@@ -57,8 +59,8 @@ plan as it is.
 | Teammate | Writes | Never writes |
 |---|---|---|
 | `video-producer` | `PRODUCTION.md`, `.video/`, `render/ab/`, `render/share.md`, the batch manifest and summary | the brief, the plan, scenes, captures, audio, render |
-| `video-director` | `BRIEF.md`, `DIRECTION.md`, `STORYBOARD.md`, `timeline.json`, `qa/plan-check.json`, `qa/directions/` | scenes, captures, audio, render |
-| `video-capture` | `captures/` | `timeline.json` |
+| `video-director` | `BRIEF.md`, `DIRECTION.md` (you or the operator write its `chosen:` line), `STORYBOARD.md`, `timeline.json`, `qa/plan-check.json`, `directions/`, `qa/directions/` | scenes, captures, audio, render |
+| `video-capture` | `captures/`, `materials/` | `timeline.json` |
 | `video-audio` | `audio/`, `qa/audio-check.json`; in `timeline.json` only `start_sec`, `duration_sec`, `meta.duration_sec`, `meta.allowed_silences`; `qa/plan-check.json` after a reconciliation | scenes, captures, render |
 | `video-animator` | `scenes/<scene-id>/` of its task, `MOTION.md`, `reanimate/`, `qa/reanimate-*` | `timeline.json` |
 | `video-editor` | `render/` except the producer's files, `qa/probe/`, `qa/self-notes.md` | `timeline.json`, scenes |
@@ -69,20 +71,29 @@ wave 4 split `scenes/` by scene id. Only 1 of them owns `MOTION.md`.
 
 ## Wave 1: Direction & Storyboard
 
-- Teammate: 1 `video-director`.
+- Teammates: 1 `video-director`, and 1 `video-capture` for the materials.
 - Inputs: the operator prompt, the product code, the brand files,
   `.video/NOTES.md` (read only; `BRIEF.md` gets a "Loaded notes" line).
 - Outputs: `BRIEF.md`, `DIRECTION.md`, `STORYBOARD.md`, `timeline.json`,
-  `qa/plan-check.json`.
-- The 3-direction pick: `DIRECTION.md` first holds 3 directions, each with 1
-  key frame in `qa/directions/`. Stop there. `video-producer` (or the
-  operator, when present) picks 1, or 2 for `ab`. Resume the director to
-  finish the storyboard and `timeline.json` for the pick.
+  `directions/`, `qa/directions/`, `materials/`, `qa/plan-check.json`.
+- Materials, before the plan gate: when the film shows a product site or
+  has a `capture` scene, `video-capture` runs
+  `node "<skill-dir>/scripts/materials.mjs" . <url>` and then
+  `node "<skill-dir>/scripts/materials.mjs" --check .` (`video-capture`).
+  Add `--allow-network` only for a site the operator allows. The plan gate
+  fails a `capture` scene when `materials/materials.md` is missing.
+- Direction pick, before wave 2: the director renders 3 directions in
+  `DIRECTION.md`, each with 1 key frame in `qa/directions/`, and stops.
+  `video-producer` (or the operator, when present) picks 1, or 2 for `ab`.
+  You or the operator write the `chosen: D<n>` line in `DIRECTION.md`.
+  For `ab`, write the 1st pick. Then resume the director to finish
+  `STORYBOARD.md` and `timeline.json` for the pick.
 - Gate: `python3 "<skill-dir>/scripts/check_timeline.py" timeline.json`
   (`video-storyboard`).
-- Pass rule: exit 0, and `qa/plan-check.json` has no errors. The 8 plan
-  gates include a hook by 3.0 s, scenes of 2.0 s to 8.0 s and 2.7 words/s
-  or less of narration.
+- Pass rule: exit 0, and `qa/plan-check.json` has no errors. The 15 plan
+  gates include a hook by 3.0 s, scenes of 2.0 s to 8.0 s, 2.7 words/s or
+  less of narration, 3 directions with 1 `chosen:` line, and materials for
+  each `capture` scene.
 
 ## Wave 2: Capture & Voice-Over
 
@@ -206,7 +217,9 @@ skill, `references/ab-and-batch.md`.
 
 1. Waves 1 to 3 run once. The producer picks 2 directions in wave 1.
 2. The producer forks the folder after wave 3: `video/<slug>-<id>/` for
-   each direction. Waves 4 and 5 run in each fork, each with its own gates.
+   each direction id `D<n>`. In each fork, `DIRECTION.md` keeps all 3
+   directions, and its `chosen:` line names that fork's direction. Waves 4
+   and 5 run in each fork, each with its own gates.
 3. The producer copies the 2 masters to `render/ab/A.mp4` and
    `render/ab/B.mp4` by a seeded shuffle. Only it keeps the label map.
 4. A fresh `video-critic` ranks A and B with the ranking mode of the

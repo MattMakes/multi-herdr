@@ -104,12 +104,14 @@ The entry format, the 3 kinds and the harvest rules are in
 
 ## 4. Direction pick
 
-Wave 1 gives 3 directions in `DIRECTION.md`, each with 1 key frame in
-`qa/directions/`. Show the 3 key frames to the operator when the operator
-is present. Else pick the direction that best carries the core takeaway in
-`BRIEF.md` for the channel, and write 1 sentence of reason in
-`PRODUCTION.md`. For `ab`, pick the 2 directions that differ most in motion
-language or material.
+Wave 1 gives 3 directions in `DIRECTION.md` (`### D1: <name>` to `D3`),
+each with 1 key frame in `qa/directions/`. Show the 3 key frames to the
+operator when the operator is present. Else pick the direction that best
+carries the core takeaway in `BRIEF.md` for the channel, and write 1
+sentence of reason in `PRODUCTION.md`. For `ab`, pick the 2 directions that
+differ most in motion language or material. Send the pick to the
+orchestrator: it writes the `chosen: D<n>` line in `DIRECTION.md` before
+wave 2. You do not edit `DIRECTION.md`.
 
 ## 5. A/B on 1 brief
 
