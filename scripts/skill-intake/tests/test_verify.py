@@ -18,7 +18,7 @@ from base import IntakeTestCase
 
 import fixtures
 from fixtures import ZWSP, host, secret
-from intakelib import domain, handoff, index, schema, verify
+from intakelib import domain, handoff, index, roles, schema, verify
 from intakelib import task as tasklib
 from intakelib.cmd_cr import preflight
 from intakelib.task import read_json, write_json
@@ -453,6 +453,14 @@ class DomainSnapshotTest(VerifyCase):
         (t.c / "briefs" / "analyst-2.md").write_text("brief\n")  # the controller's write
         self.assertIsNone(domain.compare(t, "writer", before, domain.take(t)))
         self.assertEqual(list(handoff.incidents_dir(t).glob("inc-*.json")), [])
+
+    def test_writer_persona_is_in_its_write_set(self):
+        t = self.clean_task()
+        before = domain.take(t)
+        (t.k / "persona.md").write_text("You write PDF tools.\n")  # repo install reads K/persona.md
+        self.assertIsNone(domain.compare(t, "writer", before, domain.take(t)))
+        self.assertIn(t.k / "persona.md", roles._io(t, "writer", None)[1])
+        self.assertIsNotNone(domain.compare(t, "reviewer", before, domain.take(t)))
 
     def test_writer_writing_outside_its_domain_fails_the_gate(self):
         t = self.clean_task()
