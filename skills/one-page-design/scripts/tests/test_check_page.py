@@ -243,8 +243,8 @@ class DrawingLayerRules(unittest.TestCase):
         svg = svg_layer("0 0 2400 1600", '<text font-size="6">a</text>')
         findings, _, _ = check(sheet_html(inside=svg))
         self.assertEqual(len(findings), 1, findings)
-        self.assertTrue(matching(findings, "svg text below the minimum",
-                                 "font-size 6", "4.3 pt",
+        self.assertTrue(matching(findings, "drawing text on <text>", "too small",
+                                 "font-size of 6", "4.3 pt",
                                  "100 units per inch", "<text>"))
 
     def test_svg_text_at_minimum(self):  # spec-page-checks t12
@@ -255,14 +255,14 @@ class DrawingLayerRules(unittest.TestCase):
     def test_svg_inline_unitless_too_small(self):
         svg = svg_layer("0 0 2400 1600", '<tspan style="font-size:5">b</tspan>')
         findings, _, _ = check(sheet_html(inside=svg))
-        self.assertTrue(matching(findings, "svg text below", "font-size 5",
+        self.assertTrue(matching(findings, "drawing text", "font-size of 5",
                                  "<tspan>"))
 
     def test_layer_wrong_scale(self):  # spec-page-checks t13
         svg = svg_layer("0 0 4800 3200", '<text font-size="12">a</text>')
         findings, _, _ = check(sheet_html(inside=svg))
         self.assertTrue(matching(findings, "4800 x 3200", "2400 x 1600"))
-        self.assertTrue(matching(findings, "svg text below", "font-size 12",
+        self.assertTrue(matching(findings, "drawing text", "font-size of 12",
                                  "4.3 pt", "200 units per inch"))
 
     def test_view_box_for_30_by_20(self):  # spec-drawing-parts t1
@@ -289,7 +289,7 @@ class DrawingLayerRules(unittest.TestCase):
                                           inside=first + second))
         self.assertEqual(len(findings), 2, findings)
         self.assertTrue(matching(findings, "4800 x 2400", "1600 x 800"))
-        self.assertTrue(matching(findings, "svg text below", "font-size 10",
+        self.assertTrue(matching(findings, "drawing text", "font-size of 10",
                                  "2.4 pt", "300 units per inch"))
 
     def test_later_nested_candidate_is_not_a_layer(self):
@@ -355,7 +355,7 @@ class StyleTextParity(unittest.TestCase):
         self.assertEqual(size, (20.0, 12.0))
         self.assertEqual(len(findings), 2, findings)
         self.assertTrue(matching(findings, "4pt", "inline on <p>"))
-        self.assertTrue(matching(findings, "svg text", "4.3 pt",
+        self.assertTrue(matching(findings, "drawing text", "4.3 pt",
                                  "100 units per inch"))
 
 
@@ -368,6 +368,29 @@ class CalloutRules(unittest.TestCase):
         eight = '<div class="east note">n</div>' * 8
         self.assertEqual(check(sheet_html(inside=eight)),
                          ([], (24.0, 16.0), 8))
+
+
+class SizeFindingWording(unittest.TestCase):
+    """spec-rewrite-checker-wording-p4: the two size findings."""
+
+    def test_small_caption_with_unit(self):  # t1
+        caption = '<p class="caption" style="font-size: 4px">Pier</p>'
+        findings, _, _ = check(sheet_html(inside=caption))
+        self.assertEqual(len(findings), 1, findings)
+        self.assertTrue(matching(findings, "font too small", "4px", "3.0 pt",
+                                 "inline on <p>", "6 pt floor"))
+
+    def test_small_unitless_drawing_text(self):  # t2
+        # 60 units per inch also breaks the layer scale rule (spec-page-checks
+        # b10), so the page has a second finding for the view box.
+        layer = svg_layer("0 0 1200 720", '<text font-size="3">Dock</text>')
+        findings, size, _ = check(sheet_html(("20in", "12in"), inside=layer))
+        self.assertEqual(size, (20.0, 12.0))
+        text = matching(findings, "drawing text")
+        self.assertEqual(len(text), 1, findings)
+        self.assertTrue(matching(text, "<text>", "font-size of 3",
+                                 "60 units per inch", "3.6 pt", "6 pt"))
+        self.assertEqual(len(matching(findings, "view box", "1200 x 720")), 1)
 
 
 class CommandLine(unittest.TestCase):
@@ -393,28 +416,30 @@ class CommandLine(unittest.TestCase):
     def test_clean_page(self):  # spec-checker-command t1
         done = self.invoke(self.save(sheet_html()))
         self.assertEqual(done.returncode, 0, done.stdout)
+        # spec-rewrite-checker-wording-p4 t3: the count line comes before
+        # the size line, also when the count is zero.
         self.assertEqual(done.stdout.splitlines(),
-                         ["callouts: 0", "size: 24.0 x 16.0 in"])
+                         ["callout count: 0", "size: 24.0 x 16.0 in"])
 
     def test_findings_set_exit_status(self):  # spec-checker-command t2
         done = self.invoke(self.save(sheet_html(("48in", "16in"))))
         self.assertEqual(done.returncode, 1)
         out = done.stdout.splitlines()
         self.assertTrue(out[0].startswith("- "))
-        self.assertEqual(out[-2:], ["callouts: 0", "size: 48.0 x 16.0 in"])
+        self.assertEqual(out[-2:], ["callout count: 0", "size: 48.0 x 16.0 in"])
 
     def test_callouts_at_limit(self):  # spec-checker-command t3
         done = self.invoke(self.save(sheet_html(
             inside='<p class="note">n</p>' * 8)))
         self.assertEqual(done.returncode, 0)
-        self.assertIn("callouts: 8", done.stdout.splitlines())
+        self.assertIn("callout count: 8", done.stdout.splitlines())
 
     def test_callouts_over_limit(self):  # spec-checker-command t4
         done = self.invoke(self.save(sheet_html(
             inside='<p class="note">n</p>' * 9)))
         self.assertEqual(done.returncode, 1)
         out = done.stdout.splitlines()
-        self.assertIn("callouts: 9", out)
+        self.assertIn("callout count: 9", out)
         self.assertTrue([l for l in out
                          if l.startswith("- ") and "limit of 8" in l])
 
@@ -423,7 +448,7 @@ class CommandLine(unittest.TestCase):
         self.assertEqual(done.returncode, 1)
         out = done.stdout.splitlines()
         self.assertFalse([l for l in out if l.startswith("size:")])
-        self.assertIn("callouts: 0", out)
+        self.assertIn("callout count: 0", out)
 
     def test_min_pt_option(self):
         done = self.invoke(self.save(sheet_html()), "--min-pt", "12")

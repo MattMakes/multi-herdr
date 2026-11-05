@@ -11,7 +11,7 @@ Page title: <the point sentence of the page, so the picture supports it>
 
 Subject: <one sentence naming the one thing to show, including the point of view>
 
-View type: <choose one: plan (straight down) | isometric | side view | three-quarter scene | storyboard frame>
+View type: <choose one: top-down (camera looks straight down) | high oblique (camera above, looking down at a slant) | eye level (camera level with the subject) | equal-axis (three axes drawn at equal angles) | single frame (one still from a series of frames)>
 
 Must be visible:
 - <part 1>
@@ -48,7 +48,7 @@ Page title: Every gear in the workshop is a puzzle the player can reach from the
 Subject: A clockmaker's workshop seen from a raised three-quarter angle, looking
 across the workbench toward the back wall of gears.
 
-View type: three-quarter scene
+View type: high oblique
 
 Must be visible:
 - the gears on the back wall, each one separate
@@ -78,7 +78,7 @@ Requirements (fixed):
 
 1. Look at it. If it has any text at all (a sign on a door that says OPEN, a number on a dial, a scribble that reads as letters), refuse it and send the same form again. Never edit or paint out the text yourself.
 2. Check that every must-be-visible part is there and easy to locate, and nothing on the must-be-absent list is. If not, send the form again with that part made clearer.
-3. Accept it. Put the PNG into the page's `<img>` as a `data:image/png;base64,...` URI so the HTML stays one file.
+3. Once it passes, turn the PNG into base64 text and write that text into the `src` of the page's `<img>` as a `data:image/png;base64,...` URI. With the picture inside the HTML, the page needs no separate image file.
 4. Put the filled form into the page as an HTML comment directly beside the `<img>`, so anyone can make the picture again in one step.
 
 ```html

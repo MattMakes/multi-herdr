@@ -227,7 +227,7 @@ A row of frames side by side. All frames have one width, a thin border and a sma
 A white box with a border, placed in inches, usually near a bottom corner. It has one line for each mark: the mark, then what it means.
 
 ```html
-<div class="key" style="bottom:0.6in; left:0.6in">
+<div class="key" style="bottom:0.75in; left:0.5in">
   <div><b>O</b> = player</div>
   <div><b>X</b> = guard</div>
   <div><span style="color:var(--c-hot)">●</span> = lantern oil</div>

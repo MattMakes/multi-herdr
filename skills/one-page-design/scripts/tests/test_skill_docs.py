@@ -198,7 +198,7 @@ class RequestTests(unittest.TestCase):
 
     def test_completed_form(self):  # spec-illustrator-request t1
         example = self.text.split("## Filled example")[1].split("## When")[0]
-        self.assertIn("View type: three-quarter scene", example)
+        self.assertIn("View type: high oblique", example)
         for part in ("gears", "workbench", "pendulum"):
             self.assertIn(part, example)
         path = re.search(r"Output file: (\S+)", example).group(1)
@@ -207,6 +207,17 @@ class RequestTests(unittest.TestCase):
         self.assertIn("2048 pixels", example)
         self.assertIn("accent colour only: orange", example.replace("\n", " "))
         self.assertNotIn("<", example)  # every field is filled
+
+    def test_view_types_and_embed_step(self):  # spec-rewrite-picture-request-p4 t1
+        form = self.text.split("## Form")[1].split("## Filled example")[0]
+        field = re.search(r"View type: <choose one: (.*)>", form).group(1)
+        names = [part.split(" (")[0] for part in field.split(" | ")]
+        self.assertEqual(names, ["top-down", "high oblique", "eye level",
+                                 "equal-axis", "single frame"])
+        step = squash(self.text.split("## When the picture comes back")[1])
+        for need in ("base64", "data:image/png;base64", "<img>",
+                     "no separate image file"):
+            self.assertIn(need, step)
 
     def test_text_in_result(self):  # spec-illustrator-request t2
         text = squash(self.text)

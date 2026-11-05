@@ -79,7 +79,7 @@ class Starter(unittest.TestCase):
         self.assertIn("<!--", head)
         self.assertIn("only place", head)
         self.assertIn('class="headline far"', self.text)
-        self.assertIn("before you write any prose", self.text)
+        self.assertIn("only then write any text", self.text)
         self.assertRegex(self.text,
                          r'class="dateline">\w+ · \d{4}-\d{2}-\d{2}<')
 

@@ -44,7 +44,8 @@ _LENGTH = re.compile(r"^\s*" + _N + r"\s*(in|cm|mm)\s*$", re.I)
 # A property counts when its name is font-size or ends in it (a size token
 # such as --label-font-size), and font or a name ending in -font.
 _FONT_SIZE = re.compile(r"(?<![\w-])[\w-]*font-size\s*:\s*([^;}\"]+)", re.I)
-_FONT = re.compile(r"(?<![\w-])(?:[\w-]*-)?font\s*:\s*([^;}\"]+)", re.I)
+_SHORTHAND_FONT = re.compile(
+    r"(?<![\w-])(?:[\w-]*-)?font\s*:\s*([^;}\"]+)", re.I)
 _WITH_UNIT = re.compile(r"(?<![\w.])" + _N + r"(pt|px|em|rem|%)(?!\w)", re.I)
 _BARE = re.compile(r"^\s*" + _N + r"\s*$")
 _RULE = re.compile(r"([^{}]*)\{([^{}]*)\}")
@@ -182,22 +183,22 @@ def is_remote(url):
     return url.strip().lower().startswith(("http://", "https://", "//"))
 
 
-def unit_size_finding(raw, where, min_pt, relative_ok=False):
+def unit_size_finding(raw, spot, min_pt, relative_ok=False):
     """Finding for a size written with a unit, or None."""
     hit = _WITH_UNIT.match(raw.strip())
     if hit is None:
         return None
-    value, unit = float(hit.group(1)), hit.group(2).lower()
+    unit = hit.group(2).lower()
     if unit in RELATIVE_UNITS:
-        if relative_ok:
-            return None
-        return (f"font-size {raw.strip()} {where} cannot be verified for "
-                f"print; use pt or px.")
-    points = value * 72 / 96 if unit == "px" else value
-    if points < min_pt:
-        return (f"Text size {hit.group(0)} ({points:.1f} pt) {where} is below "
-                f"the {num(min_pt)} pt minimum.")
-    return None
+        return None if relative_ok else (
+            f"font-size {raw.strip()} {spot} cannot be verified for "
+            f"print; use pt or px.")
+    factor = 72 / 96 if unit == "px" else 1.0
+    points = factor * float(hit.group(1))
+    if points >= min_pt:
+        return None
+    return (f"Font too small {spot}: {hit.group(0)} works out to "
+            f"{points:.1f} pt, under the {num(min_pt)} pt floor.")
 
 
 def drawing_size_finding(raw, scale, tag, min_pt):
@@ -208,19 +209,18 @@ def drawing_size_finding(raw, scale, tag, min_pt):
     points = float(hit.group(1)) * 72 / scale
     if points >= min_pt:
         return None
-    return (f"SVG text below the minimum: font-size {hit.group(1)} is "
-            f"{points:.1f} pt at {scale:.0f} units per inch on <{tag}>; the "
-            f"minimum is {num(min_pt)} pt.")
+    return (f"Drawing text on <{tag}> is too small: a font-size of "
+            f"{hit.group(1)} at {scale:.0f} units per inch gives "
+            f"{points:.1f} pt, and the floor is {num(min_pt)} pt.")
 
 
 def css_font_values(css):
     """Every font-size value, plus the size part of each font shorthand."""
-    values = [m.group(1).strip() for m in _FONT_SIZE.finditer(css)]
-    for m in _FONT.finditer(css):
-        part = _WITH_UNIT.search(m.group(1))
-        if part:
-            values.append(part.group(0))
-    return values
+    sizes = [m.group(1).strip() for m in _FONT_SIZE.finditer(css)]
+    shorthand = (_WITH_UNIT.search(m.group(1))
+                 for m in _SHORTHAND_FONT.finditer(css))
+    sizes.extend(hit.group(0) for hit in shorthand if hit is not None)
+    return sizes
 
 
 def layer_view_box(el):
@@ -347,10 +347,10 @@ def rule_text_size(page):
     for raw in css_font_values(page.css):
         out.append(unit_size_finding(raw, "in a style block", page.min_pt))
     for el in page.elements:
-        where = f"inline on <{el.tag}>"
+        spot = f"inline on <{el.tag}>"
         inline = el.attr("style")
         for raw in css_font_values(inline):
-            out.append(unit_size_finding(raw, where, page.min_pt))
+            out.append(unit_size_finding(raw, spot, page.min_pt))
         if el.drawing is None:
             continue
         scale = page.scales.get(id(el.drawing), LAYER_UNITS)
@@ -467,7 +467,7 @@ def build_parser():
 
 def report_lines(findings, size, callouts):
     lines = ["- " + f for f in findings]
-    lines.append(f"callouts: {callouts}")
+    lines.append(f"callout count: {callouts}")
     if size:
         lines.append("size: {:.1f} x {:.1f} in".format(*size))
     return lines
