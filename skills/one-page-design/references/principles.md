@@ -58,7 +58,7 @@ Example: twelve weather spells, each card showing O for the caster, a blue area 
 
 ## Roles that trade off
 
-A triangle whose edges are the axes, with one group of units in each region, each with a trait card and a figure. The shape shows continuous trade-offs, not a simple three-way counter cycle.
+A triangle whose edges are the axes. Each region holds a single unit group, drawn as a figure next to a card that lists its traits. The shape shows continuous trade-offs, not a simple three-way counter cycle.
 
 ## Two categories crossed
 

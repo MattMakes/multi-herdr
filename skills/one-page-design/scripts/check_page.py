@@ -41,8 +41,10 @@ RELATIVE_UNITS = frozenset(("em", "rem", "%"))
 
 _N = r"(\d*\.?\d+)"
 _LENGTH = re.compile(r"^\s*" + _N + r"\s*(in|cm|mm)\s*$", re.I)
-_FONT_SIZE = re.compile(r"(?<![\w-])font-size\s*:\s*([^;}\"]+)", re.I)
-_FONT = re.compile(r"(?<![\w-])font\s*:\s*([^;}\"]+)", re.I)
+# A property counts when its name is font-size or ends in it (a size token
+# such as --label-font-size), and font or a name ending in -font.
+_FONT_SIZE = re.compile(r"(?<![\w-])[\w-]*font-size\s*:\s*([^;}\"]+)", re.I)
+_FONT = re.compile(r"(?<![\w-])(?:[\w-]*-)?font\s*:\s*([^;}\"]+)", re.I)
 _WITH_UNIT = re.compile(r"(?<![\w.])" + _N + r"(pt|px|em|rem|%)(?!\w)", re.I)
 _BARE = re.compile(r"^\s*" + _N + r"\s*$")
 _RULE = re.compile(r"([^{}]*)\{([^{}]*)\}")
@@ -163,10 +165,15 @@ def declared_size(block):
 
 
 def root_size(css):
-    """Size from the last :root rule that declares both properties."""
+    """Size from the last :root rule that declares both properties.
+
+    A rule counts when the last selector of its list is :root. Text up to a
+    semicolon belongs to an earlier statement at-rule, such as @layer a, b;.
+    """
     found = None
     for selectors, block in _RULE.findall(css):
-        if any(s.strip() == ":root" for s in selectors.split(",")):
+        last = selectors.rsplit(";", 1)[-1].split(",")[-1]
+        if last.strip() == ":root":
             found = declared_size(block) or found
     return found
 

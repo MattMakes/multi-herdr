@@ -62,8 +62,8 @@ class SkillTextTests(unittest.TestCase):
 
     def test_trigger_exclusion(self):  # spec-skill-workflow t2, spec-skill-trigger-p2 t3
         desc = front_matter()["description"].lower()
-        self.assertIn("do not use it for reports, slide decks or dashboards",
-                      desc)
+        self.assertIn("skip it when the output is a dashboard, a report or a "
+                      "slide deck", desc)
         body = squash(read("SKILL.md"))
         self.assertIn("leave it out for slide decks, dashboards, status "
                       "reports and api reference documents", body)
@@ -76,7 +76,8 @@ class SkillTextTests(unittest.TestCase):
 
     def test_drawn_way_without_image_source(self):  # spec-skill-workflow t4
         body = squash(read("SKILL.md"))
-        self.assertIn("when no image source is available", body)
+        self.assertIn("nothing on hand can make images", body)
+        self.assertIn("exact and open to later edits", body)
         self.assertIn("inline svg", body)
         self.assertIn("svg or html that sits on top of the picture", body)
 
@@ -122,6 +123,10 @@ class ContractTests(unittest.TestCase):
         self.assertIn("at most 8 callouts", self.text)
         self.assertIn("at most 3 card sets", self.text)
         self.assertIn("never make fine print smaller than 6 pt", self.text)
+
+    def test_no_external_loads(self):  # spec-reword-doc-phrases-p3 b3
+        self.assertIn("fetches no style sheet, script or font from outside "
+                      "its own file", self.text)
 
 
 class PartsTests(unittest.TestCase):
@@ -220,6 +225,13 @@ class PrinciplesTests(unittest.TestCase):
         for need in ("thumbnail", "italic story line", "central map",
                      "numbers and letters", "column on one side", "legend",
                      "date", "flooded city"):
+            self.assertIn(need, section)
+
+    def test_trade_off_regions(self):  # spec-reword-doc-phrases-p3 b4
+        section = squash(self.text.split("## Roles that trade off")[1]
+                         .split("\n## ")[0])
+        for need in ("edges are the axes", "each region holds a single unit "
+                     "group", "figure", "traits", "continuous trade-offs"):
             self.assertIn(need, section)
 
     def test_credit_and_no_images(self):  # spec-reference-principles t2

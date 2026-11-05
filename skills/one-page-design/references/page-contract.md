@@ -43,7 +43,7 @@ Example: a 30 x 20 in page whose map covers 35 percent of the sheet while rule p
 
 18. All content is visible on the one sheet. No links, tabs, collapsed sections, hidden content, or content that shows only on hover.
 19. The width and height in inches are set one time, on the document root. The screen sheet and the printed page size both read those two values.
-20. The page loads no external fonts, scripts or stylesheets.
+20. The page fetches no style sheet, script or font from outside its own file.
 
 ## Too large
 

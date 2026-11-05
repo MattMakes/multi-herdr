@@ -13,13 +13,6 @@ import check_page  # noqa: E402
 
 STARTER = SKILL / "assets" / "starter.html"
 
-# Names from the first build. spec-rewrite-starter-p2 t2: none may remain.
-OLD_NAMES = ("--ink", "--paper", "--rule", "--accent", "--wash-", "--muted",
-             "t1", "t2", "t3", "story", "param", "formula", "title",
-             "callout", "card", "sub", "row", "legend", "outline", "lead",
-             "stamp")
-
-
 def rule_body(css, selector):
     hit = re.search(r"(?:^|[\s}])" + re.escape(selector) + r"\s*\{([^}]*)\}",
                     css)
@@ -90,25 +83,19 @@ class Starter(unittest.TestCase):
         self.assertRegex(self.text,
                          r'class="dateline">\w+ · \d{4}-\d{2}-\d{2}<')
 
-    def test_old_names_gone(self):  # spec-rewrite-starter-p2 t2
-        for path in SKILL.rglob("*"):
-            if not path.is_file() or path.suffix not in (".md", ".html",
-                                                         ".py"):
-                continue
-            if path.suffix == ".py" and path.name != "check_page.py":
-                continue  # tests use these words as prose, not as names
-            text = path.read_text(encoding="utf-8")
-            for old in OLD_NAMES:
-                if old.startswith("--"):
-                    pattern = re.escape(old)
-                elif path.suffix == ".py":
-                    # In code an old class name would be a string literal.
-                    pattern = r"[\"']" + re.escape(old) + r"[\"']"
-                else:
-                    pattern = (r'class="[^"]*\b' + re.escape(old) + r'\b'
-                               r'|\.' + re.escape(old) + r'\b(?![-.])')
-                hit = re.search(pattern, text)
-                self.assertIsNone(hit, f"old name {old} in {path.name}")
+    def test_shared_names_are_defined(self):  # spec-drop-old-name-list-p3 b2
+        # The names the checker reads and the drawing parts use come from
+        # this starter.
+        for name in (check_page.SIZE_W, check_page.SIZE_H):
+            self.assertIn(name + ":", rule_body(self.css, ":root"))
+        self.assertIn(f'<{check_page.SURFACE_TAG} class="'
+                      f'{check_page.SURFACE_CLASS}">', self.code)
+        parts = (SKILL / "references" / "drawing-parts.md").read_text(
+            encoding="utf-8")
+        for cls in (check_page.NOTE_CLASS, "plate", "key", "pointer", "edge",
+                    "fine", "flavor", "mechanic", "tuning"):
+            self.assertIsNotNone(rule_body(self.css, "." + cls), cls)
+            self.assertRegex(parts, r'class="[^"]*\b' + cls + r'\b', cls)
 
     def test_new_size_prints_at_that_size(self):  # spec-page-starter t3
         bigger = (self.text.replace("--sheet-w: 17in", "--sheet-w: 30in")

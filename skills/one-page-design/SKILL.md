@@ -1,6 +1,6 @@
 ---
 name: one-page-design
-description: Use when the requested output is a one-page design or a one-pager - from a person or from a task or orchestrator ticket that names a one-page design as its deliverable - or when a design (game, level, mission, system, feature, building) must fit on one sheet, be laid out as a poster or a table-mat, be pinned to a wall or handed round at a meeting, or be cut down because its design document is too long and nobody reads it. Makes one self-contained, printable HTML page after Stone Librande - the designed thing drawn in the centre, short text tied to it. Do not use it for reports, slide decks or dashboards.
+description: Use when the requested output is a one-page design or a one-pager - from a person or from a task or orchestrator ticket that names a one-page design as its deliverable - or when a design (game, level, mission, system, feature, building) must fit on one sheet, be laid out as a poster or a table-mat, be pinned to a wall or handed round at a meeting, or be cut down because its design document is too long and nobody reads it. Makes one self-contained, printable HTML page after Stone Librande - the designed thing drawn in the centre, short text tied to it. Skip it when the output is a dashboard, a report or a slide deck.
 ---
 
 # One-page design
@@ -56,7 +56,7 @@ If no form fits on one surface, tell the person the design is probably too compl
 There are two ways.
 
 - **Commissioned.** Fill in the form in `references/illustrator-request.md` and give it to whatever can make images: an image model, another agent with drawing tools, or a human artist. Embed the returned PNG as a `data:` URI so the page stays one file. Store the filled form next to the image as an HTML comment. If the returned image has any text in it, refuse it and request it again. Never edit the text out. This way suits scenes and objects.
-- **Drawn.** Write inline SVG with `references/drawing-parts.md`. Use this way when no image source is available, or when the picture must be precise and editable: placed maps, matrices, card grids.
+- **Drawn.** Write inline SVG with `references/drawing-parts.md`. Draw it yourself in two cases. First, nothing on hand can make images. Second, the picture has to be exact and open to later edits, as with placed maps, matrices and card grids.
 
 Whichever way you choose, the labels, numbers, leader lines, cards and legends all live in SVG or HTML that sits on top of the picture. The image itself carries none of them.
 

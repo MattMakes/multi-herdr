@@ -302,6 +302,63 @@ class DrawingLayerRules(unittest.TestCase):
         self.assertEqual(check(sheet_html(inside=svg))[0], [])
 
 
+class StyleTextParity(unittest.TestCase):
+    """spec-checker-css-parity-p3: size tokens and the :root selector."""
+
+    def page(self, **kw):
+        return sheet_html(("20in", "12in"), **kw)
+
+    def test_small_size_token(self):  # t1
+        findings, size, _ = check(self.page(
+            css=".tide-table { --caption-font-size: 5pt; }"))
+        self.assertEqual(size, (20.0, 12.0))
+        self.assertEqual(len(findings), 1, findings)
+        self.assertTrue(matching(findings, "5pt", "in a style block", "6 pt"))
+
+    def test_legible_size_token(self):  # t2
+        html = self.page(css=".tide-table { --caption-font-size: 12pt; }")
+        self.assertEqual(check(html), ([], (20.0, 12.0), 0))
+
+    def test_font_token_small_px(self):  # t3
+        html = self.page().replace(
+            "--sheet-w: 20in;", "--sheet-w: 20in; --body-font: italic 4.5px serif;")
+        findings, _, _ = check(html)
+        self.assertEqual(len(findings), 1, findings)
+        self.assertTrue(matching(findings, "4.5px", "3.4 pt"))
+
+    def test_relative_size_token(self):
+        findings, _, _ = check(self.page(
+            css=".tide-table { --caption-font-size: 0.8rem; }"))
+        self.assertTrue(matching(findings, "cannot be verified"))
+
+    def test_root_must_be_last_selector(self):  # t4
+        rule = "{ --sheet-w: 20in; --sheet-h: 12in; }"
+        page_a = sheet_html(root_rule=False, css="html, :root " + rule)
+        self.assertEqual(check(page_a), ([], (20.0, 12.0), 0))
+        findings, size, _ = check(sheet_html(root_rule=False,
+                                             css=":root, html " + rule))
+        self.assertIsNone(size)
+        self.assertEqual(len(findings), 1, findings)
+        self.assertTrue(matching(findings, "not declared", ":root"))
+
+    def test_root_after_statement_at_rule(self):  # t5
+        html = self.page().replace("<style>\n", "<style>\n@layer base, page;\n", 1)
+        self.assertIn("@layer base, page;\n:root", html)
+        self.assertEqual(check(html), ([], (20.0, 12.0), 0))
+
+    def test_size_token_inline_and_in_svg(self):  # t6
+        inside = ('<p style="--note-font-size: 4pt">Tide tables</p>'
+                  + svg_layer("0 0 2000 1200",
+                              '<text style="--tag-font-size: 6" x="40" '
+                              'y="90">Pier</text>'))
+        findings, size, _ = check(self.page(inside=inside))
+        self.assertEqual(size, (20.0, 12.0))
+        self.assertEqual(len(findings), 2, findings)
+        self.assertTrue(matching(findings, "4pt", "inline on <p>"))
+        self.assertTrue(matching(findings, "svg text", "4.3 pt",
+                                 "100 units per inch"))
+
+
 class CalloutRules(unittest.TestCase):
     def test_callout_limit(self):  # spec-page-checks t14, spec-page-contract t1
         nine = '<div class="note west">n</div>' * 9
