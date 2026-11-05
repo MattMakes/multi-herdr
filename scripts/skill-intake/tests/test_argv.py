@@ -27,7 +27,7 @@ from unittest import mock
 from base import INTAKE, REPO, IntakeTestCase
 
 import fixtures
-from intakelib import acquire, roles, sandbox
+from intakelib import acquire, sandbox
 from intakelib.task import read_json, write_json
 
 ALLOWED = {"git", "nm", "otool", "objdump", "sandbox-exec", "bwrap"}
@@ -195,10 +195,7 @@ class ArgvTest(IntakeTestCase):
         for key in FLEET:
             del os.environ[key]
         code, out = self.intake("brief", "reviewer", "--task", str(c))
-        role_dir = self.tmp / "roles"
-        fixtures.build(role_dir, {"reviewer.md": "# Reviewer\n"})
-        with mock.patch.object(roles, "ROLES_DIR", role_dir):
-            self.assertEqual(self.intake("subagent-prompt", "reviewer", "--brief", json.loads(out)["brief"])[0], 0)
+        self.assertEqual(self.intake("subagent-prompt", "reviewer", "--brief", json.loads(out)["brief"])[0], 0)
 
         # Every command that exists at this point ran.
         commands = set(self.cli.COMMANDS) - {"cr"}

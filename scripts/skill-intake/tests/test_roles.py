@@ -13,7 +13,6 @@ import sys
 import time
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
-from unittest import mock
 
 from base import TESTS, IntakeTestCase
 
@@ -328,11 +327,8 @@ class PlainTest(RolesCase):
 
     def prompt(self, role: str, brief: str) -> tuple[int, str]:
         cli = __import__("intake")
-        role_dir = self.tmp / "roles"
-        role_dir.mkdir(exist_ok=True)
-        (role_dir / f"{role}.md").write_text(f"# The {role} role\n\nDo the {role} work.\n")
         buf = io.StringIO()
-        with mock.patch.object(roles, "ROLES_DIR", role_dir), redirect_stdout(buf), redirect_stderr(io.StringIO()):
+        with redirect_stdout(buf), redirect_stderr(io.StringIO()):
             code = cli.main(["subagent-prompt", role, "--brief", brief])
         return code, buf.getvalue()
 
@@ -349,7 +345,9 @@ class PlainTest(RolesCase):
         self.assertNotIn("horch", Path(b["brief"]).read_text())
         code, out = self.prompt("writer", b["brief"])
         self.assertEqual(code, 0)
-        self.assertEqual(out, "# The writer role\n\nDo the writer work.\n\n"
+        role_text = (roles.ROLES_DIR / "writer.md").read_text().rstrip("\n")
+        self.assertTrue(role_text.startswith("# Role: writer"))
+        self.assertEqual(out, f"{role_text}\n\n"
                               f"Your brief is `{b['brief']}`. Read it and do only what it says.\n")
         active = read_json(tasklib.default_base() / "active-role.json")
         self.assertEqual((active["role"], active["task_dir"]), ("writer", str(t.c)))
