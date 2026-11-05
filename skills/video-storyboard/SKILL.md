@@ -6,9 +6,9 @@ description: "Use when a video project has BRIEF.md and DIRECTION.md and needs a
 # Video Storyboard
 
 The storyboard turns the direction into a plan every later phase can run
-without a question. `timeline.json` is the single source of truth for
-scene ids, order and timing. Capture, audio, animation, render and QA all
-read it. Only this phase and the audio timing reconciliation write it.
+without a question. `timeline.json` holds scene ids, order and timing for the
+whole film. Every later phase reads it. Only this phase and the audio timing
+reconciliation change it.
 
 Inputs: `BRIEF.md`, `DIRECTION.md` (from `video-direction`).
 Outputs: `STORYBOARD.md`, `timeline.json`, `qa/plan-check.json`.
