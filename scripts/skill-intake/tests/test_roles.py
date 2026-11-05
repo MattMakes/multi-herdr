@@ -460,6 +460,53 @@ class RealWritePathsTest(RolesCase):
                     self.assertIn("output outside the", r.stderr)
 
 
+    # T-32: a role may list its own status file in outputs, and only that status file.
+
+    def result_with(self, role: str, plain: bool, extra):
+        t = self.task()
+        status = self.start(t, role, plain)
+        outs = [str(p) for p in self.outputs(t, role)] + [e(t, status) for e in extra]
+        self.status(status, role=role, status="ok", outputs=outs, error=None)
+        env = {"SKILL_INTAKE_MODE": "plain"} if plain else {}
+        return self.run_intake("role-result", status, env=env), t, status
+
+    def test_each_role_may_list_its_own_status_file(self):
+        for role in roles.ROLES:
+            for plain in (False, True):
+                with self.subTest(role=role, plain=plain):
+                    r, t, status = self.result_with(role, plain, [lambda t, s: s])
+                    self.assertEqual(r.returncode, 0, f"{r.stdout}{r.stderr}")
+                    self.assertIn(status, json.loads(r.stdout)["outputs"])
+                    self.assertEqual(self.roles(t)[0]["state"], "done")
+
+    def test_another_roles_status_file_fails(self):
+        for role in roles.ROLES:
+            other = next(o for o in roles.ROLES if o != role)
+            for plain in (False, True):
+                with self.subTest(role=role, other=other, plain=plain):
+                    r, _, _ = self.result_with(
+                        role, plain, [lambda t, s: str(roles.side_root(t, other) / "status" / f"{other}-1.json")])
+                    self.assertEqual(r.returncode, roles.BAD_RESULT, r.stdout + r.stderr)
+                    self.assertIn("output outside the", r.stderr)
+
+    def test_a_same_role_other_numbered_status_file_fails(self):
+        for role in roles.ROLES:
+            for plain in (False, True):
+                with self.subTest(role=role, plain=plain):
+                    r, _, _ = self.result_with(
+                        role, plain, [lambda t, s: str(Path(s).with_name(f"{role}-9.json"))])
+                    self.assertEqual(r.returncode, roles.BAD_RESULT, r.stdout + r.stderr)
+                    self.assertIn("output outside the", r.stderr)
+
+    def test_a_different_file_under_status_fails(self):
+        for role in roles.ROLES:
+            for plain in (False, True):
+                with self.subTest(role=role, plain=plain):
+                    r, _, _ = self.result_with(role, plain, [lambda t, s: str(Path(s).with_name("notes.json"))])
+                    self.assertEqual(r.returncode, roles.BAD_RESULT, r.stdout + r.stderr)
+                    self.assertIn("output outside the", r.stderr)
+
+
 class PythonVersionTest(RolesCase):
     """T-29: intake needs Python 3.11 or later."""
 
