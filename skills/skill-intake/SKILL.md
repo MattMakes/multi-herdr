@@ -56,9 +56,11 @@ run (acquire, discover, scan, triage) -> auditor -> triage = GATE 1
 5. Start 1 **analyst** per unit (`--unit U`).
 6. `intake cr scan --task T <each draft in D/drafts>`. Then start 1
    fresh **sanitizer** per pass, at most 2 passes per draft.
-7. `intake cr handoff --task T <approved drafts>`. A rejected draft goes to
-   `D/quarantine-cr/` with an incident. Send it back once through a new
-   analyst and sanitizer, then let the gate decide.
+7. `intake cr handoff --task T <approved drafts>`. A draft that leaks goes
+   to `D/quarantine-cr/` with an incident. A draft that fails the spec
+   schema stays in `D/drafts/` and is listed as rejected, with exit 1 and
+   no incident. Send either back once through a new analyst and sanitizer,
+   then let the gate decide.
 8. `intake cr context --task T --target repo|standalone`.
 9. Start 1 **writer** per skill (`--skill S`), then 1 fresh **reviewer** per
    skill (`--skill S`). S is the new output skill name: a plain name that

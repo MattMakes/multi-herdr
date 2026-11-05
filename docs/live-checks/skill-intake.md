@@ -872,3 +872,27 @@ write paths. The generated brief says the opposite:
 | installed | nothing. `ls ~/.claude/skills` still has 191 entries. |
 
 The GitHub steps (1, 2, 4) wait for ticket 33.
+
+### Step 5, attempt 3: FAILED (role prompt gap, fixed in T-17)
+
+| field | value |
+|---|---|
+| command | the attempt 2 command with the added line "run each `intake` command alone", after the rebase on commit `42330122`, before the rebase on `4da5bc0e` |
+| task id | T-17 (Claude session started 13:03Z, 27 turns, 3.09 USD list price). `intake` task `20261105-130153-780b8b` |
+| outcome | FAILED at `cr handoff`. `intake mode` printed `plain`. The clone, the scan (47 hits, none malicious), the auditor, GATE 1 (pass), `cr init`, `cr index` (1 unit), the analyst and sanitizer pass 1 (3 `general-purpose` subagents) all worked, and `role-result` passed for each role (T-32 fix holds). `cr handoff` exited 1: `schema: $.public_contract[0].kind: 'skill-name' not one of ['function', 'type', 'endpoint', 'cli-flag', 'config-key', 'file-format', 'event', ...]`. |
+| report | `~/.local/state/skill-intake/contaminated/20261105-130153-780b8b/report.md` |
+| installed | nothing. `ls ~/.claude/skills` equals the list before step 1. |
+
+Causes, both in `skills/skill-intake/` text, fixed in T-17:
+
+- `roles/analyst.md` named `public_contract` but not the allowed `kind`
+  values, which only `schemas/behavior-spec.schema.json` holds. A brief takes
+  no free text, so no later step could tell the analyst. The prompt now lists
+  the 9 kinds and says that the skill's own name goes in `skill.name`.
+- `SKILL.md` step 7 said that a rejected draft goes to `D/quarantine-cr/` with
+  an incident. `handoff.py` does that only for a leak. A draft that fails the
+  schema stays in `D/drafts/`, is listed as rejected and gives exit 1, with no
+  incident. Step 7 now says so.
+
+The step 5 retry uses a new task. The intake suite passes after the edit
+(376 tests).
