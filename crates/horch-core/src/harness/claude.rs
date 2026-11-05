@@ -343,9 +343,13 @@ fn merged_inline_settings(
     let obj = value
         .as_object_mut()
         .context("teammate settings must be a JSON object")?;
+    // The teammate's own inline JSON carries no sandbox unless a skills
+    // launch merged it in; the `sandbox:` block is the truth either way.
+    overlay_sandbox(teammate, obj)?;
     let changed = merge_settings_defaults(teammate, obj, || operator_settings(env))?
         | overlay_window(window, obj)
-        | overlay_horch_paths(env, teammate, obj)?;
+        | overlay_horch_paths(env, teammate, obj)?
+        | teammate.sandbox.is_some();
     Ok(if changed {
         value.to_string().into()
     } else {
@@ -1406,6 +1410,87 @@ mod tests {
             settings["permissions"]["blockReadsOutsideWorkingDirectories"],
             true
         );
+    }
+
+    /// Launch a sandboxed teammate and check `--settings` holds the sandbox
+    /// block, the forced keys and the horch paths. `skills` runs the teammate
+    /// through the skills overlay first; `inline` gives it settings of its own.
+    /// Returns the launched settings, or `None` on a host with no sandbox.
+    fn sandboxed_launch_settings(skills: bool, inline: bool) -> Option<Value> {
+        let mut t = sandboxed(json!({
+            "network": {"allowedDomains": ["example.com"]}
+        }));
+        if inline {
+            t.settings = Some(json!({"model": "sonnet"}).to_string());
+        }
+        if skills {
+            t.settings = Some(skills_settings(&t, None).unwrap().to_string());
+        }
+        let tmp = tempfile::tempdir().unwrap();
+        let [env, _] = sandbox_envs(tmp.path());
+        if !host_can_sandbox(&env) {
+            return None;
+        }
+        let built =
+            super::super::launch::command_in(&env, &t, Session::Fresh("id"), "go", None).unwrap();
+        let settings = settings_arg(&built);
+        assert_eq!(settings["sandbox"]["enabled"], true, "{settings}");
+        assert_eq!(settings["sandbox"]["failIfUnavailable"], true, "{settings}");
+        assert_eq!(
+            settings["sandbox"]["allowUnsandboxedCommands"], false,
+            "{settings}"
+        );
+        assert_eq!(
+            settings["sandbox"]["network"]["strictAllowlist"], true,
+            "{settings}"
+        );
+        assert_eq!(
+            settings["sandbox"]["network"]["allowedDomains"],
+            json!(["example.com"]),
+            "{settings}"
+        );
+        assert_eq!(
+            settings["sandbox"]["filesystem"]["allowWrite"],
+            json!(["/state/horch", "/home/op/.horch"]),
+            "{settings}"
+        );
+        assert_eq!(
+            settings["sandbox"]["network"]["allowUnixSockets"],
+            json!(["/state/horch", "/home/op/.config/herdr/herdr.sock"]),
+            "{settings}"
+        );
+        assert_eq!(
+            settings["permissions"]["blockReadsOutsideWorkingDirectories"], true,
+            "{settings}"
+        );
+        Some(settings)
+    }
+
+    /// A sandboxed teammate with inline settings and no skills keeps its
+    /// sandbox: the inline settings path used to drop the block.
+    #[test]
+    fn a_sandboxed_launch_with_inline_settings_and_no_skills_keeps_the_sandbox() {
+        if let Some(settings) = sandboxed_launch_settings(false, true) {
+            // The teammate's own settings stay.
+            assert_eq!(settings["model"], "sonnet");
+        }
+    }
+
+    #[test]
+    fn a_sandboxed_launch_with_no_skills_and_no_inline_settings_keeps_the_sandbox() {
+        sandboxed_launch_settings(false, false);
+    }
+
+    #[test]
+    fn a_sandboxed_launch_with_skills_and_inline_settings_keeps_the_sandbox() {
+        if let Some(settings) = sandboxed_launch_settings(true, true) {
+            assert_eq!(settings["model"], "sonnet");
+        }
+    }
+
+    #[test]
+    fn a_sandboxed_launch_with_skills_and_no_inline_settings_keeps_the_sandbox() {
+        sandboxed_launch_settings(true, false);
     }
 
     /// The shipped release preparer launches inside the sandbox: only the
