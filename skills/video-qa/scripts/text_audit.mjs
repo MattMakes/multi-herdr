@@ -69,98 +69,129 @@ function intersection(a, b) {
   return w > 0 && h > 0 ? w * h : 0;
 }
 
-function overlapShare(a, b) {
-  let best = 0;
-  for (const fa of a.frags) {
-    for (const fb of b.frags) best = Math.max(best, intersection(fa, fb) / Math.min(area(fa), area(fb)));
-  }
-  return best;
-}
-
+const shareOf = (fa, fb) => intersection(fa, fb) / Math.min(area(fa), area(fb));
+const overlapShare = (a, b) => Math.max(0, ...a.frags.flatMap((fa) => b.frags.map((fb) => shareOf(fa, fb))));
 const settled = (box, prev) => prev !== undefined && box.every((v, i) => Math.abs(v - prev[i]) <= SETTLED_PX);
+const boxOut = (box) => box.map((v) => round(v, 1));
 
 function offFrame(box, frame) {
   const t = EDGE_TOLERANCE_PX;
   return box[0] < -t || box[1] < -t || right(box) > frame.width + t || bottom(box) > frame.height + t;
 }
 
-function safeZone(box, frame) {
-  if (bottom(box) > CAPTION_ZONE_Y * frame.height) return "caption zone (bottom 18 %)";
-  if (frame.height > frame.width && right(box) > APP_ZONE_X * frame.width) return "app zone (right 15 %)";
-  return null;
+const ZONES = [
+  ["caption zone (bottom 18 %)", (box, frame) => bottom(box) > CAPTION_ZONE_Y * frame.height],
+  ["app zone (right 15 %)", (box, frame) => frame.height > frame.width && right(box) > APP_ZONE_X * frame.width],
+];
+const safeZone = (box, frame) => ZONES.find(([, hit]) => hit(box, frame))?.[0];
+
+// Each item rule takes (item, opts, still) and returns a partial finding or null.
+// still is true when the box is settled since the previous sample.
+function tooSmall(item, opts) {
+  const phonePx = (item.px * PHONE_WIDTH) / opts.width;
+  if (phonePx >= opts.minPhonePx) return null;
+  const detail = `${round(phonePx)} px at ${PHONE_WIDTH} px width (font ${round(item.px)} px), needs ${opts.minPhonePx} px`;
+  return { rule: "too_small", detail, phone_px: round(phonePx) };
+}
+
+function placeholder(item) {
+  const m = PLACEHOLDER.exec(item.text);
+  return m ? { rule: "placeholder", detail: `shows "${m[0]}"` } : null;
+}
+
+function offFrameRule(item, opts, still) {
+  if (!still || !offFrame(item.box, opts)) return null;
+  const detail = `box ${item.box.map(Math.round).join(",")} leaves the ${opts.width}x${opts.height} frame`;
+  return { rule: "off_frame", detail, box: boxOut(item.box) };
+}
+
+function safeZoneRule(item, opts, still) {
+  const zone = still && safeZone(item.box, opts);
+  return zone ? { rule: "safe_zone", detail: `inside the ${zone}`, box: boxOut(item.box) } : null;
+}
+
+const ITEM_RULES = [tooSmall, placeholder, offFrameRule, safeZoneRule];
+
+function overlapRule(a, b) {
+  if (normText(a.text) === normText(b.text)) return null; // a duplicate layer (glow, outline) of the same words
+  const share = overlapShare(a, b);
+  return share < OVERLAP_MIN ? null : { rule: "overlap", detail: `${Math.round(share * 100)} % of the smaller box is covered` };
+}
+
+function tooShort(run, step) {
+  const shown = run.count * step;
+  const need = minShowSec(run.text);
+  if (shown + 1e-9 >= need) return null;
+  const detail = `shown ${round(shown)} s, needs ${round(need)} s (0.4 + 0.2 s x ${words(run.text)} words)`;
+  return { rule: "too_short", detail, shown_sec: round(shown), need_sec: round(need) };
+}
+
+const toFinding = (text, t, partial) => ({ rule: partial.rule, text: label(text), time_sec: t, ...partial, owner: OWNER });
+
+// Walks the samples in order. A run is 1 continuous showing of 1 item.
+class TextAudit {
+  constructor(opts) {
+    this.opts = opts;
+    this.findings = [];
+    this.seen = new Set();
+    this.prevBox = new Map();
+    this.runs = new Map(); // item id -> { text, start, count, last }
+  }
+
+  // Reports each rule once per item (or per pair of items).
+  report(id, text, t, partial) {
+    const key = partial && `${partial.rule}|${id}`;
+    if (!partial || this.seen.has(key)) return;
+    this.seen.add(key);
+    this.findings.push(toFinding(text, t, partial));
+  }
+
+  closeRun(run) {
+    const partial = tooShort(run, this.opts.step);
+    if (partial) this.findings.push(toFinding(run.text, run.start, partial));
+  }
+
+  track(item, index, t) {
+    const run = this.runs.get(item.id);
+    if (run?.last === index - 1) {
+      run.count += 1;
+      run.last = index;
+      return;
+    }
+    if (run) this.closeRun(run);
+    this.runs.set(item.id, { text: item.text, start: t, count: 1, last: index });
+  }
+
+  checkItem(item, index, t) {
+    this.track(item, index, t);
+    const still = settled(item.box, this.prevBox.get(item.id));
+    for (const rule of ITEM_RULES) this.report(item.id, item.text, t, rule(item, this.opts, still));
+  }
+
+  checkPair(a, b, t) {
+    this.report([a.id, b.id].sort().join("||"), `${a.text} / ${b.text}`, t, overlapRule(a, b));
+  }
+
+  step(sample, index) {
+    const t = round(sample.time_sec, 3);
+    const keyed = sample.items.map((item) => ({ ...item, id: itemKey(item) }));
+    keyed.forEach((item) => this.checkItem(item, index, t));
+    keyed.forEach((a, i) => keyed.slice(i + 1).forEach((b) => this.checkPair(a, b, t)));
+    this.prevBox = new Map(keyed.map((item) => [item.id, item.box]));
+  }
+
+  finish() {
+    this.runs.forEach((run) => this.closeRun(run));
+    return this.findings.sort((a, b) => a.time_sec - b.time_sec || a.rule.localeCompare(b.rule));
+  }
 }
 
 // samples: [{ time_sec, items: [{ key, text, px, box: [x, y, w, h], frags: [[x, y, w, h], ...] }] }]
 // opts: { width, height, step, minPhonePx }. Returns the findings, sorted by time.
 export function audit(samples, opts) {
-  const findings = [];
-  const seen = new Set();
-  const once1 = (id, finding) => seen.has(id) || (seen.add(id), findings.push({ ...finding, owner: OWNER }));
-  const phoneScale = PHONE_WIDTH / opts.width;
-  const prevBox = new Map();
-  const runs = new Map(); // key -> { text, start, count, last }
-  const closeRun = (key, run) => {
-    const shown = run.count * opts.step;
-    const need = minShowSec(run.text);
-    if (shown + 1e-9 < need) {
-      findings.push({ rule: "too_short", text: label(run.text), time_sec: run.start, owner: OWNER,
-        detail: `shown ${round(shown)} s, needs ${round(need)} s (0.4 + 0.2 s x ${words(run.text)} words)`,
-        shown_sec: round(shown), need_sec: round(need) });
-    }
-    runs.delete(key);
-  };
-  samples.forEach((sample, index) => {
-    const t = round(sample.time_sec, 3);
-    const keyed = sample.items.map((item) => ({ ...item, id: itemKey(item) }));
-    const nowBox = new Map();
-    for (const item of keyed) {
-      nowBox.set(item.id, item.box);
-      const run = runs.get(item.id);
-      if (run && run.last === index - 1) {
-        run.count += 1;
-        run.last = index;
-      } else {
-        if (run) closeRun(item.id, run);
-        runs.set(item.id, { text: item.text, start: t, count: 1, last: index });
-      }
-      const phonePx = item.px * phoneScale;
-      if (phonePx < opts.minPhonePx) {
-        once1(`too_small|${item.id}`, { rule: "too_small", text: label(item.text), time_sec: t,
-          detail: `${round(phonePx)} px at ${PHONE_WIDTH} px width (font ${round(item.px)} px), needs ${opts.minPhonePx} px`,
-          phone_px: round(phonePx) });
-      }
-      if (PLACEHOLDER.test(item.text)) {
-        once1(`placeholder|${item.id}`, { rule: "placeholder", text: label(item.text), time_sec: t,
-          detail: `shows "${PLACEHOLDER.exec(item.text)[0]}"` });
-      }
-      const still = settled(item.box, prevBox.get(item.id));
-      if (still && offFrame(item.box, opts)) {
-        once1(`off_frame|${item.id}`, { rule: "off_frame", text: label(item.text), time_sec: t,
-          detail: `box ${item.box.map((v) => Math.round(v)).join(",")} leaves the ${opts.width}x${opts.height} frame`,
-          box: item.box.map((v) => round(v, 1)) });
-      }
-      const zone = still ? safeZone(item.box, opts) : null;
-      if (zone) {
-        once1(`safe_zone|${item.id}`, { rule: "safe_zone", text: label(item.text), time_sec: t,
-          detail: `inside the ${zone}`, box: item.box.map((v) => round(v, 1)) });
-      }
-    }
-    for (let i = 0; i < keyed.length; i++) {
-      for (let j = i + 1; j < keyed.length; j++) {
-        const [a, b] = [keyed[i], keyed[j]];
-        if (normText(a.text) === normText(b.text)) continue; // a duplicate layer (glow, outline) of the same words
-        const share = overlapShare(a, b);
-        if (share < OVERLAP_MIN) continue;
-        const pair = [a.id, b.id].sort().join("||");
-        once1(`overlap|${pair}`, { rule: "overlap", text: label(`${a.text} / ${b.text}`), time_sec: t,
-          detail: `${Math.round(share * 100)} % of the smaller box is covered` });
-      }
-    }
-    prevBox.clear();
-    nowBox.forEach((box, id) => prevBox.set(id, box));
-  });
-  runs.forEach((run, key) => closeRun(key, run));
-  return findings.sort((a, b) => a.time_sec - b.time_sec || a.rule.localeCompare(b.rule));
+  const auditor = new TextAudit(opts);
+  samples.forEach((sample, index) => auditor.step(sample, index));
+  return auditor.finish();
 }
 
 export const sampleTimes = (duration, step) => {
