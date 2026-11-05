@@ -97,6 +97,35 @@
       "items": {
         "type": "string"
       }
+    },
+    "verdicts": {
+      "type": "array",
+      "description": "Reviewer only: 1 verdict per spec requirement (behavior id), replace_or_remove id, and declared capability (`capability:<key>`). `intake verify` needs `pass` for each (spec 7.1, 7.4).",
+      "items": {
+        "type": "object",
+        "required": [
+          "spec_id",
+          "item",
+          "result"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "spec_id": {
+            "type": "string",
+            "pattern": "^spec-[a-z0-9-]{2,40}$"
+          },
+          "item": {
+            "type": "string",
+            "pattern": "^(b[0-9]{1,4}|R-[0-9]{1,4}|capability:(network|reads|writes|runs))$"
+          },
+          "result": {
+            "enum": [
+              "pass",
+              "fail"
+            ]
+          }
+        }
+      }
     }
   }
 }

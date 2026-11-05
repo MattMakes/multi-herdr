@@ -18,6 +18,7 @@ import shutil
 from pathlib import Path
 
 from . import scan, schema
+from .targets import RULES
 from .task import Task, is_within, now, read_json, resolve, write_json
 
 STRIPPED = ("provenance", "review")
@@ -100,8 +101,9 @@ def verify_package(task: Task) -> list[str]:
     return problems
 
 
-def write_context(task: Task) -> Path:
-    """K/context.json: the only task description clean roles ever see. No source paths."""
+def write_context(task: Task, target: str | None = None) -> Path:
+    """K/context.json: the only task description clean roles ever see. No source paths.
+    With a `target`, it also holds that target's rules (spec 7.3), which verify checks."""
     pre_path = task.c / "contaminated" / "preflight.json"
     if not pre_path.is_file():
         raise ValueError("no preflight.json; run intake cr init first")
@@ -123,6 +125,9 @@ def write_context(task: Task) -> Path:
         "out_root": str(task.k / "out"),
         "specs": [i["file"] for i in read_json(pkg)["items"]] if pkg.is_file() else [],
     }
+    if target is not None:
+        context["target"] = target
+        context["target_rules"] = RULES[target]
     findings = scan.scan_text("\n".join(scan.strings_of({k: v for k, v in context.items() if not k.endswith("_root")})), task)
     if not scan.passed(findings):
         raise ValueError("context would leak: " + "; ".join(f.check for f in findings if f.severity == "block"))

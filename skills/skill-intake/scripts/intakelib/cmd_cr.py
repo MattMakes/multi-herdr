@@ -25,7 +25,7 @@ import json
 import sys
 from pathlib import Path
 
-from . import evidence, guard, handoff, index, sandbox, scan, schema, triage
+from . import evidence, guard, handoff, index, sandbox, scan, schema, targets, triage
 from . import task as tasklib
 from .task import is_within, read_json, resolve, write_json
 
@@ -161,7 +161,7 @@ def cmd_handoff(a) -> int:
 
 
 def cmd_context(a) -> int:
-    _out({"context": str(handoff.write_context(tasklib.load(a.task)))})
+    _out({"context": str(handoff.write_context(tasklib.load(a.task), a.target))})
     return 0
 
 
@@ -248,7 +248,8 @@ def add_arguments(p: argparse.ArgumentParser) -> None:
     s.add_argument("role", nargs="?", choices=list(guard.ROLES))
     task_cmd("scan", cmd_scan, "leakage-scan files headed for the clean side").add_argument("paths", nargs="+")
     task_cmd("handoff", cmd_handoff, "move approved drafts from D/drafts to K/handoff").add_argument("drafts", nargs="+")
-    task_cmd("context", cmd_context, "write K/context.json from the preflight")
+    task_cmd("context", cmd_context, "write K/context.json from the preflight").add_argument(
+        "--target", choices=targets.TARGETS, help="add the target rules the writer follows (spec 7.3)")
     s = task_cmd("verify", cmd_verify, "run a test command offline in the sandbox (cwd = K/out)")
     s.add_argument("--timeout", type=int, default=600)
     s.add_argument("argv", nargs=argparse.REMAINDER)

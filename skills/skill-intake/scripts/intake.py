@@ -35,6 +35,7 @@ COMMANDS = (
     "triage",
     "report",
     "run",
+    "verify",
 )
 
 
