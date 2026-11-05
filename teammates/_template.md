@@ -329,7 +329,12 @@ settings:
 #   network.strictAllowlist: true and
 #   permissions.blockReadsOutsideWorkingDirectories: true (the Read tool is
 #   outside the sandbox, and this key closes the home directory to it and
-#   to Bash). Re-open paths with filesystem.allowRead. The launch refuses a
+#   to Bash). Re-open paths with filesystem.allowRead. horch also adds its
+#   own state root and task ledger folder to filesystem.allowRead and
+#   allowWrite, and the state root and $HERDR_SOCKET_PATH to
+#   network.allowUnixSockets, from the roots it resolves at launch, so `horch tell`,
+#   `horch done`, `horch ledger` and `horch spawn` work in the pane. Do not
+#   list those machine paths here. The launch refuses a
 #   host that cannot sandbox. `horch teammates --check` fails a non-claude
 #   agent, a settings file, a value against a forced key, excludedCommands
 #   and filesystem.disabled. See app-release-preparer.md.

@@ -65,6 +65,12 @@ pub struct LaunchEnv {
     pub codex_home: Option<PathBuf>,
     /// Horch's state root, where a Codex launch finds its v1 model catalog.
     pub state_root: Option<PathBuf>,
+    /// The folder of the task ledger database (`Paths::ledger_db`). A
+    /// sandboxed Claude launch opens it, and the state root, to Bash.
+    pub ledger_dir: Option<PathBuf>,
+    /// `$HERDR_SOCKET_PATH`. A sandboxed Claude launch allows Bash to
+    /// connect to it.
+    pub herdr_socket: Option<PathBuf>,
     /// `$CLAUDE_CONFIG_DIR`: where the operator's Claude user settings live.
     pub claude_config_dir: Option<PathBuf>,
     /// `RuntimeContext.paths.claude_managed_settings`. `None` reads no
@@ -96,6 +102,8 @@ impl LaunchEnv {
                 .collect(),
             codex_home: ctx.inherited.codex_home.clone(),
             state_root: Some(ctx.paths.state_root.clone()),
+            ledger_dir: ctx.paths.ledger_db.parent().map(Path::to_path_buf),
+            herdr_socket: ctx.inherited.herdr_socket_path.clone(),
             claude_config_dir: ctx.inherited.claude_config_dir.clone(),
             claude_managed_settings: Some(ctx.paths.claude_managed_settings.clone()),
             workdir: ctx.paths.cwd.clone(),
@@ -119,6 +127,8 @@ impl LaunchEnv {
             operator_env: BTreeMap::new(),
             codex_home: None,
             state_root: None,
+            ledger_dir: None,
+            herdr_socket: None,
             claude_config_dir: None,
             claude_managed_settings: None,
             workdir: Some(PathBuf::from("/workdir")),

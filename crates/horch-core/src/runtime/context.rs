@@ -235,6 +235,9 @@ pub struct Inherited {
     pub hostname: Option<String>,
     /// `HERDR_SESSION`.
     pub herdr_session: Option<String>,
+    /// `HERDR_SOCKET_PATH`: the herdr server socket a pane's horch commands
+    /// connect to.
+    pub herdr_socket_path: Option<PathBuf>,
     /// `OPENCODE_DISABLE_EXTERNAL_SKILLS` (an OpenCode harness default yields to it).
     pub opencode_disable_external_skills: Option<String>,
     /// `RLM_MAX_DEPTH` (a Prime harness default yields to it).
@@ -285,6 +288,7 @@ impl Inherited {
             local_app_data: nonempty_path(env, "LOCALAPPDATA"),
             hostname: nonempty("HOSTNAME").or_else(|| nonempty("COMPUTERNAME")),
             herdr_session: nonempty("HERDR_SESSION"),
+            herdr_socket_path: nonempty_path(env, "HERDR_SOCKET_PATH"),
             opencode_disable_external_skills: env.var("OPENCODE_DISABLE_EXTERNAL_SKILLS"),
             rlm_max_depth: env.var("RLM_MAX_DEPTH"),
             claude_code_auto_compact_window: env.var("CLAUDE_CODE_AUTO_COMPACT_WINDOW"),
@@ -528,6 +532,7 @@ mod tests {
             .with("LOCALAPPDATA", "/lad")
             .with("HOSTNAME", "box")
             .with("HERDR_SESSION", "s")
+            .with("HERDR_SOCKET_PATH", "/herdr.sock")
             .with("HORCH_ROLE", "sonnet-1")
             .with("HORCH_TEAMMATE", "sonnet")
             .with("HORCH_AGENT", "claude")
@@ -596,6 +601,7 @@ mod tests {
         assert_eq!(i.local_app_data, Some(PathBuf::from("/lad")));
         assert_eq!(i.hostname.as_deref(), Some("box"));
         assert_eq!(i.herdr_session.as_deref(), Some("s"));
+        assert_eq!(i.herdr_socket_path, Some(PathBuf::from("/herdr.sock")));
 
         let w = ctx.worker.as_ref().unwrap();
         assert_eq!(w.role.as_deref(), Some("sonnet-1"));

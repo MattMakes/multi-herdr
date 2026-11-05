@@ -321,7 +321,7 @@ fn inline_settings_arg(env: &LaunchEnv, teammate: &Teammate, settings: &str) -> 
     let has_defaults = HarnessDefault::for_harness(&teammate.harness_defaults, HarnessKind::Claude)
         .any(|d| d.settings.is_some());
     let window = applied_window(env);
-    if inline && (has_defaults || window.is_some()) {
+    if inline && (has_defaults || window.is_some() || teammate.sandbox.is_some()) {
         merged_inline_settings(env, teammate, settings, window)
     } else {
         // The teammate named its own file; that file owns the overlay.
@@ -344,7 +344,8 @@ fn merged_inline_settings(
         .as_object_mut()
         .context("teammate settings must be a JSON object")?;
     let changed = merge_settings_defaults(teammate, obj, || operator_settings(env))?
-        | overlay_window(window, obj);
+        | overlay_window(window, obj)
+        | overlay_horch_paths(env, teammate, obj)?;
     Ok(if changed {
         value.to_string().into()
     } else {
@@ -362,6 +363,7 @@ fn default_overlay(env: &LaunchEnv, teammate: &Teammate) -> Result<Option<OsStri
     overlay_skill_switches(teammate, &mut overlay, env.home())?;
     copy_operator_status_line(&mut overlay, teammate, env.home());
     overlay_sandbox(teammate, &mut overlay)?;
+    overlay_horch_paths(env, teammate, &mut overlay)?;
     merge_settings_defaults(teammate, &mut overlay, || operator_settings(env))?;
     overlay_window(applied_window(env), &mut overlay);
     Ok((!overlay.is_empty()).then(|| Value::Object(overlay).to_string().into()))
@@ -805,6 +807,53 @@ pub(crate) fn overlay_sandbox(
     Ok(())
 }
 
+/// Open horch's own paths to a sandboxed teammate's Bash, so `horch tell`,
+/// `horch done`, `horch ledger` and `horch spawn` work in the pane:
+/// - the state root and the ledger folder, for read and write;
+/// - Unix sockets under the state root (the channel relays) and
+///   `$HERDR_SOCKET_PATH`, for connect.
+///
+/// The paths come from the launch's resolved roots, so a moved root is the
+/// one opened. A launch with no `sandbox:` block, or whose settings carry
+/// no sandbox, is unchanged. Returns whether a path was added.
+fn overlay_horch_paths(
+    env: &LaunchEnv,
+    teammate: &Teammate,
+    settings: &mut serde_json::Map<String, Value>,
+) -> Result<bool> {
+    let Some(sandbox) = settings
+        .get_mut("sandbox")
+        .filter(|_| teammate.sandbox.is_some())
+    else {
+        return Ok(false);
+    };
+    let sandbox = sandbox
+        .as_object_mut()
+        .context("sandbox must be an object")?;
+    let dirs = [&env.state_root, &env.ledger_dir];
+    let sockets = [&env.state_root, &env.herdr_socket];
+    let mut changed = false;
+    for (section, key, paths) in [
+        ("filesystem", "allowRead", dirs),
+        ("filesystem", "allowWrite", dirs),
+        ("network", "allowUnixSockets", sockets),
+    ] {
+        let list = object_entry(sandbox, section)?
+            .entry(key)
+            .or_insert_with(|| json!([]))
+            .as_array_mut()
+            .with_context(|| format!("sandbox.{section}.{key} must be a list"))?;
+        for path in paths.into_iter().flatten() {
+            let path = Value::String(path.to_string_lossy().into_owned());
+            if !list.contains(&path) {
+                list.push(path);
+                changed = true;
+            }
+        }
+    }
+    Ok(changed)
+}
+
 /// What in a teammate's `sandbox:` block would open a way out, one line
 /// each: a value against a [`SANDBOX_FORCED`] key, `excludedCommands` (runs
 /// a command outside the sandbox) or `filesystem.disabled`.
@@ -1236,6 +1285,9 @@ mod tests {
     fn sandbox_envs(tmp: &Path) -> [LaunchEnv; 2] {
         [true, false].map(|tools| LaunchEnv {
             path: Some(sandbox_tools_path(&tmp.join(tools.to_string()), tools)),
+            state_root: Some(PathBuf::from("/state/horch")),
+            ledger_dir: Some(PathBuf::from("/home/op/.horch")),
+            herdr_socket: Some(PathBuf::from("/home/op/.config/herdr/herdr.sock")),
             ..LaunchEnv::for_test()
         })
     }
@@ -1279,9 +1331,13 @@ mod tests {
                     "allowUnsandboxedCommands": false,
                     "network": {
                         "allowedDomains": ["api.appstoreconnect.apple.com"],
-                        "strictAllowlist": true
+                        "strictAllowlist": true,
+                        "allowUnixSockets": ["/state/horch", "/home/op/.config/herdr/herdr.sock"]
                     },
-                    "filesystem": {"allowRead": ["~/.config/horch/asc"]}
+                    "filesystem": {
+                        "allowRead": ["~/.config/horch/asc", "/state/horch", "/home/op/.horch"],
+                        "allowWrite": ["/state/horch", "/home/op/.horch"]
+                    }
                 })
             );
             assert_eq!(
@@ -1289,6 +1345,67 @@ mod tests {
                 true
             );
         }
+    }
+
+    /// A launch with no `sandbox:` block gets no horch paths: its argv is
+    /// the same whether or not the launch knows horch's roots.
+    #[test]
+    fn a_launch_without_a_sandbox_is_unchanged_by_the_horch_paths() {
+        let t = Teammate {
+            name: "plain".into(),
+            model: Some("sonnet".into()),
+            ..Teammate::default()
+        };
+        let tmp = tempfile::tempdir().unwrap();
+        let [with_roots, _] = sandbox_envs(tmp.path());
+        let without_roots = LaunchEnv {
+            state_root: None,
+            ledger_dir: None,
+            herdr_socket: None,
+            ..with_roots.clone()
+        };
+        let argv = |env: &LaunchEnv| -> Vec<String> {
+            super::super::launch::command_in(env, &t, Session::Fresh("id"), "go", None)
+                .unwrap()
+                .get_args()
+                .map(|a| a.to_string_lossy().into_owned())
+                .collect()
+        };
+        let got = argv(&with_roots);
+        assert_eq!(got, argv(&without_roots));
+        assert!(!got.iter().any(|a| a.contains("/state/horch")), "{got:?}");
+    }
+
+    /// A skills launch carries the sandbox as inline settings JSON. The
+    /// launch adds horch's paths to it too, once each, and keeps the forced
+    /// keys.
+    #[test]
+    fn a_sandboxed_skills_launch_gets_the_horch_paths() {
+        let mut t = sandboxed(json!({
+            "filesystem": {"allowWrite": ["/state/horch"]}
+        }));
+        t.settings = Some(skills_settings(&t, None).unwrap().to_string());
+        let tmp = tempfile::tempdir().unwrap();
+        let [env, _] = sandbox_envs(tmp.path());
+        if !host_can_sandbox(&env) {
+            return;
+        }
+        let built =
+            super::super::launch::command_in(&env, &t, Session::Fresh("id"), "go", None).unwrap();
+        let settings = settings_arg(&built);
+        let fs = &settings["sandbox"]["filesystem"];
+        assert_eq!(fs["allowRead"], json!(["/state/horch", "/home/op/.horch"]));
+        assert_eq!(fs["allowWrite"], json!(["/state/horch", "/home/op/.horch"]));
+        assert_eq!(
+            settings["sandbox"]["network"]["allowUnixSockets"],
+            json!(["/state/horch", "/home/op/.config/herdr/herdr.sock"])
+        );
+        assert_eq!(settings["sandbox"]["network"]["strictAllowlist"], true);
+        assert_eq!(settings["sandbox"]["allowUnsandboxedCommands"], false);
+        assert_eq!(
+            settings["permissions"]["blockReadsOutsideWorkingDirectories"],
+            true
+        );
     }
 
     /// The shipped release preparer launches inside the sandbox: only the

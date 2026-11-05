@@ -106,3 +106,62 @@ The probe started 3 short Claude sessions, 1 more than the ticket allows:
 started. The probe left a worker row for each pane in run `skill-intake`;
 all 3 were stopped with `horch ledger stop`. The probe wrote only under
 `~/.local/state/skill-intake/`.
+
+### Re-probe after ticket 02
+
+**Verdict: all 4 commands work.** Date: 2026-11-05. The same 2 probe
+teammates ran from `.worktrees/_scratch/probe-q7/teammates`, spawned by a
+debug build of the ticket 02 branch with `--exact --run skill-intake`. The
+commands inside the panes ran the installed horch 0.4.3: only the launch
+settings changed. The task text named the commands, as the section above
+says.
+
+The launch adds these entries to every sandboxed Claude pane. Each comes
+from the roots horch resolves at launch, not from a fixed string:
+
+| key | entry | source |
+|---|---|---|
+| `filesystem.allowRead`, `filesystem.allowWrite` | `/Users/matthewscott/.local/state/horch` | `Paths::state_root` (`$HORCH_STATE_DIR`, else the XDG default) |
+| `filesystem.allowRead`, `filesystem.allowWrite` | `/Users/matthewscott/.horch` | the folder of `Paths::ledger_db` (`$HORCH_LEDGER_DB`, else `<home>/.horch/ledger.sqlite3`) |
+| `network.allowUnixSockets` | `/Users/matthewscott/.local/state/horch` | `Paths::state_root`. Seatbelt matches a socket entry as a subpath, so this covers `channels/<workspace>.sock` |
+| `network.allowUnixSockets` | `/Users/matthewscott/.config/herdr/herdr.sock` | `$HERDR_SOCKET_PATH` of the spawning process. No entry when it is unset |
+
+Round 1 (filesystem entries only; panes `probe-sanitizer-2`, `probe-importer-3`):
+
+| command | exit | error text |
+|---|---|---|
+| `horch tell orchestrator "..."` | 0, not delivered | `connect to channel relay /Users/matthewscott/.local/state/horch/channels/w29.sock` failed, then `herdr pane send-text ... PermissionDenied` |
+| `horch ledger progress "..."` | 0 | none |
+| `horch done "..."` | 1 | `herdr pane get w29:pC failed ... PermissionDenied`; "the summary is recorded, but this pane may still be open" |
+| `horch spawn smoke` | 1 | `launch of ... failed splitting a pane: herdr pane get w29:pD failed ... PermissionDenied` |
+
+Round 1 proves 2 facts:
+
+- The state root caused the "no record matches" error of `horch done`. With
+  the state root open, the error is gone and the summary is recorded.
+- The next layer is Unix socket connects: the channel relay socket under the
+  state root, and the herdr socket. The `~/.config` read path is not needed
+  for the herdr socket: the sanitizer keeps `denyRead ~/.config` and connects.
+
+Round 2 (all entries; panes `probe-sanitizer-3`, `probe-importer-4`):
+
+| command | probe | exit | output |
+|---|---|---|---|
+| `horch tell orchestrator "..."` | `probe-sanitizer-3` | 0 | `queued, not yet acknowledged (notification written; awaiting horch inbox acknowledgement)` |
+| `horch ledger progress "..."` | `probe-sanitizer-3` | 0 | none |
+| `horch done "..."` | `probe-sanitizer-3` | 0 | the pane closed; record status `done` |
+| `horch spawn smoke` | `probe-importer-4` | 0 | `spawned smoke-2 (pane w29:pG)` |
+| `horch done "..."` | `probe-importer-4` | 0 | the pane closed; record status `done` |
+
+A successful `horch done` closes its pane, so the pane cannot write its exit
+code. The evidence is the record file: `probe-sanitizer-3`,
+`probe-importer-4` and `smoke-2` have status `done`, and their panes and
+processes are gone. In round 1, a failed `horch done` left the pane open.
+
+Not needed: the data root `$HORCH_DATA_DIR` (`~/.local/share/horch`). No
+command in either round reached it, so the launch does not add it.
+
+Cost: 4 more sonnet low-effort sessions (2 per round) and 1 `smoke` pane,
+which runs no model. Round 1 panes were stopped with `horch ledger stop`.
+Round 1 results files are kept as `*-results-round1.txt` beside the round 2
+files under `~/.local/state/skill-intake/`.
