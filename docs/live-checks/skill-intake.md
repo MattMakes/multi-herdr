@@ -756,3 +756,60 @@ the writer rule of T-17 on top. Every `claude` run removes
 | side effects | none. No `skill-intake` task folder exists. `ls ~/.claude/skills` is unchanged (191 entries). |
 
 The step is not retried until ticket 27 lands. It is not counted as passed.
+
+The 3 sections below were run after the rebase of T-17 on commit `6a2bab47`
+(ticket 27) unless a row says otherwise. The step 1 retry and steps 2 and 4
+are open: see "Defect found" below.
+
+### Step 3, abort: PASSED
+
+| field | value |
+|---|---|
+| command | `SKILL_INTAKE_MODE=plain python3 -I skills/skill-intake/scripts/intake.py run <fixture>`, then `intake report --task <T>`. The fixture comes from `fixtures.f_exfil()` (`scripts/skill-intake/tests/fixtures.py`) built into `.worktrees/_scratch/live-skill-intake/exfil-fixture`. A worker ran `intake` by hand: no `skill-importer` pane. |
+| task id | `20261105-114212-917560` (ledger task T-17) |
+| outcome | `intake run` exit 4: `GATE 1 abort`, reason `malicious finding: SCR-04#2`, 5 findings (1 critical, 3 high, 1 medium), 1 malicious. Nothing from the fixture ran. |
+| installed | nothing. `ls ~/.claude/skills` equals the list before step 1. No `installed.jsonl` exists. No `clean/` folder was written for the task. |
+| report | `~/.local/state/skill-intake/contaminated/20261105-114212-917560/report.md`: `outcome: aborted at GATE 1`, the row `SCR-04#2 (malicious) critical exfil-fixture remove planned pending`, the evidence line for `sync.sh:2`. |
+
+### Step 5 (and a plain-mode run of step 1), attempt 1: FAILED (defect)
+
+| field | value |
+|---|---|
+| command | `env -i HOME=... PATH=... claude -p --model opus --permission-mode auto --add-dir <state root> --add-dir ~/.claude/skills --add-dir <skill folder> --output-format stream-json --verbose "<controller task>"`, run in the git-initialised scratch project `.worktrees/_scratch/live-skill-intake/plain-project`. `env -i` leaves no `ANTHROPIC_API_KEY`, no `HORCH_*` and no `HERDR_*` variable. |
+| task id | T-17 (Claude session `e917c0ca-0df9-4aa5-874f-f8239fcac305`, 21 turns, cost 2.64 USD list price, started 11:42:56Z) |
+| outcome | FAILED at the analyst. `intake mode` printed `plain` (exit 0). The auditor and the analyst ran as 2 `general-purpose` subagents (`subagent_stats.spawned` 2). GATE 1 passed. No mapping question was asked, because the scratch project is not a multi-herdr checkout. Nothing was installed. |
+| report | `~/.local/state/skill-intake/contaminated/20261105-114323-f1da7a/report.md` (55 findings: 0 critical, 41 high, 9 medium, 4 low, 1 info; 0 malicious; licence permissive) |
+| installed | nothing. `ls ~/.claude/skills` equals the list before step 1. |
+| transcript | `<scratchpad>/plain-run.jsonl` (not committed) |
+
+#### Defect found (code, not fixed in T-17)
+
+`intake role-result` marks every analyst `error`, so no analyst can finish.
+
+- `roles.py` sets `SIDE["analyst"]` to `contaminated`, and `_io` gives the
+  analyst the write path `D/drafts` (`drafts/<task>/drafts`). The brief
+  names that path too.
+- `role_result` checks each `outputs` path in the status file against
+  `side_root(t, role)`, so it needs a path under `contaminated/<task>`
+  (`roles.py` `_schema_problems`).
+- The analyst wrote `drafts/20261105-114323-f1da7a/drafts/spec-documentation-first-task-discipline.json`
+  and listed it in `outputs`. `intake role-result` exited 12 with
+  `output outside the analyst side root`. The task log `roles.jsonl` shows
+  `analyst-1#1` ended `error`. A fresh analyst writes the same path, so
+  the same exit 12 follows.
+- The defect is in shared code. It stops a fleet run at the first analyst as
+  well. Steps 1 (retry), 2 and 4 cannot pass until it is fixed.
+- A likely fix: check the `outputs` paths against the write paths of
+  `_io(t, role, skill)`, not against the side root. A regression test: an
+  analyst status file whose output is under `D/drafts` gives exit 0.
+
+Other observations from the same run (not defects of T-17):
+
+- The plain session found `python3` = `/usr/bin/python3` 3.9 first on the
+  `env -i` PATH, and `intake` failed on `import tomllib` (Python 3.11+, in
+  `intakelib/supply.py`). The session used `/opt/homebrew/bin/python3` 3.14
+  through a wrapper it wrote to `/tmp/intake-wrap/intake`. The skill text and
+  `install.md` say `python3` 3.10+ for the installed skills, and the
+  persona says `intake` checks `python3` at start. No doc says `intake`
+  itself needs 3.11+.
+- The session wrote the wrapper under `/tmp`, outside the state root.
