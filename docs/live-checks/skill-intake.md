@@ -1006,3 +1006,25 @@ Note: the writer persona rule (no shell command, URL or `horch` command in
 `K/persona.md`) that T-17 added to `roles/writer.md` is reverted in the T-17
 branch. Ticket 37 owns `roles/writer.md`. The `skill-importer-6` run and the
 plain run 4 used the build or the worktree with that rule in place.
+
+### Finding: role panes have no `HORCH_WORKER_ID` (read from code, step 2 proves it live)
+
+`intake-analyst-2` of `skill-importer-6` reported that `horch ledger progress`
+failed because `HORCH_WORKER_ID` is not set. The cause is not only that
+`skill-importer-6` has no ledger run (attempt 6 has no `--run`):
+
+- `horch spawn` gives a pane `HORCH_WORKER_ID` only when the spawn joins a run
+  (`taskledger_spawn::ledger_run_wanted`). It joins when `--run` or
+  `HORCH_RUN_ID` names a run, with `--replaces`, or with no task text while a
+  run is active.
+- `intake spawn` runs `horch spawn <teammate> --exact "Read and follow <brief>
+  exactly."`: it has task text and no `--run`
+  (`roles.py` `spawn_argv`). So a role is outside the run, with a note `this
+  spawn has task text, so it runs outside task-ledger run`.
+- Nothing exports `HORCH_RUN_ID` to a worker pane (a worker's environment has
+  `HORCH_WORKER_ID` but no `HORCH_RUN_ID`). The e2e test of T-16
+  (`skill_intake_spawn.rs`) sets `HORCH_RUN_ID` by hand in the spawning
+  command, so it proves the join only for an operator who sets that variable.
+- So a role of a controller that is inside a run does not join the run
+  either. Step 4 ("`horch ledger status` shows every role worker") cannot
+  pass as designed. Step 2 checks this live.
