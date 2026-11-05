@@ -193,7 +193,10 @@ const samples = (f, n) => [...Array(n + 1).keys()].map((i) => f(i / n));
 const peakOf = (f) => Math.max(...samples(f, 1000));
 const rising = (values) => values.every((v, i) => i === 0 || v >= values[i - 1]);
 
-function checkSpring(f, values, peak) {
+const presetName = ([name]) => name;
+
+function checkSpring(ease, [name, values, peak]) {
+  const f = ease(`spring-${name}`);
   [0.1, 0.25, 0.5, 0.75].forEach(function (p, i) { close(f(p), values[i], 1e-3); });
   close(f(0), 0, 1e-9);
   assert.equal(f(1), 1);
@@ -202,9 +205,9 @@ function checkSpring(f, values, peak) {
 
 test("spring presets: values, peaks and end points", () => {
   const { ease, springs } = load().ST;
-  assert.deepEqual(Object.keys(springs), SPRING_POINTS.map(([name]) => name));
-  SPRING_POINTS.forEach(function ([name, values, peak]) { checkSpring(ease(`spring-${name}`), values, peak); });
-  assert.throws(function () { ease("spring-wobbly"); }, /unknown ease/);
+  assert.deepEqual(Object.keys(springs), SPRING_POINTS.map(presetName));
+  SPRING_POINTS.forEach(checkSpring.bind(null, ease));
+  assert.throws(ease.bind(null, "spring-wobbly"), /unknown ease/);
 });
 
 test("the camera spring never overshoots, the playful one bounces", () => {
