@@ -25,7 +25,7 @@ use horch_core::harness::launch;
 use horch_core::measure::paths::DatasetPaths;
 use horch_core::messaging::channel;
 use horch_core::messaging::delivery;
-use horch_core::messaging::mail::Mail;
+use horch_core::messaging::mail::{Id, Mail};
 use horch_core::messaging::mailbox::{Mailbox, PaneState, RoleEntry};
 use horch_core::messaging::message;
 use horch_core::messaging::report;
@@ -122,6 +122,8 @@ struct Outgoing<'a> {
     target: Option<String>,
     line: String,
     durable: bool,
+    /// The durable mail of the line: a push records its first push on it.
+    queued: Option<Id>,
     /// Start the courier after the push, as before #67: an unbounded push
     /// can outlast the courier's first redelivery and deliver the line twice.
     courier_after: bool,
@@ -151,9 +153,10 @@ fn queue_as<'a>(
     // mail with a courier. Its first redelivery is 30 s after the enqueue,
     // after the push budget ends.
     let courier_now = durable && delivery::push_time_left().is_some();
+    let mut queued = None;
     if durable {
         let from = sender.as_deref().expect("durable mail has a sender");
-        enqueue_durable(
+        queued = Some(enqueue_durable(
             ctx,
             mailbox.workspace_id(),
             role,
@@ -162,7 +165,7 @@ fn queue_as<'a>(
             text,
             courier_now,
             take_back,
-        )?;
+        )?);
         if role != "orchestrator" {
             // Worker mail holds no question for the orchestrator.
         } else if let Err(error) = sync_question_waits(ctx, mailbox.workspace_id()) {
@@ -180,6 +183,7 @@ fn queue_as<'a>(
         target,
         line,
         durable,
+        queued,
         courier_after: durable && !courier_now,
     }))
 }
@@ -225,18 +229,18 @@ fn enqueue_durable(
     original: &str,
     courier_now: bool,
     take_back: bool,
-) -> Result<()> {
+) -> Result<Id> {
     let mail = Mail::for_role(&ctx.paths.state_root, workspace, role);
     let id = mail.enqueue_with_questions(from, line, original)?;
     if !courier_now {
-        return Ok(());
+        return Ok(id);
     }
     let Err(error) = super::mail::start_courier(ctx, workspace) else {
-        return Ok(());
+        return Ok(id);
     };
     if !take_back {
         eprintln!("horch tell: {error:#}; `horch inbox` still shows the mail");
-        return Ok(());
+        return Ok(id);
     }
     if let Err(ack_error) = mail.ack(&id) {
         eprintln!("horch tell: could not take back the queued line ({ack_error:#})");
@@ -271,6 +275,14 @@ impl Outgoing<'_> {
                 true,
             )
         };
+        // The courier sends the full text 1 time to mail with no first push.
+        if let (Ok(()), Some(id)) = (&pushed, &self.queued) {
+            let state_root = &self.ctx.paths.state_root;
+            let queued = Mail::for_role(state_root, self.mailbox.workspace_id(), &self.role);
+            if let Err(error) = queued.mark_pushed(id) {
+                eprintln!("horch tell: recording the push failed ({error:#})");
+            }
+        }
         if self.courier_after {
             if let Err(error) = super::mail::start_courier(self.ctx, self.mailbox.workspace_id()) {
                 eprintln!("horch tell: {error:#}; `horch inbox` still shows the mail");

@@ -24,6 +24,11 @@ pub struct Message {
     pub from: String,
     pub text: String,
     pub created_at: SystemTime,
+    /// Whether a first push of the line went (`tell` records it with
+    /// [`Mail::mark_pushed`]). Mail without it, such as a horch notice, gets
+    /// its first push from the courier. [`Mail::pending`] reads it.
+    #[serde(skip)]
+    pub first_push: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -117,6 +122,7 @@ impl Mail {
             from: from.to_string(),
             text: text.to_string(),
             created_at,
+            first_push: false,
         };
         let final_path = pending.join(format!("{}.json", id.0));
         let temp_path = pending.join(format!(".{}.json.tmp", id.0));
@@ -275,7 +281,26 @@ impl Mail {
     /// could hold lines planted for the orchestrator to read.
     pub fn pending(&self) -> Result<Vec<Message>> {
         private::check(&self.dir)?;
-        read_pending(&self.pending_paths()?)
+        let mut messages = read_pending(&self.pending_paths()?)?;
+        for message in &mut messages {
+            message.first_push = self.pushed_marker(&message.id).exists();
+        }
+        Ok(messages)
+    }
+
+    /// Record that a first push of the mail `id` went. A marker file, not a
+    /// rewrite of the mail: a rewrite can race `ack` and bring the mail back.
+    pub fn mark_pushed(&self, id: &Id) -> Result<()> {
+        if !id.0.chars().all(|c| c.is_ascii_alphanumeric() || c == '-') {
+            bail!("invalid mail id");
+        }
+        let marker = self.pushed_marker(id);
+        private::ensure_dir(marker.parent().expect("the marker has a dir"))?;
+        std::fs::write(&marker, b"").with_context(|| format!("writing {}", marker.display()))
+    }
+
+    fn pushed_marker(&self, id: &Id) -> PathBuf {
+        self.dir.join("pushed").join(&id.0)
     }
 
     /// The pending mail files, oldest first.
@@ -299,6 +324,7 @@ impl Mail {
         let acked_dir = self.dir.join("acked");
         private::ensure_dir(&acked_dir)?;
         let acked = acked_dir.join(format!("{}.json", id.0));
+        let _ = std::fs::remove_file(self.pushed_marker(id));
         match std::fs::rename(&pending, &acked) {
             Ok(()) => Ok(()),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
@@ -1028,6 +1054,30 @@ mod tests {
     }
 
     #[test]
+    fn mark_pushed_records_a_first_push_and_ack_removes_it() {
+        let root = tempfile::tempdir().unwrap();
+        let mail = Mail::under(root.path(), "w1");
+        mail.enqueue("horch", "[horch] NOTE: Tasks can start: T-35")
+            .unwrap();
+        let told = mail
+            .enqueue_with_questions("sonnet-1", "[sonnet-1] DONE: x", "DONE: x")
+            .unwrap();
+        let pushed = |mail: &Mail| -> Vec<bool> {
+            mail.pending()
+                .unwrap()
+                .iter()
+                .map(|m| m.first_push)
+                .collect()
+        };
+        assert_eq!(pushed(&mail), [false, false], "enqueue records no push");
+        mail.mark_pushed(&told).unwrap();
+        assert_eq!(pushed(&mail), [false, true]);
+        mail.ack(&told).unwrap();
+        assert!(!mail.dir().join("pushed").join(&told.0).exists());
+        assert!(mail.mark_pushed(&Id("../x".into())).is_err());
+    }
+
+    #[test]
     fn a_note_line_is_tagged_note() {
         assert!(is_note("[sonnet-1] NOTE: tests pass"));
         assert!(is_note("[horch] NOTE: All tasks are done."));
@@ -1042,7 +1092,8 @@ mod tests {
         let mail = Mail::under(root.path(), "w1");
         mail.enqueue("opus-1", "[opus-1] DONE: the full report text")
             .unwrap();
-        mail.enqueue("qa-3", "[qa-3] QUESTION: which file?").unwrap();
+        mail.enqueue("qa-3", "[qa-3] QUESTION: which file?")
+            .unwrap();
         mail.enqueue("horch", "plain notice").unwrap();
         let line = digest_line(&mail.pending().unwrap());
         assert_eq!(

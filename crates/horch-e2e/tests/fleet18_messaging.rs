@@ -1517,11 +1517,11 @@ fn g60_pinned_running_courier_skips_busy_and_login_backlog_without_burst() {
             2,
             "missed retries must not burst after {held}"
         );
-        clock_file_set(&clock, "2030-01-01T02:04:59Z");
+        clock_file_set(&clock, "2030-01-01T02:14:59Z");
         std::thread::sleep(Duration::from_millis(150));
         assert_eq!(prompt_count(&h), 2);
-        clock_file_set(&clock, "2030-01-01T02:05:00Z");
-        wait_for("five-minute fixed retry", || {
+        clock_file_set(&clock, "2030-01-01T02:15:00Z");
+        wait_for("fifteen-minute digest", || {
             (prompt_count(&h) >= 3).then_some(())
         });
         assert_eq!(prompt_count(&h), 3);

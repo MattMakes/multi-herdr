@@ -132,14 +132,13 @@ impl<'a> Courier<'a> {
         let roles_reachable = self.deliver_roles(role_mail);
         let (pane, relay_live) = self.orchestrator_target(pending);
         let has_target = pane.is_some() || relay_live;
-        let now = mail_now(self.ctx);
         if !(roles_reachable || has_target) {
-            self.orchestrator.observe(pending, true, now);
+            self.orchestrator.observe(pending, true);
             return Ok(self.wait_for_orchestrator());
         }
         self.no_orchestrator_since = None;
         let missed = !has_target || check_login(&self.herdr, &self.mailbox, &self.mail)?;
-        self.orchestrator.observe(pending, missed, now);
+        self.orchestrator.observe(pending, missed);
         if missed {
             return Ok(Step::Wait);
         }
@@ -269,27 +268,40 @@ fn pending_role_mail(mail: &Mail) -> Vec<(String, Mail, Vec<Message>)> {
 type Attempts = HashMap<Id, (usize, Option<SystemTime>)>;
 
 /// The courier's pushes to the orchestrator. Unread mail does not flood its
-/// window: the full text goes again 1 time only when the first push can
-/// have missed, and the rest is 1 digest line now and then.
+/// window: the courier sends the full text 1 time only for mail with no
+/// first push, or whose first push can have missed. The rest is 1 digest
+/// line now and then.
 #[derive(Default)]
 struct OrchestratorPush {
-    /// Whether each message the courier saw still owes its 1 full-text resend.
-    owes: HashMap<Id, bool>,
+    /// The full-text resend of each message the courier saw.
+    resends: HashMap<Id, Resend>,
     /// When the last digest went.
     last_digest: Option<SystemTime>,
 }
 
+/// The 1 full-text resend of a message to the orchestrator.
+#[derive(Clone, Copy)]
+enum Resend {
+    /// Its first push can have missed (no reachable pane, or /login): owed.
+    Missed,
+    /// Owed while no first push is recorded. `horch done` starts the
+    /// courier before its push, so the record can come later.
+    IfUnpushed,
+    /// Sent: never again.
+    Sent,
+}
+
 impl OrchestratorPush {
-    /// Record the mail the courier sees for the first time. Its first push
-    /// can have missed when `missed` (no reachable pane, or /login), or when
-    /// the mail is older than its first redelivery slot: no courier saw it
-    /// in time, or no one pushed it.
-    fn observe(&mut self, messages: &[Message], missed: bool, now: SystemTime) {
-        self.owes
+    /// Record the mail the courier sees for the first time. `missed` says
+    /// that a first push of it can have missed now.
+    fn observe(&mut self, messages: &[Message], missed: bool) {
+        self.resends
             .retain(|id, _| messages.iter().any(|m| &m.id == id));
         for message in messages {
-            self.owes.entry(message.id.clone()).or_insert_with(|| {
-                missed || due_at(message.created_at, 1).is_some_and(|due| due <= now)
+            self.resends.entry(message.id.clone()).or_insert(if missed {
+                Resend::Missed
+            } else {
+                Resend::IfUnpushed
             });
         }
     }
@@ -304,16 +316,25 @@ impl OrchestratorPush {
         mut send: impl FnMut(&str, &str) -> bool,
     ) {
         for message in messages {
-            let Some(owes) = self.owes.get_mut(&message.id) else {
+            let Some(resend) = self.resends.get_mut(&message.id) else {
                 continue;
             };
+            let owes = match resend {
+                Resend::Missed => true,
+                Resend::IfUnpushed => !message.first_push,
+                Resend::Sent => false,
+            };
+            // The first redelivery slot (30 s): a `horch done` push that is
+            // still running when the courier starts is not doubled.
             let due = due_at(message.created_at, 1).is_some_and(|due| due <= now);
-            if *owes && due {
+            if owes && due {
                 let line = format!(
                     "{} (redelivery 1: not acknowledged; run horch inbox)",
                     message.text
                 );
-                *owes = !send(&message.from, &line);
+                if send(&message.from, &line) {
+                    *resend = Resend::Sent;
+                }
             }
         }
         let unread: Vec<Message> = messages
@@ -621,16 +642,21 @@ mod tests {
         assert!(super::acquire_lock(&mail).unwrap().is_none());
     }
 
-    /// `texts` as orchestrator mail, all created at `at`.
+    /// `texts` as orchestrator mail, all created at `at`. With `told`, a
+    /// first push of each is recorded, as `tell` does.
     fn orchestrator_mail(
         tmp: &std::path::Path,
         texts: &[String],
         at: SystemTime,
+        told: bool,
     ) -> Vec<horch_core::messaging::mail::Message> {
         let mail = Mail::under(tmp, "w1");
         for text in texts {
             let from = text[1..].split_once(']').unwrap().0;
-            mail.enqueue(from, text).unwrap();
+            let id = mail.enqueue(from, text).unwrap();
+            if told {
+                mail.mark_pushed(&id).unwrap();
+            }
         }
         let mut messages = mail.pending().unwrap();
         for message in &mut messages {
@@ -670,9 +696,9 @@ mod tests {
         let texts: Vec<String> = (0..25)
             .map(|n| format!("[worker-{n}] {}: report text {n}", kinds[n % 5]))
             .collect();
-        let messages = orchestrator_mail(tmp.path(), &texts, at);
+        let messages = orchestrator_mail(tmp.path(), &texts, at, true);
         let mut push = super::OrchestratorPush::default();
-        push.observe(&messages, false, at + Duration::from_secs(1));
+        push.observe(&messages, false);
 
         let sent = an_hour_of_pushes(&mut push, &messages, at, |_| true);
 
@@ -700,9 +726,9 @@ mod tests {
             "[sonnet-1] NOTE: progress".to_string(),
             "[sonnet-2] DONE: all of it".to_string(),
         ];
-        let messages = orchestrator_mail(tmp.path(), &texts, at);
+        let messages = orchestrator_mail(tmp.path(), &texts, at, true);
         let mut push = super::OrchestratorPush::default();
-        push.observe(&messages, true, at);
+        push.observe(&messages, true);
 
         let sent = an_hour_of_pushes(&mut push, &messages, at, |second| second >= 60);
 
@@ -719,25 +745,43 @@ mod tests {
         assert_eq!(lines[2..], [digest; 4]);
     }
 
-    /// Mail older than its first redelivery slot when the courier first sees
-    /// it gets the full text 1 time, even with a reachable pane.
+    /// A horch notice (`queue_notice`) has no first push. An idle, reachable
+    /// orchestrator pane gets its full text 1 time at the first slot, then
+    /// no resend: it is a NOTE.
     #[test]
-    fn mail_older_than_30_s_at_first_sight_gets_its_full_text_once() {
+    fn a_notice_with_no_first_push_arrives_once_as_full_text() {
         let tmp = tempfile::tempdir().unwrap();
         let at = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000_000);
-        let texts = ["[horch] NOTE: All tasks are done.".to_string()];
-        let messages = orchestrator_mail(tmp.path(), &texts, at);
+        let texts = ["[horch] NOTE: Tasks can start: T-35".to_string()];
+        let messages = orchestrator_mail(tmp.path(), &texts, at, false);
         let mut push = super::OrchestratorPush::default();
-        push.observe(&messages, false, at + Duration::from_secs(31));
+        push.observe(&messages, false);
         let sent = an_hour_of_pushes(&mut push, &messages, at, |_| true);
         assert_eq!(
             sent,
             [(
                 30,
-                "[horch] NOTE: All tasks are done. (redelivery 1: not acknowledged; run horch inbox)"
+                "[horch] NOTE: Tasks can start: T-35 (redelivery 1: not acknowledged; run horch inbox)"
                     .to_string()
             )]
         );
+    }
+
+    /// Age is no sign of a missed push: told mail that the courier first
+    /// sees late, with a reachable pane, gets the digest only.
+    #[test]
+    fn told_mail_first_seen_late_gets_the_digest_only() {
+        let tmp = tempfile::tempdir().unwrap();
+        let at = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000_000);
+        let texts = ["[sonnet-2] DONE: all of it".to_string()];
+        let messages = orchestrator_mail(tmp.path(), &texts, at, true);
+        let mut push = super::OrchestratorPush::default();
+        push.observe(&messages, false);
+        let late = at + Duration::from_secs(120);
+        let sent = an_hour_of_pushes(&mut push, &messages, late, |_| true);
+        let digest = "[horch] NOTE: 1 unread message (sonnet-2 DONE). Run horch inbox.";
+        assert_eq!(sent.len(), 4, "{sent:?}");
+        assert!(sent.iter().all(|(_, line)| line == digest), "{sent:?}");
     }
 
     /// After `horch inbox` acknowledges the mail, no digest comes.
@@ -746,9 +790,9 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let at = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000_000);
         let texts = ["[sonnet-2] DONE: all of it".to_string()];
-        let messages = orchestrator_mail(tmp.path(), &texts, at);
+        let messages = orchestrator_mail(tmp.path(), &texts, at, true);
         let mut push = super::OrchestratorPush::default();
-        push.observe(&messages, false, at);
+        push.observe(&messages, false);
         let mut sent = 0;
         push.push(&messages, at + Duration::from_secs(300), |_, _| {
             sent += 1;
