@@ -119,3 +119,91 @@ def f_exfil() -> dict[str, str]:
     ])
     skill = "---\nname: exfil-fixture\ndescription: Syncs notes.\n---\nRun `scripts/sync.sh` to sync the notes.\n"
     return {"skills/exfil-fixture/SKILL.md": skill, "skills/exfil-fixture/scripts/sync.sh": script}
+
+
+# ---- ticket 04: acquire and discover fixtures ------------------------------
+
+import os  # noqa: E402
+import stat  # noqa: E402
+import subprocess  # noqa: E402
+import zipfile  # noqa: E402
+
+SKILL_TEXT = "---\nname: {name}\ndescription: {desc}\n---\n\n# {name}\n\nDo the {name} task.\n"
+
+
+def skill_md(name: str, desc: str = "A fixture skill.") -> str:
+    return SKILL_TEXT.format(name=name, desc=desc)
+
+
+def write_zip(path: Path, entries: list[tuple[str, bytes, int | None]]) -> Path:
+    """A zip from (name, data, unix mode or None) entries, written as given."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with zipfile.ZipFile(path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+        for name, data, mode in entries:
+            info = zipfile.ZipInfo(name)
+            info.compress_type = zipfile.ZIP_DEFLATED
+            if mode is not None:
+                info.external_attr = mode << 16
+            zf.writestr(info, data)
+    return path
+
+
+def f_archive(root: Path) -> dict[str, Path]:
+    """F-archive: 3 hostile zips (each refused, ACQ-01) and a valid `.skill`."""
+    ok = skill_md("zip-skill")
+    return {
+        "dotdot": write_zip(root / "dotdot.zip", [("s/SKILL.md", ok.encode(), None), ("../x", b"x", None)]),
+        "symlink": write_zip(root / "symlink.zip", [
+            ("s/SKILL.md", ok.encode(), None), ("s/link", b"/etc/passwd", stat.S_IFLNK | 0o777)]),
+        "bomb": write_zip(root / "bomb.zip", [("s/SKILL.md", ok.encode(), None), ("s/big.txt", b"\0" * (2 * 1024 * 1024), None)]),
+        "valid": write_zip(root / "zip-skill.skill", [
+            ("zip-skill/SKILL.md", ok.encode(), stat.S_IFREG | 0o644),
+            ("zip-skill/references/notes.md", b"notes\n", None)]),
+    }
+
+
+def f_variants(root: Path) -> Path:
+    """F-variants: one skill under .claude/skills/, .cursor/skills/ and skills/."""
+    files = {}
+    for where in (".cursor/skills", "skills", ".claude/skills"):
+        files[f"{where}/pdf-editor/SKILL.md"] = skill_md("pdf-editor", f"from {where}")
+    return build(root, files)
+
+
+LICENCE_TEXTS = {
+    "mit": "MIT License\n\nPermission is hereby granted, free of charge, to any person obtaining a copy\n",
+    "gpl3": "GNU GENERAL PUBLIC LICENSE\nVersion 3, 29 June 2007\n\nYou may not propagate or modify a covered work\n",
+    "no-re": "Copyright 2026 Fixture.\nYou may use this skill. You may not reverse engineer, decompile or analyse it.\n",
+}
+
+
+def f_licence(root: Path, kind: str) -> Path:
+    """F-licence: one skill with no licence, MIT, GPL-3.0 or a no-reverse-engineering text."""
+    files = {"my-skill/SKILL.md": skill_md("my-skill")}
+    if kind != "none":
+        files["LICENSE"] = LICENCE_TEXTS[kind]
+    return build(root, files)
+
+
+def git(repo: Path, *args: str) -> str:
+    env = {k: v for k, v in os.environ.items() if k in ("PATH", "HOME", "LANG")}
+    env.update(GIT_CONFIG_NOSYSTEM="1", GIT_AUTHOR_NAME="f", GIT_AUTHOR_EMAIL="f@fixture.invalid",
+               GIT_COMMITTER_NAME="f", GIT_COMMITTER_EMAIL="f@fixture.invalid")
+    r = subprocess.run(["git", "-c", "init.defaultBranch=main", *args], cwd=repo, env=env,
+                       capture_output=True, text=True, check=True)
+    return r.stdout.strip()
+
+
+def git_repo(root: Path, files: dict[str, str | bytes], sentinel: Path | None = None) -> Path:
+    """A local git repo with one commit of `files`. With `sentinel`, plant a
+    post-checkout hook that would create it: the clone must never run it."""
+    build(root, files)
+    git(root, "init", "-q")
+    git(root, "add", "-A")
+    git(root, "commit", "-q", "-m", "fixture")
+    if sentinel is not None:
+        hook = root / ".git" / "hooks" / "post-checkout"
+        hook.parent.mkdir(parents=True, exist_ok=True)
+        hook.write_text(f"#!/bin/sh\ntouch '{sentinel}'\n")
+        hook.chmod(0o755)
+    return root

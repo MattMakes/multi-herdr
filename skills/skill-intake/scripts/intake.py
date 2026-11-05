@@ -30,6 +30,8 @@ COMMANDS = (
     "guard",
     "hook-config",
     "scan",
+    "acquire",
+    "discover",
 )
 
 
