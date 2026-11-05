@@ -957,3 +957,47 @@ fixes it. `intake-analyst-1` is not a worker of the ledger run, so it ended by
 itself or is still to close: see the check before `horch done`.
 
 Steps 1, 2 and 4 wait for tickets 34 and 35. Step 5 runs in the meantime.
+
+### Step 5, attempt 4: FAILED at GATE 2 (the gate worked; the install did not happen)
+
+| field | value |
+|---|---|
+| command | the attempt 3 command, on the branch after the analyst prompt fix (rebased on `4da5bc0e`) |
+| task id | T-17 (Claude session started 13:39:53Z, 49 turns, 6.08 USD list price). `intake` task `20261105-134024-bc6d24` |
+| outcome | `intake mode` printed `plain`. 6 `general-purpose` subagents ran: auditor, analyst, sanitizer, writer, reviewer and a second reviewer. The clone, GATE 1, `cr init`, `cr index`, handoff, `cr context`, the writer and the reviewer all passed, and `role-result` passed for each role (T-29, T-32 and the analyst prompt fix hold). `intake verify` aborted at GATE 2 (exit 5). After 1 feedback pass with a fresh reviewer it failed again for the same 2 reasons. The controller stopped there, and nothing was installed. |
+| report | `~/.local/state/skill-intake/contaminated/20261105-134024-bc6d24/report.md`: `aborted at GATE 2`, 55 findings (0 critical, 41 high, 9 medium, 3 low, 2 info), 0 malicious, permissive licence |
+| installed | nothing. `ls ~/.claude/skills` equals the list before step 1. |
+
+GATE 2 reasons (`C/verify.json`; 7 checks passed: findings, handoff-integrity,
+review-coverage, scripts, target-rules, domain-snapshot, persona):
+
+- `resweep`: `INJ-04 high in documentation-first-change-discipline/references/templates.md:192`.
+  The line is the writer's own sentence in a `TODO.md` template: "Do not
+  delete items silently: mark them with a status instead." The INJ-04 rule
+  reads the word "silently" as a concealment phrase. This is a false positive
+  on a plain sentence. `INJ-04` is in `NEVER_ACCEPTED` (`verify.py`), so
+  no declared capability can accept it.
+- `overlap`: the output `SKILL.md` and `references/templates.md` share
+  6-word prose runs with the source `README.md`, `README.zh-CN.md` and
+  `SKILL.md`, and the output `SKILL.md` and `references/task-discipline.md`
+  share runs with the spec.
+
+Findings, not fixed in T-17:
+
+- The feedback loop cannot fix either reason. The brief takes no free text,
+  so a fresh reviewer gets no verify output. The reviewer is source-blind
+  and cannot locate prose that overlaps a source it never saw. A revised spec
+  does not rewrite the existing output. The controller ran 1 of the 3 allowed
+  passes and stopped, because 2 more would fail the same way. This is the
+  same design limit that `SKILL.md` "Feedback loop" describes.
+- The `skill-importer` skill text for the writer brief: `intake brief writer
+  --skill docs-driven-workflow` exited 9 (the name is the source project's own
+  name, so the leakage scan refuses it). The controller used the skill name
+  from the spec, `documentation-first-change-discipline`.
+- Nothing checks that a `verification` argv in `K/review.json` can run: the
+  second reviewer recorded 1 command with placeholder text in place of code.
+- The controller ran `subagent-prompt` for the second reviewer twice. The
+  first run started the role and its output was lost, and the second run was
+  refused (exit 14, another role active). The controller built the prompt by
+  hand from the first one. This is the controller's error, and it makes the
+  second reviewer run less reliable as evidence.
