@@ -76,8 +76,10 @@ This rule is fixed:
 
 `duration_sec = max(planned duration_sec, vo_duration_sec + 0.25)`
 
-The `0.25 s` is the breath pad before the next scene. The script applies it,
-recomputes every `start_sec` and `meta.duration_sec`, and moves the other
+The `0.25 s` is the breath pad before the next scene. With `meta.bpm`, the
+end of a scene that grew moves up to the next beat (`k * 60 / bpm`), so every
+cut stays on the step 3 grid, and every `beat_in` and `beat_out` is
+recomputed from the new edges. The script applies the pad, recomputes every `start_sec` and `meta.duration_sec`, and moves the other
 project times with the scenes: `rhythm[]` `start_sec`, `end_sec` and
 `events_sec`, `meta.hero_sec`, `meta.payoff_silence_sec` and
 `meta.allowed_silences`. A time inside a scene that grew keeps its fraction of

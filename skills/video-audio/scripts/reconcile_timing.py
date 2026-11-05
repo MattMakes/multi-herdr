@@ -9,6 +9,11 @@ For each scene with narration, ffprobe measures audio/vo-<id>.wav. The rule:
 
   duration_sec = max(planned duration_sec, vo_duration_sec + 0.25)
 
+With meta.bpm, the end of a scene that grew moves up to the next beat of the
+grid k * 60 / bpm, so every cut stays on the beat grid of step 3. Then every
+scene beat_in and beat_out is recomputed from its edges. Without meta.bpm
+there is no grid: a scene that grew is not snapped, and the beats stay.
+
 Then every scene start_sec and meta.duration_sec are recomputed, and every
 other project time moves with the scenes:
   rhythm[].start_sec, rhythm[].end_sec, rhythm[].events_sec,
@@ -20,7 +25,7 @@ a word stays near that word, and the gaps between events grow by the same
 factor, not all in the scene tail. A time in a scene that did not change keeps
 its offset from the scene start. A time at or after the old film end moves by
 the total change. Times relative to a scene start (motion.reveal_sec) do not
-change. beat_in and beat_out do not change.
+change.
 
 The file is written in place. Stdout is a JSON report with each changed scene.
 Run check_timeline.py of video-storyboard after it.
@@ -31,6 +36,7 @@ Needs ffprobe on PATH. Python standard library only.
 
 import argparse
 import json
+import math
 import os
 import subprocess
 import sys
@@ -73,24 +79,33 @@ def reconcile(timeline, vo_durations):
     scenes = timeline["scenes"]
     old_edges = [scene["start_sec"] for scene in scenes]
     old_edges.append(scenes[-1]["start_sec"] + scenes[-1]["duration_sec"])
+    meta = timeline["meta"]
+    beat = 60.0 / meta["bpm"] if "bpm" in meta else None
     changes = []
     start = 0.0
     new_edges = []
     for scene in scenes:
+        scene["start_sec"] = round(start, 3)
+        new_edges.append(scene["start_sec"])
+        end = start + scene["duration_sec"]
         if scene["id"] in vo_durations:
             vo = round(vo_durations[scene["id"]], 3)
             scene["vo_duration_sec"] = vo
             planned = scene["duration_sec"]
-            scene["duration_sec"] = round(max(planned, vo + BREATH_PAD_SEC), 3)
-            if scene["duration_sec"] != planned:
+            if round(vo + BREATH_PAD_SEC, 3) > planned:
+                end = start + vo + BREATH_PAD_SEC
+                if beat:
+                    end = math.ceil(end / beat - 1e-6) * beat
+                scene["duration_sec"] = round(end - start, 3)
                 changes.append({"scene": scene["id"], "old_duration_sec": planned,
                                 "new_duration_sec": scene["duration_sec"]})
-        scene["start_sec"] = round(start, 3)
-        new_edges.append(scene["start_sec"])
-        start += scene["duration_sec"]
+        start = end
     new_edges.append(round(start, 3))
-    meta = timeline["meta"]
     meta["duration_sec"] = round(start, 3)
+    if beat:
+        for scene in scenes:
+            scene["beat_in"] = round(scene["start_sec"] / beat)
+            scene["beat_out"] = round((scene["start_sec"] + scene["duration_sec"]) / beat)
 
     move = time_map(old_edges, new_edges)
     for item in timeline.get("rhythm", []):
@@ -190,6 +205,10 @@ def _starts_only(timeline, vo_durations):
     timeline["meta"]["duration_sec"] = round(start, 3)
 
 
+def _beats(timeline):
+    return [(s["beat_in"], s["beat_out"]) for s in timeline["scenes"]]
+
+
 def self_test():
     import copy
     import shutil
@@ -234,6 +253,28 @@ def self_test():
     expect("the stretch before the change holds, the last one ends at the film end",
            new["rhythm"][0]["end_sec"] == 2.5 and new["rhythm"][-1]["end_sec"] == 17.0, new["rhythm"])
     expect("vo_duration_sec is recorded", new["scenes"][1]["vo_duration_sec"] == 6.75, new["scenes"][1])
+    expect("beat_in and beat_out follow the moved edges", _beats(new)
+           == [(0, 5), (5, 19), (19, 28), (28, 34)], _beats(new))
+
+    # s02-demo needs 6.6 + 0.25 = 6.85 s. Its end snaps up to the next beat (0.5 s at bpm 120).
+    off_beat = copy.deepcopy(plan)
+    reconcile(off_beat, {"s02-demo": 6.6})
+    expect("a grown scene ends on the next beat (6.85 s -> 7.0 s)",
+           [s["start_sec"] for s in off_beat["scenes"]] == [0.0, 2.5, 9.5, 14.0]
+           and off_beat["meta"]["duration_sec"] == 17.0, off_beat["scenes"])
+    misses = [s["id"] for s in off_beat["scenes"] if abs(s["start_sec"] * 2 - round(s["start_sec"] * 2))
+              > 2 / off_beat["meta"]["fps"]]
+    expect("every cut is within 1 frame of the beat grid (the render beat check)", misses == [], misses)
+    expect("beat_in and beat_out of the snapped plan", _beats(off_beat)
+           == [(0, 5), (5, 19), (19, 28), (28, 34)], _beats(off_beat))
+    expect("snapped plan passes check_timeline", rules(off_beat) == set(), rules(off_beat))
+
+    no_music = copy.deepcopy(plan)
+    del no_music["meta"]["bpm"]
+    reconcile(no_music, {"s02-demo": 6.6})
+    expect("without meta.bpm a grown scene is not snapped and beats stay",
+           no_music["scenes"][1]["duration_sec"] == 6.85 and _beats(no_music) == _beats(plan),
+           no_music["scenes"])
 
     same = copy.deepcopy(plan)
     expect("short voices change nothing", reconcile(same, {"s01-hook": 1.0}) == []
