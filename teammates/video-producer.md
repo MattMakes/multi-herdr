@@ -1,6 +1,6 @@
 ---
 name: video-producer
-brief_description: Video production lead. Picks the workflow (launch film, app explainer, A/B, batch), keeps the A/B label map, taste notes and share kit. Use first on any video request.
+brief_description: Video producer. Picks the workflow, runs A/B ranks and batches, keeps taste notes, writes the share kit.
 base: fleet-worker
 agent: claude
 # Sanctioned #58: subscription auto-mode read-only pre-approval; see live-check results.

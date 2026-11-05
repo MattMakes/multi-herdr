@@ -2166,7 +2166,8 @@ w3-codex: sandbox is Claude only; agent codex cannot honour it";
                 | "opus-creative"
                 | "ue-tech-lead"
                 | "godot-tech-lead"
-                | "video-director" => Some(Phase::Plan),
+                | "video-director"
+                | "video-producer" => Some(Phase::Plan),
                 "architect-reviewer"
                 | "qa-engineer"
                 | "codex-reviewer"
