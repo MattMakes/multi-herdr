@@ -363,9 +363,12 @@ fn target_for(env: &Env, role: &str, need_command: bool) -> Result<Target, Strin
 }
 
 /// Steps 3 and 4: the in-place route and the handoff guard, unless forced.
+/// A `handoff` row gets no new compaction (TRF-09).
 fn route_and_handoff(env: &Env, t: &Target, force: bool) -> Result<(), String> {
     if force {
         Ok(())
+    } else if let Some(reason) = handoff_route(t) {
+        Err(reason)
     } else if !env.src.roster.compacts_in_place(t.row.kind) {
         Err(format!(
             "refused: {} uses the fresh route; tell {} to run horch done",
@@ -375,6 +378,19 @@ fn route_and_handoff(env: &Env, t: &Target, force: bool) -> Result<(), String> {
     } else {
         check_handoff(env, t)
     }
+}
+
+/// TRF-09: the refusal for a row still over its threshold after 1
+/// compaction. A second cycle would not help; the session hands off (C4).
+fn handoff_route(t: &Target) -> Option<String> {
+    (t.row.state == RowState::Handoff).then(|| {
+        let role = &t.row.record.role;
+        format!(
+            "refused: {role} is still over its threshold after 1 compaction; \
+             use the handoff route: {role} writes {} and runs horch ledger handoff",
+            policy::handoff_path(role)
+        )
+    })
 }
 
 /// Step 4: the handoff file of the record is fresh enough.
@@ -409,6 +425,9 @@ fn handoff_file(ctx: &RuntimeContext, record: &Record) -> PathBuf {
 
 fn request(env: &Env, role: &str) -> Outcome {
     Outcome::from_result(request_target(env, role).and_then(|t| {
+        if let Some(reason) = handoff_route(&t) {
+            return Err(reason);
+        }
         already_asked_line(env, &t, role).map_or_else(|| send_request(env, &t, role), Ok)
     }))
 }
@@ -1446,6 +1465,35 @@ mod tests {
         );
         assert!(f.typed(&pane).is_empty());
         assert_eq!(f.w.events("r-1", EVENT_REQUESTED).len(), 2);
+    }
+
+    /// TRF-09: a row still over after 1 compaction gets the handoff route.
+    /// `--request` types nothing and records nothing; a compaction is
+    /// refused unless forced.
+    #[test]
+    fn trf_09_a_row_still_over_after_1_compaction_is_sent_to_the_handoff_route() {
+        let f = Fleet::new();
+        let pane = f.pane("sonnet-1");
+        f.w.worker("r-1", "sonnet-1", "claude", "sonnet", Some(OVER));
+        f.w.event_at("r-1", &minutes_ago(10), EVENT_REQUESTED, "first");
+        f.w.event_at(
+            "r-1",
+            &minutes_ago(5),
+            policy::EVENT_COMPACTED,
+            &policy::compacted_text(Some(330_000), Some(305_000), "h.md"),
+        );
+        let want = "horch compact: refused: sonnet-1 is still over its threshold after 1 \
+                    compaction; use the handoff route: sonnet-1 writes \
+                    ai_docs/handoffs/sonnet-1-whats-next.md and runs horch ledger handoff";
+        let asked = f.run("sonnet-1", |a| a.request = true);
+        assert_eq!(asked.code, 1, "{asked:?}");
+        assert_eq!(asked.err, [want]);
+        assert!(f.typed(&pane).is_empty());
+        assert_eq!(f.w.events("r-1", EVENT_REQUESTED).len(), 1);
+        let scheduled = f.run("sonnet-1", |_| {});
+        assert_eq!(scheduled.code, 1, "{scheduled:?}");
+        assert_eq!(scheduled.err, [want]);
+        assert!(!f.env().job_dir("sonnet-1").join(JOB_FILE).exists());
     }
 
     /// #75: a stale ask whose compaction job is live is not asked again.
