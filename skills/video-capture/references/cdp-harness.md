@@ -4,7 +4,7 @@ The harness drives Chrome through the Chrome DevTools Protocol (CDP) with
 Node built-ins only: no `playwright` import, no `npm install`. It ran on
 Chrome 156, Node v26.12.1 and ffmpeg 8.1.
 
-`<skill-dir>` is the folder that holds SKILL.md. The code is in
+`<skill-dir>` means the directory where SKILL.md sits. The code is in
 `<skill-dir>/scripts/`. Run the scripts from there. Do not copy them.
 
 | File | Use |

@@ -60,7 +60,7 @@ const SEATS: [Seat; 7] = [
         &[
             "video-motion",
             "video-character",
-            "video-reanimate",
+            "video-motion-match",
             "motion-gsap",
         ],
     ),
@@ -88,7 +88,7 @@ const VIDEO_SKILLS: [&str; 10] = [
     "video-audio",
     "video-motion",
     "video-character",
-    "video-reanimate",
+    "video-motion-match",
     "video-render",
     "video-qa",
 ];
@@ -101,7 +101,7 @@ const ENTRYPOINTS: [&str; 9] = [
     "video-produce/scripts/check_share.py",
     "video-storyboard/scripts/check_timeline.py",
     "video-audio/scripts/check_audio.py",
-    "video-reanimate/scripts/compare_frames.py",
+    "video-motion-match/scripts/compare_frames.py",
     "video-render/scripts/render_frames.mjs",
     "video-qa/scripts/qa_video.py",
 ];
@@ -114,7 +114,7 @@ const PYTHON_SELF_TESTS: [&str; 8] = [
     "skills/video-produce/scripts/check_share.py",
     "skills/video-storyboard/scripts/check_timeline.py",
     "skills/video-audio/scripts/check_audio.py",
-    "skills/video-reanimate/scripts/compare_frames.py",
+    "skills/video-motion-match/scripts/compare_frames.py",
     "skills/video-qa/scripts/qa_video.py",
 ];
 

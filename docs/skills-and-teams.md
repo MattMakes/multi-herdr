@@ -200,7 +200,7 @@ each team.
 | Design (6 new, 2 changed) | no gate: always offered | 8 design skills | brand inputs override the palettes and font pairings in the skills |
 | Blender (`blender-artist`) | `*.blend` or `*.uproject` | `blender-ue-pipeline`, `blender-modeling`, `blender-rigging`, `blender-baking` | Blender Lab MCP server; hands FBX exports to the Unreal team |
 | Blender (`blender-builder`, `blender-qa`, `blender-3d-printer`) | `*.blend`; the printer also `*.stl`, `*.3mf` or `*.obj` | the 28 copied EL4CTEO `blender-*` skills and the own-text `blender-3d-print` | ahujasid MCP server, pinned, telemetry off, network asset tools denied; headless by default; QA reports and fixes nothing |
-| Video (7 `video-*`) | no gate: always offered | 10 own-text `video-*` skills: `video-produce`, `video-direction`, `video-storyboard`, `video-capture`, `video-audio`, `video-motion`, `video-character`, `video-reanimate`, `video-render`, `video-qa` | work offline with local `ffmpeg`, Chrome and macOS `say`; `timeline.json` is the single source of truth; every wave passes a numeric gate; a fresh `video-critic` for each review round |
+| Video (7 `video-*`) | no gate: always offered | 10 own-text `video-*` skills: `video-produce`, `video-direction`, `video-storyboard`, `video-capture`, `video-audio`, `video-motion`, `video-character`, `video-motion-match`, `video-render`, `video-qa` | work offline with local `ffmpeg`, Chrome and macOS `say`; `timeline.json` is the single source of truth; every wave passes a numeric gate; a fresh `video-critic` for each review round |
 
 ### Unreal Engine and Git LFS
 

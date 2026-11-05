@@ -13,7 +13,7 @@ read it. Only this phase and the audio timing reconciliation write it.
 Inputs: `BRIEF.md`, `DIRECTION.md` (from `video-direction`).
 Outputs: `STORYBOARD.md`, `timeline.json`, `qa/plan-check.json`.
 
-`<skill-dir>` is the folder that holds this SKILL.md. Run every command from
+`<skill-dir>` means the directory where this SKILL.md sits. Run every command from
 the video project folder.
 
 ## Order of work
@@ -163,7 +163,7 @@ later phase reads them, and write them into `STORYBOARD.md` too.
 | 5 | `visual_variety` | At most 2 scenes in a row share a kind. Adjacent scenes differ in kind, plate, `motion.template`, or a focal point shift of 0.25 or more (distance in normalized units). |
 | 6 | `safe_zone` | Every region is inside the frame with area. Bottom edge `y + h` is 0.82 or less (caption band). In `9:16`, right edge `x + w` is 0.85 or less (platform buttons). |
 | 7 | `contiguous_timing` | Scene 1 starts at 0.0 s. Each start equals the previous start plus duration, within 0.001 s. Durations sum to `meta.duration_sec` within 0.05 s. |
-| 8 | `read_hold` | Each caption and `on_screen_text` item holds `duration_sec - motion.reveal_sec` of at least max(1.5 s, 1.0 s + 0.3 s per word). |
+| 8 | `read_hold` | Each caption and `on_screen_text` item holds `duration_sec - motion.reveal_sec` of at least 1.0 s plus 0.3 s for each word, and never under 1.5 s. |
 | 9 | `terms` | Each `meta.terms` entry is said in a narration and shown in a caption or `on_screen_text`. Whole words, any case. |
 | 10 | `rhythm` | Energy is an integer 0 to 10. Stretches are in order, do not overlap, and stay inside the film. Each event is inside its stretch. With `meta.bpm`, the sheet is not empty. |
 | 11 | `event_gap` | With `meta.bpm`: no part of the film longer than 2 bars has no event (a scene start or an `events_sec` time), except inside a `stop` stretch or `payoff_silence_sec`. |

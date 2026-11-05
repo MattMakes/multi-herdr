@@ -9,7 +9,7 @@ Record product UI and CLI walkthroughs as plates that are the same on every
 run, and record every interaction as telemetry. The audio phase places click
 and key sounds from the telemetry. The editor applies camera zoom from it.
 
-`<skill-dir>` is the folder that holds this SKILL.md. The harness and the
+`<skill-dir>` means the directory where this SKILL.md sits. The harness and the
 plate gate are in `<skill-dir>/scripts/`. Run them from there. Do not copy
 them. `<skill-dir>/references/cdp-harness.md` explains the harness, the take
 API (`h`) and the gotchas.

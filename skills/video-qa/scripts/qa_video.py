@@ -217,6 +217,25 @@ def load_timeline(path):
 
 # ---------------------------------------------------------------- analysis pass
 
+def _summary_levels(text):
+    """Read integrated loudness and true peak from ebur128 summary lines.
+
+    Returns (lufs, peak) as floats; a value the text does not hold is None.
+    """
+    lufs = peak = None
+    heading = ""
+    for raw in text.splitlines():
+        label, _, rest = raw.strip().partition(":")
+        fields = rest.split()
+        if not fields:
+            heading = label
+        elif label == "I" and fields[1:] == ["LUFS"]:
+            lufs = float(fields[0])
+        elif label == "Peak" and heading == "True peak" and fields[1:] == ["dBFS"]:
+            peak = float(fields[0])
+    return lufs, peak
+
+
 def analyse(video, has_audio):
     """One decode pass: per-frame signalstats, black, freeze and loudness."""
     args = ["-i", str(video), "-map", "0:v:0",
@@ -239,14 +258,13 @@ def analyse(video, has_audio):
     starts = [float(v) for v in re.findall(r"freeze_start: (\S+)", err)]
     ends = [float(v) for v in re.findall(r"freeze_end: (\S+)", err)]
     freezes = [(s, ends[i] if i < len(ends) else None) for i, s in enumerate(starts)]
-    loud = re.search(r"I:\s+(-?[\d.]+|-inf) LUFS", err)
-    peak = re.search(r"True peak:\s+Peak:\s+(-?[\d.]+|-inf) dBFS", err)
+    lufs, peak = _summary_levels(err)
     return {
         "frames": frames,
         "blacks": blacks,
         "freezes": freezes,
-        "lufs": float(loud.group(1)) if loud else None,
-        "true_peak": float(peak.group(1)) if peak else None,
+        "lufs": lufs,
+        "true_peak": peak,
     }
 
 
@@ -940,13 +958,10 @@ def require_tools():
 
 SCENE_OK = """<!doctype html><html><head><style>.dot { transform: translateX(0); }</style></head>
 <body><div class="dot"></div><script>
-// Pure function of (frameIndex, fps). No clocks, no timers.
-function mulberry32(a) { return function () { a |= 0; a = a + 0x6D2B79F5 | 0;
-  let t = Math.imul(a ^ a >>> 15, 1 | a); t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t;
-  return ((t ^ t >>> 14) >>> 0) / 4294967296; }; }
+// Pure function of (frameIndex, fps). No clocks, no timers, no random numbers.
 window.__seekToFrame = function (frameIndex, fps) {
-  const rand = mulberry32(7);
-  document.querySelector('.dot').style.transform = 'translateX(' + (frameIndex / fps * 100 + rand()) + 'px)';
+  const wobble = 0.37;
+  document.querySelector('.dot').style.transform = 'translateX(' + (frameIndex / fps * 100 + wobble) + 'px)';
 };
 </script></body></html>
 """

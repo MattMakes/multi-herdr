@@ -64,9 +64,9 @@ const REPO_ORIGINAL: &[&str] = &[
     "video-character",
     "video-direction",
     "video-motion",
+    "video-motion-match",
     "video-produce",
     "video-qa",
-    "video-reanimate",
     "video-render",
     "video-storyboard",
 ];
@@ -434,9 +434,9 @@ const EXEMPT_FROM_TEXT_ONLY: &[&str] = &[
     "video-audio",
     "video-capture",
     "video-motion",
+    "video-motion-match",
     "video-produce",
     "video-qa",
-    "video-reanimate",
     "video-render",
     "video-storyboard",
 ];

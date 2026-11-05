@@ -91,6 +91,25 @@ def _db(text):
     return -math.inf if text == "-inf" else float(text)
 
 
+def _summary_levels(text):
+    """Read integrated loudness and true peak from ebur128 summary lines.
+
+    Returns (lufs, peak) as floats; a value the text does not hold is None.
+    """
+    lufs = peak = None
+    heading = ""
+    for raw in text.splitlines():
+        label, _, rest = raw.strip().partition(":")
+        fields = rest.split()
+        if not fields:
+            heading = label
+        elif label == "I" and fields[1:] == ["LUFS"]:
+            lufs = float(fields[0])
+        elif label == "Peak" and heading == "True peak" and fields[1:] == ["dBFS"]:
+            peak = float(fields[0])
+    return lufs, peak
+
+
 def measure(path):
     """Run ebur128 and silencedetect. Return loudness, true peak and silences."""
     proc = _run([
@@ -100,10 +119,9 @@ def measure(path):
     if proc.returncode != 0:
         raise ToolError(f"ffmpeg cannot analyse {path}: {proc.stderr.strip()[-400:]}")
     log = proc.stderr
-    summary = log[log.rfind("Summary:"):] if "Summary:" in log else ""
-    lufs = re.search(r"I:\s+(-?[\d.]+|-inf) LUFS", summary)
-    peak = re.search(r"True peak:\s+Peak:\s+(-?[\d.]+|-inf) dBFS", summary)
-    if not lufs or not peak:
+    _, found, block = log.rpartition("Summary:")
+    lufs, peak = _summary_levels(block if found else "")
+    if lufs is None or peak is None:
         raise ToolError("ebur128 summary is missing from the ffmpeg log")
     silences = []
     start = None
@@ -119,8 +137,8 @@ def measure(path):
     momentary = [(float(t), _db(m)) for t, m in re.findall(
         r"\] t: ([\d.]+)\s+TARGET:\S+ LUFS\s+M:\s*(-?[\d.]+|-inf)", log)]
     return {
-        "integrated_lufs": _db(lufs.group(1)),
-        "true_peak_dbtp": _db(peak.group(1)),
+        "integrated_lufs": lufs,
+        "true_peak_dbtp": peak,
         "silences": silences,
         "momentary": momentary,
     }

@@ -55,7 +55,7 @@ done
 S=skills
 TL_CHECK=$S/video-storyboard/scripts/check_timeline.py
 AUDIO_CHECK=$S/video-audio/scripts/check_audio.py
-COMPARE=$S/video-reanimate/scripts/compare_frames.py
+COMPARE=$S/video-motion-match/scripts/compare_frames.py
 RENDER=$S/video-render/scripts/render_frames.mjs
 ASSEMBLE=$S/video-render/scripts/assemble_master.mjs
 QA=$S/video-qa/scripts/qa_video.py
@@ -199,8 +199,8 @@ mkframes() { # DIR X_OFFSET Y NOISE
 mkframes "$P/ref" 0 60 ""
 mkframes "$P/rendered" 1 60 ",noise=alls=3:allf=t"
 mkframes "$P/rendered-bad" 120 100 ""
-ok "compare_frames passes matching keyframes" python3 "$COMPARE" --ref "$P/ref" --rendered "$P/rendered" --out "$P/qa/reanimate-check.json"
-bad "compare_frames fails mismatched keyframes" python3 "$COMPARE" --ref "$P/ref" --rendered "$P/rendered-bad" --out "$W/reanimate-bad.json"
+ok "compare_frames passes matching keyframes" python3 "$COMPARE" --ref "$P/ref" --rendered "$P/rendered" --out "$P/qa/motion-match-check.json"
+bad "compare_frames fails mismatched keyframes" python3 "$COMPARE" --ref "$P/ref" --rendered "$P/rendered-bad" --out "$W/motion-match-bad.json"
 
 # scan_linear_motion: the video-motion template scene is clean, a linear move fails.
 SCAN=$S/video-motion/scripts/scan_linear_motion.py

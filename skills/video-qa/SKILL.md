@@ -5,7 +5,7 @@ description: "Use when a rendered video (render/master.mp4) must pass the final 
 
 # Video QA: numeric gate and blind critic
 
-`<skill-dir>` is the folder that holds this SKILL.md. Run every command from
+`<skill-dir>` means the directory where this SKILL.md sits. Run every command from
 the video project root (the folder that holds `timeline.json`).
 
 The gate has 2 parts. Part 1 is numeric and decides itself: a failed check is

@@ -165,8 +165,8 @@ target duration. State the hook pattern you picked and the first 3 s in
   other transition types.
 - Element entrances: 200 ms to 600 ms. Stagger related elements by 40 ms
   to 80 ms.
-- Hold every text element long enough to read: max(1.5 s, 1.0 s + 0.3 s
-  per word), after it settles. The plan gate checks it.
+- Hold every text element long enough to read, after it settles: 1.0 s plus
+  0.3 s for each word, and never under 1.5 s. The plan gate checks it.
 - Cursor motion in captures follows the `move` curve. No teleporting
   cursor.
 - State what never moves (logo position, caption band) so the eye has an

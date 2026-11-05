@@ -59,7 +59,7 @@ const prelude = `(() => {
   XMLHttpRequest.prototype.send = function (...a) { inflight++; this.addEventListener('loadend', landed, { once: true }); return realSend.apply(this, a); };
   const css = '*,*::before,*::after{caret-color:transparent!important;cursor:none!important}' +
     '::-webkit-scrollbar{display:none!important}html{scrollbar-width:none!important}';
-  const ARROW = '<svg width="28" height="28" viewBox="0 0 28 28"><path d="M4 2 L4 22 L9.5 17 L13 25 L16.5 23.5 L13 15.8 L20.5 15.8 Z" fill="#111" stroke="#fff" stroke-width="1.6" stroke-linejoin="round"/></svg>';
+  const ARROW = '<svg width="28" height="28" viewBox="0 0 28 28"><path d="M4 2 L4 22 L9.5 17 L13 25 L16.5 23.5 L13 15.8 L20.5 15.8 Z" fill="#111" stroke="#fff" stroke-width="1.5" stroke-linejoin="round"/></svg>';
   let ov, cur;
   const overlay = () => {
     if (ov) return;
@@ -172,8 +172,8 @@ cdp.sessionId = (await send('Target.attachToTarget', { targetId, flatten: true }
 const errors = [];
 const argText = (a) => a.value ?? a.description;
 const ON_EVENT = { // CDP event method -> handler of its params
-  'Runtime.exceptionThrown': (p) => errors.push(`pageerror: ${p.exceptionDetails.exception?.description || p.exceptionDetails.text}`),
-  'Runtime.consoleAPICalled': (p) => p.type === 'error' && errors.push(`console.error: ${p.args.map(argText).join(' ')}`),
+  'Runtime.exceptionThrown': ({ exceptionDetails: d }) => errors.push(`uncaught in page: ${d.exception?.description || d.text}`),
+  'Runtime.consoleAPICalled': ({ type, args }) => type === 'error' && errors.push(`page logged an error: ${args.map(argText).join(' ')}`),
   'Fetch.requestPaused': (p) => route(p),
 };
 cdp.events.push((m) => ON_EVENT[m.method]?.(m.params));
@@ -692,6 +692,6 @@ function testMissingChrome(dir) {
 }
 
 function testErrors(err) {
-  const ok = err.status === 1 && err.stderr.includes('console.error: boom') && err.stderr.includes('blocked live request');
+  const ok = err.status === 1 && err.stderr.includes('page logged an error: boom') && err.stderr.includes('blocked live request');
   return [outcome(ok, `console.error and a live request make the capture exit 1 (exit ${err.status})`)];
 }

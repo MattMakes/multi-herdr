@@ -31,7 +31,7 @@ window.__videoMeta = { width: 1920, height: 1080, fps: 60, duration: 6.0 };
 
 ## 2. Scene template
 
-Write the scene as 1 HTML file. Copy `<skill-dir>/scripts/seek-timeline.js` into the scene folder as `scenes/<scene-id>/seek-timeline.js`. `<skill-dir>` is the folder that holds the `video-motion` SKILL.md. The file has no dependencies and loads nothing from the network.
+Write the scene as 1 HTML file. Copy `<skill-dir>/scripts/seek-timeline.js` into the scene folder as `scenes/<scene-id>/seek-timeline.js`. `<skill-dir>` means the directory where the `video-motion` SKILL.md sits. The file has no dependencies and loads nothing from the network.
 
 GSAP is an option only when the user project already ships its own GSAP file. Then load that local file, build `gsap.timeline({ paused: true })`, and seek it with `tl.time(t)`.
 

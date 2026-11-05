@@ -11,7 +11,7 @@ Phase 3 of the video pipeline. Input: `timeline.json`, `DIRECTION.md`,
 `audio/bed.wav`, `audio/mix.wav`, and `qa/audio-check.json`. The editor in Phase 5 uses only `audio/mix.wav` and the
 reconciled `timeline.json`.
 
-`<skill-dir>` is the folder that holds this SKILL.md. Run every command from
+`<skill-dir>` means the directory where this SKILL.md sits. Run every command from
 the root of the video project.
 
 Every step runs locally with no network: `ffmpeg`, `ffprobe`, `python3` (standard
@@ -237,7 +237,7 @@ change the script. It makes its test audio in a temporary directory.
 - `audio/sync-sheet.json` exists and the gate ran with `--sync-sheet`.
 - `qa/plan-check.json` passes on the reconciled `timeline.json`.
 
-`<skill-dir>` is the folder that holds this SKILL.md. Run every command from
+`<skill-dir>` means the directory where this SKILL.md sits. Run every command from
 the root of the video project.
 - `DONE:` states the LUFS, the true peak, the final duration, the TTS engine
   and voice, the sync sheet `timing`, and each scene whose duration changed.

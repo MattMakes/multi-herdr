@@ -3,7 +3,7 @@
 
 Usage:
   compare_frames.py --ref <dir-or-video> --rendered <dir-or-video>
-                    [--spec motion-spec.json] [--out qa/reanimate-check.json]
+                    [--spec motion-spec.json] [--out qa/motion-match-check.json]
                     [--diff-strip diff-strip.png] [--samples 8]
   compare_frames.py --self-test
 
@@ -279,7 +279,7 @@ def compare(ref_path, rendered_path, spec_path=None, out=None, diff_strip=None,
 # ---------------------------------------------------------------- self-test
 
 SKILL_BUDGET_BYTES = 12288
-SKILLS = ("video-motion", "video-character", "video-reanimate")
+SKILLS = ("video-motion", "video-character", "video-motion-match")
 TEXT_ONLY = ("video-character",)
 
 
@@ -326,7 +326,7 @@ def self_test():
         make_frames(t / "near", [x + 1 for x in xs], noise=True)
         make_frames(t / "shifted", [x + 120 for x in xs], y=100)
 
-        out, strip = t / "qa" / "reanimate-check.json", t / "qa" / "diff-strip.png"
+        out, strip = t / "qa" / "motion-match-check.json", t / "qa" / "diff-strip.png"
         proc = cli("--ref", t / "ref", "--rendered", t / "near",
                    "--out", out, "--diff-strip", strip)
         report = json.loads(out.read_text()) if out.is_file() else {}

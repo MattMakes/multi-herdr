@@ -45,7 +45,7 @@ plan as it is.
   audio/      vo-<scene-id>.wav, beats.json, sync-sheet.json, sfx-cues.json,
               sfx/, sfx-bus.wav, bed.wav, mix.wav
   scenes/     <scene-id>/index.html
-  reanimate/  <scene-id>/ (reference keyframes, motion-spec.json)
+  motion-match/  <scene-id>/ (reference keyframes, motion-spec.json)
   render/     master.mp4, 16x9.mp4, 9x16.mp4, 1x1.mp4, captions.srt,
               captions.vtt, chapters.txt, cover.jpg, preview.gif,
               share.md, ab/A.mp4, ab/B.mp4
@@ -62,7 +62,7 @@ plan as it is.
 | `video-director` | `BRIEF.md`, `DIRECTION.md` (you or the operator write its `chosen:` line), `STORYBOARD.md`, `timeline.json`, `qa/plan-check.json`, `directions/`, `qa/directions/` | scenes, captures, audio, render |
 | `video-capture` | `captures/`, `materials/` | `timeline.json` |
 | `video-audio` | `audio/`, `qa/audio-check.json`; in `timeline.json` only `start_sec`, `duration_sec`, `meta.duration_sec`, `meta.allowed_silences`; `qa/plan-check.json` after a reconciliation | scenes, captures, render |
-| `video-animator` | `scenes/<scene-id>/` of its task, `MOTION.md`, `reanimate/`, `qa/reanimate-*` | `timeline.json` |
+| `video-animator` | `scenes/<scene-id>/` of its task, `MOTION.md`, `motion-match/`, `qa/motion-match-*` | `timeline.json` |
 | `video-editor` | `render/` except the producer's files, `qa/probe/`, `qa/self-notes.md` | `timeline.json`, scenes |
 | `video-critic` | `qa/render-check.json`, `qa/contact-sheet-360p.png`, `qa/hook-strip.png`, `qa/critique-round-<N>.md`; a ranker: `qa/ab-rank.md`, `qa/ab-*` | every other file |
 
@@ -140,14 +140,14 @@ timing to `video-director` before wave 4.
 
 - Teammate: 1 to 3 `video-animator`, each with its own scene ids.
 - Inputs: `timeline.json`, `DIRECTION.md`, `STORYBOARD.md`, `MOTION.md`,
-  `audio/beats.json`, reference clips for a reanimate scene.
+  `audio/beats.json`, reference clips for a motion-match scene.
 - Outputs: `scenes/<scene-id>/index.html` for every non-capture scene,
-  `MOTION.md`, `reanimate/`, `qa/reanimate-check.json`.
+  `MOTION.md`, `motion-match/`, `qa/motion-match-check.json`.
 - Gate 1: each scene exposes `window.__seekToFrame(frameIndex, fps)`. 3
   sample frames rendered forward and then in reverse are byte-identical.
 - Gate 2, for a reference scene only:
-  `python3 "<skill-dir>/scripts/compare_frames.py" --ref reanimate/<scene-id>/ref/keyframes --rendered reanimate/<scene-id>/rendered --spec reanimate/<scene-id>/motion-spec.json --out qa/reanimate-check.json`
-  (`video-reanimate`).
+  `python3 "<skill-dir>/scripts/compare_frames.py" --ref motion-match/<scene-id>/ref/keyframes --rendered motion-match/<scene-id>/rendered --spec motion-match/<scene-id>/motion-spec.json --out qa/motion-match-check.json`
+  (`video-motion-match`).
 - Pass rule: both gates pass. No `Math.random()`, `Date.now()`,
   `performance.now()`, `setTimeout` or `setInterval` in render code.
 

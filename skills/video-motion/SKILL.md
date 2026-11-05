@@ -13,7 +13,7 @@ A video scene is a web page that a renderer photographs one frame at a time. The
 - You add motion, kinetic type, a diagram walkthrough or particles to such a scene.
 - A render shows jitter, dropped motion, or frames that differ between 2 renders.
 
-For a character or mascot rig, also use the `video-character` skill. To copy the motion of a reference clip, also use the `video-reanimate` skill. `<skill-dir>` is the folder that holds this SKILL.md.
+For a character or mascot rig, also use the `video-character` skill. To copy the motion of a reference clip, also use the `video-motion-match` skill. `<skill-dir>` means the directory where this SKILL.md sits.
 
 ## Inputs
 

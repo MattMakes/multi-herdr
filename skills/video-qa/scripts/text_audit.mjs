@@ -256,14 +256,12 @@ const CANVAS_HOOK = `(() => {
 const SAMPLE_FN = `() => {
   const SKIP = new Set(["SCRIPT", "STYLE", "NOSCRIPT", "TEMPLATE", "TITLE"]);
   const W = innerWidth, H = innerHeight;
+  const chainOf = (el) => (el instanceof Element ? [el, ...chainOf(el.parentElement)] : []);
   const opacityOf = (el) => {
-    let o = 1;
-    for (let e = el; e && e.nodeType === 1; e = e.parentElement) {
-      const s = getComputedStyle(e);
-      if (s.display === "none") return 0;
-      o *= Number(s.opacity);
-    }
-    return getComputedStyle(el).visibility === "visible" ? o : 0;
+    const styles = chainOf(el).map((e) => getComputedStyle(e));
+    if (styles.some((st) => st.display === "none")) return 0;
+    if (getComputedStyle(el).visibility !== "visible") return 0;
+    return styles.reduce((acc, st) => acc * Number(st.opacity), 1);
   };
   // Clip to the overflow boxes of the ancestors (a mask reveal hides its text). A box that
   // holds the whole frame (the stage, body) is skipped, so text cut by the frame edge counts.
@@ -308,7 +306,8 @@ const SAMPLE_FN = `() => {
     items.push({ key, text, px, box: union(frags), frags });
   };
   const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
-  for (let n = walker.nextNode(); n; n = walker.nextNode()) {
+  let n;
+  while ((n = walker.nextNode())) {
     const el = n.parentElement, text = n.nodeValue.replace(/\\s+/g, " ").trim();
     if (!el || !text || SKIP.has(el.tagName)) continue;
     const range = document.createRange();

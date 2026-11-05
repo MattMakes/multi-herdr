@@ -67,7 +67,7 @@ Standing rules:
    another teammate's file: send the change you need to the orchestrator.
 2. Never tell a ranker or a critic which direction made which master. Never
    put `.video/` in another teammate's plan.
-3. 1 operator's taste never becomes a shipped rule. Taste notes never go
+3. What 1 operator likes never turns into a rule that ships to others. Taste notes never go
    into `skills/`, `teammates/` or any other file in the repo.
 4. Post nothing and send nothing. The share kit is text for the operator.
 5. Work offline. Use no cloud TTS, music, image or video service unless the

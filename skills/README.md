@@ -199,7 +199,7 @@ These 29 skills belong to no phase; a teammate attaches them by name. 28 of them
 
 ## Video skills
 
-These 10 skills are own text and belong to no phase; a `video-*` teammate attaches them by name (see [`teammates/README.md`](../teammates/README.md)). 8 ship runnable scripts that use only the Python standard library, Node built-ins, `ffmpeg` and `ffprobe`: `video-audio`, `video-capture`, `video-motion`, `video-produce`, `video-qa`, `video-reanimate`, `video-render` and `video-storyboard`. A script calls a sibling skill only when the same teammate carries it. The orchestrator's wave recipe is in [`orchestrate/references/video-pipeline.md`](orchestrate/references/video-pipeline.md).
+These 10 skills are own text and belong to no phase; a `video-*` teammate attaches them by name (see [`teammates/README.md`](../teammates/README.md)). 8 ship runnable scripts that use only the Python standard library, Node built-ins, `ffmpeg` and `ffprobe`: `video-audio`, `video-capture`, `video-motion`, `video-produce`, `video-qa`, `video-motion-match`, `video-render` and `video-storyboard`. A script calls a sibling skill only when the same teammate carries it. The orchestrator's wave recipe is in [`orchestrate/references/video-pipeline.md`](orchestrate/references/video-pipeline.md).
 
 | Skill | Kind |
 | --- | --- |
@@ -208,9 +208,9 @@ These 10 skills are own text and belong to no phase; a `video-*` teammate attach
 | [video-character](video-character/SKILL.md) | own text |
 | [video-direction](video-direction/SKILL.md) | own text |
 | [video-motion](video-motion/SKILL.md) | own text |
+| [video-motion-match](video-motion-match/SKILL.md) | own text |
 | [video-produce](video-produce/SKILL.md) | own text |
 | [video-qa](video-qa/SKILL.md) | own text |
-| [video-reanimate](video-reanimate/SKILL.md) | own text |
 | [video-render](video-render/SKILL.md) | own text |
 | [video-storyboard](video-storyboard/SKILL.md) | own text |
 

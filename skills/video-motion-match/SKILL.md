@@ -1,13 +1,13 @@
 ---
-name: video-reanimate
+name: video-motion-match
 description: Use when a video scene must recreate the motion of a reference clip or GIF - decompose it into keyframes, a numbered contact sheet and a motion-spec.json of layers, boxes, opacity, transforms and easing, then rebuild it as a deterministic scene and loop scripts/compare_frames.py until SSIM and box IoU pass.
 ---
 
 # Reference reanimation
 
-Recreate the motion of a reference video as a deterministic scene. First measure the reference. Then build a candidate, render the same moments, and compare numbers. Repeat until the numbers pass. Do not judge a match by eye alone.
+Rebuild the movement of a reference clip as a deterministic scene. First measure the reference. Then build a candidate, render the same moments, and compare numbers. Repeat until the numbers pass. Do not judge a match by eye alone.
 
-`<skill-dir>` is the folder that holds this SKILL.md. Run every command from the video project folder.
+`<skill-dir>` means the directory where this SKILL.md sits. Run every command from the video project folder.
 
 ## When to use
 
@@ -24,11 +24,11 @@ The rebuilt scene follows the seek contract of the `video-motion` skill. A chara
 
 ## 1. Decompose the reference
 
-Work in `reanimate/<scene-id>/`.
+Work in `motion-match/<scene-id>/`.
 
 1. Probe it: `ffprobe -v error -show_entries stream=width,height,r_frame_rate:format=duration -of json ref/clip.mp4`.
 2. Extract all frames at the target size for inspection:
-   `ffmpeg -i ref/clip.mp4 -vf "fps=<fps>,scale=<w>:<h>:flags=area" reanimate/<scene-id>/ref/all/f%05d.png`
+   `ffmpeg -i ref/clip.mp4 -vf "fps=<fps>,scale=<w>:<h>:flags=area" motion-match/<scene-id>/ref/all/f%05d.png`
 3. Find the keyframes, where the motion changes:
    `ffmpeg -i ref/clip.mp4 -vf "select='gt(scene,0.08)',showinfo" -f null -` prints a `pts_time` for each change.
    Always add the first frame, the last frame, and the start and end of each visible move. Use 6-16 keyframes.
@@ -82,22 +82,22 @@ Work in `reanimate/<scene-id>/`.
 
 ## 4. Compare and iterate
 
-1. Render the candidate at each keyframe `tau` into `reanimate/<scene-id>/rendered/` with the render step of the pipeline. The frame index is `round(tau * (frame_count - 1))`.
+1. Render the candidate at each keyframe `tau` into `motion-match/<scene-id>/rendered/` with the render step of the pipeline. The frame index is `round(tau * (frame_count - 1))`.
 2. Run the check:
 
 ```sh
 python3 "<skill-dir>/scripts/compare_frames.py" \
-  --ref reanimate/<scene-id>/ref/keyframes \
-  --rendered reanimate/<scene-id>/rendered \
-  --spec reanimate/<scene-id>/motion-spec.json \
-  --out qa/reanimate-check.json \
-  --diff-strip qa/reanimate-diff-strip.png
+  --ref motion-match/<scene-id>/ref/keyframes \
+  --rendered motion-match/<scene-id>/rendered \
+  --spec motion-match/<scene-id>/motion-spec.json \
+  --out qa/motion-match-check.json \
+  --diff-strip qa/motion-match-diff-strip.png
 ```
 
-3. Read `qa/reanimate-check.json`. Fix the frame named by `worst_tau` first.
+3. Read `qa/motion-match-check.json`. Fix the frame named by `worst_tau` first.
    - Low IoU means a wrong position or size. Fix the box or transform at that `tau`.
    - Good IoU with low SSIM means a wrong shape, colour, blur or an easing that lags. Compare the in-between frames.
-4. Look at `qa/reanimate-diff-strip.png`. Each row shows reference, candidate and the absolute difference. Bright areas are wrong.
+4. Look at `qa/motion-match-diff-strip.png`. Each row shows reference, candidate and the absolute difference. Bright areas are wrong.
 5. Change 1 cause per round. Run the check again. Stop when it passes, or after 6 rounds. Then report the numbers and the remaining defect.
 
 ## The script
@@ -115,6 +115,6 @@ The gate is the minimum. For a close recreation, also aim for `mean_mismatch_rat
 
 ## Output
 
-- `reanimate/<scene-id>/ref/keyframes/`, `contact-sheet.png` and `motion-spec.json`.
+- `motion-match/<scene-id>/ref/keyframes/`, `contact-sheet.png` and `motion-spec.json`.
 - `scenes/<scene-id>/index.html`.
-- `qa/reanimate-check.json` and `qa/reanimate-diff-strip.png` from the passing run.
+- `qa/motion-match-check.json` and `qa/motion-match-diff-strip.png` from the passing run.

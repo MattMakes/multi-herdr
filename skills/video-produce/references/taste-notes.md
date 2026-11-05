@@ -61,12 +61,12 @@ notes on the film, and the gate files in `qa/`.
 
 ## What never happens
 
-- 1 operator's taste never becomes a shipped rule. A `preference` stays in
+- What 1 operator likes never turns into a rule that ships to others. A `preference` stays in
   the fleet copy on this host. It never goes into `skills/`, `teammates/`
   or any file in the repo.
 - A `verified` finding that holds for every operator goes to the
   orchestrator as a proposed check or skill change. The orchestrator
   decides. A fact that holds for every task can also go to
   `horch note --fact`.
-- A notes entry never blocks a gate and never grants permission to
-  publish, spend money or contact anyone.
+- A notes entry never blocks a gate. It gives no authority to post, pay for
+  anything or reach out to anyone.

@@ -292,7 +292,7 @@ waves from
 | `video-director` | plan | claude, opus, high | `video-direction`, `video-storyboard` | brief, direction, storyboard, `timeline.json` and the plan gate |
 | `video-capture` | implementation | claude, sonnet, medium | `video-capture` | deterministic browser and terminal plates with telemetry |
 | `video-audio` | implementation | claude, sonnet, medium | `video-audio`, `video-storyboard` | voice-over, timing reconciliation, beat grid, SFX, -14 LUFS master |
-| `video-animator` | implementation | claude, opus, medium | `video-motion`, `video-character`, `video-reanimate`, `motion-gsap` | deterministic HTML scenes, character rigs, reference matching |
+| `video-animator` | implementation | claude, opus, medium | `video-motion`, `video-character`, `video-motion-match`, `motion-gsap` | deterministic HTML scenes, character rigs, reference matching |
 | `video-editor` | implementation | claude, sonnet, medium | `video-render` | frame-stepped render, `render/master.mp4`, aspect variants, publish pack |
 | `video-critic` | validation | claude, opus, high | `video-qa`, `video-direction` | numeric render QA and a blind 8-axis review |
 

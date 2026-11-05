@@ -8,7 +8,7 @@ description: "Use when a video project pack has scenes, captures and a mastered 
 Phase 5 of the video pipeline. Inputs come from the earlier phases. Outputs go
 to `render/` and the critic (video-qa) reads them next.
 
-`<skill-dir>` is the folder that holds this SKILL.md. Every command below runs
+`<skill-dir>` means the directory where this SKILL.md sits. Every command below runs
 from the video project directory, the folder that holds `timeline.json`.
 
 Tools: Node 22 or later (built-ins only), `ffmpeg` and `ffprobe` on `PATH`,

@@ -154,5 +154,5 @@ Rules:
 - `music.drop` (with `--music audio/music.wav`): the drop is the downbeat whose
   bar has the largest rise in energy under `150 Hz`. When that rise is at least
   `6 dB` and the plan has a hero, the drop must be within 1 beat of the hero
-  start. The report gives `drop_sec` and the energy of each bar. Fix: offset or
-  edit the bed so the drop lands on the hero.
+  start. The report gives `drop_sec` and the energy of each bar. Fix: move or
+  cut the bed so its biggest rise coincides with the hero start.

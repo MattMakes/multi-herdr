@@ -5,7 +5,7 @@ description: "Use when a video request arrives and someone must run the producti
 
 # Video produce: workflow, memory, A/B, batch and share kit
 
-`<skill-dir>` is the folder that holds this SKILL.md. Run every command from
+`<skill-dir>` means the directory where this SKILL.md sits. Run every command from
 the video project folder, the folder that holds `timeline.json`, unless a
 step names another folder.
 
@@ -46,8 +46,8 @@ Read the operator's 1-line request. Pick the first row that matches.
 | a real app, CLI or site to show, "demo", "walkthrough", "how it works" | `app-explainer` | capture plus narration, archetypes 2 or 3 |
 | anything else: a launch, an announcement, a feature | `launch-film` | archetype 1, waves 1 to 6 |
 
-When the request fits 2 rows, take the most sensible reading, do it, and
-write the reading in `PRODUCTION.md` under "Reading". Ask the operator only
+When the request fits 2 rows, pick the likelier row and carry on. Record
+the row you picked in `PRODUCTION.md` under "Reading". Ask the operator only
 for a value that changes the result and has no default: the product, or
 the channel when the request names none.
 
@@ -96,8 +96,8 @@ python3 "<skill-dir>/scripts/lint_notes.py" .video/NOTES.md
 ```
 
 Notes never block the plan, and never override the brief or the film in
-front of the team. A notes entry never grants permission to publish, spend
-money or contact anyone.
+front of the team. A notes entry gives no authority to post, pay for
+anything or reach out to anyone.
 
 The entry format, the 3 kinds and the harvest rules are in
 `references/taste-notes.md`. Read it before the harvest.
