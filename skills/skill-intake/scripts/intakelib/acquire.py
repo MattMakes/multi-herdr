@@ -156,8 +156,17 @@ def _github(text: str, owner: str, repo: str, ref: str | None, sub: str) -> Sour
 
 # ---- GitHub ---------------------------------------------------------------
 
+# The Claude sandbox routes network through a proxy it sets in these variables.
+# git keeps them and nothing else, so a sandboxed pane can clone from GitHub.
+_NET_ENV = (
+    "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY",
+    "http_proxy", "https_proxy", "all_proxy", "no_proxy",
+    "SSL_CERT_FILE", "SSL_CERT_DIR", "GIT_SSL_CAINFO",
+)
+
+
 def _git_env() -> dict[str, str]:
-    env = {k: os.environ[k] for k in ("PATH", "HOME", "LANG") if k in os.environ}
+    env = {k: os.environ[k] for k in ("PATH", "HOME", "LANG", *_NET_ENV) if k in os.environ}
     env.update(GIT_LFS_SKIP_SMUDGE="1", GIT_TERMINAL_PROMPT="0", GIT_CONFIG_NOSYSTEM="1")
     return env
 

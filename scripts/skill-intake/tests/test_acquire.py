@@ -144,6 +144,27 @@ class GitHubCloneTest(AcquireCase):
         self.assertEqual(set(env) - {"PATH", "HOME", "LANG"},
                          {"GIT_LFS_SKIP_SMUDGE", "GIT_TERMINAL_PROMPT", "GIT_CONFIG_NOSYSTEM"})
 
+    def test_git_child_keeps_only_the_sandbox_network_variables(self):
+        allowed = ["HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY", "http_proxy", "https_proxy",
+                   "all_proxy", "no_proxy", "SSL_CERT_FILE", "SSL_CERT_DIR", "GIT_SSL_CAINFO"]
+        saved = {k: os.environ.get(k) for k in [*allowed, "UNRELATED_VAR", "FOO_API_KEY"]}
+        try:
+            for k in allowed:
+                os.environ[k] = "v-" + k
+            os.environ["UNRELATED_VAR"] = "x"
+            os.environ["FOO_API_KEY"] = "secret"
+            env = acquire._git_env()
+        finally:
+            for k, v in saved.items():
+                if v is None:
+                    os.environ.pop(k, None)
+                else:
+                    os.environ[k] = v
+        for k in allowed:
+            self.assertEqual(env.get(k), "v-" + k)
+        self.assertNotIn("UNRELATED_VAR", env)
+        self.assertNotIn("FOO_API_KEY", env)
+
     def test_seam_must_be_file_url(self):
         r, c = self.acquire("o/r", env={acquire.BASE_ENV: "https://evil.invalid/"})
         self.assertEqual(r.returncode, 2)
