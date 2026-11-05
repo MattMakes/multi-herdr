@@ -181,7 +181,8 @@ def brief(t: Task, role: str, unit: str | None = None, skill: str | None = None,
     if SIDE[role] == "clean":
         problems = _check_clean(t, text, render(t, role, n, None, None, controller, fix))
         if problems:
-            raise RoleError(BRIEF_LEAK, "the clean brief failed the leakage checks: " + "; ".join(problems))
+            hint = " Use a new output skill name for --skill." if skill else ""
+            raise RoleError(BRIEF_LEAK, "the clean brief failed the leakage checks: " + "; ".join(problems) + "." + hint)
     root = side_root(t, role)
     path = root / "briefs" / f"{role}-{n}.md"
     path.parent.mkdir(parents=True, exist_ok=True)

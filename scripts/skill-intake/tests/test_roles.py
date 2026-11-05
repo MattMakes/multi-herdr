@@ -175,6 +175,13 @@ class BriefTest(RolesCase):
             self.brief(t, role, "--unit", "test_count", expect=roles.BRIEF_LEAK)
         self.assertEqual(list((t.k / "briefs").iterdir()), [])
 
+    def test_a_source_name_error_says_to_use_a_new_output_skill_name(self):
+        t = self.task()
+        for role in ("writer", "reviewer"):
+            r = self.fleet("brief", role, "--task", str(t.c), "--skill", SOURCE)
+            self.assertEqual(r.returncode, roles.BRIEF_LEAK, r.stdout + r.stderr)
+            self.assertIn("Use a new output skill name for --skill.", r.stdout + r.stderr)
+
     def test_a_value_that_is_not_a_plain_name_is_refused(self):
         t = self.task()
         for value in ("../x", "a b", "/abs", ""):

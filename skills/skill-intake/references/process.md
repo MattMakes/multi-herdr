@@ -123,6 +123,10 @@ line aborts GATE 1. OPQ-06 data files default to `remove`.
 | writer | 1 per skill | clean | `--skill S` |
 | reviewer | 1 fresh per skill | clean | `--skill S` |
 
+`S` is the new output skill name, a plain name that describes the skill. `S`
+must differ from every source skill name and the repo name, or the brief
+fails with exit 9. The reviewer of a skill uses the same `S` as its writer.
+
 Roles run 1 at a time per task, in this order. `C/roles.jsonl` records each
 start and end. `intake roles --task T` lists every role worker with its state
 (`running`, `done`, `error`, `lost`). `--pending` lists the running ones.

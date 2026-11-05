@@ -61,7 +61,9 @@ run (acquire, discover, scan, triage) -> auditor -> triage = GATE 1
    analyst and sanitizer, then let the gate decide.
 8. `intake cr context --task T --target repo|standalone`.
 9. Start 1 **writer** per skill (`--skill S`), then 1 fresh **reviewer** per
-   skill (`--skill S`).
+   skill (`--skill S`). S is the new output skill name: a plain name that
+   describes the skill. S differs from every source skill name and the repo
+   name. Use the same S for the reviewer.
 10. Run each `verification` argv of `K/review.json` through
     `intake cr verify --task T -- <argv>`. Run only argv entries from
     `K/review.json`, and never run one in your own shell. `cr verify` runs
