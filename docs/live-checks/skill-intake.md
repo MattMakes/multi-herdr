@@ -1028,3 +1028,48 @@ failed because `HORCH_WORKER_ID` is not set. The cause is not only that
 - So a role of a controller that is inside a run does not join the run
   either. Step 4 ("`horch ledger status` shows every role worker") cannot
   pass as designed. Step 2 checks this live.
+
+### Step 1, attempt 6: ABORTED at GATE 2 (fleet role machinery proven; 3 new defects)
+
+| field | value |
+|---|---|
+| command | `env -u ANTHROPIC_API_KEY -u HORCH_PROJECT_DIR <build>/horch spawn skill-importer --exact "<task>"` from `.worktrees/_scratch/live-skill-intake/step1-project`, no `--run`, on the build of `68dede04` (T-34, T-35) |
+| task id | T-17 (worker `skill-importer-6`, pane `w29:p29`, spawned 2026-11-05T14:17Z). `intake` task `20261105-141802-7d0d8e` |
+| pane cwd and mode | cwd `step1-project` (`lsof -d cwd`); `targets.detect` gave `standalone` |
+| outcome | `aborted at GATE 2`. Nothing was installed. `ls ~/.claude/skills` equals the list before step 1 (191 entries). |
+| report | `~/.local/state/skill-intake/contaminated/20261105-141802-7d0d8e/report.md` |
+
+What passed: the real `github.com` clone of `de8494f3` inside the sandboxed
+pane, GATE 1, and all 5 role workers one at a time through `intake spawn`
+(`roles.jsonl`: auditor-1 `intake-auditor-2`, analyst-1 `intake-analyst-2`,
+sanitizer-1 `intake-sanitizer-1`, writer-1 `intake-writer-1`, reviewer-1
+`intake-reviewer-1`, each start after the previous end, 14:18:15Z to
+14:27:41Z). Each role ended `done` and its record has status `done`; no
+`intake-*` pane is open. `role-result` passed for all 5 (T-32, T-34 hold).
+The controller closed with `horch done`. The record of `skill-importer-5`
+still shows `working`: I closed its pane by hand.
+
+GATE 2 checks that failed (`C/verify.json`): resweep, overlap, target-rules.
+Passed: findings, handoff-integrity, review-coverage, scripts, domain-snapshot,
+persona. The controller's causes (checked against `verify.json`):
+
+1. `resweep`: 15 INJ-05 hits on `AGENTS.md` mentions in the output `SKILL.md`
+   stay unaccepted. `verify` accepts a declared capability by the spec
+   `skill.name` (`docs-driven-workflow`). The writer brief refuses that name
+   (it is the source project name, exit 9), so the output folder is
+   `scope-and-change-record-workflow`. The names differ, so the accepted
+   capability does not apply. The spec declares `reads` and the reviewer
+   passed `capability:reads`.
+2. `target-rules`: `.claude: no SKILL.md`. The writer's harness created
+   `K/out/.claude/.cc-writes`, which `verify` reads as a skill folder. Each new
+   role run can create it again.
+3. `overlap`: the output shares 6 to 16 words of prose with the source
+   `README.md`, `README.zh-CN.md` and `SKILL.md`. The reviewer cannot see
+   which words match (known: T-37).
+4. Fact (not a GATE 2 reason here): `intake cr verify` exited 13 for all 5
+   reviewer argv entries ("no usable sandbox"), so the 5 checks are
+   `unverified`. `sandbox-exec` does not run inside the sandboxed pane. The
+   report lists them as unverified scripts.
+
+The step is not retried until T-36, T-37 and T-38 land. Defects 1, 2 and 4 are
+new and have no ticket yet.
