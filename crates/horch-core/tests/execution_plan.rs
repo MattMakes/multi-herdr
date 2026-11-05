@@ -432,13 +432,6 @@ fn arc_15_plan_table() {
             err("unknown-teammate"),
         ),
         (
-            "a headless-only teammate",
-            req("judge", "x"),
-            "all-ok",
-            None,
-            err("unspawnable"),
-        ),
-        (
             "resume keeps the record's effort and phase, ungated",
             resume("rec-1", "more"),
             "all-exhausted",

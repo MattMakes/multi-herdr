@@ -22,7 +22,6 @@ use horch_core::compaction::window::{
     decide, fleet_window, headroom, native_trigger, threshold, OperatorWindow, WindowSource,
     BASE_THRESHOLD,
 };
-use horch_core::evaluation::scheduler::{self, JobFacts, JobState};
 use horch_core::execution::legacy::HistoryEntry;
 use horch_core::harness::HarnessKind;
 use horch_core::heartbeat::{self, Heartbeat, Liveness, HEARTBEAT_FILE, STALE_AFTER};
@@ -1026,7 +1025,7 @@ fn ctx_15_lost_job_classifies_compact_lost() {
     assert_eq!(jobfile::liveness(&dir, Utc::now()), JobLiveness::None);
     assert!(dir.join(LOG_FILE).exists());
 
-    // The shared heartbeat says what the judge's decide says.
+    // The shared heartbeat's liveness, case by case.
     let now = at("2026-10-02T12:00:30Z");
     let hb = |at: &str| Heartbeat {
         pid: 7,
@@ -1034,58 +1033,35 @@ fn ctx_15_lost_job_classifies_compact_lost() {
         started: None,
     };
     let cases = [
-        (
-            None,
-            false,
-            None,
-            Liveness::NotStarted,
-            JobState::NotStarted,
-        ),
+        (None, false, None, Liveness::NotStarted),
         (
             Some(hb("2026-10-02T12:00:25Z")),
             true,
             None,
             Liveness::Running { pid: 7 },
-            JobState::Running { pid: 7 },
         ),
         (
             None,
             false,
             Some(at("2026-10-02T12:00:10Z")),
             Liveness::Running { pid: 0 },
-            JobState::Running { pid: 0 },
         ),
         (
             Some(hb("2026-10-02T12:00:25Z")),
             false,
             None,
             Liveness::Lost,
-            JobState::Lost,
         ),
-        (
-            Some(hb("2026-10-02T11:59:00Z")),
-            true,
-            None,
-            Liveness::Lost,
-            JobState::Lost,
-        ),
+        (Some(hb("2026-10-02T11:59:00Z")), true, None, Liveness::Lost),
         (
             None,
             false,
             Some(at("2026-10-02T11:59:00Z")),
             Liveness::Lost,
-            JobState::Lost,
         ),
     ];
-    for (hb, pid_alive, spawned_at, live, state) in cases {
+    for (hb, pid_alive, spawned_at, live) in cases {
         let got = heartbeat::liveness(hb.as_ref(), pid_alive, spawned_at, now, STALE_AFTER);
         assert_eq!(got, live, "{hb:?} {pid_alive} {spawned_at:?}");
-        let facts = JobFacts {
-            heartbeat: hb,
-            pid_alive,
-            spawned_at,
-            ..JobFacts::default()
-        };
-        assert_eq!(scheduler::decide(&facts, now, STALE_AFTER), state);
     }
 }

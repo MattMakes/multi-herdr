@@ -265,7 +265,7 @@ enum ProjectCommand {
         /// Print the raw ledger JSON instead of the readable summary.
         #[arg(long)]
         json: bool,
-        /// Also list competition candidates and judges (multi-herdr-dataset).
+        /// Also list competition candidates and judges from older ledgers.
         #[arg(long)]
         all: bool,
         /// Include sessions from every workspace of this project.
@@ -888,7 +888,6 @@ impl LaunchCommand {
                     no_update,
                     resume,
                     verify,
-                    ..Default::default()
                 },
             )),
             LaunchCommand::Orchestration { cwd, no_update } => {

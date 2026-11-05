@@ -13,14 +13,6 @@
 //! Scenarios: `usage_ok`, `usage_exhausted` (the default for a probe),
 //! `usage_scoped`, `usage_hang` (or `hang`), `usage_garbage` (or `error`).
 //!
-//! - As the headless judge (`-p --output-format json`): read the prompt from
-//!   stdin, record argv, cwd and env keys, then act per
-//!   `$HORCH_FAKE_LOG.judge.json`, `{"attempts": ["crash", "valid"]}`: the
-//!   n-th judge call takes the n-th entry (the last one repeats). `valid`
-//!   answers a winner over the bundle labels in `./manifest.json`;
-//!   `invalid` answers a fenced object; `crash` exits 3; `hang` blocks;
-//!   `oversize` prints a 2 MiB answer.
-//!
 //! `inspect_skills`: a pane launch also writes the `skills/` dir of each
 //! `--plugin-dir`, the plugin manifest names and the `--settings` value to
 //! `$HORCH_FAKE_LOG.skills.json` (`horch_e2e::write_skills_report`).
@@ -28,9 +20,7 @@
 use std::io::BufRead;
 use std::path::Path;
 
-use horch_e2e::{
-    candidate_spec, hang, run_candidate, say, scenario, scenario_has, write_skills_report, Call,
-};
+use horch_e2e::{hang, say, scenario, scenario_has, write_skills_report, Call};
 use serde_json::{json, Value};
 
 fn main() {
@@ -47,24 +37,11 @@ fn main() {
     if call.argv == ["update"] {
         update(&call);
     }
-    let judge = call.argv.first().is_some_and(|a| a == "-p")
-        && call
-            .argv
-            .windows(2)
-            .any(|w| w[0] == "--output-format" && w[1] == "json");
-    if judge {
-        judge_mode(call);
-        return;
-    }
     let probe = call
         .argv
         .windows(2)
         .any(|w| w[0] == "--input-format" && w[1] == "stream-json");
     if !probe {
-        if let Some((label, spec)) = candidate_spec() {
-            let argv = call.argv.clone();
-            run_candidate(&mut call, &label, &spec, |u| write_transcript(&argv, u));
-        }
         if scenario_has("inspect_skills") {
             inspect_skills(&call.argv);
         }
@@ -170,165 +147,6 @@ fn inspect_skills(argv: &[String]) {
         &dirs,
         json!({"flags": flags, "plugins": plugins, "settings": settings}),
     );
-}
-
-/// The headless judge: one prompt on stdin, one json envelope on stdout.
-/// `$HORCH_FAKE_LOG.judge.json` holds `attempts` (one scenario per attempt)
-/// and, optionally, `usage` for the transcript.
-fn judge_mode(mut call: Call) {
-    let mut prompt = String::new();
-    let _ = std::io::Read::read_to_string(&mut std::io::stdin(), &mut prompt);
-    let cwd = std::env::current_dir().unwrap_or_default();
-    call.extra
-        .insert("cwd".into(), json!(cwd.to_string_lossy()));
-    call.extra.insert("mode".into(), json!("judge"));
-    call.extra.insert(
-        "prompt_has_rubric".into(),
-        json!(!prompt.contains("{rubric}")),
-    );
-    call.stdin.push(format!("<prompt: {} bytes>", prompt.len()));
-    let log = std::env::var("HORCH_FAKE_LOG").unwrap_or_default();
-    let counter = format!("{log}.judge.count");
-    let n: usize = std::fs::read_to_string(&counter)
-        .ok()
-        .and_then(|s| s.trim().parse().ok())
-        .unwrap_or(0);
-    let _ = std::fs::write(&counter, (n + 1).to_string());
-    let script: Value = std::fs::read_to_string(format!("{log}.judge.json"))
-        .ok()
-        .and_then(|s| serde_json::from_str(&s).ok())
-        .unwrap_or(Value::Null);
-    let attempts: Vec<String> = script["attempts"]
-        .as_array()
-        .map(|a| {
-            a.iter()
-                .filter_map(|v| v.as_str().map(str::to_owned))
-                .collect()
-        })
-        .unwrap_or_default();
-    let mode = attempts
-        .get(n)
-        .or(attempts.last())
-        .cloned()
-        .unwrap_or_else(|| "valid".into());
-    call.extra.insert("judge_scenario".into(), json!(mode));
-    call.flush();
-    // `"usage"` in the script: write the session's transcript, as a real
-    // `claude -p --session-id` does, so `horch cost` prices the judge.
-    if !script["usage"].is_null() {
-        write_transcript(&call.argv, &script["usage"]);
-    }
-    let session = call
-        .argv
-        .windows(2)
-        .find(|w| w[0] == "--session-id")
-        .map(|w| w[1].clone())
-        .unwrap_or_default();
-    let envelope = |result: String| {
-        json!({"type": "result", "subtype": "success", "is_error": false,
-               "result": result, "session_id": session, "total_cost_usd": 0.0})
-        .to_string()
-    };
-    match mode.as_str() {
-        "crash" => {
-            eprintln!("fake-claude: judge crash");
-            std::process::exit(3);
-        }
-        "hang" => hang(),
-        "invalid" => say(&envelope("```json\n{}\n```".into())),
-        "oversize" => say(&envelope("x".repeat(2 * 1024 * 1024))),
-        _ => say(&envelope(judgment(&labels(&cwd)))),
-    }
-}
-
-/// The bundle labels from `manifest.json` in the judge's cwd, eligible ones
-/// first (each `candidates/<L>/validation.json` says), so a `valid` answer
-/// picks a winner that can win.
-fn labels(cwd: &std::path::Path) -> Vec<String> {
-    let mut labels = manifest_labels(cwd);
-    let eligible = |l: &String| {
-        std::fs::read_to_string(cwd.join("candidates").join(l).join("validation.json"))
-            .ok()
-            .and_then(|s| serde_json::from_str::<Value>(&s).ok())
-            .is_none_or(|v| v["eligible"] != false)
-    };
-    labels.sort_by_key(|l| !eligible(l));
-    labels
-}
-
-fn manifest_labels(cwd: &std::path::Path) -> Vec<String> {
-    std::fs::read_to_string(cwd.join("manifest.json"))
-        .ok()
-        .and_then(|s| serde_json::from_str::<Value>(&s).ok())
-        .and_then(|m| {
-            m["labels"].as_array().map(|a| {
-                a.iter()
-                    .filter_map(|v| v.as_str().map(str::to_owned))
-                    .collect()
-            })
-        })
-        .unwrap_or_default()
-}
-
-/// A valid judgment: the first label wins with confidence 0.9.
-fn judgment(labels: &[String]) -> String {
-    let scores = json!({"correctness": 8, "tests": 7, "scope": 9, "maintainability": 8, "risk": 8});
-    let candidates: serde_json::Map<String, Value> = labels
-        .iter()
-        .map(|l| {
-            (
-                l.clone(),
-                json!({"scores": scores, "acceptable": true, "notes": "ok"}),
-            )
-        })
-        .collect();
-    json!({
-        "schema_version": "1.0.1",
-        "verdict": "winner",
-        "winner": labels.first(),
-        "ranking": labels,
-        "candidates": candidates,
-        "confidence": 0.9,
-        "rationale": "The first candidate is best.",
-    })
-    .to_string()
-}
-
-/// A transcript at `$HOME/.claude/projects/<cwd slug>/<session>.jsonl` with
-/// one assistant message using `usage` (`model`, `input`, `output`), so
-/// horch's telemetry readers price the session.
-fn write_transcript(argv: &[String], usage: &Value) {
-    let Some(sid) = argv
-        .windows(2)
-        .find(|w| w[0] == "--session-id")
-        .map(|w| w[1].clone())
-    else {
-        return;
-    };
-    let home = std::env::var_os("HOME")
-        .map(std::path::PathBuf::from)
-        .unwrap_or_default();
-    let cwd = std::env::current_dir().unwrap_or_default();
-    let slug: String = cwd
-        .to_string_lossy()
-        .chars()
-        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
-        .collect();
-    // A file name has at most 255 bytes; a worktree under a temp dir is
-    // longer. horch finds the session file in any project dir.
-    let slug = &slug[slug.len().saturating_sub(200)..];
-    let dir = home.join(".claude/projects").join(slug);
-    let _ = std::fs::create_dir_all(&dir);
-    let line = json!({
-        "type": "assistant",
-        "sessionId": sid,
-        "timestamp": "2026-10-02T12:00:00.000Z",
-        "message": {"id": "msg_candidate", "model": usage["model"], "role": "assistant",
-            "content": [{"type": "text", "text": "working"}],
-            "usage": {"input_tokens": usage["input"], "output_tokens": usage["output"],
-                      "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0}}
-    });
-    let _ = std::fs::write(dir.join(format!("{sid}.jsonl")), format!("{line}\n"));
 }
 
 /// `claude update`: record the call, then answer as the scenario says.

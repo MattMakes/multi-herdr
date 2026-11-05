@@ -1012,11 +1012,13 @@ fn session_lookup(
             .and_then(|r| r.session_id)
             .filter(|s| !s.is_empty());
         let transcript = sid.as_deref().and_then(|sid| {
-            crate::competition::observe::TelemetryUsage {
-                locations: crate::usage::Locations::from_context(&ctx),
-            }
-            .transcript(&agent, Some(sid))
-            .map(|p| p.to_string_lossy().into_owned())
+            crate::usage::read_session(
+                &crate::usage::Locations::from_context(&ctx),
+                &agent,
+                Some(sid),
+            )
+            .ok()
+            .map(|(p, _)| p.to_string_lossy().into_owned())
         });
         (sid, transcript)
     })

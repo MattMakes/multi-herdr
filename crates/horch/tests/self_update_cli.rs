@@ -33,7 +33,7 @@ fn tar_gz(script: &str, names: &[&str]) -> Vec<u8> {
     builder.into_inner().unwrap().finish().unwrap()
 }
 
-const ALL_BINARIES: [&str; 3] = ["horch", "multi-herdr-dataset", "herdr-install"];
+const ALL_BINARIES: [&str; 2] = ["horch", "herdr-install"];
 
 fn hex(bytes: &[u8]) -> String {
     Sha256::digest(bytes)
@@ -152,7 +152,6 @@ fn self_update_refuses_an_archive_that_lacks_a_binary_and_installs_nothing() {
     let out = self_update(&root, &api);
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(!out.status.success(), "{stderr}");
-    assert!(stderr.contains("multi-herdr-dataset"), "{stderr}");
     assert!(stderr.contains("herdr-install"), "{stderr}");
     assert!(stderr.contains("v99.0.0"), "{stderr}");
     assert!(!root.join("marker").exists());

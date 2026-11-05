@@ -6,7 +6,6 @@
 //! `fleet` starts one orchestrator alone, which then grows and shrinks the fleet
 //! itself through the session ledger.
 
-use std::collections::BTreeMap;
 use std::path::{Component, Path, PathBuf};
 use std::process::ExitCode;
 
@@ -204,7 +203,7 @@ fn pane_command(
     kind: PaneKind,
     model: Option<&str>,
 ) -> Result<String> {
-    pane_command_for(ctx, role, kind, model, None, None, None)
+    pane_command_for(ctx, role, kind, model, None, None)
 }
 
 /// The ledger identity an orchestrator pane runs under.
@@ -222,7 +221,6 @@ fn pane_command_for(
     kind: PaneKind,
     model: Option<&str>,
     record: Option<PaneRecord<'_>>,
-    compete: Option<&CompeteSettings>,
     verify: Option<VerifyProfile>,
 ) -> Result<String> {
     let exe = ctx.bins.exe()?;
@@ -263,7 +261,6 @@ fn pane_command_for(
     // The skill store too: `pane-launch`, its agent and every `horch spawn`
     // that agent runs read `HORCH_DATA_DIR`, so they all use this store.
     let data_root = ctx.paths.data_root.to_string_lossy();
-    let rounds = compete.map(|c| c.rounds.to_string());
     let mut env: Vec<(&str, &str)> = vec![("HORCH_DATA_DIR", data_root.as_ref())];
     // The mailbox lives in the state folder, so the pane needs the same one,
     // whether `HORCH_STATE_DIR` or `XDG_STATE_HOME` picked it.
@@ -275,11 +272,6 @@ fn pane_command_for(
     if let Some(ledger) = ledger.as_deref() {
         env.push(("HORCH_LEDGER_DB", ledger));
     }
-    // Competition mode (FDS-13) reaches the briefing the same way.
-    if let (Some(c), Some(rounds)) = (compete, rounds.as_deref()) {
-        env.push((COMPETE_ROUNDS_ENV, rounds));
-        env.push((COMPETE_BUDGET_ENV, c.budget_usd.as_str()));
-    }
     // The verification profile: the briefing names it, and the
     // orchestrator's `horch ledger run new` takes its steps from it.
     if let Some(verify) = verify {
@@ -288,56 +280,9 @@ fn pane_command_for(
     Ok(PaneShell::host().command_line_with_env(&exe, &env, &args))
 }
 
-/// Environment variables that carry the competition settings into the
-/// orchestrator pane, where `pane_launch` renders the briefing.
-const COMPETE_ROUNDS_ENV: &str = "HORCH_COMPETE_ROUNDS";
-const COMPETE_BUDGET_ENV: &str = "HORCH_COMPETE_BUDGET_USD";
-
-/// Competition mode (FDS-13): what the briefing tells the orchestrator about
-/// rounds. The rules live in the base `fleet-compete`; these are its 2 values.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CompeteSettings {
-    /// At most this many rounds in 1 fleet session.
-    pub rounds: u32,
-    /// The hard ceiling of 1 round in US dollars, as the dataset CLI takes it
-    /// for `--budget-usd`: a decimal string.
-    pub budget_usd: String,
-}
-
-impl Default for CompeteSettings {
-    fn default() -> Self {
-        Self {
-            rounds: 3,
-            budget_usd: "10".to_string(),
-        }
-    }
-}
-
-impl CompeteSettings {
-    /// The settings a pane inherits from [`COMPETE_ROUNDS_ENV`] and
-    /// [`COMPETE_BUDGET_ENV`]. None when competition mode is off.
-    fn from_env() -> Result<Option<Self>> {
-        let (Ok(rounds), Ok(budget)) = (
-            std::env::var(COMPETE_ROUNDS_ENV),
-            std::env::var(COMPETE_BUDGET_ENV),
-        ) else {
-            return Ok(None);
-        };
-        let rounds = rounds
-            .parse()
-            .with_context(|| format!("{COMPETE_ROUNDS_ENV}='{rounds}' is not a number"))?;
-        Ok(Some(Self {
-            rounds,
-            budget_usd: budget,
-        }))
-    }
-}
-
 /// Options of `horch fleet` beyond the flavor.
 #[derive(Debug, Clone, Default)]
 pub struct FleetOptions {
-    /// Some: append the competition rules to the orchestrator's briefing.
-    pub compete: Option<CompeteSettings>,
     /// `--no-update`: skip the agent CLI update step (ARC-34).
     pub no_update: bool,
     /// Some: the orchestrator resumes this session instead of starting fresh.
@@ -407,31 +352,6 @@ fn warn_about_other_run_steps(ctx: &RuntimeContext, cwd: &str, profile: VerifyPr
     }
 }
 
-/// The briefing of a fleet orchestrator: the base briefing, then with
-/// `compete` the rendered base `fleet-compete` after 1 blank line (FDS-13).
-/// Without `compete` it is [`prompts::agent_prompt`] unchanged.
-pub(crate) fn orchestrator_briefing(
-    roster: &Roster,
-    teammate: &Teammate,
-    role: &str,
-    compete: Option<&CompeteSettings>,
-) -> Result<String> {
-    let briefing = prompts::agent_prompt(roster, teammate, role)?;
-    let Some(compete) = compete else {
-        return Ok(briefing);
-    };
-    let base = roster
-        .base("fleet-compete")
-        .context("base 'fleet-compete' does not exist in _base/")?;
-    let rounds = compete.rounds.to_string();
-    let vars = BTreeMap::from([
-        ("compete_rounds", rounds.as_str()),
-        ("compete_budget_usd", compete.budget_usd.as_str()),
-    ]);
-    let rules = prompts::render(&base.body, &vars).context("base 'fleet-compete'")?;
-    Ok(format!("{}\n\n{}", briefing.trim_end(), rules.trim_start()))
-}
-
 /// Launch the herdr-fleet workspace.
 ///
 /// One orchestrator pane, alone. It reads the roster, breaks the work down, and
@@ -443,7 +363,7 @@ pub(crate) fn orchestrator_briefing(
 /// the shape of the team before anyone knew what the work was, and burned four
 /// agent sessions holding a greeting.
 ///
-/// `options.compete` adds competition mode; `options.resume` continues an
+/// `options.resume` continues an
 /// earlier orchestrator session instead of starting a new one. Unless
 /// `options.no_update`, every agent CLI updates first (ARC-32).
 pub fn fleet_with(
@@ -691,7 +611,6 @@ fn start_orchestrator(
                 session_id: session_id.as_deref(),
                 resume: options.resume.is_some(),
             }),
-            options.compete.as_ref(),
             Some(options.verify()),
         )?,
     )
@@ -980,8 +899,7 @@ fn register_pane(ctx: &mut RuntimeContext, role: &str, identity: &PaneIdentity) 
     Ok(mailbox)
 }
 
-/// The briefing of a pane. Competition settings reach a fleet orchestrator
-/// only (FDS-13).
+/// The briefing of a pane.
 fn briefing_for(
     kind: PaneKind,
     roster: &Roster,
@@ -989,10 +907,9 @@ fn briefing_for(
     role: &str,
 ) -> Result<String> {
     if !kind.is_fleet() {
-        return orchestrator_briefing(roster, teammate, role, None);
+        return prompts::agent_prompt(roster, teammate, role);
     }
-    let compete = CompeteSettings::from_env()?;
-    let briefing = orchestrator_briefing(roster, teammate, role, compete.as_ref())?;
+    let briefing = prompts::agent_prompt(roster, teammate, role)?;
     match verify_from_env()? {
         Some(profile) => Ok(format!(
             "{}\n\n{}",
@@ -1154,44 +1071,6 @@ fn session_for(
 mod tests {
     use super::*;
     use horch_core::roster::ProjectFacts;
-
-    /// The orchestrator's briefing for `compete`, from the compiled-in roster.
-    fn briefing(compete: Option<&CompeteSettings>) -> String {
-        let roster = Roster::builtin().unwrap();
-        let t = roster.require("orchestrator").unwrap();
-        orchestrator_briefing(&roster, t, "orchestrator", compete).unwrap()
-    }
-
-    /// FDS-13: no compete settings, the briefing is the unchanged one.
-    #[test]
-    fn fds_13_briefing_without_compete_unchanged() {
-        let roster = Roster::builtin().unwrap();
-        let t = roster.require("orchestrator").unwrap();
-        let before = prompts::agent_prompt(&roster, t, "orchestrator").unwrap();
-        assert_eq!(briefing(None), before);
-        assert!(!before.contains("== Competition mode =="));
-        assert!(FleetOptions::default().compete.is_none());
-    }
-
-    /// FDS-13: compete settings append the rules, with both values rendered.
-    #[test]
-    fn fds_13_briefing_with_compete_rendered() {
-        let plain = briefing(None);
-        let text = briefing(Some(&CompeteSettings::default()));
-        assert!(text.starts_with(plain.trim_end()), "base text comes first");
-        assert!(text.contains("== Competition mode =="), "{text}");
-        assert!(text.contains("--budget-usd 10"), "{text}");
-        assert!(text.contains("fewer than 3 rounds"), "{text}");
-        assert!(!text.contains("{compete_"), "{text}");
-        let rules = text.split("== Competition mode ==").next().unwrap();
-        assert!(rules.ends_with("\n\n"), "1 blank line before the rules");
-        let custom = briefing(Some(&CompeteSettings {
-            rounds: 5,
-            budget_usd: "2.50".into(),
-        }));
-        assert!(custom.contains("--budget-usd 2.50"));
-        assert!(custom.contains("fewer than 5 rounds"));
-    }
 
     /// A context with a known binary path and nothing else.
     fn test_ctx() -> RuntimeContext {
@@ -1433,7 +1312,6 @@ mod tests {
             &ctx,
             "orchestrator",
             kind,
-            None,
             None,
             None,
             Some(VerifyProfile::Minimal),

@@ -1,11 +1,8 @@
 //! The in-repo PRNG (NFR-11): SplitMix64, and a small property-test runner.
 //!
 //! There is no `proptest` and no `rand` in the build. SplitMix64 is a few
-//! lines, fully specified, and the same on every platform, so a seed recorded
-//! in a dataset row replays the same draws. The planner's exploration slot
-//! (phase B3) draws from it too, which is why this module is not test-only.
-
-use super::digest::Digest;
+//! lines, fully specified, and the same on every platform, so a seed
+//! replays the same draws.
 
 /// A SplitMix64 generator; the field is the state.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -39,21 +36,6 @@ impl SplitMix64 {
             }
         }
     }
-
-    /// Shuffle `items` in place (Fisher-Yates).
-    pub(crate) fn shuffle<T>(&mut self, items: &mut [T]) {
-        for i in (1..items.len()).rev() {
-            let j = self.below(i as u64 + 1) as usize;
-            items.swap(i, j);
-        }
-    }
-}
-
-/// A seed from a digest: its first 8 bytes, big-endian.
-pub(crate) fn seed_from_digest(d: &Digest) -> u64 {
-    let mut b = [0u8; 8];
-    b.copy_from_slice(&d.0[..8]);
-    u64::from_be_bytes(b)
 }
 
 /// Run `f` for `cases` cases, each with a fresh generator. The case seeds
@@ -123,28 +105,6 @@ mod tests {
         for _ in 0..10_000 {
             assert!(g.below(big) < big);
         }
-    }
-
-    #[test]
-    fn shuffle_is_deterministic_per_seed() {
-        let shuffled = |seed| {
-            let mut v: Vec<u32> = (0..20).collect();
-            SplitMix64::new(seed).shuffle(&mut v);
-            v
-        };
-        assert_eq!(shuffled(7), shuffled(7));
-        assert_ne!(shuffled(7), shuffled(8));
-        let mut sorted = shuffled(7);
-        sorted.sort();
-        assert_eq!(sorted, (0..20).collect::<Vec<_>>());
-        let mut empty: [u8; 0] = [];
-        SplitMix64::new(1).shuffle(&mut empty);
-    }
-
-    #[test]
-    fn seed_from_digest_is_first_8_bytes_big_endian() {
-        let d = crate::measure::digest::sha256_bytes(b"abc");
-        assert_eq!(seed_from_digest(&d), 0xBA78_16BF_8F01_CFEA);
     }
 
     #[test]

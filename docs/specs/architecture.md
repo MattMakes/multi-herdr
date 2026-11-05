@@ -244,7 +244,6 @@ Lowercase non-ID entries (`bal_04`, `tel_*`, `nfr_03`, `quo_07`,
 | ARC-21 | done lifecycle order | A7 | arc_21_done_order |
 | ARC-22 | Thin CLI; typed errors; exit codes | A6 / A12 | bal_04 (exit 3), arc_22_no_error_string_matching |
 | ARC-23 | Telemetry uses executions | A6 | arc_23_telemetry_reads_executions, arc_23_telemetry_never_routes, tel_* |
-| ARC-24 | Competition uses the kernel | B3 | arc_24_candidates_are_ordinary_executions |
 | ARC-25 | Shims removed; pub(crate) | A12 | arc_25_no_shim_modules |
 | ARC-26 | E2E lifecycle matrix for all 5 harnesses | A6 | arc_26_e2e_lifecycle_matrix_claude, arc_26_e2e_lifecycle_matrix_codex, arc_26_e2e_lifecycle_matrix_opencode, arc_26_e2e_lifecycle_matrix_pi, arc_26_e2e_lifecycle_matrix_prime |
 | ARC-27 | tile/balance pure | A7 | arc_27_tile_balance_pure |
@@ -314,7 +313,6 @@ the IDs in each row pin the criterion.
 | 13 | E2E covers all harness lifecycle and routing paths | ARC-26, ARC-14, bal_04..06, SKL-06 |
 | 14 | adding a harness ≈ one harness module | ARC-10 (`arc_10_harness_match_only_in_harness`) |
 | 15 | adding a skill source ≈ marketplace resolution/fetch | MKT-10 |
-| 16 | competition composes ordinary executions | ARC-24 |
 
 ### 3.5 Spec A §13 E2E list → IDs
 

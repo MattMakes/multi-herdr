@@ -1358,7 +1358,7 @@ fn shown_pools(quota: &QuotaView) -> BTreeMap<String, quota::PoolReading> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::measure::testkit::{property, SplitMix64};
+    use crate::testkit::{property, SplitMix64};
 
     fn now() -> DateTime<Utc> {
         clock::parse("2026-09-28T18:00:00Z").unwrap()

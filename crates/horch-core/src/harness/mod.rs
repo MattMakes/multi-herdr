@@ -10,7 +10,6 @@ pub(crate) mod claude;
 pub(crate) mod claude_plugins;
 pub mod codex;
 pub mod cooldown;
-pub mod headless;
 pub mod inventory;
 pub mod launch;
 pub(crate) mod none;
@@ -543,16 +542,6 @@ mod tests {
                 efforts,
                 "{kind}"
             );
-            // The pre-A4 preflight footprint: 600 MiB, plus the local model on pi,
-            // 64 MiB for none.
-            let local = 7 << 30;
-            let mib = 1024 * 1024;
-            let want = match kind {
-                HarnessKind::Pi => 600 * mib + local,
-                HarnessKind::None => 64 * mib,
-                _ => 600 * mib,
-            };
-            assert_eq!(c.footprint(local), want, "{kind}");
         }
     }
 

@@ -11,8 +11,8 @@ use serde::{Deserialize, Serialize};
 
 use super::catalog::{CatalogEntry, SkillCatalog};
 use super::selection::{check, operator_names, phase_skills};
+use crate::digest::Digest;
 use crate::ids::SkillId;
-use crate::measure::digest::Digest;
 use crate::roster::{Phase, Teammate};
 
 /// Why a skill is in a plan.

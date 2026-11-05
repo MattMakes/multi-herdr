@@ -78,7 +78,7 @@ pub enum PlanError {
         line: String,
     },
     UnknownTeammate(String),
-    /// A reserved model tier, or a headless-only teammate.
+    /// A reserved model tier.
     Unspawnable(String),
     NotResumable {
         id: String,

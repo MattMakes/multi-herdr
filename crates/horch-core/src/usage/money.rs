@@ -1,10 +1,5 @@
-//! Exact integer money (MEA-07).
-//!
-//! Dataset rows store cost as whole micro-dollars ([`MicroUsd`]). Sums are
-//! taken in nano-dollars (`NanoUsd`), where token count × price is exact:
-//! a price in $/MTok × 1000 is n$/token, a whole number for every built-in
-//! price. The total is rounded to µ$ once, half-even, so the order in which
-//! terms are added never changes the stored cost.
+//! Exact integer money (MEA-07): whole micro-dollars ([`MicroUsd`]) and
+//! where a cost figure came from ([`CostSource`]).
 
 use std::fmt;
 use std::str::FromStr;
@@ -17,96 +12,6 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 )]
 #[serde(transparent)]
 pub struct MicroUsd(pub i64);
-
-/// Whole nano-dollars (1e-9 USD), the accumulation unit.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub(crate) struct NanoUsd(pub i128);
-
-/// What can go wrong converting a price.
-#[derive(Debug, Clone, PartialEq)]
-pub(crate) enum MoneyError {
-    /// The $/MTok price is not a whole, non-negative number of n$/token.
-    InexactPrice { dollars_per_mtok: f64 },
-    /// The price does not fit the integer range.
-    Overflow,
-}
-
-impl fmt::Display for MoneyError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            MoneyError::InexactPrice { dollars_per_mtok } => write!(
-                f,
-                "price ${dollars_per_mtok}/MTok is not a whole, non-negative number of \
-                 nano-dollars per token"
-            ),
-            MoneyError::Overflow => f.write_str("price is too large"),
-        }
-    }
-}
-
-impl std::error::Error for MoneyError {}
-
-/// How far from a whole n$ a scaled price may be and still count as exact.
-const EXACT_EPSILON: f64 = 1e-9;
-
-/// Nano-dollars per token for a price in dollars per million tokens.
-pub(crate) fn nano_per_token(dollars_per_mtok: f64) -> Result<i128, MoneyError> {
-    let inexact = MoneyError::InexactPrice { dollars_per_mtok };
-    let scaled = dollars_per_mtok * 1000.0;
-    let whole = scaled.round();
-    if dollars_per_mtok.is_nan() || dollars_per_mtok < 0.0 {
-        Err(inexact)
-    } else if scaled >= i64::MAX as f64 {
-        Err(MoneyError::Overflow)
-    } else if (scaled - whole).abs() > EXACT_EPSILON {
-        Err(inexact)
-    } else {
-        Ok(whole as i128)
-    }
-}
-
-impl NanoUsd {
-    /// The cost of `tokens` tokens at `nano_per_token` n$ each.
-    pub(crate) fn of(tokens: u64, nano_per_token: i128) -> Self {
-        NanoUsd(tokens as i128 * nano_per_token)
-    }
-
-    /// Add the cost of `tokens` tokens at `nano_per_token` n$ each.
-    pub(crate) fn add_tokens(&mut self, tokens: u64, nano_per_token: i128) {
-        *self += NanoUsd::of(tokens, nano_per_token);
-    }
-
-    /// Round to whole µ$, half to even. Saturates at the `i64` range.
-    pub(crate) fn to_micro_half_even(self) -> MicroUsd {
-        let q = self.0.div_euclid(1000);
-        let r = self.0.rem_euclid(1000);
-        let q = if r > 500 || (r == 500 && q % 2 != 0) {
-            q + 1
-        } else {
-            q
-        };
-        MicroUsd(q.clamp(i64::MIN as i128, i64::MAX as i128) as i64)
-    }
-}
-
-impl std::ops::Add for NanoUsd {
-    type Output = NanoUsd;
-    fn add(self, rhs: NanoUsd) -> NanoUsd {
-        NanoUsd(self.0 + rhs.0)
-    }
-}
-
-impl std::ops::AddAssign for NanoUsd {
-    fn add_assign(&mut self, rhs: NanoUsd) {
-        self.0 += rhs.0;
-    }
-}
-
-impl std::iter::Sum for NanoUsd {
-    fn sum<I: Iterator<Item = NanoUsd>>(iter: I) -> NanoUsd {
-        iter.fold(NanoUsd(0), |a, b| a + b)
-    }
-}
 
 /// Where a cost figure came from.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -194,88 +99,6 @@ impl<'de> Deserialize<'de> for CostSource {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn mea_07_every_builtin_price_is_exact() {
-        for (model, p) in super::super::builtin_prices() {
-            // A cache write is the listed price, or the derived multiple of
-            // input when none is listed (`Price::cost`, `budget.rs`).
-            let all = [
-                p.input,
-                p.output,
-                p.cache_read,
-                p.cache_write_5m.unwrap_or(p.input * 1.25),
-                p.cache_write_1h.unwrap_or(p.input * 2.0),
-            ];
-            for price in all {
-                nano_per_token(price).unwrap_or_else(|e| panic!("{model}: {e}"));
-            }
-        }
-        assert_eq!(nano_per_token(4.0), Ok(4_000));
-        assert_eq!(nano_per_token(0.02), Ok(20));
-        assert_eq!(
-            nano_per_token(0.0001),
-            Err(MoneyError::InexactPrice {
-                dollars_per_mtok: 0.0001
-            })
-        );
-        assert!(matches!(
-            nano_per_token(-1.0),
-            Err(MoneyError::InexactPrice { .. })
-        ));
-        assert!(matches!(
-            nano_per_token(f64::NAN),
-            Err(MoneyError::InexactPrice { .. })
-        ));
-        assert_eq!(nano_per_token(f64::INFINITY), Err(MoneyError::Overflow));
-        assert_eq!(nano_per_token(1e20), Err(MoneyError::Overflow));
-    }
-
-    #[test]
-    fn mea_07_nano_accumulation_exact() {
-        // gpt-5.6-luna cache reads: $0.02/MTok, 20 n$/token. In f64 dollars,
-        // a million single-token additions drift; in n$ they do not.
-        let per = nano_per_token(0.02).unwrap();
-        let mut total = NanoUsd(0);
-        let mut f = 0.0f64;
-        for _ in 0..1_000_000 {
-            total.add_tokens(1, per);
-            f += 0.02 / 1_000_000.0;
-        }
-        assert_eq!(total, NanoUsd(20_000_000));
-        assert_eq!(total.to_micro_half_even(), MicroUsd(20_000));
-        assert_ne!(f, 0.02, "the f64 sum drifts, which is why money is integer");
-
-        let parts = [
-            NanoUsd::of(123_456, nano_per_token(4.0).unwrap()),
-            NanoUsd::of(7_890, nano_per_token(20.0).unwrap()),
-            NanoUsd::of(1_000_000, nano_per_token(0.20).unwrap()),
-        ];
-        let sum: NanoUsd = parts.iter().copied().sum();
-        assert_eq!(sum, NanoUsd(493_824_000 + 157_800_000 + 200_000_000));
-    }
-
-    #[test]
-    fn mea_07_rounding_once() {
-        let micro = |n| NanoUsd(n).to_micro_half_even();
-        assert_eq!(micro(1500), MicroUsd(2));
-        assert_eq!(micro(2500), MicroUsd(2));
-        assert_eq!(micro(3500), MicroUsd(4));
-        assert_eq!(micro(2501), MicroUsd(3));
-        assert_eq!(micro(2499), MicroUsd(2));
-        assert_eq!(micro(0), MicroUsd(0));
-        assert_eq!(micro(-1500), MicroUsd(-2));
-        assert_eq!(micro(-2500), MicroUsd(-2));
-        assert_eq!(micro(-2501), MicroUsd(-3));
-
-        // Sum then round once, not round each term.
-        let terms = [NanoUsd(1500), NanoUsd(1500)];
-        let once = terms.iter().copied().sum::<NanoUsd>().to_micro_half_even();
-        let each: i64 = terms.iter().map(|t| t.to_micro_half_even().0).sum();
-        assert_eq!(once, MicroUsd(3));
-        assert_eq!(each, 4);
-        assert_ne!(once.0, each);
-    }
 
     /// Every text that is not a cost source is refused with its own text in
     /// the error: unknown names, an empty date, and a hash that is not 12

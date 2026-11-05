@@ -131,16 +131,6 @@ impl Capabilities {
     pub(crate) fn discovers_session(&self) -> bool {
         self.resumes && !self.caller_minted_session
     }
-
-    /// Resident memory of one candidate whose local model takes
-    /// `local_model_bytes`.
-    pub(crate) fn footprint(&self, local_model_bytes: u64) -> u64 {
-        if self.local_model {
-            self.footprint_bytes.saturating_add(local_model_bytes)
-        } else {
-            self.footprint_bytes
-        }
-    }
 }
 
 // The compaction failure lines, from each installed harness (2026-10-07).

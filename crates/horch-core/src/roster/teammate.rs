@@ -42,11 +42,6 @@ pub(crate) const ORCHESTRATOR_ONLY_SKILLS: [&str; 2] = ["orchestrate", "skill-cr
 /// Workers are the orchestrator's only way to delegate.
 pub(crate) const ORCHESTRATOR_DENIED_TOOLS: [&str; 2] = ["Agent", "RemoteTrigger"];
 
-/// Teammates that run only as a headless `claude -p` job the dataset
-/// coordinator starts, never in a fleet pane. `horch spawn` refuses them: the
-/// judge must see the anonymous bundle and nothing else (JDG-01, SEC-04).
-pub(crate) const HEADLESS_ONLY: [&str; 1] = ["judge"];
-
 /// The reserved tier a model belongs to, if any.
 ///
 /// Matched on the model's name segments rather than the whole slug, because the

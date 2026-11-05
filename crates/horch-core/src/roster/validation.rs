@@ -11,7 +11,7 @@ use super::parser::{parse_base, parse_teammate};
 use super::repository::{BUILTIN_BASES, BUILTIN_TEAMMATES};
 use super::teammate::{
     HarnessDefault, CONTEXT_MESSAGES_BASE, CONTEXT_MESSAGE_KEYS, CONTEXT_MESSAGE_PLACEHOLDERS,
-    CONTEXT_WINDOWS_BASE, HARNESS_DEFAULTS_BASE, HEADLESS_ONLY,
+    CONTEXT_WINDOWS_BASE, HARNESS_DEFAULTS_BASE,
 };
 use super::{
     effort_problem, reserved_tier, Base, ExecDecision, ExecRule, PermissionMode, Roster, Teammate,
@@ -61,16 +61,8 @@ fn builtin_compact_at_problems(builtins: &[(&str, &str)]) -> Vec<String> {
 impl Roster {
     /// Whether this teammate may be started by `horch spawn`. Orchestrators
     /// are launched by `pane-launch`, never spawned, so this is where the
-    /// one-top-tier-session rule bites. A headless-only teammate never gets
-    /// a pane at all.
+    /// one-top-tier-session rule bites.
     pub fn is_spawnable(t: &Teammate) -> Result<()> {
-        if HEADLESS_ONLY.contains(&t.name.as_str()) {
-            bail!(
-                "'{}' is headless only (HEADLESS_ONLY): the dataset coordinator runs it \
-                 as a `claude -p` job, and `horch spawn` never starts it in a pane",
-                t.name
-            );
-        }
         Roster::model_is_spawnable(t.model.as_deref().unwrap_or_default(), &t.name)
     }
 

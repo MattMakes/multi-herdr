@@ -24,8 +24,8 @@ use serde::{Deserialize, Serialize};
 use super::{
     BUNDLED_COPIED, BUNDLED_SKILL_DIGESTS, BUNDLED_SKILL_EXECUTABLES, BUNDLED_SKILL_FILES,
 };
+use crate::digest::Digest;
 use crate::ids::SkillId;
-use crate::measure::digest::Digest;
 use crate::roster::{OperatorSkills, Teammate};
 
 /// The marketplace API, for the `horch` binary, which depends on core only.
@@ -825,7 +825,7 @@ fn tree_digest(files: &[(&str, &[u8])], executable: &[&str]) -> Digest {
         .map(|(rel, bytes)| {
             (
                 *rel,
-                crate::measure::digest::sha256_bytes(bytes).hex(),
+                crate::digest::sha256_bytes(bytes).hex(),
                 executable.contains(rel),
             )
         })

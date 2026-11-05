@@ -50,8 +50,6 @@
 //! A top-level command that herdr 0.8.2 does not have (for example the old
 //! `herdr wait output`) exits 2 with herdr's `unknown command` message.
 //!
-//! Dataset workspaces (label `multi-herdr-dataset ...`) are exempt from the
-//! violation rule: their coordinator splits and closes panes there.
 //! `workspace close` removes a workspace and kills every pane command in it.
 
 use std::path::PathBuf;
@@ -288,12 +286,9 @@ fn run(call: &mut Call) -> i32 {
     }
     let mut state = load();
     // Any verb that changes what the operator sees is a violation, whatever
-    // noun it is attached to, except inside a dataset workspace: the
-    // coordinator owns that one and splits and closes in it by design.
+    // noun it is attached to.
     if let Some(verb) = args.get(1) {
-        if (MUTATING.contains(verb) || (args.first() == Some(&"tab") && *verb == "focus"))
-            && !in_dataset_workspace(&state, &args)
-        {
+        if MUTATING.contains(verb) || (args.first() == Some(&"tab") && *verb == "focus") {
             call.violate(format!("mutating call: herdr {}", args.join(" ")));
         }
     }
@@ -636,30 +631,6 @@ fn remove_pane(state: &mut Value, pane: &str) -> bool {
         }
     }
     found
-}
-
-/// The label prefix of the workspaces `multi-herdr-dataset` creates.
-const DATASET_LABEL: &str = "multi-herdr-dataset";
-
-/// Whether the call targets a pane or workspace of a dataset workspace
-/// (its third argument names it).
-fn in_dataset_workspace(state: &Value, args: &[&str]) -> bool {
-    let Some(target) = args.get(2) else {
-        return false;
-    };
-    // Pane ids are `<workspace>:p<n>`, so a pane that is already gone still
-    // names its workspace.
-    let ws = target.split(':').next().unwrap_or(target);
-    state["workspaces"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .any(|w| {
-            w["label"]
-                .as_str()
-                .is_some_and(|l| l.starts_with(DATASET_LABEL))
-                && w["workspace_id"].as_str() == Some(ws)
-        })
 }
 
 /// Remove a workspace and kill every pane command in it.

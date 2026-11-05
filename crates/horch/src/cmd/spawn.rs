@@ -12,20 +12,15 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
 use anyhow::{bail, Context, Result};
-use horch_core::competition::budget::UsageMeter;
-use horch_core::competition::observe::TelemetryUsage;
 use horch_core::execution::legacy::Record;
 use horch_core::execution::lifecycle::{await_worker, StartupKey, WorkerStart};
 use horch_core::execution::plan::{self, GateInputs, MintedIds, PlanInputs};
 use horch_core::execution::service::{ExecutionService, SpawnError, SpawnOutcome};
 use horch_core::execution::store::ExecutionStore;
 use horch_core::execution::{
-    Execution, ExecutionPlan, ExecutionStatus, LaunchStage, SessionMode, SpawnRequest, TilingMode,
+    ExecutionPlan, ExecutionStatus, LaunchStage, SessionMode, SpawnRequest, TilingMode,
 };
-use horch_core::fleet_runs::facts::{record_start, RunSources};
-use horch_core::fleet_runs::sync::sync_project;
 use horch_core::ids::{ExecutionId, SessionId, TeammateName};
-use horch_core::measure::paths::DatasetPaths;
 use horch_core::messaging::mailbox::Mailbox;
 use horch_core::roster::{Phase, Roster};
 use horch_core::routing::decision::GateFlags;
@@ -33,8 +28,6 @@ use horch_core::routing::policy::BalanceMode;
 use horch_core::routing::quota::QuotaView;
 use horch_core::runtime::RuntimeContext;
 use horch_core::skills::{harness_support, SkillResolution};
-use horch_core::usage::Locations;
-use horch_core::vcs::git::GitCli;
 use horch_core::workspace::arrange;
 use horch_core::workspace::herdr::Herdr;
 use horch_core::workspace::model::Direction;
@@ -220,8 +213,6 @@ fn launch(
             out.plan.execution.effort.as_deref(),
         );
     }
-    // The record has its pane, and the spawn has run the ledger recovery.
-    fleet_facts(ctx, &sc.store, &sc.project, &out.plan.execution);
     wait_for_start(ctx, sc, &out, started, ledger)?;
     eprintln!("{}", spawned_line(&out));
     Ok(out.pane)
@@ -272,13 +263,14 @@ fn spawn_context(ctx: &RuntimeContext) -> Result<SpawnContext> {
     })
 }
 
-/// A competition record belongs to multi-herdr-dataset, never to a resume.
+/// A competition record, from an older ledger, is never resumed: the
+/// competition rounds that ran it are removed.
 fn refuse_competition_record(existing: Option<&Record>) -> Result<()> {
     let Some(r) = existing.filter(|r| r.round_id.is_some()) else {
         return Ok(());
     };
     bail!(
-        "record {} is a competition {} (round {}); multi-herdr-dataset owns it, \
+        "record {} is a competition {} (round {}) from a removed feature, \
          so horch spawn --resume refuses it",
         r.record_id,
         if r.experiment_id.is_some() {
@@ -429,42 +421,6 @@ fn spawned_line(out: &SpawnOutcome) -> String {
         SessionMode::Fresh(Some(id)) => {
             format!("spawned {role} (pane {pane}): {what}, new session {id}")
         }
-    }
-}
-
-/// The most run rows one `horch spawn` writes. Each reads a transcript;
-/// a backfill of a long ledger spreads over many spawns.
-const SPAWN_SYNC_ROWS: usize = 8;
-
-/// The fleet run facts of a spawn (fleet-dataset §4.1, §4.2): the start row
-/// of `execution`, then a run row for every finished record of this project
-/// that has none. Each failure is 1 NOTE line on stderr; the spawn goes on.
-fn fleet_facts(
-    ctx: &RuntimeContext,
-    store: &ExecutionStore,
-    project: &Path,
-    execution: &Execution,
-) {
-    let paths = DatasetPaths::new(&ctx.paths.state_root, project);
-    let git = GitCli::new(ctx.bins.harness.git.clone());
-    let now = horch_core::clock::now();
-    let id = execution.id.as_str();
-    if let Err(e) = record_start(&paths, project, &git, id, &execution.task.text, now) {
-        eprintln!("horch: NOTE: fleet start row not written: {e:#}");
-    }
-    let usage = TelemetryUsage {
-        locations: Locations::from_context(ctx),
-    };
-    let sources = RunSources {
-        usage: &usage,
-        meter: &UsageMeter::default(),
-        git: &git,
-    };
-    let synced = store.read().and_then(|records| {
-        sync_project(&paths, project, &records, &sources, now, SPAWN_SYNC_ROWS)
-    });
-    if let Err(e) = synced {
-        eprintln!("horch: NOTE: fleet run rows not synced: {e:#}");
     }
 }
 

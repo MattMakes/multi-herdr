@@ -15,8 +15,7 @@ use anyhow::{bail, Context};
 use horch_marketplace::git::{GitOutput, GitRunner};
 use sha2::{Digest as _, Sha256};
 
-use crate::measure::digest::Digest;
-use crate::measure::NumstatLine;
+use crate::digest::Digest;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CherryPick {
@@ -77,7 +76,6 @@ pub trait GitClient {
     /// The full hash `rev` names, or `None` when it names nothing.
     fn rev_parse(&self, dir: &Path, rev: &str) -> anyhow::Result<Option<String>>;
     fn rev_list(&self, dir: &Path, range: &str) -> anyhow::Result<Vec<String>>;
-    fn diff_numstat(&self, dir: &Path, base: &str, head: &str) -> anyhow::Result<Vec<NumstatLine>>;
     /// The patch, cut at `cap_bytes` on a UTF-8 boundary, and whether it was
     /// cut.
     fn diff_patch(
@@ -379,48 +377,6 @@ impl GitClient for GitCli {
         refuse_option(range)?;
         let text = self.text(dir, &["rev-list", range])?;
         Ok(text.lines().map(str::to_owned).collect())
-    }
-
-    fn diff_numstat(&self, dir: &Path, base: &str, head: &str) -> anyhow::Result<Vec<NumstatLine>> {
-        refuse_option(base)?;
-        refuse_option(head)?;
-        let out = self.run(
-            dir,
-            &[
-                "diff",
-                "--numstat",
-                "-z",
-                "--no-renames",
-                "--no-ext-diff",
-                "--no-textconv",
-                base,
-                head,
-            ],
-        )?;
-        // `-z`: `<added>\t<deleted>\t<path>\0`, the path unquoted.
-        let text = String::from_utf8_lossy(&out.stdout);
-        let mut lines = Vec::new();
-        for record in text.split('\0').filter(|r| !r.is_empty()) {
-            let mut parts = record.splitn(3, '\t');
-            let (Some(a), Some(d), Some(path)) = (parts.next(), parts.next(), parts.next()) else {
-                bail!("unexpected git numstat record '{record}'");
-            };
-            let count = |s: &str| -> anyhow::Result<Option<u32>> {
-                if s == "-" {
-                    Ok(None)
-                } else {
-                    Ok(Some(s.parse().with_context(|| {
-                        format!("bad numstat count in '{record}'")
-                    })?))
-                }
-            };
-            lines.push(NumstatLine {
-                added: count(a)?,
-                deleted: count(d)?,
-                path: path.to_owned(),
-            });
-        }
-        Ok(lines)
     }
 
     fn diff_patch(

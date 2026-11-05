@@ -11,7 +11,7 @@
 //! | [`fsx`]         | durable file writes and the cross-process directory lock    |
 //! | [`procid`]      | process identity: a pid with its start time                 |
 //! | [`exeid`]       | which binary a long-lived horch process runs                |
-//! | [`heartbeat`]   | the liveness of background jobs (judge, compaction)         |
+//! | [`heartbeat`]   | the liveness of background jobs (compaction)                |
 //! | [`runtime`]     | the process boundary: `RuntimeContext`, paths, binaries     |
 //! | [`roster`]      | `teammates/` files: parsing, layering, `--check` rules      |
 //! | [`prompts`]     | rendering briefings from `teammates/`                       |
@@ -27,33 +27,25 @@
 //! | [`compaction`]  | context windows, thresholds, row states, the compaction job |
 //! | [`telemetry`]   | live per-pane token telemetry and the collector             |
 //! | [`usage`]       | what a run cost, read back from each harness's own records  |
-//! | [`vcs`]         | typed git and worktrees for the dataset mode                |
-//! | [`measure`]     | dataset digests, events, the event store and projections    |
-//! | [`competition`] | competitive mode: config, preflight, planner, coordinator, promotion |
-//! | [`evaluation`]  | validation gates, judge input, judging and winner policy    |
-//! | [`dataset`]     | the dataset outputs: export rows and readiness              |
-//! | [`fleet_runs`]  | fleet run facts: start, run and verdict rows per worker     |
-//! | [`teacher`]     | the System One decision-model seam (inert)                  |
+//! | [`vcs`]         | typed git and worker landing                                |
+//! | [`digest`]      | sha256 digests over canonical JSON                          |
+//! | [`testkit`]     | the in-repo PRNG and property-test runner                   |
 //!
 //! Nothing here shells out to `bash`, `jq`, `node`, or `just`. The external
-//! processes are `herdr`, the agent CLI a worker launches, `git` in the
-//! dataset mode, and `sqlite3` for OpenCode's usage database.
+//! processes are `herdr`, the agent CLI a worker launches, `git`, and
+//! `sqlite3` for OpenCode's usage database.
 
 #![warn(unreachable_pub)]
 
 pub mod clock;
 pub mod compaction;
-pub mod competition;
-pub mod dataset;
-pub mod evaluation;
+pub mod digest;
 pub mod execution;
 pub mod exeid;
-pub mod fleet_runs;
 pub mod fsx;
 pub mod harness;
 pub mod heartbeat;
 pub mod ids;
-pub mod measure;
 pub mod messaging;
 pub mod procid;
 pub mod project_notes;
@@ -64,8 +56,8 @@ pub mod runtime;
 pub mod skills;
 pub mod sweep;
 pub mod taskledger;
-pub mod teacher;
 pub mod telemetry;
+pub mod testkit;
 pub mod usage;
 pub mod vcs;
 pub mod workspace;

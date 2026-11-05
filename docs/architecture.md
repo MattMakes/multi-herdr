@@ -68,6 +68,8 @@ open first.
 | `telemetry` | live per-pane token telemetry and the collector | `crates/horch-core/src/telemetry/collect.rs`, `crates/horch-core/src/telemetry/readers.rs` |
 | `usage` | what a run cost, read back from each harness's own records | `crates/horch-core/src/usage.rs` |
 | `vcs` | typed git and worktrees for the dataset mode | `crates/horch-core/src/vcs/git.rs` |
+| `digest` | sha256 digests over canonical JSON | `crates/horch-core/src/digest.rs` |
+| `testkit` | the in-repo PRNG and property-test runner | `crates/horch-core/src/testkit.rs` |
 | `measure` | dataset digests, events, the event store and projections | `crates/horch-core/src/measure/event.rs`, `crates/horch-core/src/measure/projection.rs` |
 | `competition` | competitive mode: config, preflight, planner, round state table, coordinator, judging, promotion, budget | `crates/horch-core/src/competition/coordinator.rs`, `crates/horch-core/src/competition/state.rs` |
 | `evaluation` | validation gates, judge input, judging and winner policy | `crates/horch-core/src/evaluation/validator.rs`, `crates/horch-core/src/evaluation/winner.rs` |
