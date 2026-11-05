@@ -17,6 +17,7 @@ from __future__ import annotations
 import json
 import os
 import secrets
+import subprocess
 import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
@@ -91,9 +92,38 @@ def read_json(path: Path):
         return json.load(f)
 
 
+MODE_ENV = "SKILL_INTAKE_MODE"
+HORCH_ENV = "SKILL_INTAKE_HORCH"
+FLEET_VARS = ("HORCH_ROLE", "HORCH_RECORD_ID", "HERDR_PANE_ID")
+VERSION_TIMEOUT = 5  # seconds
+
+
+def horch_bin() -> str:
+    """The horch binary intake calls; SKILL_INTAKE_HORCH is the test seam."""
+    return os.environ.get(HORCH_ENV) or "horch"
+
+
+def mode() -> str:
+    """The mode rule of spec 6.2: `fleet` when HORCH_ROLE, HORCH_RECORD_ID and
+    HERDR_PANE_ID are set and not empty and `horch --version` exits 0 within
+    5 seconds; else `plain`. SKILL_INTAKE_MODE=fleet|plain overrides it."""
+    forced = os.environ.get(MODE_ENV)
+    if forced:
+        if forced not in ("fleet", "plain"):
+            raise TaskError(f"{MODE_ENV} must be fleet or plain, not {forced!r}")
+        return forced
+    if not all(os.environ.get(v) for v in FLEET_VARS):
+        return "plain"
+    try:
+        r = subprocess.run([horch_bin(), "--version"], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                           stderr=subprocess.DEVNULL, timeout=VERSION_TIMEOUT)
+    except (OSError, subprocess.TimeoutExpired):
+        return "plain"
+    return "fleet" if r.returncode == 0 else "plain"
+
+
 def fleet_mode() -> bool:
-    # Ticket 12 adds the full mode rule (spec 6.2); SKILL_INTAKE_MODE overrides it.
-    return os.environ.get("SKILL_INTAKE_MODE") == "fleet"
+    return mode() == "fleet"
 
 
 def _home() -> Path:

@@ -4,7 +4,9 @@ Every intake command runs in this process with subprocess patched to record
 the argv of each program start. Only git, nm, otool, objdump and the sandbox
 wrappers (sandbox-exec, bwrap) may be started, and never with a quarantine
 path as the program. For a sandbox wrapper, the program it starts is checked
-too. os.system, os.exec* and os.spawn* must never be called.
+too. The horch binary from SKILL_INTAKE_HORCH (intake mode, intake spawn) may
+be started too, and never gets a quarantine path in any argument.
+os.system, os.exec* and os.spawn* must never be called.
 
 Later tickets add their own commands to COMMANDS_RUN and to this flow.
 """
@@ -25,11 +27,13 @@ from unittest import mock
 from base import INTAKE, IntakeTestCase
 
 import fixtures
-from intakelib import acquire, sandbox
+from intakelib import acquire, roles, sandbox
 from intakelib.task import read_json, write_json
 
 ALLOWED = {"git", "nm", "otool", "objdump", "sandbox-exec", "bwrap"}
 WRAPPERS = {"sandbox-exec", "bwrap"}
+FLEET = {"HORCH_ROLE": "skill-importer-1", "HORCH_RECORD_ID": "rec-1", "HERDR_PANE_ID": "p0"}
+HORCH_STUB = '#!/bin/sh\nif [ "$1" = spawn ]; then echo "spawned $2-1 (pane p1): none none" >&2; fi\nexit 0\n'
 
 
 def load_cli():
@@ -157,6 +161,29 @@ class ArgvTest(IntakeTestCase):
         self.assertEqual(code, 0, out)
         self.assertTrue((skills / "bin-fixture" / "SKILL.md").is_file())
 
+        # Role orchestration: fleet mode by the real rule, with a stub horch.
+        horch = self.tmp / "bin" / "horch"
+        horch.parent.mkdir()
+        horch.write_text(HORCH_STUB)
+        horch.chmod(0o755)
+        os.environ.update(FLEET, SKILL_INTAKE_HORCH=str(horch))
+        code, out = self.intake("mode")
+        self.assertEqual((code, out.strip()), (0, "fleet"))
+        self.assertEqual(self.intake("brief", "writer", "--task", str(c))[0], 0)
+        code, out = self.intake("spawn", "auditor", "--task", str(c))
+        self.assertEqual(code, 0, out)
+        status = Path(json.loads(out)["status_file"])
+        write_json(status, {"role": "auditor", "status": "ok", "outputs": [], "error": None})
+        self.assertEqual(self.intake("role-result", str(status))[0], 0)
+        self.assertEqual(self.intake("roles", "--task", str(c))[0], 0)
+        for key in FLEET:
+            del os.environ[key]
+        code, out = self.intake("brief", "reviewer", "--task", str(c))
+        role_dir = self.tmp / "roles"
+        fixtures.build(role_dir, {"reviewer.md": "# Reviewer\n"})
+        with mock.patch.object(roles, "ROLES_DIR", role_dir):
+            self.assertEqual(self.intake("subagent-prompt", "reviewer", "--brief", json.loads(out)["brief"])[0], 0)
+
         # Every command that exists at this point ran.
         commands = set(self.cli.COMMANDS) - {"cr"}
         cr_actions = {"init", "index", "role", "scan", "handoff", "context", "verify", "status", "validate"}
@@ -164,9 +191,11 @@ class ArgvTest(IntakeTestCase):
 
         quarantine = [str((base / "contaminated" / x / "quarantine").resolve()) for x in (c.name, Path(c2).name)]
         self.assertTrue(self.calls)
-        self.assertEqual(violations(self.calls, quarantine), [])
+        self.assertEqual(violations(self.calls, quarantine, str(horch)), [])
         programs = {Path(a[0]).name for a in self.calls}
         self.assertIn("git", programs)
+        self.assertIn(["--version"], [a[1:] for a in self.calls if a[0] == str(horch)])
+        self.assertIn("spawn", [a[1] for a in self.calls if a[0] == str(horch)])
         readers = {Path(inner_program(a)).name for a in self.calls if Path(a[0]).name in WRAPPERS}
         if Path(sandbox.SANDBOX_EXEC).exists() or shutil.which("bwrap"):
             self.assertTrue(readers & {"nm", "otool", "objdump"}, self.calls)
@@ -178,12 +207,21 @@ class ArgvTest(IntakeTestCase):
         self.assertTrue(violations([["/usr/bin/bwrap", "--ro-bind", "/", "/", "--", f"{q}/x"]], [q]))
         self.assertTrue(violations([["/usr/bin/python3", "x.py"]], [q]))
         self.assertEqual(violations([["/usr/bin/sandbox-exec", "-f", "p.sb", "/usr/bin/nm", "-gU", f"{q}/a"]], [q]), [])
+        h = str(self.tmp / "bin" / "horch")
+        self.assertEqual(violations([[h, "spawn", "intake-writer", "--exact", "Read and follow /k/b.md exactly."]], [q], h), [])
+        self.assertTrue(violations([[h, "spawn", "x", "--exact", f"Read and follow {q}/src/x exactly."]], [q], h))
+        self.assertTrue(violations([["/usr/local/bin/horch", "--version"]], [q], h))
 
 
-def violations(calls: list[list[str]], quarantine: list[str]) -> list[str]:
-    """Each program start that is not allowed, or whose program is a quarantine path."""
+def violations(calls: list[list[str]], quarantine: list[str], horch: str | None = None) -> list[str]:
+    """Each program start that is not allowed, or whose program is a quarantine path.
+    `horch` (the SKILL_INTAKE_HORCH path) is allowed; no argument of it may hold a quarantine path."""
     bad = []
     for argv in calls:
+        if horch is not None and argv[0] == horch:
+            if any(q in arg for arg in argv for q in quarantine):
+                bad.append(f"quarantine path passed to horch: {argv}")
+            continue
         prog = Path(argv[0]).name
         if prog not in ALLOWED:
             bad.append(f"not allowed: {argv}")

@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from . import evidence, task
+from . import evidence, roles, task
 from .sweep import SEVERITIES
 
 OUTCOME = {
@@ -87,6 +87,8 @@ def write(t: task.Task) -> tuple[Path, str]:
     lines = ["# skill-intake report", "", f"- outcome: {outcome}", f"- task: {_cell(t.id)}",
              f"- auditor: {summary['audit']}"]
     lines += [f"- abort reason: {_cell(r)}" for r in summary["reasons"]]
+    lost = [a["reason"] for a in roles.aborts(t)]
+    lines += [f"- role abort: {_cell(r)}" for r in lost]
     lines.append("")
     lines += source_section(prov)
     lines += findings_section(findings, entries)
@@ -99,4 +101,6 @@ def write(t: task.Task) -> tuple[Path, str]:
             f", flag {_cell(summary['licence']['flag'])}. Report: {path}")
     if summary["reasons"]:
         para += ". Abort reasons: " + "; ".join(_cell(r) for r in summary["reasons"])
+    if lost:
+        para += ". Role abort: " + "; ".join(_cell(r) for r in lost)
     return path, para

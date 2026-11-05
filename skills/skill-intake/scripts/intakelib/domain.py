@@ -31,8 +31,10 @@ WRITE_SETS = {
     "reviewer": ("K/out/*", "K/review.json", "K/verify-log/*", "K/status/reviewer-*.json"),
 }
 # Files the controller writes through `intake` while a role runs: the task
-# manifest, the role log and briefs. A change to them is not counted against a role.
-CONTROLLER = ("C/task.json", "C/roles.jsonl", "C/briefs/*", "D/briefs/*", "K/briefs/*")
+# manifest, the role log, briefs and the role snapshots. A change to them is
+# not counted against a role.
+CONTROLLER = ("C/task.json", "C/roles.jsonl", "C/briefs/*", "D/briefs/*", "K/briefs/*",
+              "C/contaminated/snapshots/*")
 
 
 def take(task: Task) -> dict:

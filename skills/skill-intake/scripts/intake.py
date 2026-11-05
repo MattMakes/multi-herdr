@@ -37,6 +37,12 @@ COMMANDS = (
     "run",
     "verify",
     "install",
+    "mode",
+    "brief",
+    "spawn",
+    "roles",
+    "role-result",
+    "subagent-prompt",
 )
 
 

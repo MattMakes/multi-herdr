@@ -23,6 +23,7 @@ SKILL = REPO / "skills" / "skill-intake"
 SCRIPTS = SKILL / "scripts"
 INTAKE = SCRIPTS / "intake.py"
 TESTS = Path(__file__).resolve().parent
+FLEET_ENV = ("HORCH_ROLE", "HORCH_RECORD_ID", "HERDR_PANE_ID", "HORCH_RUN_ID")
 
 if str(SCRIPTS) not in sys.path:
     sys.path.insert(0, str(SCRIPTS))
@@ -41,8 +42,9 @@ class IntakeTestCase(unittest.TestCase):
         saved = dict(os.environ)
         self.addCleanup(self._restore_env, saved)
         # No test passes an API key to anything (repo rule): drop them all.
+        # A test run in a horch pane must not see the pane's fleet variables.
         for key in list(os.environ):
-            if key.startswith("SKILL_INTAKE_") or key.endswith("_API_KEY"):
+            if key.startswith("SKILL_INTAKE_") or key.endswith("_API_KEY") or key in FLEET_ENV:
                 del os.environ[key]
         os.environ["HOME"] = str(self.home)
         os.environ["XDG_STATE_HOME"] = str(self.state)
