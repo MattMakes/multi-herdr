@@ -470,7 +470,9 @@ fn t27_every_intake_teammate_reads_but_does_not_write_its_bundle() {
         assert_eq!(denied.last(), Some(&dir), "{name}");
         let perms = &settings["permissions"];
         assert_eq!(perms["blockReadsOutsideWorkingDirectories"], true, "{name}");
-        assert_eq!(perms["additionalDirectories"], json!([dir]), "{name}");
+        // Before the bundle: the teammate's own sandbox paths (T-31).
+        let dirs = strings(&perms["additionalDirectories"]);
+        assert_eq!(dirs.last(), Some(&dir), "{name}");
         let deny = strings(&perms["deny"]);
         for tool in ["Edit", "Write"] {
             assert!(
@@ -532,4 +534,69 @@ fn t28_a_full_sandboxed_teammate_writes_no_skills_bundle() {
         let text = launched_settings(&env, r.require(name).unwrap()).to_string();
         assert!(!text.contains(&bundles), "{name}: {text}");
     }
+}
+
+/// T-31: each intake teammate's own `allowRead` and `allowWrite` paths, with
+/// `~` expanded, are working directories, so a Bash command that names one
+/// does not stop at a permission prompt. No other path is one: the Read tool
+/// reaches no more than Bash. An `allowRead`-only path gets an `Edit(...)`
+/// deny rule. skill-importer keeps its quarantine Read deny.
+#[test]
+fn t31_an_intake_teammate_works_in_its_own_sandbox_paths() {
+    let home = tempfile::tempdir().unwrap();
+    let env = launch_env(home.path());
+    let expand = |p: &str| match p.strip_prefix("~/") {
+        Some(rest) => home.path().join(rest).to_string_lossy().into_owned(),
+        None => p.to_string(),
+    };
+    let r = Roster::builtin().unwrap();
+    for name in ROLES.iter().map(|r| r.name).chain(["skill-importer"]) {
+        let t = r.require(name).unwrap();
+        let own = sandbox(t);
+        let reads: Vec<String> = strings(&own["filesystem"]["allowRead"])
+            .iter()
+            .map(|p| expand(p))
+            .collect();
+        let writes: Vec<String> = strings(&own["filesystem"]["allowWrite"])
+            .iter()
+            .map(|p| expand(p))
+            .collect();
+        let settings = launched_settings(&env, t);
+        let perms = &settings["permissions"];
+        let dirs = strings(&perms["additionalDirectories"]);
+        for dir in reads.iter().chain(&writes) {
+            assert!(dirs.contains(dir), "{name}: {dir} not in {dirs:?}");
+        }
+        for dir in &dirs {
+            assert!(
+                reads.contains(dir) || writes.contains(dir),
+                "{name}: {dir} is not its own sandbox path"
+            );
+        }
+        // No `deny` list when every path is also in `allowWrite`.
+        let deny = perms.get("deny").map(strings).unwrap_or_default();
+        for dir in reads.iter().filter(|d| !writes.contains(d)) {
+            assert!(
+                deny.contains(&format!("Edit(/{dir}/**)")),
+                "{name}: {deny:?}"
+            );
+        }
+    }
+    let importer = r.require("skill-importer").unwrap();
+    let workspace = expand(B);
+    let dirs = strings(&launched_settings(&env, importer)["permissions"]["additionalDirectories"]);
+    assert!(dirs.contains(&workspace), "{dirs:?}");
+    let cmd =
+        launch::command_with_skills_in(&env, importer, Session::Unmanaged, "PROMPT", None, None)
+            .unwrap();
+    let args: Vec<String> = cmd
+        .get_args()
+        .map(|a| a.to_string_lossy().into_owned())
+        .collect();
+    let i = args
+        .iter()
+        .position(|a| a == "--disallowedTools")
+        .expect("--disallowedTools");
+    let quarantine = format!("Read({B}/contaminated/*/quarantine/**)");
+    assert!(args[i + 1].contains(&quarantine), "{}", args[i + 1]);
 }

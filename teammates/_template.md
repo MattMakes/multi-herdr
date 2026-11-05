@@ -329,7 +329,13 @@ settings:
 #   network.strictAllowlist: true and
 #   permissions.blockReadsOutsideWorkingDirectories: true (the Read tool is
 #   outside the sandbox, and this key closes the home directory to it and
-#   to Bash). Re-open paths with filesystem.allowRead. With horch_access:
+#   to Bash). Re-open paths with filesystem.allowRead. horch also makes
+#   each filesystem.allowRead and allowWrite path (~ expanded) a working
+#   directory (permissions.additionalDirectories), so the Read tool reads
+#   it and a Bash command that names it runs with no prompt. A working
+#   directory is open to Edit and Write, so horch adds an Edit(//<path>/**)
+#   deny rule for a path in allowRead and not in allowWrite. A deny rule
+#   for a path in that list still wins. With horch_access:
 #   full (below), horch also adds its own state root and task ledger folder to filesystem.allowRead and
 #   allowWrite, and the state root and $HERDR_SOCKET_PATH to
 #   network.allowUnixSockets, from the roots it resolves at launch, so `horch tell`,

@@ -448,3 +448,88 @@ not matched by file permission checks — only Edit(path) rules are`. The
 Cost: 1 sonnet low-effort pane, 1 `smoke` pane (no model) and 2 short
 `claude -p` sonnet sessions. Results file:
 `~/.local/state/skill-intake/drafts/probe/t28-full-results.txt`.
+
+### Re-probe after ticket 31 (`allowRead` paths as working directories)
+
+**Verdict: after the fix, a sandboxed auto-mode pane runs the T-17 command
+with no prompt. The quarantine Read deny holds, a path outside the sandbox
+lists stays closed to Read and Bash, and Edit and Write fail on an
+`allowRead`-only path.**
+Date: 2026-11-05. Claude Code 2.1.318, macOS (Seatbelt).
+
+#### Cause
+
+`overlay_sandbox` sets `permissions.blockReadsOutsideWorkingDirectories`.
+Claude Code checks the path arguments of a Bash command against the working
+directories, whatever `sandbox.filesystem.allowRead` says. A command that
+names a path under `~/.local/state/skill-intake` stops at:
+`Reads outside the working directories are blocked
+(permissions.blockReadsOutsideWorkingDirectories). Add the directory with
+/add-dir, or remove that setting. Do you want to proceed?`
+A plain `cat <path>` did not stop; `python3 -I $S/scripts/intake.py ...
+--task <path>` did.
+
+#### Fix
+
+`overlay_sandbox_dirs` in `crates/horch-core/src/harness/claude.rs` adds
+each `filesystem.allowRead` and `allowWrite` path of the teammate's
+`sandbox:` block, with `~` expanded, to `permissions.additionalDirectories`.
+A path in `allowRead` and not in `allowWrite` also gets the deny rule
+`Edit(//<path>/**)`, which covers the Write tool too (T-28 finding).
+horch's own paths (state root, ledger folder, sockets) are not added. The
+fix is for every sandboxed teammate, so the `_template.md` promise holds:
+`allowRead` re-opens a path for Bash and for the Read tool.
+
+#### Probe
+
+The probe teammate `probe-t31` is a copy of `skill-importer` with
+`hidden: true`, `model: sonnet`, `effort: low`, no `system_prompt` and no
+`spawn_only`. Its `allowRead` adds `~/.local/state/probe-t31-ro`, a path
+not in `allowWrite`. It ran from `.worktrees/_scratch/probe-t31/teammates`
+with `--exact --run skill-intake`. Copies of the debug build before and
+after the fix spawned it. Probe files:
+
+- `C` = `~/.local/state/skill-intake/contaminated/probe-t31`, with
+  `task.txt` and `quarantine/secret.txt`.
+- `O` = `~/.local/state/probe-t31-outside/out.txt`, in no sandbox list.
+- `R` = `~/.local/state/probe-t31-ro/ro.txt`, `allowRead` only.
+- `S` = the pane's own bundle `skills/skill-intake` folder.
+
+The launched `--settings` after the fix add, before the bundle entries:
+
+| key | entries |
+|---|---|
+| `permissions.additionalDirectories` | `~/.local/state/skill-intake`, `~/.local/state/probe-t31-ro`, `~/.claude/skills` (expanded) |
+| `permissions.deny` | `Edit(//<home>/.local/state/probe-t31-ro/**)` |
+
+| # | step | before | after |
+|---|---|---|---|
+| 1 | Bash `S=...; python3 -I $S/scripts/intake.py spawn auditor --help --task C` | prompted (text above) | allowed, `usage: intake spawn ...` |
+| 2 | Bash `cat C/task.txt` | allowed | allowed |
+| 3 | Read `C/task.txt` | denied, `blockReadsOutsideWorkingDirectories` | allowed |
+| 4 | Read `C/quarantine/secret.txt` | denied, `File is in a directory that is denied by your permission settings.` | denied, as before |
+| 5 | Bash `cat O` | denied, `Operation not permitted` | denied, as before |
+| 6 | Read `O` | denied, `blockReadsOutsideWorkingDirectories` | denied, as before |
+| 7 | Bash `cat R` | allowed | allowed |
+| 8 | Edit `R` | allowed (the file changed) | denied, `File is in a directory that is denied by your permission settings.` |
+| 9 | Write `R/../new.txt` | allowed (the file was made) | denied, as step 8 |
+
+Panes: `probe-t31-1` (before, steps 2 to 9), `probe-t31-3` (before, step 1;
+the prompt was declined with Esc) and `probe-t31-2` (after, steps 1 to 9).
+A headless `claude -p --permission-mode auto` run with the before pane's
+launched `--settings` gave the same step 1 denial, and with the fix the
+command ran.
+
+Step 4 shows that the `Read(~/.local/state/skill-intake/contaminated/*/quarantine/**)`
+deny of `skill-importer` wins over the new working directory. Steps 8 and 9
+show a gap before this ticket: the Edit and Write tools are outside the OS
+sandbox, so in auto mode they wrote an `allowRead`-only path. The new
+`Edit(...)` rule closes it. After the probe, `R` holds its first text and
+no probe file is in its folder.
+
+Not closed: a `denyRead` path inside an `allowRead` path would be open to
+the Read tool. No teammate has that shape today.
+
+Cost: 3 sonnet low-effort panes and 2 short `claude -p` sonnet sessions.
+Results files: `~/.local/state/skill-intake/drafts/probe/t31-before-results.txt`
+and `t31-after-results.txt`.

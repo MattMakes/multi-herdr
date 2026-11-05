@@ -879,6 +879,7 @@ fn overlay_horch_paths(
     if let (HorchAccess::Full, Some(root)) = (teammate.horch_access, &env.state_root) {
         changed |= deny_writes(&root.join("skill-bundles"), settings)?;
     }
+    changed |= overlay_sandbox_dirs(env, teammate, settings)?;
     if let Some(bundle) = &env.skill_bundle {
         changed |= overlay_bundle_paths(bundle, settings)?;
     }
@@ -907,6 +908,47 @@ fn overlay_bundle_paths(
         ],
     )?;
     Ok(deny_writes(bundle, settings)? | changed)
+}
+
+/// Make each `allowRead` and `allowWrite` path of the teammate's `sandbox:`
+/// block, with `~` expanded, a working directory
+/// (`permissions.additionalDirectories`). Without it, Claude Code asks
+/// before a Bash command that names a path there, because of
+/// `blockReadsOutsideWorkingDirectories` (ticket 31; live probe, Claude Code
+/// 2.1.318). A working directory is open to Edit and Write too, so an
+/// `allowRead`-only path gets an `Edit(...)` deny rule, which also covers
+/// Write. horch's own paths stay out: only `horch` commands use them.
+/// Returns whether an entry was added.
+fn overlay_sandbox_dirs(
+    env: &LaunchEnv,
+    teammate: &Teammate,
+    settings: &mut serde_json::Map<String, Value>,
+) -> Result<bool> {
+    let paths = |key: &str| -> Vec<PathBuf> {
+        let list = teammate
+            .sandbox
+            .as_ref()
+            .and_then(|s| s.get("filesystem"))
+            .and_then(|f| f.get(key))
+            .and_then(Value::as_array);
+        list.into_iter()
+            .flatten()
+            .filter_map(Value::as_str)
+            .map(|p| env.expand_home(p))
+            .collect()
+    };
+    let (reads, writes) = (paths("allowRead"), paths("allowWrite"));
+    let mut changed = false;
+    for dir in reads.iter().chain(&writes) {
+        let dir = dir.to_string_lossy().into_owned();
+        changed |= add_entries(settings, [(PERMS, "additionalDirectories", dir)])?;
+    }
+    for dir in reads.iter().filter(|d| !writes.contains(d)) {
+        // A rule path that starts with `//` is absolute.
+        let rule = format!("Edit(/{}/**)", dir.to_string_lossy());
+        changed |= add_entries(settings, [(PERMS, "deny", rule)])?;
+    }
+    Ok(changed)
 }
 
 const FS: &[&str] = &["sandbox", "filesystem"];
@@ -1533,7 +1575,8 @@ mod tests {
                 assert!(!writes.contains(&json!(bundle)), "{access:?}");
                 let perms = &settings["permissions"];
                 assert_eq!(perms["blockReadsOutsideWorkingDirectories"], true);
-                assert_eq!(perms["additionalDirectories"], json!([bundle]));
+                // `/side` is the teammate's own `allowRead` path (T-31).
+                assert_eq!(perms["additionalDirectories"], json!(["/side", bundle]));
                 let rules = perms["deny"].as_array().unwrap();
                 assert_eq!(
                     rules[rules.len() - 2..],
@@ -1543,6 +1586,57 @@ mod tests {
                     ],
                     "{access:?}"
                 );
+            }
+        }
+    }
+
+    /// T-31: the teammate's own `allowRead` and `allowWrite` paths, with `~`
+    /// expanded, are working directories, so a Bash command that names one
+    /// does not stop at `blockReadsOutsideWorkingDirectories`. An
+    /// `allowRead`-only path gets an `Edit(...)` deny rule. horch's own
+    /// paths are not working directories. Through the skills overlay too,
+    /// for a `full` and a `report` teammate.
+    #[test]
+    fn a_sandboxed_launch_opens_its_own_paths_as_working_directories() {
+        let tmp = tempfile::tempdir().unwrap();
+        let [env, _] = sandbox_envs(tmp.path());
+        if !host_can_sandbox(&env) {
+            return;
+        }
+        let env = LaunchEnv {
+            home: Some(PathBuf::from("/home/op")),
+            report_socket: Some(PathBuf::from("/state/horch/report/r1.sock")),
+            ..env
+        };
+        for access in [HorchAccess::Full, HorchAccess::Report] {
+            let mut t = sandboxed(json!({"filesystem": {
+                "allowRead": ["~/ro", "/both"],
+                "allowWrite": ["/both", "~/w"]
+            }}));
+            t.horch_access = access;
+            let mut via_skills = t.clone();
+            via_skills.settings = Some(skills_settings(&t, None).unwrap().to_string());
+            for t in [&t, &via_skills] {
+                let built =
+                    super::super::launch::command_in(&env, t, Session::Fresh("id"), "go", None)
+                        .unwrap();
+                let perms = &settings_arg(&built)["permissions"];
+                assert_eq!(
+                    perms["additionalDirectories"],
+                    json!(["/home/op/ro", "/both", "/home/op/w"]),
+                    "{access:?}"
+                );
+                let rules = perms["deny"].as_array().unwrap();
+                assert!(
+                    rules.contains(&json!("Edit(//home/op/ro/**)")),
+                    "{access:?}"
+                );
+                for open in ["//both/**", "//home/op/w/**"] {
+                    assert!(
+                        !rules.contains(&json!(format!("Edit({open})"))),
+                        "{access:?}: {open}"
+                    );
+                }
             }
         }
     }
