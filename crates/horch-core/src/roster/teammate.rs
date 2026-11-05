@@ -338,8 +338,8 @@ pub struct OperatorSkills {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum HorchAccess {
-    /// The state root, the ledger folder, the relay sockets and the herdr
-    /// socket: every `horch` command works in the pane.
+    /// The state root, the ledger folder, the relay sockets and the pane
+    /// manager socket: every `horch` command works in the pane.
     #[default]
     Full,
     /// 1 per-pane report socket: only `horch ledger progress`, `horch tell`

@@ -240,6 +240,12 @@ pub fn send(path: &Path, request: &Request) -> Result<()> {
     let mut reply = String::new();
     BufReader::new(stream).read_line(&mut reply)?;
     if reply.is_empty() {
+        // A `horch done` that works closes this pane, and the parent dies
+        // with it before it can answer. Any other request needs an answer.
+        if matches!(request, Request::Done { .. }) {
+            eprintln!("horch done: the worker is closing this pane");
+            return Ok(());
+        }
         bail!("the report socket closed without an answer");
     }
     let reply: Reply = serde_json::from_str(&reply).context("reading the report answer")?;
@@ -387,6 +393,31 @@ mod tests {
             socket_path(Path::new("/s"), "../x"),
             PathBuf::from("/s/report/___x.sock")
         );
+    }
+
+    /// A parent that dies during a request (a `horch done` closes the pane
+    /// and the parent with it) answers nothing: `done` succeeds, and every
+    /// other verb fails.
+    #[cfg(unix)]
+    #[test]
+    fn a_closed_socket_is_success_only_for_done() {
+        let tmp = tempfile::Builder::new().tempdir_in("/tmp").unwrap();
+        let path = tmp.path().join("r.sock");
+        let listener = std::os::unix::net::UnixListener::bind(&path).unwrap();
+        let mute = std::thread::spawn(move || {
+            for _ in 0..2 {
+                let (stream, _) = listener.accept().unwrap();
+                let mut line = String::new();
+                BufReader::new(&stream).read_line(&mut line).unwrap();
+            }
+        });
+        send(&path, &Request::Done { text: "x".into() }).unwrap();
+        let err = send(&path, &Request::Progress { text: "x".into() }).unwrap_err();
+        assert!(
+            err.to_string().contains("closed without an answer"),
+            "{err}"
+        );
+        mute.join().unwrap();
     }
 
     /// A Unix socket path has a short length limit, so the test folder is
