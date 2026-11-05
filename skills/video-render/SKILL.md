@@ -64,11 +64,13 @@ Frame count comes from `--frames`, else `--duration` x `--fps`, else
 | `--reverse` | capture in descending order, same file names |
 | `--transparent` | clear page background, RGBA PNGs (frames directory only) |
 | `--subframes 8` | motion blur: average 8 seeks per frame (1, 2, 4 or 8) |
+| `--raster-sizes f.json` | also write image natural vs drawn sizes |
 
 Render all HTML scenes in parallel workers (60 % of CPUs, at most 8), each
 with its tail handle:
 `render_frames.mjs --scenes timeline.json --out-dir render/scenes [--subframes 8]`.
-Review renders and probes use 1 subframe. The final master uses 8 for smooth
+It also writes `render/raster-sizes.json` for the video-qa `raster_upscale`
+check: `references/raster-sizes.md`. Review renders and probes use 1 subframe. The final master uses 8 for smooth
 motion. Rules: `references/blur-parallel-revision.md`.
 
 Tail handle: render each clip `transition_out` seconds longer than
