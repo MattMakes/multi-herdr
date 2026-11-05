@@ -813,3 +813,16 @@ Other observations from the same run (not defects of T-17):
   persona says `intake` checks `python3` at start. No doc says `intake`
   itself needs 3.11+.
 - The session wrote the wrapper under `/tmp`, outside the state root.
+
+### Step 1, attempt 2: FAILED (clone blocked in the sandbox)
+
+| field | value |
+|---|---|
+| command | the attempt 1 command, after the rebase on commit `854e5ea3` (tickets 27 and 29) |
+| task id | T-17 (worker `skill-importer-2`, pane `w29:p1P`, run `skill-intake`, spawned 2026-11-05T12:24Z) |
+| outcome | FAILED at acquire. The `git clone` of `github.com` did not work in the controller's sandbox: `intake` `_git_env` drops the sandbox proxy variables. The task folder `contaminated/20261105-122420-ffc5aa` holds no `provenance.json`. |
+| side effects | The controller then built a local copy of the source in its scratchpad and ran `intake` on it: task `20261105-122527-7af466`, source kind `local`, stopped at `pending-audit`. That is a workaround, not the check, and the orchestrator stopped the pane. It is no evidence for step 1. |
+| installed | nothing. `ls ~/.claude/skills` still has 191 entries. |
+| report path | none |
+
+Ticket 30 fixes `_git_env`. The step is not retried until it lands.
