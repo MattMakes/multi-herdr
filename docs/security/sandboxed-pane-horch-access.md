@@ -323,6 +323,8 @@ High. The system prompt file is Low (a race). Status: CONFIRMED by code.
 
 **Status: C3 done in commit `f5bfc2eb` (ticket T-20).**
 
+T-27 (`769dd9cf`): a sandboxed pane reads its own bundle (`additionalDirectories`, `allowRead`) and cannot write it (`deny` Edit/Write, `denyWrite`); a `full` pane can still write other bundles through the state root.
+
 **Proposed change (C3).** For `horch_access: report`, do not add the state
 root to `allowRead` or `allowWrite`. With C1 the pane writes nothing there.
 

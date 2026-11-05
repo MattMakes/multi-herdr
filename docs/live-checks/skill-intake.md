@@ -270,3 +270,95 @@ Both say nothing was signalled. The role's report socket file stayed after
 Cost: 2 sonnet low-effort sessions. No `smoke` pane started. Results files:
 `~/.local/state/skill-intake/workspace/probe/t21-importer-results.txt` and
 `~/.local/state/skill-intake/drafts/probe/t21-report-results.txt`.
+
+### Re-probe after ticket 27 (own skill bundle)
+
+**Verdict: each pane reads its bundle 2 ways and fails to write it 3
+ways.** Date: 2026-11-05. Claude Code 2.1.318, macOS (Seatbelt). Code at
+commit `769dd9cf`.
+
+The T-17 live check stopped `skill-importer-1` at a prompt: the Read tool
+could not open the skill bundle under the state root
+(`permissions.blockReadsOutsideWorkingDirectories`).
+
+#### Option choice (`claude -p` probes)
+
+4 headless `claude -p --permission-mode acceptEdits` runs, with a
+hand-made `--settings` and a probe bundle at
+`~/.local/state/horch/skill-bundles/probe-t27/`. `acceptEdits` allows any
+edit in a working directory, so only a deny rule or the sandbox stops a
+write. No auto-mode classifier runs. Grep and Glob are not tools in Claude
+Code 2.1.318 ("No such tool available"), so Read and Bash are the read
+paths.
+
+| run | Read | `cat` | Edit | Write | `echo >` |
+|---|---|---|---|---|---|
+| no grant, `full` | denied (`blockReadsOutsideWorkingDirectories`) | allowed | **allowed** | **allowed** | **allowed** |
+| option (a), `full` | allowed | allowed | denied | denied | denied |
+| option (b), `full` | denied (`blockReadsOutsideWorkingDirectories`) | allowed | denied | denied | denied |
+| option (a), `report` | allowed | allowed | denied | denied | denied |
+
+- Option (a): `permissions.additionalDirectories` of the bundle, plus
+  `permissions.deny` `Edit(/<bundle>/**)` and `Write(/<bundle>/**)`
+  (`//` starts an absolute rule path), plus `sandbox.filesystem.allowRead`
+  and `denyWrite` of the bundle.
+- Option (b): the same, with a `permissions.allow` rule `Read(/<bundle>/**)`
+  in place of `additionalDirectories`. An allow rule does not pass
+  `blockReadsOutsideWorkingDirectories`, so (b) fails.
+- Edit and Write fail with `File is in a directory that is denied by your
+  permission settings.` `echo >` fails with `operation not permitted`: the
+  sandbox `denyWrite` wins over the `full` pane's state-root `allowWrite`.
+- The first row shows the gap before this ticket: a `full` pane could edit
+  its bundle with every tool.
+
+Horch takes option (a), for the launch's own bundle only
+(`overlay_bundle_paths` in `crates/horch-core/src/harness/claude.rs`).
+
+#### Live panes
+
+The probe teammates `probe-t27-report` (`horch_access: report`) and
+`probe-t27-full` (`horch_access: full`) are copies of the T-20
+`probe-report` (sonnet, low effort, `permission_mode: auto`,
+`skills: [skill-intake]`). They ran from
+`.worktrees/_scratch/probe-t27/probe-teammates`. A copy of the T-27 debug
+build at `~/.local/state/skill-intake/drafts/probe/t27-bin/horch` spawned
+each with `--exact --run skill-intake`. The task text named the steps.
+
+The launched `--settings` (read from the `claude` process arguments) add 5
+entries, each for the pane's own bundle `<state>/skill-bundles/<record id>`:
+
+| key | entry |
+|---|---|
+| `sandbox.filesystem.allowRead` | the bundle |
+| `sandbox.filesystem.denyWrite` | the bundle |
+| `permissions.additionalDirectories` | the bundle |
+| `permissions.deny` | `Edit(//<bundle>/**)`, `Write(//<bundle>/**)` |
+
+The `report` pane has no state root and no ledger folder, as after T-20.
+
+| # | step | `report-1` | `full-1` | `report-2` | `full-2` |
+|---|---|---|---|---|---|
+| 1 | Read `S/SKILL.md` | allowed | allowed | allowed | allowed |
+| 2 | `cat S/SKILL.md \| head -5` | allowed | allowed | allowed | allowed |
+| 3 | Edit `S/SKILL.md` | denied | denied | denied | denied |
+| 4 | Write `S/probe-written.txt` | denied | denied | denied | denied |
+| 5 | `echo ... > S/probe-echoed.txt` | denied | denied | denied | denied |
+
+`S` is `<bundle>/skills/skill-intake`. Steps 3 and 4 fail with `File is in
+a directory that is denied by your permission settings.` Step 5 fails
+first at the auto-mode classifier: `Permission for this action was denied
+by the Claude Code auto mode classifier`. Round 2 used a neutral echo text
+and a task line that names the probe; the classifier still denied it. So
+in a live pane the classifier is the first layer for step 5, and the
+sandbox `denyWrite` (shown by the `claude -p` runs above) is the second.
+After both rounds, each of the 4 bundles had its `name: skill-intake` line
+and no probe file.
+
+Not closed: a `full` pane still has the whole state root in `allowWrite`,
+so Bash can write the bundle of another worker. This ticket opens and
+closes only the pane's own bundle.
+
+Cost: 4 short `claude -p` sonnet sessions and 4 sonnet low-effort panes.
+Results files: `~/.local/state/skill-intake/drafts/probe/t27-report-results.txt`,
+`t27-full-results.txt`, `t27-report-results-round2.txt` and
+`t27-full-results-round2.txt`.
