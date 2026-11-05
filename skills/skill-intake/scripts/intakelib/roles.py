@@ -28,6 +28,9 @@ from .task import Task, TaskError, is_within, now, read_json, resolve, write_jso
 ROLES = ("auditor", "analyst", "sanitizer", "writer", "reviewer")
 SIDE = {"auditor": "contaminated", "analyst": "contaminated", "sanitizer": "drafts",
         "writer": "clean", "reviewer": "clean"}
+# The side a role writes, which holds its status file. The analyst reads its
+# brief in C but its sandbox writes only D (one-way flow C -> D -> K).
+STATUS_SIDE = {**SIDE, "analyst": "drafts"}
 ROLES_DIR = guard.SKILL_DIR / "roles"
 TEAMMATE_ENV = "SKILL_INTAKE_ROLE_TEAMMATE"
 LOG = "roles.jsonl"
@@ -54,6 +57,11 @@ class RoleError(TaskError):
 
 def side_root(t: Task, role: str) -> Path:
     return t.root(SIDE[role])
+
+
+def status_path(t: Task, role: str, stem: str) -> Path:
+    """The status file of brief `stem` (<role>-<n>)."""
+    return t.root(STATUS_SIDE[role]) / "status" / f"{stem}.json"
 
 
 def _plain_name(flag: str, value: str | None) -> None:
@@ -88,7 +96,7 @@ def _next_number(t: Task, role: str) -> int:
 def render(t: Task, role: str, n: int, unit: str | None, skill: str | None, controller: str | None) -> str:
     """The fixed brief template of `role`."""
     reads, writes = _io(t, role, skill)
-    status = side_root(t, role) / "status" / f"{role}-{n}.json"
+    status = status_path(t, role, f"{role}-{n}")
     lines = [f"# Brief {role}-{n}", "", f"- Role: {role}", f"- Task: {t.id}",
              f"- Controller: {controller or 'none (plain session)'}"]
     if unit:
@@ -142,7 +150,7 @@ def brief(t: Task, role: str, unit: str | None = None, skill: str | None = None)
     path = root / "briefs" / f"{role}-{n}.md"
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(text, encoding="utf-8")
-    return {"brief": str(path), "status_file": str(root / "status" / f"{role}-{n}.json")}
+    return {"brief": str(path), "status_file": str(status_path(t, role, f"{role}-{n}"))}
 
 
 # ---- the role log ----
@@ -199,7 +207,7 @@ def _snapshot(t: Task, brief_path: Path) -> Path:
 def _start(t: Task, role: str, worker: str | None, brief_path: Path, mode: str, attempt: int,
            snapshot: Path) -> dict:
     line = {"kind": "start", "id": f"{brief_path.stem}#{attempt}", "role": role, "worker": worker,
-            "brief": str(brief_path), "status_file": str(side_root(t, role) / "status" / f"{brief_path.stem}.json"),
+            "brief": str(brief_path), "status_file": str(status_path(t, role, brief_path.stem)),
             "started": now(), "attempt": attempt, "mode": mode, "snapshot": str(snapshot)}
     _append(t, line)
     return line

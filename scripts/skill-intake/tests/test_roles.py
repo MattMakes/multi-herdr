@@ -16,7 +16,7 @@ from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from unittest import mock
 
-from base import INTAKE, TESTS, IntakeTestCase
+from base import INTAKE, REPO, TESTS, IntakeTestCase
 
 import fixtures
 from intakelib import index, roles
@@ -146,10 +146,12 @@ class BriefTest(RolesCase):
 
     def test_each_brief_is_in_its_side_root(self):
         t = self.task()
-        for role, root in (("auditor", t.c), ("analyst", t.c), ("sanitizer", t.d), ("writer", t.k), ("reviewer", t.k)):
+        # The analyst reads its brief in C and writes its status file in D (T-34).
+        for role, root, status in (("auditor", t.c, t.c), ("analyst", t.c, t.d), ("sanitizer", t.d, t.d),
+                                   ("writer", t.k, t.k), ("reviewer", t.k, t.k)):
             out = self.brief(t, role)
             self.assertEqual(out["brief"], str(root / "briefs" / f"{role}-1.md"))
-            self.assertEqual(out["status_file"], str(root / "status" / f"{role}-1.json"))
+            self.assertEqual(out["status_file"], str(status / "status" / f"{role}-1.json"))
             text = Path(out["brief"]).read_text()
             self.assertIn("Controller: skill-importer-1", text)
             self.assertIn(out["status_file"], text)
@@ -197,7 +199,7 @@ class SpawnTest(RolesCase):
         self.assertEqual(len(rec), 1)
         self.assertEqual({k: rec[0][k] for k in ("kind", "role", "worker", "brief", "status_file", "attempt")},
                          {"kind": "start", "role": "analyst", "worker": "intake-analyst-1", "brief": brief,
-                          "status_file": str(t.c / "status" / "analyst-1.json"), "attempt": 1})
+                          "status_file": str(t.d / "status" / "analyst-1.json"), "attempt": 1})
         self.assertTrue(rec[0]["started"])
         self.assertEqual(out["worker"], "intake-analyst-1")
         snap = read_json(Path(rec[0]["snapshot"]))
@@ -485,7 +487,7 @@ class RealWritePathsTest(RolesCase):
             for plain in (False, True):
                 with self.subTest(role=role, other=other, plain=plain):
                     r, _, _ = self.result_with(
-                        role, plain, [lambda t, s: str(roles.side_root(t, other) / "status" / f"{other}-1.json")])
+                        role, plain, [lambda t, s: str(roles.status_path(t, other, f"{other}-1"))])
                     self.assertEqual(r.returncode, roles.BAD_RESULT, r.stdout + r.stderr)
                     self.assertIn("output outside the", r.stderr)
 
@@ -505,6 +507,62 @@ class RealWritePathsTest(RolesCase):
                     r, _, _ = self.result_with(role, plain, [lambda t, s: str(Path(s).with_name("notes.json"))])
                     self.assertEqual(r.returncode, roles.BAD_RESULT, r.stdout + r.stderr)
                     self.assertIn("output outside the", r.stderr)
+
+
+def sandbox_paths(teammate: Path, home: Path) -> dict[str, list[Path]]:
+    """{"allowRead", "allowWrite", "denyRead"} of the sandbox.filesystem block in the
+    frontmatter of `teammate`, with "~" expanded to `home`."""
+    front = teammate.read_text(encoding="utf-8").split("\n---", 1)[0].splitlines()
+    out: dict[str, list[Path]] = {}
+    key, in_fs = None, False
+    for ln in front:
+        if ln.startswith("  filesystem:"):
+            in_fs = True
+        elif in_fs and ln.startswith("    ") and ln.strip().endswith(":"):
+            key = ln.strip()[:-1]
+            out[key] = []
+        elif in_fs and key and ln.startswith("      - "):
+            raw = ln.strip()[2:].strip().strip('"')
+            out[key].append(home / raw[2:] if raw.startswith("~/") else Path(raw))
+        elif not ln.startswith("    "):
+            in_fs, key = False, None
+    return out
+
+
+class TeammateSandboxTest(RolesCase):
+    """T-34: each role's brief, status file and write paths fit the real
+    teammates/intake-<role>.md sandbox block and the domain write set."""
+
+    def test_each_role_paths_fit_its_teammate_sandbox_and_write_set(self):
+        from intakelib import domain
+        os.environ.update({**FLEET, "SKILL_INTAKE_MODE": "fleet"})
+        t = tasklib.create()
+        self.assertEqual(t.base, self.home / ".local" / "state" / "skill-intake")
+        for role in roles.ROLES:
+            with self.subTest(role=role):
+                skill = SKILL_NAME if role in ("writer", "reviewer") else None
+                box = sandbox_paths(REPO / "teammates" / f"intake-{role}.md", self.home)
+                self.assertTrue(box.get("allowRead") and box.get("allowWrite"), box)
+
+                def inside(p, key: str) -> bool:
+                    return any(tasklib.is_within(Path(p), a) for a in box[key])
+
+                out = roles.brief(t, role, skill=skill)
+                reads, writes = roles._io(t, role, skill)
+                self.assertTrue(inside(out["brief"], "allowRead"), f"brief {out['brief']}")
+                self.assertTrue(inside(out["status_file"], "allowWrite"), f"status {out['status_file']}")
+                for p in reads:
+                    self.assertTrue(inside(p, "allowRead"), f"read path {p}")
+                    self.assertFalse(inside(p, "denyRead"), f"read path {p}")
+                for p in writes:
+                    self.assertTrue(inside(p, "allowWrite"), f"write path {p}")
+                # The domain write set names the status file and only sides the role can write.
+                side = next(s for s in tasklib.SIDES if tasklib.is_within(Path(out["status_file"]), t.root(s)))
+                rel = domain.SHORT[side] + "/" + str(Path(out["status_file"]).relative_to(t.root(side)))
+                self.assertTrue(domain._allowed(rel, domain.WRITE_SETS[role]), f"{rel} not in the write set")
+                short = {v: k for k, v in domain.SHORT.items()}
+                for pat in domain.WRITE_SETS[role]:
+                    self.assertTrue(inside(t.root(short[pat.split("/", 1)[0]]), "allowWrite"), pat)
 
 
 class PythonVersionTest(RolesCase):

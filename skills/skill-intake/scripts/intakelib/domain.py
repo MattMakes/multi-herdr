@@ -25,7 +25,7 @@ CHECK = "domain-snapshot"
 # Each role also writes its status file next to its brief (spec 6.6).
 WRITE_SETS = {
     "auditor": ("C/sweep/audit.jsonl", "C/sweep/opaque/*.md", "C/status/auditor-*.json"),
-    "analyst": ("D/drafts/*", "C/status/analyst-*.json"),
+    "analyst": ("D/drafts/*", "D/status/analyst-*.json"),
     "sanitizer": ("D/drafts/*", "D/quarantine-cr/*", "D/status/sanitizer-*.json"),
     "writer": ("K/out/*", "K/report.json", "K/persona.md", "K/verify-log/*", "K/status/writer-*.json"),
     "reviewer": ("K/out/*", "K/review.json", "K/verify-log/*", "K/status/reviewer-*.json"),

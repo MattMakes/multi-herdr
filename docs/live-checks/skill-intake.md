@@ -613,3 +613,47 @@ block ran `intake acquire https://github.com/MNICKZ/docs-driven-workflow
 and no prompt. It exited 0, and the provenance records commit `de8494f3...`.
 
 Cost: 1 sonnet low-effort pane and 5 short `claude -p` sonnet sessions.
+
+### Ticket 34 (each role's status file is inside its sandbox)
+
+T-17 live, task `20261105-133523-1d17be`: `intake-analyst-1` wrote its
+spec under `drafts/`, but "Status file write is denied". The analyst
+status file was `contaminated/<task>/status/analyst-<n>.json`. The
+`intake-analyst` sandbox writes only `~/.local/state/skill-intake/drafts`.
+
+#### Paths per role before the fix
+
+`B` is `~/.local/state/skill-intake`. `<t>` is the task id.
+
+| role | brief | status file | `_io` write paths | allowRead | allowWrite |
+|---|---|---|---|---|---|
+| auditor | `B/contaminated/<t>/briefs/` | `B/contaminated/<t>/status/` | `C/sweep/audit.jsonl`, `C/sweep/opaque` | contaminated | contaminated |
+| analyst | `B/contaminated/<t>/briefs/` | `B/contaminated/<t>/status/` (denied) | `D/drafts` | contaminated, drafts | drafts |
+| sanitizer | `B/drafts/<t>/briefs/` | `B/drafts/<t>/status/` | `D/drafts`, `D/quarantine-cr` | drafts | drafts |
+| writer | `B/clean/<t>/briefs/` | `B/clean/<t>/status/` | `K/out`, `K/report.json`, `K/persona.md` | clean | clean |
+| reviewer | `B/clean/<t>/briefs/` | `B/clean/<t>/status/` | `K/out`, `K/review.json` | clean | clean |
+
+Only the analyst status file was outside its allowWrite. The domain
+write set had the same error: `"C/status/analyst-*.json"`.
+
+#### Fix
+
+- `roles.STATUS_SIDE` puts each status file in the side that the role
+  writes. The analyst status file is `D/status/analyst-<n>.json`. The
+  analyst brief stays in `C/briefs/`.
+- `domain.WRITE_SETS["analyst"]` names `"D/status/analyst-*.json"`.
+
+#### Test
+
+`TeammateSandboxTest` in `scripts/skill-intake/tests/test_roles.py`
+reads the real `teammates/intake-<role>.md` sandbox blocks, with `~` set
+to the test HOME. For each of the 5 roles it checks:
+
+- the brief and every `_io` read path are inside allowRead and outside
+  denyRead;
+- the status file and every `_io` write path are inside allowWrite;
+- the status file matches the role's `domain.WRITE_SETS` patterns, and
+  each pattern's side root is inside allowWrite.
+
+Before the fix the test failed for the analyst only. After the fix it
+passes for all 5 roles.
