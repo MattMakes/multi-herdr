@@ -27,6 +27,11 @@ Make the prompts describe what the code now does, in 1 pass (U1, U3, U4).
 
 Amendment (report 04): `teammates/_base/fleet-orchestrator.md` lines 160-173, its golden in `crates/horch-core/tests/golden_prompts.rs`, and `README.md` lines 430-436 still name `ai_docs/specs` and `ai_docs/tickets`. Change them to `docs/specs/<slug>.md` and `docs/tickets/<slug>/`. Bless only that golden.
 
+Amendment (reports 06, 08):
+- `docs/specs/context-policy.md` CTX-09: describe the new `--over` output and the instruction ids that report 08 lists.
+- The briefing: add 1 instruction for each new context state id in report 08, including `handoff`.
+- `docs/specs/task-ledger.md` section 5.5: name the land-lock stale age (check timeout plus 10 min) and the reset after a red land (report 06).
+
 ## Done when
 
 TRF-46 and the golden tests pass.

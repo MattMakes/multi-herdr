@@ -23,6 +23,8 @@ One handoff path for compaction and respawn (C4, D15).
 1. Implement contract C4 in 1 transaction.
 2. The next claim prints `PRIOR WORK: read <path> first` before the ticket snapshot.
 
+Amendment (report 08): ticket 08 added the context state `handoff`. When `horch note` runs for a worker in that state, print 1 warning that names `horch ledger handoff`. Test name starts with `trf_37_`.
+
 ## Done when
 
 TRF-37 passes.
