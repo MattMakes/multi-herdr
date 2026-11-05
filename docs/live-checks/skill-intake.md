@@ -533,3 +533,83 @@ the Read tool. No teammate has that shape today.
 Cost: 3 sonnet low-effort panes and 2 short `claude -p` sonnet sessions.
 Results files: `~/.local/state/skill-intake/drafts/probe/t31-before-results.txt`
 and `t31-after-results.txt`.
+
+### Re-probe after ticket 33 (git through the sandbox proxy)
+
+**Verdict: fixed.** Date: 2026-11-05. Claude Code 2.1.318, macOS
+(Seatbelt). In a sandboxed `skill-importer` pane, `intake`'s git failed with
+`Proxy CONNECT aborted`. Plain `git` in the same pane worked.
+
+#### Facts from the docs and the binary
+
+- `~/.claude-code-docs/docs` (dated 2025-10-31) has no `allowedDomains`,
+  `strictAllowlist` or `allowManagedDomainsOnly`. The facts below come from
+  the schema text and code in the 2.1.318 binary.
+- `strictAllowlist`: "When true, the sandbox runtime deterministically
+  denies hosts not in allowedDomains instead of prompting." It applies to
+  sandboxed commands only, not to WebFetch.
+- With `strictAllowlist` (or an admin sandbox mandate), Claude Code takes
+  `allowedDomains` only from policy, `--settings` (flagSettings) and user
+  settings. It ignores entries from project and local settings. horch gives
+  the list through `--settings`, so `github.com` stays allowed.
+- The operator's `~/.claude/settings.json` and `settings.local.json` have
+  no `sandbox` key. This host has no managed settings file and no
+  `com.anthropic.claudecode` preferences domain.
+- In the sandbox, the proxy URL in `HTTP(S)_PROXY` and `ALL_PROXY` carries
+  per-session credentials. The sandbox also sets
+  `GIT_CONFIG_PARAMETERS='http.proxyAuthMethod=basic' 'credential.http://127.0.0.1:<port>.helper='`.
+
+#### Proven cause
+
+`_git_env()` in `intakelib/acquire.py` keeps the proxy variables but drops
+`GIT_CONFIG_PARAMETERS`. Without `http.proxyAuthMethod=basic`, git sends its
+first CONNECT with no `Proxy-Authorization` and waits for a 407. The sandbox
+proxy closes the connection instead, and git prints `Proxy CONNECT aborted`.
+`strictAllowlist`, `allowUnixSockets` and the allowlist are not the cause:
+plain `git` and `curl` to `github.com` pass with the same block.
+
+1-change isolation (headless `claude -p --permission-mode auto` with the
+same `sandbox` block as the pane):
+
+| run | change | result |
+|---|---|---|
+| c | plain `git ls-remote` | exit 0, `de8494f3...` |
+| c0 | c with `GIT_CONFIG_PARAMETERS` unset | `Proxy CONNECT aborted` |
+| d | git with `_git_env()` | exit 128, `Proxy CONNECT aborted` |
+| d1 | d with `GIT_CONFIG_PARAMETERS` added back | exit 0 |
+| d2 | d with only `-c http.proxyAuthMethod=basic` | exit 0 |
+
+#### Fix
+
+`_git_config()` adds `-c http.proxyAuthMethod=basic`. `_git_env()` is not
+changed: `GIT_CONFIG_PARAMETERS` can carry any git config, so it stays
+out. No `*_API_KEY` reaches git. The domains not listed stay denied.
+Test: `test_git_sends_proxy_credentials_on_the_first_connect` runs git
+against a local proxy that closes a CONNECT with no credentials. It failed
+before the fix with the live error text, and passes after it.
+
+#### Probe
+
+Pane `probe-t33-1`, a copy of `skill-importer` with `hidden: true`,
+`model: sonnet`, `effort: low`, `skills: []`, no `system_prompt` and no
+`spawn_only`. It ran from `.worktrees/_scratch/probe-t33/teammates` with
+`--exact --run skill-intake`, spawned by a copy of the branch's debug build.
+Its launched `sandbox.network` was the same as the failing pane's:
+`allowUnixSockets` (state root, herdr socket), the 3 GitHub domains,
+`strictAllowlist: true`. "before" and "after" are copies of `intakelib`
+from before and after the fix, run in the same pane.
+
+| step | command | before | after |
+|---|---|---|---|
+| 2a | `env \| grep -i -E 'proxy\|ssl\|cert'` | proxy variables and `GIT_CONFIG_PARAMETERS` set (credentials not recorded) | same |
+| 2b | `curl https://github.com` | `200` | `200` |
+| 2c | `git ls-remote https://github.com/MNICKZ/docs-driven-workflow` | exit 0, `de8494f3...` | exit 0 |
+| 2d | the same with `_git_config()` and `_git_env()` | exit 128, `Proxy CONNECT aborted` | exit 0, `de8494f3...` |
+| 2e | `curl https://example.com` | denied, `CONNECT tunnel failed, response 403`, `host is not on the allow list` | denied, as before |
+
+A headless `claude -p --permission-mode auto` run with the same `sandbox`
+block ran `intake acquire https://github.com/MNICKZ/docs-driven-workflow
+--ref de8494f3b9b4c622f29a3dc0e6d8eb9162c7a8db` with the fixed scripts
+and no prompt. It exited 0, and the provenance records commit `de8494f3...`.
+
+Cost: 1 sonnet low-effort pane and 5 short `claude -p` sonnet sessions.
