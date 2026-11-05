@@ -37,11 +37,12 @@ Spec: [docs/specs/trace-fixes.md](../../specs/trace-fixes.md)
 | 31 | [Review: delivery, supervision and respawn](31-review-supervision.md) | primary `codex-reviewer`, fallback `architect-reviewer` | yes | 8 | 17, 24 |
 | 32 | [Review: session ledger retirement](32-review-ledger-retirement.md) | primary `codex-reviewer`, fallback `architect-reviewer` | yes | 10 | 29 |
 | 33 | [Full gate on the run branch](33-final-gate.md) | primary `opus`, fallback `backend-developer` | yes | 11 | 30, 31, 32 |
+| 34 | [Remove the dataset leftovers that ticket 02 found](34-dataset-leftovers.md) | primary `opus`, fallback `backend-developer` | yes | 2 | 02 |
 
 ## Waves
 
 - Wave 1: 01, 02, 03, 04, 05, 06, 07, 08, 09
-- Wave 2: 10, 11, 12, 17
+- Wave 2: 10, 11, 12, 17, 34
 - Wave 3: 13, 14, 18, 19
 - Wave 4: 15, 16, 21
 - Wave 5: 20, 22
