@@ -99,6 +99,8 @@ ALLOW_WORDS = {
     # names of our own storyboard gate, scripts/check_timeline.py, and its input
     # timeline.json: the same names occur upstream, reported in the audit DONE
     "scripts", "timeline", "py",
+    # canvas drawImage parameter names (source and destination rectangle): MDN names
+    "sx", "sy", "sw", "sh", "dx", "dy", "dw", "dh",
     # macos install path of Google Chrome: a path fixed by the vendor
     "applications", "google", "chrome", "app", "contents", "macos",
 }
