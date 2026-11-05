@@ -3,8 +3,8 @@
 A port of harvest's discovery: a skill is a directory that holds a SKILL.md
 (the search does not go into a skill directory); skip folders; keep one copy
 per name, ranked .claude/skills > plugin/skills > .agents/skills > skills/ >
-other (harvest's variantRank). The source root itself is a skill when it
-holds a SKILL.md. Files outside every skill directory that no skill text
+other (harvest's variantRank). A source whose root is a skill was moved
+into a folder by acquire, so no rel_path is ".". Files outside every skill directory that no skill text
 names are listed as out of scope.
 """
 
@@ -53,8 +53,6 @@ def safe_path(rel: PurePosixPath) -> bool:
 def find(src: Path) -> list[PurePosixPath]:
     """Relative paths of every skill directory, sorted (harvest's findSkills)."""
     found: list[PurePosixPath] = []
-    if (src / "SKILL.md").is_file():
-        return [PurePosixPath(".")]
 
     def walk(d: Path, rel: PurePosixPath) -> None:
         for e in sorted(d.iterdir(), key=lambda p: p.name):
@@ -85,12 +83,11 @@ def _text(p: Path) -> str:
     return data.decode("utf-8", "replace")
 
 
-def discover(src: Path, root_name: str) -> dict:
+def discover(src: Path) -> dict:
     """Return {"skills": [...], "out_of_scope": [...], "findings": [...]}.
 
-    `root_name` is the folder name to use for a skill at the source root.
     `rel_path` and `dropped_variants` hold raw relative paths (every component
-    matches COMPONENT; a skill at the source root is "."). A skill folder with
+    matches COMPONENT). A skill folder with
     any other component is skipped with an ACQ-05 finding. All other source
     text in the result is escaped.
     """
@@ -98,7 +95,7 @@ def discover(src: Path, root_name: str) -> dict:
     findings = []
     unnamed = 0
     for rel in find(src):
-        if str(rel) != "." and not safe_path(rel):
+        if not safe_path(rel):
             findings.append({
                 "rule": "ACQ-05", "severity": "medium", "file": evidence.escape(str(rel)),
                 "detail": "a skill folder path component is not [A-Za-z0-9._-]+ or is '.' or '..'; the skill is skipped",
@@ -106,7 +103,7 @@ def discover(src: Path, root_name: str) -> dict:
             continue
         d = src / rel
         fm = frontmatter.read(d / "SKILL.md")
-        dir_name = root_name if str(rel) == "." else rel.name
+        dir_name = rel.name
         fm_name = fm.get("name", "").strip()
         name = fm_name if NAME.match(fm_name) else normalize(dir_name)
         if name is None:

@@ -73,7 +73,7 @@ class Caps:
 
 @dataclass
 class Source:
-    kind: str  # github | folder | archive
+    kind: str  # github | local | archive
     input: str
     url: str | None = None
     ref: str | None = None
@@ -113,7 +113,7 @@ def parse(text: str, ref: str | None = None, subdir: str | None = None) -> Sourc
     local = Path(os.path.expanduser(text))
     if local.exists():
         if local.is_dir():
-            src = Source("folder", text, path=local.resolve())
+            src = Source("local", text, path=local.resolve())
         elif local.is_file() and local.suffix.lower() in (".zip", ".skill"):
             if subdir:
                 raise BadSource("--path applies to a GitHub source or a folder, not to an archive")
@@ -342,6 +342,31 @@ def extract(archive: Path, dest: Path, caps: Caps) -> None:
             if written > caps.total_bytes:
                 raise Refused("ACQ-01", f"uncompressed size over {caps.total_bytes} bytes")
             os.chmod(target, 0o644)
+
+
+# ---- a source that is itself a skill -------------------------------------
+
+def source_name(src: Source) -> str:
+    """The folder name of the source: the subfolder, the repo, the folder or the archive stem."""
+    if src.subdir:
+        return PurePosixPath(src.subdir).name
+    if src.kind == "github":
+        return src.repo or "skill"
+    name = src.path.name if src.path else "skill"
+    return name.rsplit(".", 1)[0] if src.kind == "archive" else name
+
+
+def wrap_root_skill(q: Path, name: str) -> str | None:
+    """When the source root holds a SKILL.md, move the whole tree into
+    q/<name>/, so every skill has a plain rel_path (cr index refuses ".").
+    `name` must already be a safe folder name. Return it, or None."""
+    if not (q / "SKILL.md").is_file():
+        return None
+    tmp = q.parent / ".wrap"
+    os.replace(q, tmp)
+    q.mkdir()
+    os.replace(tmp, q / name)
+    return name
 
 
 # ---- hashes and read-only -------------------------------------------------

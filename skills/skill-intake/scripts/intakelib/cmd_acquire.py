@@ -12,7 +12,7 @@ import shutil
 import sys
 from pathlib import Path
 
-from . import acquire, evidence, licensing, task
+from . import acquire, discover, evidence, licensing, task
 from .acquire import BadSource, Caps, Refused
 
 HELP = "fetch a skill source into a read-only quarantine and write provenance.json"
@@ -75,8 +75,8 @@ def run(args) -> int:
         "source": {"kind": src.kind, "input": evidence.escape(src.input), "url": src.url,
                    "ref": src.ref, "commit": None, "subdir": src.subdir},
         "content_sha256": None, "archive_sha256": None, "licence": None,
-        "skills": [], "intake_version": None, "sweep": None, "installed": [],
-    }
+        "skills": [], "installed": [],
+    }  # intake_version and sweep are added by later stages (schema: no null)
     skipped = acquire.Skipped()
     repo_licence = None  # the repo root licence when only a subfolder is taken
     try:
@@ -92,7 +92,7 @@ def run(args) -> int:
                     repo_licence = licensing.detect(staging, [staging])
             finally:
                 shutil.rmtree(staging, ignore_errors=True)
-        elif src.kind == "folder":
+        elif src.kind == "local":
             root = src.path / src.subdir if src.subdir else src.path
             if not root.is_dir() or root.is_symlink():
                 raise BadSource(f"--path {src.subdir!r} is not a folder in the source")
@@ -108,13 +108,13 @@ def run(args) -> int:
     except Refused as e:
         acquire.clear(q)
         write_findings(t, [finding(1, e.rule, e.file, e.reason)])
-        task.set_phase(t, "refused")
-        task.write_json(t.c / "provenance.json", prov)
+        task.set_phase(t, "refused")  # no provenance.json: nothing was acquired
         where = f" ({evidence.escape(e.file)})" if e.file else ""
         print(f"intake acquire: refused, {e.rule}: {e.reason}{where}", file=sys.stderr)
         print(json.dumps({"task_dir": str(t.c), "refused": e.rule}))
         return 3
     write_findings(t, [finding(i, r, f, d) for i, (r, f, d) in enumerate(skipped.items, 1)])
+    acquire.wrap_root_skill(q, discover.normalize(acquire.source_name(src)) or "skill")
     prov["content_sha256"] = acquire.tree_sha256(q)
     found = licensing.detect(q, [q, *_skill_dirs(q)])
     if repo_licence and repo_licence["files"] and (

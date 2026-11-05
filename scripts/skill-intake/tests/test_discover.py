@@ -40,10 +40,10 @@ class DiscoverTest(DiscoverCase):
         # ".agents" and "a" sort before ".claude" and "plugin"; the rank must still decide.
         files = {f"{w}/x/SKILL.md": fixtures.skill_md("x") for w in ("a", ".agents/skills", "plugin/skills", "a/skills")}
         src = fixtures.build(self.tmp / "r", files)
-        self.assertEqual(discover.discover(src, "r")["skills"][0]["rel_path"], "plugin/skills/x")
+        self.assertEqual(discover.discover(src)["skills"][0]["rel_path"], "plugin/skills/x")
         (src / ".claude" / "skills" / "x").mkdir(parents=True)
         (src / ".claude" / "skills" / "x" / "SKILL.md").write_text(fixtures.skill_md("x"))
-        self.assertEqual(discover.discover(src, "r")["skills"][0]["rel_path"], ".claude/skills/x")
+        self.assertEqual(discover.discover(src)["skills"][0]["rel_path"], ".claude/skills/x")
 
     def test_skip_dirs(self):
         files = {f"{d}/s-{i}/SKILL.md": fixtures.skill_md(f"s-{i}") for i, d in enumerate(sorted(discover.SKIP_DIRS))}
@@ -107,7 +107,7 @@ class DiscoverTest(DiscoverCase):
         src = fixtures.build(self.tmp / "Root Skill", {"SKILL.md": "---\ndescription: d\n---\n"})
         d, c, out = self.acquire_and_discover(src)
         self.assertEqual(d.returncode, 0, d.stderr)
-        self.assertEqual([(s["name"], s["rel_path"]) for s in out["skills"]], [("root-skill", ".")])
+        self.assertEqual([(s["name"], s["rel_path"]) for s in out["skills"]], [("root-skill", "root-skill")])
 
     def test_out_of_scope_files(self):
         src = fixtures.build(self.tmp / "o", {
@@ -130,6 +130,37 @@ class DiscoverTest(DiscoverCase):
     def test_discover_needs_an_acquired_task(self):
         d = self.run_intake("discover", "--task", str(self.tmp))
         self.assertEqual(d.returncode, 2)
+
+
+class CrCompatibilityTest(DiscoverCase):
+    """The T-8 readers accept this ticket's output: cr validate and cr index."""
+
+    def test_provenance_validates_for_each_source_kind(self):
+        gh = self.tmp / "gh"
+        fixtures.git_repo(gh / "o" / "r.git", {"skills/a/SKILL.md": fixtures.skill_md("a")})
+        sources = {
+            "github": ("o/r", {"SKILL_INTAKE_GITHUB_BASE": f"file://{gh}"}),
+            "local": (str(fixtures.f_licence(self.tmp / "l", "none")), None),
+            "archive": (str(fixtures.f_archive(self.tmp / "z")["valid"]), None),
+        }
+        for kind, (source, env) in sources.items():
+            r = self.run_intake("acquire", source, "--base", str(self.tmp / "base"), env=env)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            c = Path(json.loads(r.stdout)["task_dir"])
+            self.assertEqual(self.run_intake("discover", "--task", str(c)).returncode, 0)
+            v = self.run_intake("cr", "validate", "--task", str(c), str(c / "provenance.json"))
+            self.assertEqual(v.returncode, 0, f"{kind}: {v.stdout} {v.stderr}")
+            self.assertEqual(json.loads(v.stdout)["results"][0]["kind"], "provenance")
+
+    def test_cr_index_reads_skills_json(self):
+        src = fixtures.build(self.tmp / "Root Skill", {"SKILL.md": fixtures.skill_md("root"), "ref.md": "r\n"})
+        d, c, out = self.acquire_and_discover(src)
+        self.assertEqual(d.returncode, 0, d.stderr)
+        i = self.run_intake("cr", "index", "--task", str(c))
+        self.assertEqual(i.returncode, 0, i.stderr)
+        _, c2, _ = self.acquire_and_discover(fixtures.f_variants(self.tmp / "v"))
+        i = self.run_intake("cr", "index", "--task", str(c2))
+        self.assertEqual(i.returncode, 0, i.stderr)
 
 
 if __name__ == "__main__":

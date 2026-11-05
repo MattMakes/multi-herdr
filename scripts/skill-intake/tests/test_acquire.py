@@ -39,12 +39,12 @@ class SourceFormsTest(IntakeTestCase):
         d = self.tmp / "dir"
         d.mkdir()
         z = fixtures.write_zip(self.tmp / "a.skill", [("x/SKILL.md", b"x", None)])
-        self.assertEqual(acquire.parse(str(d)).kind, "folder")
+        self.assertEqual(acquire.parse(str(d)).kind, "local")
         self.assertEqual(acquire.parse(str(z)).kind, "archive")
 
     def test_short_form_is_a_local_path_when_it_exists(self):
         (self.tmp / "work" / "o" / "r").mkdir(parents=True)
-        self.assertEqual(acquire.parse("o/r").kind, "folder")
+        self.assertEqual(acquire.parse("o/r").kind, "local")
 
     def test_bad_forms(self):
         f = self.tmp / "work" / "notes.txt"
@@ -169,7 +169,7 @@ class FolderTest(AcquireCase):
         self.assertEqual(self.src_files(c), ["s/SKILL.md", "s/a.md"])
         rules = sorted((f["rule"], f["file"]) for f in self.findings(c))
         self.assertEqual(rules, [("ACQ-02", "loop"), ("ACQ-02", "s/hosts"), ("ACQ-03", "s/pipe"), ("ACQ-03", "s/sock")])
-        self.assertEqual(self.prov(c)["source"]["kind"], "folder")
+        self.assertEqual(self.prov(c)["source"]["kind"], "local")
 
     def test_quarantine_is_read_only_and_hash_matches(self):
         src = fixtures.build(self.tmp / "src", {"s/SKILL.md": fixtures.skill_md("s"), "s/b/c.txt": "c"})
@@ -224,6 +224,18 @@ class ArchiveTest(AcquireCase):
         r, c = self.acquire(str(z))
         self.assertEqual(r.returncode, 3, r.stderr)
         self.assertEqual(self.src_files(c), [])
+
+    def test_skill_at_the_archive_root_is_moved_into_a_folder(self):
+        z = fixtures.write_zip(self.tmp / "Root_Skill.skill", [("SKILL.md", fixtures.skill_md("x").encode(), None)])
+        r, c = self.acquire(str(z))
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(self.src_files(c), ["root-skill/SKILL.md"])
+
+    def test_refused_run_writes_no_provenance(self):
+        arch = fixtures.f_archive(self.tmp / "arch")
+        r, c = self.acquire(str(arch["dotdot"]))
+        self.assertEqual(r.returncode, 3, r.stderr)
+        self.assertFalse((c / "provenance.json").exists())
 
     def test_total_size_over_cap_is_refused(self):
         z = fixtures.write_zip(self.tmp / "z.zip", [("a", b"a" * 100, None), ("b", b"b" * 100, None)])
