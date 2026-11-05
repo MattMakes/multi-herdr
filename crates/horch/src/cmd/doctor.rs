@@ -157,6 +157,7 @@ fn host_warnings(ctx: &RuntimeContext, roster: &Roster) -> (Vec<String>, Vec<Str
     .chain(broken_harness_warnings(&facts))
     .chain(reviewer_warnings(roster, &facts))
     .chain(watchdog_blind_warnings(roster))
+    .chain(stale_skill_warnings(&ctx.paths.home))
     .chain(operator_effort_warnings(
         home,
         &codex_home,
@@ -164,6 +165,34 @@ fn host_warnings(ctx: &RuntimeContext, roster: &Roster) -> (Vec<String>, Vec<Str
     ))
     .collect();
     (note.into_iter().collect(), warnings)
+}
+
+/// One warning per `herdr-*` entry in `<home>/.claude/skills` (TRF-10).
+/// Claude loads such an entry as an ambient skill, and its text can name
+/// commands this horch lacks. The briefing horch compiles into each pane is
+/// canonical. Doctor names each entry and removes nothing.
+fn stale_skill_warnings(home: &Path) -> Vec<String> {
+    let dir = home.join(".claude").join("skills");
+    let Ok(entries) = std::fs::read_dir(&dir) else {
+        return Vec::new();
+    };
+    let mut names: Vec<String> = entries
+        .filter_map(|e| e.ok())
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .filter(|name| name.starts_with("herdr-"))
+        .collect();
+    names.sort();
+    names
+        .into_iter()
+        .map(|name| {
+            format!(
+                "ambient skill {} can shadow the fleet briefing. \
+                 The briefing that horch compiles into each pane is canonical. \
+                 Remove the entry if a fleet pane follows its old commands.",
+                dir.join(name).display()
+            )
+        })
+        .collect()
 }
 
 /// The precondition every recipe shares. Deliberately does NOT validate the
@@ -1788,6 +1817,35 @@ mod tests {
             warnings[0]
         );
         assert!(warnings[0].contains("Fix `pi --version` first."));
+    }
+
+    #[test]
+    fn trf_10_doctor_warns_about_each_ambient_herdr_skill() {
+        let home = tempfile::tempdir().unwrap();
+        assert!(
+            stale_skill_warnings(home.path()).is_empty(),
+            "no skills dir"
+        );
+        let skills = home.path().join(".claude").join("skills");
+        std::fs::create_dir_all(&skills).unwrap();
+        let target = home.path().join("old-plugin");
+        std::fs::create_dir_all(&target).unwrap();
+        std::os::unix::fs::symlink(&target, skills.join("herdr-worker")).unwrap();
+        std::fs::create_dir_all(skills.join("herdr-orchestrator")).unwrap();
+        std::fs::create_dir_all(skills.join("other-skill")).unwrap();
+
+        let warnings = stale_skill_warnings(home.path());
+        assert_eq!(warnings.len(), 2, "{warnings:?}");
+        assert!(warnings[0].contains(&*skills.join("herdr-orchestrator").to_string_lossy()));
+        assert!(warnings[1].contains(&*skills.join("herdr-worker").to_string_lossy()));
+        for w in &warnings {
+            assert!(w.contains("compiles into each pane is canonical"), "{w}");
+        }
+        assert!(
+            skills.join("herdr-worker").exists(),
+            "doctor removes nothing"
+        );
+        assert!(skills.join("herdr-orchestrator").exists());
     }
 
     /// A context whose state root is in `dir` and whose herdr is a warmed
