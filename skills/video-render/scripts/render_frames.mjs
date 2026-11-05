@@ -422,10 +422,12 @@ export const subframeTimes = (f, n) => range(n).map((j) => f + j / n);
 
 // Subframe file of frame f: by its rank in the sorted frame list, so a --reverse
 // capture writes the same files.
+const shotAt = (page, base) => (t, j) => [t, join(page.subDir, subName(base + j))];
+const takeShot = (page) => ([t, file]) => captureAt(page, t, file);
+
 function captureSubframes(page, sorted, f) {
-  const base = sorted.indexOf(f) * page.subframes;
-  const shots = subframeTimes(f, page.subframes).map((t, j) => [t, join(page.subDir, subName(base + j))]);
-  return inSequence(shots, ([t, file]) => captureAt(page, t, file));
+  const shots = subframeTimes(f, page.subframes).map(shotAt(page, sorted.indexOf(f) * page.subframes));
+  return inSequence(shots, takeShot(page));
 }
 
 // ffmpeg tmix averages each window of n subframes; select keeps the last frame of each
@@ -437,15 +439,20 @@ export async function averageSubframes(subDir, n, sorted, framesDir) {
   sorted.forEach((f, i) => renameSync(join(subDir, avgName(i)), join(framesDir, frameName(f))));
 }
 
+const ascending = (a, b) => a - b;
+const subframesOf = (page, sorted) => (f) => captureSubframes(page, sorted, f);
+
 async function blurInto(page, order) {
-  const sorted = [...order].sort((a, b) => a - b);
-  await inSequence(order, (f) => captureSubframes(page, sorted, f));
+  const sorted = [...order].sort(ascending);
+  await inSequence(order, subframesOf(page, sorted));
   await averageSubframes(page.subDir, page.subframes, sorted, page.framesDir);
 }
 
+const removeDir = (dir) => () => rmSync(dir, { recursive: true, force: true });
+
 function captureBlurred(page, order) {
   page.subDir = mkdtempSync(join(tmpdir(), "video-render-sub-"));
-  return blurInto(page, order).finally(() => rmSync(page.subDir, { recursive: true, force: true }));
+  return blurInto(page, order).finally(removeDir(page.subDir));
 }
 
 const captureAll = (page, order) =>
@@ -624,16 +631,22 @@ const runJob = (plan, opts) => (job) =>
   job.source.kind === "html" ? run(process.execPath, workerArgs(job, plan, opts)) : hashPlate(job);
 
 // A lane takes the next job when its last one ends. Jobs keep their timeline order in the report.
-const lane = (queue, fn, settled) => {
+async function lane(queue, fn, settled) {
   const job = queue.shift();
-  return job ? Promise.allSettled([fn(job)]).then(([r]) => settled.set(job, r)).then(() => lane(queue, fn, settled)) : null;
-};
+  if (!job) return;
+  const [result] = await Promise.allSettled([fn(job)]);
+  settled.set(job, result);
+  await lane(queue, fn, settled);
+}
+
+const startLane = (queue, fn, settled) => () => lane(queue, fn, settled);
+const resultOf = (settled) => (job) => ({ job, result: settled.get(job) });
 
 async function runPool(jobs, size, fn) {
   const queue = [...jobs];
   const settled = new Map();
-  await Promise.all(range(Math.min(size, jobs.length)).map(() => lane(queue, fn, settled)));
-  return jobs.map((job) => ({ job, result: settled.get(job) }));
+  await Promise.all(range(Math.min(size, jobs.length)).map(startLane(queue, fn, settled)));
+  return jobs.map(resultOf(settled));
 }
 
 const jobFailure = ({ job, result }) => `scene ${job.id}: ${result.reason?.message ?? result.reason}`;
@@ -655,22 +668,34 @@ export async function renderScenes(opts) {
 
 const filesIn = (dir) => (existsSync(dir) ? readdirSync(dir).sort() : null);
 
-function sceneChange(before, after, id) {
-  const [a, b] = [filesIn(join(before, id)), filesIn(join(after, id))];
-  const missing = !a?.length || !b?.length;
-  if (missing) return `no samples in ${!a?.length ? before : after}`;
-  if (json(a) !== json(b)) return `sample files differ: ${json(a)} vs ${json(b)}`;
-  const differs = a.filter((f) => !sameBytes(join(before, id, f), join(after, id, f)));
+const hasFiles = (list) => Boolean(list?.length);
+const fileDiffers = (before, after, id) => (f) => !sameBytes(join(before, id, f), join(after, id, f));
+
+function sampleChange(before, after, id, names) {
+  const differs = names.filter(fileDiffers(before, after, id));
   return differs.length ? `changed: ${differs.join(", ")}` : null;
 }
 
+function sceneChange(before, after, id) {
+  const [a, b] = [filesIn(join(before, id)), filesIn(join(after, id))];
+  if (!hasFiles(a)) return `no samples in ${before}`;
+  if (!hasFiles(b)) return `no samples in ${after}`;
+  if (json(a) !== json(b)) return `sample files differ: ${json(a)} vs ${json(b)}`;
+  return sampleChange(before, after, id, a);
+}
+
+const sceneId = (s) => s.id;
+const notIn = (list) => (id) => !list.includes(id);
+const changeOf = (before, after) => (id) => ({ id, reason: sceneChange(before, after, id) });
+const hasReason = (c) => Boolean(c.reason);
+
 // Revision scope check: every scene outside the fix must keep byte-identical samples.
 export function scopeCheck({ timelineFile, before, after, fix }) {
-  const ids = loadTimeline(timelineFile).scenes.map((s) => s.id);
-  const unknown = fix.filter((id) => !ids.includes(id));
+  const ids = loadTimeline(timelineFile).scenes.map(sceneId);
+  const unknown = fix.filter(notIn(ids));
   check(unknown.length === 0, `--fix names unknown scene ids: ${unknown.join(", ")}`, UsageError);
-  const checked = ids.filter((id) => !fix.includes(id));
-  const changed = checked.map((id) => ({ id, reason: sceneChange(before, after, id) })).filter((c) => c.reason);
+  const checked = ids.filter(notIn(fix));
+  const changed = checked.map(changeOf(before, after)).filter(hasReason);
   return { passed: changed.length === 0, fix, checked, changed };
 }
 
@@ -685,13 +710,15 @@ const noteTime = (line) => {
   return m ? Number(m[1]) * 60 + Number(m[2]) : null;
 };
 
+const isTime = (t) => t !== null;
+const laterThan = (end) => (t) => end !== undefined && t > end;
+const lateNote = (end) => (t) => `note at ${t} s is after the film end at ${end} s`;
+const tooFew = (n) => (n < SELF_NOTES_MIN ? [`${n} timestamped notes, need ${SELF_NOTES_MIN} or more`] : []);
+
 export function selfNotes(text, durationSec) {
-  const times = text.split("\n").map(noteTime).filter((t) => t !== null);
-  const late = durationSec === undefined ? [] : times.filter((t) => t > durationSec);
-  const errors = [
-    ...(times.length < SELF_NOTES_MIN ? [`${times.length} timestamped notes, need ${SELF_NOTES_MIN} or more`] : []),
-    ...late.map((t) => `note at ${t} s is after the film end at ${durationSec} s`),
-  ];
+  const times = text.split("\n").map(noteTime).filter(isTime);
+  const late = times.filter(laterThan(durationSec)).map(lateNote(durationSec));
+  const errors = [...tooFew(times.length), ...late];
   return { passed: errors.length === 0, notes: times.length, times, errors };
 }
 
@@ -1090,14 +1117,18 @@ function grayRow(png, y, width, format = "gray") {
   return [...spawnSync("ffmpeg", args).stdout];
 }
 
+// Subframe i is a flat grey of value 30 x i.
+const greyPlate = (sub) => (i) =>
+  ffmpeg(["-f", "lavfi", "-i", `color=c=0x${pad((i * 30).toString(16)).repeat(3)}:s=4x4,format=rgb24`, "-frames:v", "1", join(sub, subName(i))]);
+const redOf = (dir) => (f) => grayRow(join(dir, frameName(f)), 0, 1, "rgb24")[0];
+
 async function testAverage(root) {
-  const sub = join(root, "avg-sub"), out = join(root, "avg-out");
-  [sub, out].forEach((d) => mkdirSync(d));
-  const grey = (i) => ["-f", "lavfi", "-i", `color=c=0x${pad((i * 30).toString(16)).repeat(3)}:s=4x4,format=rgb24`, "-frames:v", "1", join(sub, subName(i))];
-  await inSequence(range(8), (i) => ffmpeg(grey(i)));
+  const [sub, out] = [join(root, "avg-sub"), join(root, "avg-out")];
+  mkdirSync(sub);
+  mkdirSync(out);
+  await inSequence(range(8), greyPlate(sub));
   await averageSubframes(sub, 4, [3, 9], out);
-  const red = (f) => grayRow(join(out, frameName(f)), 0, 1, "rgb24")[0];
-  assertEq([red(3), red(9)], [45, 165], "window means");
+  assertEq([3, 9].map(redOf(out)), [45, 165], "window means");
 }
 
 // Pixels between the background (22) and the box (180) on the row through the box.
