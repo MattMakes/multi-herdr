@@ -259,6 +259,25 @@ class PlanTest(TriageCase):
             self.assertEqual(opq["OPQ-01"]["disposition"], want, text)
             self.assertEqual(opq["OPQ-01"]["status"], "unresolved" if code else "planned", text)
 
+    def test_real_scan_sup_and_opq_hits_get_their_dispositions(self):
+        """Scan, then triage, on a real tree: the OPQ inference file is sweep/opaque/<scan id>.md."""
+        files = {**fixtures.f_clean(), f"{SKILL_DIR}/requirements.txt": "flask==3.0.0\n",
+                 f"{SKILL_DIR}/bin/fmt": fixtures.binary(fixtures.MACHO_64, "--format")}
+        c = self.run_source(files, 4)  # no inference file for OPQ-01 yet: GATE 1 cannot pass
+        hits = {h["rule"]: h for h in self.scan_hits(c)}
+        self.assertEqual(set(hits), {"SUP-01", "OPQ-01"})
+        opq_id = hits["OPQ-01"]["id"]
+        self.assertTrue((c / "sweep" / "opaque" / f"{opq_id}.json").is_file())
+        (c / "sweep" / "opaque" / f"{opq_id}.md").write_text(
+            "**Inferred purpose**: formats notes.\n\n**Disposition**: replace\n")
+        self.audit(c, PURPOSE)
+        self.triage(c, 0)
+        by_scan = {f["scan_id"]: f["id"] for f in self.findings(c) if f.get("scan_id")}
+        got = {rule: (self.entries(c)[by_scan[h["id"]]]["disposition"], self.entries(c)[by_scan[h["id"]]]["status"])
+               for rule, h in hits.items()}
+        self.assertEqual(got, {"SUP-01": ("replace", "planned"), "OPQ-01": ("replace", "planned")})
+        self.validate(c)
+
     def test_acq_skips_are_removed(self):
         c = self.run_source(fixtures.f_clean(), PENDING_EXIT)
         (c / "sweep" / "acquire.jsonl").write_text(json.dumps({
