@@ -163,6 +163,7 @@ class ArgvTest(IntakeTestCase):
 
         # The repo target: candidates, then install without and with a mapping (ticket 11).
         repo = fixtures.f_repo(self.tmp / "checkout", REPO)
+        fixtures.git(repo, "checkout", "-q", "-b", "fleet/argv")  # install refuses the default branch
         code, out = self.intake("candidates", "--task", str(c), "--repo", str(repo))
         self.assertEqual(code, 0, out)
         self.assertEqual(self.intake("cr", "context", "--task", str(c), "--target", "repo")[0], 0)

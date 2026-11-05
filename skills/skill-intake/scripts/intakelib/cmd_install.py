@@ -5,7 +5,8 @@ Without --target, the spec 8.1 rule picks the target in the invocation dir (or
 in --repo when given); the output names the rule that decided. The repo target
 without --mapping writes only the answer-independent set (spec 8.2).
 
-Exit codes: 0 ok, 2 bad input, 7 a name collision that no rule resolves.
+Exit codes: 0 ok, 2 bad input, 7 a name collision that no rule resolves, 15 the repo is on
+its default branch (nothing is written).
 stdout gets the result as JSON.
 """
 
@@ -56,6 +57,11 @@ def run(args) -> int:
     except install.Unresolvable as e:
         print(f"intake install: {e}", file=sys.stderr)
         return 7
+    except repo_install.DefaultBranch as e:
+        print(f"intake install: {e}", file=sys.stderr)
+        return 15
+    t.manifest["target_rule"] = mode["rule"]
+    task.write_json(t.c / task.MANIFEST, t.manifest)
     print(json.dumps({
         "target": "standalone", "target_rule": mode["rule"],
         "installed": [{"name": r["name"], "renamed_from": r["renamed_from"], "path": r["path"]}

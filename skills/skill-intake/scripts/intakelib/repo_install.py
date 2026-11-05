@@ -26,6 +26,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import subprocess
 from pathlib import Path
 
 from . import discover, evidence, install, roster, targets, task, verify
@@ -70,10 +71,23 @@ def _read(repo: Path, rel: str) -> str:
     return (repo / rel).read_text(encoding="utf-8")
 
 
-def _write(repo: Path, rel: str, text: str, changed: set[str]) -> None:
+class Changed(set):
+    """The files a run changed. `touched` holds every file the run wrote or checked;
+    `created` holds those that did not exist before this run wrote them."""
+
+    def __init__(self, items=()):
+        super().__init__(items)
+        self.touched: set[str] = set()
+        self.created: set[str] = set()
+
+
+def _write(repo: Path, rel: str, text: str, changed: Changed) -> None:
     p = repo / rel
+    changed.touched.add(rel)
     if p.is_file() and p.read_text(encoding="utf-8") == text:
         return
+    if not p.exists():
+        changed.created.add(rel)
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_text(text, encoding="utf-8")
     changed.add(rel)
@@ -129,6 +143,54 @@ def put_section(text: str, heading: str, body: str, before: str | None = None, e
             lines.append("\n")
     lines[at:at] = section
     return "".join(lines)
+
+
+def remove_rust_item(text: str, const: str, name: str) -> str:
+    """Drop `name` from `const <const>: &[&str] = &[...]`."""
+    lines = text.splitlines(keepends=True)
+    head = next((i for i, ln in enumerate(lines) if ln.startswith(f"const {const}: &[&str] = &[")), None)
+    if head is None:
+        return text
+    end = next(i for i in range(head + 1, len(lines)) if lines[i].startswith("];"))
+    keep = [ln for i, ln in enumerate(lines) if not (head < i < end and ln.strip() == f'"{name}",')]
+    return "".join(keep)
+
+
+def drop_section(text: str, heading: str) -> str:
+    """Remove the section `heading` (to the next heading of its level or higher)."""
+    level = len(heading.split(" ", 1)[0])
+    lines = text.splitlines(keepends=True)
+    if heading + "\n" not in lines:
+        return text
+    start = lines.index(heading + "\n")
+    end = next((i for i in range(start + 1, len(lines))
+                if (m := re.match(r"^(#+) ", lines[i])) and len(m.group(1)) <= level), len(lines))
+    return "".join(lines[:start] + lines[end:])
+
+
+def remove_from_list(text: str, key: str, names: list[str]) -> str:
+    """Take `names` out of the frontmatter list `key`; a list left empty loses its line."""
+    lines = text.splitlines(keepends=True)
+    b = roster.bounds(lines)
+    if b is None:
+        return text
+    for i in range(b[0], b[1]):
+        m = roster._KEY.match(lines[i].rstrip("\n"))
+        if not m or m.group(1) != key:
+            continue
+        items = roster.flow(m.group(2).strip())
+        if items is not None:
+            left = [x for x in items if x not in names]
+            lines[i:i + 1] = [f"{key}: [{', '.join(left)}]\n"] if left else []
+            return "".join(lines)
+        j = i + 1
+        while j < b[1] and roster._ITEM.match(lines[j].rstrip("\n")):
+            j += 1
+        block = [(ln, roster.unquote(roster._ITEM.match(ln.rstrip("\n")).group(1))) for ln in lines[i + 1:j]]
+        left = [ln for ln, x in block if x not in names]
+        lines[i:j] = ([lines[i]] + left) if left else []
+        return "".join(lines)
+    return text
 
 
 # ---- inputs ----------------------------------------------------------------------
@@ -209,8 +271,11 @@ def read_persona(t: task.Task) -> str:
 def load_state(t: task.Task, repo: Path) -> dict:
     p = t.c / STATE
     if not p.is_file():
-        return {"repo": str(repo), "skills": {}, "cleanroom": None, "teammate": None, "mapping": None}
+        return {"repo": str(repo), "skills": {}, "cleanroom": None, "teammate": None, "mapping": None,
+                "created": [], "edits": {}, "removed": []}
     state = task.read_json(p)
+    for key, empty in (("created", []), ("edits", {}), ("removed", [])):
+        state.setdefault(key, empty)
     if state.get("repo") != str(repo):
         raise task.TaskError(f"this task installed into {state.get('repo')}, not {repo}")
     return state
@@ -237,7 +302,7 @@ def source_line(prov: dict) -> tuple[str, str, str]:
 
 # ---- the answer-independent set --------------------------------------------------
 
-def write_copied(repo: Path, names: dict[str, str], exempt: dict[str, str], changed: set[str]) -> None:
+def write_copied(repo: Path, names: dict[str, str], exempt: dict[str, str], changed: Changed) -> None:
     doc = json.loads(_read(repo, COPIED))
     keep = [e for e in doc["skills"] if e["name"] not in names.values()]
     for skill, name in names.items():
@@ -249,7 +314,7 @@ def write_copied(repo: Path, names: dict[str, str], exempt: dict[str, str], chan
     _write(repo, COPIED, json.dumps(doc, indent=2, ensure_ascii=False) + "\n", changed)
 
 
-def write_skills_readme(repo: Path, cr: str, names: list[str], prov: dict, changed: set[str]) -> None:
+def write_skills_readme(repo: Path, cr: str, names: list[str], prov: dict, changed: Changed) -> None:
     where, licence, version = source_line(prov)
     they = "It is" if len(names) == 1 else "They are"
     noun = "skill" if len(names) == 1 else "skills"
@@ -298,7 +363,7 @@ def render_spec(spec: dict) -> str:
 
 
 def write_cleanroom(t: task.Task, repo: Path, cr: str, installed: list[dict], prov: dict,
-                    vdoc: dict, changed: set[str]) -> None:
+                    vdoc: dict, changed: Changed) -> None:
     rel = f"docs/cleanroom/{cr}"
     specs = verify.load_specs(t)
     files = []
@@ -421,9 +486,11 @@ def teammate_text(name: str, mapping: dict, skills: list[str], persona: str, sib
 
 
 def write_mapping(repo: Path, mapping: dict, names: list[str], cr: str, persona: str | None, prov: dict,
-                  state: dict, changed: set[str]) -> str | None:
+                  state: dict, changed: Changed) -> str | None:
     option, field = mapping["option"], mapping["field"]
     new = None
+    if option == 3 and state.get("teammate"):
+        retract_teammate(repo, state["teammate"], state, changed)
     if option in (1, 2):
         new = teammate_name(repo, mapping["teammate"], state)
         state["teammate"] = new
@@ -439,9 +506,20 @@ def write_mapping(repo: Path, mapping: dict, names: list[str], cr: str, persona:
             f" [docs/cleanroom/{cr}/](../docs/cleanroom/{cr}/)). {offered}"])
         _write(repo, TEAMMATES_README, put_section(_read(repo, TEAMMATES_README), f"## The {new} teammate", body,
                                                    before=TEAMMATES_BEFORE), changed)
-    for other in mapping["existing"]:
-        rel = f"teammates/{other}.md"
-        _write(repo, rel, roster.add_to_list(_read(repo, rel), field, names), changed)
+    targets_now = {f"teammates/{o}.md": field for o in mapping["existing"]}
+    for rel, old in list(state["edits"].items()):
+        if targets_now.get(rel) == old["field"]:
+            continue
+        if (repo / rel).is_file():
+            _write(repo, rel, remove_from_list(_read(repo, rel), old["field"], old["added"]), changed)
+        state["removed"].append(f"{rel} (reverted: {old['field']} {', '.join(old['added'])})")
+        del state["edits"][rel]
+    for rel in targets_now:
+        text = _read(repo, rel)
+        absent = [n for n in names if roster.add_to_list(text, field, [n]) != text]
+        kept = state["edits"].get(rel, {}).get("added", [])
+        state["edits"][rel] = {"field": field, "added": sorted(set(kept) | set(absent))}
+        _write(repo, rel, roster.add_to_list(text, field, names), changed)
     one = len(names) == 1
     noun, it = ("skill", "it") if one else ("skills", "them")
     how = (f"under `available_skills`, so a worker loads {it} on demand" if field == "available_skills"
@@ -468,6 +546,20 @@ def write_mapping(repo: Path, mapping: dict, names: list[str], cr: str, persona:
     line += f". Imported with `skill-intake` from {where} ({licence}); specs in `docs/cleanroom/{cr}/`."
     _write(repo, CHANGELOG, changelog(_read(repo, CHANGELOG), line, f"`docs/cleanroom/{cr}/`"), changed)
     return new
+
+
+def retract_teammate(repo: Path, old: str, state: dict, changed: Changed) -> None:
+    """A later mapping adds no new teammate: remove the one an earlier run of this task created."""
+    rel = f"teammates/{old}.md"
+    if rel in state["created"] and (repo / rel).is_file():
+        (repo / rel).unlink()
+        changed.add(rel)
+        state["created"].remove(rel)
+        state["removed"].append(rel)
+    for path in (CATALOG, ORACLES):
+        _write(repo, path, remove_rust_item(_read(repo, path), "SKIP_NEW_TEAMMATES", old), changed)
+    _write(repo, TEAMMATES_README, drop_section(_read(repo, TEAMMATES_README), f"## The {old} teammate"), changed)
+    state["teammate"] = None
 
 
 def changelog(text: str, line: str, marker: str) -> str:
@@ -525,12 +617,39 @@ def install_skills(t: task.Task, repo: Path, state: dict, prov: dict, vdoc: dict
     return sorted(done, key=lambda r: r["skill"]), skipped, new
 
 
+class DefaultBranch(task.TaskError):
+    """The repo is on its default branch: install writes nothing (exit 15)."""
+
+
+def _git(repo: Path, *args: str) -> str | None:
+    try:
+        r = subprocess.run(["git", *args], cwd=str(repo), capture_output=True, text=True, timeout=30,
+                           stdin=subprocess.DEVNULL)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return r.stdout.strip() if r.returncode == 0 else None
+
+
+def default_branch(repo: Path) -> str:
+    """`main`, or the branch refs/remotes/origin/HEAD names when it exists."""
+    head = _git(repo, "symbolic-ref", "refs/remotes/origin/HEAD")
+    return head.removeprefix("refs/remotes/origin/") if head else "main"
+
+
+def current_branch(repo: Path) -> str | None:
+    return _git(repo, "symbolic-ref", "--short", "-q", "HEAD")
+
+
 def run(t: task.Task, repo: Path, mapping_path: str | None, resolve_text: str | None, rule: str) -> dict:
     repo = task.resolve(repo)
     if not targets.is_multi_herdr(repo):
         raise task.TaskError(f"{repo} is not a multi-herdr checkout: it lacks a marker file of spec 8.1")
     if task.overlaps(repo, t.base):
         raise task.TaskError("the repo and the workspace base overlap")
+    branch = current_branch(repo)
+    if branch is not None and branch == default_branch(repo):
+        raise DefaultBranch(f"refused: {repo} is on its default branch {evidence.escape(branch)}; "
+                            "make a feature branch first")
     vdoc = install.load_verify(t, "repo")
     mapping = parse_mapping(Path(mapping_path), repo) if mapping_path else None
     persona = read_persona(t) if mapping and mapping["option"] in (1, 2) else None
@@ -542,7 +661,7 @@ def run(t: task.Task, repo: Path, mapping_path: str | None, resolve_text: str | 
     names = {r["skill"]: r["name"] for r in installed}
     cr = state.get("cleanroom") or installed[0]["name"]
     state["cleanroom"] = cr
-    changed: set[str] = {f"skills/{n}" for n in fresh}
+    changed = Changed(f"skills/{n}" for n in fresh)
     write_copied(repo, names, vdoc.get("budget_exempt") or {}, changed)
     _write(repo, CATALOG, add_rust_list(_read(repo, CATALOG), "REPO_ORIGINAL", list(names.values())), changed)
     write_skills_readme(repo, cr, sorted(names.values()), prov, changed)
@@ -552,9 +671,21 @@ def run(t: task.Task, repo: Path, mapping_path: str | None, resolve_text: str | 
         new = write_mapping(repo, mapping, sorted(names.values()), cr, persona, prov, state, changed)
         state["mapping"] = mapping
     state["target_rule"] = rule
+    old_created = set(state["created"])
+    state["created"] = sorted(old_created | changed.created)
+    if mapping:
+        for rel in sorted(old_created - changed.touched):
+            p = (repo / rel)
+            if task.is_within(p.resolve(), repo) and p.is_file():
+                p.unlink()
+                changed.add(rel)
+                state["removed"].append(rel)
+            state["created"].remove(rel)
+    gone = {r for r in state["removed"]}
+    state["written"] = sorted((set(state.get("written", [])) | set(changed)) - gone)
     task.write_json(t.c / STATE, state)
     task.set_phase(t, "installed" if mapping else "installed-awaiting-mapping")
     return {"target": "repo", "target_rule": rule, "repo": str(repo), "cleanroom": f"docs/cleanroom/{cr}",
             "installed": [{"name": r["name"], "renamed_from": r["renamed_from"]} for r in installed],
             "skipped": skipped, "mapping": mapping["option"] if mapping else None, "teammate": new,
-            "changed": sorted(changed)}
+            "changed": sorted(changed), "removed": list(state["removed"])}

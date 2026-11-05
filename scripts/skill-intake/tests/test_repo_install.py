@@ -45,6 +45,7 @@ class RepoCase(VerifyCase):
     def setUp(self):
         super().setUp()
         self.repo = fixtures.f_repo(self.tmp / "checkout", REPO, roster=GODOT)
+        fixtures.git(self.repo, "checkout", "-q", "-b", "fleet/pdf-editor")
 
     def verified(self) -> tasklib.Task:
         """A task with a repo GATE 2 pass and 1 output skill. The source folder is named OWNER."""
@@ -292,6 +293,47 @@ class RepoInstallTest(RepoCase):
         self.assertEqual((out["target"], out["target_rule"]),
                          ("repo", "detected: the git top level holds the 3 marker files"))
         self.assertEqual(read_json(t.c / repo_install.STATE)["target_rule"], out["target_rule"])
+
+
+class BranchAndRerunTest(RepoCase):
+    def test_default_branch_is_refused_and_nothing_is_written(self):
+        t = self.verified()
+        fixtures.git(self.repo, "checkout", "-q", "-B", "main")
+        args = ["install", "--task", str(t.c), "--target", "repo", "--repo", str(self.repo)]
+        r = self.run_intake(*args)
+        self.assertEqual(r.returncode, 15, r.stdout + r.stderr)
+        self.assertIn("default branch", r.stderr)
+        self.assertEqual(self.changed(), set())
+        self.assertFalse((t.c / repo_install.STATE).exists())
+        # The branch origin/HEAD names is the default branch too.
+        fixtures.git(self.repo, "checkout", "-q", "-B", "trunk")
+        self.assertEqual(self.run_intake(*args).returncode, 0)
+        fixtures.git(self.repo, "update-ref", "refs/remotes/origin/trunk", "HEAD")
+        fixtures.git(self.repo, "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/trunk")
+        self.assertEqual(self.run_intake(*args).returncode, 15)
+
+    def test_a_later_mapping_removes_what_the_earlier_one_created(self):
+        t = self.verified()
+        before = {p: self.read(p) for p in ("crates/horch-core/tests/skills_catalog.rs",
+                                            "crates/horch-core/tests/baseline_oracles.rs", "teammates/README.md",
+                                            "teammates/godot-ui.md")}
+        self.install(t, {"option": 1, "teammate": "pdf-specialist", "brief_description": "PDF edits."})
+        self.assertTrue((self.repo / "teammates" / "pdf-specialist.md").is_file())
+        out = self.install(t, {"option": 3, "existing": ["godot-ui"], "field": "skills"})
+        self.assertFalse((self.repo / "teammates" / "pdf-specialist.md").exists())
+        self.assertIn("teammates/pdf-specialist.md", out["removed"])
+        self.assertIn(f"skills: [{SKILL}]\n", self.read("teammates/godot-ui.md"))
+        for rs in ("skills_catalog.rs", "baseline_oracles.rs"):
+            p = f"crates/horch-core/tests/{rs}"
+            self.assertEqual(rust_list(self.read(p), "SKIP_NEW_TEAMMATES"),
+                             rust_list(before[p], "SKIP_NEW_TEAMMATES"))
+        self.assertEqual(self.read("teammates/README.md"), before["teammates/README.md"])
+        self.assertNotIn("pdf-specialist", self.read("docs/skills-and-teams.md"))
+        # Option 3 again to another teammate: the first edit is reverted, a file the tool did not create stays.
+        self.install(t, {"option": 3, "existing": ["web-dev"]})
+        self.assertEqual(self.read("teammates/godot-ui.md"), before["teammates/godot-ui.md"])
+        self.assertIn(f"available_skills: [{SKILL}]", self.read("teammates/web-dev.md"))
+        self.assertTrue((self.repo / "teammates" / "godot-gameplay.md").is_file())
 
 
 class BookkeepingUnitTest(RepoCase):
