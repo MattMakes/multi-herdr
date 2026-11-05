@@ -895,3 +895,67 @@ fn teardown_fails_a_test_that_leaks_a_process() {
     assert!(message.contains("the test leaked"), "{message}");
     assert!(message.contains("stubborn"), "{message}");
 }
+
+/// Append one record to the fake log, the way a fake does.
+fn record(h: &Harness, line: Value) {
+    use std::io::Write;
+    let mut log = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&h.log)
+        .unwrap();
+    writeln!(log, "{line}").unwrap();
+}
+
+/// The operating system reuses a pid under fork load. Two processes of one
+/// fake that got the same pid are 2 calls, not 1.
+#[test]
+fn calls_of_keeps_two_calls_that_share_a_pid() {
+    let h = Harness::new("fakes-pid-reuse");
+    record(
+        &h,
+        serde_json::json!({"fake": "claude", "pid": 4242, "call_id": "4242-1", "argv": ["first"]}),
+    );
+    record(
+        &h,
+        serde_json::json!({"fake": "claude", "pid": 4242, "call_id": "4242-2", "argv": ["second"]}),
+    );
+    let calls = h.calls_of("claude");
+    assert_eq!(calls.len(), 2, "{calls:?}");
+    assert_eq!(calls[0]["argv"][0], "first");
+    assert_eq!(calls[1]["argv"][0], "second");
+}
+
+/// A fake that logs as it goes writes several lines for one call: the last
+/// one wins, and a record with no `call_id` still merges by pid.
+#[test]
+fn calls_of_merges_the_lines_of_one_call() {
+    let h = Harness::new("fakes-call-lines");
+    for (id, stdin) in [("7-1", 0), ("7-1", 1)] {
+        record(
+            &h,
+            serde_json::json!({"fake": "claude", "pid": 7, "call_id": id, "stdin": vec!["x"; stdin]}),
+        );
+    }
+    record(&h, serde_json::json!({"fake": "herdr", "pid": 8, "n": 1}));
+    record(&h, serde_json::json!({"fake": "herdr", "pid": 8, "n": 2}));
+    let claude = h.calls_of("claude");
+    assert_eq!(claude.len(), 1);
+    assert_eq!(claude[0]["stdin"].as_array().unwrap().len(), 1);
+    let herdr = h.calls_of("herdr");
+    assert_eq!(herdr.len(), 1);
+    assert_eq!(herdr[0]["n"], 2);
+}
+
+/// Every flush of one real call carries the same `call_id`, and 2 calls
+/// carry 2 ids.
+#[test]
+fn a_fake_logs_one_call_id_per_process() {
+    let h = Harness::new("fakes-call-id");
+    version(&h, "claude");
+    version(&h, "claude");
+    let calls = h.calls_of("claude");
+    assert_eq!(calls.len(), 2, "{calls:?}");
+    assert_ne!(calls[0]["call_id"], calls[1]["call_id"]);
+    assert!(calls[0]["call_id"].is_string(), "{calls:?}");
+}

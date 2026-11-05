@@ -23,6 +23,9 @@ pub mod process;
 #[derive(Debug)]
 pub struct Call {
     pub fake: &'static str,
+    /// Names this call in the log: the pid and the start time in nanoseconds.
+    /// A pid alone is not enough, the system reuses it under fork load.
+    pub call_id: String,
     pub argv: Vec<String>,
     pub stdin: Vec<String>,
     pub violations: Vec<String>,
@@ -32,8 +35,12 @@ pub struct Call {
 impl Call {
     /// Start recording a call of `fake`.
     pub fn start(fake: &'static str) -> Self {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_nanos());
         Call {
             fake,
+            call_id: format!("{}-{nanos}", std::process::id()),
             argv: std::env::args().skip(1).collect(),
             stdin: Vec::new(),
             violations: Vec::new(),
@@ -58,6 +65,7 @@ impl Call {
         let mut line = json!({
             "fake": self.fake,
             "pid": std::process::id(),
+            "call_id": self.call_id,
             "argv": self.argv,
             "env_keys": env_keys,
             "stdin": self.stdin,
