@@ -380,6 +380,11 @@ pub(crate) struct LockOwner {
     /// before it existed; then the pid alone decides.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub started: Option<u64>,
+    /// The holder's own `stale_after`, in seconds. A waiter with a shorter
+    /// one does not break a live holder's lock before this age (D7). `None`
+    /// in an owner file written before it existed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stale_after_s: Option<u64>,
 }
 
 /// A cross-process lock at `<dir>/<name>.lock/`.
@@ -498,7 +503,7 @@ impl DirLock {
         let start = Instant::now();
         let mut backoff = Duration::from_millis(5);
         loop {
-            if let Some(done) = publish(&path, &mut writing).transpose() {
+            if let Some(done) = publish(&path, stale_after, &mut writing).transpose() {
                 break done;
             }
             let broke = is_stale(&path, stale_after) && break_lock(&path, stale_after);
@@ -543,7 +548,11 @@ fn no_hook(_lock: &Path) {}
 /// directory is renamed to `path`. A lock is never seen without its owner:
 /// a holder whose owner write is slow (an `F_FULLFSYNC` on macOS under I/O
 /// load can take seconds) is not taken for one that died before writing it.
-fn publish(path: &Path, writing: &mut Option<impl FnOnce(&Path)>) -> Result<Option<DirLockGuard>> {
+fn publish(
+    path: &Path,
+    stale_after: Duration,
+    writing: &mut Option<impl FnOnce(&Path)>,
+) -> Result<Option<DirLockGuard>> {
     // A held lock: no staging work that can only lose the rename.
     if std::fs::symlink_metadata(path).is_ok() {
         return Ok(None);
@@ -558,6 +567,7 @@ fn publish(path: &Path, writing: &mut Option<impl FnOnce(&Path)>) -> Result<Opti
         acquired_at: crate::clock::stamp(chrono::Utc::now()),
         nonce,
         started: crate::procid::start_time(std::process::id()),
+        stale_after_s: Some(stale_after.as_secs()),
     };
     let json = serde_json::to_vec(&owner).expect("LockOwner serializes");
     if let Some(writing) = writing.take() {
@@ -643,13 +653,20 @@ fn age(path: &Path) -> Option<Duration> {
         .and_then(|t| t.elapsed().ok())
 }
 
-/// Whether the lock at `path` may be broken.
+/// Whether the lock at `path` may be broken. The age limit is the longer
+/// of `stale_after` and the holder's own, so a waiter never breaks a live
+/// holder's lock before the holder's limit.
 fn is_stale(path: &Path, stale_after: Duration) -> bool {
     let age = age(path);
-    if age.is_some_and(|a| a >= stale_after) {
+    let owner = read_owner(path);
+    let limit = owner
+        .as_ref()
+        .and_then(|o| o.stale_after_s)
+        .map_or(stale_after, |s| stale_after.max(Duration::from_secs(s)));
+    if age.is_some_and(|a| a >= limit) {
         return true;
     }
-    match read_owner(path) {
+    match owner {
         // A pid on another host cannot be checked from here.
         Some(o) => o.host == host_name() && !crate::procid::alive(o.pid, o.started),
         // A holder between `create_dir` and writing its owner is live for a
@@ -872,6 +889,7 @@ mod tests {
             acquired_at: "2026-09-28T17:00:00Z".into(),
             nonce: "dead".into(),
             started: None,
+            stale_after_s: None,
         };
         std::fs::write(lock.join("owner"), serde_json::to_vec(&dead).unwrap()).unwrap();
         let held = DirLock::acquire(
@@ -884,6 +902,43 @@ mod tests {
         let owner: LockOwner =
             serde_json::from_slice(&std::fs::read(held.path().join("owner")).unwrap()).unwrap();
         assert_eq!(owner.pid, std::process::id());
+    }
+
+    /// TRF-06: a waiter with a shorter stale age does not break a live
+    /// holder's lock before the holder's own stale age; after it, it does.
+    #[cfg(unix)]
+    #[test]
+    fn trf_06_a_live_holders_lock_is_stale_only_after_its_own_age() {
+        let tmp = tempfile::tempdir().unwrap();
+        let hour = Duration::from_secs(3600);
+        let held = DirLock::acquire(tmp.path(), "land-x", hour, Duration::from_secs(1)).unwrap();
+        let lock = held.path().to_path_buf();
+        assert_eq!(read_owner(&lock).unwrap().stale_after_s, Some(3600));
+        let aged = |by: Duration| {
+            std::fs::File::open(&lock)
+                .unwrap()
+                .set_modified(std::time::SystemTime::now() - by)
+                .unwrap();
+        };
+        let second = Duration::from_secs(1);
+        aged(Duration::from_secs(60));
+        assert!(!is_stale(&lock, second), "the holder's hour is not over");
+        let err =
+            DirLock::acquire(tmp.path(), "land-x", second, Duration::from_millis(50)).unwrap_err();
+        assert!(matches!(err, FsxError::LockTimeout { .. }), "{err}");
+        assert!(
+            lock.join("owner").exists(),
+            "the live holder keeps its lock"
+        );
+        aged(2 * hour);
+        assert!(is_stale(&lock, second), "the holder's hour is over");
+        // An owner file from before the field: the waiter's age decides.
+        let mut old = read_owner(&lock).unwrap();
+        old.stale_after_s = None;
+        std::fs::write(lock.join("owner"), serde_json::to_vec(&old).unwrap()).unwrap();
+        aged(Duration::from_secs(60));
+        assert!(is_stale(&lock, second));
+        assert!(!is_stale(&lock, hour));
     }
 
     /// The owner's pid runs (it is this process) but with another start
@@ -901,6 +956,7 @@ mod tests {
             acquired_at: "2026-09-28T17:00:00Z".into(),
             nonce: "old".into(),
             started,
+            stale_after_s: None,
         };
         std::fs::create_dir(&lock).unwrap();
         std::fs::write(
@@ -967,6 +1023,7 @@ mod tests {
                 acquired_at: "2026-09-28T17:00:00Z".into(),
                 nonce: "dead".into(),
                 started: None,
+                stale_after_s: None,
             };
             std::fs::write(lock.join("owner"), serde_json::to_vec(&dead).unwrap()).unwrap();
             #[cfg(unix)]
@@ -1023,6 +1080,7 @@ mod tests {
             acquired_at: "2026-09-28T17:00:00Z".into(),
             nonce: "dead".into(),
             started: None,
+            stale_after_s: None,
         };
         std::fs::write(lock.join("owner"), serde_json::to_vec(&dead).unwrap()).unwrap();
         let breaker = tmp.path().join("events.lock.break");
@@ -1057,6 +1115,7 @@ mod tests {
             acquired_at: "2026-09-28T17:00:00Z".into(),
             nonce: "dead".into(),
             started: None,
+            stale_after_s: None,
         };
         std::fs::write(lock.join("owner"), serde_json::to_vec(&dead).unwrap()).unwrap();
         let breaker = tmp.path().join("events.lock.break");

@@ -17,6 +17,11 @@ use crate::taskledger::util::{self, About};
 /// How long a land waits for another land of the same repository.
 pub const LAND_LOCK_TIMEOUT: Duration = Duration::from_secs(60 * 60);
 
+/// How much older than its holder's check timeout a land lock gets before
+/// a waiter may break it: the time for the rebase, the fast-forward and the
+/// push around the check.
+const LOCK_STALE_MARGIN: Duration = Duration::from_secs(10 * 60);
+
 /// How many times a land rebases and checks again because the run branch
 /// moved during its check.
 const MAX_LAND_TRIES: u32 = 5;
@@ -324,8 +329,25 @@ pub fn check(cx: &Ctx<'_>, name: StepName) -> Result<Outcome> {
     }
 }
 
+/// The age at which a land lock whose holder runs checks of `check_timeout`
+/// is stale (D7). A check can run under the lock, so a shorter age breaks
+/// the lock of a live holder.
+pub(crate) fn lock_stale_age(check_timeout: Duration) -> Duration {
+    check_timeout.min(MAX_CHECK_TIMEOUT) + LOCK_STALE_MARGIN
+}
+
+/// How long a land waits for the land lock.
+fn lock_wait() -> Duration {
+    #[cfg(test)]
+    if let Some(wait) = tests::LOCK_WAIT.with(std::cell::Cell::get) {
+        return wait;
+    }
+    LAND_LOCK_TIMEOUT
+}
+
 /// The lock every land of 1 repository takes, so lands go in a line. While
-/// it waits, it prints who holds it every 30 s.
+/// it waits, it prints who holds it every 30 s. It is stale only after the
+/// task's check timeout plus [`LOCK_STALE_MARGIN`].
 pub(crate) fn land_lock(cx: &Ctx<'_>) -> Result<crate::fsx::DirLockGuard> {
     let holder = format!(
         "{} of {} (PID {})",
@@ -333,15 +355,26 @@ pub(crate) fn land_lock(cx: &Ctx<'_>) -> Result<crate::fsx::DirLockGuard> {
         cx.worker.label(),
         std::process::id()
     );
-    repo_land_lock(&cx.tools.evidence_root, &cx.root, &holder)
+    let stale = lock_stale_age(check_timeout(&cx.tools.evidence_root, &cx.task.task_id));
+    lock_of_repo(&cx.tools.evidence_root, &cx.root, &holder, stale)
 }
 
 /// The land lock of the repository at `root`, held by `holder`: the lock
-/// [`land_lock`] takes, for a land that has no finish context (#308).
+/// [`land_lock`] takes, for a land that has no finish context (#308). It
+/// runs no check, so the default check timeout sets its stale age.
 pub(crate) fn repo_land_lock(
     evidence_root: &Path,
     root: &Path,
     holder: &str,
+) -> Result<crate::fsx::DirLockGuard> {
+    lock_of_repo(evidence_root, root, holder, lock_stale_age(CHECK_TIMEOUT))
+}
+
+fn lock_of_repo(
+    evidence_root: &Path,
+    root: &Path,
+    holder: &str,
+    stale: Duration,
 ) -> Result<crate::fsx::DirLockGuard> {
     let dir = evidence_root.join("locks");
     let key = sha_hex(&root.to_string_lossy());
@@ -349,18 +382,20 @@ pub(crate) fn repo_land_lock(
         &dir,
         &format!("land-{}", &key[..16]),
         holder,
+        stale,
         LOCK_NOTICE_EVERY,
-        LAND_LOCK_TIMEOUT,
+        lock_wait(),
         |held_by| eprintln!("horch ledger: waiting for the land lock; {held_by} holds it"),
     )
 }
 
-/// Take lock `name` in `dir` and write `holder` into it. Every `every`
-/// that it waits, `notice` gets the current holder's line.
+/// Take lock `name` in `dir`, stale after `stale`, and write `holder` into
+/// it. Every `every` that it waits, `notice` gets the current holder's line.
 fn take_lock(
     dir: &Path,
     name: &str,
     holder: &str,
+    stale: Duration,
     every: Duration,
     timeout: Duration,
     mut notice: impl FnMut(&str),
@@ -368,7 +403,7 @@ fn take_lock(
     let start = std::time::Instant::now();
     loop {
         let left = timeout.saturating_sub(start.elapsed());
-        match crate::fsx::DirLock::acquire(dir, name, LAND_LOCK_TIMEOUT, every.min(left)) {
+        match crate::fsx::DirLock::acquire(dir, name, stale, every.min(left)) {
             Ok(guard) => {
                 std::fs::write(guard.path().join("holder"), format!("{holder}\n"))?;
                 return Ok(guard);
@@ -413,8 +448,26 @@ pub fn land(store: &mut Store, cx: &Ctx<'_>) -> Result<Outcome> {
         Ok((_lock, new)) => finish_landed(store, cx, &wt, &run_branch, &new, log),
         Err(Stop::Red(why)) => red(store, cx, &wt, log, why),
         Err(Stop::NotMine(o)) => Ok(*o),
-        Err(Stop::Error(e)) => Err(e),
+        Err(Stop::Error(e)) => {
+            // Like a red stage, an error leaves no `landing` row (D7).
+            let _ = reopen_landing(store, &wt, &format!("{e:#}"));
+            Err(e)
+        }
     }
+}
+
+/// A worktree still `landing` is `open` again, with why.
+fn reopen_landing(store: &Store, wt: &WorktreeRow, why: &str) -> Result<()> {
+    store.conn().execute(
+        &format!(
+            "UPDATE worktrees SET status = {open}, reason = ?2
+             WHERE worktree_id = ?1 AND status = {landing}",
+            open = word(WorktreeStatus::Open),
+            landing = word(WorktreeStatus::Landing)
+        ),
+        params![wt.worktree_id, why],
+    )?;
+    Ok(())
 }
 
 /// Why a land stopped before the fast-forward.
@@ -461,12 +514,50 @@ fn land_stages(
         EventKind::LandStarted,
         &format!("Landing {} on {run_branch}.", wt.branch),
     )?;
-    let (lock, new) = rebase_and_check(cx, dir, run_branch, log)?;
-    // Under the land lock, just before the fast-forward: a cancel that
-    // arrived during the rebase, the check or the lock wait lands nothing.
-    still_mine(store, cx)?;
-    fast_forward(cx, run_branch, &new)?;
-    Ok((lock, new))
+    let tip = cx.tools.git.rev(dir, "HEAD")?;
+    let landed = rebase_and_check(cx, dir, run_branch, log).and_then(|(lock, new)| {
+        // Under the land lock, just before the fast-forward: a cancel that
+        // arrived during the rebase, the check or the lock wait lands nothing.
+        still_mine(store, cx)?;
+        fast_forward(cx, run_branch, &new)?;
+        Ok((lock, new))
+    });
+    landed.map_err(|stop| undo_rebase(&cx.tools.git, dir, &tip, stop))
+}
+
+/// A land that stops after its rebase puts the branch back at `tip`, its
+/// head before the land (L2). The tree that the steps before land judged
+/// stays, so the next finish starts no new review round. A task that is no
+/// longer this worker's keeps its branch as it is: another worker can use
+/// the worktree now.
+fn undo_rebase(git: &Git, dir: &Path, tip: &str, stop: Stop) -> Stop {
+    if matches!(stop, Stop::NotMine(_)) {
+        return stop;
+    }
+    let Err(e) = reset_to(git, dir, tip) else {
+        return stop;
+    };
+    let failed = format!(
+        "resetting the branch to its tip before the land, {}, failed: {e:#}",
+        &tip[..tip.len().min(12)]
+    );
+    match stop {
+        Stop::Red(why) => Stop::Red(format!("{why}; {failed}")),
+        Stop::Error(err) => Stop::Error(err.context(failed)),
+        other => other,
+    }
+}
+
+/// Move the branch checked out in `dir` back to `tip`, when it moved.
+fn reset_to(git: &Git, dir: &Path, tip: &str) -> Result<()> {
+    if git.rev(dir, "HEAD")? == tip {
+        return Ok(());
+    }
+    let out = git.try_run(dir, &["reset", "--hard", "--quiet", tip])?;
+    if !out.ok {
+        bail!("git reset --hard: {}", out.stderr.trim());
+    }
+    Ok(())
 }
 
 /// The task may be cancelled at any time before the fast-forward (#136).
@@ -500,9 +591,17 @@ fn rebase_and_check(
 ) -> Result<(crate::fsx::DirLockGuard, String), Stop> {
     let mut held: Option<crate::fsx::DirLockGuard> = None;
     for _ in 0..MAX_LAND_TRIES {
+        if let Some(lock) = &held {
+            // This check runs under the lock: its age starts again, so a
+            // waiter does not take it for stale.
+            lock.refresh().map_err(anyhow::Error::from)?;
+        }
         let (target_before, new) = rebased_and_checked(cx, dir, run_branch, log)?;
         // After the first try the lock is held already.
-        let lock = held.take().map_or_else(|| land_lock(cx), Ok)?;
+        let lock = match held.take() {
+            Some(lock) => lock,
+            None => land_lock(cx).map_err(lock_wait_stop)?,
+        };
         if cx.tools.git.rev(&cx.root, run_branch)? == target_before {
             return Ok((lock, new));
         }
@@ -511,6 +610,18 @@ fn rebase_and_check(
     Err(Stop::Red(format!(
         "{run_branch} moved during each of {MAX_LAND_TRIES} checks; run finish again"
     )))
+}
+
+/// A land-lock wait that timed out is a red stage, so the worktree is
+/// `open` again (D7); every other lock error is an error.
+fn lock_wait_stop(e: anyhow::Error) -> Stop {
+    match e.downcast_ref::<crate::fsx::FsxError>() {
+        Some(crate::fsx::FsxError::LockTimeout { waited, .. }) => Stop::Red(format!(
+            "the land lock stayed held for the whole {} s wait; run finish again",
+            waited.as_secs()
+        )),
+        _ => Stop::Error(e),
+    }
 }
 
 /// 1 try: rebase the branch on the run branch and run the check. The run
@@ -1018,13 +1129,282 @@ pub fn retry_cleanup(store: &mut Store, git: &Git) -> Result<Vec<(String, Outcom
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::taskledger::finish::{self, CodexSandbox, FinishReport, Tools};
+    use crate::taskledger::model::Actor;
+    use crate::taskledger::runs::{self, NewRun, Run};
+    use crate::taskledger::tasks::{self, NewTask};
+    use crate::taskledger::workers::{self, NewWorker};
+
+    thread_local! {
+        /// The land-lock wait of a test, instead of [`LAND_LOCK_TIMEOUT`].
+        pub(super) static LOCK_WAIT: std::cell::Cell<Option<Duration>> =
+            const { std::cell::Cell::new(None) };
+    }
+
+    const RUN_BRANCH: &str = "fleet/r1";
+
+    fn git(dir: &Path, args: &[&str]) -> String {
+        let o = Command::new("git")
+            .arg("-C")
+            .arg(dir)
+            .args(args)
+            .env("LC_ALL", "C")
+            .output()
+            .unwrap();
+        assert!(
+            o.status.success(),
+            "git {}: {}",
+            args.join(" "),
+            String::from_utf8_lossy(&o.stderr)
+        );
+        String::from_utf8_lossy(&o.stdout).trim().to_string()
+    }
+
+    fn commit(dir: &Path, file: &str) -> String {
+        std::fs::write(dir.join(file), format!("{file}\n")).unwrap();
+        git(dir, &["add", file]);
+        git(dir, &["commit", "--quiet", "-m", file]);
+        git(dir, &["rev-parse", "HEAD"])
+    }
+
+    /// A repository with a run branch, a ledger, and 1 claimed task with
+    /// the check `check` and 1 commit in its worktree.
+    struct World {
+        _tmp: tempfile::TempDir,
+        root: PathBuf,
+        store: Store,
+        run: Run,
+        tools: Tools,
+        worker: String,
+        wt: PathBuf,
+    }
+
+    impl World {
+        fn new(check: &str) -> World {
+            let tmp = tempfile::tempdir().unwrap();
+            let top = tmp.path().canonicalize().unwrap();
+            let root = top.join("repo");
+            std::fs::create_dir_all(&root).unwrap();
+            git(&root, &["init", "--quiet", "-b", "main"]);
+            for (k, v) in [
+                ("user.name", "t"),
+                ("user.email", "t@example.com"),
+                ("commit.gpgsign", "false"),
+            ] {
+                git(&root, &["config", k, v]);
+            }
+            commit(&root, "README.md");
+            git(&root, &["branch", RUN_BRANCH]);
+            let mut store = Store::open(&top.join("ledger.sqlite3")).unwrap();
+            let run = store
+                .immediate(|tx| {
+                    runs::create(
+                        tx,
+                        &root,
+                        &NewRun {
+                            slug: "r1".into(),
+                            base_branch: Some("main".into()),
+                            run_branch: Some(RUN_BRANCH.into()),
+                            finish_steps: vec![StepName::Land],
+                            ..Default::default()
+                        },
+                    )
+                })
+                .unwrap();
+            let tools = Tools {
+                git: Git::new("git"),
+                gh: top.join("gh"),
+                node: "/bin/sh".into(),
+                complexity_cli: None,
+                code_sweep_dir: None,
+                evidence_root: top.join("evidence"),
+                shell: "/bin/sh".into(),
+                reviewers_down: Vec::new(),
+                codex: CodexSandbox::default(),
+            };
+            let mut t = NewTask::work("feature", "t.md", "opus");
+            t.land_check = Some(check.into());
+            let worker = store
+                .immediate(|tx| {
+                    tasks::add(tx, &run, &t, Actor::Orchestrator)?;
+                    let id = workers::insert(
+                        tx,
+                        &NewWorker {
+                            run_id: run.run_id.clone(),
+                            persona: "opus".into(),
+                            role: Some("opus-1".into()),
+                            ..Default::default()
+                        },
+                    )?;
+                    workers::supervisor_started(tx, &id, 4242, Some(1))?;
+                    workers::agent_started(tx, &id, 4243, Some(2))?;
+                    tasks::claim(tx, &id)?;
+                    Ok(id)
+                })
+                .unwrap();
+            let row = finish::worktree_new(&mut store, &tools.git, &worker, "feat").unwrap();
+            let wt = PathBuf::from(&row.path);
+            commit(&wt, "feature.txt");
+            World {
+                _tmp: tmp,
+                root,
+                store,
+                run,
+                tools,
+                worker,
+                wt,
+            }
+        }
+
+        /// A commit on the run branch, so a land must rebase.
+        fn move_run_branch(&self) -> String {
+            let tree = format!("{RUN_BRANCH}^{{tree}}");
+            let c = git(
+                &self.root,
+                &["commit-tree", "-p", RUN_BRANCH, "-m", "moved", &tree],
+            );
+            git(
+                &self.root,
+                &["update-ref", &format!("refs/heads/{RUN_BRANCH}"), &c],
+            );
+            c
+        }
+
+        fn finish(&mut self) -> FinishReport {
+            finish::finish(&mut self.store, &self.tools, &self.worker).unwrap()
+        }
+
+        fn head(&self) -> String {
+            git(&self.wt, &["rev-parse", "HEAD"])
+        }
+
+        fn task_id(&self) -> String {
+            workers::get(self.store.conn(), &self.worker)
+                .unwrap()
+                .task_id
+                .unwrap()
+        }
+
+        fn row(&self) -> WorktreeRow {
+            finish::worktree_of(self.store.conn(), &self.task_id())
+                .unwrap()
+                .unwrap()
+        }
+    }
+
+    fn land_note(r: &FinishReport) -> (String, String) {
+        let s = r.steps.iter().find(|s| s.name == "land").unwrap();
+        (
+            s.verdict.clone().unwrap_or_default(),
+            s.note.clone().unwrap_or_default(),
+        )
+    }
+
+    #[test]
+    fn trf_05_a_red_check_after_a_rebase_resets_the_branch_to_its_tip() {
+        let mut w = World::new("false");
+        let tip = w.head();
+        let moved = w.move_run_branch();
+        let r = w.finish();
+        let (verdict, note) = land_note(&r);
+        assert_eq!(verdict, "not landed");
+        assert!(
+            note.starts_with("after the rebase: `false` failed"),
+            "{note}"
+        );
+        assert_eq!(w.head(), tip, "the rebased branch is reset to its tip");
+        assert_eq!(git(&w.wt, &["status", "--porcelain"]), "");
+        assert_eq!(git(&w.root, &["rev-parse", RUN_BRANCH]), moved);
+        assert_eq!(w.row().status, "open");
+    }
+
+    #[test]
+    fn trf_05_a_green_land_keeps_the_rebased_branch() {
+        let mut w = World::new("true");
+        let tip = w.head();
+        let moved = w.move_run_branch();
+        let r = w.finish();
+        assert!(r.complete, "{r:?}");
+        let head = w.head();
+        assert_ne!(head, tip);
+        assert_eq!(git(&w.wt, &["rev-parse", "HEAD~1"]), moved);
+        assert_eq!(git(&w.root, &["rev-parse", RUN_BRANCH]), head);
+    }
+
+    #[test]
+    fn trf_06_a_land_lock_wait_timeout_reopens_the_worktree() {
+        let mut w = World::new("true");
+        let tip = w.head();
+        let moved = w.move_run_branch();
+        let held = repo_land_lock(&w.tools.evidence_root, &w.root, "T-9 of other (PID 1)").unwrap();
+        LOCK_WAIT.with(|c| c.set(Some(Duration::from_millis(200))));
+        let r = w.finish();
+        LOCK_WAIT.with(|c| c.set(None));
+        let (verdict, note) = land_note(&r);
+        assert_eq!(verdict, "not landed");
+        assert!(
+            note.starts_with("the land lock stayed held for the whole 0 s wait; run finish again"),
+            "{note}"
+        );
+        let row = w.row();
+        assert_eq!(row.status, "open", "no landing row is left");
+        assert_eq!(row.reason.as_deref(), Some(note.as_str()));
+        assert_eq!(w.head(), tip, "the rebase is undone");
+        assert_eq!(git(&w.root, &["rev-parse", RUN_BRANCH]), moved);
+        // The lock is free again: the next finish lands.
+        drop(held);
+        let r = w.finish();
+        assert!(r.complete, "{r:?}");
+        assert_eq!(w.row().status, "landed");
+    }
+
+    #[test]
+    fn trf_06_the_land_lock_is_stale_after_the_check_timeout_plus_10_min() {
+        let min = |m: u64| Duration::from_secs(m * 60);
+        assert_eq!(lock_stale_age(CHECK_TIMEOUT), min(30));
+        assert_eq!(lock_stale_age(min(120)), min(130));
+        assert_eq!(lock_stale_age(min(48 * 60)), MAX_CHECK_TIMEOUT + min(10));
+        let w = World::new("true");
+        let task_id = w.task_id();
+        set_check_timeout(&w.tools.evidence_root, &task_id, min(120)).unwrap();
+        let task = tasks::get(w.store.conn(), &task_id).unwrap();
+        let worker = workers::get(w.store.conn(), &w.worker).unwrap();
+        let cx = Ctx {
+            tools: &w.tools,
+            run: &w.run,
+            task: &task,
+            worker: &worker,
+            worktree: Some(w.row()),
+            dir: w.wt.clone(),
+            root: w.root.clone(),
+            evidence_dir: w.tools.evidence_root.join("ev"),
+            seq: 1,
+        };
+        let stale_after = |g: &crate::fsx::DirLockGuard| {
+            let owner: serde_json::Value =
+                serde_json::from_slice(&std::fs::read(g.path().join("owner")).unwrap()).unwrap();
+            owner["stale_after_s"].as_u64()
+        };
+        let g = land_lock(&cx).unwrap();
+        assert_eq!(stale_after(&g), Some(130 * 60), "the task's own timeout");
+        drop(g);
+        let g = repo_land_lock(&w.tools.evidence_root, &w.root, "triage").unwrap();
+        assert_eq!(
+            stale_after(&g),
+            Some(30 * 60),
+            "no task: the default timeout"
+        );
+    }
 
     #[test]
     fn a_land_that_waits_names_the_holder() {
         let dir = tempfile::tempdir().unwrap();
         let every = Duration::from_millis(50);
         let take = |holder: &str, timeout: Duration, notice: &mut dyn FnMut(&str)| {
-            take_lock(dir.path(), "land-x", holder, every, timeout, |h| notice(h))
+            let stale = Duration::from_secs(3600);
+            take_lock(dir.path(), "land-x", holder, stale, every, timeout, |h| {
+                notice(h)
+            })
         };
         let mut held = Some(take("T-3 of w1 (PID 7)", every, &mut |_| {}).unwrap());
         // No time left: the wait gives up and names nobody.
