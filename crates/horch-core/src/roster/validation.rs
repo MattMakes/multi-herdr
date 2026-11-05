@@ -2152,7 +2152,9 @@ w3-codex: sandbox is Claude only; agent codex cannot honour it";
             );
             let expected = match t.name.as_str() {
                 // agy exposes no skills, so its teammates can have no phase.
-                "smoke" | "judge" | "antigravity" | "spec-writer" | "ticket-writer" => None,
+                "smoke" | "judge" | "antigravity" | "spec-writer" | "ticket-writer"
+                | "skill-importer" | "intake-auditor" | "intake-analyst" | "intake-sanitizer"
+                | "intake-writer" | "intake-reviewer" => None,
                 "researcher" | "product-lead" | "designer" | "design-director" => {
                     Some(Phase::Research)
                 }
