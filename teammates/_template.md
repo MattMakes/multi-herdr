@@ -355,6 +355,21 @@ sandbox:
 #   `horch teammates --check` fails report without a sandbox: block.
 horch_access: full
 
+# spawn_only -> the teammates a pane of this teammate may `horch spawn`.
+#   Omit or []    = no limit.
+#   ["intake-*"]  = name globs (`*` any run, `?` 1 character). `horch spawn`
+#                   reads the caller's teammate from the brief of the worker
+#                   on the caller's pane, not from HORCH_ROLE, and refuses a
+#                   name that matches no glob, `--resume`, and a
+#                   HORCH_TEAMMATES_DIR other than the caller's brief's. The
+#                   spawned worker's brief names the caller's role as its
+#                   controller, so `horch tell` from a report pane reaches
+#                   only that role. For a controller that keeps
+#                   horch_access: full (see skill-importer.md).
+#   `horch teammates --check` fails an empty pattern, a path separator and
+#   a pattern that matches no teammate.
+spawn_only: []
+
 # mcp_servers -> --mcp-config '{"mcpServers": {...}}' --strict-mcp-config
 #   Omit the key = leave the operator's MCP configuration alone.
 #   {} (empty)   = exactly zero MCP servers. `--strict-mcp-config` is what

@@ -191,6 +191,12 @@ pub struct Teammate {
     /// worker process serves (`messaging::report`). `report` needs `sandbox:`.
     #[serde(default)]
     pub horch_access: HorchAccess,
+    /// Name globs (`intake-*`). When set, a pane of this teammate may run
+    /// `horch spawn` only for a teammate whose name matches 1 of them, and
+    /// never with `--resume` or its own `HORCH_TEAMMATES_DIR`. The spawned
+    /// worker reports to this pane's role. Empty: no limit.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub spawn_only: Vec<String>,
     /// Inline MCP server definitions. `None` leaves the operator's MCP
     /// configuration alone; `Some` renders `--mcp-config <json>
     /// --strict-mcp-config`, so `Some({})` means exactly zero MCP servers.
@@ -303,6 +309,7 @@ impl Default for Teammate {
             settings: None,
             sandbox: None,
             horch_access: HorchAccess::Full,
+            spawn_only: Vec::new(),
             mcp_servers: None,
             mcp_config_files: Vec::new(),
             args: Vec::new(),
@@ -320,6 +327,18 @@ impl Default for Teammate {
             compact_at: None,
             persona: String::new(),
         }
+    }
+}
+
+impl Teammate {
+    /// Whether a pane of this teammate may spawn `name`: always without
+    /// `spawn_only`, else only when `name` matches 1 of its globs.
+    pub fn may_spawn(&self, name: &str) -> bool {
+        self.spawn_only.is_empty()
+            || self
+                .spawn_only
+                .iter()
+                .any(|pattern| super::offer::glob_match(pattern, name))
     }
 }
 

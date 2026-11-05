@@ -271,6 +271,19 @@ impl Roster {
                 problems.push(format!("{who}: offer_when pattern '{pattern}' {problem}"));
             }
         }
+        for pattern in &t.spawn_only {
+            if let Some(problem) = super::offer::pattern_problem(pattern) {
+                problems.push(format!("{who}: spawn_only pattern '{pattern}' {problem}"));
+            } else if !self
+                .teammates
+                .keys()
+                .any(|name| super::offer::glob_match(pattern, name))
+            {
+                problems.push(format!(
+                    "{who}: spawn_only pattern '{pattern}' matches no teammate"
+                ));
+            }
+        }
         problems
     }
 
@@ -2609,6 +2622,44 @@ w3-codex: sandbox is Claude only; agent codex cannot honour it";
             "{:?}",
             r.check()
         );
+    }
+
+    /// `spawn_only` parses as a list of name globs, `may_spawn` matches a
+    /// name against them, and the check fails an empty pattern, a pattern
+    /// with a path separator and a pattern that matches no teammate.
+    #[test]
+    fn spawn_only_limits_the_names_and_its_patterns_are_checked() {
+        let text = "---\nname: t\nbrief_description: x\nagent: claude\n\
+                    spawn_only: [\"intake-*\"]\n---\nbody\n";
+        let t = parse_teammate("t", text).unwrap();
+        assert_eq!(t.spawn_only, ["intake-*"]);
+        assert!(t.may_spawn("intake-auditor"));
+        assert!(!t.may_spawn("opus"));
+        assert!(!t.may_spawn("intake"));
+        let open = Teammate::default();
+        assert!(open.may_spawn("opus"), "no spawn_only: every name");
+
+        let mut r = Roster::builtin().unwrap();
+        let sonnet = r.teammates.get_mut("sonnet").unwrap();
+        sonnet.spawn_only = vec!["intake-*".into()];
+        assert!(
+            !r.check().iter().any(|p| p.contains("spawn_only")),
+            "{:?}",
+            r.check()
+        );
+        let sonnet = r.teammates.get_mut("sonnet").unwrap();
+        sonnet.spawn_only = vec![" ".into(), "a/b".into(), "nobody-*".into()];
+        let problems = r.check();
+        for expected in [
+            "sonnet: spawn_only pattern ' ' is empty",
+            "sonnet: spawn_only pattern 'a/b' contains a path separator",
+            "sonnet: spawn_only pattern 'nobody-*' matches no teammate",
+        ] {
+            assert!(
+                problems.iter().any(|p| p.starts_with(expected)),
+                "{expected}: {problems:?}"
+            );
+        }
     }
 
     /// An agy teammate that sets a Google key would leave the operator's
