@@ -10,8 +10,8 @@ use super::operator::expand_home;
 use super::parser::{parse_base, parse_teammate};
 use super::repository::{BUILTIN_BASES, BUILTIN_TEAMMATES};
 use super::teammate::{
-    HarnessDefault, CONTEXT_MESSAGES_BASE, CONTEXT_MESSAGE_KEYS, CONTEXT_MESSAGE_PLACEHOLDERS,
-    CONTEXT_WINDOWS_BASE, HARNESS_DEFAULTS_BASE, HEADLESS_ONLY,
+    HarnessDefault, HorchAccess, CONTEXT_MESSAGES_BASE, CONTEXT_MESSAGE_KEYS,
+    CONTEXT_MESSAGE_PLACEHOLDERS, CONTEXT_WINDOWS_BASE, HARNESS_DEFAULTS_BASE, HEADLESS_ONLY,
 };
 use super::{
     effort_problem, reserved_tier, Base, ExecDecision, ExecRule, PermissionMode, Roster, Teammate,
@@ -552,6 +552,11 @@ impl Roster {
             for problem in crate::harness::claude::sandbox_problems(block) {
                 problems.push(format!("{who}: {problem}"));
             }
+        } else if t.horch_access == HorchAccess::Report {
+            problems.push(format!(
+                "{who}: horch_access: report needs a sandbox: block (without the \
+                 sandbox the pane reaches all of horch anyway)"
+            ));
         }
         problems
     }
@@ -2565,6 +2570,45 @@ w3-codex: sandbox is Claude only; agent codex cannot honour it";
                 "{expected}: {problems:?}"
             );
         }
+    }
+
+    /// `horch_access` parses as `full` (the default) or `report`, and
+    /// `report` without `sandbox:` fails the check.
+    #[test]
+    fn horch_access_report_needs_a_sandbox() {
+        let parse = |line: &str| {
+            let text =
+                format!("---\nname: t\nbrief_description: x\nagent: claude\n{line}---\nbody\n");
+            parse_teammate("t", &text)
+        };
+        assert_eq!(parse("").unwrap().horch_access, HorchAccess::Full);
+        assert_eq!(
+            parse("horch_access: full\n").unwrap().horch_access,
+            HorchAccess::Full
+        );
+        assert_eq!(
+            parse("horch_access: report\n").unwrap().horch_access,
+            HorchAccess::Report
+        );
+        assert!(parse("horch_access: none\n").is_err());
+
+        let mut r = Roster::builtin().unwrap();
+        let sonnet = r.teammates.get_mut("sonnet").unwrap();
+        sonnet.horch_access = HorchAccess::Report;
+        sonnet.sandbox = None;
+        let expected = "sonnet: horch_access: report needs a sandbox: block";
+        assert!(
+            r.check().iter().any(|p| p.starts_with(expected)),
+            "{:?}",
+            r.check()
+        );
+        let sonnet = r.teammates.get_mut("sonnet").unwrap();
+        sonnet.sandbox = Some(serde_json::Map::new());
+        assert!(
+            !r.check().iter().any(|p| p.contains("horch_access")),
+            "{:?}",
+            r.check()
+        );
     }
 
     /// An agy teammate that sets a Google key would leave the operator's

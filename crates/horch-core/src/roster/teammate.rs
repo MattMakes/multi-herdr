@@ -185,6 +185,12 @@ pub struct Teammate {
     /// rejects it elsewhere and rejects every escape hatch inside it.
     #[serde(default)]
     pub sandbox: Option<serde_json::Map<String, serde_json::Value>>,
+    /// What a sandboxed pane may reach of horch itself. `full` opens the
+    /// state root, the ledger folder and the sockets to the sandbox.
+    /// `report` opens only 1 socket for this pane, which the unsandboxed
+    /// worker process serves (`messaging::report`). `report` needs `sandbox:`.
+    #[serde(default)]
+    pub horch_access: HorchAccess,
     /// Inline MCP server definitions. `None` leaves the operator's MCP
     /// configuration alone; `Some` renders `--mcp-config <json>
     /// --strict-mcp-config`, so `Some({})` means exactly zero MCP servers.
@@ -296,6 +302,7 @@ impl Default for Teammate {
             worker_channel: false,
             settings: None,
             sandbox: None,
+            horch_access: HorchAccess::Full,
             mcp_servers: None,
             mcp_config_files: Vec::new(),
             args: Vec::new(),
@@ -325,6 +332,19 @@ impl Default for Teammate {
 pub struct OperatorSkills {
     pub dir: String,
     pub names: Vec<String>,
+}
+
+/// `horch_access:`: what a sandboxed pane may reach of horch itself.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum HorchAccess {
+    /// The state root, the ledger folder, the relay sockets and the herdr
+    /// socket: every `horch` command works in the pane.
+    #[default]
+    Full,
+    /// 1 per-pane report socket: only `horch ledger progress`, `horch tell`
+    /// to the report target and `horch done` work in the pane.
+    Report,
 }
 
 fn yes() -> bool {

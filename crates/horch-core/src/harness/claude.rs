@@ -19,7 +19,7 @@ use super::{
 };
 use crate::compaction::window::OperatorWindow;
 use crate::roster::{expand_home, operator_enabled_plugins, operator_status_line};
-use crate::roster::{HarnessDefault, Teammate};
+use crate::roster::{HarnessDefault, HorchAccess, Teammate};
 use crate::runtime::RuntimeContext;
 use crate::skills::Bundle;
 
@@ -177,6 +177,9 @@ pub(super) fn claude_command(
     push_plugin_args(&mut cmd, env, teammate)?;
     check_sandbox_host(env, teammate)?;
     push_settings_arg(&mut cmd, env, teammate)?;
+    if let Some(socket) = report_socket(env, teammate) {
+        cmd.env(crate::messaging::report::ENV, socket);
+    }
     push_session_args(&mut cmd, session);
     // Escape-hatch args sit right before the prompt: a variadic flag at the
     // end of `args` would eat it. `Roster::check` warns about that.
@@ -811,11 +814,22 @@ pub(crate) fn overlay_sandbox(
     Ok(())
 }
 
-/// Open horch's own paths to a sandboxed teammate's Bash, so `horch tell`,
-/// `horch done`, `horch ledger` and `horch spawn` work in the pane:
+/// The report socket of a sandboxed `horch_access: report` teammate.
+fn report_socket<'a>(env: &'a LaunchEnv, teammate: &Teammate) -> Option<&'a PathBuf> {
+    (teammate.sandbox.is_some() && teammate.horch_access == HorchAccess::Report)
+        .then_some(env.report_socket.as_ref())
+        .flatten()
+}
+
+/// Open horch's own paths to a sandboxed teammate's Bash. For
+/// `horch_access: full`, so `horch tell`, `horch done`, `horch ledger` and
+/// `horch spawn` work in the pane:
 /// - the state root and the ledger folder, for read and write;
 /// - Unix sockets under the state root (the channel relays) and
 ///   `$HERDR_SOCKET_PATH`, for connect.
+///
+/// For `horch_access: report`, only the pane's report socket, for connect
+/// (`docs/security/sandboxed-pane-horch-access.md`, C1 to C3).
 ///
 /// The paths come from the launch's resolved roots, so a moved root is the
 /// one opened. A launch with no `sandbox:` block, or whose settings carry
@@ -834,8 +848,13 @@ fn overlay_horch_paths(
     let sandbox = sandbox
         .as_object_mut()
         .context("sandbox must be an object")?;
-    let dirs = [&env.state_root, &env.ledger_dir];
-    let sockets = [&env.state_root, &env.herdr_socket];
+    let (dirs, sockets) = match teammate.horch_access {
+        HorchAccess::Full => (
+            [&env.state_root, &env.ledger_dir],
+            [&env.state_root, &env.herdr_socket],
+        ),
+        HorchAccess::Report => ([&None, &None], [&env.report_socket, &None]),
+    };
     let mut changed = false;
     for (section, key, paths) in [
         ("filesystem", "allowRead", dirs),
@@ -1349,6 +1368,85 @@ mod tests {
                 true
             );
         }
+    }
+
+    /// A `horch_access: report` launch opens only the pane's report socket:
+    /// no state root, ledger folder, relay or herdr socket. It sets
+    /// `HORCH_REPORT_SOCKET`. Through the skills overlay too.
+    #[test]
+    fn a_report_launch_opens_only_the_report_socket() {
+        let mut t = sandboxed(json!({
+            "filesystem": {"allowRead": ["/side"], "allowWrite": ["/side"]}
+        }));
+        t.horch_access = HorchAccess::Report;
+        let mut via_skills = t.clone();
+        via_skills.settings = Some(skills_settings(&t, None).unwrap().to_string());
+        let tmp = tempfile::tempdir().unwrap();
+        let [env, _] = sandbox_envs(tmp.path());
+        if !host_can_sandbox(&env) {
+            return;
+        }
+        let env = LaunchEnv {
+            report_socket: Some(PathBuf::from("/state/horch/report/r1.sock")),
+            ..env
+        };
+        for t in [&t, &via_skills] {
+            let built = super::super::launch::command_in(&env, t, Session::Fresh("id"), "go", None)
+                .unwrap();
+            let settings = settings_arg(&built);
+            let s = &settings["sandbox"];
+            assert_eq!(s["filesystem"]["allowRead"], json!(["/side"]));
+            assert_eq!(s["filesystem"]["allowWrite"], json!(["/side"]));
+            assert_eq!(
+                s["network"]["allowUnixSockets"],
+                json!(["/state/horch/report/r1.sock"])
+            );
+            let text = settings.to_string();
+            for path in ["/home/op/.horch", "herdr.sock", "\"/state/horch\""] {
+                assert!(!text.contains(path), "{path}: {text}");
+            }
+            let socket = built
+                .get_envs()
+                .find(|(k, _)| *k == "HORCH_REPORT_SOCKET")
+                .and_then(|(_, v)| v);
+            assert_eq!(
+                socket,
+                Some(std::ffi::OsStr::new("/state/horch/report/r1.sock"))
+            );
+        }
+    }
+
+    /// A `report` launch with no ledger record has no socket: it opens no
+    /// horch path at all and sets no `HORCH_REPORT_SOCKET`. A `full`
+    /// launch ignores a report socket.
+    #[test]
+    fn a_report_launch_without_a_socket_opens_nothing() {
+        let mut t = sandboxed(json!({}));
+        t.horch_access = HorchAccess::Report;
+        let tmp = tempfile::tempdir().unwrap();
+        let [env, _] = sandbox_envs(tmp.path());
+        if !host_can_sandbox(&env) {
+            return;
+        }
+        let built =
+            super::super::launch::command_in(&env, &t, Session::Fresh("id"), "go", None).unwrap();
+        let settings = settings_arg(&built);
+        assert_eq!(
+            settings["sandbox"]["network"]["allowUnixSockets"],
+            json!([])
+        );
+        assert!(!settings.to_string().contains("/state/horch"));
+        assert!(!built.get_envs().any(|(k, _)| k == "HORCH_REPORT_SOCKET"));
+
+        t.horch_access = HorchAccess::Full;
+        let env = LaunchEnv {
+            report_socket: Some(PathBuf::from("/state/horch/report/r1.sock")),
+            ..env
+        };
+        let built =
+            super::super::launch::command_in(&env, &t, Session::Fresh("id"), "go", None).unwrap();
+        assert!(!settings_arg(&built).to_string().contains("report/r1.sock"));
+        assert!(!built.get_envs().any(|(k, _)| k == "HORCH_REPORT_SOCKET"));
     }
 
     /// A launch with no `sandbox:` block gets no horch paths: its argv is

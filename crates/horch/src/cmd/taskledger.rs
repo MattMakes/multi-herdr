@@ -263,6 +263,17 @@ pub enum LedgerCommand {
     Path,
 }
 
+/// The report request of a ledger command in a `horch_access: report`
+/// pane: only `progress`. Every other ledger command is refused there.
+pub fn report_request(command: &LedgerCommand) -> Option<horch_core::messaging::report::Request> {
+    match command {
+        LedgerCommand::Progress { text } => {
+            Some(horch_core::messaging::report::Request::Progress { text: text.clone() })
+        }
+        _ => None,
+    }
+}
+
 #[derive(Subcommand)]
 pub enum WorktreeCommand {
     /// Create this worker's worktree (or get the task's existing one back).

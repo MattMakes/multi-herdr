@@ -329,8 +329,8 @@ settings:
 #   network.strictAllowlist: true and
 #   permissions.blockReadsOutsideWorkingDirectories: true (the Read tool is
 #   outside the sandbox, and this key closes the home directory to it and
-#   to Bash). Re-open paths with filesystem.allowRead. horch also adds its
-#   own state root and task ledger folder to filesystem.allowRead and
+#   to Bash). Re-open paths with filesystem.allowRead. With horch_access:
+#   full (below), horch also adds its own state root and task ledger folder to filesystem.allowRead and
 #   allowWrite, and the state root and $HERDR_SOCKET_PATH to
 #   network.allowUnixSockets, from the roots it resolves at launch, so `horch tell`,
 #   `horch done`, `horch ledger` and `horch spawn` work in the pane. Do not
@@ -339,6 +339,21 @@ settings:
 #   agent, a settings file, a value against a forced key, excludedCommands
 #   and filesystem.disabled. See app-release-preparer.md.
 sandbox:
+
+# horch_access -> what a sandboxed pane may reach of horch itself.
+#   full (default) = the paths above: every horch command works in the pane.
+#   report         = none of those paths. horch opens 1 Unix socket for this
+#                    pane only (<state root>/report/<record id>.sock), which
+#                    the unsandboxed `horch worker` parent serves, and sets
+#                    HORCH_REPORT_SOCKET. In the pane only `horch ledger
+#                    progress`, `horch tell <report target>` (the
+#                    orchestrator) and `horch done` work; horch refuses every
+#                    other command. The parent sets the role and record, not
+#                    the pane. For a role that reads hostile text (see
+#                    intake-auditor.md and
+#                    docs/security/sandboxed-pane-horch-access.md).
+#   `horch teammates --check` fails report without a sandbox: block.
+horch_access: full
 
 # mcp_servers -> --mcp-config '{"mcpServers": {...}}' --strict-mcp-config
 #   Omit the key = leave the operator's MCP configuration alone.

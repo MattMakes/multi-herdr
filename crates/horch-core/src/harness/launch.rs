@@ -71,6 +71,11 @@ pub struct LaunchEnv {
     /// `$HERDR_SOCKET_PATH`. A sandboxed Claude launch allows Bash to
     /// connect to it.
     pub herdr_socket: Option<PathBuf>,
+    /// The pane's report socket (`messaging::report::socket_path`), for a
+    /// `horch_access: report` launch with a ledger record. Such a launch
+    /// opens only this socket to Bash, and gets no state root, ledger
+    /// folder or other socket.
+    pub report_socket: Option<PathBuf>,
     /// `$CLAUDE_CONFIG_DIR`: where the operator's Claude user settings live.
     pub claude_config_dir: Option<PathBuf>,
     /// `RuntimeContext.paths.claude_managed_settings`. `None` reads no
@@ -104,6 +109,7 @@ impl LaunchEnv {
             state_root: Some(ctx.paths.state_root.clone()),
             ledger_dir: ctx.paths.ledger_db.parent().map(Path::to_path_buf),
             herdr_socket: ctx.inherited.herdr_socket_path.clone(),
+            report_socket: None,
             claude_config_dir: ctx.inherited.claude_config_dir.clone(),
             claude_managed_settings: Some(ctx.paths.claude_managed_settings.clone()),
             workdir: ctx.paths.cwd.clone(),
@@ -129,6 +135,7 @@ impl LaunchEnv {
             state_root: None,
             ledger_dir: None,
             herdr_socket: None,
+            report_socket: None,
             claude_config_dir: None,
             claude_managed_settings: None,
             workdir: Some(PathBuf::from("/workdir")),
@@ -661,6 +668,7 @@ fn launch_command(
         env.state_root = None;
     }
     env.compact_window = Some(launch.decision.clone());
+    env.report_socket = report_socket(ctx, req);
     let tagged_prompt = if req.teammate.agent == HarnessKind::Codex && !req.session.is_resume() {
         req.record.as_ref().map(|r| {
             format!(
@@ -687,6 +695,19 @@ fn launch_command(
         cmd.env(key, value);
     }
     Ok((cmd, teammate))
+}
+
+/// The report socket of a `horch_access: report` launch with a ledger
+/// record. The worker parent serves the same path.
+fn report_socket(ctx: &RuntimeContext, req: &LaunchRequest<'_>) -> Option<PathBuf> {
+    let target = req
+        .record
+        .as_ref()
+        .filter(|_| req.teammate.horch_access == crate::roster::HorchAccess::Report)?;
+    Some(crate::messaging::report::socket_path(
+        &ctx.paths.state_root,
+        target.record_id,
+    ))
 }
 
 /// Record the window decision on the launch's ledger record, if it has one.

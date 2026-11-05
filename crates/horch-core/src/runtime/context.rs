@@ -350,6 +350,11 @@ pub struct RuntimeContext {
     pub settings: Settings,
     pub inherited: Inherited,
     pub worker: Option<WorkerEnv>,
+    /// `HORCH_REPORT_SOCKET`: this process runs in a `horch_access: report`
+    /// pane. The CLI then sends only `ledger progress`, `tell` and `done`
+    /// to this socket and refuses every other command
+    /// (`messaging::report`).
+    pub report_socket: Option<PathBuf>,
 }
 
 impl RuntimeContext {
@@ -424,6 +429,7 @@ impl RuntimeContext {
             settings,
             inherited,
             worker: WorkerEnv::from_env(env),
+            report_socket: nonempty_path(env, crate::messaging::report::ENV),
         })
     }
 

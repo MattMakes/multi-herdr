@@ -43,8 +43,11 @@ disallowed_tools:
   - "Bash(./*)"
   - "Bash(source *)"
   - "Bash(chmod *)"
-# No network at all: no network.allowedDomains. horch adds its own state
-# root, ledger folder and sockets at launch; do not list them here.
+# No network at all: no network.allowedDomains.
+# report: horch opens no state root, ledger folder or herdr socket to this
+# role, only 1 report socket for its pane (progress, tell, done).
+# See docs/security/sandboxed-pane-horch-access.md.
+horch_access: report
 # `B` = ~/.local/state/skill-intake, fixed in fleet mode (spec section 9.3).
 sandbox:
   filesystem:

@@ -7,7 +7,7 @@ use std::path::Path;
 
 use horch_core::harness::launch;
 use horch_core::harness::{HarnessKind, LaunchEnv, Session};
-use horch_core::roster::{Roster, Teammate};
+use horch_core::roster::{HorchAccess, Roster, Teammate};
 use horch_core::runtime::{MapEnv, RuntimeContext};
 use serde_json::{json, Value};
 
@@ -264,6 +264,10 @@ fn launch_env(home: &Path) -> LaunchEnv {
         .with("HOME", &home.to_string_lossy())
         .with("PATH", &bin.to_string_lossy())
         .with(
+            "HERDR_SOCKET_PATH",
+            &home.join("herdr.sock").to_string_lossy(),
+        )
+        .with(
             "HORCH_CLAUDE_MANAGED_SETTINGS",
             &home.join("no-managed-settings.json").to_string_lossy(),
         );
@@ -301,4 +305,58 @@ fn t26_every_intake_teammate_launches_sandboxed() {
             }
         }
     }
+}
+
+/// The launched `--settings` of `t` in `env`.
+fn launched_settings(env: &LaunchEnv, t: &Teammate) -> Value {
+    let cmd =
+        launch::command_with_skills_in(env, t, Session::Unmanaged, "PROMPT", None, None).unwrap();
+    let args: Vec<String> = cmd
+        .get_args()
+        .map(|a| a.to_string_lossy().into_owned())
+        .collect();
+    let i = args.iter().position(|a| a == "--settings").unwrap();
+    serde_json::from_str(&args[i + 1]).unwrap()
+}
+
+/// T-20: the 5 roles have `horch_access: report`. Their launched settings
+/// hold no state root, ledger folder, relay socket or herdr socket: only
+/// the pane's report socket. skill-importer keeps `full` and all 4 grants.
+#[test]
+fn t20_the_roles_launch_with_only_the_report_socket() {
+    let home = tempfile::tempdir().unwrap();
+    let mut env = launch_env(home.path());
+    let state_root = env.state_root.clone().unwrap();
+    let ledger_dir = env.ledger_dir.clone().unwrap();
+    let herdr = env.herdr_socket.clone().unwrap();
+    let socket = state_root.join("report").join("r1.sock");
+    env.report_socket = Some(socket.clone());
+    let r = Roster::builtin().unwrap();
+    for name in ROLES.iter().map(|r| r.name) {
+        let t = r.require(name).unwrap();
+        assert_eq!(t.horch_access, HorchAccess::Report, "{name}");
+        let s = &launched_settings(&env, t)["sandbox"];
+        assert_eq!(
+            s["network"]["allowUnixSockets"],
+            json!([socket.to_string_lossy()]),
+            "{name}"
+        );
+        for key in ["allowRead", "allowWrite"] {
+            let launched = strings(&s["filesystem"][key]);
+            for path in [&state_root, &ledger_dir] {
+                let path = path.to_string_lossy().into_owned();
+                assert!(!launched.contains(&path), "{name}: {key} {path}");
+            }
+        }
+        let text = s.to_string();
+        assert!(!text.contains(&*herdr.to_string_lossy()), "{name}: {text}");
+    }
+    let importer = r.require("skill-importer").unwrap();
+    assert_eq!(importer.horch_access, HorchAccess::Full);
+    let s = &launched_settings(&env, importer)["sandbox"];
+    let sockets = strings(&s["network"]["allowUnixSockets"]);
+    for path in [&state_root, &herdr] {
+        assert!(sockets.contains(&path.to_string_lossy().into_owned()));
+    }
+    assert!(!sockets.contains(&socket.to_string_lossy().into_owned()));
 }

@@ -28,6 +28,7 @@ use horch_core::messaging::delivery;
 use horch_core::messaging::mail::Mail;
 use horch_core::messaging::mailbox::{Mailbox, PaneState, RoleEntry};
 use horch_core::messaging::message;
+use horch_core::messaging::report;
 use horch_core::prompts;
 use horch_core::runtime::RuntimeContext;
 use horch_core::skills::catalog::marketplace::GitError;
@@ -40,6 +41,19 @@ use horch_core::workspace::herdr::Herdr;
 
 use super::context::{self, Sources};
 use crate::output;
+
+/// Report mode: a `horch_access: report` pane sends `request` to its
+/// report socket. `None` (any other command) is refused before anything
+/// else runs. The worker parent runs the request with its own identity.
+pub fn report_mode(socket: &std::path::Path, request: Option<report::Request>) -> Result<()> {
+    let Some(request) = request else {
+        bail!(
+            "this pane has horch_access: report. Only `horch ledger progress <text>`, \
+             `horch tell <report target> <text>` and `horch done <summary>` work here"
+        );
+    };
+    report::send(socket, &request)
+}
 
 /// Deliver `text` into the pane registered as `role`.
 ///
