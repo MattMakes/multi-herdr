@@ -26,6 +26,8 @@ Fix G11 and G12 (D13, D16).
 
 Amendment (report 19): ticket 19 added `refuse_over_plan` in `crates/horch/src/cmd/spawn.rs`. Add 1 test: after a worker is reaped and its task requeued, `horch spawn <persona> --replaces <worker>` is not refused. Fix the guard if it is.
 
+Amendment (report 13): `horch ledger run gate` (in `crates/horch-core/src/taskledger/runs.rs`, which you own) makes a detached worktree `<root>/.worktrees/_gate-<slug>` with no ledger row, so nothing cleans it. Record it as a `scratch` worktree row, reuse it on the next gate, and remove it at `run close`. Add 1 test whose name starts with `trf_19_`.
+
 ## Done when
 
 Both tests pass.

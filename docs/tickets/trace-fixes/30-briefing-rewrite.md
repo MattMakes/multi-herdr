@@ -46,6 +46,8 @@ Amendment (report 12): tell the orchestrator to pass `horch ledger run new <slug
 
 Amendment (report 17): document `horch tell <role> --answers <question-id> "<text>"` and the `[orchestrator re #<id>]` line in the orchestrator briefing. A plain tell closes no question.
 
+Amendment (report 13): document `horch ledger run gate [--check <cmd>]` and `horch ledger run close --pr-declined <reason>` in the orchestrator briefing: close needs a settled run, a passing gate on the current tip, and a merged or declined PR.
+
 ## Done when
 
 TRF-46 and the golden tests pass.
