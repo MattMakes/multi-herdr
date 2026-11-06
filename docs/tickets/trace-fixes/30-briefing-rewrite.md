@@ -52,6 +52,8 @@ Amendment (reports 16, 18): `horch ledger finish` now spawns code-sweep reviewer
 
 Amendment (report 22): `horch ledger cancel` always stops the worker now; `--stop` is hidden and does nothing. Remove `--stop` from every briefing and doc, and say that cancel and `run close --abandon` stop the worker.
 
+Amendment (report 20): a task-less spawn joins only the active run of its own workspace. A run with no workspace id (made by an older horch outside herdr) needs `horch spawn <persona> --run <slug>`. Say this in the briefing and in the CHANGELOG line.
+
 ## Done when
 
 TRF-46 and the golden tests pass.
