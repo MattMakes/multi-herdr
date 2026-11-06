@@ -225,9 +225,39 @@ fn steps(
     let report = run_finish(ctx, store, wid, rereview)?;
     stop_superseded(ctx, store, &report.superseded_workers);
     if !report.queued_reviews.is_empty() {
+        spawn_reviewers_of(ctx, store, wid, &report);
         nudge_run_of(ctx, store, wid)?;
     }
     Ok(report)
+}
+
+/// horch spawns the queued reviewers itself (TRF-24, D11). Only from a
+/// herdr pane: a spawn splits a pane, so elsewhere the orchestrator gets
+/// the startable wake as before. An error is printed, never returned.
+fn spawn_reviewers_of(
+    ctx: &RuntimeContext,
+    store: &Store,
+    wid: &str,
+    report: &finish::FinishReport,
+) {
+    if ctx.herdr.pane.is_none() {
+        return;
+    }
+    let spawned = workers::get(store.conn(), wid).and_then(|w| {
+        let run = runs::get(store.conn(), &w.run_id.context("this worker has no run")?)?;
+        super::taskledger_spawn::spawn_reviewers(
+            ctx,
+            store,
+            &run,
+            &report.task,
+            &report.queued_reviews,
+            &super::taskledger_spawn::CliSpawn,
+        )
+    });
+    match spawned {
+        Ok(note) => eprintln!("horch ledger: {note}"),
+        Err(e) => eprintln!("horch ledger: horch did not spawn the reviewers: {e:#}"),
+    }
 }
 
 /// The steps in this process; the exit code is 1 while a step has not
