@@ -49,6 +49,9 @@ pub struct Worker {
     pub ended_at: Option<String>,
     /// The handoff file of a worker that ended `handed_off` (C4).
     pub handoff_path: Option<String>,
+    /// The task this worker was spawned to claim (TRF-24). The claim takes
+    /// it first; no other worker claims it while this worker is live.
+    pub target_task_id: Option<String>,
 }
 
 impl Worker {
@@ -99,6 +102,7 @@ impl Worker {
             claimed_at: r.get("claimed_at")?,
             ended_at: r.get("ended_at")?,
             handoff_path: r.get("handoff_path")?,
+            target_task_id: r.get("target_task_id")?,
         })
     }
 }
@@ -166,6 +170,8 @@ pub struct NewWorker {
     pub previous_worker_id: Option<String>,
     pub resumed_from_session: Option<String>,
     pub legacy_record_id: Option<String>,
+    /// The task this worker is spawned to claim (TRF-24).
+    pub target_task_id: Option<String>,
 }
 
 /// Insert a worker in state `spawning` and return its id.
@@ -176,12 +182,22 @@ pub fn insert(conn: &Connection, new: &NewWorker) -> Result<String> {
             bail!("worker {prev} belongs to another run");
         }
     }
+    if let Some(target) = &new.target_task_id {
+        let run: Option<String> = optional(conn.query_row(
+            "SELECT run_id FROM tasks WHERE task_id = ?1",
+            [target],
+            |r| r.get(0),
+        ))?;
+        if run.as_deref() != Some(new.run_id.as_str()) {
+            bail!("task {target} is not a task of this run");
+        }
+    }
     let id = util::new_id();
     conn.execute(
         "INSERT INTO workers (worker_id, run_id, kind, persona, role, harness, model, effort,
             host, workspace_id, pane_id, previous_worker_id, resumed_from_session,
-            legacy_record_id, status, origin, spawned_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)",
+            legacy_record_id, status, origin, spawned_at, target_task_id)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)",
         params![
             id,
             new.run_id,
@@ -200,6 +216,7 @@ pub fn insert(conn: &Connection, new: &NewWorker) -> Result<String> {
             WorkerStatus::Spawning.as_str(),
             Origin::Native.as_str(),
             util::now(),
+            new.target_task_id,
         ],
     )?;
     Ok(id)

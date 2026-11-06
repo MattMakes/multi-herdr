@@ -18,6 +18,10 @@ use super::taskledger::{project_root, RunArg};
 /// The fixed task of a worker spawned with no task text.
 pub const CLAIM_TASK: &str = "Run horch ledger claim. Read the ticket file it prints and follow it exactly. If it prints that there is no task for you, send the line it prints, then end your turn.";
 
+/// The environment variable that names the task a spawned worker claims
+/// first (TRF-24). Reviewer auto-spawn sets it on its `horch spawn` child.
+pub const CLAIM_TARGET_ENV: &str = "HORCH_CLAIM_TARGET";
+
 /// A spawn's worker row.
 pub struct LedgerSpawn {
     store: std::cell::RefCell<Store>,
@@ -172,10 +176,18 @@ fn insert_row(
                 workspace_id: ctx.herdr.workspace.as_ref().map(|w| w.as_str().to_string()),
                 previous_worker_id: args.replaces.clone(),
                 resumed_from_session: args.resume.clone(),
+                target_task_id: claim_target(),
                 ..Default::default()
             },
         )
     })
+}
+
+/// The task [`CLAIM_TARGET_ENV`] names, if it is set.
+fn claim_target() -> Option<String> {
+    std::env::var(CLAIM_TARGET_ENV)
+        .ok()
+        .filter(|v| !v.trim().is_empty())
 }
 
 /// Say that a spawn with task text runs outside the active runs.
@@ -277,23 +289,25 @@ pub enum ReviewSpawn {
     Failed(String),
 }
 
-/// Spawns 1 claiming worker of a persona in a run.
+/// Spawns 1 claiming worker of a persona in a run, reserved for 1 task.
 pub trait SpawnReviewer {
-    fn spawn(&self, persona: &str, run: &Run) -> ReviewSpawn;
+    fn spawn(&self, persona: &str, run: &Run, task_id: &str) -> ReviewSpawn;
 }
 
 /// The normal spawn path: `horch spawn <persona> --run <slug>` as a child
 /// process, so the spawn gate decides and its lines stay off this stdout.
+/// [`CLAIM_TARGET_ENV`] reserves the review task for the new worker.
 pub struct CliSpawn;
 
 impl SpawnReviewer for CliSpawn {
-    fn spawn(&self, persona: &str, run: &Run) -> ReviewSpawn {
+    fn spawn(&self, persona: &str, run: &Run, task_id: &str) -> ReviewSpawn {
         let exe = match std::env::current_exe() {
             Ok(exe) => exe,
             Err(e) => return ReviewSpawn::Failed(format!("finding the horch binary: {e}")),
         };
         let out = std::process::Command::new(exe)
             .args(["spawn", persona, "--run", &run.slug])
+            .env(CLAIM_TARGET_ENV, task_id)
             .stdin(std::process::Stdio::null())
             .output();
         match out {
@@ -341,7 +355,8 @@ pub fn spawn_outcome(code: Option<i32>, stdout: &str, stderr: &str) -> ReviewSpa
 }
 
 /// Spawn 1 claiming worker for each queued review task of `of` through
-/// `spawner`, then write 1 NOTE wake that names the reviewers. A refused or
+/// `spawner`, then write 1 NOTE wake that names the reviewers. Each worker
+/// is reserved for its review task and claims it first. A refused or
 /// failed spawn leaves its task queued and says so in the NOTE. Returns
 /// the NOTE text.
 pub fn spawn_reviewers(
@@ -363,12 +378,17 @@ pub fn spawn_reviewers(
             .or_else(|| t.primary_persona.clone())
             .unwrap_or_default();
         let short = t.short();
-        let item = match spawner.spawn(&persona, run) {
+        let item = match spawner.spawn(&persona, run, id) {
             ReviewSpawn::Spawned { role, substituted } => {
                 spawned += 1;
+                let fallback = format!(
+                    "{role} claims {short} first. If {short} is not startable at the claim, {role} claims the next task of {persona}."
+                );
                 match substituted {
-                    Some(s) => format!("{role} ({persona}) is spawned for {short}. {s}"),
-                    None => format!("{role} ({persona}) is spawned for {short}."),
+                    Some(s) => {
+                        format!("{role} ({persona}) is spawned for {short}. {s} {fallback}")
+                    }
+                    None => format!("{role} ({persona}) is spawned for {short}. {fallback}"),
                 }
             }
             ReviewSpawn::Refused(line) => format!("{short} stays queued. {line}"),
@@ -408,6 +428,7 @@ mod trf_24_tests {
     struct Fake {
         outcomes: RefCell<Vec<ReviewSpawn>>,
         personas: RefCell<Vec<String>>,
+        targets: RefCell<Vec<String>>,
     }
 
     impl Fake {
@@ -415,13 +436,15 @@ mod trf_24_tests {
             Fake {
                 outcomes: RefCell::new(outcomes),
                 personas: RefCell::new(Vec::new()),
+                targets: RefCell::new(Vec::new()),
             }
         }
     }
 
     impl SpawnReviewer for Fake {
-        fn spawn(&self, persona: &str, _run: &Run) -> ReviewSpawn {
+        fn spawn(&self, persona: &str, _run: &Run, task_id: &str) -> ReviewSpawn {
             self.personas.borrow_mut().push(persona.to_string());
+            self.targets.borrow_mut().push(task_id.to_string());
             self.outcomes.borrow_mut().remove(0)
         }
     }
@@ -514,6 +537,11 @@ mod trf_24_tests {
             *fake.personas.borrow(),
             ["codex-reviewer", "codex-reviewer", "opus-reviewer"]
         );
+        assert_eq!(
+            *fake.targets.borrow(),
+            reviews,
+            "each spawn names its review"
+        );
         let rows = outbox(&store, &run);
         assert_eq!(rows.len(), 1, "{rows:?}");
         assert_eq!(rows[0].0, "startable");
@@ -529,9 +557,13 @@ mod trf_24_tests {
         ] {
             let item = format!("{role} (");
             assert!(note.contains(&item), "{note}");
+            let s = short(&store, id);
+            assert!(note.contains(&format!("spawned for {s}.")), "{note}");
             assert!(
-                note.contains(&format!("spawned for {}.", short(&store, id))),
-                "{note}"
+                note.contains(&format!(
+                    "{role} claims {s} first. If {s} is not startable at the claim"
+                )),
+                "the NOTE says what the worker claims: {note}"
             );
         }
         assert!(

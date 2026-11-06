@@ -472,7 +472,8 @@ CREATE TABLE outbox (
     created_at TEXT NOT NULL,
     delivered_at TEXT
 );
-CREATE INDEX outbox_undelivered ON outbox(created_at) WHERE delivered_at IS NULL;",
+CREATE INDEX outbox_undelivered ON outbox(created_at) WHERE delivered_at IS NULL;
+ALTER TABLE workers ADD COLUMN target_task_id TEXT REFERENCES tasks(task_id);",
         work_kind = WorkKind::check("work_kind"),
         review_mode = ReviewMode::check("review_mode"),
         event = OutboxEvent::check("event"),

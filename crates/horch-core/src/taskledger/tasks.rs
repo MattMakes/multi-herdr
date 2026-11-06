@@ -972,12 +972,21 @@ fn check_claimer(w: &Worker) -> Result<(String, String)> {
     Ok((run_id, persona))
 }
 
-/// The next startable task of `persona`. A replacement takes its
-/// predecessor's task first.
+/// The next startable task of `persona`. A worker spawned for a target
+/// task takes that task first, if it is still startable (TRF-24). A
+/// replacement takes its predecessor's task first. No worker takes a task
+/// that another live, unclaimed worker was spawned for.
 fn pick_task(conn: &Connection, w: &Worker, run_id: &str, persona: &str) -> Result<Option<Task>> {
     let board = Board::load(conn, run_id)?;
     let startable = board.startable();
-    let mine = |t: &&Task| t.claimable_by.as_deref() == Some(persona);
+    if let Some(target) = &w.target_task_id {
+        if let Some(t) = startable.iter().find(|t| &t.task_id == target) {
+            return Ok(Some((*t).clone()));
+        }
+    }
+    let reserved = reserved_for_others(conn, w, run_id)?;
+    let mine =
+        |t: &&Task| t.claimable_by.as_deref() == Some(persona) && !reserved.contains(&t.task_id);
     let predecessor = predecessor_task(conn, w)?;
     let first = |pred: Option<&str>| {
         startable
@@ -989,6 +998,18 @@ fn pick_task(conn: &Connection, w: &Worker, run_id: &str, persona: &str) -> Resu
     Ok(first(predecessor.as_deref())
         .or_else(|| first(None))
         .cloned())
+}
+
+/// The tasks that other workers of `run_id` were spawned for. A reservation
+/// lasts while its worker is live and has not claimed (TRF-24): it ends
+/// when the worker ends or claims, so no dead worker holds a task.
+fn reserved_for_others(conn: &Connection, w: &Worker, run_id: &str) -> Result<BTreeSet<String>> {
+    Ok(workers::of_run(conn, run_id)?
+        .into_iter()
+        .filter(|o| o.worker_id != w.worker_id && o.claimed_at.is_none())
+        .filter(|o| o.status().is_ok_and(WorkerStatus::is_live))
+        .filter_map(|o| o.target_task_id)
+        .collect())
 }
 
 /// The task a replaced worker held, if `w` replaces one.
@@ -1635,6 +1656,80 @@ mod tests {
     }
 
     const TEXT: &str = "# 01: A\n\n<!-- horch-ticket: 1 -->\n**Persona:** primary `dev`\n";
+
+    /// A new worker of `persona` in `run`, spawned for `target`.
+    fn spawn_for(store: &mut Store, run: &Run, persona: &str, target: Option<&str>) -> String {
+        let new = NewWorker {
+            run_id: run.run_id.clone(),
+            persona: persona.into(),
+            target_task_id: target.map(str::to_string),
+            ..Default::default()
+        };
+        store.immediate(|tx| workers::insert(tx, &new)).unwrap()
+    }
+
+    /// The task id `worker` claims, or `None` for no task.
+    fn claim_id(store: &mut Store, worker: &str) -> Option<String> {
+        match store.immediate(|tx| claim(tx, worker)).unwrap() {
+            ClaimOutcome::Claimed(c) => Some(c.task.task_id),
+            ClaimOutcome::NoTask { .. } => None,
+        }
+    }
+
+    /// Review 31 I-08: an older startable task of `codex-reviewer` and then
+    /// 1 code-sweep review. The worker spawned for the review claims the
+    /// review, and no other worker takes it while that worker is live.
+    #[test]
+    fn trf_24_auto_spawned_reviewer_claims_its_review_not_an_older_task() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut store, run) = store_with_run(dir.path());
+        let add_task = |store: &mut Store, title: &str, kind: TaskKind| {
+            let mut new = NewTask::work(title, &format!("tickets/{title}.md"), "codex-reviewer");
+            new.kind = kind;
+            store
+                .immediate(|tx| add(tx, &run, &new, Actor::Orchestrator))
+                .unwrap()
+                .task_id
+        };
+        let older = add_task(&mut store, "older", TaskKind::Work);
+        let review = add_task(&mut store, "review", TaskKind::Review);
+
+        let reviewer = spawn_for(&mut store, &run, "codex-reviewer", Some(&review));
+        // A plain worker claims first: it skips the reserved review.
+        let plain = spawn_for(&mut store, &run, "codex-reviewer", None);
+        assert_eq!(claim_id(&mut store, &plain), Some(older.clone()));
+        let late = spawn_for(&mut store, &run, "codex-reviewer", None);
+        assert_eq!(claim_id(&mut store, &late), None, "the review is reserved");
+        assert_eq!(claim_id(&mut store, &reviewer), Some(review.clone()));
+
+        // A reservation ends with its worker: the task is claimable again.
+        let review2 = add_task(&mut store, "review2", TaskKind::Review);
+        let dead = spawn_for(&mut store, &run, "codex-reviewer", Some(&review2));
+        store
+            .conn()
+            .execute(
+                "UPDATE workers SET status = ?2 WHERE worker_id = ?1",
+                params![dead, WorkerStatus::NoTask.as_str()],
+            )
+            .unwrap();
+        let next = spawn_for(&mut store, &run, "codex-reviewer", None);
+        assert_eq!(claim_id(&mut store, &next), Some(review2));
+
+        // A target that is no longer startable: the claim goes on as before.
+        let other = add_task(&mut store, "other", TaskKind::Work);
+        let missed = spawn_for(&mut store, &run, "codex-reviewer", Some(&review));
+        assert_eq!(claim_id(&mut store, &missed), Some(other));
+
+        // A target of another run is refused at spawn.
+        let (mut store2, run2) = store_with_run(&dir.path().join("b"));
+        let new = NewWorker {
+            run_id: run2.run_id.clone(),
+            persona: "codex-reviewer".into(),
+            target_task_id: Some(older),
+            ..Default::default()
+        };
+        assert!(store2.immediate(|tx| workers::insert(tx, &new)).is_err());
+    }
 
     #[test]
     fn trf_12_add_stores_the_snapshot_and_its_sha_and_a_claim_gives_it_back() {
