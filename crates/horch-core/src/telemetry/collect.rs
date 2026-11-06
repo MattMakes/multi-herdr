@@ -175,6 +175,9 @@ pub struct Collector {
     pub info: CollectorInfo,
     /// Each ledger's last good records, read again only when it changes.
     last_good: BTreeMap<PathBuf, LedgerSnapshot>,
+    /// The task ledger whose worker rows are laid over each ledger's
+    /// records (TRF-44). `None` reads the JSON ledgers only.
+    task_ledger: Option<PathBuf>,
     /// Where each session's inputs are, kept across ticks.
     places: HashMap<(String, String), Place>,
     /// Each session's inputs as they were when last polled.
@@ -250,6 +253,7 @@ impl Collector {
             QuotaEnv::from_context(ctx),
         )?;
         let mut c = c.with_faults(&ctx.settings.faults);
+        c.task_ledger = Some(ctx.paths.ledger_db.clone());
         use crate::runtime::EnvSource;
         c.print_timing = crate::runtime::ProcessEnv
             .var("HORCH_TELEMETRY_TIMING")
@@ -289,6 +293,7 @@ impl Collector {
                 started_at: clock::stamp(now),
             },
             last_good: BTreeMap::new(),
+            task_ledger: None,
             places: HashMap::new(),
             polled: HashMap::new(),
             searches: 0,
@@ -315,8 +320,25 @@ impl Collector {
     pub fn ledgers(&mut self) -> Vec<Record> {
         self.refresh_ledgers();
         (self.last_good.values())
-            .flat_map(|l| l.records.iter().cloned())
+            .flat_map(|l| self.overlaid(&l.records).into_owned())
             .collect()
+    }
+
+    /// 1 ledger's records with the task ledger's worker rows of its project
+    /// laid over them ([`execution_store::overlay_task_ledger`]). Without a
+    /// task ledger file, or a record that names its project, they are
+    /// borrowed as read.
+    fn overlaid<'r>(&self, records: &'r [Record]) -> std::borrow::Cow<'r, [Record]> {
+        let db = self.task_ledger.as_deref().filter(|db| db.is_file());
+        let project = records.iter().find_map(|r| r.project.as_deref());
+        match db.zip(project) {
+            Some((db, project)) => {
+                let mut out = records.to_vec();
+                execution_store::overlay_task_ledger(&mut out, db, Path::new(project));
+                std::borrow::Cow::Owned(out)
+            }
+            None => std::borrow::Cow::Borrowed(records),
+        }
     }
 
     /// The rollups of 1 project, 1 per window of [`WINDOWS`], keyed like
@@ -366,7 +388,11 @@ impl Collector {
         let start = Instant::now();
         self.refresh_ledgers();
         let ledgers = std::mem::take(&mut self.last_good);
-        let records: Vec<&Record> = ledgers.values().flat_map(|l| &l.records).collect();
+        let lists: Vec<_> = ledgers
+            .values()
+            .map(|l| self.overlaid(&l.records))
+            .collect();
+        let records: Vec<&Record> = lists.iter().flat_map(|l| l.iter()).collect();
         self.timing.lap("ledgers", start);
         let snapshot = self.tick_on(&records, now);
         self.last_good = ledgers;

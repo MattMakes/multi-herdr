@@ -128,13 +128,8 @@ pub fn sessions_filtered(
         live,
         role,
     };
-    let store = ExecutionStore::open_in(ctx)?;
     let caller = caller_workspace(ctx);
-    let records: Vec<_> = store
-        .read()?
-        .into_iter()
-        .filter(|r| (all || r.round_id.is_none()) && filter.matches(caller.as_deref(), r))
-        .collect();
+    let records = session_records(ctx, all, &filter, caller.as_deref())?;
     let herdr = horch_core::workspace::herdr::Herdr::with_bin(&ctx.bins.harness.herdr);
     let mut panes = std::collections::BTreeMap::new();
     for workspace in records.iter().filter_map(|r| r.workspace_id.as_deref()) {
@@ -197,6 +192,21 @@ pub fn sessions_filtered(
         }
     }
     Ok(())
+}
+
+/// The records `horch sessions` shows: the JSON ledger with the task
+/// ledger's worker rows laid over it (TRF-44), filtered.
+fn session_records(
+    ctx: &RuntimeContext,
+    all: bool,
+    filter: &SessionFilter<'_>,
+    caller: Option<&str>,
+) -> Result<Vec<horch_core::execution::legacy::Record>> {
+    Ok(ExecutionStore::open_in(ctx)?
+        .read()?
+        .into_iter()
+        .filter(|r| (all || r.round_id.is_none()) && filter.matches(caller, r))
+        .collect())
 }
 
 // Legacy plumbing retains its project-wide output.
@@ -283,5 +293,145 @@ fn write(ledger: &SessionLedger, command: LegacyCommand) -> Result<()> {
         LegacyCommand::Note { key, text } => ledger.note(&key, &text),
         LegacyCommand::Done { key, summary } => ledger.done(&key, &summary),
         _ => unreachable!("run routes only the write subcommands here"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use horch_core::taskledger::model::Actor;
+    use horch_core::taskledger::runs::{self, NewRun};
+    use horch_core::taskledger::tasks::{self, NewTask};
+    use horch_core::taskledger::workers::{self, NewWorker};
+
+    const LEDGER: &str = r#"[
+  {
+    "record_id": "r1",
+    "session_id": "s1",
+    "agent": "claude",
+    "tier": "opus",
+    "model": "opus",
+    "role": "opus-1",
+    "status": "working",
+    "task": "Run horch ledger claim.",
+    "history": [
+      {"at": "2026-11-05T10:00:00Z", "event": "spawned", "text": "Run horch ledger claim."},
+      {"at": "2026-11-05T10:05:00Z", "event": "note", "text": "claimed"}
+    ],
+    "created_at": "2026-11-05T10:00:00Z",
+    "updated_at": "2026-11-05T10:05:00Z",
+    "workspace_id": "w1"
+  }
+]"#;
+
+    /// The `horch sessions` text before TRF-44, pinned.
+    const PINNED: &str = "[working] opus (opus-1)  session=s1  record=r1
+  agent=claude model=opus  updated=2026-11-05T10:05:00Z
+  task: Run horch ledger claim.
+  note @ 2026-11-05T10:05:00Z: claimed
+
+";
+
+    fn ctx(dir: &std::path::Path) -> RuntimeContext {
+        let project = dir.join("repo");
+        std::fs::create_dir_all(&project).unwrap();
+        let ctx = RuntimeContext::from_env(
+            &horch_core::runtime::MapEnv::new(project.to_str().unwrap())
+                .with_exe("/opt/horch/bin/horch")
+                .with("HORCH_STATE_DIR", dir.join("state").to_str().unwrap())
+                .with("HORCH_PROJECT_DIR", project.to_str().unwrap())
+                .with(
+                    "HORCH_LEDGER_DB",
+                    dir.join("ledger.sqlite3").to_str().unwrap(),
+                ),
+        )
+        .unwrap();
+        let store = ExecutionStore::open_in(&ctx).unwrap();
+        std::fs::create_dir_all(store.path().parent().unwrap()).unwrap();
+        std::fs::write(store.path(), LEDGER).unwrap();
+        ctx
+    }
+
+    fn text(ctx: &RuntimeContext) -> String {
+        let records = session_records(ctx, false, &SessionFilter::default(), Some("w1")).unwrap();
+        ExecutionStore::render_text(&records)
+    }
+
+    #[test]
+    fn trf_44_sessions_text_is_pinned_without_task_ledger_rows() {
+        let dir = tempfile::tempdir().unwrap();
+        let ctx = ctx(dir.path());
+        assert_eq!(text(&ctx), PINNED);
+        // A task ledger with no run of this project changes nothing.
+        horch_core::taskledger::open(&ctx).unwrap();
+        assert_eq!(text(&ctx), PINNED);
+    }
+
+    #[test]
+    fn trf_44_sessions_shows_a_ledger_worker_with_its_claimed_task() {
+        let dir = tempfile::tempdir().unwrap();
+        let ctx = ctx(dir.path());
+        let root = ctx.paths.project().unwrap();
+        let mut store = horch_core::taskledger::open(&ctx).unwrap();
+        let other = store
+            .immediate(|tx| {
+                let run = runs::create(
+                    tx,
+                    &root,
+                    &NewRun {
+                        slug: "r".into(),
+                        ..Default::default()
+                    },
+                )?;
+                let task = tasks::add(
+                    tx,
+                    &run,
+                    &NewTask::work("Fix the parser", "t.md", "opus"),
+                    Actor::Orchestrator,
+                )?;
+                let linked = workers::insert(
+                    tx,
+                    &NewWorker {
+                        run_id: run.run_id.clone(),
+                        persona: "opus".into(),
+                        role: Some("opus-1".into()),
+                        workspace_id: Some("w1".into()),
+                        legacy_record_id: Some("r1".into()),
+                        ..Default::default()
+                    },
+                )?;
+                let other = workers::insert(
+                    tx,
+                    &NewWorker {
+                        run_id: run.run_id.clone(),
+                        persona: "codex".into(),
+                        role: Some("codex-2".into()),
+                        harness: Some("codex".into()),
+                        workspace_id: Some("w1".into()),
+                        ..Default::default()
+                    },
+                )?;
+                tx.execute(
+                    "UPDATE workers SET status = 'working', task_id = ?2 WHERE worker_id = ?1",
+                    rusqlite::params![linked, task.task_id],
+                )?;
+                tx.execute(
+                    "UPDATE workers SET status = 'claiming' WHERE worker_id = ?1",
+                    [&other],
+                )?;
+                Ok(other)
+            })
+            .unwrap();
+        let shown = text(&ctx);
+        assert!(shown.contains("record=r1\n"), "{shown}");
+        assert!(shown.contains("task: T-1: Fix the parser\n"), "{shown}");
+        assert!(!shown.contains("Run horch ledger claim."), "{shown}");
+        assert!(
+            shown.contains(&format!(
+                "codex (codex-2)  session=not-yet-known  record={other}"
+            )),
+            "{shown}"
+        );
+        assert!(shown.contains("agent=codex"), "{shown}");
     }
 }

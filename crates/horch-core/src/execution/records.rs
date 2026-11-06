@@ -21,7 +21,7 @@ use crate::roster::Phase;
 use anyhow::{bail, Result};
 
 /// Placeholder task for a worker spawned with nothing assigned yet.
-const IDLE_TASK: &str = "(idle - awaiting assignment)";
+pub(crate) const IDLE_TASK: &str = "(idle - awaiting assignment)";
 
 /// Task an orchestrator record carries. It has no task of its own.
 pub const ORCHESTRATING_TASK: &str = "(orchestrating)";
@@ -64,16 +64,21 @@ pub struct NewRecord<'a> {
 impl SessionLedger {
     /// The ledger for the context's project, under its state root. Records
     /// inserted here default to that project and the context's workspace.
+    /// Reads go through the context's task ledger (TRF-44).
     pub fn open_in(ctx: &crate::runtime::RuntimeContext) -> Result<Self> {
-        let project = ctx.paths.project()?.to_string_lossy().into_owned();
-        Ok(Self::for_project(&ctx.paths.state_root, &project)
-            .with_project(Some(project))
-            .with_workspace(ctx.herdr.workspace.as_ref().map(|w| w.to_string())))
+        let root = ctx.paths.project()?;
+        let project = root.to_string_lossy().into_owned();
+        Ok(Self {
+            store: ExecutionStore::open(&ctx.paths, &root),
+            project: Some(project),
+            workspace_id: ctx.herdr.workspace.as_ref().map(|w| w.to_string()),
+        })
     }
 
-    /// The project [`SessionLedger::insert`] fills into a record without one.
-    pub(crate) fn with_project(mut self, project: Option<String>) -> Self {
-        self.project = project;
+    /// Read the worker rows of `project`'s runs in the task ledger `db` over
+    /// the JSON records ([`crate::execution::store::overlay_task_ledger`]).
+    pub fn with_task_ledger(mut self, db: &Path, project: &Path) -> Self {
+        self.store = self.store.with_task_ledger(db, project);
         self
     }
 

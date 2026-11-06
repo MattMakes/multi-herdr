@@ -1011,6 +1011,12 @@ pub fn pane_launch(
     }
     let roster = launch_roster(ctx, kind, teammates_dir)?;
     let teammate = launch_teammate(&roster, kind, model)?;
+    if kind.is_fleet() {
+        let model = model.or(teammate.model.as_deref());
+        if let Err(e) = record_orchestrator_harness(ctx, mailbox.workspace_id(), &teammate, model) {
+            eprintln!("horch: the task ledger did not record the orchestrator harness: {e:#}");
+        }
+    }
     let prompt = briefing_for(kind, &roster, &teammate, role)?;
     let exec_rules = exec_rules_for(kind, &roster);
     let (session, workdir) = session_for(&identity, ctx)?;
@@ -1098,6 +1104,30 @@ fn claim_launch_run(
         orchestrator::Claimed::Unchanged => {}
     }
     Ok(())
+}
+
+/// Write the harness, and the model when it is missing, on every live
+/// orchestrator row of `workspace` that has no harness (TRF-44): the session
+/// readers show it. No ledger file writes nothing. Returns the rows changed.
+fn record_orchestrator_harness(
+    ctx: &RuntimeContext,
+    workspace: &str,
+    teammate: &Teammate,
+    model: Option<&str>,
+) -> Result<usize> {
+    let Some(store) = horch_core::taskledger::open_existing(ctx)? else {
+        return Ok(0);
+    };
+    let live =
+        horch_core::taskledger::sql_words::list(horch_core::taskledger::sql_words::WORKERS_LIVE);
+    Ok(store.conn().execute(
+        &format!(
+            "UPDATE workers SET harness = ?2, model = coalesce(model, ?3)
+             WHERE kind = 'orchestrator' AND workspace_id = ?1 AND harness IS NULL
+               AND status IN ({live})"
+        ),
+        rusqlite::params![workspace, teammate.agent.as_str(), model],
+    )?)
 }
 
 /// The briefing of a pane.
@@ -2001,6 +2031,67 @@ mod tests {
                 .stopped_at,
             None
         );
+    }
+
+    #[test]
+    fn trf_44_a_fleet_launch_writes_the_harness_on_its_orchestrator_rows() {
+        let dir = tempfile::tempdir().unwrap();
+        let ctx = ledger_ctx(dir.path());
+        let root = dir.path().join("repo");
+        std::fs::create_dir_all(&root).unwrap();
+        let roster = Roster::builtin().unwrap();
+        let teammate =
+            launch_teammate(&roster, PaneKind::FleetCodexOrchestrator, Some("gpt-x")).unwrap();
+        // No ledger: nothing is written, and no ledger is created.
+        assert_eq!(
+            record_orchestrator_harness(&ctx, "w1", &teammate, Some("gpt-x")).unwrap(),
+            0
+        );
+        assert!(!ctx.paths.ledger_db.exists());
+
+        let mut store = horch_core::taskledger::open(&ctx).unwrap();
+        let (live, ended) = store
+            .immediate(|tx| {
+                use horch_core::taskledger::model::WorkerKind;
+                use horch_core::taskledger::workers::{self, NewWorker};
+                let run = horch_core::taskledger::runs::create(
+                    tx,
+                    &root,
+                    &horch_core::taskledger::runs::NewRun {
+                        slug: "r1".into(),
+                        workspace_id: Some("w1".into()),
+                        ..Default::default()
+                    },
+                )?;
+                let row = |tx: &rusqlite::Transaction, status: &str| {
+                    let id = workers::insert(
+                        tx,
+                        &NewWorker {
+                            run_id: run.run_id.clone(),
+                            kind: Some(WorkerKind::Orchestrator),
+                            persona: "orchestrator".into(),
+                            role: Some("orchestrator".into()),
+                            workspace_id: Some("w1".into()),
+                            ..Default::default()
+                        },
+                    )?;
+                    tx.execute(
+                        "UPDATE workers SET status = ?2 WHERE worker_id = ?1",
+                        rusqlite::params![id, status],
+                    )?;
+                    anyhow::Ok(id)
+                };
+                Ok((row(tx, "working")?, row(tx, "stopped")?))
+            })
+            .unwrap();
+        assert_eq!(
+            record_orchestrator_harness(&ctx, "w1", &teammate, Some("gpt-x")).unwrap(),
+            1
+        );
+        let get = |id: &str| horch_core::taskledger::workers::get(store.conn(), id).unwrap();
+        assert_eq!(get(&live).harness.as_deref(), Some("codex"));
+        assert_eq!(get(&live).model.as_deref(), Some("gpt-x"));
+        assert_eq!(get(&ended).harness, None);
     }
 
     #[test]

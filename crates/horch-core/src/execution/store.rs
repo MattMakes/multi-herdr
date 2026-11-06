@@ -309,9 +309,16 @@ pub fn from_execution(e: &Execution) -> LedgerRecordV1 {
 }
 
 /// A project's executions on disk.
+///
+/// Reads come from the task ledger (TRF-44): when a ledger file is attached,
+/// [`ExecutionStore::read`] lays that project's worker rows over the JSON
+/// records ([`overlay_task_ledger`]). Writes still go to the JSON file only;
+/// ticket 29 removes them.
 #[derive(Debug, Clone)]
 pub struct ExecutionStore {
     path: PathBuf,
+    /// The task ledger and the project root its runs are under.
+    task_ledger: Option<(PathBuf, PathBuf)>,
 }
 
 impl ExecutionStore {
@@ -319,27 +326,48 @@ impl ExecutionStore {
     pub fn for_project(state_root: impl AsRef<Path>, project: &str) -> Self {
         Self {
             path: state_root.as_ref().join(format!("{}.json", slug(project))),
+            task_ledger: None,
         }
     }
 
-    /// The store for `project` under the state root of `paths`.
+    /// The store for `project` under the state root of `paths`, reading
+    /// through the task ledger of `paths`.
     pub fn open(paths: &Paths, project: &Path) -> Self {
         Self::for_project(&paths.state_root, &project.to_string_lossy())
+            .with_task_ledger(&paths.ledger_db, project)
     }
 
-    /// The store for the context's state root and project.
+    /// The store for the context's state root and project, reading through
+    /// the context's task ledger.
     pub fn open_in(ctx: &crate::runtime::RuntimeContext) -> Result<Self> {
-        let project = ctx.paths.project()?.to_string_lossy().into_owned();
-        Ok(Self::for_project(&ctx.paths.state_root, &project))
+        Ok(Self::open(&ctx.paths, &ctx.paths.project()?))
+    }
+
+    /// Read the worker rows of `project`'s runs in the task ledger `db` over
+    /// the JSON records. A ledger file that does not exist adds nothing.
+    pub fn with_task_ledger(mut self, db: &Path, project: &Path) -> Self {
+        self.task_ledger = Some((db.to_path_buf(), project.to_path_buf()));
+        self
     }
 
     pub fn path(&self) -> &Path {
         &self.path
     }
 
-    /// All records, oldest write order preserved. An absent or empty file reads
-    /// as an empty ledger, matching the bash `[]` default.
+    /// All records, oldest write order preserved, with the task ledger's
+    /// worker rows laid over them ([`overlay_task_ledger`]). An absent or
+    /// empty file reads as an empty ledger, matching the bash `[]` default.
     pub fn read(&self) -> Result<Vec<LedgerRecordV1>> {
+        let mut records = self.read_file()?;
+        if let Some((db, project)) = &self.task_ledger {
+            overlay_task_ledger(&mut records, db, project);
+        }
+        Ok(records)
+    }
+
+    /// The JSON file's records as written: what a read-modify-write starts
+    /// from.
+    fn read_file(&self) -> Result<Vec<LedgerRecordV1>> {
         let raw = std::fs::read_to_string(&self.path).unwrap_or_default();
         if raw.trim().is_empty() {
             return Ok(Vec::new());
@@ -404,7 +432,7 @@ impl ExecutionStore {
             .to_string_lossy();
         let _guard = DirLock::acquire(root, &name, LOCK_STALE_AFTER, LOCK_TIMEOUT)
             .with_context(|| format!("locking ledger {}", self.path.display()))?;
-        let mut records = self.read()?;
+        let mut records = self.read_file()?;
         let out = f(&mut records)?;
         self.write(&mut records)?;
         Ok(out)
@@ -592,7 +620,7 @@ impl ExecutionStore {
                 && crate::clock::parse(&r.updated_at).is_some_and(|t| now - t >= ABANDONED_AFTER)
         };
         // Read first: most spawns find nothing, and then write nothing.
-        if !self.read()?.iter().any(abandoned) {
+        if !self.read_file()?.iter().any(abandoned) {
             return Ok(Vec::new());
         }
         let at = crate::clock::stamp(now);
@@ -723,5 +751,514 @@ fn render_records(records: &[LedgerRecordV1], out: &mut String) {
             ));
         }
         out.push('\n');
+    }
+}
+
+/// 1 worker row of the task ledger, with the task it claimed.
+struct LedgerWorker {
+    worker: crate::taskledger::workers::Worker,
+    /// `T-<seq>: <title>` of the claimed task.
+    task: Option<String>,
+}
+
+/// The worker rows of every run of `project` in the task ledger `db`, newest
+/// first. A ledger file that does not exist, or that does not open or read
+/// right now, gives none: a session read never fails on the task ledger.
+fn ledger_workers(db: &Path, project: &Path) -> Vec<LedgerWorker> {
+    if !db.is_file() {
+        return Vec::new();
+    }
+    let read = || -> Result<Vec<LedgerWorker>> {
+        let store = crate::taskledger::Store::open(db)?;
+        let mut stmt = store.conn().prepare(
+            "SELECT w.*, t.seq AS task_seq, t.title AS task_title
+             FROM workers w
+             JOIN runs r ON r.run_id = w.run_id
+             JOIN projects p ON p.project_id = r.project_id
+             LEFT JOIN tasks t ON t.task_id = w.task_id
+             WHERE p.root = ?1
+             ORDER BY w.spawned_at DESC, w.rowid DESC",
+        )?;
+        let root = crate::taskledger::runs::root_key(project);
+        let rows = stmt
+            .query_map([root], |row| {
+                let seq: Option<i64> = row.get("task_seq")?;
+                let title: Option<String> = row.get("task_title")?;
+                Ok(LedgerWorker {
+                    worker: crate::taskledger::workers::Worker::from_row(row)?,
+                    task: seq.zip(title).map(|(s, t)| format!("T-{s}: {t}")),
+                })
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
+    };
+    read().unwrap_or_default()
+}
+
+/// The typed status of a worker row.
+fn worker_state(w: &crate::taskledger::workers::Worker) -> ExecutionStatus {
+    use crate::taskledger::model::WorkerStatus as W;
+    let reason = || w.end_reason.clone().unwrap_or_else(|| w.status.clone());
+    match W::parse(&w.status) {
+        Ok(W::Spawning | W::Starting) => ExecutionStatus::Starting,
+        Ok(W::Claiming | W::Working) => ExecutionStatus::Running,
+        Ok(W::Done | W::NoTask) => ExecutionStatus::Done,
+        Ok(W::LaunchFailed) => ExecutionStatus::LaunchFailed {
+            stage: LaunchStage::Run,
+            reason: reason(),
+        },
+        Ok(W::Stopped) => ExecutionStatus::Failed {
+            failure: FailureKind::Cancelled { reason: reason() },
+        },
+        Ok(W::Incomplete) | Err(_) => ExecutionStatus::Failed {
+            failure: FailureKind::AgentExited {
+                code: w.exit_code.and_then(|c| i32::try_from(c).ok()),
+            },
+        },
+    }
+}
+
+/// The newest of a worker row's stamps.
+fn worker_updated(w: &crate::taskledger::workers::Worker) -> Option<String> {
+    [
+        &w.spawned_at,
+        &w.started_at,
+        &w.claimed_at,
+        &w.last_progress_at,
+        &w.ended_at,
+    ]
+    .into_iter()
+    .flatten()
+    .max()
+    .cloned()
+}
+
+/// The JSON record a worker row stands for: the record it names, else the
+/// newest unclaimed record of its kind, role, workspace and liveness. An
+/// unnamed row matches only a record that no other row names.
+fn matching_record(
+    records: &[LedgerRecordV1],
+    w: &crate::taskledger::workers::Worker,
+    taken: &std::collections::HashSet<usize>,
+    named: &std::collections::HashSet<String>,
+) -> Option<usize> {
+    if let Some(id) = &w.legacy_record_id {
+        return records.iter().rposition(|r| &r.record_id == id);
+    }
+    let kind = if w.kind == KIND_ORCHESTRATOR {
+        KIND_ORCHESTRATOR
+    } else {
+        KIND_WORKER
+    };
+    let live = worker_state(w).is_live();
+    records
+        .iter()
+        .enumerate()
+        .filter(|(i, r)| {
+            !taken.contains(i)
+                && !named.contains(&r.record_id)
+                && r.kind == kind
+                && Some(r.role.as_str()) == w.role.as_deref()
+                && r.workspace_id.is_some()
+                && r.workspace_id == w.workspace_id
+                && r.execution_status().is_live() == live
+        })
+        .max_by(|(_, a), (_, b)| a.updated_at.cmp(&b.updated_at))
+        .map(|(i, _)| i)
+}
+
+/// Lay a worker row over its JSON record. The row wins for what it records:
+/// the claimed task, liveness, session, pane and end. The record keeps what
+/// only it has: history, skills, routing and the window decision.
+fn overlay_record(r: &mut LedgerRecordV1, lw: &LedgerWorker) {
+    let w = &lw.worker;
+    if let Some(task) = &lw.task {
+        r.task = task.clone();
+    }
+    let state = worker_state(w);
+    if state.is_live() != r.execution_status().is_live() {
+        r.set_state(state.clone());
+    }
+    if state.is_terminal() {
+        if r.finished_at.is_none() {
+            r.finished_at = w.ended_at.clone();
+        }
+    } else {
+        r.finished_at = None;
+    }
+    let fill = |field: &mut Option<String>, value: &Option<String>| {
+        if value.is_some() {
+            *field = value.clone();
+        }
+    };
+    fill(&mut r.session_id, &w.session_id);
+    fill(&mut r.pane_id, &w.pane_id);
+    fill(&mut r.workspace_id, &w.workspace_id);
+    if r.effort.is_none() {
+        r.effort = w.effort.clone();
+    }
+    if r.agent.is_empty() {
+        r.agent = w.harness.clone().unwrap_or_default();
+    }
+    if r.model.is_empty() {
+        r.model = w.model.clone().unwrap_or_default();
+    }
+    if r.exit_code.is_none() {
+        r.exit_code = w.exit_code.and_then(|c| i32::try_from(c).ok());
+    }
+    if let (Some(summary), Some(at)) = (&w.summary, &w.ended_at) {
+        if !r
+            .history
+            .iter()
+            .any(|h| h.event == "done" && &h.text == summary)
+        {
+            r.history.push(HistoryEntry {
+                at: at.clone(),
+                event: "done".to_string(),
+                text: summary.clone(),
+            });
+        }
+    }
+    if let Some(at) = worker_updated(w).filter(|at| *at > r.updated_at) {
+        r.updated_at = at;
+    }
+}
+
+/// The record of a worker row that has no JSON record: its id is the
+/// worker id. An orchestrator row without a harness takes the harness of
+/// the newest JSON orchestrator record of its workspace.
+fn synthesized_record(lw: &LedgerWorker, records: &[LedgerRecordV1]) -> LedgerRecordV1 {
+    let w = &lw.worker;
+    let orchestrator = w.kind == KIND_ORCHESTRATOR;
+    let agent = w.harness.clone().or_else(|| {
+        records
+            .iter()
+            .filter(|r| r.is_orchestrator() && orchestrator && r.workspace_id == w.workspace_id)
+            .max_by(|a, b| a.updated_at.cmp(&b.updated_at))
+            .map(|r| r.agent.clone())
+    });
+    let spawned = w.spawned_at.clone().unwrap_or_default();
+    let mut r = LedgerRecordV1 {
+        record_id: w.worker_id.clone(),
+        session_id: w.session_id.clone(),
+        agent: agent.unwrap_or_default(),
+        tier: w.persona.clone().unwrap_or_default(),
+        model: w.model.clone().unwrap_or_default(),
+        effort: w.effort.clone(),
+        role: w.label().to_string(),
+        task: lw.task.clone().unwrap_or_else(|| {
+            if orchestrator {
+                crate::execution::records::ORCHESTRATING_TASK.to_string()
+            } else {
+                crate::execution::records::IDLE_TASK.to_string()
+            }
+        }),
+        history: vec![HistoryEntry {
+            at: spawned.clone(),
+            event: "spawned".to_string(),
+            text: format!("task-ledger worker {}", w.worker_id),
+        }],
+        created_at: spawned.clone(),
+        updated_at: spawned,
+        kind: if orchestrator {
+            KIND_ORCHESTRATOR
+        } else {
+            KIND_WORKER
+        }
+        .to_string(),
+        workspace_id: w.workspace_id.clone(),
+        pane_id: w.pane_id.clone(),
+        ..LedgerRecordV1::default()
+    };
+    r.set_state(worker_state(w));
+    overlay_record(&mut r, lw);
+    r
+}
+
+/// Lay the task ledger's worker rows for `project` over `records` (TRF-44,
+/// D10 step 1). A row that names a record, or matches one by kind, role and
+/// workspace, updates it in place ([`overlay_record`]). A row without a
+/// record is added after them ([`synthesized_record`]). Without the ledger
+/// file the records stay as read.
+pub fn overlay_task_ledger(records: &mut Vec<LedgerRecordV1>, db: &Path, project: &Path) {
+    let rows = ledger_workers(db, project);
+    if rows.is_empty() {
+        return;
+    }
+    let named: std::collections::HashSet<String> = rows
+        .iter()
+        .filter_map(|lw| lw.worker.legacy_record_id.clone())
+        .collect();
+    let mut taken = std::collections::HashSet::new();
+    let mut added = Vec::new();
+    for lw in &rows {
+        match matching_record(records, &lw.worker, &taken, &named) {
+            Some(i) if taken.insert(i) => overlay_record(&mut records[i], lw),
+            // A second row of 1 record (a resume) leaves it to the newest.
+            Some(_) => {}
+            None => added.push(synthesized_record(lw, records)),
+        }
+    }
+    added.reverse();
+    records.extend(added);
+}
+
+#[cfg(test)]
+mod trf_44_tests {
+    use super::*;
+    use crate::execution::records::{NewRecord, SessionLedger};
+    use crate::taskledger::model::Actor;
+    use crate::taskledger::runs::{self, NewRun};
+    use crate::taskledger::tasks::{self, NewTask};
+    use crate::taskledger::workers::{self, NewWorker};
+    use crate::taskledger::Store;
+
+    struct Fixture {
+        _tmp: tempfile::TempDir,
+        project: PathBuf,
+        db: PathBuf,
+        ledger: SessionLedger,
+    }
+
+    fn fixture() -> Fixture {
+        let tmp = tempfile::tempdir().unwrap();
+        let project = tmp.path().join("repo");
+        std::fs::create_dir_all(&project).unwrap();
+        let db = tmp.path().join("ledger.sqlite3");
+        let ledger =
+            SessionLedger::for_project(tmp.path().join("state"), project.to_str().unwrap())
+                .with_task_ledger(&db, &project);
+        Fixture {
+            _tmp: tmp,
+            project,
+            db,
+            ledger,
+        }
+    }
+
+    fn add_record(f: &Fixture, id: &str, role: &str, task: &str) {
+        f.ledger
+            .add(NewRecord {
+                record_id: id,
+                agent: "claude",
+                tier: "opus",
+                model: "opus",
+                role,
+                session_id: None,
+                task,
+                phase: None,
+            })
+            .unwrap();
+        f.ledger
+            .store()
+            .update_key(id, |r| r.workspace_id = Some("w1".into()))
+            .unwrap();
+    }
+
+    /// A run with task T-1 and 1 worker row; `set` is the SQL `SET` list
+    /// for the row, with `?2` the task id.
+    fn add_worker(f: &Fixture, new: NewWorker, set: &str) -> String {
+        let mut store = Store::open(&f.db).unwrap();
+        store
+            .immediate(|tx| {
+                let run = match runs::of_project(tx, &f.project)?.into_iter().next() {
+                    Some(run) => run,
+                    None => runs::create(
+                        tx,
+                        &f.project,
+                        &NewRun {
+                            slug: "r1".into(),
+                            ..Default::default()
+                        },
+                    )?,
+                };
+                let task = match tasks::resolve(tx, &run.run_id, "T-1") {
+                    Ok(t) => t,
+                    Err(_) => tasks::add(
+                        tx,
+                        &run,
+                        &NewTask::work("Fix the parser", "t.md", "opus"),
+                        Actor::Orchestrator,
+                    )?,
+                };
+                let id = workers::insert(
+                    tx,
+                    &NewWorker {
+                        run_id: run.run_id.clone(),
+                        workspace_id: Some("w1".into()),
+                        ..new
+                    },
+                )?;
+                let sql = format!("UPDATE workers SET {set} WHERE worker_id = ?1");
+                if sql.contains("?2") {
+                    tx.execute(&sql, rusqlite::params![id, task.task_id])?;
+                } else {
+                    tx.execute(&sql, [&id])?;
+                }
+                Ok(id)
+            })
+            .unwrap()
+    }
+
+    fn worker(role: &str, record: Option<&str>) -> NewWorker {
+        NewWorker {
+            persona: "opus".into(),
+            role: Some(role.into()),
+            legacy_record_id: record.map(str::to_string),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn trf_44_without_the_ledger_file_records_read_as_written() {
+        let f = fixture();
+        add_record(&f, "r1", "opus-1", "Run horch ledger claim.");
+        assert!(!f.db.exists());
+        let read = f.ledger.read().unwrap();
+        let raw = f.ledger.store().read_file().unwrap();
+        assert_eq!(
+            ExecutionStore::render_json(&read).unwrap(),
+            ExecutionStore::render_json(&raw).unwrap()
+        );
+        assert!(!f.db.exists(), "a read must not create the task ledger");
+    }
+
+    #[test]
+    fn trf_44_a_linked_worker_shows_its_claimed_task() {
+        let f = fixture();
+        add_record(&f, "r1", "opus-1", "Run horch ledger claim.");
+        add_worker(
+            &f,
+            worker("opus-1", Some("r1")),
+            "status = 'working', task_id = ?2, session_id = 's-1'",
+        );
+        let records = f.ledger.read().unwrap();
+        assert_eq!(records.len(), 1, "{records:?}");
+        assert_eq!(records[0].task, "T-1: Fix the parser");
+        assert_eq!(records[0].session_id.as_deref(), Some("s-1"));
+        assert!(records[0].execution_status().is_live());
+        let text = ExecutionStore::render_text(&records);
+        assert!(text.contains("task: T-1: Fix the parser"), "{text}");
+        // The JSON file keeps what the writers wrote.
+        assert_eq!(
+            f.ledger.store().read_file().unwrap()[0].task,
+            "Run horch ledger claim."
+        );
+    }
+
+    #[test]
+    fn trf_44_an_ended_worker_row_ends_its_record_with_its_summary() {
+        let f = fixture();
+        add_record(&f, "r1", "opus-1", "Run horch ledger claim.");
+        add_worker(
+            &f,
+            worker("opus-1", Some("r1")),
+            "status = 'done', task_id = ?2, summary = 'fixed it', ended_at = '2099-01-01T00:00:00Z'",
+        );
+        let r = f.ledger.get("r1").unwrap();
+        assert_eq!(r.status, "done");
+        assert_eq!(r.finished_at.as_deref(), Some("2099-01-01T00:00:00Z"));
+        assert!(r
+            .history
+            .iter()
+            .any(|h| h.event == "done" && h.text == "fixed it"));
+    }
+
+    #[test]
+    fn trf_44_a_worker_row_without_a_record_is_a_session() {
+        let f = fixture();
+        let id = add_worker(
+            &f,
+            NewWorker {
+                harness: Some("codex".into()),
+                model: Some("gpt".into()),
+                ..worker("codex-1", None)
+            },
+            "status = 'working', task_id = ?2",
+        );
+        let records = f.ledger.read().unwrap();
+        assert_eq!(records.len(), 1, "{records:?}");
+        let r = &records[0];
+        assert_eq!(r.record_id, id);
+        assert_eq!((r.tier.as_str(), r.role.as_str()), ("opus", "codex-1"));
+        assert_eq!((r.agent.as_str(), r.model.as_str()), ("codex", "gpt"));
+        assert_eq!(r.task, "T-1: Fix the parser");
+        assert!(r.execution_status().is_live());
+        assert_eq!(
+            f.ledger
+                .live_for_role("codex-1", Some("w1"))
+                .unwrap()
+                .unwrap()
+                .record_id,
+            id
+        );
+    }
+
+    #[test]
+    fn trf_44_an_orchestrator_row_is_its_record_and_shows_its_harness() {
+        let f = fixture();
+        f.ledger
+            .insert(LedgerRecordV1 {
+                record_id: "o1".into(),
+                agent: "claude".into(),
+                tier: "orchestrator".into(),
+                model: "opus".into(),
+                role: "orchestrator".into(),
+                task: crate::execution::records::ORCHESTRATING_TASK.into(),
+                kind: KIND_ORCHESTRATOR.into(),
+                workspace_id: Some("w1".into()),
+                ..LedgerRecordV1::default()
+            })
+            .unwrap();
+        add_worker(
+            &f,
+            NewWorker {
+                kind: Some(crate::taskledger::model::WorkerKind::Orchestrator),
+                persona: "orchestrator".into(),
+                ..worker("orchestrator", None)
+            },
+            "status = 'working'",
+        );
+        let records = f.ledger.read().unwrap();
+        assert_eq!(records.len(), 1, "{records:?}");
+        assert_eq!(records[0].record_id, "o1");
+        assert_eq!(records[0].agent, "claude");
+    }
+
+    #[test]
+    fn trf_44_an_orchestrator_row_without_a_record_takes_a_harness() {
+        let f = fixture();
+        f.ledger
+            .insert(LedgerRecordV1 {
+                record_id: "o-old".into(),
+                agent: "codex".into(),
+                role: "orchestrator".into(),
+                kind: KIND_ORCHESTRATOR.into(),
+                workspace_id: Some("w1".into()),
+                ..LedgerRecordV1::default()
+            })
+            .unwrap();
+        f.ledger.done("o-old", "superseded").unwrap();
+        let orchestrator = || NewWorker {
+            kind: Some(crate::taskledger::model::WorkerKind::Orchestrator),
+            persona: "orchestrator".into(),
+            ..worker("orchestrator", None)
+        };
+        // The stopped row is the done record; the working row has none.
+        add_worker(
+            &f,
+            orchestrator(),
+            "status = 'stopped', spawned_at = '2000-01-01T00:00:00Z'",
+        );
+        let newer = add_worker(
+            &f,
+            orchestrator(),
+            "status = 'working', spawned_at = '2099-01-01T00:00:00Z'",
+        );
+        let records = f.ledger.read().unwrap();
+        assert_eq!(records.len(), 2, "{records:?}");
+        let synth = records.iter().find(|r| r.record_id == newer).unwrap();
+        assert!(synth.is_orchestrator());
+        assert_eq!(synth.agent, "codex");
     }
 }
