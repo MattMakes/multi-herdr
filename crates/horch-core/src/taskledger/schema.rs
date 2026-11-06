@@ -866,13 +866,14 @@ mod v7_tests {
         assert_eq!(v, VERSION);
         assert_eq!(dump(conn, Some(&before)), before, "no row changed");
 
-        let task: Vec<(
+        type TaskRow = (
             Option<String>,
             Option<String>,
             Option<String>,
             Option<String>,
             i64,
-        )> = conn
+        );
+        let task: Vec<TaskRow> = conn
             .prepare(
                 "SELECT work_kind, review_mode, ticket_snapshot, ticket_sha, check_none FROM tasks",
             )
