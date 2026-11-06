@@ -71,7 +71,7 @@ pub enum LegacyCommand {
         #[arg(long)]
         json: bool,
     },
-    /// Print the ledger file path.
+    /// Print the task ledger file that holds the session records.
     Path,
 }
 
@@ -252,11 +252,25 @@ fn read(ctx: &RuntimeContext, ledger: &SessionLedger, command: LegacyCommand) ->
         LegacyCommand::Get { key } => print_record(ledger, &key),
         LegacyCommand::List { json } => print_list(ctx, json, true),
         LegacyCommand::Path => {
-            output::println(&ledger.path().display().to_string());
+            let [db, note] = path_lines(ledger);
+            output::println(&db);
+            eprintln!("{note}");
             Ok(())
         }
         _ => unreachable!("run routes only the print subcommands here"),
     }
+}
+
+/// What `horch ledger legacy path` prints: the task ledger file on stdout,
+/// and a note on stderr that the old JSON file is only read.
+fn path_lines(ledger: &SessionLedger) -> [String; 2] {
+    [
+        ledger.store().db().display().to_string(),
+        format!(
+            "The old JSON session file {} is read only: horch never writes it.",
+            ledger.path().display()
+        ),
+    ]
 }
 
 fn print_record(ledger: &SessionLedger, key: &str) -> Result<()> {
@@ -433,5 +447,21 @@ mod tests {
             "{shown}"
         );
         assert!(shown.contains("agent=codex"), "{shown}");
+    }
+
+    /// TRF-45: `horch ledger legacy path` prints the task ledger file, and
+    /// says that the old JSON session file is only read.
+    #[test]
+    fn trf_45_legacy_path_names_the_task_ledger() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ledger = SessionLedger::for_project(tmp.path(), "/p");
+        let [db, note] = path_lines(&ledger);
+        assert_eq!(db, ledger.store().db().display().to_string());
+        assert!(!db.ends_with(".json"), "{db}");
+        assert!(
+            note.contains(&ledger.path().display().to_string()),
+            "{note}"
+        );
+        assert!(note.contains("read only"), "{note}");
     }
 }

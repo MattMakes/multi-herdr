@@ -570,10 +570,18 @@ fn open_ledger(ctx: &RuntimeContext, herdr: &Herdr) -> Result<SessionLedger> {
     Ok(ledger)
 }
 
+/// Where the fleet's session records live: the task ledger file.
+fn session_records_line(ledger: &SessionLedger) -> String {
+    format!(
+        "Session records (task ledger): {}",
+        ledger.store().db().display()
+    )
+}
+
 /// The closing text of `horch fleet`.
 fn print_fleet_ready(workspace_id: &str, ledger: &SessionLedger) {
     println!("\nDone. Fleet workspace {workspace_id} is live with one orchestrator pane.");
-    println!("Session ledger: {}", ledger.path().display());
+    println!("{}", session_records_line(ledger));
     println!("Orchestrator commands: horch sessions | horch ledger task | horch spawn [--resume]");
     println!(
         "Workers are spawned on demand: horch ledger task '<task>' --persona <teammate>, then horch spawn <teammate>"
@@ -2224,5 +2232,17 @@ mod tests {
             hold_orchestrator_lock(&ctx, "w1").is_ok(),
             "free after the agent ends"
         );
+    }
+
+    /// TRF-45: `horch fleet` names the task ledger file as the home of the
+    /// session records, not the retired JSON session ledger.
+    #[test]
+    fn trf_45_fleet_names_the_task_ledger_for_session_records() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ledger = SessionLedger::for_project(tmp.path(), "/p");
+        let line = session_records_line(&ledger);
+        let db = ledger.store().db().display().to_string();
+        assert_eq!(line, format!("Session records (task ledger): {db}"));
+        assert!(!line.contains(".json"), "{line}");
     }
 }

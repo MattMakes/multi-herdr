@@ -12,6 +12,7 @@ use anyhow::{Context, Result};
 use clap::Subcommand;
 use horch_core::execution::legacy::Record;
 use horch_core::execution::records::SessionLedger;
+use horch_core::execution::store::ExecutionStore;
 use horch_core::execution::TilingMode;
 use horch_core::messaging::mailbox::Mailbox;
 use horch_core::runtime::RuntimeContext;
@@ -351,7 +352,7 @@ fn verify_worker_done(sc: &Scratch, pane: &str) -> Step {
         let mut lines = vec![format!(
             "FAIL: smoke session never reached done in the ledger. Workspace {id} left open."
         )];
-        lines.extend(ledger_dump(ledger.path()));
+        lines.extend(ledger_dump(ledger.store()));
         return Err(Smoke::Failed(Failure(lines)));
     }
 
@@ -934,10 +935,14 @@ fn session_is_done(record: &Record) -> bool {
         && recorded("done")
 }
 
-fn ledger_dump(path: &Path) -> [String; 2] {
+/// The stored session records of a failed smoke, under the task ledger file
+/// that holds them.
+fn ledger_dump(store: &ExecutionStore) -> [String; 2] {
     [
-        format!("--- ledger ({}) ---", path.display()),
-        std::fs::read_to_string(path).unwrap_or_else(|e| format!("(could not read ledger: {e})")),
+        format!("--- session records ({}) ---", store.db().display()),
+        store
+            .stored_json()
+            .unwrap_or_else(|e| format!("(could not read session records: {e})")),
     ]
 }
 
@@ -1256,5 +1261,34 @@ mod tests {
         assert_eq!(failed.unwrap(), ExitCode::FAILURE);
         let broken = finish(Err(Smoke::Error(anyhow::anyhow!("herdr is gone"))));
         assert_eq!(broken.unwrap_err().to_string(), "herdr is gone");
+    }
+
+    /// TRF-45: a failed smoke prints the stored session records under the
+    /// task ledger file, and reads no JSON session ledger.
+    #[test]
+    fn trf_45_ledger_dump_prints_the_stored_session_records() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ledger = SessionLedger::for_project(tmp.path(), "/p");
+        ledger
+            .add(horch_core::execution::records::NewRecord {
+                record_id: "r1",
+                agent: "none",
+                tier: "smoke",
+                model: "none",
+                role: "smoke-1",
+                session_id: Some("s1"),
+                task: "t",
+                phase: None,
+            })
+            .unwrap();
+        let store = ledger.store();
+        let [head, body] = ledger_dump(store);
+        assert_eq!(
+            head,
+            format!("--- session records ({}) ---", store.db().display())
+        );
+        assert_eq!(body, store.stored_json().unwrap());
+        assert!(body.contains("\"record_id\": \"r1\""), "{body}");
+        assert!(!store.path().exists(), "no JSON session ledger is written");
     }
 }

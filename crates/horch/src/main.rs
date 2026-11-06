@@ -1209,14 +1209,9 @@ fn mode_command(ctx: &mut Ctx, role: String, mode: &str, timeout: Option<u64>) -
     )
 }
 
-/// `horch done`: the task ledger finishes a ledger worker, the mailbox the rest.
+/// `horch done`: [`cmd::messaging::done`] picks the task ledger or the mailbox.
 fn done_command(ctx: &mut Ctx, summary: &str, unlanded: Option<&str>) -> Result<()> {
-    if cmd::taskledger::is_ledger_worker(ctx) {
-        let store = horch_core::taskledger::open(ctx)?;
-        cmd::taskledger::done_cmd(ctx, store, summary, unlanded)
-    } else {
-        cmd::messaging::done(ctx, summary, unlanded)
-    }
+    cmd::messaging::done(ctx, summary, unlanded)
 }
 
 fn worktree_command(ctx: &mut Ctx, command: WorktreeSubcommand) -> Result<()> {
