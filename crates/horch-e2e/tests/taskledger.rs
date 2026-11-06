@@ -3483,13 +3483,14 @@ fn a_live_worker_that_does_not_claim_is_reported_once() {
         let o = run_env(&h, &env, &["ledger", "watch", "--once", "--force"]);
         assert!(o.status.success(), "{}", text(&o));
     };
-    // Within the claim grace the worker is never touched.
-    watch(Some(later(300)));
+    // Within the 3 min claim grace (TRF-23) the worker is never touched.
+    watch(Some(later(150)));
     assert_eq!(worker_status(&h, &id).0, "claiming");
     assert!(wakes(&h).is_empty(), "{:?}", wakes(&h));
     // Past it: 1 wake that names the pane, and only 1.
-    watch(Some(later(700)));
-    watch(Some(later(800)));
+    watch(Some(later(200)));
+    assert_eq!(wakes(&h).len(), 1, "{:?}", wakes(&h));
+    watch(Some(later(300)));
     let w = wakes(&h);
     assert_eq!(w.len(), 1, "{w:?}");
     assert!(w[0].contains("has not claimed a task"), "{w:?}");
