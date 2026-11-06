@@ -54,7 +54,11 @@ pub struct WorkerLine {
     /// A working worker with no check in the last 2 check intervals.
     pub unwatched: bool,
     /// A pre-claim row whose process went silent ([`workers::is_stale`]).
+    /// A pending orchestrator row is never stale.
     pub stale: bool,
+    /// An orchestrator row in status `spawning`: it waits for a watchdog
+    /// pass to see the lock holder (TRF-39), so its age is not silence.
+    pub launch_pending: bool,
     pub waiting: Vec<workers::Wait>,
 }
 
@@ -275,8 +279,10 @@ fn worker_line(
             .find(|l| &l.task.task_id == id)
             .map(|l| l.task.short())
     });
+    let launch_pending = w.kind == "orchestrator" && w.status == "spawning";
     Ok(WorkerLine {
-        stale: workers::is_stale(&w, run.heartbeat_stale_s, now),
+        stale: !launch_pending && workers::is_stale(&w, run.heartbeat_stale_s, now),
+        launch_pending,
         waiting: workers::waiting(conn, &w.worker_id)?,
         unwatched: is_unwatched(conn, run, &w, now)?,
         worker: w,
@@ -503,6 +509,9 @@ pub fn render(r: &Report) -> String {
     render_watchdog(&mut out, r.watchdog.as_ref());
     if let Some(line) = &r.orchestrator {
         let _ = writeln!(out, "{line}");
+    }
+    for w in r.workers.iter().filter(|w| w.launch_pending) {
+        let _ = writeln!(out, "Orchestrator {}: launch pending.", w.worker.label());
     }
     render_tasks(&mut out, &r.tasks);
     render_live(&mut out, &r.workers);
@@ -911,5 +920,87 @@ mod trf_15_tests {
             err.to_string().contains("T-1 (held: two failures)"),
             "{err}"
         );
+    }
+}
+
+#[cfg(test)]
+mod trf_39_tests {
+    use std::path::Path;
+
+    use super::*;
+    use crate::taskledger::model::WorkerKind;
+    use crate::taskledger::runs::{self, NewRun};
+    use crate::taskledger::workers::NewWorker;
+    use crate::taskledger::Store;
+
+    /// A replacement orchestrator row stays `spawning` until a watchdog pass
+    /// sees the lock holder (ticket 44). Its old spawn time is not a silent
+    /// process: the board says `launch pending`, not `STALE`. A worker row of
+    /// the same age stays stale.
+    #[test]
+    fn trf_39_a_pending_orchestrator_row_is_not_stale() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = Store::open(&dir.path().join("ledger.sqlite3")).unwrap();
+        let run = store
+            .immediate(|tx| {
+                runs::create(
+                    tx,
+                    Path::new("/repo"),
+                    &NewRun {
+                        slug: "r1".into(),
+                        ..Default::default()
+                    },
+                )
+            })
+            .unwrap();
+        for (kind, role) in [
+            (WorkerKind::Orchestrator, "orchestrator"),
+            (WorkerKind::Worker, "dev-1"),
+        ] {
+            store
+                .immediate(|tx| {
+                    workers::insert(
+                        tx,
+                        &NewWorker {
+                            run_id: run.run_id.clone(),
+                            kind: Some(kind),
+                            persona: "opus".into(),
+                            role: Some(role.into()),
+                            ..Default::default()
+                        },
+                    )
+                })
+                .unwrap();
+        }
+        store
+            .conn()
+            .execute(
+                "UPDATE workers SET status = 'spawning', last_checkin_at = NULL,
+                 spawned_at = '2000-01-01T00:00:00Z'",
+                [],
+            )
+            .unwrap();
+
+        let r = report(store.conn(), &run).unwrap();
+        let line = |role: &str| {
+            r.workers
+                .iter()
+                .find(|w| w.worker.label() == role)
+                .unwrap()
+        };
+        let orchestrator = line("orchestrator");
+        assert!(!orchestrator.stale, "a pending orchestrator is not stale");
+        assert!(orchestrator.launch_pending);
+        let worker = line("dev-1");
+        assert!(worker.stale, "a silent worker row stays stale");
+        assert!(!worker.launch_pending);
+
+        let text = render(&r);
+        assert!(
+            text.contains("Orchestrator orchestrator: launch pending."),
+            "{text}"
+        );
+        assert!(text.contains("dev-1"), "{text}");
+        assert_eq!(text.matches("STALE").count(), 1, "{text}");
     }
 }

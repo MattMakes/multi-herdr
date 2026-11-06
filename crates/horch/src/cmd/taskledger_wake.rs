@@ -38,9 +38,7 @@ pub fn wake(ctx: &RuntimeContext, store: &Store, run: &Run, text: &str) {
 /// The outbox event of a free-text wake. The column allows only the C3
 /// events: a stall or suspect line about a worker is `held`.
 fn event_of(text: &str) -> OutboxEvent {
-    if text.contains("The reviews of") {
-        OutboxEvent::ReviewsIn
-    } else if text.contains("was reaped") {
+    if text.contains("was reaped") {
         OutboxEvent::Reaped
     } else if text.contains("Spawn") {
         OutboxEvent::Startable
@@ -959,10 +957,6 @@ mod trf_21_tests {
         wake(&ctx, &store, &run, "NOTE: same.");
         wake(&ctx, &store, &run, "NOTE: same.");
         assert_eq!(rows(&store, &run).len(), 2);
-        assert_eq!(
-            event_of("NOTE: The reviews of T-1 are in, but x was not told."),
-            OutboxEvent::ReviewsIn
-        );
         assert_eq!(
             event_of("NOTE: w was reaped. Spawn: x"),
             OutboxEvent::Reaped

@@ -1136,9 +1136,17 @@ fn claim_line(
 }
 
 /// Record this pane's public id under `role` so other panes can address it.
+/// Role `orchestrator` takes the workspace orchestrator lock first, as a
+/// fleet launch does (TRF-39): while another live process holds it, this
+/// refuses, names the holder's PID and changes no route. The lock is free
+/// again when this returns.
 pub fn register(ctx: &mut RuntimeContext, role: &str) -> Result<()> {
-    let herdr = Herdr::with_bin(&ctx.bins.harness.herdr);
-    let (mailbox, pane_id) = Mailbox::register_in(&herdr, ctx, role)?;
+    let (mailbox, pane_id, _lock) = super::recipes::register_pane(
+        ctx,
+        role,
+        &super::recipes::PaneIdentity::default(),
+        role == "orchestrator",
+    )?;
     println!(
         "registered {role} as {pane_id} in {}",
         mailbox.dir().display()
@@ -1217,6 +1225,82 @@ fn ledger_role_state(ctx: &RuntimeContext, workspace: &str, role: &str) -> Strin
 mod tests {
     use super::*;
     use std::time::Duration;
+
+    /// A context in herdr pane p2 of workspace w1, with a fake herdr and a
+    /// scratch ledger. The second value is the folder of the workspace locks.
+    fn register_ctx(dir: &std::path::Path) -> (RuntimeContext, std::path::PathBuf) {
+        let bin = dir.join("herdr");
+        let warm = crate::test_support::write_warmed(
+            &bin,
+            "#!/bin/sh\n\
+             case \"$*\" in\n\
+             'pane get p2') echo '{\"result\":{\"pane\":{\"pane_id\":\"p2\",\"workspace_id\":\"w1\"}}}' ;;\n\
+             warm*) ;;\n\
+             *) exit 1 ;;\n\
+             esac\n",
+            &["warm"],
+        );
+        assert!(warm.status.success());
+        let db = dir.join("ledger.sqlite3");
+        let ctx = RuntimeContext::from_env(
+            &horch_core::runtime::MapEnv::new("/")
+                .with_exe("/opt/horch/bin/horch")
+                .with("HORCH_STATE_DIR", dir.join("state").to_str().unwrap())
+                .with("HORCH_LEDGER_DB", db.to_str().unwrap())
+                .with("HORCH_HERDR_BIN", bin.to_str().unwrap())
+                .with("HERDR_PANE_ID", "p2"),
+        )
+        .unwrap();
+        let locks = horch_core::taskledger::orchestrator::lock_dir(&db);
+        std::fs::create_dir_all(&locks).unwrap();
+        (ctx, locks)
+    }
+
+    /// TRF-39: `horch register orchestrator` while a live orchestrator holds
+    /// the workspace lock refuses with the holder's PID and keeps the route.
+    /// Other roles register as before.
+    #[test]
+    fn trf_39_register_refuses_the_orchestrator_role_while_another_holds_the_lock() {
+        use horch_core::taskledger::orchestrator;
+        let dir = tempfile::tempdir().unwrap();
+        let (mut ctx, locks) = register_ctx(dir.path());
+        let _live = orchestrator::lock(&locks, "w1").unwrap().unwrap();
+        let mailbox = Mailbox::under(&ctx.paths.state_root, "w1");
+        std::fs::create_dir_all(mailbox.dir()).unwrap();
+        mailbox.register_role("orchestrator", "p1").unwrap();
+
+        let err = register(&mut ctx, "orchestrator").unwrap_err().to_string();
+        assert_eq!(
+            err,
+            format!(
+                "an orchestrator already runs in workspace w1 (PID {}); \
+                 1 workspace has 1 orchestrator",
+                std::process::id()
+            )
+        );
+        assert!(!err.contains('\n'), "1 line: {err}");
+        assert_eq!(mailbox.pane_for("orchestrator").as_deref(), Some("p1"));
+
+        register(&mut ctx, "dev-1").unwrap();
+        assert_eq!(mailbox.pane_for("dev-1").as_deref(), Some("p2"));
+    }
+
+    /// TRF-39: with the workspace lock free, `horch register orchestrator`
+    /// takes the lock, writes the route, and frees the lock when it ends.
+    #[test]
+    fn trf_39_register_takes_the_orchestrator_role_when_the_lock_is_free() {
+        use horch_core::taskledger::orchestrator;
+        let dir = tempfile::tempdir().unwrap();
+        let (mut ctx, locks) = register_ctx(dir.path());
+
+        register(&mut ctx, "orchestrator").unwrap();
+        let mailbox = Mailbox::under(&ctx.paths.state_root, "w1");
+        assert_eq!(mailbox.pane_for("orchestrator").as_deref(), Some("p2"));
+        assert!(
+            orchestrator::lock(&locks, "w1").unwrap().is_some(),
+            "register frees the lock when it ends"
+        );
+    }
 
     /// TRF-45: `horch note`, `horch ledger progress` and `horch ledger note`
     /// are 1 command. With a record and a worker row, each writes the

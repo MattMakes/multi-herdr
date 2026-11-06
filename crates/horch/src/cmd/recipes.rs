@@ -1106,7 +1106,7 @@ pub fn pane_launch(
 /// the workspace orchestrator lock before it registers its role, so a
 /// launch that loses the lock never replaces the live route (TRF-39). The
 /// third value is that lock.
-fn register_pane(
+pub(super) fn register_pane(
     ctx: &mut RuntimeContext,
     role: &str,
     identity: &PaneIdentity,
