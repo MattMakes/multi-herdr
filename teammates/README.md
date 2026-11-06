@@ -334,7 +334,7 @@ starts each clean-room role as a separate fleet worker with `intake spawn`
 | `skill-importer` | claude, opus, high | controller, never opens source | `intake` output, status files | through `intake` only | everywhere |
 | `intake-auditor` | claude, opus, high | contaminated | `contaminated/` | `contaminated/` | hidden: started only by `skill-importer` |
 | `intake-analyst` | claude, opus, medium | contaminated | `contaminated/`, `drafts/` | `drafts/` | hidden: started only by `skill-importer` |
-| `intake-sanitizer` | claude, sonnet, medium | source-blind | `drafts/` | `drafts/` | hidden: started only by `skill-importer` |
+| `intake-sanitizer` | claude, opus, medium | source-blind | `drafts/` | `drafts/` | hidden: started only by `skill-importer` |
 | `intake-writer` | claude, opus, medium | clean | `clean/` | `clean/` | hidden: started only by `skill-importer` |
 | `intake-reviewer` | claude, opus, medium | clean, fresh | `clean/` | `clean/` | hidden: started only by `skill-importer` |
 
