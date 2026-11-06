@@ -55,7 +55,7 @@ fn records(h: &Harness) -> Vec<Value> {
             }
         })
         .collect();
-    std::fs::read_to_string(h.state.join(format!("{slug}.json")))
+    h.stored_ledger(&slug)
         .ok()
         .and_then(|t| serde_json::from_str(&t).ok())
         .unwrap_or_default()

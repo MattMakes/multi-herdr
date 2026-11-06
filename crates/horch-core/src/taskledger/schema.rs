@@ -436,8 +436,9 @@ const V6: &str = "ALTER TABLE worktrees ADD COLUMN bytes INTEGER;
 /// Version 7: every field of the trace-fixes plan (docs/specs/trace-fixes.md
 /// section 4), in 1 migration so no 2 tickets race on the version. The
 /// ticket fields of a task (C1), the run check, PR decline and orchestrator
-/// respawn of a run (C5, C7), the run gates (C5), the wake outbox (C3) and
-/// the handoff of a worker (C4). `held_reason` and `end_reason` stay free
+/// respawn of a run (C5, C7), the run gates (C5), the wake outbox (C3),
+/// the handoff of a worker (C4) and the session records that replace the
+/// JSON session ledger (D10, TRF-45). `held_reason` and `end_reason` stay free
 /// text: their new words live in [`HeldReason`] and [`EndReason`].
 fn v7() -> String {
     format!(
@@ -473,7 +474,16 @@ CREATE TABLE outbox (
     delivered_at TEXT
 );
 CREATE INDEX outbox_undelivered ON outbox(created_at) WHERE delivered_at IS NULL;
-ALTER TABLE workers ADD COLUMN target_task_id TEXT REFERENCES tasks(task_id);",
+ALTER TABLE workers ADD COLUMN target_task_id TEXT REFERENCES tasks(task_id);
+CREATE TABLE session_records (
+    record_id TEXT PRIMARY KEY,
+    worker_id TEXT,
+    project_root TEXT NOT NULL,
+    slug TEXT NOT NULL,
+    record_json TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE INDEX session_records_by_slug ON session_records(slug);",
         work_kind = WorkKind::check("work_kind"),
         review_mode = ReviewMode::check("review_mode"),
         event = OutboxEvent::check("event"),
@@ -669,7 +679,7 @@ mod tests {
                 |r| r.get(0),
             )
             .unwrap();
-        assert_eq!(tables, 17);
+        assert_eq!(tables, 18);
     }
 
     /// A ledger file as version 3 left it, with 1 run.

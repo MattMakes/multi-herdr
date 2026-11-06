@@ -1,13 +1,14 @@
 //! The lifecycle rules of the persistent per-project session ledger.
 //!
-//! One JSON file per project dir, so "what has been worked on here, by which
-//! session" survives pane close and workspace restarts - that is what lets the
-//! orchestrator resume an old session id instead of starting cold. Records are
-//! keyed by `record_id` (minted at spawn, always known) with `session_id` as a
-//! separate field, because codex only reveals its session id after launch.
+//! One set of records per project dir, so "what has been worked on here, by
+//! which session" survives pane close and workspace restarts - that is what
+//! lets the orchestrator resume an old session id instead of starting cold.
+//! Records are keyed by `record_id` (minted at spawn, always known) with
+//! `session_id` as a separate field, because codex only reveals its session
+//! id after launch.
 //!
-//! The on-disk format, file path, slug rule and timestamp format are unchanged
-//! from the bash implementation: existing ledgers stay readable and resumable.
+//! The records live in the task ledger's `session_records` table (TRF-45).
+//! An old JSON ledger stays readable and resumable; nothing writes it.
 //!
 //! The record is [`crate::execution::legacy::LedgerRecordV1`] and every read
 //! and write goes through [`ExecutionStore`]. Only the lifecycle rules live
@@ -33,7 +34,7 @@ pub const EVENT_REPORT_FAILED: &str = "report-failed";
 /// The history event of a durable `horch done` report whose push failed.
 pub const EVENT_REPORT_QUEUED: &str = "report-queued";
 
-/// A project's ledger file.
+/// A project's session records.
 #[derive(Debug, Clone)]
 pub struct SessionLedger {
     store: ExecutionStore,
@@ -627,7 +628,7 @@ mod tests {
     }
 
     #[test]
-    fn operations_on_unknown_keys_name_the_ledger_file() {
+    fn operations_on_unknown_keys_name_the_session_records_file() {
         let (_t, l) = ledger();
         for err in [
             l.note("nope", "x").unwrap_err(),
@@ -637,7 +638,7 @@ mod tests {
         ] {
             let msg = err.to_string();
             assert!(msg.contains("no record matches 'nope'"), "{msg}");
-            assert!(msg.contains("-Users-a-proj.json"), "{msg}");
+            assert!(msg.contains("ledger.sqlite3"), "{msg}");
         }
     }
 

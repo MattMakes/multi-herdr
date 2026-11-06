@@ -11,6 +11,8 @@ use rusqlite::Connection;
 /// Undo what `schema::v7()` adds: the incident's downgrade, so the test has
 /// a real version 6 file.
 const DOWNGRADE_V7_TO_V6: &str = "
+DROP INDEX session_records_by_slug;
+DROP TABLE session_records;
 DROP INDEX outbox_undelivered;
 DROP TABLE outbox;
 DROP INDEX run_gates_by_tip;
@@ -26,6 +28,7 @@ ALTER TABLE runs DROP COLUMN orchestrator_stopped_at;
 ALTER TABLE runs DROP COLUMN orchestrator_respawns;
 ALTER TABLE runs DROP COLUMN last_respawn_at;
 ALTER TABLE workers DROP COLUMN handoff_path;
+ALTER TABLE workers DROP COLUMN target_task_id;
 PRAGMA user_version = 6;";
 
 /// A version 6 ledger at `path` with 1 project row.

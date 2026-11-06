@@ -234,6 +234,9 @@ fn orchestrator_at(
     };
     match &checked.outcome {
         orchestrator::Outcome::Respawned(r) => {
+            if let Err(e) = inherit_harness(store, r) {
+                eprintln!("horch ledger watch: recording the respawn's harness failed: {e:#}");
+            }
             if let Err(e) = launch(r) {
                 eprintln!("horch ledger watch: the orchestrator respawn did not start: {e:#}");
                 if let Err(e) = orchestrator::launch_failed(store.conn(), r, &format!("{e:#}")) {
@@ -252,6 +255,19 @@ fn orchestrator_at(
     // The wake goes out after the launch, so the new orchestrator's mailbox
     // can take it; durable mail keeps it either way.
     taskledger_wake::drain_run(ctx, store, run, checked.wake_id.as_deref());
+}
+
+/// Give the respawned orchestrator row the harness and model of the row it
+/// replaces, when it has none (report 28 D-c): the respawn runs the same
+/// flavor. Returns the rows changed.
+fn inherit_harness(store: &Store, r: &orchestrator::Respawn) -> Result<usize> {
+    Ok(store.conn().execute(
+        "UPDATE workers SET
+             harness = coalesce(harness, (SELECT harness FROM workers WHERE worker_id = ?2)),
+             model = coalesce(model, (SELECT model FROM workers WHERE worker_id = ?2))
+         WHERE worker_id = ?1",
+        [&r.new_worker_id, &r.old_worker_id],
+    )?)
 }
 
 /// What the watchdog does about 1 verdict: reap the dead, wake the
@@ -1299,6 +1315,45 @@ mod orchestrator_tests {
             .orchestrator_worker_id
             .unwrap();
         workers::get(store.conn(), &id).unwrap()
+    }
+
+    /// Report 28 D-c: the respawned orchestrator row records the harness
+    /// and model of the row it replaces before its launch runs.
+    #[test]
+    fn trf_45_a_respawned_orchestrator_row_keeps_the_harness() {
+        let (_dir, ctx, store, run) = world();
+        let old = current(&store, &run).worker_id;
+        store
+            .conn()
+            .execute(
+                "UPDATE workers SET harness = 'codex', model = 'gpt-5.6-sol' WHERE worker_id = ?1",
+                [&old],
+            )
+            .unwrap();
+        let seen = RefCell::new(None);
+        let launch = |r: &Respawn| {
+            let w = workers::get(store.conn(), &r.new_worker_id).unwrap();
+            *seen.borrow_mut() = Some((w.harness, w.model));
+            Ok(())
+        };
+        // The launch reads through `store`; the pass writes through a 2nd
+        // connection to the same file.
+        orchestrator_at(
+            &ctx,
+            &mut Store::open(store.path()).unwrap(),
+            &run,
+            &at(&horch_core::clock::now(), 0),
+            &Dead,
+            &launch,
+        );
+        let new = current(&store, &run);
+        assert_ne!(new.worker_id, old);
+        assert_eq!(new.harness.as_deref(), Some("codex"));
+        assert_eq!(new.model.as_deref(), Some("gpt-5.6-sol"));
+        assert_eq!(
+            seen.into_inner(),
+            Some((Some("codex".to_string()), Some("gpt-5.6-sol".to_string())))
+        );
     }
 
     #[test]

@@ -543,7 +543,7 @@ fn orchestrator_only(ctx: &RuntimeContext, store: &Store, what: &str) -> Result<
     Ok(())
 }
 
-fn worker_id_opt(ctx: &RuntimeContext) -> Option<String> {
+pub(crate) fn worker_id_opt(ctx: &RuntimeContext) -> Option<String> {
     ctx.worker.as_ref().and_then(|w| w.worker_id.clone())
 }
 
@@ -766,28 +766,25 @@ fn worker_side_cmd(
         return steps_cmd(ctx, &store, task, &run, as_json);
     }
     if let LedgerCommand::Done { summary, unlanded } = command {
-        return done_exit(ctx, store, &summary.join(" "), unlanded.as_deref());
+        drop(store);
+        return done_exit(ctx, &summary.join(" "), unlanded.as_deref());
     }
     if let LedgerCommand::Handoff { path } = command {
         return handoff_cmd(ctx, store, &path).map(|()| ExitCode::SUCCESS);
     }
     if let LedgerCommand::Progress { text } = command {
-        return progress(ctx, &mut store, EventKind::Progress, &text);
+        return progress(ctx, EventKind::Progress, &text);
     }
     if let LedgerCommand::Note { text } = command {
-        return progress(ctx, &mut store, EventKind::Note, &text);
+        return progress(ctx, EventKind::Note, &text);
     }
     unreachable!("not a worker command")
 }
 
-/// `horch ledger done`: the exit code once the finish is recorded.
-fn done_exit(
-    ctx: &RuntimeContext,
-    store: Store,
-    summary: &str,
-    unlanded: Option<&str>,
-) -> Result<ExitCode> {
-    done_cmd(ctx, store, summary, unlanded).map(|()| ExitCode::SUCCESS)
+/// `horch ledger done`: `horch done` ([`super::messaging::done`], TRF-45),
+/// and the exit code once the finish is recorded.
+fn done_exit(ctx: &RuntimeContext, summary: &str, unlanded: Option<&str>) -> Result<ExitCode> {
+    super::messaging::done(ctx, summary, unlanded).map(|()| ExitCode::SUCCESS)
 }
 
 /// Import, unfinished work, the watchdog and worker rows.
@@ -2014,12 +2011,17 @@ fn insert_run(
     check: Option<&str>,
 ) -> Result<Run> {
     let pane = ctx.herdr.pane.as_ref().map(|p| p.as_str().to_string());
+    let own = own_orchestrator_harness(ctx);
     store.immediate(|tx| {
         runs::refuse_a_2nd_workspace_run(tx, root, new)?;
         let r = runs::create(tx, root, new)?;
         if let Some(check) = check {
             finish::set_default_check(tx, &r.run_id, check)?;
         }
+        let (harness, model) = match &own {
+            Some(own) => own.clone(),
+            None => workspace_orchestrator_harness(tx, new.workspace_id.as_deref())?,
+        };
         let id = workers::insert(
             tx,
             &NewWorker {
@@ -2027,6 +2029,8 @@ fn insert_run(
                 kind: Some(WorkerKind::Orchestrator),
                 persona: "orchestrator".into(),
                 role: Some("orchestrator".into()),
+                harness,
+                model,
                 workspace_id: new.workspace_id.clone(),
                 pane_id: pane.clone(),
                 ..Default::default()
@@ -2042,6 +2046,42 @@ fn insert_run(
         runs::set_orchestrator(tx, &r.run_id, &id)?;
         runs::get(tx, &r.run_id)
     })
+}
+
+/// A harness and its model, as an orchestrator row records them.
+type HarnessModel = (Option<String>, Option<String>);
+
+/// The harness and model of the orchestrator that runs this command
+/// (report 28 D-c): its session record, which `HORCH_RECORD_ID` names.
+/// `None` when no orchestrator record names a harness.
+fn own_orchestrator_harness(ctx: &RuntimeContext) -> Option<HarnessModel> {
+    let id = ctx.worker.as_ref()?.record_id.as_deref()?;
+    let record = horch_core::execution::store::ExecutionStore::open_in(ctx)
+        .ok()?
+        .get(id)
+        .ok()?;
+    let nonempty = |s: &str| (!s.is_empty()).then(|| s.to_string());
+    (record.is_orchestrator() && !record.agent.is_empty())
+        .then(|| (nonempty(&record.agent), nonempty(&record.model)))
+}
+
+/// The harness and model of the newest orchestrator row of `workspace` that
+/// records one: the fleet launch wrote it (TRF-44).
+fn workspace_orchestrator_harness(
+    tx: &rusqlite::Connection,
+    workspace: Option<&str>,
+) -> Result<HarnessModel> {
+    let Some(workspace) = workspace else {
+        return Ok((None, None));
+    };
+    let row = taskledger::store::optional(tx.query_row(
+        "SELECT harness, model FROM workers
+         WHERE kind = 'orchestrator' AND workspace_id = ?1 AND harness IS NOT NULL
+         ORDER BY spawned_at DESC, rowid DESC LIMIT 1",
+        [workspace],
+        |r| Ok((r.get(0)?, r.get(1)?)),
+    ))?;
+    Ok(row.unwrap_or((None, None)))
 }
 
 /// The ticket's first heading, or its file stem.
@@ -2903,44 +2943,32 @@ pub fn slug(title: &str) -> String {
         .to_string()
 }
 
-fn progress(
-    ctx: &RuntimeContext,
-    store: &mut Store,
-    kind: EventKind,
-    text: &str,
-) -> Result<ExitCode> {
-    let wid = worker_id(ctx)?;
-    store.immediate(|tx| workers::progress(tx, &wid, ProgressSource::Agent, kind, text))?;
-    if let Err(error) = super::compact::worker_note_context(ctx, text) {
-        eprintln!("horch ledger: context check failed: {error:#}");
-    }
-    Ok(ExitCode::SUCCESS)
+/// `horch ledger progress` and `horch ledger note`: `horch note`
+/// ([`super::messaging::note_as`], TRF-45) with their event kind.
+fn progress(ctx: &RuntimeContext, kind: EventKind, text: &str) -> Result<ExitCode> {
+    worker_id(ctx)?;
+    super::messaging::note_as(ctx, text, kind).map(|()| ExitCode::SUCCESS)
 }
 
-/// `horch note` and `horch done` also write the ledger when the worker has
-/// a row; a failure there never blocks them.
-pub fn note_from_worker(ctx: &RuntimeContext, text: &str) {
+/// Record `kind` with `text` on this worker's task ledger row. True when it
+/// did: a worker without `HORCH_WORKER_ID`, or whose row the ledger does
+/// not have, records nothing.
+pub fn progress_from_worker(ctx: &RuntimeContext, kind: EventKind, text: &str) -> Result<bool> {
     let Some(wid) = worker_id_opt(ctx) else {
-        return;
+        return Ok(false);
     };
-    let result = taskledger::open(ctx).and_then(|mut s| {
-        if workers::find(s.conn(), &wid)?.is_none() {
-            return Ok(());
-        }
-        s.immediate(|tx| workers::progress(tx, &wid, ProgressSource::Agent, EventKind::Note, text))
-    });
-    if let Err(e) = result {
-        eprintln!("horch: the task ledger did not record the note: {e:#}");
+    let mut s = taskledger::open(ctx)?;
+    if workers::find(s.conn(), &wid)?.is_none() {
+        return Ok(false);
     }
-    if let Some(line) = note_handoff_warning(ctx) {
-        output::println(&line);
-    }
+    s.immediate(|tx| workers::progress(tx, &wid, ProgressSource::Agent, kind, text))?;
+    Ok(true)
 }
 
 /// The 1 warning of `horch note` for a live session in the context state
 /// `handoff` (TRF-09): it names `horch ledger handoff`. The row is built as
 /// `horch context` builds it. Any read error means no warning.
-fn note_handoff_warning(ctx: &RuntimeContext) -> Option<String> {
+pub(crate) fn note_handoff_warning(ctx: &RuntimeContext) -> Option<String> {
     use horch_core::execution::records::SessionLedger;
     let record_id = ctx.worker.as_ref()?.record_id.as_deref()?;
     let ledger = SessionLedger::open_in(ctx).ok()?;
@@ -3058,6 +3086,68 @@ mod tests {
     use horch_core::taskledger::workers::{self, NewWorker};
     use horch_core::taskledger::Store;
     use std::path::Path;
+
+    /// Report 28 D-c: `horch ledger run new` writes the harness on the
+    /// orchestrator row it inserts: from the orchestrator's own session
+    /// record, else from the newest orchestrator row of the workspace.
+    #[test]
+    fn trf_45_run_new_writes_the_orchestrator_harness() {
+        use horch_core::execution::legacy::{LedgerRecordV1, KIND_ORCHESTRATOR};
+        use horch_core::execution::store::ExecutionStore;
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("repo");
+        std::fs::create_dir_all(&root).unwrap();
+        let db = dir.path().join("ledger.sqlite3");
+        let env = |record: Option<&str>| {
+            let mut env = MapEnv::new(&root)
+                .with("HOME", &dir.path().to_string_lossy())
+                .with(
+                    "HORCH_STATE_DIR",
+                    &dir.path().join("state").to_string_lossy(),
+                )
+                .with("HORCH_LEDGER_DB", &db.to_string_lossy())
+                .with("HORCH_PROJECT_DIR", &root.to_string_lossy());
+            if let Some(id) = record {
+                env = env.with("HORCH_RECORD_ID", id);
+            }
+            RuntimeContext::from_env(&env).unwrap()
+        };
+        let ctx = env(Some("orch-1"));
+        ExecutionStore::open_in(&ctx)
+            .unwrap()
+            .insert(LedgerRecordV1 {
+                record_id: "orch-1".into(),
+                agent: "codex".into(),
+                model: "gpt-5.6-sol".into(),
+                role: "orchestrator".into(),
+                kind: KIND_ORCHESTRATOR.into(),
+                ..LedgerRecordV1::default()
+            })
+            .unwrap();
+        let mut store = Store::open(&db).unwrap();
+        let run = |store: &mut Store, ctx: &RuntimeContext, slug: &str| {
+            let new = NewRun {
+                slug: slug.into(),
+                workspace_id: Some("w1".into()),
+                ..Default::default()
+            };
+            let r = super::insert_run(ctx, store, &root, &new, None).unwrap();
+            let id = r.orchestrator_worker_id.unwrap();
+            let w = workers::get(store.conn(), &id).unwrap();
+            store
+                .conn()
+                .execute(
+                    "UPDATE runs SET status = 'done' WHERE run_id = ?1",
+                    [&r.run_id],
+                )
+                .unwrap();
+            (w.harness, w.model)
+        };
+        let own = (Some("codex".to_string()), Some("gpt-5.6-sol".to_string()));
+        assert_eq!(run(&mut store, &ctx, "a"), own);
+        // No own record: the newest orchestrator row of the workspace.
+        assert_eq!(run(&mut store, &env(None), "b"), own);
+    }
 
     #[test]
     fn run_steps_prefer_steps_then_flag_then_env_then_light() {

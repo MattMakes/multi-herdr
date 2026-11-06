@@ -32,10 +32,14 @@ use crate::routing::quota_probe::{self, ProbeBins};
 use crate::routing::snapshot::QuotaEnv;
 use crate::usage::{self, Locations, Price};
 
-/// Every record in every ledger under `state_root`, skipping a ledger that
-/// does not parse right now. For readers outside the collector.
+/// Every session record under `state_root`, skipping a JSON ledger that does
+/// not parse right now. For readers outside the collector. The records are
+/// the session records (TRF-45) and old JSON ledgers, and for this
+/// process's own state root the task ledger's worker rows are laid over
+/// them (TRF-44, [`execution_store::session_files`]).
 pub fn read_ledgers(state_root: &Path) -> Vec<Record> {
-    execution_store::read_all_ledgers(state_root)
+    let (db, task_ledger) = execution_store::session_files(state_root);
+    execution_store::read_all_sessions(state_root, &db, task_ledger.as_deref())
         .into_iter()
         .flat_map(|(_, records)| records)
         .collect()
@@ -176,8 +180,11 @@ pub struct Collector {
     /// Each ledger's last good records, read again only when it changes.
     last_good: BTreeMap<PathBuf, LedgerSnapshot>,
     /// The task ledger whose worker rows are laid over each ledger's
-    /// records (TRF-44). `None` reads the JSON ledgers only.
+    /// records (TRF-44). `None` lays no worker rows.
     task_ledger: Option<PathBuf>,
+    /// The task ledger file that holds the session records (TRF-45):
+    /// `<state_root>/ledger.sqlite3` unless [`Collector::open_in`] names it.
+    session_db: PathBuf,
     /// Where each session's inputs are, kept across ticks.
     places: HashMap<(String, String), Place>,
     /// Each session's inputs as they were when last polled.
@@ -254,6 +261,7 @@ impl Collector {
         )?;
         let mut c = c.with_faults(&ctx.settings.faults);
         c.task_ledger = Some(ctx.paths.ledger_db.clone());
+        c.session_db = execution_store::session_db(&ctx.paths);
         use crate::runtime::EnvSource;
         c.print_timing = crate::runtime::ProcessEnv
             .var("HORCH_TELEMETRY_TIMING")
@@ -294,6 +302,7 @@ impl Collector {
             },
             last_good: BTreeMap::new(),
             task_ledger: None,
+            session_db: state_root.join(execution_store::STATE_DB),
             places: HashMap::new(),
             polled: HashMap::new(),
             searches: 0,
@@ -315,30 +324,25 @@ impl Collector {
         self
     }
 
-    /// Every ledger's records, keeping the last good copy of one that does
-    /// not parse right now.
+    /// Every project's records, keeping the last good copy of a JSON
+    /// ledger that does not parse right now.
     pub fn ledgers(&mut self) -> Vec<Record> {
         self.refresh_ledgers();
-        (self.last_good.values())
-            .flat_map(|l| self.overlaid(&l.records).into_owned())
-            .collect()
+        self.merged()
     }
 
-    /// 1 ledger's records with the task ledger's worker rows of its project
-    /// laid over them ([`execution_store::overlay_task_ledger`]). Without a
-    /// task ledger file, or a record that names its project, they are
-    /// borrowed as read.
-    fn overlaid<'r>(&self, records: &'r [Record]) -> std::borrow::Cow<'r, [Record]> {
-        let db = self.task_ledger.as_deref().filter(|db| db.is_file());
-        let project = records.iter().find_map(|r| r.project.as_deref());
-        match db.zip(project) {
-            Some((db, project)) => {
-                let mut out = records.to_vec();
-                execution_store::overlay_task_ledger(&mut out, db, Path::new(project));
-                std::borrow::Cow::Owned(out)
-            }
-            None => std::borrow::Cow::Borrowed(records),
-        }
+    /// The session records (TRF-45) merged with the last good JSON ledgers,
+    /// with the task ledger's worker rows of each project laid over them
+    /// ([`execution_store::merge_projects`]).
+    fn merged(&self) -> Vec<Record> {
+        let legacy = (self.last_good.iter())
+            .map(|(p, l)| (p.clone(), l.records.clone()))
+            .collect();
+        let task_ledger = self.task_ledger.as_deref().filter(|db| db.is_file());
+        execution_store::merge_projects(&self.state_root, legacy, &self.session_db, task_ledger)
+            .into_iter()
+            .flat_map(|p| p.records)
+            .collect()
     }
 
     /// The rollups of 1 project, 1 per window of [`WINDOWS`], keyed like
@@ -349,8 +353,8 @@ impl Collector {
     /// matches it too.
     pub fn project_rollups(&self, project: &str, now: DateTime<Utc>) -> BTreeMap<String, Rollup> {
         let index = &self.store.table;
-        let records = self.last_good.values().flat_map(|l| &l.records);
-        let mut fold = RollupFold::new(index, &done_ids(records), now);
+        let records = self.merged();
+        let mut fold = RollupFold::new(index, &done_ids(&records), now);
         if let Some(id) = index.names.get(project) {
             // Per row: whether its project key (group 3) is `project`.
             let mine: Vec<bool> = index.rows.iter().map(|r| r.groups[3] == id).collect();
@@ -387,15 +391,10 @@ impl Collector {
         self.timing = TickTiming::default();
         let start = Instant::now();
         self.refresh_ledgers();
-        let ledgers = std::mem::take(&mut self.last_good);
-        let lists: Vec<_> = ledgers
-            .values()
-            .map(|l| self.overlaid(&l.records))
-            .collect();
-        let records: Vec<&Record> = lists.iter().flat_map(|l| l.iter()).collect();
+        let merged = self.merged();
+        let records: Vec<&Record> = merged.iter().collect();
         self.timing.lap("ledgers", start);
         let snapshot = self.tick_on(&records, now);
-        self.last_good = ledgers;
         self.timing.total = start.elapsed();
         if self.print_timing {
             eprintln!("{}", self.timing.line());
@@ -1675,5 +1674,51 @@ mod tests {
         assert_eq!(windows, BTreeSet::from(WINDOWS));
         assert!(got.values().all(|r| *r == Rollup::default()), "{got:?}");
         assert_eq!(got, rollups_from_files(tmp.path(), "/none"));
+    }
+}
+
+#[cfg(test)]
+mod trf_45_tests {
+    use super::*;
+    use crate::execution::records::{NewRecord, SessionLedger};
+
+    /// Report 28 amendment: `read_ledgers` and the collector return the
+    /// session records with no JSON ledger on disk.
+    #[test]
+    fn trf_45_read_ledgers_and_the_collector_read_the_session_records() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = tmp.path().join("state");
+        let ledger = SessionLedger::for_project(&state, "/repo");
+        ledger
+            .add(NewRecord {
+                record_id: "r-1",
+                agent: "claude",
+                tier: "opus",
+                model: "opus",
+                role: "opus-1",
+                session_id: None,
+                task: "t",
+                phase: None,
+            })
+            .unwrap();
+        ledger.done("r-1", "finished").unwrap();
+        assert!(!ledger.path().exists(), "no JSON ledger");
+
+        let records = read_ledgers(&state);
+        assert_eq!(records.len(), 1);
+        assert_eq!(done_record_ids(&records).len(), 1);
+
+        let home = tmp.path().join("home");
+        let loc = Locations {
+            home: home.clone(),
+            claude_projects: home.join(".claude/projects"),
+            codex_sessions: home.join(".codex/sessions"),
+            pi_sessions: home.join(".pi/agent/sessions"),
+            opencode_db: home.join(".local/share/opencode/opencode.db"),
+            sqlite3: PathBuf::from("sqlite3"),
+        };
+        let mut c = Collector::open_at(&state, loc, Probing::Never, clock::now()).unwrap();
+        let ids: Vec<String> = c.ledgers().into_iter().map(|r| r.record_id).collect();
+        assert_eq!(ids, ["r-1"]);
     }
 }

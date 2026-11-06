@@ -1,14 +1,13 @@
-//! The execution store: a project's ledger file, read and written whole.
+//! The execution store: a project's session records.
 //!
-//! One JSON array of [`LedgerRecordV1`] at `<state_root>/<slug>.json`, the
-//! path, slug rule and pretty-printed format the bash implementation and
-//! every earlier binary used. A read-modify-write holds `DirLock` on
-//! `<slug>.json.lock/`, the directory the old mkdir spinlock created, so an
-//! old binary and a new one still exclude each other. Writes go through
-//! [`fsx::write_atomic`]: temp file, fsync, rename, directory fsync.
+//! The records live in the `session_records` table of a task ledger file
+//! (TRF-45, D10), 1 row per [`LedgerRecordV1`], the record as JSON. A
+//! read-modify-write is 1 immediate SQLite transaction. The old JSON ledger
+//! at `<state_root>/<slug>.json` (the path and slug rule of every earlier
+//! version) is read, never written: `horch ledger import` copies it, and a
+//! record only it holds moves into the table at the next write.
 
 use std::path::{Path, PathBuf};
-use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
 
@@ -20,7 +19,6 @@ use crate::execution::legacy::{
 use crate::execution::model::{
     Execution, ExecutionKind, ExecutionStatus, FailureKind, LaunchStage, SessionState, Task,
 };
-use crate::fsx::{self, DirLock};
 use crate::ids::{IdError, PaneId, WorkspaceId};
 use crate::runtime::Paths;
 use crate::skills::activation::ResolvedSkillRef;
@@ -29,15 +27,6 @@ use crate::workspace::client::WorkspaceClient;
 /// The history text of a record that [`ExecutionStore::end_if_pane_closed`]
 /// ended.
 pub const PANE_CLOSED: &str = "pane closed without horch done";
-
-/// A lock older than this is broken: panes can be killed mid-write, and the
-/// old spinlock broke after about 15 seconds too.
-const LOCK_STALE_AFTER: Duration = Duration::from_secs(15);
-/// How long a writer waits for a live lock before it gives up.
-const LOCK_TIMEOUT: Duration = Duration::from_secs(60);
-/// The ledger file's mode: what `std::fs::write` gave it under the usual
-/// umask before the store wrote it.
-const LEDGER_MODE: u32 = 0o644;
 
 /// Turn a project path into a filename, matching `tr -c 'A-Za-z0-9' '-'`.
 ///
@@ -308,33 +297,227 @@ pub fn from_execution(e: &Execution) -> LedgerRecordV1 {
     }
 }
 
-/// A project's executions on disk.
+/// The file name of the session records under a state root that has no
+/// task ledger of its own: a test, or a state dir moved with
+/// `HORCH_STATE_DIR` alone.
+pub const STATE_DB: &str = "ledger.sqlite3";
+
+/// The task ledger file that holds the session records of `paths`
+/// (TRF-45): the task ledger, unless the state dir moved. A state dir moved
+/// with `HORCH_STATE_DIR` (a test, a smoke run) keeps its sessions in
+/// `<state_root>/ledger.sqlite3`, as it kept its JSON ledgers in the state
+/// dir before, so it never writes another ledger's sessions. A worker pane
+/// gets the default state dir by name, which is no move.
+pub fn session_db(paths: &Paths) -> PathBuf {
+    if paths.state_root == paths.default_state_root {
+        paths.ledger_db.clone()
+    } else {
+        paths.state_root.join(STATE_DB)
+    }
+}
+
+/// The session records file and the task ledger to overlay for a reader that
+/// knows only `state_root`: this process's own files when `state_root` is
+/// this process's state root, else `<state_root>/ledger.sqlite3` and no
+/// overlay.
+pub fn session_files(state_root: &Path) -> (PathBuf, Option<PathBuf>) {
+    let paths = Paths::from_env(&crate::runtime::ProcessEnv);
+    if paths.state_root == state_root {
+        (session_db(&paths), Some(paths.ledger_db))
+    } else {
+        (state_root.join(STATE_DB), None)
+    }
+}
+
+/// 1 row of `session_records`.
+struct SessionRow {
+    project_root: String,
+    slug: String,
+    record: LedgerRecordV1,
+}
+
+/// The session records of the slug `slug` (every slug with `None`), in write
+/// order. A record that does not parse is left out.
+fn session_rows(conn: &rusqlite::Connection, slug: Option<&str>) -> Result<Vec<SessionRow>> {
+    let mut stmt = conn.prepare(
+        "SELECT project_root, slug, record_json FROM session_records
+         WHERE ?1 IS NULL OR slug = ?1 ORDER BY rowid",
+    )?;
+    let rows = stmt
+        .query_map([slug], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+            ))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(rows
+        .into_iter()
+        .filter_map(|(project_root, slug, json)| {
+            let record = serde_json::from_str(&json).ok()?;
+            Some(SessionRow {
+                project_root,
+                slug,
+                record,
+            })
+        })
+        .collect())
+}
+
+/// The session records in `db` when the file exists, without creating it.
+/// A ledger that does not open or read gives none: a read never fails on it.
+fn read_session_rows(db: &Path, slug: Option<&str>) -> Vec<SessionRow> {
+    if !db.is_file() {
+        return Vec::new();
+    }
+    crate::taskledger::Store::open(db)
+        .and_then(|store| session_rows(store.conn(), slug))
+        .unwrap_or_default()
+}
+
+/// The old JSON records (read only) that no session record replaces, then
+/// the session records: 1 project's records in write order.
+fn merge_legacy(legacy: Vec<LedgerRecordV1>, rows: Vec<LedgerRecordV1>) -> Vec<LedgerRecordV1> {
+    let stored: std::collections::HashSet<&str> =
+        rows.iter().map(|r| r.record_id.as_str()).collect();
+    let mut out: Vec<LedgerRecordV1> = legacy
+        .into_iter()
+        .filter(|r| !stored.contains(r.record_id.as_str()))
+        .collect();
+    out.extend(rows);
+    out
+}
+
+/// 1 project's records, as [`read_all_projects`] reads them.
+pub struct ProjectRecords {
+    /// The path its JSON ledger had: `<state_root>/<slug>.json`.
+    pub path: PathBuf,
+    /// The project path its session records or JSON records name.
+    pub project: Option<String>,
+    pub records: Vec<LedgerRecordV1>,
+}
+
+/// Every project's records under `state_root`, in path order: the old JSON
+/// ledgers (read only) merged with the session records in `db`, then the
+/// worker rows of `task_ledger` laid over each project. A JSON ledger that
+/// does not parse right now is left out.
+pub fn read_all_projects(
+    state_root: &Path,
+    db: &Path,
+    task_ledger: Option<&Path>,
+) -> Vec<ProjectRecords> {
+    merge_projects(state_root, read_all_ledgers(state_root), db, task_ledger)
+}
+
+/// [`read_all_projects`] over JSON ledgers the caller read already
+/// (`legacy`, path and records): a reader that keeps its last good copy of
+/// each file (the telemetry collector) passes its copies.
+pub fn merge_projects(
+    state_root: &Path,
+    legacy: Vec<(PathBuf, Vec<LedgerRecordV1>)>,
+    db: &Path,
+    task_ledger: Option<&Path>,
+) -> Vec<ProjectRecords> {
+    let mut by_path: std::collections::BTreeMap<PathBuf, (Option<String>, Vec<LedgerRecordV1>)> =
+        legacy
+            .into_iter()
+            .map(|(p, records)| (p, (None, records)))
+            .collect();
+    let mut rows: std::collections::BTreeMap<PathBuf, (String, Vec<LedgerRecordV1>)> =
+        Default::default();
+    for row in read_session_rows(db, None) {
+        let path = state_root.join(format!("{}.json", row.slug));
+        rows.entry(path)
+            .or_insert_with(|| (row.project_root.clone(), Vec::new()))
+            .1
+            .push(row.record);
+    }
+    for (path, (project, records)) in rows {
+        let entry = by_path.entry(path).or_default();
+        entry.0 = Some(project);
+        entry.1 = merge_legacy(std::mem::take(&mut entry.1), records);
+    }
+    by_path
+        .into_iter()
+        .map(|(path, (project, mut records))| {
+            let project = project.or_else(|| records.iter().find_map(|r| r.project.clone()));
+            if let Some((db, project)) = task_ledger.zip(project.as_deref()) {
+                overlay_task_ledger(&mut records, db, Path::new(project));
+            }
+            ProjectRecords {
+                path,
+                project,
+                records,
+            }
+        })
+        .collect()
+}
+
+/// [`read_all_projects`] as (path, records) pairs.
+pub fn read_all_sessions(
+    state_root: &Path,
+    db: &Path,
+    task_ledger: Option<&Path>,
+) -> Vec<(PathBuf, Vec<LedgerRecordV1>)> {
+    read_all_projects(state_root, db, task_ledger)
+        .into_iter()
+        .map(|p| (p.path, p.records))
+        .collect()
+}
+
+/// A project's executions.
 ///
-/// Reads come from the task ledger (TRF-44): when a ledger file is attached,
-/// [`ExecutionStore::read`] lays that project's worker rows over the JSON
-/// records ([`overlay_task_ledger`]). Writes still go to the JSON file only;
-/// ticket 29 removes them.
+/// The records live in the `session_records` table of a task ledger file
+/// (TRF-45, D10): 1 row per record, the record as JSON. An old JSON ledger
+/// (`<state_root>/<slug>.json`) is read, never written: a record only it
+/// holds reads as before and moves into the table at the next write. Reads
+/// lay the task ledger's worker rows over the records (TRF-44,
+/// [`overlay_task_ledger`]). Every write is 1 immediate transaction.
 #[derive(Debug, Clone)]
 pub struct ExecutionStore {
+    /// The old JSON ledger, read only.
     path: PathBuf,
+    /// The task ledger file that holds the session records.
+    db: PathBuf,
+    /// The project path as given, and its slug.
+    project: String,
+    slug: String,
     /// The task ledger and the project root its runs are under.
     task_ledger: Option<(PathBuf, PathBuf)>,
 }
 
 impl ExecutionStore {
-    /// The store for an explicit state root and project path.
+    /// The store for an explicit state root and project path. The session
+    /// records live in `<state_root>/ledger.sqlite3`.
     pub fn for_project(state_root: impl AsRef<Path>, project: &str) -> Self {
+        let state_root = state_root.as_ref();
+        Self::in_db(state_root, &state_root.join(STATE_DB), project)
+    }
+
+    /// The store for `project` with its session records in `db` and its old
+    /// JSON ledger under `state_root`.
+    pub fn in_db(state_root: &Path, db: &Path, project: &str) -> Self {
+        let slug = slug(project);
         Self {
-            path: state_root.as_ref().join(format!("{}.json", slug(project))),
+            path: state_root.join(format!("{slug}.json")),
+            db: db.to_path_buf(),
+            project: project.to_string(),
+            slug,
             task_ledger: None,
         }
     }
 
-    /// The store for `project` under the state root of `paths`, reading
-    /// through the task ledger of `paths`.
+    /// The store for `project` under the state root of `paths`, with its
+    /// session records in [`session_db`], reading through the task ledger of
+    /// `paths`.
     pub fn open(paths: &Paths, project: &Path) -> Self {
-        Self::for_project(&paths.state_root, &project.to_string_lossy())
-            .with_task_ledger(&paths.ledger_db, project)
+        Self::in_db(
+            &paths.state_root,
+            &session_db(paths),
+            &project.to_string_lossy(),
+        )
+        .with_task_ledger(&paths.ledger_db, project)
     }
 
     /// The store for the context's state root and project, reading through
@@ -344,19 +527,25 @@ impl ExecutionStore {
     }
 
     /// Read the worker rows of `project`'s runs in the task ledger `db` over
-    /// the JSON records. A ledger file that does not exist adds nothing.
+    /// the records. A ledger file that does not exist adds nothing.
     pub fn with_task_ledger(mut self, db: &Path, project: &Path) -> Self {
         self.task_ledger = Some((db.to_path_buf(), project.to_path_buf()));
         self
     }
 
+    /// The old JSON ledger of this project. Nothing writes it (TRF-45).
     pub fn path(&self) -> &Path {
         &self.path
     }
 
+    /// The task ledger file that holds this project's session records.
+    pub fn db(&self) -> &Path {
+        &self.db
+    }
+
     /// All records, oldest write order preserved, with the task ledger's
-    /// worker rows laid over them ([`overlay_task_ledger`]). An absent or
-    /// empty file reads as an empty ledger, matching the bash `[]` default.
+    /// worker rows laid over them ([`overlay_task_ledger`]). No records read
+    /// as an empty ledger. A read never creates a file.
     pub fn read(&self) -> Result<Vec<LedgerRecordV1>> {
         let mut records = self.read_file()?;
         if let Some((db, project)) = &self.task_ledger {
@@ -365,9 +554,25 @@ impl ExecutionStore {
         Ok(records)
     }
 
-    /// The JSON file's records as written: what a read-modify-write starts
+    /// The records as stored, without the overlay: what a write starts
     /// from.
     fn read_file(&self) -> Result<Vec<LedgerRecordV1>> {
+        let rows = read_session_rows(&self.db, Some(&self.slug));
+        Ok(merge_legacy(
+            self.read_legacy()?,
+            rows.into_iter().map(|r| r.record).collect(),
+        ))
+    }
+
+    /// The stored records, without the overlay, rendered as a JSON ledger
+    /// was written ([`ExecutionStore::render_json`]): what a check of the
+    /// stored bytes reads now that no JSON file is written.
+    pub fn stored_json(&self) -> Result<String> {
+        Self::render_json(&self.read_file()?)
+    }
+
+    /// The old JSON ledger's records. An absent or empty file is none.
+    fn read_legacy(&self) -> Result<Vec<LedgerRecordV1>> {
         let raw = std::fs::read_to_string(&self.path).unwrap_or_default();
         if raw.trim().is_empty() {
             return Ok(Vec::new());
@@ -408,34 +613,50 @@ impl ExecutionStore {
         out
     }
 
-    /// Replace the file with `records`, durably. A record's `status` is
-    /// brought in line with its `state` first.
-    fn write(&self, records: &mut [LedgerRecordV1]) -> Result<()> {
+    /// Replace this project's session records with `records`, inside the
+    /// transaction `tx`. A record's `status` is brought in line with its
+    /// `state` first. A record id that appears twice keeps its last row.
+    fn write(&self, tx: &rusqlite::Transaction, records: &mut [LedgerRecordV1]) -> Result<()> {
+        tx.execute("DELETE FROM session_records WHERE slug = ?1", [&self.slug])?;
+        let mut insert = tx.prepare(
+            "INSERT OR REPLACE INTO session_records
+                 (record_id, worker_id, project_root, slug, record_json, updated_at)
+             VALUES (?1, (SELECT worker_id FROM workers
+                          WHERE worker_id = ?1 OR legacy_record_id = ?1
+                          ORDER BY rowid DESC LIMIT 1),
+                     ?2, ?3, ?4, ?5)",
+        )?;
         for r in records.iter_mut() {
             r.sync_legacy_status();
+            insert.execute(rusqlite::params![
+                r.record_id,
+                self.project,
+                self.slug,
+                serde_json::to_string(r)?,
+                r.updated_at,
+            ])?;
         }
-        let json = Self::render_json(records)?;
-        fsx::write_atomic(&self.path, json.as_bytes(), LEDGER_MODE)
-            .with_context(|| format!("replacing {}", self.path.display()))
+        Ok(())
     }
 
-    /// Take the lock, mutate the records, write them back.
+    /// Mutate the records and write them back, in 1 immediate transaction
+    /// of the task ledger file: 2 writers cannot interleave.
     pub fn update<T>(&self, f: impl FnOnce(&mut Vec<LedgerRecordV1>) -> Result<T>) -> Result<T> {
-        let root = self
-            .path
-            .parent()
-            .context("ledger path has no parent directory")?;
-        let name = self
-            .path
-            .file_name()
-            .context("ledger path has no file name")?
-            .to_string_lossy();
-        let _guard = DirLock::acquire(root, &name, LOCK_STALE_AFTER, LOCK_TIMEOUT)
-            .with_context(|| format!("locking ledger {}", self.path.display()))?;
-        let mut records = self.read_file()?;
-        let out = f(&mut records)?;
-        self.write(&mut records)?;
-        Ok(out)
+        if let Some(dir) = self.db.parent().filter(|d| !d.as_os_str().is_empty()) {
+            std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
+        }
+        let mut store = crate::taskledger::Store::open(&self.db)
+            .with_context(|| format!("opening the session records in {}", self.db.display()))?;
+        store.immediate(|tx| {
+            let rows = session_rows(tx, Some(&self.slug))?;
+            let mut records = merge_legacy(
+                self.read_legacy()?,
+                rows.into_iter().map(|r| r.record).collect(),
+            );
+            let out = f(&mut records)?;
+            self.write(tx, &mut records)?;
+            Ok(out)
+        })
     }
 
     /// Mutate every record addressed by `key` (record id or session id).
@@ -447,7 +668,7 @@ impl ExecutionStore {
     ) -> Result<()> {
         self.update(|records| {
             if !records.iter().any(|r| r.matches(key)) {
-                bail!("no record matches '{key}' in {}", self.path.display())
+                bail!("no record matches '{key}' in {}", self.db.display())
             }
             records
                 .iter_mut()
@@ -570,7 +791,7 @@ impl ExecutionStore {
                 }
                 last = Some(r.execution_status());
             }
-            last.with_context(|| format!("no record matches '{key}' in {}", self.path.display()))
+            last.with_context(|| format!("no record matches '{key}' in {}", self.db.display()))
         })
     }
 
@@ -1260,5 +1481,172 @@ mod trf_44_tests {
         let synth = records.iter().find(|r| r.record_id == newer).unwrap();
         assert!(synth.is_orchestrator());
         assert_eq!(synth.agent, "codex");
+    }
+}
+
+#[cfg(test)]
+mod trf_45_tests {
+    use super::*;
+    use crate::execution::records::{NewRecord, SessionLedger};
+
+    fn json_files(dir: &Path) -> Vec<String> {
+        std::fs::read_dir(dir)
+            .map(|rd| {
+                rd.flatten()
+                    .map(|e| e.file_name().to_string_lossy().into_owned())
+                    .filter(|n| n.ends_with(".json"))
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    fn add(ledger: &SessionLedger, id: &str) {
+        ledger
+            .add(NewRecord {
+                record_id: id,
+                agent: "claude",
+                tier: "opus",
+                model: "opus",
+                role: "opus-1",
+                session_id: None,
+                task: "t",
+                phase: None,
+            })
+            .unwrap();
+    }
+
+    /// Spawn, worker start and exit, note and done write the session
+    /// records and never a JSON file.
+    #[test]
+    fn trf_45_every_session_write_goes_to_the_table_and_no_json_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = tmp.path().join("state");
+        let ledger = SessionLedger::for_project(&state, "/repo");
+        let store = ledger.store().clone();
+        add(&ledger, "r-1");
+        store.set_skills("r-1", Vec::new()).unwrap();
+        store.mark_starting("r-1", "w1:p2").unwrap();
+        store.mark_running("r-1").unwrap();
+        ledger.note("r-1", "progress").unwrap();
+        ledger.done("r-1", "finished").unwrap();
+        store.record_exit("r-1", Some(0)).unwrap();
+        add(&ledger, "r-2");
+        store
+            .end_live(
+                "r-2",
+                ExecutionStatus::Failed {
+                    failure: FailureKind::PaneVanished,
+                },
+            )
+            .unwrap();
+        store.recover_abandoned(crate::clock::now()).unwrap();
+
+        assert_eq!(json_files(&state), Vec::<String>::new());
+        let records = store.read().unwrap();
+        assert_eq!(records.len(), 2);
+        assert!(records[0].history.iter().any(|h| h.text == "finished"));
+        assert_eq!(records[0].pane_id.as_deref(), Some("w1:p2"));
+        let conn = crate::taskledger::Store::open(store.db()).unwrap();
+        let rows: i64 = conn
+            .conn()
+            .query_row(
+                "SELECT count(*) FROM session_records WHERE slug = '-repo' AND project_root = '/repo'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(rows, 2);
+    }
+
+    /// An old JSON ledger reads as before, is never written, and its
+    /// records move into the table at the next write.
+    #[test]
+    fn trf_45_an_old_json_ledger_is_read_and_never_written() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = ExecutionStore::for_project(tmp.path(), "/repo");
+        let old = LedgerRecordV1 {
+            record_id: "old-1".into(),
+            role: "opus-1".into(),
+            status: STATUS_WORKING.into(),
+            ..LedgerRecordV1::default()
+        };
+        let text = ExecutionStore::render_json(&[old]).unwrap();
+        std::fs::write(store.path(), &text).unwrap();
+        assert!(!store.db().exists());
+        assert_eq!(store.read().unwrap()[0].record_id, "old-1");
+        assert!(!store.db().exists(), "a read creates no file");
+
+        store.mark_running("old-1").unwrap();
+        assert_eq!(std::fs::read_to_string(store.path()).unwrap(), text);
+        let rows = read_session_rows(store.db(), Some("-repo"));
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].record.execution_status(), ExecutionStatus::Running);
+        assert_eq!(store.read().unwrap().len(), 1, "no duplicate");
+    }
+
+    /// A worker row that names a record links the session record to it.
+    #[test]
+    fn trf_45_a_session_record_names_its_worker_row() {
+        use crate::taskledger::runs::{self, NewRun};
+        use crate::taskledger::workers::{self, NewWorker};
+        let tmp = tempfile::tempdir().unwrap();
+        let db = tmp.path().join("ledger.sqlite3");
+        let mut ledger = crate::taskledger::Store::open(&db).unwrap();
+        let wid = ledger
+            .immediate(|tx| {
+                let run = runs::create(
+                    tx,
+                    Path::new("/repo"),
+                    &NewRun {
+                        slug: "r1".into(),
+                        ..Default::default()
+                    },
+                )?;
+                workers::insert(
+                    tx,
+                    &workers::NewWorker {
+                        run_id: run.run_id,
+                        persona: "opus".into(),
+                        legacy_record_id: Some("r-1".into()),
+                        ..NewWorker::default()
+                    },
+                )
+            })
+            .unwrap();
+        let store = ExecutionStore::in_db(tmp.path(), &db, "/repo");
+        store
+            .insert(LedgerRecordV1 {
+                record_id: "r-1".into(),
+                ..LedgerRecordV1::default()
+            })
+            .unwrap();
+        let linked: Option<String> = ledger
+            .conn()
+            .query_row(
+                "SELECT worker_id FROM session_records WHERE record_id = 'r-1'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(linked, Some(wid));
+    }
+
+    /// A state dir moved alone keeps its sessions there; the default state
+    /// dir uses the task ledger.
+    #[test]
+    fn trf_45_session_db_is_the_task_ledger_unless_the_state_dir_moved() {
+        use crate::runtime::MapEnv;
+        let home = Path::new("/home/u");
+        let at = |env: MapEnv| Paths::from_env(&env.with("HOME", "/home/u"));
+        let default = at(MapEnv::new("/"));
+        assert_eq!(session_db(&default), home.join(".horch/ledger.sqlite3"));
+        let named = at(MapEnv::new("/").with("HORCH_STATE_DIR", "/home/u/.local/state/horch"));
+        assert_eq!(session_db(&named), home.join(".horch/ledger.sqlite3"));
+        let scratch = at(MapEnv::new("/").with("HORCH_LEDGER_DB", "/tmp/l.sqlite3"));
+        assert_eq!(session_db(&scratch), Path::new("/tmp/l.sqlite3"));
+        let moved = at(MapEnv::new("/")
+            .with("HORCH_STATE_DIR", "/tmp/s")
+            .with("HORCH_LEDGER_DB", "/tmp/l.sqlite3"));
+        assert_eq!(session_db(&moved), Path::new("/tmp/s/ledger.sqlite3"));
     }
 }

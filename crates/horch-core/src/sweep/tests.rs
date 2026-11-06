@@ -534,3 +534,42 @@ fn run_due_leaves_bundles_only_for_live_records_once_an_hour() {
         "the stamp holds the next sweep for an hour"
     );
 }
+
+/// TRF-45: the sweep reads the session records, not a JSON ledger. A
+/// working record in the table whose pane closed ends there, an old JSON
+/// ledger's record ends in the table, and no JSON file is written.
+#[test]
+fn trf_45_the_sweep_ends_session_records_and_writes_no_json() {
+    let w = World::new();
+    w.record("table-1", "opus-1", "w7", "p9");
+    let old = SessionLedger::for_project(w.state(), "/old");
+    let json = crate::execution::store::ExecutionStore::render_json(&[Record {
+        record_id: "json-1".to_string(),
+        role: "opus-2".to_string(),
+        agent: "codex".to_string(),
+        status: crate::execution::legacy::STATUS_WORKING.to_string(),
+        project: Some("/old".to_string()),
+        workspace_id: Some("w7".to_string()),
+        pane_id: Some("p9".to_string()),
+        ..Record::default()
+    }])
+    .unwrap();
+    std::fs::write(old.path(), &json).unwrap();
+
+    let applied = w.sweep(Duration::ZERO);
+
+    assert_eq!(applied.removed.get(&Kind::Record), Some(&2), "{applied:?}");
+    let vanished = ExecutionStatus::Failed {
+        failure: FailureKind::PaneVanished,
+    };
+    assert_eq!(w.status("table-1"), vanished);
+    assert_eq!(old.get("json-1").unwrap().execution_status(), vanished);
+    assert_eq!(std::fs::read_to_string(old.path()).unwrap(), json);
+    let files: Vec<String> = std::fs::read_dir(w.state())
+        .unwrap()
+        .flatten()
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .filter(|n| n.ends_with(".json"))
+        .collect();
+    assert_eq!(files, ["-old.json"]);
+}

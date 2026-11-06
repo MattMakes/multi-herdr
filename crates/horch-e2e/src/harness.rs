@@ -283,6 +283,15 @@ impl Harness {
         cmd
     }
 
+    /// The session records of the project with slug `slug`, rendered as its
+    /// JSON ledger was (TRF-45: no code writes that file now; the records
+    /// live in `<state>/ledger.sqlite3`, an old JSON ledger read only).
+    pub fn stored_ledger(&self, slug: &str) -> Result<String, String> {
+        horch_core::execution::store::ExecutionStore::for_project(&self.state, slug)
+            .stored_json()
+            .map_err(|e| format!("{e:#}"))
+    }
+
     /// Run `horch`, returning its output.
     pub fn run(&self, args: &[&str]) -> Output {
         self.horch(args).output().expect("running horch")

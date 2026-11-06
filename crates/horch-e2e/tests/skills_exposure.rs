@@ -534,7 +534,7 @@ fn operator_skills_e2e_ledger_record_lists_them() {
             }
         })
         .collect();
-    let ledger = std::fs::read_to_string(h.state.join(format!("{slug}.json"))).unwrap();
+    let ledger = h.stored_ledger(&slug).unwrap();
     let records: Vec<Value> = serde_json::from_str(&ledger).unwrap();
     let r = records
         .iter()
@@ -734,7 +734,7 @@ fn ledger_record(h: &Harness, tier: &str) -> Value {
             }
         })
         .collect();
-    let ledger = std::fs::read_to_string(h.state.join(format!("{slug}.json"))).unwrap();
+    let ledger = h.stored_ledger(&slug).unwrap();
     let records: Vec<Value> = serde_json::from_str(&ledger).unwrap();
     records
         .into_iter()

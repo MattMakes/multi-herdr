@@ -24,6 +24,7 @@ use horch_core::messaging::message;
 use horch_core::prompts;
 use horch_core::runtime::RuntimeContext;
 use horch_core::skills::catalog::marketplace::GitError;
+use horch_core::taskledger::model::EventKind;
 use horch_core::vcs::git::GitCli;
 use horch_core::vcs::git::GitClient;
 use horch_core::vcs::landing::Landing;
@@ -711,18 +712,53 @@ fn inbox_listing(roles: &[RoleEntry], channel_live: bool) -> String {
     listing
 }
 
-/// Worker-facing: append a progress note to this worker's own ledger record, so
-/// the session history shows what it is doing, not just start and end states.
+/// Worker-facing: append a progress note to this worker's own session record,
+/// so the session history shows what it is doing, not just start and end
+/// states. [`note_as`] with a note.
+pub fn note(ctx: &RuntimeContext, text: &str) -> Result<()> {
+    note_as(ctx, text, EventKind::Note)
+}
+
+/// The 1 progress command (TRF-45): `horch note`, `horch ledger progress`
+/// and `horch ledger note`. It appends `text` to this worker's session
+/// record (`HORCH_RECORD_ID`) and records `kind` on its task ledger row
+/// (`HORCH_WORKER_ID`), when it has one. With a record, a task ledger
+/// failure prints and never fails the note. Without a record, the task
+/// ledger row is the only record and its failure fails the command.
 ///
 /// Then the context check (CTX-10, design §6.10): when the session is over
 /// its threshold and was not asked in this compaction cycle, it records
 /// `context-warned` and prints the rendered `warning` line (the stopping
 /// point). Context follow-up never fails a saved note. Handoff scheduling
 /// errors are visible on stderr; a panic is silenced.
-pub fn note(ctx: &RuntimeContext, text: &str) -> Result<()> {
-    let record_id = require_env("HORCH_RECORD_ID", worker_var(ctx, |w| &w.record_id))?;
-    SessionLedger::open_in(ctx)?.note(&record_id, text)?;
-    super::taskledger::note_from_worker(ctx, text);
+pub fn note_as(ctx: &RuntimeContext, text: &str, kind: EventKind) -> Result<()> {
+    let record_id = worker_var(ctx, |w| &w.record_id);
+    let worker_id = super::taskledger::worker_id_opt(ctx);
+    if record_id.is_none() && worker_id.is_none() {
+        require_env("HORCH_RECORD_ID", record_id.clone())?;
+    }
+    let session = record_id
+        .as_deref()
+        .map(|id| SessionLedger::open_in(ctx).and_then(|l| l.note(id, text)));
+    let ledger = super::taskledger::progress_from_worker(ctx, kind, text);
+    match (session, ledger) {
+        (None, Ok(true)) | (Some(Ok(())), Ok(_)) => {}
+        (None, Ok(false)) => bail!(
+            "the task ledger has no worker {}",
+            worker_id.unwrap_or_default()
+        ),
+        (None, Err(e)) => return Err(e),
+        (Some(Ok(())), Err(e)) => {
+            eprintln!("horch: the task ledger did not record the note: {e:#}")
+        }
+        (Some(Err(e)), Ok(true)) => {
+            eprintln!("horch: the session record did not record the note: {e:#}")
+        }
+        (Some(Err(e)), _) => return Err(e),
+    }
+    if let Some(line) = super::taskledger::note_handoff_warning(ctx) {
+        output::println(&line);
+    }
     let hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(|_| {}));
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -810,9 +846,16 @@ fn warn_row(
 }
 
 /// Worker-facing self-shutdown, run only when the work is truly complete (not
-/// while waiting on a question). The order of the steps is
-/// [`lifecycle::done`]'s.
+/// while waiting on a question): the 1 done command (TRF-45), `horch done`
+/// and `horch ledger done`. A worker with a claimed task finishes it in the
+/// task ledger first ([`super::taskledger::done_cmd`]), which then runs
+/// [`done_then`] in its pane. Any other worker runs [`done_then`]. The
+/// order of the steps is [`lifecycle::done`]'s.
 pub fn done(ctx: &RuntimeContext, summary: &str, unlanded: Option<&str>) -> Result<()> {
+    if super::taskledger::is_ledger_worker(ctx) {
+        let store = horch_core::taskledger::open(ctx)?;
+        return super::taskledger::done_cmd(ctx, store, summary, unlanded);
+    }
     done_then(ctx, summary, unlanded, &|| {})
 }
 
@@ -1174,6 +1217,112 @@ fn ledger_role_state(ctx: &RuntimeContext, workspace: &str, role: &str) -> Strin
 mod tests {
     use super::*;
     use std::time::Duration;
+
+    /// TRF-45: `horch note`, `horch ledger progress` and `horch ledger note`
+    /// are 1 command. With a record and a worker row, each writes the
+    /// session record's history and the worker row's progress. Without a
+    /// record, the worker row is the only record. No JSON file is written.
+    #[test]
+    fn trf_45_note_and_ledger_progress_are_1_command_and_write_no_json() {
+        use horch_core::runtime::MapEnv;
+        use horch_core::taskledger::runs::{self, NewRun};
+        use horch_core::taskledger::workers::{self, NewWorker};
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("repo");
+        let state = dir.path().join("state");
+        std::fs::create_dir_all(&root).unwrap();
+        let db = dir.path().join("ledger.sqlite3");
+        let mut store = horch_core::taskledger::Store::open(&db).unwrap();
+        let wid = store
+            .immediate(|tx| {
+                let run = runs::create(
+                    tx,
+                    &root,
+                    &NewRun {
+                        slug: "r1".into(),
+                        ..Default::default()
+                    },
+                )?;
+                let id = workers::insert(
+                    tx,
+                    &NewWorker {
+                        run_id: run.run_id,
+                        persona: "opus".into(),
+                        role: Some("opus-1".into()),
+                        legacy_record_id: Some("r-1".into()),
+                        ..Default::default()
+                    },
+                )?;
+                tx.execute(
+                    "UPDATE workers SET status = 'working' WHERE worker_id = ?1",
+                    [&id],
+                )?;
+                Ok(id)
+            })
+            .unwrap();
+        let ctx = |record: Option<&str>, worker: Option<&str>| {
+            let mut env = MapEnv::new(&root)
+                .with("HOME", &dir.path().to_string_lossy())
+                .with("HORCH_STATE_DIR", &state.to_string_lossy())
+                .with("HORCH_LEDGER_DB", &db.to_string_lossy())
+                .with("HORCH_PROJECT_DIR", &root.to_string_lossy())
+                .with("HORCH_ROLE", "opus-1");
+            if let Some(id) = record {
+                env = env.with("HORCH_RECORD_ID", id);
+            }
+            if let Some(id) = worker {
+                env = env.with("HORCH_WORKER_ID", id);
+            }
+            RuntimeContext::from_env(&env).unwrap()
+        };
+        let both = ctx(Some("r-1"), Some(&wid));
+        SessionLedger::open_in(&both)
+            .unwrap()
+            .add(horch_core::execution::records::NewRecord {
+                record_id: "r-1",
+                agent: "claude",
+                tier: "opus",
+                model: "opus",
+                role: "opus-1",
+                session_id: None,
+                task: "t",
+                phase: None,
+            })
+            .unwrap();
+
+        note(&both, "step one").unwrap();
+        note_as(&both, "milestone", EventKind::Progress).unwrap();
+        note_as(&ctx(None, Some(&wid)), "ledger only", EventKind::Progress).unwrap();
+        let err = note(&ctx(None, None), "x").unwrap_err();
+        assert!(format!("{err:#}").contains("HORCH_RECORD_ID"), "{err:#}");
+
+        let history: Vec<String> = SessionLedger::open_in(&both)
+            .unwrap()
+            .get("r-1")
+            .unwrap()
+            .history
+            .into_iter()
+            .filter(|h| h.event == "note")
+            .map(|h| h.text)
+            .collect();
+        assert_eq!(history, ["step one", "milestone"]);
+        let texts: Vec<String> = store
+            .conn()
+            .prepare("SELECT text FROM events WHERE worker_id = ?1 AND kind IN ('note', 'progress') ORDER BY rowid")
+            .unwrap()
+            .query_map([&wid], |r| r.get(0))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert_eq!(texts, ["step one", "milestone", "ledger only"]);
+        let json: Vec<_> = std::fs::read_dir(&state)
+            .unwrap()
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .filter(|n| n.ends_with(".json"))
+            .collect();
+        assert!(json.is_empty(), "{json:?}");
+    }
 
     /// TRF-25: an answer carries `re #<id>` in the orchestrator tag, once.
     #[test]

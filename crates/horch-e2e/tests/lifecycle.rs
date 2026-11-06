@@ -59,7 +59,9 @@ fn records(h: &Harness) -> Vec<Value> {
             }
         })
         .collect();
-    std::fs::read_to_string(h.state.join(format!("{slug}.json")))
+    // TRF-45: the session records, not a JSON file.
+    horch_core::execution::store::ExecutionStore::for_project(&h.state, &slug)
+        .stored_json()
         .ok()
         .and_then(|t| serde_json::from_str(&t).ok())
         .unwrap_or_default()

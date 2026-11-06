@@ -32,7 +32,7 @@ fn gated(name: &str, fixture: &str) -> Harness {
 }
 
 fn records(h: &Harness) -> Vec<Value> {
-    let text = std::fs::read_to_string(h.state.join("-work-alpha.json")).unwrap();
+    let text = h.stored_ledger("-work-alpha").unwrap();
     serde_json::from_str(&text).unwrap()
 }
 

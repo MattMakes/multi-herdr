@@ -448,7 +448,9 @@ fn a_schema_2_ledger_migrates_forward_and_keeps_its_rows() {
     let path = dir.path().join("ledger.sqlite3");
     let conn = rusqlite::Connection::open(&path).unwrap();
     conn.execute_batch(
-        "DROP INDEX outbox_undelivered;
+        "DROP INDEX session_records_by_slug;
+         DROP TABLE session_records;
+         DROP INDEX outbox_undelivered;
          DROP TABLE outbox;
          DROP INDEX run_gates_by_tip;
          DROP TABLE run_gates;
@@ -463,6 +465,7 @@ fn a_schema_2_ledger_migrates_forward_and_keeps_its_rows() {
          ALTER TABLE runs DROP COLUMN orchestrator_respawns;
          ALTER TABLE runs DROP COLUMN last_respawn_at;
          ALTER TABLE workers DROP COLUMN handoff_path;
+         ALTER TABLE workers DROP COLUMN target_task_id;
          ALTER TABLE worktrees DROP COLUMN bytes;
          ALTER TABLE worktrees DROP COLUMN bytes_measured_at;
          ALTER TABLE worktrees DROP COLUMN archive_ref;

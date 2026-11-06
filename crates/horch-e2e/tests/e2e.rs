@@ -91,6 +91,13 @@ fn ledger_path(h: &Harness, slug: &str) -> PathBuf {
     h.state.join(format!("{slug}.json"))
 }
 
+/// The session records of the project with slug `slug` (TRF-45: the old
+/// JSON ledger, read only, merged with the `session_records` table).
+fn stored_records(h: &Harness, slug: &str) -> Option<Vec<Value>> {
+    let store = horch_core::execution::store::ExecutionStore::for_project(&h.state, slug);
+    serde_json::from_str(&store.stored_json().ok()?).ok()
+}
+
 fn wait_for(what: &str, mut f: impl FnMut() -> bool) {
     harness::wait_for(what, || f().then_some(()));
 }
@@ -357,13 +364,10 @@ fn tel_02_fleet_writes_orchestrator_record() {
             }
         })
         .collect();
-    // The ledger is replaced atomically, so a read can see no file or a
-    // partial one. Retry the whole read and parse on every poll.
+    // The record may not be written yet: retry the read on every poll.
     let mut orch = Value::Null;
     wait_for("the orchestrator record in the ledger", || {
-        let found = std::fs::read_to_string(ledger_path(&h, &slug))
-            .ok()
-            .and_then(|t| serde_json::from_str::<Vec<Value>>(&t).ok())
+        let found = stored_records(&h, &slug)
             .and_then(|rs| rs.into_iter().find(|r| r["kind"] == "orchestrator"));
         found.map(|r| orch = r).is_some()
     });
@@ -439,9 +443,7 @@ fn tel_02_fleet_records_the_orchestrators_plugin_skills() {
         .collect();
     let mut orch = Value::Null;
     wait_for("the orchestrator record in the ledger", || {
-        let found = std::fs::read_to_string(ledger_path(&h, &slug))
-            .ok()
-            .and_then(|t| serde_json::from_str::<Vec<Value>>(&t).ok())
+        let found = stored_records(&h, &slug)
             .and_then(|rs| rs.into_iter().find(|r| r["kind"] == "orchestrator"));
         found.map(|r| orch = r).is_some()
     });
@@ -1128,6 +1130,7 @@ fn bal_04_gate_before_side_effects() {
     let h = gated("bal04", "all-exhausted");
     let ledger = ledger_path(&h, "-work-alpha");
     let before = std::fs::read(&ledger).unwrap();
+    let stored = stored_records(&h, "-work-alpha");
     let out = h.run(&["spawn", "opus", "--from-pane", "w1:p1"]);
     assert_eq!(out.status.code(), Some(3), "{}", stderr(&out));
     assert!(
@@ -1139,6 +1142,11 @@ fn bal_04_gate_before_side_effects() {
         std::fs::read(&ledger).unwrap(),
         before,
         "ledger byte-identical"
+    );
+    assert_eq!(
+        stored_records(&h, "-work-alpha"),
+        stored,
+        "session records unchanged"
     );
     assert!(
         !h.calls_of("herdr").iter().any(|c| c["argv"][1] == "split"),
@@ -1179,7 +1187,7 @@ fn bal_04_exit_code_3() {
 }
 
 fn records(h: &Harness) -> Vec<Value> {
-    serde_json::from_str(&std::fs::read_to_string(ledger_path(h, "-work-alpha")).unwrap()).unwrap()
+    stored_records(h, "-work-alpha").unwrap()
 }
 
 #[test]
