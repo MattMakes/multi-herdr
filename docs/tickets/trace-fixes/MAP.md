@@ -60,7 +60,8 @@ Spec: [docs/specs/trace-fixes.md](../../specs/trace-fixes.md)
 | 54 | [A skipped run claim refuses the orchestrator launch](54-skipped-claim-refuses-launch.md) | primary `opus-hardening`, fallback `opus` | yes | 12 | 32, 50 |
 | 55 | [A refused fleet launch leaves no orchestrator route behind](55-refused-launch-drops-route.md) | primary `opus-hardening`, fallback `opus` | yes | 13 | 54 |
 | 56 | [Merge PR #338 (skill-intake) into the run branch](56-merge-skill-intake.md) | primary `opus-hardening`, fallback `opus` | no | 14 | 33 |
-| 57 | [Full gate on the run branch after the PR #338 merge](57-regate-after-merge.md) | primary `opus`, fallback `backend-developer` | no | 15 | 56 |
+| 58 | [The spawn_only controller is identified by its recorded process, intake roles run on Opus](58-intake-identity-model.md) | primary `opus-hardening`, fallback `opus` | no | 15 | 56 |
+| 57 | [Full gate on the run branch after the PR #338 merge](57-regate-after-merge.md) | primary `opus`, fallback `backend-developer` | no | 16 | 56, 58 |
 
 ## Waves
 

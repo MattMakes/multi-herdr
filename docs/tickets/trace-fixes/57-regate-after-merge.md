@@ -7,7 +7,7 @@
 **Check:** none
 
 Spec: `docs/specs/trace-fixes.md` (conventions in section 8). Added by the orchestrator. Prior gate: ticket 33, report `/Users/mascott/projects/multi-herdr/ai_docs/reports/trace-fixes/33.md`. Merge: ticket 56, report `/Users/mascott/projects/multi-herdr/ai_docs/reports/trace-fixes/56.md`.
-Waits for: 56.
+Waits for: 56, 58.
 
 ## Goal
 
