@@ -463,7 +463,7 @@ fn tel_02_resume_refuses_orchestrator() {
     let mut h = corpus("tel02r");
     h.set("HORCH_PROJECT_DIR", "/work/alpha");
     h.set("HORCH_WORKSPACE_ID", "w1");
-    let out = h.run(&["spawn", "--resume", "rec-o1", "continue"]);
+    let out = h.run(&["spawn", "--resume", "rec-o1"]);
     assert!(!out.status.success());
     assert!(
         stderr(&out).contains("record rec-o1 is an orchestrator; restart it with horch fleet"),
@@ -1128,7 +1128,7 @@ fn bal_04_gate_before_side_effects() {
     let h = gated("bal04", "all-exhausted");
     let ledger = ledger_path(&h, "-work-alpha");
     let before = std::fs::read(&ledger).unwrap();
-    let out = h.run(&["spawn", "opus", "x", "--from-pane", "w1:p1"]);
+    let out = h.run(&["spawn", "opus", "--from-pane", "w1:p1"]);
     assert_eq!(out.status.code(), Some(3), "{}", stderr(&out));
     assert!(
         stdout(&out).starts_with("REFUSED: opus cannot start."),
@@ -1165,7 +1165,6 @@ fn bal_04_exit_code_3() {
     let out = h.run(&[
         "spawn",
         "opus",
-        "x",
         "--from-pane",
         "w1:p1",
         "--force",
@@ -1186,14 +1185,7 @@ fn records(h: &Harness) -> Vec<Value> {
 #[test]
 fn bal_05_substituted_record_fields() {
     let h = gated("bal05", "claude-exhausted-codex-ok");
-    let out = h.run(&[
-        "spawn",
-        "researcher",
-        "look into ai_docs/plans/p.md",
-        "--from-pane",
-        "w1:p1",
-        "--no-tile",
-    ]);
+    let out = h.run(&["spawn", "researcher", "--from-pane", "w1:p1", "--no-tile"]);
     assert!(out.status.success(), "{}", stderr(&out));
     let first = stdout(&out).lines().next().unwrap().to_string();
     assert_eq!(
@@ -1215,7 +1207,6 @@ fn bal_05_substituted_record_fields() {
         r["role"], "researcher-1",
         "the role keeps the original's name"
     );
-    assert_eq!(r["plan"], "p");
     let brief: Value = serde_json::from_str(
         &std::fs::read_to_string(
             h.state
@@ -1235,14 +1226,7 @@ fn bal_05_substituted_record_fields() {
 fn bal_05_resume_uses_via() {
     let mut h = gated("bal05r", "claude-exhausted-codex-ok");
     assert!(h
-        .run(&[
-            "spawn",
-            "researcher",
-            "x",
-            "--from-pane",
-            "w1:p1",
-            "--no-tile"
-        ])
+        .run(&["spawn", "researcher", "--from-pane", "w1:p1", "--no-tile"])
         .status
         .success());
     let r = records(&h)
@@ -1271,7 +1255,6 @@ fn bal_05_resume_uses_via() {
         "spawn",
         "--resume",
         &id,
-        "more",
         "--from-pane",
         "w1:p1",
         "--no-tile",
@@ -1310,7 +1293,7 @@ fn bal_06_route_matches_gate() {
             let h = gated(&format!("bal06-{fixture}-{teammate}"), fixture);
             let route = h.run(&["route", teammate, "--json"]);
             let r = json(&route);
-            let spawn = h.run(&["spawn", teammate, "x", "--from-pane", "w1:p1", "--no-tile"]);
+            let spawn = h.run(&["spawn", teammate, "--from-pane", "w1:p1", "--no-tile"]);
             let gate_line = stdout(&spawn)
                 .lines()
                 .next()

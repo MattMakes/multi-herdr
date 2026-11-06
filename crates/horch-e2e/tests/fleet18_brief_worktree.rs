@@ -325,7 +325,6 @@ fn g56_later_spawn_receives_recorded_fact() {
             "w1:p1",
             "--force",
             "--no-tile",
-            "Read the project facts",
         ],
     );
     let call = horch_e2e::harness::wait_for("worker brief with project facts", || {

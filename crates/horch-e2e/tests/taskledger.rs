@@ -1636,14 +1636,14 @@ fn the_import_finds_work_that_never_landed() {
 }
 
 #[test]
-fn assign_refuses_in_a_ledger_run() {
+fn trf_43_assign_is_gone() {
     let mut h = fleet("tl-assign", "default");
     h.set("HORCH_NO_WATCHDOG", "1");
     ok(&h, &["ledger", "run", "new", "eta"]);
     let o = h.run(&["assign", "opus-1", "do it"]);
     assert!(!o.status.success());
     assert!(
-        text(&o).contains("assignment is queue plus claim"),
+        text(&o).contains("unrecognized subcommand 'assign'"),
         "{}",
         text(&o)
     );
@@ -3279,37 +3279,17 @@ fn a_spawn_joins_the_run_of_its_own_workspace() {
 }
 
 #[test]
-fn a_spawn_with_task_text_runs_outside_the_run() {
+fn trf_43_a_spawn_with_task_text_refuses_with_the_ledger_task_command() {
     let h = fleet("tl-spawn-text", "default");
     ok(&h, &["ledger", "run", "new", "a"]);
     let o = h.run(&spawn_args("w1:p1", &["codex-terra", "Review src/x.rs"]));
-    assert!(o.status.success(), "{}", text(&o));
+    assert!(!o.status.success(), "{}", text(&o));
     assert!(
-        text(&o).contains("NOTE: this spawn has task text, so it runs outside task-ledger run a"),
+        text(&o).contains("horch ledger task 'Review src/x.rs' --persona codex-terra"),
         "{}",
         text(&o)
     );
     assert_eq!(run_of_worker(&h, "a", "codex-terra"), 0);
-}
-
-#[test]
-fn assign_refuses_only_in_the_workspace_that_owns_the_run() {
-    let mut h = fleet("tl-assign-ws", "default");
-    h.set("HORCH_NO_WATCHDOG", "1");
-    second_workspace(&h);
-    ok(&h, &["ledger", "run", "new", "a"]);
-    // W2 owns no run: assign passes the ledger guard to the role lookup.
-    let o = run_env(
-        &h,
-        &[("HORCH_WORKSPACE_ID", "w2")],
-        &["assign", "opus-1", "do it"],
-    );
-    assert!(!o.status.success(), "{}", text(&o));
-    assert!(
-        text(&o).contains("no working session for role 'opus-1'"),
-        "{}",
-        text(&o)
-    );
 }
 
 // ─── #190: no pre-claim row outlives its process ─────────────────────────────

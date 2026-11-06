@@ -166,7 +166,11 @@ fn spawn_worker(
     let existing = resume_record(&req, &sc)?;
     let planned = plan_request(ctx, &req, &sc, existing.as_ref());
     if let Some(rec) = GateRecord::of(&planned) {
-        record_gate(ctx, ledger.map(|l| (l.run.run_id.as_str(), l.worker_id.as_str())), &rec);
+        record_gate(
+            ctx,
+            ledger.map(|l| (l.run.run_id.as_str(), l.worker_id.as_str())),
+            &rec,
+        );
     }
     launch(ctx, &sc, planned?, args.role.as_deref(), ledger)
 }
@@ -250,9 +254,7 @@ fn record_gate(ctx: &RuntimeContext, about: Option<(&str, &str)>, rec: &GateReco
             task: None,
             worker: about.map(|(_, worker)| worker),
         };
-        store.immediate(|tx| {
-            ledger_event(tx, &about, Actor::Horch, EventKind::Note, &rec.text())
-        })
+        store.immediate(|tx| ledger_event(tx, &about, Actor::Horch, EventKind::Note, &rec.text()))
     };
     if let Err(e) = write() {
         eprintln!("horch spawn: the task ledger did not record the gate decision: {e:#}");
@@ -747,7 +749,10 @@ mod trf_41_tests {
         let db = dir.path().join("ledger.sqlite3");
         let ctx = RuntimeContext::from_env(
             &MapEnv::new("/")
-                .with("HORCH_STATE_DIR", dir.path().join("state").to_str().unwrap())
+                .with(
+                    "HORCH_STATE_DIR",
+                    dir.path().join("state").to_str().unwrap(),
+                )
                 .with("HORCH_LEDGER_DB", db.to_str().unwrap()),
         )
         .unwrap();
@@ -839,7 +844,11 @@ mod trf_41_tests {
     fn trf_41_each_decision_is_1_ledger_event_about_the_run_and_the_worker() {
         let (_dir, ctx, store, run) = world();
         let about = Some((run.run_id.as_str(), "w-1"));
-        record_gate(&ctx, about, &GateRecord::spoken(&provenance("opus", "opus", Some("n"))));
+        record_gate(
+            &ctx,
+            about,
+            &GateRecord::spoken(&provenance("opus", "opus", Some("n"))),
+        );
         record_gate(&ctx, about, &GateRecord::refused(&refusal()).unwrap());
         let events = gate_events(&store, &run);
         assert_eq!(events.len(), 2, "{events:?}");
@@ -859,13 +868,23 @@ mod trf_41_tests {
         let before = tasks::plan_workers(store.conn(), &run.run_id).unwrap();
         let about = Some((run.run_id.as_str(), "w-1"));
         record_gate(&ctx, about, &GateRecord::refused(&refusal()).unwrap());
-        record_gate(&ctx, about, &GateRecord::spoken(&provenance("opus", "codex-sol", None)));
+        record_gate(
+            &ctx,
+            about,
+            &GateRecord::spoken(&provenance("opus", "codex-sol", None)),
+        );
         assert_eq!(gate_events(&store, &run).len(), 2);
-        assert_eq!(tasks::plan_workers(store.conn(), &run.run_id).unwrap(), before);
+        assert_eq!(
+            tasks::plan_workers(store.conn(), &run.run_id).unwrap(),
+            before
+        );
         // The gate itself takes no ledger: its inputs are the roster and
         // the quota view, so a record cannot reach a decision.
         let src = include_str!("../../../horch-core/src/routing/decision.rs");
-        assert!(!src.contains("events"), "the gate must not read ledger events");
+        assert!(
+            !src.contains("events"),
+            "the gate must not read ledger events"
+        );
     }
 
     #[test]
@@ -875,7 +894,10 @@ mod trf_41_tests {
         std::fs::write(dir.path().join("no-dir"), "a file, not a directory").unwrap();
         let ctx = RuntimeContext::from_env(
             &MapEnv::new("/")
-                .with("HORCH_STATE_DIR", dir.path().join("state").to_str().unwrap())
+                .with(
+                    "HORCH_STATE_DIR",
+                    dir.path().join("state").to_str().unwrap(),
+                )
                 .with("HORCH_LEDGER_DB", bad.to_str().unwrap()),
         )
         .unwrap();

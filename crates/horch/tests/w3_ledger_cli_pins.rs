@@ -570,11 +570,13 @@ fn spawn_checks_the_run_the_persona_and_the_replaced_worker() {
         live.err,
         format!("horch: worker dev1 is still spawning. Run horch ledger stop {id} \"<reason>\" --run r1, then spawn again\n")
     );
-    let outside = w.run(&["spawn", "sonnet", "do a thing"]);
+    let text = w.run(&["spawn", "sonnet", "do a thing"]);
+    assert_eq!(text.code, 1);
     assert!(
-        outside.err.starts_with("horch spawn: NOTE: this spawn has task text, so it runs outside task-ledger run r1. Give --run <slug> to join a run.\n"),
+        text.err
+            .contains("horch ledger task 'do a thing' --persona sonnet"),
         "{}",
-        outside.err
+        text.err
     );
     let missing = w.run(&["spawn", "sonnet", "--run", "nosuch"]);
     assert_eq!(missing.code, 1);

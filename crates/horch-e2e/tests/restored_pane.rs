@@ -70,14 +70,7 @@ fn record(h: &Harness, id: &str) -> Value {
 
 /// A spawned codex worker that runs, as `(pane, role, record id)`.
 fn running_worker(h: &Harness) -> (String, String, String) {
-    let o = h.run(&[
-        "spawn",
-        "codex-sol",
-        "build the thing",
-        "--from-pane",
-        "w1:p1",
-        "--no-tile",
-    ]);
+    let o = h.run(&["spawn", "codex-sol", "--from-pane", "w1:p1", "--no-tile"]);
     assert!(o.status.success(), "{}", text(&o));
     let pane = String::from_utf8_lossy(&o.stdout)
         .lines()

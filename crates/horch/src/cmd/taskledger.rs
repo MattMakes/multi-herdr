@@ -3742,7 +3742,9 @@ mod tests {
         root: &Path,
     ) -> (finish::Outcome, finish::Outcome) {
         use horch_core::taskledger::model::StepName;
-        let run = runs::active_solo(store.conn(), root, "w7").unwrap().unwrap();
+        let run = runs::active_solo(store.conn(), root, "w7")
+            .unwrap()
+            .unwrap();
         let worker = NewWorker {
             run_id: run.run_id.clone(),
             persona: "opus".into(),
@@ -3790,7 +3792,9 @@ mod tests {
         let (ctx, mut store) = task_world(dir.path(), &root, Some("w7"));
         super::task_cmd(&ctx, &mut store, task_args("no check", None, None)).unwrap();
         super::task_cmd(&ctx, &mut store, task_args("tidy", None, Some(" none "))).unwrap();
-        let run = runs::active_solo(store.conn(), &root, "w7").unwrap().unwrap();
+        let run = runs::active_solo(store.conn(), &root, "w7")
+            .unwrap()
+            .unwrap();
         let queued = tasks::of_run(store.conn(), &run.run_id).unwrap();
         assert!(!queued[0].check_none);
         assert!(queued[1].check_none, "--check none sets check_none");

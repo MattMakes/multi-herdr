@@ -66,14 +66,7 @@ fn workspace(name: &str, wait_ms: &str) -> Harness {
 }
 
 fn spawn_smoke(h: &Harness) -> Output {
-    h.run(&[
-        "spawn",
-        "smoke",
-        "start",
-        "--from-pane",
-        "w1:p1",
-        "--no-tile",
-    ])
+    h.run(&["spawn", "smoke", "--from-pane", "w1:p1", "--no-tile"])
 }
 
 /// Poll `f` every 50 ms until it is true; false after `limit`.
@@ -175,14 +168,7 @@ fn spawn_fails_with_the_error_of_a_worker_whose_brief_is_missing() {
     );
     h.set("HORCH_HERDR_BIN", wrapper.to_string_lossy());
 
-    let out = h.run(&[
-        "spawn",
-        "smoke",
-        "never starts",
-        "--from-pane",
-        "w1:p1",
-        "--no-tile",
-    ]);
+    let out = h.run(&["spawn", "smoke", "--from-pane", "w1:p1", "--no-tile"]);
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(!out.status.success(), "{}", text(&out));
     assert!(

@@ -407,7 +407,6 @@ fn g52_concurrent_workers_get_their_own_session_and_transcript() {
                 "spawn",
                 "--resume",
                 record,
-                "continue",
                 "--role",
                 &role,
                 "--from-pane",
@@ -639,7 +638,6 @@ fn g50_live_foreign_runs_and_legacy_orchestrators_warn_but_do_not_block() {
     let o = h.run(&[
         "spawn",
         "sonnet",
-        "task",
         "--from-pane",
         "w1:p1",
         "--no-tile",
@@ -667,7 +665,6 @@ fn g50_live_foreign_runs_and_legacy_orchestrators_warn_but_do_not_block() {
     let o = h.run(&[
         "spawn",
         "sonnet",
-        "task",
         "--from-pane",
         "w1:p1",
         "--no-tile",
@@ -696,7 +693,6 @@ fn g50_legacy_orchestrator_and_host_load_are_advisory() {
     let argv = [
         "spawn",
         "sonnet",
-        "task",
         "--from-pane",
         "w1:p1",
         "--no-tile",
@@ -722,7 +718,6 @@ fn g50_legacy_orchestrator_and_host_load_are_advisory() {
     let o = h.run(&[
         "spawn",
         "sonnet",
-        "task",
         "--from-pane",
         "w2:p1",
         "--no-tile",
@@ -869,7 +864,6 @@ fn g49_spawn_doctor_and_inbox_warn_once_and_name_installed_binary() {
         &[
             "spawn",
             "sonnet",
-            "task",
             "--from-pane",
             "w1:p1",
             "--no-tile",
@@ -1039,7 +1033,6 @@ fn g52_done_discovery_uses_the_same_launch_token() {
         &[
             "spawn",
             "codex-terra",
-            "work",
             "--role",
             role,
             "--from-pane",

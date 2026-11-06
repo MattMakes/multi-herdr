@@ -43,7 +43,7 @@ fn arc_07_e2e_bin_overrides_reach_worker() {
         .unwrap();
     assert!(created.status.success(), "{}", text(&created));
 
-    let out = h.run(&["spawn", "sonnet", "x", "--from-pane", "w1:p1", "--no-tile"]);
+    let out = h.run(&["spawn", "sonnet", "--from-pane", "w1:p1", "--no-tile"]);
     assert!(out.status.success(), "{}", text(&out));
     let pane = String::from_utf8_lossy(&out.stdout)
         .lines()

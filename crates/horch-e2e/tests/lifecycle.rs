@@ -143,7 +143,7 @@ fn lifecycle(harness: &str, teammate: &str, fake: &str) {
 
 /// [`lifecycle`] in a harness the caller has set up.
 fn lifecycle_in(h: Harness, harness: &str, teammate: &str, fake: &str) {
-    let pane = spawn(&h, &[teammate, "build the thing"]);
+    let pane = spawn(&h, &[teammate]);
     let fresh = records(&h)
         .into_iter()
         .find(|r| r["tier"] == teammate)
@@ -172,7 +172,7 @@ fn lifecycle_in(h: Harness, harness: &str, teammate: &str, fake: &str) {
     assert_eq!(r["status"], "done", "{r}");
     assert_eq!(r["state"]["state"], "done", "{r}");
 
-    let pane2 = spawn(&h, &["--resume", &id, "keep going"]);
+    let pane2 = spawn(&h, &["--resume", &id]);
     let resumed = wait_for("the resumed launch", || launch_naming(&h, fake, &session));
     assert!(
         resumed["violations"].as_array().unwrap().is_empty(),
@@ -248,7 +248,7 @@ fn arc_26_e2e_lifecycle_matrix_antigravity() {
 fn pane_command_removes_a_forbidden_key_before_horch_starts() {
     let mut h = fleet("pane-env", "default");
     h.set("ANTHROPIC_API_KEY", "SENTINEL");
-    let pane = spawn(&h, &["sonnet", "build the thing"]);
+    let pane = spawn(&h, &["sonnet"]);
     let ran = h
         .calls_of("herdr")
         .into_iter()
@@ -298,7 +298,7 @@ fn worker_warns_once_about_a_teammate_file_that_does_not_load() {
         .replace("name: opus", "name: newcomer")
         .replacen("\n---\n", "\nrequires: [no-such-tool]\n---\n", 1);
     std::fs::write(dir.join("newcomer.md"), broken).unwrap();
-    let pane = spawn(&h, &["sonnet", "build the thing"]);
+    let pane = spawn(&h, &["sonnet"]);
     let role = records(&h)[0]["role"].as_str().unwrap().to_string();
     let mut worker = h.horch(&["worker", &role]);
     worker.env("HERDR_PANE_ID", &pane);
@@ -333,7 +333,7 @@ fn antigravity_child_never_receives_a_forbidden_key() {
     ];
     let mut h = fleet("agy-env", "default");
     with_agy(&mut h);
-    let pane = spawn(&h, &["antigravity", "build the thing"]);
+    let pane = spawn(&h, &["antigravity"]);
     let role = records(&h)[0]["role"].as_str().unwrap().to_string();
     let mut worker = h.horch(&["worker", &role]);
     worker.env("HERDR_PANE_ID", &pane);
@@ -373,7 +373,7 @@ fn antigravity_child_never_receives_a_forbidden_key() {
 #[test]
 fn tel_session_recorded_when_agent_ends_fast() {
     let h = fleet("tel-fast-end", "exec,stay");
-    let pane = spawn(&h, &["codex-sol", "build the thing"]);
+    let pane = spawn(&h, &["codex-sol"]);
     let fresh = records(&h)
         .into_iter()
         .find(|r| r["tier"] == "codex-sol")
@@ -399,7 +399,7 @@ fn tel_session_recorded_when_agent_ends_fast() {
 #[test]
 fn tel_session_recorded_when_prime_ends_fast() {
     let h = fleet("tel-fast-end-prime", "exec,stay");
-    let pane = spawn(&h, &["prime", "build the thing"]);
+    let pane = spawn(&h, &["prime"]);
     let fresh = records(&h)
         .into_iter()
         .find(|r| r["tier"] == "prime")
@@ -423,7 +423,7 @@ fn tel_session_recorded_when_prime_ends_fast() {
 #[test]
 fn arc_16_e2e_fail_split() {
     let h = fleet("arc16-split", "fail_split");
-    let out = h.run(&["spawn", "sonnet", "x", "--from-pane", "w1:p1", "--no-tile"]);
+    let out = h.run(&["spawn", "sonnet", "--from-pane", "w1:p1", "--no-tile"]);
     assert!(!out.status.success(), "{}", text(&out));
     assert_ne!(
         out.status.code(),
@@ -453,7 +453,7 @@ fn arc_16_e2e_fail_split() {
 fn arc_16_crash_after_insert_not_live() {
     let mut h = fleet("arc16-crash", "default");
     h.set("HORCH_FAULT", "abort-after-execution-insert");
-    let out = h.run(&["spawn", "sonnet", "x", "--from-pane", "w1:p1", "--no-tile"]);
+    let out = h.run(&["spawn", "sonnet", "--from-pane", "w1:p1", "--no-tile"]);
     assert_eq!(out.status.code(), Some(86), "{}", text(&out));
     let r = records(&h).pop().unwrap();
     assert_eq!(r["state"]["state"], "planned", "{r}");
@@ -467,7 +467,7 @@ fn arc_16_crash_after_insert_not_live() {
     // A later spawn recovers it and goes on.
     h.unset("HORCH_FAULT");
     h.set("HORCH_NOW", "2026-09-28T18:05:00Z");
-    spawn(&h, &["sonnet", "y"]);
+    spawn(&h, &["sonnet"]);
     let r = record(&h, &crashed);
     assert_eq!(r["state"]["state"], "launch_failed", "{r}");
     assert_eq!(r["status"], "done");

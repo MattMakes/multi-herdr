@@ -130,7 +130,7 @@ fn as_worker(h: &Harness, args: &[&str], pane: &str, role: &str, id: &str) -> Ou
 
 /// A spawned codex worker that is running, as `(pane, role, record id)`.
 fn running_worker(h: &Harness) -> (String, String, String) {
-    let pane = spawn(h, &["codex-sol", "build the thing"]);
+    let pane = spawn(h, &["codex-sol"]);
     let r = records(h).pop().expect("the spawn wrote a record");
     let id = r["record_id"].as_str().unwrap().to_string();
     let role = r["role"].as_str().unwrap().to_string();
@@ -239,7 +239,7 @@ fn g5_resume_after_a_closed_pane() {
         .unwrap_or_else(|| panic!("no {role} in {stdout}"));
     assert!(line.ends_with("(pane closed)"), "{stdout}");
 
-    let pane2 = spawn(&h, &["--resume", &id, "keep going"]);
+    let pane2 = spawn(&h, &["--resume", &id]);
     let r = record(&h, &id);
     let events: Vec<(&str, &str)> = r["history"]
         .as_array()
@@ -778,7 +778,7 @@ fn w2_agent_exit_before_done_tells_the_orchestrator() {
     let mailbox = h.state.join("herdr-orchestration-w1");
     std::fs::create_dir_all(&mailbox).unwrap();
     std::fs::write(mailbox.join("orchestrator.id"), "w1:p1").unwrap();
-    let pane = spawn(&h, &["codex-sol", "build the thing"]);
+    let pane = spawn(&h, &["codex-sol"]);
     let id = records(&h).pop().unwrap()["record_id"]
         .as_str()
         .unwrap()

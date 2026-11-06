@@ -212,7 +212,7 @@ fn the_hermetic_story() {
     let ledger = h.state.join("-work-alpha.json");
     let before = std::fs::read(&ledger).unwrap();
     let herdr_calls = h.calls_of("herdr").len();
-    let out = h.run(&["spawn", "opus", "x", "--from-pane", "w1:p1"]);
+    let out = h.run(&["spawn", "opus", "--from-pane", "w1:p1"]);
     assert_eq!(out.status.code(), Some(3));
     assert_eq!(std::fs::read(&ledger).unwrap(), before);
     assert_eq!(

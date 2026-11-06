@@ -117,14 +117,7 @@ fn worker_done_reports_without_the_default_tell_grace() {
     let out = register.output().unwrap();
     assert!(out.status.success(), "{}", text(&out));
 
-    let out = h.run(&[
-        "spawn",
-        "smoke",
-        "verify the tell grace",
-        "--from-pane",
-        "w1:p1",
-        "--no-tile",
-    ]);
+    let out = h.run(&["spawn", "smoke", "--from-pane", "w1:p1", "--no-tile"]);
     assert!(out.status.success(), "{}", text(&out));
     let pane = String::from_utf8_lossy(&out.stdout)
         .lines()
