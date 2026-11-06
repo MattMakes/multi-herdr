@@ -456,10 +456,11 @@ pub fn fleet_with(
     Ok(())
 }
 
-/// When the project has parked worktrees (`horch worktree triage`), spawn
-/// the `worktree-steward` teammate beside the orchestrator: it runs the
-/// triage with the operator. With none, nothing is spawned. Never a reason
-/// for the fleet to fail.
+/// When the project has parked worktrees (`horch worktree triage`), queue a
+/// one-off task for the `worktree-steward` teammate and spawn it beside the
+/// orchestrator: it claims the task and runs the triage with the operator.
+/// With none, nothing is queued or spawned. Never a reason for the fleet to
+/// fail.
 fn start_worktree_steward(ctx: &RuntimeContext, ws: &NewWorkspace) {
     let rows = match super::worktree::triage_rows(ctx, horch_core::taskledger::triage::Measure::Ids)
     {
@@ -476,24 +477,60 @@ fn start_worktree_steward(ctx: &RuntimeContext, ws: &NewWorkspace) {
         "{} parked worktrees: starting the worktree steward...",
         rows.len()
     );
-    let args = super::spawn::SpawnArgs {
-        teammate: Some("worktree-steward".to_string()),
-        // A fact, not a brief: the steward's file holds its instructions.
-        task: format!("parked worktrees: {}", rows.len()),
+    // No code path types a task into a pane (TRF-43): the steward claims
+    // this task from the ledger.
+    let queued = steward_task(rows.len()).and_then(|cmd| super::taskledger::run(ctx, cmd));
+    if let Err(e) = queued {
+        println!("warning: the worktree steward task was not queued: {e:#}");
+        return;
+    }
+    if let Err(e) = super::spawn::spawn(ctx, steward_spawn_args(&ws.root_pane_id)) {
+        println!("warning: the worktree steward did not start: {e:#}");
+    }
+}
+
+/// The teammate that runs the worktree triage with the operator.
+const WORKTREE_STEWARD: &str = "worktree-steward";
+
+/// What `horch ledger task 'parked worktrees: <parked>' --persona
+/// worktree-steward --check none` runs. The title is a fact, not a brief:
+/// the steward's file holds its instructions.
+fn steward_task(parked: usize) -> Result<super::taskledger::LedgerCommand> {
+    #[derive(clap::Parser)]
+    struct Ledger {
+        #[command(subcommand)]
+        command: super::taskledger::LedgerCommand,
+    }
+    let title = format!("parked worktrees: {parked}");
+    let argv = [
+        "ledger",
+        "task",
+        title.as_str(),
+        "--persona",
+        WORKTREE_STEWARD,
+        "--check",
+        "none",
+    ];
+    Ok(<Ledger as clap::Parser>::try_parse_from(argv)?.command)
+}
+
+/// The steward's spawn beside the orchestrator. It has no task text, so it
+/// joins the workspace's run and claims the task [`steward_task`] queued.
+fn steward_spawn_args(root_pane: &str) -> super::spawn::SpawnArgs {
+    super::spawn::SpawnArgs {
+        teammate: Some(WORKTREE_STEWARD.to_string()),
+        task: String::new(),
         resume: None,
         phase: None,
         effort: None,
         role: None,
-        from_pane: Some(ws.root_pane_id.clone()),
+        from_pane: Some(root_pane.to_string()),
         direction: Direction::Right,
         tiling: horch_core::execution::TilingMode::Automatic,
         exact: false,
         force: false,
         replaces: None,
         run: None,
-    };
-    if let Err(e) = super::spawn::spawn(ctx, args) {
-        println!("warning: the worktree steward did not start: {e:#}");
     }
 }
 
@@ -534,7 +571,9 @@ fn print_fleet_ready(workspace_id: &str, ledger: &SessionLedger) {
     println!("\nDone. Fleet workspace {workspace_id} is live with one orchestrator pane.");
     println!("Session ledger: {}", ledger.path().display());
     println!("Orchestrator commands: horch sessions | horch ledger task | horch spawn [--resume]");
-    println!("Workers are spawned on demand: horch spawn <teammate> \"task\"");
+    println!(
+        "Workers are spawned on demand: horch ledger task '<task>' --persona <teammate>, then horch spawn <teammate>"
+    );
 }
 
 /// What `fleet_with` resolved before its workspace exists: the orchestrator
@@ -1349,6 +1388,38 @@ mod tests {
     /// [`workspace_label`] against the test process's current directory.
     fn label(path: &Path) -> String {
         workspace_label(path, std::env::current_dir().ok().as_deref())
+    }
+
+    /// TRF-43: the worktree steward's work is a one-off ledger task, and its
+    /// spawn carries no task text, so it claims that task.
+    #[test]
+    fn trf_43_the_steward_task_is_queued_and_its_spawn_has_no_task_text() {
+        use horch_core::taskledger::{runs, tasks, Store};
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("proj");
+        std::fs::create_dir_all(&root).unwrap();
+        let env = horch_core::runtime::MapEnv::new(&root)
+            .with("HORCH_PROJECT_DIR", root.to_str().unwrap())
+            .with("HORCH_WORKSPACE_ID", "w7");
+        let mut ctx = RuntimeContext::from_env(&env).unwrap();
+        ctx.paths.ledger_db = dir.path().join("ledger.sqlite3");
+
+        super::super::taskledger::run(&ctx, steward_task(3).unwrap()).unwrap();
+
+        let store = Store::open(&ctx.paths.ledger_db).unwrap();
+        let all = runs::of_project(store.conn(), &root.canonicalize().unwrap()).unwrap();
+        assert_eq!(all.len(), 1, "{all:?}");
+        assert_eq!(all[0].workspace_id.as_deref(), Some("w7"));
+        let queued = tasks::of_run(store.conn(), &all[0].run_id).unwrap();
+        assert_eq!(queued.len(), 1);
+        assert_eq!(queued[0].title, "parked worktrees: 3");
+        assert_eq!(queued[0].claimable_by.as_deref(), Some(WORKTREE_STEWARD));
+        assert_eq!(queued[0].status, "queued");
+
+        let args = steward_spawn_args("w7:p1");
+        assert_eq!(args.task, "", "no code path types a task into a pane");
+        assert_eq!(args.teammate.as_deref(), Some(WORKTREE_STEWARD));
+        assert_eq!(args.from_pane.as_deref(), Some("w7:p1"));
     }
 
     #[test]

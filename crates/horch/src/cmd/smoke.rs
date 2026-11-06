@@ -210,32 +210,36 @@ impl Scratch {
     }
 
     /// Spawn the token-free `smoke` teammate into the scratch workspace.
-    fn spawn_smoke(&self, task: &str) -> Result<String> {
-        spawn(
-            &self.ctx,
-            SpawnArgs {
-                teammate: Some("smoke".to_string()),
-                phase: None,
-                effort: None,
-                task: task.to_string(),
-                resume: None,
-                role: None,
-                // What `horch spawn` does by default: split the calling pane,
-                // which in a fleet is the orchestrator's. Named explicitly
-                // because this check runs outside the workspace it is testing,
-                // where the default would resolve to the checker's own pane in
-                // another workspace.
-                from_pane: Some(self.ws.root_pane_id.clone()),
-                direction: Direction::Right,
-                // Tiling on, so this check covers the hook `horch spawn` runs.
-                tiling: TilingMode::Automatic,
-                // The smoke fake spends nothing; never gate it on usage limits.
-                exact: false,
-                force: true,
-                replaces: None,
-                run: None,
-            },
-        )
+    fn spawn_smoke(&self) -> Result<String> {
+        spawn(&self.ctx, smoke_spawn_args(&self.ws.root_pane_id))
+    }
+}
+
+/// The spawn of the `smoke` teammate beside `root_pane`. It has no task
+/// text and joins no task-ledger run (TRF-43): the scratch state holds no
+/// run, and the token-free fake never reads a task.
+fn smoke_spawn_args(root_pane: &str) -> SpawnArgs {
+    SpawnArgs {
+        teammate: Some("smoke".to_string()),
+        phase: None,
+        effort: None,
+        task: String::new(),
+        resume: None,
+        role: None,
+        // What `horch spawn` does by default: split the calling pane,
+        // which in a fleet is the orchestrator's. Named explicitly
+        // because this check runs outside the workspace it is testing,
+        // where the default would resolve to the checker's own pane in
+        // another workspace.
+        from_pane: Some(root_pane.to_string()),
+        direction: Direction::Right,
+        // Tiling on, so this check covers the hook `horch spawn` runs.
+        tiling: TilingMode::Automatic,
+        // The smoke fake spends nothing; never gate it on usage limits.
+        exact: false,
+        force: true,
+        replaces: None,
+        run: None,
     }
 }
 
@@ -329,7 +333,7 @@ fn fleet_run(ctx: &RuntimeContext) -> Step {
     )))?;
 
     println!("Spawning smoke worker...");
-    let pane = sc.spawn_smoke("verify fleet machinery")?;
+    let pane = sc.spawn_smoke()?;
     verify_worker_done(&sc, &pane)?;
 
     println!(
@@ -818,7 +822,7 @@ fn spawn_tiles(
     // The split above passed `--no-focus`, so this is only here to be explicit
     // about what the check is watching.
     focus_worker(sc, watched_on, "before spawning")?;
-    let spawned = sc.spawn_smoke("verify the spawn hook tiles")?;
+    let spawned = sc.spawn_smoke()?;
     let complaints = grid_after_spawn(sc, &spawned)?;
     check(
         complaints.is_empty(),
@@ -985,6 +989,15 @@ mod tests {
         }
         assert!(arithmetic_echo(PaneShell::Posix).starts_with("echo "));
         assert!(arithmetic_echo(PaneShell::PowerShell).starts_with("Write-Output "));
+    }
+
+    #[test]
+    fn trf_43_the_smoke_spawn_carries_no_task_text() {
+        let args = smoke_spawn_args("w1:p1");
+        assert_eq!(args.task, "", "no code path types a task into a pane");
+        assert_eq!(args.teammate.as_deref(), Some("smoke"));
+        assert_eq!(args.from_pane.as_deref(), Some("w1:p1"));
+        assert!(args.run.is_none(), "smoke joins no task-ledger run");
     }
 
     #[test]

@@ -30,9 +30,8 @@ pub struct LedgerSpawn {
 }
 
 /// Write the worker row when this spawn joins a task-ledger run: it names
-/// one with `--run` (or `HORCH_RUN_ID`), it replaces a ledger worker, or it
-/// has no task text and the project has an active run. `None` otherwise: a
-/// spawn with task text runs outside every run, with 1 `NOTE:` (#89).
+/// one with `--run` (or `HORCH_RUN_ID`), it replaces a ledger worker, or its
+/// workspace has an active run. `None` otherwise.
 pub fn prepare(ctx: &RuntimeContext, args: &SpawnArgs) -> Result<Option<LedgerSpawn>> {
     let mut store = taskledger::open(ctx)?;
     let Some(explicit) = ledger_run_wanted(ctx, &store, args)? else {
@@ -53,8 +52,8 @@ pub fn prepare(ctx: &RuntimeContext, args: &SpawnArgs) -> Result<Option<LedgerSp
 /// Whether this spawn joins a task-ledger run. `None`: it does not. `Some`
 /// holds the run it joins: the run `--run` (or `HORCH_RUN_ID`) names, the run
 /// of the worker `--replaces` names, else the 1 active run of the caller's
-/// herdr workspace (TRF-34). A task-less spawn never joins the run of another
-/// workspace. A spawn with task text names no run and says so.
+/// herdr workspace (TRF-34). A spawn never joins the run of another
+/// workspace unless it names that run.
 fn ledger_run_wanted(
     ctx: &RuntimeContext,
     store: &Store,
@@ -78,12 +77,6 @@ fn run_to_join(
     workspace: Option<&str>,
     args: &SpawnArgs,
 ) -> Result<Option<Option<String>>> {
-    let active = active_runs(store, root)?;
-    let joins = explicit.is_some() || args.replaces.is_some() || args.task.trim().is_empty();
-    if !joins {
-        note_outside_run(&active);
-        return Ok(None);
-    }
     if explicit.is_some() {
         return Ok(Some(explicit));
     }
@@ -92,6 +85,7 @@ fn run_to_join(
             return Ok(Some(Some(run)));
         }
     }
+    let active = active_runs(store, root)?;
     let own: Vec<&Run> = active
         .iter()
         .filter(|r| workspace.is_some() && r.workspace_id.as_deref() == workspace)
@@ -119,7 +113,7 @@ fn run_to_join(
     }
 }
 
-/// Say that a task-less spawn joins no run, because each active run of the
+/// Say that a spawn joins no run, because each active run of the
 /// project belongs to another workspace than the caller's.
 fn note_other_workspaces(active: &[Run], workspace: Option<&str>) {
     if active.is_empty() {
@@ -188,18 +182,6 @@ fn claim_target() -> Option<String> {
     std::env::var(CLAIM_TARGET_ENV)
         .ok()
         .filter(|v| !v.trim().is_empty())
-}
-
-/// Say that a spawn with task text runs outside the active runs.
-fn note_outside_run(active: &[Run]) {
-    if active.is_empty() {
-        return;
-    }
-    let slugs: Vec<&str> = active.iter().map(|r| r.slug.as_str()).collect();
-    eprintln!(
-        "horch spawn: NOTE: this spawn has task text, so it runs outside task-ledger run {}. Give --run <slug> to join a run.",
-        slugs.join(", ")
-    );
 }
 
 /// A closed run takes no new worker.
@@ -728,12 +710,17 @@ mod trf_33_34_tests {
             run_to_join(&store, dir.path(), None, Some("w1"), &bare).unwrap(),
             None
         );
-        // A spawn with task text joins no run.
-        let (dir, store, _) = world(&[("r1", Some("w1"))]);
+    }
+
+    /// TRF-43: no spawn runs outside its workspace's run because of task
+    /// text. The "runs outside task-ledger run" path is gone.
+    #[test]
+    fn trf_43_task_text_does_not_keep_a_spawn_out_of_its_workspaces_run() {
+        let (dir, store, made) = world(&[("r1", Some("w1"))]);
         let texted = args(Some("opus"), "fix it");
         assert_eq!(
             run_to_join(&store, dir.path(), None, Some("w1"), &texted).unwrap(),
-            None
+            Some(Some(made[0].run_id.clone()))
         );
     }
 
