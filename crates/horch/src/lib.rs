@@ -16,6 +16,10 @@ pub const HERDR_INSTALL_BIN: &str = "herdr-install";
 /// `horch self-update` replaces, in that order.
 pub const RELEASE_BINARIES: [&str; 2] = ["horch", HERDR_INSTALL_BIN];
 
+/// Binaries an older release installed and no release holds now. `horch
+/// install`, and so `horch self-update`, deletes them from the install dir.
+pub const RETIRED_BINARIES: [&str; 1] = ["multi-herdr-dataset"];
+
 #[cfg(test)]
 mod tests {
     use super::RELEASE_BINARIES;

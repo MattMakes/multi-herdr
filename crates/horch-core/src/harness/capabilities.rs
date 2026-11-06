@@ -4,13 +4,6 @@
 //! values instead of matching on [`HarnessKind`](super::HarnessKind), so a new
 //! harness is one new module plus one row here.
 
-const MIB: u64 = 1024 * 1024;
-
-/// Resident memory of one harness CLI process, before any local model.
-pub const HARNESS_FOOTPRINT_BYTES: u64 = 600 * MIB;
-/// Resident memory of the smoke teammate, which runs no agent CLI.
-pub(crate) const NONE_FOOTPRINT_BYTES: u64 = 64 * MIB;
-
 /// How a harness discovers the skills a launch activates.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SkillExposure {
@@ -115,8 +108,6 @@ pub struct Capabilities {
     pub tool_selection: bool,
     /// Can run one-shot without a terminal (the B4 headless runner).
     pub headless: bool,
-    /// Resident memory of one candidate, before a local model.
-    pub footprint_bytes: u64,
     /// The model runs on this machine, so its weights count against memory.
     pub local_model: bool,
     /// How horch asks it to compact, and how it triggers its own compaction.
@@ -184,7 +175,6 @@ pub(crate) const CLAUDE: Capabilities = Capabilities {
     extensions_flag: false,
     tool_selection: false,
     headless: true,
-    footprint_bytes: HARNESS_FOOTPRINT_BYTES,
     local_model: false,
     compaction: CompactionCaps {
         command: CompactCommand::WithInstructions,
@@ -206,7 +196,6 @@ pub(crate) const CODEX: Capabilities = Capabilities {
     extensions_flag: false,
     tool_selection: false,
     headless: false,
-    footprint_bytes: HARNESS_FOOTPRINT_BYTES,
     local_model: false,
     compaction: CompactionCaps {
         command: CompactCommand::Bare,
@@ -228,7 +217,6 @@ pub(crate) const OPENCODE: Capabilities = Capabilities {
     extensions_flag: false,
     tool_selection: false,
     headless: false,
-    footprint_bytes: HARNESS_FOOTPRINT_BYTES,
     local_model: false,
     compaction: CompactionCaps {
         command: CompactCommand::Bare,
@@ -252,7 +240,6 @@ pub(crate) const PI: Capabilities = Capabilities {
     extensions_flag: true,
     tool_selection: true,
     headless: false,
-    footprint_bytes: HARNESS_FOOTPRINT_BYTES,
     local_model: true,
     compaction: CompactionCaps {
         command: CompactCommand::WithInstructions,
@@ -274,7 +261,6 @@ pub(crate) const PRIME: Capabilities = Capabilities {
     extensions_flag: false,
     tool_selection: false,
     headless: false,
-    footprint_bytes: HARNESS_FOOTPRINT_BYTES,
     local_model: false,
     compaction: CompactionCaps {
         command: CompactCommand::WithInstructions,
@@ -300,7 +286,6 @@ pub(crate) const ANTIGRAVITY: Capabilities = Capabilities {
     extensions_flag: false,
     tool_selection: false,
     headless: false,
-    footprint_bytes: HARNESS_FOOTPRINT_BYTES,
     local_model: false,
     compaction: CompactionCaps {
         command: CompactCommand::Unknown,
@@ -322,7 +307,6 @@ pub(crate) const NONE: Capabilities = Capabilities {
     extensions_flag: false,
     tool_selection: false,
     headless: false,
-    footprint_bytes: NONE_FOOTPRINT_BYTES,
     local_model: false,
     compaction: CompactionCaps {
         command: CompactCommand::Unknown,

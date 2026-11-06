@@ -25,8 +25,6 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-pub mod money;
-
 /// Token counts in the one shape every harness is converted into.
 ///
 /// `input` is fresh (uncached) input only. Codex reports cached tokens inside

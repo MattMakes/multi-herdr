@@ -38,8 +38,7 @@ pub fn install(ctx: &RuntimeContext, dir: Option<&str>) -> Result<()> {
         .context("the running binary has no file name")?;
     let target = dir.join(file_name);
 
-    remove_stale_old(&dir);
-    install_one("horch", &source, &target)?;
+    place_horch(&source, &dir, &target)?;
     // A live collector keeps running the binary it started with: old
     // prices, old readers. Restart it on the binary just installed.
     let herdr = horch_core::workspace::herdr::Herdr::with_bin(&ctx.bins.harness.herdr);
@@ -62,6 +61,27 @@ pub fn install(ctx: &RuntimeContext, dir: Option<&str>) -> Result<()> {
     println!("{}", path_help(&dir, on_path));
 
     println!("\nInstalled version: {}", installed_version(&target)?);
+    Ok(())
+}
+
+/// Clears `dir` of leftovers and installs `source` as `target`.
+fn place_horch(source: &Path, dir: &Path, target: &Path) -> Result<()> {
+    remove_stale_old(dir);
+    remove_retired(dir)?;
+    install_one("horch", source, target)
+}
+
+/// Deletes each [`horch::RETIRED_BINARIES`] file in `dir` and prints 1 line
+/// that names its path.
+fn remove_retired(dir: &Path) -> Result<()> {
+    for bin in horch::RETIRED_BINARIES {
+        let path = dir.join(exe_name(bin));
+        if path.is_file() || is_symlink(&path) {
+            std::fs::remove_file(&path)
+                .with_context(|| format!("removing the retired {}", path.display()))?;
+            println!("removed the retired {}", path.display());
+        }
+    }
     Ok(())
 }
 
@@ -467,6 +487,22 @@ mod tests {
             std::fs::write(build.join(exe_name(bin)), *bin).unwrap();
         }
         build.join(exe_name("horch"))
+    }
+
+    #[test]
+    fn trf_47_install_removes_old_dataset_binary() {
+        let tmp = tempfile::tempdir().unwrap();
+        let horch = build_dir(tmp.path(), &["horch"]);
+        let bin = tmp.path().join("bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        let dataset = bin.join(exe_name(horch::RETIRED_BINARIES[0]));
+        std::fs::write(&dataset, "old").unwrap();
+        let target = bin.join(exe_name("horch"));
+
+        place_horch(&horch, &bin, &target).unwrap();
+
+        assert!(!dataset.exists());
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "horch");
     }
 
     #[test]

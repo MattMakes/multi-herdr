@@ -1,6 +1,5 @@
 //! The compaction job dir, `<state_root>/compact/<workspace>-<role>/`
-//! (design §6.8, §6.8a). The same layout idea as the judge job dir, on the
-//! shared [`crate::heartbeat`]:
+//! (design §6.8, §6.8a), on the shared [`crate::heartbeat`]:
 //!
 //! | file | written by | content |
 //! |---|---|---|

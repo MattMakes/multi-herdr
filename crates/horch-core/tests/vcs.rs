@@ -9,7 +9,7 @@ mod common;
 
 use std::path::{Path, PathBuf};
 
-use horch_core::vcs::git::{CherryPick, GitCli, GitClient, GitIdentity};
+use horch_core::vcs::git::{GitCli, GitClient};
 use horch_marketplace::git::GitRunner;
 use tempfile::TempDir;
 
@@ -93,153 +93,17 @@ impl Fixture {
 }
 
 #[test]
-fn git_cherry_pick_conflict_reports_paths() {
+fn git_rev_parse_and_toplevel() {
     let Some(f) = Fixture::new() else { return };
-    let base = f.git.head(&f.repo).unwrap();
-    f.git_in(&f.repo, &["checkout", "-q", "-b", "side"]);
-    std::fs::write(f.repo.join("a.txt"), "one\ntwo side\nthree\n").unwrap();
-    f.commit_in(&f.repo, "side edits a");
-    std::fs::write(f.repo.join("c.txt"), "sea\n").unwrap();
-    let side_c = f.commit_in(&f.repo, "side adds c");
-    f.git_in(&f.repo, &["checkout", "-q", "main"]);
-    std::fs::write(f.repo.join("a.txt"), "one\ntwo main\nthree\n").unwrap();
-    let main = f.commit_in(&f.repo, "main edits a");
-
-    let id = GitIdentity {
-        name: "picker".into(),
-        email: "picker@horch.invalid".into(),
-        date: "2026-10-02T11:00:00Z".into(),
-    };
-    let r = f
-        .git
-        .cherry_pick(&f.repo, &format!("{base}..side"), &id)
-        .unwrap();
+    let head = f.git_in(&f.repo, &["rev-parse", "HEAD"]);
     assert_eq!(
-        r,
-        CherryPick::Conflict {
-            paths: vec!["a.txt".into()]
-        }
+        f.git.rev_parse(&f.repo, "main").unwrap().as_deref(),
+        Some(head.as_str())
     );
-    // Aborted: the checkout is as it was.
-    assert_eq!(f.git.head(&f.repo).unwrap(), main);
-    assert_eq!(f.git.status_porcelain(&f.repo).unwrap(), "");
-    assert_eq!(f.git.rev_parse(&f.repo, "CHERRY_PICK_HEAD").unwrap(), None);
-
-    // A clean pick reports the new head, committed as `id`.
-    let CherryPick::Clean { head } = f.git.cherry_pick(&f.repo, &side_c, &id).unwrap() else {
-        panic!("expected a clean pick");
-    };
-    assert_eq!(head, f.git.head(&f.repo).unwrap());
-    assert_eq!(
-        common::utc_offset_date(&f.git_in(&f.repo, &["log", "-1", "--format=%cn %cI %an", &head])),
-        "picker 2026-10-02T11:00:00+00:00 Horch Fixture"
-    );
-    assert_eq!(
-        f.git.rev_list(&f.repo, &format!("{main}..{head}")).unwrap(),
-        std::slice::from_ref(&head)
-    );
-    assert!(f.git.is_ancestor(&f.repo, &main, &head).unwrap());
-    assert!(!f.git.is_ancestor(&f.repo, &head, &main).unwrap());
-}
-
-#[test]
-fn git_update_ref_cas_mismatch_is_false() {
-    let Some(f) = Fixture::new() else { return };
-    let base = f.git.head(&f.repo).unwrap();
-    f.git_in(&f.repo, &["branch", "target"]);
-    std::fs::write(f.repo.join("c.txt"), "sea\n").unwrap();
-    let next = f.commit_in(&f.repo, "next");
-    let target = "refs/heads/target";
-
-    // The ref holds `base`, not `next`: no swap, no error.
-    assert!(!f.git.update_ref_cas(&f.repo, target, &next, &next).unwrap());
-    assert_eq!(
-        f.git.rev_parse(&f.repo, target).unwrap().as_deref(),
-        Some(base.as_str())
-    );
-    assert!(f.git.update_ref_cas(&f.repo, target, &next, &base).unwrap());
-    assert_eq!(
-        f.git.rev_parse(&f.repo, target).unwrap().as_deref(),
-        Some(next.as_str())
-    );
-
-    // Option-shaped arguments never reach git. Each of these, run by git,
-    // would succeed: `--no-deref` drops the compare, `-d` deletes the ref.
-    for (refname, new, old) in [
-        ("--no-deref", target, base.as_str()),
-        (target, "-d", next.as_str()),
-        (target, base.as_str(), "--no-deref"),
-    ] {
-        let tried = f.git.update_ref_cas(&f.repo, refname, new, old);
-        assert!(tried.is_err(), "{refname} {new} {old}: {tried:?}");
-    }
-    assert_eq!(
-        f.git.rev_parse(&f.repo, target).unwrap().as_deref(),
-        Some(next.as_str())
-    );
+    assert_eq!(f.git.rev_parse(&f.repo, "refs/heads/ghost").unwrap(), None);
+    // An option-shaped revision never reaches git.
     assert!(f.git.rev_parse(&f.repo, "--all").is_err());
-
-    assert!(f.git.version().unwrap().starts_with("git version "));
     assert_eq!(f.git.toplevel(&f.repo).unwrap(), f.repo);
-}
-
-/// A refused update is a lost race when the ref no longer holds the value the
-/// caller expected, and an error when it still does. An absent ref holds the
-/// all-zero value.
-#[test]
-fn git_update_ref_cas_tells_a_failure_from_a_lost_race() {
-    let Some(f) = Fixture::new() else { return };
-    let base = f.git.head(&f.repo).unwrap();
-    f.git_in(&f.repo, &["branch", "target"]);
-    std::fs::write(f.repo.join("c.txt"), "sea\n").unwrap();
-    let next = f.commit_in(&f.repo, "next");
-    let target = "refs/heads/target";
-    let ghost = "refs/heads/ghost";
-    let zero = "0".repeat(40);
-    // Well formed, but no such object: git refuses to write it into a ref.
-    let missing = "1".repeat(40);
-
-    // The ref holds `base`, as expected, and git still refuses: an error.
-    let err = f
-        .git
-        .update_ref_cas(&f.repo, target, &missing, &base)
-        .unwrap_err()
-        .to_string();
-    let (status, detail) = err
-        .strip_prefix("git update-ref refs/heads/target failed (")
-        .and_then(|rest| rest.split_once("): "))
-        .unwrap_or_else(|| panic!("unexpected message: {err}"));
-    assert_ne!(status.parse::<i32>().unwrap(), 0, "{err}");
-    assert!(!detail.is_empty(), "git's own message is kept: {err}");
-    assert_eq!(
-        f.git.rev_parse(&f.repo, target).unwrap().as_deref(),
-        Some(base.as_str())
-    );
-
-    // No such ref, and the caller expects it absent (all zeros): an error.
-    let err = f
-        .git
-        .update_ref_cas(&f.repo, ghost, &missing, &zero)
-        .unwrap_err()
-        .to_string();
-    assert!(
-        err.starts_with("git update-ref refs/heads/ghost failed ("),
-        "{err}"
-    );
-    assert_eq!(f.git.rev_parse(&f.repo, ghost).unwrap(), None);
-
-    // No such ref, but the caller expected `base`: a lost race, no error.
-    assert!(!f.git.update_ref_cas(&f.repo, ghost, &next, &base).unwrap());
-    assert_eq!(f.git.rev_parse(&f.repo, ghost).unwrap(), None);
-
-    // All zeros mean "absent": create the ref, then delete it.
-    assert!(f.git.update_ref_cas(&f.repo, ghost, &next, &zero).unwrap());
-    assert_eq!(
-        f.git.rev_parse(&f.repo, ghost).unwrap().as_deref(),
-        Some(next.as_str())
-    );
-    assert!(f.git.update_ref_cas(&f.repo, ghost, &zero, &next).unwrap());
-    assert_eq!(f.git.rev_parse(&f.repo, ghost).unwrap(), None);
 }
 
 /// D20 item 5: the fixture with `GIT_DIR` and `GIT_WORK_TREE` aimed at a
