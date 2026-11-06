@@ -6,10 +6,7 @@
 use std::fs::{OpenOptions, TryLockError};
 
 use anyhow::{Context, Result};
-use rusqlite::{params, TransactionBehavior};
-/// The connection and transaction types of the wake functions: a caller
-/// outside this crate names them here.
-pub use rusqlite::{Connection, Transaction};
+use rusqlite::{params, Connection, Transaction, TransactionBehavior};
 use sha2::{Digest, Sha256};
 
 use super::model::OutboxEvent;

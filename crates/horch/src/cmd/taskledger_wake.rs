@@ -17,6 +17,7 @@ use horch_core::taskledger::util::{self, About};
 use horch_core::taskledger::workers;
 use horch_core::taskledger::Store;
 use horch_core::workspace::herdr::Herdr;
+use rusqlite::{Connection, Transaction};
 
 /// `HORCH_NO_WAKE=1` turns wakes off (tests that run no herdr). A wake is
 /// still written; its send fails, so the row stays undelivered.
@@ -54,7 +55,7 @@ pub fn wake_as(
     ctx: &RuntimeContext,
     store: &Store,
     run: &Run,
-    decide: impl FnOnce(&outbox::Transaction) -> anyhow::Result<Option<Wake>>,
+    decide: impl FnOnce(&Transaction) -> anyhow::Result<Option<Wake>>,
 ) -> Written {
     let written = match outbox::write_now(store, &run.run_id, decide) {
         Ok(w) => w,
@@ -178,7 +179,7 @@ pub(crate) fn settled_note(store: &Store, run: &Run) -> anyhow::Result<Option<St
     settled_line(store.conn(), run)
 }
 
-fn settled_line(conn: &outbox::Connection, run: &Run) -> anyhow::Result<Option<String>> {
+fn settled_line(conn: &Connection, run: &Run) -> anyhow::Result<Option<String>> {
     if !status::unsettled(conn, &run.run_id)?.is_empty() {
         return Ok(None);
     }
@@ -190,7 +191,7 @@ fn settled_line(conn: &outbox::Connection, run: &Run) -> anyhow::Result<Option<S
 
 /// The settled wake of `run`: 1 row per settled board state. A repeat of
 /// the same settled state writes no new row.
-fn settled_wake(conn: &outbox::Connection, run: &Run) -> anyhow::Result<Option<Wake>> {
+fn settled_wake(conn: &Connection, run: &Run) -> anyhow::Result<Option<Wake>> {
     let Some(line) = settled_line(conn, run)? else {
         return Ok(None);
     };
@@ -266,7 +267,7 @@ pub fn nudge_stuck(ctx: &RuntimeContext, store: &Store, run: &Run) {
     });
 }
 
-fn stuck_line(conn: &outbox::Connection, run: &Run) -> Option<String> {
+fn stuck_line(conn: &Connection, run: &Run) -> Option<String> {
     let open: Vec<tasks::Task> = tasks::of_run(conn, &run.run_id)
         .ok()?
         .into_iter()
@@ -317,7 +318,7 @@ pub fn nudge_startable(ctx: &RuntimeContext, store: &Store, run: &Run) {
     wake_as(ctx, store, run, |tx| startable_wake(tx, run));
 }
 
-fn startable_wake(conn: &outbox::Connection, run: &Run) -> anyhow::Result<Option<Wake>> {
+fn startable_wake(conn: &Connection, run: &Run) -> anyhow::Result<Option<Wake>> {
     let Some((ready, advice)) = spawn_advice(conn, run) else {
         return Ok(None);
     };
@@ -334,7 +335,7 @@ fn startable_wake(conn: &outbox::Connection, run: &Run) -> anyhow::Result<Option
 
 /// The startable tasks ("T-1,T-2") and "Tasks can start: T-1. Spawn: opus
 /// x1." when workers should be spawned now, else `None`.
-fn spawn_advice(conn: &outbox::Connection, run: &Run) -> Option<(String, String)> {
+fn spawn_advice(conn: &Connection, run: &Run) -> Option<(String, String)> {
     let plan = tasks::plan_workers(conn, &run.run_id).ok()?;
     let spawn: Vec<String> = plan
         .iter()
@@ -435,7 +436,7 @@ pub fn sweep_preclaim(ctx: &RuntimeContext, store: &mut Store, run: &Run) {
 
 /// The QUESTION for the operator when the task of `worker_id` is held after
 /// too many attempts (#168), else `None`.
-fn held_question(conn: &outbox::Connection, worker_id: &str) -> Option<(String, String)> {
+fn held_question(conn: &Connection, worker_id: &str) -> Option<(String, String)> {
     let w = workers::get(conn, worker_id).ok()?;
     let task = tasks::get(conn, w.task_id.as_deref()?).ok()?;
     let held = task.held_reason.as_deref()?;

@@ -729,6 +729,7 @@ dependencies = [
  "horch-marketplace",
  "libc",
  "ratatui",
+ "rusqlite",
  "serde",
  "serde_json",
  "serde_yaml",
