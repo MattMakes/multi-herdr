@@ -48,6 +48,8 @@ Amendment (report 17): document `horch tell <role> --answers <question-id> "<tex
 
 Amendment (report 13): document `horch ledger run gate [--check <cmd>]` and `horch ledger run close --pr-declined <reason>` in the orchestrator briefing: close needs a settled run, a passing gate on the current tip, and a merged or declined PR.
 
+Amendment (reports 16, 18): `horch ledger finish` now spawns code-sweep reviewers itself and sends 1 NOTE naming them. Remove every briefing line that tells the orchestrator to spawn reviewers. Describe the review cap (none 0, light 1, full 3 rounds), the `## Answers` section with `F<n> accepted|rejected`, and the light reviewers for rounds 2-3.
+
 ## Done when
 
 TRF-46 and the golden tests pass.
