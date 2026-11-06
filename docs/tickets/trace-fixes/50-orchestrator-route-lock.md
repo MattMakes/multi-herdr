@@ -28,6 +28,8 @@ Ticket 44 fixed review 31 finding I-02 for `pane_launch` only: `register_pane` i
 
 Warning: never run a branch-built horch against the shared ledger. Set `HORCH_LEDGER_DB` to a scratch file for any manual run.
 
+Amendment (report 46): `event_of` in `crates/horch/src/cmd/taskledger_wake.rs` still maps the free text "The reviews of" to `reviews-in`, but no caller sends that text now (reviews-in is a keyed row). Delete that mapping and anything only it uses. `taskledger_wake.rs` is approved outside Own.
+
 ## Done when
 
 The Check passes, and report 50 shows the refusal line.

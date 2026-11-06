@@ -64,6 +64,8 @@ Amendment (reports 42, 43): an orchestrator launch claims its run (records the w
 
 Amendment (R45): ticket 29 moves the session records from `<slug>.json` files into a new `session_records` table of the task ledger (v7). Document the table (from report 29: DDL and reason) in `docs/specs/task-ledger.md`, and remove every doc line that says sessions live in a JSON ledger file.
 
+Amendment (report 46): in `CHANGELOG.md`, say that a run already open when this version is installed gets 1 extra wake line per unresolved event on the first watchdog pass (the wake keys changed), and that it is harmless.
+
 ## Done when
 
 TRF-46 and the golden tests pass.
