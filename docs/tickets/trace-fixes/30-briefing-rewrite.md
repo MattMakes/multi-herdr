@@ -60,6 +60,8 @@ Amendment (report 26): document `horch ledger task "<title>" --persona <p> [--fi
 
 Amendment (report 24): document `horch fleet stop` (a deliberate stop; no respawn), the orchestrator respawn rules of C7, and the `Orchestrator` line of `horch ledger status`.
 
+Amendment (reports 42, 43): an orchestrator launch claims its run (records the workspace, clears a stop). 1 active non-solo run per workspace: `run new` refuses a 2nd.
+
 ## Done when
 
 TRF-46 and the golden tests pass.
