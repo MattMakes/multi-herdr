@@ -54,6 +54,8 @@ Amendment (report 22): `horch ledger cancel` always stops the worker now; `--sto
 
 Amendment (report 20): a task-less spawn joins only the active run of its own workspace. A run with no workspace id (made by an older horch outside herdr) needs `horch spawn <persona> --run <slug>`. Say this in the briefing and in the CHANGELOG line.
 
+Amendment (report 23): replace the compaction fresh route prose with `horch ledger handoff <absolute path>`: it ends the worker handed off, requeues the task first with its worktree, and the next claim prints `PRIOR WORK: read <path> first`. Workers run it themselves when their context state is `handoff`.
+
 ## Done when
 
 TRF-46 and the golden tests pass.
