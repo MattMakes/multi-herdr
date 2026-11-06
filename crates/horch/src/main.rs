@@ -170,13 +170,6 @@ enum MessagingCommand {
         lines: usize,
     },
 
-    /// Give a task to a live worker: record it on the ledger, then deliver it.
-    Assign {
-        role: String,
-        #[arg(required = true, trailing_var_arg = true)]
-        task: Vec<String>,
-    },
-
     /// Append a progress note to this worker's own ledger record.
     Note {
         /// Share a project fact with workers launched after this command.
@@ -353,11 +346,13 @@ enum ProjectCommand {
     /// Create a pane running a worker agent, fresh or resuming a ledger session.
     ///
     /// Prints the new pane id on stdout so callers can chain splits.
-    #[command(override_usage = "horch spawn <TEAMMATE> [TASK]\n       \
-                                horch spawn --resume <ID> [TASK]")]
+    /// A worker gets its work from the task ledger: queue it with
+    /// `horch ledger task` or `horch ledger add`. Task text is refused.
+    #[command(override_usage = "horch spawn <TEAMMATE>\n       \
+                                horch spawn --resume <ID>")]
     Spawn {
-        /// `<teammate> [task]`, or just `[task]` when using --resume.
-        #[arg(value_name = "TEAMMATE|TASK")]
+        /// `<teammate>`, or nothing when using --resume.
+        #[arg(value_name = "TEAMMATE")]
         args: Vec<String>,
         /// Resume a previous session by session or record id.
         #[arg(long, value_name = "ID")]
@@ -392,8 +387,8 @@ enum ProjectCommand {
         /// takes that worker's task and gets its transcript and worktree.
         #[arg(long, value_name = "WORKER")]
         replaces: Option<String>,
-        /// The task-ledger run (slug or id) this worker joins. Without it, a
-        /// spawn with task text runs outside any run.
+        /// The task-ledger run (slug or id) this worker joins. Without it,
+        /// the worker joins the active run of this workspace, if any.
         #[arg(long = "run", value_name = "RUN")]
         run: Option<String>,
     },
@@ -937,9 +932,6 @@ impl MessagingCommand {
                 done(cmd::messaging::inbox(ctx, roles, peek))
             }
             MessagingCommand::Peek { role, lines } => done(cmd::messaging::peek(ctx, &role, lines)),
-            MessagingCommand::Assign { role, task } => {
-                done(cmd::messaging::assign(ctx, &role, &joined(&task)))
-            }
             MessagingCommand::Note { text, fact } => done(note_command(ctx, &joined(&text), fact)),
         }
     }
@@ -1250,8 +1242,7 @@ fn spawn_command(
     positionals: &[String],
     mut args: cmd::spawn::SpawnArgs,
 ) -> Result<()> {
-    (args.teammate, args.task) =
-        cmd::spawn::resolve_positionals(positionals, args.resume.as_deref())?;
+    args.teammate = cmd::spawn::resolve_positionals(positionals, args.resume.as_deref())?;
     output::println(&cmd::spawn::spawn(ctx, args)?);
     Ok(())
 }
@@ -1459,8 +1450,8 @@ mod tests {
         assert!(Cli::try_parse_from(["horch", "tell", "sonnet-1"]).is_err());
     }
 
-    /// Walk the whole path a user types through to a resolved (teammate, task).
-    fn parse_spawn(argv: &[&str]) -> (Option<String>, String, Option<String>, Direction) {
+    /// Walk the whole path a user types through to a resolved teammate.
+    fn parse_spawn(argv: &[&str]) -> (Result<Option<String>>, Option<String>, Direction) {
         let cli = Cli::try_parse_from(argv).expect("should parse");
         match cli.command {
             Command::Project(ProjectCommand::Spawn {
@@ -1468,34 +1459,49 @@ mod tests {
                 resume,
                 direction,
                 ..
-            }) => {
-                let (teammate, task) = cmd::spawn::resolve_positionals(&args, resume.as_deref())
-                    .expect("should resolve");
-                (teammate, task, resume, direction)
-            }
+            }) => (
+                cmd::spawn::resolve_positionals(&args, resume.as_deref()),
+                resume,
+                direction,
+            ),
             _ => panic!("wrong subcommand"),
         }
     }
 
     #[test]
-    fn spawn_parses_a_teammate_and_task() {
-        let (teammate, task, resume, direction) =
-            parse_spawn(&["horch", "spawn", "codex-sol", "do the thing"]);
-        assert_eq!(teammate.as_deref(), Some("codex-sol"));
-        assert_eq!(task, "do the thing");
+    fn spawn_parses_a_teammate() {
+        let (teammate, resume, direction) = parse_spawn(&["horch", "spawn", "codex-sol"]);
+        assert_eq!(teammate.unwrap().as_deref(), Some("codex-sol"));
         assert!(resume.is_none());
         assert_eq!(direction, Direction::Right, "right is the default");
     }
 
-    /// `horch spawn --resume <id> "<task>"` is the form the orchestrator briefing
-    /// documents; the task must not be mistaken for a teammate.
+    /// `horch spawn --resume <id>`: the resumed worker claims through the
+    /// ledger, so no teammate and no task are parsed.
     #[test]
     fn spawn_parses_a_resume_key_without_a_teammate() {
-        let (teammate, task, resume, _) =
-            parse_spawn(&["horch", "spawn", "--resume", "s-1", "continue"]);
-        assert!(teammate.is_none());
+        let (teammate, resume, _) = parse_spawn(&["horch", "spawn", "--resume", "s-1"]);
+        assert_eq!(teammate.unwrap(), None);
         assert_eq!(resume.as_deref(), Some("s-1"));
-        assert_eq!(task, "continue");
+    }
+
+    /// TRF-43: `horch assign` is gone, and a spawn with task text refuses
+    /// with the `horch ledger task` command for the same work.
+    #[test]
+    fn trf_43_assign_is_gone_and_task_text_spawns_refuse() {
+        assert!(Cli::try_parse_from(["horch", "assign", "opus-1", "do it"]).is_err());
+        assert!(!Cli::command()
+            .get_subcommands()
+            .any(|c| c.get_name() == "assign"));
+        let (teammate, _, _) = parse_spawn(&["horch", "spawn", "opus", "do it"]);
+        let err = format!("{:#}", teammate.unwrap_err());
+        assert!(
+            err.contains("horch ledger task 'do it' --persona opus"),
+            "{err}"
+        );
+        let (teammate, _, _) = parse_spawn(&["horch", "spawn", "--resume", "s-1", "go on"]);
+        let err = format!("{:#}", teammate.unwrap_err());
+        assert!(err.contains("horch ledger task 'go on'"), "{err}");
     }
 
     /// Teammate names are no longer a closed enum, so an unknown one cannot be
@@ -1506,7 +1512,7 @@ mod tests {
         let cli = Cli::try_parse_from(["horch", "spawn", "haiku"]).unwrap();
         match cli.command {
             Command::Project(ProjectCommand::Spawn { args, resume, .. }) => {
-                let (name, _) = cmd::spawn::resolve_positionals(&args, resume.as_deref()).unwrap();
+                let name = cmd::spawn::resolve_positionals(&args, resume.as_deref()).unwrap();
                 let roster = horch_core::roster::Roster::builtin().unwrap();
                 let err = roster
                     .require(name.as_deref().unwrap())
@@ -1524,7 +1530,7 @@ mod tests {
 
     #[test]
     fn spawn_takes_the_gate_flags() {
-        match Cli::try_parse_from(["horch", "spawn", "opus", "x", "--exact", "--force"])
+        match Cli::try_parse_from(["horch", "spawn", "opus", "--exact", "--force"])
             .unwrap()
             .command
         {
@@ -1613,7 +1619,6 @@ mod tests {
             ("tell", false),
             ("inbox", false),
             ("peek", false),
-            ("assign", false),
             ("note", false),
             ("context", false),
             ("compact", false),

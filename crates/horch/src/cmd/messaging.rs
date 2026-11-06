@@ -1,6 +1,6 @@
-//! The channel between panes: `tell`, `inbox`, `assign`, `note`, `done`.
+//! The channel between panes: `tell`, `inbox`, `note`, `done`.
 //!
-//! Ports `bin/herdr-tell`, `bin/herdr-inbox`, `bin/horch-assign`,
+//! Ports `bin/herdr-tell`, `bin/herdr-inbox`,
 //! `bin/horch-note`, `bin/horch-done` and `scripts/lib/herdr-register.sh`.
 //!
 //! There is no AI-native agent-to-agent protocol here: a message is literally
@@ -701,30 +701,6 @@ fn inbox_listing(roles: &[RoleEntry], channel_live: bool) -> String {
         listing.push_str(&format!("{:<12} {}{mark}{channel}\n", r.role, r.pane));
     }
     listing
-}
-
-/// Orchestrator-facing: give a task to a LIVE worker.
-///
-/// Records the task on that worker's ledger record, so the session history
-/// reflects what it is doing, then delivers it into the worker's terminal. For a
-/// worker that does not exist yet, use `horch spawn`.
-///
-/// The record is the role's live record in the mailbox's workspace
-/// ([`SessionLedger::live_for_role`], review finding 13): 2 fleets of 1 project can
-/// both have the role.
-pub fn assign(ctx: &RuntimeContext, role: &str, task: &str) -> Result<()> {
-    if let Some(run) = super::taskledger::active_run_slug(ctx) {
-        bail!(
-            "run {run} uses the task ledger: assignment is queue plus claim. Queue the work with \
-             horch ledger add --file <ticket> --primary <persona>, then spawn the workers \
-             horch ledger plan-workers names"
-        );
-    }
-    let herdr = Herdr::with_bin(&ctx.bins.harness.herdr);
-    let mailbox = Mailbox::resolve_in(&herdr, ctx)
-        .context("horch assign must run inside a herdr pane, or with HORCH_WORKSPACE_ID set")?;
-    SessionLedger::open_in(ctx)?.assign_in(role, Some(mailbox.workspace_id()), task)?;
-    tell(ctx, role, task)
 }
 
 /// Worker-facing: append a progress note to this worker's own ledger record, so

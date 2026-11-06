@@ -65,31 +65,43 @@ pub struct SpawnArgs {
     pub run: Option<String>,
 }
 
-/// Split `horch spawn`'s positional arguments into a teammate and a task.
+/// The teammate `horch spawn`'s positional arguments name.
 ///
-/// The two documented forms take positionals in different slots:
-///   `horch spawn <teammate> ["task"]`
-///   `horch spawn --resume <id> ["task"]`
-/// With `--resume` the teammate comes from the ledger record, so the lone
-/// positional is the task. Letting the parser bind positionally instead would
-/// reject `--resume s-1 "continue"` with "unknown teammate 'continue'".
-pub fn resolve_positionals(
-    positionals: &[String],
-    resume: Option<&str>,
-) -> Result<(Option<String>, String)> {
+/// The two forms are `horch spawn <teammate>` and `horch spawn --resume <id>`.
+/// Task text is refused (TRF-43, D1): pull is the only dispatch model, so a
+/// worker gets its work by `horch ledger claim`. The refusal prints the
+/// `horch ledger task` command that queues the same work.
+pub fn resolve_positionals(positionals: &[String], resume: Option<&str>) -> Result<Option<String>> {
     if resume.is_some() {
         return match positionals {
-            [] => Ok((None, String::new())),
-            [task] => Ok((None, task.clone())),
-            _ => bail!("--resume takes at most one positional argument: the task"),
+            [] => Ok(None),
+            [task] => bail!(refuse_task_text(None, task)),
+            _ => bail!("--resume takes no positional argument; usage: horch spawn --resume <id>"),
         };
     }
     match positionals {
-        [] => bail!("give a teammate (e.g. `horch spawn sonnet \"task\"`) or --resume <id>"),
-        [name] => Ok((Some(name.clone()), String::new())),
-        [name, task] => Ok((Some(name.clone()), task.clone())),
-        _ => bail!("too many arguments; usage: horch spawn <teammate> [\"task\"]"),
+        [] => bail!("give a teammate (e.g. `horch spawn sonnet`) or --resume <id>"),
+        [name] => Ok(Some(name.clone())),
+        [name, task] => bail!(refuse_task_text(Some(name), task)),
+        _ => bail!("too many arguments; usage: horch spawn <teammate>"),
     }
+}
+
+/// The refusal of a spawn with task text: the `horch ledger task` command
+/// that queues `task` for `teammate` instead.
+fn refuse_task_text(teammate: Option<&str>, task: &str) -> String {
+    format!(
+        "horch spawn takes no task text: a worker claims its task from the task ledger. \
+         Queue the task with:\n  horch ledger task {} --persona {}\n\
+         It prints the horch spawn command that starts a worker for it.",
+        shell_quote(task),
+        teammate.unwrap_or("<persona>")
+    )
+}
+
+/// `text` as 1 POSIX shell word.
+fn shell_quote(text: &str) -> String {
+    format!("'{}'", text.replace('\'', "'\\''"))
 }
 
 /// Spawn a worker pane, returning its pane id so callers can chain splits.
@@ -622,34 +634,35 @@ mod tests {
 
     #[test]
     fn a_bare_teammate_spawns_an_idle_worker() {
-        let (name, task) = resolve_positionals(&["sonnet".into()], None).unwrap();
+        let name = resolve_positionals(&["sonnet".into()], None).unwrap();
         assert_eq!(name.as_deref(), Some("sonnet"));
-        assert_eq!(task, "");
     }
 
     #[test]
-    fn a_teammate_and_task_are_taken_in_order() {
-        let (name, task) =
-            resolve_positionals(&["codex-sol".into(), "fix auth".into()], None).unwrap();
-        assert_eq!(name.as_deref(), Some("codex-sol"));
-        assert_eq!(task, "fix auth");
+    fn trf_43_spawn_with_task_text_prints_the_ledger_task_command() {
+        let err = resolve_positionals(&["codex-sol".into(), "fix Bob's auth".into()], None)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("horch ledger task 'fix Bob'\\''s auth' --persona codex-sol"),
+            "{err}"
+        );
     }
 
-    /// The regression this resolver exists for: with --resume, the lone
-    /// positional is the task, not a teammate.
     #[test]
-    fn resume_takes_its_positional_as_the_task() {
-        let (name, task) =
-            resolve_positionals(&["continue the refactor".into()], Some("s-1")).unwrap();
-        assert!(name.is_none(), "teammate must come from the ledger record");
-        assert_eq!(task, "continue the refactor");
+    fn trf_43_resume_with_task_text_prints_the_ledger_task_command() {
+        let err = resolve_positionals(&["continue the refactor".into()], Some("s-1"))
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("horch ledger task 'continue the refactor' --persona <persona>"),
+            "{err}"
+        );
     }
 
     #[test]
     fn resume_without_a_task_is_allowed() {
-        let (name, task) = resolve_positionals(&[], Some("s-1")).unwrap();
-        assert!(name.is_none());
-        assert_eq!(task, "");
+        assert_eq!(resolve_positionals(&[], Some("s-1")).unwrap(), None);
     }
 
     #[test]
@@ -664,7 +677,7 @@ mod tests {
     /// actually exists on this machine, which a compiled-in enum could not give.
     #[test]
     fn an_unknown_teammate_lists_the_valid_ones() {
-        let (name, _) = resolve_positionals(&["haiku".into()], None).unwrap();
+        let name = resolve_positionals(&["haiku".into()], None).unwrap();
         let err = Roster::builtin()
             .unwrap()
             .require(name.as_deref().unwrap())

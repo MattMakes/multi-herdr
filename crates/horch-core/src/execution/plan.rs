@@ -97,7 +97,7 @@ impl std::fmt::Display for PlanError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::NothingToSpawn => {
-                f.write_str("give a teammate (e.g. `horch spawn sonnet \"task\"`) or --resume <id>")
+                f.write_str("give a teammate (e.g. `horch spawn sonnet`) or --resume <id>")
             }
             Self::Refused { .. } => f.write_str("spawn refused over usage limits"),
             Self::UnknownTeammate(m)

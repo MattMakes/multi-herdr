@@ -2742,22 +2742,6 @@ fn hold_for_finish(store: &Store, review_task_id: &str) -> Result<()> {
     workers::hold_for_finish(store.conn(), &author)
 }
 
-/// The slug of the active task-ledger run of this project that the caller's
-/// herdr workspace owns, if any (#89). Never creates the ledger file.
-pub fn active_run_slug(ctx: &RuntimeContext) -> Option<String> {
-    if !ctx.paths.ledger_db.exists() {
-        return None;
-    }
-    let workspace = ctx.herdr.workspace.as_ref()?.as_str().to_string();
-    let store = taskledger::open(ctx).ok()?;
-    let root = project_root(ctx).ok()?;
-    runs::of_project(store.conn(), &root)
-        .ok()?
-        .into_iter()
-        .find(|r| r.status == "active" && r.workspace_id.as_deref() == Some(workspace.as_str()))
-        .map(|r| r.slug)
-}
-
 /// Whether this process is a task-ledger worker that holds (or finished) a
 /// task: `horch done` then goes through [`done_cmd`]. A worker whose task
 /// was cancelled or taken from it ends with the plain `horch done` (#136).
