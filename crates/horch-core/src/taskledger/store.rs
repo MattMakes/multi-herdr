@@ -18,6 +18,115 @@ pub fn default_path(home: &Path) -> PathBuf {
     home.join(".horch").join("ledger.sqlite3")
 }
 
+/// The opt-in that lets a development build migrate the shared ledger.
+pub const ALLOW_MIGRATE_ENV: &str = "HORCH_ALLOW_LEDGER_MIGRATE";
+
+/// True when `exe` is a cargo build output: a `target` component followed
+/// by `debug` or `release`, or by 1 more component and then `debug`,
+/// `release` or `deps` (`target/<triple>/debug`, `target/<profile>/deps`).
+pub fn is_dev_build(exe: &Path) -> bool {
+    let parts: Vec<&std::ffi::OsStr> = exe
+        .parent()
+        .map(|dir| dir.iter().collect())
+        .unwrap_or_default();
+    let is = |i: usize, words: &[&str]| {
+        parts
+            .get(i)
+            .is_some_and(|p| words.iter().any(|w| p == &std::ffi::OsStr::new(w)))
+    };
+    (0..parts.len()).any(|i| {
+        parts[i] == "target"
+            && (is(i + 1, &["debug", "release"]) || is(i + 2, &["debug", "release", "deps"]))
+    })
+}
+
+/// True when `ledger` is the operator's shared ledger,
+/// `<passwd_home>/.horch/ledger.sqlite3`.
+pub fn is_shared_ledger(ledger: &Path, passwd_home: &Path) -> bool {
+    ledger == default_path(passwd_home)
+}
+
+/// Why this horch must not migrate `ledger` from version `from`, or `None`
+/// when it may. A development build refuses the shared ledger unless
+/// `allow` (the value of [`ALLOW_MIGRATE_ENV`]) is `1`.
+pub fn migrate_refusal(
+    exe: &Path,
+    ledger: &Path,
+    passwd_home: Option<&Path>,
+    allow: Option<&str>,
+    from: i64,
+) -> Option<String> {
+    let shared = passwd_home.is_some_and(|home| is_shared_ledger(ledger, home));
+    if !shared || !is_dev_build(exe) || allow == Some("1") {
+        return None;
+    }
+    Some(format!(
+        "the development build {exe} refuses to migrate the shared task ledger {ledger} \
+         from schema version {from} to {to}, because the installed horch would then refuse it.\n\
+         Set HORCH_LEDGER_DB=<scratch file> to use a scratch ledger, \
+         or set {ALLOW_MIGRATE_ENV}=1 to migrate the shared ledger.",
+        exe = exe.display(),
+        ledger = ledger.display(),
+        to = schema::VERSION,
+    ))
+}
+
+/// The home directory of this user in the passwd database, not `$HOME`: a
+/// test or a fleet can point `$HOME` anywhere, but the shared ledger stays.
+#[cfg(unix)]
+pub fn passwd_home() -> Option<PathBuf> {
+    use std::ffi::{CStr, OsStr};
+    use std::os::unix::ffi::OsStrExt;
+    let mut buf = vec![0 as libc::c_char; 16 * 1024];
+    // SAFETY: `passwd` is plain data; all-zero bytes are a valid value.
+    let mut pw: libc::passwd = unsafe { std::mem::zeroed() };
+    let mut out: *mut libc::passwd = std::ptr::null_mut();
+    // SAFETY: every pointer is valid for the call, and `buf.len()` is the
+    // size of `buf`. The strings in `pw` point into `buf`, which outlives them.
+    let rc = unsafe {
+        libc::getpwuid_r(
+            libc::getuid(),
+            &mut pw,
+            buf.as_mut_ptr(),
+            buf.len(),
+            &mut out,
+        )
+    };
+    if rc != 0 || out.is_null() || pw.pw_dir.is_null() {
+        return None;
+    }
+    // SAFETY: getpwuid_r succeeded, so `pw_dir` is a NUL-terminated string in `buf`.
+    let dir = unsafe { CStr::from_ptr(pw.pw_dir) };
+    Some(PathBuf::from(OsStr::from_bytes(dir.to_bytes())))
+}
+
+/// No passwd database: no ledger counts as shared.
+#[cfg(not(unix))]
+pub fn passwd_home() -> Option<PathBuf> {
+    None
+}
+
+/// [`migrate_refusal`] for this process and `ledger`.
+fn guard(ledger: &Path, from: i64) -> Result<()> {
+    let Ok(exe) = std::env::current_exe() else {
+        return Ok(());
+    };
+    let real = |p: &Path| std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
+    // Compare real paths, so a symlinked home or a relative path still matches.
+    let home = passwd_home();
+    let shared = home.as_deref().map(|h| real(&default_path(h)));
+    let ledger = real(ledger);
+    let allow = std::env::var(ALLOW_MIGRATE_ENV).ok();
+    // `is_shared_ledger` checks `<home>/.horch/ledger.sqlite3`; pass the home
+    // only when the real paths match.
+    let home = home.filter(|_| shared.as_deref() == Some(ledger.as_path()));
+    let shown = home.as_deref().map(default_path).unwrap_or(ledger);
+    match migrate_refusal(&exe, &shown, home.as_deref(), allow.as_deref(), from) {
+        Some(text) => anyhow::bail!(text),
+        None => Ok(()),
+    }
+}
+
 /// An open task ledger.
 pub struct Store {
     conn: Connection,
@@ -25,7 +134,8 @@ pub struct Store {
 }
 
 impl Store {
-    /// Open (and create, and migrate) the ledger at `path`.
+    /// Open (and create, and migrate) the ledger at `path`. A development
+    /// build does not migrate the shared ledger ([`migrate_refusal`]).
     pub fn open(path: &Path) -> Result<Store> {
         if let Some(dir) = path.parent() {
             std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
@@ -38,7 +148,7 @@ impl Store {
         let _: String = conn.query_row("PRAGMA journal_mode = WAL", [], |r| r.get(0))?;
         conn.pragma_update(None, "synchronous", "NORMAL")?;
         conn.pragma_update(None, "foreign_keys", "ON")?;
-        schema::migrate(&mut conn)?;
+        schema::migrate_guarded(&mut conn, &|from| guard(path, from))?;
         Ok(Store {
             conn,
             path: path.to_path_buf(),

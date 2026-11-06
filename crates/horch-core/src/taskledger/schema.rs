@@ -4,6 +4,8 @@
 //! list is the code's own list. `PRAGMA user_version` holds the version;
 //! [`migrate`] brings an older file forward and never goes back.
 
+use std::path::{Path, PathBuf};
+
 use anyhow::{bail, Context, Result};
 use rusqlite::Connection;
 
@@ -484,27 +486,122 @@ CREATE INDEX outbox_undelivered ON outbox(created_at) WHERE delivered_at IS NULL
 /// (`v5`) is dropped while other rows point at it. They are checked before
 /// the commit, and turned back on after it.
 pub fn migrate(conn: &mut Connection) -> Result<()> {
+    migrate_guarded(conn, &|_| Ok(()))
+}
+
+/// [`migrate`], but an existing file (version 1 or more) is migrated only
+/// when `guard(version)` is `Ok`, and only after a backup ([`backup`]).
+pub fn migrate_guarded(conn: &mut Connection, guard: &dyn Fn(i64) -> Result<()>) -> Result<()> {
     // The pragma is a no-op inside a transaction, so it is set before one.
     let keys: bool = conn.query_row("PRAGMA foreign_keys", [], |r| r.get(0))?;
     conn.pragma_update(None, "foreign_keys", false)?;
-    let migrated = migrate_unchecked(conn);
+    let migrated = migrate_unchecked(conn, guard);
     conn.pragma_update(None, "foreign_keys", keys)?;
     migrated
 }
 
-fn migrate_unchecked(conn: &mut Connection) -> Result<()> {
+/// The file of `conn`, or `None` for an in-memory database.
+fn file_of(conn: &Connection) -> Option<PathBuf> {
+    conn.path().filter(|p| !p.is_empty()).map(PathBuf::from)
+}
+
+/// How many backups [`backup`] keeps in 1 folder.
+pub const BACKUPS_KEPT: usize = 3;
+
+/// The backups in `dir`, `ledger.v<n>-backup-<stamp>.sqlite3`, oldest
+/// name first.
+pub fn backups_in(dir: &Path) -> Vec<PathBuf> {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    let mut found: Vec<PathBuf> = entries
+        .filter_map(|e| e.ok())
+        .filter(|e| {
+            let name = e.file_name();
+            let name = name.to_string_lossy();
+            name.strip_prefix("ledger.v")
+                .and_then(|rest| rest.split_once("-backup-"))
+                .is_some_and(|(v, rest)| {
+                    !v.is_empty()
+                        && v.bytes().all(|b| b.is_ascii_digit())
+                        && rest.ends_with(".sqlite3")
+                })
+        })
+        .map(|e| e.path())
+        .collect();
+    found.sort();
+    found
+}
+
+/// Copy the ledger `file` at version `from` to
+/// `<dir>/ledger.v<from>-backup-<UTC yyyymmddTHHMMSSZ>.sqlite3`, then keep
+/// the newest [`BACKUPS_KEPT`]. The caller holds the write lock, so the copy
+/// is the state the migration starts from. `VACUUM INTO` cannot run inside a
+/// transaction, so it runs on a second connection.
+fn backup(file: &Path, from: i64) -> Result<PathBuf> {
+    let dir = file.parent().unwrap_or(Path::new("."));
+    let stamp = chrono::Utc::now().format("%Y%m%dT%H%M%SZ");
+    let mut copy = dir.join(format!("ledger.v{from}-backup-{stamp}.sqlite3"));
+    // 2 migrations in 1 second: the second copy gets a number.
+    let mut n = 2;
+    while copy.exists() {
+        copy = dir.join(format!("ledger.v{from}-backup-{stamp}-{n}.sqlite3"));
+        n += 1;
+    }
+    let source = Connection::open(file)
+        .with_context(|| format!("opening {} for a backup", file.display()))?;
+    source.busy_timeout(super::store::BUSY_TIMEOUT)?;
+    source
+        .execute("VACUUM INTO ?1", [copy.to_string_lossy()])
+        .with_context(|| format!("writing the ledger backup {}", copy.display()))?;
+    let all = backups_in(dir);
+    for old in &all[..all.len().saturating_sub(BACKUPS_KEPT)] {
+        let _ = std::fs::remove_file(old);
+    }
+    Ok(copy)
+}
+
+/// The error for a file at version `current` above [`VERSION`]: 1 sentence
+/// and 1 instruction line.
+fn newer_schema(file: Option<&Path>, current: i64) -> anyhow::Error {
+    let what = match file {
+        Some(f) => format!("the task ledger {}", f.display()),
+        None => "the task ledger".to_string(),
+    };
+    let newest = file
+        .and_then(|f| f.parent())
+        .and_then(|dir| backups_in(dir).pop());
+    let todo = match newest {
+        Some(b) => format!(
+            "Run horch self-update, or stop every fleet and copy the backup {} over the ledger \
+             (rows written after the backup are lost).",
+            b.display()
+        ),
+        None => "Run horch self-update, or use the horch that migrated the file.".to_string(),
+    };
+    anyhow::anyhow!(
+        "{what} is schema version {current} and this horch knows only up to {VERSION}: \
+         a newer or development horch migrated the file.\n{todo}"
+    )
+}
+
+fn migrate_unchecked(conn: &mut Connection, guard: &dyn Fn(i64) -> Result<()>) -> Result<()> {
     // The write lock first, then the version: 2 processes that open a fresh
     // file at once must not both create the tables.
+    let file = file_of(conn);
     let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
     let current: i64 = tx.query_row("PRAGMA user_version", [], |r| r.get(0))?;
     if current > VERSION {
-        bail!(
-            "the task ledger is schema version {current}; this horch knows only up to {VERSION}. \
-             Run horch self-update."
-        );
+        return Err(newer_schema(file.as_deref(), current));
     }
     if current == VERSION {
         return Ok(());
+    }
+    if current > 0 {
+        guard(current)?;
+        if let Some(file) = &file {
+            backup(file, current)?;
+        }
     }
     if current < 1 {
         tx.execute_batch(&v1())
@@ -949,5 +1046,65 @@ mod v7_tests {
             .query_row("SELECT count(*) FROM outbox", [], |r| r.get(0))
             .unwrap();
         assert_eq!(n, 1);
+    }
+
+    /// A ledger file at `path` that the real steps 1..=`version` built, with
+    /// 1 project row.
+    fn file_at(path: &std::path::Path, version: i64) {
+        let conn = Connection::open(path).unwrap();
+        let steps = [v1(), V2.into(), V3.into(), V4.into(), v5(), V6.into(), v7()];
+        assert_eq!(steps.len() as i64, VERSION, "add the new step here");
+        for sql in &steps[..version as usize] {
+            conn.execute_batch(sql).unwrap();
+        }
+        conn.execute("INSERT INTO projects VALUES ('p', '/r', 'now')", [])
+            .unwrap();
+        conn.pragma_update(None, "user_version", version).unwrap();
+    }
+
+    /// Every table, index and trigger with its SQL text.
+    fn schema_text(conn: &Connection) -> Vec<(String, String, Option<String>)> {
+        conn.prepare("SELECT type, name, sql FROM sqlite_master ORDER BY type, name")
+            .unwrap()
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap()
+    }
+
+    #[test]
+    fn trf_48_every_old_version_migrates_to_current() {
+        let fresh_dir = tempfile::tempdir().unwrap();
+        let fresh = crate::taskledger::Store::open(&fresh_dir.path().join("l.sqlite3")).unwrap();
+        let want = schema_text(fresh.conn());
+        for version in 1..VERSION {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("ledger.sqlite3");
+            file_at(&path, version);
+            let store = crate::taskledger::Store::open(&path)
+                .unwrap_or_else(|e| panic!("version {version}: {e:#}"));
+            let v: i64 = store
+                .conn()
+                .query_row("PRAGMA user_version", [], |r| r.get(0))
+                .unwrap();
+            assert_eq!(v, VERSION, "version {version}");
+            assert_eq!(schema_text(store.conn()), want, "version {version}");
+            let rows: i64 = store
+                .conn()
+                .query_row("SELECT count(*) FROM projects", [], |r| r.get(0))
+                .unwrap();
+            assert_eq!(rows, 1, "version {version}");
+            let copies = backups_in(dir.path());
+            assert_eq!(copies.len(), 1, "version {version}: {copies:?}");
+            let name = copies[0]
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+                .into_owned();
+            assert!(
+                name.starts_with(&format!("ledger.v{version}-backup-")),
+                "{name}"
+            );
+        }
     }
 }
