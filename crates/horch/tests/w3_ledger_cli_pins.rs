@@ -608,7 +608,7 @@ fn claim_prints_the_line_to_send_the_ticket_and_the_project_facts() {
     assert_eq!(none.code, 0, "{}", none.err);
     assert_eq!(
         none.out,
-        format!("No task for other. Send this line, then end your turn:\nhorch tell orchestrator \"[{text_id}] NOTE: No task for other. I exit. PID unknown.\"\n")
+        "No task for other. Run this line to close your pane:\nhorch done \"No task for other.\"\n"
     );
     let none = w.run_as(Some(&json_id), &["ledger", "claim", "--json"]);
     assert_eq!(none.code, 0, "{}", none.err);

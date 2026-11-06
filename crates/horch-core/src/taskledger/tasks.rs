@@ -1,15 +1,15 @@
 //! Tasks: queueing, the claimable rule and the claim (sections 4.3 to 4.5,
 //! 5.1, 5.2).
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use anyhow::{bail, Context, Result};
 use rusqlite::{params, Connection, Row};
 use serde::Serialize;
 
 use super::model::{
-    Actor, EventKind, FileMode, FindingStatus, Origin, ReviewMode, StepName, TaskKind, TaskStatus,
-    WorkKind, WorkerKind, WorkerStatus, WorktreeMode, WorktreeStatus,
+    Actor, EventKind, FileMode, FindingStatus, Origin, OutboxEvent, ReviewMode, StepName, TaskKind,
+    TaskStatus, WorkKind, WorkerKind, WorkerStatus, WorktreeMode, WorktreeStatus,
 };
 use super::runs::Run;
 use super::sql_words::{self, word};
@@ -680,11 +680,12 @@ fn shared_checkout(t: &Task, work: &[&&Task]) -> Option<Wait> {
 }
 
 /// The state the claimable rule reads: the run's tasks with their files and
-/// blockers.
+/// blockers, and the personas that have a live worker.
 struct Board {
     tasks: Vec<Task>,
     own: BTreeMap<String, Vec<String>>,
     deps: BTreeMap<String, Vec<String>>,
+    staffed: BTreeSet<String>,
 }
 
 impl Board {
@@ -708,7 +709,25 @@ impl Board {
         )? {
             deps.entry(t).or_default().push(b);
         }
-        Ok(Board { tasks, own, deps })
+        let staffed = workers::of_run(conn, run_id)?
+            .into_iter()
+            .filter(|w| w.kind == WorkerKind::Worker.as_str())
+            .filter(|w| w.status().is_ok_and(WorkerStatus::is_live))
+            .filter_map(|w| w.persona)
+            .collect();
+        Ok(Board {
+            tasks,
+            own,
+            deps,
+            staffed,
+        })
+    }
+
+    /// Whether a live or starting worker can claim `t` (TRF-31).
+    fn is_staffed(&self, t: &Task) -> bool {
+        t.claimable_by
+            .as_deref()
+            .is_some_and(|p| self.staffed.contains(p))
     }
 
     fn task(&self, id: &str) -> Option<&Task> {
@@ -789,13 +808,15 @@ impl Board {
 
     /// Every queued task in claim order, with why it cannot start (`None`
     /// when it can). The tasks are chosen greedily: each one is checked
-    /// against the running tasks and the startable ones before it.
+    /// against the running tasks and the startable ones before it. A
+    /// startable task holds its slot only when its persona has a live or
+    /// starting worker: no task waits behind one that nobody will claim.
     fn plan(&self) -> Vec<(&Task, Option<Wait>)> {
         let mut active: Vec<&Task> = self.tasks.iter().filter(|t| Self::is_active(t)).collect();
         let mut out = Vec::new();
         for t in self.queued() {
             let w = self.wait(t, &active);
-            if w.is_none() {
+            if w.is_none() && self.is_staffed(t) {
                 active.push(t);
             }
             out.push((t, w));
@@ -969,14 +990,18 @@ fn no_task(conn: &Connection, w: &Worker, persona: &str, run_id: &str) -> Result
             .map(|p| p.to_string())
             .unwrap_or_else(|| "unknown".into())
     );
+    let now = util::now();
     conn.execute(
-        "UPDATE workers SET status = ?2, end_reason = ?3 WHERE worker_id = ?1",
+        "UPDATE workers SET status = ?2, end_reason = ?3, ended_at = COALESCE(ended_at, ?4)
+         WHERE worker_id = ?1",
         params![
             w.worker_id,
             WorkerStatus::NoTask.as_str(),
-            format!("no task for persona {persona}")
+            format!("no task for persona {persona}"),
+            now
         ],
     )?;
+    no_task_wake(conn, w, persona, run_id, &now)?;
     util::event(
         conn,
         &About {
@@ -994,6 +1019,35 @@ fn no_task(conn: &Connection, w: &Worker, persona: &str, run_id: &str) -> Result
         supervisor_pid: w.supervisor_pid,
         tell,
     })
+}
+
+/// The `no-task` outbox row that tells the orchestrator a worker ended
+/// without a task (trace-fixes C3). 1 row for each worker.
+fn no_task_wake(
+    conn: &Connection,
+    w: &Worker,
+    persona: &str,
+    run_id: &str,
+    now: &str,
+) -> Result<()> {
+    let event = OutboxEvent::NoTask.as_str();
+    conn.execute(
+        "INSERT OR IGNORE INTO outbox (id, run_id, event, key, text, created_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        params![
+            util::new_id(),
+            run_id,
+            event,
+            format!("{run_id}:{event}:{}", w.worker_id),
+            format!(
+                "[horch] NOTE: Worker {} found no task for persona {persona} and ended. \
+                 Run horch ledger plan-workers before you spawn again.",
+                w.label()
+            ),
+            now
+        ],
+    )?;
+    Ok(())
 }
 
 /// Write the claim: the task, the worker, an open worktree from an earlier
@@ -1381,22 +1435,31 @@ pub fn plan_workers(conn: &Connection, run_id: &str) -> Result<Vec<PersonaPlan>>
     Ok(out)
 }
 
-/// Whether every task of the run is finished.
-pub fn all_finished(conn: &Connection, run_id: &str) -> Result<bool> {
-    let open: i64 = conn.query_row(
-        &format!(
-            "SELECT count(*) FROM tasks WHERE run_id = ?1 AND status NOT IN ({ended})",
-            ended = sql_words::list(sql_words::TASKS_ENDED)
-        ),
-        [run_id],
-        |r| r.get(0),
-    )?;
-    let total: i64 = conn.query_row(
-        "SELECT count(*) FROM tasks WHERE run_id = ?1",
-        [run_id],
-        |r| r.get(0),
-    )?;
-    Ok(total > 0 && open == 0)
+/// Why the spawn of worker `worker_id` (a row in `run_id` with no task) is
+/// refused, or `None`: the other workers of its persona still on their way
+/// already cover the startable tasks of that persona (gap G-A).
+pub fn spawn_refusal(conn: &Connection, run_id: &str, worker_id: &str) -> Result<Option<String>> {
+    let w = workers::get(conn, worker_id)?;
+    let Some(persona) = w.persona.as_deref() else {
+        return Ok(None);
+    };
+    let plan = plan_workers(conn, run_id)?;
+    let line = plan.iter().find(|p| p.persona == persona);
+    let startable = line.map_or(0, |p| p.startable);
+    // plan_workers counts this new row too, when the persona has a line and
+    // the row is on its way.
+    let mine = i64::from(matches!(
+        w.status.as_str(),
+        "spawning" | "starting" | "claiming"
+    ));
+    let others = line.map_or(0, |p| (p.on_the_way - mine).max(0));
+    Ok((others >= startable).then(|| {
+        format!(
+            "persona {persona} has {startable} startable task(s), and {others} worker(s) \
+             of it are already on their way. Run horch ledger plan-workers and spawn only \
+             the count it prints."
+        )
+    }))
 }
 
 #[cfg(test)]
@@ -1513,5 +1576,131 @@ mod tests {
         assert_eq!(t.review_mode.as_deref(), Some("full"));
         assert!(t.check_none);
         assert_eq!(t.land_check, None);
+    }
+
+    /// Queue a task of `persona` with `edit` applied.
+    fn queue(
+        store: &mut Store,
+        run: &Run,
+        title: &str,
+        persona: &str,
+        edit: impl Fn(&mut NewTask),
+    ) -> Task {
+        let mut new = NewTask::work(title, &format!("tickets/{title}.md"), persona);
+        edit(&mut new);
+        store
+            .immediate(|tx| add(tx, run, &new, Actor::Orchestrator))
+            .unwrap()
+    }
+
+    /// A new worker row of `persona`, in state `spawning`.
+    fn hire(store: &mut Store, run: &Run, persona: &str) -> String {
+        let new = NewWorker {
+            run_id: run.run_id.clone(),
+            persona: persona.into(),
+            ..Default::default()
+        };
+        store.immediate(|tx| workers::insert(tx, &new)).unwrap()
+    }
+
+    #[test]
+    fn trf_31_a_task_with_no_worker_of_its_persona_holds_no_slot() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut store, run) = store_with_run(dir.path());
+        // x is first and exclusive, and owns the file y owns. No x worker exists.
+        queue(&mut store, &run, "x", "x", |n| {
+            n.parallel = false;
+            n.priority = 1;
+            n.own = vec!["src/a.rs".into()];
+        });
+        queue(&mut store, &run, "y", "y", |n| {
+            n.own = vec!["src/a.rs".into()]
+        });
+        let start: Vec<String> = startable(store.conn(), &run.run_id)
+            .unwrap()
+            .into_iter()
+            .map(|t| t.title)
+            .collect();
+        assert_eq!(
+            start,
+            vec!["x", "y"],
+            "both show, so plan-workers asks for both"
+        );
+        let wy = hire(&mut store, &run, "y");
+        let ClaimOutcome::Claimed(c) = store.immediate(|tx| claim(tx, &wy)).unwrap() else {
+            panic!("the y worker claims y: x holds no slot");
+        };
+        assert_eq!(c.task.title, "y");
+    }
+
+    #[test]
+    fn trf_31_a_task_with_a_starting_worker_of_its_persona_holds_its_slot() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut store, run) = store_with_run(dir.path());
+        queue(&mut store, &run, "x", "x", |n| {
+            n.parallel = false;
+            n.priority = 1;
+        });
+        queue(&mut store, &run, "y", "y", |_| {});
+        hire(&mut store, &run, "x");
+        let wy = hire(&mut store, &run, "y");
+        let waits = waits(store.conn(), &run.run_id).unwrap();
+        assert_eq!(waits.len(), 1, "{waits:?}");
+        assert_eq!(waits[0].0.title, "y");
+        assert!(matches!(
+            store.immediate(|tx| claim(tx, &wy)).unwrap(),
+            ClaimOutcome::NoTask { .. }
+        ));
+    }
+
+    #[test]
+    fn trf_31_a_spawn_is_refused_when_workers_on_their_way_cover_the_plan() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut store, run) = store_with_run(dir.path());
+        queue(&mut store, &run, "a", "dev", |_| {});
+        let first = hire(&mut store, &run, "dev");
+        assert_eq!(
+            spawn_refusal(store.conn(), &run.run_id, &first).unwrap(),
+            None,
+            "the first worker covers the 1 startable task"
+        );
+        let second = hire(&mut store, &run, "dev");
+        let why = spawn_refusal(store.conn(), &run.run_id, &second)
+            .unwrap()
+            .expect("a second dev worker is over the plan");
+        assert!(why.contains("horch ledger plan-workers"), "{why}");
+        let other = hire(&mut store, &run, "idle");
+        assert!(
+            spawn_refusal(store.conn(), &run.run_id, &other)
+                .unwrap()
+                .is_some(),
+            "a persona with no startable task gets no worker"
+        );
+    }
+
+    #[test]
+    fn trf_32_a_claim_with_no_task_ends_the_worker_and_tells_the_orchestrator() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut store, run) = store_with_run(dir.path());
+        let w = hire(&mut store, &run, "dev");
+        assert!(matches!(
+            store.immediate(|tx| claim(tx, &w)).unwrap(),
+            ClaimOutcome::NoTask { .. }
+        ));
+        let worker = workers::get(store.conn(), &w).unwrap();
+        assert_eq!(worker.status, WorkerStatus::NoTask.as_str());
+        assert!(worker.ended_at.is_some(), "the worker ended");
+        let (event, key, text, delivered): (String, String, String, Option<String>) = store
+            .conn()
+            .query_row(
+                "SELECT event, key, text, delivered_at FROM outbox WHERE run_id = ?1",
+                [&run.run_id],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+            )
+            .unwrap();
+        assert_eq!(event, "no-task");
+        assert_eq!(key, format!("{}:no-task:{w}", run.run_id));
+        assert!(text.contains("found no task for persona dev"), "{text}");
+        assert_eq!(delivered, None);
     }
 }

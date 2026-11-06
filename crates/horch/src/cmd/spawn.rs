@@ -96,10 +96,14 @@ pub fn spawn(ctx: &RuntimeContext, mut args: SpawnArgs) -> Result<String> {
     // The task ledger: when this spawn joins a run, the worker gets a row,
     // and a spawn with no task tells it to claim one.
     let ledger = super::taskledger_spawn::prepare(ctx, &args)?;
-    if ledger.is_some() && args.task.trim().is_empty() && args.resume.is_none() {
+    let claims = ledger.is_some() && args.task.trim().is_empty() && args.resume.is_none();
+    if claims {
         args.task = super::taskledger_spawn::CLAIM_TASK.to_string();
     }
-    let result = spawn_worker(ctx, args, ledger.as_ref());
+    let result = match ledger.as_ref().filter(|_| claims) {
+        Some(l) => refuse_over_plan(ctx, l).and_then(|()| spawn_worker(ctx, args, ledger.as_ref())),
+        None => spawn_worker(ctx, args, ledger.as_ref()),
+    };
     // No row outlives a spawn that failed before its worker ran (#190).
     if let (Err(e), Some(l)) = (&result, &ledger) {
         let reason = match e.downcast_ref::<SpawnError>() {
@@ -109,6 +113,18 @@ pub fn spawn(ctx: &RuntimeContext, mut args: SpawnArgs) -> Result<String> {
         l.launch_failed(&reason);
     }
     result
+}
+
+/// Refuse a claiming spawn that its run's plan does not need (gap G-A): the
+/// workers of its persona on their way already cover the startable tasks.
+fn refuse_over_plan(ctx: &RuntimeContext, l: &super::taskledger_spawn::LedgerSpawn) -> Result<()> {
+    let Some(store) = horch_core::taskledger::open_existing(ctx)? else {
+        return Ok(());
+    };
+    match horch_core::taskledger::tasks::spawn_refusal(store.conn(), &l.run.run_id, &l.worker_id)? {
+        Some(why) => bail!("horch spawn refused: {why}"),
+        None => Ok(()),
+    }
 }
 
 /// What `spawn_worker` reads before it plans, and the steps after it use.

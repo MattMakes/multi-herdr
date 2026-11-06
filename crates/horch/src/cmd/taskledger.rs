@@ -2061,11 +2061,12 @@ fn claim_task(store: &mut Store, tools: &finish::Tools, wid: &str) -> Result<Cla
 /// the project facts.
 fn print_claim(ctx: &RuntimeContext, outcome: ClaimOutcome) -> Result<ExitCode> {
     match outcome {
-        ClaimOutcome::NoTask { tell, persona, .. } => {
+        // The claim ended this worker (TRF-32); horch done closes its pane.
+        ClaimOutcome::NoTask { persona, .. } => {
             output::println(&format!(
-                "No task for {persona}. Send this line, then end your turn:"
+                "No task for {persona}. Run this line to close your pane:"
             ));
-            output::println(&tell);
+            output::println(&format!("horch done \"No task for {persona}.\""));
         }
         ClaimOutcome::Claimed(c) => {
             output::print(&render_claim(&c));

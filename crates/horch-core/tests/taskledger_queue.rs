@@ -165,6 +165,8 @@ fn a_queued_task_behind_a_task_with_its_file_waits_on_the_file() {
     add(&mut s, &run, "b", "opus", |t| {
         t.own = vec!["crates/horch/src/cmd/taskledger.rs".into()]
     });
+    // A slot is held only for a persona with a live worker (TRF-31).
+    worker(&mut s, &run, "opus");
     let waits = tasks::waits(s.conn(), &run.run_id).unwrap();
     assert_eq!(waits.len(), 1, "{waits:?}");
     assert_eq!(waits[0].0.short(), "T-2");
@@ -341,7 +343,6 @@ fn a_cancelled_task_is_finished_and_not_claimable() {
     s.immediate(|tx| tasks::cancel(tx, &t, "dropped")).unwrap();
     let w = worker(&mut s, &run, "opus");
     assert!(matches!(claim(&mut s, &w), ClaimOutcome::NoTask { .. }));
-    assert!(tasks::all_finished(s.conn(), &run.run_id).unwrap());
 }
 
 #[test]
@@ -355,6 +356,8 @@ fn shared_checkout_tasks_run_one_at_a_time() {
         t.worktree_mode = WorktreeMode::Shared
     });
     add(&mut s, &run, "c", "opus", |_| {});
+    // A slot is held only for a persona with a live worker (TRF-31).
+    worker(&mut s, &run, "opus");
     let plan = tasks::plan_workers(s.conn(), &run.run_id).unwrap();
     assert_eq!(
         plan[0].startable, 2,
