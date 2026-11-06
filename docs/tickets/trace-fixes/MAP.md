@@ -58,6 +58,7 @@ Spec: [docs/specs/trace-fixes.md](../../specs/trace-fixes.md)
 | 52 | [A plain spawn prefers the planned run over the steward's solo run](52-spawn-prefers-planned-run.md) | primary `opus`, fallback `backend-developer` | yes | 11 | 49 |
 | 53 | [No label or diagnostic names the retired JSON session ledger](53-json-path-labels.md) | primary `opus`, fallback `backend-developer` | yes | 12 | 29 |
 | 54 | [A skipped run claim refuses the orchestrator launch](54-skipped-claim-refuses-launch.md) | primary `opus-hardening`, fallback `opus` | yes | 12 | 32, 50 |
+| 55 | [A refused fleet launch leaves no orchestrator route behind](55-refused-launch-drops-route.md) | primary `opus-hardening`, fallback `opus` | yes | 13 | 54 |
 
 ## Waves
 
