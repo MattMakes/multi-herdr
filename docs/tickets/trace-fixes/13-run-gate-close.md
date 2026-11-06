@@ -25,6 +25,8 @@ Move the end of a run from the prompt into code (C5, D4).
 2. `run close` uses the C6 predicate, then requires a passing gate for the current tip and the PR merged (query with gh in pr.rs) or `--pr-declined "<reason>"`.
 3. With no remote or no gh, the PR condition is not applicable and close says so.
 
+Amendment (report 12): `crates/horch-e2e/tests/i308_triage.rs` test `run_close_refuses_while_a_parked_worktree_has_no_decision` fails on the run branch: `ledger status` now exits 1 for an unsettled run (TRF-15, ticket 11). Update that test to the settled rule and keep what it proves: `run close` refuses while a parked worktree has no decision. Approved outside Own.
+
 ## Done when
 
 Both tests pass with a fake gh.

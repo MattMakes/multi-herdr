@@ -42,6 +42,8 @@ Amendment (decision R11): add `question` to the C3 event list in `docs/specs/tra
 
 Amendment (report 34): `docs/specs/architecture.md` lines near 1211 and 1274 still describe `footprint_bytes`, which ticket 34 deleted. The module doc of `crates/horch-core/src/harness/capabilities.rs` names the competition preflight. Fix both texts (approved outside Own).
 
+Amendment (report 12): tell the orchestrator to pass `horch ledger run new <slug> --check "<command>"` when the project has a whole-run check. Make the not-applicable note in `crates/horch-core/src/taskledger/finish/complexity.rs` name the Rust clippy path too (approved outside Own).
+
 ## Done when
 
 TRF-46 and the golden tests pass.
