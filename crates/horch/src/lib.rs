@@ -20,9 +20,44 @@ pub const RELEASE_BINARIES: [&str; 2] = ["horch", HERDR_INSTALL_BIN];
 /// install`, and so `horch self-update`, deletes them from the install dir.
 pub const RETIRED_BINARIES: [&str; 1] = ["multi-herdr-dataset"];
 
+/// Deletes each [`RETIRED_BINARIES`] file or symlink in `dir` and returns the
+/// paths it deleted.
+pub fn remove_retired_binaries(dir: &std::path::Path) -> anyhow::Result<Vec<std::path::PathBuf>> {
+    use anyhow::Context as _;
+    let mut removed = Vec::new();
+    for bin in RETIRED_BINARIES {
+        let path = dir.join(format!("{bin}{}", std::env::consts::EXE_SUFFIX));
+        if std::fs::symlink_metadata(&path).is_ok() {
+            std::fs::remove_file(&path)
+                .with_context(|| format!("removing the retired {}", path.display()))?;
+            removed.push(path);
+        }
+    }
+    Ok(removed)
+}
+
 #[cfg(test)]
 mod tests {
-    use super::RELEASE_BINARIES;
+    use super::{remove_retired_binaries, RELEASE_BINARIES, RETIRED_BINARIES};
+
+    /// TRF-47: install deletes an old `multi-herdr-dataset` and keeps `horch`.
+    #[test]
+    fn trf_47_install_removes_old_dataset_binary() {
+        let tmp = tempfile::tempdir().unwrap();
+        let exe = |name: &str| {
+            tmp.path()
+                .join(format!("{name}{}", std::env::consts::EXE_SUFFIX))
+        };
+        std::fs::write(exe(RETIRED_BINARIES[0]), "old").unwrap();
+        std::fs::write(exe("horch"), "horch").unwrap();
+
+        let removed = remove_retired_binaries(tmp.path()).unwrap();
+
+        assert_eq!(removed, vec![exe(RETIRED_BINARIES[0])]);
+        assert!(!exe(RETIRED_BINARIES[0]).exists());
+        assert_eq!(std::fs::read_to_string(exe("horch")).unwrap(), "horch");
+        assert!(remove_retired_binaries(tmp.path()).unwrap().is_empty());
+    }
 
     fn repo_file(rel: &str) -> String {
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");

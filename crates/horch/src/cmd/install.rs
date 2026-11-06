@@ -74,13 +74,8 @@ fn place_horch(source: &Path, dir: &Path, target: &Path) -> Result<()> {
 /// Deletes each [`horch::RETIRED_BINARIES`] file in `dir` and prints 1 line
 /// that names its path.
 fn remove_retired(dir: &Path) -> Result<()> {
-    for bin in horch::RETIRED_BINARIES {
-        let path = dir.join(exe_name(bin));
-        if path.is_file() || is_symlink(&path) {
-            std::fs::remove_file(&path)
-                .with_context(|| format!("removing the retired {}", path.display()))?;
-            println!("removed the retired {}", path.display());
-        }
+    for path in horch::remove_retired_binaries(dir)? {
+        println!("removed the retired {}", path.display());
     }
     Ok(())
 }
@@ -490,7 +485,7 @@ mod tests {
     }
 
     #[test]
-    fn trf_47_install_removes_old_dataset_binary() {
+    fn trf_47_place_horch_removes_old_dataset_binary() {
         let tmp = tempfile::tempdir().unwrap();
         let horch = build_dir(tmp.path(), &["horch"]);
         let bin = tmp.path().join("bin");
