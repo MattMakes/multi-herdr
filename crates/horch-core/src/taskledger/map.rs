@@ -1191,7 +1191,10 @@ mod tests {
         assert!(got[1].1.contains("field 'Kind' is out of order"), "{got:?}");
         assert!(got[2].1.contains("unknown field 'Areas'"), "{got:?}");
         assert!(got[3].1.contains("is not a field line"), "{got:?}");
-        assert!(got[4].1.contains("Check needs a backticked command"), "{got:?}");
+        assert!(
+            got[4].1.contains("Check needs a backticked command"),
+            "{got:?}"
+        );
         assert!(got[5].1.contains("Own names no backticked path"), "{got:?}");
         assert!(got[6].1.contains("no **Kind:** field"), "{got:?}");
         let bad = ticket_problems(&c1("**Persona:** primary `o`\n**Kind:** feature\n**Review:** heavy\n**Check:** x\n**Own:** `a`"));

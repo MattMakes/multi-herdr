@@ -1122,9 +1122,7 @@ mod trf_45_tests {
         let state = tmp.path().join("state");
         std::fs::create_dir_all(&state).unwrap();
         let file = state.join("-repo.json");
-        let entry = |at: &str, event: &str, text: &str| {
-            serde_json::json!({"at": at, "event": event, "text": text})
-        };
+        let entry = |at: &str, event: &str, text: &str| serde_json::json!({"at": at, "event": event, "text": text});
         let text = serde_json::json!([
             {"record_id": "a", "session_id": null, "agent": "claude", "tier": "opus",
              "model": "opus", "role": "opus-1", "status": "working", "task": "t1",

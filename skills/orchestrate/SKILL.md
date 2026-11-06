@@ -89,8 +89,8 @@ Keep `ai_docs/plans/<run-slug>/decisions.md`: operator decisions, reasons, rejec
 1. Confirm `horch inbox` shows no worker mid-task and no message is pending.
 2. Run `horch worktree list`. Confirm that no claim is open or unlanded.
 3. Confirm every unit is finished or deliberately dropped, and say which were dropped.
-4. Before the run PR merges, run `horch ledger run gate`.
-5. Report to the human what was built, which teammate built each part, and what was left undone.
+4. Before the run PR merges, give `horch ledger run gate` to 1 worker.
+5. Report to the human what was built, which teammate built it, and what is undone.
 
 ## 8. Things that go wrong
 

@@ -211,8 +211,6 @@ fn read_bounded(file: std::fs::File) -> Option<Vec<u8>> {
 }
 
 /// Replace `path` with `bytes` atomically and durably, with file mode `mode`.
-/// This is the "replace" discipline of
-/// `docs/specs/dataset-competition.md` §2.3 (MEA-09).
 pub fn write_atomic(path: &Path, bytes: &[u8], mode: u32) -> Result<()> {
     let (parent, name) = parent_and_name(path)?;
     let nonce = uuid::Uuid::new_v4().simple().to_string();

@@ -982,12 +982,7 @@ mod trf_39_tests {
             .unwrap();
 
         let r = report(store.conn(), &run).unwrap();
-        let line = |role: &str| {
-            r.workers
-                .iter()
-                .find(|w| w.worker.label() == role)
-                .unwrap()
-        };
+        let line = |role: &str| r.workers.iter().find(|w| w.worker.label() == role).unwrap();
         let orchestrator = line("orchestrator");
         assert!(!orchestrator.stale, "a pending orchestrator is not stale");
         assert!(orchestrator.launch_pending);

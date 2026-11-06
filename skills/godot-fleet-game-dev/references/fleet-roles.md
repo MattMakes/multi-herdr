@@ -20,8 +20,8 @@ Use this when you split a large request into parallel unit plans.
 5. Put every balance number into data, so no worker waits for a number.
 6. Land shared seams alone first, with a test that old behaviour is unchanged.
 7. Check every path that the plans name. Commit plans before spawns, so worktrees hold them.
-8. Spawn each worker from its own worktree with "Read and follow <plan> exactly." Check that
-   it runs on the intended agent type. Close a wrong fallback before it works.
+8. Queue each unit with `horch ledger task '<task>' --persona <teammate>`, then run
+   `horch spawn <teammate>`. Check that it runs on the intended agent type. Close a wrong fallback before it works.
 9. Require a QUESTION before any file outside the own list. Grant a file only if no active
    worker owns it, with conditions (old items keep their look; tests cover old and new).
 10. Relay interface facts and peer contracts between parallel units.

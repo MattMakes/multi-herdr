@@ -501,7 +501,7 @@ pub fn migrate(conn: &mut Connection) -> Result<()> {
 }
 
 /// [`migrate`], but an existing file (version 1 or more) is migrated only
-/// when `guard(version)` is `Ok`, and only after a backup ([`backup`]).
+/// when `guard(version)` is `Ok`, and only after a backup (`backup`).
 pub fn migrate_guarded(conn: &mut Connection, guard: &dyn Fn(i64) -> Result<()>) -> Result<()> {
     // The pragma is a no-op inside a transaction, so it is set before one.
     let keys: bool = conn.query_row("PRAGMA foreign_keys", [], |r| r.get(0))?;
@@ -516,7 +516,7 @@ fn file_of(conn: &Connection) -> Option<PathBuf> {
     conn.path().filter(|p| !p.is_empty()).map(PathBuf::from)
 }
 
-/// How many backups [`backup`] keeps in 1 folder.
+/// How many backups `backup` keeps in 1 folder.
 pub const BACKUPS_KEPT: usize = 3;
 
 /// The backups in `dir`, `ledger.v<n>-backup-<stamp>.sqlite3`, oldest

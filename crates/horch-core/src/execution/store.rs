@@ -1198,8 +1198,8 @@ fn synthesized_record(lw: &LedgerWorker, records: &[LedgerRecordV1]) -> LedgerRe
 
 /// Lay the task ledger's worker rows for `project` over `records` (TRF-44,
 /// D10 step 1). A row that names a record, or matches one by kind, role and
-/// workspace, updates it in place ([`overlay_record`]). A row without a
-/// record is added after them ([`synthesized_record`]). Without the ledger
+/// workspace, updates it in place (`overlay_record`). A row without a
+/// record is added after them (`synthesized_record`). Without the ledger
 /// file the records stay as read.
 pub fn overlay_task_ledger(records: &mut Vec<LedgerRecordV1>, db: &Path, project: &Path) {
     let rows = ledger_workers(db, project);

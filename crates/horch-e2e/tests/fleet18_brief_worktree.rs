@@ -384,7 +384,7 @@ fn g64_skill_states_each_delegation_and_reporting_rule_within_budget() {
         "Your own checks only read",
         "Delegate landing, installs, cleanup",
         "Do not re-run the tests",
-        "1 full gate on the run branch to 1 worker",
+        "give `horch ledger run gate` to 1 worker",
         "1 unit per item",
         "active runs",
         "live orchestrators",

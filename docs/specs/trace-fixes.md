@@ -230,6 +230,11 @@ Each ID needs a test whose name starts with its lowercase form (`trf_07_...`); t
 | TRF-45 | No code writes the JSON session ledger; `ledger import` still reads old JSON once; `done` and `note` are single commands. | 29 | U2, CC4 |
 | TRF-46 | The briefings contain no push dispatch, and every `context --over` state has an instruction. | 30 | U1, U3, U4 |
 | TRF-47 | `multi-herdr-dataset` and the competition, evaluation, dataset, fleet_runs, measure and teacher modules are gone; release archives hold `horch` and `herdr-install`. | 02 | D17 |
+| TRF-48 | A cargo-built horch does not migrate the shared ledger; every migration of an existing ledger writes a backup and keeps the newest 3; the newer-schema error names the backup. | 35 | incident |
+| TRF-49 | A repeating checkin failure prints once, then at most 1 line per 10 min, and 1 recovery line. | 35 | incident |
+| TRF-50 | The pr step passes when the remote run branch holds the landed commit, even while GitHub's PR head lags. | 40 | D4 |
+| TRF-51 | Each 30 s watchdog pass rebuilds every wake that a crash after commit can lose, deduplicated by its C3 key. | 46 | D7 |
+| TRF-52 | `run close` never fails because the gate folder cannot be removed; a git error gives 1 NOTE and the run closes. | 51 | D4 |
 
 ## 7. Work breakdown
 

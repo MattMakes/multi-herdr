@@ -1,5 +1,5 @@
 //! The wake outbox (trace-fixes C3, D7). A wake is a row first and a send
-//! second: [`write`] adds the row inside a ledger transaction, and [`drain`]
+//! second: [`write()`] adds the row inside a ledger transaction, and [`drain`]
 //! gives each undelivered row to a sender and sets `delivered_at` only when
 //! the send took it. A failed send leaves the row for the next drain.
 

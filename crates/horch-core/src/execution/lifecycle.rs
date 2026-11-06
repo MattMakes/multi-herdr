@@ -2370,7 +2370,10 @@ mod tests {
             let tmp = tempfile::tempdir().unwrap();
             let mut ctx = RuntimeContext::from_env(
                 &MapEnv::new(tmp.path())
-                    .with("HORCH_STATE_DIR", tmp.path().join("state").to_str().unwrap())
+                    .with(
+                        "HORCH_STATE_DIR",
+                        tmp.path().join("state").to_str().unwrap(),
+                    )
                     .with("HORCH_HERDR_BIN", "/nonexistent/herdr"),
             )
             .unwrap();
