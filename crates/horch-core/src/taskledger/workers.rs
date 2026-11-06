@@ -4,7 +4,7 @@ use anyhow::{bail, Context, Result};
 use rusqlite::{params, Connection, Row};
 use serde::Serialize;
 
-use super::model::{Actor, EventKind, Origin, ProgressSource, WorkerKind, WorkerStatus};
+use super::model::{Actor, EndReason, EventKind, Origin, ProgressSource, WorkerKind, WorkerStatus};
 use super::sql_words::{self, word};
 use super::store::optional;
 use super::util::{self, About};
@@ -47,6 +47,8 @@ pub struct Worker {
     pub started_at: Option<String>,
     pub claimed_at: Option<String>,
     pub ended_at: Option<String>,
+    /// The handoff file of a worker that ended `handed_off` (C4).
+    pub handoff_path: Option<String>,
 }
 
 impl Worker {
@@ -96,6 +98,7 @@ impl Worker {
             started_at: r.get("started_at")?,
             claimed_at: r.get("claimed_at")?,
             ended_at: r.get("ended_at")?,
+            handoff_path: r.get("handoff_path")?,
         })
     }
 }
@@ -407,6 +410,26 @@ pub fn end(
         params![worker_id, status.as_str(), reason, exit_code, util::now()],
     )?;
     Ok(n > 0)
+}
+
+/// End a live worker `handed_off` with its handoff file (trace-fixes C4).
+/// The attempt did not finish, so the row ends `incomplete`, as a reaped
+/// one does: `plan-workers` then names it for `--replaces`.
+pub fn hand_off(conn: &Connection, worker_id: &str, path: &str) -> Result<()> {
+    let n = conn.execute(
+        &format!(
+            "UPDATE workers SET status = {incomplete}, end_reason = ?2, handoff_path = ?3,
+                ended_at = COALESCE(ended_at, ?4)
+             WHERE worker_id = ?1 AND status IN ({live})",
+            incomplete = word(WorkerStatus::Incomplete),
+            live = sql_words::list(sql_words::WORKERS_LIVE)
+        ),
+        params![worker_id, EndReason::HandedOff.as_str(), path, util::now()],
+    )?;
+    if n != 1 {
+        bail!("worker {worker_id} already ended; an ended worker cannot hand off");
+    }
+    Ok(())
 }
 
 /// How long a `spawning` row may wait for its supervisor: longer than the

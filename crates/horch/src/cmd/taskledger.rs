@@ -169,6 +169,10 @@ pub enum LedgerCommand {
         #[arg(long, value_name = "REASON")]
         unlanded: Option<String>,
     },
+    /// (worker) Hand the running task off: this worker ends `handed_off`,
+    /// the task is queued again first with its worktree, and the next claim
+    /// reads the handoff file first. Write the file before you run it.
+    Handoff { path: PathBuf },
     /// (worker) Record a milestone; it counts as progress.
     Progress { text: String },
     /// (worker) Record a note; it counts as progress.
@@ -577,6 +581,7 @@ fn group_of(command: &LedgerCommand) -> Group {
             | C::Finish { .. }
             | C::Steps { .. }
             | C::Done { .. }
+            | C::Handoff { .. }
             | C::Progress { .. }
             | C::Note { .. }
     ) {
@@ -738,6 +743,9 @@ fn worker_side_cmd(
     }
     if let LedgerCommand::Done { summary, unlanded } = command {
         return done_exit(ctx, store, &summary.join(" "), unlanded.as_deref());
+    }
+    if let LedgerCommand::Handoff { path } = command {
+        return handoff_cmd(ctx, store, &path).map(|()| ExitCode::SUCCESS);
     }
     if let LedgerCommand::Progress { text } = command {
         return progress(ctx, &mut store, EventKind::Progress, &text);
@@ -2479,6 +2487,57 @@ pub fn done_cmd(
     done
 }
 
+/// `horch ledger handoff <path>` (trace-fixes C4): hand the task off in 1
+/// transaction, wake the orchestrator, then, in a worker pane, report and
+/// close the pane as `horch done` does.
+pub fn handoff_cmd(ctx: &RuntimeContext, mut store: Store, path: &Path) -> Result<()> {
+    let wid = worker_id(ctx)?;
+    let file = handoff_file(ctx, path)?;
+    let in_pane = in_worker_pane(ctx);
+    let budget = delivery::start_push_budget(delivery::DONE_PUSH_BUDGET);
+    if budget.is_some() && in_pane {
+        eprintln!("{}", super::messaging::CLOSING);
+    }
+    let out = store.immediate(|tx| tasks::handoff(tx, &wid, &file))?;
+    let run = runs::get(store.conn(), &out.task.run_id)?;
+    let short = out.task.short();
+    output::println(&format!(
+        "{short} is handed off. It is queued first with its worktree. The next claim reads {file} first."
+    ));
+    let woken = std::cell::Cell::new(false);
+    let wake = || {
+        if !woken.replace(true) {
+            super::taskledger_wake::drain_run(ctx, &store, &run, out.wake_id.as_deref());
+        }
+    };
+    if !in_pane {
+        wake();
+        return Ok(());
+    }
+    let summary = format!("I handed off {short}. The handoff file is {file}.");
+    let done = super::messaging::done_then(ctx, &summary, None, &wake);
+    wake();
+    done
+}
+
+/// The absolute path of the handoff file `path`, relative to the current
+/// directory. The file must exist.
+fn handoff_file(ctx: &RuntimeContext, path: &Path) -> Result<String> {
+    let full = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        ctx.paths.current_dir()?.join(path)
+    };
+    if !full.is_file() {
+        bail!(
+            "the handoff file {} does not exist; write it first",
+            full.display()
+        );
+    }
+    let full = full.canonicalize().unwrap_or(full);
+    Ok(full.to_string_lossy().into_owned())
+}
+
 /// Whether `horch done`'s report and pane close run: in a herdr pane of a
 /// worker with a record and a role.
 fn in_worker_pane(ctx: &RuntimeContext) -> bool {
@@ -2616,6 +2675,9 @@ pub fn render_claim(c: &Claimed) -> String {
         c.attempt,
         t.title
     );
+    if let Some(path) = &c.handoff_path {
+        out.push_str(&format!("PRIOR WORK: read {path} first\n"));
+    }
     render_ticket(c, &mut out);
     if let Some(p) = &t.phase {
         out.push_str(&format!("Phase: {p}.\n"));
@@ -2770,6 +2832,50 @@ pub fn note_from_worker(ctx: &RuntimeContext, text: &str) {
     if let Err(e) = result {
         eprintln!("horch: the task ledger did not record the note: {e:#}");
     }
+    if let Some(line) = note_handoff_warning(ctx) {
+        output::println(&line);
+    }
+}
+
+/// The 1 warning of `horch note` for a live session in the context state
+/// `handoff` (TRF-09): it names `horch ledger handoff`. The row is built as
+/// `horch context` builds it. Any read error means no warning.
+fn note_handoff_warning(ctx: &RuntimeContext) -> Option<String> {
+    use horch_core::execution::records::SessionLedger;
+    let record_id = ctx.worker.as_ref()?.record_id.as_deref()?;
+    let ledger = SessionLedger::open_in(ctx).ok()?;
+    let record = ledger.get(record_id).ok()?;
+    if !record.execution_status().is_live() {
+        return None;
+    }
+    let roster = super::load_roster_unwarned(ctx, None)
+        .or_else(|_| horch_core::roster::Roster::builtin())
+        .ok()?;
+    let loc = horch_core::usage::Locations::from_context(ctx);
+    let cache = super::context::cache_dir(ctx);
+    let src = super::context::Sources {
+        ctx,
+        ledger: &ledger,
+        roster: &roster,
+        loc: &loc,
+        cache_dir: &cache,
+    };
+    let workspace = ctx.herdr.workspace.as_ref().map(|w| w.to_string());
+    let row = super::context::build_row(&src, record, workspace.as_deref());
+    handoff_warning(row.state, &row.record.role)
+}
+
+/// The `horch note` line for a session in context state `state`: a line
+/// only for `handoff`.
+fn handoff_warning(state: horch_core::compaction::policy::RowState, role: &str) -> Option<String> {
+    use horch_core::compaction::policy::{self, RowState};
+    (state == RowState::Handoff).then(|| {
+        let file = policy::handoff_path(role);
+        format!(
+            "NOTE: Context handoff: {role} is still over its threshold after 1 compaction. \
+             Do not wait for a compaction. Write {file}, then run: horch ledger handoff {file}"
+        )
+    })
 }
 
 fn worker_cmd(ctx: &RuntimeContext, store: &mut Store, command: WorkerCommand) -> Result<ExitCode> {
@@ -2838,7 +2944,10 @@ fn record_pids(
 
 #[cfg(test)]
 mod tests {
-    use super::{absolute_ticket_if_missing, finish, tools, ExitCode, Git, LedgerCommand, Run};
+    use super::{
+        absolute_ticket_if_missing, finish, handoff_warning, render_claim, tools, ExitCode, Git,
+        LedgerCommand, Run,
+    };
     use clap::Subcommand;
     use horch_core::roster::{ExecDecision, Roster};
     use horch_core::runtime::{MapEnv, RuntimeContext};
@@ -2928,6 +3037,39 @@ mod tests {
             std::fs::write(root.join("tickets/t.md"), "# t\n").unwrap();
         }
         root.canonicalize().unwrap()
+    }
+
+    #[test]
+    fn trf_37_a_claim_prints_prior_work_before_the_ticket_snapshot() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = project(dir.path(), true);
+        let (_ctx, _store, mut c) = claimed(dir.path(), &root, None, |t| {
+            t.ticket_snapshot = Some("# t\n".into());
+        });
+        assert!(!render_claim(&c).contains("PRIOR WORK"));
+        c.handoff_path = Some("/w/ai_docs/handoffs/opus-1-whats-next.md".into());
+        let out = render_claim(&c);
+        let prior = out
+            .find("PRIOR WORK: read /w/ai_docs/handoffs/opus-1-whats-next.md first\n")
+            .expect("the PRIOR WORK line");
+        assert!(prior < out.find("Ticket snapshot").unwrap(), "{out}");
+    }
+
+    #[test]
+    fn trf_37_note_warns_once_only_in_the_handoff_state() {
+        use horch_core::compaction::policy::RowState;
+        let line = handoff_warning(RowState::Handoff, "opus-1").expect("a warning");
+        assert_eq!(line.lines().count(), 1, "{line}");
+        assert!(
+            line.contains("horch ledger handoff ai_docs/handoffs/opus-1-whats-next.md"),
+            "{line}"
+        );
+        for s in RowState::ALL
+            .into_iter()
+            .filter(|s| *s != RowState::Handoff)
+        {
+            assert_eq!(handoff_warning(s, "opus-1"), None, "{}", s.as_str());
+        }
     }
 
     fn ticket_of(c: &Claimed) -> &str {

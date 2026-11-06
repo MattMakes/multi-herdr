@@ -4,14 +4,15 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use anyhow::{bail, Context, Result};
-use rusqlite::{params, Connection, Row};
+use rusqlite::{params, Connection, Row, Transaction};
 use serde::Serialize;
 
 use super::model::{
-    Actor, EventKind, FileMode, FindingStatus, HeldReason, Origin, OutboxEvent, ReviewMode,
-    StepName, TaskKind, TaskStatus, WorkKind, WorkerKind, WorkerStatus, WorktreeMode,
+    Actor, EndReason, EventKind, FileMode, FindingStatus, HeldReason, Origin, OutboxEvent,
+    ReviewMode, StepName, TaskKind, TaskStatus, WorkKind, WorkerKind, WorkerStatus, WorktreeMode,
     WorktreeStatus,
 };
+use super::outbox::{self, Wake};
 use super::runs::Run;
 use super::sql_words::{self, word};
 use super::store::optional;
@@ -898,6 +899,9 @@ pub struct Claimed {
     pub steps_after_land: Vec<String>,
     /// The ticket text as `add-map` queued it (TRF-12).
     pub ticket_snapshot: Option<String>,
+    /// The handoff file of the last attempt, when it ended through
+    /// `horch ledger handoff` (C4). The claim prints it first.
+    pub handoff_path: Option<String>,
 }
 
 /// The result of `horch ledger claim`.
@@ -1119,9 +1123,16 @@ fn take_task(conn: &Connection, w: &Worker, run_id: &str, task: &Task) -> Result
 }
 
 fn claimed(conn: &Connection, w: &Worker, task: Task) -> Result<Claimed> {
-    let prior = workers::attempts_at(conn, &task.task_id)?
+    let attempts: Vec<Worker> = workers::attempts_at(conn, &task.task_id)?
         .into_iter()
         .filter(|a| a.worker_id != w.worker_id)
+        .collect();
+    let handoff_path = attempts
+        .last()
+        .filter(|a| a.end_reason.as_deref() == Some(EndReason::HandedOff.as_str()))
+        .and_then(|a| a.handoff_path.clone());
+    let prior = attempts
+        .into_iter()
         .map(|a| PriorAttempt {
             worker_id: a.worker_id,
             role: a.role,
@@ -1162,8 +1173,115 @@ fn claimed(conn: &Connection, w: &Worker, task: Task) -> Result<Claimed> {
         steps_after_land,
         worktree_branch: wt.map(|(_, b, _)| b),
         ticket_snapshot: task.ticket_snapshot.clone(),
+        handoff_path,
         task,
     })
+}
+
+/// What [`handoff`] did.
+#[derive(Debug, Clone, PartialEq)]
+pub struct HandedOff {
+    /// The task, queued again first in line.
+    pub task: Task,
+    /// The worker, ended `handed_off`.
+    pub worker: Worker,
+    /// The new `startable` outbox row, if its key was new.
+    pub wake_id: Option<String>,
+}
+
+/// `horch ledger handoff` (trace-fixes C4), in the caller's transaction:
+/// the worker ends `handed_off` with `path`, its task is queued again in
+/// front of every other queued task and keeps its worktree, and a
+/// `startable` wake is written. `path` must exist.
+pub fn handoff(tx: &Transaction, worker_id: &str, path: &str) -> Result<HandedOff> {
+    let w = workers::get(tx, worker_id)?;
+    let task = handoff_task(tx, &w)?;
+    if !std::path::Path::new(path).is_file() {
+        bail!("the handoff file {path} does not exist; write it first");
+    }
+    workers::hand_off(tx, worker_id, path)?;
+    tx.execute(
+        &format!(
+            "UPDATE tasks SET status = {queued}, current_worker_id = NULL, held_reason = NULL,
+                priority = MIN(priority, (SELECT COALESCE(MIN(o.priority), tasks.priority)
+                    FROM tasks o WHERE o.run_id = tasks.run_id AND o.status = {queued}
+                    AND o.task_id != tasks.task_id) - 1),
+                updated_at = ?2
+             WHERE task_id = ?1",
+            queued = word(TaskStatus::Queued)
+        ),
+        params![task.task_id, util::now()],
+    )?;
+    // The worktree waits for the next claim, which takes it over.
+    tx.execute(
+        &format!(
+            "UPDATE worktrees SET worker_id = NULL WHERE task_id = ?1 AND status IN ({held})",
+            held = sql_words::list(sql_words::WORKTREES_HELD)
+        ),
+        [&task.task_id],
+    )?;
+    util::event(
+        tx,
+        &About {
+            run: Some(&task.run_id),
+            task: Some(&task.task_id),
+            worker: Some(worker_id),
+        },
+        Actor::Worker,
+        EventKind::Requeued,
+        &format!(
+            "{} handed off {}: it is queued again, first in line, with its worktree. Handoff: {path}",
+            w.label(),
+            task.short()
+        ),
+    )?;
+    let wake_id = outbox::write(tx, &task.run_id, &handoff_wake(&w, &task, path))?;
+    Ok(HandedOff {
+        task: get(tx, &task.task_id)?,
+        worker: workers::get(tx, worker_id)?,
+        wake_id,
+    })
+}
+
+/// The running task `w` holds: the precondition of a handoff.
+fn handoff_task(conn: &Connection, w: &Worker) -> Result<Task> {
+    let Some(task_id) = &w.task_id else {
+        bail!(
+            "worker {} holds no task; only a worker with a running task hands off",
+            w.label()
+        );
+    };
+    let task = get(conn, task_id)?;
+    if w.status()? != WorkerStatus::Working
+        || task.status != TaskStatus::Running.as_str()
+        || task.current_worker_id.as_deref() != Some(w.worker_id.as_str())
+    {
+        bail!(
+            "{} is {} and worker {} is {}; only a worker with a running task hands off",
+            task.short(),
+            task.status,
+            w.label(),
+            w.status
+        );
+    }
+    Ok(task)
+}
+
+/// The `startable` wake of a handoff: spawn 1 replacement.
+fn handoff_wake(w: &Worker, task: &Task, path: &str) -> Wake {
+    let persona = task.claimable_by.as_deref().unwrap_or("?");
+    Wake::new(
+        OutboxEvent::Startable,
+        format!("handoff:{}", w.worker_id),
+        format!(
+            "[horch] NOTE: {} handed off {}. {} is queued first with its worktree. \
+             The handoff is {path}. Spawn: {persona} x1 (--replaces {}).",
+            w.label(),
+            task.short(),
+            task.short(),
+            w.label()
+        ),
+    )
 }
 
 /// Let the fallback persona claim `task`.
@@ -1736,5 +1854,139 @@ mod tests {
         assert_eq!(key, format!("{}:no-task:{w}", run.run_id));
         assert!(text.contains("found no task for persona dev"), "{text}");
         assert_eq!(delivered, None);
+    }
+
+    /// A run with tasks "a" (priority 100) and "b" (priority 50) for dev.
+    /// A dev worker claims b, and b gets an open worktree. `dir` holds a
+    /// handoff file. Returns the worker id, task b, and the handoff path.
+    fn handing_off(store: &mut Store, run: &Run, dir: &std::path::Path) -> (String, Task, String) {
+        queue(store, run, "a", "dev", |_| {});
+        queue(store, run, "b", "dev", |n| n.priority = 50);
+        let w = hire(store, run, "dev");
+        let ClaimOutcome::Claimed(c) = store.immediate(|tx| claim(tx, &w)).unwrap() else {
+            panic!("the worker claims b");
+        };
+        assert_eq!(c.task.title, "b");
+        store
+            .immediate(|tx| {
+                tx.execute(
+                    "INSERT INTO worktrees (worktree_id, task_id, worker_id, repo_root, path,
+                        branch, base, status, origin, created_at)
+                     VALUES ('wt1', ?1, ?2, '/repo', '/repo/.worktrees/b', 'fleet/b', 'main',
+                        'open', 'native', ?3)",
+                    params![c.task.task_id, w, util::now()],
+                )?;
+                Ok(())
+            })
+            .unwrap();
+        let path = dir.join("opus-1-whats-next.md");
+        std::fs::write(&path, "# Handoff\n").unwrap();
+        (w, c.task.clone(), path.to_string_lossy().into_owned())
+    }
+
+    #[test]
+    fn trf_37_handoff_ends_the_worker_and_requeues_the_task_first_with_its_worktree() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut store, run) = store_with_run(dir.path());
+        let (w, b, path) = handing_off(&mut store, &run, dir.path());
+        let out = store.immediate(|tx| handoff(tx, &w, &path)).unwrap();
+        // The worker ended handed off, with the path.
+        assert_eq!(out.worker.status, WorkerStatus::Incomplete.as_str());
+        assert_eq!(out.worker.end_reason.as_deref(), Some("handed_off"));
+        assert_eq!(out.worker.handoff_path.as_deref(), Some(path.as_str()));
+        assert!(out.worker.ended_at.is_some());
+        // The task is queued, in front of a, and its worktree is open.
+        assert_eq!(out.task.status, TaskStatus::Queued.as_str());
+        assert_eq!(out.task.current_worker_id, None);
+        let a = resolve(store.conn(), &run.run_id, "T-1").unwrap();
+        assert!(
+            out.task.priority < a.priority,
+            "{} < {}",
+            out.task.priority,
+            a.priority
+        );
+        let (status, holder): (String, Option<String>) = store
+            .conn()
+            .query_row(
+                "SELECT status, worker_id FROM worktrees WHERE worktree_id = 'wt1'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!((status.as_str(), holder), ("open", None));
+        // A startable wake, in the same transaction, names the replacement.
+        let (event, text): (String, String) = store
+            .conn()
+            .query_row(
+                "SELECT event, text FROM outbox WHERE id = ?1",
+                [out.wake_id.as_deref().expect("a new wake row")],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(event, "startable");
+        assert!(
+            text.contains(&format!("handed off {}", b.short())),
+            "{text}"
+        );
+        assert!(text.contains("Spawn: dev x1"), "{text}");
+        // plan-workers names the handed-off worker for --replaces.
+        let plan = plan_workers(store.conn(), &run.run_id).unwrap();
+        assert_eq!(plan[0].replaces, vec![w.clone()]);
+    }
+
+    #[test]
+    fn trf_37_the_next_claim_takes_the_task_its_worktree_and_the_handoff_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut store, run) = store_with_run(dir.path());
+        let (w, b, path) = handing_off(&mut store, &run, dir.path());
+        store.immediate(|tx| handoff(tx, &w, &path)).unwrap();
+        let next = hire(&mut store, &run, "dev");
+        let ClaimOutcome::Claimed(c) = store.immediate(|tx| claim(tx, &next)).unwrap() else {
+            panic!("the replacement claims");
+        };
+        assert_eq!(c.task.task_id, b.task_id, "the handed-off task comes first");
+        assert_eq!(c.handoff_path.as_deref(), Some(path.as_str()));
+        assert_eq!(c.worktree.as_deref(), Some("/repo/.worktrees/b"));
+        assert_eq!(c.attempt, 2);
+    }
+
+    #[test]
+    fn trf_37_a_claim_after_an_attempt_that_did_not_hand_off_has_no_handoff_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut store, run) = store_with_run(dir.path());
+        let (w, _, _) = handing_off(&mut store, &run, dir.path());
+        store
+            .immediate(|tx| {
+                workers::end(tx, &w, WorkerStatus::Incomplete, "reaped", None)?;
+                requeue(tx, &resolve(tx, &run.run_id, "T-2")?.task_id, "reaped")
+            })
+            .unwrap();
+        let next = hire(&mut store, &run, "dev");
+        let ClaimOutcome::Claimed(c) = store.immediate(|tx| claim(tx, &next)).unwrap() else {
+            panic!("the replacement claims");
+        };
+        assert_eq!(c.handoff_path, None);
+    }
+
+    #[test]
+    fn trf_37_handoff_refuses_a_missing_file_and_a_worker_with_no_running_task() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut store, run) = store_with_run(dir.path());
+        let (w, _, path) = handing_off(&mut store, &run, dir.path());
+        let missing = dir.path().join("nope.md");
+        let err = store
+            .immediate(|tx| handoff(tx, &w, &missing.to_string_lossy()))
+            .unwrap_err();
+        assert!(format!("{err:#}").contains("does not exist"), "{err:#}");
+        // Nothing changed: the worker still works.
+        let worker = workers::get(store.conn(), &w).unwrap();
+        assert_eq!(worker.status, WorkerStatus::Working.as_str());
+        // A worker with no task cannot hand off.
+        let idle = hire(&mut store, &run, "dev");
+        let err = store.immediate(|tx| handoff(tx, &idle, &path)).unwrap_err();
+        assert!(format!("{err:#}").contains("holds no task"), "{err:#}");
+        // A second handoff of the same worker is refused.
+        store.immediate(|tx| handoff(tx, &w, &path)).unwrap();
+        assert!(store.immediate(|tx| handoff(tx, &w, &path)).is_err());
     }
 }
