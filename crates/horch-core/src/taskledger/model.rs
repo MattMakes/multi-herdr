@@ -122,6 +122,8 @@ ledger_enum!(
         NoTask = "no-task",
         UnclaimedSpawn = "unclaimed-spawn",
         OrchestratorRespawned = "orchestrator-respawned",
+        // A ruling horch asks the orchestrator for (code-sweep TRF-27).
+        Question = "question",
     }
 );
 

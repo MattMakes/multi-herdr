@@ -2264,6 +2264,7 @@ mod tests {
             "codex-luna",
             "codex-network",
             "codex-reviewer",
+            "codex-reviewer-light",
             "codex-sol",
             "codex-swift-reviewer",
             "codex-terra",

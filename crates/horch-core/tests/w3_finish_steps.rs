@@ -1002,9 +1002,9 @@ fn code_sweep_queues_a_round_then_waits_for_it() {
     assert_eq!(verdict(&r, "code-sweep"), "waiting");
     assert_eq!(
         note(&r, "code-sweep"),
-        "round 1: 4 reviewer tasks queued (T-2, T-3, T-4, T-5) for codex-reviewer. horch wakes the orchestrator to spawn them, and tells you when the reviews are in. End your turn now"
+        "round 1: 3 reviewer tasks queued (T-2, T-3, T-4) for codex-reviewer. horch wakes the orchestrator to spawn them, and tells you when the reviews are in. End your turn now"
     );
-    assert_eq!(r.queued_reviews.len(), 4);
+    assert_eq!(r.queued_reviews.len(), 3);
     let files: Vec<String> = reviews(&w).into_iter().map(|(_, f)| f).collect();
     assert!(
         files[0].ends_with("round-1/bug-hunter-findings.md"),
@@ -1012,11 +1012,10 @@ fn code_sweep_queues_a_round_then_waits_for_it() {
     );
     assert!(files[1].ends_with("round-1/clarity-checker-findings.md"));
     assert!(files[2].ends_with("round-1/structure-inspector-findings.md"));
-    assert!(files[3].ends_with("round-1/coverage-analyst-findings.md"));
     let r = w.finish(&id);
     assert_eq!(
         note(&r, "code-sweep"),
-        "round 1: waiting for reviewer tasks T-2, T-3, T-4, T-5. End your turn; horch tells you when they are in"
+        "round 1: waiting for reviewer tasks T-2, T-3, T-4. End your turn; horch tells you when they are in"
     );
 }
 
@@ -1030,7 +1029,6 @@ fn code_sweep_passes_and_writes_the_merged_report() {
         &[
             NONE,
             "## Critical\n- none\n## Important\n- none\n## Minor\n- a.rs:1 name it\n",
-            NONE,
             NONE,
         ],
     );
@@ -1046,7 +1044,6 @@ fn code_sweep_passes_and_writes_the_merged_report() {
          | bug-hunter | PASS | 0 | 0 | 0 |\n\
          | clarity-checker | PASS | 0 | 0 | 1 |\n\
          | structure-inspector | PASS | 0 | 0 | 0 |\n\
-         | coverage-analyst | PASS | 0 | 0 | 0 |\n\
          \n## Critical\n\n## Important\n\n## Minor\n- F1 [clarity-checker] a.rs:1 name it\n"
     );
 }
@@ -1056,7 +1053,7 @@ fn code_sweep_fails_on_a_missing_findings_file() {
     let mut w = sweep_world();
     let (id, _) = w.task(None, "feature.txt");
     w.finish(&id);
-    reviews_in(&w, &[NONE, "", NONE, "## Critical\n- a.rs:1 boom\n"]);
+    reviews_in(&w, &[NONE, "", "## Critical\n- a.rs:1 boom\n"]);
     let r = w.finish(&id);
     let evidence = w.log(&id, "1-code-sweep-report.md");
     assert_eq!(verdict(&r, "code-sweep"), "FAIL");
@@ -1074,7 +1071,7 @@ fn code_sweep_fails_on_a_missing_findings_file() {
         "{report}"
     );
     assert!(
-        report.contains("| coverage-analyst | FAIL | 1 | 0 | 0 |"),
+        report.contains("| structure-inspector | FAIL | 1 | 0 | 0 |"),
         "{report}"
     );
 }
@@ -1088,7 +1085,6 @@ fn code_sweep_fails_on_a_critical_finding_until_it_is_waived() {
         &w,
         &[
             "## Critical\n- a.rs:1 boom\n## Important\n- a.rs:2 meh\n",
-            NONE,
             NONE,
             NONE,
         ],
@@ -1309,7 +1305,7 @@ fn the_last_review_in_names_the_author_to_wake() {
     w.finish(&id);
     let run = w.run.clone();
     let mut reviewers = Vec::new();
-    for _ in 0..4 {
+    for _ in 0..3 {
         reviewers.push(
             w.store
                 .immediate(|tx| worker(tx, &run, "codex-reviewer"))
@@ -1332,7 +1328,6 @@ fn the_last_review_in_names_the_author_to_wake() {
     assert_eq!(
         woke,
         vec![
-            None,
             None,
             None,
             Some(("T-1".to_string(), Some("opus-1".to_string())))

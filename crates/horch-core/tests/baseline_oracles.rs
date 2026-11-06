@@ -70,6 +70,7 @@ fn check_oracle(rel: &str, actual: &str) {
 const SKIP_NEW_TEAMMATES: &[&str] = &[
     "antigravity",
     "app-release-preparer",
+    "architect-reviewer-light",
     "apple-accessibility-auditor",
     "apple-platform-developer",
     "astra-creative",
@@ -77,6 +78,7 @@ const SKIP_NEW_TEAMMATES: &[&str] = &[
     "blender-artist",
     "blender-builder",
     "blender-qa",
+    "codex-reviewer-light",
     "codex-swift-reviewer",
     "design-critic",
     "design-director",

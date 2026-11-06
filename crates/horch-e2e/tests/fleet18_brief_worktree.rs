@@ -585,7 +585,7 @@ fn g58_claude_workers_share_read_only_preapprovals() {
             count += 1;
         }
     }
-    assert_eq!(count, 75);
+    assert_eq!(count, 76);
     for pattern in expected {
         assert!(
             matches!(pattern.as_str(), "Read" | "Grep" | "Glob") || pattern.starts_with("Bash(")

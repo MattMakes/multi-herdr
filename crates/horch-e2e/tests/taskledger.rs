@@ -817,11 +817,12 @@ fn a_critical_finding_fails_until_a_fix_is_reviewed_again() {
         &["commit", "--quiet", "--no-gpg-sign", "-m", "a"],
     );
 
-    let review_round = |critical: &str, important: &str| {
+    // Round 2 goes to the cheaper reviewer persona (TRF-30).
+    let review_round = |persona: &str, critical: &str, important: &str| {
         let (_, r) = finish_json(&h, &w);
         let n = r["queued_reviews"].as_array().unwrap().len();
         for i in 0..n {
-            let rw = worker_new(&h, "codex-reviewer");
+            let rw = worker_new(&h, persona);
             let c: Value =
                 serde_json::from_str(&ok_as(&h, &rw, &["ledger", "claim", "--json"])).unwrap();
             let f = c["task"]["spec_ref"].as_str().unwrap().to_string();
@@ -838,7 +839,7 @@ fn a_critical_finding_fails_until_a_fix_is_reviewed_again() {
             ok_as(&h, &rw, &["ledger", "done", "reviewed"]);
         }
     };
-    review_round("- a.txt:1 data loss. Fix: x", "- none");
+    review_round("codex-reviewer", "- a.txt:1 data loss. Fix: x", "- none");
     let (code, r) = finish_json(&h, &w);
     assert_eq!(code, Some(1));
     assert!(r["message"].as_str().unwrap().contains("Critical"), "{r}");
@@ -850,7 +851,11 @@ fn a_critical_finding_fails_until_a_fix_is_reviewed_again() {
         &path,
         &["commit", "--quiet", "--no-gpg-sign", "-am", "fix"],
     );
-    review_round("- none", "- a.txt:1 slow. Fix: cache");
+    review_round(
+        "codex-reviewer-light",
+        "- none",
+        "- a.txt:1 slow. Fix: cache",
+    );
     let (code, r) = finish_json(&h, &w);
     assert_eq!(code, Some(1), "an unanswered Important finding fails");
     let msg = r["message"].as_str().unwrap().to_string();
@@ -859,7 +864,8 @@ fn a_critical_finding_fails_until_a_fix_is_reviewed_again() {
         .find(|t| t.ends_with("answers.md"))
         .expect("the message names the answers file")
         .to_string();
-    std::fs::write(&answers, "F1: the input is 3 items at most\n").unwrap();
+    // Finding ids are stable across rounds: round 1's Critical was F1.
+    std::fs::write(&answers, "F2: the input is 3 items at most\n").unwrap();
     let (code, r) = finish_json(&h, &w);
     assert_eq!(
         code,
@@ -1642,9 +1648,15 @@ fn assign_refuses_in_a_ledger_run() {
 /// Review every queued reviewer task of a finish round with `findings`.
 /// Returns the last reviewer's worker id.
 fn review_all(h: &Harness, n: usize, findings: &str) -> String {
+    review_all_as(h, "codex-reviewer", n, findings)
+}
+
+/// [`review_all`] with reviewer workers of `persona`: rounds 2 and 3 go to
+/// the cheaper reviewer persona (TRF-30).
+fn review_all_as(h: &Harness, persona: &str, n: usize, findings: &str) -> String {
     let mut last = String::new();
     for _ in 0..n {
-        let rw = worker_new(h, "codex-reviewer");
+        let rw = worker_new(h, persona);
         let c: Value =
             serde_json::from_str(&ok_as(h, &rw, &["ledger", "claim", "--json"])).unwrap();
         assert_eq!(c["outcome"], "claimed", "{c}");
@@ -2155,7 +2167,12 @@ fn a_commit_after_the_land_is_checked_and_reviewed_again() {
         r["steps"][0]["rounds"].as_i64().unwrap() > check_rounds,
         "check ran again: {r}"
     );
-    review_all(&h, r["queued_reviews"].as_array().unwrap().len(), clean);
+    review_all_as(
+        &h,
+        "codex-reviewer-light",
+        r["queued_reviews"].as_array().unwrap().len(),
+        clean,
+    );
     let (code, r) = finish_json(&h, &w);
     assert_eq!(code, Some(0), "{r}");
     let remote = h.root.join("remote.git");
