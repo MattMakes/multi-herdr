@@ -1102,7 +1102,7 @@ pub(crate) fn type_resumed_prompt(
     }
     let line = format!(
         "[{role}] BLOCKED: My resumed task did not reach my pane. Reason: {e:#}. \
-         Send it again with horch assign {role} \"<task>\"."
+         Tell me to claim it again with horch tell {role} \"Run horch ledger claim.\"."
     );
     if let Some(queue) = queue {
         if let Err(e) = queue(&line) {

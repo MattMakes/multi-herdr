@@ -533,7 +533,7 @@ fn open_ledger(ctx: &RuntimeContext, herdr: &Herdr) -> Result<SessionLedger> {
 fn print_fleet_ready(workspace_id: &str, ledger: &SessionLedger) {
     println!("\nDone. Fleet workspace {workspace_id} is live with one orchestrator pane.");
     println!("Session ledger: {}", ledger.path().display());
-    println!("Orchestrator commands: horch sessions | horch assign | horch spawn [--resume]");
+    println!("Orchestrator commands: horch sessions | horch ledger task | horch spawn [--resume]");
     println!("Workers are spawned on demand: horch spawn <teammate> \"task\"");
 }
 
