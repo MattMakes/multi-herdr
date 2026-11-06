@@ -901,6 +901,17 @@ fn pr_still_opens_the_pull_request_when_the_task_landed_a_new_commit() {
 #[test]
 fn pr_fails_when_its_head_lacks_the_landed_commit() {
     let mut w = World::new(&[StepName::Land, StepName::Pr], true);
+    // The land pushes to another repository, so the remote run branch that
+    // origin reads stays at the base and lacks the landed commit (TRF-50).
+    let other = w.top().join("other.git");
+    git(
+        &w.top(),
+        &["init", "--quiet", "--bare", &other.to_string_lossy()],
+    );
+    git(
+        &w.root,
+        &["config", "remote.origin.pushurl", &other.to_string_lossy()],
+    );
     let state = fake_gh(&w);
     let (id, path) = w.task(None, "feature.txt");
     let head = git(&path, &["rev-parse", "HEAD"]);
@@ -911,8 +922,8 @@ fn pr_fails_when_its_head_lacks_the_landed_commit() {
     assert_eq!(
         note(&r, "pr"),
         format!(
-            "PR #7 head {} does not contain {head}: the run branch is not pushed; run horch ledger finish to retry the push",
-            w.base
+            "the remote run branch origin/{RUN_BRANCH} is at {base}, which does not hold {head}; PR #7 head is {base}; run horch ledger finish to retry the push",
+            base = w.base
         )
     );
 }

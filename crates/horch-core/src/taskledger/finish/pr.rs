@@ -190,26 +190,139 @@ fn sync_pr_body(
     Ok((n.to_string(), view))
 }
 
-/// Pass when the head of PR `n` holds the landed commit.
-fn verdict(cx: &Ctx<'_>, view: &PrView, landed: &str, n: &str, short: &str) -> Outcome {
-    let has_it = view.head == landed || cx.tools.git.is_ancestor(&cx.root, landed, &view.head);
-    if has_it {
-        Outcome::pass(&format!("PR #{n}"), None, &format!("PR #{n} holds {short}"))
-    } else {
-        Outcome::fail(
+/// How the pr step waits for GitHub's PR head to catch up with a push
+/// (TRF-50): `tries` re-reads, `pause` apart, slept with `sleep`.
+#[derive(Clone, Copy)]
+struct HeadWait {
+    tries: u32,
+    pause: std::time::Duration,
+    sleep: fn(std::time::Duration),
+}
+
+impl HeadWait {
+    /// GitHub updates a PR's head some seconds after a push: 6 reads, 5 s apart.
+    const GITHUB: HeadWait = HeadWait {
+        tries: 6,
+        pause: std::time::Duration::from_secs(5),
+        sleep: std::thread::sleep,
+    };
+}
+
+/// What the pr step compares: the landed commit and where it must be.
+struct Heads<'a> {
+    git: &'a crate::taskledger::git::Git,
+    gh: &'a Path,
+    root: &'a Path,
+    remote: &'a str,
+    run_branch: &'a str,
+    landed: &'a str,
+}
+
+impl Heads<'_> {
+    /// Whether `head` is the landed commit or holds it.
+    fn holds(&self, head: &str) -> bool {
+        head == self.landed || self.git.is_ancestor(self.root, self.landed, head)
+    }
+
+    /// The tip of the run branch on the remote, or "" when it has none.
+    fn remote_tip(&self) -> Result<String> {
+        let rf = format!("refs/heads/{}", self.run_branch);
+        let out = self.git.run(self.root, &["ls-remote", self.remote, &rf])?;
+        Ok(out
+            .lines()
+            .find(|l| l.ends_with(&rf))
+            .and_then(|l| l.split_whitespace().next())
+            .unwrap_or_default()
+            .to_string())
+    }
+
+    /// Whether the remote tip `tip` holds the landed commit; fetches the run
+    /// branch first when the tip object is not here.
+    fn tip_holds(&self, tip: &str) -> bool {
+        if tip.is_empty() {
+            return false;
+        }
+        let obj = format!("{tip}^{{commit}}");
+        let here = |g: &Self| {
+            g.git
+                .try_run(g.root, &["cat-file", "-e", &obj])
+                .map(|o| o.ok)
+                .unwrap_or(false)
+        };
+        if !here(self) {
+            let _ = self
+                .git
+                .try_run(self.root, &["fetch", self.remote, self.run_branch]);
+        }
+        self.holds(tip)
+    }
+
+    /// The head of PR `n`, read again.
+    fn pr_head(&self, n: &str) -> Result<String> {
+        #[derive(Deserialize)]
+        struct Head {
+            #[serde(rename = "headRefOid")]
+            head: String,
+        }
+        let out = gh(
+            self.gh,
+            self.root,
+            &["pr", "view", n, "--json", "headRefOid"],
+        )?;
+        Ok(serde_json::from_str::<Head>(&out)
+            .context("reading gh pr view --json headRefOid")?
+            .head)
+    }
+}
+
+/// Pass when the head of PR `n` holds the landed commit. When the head read
+/// lacks it but the remote run branch holds it, GitHub lags the push: read
+/// the head again as `wait` says, and pass with a note when it still lags.
+/// Fail only when the remote run branch lacks the commit (TRF-50).
+fn verdict(h: &Heads<'_>, head: &str, n: &str, short: &str, wait: &HeadWait) -> Result<Outcome> {
+    let pass = |extra: &str| {
+        Outcome::pass(
+            &format!("PR #{n}"),
+            None,
+            &format!("PR #{n} holds {short}{extra}"),
+        )
+    };
+    if h.holds(head) {
+        return Ok(pass(""));
+    }
+    let tip = h.remote_tip()?;
+    if !h.tip_holds(&tip) {
+        let tip = if tip.is_empty() {
+            "(none)"
+        } else {
+            tip.as_str()
+        };
+        return Ok(Outcome::fail(
             "PR head behind",
             None,
             &format!(
-                "PR #{n} head {} does not contain {landed}: the run branch is not pushed; run horch ledger finish to retry the push",
-                view.head
+                "the remote run branch {}/{} is at {tip}, which does not hold {}; PR #{n} head is {head}; run horch ledger finish to retry the push",
+                h.remote, h.run_branch, h.landed
             ),
-        )
+        ));
     }
+    let mut last = head.to_string();
+    for _ in 0..wait.tries {
+        (wait.sleep)(wait.pause);
+        last = h.pr_head(n)?;
+        if h.holds(&last) {
+            return Ok(pass(""));
+        }
+    }
+    Ok(pass(&format!(
+        ". NOTE: GitHub still shows PR #{n} head {last}, but the remote run branch {}/{} is at {tip}, which holds {}; GitHub catches up later",
+        h.remote, h.run_branch, h.landed
+    )))
 }
 
 /// The pr step.
 pub fn step(store: &mut Store, cx: &Ctx<'_>) -> Result<Outcome> {
-    let Some(_remote) = &cx.run.remote else {
+    let Some(remote) = &cx.run.remote else {
         return Ok(Outcome::not_applicable(
             "the run has no remote, so it has no pull request",
         ));
@@ -236,7 +349,15 @@ pub fn step(store: &mut Store, cx: &Ctx<'_>) -> Result<Outcome> {
     // 1 writer at a time: the landing lock of this repository.
     let _lock = land::land_lock(cx)?;
     let (n, view) = sync_pr_body(store, cx, &run_branch, &base, &short, &section)?;
-    Ok(verdict(cx, &view, &landed, &n, &short))
+    let heads = Heads {
+        git: &cx.tools.git,
+        gh: &cx.tools.gh,
+        root: &cx.root,
+        remote,
+        run_branch: &run_branch,
+        landed: &landed,
+    };
+    verdict(&heads, &view.head, &n, &short, &HeadWait::GITHUB)
 }
 
 /// The state of `run`'s PR for `run close` (C5, TRF-20), asked with gh.
@@ -369,5 +490,142 @@ mod tests {
         assert!(b2.ends_with("<!-- horch:task T-2 -->\ntwo\n<!-- /horch:task T-2 -->"));
         assert!(b2.contains("Operator note."));
         assert_eq!(with_section(&b2, "T-2", "two"), b2, "idempotent");
+    }
+
+    const FAKE_GH: &str = r#"#!/bin/sh
+[ "$1" = warm ] && exit 0
+d="$(dirname "$0")"
+n=$(cat "$d/n" 2>/dev/null || echo 0)
+n=$((n + 1))
+echo "$n" > "$d/n"
+h=$(sed -n "${n}p" "$d/heads")
+[ -z "$h" ] && h=$(tail -n 1 "$d/heads")
+printf '{"headRefOid":"%s"}' "$h"
+"#;
+
+    fn no_sleep(_: std::time::Duration) {}
+
+    const NO_WAIT: HeadWait = HeadWait {
+        tries: 6,
+        pause: std::time::Duration::from_secs(5),
+        sleep: no_sleep,
+    };
+
+    /// A repo whose remote `origin` has `run` at commit `old`, a local
+    /// commit `new` on top, and a fake gh in its own directory.
+    struct World {
+        _tmp: tempfile::TempDir,
+        root: std::path::PathBuf,
+        gh: std::path::PathBuf,
+        git: crate::taskledger::git::Git,
+        old: String,
+        new: String,
+    }
+
+    impl World {
+        fn new(push_new: bool) -> World {
+            let tmp = tempfile::tempdir().unwrap();
+            let top = tmp.path().canonicalize().unwrap();
+            let root = top.join("repo");
+            std::fs::create_dir_all(&root).unwrap();
+            let git = crate::taskledger::git::Git::new("git");
+            let g = |args: &[&str]| git.run(&root, args).unwrap();
+            g(&["init", "--quiet", "-b", "run"]);
+            g(&["config", "user.name", "t"]);
+            g(&["config", "user.email", "t@example.com"]);
+            g(&["config", "commit.gpgsign", "false"]);
+            g(&["commit", "--quiet", "--allow-empty", "-m", "old"]);
+            let old = g(&["rev-parse", "HEAD"]);
+            let bare = top.join("remote.git");
+            g(&["init", "--quiet", "--bare", &bare.to_string_lossy()]);
+            g(&["remote", "add", "origin", &bare.to_string_lossy()]);
+            g(&["push", "--quiet", "origin", "run:run"]);
+            g(&["commit", "--quiet", "--allow-empty", "-m", "new"]);
+            let new = g(&["rev-parse", "HEAD"]);
+            if push_new {
+                g(&["push", "--quiet", "origin", "run:run"]);
+            }
+            let ghdir = top.join("gh");
+            std::fs::create_dir_all(&ghdir).unwrap();
+            let gh = ghdir.join("gh");
+            let warm = crate::test_support::write_warmed(&gh, FAKE_GH, &["warm"]);
+            assert!(warm.status.success());
+            World {
+                _tmp: tmp,
+                root,
+                gh,
+                git,
+                old,
+                new,
+            }
+        }
+
+        /// The heads the fake gh prints, 1 per re-read; the last repeats.
+        fn gh_heads(&self, heads: &[&str]) {
+            let dir = self.gh.parent().unwrap();
+            std::fs::write(dir.join("heads"), heads.join("\n") + "\n").unwrap();
+        }
+
+        fn gh_reads(&self) -> u32 {
+            std::fs::read_to_string(self.gh.parent().unwrap().join("n"))
+                .map(|s| s.trim().parse().unwrap())
+                .unwrap_or(0)
+        }
+
+        fn verdict(&self) -> Outcome {
+            let h = Heads {
+                git: &self.git,
+                gh: &self.gh,
+                root: &self.root,
+                remote: "origin",
+                run_branch: "run",
+                landed: &self.new,
+            };
+            verdict(&h, &self.old, "7", "T-1", &NO_WAIT).unwrap()
+        }
+    }
+
+    #[test]
+    fn trf_50_lagging_pr_head_passes_when_the_remote_branch_holds_the_commit() {
+        let w = World::new(true);
+        w.gh_heads(&[&w.old]);
+        let o = w.verdict();
+        assert_eq!(o.status, StepStatus::Passed, "{o:?}");
+        let note = &o.note;
+        assert!(
+            note.contains("NOTE: GitHub still shows PR #7 head"),
+            "{note}"
+        );
+        assert!(note.contains(&w.old) && note.contains(&w.new), "{note}");
+        assert_eq!(o.verdict.as_deref(), Some("PR #7"));
+        assert_eq!(w.gh_reads(), 6, "6 re-reads, then pass");
+    }
+
+    #[test]
+    fn trf_50_pr_head_catches_up_on_a_later_read() {
+        let w = World::new(true);
+        w.gh_heads(&[&w.old, &w.new]);
+        let o = w.verdict();
+        assert_eq!(o.status, StepStatus::Passed, "{o:?}");
+        assert_eq!(o.note, "PR #7 holds T-1");
+        assert_eq!(w.gh_reads(), 2, "pass at the read that holds it");
+    }
+
+    #[test]
+    fn trf_50_unpushed_commit_still_fails_and_names_the_remote_tip() {
+        let w = World::new(false);
+        w.gh_heads(&[&w.new]);
+        let o = w.verdict();
+        assert_eq!(o.status, StepStatus::Failed, "{o:?}");
+        assert_eq!(o.verdict.as_deref(), Some("PR head behind"));
+        let text = &o.note;
+        assert!(
+            text.contains(&format!(
+                "the remote run branch origin/run is at {}, which does not hold {}",
+                w.old, w.new
+            )),
+            "{text}"
+        );
+        assert_eq!(w.gh_reads(), 0, "no wait when the push is missing");
     }
 }
