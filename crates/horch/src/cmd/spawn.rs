@@ -96,7 +96,7 @@ pub fn spawn(ctx: &RuntimeContext, mut args: SpawnArgs) -> Result<String> {
     // The task ledger: when this spawn joins a run, the worker gets a row,
     // and a spawn with no task tells it to claim one.
     let ledger = super::taskledger_spawn::prepare(ctx, &args)?;
-    let claims = ledger.is_some() && args.task.trim().is_empty() && args.resume.is_none();
+    let claims = claims_a_task(ledger.is_some(), &args.task);
     if claims {
         args.task = super::taskledger_spawn::CLAIM_TASK.to_string();
     }
@@ -113,6 +113,12 @@ pub fn spawn(ctx: &RuntimeContext, mut args: SpawnArgs) -> Result<String> {
         l.launch_failed(&reason);
     }
     result
+}
+
+/// Whether this spawn's worker gets [`super::taskledger_spawn::CLAIM_TASK`]:
+/// it joins a run and has no task text. A `--resume` spawn too (TRF-33).
+pub(crate) fn claims_a_task(joins_run: bool, task: &str) -> bool {
+    joins_run && task.trim().is_empty()
 }
 
 /// Refuse a claiming spawn that its run's plan does not need (gap G-A): the

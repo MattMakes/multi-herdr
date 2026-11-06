@@ -1841,7 +1841,7 @@ fn new_run_cmd(
     }
     let new = NewRun {
         slug: a.slug.clone(),
-        workspace_id: ctx.herdr.workspace.as_ref().map(|w| w.as_str().to_string()),
+        workspace_id: super::sessionscmd::caller_workspace(ctx),
         base_branch: base,
         run_branch: is_repo.then_some(run_branch),
         remote,

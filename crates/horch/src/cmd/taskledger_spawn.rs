@@ -47,30 +47,95 @@ pub fn prepare(ctx: &RuntimeContext, args: &SpawnArgs) -> Result<Option<LedgerSp
 }
 
 /// Whether this spawn joins a task-ledger run. `None`: it does not. `Some`
-/// holds the run it names (`--run` or `HORCH_RUN_ID`), or `None` for the
-/// project's 1 active run. A spawn with task text names no run and says so.
+/// holds the run it joins: the run `--run` (or `HORCH_RUN_ID`) names, the run
+/// of the worker `--replaces` names, else the 1 active run of the caller's
+/// herdr workspace (TRF-34). A task-less spawn never joins the run of another
+/// workspace. A spawn with task text names no run and says so.
 fn ledger_run_wanted(
     ctx: &RuntimeContext,
     store: &Store,
     args: &SpawnArgs,
 ) -> Result<Option<Option<String>>> {
-    let root = project_root(ctx)?;
-    let explicit = explicit_run(args);
-    let active = active_runs(store, &root)?;
+    let workspace = super::sessionscmd::caller_workspace(ctx);
+    run_to_join(
+        store,
+        &project_root(ctx)?,
+        explicit_run(args),
+        workspace.as_deref(),
+        args,
+    )
+}
+
+/// [`ledger_run_wanted`] with its inputs read.
+fn run_to_join(
+    store: &Store,
+    root: &Path,
+    explicit: Option<String>,
+    workspace: Option<&str>,
+    args: &SpawnArgs,
+) -> Result<Option<Option<String>>> {
+    let active = active_runs(store, root)?;
     let joins = explicit.is_some() || args.replaces.is_some() || args.task.trim().is_empty();
     if !joins {
         note_outside_run(&active);
         return Ok(None);
     }
-    if explicit.is_none() && active.is_empty() {
-        ensure!(
-            args.replaces.is_none(),
-            "--replaces needs an active task-ledger run in {}",
-            root.display()
-        );
-        return Ok(None);
+    if explicit.is_some() {
+        return Ok(Some(explicit));
     }
-    Ok(Some(explicit))
+    if let Some(prev) = &args.replaces {
+        if let Some(run) = workers::find(store.conn(), prev)?.and_then(|w| w.run_id) {
+            return Ok(Some(Some(run)));
+        }
+    }
+    let own: Vec<&Run> = active
+        .iter()
+        .filter(|r| workspace.is_some() && r.workspace_id.as_deref() == workspace)
+        .collect();
+    match own.as_slice() {
+        [one] => Ok(Some(Some(one.run_id.clone()))),
+        [] => {
+            ensure!(
+                args.replaces.is_none(),
+                "--replaces needs an active task-ledger run in {}",
+                root.display()
+            );
+            note_other_workspaces(&active, workspace);
+            Ok(None)
+        }
+        many => bail!(
+            "{} active runs in workspace {}: {}. Name one with --run <slug>",
+            many.len(),
+            workspace.unwrap_or_default(),
+            many.iter()
+                .map(|r| r.slug.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+    }
+}
+
+/// Say that a task-less spawn joins no run, because each active run of the
+/// project belongs to another workspace than the caller's.
+fn note_other_workspaces(active: &[Run], workspace: Option<&str>) {
+    if active.is_empty() {
+        return;
+    }
+    let runs: Vec<String> = active
+        .iter()
+        .map(|r| {
+            format!(
+                "{} (workspace {})",
+                r.slug,
+                r.workspace_id.as_deref().unwrap_or("(none)")
+            )
+        })
+        .collect();
+    eprintln!(
+        "horch spawn: NOTE: this spawn joins no task-ledger run. Run {} is not of this workspace {}. Give --run <slug> to join it.",
+        runs.join(", "),
+        workspace.unwrap_or("(none)")
+    );
 }
 
 /// The run `--run` or `HORCH_RUN_ID` names.
@@ -533,6 +598,196 @@ mod trf_24_tests {
         assert_eq!(
             spawn_outcome(Some(1), "", "horch: horch spawn refused: enough workers\n"),
             ReviewSpawn::Failed("horch: horch spawn refused: enough workers".into())
+        );
+    }
+}
+
+#[cfg(test)]
+mod trf_33_34_tests {
+    use std::time::Duration;
+
+    use horch_core::execution::TilingMode;
+    use horch_core::taskledger::model::{Actor, StopRequester};
+    use horch_core::taskledger::runs::NewRun;
+    use horch_core::taskledger::stop::{self, Panes, Processes};
+    use horch_core::taskledger::tasks::{self, NewTask};
+    use horch_core::workspace::model::Direction;
+
+    use super::*;
+
+    fn args(teammate: Option<&str>, task: &str) -> SpawnArgs {
+        SpawnArgs {
+            teammate: teammate.map(str::to_string),
+            task: task.into(),
+            resume: None,
+            phase: None,
+            effort: None,
+            role: None,
+            from_pane: None,
+            direction: Direction::Right,
+            tiling: TilingMode::Disabled,
+            exact: false,
+            force: false,
+            replaces: None,
+            run: None,
+        }
+    }
+
+    /// A ledger with 1 active run per (slug, workspace) in project `root`.
+    fn world(runs_of: &[(&str, Option<&str>)]) -> (tempfile::TempDir, Store, Vec<Run>) {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = Store::open(&dir.path().join("ledger.sqlite3")).unwrap();
+        let made = runs_of
+            .iter()
+            .map(|(slug, ws)| {
+                store
+                    .immediate(|tx| {
+                        runs::create(
+                            tx,
+                            dir.path(),
+                            &NewRun {
+                                slug: (*slug).into(),
+                                workspace_id: ws.map(str::to_string),
+                                ..Default::default()
+                            },
+                        )
+                    })
+                    .unwrap()
+            })
+            .collect();
+        (dir, store, made)
+    }
+
+    #[test]
+    fn trf_33_a_resume_spawn_that_joins_a_run_gets_the_claim_task() {
+        let (dir, store, made) = world(&[("r1", Some("w1"))]);
+        let mut resume = args(None, "");
+        resume.resume = Some("s-1".into());
+        let joined = run_to_join(&store, dir.path(), None, Some("w1"), &resume).unwrap();
+        assert_eq!(joined, Some(Some(made[0].run_id.clone())));
+        assert!(super::super::spawn::claims_a_task(
+            joined.is_some(),
+            &resume.task
+        ));
+        // A resume with task text keeps its text; one outside every run too.
+        assert!(!super::super::spawn::claims_a_task(true, "continue"));
+        assert!(!super::super::spawn::claims_a_task(false, ""));
+    }
+
+    #[test]
+    fn trf_34_a_task_less_spawn_joins_only_its_own_workspaces_run() {
+        let (dir, store, made) = world(&[("r1", Some("w1")), ("r2", Some("w2"))]);
+        let root = dir.path();
+        let bare = args(Some("opus"), "");
+        let join = |ws: Option<&str>, explicit: Option<&str>| {
+            run_to_join(&store, root, explicit.map(str::to_string), ws, &bare).unwrap()
+        };
+        assert_eq!(join(Some("w1"), None), Some(Some(made[0].run_id.clone())));
+        assert_eq!(join(Some("w2"), None), Some(Some(made[1].run_id.clone())));
+        // Another workspace's 1 active run is not joined.
+        assert_eq!(join(Some("w3"), None), None);
+        assert_eq!(join(None, None), None);
+        // --run reaches another workspace's run.
+        assert_eq!(join(Some("w1"), Some("r2")), Some(Some("r2".to_string())));
+
+        // 1 run of another workspace only: still not joined.
+        let (dir, store, _) = world(&[("r9", Some("w9"))]);
+        assert_eq!(
+            run_to_join(&store, dir.path(), None, Some("w1"), &bare).unwrap(),
+            None
+        );
+        // A spawn with task text joins no run.
+        let (dir, store, _) = world(&[("r1", Some("w1"))]);
+        let texted = args(Some("opus"), "fix it");
+        assert_eq!(
+            run_to_join(&store, dir.path(), None, Some("w1"), &texted).unwrap(),
+            None
+        );
+    }
+
+    struct NoPanes;
+    impl Panes for NoPanes {
+        fn exists(&self, _: &str) -> bool {
+            false
+        }
+        fn close(&self, _: &str) -> Result<()> {
+            Ok(())
+        }
+    }
+    struct NoProcs;
+    impl Processes for NoProcs {
+        fn is_same(&self, _: u32, _: u64) -> bool {
+            false
+        }
+        fn exists(&self, _: u32) -> bool {
+            false
+        }
+        fn stop_same(&self, _: u32, _: u64, _: horch_core::procid::Stop) -> bool {
+            false
+        }
+    }
+
+    /// Ticket 19's `refuse_over_plan` guard: a `--replaces` spawn after a
+    /// reap that requeued the task is not refused.
+    #[test]
+    fn trf_33_a_replaces_spawn_after_a_reap_and_requeue_is_not_refused() {
+        let (dir, mut store, made) = world(&[("r1", Some("w1"))]);
+        let run = made[0].clone();
+        store
+            .immediate(|tx| {
+                tasks::add(
+                    tx,
+                    &run,
+                    &NewTask::work("alpha", "tickets/a.md", "opus"),
+                    Actor::Orchestrator,
+                )
+            })
+            .unwrap();
+        let new_row = |store: &mut Store, prev: Option<String>| {
+            store
+                .immediate(|tx| {
+                    workers::insert(
+                        tx,
+                        &NewWorker {
+                            run_id: run.run_id.clone(),
+                            kind: Some(WorkerKind::Worker),
+                            persona: "opus".into(),
+                            workspace_id: Some("w1".into()),
+                            previous_worker_id: prev.clone(),
+                            ..Default::default()
+                        },
+                    )
+                })
+                .unwrap()
+        };
+        let first = new_row(&mut store, None);
+        let claimed = store.immediate(|tx| tasks::claim(tx, &first)).unwrap();
+        assert!(
+            matches!(claimed, tasks::ClaimOutcome::Claimed(_)),
+            "{claimed:?}"
+        );
+        stop::reap(
+            &mut store,
+            &first,
+            StopRequester::Orchestrator,
+            "pane gone",
+            &NoPanes,
+            &NoProcs,
+            Duration::ZERO,
+        )
+        .unwrap();
+        let t = &tasks::of_run(store.conn(), &run.run_id).unwrap()[0];
+        assert_eq!(t.status, "queued", "the reap requeues the task");
+
+        let mut replace = args(Some("opus"), "");
+        replace.replaces = Some(first.clone());
+        let joined = run_to_join(&store, dir.path(), None, Some("w1"), &replace).unwrap();
+        assert_eq!(joined, Some(Some(run.run_id.clone())));
+        ensure_replaceable(&store, &replace, &run).unwrap();
+        let second = new_row(&mut store, Some(first));
+        assert_eq!(
+            tasks::spawn_refusal(store.conn(), &run.run_id, &second).unwrap(),
+            None
         );
     }
 }
