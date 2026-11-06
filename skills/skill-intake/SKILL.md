@@ -133,8 +133,8 @@ active exits 14.
    brief, takes the domain snapshot, and runs
    `horch spawn intake-<role> --exact "Read and follow <brief> exactly."`.
    Never call `horch spawn` yourself, and never without `--exact`.
-2. Record `horch ledger progress "waiting: <worker> (<role>)"` in a ledger
-   run, or `horch note "waiting: <worker> (<role>)"` outside one.
+2. Record `horch ledger progress "waiting: <worker> (<role>)"`. Fleet mode
+   runs only in a ledger run: outside one, `horch spawn` refuses the brief.
 3. Send the relay line: `horch tell orchestrator "[<your role>] NOTE: I wait
    for <worker>. If it stops without DONE, tell <your role>."`
 4. End your turn.

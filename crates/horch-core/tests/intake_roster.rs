@@ -79,7 +79,7 @@ const ROLES: [Role; 5] = [
     },
     Role {
         name: "intake-sanitizer",
-        model: "sonnet",
+        model: "opus",
         effort: "medium",
         tools: ALL_TOOLS,
         allow_read: &["drafts"],

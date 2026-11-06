@@ -9,11 +9,13 @@ agent: claude
 # Sanctioned #58: subscription auto-mode read-only pre-approval; see live-check results.
 allowed_tools: ["Read", "Grep", "Glob", "Bash(git status)", "Bash(git status *)", "Bash(git log)", "Bash(git log --oneline -10)", "Bash(git diff)", "Bash(git diff --stat)", "Bash(git diff --cached)", "Bash(git show)", "Bash(git ls-files)", "Bash(aws sts get-caller-identity)", "Bash(aws s3 ls)", "Bash(gcloud projects list)", "Bash(az account show)", "Bash(kubectl get pods)", "Bash(docker ps)"]
 phase: null
-model: sonnet
+model: opus
+system_prompt: sr_eng_system_prompt
 # No fallback: a fallback launches with another harness and other rules, so
 # the trust wall below would be gone. skill-importer spawns with --exact.
 fallbacks: []
-# sonnet, medium: it edits wording against a scan report.
+# opus, medium: it edits wording against a scan report. Workers run on
+# Opus, not Sonnet (trace-fixes T-58).
 effort: medium
 compact_window: 200000
 compact_at: 300000

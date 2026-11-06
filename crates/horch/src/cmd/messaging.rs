@@ -883,7 +883,28 @@ pub fn done(ctx: &RuntimeContext, summary: &str, unlanded: Option<&str>) -> Resu
         let store = horch_core::taskledger::open(ctx)?;
         return super::taskledger::done_cmd(ctx, store, summary, unlanded);
     }
-    done_then(ctx, summary, unlanded, &|| {})
+    done_then(ctx, summary, unlanded, &|| end_taskless_row(ctx))
+}
+
+/// End this pane's live ledger row when it holds no task, as a
+/// controller's report role does (T-38). `done` closes the pane next, and
+/// that ends the `horch worker` that would settle the row. A retry finds
+/// the row ended and changes nothing.
+fn end_taskless_row(ctx: &RuntimeContext) {
+    use horch_core::taskledger::{model::WorkerStatus, workers};
+    let Some(wid) = super::taskledger::worker_id_opt(ctx) else {
+        return;
+    };
+    let ended =
+        horch_core::taskledger::open(ctx).and_then(|s| match workers::find(s.conn(), &wid)? {
+            Some(w) if w.task_id.is_none() => {
+                workers::end(s.conn(), &wid, WorkerStatus::Done, "done", None).map(|_| ())
+            }
+            _ => Ok(()),
+        });
+    if let Err(e) = ended {
+        eprintln!("horch done: the task ledger did not end worker {wid}: {e:#}");
+    }
 }
 
 /// [`done`], with `after_mark_done` run once the record is done and before
