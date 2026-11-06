@@ -2154,6 +2154,22 @@ fn add(ctx: &RuntimeContext, store: &mut Store, a: AddArgs) -> Result<ExitCode> 
 const ONE_OFF_TICKET: &str = "(one-off: no ticket file)";
 
 fn task_cmd(ctx: &RuntimeContext, store: &mut Store, a: TaskArgs) -> Result<ExitCode> {
+    let (run, primary) = queue_one_off_in(ctx, store, a)?;
+    output::println(&spawn_line(&primary, &run));
+    Ok(ExitCode::SUCCESS)
+}
+
+/// `horch ledger task` without its `Run next` line: a caller that spawns
+/// the worker itself (the fleet's worktree steward) uses it. It returns the
+/// solo run that holds the task.
+pub(super) fn queue_one_off(ctx: &RuntimeContext, a: TaskArgs) -> Result<Run> {
+    let mut store = taskledger::open(ctx)?;
+    queue_one_off_in(ctx, &mut store, a).map(|(run, _)| run)
+}
+
+/// Queue the one-off task `a` in the caller's solo run. It returns the run
+/// and the task's persona.
+fn queue_one_off_in(ctx: &RuntimeContext, store: &mut Store, a: TaskArgs) -> Result<(Run, String)> {
     let root = project_root(ctx)?;
     let Some(workspace) = super::sessionscmd::caller_workspace(ctx) else {
         bail!("horch ledger task needs a herdr workspace. Run it in a herdr pane, or queue the task with horch ledger add --run <slug>");
@@ -2174,8 +2190,7 @@ fn task_cmd(ctx: &RuntimeContext, store: &mut Store, a: TaskArgs) -> Result<Exit
             t.short()
         );
     }
-    output::println(&spawn_line(&new.primary, &run));
-    Ok(ExitCode::SUCCESS)
+    Ok((run, new.primary))
 }
 
 /// The line that starts a worker for a one-off task of `run`.

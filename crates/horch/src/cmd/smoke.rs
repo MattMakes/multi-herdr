@@ -223,7 +223,6 @@ fn smoke_spawn_args(root_pane: &str) -> SpawnArgs {
         teammate: Some("smoke".to_string()),
         phase: None,
         effort: None,
-        task: String::new(),
         resume: None,
         role: None,
         // What `horch spawn` does by default: split the calling pane,
@@ -994,7 +993,6 @@ mod tests {
     #[test]
     fn trf_43_the_smoke_spawn_carries_no_task_text() {
         let args = smoke_spawn_args("w1:p1");
-        assert_eq!(args.task, "", "no code path types a task into a pane");
         assert_eq!(args.teammate.as_deref(), Some("smoke"));
         assert_eq!(args.from_pane.as_deref(), Some("w1:p1"));
         assert!(args.run.is_none(), "smoke joins no task-ledger run");

@@ -478,13 +478,18 @@ fn start_worktree_steward(ctx: &RuntimeContext, ws: &NewWorkspace) {
         rows.len()
     );
     // No code path types a task into a pane (TRF-43): the steward claims
-    // this task from the ledger.
-    let queued = steward_task(rows.len()).and_then(|cmd| super::taskledger::run(ctx, cmd));
-    if let Err(e) = queued {
-        println!("warning: the worktree steward task was not queued: {e:#}");
-        return;
-    }
-    if let Err(e) = super::spawn::spawn(ctx, steward_spawn_args(&ws.root_pane_id)) {
+    // this task from the ledger. The fleet spawns the steward itself, so
+    // it prints no `Run next` line.
+    let queued =
+        steward_task(rows.len()).and_then(|args| super::taskledger::queue_one_off(ctx, args));
+    let run = match queued {
+        Ok(run) => run,
+        Err(e) => {
+            println!("warning: the worktree steward task was not queued: {e:#}");
+            return;
+        }
+    };
+    if let Err(e) = super::spawn::spawn(ctx, steward_spawn_args(&ws.root_pane_id, &run.slug)) {
         println!("warning: the worktree steward did not start: {e:#}");
     }
 }
@@ -495,15 +500,14 @@ const WORKTREE_STEWARD: &str = "worktree-steward";
 /// What `horch ledger task 'parked worktrees: <parked>' --persona
 /// worktree-steward --check none` runs. The title is a fact, not a brief:
 /// the steward's file holds its instructions.
-fn steward_task(parked: usize) -> Result<super::taskledger::LedgerCommand> {
+fn steward_task(parked: usize) -> Result<super::taskledger::TaskArgs> {
     #[derive(clap::Parser)]
-    struct Ledger {
-        #[command(subcommand)]
-        command: super::taskledger::LedgerCommand,
+    struct Task {
+        #[command(flatten)]
+        args: super::taskledger::TaskArgs,
     }
     let title = format!("parked worktrees: {parked}");
     let argv = [
-        "ledger",
         "task",
         title.as_str(),
         "--persona",
@@ -511,15 +515,15 @@ fn steward_task(parked: usize) -> Result<super::taskledger::LedgerCommand> {
         "--check",
         "none",
     ];
-    Ok(<Ledger as clap::Parser>::try_parse_from(argv)?.command)
+    Ok(<Task as clap::Parser>::try_parse_from(argv)?.args)
 }
 
-/// The steward's spawn beside the orchestrator. It has no task text, so it
-/// joins the workspace's run and claims the task [`steward_task`] queued.
-fn steward_spawn_args(root_pane: &str) -> super::spawn::SpawnArgs {
+/// The steward's spawn beside the orchestrator. It names `run`, the solo run
+/// that holds the task [`steward_task`] queued, so a planned run in the
+/// workspace never changes which run it joins. It claims that task.
+fn steward_spawn_args(root_pane: &str, run: &str) -> super::spawn::SpawnArgs {
     super::spawn::SpawnArgs {
         teammate: Some(WORKTREE_STEWARD.to_string()),
-        task: String::new(),
         resume: None,
         phase: None,
         effort: None,
@@ -530,7 +534,7 @@ fn steward_spawn_args(root_pane: &str) -> super::spawn::SpawnArgs {
         exact: false,
         force: false,
         replaces: None,
-        run: None,
+        run: Some(run.to_string()),
     }
 }
 
@@ -1391,7 +1395,8 @@ mod tests {
     }
 
     /// TRF-43: the worktree steward's work is a one-off ledger task, and its
-    /// spawn carries no task text, so it claims that task.
+    /// spawn carries no task text, so it claims that task. TRF-34: the spawn
+    /// names the solo run that holds the task.
     #[test]
     fn trf_43_the_steward_task_is_queued_and_its_spawn_has_no_task_text() {
         use horch_core::taskledger::{runs, tasks, Store};
@@ -1404,7 +1409,7 @@ mod tests {
         let mut ctx = RuntimeContext::from_env(&env).unwrap();
         ctx.paths.ledger_db = dir.path().join("ledger.sqlite3");
 
-        super::super::taskledger::run(&ctx, steward_task(3).unwrap()).unwrap();
+        let run = super::super::taskledger::queue_one_off(&ctx, steward_task(3).unwrap()).unwrap();
 
         let store = Store::open(&ctx.paths.ledger_db).unwrap();
         let all = runs::of_project(store.conn(), &root.canonicalize().unwrap()).unwrap();
@@ -1415,9 +1420,10 @@ mod tests {
         assert_eq!(queued[0].title, "parked worktrees: 3");
         assert_eq!(queued[0].claimable_by.as_deref(), Some(WORKTREE_STEWARD));
         assert_eq!(queued[0].status, "queued");
+        assert_eq!(run.run_id, all[0].run_id);
 
-        let args = steward_spawn_args("w7:p1");
-        assert_eq!(args.task, "", "no code path types a task into a pane");
+        let args = steward_spawn_args("w7:p1", &run.slug);
+        assert_eq!(args.run.as_deref(), Some("solo-w7"));
         assert_eq!(args.teammate.as_deref(), Some(WORKTREE_STEWARD));
         assert_eq!(args.from_pane.as_deref(), Some("w7:p1"));
     }

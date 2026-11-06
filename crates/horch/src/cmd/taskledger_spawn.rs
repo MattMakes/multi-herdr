@@ -52,7 +52,7 @@ pub fn prepare(ctx: &RuntimeContext, args: &SpawnArgs) -> Result<Option<LedgerSp
 /// Whether this spawn joins a task-ledger run. `None`: it does not. `Some`
 /// holds the run it joins: the run `--run` (or `HORCH_RUN_ID`) names, the run
 /// of the worker `--replaces` names, else the 1 active run of the caller's
-/// herdr workspace (TRF-34). A spawn never joins the run of another
+/// herdr workspace (TRF-34). A planned run there wins over solo runs. A spawn never joins the run of another
 /// workspace unless it names that run.
 fn ledger_run_wanted(
     ctx: &RuntimeContext,
@@ -86,10 +86,13 @@ fn run_to_join(
         }
     }
     let active = active_runs(store, root)?;
-    let own: Vec<&Run> = active
-        .iter()
-        .filter(|r| workspace.is_some() && r.workspace_id.as_deref() == workspace)
-        .collect();
+    // A solo run never makes the workspace's planned run ambiguous (TRF-34).
+    let own = runs::planned_first(
+        active
+            .iter()
+            .filter(|r| workspace.is_some() && r.workspace_id.as_deref() == workspace)
+            .collect(),
+    );
     match own.as_slice() {
         [one] => Ok(Some(Some(one.run_id.clone()))),
         [] => {
@@ -629,10 +632,9 @@ mod trf_33_34_tests {
 
     use super::*;
 
-    fn args(teammate: Option<&str>, task: &str) -> SpawnArgs {
+    fn args(teammate: Option<&str>) -> SpawnArgs {
         SpawnArgs {
             teammate: teammate.map(str::to_string),
-            task: task.into(),
             resume: None,
             phase: None,
             effort: None,
@@ -675,24 +677,23 @@ mod trf_33_34_tests {
     #[test]
     fn trf_33_a_resume_spawn_that_joins_a_run_gets_the_claim_task() {
         let (dir, store, made) = world(&[("r1", Some("w1"))]);
-        let mut resume = args(None, "");
+        let mut resume = args(None);
         resume.resume = Some("s-1".into());
         let joined = run_to_join(&store, dir.path(), None, Some("w1"), &resume).unwrap();
         assert_eq!(joined, Some(Some(made[0].run_id.clone())));
-        assert!(super::super::spawn::claims_a_task(
-            joined.is_some(),
-            &resume.task
-        ));
-        // A resume with task text keeps its text; one outside every run too.
-        assert!(!super::super::spawn::claims_a_task(true, "continue"));
-        assert!(!super::super::spawn::claims_a_task(false, ""));
+        assert_eq!(
+            super::super::spawn::worker_task(joined.is_some()),
+            CLAIM_TASK
+        );
+        // A spawn outside every run gets no task.
+        assert_eq!(super::super::spawn::worker_task(false), "");
     }
 
     #[test]
     fn trf_34_a_task_less_spawn_joins_only_its_own_workspaces_run() {
         let (dir, store, made) = world(&[("r1", Some("w1")), ("r2", Some("w2"))]);
         let root = dir.path();
-        let bare = args(Some("opus"), "");
+        let bare = args(Some("opus"));
         let join = |ws: Option<&str>, explicit: Option<&str>| {
             run_to_join(&store, root, explicit.map(str::to_string), ws, &bare).unwrap()
         };
@@ -712,16 +713,47 @@ mod trf_33_34_tests {
         );
     }
 
-    /// TRF-43: no spawn runs outside its workspace's run because of task
-    /// text. The "runs outside task-ledger run" path is gone.
+    /// TRF-34: a solo run (`horch ledger task`) beside the workspace's
+    /// planned run does not make a plain spawn ambiguous.
     #[test]
-    fn trf_43_task_text_does_not_keep_a_spawn_out_of_its_workspaces_run() {
-        let (dir, store, made) = world(&[("r1", Some("w1"))]);
-        let texted = args(Some("opus"), "fix it");
+    fn trf_34_a_plain_spawn_joins_the_planned_run_beside_a_solo_run() {
+        let (dir, store, made) = world(&[("solo-w1", Some("w1")), ("plan", Some("w1"))]);
+        let bare = args(Some("opus"));
+        let join = |explicit: Option<&str>| {
+            run_to_join(
+                &store,
+                dir.path(),
+                explicit.map(str::to_string),
+                Some("w1"),
+                &bare,
+            )
+            .unwrap()
+        };
+        assert_eq!(join(None), Some(Some(made[1].run_id.clone())));
+        // --run still reaches the solo run.
+        assert_eq!(join(Some("solo-w1")), Some(Some("solo-w1".to_string())));
+
+        // A solo run alone is still joined.
+        let (dir, store, made) = world(&[("solo-w1", Some("w1"))]);
         assert_eq!(
-            run_to_join(&store, dir.path(), None, Some("w1"), &texted).unwrap(),
+            run_to_join(&store, dir.path(), None, Some("w1"), &bare).unwrap(),
             Some(Some(made[0].run_id.clone()))
         );
+    }
+
+    #[test]
+    fn trf_34_two_planned_runs_still_refuse() {
+        let (dir, store, _) = world(&[
+            ("solo-w1", Some("w1")),
+            ("p1", Some("w1")),
+            ("p2", Some("w1")),
+        ]);
+        let err = run_to_join(&store, dir.path(), None, Some("w1"), &args(Some("opus")))
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("2 active runs in workspace w1: "), "{err}");
+        assert!(err.contains("p1") && err.contains("p2"), "{err}");
+        assert!(!err.contains("solo-w1"), "{err}");
     }
 
     struct NoPanes;
@@ -798,7 +830,7 @@ mod trf_33_34_tests {
         let t = &tasks::of_run(store.conn(), &run.run_id).unwrap()[0];
         assert_eq!(t.status, "queued", "the reap requeues the task");
 
-        let mut replace = args(Some("opus"), "");
+        let mut replace = args(Some("opus"));
         replace.replaces = Some(first.clone());
         let joined = run_to_join(&store, dir.path(), None, Some("w1"), &replace).unwrap();
         assert_eq!(joined, Some(Some(run.run_id.clone())));

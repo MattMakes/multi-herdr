@@ -364,7 +364,7 @@ fn the_active(runs: &[Run], root: &Path, workspace: Option<&str>) -> Result<(Run
 }
 
 /// `runs` without the solo runs when any other run is among them.
-fn planned_first(mut runs: Vec<&Run>) -> Vec<&Run> {
+pub fn planned_first(mut runs: Vec<&Run>) -> Vec<&Run> {
     if runs.iter().any(|r| !is_solo(r)) {
         runs.retain(|r| !is_solo(r));
     }

@@ -44,7 +44,6 @@ const SPAWN_POLL: Duration = Duration::from_millis(100);
 
 pub struct SpawnArgs {
     pub teammate: Option<String>,
-    pub task: String,
     pub resume: Option<String>,
     pub phase: Option<Phase>,
     /// Effort for this spawn only, over the teammate file's (or the record's).
@@ -106,15 +105,11 @@ fn shell_quote(text: &str) -> String {
 
 /// Spawn a worker pane, returning its pane id so callers can chain splits.
 /// A refusal is a [`SpawnError::Refused`]; its REFUSED line is on stdout.
-pub fn spawn(ctx: &RuntimeContext, mut args: SpawnArgs) -> Result<String> {
-    // The task ledger: when this spawn joins a run, the worker gets a row,
-    // and a spawn with no task tells it to claim one.
+pub fn spawn(ctx: &RuntimeContext, args: SpawnArgs) -> Result<String> {
+    // The task ledger: when this spawn joins a run, the worker gets a row
+    // and the task to claim one.
     let ledger = super::taskledger_spawn::prepare(ctx, &args)?;
-    let claims = claims_a_task(ledger.is_some(), &args.task);
-    if claims {
-        args.task = super::taskledger_spawn::CLAIM_TASK.to_string();
-    }
-    let result = match ledger.as_ref().filter(|_| claims) {
+    let result = match ledger.as_ref() {
         Some(l) => refuse_over_plan(ctx, l).and_then(|()| spawn_worker(ctx, args, ledger.as_ref())),
         None => spawn_worker(ctx, args, ledger.as_ref()),
     };
@@ -129,10 +124,14 @@ pub fn spawn(ctx: &RuntimeContext, mut args: SpawnArgs) -> Result<String> {
     result
 }
 
-/// Whether this spawn's worker gets [`super::taskledger_spawn::CLAIM_TASK`]:
-/// it joins a run and has no task text. A `--resume` spawn too (TRF-33).
-pub(crate) fn claims_a_task(joins_run: bool, task: &str) -> bool {
-    joins_run && task.trim().is_empty()
+/// The task of this spawn's worker: [`super::taskledger_spawn::CLAIM_TASK`]
+/// when it joins a run, a `--resume` spawn too (TRF-33). Else none.
+pub(crate) fn worker_task(joins_run: bool) -> &'static str {
+    if joins_run {
+        super::taskledger_spawn::CLAIM_TASK
+    } else {
+        ""
+    }
 }
 
 /// Refuse a claiming spawn that its run's plan does not need (gap G-A): the
@@ -161,7 +160,7 @@ fn spawn_worker(
     args: SpawnArgs,
     ledger: Option<&super::taskledger_spawn::LedgerSpawn>,
 ) -> Result<String> {
-    let req = build_request(&args)?;
+    let req = build_request(&args, worker_task(ledger.is_some()))?;
     let sc = spawn_context(ctx)?;
     let existing = resume_record(&req, &sc)?;
     let planned = plan_request(ctx, &req, &sc, existing.as_ref());
@@ -348,13 +347,13 @@ fn launch(
 }
 
 /// The request `horch spawn` plans, from its arguments.
-fn build_request(args: &SpawnArgs) -> Result<SpawnRequest> {
+fn build_request(args: &SpawnArgs, task: &str) -> Result<SpawnRequest> {
     let mut req = SpawnRequest::worker(
         args.teammate
             .as_deref()
             .map(TeammateName::new)
             .transpose()?,
-        args.task.clone(),
+        task.to_string(),
     );
     if req.teammate.is_none() && args.resume.is_none() {
         return Err(SpawnError::from(plan::PlanError::NothingToSpawn).into());

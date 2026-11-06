@@ -1048,7 +1048,6 @@ impl ProjectCommand {
                 &args,
                 cmd::spawn::SpawnArgs {
                     teammate: None,
-                    task: String::new(),
                     resume,
                     phase,
                     effort,
