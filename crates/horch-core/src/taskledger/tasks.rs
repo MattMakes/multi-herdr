@@ -1004,11 +1004,24 @@ fn pick_task(conn: &Connection, w: &Worker, run_id: &str, persona: &str) -> Resu
 /// lasts while its worker is live and has not claimed (TRF-24): it ends
 /// when the worker ends or claims, so no dead worker holds a task.
 fn reserved_for_others(conn: &Connection, w: &Worker, run_id: &str) -> Result<BTreeSet<String>> {
+    Ok(reservations(conn, run_id, Some(&w.worker_id))?
+        .into_values()
+        .collect())
+}
+
+/// The reservations of `run_id` (TRF-24): each live worker with no claim
+/// that was spawned for a task, with that task. `except` names a worker
+/// whose reservation does not count.
+fn reservations(
+    conn: &Connection,
+    run_id: &str,
+    except: Option<&str>,
+) -> Result<BTreeMap<String, String>> {
     Ok(workers::of_run(conn, run_id)?
         .into_iter()
-        .filter(|o| o.worker_id != w.worker_id && o.claimed_at.is_none())
+        .filter(|o| Some(o.worker_id.as_str()) != except && o.claimed_at.is_none())
         .filter(|o| o.status().is_ok_and(WorkerStatus::is_live))
-        .filter_map(|o| o.target_task_id)
+        .filter_map(|o| o.target_task_id.map(|t| (o.worker_id, t)))
         .collect())
 }
 
@@ -1567,12 +1580,31 @@ pub struct PersonaPlan {
 
 /// How many workers of each persona to spawn now: the tasks that can start
 /// now, minus the workers of that persona still spawning, starting or
-/// claiming and not stale ([`workers::is_stale`]).
+/// claiming and not stale ([`workers::is_stale`]). A task that a live
+/// worker with no claim was spawned for has its worker on the way already
+/// (TRF-51): it needs no spawn, and that worker covers no other task.
 pub fn plan_workers(conn: &Connection, run_id: &str) -> Result<Vec<PersonaPlan>> {
+    plan_workers_except(conn, run_id, None)
+}
+
+/// [`plan_workers`], where the reservation of worker `except` does not
+/// count: the spawn gate asks it for the worker it gates.
+fn plan_workers_except(
+    conn: &Connection,
+    run_id: &str,
+    except: Option<&str>,
+) -> Result<Vec<PersonaPlan>> {
     let startable = startable(conn, run_id)?;
+    let reserved: BTreeMap<String, String> = reservations(conn, run_id, except)?
+        .into_iter()
+        .filter(|(_, task)| startable.iter().any(|t| &t.task_id == task))
+        .collect();
     let mut by: BTreeMap<String, (i64, Vec<String>)> = BTreeMap::new();
     for t in &startable {
         let Some(p) = &t.claimable_by else { continue };
+        if reserved.values().any(|r| r == &t.task_id) {
+            continue;
+        }
         let entry = by.entry(p.clone()).or_default();
         entry.0 += 1;
         // A task whose last attempt died names that worker for --replaces.
@@ -1592,6 +1624,7 @@ pub fn plan_workers(conn: &Connection, run_id: &str) -> Result<Vec<PersonaPlan>>
             .iter()
             .filter(|w| {
                 w.kind == WorkerKind::Worker.as_str()
+                    && !reserved.contains_key(&w.worker_id)
                     && w.persona.as_deref() == Some(persona.as_str())
                     && matches!(w.status.as_str(), "spawning" | "starting" | "claiming")
                     && !workers::is_stale(w, run.heartbeat_stale_s, &now)
@@ -1616,7 +1649,7 @@ pub fn spawn_refusal(conn: &Connection, run_id: &str, worker_id: &str) -> Result
     let Some(persona) = w.persona.as_deref() else {
         return Ok(None);
     };
-    let plan = plan_workers(conn, run_id)?;
+    let plan = plan_workers_except(conn, run_id, Some(worker_id))?;
     let line = plan.iter().find(|p| p.persona == persona);
     let startable = line.map_or(0, |p| p.startable);
     // plan_workers counts this new row too, when the persona has a line and
@@ -1729,6 +1762,61 @@ mod tests {
             ..Default::default()
         };
         assert!(store2.immediate(|tx| workers::insert(tx, &new)).is_err());
+    }
+
+    /// Report 47: a review task of `codex-reviewer` reserved by a live
+    /// worker of another persona, and by a stale one. Each reserved task
+    /// has its worker on the way: the plan asks for no extra worker.
+    #[test]
+    fn trf_51_a_reserved_task_needs_no_extra_worker() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut store, run) = store_with_run(dir.path());
+        let mut new = NewTask::work("review", "tickets/review.md", "codex-reviewer");
+        new.kind = TaskKind::Review;
+        let review = store
+            .immediate(|tx| add(tx, &run, &new, Actor::Orchestrator))
+            .unwrap()
+            .task_id;
+        let spawn = |plan: &[PersonaPlan]| -> i64 { plan.iter().map(|p| p.spawn).sum() };
+        assert_eq!(spawn(&plan_workers(store.conn(), &run.run_id).unwrap()), 1);
+
+        // A worker of another persona was spawned for the review.
+        let reviewer = spawn_for(&mut store, &run, "opus-reviewer", Some(&review));
+        assert_eq!(
+            spawn(&plan_workers(store.conn(), &run.run_id).unwrap()),
+            0,
+            "the review has its worker on the way"
+        );
+        // A worker of the persona of the review finds no task: it is reserved.
+        let extra = spawn_for(&mut store, &run, "codex-reviewer", None);
+        assert_eq!(claim_id(&mut store, &extra), None);
+
+        // A stale reserving worker still holds the review: no spawn either.
+        store
+            .conn()
+            .execute(
+                "UPDATE workers SET status = 'claiming', last_checkin_at = '2000-01-01T00:00:00Z'
+                 WHERE worker_id = ?1",
+                [&reviewer],
+            )
+            .unwrap();
+        assert_eq!(spawn(&plan_workers(store.conn(), &run.run_id).unwrap()), 0);
+
+        // The reservation ends with its worker: the review needs 1 worker.
+        store
+            .conn()
+            .execute(
+                "UPDATE workers SET status = ?2 WHERE worker_id = ?1",
+                params![reviewer, WorkerStatus::NoTask.as_str()],
+            )
+            .unwrap();
+        assert_eq!(spawn(&plan_workers(store.conn(), &run.run_id).unwrap()), 1);
+        // The gate of the spawned worker does not count its own reservation.
+        let mine = spawn_for(&mut store, &run, "codex-reviewer", Some(&review));
+        assert_eq!(
+            spawn_refusal(store.conn(), &run.run_id, &mine).unwrap(),
+            None
+        );
     }
 
     #[test]

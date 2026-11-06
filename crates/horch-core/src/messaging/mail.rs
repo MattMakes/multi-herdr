@@ -42,6 +42,15 @@ pub fn keyed<T>(key: &str, f: impl FnOnce() -> T) -> T {
 #[derive(Clone, Debug, Eq, PartialEq, Hash, Deserialize, Serialize)]
 pub struct Id(String);
 
+/// What 1 enqueue did.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Enqueued {
+    pub id: Id,
+    /// The mail of the key was pending or acknowledged before: this enqueue
+    /// wrote nothing, and the mail went out already.
+    pub already_published: bool,
+}
+
 impl Id {
     /// The full id: the mail file's name without `.json`.
     pub fn as_str(&self) -> &str {
@@ -156,6 +165,13 @@ impl Mail {
     /// horch's own QUESTION or BLOCKED that names no closing ledger action
     /// is queued as a NOTE ([`horch_line`]).
     pub fn enqueue_with_questions(&self, from: &str, text: &str, original: &str) -> Result<Id> {
+        self.enqueue_once(from, text, original).map(|e| e.id)
+    }
+
+    /// [`Mail::enqueue_with_questions`] that says whether the mail of the
+    /// [`keyed`] key of this thread was published before. A caller skips
+    /// the push of such a mail: it went out already (TRF-51).
+    pub fn enqueue_once(&self, from: &str, text: &str, original: &str) -> Result<Enqueued> {
         let key = KEY.with(|k| k.borrow_mut().take());
         self.enqueue_inner(key.as_deref(), from, text, original)
     }
@@ -169,7 +185,7 @@ impl Mail {
         from: &str,
         text: &str,
         original: &str,
-    ) -> Result<Id> {
+    ) -> Result<Enqueued> {
         self.enqueue_inner(Some(key), from, text, original)
     }
 
@@ -179,7 +195,7 @@ impl Mail {
         from: &str,
         text: &str,
         original: &str,
-    ) -> Result<Id> {
+    ) -> Result<Enqueued> {
         let (text, original) = if from == HORCH {
             (horch_line(text), horch_line(original))
         } else {
@@ -198,7 +214,12 @@ impl Mail {
         let id = match key {
             None => next_id(created_at),
             Some(key) => match self.claim_key(key, created_at)? {
-                Claim::Published(id) => return Ok(id),
+                Claim::Published(id) => {
+                    return Ok(Enqueued {
+                        id,
+                        already_published: true,
+                    })
+                }
                 Claim::Publish(id) => id,
             },
         };
@@ -239,7 +260,10 @@ impl Mail {
         // Publish questions first: a courier/inbox can observe pending mail as
         // soon as this rename completes, and acknowledgement must not erase them.
         publish_pending(&temp_path, &final_path, question_path.as_deref())?;
-        Ok(id)
+        Ok(Enqueued {
+            id,
+            already_published: false,
+        })
     }
 
     /// The mail id of `key`. The key file names the id before the mail is
@@ -1336,16 +1360,28 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let mail = Mail::under(root.path(), "w1");
         let text = "[horch] NOTE: x";
-        let first = mail.enqueue_with_key("row-1", "horch", text, text).unwrap();
-        let again = mail.enqueue_with_key("row-1", "horch", text, text).unwrap();
+        let first = mail
+            .enqueue_with_key("row-1", "horch", text, text)
+            .unwrap()
+            .id;
+        let again = mail
+            .enqueue_with_key("row-1", "horch", text, text)
+            .unwrap()
+            .id;
         assert_eq!(again, first);
         assert_eq!(pending_files(&mail), 1);
-        let other = mail.enqueue_with_key("row-2", "horch", text, text).unwrap();
+        let other = mail
+            .enqueue_with_key("row-2", "horch", text, text)
+            .unwrap()
+            .id;
         assert_ne!(other, first);
         assert_eq!(pending_files(&mail), 2);
 
         mail.ack(&first).unwrap();
-        let acked = mail.enqueue_with_key("row-1", "horch", text, text).unwrap();
+        let acked = mail
+            .enqueue_with_key("row-1", "horch", text, text)
+            .unwrap()
+            .id;
         assert_eq!(acked, first, "an acknowledged mail is reused");
         assert_eq!(pending_files(&mail), 1, "and not queued again");
     }
@@ -1357,7 +1393,10 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let mail = Mail::under(root.path(), "w1");
         let text = "[horch] QUESTION: T-7 is held. Run horch ledger requeue T-7.";
-        let first = mail.enqueue_with_key("row-1", "horch", text, text).unwrap();
+        let first = mail
+            .enqueue_with_key("row-1", "horch", text, text)
+            .unwrap()
+            .id;
         // The crash: the pending file is not yet in place; its temp file is.
         let pending = mail.dir.join("pending");
         std::fs::rename(
@@ -1371,7 +1410,10 @@ mod tests {
         )
         .unwrap();
 
-        let again = mail.enqueue_with_key("row-1", "horch", text, text).unwrap();
+        let again = mail
+            .enqueue_with_key("row-1", "horch", text, text)
+            .unwrap()
+            .id;
         assert_eq!(again, first);
         assert_eq!(pending_files(&mail), 1);
         assert_eq!(mail.pending().unwrap()[0].id.short(), first.short());

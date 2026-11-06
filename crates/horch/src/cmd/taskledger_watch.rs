@@ -180,9 +180,10 @@ fn pass(
     Ok(checked)
 }
 
-/// The board read of a pass at `now` (TRF-22, TRF-23): 1 re-wake for tasks
-/// that can start with no worker on its way for 2 min, and 1 flag for each
-/// spawned worker with no claim after 3 min. A failure is printed.
+/// The board read of a pass at `now` (TRF-22, TRF-23, TRF-51): 1 re-wake
+/// for tasks that can start with no worker on its way for 2 min, 1 flag for
+/// each spawned worker with no claim after 3 min, and each wake that a crash
+/// after its ledger commit lost. A failure is printed.
 fn reconcile_at(
     ctx: &RuntimeContext,
     store: &Store,
@@ -210,6 +211,7 @@ fn reconcile_at(
     taskledger_wake::wake_as(ctx, store, run, |tx| {
         watchdog::startable_rewake(tx, run, now, seen)
     });
+    taskledger_wake::reconcile_lost(ctx, store, run, now);
 }
 
 /// The orchestrator check of a pass at `now` (trace-fixes C7): record a
@@ -886,6 +888,291 @@ mod reconcile_tests {
             rows(&store, &run, "startable").is_empty(),
             "a claiming worker is on its way to the task"
         );
+    }
+}
+
+/// TRF-51: each test commits a ledger change and skips its direct wake, as
+/// a crash after the commit does. An unrelated worker stays live. 1 pass
+/// writes exactly 1 row; a 2nd pass, and the direct path, write none.
+#[cfg(test)]
+mod trf_51_tests {
+    use std::path::Path;
+
+    use horch_core::runtime::MapEnv;
+    use horch_core::taskledger::model::{Actor, TaskKind};
+    use horch_core::taskledger::runs::NewRun;
+    use horch_core::taskledger::tasks::{self, NewTask, Task};
+    use horch_core::taskledger::workers::{self, NewWorker};
+
+    use super::*;
+
+    /// A run with task `a` (T-1) for `dev`, task `b` (T-2) that waits for
+    /// it, and 1 live worker on neither. Each send fails: rows stay.
+    fn world() -> (tempfile::TempDir, RuntimeContext, Store, Run) {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("ledger.sqlite3");
+        let ctx = RuntimeContext::from_env(
+            &MapEnv::new("/")
+                .with(
+                    "HORCH_STATE_DIR",
+                    dir.path().join("state").to_str().unwrap(),
+                )
+                .with("HORCH_LEDGER_DB", db.to_str().unwrap()),
+        )
+        .unwrap();
+        let mut store = Store::open(&db).unwrap();
+        let run = store
+            .immediate(|tx| {
+                let run = runs::create(
+                    tx,
+                    Path::new("/repo"),
+                    &NewRun {
+                        slug: "r1".into(),
+                        ..Default::default()
+                    },
+                )?;
+                tasks::add(
+                    tx,
+                    &run,
+                    &NewTask::work("a", "a.md", "dev"),
+                    Actor::Orchestrator,
+                )?;
+                let mut b = NewTask::work("b", "b.md", "dev");
+                b.blocked_by = vec!["T-1".into()];
+                tasks::add(tx, &run, &b, Actor::Orchestrator)?;
+                Ok(run)
+            })
+            .unwrap();
+        worker(&mut store, &run, "other", "other-1");
+        (dir, ctx, store, run)
+    }
+
+    /// A working worker of `persona` with `role`, checked in now.
+    fn worker(store: &mut Store, run: &Run, persona: &str, role: &str) -> String {
+        let id = store
+            .immediate(|tx| {
+                workers::insert(
+                    tx,
+                    &NewWorker {
+                        run_id: run.run_id.clone(),
+                        persona: persona.into(),
+                        role: Some(role.into()),
+                        ..Default::default()
+                    },
+                )
+            })
+            .unwrap();
+        store
+            .conn()
+            .execute(
+                "UPDATE workers SET status = 'working', claimed_at = ?2, last_checkin_at = ?2
+                 WHERE worker_id = ?1",
+                [&id, &horch_core::taskledger::util::now()],
+            )
+            .unwrap();
+        id
+    }
+
+    fn at(t0: &chrono::DateTime<chrono::Utc>, secs: i64) -> String {
+        horch_core::clock::stamp(*t0 + chrono::Duration::seconds(secs))
+    }
+
+    /// 1 watchdog pass at `now`, with no sighting kept.
+    fn pass(ctx: &RuntimeContext, store: &Store, run: &Run, now: &str) {
+        reconcile_at(ctx, store, run, now, &mut None);
+    }
+
+    fn rows(store: &Store, run: &Run, event: &str) -> Vec<String> {
+        let mut stmt = store
+            .conn()
+            .prepare("SELECT text FROM outbox WHERE run_id = ?1 AND event = ?2 ORDER BY rowid")
+            .unwrap();
+        stmt.query_map([&run.run_id, event], |r| r.get(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap()
+    }
+
+    fn task(store: &Store, run: &Run, short: &str) -> Task {
+        tasks::resolve(store.conn(), &run.run_id, short).unwrap()
+    }
+
+    fn set(store: &Store, sql: &str, id: &str) {
+        store.conn().execute(sql, [id]).unwrap();
+    }
+
+    /// A board change that no wake of these tests answers.
+    fn unrelated_change(store: &mut Store, run: &Run) {
+        store
+            .immediate(|tx| {
+                tasks::add(
+                    tx,
+                    run,
+                    &NewTask::work("z", "z.md", "dev"),
+                    Actor::Orchestrator,
+                )
+            })
+            .unwrap();
+    }
+
+    /// I-03: the last task is done, and `wake_after_done` never ran.
+    #[test]
+    fn trf_51_a_lost_settled_wake_is_written_once() {
+        let (_dir, ctx, store, run) = world();
+        let t0 = horch_core::clock::now();
+        pass(&ctx, &store, &run, &at(&t0, 0));
+        assert!(rows(&store, &run, "settled").is_empty(), "not settled");
+        for t in ["T-1", "T-2"] {
+            let id = task(&store, &run, t).task_id;
+            set(
+                &store,
+                "UPDATE tasks SET status = 'done', finished_at = updated_at WHERE task_id = ?1",
+                &id,
+            );
+        }
+
+        pass(&ctx, &store, &run, &at(&t0, 30));
+        let r = rows(&store, &run, "settled");
+        assert_eq!(r.len(), 1, "{r:?}");
+        assert!(r[0].contains("All tasks are done"), "{r:?}");
+        pass(&ctx, &store, &run, &at(&t0, 60));
+        taskledger_wake::after_done(&ctx, &store, &run);
+        assert_eq!(rows(&store, &run, "settled").len(), 1, "1 row per settle");
+    }
+
+    /// I-04: the last review of T-1 is done, and its author was never told.
+    #[test]
+    fn trf_51_a_lost_reviews_in_wake_is_written_once() {
+        let (_dir, ctx, mut store, run) = world();
+        let t0 = horch_core::clock::now();
+        let author = worker(&mut store, &run, "dev", "dev-1");
+        let parent = task(&store, &run, "T-1");
+        store
+            .conn()
+            .execute(
+                "UPDATE tasks SET status = 'running', current_worker_id = ?2 WHERE task_id = ?1",
+                [&parent.task_id, &author],
+            )
+            .unwrap();
+        store
+            .conn()
+            .execute(
+                "INSERT INTO task_steps (task_id, worker_id, seq, name, status)
+                 VALUES (?1, ?2, 2, 'code-sweep', 'running')",
+                [&parent.task_id, &author],
+            )
+            .unwrap();
+        let mut review = NewTask::work("review", "review.md", "rev");
+        review.kind = TaskKind::Review;
+        review.parent_task_id = Some(parent.task_id.clone());
+        let review = store
+            .immediate(|tx| tasks::add(tx, &run, &review, Actor::Orchestrator))
+            .unwrap();
+        pass(&ctx, &store, &run, &at(&t0, 0));
+        assert!(
+            rows(&store, &run, "reviews-in").is_empty(),
+            "a review is open"
+        );
+        store
+            .conn()
+            .execute(
+                "UPDATE tasks SET status = 'done', finished_at = ?2 WHERE task_id = ?1",
+                [&review.task_id, &at(&t0, 10)],
+            )
+            .unwrap();
+
+        pass(&ctx, &store, &run, &at(&t0, 40));
+        assert!(
+            rows(&store, &run, "reviews-in").is_empty(),
+            "the direct path has {} s",
+            watchdog::REVIEWS_IN_AFTER_S
+        );
+        pass(&ctx, &store, &run, &at(&t0, 70));
+        let r = rows(&store, &run, "reviews-in");
+        assert_eq!(r.len(), 1, "{r:?}");
+        assert!(r[0].contains("The reviews of T-1 are in"), "{r:?}");
+        assert!(r[0].contains("horch tell dev-1"), "{r:?}");
+
+        unrelated_change(&mut store, &run);
+        pass(&ctx, &store, &run, &at(&t0, 100));
+        taskledger_wake::reviews_in(&ctx, &store, &run, "T-1", "dev-1");
+        assert_eq!(rows(&store, &run, "reviews-in").len(), 1);
+    }
+
+    /// I-05: T-1 is cancelled while T-2 waits, and `wake_dependents` never
+    /// ran.
+    #[test]
+    fn trf_51_a_lost_cancelled_wake_is_written_once() {
+        let (_dir, ctx, mut store, run) = world();
+        let t0 = horch_core::clock::now();
+        let a = task(&store, &run, "T-1");
+        store
+            .immediate(|tx| tasks::cancel(tx, &a, "not needed"))
+            .unwrap();
+
+        pass(&ctx, &store, &run, &at(&t0, 0));
+        let r = rows(&store, &run, "cancelled");
+        assert_eq!(r.len(), 1, "{r:?}");
+        assert!(r[0].contains("T-1 was cancelled. T-2 wait for it"), "{r:?}");
+
+        unrelated_change(&mut store, &run);
+        pass(&ctx, &store, &run, &at(&t0, 30));
+        let waiting = tasks::dependents(store.conn(), &a.task_id).unwrap();
+        taskledger_wake::stalled_dependents(&ctx, &store, &run, "T-1", &waiting);
+        assert_eq!(rows(&store, &run, "cancelled").len(), 1);
+    }
+
+    /// I-06: T-1 is parked unlanded while T-2 waits, and `wake_unlanded`
+    /// never ran.
+    #[test]
+    fn trf_51_a_lost_parked_blocker_wake_is_written_once() {
+        let (_dir, ctx, mut store, run) = world();
+        let t0 = horch_core::clock::now();
+        let a = task(&store, &run, "T-1");
+        set(
+            &store,
+            "UPDATE tasks SET status = 'queued', held_reason = 'unlanded', attempts = 1
+             WHERE task_id = ?1",
+            &a.task_id,
+        );
+
+        pass(&ctx, &store, &run, &at(&t0, 0));
+        let r = rows(&store, &run, "held");
+        assert_eq!(r.len(), 1, "{r:?}");
+        assert!(r[0].contains("T-2 waits: T-1 is parked unlanded"), "{r:?}");
+
+        unrelated_change(&mut store, &run);
+        pass(&ctx, &store, &run, &at(&t0, 30));
+        let waiting = tasks::dependents(store.conn(), &a.task_id).unwrap();
+        taskledger_wake::stalled_dependents(&ctx, &store, &run, "T-1", &waiting);
+        assert_eq!(rows(&store, &run, "held").len(), 1);
+    }
+
+    /// I-07: the reap that held T-1 at the attempt limit committed, and
+    /// `after_reap` never ran.
+    #[test]
+    fn trf_51_a_lost_held_attempt_question_is_written_once() {
+        let (_dir, ctx, mut store, run) = world();
+        let t0 = horch_core::clock::now();
+        let a = task(&store, &run, "T-1");
+        set(
+            &store,
+            "UPDATE tasks SET status = 'queued', held_reason = '3 attempts failed', attempts = 3
+             WHERE task_id = ?1",
+            &a.task_id,
+        );
+
+        pass(&ctx, &store, &run, &at(&t0, 0));
+        let r = rows(&store, &run, "held");
+        assert_eq!(r.len(), 1, "{r:?}");
+        assert!(
+            r[0].contains("QUESTION: T-1 is held: 3 attempts failed"),
+            "{r:?}"
+        );
+
+        unrelated_change(&mut store, &run);
+        pass(&ctx, &store, &run, &at(&t0, 30));
+        assert_eq!(rows(&store, &run, "held").len(), 1);
     }
 }
 

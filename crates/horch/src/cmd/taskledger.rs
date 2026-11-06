@@ -10,7 +10,6 @@ use std::process::ExitCode;
 
 use anyhow::{bail, Context, Result};
 use clap::{Args, Subcommand};
-use horch_core::execution::lifecycle::ReportStatus;
 use horch_core::messaging::delivery;
 use horch_core::runtime::RuntimeContext;
 use horch_core::taskledger::finish::{self, land};
@@ -2686,8 +2685,8 @@ fn done_line(c: &finish::Completed) -> String {
     format!("{} {what}.", c.task)
 }
 
-/// The last review of `parent` is in: tell its author to run finish, and
-/// wake the orchestrator when the tell fails.
+/// The last review of `parent` is in: tell its author to run finish
+/// through its keyed `reviews-in` row (TRF-51).
 fn tell_reviews_in(
     ctx: &RuntimeContext,
     store: &Store,
@@ -2696,32 +2695,11 @@ fn tell_reviews_in(
     parent: &str,
     role: &str,
 ) {
-    let line = format!("[horch] NOTE: The reviews of {parent} are in. Run horch ledger finish.");
     // The author waits for this line until it runs finish (#177).
     if let Err(e) = hold_for_finish(store, review_task_id) {
         eprintln!("horch ledger: could not record the wait of {role}: {e:#}");
     }
-    let told = match super::messaging::tell_as(ctx, Some("horch".into()), role, &line) {
-        Ok(ReportStatus::Delivered) => Ok(()),
-        Ok(ReportStatus::Queued(cause)) => Err(anyhow::anyhow!(
-            "{cause}; the courier types it when the pane is idle"
-        )),
-        Err(e) => Err(e),
-    };
-    if let Err(e) = told {
-        eprintln!("horch ledger: could not tell {role}: {e:#}");
-        // A retried done skips the tell, so the orchestrator gets it
-        // as durable mail too.
-        super::taskledger_wake::wake(
-            ctx,
-            store,
-            run,
-            &format!(
-                "NOTE: The reviews of {parent} are in, but {role} was not told. \
-                 Tell {role} to run horch ledger finish."
-            ),
-        );
-    }
+    super::taskledger_wake::reviews_in(ctx, store, run, parent, role);
 }
 
 /// A parked task is not cancelled, but the tasks that wait for it cannot

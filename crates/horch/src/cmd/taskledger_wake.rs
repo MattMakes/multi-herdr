@@ -15,6 +15,7 @@ use horch_core::taskledger::status;
 use horch_core::taskledger::stop::Panes;
 use horch_core::taskledger::tasks;
 use horch_core::taskledger::util::{self, About};
+use horch_core::taskledger::watchdog;
 use horch_core::taskledger::workers;
 use horch_core::taskledger::Store;
 use horch_core::workspace::herdr::Herdr;
@@ -226,13 +227,24 @@ pub fn stalled_dependents(
     task: &str,
     dependents: &[tasks::Task],
 ) {
-    let Some(first) = dependents.first() else {
+    if dependents.is_empty() {
         return;
-    };
+    }
+    wake_as(ctx, store, run, |tx| {
+        let t = tasks::resolve(tx, &run.run_id, task)?;
+        Ok(dependents_wake(&t, dependents))
+    });
+}
+
+/// The wake of blocker `t` that `dependents` wait for, else `None`. The
+/// key holds the blocker's state ([`watchdog::blocker_state`]), not the
+/// board: the direct wake and the reconciled wake (TRF-51) are 1 row.
+fn dependents_wake(t: &tasks::Task, dependents: &[tasks::Task]) -> Option<Wake> {
+    let first = dependents.first()?;
+    let task = t.short();
     let names: Vec<String> = dependents.iter().map(|t| t.short()).collect();
     // A parked task is not cancelled: it resumes on a requeue (D16).
-    let parked = tasks::resolve(store.conn(), &run.run_id, task).is_ok_and(|t| t.is_parked());
-    let (event, text) = if parked {
+    let (event, text) = if t.is_parked() {
         let text = format!(
             "NOTE: {} {}: {task} is parked unlanded. Run horch ledger requeue {task} to resume it.",
             names.join(", "),
@@ -247,10 +259,71 @@ pub fn stalled_dependents(
         );
         (OutboxEvent::Cancelled, text)
     };
-    wake_as(ctx, store, run, |tx| {
-        let board = outbox::board(tx, &run.run_id, false)?;
-        Ok(Some(Wake::new(event, task, tagged(&text)).on_board(board)))
+    Some(Wake::new(event, task, tagged(&text)).on_board(watchdog::blocker_state(t)))
+}
+
+/// The last review of `parent` is in (C3): write its keyed `reviews-in`
+/// row, tell the author `role` to run finish, then mark the row delivered.
+/// The outbox order is row, send, mark: a crash before the mark sends the
+/// row to the orchestrator. A failed tell sends it to the orchestrator now.
+pub fn reviews_in(ctx: &RuntimeContext, store: &Store, run: &Run, parent: &str, role: &str) {
+    let written = outbox::write_now(store, &run.run_id, |tx| {
+        let p = tasks::resolve(tx, &run.run_id, parent)?;
+        reviews_in_wake(tx, &p, role).map(Some)
     });
+    let id = match written {
+        Ok(Written::New(id)) => id,
+        Ok(_) => return drain_run(ctx, store, run, None),
+        Err(e) => {
+            eprintln!("horch ledger: the reviews-in wake was not written: {e:#}");
+            return;
+        }
+    };
+    let line = format!("[horch] NOTE: The reviews of {parent} are in. Run horch ledger finish.");
+    let drained = outbox::drain(store, Scope::Run(&run.run_id), |row| {
+        if row.id != id {
+            return send_row(ctx, store, run, row, false);
+        }
+        match tell_author(ctx, role, &line) {
+            Ok(()) => Ok(()),
+            Err(e) => {
+                eprintln!("horch ledger: could not tell {role}: {e:#}");
+                send_row(ctx, store, run, row, true)
+            }
+        }
+    });
+    match drained {
+        Ok(d) if d.busy => eprintln!(
+            "horch ledger: another drain sends the reviews-in wake of {parent} to the orchestrator"
+        ),
+        Ok(_) => {}
+        Err(e) => eprintln!("horch ledger: the outbox drain failed: {e:#}"),
+    }
+}
+
+/// Tell the author `role` its line. Mail the courier still has to type is
+/// not a delivery: the orchestrator is told too.
+fn tell_author(ctx: &RuntimeContext, role: &str, line: &str) -> anyhow::Result<()> {
+    if disabled() {
+        anyhow::bail!("wakes are off (HORCH_NO_WAKE=1)");
+    }
+    match super::messaging::tell_as(ctx, Some("horch".into()), role, line)? {
+        ReportStatus::Delivered => Ok(()),
+        ReportStatus::Queued(cause) => Err(anyhow::anyhow!(
+            "{cause}; the courier types it when the pane is idle"
+        )),
+    }
+}
+
+/// The `reviews-in` wake of the review round of `parent` ([`watchdog::review_round`]),
+/// for the orchestrator: the direct path and the reconcile pass build it alike.
+fn reviews_in_wake(conn: &Connection, parent: &tasks::Task, role: &str) -> anyhow::Result<Wake> {
+    let p = parent.short();
+    let text = format!(
+        "NOTE: The reviews of {p} are in. Make sure {role} runs horch ledger finish: horch tell {role} \"[orchestrator] NOTE: The reviews of {p} are in. Run horch ledger finish.\""
+    );
+    Ok(Wake::new(OutboxEvent::ReviewsIn, p, tagged(&text))
+        .on_board(watchdog::review_round(conn, &parent.task_id)?))
 }
 
 /// Wake the orchestrator once when the run has open tasks, none can start
@@ -316,6 +389,52 @@ fn stuck_line(conn: &Connection, run: &Run) -> Option<String> {
 pub fn after_watch(ctx: &RuntimeContext, store: &mut Store, run: &Run) {
     sweep_preclaim(ctx, store, run);
     nudge_stuck(ctx, store, run);
+}
+
+/// The reconcile pass at `now` for the wakes that a crash between a ledger
+/// commit and its wake loses (TRF-51, review 31 I-03 to I-07). Each wake
+/// comes from the board, with the key and the text of its direct path, so
+/// a wake that exists writes no new row. No live worker holds these wakes
+/// back: each event needs the orchestrator, whoever else works.
+pub fn reconcile_lost(ctx: &RuntimeContext, store: &Store, run: &Run, now: &str) {
+    if let Err(e) = try_reconcile_lost(ctx, store, run, now) {
+        eprintln!("horch ledger watch: the lost-wake read failed: {e:#}");
+    }
+}
+
+fn try_reconcile_lost(
+    ctx: &RuntimeContext,
+    store: &Store,
+    run: &Run,
+    now: &str,
+) -> anyhow::Result<()> {
+    // I-03: the settled wake, 1 row per settled board state.
+    wake_as(ctx, store, run, |tx| settled_wake(tx, run));
+    // I-04: a review round in while its author still waits.
+    for r in watchdog::reviews_waiting(store.conn(), run, now)? {
+        let role = r
+            .author
+            .role
+            .clone()
+            .unwrap_or_else(|| r.author.label().to_string());
+        wake_as(ctx, store, run, |tx| {
+            reviews_in_wake(tx, &r.parent, &role).map(Some)
+        });
+    }
+    // I-05, I-06: a cancelled or parked task that open tasks wait for.
+    for t in watchdog::stalled_blockers(store.conn(), run)? {
+        wake_as(ctx, store, run, |tx| {
+            let t = tasks::get(tx, &t.task_id)?;
+            Ok(dependents_wake(&t, &tasks::dependents(tx, &t.task_id)?))
+        });
+    }
+    // I-07: a task the attempt limit holds for the operator.
+    for t in watchdog::attempt_held(store.conn(), run)? {
+        wake_as(ctx, store, run, |tx| {
+            Ok(held_wake(tx, &tasks::get(tx, &t.task_id)?))
+        });
+    }
+    Ok(())
 }
 
 /// Wake the orchestrator when workers should be spawned now: 1 row per
@@ -440,21 +559,31 @@ pub fn sweep_preclaim(ctx: &RuntimeContext, store: &mut Store, run: &Run) {
     }
 }
 
-/// The QUESTION for the operator when the task of `worker_id` is held after
-/// too many attempts (#168), else `None`.
-fn held_question(conn: &Connection, worker_id: &str) -> Option<(String, String)> {
+/// The `held` QUESTION wake for the operator when the task of `worker_id`
+/// is held after too many attempts (#168), else `None`.
+fn held_question(conn: &Connection, worker_id: &str) -> Option<Wake> {
     let w = workers::get(conn, worker_id).ok()?;
-    let task = tasks::get(conn, w.task_id.as_deref()?).ok()?;
+    held_wake(conn, &tasks::get(conn, w.task_id.as_deref()?).ok()?)
+}
+
+/// The `held` QUESTION wake of `task`, held after too many attempts, else
+/// `None`. The key holds its attempts ([`watchdog::held_state`]), not the
+/// board: the reap's wake and the reconciled wake (TRF-51) are 1 row.
+fn held_wake(conn: &Connection, task: &tasks::Task) -> Option<Wake> {
     let held = task.held_reason.as_deref()?;
-    let ends = tasks::attempt_ends(conn, &task).unwrap_or_default();
-    Some((
-        task.task_id.clone(),
-        format!(
-            "QUESTION: {t} is held: {held} ({}). Ask the operator: requeue it (horch ledger requeue {t} \"<reason>\"), change the ticket, or cancel it (horch ledger cancel {t} \"<reason>\"). Spawn no replacement.",
-            ends.join("; "),
-            t = task.short()
-        ),
-    ))
+    if task.is_parked() {
+        return None;
+    }
+    let ends = tasks::attempt_ends(conn, task).unwrap_or_default();
+    let question = format!(
+        "QUESTION: {t} is held: {held} ({}). Ask the operator: requeue it (horch ledger requeue {t} \"<reason>\"), change the ticket, or cancel it (horch ledger cancel {t} \"<reason>\"). Spawn no replacement.",
+        ends.join("; "),
+        t = task.short()
+    );
+    Some(
+        Wake::new(OutboxEvent::Held, task.task_id.clone(), tagged(&question))
+            .on_board(watchdog::held_state(task)),
+    )
 }
 
 /// After a reap: tell the orchestrator which persona to spawn, and how.
@@ -475,11 +604,8 @@ pub fn after_reap(
         "NOTE: {who} was reaped and its task is queued again. Spawn: horch spawn {persona} --replaces {worker_id}"
     );
     wake_as(ctx, store, run, |tx| {
-        if let Some((task_id, question)) = held_question(tx, worker_id) {
-            let board = outbox::board(tx, &run.run_id, false)?;
-            return Ok(Some(
-                Wake::new(OutboxEvent::Held, task_id, tagged(&question)).on_board(board),
-            ));
+        if let Some(wake) = held_question(tx, worker_id) {
+            return Ok(Some(wake));
         }
         Ok(Some(Wake::new(
             OutboxEvent::Reaped,
@@ -794,6 +920,39 @@ mod trf_21_tests {
         after_done(&ctx, &store, &run);
         after_done(&ctx, &store, &run);
         assert_eq!(settled(&store), 2);
+    }
+
+    /// Report 45: a crash after the send published the mail and before
+    /// `mark_delivered`. The replay finds the mail of the row published and
+    /// pushes nothing: the first send pushed it, and the courier has it.
+    #[test]
+    fn trf_51_replayed_published_row_pushes_nothing() {
+        let (_dir, ctx, store, run) = world();
+        let run = give_workspace(&store, &run);
+        wake(&ctx, &store, &run, "NOTE: T-1 needs you.");
+        let w = woke(&store, &run);
+        assert_eq!(w.len(), 1, "{w:?}");
+        assert!(
+            w[0].starts_with("Wake queued"),
+            "the first send pushes, and no pane takes it: {w:?}"
+        );
+
+        store
+            .conn()
+            .execute(
+                "UPDATE outbox SET delivered_at = NULL WHERE run_id = ?1",
+                [&run.run_id],
+            )
+            .unwrap();
+        drain_run(&ctx, &store, &run, None);
+        let w = woke(&store, &run);
+        assert_eq!(w.len(), 2, "{w:?}");
+        assert!(
+            w[1].starts_with("Wake delivered"),
+            "the replay tries no push: {w:?}"
+        );
+        assert!(rows(&store, &run).iter().all(|(_, d)| d.is_some()));
+        assert_eq!(orchestrator_mail(&ctx).len(), 1, "1 mail");
     }
 
     #[test]

@@ -1000,6 +1000,125 @@ pub fn flag_unclaimed(
     )))
 }
 
+/// How long after the last review of a round the reconcile pass waits
+/// before it writes a lost `reviews-in` wake (TRF-51): the direct path
+/// writes its row in this time, so the 2 do not race.
+pub const REVIEWS_IN_AFTER_S: i64 = 60;
+
+/// The tasks of `run` that block open dependents and cannot resume by
+/// themselves (TRF-51): cancelled, or parked unlanded. Each needs 1
+/// `cancelled` or `held` wake; the reconcile pass writes a missing one.
+pub fn stalled_blockers(conn: &Connection, run: &Run) -> Result<Vec<tasks::Task>> {
+    let mut out = Vec::new();
+    for t in tasks::of_run(conn, &run.run_id)? {
+        let blocker = t.status == super::model::TaskStatus::Cancelled.as_str() || t.is_parked();
+        if blocker && !tasks::dependents(conn, &t.task_id)?.is_empty() {
+            out.push(t);
+        }
+    }
+    Ok(out)
+}
+
+/// The state of 1 blocker that its wake answers, hashed into the wake key:
+/// a new cancel after a requeue, or a new park, is a new wake.
+pub fn blocker_state(t: &tasks::Task) -> String {
+    if t.is_parked() {
+        format!("parked:{}", t.attempts)
+    } else {
+        format!(
+            "{}:{}",
+            t.status,
+            t.finished_at.as_deref().unwrap_or_default()
+        )
+    }
+}
+
+/// The tasks of `run` that the attempt limit holds for the operator (#168):
+/// queued with a hold that is not a park. Each needs 1 `held` question.
+pub fn attempt_held(conn: &Connection, run: &Run) -> Result<Vec<tasks::Task>> {
+    Ok(tasks::of_run(conn, &run.run_id)?
+        .into_iter()
+        .filter(|t| {
+            t.status == super::model::TaskStatus::Queued.as_str()
+                && t.held_reason.is_some()
+                && !t.is_parked()
+        })
+        .collect())
+}
+
+/// The state of an attempt-held task that its question answers: an
+/// operator requeue and a new hold is a new question.
+pub fn held_state(t: &tasks::Task) -> String {
+    format!("held:{}", t.attempts)
+}
+
+/// 1 review round whose reviews are all in while its author still waits
+/// in the code-sweep step for them.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ReviewsIn {
+    /// The reviewed task.
+    pub parent: tasks::Task,
+    /// The author, which runs `horch ledger finish` next.
+    pub author: Worker,
+}
+
+/// The review rounds of `run` at `now` whose reviews are all in for
+/// [`REVIEWS_IN_AFTER_S`] while the author waits (TRF-51): the parent is in
+/// flight, its live worker's code-sweep step waits, and no review of it is
+/// open. Each needs 1 `reviews-in` wake.
+pub fn reviews_waiting(conn: &Connection, run: &Run, now: &str) -> Result<Vec<ReviewsIn>> {
+    let mut stmt = conn.prepare(&format!(
+        "SELECT t.task_id, t.current_worker_id, max(r.finished_at)
+           FROM tasks t
+           JOIN task_steps s ON s.task_id = t.task_id AND s.worker_id = t.current_worker_id
+           JOIN tasks r ON r.parent_task_id = t.task_id AND r.kind = 'review'
+          WHERE t.run_id = ?1 AND t.status IN ({in_flight})
+            AND s.name = {sweep} AND s.status = {running}
+          GROUP BY t.task_id, t.current_worker_id
+         HAVING sum(r.status NOT IN ({ended})) = 0",
+        in_flight = sql_words::list(sql_words::TASKS_IN_FLIGHT),
+        sweep = word(super::model::StepName::CodeSweep),
+        running = word(super::model::StepStatus::Running),
+        ended = sql_words::list(sql_words::TASKS_ENDED),
+    ))?;
+    let rows = stmt
+        .query_map([&run.run_id], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, Option<String>>(2)?,
+            ))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    let mut out = Vec::new();
+    for (task_id, worker_id, last) in rows {
+        let settled = last
+            .as_deref()
+            .and_then(|t| util::seconds_between(t, now))
+            .is_some_and(|age| age >= REVIEWS_IN_AFTER_S);
+        let author = workers::get(conn, &worker_id)?;
+        if settled && author.status().is_ok_and(|s| s.is_live()) {
+            out.push(ReviewsIn {
+                parent: tasks::get(conn, &task_id)?,
+                author,
+            });
+        }
+    }
+    Ok(out)
+}
+
+/// The review round of `parent_id` that a `reviews-in` wake answers: its
+/// review task ids. A new round adds reviews, so it is a new wake.
+pub fn review_round(conn: &Connection, parent_id: &str) -> Result<String> {
+    Ok(conn.query_row(
+        "SELECT coalesce(group_concat(task_id, ','), '') FROM (
+           SELECT task_id FROM tasks WHERE parent_task_id = ?1 AND kind = 'review'
+            ORDER BY task_id)",
+        [parent_id],
+        |r| r.get(0),
+    )?)
+}
+
 #[cfg(test)]
 mod tests {
     use std::cell::RefCell;
