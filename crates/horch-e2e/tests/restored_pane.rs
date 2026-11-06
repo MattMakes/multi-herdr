@@ -30,7 +30,6 @@ fn fleet(name: &str, scenario: &str) -> Harness {
     h.set("HORCH_WORKSPACE_ID", "w1");
     h.set("HORCH_FAKE_SCENARIO", scenario);
     h.set("HORCH_NO_WATCHDOG", "1");
-    h.set("HORCH_TEST_MAIL_NO_ORCHESTRATOR_MS", "20");
     h.set("HORCH_TEST_MAIL_POLL_MS", "10");
     herdr(&h, &["workspace", "create", "--label", name]);
     h

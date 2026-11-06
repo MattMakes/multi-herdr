@@ -19,6 +19,11 @@ static NEXT_ID: AtomicU64 = AtomicU64::new(0);
 pub struct Id(String);
 
 impl Id {
+    /// The full id: the mail file's name without `.json`.
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
     /// The id a mail line shows: 8 hex characters, a 32-bit FNV-1a hash of
     /// the full id. Every process computes the same value from the file name.
     pub fn short(&self) -> String {
@@ -35,6 +40,10 @@ pub struct Message {
     pub from: String,
     pub text: String,
     pub created_at: SystemTime,
+    /// The ledger actions that close a question horch raised, such as
+    /// `requeue T-7` (C2). Empty for other mail.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub closes_on: Vec<String>,
 }
 
 impl Message {
@@ -120,7 +129,15 @@ impl Mail {
     }
 
     /// Keep question lines from the original body before transport truncation.
+    /// horch's own QUESTION or BLOCKED that names no closing ledger action
+    /// is queued as a NOTE ([`horch_line`]).
     pub fn enqueue_with_questions(&self, from: &str, text: &str, original: &str) -> Result<Id> {
+        let (text, original) = if from == HORCH {
+            (horch_line(text), horch_line(original))
+        } else {
+            (text.to_string(), original.to_string())
+        };
+        let (text, original) = (text.as_str(), original.as_str());
         let pending = self.dir.join("pending");
         self.ensure_dir()?;
         private::ensure_dir(&pending)?;
@@ -136,6 +153,7 @@ impl Mail {
             from: from.to_string(),
             text: text.to_string(),
             created_at,
+            closes_on: Vec::new(),
         };
         let final_path = pending.join(format!("{}.json", id.0));
         let temp_path = pending.join(format!(".{}.json.tmp", id.0));
@@ -143,11 +161,22 @@ impl Mail {
             &temp_path,
             &serde_json::to_vec(&message).context("serializing mail")?,
         )?;
-        let questions = question_lines(original, from);
+        let mut questions = question_lines(original, from);
+        if from == HORCH && closing_actions(&questions).is_empty() {
+            // A horch question with no closing ledger action is mail only:
+            // no answer by id could reach horch, so it would never close.
+            questions.clear();
+        }
         let question_path = (!questions.is_empty())
             .then(|| {
+                let closes_on = if from == HORCH {
+                    closing_actions(&questions)
+                } else {
+                    Vec::new()
+                };
                 let question = Message {
                     text: questions,
+                    closes_on,
                     ..message
                 };
                 self.publish_question(&id, &question)
@@ -217,42 +246,37 @@ impl Mail {
             .join(format!("{}.json", file_safe(role)))
     }
 
-    /// An orchestrator reply closes questions created before this tell.
-    pub fn answer(&self, role: &str) -> Result<()> {
-        self.mark_answered(role, crate::clock::now().into())
+    /// The open question `key` names: its short id (`#` optional) or its
+    /// full id.
+    pub fn find_question(&self, key: &str) -> Result<Option<Message>> {
+        let key = key.trim().trim_start_matches('#');
+        Ok(self
+            .open_questions()?
+            .into_iter()
+            .find(|q| q.id.short() == key || q.id.0 == key))
     }
 
-    /// Leave an empty marker named by `at` in `answers/<role>/`. The newest
-    /// marker is the answer time. No lock: replies that overlap each leave
-    /// their own marker, so an older one cannot replace a newer one, and no
-    /// reply waits for another.
-    fn mark_answered(&self, role: &str, at: SystemTime) -> Result<()> {
-        let dir = self.answers_dir(role);
-        self.ensure_dir()?;
-        private::ensure_dir(&dir)?;
-        let name = answer_marker(at).context("an answer time before 1970")?;
-        match private::create_new(&dir.join(name)) {
-            Ok(_) => {}
-            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
-            Err(e) => {
-                return Err(e).with_context(|| format!("writing an answer in {}", dir.display()))
-            }
+    /// Close the open question `key` names, and only that question (C2).
+    /// `None`: no open question has that id.
+    pub fn close_question(&self, key: &str) -> Result<Option<Message>> {
+        let Some(question) = self.find_question(key)? else {
+            return Ok(None);
+        };
+        let path = self
+            .dir
+            .join("questions")
+            .join(format!("{}.json", question.id.0));
+        match std::fs::remove_file(&path) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(e).with_context(|| format!("removing {}", path.display())),
         }
-        // Markers older than the newest no longer count. The newest is never
-        // removed, so a race here cannot make the answer older.
-        let markers = answer_markers(&dir);
-        if let Some(newest) = markers.iter().map(|(at, _)| *at).max() {
-            for (at, path) in markers {
-                if at < newest {
-                    let _ = std::fs::remove_file(path);
-                }
-            }
-        }
-        Ok(())
+        Ok(Some(question))
     }
 
-    /// When `role` was last answered: the newest marker, or the answer file
-    /// an earlier release wrote, whichever is later.
+    /// When an earlier release last answered `role`: its newest marker, or
+    /// its answer file, whichever is later. These are read, never written: a
+    /// question asked now closes only by its id.
     fn answered_at(&self, role: &str) -> Option<SystemTime> {
         let earlier: Option<SystemTime> = std::fs::read(self.answer_path(role))
             .ok()
@@ -414,6 +438,93 @@ fn question_lines(original: &str, from: &str) -> String {
         .join("\n")
 }
 
+/// The sender tag of horch's own lines.
+const HORCH: &str = "horch";
+
+/// The actions of `text` that close a horch question: the ledger actions
+/// with a closing event (C2).
+fn closing_actions(text: &str) -> Vec<String> {
+    ledger_actions(text)
+        .into_iter()
+        .filter(|a| {
+            a.split_once(' ')
+                .and_then(|(verb, _)| crate::taskledger::workers::closing_event(verb))
+                .is_some()
+        })
+        .collect()
+}
+
+/// Whether `text` names a horch command: `horch` followed by a lowercase
+/// subcommand, such as `horch compact` or `horch ledger requeue T-7`.
+fn names_horch_command(text: &str) -> bool {
+    let words: Vec<&str> = text.split_whitespace().collect();
+    words.windows(2).any(|w| {
+        w[0].trim_start_matches(|c: char| !c.is_ascii_alphanumeric()) == "horch"
+            && w[1].starts_with(|c: char| c.is_ascii_lowercase())
+            && w[1]
+                .trim_end_matches(|c: char| !c.is_ascii_alphanumeric())
+                .bytes()
+                .all(|b| b.is_ascii_lowercase() || b == b'-')
+    })
+}
+
+/// A line of horch as horch sends it (C2). A QUESTION or BLOCKED must name
+/// the horch command that answers it, such as `horch ledger requeue T-7`
+/// or `horch compact <role> --request`. When `text` names none, each such
+/// keyword becomes `NOTE:`.
+pub fn horch_line(text: &str) -> String {
+    if names_horch_command(text) {
+        return text.to_string();
+    }
+    let mut out: Vec<String> = Vec::new();
+    for line in text.lines() {
+        let body = line.trim_start();
+        let lead = &line[..line.len() - body.len()];
+        let (tag, rest) = match body
+            .strip_prefix("[horch")
+            .and_then(|r| r.find(']').map(|i| i + 7))
+        {
+            Some(end) => body.split_at(end),
+            None => ("", body),
+        };
+        let gap = &rest[..rest.len() - rest.trim_start().len()];
+        let words = rest.trim_start();
+        let note = ["QUESTION:", "BLOCKED:"]
+            .iter()
+            .find_map(|k| words.strip_prefix(k))
+            .map(|after| format!("{lead}{tag}{gap}NOTE:{after}"));
+        out.push(note.unwrap_or_else(|| line.to_string()));
+    }
+    let mut joined = out.join("\n");
+    if text.ends_with('\n') {
+        joined.push('\n');
+    }
+    joined
+}
+
+/// The ledger actions `text` names, as `<verb> T-<n>`: each
+/// `horch ledger <verb> T-<n>` in it, in order, without repeats.
+pub fn ledger_actions(text: &str) -> Vec<String> {
+    let words: Vec<&str> = text
+        .split_whitespace()
+        .map(|w| w.trim_matches(|c: char| !c.is_ascii_alphanumeric() && c != '-'))
+        .collect();
+    let mut out: Vec<String> = Vec::new();
+    for w in words.windows(4) {
+        let task = w[3].strip_prefix("T-").unwrap_or("");
+        let named = w[0] == "horch"
+            && w[1] == "ledger"
+            && !w[2].is_empty()
+            && !task.is_empty()
+            && task.bytes().all(|b| b.is_ascii_digit());
+        let action = format!("{} {}", w[2], w[3]);
+        if named && !out.contains(&action) {
+            out.push(action);
+        }
+    }
+    out
+}
+
 /// Read the pending messages at `paths`. A file that a concurrent ack moved
 /// away after the listing is no longer pending, so it is skipped.
 fn read_pending(paths: &[PathBuf]) -> Result<Vec<Message>> {
@@ -438,13 +549,6 @@ fn read_message(path: &Path) -> Result<Option<Message>> {
         bail!("mail id does not match {}", path.display());
     }
     Ok(Some(message))
-}
-
-/// The marker name for an answer at `at`: nanoseconds since 1970, padded,
-/// so names sort by time.
-fn answer_marker(at: SystemTime) -> Option<String> {
-    let nanos = at.duration_since(SystemTime::UNIX_EPOCH).ok()?.as_nanos();
-    Some(format!("{nanos:039}"))
 }
 
 /// The answer markers in `dir` with their times. Other files are skipped.
@@ -759,7 +863,8 @@ mod tests {
 
         let orchestrator = Mail::under(root.path(), "w1").pending().unwrap();
         assert_eq!(orchestrator.len(), 1);
-        assert_eq!(orchestrator[0].text, "[horch] BLOCKED: x");
+        // A horch BLOCKED that names no horch command is a NOTE (C2).
+        assert_eq!(orchestrator[0].text, "[horch] NOTE: x");
         assert_eq!(orchestrator[0].from, "horch");
         let worker = Mail::to_role(root.path(), "w1", "opus-1")
             .pending()
@@ -777,20 +882,12 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let mail = Mail::under(root.path(), "w1");
         let id = mail.enqueue("worker", "QUESTION: which?").unwrap();
-        mail.answer("worker").unwrap();
         assert_eq!(mode(&mail.dir), 0o700);
         assert_eq!(mode(&mail.dir.join("pending")), 0o700);
         let file = mail.dir.join("pending").join(format!("{}.json", id.0));
         assert_eq!(mode(&file), 0o600);
         let question = mail.dir.join("questions").join(format!("{}.json", id.0));
         assert_eq!(mode(&question), 0o600);
-        assert_eq!(mode(&mail.dir.join("answers/worker")), 0o700);
-        let marker = std::fs::read_dir(mail.dir.join("answers/worker"))
-            .unwrap()
-            .next()
-            .unwrap()
-            .unwrap();
-        assert_eq!(mode(&marker.path()), 0o600);
 
         std::fs::set_permissions(&mail.dir, std::fs::Permissions::from_mode(0o777)).unwrap();
         let err = format!("{:#}", mail.pending().unwrap_err());
@@ -798,61 +895,118 @@ mod tests {
         assert!(mail.enqueue("worker", "more").is_err());
     }
 
-    /// A reply takes no lock: a held lock of an earlier release, or a slow
-    /// reply, does not hold it. A held lock made `answer` fail after 5 s.
-    #[test]
-    fn an_answer_does_not_wait_for_another_reply() {
-        let root = tempfile::tempdir().unwrap();
-        let mail = Mail::under(root.path(), "w1");
-        mail.enqueue("worker", "QUESTION: which?").unwrap();
-        let answers = mail.dir.join("answers");
-        private::ensure_dir(&answers).unwrap();
-        let _held = crate::fsx::DirLock::acquire(
-            &answers,
-            "answer-worker",
-            Duration::from_secs(300),
-            Duration::from_secs(1),
-        )
-        .unwrap();
-
-        let started = std::time::Instant::now();
-        mail.answer("worker").unwrap();
-
-        assert!(started.elapsed() < Duration::from_secs(4));
-        assert!(mail.open_questions().unwrap().is_empty());
+    fn question(mail: &Mail, from: &str, text: &str) -> Id {
+        let id = mail.enqueue(from, text).unwrap();
+        mail.ack(&id).unwrap();
+        id
     }
 
-    /// Replies that overlap keep the newest answer: an older reply that
-    /// lands last does not reopen a question asked between the 2 replies.
-    #[test]
-    fn overlapping_replies_keep_the_newest_answer() {
-        let root = tempfile::tempdir().unwrap();
-        let mail = std::sync::Arc::new(Mail::under(root.path(), "w1"));
-        let base = SystemTime::UNIX_EPOCH + Duration::from_secs(1_900_000_000);
-        let barrier = std::sync::Arc::new(std::sync::Barrier::new(8));
-        let threads: Vec<_> = (0..8u64)
-            .map(|n| {
-                let mail = std::sync::Arc::clone(&mail);
-                let barrier = std::sync::Arc::clone(&barrier);
-                std::thread::spawn(move || {
-                    barrier.wait();
-                    mail.mark_answered("worker", base + Duration::from_secs(n))
-                })
-            })
-            .collect();
-        for thread in threads {
-            thread.join().unwrap().unwrap();
-        }
-        mail.mark_answered("worker", base).unwrap();
+    fn open_ids(mail: &Mail) -> Vec<Id> {
+        mail.open_questions()
+            .unwrap()
+            .into_iter()
+            .map(|q| q.id)
+            .collect()
+    }
 
+    /// TRF-25: an answer by id closes that question and no other one of
+    /// the same role. `#` before the short id is optional.
+    #[test]
+    fn trf_25_close_question_closes_only_the_named_question() {
+        let root = tempfile::tempdir().unwrap();
+        let mail = Mail::under(root.path(), "w1");
+        let first = question(&mail, "worker", "QUESTION: which?");
+        let second = question(&mail, "worker", "QUESTION: where?");
+        let other = question(&mail, "other", "BLOCKED: no key");
+
+        let closed = mail
+            .close_question(&format!("#{}", second.short()))
+            .unwrap()
+            .expect("the question is open");
+        assert_eq!(closed.id, second);
+        assert_eq!(open_ids(&mail), vec![first.clone(), other.clone()]);
+
+        assert!(mail.close_question(&second.short()).unwrap().is_none());
+        assert!(mail.close_question("00000000").unwrap().is_none());
+        assert_eq!(mail.close_question(&first.0).unwrap().unwrap().id, first);
+        assert_eq!(open_ids(&mail), vec![other]);
+    }
+
+    /// TRF-25: nothing but an answer by id closes a question. New mail of
+    /// the same role leaves it open.
+    #[test]
+    fn trf_25_new_mail_of_a_role_leaves_its_question_open() {
+        let root = tempfile::tempdir().unwrap();
+        let mail = Mail::under(root.path(), "w1");
+        let id = question(&mail, "worker", "QUESTION: which?");
+        mail.enqueue("worker", "NOTE: still here").unwrap();
+        assert_eq!(open_ids(&mail), vec![id]);
+    }
+
+    /// TRF-26: a horch question keeps the ledger actions it names; a
+    /// worker question names none.
+    #[test]
+    fn trf_26_a_horch_question_records_the_actions_that_close_it() {
+        let root = tempfile::tempdir().unwrap();
+        let mail = Mail::under(root.path(), "w1");
+        let text = "[horch] QUESTION: T-7 is held: 3 attempts failed. Ask the operator: \
+                    requeue it (horch ledger requeue T-7 \"<reason>\"), or cancel it \
+                    (horch ledger cancel T-7 \"<reason>\").";
+        mail.enqueue("horch", text).unwrap();
+        mail.enqueue("worker", "QUESTION: run horch ledger cancel T-7?")
+            .unwrap();
+        let open = mail.open_questions().unwrap();
+        assert_eq!(open[0].closes_on, vec!["requeue T-7", "cancel T-7"]);
+        assert!(open[1].closes_on.is_empty());
+    }
+
+    /// TRF-26: a horch QUESTION or BLOCKED that names no horch command is
+    /// queued as a NOTE, with no question file. One that names a command
+    /// keeps its keyword.
+    #[test]
+    fn trf_26_a_horch_question_without_a_closing_action_is_a_note() {
         assert_eq!(
-            mail.answered_at("worker"),
-            Some(base + Duration::from_secs(7))
+            horch_line("[horch] BLOCKED: Compaction of a failed. Log: x."),
+            "[horch] NOTE: Compaction of a failed. Log: x."
         );
+        assert_eq!(
+            horch_line("[horch #0a1b2c3d] QUESTION: which one? Log: /a/horch/x."),
+            "[horch #0a1b2c3d] NOTE: which one? Log: /a/horch/x."
+        );
+        // A named horch command keeps the keyword.
+        let compact = "[horch] BLOCKED: Compaction of a failed. Run horch compact a --request.";
+        assert_eq!(horch_line(compact), compact);
+        assert_eq!(horch_line("QUESTION: why?\n"), "NOTE: why?\n");
+        let kept = "[horch] QUESTION: T-2 is held. horch ledger requeue T-2 \"<reason>\"";
+        assert_eq!(horch_line(kept), kept);
+        assert_eq!(horch_line("[horch] NOTE: x"), "[horch] NOTE: x");
+
+        let root = tempfile::tempdir().unwrap();
+        let mail = Mail::under(root.path(), "w1");
+        mail.enqueue("horch", "[horch] BLOCKED: boom").unwrap();
+        assert!(mail.open_questions().unwrap().is_empty());
+        assert_eq!(mail.pending().unwrap()[0].text, "[horch] NOTE: boom");
+        // A kept BLOCKED with no closing ledger action is mail, not a question.
+        mail.enqueue("horch", compact).unwrap();
+        assert!(mail.open_questions().unwrap().is_empty());
+        mail.enqueue("worker", "[worker] BLOCKED: no key").unwrap();
+        assert_eq!(mail.open_questions().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn trf_26_ledger_actions_reads_each_named_action_once() {
+        assert_eq!(
+            ledger_actions("(horch ledger requeue T-12 \"x\"), horch ledger requeue T-12."),
+            vec!["requeue T-12"]
+        );
+        assert!(ledger_actions("horch ledger status").is_empty());
+        assert!(ledger_actions("horch ledger cancel T-x now").is_empty());
+        assert!(ledger_actions("horch spawn opus").is_empty());
     }
 
     /// A fleet that ran an earlier release has its answer in
-    /// `answers/<role>.json`: it still counts.
+    /// `answers/<role>.json` or as a marker in `answers/<role>/`: both
+    /// still count, and the later one wins.
     #[test]
     fn an_answer_of_an_earlier_release_still_counts() {
         let root = tempfile::tempdir().unwrap();
@@ -865,9 +1019,14 @@ mod tests {
         )
         .unwrap();
         assert_eq!(mail.answered_at("worker"), Some(at));
-        mail.mark_answered("worker", at - Duration::from_secs(60))
-            .unwrap();
-        assert_eq!(mail.answered_at("worker"), Some(at));
+        let marker = at + Duration::from_secs(60);
+        let nanos = marker
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        private::ensure_dir(&mail.answers_dir("worker")).unwrap();
+        std::fs::write(mail.answers_dir("worker").join(format!("{nanos:039}")), "").unwrap();
+        assert_eq!(mail.answered_at("worker"), Some(marker));
     }
 
     /// 2 processes enqueue under the same `created_at` (a pinned clock, or

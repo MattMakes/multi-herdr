@@ -141,6 +141,9 @@ enum MessagingCommand {
     Tell {
         /// Registered role to deliver to, e.g. orchestrator or sonnet-1.
         role: String,
+        /// Orchestrator only: answer the open question with this id (the #<id> of its line). It closes that question only; a tell without it closes none.
+        #[arg(long, value_name = "ID")]
+        answers: Option<String>,
         /// The message. Joined with spaces.
         #[arg(required = true, trailing_var_arg = true)]
         message: Vec<String>,
@@ -901,9 +904,14 @@ impl LaunchCommand {
 impl MessagingCommand {
     fn dispatch(self, ctx: &mut Ctx) -> Result<ExitCode> {
         match self {
-            MessagingCommand::Tell { role, message } => {
-                done(cmd::messaging::tell(ctx, &role, &joined(&message)))
-            }
+            MessagingCommand::Tell {
+                role,
+                answers,
+                message,
+            } => done(match answers {
+                Some(id) => cmd::messaging::tell_answer(ctx, &role, &id, &joined(&message)),
+                None => cmd::messaging::tell(ctx, &role, &joined(&message)),
+            }),
             MessagingCommand::Inbox { roles, peek } => {
                 done(cmd::messaging::inbox(ctx, roles, peek))
             }
@@ -1372,9 +1380,42 @@ mod tests {
     fn tell_joins_its_trailing_words() {
         let cli = Cli::try_parse_from(["horch", "tell", "sonnet-1", "fix", "the", "bug"]).unwrap();
         match cli.command {
-            Command::Messaging(MessagingCommand::Tell { role, message }) => {
+            Command::Messaging(MessagingCommand::Tell {
+                role,
+                answers,
+                message,
+            }) => {
                 assert_eq!(role, "sonnet-1");
+                assert_eq!(answers, None);
                 assert_eq!(joined(&message), "fix the bug");
+            }
+            _ => panic!("wrong subcommand"),
+        }
+    }
+
+    /// TRF-25: `--answers <id>` names the question; the words after it are
+    /// the message.
+    #[test]
+    fn trf_25_tell_takes_the_question_id_to_answer() {
+        let cli = Cli::try_parse_from([
+            "horch",
+            "tell",
+            "opus-1",
+            "--answers",
+            "0a1b2c3d",
+            "Use",
+            "A",
+        ])
+        .unwrap();
+        match cli.command {
+            Command::Messaging(MessagingCommand::Tell {
+                role,
+                answers,
+                message,
+            }) => {
+                assert_eq!(role, "opus-1");
+                assert_eq!(answers.as_deref(), Some("0a1b2c3d"));
+                assert_eq!(joined(&message), "Use A");
             }
             _ => panic!("wrong subcommand"),
         }

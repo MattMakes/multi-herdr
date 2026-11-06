@@ -50,6 +50,22 @@ pub fn tell(ctx: &RuntimeContext, role: &str, text: &str) -> Result<()> {
     }
 }
 
+/// `horch tell <role> --answers <id>`: deliver `text` to `role` as the
+/// answer to its open question `<id>`, then close that question and no
+/// other (C2). The line reads `[orchestrator re #<id>] <text>`. Only the
+/// orchestrator answers; an unknown id, or a question of another role,
+/// sends nothing.
+pub fn tell_answer(ctx: &RuntimeContext, role: &str, question: &str, text: &str) -> Result<()> {
+    let sender = ctx.worker.as_ref().and_then(|w| w.role.clone());
+    if sender.as_deref().is_some_and(|s| s != "orchestrator") {
+        bail!("only the orchestrator answers a question with --answers; send a QUESTION: or NOTE: line instead");
+    }
+    match queue_as(ctx, sender, role, text, false, Some(question))? {
+        Some(outgoing) => outgoing.push().map(|_| ()),
+        None => Ok(()),
+    }
+}
+
 fn tell_outcome(ctx: &RuntimeContext, role: &str, text: &str) -> Result<ReportStatus> {
     let sender = ctx.worker.as_ref().and_then(|w| w.role.clone());
     tell_as(ctx, sender, role, text)
@@ -70,7 +86,7 @@ pub fn tell_as(
     let _budget = (sender.as_deref() == Some(HORCH))
         .then(|| delivery::start_push_budget(delivery::DONE_PUSH_BUDGET))
         .flatten();
-    match queue_as(ctx, sender, role, text, false)? {
+    match queue_as(ctx, sender, role, text, false, None)? {
         Some(outgoing) => outgoing.push(),
         None => Ok(ReportStatus::Delivered),
     }
@@ -103,25 +119,51 @@ struct Outgoing<'a> {
     /// Start the courier after the push, as before #67: an unbounded push
     /// can outlast the courier's first redelivery and deliver the line twice.
     courier_after: bool,
+    /// The full id of the question this line answers: a delivered answer
+    /// closes it.
+    answers: Option<String>,
 }
 
 /// The first half of [`tell_as`]: an error here means nothing was sent or
 /// queued. `None`: the line went already, as there was nothing to queue.
 /// `take_back` is for the `done` report only: a courier that cannot start
 /// takes its mail back. Any other line stays queued and is pushed.
+/// `answers`: the id of the open question of `role` that this line answers.
 fn queue_as<'a>(
     ctx: &'a RuntimeContext,
     sender: Option<String>,
     role: &str,
     text: &str,
     take_back: bool,
+    answers: Option<&str>,
 ) -> Result<Option<Outgoing<'a>>> {
     // Inside a push budget, resolving the mailbox (a `pane get` without
     // HORCH_WORKSPACE_ID) ends at the push deadline too.
     let herdr = Herdr::with_bin(&ctx.bins.harness.herdr).until(delivery::push_deadline());
     let mailbox = Mailbox::resolve_in(&herdr, ctx)
         .context("horch tell must run inside a herdr pane, or with HORCH_WORKSPACE_ID set")?;
-    let mut line = render_line(ctx, mailbox.workspace_id(), sender.as_deref(), role, text)?;
+    let horch_text;
+    let text = if sender.as_deref() == Some(HORCH) {
+        // A horch QUESTION or BLOCKED that names no closing action is a NOTE.
+        horch_text = horch_core::messaging::mail::horch_line(text);
+        horch_text.as_str()
+    } else {
+        text
+    };
+    let question = answers
+        .map(|key| open_question(ctx, mailbox.workspace_id(), role, key))
+        .transpose()?;
+    let mut line = match &question {
+        // The answer tag replaces the sender tag.
+        Some(q) => render_line(
+            ctx,
+            mailbox.workspace_id(),
+            None,
+            role,
+            &answer_line(&q.id.short(), text),
+        )?,
+        None => render_line(ctx, mailbox.workspace_id(), sender.as_deref(), role, text)?,
+    };
     let target = mailbox.pane_for(role);
     let durable = is_durable(sender.as_deref(), role);
     // Inside a push budget (`horch done`), the courier starts now, before
@@ -161,7 +203,45 @@ fn queue_as<'a>(
         line,
         durable,
         courier_after: durable && !courier_now,
+        answers: question.map(|q| q.id.as_str().to_string()),
     }))
+}
+
+/// The open question `key` names, if it is a question of `role`.
+fn open_question(
+    ctx: &RuntimeContext,
+    workspace: &str,
+    role: &str,
+    key: &str,
+) -> Result<horch_core::messaging::mail::Message> {
+    let mail = Mail::under(&ctx.paths.state_root, workspace);
+    let Some(question) = mail.find_question(key)? else {
+        bail!(
+            "no open question #{}; horch inbox --roles lists the open questions",
+            key.trim_start_matches('#')
+        );
+    };
+    check_answer_role(&question.from, role, &question.id.short())?;
+    Ok(question)
+}
+
+/// An answer goes to the role that asked.
+fn check_answer_role(asker: &str, role: &str, short: &str) -> Result<()> {
+    if asker != role {
+        bail!("question #{short} is from {asker}, not {role}; run: horch tell {asker} --answers {short} \"<answer>\"");
+    }
+    Ok(())
+}
+
+/// `[orchestrator re #<id>] <text>` (C2). A leading `[orchestrator]` tag
+/// in `text` is dropped.
+fn answer_line(short: &str, text: &str) -> String {
+    let body = text.trim_start();
+    let body = body
+        .strip_prefix("[orchestrator]")
+        .unwrap_or(body)
+        .trim_start();
+    format!("[orchestrator re #{short}] {body}")
 }
 
 /// The line `tell` sends: tagged with the sender, and spooled to a file
@@ -274,8 +354,9 @@ impl Outgoing<'_> {
             });
         }
         pushed?;
-        if self.sender.as_deref().is_none_or(|s| s == "orchestrator") {
-            mail.answer(&self.role)?;
+        // Only an answer by id closes a question; a plain tell closes none.
+        if let Some(id) = &self.answers {
+            mail.close_question(id)?;
             sync_question_waits(self.ctx, self.mailbox.workspace_id())?;
         }
         Ok(ReportStatus::Delivered)
@@ -418,6 +499,10 @@ pub fn inbox(ctx: &RuntimeContext, roles_only: bool, peek: bool) -> Result<()> {
     let herdr = Herdr::with_bin(&ctx.bins.harness.herdr).with_timeout(pane_list_timeout());
     let mailbox = Mailbox::resolve_in(&herdr, ctx)?;
     let roles = mailbox.role_states(&herdr);
+    // A horch question whose ledger action ran closes before the listing.
+    if let Err(error) = sync_question_waits(ctx, mailbox.workspace_id()) {
+        eprintln!("horch inbox: question wait projection failed ({error:#})");
+    }
     let question_mail = Mail::under(&ctx.paths.state_root, mailbox.workspace_id());
     let questions = question_mail.open_questions()?;
     let now: std::time::SystemTime = horch_core::clock::now().into();
@@ -427,8 +512,10 @@ pub fn inbox(ctx: &RuntimeContext, roles_only: bool, peek: bool) -> Result<()> {
             .unwrap_or_default()
             .as_secs();
         output::println(&format!(
-            "  {} open ({age}s ago): {}",
-            question.from, question.text
+            "  {} #{} open ({age}s ago): {}",
+            question.from,
+            question.id.short(),
+            question.text
         ));
     };
     if roles.is_empty() {
@@ -538,7 +625,8 @@ fn print_mail(mail: &Mail, peek: bool) -> Result<()> {
     // that pipes this output into `tail` still sees how many it acknowledged.
     let pending = mail.pending()?;
     for message in &pending {
-        output::println(&message.text);
+        // The line shows the mail id, as the pane line does.
+        output::println(&message.line());
         if !peek {
             mail.ack(&message.id)?;
         }
@@ -959,7 +1047,7 @@ impl DoneSteps for CliDone<'_> {
     /// relay is an orchestrator too, with or without a registered pane.
     fn queue_report(&self, line: &str) -> Result<()> {
         let sender = self.ctx.worker.as_ref().and_then(|w| w.role.clone());
-        *self.outgoing.borrow_mut() = queue_as(self.ctx, sender, "orchestrator", line, true)?;
+        *self.outgoing.borrow_mut() = queue_as(self.ctx, sender, "orchestrator", line, true, None)?;
         Ok(())
     }
 
@@ -1102,6 +1190,33 @@ fn ledger_role_state(ctx: &RuntimeContext, workspace: &str, role: &str) -> Strin
 mod tests {
     use super::*;
     use std::time::Duration;
+
+    /// TRF-25: an answer carries `re #<id>` in the orchestrator tag, once.
+    #[test]
+    fn trf_25_an_answer_line_names_the_question_id() {
+        assert_eq!(
+            answer_line("0a1b2c3d", "Use A"),
+            "[orchestrator re #0a1b2c3d] Use A"
+        );
+        assert_eq!(
+            answer_line("0a1b2c3d", "  [orchestrator] Use A"),
+            "[orchestrator re #0a1b2c3d] Use A"
+        );
+    }
+
+    /// TRF-25: an answer to the role that did not ask is refused, and the
+    /// error names the command for the role that asked.
+    #[test]
+    fn trf_25_an_answer_goes_only_to_the_role_that_asked() {
+        assert!(check_answer_role("opus-1", "opus-1", "0a1b2c3d").is_ok());
+        let err = check_answer_role("opus-1", "opus-2", "0a1b2c3d")
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("horch tell opus-1 --answers 0a1b2c3d"),
+            "{err}"
+        );
+    }
 
     /// #67: inside `done`, a courier that cannot start fails the queue and
     /// leaves no mail, so the retry does not queue a second report.

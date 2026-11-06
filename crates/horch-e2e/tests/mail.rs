@@ -95,7 +95,9 @@ fn mail_u1_courier_redelivers_to_an_idle_orchestrator_until_inbox_acks() {
 
     let inbox = harness.run(&["inbox"]);
     assert!(inbox.status.success(), "{}", text(&inbox));
-    assert!(String::from_utf8_lossy(&inbox.stdout).contains("[sonnet-1] NOTE: do not lose this"));
+    // The inbox shows the same mail id as the pane line.
+    assert!(String::from_utf8_lossy(&inbox.stdout)
+        .contains(&format!("[sonnet-1 #{id}] NOTE: do not lose this")));
     wait_for_or(
         "the courier to exit",
         || (!courier_holds(&lock_path)?).then_some(()),
@@ -108,9 +110,8 @@ fn mail_u1_courier_redelivers_to_an_idle_orchestrator_until_inbox_acks() {
 /// only `horch inbox`, which acknowledges the mail, lets it exit.
 #[test]
 fn trf_04_courier_stays_while_mail_is_pending_and_the_pane_is_gone() {
-    let mut harness = fleet();
+    let harness = fleet();
     // The limit of an earlier release: it no longer ends the courier.
-    harness.set("HORCH_TEST_MAIL_NO_ORCHESTRATOR_MS", "100");
     let mailbox = harness.state.join("herdr-orchestration-w1");
     std::fs::write(mailbox.join("orchestrator.id"), "w1:p9").unwrap();
     let mut tell = harness.horch(&["tell", "orchestrator", "NOTE: still here"]);

@@ -605,7 +605,8 @@ fn start_failed(
         .failed_line(role, Step::Start.as_str(), reason, log)
         .unwrap_or_else(|_| {
             format!(
-                "[horch] BLOCKED: Compaction of {role} failed at step start: {reason}. Log: {}.",
+                "[horch] BLOCKED: Compaction of {role} failed at step start: {reason}. Log: {}. \
+                 Run horch compact {role} --request, or use horch ledger handoff.",
                 log.display()
             )
         });
@@ -896,7 +897,8 @@ fn refuse_child(
         .failed_line(role, Step::Start.as_str(), reason, log)
         .unwrap_or_else(|_| {
             format!(
-                "[horch] BLOCKED: Compaction of {role} failed at step start: {reason}. Log: {}.",
+                "[horch] BLOCKED: Compaction of {role} failed at step start: {reason}. Log: {}. \
+                 Run horch compact {role} --request, or use horch ledger handoff.",
                 log.display()
             )
         });
@@ -914,6 +916,9 @@ fn refuse_child(
 /// delivers it when no orchestrator pane is registered yet or the push
 /// fails. A queue that fails is printed, and the line is still typed.
 fn report(env: &Env, line: &str) -> Result<()> {
+    // A BLOCKED that names no horch command goes as a NOTE (C2), in the
+    // mail and in the pane alike.
+    let line = &horch_core::messaging::mail::horch_line(line);
     if let Err(error) = horch_core::messaging::mail::queue_notice(
         env.src.ctx,
         env.workspace(),

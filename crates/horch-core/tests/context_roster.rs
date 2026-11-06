@@ -639,7 +639,7 @@ fn context_message_renders_one_line_whatever_the_values() {
     assert_eq!(
         context_message(&builtin(), "failed", &vars).unwrap(),
         "[horch] BLOCKED: Compaction of sonnet-1 failed at step send: exit 1  stderr: boom. \
-         Log: ai_docs/x.log."
+         Log: ai_docs/x.log. Run horch compact sonnet-1 --request, or use horch ledger handoff."
     );
 }
 
