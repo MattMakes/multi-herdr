@@ -38,6 +38,8 @@ Amendment (report 05, incident of 2026-11-06):
 
 Amendment (report 10): `horch ledger claim` now prints the ticket snapshot, then the path. Change the briefing line that tells a worker to read the ticket file in full: the snapshot is the ticket; read the file only for context.
 
+Amendment (decision R11): add `question` to the C3 event list in `docs/specs/trace-fixes.md` section 3, and name the 2 light reviewer personas in the docs that list teammates.
+
 ## Done when
 
 TRF-46 and the golden tests pass.
