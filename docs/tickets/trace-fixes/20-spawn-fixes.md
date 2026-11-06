@@ -24,6 +24,8 @@ Fix G11 and G12 (D13, D16).
 1. A `--resume` spawn that joins a run gets `CLAIM_TASK` as its task.
 2. `run new` fills the existing `runs.workspace_id` when it runs in a pane (today only a later ledger command from the orchestrator pane sets it). A task-less spawn joins only its own workspace's active run; `--run <slug>` reaches another one.
 
+Amendment (report 19): ticket 19 added `refuse_over_plan` in `crates/horch/src/cmd/spawn.rs`. Add 1 test: after a worker is reaped and its task requeued, `horch spawn <persona> --replaces <worker>` is not refused. Fix the guard if it is.
+
 ## Done when
 
 Both tests pass.
