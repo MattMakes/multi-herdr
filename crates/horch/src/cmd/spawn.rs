@@ -23,11 +23,13 @@ use horch_core::execution::{
 use horch_core::ids::{ExecutionId, SessionId, TeammateName};
 use horch_core::messaging::mailbox::Mailbox;
 use horch_core::roster::{Phase, Roster};
-use horch_core::routing::decision::GateFlags;
+use horch_core::routing::decision::{GateFlags, RoutingDecision, RoutingProvenance};
 use horch_core::routing::policy::BalanceMode;
 use horch_core::routing::quota::QuotaView;
 use horch_core::runtime::RuntimeContext;
 use horch_core::skills::{harness_support, SkillResolution};
+use horch_core::taskledger::model::{Actor, EventKind};
+use horch_core::taskledger::util::{event as ledger_event, About};
 use horch_core::workspace::arrange;
 use horch_core::workspace::herdr::Herdr;
 use horch_core::workspace::model::Direction;
@@ -150,8 +152,99 @@ fn spawn_worker(
     let req = build_request(&args)?;
     let sc = spawn_context(ctx)?;
     let existing = resume_record(&req, &sc)?;
-    let plan = plan_request(ctx, &req, &sc, existing.as_ref())?;
-    launch(ctx, &sc, plan, args.role.as_deref(), ledger)
+    let planned = plan_request(ctx, &req, &sc, existing.as_ref());
+    if let Some(rec) = GateRecord::of(&planned) {
+        record_gate(ctx, ledger.map(|l| (l.run.run_id.as_str(), l.worker_id.as_str())), &rec);
+    }
+    launch(ctx, &sc, planned?, args.role.as_deref(), ledger)
+}
+
+/// 1 spawn-gate decision, as the task ledger records it (TRF-41). The
+/// record is for measurement only: nothing reads it to decide a spawn.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct GateRecord {
+    teammate: String,
+    outcome: &'static str,
+    pool: String,
+    reason: String,
+}
+
+impl GateRecord {
+    /// The gate decision of a planned spawn. `None` when no gate spoke: no
+    /// gate ran, or the gate let the teammate run with no note.
+    fn of(planned: &Result<ExecutionPlan>) -> Option<GateRecord> {
+        match planned {
+            Ok(p) if p.gate_line.is_some() => p.execution.routing.as_ref().map(Self::spoken),
+            Ok(_) => None,
+            Err(e) => match e.downcast_ref::<SpawnError>() {
+                Some(SpawnError::Refused { decision, .. }) => Self::refused(decision),
+                _ => None,
+            },
+        }
+    }
+
+    /// A NOTE, or a SUBSTITUTED when another teammate's settings run.
+    fn spoken(r: &RoutingProvenance) -> GateRecord {
+        let substituted = r.resolved != r.requested;
+        let reason = r.reason.clone().unwrap_or_default();
+        GateRecord {
+            teammate: r.requested.as_str().to_string(),
+            outcome: if substituted { "SUBSTITUTED" } else { "NOTE" },
+            pool: r.pool.clone(),
+            reason: if substituted {
+                format!("runs on {}: {reason}", r.resolved.as_str())
+            } else {
+                reason
+            },
+        }
+    }
+
+    /// A REFUSED. Its pool names every pool the gate found closed.
+    fn refused(d: &RoutingDecision) -> Option<GateRecord> {
+        let RoutingDecision::Refuse {
+            requested,
+            reason,
+            pools,
+        } = d
+        else {
+            return None;
+        };
+        let pool: Vec<&str> = pools.iter().map(|p| p.pool.as_str()).collect();
+        Some(GateRecord {
+            teammate: requested.clone(),
+            outcome: "REFUSED",
+            pool: pool.join(","),
+            reason: reason.clone(),
+        })
+    }
+
+    /// The event text: `spawn gate: teammate=<t> outcome=<o> pool=<p> reason=<r>`.
+    fn text(&self) -> String {
+        format!(
+            "spawn gate: teammate={} outcome={} pool={} reason={}",
+            self.teammate, self.outcome, self.pool, self.reason
+        )
+    }
+}
+
+/// Write 1 ledger event for a gate decision, about the run and the worker
+/// this spawn joins (`about`), if any. Best effort: a failed write prints a
+/// warning and never changes the spawn.
+fn record_gate(ctx: &RuntimeContext, about: Option<(&str, &str)>, rec: &GateRecord) {
+    let write = || -> Result<()> {
+        let mut store = horch_core::taskledger::open(ctx)?;
+        let about = About {
+            run: about.map(|(run, _)| run),
+            task: None,
+            worker: about.map(|(_, worker)| worker),
+        };
+        store.immediate(|tx| {
+            ledger_event(tx, &about, Actor::Horch, EventKind::Note, &rec.text())
+        })
+    };
+    if let Err(e) = write() {
+        eprintln!("horch spawn: the task ledger did not record the gate decision: {e:#}");
+    }
 }
 
 /// The record a resume continues, when the request has one.
@@ -587,5 +680,192 @@ mod tests {
             resolve_positionals(&["sonnet".into(), "task".into(), "extra".into()], None).is_err()
         );
         assert!(resolve_positionals(&["task".into(), "extra".into()], Some("s-1")).is_err());
+    }
+}
+
+#[cfg(test)]
+mod trf_41_tests {
+    use std::path::Path;
+
+    use horch_core::ids::TeammateName;
+    use horch_core::routing::decision::{PoolLine, RoutingMode};
+    use horch_core::routing::quota::State;
+    use horch_core::runtime::MapEnv;
+    use horch_core::taskledger::runs::{self, NewRun, Run};
+    use horch_core::taskledger::tasks::{self, NewTask};
+    use horch_core::taskledger::Store;
+
+    use super::*;
+
+    fn provenance(requested: &str, resolved: &str, reason: Option<&str>) -> RoutingProvenance {
+        RoutingProvenance {
+            requested: TeammateName::new(requested).unwrap(),
+            resolved: TeammateName::new(resolved).unwrap(),
+            fallback_index: (requested != resolved).then_some(0),
+            pool: "codex".into(),
+            pool_state: State::Ok,
+            reason: reason.map(str::to_string),
+            mode: RoutingMode::Auto,
+        }
+    }
+
+    fn refusal() -> RoutingDecision {
+        RoutingDecision::Refuse {
+            requested: "opus".into(),
+            reason: "every pool is exhausted".into(),
+            pools: vec![
+                PoolLine {
+                    pool: "claude".into(),
+                    state: "exhausted".into(),
+                    detail: "7d 100%".into(),
+                },
+                PoolLine {
+                    pool: "codex".into(),
+                    state: "exhausted".into(),
+                    detail: "7d 99%".into(),
+                },
+            ],
+        }
+    }
+
+    /// A ledger with 1 run and 1 startable `opus` task.
+    fn world() -> (tempfile::TempDir, RuntimeContext, Store, Run) {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("ledger.sqlite3");
+        let ctx = RuntimeContext::from_env(
+            &MapEnv::new("/")
+                .with("HORCH_STATE_DIR", dir.path().join("state").to_str().unwrap())
+                .with("HORCH_LEDGER_DB", db.to_str().unwrap()),
+        )
+        .unwrap();
+        let mut store = Store::open(&db).unwrap();
+        let run = store
+            .immediate(|tx| {
+                runs::create(
+                    tx,
+                    Path::new("/repo"),
+                    &NewRun {
+                        slug: "r1".into(),
+                        ..Default::default()
+                    },
+                )
+            })
+            .unwrap();
+        store
+            .immediate(|tx| {
+                tasks::add(
+                    tx,
+                    &run,
+                    &NewTask::work("alpha", "tickets/alpha.md", "opus"),
+                    Actor::Orchestrator,
+                )
+            })
+            .unwrap();
+        (dir, ctx, store, run)
+    }
+
+    /// The gate events of a run: (actor, kind, worker, text).
+    fn gate_events(store: &Store, run: &Run) -> Vec<(String, String, Option<String>, String)> {
+        let mut stmt = store
+            .conn()
+            .prepare(
+                "SELECT actor, kind, worker_id, text FROM events
+                 WHERE run_id = ?1 AND text LIKE 'spawn gate:%' ORDER BY event_id",
+            )
+            .unwrap();
+        stmt.query_map([&run.run_id], |r| {
+            Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
+        })
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap()
+    }
+
+    #[test]
+    fn trf_41_a_note_records_the_teammate_its_pool_and_the_note() {
+        let rec = GateRecord::spoken(&provenance("opus", "opus", Some("claude 7d 91%")));
+        assert_eq!(
+            rec.text(),
+            "spawn gate: teammate=opus outcome=NOTE pool=codex reason=claude 7d 91%"
+        );
+    }
+
+    #[test]
+    fn trf_41_a_substitution_records_the_requested_teammate_and_the_one_that_runs() {
+        let rec = GateRecord::spoken(&provenance("opus", "codex-sol", Some("claude 7d 100%")));
+        assert_eq!(rec.outcome, "SUBSTITUTED");
+        assert_eq!(rec.teammate, "opus");
+        assert_eq!(rec.reason, "runs on codex-sol: claude 7d 100%");
+    }
+
+    #[test]
+    fn trf_41_a_refusal_records_every_closed_pool() {
+        let rec = GateRecord::refused(&refusal()).unwrap();
+        assert_eq!(
+            rec.text(),
+            "spawn gate: teammate=opus outcome=REFUSED pool=claude,codex reason=every pool is exhausted"
+        );
+        let err: anyhow::Error = SpawnError::Refused {
+            decision: refusal(),
+            line: "REFUSED: opus cannot start.".into(),
+        }
+        .into();
+        assert_eq!(GateRecord::of(&Err(err)), Some(rec));
+    }
+
+    #[test]
+    fn trf_41_a_failure_that_is_not_a_gate_decision_records_nothing() {
+        assert_eq!(GateRecord::of(&Err(anyhow::anyhow!("herdr is gone"))), None);
+        let spawn = RoutingDecision::Spawn {
+            teammate: "opus".into(),
+        };
+        assert_eq!(GateRecord::refused(&spawn), None);
+    }
+
+    #[test]
+    fn trf_41_each_decision_is_1_ledger_event_about_the_run_and_the_worker() {
+        let (_dir, ctx, store, run) = world();
+        let about = Some((run.run_id.as_str(), "w-1"));
+        record_gate(&ctx, about, &GateRecord::spoken(&provenance("opus", "opus", Some("n"))));
+        record_gate(&ctx, about, &GateRecord::refused(&refusal()).unwrap());
+        let events = gate_events(&store, &run);
+        assert_eq!(events.len(), 2, "{events:?}");
+        for (actor, kind, worker, _) in &events {
+            assert_eq!(
+                (actor.as_str(), kind.as_str(), worker.as_deref()),
+                ("horch", "note", Some("w-1"))
+            );
+        }
+        assert!(events[0].3.contains("outcome=NOTE"));
+        assert!(events[1].3.contains("outcome=REFUSED"));
+    }
+
+    #[test]
+    fn trf_41_the_record_never_changes_routing() {
+        let (_dir, ctx, store, run) = world();
+        let before = tasks::plan_workers(store.conn(), &run.run_id).unwrap();
+        let about = Some((run.run_id.as_str(), "w-1"));
+        record_gate(&ctx, about, &GateRecord::refused(&refusal()).unwrap());
+        record_gate(&ctx, about, &GateRecord::spoken(&provenance("opus", "codex-sol", None)));
+        assert_eq!(gate_events(&store, &run).len(), 2);
+        assert_eq!(tasks::plan_workers(store.conn(), &run.run_id).unwrap(), before);
+        // The gate itself takes no ledger: its inputs are the roster and
+        // the quota view, so a record cannot reach a decision.
+        let src = include_str!("../../../horch-core/src/routing/decision.rs");
+        assert!(!src.contains("events"), "the gate must not read ledger events");
+    }
+
+    #[test]
+    fn trf_41_a_ledger_that_cannot_be_written_does_not_fail_the_spawn() {
+        let dir = tempfile::tempdir().unwrap();
+        let bad = dir.path().join("no-dir").join("x").join("ledger.sqlite3");
+        std::fs::write(dir.path().join("no-dir"), "a file, not a directory").unwrap();
+        let ctx = RuntimeContext::from_env(
+            &MapEnv::new("/")
+                .with("HORCH_STATE_DIR", dir.path().join("state").to_str().unwrap())
+                .with("HORCH_LEDGER_DB", bad.to_str().unwrap()),
+        )
+        .unwrap();
+        record_gate(&ctx, None, &GateRecord::refused(&refusal()).unwrap());
     }
 }
