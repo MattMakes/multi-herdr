@@ -44,6 +44,8 @@ Amendment (report 34): `docs/specs/architecture.md` lines near 1211 and 1274 sti
 
 Amendment (report 12): tell the orchestrator to pass `horch ledger run new <slug> --check "<command>"` when the project has a whole-run check. Make the not-applicable note in `crates/horch-core/src/taskledger/finish/complexity.rs` name the Rust clippy path too (approved outside Own).
 
+Amendment (report 17): document `horch tell <role> --answers <question-id> "<text>"` and the `[orchestrator re #<id>]` line in the orchestrator briefing. A plain tell closes no question.
+
 ## Done when
 
 TRF-46 and the golden tests pass.
