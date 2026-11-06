@@ -1287,7 +1287,8 @@ fn done_unlanded_parks_the_task_and_its_worktree() {
     let c = finish::complete(&mut w.store, &id, "tried", Some("no way")).unwrap();
     assert!(c.unlanded);
     let task = tasks::get(w.store.conn(), &c.task_id).unwrap();
-    assert_eq!(task.status, "cancelled");
+    assert_eq!(task.status, "queued");
+    assert_eq!(task.held_reason.as_deref(), Some("unlanded"));
     assert_eq!(task.summary.as_deref(), Some("UNLANDED: no way | tried"));
     let wt: (String, Option<String>) = w
         .store

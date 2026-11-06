@@ -21,7 +21,7 @@ use serde::Serialize;
 
 use super::git::Git;
 use super::model::{
-    Actor, EventKind, StepName, StepStatus, TaskStatus, WorkerStatus, WorktreeStatus,
+    Actor, EventKind, HeldReason, StepName, StepStatus, TaskStatus, WorkerStatus, WorktreeStatus,
 };
 use super::runs::{self, Run};
 use super::sql_words::{self, word};
@@ -981,8 +981,10 @@ pub struct Completed {
 }
 
 /// `horch ledger done`: finish the worker's task. A work task needs every
-/// finish step through, unless `unlanded` parks it (its branch and worktree
-/// stay). A review task needs its findings file.
+/// finish step through, unless `unlanded` parks it: the task stays queued
+/// and held (`held_reason = unlanded`), its worktree stays attached, and its
+/// dependents stay blocked until `requeue` resumes it (trace-fixes D16).
+/// A review task needs its findings file.
 pub fn complete(
     store: &mut Store,
     worker_id: &str,
@@ -1032,7 +1034,7 @@ fn already_completed(conn: &Connection, worker_id: &str) -> Result<Option<Comple
         task_id: task.task_id.clone(),
         run_id: task.run_id.clone(),
         review: task.is_review(),
-        unlanded: false,
+        unlanded: w.end_reason.as_deref() == Some("unlanded"),
         reviews_in_for: None,
         already: true,
     }))
@@ -1089,8 +1091,8 @@ fn require_through(conn: &Connection, run: &Run, task: &Task, worker_id: &str) -
     );
 }
 
-/// The task's final status, summary and event. An unlanded task parks its
-/// worktree.
+/// The task's final status, summary and event. An unlanded task is parked
+/// `queued` and its worktree `unlanded`, still attached to the task.
 fn final_state(
     tx: &Connection,
     task: &Task,
@@ -1104,7 +1106,7 @@ fn final_state(
         set_worktree(tx, &wt.worktree_id, WorktreeStatus::Unlanded, Some(reason))?;
     }
     Ok((
-        "cancelled",
+        "queued",
         format!("UNLANDED: {reason} | {summary}"),
         EventKind::Unlanded,
     ))
@@ -1119,14 +1121,24 @@ fn mark_done(
     unlanded: bool,
 ) -> Result<()> {
     let now = util::now();
-    // Never turn a task cancelled meanwhile into done (#136).
+    // Never turn a task cancelled meanwhile into done (#136). A parked task
+    // lets go of its worker and is not finished.
     let n = tx.execute(
         &format!(
-            "UPDATE tasks SET status = ?2, summary = ?3, updated_at = ?4, finished_at = ?4
+            "UPDATE tasks SET status = ?2, summary = ?3, updated_at = ?4,
+                finished_at = CASE WHEN ?5 IS NULL THEN ?4 END,
+                held_reason = ?5,
+                current_worker_id = CASE WHEN ?5 IS NULL THEN current_worker_id END
              WHERE task_id = ?1 AND status IN ({in_flight})",
             in_flight = sql_words::list(sql_words::TASKS_IN_FLIGHT)
         ),
-        params![task.task_id, status, text, now],
+        params![
+            task.task_id,
+            status,
+            text,
+            now,
+            unlanded.then_some(HeldReason::Unlanded.as_str())
+        ],
     )?;
     if n == 0 {
         bail!(
@@ -1157,7 +1169,11 @@ fn mark_done(
         },
         Actor::Worker,
         kind,
-        &format!("{} {}: {text}", task.short(), status),
+        &format!(
+            "{} {}: {text}",
+            task.short(),
+            if unlanded { "parked unlanded" } else { status }
+        ),
     )
 }
 

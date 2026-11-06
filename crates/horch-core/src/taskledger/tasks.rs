@@ -8,8 +8,8 @@ use rusqlite::{params, Connection, Row};
 use serde::Serialize;
 
 use super::model::{
-    Actor, EventKind, FileMode, FindingStatus, Origin, OutboxEvent, ReviewMode, StepName, TaskKind,
-    TaskStatus, WorkKind, WorkerKind, WorkerStatus, WorktreeMode, WorktreeStatus,
+    Actor, EventKind, FileMode, FindingStatus, HeldReason, Origin, OutboxEvent, ReviewMode,
+    StepName, TaskKind, TaskStatus, WorkKind, WorkerKind, WorkerStatus, WorktreeMode, WorktreeStatus,
 };
 use super::runs::Run;
 use super::sql_words::{self, word};
@@ -85,6 +85,13 @@ impl Task {
 
     pub fn uses_worktree(&self) -> bool {
         self.worktree_mode == WorktreeMode::Worktree.as_str()
+    }
+
+    /// Parked by `done --unlanded`: queued, held, with its worktree kept
+    /// (trace-fixes D16). `requeue` resumes it on that worktree.
+    pub fn is_parked(&self) -> bool {
+        self.status == TaskStatus::Queued.as_str()
+            && self.held_reason.as_deref() == Some(HeldReason::Unlanded.as_str())
     }
 
     pub(crate) fn from_row(r: &Row<'_>) -> rusqlite::Result<Task> {
@@ -624,6 +631,8 @@ pub enum Wait {
     BlockedBy { task: String, status: String },
     /// A blocker was cancelled: it never finishes unless someone acts (#119).
     BlockerCancelled { task: String },
+    /// A blocker is parked unlanded: it resumes only on a requeue (D16).
+    BlockerParked { task: String },
     /// An exclusive task runs, or this exclusive task waits for others.
     Exclusive { running: String },
     /// A running task owns 1 of this task's files.
@@ -642,6 +651,10 @@ impl std::fmt::Display for Wait {
                     "{task} was cancelled: requeue it, or drop the dependency"
                 )
             }
+            Wait::BlockerParked { task } => write!(
+                f,
+                "{task} is parked unlanded. Run horch ledger requeue {task} to resume it"
+            ),
             Wait::Exclusive { running } => write!(f, "exclusive: waits for {running}"),
             Wait::FileHeld { path, by } => write!(f, "{path} is held by {by}"),
             Wait::SharedCheckout { running } => {
@@ -764,6 +777,8 @@ impl Board {
             .find_map(|bt| {
                 if bt.status == TaskStatus::Cancelled.as_str() {
                     Some(Wait::BlockerCancelled { task: bt.short() })
+                } else if bt.is_parked() {
+                    Some(Wait::BlockerParked { task: bt.short() })
                 } else if bt.status != TaskStatus::Done.as_str() {
                     Some(Wait::BlockedBy {
                         task: bt.short(),
@@ -1316,7 +1331,7 @@ pub fn attempt_ends(conn: &Connection, task: &Task) -> Result<Vec<String>> {
 /// `horch ledger requeue`: the operator wants a held or cancelled task
 /// worked on again. Its attempt history stays, and it gets the run's
 /// `max_attempts` anew. A cancelled task gets back the worktree its cancel
-/// abandoned.
+/// abandoned; a parked task resumes on the worktree it parked with.
 pub fn requeue_by_operator(conn: &Connection, task: &Task, reason: &str) -> Result<Task> {
     let held = task.status == TaskStatus::Queued.as_str() && task.held_reason.is_some();
     if !held && task.status != TaskStatus::Cancelled.as_str() {
@@ -1327,6 +1342,9 @@ pub fn requeue_by_operator(conn: &Connection, task: &Task, reason: &str) -> Resu
         );
     }
     let now = util::now();
+    if task.is_parked() {
+        resume_parked_worktree(conn, task)?;
+    }
     conn.execute(
         &format!(
             "UPDATE tasks SET status = {queued}, held_reason = NULL, attempt_floor = attempts,
@@ -1379,6 +1397,20 @@ pub fn requeue_by_operator(conn: &Connection, task: &Task, reason: &str) -> Resu
         &format!("{} is queued again by the operator: {reason}", task.short()),
     )?;
     get(conn, &task.task_id)
+}
+
+/// The worktree a parked task kept becomes open again, for the next claim.
+fn resume_parked_worktree(conn: &Connection, task: &Task) -> Result<()> {
+    conn.execute(
+        &format!(
+            "UPDATE worktrees SET status = {open}, worker_id = NULL, reason = NULL
+             WHERE task_id = ?1 AND status = {unlanded}",
+            open = word(WorktreeStatus::Open),
+            unlanded = word(WorktreeStatus::Unlanded)
+        ),
+        [&task.task_id],
+    )?;
+    Ok(())
 }
 
 /// 1 persona's line of `horch ledger plan-workers`.
