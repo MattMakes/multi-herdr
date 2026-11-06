@@ -107,6 +107,183 @@ pub fn record_stop(conn: &Connection, run_id: &str) -> Result<bool> {
     Ok(n == 1)
 }
 
+/// The run that an orchestrator launched in `workspace` of project `root`
+/// continues (TRF-38): the active run of the respawn slug `respawn`, else the
+/// 1 active non-solo run of `workspace`, else the 1 active non-solo run of
+/// the project. `None` when 0 or 2+ runs fit.
+pub fn launch_run(
+    conn: &Connection,
+    root: &Path,
+    workspace: &str,
+    respawn: Option<&str>,
+) -> Result<Option<runs::Run>> {
+    let active: Vec<runs::Run> = runs::of_project(conn, root)?
+        .into_iter()
+        .filter(|r| r.status == RunStatus::Active.as_str())
+        .collect();
+    if let Some(slug) = respawn {
+        return Ok(active.into_iter().find(|r| r.slug == slug));
+    }
+    let planned: Vec<runs::Run> = active.into_iter().filter(|r| !runs::is_solo(r)).collect();
+    let own: Vec<&runs::Run> = planned
+        .iter()
+        .filter(|r| r.workspace_id.as_deref() == Some(workspace))
+        .collect();
+    Ok(match (own.as_slice(), planned.as_slice()) {
+        ([one], _) => Some((*one).clone()),
+        ([], [one]) => Some(one.clone()),
+        _ => None,
+    })
+}
+
+/// What 1 orchestrator launch did to its run ([`claim`]).
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub enum Claimed {
+    /// The run is not active, or it already had this workspace and no stop.
+    Unchanged,
+    /// The workspace or the stop changed: the text of the 1 `note` event.
+    Changed(String),
+    /// The run's orchestrator still runs in the run's workspace: the run
+    /// stays there. The text says why.
+    Skipped(String),
+}
+
+/// An orchestrator took the pane-launch lock of `workspace` in `pane` for
+/// `run_id` (TRF-38). In `tx`: the run moves to `workspace`, its stop is
+/// cleared, and the run's orchestrator row is a live row of this pane.
+/// 1 `note` event names the old and new values when the workspace or the
+/// stop changes. A run never moves to a workspace with another active
+/// non-solo run, and never away from a workspace whose orchestrator lives.
+pub fn claim(
+    tx: &Transaction,
+    run_id: &str,
+    workspace: &str,
+    pane: Option<&str>,
+    probe: &dyn Probe,
+) -> Result<Claimed> {
+    let run = runs::get(tx, run_id)?;
+    if run.status != RunStatus::Active.as_str() {
+        return Ok(Claimed::Unchanged);
+    }
+    let old_ws = run.workspace_id.as_deref().filter(|w| *w != workspace);
+    if let Some(old) = old_ws {
+        if let Some(h) = probe.holder(old) {
+            return Ok(Claimed::Skipped(format!(
+                "Run {} stays in workspace {old}: its orchestrator runs there (PID {}).",
+                run.slug, h.pid
+            )));
+        }
+        refuse_a_taken_workspace(tx, &run, workspace)?;
+    }
+    let stopped_at = guard(tx, run_id)?.stopped_at;
+    tx.execute(
+        "UPDATE runs SET workspace_id = ?2, orchestrator_stopped_at = NULL WHERE run_id = ?1",
+        params![run_id, workspace],
+    )?;
+    let orch = live_orchestrator(tx, &run, workspace, pane)?;
+    let mut changes = Vec::new();
+    if run.workspace_id.as_deref() != Some(workspace) {
+        changes.push(format!(
+            "workspace {} -> {workspace}",
+            run.workspace_id.as_deref().unwrap_or("(none)")
+        ));
+    }
+    if let Some(at) = &stopped_at {
+        changes.push(format!("orchestrator stop {at} -> cleared"));
+    }
+    if changes.is_empty() {
+        return Ok(Claimed::Unchanged);
+    }
+    let text = format!(
+        "An orchestrator launch claims run {}: {}.",
+        run.slug,
+        changes.join("; ")
+    );
+    util::event(
+        tx,
+        &About {
+            run: Some(run_id),
+            worker: Some(&orch),
+            ..Default::default()
+        },
+        Actor::Horch,
+        EventKind::Note,
+        &text,
+    )?;
+    Ok(Claimed::Changed(text))
+}
+
+/// Fail when another active non-solo run of the project of `run` is in
+/// `workspace` (D13: 1 run per workspace).
+fn refuse_a_taken_workspace(tx: &Transaction, run: &runs::Run, workspace: &str) -> Result<()> {
+    let other = runs::of_project(tx, Path::new(&run.project_root))?
+        .into_iter()
+        .find(|r| {
+            r.run_id != run.run_id
+                && r.status == RunStatus::Active.as_str()
+                && !runs::is_solo(r)
+                && r.workspace_id.as_deref() == Some(workspace)
+        });
+    match other {
+        Some(o) => anyhow::bail!(
+            "run {} cannot move to workspace {workspace}: run {} is active there",
+            run.slug,
+            o.slug
+        ),
+        None => Ok(()),
+    }
+}
+
+/// The run's orchestrator row as a live row of `workspace` and `pane`: the
+/// registered row when it is live, else a new row that follows it. The
+/// watchdog then registers this launcher's PID on it.
+fn live_orchestrator(
+    tx: &Transaction,
+    run: &runs::Run,
+    workspace: &str,
+    pane: Option<&str>,
+) -> Result<String> {
+    let current = run
+        .orchestrator_worker_id
+        .as_deref()
+        .map(|id| workers::find(tx, id))
+        .transpose()?
+        .flatten();
+    if let Some(orch) = current
+        .as_ref()
+        .filter(|o| o.status().is_ok_and(|s| s.is_live()))
+    {
+        tx.execute(
+            "UPDATE workers SET workspace_id = ?2, pane_id = coalesce(?3, pane_id)
+             WHERE worker_id = ?1",
+            params![orch.worker_id, workspace, pane],
+        )?;
+        return Ok(orch.worker_id.clone());
+    }
+    let id = workers::insert(
+        tx,
+        &NewWorker {
+            run_id: run.run_id.clone(),
+            kind: Some(WorkerKind::Orchestrator),
+            persona: "orchestrator".into(),
+            role: Some("orchestrator".into()),
+            workspace_id: Some(workspace.to_string()),
+            pane_id: pane.map(str::to_string),
+            previous_worker_id: current.map(|o| o.worker_id),
+            ..Default::default()
+        },
+    )?;
+    tx.execute(
+        &format!(
+            "UPDATE workers SET status = {working}, started_at = spawned_at WHERE worker_id = ?1",
+            working = word(WorkerStatus::Working)
+        ),
+        [&id],
+    )?;
+    runs::set_orchestrator(tx, &run.run_id, &id)?;
+    Ok(id)
+}
+
 /// The folder of the workspace locks: beside the ledger, as the watchdog's.
 pub fn lock_dir(ledger_db: &Path) -> PathBuf {
     ledger_db
@@ -801,6 +978,186 @@ mod tests {
             )),
             "{board}"
         );
+    }
+
+    fn claim_in(store: &mut Store, run_id: &str, ws: &str, probe: &Fake) -> Result<Claimed> {
+        store.immediate(|tx| claim(tx, run_id, ws, Some("p9"), probe))
+    }
+
+    /// The `note` events of `run_id` that a launch claim wrote.
+    fn claim_events(store: &Store, run_id: &str) -> Vec<String> {
+        let mut stmt = store
+            .conn()
+            .prepare(
+                "SELECT text FROM events WHERE run_id = ?1
+                 AND text LIKE 'An orchestrator launch claims%' ORDER BY rowid",
+            )
+            .unwrap();
+        stmt.query_map([run_id], |r| r.get(0))
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<String>>>()
+            .unwrap()
+    }
+
+    #[test]
+    fn trf_38_launch_after_fleet_stop_clears_the_stop() {
+        let (dir, mut store, run_id) = world();
+        assert!(record_stop(store.conn(), &run_id).unwrap());
+        let at = guard(store.conn(), &run_id).unwrap().stopped_at.unwrap();
+        let run = runs::get(store.conn(), &run_id).unwrap();
+        assert_eq!(
+            launch_run(store.conn(), dir.path(), "w1", None)
+                .unwrap()
+                .map(|r| r.run_id),
+            Some(run_id.clone()),
+            "the workspace's 1 active run"
+        );
+
+        let out = claim_in(&mut store, &run_id, "w1", &Fake::dead()).unwrap();
+        let Claimed::Changed(text) = out else {
+            panic!("{out:?}")
+        };
+        assert!(
+            text.contains(&format!("orchestrator stop {at} -> cleared")),
+            "{text}"
+        );
+        assert!(!text.contains("workspace"), "{text}");
+        assert_eq!(guard(store.conn(), &run_id).unwrap().stopped_at, None);
+        assert_eq!(claim_events(&store, &run_id), vec![text]);
+        // The live orchestrator row stays the run's, now in this pane.
+        let after = runs::get(store.conn(), &run_id).unwrap();
+        assert_eq!(after.orchestrator_worker_id, run.orchestrator_worker_id);
+        let w = workers::get(
+            store.conn(),
+            after.orchestrator_worker_id.as_deref().unwrap(),
+        )
+        .unwrap();
+        assert_eq!(w.pane_id.as_deref(), Some("p9"));
+
+        // A 2nd launch changes nothing and writes no event.
+        assert_eq!(
+            claim_in(&mut store, &run_id, "w1", &Fake::dead()).unwrap(),
+            Claimed::Unchanged
+        );
+        assert_eq!(claim_events(&store, &run_id).len(), 1);
+        // The watchdog now respawns again.
+        let now = crate::clock::now_stamp();
+        assert!(matches!(
+            pass(&mut store, &run_id, &now, &Fake::dead()),
+            Outcome::Respawned(_)
+        ));
+    }
+
+    #[test]
+    fn trf_38_launch_in_a_new_workspace_moves_the_run() {
+        let (dir, mut store, run_id) = world();
+        // The old workspace was gone: the watchdog ended the orchestrator.
+        let probe = Fake::dead();
+        probe.open.set(Some(false));
+        let now = crate::clock::now_stamp();
+        assert!(matches!(
+            pass(&mut store, &run_id, &now, &probe),
+            Outcome::NotRespawned(_)
+        ));
+        let old = runs::get(store.conn(), &run_id)
+            .unwrap()
+            .orchestrator_worker_id;
+        assert_eq!(
+            launch_run(store.conn(), dir.path(), "w2", None)
+                .unwrap()
+                .map(|r| r.run_id),
+            Some(run_id.clone()),
+            "the project's 1 active run"
+        );
+
+        let out = claim_in(&mut store, &run_id, "w2", &Fake::dead()).unwrap();
+        let Claimed::Changed(text) = out else {
+            panic!("{out:?}")
+        };
+        assert!(text.contains("workspace w1 -> w2"), "{text}");
+        assert_eq!(claim_events(&store, &run_id), vec![text]);
+        let run = runs::get(store.conn(), &run_id).unwrap();
+        assert_eq!(run.workspace_id.as_deref(), Some("w2"));
+        // A new live orchestrator row in w2 follows the ended one.
+        let w = workers::get(store.conn(), run.orchestrator_worker_id.as_deref().unwrap()).unwrap();
+        assert_ne!(run.orchestrator_worker_id, old);
+        assert_eq!(w.previous_worker_id, old);
+        assert_eq!(
+            (
+                w.status.as_str(),
+                w.workspace_id.as_deref(),
+                w.pane_id.as_deref()
+            ),
+            ("working", Some("w2"), Some("p9"))
+        );
+        // The watchdog registers the launcher that holds the w2 lock.
+        let live = Fake::dead();
+        live.holder.set(Some(Holder {
+            pid: 31,
+            started: Some(3),
+        }));
+        assert_eq!(
+            pass(&mut store, &run_id, &now, &live),
+            Outcome::Registered(31)
+        );
+
+        // A run whose orchestrator lives in its workspace does not move.
+        assert_eq!(
+            claim_in(&mut store, &run_id, "w3", &live).unwrap(),
+            Claimed::Skipped(
+                "Run r1 stays in workspace w2: its orchestrator runs there (PID 31).".into()
+            )
+        );
+        let run = runs::get(store.conn(), &run_id).unwrap();
+        assert_eq!(run.workspace_id.as_deref(), Some("w2"));
+    }
+
+    #[test]
+    fn trf_38_launch_refuses_a_workspace_with_another_active_run() {
+        let (dir, mut store, run_id) = world();
+        assert!(record_stop(store.conn(), &run_id).unwrap());
+        store
+            .immediate(|tx| {
+                runs::create(
+                    tx,
+                    dir.path(),
+                    &NewRun {
+                        slug: "r2".into(),
+                        workspace_id: Some("w2".into()),
+                        ..Default::default()
+                    },
+                )?;
+                // A solo run never blocks a move.
+                runs::create(tx, dir.path(), &runs::solo_new_run("w3"))
+            })
+            .unwrap();
+        let err = claim_in(&mut store, &run_id, "w2", &Fake::dead())
+            .unwrap_err()
+            .to_string();
+        assert_eq!(
+            err,
+            "run r1 cannot move to workspace w2: run r2 is active there"
+        );
+        let run = runs::get(store.conn(), &run_id).unwrap();
+        assert_eq!(run.workspace_id.as_deref(), Some("w1"));
+        assert!(guard(store.conn(), &run_id).unwrap().stopped_at.is_some());
+        assert!(claim_events(&store, &run_id).is_empty());
+
+        // 2 active runs and none in w4: a launch there claims neither.
+        assert!(launch_run(store.conn(), dir.path(), "w4", None)
+            .unwrap()
+            .is_none());
+        // A respawn names its run.
+        assert_eq!(
+            launch_run(store.conn(), dir.path(), "w4", Some("r1"))
+                .unwrap()
+                .map(|r| r.slug),
+            Some("r1".into())
+        );
+        assert!(matches!(
+            claim_in(&mut store, &run_id, "w3", &Fake::dead()).unwrap(),
+            Claimed::Changed(_)
+        ));
     }
 
     #[test]

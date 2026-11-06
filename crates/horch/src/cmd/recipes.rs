@@ -994,7 +994,7 @@ pub fn pane_launch(
     identity: PaneIdentity,
 ) -> Result<ExitCode> {
     require_model(kind, model)?;
-    let mailbox = register_pane(ctx, role, &identity)?;
+    let (mailbox, pane) = register_pane(ctx, role, &identity)?;
     // Held until the agent exits, then released on drop.
     let _orchestrator_lock = kind
         .is_fleet()
@@ -1002,6 +1002,17 @@ pub fn pane_launch(
         .transpose()?;
     let child_env = child_env(ctx, &mailbox, &identity, teammates_dir);
     let ctx: &RuntimeContext = ctx;
+    if kind.is_fleet() {
+        let root = ctx.paths.current_dir()?;
+        let respawn = respawn_from_env().map(|(slug, _)| slug);
+        claim_launch_run(
+            ctx,
+            &root,
+            mailbox.workspace_id(),
+            &pane,
+            respawn.as_deref(),
+        )?;
+    }
     let roster = launch_roster(ctx, kind, teammates_dir)?;
     let teammate = launch_teammate(&roster, kind, model)?;
     let prompt = briefing_for(kind, &roster, &teammate, role)?;
@@ -1038,13 +1049,50 @@ pub fn pane_launch(
 
 /// Registers the pane's mailbox. The state folder is set first: the mailbox
 /// lives in it.
-fn register_pane(ctx: &mut RuntimeContext, role: &str, identity: &PaneIdentity) -> Result<Mailbox> {
+/// The second value is the pane id.
+fn register_pane(
+    ctx: &mut RuntimeContext,
+    role: &str,
+    identity: &PaneIdentity,
+) -> Result<(Mailbox, String)> {
     let herdr = Herdr::with_bin(&ctx.bins.harness.herdr);
     if let Some(dir) = &identity.state_dir {
         ctx.paths.set_state_dir(dir);
     }
-    let (mailbox, _pane) = Mailbox::register_in(&herdr, ctx, role)?;
-    Ok(mailbox)
+    Mailbox::register_in(&herdr, ctx, role)
+}
+
+/// A fleet orchestrator that holds the lock of `workspace` claims the run it
+/// continues (TRF-38): the run moves to `workspace` and its stop is cleared,
+/// in 1 transaction. No ledger, or no 1 run that fits, claims nothing. A
+/// workspace with another active run fails the launch.
+fn claim_launch_run(
+    ctx: &RuntimeContext,
+    root: &Path,
+    workspace: &str,
+    pane: &str,
+    respawn: Option<&str>,
+) -> Result<()> {
+    let Some(mut store) = horch_core::taskledger::open_existing(ctx)? else {
+        return Ok(());
+    };
+    let Some(run) = orchestrator::launch_run(store.conn(), root, workspace, respawn)? else {
+        return Ok(());
+    };
+    let dir = orchestrator::lock_dir(&ctx.paths.ledger_db);
+    let probe = orchestrator::Os {
+        lock_dir: &dir,
+        herdr_open: &|_| None,
+    };
+    let claimed = store
+        .immediate(|tx| orchestrator::claim(tx, &run.run_id, workspace, Some(pane), &probe))?;
+    match claimed {
+        orchestrator::Claimed::Changed(text) | orchestrator::Claimed::Skipped(text) => {
+            println!("{text}")
+        }
+        orchestrator::Claimed::Unchanged => {}
+    }
+    Ok(())
 }
 
 /// The briefing of a pane.
@@ -1858,6 +1906,42 @@ mod tests {
             assert_eq!(flavor_of_model(f.model()), f);
         }
         assert_eq!(flavor_of_model("some-model"), FleetFlavor::Opus);
+    }
+
+    #[test]
+    fn trf_38_a_fleet_launch_claims_the_run_after_fleet_stop() {
+        let dir = tempfile::tempdir().unwrap();
+        let ctx = ledger_ctx(dir.path());
+        let root = dir.path().join("repo");
+        std::fs::create_dir_all(&root).unwrap();
+        // No ledger: nothing to claim, and no ledger is created.
+        claim_launch_run(&ctx, &root, "w2", "p2", None).unwrap();
+        assert!(!ctx.paths.ledger_db.exists());
+
+        let mut store = horch_core::taskledger::open(&ctx).unwrap();
+        let run = store
+            .immediate(|tx| {
+                horch_core::taskledger::runs::create(
+                    tx,
+                    &root,
+                    &horch_core::taskledger::runs::NewRun {
+                        slug: "r1".into(),
+                        workspace_id: Some("w1".into()),
+                        ..Default::default()
+                    },
+                )
+            })
+            .unwrap();
+        assert_eq!(fleet_stop(&ctx, root.to_str()).unwrap(), ExitCode::SUCCESS);
+        claim_launch_run(&ctx, &root, "w2", "p2", None).unwrap();
+        let after = horch_core::taskledger::runs::get(store.conn(), &run.run_id).unwrap();
+        assert_eq!(after.workspace_id.as_deref(), Some("w2"));
+        assert_eq!(
+            orchestrator::guard(store.conn(), &run.run_id)
+                .unwrap()
+                .stopped_at,
+            None
+        );
     }
 
     #[test]
