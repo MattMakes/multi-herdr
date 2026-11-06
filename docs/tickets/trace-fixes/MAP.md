@@ -45,6 +45,7 @@ Spec: [docs/specs/trace-fixes.md](../../specs/trace-fixes.md)
 | 39 | [Round 2-3 review tasks queue with the other vendor's light reviewer as fallback](39-round2-fallback.md) | primary `opus`, fallback `backend-developer` | yes | 5 | 38 |
 | 40 | [The pr step waits for GitHub's PR head instead of failing on a fresh push](40-pr-head-lag.md) | primary `opus`, fallback `backend-developer` | yes | 5 |  |
 | 41 | [The outbox drain releases its lock explicitly (flaky trf_21 tests)](41-outbox-lock-release.md) | primary `opus-hardening`, fallback `opus` | yes | 5 |  |
+| 42 | [An orchestrator launch claims its run: workspace recorded, stop cleared](42-orchestrator-launch-claims-run.md) | primary `opus-hardening`, fallback `opus` | yes | 8 | 24 |
 
 ## Waves
 
@@ -55,7 +56,7 @@ Spec: [docs/specs/trace-fixes.md](../../specs/trace-fixes.md)
 - Wave 5: 20, 22, 39, 40, 41
 - Wave 6: 23, 25, 26
 - Wave 7: 24, 27
-- Wave 8: 28, 31
+- Wave 8: 28, 31, 42
 - Wave 9: 29
 - Wave 10: 30, 32
 - Wave 11: 33

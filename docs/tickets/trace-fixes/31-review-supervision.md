@@ -21,6 +21,8 @@ Get a second-vendor review of the riskiest concurrency changes before the gate.
 
 Amendment (orchestrator, decision R10): ticket 14 writes the outbox row right after the ledger commit, not inside it, because the call sites belong to other tickets. Judge this window: which wake events can a crash between commit and outbox write lose, and does ticket 15's 30 s reconcile recover each one? List each unrecovered event as a finding.
 
+Amendment: also review ticket 42 if it has landed when you start (orchestrator launch updates the run's workspace and clears the stop).
+
 ## Done when
 
 `ai_docs/reports/trace-fixes/31.md` lists findings as Critical, Important or Minor, each with file:line and a reproduction.

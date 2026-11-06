@@ -58,6 +58,8 @@ Amendment (report 23): replace the compaction fresh route prose with `horch ledg
 
 Amendment (report 26): document `horch ledger task "<title>" --persona <p> [--file <ticket>] [--check "<cmd>"|none]`, the `solo-<workspace>` run it uses, and `Run next: horch spawn <p> --run solo-<workspace>`.
 
+Amendment (report 24): document `horch fleet stop` (a deliberate stop; no respawn), the orchestrator respawn rules of C7, and the `Orchestrator` line of `horch ledger status`.
+
 ## Done when
 
 TRF-46 and the golden tests pass.
