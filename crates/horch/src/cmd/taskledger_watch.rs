@@ -917,6 +917,24 @@ mod orchestrator_tests {
         }
     }
 
+    /// A live lock holder, PID 31.
+    struct Held;
+
+    impl Probe for Held {
+        fn holder(&self, _: &str) -> Option<Holder> {
+            Some(Holder {
+                pid: 31,
+                started: Some(3),
+            })
+        }
+        fn alive(&self, _: u32, _: Option<u64>) -> bool {
+            true
+        }
+        fn workspace_open(&self, _: &str) -> Option<bool> {
+            Some(true)
+        }
+    }
+
     /// A run in workspace `w1` whose orchestrator's agent PID is recorded,
     /// and a context with no workspace: each send fails, so wakes stay.
     fn world() -> (tempfile::TempDir, RuntimeContext, Store, Run) {
@@ -980,10 +998,20 @@ mod orchestrator_tests {
         store
             .conn()
             .execute(
-                "UPDATE workers SET agent_pid = 5000, agent_started = 2 WHERE worker_id = ?1",
+                "UPDATE workers SET status = 'working', agent_pid = 5000, agent_started = 2
+                 WHERE worker_id = ?1",
                 [&id],
             )
             .unwrap();
+    }
+
+    /// The run's current orchestrator row.
+    fn current(store: &Store, run: &Run) -> workers::Worker {
+        let id = runs::get(store.conn(), &run.run_id)
+            .unwrap()
+            .orchestrator_worker_id
+            .unwrap();
+        workers::get(store.conn(), &id).unwrap()
     }
 
     #[test]
@@ -1028,25 +1056,154 @@ mod orchestrator_tests {
     #[test]
     fn trf_38_a_failed_respawn_launch_is_recorded_and_still_counts() {
         let (_dir, ctx, mut store, run) = world();
-        let launch = |_: &Respawn| anyhow::bail!("herdr is down");
-        orchestrator_at(
-            &ctx,
-            &mut store,
-            &run,
-            &at(&horch_core::clock::now(), 0),
-            &Dead,
-            &launch,
-        );
-        let run_now = runs::get(store.conn(), &run.run_id).unwrap();
-        let new = workers::get(
-            store.conn(),
-            run_now.orchestrator_worker_id.as_deref().unwrap(),
-        )
-        .unwrap();
+        let tries = RefCell::new(Vec::new());
+        let t0 = horch_core::clock::now();
+        for secs in (0..=1800).step_by(watchdog::RECONCILE_S as usize) {
+            let launch = |r: &Respawn| {
+                tries.borrow_mut().push((secs, r.number));
+                anyhow::bail!("herdr is down")
+            };
+            orchestrator_at(
+                &ctx,
+                &mut store,
+                &run,
+                &at(&t0, secs as i64),
+                &Dead,
+                &launch,
+            );
+        }
+        // Each failed launch counts 1 respawn, so it cannot loop.
+        assert_eq!(tries.into_inner(), vec![(0, 1), (600, 2), (1200, 3)]);
+        let new = current(&store, &run);
         assert_eq!(new.status, "launch_failed");
-        assert!(new.end_reason.unwrap().contains("herdr is down"));
+        assert!(
+            new.end_reason.unwrap().contains("used its 3 respawns"),
+            "the last respawn ends the pending row"
+        );
+        let failed: i64 = store
+            .conn()
+            .query_row(
+                "SELECT count(*) FROM events WHERE run_id = ?1
+                 AND text LIKE 'Orchestrator respawn % did not start: herdr is down'",
+                [&run.run_id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(failed, 3);
+        assert_eq!(
+            orchestrator::guard(store.conn(), &run.run_id)
+                .unwrap()
+                .respawns,
+            3
+        );
+    }
+
+    #[test]
+    fn trf_38_crash_before_launch_is_retried_on_the_next_pass() {
+        let (_dir, ctx, mut store, run) = world();
+        let t0 = horch_core::clock::now();
+        // A pass commits the respawn, and the watchdog exits before the launch.
+        let checked = store
+            .immediate(|tx| orchestrator::check(tx, &run.run_id, &at(&t0, 0), &Dead))
+            .unwrap();
+        let orchestrator::Outcome::Respawned(first) = checked.outcome else {
+            panic!("{:?}", checked.outcome)
+        };
+        let pending = current(&store, &run);
+        assert_eq!(
+            (pending.status.as_str(), pending.agent_pid),
+            ("spawning", None),
+            "no lock holder seen: the row is launch-pending"
+        );
+
+        // The restarted watchdog passes every 30 s. The next pass that the
+        // 10 min guard allows launches the same row again.
+        let launched = RefCell::new(Vec::<(u64, Respawn)>::new());
+        for secs in (30..=900).step_by(watchdog::RECONCILE_S as usize) {
+            let launch = |r: &Respawn| {
+                launched.borrow_mut().push((secs, r.clone()));
+                Ok(())
+            };
+            orchestrator_at(
+                &ctx,
+                &mut store,
+                &run,
+                &at(&t0, secs as i64),
+                &Dead,
+                &launch,
+            );
+            if !launched.borrow().is_empty() {
+                break;
+            }
+        }
+        let launched = launched.into_inner();
+        assert_eq!(launched.len(), 1);
+        let (secs, r) = &launched[0];
+        assert_eq!(*secs, orchestrator::RESPAWN_EVERY_S as u64);
+        assert_eq!(r.number, 2);
+        assert_eq!(r.new_worker_id, first.new_worker_id);
+        assert_eq!(r.old_worker_id, first.old_worker_id);
+        assert_eq!(r.slug, "r1");
+
+        // A pass that observes the lock holder marks the row live.
+        let none = |_: &Respawn| anyhow::bail!("no launch while the holder lives");
+        orchestrator_at(&ctx, &mut store, &run, &at(&t0, 930), &Held, &none);
+        let live = current(&store, &run);
+        assert_eq!(live.worker_id, first.new_worker_id);
+        assert_eq!(
+            (live.status.as_str(), live.agent_pid),
+            ("working", Some(31))
+        );
+        assert!(live.started_at.is_some());
+    }
+
+    #[test]
+    fn trf_38_failed_launch_keeps_the_remaining_budget() {
+        let (_dir, ctx, mut store, run) = world();
+        let t0 = horch_core::clock::now();
+        let fail = |_: &Respawn| anyhow::bail!("herdr is down");
+        orchestrator_at(&ctx, &mut store, &run, &at(&t0, 0), &Dead, &fail);
+        let pending = current(&store, &run);
+        assert_eq!(pending.status, "spawning", "a failed launch stays pending");
+        assert_eq!(
+            orchestrator::guard(store.conn(), &run.run_id)
+                .unwrap()
+                .respawns,
+            1
+        );
+
+        let launched = RefCell::new(Vec::new());
+        for secs in (30..=1200).step_by(watchdog::RECONCILE_S as usize) {
+            let launch = |r: &Respawn| {
+                launched.borrow_mut().push((secs, r.number));
+                Ok(())
+            };
+            orchestrator_at(
+                &ctx,
+                &mut store,
+                &run,
+                &at(&t0, secs as i64),
+                &Dead,
+                &launch,
+            );
+            if !launched.borrow().is_empty() {
+                orchestrator_at(
+                    &ctx,
+                    &mut store,
+                    &run,
+                    &at(&t0, secs as i64 + 30),
+                    &Held,
+                    &fail,
+                );
+                break;
+            }
+        }
+        assert_eq!(launched.into_inner(), vec![(600, 2)]);
+        let live = current(&store, &run);
+        assert_eq!(live.worker_id, pending.worker_id);
+        assert_eq!(live.status, "working");
         let g = orchestrator::guard(store.conn(), &run.run_id).unwrap();
-        assert_eq!(g.respawns, 1, "a launch that always fails cannot loop");
+        assert_eq!(g.respawns, 2, "1 respawn of 3 remains");
     }
 
     #[test]

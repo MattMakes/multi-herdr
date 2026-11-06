@@ -13,6 +13,11 @@
 //!   [`RESPAWN_EVERY_S`] and [`RESPAWNS_PER_RUN`] per run. The old row ends
 //!   handed off to [`HANDOFF_FILE`] (the C4 path), and a new orchestrator row
 //!   takes its place. The caller starts the agent with [`first_instruction`].
+//! - The new row is launch-pending (`spawning`) until a pass observes the
+//!   lock holder: then it is `working`. A pending row with no lock holder
+//!   did not start (a crash before the launch, or a failed launch). Each
+//!   pass launches it again inside the same guards, and each launch counts 1
+//!   respawn (TRF-38).
 
 use std::path::{Path, PathBuf};
 
@@ -444,11 +449,15 @@ pub fn check(tx: &Transaction, run_id: &str, now: &str, probe: &dyn Probe) -> Re
     let Some(workspace) = orch.workspace_id.clone().or(run.workspace_id.clone()) else {
         return nothing();
     };
-    if !orch.status()?.is_live() {
+    let status = orch.status()?;
+    if !status.is_live() {
         return nothing();
     }
     if let Some(h) = probe.holder(&workspace) {
-        return register(tx, &orch, h);
+        return register(tx, &orch, h, now);
+    }
+    if status == WorkerStatus::Spawning {
+        return pending(tx, &run, &orch, &workspace, now, probe);
     }
     let Some(pid) = orch.agent_pid else {
         // Never registered: a death cannot be confirmed.
@@ -463,7 +472,7 @@ pub fn check(tx: &Transaction, run_id: &str, now: &str, probe: &dyn Probe) -> Re
             tx,
             &run,
             &orch,
-            pid,
+            &format!("the orchestrator agent PID {pid} exited"),
             &format!("its workspace {workspace} is gone"),
         ),
         Some(true) => dead(tx, &run, &orch, &workspace, pid, now),
@@ -471,19 +480,31 @@ pub fn check(tx: &Transaction, run_id: &str, now: &str, probe: &dyn Probe) -> Re
 }
 
 /// Record the live lock holder as the orchestrator's agent, when it is not
-/// already recorded.
-fn register(tx: &Transaction, orch: &Worker, h: Holder) -> Result<Checked> {
+/// already recorded. A launch-pending row becomes `working` here, and only
+/// here.
+fn register(tx: &Transaction, orch: &Worker, h: Holder, now: &str) -> Result<Checked> {
     let same =
         orch.agent_pid == Some(h.pid as i64) && orch.agent_started == h.started.map(|s| s as i64);
-    if same {
+    let pending = orch.status == WorkerStatus::Spawning.as_str();
+    if same && !pending {
         return Ok(Checked {
             outcome: Outcome::Nothing,
             wake_id: None,
         });
     }
     tx.execute(
-        "UPDATE workers SET agent_pid = ?2, agent_started = ?3 WHERE worker_id = ?1",
-        params![orch.worker_id, h.pid as i64, h.started.map(|s| s as i64)],
+        &format!(
+            "UPDATE workers SET agent_pid = ?2, agent_started = ?3, status = {working},
+                started_at = coalesce(started_at, ?4)
+             WHERE worker_id = ?1",
+            working = word(WorkerStatus::Working)
+        ),
+        params![
+            orch.worker_id,
+            h.pid as i64,
+            h.started.map(|s| s as i64),
+            now
+        ],
     )?;
     Ok(Checked {
         outcome: Outcome::Registered(h.pid),
@@ -501,29 +522,24 @@ fn dead(
     pid: i64,
     now: &str,
 ) -> Result<Checked> {
-    let g = guard(tx, &run.run_id)?;
-    if g.respawns >= RESPAWNS_PER_RUN {
-        return end_without_respawn(
-            tx,
-            run,
-            orch,
-            pid,
-            &format!("the run used its {RESPAWNS_PER_RUN} respawns"),
-        );
-    }
-    if let Some(since) = g
-        .last_respawn_at
-        .as_deref()
-        .and_then(|t| util::seconds_between(t, now))
-    {
-        if since < RESPAWN_EVERY_S {
+    let number = match allowed(tx, &run.run_id, now)? {
+        Allowed::Next(n) => n,
+        Allowed::Wait(left) => {
             return Ok(Checked {
-                outcome: Outcome::Waiting(RESPAWN_EVERY_S - since),
+                outcome: Outcome::Waiting(left),
                 wake_id: None,
-            });
+            })
         }
-    }
-    let number = g.respawns + 1;
+        Allowed::Spent => {
+            return end_without_respawn(
+                tx,
+                run,
+                orch,
+                &format!("the orchestrator agent PID {pid} exited"),
+                &format!("the run used its {RESPAWNS_PER_RUN} respawns"),
+            )
+        }
+    };
     let handoff = Path::new(&run.project_root).join(HANDOFF_FILE);
     workers::hand_off(tx, &orch.worker_id, &handoff.to_string_lossy())?;
     let new_id = workers::insert(
@@ -538,18 +554,17 @@ fn dead(
             ..Default::default()
         },
     )?;
+    // `spawning` is launch-pending: it is `working` after a pass observes
+    // the lock holder ([`register`]).
     tx.execute(
         &format!(
-            "UPDATE workers SET status = {working}, started_at = spawned_at WHERE worker_id = ?1",
-            working = word(WorkerStatus::Working)
+            "UPDATE workers SET status = {spawning} WHERE worker_id = ?1",
+            spawning = word(WorkerStatus::Spawning)
         ),
         [&new_id],
     )?;
     runs::set_orchestrator(tx, &run.run_id, &new_id)?;
-    tx.execute(
-        "UPDATE runs SET orchestrator_respawns = ?2, last_respawn_at = ?3 WHERE run_id = ?1",
-        params![run.run_id, number, now],
-    )?;
+    count_respawn(tx, &run.run_id, number, now)?;
     let text = format!(
         "{RESPAWNED}: respawn {number} of {RESPAWNS_PER_RUN}. The agent PID {pid} of orchestrator \
          {old} exited. Orchestrator {new_id} starts in workspace {workspace} and reads \
@@ -593,16 +608,150 @@ fn dead(
     })
 }
 
-/// End the dead orchestrator with no respawn, and say why in 1 event.
+/// Whether the guards allow the next respawn of `run_id` at `now`.
+enum Allowed {
+    /// Yes: the number of the next respawn.
+    Next(i64),
+    /// Not yet: the seconds until the next respawn is allowed.
+    Wait(i64),
+    /// No: the run used its [`RESPAWNS_PER_RUN`].
+    Spent,
+}
+
+fn allowed(tx: &Transaction, run_id: &str, now: &str) -> Result<Allowed> {
+    let g = guard(tx, run_id)?;
+    if g.respawns >= RESPAWNS_PER_RUN {
+        return Ok(Allowed::Spent);
+    }
+    let since = g
+        .last_respawn_at
+        .as_deref()
+        .and_then(|t| util::seconds_between(t, now));
+    Ok(match since {
+        Some(since) if since < RESPAWN_EVERY_S => Allowed::Wait(RESPAWN_EVERY_S - since),
+        _ => Allowed::Next(g.respawns + 1),
+    })
+}
+
+/// Count respawn `number` of `run_id` at `now`.
+fn count_respawn(tx: &Transaction, run_id: &str, number: i64, now: &str) -> Result<()> {
+    tx.execute(
+        "UPDATE runs SET orchestrator_respawns = ?2, last_respawn_at = ?3 WHERE run_id = ?1",
+        params![run_id, number, now],
+    )?;
+    Ok(())
+}
+
+/// A launch-pending orchestrator with no lock holder: its launch did not
+/// happen or did not start an agent (C-01). Launch it again inside the
+/// guards; each launch counts 1 respawn. After the last respawn it ends
+/// `launch_failed`. A gone workspace ends it; an unknown one waits.
+fn pending(
+    tx: &Transaction,
+    run: &runs::Run,
+    orch: &Worker,
+    workspace: &str,
+    now: &str,
+    probe: &dyn Probe,
+) -> Result<Checked> {
+    let what = "the orchestrator respawn did not start";
+    match probe.workspace_open(workspace) {
+        None => {
+            return Ok(Checked {
+                outcome: Outcome::Nothing,
+                wake_id: None,
+            })
+        }
+        Some(false) => {
+            return end_without_respawn(
+                tx,
+                run,
+                orch,
+                what,
+                &format!("its workspace {workspace} is gone"),
+            )
+        }
+        Some(true) => {}
+    }
+    let number = match allowed(tx, &run.run_id, now)? {
+        Allowed::Next(n) => n,
+        Allowed::Wait(left) => {
+            return Ok(Checked {
+                outcome: Outcome::Waiting(left),
+                wake_id: None,
+            })
+        }
+        Allowed::Spent => {
+            return end_without_respawn(
+                tx,
+                run,
+                orch,
+                what,
+                &format!("the run used its {RESPAWNS_PER_RUN} respawns"),
+            )
+        }
+    };
+    count_respawn(tx, &run.run_id, number, now)?;
+    let previous = orch
+        .previous_worker_id
+        .as_deref()
+        .map(|id| workers::find(tx, id))
+        .transpose()?
+        .flatten();
+    let text = format!(
+        "{RESPAWNED}: respawn {number} of {RESPAWNS_PER_RUN}. Orchestrator {id} did not start          after the last launch. horch launches it again in workspace {workspace}.",
+        id = orch.worker_id,
+    );
+    util::event(
+        tx,
+        &About {
+            run: Some(&run.run_id),
+            worker: Some(&orch.worker_id),
+            ..Default::default()
+        },
+        Actor::Watchdog,
+        EventKind::Note,
+        &text,
+    )?;
+    Ok(Checked {
+        outcome: Outcome::Respawned(Respawn {
+            run_id: run.run_id.clone(),
+            slug: run.slug.clone(),
+            project_root: run.project_root.clone(),
+            workspace_id: workspace.to_string(),
+            old_pane_id: orch
+                .pane_id
+                .clone()
+                .or_else(|| previous.as_ref().and_then(|p| p.pane_id.clone())),
+            old_worker_id: orch
+                .previous_worker_id
+                .clone()
+                .unwrap_or_else(|| orch.worker_id.clone()),
+            new_worker_id: orch.worker_id.clone(),
+            number,
+            finish_steps: run.finish_steps.clone(),
+        }),
+        // The first launch's wake names this row; durable mail keeps it.
+        wake_id: None,
+    })
+}
+
+/// End the orchestrator with no respawn, and say why in 1 event. A
+/// launch-pending row ends `launch_failed`, a dead agent `incomplete`.
 fn end_without_respawn(
     tx: &Transaction,
     run: &runs::Run,
     orch: &Worker,
-    pid: i64,
+    what: &str,
     why: &str,
 ) -> Result<Checked> {
-    let reason = format!("the orchestrator agent PID {pid} exited; no respawn: {why}");
-    workers::end(tx, &orch.worker_id, WorkerStatus::Incomplete, &reason, None)?;
+    let reason = format!("{what}; no respawn: {why}");
+    let end_as = if orch.status == WorkerStatus::Spawning.as_str() {
+        WorkerStatus::LaunchFailed
+    } else {
+        WorkerStatus::Incomplete
+    };
+    workers::end(tx, &orch.worker_id, end_as, &reason, None)?;
     util::event(
         tx,
         &About {
@@ -621,15 +770,10 @@ fn end_without_respawn(
 }
 
 /// Record that the start of `respawn` failed. The respawn still counts, so
-/// a launch that always fails cannot loop.
+/// a launch that always fails cannot loop. The row stays launch-pending: a
+/// later pass launches it again inside the guards, until the last respawn
+/// ends it (TRF-38).
 pub fn launch_failed(conn: &Connection, respawn: &Respawn, error: &str) -> Result<()> {
-    workers::end(
-        conn,
-        &respawn.new_worker_id,
-        WorkerStatus::LaunchFailed,
-        &format!("the orchestrator respawn did not start: {error}"),
-        None,
-    )?;
     util::event(
         conn,
         &About {
@@ -752,13 +896,15 @@ mod tests {
             .outcome
     }
 
-    /// Make the current orchestrator row a registered, now dead, agent.
+    /// Make the current orchestrator row a registered, now dead, agent, as
+    /// a pass that observed its lock holder leaves it.
     fn register_dead(store: &Store, run_id: &str) {
         let run = runs::get(store.conn(), run_id).unwrap();
         store
             .conn()
             .execute(
-                "UPDATE workers SET agent_pid = 5000, agent_started = 2 WHERE worker_id = ?1",
+                "UPDATE workers SET status = 'working', agent_pid = 5000, agent_started = 2
+                 WHERE worker_id = ?1",
                 [run.orchestrator_worker_id.unwrap()],
             )
             .unwrap();
@@ -784,7 +930,8 @@ mod tests {
         let new = workers::get(store.conn(), &r.new_worker_id).unwrap();
         assert_eq!(
             (new.kind.as_str(), new.status.as_str()),
-            ("orchestrator", "working")
+            ("orchestrator", "spawning"),
+            "launch-pending until a pass observes the lock holder"
         );
         assert_eq!(
             new.previous_worker_id.as_deref(),

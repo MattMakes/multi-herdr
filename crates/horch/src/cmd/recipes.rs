@@ -994,12 +994,8 @@ pub fn pane_launch(
     identity: PaneIdentity,
 ) -> Result<ExitCode> {
     require_model(kind, model)?;
-    let (mailbox, pane) = register_pane(ctx, role, &identity)?;
-    // Held until the agent exits, then released on drop.
-    let _orchestrator_lock = kind
-        .is_fleet()
-        .then(|| hold_orchestrator_lock(ctx, mailbox.workspace_id()))
-        .transpose()?;
+    // The lock is held until the agent exits, then released on drop.
+    let (mailbox, pane, _orchestrator_lock) = register_pane(ctx, role, &identity, kind.is_fleet())?;
     let child_env = child_env(ctx, &mailbox, &identity, teammates_dir);
     let ctx: &RuntimeContext = ctx;
     if kind.is_fleet() {
@@ -1049,17 +1045,26 @@ pub fn pane_launch(
 
 /// Registers the pane's mailbox. The state folder is set first: the mailbox
 /// lives in it.
-/// The second value is the pane id.
+/// The second value is the pane id. A fleet orchestrator (`fleet`) takes
+/// the workspace orchestrator lock before it registers its role, so a
+/// launch that loses the lock never replaces the live route (TRF-39). The
+/// third value is that lock.
 fn register_pane(
     ctx: &mut RuntimeContext,
     role: &str,
     identity: &PaneIdentity,
-) -> Result<(Mailbox, String)> {
+    fleet: bool,
+) -> Result<(Mailbox, String, Option<horch_core::fsx::DirLockGuard>)> {
     let herdr = Herdr::with_bin(&ctx.bins.harness.herdr);
     if let Some(dir) = &identity.state_dir {
         ctx.paths.set_state_dir(dir);
     }
-    Mailbox::register_in(&herdr, ctx, role)
+    let (mailbox, pane) = Mailbox::locate_in(&herdr, ctx)?;
+    let lock = fleet
+        .then(|| hold_orchestrator_lock(ctx, mailbox.workspace_id()))
+        .transpose()?;
+    mailbox.register_role(role, &pane)?;
+    Ok((mailbox, pane, lock))
 }
 
 /// A fleet orchestrator that holds the lock of `workspace` claims the run it
@@ -1836,6 +1841,60 @@ mod tests {
             number: 2,
             finish_steps: Vec::new(),
         }
+    }
+
+    #[test]
+    fn trf_39_losing_launch_keeps_the_live_route() {
+        let dir = tempfile::tempdir().unwrap();
+        let bin = dir.path().join("herdr");
+        let warm = crate::test_support::write_warmed(
+            &bin,
+            "#!/bin/sh\n\
+             case \"$*\" in\n\
+             'pane get p2') echo '{\"result\":{\"pane\":{\"pane_id\":\"p2\",\"workspace_id\":\"w1\"}}}' ;;\n\
+             warm*) ;;\n\
+             *) exit 1 ;;\n\
+             esac\n",
+            &["warm"],
+        );
+        assert!(warm.status.success());
+        let db = dir.path().join("ledger.sqlite3");
+        let mut ctx = RuntimeContext::from_env(
+            &horch_core::runtime::MapEnv::new("/")
+                .with_exe("/opt/horch/bin/horch")
+                .with(
+                    "HORCH_STATE_DIR",
+                    dir.path().join("state").to_str().unwrap(),
+                )
+                .with("HORCH_LEDGER_DB", db.to_str().unwrap())
+                .with("HORCH_HERDR_BIN", bin.to_str().unwrap())
+                .with("HERDR_PANE_ID", "p2"),
+        )
+        .unwrap();
+        // Launch A holds the w1 lock and the orchestrator route.
+        let lock_dir = orchestrator::lock_dir(&db);
+        std::fs::create_dir_all(&lock_dir).unwrap();
+        let a = orchestrator::lock(&lock_dir, "w1").unwrap().unwrap();
+        let mailbox = Mailbox::under(&ctx.paths.state_root, "w1");
+        std::fs::create_dir_all(mailbox.dir()).unwrap();
+        mailbox.register_role("orchestrator", "p1").unwrap();
+
+        // Launch B in pane p2 loses the lock: the route stays on A.
+        let Err(err) = register_pane(&mut ctx, "orchestrator", &PaneIdentity::default(), true)
+        else {
+            panic!("a 2nd orchestrator refuses");
+        };
+        let err = err.to_string();
+        assert!(err.contains("already runs in workspace w1"), "{err}");
+        assert_eq!(mailbox.pane_for("orchestrator").as_deref(), Some("p1"));
+
+        // After A ends, B takes the lock and then the route.
+        drop(a);
+        let (_mb, pane, lock) =
+            register_pane(&mut ctx, "orchestrator", &PaneIdentity::default(), true).unwrap();
+        assert_eq!(pane, "p2");
+        assert!(lock.is_some());
+        assert_eq!(mailbox.pane_for("orchestrator").as_deref(), Some("p2"));
     }
 
     #[test]
