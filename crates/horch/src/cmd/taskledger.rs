@@ -1869,12 +1869,20 @@ fn new_run_cmd(
     let git = Git::new(&ctx.bins.harness.git);
     let is_repo = git.main_root(root).is_some();
     let (run_branch, base, remote) = default_branches(&git, root, is_repo, &a);
+    let workspace_id = super::sessionscmd::caller_workspace(ctx);
+    // Refuse before the git work, so a refused run leaves no branch (TRF-34).
+    let probe = NewRun {
+        slug: a.slug.clone(),
+        workspace_id: workspace_id.clone(),
+        ..Default::default()
+    };
+    runs::refuse_a_2nd_workspace_run(store.conn(), root, &probe)?;
     if is_repo {
         run_branches(&git, root, &run_branch, base.as_deref(), remote.as_deref())?;
     }
     let new = NewRun {
         slug: a.slug.clone(),
-        workspace_id: super::sessionscmd::caller_workspace(ctx),
+        workspace_id,
         base_branch: base,
         run_branch: is_repo.then_some(run_branch),
         remote,
@@ -2008,6 +2016,7 @@ fn insert_run(
 ) -> Result<Run> {
     let pane = ctx.herdr.pane.as_ref().map(|p| p.as_str().to_string());
     store.immediate(|tx| {
+        runs::refuse_a_2nd_workspace_run(tx, root, new)?;
         let r = runs::create(tx, root, new)?;
         if let Some(check) = check {
             finish::set_default_check(tx, &r.run_id, check)?;
@@ -3721,6 +3730,54 @@ mod tests {
         assert_eq!(t.task_file.as_deref(), Some("tickets/t.md"));
         assert_eq!(t.land_check.as_deref(), Some("cargo test"));
         assert_eq!(t.ticket_snapshot, None);
+    }
+
+    /// `horch ledger run new <slug>` as the CLI parses it.
+    fn new_run_args(slug: &str) -> super::NewRunArgs {
+        #[derive(clap::Parser)]
+        struct P {
+            #[command(flatten)]
+            a: super::NewRunArgs,
+        }
+        <P as clap::Parser>::parse_from(["run-new", slug]).a
+    }
+
+    #[test]
+    fn trf_34_run_new_refuses_a_2nd_active_run_in_a_workspace() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = project(dir.path(), false);
+        let (ctx, mut store) = task_world(dir.path(), &root, Some("w7"));
+        super::new_run_cmd(&ctx, &mut store, &root, new_run_args("plan")).unwrap();
+        let err = super::new_run_cmd(&ctx, &mut store, &root, new_run_args("next"))
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("active run plan"), "{err}");
+        assert!(err.contains("horch ledger run close --run plan"), "{err}");
+        assert!(err.contains("another workspace"), "{err}");
+        let slugs: Vec<String> = runs::of_project(store.conn(), &root)
+            .unwrap()
+            .into_iter()
+            .map(|r| r.slug)
+            .collect();
+        assert_eq!(slugs, ["plan"]);
+        // Another workspace may create its run.
+        let (other, mut store) = task_world(dir.path(), &root, Some("w8"));
+        super::new_run_cmd(&other, &mut store, &root, new_run_args("next")).unwrap();
+    }
+
+    #[test]
+    fn trf_34_run_new_ignores_solo_and_workspaceless_runs() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = project(dir.path(), false);
+        let (outside, mut store) = task_world(dir.path(), &root, None);
+        super::new_run_cmd(&outside, &mut store, &root, new_run_args("loose")).unwrap();
+        super::new_run_cmd(&outside, &mut store, &root, new_run_args("loose2")).unwrap();
+        let (ctx, mut store) = task_world(dir.path(), &root, Some("w7"));
+        super::task_cmd(&ctx, &mut store, task_args("t", None, None)).unwrap();
+        super::new_run_cmd(&ctx, &mut store, &root, new_run_args("plan")).unwrap();
+        // The solo run still takes one-off tasks next to the planned run.
+        super::task_cmd(&ctx, &mut store, task_args("t2", None, None)).unwrap();
+        assert_eq!(runs::of_project(store.conn(), &root).unwrap().len(), 4);
     }
 
     #[test]

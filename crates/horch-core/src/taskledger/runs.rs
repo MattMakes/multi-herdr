@@ -269,6 +269,33 @@ pub fn active_solo(conn: &Connection, root: &Path, workspace: &str) -> Result<Op
         .find(|r| r.slug == slug && r.status == RunStatus::Active.as_str()))
 }
 
+/// Refuse `new` when its workspace already has an active non-solo run in
+/// project `root` (D13, TRF-34). A solo run, and a run with no workspace,
+/// never clash. `horch ledger run new` calls it before its git work and
+/// again in the insert's transaction.
+pub fn refuse_a_2nd_workspace_run(conn: &Connection, root: &Path, new: &NewRun) -> Result<()> {
+    let Some(ws) = new.workspace_id.as_deref() else {
+        return Ok(());
+    };
+    if new.slug.starts_with(SOLO_PREFIX) {
+        return Ok(());
+    }
+    let taken = of_project(conn, root)?.into_iter().find(|r| {
+        r.status == RunStatus::Active.as_str()
+            && !is_solo(r)
+            && r.workspace_id.as_deref() == Some(ws)
+    });
+    match taken {
+        Some(r) => bail!(
+            "workspace {ws} already has active run {} ({}). A run belongs to 1 workspace. Close it with horch ledger run close --run {}, or run horch ledger run new in another workspace",
+            r.slug,
+            r.run_id,
+            r.slug
+        ),
+        None => Ok(()),
+    }
+}
+
 /// 1 run by id.
 pub fn get(conn: &Connection, run_id: &str) -> Result<Run> {
     conn.query_row(
@@ -1266,5 +1293,52 @@ mod tests {
             .unwrap();
         let (run, note) = resolve(store.conn(), &root, None, Some("w9")).unwrap();
         assert_eq!((run.slug.as_str(), note), ("solo-w9", None));
+    }
+
+    fn planned(slug: &str, ws: Option<&str>) -> NewRun {
+        NewRun {
+            slug: slug.into(),
+            workspace_id: ws.map(str::to_string),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn trf_34_refuses_a_2nd_active_run_in_a_workspace() {
+        let (_dir, mut store, root) = solo_world();
+        let first = store
+            .immediate(|tx| create(tx, &root, &planned("plan", Some("w7"))))
+            .unwrap();
+        let err = refuse_a_2nd_workspace_run(store.conn(), &root, &planned("next", Some("w7")))
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("plan"), "{err}");
+        assert!(err.contains("horch ledger run close --run plan"), "{err}");
+        assert!(err.contains("another workspace"), "{err}");
+        // Another workspace is free.
+        refuse_a_2nd_workspace_run(store.conn(), &root, &planned("next", Some("w8"))).unwrap();
+        // A closed run frees its workspace.
+        store
+            .immediate(|tx| close(tx, &first.run_id, RunStatus::Done))
+            .unwrap();
+        refuse_a_2nd_workspace_run(store.conn(), &root, &planned("next", Some("w7"))).unwrap();
+    }
+
+    #[test]
+    fn trf_34_ignores_solo_and_workspaceless_runs() {
+        let (_dir, mut store, root) = solo_world();
+        store
+            .immediate(|tx| create(tx, &root, &solo_new_run("w7")))
+            .unwrap();
+        store
+            .immediate(|tx| create(tx, &root, &planned("loose", None)))
+            .unwrap();
+        refuse_a_2nd_workspace_run(store.conn(), &root, &planned("plan", Some("w7"))).unwrap();
+        store
+            .immediate(|tx| create(tx, &root, &planned("plan", Some("w7"))))
+            .unwrap();
+        // A new solo run and a new run with no workspace never clash.
+        refuse_a_2nd_workspace_run(store.conn(), &root, &solo_new_run("w7")).unwrap();
+        refuse_a_2nd_workspace_run(store.conn(), &root, &planned("free", None)).unwrap();
     }
 }
