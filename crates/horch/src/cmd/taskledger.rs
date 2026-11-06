@@ -62,6 +62,10 @@ pub enum LedgerCommand {
     },
     /// Queue 1 task from a ticket file.
     Add(AddArgs),
+    /// Queue 1 one-off task in this workspace's solo run
+    /// (`solo-<workspace>`). Creates that run with the minimal profile when
+    /// it is absent. Prints the spawn line to run next.
+    Task(TaskArgs),
     /// Queue every ticket of a ticket map (MAP.md) in 1 transaction.
     /// `--dry-run` checks the map and every ticket against the ticket
     /// format (C1) and writes nothing.
@@ -460,6 +464,22 @@ pub struct AddArgs {
     run: RunArg,
 }
 
+/// `horch ledger task`: 1 one-off task (TRF-42).
+#[derive(Args)]
+pub struct TaskArgs {
+    /// The task's title. With no `--file`, the title is the whole ticket.
+    title: String,
+    /// The persona that claims it.
+    #[arg(long)]
+    persona: String,
+    /// The ticket file the worker reads.
+    #[arg(long = "file")]
+    file: Option<PathBuf>,
+    /// The check the finish steps run. Default: the ticket's `**Check:**`.
+    #[arg(long)]
+    check: Option<String>,
+}
+
 /// The project root a command means: the main checkout of the repository
 /// the project dir is in, else the project dir itself.
 pub fn project_root(ctx: &RuntimeContext) -> Result<PathBuf> {
@@ -558,6 +578,7 @@ fn group_of(command: &LedgerCommand) -> Group {
             | C::Show { .. }
             | C::Run { .. }
             | C::Add(_)
+            | C::Task(_)
             | C::AddMap { .. }
             | C::PlanWorkers { .. }
             | C::Events { .. }
@@ -636,6 +657,9 @@ fn board_cmd(ctx: &RuntimeContext, mut store: Store, command: LedgerCommand) -> 
     }
     if let LedgerCommand::Add(args) = command {
         return add(ctx, &mut store, args);
+    }
+    if let LedgerCommand::Task(args) = command {
+        return task_cmd(ctx, &mut store, args);
     }
     if let LedgerCommand::AddMap {
         map: path,
@@ -2116,6 +2140,85 @@ fn add(ctx: &RuntimeContext, store: &mut Store, a: AddArgs) -> Result<ExitCode> 
     Ok(ExitCode::SUCCESS)
 }
 
+/// The ticket file name of a one-off task that has no ticket file. Its
+/// snapshot holds the title.
+const ONE_OFF_TICKET: &str = "(one-off: no ticket file)";
+
+fn task_cmd(ctx: &RuntimeContext, store: &mut Store, a: TaskArgs) -> Result<ExitCode> {
+    let root = project_root(ctx)?;
+    let Some(workspace) = super::sessionscmd::caller_workspace(ctx) else {
+        bail!("horch ledger task needs a herdr workspace. Run it in a herdr pane, or queue the task with horch ledger add --run <slug>");
+    };
+    let new = one_off_task(ctx, &root, a)?;
+    let run = solo_run(ctx, store, &root, &workspace)?;
+    let t = store.immediate(|tx| tasks::add(tx, &run, &new, Actor::Orchestrator))?;
+    output::println(&format!(
+        "{} queued in run {} for {}: {}.",
+        t.short(),
+        run.slug,
+        new.primary,
+        t.title
+    ));
+    if new.land_check.is_none() && !new.check_none {
+        eprintln!(
+            "horch ledger: warning: {} has no check, so it does not land. Queue it with --check \"<cmd>\", or write **Check:** none in its ticket.",
+            t.short()
+        );
+    }
+    output::println(&spawn_line(&new.primary, &run));
+    Ok(ExitCode::SUCCESS)
+}
+
+/// The line that starts a worker for a one-off task of `run`.
+fn spawn_line(persona: &str, run: &Run) -> String {
+    format!("Run next: horch spawn {persona} --run {}", run.slug)
+}
+
+/// The one-off task: the ticket file's facts when `--file` names one, else
+/// a snapshot that holds only the title.
+fn one_off_task(ctx: &RuntimeContext, root: &Path, a: TaskArgs) -> Result<NewTask> {
+    if a.title.trim().is_empty() {
+        bail!("a task needs a title");
+    }
+    let Some(file) = a.file else {
+        let mut new = NewTask::work(&a.title, ONE_OFF_TICKET, &a.persona);
+        new.ticket_snapshot = Some(format!("# {}\n", a.title.trim()));
+        new.land_check = a.check;
+        return Ok(new);
+    };
+    let file = ticket_path(root, &file, &cwd_or_root(ctx, root))?;
+    let facts = facts_of(root, &file);
+    let mut new = NewTask::work(&a.title, &file, &a.persona);
+    new.check_none = a.check.is_none() && facts.check_none;
+    new.review_mode = facts.review_mode();
+    new.land_check = a.check.or(facts.check);
+    new.work_kind = facts.kind;
+    new.own = facts.own;
+    new.no_touch = facts.no_touch;
+    Ok(new)
+}
+
+/// The workspace's active solo run, created with its run branch when absent.
+fn solo_run(ctx: &RuntimeContext, store: &mut Store, root: &Path, workspace: &str) -> Result<Run> {
+    if let Some(run) = runs::active_solo(store.conn(), root, workspace)? {
+        return Ok(run);
+    }
+    let mut new = runs::solo_new_run(workspace);
+    let git = Git::new(&ctx.bins.harness.git);
+    if git.main_root(root).is_some() {
+        let branch = format!("fleet/{}", new.slug);
+        let base = git.current_branch(root);
+        let remote = git.has_remote(root, "origin").then(|| "origin".to_string());
+        run_branches(&git, root, &branch, base.as_deref(), remote.as_deref())?;
+        new.run_branch = Some(branch);
+        new.base_branch = base;
+        new.remote = remote;
+    }
+    let r = insert_run(ctx, store, root, &new, None)?;
+    report_created(&r);
+    Ok(r)
+}
+
 /// `add-map --dry-run`: every problem as `<file>:<line>: <problem>`. It
 /// needs no run and writes nothing.
 fn add_map_dry_run(ctx: &RuntimeContext, path: &Path) -> Result<ExitCode> {
@@ -3548,5 +3651,90 @@ mod tests {
             "cancelled"
         );
         assert_eq!(requeues(&store), 0);
+    }
+
+    /// The context of a caller in herdr workspace `workspace` (none: outside
+    /// herdr) whose project is `root`, and the ledger in `dir`.
+    fn task_world(dir: &Path, root: &Path, workspace: Option<&str>) -> (RuntimeContext, Store) {
+        let mut env = MapEnv::new(root).with("HORCH_PROJECT_DIR", root.to_str().unwrap());
+        if let Some(ws) = workspace {
+            env = env.with("HORCH_WORKSPACE_ID", ws);
+        }
+        let ctx = RuntimeContext::from_env(&env).unwrap();
+        let store = Store::open(&dir.join("ledger.sqlite3")).unwrap();
+        (ctx, store)
+    }
+
+    fn task_args(title: &str, file: Option<&Path>, check: Option<&str>) -> super::TaskArgs {
+        super::TaskArgs {
+            title: title.into(),
+            persona: "opus".into(),
+            file: file.map(Path::to_path_buf),
+            check: check.map(str::to_string),
+        }
+    }
+
+    #[test]
+    fn trf_42_task_creates_the_solo_run_once_and_queues_each_task_in_it() {
+        use horch_core::taskledger::model::VerifyProfile;
+        let dir = tempfile::tempdir().unwrap();
+        let root = project(dir.path(), false);
+        let (ctx, mut store) = task_world(dir.path(), &root, Some("w7"));
+        super::task_cmd(
+            &ctx,
+            &mut store,
+            task_args("fix a typo", None, Some("true")),
+        )
+        .unwrap();
+        super::task_cmd(&ctx, &mut store, task_args("bump a dep", None, None)).unwrap();
+        let all = runs::of_project(store.conn(), &root).unwrap();
+        assert_eq!(all.len(), 1, "1 solo run: {all:?}");
+        let run = &all[0];
+        assert_eq!(run.slug, "solo-w7");
+        assert_eq!(run.workspace_id.as_deref(), Some("w7"));
+        assert_eq!(run.steps().unwrap(), VerifyProfile::Minimal.steps());
+        let queued = tasks::of_run(store.conn(), &run.run_id).unwrap();
+        let titles: Vec<&str> = queued.iter().map(|t| t.title.as_str()).collect();
+        assert_eq!(titles, ["fix a typo", "bump a dep"]);
+        let first = &queued[0];
+        assert_eq!(first.claimable_by.as_deref(), Some("opus"));
+        assert_eq!(first.land_check.as_deref(), Some("true"));
+        assert_eq!(first.task_file.as_deref(), Some(super::ONE_OFF_TICKET));
+        assert_eq!(first.ticket_snapshot.as_deref(), Some("# fix a typo\n"));
+        assert_eq!(
+            super::spawn_line("opus", run),
+            "Run next: horch spawn opus --run solo-w7"
+        );
+    }
+
+    #[test]
+    fn trf_42_task_with_a_file_takes_the_tickets_check() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = project(dir.path(), false);
+        std::fs::write(
+            root.join("tickets/t.md"),
+            "# t\n\n**Check:** `cargo test`\n",
+        )
+        .unwrap();
+        let (ctx, mut store) = task_world(dir.path(), &root, Some("w7"));
+        let file = root.join("tickets/t.md");
+        super::task_cmd(&ctx, &mut store, task_args("t", Some(&file), None)).unwrap();
+        let run = runs::active_solo(store.conn(), &root, "w7")
+            .unwrap()
+            .unwrap();
+        let t = &tasks::of_run(store.conn(), &run.run_id).unwrap()[0];
+        assert_eq!(t.task_file.as_deref(), Some("tickets/t.md"));
+        assert_eq!(t.land_check.as_deref(), Some("cargo test"));
+        assert_eq!(t.ticket_snapshot, None);
+    }
+
+    #[test]
+    fn trf_42_task_outside_a_workspace_queues_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = project(dir.path(), false);
+        let (ctx, mut store) = task_world(dir.path(), &root, None);
+        let err = super::task_cmd(&ctx, &mut store, task_args("t", None, None)).unwrap_err();
+        assert!(format!("{err:#}").contains("herdr workspace"), "{err:#}");
+        assert!(runs::of_project(store.conn(), &root).unwrap().is_empty());
     }
 }

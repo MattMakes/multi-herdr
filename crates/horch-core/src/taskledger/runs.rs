@@ -236,6 +236,39 @@ pub fn create(conn: &Connection, root: &Path, new: &NewRun) -> Result<Run> {
     get(conn, &id)
 }
 
+/// The slug prefix of a workspace's solo run, which holds its one-off tasks
+/// (`horch ledger task`, TRF-42).
+pub const SOLO_PREFIX: &str = "solo-";
+
+/// The slug of the solo run of `workspace`.
+pub fn solo_slug(workspace: &str) -> String {
+    format!("{SOLO_PREFIX}{workspace}")
+}
+
+/// Whether `run` is a workspace's solo run.
+pub fn is_solo(run: &Run) -> bool {
+    run.slug.starts_with(SOLO_PREFIX)
+}
+
+/// What a new solo run of `workspace` records: its slug, its workspace and
+/// the minimal profile's finish steps. The caller fills in the branches.
+pub fn solo_new_run(workspace: &str) -> NewRun {
+    NewRun {
+        slug: solo_slug(workspace),
+        workspace_id: Some(workspace.to_string()),
+        finish_steps: super::model::VerifyProfile::Minimal.steps(),
+        ..Default::default()
+    }
+}
+
+/// The active solo run of `workspace` in project `root`, if any.
+pub fn active_solo(conn: &Connection, root: &Path, workspace: &str) -> Result<Option<Run>> {
+    let slug = solo_slug(workspace);
+    Ok(of_project(conn, root)?
+        .into_iter()
+        .find(|r| r.slug == slug && r.status == RunStatus::Active.as_str()))
+}
+
 /// 1 run by id.
 pub fn get(conn: &Connection, run_id: &str) -> Result<Run> {
     conn.query_row(
@@ -276,6 +309,8 @@ pub fn resolve(
 }
 
 /// The 1 active run a command means when it names none (see [`resolve`]).
+/// A solo run is chosen only when no other run fits: one-off tasks must not
+/// make the workspace's planned run ambiguous (TRF-42).
 fn the_active(runs: &[Run], root: &Path, workspace: Option<&str>) -> Result<(Run, Option<String>)> {
     let active: Vec<&Run> = runs
         .iter()
@@ -286,6 +321,7 @@ fn the_active(runs: &[Run], root: &Path, workspace: Option<&str>) -> Result<(Run
         .copied()
         .filter(|r| workspace.is_some() && r.workspace_id.as_deref() == workspace)
         .collect();
+    let (own, active) = (planned_first(own), planned_first(active));
     match (own.as_slice(), active.as_slice()) {
         ([one], _) => Ok(((*one).clone(), None)),
         ([], [one]) => Ok(((*one).clone(), other_workspace_note(one, workspace))),
@@ -298,6 +334,14 @@ fn the_active(runs: &[Run], root: &Path, workspace: Option<&str>) -> Result<(Run
             ambiguous_runs(if mine.is_empty() { all } else { mine }, root)
         ),
     }
+}
+
+/// `runs` without the solo runs when any other run is among them.
+fn planned_first(mut runs: Vec<&Run>) -> Vec<&Run> {
+    if runs.iter().any(|r| !is_solo(r)) {
+        runs.retain(|r| !is_solo(r));
+    }
+    runs
 }
 
 /// The `NOTE:` line for the 1 active run when it is not the caller's workspace's.
@@ -1157,5 +1201,69 @@ mod tests {
         )
         .unwrap();
         assert_eq!(closed.status, "abandoned");
+    }
+
+    /// A ledger in a temp dir with a project folder `root`.
+    fn solo_world() -> (tempfile::TempDir, Store, std::path::PathBuf) {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("proj");
+        std::fs::create_dir_all(&root).unwrap();
+        let store = Store::open(&dir.path().join("ledger.sqlite3")).unwrap();
+        (dir, store, root)
+    }
+
+    #[test]
+    fn trf_42_a_solo_run_uses_the_minimal_profile_and_its_workspace() {
+        let new = solo_new_run("w7");
+        assert_eq!(new.slug, "solo-w7");
+        assert_eq!(new.workspace_id.as_deref(), Some("w7"));
+        assert_eq!(
+            new.finish_steps,
+            crate::taskledger::model::VerifyProfile::Minimal.steps()
+        );
+    }
+
+    #[test]
+    fn trf_42_active_solo_finds_only_the_workspaces_active_solo_run() {
+        let (_dir, mut store, root) = solo_world();
+        assert!(active_solo(store.conn(), &root, "w7").unwrap().is_none());
+        let other = store
+            .immediate(|tx| create(tx, &root, &solo_new_run("w8")))
+            .unwrap();
+        assert!(active_solo(store.conn(), &root, "w7").unwrap().is_none());
+        let mine = store
+            .immediate(|tx| create(tx, &root, &solo_new_run("w7")))
+            .unwrap();
+        let found = active_solo(store.conn(), &root, "w7").unwrap().unwrap();
+        assert_eq!(found.run_id, mine.run_id);
+        assert_ne!(found.run_id, other.run_id);
+        store
+            .immediate(|tx| close(tx, &mine.run_id, RunStatus::Done))
+            .unwrap();
+        assert!(active_solo(store.conn(), &root, "w7").unwrap().is_none());
+    }
+
+    #[test]
+    fn trf_42_a_solo_run_never_makes_the_planned_run_ambiguous() {
+        let (_dir, mut store, root) = solo_world();
+        let planned = NewRun {
+            slug: "plan".into(),
+            workspace_id: Some("w7".into()),
+            ..Default::default()
+        };
+        store.immediate(|tx| create(tx, &root, &planned)).unwrap();
+        store
+            .immediate(|tx| create(tx, &root, &solo_new_run("w7")))
+            .unwrap();
+        let (run, note) = resolve(store.conn(), &root, None, Some("w7")).unwrap();
+        assert_eq!((run.slug.as_str(), note), ("plan", None));
+        let (run, _) = resolve(store.conn(), &root, Some("solo-w7"), Some("w7")).unwrap();
+        assert_eq!(run.slug, "solo-w7");
+        // The caller's own solo run beats another workspace's planned run.
+        store
+            .immediate(|tx| create(tx, &root, &solo_new_run("w9")))
+            .unwrap();
+        let (run, note) = resolve(store.conn(), &root, None, Some("w9")).unwrap();
+        assert_eq!((run.slug.as_str(), note), ("solo-w9", None));
     }
 }
