@@ -1,6 +1,7 @@
 //! Durable mail: worker-to-orchestrator, and horch's own notices to a
 //! worker role (`roles/<role>/` under the workspace's mail dir).
 
+use std::cell::RefCell;
 use std::fs::File;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -9,11 +10,34 @@ use std::time::{Duration, SystemTime};
 
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
 use crate::messaging::{file_safe, private};
 
 const ACK_RETENTION: Duration = Duration::from_secs(7 * 24 * 60 * 60);
 static NEXT_ID: AtomicU64 = AtomicU64::new(0);
+
+thread_local! {
+    /// The idempotency key that [`keyed`] gives the next enqueue.
+    static KEY: RefCell<Option<String>> = const { RefCell::new(None) };
+}
+
+/// Run `f` with `key` as the idempotency key of the first enqueue on this
+/// thread inside it (C3, D7). That enqueue returns the first mail of `key`
+/// when it is pending or acknowledged, and writes no new file. A caller
+/// that cannot reach the enqueue, such as an outbox drain that sends
+/// through `horch tell`, passes the outbox row id here.
+pub fn keyed<T>(key: &str, f: impl FnOnce() -> T) -> T {
+    struct Restore(Option<String>);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            let previous = self.0.take();
+            KEY.with(|k| *k.borrow_mut() = previous);
+        }
+    }
+    let _restore = Restore(KEY.with(|k| k.replace(Some(key.to_string()))));
+    f()
+}
 
 #[derive(Clone, Debug, Eq, PartialEq, Hash, Deserialize, Serialize)]
 pub struct Id(String);
@@ -132,6 +156,30 @@ impl Mail {
     /// horch's own QUESTION or BLOCKED that names no closing ledger action
     /// is queued as a NOTE ([`horch_line`]).
     pub fn enqueue_with_questions(&self, from: &str, text: &str, original: &str) -> Result<Id> {
+        let key = KEY.with(|k| k.borrow_mut().take());
+        self.enqueue_inner(key.as_deref(), from, text, original)
+    }
+
+    /// [`Mail::enqueue_with_questions`] with an idempotency key: the first
+    /// mail of `key`, pending or acknowledged, is returned and not written
+    /// again. A replay after a crash keeps 1 file and 1 mail id.
+    pub fn enqueue_with_key(
+        &self,
+        key: &str,
+        from: &str,
+        text: &str,
+        original: &str,
+    ) -> Result<Id> {
+        self.enqueue_inner(Some(key), from, text, original)
+    }
+
+    fn enqueue_inner(
+        &self,
+        key: Option<&str>,
+        from: &str,
+        text: &str,
+        original: &str,
+    ) -> Result<Id> {
         let (text, original) = if from == HORCH {
             (horch_line(text), horch_line(original))
         } else {
@@ -142,12 +190,18 @@ impl Mail {
         self.ensure_dir()?;
         private::ensure_dir(&pending)?;
         // Cleanup is best effort: a prune error must never block a send.
-        if let Err(error) = self.prune_acked() {
+        if let Err(error) = self.prune_acked().and_then(|()| self.prune_keys()) {
             eprintln!("horch: pruning acked mail: {error:#}");
         }
 
         let created_at = crate::clock::now().into();
-        let id = next_id(created_at);
+        let id = match key {
+            None => next_id(created_at),
+            Some(key) => match self.claim_key(key, created_at)? {
+                Claim::Published(id) => return Ok(id),
+                Claim::Publish(id) => id,
+            },
+        };
         let message = Message {
             id: id.clone(),
             from: from.to_string(),
@@ -186,6 +240,49 @@ impl Mail {
         // soon as this rename completes, and acknowledgement must not erase them.
         publish_pending(&temp_path, &final_path, question_path.as_deref())?;
         Ok(id)
+    }
+
+    /// The mail id of `key`. The key file names the id before the mail is
+    /// published, so a crash at any point leaves 1 id for the replay.
+    fn claim_key(&self, key: &str, created_at: SystemTime) -> Result<Claim> {
+        let dir = self.dir.join("keys");
+        private::ensure_dir(&dir)?;
+        let name = key_file(key);
+        let path = dir.join(&name);
+        if let Some(named) = if_exists(std::fs::read_to_string(&path))
+            .with_context(|| format!("reading {}", path.display()))?
+        {
+            let id = Id(named.trim().to_string());
+            if id.0.is_empty() || !valid_id(&id.0) {
+                bail!("invalid mail id in {}", path.display());
+            }
+            if self.published(&id) {
+                return Ok(Claim::Published(id));
+            }
+            // The crash came before the publish: drop its temp files.
+            let pending = self.dir.join("pending").join(format!(".{}.json.tmp", id.0));
+            let question = self.dir.join("questions").join(format!(".{}.tmp", id.0));
+            for temp in [pending, question] {
+                if_exists(std::fs::remove_file(&temp))
+                    .with_context(|| format!("removing {}", temp.display()))?;
+            }
+            return Ok(Claim::Publish(id));
+        }
+        let id = next_id(created_at);
+        let temp = dir.join(format!(".{name}.tmp"));
+        if_exists(std::fs::remove_file(&temp))
+            .with_context(|| format!("removing {}", temp.display()))?;
+        write_temp(&temp, id.0.as_bytes())?;
+        std::fs::rename(&temp, &path)
+            .with_context(|| format!("moving {} to {}", temp.display(), path.display()))?;
+        Ok(Claim::Publish(id))
+    }
+
+    /// Whether mail `id` is pending or acknowledged.
+    fn published(&self, id: &Id) -> bool {
+        ["pending", "acked"]
+            .iter()
+            .any(|dir| self.dir.join(dir).join(format!("{}.json", id.0)).exists())
     }
 
     fn publish_question(&self, id: &Id, question: &Message) -> Result<PathBuf> {
@@ -335,7 +432,7 @@ impl Mail {
     }
 
     pub fn ack(&self, id: &Id) -> Result<()> {
-        if !id.0.chars().all(|c| c.is_ascii_alphanumeric() || c == '-') {
+        if !valid_id(&id.0) {
             bail!("invalid mail id");
         }
         let pending = self.dir.join("pending").join(format!("{}.json", id.0));
@@ -357,6 +454,22 @@ impl Mail {
         self.prune_paths(entries.map(|entry| entry.map(|entry| entry.path())))
     }
 
+    /// Remove the expired key files whose mail is not pending. A pending
+    /// mail keeps its key: pending mail never expires.
+    fn prune_keys(&self) -> Result<()> {
+        let Some(entries) = read_dir_if_exists(&self.dir.join("keys"))? else {
+            return Ok(());
+        };
+        let pending = self.dir.join("pending");
+        let paths = entries.filter(|entry| {
+            let Ok(entry) = entry else { return true };
+            let named = std::fs::read_to_string(entry.path()).unwrap_or_default();
+            let id = named.trim();
+            !(!id.is_empty() && valid_id(id) && pending.join(format!("{id}.json")).exists())
+        });
+        self.prune_paths(paths.map(|entry| entry.map(|entry| entry.path())))
+    }
+
     /// Another enqueue can prune the same file first, so NotFound is skipped.
     fn prune_paths(&self, paths: impl IntoIterator<Item = std::io::Result<PathBuf>>) -> Result<()> {
         let now = SystemTime::now();
@@ -369,6 +482,29 @@ impl Mail {
         }
         Ok(())
     }
+}
+
+/// What [`Mail::claim_key`] found.
+enum Claim {
+    /// The mail of the key is pending or acknowledged already.
+    Published(Id),
+    /// Publish the mail with this id.
+    Publish(Id),
+}
+
+/// The key file name of an idempotency key: 32 hex characters of its
+/// sha256, safe as a file name for any key.
+fn key_file(key: &str) -> String {
+    Sha256::digest(key.as_bytes())
+        .iter()
+        .take(16)
+        .map(|b| format!("{b:02x}"))
+        .collect()
+}
+
+/// A mail id is a file name: ASCII letters, digits and `-` only.
+fn valid_id(id: &str) -> bool {
+    id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
 }
 
 /// `Some` of an io result, or `None` when the path is missing.
@@ -1178,6 +1314,87 @@ mod tests {
         // The short id comes from the file name, so every reader agrees.
         assert_eq!(mail.pending().unwrap()[0].id.short(), short);
         assert_eq!(Id(first.0.clone()).short(), short);
+    }
+
+    fn pending_files(mail: &Mail) -> usize {
+        std::fs::read_dir(mail.dir.join("pending"))
+            .unwrap()
+            .filter(|e| {
+                e.as_ref()
+                    .unwrap()
+                    .path()
+                    .extension()
+                    .is_some_and(|x| x == "json")
+            })
+            .count()
+    }
+
+    /// TRF-21: an enqueue with an idempotency key reuses the first mail of
+    /// that key, pending or acknowledged. Another key is new mail.
+    #[test]
+    fn trf_21_a_keyed_enqueue_reuses_its_first_mail() {
+        let root = tempfile::tempdir().unwrap();
+        let mail = Mail::under(root.path(), "w1");
+        let text = "[horch] NOTE: x";
+        let first = mail.enqueue_with_key("row-1", "horch", text, text).unwrap();
+        let again = mail.enqueue_with_key("row-1", "horch", text, text).unwrap();
+        assert_eq!(again, first);
+        assert_eq!(pending_files(&mail), 1);
+        let other = mail.enqueue_with_key("row-2", "horch", text, text).unwrap();
+        assert_ne!(other, first);
+        assert_eq!(pending_files(&mail), 2);
+
+        mail.ack(&first).unwrap();
+        let acked = mail.enqueue_with_key("row-1", "horch", text, text).unwrap();
+        assert_eq!(acked, first, "an acknowledged mail is reused");
+        assert_eq!(pending_files(&mail), 1, "and not queued again");
+    }
+
+    /// TRF-21: a crash after the key names an id and before the mail is
+    /// published leaves a temp file. The replay publishes that id once.
+    #[test]
+    fn trf_21_a_keyed_replay_after_a_crash_publishes_the_named_id() {
+        let root = tempfile::tempdir().unwrap();
+        let mail = Mail::under(root.path(), "w1");
+        let text = "[horch] QUESTION: T-7 is held. Run horch ledger requeue T-7.";
+        let first = mail.enqueue_with_key("row-1", "horch", text, text).unwrap();
+        // The crash: the pending file is not yet in place; its temp file is.
+        let pending = mail.dir.join("pending");
+        std::fs::rename(
+            pending.join(format!("{}.json", first.0)),
+            pending.join(format!(".{}.json.tmp", first.0)),
+        )
+        .unwrap();
+        std::fs::write(
+            mail.dir.join("questions").join(format!(".{}.tmp", first.0)),
+            b"x",
+        )
+        .unwrap();
+
+        let again = mail.enqueue_with_key("row-1", "horch", text, text).unwrap();
+        assert_eq!(again, first);
+        assert_eq!(pending_files(&mail), 1);
+        assert_eq!(mail.pending().unwrap()[0].id.short(), first.short());
+        assert_eq!(mail.open_questions().unwrap().len(), 1, "1 question file");
+    }
+
+    /// TRF-21: [`keyed`] gives its key to the first enqueue in its scope
+    /// only. A later enqueue is new mail.
+    #[test]
+    fn trf_21_keyed_scopes_the_key_to_1_enqueue() {
+        let root = tempfile::tempdir().unwrap();
+        let mail = Mail::under(root.path(), "w1");
+        let first = keyed("row-1", || mail.enqueue("horch", "[horch] NOTE: x")).unwrap();
+        let (again, plain) = keyed("row-1", || {
+            (
+                mail.enqueue("horch", "[horch] NOTE: x"),
+                mail.enqueue("horch", "y"),
+            )
+        });
+        assert_eq!(again.unwrap(), first);
+        assert_ne!(plain.unwrap(), first);
+        assert_ne!(mail.enqueue("horch", "[horch] NOTE: x").unwrap(), first);
+        assert_eq!(pending_files(&mail), 3);
     }
 
     #[test]

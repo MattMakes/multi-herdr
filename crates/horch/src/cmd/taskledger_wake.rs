@@ -6,6 +6,7 @@
 
 use horch_core::execution::lifecycle::ReportStatus;
 use horch_core::ids::WorkspaceId;
+use horch_core::messaging::mail;
 use horch_core::runtime::RuntimeContext;
 use horch_core::taskledger::model::{Actor, EventKind, OutboxEvent};
 use horch_core::taskledger::outbox::{self, Row, Scope, Wake, Written};
@@ -134,7 +135,11 @@ fn send_row(
     let sent = if disabled() {
         Err(anyhow::anyhow!("wakes are off (HORCH_NO_WAKE=1)"))
     } else {
-        super::messaging::tell_as(&ctx, Some("horch".into()), "orchestrator", line)
+        // The row id keys the mail: a replay after a crash before
+        // `mark_delivered` reuses the first mail and writes no 2nd file.
+        mail::keyed(&row.id, || {
+            super::messaging::tell_as(&ctx, Some("horch".into()), "orchestrator", line)
+        })
     };
     let note = match &sent {
         Ok(ReportStatus::Delivered) => format!("Wake delivered to {target}: {line}"),
@@ -684,6 +689,52 @@ mod trf_21_tests {
         // A delivered row is not sent again.
         drain_run(&ctx, &store, &run, None);
         assert_eq!(orchestrator_mail(&ctx).len(), 1);
+    }
+
+    /// A crash after the send queued the mail and before `mark_delivered`
+    /// leaves the row undelivered. The next drain sends it again, and the
+    /// mailbox still holds 1 pending file with the first mail id.
+    #[test]
+    fn trf_21_replayed_row_reuses_its_mail() {
+        let (_dir, ctx, store, run) = world();
+        let run = give_workspace(&store, &run);
+        wake(&ctx, &store, &run, "NOTE: T-1 needs you.");
+        let mail = Mail::for_role(&ctx.paths.state_root, "w1", "orchestrator");
+        let first = mail.pending().unwrap();
+        assert_eq!(first.len(), 1, "{first:?}");
+
+        // The crash: the row is undelivered again, and its mail stays.
+        store
+            .conn()
+            .execute(
+                "UPDATE outbox SET delivered_at = NULL WHERE run_id = ?1",
+                [&run.run_id],
+            )
+            .unwrap();
+        drain_run(&ctx, &store, &run, None);
+        assert!(rows(&store, &run).iter().all(|(_, d)| d.is_some()));
+        let files = std::fs::read_dir(mail.dir().join("pending"))
+            .unwrap()
+            .filter(|e| {
+                let path = e.as_ref().unwrap().path();
+                path.extension().is_some_and(|x| x == "json")
+            })
+            .count();
+        assert_eq!(files, 1, "1 row makes 1 pending file");
+        let again = mail.pending().unwrap();
+        assert_eq!(again[0].id, first[0].id, "the replay reuses the mail id");
+
+        // A replay after the orchestrator acknowledged the mail queues nothing.
+        mail.ack_all().unwrap();
+        store
+            .conn()
+            .execute(
+                "UPDATE outbox SET delivered_at = NULL WHERE run_id = ?1",
+                [&run.run_id],
+            )
+            .unwrap();
+        drain_run(&ctx, &store, &run, None);
+        assert!(mail.pending().unwrap().is_empty());
     }
 
     #[test]
