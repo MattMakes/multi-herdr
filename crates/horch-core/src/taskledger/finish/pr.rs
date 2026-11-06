@@ -239,6 +239,70 @@ pub fn step(store: &mut Store, cx: &Ctx<'_>) -> Result<Outcome> {
     Ok(verdict(cx, &view, &landed, &n, &short))
 }
 
+/// The state of `run`'s PR for `run close` (C5, TRF-20), asked with gh.
+/// Not applicable with no remote, no gh, or no commit on the run branch
+/// that the main branch lacks. A failing gh is an error, never a pass.
+pub fn pr_check(
+    gh_bin: &Path,
+    git: &crate::taskledger::git::Git,
+    run: &runs::Run,
+) -> Result<runs::PrCheck> {
+    use runs::PrCheck;
+    if run.remote.is_none() {
+        return Ok(PrCheck::NotApplicable("the run has no remote".into()));
+    }
+    let root = Path::new(&run.project_root);
+    let (Some(branch), Some(base)) = (&run.run_branch, &run.base_branch) else {
+        return Ok(PrCheck::NotApplicable(
+            "the run has no run branch or main branch".into(),
+        ));
+    };
+    let Some(n) = run.pr_number else {
+        if git.is_ancestor(root, branch, base) {
+            return Ok(PrCheck::NotApplicable(format!(
+                "{branch} has no commit that {base} lacks"
+            )));
+        }
+        return Ok(PrCheck::Missing);
+    };
+    let n_text = n.to_string();
+    let args = ["pr", "view", n_text.as_str(), "--json", "state"];
+    let mut cmd = Command::new(gh_bin);
+    cmd.args(args).current_dir(root);
+    crate::runtime::process::scrub_child_env(&mut cmd);
+    let out = match cmd.output() {
+        Ok(out) => out,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(PrCheck::NotApplicable(format!(
+                "gh is not installed ({})",
+                gh_bin.display()
+            )))
+        }
+        Err(e) => return Err(anyhow::Error::new(e).context("running gh")),
+    };
+    if !out.status.success() {
+        bail!(
+            "gh {} failed: {}. Check gh auth status, then run horch ledger run close again",
+            args.join(" "),
+            String::from_utf8_lossy(&out.stderr).trim()
+        );
+    }
+    #[derive(Deserialize)]
+    struct State {
+        state: String,
+    }
+    let st: State =
+        serde_json::from_slice(&out.stdout).context("reading gh pr view --json state")?;
+    Ok(if st.state.eq_ignore_ascii_case("MERGED") {
+        PrCheck::Merged(n)
+    } else {
+        PrCheck::Unmerged {
+            number: n,
+            state: st.state.to_lowercase(),
+        }
+    })
+}
+
 fn section_text(store: &Store, cx: &Ctx<'_>, landed: &str) -> Result<String> {
     let steps = super::steps_of(store.conn(), &cx.task.task_id, &cx.worker.worker_id)?;
     let verdict = |name: &str| {

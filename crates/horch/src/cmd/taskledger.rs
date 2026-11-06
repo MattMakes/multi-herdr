@@ -295,8 +295,9 @@ pub enum WorktreeCommand {
 pub enum RunCommand {
     /// Create a run and its run branch (from the main branch).
     New(NewRunArgs),
-    /// Close the run when its work is done. Refuses while a task is queued,
-    /// held, running or landing, or a worktree is open or landing.
+    /// Close the run when its work is done. Refuses while the run is not
+    /// settled, without a passing gate on the run-branch tip, or while the
+    /// run PR is neither merged nor declined.
     Close {
         #[command(flatten)]
         run: RunArg,
@@ -304,6 +305,18 @@ pub enum RunCommand {
         /// abandoned.
         #[arg(long, value_name = "REASON")]
         abandon: Option<String>,
+        /// Close without a merged PR, and record why.
+        #[arg(long, value_name = "REASON", conflicts_with = "abandon")]
+        pr_declined: Option<String>,
+    },
+    /// Run the run check on the run-branch tip and record the result.
+    /// `run close` needs a passing gate on the current tip.
+    Gate {
+        #[command(flatten)]
+        run: RunArg,
+        /// The check command; default the run's check (`run new --check`).
+        #[arg(long)]
+        check: Option<String>,
     },
     /// Every run of this project.
     List {
@@ -1651,20 +1664,43 @@ fn opt(v: Option<i64>) -> String {
 fn run_cmd(ctx: &RuntimeContext, store: &mut Store, command: RunCommand) -> Result<ExitCode> {
     let root = project_root(ctx)?;
     match command {
-        RunCommand::Close { run, abandon } => close_run_cmd(ctx, store, &run, abandon.as_deref()),
+        RunCommand::Close {
+            run,
+            abandon,
+            pr_declined,
+        } => {
+            let r = resolve_run(ctx, store, &run)?;
+            close_run_cmd(&tools(ctx), store, &r, abandon.as_deref(), pr_declined)
+        }
+        RunCommand::Gate { run, check } => {
+            let r = resolve_run(ctx, store, &run)?;
+            gate_cmd(&tools(ctx), store, &r, check.as_deref())
+        }
         RunCommand::List { json: as_json } => list_runs(store, &root, as_json),
         RunCommand::New(args) => new_run_cmd(ctx, store, &root, args),
     }
 }
 
 fn close_run_cmd(
-    ctx: &RuntimeContext,
+    t: &finish::Tools,
     store: &mut Store,
-    run: &RunArg,
+    r: &Run,
     abandon: Option<&str>,
+    pr_declined: Option<String>,
 ) -> Result<ExitCode> {
-    let r = resolve_run(ctx, store, run)?;
-    let closed = store.immediate(|tx| runs::close_run(tx, &r, abandon))?;
+    // C6 first: an unsettled run gets the settled rule's refusal, before gh.
+    let settled = status::unsettled(store.conn(), &r.run_id)?.is_empty();
+    let closed = match abandon {
+        Some(_) => store.immediate(|tx| runs::close_run(tx, r, abandon))?,
+        None if !settled => store.immediate(|tx| runs::close_run(tx, r, None))?,
+        None => {
+            let guards = close_guards(t, r, pr_declined)?;
+            store.immediate(|tx| runs::close_run_with(tx, r, None, &guards))?
+        }
+    };
+    for note in &closed.notes {
+        output::println(note);
+    }
     for (task, holder) in &closed.cancelled {
         match holder {
             Some(w) => output::println(&format!(
@@ -1677,11 +1713,70 @@ fn close_run_cmd(
     if !closed.parked.is_empty() {
         bail!(
             "{}. The open tasks are cancelled; the run stays active",
-            runs::parked_message(&r, &closed.parked)
+            runs::parked_message(r, &closed.parked)
         );
     }
     output::println(&format!("Run {} closed as {}.", r.slug, closed.status));
     Ok(ExitCode::SUCCESS)
+}
+
+/// The C5 facts `run close` checks: the run-branch tip, and the PR as gh
+/// reports it.
+fn close_guards(
+    t: &finish::Tools,
+    r: &Run,
+    pr_declined: Option<String>,
+) -> Result<runs::CloseGuards> {
+    let root = Path::new(&r.project_root);
+    let tip = match &r.run_branch {
+        Some(b) => Some(t.git.rev(root, b)?),
+        None => None,
+    };
+    let pr = finish::pr::pr_check(&t.gh, &t.git, r)?;
+    Ok(runs::CloseGuards {
+        tip,
+        pr,
+        pr_declined: pr_declined.filter(|p| !p.trim().is_empty()),
+    })
+}
+
+/// `horch ledger run gate` (C5, TRF-19).
+fn gate_cmd(
+    t: &finish::Tools,
+    store: &mut Store,
+    r: &Run,
+    check: Option<&str>,
+) -> Result<ExitCode> {
+    let command = match check.filter(|c| !c.trim().is_empty()) {
+        Some(c) => c.to_string(),
+        None => finish::default_check(store.conn(), &r.run_id)?.with_context(|| {
+            format!(
+                "run {} has no check. Pass --check \"<cmd>\", or create the run with horch ledger run new <slug> --check \"<cmd>\"",
+                r.slug
+            )
+        })?,
+    };
+    let log_dir = t.evidence_root.join("gates").join(&r.run_id);
+    output::println(&format!(
+        "Run gate: running `{command}` on the tip of {} in {}.",
+        r.run_branch.as_deref().unwrap_or("-"),
+        runs::gate_dir(r).display()
+    ));
+    let ran = runs::run_gate(&t.git, &t.shell, r, &command, &log_dir)?;
+    let gate = store.immediate(|tx| runs::record_gate(tx, &ran))?;
+    let log = gate.log_path.as_deref().unwrap_or("(no log)");
+    if gate.passed() {
+        output::println(&format!("Run gate passed on {}. Log: {log}.", gate.tip_sha));
+        return Ok(ExitCode::SUCCESS);
+    }
+    output::println(&format!(
+        "Run gate failed on {}: exit {}. Read {log}.",
+        gate.tip_sha,
+        gate.exit_code
+            .map(|c| c.to_string())
+            .unwrap_or_else(|| "none".into())
+    ));
+    Ok(ExitCode::FAILURE)
 }
 
 fn list_runs(store: &Store, root: &Path, as_json: bool) -> Result<ExitCode> {
@@ -2718,7 +2813,7 @@ fn record_pids(
 
 #[cfg(test)]
 mod tests {
-    use super::{absolute_ticket_if_missing, LedgerCommand};
+    use super::{absolute_ticket_if_missing, finish, tools, ExitCode, Git, LedgerCommand, Run};
     use clap::Subcommand;
     use horch_core::roster::{ExecDecision, Roster};
     use horch_core::runtime::{MapEnv, RuntimeContext};
@@ -2983,5 +3078,146 @@ mod tests {
                 );
             }
         }
+    }
+
+    fn git_in(dir: &Path, args: &[&str]) -> String {
+        let out = std::process::Command::new("git")
+            .args(args)
+            .current_dir(dir)
+            .env("GIT_AUTHOR_NAME", "t")
+            .env("GIT_AUTHOR_EMAIL", "t@t")
+            .env("GIT_COMMITTER_NAME", "t")
+            .env("GIT_COMMITTER_EMAIL", "t@t")
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "git {args:?}: {out:?}");
+        String::from_utf8_lossy(&out.stdout).trim().to_string()
+    }
+
+    /// A repository whose run branch `fleet/r1` is 1 commit ahead of `main`,
+    /// run r1 with remote `origin` and PR #7, and the finish tools with a
+    /// fake gh that prints `{"state":"<state>"}`.
+    fn gated_world(dir: &Path, state: &str) -> (finish::Tools, Store, Run) {
+        let root = dir.join("repo");
+        std::fs::create_dir(&root).unwrap();
+        git_in(&root, &["init", "-q", "-b", "main"]);
+        std::fs::write(root.join("a"), "a").unwrap();
+        git_in(&root, &["add", "a"]);
+        git_in(&root, &["commit", "-qm", "a"]);
+        git_in(&root, &["checkout", "-q", "-b", "fleet/r1"]);
+        std::fs::write(root.join("b"), "b").unwrap();
+        git_in(&root, &["add", "b"]);
+        git_in(&root, &["commit", "-qm", "b"]);
+        git_in(&root, &["checkout", "-q", "main"]);
+        let gh = dir.join("gh");
+        std::fs::write(
+            &gh,
+            format!("#!/bin/sh\necho \"$*\" >> \"$0.args\"\necho '{{\"state\":\"{state}\"}}'\n"),
+        )
+        .unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&gh, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        // Warm the fake: a new executable's first exec is slow on macOS.
+        let _ = std::process::Command::new(&gh).output();
+        let ctx = RuntimeContext::from_env(&MapEnv::new(dir)).unwrap();
+        let mut t = tools(&ctx);
+        t.git = Git::new("git");
+        t.gh = gh;
+        t.evidence_root = dir.join("evidence");
+        let mut store = Store::open(&dir.join("ledger.sqlite3")).unwrap();
+        let run = store
+            .immediate(|tx| {
+                let r = runs::create(
+                    tx,
+                    &root,
+                    &NewRun {
+                        slug: "r1".into(),
+                        base_branch: Some("main".into()),
+                        run_branch: Some("fleet/r1".into()),
+                        remote: Some("origin".into()),
+                        ..Default::default()
+                    },
+                )?;
+                runs::set_pr(tx, &r.run_id, 7, "https://example.invalid/pull/7")?;
+                runs::get(tx, &r.run_id)
+            })
+            .unwrap();
+        (t, store, run)
+    }
+
+    fn status_of(store: &Store, run: &Run) -> String {
+        runs::get(store.conn(), &run.run_id).unwrap().status
+    }
+
+    #[test]
+    fn trf_19_run_gate_command_records_a_gate_and_exits_by_its_result() {
+        let dir = tempfile::tempdir().unwrap();
+        let (t, mut store, run) = gated_world(dir.path(), "MERGED");
+        let err = super::gate_cmd(&t, &mut store, &run, None).unwrap_err();
+        assert!(err.to_string().contains("has no check"), "{err}");
+        finish::set_default_check(store.conn(), &run.run_id, "test -f b").unwrap();
+        let code = super::gate_cmd(&t, &mut store, &run, None).unwrap();
+        assert_eq!(code, ExitCode::SUCCESS);
+        let code = super::gate_cmd(&t, &mut store, &run, Some("exit 4")).unwrap();
+        assert_eq!(code, ExitCode::FAILURE);
+        let rows: String = store
+            .conn()
+            .query_row(
+                "SELECT group_concat(command || '=' || exit_code, ';') FROM
+                    (SELECT command, exit_code FROM run_gates ORDER BY gate_id)",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(rows, "test -f b=0;exit 4=4");
+    }
+
+    #[test]
+    fn trf_20_run_close_asks_gh_and_refuses_an_open_pr() {
+        let dir = tempfile::tempdir().unwrap();
+        let (t, mut store, run) = gated_world(dir.path(), "OPEN");
+        let err = super::close_run_cmd(&t, &mut store, &run, None, None).unwrap_err();
+        assert!(err.to_string().contains("no gate on its tip"), "{err}");
+        assert_eq!(
+            super::gate_cmd(&t, &mut store, &run, Some("true")).unwrap(),
+            ExitCode::SUCCESS
+        );
+        let err = super::close_run_cmd(&t, &mut store, &run, None, None).unwrap_err();
+        assert!(
+            err.to_string().contains("PR #7 is open, not merged"),
+            "{err}"
+        );
+        let args = std::fs::read_to_string(dir.path().join("gh.args")).unwrap();
+        assert!(args.contains("pr view 7 --json state"), "{args}");
+        assert_eq!(status_of(&store, &run), "active");
+
+        let code = super::close_run_cmd(&t, &mut store, &run, None, Some("not wanted".into()));
+        assert_eq!(code.unwrap(), ExitCode::SUCCESS);
+        assert_eq!(status_of(&store, &run), "done");
+    }
+
+    #[test]
+    fn trf_20_run_close_passes_with_a_merged_pr_and_without_gh() {
+        let dir = tempfile::tempdir().unwrap();
+        let (t, mut store, run) = gated_world(dir.path(), "MERGED");
+        super::gate_cmd(&t, &mut store, &run, Some("true")).unwrap();
+        super::close_run_cmd(&t, &mut store, &run, None, None).unwrap();
+        assert_eq!(status_of(&store, &run), "done");
+
+        // No gh: the PR condition is not applicable.
+        let dir = tempfile::tempdir().unwrap();
+        let (mut t, mut store, run) = gated_world(dir.path(), "OPEN");
+        t.gh = dir.path().join("no-such-gh");
+        super::gate_cmd(&t, &mut store, &run, Some("true")).unwrap();
+        let pr = finish::pr::pr_check(&t.gh, &t.git, &run).unwrap();
+        assert!(
+            matches!(&pr, runs::PrCheck::NotApplicable(w) if w.contains("gh is not installed")),
+            "{pr:?}"
+        );
+        super::close_run_cmd(&t, &mut store, &run, None, None).unwrap();
+        assert_eq!(status_of(&store, &run), "done");
     }
 }

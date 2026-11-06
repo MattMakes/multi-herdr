@@ -3067,6 +3067,11 @@ fn a_closed_run_frees_the_project_for_the_next_run() {
     assert!(text(&o).contains("T-1 (queued)"), "{}", text(&o));
 
     ok(&h, &["ledger", "cancel", "T-1", "not needed"]);
+    // A settled run still needs a passing gate on its tip (TRF-20).
+    let o = h.run(&["ledger", "run", "close"]);
+    assert!(!o.status.success(), "{}", text(&o));
+    assert!(text(&o).contains("has no gate on its tip"), "{}", text(&o));
+    ok(&h, &["ledger", "run", "gate", "--check", "true"]);
     let closed = ok(&h, &["ledger", "run", "close"]);
     assert!(closed.contains("Run a closed as done."), "{closed}");
     ok(&h, &["ledger", "run", "new", "b"]);
@@ -3075,6 +3080,10 @@ fn a_closed_run_frees_the_project_for_the_next_run() {
     assert!(out(&o).starts_with("Run b (active)."), "{}", text(&o));
 
     // The slug of a closed run can be used again.
+    ok(
+        &h,
+        &["ledger", "run", "gate", "--run", "b", "--check", "true"],
+    );
     ok(&h, &["ledger", "run", "close", "--run", "b"]);
     ok(&h, &["ledger", "run", "new", "a"]);
     let runs = json_of(&h, &["ledger", "run", "list", "--json"]);
@@ -3106,6 +3115,7 @@ fn close_abandon_cancels_the_open_tasks() {
 fn run_new_refuses_an_old_run_branch_behind_the_main_branch() {
     let h = world("tl-oldbranch");
     ok(&h, &["ledger", "run", "new", "a"]);
+    ok(&h, &["ledger", "run", "gate", "--check", "true"]);
     ok(&h, &["ledger", "run", "close"]);
     project_file(&h, "new.txt", "x");
     git_commit_all(&h, "main moves on");
@@ -3127,6 +3137,7 @@ fn the_watchdog_of_a_closed_run_exits() {
     // It runs while the run is active.
     std::thread::sleep(Duration::from_millis(1500));
     assert!(child.try_wait().unwrap().is_none(), "the watchdog runs");
+    ok(&h, &["ledger", "run", "gate", "--check", "true"]);
     ok(&h, &["ledger", "run", "close"]);
     // 1 tick is 1 s at a 10 s check interval.
     let until = Instant::now() + Duration::from_secs(5);

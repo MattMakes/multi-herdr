@@ -583,6 +583,7 @@ fn spawn_checks_the_run_the_persona_and_the_replaced_worker() {
         "{}",
         missing.err
     );
+    w.ok(&["ledger", "run", "gate", "--check", "true"]);
     w.ok(&["ledger", "run", "close"]);
     let closed = w.run(&["spawn", "sonnet", "--run", "r1"]);
     assert_eq!(closed.code, 1);
