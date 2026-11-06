@@ -8,8 +8,8 @@ read its files, join it as a worker, or run one yourself.
 
 | role | who | commands |
 |---|---|---|
-| orchestrator | 1 pane, started by `horch fleet` | `horch sessions`, `horch spawn`, `horch assign`, `horch tell`, `horch route`, `horch inbox` |
-| worker | 1 pane per unit of work, started by `horch spawn` | `horch note`, `horch tell orchestrator`, `horch done` |
+| orchestrator | 1 pane, started by `horch fleet` | `horch ledger` (queue, board, gate, close), `horch spawn`, `horch tell`, `horch route`, `horch inbox`, `horch fleet stop` |
+| worker | 1 pane per task, started by `horch spawn` | `horch ledger claim`, `horch ledger progress`, `horch tell orchestrator`, `horch ledger finish`, `horch ledger done`, `horch ledger handoff` |
 
 The worker briefing is `teammates/_base/fleet-worker.md`; the orchestrator
 briefing is `teammates/_base/fleet-orchestrator.md`; the orchestrator's
@@ -28,36 +28,79 @@ The role list includes agent state and unanswered questions. `horch peek
 not acknowledge a message; only `inbox` does. The courier keeps retrying pending
 mail and pauses with an operator notification when Claude needs `/login`.
 
+Every mail line shows its mail id: `[<role> #<id>] <KEYWORD>: <text>`. A
+redelivery repeats the id. The orchestrator answers 1 question with
+`horch tell <role> --answers <id> "<text>"`, and the worker sees
+`[orchestrator re #<id>] <text>`. A tell without `--answers` closes no
+question.
+
 The operator starts the orchestrator with no task. Its briefing ends with
 "Acknowledge and await further instruction.", so it acknowledges the briefing
-and waits for the operator's first message. A worker always gets its task at
-spawn.
+and waits for the operator's first message. Pull is the only dispatch model:
+`horch spawn` takes no task text, and a worker claims its task from the task
+ledger. A one-off goes through `horch ledger task "<title>" --persona <p>`.
 
 ## Task ledger runs
 
-A run can be driven by the task ledger (`docs/specs/task-ledger.md`). Then
-the orchestrator only queues work, and workers claim it:
+Every run is driven by the task ledger (`docs/specs/task-ledger.md`). The
+orchestrator only queues work, and workers claim it:
 
 | step | who | command |
 |---|---|---|
-| create the run and its run branch | orchestrator | `horch ledger run new <slug>` |
+| write the spec and the tickets | spec-writer, ticket-writer | `docs/specs/<slug>.md`, `docs/tickets/<slug>/` (format: `docs/specs/ticket-format.md`) |
+| check the tickets | orchestrator | `horch ledger add-map --dry-run <MAP.md>` |
+| create the run and its run branch | orchestrator | `horch ledger run new <slug> [--check "<cmd>"]` |
 | queue the tickets | orchestrator | `horch ledger add-map <MAP.md>` or `horch ledger add --file <ticket> --primary <persona>` |
-| spawn exactly the workers needed | orchestrator | `horch ledger plan-workers`, then `horch spawn <persona>` with no task |
-| take a task | worker | `horch ledger claim` |
+| queue a one-off | orchestrator | `horch ledger task "<title>" --persona <p> [--file <ticket>] [--check "<cmd>"\|none]` |
+| spawn exactly the workers needed | orchestrator | `horch ledger plan-workers`, then `horch spawn <persona>` |
+| take a task | worker | `horch ledger claim` (prints the ticket snapshot, then the path) |
 | record milestones | worker | `horch ledger progress "<text>"` |
 | finish: the run's steps (all 7 under `--verify full`: check, code-sweep, complexity-sweep, recheck, land, pr, cleanup) | worker | `horch ledger finish` (again after each fix) |
 | close the task | worker | `horch ledger done "<summary>"` |
-| read the board | anyone | `horch ledger status` (exit 0 = all done) |
+| hand the task to a fresh worker | worker | `horch ledger handoff <path>` |
+| read the board | anyone | `horch ledger status` (exit 0 = the run is settled) |
+| run the whole-run gate | orchestrator | `horch ledger run gate [--check "<cmd>"]` |
+| close the run | orchestrator | `horch ledger run close [--pr-declined "<reason>" \| --abandon "<reason>"]` |
+
+A run has a default check (`run new --check`). A ticket with no `**Check:**`
+inherits it. A task with no check does not land, unless its ticket says
+`**Check:** none`. `run close` needs a settled run, a passing gate on the
+run-branch tip, and a merged or declined PR. The operator merges the PR.
+
+`horch ledger finish` spawns the code-sweep reviewers itself and sends the
+orchestrator 1 NOTE that names them. A ticket's `**Review:**` sets the rounds
+(none 0, light 1, full at most 3). Rounds 2 and 3 review only the change since
+the last reviewed tree, with `codex-reviewer-light` and
+`architect-reviewer-light`. Findings keep their `F<n>` id in every round. The
+author answers in the answers file (`F<n>: <reason>`), and the next round's
+reviewers write `- F<n> accepted` or `- F<n> rejected: <why>` under
+`## Answers`.
+
+A workspace holds at most 1 active run that is not a solo run. A spawn with
+no `--run` joins only the active run of its own workspace. A run made outside
+herdr by an older horch has no workspace id and needs `--run <slug>`. One-off
+tasks go to the solo run `solo-<workspace>`.
+
+The watchdog respawns a dead orchestrator: at most 1 time in 10 min and 3
+times in a run, never after `horch fleet stop` or `run close`. The new
+orchestrator first reads `ai_docs/handoffs/orchestrator-whats-next.md`, then
+`ai_docs/plans/<run>/decisions.md`, then `horch ledger status`. An
+orchestrator launch claims its run: it records the workspace and clears a
+recorded stop. The `Orchestrator` line of `horch ledger status` shows the
+respawns and the stop.
 
 `horch worker` records the supervisor's and the agent's PIDs and checks in
 every 30 s. A watchdog checks every working worker every 10 minutes and
 reaps a worker whose process is gone or that shows no progress for 3
 checks; its task is queued again first, and the replacement
 (`horch spawn <persona> --replaces <worker>`) gets the dead worker's
-transcript path and worktree. `horch ledger stop` is the only way to stop a
-worker. `horch ledger unfinished` lists past work that never landed,
+transcript path and worktree. `horch ledger stop` stops 1 worker;
+`horch ledger cancel` and `run close --abandon` stop the worker of each task
+they cancel. `horch ledger unfinished` lists past work that never landed,
 including the history imported from the old JSON ledgers
-(`horch ledger import`).
+(`horch ledger import`). Session records live in the `session_records`
+table of the task ledger; `import` copies an old JSON session ledger there
+once.
 
 An outstanding review, unanswered question or `progress "waiting: ..."` note
 gives a worker a waiting reason and deadline. These waits suspend stall counting
@@ -147,21 +190,23 @@ of the oldest measurement; `status` walks no folder. Rows that triage has not
 measured add `; <n> not measured`. With no measurement the line says
 `(disk not measured; run horch worktree triage)`.
 
-## Plan files
+## Tickets and plan files
+
+The tickets are the contract. They live in git, in `docs/tickets/<slug>/`,
+beside the spec `docs/specs/<slug>.md`. Each ticket starts with the field
+block of `docs/specs/ticket-format.md`. `add-map` stores a snapshot of each
+ticket, and the claim prints it. A worker edits only the `**Own:**` paths of
+its ticket. A worker that needs another file asks first.
 
 `ai_docs/` is local scratch. It is not in git (no commit holds it), so a
-fresh clone has no `ai_docs/`. A run keeps its plans there, in `ai_docs/plans/<run>/`:
+fresh clone has no `ai_docs/`. A run keeps its notes there, in `ai_docs/plans/<run>/`:
 
 | file | what it holds |
 |---|---|
 | `00-conventions.md` (or `00-common.md`) | the rules every unit follows: sources, the branch mode, shared files, the gate, hard rules |
-| `<unit>.md` (for example `d09-agent-list.md`) | 1 unit: `GOAL`, `CONTEXT`, `FILES` (`own` and `do not touch`), `STEPS`, and often an `EXECUTION` section the orchestrator adds |
+| `decisions.md` | the operator's decisions, their reasons and the rejected options |
+| `brief.md` | the operator's idea in their words, the input of the spec-writer task |
 | `<unit>-impl.md` | optional: a detailed implementation plan a planner wrote for an executor |
-| `STATUS.md` | the table of units, workers and states (`running`, `MERGED`, `queued`), the merge order and open notes |
-
-The orchestrator spawns a worker with the task "Read and follow `<plan
-path>` exactly." The plan file is the contract. A worker edits only the files
-under `own`. A worker that needs another file asks first.
 
 ## Phases and skills
 
@@ -219,7 +264,7 @@ In this mode:
 
 - Scratch repos for experiments go in `.worktrees/_scratch/`, which is
   git-ignored and inside the trusted project folder. Never use `/tmp`.
-- A worker edits only the files in the `FILES` section of its plan.
+- A worker edits only the `**Own:**` paths of its ticket.
 - The tree must compile at every commit. Never leave a half-edited `.rs`
   file while you wait.
 - A worker commits only its own paths:
@@ -260,7 +305,9 @@ branch, runs the gate, fast-forwards the integration branch, and removes the
 worktree. On a conflict, the worker rebases, runs the check, and runs the land
 command again. `horch done` refuses while the worker has an open claim.
 `horch done --unlanded "<reason>" "<summary>"` is the last resort. It keeps
-the branch and reports it to the orchestrator.
+the branch and reports it to the orchestrator. In a ledger run it parks the
+task with its worktree; its dependents wait, and `horch ledger requeue`
+resumes it on the same worktree.
 
 Shared files (for example `skills/README.md`, `skills/copied.json`,
 `SKIP_NEW_TEAMMATES`) get lines from several units. Each unit adds its lines
@@ -278,7 +325,7 @@ learn why the code is the way it is.
 
 ## Messages
 
-Every `horch tell`, `horch note` and `horch done` message uses Simplified
+Every `horch tell`, `horch ledger progress` and `horch ledger done` message uses Simplified
 Technical English: short sentences, active voice, 1 fact per sentence. A
 report starts with the role tag and 1 keyword:
 

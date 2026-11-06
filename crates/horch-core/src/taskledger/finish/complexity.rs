@@ -448,7 +448,9 @@ pub fn step(cx: &Ctx<'_>) -> Result<Outcome> {
     let tree = git.tree(&cx.dir).ok();
     if files.is_empty() && rust.is_empty() {
         return Ok(
-            Outcome::not_applicable("no changed file is in a language the analyser reads")
+            Outcome::not_applicable(
+                "no changed file is in a language that the analyser (TypeScript, JavaScript, Python) or clippy (Rust) reads",
+            )
                 .judged(tree),
         );
     }

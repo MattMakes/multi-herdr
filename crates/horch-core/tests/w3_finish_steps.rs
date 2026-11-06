@@ -600,7 +600,7 @@ fn complexity_sweep_skips_files_the_analyser_cannot_read() {
     assert_eq!(step(&r, "complexity-sweep").status, "not_applicable");
     assert_eq!(
         note(&r, "complexity-sweep"),
-        "no changed file is in a language the analyser reads"
+        "no changed file is in a language that the analyser (TypeScript, JavaScript, Python) or clippy (Rust) reads"
     );
     assert!(step(&r, "complexity-sweep").judged_rev.is_some());
 }

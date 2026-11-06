@@ -312,12 +312,16 @@ and Prime stay on this route:
   reporter, source `herdr:pi`); the in-place round trip is not verified
   on 0.10.0.
 
-On `COMPACT-READY <path>` when `horch compact` refuses with "fresh route",
-on a `[horch] BLOCKED:` line, or on a row in state `compact-lost`: the
-orchestrator tells the worker to run `horch done` with a summary that names
-`<path>`, then spawns the same teammate with a task that names the plan file
-and `PRIOR WORK: read <path> first`. horch types nothing into a pane that
-may be busy, so this route works when herdr reports `unknown` for the pane.
+On `COMPACT-READY <path>` when `horch compact` refuses with "fresh route"
+or "handoff route", on a `[horch] BLOCKED:` line, or on a row in state
+`compact-lost` or `handoff`: the orchestrator uses the handoff route. It
+tells the worker to write `<path>` and run `horch ledger handoff <absolute
+path>`. The worker ends `handed_off`, its task is queued again first with
+its worktree, and the replacement's claim prints
+`PRIOR WORK: read <path> first`. A worker in state `handoff` gets the same
+instruction from its own `horch note` (`NOTE: Context handoff: ...`) and
+runs it itself. horch types nothing into a pane that may be busy, so this
+route works when herdr reports `unknown` for the pane.
 
 ### 4.3 Orchestrator (both flavors)
 
@@ -423,9 +427,30 @@ reasons:
 - Exit 0, also when rows are unreadable. Exit 1 only when the ledger cannot
   be read (1 stderr line).
 
-`--over`: the header and only the rows in `over`, `requested`,
-`request-stale`, `compact-lost` or `compact-failed`, with their `reasons:` lines. With none it prints exactly
-`no session is over its threshold` (no header), exit 0.
+`--over`: the header and every row whose state is not `ok`, with their
+`reasons:` lines. Then `instructions:` and 1 line `  <state>: <id>` per
+state shown, in first-seen order. Each id names 1 instruction in the
+orchestrator briefing and in the worker briefing (TRF-08, TRF-46):
+
+| state | instruction id | what the row means |
+|---|---|---|
+| `compact-lost` | `ctx-compact-lost` | the compaction job is gone mid-run; the reason names the step and the log |
+| `no-session` | `ctx-no-session` | the record has no session id |
+| `not-read` | `ctx-not-read` | the harness has no transcript reader |
+| `no-transcript` | `ctx-no-transcript` | the session has no transcript file yet |
+| `unknown` | `ctx-unknown` | the transcript has no usable token count |
+| `compacting` | `ctx-compacting` | a compaction job runs now |
+| `pending` | `ctx-pending` | the harness compacted; the next response gives the count |
+| `handoff` | `ctx-handoff` | still over the threshold after 1 compaction: the handoff route, not a new compaction |
+| `compact-failed` | `ctx-compact-failed` | a job failed after the newest ask |
+| `request-stale` | `ctx-request-stale` | the newest ask is older than 20 min with no compaction |
+| `requested` | `ctx-requested` | the worker was asked in this cycle |
+| `over` | `ctx-over` | at or over the threshold and not asked yet |
+
+`ok` has no id. With no row that is not `ok`, `--over` prints exactly
+`no session is over its threshold` (no header), exit 0. For a `handoff`
+row, `horch compact <role>` and `--request` refuse and name the handoff
+route; `--force` still compacts.
 
 `--windows`: 1 row per roster teammate on a harness with a known trigger
 rule, as a launch from the current directory would decide now: TEAMMATE,
@@ -723,7 +748,7 @@ a job that runs in its own herdr pane.
 | the job is killed later | `job.json` with a dead pid or a stale heartbeat: `compact-lost`; 1 `compact-failed` event | `horch context --over` row and its reason; ledger |
 | 2 `horch compact` for 1 role | the second sees a live job (or `AlreadyExists`) and exits 0 `already running` | stdout line |
 | handoff missing or stale | refused; nothing typed | 1 stderr line |
-| the worker ignores the request or the warning | the row is `requested`, then `request-stale` after 20 minutes; `--request` asks again once, then the orchestrator uses the fresh route | `horch context` |
+| the worker ignores the request or the warning | the row is `requested`, then `request-stale` after 20 minutes; `--request` asks again once, then the orchestrator uses the handoff route | `horch context` |
 | the handoff costs more than the headroom | a native compaction during the handoff; the block keeps the state | LAST COMPACT |
 | herdr does not detect the agent (Prime 0.9.4: agent `null`; 0.10.0 reports itself) | the job never sees idle and fails `wait-idle`; it types nothing. Prime stays on the fresh route, which types nothing | `[horch] BLOCKED:` line on a forced job |
 | pi answers `/compact` with "Nothing to compact (session too small)" | the in-place round trip is not verified; pi stays on the fresh route | live check C5 |
@@ -749,7 +774,7 @@ slice 3 adds CTX-21 and CTX-25.
 | CTX-06 | The window a pane uses is proved per tier by a re-runnable live check that reads the harness's own report (`/autocompact` for Claude) and compares it with `horch context --windows`. | W1 | ctx_06_windows_view_lists_claude_and_codex_teammates, ctx_06_live_check_covers_every_tier |
 | CTX-07 | Threshold = `min(base, floor(0.8 x native))`, base 300,000; unknown native gives base. | W1 | ctx_07_threshold_is_min_of_base_and_eight_tenths, ctx_07_unknown_native_uses_base, ctx_07_native_trigger_per_rule, ctx_07_compaction_pure_modules_do_no_io |
 | CTX-08 | The roster check fails a teammate whose fleet window leaves headroom below 20,000. | W1 | ctx_08_roster_check_fails_headroom_below_floor, ctx_08_builtin_roster_passes_the_floor |
-| CTX-09 | `horch context --over` prints only `over`, `requested`, `request-stale`, `compact-lost` and `compact-failed` rows, else exactly `no session is over its threshold`, exit 0. The orchestrator briefing names it at 2 checkpoints; the Codex orchestrator may run it. | W1 | ctx_09_over_prints_only_over_and_requested, ctx_09_over_prints_compact_lost, over_prints_the_age_of_a_requested_and_a_stale_ask, over_lists_a_compact_failed_row_with_its_step, a_request_on_a_stale_row_types_and_records_again, a_stale_row_with_two_asks_is_not_asked_a_third_time, ctx_09_over_with_none_prints_exact_line, ctx_09_orchestrator_briefing_names_the_checkpoints |
+| CTX-09 | `horch context --over` prints every row whose state is not `ok`, then 1 `<state>: <id>` instruction line per state shown, else exactly `no session is over its threshold`, exit 0. The orchestrator briefing names it at 2 checkpoints and has 1 instruction per id; the Codex orchestrator may run it. | W1 | trf_08_over_lists_every_non_ok_state_with_its_instruction_id, trf_09_over_shows_a_row_still_over_after_1_compaction_as_handoff, trf_46_every_context_state_has_an_instruction, ctx_09_over_prints_compact_lost, over_prints_the_age_of_a_requested_and_a_stale_ask, over_lists_a_compact_failed_row_with_its_step, a_request_on_a_stale_row_types_and_records_again, a_stale_row_with_two_asks_is_not_asked_a_third_time, ctx_09_over_with_none_prints_exact_line, ctx_09_orchestrator_briefing_names_the_checkpoints |
 | CTX-10 | `horch note` warns a session at or over its threshold, once per compaction cycle, after recording the note; a check failure changes nothing; the rule is `policy::should_warn`; a failed cache write does not hide the reading. Live check B2 passes for `workspace-write` Codex panes; for a `read-only` Codex pane the orchestrator checkpoint is the only watch. | W1 | ctx_10_rule_a_cycle_starts_at_newest_compaction, ctx_10_should_warn_is_classify_over, ctx_10_cache_write_failure_keeps_the_reading, ctx_10_note_warns_once_over_threshold, ctx_10_note_silent_on_unknown_pending_or_error, ctx_10_note_warns_again_after_compaction, ctx_10_note_warns_with_a_read_only_cache_dir |
 | CTX-11 | The orchestrator asks a worker to prepare; the worker answers `[<role>] NOTE: COMPACT-READY <path>`; the row shows `requested`. | W1 | ctx_11_requested_state_after_ask, ctx_11_request_types_message_and_records_event, ctx_11_live_for_role_filters_by_workspace, ctx_11_worker_briefing_explains_compact_ready, ctx_11_briefing_prefixes_start_the_rendered_messages |
 | CTX-12 | Handoff path `ai_docs/handoffs/<role>-whats-next.md`; distinct per role; the handoff skill defaults to it. | W1 | ctx_12_handoff_path_per_role_is_distinct, ctx_12_handoff_skill_names_the_role_path |
