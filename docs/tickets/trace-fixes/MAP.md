@@ -44,6 +44,7 @@ Spec: [docs/specs/trace-fixes.md](../../specs/trace-fixes.md)
 | 38 | [A light reviewer falls back to the other vendor's light reviewer](38-light-reviewer-fallback.md) | primary `opus`, fallback `backend-developer` | yes | 4 |  |
 | 39 | [Round 2-3 review tasks queue with the other vendor's light reviewer as fallback](39-round2-fallback.md) | primary `opus`, fallback `backend-developer` | yes | 5 | 38 |
 | 40 | [The pr step waits for GitHub's PR head instead of failing on a fresh push](40-pr-head-lag.md) | primary `opus`, fallback `backend-developer` | yes | 5 |  |
+| 41 | [The outbox drain releases its lock explicitly (flaky trf_21 tests)](41-outbox-lock-release.md) | primary `opus-hardening`, fallback `opus` | yes | 5 |  |
 
 ## Waves
 
@@ -51,7 +52,7 @@ Spec: [docs/specs/trace-fixes.md](../../specs/trace-fixes.md)
 - Wave 2: 10, 11, 12, 17, 34, 35
 - Wave 3: 13, 14, 18, 19, 36, 37
 - Wave 4: 15, 16, 21, 38
-- Wave 5: 20, 22, 39, 40
+- Wave 5: 20, 22, 39, 40, 41
 - Wave 6: 23, 25, 26
 - Wave 7: 24, 27
 - Wave 8: 28, 31
