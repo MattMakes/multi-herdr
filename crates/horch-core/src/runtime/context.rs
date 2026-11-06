@@ -164,6 +164,9 @@ pub struct Settings {
     pub machine_file: Option<PathBuf>,
     /// `HORCH_PROBE_TIMEOUT_MS`.
     pub probe_timeout: Option<Duration>,
+    /// `HORCH_LOCAL_PROBE_TIMEOUT_MS`: the deadline of each command of the
+    /// local pool's health check. `None` is the 5 s default.
+    pub local_probe_timeout: Option<Duration>,
     /// `HORCH_TELL_GRACE_MS`: how long `horch tell` waits for herdr to see an
     /// agent in a pane whose role registered that recently. `None` is the
     /// default ([`crate::messaging::delivery::TELL_GRACE`]).
@@ -235,6 +238,9 @@ pub struct Inherited {
     pub hostname: Option<String>,
     /// `HERDR_SESSION`.
     pub herdr_session: Option<String>,
+    /// `HERDR_SOCKET_PATH`: the herdr server socket a pane's horch commands
+    /// connect to.
+    pub herdr_socket_path: Option<PathBuf>,
     /// `OPENCODE_DISABLE_EXTERNAL_SKILLS` (an OpenCode harness default yields to it).
     pub opencode_disable_external_skills: Option<String>,
     /// `RLM_MAX_DEPTH` (a Prime harness default yields to it).
@@ -285,6 +291,7 @@ impl Inherited {
             local_app_data: nonempty_path(env, "LOCALAPPDATA"),
             hostname: nonempty("HOSTNAME").or_else(|| nonempty("COMPUTERNAME")),
             herdr_session: nonempty("HERDR_SESSION"),
+            herdr_socket_path: nonempty_path(env, "HERDR_SOCKET_PATH"),
             opencode_disable_external_skills: env.var("OPENCODE_DISABLE_EXTERNAL_SKILLS"),
             rlm_max_depth: env.var("RLM_MAX_DEPTH"),
             claude_code_auto_compact_window: env.var("CLAUDE_CODE_AUTO_COMPACT_WINDOW"),
@@ -346,6 +353,11 @@ pub struct RuntimeContext {
     pub settings: Settings,
     pub inherited: Inherited,
     pub worker: Option<WorkerEnv>,
+    /// `HORCH_REPORT_SOCKET`: this process runs in a `horch_access: report`
+    /// pane. The CLI then sends only `ledger progress`, `tell` and `done`
+    /// to this socket and refuses every other command
+    /// (`messaging::report`).
+    pub report_socket: Option<PathBuf>,
 }
 
 impl RuntimeContext {
@@ -396,6 +408,9 @@ impl RuntimeContext {
             probe_timeout: nonempty("HORCH_PROBE_TIMEOUT_MS")
                 .and_then(|ms| ms.parse::<u64>().ok())
                 .map(Duration::from_millis),
+            local_probe_timeout: nonempty("HORCH_LOCAL_PROBE_TIMEOUT_MS")
+                .and_then(|ms| ms.parse::<u64>().ok())
+                .map(Duration::from_millis),
             tell_grace: nonempty("HORCH_TELL_GRACE_MS")
                 .and_then(|ms| ms.parse::<u64>().ok())
                 .map(Duration::from_millis),
@@ -420,6 +435,7 @@ impl RuntimeContext {
             settings,
             inherited,
             worker: WorkerEnv::from_env(env),
+            report_socket: nonempty_path(env, crate::messaging::report::ENV),
         })
     }
 
@@ -516,6 +532,7 @@ mod tests {
             .with("HORCH_QUOTA_FILE", "/q.json")
             .with("HORCH_MACHINE_FILE", "/m.json")
             .with("HORCH_PROBE_TIMEOUT_MS", "250")
+            .with("HORCH_LOCAL_PROBE_TIMEOUT_MS", "120000")
             .with("HORCH_TELL_GRACE_MS", "0")
             .with("HORCH_SPAWN_WAIT_MS", "1500")
             .with("HORCH_FAULT", "after-append,abort-after-append")
@@ -528,6 +545,7 @@ mod tests {
             .with("LOCALAPPDATA", "/lad")
             .with("HOSTNAME", "box")
             .with("HERDR_SESSION", "s")
+            .with("HERDR_SOCKET_PATH", "/herdr.sock")
             .with("HORCH_ROLE", "sonnet-1")
             .with("HORCH_TEAMMATE", "sonnet")
             .with("HORCH_AGENT", "claude")
@@ -581,6 +599,7 @@ mod tests {
         assert_eq!(s.quota_file, Some(PathBuf::from("/q.json")));
         assert_eq!(s.machine_file, Some(PathBuf::from("/m.json")));
         assert_eq!(s.probe_timeout, Some(Duration::from_millis(250)));
+        assert_eq!(s.local_probe_timeout, Some(Duration::from_secs(120)));
         assert_eq!(s.tell_grace, Some(Duration::ZERO));
         assert_eq!(s.spawn_wait, Some(Duration::from_millis(1500)));
         assert!(s.faults.has("after-append") && s.faults.has("abort-after-append"));
@@ -596,6 +615,7 @@ mod tests {
         assert_eq!(i.local_app_data, Some(PathBuf::from("/lad")));
         assert_eq!(i.hostname.as_deref(), Some("box"));
         assert_eq!(i.herdr_session.as_deref(), Some("s"));
+        assert_eq!(i.herdr_socket_path, Some(PathBuf::from("/herdr.sock")));
 
         let w = ctx.worker.as_ref().unwrap();
         assert_eq!(w.role.as_deref(), Some("sonnet-1"));
@@ -620,6 +640,7 @@ mod tests {
         assert_eq!(ctx.settings.now, None);
         assert_eq!(ctx.settings.tiling, TilingMode::Automatic);
         assert_eq!(ctx.settings.probe_timeout, None);
+        assert_eq!(ctx.settings.local_probe_timeout, None);
         assert_eq!(ctx.settings.tell_grace, None);
         assert_eq!(ctx.settings.spawn_wait, None);
         assert!(ctx.settings.faults.is_empty());
@@ -720,6 +741,21 @@ mod tests {
             RuntimeContext::from_env(&MapEnv::new("/").with("HORCH_NOW", "yesterday")).unwrap();
         assert_eq!(ctx.settings.now, None);
         assert_eq!(ctx.settings.now_unparsable.as_deref(), Some("yesterday"));
+    }
+
+    #[test]
+    fn the_local_probe_timeout_parses_milliseconds_and_ignores_the_rest() {
+        for (value, want) in [
+            ("7000", Some(Duration::from_secs(7))),
+            ("0", Some(Duration::ZERO)),
+            ("", None),
+            ("5s", None),
+            ("-1", None),
+        ] {
+            let env = MapEnv::new("/").with("HORCH_LOCAL_PROBE_TIMEOUT_MS", value);
+            let ctx = RuntimeContext::from_env(&env).unwrap();
+            assert_eq!(ctx.settings.local_probe_timeout, want, "{value:?}");
+        }
     }
 
     #[test]

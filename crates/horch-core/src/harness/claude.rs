@@ -19,7 +19,7 @@ use super::{
 };
 use crate::compaction::window::OperatorWindow;
 use crate::roster::{expand_home, operator_enabled_plugins, operator_status_line};
-use crate::roster::{HarnessDefault, Teammate};
+use crate::roster::{HarnessDefault, HorchAccess, Teammate};
 use crate::runtime::RuntimeContext;
 use crate::skills::Bundle;
 
@@ -177,6 +177,9 @@ pub(super) fn claude_command(
     push_plugin_args(&mut cmd, env, teammate)?;
     check_sandbox_host(env, teammate)?;
     push_settings_arg(&mut cmd, env, teammate)?;
+    if let Some(socket) = report_socket(env, teammate) {
+        cmd.env(crate::messaging::report::ENV, socket);
+    }
     push_session_args(&mut cmd, session);
     // Escape-hatch args sit right before the prompt: a variadic flag at the
     // end of `args` would eat it. `Roster::check` warns about that.
@@ -321,7 +324,7 @@ fn inline_settings_arg(env: &LaunchEnv, teammate: &Teammate, settings: &str) -> 
     let has_defaults = HarnessDefault::for_harness(&teammate.harness_defaults, HarnessKind::Claude)
         .any(|d| d.settings.is_some());
     let window = applied_window(env);
-    if inline && (has_defaults || window.is_some()) {
+    if inline && (has_defaults || window.is_some() || teammate.sandbox.is_some()) {
         merged_inline_settings(env, teammate, settings, window)
     } else {
         // The teammate named its own file; that file owns the overlay.
@@ -343,8 +346,13 @@ fn merged_inline_settings(
     let obj = value
         .as_object_mut()
         .context("teammate settings must be a JSON object")?;
+    // The teammate's own inline JSON carries no sandbox unless a skills
+    // launch merged it in; the `sandbox:` block is the truth either way.
+    overlay_sandbox(teammate, obj)?;
     let changed = merge_settings_defaults(teammate, obj, || operator_settings(env))?
-        | overlay_window(window, obj);
+        | overlay_window(window, obj)
+        | overlay_horch_paths(env, teammate, obj)?
+        | teammate.sandbox.is_some();
     Ok(if changed {
         value.to_string().into()
     } else {
@@ -362,6 +370,7 @@ fn default_overlay(env: &LaunchEnv, teammate: &Teammate) -> Result<Option<OsStri
     overlay_skill_switches(teammate, &mut overlay, env.home())?;
     copy_operator_status_line(&mut overlay, teammate, env.home());
     overlay_sandbox(teammate, &mut overlay)?;
+    overlay_horch_paths(env, teammate, &mut overlay)?;
     merge_settings_defaults(teammate, &mut overlay, || operator_settings(env))?;
     overlay_window(applied_window(env), &mut overlay);
     Ok((!overlay.is_empty()).then(|| Value::Object(overlay).to_string().into()))
@@ -805,6 +814,224 @@ pub(crate) fn overlay_sandbox(
     Ok(())
 }
 
+/// The report socket of a sandboxed `horch_access: report` teammate.
+fn report_socket<'a>(env: &'a LaunchEnv, teammate: &Teammate) -> Option<&'a PathBuf> {
+    (teammate.sandbox.is_some() && teammate.horch_access == HorchAccess::Report)
+        .then_some(env.report_socket.as_ref())
+        .flatten()
+}
+
+/// Open horch's own paths to a sandboxed teammate's Bash. For
+/// `horch_access: full`, so `horch tell`, `horch done`, `horch ledger` and
+/// `horch spawn` work in the pane:
+/// - the state root and the ledger folder, for read and write;
+/// - Unix sockets under the state root (the channel relays) and
+///   `$HERDR_SOCKET_PATH`, for connect.
+///
+/// For `horch_access: report`, only the pane's report socket, for connect
+/// (`docs/security/sandboxed-pane-horch-access.md`, C1 to C3).
+///
+/// The paths come from the launch's resolved roots, so a moved root is the
+/// one opened. A launch with no `sandbox:` block, or whose settings carry
+/// no sandbox, is unchanged. Returns whether a path was added.
+fn overlay_horch_paths(
+    env: &LaunchEnv,
+    teammate: &Teammate,
+    settings: &mut serde_json::Map<String, Value>,
+) -> Result<bool> {
+    let Some(sandbox) = settings
+        .get_mut("sandbox")
+        .filter(|_| teammate.sandbox.is_some())
+    else {
+        return Ok(false);
+    };
+    let sandbox = sandbox
+        .as_object_mut()
+        .context("sandbox must be an object")?;
+    let (dirs, sockets) = match teammate.horch_access {
+        HorchAccess::Full => (
+            [&env.state_root, &env.ledger_dir],
+            [&env.state_root, &env.herdr_socket],
+        ),
+        HorchAccess::Report => ([&None, &None], [&env.report_socket, &None]),
+    };
+    let mut changed = false;
+    for (section, key, paths) in [
+        ("filesystem", "allowRead", dirs),
+        ("filesystem", "allowWrite", dirs),
+        ("network", "allowUnixSockets", sockets),
+    ] {
+        let list = object_entry(sandbox, section)?
+            .entry(key)
+            .or_insert_with(|| json!([]))
+            .as_array_mut()
+            .with_context(|| format!("sandbox.{section}.{key} must be a list"))?;
+        for path in paths.into_iter().flatten() {
+            let path = Value::String(path.to_string_lossy().into_owned());
+            if !list.contains(&path) {
+                list.push(path);
+                changed = true;
+            }
+        }
+    }
+    // The state root holds every worker's skills bundle, which the pane's
+    // `horch` commands never write (ticket 28; R6).
+    if let (HorchAccess::Full, Some(root)) = (teammate.horch_access, &env.state_root) {
+        changed |= deny_writes(&root.join("skill-bundles"), settings)?;
+    }
+    changed |= overlay_sandbox_dirs(env, teammate, settings)?;
+    if let Some(bundle) = &env.skill_bundle {
+        changed |= overlay_bundle_paths(bundle, settings)?;
+    }
+    if teammate.horch_access == HorchAccess::Full {
+        changed |= overlay_roster_dirs(env, settings)?;
+    }
+    Ok(changed)
+}
+
+/// Open each roster folder `horch spawn` reads in the pane to read, and
+/// close it to write (ticket 35): `~/.config/horch/teammates` and the
+/// briefed `$HORCH_TEAMMATES_DIR`, each when it exists. A pane that could
+/// edit the roster could re-brief the roles it spawns (R6). Bash gets
+/// `allowRead` and `denyWrite`, the Read tool a working directory
+/// (ticket 31), and an `Edit(...)` deny closes it to Edit and Write. A
+/// `Write(...)` deny has no effect (ticket 28 finding). Returns whether an
+/// entry was added.
+fn overlay_roster_dirs(
+    env: &LaunchEnv,
+    settings: &mut serde_json::Map<String, Value>,
+) -> Result<bool> {
+    let mut changed = false;
+    for dir in crate::roster::repository::overlay_dirs(env.home(), env.roster_dir.as_deref()) {
+        if !dir.is_dir() {
+            continue;
+        }
+        let dir = dir.to_string_lossy();
+        changed |= add_entries(
+            settings,
+            [
+                (FS, "allowRead", dir.to_string()),
+                (FS, "denyWrite", dir.to_string()),
+                (PERMS, "additionalDirectories", dir.to_string()),
+                // A rule path that starts with `//` is absolute.
+                (PERMS, "deny", format!("Edit(/{dir}/**)")),
+            ],
+        )?;
+    }
+    Ok(changed)
+}
+
+/// Open the launch's own skills bundle to read and close it to write, for
+/// every tool (ticket 27; `docs/security/sandboxed-pane-horch-access.md`,
+/// R6). The Read tool reads it as a working directory
+/// (`permissions.additionalDirectories`), and deny rules close it to Edit
+/// and Write. Bash gets it in `sandbox.filesystem.allowRead` and
+/// `denyWrite`; `denyWrite` wins over the state root in a `full` pane's
+/// `allowWrite`. A `Read(...)` allow rule does not pass
+/// `blockReadsOutsideWorkingDirectories` (live probe, Claude Code
+/// 2.1.318). Returns whether an entry was added.
+fn overlay_bundle_paths(
+    bundle: &Path,
+    settings: &mut serde_json::Map<String, Value>,
+) -> Result<bool> {
+    let dir = bundle.to_string_lossy();
+    let changed = add_entries(
+        settings,
+        [
+            (FS, "allowRead", dir.to_string()),
+            (PERMS, "additionalDirectories", dir.to_string()),
+        ],
+    )?;
+    Ok(deny_writes(bundle, settings)? | changed)
+}
+
+/// Make each `allowRead` and `allowWrite` path of the teammate's `sandbox:`
+/// block, with `~` expanded, a working directory
+/// (`permissions.additionalDirectories`). Without it, Claude Code asks
+/// before a Bash command that names a path there, because of
+/// `blockReadsOutsideWorkingDirectories` (ticket 31; live probe, Claude Code
+/// 2.1.318). A working directory is open to Edit and Write too, so an
+/// `allowRead`-only path gets an `Edit(...)` deny rule, which also covers
+/// Write. horch's own paths stay out: only `horch` commands use them.
+/// Returns whether an entry was added.
+fn overlay_sandbox_dirs(
+    env: &LaunchEnv,
+    teammate: &Teammate,
+    settings: &mut serde_json::Map<String, Value>,
+) -> Result<bool> {
+    let paths = |key: &str| -> Vec<PathBuf> {
+        let list = teammate
+            .sandbox
+            .as_ref()
+            .and_then(|s| s.get("filesystem"))
+            .and_then(|f| f.get(key))
+            .and_then(Value::as_array);
+        list.into_iter()
+            .flatten()
+            .filter_map(Value::as_str)
+            .map(|p| env.expand_home(p))
+            .collect()
+    };
+    let (reads, writes) = (paths("allowRead"), paths("allowWrite"));
+    let mut changed = false;
+    for dir in reads.iter().chain(&writes) {
+        let dir = dir.to_string_lossy().into_owned();
+        changed |= add_entries(settings, [(PERMS, "additionalDirectories", dir)])?;
+    }
+    for dir in reads.iter().filter(|d| !writes.contains(d)) {
+        // A rule path that starts with `//` is absolute.
+        let rule = format!("Edit(/{}/**)", dir.to_string_lossy());
+        changed |= add_entries(settings, [(PERMS, "deny", rule)])?;
+    }
+    Ok(changed)
+}
+
+const FS: &[&str] = &["sandbox", "filesystem"];
+const PERMS: &[&str] = &["permissions"];
+
+/// Close `dir` to writes for every tool: Bash by
+/// `sandbox.filesystem.denyWrite`, which wins over `allowWrite`, and Edit
+/// and Write by deny rules. Returns whether an entry was added.
+fn deny_writes(dir: &Path, settings: &mut serde_json::Map<String, Value>) -> Result<bool> {
+    let dir = dir.to_string_lossy();
+    // A rule path that starts with `//` is absolute.
+    let rule = |tool: &str| format!("{tool}(/{dir}/**)");
+    add_entries(
+        settings,
+        [
+            (FS, "denyWrite", dir.to_string()),
+            (PERMS, "deny", rule("Edit")),
+            (PERMS, "deny", rule("Write")),
+        ],
+    )
+}
+
+/// Append each `(parents, key, entry)` to the list at `parents.key`, once.
+/// Returns whether an entry was added.
+fn add_entries<const N: usize>(
+    settings: &mut serde_json::Map<String, Value>,
+    entries: [(&[&str], &str, String); N],
+) -> Result<bool> {
+    let mut changed = false;
+    for (parents, key, entry) in entries {
+        let mut node = &mut *settings;
+        for parent in parents {
+            node = object_entry(node, parent)?;
+        }
+        let list = node
+            .entry(key)
+            .or_insert_with(|| json!([]))
+            .as_array_mut()
+            .with_context(|| format!("{}.{key} must be a list", parents.join(".")))?;
+        let entry = Value::String(entry);
+        if !list.contains(&entry) {
+            list.push(entry);
+            changed = true;
+        }
+    }
+    Ok(changed)
+}
+
 /// What in a teammate's `sandbox:` block would open a way out, one line
 /// each: a value against a [`SANDBOX_FORCED`] key, `excludedCommands` (runs
 /// a command outside the sandbox) or `filesystem.disabled`.
@@ -1236,6 +1463,9 @@ mod tests {
     fn sandbox_envs(tmp: &Path) -> [LaunchEnv; 2] {
         [true, false].map(|tools| LaunchEnv {
             path: Some(sandbox_tools_path(&tmp.join(tools.to_string()), tools)),
+            state_root: Some(PathBuf::from("/state/horch")),
+            ledger_dir: Some(PathBuf::from("/home/op/.horch")),
+            herdr_socket: Some(PathBuf::from("/home/op/.config/herdr/herdr.sock")),
             ..LaunchEnv::for_test()
         })
     }
@@ -1279,9 +1509,14 @@ mod tests {
                     "allowUnsandboxedCommands": false,
                     "network": {
                         "allowedDomains": ["api.appstoreconnect.apple.com"],
-                        "strictAllowlist": true
+                        "strictAllowlist": true,
+                        "allowUnixSockets": ["/state/horch", "/home/op/.config/herdr/herdr.sock"]
                     },
-                    "filesystem": {"allowRead": ["~/.config/horch/asc"]}
+                    "filesystem": {
+                        "allowRead": ["~/.config/horch/asc", "/state/horch", "/home/op/.horch"],
+                        "allowWrite": ["/state/horch", "/home/op/.horch"],
+                        "denyWrite": ["/state/horch/skill-bundles"]
+                    }
                 })
             );
             assert_eq!(
@@ -1289,6 +1524,521 @@ mod tests {
                 true
             );
         }
+    }
+
+    /// A `horch_access: report` launch opens only the pane's report socket:
+    /// no state root, ledger folder, relay or herdr socket. It sets
+    /// `HORCH_REPORT_SOCKET`. Through the skills overlay too.
+    #[test]
+    fn a_report_launch_opens_only_the_report_socket() {
+        let mut t = sandboxed(json!({
+            "filesystem": {"allowRead": ["/side"], "allowWrite": ["/side"]}
+        }));
+        t.horch_access = HorchAccess::Report;
+        let mut via_skills = t.clone();
+        via_skills.settings = Some(skills_settings(&t, None).unwrap().to_string());
+        let tmp = tempfile::tempdir().unwrap();
+        let [env, _] = sandbox_envs(tmp.path());
+        if !host_can_sandbox(&env) {
+            return;
+        }
+        let env = LaunchEnv {
+            report_socket: Some(PathBuf::from("/state/horch/report/r1.sock")),
+            ..env
+        };
+        for t in [&t, &via_skills] {
+            let built = super::super::launch::command_in(&env, t, Session::Fresh("id"), "go", None)
+                .unwrap();
+            let settings = settings_arg(&built);
+            let s = &settings["sandbox"];
+            assert_eq!(s["filesystem"]["allowRead"], json!(["/side"]));
+            assert_eq!(s["filesystem"]["allowWrite"], json!(["/side"]));
+            assert_eq!(
+                s["network"]["allowUnixSockets"],
+                json!(["/state/horch/report/r1.sock"])
+            );
+            let text = settings.to_string();
+            for path in ["/home/op/.horch", "herdr.sock", "\"/state/horch\""] {
+                assert!(!text.contains(path), "{path}: {text}");
+            }
+            let socket = built
+                .get_envs()
+                .find(|(k, _)| *k == "HORCH_REPORT_SOCKET")
+                .and_then(|(_, v)| v);
+            assert_eq!(
+                socket,
+                Some(std::ffi::OsStr::new("/state/horch/report/r1.sock"))
+            );
+        }
+    }
+
+    /// T-27: a sandboxed launch with a skills bundle opens that bundle, and
+    /// no other path, to read: a working directory for the Read tool and
+    /// `allowRead` for Bash. Deny rules close it to Edit and Write, and
+    /// `denyWrite` closes it to Bash, also over a `full` pane's state root.
+    /// Through the skills overlay too, for a `full` and a `report` teammate.
+    #[test]
+    fn a_sandboxed_launch_reads_but_does_not_write_its_bundle() {
+        let tmp = tempfile::tempdir().unwrap();
+        let [env, _] = sandbox_envs(tmp.path());
+        if !host_can_sandbox(&env) {
+            return;
+        }
+        let bundle = "/state/horch/skill-bundles/r1";
+        let env = LaunchEnv {
+            report_socket: Some(PathBuf::from("/state/horch/report/r1.sock")),
+            skill_bundle: Some(PathBuf::from(bundle)),
+            ..env
+        };
+        for access in [HorchAccess::Full, HorchAccess::Report] {
+            let mut t = sandboxed(json!({"filesystem": {"allowRead": ["/side"]}}));
+            t.horch_access = access;
+            let mut via_skills = t.clone();
+            via_skills.settings = Some(skills_settings(&t, None).unwrap().to_string());
+            for t in [&t, &via_skills] {
+                let built =
+                    super::super::launch::command_in(&env, t, Session::Fresh("id"), "go", None)
+                        .unwrap();
+                let settings = settings_arg(&built);
+                let fs = &settings["sandbox"]["filesystem"];
+                let reads = fs["allowRead"].as_array().unwrap();
+                assert_eq!(reads.first(), Some(&json!("/side")), "{access:?}");
+                assert_eq!(reads.last(), Some(&json!(bundle)), "{access:?}");
+                let denied = fs["denyWrite"].as_array().unwrap();
+                assert_eq!(denied.last(), Some(&json!(bundle)), "{access:?}");
+                let writes = fs["allowWrite"].as_array().unwrap();
+                assert!(!writes.contains(&json!(bundle)), "{access:?}");
+                let perms = &settings["permissions"];
+                assert_eq!(perms["blockReadsOutsideWorkingDirectories"], true);
+                // `/side` is the teammate's own `allowRead` path (T-31).
+                assert_eq!(perms["additionalDirectories"], json!(["/side", bundle]));
+                let rules = perms["deny"].as_array().unwrap();
+                assert_eq!(
+                    rules[rules.len() - 2..],
+                    [
+                        json!(format!("Edit(/{bundle}/**)")),
+                        json!(format!("Write(/{bundle}/**)"))
+                    ],
+                    "{access:?}"
+                );
+            }
+        }
+    }
+
+    /// T-31: the teammate's own `allowRead` and `allowWrite` paths, with `~`
+    /// expanded, are working directories, so a Bash command that names one
+    /// does not stop at `blockReadsOutsideWorkingDirectories`. An
+    /// `allowRead`-only path gets an `Edit(...)` deny rule. horch's own
+    /// paths are not working directories. Through the skills overlay too,
+    /// for a `full` and a `report` teammate.
+    #[test]
+    fn a_sandboxed_launch_opens_its_own_paths_as_working_directories() {
+        let tmp = tempfile::tempdir().unwrap();
+        let [env, _] = sandbox_envs(tmp.path());
+        if !host_can_sandbox(&env) {
+            return;
+        }
+        let env = LaunchEnv {
+            home: Some(PathBuf::from("/home/op")),
+            report_socket: Some(PathBuf::from("/state/horch/report/r1.sock")),
+            ..env
+        };
+        for access in [HorchAccess::Full, HorchAccess::Report] {
+            let mut t = sandboxed(json!({"filesystem": {
+                "allowRead": ["~/ro", "/both"],
+                "allowWrite": ["/both", "~/w"]
+            }}));
+            t.horch_access = access;
+            let mut via_skills = t.clone();
+            via_skills.settings = Some(skills_settings(&t, None).unwrap().to_string());
+            for t in [&t, &via_skills] {
+                let built =
+                    super::super::launch::command_in(&env, t, Session::Fresh("id"), "go", None)
+                        .unwrap();
+                let perms = &settings_arg(&built)["permissions"];
+                assert_eq!(
+                    perms["additionalDirectories"],
+                    json!(["/home/op/ro", "/both", "/home/op/w"]),
+                    "{access:?}"
+                );
+                let rules = perms["deny"].as_array().unwrap();
+                assert!(
+                    rules.contains(&json!("Edit(//home/op/ro/**)")),
+                    "{access:?}"
+                );
+                for open in ["//both/**", "//home/op/w/**"] {
+                    assert!(
+                        !rules.contains(&json!(format!("Edit({open})"))),
+                        "{access:?}: {open}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// A sandboxed `full` launch closes every skills bundle under the state
+    /// root to writes, with or without a bundle of its own and through the
+    /// skills overlay too (ticket 28; R6). A `report` launch has no state
+    /// root to close.
+    #[test]
+    fn a_full_sandboxed_launch_writes_no_skills_bundle() {
+        let tmp = tempfile::tempdir().unwrap();
+        let [env, _] = sandbox_envs(tmp.path());
+        if !host_can_sandbox(&env) {
+            return;
+        }
+        let bundles = "/state/horch/skill-bundles";
+        let own = format!("{bundles}/r1");
+        for skill_bundle in [None, Some(PathBuf::from(&own))] {
+            let env = LaunchEnv {
+                report_socket: Some(PathBuf::from("/state/horch/report/r1.sock")),
+                skill_bundle: skill_bundle.clone(),
+                ..env.clone()
+            };
+            let t = sandboxed(json!({}));
+            let mut via_skills = t.clone();
+            via_skills.settings = Some(skills_settings(&t, None).unwrap().to_string());
+            for t in [&t, &via_skills] {
+                let built =
+                    super::super::launch::command_in(&env, t, Session::Fresh("id"), "go", None)
+                        .unwrap();
+                let settings = settings_arg(&built);
+                let fs = &settings["sandbox"]["filesystem"];
+                assert_eq!(fs["allowWrite"], json!(["/state/horch", "/home/op/.horch"]));
+                let denied = fs["denyWrite"].as_array().unwrap();
+                assert_eq!(denied.first(), Some(&json!(bundles)), "{skill_bundle:?}");
+                let rules = &settings["permissions"]["deny"].as_array().unwrap()[..2];
+                assert_eq!(
+                    rules,
+                    [
+                        json!(format!("Edit(/{bundles}/**)")),
+                        json!(format!("Write(/{bundles}/**)"))
+                    ],
+                    "{skill_bundle:?}"
+                );
+            }
+            let mut report = sandboxed(json!({}));
+            report.horch_access = HorchAccess::Report;
+            let built =
+                super::super::launch::command_in(&env, &report, Session::Fresh("id"), "go", None)
+                    .unwrap();
+            let text = settings_arg(&built).to_string();
+            assert!(!text.contains(&format!("{bundles}\"")), "{text}");
+            assert!(!text.contains(&format!("{bundles}/**")), "{text}");
+        }
+    }
+
+    /// T-35: a sandboxed `full` launch reads the roster it was briefed from
+    /// and `~/.config/horch/teammates`, so `horch spawn` works in the pane.
+    /// It writes neither (R6): `denyWrite` for Bash, an `Edit(...)` deny for
+    /// the Edit and Write tools, and no `Write(...)` rule (T-28 finding).
+    /// Through the skills overlay too.
+    #[test]
+    fn a_full_sandboxed_launch_reads_but_does_not_write_its_roster() {
+        let tmp = tempfile::tempdir().unwrap();
+        let [env, _] = sandbox_envs(tmp.path());
+        if !host_can_sandbox(&env) {
+            return;
+        }
+        let home = tmp.path().join("home");
+        let user = home.join(".config/horch/teammates");
+        let roster = tmp.path().join("roster");
+        std::fs::create_dir_all(&user).unwrap();
+        std::fs::create_dir_all(&roster).unwrap();
+        let env = LaunchEnv {
+            home: Some(home),
+            roster_dir: Some(roster.clone()),
+            ..env
+        };
+        let t = sandboxed(json!({}));
+        let mut via_skills = t.clone();
+        via_skills.settings = Some(skills_settings(&t, None).unwrap().to_string());
+        for t in [&t, &via_skills] {
+            let built = super::super::launch::command_in(&env, t, Session::Fresh("id"), "go", None)
+                .unwrap();
+            let settings = settings_arg(&built);
+            let fs = &settings["sandbox"]["filesystem"];
+            let perms = &settings["permissions"];
+            let has = |list: &Value, entry: &str| list.as_array().unwrap().contains(&json!(entry));
+            for dir in [&user, &roster] {
+                let dir = dir.to_string_lossy();
+                assert!(has(&fs["allowRead"], &dir), "{settings}");
+                assert!(has(&fs["denyWrite"], &dir), "{settings}");
+                assert!(!has(&fs["allowWrite"], &dir), "{settings}");
+                assert!(has(&perms["additionalDirectories"], &dir), "{settings}");
+                assert!(
+                    has(&perms["deny"], &format!("Edit(/{dir}/**)")),
+                    "{settings}"
+                );
+                assert!(
+                    !has(&perms["deny"], &format!("Write(/{dir}/**)")),
+                    "{settings}"
+                );
+            }
+        }
+    }
+
+    /// T-35: a `report` launch gets no roster path, and a `full` launch with
+    /// no roster dir and no `~/.config/horch/teammates` gets none either.
+    #[test]
+    fn only_a_full_launch_with_a_roster_opens_one() {
+        let tmp = tempfile::tempdir().unwrap();
+        let [env, _] = sandbox_envs(tmp.path());
+        if !host_can_sandbox(&env) {
+            return;
+        }
+        let home = tmp.path().join("home");
+        let user = home.join(".config/horch/teammates");
+        let roster = tmp.path().join("roster");
+        std::fs::create_dir_all(&user).unwrap();
+        std::fs::create_dir_all(&roster).unwrap();
+        let mut report = sandboxed(json!({}));
+        report.horch_access = HorchAccess::Report;
+        let with_roster = LaunchEnv {
+            home: Some(home),
+            roster_dir: Some(roster),
+            report_socket: Some(PathBuf::from("/state/horch/report/r1.sock")),
+            ..env.clone()
+        };
+        let no_roster = LaunchEnv {
+            home: Some(tmp.path().join("empty-home")),
+            ..env
+        };
+        for (env, t) in [(&with_roster, &report), (&no_roster, &sandboxed(json!({})))] {
+            let built =
+                super::super::launch::command_in(env, t, Session::Fresh("id"), "go", None).unwrap();
+            let settings = settings_arg(&built);
+            let text = settings.to_string();
+            assert!(!text.contains("teammates"), "{text}");
+            assert!(!text.contains("roster"), "{text}");
+            assert!(settings["permissions"]
+                .get("additionalDirectories")
+                .is_none());
+        }
+    }
+
+    /// A sandboxed launch with no skills bundle opens no bundle path, and a
+    /// launch with no `sandbox:` block opens none even with a bundle.
+    #[test]
+    fn only_a_sandboxed_bundle_launch_opens_the_bundle() {
+        let tmp = tempfile::tempdir().unwrap();
+        let [env, _] = sandbox_envs(tmp.path());
+        if !host_can_sandbox(&env) {
+            return;
+        }
+        let built = super::super::launch::command_in(
+            &env,
+            &sandboxed(json!({})),
+            Session::Fresh("id"),
+            "go",
+            None,
+        )
+        .unwrap();
+        let settings = settings_arg(&built);
+        // Only the state root's bundle folder (ticket 28), no bundle of its own.
+        assert_eq!(
+            settings["sandbox"]["filesystem"]["denyWrite"],
+            json!(["/state/horch/skill-bundles"])
+        );
+        assert!(settings["permissions"]
+            .get("additionalDirectories")
+            .is_none());
+        assert_eq!(settings["permissions"]["deny"].as_array().unwrap().len(), 2);
+
+        let plain = Teammate {
+            name: "plain".into(),
+            model: Some("sonnet".into()),
+            ..Teammate::default()
+        };
+        let env = LaunchEnv {
+            skill_bundle: Some(PathBuf::from("/state/horch/skill-bundles/r1")),
+            ..env
+        };
+        let argv: Vec<String> =
+            super::super::launch::command_in(&env, &plain, Session::Fresh("id"), "go", None)
+                .unwrap()
+                .get_args()
+                .map(|a| a.to_string_lossy().into_owned())
+                .collect();
+        assert!(
+            !argv.iter().any(|a| a.contains("skill-bundles")),
+            "{argv:?}"
+        );
+    }
+
+    /// A `report` launch with no ledger record has no socket: it opens no
+    /// horch path at all and sets no `HORCH_REPORT_SOCKET`. A `full`
+    /// launch ignores a report socket.
+    #[test]
+    fn a_report_launch_without_a_socket_opens_nothing() {
+        let mut t = sandboxed(json!({}));
+        t.horch_access = HorchAccess::Report;
+        let tmp = tempfile::tempdir().unwrap();
+        let [env, _] = sandbox_envs(tmp.path());
+        if !host_can_sandbox(&env) {
+            return;
+        }
+        let built =
+            super::super::launch::command_in(&env, &t, Session::Fresh("id"), "go", None).unwrap();
+        let settings = settings_arg(&built);
+        assert_eq!(
+            settings["sandbox"]["network"]["allowUnixSockets"],
+            json!([])
+        );
+        assert!(!settings.to_string().contains("/state/horch"));
+        assert!(!built.get_envs().any(|(k, _)| k == "HORCH_REPORT_SOCKET"));
+
+        t.horch_access = HorchAccess::Full;
+        let env = LaunchEnv {
+            report_socket: Some(PathBuf::from("/state/horch/report/r1.sock")),
+            ..env
+        };
+        let built =
+            super::super::launch::command_in(&env, &t, Session::Fresh("id"), "go", None).unwrap();
+        assert!(!settings_arg(&built).to_string().contains("report/r1.sock"));
+        assert!(!built.get_envs().any(|(k, _)| k == "HORCH_REPORT_SOCKET"));
+    }
+
+    /// A launch with no `sandbox:` block gets no horch paths: its argv is
+    /// the same whether or not the launch knows horch's roots.
+    #[test]
+    fn a_launch_without_a_sandbox_is_unchanged_by_the_horch_paths() {
+        let t = Teammate {
+            name: "plain".into(),
+            model: Some("sonnet".into()),
+            ..Teammate::default()
+        };
+        let tmp = tempfile::tempdir().unwrap();
+        let [with_roots, _] = sandbox_envs(tmp.path());
+        let without_roots = LaunchEnv {
+            state_root: None,
+            ledger_dir: None,
+            herdr_socket: None,
+            ..with_roots.clone()
+        };
+        let argv = |env: &LaunchEnv| -> Vec<String> {
+            super::super::launch::command_in(env, &t, Session::Fresh("id"), "go", None)
+                .unwrap()
+                .get_args()
+                .map(|a| a.to_string_lossy().into_owned())
+                .collect()
+        };
+        let got = argv(&with_roots);
+        assert_eq!(got, argv(&without_roots));
+        assert!(!got.iter().any(|a| a.contains("/state/horch")), "{got:?}");
+    }
+
+    /// A skills launch carries the sandbox as inline settings JSON. The
+    /// launch adds horch's paths to it too, once each, and keeps the forced
+    /// keys.
+    #[test]
+    fn a_sandboxed_skills_launch_gets_the_horch_paths() {
+        let mut t = sandboxed(json!({
+            "filesystem": {"allowWrite": ["/state/horch"]}
+        }));
+        t.settings = Some(skills_settings(&t, None).unwrap().to_string());
+        let tmp = tempfile::tempdir().unwrap();
+        let [env, _] = sandbox_envs(tmp.path());
+        if !host_can_sandbox(&env) {
+            return;
+        }
+        let built =
+            super::super::launch::command_in(&env, &t, Session::Fresh("id"), "go", None).unwrap();
+        let settings = settings_arg(&built);
+        let fs = &settings["sandbox"]["filesystem"];
+        assert_eq!(fs["allowRead"], json!(["/state/horch", "/home/op/.horch"]));
+        assert_eq!(fs["allowWrite"], json!(["/state/horch", "/home/op/.horch"]));
+        assert_eq!(
+            settings["sandbox"]["network"]["allowUnixSockets"],
+            json!(["/state/horch", "/home/op/.config/herdr/herdr.sock"])
+        );
+        assert_eq!(settings["sandbox"]["network"]["strictAllowlist"], true);
+        assert_eq!(settings["sandbox"]["allowUnsandboxedCommands"], false);
+        assert_eq!(
+            settings["permissions"]["blockReadsOutsideWorkingDirectories"],
+            true
+        );
+    }
+
+    /// Launch a sandboxed teammate and check `--settings` holds the sandbox
+    /// block, the forced keys and the horch paths. `skills` runs the teammate
+    /// through the skills overlay first; `inline` gives it settings of its own.
+    /// Returns the launched settings, or `None` on a host with no sandbox.
+    fn sandboxed_launch_settings(skills: bool, inline: bool) -> Option<Value> {
+        let mut t = sandboxed(json!({
+            "network": {"allowedDomains": ["example.com"]}
+        }));
+        if inline {
+            t.settings = Some(json!({"model": "sonnet"}).to_string());
+        }
+        if skills {
+            t.settings = Some(skills_settings(&t, None).unwrap().to_string());
+        }
+        let tmp = tempfile::tempdir().unwrap();
+        let [env, _] = sandbox_envs(tmp.path());
+        if !host_can_sandbox(&env) {
+            return None;
+        }
+        let built =
+            super::super::launch::command_in(&env, &t, Session::Fresh("id"), "go", None).unwrap();
+        let settings = settings_arg(&built);
+        assert_eq!(settings["sandbox"]["enabled"], true, "{settings}");
+        assert_eq!(settings["sandbox"]["failIfUnavailable"], true, "{settings}");
+        assert_eq!(
+            settings["sandbox"]["allowUnsandboxedCommands"], false,
+            "{settings}"
+        );
+        assert_eq!(
+            settings["sandbox"]["network"]["strictAllowlist"], true,
+            "{settings}"
+        );
+        assert_eq!(
+            settings["sandbox"]["network"]["allowedDomains"],
+            json!(["example.com"]),
+            "{settings}"
+        );
+        assert_eq!(
+            settings["sandbox"]["filesystem"]["allowWrite"],
+            json!(["/state/horch", "/home/op/.horch"]),
+            "{settings}"
+        );
+        assert_eq!(
+            settings["sandbox"]["network"]["allowUnixSockets"],
+            json!(["/state/horch", "/home/op/.config/herdr/herdr.sock"]),
+            "{settings}"
+        );
+        assert_eq!(
+            settings["permissions"]["blockReadsOutsideWorkingDirectories"], true,
+            "{settings}"
+        );
+        Some(settings)
+    }
+
+    /// A sandboxed teammate with inline settings and no skills keeps its
+    /// sandbox: the inline settings path used to drop the block.
+    #[test]
+    fn a_sandboxed_launch_with_inline_settings_and_no_skills_keeps_the_sandbox() {
+        if let Some(settings) = sandboxed_launch_settings(false, true) {
+            // The teammate's own settings stay.
+            assert_eq!(settings["model"], "sonnet");
+        }
+    }
+
+    #[test]
+    fn a_sandboxed_launch_with_no_skills_and_no_inline_settings_keeps_the_sandbox() {
+        sandboxed_launch_settings(false, false);
+    }
+
+    #[test]
+    fn a_sandboxed_launch_with_skills_and_inline_settings_keeps_the_sandbox() {
+        if let Some(settings) = sandboxed_launch_settings(true, true) {
+            assert_eq!(settings["model"], "sonnet");
+        }
+    }
+
+    #[test]
+    fn a_sandboxed_launch_with_skills_and_no_inline_settings_keeps_the_sandbox() {
+        sandboxed_launch_settings(true, false);
     }
 
     /// The shipped release preparer launches inside the sandbox: only the

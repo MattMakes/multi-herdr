@@ -10,8 +10,8 @@ use super::operator::expand_home;
 use super::parser::{parse_base, parse_teammate};
 use super::repository::{BUILTIN_BASES, BUILTIN_TEAMMATES};
 use super::teammate::{
-    HarnessDefault, CONTEXT_MESSAGES_BASE, CONTEXT_MESSAGE_KEYS, CONTEXT_MESSAGE_PLACEHOLDERS,
-    CONTEXT_WINDOWS_BASE, HARNESS_DEFAULTS_BASE,
+    HarnessDefault, HorchAccess, CONTEXT_MESSAGES_BASE, CONTEXT_MESSAGE_KEYS,
+    CONTEXT_MESSAGE_PLACEHOLDERS, CONTEXT_WINDOWS_BASE, HARNESS_DEFAULTS_BASE,
 };
 use super::{
     effort_problem, reserved_tier, Base, ExecDecision, ExecRule, PermissionMode, Roster, Teammate,
@@ -34,6 +34,9 @@ use crate::skills::{harness_support, SkillCatalog, SkillResolution};
 const COMPACT_AT_RANGE: std::ops::RangeInclusive<u64> = 50_000..=1_000_000;
 
 /// The line for a teammate on a watched harness without `compact_at`.
+/// The base every `horch_access: report` teammate uses, and only they.
+const REPORT_WORKER_BASE: &str = "report-worker";
+
 fn compact_at_missing(name: &str) -> String {
     format!(
         "{name}: compact_at is missing (the token count where horch asks it to hand off; see teammates/README.md)"
@@ -180,6 +183,7 @@ impl Roster {
         problems.extend(self.orchestrator_only_rules(t));
         problems.extend(self.worker_channel_rules(t));
         problems.extend(self.sandbox_rules(t));
+        problems.extend(self.report_base_rules(t));
         problems.extend(self.permission_mode_rules(t));
         problems.extend(self.plan_mode_rules(t));
         problems.extend(self.empty_setting_sources_rules(t));
@@ -261,6 +265,19 @@ impl Roster {
         for pattern in &t.offer_when {
             if let Some(problem) = super::offer::pattern_problem(pattern) {
                 problems.push(format!("{who}: offer_when pattern '{pattern}' {problem}"));
+            }
+        }
+        for pattern in &t.spawn_only {
+            if let Some(problem) = super::offer::pattern_problem(pattern) {
+                problems.push(format!("{who}: spawn_only pattern '{pattern}' {problem}"));
+            } else if !self
+                .teammates
+                .keys()
+                .any(|name| super::offer::glob_match(pattern, name))
+            {
+                problems.push(format!(
+                    "{who}: spawn_only pattern '{pattern}' matches no teammate"
+                ));
             }
         }
         problems
@@ -544,8 +561,33 @@ impl Roster {
             for problem in crate::harness::claude::sandbox_problems(block) {
                 problems.push(format!("{who}: {problem}"));
             }
+        } else if t.horch_access == HorchAccess::Report {
+            problems.push(format!(
+                "{who}: horch_access: report needs a sandbox: block (without the \
+                 sandbox the pane reaches all of horch anyway)"
+            ));
         }
         problems
+    }
+
+    /// `horch_access: report` and `base: report-worker` go together. Any
+    /// other base tells the worker to run horch commands report mode refuses,
+    /// and the report base names only the 3 commands of report mode.
+    fn report_base_rules(&self, t: &Teammate) -> Vec<String> {
+        let who = &t.name;
+        let report = t.horch_access == HorchAccess::Report;
+        let on_report_base = t.base.as_deref() == Some(REPORT_WORKER_BASE);
+        match (report, on_report_base) {
+            (true, false) => vec![format!(
+                "{who}: horch_access: report needs base: {REPORT_WORKER_BASE} (any other \
+                 base names horch commands that report mode refuses)"
+            )],
+            (false, true) => vec![format!(
+                "{who}: base: {REPORT_WORKER_BASE} needs horch_access: report (the base \
+                 names only the 3 commands of report mode)"
+            )],
+            _ => Vec::new(),
+        }
     }
 
     /// A permission mode needs an equivalent on this agent.
@@ -2144,7 +2186,9 @@ w3-codex: sandbox is Claude only; agent codex cannot honour it";
             );
             let expected = match t.name.as_str() {
                 // agy exposes no skills, so its teammates can have no phase.
-                "smoke" | "judge" | "antigravity" | "spec-writer" | "ticket-writer" => None,
+                "smoke" | "judge" | "antigravity" | "spec-writer" | "ticket-writer"
+                | "skill-importer" | "intake-auditor" | "intake-analyst" | "intake-sanitizer"
+                | "intake-writer" | "intake-reviewer" => None,
                 "researcher" | "product-lead" | "designer" | "design-director"
                 | "one-page-design" => Some(Phase::Research),
                 "staff-engineer"
@@ -2558,6 +2602,122 @@ w3-codex: sandbox is Claude only; agent codex cannot honour it";
         }
     }
 
+    /// `horch_access` parses as `full` (the default) or `report`, and
+    /// `report` without `sandbox:` fails the check.
+    #[test]
+    fn horch_access_report_needs_a_sandbox() {
+        let parse = |line: &str| {
+            let text =
+                format!("---\nname: t\nbrief_description: x\nagent: claude\n{line}---\nbody\n");
+            parse_teammate("t", &text)
+        };
+        assert_eq!(parse("").unwrap().horch_access, HorchAccess::Full);
+        assert_eq!(
+            parse("horch_access: full\n").unwrap().horch_access,
+            HorchAccess::Full
+        );
+        assert_eq!(
+            parse("horch_access: report\n").unwrap().horch_access,
+            HorchAccess::Report
+        );
+        assert!(parse("horch_access: none\n").is_err());
+
+        let mut r = Roster::builtin().unwrap();
+        let sonnet = r.teammates.get_mut("sonnet").unwrap();
+        sonnet.horch_access = HorchAccess::Report;
+        sonnet.sandbox = None;
+        let expected = "sonnet: horch_access: report needs a sandbox: block";
+        assert!(
+            r.check().iter().any(|p| p.starts_with(expected)),
+            "{:?}",
+            r.check()
+        );
+        let sonnet = r.teammates.get_mut("sonnet").unwrap();
+        sonnet.sandbox = Some(serde_json::Map::new());
+        assert!(
+            !r.check().iter().any(|p| p.contains("needs a sandbox")),
+            "{:?}",
+            r.check()
+        );
+    }
+
+    /// `horch_access: report` needs `base: report-worker`.
+    #[test]
+    fn horch_access_report_needs_the_report_worker_base() {
+        let r = Roster::builtin().unwrap();
+        let mut t = r.require("intake-writer").unwrap().clone();
+        assert!(r.report_base_rules(&t).is_empty());
+        t.base = Some("fleet-worker".into());
+        assert_eq!(
+            r.report_base_rules(&t),
+            [
+                "intake-writer: horch_access: report needs base: report-worker (any other \
+              base names horch commands that report mode refuses)"
+            ]
+        );
+        assert!(r
+            .check_teammate(&t)
+            .iter()
+            .any(|p| p.contains("needs base: report-worker")));
+    }
+
+    /// `base: report-worker` needs `horch_access: report`.
+    #[test]
+    fn the_report_worker_base_needs_horch_access_report() {
+        let r = Roster::builtin().unwrap();
+        let mut t = r.require("intake-writer").unwrap().clone();
+        t.horch_access = HorchAccess::Full;
+        assert_eq!(
+            r.report_base_rules(&t),
+            [
+                "intake-writer: base: report-worker needs horch_access: report (the base \
+              names only the 3 commands of report mode)"
+            ]
+        );
+        assert!(r
+            .check_teammate(&t)
+            .iter()
+            .any(|p| p.contains("needs horch_access: report")));
+    }
+
+    /// `spawn_only` parses as a list of name globs, `may_spawn` matches a
+    /// name against them, and the check fails an empty pattern, a pattern
+    /// with a path separator and a pattern that matches no teammate.
+    #[test]
+    fn spawn_only_limits_the_names_and_its_patterns_are_checked() {
+        let text = "---\nname: t\nbrief_description: x\nagent: claude\n\
+                    spawn_only: [\"intake-*\"]\n---\nbody\n";
+        let t = parse_teammate("t", text).unwrap();
+        assert_eq!(t.spawn_only, ["intake-*"]);
+        assert!(t.may_spawn("intake-auditor"));
+        assert!(!t.may_spawn("opus"));
+        assert!(!t.may_spawn("intake"));
+        let open = Teammate::default();
+        assert!(open.may_spawn("opus"), "no spawn_only: every name");
+
+        let mut r = Roster::builtin().unwrap();
+        let sonnet = r.teammates.get_mut("sonnet").unwrap();
+        sonnet.spawn_only = vec!["intake-*".into()];
+        assert!(
+            !r.check().iter().any(|p| p.contains("spawn_only")),
+            "{:?}",
+            r.check()
+        );
+        let sonnet = r.teammates.get_mut("sonnet").unwrap();
+        sonnet.spawn_only = vec![" ".into(), "a/b".into(), "nobody-*".into()];
+        let problems = r.check();
+        for expected in [
+            "sonnet: spawn_only pattern ' ' is empty",
+            "sonnet: spawn_only pattern 'a/b' contains a path separator",
+            "sonnet: spawn_only pattern 'nobody-*' matches no teammate",
+        ] {
+            assert!(
+                problems.iter().any(|p| p.starts_with(expected)),
+                "{expected}: {problems:?}"
+            );
+        }
+    }
+
     /// An agy teammate that sets a Google key would leave the operator's
     /// login. Another agent may set it: only agy children lose it.
     #[test]
@@ -2718,7 +2878,7 @@ w3-codex: sandbox is Claude only; agent codex cannot honour it";
             .values()
             .filter(|t| t.agent == HarnessKind::Claude && (!t.hidden || t.name == "orchestrator"))
             .count();
-        assert_eq!(covered, 76, "the rule should cover 76 claude teammates");
+        assert_eq!(covered, 77, "the rule should cover 77 claude teammates");
 
         // Take the deny away from a worker and the check fails by name.
         r.teammates.get_mut("opus").unwrap().disallowed_tools = Vec::new();

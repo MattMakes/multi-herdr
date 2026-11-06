@@ -525,6 +525,7 @@ pub fn plan_launch(req: &SpawnRequest, inputs: &PlanInputs) -> Result<ExecutionP
         },
         gate_line,
         report_to: req.report_to,
+        controller: None,
     })
 }
 

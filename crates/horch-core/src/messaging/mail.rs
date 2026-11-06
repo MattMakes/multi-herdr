@@ -77,6 +77,11 @@ pub struct Message {
     /// `requeue T-7` (C2). Empty for other mail.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub closes_on: Vec<String>,
+    /// Whether a first push of the line went (`tell` records it with
+    /// [`Mail::mark_pushed`]). Mail without it, such as a horch notice, gets
+    /// its first push from the courier. [`Mail::pending`] reads it.
+    #[serde(skip)]
+    pub first_push: bool,
 }
 
 impl Message {
@@ -229,6 +234,7 @@ impl Mail {
             text: text.to_string(),
             created_at,
             closes_on: Vec::new(),
+            first_push: false,
         };
         let final_path = pending.join(format!("{}.json", id.0));
         let temp_path = pending.join(format!(".{}.json.tmp", id.0));
@@ -439,7 +445,26 @@ impl Mail {
     /// could hold lines planted for the orchestrator to read.
     pub fn pending(&self) -> Result<Vec<Message>> {
         private::check(&self.dir)?;
-        read_pending(&self.pending_paths()?)
+        let mut messages = read_pending(&self.pending_paths()?)?;
+        for message in &mut messages {
+            message.first_push = self.pushed_marker(&message.id).exists();
+        }
+        Ok(messages)
+    }
+
+    /// Record that a first push of the mail `id` went. A marker file, not a
+    /// rewrite of the mail: a rewrite can race `ack` and bring the mail back.
+    pub fn mark_pushed(&self, id: &Id) -> Result<()> {
+        if !valid_id(&id.0) {
+            bail!("invalid mail id");
+        }
+        let marker = self.pushed_marker(id);
+        private::ensure_dir(marker.parent().expect("the marker has a dir"))?;
+        std::fs::write(&marker, b"").with_context(|| format!("writing {}", marker.display()))
+    }
+
+    fn pushed_marker(&self, id: &Id) -> PathBuf {
+        self.dir.join("pushed").join(&id.0)
     }
 
     /// The pending mail files, oldest first.
@@ -463,6 +488,7 @@ impl Mail {
         let acked_dir = self.dir.join("acked");
         private::ensure_dir(&acked_dir)?;
         let acked = acked_dir.join(format!("{}.json", id.0));
+        let _ = std::fs::remove_file(self.pushed_marker(id));
         match std::fs::rename(&pending, &acked) {
             Ok(()) => Ok(()),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
@@ -780,6 +806,47 @@ pub fn redelivery_offset(attempt: usize) -> Option<Duration> {
         .ok()?
         .checked_mul(300)?;
     Some(Duration::from_secs(early.checked_add(late)?))
+}
+
+/// The orchestrator's first digest of unread mail: when the oldest is 5 min old.
+pub const DIGEST_FIRST: Duration = Duration::from_secs(5 * 60);
+/// The least time between 2 digests to the orchestrator.
+pub const DIGEST_GAP: Duration = Duration::from_secs(15 * 60);
+
+/// Whether `text` is a `[<role>] NOTE:` line. The orchestrator gets no
+/// redelivery of it.
+pub fn is_note(text: &str) -> bool {
+    text.strip_prefix('[')
+        .and_then(|rest| rest.split_once("] "))
+        .is_some_and(|(_, body)| body.starts_with("NOTE:"))
+}
+
+/// The keyword of a `[<role>] KEYWORD: ...` line, such as `DONE`.
+fn keyword(text: &str) -> Option<&str> {
+    let (_, body) = text.strip_prefix('[')?.split_once("] ")?;
+    let (word, _) = body.split_once(':')?;
+    (!word.is_empty() && word.bytes().all(|b| b.is_ascii_uppercase())).then_some(word)
+}
+
+/// 1 line that names the unread `messages` without their text.
+pub fn digest_line(messages: &[Message]) -> String {
+    let senders: Vec<String> = messages
+        .iter()
+        .map(|m| match keyword(&m.text) {
+            Some(word) => format!("{} {word}", m.from),
+            None => m.from.clone(),
+        })
+        .collect();
+    let noun = if messages.len() == 1 {
+        "message"
+    } else {
+        "messages"
+    };
+    format!(
+        "[horch] NOTE: {} unread {noun} ({}). Run horch inbox.",
+        messages.len(),
+        senders.join(", ")
+    )
 }
 
 /// Claude Code login screen match strings; fixtures cover every table row.
@@ -1453,6 +1520,61 @@ mod tests {
         assert_eq!(
             message.text, "[sonnet-1] NOTE: x",
             "the stored text is unchanged"
+        );
+    }
+
+    #[test]
+    fn mark_pushed_records_a_first_push_and_ack_removes_it() {
+        let root = tempfile::tempdir().unwrap();
+        let mail = Mail::under(root.path(), "w1");
+        mail.enqueue("horch", "[horch] NOTE: Tasks can start: T-35")
+            .unwrap();
+        let told = mail
+            .enqueue_with_questions("sonnet-1", "[sonnet-1] DONE: x", "DONE: x")
+            .unwrap();
+        let pushed = |mail: &Mail| -> Vec<bool> {
+            mail.pending()
+                .unwrap()
+                .iter()
+                .map(|m| m.first_push)
+                .collect()
+        };
+        assert_eq!(pushed(&mail), [false, false], "enqueue records no push");
+        mail.mark_pushed(&told).unwrap();
+        assert_eq!(pushed(&mail), [false, true]);
+        mail.ack(&told).unwrap();
+        assert!(!mail.dir().join("pushed").join(&told.0).exists());
+        assert!(mail.mark_pushed(&Id("../x".into())).is_err());
+    }
+
+    #[test]
+    fn a_note_line_is_tagged_note() {
+        assert!(is_note("[sonnet-1] NOTE: tests pass"));
+        assert!(is_note("[horch] NOTE: All tasks are done."));
+        assert!(!is_note("[sonnet-1] DONE: NOTE: tests pass"));
+        assert!(!is_note("[sonnet-1] QUESTION: which file?"));
+        assert!(!is_note("NOTE: untagged"));
+    }
+
+    #[test]
+    fn a_digest_counts_the_mail_and_names_each_sender_and_keyword() {
+        let root = tempfile::tempdir().unwrap();
+        let mail = Mail::under(root.path(), "w1");
+        mail.enqueue("opus-1", "[opus-1] DONE: the full report text")
+            .unwrap();
+        mail.enqueue("qa-3", "[qa-3] QUESTION: which file?")
+            .unwrap();
+        mail.enqueue("horch", "plain notice").unwrap();
+        let line = digest_line(&mail.pending().unwrap());
+        assert_eq!(
+            line,
+            "[horch] NOTE: 3 unread messages (opus-1 DONE, qa-3 QUESTION, horch). Run horch inbox."
+        );
+        assert!(!line.contains("full report text"));
+        let one = digest_line(&mail.pending().unwrap()[..1]);
+        assert_eq!(
+            one,
+            "[horch] NOTE: 1 unread message (opus-1 DONE). Run horch inbox."
         );
     }
 }

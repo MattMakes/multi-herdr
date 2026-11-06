@@ -524,6 +524,7 @@ fn steward_task(parked: usize) -> Result<super::taskledger::TaskArgs> {
 fn steward_spawn_args(root_pane: &str, run: &str) -> super::spawn::SpawnArgs {
     super::spawn::SpawnArgs {
         teammate: Some(WORKTREE_STEWARD.to_string()),
+        task: String::new(),
         resume: None,
         phase: None,
         effort: None,

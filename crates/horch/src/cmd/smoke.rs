@@ -222,6 +222,7 @@ impl Scratch {
 fn smoke_spawn_args(root_pane: &str) -> SpawnArgs {
     SpawnArgs {
         teammate: Some("smoke".to_string()),
+        task: String::new(),
         phase: None,
         effort: None,
         resume: None,

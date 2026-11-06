@@ -1,0 +1,122 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Preflight goal contract",
+  "description": "Contaminated side (C/contaminated/). Written by `intake cr init` for an unattended run (spec 6.3).",
+  "type": "object",
+  "required": [
+    "goal",
+    "target_stack",
+    "authorization",
+    "destination",
+    "policies",
+    "mode",
+    "open_questions",
+    "confirmed_by_user"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "goal": {
+      "type": "string",
+      "minLength": 10,
+      "description": "What the clean implementation must achieve, in the user's terms."
+    },
+    "target_stack": {
+      "type": "string",
+      "minLength": 2,
+      "description": "Language, framework, runtime of the clean implementation."
+    },
+    "authorization": {
+      "type": "object",
+      "required": [
+        "confirmed",
+        "basis"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "confirmed": {
+          "const": true
+        },
+        "basis": {
+          "type": "string",
+          "minLength": 5,
+          "description": "Why the user may analyze this source (owner, license, contract, interoperability)."
+        }
+      }
+    },
+    "source_scope": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "Parts of the source in scope; empty means all source roots."
+    },
+    "destination": {
+      "type": "string",
+      "minLength": 2,
+      "description": "Where clean code goes (repo, package, folder)."
+    },
+    "policies": {
+      "type": "object",
+      "required": [
+        "compatibility",
+        "dependencies",
+        "license"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "compatibility": {
+          "enum": [
+            "behavioral",
+            "public-api-exact",
+            "wire-format-exact"
+          ]
+        },
+        "dependencies": {
+          "enum": [
+            "stdlib-only",
+            "approved-list",
+            "any-vetted"
+          ]
+        },
+        "approved_dependencies": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "license": {
+          "type": "string",
+          "minLength": 2,
+          "description": "License of the clean implementation."
+        },
+        "features": {
+          "enum": [
+            "parity",
+            "subset",
+            "parity-plus"
+          ]
+        }
+      }
+    },
+    "mode": {
+      "enum": [
+        "attended",
+        "unattended"
+      ]
+    },
+    "max_iterations": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 50
+    },
+    "open_questions": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "confirmed_by_user": {
+      "type": "boolean"
+    }
+  }
+}

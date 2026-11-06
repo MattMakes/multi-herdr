@@ -1,0 +1,131 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Implementation or review report",
+  "description": "Written by the writer (K/report.json) or the reviewer (K/review.json).",
+  "type": "object",
+  "required": [
+    "role",
+    "status",
+    "spec_ids",
+    "changed_files",
+    "verification"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "role": {
+      "enum": [
+        "writer",
+        "reviewer"
+      ]
+    },
+    "status": {
+      "enum": [
+        "complete",
+        "partial",
+        "blocked"
+      ]
+    },
+    "spec_ids": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "changed_files": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "verification": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "argv",
+          "exit_code"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "argv": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "exit_code": {
+            "type": "integer"
+          },
+          "summary": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "scenarios": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "id",
+          "result"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "result": {
+            "enum": [
+              "pass",
+              "fail",
+              "not-run"
+            ]
+          }
+        }
+      }
+    },
+    "questions": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "Abstract questions back to the controller. Never ask for source."
+    },
+    "findings": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "verdicts": {
+      "type": "array",
+      "description": "Reviewer only: 1 verdict per spec requirement (behavior id), replace_or_remove id, and declared capability (`capability:<key>`), and `persona` when K/persona.md exists. `intake verify` needs `pass` for each (spec 7.1, 7.4).",
+      "items": {
+        "type": "object",
+        "required": [
+          "spec_id",
+          "item",
+          "result"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "spec_id": {
+            "type": "string",
+            "pattern": "^spec-[a-z0-9-]{2,40}$"
+          },
+          "item": {
+            "type": "string",
+            "pattern": "^(b[0-9]{1,4}|R-[0-9]{1,4}|capability:(network|reads|writes|runs)|persona)$"
+          },
+          "result": {
+            "enum": [
+              "pass",
+              "fail"
+            ]
+          }
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,4 @@
+{
+  "about": "The argv that `intake spawn` passes to the horch binary (spec 6.5). T-21 (test_roles.py) and T-27 (crates/horch-e2e/tests/skill_intake_spawn.rs) both read this file. Replace {teammate} with intake-<role> (or the SKILL_INTAKE_ROLE_TEAMMATE value) and {brief} with the absolute brief path.",
+  "argv": ["spawn", "{teammate}", "--exact", "Read and follow {brief} exactly."]
+}

@@ -1091,6 +1091,7 @@ fn brief(record_id: &str) -> Brief {
         report_to: horch_core::execution::ReportTarget::Orchestrator,
         worker_id: None,
         ledger_db: None,
+        controller: None,
     }
 }
 

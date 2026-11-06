@@ -1,0 +1,83 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Merged findings",
+  "description": "Contaminated side (C/sweep/findings.json). Written by `intake triage` from scan.jsonl and audit.jsonl (spec 4.2, 5).",
+  "type": "object",
+  "required": [
+    "findings"
+  ],
+  "$defs": {
+    "untrusted": {
+      "type": "object",
+      "required": [
+        "untrusted"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "untrusted": {
+          "type": "string",
+          "maxLength": 200
+        }
+      }
+    }
+  },
+  "properties": {
+    "findings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "id",
+          "rule",
+          "severity",
+          "file",
+          "malicious"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^(INJ|SCR|SUP|OPQ|ACQ|AUD)-[0-9A-Z-]{2,12}#[0-9]{1,6}$"
+          },
+          "rule": {
+            "type": "string",
+            "pattern": "^(INJ|SCR|SUP|OPQ|ACQ|AUD)-[0-9A-Z-]{2,10}$"
+          },
+          "severity": {
+            "enum": [
+              "critical",
+              "high",
+              "medium",
+              "low",
+              "info"
+            ]
+          },
+          "file": {
+            "type": "string"
+          },
+          "line": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "evidence": {
+            "$ref": "#/$defs/untrusted"
+          },
+          "malicious": {
+            "type": "boolean"
+          },
+          "source": {
+            "enum": [
+              "scan",
+              "audit"
+            ]
+          },
+          "skill": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      }
+    }
+  }
+}

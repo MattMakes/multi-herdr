@@ -90,7 +90,29 @@ fn check_golden(name: &str, frame: &str) {
 
 #[test]
 fn the_hermetic_story() {
+    story(false);
+}
+
+/// The same story with an `ollama` that takes 7 s to start, longer than the
+/// 5 s production deadline. The harness deadline covers it, so the telemetry
+/// is the same. Its steps print nothing: the plain story prints them.
+#[test]
+fn the_hermetic_story_with_an_ollama_that_starts_in_7_s() {
+    story(true);
+}
+
+/// The story of the module doc. `slow_ollama` delays every `ollama` call by
+/// 7 s and keeps the `PASS` lines quiet.
+fn story(slow_ollama: bool) {
+    let pass = |step: &str| {
+        if !slow_ollama {
+            pass(step);
+        }
+    };
     let mut h = Harness::new("story");
+    if slow_ollama {
+        h.set("HORCH_FAKE_OLLAMA_DELAY_MS", "7000");
+    }
     let f = fixtures();
     let places = [
         (f.join("claude"), h.home.join(".claude/projects")),
@@ -101,7 +123,10 @@ fn the_hermetic_story() {
 
     // 1. The clock, the 2 ledgers, and the first half of every transcript.
     h.set("HORCH_NOW", "2026-09-28T18:00:00Z");
-    h.set("HORCH_PROBE_TIMEOUT_MS", "1500");
+    h.set(
+        "HORCH_PROBE_TIMEOUT_MS",
+        horch_e2e::harness::DEADLINE.as_millis().to_string(),
+    );
     for (from, to) in &places {
         copy_half(from, to);
     }
@@ -232,7 +257,13 @@ fn the_hermetic_story() {
         String::from_utf8_lossy(&out.stderr)
     );
     check_golden("telemetry-e2e.txt", &String::from_utf8_lossy(&out.stdout));
-    println!("{}", String::from_utf8_lossy(&out.stdout));
+    if !slow_ollama {
+        println!("{}", String::from_utf8_lossy(&out.stdout));
+    }
+    assert!(
+        !h.calls_of("ollama").is_empty(),
+        "the local check ran ollama"
+    );
     pass("9 render 120x40 equals golden/telemetry-e2e.txt");
 
     // 10. Nothing that must not persist did (TEL-11).

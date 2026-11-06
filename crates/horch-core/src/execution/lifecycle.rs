@@ -15,7 +15,8 @@ use crate::harness::HarnessKind;
 use crate::messaging::brief::Brief;
 use crate::messaging::mailbox::Mailbox;
 use crate::messaging::message::strip_done_prefix;
-use crate::roster::{Roster, Teammate};
+use crate::messaging::report;
+use crate::roster::{HorchAccess, Roster, Teammate};
 use crate::runtime::{process, RuntimeContext};
 use crate::taskledger::supervisor::Checkins;
 use crate::workspace::client::WorkspaceClient;
@@ -928,6 +929,8 @@ impl WorkerSteps for PaneWorker<'_> {
                 .with_context(|| format!("entering workdir {workdir}"))?;
         }
         let env = child_env(mailbox, brief, self.path.clone());
+        // Held until the agent exits; dropping it removes the socket.
+        let _report = start_report_server(ctx, brief, &teammate, &env)?;
         let checkins = self.start_checkins(brief);
         if teammate.agent == HarnessKind::None {
             self.run_smoke_agent(&env, checkins)
@@ -1002,6 +1005,54 @@ impl WorkerSteps for PaneWorker<'_> {
         }
         out
     }
+}
+
+/// The only role a `report` pane may tell (`report::target`).
+fn report_target(brief: &Brief) -> Option<String> {
+    report::target(brief)
+}
+
+/// The `horch` command the parent runs for 1 checked report request.
+fn report_args(request: &report::Request) -> Vec<&str> {
+    match request {
+        report::Request::Progress { text } => vec!["ledger", "progress", text],
+        report::Request::Tell { to, text } => vec!["tell", to, text],
+        report::Request::Done { text } => vec!["done", text],
+    }
+}
+
+/// Serve the report socket of a `horch_access: report` pane for the life
+/// of its agent (`messaging::report`). This process is outside the
+/// agent's sandbox, so the request runs as `horch` with the brief's
+/// identity in `env`, never the pane's.
+#[cfg(unix)]
+fn start_report_server(
+    ctx: &RuntimeContext,
+    brief: &Brief,
+    teammate: &Teammate,
+    env: &[(String, String)],
+) -> Result<Option<report::Server>> {
+    if teammate.horch_access != HorchAccess::Report {
+        return Ok(None);
+    }
+    let path = report::socket_path(&ctx.paths.state_root, &brief.record_id);
+    let env = env.to_vec();
+    let exec: Box<report::Executor> =
+        Box::new(move |request: &report::Request| run_horch_quiet(&env, &report_args(request)));
+    report::Server::start(path, report_target(brief), exec).map(Some)
+}
+
+#[cfg(not(unix))]
+fn start_report_server(
+    _ctx: &RuntimeContext,
+    _brief: &Brief,
+    teammate: &Teammate,
+    _env: &[(String, String)],
+) -> Result<Option<()>> {
+    if teammate.horch_access == HorchAccess::Report {
+        bail!("horch_access: report needs a Unix host");
+    }
+    Ok(None)
 }
 
 /// Read the session id the launch recorded in the session ledger, and find
@@ -1088,12 +1139,34 @@ fn early_exit_line(brief: &Brief, code: Option<i32>) -> String {
     )
 }
 
-/// Invoke `horch` the way an agent would: by name, off PATH, with the
-/// environment an agent in this pane would have.
-fn run_horch(env: &[(String, String)], args: &[&str]) -> Result<()> {
+/// [`run_horch`] with its output captured: the agent's screen is this
+/// pane, so the error text goes back to the caller instead.
+fn run_horch_quiet(env: &[(String, String)], args: &[&str]) -> Result<()> {
+    let out = horch_command(env)
+        .args(args)
+        .output()
+        .context("running horch")?;
+    if !out.status.success() {
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        bail!("horch {} failed: {}", args[0], stderr.trim());
+    }
+    Ok(())
+}
+
+/// `horch` by name, off PATH, with `env` on top of this process's
+/// environment, never in report mode.
+fn horch_command(env: &[(String, String)]) -> Command {
     // A PATH given to the child is also the one `Command` searches.
     let mut cmd = Command::new("horch");
     process::inherit_env(&mut cmd, env.iter().map(|(k, v)| (k, v)));
+    cmd.env_remove(report::ENV);
+    cmd
+}
+
+/// Invoke `horch` the way an agent would: by name, off PATH, with the
+/// environment an agent in this pane would have.
+fn run_horch(env: &[(String, String)], args: &[&str]) -> Result<()> {
+    let mut cmd = horch_command(env);
     let status = cmd.args(args).status().map_err(|e| {
         if e.kind() == std::io::ErrorKind::NotFound {
             anyhow::anyhow!(
@@ -1448,6 +1521,98 @@ mod tests {
             .contains(" | UNREGISTERED: /repo/.worktrees/manual branch manual ahead 1 dirty 0"));
     }
 
+    fn report_brief(report_to: ReportTarget) -> Brief {
+        Brief {
+            schema: SCHEMA,
+            role: "intake-auditor-1".into(),
+            teammate: "intake-auditor".into(),
+            agent: "claude".into(),
+            model: "opus".into(),
+            record_id: "r1".into(),
+            session: SessionMode::Fresh(None),
+            task: "t".into(),
+            project_dir: "/p".into(),
+            state_dir: None,
+            claude_bin: None,
+            codex_bin: None,
+            resolved: None,
+            teammates_dir: None,
+            workdir: None,
+            bin_overrides: BinOverrides::default(),
+            report_to,
+            worker_id: None,
+            ledger_db: None,
+            controller: None,
+        }
+    }
+
+    /// Each report verb runs 1 `horch` command in the parent, and `tell`
+    /// reaches only the brief's report target.
+    #[test]
+    fn a_report_request_maps_to_1_horch_command() {
+        let text = || "x".to_string();
+        assert_eq!(
+            report_args(&report::Request::Progress { text: text() }),
+            ["ledger", "progress", "x"]
+        );
+        assert_eq!(
+            report_args(&report::Request::Tell {
+                to: "orchestrator".into(),
+                text: text()
+            }),
+            ["tell", "orchestrator", "x"]
+        );
+        assert_eq!(
+            report_args(&report::Request::Done { text: text() }),
+            ["done", "x"]
+        );
+        assert_eq!(
+            report_target(&report_brief(ReportTarget::Orchestrator)).as_deref(),
+            Some("orchestrator")
+        );
+        assert_eq!(report_target(&report_brief(ReportTarget::None)), None);
+    }
+
+    /// A `report` teammate's parent serves the socket at the record's path;
+    /// a `full` teammate gets none. The request runs as `horch` in the
+    /// parent, so a PATH without `horch` comes back as the error.
+    #[cfg(unix)]
+    #[test]
+    fn the_parent_serves_the_report_socket_only_for_report() {
+        let tmp = tempfile::Builder::new().tempdir_in("/tmp").unwrap();
+        let mut ctx = RuntimeContext::from_env(&MapEnv::new("/")).unwrap();
+        ctx.paths.state_root = tmp.path().to_path_buf();
+        let brief = report_brief(ReportTarget::Orchestrator);
+        let env = vec![(
+            "PATH".to_string(),
+            tmp.path().to_string_lossy().into_owned(),
+        )];
+        let mut t = Teammate::default();
+        assert!(start_report_server(&ctx, &brief, &t, &env)
+            .unwrap()
+            .is_none());
+
+        t.horch_access = HorchAccess::Report;
+        let server = start_report_server(&ctx, &brief, &t, &env)
+            .unwrap()
+            .unwrap();
+        let path = report::socket_path(tmp.path(), "r1");
+        assert_eq!(server.path(), path);
+        let err = report::send(
+            &path,
+            &report::Request::Tell {
+                to: "sonnet-1".into(),
+                text: "x".into(),
+            },
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("only to orchestrator"), "{err}");
+        let err = report::send(&path, &report::Request::Progress { text: "x".into() }).unwrap_err();
+        assert!(err.to_string().contains("running horch"), "{err}");
+        drop(server);
+        assert!(!path.exists());
+    }
+
     /// The brief's transport variables, the workspace and the PATH reach the
     /// agent's command and nothing else: the test process's own environment is
     /// the same afterwards, and `ANTHROPIC_API_KEY` is removed from the child
@@ -1477,6 +1642,7 @@ mod tests {
             report_to: crate::execution::ReportTarget::Orchestrator,
             worker_id: None,
             ledger_db: None,
+            controller: None,
         };
         let mut env = MapEnv::new("/");
         for key in BinOverrides::VARS {
@@ -1899,6 +2065,7 @@ mod tests {
                     report_to: ReportTarget::Orchestrator,
                     worker_id: None,
                     ledger_db: None,
+                    controller: None,
                 }
             }
         }

@@ -1,0 +1,44 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Contamination incident",
+  "description": "Contaminated side (C/contaminated/incidents/). Written by `intake cr handoff` on a failed scan, or by the controller.",
+  "type": "object",
+  "required": [
+    "incident_id",
+    "detected",
+    "artifact",
+    "checks",
+    "action"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "incident_id": {
+      "type": "string",
+      "pattern": "^inc-[0-9a-f]{8}$"
+    },
+    "detected": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "artifact": {
+      "type": "string"
+    },
+    "checks": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "action": {
+      "enum": [
+        "quarantined",
+        "redrafted",
+        "restarted-role",
+        "escalated-to-user"
+      ]
+    },
+    "notes": {
+      "type": "string"
+    }
+  }
+}

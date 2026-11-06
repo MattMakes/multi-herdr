@@ -7,8 +7,9 @@ use std::path::Path;
 use anyhow::{bail, ensure, Result};
 use horch_core::execution::store::ExecutionStore;
 use horch_core::runtime::RuntimeContext;
-use horch_core::taskledger::model::{RunStatus, WorkerKind};
+use horch_core::taskledger::model::{Actor, EventKind, RunStatus, WorkerKind};
 use horch_core::taskledger::runs::{self, Run};
+use horch_core::taskledger::util::{self, About};
 use horch_core::taskledger::workers::{self, NewWorker};
 use horch_core::taskledger::{self, Store};
 
@@ -30,18 +31,38 @@ pub struct LedgerSpawn {
 }
 
 /// Write the worker row when this spawn joins a task-ledger run: it names
-/// one with `--run` (or `HORCH_RUN_ID`), it replaces a ledger worker, or its
-/// workspace has an active run. `None` otherwise.
-pub fn prepare(ctx: &RuntimeContext, args: &SpawnArgs) -> Result<Option<LedgerSpawn>> {
+/// one with `--run` (or `HORCH_RUN_ID`), it replaces a ledger worker, its
+/// workspace has an active run, or a `spawn_only` controller in an active
+/// run sends a role its brief. `None` otherwise: a controller outside every
+/// run sends its brief outside every run too.
+///
+/// `controller` is the caller's ledger row when the caller has
+/// `spawn_only` and passed its check (T-38). Only such a spawn carries task
+/// text: `horch spawn` refuses every other (TRF-43).
+pub fn prepare(
+    ctx: &RuntimeContext,
+    args: &SpawnArgs,
+    controller: Option<&str>,
+) -> Result<Option<LedgerSpawn>> {
     let mut store = taskledger::open(ctx)?;
-    let Some(explicit) = ledger_run_wanted(ctx, &store, args)? else {
-        return Ok(None);
+    let role_run = controller_run(&store, args, controller)?;
+    let run = match &role_run {
+        Some(run) => run.clone(),
+        None if !args.task.trim().is_empty() => return Ok(None),
+        None => {
+            let Some(explicit) = ledger_run_wanted(ctx, &store, args)? else {
+                return Ok(None);
+            };
+            super::taskledger::resolve_run(ctx, &store, &RunArg { run: explicit })?
+        }
     };
-    let run = super::taskledger::resolve_run(ctx, &store, &RunArg { run: explicit })?;
     ensure_active(&run)?;
     let persona = spawn_persona(ctx, args)?;
     ensure_replaceable(&store, args, &run)?;
     let id = insert_row(ctx, &mut store, args, &run, persona)?;
+    if role_run.is_some() {
+        mark_no_claim(&mut store, &run, &id, controller.unwrap_or_default())?;
+    }
     Ok(Some(LedgerSpawn {
         store: std::cell::RefCell::new(store),
         run,
@@ -137,6 +158,53 @@ fn note_other_workspaces(active: &[Run], workspace: Option<&str>) {
         runs.join(", "),
         workspace.unwrap_or("(none)")
     );
+}
+
+/// The run a role joins (T-38, decision Q4): the active run of the
+/// `spawn_only` controller's ledger row, when the spawn has task text and
+/// names no run. Only a controller passes `controller`, so every other
+/// spawn with task text keeps #89.
+fn controller_run(
+    store: &Store,
+    args: &SpawnArgs,
+    controller: Option<&str>,
+) -> Result<Option<Run>> {
+    let Some(wid) = controller else {
+        return Ok(None);
+    };
+    if explicit_run(args).is_some() || args.task.trim().is_empty() {
+        return Ok(None);
+    }
+    let Some(run_id) = workers::find(store.conn(), wid)?.and_then(|w| w.run_id) else {
+        return Ok(None);
+    };
+    let run = runs::get(store.conn(), &run_id)?;
+    Ok((run.status == RunStatus::Active.as_str()).then_some(run))
+}
+
+/// The text a role's row starts its "no claim" verdict with. It is the
+/// prefix of the watchdog's own verdict (`workers::sweep_preclaim`), which
+/// reports a `claiming` worker once and never again after it.
+const NO_CLAIM: &str = "No claim:";
+
+/// Record that a role works from its brief and claims no task, so the
+/// watchdog never reports it as a worker that has not claimed one.
+fn mark_no_claim(store: &mut Store, run: &Run, worker_id: &str, controller: &str) -> Result<()> {
+    store.immediate(|tx| {
+        util::event(
+            tx,
+            &About {
+                run: Some(&run.run_id),
+                task: None,
+                worker: Some(worker_id),
+            },
+            Actor::Horch,
+            EventKind::Verdict,
+            &format!(
+                "{NO_CLAIM} a role of controller worker {controller}; it works from its brief and claims no task."
+            ),
+        )
+    })
 }
 
 /// The run `--run` or `HORCH_RUN_ID` names.
@@ -635,6 +703,7 @@ mod trf_33_34_tests {
     fn args(teammate: Option<&str>) -> SpawnArgs {
         SpawnArgs {
             teammate: teammate.map(str::to_string),
+            task: String::new(),
             resume: None,
             phase: None,
             effort: None,
@@ -840,5 +909,58 @@ mod trf_33_34_tests {
             tasks::spawn_refusal(store.conn(), &run.run_id, &second).unwrap(),
             None
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::Path;
+
+    use horch_core::taskledger::runs::NewRun;
+
+    use super::*;
+
+    /// T-38 step 3: the watchdog's pre-claim sweep reports a `claiming`
+    /// worker past the claim grace, but never a role that `prepare` marked.
+    /// The role is not ended either: its supervisor checks in.
+    #[test]
+    fn a_marked_role_is_never_reported_as_a_worker_that_did_not_claim() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut s = Store::open(&dir.path().join("l.sqlite3")).unwrap();
+        let (run, role, plain) = s
+            .immediate(|tx| {
+                let run = runs::create(
+                    tx,
+                    Path::new("/r"),
+                    &NewRun {
+                        slug: "s".into(),
+                        ..Default::default()
+                    },
+                )?;
+                let new = |persona: &str| NewWorker {
+                    run_id: run.run_id.clone(),
+                    kind: Some(WorkerKind::Worker),
+                    persona: persona.into(),
+                    ..Default::default()
+                };
+                let role = workers::insert(tx, &new("intake-analyst"))?;
+                let plain = workers::insert(tx, &new("opus"))?;
+                Ok((run, role, plain))
+            })
+            .unwrap();
+        mark_no_claim(&mut s, &run, &role, "w-controller").unwrap();
+        s.conn()
+            .execute(
+                "UPDATE workers SET status = 'claiming', started_at = '2000-01-01T00:00:00Z',
+                    last_checkin_at = ?1",
+                [util::now()],
+            )
+            .unwrap();
+        let swept = s
+            .immediate(|tx| workers::sweep_preclaim(tx, &run, &|_| true))
+            .unwrap();
+        let noted: Vec<&str> = swept.iter().map(|p| p.worker.worker_id.as_str()).collect();
+        assert_eq!(noted, [plain.as_str()], "{swept:?}");
+        assert!(swept.iter().all(|p| p.ended.is_none()), "{swept:?}");
     }
 }

@@ -18,9 +18,10 @@ use horch_core::execution::records::{SessionLedger, EVENT_REPORT_FAILED, EVENT_R
 use horch_core::harness::launch;
 use horch_core::messaging::channel;
 use horch_core::messaging::delivery;
-use horch_core::messaging::mail::{Enqueued, Mail};
+use horch_core::messaging::mail::{Enqueued, Id, Mail};
 use horch_core::messaging::mailbox::{Mailbox, PaneState, RoleEntry};
 use horch_core::messaging::message;
+use horch_core::messaging::report;
 use horch_core::prompts;
 use horch_core::runtime::RuntimeContext;
 use horch_core::skills::catalog::marketplace::GitError;
@@ -33,6 +34,19 @@ use horch_core::workspace::herdr::Herdr;
 
 use super::context::{self, Sources};
 use crate::output;
+
+/// Report mode: a `horch_access: report` pane sends `request` to its
+/// report socket. `None` (any other command) is refused before anything
+/// else runs. The worker parent runs the request with its own identity.
+pub fn report_mode(socket: &std::path::Path, request: Option<report::Request>) -> Result<()> {
+    let Some(request) = request else {
+        bail!(
+            "this pane has horch_access: report. Only `horch ledger progress <text>`, \
+             `horch tell <report target> <text>` and `horch done <summary>` work here"
+        );
+    };
+    report::send(socket, &request)
+}
 
 /// Deliver `text` into the pane registered as `role`.
 ///
@@ -117,6 +131,8 @@ struct Outgoing<'a> {
     target: Option<String>,
     line: String,
     durable: bool,
+    /// The durable mail of the line: a push records its first push on it.
+    queued: Option<Id>,
     /// Start the courier after the push, as before #67: an unbounded push
     /// can outlast the courier's first redelivery and deliver the line twice.
     courier_after: bool,
@@ -172,9 +188,10 @@ fn queue_as<'a>(
     // mail with a courier. Its first redelivery is 30 s after the enqueue,
     // after the push budget ends.
     let courier_now = durable && delivery::push_time_left().is_some();
+    let mut queued = None;
     if durable {
         let from = sender.as_deref().expect("durable mail has a sender");
-        let queued = enqueue_durable(
+        let enqueued = enqueue_durable(
             ctx,
             mailbox.workspace_id(),
             role,
@@ -186,12 +203,13 @@ fn queue_as<'a>(
         )?;
         // A replay of a keyed mail that went out already pushes nothing
         // (TRF-51): the first send pushed it, and the courier redelivers it.
-        if queued.already_published {
+        if enqueued.already_published {
             return Ok(None);
         }
-        let id = queued.id;
+        let id = enqueued.id;
         // The first push shows the mail id too, as every redelivery does.
         line = message::with_mail_id(&line, from, &id.short());
+        queued = Some(id);
         if role != "orchestrator" {
             // Worker mail holds no question for the orchestrator.
         } else if let Err(error) = sync_question_waits(ctx, mailbox.workspace_id()) {
@@ -209,6 +227,7 @@ fn queue_as<'a>(
         target,
         line,
         durable,
+        queued,
         courier_after: durable && !courier_now,
         answers: question.map(|q| q.id.as_str().to_string()),
     }))
@@ -340,6 +359,14 @@ impl Outgoing<'_> {
                 true,
             )
         };
+        // The courier sends the full text 1 time to mail with no first push.
+        if let (Ok(()), Some(id)) = (&pushed, &self.queued) {
+            let state_root = &self.ctx.paths.state_root;
+            let queued = Mail::for_role(state_root, self.mailbox.workspace_id(), &self.role);
+            if let Err(error) = queued.mark_pushed(id) {
+                eprintln!("horch tell: recording the push failed ({error:#})");
+            }
+        }
         if self.courier_after {
             if let Err(error) = super::mail::start_courier(self.ctx, self.mailbox.workspace_id()) {
                 eprintln!("horch tell: {error:#}; `horch inbox` still shows the mail");

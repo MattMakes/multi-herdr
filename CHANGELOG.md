@@ -29,6 +29,16 @@
   `horch` and `herdr-install`, and `horch install` deletes an old
   `multi-herdr-dataset` file from the install directory.
 
+- Unread mail no longer floods the orchestrator. The courier sends a
+  message's full text 1 time only when no first push of it went or the push
+  can have missed. Then a NOTE gets nothing, and other unread mail gets 1
+  digest line after 5 min and every 15 min after that. Worker panes keep
+  their per-message redelivery.
+- The `skill-importer` teammate imports a skill repo with the new `skill-intake`
+  skill: a security sweep, a clean-room rewrite by 5 hidden, sandboxed role
+  workers (`intake-auditor`, `intake-analyst`, `intake-sanitizer`,
+  `intake-writer`, `intake-reviewer`), a verify gate, and an install.
+
 ## v0.4.5 - 2026-11-05
 
 - A new `one-page-design` teammate and skill turn a design into a one-page

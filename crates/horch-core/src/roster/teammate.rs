@@ -180,6 +180,18 @@ pub struct Teammate {
     /// rejects it elsewhere and rejects every escape hatch inside it.
     #[serde(default)]
     pub sandbox: Option<serde_json::Map<String, serde_json::Value>>,
+    /// What a sandboxed pane may reach of horch itself. `full` opens the
+    /// state root, the ledger folder and the sockets to the sandbox.
+    /// `report` opens only 1 socket for this pane, which the unsandboxed
+    /// worker process serves (`messaging::report`). `report` needs `sandbox:`.
+    #[serde(default)]
+    pub horch_access: HorchAccess,
+    /// Name globs (`intake-*`). When set, a pane of this teammate may run
+    /// `horch spawn` only for a teammate whose name matches 1 of them, and
+    /// never with `--resume` or its own `HORCH_TEAMMATES_DIR`. The spawned
+    /// worker reports to this pane's role. Empty: no limit.
+    #[serde(default)]
+    pub spawn_only: Vec<String>,
     /// Inline MCP server definitions. `None` leaves the operator's MCP
     /// configuration alone; `Some` renders `--mcp-config <json>
     /// --strict-mcp-config`, so `Some({})` means exactly zero MCP servers.
@@ -291,6 +303,8 @@ impl Default for Teammate {
             worker_channel: false,
             settings: None,
             sandbox: None,
+            horch_access: HorchAccess::Full,
+            spawn_only: Vec::new(),
             mcp_servers: None,
             mcp_config_files: Vec::new(),
             args: Vec::new(),
@@ -311,6 +325,18 @@ impl Default for Teammate {
     }
 }
 
+impl Teammate {
+    /// Whether a pane of this teammate may spawn `name`: always without
+    /// `spawn_only`, else only when `name` matches 1 of its globs.
+    pub fn may_spawn(&self, name: &str) -> bool {
+        self.spawn_only.is_empty()
+            || self
+                .spawn_only
+                .iter()
+                .any(|pattern| super::offer::glob_match(pattern, name))
+    }
+}
+
 /// `operator_skills:`: skill directories `names` under `dir`, an
 /// operator-local directory. `~/` in `dir` expands against the launch's
 /// home. Each name must be a `<dir>/<name>/SKILL.md` whose `name:` matches,
@@ -320,6 +346,19 @@ impl Default for Teammate {
 pub struct OperatorSkills {
     pub dir: String,
     pub names: Vec<String>,
+}
+
+/// `horch_access:`: what a sandboxed pane may reach of horch itself.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum HorchAccess {
+    /// The state root, the ledger folder, the relay sockets and the pane
+    /// manager socket: every `horch` command works in the pane.
+    #[default]
+    Full,
+    /// 1 per-pane report socket: only `horch ledger progress`, `horch tell`
+    /// to the report target and `horch done` work in the pane.
+    Report,
 }
 
 fn yes() -> bool {

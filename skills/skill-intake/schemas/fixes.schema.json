@@ -1,0 +1,55 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "GATE 2 fix list",
+  "description": "Clean side (K/fixes.json). Written only by `intake verify`. Each entry names 1 range of clean-side lines that must change, and the reason class. It holds no matched text, no source path, no C or D path and no score.",
+  "type": "object",
+  "required": [
+    "fixes"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "fixes": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "file",
+          "lines",
+          "kind",
+          "rule"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "file": {
+            "description": "A path relative to K: out/<skill>/<file> or persona.md.",
+            "type": "string",
+            "pattern": "^(out/[^/]+/(?!.*(^|/)\\.\\.(/|$)).+|persona\\.md)$"
+          },
+          "lines": {
+            "description": "[start, end], 1-based and inclusive.",
+            "type": "array",
+            "minItems": 2,
+            "items": {
+              "type": "integer",
+              "minimum": 1
+            }
+          },
+          "kind": {
+            "enum": [
+              "overlap",
+              "rule"
+            ]
+          },
+          "rule": {
+            "description": "The scanner rule id for kind rule; null for kind overlap.",
+            "type": [
+              "string",
+              "null"
+            ],
+            "pattern": "^(INJ|SCR|SUP|OPQ)-[0-9]{2}$"
+          }
+        }
+      }
+    }
+  }
+}

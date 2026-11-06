@@ -22,7 +22,7 @@ use horch_core::execution::{
 };
 use horch_core::ids::{ExecutionId, SessionId, TeammateName};
 use horch_core::messaging::mailbox::Mailbox;
-use horch_core::roster::{Phase, Roster};
+use horch_core::roster::{HorchAccess, Phase, Roster, Teammate};
 use horch_core::routing::decision::{GateFlags, RoutingDecision, RoutingProvenance};
 use horch_core::routing::policy::BalanceMode;
 use horch_core::routing::quota::QuotaView;
@@ -44,6 +44,9 @@ const SPAWN_POLL: Duration = Duration::from_millis(100);
 
 pub struct SpawnArgs {
     pub teammate: Option<String>,
+    /// Task text. Empty, except for a `spawn_only` controller's brief to a
+    /// report role ([`check_task_text`]); every other spawn refuses it.
+    pub task: String,
     pub resume: Option<String>,
     pub phase: Option<Phase>,
     /// Effort for this spawn only, over the teammate file's (or the record's).
@@ -69,21 +72,63 @@ pub struct SpawnArgs {
 /// The two forms are `horch spawn <teammate>` and `horch spawn --resume <id>`.
 /// Task text is refused (TRF-43, D1): pull is the only dispatch model, so a
 /// worker gets its work by `horch ledger claim`. The refusal prints the
-/// `horch ledger task` command that queues the same work.
+/// `horch ledger task` command that queues the same work. This is the view
+/// of a spawn with no `spawn_only` controller ([`check_task_text`]).
+#[cfg(test)]
 pub fn resolve_positionals(positionals: &[String], resume: Option<&str>) -> Result<Option<String>> {
+    let (teammate, task) = split_positionals(positionals, resume)?;
+    if !task.trim().is_empty() {
+        bail!(refuse_task_text(teammate.as_deref(), &task));
+    }
+    Ok(teammate)
+}
+
+/// The teammate and the task text of `horch spawn`'s positionals, with no
+/// refusal of the task text. [`spawn`] refuses it unless
+/// [`check_task_text`] allows it.
+pub fn split_positionals(
+    positionals: &[String],
+    resume: Option<&str>,
+) -> Result<(Option<String>, String)> {
     if resume.is_some() {
         return match positionals {
-            [] => Ok(None),
-            [task] => bail!(refuse_task_text(None, task)),
+            [] => Ok((None, String::new())),
+            [task] => Ok((None, task.clone())),
             _ => bail!("--resume takes no positional argument; usage: horch spawn --resume <id>"),
         };
     }
     match positionals {
         [] => bail!("give a teammate (e.g. `horch spawn sonnet`) or --resume <id>"),
-        [name] => Ok(Some(name.clone())),
-        [name, task] => bail!(refuse_task_text(Some(name), task)),
+        [name] => Ok((Some(name.clone()), String::new())),
+        [name, task] => Ok((Some(name.clone()), task.clone())),
         _ => bail!("too many arguments; usage: horch spawn <teammate>"),
     }
+}
+
+/// Whether this spawn carries task text.
+fn has_task_text(args: &SpawnArgs) -> bool {
+    !args.task.trim().is_empty()
+}
+
+/// The 1 exception to TRF-43: a `spawn_only` controller sends a brief to a
+/// role whose pane has `horch_access: report`. A report pane cannot run
+/// `horch ledger claim` (its socket takes only progress, tell and done), so
+/// the brief is its task. `controller` comes from [`spawn_only_check`]: the
+/// caller's registered pane, its horch-written brief and that teammate's
+/// globs, never a flag or a variable. Every other task text is refused.
+fn check_task_text(
+    args: &SpawnArgs,
+    controller: Option<&str>,
+    target: Option<&Teammate>,
+) -> Result<()> {
+    if !has_task_text(args) {
+        return Ok(());
+    }
+    let report = target.is_some_and(|t| t.horch_access == HorchAccess::Report);
+    if controller.is_some() && report && args.resume.is_none() {
+        return Ok(());
+    }
+    bail!(refuse_task_text(args.teammate.as_deref(), &args.task))
 }
 
 /// The refusal of a spawn with task text: the `horch ledger task` command
@@ -106,12 +151,29 @@ fn shell_quote(text: &str) -> String {
 /// Spawn a worker pane, returning its pane id so callers can chain splits.
 /// A refusal is a [`SpawnError::Refused`]; its REFUSED line is on stdout.
 pub fn spawn(ctx: &RuntimeContext, args: SpawnArgs) -> Result<String> {
+    // Before the ledger row: a refused caller leaves nothing behind.
+    let roster_dir = super::path_text(ctx.bins.roster_override.as_deref());
+    let caller = caller(ctx);
+    let controller = spawn_only_check(caller.as_ref(), &args, roster_dir.as_deref())?;
+    let brief = has_task_text(&args);
+    if brief {
+        let roster = super::load_roster(ctx, roster_dir.as_deref())?;
+        let target = args.teammate.as_deref().and_then(|t| roster.get(t));
+        check_task_text(&args, controller.as_deref(), target)?;
+    }
+    let sandboxed = sandboxed(caller.as_ref());
     // The task ledger: when this spawn joins a run, the worker gets a row
-    // and the task to claim one.
-    let ledger = super::taskledger_spawn::prepare(ctx, &args)?;
+    // and the task to claim one. A controller's role joins the
+    // controller's run and works from its brief (T-38).
+    let controller_row = controller
+        .as_ref()
+        .and(caller.as_ref())
+        .and_then(|c| c.worker_id.as_deref());
+    let ledger = super::taskledger_spawn::prepare(ctx, &args, controller_row)?;
     let result = match ledger.as_ref() {
-        Some(l) => refuse_over_plan(ctx, l).and_then(|()| spawn_worker(ctx, args, ledger.as_ref())),
-        None => spawn_worker(ctx, args, ledger.as_ref()),
+        Some(l) if !brief => refuse_over_plan(ctx, l)
+            .and_then(|()| spawn_worker(ctx, args, ledger.as_ref(), controller, sandboxed)),
+        _ => spawn_worker(ctx, args, ledger.as_ref(), controller, sandboxed),
     };
     // No row outlives a spawn that failed before its worker ran (#190).
     if let (Err(e), Some(l)) = (&result, &ledger) {
@@ -159,8 +221,15 @@ fn spawn_worker(
     ctx: &RuntimeContext,
     args: SpawnArgs,
     ledger: Option<&super::taskledger_spawn::LedgerSpawn>,
+    controller: Option<String>,
+    sandboxed: bool,
 ) -> Result<String> {
-    let req = build_request(&args, worker_task(ledger.is_some()))?;
+    let task = if has_task_text(&args) {
+        args.task.clone()
+    } else {
+        worker_task(ledger.is_some()).to_string()
+    };
+    let req = build_request(&args, &task)?;
     let sc = spawn_context(ctx)?;
     let existing = resume_record(&req, &sc)?;
     let planned = plan_request(ctx, &req, &sc, existing.as_ref());
@@ -171,7 +240,9 @@ fn spawn_worker(
             &rec,
         );
     }
-    launch(ctx, &sc, planned?, args.role.as_deref(), ledger)
+    let mut plan = planned?;
+    plan.controller = controller;
+    launch(ctx, &sc, plan, args.role.as_deref(), ledger, sandboxed)
 }
 
 /// 1 spawn-gate decision, as the task ledger records it (TRF-41). The
@@ -260,6 +331,88 @@ fn record_gate(ctx: &RuntimeContext, about: Option<(&str, &str)>, rec: &GateReco
     }
 }
 
+/// The worker that runs this `horch spawn`: the role registered on this
+/// pane, in the pane's own workspace, and the teammate its brief resolved.
+/// `HORCH_ROLE` is not read. No pane, no registered role or no readable
+/// brief: no caller (the orchestrator, an operator shell).
+struct Caller {
+    role: String,
+    teammate: Teammate,
+    teammates_dir: Option<String>,
+    /// The caller's task-ledger row, from its brief.
+    worker_id: Option<String>,
+}
+
+fn caller(ctx: &RuntimeContext) -> Option<Caller> {
+    let pane = ctx.herdr.pane.as_ref()?;
+    let info = Herdr::with_bin(&ctx.bins.harness.herdr)
+        .pane_get(pane.as_str())
+        .ok()?;
+    let workspace = info
+        .workspace_id
+        .clone()
+        .or_else(|| ctx.herdr.workspace.as_ref().map(|w| w.to_string()))?;
+    let mailbox = Mailbox::in_context(ctx, &workspace);
+    let (role, _) = mailbox
+        .roles()
+        .into_iter()
+        .find(|(_, p)| *p == info.pane_id)?;
+    let brief = mailbox.read_brief(&role).ok()?;
+    Some(Caller {
+        role,
+        teammate: brief.resolved?,
+        teammates_dir: brief.teammates_dir,
+        worker_id: brief.worker_id,
+    })
+}
+
+/// Whether a sandboxed worker runs this spawn.
+fn sandboxed(caller: Option<&Caller>) -> bool {
+    caller.is_some_and(|c| c.teammate.sandbox.is_some())
+}
+
+/// Run the state sweep, unless a sandboxed worker runs this spawn: its
+/// sandbox denies the removal of skill bundles (ticket 28). A skipped
+/// sweep writes no stamp, so the next spawn outside a sandbox sweeps on
+/// time.
+fn sweep_state(ctx: &RuntimeContext, sandboxed: bool) {
+    if !sandboxed {
+        horch_core::sweep::run_due(ctx);
+    }
+}
+
+/// Refuse what the caller's `spawn_only` does not allow: a name that
+/// matches no glob, `--resume`, and a roster folder other than the one its
+/// brief names. Returns the controller for the new worker's brief: the
+/// caller's role when it has `spawn_only`, else none.
+fn spawn_only_check(
+    caller: Option<&Caller>,
+    args: &SpawnArgs,
+    roster_dir: Option<&str>,
+) -> Result<Option<String>> {
+    let Some(c) = caller.filter(|c| !c.teammate.spawn_only.is_empty()) else {
+        return Ok(None);
+    };
+    let who = format!("{} (teammate {})", c.role, c.teammate.name);
+    let only = c.teammate.spawn_only.join(", ");
+    if args.resume.is_some() {
+        bail!("horch spawn refused: {who} has spawn_only [{only}], so --resume is refused");
+    }
+    if roster_dir != c.teammates_dir.as_deref() {
+        bail!(
+            "horch spawn refused: {who} has spawn_only [{only}], so HORCH_TEAMMATES_DIR={} \
+             is refused; its brief names {}",
+            roster_dir.unwrap_or("(unset)"),
+            c.teammates_dir.as_deref().unwrap_or("(unset)")
+        );
+    }
+    let name = args.teammate.as_deref().unwrap_or_default();
+    if !c.teammate.may_spawn(name) {
+        bail!("horch spawn refused: {who} may spawn only [{only}], and '{name}' matches none");
+    }
+    Ok(Some(c.role.clone()))
+}
+
 /// The record a resume continues, when the request has one.
 fn resume_record(req: &SpawnRequest, sc: &SpawnContext) -> Result<Option<Record>> {
     // A record whose pane closed without `horch done` ends here, so it resumes.
@@ -310,6 +463,7 @@ fn launch(
     plan: ExecutionPlan,
     role: Option<&str>,
     ledger: Option<&super::taskledger_spawn::LedgerSpawn>,
+    sandboxed: bool,
 ) -> Result<String> {
     // Advisory probes belong after validation: a refused/headless request
     // must not contact herdr or create diagnostic state.
@@ -330,7 +484,7 @@ fn launch(
             l.launch_failed(&format!("{e:#}"));
         }
     })?;
-    horch_core::sweep::run_due(ctx);
+    sweep_state(ctx, sandboxed);
     let launch = &out.plan.launch;
     if let Some(l) = ledger {
         l.spawned(
@@ -686,6 +840,202 @@ mod tests {
             .to_string();
         assert!(err.contains("unknown teammate 'haiku'"), "{err}");
         assert!(err.contains("codex-terra"), "{err}");
+    }
+
+    fn args(teammate: Option<&str>, resume: Option<&str>) -> SpawnArgs {
+        SpawnArgs {
+            teammate: teammate.map(str::to_string),
+            task: String::new(),
+            resume: resume.map(str::to_string),
+            phase: None,
+            effort: None,
+            role: None,
+            from_pane: None,
+            direction: Direction::Right,
+            tiling: TilingMode::Disabled,
+            exact: false,
+            force: false,
+            replaces: None,
+            run: None,
+        }
+    }
+
+    fn importer(spawn_only: &[&str]) -> Caller {
+        Caller {
+            role: "skill-importer-1".into(),
+            teammate: horch_core::roster::Teammate {
+                name: "skill-importer".into(),
+                spawn_only: spawn_only.iter().map(|s| s.to_string()).collect(),
+                ..Default::default()
+            },
+            teammates_dir: Some("/repo/teammates".into()),
+            worker_id: None,
+        }
+    }
+
+    /// A spawn skips the state sweep only when a sandboxed worker runs it
+    /// (ticket 28): an operator shell, the orchestrator and an unsandboxed
+    /// worker sweep.
+    #[test]
+    fn only_a_sandboxed_caller_skips_the_sweep() {
+        let mut boxed = importer(&[]);
+        boxed.teammate.sandbox = Some(serde_json::Map::new());
+        assert!(sandboxed(Some(&boxed)));
+        assert!(!sandboxed(Some(&importer(&[]))));
+        assert!(!sandboxed(None));
+    }
+
+    /// A skipped sweep writes no stamp, so the next unsandboxed spawn
+    /// sweeps on time; a sweep that runs writes it.
+    #[test]
+    fn a_skipped_sweep_writes_no_stamp() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = tmp.path().join("state");
+        std::fs::create_dir(&state).unwrap();
+        // A herdr that does not answer leaves all state alone.
+        let env = horch_core::runtime::MapEnv::new(tmp.path())
+            .with("HOME", &tmp.path().to_string_lossy())
+            .with("HORCH_STATE_DIR", &state.to_string_lossy())
+            .with(
+                "HORCH_HERDR_BIN",
+                &tmp.path().join("no-herdr").to_string_lossy(),
+            );
+        let ctx = RuntimeContext::from_env(&env).unwrap();
+        let stamp = state.join(".sweep-stamp");
+        sweep_state(&ctx, true);
+        assert!(!stamp.exists(), "a sandboxed spawn must not stamp");
+        sweep_state(&ctx, false);
+        assert!(stamp.exists(), "an unsandboxed spawn sweeps and stamps");
+    }
+
+    /// A caller with `spawn_only` spawns a matching teammate, and the new
+    /// worker's controller is the caller's role.
+    #[test]
+    fn spawn_only_allows_a_matching_name_and_names_the_controller() {
+        let c = importer(&["intake-*"]);
+        let got = spawn_only_check(
+            Some(&c),
+            &args(Some("intake-auditor"), None),
+            Some("/repo/teammates"),
+        )
+        .unwrap();
+        assert_eq!(got.as_deref(), Some("skill-importer-1"));
+    }
+
+    #[test]
+    fn spawn_only_refuses_a_name_that_matches_no_glob() {
+        let c = importer(&["intake-*"]);
+        let err = spawn_only_check(Some(&c), &args(Some("opus"), None), Some("/repo/teammates"))
+            .unwrap_err()
+            .to_string();
+        assert_eq!(
+            err,
+            "horch spawn refused: skill-importer-1 (teammate skill-importer) may spawn \
+             only [intake-*], and 'opus' matches none"
+        );
+    }
+
+    /// The caller cannot point the roster at a folder it wrote: only the
+    /// folder its own brief names passes.
+    #[test]
+    fn spawn_only_refuses_another_teammates_dir() {
+        let c = importer(&["intake-*"]);
+        for dir in [Some("/tmp/evil"), None] {
+            let err = spawn_only_check(Some(&c), &args(Some("intake-auditor"), None), dir)
+                .unwrap_err()
+                .to_string();
+            assert!(
+                err.starts_with(
+                    "horch spawn refused: skill-importer-1 (teammate skill-importer) has \
+                     spawn_only [intake-*], so HORCH_TEAMMATES_DIR="
+                ),
+                "{err}"
+            );
+        }
+    }
+
+    #[test]
+    fn spawn_only_refuses_resume() {
+        let c = importer(&["intake-*"]);
+        let err = spawn_only_check(Some(&c), &args(None, Some("s-1")), Some("/repo/teammates"))
+            .unwrap_err()
+            .to_string();
+        assert_eq!(
+            err,
+            "horch spawn refused: skill-importer-1 (teammate skill-importer) has \
+             spawn_only [intake-*], so --resume is refused"
+        );
+    }
+
+    /// A caller without the key, and no caller (the orchestrator or an
+    /// operator shell), spawn as before: any name, any roster, resume.
+    #[test]
+    fn a_caller_without_spawn_only_is_unchanged() {
+        let c = importer(&[]);
+        for caller in [Some(&c), None] {
+            for a in [args(Some("opus"), None), args(None, Some("s-1"))] {
+                assert_eq!(
+                    spawn_only_check(caller, &a, Some("/tmp/other")).unwrap(),
+                    None
+                );
+            }
+        }
+    }
+
+    /// TRF-43's 1 exception: `skill-importer` (spawn_only `intake-*`) sends a
+    /// brief to `intake-writer`, a `horch_access: report` pane.
+    #[test]
+    fn trf_43_spawn_only_controller_may_send_a_brief() {
+        let roster = Roster::builtin().unwrap();
+        let importer_caller = importer(&["intake-*"]);
+        let mut a = args(Some("intake-writer"), None);
+        a.task = "Read and follow /x/brief.md exactly.".into();
+        let controller =
+            spawn_only_check(Some(&importer_caller), &a, Some("/repo/teammates")).unwrap();
+        assert_eq!(controller.as_deref(), Some("skill-importer-1"));
+        let target = roster.get("intake-writer");
+        assert_eq!(target.unwrap().horch_access, HorchAccess::Report);
+        check_task_text(&a, controller.as_deref(), target).unwrap();
+        // No task text needs no exception.
+        check_task_text(&args(Some("opus"), None), None, roster.get("opus")).unwrap();
+    }
+
+    /// Every other task text keeps the TRF-43 refusal: no controller, a
+    /// controller's brief to a pane with full horch access, an unknown
+    /// teammate, and a resume.
+    #[test]
+    fn trf_43_task_text_refused_outside_spawn_only() {
+        let roster = Roster::builtin().unwrap();
+        let brief = |teammate: Option<&str>, resume: Option<&str>| {
+            let mut a = args(teammate, resume);
+            a.task = "fix Bob's auth".into();
+            a
+        };
+        let refused = |a: &SpawnArgs, controller: Option<&str>, target: Option<&Teammate>| {
+            let err = check_task_text(a, controller, target)
+                .unwrap_err()
+                .to_string();
+            assert_eq!(err, refuse_task_text(a.teammate.as_deref(), &a.task));
+            assert!(
+                err.contains("horch ledger task 'fix Bob'\\''s auth'"),
+                "{err}"
+            );
+        };
+        let writer = brief(Some("intake-writer"), None);
+        refused(&writer, None, roster.get("intake-writer"));
+        let opus = brief(Some("opus"), None);
+        refused(&opus, Some("skill-importer-1"), roster.get("opus"));
+        refused(&brief(Some("nobody"), None), Some("skill-importer-1"), None);
+        refused(
+            &brief(None, Some("s-1")),
+            Some("skill-importer-1"),
+            roster.get("intake-writer"),
+        );
+        // A caller without spawn_only is no controller, so its brief is refused.
+        let plain = importer(&[]);
+        let controller = spawn_only_check(Some(&plain), &writer, Some("/repo/teammates")).unwrap();
+        assert_eq!(controller, None);
+        refused(&writer, controller.as_deref(), roster.get("intake-writer"));
     }
 
     #[test]

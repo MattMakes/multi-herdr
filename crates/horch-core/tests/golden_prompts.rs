@@ -2134,3 +2134,26 @@ This briefing is complete. An ambient skill named herdr-orchestrator or
     }
     expected
 }
+
+/// T-22: the `report-worker` base, as an intake role renders it. This golden
+/// is a capture of new text, not of an old implementation: the base did not
+/// exist before. It pins the report-mode briefing byte for byte, so a change
+/// to `_base/report-worker.md` or to a role persona is a deliberate change.
+/// The host and project facts are fixed, so the capture is the same on every
+/// machine.
+#[test]
+fn the_report_worker_briefing_matches_its_golden() {
+    let r = roster();
+    let t = r.require("intake-writer").unwrap();
+    let got = prompts::worker_prompt_with_context(
+        &r,
+        t,
+        "intake-writer-1",
+        "Read brief ~/.local/state/skill-intake/clean/x/brief.md",
+        &SessionMode::Fresh(None),
+        "(No project facts recorded.)",
+        "test-host",
+    )
+    .unwrap();
+    assert_eq!(golden("worker-intake-writer-task"), got);
+}

@@ -793,6 +793,13 @@ fn run() -> Result<std::process::ExitCode> {
     // The one read of the process environment. Every command takes its
     // values from this context.
     let mut ctx = bootstrap::context()?;
+    // A `horch_access: report` pane reaches only its report socket.
+    if let Some(socket) = ctx.report_socket.clone() {
+        return done(cmd::messaging::report_mode(
+            &socket,
+            cli.command.report_request(),
+        ));
+    }
     cli.command.warn_stale(&ctx);
     // A pane that herdr resumed after a restart has no HORCH_ROLE (#125).
     if cli.command.adopts_identity() {
@@ -828,6 +835,33 @@ impl Command {
             Command::Measure(c) => c.dispatch(ctx),
             Command::Grid(c) => c.dispatch(ctx),
             Command::Tool(c) => c.dispatch(ctx),
+        }
+    }
+
+    /// What this command sends in a `horch_access: report` pane. `None`:
+    /// it is refused there.
+    fn report_request(self) -> Option<horch_core::messaging::report::Request> {
+        use horch_core::messaging::report::Request;
+        match self {
+            // A report pane answers no question: `--answers` is refused.
+            Command::Messaging(MessagingCommand::Tell {
+                role,
+                message,
+                answers: None,
+            }) => Some(Request::Tell {
+                to: role,
+                text: joined(&message),
+            }),
+            Command::Session(SessionCommand::Done {
+                unlanded: None,
+                summary,
+            }) => Some(Request::Done {
+                text: joined(&summary),
+            }),
+            Command::Grid(GridCommand::Ledger { command }) => {
+                cmd::taskledger::report_request(&command)
+            }
+            _ => None,
         }
     }
 
@@ -1048,6 +1082,7 @@ impl ProjectCommand {
                 &args,
                 cmd::spawn::SpawnArgs {
                     teammate: None,
+                    task: String::new(),
                     resume,
                     phase,
                     effort,
@@ -1236,7 +1271,8 @@ fn spawn_command(
     positionals: &[String],
     mut args: cmd::spawn::SpawnArgs,
 ) -> Result<()> {
-    args.teammate = cmd::spawn::resolve_positionals(positionals, args.resume.as_deref())?;
+    (args.teammate, args.task) =
+        cmd::spawn::split_positionals(positionals, args.resume.as_deref())?;
     output::println(&cmd::spawn::spawn(ctx, args)?);
     Ok(())
 }
@@ -1296,6 +1332,64 @@ fn telemetry_command(
 mod tests {
     use super::*;
     use clap::CommandFactory;
+
+    /// In a `horch_access: report` pane, `tell`, `done` and `ledger
+    /// progress` reach the report socket as 1 request each, and every other
+    /// command is refused without a request.
+    #[cfg(unix)]
+    #[test]
+    fn report_mode_sends_3_commands_and_refuses_the_rest() {
+        use horch_core::messaging::report::{self, Request};
+        use std::sync::{Arc, Mutex};
+        let tmp = tempfile::Builder::new().tempdir_in("/tmp").unwrap();
+        let path = report::socket_path(tmp.path(), "r1");
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let log = seen.clone();
+        let exec: Box<report::Executor> = Box::new(move |r: &Request| {
+            log.lock().unwrap().push(r.clone());
+            Ok(())
+        });
+        let _server =
+            report::Server::start(path.clone(), Some("orchestrator".into()), exec).unwrap();
+        let run = |argv: &[&str]| {
+            let cli = Cli::try_parse_from(argv).unwrap();
+            cmd::messaging::report_mode(&path, cli.command.report_request())
+        };
+        run(&["horch", "ledger", "progress", "step 1"]).unwrap();
+        run(&["horch", "tell", "orchestrator", "[r] NOTE:", "hi"]).unwrap();
+        run(&["horch", "done", "all", "done"]).unwrap();
+        let err = run(&["horch", "tell", "sonnet-1", "x"]).unwrap_err();
+        assert!(err.to_string().contains("only to orchestrator"), "{err}");
+        for argv in [
+            &["horch", "spawn", "opus"][..],
+            &["horch", "note", "x"],
+            &["horch", "inbox"],
+            &["horch", "ledger", "status"],
+            &["horch", "ledger", "note", "x"],
+            &["horch", "done", "--unlanded", "why", "x"],
+        ] {
+            let err = run(argv).unwrap_err();
+            assert!(
+                err.to_string().contains("horch_access: report"),
+                "{argv:?}: {err}"
+            );
+        }
+        assert_eq!(
+            *seen.lock().unwrap(),
+            [
+                Request::Progress {
+                    text: "step 1".into()
+                },
+                Request::Tell {
+                    to: "orchestrator".into(),
+                    text: "[r] NOTE: hi".into()
+                },
+                Request::Done {
+                    text: "all done".into()
+                },
+            ]
+        );
+    }
 
     /// The failure a Codex orchestrator hit on `horch spawn`, verbatim.
     #[cfg(unix)]

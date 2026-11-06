@@ -1,0 +1,47 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Handoff package",
+  "description": "Written by `intake cr handoff` into K/handoff/. Lists every approved spec with its hash.",
+  "type": "object",
+  "required": [
+    "task_id",
+    "created",
+    "items"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "task_id": {
+      "type": "string",
+      "pattern": "^[0-9]{8}-[0-9]{6}-[0-9a-f]{6}$"
+    },
+    "created": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "items": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "spec_id",
+          "file",
+          "sha256"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "spec_id": {
+            "type": "string"
+          },
+          "file": {
+            "type": "string",
+            "pattern": "^[a-z0-9-]+\\.json$"
+          },
+          "sha256": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          }
+        }
+      }
+    }
+  }
+}

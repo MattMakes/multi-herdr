@@ -8,6 +8,7 @@ pub mod mail;
 pub mod mailbox;
 pub mod message;
 mod private;
+pub mod report;
 
 /// A name as 1 file or directory name: ASCII letters, digits and `-` stay,
 /// every other character (`/`, `:`, `.`, `_`, a space) becomes `_`.

@@ -89,5 +89,8 @@ step env HORCH_TEAMMATES_DIR=teammates cargo run --quiet --bin horch -- teammate
 step scripts/check-req-coverage.sh
 step scripts/check-deps.sh
 step scripts/verify-telemetry-e2e.sh
+# skill-intake: the `intake` tool's unittest suite (stdlib only, no network;
+# every test sets HOME and XDG_STATE_HOME to a temp dir).
+step python3 -m unittest discover -s scripts/skill-intake/tests
 step godot_skills
 echo "GATE GREEN"

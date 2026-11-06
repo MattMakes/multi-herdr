@@ -64,11 +64,16 @@ fn corpus(name: &str) -> Harness {
         assert!(ok.success());
     }
     h.set("HORCH_NOW", NOW);
-    h.set("HORCH_PROBE_TIMEOUT_MS", "1500");
+    // A probe only needs to answer: a slow first exec must not fail it. A test
+    // that asserts a timeout sets a short deadline and a fake that hangs.
+    h.set(
+        "HORCH_PROBE_TIMEOUT_MS",
+        horch_e2e::harness::DEADLINE.as_millis().to_string(),
+    );
     h
 }
 
-/// Warm the first-exec scan before the quota probes use their short timeout.
+/// Warm the first-exec scan of the quota fakes before the probes run.
 fn warm_quota_fakes(h: &Harness) {
     for fake in ["claude", "codex", "pi", "ollama"] {
         assert!(std::process::Command::new(h.bin.join(fake))
@@ -618,6 +623,11 @@ fn quo_03_fallback_on_probe_failure() {
     for scenario in ["hang", "error"] {
         let mut h = corpus(&format!("quo03-{scenario}"));
         h.set("HORCH_FAKE_SCENARIO", scenario);
+        if scenario == "hang" {
+            // The fake never answers, so the probe always times out: the short
+            // deadline only sets how long the test waits, not its result.
+            h.set("HORCH_PROBE_TIMEOUT_MS", "1500");
+        }
         let out = h.run(&["quota", "--refresh", "--json"]);
         assert!(out.status.success(), "{}", stderr(&out));
         let q = json(&out);

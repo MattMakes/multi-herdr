@@ -134,12 +134,18 @@ const SKIP_NEW_TEAMMATES: &[&str] = &[
     "godot-ui-developer",
     "godot-world-builder",
     "godot-xr-developer",
+    "intake-analyst",
+    "intake-auditor",
+    "intake-reviewer",
+    "intake-sanitizer",
+    "intake-writer",
     "judge",
     "landing-page-builder",
     "motion-engineer",
     "one-page-design",
     "opus-creative",
     "pixel-vfx-artist",
+    "skill-importer",
     "spec-writer",
     "swift-developer",
     "swift-qa-engineer",
@@ -409,6 +415,8 @@ fn skills_bundled_size_budget() {
 /// The `video-*` skills listed here ship their own runnable checker,
 /// capture and render scripts. The own-text `one-page-design` ships its page
 /// checker script, the checker's tests and an HTML starter page.
+/// `skill-intake` ships its `intake` tool as real `.py` files, so the gate's
+/// tests and the skill digest cover the tool itself.
 const EXEMPT_FROM_TEXT_ONLY: &[&str] = &[
     "blender-3d-print",
     "blender-addon-development",
@@ -440,6 +448,7 @@ const EXEMPT_FROM_TEXT_ONLY: &[&str] = &[
     "blender-weather-fx",
     "one-page-design",
     "skill-creator",
+    "skill-intake",
     "video-audio",
     "video-capture",
     "video-motion",
