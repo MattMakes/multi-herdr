@@ -19,6 +19,8 @@ Get a second-vendor review of the widest refactor before the gate.
 2. Look for: a reader still on JSON, lost history after import, a command that changed output without a test.
 3. Do not edit code.
 
+Amendment (review 31 did not cover them): also review tickets 42 and 44 (orchestrator launch claims its run; respawn launch-pending) for the C7 risks named in review 31 C-01 and I-02.
+
 ## Done when
 
 `ai_docs/reports/trace-fixes/32.md` lists findings as Critical, Important or Minor.

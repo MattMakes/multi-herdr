@@ -47,6 +47,10 @@ Spec: [docs/specs/trace-fixes.md](../../specs/trace-fixes.md)
 | 41 | [The outbox drain releases its lock explicitly (flaky trf_21 tests)](41-outbox-lock-release.md) | primary `opus-hardening`, fallback `opus` | yes | 5 |  |
 | 42 | [An orchestrator launch claims its run: workspace recorded, stop cleared](42-orchestrator-launch-claims-run.md) | primary `opus-hardening`, fallback `opus` | yes | 8 | 24 |
 | 43 | [run new refuses a 2nd active run in a workspace](43-run-new-one-per-workspace.md) | primary `opus`, fallback `backend-developer` | yes | 8 | 27 |
+| 44 | [Respawn survives a crash before launch, and a losing launch keeps the live route](44-respawn-launch-pending.md) | primary `opus-hardening`, fallback `opus` | yes | 9 | 31 |
+| 45 | [An outbox drain never makes duplicate mail](45-idempotent-drain.md) | primary `opus-hardening`, fallback `opus` | yes | 9 | 31 |
+| 46 | [The watchdog reconciles every wake that a crash after commit can lose](46-wake-reconcilers.md) | primary `opus-hardening`, fallback `opus` | yes | 10 | 44, 45 |
+| 47 | [An auto-spawned reviewer claims the review it was spawned for](47-reviewer-claim-target.md) | primary `opus`, fallback `opus-hardening` | yes | 9 | 31 |
 
 ## Waves
 
@@ -58,8 +62,8 @@ Spec: [docs/specs/trace-fixes.md](../../specs/trace-fixes.md)
 - Wave 6: 23, 25, 26
 - Wave 7: 24, 27
 - Wave 8: 28, 31, 42, 43
-- Wave 9: 29
-- Wave 10: 30, 32
+- Wave 9: 29, 44, 45, 47
+- Wave 10: 30, 32, 46
 - Wave 11: 33
 
 ## Critical path
