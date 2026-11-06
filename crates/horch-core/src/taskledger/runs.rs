@@ -8,6 +8,7 @@ use serde::Serialize;
 
 use super::model::{Actor, EventKind, Origin, RunStatus, StepName, WorktreeStatus};
 use super::sql_words::{self, word};
+use super::status::Unsettled;
 use super::store::optional;
 use super::util::{self, About};
 use crate::exeid::ExeIdentity;
@@ -375,26 +376,6 @@ pub fn close(conn: &Connection, run_id: &str, status: RunStatus) -> Result<()> {
     Ok(())
 }
 
-/// What keeps a run open: each task that is queued (held included),
-/// running or landing, and each worktree that is open or landing.
-pub fn open_items(conn: &Connection, run_id: &str) -> Result<Vec<String>> {
-    let mut out: Vec<String> = super::tasks::of_run(conn, run_id)?
-        .into_iter()
-        .filter(|t| matches!(t.status.as_str(), "queued" | "running" | "landing"))
-        .map(|t| match &t.held_reason {
-            Some(r) => format!("{} (held: {r})", t.short()),
-            None => format!("{} ({})", t.short(), t.status),
-        })
-        .collect();
-    out.extend(
-        super::status::worktrees(conn, run_id)?
-            .into_iter()
-            .filter(|w| !w.scratch && matches!(w.status.as_str(), "open" | "landing"))
-            .map(|w| format!("worktree {} ({})", w.path, w.status)),
-    );
-    Ok(out)
-}
-
 /// The statuses of a worktree that no step takes to an outcome.
 const PARKED: &[WorktreeStatus] = &[
     WorktreeStatus::Landed,
@@ -431,16 +412,6 @@ pub fn parked_worktrees(conn: &Connection, run_id: &str) -> Result<Vec<String>> 
         .collect())
 }
 
-/// The parked worktrees of the run with no triage decision: they keep the
-/// run open, with `--abandon` too (#308).
-pub fn undecided_worktrees(conn: &Connection, run_id: &str) -> Result<Vec<String>> {
-    Ok(parked_on_disk(conn, run_id)?
-        .into_iter()
-        .filter(|(_, d)| d.is_none())
-        .map(|p| p.0)
-        .collect())
-}
-
 /// Why `run` cannot close while `parked` have no decision.
 pub fn parked_message(run: &Run, parked: &[String]) -> String {
     format!(
@@ -463,8 +434,7 @@ pub struct Closed {
 }
 
 /// `horch ledger run close`: close an active run as `done`. It refuses while
-/// [`open_items`] names anything, or a parked worktree has no triage
-/// decision ([`undecided_worktrees`]). With `abandon`, every open task is
+/// the run is not settled ([`super::status::unsettled`], C6). With `abandon`, every open task is
 /// cancelled first (the 1 cancel path) and the run closes as `abandoned`;
 /// an undecided worktree then keeps the run active, with the cancels done
 /// ([`Closed::parked`]).
@@ -493,8 +463,13 @@ pub fn close_run(conn: &Connection, run: &Run, abandon: Option<&str>) -> Result<
             params![run.run_id, format!("run abandoned: {reason}")],
         )?;
     }
-    let open = open_items(conn, &run.run_id)?;
+    // C6: the 1 settled rule. Run close adds nothing to it here.
+    let (parked, open): (Vec<Unsettled>, Vec<Unsettled>) =
+        super::status::unsettled(conn, &run.run_id)?
+            .into_iter()
+            .partition(|u| matches!(u, Unsettled::Parked { .. }));
     if !open.is_empty() {
+        let open: Vec<String> = open.iter().map(|u| u.to_string()).collect();
         bail!(
             "run {} still has open work: {}. Finish or cancel it, or run horch ledger run close --run {} --abandon \"<reason>\"",
             run.slug,
@@ -502,7 +477,13 @@ pub fn close_run(conn: &Connection, run: &Run, abandon: Option<&str>) -> Result<
             run.slug
         );
     }
-    let parked = undecided_worktrees(conn, &run.run_id)?;
+    let parked: Vec<String> = parked
+        .into_iter()
+        .filter_map(|u| match u {
+            Unsettled::Parked { path, .. } => Some(path),
+            _ => None,
+        })
+        .collect();
     if !parked.is_empty() {
         if abandon.is_none() {
             bail!("{}", parked_message(run, &parked));

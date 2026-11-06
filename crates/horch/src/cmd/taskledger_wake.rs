@@ -4,9 +4,9 @@
 
 use horch_core::ids::WorkspaceId;
 use horch_core::runtime::RuntimeContext;
-use horch_core::taskledger::model::{Actor, EventKind, WorktreeStatus};
+use horch_core::taskledger::model::{Actor, EventKind};
 use horch_core::taskledger::runs::Run;
-use horch_core::taskledger::sql_words;
+use horch_core::taskledger::status;
 use horch_core::taskledger::stop::Panes;
 use horch_core::taskledger::tasks;
 use horch_core::taskledger::util::{self, About};
@@ -72,41 +72,27 @@ pub fn wake(ctx: &RuntimeContext, store: &Store, run: &Run, text: &str) {
     );
 }
 
+/// The settled wake line of `run`, or `None` while the run is not settled
+/// (C6: [`status::unsettled`], the rule `run close` uses).
+pub(crate) fn settled_note(store: &Store, run: &Run) -> anyhow::Result<Option<String>> {
+    if !status::unsettled(store.conn(), &run.run_id)?.is_empty() {
+        return Ok(None);
+    }
+    Ok(Some(format!(
+        "NOTE: All tasks are done. Run horch ledger status, verify the run, then close it with horch ledger run close --run {} and report to the operator.",
+        run.slug
+    )))
+}
+
 /// After a task finishes: wake the orchestrator when tasks can start that
-/// no live worker is on its way to claim, or when the run is complete.
+/// no live worker is on its way to claim, or when the run is settled.
 pub fn after_done(ctx: &RuntimeContext, store: &Store, run: &Run) {
-    match tasks::all_finished(store.conn(), &run.run_id) {
-        Ok(true) => {
-            let open_worktrees: i64 = store
-                .conn()
-                .query_row(
-                    &format!(
-                        "SELECT count(*) FROM worktrees w JOIN tasks t ON t.task_id = w.task_id
-                         WHERE t.run_id = ?1 AND w.status NOT IN ({settled})",
-                        settled = sql_words::list(&[
-                            WorktreeStatus::Cleaned,
-                            WorktreeStatus::Unlanded,
-                            WorktreeStatus::Abandoned
-                        ])
-                    ),
-                    [&run.run_id],
-                    |r| r.get(0),
-                )
-                .unwrap_or(0);
-            if open_worktrees == 0 {
-                wake(
-                    ctx,
-                    store,
-                    run,
-                    &format!(
-                        "NOTE: All tasks are done. Run horch ledger status, verify the run, then close it with horch ledger run close --run {} and report to the operator.",
-                        run.slug
-                    ),
-                );
-                return;
-            }
+    match settled_note(store, run) {
+        Ok(Some(note)) => {
+            wake(ctx, store, run, &note);
+            return;
         }
-        Ok(false) => {}
+        Ok(None) => {}
         Err(e) => eprintln!("horch ledger: {e:#}"),
     }
     nudge_startable(ctx, store, run);
@@ -345,4 +331,80 @@ pub fn after_reap(
             report.stop.worker_id
         ),
     );
+}
+
+#[cfg(test)]
+mod trf_15_tests {
+    use std::path::Path;
+
+    use horch_core::taskledger::runs::{self, NewRun};
+    use horch_core::taskledger::tasks::NewTask;
+
+    use super::*;
+
+    /// 1 worktree row: (status, folder on disk, triage decision, settled).
+    const CASES: &[(&str, bool, Option<&str>, bool)] = &[
+        ("open", true, None, false),
+        ("landing", true, None, false),
+        ("landed", true, None, false),
+        ("cleanup_failed", true, None, false),
+        ("unlanded", true, None, false),
+        ("unlanded", true, Some("KEEP"), true),
+        ("unlanded", false, None, true),
+        ("abandoned", true, None, false),
+        ("abandoned", false, None, true),
+        ("cleaned", false, None, true),
+        ("archived", false, None, true),
+        ("trashed", false, None, true),
+    ];
+
+    #[test]
+    fn trf_15_settled_wake_agrees_with_status_and_run_close() {
+        for &(status, on_disk, decision, settled) in CASES {
+            let dir = tempfile::tempdir().unwrap();
+            let mut store = Store::open(&dir.path().join("ledger.sqlite3")).unwrap();
+            let run = store
+                .immediate(|tx| {
+                    runs::create(
+                        tx,
+                        Path::new("/repo"),
+                        &NewRun {
+                            slug: "r1".into(),
+                            ..Default::default()
+                        },
+                    )
+                })
+                .unwrap();
+            let t = NewTask::work("alpha", "tickets/alpha.md", "dev");
+            let task = store
+                .immediate(|tx| tasks::add(tx, &run, &t, Actor::Orchestrator))
+                .unwrap();
+            let wt = dir.path().join("wt");
+            if on_disk {
+                std::fs::create_dir(&wt).unwrap();
+            }
+            store
+                .conn()
+                .execute(
+                    "UPDATE tasks SET status = 'done' WHERE task_id = ?1",
+                    [&task.task_id],
+                )
+                .unwrap();
+            store
+                .conn()
+                .execute(
+                    "INSERT INTO worktrees (worktree_id, task_id, repo_root, path, branch, base, status, decision, origin, created_at)
+                     VALUES ('wt1', ?1, '/repo', ?2, 'fleet/a', 'main', ?3, ?4, 'native', '2000-01-01T00:00:00Z')",
+                    (&task.task_id, wt.to_string_lossy().to_string(), status, decision),
+                )
+                .unwrap();
+            let case = (status, on_disk, decision);
+            let note = settled_note(&store, &run).unwrap();
+            assert_eq!(note.is_some(), settled, "{case:?}");
+            let board = status::report(store.conn(), &run).unwrap();
+            assert_eq!(board.complete, settled, "{case:?}");
+            let closed = runs::close_run(store.conn(), &run, None);
+            assert_eq!(closed.is_ok(), settled, "{case:?}: {closed:?}");
+        }
+    }
 }

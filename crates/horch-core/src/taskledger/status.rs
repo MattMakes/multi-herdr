@@ -9,8 +9,9 @@ use serde::Serialize;
 
 use crate::exeid::{exe_identity, ExeIdentity};
 
-use super::model::WorktreeStatus;
+use super::model::{TaskStatus, WorktreeStatus};
 use super::runs::Run;
+use super::sql_words;
 use super::store::optional;
 use super::tasks::{self, Task};
 use super::util;
@@ -64,9 +65,10 @@ pub struct Report {
     pub tasks: Vec<TaskLine>,
     pub workers: Vec<WorkerLine>,
     pub worktrees: Vec<WorktreeLine>,
-    /// Every task done or cancelled, and every worktree cleaned, unlanded or
-    /// abandoned: nothing is left to do.
+    /// The run is settled (C6): [`Report::unsettled`] is empty.
     pub complete: bool,
+    /// What keeps the run from being settled ([`unsettled`]).
+    pub unsettled: Vec<Unsettled>,
     pub counts: Counts,
     /// The watchdog's version and binary, once it has checked in (#216).
     pub watchdog: Option<WatchdogLine>,
@@ -334,15 +336,106 @@ fn worker_lines(
         .collect()
 }
 
-/// A worktree still holds work unless it is scratch or finished.
-fn any_open_worktree(wts: &[WorktreeLine]) -> bool {
-    wts.iter().any(|w| {
-        !w.scratch
-            && !matches!(
-                w.status.as_str(),
-                "cleaned" | "unlanded" | "abandoned" | "archived" | "trashed"
-            )
-    })
+/// 1 thing that keeps a run from being settled (C6).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum Unsettled {
+    /// A task that is not done or cancelled. `held` is its held reason.
+    Task {
+        task: String,
+        status: String,
+        held: Option<String>,
+    },
+    /// A worktree whose work is not on the run branch yet.
+    Worktree { path: String, status: String },
+    /// A parked worktree on disk with no triage decision.
+    Parked { path: String, status: String },
+}
+
+impl std::fmt::Display for Unsettled {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Unsettled::Task {
+                task,
+                held: Some(r),
+                ..
+            } => write!(f, "{task} (held: {r})"),
+            Unsettled::Task { task, status, .. } => write!(f, "{task} ({status})"),
+            Unsettled::Worktree { path, status } => write!(f, "worktree {path} ({status})"),
+            Unsettled::Parked { path, status } => {
+                write!(f, "worktree {path} ({status}, no triage decision)")
+            }
+        }
+    }
+}
+
+/// How a worktree row counts for C6.
+fn worktree_unsettled(
+    path: String,
+    status: String,
+    decision: Option<&str>,
+    scratch: bool,
+) -> Option<Unsettled> {
+    if scratch {
+        return None;
+    }
+    match WorktreeStatus::parse(&status) {
+        Ok(WorktreeStatus::Cleaned | WorktreeStatus::Archived | WorktreeStatus::Trashed) => None,
+        Ok(
+            WorktreeStatus::Landed
+            | WorktreeStatus::CleanupFailed
+            | WorktreeStatus::Unlanded
+            | WorktreeStatus::Abandoned,
+        ) => (decision.is_none() && std::path::Path::new(&path).exists())
+            .then_some(Unsettled::Parked { path, status }),
+        Ok(WorktreeStatus::Open | WorktreeStatus::Landing) | Err(_) => {
+            Some(Unsettled::Worktree { path, status })
+        }
+    }
+}
+
+/// C6, the 1 "run settled" rule: what keeps `run_id` from being settled.
+/// Empty means settled. `ledger status`, `run close` and the settled wake
+/// all use it.
+///
+/// - Each task that is not `done` or `cancelled` (held tasks included).
+/// - Each worktree that is `open` or `landing`.
+/// - Each parked worktree (`landed`, `cleanup_failed`, `unlanded`,
+///   `abandoned`) whose folder is on disk and has no triage decision.
+///
+/// Scratch worktrees and `cleaned`, `archived` or `trashed` rows never count.
+pub fn unsettled(conn: &Connection, run_id: &str) -> Result<Vec<Unsettled>> {
+    let mut out: Vec<Unsettled> = tasks::of_run(conn, run_id)?
+        .into_iter()
+        .filter(|t| {
+            !TaskStatus::parse(&t.status).is_ok_and(|s| sql_words::TASKS_ENDED.contains(&s))
+        })
+        .map(|t| Unsettled::Task {
+            task: t.short(),
+            status: t.status.clone(),
+            held: t.held_reason.clone(),
+        })
+        .collect();
+    let mut stmt = conn.prepare(
+        "SELECT w.path, w.status, w.decision, COALESCE(m.scratch, 0)
+         FROM worktrees w LEFT JOIN tasks t ON t.task_id = w.task_id
+         LEFT JOIN worktree_modes m ON m.worktree_id = w.worktree_id
+         WHERE t.run_id = ?1 OR m.run_id = ?1 ORDER BY w.created_at, w.rowid",
+    )?;
+    let rows = stmt
+        .query_map([run_id], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, Option<String>>(2)?,
+                r.get::<_, i64>(3)?,
+            ))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    out.extend(rows.into_iter().filter_map(|(path, status, decision, scratch)| {
+        worktree_unsettled(path, status, decision.as_deref(), scratch != 0)
+    }));
+    Ok(out)
 }
 
 /// Build the board of `run`.
@@ -365,12 +458,13 @@ pub fn report_for(conn: &Connection, run: &Run, current: Option<&ExeIdentity>) -
     }
     let wl = worker_lines(conn, run, roster, &lines, &now)?;
     let wts = worktrees(conn, &run.run_id)?;
-    let open_tasks = counts.queued + counts.running + counts.landing;
+    let unsettled = unsettled(conn, &run.run_id)?;
     Ok(Report {
         run: run.clone(),
         tasks: lines,
         workers: wl,
-        complete: open_tasks == 0 && !any_open_worktree(&wts),
+        complete: unsettled.is_empty(),
+        unsettled,
         worktrees: wts,
         counts,
         watchdog: WatchdogLine::of(run, current),
@@ -405,6 +499,10 @@ pub fn render(r: &Report) -> String {
     render_live(&mut out, &r.workers);
     render_open_worktrees(&mut out, &r.worktrees);
     render_parked(&mut out, &r.parked);
+    if !r.unsettled.is_empty() {
+        let items: Vec<String> = r.unsettled.iter().map(|u| u.to_string()).collect();
+        let _ = writeln!(out, "Unsettled: {}.", items.join(", "));
+    }
     let c = &r.counts;
     let _ = writeln!(
         out,
@@ -668,4 +766,129 @@ pub fn stops(conn: &Connection, worker_id: &str) -> Result<Vec<StopLine>> {
         .query_map([worker_id], StopLine::from_row)?
         .collect::<rusqlite::Result<Vec<_>>>()?;
     Ok(rows)
+}
+
+#[cfg(test)]
+mod trf_15_tests {
+    use std::path::Path;
+
+    use super::*;
+    use crate::taskledger::model::Actor;
+    use crate::taskledger::runs::{self, NewRun};
+    use crate::taskledger::tasks::NewTask;
+    use crate::taskledger::Store;
+
+    /// 1 worktree row: (status, folder on disk, triage decision, scratch,
+    /// the run is settled).
+    pub(crate) const CASES: &[(&str, bool, Option<&str>, bool, bool)] = &[
+        ("open", true, None, false, false),
+        ("landing", true, None, false, false),
+        ("landed", true, None, false, false),
+        ("landed", false, None, false, true),
+        ("cleanup_failed", true, None, false, false),
+        ("cleanup_failed", true, Some("ARCHIVE"), false, true),
+        ("unlanded", true, None, false, false),
+        ("unlanded", true, Some("KEEP"), false, true),
+        ("unlanded", false, None, false, true),
+        ("abandoned", true, None, false, false),
+        ("abandoned", false, None, false, true),
+        ("cleaned", false, None, false, true),
+        ("archived", false, None, false, true),
+        ("trashed", false, None, false, true),
+        ("open", true, None, true, true),
+    ];
+
+    /// A run with 1 done task and 1 worktree row of `case`.
+    fn fixture(
+        case: (&str, bool, Option<&str>, bool, bool),
+    ) -> (tempfile::TempDir, Store, Run) {
+        let (status, on_disk, decision, scratch, _) = case;
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = Store::open(&dir.path().join("ledger.sqlite3")).unwrap();
+        let run = store
+            .immediate(|tx| {
+                runs::create(
+                    tx,
+                    Path::new("/repo"),
+                    &NewRun {
+                        slug: "r1".into(),
+                        ..Default::default()
+                    },
+                )
+            })
+            .unwrap();
+        let t = NewTask::work("alpha", "tickets/alpha.md", "dev");
+        let task = store
+            .immediate(|tx| tasks::add(tx, &run, &t, Actor::Orchestrator))
+            .unwrap();
+        let wt = dir.path().join("wt");
+        if on_disk {
+            std::fs::create_dir(&wt).unwrap();
+        }
+        let conn = store.conn();
+        conn.execute(
+            "UPDATE tasks SET status = 'done' WHERE task_id = ?1",
+            [&task.task_id],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO worktrees (worktree_id, task_id, repo_root, path, branch, base, status, decision, origin, created_at)
+             VALUES ('wt1', ?1, '/repo', ?2, 'fleet/a', 'main', ?3, ?4, 'native', '2000-01-01T00:00:00Z')",
+            params![
+                (!scratch).then_some(&task.task_id),
+                wt.to_string_lossy(),
+                status,
+                decision
+            ],
+        )
+        .unwrap();
+        if scratch {
+            conn.execute(
+                "INSERT INTO worktree_modes (worktree_id, run_id, name, scratch) VALUES ('wt1', ?1, 'wt', 1)",
+                [&run.run_id],
+            )
+            .unwrap();
+        }
+        (dir, store, run)
+    }
+
+    #[test]
+    fn trf_15_status_and_run_close_agree_on_every_worktree_state() {
+        for &case in CASES {
+            let (_d, store, run) = fixture(case);
+            let settled = case.4;
+            let items = unsettled(store.conn(), &run.run_id).unwrap();
+            assert_eq!(items.is_empty(), settled, "{case:?}: {items:?}");
+            let r = report(store.conn(), &run).unwrap();
+            assert_eq!(r.complete, settled, "{case:?}");
+            assert_eq!(r.unsettled, items, "{case:?}");
+            assert_eq!(
+                render(&r).contains("Unsettled: worktree "),
+                !settled,
+                "{case:?}"
+            );
+            let closed = runs::close_run(store.conn(), &run, None);
+            assert_eq!(closed.is_ok(), settled, "{case:?}: {closed:?}");
+        }
+    }
+
+    #[test]
+    fn trf_15_an_open_or_held_task_keeps_the_run_unsettled() {
+        let (_d, store, run) = fixture(("cleaned", false, None, false, true));
+        store
+            .conn()
+            .execute(
+                "UPDATE tasks SET status = 'queued', held_reason = 'two failures'",
+                [],
+            )
+            .unwrap();
+        let items = unsettled(store.conn(), &run.run_id).unwrap();
+        assert_eq!(
+            items.iter().map(|u| u.to_string()).collect::<Vec<_>>(),
+            ["T-1 (held: two failures)"]
+        );
+        assert!(!report(store.conn(), &run).unwrap().complete);
+        let err = runs::close_run(store.conn(), &run, None).unwrap_err();
+        assert!(err.to_string().contains("T-1 (held: two failures)"), "{err}");
+    }
 }
