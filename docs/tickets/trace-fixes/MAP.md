@@ -59,6 +59,7 @@ Spec: [docs/specs/trace-fixes.md](../../specs/trace-fixes.md)
 | 53 | [No label or diagnostic names the retired JSON session ledger](53-json-path-labels.md) | primary `opus`, fallback `backend-developer` | yes | 12 | 29 |
 | 54 | [A skipped run claim refuses the orchestrator launch](54-skipped-claim-refuses-launch.md) | primary `opus-hardening`, fallback `opus` | yes | 12 | 32, 50 |
 | 55 | [A refused fleet launch leaves no orchestrator route behind](55-refused-launch-drops-route.md) | primary `opus-hardening`, fallback `opus` | yes | 13 | 54 |
+| 56 | [Merge PR #338 (skill-intake) into the run branch](56-merge-skill-intake.md) | primary `opus-hardening`, fallback `opus` | no | 14 | 33 |
 
 ## Waves
 
