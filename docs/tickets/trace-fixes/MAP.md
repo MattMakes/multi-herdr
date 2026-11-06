@@ -54,6 +54,7 @@ Spec: [docs/specs/trace-fixes.md](../../specs/trace-fixes.md)
 | 48 | [Fix the 8 tests that fail on the run branch](48-run-branch-red-tests.md) | primary `opus`, fallback `backend-developer` | yes | 10 | 27 |
 | 49 | [No internal code path types a task into a pane](49-no-typed-task-internal.md) | primary `opus`, fallback `backend-developer` | yes | 10 | 27 |
 | 50 | [horch register cannot steal the orchestrator route, and a pending orchestrator does not show as stale](50-orchestrator-route-lock.md) | primary `opus-hardening`, fallback `opus` | yes | 11 | 44, 46 |
+| 51 | [The dependency rule knows the horch rusqlite dependency, and a git spawn error does not abort run close](51-deps-rule-gate-close.md) | primary `opus`, fallback `backend-developer` | yes | 11 | 48 |
 
 ## Waves
 
