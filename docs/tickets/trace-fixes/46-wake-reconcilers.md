@@ -36,6 +36,8 @@ held-attempt question (I-07).
 3. Remove the "suppressed while any worker is live" condition only where it hides these 5 events.
 4. Tests with a fake clock: 1 `trf_51_` test per event: the ledger change commits, the direct wake is skipped, 1 pass writes exactly 1 row, a 2nd pass writes none.
 
+Amendment (report 45): ticket 45 made a replayed outbox row reuse its first mail file (`mail::keyed`, `Mail::enqueue_with_key` in `crates/horch-core/src/messaging/mail.rs`), but a replay of a row whose mail was already published still pushes the line again through `tell_as` (`crates/horch/src/cmd/messaging.rs`, `outgoing.push()`). Make the keyed enqueue tell its caller "already published", and make `tell_as` skip the push then. `crates/horch/src/cmd/messaging.rs` and `mail.rs` are approved outside Own. Add 1 test `trf_51_replayed_published_row_pushes_nothing`.
+
 ## Done when
 
 The check passes. The report maps I-03 to I-07 to the 5 tests.
