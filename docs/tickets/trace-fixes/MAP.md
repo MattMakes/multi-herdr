@@ -56,6 +56,7 @@ Spec: [docs/specs/trace-fixes.md](../../specs/trace-fixes.md)
 | 50 | [horch register cannot steal the orchestrator route, and a pending orchestrator does not show as stale](50-orchestrator-route-lock.md) | primary `opus-hardening`, fallback `opus` | yes | 11 | 44, 46 |
 | 51 | [The dependency rule knows the horch rusqlite dependency, and a git spawn error does not abort run close](51-deps-rule-gate-close.md) | primary `opus`, fallback `backend-developer` | yes | 11 | 48 |
 | 52 | [A plain spawn prefers the planned run over the steward's solo run](52-spawn-prefers-planned-run.md) | primary `opus`, fallback `backend-developer` | yes | 11 | 49 |
+| 53 | [No label or diagnostic names the retired JSON session ledger](53-json-path-labels.md) | primary `opus`, fallback `backend-developer` | yes | 12 | 29 |
 
 ## Waves
 
