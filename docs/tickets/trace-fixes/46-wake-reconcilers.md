@@ -38,6 +38,8 @@ held-attempt question (I-07).
 
 Amendment (report 45): ticket 45 made a replayed outbox row reuse its first mail file (`mail::keyed`, `Mail::enqueue_with_key` in `crates/horch-core/src/messaging/mail.rs`), but a replay of a row whose mail was already published still pushes the line again through `tell_as` (`crates/horch/src/cmd/messaging.rs`, `outgoing.push()`). Make the keyed enqueue tell its caller "already published", and make `tell_as` skip the push then. `crates/horch/src/cmd/messaging.rs` and `mail.rs` are approved outside Own. Add 1 test `trf_51_replayed_published_row_pushes_nothing`.
 
+Amendment (report 47): ticket 47 added a claim reservation (`workers.target_task_id`, `reserved_for_others` in `crates/horch-core/src/taskledger/tasks.rs`). `plan_workers` (`tasks.rs`) and `startable_rewake` (`watchdog.rs`) still count a task that a live, unclaimed worker reserves as startable, so they can ask for 1 extra worker that finds no task. Count such a task as having a worker on its way. `tasks.rs` is approved outside Own. Add 1 test `trf_51_a_reserved_task_needs_no_extra_worker`.
+
 ## Done when
 
 The check passes. The report maps I-03 to I-07 to the 5 tests.
