@@ -247,8 +247,8 @@ pub fn drain(
         .truncate(false)
         .open(&lock_path)
         .with_context(|| format!("opening {}", lock_path.display()))?;
-    match lock.try_lock() {
-        Ok(()) => {}
+    let _held = match lock.try_lock() {
+        Ok(()) => Held(lock),
         Err(TryLockError::WouldBlock) => {
             return Ok(Drained {
                 busy: true,
@@ -258,7 +258,7 @@ pub fn drain(
         Err(TryLockError::Error(e)) => {
             return Err(e).with_context(|| format!("locking {}", lock_path.display()))
         }
-    }
+    };
     let mut out = Drained::default();
     for row in undelivered(store.conn(), scope)? {
         match send(&row) {
@@ -270,6 +270,17 @@ pub fn drain(
         }
     }
     Ok(out)
+}
+
+/// The held drain lock. Its drop unlocks explicitly: a flock belongs to the
+/// open file description, and a child forked by another thread holds a copy
+/// of it until its exec. Only an unlock, not a close, frees it at once.
+struct Held(std::fs::File);
+
+impl Drop for Held {
+    fn drop(&mut self) {
+        let _ = self.0.unlock();
+    }
 }
 
 #[cfg(test)]
@@ -453,6 +464,71 @@ mod tests {
         })
         .unwrap();
         assert_eq!(nested.delivered.len(), 1);
+    }
+
+    /// A forked child that lives until [`Child::release`]. It holds a copy of
+    /// every descriptor of this process, as a child of a concurrent spawn
+    /// does between its fork and its exec.
+    struct Child {
+        pid: libc::pid_t,
+        hold: libc::c_int,
+    }
+
+    impl Child {
+        fn fork() -> Child {
+            let mut fds = [0 as libc::c_int; 2];
+            // SAFETY: `fds` is a writable array of 2 descriptors.
+            assert_eq!(unsafe { libc::pipe(fds.as_mut_ptr()) }, 0);
+            let [read, hold] = fds;
+            // SAFETY: the child makes only async-signal-safe calls.
+            let pid = unsafe { libc::fork() };
+            assert!(pid >= 0, "fork failed");
+            if pid == 0 {
+                // SAFETY: close, read and _exit are async-signal-safe, and
+                // `b` is 1 writable byte. The child blocks until the parent
+                // closes `hold`, then exits.
+                unsafe {
+                    libc::close(hold);
+                    let mut b = 0u8;
+                    libc::read(read, (&mut b as *mut u8).cast(), 1);
+                    libc::_exit(0);
+                }
+            }
+            // SAFETY: `read` is a pipe descriptor that this process owns.
+            unsafe { libc::close(read) };
+            Child { pid, hold }
+        }
+
+        fn release(self) {
+            // SAFETY: `hold` is owned here, and `pid` is a child of this process.
+            unsafe {
+                libc::close(self.hold);
+                let mut status = 0;
+                libc::waitpid(self.pid, &mut status, 0);
+            }
+        }
+    }
+
+    #[test]
+    fn trf_21_a_drain_lock_is_free_while_a_child_process_lives() {
+        let (_dir, mut store, run) = ledger();
+        store
+            .immediate(|tx| write(tx, &run.run_id, &wake("T-1", "a")))
+            .unwrap();
+        let mut child = None;
+        let first = drain(&store, Scope::Run(&run.run_id), |_| {
+            child = Some(Child::fork());
+            anyhow::bail!("the send fails")
+        })
+        .unwrap();
+        assert_eq!(first.failed.len(), 1);
+
+        // The child still holds a copy of the lock descriptor.
+        let second = drain(&store, Scope::Run(&run.run_id), |_| Ok(()));
+        child.expect("the send forked").release();
+        let second = second.unwrap();
+        assert!(!second.busy, "the first drain released its lock");
+        assert_eq!(second.delivered.len(), 1);
     }
 
     #[test]
