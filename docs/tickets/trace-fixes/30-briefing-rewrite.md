@@ -56,6 +56,8 @@ Amendment (report 20): a task-less spawn joins only the active run of its own wo
 
 Amendment (report 23): replace the compaction fresh route prose with `horch ledger handoff <absolute path>`: it ends the worker handed off, requeues the task first with its worktree, and the next claim prints `PRIOR WORK: read <path> first`. Workers run it themselves when their context state is `handoff`.
 
+Amendment (report 26): document `horch ledger task "<title>" --persona <p> [--file <ticket>] [--check "<cmd>"|none]`, the `solo-<workspace>` run it uses, and `Run next: horch spawn <p> --run solo-<workspace>`.
+
 ## Done when
 
 TRF-46 and the golden tests pass.

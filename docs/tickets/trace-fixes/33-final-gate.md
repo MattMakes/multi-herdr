@@ -26,6 +26,8 @@ Amendment (report 34): `utc_offset_date` in `crates/horch-core/tests/common/mod.
 
 Amendment (reports 10, 34, 35): ticket checks do not run `cargo fmt`. Before the gate, run `cargo fmt --all`, commit the changed files by exact path in 1 commit, then run the gate. Known drift: `taskledger/map.rs`, `taskledger/status.rs`, `tests/trf_02_ticket_template.rs`.
 
+Amendment (report 26): `cargo fmt` drift also includes `crates/horch/src/cmd/spawn.rs`.
+
 ## Done when
 
 The gate passes on the tip and the run gate row is recorded.
