@@ -1112,4 +1112,69 @@ mod trf_45_tests {
         let ids: Vec<&str> = records.iter().map(|r| r.record_id.as_str()).collect();
         assert_eq!(ids, ["a", "b"]);
     }
+
+    /// A legacy record with 3 history entries imports with all 3, and 1
+    /// later `update` appends a 4th: all 4 remain, in order.
+    #[test]
+    fn trf_45_import_keeps_a_non_empty_history() {
+        use crate::execution::legacy::HistoryEntry;
+        let tmp = tempfile::tempdir().unwrap();
+        let state = tmp.path().join("state");
+        std::fs::create_dir_all(&state).unwrap();
+        let file = state.join("-repo.json");
+        let entry = |at: &str, event: &str, text: &str| {
+            serde_json::json!({"at": at, "event": event, "text": text})
+        };
+        let text = serde_json::json!([
+            {"record_id": "a", "session_id": null, "agent": "claude", "tier": "opus",
+             "model": "opus", "role": "opus-1", "status": "working", "task": "t1",
+             "history": [
+                 entry("2026-01-01T00:00:00Z", "spawn", "spawned"),
+                 entry("2026-01-01T00:01:00Z", "note", "first note"),
+                 entry("2026-01-01T00:02:00Z", "note", "second note")
+             ],
+             "created_at": "2026-01-01T00:00:00Z",
+             "updated_at": "2026-01-01T00:02:00Z", "project": "/repo"}
+        ])
+        .to_string();
+        std::fs::write(&file, &text).unwrap();
+        let db = tmp.path().join("ledger.sqlite3");
+        let mut store = Store::open(&db).unwrap();
+        let report = import(&mut store, &Git::new("git"), &state, false).unwrap();
+        assert_eq!(report.sessions, 1);
+        // Only the imported copy remains.
+        std::fs::remove_file(&file).unwrap();
+
+        let records = ExecutionStore::in_db(&state, &db, "/repo");
+        let events = |records: &ExecutionStore| -> Vec<(String, String)> {
+            records
+                .get("a")
+                .unwrap()
+                .history
+                .into_iter()
+                .map(|h| (h.event, h.text))
+                .collect()
+        };
+        assert_eq!(events(&records).len(), 3, "{:?}", events(&records));
+        records
+            .update(|rs| {
+                let r = rs.iter_mut().find(|r| r.record_id == "a").unwrap();
+                r.history.push(HistoryEntry {
+                    at: "2026-01-01T00:03:00Z".into(),
+                    event: "note".into(),
+                    text: "third note".into(),
+                });
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(
+            events(&records),
+            [
+                ("spawn".to_string(), "spawned".to_string()),
+                ("note".into(), "first note".into()),
+                ("note".into(), "second note".into()),
+                ("note".into(), "third note".into()),
+            ]
+        );
+    }
 }

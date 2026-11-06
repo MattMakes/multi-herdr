@@ -888,7 +888,13 @@ impl WorkerSteps for PaneWorker<'_> {
         Ok(())
     }
 
+    /// A worker takes no orchestrator lock, so it never takes the role
+    /// `orchestrator` (TRF-39): only `horch fleet` registers it, under the
+    /// lock.
     fn register(&mut self, _brief: &Brief) -> Result<()> {
+        if self.role == "orchestrator" {
+            bail!("a worker cannot register the role orchestrator: only horch fleet takes it");
+        }
         let herdr = self.herdr();
         let (mailbox, _pane) = Mailbox::register_in(&herdr, self.ctx, self.role)?;
         self.mailbox = Some(mailbox);
@@ -2354,6 +2360,28 @@ mod tests {
             assert_eq!(run_worker(&mut steps).unwrap(), 0);
             assert!(!steps.calls.contains(&"close_pane"));
             assert_eq!(ws.pane_ids().len(), 1);
+        }
+
+        /// Report 50: worker startup takes no orchestrator lock, so a
+        /// worker never registers the role `orchestrator`. The refusal is 1
+        /// line, and it comes before herdr or the mailbox is touched.
+        #[test]
+        fn trf_39_a_worker_cannot_register_the_orchestrator_role() {
+            let tmp = tempfile::tempdir().unwrap();
+            let mut ctx = RuntimeContext::from_env(
+                &MapEnv::new(tmp.path())
+                    .with("HORCH_STATE_DIR", tmp.path().join("state").to_str().unwrap())
+                    .with("HORCH_HERDR_BIN", "/nonexistent/herdr"),
+            )
+            .unwrap();
+            let enter_dir = |_: &Path| -> Result<()> { Ok(()) };
+            let mut worker = PaneWorker::new(&mut ctx, "orchestrator", &enter_dir);
+            let e = format!("{:#}", worker.register(&Steps::brief()).unwrap_err());
+            assert_eq!(
+                e,
+                "a worker cannot register the role orchestrator: only horch fleet takes it"
+            );
+            assert!(!tmp.path().join("state").exists(), "no mailbox is written");
         }
     }
 }
