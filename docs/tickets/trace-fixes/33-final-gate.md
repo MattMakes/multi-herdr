@@ -30,6 +30,8 @@ Amendment (report 26): `cargo fmt` drift also includes `crates/horch/src/cmd/spa
 
 Amendment (orchestrator): the ledger cannot add blockers to this task after add-map. Before any step, run `horch ledger status` and confirm that every task from T-34 to the last task is `done`. If one is not, send `horch tell orchestrator "BLOCKED: T-33 waits for <tasks>"` and end your turn.
 
+Amendment (report 30): in the same pre-gate commit as `cargo fmt`, fix 2 stale texts: `skills/godot-fleet-game-dev/references/fleet-roles.md:23` spawns with task text "Read and follow <plan> exactly." (use `horch ledger task '<task>' --persona <teammate>` then `horch spawn <teammate>`), and the doc comment at `crates/horch-core/src/fsx.rs:215` names `docs/specs/dataset-competition.md`, which is gone (drop the reference). Report 30 saw `execution_store::store_dirlock_excludes_concurrent_writers` fail once in a combined run. If the gate shows it, check whether it still tests a live path (ticket 29 removed the DirLock write path from `ExecutionStore`) and send the orchestrator a QUESTION; do not retry the gate until it passes by luck.
+
 ## Done when
 
 The gate passes on the tip and the run gate row is recorded.
