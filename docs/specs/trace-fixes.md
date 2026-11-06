@@ -106,7 +106,7 @@ Outbox row, written in the same SQLite transaction as the ledger change that cau
 |---|---|
 | `id` | uuid |
 | `run_id` | the run |
-| `event` | `startable`, `settled`, `reaped`, `held`, `cancelled`, `reviews-in`, `no-task`, `unclaimed-spawn`, `orchestrator-respawned` |
+| `event` | `startable`, `settled`, `reaped`, `held`, `cancelled`, `reviews-in`, `no-task`, `unclaimed-spawn`, `orchestrator-respawned`, `question` |
 | `key` | dedup key: `<run>:<event>:<subject>[:<board-hash>]`, unique |
 | `text` | the line for the orchestrator (STE) |
 | `created_at`, `delivered_at` | delivery state |

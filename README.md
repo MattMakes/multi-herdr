@@ -2,7 +2,7 @@
 
 "horch" multi-agent orchestration layouts for [herdr](https://herdr.dev), in Rust.
 
-Four binaries, no runtime dependencies beyond herdr itself. No bash, no jq, no
+Three binaries, no runtime dependencies beyond herdr itself. No bash, no jq, no
 Node required by horch itself. It runs on macOS, Linux and Windows; Codex phase
 skills currently require macOS/Linux or WSL. A `justfile` at
 the repo root wraps the common ones for people who like typing `just
@@ -11,7 +11,6 @@ herdr-fleet`, but it's optional sugar over `horch`, not a dependency.
 | binary            | what it does                                              |
 |-------------------|-----------------------------------------------------------|
 | `horch`           | Build and drive multi-agent herdr workspaces              |
-| `multi-herdr-dataset` | Competitive dataset rounds: N candidates, a blind judge, opt-in promotion (paid model calls) |
 | `herdr-install`   | Install the latest Herdr CLI                              |
 | `herdr-docs-sync` | Mirror the Herdr docs into `herdr-docs/`                  |
 
@@ -32,7 +31,8 @@ operator: a brief, or a rough idea
 | orchestrator pane           |------------->| spec-writer   -> spec.md    |
 |   horch fleet               |<-------------| ticket-writer -> MAP.md     |
 +-----------------------------+   tickets    +-----------------------------+
-  | horch ledger run new <slug>         run branch fleet/<slug>
+  | horch ledger add-map --dry-run MAP.md   check every ticket, queue nothing
+  | horch ledger run new <slug> [--check "<cmd>"]   run branch fleet/<slug>
   | horch ledger add-map MAP.md   (or horch ledger add --file <ticket> ...)
   | horch ledger plan-workers           how many workers of each persona
   | horch spawn <persona>               1 pane per worker, no task text
@@ -50,19 +50,22 @@ operator: a brief, or a rough idea
   | horch tell orchestrator "..." --> channel relay, else a typed line
   |                               --> horch inbox in the orchestrator pane
   | the run's watchdog wakes the orchestrator: a question, a stall,
-  | a dead worker, tasks that can start, all tasks done
+  | a dead worker, tasks that can start, reviews in, the run settled
   v
-  horch ledger finish   check, code-sweep, complexity-sweep, recheck,
+  horch ledger finish   check, code-sweep (horch spawns the reviewers),
+                        complexity-sweep, recheck,
                         land (onto fleet/<slug>), pr, cleanup
   horch ledger done "<summary>"         closes the worker's pane
+  (or horch ledger handoff <path>: the task goes back to the queue first)
   |
   v
   fleet/<slug> -- 1 pull request to main; each task writes its section
-  | orchestrator: 1 full gate on the run branch, run by 1 worker
-  | horch ledger run close
+  | horch ledger run gate               the run check on the run-branch tip
   v
   you merge --> CI --> auto-release, only when CHANGELOG.md has
                        entries under ## Unreleased --> release
+  | horch ledger run close   needs a settled run, a passing gate on the
+                             tip, and a merged PR (or --pr-declined)
 
   parked worktrees (not landed, cancelled, cleanup failed, unknown):
   horch fleet starts worktree-steward --> horch worktree triage
@@ -70,9 +73,10 @@ operator: a brief, or a rough idea
   (horch ledger run close refuses while 1 has no decision)
 ```
 
-Outside a ledger run, a worker uses `horch worktree new <name>` and
-`horch worktree land --check "<command>"`, and the orchestrator hands out work
-with `horch assign`. The deep sections: [The task ledger](#the-task-ledger),
+Pull is the only dispatch model: `horch spawn` takes no task text, and every
+worker claims its task. A one-off goes through `horch ledger task "<title>"
+--persona <p>`, which queues it in the solo run `solo-<workspace>` and prints
+the spawn line. The deep sections: [The task ledger](#the-task-ledger),
 [How the panes talk](#how-the-panes-talk),
 [From a rough idea to tickets](#from-a-rough-idea-to-tickets),
 [Releases](#releases), [docs/fleet-workflow.md](docs/fleet-workflow.md) and
@@ -91,9 +95,11 @@ on your machine; layers 5 and 6 run on GitHub.
   v
 +--------------------------------------------------------------------------+
 | 2 horch ledger finish  horch, in the worker's worktree                   |
-|   check             the task's --check "<command>" (horch ledger add)    |
-|   code-sweep        reviewer tasks that fleet workers claim; Critical    |
-|                     fails, Important fails until fixed or answered       |
+|   check             the task's check, else the run's (run new --check);  |
+|                     no check means no land, unless **Check:** none       |
+|   code-sweep        horch spawns the reviewers; Review none 0, light 1,  |
+|                     full at most 3 rounds; Critical fails, Important     |
+|                     fails until fixed, answered (F<n>) or waived         |
 |   complexity-sweep  the analyser on the changed files; no changed        |
 |                     function may have a violation                        |
 |   recheck           the check again                                      |
@@ -111,7 +117,7 @@ on your machine; layers 5 and 6 run on GitHub.
 +--------------------------------------------------------------------------+
   v
 +--------------------------------------------------------------------------+
-| 4 full gate            1 worker, for the orchestrator, before the merge  |
+| 4 full gate            horch ledger run gate, before the merge           |
 |   HORCH_REQUIRE_GIT=1 HORCH_REQUIRE_SQLITE=1 just gate                   |
 |   scripts/phase-gate.sh, 13 steps: the spec-marker scan, fmt, build,     |
 |   clippy (debug and --release), rustdoc, every test, teammates --check,  |
@@ -184,7 +190,6 @@ See [docs/testing-and-gates.md](docs/testing-and-gates.md) and
 | Your own or changed teammates | the compiled-in roster | a file in `~/.config/horch/teammates/` or `$HORCH_TEAMMATES_DIR` (same name wins) | remove the file | directory |
 | Finish steps of a run | all 7 | `horch ledger run new <slug> --steps <list>` | leave a step out of `--steps` | flag |
 | Shared checkout instead of a worktree | worktree | `horch ledger add --shared` | default | flag |
-| Dataset promotion (paid model calls) | off: a round only decides | `multi-herdr-dataset run --promote-to <branch>` | default | flag |
 | A release on merge | only with `## Unreleased` entries | a `CHANGELOG.md` line | an empty `## Unreleased` | `CHANGELOG.md` |
 | Release size | patch | PR label `release:minor` or `release:major` | no label | GitHub label |
 
@@ -218,7 +223,7 @@ folder gets a notice instead. A `just install` copy is updated like a release
 one, but only when a release is newer than its version.
 
 If you download an archive in a browser on macOS, clear the quarantine flag
-before you run it: `xattr -d com.apple.quarantine horch multi-herdr-dataset herdr-install`.
+before you run it: `xattr -d com.apple.quarantine horch herdr-install`.
 
 ### From source (contributors)
 
@@ -324,7 +329,7 @@ Fable and Astra are reserved for the orchestrator and for 2 seats of the
 creative council. `horch spawn` refuses every other worker on either tier,
 whichever flavor is orchestrating. `fable-creative` starts only on Fable and
 `astra-creative` only on Astra, and only when the orchestrator names them: a
-router, a fallback or a competition never picks a seat. The council is for
+router or a fallback never picks a seat. The council is for
 creative and out-of-the-box work: the 2 seats and `opus-creative` each write a
 design alone, and a fresh `fable-creative` combines them. The rule is matched
 on the tier name rather than an exact model slug, so a version bump stays
@@ -347,22 +352,25 @@ no ledger and no dynamic spawning.
 
 There is no AI-to-AI protocol here. A message is literally typed into the target
 pane's terminal and submitted, as if you switched panes and typed it by hand.
+Every mail line shows its mail id: `[<role> #<id>] <KEYWORD>: <text>`. A
+redelivery repeats the id. A tell without `--answers` closes no question.
 
 | command                            | who runs it  | what it does                          |
 |------------------------------------|--------------|---------------------------------------|
 | `horch tell <role> "<message>"`    | anyone       | Type a message into another pane      |
+| `horch tell <role> --answers <id> "<text>"` | orchestrator | Answer 1 open question `#<id>`; the worker sees `[orchestrator re #<id>] <text>` |
 | `horch inbox`                      | anyone       | List roles; the orchestrator's pane prints and acknowledges pending worker messages, a worker its own mail |
 | `horch peek <role> --lines 20`      | anyone       | Read the recent output of a registered worker |
-| `horch assign <role> "<task>"`     | orchestrator | Record a task on the ledger, then send it |
-| `horch spawn <teammate> "<task>"`  | orchestrator | New pane, new agent session           |
-| `horch spawn --resume <id> "<task>"` | orchestrator | New pane, resuming an old session   |
-| `horch sessions`                   | orchestrator | Read the project session ledger       |
+| `horch ledger task "<title>" --persona <p>` | orchestrator | Queue a one-off task; prints the spawn line |
+| `horch spawn <teammate> [--run <slug>]` | orchestrator | New pane, new agent session; it claims its task |
+| `horch spawn --resume <id>`        | orchestrator | New pane, resuming an old session     |
+| `horch sessions`                   | orchestrator | Read the session records              |
 | `horch layout`                     | orchestrator | Report the grid of every tab          |
 | `horch tile`                       | orchestrator | Rearrange every pane into the grid    |
 | `horch balance`                    | orchestrator | Make every worker column the same width |
-| `horch note "<update>"`            | worker       | Record progress on its ledger record  |
+| `horch ledger progress "<update>"` | worker       | Record progress (`horch note` is the same command) |
 | `horch note --fact "<fact>"`       | anyone       | Share one project fact with later worker briefs and claims |
-| `horch done "<summary>"`           | worker       | Record a summary, report, close its pane |
+| `horch ledger done "<summary>"`    | worker       | Record a summary, report, close its pane (`horch done` is the same command) |
 
 `horch tile` puts every pane where it belongs: the orchestrator full height down
 the left of tab 1, four workers beside it in a 2x2, and six per overflow tab in a
@@ -399,6 +407,8 @@ registry to update.
 | `backend-developer`    | Claude | Opus   | medium | JS/TS, Python, Go, C#, Rust services and APIs |
 | `qa-engineer`          | Claude | Sonnet | high   | Tests, e2e harnesses, bug reproduction       |
 | `codex-reviewer`       | Codex  | Sol    | high   | Cross-vendor review of Claude-built changes  |
+| `architect-reviewer-light` | Claude | Opus | medium | Code-sweep rounds 2 and 3 only. Read-only    |
+| `codex-reviewer-light` | Codex  | Terra  | medium | Code-sweep rounds 2 and 3 only               |
 | `sonnet-sketch`        | Claude | Sonnet | low    | Drafts, brainstorms, boilerplate, one-file edits |
 | `sonnet-feature`       | Claude | Sonnet | medium | Standard features against a clear spec       |
 | `sonnet-bugfix`        | Claude | Sonnet | high   | Localized bugs with repro steps, edge-case hardening |
@@ -427,15 +437,18 @@ below.
 Give the orchestrator a rough idea and it runs 2 Argon workers before any
 build work:
 
-1. `spec-writer` reads `ai_docs/specs/<slug>/brief.md` and writes
-   `spec.md` beside it: user stories, test seams, implementation and testing
-   decisions, and open questions with a recommendation each.
+1. `spec-writer` reads the brief (a `horch ledger task`) and writes
+   `docs/specs/<slug>.md`: user stories, test seams, implementation and
+   testing decisions, and open questions with a recommendation each.
 2. The orchestrator answers the open questions it can, and asks you only the
    ones that are yours.
 3. A new `ticket-writer` writes 1 file per ticket into
-   `ai_docs/tickets/<slug>/`, plus `MAP.md`: every ticket's blockers, the
-   waves that can run in parallel, and the critical path.
-4. The orchestrator runs the waves.
+   `docs/tickets/<slug>/`, plus `MAP.md`: every ticket's blockers, the
+   waves that can run in parallel, and the critical path. Each ticket starts
+   with the field block of `docs/specs/ticket-format.md`.
+4. The orchestrator checks the map with `horch ledger add-map --dry-run`,
+   then makes the run and queues it with `horch ledger add-map`. The ledger
+   starts each ticket when its blockers are done.
 
 Both writers report only file paths, and only once the file is complete. They
 run on the `google` pool, which horch reads with `agy -p /usage` (no model
@@ -961,8 +974,8 @@ setup must already be complete before launching unattended panes.
 Codex has no `--tools` or `--settings`; what it can reach outside its sandbox is
 decided by execpolicy `prefix_rule`s, and it refuses any command its rules do not
 name. So a codex worker needs `horch note` and `horch done` allowed, and a codex
-orchestrator needs `horch spawn`, `assign`, `tell`, `inbox`, `sessions` and
-`layout` - different sets, and neither should get the other's.
+orchestrator needs `horch spawn`, `tell`, `inbox`, `sessions`, `ledger`,
+`fleet` and `layout` - different sets, and neither should get the other's.
 
 Those rules load from `$CODEX_HOME/rules/*.rules`, and codex has no flag or
 config key that points one launch at a different set. Appending to the shared
@@ -987,9 +1000,10 @@ instead for custom teammates without phase skills. Phase-enabled Codex requires
 WSL on Windows and fails before shared rules are written; see the compatibility
 notes in [phase skills](docs/phase-skills.md).
 
-### The session ledger
+### Session records
 
-Every worker session is recorded in a per-project JSON ledger, so "what has been
+Every worker session is recorded in the `session_records` table of the task
+ledger, so "what has been
 worked on here, by which session" survives pane close and workspace restarts.
 That is what lets the orchestrator resume an old session instead of starting
 cold. Workers close their own pane when done, but their sessions stay resumable.
@@ -998,13 +1012,14 @@ cold. Workers close their own pane when done, but their sessions stay resumable.
 horch sessions              # readable summary, newest first
 horch sessions --json       # the raw records
 horch sessions --all-workspaces --live --role sonnet-2
-horch ledger legacy path           # where the file lives
+horch ledger path                  # the task ledger that holds them
 ```
 
-The ledger lives at `$HORCH_STATE_DIR`, else
-`${XDG_STATE_HOME:-~/.local/state}/horch/<slugified-project-path>.json`. The
-format is unchanged from the previous bash implementation, so existing ledgers
-stay readable and their sessions stay resumable.
+horch no longer writes the old per-project JSON session ledger
+(`${XDG_STATE_HOME:-~/.local/state}/horch/<slugified-project-path>.json`).
+It still reads one, so old sessions stay resumable, and a record that only
+the file holds moves into the table at its next write. `horch ledger import`
+copies every old record into the table once.
 
 `sessions` and `context` show only the caller's workspace by default; outside a
 workspace they show the project. Both support `--all-workspaces`, `--live` and
@@ -1015,14 +1030,22 @@ workspace they show the project. Both support `--all-workspaces`, `--live` and
 `horch ledger` is the queue an orchestrator and its workers share: 1 SQLite
 file per machine at `~/.horch/ledger.sqlite3` (`HORCH_LEDGER_DB` overrides
 it). The orchestrator queues tickets (`horch ledger run new`, `add-map`,
-`plan-workers`) and spawns workers with no task; each worker claims its own
+`plan-workers`, or `horch ledger task` for a one-off) and spawns workers with
+no task; each worker claims its own
 (`horch ledger claim`), reports (`progress`), and cannot finish until
 `horch ledger finish` has run every step of the run: check, code-sweep,
 complexity-sweep, recheck, land on the run branch, the run's PR, and a
 cleanup that refuses to lose work. The verification profile picks which of
 the checking steps a run uses (see below). Workers check in every 30 s, a watchdog
 reaps a worker that stops making progress, and workers are stopped only by
-the PIDs the ledger recorded (`horch ledger stop`). See
+the PIDs the ledger recorded (`horch ledger stop`; `horch ledger cancel` and
+`run close --abandon` stop the worker of each task they cancel). The run ends
+with `horch ledger run gate` and `horch ledger run close`, which needs a
+settled run, a passing gate on the run-branch tip, and a merged PR (or
+`--pr-declined "<reason>"`). A workspace holds at most 1 active run that is
+not a solo run, and a spawn with no `--run` joins only its own workspace's
+run. horch respawns a dead orchestrator (at most 1 time in 10 min and 3
+times in a run); `horch fleet stop` records a deliberate stop. See
 [docs/specs/task-ledger.md](docs/specs/task-ledger.md).
 
 Workers may create a worktree with `horch ledger worktree new <name> --from
@@ -1040,8 +1063,8 @@ with land, pr and cleanup.
 
 | profile | steps before land | token cost |
 |---|---|---|
-| `full` | check, code-sweep, complexity-sweep, recheck | highest: code-sweep queues 3 to 12 AI reviewer workers per change, and again after each fix |
-| `light` (default) | check, complexity-sweep | low: the check is the task's own command; complexity-sweep is a local analyser for TS/JS/Python |
+| `full` | check, code-sweep, complexity-sweep, recheck | highest: code-sweep runs up to 3 AI reviewers per round, and a ticket's `**Review:**` sets the rounds (none 0, light 1, full at most 3) |
+| `light` (default) | check, complexity-sweep | low: the check is the task's own command; complexity-sweep is a local analyser for TS/JS/Python and clippy for Rust |
 | `minimal` | check | lowest |
 
 ```sh
@@ -1072,8 +1095,7 @@ Apple platforms, and design. The orchestrator is offered a domain team only
 when the project has a matching file (`offer_when`). Skills are bundled
 (adapted, verbatim or own text) or come from your machine (`operator_skills`).
 [docs/skills-and-teams.md](docs/skills-and-teams.md) explains how to use each
-team, how to refresh a copied skill and what `horch agent-list` and
-`multi-herdr-dataset` show. [docs/README.md](docs/README.md) is the
+team, how to refresh a copied skill and what `horch agent-list` shows. [docs/README.md](docs/README.md) is the
 contributor handbook, including the gate rules: never run the gate under
 `git rebase -x`, and run it through the slot wrapper when other gates run.
 
@@ -1228,8 +1250,8 @@ less often: only when their newest release has been out for a week.
 ```
 crates/
   horch-core/         The domain: roster, harnesses, routing, executions,
-                      messaging, workspace, telemetry, the dataset mode
-  horch/              The horch CLI and the multi-herdr-dataset binary
+                      messaging, workspace, telemetry, the task ledger
+  horch/              The horch CLI
   horch-marketplace/  Skill sources, installs and the lockfile
   horch-e2e/          Fake harness binaries and the hermetic end-to-end tests
   herdr-install/      The Herdr CLI installer
@@ -1262,10 +1284,10 @@ deterministically; an agent decides only where semantic judgment is needed.
 | `execution` | executions: model, the ledger record and store, spawn plan, lifecycle |
 | `messaging`, `workspace` | the brief, mailbox and delivery; the herdr client, tiling and balancing |
 | `telemetry`, `usage` | live token telemetry; what a run cost |
-| `vcs`, `measure`, `competition`, `evaluation`, `dataset` | the dataset mode: git, the event store, rounds, judging, promotion, export |
+| `vcs` | git and landing |
+| `taskledger` | the task ledger: tasks, workers, finish steps, wakes, session records |
 
-The specs are `docs/specs/architecture.md` and
-`docs/specs/dataset-competition.md`.
+The spec is `docs/specs/architecture.md`.
 
 New contributors: start with [the handbook in `docs/`](docs/README.md).
 

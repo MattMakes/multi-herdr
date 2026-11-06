@@ -5,7 +5,7 @@
 | Status | Implemented. Phases A0 to A12 landed. |
 | Date | 2026-10-02 |
 | Author | The fleet (unit `a0-designs`), from the operator's master plan |
-| Companion | [`dataset-competition.md`](dataset-competition.md) (Spec B, phases B1 to B6) |
+| Companion | Spec B (dataset and competition, phases B1 to B6). Trace-fixes ticket 02 (D17) removed Spec B, the `multi-herdr-dataset` binary and its modules. The Spec B rows on this page are history. |
 | Base | branch `arch-refactor-dataset`, off `combine-open-prs` @ `575c2c2` |
 
 Requirement tables in section 3 are machine-read by
@@ -626,8 +626,7 @@ under. horch waits for it, at most 30 s, so it is not a background job.
 
 The fault abort exit code is 86 (`runtime/fault.rs:ABORT_EXIT_CODE`).
 Spec A names no code. 86 is distinct from every exit code that `horch`
-(0 to 3, `horch/src/exit.rs`) and `multi-herdr-dataset` (0, 1, 3 to 6,
-`horch/src/dataset/mod.rs:exit`) use. `arc_16_crash_after_insert_not_live`
+(0 to 3, `horch/src/exit.rs`) uses. `arc_16_crash_after_insert_not_live`
 (`horch-e2e/tests/lifecycle.rs`) pins it.
 
 ### 4.3 `execution::model` (A1) and legacy compatibility (A6)
@@ -1208,7 +1207,6 @@ pub struct Capabilities {
     pub tool_lists: bool,
     pub tool_denylist: bool,
     pub headless: bool,                  // the B4 headless runner
-    pub footprint_bytes: u64,            // resident memory of 1 CLI, before a local model
     pub local_model: bool,               // the model's weights count against memory
 }
 
@@ -1271,8 +1269,7 @@ Capabilities per harness (the constants in `harness/capabilities.rs`):
 | antigravity | no | yes | low, medium, high | no | no | None (`agy` reads only shared skill directories) | no | no | no | no | no | no |
 | none | no | no | (none) | no | no | None | no | no | no | no | no | no |
 
-`footprint_bytes` is 600 MiB (`HARNESS_FOOTPRINT_BYTES`) for every harness
-except `none`, which is 64 MiB. `arc_10_capabilities_match_legacy_predicates`
+`arc_10_capabilities_match_legacy_predicates`
 checks every column against the pre-A4 predicates and effort table;
 `arc_10_extensions_flag_and_tool_selection_only_for_pi` checks
 `extensions_flag` and `tool_selection`, which the Rust build of Prime

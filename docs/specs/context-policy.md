@@ -714,8 +714,8 @@ lost, at the step `job.json` names. A lost job is row state `compact-lost`,
 
 ### 8.3 The shared heartbeat (`crates/horch-core/src/heartbeat.rs`)
 
-The judge job (CMP-16) and the compaction job are the 2 allowed background
-jobs, and both use 1 liveness scheme: `heartbeat::start` writes a beat every
+The compaction job is the 1 allowed background job (the judge job left with
+the dataset rounds, trace-fixes ticket 02). It uses 1 liveness scheme: `heartbeat::start` writes a beat every
 2 s, and `heartbeat::liveness` decides running, lost or not started from the
 beat, the pid and the spawn time (stale after 30 s). The CMP-16 guard test
 (`cmp_16_only_judge_and_compaction_jobs_detached`) keeps a named allow-list

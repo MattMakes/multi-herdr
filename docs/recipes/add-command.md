@@ -2,7 +2,7 @@
 
 ## When
 
-You want a new `horch <command>` (or a new `multi-herdr-dataset <command>`).
+You want a new `horch <command>`.
 
 ## Before you start
 
@@ -54,22 +54,6 @@ In the steps, `<name>` is the command, for example `agent-list`, and
    `_base` needs a sanctioned block in
    `crates/horch-core/tests/golden_prompts.rs`.
 8. Run the gate: `HORCH_REQUIRE_GIT=1 HORCH_REQUIRE_SQLITE=1 just gate`.
-
-## Steps for `multi-herdr-dataset`
-
-1. Core logic in `crates/horch-core/src/competition/`, `measure/`,
-   `evaluation/` or `dataset/`.
-2. Add the subcommand to `enum Command` in `crates/horch/src/dataset/cli.rs`
-   (`#[command(hide = true)]` for an operator-only or internal command), a
-   module `crates/horch/src/dataset/<file>.rs` returning `Result<u8>` (the
-   exit code), `pub(crate) mod <file>;` and a dispatch arm in
-   `crates/horch/src/dataset/mod.rs`. Exit codes are in `dataset::exit` in
-   the same file.
-3. Tests in `crates/horch/tests/dataset_cli.rs`: `cmp_01_cli_args` parses
-   flags with `Cli::try_parse_from`; the `BIN` const runs the built binary.
-   Check: `cargo test -p horch --test dataset_cli`.
-4. Write every state change as an event; see
-   [add-dataset-event.md](add-dataset-event.md).
 
 ## Files this recipe touches
 

@@ -195,12 +195,12 @@ All fields use `#[serde(default)]` so that every existing ledger still loads.
 |---|---|---|---|
 | `kind` | `"worker"` \| `"orchestrator"` | spawn / fleet | default `worker` |
 | `project` | `Option<String>` | spawn / fleet, from `HORCH_PROJECT_DIR` or the cwd | absolute project path. It fixes the lossy slug [H]. |
-| `plan` | `Option<String>` | spawn and `horch assign` | slug parsed from the task (rule below) |
+| `plan` | `Option<String>` | spawn | slug parsed from the task (rule below) |
 | `workspace_id` | `Option<String>` | spawn / fleet, from `HORCH_WORKSPACE_ID` | recorded for the sidebar, which is not planned (§18, M7) |
 | `via` | `Option<String>` | spawn gate | the fallback teammate whose launch settings were used |
 | `substitution_reason` | `Option<String>` | spawn gate | 1 line, for example `claude 7d 100%, resets 2026-10-02T14:00Z` |
 
-`plan` rule: the first match of `ai_docs/plans/([A-Za-z0-9._-]+)\.md` in the task text, without the extension. Otherwise empty. The rule reads only the task text. `ai_docs/` is the operator's local scratch directory and is not in git, so the named file need not exist. `horch assign` updates `plan` when it changes the task.
+`plan` rule: the first match of `ai_docs/plans/([A-Za-z0-9._-]+)\.md` in the task text, without the extension. Otherwise empty. The rule reads only the task text. `ai_docs/` is the operator's local scratch directory and is not in git, so the named file need not exist. A spawn carries no task text of its own: its task is `Run horch ledger claim.`, so `plan` is empty for a ledger worker.
 
 ### 6.2 The orchestrator record
 
@@ -825,7 +825,7 @@ Test names start with the requirement ID. U = unit test in the module; I = integ
 5. `HORCH_FAKE_SCENARIO=usage_exhausted horch quota --refresh --json`. It prints claude `exhausted`, 7d `1.00`, with the reset from the fixture. The fake log shows no violation.
 6. `horch route opus` prints `SUBSTITUTED: opus runs on codex-sol`, for a quota fixture with claude exhausted and codex ok.
 7. `horch route opus` prints `REFUSED`, exit 3, for claude and codex both exhausted (today's real state).
-8. `horch spawn opus "x"` with the fixture from step 7: exit 3, the ledger is unchanged, and fake-herdr has no `pane split`.
+8. `horch spawn opus` with the fixture from step 7: exit 3, the ledger is unchanged, and fake-herdr has no `pane split`.
 9. `horch telemetry render --size 120x40` equals `golden/telemetry-e2e.txt`.
 10. Scan the state dir for sentinels (TEL-11): 0 hits.
 11. `horch usage --json` equals `horch cost --json` per record (TEL-10).
@@ -883,7 +883,7 @@ The cloud proves the logic against fixtures. These steps prove the fixtures matc
 | L5 singleton in herdr | `horch fleet` in 2 scratch projects | 1 `horch telemetry` workspace in `herdr workspace list`; the operator's focused pane does not change; the `collector.json` pid is the same after the second fleet |
 | L6 live latency | Spawn 1 `sonnet` worker with a 1-line task | its first event is in the store within 5 s after its first usage line is on disk (the script polls the transcript and the store every 0.2 s), and its totals match its transcript. The origin is the disk, not the line's `timestamp`: Claude Code writes a line only after its message completes, seconds after that timestamp, and that lag is outside horch. The limit: 1 tick (2 s) + the tick (under 0.2 s) + 2 polls (0.4 s) is 2.6 s at worst. The script prints the lag from the timestamp as INFO, never as PASS or FAIL |
 | L7 crash recovery | `kill -9` the collector during L6, then `horch telemetry ensure` | totals unchanged; no duplicate event keys (`jq` check in the script) |
-| L8 gate drill | `HORCH_QUOTA_FILE=<fixture: claude exhausted, codex ok, dates shifted to now> horch route researcher`, then `horch spawn researcher "Reply with DONE"` in a scratch fleet | `SUBSTITUTED` line; the record has `via: codex-sol`; the pane runs codex with the researcher briefing |
+| L8 gate drill | `HORCH_QUOTA_FILE=<fixture: claude exhausted, codex ok, dates shifted to now> horch route researcher`, then `horch ledger task "Reply with DONE" --persona researcher --check none` and the `horch spawn researcher --run solo-<workspace>` line it prints, in a scratch fleet | `SUBSTITUTED` line; the record has `via: codex-sol`; the pane runs codex with the researcher briefing |
 | L9 real gate | `horch route opus` on the real pools | the answer follows the pools: `REFUSED` with both reset times when both are exhausted, else `SPAWN` or `SUBSTITUTED`. The script also drills `REFUSED` on the shifted all-exhausted fixture |
 | L10 perf | `just verify-perf` on the real state dir | tick under 200 ms after the first; RSS under 150 MB |
 

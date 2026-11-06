@@ -4,6 +4,31 @@
 
 ## Unreleased
 
+- Fleet work now flows to an end with no silent stop. Pull is the only
+  dispatch model: `horch assign` is gone, `horch spawn` refuses task text,
+  and a one-off goes through `horch ledger task "<title>" --persona <p>`.
+  Tickets follow `docs/specs/ticket-format.md`, and `horch ledger add-map
+  --dry-run` checks them first. A run has a default check (`run new
+  --check`), and a task with no check does not land unless its ticket says
+  `**Check:** none`. `horch ledger run gate` records the whole-run check, and
+  `run close` needs a passing gate and a merged or declined PR. horch spawns
+  the code-sweep reviewers itself, at most 3 rounds of at most 3 reviewers.
+  Every mail line shows its id, and `horch tell <role> --answers <id>`
+  closes 1 question. `horch ledger handoff <path>` hands a task to a fresh
+  worker. Wakes are durable and the watchdog reconciles every 30 s. horch
+  respawns a dead orchestrator, rarely; `horch fleet stop` prevents it.
+  `horch ledger cancel` always stops the worker. Session records move from
+  the JSON session ledger into the task ledger. A task-less spawn joins only
+  the active run of its own workspace: a run made outside herdr by an older
+  horch has no workspace id, so spawn its workers with
+  `horch spawn <persona> --run <slug>`. A run that is already open when you
+  install this version gets 1 extra wake line for each unresolved event at
+  the first watchdog pass, because the wake keys changed. It is harmless.
+- Removed competitive dataset rounds. The `multi-herdr-dataset` binary, the
+  judge teammate and the fleet run rows are gone. Release archives now hold
+  `horch` and `herdr-install`, and `horch install` deletes an old
+  `multi-herdr-dataset` file from the install directory.
+
 ## v0.4.5 - 2026-11-05
 
 - A new `one-page-design` teammate and skill turn a design into a one-page

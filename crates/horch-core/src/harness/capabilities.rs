@@ -1,6 +1,6 @@
 //! What each harness can do, as data.
 //!
-//! The launch flow, the roster check and the competition preflight read these
+//! The launch flow and the roster check read these
 //! values instead of matching on [`HarnessKind`](super::HarnessKind), so a new
 //! harness is one new module plus one row here.
 
