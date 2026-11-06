@@ -101,9 +101,9 @@ fn oracles() -> PathBuf {
 const SKIP_NEW_TEAMMATES: &[&str] = &[
     "antigravity",
     "app-release-preparer",
-    "architect-reviewer-light",
     "apple-accessibility-auditor",
     "apple-platform-developer",
+    "architect-reviewer-light",
     "astra-creative",
     "blender-3d-printer",
     "blender-artist",

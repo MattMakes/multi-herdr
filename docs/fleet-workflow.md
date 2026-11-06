@@ -39,6 +39,9 @@ The operator starts the orchestrator with no task. Its briefing ends with
 and waits for the operator's first message. Pull is the only dispatch model:
 `horch spawn` takes no task text, and a worker claims its task from the task
 ledger. A one-off goes through `horch ledger task "<title>" --persona <p>`.
+The 1 exception is a `spawn_only` controller, such as `skill-importer`, that
+sends a brief to a role with `horch_access: report`: a report pane cannot run
+`horch ledger claim`, so the brief is its task.
 
 ## Task ledger runs
 

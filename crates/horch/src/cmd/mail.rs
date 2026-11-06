@@ -825,7 +825,14 @@ mod tests {
             });
         }
         assert_eq!(sent.len(), 14, "{sent:?}");
-        assert!(sent[13].starts_with("[horch] NOTE: the reviews are in (redelivery 14:"));
+        let tag = format!(
+            "[horch #{}] NOTE: the reviews are in",
+            messages[0].id.short()
+        );
+        assert!(
+            sent[13].starts_with(&format!("{tag} (redelivery 14:")),
+            "{sent:?}"
+        );
     }
 
     /// Every redelivery of one message repeats the same mail id.

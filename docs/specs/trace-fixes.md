@@ -225,7 +225,7 @@ Each ID needs a test whose name starts with its lowercase form (`trf_07_...`); t
 | TRF-40 | One orchestrator per workspace; at most 1 respawn per 10 min and 3 per run; each respawn is an event shown by status. | 24 | G8 |
 | TRF-41 | Every spawn-gate decision (NOTE, SUBSTITUTED, REFUSED) is recorded as a ledger event and never changes routing. | 25 | define Q5 |
 | TRF-42 | `horch ledger task` queues a one-off task in the workspace's solo run and creates that run when needed. | 26 | U1 |
-| TRF-43 | `horch assign` is gone and `horch spawn` with task text refuses, printing the `horch ledger task` command. | 27 | U1 |
+| TRF-43 | `horch assign` is gone and `horch spawn` with task text refuses, printing the `horch ledger task` command. The 1 exception (T-56, PR #338) is a `spawn_only` controller's brief to a `horch_access: report` role, because a report pane cannot run `horch ledger claim`. | 27 | U1 |
 | TRF-44 | `horch sessions` and every session reader read the task ledger. | 28 | U2 |
 | TRF-45 | No code writes the JSON session ledger; `ledger import` still reads old JSON once; `done` and `note` are single commands. | 29 | U2, CC4 |
 | TRF-46 | The briefings contain no push dispatch, and every `context --over` state has an instruction. | 30 | U1, U3, U4 |
