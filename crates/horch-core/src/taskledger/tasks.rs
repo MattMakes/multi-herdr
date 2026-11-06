@@ -1199,7 +1199,8 @@ pub fn fallback(conn: &Connection, task: &Task, reason: &str) -> Result<Task> {
 /// Drop a task: the 1 cancel path (#136). In the caller's transaction the
 /// task lets go of its worker, the worker row ends `stopped`, and an open
 /// worktree becomes `abandoned` (its branch and folder stay, so a requeue
-/// can reopen it). The worker's process is not signalled here.
+/// can reopen it). The worker's process is not signalled here: after the
+/// commit, the caller stops it with [`super::stop::stop_cancelled`] (TRF-36).
 pub fn cancel(conn: &Connection, task: &Task, reason: &str) -> Result<Task> {
     if matches!(task.status.as_str(), "done" | "cancelled") {
         bail!("{} is already {}", task.short(), task.status);

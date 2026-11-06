@@ -380,6 +380,37 @@ pub fn stop_worker(
     })
 }
 
+/// Stop the workers that held the tasks a cancel just dropped (TRF-36):
+/// `horch ledger cancel` and `run close --abandon`. Each goes through
+/// [`stop_worker`], so each PID is signalled only while it runs with its
+/// recorded start time. The cancel already ended each row and let go of its
+/// task, so nothing is queued again. A worker that cannot be stopped gives
+/// its error in its slot, and the cancel stands.
+pub fn stop_cancelled(
+    store: &mut Store,
+    holders: &[String],
+    reason: &str,
+    panes: &dyn Panes,
+    procs: &dyn Processes,
+    opts: &StopOptions,
+) -> Vec<(String, Result<StopReport>)> {
+    holders
+        .iter()
+        .map(|w| {
+            let r = stop_worker(
+                store,
+                w,
+                StopRequester::Orchestrator,
+                reason,
+                panes,
+                procs,
+                opts,
+            );
+            (w.clone(), r)
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use std::cell::RefCell;
@@ -953,6 +984,89 @@ mod tests {
         assert!(e
             .to_string()
             .ends_with("is done; only a live or incomplete worker is reaped"));
+    }
+
+    /// A task "t" claimed by a worker whose agent (PID 4000) and supervisor
+    /// (PID 4001) run with start time 7. Returns the task and the worker.
+    fn claimed_task(s: &mut Store) -> (tasks::Task, String) {
+        let id = worker(s, 7);
+        s.immediate(|tx| {
+            let w = workers::get(tx, &id)?;
+            let run = runs::get(tx, w.run_id.as_deref().unwrap())?;
+            tasks::add(
+                tx,
+                &run,
+                &tasks::NewTask::work("t", "tickets/t.md", "opus"),
+                Actor::Orchestrator,
+            )?;
+            tx.execute(
+                "UPDATE workers SET supervisor_pid = 4001, supervisor_started = 7
+                 WHERE worker_id = ?1",
+                [&id],
+            )?;
+            let tasks::ClaimOutcome::Claimed(c) = tasks::claim(tx, &id)? else {
+                bail!("the worker claims the task");
+            };
+            Ok((c.task, id.clone()))
+        })
+        .unwrap()
+    }
+
+    #[test]
+    fn trf_36_a_cancel_stops_the_worker_by_its_pids_and_queues_nothing() {
+        let (_d, mut s) = open();
+        let (task, id) = claimed_task(&mut s);
+        s.immediate(|tx| tasks::cancel(tx, &task, "not wanted"))
+            .unwrap();
+        let procs = Scripted::new(true, true, true);
+        let r = stop_cancelled(
+            &mut s,
+            std::slice::from_ref(&id),
+            "task cancelled: not wanted",
+            &NoPanes,
+            &procs,
+            &fast(),
+        );
+        assert_eq!(r.len(), 1);
+        let report = r[0].1.as_ref().unwrap();
+        assert_eq!(report.requeued, None);
+        // The agent's TERM ends the scripted process, so the supervisor PID
+        // is already gone: each PID is signalled only while it is the same.
+        assert_eq!(*procs.sent.borrow(), vec![procid::Stop::Term]);
+        assert_eq!(agent_steps(report), vec![(Some("TERM"), "sent")]);
+        assert_eq!(
+            tasks::get(s.conn(), &task.task_id).unwrap().status,
+            "cancelled"
+        );
+        assert_eq!(workers::get(s.conn(), &id).unwrap().status, "stopped");
+        let requeues: i64 = s
+            .conn()
+            .query_row(
+                "SELECT count(*) FROM events WHERE kind = 'requeued'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(requeues, 0);
+    }
+
+    #[test]
+    fn trf_36_a_worker_that_cannot_be_stopped_leaves_the_cancel_standing() {
+        let (_d, mut s) = open();
+        let (task, id) = claimed_task(&mut s);
+        s.conn()
+            .execute("UPDATE workers SET host = 'elsewhere'", [])
+            .unwrap();
+        s.immediate(|tx| tasks::cancel(tx, &task, "x")).unwrap();
+        let procs = Scripted::new(true, true, true);
+        let r = stop_cancelled(&mut s, &[id], "x", &NoPanes, &procs, &fast());
+        let e = r[0].1.as_ref().unwrap_err();
+        assert!(e.to_string().contains("runs on host elsewhere"), "{e}");
+        assert!(procs.sent.borrow().is_empty());
+        assert_eq!(
+            tasks::get(s.conn(), &task.task_id).unwrap().status,
+            "cancelled"
+        );
     }
 }
 

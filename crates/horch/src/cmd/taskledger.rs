@@ -90,12 +90,13 @@ pub enum LedgerCommand {
         #[command(flatten)]
         run: RunArg,
     },
-    /// Drop a task. Its worker lets go of it at once; `--stop` also stops
-    /// that worker by its recorded PIDs and pane.
+    /// Drop a task. Its worker lets go of it at once and is stopped by its
+    /// recorded PIDs and pane, as `horch ledger stop` does.
     Cancel {
         task: String,
         reason: String,
-        #[arg(long)]
+        /// Kept so that old command lines still run: a cancel always stops.
+        #[arg(long, hide = true)]
         stop: bool,
         #[command(flatten)]
         run: RunArg,
@@ -659,13 +660,10 @@ fn control_cmd(ctx: &RuntimeContext, mut store: Store, command: LedgerCommand) -
         return fallback_cmd(ctx, &mut store, &task, &reason, &run);
     }
     if let LedgerCommand::Cancel {
-        task,
-        reason,
-        stop: stop_it,
-        run,
+        task, reason, run, ..
     } = command
     {
-        return cancel_cmd(ctx, &mut store, &task, &reason, stop_it, &run);
+        return cancel_cmd(ctx, &mut store, &task, &reason, &run);
     }
     if let LedgerCommand::Unblock { task, from, run } = command {
         return unblock_cmd(ctx, &mut store, &task, &from, &run);
@@ -878,20 +876,29 @@ fn cancel_cmd(
     store: &mut Store,
     task: &str,
     reason: &str,
-    stop_it: bool,
     run: &RunArg,
 ) -> Result<ExitCode> {
     let r = resolve_run(ctx, store, run)?;
-    let holder = tasks::resolve(store.conn(), &r.run_id, task)?.current_worker_id;
-    if let (true, Some(w)) = (stop_it, &holder) {
-        stop_holder(ctx, store, w, reason)?;
-    }
-    let t = cancel_task(store, &r, task, reason)?;
-    output::println(&format!("{} cancelled.", t.short()));
-    if let (false, Some(w)) = (stop_it, &holder) {
-        warn_still_running(w, &t.short());
-    }
+    let herdr = HerdrPanes::new(ctx);
+    let t = cancel_and_stop(store, &r, task, reason, &Stopper::real(&herdr))?;
     wake_dependents(ctx, store, &r, &t)
+}
+
+/// Cancel the task, then stop the worker that held it (TRF-36). The cancel
+/// comes first and lets go of the worker, so the stop queues nothing again.
+fn cancel_and_stop(
+    store: &mut Store,
+    run: &Run,
+    task: &str,
+    reason: &str,
+    s: &Stopper,
+) -> Result<tasks::Task> {
+    let holder = tasks::resolve(store.conn(), &run.run_id, task)?.current_worker_id;
+    let t = cancel_task(store, run, task, reason)?;
+    output::println(&format!("{} cancelled.", t.short()));
+    let holders: Vec<String> = holder.into_iter().collect();
+    stop_holders(store, &holders, &format!("task cancelled: {reason}"), s)?;
+    Ok(t)
 }
 
 fn cancel_task(store: &mut Store, run: &Run, task: &str, reason: &str) -> Result<tasks::Task> {
@@ -910,31 +917,44 @@ fn wake_dependents(
 ) -> Result<ExitCode> {
     let waiting = tasks::dependents(store.conn(), &t.task_id)?;
     print_waiting(&t.short(), &waiting);
-    super::taskledger_wake::cancelled_dependents(ctx, store, run, &t.short(), &waiting);
+    super::taskledger_wake::stalled_dependents(ctx, store, run, &t.short(), &waiting);
     Ok(ExitCode::SUCCESS)
 }
 
-fn warn_still_running(worker: &str, task: &str) {
-    eprintln!(
-        "horch ledger: worker {worker} held {task} and can no longer finish it. Its process may still run: horch ledger stop {worker} \"<reason>\"."
-    );
+/// How a cancel stops the workers it let go of: herdr and the processes of
+/// this machine, or fakes in tests.
+struct Stopper<'a> {
+    panes: &'a dyn stop::Panes,
+    procs: &'a dyn stop::Processes,
+    opts: stop::StopOptions,
 }
 
-/// Stop the worker that held a cancelled task.
-fn stop_holder(ctx: &RuntimeContext, store: &mut Store, worker: &str, reason: &str) -> Result<()> {
-    let report = stop::stop_worker(
-        store,
-        worker,
-        StopRequester::Orchestrator,
-        &format!("task cancelled: {reason}"),
-        &HerdrPanes::new(ctx),
-        &stop::Os,
-        &stop::StopOptions {
-            grace: stop_grace(),
-            ..Default::default()
-        },
-    )?;
-    print_stop(&report, false)
+impl<'a> Stopper<'a> {
+    fn real(panes: &'a HerdrPanes) -> Stopper<'a> {
+        Stopper {
+            panes,
+            procs: &stop::Os,
+            opts: stop::StopOptions {
+                grace: stop_grace(),
+                ..Default::default()
+            },
+        }
+    }
+}
+
+/// Stop the workers that held cancelled tasks, by their recorded PIDs and
+/// panes (TRF-36). A worker that cannot be stopped gets a warning, and the
+/// cancel stands.
+fn stop_holders(store: &mut Store, holders: &[String], reason: &str, s: &Stopper) -> Result<()> {
+    for (w, r) in stop::stop_cancelled(store, holders, reason, s.panes, s.procs, &s.opts) {
+        match r {
+            Ok(report) => print_stop(&report, false)?,
+            Err(e) => eprintln!(
+                "horch ledger: worker {w} was not stopped: {e:#}. Its process may still run: horch ledger stop {w} \"<reason>\"."
+            ),
+        }
+    }
+    Ok(())
 }
 
 /// The tasks that wait for a cancelled task.
@@ -1670,7 +1690,9 @@ fn run_cmd(ctx: &RuntimeContext, store: &mut Store, command: RunCommand) -> Resu
             pr_declined,
         } => {
             let r = resolve_run(ctx, store, &run)?;
-            close_run_cmd(&tools(ctx), store, &r, abandon.as_deref(), pr_declined)
+            let herdr = HerdrPanes::new(ctx);
+            let s = Stopper::real(&herdr);
+            close_run_cmd(&tools(ctx), store, &r, abandon.as_deref(), pr_declined, &s)
         }
         RunCommand::Gate { run, check } => {
             let r = resolve_run(ctx, store, &run)?;
@@ -1687,6 +1709,7 @@ fn close_run_cmd(
     r: &Run,
     abandon: Option<&str>,
     pr_declined: Option<String>,
+    s: &Stopper,
 ) -> Result<ExitCode> {
     // C6 first: an unsettled run gets the settled rule's refusal, before gh.
     let settled = status::unsettled(store.conn(), &r.run_id)?.is_empty();
@@ -1701,15 +1724,16 @@ fn close_run_cmd(
     for note in &closed.notes {
         output::println(note);
     }
-    for (task, holder) in &closed.cancelled {
-        match holder {
-            Some(w) => output::println(&format!(
-                "{task} cancelled. Its worker {w} may still run: horch ledger stop {w} \"run abandoned\" --run {}",
-                r.slug
-            )),
-            None => output::println(&format!("{task} cancelled.")),
-        }
+    for (task, _) in &closed.cancelled {
+        output::println(&format!("{task} cancelled."));
     }
+    let holders: Vec<String> = closed
+        .cancelled
+        .iter()
+        .filter_map(|(_, w)| w.clone())
+        .collect();
+    let why = format!("run abandoned: {}", abandon.unwrap_or_default());
+    stop_holders(store, &holders, &why, s)?;
     if !closed.parked.is_empty() {
         bail!(
             "{}. The open tasks are cancelled; the run stays active",
@@ -2465,8 +2489,8 @@ fn in_worker_pane(ctx: &RuntimeContext) -> bool {
             .is_some_and(|w| w.record_id.is_some() && w.role.is_some())
 }
 
-/// The wakes of a finished task: the author of a reviewed task, the tasks a
-/// parked one cancels, and the orchestrator.
+/// The wakes of a finished task: the author of a reviewed task, the tasks
+/// that wait for a parked one, and the orchestrator.
 fn wake_after_done(ctx: &RuntimeContext, store: &Store, run: &Run, c: &finish::Completed) {
     if let Some((parent, Some(role))) = &c.reviews_in_for {
         tell_reviews_in(ctx, store, run, &c.task_id, parent, role);
@@ -2525,12 +2549,13 @@ fn tell_reviews_in(
     }
 }
 
-/// A parked task cancels what waited on it: wake on those tasks.
+/// A parked task is not cancelled, but the tasks that wait for it cannot
+/// start until a requeue resumes it: wake on those tasks.
 fn wake_unlanded(ctx: &RuntimeContext, store: &Store, run: &Run, c: &finish::Completed) {
     // The task is already done here, so a read error only costs the wake.
     match tasks::dependents(store.conn(), &c.task_id) {
         Ok(waiting) => {
-            super::taskledger_wake::cancelled_dependents(ctx, store, run, &c.task, &waiting)
+            super::taskledger_wake::stalled_dependents(ctx, store, run, &c.task, &waiting)
         }
         Err(e) => eprintln!(
             "horch ledger: could not read the tasks that wait on {}: {e:#}",
@@ -2819,6 +2844,7 @@ mod tests {
     use horch_core::runtime::{MapEnv, RuntimeContext};
     use horch_core::taskledger::model::{Actor, WorktreeMode};
     use horch_core::taskledger::runs::{self, NewRun};
+    use horch_core::taskledger::stop;
     use horch_core::taskledger::tasks::{self, ClaimOutcome, Claimed, NewTask};
     use horch_core::taskledger::workers::{self, NewWorker};
     use horch_core::taskledger::Store;
@@ -3179,13 +3205,13 @@ mod tests {
     fn trf_20_run_close_asks_gh_and_refuses_an_open_pr() {
         let dir = tempfile::tempdir().unwrap();
         let (t, mut store, run) = gated_world(dir.path(), "OPEN");
-        let err = super::close_run_cmd(&t, &mut store, &run, None, None).unwrap_err();
+        let err = super::close_run_cmd(&t, &mut store, &run, None, None, &no_stops()).unwrap_err();
         assert!(err.to_string().contains("no gate on its tip"), "{err}");
         assert_eq!(
             super::gate_cmd(&t, &mut store, &run, Some("true")).unwrap(),
             ExitCode::SUCCESS
         );
-        let err = super::close_run_cmd(&t, &mut store, &run, None, None).unwrap_err();
+        let err = super::close_run_cmd(&t, &mut store, &run, None, None, &no_stops()).unwrap_err();
         assert!(
             err.to_string().contains("PR #7 is open, not merged"),
             "{err}"
@@ -3194,7 +3220,14 @@ mod tests {
         assert!(args.contains("pr view 7 --json state"), "{args}");
         assert_eq!(status_of(&store, &run), "active");
 
-        let code = super::close_run_cmd(&t, &mut store, &run, None, Some("not wanted".into()));
+        let code = super::close_run_cmd(
+            &t,
+            &mut store,
+            &run,
+            None,
+            Some("not wanted".into()),
+            &no_stops(),
+        );
         assert_eq!(code.unwrap(), ExitCode::SUCCESS);
         assert_eq!(status_of(&store, &run), "done");
     }
@@ -3204,7 +3237,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let (t, mut store, run) = gated_world(dir.path(), "MERGED");
         super::gate_cmd(&t, &mut store, &run, Some("true")).unwrap();
-        super::close_run_cmd(&t, &mut store, &run, None, None).unwrap();
+        super::close_run_cmd(&t, &mut store, &run, None, None, &no_stops()).unwrap();
         assert_eq!(status_of(&store, &run), "done");
 
         // No gh: the PR condition is not applicable.
@@ -3217,7 +3250,161 @@ mod tests {
             matches!(&pr, runs::PrCheck::NotApplicable(w) if w.contains("gh is not installed")),
             "{pr:?}"
         );
-        super::close_run_cmd(&t, &mut store, &run, None, None).unwrap();
+        super::close_run_cmd(&t, &mut store, &run, None, None, &no_stops()).unwrap();
         assert_eq!(status_of(&store, &run), "done");
+    }
+
+    /// Processes that each run with start time 7 and end on TERM. Each
+    /// signal is recorded with its PID.
+    #[derive(Default)]
+    struct FakeProcs {
+        gone: std::cell::RefCell<Vec<u32>>,
+        sent: std::cell::RefCell<Vec<(u32, horch_core::procid::Stop)>>,
+    }
+
+    impl stop::Processes for FakeProcs {
+        fn is_same(&self, pid: u32, started: u64) -> bool {
+            started == 7 && !self.gone.borrow().contains(&pid)
+        }
+        fn exists(&self, pid: u32) -> bool {
+            !self.gone.borrow().contains(&pid)
+        }
+        fn stop_same(&self, pid: u32, started: u64, how: horch_core::procid::Stop) -> bool {
+            if !self.is_same(pid, started) {
+                return false;
+            }
+            self.sent.borrow_mut().push((pid, how));
+            self.gone.borrow_mut().push(pid);
+            true
+        }
+    }
+
+    /// No process and no pane exists.
+    struct Nothing;
+
+    impl stop::Processes for Nothing {
+        fn is_same(&self, _: u32, _: u64) -> bool {
+            false
+        }
+        fn exists(&self, _: u32) -> bool {
+            false
+        }
+        fn stop_same(&self, _: u32, _: u64, _: horch_core::procid::Stop) -> bool {
+            false
+        }
+    }
+
+    impl stop::Panes for Nothing {
+        fn exists(&self, _: &str) -> bool {
+            false
+        }
+        fn close(&self, _: &str) -> anyhow::Result<()> {
+            Ok(())
+        }
+    }
+
+    fn fast() -> stop::StopOptions {
+        stop::StopOptions {
+            grace: std::time::Duration::from_millis(30),
+            poll: std::time::Duration::from_millis(5),
+            ..Default::default()
+        }
+    }
+
+    /// A stopper that finds nothing to stop.
+    fn no_stops() -> super::Stopper<'static> {
+        super::Stopper {
+            panes: &Nothing,
+            procs: &Nothing,
+            opts: fast(),
+        }
+    }
+
+    fn stopper(procs: &FakeProcs) -> super::Stopper<'_> {
+        super::Stopper {
+            panes: &Nothing,
+            procs,
+            opts: fast(),
+        }
+    }
+
+    /// The task "t" of run "r1", claimed by a worker whose agent (PID 4000)
+    /// and supervisor (PID 4001) run with start time 7.
+    fn running(dir: &Path) -> (RuntimeContext, Store, Run, Claimed) {
+        let root = dir.join("project");
+        std::fs::create_dir_all(&root).unwrap();
+        let (ctx, store, c) = claimed(dir, &root, None, |_| {});
+        store
+            .conn()
+            .execute(
+                "UPDATE workers SET agent_pid = 4000, agent_started = 7,
+                    supervisor_pid = 4001, supervisor_started = 7",
+                [],
+            )
+            .unwrap();
+        let run = runs::get(store.conn(), &c.task.run_id).unwrap();
+        (ctx, store, run, c)
+    }
+
+    fn requeues(store: &Store) -> i64 {
+        store
+            .conn()
+            .query_row(
+                "SELECT count(*) FROM events WHERE kind = 'requeued'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap()
+    }
+
+    fn term_to_both() -> Vec<(u32, horch_core::procid::Stop)> {
+        use horch_core::procid::Stop;
+        vec![(4000, Stop::Term), (4001, Stop::Term)]
+    }
+
+    #[test]
+    fn trf_36_cancel_signals_the_recorded_pids_and_writes_no_requeue() {
+        let dir = tempfile::tempdir().unwrap();
+        let (_ctx, mut store, run, c) = running(dir.path());
+        let procs = FakeProcs::default();
+        let t = super::cancel_and_stop(
+            &mut store,
+            &run,
+            &c.task.short(),
+            "not wanted",
+            &stopper(&procs),
+        )
+        .unwrap();
+        assert_eq!(*procs.sent.borrow(), term_to_both());
+        assert_eq!(t.status, "cancelled");
+        assert_eq!(
+            tasks::get(store.conn(), &t.task_id).unwrap().status,
+            "cancelled"
+        );
+        assert_eq!(requeues(&store), 0);
+    }
+
+    #[test]
+    fn trf_36_run_close_abandon_signals_the_recorded_pids() {
+        let dir = tempfile::tempdir().unwrap();
+        let (ctx, mut store, run, c) = running(dir.path());
+        let procs = FakeProcs::default();
+        let code = super::close_run_cmd(
+            &tools(&ctx),
+            &mut store,
+            &run,
+            Some("gave up"),
+            None,
+            &stopper(&procs),
+        )
+        .unwrap();
+        assert_eq!(code, ExitCode::SUCCESS);
+        assert_eq!(*procs.sent.borrow(), term_to_both());
+        assert_eq!(status_of(&store, &run), "abandoned");
+        assert_eq!(
+            tasks::get(store.conn(), &c.task.task_id).unwrap().status,
+            "cancelled"
+        );
+        assert_eq!(requeues(&store), 0);
     }
 }

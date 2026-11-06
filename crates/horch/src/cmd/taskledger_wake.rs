@@ -211,9 +211,10 @@ pub fn after_done(ctx: &RuntimeContext, store: &Store, run: &Run) {
     nudge_stuck(ctx, store, run);
 }
 
-/// After a task was cancelled (or parked unlanded): tell the orchestrator
-/// which open tasks now wait for it (#119). No wake when none do.
-pub fn cancelled_dependents(
+/// After a task was cancelled or parked unlanded: tell the orchestrator
+/// which open tasks now wait for it (#119). No wake when none do. A parked
+/// task's wake is `held`, a cancelled task's wake is `cancelled`.
+pub fn stalled_dependents(
     ctx: &RuntimeContext,
     store: &Store,
     run: &Run,
@@ -226,24 +227,24 @@ pub fn cancelled_dependents(
     let names: Vec<String> = dependents.iter().map(|t| t.short()).collect();
     // A parked task is not cancelled: it resumes on a requeue (D16).
     let parked = tasks::resolve(store.conn(), &run.run_id, task).is_ok_and(|t| t.is_parked());
-    let text = if parked {
-        format!(
+    let (event, text) = if parked {
+        let text = format!(
             "NOTE: {} {}: {task} is parked unlanded. Run horch ledger requeue {task} to resume it.",
             names.join(", "),
             if names.len() == 1 { "waits" } else { "wait" }
-        )
+        );
+        (OutboxEvent::Held, text)
     } else {
-        format!(
+        let text = format!(
             "NOTE: {task} was cancelled. {} wait for it. Run horch ledger unblock {} --from {task}, or cancel them, or requeue {task}.",
             names.join(", "),
             first.short()
-        )
+        );
+        (OutboxEvent::Cancelled, text)
     };
     wake_as(ctx, store, run, |tx| {
         let board = outbox::board(tx, &run.run_id, false)?;
-        Ok(Some(
-            Wake::new(OutboxEvent::Cancelled, task, tagged(&text)).on_board(board),
-        ))
+        Ok(Some(Wake::new(event, task, tagged(&text)).on_board(board)))
     });
 }
 
