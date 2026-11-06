@@ -347,12 +347,16 @@ pub fn reviewer_persona(author_harness: Option<&str>) -> &'static str {
     }
 }
 
-/// The other reviewer persona: the fallback of every review task.
+/// The other reviewer persona: the fallback of every review task. It
+/// switches vendor and keeps the cost tier, so a light reviewer falls back
+/// to the other vendor's light reviewer (TRF-30). An unknown persona falls
+/// back to `architect-reviewer`.
 pub fn other_reviewer(persona: &str) -> &'static str {
-    if persona == "architect-reviewer" {
-        "codex-reviewer"
-    } else {
-        "architect-reviewer"
+    match persona {
+        "architect-reviewer" => "codex-reviewer",
+        "architect-reviewer-light" => "codex-reviewer-light",
+        "codex-reviewer-light" => "architect-reviewer-light",
+        _ => "architect-reviewer",
     }
 }
 

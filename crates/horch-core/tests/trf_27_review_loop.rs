@@ -476,3 +476,17 @@ fn trf_30_review_modes_reviewer_limits_and_the_cheaper_rounds() {
         "{round2:?}"
     );
 }
+
+#[test]
+fn trf_30_light_reviewer_falls_back_to_the_other_light_reviewer() {
+    for (persona, fallback) in [
+        ("architect-reviewer", "codex-reviewer"),
+        ("codex-reviewer", "architect-reviewer"),
+        ("architect-reviewer-light", "codex-reviewer-light"),
+        ("codex-reviewer-light", "architect-reviewer-light"),
+    ] {
+        assert_eq!(codesweep::other_reviewer(persona), fallback, "{persona}");
+    }
+    // An unknown persona keeps the default fallback.
+    assert_eq!(codesweep::other_reviewer("opus"), "architect-reviewer");
+}
