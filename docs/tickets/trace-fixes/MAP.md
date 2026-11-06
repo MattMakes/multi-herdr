@@ -39,12 +39,13 @@ Spec: [docs/specs/trace-fixes.md](../../specs/trace-fixes.md)
 | 33 | [Full gate on the run branch](33-final-gate.md) | primary `opus`, fallback `backend-developer` | yes | 11 | 30, 31, 32 |
 | 34 | [Remove the dataset leftovers that ticket 02 found](34-dataset-leftovers.md) | primary `opus`, fallback `backend-developer` | yes | 2 | 02 |
 | 35 | [A dev build cannot migrate the shared ledger, and a failing checkin does not flood the pane](35-ledger-guard-checkin-flood.md) | primary `opus-hardening`, fallback `opus` | yes | 2 |  |
+| 36 | [Remove the rusqlite re-export from the outbox (arc_25)](36-outbox-shim.md) | primary `opus`, fallback `backend-developer` | yes | 3 |  |
 
 ## Waves
 
 - Wave 1: 01, 02, 03, 04, 05, 06, 07, 08, 09
 - Wave 2: 10, 11, 12, 17, 34, 35
-- Wave 3: 13, 14, 18, 19
+- Wave 3: 13, 14, 18, 19, 36
 - Wave 4: 15, 16, 21
 - Wave 5: 20, 22
 - Wave 6: 23, 25, 26

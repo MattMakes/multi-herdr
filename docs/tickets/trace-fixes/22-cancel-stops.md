@@ -23,6 +23,8 @@ Fix G14 (D16).
 1. `cancel` and `run close --abandon` stop the task's worker by its recorded PIDs, through the same path as `ledger stop`.
 2. A cancel no longer writes a requeue first.
 
+Amendment (report 21): a parked task is not cancelled. In `crates/horch/src/cmd/taskledger.rs`, fix the doc comments of `wake_unlanded`. Rename `cancelled_dependents` in `crates/horch/src/cmd/taskledger_wake.rs` so the name covers cancel and park, and write a parked task's wake with `OutboxEvent::Held`, not `Cancelled`. `taskledger_wake.rs` is approved outside Own; rebase first if ticket 36 has landed.
+
 ## Done when
 
 TRF-36 passes with fake processes.
