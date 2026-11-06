@@ -51,6 +51,8 @@ Spec: [docs/specs/trace-fixes.md](../../specs/trace-fixes.md)
 | 45 | [An outbox drain never makes duplicate mail](45-idempotent-drain.md) | primary `opus-hardening`, fallback `opus` | yes | 9 | 31 |
 | 46 | [The watchdog reconciles every wake that a crash after commit can lose](46-wake-reconcilers.md) | primary `opus-hardening`, fallback `opus` | yes | 10 | 44, 45 |
 | 47 | [An auto-spawned reviewer claims the review it was spawned for](47-reviewer-claim-target.md) | primary `opus`, fallback `opus-hardening` | yes | 9 | 31 |
+| 48 | [Fix the 8 tests that fail on the run branch](48-run-branch-red-tests.md) | primary `opus`, fallback `backend-developer` | yes | 10 | 27 |
+| 49 | [No internal code path types a task into a pane](49-no-typed-task-internal.md) | primary `opus`, fallback `backend-developer` | yes | 10 | 27 |
 
 ## Waves
 
