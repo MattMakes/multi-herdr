@@ -371,7 +371,8 @@ pub fn cheaper_reviewer(persona: &str) -> &'static str {
 
 /// The (primary, fallback) persona of round `round`'s reviews, and why the
 /// usual reviewer was swapped, when it cannot run here. Rounds 2 and 3 go
-/// to the cheaper persona, with the full one as the fallback.
+/// to the cheaper persona, with the other vendor's cheaper persona as the
+/// fallback (TRF-30).
 fn reviewer_personas(cx: &Ctx<'_>, round: u32) -> (&'static str, &'static str, Option<String>) {
     let usual = reviewer_persona(cx.worker.harness.as_deref());
     let other = other_reviewer(usual);
@@ -391,7 +392,8 @@ fn reviewer_personas(cx: &Ctx<'_>, round: u32) -> (&'static str, &'static str, O
         _ => (usual, other, None),
     };
     if round > 1 {
-        (cheaper_reviewer(primary), primary, swapped)
+        let light = cheaper_reviewer(primary);
+        (light, other_reviewer(light), swapped)
     } else {
         (primary, fallback, swapped)
     }

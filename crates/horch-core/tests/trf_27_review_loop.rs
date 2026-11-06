@@ -450,7 +450,8 @@ fn trf_30_review_modes_reviewer_limits_and_the_cheaper_rounds() {
     assert_eq!(w.review_count(), 2);
 
     // full: at most 3 reviewers, though the triage picks more; round 2
-    // goes to the cheaper persona, with the full one as its fallback.
+    // goes to the cheaper persona, with the other vendor's light reviewer
+    // as its fallback.
     let mut w = World::new(Some(ReviewMode::Full));
     commit(
         &w.wt,
@@ -472,7 +473,7 @@ fn trf_30_review_modes_reviewer_limits_and_the_cheaper_rounds() {
     assert!(
         round2
             .iter()
-            .all(|(p, f, _)| p == "codex-reviewer-light" && f == "codex-reviewer"),
+            .all(|(p, f, _)| p == "codex-reviewer-light" && f == "architect-reviewer-light"),
         "{round2:?}"
     );
 }
