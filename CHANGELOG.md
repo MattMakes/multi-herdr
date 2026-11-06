@@ -4,6 +4,8 @@
 
 ## Unreleased
 
+## v0.4.6 - 2026-11-06
+
 - Fleet work now flows to an end with no silent stop. Pull is the only
   dispatch model: `horch assign` is gone, `horch spawn` refuses task text,
   and a one-off goes through `horch ledger task "<title>" --persona <p>`.
