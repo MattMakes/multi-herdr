@@ -302,11 +302,9 @@ pub fn reviews_in(ctx: &RuntimeContext, store: &Store, run: &Run, parent: &str, 
 }
 
 /// Tell the author `role` its line. Mail the courier still has to type is
-/// not a delivery: the orchestrator is told too.
+/// not a delivery: the orchestrator is told too. The tell is not a wake, so
+/// `HORCH_NO_WAKE` does not stop it (as before TRF-51).
 fn tell_author(ctx: &RuntimeContext, role: &str, line: &str) -> anyhow::Result<()> {
-    if disabled() {
-        anyhow::bail!("wakes are off (HORCH_NO_WAKE=1)");
-    }
     match super::messaging::tell_as(ctx, Some("horch".into()), role, line)? {
         ReportStatus::Delivered => Ok(()),
         ReportStatus::Queued(cause) => Err(anyhow::anyhow!(

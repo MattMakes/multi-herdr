@@ -938,10 +938,9 @@ fn a_failed_reviews_in_tell_wakes_the_orchestrator_once() {
             .iter()
             .filter(|e| {
                 e["kind"] == "woke"
-                    && e["text"]
-                        .as_str()
-                        .unwrap()
-                        .contains("The reviews of T-1 are in, but opus-1 was not told")
+                    && e["text"].as_str().unwrap().contains(
+                        "The reviews of T-1 are in. Make sure opus-1 runs horch ledger finish",
+                    )
             })
             .count()
     };
@@ -3233,7 +3232,13 @@ fn spawn_args<'a>(pane: &'a str, extra: &[&'a str]) -> Vec<&'a str> {
 #[test]
 fn spawn_run_names_the_run_the_worker_joins() {
     let h = fleet("tl-spawn-run", "default");
-    ok(&h, &["ledger", "run", "new", "a"]);
+    // A workspace holds 1 planned run (TRF-34): run a is of workspace w2.
+    let o = run_env(
+        &h,
+        &[("HORCH_WORKSPACE_ID", "w2")],
+        &["ledger", "run", "new", "a"],
+    );
+    assert!(o.status.success(), "{}", text(&o));
     ok(&h, &["ledger", "run", "new", "b"]);
     // Without --run, 2 active runs in no workspace of theirs: the spawn joins
     // no run (TRF-34), and its NOTE names the flag that joins one.
