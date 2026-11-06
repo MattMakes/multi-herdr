@@ -53,6 +53,7 @@ Spec: [docs/specs/trace-fixes.md](../../specs/trace-fixes.md)
 | 47 | [An auto-spawned reviewer claims the review it was spawned for](47-reviewer-claim-target.md) | primary `opus`, fallback `opus-hardening` | yes | 9 | 31 |
 | 48 | [Fix the 8 tests that fail on the run branch](48-run-branch-red-tests.md) | primary `opus`, fallback `backend-developer` | yes | 10 | 27 |
 | 49 | [No internal code path types a task into a pane](49-no-typed-task-internal.md) | primary `opus`, fallback `backend-developer` | yes | 10 | 27 |
+| 50 | [horch register cannot steal the orchestrator route, and a pending orchestrator does not show as stale](50-orchestrator-route-lock.md) | primary `opus-hardening`, fallback `opus` | yes | 11 | 44, 46 |
 
 ## Waves
 
