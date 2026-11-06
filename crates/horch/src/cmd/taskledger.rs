@@ -63,10 +63,18 @@ pub enum LedgerCommand {
     /// Queue 1 task from a ticket file.
     Add(AddArgs),
     /// Queue every ticket of a ticket map (MAP.md) in 1 transaction.
+    /// `--dry-run` checks the map and every ticket against the ticket
+    /// format (C1) and writes nothing.
     AddMap {
         map: PathBuf,
         #[command(flatten)]
         run: RunArg,
+        /// Check the map and its tickets; queue nothing. Exit 1 on a problem.
+        #[arg(long)]
+        dry_run: bool,
+        /// Queue a ticket again that is already a task in the run.
+        #[arg(long)]
+        again: bool,
     },
     /// Per persona: how many workers to spawn now.
     PlanWorkers {
@@ -570,6 +578,16 @@ pub fn run(ctx: &RuntimeContext, command: LedgerCommand) -> Result<ExitCode> {
         output::println(&ctx.paths.ledger_db.display().to_string());
         return Ok(ExitCode::SUCCESS);
     }
+    // A dry run reads only files: it opens no ledger, so it creates and
+    // migrates nothing (TRF-11).
+    if let LedgerCommand::AddMap {
+        map: path,
+        dry_run: true,
+        ..
+    } = &command
+    {
+        return add_map_dry_run(ctx, path);
+    }
     let store = taskledger::open(ctx)?;
     // One entry per `Group`, in its order.
     let dispatch: [GroupCmd; 4] = [board_cmd, control_cmd, worker_side_cmd, admin_cmd];
@@ -595,8 +613,18 @@ fn board_cmd(ctx: &RuntimeContext, mut store: Store, command: LedgerCommand) -> 
     if let LedgerCommand::Add(args) = command {
         return add(ctx, &mut store, args);
     }
-    if let LedgerCommand::AddMap { map: path, run } = command {
-        return add_map(ctx, &mut store, &path, &run);
+    if let LedgerCommand::AddMap {
+        map: path,
+        run,
+        dry_run,
+        again,
+    } = command
+    {
+        debug_assert!(
+            !dry_run,
+            "run() answers a dry run before it opens the ledger"
+        );
+        return add_map(ctx, &mut store, &path, &run, again);
     }
     if let LedgerCommand::PlanWorkers { run, json: as_json } = command {
         return plan_workers_cmd(ctx, &store, &run, as_json);
@@ -1886,6 +1914,7 @@ fn facts_of(root: &Path, file: &str) -> map::TicketFacts {
 
 /// The task `add` queues: what a flag names, else what the ticket says.
 fn new_task(root: &Path, file: String, facts: map::TicketFacts, a: AddArgs) -> NewTask {
+    let review_mode = facts.review_mode();
     NewTask {
         title: a.title.unwrap_or_else(|| ticket_title(&root.join(&file))),
         task_file: file,
@@ -1902,6 +1931,7 @@ fn new_task(root: &Path, file: String, facts: map::TicketFacts, a: AddArgs) -> N
         } else {
             WorktreeMode::Worktree
         },
+        check_none: a.check.is_none() && facts.check_none,
         land_check: a.check.or(facts.check),
         kind: TaskKind::Work,
         parent_task_id: None,
@@ -1912,6 +1942,9 @@ fn new_task(root: &Path, file: String, facts: map::TicketFacts, a: AddArgs) -> N
         } else {
             a.no_touch
         },
+        work_kind: facts.kind,
+        review_mode,
+        ticket_snapshot: None,
     }
 }
 
@@ -1940,13 +1973,49 @@ fn add(ctx: &RuntimeContext, store: &mut Store, a: AddArgs) -> Result<ExitCode> 
     Ok(ExitCode::SUCCESS)
 }
 
-fn add_map(ctx: &RuntimeContext, store: &mut Store, path: &Path, arg: &RunArg) -> Result<ExitCode> {
+/// `add-map --dry-run`: every problem as `<file>:<line>: <problem>`. It
+/// needs no run and writes nothing.
+fn add_map_dry_run(ctx: &RuntimeContext, path: &Path) -> Result<ExitCode> {
+    let root = project_root(ctx)?;
+    let path = cwd_or_root(ctx, &root).join(path);
+    let (parsed, problems) = map::check(&path, &root)?;
+    for p in &problems {
+        output::println(&p.to_string());
+    }
+    if !problems.is_empty() {
+        output::println(&format!(
+            "{} problems in {}. Nothing was queued.",
+            problems.len(),
+            path.display()
+        ));
+        return Ok(ExitCode::from(1));
+    }
+    output::println(&format!(
+        "{} tickets in {} follow the ticket format. Nothing was queued.",
+        parsed.items.len(),
+        path.display()
+    ));
+    Ok(ExitCode::SUCCESS)
+}
+
+fn add_map(
+    ctx: &RuntimeContext,
+    store: &mut Store,
+    path: &Path,
+    arg: &RunArg,
+    again: bool,
+) -> Result<ExitCode> {
     let root = project_root(ctx)?;
     let path = cwd_or_root(ctx, &root).join(path);
     let parsed = map::read(&path, &root)?;
     let run = resolve_run(ctx, store, arg)?;
     let items: Vec<(String, NewTask)> = parsed.items.into_iter().map(|i| (i.key, i.task)).collect();
-    let added = store.immediate(|tx| tasks::add_many(tx, &run, &items, Actor::Orchestrator))?;
+    let added = store.immediate(|tx| {
+        if !again {
+            tasks::refuse_queued(tx, &run.run_id, &items)?;
+        }
+        tasks::add_many(tx, &run, &items, Actor::Orchestrator)
+    })?;
     for t in &added {
         output::println(&format!(
             "{} queued for {}: {}.",
@@ -2405,12 +2474,12 @@ pub fn is_ledger_worker(ctx: &RuntimeContext) -> bool {
 pub fn render_claim(c: &Claimed) -> String {
     let t = &c.task;
     let mut out = format!(
-        "Claimed {} (attempt {}): {}\nTicket: {}. Read it in full and follow it exactly.\n",
+        "Claimed {} (attempt {}): {}\n",
         t.short(),
         c.attempt,
-        t.title,
-        t.task_file.as_deref().unwrap_or("-")
+        t.title
     );
+    render_ticket(c, &mut out);
     if let Some(p) = &t.phase {
         out.push_str(&format!("Phase: {p}.\n"));
     }
@@ -2434,6 +2503,27 @@ pub fn render_claim(c: &Claimed) -> String {
     out.push_str("Record milestones with: horch ledger progress \"<text>\"\n");
     out.push_str("When the work is complete, run: horch ledger finish\n");
     out
+}
+
+/// The ticket: its snapshot from `add-map` first, then its path (TRF-12). A
+/// task with no snapshot names only the path.
+fn render_ticket(c: &Claimed, out: &mut String) {
+    let file = c.task.task_file.as_deref().unwrap_or("-");
+    let Some(snapshot) = &c.ticket_snapshot else {
+        out.push_str(&format!(
+            "Ticket: {file}. Read it in full and follow it exactly.\n"
+        ));
+        return;
+    };
+    let sha = c.task.ticket_sha.as_deref().unwrap_or("");
+    out.push_str(&format!(
+        "Ticket snapshot (sha256 {}), as add-map queued it:\n-----\n{}\n-----\n",
+        &sha[..sha.len().min(12)],
+        snapshot.trim_end()
+    ));
+    out.push_str(&format!(
+        "Ticket: {file}. The snapshot above is the ticket. Follow it exactly. The file can differ from it.\n"
+    ));
 }
 
 /// Where the worker works: an earlier attempt's worktree, a new one, or the

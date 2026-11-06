@@ -8,8 +8,8 @@ use rusqlite::{params, Connection, Row};
 use serde::Serialize;
 
 use super::model::{
-    Actor, EventKind, FileMode, FindingStatus, Origin, StepName, TaskKind, TaskStatus, WorkerKind,
-    WorkerStatus, WorktreeMode, WorktreeStatus,
+    Actor, EventKind, FileMode, FindingStatus, Origin, ReviewMode, StepName, TaskKind, TaskStatus,
+    WorkKind, WorkerKind, WorkerStatus, WorktreeMode, WorktreeStatus,
 };
 use super::runs::Run;
 use super::sql_words::{self, word};
@@ -55,6 +55,18 @@ pub struct Task {
     pub created_at: String,
     pub updated_at: String,
     pub finished_at: Option<String>,
+    /// The ticket's `**Kind:**` (C1).
+    pub work_kind: Option<String>,
+    /// The ticket's `**Review:**`, or the default of its `Kind` (C1).
+    pub review_mode: Option<String>,
+    /// The ticket text as `add-map` queued it. A claim prints it; status
+    /// JSON leaves it out.
+    #[serde(skip_serializing)]
+    pub ticket_snapshot: Option<String>,
+    /// The sha256 of `ticket_snapshot`, in hex.
+    pub ticket_sha: Option<String>,
+    /// The ticket says `**Check:** none`: it has no check on purpose.
+    pub check_none: bool,
 }
 
 impl Task {
@@ -106,6 +118,11 @@ impl Task {
             created_at: r.get("created_at")?,
             updated_at: r.get("updated_at")?,
             finished_at: r.get("finished_at")?,
+            work_kind: r.get("work_kind")?,
+            review_mode: r.get("review_mode")?,
+            ticket_snapshot: r.get("ticket_snapshot")?,
+            ticket_sha: r.get("ticket_sha")?,
+            check_none: r.get::<_, i64>("check_none")? != 0,
         })
     }
 }
@@ -131,6 +148,14 @@ pub struct NewTask {
     pub blocked_by: Vec<String>,
     pub own: Vec<String>,
     pub no_touch: Vec<String>,
+    /// The ticket's `**Kind:**` (C1).
+    pub work_kind: Option<WorkKind>,
+    /// The ticket's review mode: explicit, else the default of its `Kind`.
+    pub review_mode: Option<ReviewMode>,
+    /// The ticket text at queue time; its sha256 is stored with it.
+    pub ticket_snapshot: Option<String>,
+    /// `**Check:** none`: no check on purpose.
+    pub check_none: bool,
 }
 
 impl NewTask {
@@ -154,8 +179,56 @@ impl NewTask {
             blocked_by: Vec::new(),
             own: Vec::new(),
             no_touch: Vec::new(),
+            work_kind: None,
+            review_mode: None,
+            ticket_snapshot: None,
+            check_none: false,
         }
     }
+}
+
+/// The sha256 of `text`, in lowercase hex.
+pub fn ticket_sha(text: &str) -> String {
+    use sha2::{Digest, Sha256};
+    Sha256::digest(text.as_bytes())
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
+}
+
+/// The tasks of `run_id` that already queue one of `files` and are not
+/// cancelled. `add-map` refuses these unless it is told `--again` (TRF-13).
+pub fn already_queued(conn: &Connection, run_id: &str, files: &[&str]) -> Result<Vec<Task>> {
+    Ok(of_run(conn, run_id)?
+        .into_iter()
+        .filter(|t| t.status != TaskStatus::Cancelled.as_str())
+        .filter(|t| t.task_file.as_deref().is_some_and(|f| files.contains(&f)))
+        .collect())
+}
+
+/// Refuse `items` when one of their tickets is already a task in `run_id`
+/// that is not cancelled. The error names each such task and `--again`.
+pub fn refuse_queued(conn: &Connection, run_id: &str, items: &[(String, NewTask)]) -> Result<()> {
+    let files: Vec<&str> = items.iter().map(|(_, t)| t.task_file.as_str()).collect();
+    let queued = already_queued(conn, run_id, &files)?;
+    if queued.is_empty() {
+        return Ok(());
+    }
+    let lines: Vec<String> = queued
+        .iter()
+        .map(|t| {
+            format!(
+                "{} is already {} ({}) in this run.",
+                t.task_file.as_deref().unwrap_or("-"),
+                t.short(),
+                t.status
+            )
+        })
+        .collect();
+    bail!(
+        "{}\nNothing was queued. To queue these tickets again, add --again.",
+        lines.join("\n")
+    )
 }
 
 /// 1 task by id.
@@ -438,9 +511,10 @@ fn insert(conn: &Connection, run: &Run, new: &NewTask) -> Result<String> {
     conn.execute(
         "INSERT INTO tasks (task_id, run_id, seq, title, task_file, issue_url, spec_ref,
             primary_persona, fallback_persona, claimable_by, phase, parallel, priority, wave,
-            worktree_mode, land_check, kind, parent_task_id, status, origin, created_at, updated_at)
+            worktree_mode, land_check, kind, parent_task_id, status, origin, created_at, updated_at,
+            work_kind, review_mode, ticket_snapshot, ticket_sha, check_none)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?8, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17,
-            ?18, ?19, ?20, ?20)",
+            ?18, ?19, ?20, ?20, ?21, ?22, ?23, ?24, ?25)",
         params![
             id,
             run.run_id,
@@ -462,6 +536,11 @@ fn insert(conn: &Connection, run: &Run, new: &NewTask) -> Result<String> {
             TaskStatus::Queued.as_str(),
             Origin::Native.as_str(),
             now,
+            new.work_kind.map(WorkKind::as_str),
+            new.review_mode.map(ReviewMode::as_str),
+            new.ticket_snapshot,
+            new.ticket_snapshot.as_deref().map(ticket_sha),
+            new.check_none as i64,
         ],
     )?;
     for (paths, mode) in [
@@ -479,7 +558,7 @@ fn insert(conn: &Connection, run: &Run, new: &NewTask) -> Result<String> {
 }
 
 /// A cycle in `edges` (node -> the nodes it waits for), if any.
-fn find_cycle(edges: &[Vec<usize>]) -> Option<Vec<usize>> {
+pub fn find_cycle(edges: &[Vec<usize>]) -> Option<Vec<usize>> {
     #[derive(Clone, Copy, PartialEq)]
     enum Mark {
         New,
@@ -780,6 +859,8 @@ pub struct Claimed {
     pub landed_commit: Option<String>,
     /// The finish steps after `land`: what a landed worktree has left.
     pub steps_after_land: Vec<String>,
+    /// The ticket text as `add-map` queued it (TRF-12).
+    pub ticket_snapshot: Option<String>,
 }
 
 /// The result of `horch ledger claim`.
@@ -1010,6 +1091,7 @@ fn claimed(conn: &Connection, w: &Worker, task: Task) -> Result<Claimed> {
         landed_commit: wt.as_ref().and_then(|(_, _, l)| l.clone()),
         steps_after_land,
         worktree_branch: wt.map(|(_, b, _)| b),
+        ticket_snapshot: task.ticket_snapshot.clone(),
         task,
     })
 }
@@ -1315,4 +1397,121 @@ pub fn all_finished(conn: &Connection, run_id: &str) -> Result<bool> {
         |r| r.get(0),
     )?;
     Ok(total > 0 && open == 0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::taskledger::runs::{self, NewRun};
+    use crate::taskledger::workers::NewWorker;
+    use crate::taskledger::Store;
+
+    /// A store in `dir` with the run "r1".
+    fn store_with_run(dir: &std::path::Path) -> (Store, Run) {
+        let mut store = Store::open(&dir.join("ledger.sqlite3")).unwrap();
+        let new_run = NewRun {
+            slug: "r1".into(),
+            ..Default::default()
+        };
+        let run = store
+            .immediate(|tx| runs::create(tx, dir, &new_run))
+            .unwrap();
+        (store, run)
+    }
+
+    const TEXT: &str = "# 01: A\n\n<!-- horch-ticket: 1 -->\n**Persona:** primary `dev`\n";
+
+    #[test]
+    fn trf_12_add_stores_the_snapshot_and_its_sha_and_a_claim_gives_it_back() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut store, run) = store_with_run(dir.path());
+        let mut new = NewTask::work("A", "tickets/a.md", "dev");
+        new.ticket_snapshot = Some(TEXT.to_string());
+        let t = store
+            .immediate(|tx| add(tx, &run, &new, Actor::Orchestrator))
+            .unwrap();
+        assert_eq!(t.ticket_snapshot.as_deref(), Some(TEXT));
+        assert_eq!(t.ticket_sha, Some(ticket_sha(TEXT)));
+        assert_eq!(
+            ticket_sha("abc"),
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        );
+        // The ticket file never existed: the claim needs only the ledger.
+        let worker = NewWorker {
+            run_id: run.run_id.clone(),
+            persona: "dev".into(),
+            ..Default::default()
+        };
+        let wid = store.immediate(|tx| workers::insert(tx, &worker)).unwrap();
+        let ClaimOutcome::Claimed(c) = store.immediate(|tx| claim(tx, &wid)).unwrap() else {
+            panic!("the worker claims the task");
+        };
+        assert_eq!(c.ticket_snapshot.as_deref(), Some(TEXT));
+        // Status JSON leaves the snapshot out; the claim JSON has it.
+        let task_json = serde_json::to_value(&c.task).unwrap();
+        assert!(task_json.get("ticket_snapshot").is_none(), "{task_json}");
+        assert_eq!(serde_json::to_value(&*c).unwrap()["ticket_snapshot"], TEXT);
+    }
+
+    #[test]
+    fn trf_12_a_task_without_a_snapshot_stores_none() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut store, run) = store_with_run(dir.path());
+        let new = NewTask::work("A", "tickets/a.md", "dev");
+        let t = store
+            .immediate(|tx| add(tx, &run, &new, Actor::Orchestrator))
+            .unwrap();
+        assert_eq!((t.ticket_snapshot, t.ticket_sha), (None, None));
+    }
+
+    #[test]
+    fn trf_13_a_ticket_already_queued_is_refused_and_a_cancelled_one_is_not() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut store, run) = store_with_run(dir.path());
+        let items = vec![
+            ("1".to_string(), NewTask::work("A", "tickets/a.md", "dev")),
+            ("2".to_string(), NewTask::work("B", "tickets/b.md", "dev")),
+        ];
+        store
+            .immediate(|tx| refuse_queued(tx, &run.run_id, &items))
+            .unwrap();
+        let added = store
+            .immediate(|tx| add_many(tx, &run, &items, Actor::Orchestrator))
+            .unwrap();
+        let e = store
+            .immediate(|tx| refuse_queued(tx, &run.run_id, &items))
+            .unwrap_err()
+            .to_string();
+        assert_eq!(
+            e,
+            "tickets/a.md is already T-1 (queued) in this run.\n\
+             tickets/b.md is already T-2 (queued) in this run.\n\
+             Nothing was queued. To queue these tickets again, add --again."
+        );
+        store.immediate(|tx| cancel(tx, &added[0], "test")).unwrap();
+        let queued = store
+            .immediate(|tx| already_queued(tx, &run.run_id, &["tickets/a.md", "tickets/b.md"]))
+            .unwrap();
+        assert_eq!(
+            queued.iter().map(Task::short).collect::<Vec<_>>(),
+            vec!["T-2"]
+        );
+    }
+
+    #[test]
+    fn trf_14_add_stores_kind_review_and_check_none() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut store, run) = store_with_run(dir.path());
+        let mut new = NewTask::work("A", "tickets/a.md", "dev");
+        new.work_kind = Some(WorkKind::Refactor);
+        new.review_mode = Some(ReviewMode::Full);
+        new.check_none = true;
+        let t = store
+            .immediate(|tx| add(tx, &run, &new, Actor::Orchestrator))
+            .unwrap();
+        assert_eq!(t.work_kind.as_deref(), Some("refactor"));
+        assert_eq!(t.review_mode.as_deref(), Some("full"));
+        assert!(t.check_none);
+        assert_eq!(t.land_check, None);
+    }
 }
