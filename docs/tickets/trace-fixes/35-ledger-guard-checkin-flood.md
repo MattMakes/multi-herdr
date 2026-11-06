@@ -73,6 +73,8 @@ Warning: never run a branch-built horch against the shared ledger. Set
 
 Out of scope: briefing text (ticket 30 adds the worker rule). The add-map dry-run fix (ticket 10).
 
+Amendment (report 11), do this first: `crates/horch/tests/taskledger_queue.rs` test `a_schema_2_ledger_migrates_forward_and_keeps_its_rows` fails with `duplicate column name: work_kind` in `v7()`. Find which earlier step already creates the column (for example a table rebuild from current DDL) and make the migration chain correct from every old version. Add `trf_48_every_old_version_migrates_to_current` that migrates a ledger from each version 1..VERSION-1. That test file is approved outside Own.
+
 ## Done when
 
 The check passes, and report 35 shows the exact refusal text and the exact flood lines.

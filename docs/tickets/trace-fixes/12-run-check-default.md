@@ -28,6 +28,8 @@ Stop work landing untested (G3) and give shared tasks real review input (G5) (D5
 
 Amendment (report 07): complexity-sweep now covers Rust. In `finish/mod.rs`, update the `Tools::complexity_cli` doc and the not-applicable note so they name the Rust clippy path. Add 1 `step()` test with a Rust fixture crate to `crates/horch-core/tests/w3_finish_steps.rs` (approved outside Own). Test name starts with `trf_07_`.
 
+Amendment (report 10): run `cargo fmt -p horch-core -- crates/horch-core/tests/trf_02_ticket_template.rs` and commit that file (approved outside Own).
+
 ## Done when
 
 The 3 tests pass.

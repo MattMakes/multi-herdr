@@ -36,6 +36,8 @@ Amendment (report 05, incident of 2026-11-06):
 - Describe the `[<role> #<id>]` mail tag in the INSTRUCTIONS text of `crates/horch-core/src/messaging/channel.rs` and in `teammates/_base/fleet-orchestrator.md`.
 - Add 1 rule to the worker base briefing: never run a horch built from a worktree (`cargo run`, `target/*/horch`) without `HORCH_LEDGER_DB` set to a scratch file. Ticket 35 adds the code guard; the rule explains it.
 
+Amendment (report 10): `horch ledger claim` now prints the ticket snapshot, then the path. Change the briefing line that tells a worker to read the ticket file in full: the snapshot is the ticket; read the file only for context.
+
 ## Done when
 
 TRF-46 and the golden tests pass.

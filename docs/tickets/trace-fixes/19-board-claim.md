@@ -25,6 +25,8 @@ Fix D1 and D2 (D16).
 2. A claim that finds no task ends the worker (`no_task` with `ended_at`) and writes a `no-task` outbox row. If closing the pane needs a file outside Own, send QUESTION.
 3. Gap G-A (report 01, item 3): in an active run, `horch spawn <persona>` with no task refuses when the live and starting workers of that persona already cover its `plan-workers` demand. The message names `horch ledger plan-workers`. Approved outside Own: `crates/horch/src/cmd/spawn.rs`, only for this guard. If T-2 has not landed, rebase on the run branch before land. Test name starts with `trf_31_`.
 
+Amendment (report 11): `tasks::all_finished` in `crates/horch-core/src/taskledger/tasks.rs` has no caller in src. Delete it and its own tests.
+
 ## Done when
 
 Both tests pass.

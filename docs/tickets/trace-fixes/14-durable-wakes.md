@@ -24,6 +24,8 @@ Make every wake durable (C3, D7).
 2. A drain function moves undelivered rows into durable mail (ticket 05's format) and sets `delivered_at`. Call it after each ledger command and from the courier.
 3. Replace every direct wake send with an outbox write. A failed send leaves the row for the next drain.
 
+Amendment (report 11): the "run settled" wake from `settled_note` in `crates/horch/src/cmd/taskledger_wake.rs` must be 1 outbox row per settle, keyed so a repeat of the same settled state writes no new row.
+
 ## Done when
 
 TRF-21 passes, including a test where the first send fails.
