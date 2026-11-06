@@ -149,8 +149,13 @@ pub enum Claimed {
     /// The workspace or the stop changed: the text of the 1 `note` event.
     Changed(String),
     /// The run's orchestrator still runs in the run's workspace: the run
-    /// stays there. The text says why.
-    Skipped(String),
+    /// stays there. `text` says why. `workspace` and `pid` name the run's
+    /// workspace and the lock holder's PID that the claim read.
+    Skipped {
+        text: String,
+        workspace: String,
+        pid: u32,
+    },
 }
 
 /// An orchestrator took the pane-launch lock of `workspace` in `pane` for
@@ -173,10 +178,14 @@ pub fn claim(
     let old_ws = run.workspace_id.as_deref().filter(|w| *w != workspace);
     if let Some(old) = old_ws {
         if let Some(h) = probe.holder(old) {
-            return Ok(Claimed::Skipped(format!(
-                "Run {} stays in workspace {old}: its orchestrator runs there (PID {}).",
-                run.slug, h.pid
-            )));
+            return Ok(Claimed::Skipped {
+                text: format!(
+                    "Run {} stays in workspace {old}: its orchestrator runs there (PID {}).",
+                    run.slug, h.pid
+                ),
+                workspace: old.to_string(),
+                pid: h.pid,
+            });
         }
         refuse_a_taken_workspace(tx, &run, workspace)?;
     }
@@ -1258,9 +1267,11 @@ mod tests {
         // A run whose orchestrator lives in its workspace does not move.
         assert_eq!(
             claim_in(&mut store, &run_id, "w3", &live).unwrap(),
-            Claimed::Skipped(
-                "Run r1 stays in workspace w2: its orchestrator runs there (PID 31).".into()
-            )
+            Claimed::Skipped {
+                text: "Run r1 stays in workspace w2: its orchestrator runs there (PID 31).".into(),
+                workspace: "w2".into(),
+                pid: 31,
+            }
         );
         let run = runs::get(store.conn(), &run_id).unwrap();
         assert_eq!(run.workspace_id.as_deref(), Some("w2"));

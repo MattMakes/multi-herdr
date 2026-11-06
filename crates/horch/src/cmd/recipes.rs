@@ -1045,65 +1045,54 @@ pub fn pane_launch(
     identity: PaneIdentity,
 ) -> Result<ExitCode> {
     require_model(kind, model)?;
-    // The lock is held until the agent exits, then released on drop.
-    let (mailbox, pane, _orchestrator_lock) = register_pane(ctx, role, &identity, kind.is_fleet())?;
+    // The lock is held until the agent exits, then released on drop. A fleet
+    // pane claims its run first: a refused claim starts no agent (TRF-38).
+    let (mailbox, _pane, _orchestrator_lock) = if kind.is_fleet() {
+        let root = ctx.paths.current_dir()?;
+        let respawn = respawn_from_env().map(|(slug, _)| slug);
+        register_fleet_pane(ctx, role, &identity, &root, respawn.as_deref())?
+    } else {
+        register_pane(ctx, role, &identity, false)?
+    };
     let child_env = child_env(ctx, &mailbox, &identity, teammates_dir);
     let ctx: &RuntimeContext = ctx;
-    // The agent starts only after the run claim passes (TRF-38).
-    let launch = || -> Result<ExitCode> {
-        let roster = launch_roster(ctx, kind, teammates_dir)?;
-        let teammate = launch_teammate(&roster, kind, model)?;
-        if kind.is_fleet() {
-            let model = model.or(teammate.model.as_deref());
-            if let Err(e) =
-                record_orchestrator_harness(ctx, mailbox.workspace_id(), &teammate, model)
-            {
-                eprintln!("horch: the task ledger did not record the orchestrator harness: {e:#}");
-            }
+    let roster = launch_roster(ctx, kind, teammates_dir)?;
+    let teammate = launch_teammate(&roster, kind, model)?;
+    if kind.is_fleet() {
+        let model = model.or(teammate.model.as_deref());
+        if let Err(e) = record_orchestrator_harness(ctx, mailbox.workspace_id(), &teammate, model) {
+            eprintln!("horch: the task ledger did not record the orchestrator harness: {e:#}");
         }
-        let prompt = briefing_for(kind, &roster, &teammate, role)?;
-        let exec_rules = exec_rules_for(kind, &roster);
-        let (session, workdir) = session_for(&identity, ctx)?;
-        // A fleet orchestrator always gets its briefing as `/orchestrator`. A
-        // resumed one already has it in context, so it is not sent again.
-        let first_message = if identity.resume { "" } else { prompt.as_str() };
-        launch::run_flow(
-            ctx,
-            LaunchRequest {
-                role,
-                teammate: &teammate,
-                session: &session,
-                prompt: first_message,
-                model_override: model,
-                exec_rules,
-                child_env,
-                record: identity.record_id.as_deref().zip(workdir.as_deref()).map(
-                    |(record_id, workdir)| DiscoveryTarget {
-                        mailbox: &mailbox,
-                        record_id,
-                        workdir,
-                    },
-                ),
-                fleet_window: roster.fleet_window(
-                    &teammate,
-                    model.or(teammate.model.as_deref()).unwrap_or_default(),
-                ),
-                briefing_skill: kind.is_fleet().then_some(prompt.as_str()),
-            },
-        )
-    };
-    if !kind.is_fleet() {
-        return launch();
     }
-    let root = ctx.paths.current_dir()?;
-    let respawn = respawn_from_env().map(|(slug, _)| slug);
-    claim_then_launch(
+    let prompt = briefing_for(kind, &roster, &teammate, role)?;
+    let exec_rules = exec_rules_for(kind, &roster);
+    let (session, workdir) = session_for(&identity, ctx)?;
+    // A fleet orchestrator always gets its briefing as `/orchestrator`. A
+    // resumed one already has it in context, so it is not sent again.
+    let first_message = if identity.resume { "" } else { prompt.as_str() };
+    launch::run_flow(
         ctx,
-        &root,
-        mailbox.workspace_id(),
-        &pane,
-        respawn.as_deref(),
-        launch,
+        LaunchRequest {
+            role,
+            teammate: &teammate,
+            session: &session,
+            prompt: first_message,
+            model_override: model,
+            exec_rules,
+            child_env,
+            record: identity.record_id.as_deref().zip(workdir.as_deref()).map(
+                |(record_id, workdir)| DiscoveryTarget {
+                    mailbox: &mailbox,
+                    record_id,
+                    workdir,
+                },
+            ),
+            fleet_window: roster.fleet_window(
+                &teammate,
+                model.or(teammate.model.as_deref()).unwrap_or_default(),
+            ),
+            briefing_skill: kind.is_fleet().then_some(prompt.as_str()),
+        },
     )
 }
 
@@ -1119,6 +1108,35 @@ pub(super) fn register_pane(
     identity: &PaneIdentity,
     fleet: bool,
 ) -> Result<(Mailbox, String, Option<horch_core::fsx::DirLockGuard>)> {
+    register_pane_then(ctx, role, identity, fleet, |_, _, _| Ok(()))
+}
+
+/// [`register_pane`] for a fleet orchestrator of project `root`: under the
+/// workspace orchestrator lock, it claims its run ([`claim_launch_run`])
+/// before it registers its role. A refused claim writes no route and
+/// releases the lock (TRF-38).
+fn register_fleet_pane(
+    ctx: &mut RuntimeContext,
+    role: &str,
+    identity: &PaneIdentity,
+    root: &Path,
+    respawn: Option<&str>,
+) -> Result<(Mailbox, String, Option<horch_core::fsx::DirLockGuard>)> {
+    register_pane_then(ctx, role, identity, true, |ctx, workspace, pane| {
+        claim_launch_run(ctx, root, workspace, pane, respawn)
+    })
+}
+
+/// [`register_pane`] that runs `before_route` with the workspace and the
+/// pane after it takes the lock and before it writes the route. A failed
+/// `before_route` writes no route.
+fn register_pane_then(
+    ctx: &mut RuntimeContext,
+    role: &str,
+    identity: &PaneIdentity,
+    fleet: bool,
+    before_route: impl FnOnce(&RuntimeContext, &str, &str) -> Result<()>,
+) -> Result<(Mailbox, String, Option<horch_core::fsx::DirLockGuard>)> {
     let herdr = Herdr::with_bin(&ctx.bins.harness.herdr);
     if let Some(dir) = &identity.state_dir {
         ctx.paths.set_state_dir(dir);
@@ -1127,23 +1145,9 @@ pub(super) fn register_pane(
     let lock = fleet
         .then(|| hold_orchestrator_lock(ctx, mailbox.workspace_id()))
         .transpose()?;
+    before_route(ctx, mailbox.workspace_id(), &pane)?;
     mailbox.register_role(role, &pane)?;
     Ok((mailbox, pane, lock))
-}
-
-/// A fleet orchestrator claims its run ([`claim_launch_run`]), then runs
-/// `launch`. A claim that fails runs no `launch`: no 2nd orchestrator acts on
-/// the run (TRF-38).
-fn claim_then_launch(
-    ctx: &RuntimeContext,
-    root: &Path,
-    workspace: &str,
-    pane: &str,
-    respawn: Option<&str>,
-    launch: impl FnOnce() -> Result<ExitCode>,
-) -> Result<ExitCode> {
-    claim_launch_run(ctx, root, workspace, pane, respawn)?;
-    launch()
 }
 
 /// A fleet orchestrator that holds the lock of `workspace` claims the run it
@@ -1174,11 +1178,12 @@ fn claim_launch_run(
         .immediate(|tx| orchestrator::claim(tx, &run.run_id, workspace, Some(pane), &probe))?;
     match claimed {
         orchestrator::Claimed::Changed(text) => println!("{text}"),
-        orchestrator::Claimed::Skipped(text) => {
+        orchestrator::Claimed::Skipped {
+            text,
+            workspace: held,
+            pid,
+        } => {
             println!("{text}");
-            let held = run.workspace_id.as_deref().unwrap_or("(none)");
-            let pid = orchestrator::Probe::holder(&probe, held)
-                .map_or_else(|| "(gone)".to_string(), |h| h.pid.to_string());
             anyhow::bail!(
                 "the launch starts no orchestrator: run {} is held in workspace {held} by PID {pid}",
                 run.slug
@@ -2150,13 +2155,39 @@ mod tests {
         );
     }
 
-    /// Review 32 I-01: the active run's orchestrator lives in workspace w1.
-    /// A launch in w2 gets `Skipped`: it starts no agent, fails with 1 line
-    /// that names w1 and the PID, and w1's route and run row do not change.
+    /// Review 32 I-01 and report 54 F1: the active run's orchestrator lives
+    /// in workspace w1. A fleet launch in pane p2 of w2 gets `Skipped`: it
+    /// fails with 1 line that names w1 and the PID before it writes a route.
+    /// w2 has no `orchestrator` route and no lock holder, and w1's route and
+    /// the run row do not change.
     #[test]
-    fn trf_38_a_skipped_claim_starts_no_agent() {
+    fn trf_38_a_refused_launch_writes_no_route() {
         let dir = tempfile::tempdir().unwrap();
-        let ctx = ledger_ctx(dir.path());
+        let bin = dir.path().join("herdr");
+        let warm = crate::test_support::write_warmed(
+            &bin,
+            "#!/bin/sh\n\
+             case \"$*\" in\n\
+             'pane get p2') echo '{\"result\":{\"pane\":{\"pane_id\":\"p2\",\"workspace_id\":\"w2\"}}}' ;;\n\
+             warm*) ;;\n\
+             *) exit 1 ;;\n\
+             esac\n",
+            &["warm"],
+        );
+        assert!(warm.status.success());
+        let db = dir.path().join("ledger.sqlite3");
+        let mut ctx = RuntimeContext::from_env(
+            &horch_core::runtime::MapEnv::new("/")
+                .with_exe("/opt/horch/bin/horch")
+                .with(
+                    "HORCH_STATE_DIR",
+                    dir.path().join("state").to_str().unwrap(),
+                )
+                .with("HORCH_LEDGER_DB", db.to_str().unwrap())
+                .with("HORCH_HERDR_BIN", bin.to_str().unwrap())
+                .with("HERDR_PANE_ID", "p2"),
+        )
+        .unwrap();
         let root = dir.path().join("repo");
         std::fs::create_dir_all(&root).unwrap();
         let mut store = horch_core::taskledger::open(&ctx).unwrap();
@@ -2174,30 +2205,35 @@ mod tests {
             })
             .unwrap();
         // Launch A holds the w1 lock and the orchestrator route.
-        let lock_dir = orchestrator::lock_dir(&ctx.paths.ledger_db);
+        let lock_dir = orchestrator::lock_dir(&db);
         std::fs::create_dir_all(&lock_dir).unwrap();
         let _a = orchestrator::lock(&lock_dir, "w1").unwrap().unwrap();
-        let mailbox = Mailbox::under(&ctx.paths.state_root, "w1");
-        std::fs::create_dir_all(mailbox.dir()).unwrap();
-        mailbox.register_role("orchestrator", "p1").unwrap();
+        let w1 = Mailbox::under(&ctx.paths.state_root, "w1");
+        std::fs::create_dir_all(w1.dir()).unwrap();
+        w1.register_role("orchestrator", "p1").unwrap();
         let before = horch_core::taskledger::runs::get(store.conn(), &run.run_id).unwrap();
 
-        let mut launched = false;
-        let err = claim_then_launch(&ctx, &root, "w2", "p2", None, || {
-            launched = true;
-            Ok(ExitCode::SUCCESS)
-        })
-        .unwrap_err()
-        .to_string();
-        assert!(!launched, "the launch callback never runs");
+        let Err(err) = register_fleet_pane(
+            &mut ctx,
+            "orchestrator",
+            &PaneIdentity::default(),
+            &root,
+            None,
+        ) else {
+            panic!("a skipped claim refuses the launch");
+        };
         assert_eq!(
-            err,
+            err.to_string(),
             format!(
                 "the launch starts no orchestrator: run r1 is held in workspace w1 by PID {}",
                 std::process::id()
             )
         );
-        assert_eq!(mailbox.pane_for("orchestrator").as_deref(), Some("p1"));
+        let w2 = Mailbox::under(&ctx.paths.state_root, "w2");
+        assert_eq!(w2.pane_for("orchestrator"), None);
+        assert!(!w2.dir().join("orchestrator.id").exists());
+        assert_eq!(orchestrator::holder(&lock_dir, "w2"), None);
+        assert_eq!(w1.pane_for("orchestrator").as_deref(), Some("p1"));
         assert_eq!(
             horch_core::taskledger::runs::get(store.conn(), &run.run_id).unwrap(),
             before
