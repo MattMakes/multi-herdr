@@ -108,7 +108,8 @@ pub fn passwd_home() -> Option<PathBuf> {
 
 /// [`migrate_refusal`] for this process and `ledger`.
 fn guard(ledger: &Path, from: i64) -> Result<()> {
-    let Ok(exe) = std::env::current_exe() else {
+    use crate::runtime::{EnvSource, ProcessEnv};
+    let Some(exe) = ProcessEnv.current_exe() else {
         return Ok(());
     };
     let real = |p: &Path| std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
@@ -116,7 +117,7 @@ fn guard(ledger: &Path, from: i64) -> Result<()> {
     let home = passwd_home();
     let shared = home.as_deref().map(|h| real(&default_path(h)));
     let ledger = real(ledger);
-    let allow = std::env::var(ALLOW_MIGRATE_ENV).ok();
+    let allow = ProcessEnv.var(ALLOW_MIGRATE_ENV);
     // `is_shared_ledger` checks `<home>/.horch/ledger.sqlite3`; pass the home
     // only when the real paths match.
     let home = home.filter(|_| shared.as_deref() == Some(ledger.as_path()));
