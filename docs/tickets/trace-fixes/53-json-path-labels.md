@@ -34,7 +34,7 @@ Out of scope: docs (ticket 30).
 
 ## Done when
 
-The Check passes, and `git grep -n "Session ledger:" crates/` finds nothing.
+The Check passes, and `git grep -n "Session ledger:" crates/horch/src` finds nothing (the prompt heading in the goldens is ticket 30's).
 
 ## Report
 
