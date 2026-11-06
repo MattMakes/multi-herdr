@@ -9,7 +9,8 @@ use serde::Serialize;
 
 use super::model::{
     Actor, EventKind, FileMode, FindingStatus, HeldReason, Origin, OutboxEvent, ReviewMode,
-    StepName, TaskKind, TaskStatus, WorkKind, WorkerKind, WorkerStatus, WorktreeMode, WorktreeStatus,
+    StepName, TaskKind, TaskStatus, WorkKind, WorkerKind, WorkerStatus, WorktreeMode,
+    WorktreeStatus,
 };
 use super::runs::Run;
 use super::sql_words::{self, word};

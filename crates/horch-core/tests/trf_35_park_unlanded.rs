@@ -4,7 +4,7 @@
 
 mod i308_support;
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use horch_core::taskledger::finish;
 use horch_core::taskledger::model::Actor;
@@ -33,7 +33,12 @@ fn parked_world() -> (World, Run, String, PathBuf) {
                     ..Default::default()
                 },
             )?;
-            let t1 = tasks::add(tx, &run, &NewTask::work("a", "a.md", "opus"), Actor::Orchestrator)?;
+            let t1 = tasks::add(
+                tx,
+                &run,
+                &NewTask::work("a", "a.md", "opus"),
+                Actor::Orchestrator,
+            )?;
             let mut b = NewTask::work("b", "b.md", "opus");
             b.blocked_by = vec![t1.short()];
             tasks::add(tx, &run, &b, Actor::Orchestrator)?;
@@ -76,7 +81,7 @@ fn t1(w: &World, run: &Run) -> tasks::Task {
 }
 
 /// The status, task and worker of the worktree at `path`.
-fn worktree(w: &World, path: &PathBuf) -> (String, Option<String>) {
+fn worktree(w: &World, path: &Path) -> (String, Option<String>) {
     w.store
         .conn()
         .query_row(
@@ -116,7 +121,10 @@ fn trf_35_done_unlanded_parks_the_task_and_requeue_resumes_it_on_the_same_worktr
     assert_eq!(t.current_worker_id, None);
     assert_eq!(t.finished_at, None);
     assert_eq!(t.summary.as_deref(), Some("UNLANDED: a red check | tried"));
-    assert_eq!(worktree(&w, &path), ("unlanded".into(), Some(t.task_id.clone())));
+    assert_eq!(
+        worktree(&w, &path),
+        ("unlanded".into(), Some(t.task_id.clone()))
+    );
     assert!(path.exists());
 
     // A retried done reports the same park.
@@ -124,7 +132,9 @@ fn trf_35_done_unlanded_parks_the_task_and_requeue_resumes_it_on_the_same_worktr
     assert!(again.already && again.unlanded);
 
     // Nothing starts: T-1 is held, and T-2 stays blocked on it.
-    assert!(tasks::startable(w.store.conn(), &run.run_id).unwrap().is_empty());
+    assert!(tasks::startable(w.store.conn(), &run.run_id)
+        .unwrap()
+        .is_empty());
     let wait = wait_of(&w, &run, "T-2").unwrap();
     assert_eq!(wait, Wait::BlockerParked { task: "T-1".into() });
     assert_eq!(
@@ -137,7 +147,10 @@ fn trf_35_done_unlanded_parks_the_task_and_requeue_resumes_it_on_the_same_worktr
         .store
         .immediate(|tx| tasks::requeue_by_operator(tx, &t, "fixed the check"))
         .unwrap();
-    assert_eq!((back.status.as_str(), back.held_reason.as_deref()), ("queued", None));
+    assert_eq!(
+        (back.status.as_str(), back.held_reason.as_deref()),
+        ("queued", None)
+    );
     assert_eq!(worktree(&w, &path).0, "open");
     assert!(matches!(
         wait_of(&w, &run, "T-2"),
@@ -145,8 +158,7 @@ fn trf_35_done_unlanded_parks_the_task_and_requeue_resumes_it_on_the_same_worktr
     ));
 
     let next = new_worker(&mut w, &run);
-    let ClaimOutcome::Claimed(c) = w.store.immediate(|tx| tasks::claim(tx, &next)).unwrap()
-    else {
+    let ClaimOutcome::Claimed(c) = w.store.immediate(|tx| tasks::claim(tx, &next)).unwrap() else {
         panic!("T-1 is not claimed again");
     };
     assert_eq!(c.task.short(), "T-1");
@@ -179,15 +191,26 @@ fn trf_35_triage_finish_resumes_the_parked_task_instead_of_queuing_a_new_one() {
         remote: None,
         primary: "opus",
     };
-    let a = apply::apply(&mut w.store, &env, &rows, &decided).unwrap().remove(0);
+    let a = apply::apply(&mut w.store, &env, &rows, &decided)
+        .unwrap()
+        .remove(0);
     assert!(a.ok, "{}", a.line());
 
     let t = t1(&w, &run);
     let q = a.queued.unwrap();
-    assert_eq!((q.task.as_str(), q.task_id.as_str()), ("T-1", t.task_id.as_str()));
+    assert_eq!(
+        (q.task.as_str(), q.task_id.as_str()),
+        ("T-1", t.task_id.as_str())
+    );
     assert_eq!(task_count(&w), 2, "FINISH queued a new task");
-    assert_eq!((t.status.as_str(), t.held_reason.as_deref()), ("queued", None));
-    assert_eq!(worktree(&w, &path), ("open".into(), Some(t.task_id.clone())));
+    assert_eq!(
+        (t.status.as_str(), t.held_reason.as_deref()),
+        ("queued", None)
+    );
+    assert_eq!(
+        worktree(&w, &path),
+        ("open".into(), Some(t.task_id.clone()))
+    );
     assert!(!w.root.join("ai_docs/triage").exists());
     assert!(matches!(
         wait_of(&w, &run, "T-2"),

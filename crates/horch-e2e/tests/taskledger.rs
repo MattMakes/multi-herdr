@@ -3618,8 +3618,9 @@ fn an_unlanded_done_names_its_dependents_and_a_stuck_run_wakes_once() {
     );
     let all = wakes(&h);
     assert!(
-        all.iter()
-            .any(|w| w.contains("NOTE: T-1 was cancelled. T-2 wait for it.")),
+        all.iter().any(|w| w.contains(
+            "NOTE: T-2 waits: T-1 is parked unlanded. Run horch ledger requeue T-1 to resume it."
+        )),
         "{all:?}"
     );
     // No worker is live, nothing can start, T-2 is open: the run is stuck.
@@ -3631,7 +3632,8 @@ fn an_unlanded_done_names_its_dependents_and_a_stuck_run_wakes_once() {
     };
     let s = stuck(&h);
     assert_eq!(s.len(), 1, "{all:?}");
-    assert!(s[0].contains("T-2: T-1 was cancelled"), "{s:?}");
+    assert!(s[0].contains("T-1 is held (unlanded)"), "{s:?}");
+    assert!(s[0].contains("T-2: T-1 is parked unlanded"), "{s:?}");
     // The watchdog sees the same stuck run: no second wake.
     ok(&h, &["ledger", "watch", "--once", "--force"]);
     ok(&h, &["ledger", "watch", "--once", "--force"]);
