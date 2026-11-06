@@ -19,6 +19,8 @@ Get a second-vendor review of the riskiest concurrency changes before the gate.
 2. Look for: lost or duplicated wakes, a transaction that sends, a respawn that can run twice, a lock that a live holder can lose.
 3. Do not edit code. Use a scratch worktree for experiments.
 
+Amendment (orchestrator, decision R10): ticket 14 writes the outbox row right after the ledger commit, not inside it, because the call sites belong to other tickets. Judge this window: which wake events can a crash between commit and outbox write lose, and does ticket 15's 30 s reconcile recover each one? List each unrecovered event as a finding.
+
 ## Done when
 
 `ai_docs/reports/trace-fixes/31.md` lists findings as Critical, Important or Minor, each with file:line and a reproduction.
