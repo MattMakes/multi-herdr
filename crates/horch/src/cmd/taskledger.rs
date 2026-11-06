@@ -475,7 +475,8 @@ pub struct TaskArgs {
     /// The ticket file the worker reads.
     #[arg(long = "file")]
     file: Option<PathBuf>,
-    /// The check the finish steps run. Default: the ticket's `**Check:**`.
+    /// The check the finish steps run. `none` lands the task without a
+    /// check. Default: the ticket's `**Check:**`.
     #[arg(long)]
     check: Option<String>,
 }
@@ -2161,7 +2162,7 @@ fn task_cmd(ctx: &RuntimeContext, store: &mut Store, a: TaskArgs) -> Result<Exit
     ));
     if new.land_check.is_none() && !new.check_none {
         eprintln!(
-            "horch ledger: warning: {} has no check, so it does not land. Queue it with --check \"<cmd>\", or write **Check:** none in its ticket.",
+            "horch ledger: warning: {} has no check, so it does not land. Queue it with --check \"<cmd>\" to run a check, or with --check none to land it without one.",
             t.short()
         );
     }
@@ -2180,18 +2181,21 @@ fn one_off_task(ctx: &RuntimeContext, root: &Path, a: TaskArgs) -> Result<NewTas
     if a.title.trim().is_empty() {
         bail!("a task needs a title");
     }
+    let check_none = a.check.as_deref().map(str::trim) == Some("none");
+    let check = a.check.filter(|_| !check_none);
     let Some(file) = a.file else {
         let mut new = NewTask::work(&a.title, ONE_OFF_TICKET, &a.persona);
         new.ticket_snapshot = Some(format!("# {}\n", a.title.trim()));
-        new.land_check = a.check;
+        new.check_none = check_none;
+        new.land_check = check;
         return Ok(new);
     };
     let file = ticket_path(root, &file, &cwd_or_root(ctx, root))?;
     let facts = facts_of(root, &file);
     let mut new = NewTask::work(&a.title, &file, &a.persona);
-    new.check_none = a.check.is_none() && facts.check_none;
+    new.check_none = check_none || (check.is_none() && facts.check_none);
     new.review_mode = facts.review_mode();
-    new.land_check = a.check.or(facts.check);
+    new.land_check = check.or(facts.check);
     new.work_kind = facts.kind;
     new.own = facts.own;
     new.no_touch = facts.no_touch;
@@ -2818,6 +2822,13 @@ fn render_ticket(c: &Claimed, out: &mut String) {
         return;
     };
     let sha = c.task.ticket_sha.as_deref().unwrap_or("");
+    if file == ONE_OFF_TICKET {
+        out.push_str(&format!(
+            "Task (one-off, no ticket file):\n-----\n{}\n-----\nThe text above is the whole task. Do it exactly.\n",
+            snapshot.trim_end()
+        ));
+        return;
+    }
     out.push_str(&format!(
         "Ticket snapshot (sha256 {}), as add-map queued it:\n-----\n{}\n-----\n",
         &sha[..sha.len().min(12)],
@@ -3736,5 +3747,91 @@ mod tests {
         let err = super::task_cmd(&ctx, &mut store, task_args("t", None, None)).unwrap_err();
         assert!(format!("{err:#}").contains("herdr workspace"), "{err:#}");
         assert!(runs::of_project(store.conn(), &root).unwrap().is_empty());
+    }
+
+    /// The land step of task `title` of the solo run of workspace w7, claimed
+    /// by a new worker, with the checkout `root` on the run branch.
+    fn land_one_off(
+        dir: &Path,
+        ctx: &RuntimeContext,
+        store: &mut Store,
+        root: &Path,
+    ) -> (finish::Outcome, finish::Outcome) {
+        use horch_core::taskledger::model::StepName;
+        let run = runs::active_solo(store.conn(), root, "w7").unwrap().unwrap();
+        let worker = NewWorker {
+            run_id: run.run_id.clone(),
+            persona: "opus".into(),
+            ..Default::default()
+        };
+        let worker = store.immediate(|tx| workers::insert(tx, &worker)).unwrap();
+        let ClaimOutcome::Claimed(c) = store.immediate(|tx| tasks::claim(tx, &worker)).unwrap()
+        else {
+            panic!("the worker claims the one-off");
+        };
+        let worker = workers::get(store.conn(), &worker).unwrap();
+        let mut t = tools(ctx);
+        t.git = Git::new("git");
+        t.evidence_root = dir.join("evidence");
+        let evidence_dir = dir.join("evidence").join(&c.task.task_id);
+        std::fs::create_dir_all(&evidence_dir).unwrap();
+        let cx = finish::Ctx {
+            tools: &t,
+            run: &run,
+            task: &c.task,
+            worker: &worker,
+            worktree: None,
+            dir: root.to_path_buf(),
+            root: root.to_path_buf(),
+            evidence_dir,
+            seq: 1,
+            default_check: None,
+        };
+        let check = finish::land::check(&cx, StepName::Check).unwrap();
+        let land = finish::land::land(store, &cx).unwrap();
+        (check, land)
+    }
+
+    #[test]
+    fn trf_42_a_one_off_with_check_none_lands() {
+        use horch_core::taskledger::model::StepStatus;
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("repo");
+        std::fs::create_dir(&root).unwrap();
+        git_in(&root, &["init", "-q", "-b", "main"]);
+        std::fs::write(root.join("a"), "a").unwrap();
+        git_in(&root, &["add", "a"]);
+        git_in(&root, &["commit", "-qm", "a"]);
+        let root = root.canonicalize().unwrap();
+        let (ctx, mut store) = task_world(dir.path(), &root, Some("w7"));
+        super::task_cmd(&ctx, &mut store, task_args("no check", None, None)).unwrap();
+        super::task_cmd(&ctx, &mut store, task_args("tidy", None, Some(" none "))).unwrap();
+        let run = runs::active_solo(store.conn(), &root, "w7").unwrap().unwrap();
+        let queued = tasks::of_run(store.conn(), &run.run_id).unwrap();
+        assert!(!queued[0].check_none);
+        assert!(queued[1].check_none, "--check none sets check_none");
+        assert_eq!(queued[1].land_check, None, "none is not a command");
+        git_in(&root, &["checkout", "-q", "fleet/solo-w7"]);
+
+        let (check, land) = land_one_off(dir.path(), &ctx, &mut store, &root);
+        assert_eq!(check.status, StepStatus::Failed, "no check: {check:?}");
+        assert_eq!(land.status, StepStatus::Failed, "no check: {land:?}");
+
+        let (check, land) = land_one_off(dir.path(), &ctx, &mut store, &root);
+        assert_eq!(check.status, StepStatus::NotApplicable, "{check:?}");
+        assert_eq!(land.status, StepStatus::Passed, "{land:?}");
+    }
+
+    #[test]
+    fn trf_42_a_one_off_claim_does_not_name_add_map() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = project(dir.path(), false);
+        let (_ctx, _store, c) = claimed(dir.path(), &root, None, |t| {
+            t.task_file = super::ONE_OFF_TICKET.into();
+            t.ticket_snapshot = Some("# fix a typo\n".into());
+        });
+        let out = render_claim(&c);
+        assert!(!out.contains("add-map"), "{out}");
+        assert!(out.contains("# fix a typo"), "{out}");
     }
 }
