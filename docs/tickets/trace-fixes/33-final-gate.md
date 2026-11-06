@@ -24,6 +24,8 @@ Amendment: drop the scratch worktree `.worktrees/_scratch/t01` with `horch ledge
 
 Amendment (report 34): `utc_offset_date` in `crates/horch-core/tests/common/mod.rs` has no caller (the e2e crate has its own copy). Delete it if `git grep -n -e utc_offset_date -- crates/horch-core` still shows no caller.
 
+Amendment (reports 10, 34, 35): ticket checks do not run `cargo fmt`. Before the gate, run `cargo fmt --all`, commit the changed files by exact path in 1 commit, then run the gate. Known drift: `taskledger/map.rs`, `taskledger/status.rs`, `tests/trf_02_ticket_template.rs`.
+
 ## Done when
 
 The gate passes on the tip and the run gate row is recorded.
