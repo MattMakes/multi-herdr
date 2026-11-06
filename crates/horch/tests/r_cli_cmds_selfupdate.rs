@@ -19,7 +19,7 @@ fn archive_name(tag: &str) -> String {
 fn tar_gz(script: &str) -> Vec<u8> {
     let gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
     let mut builder = tar::Builder::new(gz);
-    for name in ["horch", "multi-herdr-dataset", "herdr-install"] {
+    for name in ["horch", "herdr-install"] {
         let mut header = tar::Header::new_gnu();
         header.set_size(script.len() as u64);
         header.set_mode(0o644);

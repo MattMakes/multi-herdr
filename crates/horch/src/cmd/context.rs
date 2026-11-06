@@ -31,7 +31,7 @@ use horch_core::workspace::herdr::Herdr;
 use horch_core::workspace::model::Pane;
 use serde::Serialize;
 
-/// What `--over` prints when no row is over, requested or lost.
+/// What `--over` prints when every row is `ok`.
 const NONE_OVER: &str = "no session is over its threshold";
 
 /// Everything 1 row is built from. Tests fill it from a temp state dir, a
@@ -126,6 +126,15 @@ impl Row {
                 format!("the compaction failed at {}: {text}", failed.at)
             }
             (RowState::Unknown, _, Ok(_)) => "the transcript has no usable response".into(),
+            (RowState::Handoff, _, Ok(_)) => {
+                let post =
+                    policy::post_compaction_tokens(&self.record.history, self.last_compaction())
+                        .map_or_else(|| "unknown".into(), |n| n.to_string());
+                format!(
+                    "still over its threshold after 1 compaction ({post} tokens after it); \
+                     use the handoff route, not a new compaction"
+                )
+            }
             _ => return None,
         })
     }
@@ -401,8 +410,9 @@ fn append_pane_gone(mut text: String, json: &str) -> String {
     text
 }
 
-/// The text of `horch context` (`--over`: only rows in `over`, `requested`
-/// or `compact-lost`). Err only when the ledger does not read.
+/// The text of `horch context` (`--over`: every row that is not `ok`, then
+/// the instruction id of each state shown, TRF-08). Err only when the
+/// ledger does not read.
 #[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn context_text(src: &Sources, over: bool) -> Result<String> {
     context_text_matching(src, over, super::sessionscmd::SessionFilter::default())
@@ -415,22 +425,34 @@ fn context_text_matching(
 ) -> Result<String> {
     let rows: Vec<Row> = shown_rows_matching(src, filter)?
         .into_iter()
-        .filter(|row| {
-            !over
-                || matches!(
-                    row.state,
-                    RowState::Over
-                        | RowState::Requested
-                        | RowState::RequestStale
-                        | RowState::CompactLost
-                        | RowState::CompactFailed
-                )
-        })
+        .filter(|row| !over || row.state != RowState::Ok)
         .collect();
-    if over && rows.is_empty() {
+    if !over {
+        return Ok(rows_table(&rows));
+    }
+    if rows.is_empty() {
         return Ok(format!("{NONE_OVER}\n"));
     }
-    Ok(rows_table(&rows))
+    Ok(rows_table(&rows) + &instructions(&rows))
+}
+
+/// `instructions:` and 1 line `<state>: <id>` per state of `rows`, in the
+/// order the states first appear (TRF-08). The briefing keys the
+/// instruction for a state by its id.
+fn instructions(rows: &[Row]) -> String {
+    let mut seen: Vec<RowState> = Vec::new();
+    for row in rows {
+        if !seen.contains(&row.state) {
+            seen.push(row.state);
+        }
+    }
+    let mut out = String::from("instructions:\n");
+    for state in seen {
+        if let Some(id) = state.instruction_id() {
+            out.push_str(&format!("  {}: {id}\n", state.as_str()));
+        }
+    }
+    out
 }
 
 /// The rows of every shown record. Err only when the ledger does not read.
@@ -1250,9 +1272,28 @@ mod tests {
         );
     }
 
-    /// CTX-09: `--over` shows only over and requested rows.
+    /// The roles of the table lines of `out`: every line before `reasons:`
+    /// or `instructions:`, after the header.
+    fn table_roles(out: &str) -> Vec<&str> {
+        out.lines()
+            .skip(1)
+            .take_while(|l| !l.starts_with("reasons:") && !l.starts_with("instructions:"))
+            .map(|l| l.split_whitespace().next().unwrap())
+            .collect()
+    }
+
+    /// The lines after `instructions:`.
+    fn instruction_lines(out: &str) -> Vec<&str> {
+        out.lines()
+            .skip_while(|l| *l != "instructions:")
+            .skip(1)
+            .collect()
+    }
+
+    /// TRF-08: `--over` lists every row that is not ok, then 1 instruction
+    /// id per state shown.
     #[test]
-    fn ctx_09_over_prints_only_over_and_requested() {
+    fn trf_08_over_lists_every_non_ok_state_with_its_instruction_id() {
         let w = World::new();
         w.worker("r-over", "sonnet-1", "claude", "sonnet", Some(OVER));
         w.worker("r-ok", "sonnet-2", "claude", "sonnet", Some(SMALL));
@@ -1261,21 +1302,61 @@ mod tests {
             .record_event("r-asked", policy::EVENT_REQUESTED, "tokens 1 threshold 2")
             .unwrap();
         w.worker("r-none", "sonnet-4", "claude", "sonnet", None);
+        w.worker("r-pend", "sonnet-5", "claude", "sonnet", Some(PENDING));
         let out = text(&w, true);
-        let roles: Vec<&str> = out
-            .lines()
-            .skip(1)
-            .map(|l| l.split_whitespace().next().unwrap())
-            .collect();
-        assert_eq!(roles, ["sonnet-1", "sonnet-3"], "{out}");
-        assert!(out.lines().nth(1).unwrap().ends_with("over"));
-        assert!(
-            out.lines()
-                .nth(2)
-                .unwrap()
-                .ends_with("requested (asked 0m ago)"),
+        assert_eq!(
+            table_roles(&out),
+            ["sonnet-1", "sonnet-3", "sonnet-4", "sonnet-5"],
             "{out}"
         );
+        let state = |role: &str| {
+            let line = out.lines().find(|l| l.starts_with(role)).expect(role);
+            line.split("  ").last().unwrap().trim().to_string()
+        };
+        assert_eq!(state("sonnet-1"), "over", "{out}");
+        assert_eq!(state("sonnet-3"), "requested (asked 0m ago)", "{out}");
+        assert_eq!(state("sonnet-4"), "no-session", "{out}");
+        assert_eq!(state("sonnet-5"), "pending", "{out}");
+        assert_eq!(
+            instruction_lines(&out),
+            [
+                "  over: ctx-over",
+                "  requested: ctx-requested",
+                "  no-session: ctx-no-session",
+                "  pending: ctx-pending",
+            ],
+            "{out}"
+        );
+        // Without --over, the table has no instructions block.
+        assert!(!text(&w, false).contains("instructions:"));
+    }
+
+    /// TRF-09: a row still over its threshold after 1 compaction shows as
+    /// `handoff` in `--over`, with its reason and its instruction id.
+    #[test]
+    fn trf_09_over_shows_a_row_still_over_after_1_compaction_as_handoff() {
+        let w = World::new();
+        w.worker("r-1", "sonnet-1", "claude", "sonnet", Some(OVER));
+        let ago = minutes_ago;
+        w.event_at("r-1", &ago(10), "compact-requested", "");
+        w.event_at(
+            "r-1",
+            &ago(5),
+            policy::EVENT_COMPACTED,
+            &policy::compacted_text(Some(330_000), Some(305_000), "h.md"),
+        );
+        let out = text(&w, true);
+        let lines: Vec<&str> = out.lines().collect();
+        assert_eq!(lines.len(), 6, "{out}");
+        assert!(lines[1].ends_with("handoff"), "{out}");
+        assert_eq!(lines[2], "reasons:");
+        assert_eq!(
+            lines[3],
+            "  sonnet-1: handoff: still over its threshold after 1 compaction \
+             (305000 tokens after it); use the handoff route, not a new compaction"
+        );
+        assert_eq!(lines[4], "instructions:");
+        assert_eq!(lines[5], "  handoff: ctx-handoff");
     }
 
     /// CTX-09, CTX-15: a lost job shows in `--over` with its reason.
@@ -1286,7 +1367,8 @@ mod tests {
         let dir = w.lost_job("sonnet-1", "wait-marker");
         let out = text(&w, true);
         let lines: Vec<&str> = out.lines().collect();
-        assert_eq!(lines.len(), 4, "{out}");
+        assert_eq!(lines.len(), 6, "{out}");
+        assert_eq!(lines[5], "  compact-lost: ctx-compact-lost", "{out}");
         assert!(lines[1].ends_with("compact-lost"), "{out}");
         assert_eq!(lines[2], "reasons:");
         assert_eq!(
@@ -1326,7 +1408,8 @@ mod tests {
         w.event_at("r-1", &ago(5), EVENT_FAILED, "step wait-idle: timed out");
         let out = text(&w, true);
         let lines: Vec<&str> = out.lines().collect();
-        assert_eq!(lines.len(), 4, "{out}");
+        assert_eq!(lines.len(), 6, "{out}");
+        assert_eq!(lines[5], "  compact-failed: ctx-compact-failed", "{out}");
         assert!(lines[1].ends_with("compact-failed"), "{out}");
         assert_eq!(lines[2], "reasons:");
         assert!(
@@ -1336,7 +1419,7 @@ mod tests {
         );
     }
 
-    /// CTX-09: nothing over prints exactly 1 line.
+    /// CTX-09: every row ok prints exactly 1 line.
     #[test]
     fn ctx_09_over_with_none_prints_exact_line() {
         let w = World::new();

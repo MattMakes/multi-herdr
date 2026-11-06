@@ -7,13 +7,13 @@
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use horch_core::digest::Digest;
 use horch_core::execution::legacy::{HistoryEntry, LedgerRecordV1};
 use horch_core::execution::legacy::{Record, KIND_WORKER, STATUS_DONE, STATUS_WORKING};
 use horch_core::execution::records::SessionLedger;
 use horch_core::execution::store::ExecutionStore;
 use horch_core::execution::{ExecutionStatus, FailureKind, LaunchStage};
 use horch_core::ids::SkillId;
-use horch_core::measure::digest::Digest;
 use horch_core::roster::Phase;
 use horch_core::skills::{InvocationPolicy, ResolvedSkillRef};
 use horch_marketplace::SkillVersion;
@@ -85,7 +85,7 @@ fn arc_17_roundtrip_byte_identical() {
     for name in LEDGERS {
         let store = fixture_store(tmp.path(), name);
         store.update(|_| Ok(())).unwrap();
-        let saved = std::fs::read(store.path()).unwrap();
+        let saved = store.stored_json().unwrap().into_bytes();
         let want = std::fs::read(oracle_ledger(&format!("{name}.saved.json"))).unwrap();
         assert!(
             saved == want,
@@ -94,7 +94,7 @@ fn arc_17_roundtrip_byte_identical() {
         );
         // A second pass is stable too.
         store.update(|_| Ok(())).unwrap();
-        assert_eq!(std::fs::read(store.path()).unwrap(), want, "{name}");
+        assert_eq!(store.stored_json().unwrap().into_bytes(), want, "{name}");
     }
 }
 
@@ -186,7 +186,7 @@ fn arc_17_old_reader_sees_compat_status() {
         l.store().set_state(&id, state.clone()).unwrap();
     }
 
-    let raw = std::fs::read_to_string(l.path()).unwrap();
+    let raw = l.store().stored_json().unwrap();
     let old: Vec<OldRecord> = serde_json::from_str(&raw).unwrap();
     assert_eq!(old.len(), statuses.len());
     for (r, state) in old.iter().zip(&statuses) {
@@ -252,7 +252,7 @@ fn skl_04_execution_records_skill_refs() {
         phase: None,
     })
     .unwrap();
-    let raw = std::fs::read_to_string(l.path()).unwrap();
+    let raw = l.store().stored_json().unwrap();
     assert!(
         !raw.contains("\"skills\""),
         "no skills stay off disk: {raw}"
@@ -338,9 +338,7 @@ fn effort_is_recorded_rendered_and_optional_on_disk() {
     })
     .unwrap();
     assert_eq!(l.get("r1").unwrap().effort, None);
-    assert!(!std::fs::read_to_string(l.path())
-        .unwrap()
-        .contains("effort"));
+    assert!(!l.store().stored_json().unwrap().contains("effort"));
     l.set_effort("s1", Some("medium")).unwrap();
     assert_eq!(l.get("r1").unwrap().effort.as_deref(), Some("medium"));
     assert!(l.render().unwrap().contains("model=opus effort=medium"));
@@ -399,7 +397,7 @@ fn tel_08_insert_fills_plan_project_and_workspace() {
     assert_eq!(r.project.as_deref(), Some("/work/alpha"));
     assert_eq!(r.workspace_id.as_deref(), Some("w7"));
     assert_eq!(r.status, STATUS_WORKING);
-    let raw = std::fs::read_to_string(l.path()).unwrap();
+    let raw = l.store().stored_json().unwrap();
     assert!(
         !raw.contains("\"kind\""),
         "a worker's kind stays implicit: {raw}"

@@ -10,7 +10,6 @@ use std::process::ExitCode;
 
 use anyhow::{bail, Context, Result};
 use clap::{Args, Subcommand};
-use horch_core::execution::lifecycle::ReportStatus;
 use horch_core::messaging::delivery;
 use horch_core::runtime::RuntimeContext;
 use horch_core::taskledger::finish::{self, land};
@@ -62,11 +61,23 @@ pub enum LedgerCommand {
     },
     /// Queue 1 task from a ticket file.
     Add(AddArgs),
+    /// Queue 1 one-off task in this workspace's solo run
+    /// (`solo-<workspace>`). Creates that run with the minimal profile when
+    /// it is absent. Prints the spawn line to run next.
+    Task(TaskArgs),
     /// Queue every ticket of a ticket map (MAP.md) in 1 transaction.
+    /// `--dry-run` checks the map and every ticket against the ticket
+    /// format (C1) and writes nothing.
     AddMap {
         map: PathBuf,
         #[command(flatten)]
         run: RunArg,
+        /// Check the map and its tickets; queue nothing. Exit 1 on a problem.
+        #[arg(long)]
+        dry_run: bool,
+        /// Queue a ticket again that is already a task in the run.
+        #[arg(long)]
+        again: bool,
     },
     /// Per persona: how many workers to spawn now.
     PlanWorkers {
@@ -82,12 +93,13 @@ pub enum LedgerCommand {
         #[command(flatten)]
         run: RunArg,
     },
-    /// Drop a task. Its worker lets go of it at once; `--stop` also stops
-    /// that worker by its recorded PIDs and pane.
+    /// Drop a task. Its worker lets go of it at once and is stopped by its
+    /// recorded PIDs and pane, as `horch ledger stop` does.
     Cancel {
         task: String,
         reason: String,
-        #[arg(long)]
+        /// Kept so that old command lines still run: a cancel always stops.
+        #[arg(long, hide = true)]
         stop: bool,
         #[command(flatten)]
         run: RunArg,
@@ -160,6 +172,10 @@ pub enum LedgerCommand {
         #[arg(long, value_name = "REASON")]
         unlanded: Option<String>,
     },
+    /// (worker) Hand the running task off: this worker ends `handed_off`,
+    /// the task is queued again first with its worktree, and the next claim
+    /// reads the handoff file first. Write the file before you run it.
+    Handoff { path: PathBuf },
     /// (worker) Record a milestone; it counts as progress.
     Progress { text: String },
     /// (worker) Record a note; it counts as progress.
@@ -263,6 +279,17 @@ pub enum LedgerCommand {
     Path,
 }
 
+/// The report request of a ledger command in a `horch_access: report`
+/// pane: only `progress`. Every other ledger command is refused there.
+pub fn report_request(command: &LedgerCommand) -> Option<horch_core::messaging::report::Request> {
+    match command {
+        LedgerCommand::Progress { text } => {
+            Some(horch_core::messaging::report::Request::Progress { text: text.clone() })
+        }
+        _ => None,
+    }
+}
+
 #[derive(Subcommand)]
 pub enum WorktreeCommand {
     /// Create this worker's worktree (or get the task's existing one back).
@@ -287,8 +314,9 @@ pub enum WorktreeCommand {
 pub enum RunCommand {
     /// Create a run and its run branch (from the main branch).
     New(NewRunArgs),
-    /// Close the run when its work is done. Refuses while a task is queued,
-    /// held, running or landing, or a worktree is open or landing.
+    /// Close the run when its work is done. Refuses while the run is not
+    /// settled, without a passing gate on the run-branch tip, or while the
+    /// run PR is neither merged nor declined.
     Close {
         #[command(flatten)]
         run: RunArg,
@@ -296,6 +324,18 @@ pub enum RunCommand {
         /// abandoned.
         #[arg(long, value_name = "REASON")]
         abandon: Option<String>,
+        /// Close without a merged PR, and record why.
+        #[arg(long, value_name = "REASON", conflicts_with = "abandon")]
+        pr_declined: Option<String>,
+    },
+    /// Run the run check on the run-branch tip and record the result.
+    /// `run close` needs a passing gate on the current tip.
+    Gate {
+        #[command(flatten)]
+        run: RunArg,
+        /// The check command; default the run's check (`run new --check`).
+        #[arg(long)]
+        check: Option<String>,
     },
     /// Every run of this project.
     List {
@@ -345,6 +385,11 @@ pub struct NewRunArgs {
     /// (default 3).
     #[arg(long)]
     max_attempts: Option<i64>,
+    /// The run's default check command: the check of each task that names
+    /// none. A task with no check, and no `**Check:** none` in its ticket,
+    /// does not land.
+    #[arg(long, value_name = "CMD")]
+    check: Option<String>,
 }
 
 #[derive(Subcommand)]
@@ -429,6 +474,23 @@ pub struct AddArgs {
     run: RunArg,
 }
 
+/// `horch ledger task`: 1 one-off task (TRF-42).
+#[derive(Args)]
+pub struct TaskArgs {
+    /// The task's title. With no `--file`, the title is the whole ticket.
+    title: String,
+    /// The persona that claims it.
+    #[arg(long)]
+    persona: String,
+    /// The ticket file the worker reads.
+    #[arg(long = "file")]
+    file: Option<PathBuf>,
+    /// The check the finish steps run. `none` lands the task without a
+    /// check. Default: the ticket's `**Check:**`.
+    #[arg(long)]
+    check: Option<String>,
+}
+
 /// The project root a command means: the main checkout of the repository
 /// the project dir is in, else the project dir itself.
 pub fn project_root(ctx: &RuntimeContext) -> Result<PathBuf> {
@@ -492,7 +554,7 @@ fn orchestrator_only(ctx: &RuntimeContext, store: &Store, what: &str) -> Result<
     Ok(())
 }
 
-fn worker_id_opt(ctx: &RuntimeContext) -> Option<String> {
+pub(crate) fn worker_id_opt(ctx: &RuntimeContext) -> Option<String> {
     ctx.worker.as_ref().and_then(|w| w.worker_id.clone())
 }
 
@@ -527,6 +589,7 @@ fn group_of(command: &LedgerCommand) -> Group {
             | C::Show { .. }
             | C::Run { .. }
             | C::Add(_)
+            | C::Task(_)
             | C::AddMap { .. }
             | C::PlanWorkers { .. }
             | C::Events { .. }
@@ -550,6 +613,7 @@ fn group_of(command: &LedgerCommand) -> Group {
             | C::Finish { .. }
             | C::Steps { .. }
             | C::Done { .. }
+            | C::Handoff { .. }
             | C::Progress { .. }
             | C::Note { .. }
     ) {
@@ -569,6 +633,16 @@ pub fn run(ctx: &RuntimeContext, command: LedgerCommand) -> Result<ExitCode> {
     if let LedgerCommand::Path = command {
         output::println(&ctx.paths.ledger_db.display().to_string());
         return Ok(ExitCode::SUCCESS);
+    }
+    // A dry run reads only files: it opens no ledger, so it creates and
+    // migrates nothing (TRF-11).
+    if let LedgerCommand::AddMap {
+        map: path,
+        dry_run: true,
+        ..
+    } = &command
+    {
+        return add_map_dry_run(ctx, path);
     }
     let store = taskledger::open(ctx)?;
     // One entry per `Group`, in its order.
@@ -595,8 +669,21 @@ fn board_cmd(ctx: &RuntimeContext, mut store: Store, command: LedgerCommand) -> 
     if let LedgerCommand::Add(args) = command {
         return add(ctx, &mut store, args);
     }
-    if let LedgerCommand::AddMap { map: path, run } = command {
-        return add_map(ctx, &mut store, &path, &run);
+    if let LedgerCommand::Task(args) = command {
+        return task_cmd(ctx, &mut store, args);
+    }
+    if let LedgerCommand::AddMap {
+        map: path,
+        run,
+        dry_run,
+        again,
+    } = command
+    {
+        debug_assert!(
+            !dry_run,
+            "run() answers a dry run before it opens the ledger"
+        );
+        return add_map(ctx, &mut store, &path, &run, again);
     }
     if let LedgerCommand::PlanWorkers { run, json: as_json } = command {
         return plan_workers_cmd(ctx, &store, &run, as_json);
@@ -613,13 +700,10 @@ fn control_cmd(ctx: &RuntimeContext, mut store: Store, command: LedgerCommand) -
         return fallback_cmd(ctx, &mut store, &task, &reason, &run);
     }
     if let LedgerCommand::Cancel {
-        task,
-        reason,
-        stop: stop_it,
-        run,
+        task, reason, run, ..
     } = command
     {
-        return cancel_cmd(ctx, &mut store, &task, &reason, stop_it, &run);
+        return cancel_cmd(ctx, &mut store, &task, &reason, &run);
     }
     if let LedgerCommand::Unblock { task, from, run } = command {
         return unblock_cmd(ctx, &mut store, &task, &from, &run);
@@ -693,25 +777,25 @@ fn worker_side_cmd(
         return steps_cmd(ctx, &store, task, &run, as_json);
     }
     if let LedgerCommand::Done { summary, unlanded } = command {
-        return done_exit(ctx, store, &summary.join(" "), unlanded.as_deref());
+        drop(store);
+        return done_exit(ctx, &summary.join(" "), unlanded.as_deref());
+    }
+    if let LedgerCommand::Handoff { path } = command {
+        return handoff_cmd(ctx, store, &path).map(|()| ExitCode::SUCCESS);
     }
     if let LedgerCommand::Progress { text } = command {
-        return progress(ctx, &mut store, EventKind::Progress, &text);
+        return progress(ctx, EventKind::Progress, &text);
     }
     if let LedgerCommand::Note { text } = command {
-        return progress(ctx, &mut store, EventKind::Note, &text);
+        return progress(ctx, EventKind::Note, &text);
     }
     unreachable!("not a worker command")
 }
 
-/// `horch ledger done`: the exit code once the finish is recorded.
-fn done_exit(
-    ctx: &RuntimeContext,
-    store: Store,
-    summary: &str,
-    unlanded: Option<&str>,
-) -> Result<ExitCode> {
-    done_cmd(ctx, store, summary, unlanded).map(|()| ExitCode::SUCCESS)
+/// `horch ledger done`: `horch done` ([`super::messaging::done`], TRF-45),
+/// and the exit code once the finish is recorded.
+fn done_exit(ctx: &RuntimeContext, summary: &str, unlanded: Option<&str>) -> Result<ExitCode> {
+    super::messaging::done(ctx, summary, unlanded).map(|()| ExitCode::SUCCESS)
 }
 
 /// Import, unfinished work, the watchdog and worker rows.
@@ -832,20 +916,29 @@ fn cancel_cmd(
     store: &mut Store,
     task: &str,
     reason: &str,
-    stop_it: bool,
     run: &RunArg,
 ) -> Result<ExitCode> {
     let r = resolve_run(ctx, store, run)?;
-    let holder = tasks::resolve(store.conn(), &r.run_id, task)?.current_worker_id;
-    if let (true, Some(w)) = (stop_it, &holder) {
-        stop_holder(ctx, store, w, reason)?;
-    }
-    let t = cancel_task(store, &r, task, reason)?;
-    output::println(&format!("{} cancelled.", t.short()));
-    if let (false, Some(w)) = (stop_it, &holder) {
-        warn_still_running(w, &t.short());
-    }
+    let herdr = HerdrPanes::new(ctx);
+    let t = cancel_and_stop(store, &r, task, reason, &Stopper::real(&herdr))?;
     wake_dependents(ctx, store, &r, &t)
+}
+
+/// Cancel the task, then stop the worker that held it (TRF-36). The cancel
+/// comes first and lets go of the worker, so the stop queues nothing again.
+fn cancel_and_stop(
+    store: &mut Store,
+    run: &Run,
+    task: &str,
+    reason: &str,
+    s: &Stopper,
+) -> Result<tasks::Task> {
+    let holder = tasks::resolve(store.conn(), &run.run_id, task)?.current_worker_id;
+    let t = cancel_task(store, run, task, reason)?;
+    output::println(&format!("{} cancelled.", t.short()));
+    let holders: Vec<String> = holder.into_iter().collect();
+    stop_holders(store, &holders, &format!("task cancelled: {reason}"), s)?;
+    Ok(t)
 }
 
 fn cancel_task(store: &mut Store, run: &Run, task: &str, reason: &str) -> Result<tasks::Task> {
@@ -864,31 +957,44 @@ fn wake_dependents(
 ) -> Result<ExitCode> {
     let waiting = tasks::dependents(store.conn(), &t.task_id)?;
     print_waiting(&t.short(), &waiting);
-    super::taskledger_wake::cancelled_dependents(ctx, store, run, &t.short(), &waiting);
+    super::taskledger_wake::stalled_dependents(ctx, store, run, &t.short(), &waiting);
     Ok(ExitCode::SUCCESS)
 }
 
-fn warn_still_running(worker: &str, task: &str) {
-    eprintln!(
-        "horch ledger: worker {worker} held {task} and can no longer finish it. Its process may still run: horch ledger stop {worker} \"<reason>\"."
-    );
+/// How a cancel stops the workers it let go of: herdr and the processes of
+/// this machine, or fakes in tests.
+struct Stopper<'a> {
+    panes: &'a dyn stop::Panes,
+    procs: &'a dyn stop::Processes,
+    opts: stop::StopOptions,
 }
 
-/// Stop the worker that held a cancelled task.
-fn stop_holder(ctx: &RuntimeContext, store: &mut Store, worker: &str, reason: &str) -> Result<()> {
-    let report = stop::stop_worker(
-        store,
-        worker,
-        StopRequester::Orchestrator,
-        &format!("task cancelled: {reason}"),
-        &HerdrPanes::new(ctx),
-        &stop::Os,
-        &stop::StopOptions {
-            grace: stop_grace(),
-            ..Default::default()
-        },
-    )?;
-    print_stop(&report, false)
+impl<'a> Stopper<'a> {
+    fn real(panes: &'a HerdrPanes) -> Stopper<'a> {
+        Stopper {
+            panes,
+            procs: &stop::Os,
+            opts: stop::StopOptions {
+                grace: stop_grace(),
+                ..Default::default()
+            },
+        }
+    }
+}
+
+/// Stop the workers that held cancelled tasks, by their recorded PIDs and
+/// panes (TRF-36). A worker that cannot be stopped gets a warning, and the
+/// cancel stands.
+fn stop_holders(store: &mut Store, holders: &[String], reason: &str, s: &Stopper) -> Result<()> {
+    for (w, r) in stop::stop_cancelled(store, holders, reason, s.panes, s.procs, &s.opts) {
+        match r {
+            Ok(report) => print_stop(&report, false)?,
+            Err(e) => eprintln!(
+                "horch ledger: worker {w} was not stopped: {e:#}. Its process may still run: horch ledger stop {w} \"<reason>\"."
+            ),
+        }
+    }
+    Ok(())
 }
 
 /// The tasks that wait for a cancelled task.
@@ -1618,37 +1724,123 @@ fn opt(v: Option<i64>) -> String {
 fn run_cmd(ctx: &RuntimeContext, store: &mut Store, command: RunCommand) -> Result<ExitCode> {
     let root = project_root(ctx)?;
     match command {
-        RunCommand::Close { run, abandon } => close_run_cmd(ctx, store, &run, abandon.as_deref()),
+        RunCommand::Close {
+            run,
+            abandon,
+            pr_declined,
+        } => {
+            let r = resolve_run(ctx, store, &run)?;
+            let herdr = HerdrPanes::new(ctx);
+            let s = Stopper::real(&herdr);
+            close_run_cmd(&tools(ctx), store, &r, abandon.as_deref(), pr_declined, &s)
+        }
+        RunCommand::Gate { run, check } => {
+            let r = resolve_run(ctx, store, &run)?;
+            gate_cmd(&tools(ctx), store, &r, check.as_deref())
+        }
         RunCommand::List { json: as_json } => list_runs(store, &root, as_json),
         RunCommand::New(args) => new_run_cmd(ctx, store, &root, args),
     }
 }
 
 fn close_run_cmd(
-    ctx: &RuntimeContext,
+    t: &finish::Tools,
     store: &mut Store,
-    run: &RunArg,
+    r: &Run,
     abandon: Option<&str>,
+    pr_declined: Option<String>,
+    s: &Stopper,
 ) -> Result<ExitCode> {
-    let r = resolve_run(ctx, store, run)?;
-    let closed = store.immediate(|tx| runs::close_run(tx, &r, abandon))?;
-    for (task, holder) in &closed.cancelled {
-        match holder {
-            Some(w) => output::println(&format!(
-                "{task} cancelled. Its worker {w} may still run: horch ledger stop {w} \"run abandoned\" --run {}",
-                r.slug
-            )),
-            None => output::println(&format!("{task} cancelled.")),
+    // C6 first: an unsettled run gets the settled rule's refusal, before gh.
+    let settled = status::unsettled(store.conn(), &r.run_id)?.is_empty();
+    let closed = match abandon {
+        Some(_) => store.immediate(|tx| runs::close_run(tx, &t.git, r, abandon))?,
+        None if !settled => store.immediate(|tx| runs::close_run(tx, &t.git, r, None))?,
+        None => {
+            let guards = close_guards(t, r, pr_declined)?;
+            store.immediate(|tx| runs::close_run_with(tx, &t.git, r, None, &guards))?
         }
+    };
+    for note in &closed.notes {
+        output::println(note);
     }
+    for (task, _) in &closed.cancelled {
+        output::println(&format!("{task} cancelled."));
+    }
+    let holders: Vec<String> = closed
+        .cancelled
+        .iter()
+        .filter_map(|(_, w)| w.clone())
+        .collect();
+    let why = format!("run abandoned: {}", abandon.unwrap_or_default());
+    stop_holders(store, &holders, &why, s)?;
     if !closed.parked.is_empty() {
         bail!(
             "{}. The open tasks are cancelled; the run stays active",
-            runs::parked_message(&r, &closed.parked)
+            runs::parked_message(r, &closed.parked)
         );
     }
     output::println(&format!("Run {} closed as {}.", r.slug, closed.status));
     Ok(ExitCode::SUCCESS)
+}
+
+/// The C5 facts `run close` checks: the run-branch tip, and the PR as gh
+/// reports it.
+fn close_guards(
+    t: &finish::Tools,
+    r: &Run,
+    pr_declined: Option<String>,
+) -> Result<runs::CloseGuards> {
+    let root = Path::new(&r.project_root);
+    let tip = match &r.run_branch {
+        Some(b) => Some(t.git.rev(root, b)?),
+        None => None,
+    };
+    let pr = finish::pr::pr_check(&t.gh, &t.git, r)?;
+    Ok(runs::CloseGuards {
+        tip,
+        pr,
+        pr_declined: pr_declined.filter(|p| !p.trim().is_empty()),
+    })
+}
+
+/// `horch ledger run gate` (C5, TRF-19).
+fn gate_cmd(
+    t: &finish::Tools,
+    store: &mut Store,
+    r: &Run,
+    check: Option<&str>,
+) -> Result<ExitCode> {
+    let command = match check.filter(|c| !c.trim().is_empty()) {
+        Some(c) => c.to_string(),
+        None => finish::default_check(store.conn(), &r.run_id)?.with_context(|| {
+            format!(
+                "run {} has no check. Pass --check \"<cmd>\", or create the run with horch ledger run new <slug> --check \"<cmd>\"",
+                r.slug
+            )
+        })?,
+    };
+    let log_dir = t.evidence_root.join("gates").join(&r.run_id);
+    output::println(&format!(
+        "Run gate: running `{command}` on the tip of {} in {}.",
+        r.run_branch.as_deref().unwrap_or("-"),
+        runs::gate_dir(r).display()
+    ));
+    let ran = runs::run_gate(&t.git, &t.shell, r, &command, &log_dir)?;
+    let gate = store.immediate(|tx| runs::record_gate(tx, &ran))?;
+    let log = gate.log_path.as_deref().unwrap_or("(no log)");
+    if gate.passed() {
+        output::println(&format!("Run gate passed on {}. Log: {log}.", gate.tip_sha));
+        return Ok(ExitCode::SUCCESS);
+    }
+    output::println(&format!(
+        "Run gate failed on {}: exit {}. Read {log}.",
+        gate.tip_sha,
+        gate.exit_code
+            .map(|c| c.to_string())
+            .unwrap_or_else(|| "none".into())
+    ));
+    Ok(ExitCode::FAILURE)
 }
 
 fn list_runs(store: &Store, root: &Path, as_json: bool) -> Result<ExitCode> {
@@ -1684,12 +1876,20 @@ fn new_run_cmd(
     let git = Git::new(&ctx.bins.harness.git);
     let is_repo = git.main_root(root).is_some();
     let (run_branch, base, remote) = default_branches(&git, root, is_repo, &a);
+    let workspace_id = super::sessionscmd::caller_workspace(ctx);
+    // Refuse before the git work, so a refused run leaves no branch (TRF-34).
+    let probe = NewRun {
+        slug: a.slug.clone(),
+        workspace_id: workspace_id.clone(),
+        ..Default::default()
+    };
+    runs::refuse_a_2nd_workspace_run(store.conn(), root, &probe)?;
     if is_repo {
         run_branches(&git, root, &run_branch, base.as_deref(), remote.as_deref())?;
     }
     let new = NewRun {
         slug: a.slug.clone(),
-        workspace_id: ctx.herdr.workspace.as_ref().map(|w| w.as_str().to_string()),
+        workspace_id,
         base_branch: base,
         run_branch: is_repo.then_some(run_branch),
         remote,
@@ -1703,7 +1903,8 @@ fn new_run_cmd(
             max_attempts: a.max_attempts,
         },
     };
-    let r = insert_run(ctx, store, root, &new)?;
+    let check = a.check.as_deref().filter(|c| !c.trim().is_empty());
+    let r = insert_run(ctx, store, root, &new, check)?;
     report_created(&r);
     Ok(ExitCode::SUCCESS)
 }
@@ -1812,10 +2013,26 @@ fn run_branches(
 
 /// Insert the run and the orchestrator's own row: the pane it runs in. It is
 /// never watched for progress (section 9).
-fn insert_run(ctx: &RuntimeContext, store: &mut Store, root: &Path, new: &NewRun) -> Result<Run> {
+/// `check` is the run's default check (TRF-16).
+fn insert_run(
+    ctx: &RuntimeContext,
+    store: &mut Store,
+    root: &Path,
+    new: &NewRun,
+    check: Option<&str>,
+) -> Result<Run> {
     let pane = ctx.herdr.pane.as_ref().map(|p| p.as_str().to_string());
+    let own = own_orchestrator_harness(ctx);
     store.immediate(|tx| {
+        runs::refuse_a_2nd_workspace_run(tx, root, new)?;
         let r = runs::create(tx, root, new)?;
+        if let Some(check) = check {
+            finish::set_default_check(tx, &r.run_id, check)?;
+        }
+        let (harness, model) = match &own {
+            Some(own) => own.clone(),
+            None => workspace_orchestrator_harness(tx, new.workspace_id.as_deref())?,
+        };
         let id = workers::insert(
             tx,
             &NewWorker {
@@ -1823,6 +2040,8 @@ fn insert_run(ctx: &RuntimeContext, store: &mut Store, root: &Path, new: &NewRun
                 kind: Some(WorkerKind::Orchestrator),
                 persona: "orchestrator".into(),
                 role: Some("orchestrator".into()),
+                harness,
+                model,
                 workspace_id: new.workspace_id.clone(),
                 pane_id: pane.clone(),
                 ..Default::default()
@@ -1838,6 +2057,42 @@ fn insert_run(ctx: &RuntimeContext, store: &mut Store, root: &Path, new: &NewRun
         runs::set_orchestrator(tx, &r.run_id, &id)?;
         runs::get(tx, &r.run_id)
     })
+}
+
+/// A harness and its model, as an orchestrator row records them.
+type HarnessModel = (Option<String>, Option<String>);
+
+/// The harness and model of the orchestrator that runs this command
+/// (report 28 D-c): its session record, which `HORCH_RECORD_ID` names.
+/// `None` when no orchestrator record names a harness.
+fn own_orchestrator_harness(ctx: &RuntimeContext) -> Option<HarnessModel> {
+    let id = ctx.worker.as_ref()?.record_id.as_deref()?;
+    let record = horch_core::execution::store::ExecutionStore::open_in(ctx)
+        .ok()?
+        .get(id)
+        .ok()?;
+    let nonempty = |s: &str| (!s.is_empty()).then(|| s.to_string());
+    (record.is_orchestrator() && !record.agent.is_empty())
+        .then(|| (nonempty(&record.agent), nonempty(&record.model)))
+}
+
+/// The harness and model of the newest orchestrator row of `workspace` that
+/// records one: the fleet launch wrote it (TRF-44).
+fn workspace_orchestrator_harness(
+    tx: &rusqlite::Connection,
+    workspace: Option<&str>,
+) -> Result<HarnessModel> {
+    let Some(workspace) = workspace else {
+        return Ok((None, None));
+    };
+    let row = taskledger::store::optional(tx.query_row(
+        "SELECT harness, model FROM workers
+         WHERE kind = 'orchestrator' AND workspace_id = ?1 AND harness IS NOT NULL
+         ORDER BY spawned_at DESC, rowid DESC LIMIT 1",
+        [workspace],
+        |r| Ok((r.get(0)?, r.get(1)?)),
+    ))?;
+    Ok(row.unwrap_or((None, None)))
 }
 
 /// The ticket's first heading, or its file stem.
@@ -1886,6 +2141,7 @@ fn facts_of(root: &Path, file: &str) -> map::TicketFacts {
 
 /// The task `add` queues: what a flag names, else what the ticket says.
 fn new_task(root: &Path, file: String, facts: map::TicketFacts, a: AddArgs) -> NewTask {
+    let review_mode = facts.review_mode();
     NewTask {
         title: a.title.unwrap_or_else(|| ticket_title(&root.join(&file))),
         task_file: file,
@@ -1902,6 +2158,7 @@ fn new_task(root: &Path, file: String, facts: map::TicketFacts, a: AddArgs) -> N
         } else {
             WorktreeMode::Worktree
         },
+        check_none: a.check.is_none() && facts.check_none,
         land_check: a.check.or(facts.check),
         kind: TaskKind::Work,
         parent_task_id: None,
@@ -1912,6 +2169,9 @@ fn new_task(root: &Path, file: String, facts: map::TicketFacts, a: AddArgs) -> N
         } else {
             a.no_touch
         },
+        work_kind: facts.kind,
+        review_mode,
+        ticket_snapshot: None,
     }
 }
 
@@ -1940,13 +2200,146 @@ fn add(ctx: &RuntimeContext, store: &mut Store, a: AddArgs) -> Result<ExitCode> 
     Ok(ExitCode::SUCCESS)
 }
 
-fn add_map(ctx: &RuntimeContext, store: &mut Store, path: &Path, arg: &RunArg) -> Result<ExitCode> {
+/// The ticket file name of a one-off task that has no ticket file. Its
+/// snapshot holds the title.
+const ONE_OFF_TICKET: &str = "(one-off: no ticket file)";
+
+fn task_cmd(ctx: &RuntimeContext, store: &mut Store, a: TaskArgs) -> Result<ExitCode> {
+    let (run, primary) = queue_one_off_in(ctx, store, a)?;
+    output::println(&spawn_line(&primary, &run));
+    Ok(ExitCode::SUCCESS)
+}
+
+/// `horch ledger task` without its `Run next` line: a caller that spawns
+/// the worker itself (the fleet's worktree steward) uses it. It returns the
+/// solo run that holds the task.
+pub(super) fn queue_one_off(ctx: &RuntimeContext, a: TaskArgs) -> Result<Run> {
+    let mut store = taskledger::open(ctx)?;
+    queue_one_off_in(ctx, &mut store, a).map(|(run, _)| run)
+}
+
+/// Queue the one-off task `a` in the caller's solo run. It returns the run
+/// and the task's persona.
+fn queue_one_off_in(ctx: &RuntimeContext, store: &mut Store, a: TaskArgs) -> Result<(Run, String)> {
+    let root = project_root(ctx)?;
+    let Some(workspace) = super::sessionscmd::caller_workspace(ctx) else {
+        bail!("horch ledger task needs a herdr workspace. Run it in a herdr pane, or queue the task with horch ledger add --run <slug>");
+    };
+    let new = one_off_task(ctx, &root, a)?;
+    let run = solo_run(ctx, store, &root, &workspace)?;
+    let t = store.immediate(|tx| tasks::add(tx, &run, &new, Actor::Orchestrator))?;
+    output::println(&format!(
+        "{} queued in run {} for {}: {}.",
+        t.short(),
+        run.slug,
+        new.primary,
+        t.title
+    ));
+    if new.land_check.is_none() && !new.check_none {
+        eprintln!(
+            "horch ledger: warning: {} has no check, so it does not land. Queue it with --check \"<cmd>\" to run a check, or with --check none to land it without one.",
+            t.short()
+        );
+    }
+    Ok((run, new.primary))
+}
+
+/// The line that starts a worker for a one-off task of `run`.
+fn spawn_line(persona: &str, run: &Run) -> String {
+    format!("Run next: horch spawn {persona} --run {}", run.slug)
+}
+
+/// The one-off task: the ticket file's facts when `--file` names one, else
+/// a snapshot that holds only the title.
+fn one_off_task(ctx: &RuntimeContext, root: &Path, a: TaskArgs) -> Result<NewTask> {
+    if a.title.trim().is_empty() {
+        bail!("a task needs a title");
+    }
+    let check_none = a.check.as_deref().map(str::trim) == Some("none");
+    let check = a.check.filter(|_| !check_none);
+    let Some(file) = a.file else {
+        let mut new = NewTask::work(&a.title, ONE_OFF_TICKET, &a.persona);
+        new.ticket_snapshot = Some(format!("# {}\n", a.title.trim()));
+        new.check_none = check_none;
+        new.land_check = check;
+        return Ok(new);
+    };
+    let file = ticket_path(root, &file, &cwd_or_root(ctx, root))?;
+    let facts = facts_of(root, &file);
+    let mut new = NewTask::work(&a.title, &file, &a.persona);
+    new.check_none = check_none || (check.is_none() && facts.check_none);
+    new.review_mode = facts.review_mode();
+    new.land_check = check.or(facts.check);
+    new.work_kind = facts.kind;
+    new.own = facts.own;
+    new.no_touch = facts.no_touch;
+    Ok(new)
+}
+
+/// The workspace's active solo run, created with its run branch when absent.
+fn solo_run(ctx: &RuntimeContext, store: &mut Store, root: &Path, workspace: &str) -> Result<Run> {
+    if let Some(run) = runs::active_solo(store.conn(), root, workspace)? {
+        return Ok(run);
+    }
+    let mut new = runs::solo_new_run(workspace);
+    let git = Git::new(&ctx.bins.harness.git);
+    if git.main_root(root).is_some() {
+        let branch = format!("fleet/{}", new.slug);
+        let base = git.current_branch(root);
+        let remote = git.has_remote(root, "origin").then(|| "origin".to_string());
+        run_branches(&git, root, &branch, base.as_deref(), remote.as_deref())?;
+        new.run_branch = Some(branch);
+        new.base_branch = base;
+        new.remote = remote;
+    }
+    let r = insert_run(ctx, store, root, &new, None)?;
+    report_created(&r);
+    Ok(r)
+}
+
+/// `add-map --dry-run`: every problem as `<file>:<line>: <problem>`. It
+/// needs no run and writes nothing.
+fn add_map_dry_run(ctx: &RuntimeContext, path: &Path) -> Result<ExitCode> {
+    let root = project_root(ctx)?;
+    let path = cwd_or_root(ctx, &root).join(path);
+    let (parsed, problems) = map::check(&path, &root)?;
+    for p in &problems {
+        output::println(&p.to_string());
+    }
+    if !problems.is_empty() {
+        output::println(&format!(
+            "{} problems in {}. Nothing was queued.",
+            problems.len(),
+            path.display()
+        ));
+        return Ok(ExitCode::from(1));
+    }
+    output::println(&format!(
+        "{} tickets in {} follow the ticket format. Nothing was queued.",
+        parsed.items.len(),
+        path.display()
+    ));
+    Ok(ExitCode::SUCCESS)
+}
+
+fn add_map(
+    ctx: &RuntimeContext,
+    store: &mut Store,
+    path: &Path,
+    arg: &RunArg,
+    again: bool,
+) -> Result<ExitCode> {
     let root = project_root(ctx)?;
     let path = cwd_or_root(ctx, &root).join(path);
     let parsed = map::read(&path, &root)?;
     let run = resolve_run(ctx, store, arg)?;
     let items: Vec<(String, NewTask)> = parsed.items.into_iter().map(|i| (i.key, i.task)).collect();
-    let added = store.immediate(|tx| tasks::add_many(tx, &run, &items, Actor::Orchestrator))?;
+    let added = store.immediate(|tx| {
+        if !again {
+            tasks::refuse_queued(tx, &run.run_id, &items)?;
+        }
+        tasks::add_many(tx, &run, &items, Actor::Orchestrator)
+    })?;
     for t in &added {
         output::println(&format!(
             "{} queued for {}: {}.",
@@ -1992,11 +2385,12 @@ fn claim_task(store: &mut Store, tools: &finish::Tools, wid: &str) -> Result<Cla
 /// the project facts.
 fn print_claim(ctx: &RuntimeContext, outcome: ClaimOutcome) -> Result<ExitCode> {
     match outcome {
-        ClaimOutcome::NoTask { tell, persona, .. } => {
+        // The claim ended this worker (TRF-32); horch done closes its pane.
+        ClaimOutcome::NoTask { persona, .. } => {
             output::println(&format!(
-                "No task for {persona}. Send this line, then end your turn:"
+                "No task for {persona}. Run this line to close your pane:"
             ));
-            output::println(&tell);
+            output::println(&format!("horch done \"No task for {persona}.\""));
         }
         ClaimOutcome::Claimed(c) => {
             output::print(&render_claim(&c));
@@ -2274,6 +2668,57 @@ pub fn done_cmd(
     done
 }
 
+/// `horch ledger handoff <path>` (trace-fixes C4): hand the task off in 1
+/// transaction, wake the orchestrator, then, in a worker pane, report and
+/// close the pane as `horch done` does.
+pub fn handoff_cmd(ctx: &RuntimeContext, mut store: Store, path: &Path) -> Result<()> {
+    let wid = worker_id(ctx)?;
+    let file = handoff_file(ctx, path)?;
+    let in_pane = in_worker_pane(ctx);
+    let budget = delivery::start_push_budget(delivery::DONE_PUSH_BUDGET);
+    if budget.is_some() && in_pane {
+        eprintln!("{}", super::messaging::CLOSING);
+    }
+    let out = store.immediate(|tx| tasks::handoff(tx, &wid, &file))?;
+    let run = runs::get(store.conn(), &out.task.run_id)?;
+    let short = out.task.short();
+    output::println(&format!(
+        "{short} is handed off. It is queued first with its worktree. The next claim reads {file} first."
+    ));
+    let woken = std::cell::Cell::new(false);
+    let wake = || {
+        if !woken.replace(true) {
+            super::taskledger_wake::drain_run(ctx, &store, &run, out.wake_id.as_deref());
+        }
+    };
+    if !in_pane {
+        wake();
+        return Ok(());
+    }
+    let summary = format!("I handed off {short}. The handoff file is {file}.");
+    let done = super::messaging::done_then(ctx, &summary, None, &wake);
+    wake();
+    done
+}
+
+/// The absolute path of the handoff file `path`, relative to the current
+/// directory. The file must exist.
+fn handoff_file(ctx: &RuntimeContext, path: &Path) -> Result<String> {
+    let full = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        ctx.paths.current_dir()?.join(path)
+    };
+    if !full.is_file() {
+        bail!(
+            "the handoff file {} does not exist; write it first",
+            full.display()
+        );
+    }
+    let full = full.canonicalize().unwrap_or(full);
+    Ok(full.to_string_lossy().into_owned())
+}
+
 /// Whether `horch done`'s report and pane close run: in a herdr pane of a
 /// worker with a record and a role.
 fn in_worker_pane(ctx: &RuntimeContext) -> bool {
@@ -2284,8 +2729,8 @@ fn in_worker_pane(ctx: &RuntimeContext) -> bool {
             .is_some_and(|w| w.record_id.is_some() && w.role.is_some())
 }
 
-/// The wakes of a finished task: the author of a reviewed task, the tasks a
-/// parked one cancels, and the orchestrator.
+/// The wakes of a finished task: the author of a reviewed task, the tasks
+/// that wait for a parked one, and the orchestrator.
 fn wake_after_done(ctx: &RuntimeContext, store: &Store, run: &Run, c: &finish::Completed) {
     if let Some((parent, Some(role))) = &c.reviews_in_for {
         tell_reviews_in(ctx, store, run, &c.task_id, parent, role);
@@ -2306,8 +2751,8 @@ fn done_line(c: &finish::Completed) -> String {
     format!("{} {what}.", c.task)
 }
 
-/// The last review of `parent` is in: tell its author to run finish, and
-/// wake the orchestrator when the tell fails.
+/// The last review of `parent` is in: tell its author to run finish
+/// through its keyed `reviews-in` row (TRF-51).
 fn tell_reviews_in(
     ctx: &RuntimeContext,
     store: &Store,
@@ -2316,40 +2761,20 @@ fn tell_reviews_in(
     parent: &str,
     role: &str,
 ) {
-    let line = format!("[horch] NOTE: The reviews of {parent} are in. Run horch ledger finish.");
     // The author waits for this line until it runs finish (#177).
     if let Err(e) = hold_for_finish(store, review_task_id) {
         eprintln!("horch ledger: could not record the wait of {role}: {e:#}");
     }
-    let told = match super::messaging::tell_as(ctx, Some("horch".into()), role, &line) {
-        Ok(ReportStatus::Delivered) => Ok(()),
-        Ok(ReportStatus::Queued(cause)) => Err(anyhow::anyhow!(
-            "{cause}; the courier types it when the pane is idle"
-        )),
-        Err(e) => Err(e),
-    };
-    if let Err(e) = told {
-        eprintln!("horch ledger: could not tell {role}: {e:#}");
-        // A retried done skips the tell, so the orchestrator gets it
-        // as durable mail too.
-        super::taskledger_wake::wake(
-            ctx,
-            store,
-            run,
-            &format!(
-                "NOTE: The reviews of {parent} are in, but {role} was not told. \
-                 Tell {role} to run horch ledger finish."
-            ),
-        );
-    }
+    super::taskledger_wake::reviews_in(ctx, store, run, parent, role);
 }
 
-/// A parked task cancels what waited on it: wake on those tasks.
+/// A parked task is not cancelled, but the tasks that wait for it cannot
+/// start until a requeue resumes it: wake on those tasks.
 fn wake_unlanded(ctx: &RuntimeContext, store: &Store, run: &Run, c: &finish::Completed) {
     // The task is already done here, so a read error only costs the wake.
     match tasks::dependents(store.conn(), &c.task_id) {
         Ok(waiting) => {
-            super::taskledger_wake::cancelled_dependents(ctx, store, run, &c.task, &waiting)
+            super::taskledger_wake::stalled_dependents(ctx, store, run, &c.task, &waiting)
         }
         Err(e) => eprintln!(
             "horch ledger: could not read the tasks that wait on {}: {e:#}",
@@ -2368,22 +2793,6 @@ fn hold_for_finish(store: &Store, review_task_id: &str) -> Result<()> {
         return Ok(());
     };
     workers::hold_for_finish(store.conn(), &author)
-}
-
-/// The slug of the active task-ledger run of this project that the caller's
-/// herdr workspace owns, if any (#89). Never creates the ledger file.
-pub fn active_run_slug(ctx: &RuntimeContext) -> Option<String> {
-    if !ctx.paths.ledger_db.exists() {
-        return None;
-    }
-    let workspace = ctx.herdr.workspace.as_ref()?.as_str().to_string();
-    let store = taskledger::open(ctx).ok()?;
-    let root = project_root(ctx).ok()?;
-    runs::of_project(store.conn(), &root)
-        .ok()?
-        .into_iter()
-        .find(|r| r.status == "active" && r.workspace_id.as_deref() == Some(workspace.as_str()))
-        .map(|r| r.slug)
 }
 
 /// Whether this process is a task-ledger worker that holds (or finished) a
@@ -2405,12 +2814,15 @@ pub fn is_ledger_worker(ctx: &RuntimeContext) -> bool {
 pub fn render_claim(c: &Claimed) -> String {
     let t = &c.task;
     let mut out = format!(
-        "Claimed {} (attempt {}): {}\nTicket: {}. Read it in full and follow it exactly.\n",
+        "Claimed {} (attempt {}): {}\n",
         t.short(),
         c.attempt,
-        t.title,
-        t.task_file.as_deref().unwrap_or("-")
+        t.title
     );
+    if let Some(path) = &c.handoff_path {
+        out.push_str(&format!("PRIOR WORK: read {path} first\n"));
+    }
+    render_ticket(c, &mut out);
     if let Some(p) = &t.phase {
         out.push_str(&format!("Phase: {p}.\n"));
     }
@@ -2434,6 +2846,34 @@ pub fn render_claim(c: &Claimed) -> String {
     out.push_str("Record milestones with: horch ledger progress \"<text>\"\n");
     out.push_str("When the work is complete, run: horch ledger finish\n");
     out
+}
+
+/// The ticket: its snapshot from `add-map` first, then its path (TRF-12). A
+/// task with no snapshot names only the path.
+fn render_ticket(c: &Claimed, out: &mut String) {
+    let file = c.task.task_file.as_deref().unwrap_or("-");
+    let Some(snapshot) = &c.ticket_snapshot else {
+        out.push_str(&format!(
+            "Ticket: {file}. Read it in full and follow it exactly.\n"
+        ));
+        return;
+    };
+    let sha = c.task.ticket_sha.as_deref().unwrap_or("");
+    if file == ONE_OFF_TICKET {
+        out.push_str(&format!(
+            "Task (one-off, no ticket file):\n-----\n{}\n-----\nThe text above is the whole task. Do it exactly.\n",
+            snapshot.trim_end()
+        ));
+        return;
+    }
+    out.push_str(&format!(
+        "Ticket snapshot (sha256 {}), as add-map queued it:\n-----\n{}\n-----\n",
+        &sha[..sha.len().min(12)],
+        snapshot.trim_end()
+    ));
+    out.push_str(&format!(
+        "Ticket: {file}. The snapshot above is the ticket. Follow it exactly. The file can differ from it.\n"
+    ));
 }
 
 /// Where the worker works: an earlier attempt's worktree, a new one, or the
@@ -2514,35 +2954,67 @@ pub fn slug(title: &str) -> String {
         .to_string()
 }
 
-fn progress(
-    ctx: &RuntimeContext,
-    store: &mut Store,
-    kind: EventKind,
-    text: &str,
-) -> Result<ExitCode> {
-    let wid = worker_id(ctx)?;
-    store.immediate(|tx| workers::progress(tx, &wid, ProgressSource::Agent, kind, text))?;
-    if let Err(error) = super::compact::worker_note_context(ctx, text) {
-        eprintln!("horch ledger: context check failed: {error:#}");
-    }
-    Ok(ExitCode::SUCCESS)
+/// `horch ledger progress` and `horch ledger note`: `horch note`
+/// ([`super::messaging::note_as`], TRF-45) with their event kind.
+fn progress(ctx: &RuntimeContext, kind: EventKind, text: &str) -> Result<ExitCode> {
+    worker_id(ctx)?;
+    super::messaging::note_as(ctx, text, kind).map(|()| ExitCode::SUCCESS)
 }
 
-/// `horch note` and `horch done` also write the ledger when the worker has
-/// a row; a failure there never blocks them.
-pub fn note_from_worker(ctx: &RuntimeContext, text: &str) {
+/// Record `kind` with `text` on this worker's task ledger row. True when it
+/// did: a worker without `HORCH_WORKER_ID`, or whose row the ledger does
+/// not have, records nothing.
+pub fn progress_from_worker(ctx: &RuntimeContext, kind: EventKind, text: &str) -> Result<bool> {
     let Some(wid) = worker_id_opt(ctx) else {
-        return;
+        return Ok(false);
     };
-    let result = taskledger::open(ctx).and_then(|mut s| {
-        if workers::find(s.conn(), &wid)?.is_none() {
-            return Ok(());
-        }
-        s.immediate(|tx| workers::progress(tx, &wid, ProgressSource::Agent, EventKind::Note, text))
-    });
-    if let Err(e) = result {
-        eprintln!("horch: the task ledger did not record the note: {e:#}");
+    let mut s = taskledger::open(ctx)?;
+    if workers::find(s.conn(), &wid)?.is_none() {
+        return Ok(false);
     }
+    s.immediate(|tx| workers::progress(tx, &wid, ProgressSource::Agent, kind, text))?;
+    Ok(true)
+}
+
+/// The 1 warning of `horch note` for a live session in the context state
+/// `handoff` (TRF-09): it names `horch ledger handoff`. The row is built as
+/// `horch context` builds it. Any read error means no warning.
+pub(crate) fn note_handoff_warning(ctx: &RuntimeContext) -> Option<String> {
+    use horch_core::execution::records::SessionLedger;
+    let record_id = ctx.worker.as_ref()?.record_id.as_deref()?;
+    let ledger = SessionLedger::open_in(ctx).ok()?;
+    let record = ledger.get(record_id).ok()?;
+    if !record.execution_status().is_live() {
+        return None;
+    }
+    let roster = super::load_roster_unwarned(ctx, None)
+        .or_else(|_| horch_core::roster::Roster::builtin())
+        .ok()?;
+    let loc = horch_core::usage::Locations::from_context(ctx);
+    let cache = super::context::cache_dir(ctx);
+    let src = super::context::Sources {
+        ctx,
+        ledger: &ledger,
+        roster: &roster,
+        loc: &loc,
+        cache_dir: &cache,
+    };
+    let workspace = ctx.herdr.workspace.as_ref().map(|w| w.to_string());
+    let row = super::context::build_row(&src, record, workspace.as_deref());
+    handoff_warning(row.state, &row.record.role)
+}
+
+/// The `horch note` line for a session in context state `state`: a line
+/// only for `handoff`.
+fn handoff_warning(state: horch_core::compaction::policy::RowState, role: &str) -> Option<String> {
+    use horch_core::compaction::policy::{self, RowState};
+    (state == RowState::Handoff).then(|| {
+        let file = policy::handoff_path(role);
+        format!(
+            "NOTE: Context handoff: {role} is still over its threshold after 1 compaction. \
+             Do not wait for a compaction. Write {file}, then run: horch ledger handoff {file}"
+        )
+    })
 }
 
 fn worker_cmd(ctx: &RuntimeContext, store: &mut Store, command: WorkerCommand) -> Result<ExitCode> {
@@ -2611,16 +3083,82 @@ fn record_pids(
 
 #[cfg(test)]
 mod tests {
-    use super::{absolute_ticket_if_missing, LedgerCommand};
+    use super::{
+        absolute_ticket_if_missing, finish, handoff_warning, render_claim, tools, ExitCode, Git,
+        LedgerCommand, Run,
+    };
     use clap::Subcommand;
     use horch_core::roster::{ExecDecision, Roster};
     use horch_core::runtime::{MapEnv, RuntimeContext};
     use horch_core::taskledger::model::{Actor, WorktreeMode};
     use horch_core::taskledger::runs::{self, NewRun};
+    use horch_core::taskledger::stop;
     use horch_core::taskledger::tasks::{self, ClaimOutcome, Claimed, NewTask};
     use horch_core::taskledger::workers::{self, NewWorker};
     use horch_core::taskledger::Store;
     use std::path::Path;
+
+    /// Report 28 D-c: `horch ledger run new` writes the harness on the
+    /// orchestrator row it inserts: from the orchestrator's own session
+    /// record, else from the newest orchestrator row of the workspace.
+    #[test]
+    fn trf_45_run_new_writes_the_orchestrator_harness() {
+        use horch_core::execution::legacy::{LedgerRecordV1, KIND_ORCHESTRATOR};
+        use horch_core::execution::store::ExecutionStore;
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("repo");
+        std::fs::create_dir_all(&root).unwrap();
+        let db = dir.path().join("ledger.sqlite3");
+        let env = |record: Option<&str>| {
+            let mut env = MapEnv::new(&root)
+                .with("HOME", &dir.path().to_string_lossy())
+                .with(
+                    "HORCH_STATE_DIR",
+                    &dir.path().join("state").to_string_lossy(),
+                )
+                .with("HORCH_LEDGER_DB", &db.to_string_lossy())
+                .with("HORCH_PROJECT_DIR", &root.to_string_lossy());
+            if let Some(id) = record {
+                env = env.with("HORCH_RECORD_ID", id);
+            }
+            RuntimeContext::from_env(&env).unwrap()
+        };
+        let ctx = env(Some("orch-1"));
+        ExecutionStore::open_in(&ctx)
+            .unwrap()
+            .insert(LedgerRecordV1 {
+                record_id: "orch-1".into(),
+                agent: "codex".into(),
+                model: "gpt-5.6-sol".into(),
+                role: "orchestrator".into(),
+                kind: KIND_ORCHESTRATOR.into(),
+                ..LedgerRecordV1::default()
+            })
+            .unwrap();
+        let mut store = Store::open(&db).unwrap();
+        let run = |store: &mut Store, ctx: &RuntimeContext, slug: &str| {
+            let new = NewRun {
+                slug: slug.into(),
+                workspace_id: Some("w1".into()),
+                ..Default::default()
+            };
+            let r = super::insert_run(ctx, store, &root, &new, None).unwrap();
+            let id = r.orchestrator_worker_id.unwrap();
+            let w = workers::get(store.conn(), &id).unwrap();
+            store
+                .conn()
+                .execute(
+                    "UPDATE runs SET status = 'done' WHERE run_id = ?1",
+                    [&r.run_id],
+                )
+                .unwrap();
+            (w.harness, w.model)
+        };
+        let own = (Some("codex".to_string()), Some("gpt-5.6-sol".to_string()));
+        assert_eq!(run(&mut store, &ctx, "a"), own);
+        // No own record: the newest orchestrator row of the workspace.
+        assert_eq!(run(&mut store, &env(None), "b"), own);
+    }
 
     #[test]
     fn run_steps_prefer_steps_then_flag_then_env_then_light() {
@@ -2700,6 +3238,39 @@ mod tests {
             std::fs::write(root.join("tickets/t.md"), "# t\n").unwrap();
         }
         root.canonicalize().unwrap()
+    }
+
+    #[test]
+    fn trf_37_a_claim_prints_prior_work_before_the_ticket_snapshot() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = project(dir.path(), true);
+        let (_ctx, _store, mut c) = claimed(dir.path(), &root, None, |t| {
+            t.ticket_snapshot = Some("# t\n".into());
+        });
+        assert!(!render_claim(&c).contains("PRIOR WORK"));
+        c.handoff_path = Some("/w/ai_docs/handoffs/opus-1-whats-next.md".into());
+        let out = render_claim(&c);
+        let prior = out
+            .find("PRIOR WORK: read /w/ai_docs/handoffs/opus-1-whats-next.md first\n")
+            .expect("the PRIOR WORK line");
+        assert!(prior < out.find("Ticket snapshot").unwrap(), "{out}");
+    }
+
+    #[test]
+    fn trf_37_note_warns_once_only_in_the_handoff_state() {
+        use horch_core::compaction::policy::RowState;
+        let line = handoff_warning(RowState::Handoff, "opus-1").expect("a warning");
+        assert_eq!(line.lines().count(), 1, "{line}");
+        assert!(
+            line.contains("horch ledger handoff ai_docs/handoffs/opus-1-whats-next.md"),
+            "{line}"
+        );
+        for s in RowState::ALL
+            .into_iter()
+            .filter(|s| *s != RowState::Handoff)
+        {
+            assert_eq!(handoff_warning(s, "opus-1"), None, "{}", s.as_str());
+        }
     }
 
     fn ticket_of(c: &Claimed) -> &str {
@@ -2785,6 +3356,40 @@ mod tests {
         assert_eq!(Path::new(ticket_of(&c)), root.join("tickets/t.md"));
     }
 
+    #[test]
+    fn trf_16_run_new_check_sets_the_run_default_check() {
+        use clap::Parser;
+        #[derive(Parser)]
+        struct Cli {
+            #[command(flatten)]
+            a: super::NewRunArgs,
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let root = project(dir.path(), false);
+        let ctx = RuntimeContext::from_env(&MapEnv::new(dir.path())).unwrap();
+        let mut store = Store::open(&dir.path().join("ledger.sqlite3")).unwrap();
+        for (slug, check, want) in [
+            ("r1", Some("cargo test"), Some("cargo test")),
+            ("r2", Some(" "), None),
+            ("r3", None, None),
+        ] {
+            let mut argv = vec!["run-new", slug];
+            if let Some(c) = check {
+                argv.extend(["--check", c]);
+            }
+            let a = Cli::try_parse_from(argv).unwrap().a;
+            super::new_run_cmd(&ctx, &mut store, &root, a).unwrap();
+            let run = runs::of_project(store.conn(), &root)
+                .unwrap()
+                .into_iter()
+                .find(|r| r.slug == slug)
+                .unwrap();
+            let got =
+                horch_core::taskledger::finish::default_check(store.conn(), &run.run_id).unwrap();
+            assert_eq!(got.as_deref(), want, "{slug}");
+        }
+    }
+
     /// Whether `cmd` or a subcommand under it takes `--check`.
     fn takes_check(cmd: &clap::Command) -> bool {
         cmd.get_arguments().any(|a| a.get_long() == Some("check"))
@@ -2842,5 +3447,530 @@ mod tests {
                 );
             }
         }
+    }
+
+    fn git_in(dir: &Path, args: &[&str]) -> String {
+        let out = std::process::Command::new("git")
+            .args(args)
+            .current_dir(dir)
+            .env("GIT_AUTHOR_NAME", "t")
+            .env("GIT_AUTHOR_EMAIL", "t@t")
+            .env("GIT_COMMITTER_NAME", "t")
+            .env("GIT_COMMITTER_EMAIL", "t@t")
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "git {args:?}: {out:?}");
+        String::from_utf8_lossy(&out.stdout).trim().to_string()
+    }
+
+    /// A repository whose run branch `fleet/r1` is 1 commit ahead of `main`,
+    /// run r1 with remote `origin` and PR #7, and the finish tools with a
+    /// fake gh that prints `{"state":"<state>"}`.
+    fn gated_world(dir: &Path, state: &str) -> (finish::Tools, Store, Run) {
+        let root = dir.join("repo");
+        std::fs::create_dir(&root).unwrap();
+        git_in(&root, &["init", "-q", "-b", "main"]);
+        std::fs::write(root.join("a"), "a").unwrap();
+        git_in(&root, &["add", "a"]);
+        git_in(&root, &["commit", "-qm", "a"]);
+        git_in(&root, &["checkout", "-q", "-b", "fleet/r1"]);
+        std::fs::write(root.join("b"), "b").unwrap();
+        git_in(&root, &["add", "b"]);
+        git_in(&root, &["commit", "-qm", "b"]);
+        git_in(&root, &["checkout", "-q", "main"]);
+        let gh = dir.join("gh");
+        std::fs::write(
+            &gh,
+            format!("#!/bin/sh\necho \"$*\" >> \"$0.args\"\necho '{{\"state\":\"{state}\"}}'\n"),
+        )
+        .unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&gh, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        // Warm the fake: a new executable's first exec is slow on macOS.
+        let _ = std::process::Command::new(&gh).output();
+        let ctx = RuntimeContext::from_env(&MapEnv::new(dir)).unwrap();
+        let mut t = tools(&ctx);
+        t.git = Git::new("git");
+        t.gh = gh;
+        t.evidence_root = dir.join("evidence");
+        let mut store = Store::open(&dir.join("ledger.sqlite3")).unwrap();
+        let run = store
+            .immediate(|tx| {
+                let r = runs::create(
+                    tx,
+                    &root,
+                    &NewRun {
+                        slug: "r1".into(),
+                        base_branch: Some("main".into()),
+                        run_branch: Some("fleet/r1".into()),
+                        remote: Some("origin".into()),
+                        ..Default::default()
+                    },
+                )?;
+                runs::set_pr(tx, &r.run_id, 7, "https://example.invalid/pull/7")?;
+                runs::get(tx, &r.run_id)
+            })
+            .unwrap();
+        (t, store, run)
+    }
+
+    fn status_of(store: &Store, run: &Run) -> String {
+        runs::get(store.conn(), &run.run_id).unwrap().status
+    }
+
+    #[test]
+    fn trf_19_run_gate_command_records_a_gate_and_exits_by_its_result() {
+        let dir = tempfile::tempdir().unwrap();
+        let (t, mut store, run) = gated_world(dir.path(), "MERGED");
+        let err = super::gate_cmd(&t, &mut store, &run, None).unwrap_err();
+        assert!(err.to_string().contains("has no check"), "{err}");
+        finish::set_default_check(store.conn(), &run.run_id, "test -f b").unwrap();
+        let code = super::gate_cmd(&t, &mut store, &run, None).unwrap();
+        assert_eq!(code, ExitCode::SUCCESS);
+        let code = super::gate_cmd(&t, &mut store, &run, Some("exit 4")).unwrap();
+        assert_eq!(code, ExitCode::FAILURE);
+        let rows: String = store
+            .conn()
+            .query_row(
+                "SELECT group_concat(command || '=' || exit_code, ';') FROM
+                    (SELECT command, exit_code FROM run_gates ORDER BY gate_id)",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(rows, "test -f b=0;exit 4=4");
+    }
+
+    #[test]
+    fn trf_20_run_close_asks_gh_and_refuses_an_open_pr() {
+        let dir = tempfile::tempdir().unwrap();
+        let (t, mut store, run) = gated_world(dir.path(), "OPEN");
+        let err = super::close_run_cmd(&t, &mut store, &run, None, None, &no_stops()).unwrap_err();
+        assert!(err.to_string().contains("no gate on its tip"), "{err}");
+        assert_eq!(
+            super::gate_cmd(&t, &mut store, &run, Some("true")).unwrap(),
+            ExitCode::SUCCESS
+        );
+        let err = super::close_run_cmd(&t, &mut store, &run, None, None, &no_stops()).unwrap_err();
+        assert!(
+            err.to_string().contains("PR #7 is open, not merged"),
+            "{err}"
+        );
+        let args = std::fs::read_to_string(dir.path().join("gh.args")).unwrap();
+        assert!(args.contains("pr view 7 --json state"), "{args}");
+        assert_eq!(status_of(&store, &run), "active");
+
+        let code = super::close_run_cmd(
+            &t,
+            &mut store,
+            &run,
+            None,
+            Some("not wanted".into()),
+            &no_stops(),
+        );
+        assert_eq!(code.unwrap(), ExitCode::SUCCESS);
+        assert_eq!(status_of(&store, &run), "done");
+    }
+
+    #[test]
+    fn trf_20_run_close_passes_with_a_merged_pr_and_without_gh() {
+        let dir = tempfile::tempdir().unwrap();
+        let (t, mut store, run) = gated_world(dir.path(), "MERGED");
+        super::gate_cmd(&t, &mut store, &run, Some("true")).unwrap();
+        super::close_run_cmd(&t, &mut store, &run, None, None, &no_stops()).unwrap();
+        assert_eq!(status_of(&store, &run), "done");
+
+        // No gh: the PR condition is not applicable.
+        let dir = tempfile::tempdir().unwrap();
+        let (mut t, mut store, run) = gated_world(dir.path(), "OPEN");
+        t.gh = dir.path().join("no-such-gh");
+        super::gate_cmd(&t, &mut store, &run, Some("true")).unwrap();
+        let pr = finish::pr::pr_check(&t.gh, &t.git, &run).unwrap();
+        assert!(
+            matches!(&pr, runs::PrCheck::NotApplicable(w) if w.contains("gh is not installed")),
+            "{pr:?}"
+        );
+        super::close_run_cmd(&t, &mut store, &run, None, None, &no_stops()).unwrap();
+        assert_eq!(status_of(&store, &run), "done");
+    }
+
+    /// Processes that each run with start time 7 and end on TERM. Each
+    /// signal is recorded with its PID.
+    #[derive(Default)]
+    struct FakeProcs {
+        gone: std::cell::RefCell<Vec<u32>>,
+        sent: std::cell::RefCell<Vec<(u32, horch_core::procid::Stop)>>,
+    }
+
+    impl stop::Processes for FakeProcs {
+        fn is_same(&self, pid: u32, started: u64) -> bool {
+            started == 7 && !self.gone.borrow().contains(&pid)
+        }
+        fn exists(&self, pid: u32) -> bool {
+            !self.gone.borrow().contains(&pid)
+        }
+        fn stop_same(&self, pid: u32, started: u64, how: horch_core::procid::Stop) -> bool {
+            if !self.is_same(pid, started) {
+                return false;
+            }
+            self.sent.borrow_mut().push((pid, how));
+            self.gone.borrow_mut().push(pid);
+            true
+        }
+    }
+
+    /// No process and no pane exists.
+    struct Nothing;
+
+    impl stop::Processes for Nothing {
+        fn is_same(&self, _: u32, _: u64) -> bool {
+            false
+        }
+        fn exists(&self, _: u32) -> bool {
+            false
+        }
+        fn stop_same(&self, _: u32, _: u64, _: horch_core::procid::Stop) -> bool {
+            false
+        }
+    }
+
+    impl stop::Panes for Nothing {
+        fn exists(&self, _: &str) -> bool {
+            false
+        }
+        fn close(&self, _: &str) -> anyhow::Result<()> {
+            Ok(())
+        }
+    }
+
+    fn fast() -> stop::StopOptions {
+        stop::StopOptions {
+            grace: std::time::Duration::from_millis(30),
+            poll: std::time::Duration::from_millis(5),
+            ..Default::default()
+        }
+    }
+
+    /// A stopper that finds nothing to stop.
+    fn no_stops() -> super::Stopper<'static> {
+        super::Stopper {
+            panes: &Nothing,
+            procs: &Nothing,
+            opts: fast(),
+        }
+    }
+
+    fn stopper(procs: &FakeProcs) -> super::Stopper<'_> {
+        super::Stopper {
+            panes: &Nothing,
+            procs,
+            opts: fast(),
+        }
+    }
+
+    /// The task "t" of run "r1", claimed by a worker whose agent (PID 4000)
+    /// and supervisor (PID 4001) run with start time 7.
+    fn running(dir: &Path) -> (RuntimeContext, Store, Run, Claimed) {
+        let root = dir.join("project");
+        std::fs::create_dir_all(&root).unwrap();
+        let (ctx, store, c) = claimed(dir, &root, None, |_| {});
+        store
+            .conn()
+            .execute(
+                "UPDATE workers SET agent_pid = 4000, agent_started = 7,
+                    supervisor_pid = 4001, supervisor_started = 7",
+                [],
+            )
+            .unwrap();
+        let run = runs::get(store.conn(), &c.task.run_id).unwrap();
+        (ctx, store, run, c)
+    }
+
+    fn requeues(store: &Store) -> i64 {
+        store
+            .conn()
+            .query_row(
+                "SELECT count(*) FROM events WHERE kind = 'requeued'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap()
+    }
+
+    fn term_to_both() -> Vec<(u32, horch_core::procid::Stop)> {
+        use horch_core::procid::Stop;
+        vec![(4000, Stop::Term), (4001, Stop::Term)]
+    }
+
+    #[test]
+    fn trf_36_cancel_signals_the_recorded_pids_and_writes_no_requeue() {
+        let dir = tempfile::tempdir().unwrap();
+        let (_ctx, mut store, run, c) = running(dir.path());
+        let procs = FakeProcs::default();
+        let t = super::cancel_and_stop(
+            &mut store,
+            &run,
+            &c.task.short(),
+            "not wanted",
+            &stopper(&procs),
+        )
+        .unwrap();
+        assert_eq!(*procs.sent.borrow(), term_to_both());
+        assert_eq!(t.status, "cancelled");
+        assert_eq!(
+            tasks::get(store.conn(), &t.task_id).unwrap().status,
+            "cancelled"
+        );
+        assert_eq!(requeues(&store), 0);
+    }
+
+    #[test]
+    fn trf_36_run_close_abandon_signals_the_recorded_pids() {
+        let dir = tempfile::tempdir().unwrap();
+        let (ctx, mut store, run, c) = running(dir.path());
+        let procs = FakeProcs::default();
+        let code = super::close_run_cmd(
+            &tools(&ctx),
+            &mut store,
+            &run,
+            Some("gave up"),
+            None,
+            &stopper(&procs),
+        )
+        .unwrap();
+        assert_eq!(code, ExitCode::SUCCESS);
+        assert_eq!(*procs.sent.borrow(), term_to_both());
+        assert_eq!(status_of(&store, &run), "abandoned");
+        assert_eq!(
+            tasks::get(store.conn(), &c.task.task_id).unwrap().status,
+            "cancelled"
+        );
+        assert_eq!(requeues(&store), 0);
+    }
+
+    /// The context of a caller in herdr workspace `workspace` (none: outside
+    /// herdr) whose project is `root`, and the ledger in `dir`.
+    fn task_world(dir: &Path, root: &Path, workspace: Option<&str>) -> (RuntimeContext, Store) {
+        let mut env = MapEnv::new(root).with("HORCH_PROJECT_DIR", root.to_str().unwrap());
+        if let Some(ws) = workspace {
+            env = env.with("HORCH_WORKSPACE_ID", ws);
+        }
+        let ctx = RuntimeContext::from_env(&env).unwrap();
+        let store = Store::open(&dir.join("ledger.sqlite3")).unwrap();
+        (ctx, store)
+    }
+
+    fn task_args(title: &str, file: Option<&Path>, check: Option<&str>) -> super::TaskArgs {
+        super::TaskArgs {
+            title: title.into(),
+            persona: "opus".into(),
+            file: file.map(Path::to_path_buf),
+            check: check.map(str::to_string),
+        }
+    }
+
+    #[test]
+    fn trf_42_task_creates_the_solo_run_once_and_queues_each_task_in_it() {
+        use horch_core::taskledger::model::VerifyProfile;
+        let dir = tempfile::tempdir().unwrap();
+        let root = project(dir.path(), false);
+        let (ctx, mut store) = task_world(dir.path(), &root, Some("w7"));
+        super::task_cmd(
+            &ctx,
+            &mut store,
+            task_args("fix a typo", None, Some("true")),
+        )
+        .unwrap();
+        super::task_cmd(&ctx, &mut store, task_args("bump a dep", None, None)).unwrap();
+        let all = runs::of_project(store.conn(), &root).unwrap();
+        assert_eq!(all.len(), 1, "1 solo run: {all:?}");
+        let run = &all[0];
+        assert_eq!(run.slug, "solo-w7");
+        assert_eq!(run.workspace_id.as_deref(), Some("w7"));
+        assert_eq!(run.steps().unwrap(), VerifyProfile::Minimal.steps());
+        let queued = tasks::of_run(store.conn(), &run.run_id).unwrap();
+        let titles: Vec<&str> = queued.iter().map(|t| t.title.as_str()).collect();
+        assert_eq!(titles, ["fix a typo", "bump a dep"]);
+        let first = &queued[0];
+        assert_eq!(first.claimable_by.as_deref(), Some("opus"));
+        assert_eq!(first.land_check.as_deref(), Some("true"));
+        assert_eq!(first.task_file.as_deref(), Some(super::ONE_OFF_TICKET));
+        assert_eq!(first.ticket_snapshot.as_deref(), Some("# fix a typo\n"));
+        assert_eq!(
+            super::spawn_line("opus", run),
+            "Run next: horch spawn opus --run solo-w7"
+        );
+    }
+
+    #[test]
+    fn trf_42_task_with_a_file_takes_the_tickets_check() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = project(dir.path(), false);
+        std::fs::write(
+            root.join("tickets/t.md"),
+            "# t\n\n**Check:** `cargo test`\n",
+        )
+        .unwrap();
+        let (ctx, mut store) = task_world(dir.path(), &root, Some("w7"));
+        let file = root.join("tickets/t.md");
+        super::task_cmd(&ctx, &mut store, task_args("t", Some(&file), None)).unwrap();
+        let run = runs::active_solo(store.conn(), &root, "w7")
+            .unwrap()
+            .unwrap();
+        let t = &tasks::of_run(store.conn(), &run.run_id).unwrap()[0];
+        assert_eq!(t.task_file.as_deref(), Some("tickets/t.md"));
+        assert_eq!(t.land_check.as_deref(), Some("cargo test"));
+        assert_eq!(t.ticket_snapshot, None);
+    }
+
+    /// `horch ledger run new <slug>` as the CLI parses it.
+    fn new_run_args(slug: &str) -> super::NewRunArgs {
+        #[derive(clap::Parser)]
+        struct P {
+            #[command(flatten)]
+            a: super::NewRunArgs,
+        }
+        <P as clap::Parser>::parse_from(["run-new", slug]).a
+    }
+
+    #[test]
+    fn trf_34_run_new_refuses_a_2nd_active_run_in_a_workspace() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = project(dir.path(), false);
+        let (ctx, mut store) = task_world(dir.path(), &root, Some("w7"));
+        super::new_run_cmd(&ctx, &mut store, &root, new_run_args("plan")).unwrap();
+        let err = super::new_run_cmd(&ctx, &mut store, &root, new_run_args("next"))
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("active run plan"), "{err}");
+        assert!(err.contains("horch ledger run close --run plan"), "{err}");
+        assert!(err.contains("another workspace"), "{err}");
+        let slugs: Vec<String> = runs::of_project(store.conn(), &root)
+            .unwrap()
+            .into_iter()
+            .map(|r| r.slug)
+            .collect();
+        assert_eq!(slugs, ["plan"]);
+        // Another workspace may create its run.
+        let (other, mut store) = task_world(dir.path(), &root, Some("w8"));
+        super::new_run_cmd(&other, &mut store, &root, new_run_args("next")).unwrap();
+    }
+
+    #[test]
+    fn trf_34_run_new_ignores_solo_and_workspaceless_runs() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = project(dir.path(), false);
+        let (outside, mut store) = task_world(dir.path(), &root, None);
+        super::new_run_cmd(&outside, &mut store, &root, new_run_args("loose")).unwrap();
+        super::new_run_cmd(&outside, &mut store, &root, new_run_args("loose2")).unwrap();
+        let (ctx, mut store) = task_world(dir.path(), &root, Some("w7"));
+        super::task_cmd(&ctx, &mut store, task_args("t", None, None)).unwrap();
+        super::new_run_cmd(&ctx, &mut store, &root, new_run_args("plan")).unwrap();
+        // The solo run still takes one-off tasks next to the planned run.
+        super::task_cmd(&ctx, &mut store, task_args("t2", None, None)).unwrap();
+        assert_eq!(runs::of_project(store.conn(), &root).unwrap().len(), 4);
+    }
+
+    #[test]
+    fn trf_42_task_outside_a_workspace_queues_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = project(dir.path(), false);
+        let (ctx, mut store) = task_world(dir.path(), &root, None);
+        let err = super::task_cmd(&ctx, &mut store, task_args("t", None, None)).unwrap_err();
+        assert!(format!("{err:#}").contains("herdr workspace"), "{err:#}");
+        assert!(runs::of_project(store.conn(), &root).unwrap().is_empty());
+    }
+
+    /// The land step of task `title` of the solo run of workspace w7, claimed
+    /// by a new worker, with the checkout `root` on the run branch.
+    fn land_one_off(
+        dir: &Path,
+        ctx: &RuntimeContext,
+        store: &mut Store,
+        root: &Path,
+    ) -> (finish::Outcome, finish::Outcome) {
+        use horch_core::taskledger::model::StepName;
+        let run = runs::active_solo(store.conn(), root, "w7")
+            .unwrap()
+            .unwrap();
+        let worker = NewWorker {
+            run_id: run.run_id.clone(),
+            persona: "opus".into(),
+            ..Default::default()
+        };
+        let worker = store.immediate(|tx| workers::insert(tx, &worker)).unwrap();
+        let ClaimOutcome::Claimed(c) = store.immediate(|tx| tasks::claim(tx, &worker)).unwrap()
+        else {
+            panic!("the worker claims the one-off");
+        };
+        let worker = workers::get(store.conn(), &worker).unwrap();
+        let mut t = tools(ctx);
+        t.git = Git::new("git");
+        t.evidence_root = dir.join("evidence");
+        let evidence_dir = dir.join("evidence").join(&c.task.task_id);
+        std::fs::create_dir_all(&evidence_dir).unwrap();
+        let cx = finish::Ctx {
+            tools: &t,
+            run: &run,
+            task: &c.task,
+            worker: &worker,
+            worktree: None,
+            dir: root.to_path_buf(),
+            root: root.to_path_buf(),
+            evidence_dir,
+            seq: 1,
+            default_check: None,
+        };
+        let check = finish::land::check(&cx, StepName::Check).unwrap();
+        let land = finish::land::land(store, &cx).unwrap();
+        (check, land)
+    }
+
+    #[test]
+    fn trf_42_a_one_off_with_check_none_lands() {
+        use horch_core::taskledger::model::StepStatus;
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("repo");
+        std::fs::create_dir(&root).unwrap();
+        git_in(&root, &["init", "-q", "-b", "main"]);
+        std::fs::write(root.join("a"), "a").unwrap();
+        git_in(&root, &["add", "a"]);
+        git_in(&root, &["commit", "-qm", "a"]);
+        let root = root.canonicalize().unwrap();
+        let (ctx, mut store) = task_world(dir.path(), &root, Some("w7"));
+        super::task_cmd(&ctx, &mut store, task_args("no check", None, None)).unwrap();
+        super::task_cmd(&ctx, &mut store, task_args("tidy", None, Some(" none "))).unwrap();
+        let run = runs::active_solo(store.conn(), &root, "w7")
+            .unwrap()
+            .unwrap();
+        let queued = tasks::of_run(store.conn(), &run.run_id).unwrap();
+        assert!(!queued[0].check_none);
+        assert!(queued[1].check_none, "--check none sets check_none");
+        assert_eq!(queued[1].land_check, None, "none is not a command");
+        git_in(&root, &["checkout", "-q", "fleet/solo-w7"]);
+
+        let (check, land) = land_one_off(dir.path(), &ctx, &mut store, &root);
+        assert_eq!(check.status, StepStatus::Failed, "no check: {check:?}");
+        assert_eq!(land.status, StepStatus::Failed, "no check: {land:?}");
+
+        let (check, land) = land_one_off(dir.path(), &ctx, &mut store, &root);
+        assert_eq!(check.status, StepStatus::NotApplicable, "{check:?}");
+        assert_eq!(land.status, StepStatus::Passed, "{land:?}");
+    }
+
+    #[test]
+    fn trf_42_a_one_off_claim_does_not_name_add_map() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = project(dir.path(), false);
+        let (_ctx, _store, c) = claimed(dir.path(), &root, None, |t| {
+            t.task_file = super::ONE_OFF_TICKET.into();
+            t.ticket_snapshot = Some("# fix a typo\n".into());
+        });
+        let out = render_claim(&c);
+        assert!(!out.contains("add-map"), "{out}");
+        assert!(out.contains("# fix a typo"), "{out}");
     }
 }

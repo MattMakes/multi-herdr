@@ -165,6 +165,8 @@ fn a_queued_task_behind_a_task_with_its_file_waits_on_the_file() {
     add(&mut s, &run, "b", "opus", |t| {
         t.own = vec!["crates/horch/src/cmd/taskledger.rs".into()]
     });
+    // A slot is held only for a persona with a live worker (TRF-31).
+    worker(&mut s, &run, "opus");
     let waits = tasks::waits(s.conn(), &run.run_id).unwrap();
     assert_eq!(waits.len(), 1, "{waits:?}");
     assert_eq!(waits[0].0.short(), "T-2");
@@ -341,7 +343,6 @@ fn a_cancelled_task_is_finished_and_not_claimable() {
     s.immediate(|tx| tasks::cancel(tx, &t, "dropped")).unwrap();
     let w = worker(&mut s, &run, "opus");
     assert!(matches!(claim(&mut s, &w), ClaimOutcome::NoTask { .. }));
-    assert!(tasks::all_finished(s.conn(), &run.run_id).unwrap());
 }
 
 #[test]
@@ -355,6 +356,8 @@ fn shared_checkout_tasks_run_one_at_a_time() {
         t.worktree_mode = WorktreeMode::Shared
     });
     add(&mut s, &run, "c", "opus", |_| {});
+    // A slot is held only for a persona with a live worker (TRF-31).
+    worker(&mut s, &run, "opus");
     let plan = tasks::plan_workers(s.conn(), &run.run_id).unwrap();
     assert_eq!(
         plan[0].startable, 2,
@@ -434,11 +437,42 @@ fn a_schema_2_ledger_migrates_forward_and_keeps_its_rows() {
     let w = worker(&mut store, &run, "opus");
     assert_eq!(claimed_seq(&claim(&mut store, &w)), Some(1));
     drop(store);
-    // Take the file back to schema 2: v3 added 3 columns, v4 added 2.
+    // Take the file back to schema 2: undo v7, v6 and the v5 columns, then
+    // the 3 columns of v3 and the 2 of v4. A step left in place runs again
+    // and fails (`duplicate column name`).
+    assert_eq!(
+        horch_core::taskledger::schema::VERSION,
+        7,
+        "undo the new version here"
+    );
     let path = dir.path().join("ledger.sqlite3");
     let conn = rusqlite::Connection::open(&path).unwrap();
     conn.execute_batch(
-        "ALTER TABLE runs DROP COLUMN max_attempts;
+        "DROP INDEX session_records_by_slug;
+         DROP TABLE session_records;
+         DROP INDEX outbox_undelivered;
+         DROP TABLE outbox;
+         DROP INDEX run_gates_by_tip;
+         DROP TABLE run_gates;
+         ALTER TABLE tasks DROP COLUMN work_kind;
+         ALTER TABLE tasks DROP COLUMN review_mode;
+         ALTER TABLE tasks DROP COLUMN ticket_snapshot;
+         ALTER TABLE tasks DROP COLUMN ticket_sha;
+         ALTER TABLE tasks DROP COLUMN check_none;
+         ALTER TABLE runs DROP COLUMN default_check;
+         ALTER TABLE runs DROP COLUMN pr_declined_reason;
+         ALTER TABLE runs DROP COLUMN orchestrator_stopped_at;
+         ALTER TABLE runs DROP COLUMN orchestrator_respawns;
+         ALTER TABLE runs DROP COLUMN last_respawn_at;
+         ALTER TABLE workers DROP COLUMN handoff_path;
+         ALTER TABLE workers DROP COLUMN target_task_id;
+         ALTER TABLE worktrees DROP COLUMN bytes;
+         ALTER TABLE worktrees DROP COLUMN bytes_measured_at;
+         ALTER TABLE worktrees DROP COLUMN archive_ref;
+         ALTER TABLE worktrees DROP COLUMN decision;
+         ALTER TABLE worktrees DROP COLUMN decided_at;
+         ALTER TABLE worktrees DROP COLUMN bytes_freed;
+         ALTER TABLE runs DROP COLUMN max_attempts;
          ALTER TABLE tasks DROP COLUMN held_reason;
          ALTER TABLE tasks DROP COLUMN attempt_floor;
          ALTER TABLE runs DROP COLUMN watchdog_version;

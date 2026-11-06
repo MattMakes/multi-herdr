@@ -1,0 +1,75 @@
+# 30: Rewrite the briefings and docs for the new behaviour
+
+<!-- horch-ticket: 1 -->
+**Persona:** primary `opus`, fallback `backend-developer` · **Parallel:** yes
+**Kind:** docs
+**Review:** none
+**Check:** `cargo check --workspace --all-targets && cargo test -p horch-core -- golden trf_46`
+**Own:** `teammates/_base/`, `skills/orchestrate/`, `docs/fleet-workflow.md`, `docs/command-flow.md`, `docs/specs/task-ledger.md`, `docs/specs/context-policy.md`, `README.md`, `CHANGELOG.md`, `crates/horch-core/tests/golden/`, `crates/horch-core/tests/trf_46_briefings.rs`
+
+Spec: `docs/specs/trace-fixes.md` (contracts in section 3, schema in 4, timings in 5, conventions in 8).
+Waits for: 07 (complexity-sweep covers Rust); 18 (Bounded, incremental, cheaper code review); 29 (Stop writing the JSON session ledger). Wave 10.
+
+## Goal
+
+Make the prompts describe what the code now does, in 1 pass (U1, U3, U4).
+
+## Requirements
+
+- **TRF-46**: The briefings contain no push dispatch, and every `context --over` state has an instruction. Test name starts with `trf_46_`.
+
+## Steps
+
+1. Orchestrator: pull only (no 'Read and follow <path>' spawns, no assign), idea → spec → tickets → `add-map --dry-run` → `add-map`, `run gate` and close, `--answers`, reviewers spawned by horch, the respawn first instruction.
+2. Worker: `ledger progress` only, 'ticket' not 'plan file', the handoff route, an instruction for every state id from ticket 08's report.
+3. Docs and specs: the new commands, contracts C1-C7, timings. README and CHANGELOG: the removal from ticket 02's report, and 1 user-visible CHANGELOG line for the run.
+4. Re-bless only the goldens these edits change. Write `trf_46_*`: no push phrase in the briefings; every state id has an instruction.
+
+Amendment (report 04): `teammates/_base/fleet-orchestrator.md` lines 160-173, its golden in `crates/horch-core/tests/golden_prompts.rs`, and `README.md` lines 430-436 still name `ai_docs/specs` and `ai_docs/tickets`. Change them to `docs/specs/<slug>.md` and `docs/tickets/<slug>/`. Bless only that golden.
+
+Amendment (reports 06, 08):
+- `docs/specs/context-policy.md` CTX-09: describe the new `--over` output and the instruction ids that report 08 lists.
+- The briefing: add 1 instruction for each new context state id in report 08, including `handoff`.
+- `docs/specs/task-ledger.md` section 5.5: name the land-lock stale age (check timeout plus 10 min) and the reset after a red land (report 06).
+
+Amendment (report 05, incident of 2026-11-06):
+- Describe the `[<role> #<id>]` mail tag in the INSTRUCTIONS text of `crates/horch-core/src/messaging/channel.rs` and in `teammates/_base/fleet-orchestrator.md`.
+- Add 1 rule to the worker base briefing: never run a horch built from a worktree (`cargo run`, `target/*/horch`) without `HORCH_LEDGER_DB` set to a scratch file. Ticket 35 adds the code guard; the rule explains it.
+
+Amendment (report 10): `horch ledger claim` now prints the ticket snapshot, then the path. Change the briefing line that tells a worker to read the ticket file in full: the snapshot is the ticket; read the file only for context.
+
+Amendment (decision R11): add `question` to the C3 event list in `docs/specs/trace-fixes.md` section 3, and name the 2 light reviewer personas in the docs that list teammates.
+
+Amendment (report 34): `docs/specs/architecture.md` lines near 1211 and 1274 still describe `footprint_bytes`, which ticket 34 deleted. The module doc of `crates/horch-core/src/harness/capabilities.rs` names the competition preflight. Fix both texts (approved outside Own).
+
+Amendment (report 12): tell the orchestrator to pass `horch ledger run new <slug> --check "<command>"` when the project has a whole-run check. Make the not-applicable note in `crates/horch-core/src/taskledger/finish/complexity.rs` name the Rust clippy path too (approved outside Own).
+
+Amendment (report 17): document `horch tell <role> --answers <question-id> "<text>"` and the `[orchestrator re #<id>]` line in the orchestrator briefing. A plain tell closes no question.
+
+Amendment (report 13): document `horch ledger run gate [--check <cmd>]` and `horch ledger run close --pr-declined <reason>` in the orchestrator briefing: close needs a settled run, a passing gate on the current tip, and a merged or declined PR.
+
+Amendment (reports 16, 18): `horch ledger finish` now spawns code-sweep reviewers itself and sends 1 NOTE naming them. Remove every briefing line that tells the orchestrator to spawn reviewers. Describe the review cap (none 0, light 1, full 3 rounds), the `## Answers` section with `F<n> accepted|rejected`, and the light reviewers for rounds 2-3.
+
+Amendment (report 22): `horch ledger cancel` always stops the worker now; `--stop` is hidden and does nothing. Remove `--stop` from every briefing and doc, and say that cancel and `run close --abandon` stop the worker.
+
+Amendment (report 20): a task-less spawn joins only the active run of its own workspace. A run with no workspace id (made by an older horch outside herdr) needs `horch spawn <persona> --run <slug>`. Say this in the briefing and in the CHANGELOG line.
+
+Amendment (report 23): replace the compaction fresh route prose with `horch ledger handoff <absolute path>`: it ends the worker handed off, requeues the task first with its worktree, and the next claim prints `PRIOR WORK: read <path> first`. Workers run it themselves when their context state is `handoff`.
+
+Amendment (report 26): document `horch ledger task "<title>" --persona <p> [--file <ticket>] [--check "<cmd>"|none]`, the `solo-<workspace>` run it uses, and `Run next: horch spawn <p> --run solo-<workspace>`.
+
+Amendment (report 24): document `horch fleet stop` (a deliberate stop; no respawn), the orchestrator respawn rules of C7, and the `Orchestrator` line of `horch ledger status`.
+
+Amendment (reports 42, 43): an orchestrator launch claims its run (records the workspace, clears a stop). 1 active non-solo run per workspace: `run new` refuses a 2nd.
+
+Amendment (R45): ticket 29 moves the session records from `<slug>.json` files into a new `session_records` table of the task ledger (v7). Document the table (from report 29: DDL and reason) in `docs/specs/task-ledger.md`, and remove every doc line that says sessions live in a JSON ledger file.
+
+Amendment (report 46): in `CHANGELOG.md`, say that a run already open when this version is installed gets 1 extra wake line per unresolved event on the first watchdog pass (the wake keys changed), and that it is harmless.
+
+## Done when
+
+TRF-46 and the golden tests pass.
+
+## Report
+
+Write `ai_docs/reports/trace-fixes/30.md` (spec section 8). Then run `horch ledger finish`; when every step passed, run `horch ledger done "<summary>"`.

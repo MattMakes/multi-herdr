@@ -113,7 +113,7 @@ user-visible behavior changed.
 | `crates/horch-core/tests/oracles/routing/` | routing decisions per quota fixture | `baseline_oracles.rs` |
 | `crates/horch-core/tests/oracles/ledgers/` | ledger reads | `baseline_oracles.rs` |
 | `crates/horch/tests/oracles/` | `horch skills` and `horch sessions` output | `crates/horch/tests/baseline_cli.rs` |
-| `crates/horch-core/tests/golden/` | rendered briefings and execpolicy files; `export-1.0.0.jsonl`; `worker-run-1.0.0.json` | `golden_prompts.rs`, `dataset_export.rs`, `measure.rs` |
+| `crates/horch-core/tests/golden/` | rendered briefings and execpolicy files | `golden_prompts.rs` |
 | `crates/horch/tests/golden/` | telemetry screen frames (`ratatui` `TestBackend` text) | unit tests in `crates/horch/src/cmd/telemetry/mod.rs` |
 | `crates/horch-e2e/tests/golden/` | the telemetry e2e frame | `crates/horch-e2e/tests/scenario.rs` |
 | `crates/horch-core/tests/fixtures/harness/` | launch snapshots from before the harness move | `crates/horch-core/tests/harness.rs` |
@@ -132,8 +132,6 @@ comparing. The 7 files that read it behave in 2 ways:
 | `crates/horch/tests/baseline_cli.rs` | overwrites the oracle |
 | `crates/horch/src/cmd/telemetry.rs` (unit tests) | overwrites the golden |
 | `crates/horch-e2e/tests/scenario.rs` | overwrites the golden |
-| `crates/horch-core/tests/dataset_export.rs` | writes the golden only when it is absent |
-| `crates/horch-core/tests/measure.rs` | writes the golden only when it is absent |
 | `crates/horch-core/tests/harness.rs` | writes the fixture only when it is absent |
 
 The rules:
@@ -149,8 +147,6 @@ The rules:
   `crates/horch-core/tests/skills_catalog.rs` (alphabetical, 1 name per
   line). A new launch oracle file makes `arc_01_baseline_oracles_present`
   fail, because it counts exactly 33.
-- An absent-only golden (`export-1.0.0.jsonl`, `worker-run-1.0.0.json`) is a
-  schema. A change to it is a schema version change, not a bless.
 - The briefing goldens (`worker-*.txt`, `fleet-orchestrator.txt`,
   `execpolicy-*.txt` in `crates/horch-core/tests/golden/`) have no bless.
   They hold the OLD text. When you change a line in `teammates/_base/`, add
@@ -194,8 +190,7 @@ the e2e tests use it to test crash and resume.
   `Harness::write_bin`. `check_built_fakes` fails the test when a built fake
   changed. After a mistake, delete the damaged `target/debug/fake-*` and
   rebuild.
-- `HORCH_E2E_KEEP=1` keeps a test's temp dir. Judge bundle dirs are mode 0500:
-  run `chmod -R u+w <dir>` before you delete them.
+- `HORCH_E2E_KEEP=1` keeps a test's temp dir.
 - macOS kills a copied system binary (exit 137). Symlink it instead.
 - `sqlite3` reads an argument that starts with `-` as an option. Feed SQL on
   stdin.
@@ -214,8 +209,7 @@ the e2e tests use it to test crash and resume.
 ## Live checks (not in the gate)
 
 A live check proves a claim against a real tool on the operator's Mac
-(Unreal, Blender, Xcode, the harness CLIs, real telemetry, a real dataset
-round, Linux). Each family has a script `scripts/live/<family>.sh` and a
+(Unreal, Blender, Xcode, the harness CLIs, real telemetry, Linux). Each family has a script `scripts/live/<family>.sh` and a
 tracked result file. [live-checks/README.md](live-checks/README.md) is the
 index: how to run a check, the families, and the result-file format.
 

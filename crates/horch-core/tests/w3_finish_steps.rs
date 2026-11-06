@@ -147,9 +147,13 @@ impl World {
     }
 
     /// A claimed worktree task with `check`, and its worktree with 1 commit
-    /// of `file`.
+    /// of `file`. No `check` means its ticket says `**Check:** none`: a
+    /// task with no check lands only then (TRF-17).
     fn task(&mut self, check: Option<&str>, file: &str) -> (String, PathBuf) {
-        let w = self.claimed("opus", |t| t.land_check = check.map(Into::into));
+        let w = self.claimed("opus", |t| {
+            t.land_check = check.map(Into::into);
+            t.check_none = check.is_none();
+        });
         let wt = finish::worktree_new(&mut self.store, &self.tools.git, &w, "feat").unwrap();
         let path = PathBuf::from(&wt.path);
         commit(&path, file, "work\n");
@@ -440,6 +444,7 @@ fn a_task_that_is_not_landing_lands_nothing() {
         root: w.root.clone(),
         evidence_dir: evidence,
         seq: 1,
+        default_check: None,
     };
     let o = land::land(&mut w.store, &cx).unwrap();
     assert_eq!(o.verdict.as_deref(), Some("not landed"));
@@ -595,7 +600,7 @@ fn complexity_sweep_skips_files_the_analyser_cannot_read() {
     assert_eq!(step(&r, "complexity-sweep").status, "not_applicable");
     assert_eq!(
         note(&r, "complexity-sweep"),
-        "no changed file is in a language the analyser reads"
+        "no changed file is in a language that the analyser (TypeScript, JavaScript, Python) or clippy (Rust) reads"
     );
     assert!(step(&r, "complexity-sweep").judged_rev.is_some());
 }
@@ -676,6 +681,59 @@ fn complexity_sweep_fails_on_a_violation_in_a_changed_function() {
         )
     );
     assert!(step(&r, "complexity-sweep").judged_rev.is_some());
+}
+
+/// A cargo crate whose `tangled` function is over the threshold that
+/// `clippy.toml` sets (2).
+const RUST_LIB: &str = "pub fn simple(x: u32) -> u32 {
+    x + 1
+}
+
+pub fn tangled(v: &[u32]) -> u32 {
+    let mut n = 0;
+    for a in v {
+        if *a > 1 {
+            for b in v {
+                if *b > *a && *a % 2 == 0 || *b == 3 {
+                    n += 1;
+                }
+            }
+        }
+    }
+    n
+}
+";
+
+#[test]
+fn trf_07_complexity_sweep_runs_clippy_on_a_changed_rust_function() {
+    let mut w = World::new(&[StepName::ComplexitySweep], false);
+    let files = [
+        (
+            "Cargo.toml",
+            "[package]\nname = \"fx\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[workspace]\n",
+        ),
+        ("clippy.toml", "cognitive-complexity-threshold = 2\n"),
+        (".gitignore", "target\nCargo.lock\n"),
+        ("src/lib.rs", RUST_LIB),
+    ];
+    std::fs::create_dir_all(w.root.join("src")).unwrap();
+    for (f, body) in files {
+        std::fs::write(w.root.join(f), body).unwrap();
+        git(&w.root, &["add", f]);
+    }
+    git(&w.root, &["commit", "--quiet", "-m", "crate"]);
+    git(&w.root, &["branch", "-f", RUN_BRANCH, "main"]);
+    let id = w.claimed("opus", |_| {});
+    let wt = finish::worktree_new(&mut w.store, &w.tools.git, &id, "feat").unwrap();
+    let path = PathBuf::from(&wt.path);
+    commit(&path, "src/lib.rs", &RUST_LIB.replace("n += 1", "n += 2"));
+    let r = w.finish(&id);
+    assert_eq!(verdict(&r, "complexity-sweep"), "1 violations", "{r:?}");
+    let n = note(&r, "complexity-sweep");
+    assert!(
+        n.contains("src/lib.rs:5 tangled cognitiveComplexity=5 (max 2)"),
+        "{n}"
+    );
 }
 
 // ---- pr (#146) ----
@@ -811,7 +869,7 @@ fn pr_is_not_applicable_when_the_task_landed_no_commit_the_base_lacks() {
     let mut w = World::new(&[StepName::Land, StepName::Pr], true);
     let state = fake_gh(&w);
     // A research task: its worktree holds no commit beyond the base.
-    let id = w.claimed("opus", |_| {});
+    let id = w.claimed("opus", |t| t.check_none = true);
     finish::worktree_new(&mut w.store, &w.tools.git, &id, "feat").unwrap();
     let r = w.finish(&id);
     assert!(r.complete, "{r:?}");
@@ -843,6 +901,17 @@ fn pr_still_opens_the_pull_request_when_the_task_landed_a_new_commit() {
 #[test]
 fn pr_fails_when_its_head_lacks_the_landed_commit() {
     let mut w = World::new(&[StepName::Land, StepName::Pr], true);
+    // The land pushes to another repository, so the remote run branch that
+    // origin reads stays at the base and lacks the landed commit (TRF-50).
+    let other = w.top().join("other.git");
+    git(
+        &w.top(),
+        &["init", "--quiet", "--bare", &other.to_string_lossy()],
+    );
+    git(
+        &w.root,
+        &["config", "remote.origin.pushurl", &other.to_string_lossy()],
+    );
     let state = fake_gh(&w);
     let (id, path) = w.task(None, "feature.txt");
     let head = git(&path, &["rev-parse", "HEAD"]);
@@ -853,8 +922,8 @@ fn pr_fails_when_its_head_lacks_the_landed_commit() {
     assert_eq!(
         note(&r, "pr"),
         format!(
-            "PR #7 head {} does not contain {head}: the run branch is not pushed; run horch ledger finish to retry the push",
-            w.base
+            "the remote run branch origin/{RUN_BRANCH} is at {base}, which does not hold {head}; PR #7 head is {base}; run horch ledger finish to retry the push",
+            base = w.base
         )
     );
 }
@@ -944,9 +1013,9 @@ fn code_sweep_queues_a_round_then_waits_for_it() {
     assert_eq!(verdict(&r, "code-sweep"), "waiting");
     assert_eq!(
         note(&r, "code-sweep"),
-        "round 1: 4 reviewer tasks queued (T-2, T-3, T-4, T-5) for codex-reviewer. horch wakes the orchestrator to spawn them, and tells you when the reviews are in. End your turn now"
+        "round 1: 3 reviewer tasks queued (T-2, T-3, T-4) for codex-reviewer. horch wakes the orchestrator to spawn them, and tells you when the reviews are in. End your turn now"
     );
-    assert_eq!(r.queued_reviews.len(), 4);
+    assert_eq!(r.queued_reviews.len(), 3);
     let files: Vec<String> = reviews(&w).into_iter().map(|(_, f)| f).collect();
     assert!(
         files[0].ends_with("round-1/bug-hunter-findings.md"),
@@ -954,11 +1023,10 @@ fn code_sweep_queues_a_round_then_waits_for_it() {
     );
     assert!(files[1].ends_with("round-1/clarity-checker-findings.md"));
     assert!(files[2].ends_with("round-1/structure-inspector-findings.md"));
-    assert!(files[3].ends_with("round-1/coverage-analyst-findings.md"));
     let r = w.finish(&id);
     assert_eq!(
         note(&r, "code-sweep"),
-        "round 1: waiting for reviewer tasks T-2, T-3, T-4, T-5. End your turn; horch tells you when they are in"
+        "round 1: waiting for reviewer tasks T-2, T-3, T-4. End your turn; horch tells you when they are in"
     );
 }
 
@@ -972,7 +1040,6 @@ fn code_sweep_passes_and_writes_the_merged_report() {
         &[
             NONE,
             "## Critical\n- none\n## Important\n- none\n## Minor\n- a.rs:1 name it\n",
-            NONE,
             NONE,
         ],
     );
@@ -988,7 +1055,6 @@ fn code_sweep_passes_and_writes_the_merged_report() {
          | bug-hunter | PASS | 0 | 0 | 0 |\n\
          | clarity-checker | PASS | 0 | 0 | 1 |\n\
          | structure-inspector | PASS | 0 | 0 | 0 |\n\
-         | coverage-analyst | PASS | 0 | 0 | 0 |\n\
          \n## Critical\n\n## Important\n\n## Minor\n- F1 [clarity-checker] a.rs:1 name it\n"
     );
 }
@@ -998,7 +1064,7 @@ fn code_sweep_fails_on_a_missing_findings_file() {
     let mut w = sweep_world();
     let (id, _) = w.task(None, "feature.txt");
     w.finish(&id);
-    reviews_in(&w, &[NONE, "", NONE, "## Critical\n- a.rs:1 boom\n"]);
+    reviews_in(&w, &[NONE, "", "## Critical\n- a.rs:1 boom\n"]);
     let r = w.finish(&id);
     let evidence = w.log(&id, "1-code-sweep-report.md");
     assert_eq!(verdict(&r, "code-sweep"), "FAIL");
@@ -1016,7 +1082,7 @@ fn code_sweep_fails_on_a_missing_findings_file() {
         "{report}"
     );
     assert!(
-        report.contains("| coverage-analyst | FAIL | 1 | 0 | 0 |"),
+        report.contains("| structure-inspector | FAIL | 1 | 0 | 0 |"),
         "{report}"
     );
 }
@@ -1030,7 +1096,6 @@ fn code_sweep_fails_on_a_critical_finding_until_it_is_waived() {
         &w,
         &[
             "## Critical\n- a.rs:1 boom\n## Important\n- a.rs:2 meh\n",
-            NONE,
             NONE,
             NONE,
         ],
@@ -1229,7 +1294,8 @@ fn done_unlanded_parks_the_task_and_its_worktree() {
     let c = finish::complete(&mut w.store, &id, "tried", Some("no way")).unwrap();
     assert!(c.unlanded);
     let task = tasks::get(w.store.conn(), &c.task_id).unwrap();
-    assert_eq!(task.status, "cancelled");
+    assert_eq!(task.status, "queued");
+    assert_eq!(task.held_reason.as_deref(), Some("unlanded"));
     assert_eq!(task.summary.as_deref(), Some("UNLANDED: no way | tried"));
     let wt: (String, Option<String>) = w
         .store
@@ -1250,7 +1316,7 @@ fn the_last_review_in_names_the_author_to_wake() {
     w.finish(&id);
     let run = w.run.clone();
     let mut reviewers = Vec::new();
-    for _ in 0..4 {
+    for _ in 0..3 {
         reviewers.push(
             w.store
                 .immediate(|tx| worker(tx, &run, "codex-reviewer"))
@@ -1273,7 +1339,6 @@ fn the_last_review_in_names_the_author_to_wake() {
     assert_eq!(
         woke,
         vec![
-            None,
             None,
             None,
             Some(("T-1".to_string(), Some("opus-1".to_string())))

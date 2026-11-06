@@ -6,6 +6,10 @@
 //! required fields are not enforced. A row that cannot be mapped keeps its
 //! raw copy with `map_error`. The source files are never changed, and a
 //! second import skips what it already has.
+//!
+//! Stage 1 also copies each session ledger record into `session_records`
+//! (TRF-45), where the session readers and writers find it. A record that
+//! table has already keeps its row: a later write there is newer.
 
 use std::collections::{BTreeMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -35,6 +39,8 @@ pub struct ImportReport {
     pub files: Vec<String>,
     pub raw_added: i64,
     pub raw_skipped: i64,
+    /// Session records copied into `session_records` (TRF-45).
+    pub sessions: i64,
     pub workers: i64,
     pub tasks: i64,
     pub worktrees: i64,
@@ -137,8 +143,36 @@ fn stage1(
         } else {
             report.raw_skipped += 1;
         }
+        if kind == SourceKind::SessionLedger {
+            report.sessions += copy_session(conn, path, &key, r)?;
+        }
     }
     Ok(())
+}
+
+/// Copy 1 session ledger record of the JSON ledger `path` into
+/// `session_records`, once: a record id the table has is skipped. The
+/// slug is the file's stem; the project is the record's, else the slug.
+/// Returns the rows added.
+fn copy_session(conn: &Connection, path: &Path, record_id: &str, r: &Value) -> Result<i64> {
+    let slug = path
+        .file_stem()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let project = str_of(r, "project").unwrap_or(&slug).to_string();
+    let updated = str_of(r, "updated_at")
+        .map(str::to_string)
+        .unwrap_or_else(util::now);
+    let n = conn.execute(
+        "INSERT OR IGNORE INTO session_records
+             (record_id, worker_id, project_root, slug, record_json, updated_at)
+         VALUES (?1, (SELECT worker_id FROM workers
+                      WHERE worker_id = ?1 OR legacy_record_id = ?1
+                      ORDER BY rowid DESC LIMIT 1),
+                 ?2, ?3, ?4, ?5)",
+        params![record_id, project, slug, r.to_string(), updated],
+    )?;
+    Ok(n as i64)
 }
 
 fn finding(
@@ -1017,4 +1051,128 @@ pub fn reopened_from(conn: &Connection, task_id: &str) -> Result<Option<String>>
         out.push_str(&earlier_sessions(conn, &t)?);
     }
     Ok(Some(out))
+}
+
+#[cfg(test)]
+mod trf_45_tests {
+    use super::*;
+    use crate::execution::store::ExecutionStore;
+
+    /// `ledger import` copies each old JSON session record into
+    /// `session_records` once, never changes the file, and a dry run keeps
+    /// nothing.
+    #[test]
+    fn trf_45_ledger_import_copies_old_json_once() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = tmp.path().join("state");
+        std::fs::create_dir_all(&state).unwrap();
+        let file = state.join("-repo.json");
+        let text = serde_json::json!([
+            {"record_id": "a", "session_id": null, "agent": "claude", "tier": "opus",
+             "model": "opus", "role": "opus-1", "status": "done", "task": "t1",
+             "history": [], "created_at": "2026-01-01T00:00:00Z",
+             "updated_at": "2026-01-01T00:00:00Z", "project": "/repo"},
+            {"record_id": "b", "session_id": "s-b", "agent": "codex", "tier": "codex-sol",
+             "model": "gpt", "role": "codex-sol-1", "status": "working", "task": "t2",
+             "history": [], "created_at": "2026-01-02T00:00:00Z",
+             "updated_at": "2026-01-02T00:00:00Z"}
+        ])
+        .to_string();
+        std::fs::write(&file, &text).unwrap();
+        let db = tmp.path().join("ledger.sqlite3");
+        let mut store = Store::open(&db).unwrap();
+        let git = Git::new("git");
+
+        let dry = import(&mut store, &git, &state, true).unwrap();
+        assert_eq!(dry.sessions, 2);
+        let first = import(&mut store, &git, &state, false).unwrap();
+        assert_eq!(first.sessions, 2);
+        let again = import(&mut store, &git, &state, false).unwrap();
+        assert_eq!(again.sessions, 0);
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), text);
+
+        let rows: Vec<(String, String, String)> = store
+            .conn()
+            .prepare("SELECT record_id, project_root, slug FROM session_records ORDER BY record_id")
+            .unwrap()
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert_eq!(
+            rows,
+            [
+                ("a".into(), "/repo".into(), "-repo".into()),
+                ("b".into(), "-repo".into(), "-repo".into())
+            ]
+        );
+        // The store reads the copies; the file is gone from its view.
+        std::fs::remove_file(&file).unwrap();
+        let records = ExecutionStore::in_db(&state, &db, "/repo").read().unwrap();
+        let ids: Vec<&str> = records.iter().map(|r| r.record_id.as_str()).collect();
+        assert_eq!(ids, ["a", "b"]);
+    }
+
+    /// A legacy record with 3 history entries imports with all 3, and 1
+    /// later `update` appends a 4th: all 4 remain, in order.
+    #[test]
+    fn trf_45_import_keeps_a_non_empty_history() {
+        use crate::execution::legacy::HistoryEntry;
+        let tmp = tempfile::tempdir().unwrap();
+        let state = tmp.path().join("state");
+        std::fs::create_dir_all(&state).unwrap();
+        let file = state.join("-repo.json");
+        let entry = |at: &str, event: &str, text: &str| serde_json::json!({"at": at, "event": event, "text": text});
+        let text = serde_json::json!([
+            {"record_id": "a", "session_id": null, "agent": "claude", "tier": "opus",
+             "model": "opus", "role": "opus-1", "status": "working", "task": "t1",
+             "history": [
+                 entry("2026-01-01T00:00:00Z", "spawn", "spawned"),
+                 entry("2026-01-01T00:01:00Z", "note", "first note"),
+                 entry("2026-01-01T00:02:00Z", "note", "second note")
+             ],
+             "created_at": "2026-01-01T00:00:00Z",
+             "updated_at": "2026-01-01T00:02:00Z", "project": "/repo"}
+        ])
+        .to_string();
+        std::fs::write(&file, &text).unwrap();
+        let db = tmp.path().join("ledger.sqlite3");
+        let mut store = Store::open(&db).unwrap();
+        let report = import(&mut store, &Git::new("git"), &state, false).unwrap();
+        assert_eq!(report.sessions, 1);
+        // Only the imported copy remains.
+        std::fs::remove_file(&file).unwrap();
+
+        let records = ExecutionStore::in_db(&state, &db, "/repo");
+        let events = |records: &ExecutionStore| -> Vec<(String, String)> {
+            records
+                .get("a")
+                .unwrap()
+                .history
+                .into_iter()
+                .map(|h| (h.event, h.text))
+                .collect()
+        };
+        assert_eq!(events(&records).len(), 3, "{:?}", events(&records));
+        records
+            .update(|rs| {
+                let r = rs.iter_mut().find(|r| r.record_id == "a").unwrap();
+                r.history.push(HistoryEntry {
+                    at: "2026-01-01T00:03:00Z".into(),
+                    event: "note".into(),
+                    text: "third note".into(),
+                });
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(
+            events(&records),
+            [
+                ("spawn".to_string(), "spawned".to_string()),
+                ("note".into(), "first note".into()),
+                ("note".into(), "second note".into()),
+                ("note".into(), "third note".into()),
+            ]
+        );
+    }
 }

@@ -28,11 +28,11 @@ default:
     @just --list
 
 # Build the release binaries and run `horch install`. It puts horch,
-# multi-herdr-dataset, herdr-install and the herdr-fleet and herdr-run launchers
+# herdr-install and the herdr-fleet and herdr-run launchers
 # (this checkout's teammates dir baked in) in ~/.local/bin. Then remove the old herdr-fleet shell function from ~/.zshrc (a
 # backup is written first).
 install:
-    cargo build --release --bin horch --bin multi-herdr-dataset --bin herdr-install
+    cargo build --release --bin horch --bin herdr-install
     ./target/release/horch install
     ./scripts/remove-zsh-fleet-function ~/.zshrc
     @echo "Installed: $(~/.local/bin/horch --version). Open a new shell, then run: herdr-fleet or herdr-run"

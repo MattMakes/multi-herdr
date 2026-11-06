@@ -64,11 +64,16 @@ fn corpus(name: &str) -> Harness {
         assert!(ok.success());
     }
     h.set("HORCH_NOW", NOW);
-    h.set("HORCH_PROBE_TIMEOUT_MS", "1500");
+    // A probe only needs to answer: a slow first exec must not fail it. A test
+    // that asserts a timeout sets a short deadline and a fake that hangs.
+    h.set(
+        "HORCH_PROBE_TIMEOUT_MS",
+        horch_e2e::harness::DEADLINE.as_millis().to_string(),
+    );
     h
 }
 
-/// Warm the first-exec scan before the quota probes use their short timeout.
+/// Warm the first-exec scan of the quota fakes before the probes run.
 fn warm_quota_fakes(h: &Harness) {
     for fake in ["claude", "codex", "pi", "ollama"] {
         assert!(std::process::Command::new(h.bin.join(fake))
@@ -89,6 +94,13 @@ fn quota_fixture(name: &str) -> String {
 
 fn ledger_path(h: &Harness, slug: &str) -> PathBuf {
     h.state.join(format!("{slug}.json"))
+}
+
+/// The session records of the project with slug `slug` (TRF-45: the old
+/// JSON ledger, read only, merged with the `session_records` table).
+fn stored_records(h: &Harness, slug: &str) -> Option<Vec<Value>> {
+    let store = horch_core::execution::store::ExecutionStore::for_project(&h.state, slug);
+    serde_json::from_str(&store.stored_json().ok()?).ok()
 }
 
 fn wait_for(what: &str, mut f: impl FnMut() -> bool) {
@@ -357,13 +369,10 @@ fn tel_02_fleet_writes_orchestrator_record() {
             }
         })
         .collect();
-    // The ledger is replaced atomically, so a read can see no file or a
-    // partial one. Retry the whole read and parse on every poll.
+    // The record may not be written yet: retry the read on every poll.
     let mut orch = Value::Null;
     wait_for("the orchestrator record in the ledger", || {
-        let found = std::fs::read_to_string(ledger_path(&h, &slug))
-            .ok()
-            .and_then(|t| serde_json::from_str::<Vec<Value>>(&t).ok())
+        let found = stored_records(&h, &slug)
             .and_then(|rs| rs.into_iter().find(|r| r["kind"] == "orchestrator"));
         found.map(|r| orch = r).is_some()
     });
@@ -439,9 +448,7 @@ fn tel_02_fleet_records_the_orchestrators_plugin_skills() {
         .collect();
     let mut orch = Value::Null;
     wait_for("the orchestrator record in the ledger", || {
-        let found = std::fs::read_to_string(ledger_path(&h, &slug))
-            .ok()
-            .and_then(|t| serde_json::from_str::<Vec<Value>>(&t).ok())
+        let found = stored_records(&h, &slug)
             .and_then(|rs| rs.into_iter().find(|r| r["kind"] == "orchestrator"));
         found.map(|r| orch = r).is_some()
     });
@@ -463,7 +470,7 @@ fn tel_02_resume_refuses_orchestrator() {
     let mut h = corpus("tel02r");
     h.set("HORCH_PROJECT_DIR", "/work/alpha");
     h.set("HORCH_WORKSPACE_ID", "w1");
-    let out = h.run(&["spawn", "--resume", "rec-o1", "continue"]);
+    let out = h.run(&["spawn", "--resume", "rec-o1"]);
     assert!(!out.status.success());
     assert!(
         stderr(&out).contains("record rec-o1 is an orchestrator; restart it with horch fleet"),
@@ -616,6 +623,11 @@ fn quo_03_fallback_on_probe_failure() {
     for scenario in ["hang", "error"] {
         let mut h = corpus(&format!("quo03-{scenario}"));
         h.set("HORCH_FAKE_SCENARIO", scenario);
+        if scenario == "hang" {
+            // The fake never answers, so the probe always times out: the short
+            // deadline only sets how long the test waits, not its result.
+            h.set("HORCH_PROBE_TIMEOUT_MS", "1500");
+        }
         let out = h.run(&["quota", "--refresh", "--json"]);
         assert!(out.status.success(), "{}", stderr(&out));
         let q = json(&out);
@@ -1128,7 +1140,8 @@ fn bal_04_gate_before_side_effects() {
     let h = gated("bal04", "all-exhausted");
     let ledger = ledger_path(&h, "-work-alpha");
     let before = std::fs::read(&ledger).unwrap();
-    let out = h.run(&["spawn", "opus", "x", "--from-pane", "w1:p1"]);
+    let stored = stored_records(&h, "-work-alpha");
+    let out = h.run(&["spawn", "opus", "--from-pane", "w1:p1"]);
     assert_eq!(out.status.code(), Some(3), "{}", stderr(&out));
     assert!(
         stdout(&out).starts_with("REFUSED: opus cannot start."),
@@ -1139,6 +1152,11 @@ fn bal_04_gate_before_side_effects() {
         std::fs::read(&ledger).unwrap(),
         before,
         "ledger byte-identical"
+    );
+    assert_eq!(
+        stored_records(&h, "-work-alpha"),
+        stored,
+        "session records unchanged"
     );
     assert!(
         !h.calls_of("herdr").iter().any(|c| c["argv"][1] == "split"),
@@ -1165,7 +1183,6 @@ fn bal_04_exit_code_3() {
     let out = h.run(&[
         "spawn",
         "opus",
-        "x",
         "--from-pane",
         "w1:p1",
         "--force",
@@ -1180,20 +1197,13 @@ fn bal_04_exit_code_3() {
 }
 
 fn records(h: &Harness) -> Vec<Value> {
-    serde_json::from_str(&std::fs::read_to_string(ledger_path(h, "-work-alpha")).unwrap()).unwrap()
+    stored_records(h, "-work-alpha").unwrap()
 }
 
 #[test]
 fn bal_05_substituted_record_fields() {
     let h = gated("bal05", "claude-exhausted-codex-ok");
-    let out = h.run(&[
-        "spawn",
-        "researcher",
-        "look into ai_docs/plans/p.md",
-        "--from-pane",
-        "w1:p1",
-        "--no-tile",
-    ]);
+    let out = h.run(&["spawn", "researcher", "--from-pane", "w1:p1", "--no-tile"]);
     assert!(out.status.success(), "{}", stderr(&out));
     let first = stdout(&out).lines().next().unwrap().to_string();
     assert_eq!(
@@ -1215,7 +1225,6 @@ fn bal_05_substituted_record_fields() {
         r["role"], "researcher-1",
         "the role keeps the original's name"
     );
-    assert_eq!(r["plan"], "p");
     let brief: Value = serde_json::from_str(
         &std::fs::read_to_string(
             h.state
@@ -1235,14 +1244,7 @@ fn bal_05_substituted_record_fields() {
 fn bal_05_resume_uses_via() {
     let mut h = gated("bal05r", "claude-exhausted-codex-ok");
     assert!(h
-        .run(&[
-            "spawn",
-            "researcher",
-            "x",
-            "--from-pane",
-            "w1:p1",
-            "--no-tile"
-        ])
+        .run(&["spawn", "researcher", "--from-pane", "w1:p1", "--no-tile"])
         .status
         .success());
     let r = records(&h)
@@ -1271,7 +1273,6 @@ fn bal_05_resume_uses_via() {
         "spawn",
         "--resume",
         &id,
-        "more",
         "--from-pane",
         "w1:p1",
         "--no-tile",
@@ -1310,7 +1311,7 @@ fn bal_06_route_matches_gate() {
             let h = gated(&format!("bal06-{fixture}-{teammate}"), fixture);
             let route = h.run(&["route", teammate, "--json"]);
             let r = json(&route);
-            let spawn = h.run(&["spawn", teammate, "x", "--from-pane", "w1:p1", "--no-tile"]);
+            let spawn = h.run(&["spawn", teammate, "--from-pane", "w1:p1", "--no-tile"]);
             let gate_line = stdout(&spawn)
                 .lines()
                 .next()

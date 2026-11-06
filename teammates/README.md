@@ -320,6 +320,33 @@ on the web. It needs only `node` and the Read tool, which shows PNG files, so
 it has no MCP servers and `requires:` nothing. Every effect goes through at
 least 3 rounds of render, look and fix before `DONE:`.
 
+## The skill intake team
+
+`skill-importer` imports a skill from a GitHub repo or a local folder with
+the `skill-intake` skill: a security sweep, a clean-room rewrite, a verify
+gate, and an install. It is the controller and is offered everywhere. It
+starts each clean-room role as a separate fleet worker with `intake spawn`
+(`horch spawn --exact`). The 5 role teammates are hidden: started only by
+`skill-importer`.
+
+| teammate | agent, model, effort | side | reads | writes | offered |
+|---|---|---|---|---|---|
+| `skill-importer` | claude, opus, high | controller, never opens source | `intake` output, status files | through `intake` only | everywhere |
+| `intake-auditor` | claude, opus, high | contaminated | `contaminated/` | `contaminated/` | hidden: started only by `skill-importer` |
+| `intake-analyst` | claude, opus, medium | contaminated | `contaminated/`, `drafts/` | `drafts/` | hidden: started only by `skill-importer` |
+| `intake-sanitizer` | claude, opus, medium | source-blind | `drafts/` | `drafts/` | hidden: started only by `skill-importer` |
+| `intake-writer` | claude, opus, medium | clean | `clean/` | `clean/` | hidden: started only by `skill-importer` |
+| `intake-reviewer` | claude, opus, medium | clean, fresh | `clean/` | `clean/` | hidden: started only by `skill-importer` |
+
+Paths are under `~/.local/state/skill-intake/`. Each role's trust wall is
+static frontmatter: `tools:`, `disallowed_tools` path rules, and an OS
+`sandbox:` whose read, write and deny lists name only its own side roots.
+The role sandboxes have no network. `skill-importer` reaches only
+`github.com`, `codeload.github.com` and `objects.githubusercontent.com`.
+Every intake teammate denies `Agent`, `WebFetch`, `WebSearch` and
+`NotebookEdit`, and has no fallback. `skill-importer` also denies Read on
+`contaminated/*/quarantine/**`.
+
 ## The Swift and Apple team
 
 Seven specialists staff Swift and Apple-platform work. Each sets

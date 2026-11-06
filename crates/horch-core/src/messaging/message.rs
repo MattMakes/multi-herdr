@@ -31,6 +31,22 @@ pub fn ensure_tag(message: &str, role: &str) -> String {
     }
 }
 
+/// `line` with the short mail id in its sender tag: `[<from> #<id>] ...`
+/// (C2 of docs/specs/trace-fixes.md). A line without the `[<from>]` tag gets
+/// the tag. A line whose tag already carries a mail id keeps it, so a
+/// redelivery shows the id of the first delivery.
+pub fn with_mail_id(line: &str, from: &str, short_id: &str) -> String {
+    let trimmed = line.trim_start();
+    if trimmed.starts_with(&format!("[{from} #")) {
+        return trimmed.to_string();
+    }
+    let tagged = format!("[{from} #{short_id}]");
+    match trimmed.strip_prefix(&format!("[{from}]")) {
+        Some(rest) => format!("{tagged}{rest}"),
+        None => format!("{tagged} {trimmed}"),
+    }
+}
+
 /// `summary` without a leading `[role]` and `DONE:`, which `horch done` adds
 /// itself. Workers are told to open every report with both, so they often do.
 pub(crate) fn strip_done_prefix<'a>(summary: &'a str, role: &str) -> &'a str {
@@ -201,5 +217,36 @@ mod tests {
         let s = "é".repeat(300);
         assert_eq!(cut(&s, HEAD).chars().count(), HEAD);
         assert_eq!(cut("short", HEAD), "short");
+    }
+
+    #[test]
+    fn trf_03_a_tagged_line_carries_the_mail_id_in_its_tag() {
+        assert_eq!(
+            with_mail_id("[sonnet-1] NOTE: x", "sonnet-1", "0a1b2c3d"),
+            "[sonnet-1 #0a1b2c3d] NOTE: x"
+        );
+        assert_eq!(
+            with_mail_id("  [horch] DONE: y\nmore", "horch", "0a1b2c3d"),
+            "[horch #0a1b2c3d] DONE: y\nmore"
+        );
+    }
+
+    #[test]
+    fn trf_03_an_untagged_line_gets_a_tag_with_the_mail_id() {
+        assert_eq!(
+            with_mail_id("the reviews are in", "horch", "0a1b2c3d"),
+            "[horch #0a1b2c3d] the reviews are in"
+        );
+        // Another role's tag is not the sender's tag.
+        assert_eq!(
+            with_mail_id("[opus-1] hi", "sonnet-1", "0a1b2c3d"),
+            "[sonnet-1 #0a1b2c3d] [opus-1] hi"
+        );
+    }
+
+    #[test]
+    fn trf_03_a_line_that_carries_a_mail_id_keeps_it() {
+        let line = "[sonnet-1 #0a1b2c3d] NOTE: x";
+        assert_eq!(with_mail_id(line, "sonnet-1", "ffffffff"), line);
     }
 }

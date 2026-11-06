@@ -71,7 +71,7 @@ jobs:
           key: ${{ matrix.target }}
       - name: Build
         shell: bash
-        run: cargo build --release --locked --target ${{ matrix.target }} --bin horch --bin multi-herdr-dataset --bin herdr-install
+        run: cargo build --release --locked --target ${{ matrix.target }} --bin horch --bin herdr-install
       - name: Package (unix)
         if: runner.os != 'Windows'
         shell: bash
@@ -80,7 +80,7 @@ jobs:
           COPYFILE_DISABLE: "1"
         run: |
           name="multi-herdr-v${{ needs.verify.outputs.version }}-${{ matrix.target }}.tar.gz"
-          tar -czf "$name" -C "target/${{ matrix.target }}/release" horch multi-herdr-dataset herdr-install
+          tar -czf "$name" -C "target/${{ matrix.target }}/release" horch herdr-install
           echo "ARCHIVE=$name" >> "$GITHUB_ENV"
       - name: Package (windows)
         if: runner.os == 'Windows'
@@ -88,7 +88,7 @@ jobs:
         run: |
           $name = "multi-herdr-v${{ needs.verify.outputs.version }}-${{ matrix.target }}.zip"
           $dir = "target/${{ matrix.target }}/release"
-          Compress-Archive -Path "$dir/horch.exe", "$dir/multi-herdr-dataset.exe", "$dir/herdr-install.exe" -DestinationPath $name
+          Compress-Archive -Path "$dir/horch.exe", "$dir/herdr-install.exe" -DestinationPath $name
           "ARCHIVE=$name" >> $env:GITHUB_ENV
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:

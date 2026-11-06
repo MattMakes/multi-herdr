@@ -374,6 +374,26 @@ so wind-up, freeze and recovery can be judged. Both skills are own text,
 written clean-room from behaviour specs (see
 [skills/README.md](../skills/README.md)).
 
+### Skill intake
+
+`skill-importer` runs the `skill-intake` skill: it fetches a skill source
+into quarantine, sweeps it for security risks, rewrites it clean-room, and
+installs only what passes 2 gates.
+
+- The controller is `skill-importer` (opus, high, offered everywhere). It
+  never opens a file under `quarantine/` (a Read deny rule too), never runs
+  the source, and writes to the workspace only through `intake`.
+- In a horch fleet, each clean-room role is a separate hidden fleet worker:
+  `intake-auditor`, `intake-analyst`, `intake-sanitizer`, `intake-writer`
+  and `intake-reviewer`. `skill-importer` starts them with `intake spawn`,
+  always with `--exact`, and each one gets a row in the ledger run. Each
+  role's OS sandbox has no network and reads and writes only its own side
+  root under `~/.local/state/skill-intake/`.
+- In a plain Claude session with no horch fleet (`intake mode` prints
+  `plain`), the controller runs each role as a fresh subagent with the same
+  brief file. No OS sandbox applies to the subagents unless the session has
+  one, and the report says so.
+
 ## `horch agent-list`: which harnesses can this machine run
 
 ```bash
@@ -407,21 +427,3 @@ request.
   https://antigravity.google/cli/install.sh | bash`.
 - The shipped teammates are `antigravity` (Gemini 3.8 Flash), and
   `spec-writer` and `ticket-writer` (Gemini 4 Argon, `fallbacks: [opus]`).
-
-## `multi-herdr-dataset`: competitive rounds
-
-`multi-herdr-dataset` is a separate binary. Every candidate and the judge are
-model calls that cost money.
-
-```bash
-multi-herdr-dataset run "<task>" --candidates 3 --budget-usd 12.50
-multi-herdr-dataset status          # experiments and rounds with their state
-multi-herdr-dataset readiness       # the dataset per arm, the verdict and the gaps
-multi-herdr-dataset export          # decided rounds as JSONL
-multi-herdr-dataset resume          # after a crash or a kill
-```
-
-Preflight refuses a run before any worktree or model call. Use `--budget-usd`
-every time. The model is in
-[specs/dataset-competition.md](specs/dataset-competition.md), and the recipe for
-a new event is [add-dataset-event.md](recipes/add-dataset-event.md).

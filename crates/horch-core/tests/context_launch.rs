@@ -483,7 +483,7 @@ fn ctx_05_launch_records_window_decision() {
         store.get("rec-1").unwrap().compact_window,
         Some(golden.clone())
     );
-    let text = std::fs::read_to_string(store.path()).unwrap();
+    let text = store.stored_json().unwrap();
     assert!(text.contains("\"compact_window\""), "{text}");
 
     // The store boundary converts each source both ways.

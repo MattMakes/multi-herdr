@@ -12,9 +12,14 @@ fn worker_tell(h: &Harness, text: &str) -> std::process::Output {
 fn world(name: &str) -> Harness {
     let mut h = Harness::new(name);
     h.set("HORCH_WORKSPACE_ID", "w1");
-    h.set("HORCH_TEST_MAIL_NO_ORCHESTRATOR_MS", "20");
     h.set("HORCH_TEST_MAIL_POLL_MS", "10");
     h
+}
+/// The short id of the oldest open question in workspace `w1`.
+fn open_id(state: &std::path::Path) -> String {
+    Mail::under(state, "w1").open_questions().unwrap()[0]
+        .id
+        .short()
 }
 #[test]
 fn g60_missing_registration_still_queues_worker_mail() {
@@ -65,8 +70,17 @@ fn g70_question_survives_ack_without_a_task_run() {
     let mb = h.state.join("herdr-orchestration-w1");
     std::fs::create_dir_all(&mb).unwrap();
     std::fs::write(mb.join("worker-1.id"), "w1:p1").unwrap();
+    // TRF-25: a plain tell closes no question.
     assert!(h
         .run(&["tell", "worker-1", "Choose option A"])
+        .status
+        .success());
+    let inbox = h.run(&["inbox", "--roles"]);
+    assert!(String::from_utf8_lossy(&inbox.stdout).contains("QUESTION: which option?"));
+    // An answer by id closes it.
+    let id = open_id(&h.state);
+    assert!(h
+        .run(&["tell", "worker-1", "--answers", &id, "Choose option A"])
         .status
         .success());
     let inbox = h.run(&["inbox", "--roles"]);
@@ -413,7 +427,7 @@ fn g70_question_wait_clears_on_orchestrator_answer_and_stalls_restart() {
     for _ in 0..6 {
         assert_eq!(check(&mut store, &run, &worker, true), "progress");
     }
-    mail.answer("worker-1").unwrap();
+    mail.close_question(&id.short()).unwrap().unwrap();
     workers::sync_questions(store.conn(), dir.path(), "w1").unwrap();
     assert!(workers::waiting(store.conn(), &worker).unwrap().is_empty());
     for verdict in ["no_progress", "no_progress", "dead"] {
@@ -597,7 +611,6 @@ fn g60_ledger_done_and_wake_queue_without_registration_then_courier_delivers() {
     let mut h = world("g60-ledger-wake").with_git();
     h.set("HORCH_NO_WATCHDOG", "1");
     h.set("HORCH_TEST_MAIL_REDELIVERY_MS", "100");
-    h.set("HORCH_TEST_MAIL_NO_ORCHESTRATOR_MS", "200");
     let db = h.root.join("ledger.sqlite3");
     h.set("HORCH_LEDGER_DB", db.to_string_lossy());
     fake(&h, &["workspace", "create", "--label", "wake"]);
@@ -1050,8 +1063,9 @@ fn g70_pinned_cli_question_reply_resets_stalls() {
     ] {
         assert_eq!(pinned_check(&h, &run, at)["verdict"], "progress");
     }
+    let id = open_id(&h.state);
     let reply = h
-        .horch(&["tell", "worker-1", "Use A"])
+        .horch(&["tell", "worker-1", "--answers", &id, "Use A"])
         .env("HORCH_NOW", "2030-01-07T00:01:00Z")
         .output()
         .unwrap();
@@ -1186,8 +1200,9 @@ fn g70_long_multiline_questions_and_blocked_survive_transport_ack_and_reply() {
             status.contains("watchdog=progress") && status.contains("waiting:"),
             "{status}"
         );
+        let id = open_id(&h.state);
         let answered = h
-            .horch(&["tell", "worker-1", "Use A"])
+            .horch(&["tell", "worker-1", "--answers", &id, "Use A"])
             .env("HORCH_NOW", reply)
             .output()
             .unwrap();
@@ -1232,22 +1247,37 @@ fn g70_delayed_older_reply_cannot_reopen_newer_answered_question() {
         .output()
         .unwrap();
     assert!(q.status.success());
-    for at in ["2030-01-01T00:20:00Z", "2030-01-01T00:00:00Z"] {
+    let id = open_id(&h.state);
+    let o = h
+        .horch(&["tell", "worker-1", "--answers", &id, "answer"])
+        .env("HORCH_NOW", "2030-01-01T00:20:00Z")
+        .output()
+        .unwrap();
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    // A closed question takes no second answer, and an older reply does not
+    // reopen it.
+    for (args, ok) in [
+        (
+            vec!["tell", "worker-1", "--answers", id.as_str(), "again"],
+            false,
+        ),
+        (vec!["tell", "worker-1", "answer"], true),
+    ] {
         let o = h
-            .horch(&["tell", "worker-1", "answer"])
-            .env("HORCH_NOW", at)
+            .horch(&args)
+            .env("HORCH_NOW", "2030-01-01T00:00:00Z")
             .output()
             .unwrap();
-        assert!(o.status.success());
+        assert_eq!(o.status.success(), ok, "{args:?}");
         assert!(
             Mail::under(&h.state, "w1")
                 .open_questions()
                 .unwrap()
                 .is_empty(),
-            "older completion at {at} reopened the question"
+            "an older reply {args:?} reopened the question"
         );
     }
-    // Older completions also overlap each other across independent CLI processes.
+    // Older replies also overlap each other across independent CLI processes.
     let mut replies: Vec<_> = (0..8)
         .map(|minute| {
             Agent(
@@ -1365,7 +1395,6 @@ fn pinned_clock_world(name: &str) -> (Harness, std::path::PathBuf) {
     let mut h = world(name);
     h.set("HORCH_NOW", "2030-01-01T00:00:00Z");
     h.set("HORCH_TEST_MAIL_POLL_MS", "20");
-    h.set("HORCH_TEST_MAIL_NO_ORCHESTRATOR_MS", "60000");
     let clock = h.root.join("clock.txt");
     clock_file_set(&clock, "2030-01-01T00:00:00Z");
     h.set("HORCH_TEST_MAIL_CLOCK_FILE", clock.to_string_lossy());
@@ -1517,11 +1546,11 @@ fn g60_pinned_running_courier_skips_busy_and_login_backlog_without_burst() {
             2,
             "missed retries must not burst after {held}"
         );
-        clock_file_set(&clock, "2030-01-01T02:04:59Z");
+        clock_file_set(&clock, "2030-01-01T02:14:59Z");
         std::thread::sleep(Duration::from_millis(150));
         assert_eq!(prompt_count(&h), 2);
-        clock_file_set(&clock, "2030-01-01T02:05:00Z");
-        wait_for("five-minute fixed retry", || {
+        clock_file_set(&clock, "2030-01-01T02:15:00Z");
+        wait_for("fifteen-minute digest", || {
             (prompt_count(&h) >= 3).then_some(())
         });
         assert_eq!(prompt_count(&h), 3);
@@ -1701,8 +1730,9 @@ fn g70_question_retention_failed_reply_and_new_question_after_answer() {
     };
     question("2030-01-01T00:00:00Z", "QUESTION: first");
     assert!(h.run(&["inbox"]).status.success());
+    let id = open_id(&h.state);
     let failed = h
-        .horch(&["tell", "worker-1", "answer"])
+        .horch(&["tell", "worker-1", "--answers", &id, "answer"])
         .env("HORCH_NOW", "2030-01-01T00:01:00Z")
         .output()
         .unwrap();
@@ -1730,7 +1760,7 @@ fn g70_question_retention_failed_reply_and_new_question_after_answer() {
     std::fs::create_dir_all(&mb).unwrap();
     std::fs::write(mb.join("worker-1.id"), "w1:p1").unwrap();
     assert!(h
-        .horch(&["tell", "worker-1", "answer"])
+        .horch(&["tell", "worker-1", "--answers", &id, "answer"])
         .env("HORCH_NOW", "2030-01-01T00:02:00Z")
         .output()
         .unwrap()
@@ -1774,7 +1804,6 @@ fn g60_plain_done_and_tell_without_registration_arrive_after_late_registration()
     use horch_e2e::harness::wait_for;
     let mut h = world("g60-plain-done");
     h.set("HORCH_TEST_MAIL_REDELIVERY_MS", "50");
-    h.set("HORCH_TEST_MAIL_NO_ORCHESTRATOR_MS", "100");
     fake(&h, &["workspace", "create", "--label", "plain-done"]);
     fake(&h, &["pane", "split", "w1:p1", "--direction", "right"]);
     SessionLedger::for_project(&h.state, &h.project.to_string_lossy())

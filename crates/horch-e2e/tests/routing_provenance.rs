@@ -24,7 +24,10 @@ fn quota_fixture(name: &str) -> String {
 fn gated(name: &str, fixture: &str) -> Harness {
     let mut h = Harness::new(name);
     h.set("HORCH_NOW", "2026-09-28T18:00:00Z");
-    h.set("HORCH_PROBE_TIMEOUT_MS", "1500");
+    h.set(
+        "HORCH_PROBE_TIMEOUT_MS",
+        horch_e2e::harness::DEADLINE.as_millis().to_string(),
+    );
     h.set("HORCH_QUOTA_FILE", quota_fixture(fixture));
     h.set("HORCH_PROJECT_DIR", "/work/alpha");
     h.set("HORCH_WORKSPACE_ID", "w1");
@@ -32,7 +35,7 @@ fn gated(name: &str, fixture: &str) -> Harness {
 }
 
 fn records(h: &Harness) -> Vec<Value> {
-    let text = std::fs::read_to_string(h.state.join("-work-alpha.json")).unwrap();
+    let text = h.stored_ledger("-work-alpha").unwrap();
     serde_json::from_str(&text).unwrap()
 }
 
@@ -62,7 +65,7 @@ fn arc_14_provenance_on_spawn_substitute_resume() {
     let mut h = gated("arc14", "claude-exhausted-codex-ok");
 
     // A normal spawn: codex is ok, so codex-sol runs as itself.
-    spawn(&h, &["codex-sol", "plain"]);
+    spawn(&h, &["codex-sol"]);
     let plain = record(&h, "codex-sol-1");
     let p = &plain["routing"];
     assert_eq!(p["requested"], "codex-sol", "{plain:#}");
@@ -75,7 +78,7 @@ fn arc_14_provenance_on_spawn_substitute_resume() {
 
     // A substituted spawn: claude is exhausted, so researcher runs on its
     // fallback. `via` and `substitution_reason` are still written.
-    let out = spawn(&h, &["researcher", "sub"]);
+    let out = spawn(&h, &["researcher"]);
     assert!(stdout(&out).starts_with("SUBSTITUTED: researcher runs on codex-sol."));
     let sub = record(&h, "researcher-1");
     let p = &sub["routing"];
@@ -110,7 +113,7 @@ fn arc_14_provenance_on_spawn_substitute_resume() {
         .status
         .success());
     h.set("HORCH_QUOTA_FILE", quota_fixture("all-ok"));
-    spawn(&h, &["--resume", &id, "more", "--role", "researcher-9"]);
+    spawn(&h, &["--resume", &id, "--role", "researcher-9"]);
     let resumed = record(&h, "researcher-9");
     assert_eq!(resumed["record_id"], sub["record_id"]);
     let p = &resumed["routing"];

@@ -1,0 +1,148 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Auditor line",
+  "description": "Contaminated side (C/sweep/audit.jsonl), one object per line, written by the auditor role (spec 4.3). `kind` selects the $defs entry. An auditor line can add a finding or raise a scanner hit; it can never lower, close or delete one (`intake triage` drops such a line as AUD-TAMPER).",
+  "type": "object",
+  "required": [
+    "kind"
+  ],
+  "properties": {
+    "kind": {
+      "enum": [
+        "purpose",
+        "finding",
+        "raise"
+      ]
+    }
+  },
+  "$defs": {
+    "purpose": {
+      "type": "object",
+      "required": [
+        "kind",
+        "skill",
+        "purpose"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "const": "purpose"
+        },
+        "skill": {
+          "type": "string",
+          "pattern": "^[a-z0-9][a-z0-9-]{0,63}$"
+        },
+        "purpose": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        }
+      }
+    },
+    "finding": {
+      "type": "object",
+      "required": [
+        "kind",
+        "rule",
+        "severity",
+        "skill",
+        "note",
+        "malicious"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "const": "finding"
+        },
+        "rule": {
+          "type": "string",
+          "pattern": "^AUD-[0-9]{2}$"
+        },
+        "severity": {
+          "enum": [
+            "critical",
+            "high",
+            "medium",
+            "low",
+            "info"
+          ]
+        },
+        "skill": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^[a-z0-9][a-z0-9-]{0,63}$"
+        },
+        "file": {
+          "type": "string",
+          "maxLength": 400
+        },
+        "line": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "note": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 400
+        },
+        "malicious": {
+          "type": "boolean"
+        },
+        "reason": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 400
+        },
+        "disposition": {
+          "enum": [
+            "rewrite",
+            "replace",
+            "remove",
+            "none"
+          ]
+        },
+        "whole_skill": {
+          "type": "boolean"
+        }
+      }
+    },
+    "raise": {
+      "type": "object",
+      "required": [
+        "kind",
+        "target",
+        "severity",
+        "reason"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "const": "raise"
+        },
+        "target": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9#-]{1,40}$"
+        },
+        "severity": {
+          "enum": [
+            "critical",
+            "high",
+            "medium",
+            "low",
+            "info"
+          ]
+        },
+        "malicious": {
+          "type": "boolean"
+        },
+        "reason": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 400
+        }
+      }
+    }
+  }
+}

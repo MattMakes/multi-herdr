@@ -1,16 +1,18 @@
 //! Tasks: queueing, the claimable rule and the claim (sections 4.3 to 4.5,
 //! 5.1, 5.2).
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use anyhow::{bail, Context, Result};
-use rusqlite::{params, Connection, Row};
+use rusqlite::{params, Connection, Row, Transaction};
 use serde::Serialize;
 
 use super::model::{
-    Actor, EventKind, FileMode, FindingStatus, Origin, StepName, TaskKind, TaskStatus, WorkerKind,
-    WorkerStatus, WorktreeMode, WorktreeStatus,
+    Actor, EndReason, EventKind, FileMode, FindingStatus, HeldReason, Origin, OutboxEvent,
+    ReviewMode, StepName, TaskKind, TaskStatus, WorkKind, WorkerKind, WorkerStatus, WorktreeMode,
+    WorktreeStatus,
 };
+use super::outbox::{self, Wake};
 use super::runs::Run;
 use super::sql_words::{self, word};
 use super::store::optional;
@@ -55,6 +57,18 @@ pub struct Task {
     pub created_at: String,
     pub updated_at: String,
     pub finished_at: Option<String>,
+    /// The ticket's `**Kind:**` (C1).
+    pub work_kind: Option<String>,
+    /// The ticket's `**Review:**`, or the default of its `Kind` (C1).
+    pub review_mode: Option<String>,
+    /// The ticket text as `add-map` queued it. A claim prints it; status
+    /// JSON leaves it out.
+    #[serde(skip_serializing)]
+    pub ticket_snapshot: Option<String>,
+    /// The sha256 of `ticket_snapshot`, in hex.
+    pub ticket_sha: Option<String>,
+    /// The ticket says `**Check:** none`: it has no check on purpose.
+    pub check_none: bool,
 }
 
 impl Task {
@@ -73,6 +87,13 @@ impl Task {
 
     pub fn uses_worktree(&self) -> bool {
         self.worktree_mode == WorktreeMode::Worktree.as_str()
+    }
+
+    /// Parked by `done --unlanded`: queued, held, with its worktree kept
+    /// (trace-fixes D16). `requeue` resumes it on that worktree.
+    pub fn is_parked(&self) -> bool {
+        self.status == TaskStatus::Queued.as_str()
+            && self.held_reason.as_deref() == Some(HeldReason::Unlanded.as_str())
     }
 
     pub(crate) fn from_row(r: &Row<'_>) -> rusqlite::Result<Task> {
@@ -106,6 +127,11 @@ impl Task {
             created_at: r.get("created_at")?,
             updated_at: r.get("updated_at")?,
             finished_at: r.get("finished_at")?,
+            work_kind: r.get("work_kind")?,
+            review_mode: r.get("review_mode")?,
+            ticket_snapshot: r.get("ticket_snapshot")?,
+            ticket_sha: r.get("ticket_sha")?,
+            check_none: r.get::<_, i64>("check_none")? != 0,
         })
     }
 }
@@ -131,6 +157,14 @@ pub struct NewTask {
     pub blocked_by: Vec<String>,
     pub own: Vec<String>,
     pub no_touch: Vec<String>,
+    /// The ticket's `**Kind:**` (C1).
+    pub work_kind: Option<WorkKind>,
+    /// The ticket's review mode: explicit, else the default of its `Kind`.
+    pub review_mode: Option<ReviewMode>,
+    /// The ticket text at queue time; its sha256 is stored with it.
+    pub ticket_snapshot: Option<String>,
+    /// `**Check:** none`: no check on purpose.
+    pub check_none: bool,
 }
 
 impl NewTask {
@@ -154,8 +188,56 @@ impl NewTask {
             blocked_by: Vec::new(),
             own: Vec::new(),
             no_touch: Vec::new(),
+            work_kind: None,
+            review_mode: None,
+            ticket_snapshot: None,
+            check_none: false,
         }
     }
+}
+
+/// The sha256 of `text`, in lowercase hex.
+pub fn ticket_sha(text: &str) -> String {
+    use sha2::{Digest, Sha256};
+    Sha256::digest(text.as_bytes())
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
+}
+
+/// The tasks of `run_id` that already queue one of `files` and are not
+/// cancelled. `add-map` refuses these unless it is told `--again` (TRF-13).
+pub fn already_queued(conn: &Connection, run_id: &str, files: &[&str]) -> Result<Vec<Task>> {
+    Ok(of_run(conn, run_id)?
+        .into_iter()
+        .filter(|t| t.status != TaskStatus::Cancelled.as_str())
+        .filter(|t| t.task_file.as_deref().is_some_and(|f| files.contains(&f)))
+        .collect())
+}
+
+/// Refuse `items` when one of their tickets is already a task in `run_id`
+/// that is not cancelled. The error names each such task and `--again`.
+pub fn refuse_queued(conn: &Connection, run_id: &str, items: &[(String, NewTask)]) -> Result<()> {
+    let files: Vec<&str> = items.iter().map(|(_, t)| t.task_file.as_str()).collect();
+    let queued = already_queued(conn, run_id, &files)?;
+    if queued.is_empty() {
+        return Ok(());
+    }
+    let lines: Vec<String> = queued
+        .iter()
+        .map(|t| {
+            format!(
+                "{} is already {} ({}) in this run.",
+                t.task_file.as_deref().unwrap_or("-"),
+                t.short(),
+                t.status
+            )
+        })
+        .collect();
+    bail!(
+        "{}\nNothing was queued. To queue these tickets again, add --again.",
+        lines.join("\n")
+    )
 }
 
 /// 1 task by id.
@@ -438,9 +520,10 @@ fn insert(conn: &Connection, run: &Run, new: &NewTask) -> Result<String> {
     conn.execute(
         "INSERT INTO tasks (task_id, run_id, seq, title, task_file, issue_url, spec_ref,
             primary_persona, fallback_persona, claimable_by, phase, parallel, priority, wave,
-            worktree_mode, land_check, kind, parent_task_id, status, origin, created_at, updated_at)
+            worktree_mode, land_check, kind, parent_task_id, status, origin, created_at, updated_at,
+            work_kind, review_mode, ticket_snapshot, ticket_sha, check_none)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?8, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17,
-            ?18, ?19, ?20, ?20)",
+            ?18, ?19, ?20, ?20, ?21, ?22, ?23, ?24, ?25)",
         params![
             id,
             run.run_id,
@@ -462,6 +545,11 @@ fn insert(conn: &Connection, run: &Run, new: &NewTask) -> Result<String> {
             TaskStatus::Queued.as_str(),
             Origin::Native.as_str(),
             now,
+            new.work_kind.map(WorkKind::as_str),
+            new.review_mode.map(ReviewMode::as_str),
+            new.ticket_snapshot,
+            new.ticket_snapshot.as_deref().map(ticket_sha),
+            new.check_none as i64,
         ],
     )?;
     for (paths, mode) in [
@@ -479,7 +567,7 @@ fn insert(conn: &Connection, run: &Run, new: &NewTask) -> Result<String> {
 }
 
 /// A cycle in `edges` (node -> the nodes it waits for), if any.
-fn find_cycle(edges: &[Vec<usize>]) -> Option<Vec<usize>> {
+pub fn find_cycle(edges: &[Vec<usize>]) -> Option<Vec<usize>> {
     #[derive(Clone, Copy, PartialEq)]
     enum Mark {
         New,
@@ -545,6 +633,8 @@ pub enum Wait {
     BlockedBy { task: String, status: String },
     /// A blocker was cancelled: it never finishes unless someone acts (#119).
     BlockerCancelled { task: String },
+    /// A blocker is parked unlanded: it resumes only on a requeue (D16).
+    BlockerParked { task: String },
     /// An exclusive task runs, or this exclusive task waits for others.
     Exclusive { running: String },
     /// A running task owns 1 of this task's files.
@@ -563,6 +653,10 @@ impl std::fmt::Display for Wait {
                     "{task} was cancelled: requeue it, or drop the dependency"
                 )
             }
+            Wait::BlockerParked { task } => write!(
+                f,
+                "{task} is parked unlanded. Run horch ledger requeue {task} to resume it"
+            ),
             Wait::Exclusive { running } => write!(f, "exclusive: waits for {running}"),
             Wait::FileHeld { path, by } => write!(f, "{path} is held by {by}"),
             Wait::SharedCheckout { running } => {
@@ -601,11 +695,12 @@ fn shared_checkout(t: &Task, work: &[&&Task]) -> Option<Wait> {
 }
 
 /// The state the claimable rule reads: the run's tasks with their files and
-/// blockers.
+/// blockers, and the personas that have a live worker.
 struct Board {
     tasks: Vec<Task>,
     own: BTreeMap<String, Vec<String>>,
     deps: BTreeMap<String, Vec<String>>,
+    staffed: BTreeSet<String>,
 }
 
 impl Board {
@@ -629,7 +724,25 @@ impl Board {
         )? {
             deps.entry(t).or_default().push(b);
         }
-        Ok(Board { tasks, own, deps })
+        let staffed = workers::of_run(conn, run_id)?
+            .into_iter()
+            .filter(|w| w.kind == WorkerKind::Worker.as_str())
+            .filter(|w| w.status().is_ok_and(WorkerStatus::is_live))
+            .filter_map(|w| w.persona)
+            .collect();
+        Ok(Board {
+            tasks,
+            own,
+            deps,
+            staffed,
+        })
+    }
+
+    /// Whether a live or starting worker can claim `t` (TRF-31).
+    fn is_staffed(&self, t: &Task) -> bool {
+        t.claimable_by
+            .as_deref()
+            .is_some_and(|p| self.staffed.contains(p))
     }
 
     fn task(&self, id: &str) -> Option<&Task> {
@@ -666,6 +779,8 @@ impl Board {
             .find_map(|bt| {
                 if bt.status == TaskStatus::Cancelled.as_str() {
                     Some(Wait::BlockerCancelled { task: bt.short() })
+                } else if bt.is_parked() {
+                    Some(Wait::BlockerParked { task: bt.short() })
                 } else if bt.status != TaskStatus::Done.as_str() {
                     Some(Wait::BlockedBy {
                         task: bt.short(),
@@ -710,13 +825,15 @@ impl Board {
 
     /// Every queued task in claim order, with why it cannot start (`None`
     /// when it can). The tasks are chosen greedily: each one is checked
-    /// against the running tasks and the startable ones before it.
+    /// against the running tasks and the startable ones before it. A
+    /// startable task holds its slot only when its persona has a live or
+    /// starting worker: no task waits behind one that nobody will claim.
     fn plan(&self) -> Vec<(&Task, Option<Wait>)> {
         let mut active: Vec<&Task> = self.tasks.iter().filter(|t| Self::is_active(t)).collect();
         let mut out = Vec::new();
         for t in self.queued() {
             let w = self.wait(t, &active);
-            if w.is_none() {
+            if w.is_none() && self.is_staffed(t) {
                 active.push(t);
             }
             out.push((t, w));
@@ -780,6 +897,11 @@ pub struct Claimed {
     pub landed_commit: Option<String>,
     /// The finish steps after `land`: what a landed worktree has left.
     pub steps_after_land: Vec<String>,
+    /// The ticket text as `add-map` queued it (TRF-12).
+    pub ticket_snapshot: Option<String>,
+    /// The handoff file of the last attempt, when it ended through
+    /// `horch ledger handoff` (C4). The claim prints it first.
+    pub handoff_path: Option<String>,
 }
 
 /// The result of `horch ledger claim`.
@@ -850,12 +972,21 @@ fn check_claimer(w: &Worker) -> Result<(String, String)> {
     Ok((run_id, persona))
 }
 
-/// The next startable task of `persona`. A replacement takes its
-/// predecessor's task first.
+/// The next startable task of `persona`. A worker spawned for a target
+/// task takes that task first, if it is still startable (TRF-24). A
+/// replacement takes its predecessor's task first. No worker takes a task
+/// that another live, unclaimed worker was spawned for.
 fn pick_task(conn: &Connection, w: &Worker, run_id: &str, persona: &str) -> Result<Option<Task>> {
     let board = Board::load(conn, run_id)?;
     let startable = board.startable();
-    let mine = |t: &&Task| t.claimable_by.as_deref() == Some(persona);
+    if let Some(target) = &w.target_task_id {
+        if let Some(t) = startable.iter().find(|t| &t.task_id == target) {
+            return Ok(Some((*t).clone()));
+        }
+    }
+    let reserved = reserved_for_others(conn, w, run_id)?;
+    let mine =
+        |t: &&Task| t.claimable_by.as_deref() == Some(persona) && !reserved.contains(&t.task_id);
     let predecessor = predecessor_task(conn, w)?;
     let first = |pred: Option<&str>| {
         startable
@@ -867,6 +998,31 @@ fn pick_task(conn: &Connection, w: &Worker, run_id: &str, persona: &str) -> Resu
     Ok(first(predecessor.as_deref())
         .or_else(|| first(None))
         .cloned())
+}
+
+/// The tasks that other workers of `run_id` were spawned for. A reservation
+/// lasts while its worker is live and has not claimed (TRF-24): it ends
+/// when the worker ends or claims, so no dead worker holds a task.
+fn reserved_for_others(conn: &Connection, w: &Worker, run_id: &str) -> Result<BTreeSet<String>> {
+    Ok(reservations(conn, run_id, Some(&w.worker_id))?
+        .into_values()
+        .collect())
+}
+
+/// The reservations of `run_id` (TRF-24): each live worker with no claim
+/// that was spawned for a task, with that task. `except` names a worker
+/// whose reservation does not count.
+fn reservations(
+    conn: &Connection,
+    run_id: &str,
+    except: Option<&str>,
+) -> Result<BTreeMap<String, String>> {
+    Ok(workers::of_run(conn, run_id)?
+        .into_iter()
+        .filter(|o| Some(o.worker_id.as_str()) != except && o.claimed_at.is_none())
+        .filter(|o| o.status().is_ok_and(WorkerStatus::is_live))
+        .filter_map(|o| o.target_task_id.map(|t| (o.worker_id, t)))
+        .collect())
 }
 
 /// The task a replaced worker held, if `w` replaces one.
@@ -888,14 +1044,18 @@ fn no_task(conn: &Connection, w: &Worker, persona: &str, run_id: &str) -> Result
             .map(|p| p.to_string())
             .unwrap_or_else(|| "unknown".into())
     );
+    let now = util::now();
     conn.execute(
-        "UPDATE workers SET status = ?2, end_reason = ?3 WHERE worker_id = ?1",
+        "UPDATE workers SET status = ?2, end_reason = ?3, ended_at = COALESCE(ended_at, ?4)
+         WHERE worker_id = ?1",
         params![
             w.worker_id,
             WorkerStatus::NoTask.as_str(),
-            format!("no task for persona {persona}")
+            format!("no task for persona {persona}"),
+            now
         ],
     )?;
+    no_task_wake(conn, w, persona, run_id, &now)?;
     util::event(
         conn,
         &About {
@@ -913,6 +1073,35 @@ fn no_task(conn: &Connection, w: &Worker, persona: &str, run_id: &str) -> Result
         supervisor_pid: w.supervisor_pid,
         tell,
     })
+}
+
+/// The `no-task` outbox row that tells the orchestrator a worker ended
+/// without a task (trace-fixes C3). 1 row for each worker.
+fn no_task_wake(
+    conn: &Connection,
+    w: &Worker,
+    persona: &str,
+    run_id: &str,
+    now: &str,
+) -> Result<()> {
+    let event = OutboxEvent::NoTask.as_str();
+    conn.execute(
+        "INSERT OR IGNORE INTO outbox (id, run_id, event, key, text, created_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        params![
+            util::new_id(),
+            run_id,
+            event,
+            format!("{run_id}:{event}:{}", w.worker_id),
+            format!(
+                "[horch] NOTE: Worker {} found no task for persona {persona} and ended. \
+                 Run horch ledger plan-workers before you spawn again.",
+                w.label()
+            ),
+            now
+        ],
+    )?;
+    Ok(())
 }
 
 /// Write the claim: the task, the worker, an open worktree from an earlier
@@ -968,9 +1157,16 @@ fn take_task(conn: &Connection, w: &Worker, run_id: &str, task: &Task) -> Result
 }
 
 fn claimed(conn: &Connection, w: &Worker, task: Task) -> Result<Claimed> {
-    let prior = workers::attempts_at(conn, &task.task_id)?
+    let attempts: Vec<Worker> = workers::attempts_at(conn, &task.task_id)?
         .into_iter()
         .filter(|a| a.worker_id != w.worker_id)
+        .collect();
+    let handoff_path = attempts
+        .last()
+        .filter(|a| a.end_reason.as_deref() == Some(EndReason::HandedOff.as_str()))
+        .and_then(|a| a.handoff_path.clone());
+    let prior = attempts
+        .into_iter()
         .map(|a| PriorAttempt {
             worker_id: a.worker_id,
             role: a.role,
@@ -1010,8 +1206,116 @@ fn claimed(conn: &Connection, w: &Worker, task: Task) -> Result<Claimed> {
         landed_commit: wt.as_ref().and_then(|(_, _, l)| l.clone()),
         steps_after_land,
         worktree_branch: wt.map(|(_, b, _)| b),
+        ticket_snapshot: task.ticket_snapshot.clone(),
+        handoff_path,
         task,
     })
+}
+
+/// What [`handoff`] did.
+#[derive(Debug, Clone, PartialEq)]
+pub struct HandedOff {
+    /// The task, queued again first in line.
+    pub task: Task,
+    /// The worker, ended `handed_off`.
+    pub worker: Worker,
+    /// The new `startable` outbox row, if its key was new.
+    pub wake_id: Option<String>,
+}
+
+/// `horch ledger handoff` (trace-fixes C4), in the caller's transaction:
+/// the worker ends `handed_off` with `path`, its task is queued again in
+/// front of every other queued task and keeps its worktree, and a
+/// `startable` wake is written. `path` must exist.
+pub fn handoff(tx: &Transaction, worker_id: &str, path: &str) -> Result<HandedOff> {
+    let w = workers::get(tx, worker_id)?;
+    let task = handoff_task(tx, &w)?;
+    if !std::path::Path::new(path).is_file() {
+        bail!("the handoff file {path} does not exist; write it first");
+    }
+    workers::hand_off(tx, worker_id, path)?;
+    tx.execute(
+        &format!(
+            "UPDATE tasks SET status = {queued}, current_worker_id = NULL, held_reason = NULL,
+                priority = MIN(priority, (SELECT COALESCE(MIN(o.priority), tasks.priority)
+                    FROM tasks o WHERE o.run_id = tasks.run_id AND o.status = {queued}
+                    AND o.task_id != tasks.task_id) - 1),
+                updated_at = ?2
+             WHERE task_id = ?1",
+            queued = word(TaskStatus::Queued)
+        ),
+        params![task.task_id, util::now()],
+    )?;
+    // The worktree waits for the next claim, which takes it over.
+    tx.execute(
+        &format!(
+            "UPDATE worktrees SET worker_id = NULL WHERE task_id = ?1 AND status IN ({held})",
+            held = sql_words::list(sql_words::WORKTREES_HELD)
+        ),
+        [&task.task_id],
+    )?;
+    util::event(
+        tx,
+        &About {
+            run: Some(&task.run_id),
+            task: Some(&task.task_id),
+            worker: Some(worker_id),
+        },
+        Actor::Worker,
+        EventKind::Requeued,
+        &format!(
+            "{} handed off {}: it is queued again, first in line, with its worktree. Handoff: {path}",
+            w.label(),
+            task.short()
+        ),
+    )?;
+    let wake_id = outbox::write(tx, &task.run_id, &handoff_wake(&w, &task, path))?;
+    Ok(HandedOff {
+        task: get(tx, &task.task_id)?,
+        worker: workers::get(tx, worker_id)?,
+        wake_id,
+    })
+}
+
+/// The running task `w` holds: the precondition of a handoff.
+fn handoff_task(conn: &Connection, w: &Worker) -> Result<Task> {
+    let Some(task_id) = &w.task_id else {
+        bail!(
+            "worker {} holds no task; only a worker with a running task hands off",
+            w.label()
+        );
+    };
+    let task = get(conn, task_id)?;
+    if w.status()? != WorkerStatus::Working
+        || task.status != TaskStatus::Running.as_str()
+        || task.current_worker_id.as_deref() != Some(w.worker_id.as_str())
+    {
+        bail!(
+            "{} is {} and worker {} is {}; only a worker with a running task hands off",
+            task.short(),
+            task.status,
+            w.label(),
+            w.status
+        );
+    }
+    Ok(task)
+}
+
+/// The `startable` wake of a handoff: spawn 1 replacement.
+fn handoff_wake(w: &Worker, task: &Task, path: &str) -> Wake {
+    let persona = task.claimable_by.as_deref().unwrap_or("?");
+    Wake::new(
+        OutboxEvent::Startable,
+        format!("handoff:{}", w.worker_id),
+        format!(
+            "[horch] NOTE: {} handed off {}. {} is queued first with its worktree. \
+             The handoff is {path}. Spawn: {persona} x1 (--replaces {}).",
+            w.label(),
+            task.short(),
+            task.short(),
+            w.label()
+        ),
+    )
 }
 
 /// Let the fallback persona claim `task`.
@@ -1047,7 +1351,8 @@ pub fn fallback(conn: &Connection, task: &Task, reason: &str) -> Result<Task> {
 /// Drop a task: the 1 cancel path (#136). In the caller's transaction the
 /// task lets go of its worker, the worker row ends `stopped`, and an open
 /// worktree becomes `abandoned` (its branch and folder stay, so a requeue
-/// can reopen it). The worker's process is not signalled here.
+/// can reopen it). The worker's process is not signalled here: after the
+/// commit, the caller stops it with [`super::stop::stop_cancelled`] (TRF-36).
 pub fn cancel(conn: &Connection, task: &Task, reason: &str) -> Result<Task> {
     if matches!(task.status.as_str(), "done" | "cancelled") {
         bail!("{} is already {}", task.short(), task.status);
@@ -1180,7 +1485,7 @@ pub fn attempt_ends(conn: &Connection, task: &Task) -> Result<Vec<String>> {
 /// `horch ledger requeue`: the operator wants a held or cancelled task
 /// worked on again. Its attempt history stays, and it gets the run's
 /// `max_attempts` anew. A cancelled task gets back the worktree its cancel
-/// abandoned.
+/// abandoned; a parked task resumes on the worktree it parked with.
 pub fn requeue_by_operator(conn: &Connection, task: &Task, reason: &str) -> Result<Task> {
     let held = task.status == TaskStatus::Queued.as_str() && task.held_reason.is_some();
     if !held && task.status != TaskStatus::Cancelled.as_str() {
@@ -1191,6 +1496,9 @@ pub fn requeue_by_operator(conn: &Connection, task: &Task, reason: &str) -> Resu
         );
     }
     let now = util::now();
+    if task.is_parked() {
+        resume_parked_worktree(conn, task)?;
+    }
     conn.execute(
         &format!(
             "UPDATE tasks SET status = {queued}, held_reason = NULL, attempt_floor = attempts,
@@ -1245,6 +1553,20 @@ pub fn requeue_by_operator(conn: &Connection, task: &Task, reason: &str) -> Resu
     get(conn, &task.task_id)
 }
 
+/// The worktree a parked task kept becomes open again, for the next claim.
+fn resume_parked_worktree(conn: &Connection, task: &Task) -> Result<()> {
+    conn.execute(
+        &format!(
+            "UPDATE worktrees SET status = {open}, worker_id = NULL, reason = NULL
+             WHERE task_id = ?1 AND status = {unlanded}",
+            open = word(WorktreeStatus::Open),
+            unlanded = word(WorktreeStatus::Unlanded)
+        ),
+        [&task.task_id],
+    )?;
+    Ok(())
+}
+
 /// 1 persona's line of `horch ledger plan-workers`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct PersonaPlan {
@@ -1258,12 +1580,31 @@ pub struct PersonaPlan {
 
 /// How many workers of each persona to spawn now: the tasks that can start
 /// now, minus the workers of that persona still spawning, starting or
-/// claiming and not stale ([`workers::is_stale`]).
+/// claiming and not stale ([`workers::is_stale`]). A task that a live
+/// worker with no claim was spawned for has its worker on the way already
+/// (TRF-51): it needs no spawn, and that worker covers no other task.
 pub fn plan_workers(conn: &Connection, run_id: &str) -> Result<Vec<PersonaPlan>> {
+    plan_workers_except(conn, run_id, None)
+}
+
+/// [`plan_workers`], where the reservation of worker `except` does not
+/// count: the spawn gate asks it for the worker it gates.
+fn plan_workers_except(
+    conn: &Connection,
+    run_id: &str,
+    except: Option<&str>,
+) -> Result<Vec<PersonaPlan>> {
     let startable = startable(conn, run_id)?;
+    let reserved: BTreeMap<String, String> = reservations(conn, run_id, except)?
+        .into_iter()
+        .filter(|(_, task)| startable.iter().any(|t| &t.task_id == task))
+        .collect();
     let mut by: BTreeMap<String, (i64, Vec<String>)> = BTreeMap::new();
     for t in &startable {
         let Some(p) = &t.claimable_by else { continue };
+        if reserved.values().any(|r| r == &t.task_id) {
+            continue;
+        }
         let entry = by.entry(p.clone()).or_default();
         entry.0 += 1;
         // A task whose last attempt died names that worker for --replaces.
@@ -1283,6 +1624,7 @@ pub fn plan_workers(conn: &Connection, run_id: &str) -> Result<Vec<PersonaPlan>>
             .iter()
             .filter(|w| {
                 w.kind == WorkerKind::Worker.as_str()
+                    && !reserved.contains_key(&w.worker_id)
                     && w.persona.as_deref() == Some(persona.as_str())
                     && matches!(w.status.as_str(), "spawning" | "starting" | "claiming")
                     && !workers::is_stale(w, run.heartbeat_stale_s, &now)
@@ -1299,20 +1641,535 @@ pub fn plan_workers(conn: &Connection, run_id: &str) -> Result<Vec<PersonaPlan>>
     Ok(out)
 }
 
-/// Whether every task of the run is finished.
-pub fn all_finished(conn: &Connection, run_id: &str) -> Result<bool> {
-    let open: i64 = conn.query_row(
-        &format!(
-            "SELECT count(*) FROM tasks WHERE run_id = ?1 AND status NOT IN ({ended})",
-            ended = sql_words::list(sql_words::TASKS_ENDED)
-        ),
-        [run_id],
-        |r| r.get(0),
-    )?;
-    let total: i64 = conn.query_row(
-        "SELECT count(*) FROM tasks WHERE run_id = ?1",
-        [run_id],
-        |r| r.get(0),
-    )?;
-    Ok(total > 0 && open == 0)
+/// Why the spawn of worker `worker_id` (a row in `run_id` with no task) is
+/// refused, or `None`: the other workers of its persona still on their way
+/// already cover the startable tasks of that persona (gap G-A).
+pub fn spawn_refusal(conn: &Connection, run_id: &str, worker_id: &str) -> Result<Option<String>> {
+    let w = workers::get(conn, worker_id)?;
+    let Some(persona) = w.persona.as_deref() else {
+        return Ok(None);
+    };
+    let plan = plan_workers_except(conn, run_id, Some(worker_id))?;
+    let line = plan.iter().find(|p| p.persona == persona);
+    let startable = line.map_or(0, |p| p.startable);
+    // plan_workers counts this new row too, when the persona has a line and
+    // the row is on its way.
+    let mine = i64::from(matches!(
+        w.status.as_str(),
+        "spawning" | "starting" | "claiming"
+    ));
+    let others = line.map_or(0, |p| (p.on_the_way - mine).max(0));
+    Ok((others >= startable).then(|| {
+        format!(
+            "persona {persona} has {startable} startable task(s), and {others} worker(s) \
+             of it are already on their way. Run horch ledger plan-workers and spawn only \
+             the count it prints."
+        )
+    }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::taskledger::runs::{self, NewRun};
+    use crate::taskledger::workers::NewWorker;
+    use crate::taskledger::Store;
+
+    /// A store in `dir` with the run "r1".
+    fn store_with_run(dir: &std::path::Path) -> (Store, Run) {
+        let mut store = Store::open(&dir.join("ledger.sqlite3")).unwrap();
+        let new_run = NewRun {
+            slug: "r1".into(),
+            ..Default::default()
+        };
+        let run = store
+            .immediate(|tx| runs::create(tx, dir, &new_run))
+            .unwrap();
+        (store, run)
+    }
+
+    const TEXT: &str = "# 01: A\n\n<!-- horch-ticket: 1 -->\n**Persona:** primary `dev`\n";
+
+    /// A new worker of `persona` in `run`, spawned for `target`.
+    fn spawn_for(store: &mut Store, run: &Run, persona: &str, target: Option<&str>) -> String {
+        let new = NewWorker {
+            run_id: run.run_id.clone(),
+            persona: persona.into(),
+            target_task_id: target.map(str::to_string),
+            ..Default::default()
+        };
+        store.immediate(|tx| workers::insert(tx, &new)).unwrap()
+    }
+
+    /// The task id `worker` claims, or `None` for no task.
+    fn claim_id(store: &mut Store, worker: &str) -> Option<String> {
+        match store.immediate(|tx| claim(tx, worker)).unwrap() {
+            ClaimOutcome::Claimed(c) => Some(c.task.task_id),
+            ClaimOutcome::NoTask { .. } => None,
+        }
+    }
+
+    /// Review 31 I-08: an older startable task of `codex-reviewer` and then
+    /// 1 code-sweep review. The worker spawned for the review claims the
+    /// review, and no other worker takes it while that worker is live.
+    #[test]
+    fn trf_24_auto_spawned_reviewer_claims_its_review_not_an_older_task() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut store, run) = store_with_run(dir.path());
+        let add_task = |store: &mut Store, title: &str, kind: TaskKind| {
+            let mut new = NewTask::work(title, &format!("tickets/{title}.md"), "codex-reviewer");
+            new.kind = kind;
+            store
+                .immediate(|tx| add(tx, &run, &new, Actor::Orchestrator))
+                .unwrap()
+                .task_id
+        };
+        let older = add_task(&mut store, "older", TaskKind::Work);
+        let review = add_task(&mut store, "review", TaskKind::Review);
+
+        let reviewer = spawn_for(&mut store, &run, "codex-reviewer", Some(&review));
+        // A plain worker claims first: it skips the reserved review.
+        let plain = spawn_for(&mut store, &run, "codex-reviewer", None);
+        assert_eq!(claim_id(&mut store, &plain), Some(older.clone()));
+        let late = spawn_for(&mut store, &run, "codex-reviewer", None);
+        assert_eq!(claim_id(&mut store, &late), None, "the review is reserved");
+        assert_eq!(claim_id(&mut store, &reviewer), Some(review.clone()));
+
+        // A reservation ends with its worker: the task is claimable again.
+        let review2 = add_task(&mut store, "review2", TaskKind::Review);
+        let dead = spawn_for(&mut store, &run, "codex-reviewer", Some(&review2));
+        store
+            .conn()
+            .execute(
+                "UPDATE workers SET status = ?2 WHERE worker_id = ?1",
+                params![dead, WorkerStatus::NoTask.as_str()],
+            )
+            .unwrap();
+        let next = spawn_for(&mut store, &run, "codex-reviewer", None);
+        assert_eq!(claim_id(&mut store, &next), Some(review2));
+
+        // A target that is no longer startable: the claim goes on as before.
+        let other = add_task(&mut store, "other", TaskKind::Work);
+        let missed = spawn_for(&mut store, &run, "codex-reviewer", Some(&review));
+        assert_eq!(claim_id(&mut store, &missed), Some(other));
+
+        // A target of another run is refused at spawn.
+        let (mut store2, run2) = store_with_run(&dir.path().join("b"));
+        let new = NewWorker {
+            run_id: run2.run_id.clone(),
+            persona: "codex-reviewer".into(),
+            target_task_id: Some(older),
+            ..Default::default()
+        };
+        assert!(store2.immediate(|tx| workers::insert(tx, &new)).is_err());
+    }
+
+    /// Report 47: a review task of `codex-reviewer` reserved by a live
+    /// worker of another persona, and by a stale one. Each reserved task
+    /// has its worker on the way: the plan asks for no extra worker.
+    #[test]
+    fn trf_51_a_reserved_task_needs_no_extra_worker() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut store, run) = store_with_run(dir.path());
+        let mut new = NewTask::work("review", "tickets/review.md", "codex-reviewer");
+        new.kind = TaskKind::Review;
+        let review = store
+            .immediate(|tx| add(tx, &run, &new, Actor::Orchestrator))
+            .unwrap()
+            .task_id;
+        let spawn = |plan: &[PersonaPlan]| -> i64 { plan.iter().map(|p| p.spawn).sum() };
+        assert_eq!(spawn(&plan_workers(store.conn(), &run.run_id).unwrap()), 1);
+
+        // A worker of another persona was spawned for the review.
+        let reviewer = spawn_for(&mut store, &run, "opus-reviewer", Some(&review));
+        assert_eq!(
+            spawn(&plan_workers(store.conn(), &run.run_id).unwrap()),
+            0,
+            "the review has its worker on the way"
+        );
+        // A worker of the persona of the review finds no task: it is reserved.
+        let extra = spawn_for(&mut store, &run, "codex-reviewer", None);
+        assert_eq!(claim_id(&mut store, &extra), None);
+
+        // A stale reserving worker still holds the review: no spawn either.
+        store
+            .conn()
+            .execute(
+                "UPDATE workers SET status = 'claiming', last_checkin_at = '2000-01-01T00:00:00Z'
+                 WHERE worker_id = ?1",
+                [&reviewer],
+            )
+            .unwrap();
+        assert_eq!(spawn(&plan_workers(store.conn(), &run.run_id).unwrap()), 0);
+
+        // The reservation ends with its worker: the review needs 1 worker.
+        store
+            .conn()
+            .execute(
+                "UPDATE workers SET status = ?2 WHERE worker_id = ?1",
+                params![reviewer, WorkerStatus::NoTask.as_str()],
+            )
+            .unwrap();
+        assert_eq!(spawn(&plan_workers(store.conn(), &run.run_id).unwrap()), 1);
+        // The gate of the spawned worker does not count its own reservation.
+        let mine = spawn_for(&mut store, &run, "codex-reviewer", Some(&review));
+        assert_eq!(
+            spawn_refusal(store.conn(), &run.run_id, &mine).unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn trf_12_add_stores_the_snapshot_and_its_sha_and_a_claim_gives_it_back() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut store, run) = store_with_run(dir.path());
+        let mut new = NewTask::work("A", "tickets/a.md", "dev");
+        new.ticket_snapshot = Some(TEXT.to_string());
+        let t = store
+            .immediate(|tx| add(tx, &run, &new, Actor::Orchestrator))
+            .unwrap();
+        assert_eq!(t.ticket_snapshot.as_deref(), Some(TEXT));
+        assert_eq!(t.ticket_sha, Some(ticket_sha(TEXT)));
+        assert_eq!(
+            ticket_sha("abc"),
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        );
+        // The ticket file never existed: the claim needs only the ledger.
+        let worker = NewWorker {
+            run_id: run.run_id.clone(),
+            persona: "dev".into(),
+            ..Default::default()
+        };
+        let wid = store.immediate(|tx| workers::insert(tx, &worker)).unwrap();
+        let ClaimOutcome::Claimed(c) = store.immediate(|tx| claim(tx, &wid)).unwrap() else {
+            panic!("the worker claims the task");
+        };
+        assert_eq!(c.ticket_snapshot.as_deref(), Some(TEXT));
+        // Status JSON leaves the snapshot out; the claim JSON has it.
+        let task_json = serde_json::to_value(&c.task).unwrap();
+        assert!(task_json.get("ticket_snapshot").is_none(), "{task_json}");
+        assert_eq!(serde_json::to_value(&*c).unwrap()["ticket_snapshot"], TEXT);
+    }
+
+    #[test]
+    fn trf_12_a_task_without_a_snapshot_stores_none() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut store, run) = store_with_run(dir.path());
+        let new = NewTask::work("A", "tickets/a.md", "dev");
+        let t = store
+            .immediate(|tx| add(tx, &run, &new, Actor::Orchestrator))
+            .unwrap();
+        assert_eq!((t.ticket_snapshot, t.ticket_sha), (None, None));
+    }
+
+    #[test]
+    fn trf_13_a_ticket_already_queued_is_refused_and_a_cancelled_one_is_not() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut store, run) = store_with_run(dir.path());
+        let items = vec![
+            ("1".to_string(), NewTask::work("A", "tickets/a.md", "dev")),
+            ("2".to_string(), NewTask::work("B", "tickets/b.md", "dev")),
+        ];
+        store
+            .immediate(|tx| refuse_queued(tx, &run.run_id, &items))
+            .unwrap();
+        let added = store
+            .immediate(|tx| add_many(tx, &run, &items, Actor::Orchestrator))
+            .unwrap();
+        let e = store
+            .immediate(|tx| refuse_queued(tx, &run.run_id, &items))
+            .unwrap_err()
+            .to_string();
+        assert_eq!(
+            e,
+            "tickets/a.md is already T-1 (queued) in this run.\n\
+             tickets/b.md is already T-2 (queued) in this run.\n\
+             Nothing was queued. To queue these tickets again, add --again."
+        );
+        store.immediate(|tx| cancel(tx, &added[0], "test")).unwrap();
+        let queued = store
+            .immediate(|tx| already_queued(tx, &run.run_id, &["tickets/a.md", "tickets/b.md"]))
+            .unwrap();
+        assert_eq!(
+            queued.iter().map(Task::short).collect::<Vec<_>>(),
+            vec!["T-2"]
+        );
+    }
+
+    #[test]
+    fn trf_14_add_stores_kind_review_and_check_none() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut store, run) = store_with_run(dir.path());
+        let mut new = NewTask::work("A", "tickets/a.md", "dev");
+        new.work_kind = Some(WorkKind::Refactor);
+        new.review_mode = Some(ReviewMode::Full);
+        new.check_none = true;
+        let t = store
+            .immediate(|tx| add(tx, &run, &new, Actor::Orchestrator))
+            .unwrap();
+        assert_eq!(t.work_kind.as_deref(), Some("refactor"));
+        assert_eq!(t.review_mode.as_deref(), Some("full"));
+        assert!(t.check_none);
+        assert_eq!(t.land_check, None);
+    }
+
+    /// Queue a task of `persona` with `edit` applied.
+    fn queue(
+        store: &mut Store,
+        run: &Run,
+        title: &str,
+        persona: &str,
+        edit: impl Fn(&mut NewTask),
+    ) -> Task {
+        let mut new = NewTask::work(title, &format!("tickets/{title}.md"), persona);
+        edit(&mut new);
+        store
+            .immediate(|tx| add(tx, run, &new, Actor::Orchestrator))
+            .unwrap()
+    }
+
+    /// A new worker row of `persona`, in state `spawning`.
+    fn hire(store: &mut Store, run: &Run, persona: &str) -> String {
+        let new = NewWorker {
+            run_id: run.run_id.clone(),
+            persona: persona.into(),
+            ..Default::default()
+        };
+        store.immediate(|tx| workers::insert(tx, &new)).unwrap()
+    }
+
+    #[test]
+    fn trf_31_a_task_with_no_worker_of_its_persona_holds_no_slot() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut store, run) = store_with_run(dir.path());
+        // x is first and exclusive, and owns the file y owns. No x worker exists.
+        queue(&mut store, &run, "x", "x", |n| {
+            n.parallel = false;
+            n.priority = 1;
+            n.own = vec!["src/a.rs".into()];
+        });
+        queue(&mut store, &run, "y", "y", |n| {
+            n.own = vec!["src/a.rs".into()]
+        });
+        let start: Vec<String> = startable(store.conn(), &run.run_id)
+            .unwrap()
+            .into_iter()
+            .map(|t| t.title)
+            .collect();
+        assert_eq!(
+            start,
+            vec!["x", "y"],
+            "both show, so plan-workers asks for both"
+        );
+        let wy = hire(&mut store, &run, "y");
+        let ClaimOutcome::Claimed(c) = store.immediate(|tx| claim(tx, &wy)).unwrap() else {
+            panic!("the y worker claims y: x holds no slot");
+        };
+        assert_eq!(c.task.title, "y");
+    }
+
+    #[test]
+    fn trf_31_a_task_with_a_starting_worker_of_its_persona_holds_its_slot() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut store, run) = store_with_run(dir.path());
+        queue(&mut store, &run, "x", "x", |n| {
+            n.parallel = false;
+            n.priority = 1;
+        });
+        queue(&mut store, &run, "y", "y", |_| {});
+        hire(&mut store, &run, "x");
+        let wy = hire(&mut store, &run, "y");
+        let waits = waits(store.conn(), &run.run_id).unwrap();
+        assert_eq!(waits.len(), 1, "{waits:?}");
+        assert_eq!(waits[0].0.title, "y");
+        assert!(matches!(
+            store.immediate(|tx| claim(tx, &wy)).unwrap(),
+            ClaimOutcome::NoTask { .. }
+        ));
+    }
+
+    #[test]
+    fn trf_31_a_spawn_is_refused_when_workers_on_their_way_cover_the_plan() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut store, run) = store_with_run(dir.path());
+        queue(&mut store, &run, "a", "dev", |_| {});
+        let first = hire(&mut store, &run, "dev");
+        assert_eq!(
+            spawn_refusal(store.conn(), &run.run_id, &first).unwrap(),
+            None,
+            "the first worker covers the 1 startable task"
+        );
+        let second = hire(&mut store, &run, "dev");
+        let why = spawn_refusal(store.conn(), &run.run_id, &second)
+            .unwrap()
+            .expect("a second dev worker is over the plan");
+        assert!(why.contains("horch ledger plan-workers"), "{why}");
+        let other = hire(&mut store, &run, "idle");
+        assert!(
+            spawn_refusal(store.conn(), &run.run_id, &other)
+                .unwrap()
+                .is_some(),
+            "a persona with no startable task gets no worker"
+        );
+    }
+
+    #[test]
+    fn trf_32_a_claim_with_no_task_ends_the_worker_and_tells_the_orchestrator() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut store, run) = store_with_run(dir.path());
+        let w = hire(&mut store, &run, "dev");
+        assert!(matches!(
+            store.immediate(|tx| claim(tx, &w)).unwrap(),
+            ClaimOutcome::NoTask { .. }
+        ));
+        let worker = workers::get(store.conn(), &w).unwrap();
+        assert_eq!(worker.status, WorkerStatus::NoTask.as_str());
+        assert!(worker.ended_at.is_some(), "the worker ended");
+        let (event, key, text, delivered): (String, String, String, Option<String>) = store
+            .conn()
+            .query_row(
+                "SELECT event, key, text, delivered_at FROM outbox WHERE run_id = ?1",
+                [&run.run_id],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+            )
+            .unwrap();
+        assert_eq!(event, "no-task");
+        assert_eq!(key, format!("{}:no-task:{w}", run.run_id));
+        assert!(text.contains("found no task for persona dev"), "{text}");
+        assert_eq!(delivered, None);
+    }
+
+    /// A run with tasks "a" (priority 100) and "b" (priority 50) for dev.
+    /// A dev worker claims b, and b gets an open worktree. `dir` holds a
+    /// handoff file. Returns the worker id, task b, and the handoff path.
+    fn handing_off(store: &mut Store, run: &Run, dir: &std::path::Path) -> (String, Task, String) {
+        queue(store, run, "a", "dev", |_| {});
+        queue(store, run, "b", "dev", |n| n.priority = 50);
+        let w = hire(store, run, "dev");
+        let ClaimOutcome::Claimed(c) = store.immediate(|tx| claim(tx, &w)).unwrap() else {
+            panic!("the worker claims b");
+        };
+        assert_eq!(c.task.title, "b");
+        store
+            .immediate(|tx| {
+                tx.execute(
+                    "INSERT INTO worktrees (worktree_id, task_id, worker_id, repo_root, path,
+                        branch, base, status, origin, created_at)
+                     VALUES ('wt1', ?1, ?2, '/repo', '/repo/.worktrees/b', 'fleet/b', 'main',
+                        'open', 'native', ?3)",
+                    params![c.task.task_id, w, util::now()],
+                )?;
+                Ok(())
+            })
+            .unwrap();
+        let path = dir.join("opus-1-whats-next.md");
+        std::fs::write(&path, "# Handoff\n").unwrap();
+        (w, c.task.clone(), path.to_string_lossy().into_owned())
+    }
+
+    #[test]
+    fn trf_37_handoff_ends_the_worker_and_requeues_the_task_first_with_its_worktree() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut store, run) = store_with_run(dir.path());
+        let (w, b, path) = handing_off(&mut store, &run, dir.path());
+        let out = store.immediate(|tx| handoff(tx, &w, &path)).unwrap();
+        // The worker ended handed off, with the path.
+        assert_eq!(out.worker.status, WorkerStatus::Incomplete.as_str());
+        assert_eq!(out.worker.end_reason.as_deref(), Some("handed_off"));
+        assert_eq!(out.worker.handoff_path.as_deref(), Some(path.as_str()));
+        assert!(out.worker.ended_at.is_some());
+        // The task is queued, in front of a, and its worktree is open.
+        assert_eq!(out.task.status, TaskStatus::Queued.as_str());
+        assert_eq!(out.task.current_worker_id, None);
+        let a = resolve(store.conn(), &run.run_id, "T-1").unwrap();
+        assert!(
+            out.task.priority < a.priority,
+            "{} < {}",
+            out.task.priority,
+            a.priority
+        );
+        let (status, holder): (String, Option<String>) = store
+            .conn()
+            .query_row(
+                "SELECT status, worker_id FROM worktrees WHERE worktree_id = 'wt1'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!((status.as_str(), holder), ("open", None));
+        // A startable wake, in the same transaction, names the replacement.
+        let (event, text): (String, String) = store
+            .conn()
+            .query_row(
+                "SELECT event, text FROM outbox WHERE id = ?1",
+                [out.wake_id.as_deref().expect("a new wake row")],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(event, "startable");
+        assert!(
+            text.contains(&format!("handed off {}", b.short())),
+            "{text}"
+        );
+        assert!(text.contains("Spawn: dev x1"), "{text}");
+        // plan-workers names the handed-off worker for --replaces.
+        let plan = plan_workers(store.conn(), &run.run_id).unwrap();
+        assert_eq!(plan[0].replaces, vec![w.clone()]);
+    }
+
+    #[test]
+    fn trf_37_the_next_claim_takes_the_task_its_worktree_and_the_handoff_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut store, run) = store_with_run(dir.path());
+        let (w, b, path) = handing_off(&mut store, &run, dir.path());
+        store.immediate(|tx| handoff(tx, &w, &path)).unwrap();
+        let next = hire(&mut store, &run, "dev");
+        let ClaimOutcome::Claimed(c) = store.immediate(|tx| claim(tx, &next)).unwrap() else {
+            panic!("the replacement claims");
+        };
+        assert_eq!(c.task.task_id, b.task_id, "the handed-off task comes first");
+        assert_eq!(c.handoff_path.as_deref(), Some(path.as_str()));
+        assert_eq!(c.worktree.as_deref(), Some("/repo/.worktrees/b"));
+        assert_eq!(c.attempt, 2);
+    }
+
+    #[test]
+    fn trf_37_a_claim_after_an_attempt_that_did_not_hand_off_has_no_handoff_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut store, run) = store_with_run(dir.path());
+        let (w, _, _) = handing_off(&mut store, &run, dir.path());
+        store
+            .immediate(|tx| {
+                workers::end(tx, &w, WorkerStatus::Incomplete, "reaped", None)?;
+                requeue(tx, &resolve(tx, &run.run_id, "T-2")?.task_id, "reaped")
+            })
+            .unwrap();
+        let next = hire(&mut store, &run, "dev");
+        let ClaimOutcome::Claimed(c) = store.immediate(|tx| claim(tx, &next)).unwrap() else {
+            panic!("the replacement claims");
+        };
+        assert_eq!(c.handoff_path, None);
+    }
+
+    #[test]
+    fn trf_37_handoff_refuses_a_missing_file_and_a_worker_with_no_running_task() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut store, run) = store_with_run(dir.path());
+        let (w, _, path) = handing_off(&mut store, &run, dir.path());
+        let missing = dir.path().join("nope.md");
+        let err = store
+            .immediate(|tx| handoff(tx, &w, &missing.to_string_lossy()))
+            .unwrap_err();
+        assert!(format!("{err:#}").contains("does not exist"), "{err:#}");
+        // Nothing changed: the worker still works.
+        let worker = workers::get(store.conn(), &w).unwrap();
+        assert_eq!(worker.status, WorkerStatus::Working.as_str());
+        // A worker with no task cannot hand off.
+        let idle = hire(&mut store, &run, "dev");
+        let err = store.immediate(|tx| handoff(tx, &idle, &path)).unwrap_err();
+        assert!(format!("{err:#}").contains("holds no task"), "{err:#}");
+        // A second handoff of the same worker is refused.
+        store.immediate(|tx| handoff(tx, &w, &path)).unwrap();
+        assert!(store.immediate(|tx| handoff(tx, &w, &path)).is_err());
+    }
 }

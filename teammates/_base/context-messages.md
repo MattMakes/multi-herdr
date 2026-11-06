@@ -14,7 +14,7 @@ messages:
   resume-orchestrator: "NOTE: Compaction is complete. Read {handoff} and ai_docs/plans/<run-slug>/decisions.md. In a ledger run, rebuild roster and ownership from horch ledger status. Command card: horch ledger status; horch ledger plan-workers; horch spawn <persona>; horch tell <role> <message>; horch inbox; horch ledger events; horch context --over; horch compact <role>; horch note --fact <fact>."
   resume: "NOTE: Compaction is complete. Read {handoff} now. Then continue your task from its next step. Do not repeat finished steps."
   reported: "[horch] NOTE: {role} compacted. Context {pre} -> {post} tokens. Handoff: {handoff}."
-  failed: "[horch] BLOCKED: Compaction of {role} failed at step {step}: {reason}. Log: {log}."
+  failed: "[horch] BLOCKED: Compaction of {role} failed at step {step}: {reason}. Log: {log}. Run horch compact {role} --request, or use horch ledger handoff."
 ---
 # Context messages
 

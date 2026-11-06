@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::thread::JoinHandle;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::Result;
 use rusqlite::params;
@@ -100,14 +100,17 @@ pub fn start_checkins(
         let tick = Duration::from_millis(100).min(every);
         let mut since = Duration::ZERO;
         let mut session_known = false;
+        let mut log = CheckinLog::default();
         loop {
             if flag.load(Ordering::SeqCst) {
                 return;
             }
             if since >= every {
                 since = Duration::ZERO;
-                if let Err(e) = beat(&db, &worker_id, &lookup, &mut session_known) {
-                    eprintln!("horch worker: checkin failed: {e:#}");
+                let result = beat(&db, &worker_id, &lookup, &mut session_known)
+                    .map_err(|e| format!("{e:#}"));
+                if let Some(line) = log.record(result, Instant::now()) {
+                    eprintln!("{line}");
                 }
             }
             std::thread::sleep(tick);
@@ -117,6 +120,59 @@ pub fn start_checkins(
     Checkins {
         stop,
         thread: Some(thread),
+    }
+}
+
+/// The longest time 1 repeated checkin error stays silent.
+pub const REPEAT_EVERY: Duration = Duration::from_secs(10 * 60);
+
+/// What the checkin thread printed, so 1 error that repeats every checkin
+/// does not fill the pane (TRF-49).
+#[derive(Debug, Default)]
+pub struct CheckinLog {
+    /// The text of the last failure, while checkins fail.
+    last_error: Option<String>,
+    /// How many checkins in a row failed with `last_error`.
+    repeats: u64,
+    /// How many checkins in a row failed, with any text.
+    failures: u64,
+    /// When the last failure line was printed.
+    printed_at: Option<Instant>,
+}
+
+impl CheckinLog {
+    /// The line to print for 1 checkin `result` at `now`, if any. A failure
+    /// prints the first time and when its text changes. The same failure
+    /// prints again only after [`REPEAT_EVERY`], with its repeat count. The
+    /// first success after failures prints 1 recovery line.
+    pub fn record(&mut self, result: Result<(), String>, now: Instant) -> Option<String> {
+        let text = match result {
+            Ok(()) => {
+                let failures = std::mem::take(self).failures;
+                return (failures > 0)
+                    .then(|| format!("horch worker: checkin recovered after {failures} failures"));
+            }
+            Err(text) => text,
+        };
+        self.failures += 1;
+        if self.last_error.as_deref() != Some(text.as_str()) {
+            self.last_error = Some(text.clone());
+            self.repeats = 1;
+            self.printed_at = Some(now);
+            return Some(format!("horch worker: checkin failed: {text}"));
+        }
+        self.repeats += 1;
+        let due = self
+            .printed_at
+            .is_none_or(|at| now.saturating_duration_since(at) >= REPEAT_EVERY);
+        if !due {
+            return None;
+        }
+        self.printed_at = Some(now);
+        Some(format!(
+            "horch worker: checkin failed {n} times in a row: {text}",
+            n = self.repeats
+        ))
     }
 }
 
@@ -396,5 +452,83 @@ mod tests {
         );
         assert_eq!(row(&f), ("done".into(), None, Some(7)));
         assert_eq!(exited_text(&f), ["agent exited with code 7"]);
+    }
+
+    #[test]
+    fn trf_49_same_error_prints_once_then_every_10_min() {
+        let mut log = CheckinLog::default();
+        let t0 = Instant::now();
+        let err = || Err("the task ledger is schema version 8".to_string());
+        assert_eq!(
+            log.record(err(), t0).as_deref(),
+            Some("horch worker: checkin failed: the task ledger is schema version 8")
+        );
+        // 1 checkin each 30 s for 10 min: silent until the 10 min mark.
+        let mut printed = Vec::new();
+        for i in 1..=40u64 {
+            if let Some(line) = log.record(err(), t0 + Duration::from_secs(30 * i)) {
+                printed.push((i, line));
+            }
+        }
+        assert_eq!(
+            printed,
+            vec![
+                (
+                    20,
+                    "horch worker: checkin failed 21 times in a row: the task ledger is schema version 8"
+                        .to_string()
+                ),
+                (
+                    40,
+                    "horch worker: checkin failed 41 times in a row: the task ledger is schema version 8"
+                        .to_string()
+                ),
+            ]
+        );
+    }
+
+    #[test]
+    fn trf_49_changed_error_prints() {
+        let mut log = CheckinLog::default();
+        let t0 = Instant::now();
+        assert!(log.record(Err("a".into()), t0).is_some());
+        assert!(log
+            .record(Err("a".into()), t0 + Duration::from_secs(1))
+            .is_none());
+        assert_eq!(
+            log.record(Err("b".into()), t0 + Duration::from_secs(2))
+                .as_deref(),
+            Some("horch worker: checkin failed: b")
+        );
+        assert!(log
+            .record(Err("b".into()), t0 + Duration::from_secs(3))
+            .is_none());
+        // Back to the first text: it changed again, so it prints.
+        assert_eq!(
+            log.record(Err("a".into()), t0 + Duration::from_secs(4))
+                .as_deref(),
+            Some("horch worker: checkin failed: a")
+        );
+    }
+
+    #[test]
+    fn trf_49_recovery_prints_1_line() {
+        let mut log = CheckinLog::default();
+        let t0 = Instant::now();
+        assert_eq!(log.record(Ok(()), t0), None, "no failure, no line");
+        for (i, text) in ["a", "a", "b"].into_iter().enumerate() {
+            log.record(Err(text.into()), t0 + Duration::from_secs(i as u64));
+        }
+        assert_eq!(
+            log.record(Ok(()), t0 + Duration::from_secs(5)).as_deref(),
+            Some("horch worker: checkin recovered after 3 failures")
+        );
+        assert_eq!(log.record(Ok(()), t0 + Duration::from_secs(6)), None);
+        // A new failure after the recovery prints again.
+        assert_eq!(
+            log.record(Err("a".into()), t0 + Duration::from_secs(7))
+                .as_deref(),
+            Some("horch worker: checkin failed: a")
+        );
     }
 }

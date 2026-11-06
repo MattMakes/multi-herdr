@@ -4,7 +4,7 @@ use anyhow::{bail, Context, Result};
 use rusqlite::{params, Connection, Row};
 use serde::Serialize;
 
-use super::model::{Actor, EventKind, Origin, ProgressSource, WorkerKind, WorkerStatus};
+use super::model::{Actor, EndReason, EventKind, Origin, ProgressSource, WorkerKind, WorkerStatus};
 use super::sql_words::{self, word};
 use super::store::optional;
 use super::util::{self, About};
@@ -47,6 +47,11 @@ pub struct Worker {
     pub started_at: Option<String>,
     pub claimed_at: Option<String>,
     pub ended_at: Option<String>,
+    /// The handoff file of a worker that ended `handed_off` (C4).
+    pub handoff_path: Option<String>,
+    /// The task this worker was spawned to claim (TRF-24). The claim takes
+    /// it first; no other worker claims it while this worker is live.
+    pub target_task_id: Option<String>,
 }
 
 impl Worker {
@@ -96,6 +101,8 @@ impl Worker {
             started_at: r.get("started_at")?,
             claimed_at: r.get("claimed_at")?,
             ended_at: r.get("ended_at")?,
+            handoff_path: r.get("handoff_path")?,
+            target_task_id: r.get("target_task_id")?,
         })
     }
 }
@@ -163,6 +170,8 @@ pub struct NewWorker {
     pub previous_worker_id: Option<String>,
     pub resumed_from_session: Option<String>,
     pub legacy_record_id: Option<String>,
+    /// The task this worker is spawned to claim (TRF-24).
+    pub target_task_id: Option<String>,
 }
 
 /// Insert a worker in state `spawning` and return its id.
@@ -173,12 +182,22 @@ pub fn insert(conn: &Connection, new: &NewWorker) -> Result<String> {
             bail!("worker {prev} belongs to another run");
         }
     }
+    if let Some(target) = &new.target_task_id {
+        let run: Option<String> = optional(conn.query_row(
+            "SELECT run_id FROM tasks WHERE task_id = ?1",
+            [target],
+            |r| r.get(0),
+        ))?;
+        if run.as_deref() != Some(new.run_id.as_str()) {
+            bail!("task {target} is not a task of this run");
+        }
+    }
     let id = util::new_id();
     conn.execute(
         "INSERT INTO workers (worker_id, run_id, kind, persona, role, harness, model, effort,
             host, workspace_id, pane_id, previous_worker_id, resumed_from_session,
-            legacy_record_id, status, origin, spawned_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)",
+            legacy_record_id, status, origin, spawned_at, target_task_id)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)",
         params![
             id,
             new.run_id,
@@ -197,6 +216,7 @@ pub fn insert(conn: &Connection, new: &NewWorker) -> Result<String> {
             WorkerStatus::Spawning.as_str(),
             Origin::Native.as_str(),
             util::now(),
+            new.target_task_id,
         ],
     )?;
     Ok(id)
@@ -407,6 +427,26 @@ pub fn end(
         params![worker_id, status.as_str(), reason, exit_code, util::now()],
     )?;
     Ok(n > 0)
+}
+
+/// End a live worker `handed_off` with its handoff file (trace-fixes C4).
+/// The attempt did not finish, so the row ends `incomplete`, as a reaped
+/// one does: `plan-workers` then names it for `--replaces`.
+pub fn hand_off(conn: &Connection, worker_id: &str, path: &str) -> Result<()> {
+    let n = conn.execute(
+        &format!(
+            "UPDATE workers SET status = {incomplete}, end_reason = ?2, handoff_path = ?3,
+                ended_at = COALESCE(ended_at, ?4)
+             WHERE worker_id = ?1 AND status IN ({live})",
+            incomplete = word(WorkerStatus::Incomplete),
+            live = sql_words::list(sql_words::WORKERS_LIVE)
+        ),
+        params![worker_id, EndReason::HandedOff.as_str(), path, util::now()],
+    )?;
+    if n != 1 {
+        bail!("worker {worker_id} already ended; an ended worker cannot hand off");
+    }
+    Ok(())
 }
 
 /// How long a `spawning` row may wait for its supervisor: longer than the
@@ -687,9 +727,87 @@ pub fn waiting(conn: &Connection, worker: &str) -> Result<Vec<Wait>> {
     Ok(out)
 }
 
+/// The event kind of the ledger action `verb` names in a horch question,
+/// else `None`. Only these actions close a horch question (C2).
+pub fn closing_event(verb: &str) -> Option<EventKind> {
+    match verb {
+        "requeue" => Some(EventKind::Requeued),
+        "cancel" => Some(EventKind::Cancelled),
+        _ => None,
+    }
+}
+
+/// Close each open horch question once a ledger action it names happened
+/// after it was asked (TRF-26). The task is looked up in every run of
+/// `workspace`.
+fn close_acted_questions(
+    conn: &Connection,
+    mail: &crate::messaging::mail::Mail,
+    workspace: &str,
+) -> Result<()> {
+    let mut runs: Option<Vec<String>> = None;
+    for q in mail.open_questions()? {
+        if q.closes_on.is_empty() {
+            continue;
+        }
+        let runs = match &mut runs {
+            Some(runs) => runs,
+            None => {
+                let mut stmt = conn.prepare("SELECT run_id FROM runs WHERE workspace_id = ?1")?;
+                let ids = stmt
+                    .query_map([workspace], |r| r.get(0))?
+                    .collect::<rusqlite::Result<Vec<String>>>()?;
+                runs.insert(ids)
+            }
+        };
+        let asked = crate::clock::stamp(q.created_at.into());
+        if acted_since(conn, runs, &q.closes_on, &asked)? {
+            mail.close_question(&q.id.short())?;
+        }
+    }
+    Ok(())
+}
+
+/// Whether an action of `actions` (`<verb> T-<n>`) has an event at or after
+/// `since` for its task in one of `runs`.
+fn acted_since(
+    conn: &Connection,
+    runs: &[String],
+    actions: &[String],
+    since: &str,
+) -> Result<bool> {
+    for action in actions {
+        let Some((verb, key)) = action.split_once(' ') else {
+            continue;
+        };
+        let Some(kind) = closing_event(verb) else {
+            continue;
+        };
+        for run in runs {
+            let Ok(task) = super::tasks::resolve(conn, run, key) else {
+                continue;
+            };
+            let seen: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM events WHERE task_id = ?1 AND kind = ?2 AND at >= ?3",
+                params![task.task_id, kind.as_str(), since],
+                |r| r.get(0),
+            )?;
+            if seen > 0 {
+                return Ok(true);
+            }
+        }
+    }
+    Ok(false)
+}
+
 /// Project the messaging layer's authoritative questions into ledger waits.
+/// First close the horch questions whose ledger action happened. A wait
+/// names its question by id (`#<id>`): an answer by that id ends it, and
+/// the next open question of the role starts a new wait.
 pub fn sync_questions(conn: &Connection, state: &std::path::Path, workspace: &str) -> Result<()> {
-    let questions = crate::messaging::mail::Mail::under(state, workspace).open_questions()?;
+    let mail = crate::messaging::mail::Mail::under(state, workspace);
+    close_acted_questions(conn, &mail, workspace)?;
+    let questions = mail.open_questions()?;
     let mut stmt = conn.prepare(&format!(
         "SELECT * FROM workers WHERE workspace_id=?1 AND status={working}",
         working = word(WorkerStatus::Working)
@@ -698,16 +816,17 @@ pub fn sync_questions(conn: &Connection, state: &std::path::Path, workspace: &st
         .query_map([workspace], Worker::from_row)?
         .collect::<rusqlite::Result<Vec<_>>>()?;
     for w in roster {
-        // The first unanswered question fixes the deadline; polling must never extend it.
+        // The oldest open question fixes the deadline; polling must never extend it.
         let question = questions
             .iter()
             .find(|q| w.role.as_deref() == Some(q.from.as_str()));
         if let Some(q) = question {
             let started: chrono::DateTime<chrono::Utc> = q.created_at.into();
             let deadline = crate::clock::stamp(started + chrono::Duration::days(7));
+            let reason = format!("#{} {}", q.id.short(), q.text);
             conn.execute("INSERT INTO worker_waits(worker_id,kind,reason,started_at,deadline) VALUES(?1,'question',?2,?3,?4)
                 ON CONFLICT(worker_id,kind) DO UPDATE SET reason=excluded.reason,started_at=excluded.started_at,deadline=excluded.deadline",
-                params![w.worker_id,q.text,crate::clock::stamp(started),deadline])?;
+                params![w.worker_id,reason,crate::clock::stamp(started),deadline])?;
         } else {
             clear_wait(conn, &w.worker_id, "question")?;
         }
@@ -785,6 +904,155 @@ mod tests {
                 )
             })
             .unwrap()
+    }
+
+    /// A run in workspace `w1` with task T-1 and a working worker `worker-1`.
+    fn asker(store: &mut Store) -> (String, String) {
+        use crate::taskledger::tasks::{self, NewTask};
+        store
+            .immediate(|tx| {
+                let run = runs::create(
+                    tx,
+                    Path::new("/r"),
+                    &NewRun {
+                        slug: "q".into(),
+                        workspace_id: Some("w1".into()),
+                        ..Default::default()
+                    },
+                )?;
+                tasks::add(
+                    tx,
+                    &run,
+                    &NewTask::work("t", "t.md", "opus"),
+                    Actor::Orchestrator,
+                )?;
+                let worker = insert(
+                    tx,
+                    &NewWorker {
+                        run_id: run.run_id.clone(),
+                        persona: "opus".into(),
+                        role: Some("worker-1".into()),
+                        workspace_id: Some("w1".into()),
+                        ..Default::default()
+                    },
+                )?;
+                tx.execute(
+                    &format!(
+                        "UPDATE workers SET status = {} WHERE worker_id = ?1",
+                        word(WorkerStatus::Working)
+                    ),
+                    [&worker],
+                )?;
+                Ok((run.run_id, worker))
+            })
+            .unwrap()
+    }
+
+    fn question_wait(conn: &Connection, worker: &str) -> Option<Wait> {
+        waiting(conn, worker)
+            .unwrap()
+            .into_iter()
+            .find(|w| w.kind == "question")
+    }
+
+    /// TRF-25: the question wait names its question by id. An answer to
+    /// the first question moves the wait to the second, with the second's
+    /// start; an answer to the second ends it.
+    #[test]
+    fn trf_25_a_question_wait_is_keyed_by_question_id() {
+        use crate::messaging::mail::Mail;
+        let dir = tempfile::tempdir().unwrap();
+        let mut s = Store::open(&dir.path().join("l.sqlite3")).unwrap();
+        let (_, worker) = asker(&mut s);
+        let mail = Mail::under(dir.path(), "w1");
+        let first = mail.enqueue("worker-1", "QUESTION: which?").unwrap();
+        let second = mail.enqueue("worker-1", "QUESTION: where?").unwrap();
+        let open = mail.open_questions().unwrap();
+
+        sync_questions(s.conn(), dir.path(), "w1").unwrap();
+        let wait = question_wait(s.conn(), &worker).expect("a question wait");
+        assert_eq!(wait.reason, format!("#{} QUESTION: which?", first.short()));
+
+        mail.close_question(&first.short()).unwrap().unwrap();
+        sync_questions(s.conn(), dir.path(), "w1").unwrap();
+        let wait = question_wait(s.conn(), &worker).expect("a question wait");
+        assert_eq!(wait.reason, format!("#{} QUESTION: where?", second.short()));
+        assert_eq!(
+            wait.started_at,
+            crate::clock::stamp(open[1].created_at.into())
+        );
+
+        mail.close_question(&second.short()).unwrap().unwrap();
+        sync_questions(s.conn(), dir.path(), "w1").unwrap();
+        assert!(question_wait(s.conn(), &worker).is_none());
+    }
+
+    fn held_question(mail: &crate::messaging::mail::Mail, task: &str) {
+        mail.enqueue(
+            "horch",
+            &format!(
+                "[horch] QUESTION: {task} is held. Ask the operator: requeue it \
+                 (horch ledger requeue {task} \"<reason>\"), or cancel it \
+                 (horch ledger cancel {task} \"<reason>\")."
+            ),
+        )
+        .unwrap();
+    }
+
+    fn hold(conn: &Connection, run: &str) -> crate::taskledger::tasks::Task {
+        conn.execute(
+            "UPDATE tasks SET held_reason = '3 attempts failed' WHERE run_id = ?1",
+            [run],
+        )
+        .unwrap();
+        crate::taskledger::tasks::resolve(conn, run, "T-1").unwrap()
+    }
+
+    /// TRF-26: a horch question stays open until the ledger action it
+    /// names runs: `requeue T-1` closes it.
+    #[test]
+    fn trf_26_a_requeue_closes_the_held_question() {
+        use crate::messaging::mail::Mail;
+        let dir = tempfile::tempdir().unwrap();
+        let mut s = Store::open(&dir.path().join("l.sqlite3")).unwrap();
+        let (run, _) = asker(&mut s);
+        let task = hold(s.conn(), &run);
+        let mail = Mail::under(dir.path(), "w1");
+        held_question(&mail, "T-1");
+        held_question(&mail, "T-9");
+
+        sync_questions(s.conn(), dir.path(), "w1").unwrap();
+        assert_eq!(mail.open_questions().unwrap().len(), 2);
+
+        crate::taskledger::tasks::requeue_by_operator(s.conn(), &task, "go").unwrap();
+        sync_questions(s.conn(), dir.path(), "w1").unwrap();
+        let open = mail.open_questions().unwrap();
+        assert_eq!(open.len(), 1, "only the T-1 question closes");
+        assert!(open[0].text.contains("T-9 is held"));
+    }
+
+    /// TRF-26: `cancel T-1`, the other action the question names, closes
+    /// it too.
+    #[test]
+    fn trf_26_a_cancel_closes_the_held_question() {
+        use crate::messaging::mail::Mail;
+        let dir = tempfile::tempdir().unwrap();
+        let mut s = Store::open(&dir.path().join("l.sqlite3")).unwrap();
+        let (run, _) = asker(&mut s);
+        let task = hold(s.conn(), &run);
+        let mail = Mail::under(dir.path(), "w1");
+        held_question(&mail, "T-1");
+
+        crate::taskledger::tasks::cancel(s.conn(), &task, "drop").unwrap();
+        sync_questions(s.conn(), dir.path(), "w1").unwrap();
+        assert!(mail.open_questions().unwrap().is_empty());
+    }
+
+    #[test]
+    fn trf_26_only_requeue_and_cancel_close_a_question() {
+        assert_eq!(closing_event("requeue"), Some(EventKind::Requeued));
+        assert_eq!(closing_event("cancel"), Some(EventKind::Cancelled));
+        assert_eq!(closing_event("status"), None);
     }
 
     /// An agent PID for a worker the ledger does not know is an error, as

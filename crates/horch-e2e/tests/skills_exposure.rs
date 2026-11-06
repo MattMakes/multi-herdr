@@ -62,7 +62,7 @@ fn world(test: &str, name: &str, agent: &str, model: &str, skills: &[&str]) -> H
 /// Spawn `name`, then run its worker as the new pane would, and return what
 /// the agent's fake saw. `before_worker` runs between the two.
 fn launch(h: &Harness, name: &str, before_worker: impl FnOnce()) -> Value {
-    let out = h.run(&["spawn", name, "x", "--from-pane", "w1:p1", "--no-tile"]);
+    let out = h.run(&["spawn", name, "--from-pane", "w1:p1", "--no-tile"]);
     assert!(out.status.success(), "spawn {name}: {}", text(&out));
     let pane = String::from_utf8_lossy(&out.stdout)
         .lines()
@@ -227,7 +227,6 @@ fn skl_06_e2e_exposure_antigravity() {
     let out = h.run(&[
         "spawn",
         "skl-antigravity",
-        "x",
         "--from-pane",
         "w1:p1",
         "--no-tile",
@@ -365,14 +364,7 @@ fn worker_reads_the_skill_store_its_spawner_read() {
     );
     h.set("HORCH_CLAUDE_BIN", probe.to_string_lossy());
 
-    let out = h.run(&[
-        "spawn",
-        "g3-market",
-        "x",
-        "--from-pane",
-        "w1:p1",
-        "--no-tile",
-    ]);
+    let out = h.run(&["spawn", "g3-market", "--from-pane", "w1:p1", "--no-tile"]);
     assert!(out.status.success(), "spawn: {}", text(&out));
     let pane = String::from_utf8_lossy(&out.stdout)
         .lines()
@@ -542,7 +534,7 @@ fn operator_skills_e2e_ledger_record_lists_them() {
             }
         })
         .collect();
-    let ledger = std::fs::read_to_string(h.state.join(format!("{slug}.json"))).unwrap();
+    let ledger = h.stored_ledger(&slug).unwrap();
     let records: Vec<Value> = serde_json::from_str(&ledger).unwrap();
     let r = records
         .iter()
@@ -646,7 +638,7 @@ fn git_env_cannot_reach_another_repository() {
 /// Spawn `name`, run `between`, then run its worker as the new pane would,
 /// and return the worker's output, success or not.
 fn worker_after(h: &Harness, name: &str, between: impl FnOnce()) -> Output {
-    let out = h.run(&["spawn", name, "x", "--from-pane", "w1:p1", "--no-tile"]);
+    let out = h.run(&["spawn", name, "--from-pane", "w1:p1", "--no-tile"]);
     assert!(out.status.success(), "spawn {name}: {}", text(&out));
     let pane = String::from_utf8_lossy(&out.stdout)
         .lines()
@@ -742,7 +734,7 @@ fn ledger_record(h: &Harness, tier: &str) -> Value {
             }
         })
         .collect();
-    let ledger = std::fs::read_to_string(h.state.join(format!("{slug}.json"))).unwrap();
+    let ledger = h.stored_ledger(&slug).unwrap();
     let records: Vec<Value> = serde_json::from_str(&ledger).unwrap();
     records
         .into_iter()

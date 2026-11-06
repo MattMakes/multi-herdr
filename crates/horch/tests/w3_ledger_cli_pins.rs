@@ -282,7 +282,20 @@ fn the_board_commands_print_their_pinned_text() {
         events[4],
         "orchestrator note          T-2 no longer waits for T-1."
     );
-    assert_eq!(events.len(), 9, "{events:?}");
+    // 1 undelivered wake stays in the outbox. The requeue brings the board
+    // back to the same state, so it writes no second wake (TRF-21).
+    assert!(
+        events[5].ends_with(
+            "; it stays in the outbox: [horch] NOTE: Tasks can start: T-1, T-2. Spawn: dev x1, dev2 x1."
+        ),
+        "{events:?}"
+    );
+    assert_eq!(events[6], "orchestrator cancelled     T-2 cancelled: nope");
+    assert_eq!(
+        events[7],
+        "orchestrator requeued      T-2 is queued again by the operator: again"
+    );
+    assert_eq!(events.len(), 8, "{events:?}");
     let close = w.run(&["ledger", "run", "close"]);
     assert_eq!(close.code, 1);
     assert!(
@@ -309,6 +322,8 @@ fn the_board_commands_print_their_pinned_text() {
 #[test]
 fn a_worker_claims_makes_a_worktree_and_finishes() {
     let w = World::new();
+    // A task with no check lands only when its ticket says so (TRF-17).
+    std::fs::write(w.proj().join("t1.md"), "# Ticket One\n\n**Check:** none\n").unwrap();
     w.ok(&["ledger", "run", "new", "r1", "--verify", "full"]);
     w.ok(&["ledger", "add", "--file", "t1.md", "--primary", "dev"]);
     let id = w
@@ -568,11 +583,13 @@ fn spawn_checks_the_run_the_persona_and_the_replaced_worker() {
         live.err,
         format!("horch: worker dev1 is still spawning. Run horch ledger stop {id} \"<reason>\" --run r1, then spawn again\n")
     );
-    let outside = w.run(&["spawn", "sonnet", "do a thing"]);
+    let text = w.run(&["spawn", "sonnet", "do a thing"]);
+    assert_eq!(text.code, 1);
     assert!(
-        outside.err.starts_with("horch spawn: NOTE: this spawn has task text, so it runs outside task-ledger run r1. Give --run <slug> to join a run.\n"),
+        text.err
+            .contains("horch ledger task 'do a thing' --persona sonnet"),
         "{}",
-        outside.err
+        text.err
     );
     let missing = w.run(&["spawn", "sonnet", "--run", "nosuch"]);
     assert_eq!(missing.code, 1);
@@ -581,6 +598,7 @@ fn spawn_checks_the_run_the_persona_and_the_replaced_worker() {
         "{}",
         missing.err
     );
+    w.ok(&["ledger", "run", "gate", "--check", "true"]);
     w.ok(&["ledger", "run", "close"]);
     let closed = w.run(&["spawn", "sonnet", "--run", "r1"]);
     assert_eq!(closed.code, 1);
@@ -608,7 +626,7 @@ fn claim_prints_the_line_to_send_the_ticket_and_the_project_facts() {
     assert_eq!(none.code, 0, "{}", none.err);
     assert_eq!(
         none.out,
-        format!("No task for other. Send this line, then end your turn:\nhorch tell orchestrator \"[{text_id}] NOTE: No task for other. I exit. PID unknown.\"\n")
+        "No task for other. Run this line to close your pane:\nhorch done \"No task for other.\"\n"
     );
     let none = w.run_as(Some(&json_id), &["ledger", "claim", "--json"]);
     assert_eq!(none.code, 0, "{}", none.err);

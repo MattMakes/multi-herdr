@@ -21,7 +21,7 @@ use serde::Serialize;
 
 use super::git::Git;
 use super::model::{
-    Actor, EventKind, StepName, StepStatus, TaskStatus, WorkerStatus, WorktreeStatus,
+    Actor, EventKind, HeldReason, StepName, StepStatus, TaskStatus, WorkerStatus, WorktreeStatus,
 };
 use super::runs::{self, Run};
 use super::sql_words::{self, word};
@@ -39,7 +39,10 @@ pub struct Tools {
     /// `node`, for the complexity analyser.
     pub node: PathBuf,
     /// The complexity-sweep skill's analyser (`code/cli/dist/index.js`), or
-    /// an executable that takes the same arguments.
+    /// an executable that takes the same arguments. It reads changed
+    /// ts/js/py files. Changed Rust files do not use it: complexity-sweep
+    /// runs `cargo clippy` (lint `clippy::cognitive_complexity`) from PATH
+    /// for them, when the work dir has a `Cargo.toml`.
     pub complexity_cli: Option<PathBuf>,
     /// The code-sweep skill's directory (it holds `reviewers/`).
     pub code_sweep_dir: Option<PathBuf>,
@@ -166,6 +169,48 @@ pub struct Ctx<'a> {
     pub root: PathBuf,
     pub evidence_dir: PathBuf,
     pub seq: i64,
+    /// The run's default check (`run new --check`): the check of a task
+    /// that names none (TRF-16).
+    pub default_check: Option<String>,
+}
+
+impl Ctx<'_> {
+    /// The commit the task's diff starts from, for code-sweep and
+    /// complexity-sweep: the claim commit of a shared-checkout task, whose
+    /// commits are on the run branch already (TRF-18); else the run branch.
+    pub fn diff_base(&self) -> Result<String> {
+        if !self.task.uses_worktree() {
+            if let Some(start) = shared_start(&self.tools.evidence_root, &self.task.task_id) {
+                return Ok(start);
+            }
+        }
+        self.run
+            .run_branch
+            .clone()
+            .or(self.run.base_branch.clone())
+            .context("the run has no run branch")
+    }
+}
+
+/// The default check of run `run_id`, when `run new --check` set one.
+pub fn default_check(conn: &Connection, run_id: &str) -> Result<Option<String>> {
+    let check: Option<String> = conn
+        .query_row(
+            "SELECT default_check FROM runs WHERE run_id = ?1",
+            [run_id],
+            |r| r.get(0),
+        )
+        .with_context(|| format!("no run {run_id}"))?;
+    Ok(check.filter(|c| !c.trim().is_empty()))
+}
+
+/// Set the default check of run `run_id` (`run new --check`).
+pub fn set_default_check(conn: &Connection, run_id: &str, check: &str) -> Result<()> {
+    conn.execute(
+        "UPDATE runs SET default_check = ?2 WHERE run_id = ?1",
+        params![run_id, check],
+    )?;
+    Ok(())
 }
 
 /// 1 worktree row.
@@ -579,6 +624,8 @@ struct Attempt<'a> {
     dir: PathBuf,
     evidence_dir: PathBuf,
     wt: Option<WorktreeRow>,
+    /// The run's default check (TRF-16).
+    default_check: Option<String>,
     /// The seq of the land step, when the run has one.
     land_seq: Option<i64>,
 }
@@ -626,8 +673,10 @@ impl<'a> Attempt<'a> {
         let dir = work_dir(wt.as_ref(), &root);
         let evidence_dir = tools.evidence_root.join(&task.task_id).join(&w.worker_id);
         std::fs::create_dir_all(&evidence_dir)?;
+        let default_check = default_check(store.conn(), &run.run_id)?;
         Ok(Attempt {
             tools,
+            default_check,
             land_seq: land_seq(&names),
             run,
             task,
@@ -728,6 +777,7 @@ impl<'a> Attempt<'a> {
             root: self.root.clone(),
             evidence_dir: self.evidence_dir.clone(),
             seq,
+            default_check: self.default_check.clone(),
         };
         store.immediate(|tx| {
             tx.execute(
@@ -931,8 +981,10 @@ pub struct Completed {
 }
 
 /// `horch ledger done`: finish the worker's task. A work task needs every
-/// finish step through, unless `unlanded` parks it (its branch and worktree
-/// stay). A review task needs its findings file.
+/// finish step through, unless `unlanded` parks it: the task stays queued
+/// and held (`held_reason = unlanded`), its worktree stays attached, and its
+/// dependents stay blocked until `requeue` resumes it (trace-fixes D16).
+/// A review task needs its findings file.
 pub fn complete(
     store: &mut Store,
     worker_id: &str,
@@ -982,7 +1034,7 @@ fn already_completed(conn: &Connection, worker_id: &str) -> Result<Option<Comple
         task_id: task.task_id.clone(),
         run_id: task.run_id.clone(),
         review: task.is_review(),
-        unlanded: false,
+        unlanded: w.end_reason.as_deref() == Some("unlanded"),
         reviews_in_for: None,
         already: true,
     }))
@@ -1039,8 +1091,8 @@ fn require_through(conn: &Connection, run: &Run, task: &Task, worker_id: &str) -
     );
 }
 
-/// The task's final status, summary and event. An unlanded task parks its
-/// worktree.
+/// The task's final status, summary and event. An unlanded task is parked
+/// `queued` and its worktree `unlanded`, still attached to the task.
 fn final_state(
     tx: &Connection,
     task: &Task,
@@ -1054,7 +1106,7 @@ fn final_state(
         set_worktree(tx, &wt.worktree_id, WorktreeStatus::Unlanded, Some(reason))?;
     }
     Ok((
-        "cancelled",
+        "queued",
         format!("UNLANDED: {reason} | {summary}"),
         EventKind::Unlanded,
     ))
@@ -1069,14 +1121,24 @@ fn mark_done(
     unlanded: bool,
 ) -> Result<()> {
     let now = util::now();
-    // Never turn a task cancelled meanwhile into done (#136).
+    // Never turn a task cancelled meanwhile into done (#136). A parked task
+    // lets go of its worker and is not finished.
     let n = tx.execute(
         &format!(
-            "UPDATE tasks SET status = ?2, summary = ?3, updated_at = ?4, finished_at = ?4
+            "UPDATE tasks SET status = ?2, summary = ?3, updated_at = ?4,
+                finished_at = CASE WHEN ?5 IS NULL THEN ?4 END,
+                held_reason = ?5,
+                current_worker_id = CASE WHEN ?5 IS NULL THEN current_worker_id END
              WHERE task_id = ?1 AND status IN ({in_flight})",
             in_flight = sql_words::list(sql_words::TASKS_IN_FLIGHT)
         ),
-        params![task.task_id, status, text, now],
+        params![
+            task.task_id,
+            status,
+            text,
+            now,
+            unlanded.then_some(HeldReason::Unlanded.as_str())
+        ],
     )?;
     if n == 0 {
         bail!(
@@ -1107,7 +1169,11 @@ fn mark_done(
         },
         Actor::Worker,
         kind,
-        &format!("{} {}: {text}", task.short(), status),
+        &format!(
+            "{} {}: {text}",
+            task.short(),
+            if unlanded { "parked unlanded" } else { status }
+        ),
     )
 }
 

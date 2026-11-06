@@ -191,7 +191,6 @@ fn a_scratch_fleet_warns_about_the_shared_ledger_and_does_not_create_it() {
     let o = h.run(&[
         "spawn",
         "sonnet",
-        "task",
         "--from-pane",
         "w1:p1",
         "--no-tile",

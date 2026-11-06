@@ -146,12 +146,7 @@ pub fn run(ports: &dyn JobPorts, plan: &JobPlan) -> Result<JobOutcome, JobFailur
     match &result {
         Ok(done) => {
             ports.log(Step::Report, "compacted");
-            let text = format!(
-                "{} -> {} tokens; handoff {}",
-                number(done.pre),
-                number(done.post),
-                plan.handoff
-            );
+            let text = super::policy::compacted_text(done.pre, done.post, &plan.handoff);
             best_effort(
                 ports,
                 Step::Report,

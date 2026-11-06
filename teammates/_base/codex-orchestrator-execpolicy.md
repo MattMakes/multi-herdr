@@ -9,8 +9,6 @@ description: >
 rules:
   - pattern: '"horch", "spawn"'
     justification: create a worker pane, fresh or resumed
-  - pattern: '"horch", "assign"'
-    justification: record a task on the ledger and deliver it to a worker
   - pattern: '"horch", "tell"'
     justification: message any worker in the fleet
   - pattern: '"horch", "inbox"'
@@ -31,6 +29,8 @@ rules:
     justification: switch a read-only Codex worker to write and back
   - pattern: '"horch", "ledger"'
     justification: queue, plan, stop and reap tasks through the task ledger
+  - pattern: '"horch", "fleet"'
+    justification: record a deliberate orchestrator stop with horch fleet stop
 ---
 Each rule is rendered into this launch's own `rules/horch.rules`, inside a
 private `CODEX_HOME` that lives only as long as the pane, as:

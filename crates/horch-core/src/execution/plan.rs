@@ -78,7 +78,7 @@ pub enum PlanError {
         line: String,
     },
     UnknownTeammate(String),
-    /// A reserved model tier, or a headless-only teammate.
+    /// A reserved model tier.
     Unspawnable(String),
     NotResumable {
         id: String,
@@ -97,7 +97,7 @@ impl std::fmt::Display for PlanError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::NothingToSpawn => {
-                f.write_str("give a teammate (e.g. `horch spawn sonnet \"task\"`) or --resume <id>")
+                f.write_str("give a teammate (e.g. `horch spawn sonnet`) or --resume <id>")
             }
             Self::Refused { .. } => f.write_str("spawn refused over usage limits"),
             Self::UnknownTeammate(m)
@@ -525,6 +525,7 @@ pub fn plan_launch(req: &SpawnRequest, inputs: &PlanInputs) -> Result<ExecutionP
         },
         gate_line,
         report_to: req.report_to,
+        controller: None,
     })
 }
 

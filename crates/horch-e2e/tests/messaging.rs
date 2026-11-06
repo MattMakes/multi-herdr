@@ -61,7 +61,7 @@ fn records(h: &Harness) -> Vec<Value> {
             }
         })
         .collect();
-    std::fs::read_to_string(h.state.join(format!("{slug}.json")))
+    h.stored_ledger(&slug)
         .ok()
         .and_then(|t| serde_json::from_str(&t).ok())
         .unwrap_or_default()
@@ -130,7 +130,7 @@ fn as_worker(h: &Harness, args: &[&str], pane: &str, role: &str, id: &str) -> Ou
 
 /// A spawned codex worker that is running, as `(pane, role, record id)`.
 fn running_worker(h: &Harness) -> (String, String, String) {
-    let pane = spawn(h, &["codex-sol", "build the thing"]);
+    let pane = spawn(h, &["codex-sol"]);
     let r = records(h).pop().expect("the spawn wrote a record");
     let id = r["record_id"].as_str().unwrap().to_string();
     let role = r["role"].as_str().unwrap().to_string();
@@ -150,7 +150,6 @@ fn running_worker(h: &Harness) -> (String, String, String) {
 #[test]
 fn g5_done_without_an_orchestrator() {
     let mut h = fleet("g5-done", "exec,stay");
-    h.set("HORCH_TEST_MAIL_NO_ORCHESTRATOR_MS", "20");
     h.set("HORCH_TEST_MAIL_POLL_MS", "10");
     let (pane, role, id) = running_worker(&h);
 
@@ -191,7 +190,6 @@ fn done_outside_a_git_work_tree_reports_no_scan_error() {
         return;
     }
     std::fs::remove_dir_all(h.project.join(".git")).unwrap();
-    h.set("HORCH_TEST_MAIL_NO_ORCHESTRATOR_MS", "20");
     h.set("HORCH_TEST_MAIL_POLL_MS", "10");
     let (pane, role, id) = running_worker(&h);
 
@@ -241,7 +239,7 @@ fn g5_resume_after_a_closed_pane() {
         .unwrap_or_else(|| panic!("no {role} in {stdout}"));
     assert!(line.ends_with("(pane closed)"), "{stdout}");
 
-    let pane2 = spawn(&h, &["--resume", &id, "keep going"]);
+    let pane2 = spawn(&h, &["--resume", &id]);
     let r = record(&h, &id);
     let events: Vec<(&str, &str)> = r["history"]
         .as_array()
@@ -415,8 +413,16 @@ fn mail_u1_orchestrator_inbox_prints_then_acks_pending_mail() {
 
     assert!(inbox.status.success(), "{}", text(&inbox));
     let stdout = String::from_utf8_lossy(&inbox.stdout);
-    let first = stdout.find("[sonnet-1] NOTE: first").unwrap();
-    let second = stdout.find("[sonnet-1] DONE: second").unwrap();
+    // Each line shows its mail id: `[sonnet-1 #<id>] NOTE: first`.
+    let line = |text: &str| {
+        stdout
+            .lines()
+            .find(|l| l.starts_with("[sonnet-1 #") && l.ends_with(&format!("] {text}")))
+            .and_then(|l| stdout.find(l))
+            .unwrap_or_else(|| panic!("no {text} line: {stdout}"))
+    };
+    let first = line("NOTE: first");
+    let second = line("DONE: second");
     let roles = stdout.find("orchestrator ").unwrap();
     assert!(roles < first && first < second, "{stdout}");
     assert_eq!(stdout.lines().last(), Some("2 messages acknowledged"));
@@ -705,7 +711,6 @@ fn a_courier_drops_the_mail_of_a_role_no_pane_holds_and_exits() {
     let courier = h
         .horch(&["mail", "courier", "--workspace", "w1"])
         .env("HORCH_TEST_MAIL_POLL_MS", "10")
-        .env("HORCH_TEST_MAIL_NO_ORCHESTRATOR_MS", "600000")
         .output()
         .unwrap();
 
@@ -773,7 +778,7 @@ fn w2_agent_exit_before_done_tells_the_orchestrator() {
     let mailbox = h.state.join("herdr-orchestration-w1");
     std::fs::create_dir_all(&mailbox).unwrap();
     std::fs::write(mailbox.join("orchestrator.id"), "w1:p1").unwrap();
-    let pane = spawn(&h, &["codex-sol", "build the thing"]);
+    let pane = spawn(&h, &["codex-sol"]);
     let id = records(&h).pop().unwrap()["record_id"]
         .as_str()
         .unwrap()

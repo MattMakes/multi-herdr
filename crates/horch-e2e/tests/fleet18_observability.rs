@@ -320,6 +320,16 @@ fn g52_concurrent_workers_get_their_own_session_and_transcript() {
         &h,
         &["ledger", "run", "new", "race", "--heartbeat-every", "1"],
     );
+    // A task-less spawn needs a startable task (TRF-31): 1 per worker.
+    for n in 1..=2 {
+        let file = h.project.join(format!("race-{n}.md"));
+        std::fs::write(&file, format!("# Race {n}\n**Check:** `true`\n")).unwrap();
+        let file = file.to_string_lossy().into_owned();
+        ok(
+            &h,
+            &["ledger", "add", "--file", &file, "--primary", "codex-terra"],
+        );
+    }
     let argv = [
         "spawn",
         "codex-terra",
@@ -352,7 +362,8 @@ fn g52_concurrent_workers_get_their_own_session_and_transcript() {
     }
     let workers = wait("two session transcripts", || {
         let state: serde_json::Value =
-            serde_json::from_str(&ok(&h, &["ledger", "status", "--json"])).ok()?;
+            // The queued tasks keep the run open, so status exits 1 (TRF-15).
+            serde_json::from_str(&out(&h.run(&["ledger", "status", "--json"]))).ok()?;
         let ws: Vec<_> = state["workers"]
             .as_array()?
             .iter()
@@ -407,7 +418,6 @@ fn g52_concurrent_workers_get_their_own_session_and_transcript() {
                 "spawn",
                 "--resume",
                 record,
-                "continue",
                 "--role",
                 &role,
                 "--from-pane",
@@ -639,7 +649,6 @@ fn g50_live_foreign_runs_and_legacy_orchestrators_warn_but_do_not_block() {
     let o = h.run(&[
         "spawn",
         "sonnet",
-        "task",
         "--from-pane",
         "w1:p1",
         "--no-tile",
@@ -667,7 +676,6 @@ fn g50_live_foreign_runs_and_legacy_orchestrators_warn_but_do_not_block() {
     let o = h.run(&[
         "spawn",
         "sonnet",
-        "task",
         "--from-pane",
         "w1:p1",
         "--no-tile",
@@ -696,7 +704,6 @@ fn g50_legacy_orchestrator_and_host_load_are_advisory() {
     let argv = [
         "spawn",
         "sonnet",
-        "task",
         "--from-pane",
         "w1:p1",
         "--no-tile",
@@ -722,7 +729,6 @@ fn g50_legacy_orchestrator_and_host_load_are_advisory() {
     let o = h.run(&[
         "spawn",
         "sonnet",
-        "task",
         "--from-pane",
         "w2:p1",
         "--no-tile",
@@ -869,7 +875,6 @@ fn g49_spawn_doctor_and_inbox_warn_once_and_name_installed_binary() {
         &[
             "spawn",
             "sonnet",
-            "task",
             "--from-pane",
             "w1:p1",
             "--no-tile",
@@ -962,7 +967,10 @@ fn g51_pane_gone_context_filters_and_completed_summaries() {
 fn g55_unparseable_probe_reports_parser_error_in_quota() {
     let mut h = Harness::new("g55-unparse");
     h.set("HORCH_FAKE_SCENARIO", "error");
-    h.set("HORCH_PROBE_TIMEOUT_MS", "2000");
+    h.set(
+        "HORCH_PROBE_TIMEOUT_MS",
+        horch_e2e::harness::DEADLINE.as_millis().to_string(),
+    );
     for name in ["claude", "codex", "agy"] {
         let mut cmd = std::process::Command::new(h.bin.join(name));
         h.seal(&mut cmd);
@@ -1039,7 +1047,6 @@ fn g52_done_discovery_uses_the_same_launch_token() {
         &[
             "spawn",
             "codex-terra",
-            "work",
             "--role",
             role,
             "--from-pane",

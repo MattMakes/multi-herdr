@@ -1,13 +1,14 @@
 //! The lifecycle rules of the persistent per-project session ledger.
 //!
-//! One JSON file per project dir, so "what has been worked on here, by which
-//! session" survives pane close and workspace restarts - that is what lets the
-//! orchestrator resume an old session id instead of starting cold. Records are
-//! keyed by `record_id` (minted at spawn, always known) with `session_id` as a
-//! separate field, because codex only reveals its session id after launch.
+//! One set of records per project dir, so "what has been worked on here, by
+//! which session" survives pane close and workspace restarts - that is what
+//! lets the orchestrator resume an old session id instead of starting cold.
+//! Records are keyed by `record_id` (minted at spawn, always known) with
+//! `session_id` as a separate field, because codex only reveals its session
+//! id after launch.
 //!
-//! The on-disk format, file path, slug rule and timestamp format are unchanged
-//! from the bash implementation: existing ledgers stay readable and resumable.
+//! The records live in the task ledger's `session_records` table (TRF-45).
+//! An old JSON ledger stays readable and resumable; nothing writes it.
 //!
 //! The record is [`crate::execution::legacy::LedgerRecordV1`] and every read
 //! and write goes through [`ExecutionStore`]. Only the lifecycle rules live
@@ -21,7 +22,7 @@ use crate::roster::Phase;
 use anyhow::{bail, Result};
 
 /// Placeholder task for a worker spawned with nothing assigned yet.
-const IDLE_TASK: &str = "(idle - awaiting assignment)";
+pub(crate) const IDLE_TASK: &str = "(idle - awaiting assignment)";
 
 /// Task an orchestrator record carries. It has no task of its own.
 pub const ORCHESTRATING_TASK: &str = "(orchestrating)";
@@ -33,7 +34,7 @@ pub const EVENT_REPORT_FAILED: &str = "report-failed";
 /// The history event of a durable `horch done` report whose push failed.
 pub const EVENT_REPORT_QUEUED: &str = "report-queued";
 
-/// A project's ledger file.
+/// A project's session records.
 #[derive(Debug, Clone)]
 pub struct SessionLedger {
     store: ExecutionStore,
@@ -64,16 +65,21 @@ pub struct NewRecord<'a> {
 impl SessionLedger {
     /// The ledger for the context's project, under its state root. Records
     /// inserted here default to that project and the context's workspace.
+    /// Reads go through the context's task ledger (TRF-44).
     pub fn open_in(ctx: &crate::runtime::RuntimeContext) -> Result<Self> {
-        let project = ctx.paths.project()?.to_string_lossy().into_owned();
-        Ok(Self::for_project(&ctx.paths.state_root, &project)
-            .with_project(Some(project))
-            .with_workspace(ctx.herdr.workspace.as_ref().map(|w| w.to_string())))
+        let root = ctx.paths.project()?;
+        let project = root.to_string_lossy().into_owned();
+        Ok(Self {
+            store: ExecutionStore::open(&ctx.paths, &root),
+            project: Some(project),
+            workspace_id: ctx.herdr.workspace.as_ref().map(|w| w.to_string()),
+        })
     }
 
-    /// The project [`SessionLedger::insert`] fills into a record without one.
-    pub(crate) fn with_project(mut self, project: Option<String>) -> Self {
-        self.project = project;
+    /// Read the worker rows of `project`'s runs in the task ledger `db` over
+    /// the JSON records ([`crate::execution::store::overlay_task_ledger`]).
+    pub fn with_task_ledger(mut self, db: &Path, project: &Path) -> Self {
+        self.store = self.store.with_task_ledger(db, project);
         self
     }
 
@@ -622,7 +628,7 @@ mod tests {
     }
 
     #[test]
-    fn operations_on_unknown_keys_name_the_ledger_file() {
+    fn operations_on_unknown_keys_name_the_session_records_file() {
         let (_t, l) = ledger();
         for err in [
             l.note("nope", "x").unwrap_err(),
@@ -632,7 +638,7 @@ mod tests {
         ] {
             let msg = err.to_string();
             assert!(msg.contains("no record matches 'nope'"), "{msg}");
-            assert!(msg.contains("-Users-a-proj.json"), "{msg}");
+            assert!(msg.contains("ledger.sqlite3"), "{msg}");
         }
     }
 

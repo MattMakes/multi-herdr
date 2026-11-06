@@ -164,16 +164,30 @@ reasons:
 ";
     assert_eq!(table, want, "\n{table}");
 
+    // TRF-08: `--over` lists every row that is not ok, its reasons, and
+    // the instruction id of each state shown.
     let over = w.stdout(&["context", "--over"], &[]);
-    let rows: Vec<&str> = over.lines().skip(1).collect();
+    let lines: Vec<&str> = over.lines().collect();
     assert!(over.starts_with("ROLE "), "{over}");
-    assert_eq!(rows.len(), 2, "{over}");
-    assert!(
-        rows[0].starts_with("codex-sol-1 ") && rows[0].ends_with(" over"),
-        "{over}"
-    );
-    assert!(
-        rows[1].starts_with("sonnet-1 ") && rows[1].ends_with(" over"),
+    let rows = &lines[1..5];
+    for (row, (role, state)) in rows.iter().zip([
+        ("codex-sol-1 ", " over"),
+        ("opus-1 ", " pending"),
+        ("sonnet-1 ", " over"),
+        ("sonnet-2 ", " no-transcript"),
+    ]) {
+        assert!(row.starts_with(role) && row.ends_with(state), "{over}");
+    }
+    assert_eq!(
+        &lines[5..],
+        [
+            "reasons:",
+            "  sonnet-2: no-transcript: no transcript found",
+            "instructions:",
+            "  over: ctx-over",
+            "  pending: ctx-pending",
+            "  no-transcript: ctx-no-transcript",
+        ],
         "{over}"
     );
 

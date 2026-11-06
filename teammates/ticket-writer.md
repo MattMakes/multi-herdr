@@ -20,8 +20,9 @@ vertical slices, each declaring the tickets that block it.
 == Inputs and output ==
 The orchestrator's task names 2 paths:
 - the spec file;
-- the tickets folder, for example ai_docs/tickets/<slug>/. The orchestrator
-  creates it before you start.
+- the tickets folder, docs/tickets/<slug>/. The orchestrator creates it
+  before you start. Specs live in docs/specs/ and tickets in docs/tickets/;
+  both are committed.
 Write only inside the tickets folder:
 - 1 file per ticket, <folder>/<NN>-<slug>.md, numbered from 01 in
   dependency order (blockers first). Never put 2 tickets in 1 file.
@@ -70,47 +71,106 @@ once, before you send any message that names them.
    done with a summary that names the MAP.md path, the ticket count and the
    wave count.
 
-== Ticket file template ==
-# <NN>: <Ticket title>
+== Ticket file contract ==
+Every ticket follows contract C1 (docs/specs/ticket-format.md). horch ledger
+add-map reads the field block, so a ticket queues exactly as you write it.
+A field it cannot read stops the ticket from queueing.
 
-**What to build:** the end-to-end behaviour this ticket makes work, from the
-user's perspective, not a layer-by-layer implementation list.
+The field block is the first lines after the "# NN: Title" heading, 1 field
+per line, in this order. Values in backticks are literal.
+- <!-- horch-ticket: 1 --> : the format version. Write it exactly.
+- **Persona:** primary `<teammate>`, fallback `<teammate>` · **Parallel:** yes|no
+  The primary is required. Pick teammates from the roster (horch list).
+  Parallel is no only when the ticket must not run beside another ticket.
+- **Kind:** feature|quality|refactor|security|docs|report
+- **Review:** none|light|full. Omit it to take the Kind default: feature,
+  docs and report get none; quality, refactor and security get full.
+- **Check:** `<command>`: the command that proves this ticket, for example
+  `cargo test -p horch-core -- trf_02`. Omit the line to inherit the run's
+  default check. Write **Check:** none only when the ticket has no check.
+- **Own:** `<path>`, `<dir/>`: every file or directory the ticket may edit,
+  as repo-relative paths. Omit it only for a report ticket.
+- **Do not touch:** `<path>`: optional. Paths the worker must not edit.
 
-**Blocked by:** the numbers and titles of the tickets that gate this one, or
-"None (can start immediately)".
+Name real paths in Own and real commands in Check: the worker edits only
+its Own paths, and horch runs the Check before it lands the work. 2 tickets
+in 1 wave never own the same file, unless 1 blocks the other.
 
-**Status:** ready-for-agent
+After the field block, write the body: Goal, Requirements (when the spec
+has requirement ids), Steps, Done when.
 
-- [ ] Acceptance criterion 1
-- [ ] Acceptance criterion 2
+== Example ticket ==
+```markdown
+# 01: Read the retry limit from the config file
 
-Avoid specific file paths and code snippets in tickets: they go stale fast.
-Exception: if a prototype produced a snippet that encodes a decision more
-precisely than prose can (state machine, reducer, schema, type shape),
-inline it and note briefly that it came from a prototype. Trim it to the
-decision-rich parts.
+<!-- horch-ticket: 1 -->
+**Persona:** primary `backend-developer`, fallback `opus` · **Parallel:** yes
+**Kind:** feature
+**Review:** light
+**Check:** `cargo test -p app-core -- retry_limit`
+**Own:** `crates/app-core/src/config.rs`, `crates/app-core/tests/retry_limit.rs`
+**Do not touch:** `crates/app-core/src/net/`
 
-== MAP.md format ==
+Spec: `docs/specs/retry-limit.md` (section 3).
+
+## Goal
+
+A user sets `retry_limit` in `app.toml`, and every request retries at most
+that many times.
+
+## Requirements
+
+- **RL-01**: `retry_limit` in `app.toml` sets the limit. The default is 3.
+
+## Steps
+
+1. Write the test `retry_limit_from_file` first.
+2. Read `retry_limit` in the config loader. Refuse a negative value.
+
+## Done when
+
+The Check passes, and a negative value gives an error that names the key.
+```
+
+== MAP.md contract ==
 MAP.md is how the orchestrator schedules the work. It must answer 2
 questions at a glance: what can run in parallel, and what must wait.
+- A "Spec:" line names the spec path.
+- 1 table, 1 row per ticket, with these columns: #, Title, Blocked by,
+  Wave. The Title links the ticket file by its relative name.
+- Blocked by holds ticket numbers of the same map, or T-<n> for a task
+  already in the run. Leave it empty when nothing blocks the ticket.
+- The persona, the check and the owned paths live in the ticket, not in
+  the map. The map has no Areas column.
+- Wave 1 is every ticket with no blockers. Wave N is every ticket whose
+  blockers are all in earlier waves. Tickets in 1 wave can run in parallel.
 
-# Map: <feature>
-Spec: <spec path>
+Below the table, write these sections:
+- Waves: each wave as its ticket numbers.
+- Critical path: the longest chain of blocking edges, as ticket numbers.
+- Open questions: numbered, with your recommendation, or "None.".
 
-## Tickets
-| # | Title | Blocked by | Wave | Areas |
-1 row per ticket, with its file name as a relative link. "Areas" names the
-modules or subsystems the ticket changes, in glossary words, so the
-orchestrator can see 2 tickets that would edit the same code.
+== Example MAP.md ==
+```markdown
+# Map: retry limit
+
+Spec: `docs/specs/retry-limit.md`
+
+| # | Title | Blocked by | Wave |
+|---|---|---|---|
+| 01 | [Read the retry limit from the config file](01-retry-limit-config.md) |  | 1 |
+| 02 | [Apply the retry limit to every request](02-retry-limit-requests.md) | 01 | 2 |
 
 ## Waves
-Wave 1 is every ticket with no blockers. Wave N is every ticket whose
-blockers are all in earlier waves. Tickets in 1 wave can run in parallel.
-List each wave as its ticket numbers. Under a wave, name any pair of its
-tickets that share an area: the orchestrator serializes those.
+
+- Wave 1: 01
+- Wave 2: 02
 
 ## Critical path
-The longest chain of blocking edges, as ticket numbers.
+
+01 -> 02
 
 ## Open questions
-Numbered, with your recommendation. "None." when there are none.
+
+None.
+```

@@ -28,10 +28,12 @@ use anyhow::Result;
 use rusqlite::{params, Connection};
 use serde::Serialize;
 
-use super::model::{EventKind, ProgressSource, RunStatus, Verdict};
+use super::model::{EventKind, OutboxEvent, ProgressSource, RunStatus, Verdict};
+use super::outbox::{self, Wake};
 use super::runs::Run;
 use super::sql_words::{self, word};
 use super::store::{optional, Store};
+use super::tasks;
 use super::timer;
 use super::util;
 use super::workers::{self, Worker};
@@ -808,6 +810,315 @@ pub fn needs_restart(conn: &Connection, run: &Run) -> Result<bool> {
     Ok(stale && !alive)
 }
 
+/// How often the watchdog drains the outbox and reads the board
+/// (trace-fixes D7, section 5). The 600 s worker check is apart from it.
+pub const RECONCILE_S: u64 = 30;
+
+/// How long tasks can start with no worker on its way before the watchdog
+/// wakes the orchestrator again (TRF-22).
+pub const REWAKE_AFTER_S: i64 = 120;
+
+/// How long a spawned worker may go without a claim before the watchdog
+/// flags it (TRF-23).
+pub const UNCLAIMED_AFTER_S: i64 = 180;
+
+/// The board state that the watchdog first saw with tasks that can start
+/// and no worker on its way to them, and when. The watch loop keeps it
+/// between passes. A restart loses it, and the outbox row of the first
+/// `startable` wake still dates the board state.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Sighting {
+    board: String,
+    since: String,
+}
+
+/// The re-wake of the reconcile pass at `now` (TRF-22): tasks can start,
+/// fewer workers of their persona are on the way than tasks, and the board
+/// state has not changed for [`REWAKE_AFTER_S`]. The key holds the board
+/// hash, so each board state gets at most 1 re-wake. `seen` is the
+/// sighting of the last pass; the call updates it.
+pub fn startable_rewake(
+    conn: &Connection,
+    run: &Run,
+    now: &str,
+    seen: &mut Option<Sighting>,
+) -> Result<Option<Wake>> {
+    let plan: Vec<tasks::PersonaPlan> = tasks::plan_workers(conn, &run.run_id)?
+        .into_iter()
+        .filter(|p| p.spawn > 0)
+        .collect();
+    if plan.is_empty() {
+        *seen = None;
+        return Ok(None);
+    }
+    let board = outbox::board(conn, &run.run_id, true)?;
+    if seen.as_ref().is_none_or(|s| s.board != board) {
+        *seen = Some(Sighting {
+            board: board.clone(),
+            since: now.to_string(),
+        });
+    }
+    let ready: Vec<String> = tasks::startable(conn, &run.run_id)?
+        .iter()
+        .map(|t| t.short())
+        .collect();
+    let ready = ready.join(",");
+    let mut since = seen.as_ref().map(|s| s.since.clone()).unwrap_or_default();
+    if let Some(first) = first_wake_at(conn, run, &ready, &board)? {
+        since = since.min(first);
+    }
+    if util::seconds_between(&since, now).is_none_or(|age| age < REWAKE_AFTER_S) {
+        return Ok(None);
+    }
+    let spawn: Vec<String> = plan
+        .iter()
+        .map(|p| {
+            if p.replaces.is_empty() {
+                format!("{} x{}", p.persona, p.spawn)
+            } else {
+                format!(
+                    "{} x{} (--replaces {})",
+                    p.persona,
+                    p.spawn,
+                    p.replaces.join(", ")
+                )
+            }
+        })
+        .collect();
+    let text = format!(
+        "[horch] NOTE: Tasks can start, and no worker is on its way to them for {REWAKE_AFTER_S} s: {}. Spawn: {}.",
+        ready.replace(',', ", "),
+        spawn.join(", ")
+    );
+    Ok(Some(
+        Wake::new(OutboxEvent::Startable, format!("rewake:{ready}"), text).on_board(board),
+    ))
+}
+
+/// When the first `startable` wake of this board state was written, if one
+/// was: its key is the key of the startable wake of the task ledger.
+fn first_wake_at(conn: &Connection, run: &Run, ready: &str, board: &str) -> Result<Option<String>> {
+    let first = Wake::new(OutboxEvent::Startable, ready, "").on_board(board.to_string());
+    optional(conn.query_row(
+        "SELECT created_at FROM outbox WHERE key = ?1",
+        [outbox::key(&run.run_id, &first)],
+        |r| r.get(0),
+    ))
+}
+
+/// 1 spawned worker with no claim after [`UNCLAIMED_AFTER_S`].
+#[derive(Debug, Clone, PartialEq)]
+pub struct Unclaimed {
+    pub worker: Worker,
+    /// Seconds since its spawn.
+    pub waited_s: i64,
+}
+
+/// The verdict text that marks a flagged worker. The pre-claim sweep of
+/// the task ledger reads the same mark, so a worker is flagged once.
+const NO_CLAIM: &str = "No claim:";
+
+/// The spawned workers of `run` that have not claimed a task within
+/// [`UNCLAIMED_AFTER_S`] at `now`, are not stale and are not flagged yet
+/// (TRF-23). It reads only; [`flag_unclaimed`] records the flag.
+pub fn unclaimed_spawns(conn: &Connection, run: &Run, now: &str) -> Result<Vec<Unclaimed>> {
+    let mut out = Vec::new();
+    for w in workers::of_run(conn, &run.run_id)? {
+        if w.kind != "worker"
+            || !matches!(w.status.as_str(), "spawning" | "starting" | "claiming")
+            || workers::is_stale(&w, run.heartbeat_stale_s, now)
+        {
+            continue;
+        }
+        let waited_s = w
+            .spawned_at
+            .as_deref()
+            .or(w.started_at.as_deref())
+            .and_then(|t| util::seconds_between(t, now))
+            .unwrap_or(0);
+        if waited_s < UNCLAIMED_AFTER_S || flagged(conn, &w.worker_id)? {
+            continue;
+        }
+        out.push(Unclaimed {
+            worker: w,
+            waited_s,
+        });
+    }
+    Ok(out)
+}
+
+/// Whether the watchdog flagged worker `worker_id` for no claim before.
+fn flagged(conn: &Connection, worker_id: &str) -> Result<bool> {
+    let n: i64 = conn.query_row(
+        "SELECT count(*) FROM events WHERE worker_id = ?1 AND kind = ?2 AND text LIKE ?3",
+        params![
+            worker_id,
+            EventKind::Verdict.as_str(),
+            format!("{NO_CLAIM}%")
+        ],
+        |r| r.get(0),
+    )?;
+    Ok(n > 0)
+}
+
+/// Record the flag of `u` and return its `unclaimed-spawn` wake, in the
+/// caller's transaction. `None` when a flag exists already. `herdr_status`
+/// is the agent status of its pane, when herdr knows it. The subject is
+/// `asked:<worker>`, the subject of the pre-claim sweep, so the 2 never
+/// wake twice about 1 worker.
+pub fn flag_unclaimed(
+    conn: &Connection,
+    run: &Run,
+    u: &Unclaimed,
+    herdr_status: Option<&str>,
+) -> Result<Option<Wake>> {
+    let w = &u.worker;
+    if flagged(conn, &w.worker_id)? {
+        return Ok(None);
+    }
+    let note = format!("{} has not claimed a task in {}s", w.label(), u.waited_s);
+    util::event(
+        conn,
+        &util::About {
+            run: Some(&run.run_id),
+            task: None,
+            worker: Some(&w.worker_id),
+        },
+        super::model::Actor::Watchdog,
+        EventKind::Verdict,
+        &format!("{NO_CLAIM} {note}."),
+    )?;
+    let text = format!(
+        "[horch] NOTE: {note}. Look at its pane {} (herdr status {}): it may wait at a login, trust or quota prompt.",
+        w.pane_id.as_deref().unwrap_or("(none)"),
+        herdr_status.unwrap_or("unknown")
+    );
+    Ok(Some(Wake::new(
+        OutboxEvent::UnclaimedSpawn,
+        format!("asked:{}", w.worker_id),
+        text,
+    )))
+}
+
+/// How long after the last review of a round the reconcile pass waits
+/// before it writes a lost `reviews-in` wake (TRF-51): the direct path
+/// writes its row in this time, so the 2 do not race.
+pub const REVIEWS_IN_AFTER_S: i64 = 60;
+
+/// The tasks of `run` that block open dependents and cannot resume by
+/// themselves (TRF-51): cancelled, or parked unlanded. Each needs 1
+/// `cancelled` or `held` wake; the reconcile pass writes a missing one.
+pub fn stalled_blockers(conn: &Connection, run: &Run) -> Result<Vec<tasks::Task>> {
+    let mut out = Vec::new();
+    for t in tasks::of_run(conn, &run.run_id)? {
+        let blocker = t.status == super::model::TaskStatus::Cancelled.as_str() || t.is_parked();
+        if blocker && !tasks::dependents(conn, &t.task_id)?.is_empty() {
+            out.push(t);
+        }
+    }
+    Ok(out)
+}
+
+/// The state of 1 blocker that its wake answers, hashed into the wake key:
+/// a new cancel after a requeue, or a new park, is a new wake.
+pub fn blocker_state(t: &tasks::Task) -> String {
+    if t.is_parked() {
+        format!("parked:{}", t.attempts)
+    } else {
+        format!(
+            "{}:{}",
+            t.status,
+            t.finished_at.as_deref().unwrap_or_default()
+        )
+    }
+}
+
+/// The tasks of `run` that the attempt limit holds for the operator (#168):
+/// queued with a hold that is not a park. Each needs 1 `held` question.
+pub fn attempt_held(conn: &Connection, run: &Run) -> Result<Vec<tasks::Task>> {
+    Ok(tasks::of_run(conn, &run.run_id)?
+        .into_iter()
+        .filter(|t| {
+            t.status == super::model::TaskStatus::Queued.as_str()
+                && t.held_reason.is_some()
+                && !t.is_parked()
+        })
+        .collect())
+}
+
+/// The state of an attempt-held task that its question answers: an
+/// operator requeue and a new hold is a new question.
+pub fn held_state(t: &tasks::Task) -> String {
+    format!("held:{}", t.attempts)
+}
+
+/// 1 review round whose reviews are all in while its author still waits
+/// in the code-sweep step for them.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ReviewsIn {
+    /// The reviewed task.
+    pub parent: tasks::Task,
+    /// The author, which runs `horch ledger finish` next.
+    pub author: Worker,
+}
+
+/// The review rounds of `run` at `now` whose reviews are all in for
+/// [`REVIEWS_IN_AFTER_S`] while the author waits (TRF-51): the parent is in
+/// flight, its live worker's code-sweep step waits, and no review of it is
+/// open. Each needs 1 `reviews-in` wake.
+pub fn reviews_waiting(conn: &Connection, run: &Run, now: &str) -> Result<Vec<ReviewsIn>> {
+    let mut stmt = conn.prepare(&format!(
+        "SELECT t.task_id, t.current_worker_id, max(r.finished_at)
+           FROM tasks t
+           JOIN task_steps s ON s.task_id = t.task_id AND s.worker_id = t.current_worker_id
+           JOIN tasks r ON r.parent_task_id = t.task_id AND r.kind = 'review'
+          WHERE t.run_id = ?1 AND t.status IN ({in_flight})
+            AND s.name = {sweep} AND s.status = {running}
+          GROUP BY t.task_id, t.current_worker_id
+         HAVING sum(r.status NOT IN ({ended})) = 0",
+        in_flight = sql_words::list(sql_words::TASKS_IN_FLIGHT),
+        sweep = word(super::model::StepName::CodeSweep),
+        running = word(super::model::StepStatus::Running),
+        ended = sql_words::list(sql_words::TASKS_ENDED),
+    ))?;
+    let rows = stmt
+        .query_map([&run.run_id], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, Option<String>>(2)?,
+            ))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    let mut out = Vec::new();
+    for (task_id, worker_id, last) in rows {
+        let settled = last
+            .as_deref()
+            .and_then(|t| util::seconds_between(t, now))
+            .is_some_and(|age| age >= REVIEWS_IN_AFTER_S);
+        let author = workers::get(conn, &worker_id)?;
+        if settled && author.status().is_ok_and(|s| s.is_live()) {
+            out.push(ReviewsIn {
+                parent: tasks::get(conn, &task_id)?,
+                author,
+            });
+        }
+    }
+    Ok(out)
+}
+
+/// The review round of `parent_id` that a `reviews-in` wake answers: its
+/// review task ids. A new round adds reviews, so it is a new wake.
+pub fn review_round(conn: &Connection, parent_id: &str) -> Result<String> {
+    Ok(conn.query_row(
+        "SELECT coalesce(group_concat(task_id, ','), '') FROM (
+           SELECT task_id FROM tasks WHERE parent_task_id = ?1 AND kind = 'review'
+            ORDER BY task_id)",
+        [parent_id],
+        |r| r.get(0),
+    )?)
+}
+
 #[cfg(test)]
 mod tests {
     use std::cell::RefCell;
@@ -1419,5 +1730,272 @@ mod tests {
         let (_d, mut s, run, _w) = setup();
         let obs = Script(RefCell::new(vec![]));
         assert!(check_run(&mut s, &run, &obs, false).unwrap().is_empty());
+    }
+}
+
+#[cfg(test)]
+mod reconcile_tests {
+    use std::path::Path;
+
+    use super::*;
+    use crate::taskledger::model::Actor;
+    use crate::taskledger::runs::{self, NewRun};
+    use crate::taskledger::tasks::NewTask;
+    use crate::taskledger::workers::NewWorker;
+
+    /// A run with 1 queued task for persona `dev`, and no worker.
+    fn world() -> (tempfile::TempDir, Store, Run) {
+        let dir = tempfile::tempdir().unwrap();
+        let mut s = Store::open(&dir.path().join("l.sqlite3")).unwrap();
+        let run = s
+            .immediate(|tx| {
+                let run = runs::create(
+                    tx,
+                    Path::new("/r"),
+                    &NewRun {
+                        slug: "s".into(),
+                        ..Default::default()
+                    },
+                )?;
+                tasks::add(
+                    tx,
+                    &run,
+                    &NewTask::work("a", "a.md", "dev"),
+                    Actor::Orchestrator,
+                )?;
+                Ok(run)
+            })
+            .unwrap();
+        (dir, s, run)
+    }
+
+    /// The fake clock: the ledger stamp `secs` after the test began.
+    fn at(t0: &chrono::DateTime<chrono::Utc>, secs: i64) -> String {
+        crate::clock::stamp(*t0 + chrono::Duration::seconds(secs))
+    }
+
+    fn write(s: &mut Store, run: &Run, wake: &Wake) -> Option<String> {
+        s.immediate(|tx| outbox::write(tx, &run.run_id, wake))
+            .unwrap()
+    }
+
+    fn rows(s: &Store, run: &Run, event: &str) -> i64 {
+        s.conn()
+            .query_row(
+                "SELECT count(*) FROM outbox WHERE run_id = ?1 AND event = ?2",
+                [&run.run_id, event],
+                |r| r.get(0),
+            )
+            .unwrap()
+    }
+
+    fn worker(s: &mut Store, run: &Run, status: &str) -> String {
+        let id = s
+            .immediate(|tx| {
+                workers::insert(
+                    tx,
+                    &NewWorker {
+                        run_id: run.run_id.clone(),
+                        persona: "dev".into(),
+                        ..Default::default()
+                    },
+                )
+            })
+            .unwrap();
+        s.conn()
+            .execute(
+                "UPDATE workers SET status = ?2 WHERE worker_id = ?1",
+                [&id, status],
+            )
+            .unwrap();
+        id
+    }
+
+    #[test]
+    fn trf_22_a_task_startable_for_2_min_gets_1_rewake_per_board_state() {
+        let (_dir, mut s, run) = world();
+        let t0 = crate::clock::now();
+        let mut seen = None;
+        let rewake = |s: &Store, secs, seen: &mut Option<Sighting>| {
+            startable_rewake(s.conn(), &run, &at(&t0, secs), seen).unwrap()
+        };
+
+        assert_eq!(rewake(&s, 0, &mut seen), None);
+        assert_eq!(rewake(&s, 90, &mut seen), None, "under 2 min");
+        let first = rewake(&s, 120, &mut seen).expect("2 min with no worker on its way");
+        assert_eq!(first.event, OutboxEvent::Startable);
+        assert!(first.text.contains("Spawn: dev x1."), "{}", first.text);
+        assert!(
+            outbox::key(&run.run_id, &first)
+                .starts_with(&format!("{}:startable:rewake:", run.run_id)),
+            "{first:?}"
+        );
+        assert!(write(&mut s, &run, &first).is_some());
+
+        // The same board state on the next passes: no second row.
+        for secs in [150, 180, 600] {
+            let again = rewake(&s, secs, &mut seen).expect("still startable");
+            assert_eq!(
+                outbox::key(&run.run_id, &again),
+                outbox::key(&run.run_id, &first)
+            );
+            assert_eq!(
+                write(&mut s, &run, &again),
+                None,
+                "1 re-wake per board state"
+            );
+        }
+        assert_eq!(rows(&s, &run, "startable"), 1);
+
+        // A new board state starts its own 2 min.
+        s.immediate(|tx| {
+            tasks::add(
+                tx,
+                &run,
+                &NewTask::work("b", "b.md", "dev"),
+                Actor::Orchestrator,
+            )
+        })
+        .unwrap();
+        assert_eq!(rewake(&s, 610, &mut seen), None, "the board changed");
+        let second = rewake(&s, 730, &mut seen).expect("2 min in the new board state");
+        assert!(second.text.contains("Spawn: dev x2."), "{}", second.text);
+        assert!(write(&mut s, &run, &second).is_some());
+        assert_eq!(rows(&s, &run, "startable"), 2);
+    }
+
+    #[test]
+    fn trf_22_a_starting_or_claiming_worker_holds_the_rewake() {
+        for status in ["spawning", "starting", "claiming"] {
+            let (_dir, mut s, run) = world();
+            let t0 = crate::clock::now();
+            let mut seen = None;
+            worker(&mut s, &run, status);
+            for secs in [0, 120, 300] {
+                assert_eq!(
+                    startable_rewake(s.conn(), &run, &at(&t0, secs), &mut seen).unwrap(),
+                    None,
+                    "a {status} worker is on its way"
+                );
+            }
+            assert_eq!(seen, None);
+        }
+    }
+
+    #[test]
+    fn trf_22_the_first_startable_wake_dates_the_board_state_after_a_restart() {
+        let (_dir, mut s, run) = world();
+        let t0 = crate::clock::now();
+        // The task ledger wrote the first startable wake of this board state.
+        let ready = tasks::startable(s.conn(), &run.run_id).unwrap()[0].short();
+        let board = outbox::board(s.conn(), &run.run_id, true).unwrap();
+        let first = Wake::new(OutboxEvent::Startable, ready, "first").on_board(board);
+        write(&mut s, &run, &first).unwrap();
+        s.conn()
+            .execute("UPDATE outbox SET created_at = ?1", [at(&t0, -100)])
+            .unwrap();
+
+        // A new watchdog has no sighting: the row dates the board state.
+        let mut seen = None;
+        assert_eq!(
+            startable_rewake(s.conn(), &run, &at(&t0, 0), &mut seen).unwrap(),
+            None,
+            "100 s"
+        );
+        assert!(startable_rewake(s.conn(), &run, &at(&t0, 20), &mut seen)
+            .unwrap()
+            .is_some());
+    }
+
+    /// A worker of `run` spawned at `t0` that checked in at `t0 + checkin`.
+    fn spawned(
+        s: &mut Store,
+        run: &Run,
+        t0: &chrono::DateTime<chrono::Utc>,
+        checkin: i64,
+    ) -> String {
+        let id = worker(s, run, "claiming");
+        s.conn()
+            .execute(
+                "UPDATE workers SET spawned_at = ?2, last_checkin_at = ?3 WHERE worker_id = ?1",
+                [&id, &at(t0, 0), &at(t0, checkin)],
+            )
+            .unwrap();
+        id
+    }
+
+    #[test]
+    fn trf_23_a_spawned_worker_with_no_claim_after_3_min_is_flagged_once() {
+        let (_dir, mut s, run) = world();
+        let t0 = crate::clock::now() - chrono::Duration::seconds(1_000);
+        let id = spawned(&mut s, &run, &t0, 170);
+
+        assert!(unclaimed_spawns(s.conn(), &run, &at(&t0, 175))
+            .unwrap()
+            .is_empty());
+        let late = unclaimed_spawns(s.conn(), &run, &at(&t0, 180)).unwrap();
+        assert_eq!(late.len(), 1, "{late:?}");
+        assert_eq!(late[0].worker.worker_id, id);
+        assert_eq!(late[0].waited_s, 180);
+
+        let wake = s
+            .immediate(|tx| flag_unclaimed(tx, &run, &late[0], Some("idle")))
+            .unwrap()
+            .expect("the first flag");
+        assert_eq!(wake.event, OutboxEvent::UnclaimedSpawn);
+        assert_eq!(
+            outbox::key(&run.run_id, &wake),
+            format!("{}:unclaimed-spawn:asked:{id}", run.run_id)
+        );
+        assert!(
+            wake.text.contains("has not claimed a task in 180s"),
+            "{}",
+            wake.text
+        );
+        assert!(wake.text.contains("herdr status idle"), "{}", wake.text);
+        assert!(write(&mut s, &run, &wake).is_some());
+
+        // Flagged once: later passes and a second flag find the mark.
+        assert!(unclaimed_spawns(s.conn(), &run, &at(&t0, 200))
+            .unwrap()
+            .is_empty());
+        assert_eq!(
+            s.immediate(|tx| flag_unclaimed(tx, &run, &late[0], None))
+                .unwrap(),
+            None
+        );
+        // The pre-claim sweep past its own 600 s grace flags it no more.
+        s.conn()
+            .execute(
+                "UPDATE workers SET last_checkin_at = ?2 WHERE worker_id = ?1",
+                [&id, &util::now()],
+            )
+            .unwrap();
+        let swept = workers::sweep_preclaim(s.conn(), &run, &|_| true).unwrap();
+        assert!(swept.is_empty(), "{swept:?}");
+        assert_eq!(rows(&s, &run, "unclaimed-spawn"), 1);
+    }
+
+    #[test]
+    fn trf_23_a_stale_or_claimed_worker_is_not_flagged() {
+        let (_dir, mut s, run) = world();
+        let t0 = crate::clock::now();
+        // Its last checkin is older than heartbeat_stale_s: the pre-claim
+        // sweep ends it, the flag does not apply.
+        spawned(&mut s, &run, &t0, 10);
+        assert!(unclaimed_spawns(s.conn(), &run, &at(&t0, 300))
+            .unwrap()
+            .is_empty());
+        // A worker that claimed works; the 600 s check judges it.
+        let id = spawned(&mut s, &run, &t0, 290);
+        s.conn()
+            .execute(
+                "UPDATE workers SET status = 'working' WHERE worker_id = ?1",
+                [&id],
+            )
+            .unwrap();
+        assert!(unclaimed_spawns(s.conn(), &run, &at(&t0, 300))
+            .unwrap()
+            .is_empty());
     }
 }

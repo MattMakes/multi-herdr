@@ -30,18 +30,14 @@ Each recipe names every file to change and the check for each step.
 | [add-harness.md](recipes/add-harness.md) | a new agent CLI that workers can run |
 | [add-skill.md](recipes/add-skill.md) | a new bundled skill |
 | [add-teammate.md](recipes/add-teammate.md) | a new persona in `teammates/` |
-| [add-command.md](recipes/add-command.md) | a new `horch` or `multi-herdr-dataset` command |
-| [add-dataset-event.md](recipes/add-dataset-event.md) | a new event in the dataset event log |
+| [add-command.md](recipes/add-command.md) | a new `horch` command |
 
 ## Reference pages
 
 - [skills-and-teams.md](skills-and-teams.md): bundled skill kinds and
   `skills/copied.json`, the roster fields (`available_skills`, `operator_skills`,
   `offer_when`, `requires`), `horch doctor`, the Unreal, Swift and design
-  teams, `horch agent-list`, the Antigravity harness and
-  `multi-herdr-dataset`.
-- [dataset-config.md](dataset-config.md): every `.multi-herdr/dataset.yaml`
-  key of `multi-herdr-dataset`, with its default.
+  teams, `horch agent-list` and the Antigravity harness.
 - [phase-skills.md](phase-skills.md): the phase catalogs, how each harness
   sees skills, and context measurements.
 - [runtime-skill-checks.md](runtime-skill-checks.md): native skill discovery
@@ -51,8 +47,6 @@ Each recipe names every file to change and the check for each step.
 
 - [`specs/architecture.md`](specs/architecture.md): the module
   boundaries and the `arc_*` rules.
-- [`specs/dataset-competition.md`](specs/dataset-competition.md): the dataset
-  mode, events, round states, judging and promotion.
 - [`specs/telemetry.md`](specs/telemetry.md): telemetry, usage
   limits and routing.
 

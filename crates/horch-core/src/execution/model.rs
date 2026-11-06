@@ -356,6 +356,8 @@ pub struct ExecutionPlan {
     /// True when the plan reopens an existing record.
     pub resumed: bool,
     pub report_to: ReportTarget,
+    /// The caller role when the caller has `spawn_only`; the brief carries it.
+    pub controller: Option<String>,
 }
 
 #[cfg(test)]

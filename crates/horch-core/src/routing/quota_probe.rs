@@ -273,9 +273,13 @@ fn run_with_deadline(
     Ok(status.map(|status| (status, text(out), text(err))))
 }
 
-/// The local pool's health (QUO-06): `pi --version`, then `ollama list`.
-pub(crate) fn probe_local(pi: &Path, ollama: &Path) -> Result<Vec<String>, String> {
-    let t = StdDuration::from_secs(5);
+/// The deadline of each command of the local health check, unless
+/// `HORCH_LOCAL_PROBE_TIMEOUT_MS` sets another.
+pub(crate) const LOCAL_TIMEOUT: StdDuration = StdDuration::from_secs(5);
+
+/// The local pool's health (QUO-06): `pi --version`, then `ollama list`,
+/// each within `t`.
+pub(crate) fn probe_local(pi: &Path, ollama: &Path, t: StdDuration) -> Result<Vec<String>, String> {
     run_short(pi, &["--version"], t)?;
     let list = run_short(ollama, &["list"], t)?;
     Ok(list
@@ -471,6 +475,8 @@ pub struct ProbeBins {
     /// Every harness binary by harness name, for the `--version` health
     /// check.
     pub harnesses: Vec<(&'static str, PathBuf)>,
+    /// The deadline of each command of the local health check.
+    pub local_timeout: StdDuration,
 }
 
 impl ProbeBins {
@@ -490,15 +496,20 @@ impl ProbeBins {
                 .iter()
                 .filter_map(|k| Some((k.as_str(), k.binary(bins)?)))
                 .collect(),
+            local_timeout: LOCAL_TIMEOUT,
         }
     }
 
-    /// The context's programs and codex sessions directory.
+    /// The context's programs, codex sessions directory and local health
+    /// deadline.
     pub fn from_context(ctx: &crate::runtime::RuntimeContext) -> Self {
-        Self::new(
-            &ctx.bins.harness,
-            crate::usage::Locations::from_context(ctx).codex_sessions,
-        )
+        ProbeBins {
+            local_timeout: ctx.settings.local_probe_timeout.unwrap_or(LOCAL_TIMEOUT),
+            ..Self::new(
+                &ctx.bins.harness,
+                crate::usage::Locations::from_context(ctx).codex_sessions,
+            )
+        }
     }
 }
 
@@ -552,7 +563,11 @@ pub(crate) fn probe_all(
     record(google, &stamp, antigravity_version, "usage", found);
 
     let local = file.pools.entry(POOL_LOCAL.into()).or_default();
-    record_local(local, &stamp, probe_local(&bins.pi, &bins.ollama));
+    record_local(
+        local,
+        &stamp,
+        probe_local(&bins.pi, &bins.ollama, bins.local_timeout),
+    );
 }
 
 /// Mark `reading` as probed now, and take the harness's version when known.
@@ -861,6 +876,64 @@ mod tests {
         let warm = crate::test_support::write_warmed(&bin, &script, &["warm"]);
         assert!(warm.status.success(), "warming {} failed", bin.display());
         bin
+    }
+
+    /// Production gives each command of the local health check 5 s:
+    /// `ollama list` that takes 7 s is a timeout.
+    #[cfg(unix)]
+    #[test]
+    fn a_slow_ollama_times_out_at_the_5_s_production_deadline() {
+        let tmp = tempfile::tempdir().unwrap();
+        let pi = fake(tmp.path(), "pi", "#!/bin/sh\necho 0.70.0\n");
+        let ollama = fake(tmp.path(), "ollama", "#!/bin/sh\nsleep 7\necho NAME\n");
+        let bins = crate::runtime::HarnessBins::resolve(
+            &crate::runtime::BinOverrides::default(),
+            None,
+            None,
+        );
+        let deadline = ProbeBins::new(&bins, tmp.path().join("sessions")).local_timeout;
+        assert_eq!(deadline, StdDuration::from_secs(5));
+
+        let started = Instant::now();
+        let got = probe_local(&pi, &ollama, deadline);
+        let took = started.elapsed();
+        assert_eq!(
+            got,
+            Err("ollama list timed out after 5s".to_string()),
+            "after {took:?}"
+        );
+        assert!(
+            took >= deadline && took < StdDuration::from_secs(7),
+            "{took:?}"
+        );
+    }
+
+    /// `HORCH_LOCAL_PROBE_TIMEOUT_MS` sets the local health deadline, and the
+    /// same slow `ollama list` then answers.
+    #[cfg(unix)]
+    #[test]
+    fn horch_local_probe_timeout_ms_sets_the_local_deadline() {
+        let env = crate::runtime::MapEnv::new("/").with("HORCH_LOCAL_PROBE_TIMEOUT_MS", "60000");
+        let ctx = crate::runtime::RuntimeContext::from_env(&env).unwrap();
+        let deadline = ProbeBins::from_context(&ctx).local_timeout;
+        assert_eq!(deadline, StdDuration::from_secs(60));
+        let unset = crate::runtime::RuntimeContext::from_env(&crate::runtime::MapEnv::new("/"));
+        assert_eq!(
+            ProbeBins::from_context(&unset.unwrap()).local_timeout,
+            LOCAL_TIMEOUT
+        );
+
+        let tmp = tempfile::tempdir().unwrap();
+        let pi = fake(tmp.path(), "pi", "#!/bin/sh\necho 0.70.0\n");
+        let ollama = fake(
+            tmp.path(),
+            "ollama",
+            "#!/bin/sh\nsleep 7\necho 'NAME ID'\necho 'qwen3.8:latest 0123'\n",
+        );
+        assert_eq!(
+            probe_local(&pi, &ollama, deadline),
+            Ok(vec!["qwen3.8:latest".to_string()])
+        );
     }
 
     /// A fake that writes to files in `log`: `script` with `@LOG@` filled in.

@@ -154,7 +154,7 @@ pub fn cost(ctx: &RuntimeContext, args: CostArgs) -> Result<()> {
         &Locations::from_context(ctx),
         clock::now(),
         &project,
-        &store.path().display().to_string(),
+        &ledger_label(&store),
     )?;
     if args.text {
         output::print(&out);
@@ -162,6 +162,12 @@ pub fn cost(ctx: &RuntimeContext, args: CostArgs) -> Result<()> {
         output::println(&out);
     }
     Ok(())
+}
+
+/// The `Ledger:` value of a report: the task ledger file that holds the
+/// session records.
+fn ledger_label(store: &ExecutionStore) -> String {
+    format!("{} (task ledger session records)", store.db().display())
 }
 
 /// What `horch cost` prints, after it wrote its files. `now` ends the
@@ -1224,5 +1230,17 @@ mod tests {
                 assert!((row.cost - cost).abs() < 1e-6, "{name} {}", row.record_id);
             }
         }
+    }
+
+    /// TRF-45: the `Ledger:` value of a cost report is the task ledger file
+    /// that holds the session records, not the retired JSON session ledger.
+    #[test]
+    fn trf_45_cost_ledger_label_names_the_task_ledger() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = ExecutionStore::for_project(tmp.path(), "/p");
+        let label = ledger_label(&store);
+        let db = store.db().display().to_string();
+        assert_eq!(label, format!("{db} (task ledger session records)"));
+        assert!(!label.contains(".json"), "{label}");
     }
 }

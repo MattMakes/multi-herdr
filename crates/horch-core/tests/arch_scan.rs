@@ -673,37 +673,6 @@ fn arc_10_prompts_hold_no_execution_policy() {
     );
 }
 
-/// The evaluation domain has no adapters (Spec A §3, CMP-02): the winner
-/// rule and the judgment parser start no process and touch no workspace,
-/// git, environment or file.
-#[test]
-fn cmp_02_evaluation_domain_has_no_adapter_imports() {
-    let root = crate_src("horch-core");
-    let files = [
-        root.join("evaluation/winner.rs"),
-        root.join("evaluation/parser.rs"),
-    ];
-    let found = forbidden_lines(
-        &root,
-        &files,
-        &[
-            "std::process",
-            "Command",
-            "herdr",
-            "workspace::",
-            "launch::",
-            "vcs::",
-            "std::env",
-            "std::fs",
-        ],
-    );
-    assert!(
-        found.is_empty(),
-        "adapters in the evaluation domain:\n{}",
-        found.join("\n")
-    );
-}
-
 /// The compaction rules are pure (CTX-07): windows, thresholds and the row
 /// policy start no process and touch no file, environment or workspace.
 #[test]

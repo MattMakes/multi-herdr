@@ -231,18 +231,17 @@ impl Mailbox {
         self.read_path(&Self::brief_file(role))
     }
 
-    /// Record this pane's public id under `role` so other panes can address it.
+    /// Find the mailbox of this pane's workspace and create its dir.
     ///
     /// `pane` is this pane's `HERDR_PANE_ID`. Returns the mailbox and the
     /// resolved public pane id. The caller hands [`Mailbox::workspace_id`] to
     /// its children as `HORCH_WORKSPACE_ID`; this process's environment is
     /// left alone.
-    fn register(
+    fn locate(
         herdr: &Herdr,
         state_root: &Path,
         temp_root: &Path,
         pane: Option<&str>,
-        role: &str,
     ) -> Result<(Self, String)> {
         let internal = pane
             .filter(|s| !s.is_empty())
@@ -254,31 +253,42 @@ impl Mailbox {
             .with_context(|| format!("herdr did not report a workspace_id for pane {internal}"))?;
         let mailbox = Self::under(state_root, &ws).with_legacy_root(temp_root);
         mailbox.ensure_dir()?;
-        private::write(
-            &mailbox.dir.join(Self::id_file(role)),
-            pane.pane_id.as_bytes(),
-        )
-        .with_context(|| format!("registering role '{role}'"))?;
         Ok((mailbox, pane.pane_id))
     }
 
-    /// `Mailbox::register` this context's pane, then record the workspace
-    /// in the context, so everything this process does next, and every child
-    /// it starts, belongs to that workspace.
+    /// Record `pane` under `role` so other panes can address it. This
+    /// replaces the pane of `role`: a fleet orchestrator calls it only while
+    /// it holds the workspace orchestrator lock (TRF-39).
+    pub fn register_role(&self, role: &str, pane: &str) -> Result<()> {
+        private::write(&self.dir.join(Self::id_file(role)), pane.as_bytes())
+            .with_context(|| format!("registering role '{role}'"))
+    }
+
+    /// The mailbox of this context's pane and the pane's public id, with no
+    /// role registered yet ([`Mailbox::register_role`]). The workspace is
+    /// recorded in the context, so everything this process does next, and
+    /// every child it starts, belongs to that workspace.
+    pub fn locate_in(herdr: &Herdr, ctx: &mut RuntimeContext) -> Result<(Self, String)> {
+        let pane = ctx.herdr.pane.as_ref().map(|p| p.to_string());
+        let (mailbox, pane_id) = Self::locate(
+            herdr,
+            &ctx.paths.state_root,
+            &ctx.paths.temp_root,
+            pane.as_deref(),
+        )?;
+        ctx.herdr.workspace = Some(crate::ids::WorkspaceId::new(mailbox.workspace_id())?);
+        Ok((mailbox, pane_id))
+    }
+
+    /// [`Mailbox::locate_in`] this context's pane, then register it under
+    /// `role`.
     pub fn register_in(
         herdr: &Herdr,
         ctx: &mut RuntimeContext,
         role: &str,
     ) -> Result<(Self, String)> {
-        let pane = ctx.herdr.pane.as_ref().map(|p| p.to_string());
-        let (mailbox, pane_id) = Self::register(
-            herdr,
-            &ctx.paths.state_root,
-            &ctx.paths.temp_root,
-            pane.as_deref(),
-            role,
-        )?;
-        ctx.herdr.workspace = Some(crate::ids::WorkspaceId::new(mailbox.workspace_id())?);
+        let (mailbox, pane_id) = Self::locate_in(herdr, ctx)?;
+        mailbox.register_role(role, &pane_id)?;
         Ok((mailbox, pane_id))
     }
 
@@ -520,6 +530,7 @@ mod tests {
             report_to: crate::execution::ReportTarget::Orchestrator,
             worker_id: None,
             ledger_db: None,
+            controller: None,
         }
     }
 

@@ -6,7 +6,6 @@
 //! `fleet` starts one orchestrator alone, which then grows and shrinks the fleet
 //! itself through the session ledger.
 
-use std::collections::BTreeMap;
 use std::path::{Component, Path, PathBuf};
 use std::process::ExitCode;
 
@@ -25,6 +24,7 @@ use horch_core::routing::quota::{self, QuotaView, State};
 use horch_core::runtime::RuntimeContext;
 use horch_core::skills::{harness_support, SkillResolution};
 use horch_core::taskledger::model::{VerifyProfile, VERIFY_ENV};
+use horch_core::taskledger::orchestrator::{self, Respawn};
 use horch_core::workspace::herdr::Herdr;
 use horch_core::workspace::model::{Direction, NewWorkspace};
 use horch_core::workspace::paneshell::PaneShell;
@@ -204,7 +204,7 @@ fn pane_command(
     kind: PaneKind,
     model: Option<&str>,
 ) -> Result<String> {
-    pane_command_for(ctx, role, kind, model, None, None, None)
+    pane_command_for(ctx, role, kind, model, None, None)
 }
 
 /// The ledger identity an orchestrator pane runs under.
@@ -213,6 +213,8 @@ struct PaneRecord<'a> {
     session_id: Option<&'a str>,
     /// Resume `session_id` rather than start it fresh.
     resume: bool,
+    /// The [`orchestrator::RESPAWN_ENV`] value of a respawned orchestrator.
+    respawn: Option<String>,
 }
 
 /// [`pane_command`], carrying a ledger record for the pane.
@@ -222,7 +224,6 @@ fn pane_command_for(
     kind: PaneKind,
     model: Option<&str>,
     record: Option<PaneRecord<'_>>,
-    compete: Option<&CompeteSettings>,
     verify: Option<VerifyProfile>,
 ) -> Result<String> {
     let exe = ctx.bins.exe()?;
@@ -243,6 +244,7 @@ fn pane_command_for(
         args.push("--teammates-dir".to_string());
         args.push(dir);
     }
+    let respawn = record.as_ref().and_then(|r| r.respawn.clone());
     if let Some(record) = record {
         args.push("--record-id".to_string());
         args.push(record.record_id.to_string());
@@ -263,7 +265,6 @@ fn pane_command_for(
     // The skill store too: `pane-launch`, its agent and every `horch spawn`
     // that agent runs read `HORCH_DATA_DIR`, so they all use this store.
     let data_root = ctx.paths.data_root.to_string_lossy();
-    let rounds = compete.map(|c| c.rounds.to_string());
     let mut env: Vec<(&str, &str)> = vec![("HORCH_DATA_DIR", data_root.as_ref())];
     // The mailbox lives in the state folder, so the pane needs the same one,
     // whether `HORCH_STATE_DIR` or `XDG_STATE_HOME` picked it.
@@ -275,75 +276,30 @@ fn pane_command_for(
     if let Some(ledger) = ledger.as_deref() {
         env.push(("HORCH_LEDGER_DB", ledger));
     }
-    // Competition mode (FDS-13) reaches the briefing the same way.
-    if let (Some(c), Some(rounds)) = (compete, rounds.as_deref()) {
-        env.push((COMPETE_ROUNDS_ENV, rounds));
-        env.push((COMPETE_BUDGET_ENV, c.budget_usd.as_str()));
-    }
     // The verification profile: the briefing names it, and the
     // orchestrator's `horch ledger run new` takes its steps from it.
     if let Some(verify) = verify {
         env.push((VERIFY_ENV, verify.as_str()));
     }
+    // A respawned orchestrator's briefing ends with its first instruction (C7).
+    if let Some(respawn) = respawn.as_deref() {
+        env.push((orchestrator::RESPAWN_ENV, respawn));
+    }
     Ok(PaneShell::host().command_line_with_env(&exe, &env, &args))
-}
-
-/// Environment variables that carry the competition settings into the
-/// orchestrator pane, where `pane_launch` renders the briefing.
-const COMPETE_ROUNDS_ENV: &str = "HORCH_COMPETE_ROUNDS";
-const COMPETE_BUDGET_ENV: &str = "HORCH_COMPETE_BUDGET_USD";
-
-/// Competition mode (FDS-13): what the briefing tells the orchestrator about
-/// rounds. The rules live in the base `fleet-compete`; these are its 2 values.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CompeteSettings {
-    /// At most this many rounds in 1 fleet session.
-    pub rounds: u32,
-    /// The hard ceiling of 1 round in US dollars, as the dataset CLI takes it
-    /// for `--budget-usd`: a decimal string.
-    pub budget_usd: String,
-}
-
-impl Default for CompeteSettings {
-    fn default() -> Self {
-        Self {
-            rounds: 3,
-            budget_usd: "10".to_string(),
-        }
-    }
-}
-
-impl CompeteSettings {
-    /// The settings a pane inherits from [`COMPETE_ROUNDS_ENV`] and
-    /// [`COMPETE_BUDGET_ENV`]. None when competition mode is off.
-    fn from_env() -> Result<Option<Self>> {
-        let (Ok(rounds), Ok(budget)) = (
-            std::env::var(COMPETE_ROUNDS_ENV),
-            std::env::var(COMPETE_BUDGET_ENV),
-        ) else {
-            return Ok(None);
-        };
-        let rounds = rounds
-            .parse()
-            .with_context(|| format!("{COMPETE_ROUNDS_ENV}='{rounds}' is not a number"))?;
-        Ok(Some(Self {
-            rounds,
-            budget_usd: budget,
-        }))
-    }
 }
 
 /// Options of `horch fleet` beyond the flavor.
 #[derive(Debug, Clone, Default)]
 pub struct FleetOptions {
-    /// Some: append the competition rules to the orchestrator's briefing.
-    pub compete: Option<CompeteSettings>,
     /// `--no-update`: skip the agent CLI update step (ARC-34).
     pub no_update: bool,
     /// Some: the orchestrator resumes this session instead of starting fresh.
     pub resume: Option<String>,
     /// `--verify`: the run's finish steps. None is [`VerifyProfile::DEFAULT`].
     pub verify: Option<VerifyProfile>,
+    /// Some: start a respawned orchestrator in the run's existing workspace
+    /// (trace-fixes C7), not a new fleet.
+    pub respawn: Option<Respawn>,
 }
 
 impl FleetOptions {
@@ -407,31 +363,6 @@ fn warn_about_other_run_steps(ctx: &RuntimeContext, cwd: &str, profile: VerifyPr
     }
 }
 
-/// The briefing of a fleet orchestrator: the base briefing, then with
-/// `compete` the rendered base `fleet-compete` after 1 blank line (FDS-13).
-/// Without `compete` it is [`prompts::agent_prompt`] unchanged.
-pub(crate) fn orchestrator_briefing(
-    roster: &Roster,
-    teammate: &Teammate,
-    role: &str,
-    compete: Option<&CompeteSettings>,
-) -> Result<String> {
-    let briefing = prompts::agent_prompt(roster, teammate, role)?;
-    let Some(compete) = compete else {
-        return Ok(briefing);
-    };
-    let base = roster
-        .base("fleet-compete")
-        .context("base 'fleet-compete' does not exist in _base/")?;
-    let rounds = compete.rounds.to_string();
-    let vars = BTreeMap::from([
-        ("compete_rounds", rounds.as_str()),
-        ("compete_budget_usd", compete.budget_usd.as_str()),
-    ]);
-    let rules = prompts::render(&base.body, &vars).context("base 'fleet-compete'")?;
-    Ok(format!("{}\n\n{}", briefing.trim_end(), rules.trim_start()))
-}
-
 /// Launch the herdr-fleet workspace.
 ///
 /// One orchestrator pane, alone. It reads the roster, breaks the work down, and
@@ -443,7 +374,7 @@ pub(crate) fn orchestrator_briefing(
 /// the shape of the team before anyone knew what the work was, and burned four
 /// agent sessions holding a greeting.
 ///
-/// `options.compete` adds competition mode; `options.resume` continues an
+/// `options.resume` continues an
 /// earlier orchestrator session instead of starting a new one. Unless
 /// `options.no_update`, every agent CLI updates first (ARC-32).
 pub fn fleet_with(
@@ -481,6 +412,26 @@ pub fn fleet_with(
     let start = orchestrator_start(&ctx, &cwd, flavor, options)?;
     let record_id = start.record.record_id.clone();
 
+    if let Some(respawn) = &options.respawn {
+        // The dead orchestrator's record of this workspace ends first.
+        ledger.supersede_orchestrators(|ws| ws != respawn.workspace_id)?;
+        let ws = respawn_pane(&herdr, respawn)?;
+        if let Err(e) = start_orchestrator(&mut ctx, &herdr, &ws, &ledger, start) {
+            // The workspace holds the run's workers: it stays open.
+            abandon_record(&ledger, &record_id, &e);
+            return Err(e);
+        }
+        println!(
+            "Respawned the orchestrator of run {} in workspace {}, pane {} (respawn {} of {}).",
+            respawn.slug,
+            ws.workspace_id,
+            ws.root_pane_id,
+            respawn.number,
+            orchestrator::RESPAWNS_PER_RUN
+        );
+        return Ok(());
+    }
+
     println!("Creating fleet workspace rooted at {cwd}...");
     let label = workspace_label(Path::new(&cwd), ctx.paths.cwd.as_deref());
     let ws = herdr.workspace_create(&label, Some(&cwd), true)?;
@@ -505,10 +456,11 @@ pub fn fleet_with(
     Ok(())
 }
 
-/// When the project has parked worktrees (`horch worktree triage`), spawn
-/// the `worktree-steward` teammate beside the orchestrator: it runs the
-/// triage with the operator. With none, nothing is spawned. Never a reason
-/// for the fleet to fail.
+/// When the project has parked worktrees (`horch worktree triage`), queue a
+/// one-off task for the `worktree-steward` teammate and spawn it beside the
+/// orchestrator: it claims the task and runs the triage with the operator.
+/// With none, nothing is queued or spawned. Never a reason for the fleet to
+/// fail.
 fn start_worktree_steward(ctx: &RuntimeContext, ws: &NewWorkspace) {
     let rows = match super::worktree::triage_rows(ctx, horch_core::taskledger::triage::Measure::Ids)
     {
@@ -525,24 +477,65 @@ fn start_worktree_steward(ctx: &RuntimeContext, ws: &NewWorkspace) {
         "{} parked worktrees: starting the worktree steward...",
         rows.len()
     );
-    let args = super::spawn::SpawnArgs {
-        teammate: Some("worktree-steward".to_string()),
-        // A fact, not a brief: the steward's file holds its instructions.
-        task: format!("parked worktrees: {}", rows.len()),
+    // No code path types a task into a pane (TRF-43): the steward claims
+    // this task from the ledger. The fleet spawns the steward itself, so
+    // it prints no `Run next` line.
+    let queued =
+        steward_task(rows.len()).and_then(|args| super::taskledger::queue_one_off(ctx, args));
+    let run = match queued {
+        Ok(run) => run,
+        Err(e) => {
+            println!("warning: the worktree steward task was not queued: {e:#}");
+            return;
+        }
+    };
+    if let Err(e) = super::spawn::spawn(ctx, steward_spawn_args(&ws.root_pane_id, &run.slug)) {
+        println!("warning: the worktree steward did not start: {e:#}");
+    }
+}
+
+/// The teammate that runs the worktree triage with the operator.
+const WORKTREE_STEWARD: &str = "worktree-steward";
+
+/// What `horch ledger task 'parked worktrees: <parked>' --persona
+/// worktree-steward --check none` runs. The title is a fact, not a brief:
+/// the steward's file holds its instructions.
+fn steward_task(parked: usize) -> Result<super::taskledger::TaskArgs> {
+    #[derive(clap::Parser)]
+    struct Task {
+        #[command(flatten)]
+        args: super::taskledger::TaskArgs,
+    }
+    let title = format!("parked worktrees: {parked}");
+    let argv = [
+        "task",
+        title.as_str(),
+        "--persona",
+        WORKTREE_STEWARD,
+        "--check",
+        "none",
+    ];
+    Ok(<Task as clap::Parser>::try_parse_from(argv)?.args)
+}
+
+/// The steward's spawn beside the orchestrator. It names `run`, the solo run
+/// that holds the task [`steward_task`] queued, so a planned run in the
+/// workspace never changes which run it joins. It claims that task.
+fn steward_spawn_args(root_pane: &str, run: &str) -> super::spawn::SpawnArgs {
+    super::spawn::SpawnArgs {
+        teammate: Some(WORKTREE_STEWARD.to_string()),
+        task: String::new(),
         resume: None,
         phase: None,
         effort: None,
         role: None,
-        from_pane: Some(ws.root_pane_id.clone()),
+        from_pane: Some(root_pane.to_string()),
         direction: Direction::Right,
         tiling: horch_core::execution::TilingMode::Automatic,
         exact: false,
         force: false,
         replaces: None,
-        run: None,
-    };
-    if let Err(e) = super::spawn::spawn(ctx, args) {
-        println!("warning: the worktree steward did not start: {e:#}");
+        run: Some(run.to_string()),
     }
 }
 
@@ -578,12 +571,22 @@ fn open_ledger(ctx: &RuntimeContext, herdr: &Herdr) -> Result<SessionLedger> {
     Ok(ledger)
 }
 
+/// Where the fleet's session records live: the task ledger file.
+fn session_records_line(ledger: &SessionLedger) -> String {
+    format!(
+        "Session records (task ledger): {}",
+        ledger.store().db().display()
+    )
+}
+
 /// The closing text of `horch fleet`.
 fn print_fleet_ready(workspace_id: &str, ledger: &SessionLedger) {
     println!("\nDone. Fleet workspace {workspace_id} is live with one orchestrator pane.");
-    println!("Session ledger: {}", ledger.path().display());
-    println!("Orchestrator commands: horch sessions | horch assign | horch spawn [--resume]");
-    println!("Workers are spawned on demand: horch spawn <teammate> \"task\"");
+    println!("{}", session_records_line(ledger));
+    println!("Orchestrator commands: horch sessions | horch ledger task | horch spawn [--resume]");
+    println!(
+        "Workers are spawned on demand: horch ledger task '<task>' --persona <teammate>, then horch spawn <teammate>"
+    );
 }
 
 /// What `fleet_with` resolved before its workspace exists: the orchestrator
@@ -690,8 +693,8 @@ fn start_orchestrator(
                 record_id: &record_id,
                 session_id: session_id.as_deref(),
                 resume: options.resume.is_some(),
+                respawn: options.respawn.as_ref().map(Respawn::env_value),
             }),
-            options.compete.as_ref(),
             Some(options.verify()),
         )?,
     )
@@ -709,18 +712,129 @@ fn abandon_start(
     record: Option<(&SessionLedger, &str)>,
     error: &anyhow::Error,
 ) {
-    if let Some((ledger, key)) = record.filter(|(ledger, key)| ledger.get(key).is_ok()) {
-        let state = ExecutionStatus::LaunchFailed {
-            stage: LaunchStage::Run,
-            reason: format!("{error:#}"),
-        };
-        if let Err(e) = ledger.store().end_live(key, state) {
-            eprintln!("warning: ending the orchestrator record {key} failed: {e:#}");
-        }
+    if let Some((ledger, key)) = record {
+        abandon_record(ledger, key, error);
     }
     if let Err(e) = herdr.workspace_close(workspace_id) {
         eprintln!("warning: closing workspace {workspace_id} failed: {e:#}");
     }
+}
+
+/// End the orchestrator record `key` as `LaunchFailed`, when the start
+/// inserted it.
+fn abandon_record(ledger: &SessionLedger, key: &str, error: &anyhow::Error) {
+    if ledger.get(key).is_err() {
+        return;
+    }
+    let state = ExecutionStatus::LaunchFailed {
+        stage: LaunchStage::Run,
+        reason: format!("{error:#}"),
+    };
+    if let Err(e) = ledger.store().end_live(key, state) {
+        eprintln!("warning: ending the orchestrator record {key} failed: {e:#}");
+    }
+}
+
+/// The pane a respawned orchestrator runs in: the dead orchestrator's pane
+/// when herdr still has it, else a new pane beside the first pane of the
+/// workspace. The workspace must still exist.
+fn respawn_pane(herdr: &Herdr, respawn: &Respawn) -> Result<NewWorkspace> {
+    let ws = &respawn.workspace_id;
+    let pane = match respawn
+        .old_pane_id
+        .as_deref()
+        .filter(|p| herdr.pane_exists(p))
+    {
+        Some(p) => p.to_string(),
+        None => {
+            let panes = herdr.pane_list(ws)?;
+            let first = panes
+                .first()
+                .with_context(|| format!("workspace {ws} has no pane to split"))?;
+            herdr.pane_split(&first.pane_id, Direction::Right)?
+        }
+    };
+    Ok(NewWorkspace {
+        workspace_id: ws.clone(),
+        root_pane_id: pane,
+        tab_id: None,
+    })
+}
+
+/// Start the orchestrator that `respawn` decided, through [`fleet_with`]:
+/// the flavor and the verification profile of the dead one, no updates.
+pub fn respawn_orchestrator(ctx: &RuntimeContext, respawn: &Respawn) -> Result<()> {
+    let mut project = ctx.clone();
+    project.paths.project_dir = Some(PathBuf::from(&respawn.project_root));
+    let flavor = SessionLedger::open_in(&project)
+        .ok()
+        .and_then(|l| {
+            l.live_for_role("orchestrator", Some(&respawn.workspace_id))
+                .ok()
+                .flatten()
+        })
+        .map(|r| flavor_of_model(&r.model))
+        .unwrap_or_default();
+    let steps: Vec<_> = respawn
+        .finish_steps
+        .iter()
+        .filter_map(|s| horch_core::taskledger::model::StepName::parse(s).ok())
+        .collect();
+    let options = FleetOptions {
+        no_update: true,
+        resume: None,
+        verify: VerifyProfile::of_steps(&steps),
+        respawn: Some(respawn.clone()),
+    };
+    fleet_with(ctx, Some(&respawn.project_root), flavor, &options)
+}
+
+/// The flavor whose orchestrator runs `model`; Opus, the default, for a
+/// model no flavor names.
+fn flavor_of_model(model: &str) -> FleetFlavor {
+    [
+        FleetFlavor::Opus,
+        FleetFlavor::Fable,
+        FleetFlavor::Astra,
+        FleetFlavor::Sol,
+    ]
+    .into_iter()
+    .find(|f| f.model() == model)
+    .unwrap_or_default()
+}
+
+/// `horch fleet stop`: record a deliberate stop of the orchestrator of each
+/// active run of the project, so the watchdog never respawns it (C7). It
+/// does not end the agent.
+pub fn fleet_stop(ctx: &RuntimeContext, cwd: Option<&str>) -> Result<ExitCode> {
+    let root = resolve_cwd(ctx, cwd)?;
+    let Some(mut store) = horch_core::taskledger::open_existing(ctx)? else {
+        println!("No task ledger. Nothing to stop.");
+        return Ok(ExitCode::SUCCESS);
+    };
+    let active = horch_core::taskledger::model::RunStatus::Active.as_str();
+    let runs: Vec<_> = horch_core::taskledger::runs::of_project(store.conn(), Path::new(&root))?
+        .into_iter()
+        .filter(|r| r.status == active)
+        .collect();
+    if runs.is_empty() {
+        println!("No active run in {root}. Nothing to stop.");
+    }
+    for run in runs {
+        let recorded = store.immediate(|tx| orchestrator::record_stop(tx, &run.run_id))?;
+        if recorded {
+            println!(
+                "Run {}: the orchestrator stop is recorded. horch does not respawn it.",
+                run.slug
+            );
+        } else {
+            println!(
+                "Run {}: the orchestrator stop was recorded before.",
+                run.slug
+            );
+        }
+    }
+    Ok(ExitCode::SUCCESS)
 }
 
 /// `claude 7d 100% (resets Fri 14:00Z)`: a pool in a few words.
@@ -932,11 +1046,25 @@ pub fn pane_launch(
     identity: PaneIdentity,
 ) -> Result<ExitCode> {
     require_model(kind, model)?;
-    let mailbox = register_pane(ctx, role, &identity)?;
+    // The lock is held until the agent exits, then released on drop. A fleet
+    // pane claims its run first: a refused claim starts no agent (TRF-38).
+    let (mailbox, _pane, _orchestrator_lock) = if kind.is_fleet() {
+        let root = ctx.paths.current_dir()?;
+        let respawn = respawn_from_env().map(|(slug, _)| slug);
+        register_fleet_pane(ctx, role, &identity, &root, respawn.as_deref())?
+    } else {
+        register_pane(ctx, role, &identity, false)?
+    };
     let child_env = child_env(ctx, &mailbox, &identity, teammates_dir);
     let ctx: &RuntimeContext = ctx;
     let roster = launch_roster(ctx, kind, teammates_dir)?;
     let teammate = launch_teammate(&roster, kind, model)?;
+    if kind.is_fleet() {
+        let model = model.or(teammate.model.as_deref());
+        if let Err(e) = record_orchestrator_harness(ctx, mailbox.workspace_id(), &teammate, model) {
+            eprintln!("horch: the task ledger did not record the orchestrator harness: {e:#}");
+        }
+    }
     let prompt = briefing_for(kind, &roster, &teammate, role)?;
     let exec_rules = exec_rules_for(kind, &roster);
     let (session, workdir) = session_for(&identity, ctx)?;
@@ -971,17 +1099,127 @@ pub fn pane_launch(
 
 /// Registers the pane's mailbox. The state folder is set first: the mailbox
 /// lives in it.
-fn register_pane(ctx: &mut RuntimeContext, role: &str, identity: &PaneIdentity) -> Result<Mailbox> {
+/// The second value is the pane id. A fleet orchestrator (`fleet`) takes
+/// the workspace orchestrator lock before it registers its role, so a
+/// launch that loses the lock never replaces the live route (TRF-39). The
+/// third value is that lock.
+pub(super) fn register_pane(
+    ctx: &mut RuntimeContext,
+    role: &str,
+    identity: &PaneIdentity,
+    fleet: bool,
+) -> Result<(Mailbox, String, Option<horch_core::fsx::DirLockGuard>)> {
+    register_pane_then(ctx, role, identity, fleet, |_, _, _| Ok(()))
+}
+
+/// [`register_pane`] for a fleet orchestrator of project `root`: under the
+/// workspace orchestrator lock, it claims its run ([`claim_launch_run`])
+/// before it registers its role. A refused claim writes no route and
+/// releases the lock (TRF-38).
+fn register_fleet_pane(
+    ctx: &mut RuntimeContext,
+    role: &str,
+    identity: &PaneIdentity,
+    root: &Path,
+    respawn: Option<&str>,
+) -> Result<(Mailbox, String, Option<horch_core::fsx::DirLockGuard>)> {
+    register_pane_then(ctx, role, identity, true, |ctx, workspace, pane| {
+        claim_launch_run(ctx, root, workspace, pane, respawn)
+    })
+}
+
+/// [`register_pane`] that runs `before_route` with the workspace and the
+/// pane after it takes the lock and before it writes the route. A failed
+/// `before_route` writes no route.
+fn register_pane_then(
+    ctx: &mut RuntimeContext,
+    role: &str,
+    identity: &PaneIdentity,
+    fleet: bool,
+    before_route: impl FnOnce(&RuntimeContext, &str, &str) -> Result<()>,
+) -> Result<(Mailbox, String, Option<horch_core::fsx::DirLockGuard>)> {
     let herdr = Herdr::with_bin(&ctx.bins.harness.herdr);
     if let Some(dir) = &identity.state_dir {
         ctx.paths.set_state_dir(dir);
     }
-    let (mailbox, _pane) = Mailbox::register_in(&herdr, ctx, role)?;
-    Ok(mailbox)
+    let (mailbox, pane) = Mailbox::locate_in(&herdr, ctx)?;
+    let lock = fleet
+        .then(|| hold_orchestrator_lock(ctx, mailbox.workspace_id()))
+        .transpose()?;
+    before_route(ctx, mailbox.workspace_id(), &pane)?;
+    mailbox.register_role(role, &pane)?;
+    Ok((mailbox, pane, lock))
 }
 
-/// The briefing of a pane. Competition settings reach a fleet orchestrator
-/// only (FDS-13).
+/// A fleet orchestrator that holds the lock of `workspace` claims the run it
+/// continues (TRF-38): the run moves to `workspace` and its stop is cleared,
+/// in 1 transaction. No ledger, or no 1 run that fits, claims nothing. A
+/// workspace with another active run fails the launch. A run whose
+/// orchestrator lives in another workspace (`Skipped`) prints the claim text
+/// and fails the launch with 1 line that names that workspace and PID.
+fn claim_launch_run(
+    ctx: &RuntimeContext,
+    root: &Path,
+    workspace: &str,
+    pane: &str,
+    respawn: Option<&str>,
+) -> Result<()> {
+    let Some(mut store) = horch_core::taskledger::open_existing(ctx)? else {
+        return Ok(());
+    };
+    let Some(run) = orchestrator::launch_run(store.conn(), root, workspace, respawn)? else {
+        return Ok(());
+    };
+    let dir = orchestrator::lock_dir(&ctx.paths.ledger_db);
+    let probe = orchestrator::Os {
+        lock_dir: &dir,
+        herdr_open: &|_| None,
+    };
+    let claimed = store
+        .immediate(|tx| orchestrator::claim(tx, &run.run_id, workspace, Some(pane), &probe))?;
+    match claimed {
+        orchestrator::Claimed::Changed(text) => println!("{text}"),
+        orchestrator::Claimed::Skipped {
+            text,
+            workspace: held,
+            pid,
+        } => {
+            println!("{text}");
+            anyhow::bail!(
+                "the launch starts no orchestrator: run {} is held in workspace {held} by PID {pid}",
+                run.slug
+            );
+        }
+        orchestrator::Claimed::Unchanged => {}
+    }
+    Ok(())
+}
+
+/// Write the harness, and the model when it is missing, on every live
+/// orchestrator row of `workspace` that has no harness (TRF-44): the session
+/// readers show it. No ledger file writes nothing. Returns the rows changed.
+fn record_orchestrator_harness(
+    ctx: &RuntimeContext,
+    workspace: &str,
+    teammate: &Teammate,
+    model: Option<&str>,
+) -> Result<usize> {
+    let Some(store) = horch_core::taskledger::open_existing(ctx)? else {
+        return Ok(0);
+    };
+    let live =
+        horch_core::taskledger::sql_words::list(horch_core::taskledger::sql_words::WORKERS_LIVE);
+    Ok(store.conn().execute(
+        &format!(
+            "UPDATE workers SET harness = ?2, model = coalesce(model, ?3)
+             WHERE kind = 'orchestrator' AND workspace_id = ?1 AND harness IS NULL
+               AND status IN ({live})"
+        ),
+        rusqlite::params![workspace, teammate.agent.as_str(), model],
+    )?)
+}
+
+/// The briefing of a pane.
 fn briefing_for(
     kind: PaneKind,
     roster: &Roster,
@@ -989,17 +1227,51 @@ fn briefing_for(
     role: &str,
 ) -> Result<String> {
     if !kind.is_fleet() {
-        return orchestrator_briefing(roster, teammate, role, None);
+        return prompts::agent_prompt(roster, teammate, role);
     }
-    let compete = CompeteSettings::from_env()?;
-    let briefing = orchestrator_briefing(roster, teammate, role, compete.as_ref())?;
-    match verify_from_env()? {
-        Some(profile) => Ok(format!(
+    let mut briefing = prompts::agent_prompt(roster, teammate, role)?;
+    if let Some(profile) = verify_from_env()? {
+        briefing = format!("{}\n\n{}", briefing.trim_end(), verify_briefing(profile));
+    }
+    Ok(match respawn_from_env() {
+        Some((slug, number)) => format!(
             "{}\n\n{}",
             briefing.trim_end(),
-            verify_briefing(profile)
-        )),
-        None => Ok(briefing),
+            orchestrator::first_instruction(&slug, number)
+        ),
+        None => briefing,
+    })
+}
+
+/// The run slug and the respawn number `fleet_with` put in this pane's
+/// environment for a respawned orchestrator (C7).
+fn respawn_from_env() -> Option<(String, i64)> {
+    std::env::var(orchestrator::RESPAWN_ENV)
+        .ok()
+        .and_then(|v| orchestrator::parse_respawn_env(&v))
+}
+
+/// Hold the orchestrator lock of `workspace` while the agent runs: 2 fleet
+/// orchestrators never run in 1 workspace (C7). The watchdog reads the
+/// holder as the orchestrator's agent PID.
+fn hold_orchestrator_lock(
+    ctx: &RuntimeContext,
+    workspace: &str,
+) -> Result<horch_core::fsx::DirLockGuard> {
+    let dir = orchestrator::lock_dir(&ctx.paths.ledger_db);
+    std::fs::create_dir_all(&dir)
+        .with_context(|| format!("creating the lock folder {}", dir.display()))?;
+    match orchestrator::lock(&dir, workspace)? {
+        Some(guard) => Ok(guard),
+        None => {
+            let pid = orchestrator::holder(&dir, workspace)
+                .map(|h| format!(" (PID {})", h.pid))
+                .unwrap_or_default();
+            anyhow::bail!(
+                "an orchestrator already runs in workspace {workspace}{pid}; \
+                 1 workspace has 1 orchestrator"
+            )
+        }
     }
 }
 
@@ -1155,44 +1427,6 @@ mod tests {
     use super::*;
     use horch_core::roster::ProjectFacts;
 
-    /// The orchestrator's briefing for `compete`, from the compiled-in roster.
-    fn briefing(compete: Option<&CompeteSettings>) -> String {
-        let roster = Roster::builtin().unwrap();
-        let t = roster.require("orchestrator").unwrap();
-        orchestrator_briefing(&roster, t, "orchestrator", compete).unwrap()
-    }
-
-    /// FDS-13: no compete settings, the briefing is the unchanged one.
-    #[test]
-    fn fds_13_briefing_without_compete_unchanged() {
-        let roster = Roster::builtin().unwrap();
-        let t = roster.require("orchestrator").unwrap();
-        let before = prompts::agent_prompt(&roster, t, "orchestrator").unwrap();
-        assert_eq!(briefing(None), before);
-        assert!(!before.contains("== Competition mode =="));
-        assert!(FleetOptions::default().compete.is_none());
-    }
-
-    /// FDS-13: compete settings append the rules, with both values rendered.
-    #[test]
-    fn fds_13_briefing_with_compete_rendered() {
-        let plain = briefing(None);
-        let text = briefing(Some(&CompeteSettings::default()));
-        assert!(text.starts_with(plain.trim_end()), "base text comes first");
-        assert!(text.contains("== Competition mode =="), "{text}");
-        assert!(text.contains("--budget-usd 10"), "{text}");
-        assert!(text.contains("fewer than 3 rounds"), "{text}");
-        assert!(!text.contains("{compete_"), "{text}");
-        let rules = text.split("== Competition mode ==").next().unwrap();
-        assert!(rules.ends_with("\n\n"), "1 blank line before the rules");
-        let custom = briefing(Some(&CompeteSettings {
-            rounds: 5,
-            budget_usd: "2.50".into(),
-        }));
-        assert!(custom.contains("--budget-usd 2.50"));
-        assert!(custom.contains("fewer than 5 rounds"));
-    }
-
     /// A context with a known binary path and nothing else.
     fn test_ctx() -> RuntimeContext {
         RuntimeContext::from_env(
@@ -1204,6 +1438,40 @@ mod tests {
     /// [`workspace_label`] against the test process's current directory.
     fn label(path: &Path) -> String {
         workspace_label(path, std::env::current_dir().ok().as_deref())
+    }
+
+    /// TRF-43: the worktree steward's work is a one-off ledger task, and its
+    /// spawn carries no task text, so it claims that task. TRF-34: the spawn
+    /// names the solo run that holds the task.
+    #[test]
+    fn trf_43_the_steward_task_is_queued_and_its_spawn_has_no_task_text() {
+        use horch_core::taskledger::{runs, tasks, Store};
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("proj");
+        std::fs::create_dir_all(&root).unwrap();
+        let env = horch_core::runtime::MapEnv::new(&root)
+            .with("HORCH_PROJECT_DIR", root.to_str().unwrap())
+            .with("HORCH_WORKSPACE_ID", "w7");
+        let mut ctx = RuntimeContext::from_env(&env).unwrap();
+        ctx.paths.ledger_db = dir.path().join("ledger.sqlite3");
+
+        let run = super::super::taskledger::queue_one_off(&ctx, steward_task(3).unwrap()).unwrap();
+
+        let store = Store::open(&ctx.paths.ledger_db).unwrap();
+        let all = runs::of_project(store.conn(), &root.canonicalize().unwrap()).unwrap();
+        assert_eq!(all.len(), 1, "{all:?}");
+        assert_eq!(all[0].workspace_id.as_deref(), Some("w7"));
+        let queued = tasks::of_run(store.conn(), &all[0].run_id).unwrap();
+        assert_eq!(queued.len(), 1);
+        assert_eq!(queued[0].title, "parked worktrees: 3");
+        assert_eq!(queued[0].claimable_by.as_deref(), Some(WORKTREE_STEWARD));
+        assert_eq!(queued[0].status, "queued");
+        assert_eq!(run.run_id, all[0].run_id);
+
+        let args = steward_spawn_args("w7:p1", &run.slug);
+        assert_eq!(args.run.as_deref(), Some("solo-w7"));
+        assert_eq!(args.teammate.as_deref(), Some(WORKTREE_STEWARD));
+        assert_eq!(args.from_pane.as_deref(), Some("w7:p1"));
     }
 
     #[test]
@@ -1433,7 +1701,6 @@ mod tests {
             &ctx,
             "orchestrator",
             kind,
-            None,
             None,
             None,
             Some(VerifyProfile::Minimal),
@@ -1679,5 +1946,426 @@ mod tests {
             project_facts(&root.join("missing")),
             ProjectFacts::default()
         );
+    }
+
+    /// A context whose ledger lives in `dir`.
+    fn ledger_ctx(dir: &Path) -> RuntimeContext {
+        RuntimeContext::from_env(
+            &horch_core::runtime::MapEnv::new("/")
+                .with_exe("/opt/horch/bin/horch")
+                .with("HORCH_STATE_DIR", dir.join("state").to_str().unwrap())
+                .with(
+                    "HORCH_LEDGER_DB",
+                    dir.join("ledger.sqlite3").to_str().unwrap(),
+                ),
+        )
+        .unwrap()
+    }
+
+    /// A herdr where pane `p1` exists, every other pane is gone, and
+    /// workspace `w1` has pane `p9`, which splits into `p10`.
+    fn respawn_herdr(dir: &Path) -> Herdr {
+        let bin = dir.join("herdr");
+        let warm = crate::test_support::write_warmed(
+            &bin,
+            "#!/bin/sh\n\
+             case \"$*\" in\n\
+             'pane get p1') echo '{\"result\":{\"pane\":{\"pane_id\":\"p1\"}}}' ;;\n\
+             'pane list --workspace w1') echo '{\"result\":{\"panes\":[{\"pane_id\":\"p9\"}]}}' ;;\n\
+             'pane split p9 --direction right --no-focus') echo '{\"result\":{\"pane\":{\"pane_id\":\"p10\"}}}' ;;\n\
+             warm*) ;;\n\
+             *) exit 1 ;;\n\
+             esac\n",
+            &["warm"],
+        );
+        assert!(warm.status.success());
+        Herdr::with_bin(bin)
+    }
+
+    fn respawn(old_pane: Option<&str>) -> Respawn {
+        Respawn {
+            run_id: "run-1".into(),
+            slug: "r1".into(),
+            project_root: "/repo".into(),
+            workspace_id: "w1".into(),
+            old_pane_id: old_pane.map(str::to_string),
+            old_worker_id: "w-old".into(),
+            new_worker_id: "w-new".into(),
+            number: 2,
+            finish_steps: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn trf_39_losing_launch_keeps_the_live_route() {
+        let dir = tempfile::tempdir().unwrap();
+        let bin = dir.path().join("herdr");
+        let warm = crate::test_support::write_warmed(
+            &bin,
+            "#!/bin/sh\n\
+             case \"$*\" in\n\
+             'pane get p2') echo '{\"result\":{\"pane\":{\"pane_id\":\"p2\",\"workspace_id\":\"w1\"}}}' ;;\n\
+             warm*) ;;\n\
+             *) exit 1 ;;\n\
+             esac\n",
+            &["warm"],
+        );
+        assert!(warm.status.success());
+        let db = dir.path().join("ledger.sqlite3");
+        let mut ctx = RuntimeContext::from_env(
+            &horch_core::runtime::MapEnv::new("/")
+                .with_exe("/opt/horch/bin/horch")
+                .with(
+                    "HORCH_STATE_DIR",
+                    dir.path().join("state").to_str().unwrap(),
+                )
+                .with("HORCH_LEDGER_DB", db.to_str().unwrap())
+                .with("HORCH_HERDR_BIN", bin.to_str().unwrap())
+                .with("HERDR_PANE_ID", "p2"),
+        )
+        .unwrap();
+        // Launch A holds the w1 lock and the orchestrator route.
+        let lock_dir = orchestrator::lock_dir(&db);
+        std::fs::create_dir_all(&lock_dir).unwrap();
+        let a = orchestrator::lock(&lock_dir, "w1").unwrap().unwrap();
+        let mailbox = Mailbox::under(&ctx.paths.state_root, "w1");
+        std::fs::create_dir_all(mailbox.dir()).unwrap();
+        mailbox.register_role("orchestrator", "p1").unwrap();
+
+        // Launch B in pane p2 loses the lock: the route stays on A.
+        let Err(err) = register_pane(&mut ctx, "orchestrator", &PaneIdentity::default(), true)
+        else {
+            panic!("a 2nd orchestrator refuses");
+        };
+        let err = err.to_string();
+        assert!(err.contains("already runs in workspace w1"), "{err}");
+        assert_eq!(mailbox.pane_for("orchestrator").as_deref(), Some("p1"));
+
+        // After A ends, B takes the lock and then the route.
+        drop(a);
+        let (_mb, pane, lock) =
+            register_pane(&mut ctx, "orchestrator", &PaneIdentity::default(), true).unwrap();
+        assert_eq!(pane, "p2");
+        assert!(lock.is_some());
+        assert_eq!(mailbox.pane_for("orchestrator").as_deref(), Some("p2"));
+    }
+
+    #[test]
+    fn trf_38_a_respawn_runs_in_the_old_pane_or_beside_the_first_pane() {
+        let dir = tempfile::tempdir().unwrap();
+        let herdr = respawn_herdr(dir.path());
+        let ws = respawn_pane(&herdr, &respawn(Some("p1"))).unwrap();
+        assert_eq!(
+            (ws.workspace_id.as_str(), ws.root_pane_id.as_str()),
+            ("w1", "p1")
+        );
+        let ws = respawn_pane(&herdr, &respawn(Some("p-gone"))).unwrap();
+        assert_eq!(
+            ws.root_pane_id, "p10",
+            "a gone pane: a new pane in the same workspace"
+        );
+        let ws = respawn_pane(&herdr, &respawn(None)).unwrap();
+        assert_eq!(
+            (ws.workspace_id.as_str(), ws.root_pane_id.as_str()),
+            ("w1", "p10")
+        );
+    }
+
+    #[test]
+    fn trf_38_the_respawn_pane_carries_its_first_instruction() {
+        let ctx = test_ctx();
+        let record = |respawn: Option<String>| PaneRecord {
+            record_id: "rec-1",
+            session_id: None,
+            resume: false,
+            respawn,
+        };
+        let kind = PaneKind::FleetOrchestrator;
+        let r = respawn(None);
+        let with = pane_command_for(
+            &ctx,
+            "orchestrator",
+            kind,
+            None,
+            Some(record(Some(r.env_value()))),
+            None,
+        )
+        .unwrap();
+        assert!(with.contains("HORCH_ORCHESTRATOR_RESPAWN=r1 2"), "{with}");
+        let without =
+            pane_command_for(&ctx, "orchestrator", kind, None, Some(record(None)), None).unwrap();
+        assert!(!without.contains("HORCH_ORCHESTRATOR_RESPAWN"), "{without}");
+
+        let (slug, number) = orchestrator::parse_respawn_env(&r.env_value()).unwrap();
+        let first = orchestrator::first_instruction(&slug, number);
+        for item in [
+            orchestrator::HANDOFF_FILE,
+            "ai_docs/plans/r1/decisions.md",
+            "horch ledger status",
+        ] {
+            assert!(first.contains(item), "{first}");
+        }
+    }
+
+    #[test]
+    fn trf_38_a_respawn_keeps_the_flavor_of_the_dead_orchestrator() {
+        for f in [
+            FleetFlavor::Opus,
+            FleetFlavor::Fable,
+            FleetFlavor::Astra,
+            FleetFlavor::Sol,
+        ] {
+            assert_eq!(flavor_of_model(f.model()), f);
+        }
+        assert_eq!(flavor_of_model("some-model"), FleetFlavor::Opus);
+    }
+
+    #[test]
+    fn trf_38_a_fleet_launch_claims_the_run_after_fleet_stop() {
+        let dir = tempfile::tempdir().unwrap();
+        let ctx = ledger_ctx(dir.path());
+        let root = dir.path().join("repo");
+        std::fs::create_dir_all(&root).unwrap();
+        // No ledger: nothing to claim, and no ledger is created.
+        claim_launch_run(&ctx, &root, "w2", "p2", None).unwrap();
+        assert!(!ctx.paths.ledger_db.exists());
+
+        let mut store = horch_core::taskledger::open(&ctx).unwrap();
+        let run = store
+            .immediate(|tx| {
+                horch_core::taskledger::runs::create(
+                    tx,
+                    &root,
+                    &horch_core::taskledger::runs::NewRun {
+                        slug: "r1".into(),
+                        workspace_id: Some("w1".into()),
+                        ..Default::default()
+                    },
+                )
+            })
+            .unwrap();
+        assert_eq!(fleet_stop(&ctx, root.to_str()).unwrap(), ExitCode::SUCCESS);
+        claim_launch_run(&ctx, &root, "w2", "p2", None).unwrap();
+        let after = horch_core::taskledger::runs::get(store.conn(), &run.run_id).unwrap();
+        assert_eq!(after.workspace_id.as_deref(), Some("w2"));
+        assert_eq!(
+            orchestrator::guard(store.conn(), &run.run_id)
+                .unwrap()
+                .stopped_at,
+            None
+        );
+    }
+
+    /// Review 32 I-01 and report 54 F1: the active run's orchestrator lives
+    /// in workspace w1. A fleet launch in pane p2 of w2 gets `Skipped`: it
+    /// fails with 1 line that names w1 and the PID before it writes a route.
+    /// w2 has no `orchestrator` route and no lock holder, and w1's route and
+    /// the run row do not change.
+    #[test]
+    fn trf_38_a_refused_launch_writes_no_route() {
+        let dir = tempfile::tempdir().unwrap();
+        let bin = dir.path().join("herdr");
+        let warm = crate::test_support::write_warmed(
+            &bin,
+            "#!/bin/sh\n\
+             case \"$*\" in\n\
+             'pane get p2') echo '{\"result\":{\"pane\":{\"pane_id\":\"p2\",\"workspace_id\":\"w2\"}}}' ;;\n\
+             warm*) ;;\n\
+             *) exit 1 ;;\n\
+             esac\n",
+            &["warm"],
+        );
+        assert!(warm.status.success());
+        let db = dir.path().join("ledger.sqlite3");
+        let mut ctx = RuntimeContext::from_env(
+            &horch_core::runtime::MapEnv::new("/")
+                .with_exe("/opt/horch/bin/horch")
+                .with(
+                    "HORCH_STATE_DIR",
+                    dir.path().join("state").to_str().unwrap(),
+                )
+                .with("HORCH_LEDGER_DB", db.to_str().unwrap())
+                .with("HORCH_HERDR_BIN", bin.to_str().unwrap())
+                .with("HERDR_PANE_ID", "p2"),
+        )
+        .unwrap();
+        let root = dir.path().join("repo");
+        std::fs::create_dir_all(&root).unwrap();
+        let mut store = horch_core::taskledger::open(&ctx).unwrap();
+        let run = store
+            .immediate(|tx| {
+                horch_core::taskledger::runs::create(
+                    tx,
+                    &root,
+                    &horch_core::taskledger::runs::NewRun {
+                        slug: "r1".into(),
+                        workspace_id: Some("w1".into()),
+                        ..Default::default()
+                    },
+                )
+            })
+            .unwrap();
+        // Launch A holds the w1 lock and the orchestrator route.
+        let lock_dir = orchestrator::lock_dir(&db);
+        std::fs::create_dir_all(&lock_dir).unwrap();
+        let _a = orchestrator::lock(&lock_dir, "w1").unwrap().unwrap();
+        let w1 = Mailbox::under(&ctx.paths.state_root, "w1");
+        std::fs::create_dir_all(w1.dir()).unwrap();
+        w1.register_role("orchestrator", "p1").unwrap();
+        let before = horch_core::taskledger::runs::get(store.conn(), &run.run_id).unwrap();
+
+        let Err(err) = register_fleet_pane(
+            &mut ctx,
+            "orchestrator",
+            &PaneIdentity::default(),
+            &root,
+            None,
+        ) else {
+            panic!("a skipped claim refuses the launch");
+        };
+        assert_eq!(
+            err.to_string(),
+            format!(
+                "the launch starts no orchestrator: run r1 is held in workspace w1 by PID {}",
+                std::process::id()
+            )
+        );
+        let w2 = Mailbox::under(&ctx.paths.state_root, "w2");
+        assert_eq!(w2.pane_for("orchestrator"), None);
+        assert!(!w2.dir().join("orchestrator.id").exists());
+        assert_eq!(orchestrator::holder(&lock_dir, "w2"), None);
+        assert_eq!(w1.pane_for("orchestrator").as_deref(), Some("p1"));
+        assert_eq!(
+            horch_core::taskledger::runs::get(store.conn(), &run.run_id).unwrap(),
+            before
+        );
+    }
+
+    #[test]
+    fn trf_44_a_fleet_launch_writes_the_harness_on_its_orchestrator_rows() {
+        let dir = tempfile::tempdir().unwrap();
+        let ctx = ledger_ctx(dir.path());
+        let root = dir.path().join("repo");
+        std::fs::create_dir_all(&root).unwrap();
+        let roster = Roster::builtin().unwrap();
+        let teammate =
+            launch_teammate(&roster, PaneKind::FleetCodexOrchestrator, Some("gpt-x")).unwrap();
+        // No ledger: nothing is written, and no ledger is created.
+        assert_eq!(
+            record_orchestrator_harness(&ctx, "w1", &teammate, Some("gpt-x")).unwrap(),
+            0
+        );
+        assert!(!ctx.paths.ledger_db.exists());
+
+        let mut store = horch_core::taskledger::open(&ctx).unwrap();
+        let (live, ended) = store
+            .immediate(|tx| {
+                use horch_core::taskledger::model::WorkerKind;
+                use horch_core::taskledger::workers::{self, NewWorker};
+                let run = horch_core::taskledger::runs::create(
+                    tx,
+                    &root,
+                    &horch_core::taskledger::runs::NewRun {
+                        slug: "r1".into(),
+                        workspace_id: Some("w1".into()),
+                        ..Default::default()
+                    },
+                )?;
+                let row = |tx: &rusqlite::Transaction, status: &str| {
+                    let id = workers::insert(
+                        tx,
+                        &NewWorker {
+                            run_id: run.run_id.clone(),
+                            kind: Some(WorkerKind::Orchestrator),
+                            persona: "orchestrator".into(),
+                            role: Some("orchestrator".into()),
+                            workspace_id: Some("w1".into()),
+                            ..Default::default()
+                        },
+                    )?;
+                    tx.execute(
+                        "UPDATE workers SET status = ?2 WHERE worker_id = ?1",
+                        rusqlite::params![id, status],
+                    )?;
+                    anyhow::Ok(id)
+                };
+                Ok((row(tx, "working")?, row(tx, "stopped")?))
+            })
+            .unwrap();
+        assert_eq!(
+            record_orchestrator_harness(&ctx, "w1", &teammate, Some("gpt-x")).unwrap(),
+            1
+        );
+        let get = |id: &str| horch_core::taskledger::workers::get(store.conn(), id).unwrap();
+        assert_eq!(get(&live).harness.as_deref(), Some("codex"));
+        assert_eq!(get(&live).model.as_deref(), Some("gpt-x"));
+        assert_eq!(get(&ended).harness, None);
+    }
+
+    #[test]
+    fn trf_39_fleet_stop_records_the_stop_of_each_active_run() {
+        let dir = tempfile::tempdir().unwrap();
+        let ctx = ledger_ctx(dir.path());
+        let root = dir.path().join("repo");
+        std::fs::create_dir_all(&root).unwrap();
+        let mut store = horch_core::taskledger::open(&ctx).unwrap();
+        let run = store
+            .immediate(|tx| {
+                horch_core::taskledger::runs::create(
+                    tx,
+                    &root,
+                    &horch_core::taskledger::runs::NewRun {
+                        slug: "r1".into(),
+                        ..Default::default()
+                    },
+                )
+            })
+            .unwrap();
+        let stopped = |store: &horch_core::taskledger::Store| {
+            orchestrator::guard(store.conn(), &run.run_id)
+                .unwrap()
+                .stopped_at
+        };
+        assert_eq!(stopped(&store), None);
+        assert_eq!(fleet_stop(&ctx, root.to_str()).unwrap(), ExitCode::SUCCESS);
+        let first = stopped(&store).expect("the stop is recorded");
+        assert_eq!(fleet_stop(&ctx, root.to_str()).unwrap(), ExitCode::SUCCESS);
+        assert_eq!(stopped(&store), Some(first), "the first stop stays");
+    }
+
+    #[test]
+    fn trf_40_a_second_fleet_orchestrator_in_a_workspace_refuses() {
+        let dir = tempfile::tempdir().unwrap();
+        let ctx = ledger_ctx(dir.path());
+        let held = hold_orchestrator_lock(&ctx, "w1").unwrap();
+        let err = hold_orchestrator_lock(&ctx, "w1").unwrap_err().to_string();
+        assert!(
+            err.contains(&format!(
+                "an orchestrator already runs in workspace w1 (PID {})",
+                std::process::id()
+            )),
+            "{err}"
+        );
+        assert!(
+            hold_orchestrator_lock(&ctx, "w2").is_ok(),
+            "1 lock per workspace"
+        );
+        drop(held);
+        assert!(
+            hold_orchestrator_lock(&ctx, "w1").is_ok(),
+            "free after the agent ends"
+        );
+    }
+
+    /// TRF-45: `horch fleet` names the task ledger file as the home of the
+    /// session records, not the retired JSON session ledger.
+    #[test]
+    fn trf_45_fleet_names_the_task_ledger_for_session_records() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ledger = SessionLedger::for_project(tmp.path(), "/p");
+        let line = session_records_line(&ledger);
+        let db = ledger.store().db().display().to_string();
+        assert_eq!(line, format!("Session records (task ledger): {db}"));
+        assert!(!line.contains(".json"), "{line}");
     }
 }

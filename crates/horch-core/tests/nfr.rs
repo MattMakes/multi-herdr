@@ -140,6 +140,9 @@ fn nfr_05_no_new_runtime_crates() {
         "flate2",
         "tar",
         "zip",
+        // Same crate and version as horch-core (ADR 0001). The direct
+        // dependency replaces a re-export that arc_25 forbids (ticket 36).
+        "rusqlite",
     ];
     for d in deps(&repo().join("crates/horch/Cargo.toml")) {
         assert!(allowed.contains(&d.as_str()), "horch gained '{d}'");

@@ -1822,7 +1822,9 @@ mod tests {
         );
         assert_eq!(args[0], "resume");
         let pairs: Vec<&str> = args[1..9]
-            .chunks_exact(2)
+            .as_chunks::<2>()
+            .0
+            .iter()
             .map(|pair| {
                 assert_eq!(pair[0], "-c");
                 pair[1].as_str()
@@ -2264,6 +2266,7 @@ mod tests {
             "codex-luna",
             "codex-network",
             "codex-reviewer",
+            "codex-reviewer-light",
             "codex-sol",
             "codex-swift-reviewer",
             "codex-terra",

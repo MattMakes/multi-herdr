@@ -12,14 +12,25 @@
 //! the same tree reuses the round. A new round cancels the open reviews of
 //! the old one as superseded; a review cancelled in the current round is
 //! queued again (#158, #163).
+//!
+//! The loop is bounded (trace-fixes TRF-27..TRF-30): the task's `Review`
+//! mode sets the rounds and reviewers (none: no review; light: 1 round of 2;
+//! full: up to 3 rounds of 3). Rounds 2 and 3 review only the change since
+//! the last reviewed tree, with the cheaper reviewer persona. A finding
+//! keeps its `F<n>` id across rounds (the id stands for a hash of its file,
+//! reviewer and text), so answers and waivers carry; the reviewers of a
+//! later round accept or reject each answer. After the last round, an
+//! Important finding without an answer or a waiver becomes a QUESTION to
+//! the orchestrator instead of another round.
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 
 use super::{Ctx, Outcome};
-use crate::taskledger::model::{Actor, EventKind, TaskKind, WorktreeMode};
+use crate::taskledger::model::{Actor, EventKind, OutboxEvent, ReviewMode, TaskKind, WorktreeMode};
 use crate::taskledger::store::Store;
 use crate::taskledger::tasks::{self, NewTask, Task};
 use crate::taskledger::util::{self, About};
@@ -220,7 +231,48 @@ struct State {
     /// How many times each reviewer code of this round was queued again
     /// after a cancel.
     #[serde(default)]
-    requeues: std::collections::BTreeMap<String, u32>,
+    requeues: BTreeMap<String, u32>,
+    /// The tree the round's diff starts from: the tree of the round before.
+    /// `None`: the diff starts from the run branch (round 1).
+    #[serde(default)]
+    since_tree: Option<String>,
+    /// The stable id of every finding seen in any round: finding key
+    /// ([`finding_key`]) to `F<n>`.
+    #[serde(default)]
+    ids: BTreeMap<String, String>,
+    /// The number of the last id given.
+    #[serde(default)]
+    last_id: u32,
+    /// `finish --rereview`: the next round repeats this round's number and
+    /// diff, because a review of it was lost.
+    #[serde(default)]
+    redo: bool,
+}
+
+/// The review rounds and reviewers per round of a `Review` mode. A task
+/// without a mode reviews as `full`.
+fn review_mode(task: &Task) -> ReviewMode {
+    task.review_mode
+        .as_deref()
+        .and_then(|m| ReviewMode::parse(m).ok())
+        .unwrap_or(ReviewMode::Full)
+}
+
+/// The most rounds a mode runs.
+pub fn max_rounds(mode: ReviewMode) -> u32 {
+    match mode {
+        ReviewMode::NoReview => 0,
+        ReviewMode::Light => 1,
+        ReviewMode::Full => 3,
+    }
+}
+
+/// The most reviewers 1 round of a mode has.
+pub fn max_reviewers(mode: ReviewMode) -> usize {
+    match mode {
+        ReviewMode::Light => 2,
+        ReviewMode::NoReview | ReviewMode::Full => 3,
+    }
 }
 
 /// How many times 1 cancelled review of 1 round is queued again. After
@@ -280,6 +332,7 @@ pub fn forget_tree(conn: &rusqlite::Connection, evidence_root: &Path, task_id: &
         );
     }
     state.tree.clear();
+    state.redo = true;
     let path = state_path(evidence_root, task_id);
     std::fs::write(path, serde_json::to_vec_pretty(&state)?)?;
     Ok(())
@@ -294,18 +347,33 @@ pub fn reviewer_persona(author_harness: Option<&str>) -> &'static str {
     }
 }
 
-/// The other reviewer persona: the fallback of every review task.
+/// The other reviewer persona: the fallback of every review task. It
+/// switches vendor and keeps the cost tier, so a light reviewer falls back
+/// to the other vendor's light reviewer (TRF-30). An unknown persona falls
+/// back to `architect-reviewer`.
 pub fn other_reviewer(persona: &str) -> &'static str {
-    if persona == "architect-reviewer" {
-        "codex-reviewer"
-    } else {
-        "architect-reviewer"
+    match persona {
+        "architect-reviewer" => "codex-reviewer",
+        "architect-reviewer-light" => "codex-reviewer-light",
+        "codex-reviewer-light" => "architect-reviewer-light",
+        _ => "architect-reviewer",
     }
 }
 
-/// The (primary, fallback) persona of this round's reviews, and why the
-/// usual reviewer was swapped, when it cannot run here.
-fn reviewer_personas(cx: &Ctx<'_>) -> (&'static str, &'static str, Option<String>) {
+/// The cheaper persona of `persona` for review rounds 2 and 3 (TRF-30).
+pub fn cheaper_reviewer(persona: &str) -> &'static str {
+    if persona == "architect-reviewer" {
+        "architect-reviewer-light"
+    } else {
+        "codex-reviewer-light"
+    }
+}
+
+/// The (primary, fallback) persona of round `round`'s reviews, and why the
+/// usual reviewer was swapped, when it cannot run here. Rounds 2 and 3 go
+/// to the cheaper persona, with the other vendor's cheaper persona as the
+/// fallback (TRF-30).
+fn reviewer_personas(cx: &Ctx<'_>, round: u32) -> (&'static str, &'static str, Option<String>) {
     let usual = reviewer_persona(cx.worker.harness.as_deref());
     let other = other_reviewer(usual);
     let down = |p: &str| {
@@ -315,13 +383,19 @@ fn reviewer_personas(cx: &Ctx<'_>) -> (&'static str, &'static str, Option<String
             .find(|(d, _)| d == p)
             .map(|(_, why)| why.clone())
     };
-    match (down(usual), down(other)) {
+    let (primary, fallback, swapped) = match (down(usual), down(other)) {
         (Some(why), None) => (
             other,
             usual,
             Some(format!("{usual} cannot run here ({why})")),
         ),
         _ => (usual, other, None),
+    };
+    if round > 1 {
+        let light = cheaper_reviewer(primary);
+        (light, other_reviewer(light), swapped)
+    } else {
+        (primary, fallback, swapped)
     }
 }
 
@@ -344,15 +418,10 @@ fn all_waivers(evidence_root: &Path, task_id: &str) -> Vec<Waiver> {
         .unwrap_or_default()
 }
 
-/// The waivers of the task's current round.
+/// The waivers of the task, of every round: finding ids are stable, so a
+/// waiver carries to later rounds (TRF-29).
 pub fn waivers(evidence_root: &Path, task_id: &str) -> Vec<Waiver> {
-    let Some(state) = load_state(evidence_root, task_id) else {
-        return Vec::new();
-    };
     all_waivers(evidence_root, task_id)
-        .into_iter()
-        .filter(|w| w.round == state.round)
-        .collect()
 }
 
 /// The run's latest worker in herdr pane `pane`, if any: who calls
@@ -528,34 +597,71 @@ fn review_task(
     t
 }
 
-/// Write the ticket of every reviewer the triage picks. Nothing is queued
-/// yet: a prompt that does not read fails the round before any task exists.
-#[allow(clippy::too_many_arguments)] // the round inputs are all distinct paths and strings of one step
-fn plan_round(
-    cx: &Ctx<'_>,
-    sweep: &Path,
-    dir: &Path,
-    diff: &str,
-    diff_path: &Path,
-    files: &[String],
-    persona: &str,
-    fallback: &str,
-) -> Result<Vec<Planned>> {
+/// What the reviewers of a round 2 or 3 read of the rounds before.
+struct Earlier {
+    /// The round before.
+    round: u32,
+    /// Its merged report.
+    report: PathBuf,
+    /// This round's answers file: the author's answers so far.
+    answers: PathBuf,
+}
+
+/// The inputs of 1 round's tickets.
+struct RoundPlan<'a> {
+    sweep: &'a Path,
+    diff: &'a RoundDiff,
+    persona: &'a str,
+    fallback: &'a str,
+    /// The most reviewers of the round.
+    limit: usize,
+    earlier: Option<Earlier>,
+}
+
+/// The ticket text a round 2 or 3 adds: the earlier findings to carry and
+/// the answers to rule on (TRF-29).
+fn earlier_text(e: &Earlier) -> String {
+    format!(
+        "## Earlier rounds\n\n\
+         This round reviews only the change since round {r}. The report of round {r}: {report}. \
+         The author's answers: {answers}.\n\n\
+         - A finding of an earlier round that is still not fixed: write it again with its id first, \
+         as `- F<n> <file>:<line> <issue>. Fix: <fix>`.\n\
+         - Rule on each answer in {answers}: add 1 line under `## Answers`, \
+         `- F<n> accepted` or `- F<n> rejected: <why>`. \
+         Write a finding with a rejected answer again under its severity, with its id first.\n\n",
+        r = e.round,
+        report = e.report.display(),
+        answers = e.answers.display(),
+    )
+}
+
+/// Write the ticket of every reviewer the triage picks, at most
+/// `plan.limit`. Nothing is queued yet: a prompt that does not read fails
+/// the round before any task exists.
+fn plan_round(cx: &Ctx<'_>, plan: &RoundPlan<'_>) -> Result<Vec<Planned>> {
+    let d = plan.diff;
+    let earlier = plan.earlier.as_ref().map(earlier_text).unwrap_or_default();
+    let answers_form = if plan.earlier.is_some() {
+        "## Answers\n- none\n"
+    } else {
+        ""
+    };
     let mut out = Vec::new();
-    for code in triage(diff, files) {
+    for code in triage(&d.diff, &d.files).into_iter().take(plan.limit) {
         let (_, name, focus) = REVIEWERS
             .iter()
             .find(|(c, _, _)| *c == code)
             .expect("triage returns known codes");
-        let prompt_file = sweep.join("reviewers").join(format!("{name}.md"));
+        let prompt_file = plan.sweep.join("reviewers").join(format!("{name}.md"));
         let prompt = std::fs::read_to_string(&prompt_file).with_context(|| {
             format!(
                 "reading the {name} reviewer prompt {}",
                 prompt_file.display()
             )
         })?;
-        let findings = dir.join(format!("{name}-findings.md"));
-        let ticket = dir.join(format!("{name}.md"));
+        let findings = d.dir.join(format!("{name}-findings.md"));
+        let ticket = d.dir.join(format!("{name}.md"));
         std::fs::write(
             &ticket,
             format!(
@@ -565,21 +671,22 @@ fn plan_round(
                  - The changed files: {files}\n\
                  - The author's worktree, for the surrounding code (read it, never edit it): {wt}\n\n\
                  Read the surrounding code of every changed file. Do not edit any file except your findings file.\n\n\
+                 {earlier}\
                  Write your findings to {out} in exactly this form, 1 finding per `- ` line, \
                  each with file:line, the issue and the fix. Write `- none` under a heading with no findings.\n\n\
-                 ```\n## Critical\n- <file>:<line> <issue>. Fix: <fix>\n## Important\n- none\n## Minor\n- none\n```\n\n\
+                 ```\n## Critical\n- <file>:<line> <issue>. Fix: <fix>\n## Important\n- none\n## Minor\n- none\n{answers_form}```\n\n\
                  Then run: horch ledger done \"<1 line: how many findings of each severity>\"\n\n\
                  ## Your reviewer prompt\n\n{prompt}\n",
                 short = cx.task.short(),
-                diff = diff_path.display(),
-                files = files.join(", "),
+                diff = d.diff_path.display(),
+                files = d.files.join(", "),
                 wt = cx.dir.display(),
                 out = findings.display(),
             ),
         )?;
         out.push(Planned {
             code: code.to_string(),
-            task: review_task(cx, name, &ticket, &findings, persona, fallback),
+            task: review_task(cx, name, &ticket, &findings, plan.persona, plan.fallback),
             findings: findings.to_string_lossy().into_owned(),
         });
     }
@@ -625,12 +732,36 @@ struct RoundDiff {
     files: Vec<String>,
 }
 
-/// The folder of round `round` of the task's reviews, with the branch's
-/// diff in it.
-fn round_diff(cx: &Ctx<'_>, base: &str, round: u32) -> Result<RoundDiff> {
+/// The git range of a round's diff: the change since the last reviewed
+/// tree for rounds 2 and 3 (TRF-28), else the branch's change since the
+/// run branch.
+pub fn diff_range(base: &str, since_tree: Option<&str>) -> Vec<String> {
+    match since_tree {
+        Some(tree) => vec![tree.to_string(), "HEAD".to_string()],
+        None => vec![format!("{base}...HEAD")],
+    }
+}
+
+/// The diff and the changed file names of `range`.
+fn diff_of(cx: &Ctx<'_>, range: &[String]) -> Result<(String, String)> {
     let git = &cx.tools.git;
-    let diff = git.run(&cx.dir, &["diff", &format!("{base}...HEAD")])?;
-    let names = git.run(&cx.dir, &["diff", "--name-only", &format!("{base}...HEAD")])?;
+    let mut args = vec!["diff"];
+    args.extend(range.iter().map(String::as_str));
+    let diff = git.run(&cx.dir, &args)?;
+    args.insert(1, "--name-only");
+    let names = git.run(&cx.dir, &args)?;
+    Ok((diff, names))
+}
+
+/// The folder of round `round` of the task's reviews, with the round's
+/// diff in it: since `since_tree` when given, else since the run branch.
+/// A tree git no longer has falls back to the run branch.
+fn round_diff(cx: &Ctx<'_>, base: &str, since_tree: Option<&str>, round: u32) -> Result<RoundDiff> {
+    let (diff, names) = match diff_of(cx, &diff_range(base, since_tree)) {
+        Ok(d) => d,
+        Err(_) if since_tree.is_some() => diff_of(cx, &diff_range(base, None))?,
+        Err(e) => return Err(e),
+    };
     let dir = review_root(&cx.root)?
         .join(format!("T{}-{}", cx.task.seq, &cx.task.task_id[..8]))
         .join(format!("round-{round}"));
@@ -684,6 +815,72 @@ fn add_round(
     })
 }
 
+/// The next round after `old`: its number and the tree its diff starts
+/// from. A redo repeats the round; else the diff starts at the old round's
+/// tree.
+fn next_round(old: Option<&State>) -> (u32, Option<String>) {
+    match old {
+        None => (1, None),
+        Some(o) if o.redo => (o.round, o.since_tree.clone()),
+        Some(o) => (o.round + 1, Some(o.tree.clone()).filter(|t| !t.is_empty())),
+    }
+}
+
+/// The answers of every round up to `round` merged, later rounds first to
+/// win: (id, text). `dir` is the folder of `round`.
+fn carried_answers(dir: &Path, round: u32) -> Vec<(String, String)> {
+    let mut merged: BTreeMap<u32, (String, String)> = BTreeMap::new();
+    for r in 1..=round {
+        let file = round_dir(dir, r).join("answers.md");
+        for (id, why) in parse_answers(&std::fs::read_to_string(file).unwrap_or_default()) {
+            let n = id[1..].parse().unwrap_or(0);
+            merged.insert(n, (id, why));
+        }
+    }
+    merged.into_values().collect()
+}
+
+/// The folder of round `round`, next to the round folder `dir`.
+fn round_dir(dir: &Path, round: u32) -> PathBuf {
+    dir.parent().unwrap_or(dir).join(format!("round-{round}"))
+}
+
+/// What the reviewers of round `round` read of the round before, with the
+/// answers so far written into this round's answers file. `None` for round
+/// 1.
+fn earlier(old: Option<&State>, d: &RoundDiff, round: u32) -> Result<Option<Earlier>> {
+    if old.is_none() || round < 2 {
+        return Ok(None);
+    }
+    let before = round - 1;
+    let answers = d.dir.join("answers.md");
+    let carried = carried_answers(&d.dir, before);
+    if !answers.exists() {
+        let text: String = carried
+            .iter()
+            .map(|(id, why)| format!("{id}: {why}\n"))
+            .collect();
+        std::fs::write(&answers, text)?;
+    }
+    Ok(Some(Earlier {
+        round: before,
+        report: round_dir(&d.dir, before).join("report.md"),
+        answers,
+    }))
+}
+
+/// The findings files of a round that is redone: the new reviews write
+/// them again.
+fn clear_findings(old: Option<&State>) {
+    for (_, _, file) in old
+        .filter(|o| o.redo)
+        .map(|o| o.reviews.as_slice())
+        .unwrap_or_default()
+    {
+        let _ = std::fs::remove_file(file);
+    }
+}
+
 fn queue_round(
     store: &mut Store,
     cx: &Ctx<'_>,
@@ -692,18 +889,20 @@ fn queue_round(
     tree: &str,
     old: Option<&State>,
 ) -> Result<Outcome> {
-    let round = old.map_or(1, |o| o.round + 1);
-    let d = round_diff(cx, base, round)?;
-    let (persona, fallback, swapped) = reviewer_personas(cx);
+    let (round, since_tree) = next_round(old);
+    let d = round_diff(cx, base, since_tree.as_deref(), round)?;
+    clear_findings(old);
+    let (persona, fallback, swapped) = reviewer_personas(cx, round);
     let planned = plan_round(
         cx,
-        sweep,
-        &d.dir,
-        &d.diff,
-        &d.diff_path,
-        &d.files,
-        persona,
-        fallback,
+        &RoundPlan {
+            sweep,
+            diff: &d,
+            persona,
+            fallback,
+            limit: max_reviewers(review_mode(cx.task)),
+            earlier: earlier(old, &d, round)?,
+        },
     )?;
     let empty = State {
         round,
@@ -711,6 +910,10 @@ fn queue_round(
         dir: d.dir.to_string_lossy().into_owned(),
         reviews: Vec::new(),
         requeues: Default::default(),
+        since_tree,
+        ids: old.map(|o| o.ids.clone()).unwrap_or_default(),
+        last_id: old.map_or(0, |o| o.last_id),
+        redo: false,
     };
     let (state, shorts, stop) = add_round(store, cx, old, empty, &planned)?;
     save(cx, &state)?;
@@ -794,8 +997,11 @@ fn current_round(
             "the code-sweep skill was not found. Install the dev plugin's code-sweep skill, or set HORCH_CODE_SWEEP_DIR to its folder (the one that holds reviewers/)",
         )));
     };
+    let cap = max_rounds(review_mode(cx.task));
     match load(cx) {
         Some(s) if s.tree == tree => Ok(Ok((s, tree))),
+        // The last round stands for a later tree: no round past the cap.
+        Some(s) if !s.redo && s.round >= cap => Ok(Ok((s, tree))),
         old => queue_round(store, cx, &sweep, base, &tree, old.as_ref()).map(Err),
     }
 }
@@ -874,6 +1080,8 @@ struct Graded {
     table: Vec<String>,
     /// A reviewer finished without a findings file.
     missing: bool,
+    /// The reviewers' rulings on the author's answers.
+    verdicts: Vec<AnswerVerdict>,
 }
 
 /// The report row of 1 reviewer.
@@ -892,25 +1100,127 @@ fn table_row(name: &str, text: &str, found: &[(String, String, String)]) -> Stri
     format!("| {name} | {verdict} | {c} | {i} | {m} |")
 }
 
-/// Read every findings file of the round and number the findings.
-fn grade_reviews(state: &State) -> Graded {
+/// 1 reviewer's ruling on 1 answer (TRF-29).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AnswerVerdict {
+    pub id: String,
+    pub reviewer: String,
+    /// The reason of a rejection; `None`: accepted.
+    pub rejected: Option<String>,
+}
+
+/// The `- F<n> accepted` and `- F<n> rejected: <why>` lines under
+/// `## Answers` of 1 reviewer's findings file.
+pub fn parse_verdicts(reviewer: &str, text: &str) -> Vec<AnswerVerdict> {
+    let mut out = Vec::new();
+    let mut in_answers = false;
+    for l in text.lines().map(str::trim) {
+        if let Some(h) = l.strip_prefix("## ") {
+            in_answers = h.trim().eq_ignore_ascii_case("answers");
+            continue;
+        }
+        let Some(item) = finding_item(l).filter(|_| in_answers) else {
+            continue;
+        };
+        let Some((id, rest)) = split_id(item) else {
+            continue;
+        };
+        let rest = rest.trim_start();
+        let lower = rest.to_lowercase();
+        let rejected = if lower.starts_with("accepted") {
+            None
+        } else if lower.starts_with("rejected") {
+            let why = rest["rejected".len()..]
+                .trim_start_matches([':', ' '])
+                .trim();
+            Some(why.to_string())
+        } else {
+            continue;
+        };
+        out.push(AnswerVerdict {
+            id,
+            reviewer: reviewer.to_string(),
+            rejected,
+        });
+    }
+    out
+}
+
+/// `F<n>` at the start of `item`, and the rest.
+fn split_id(item: &str) -> Option<(String, &str)> {
+    let digits = item.strip_prefix('F')?;
+    let n = digits.chars().take_while(char::is_ascii_digit).count();
+    if n == 0 {
+        return None;
+    }
+    let rest = &digits[n..];
+    if !(rest.is_empty() || rest.starts_with([' ', ':'])) {
+        return None;
+    }
+    Some((format!("F{}", &digits[..n]), rest.trim_start_matches(':')))
+}
+
+/// The key that names 1 finding across rounds: the sha256 of its file, its
+/// reviewer (the rule it applies) and its text without the location,
+/// lower case, with the spaces collapsed. A line number that moves keeps
+/// the key.
+pub fn finding_key(reviewer: &str, text: &str) -> String {
+    let mut words = text.split_whitespace();
+    let first = words.next().unwrap_or_default();
+    let (file, rest): (&str, Vec<&str>) = match first.split_once(':') {
+        Some((file, _)) if !file.is_empty() => (file, words.collect()),
+        _ => ("", text.split_whitespace().collect()),
+    };
+    let norm = rest.join(" ").to_lowercase();
+    let norm = norm.trim_end_matches(['.', ' ']);
+    crate::taskledger::tasks::ticket_sha(&format!("{file}\n{reviewer}\n{norm}"))
+}
+
+impl State {
+    /// The stable id of 1 finding, and its text. A line that starts with a
+    /// known `F<n>` keeps that id; else the finding key picks the id it had
+    /// in an earlier round, or a new one.
+    fn stable_id(&mut self, reviewer: &str, text: &str) -> (String, String) {
+        if let Some((id, rest)) = split_id(text) {
+            if self.ids.values().any(|v| *v == id) {
+                return (id, rest.trim().to_string());
+            }
+        }
+        let key = finding_key(reviewer, text);
+        if let Some(id) = self.ids.get(&key) {
+            return (id.clone(), text.to_string());
+        }
+        self.last_id += 1;
+        let id = format!("F{}", self.last_id);
+        self.ids.insert(key, id.clone());
+        (id, text.to_string())
+    }
+}
+
+/// Read every findings file of the round and give each finding its stable
+/// id. The new ids go into `state`; the caller saves it.
+fn grade_reviews(state: &mut State) -> Graded {
     let mut found_all = Vec::new();
     let mut table = Vec::new();
+    let mut verdicts = Vec::new();
     for (code, _, file) in &state.reviews {
         let name = reviewer_name(code);
         let text = std::fs::read_to_string(file).unwrap_or_default();
         let found = parse_findings(name, &text);
         table.push(table_row(name, &text, &found));
+        verdicts.extend(parse_verdicts(name, &text));
         found_all.extend(found);
     }
     let findings = found_all
         .into_iter()
-        .enumerate()
-        .map(|(n, (severity, reviewer, text))| Finding {
-            id: format!("F{}", n + 1),
-            severity,
-            reviewer,
-            text,
+        .map(|(severity, reviewer, text)| {
+            let (id, text) = state.stable_id(&reviewer, &text);
+            Finding {
+                id,
+                severity,
+                reviewer,
+                text,
+            }
         })
         .collect();
     let missing = table.iter().any(|r| r.contains("| MISSING |"));
@@ -918,24 +1228,42 @@ fn grade_reviews(state: &State) -> Graded {
         findings,
         table,
         missing,
+        verdicts,
     }
 }
 
-/// The author's answers and the orchestrator's waivers of a round.
+/// The author's answers and the orchestrator's waivers, carried across
+/// rounds by finding id.
 struct Rulings {
     answers_path: PathBuf,
+    /// The answers that count: every round's, minus each answer a reviewer
+    /// of this round rejected and the author did not change since.
     answers: Vec<(String, String)>,
+    /// The answers a reviewer of this round rejected: (id, reviewer, why).
+    rejected: Vec<(String, String, String)>,
     waived: Vec<Waiver>,
 }
 
 impl Rulings {
-    fn read(cx: &Ctx<'_>, state: &State) -> Rulings {
-        let answers_path = Path::new(&state.dir).join("answers.md");
-        let answers = parse_answers(&std::fs::read_to_string(&answers_path).unwrap_or_default());
+    fn read(cx: &Ctx<'_>, state: &State, verdicts: &[AnswerVerdict]) -> Rulings {
+        let dir = Path::new(&state.dir);
+        let answers_path = dir.join("answers.md");
+        let before = carried_answers(dir, state.round.saturating_sub(1));
+        let mut answers = carried_answers(dir, state.round);
+        let mut rejected = Vec::new();
+        for v in verdicts {
+            let Some(why) = &v.rejected else { continue };
+            let unchanged = |a: &(String, String)| a.0 == v.id && before.iter().any(|b| b == a);
+            if answers.iter().any(unchanged) {
+                answers.retain(|a| !unchanged(a));
+                rejected.push((v.id.clone(), v.reviewer.clone(), why.clone()));
+            }
+        }
         Rulings {
             answers_path,
             answers,
-            waived: waivers(&cx.tools.evidence_root, &cx.task.task_id),
+            rejected,
+            waived: all_waivers(&cx.tools.evidence_root, &cx.task.task_id),
         }
     }
 
@@ -946,8 +1274,12 @@ impl Rulings {
             .map(|(_, why)| why.as_str())
     }
 
+    fn rejection(&self, id: &str) -> Option<&(String, String, String)> {
+        self.rejected.iter().find(|r| r.0 == id)
+    }
+
     fn waiver(&self, id: &str) -> Option<&Waiver> {
-        self.waived.iter().find(|w| w.id == id)
+        self.waived.iter().rev().find(|w| w.id == id)
     }
 
     /// Whether `f` blocks the step: a Critical finding until it is waived,
@@ -1007,6 +1339,10 @@ fn render_report(cx: &Ctx<'_>, state: &State, g: &Graded, r: &Rulings, overall: 
                 .answer(&f.id)
                 .map(|w| format!(" — answered: {w}"))
                 .unwrap_or_default();
+            let ans = match r.rejection(&f.id) {
+                Some((_, who, why)) => format!("{ans} — answer rejected by {who}: {why}"),
+                None => ans,
+            };
             let ans = match r.waiver(&f.id) {
                 Some(w) => format!("{ans} — waived by the orchestrator: {}", w.reason),
                 None => ans,
@@ -1025,19 +1361,63 @@ fn ids(findings: &[&Finding]) -> String {
         .join(", ")
 }
 
+/// Where a round stands against the task's round cap.
+struct Bound {
+    mode: ReviewMode,
+    /// The round is the last one the mode runs.
+    last: bool,
+    /// The branch's tree is not the tree the round reviewed.
+    moved: bool,
+}
+
 impl Judgement<'_> {
+    /// The findings that block the step.
+    fn blocking(&self) -> Vec<&Finding> {
+        self.critical
+            .iter()
+            .chain(self.open_important.iter())
+            .copied()
+            .collect()
+    }
+
     /// The step's outcome: its verdict is the overall verdict.
-    fn outcome(&self, state: &State, r: &Rulings, evidence: PathBuf) -> Outcome {
+    fn outcome(&self, state: &State, r: &Rulings, bound: &Bound, evidence: PathBuf) -> Outcome {
         let report = evidence.display();
+        let last = |what: String| {
+            format!(
+                "{what} in round {}, the last review round (Review: {}). horch asked the orchestrator to rule on them",
+                state.round,
+                bound.mode.as_str()
+            )
+        };
         let note = if self.missing {
             format!(
                 "a reviewer finished without a findings file; read {report}. To review this tree again, run horch ledger finish --rereview"
+            )
+        } else if !self.critical.is_empty() && bound.last {
+            format!(
+                "{}. A fix is not reviewed again: the orchestrator waives each one. Report: {report}",
+                last(format!(
+                    "{} Critical findings ({})",
+                    self.critical.len(),
+                    ids(&self.critical)
+                ))
             )
         } else if !self.critical.is_empty() {
             format!(
                 "{} Critical findings ({}). Fix them, commit, and run finish again: the change is reviewed again. Report: {report}",
                 self.critical.len(),
                 ids(&self.critical)
+            )
+        } else if !self.open_important.is_empty() && bound.last {
+            format!(
+                "{}. Answer each one in {} as `F<n>: <reason>` (after a fix: `F<n>: fixed in <commit>`), or wait for a waiver. Then run finish again. Report: {report}",
+                last(format!(
+                    "{} Important findings without an answer ({})",
+                    self.open_important.len(),
+                    ids(&self.open_important)
+                )),
+                r.answers_path.display()
             )
         } else if !self.open_important.is_empty() {
             format!(
@@ -1047,24 +1427,68 @@ impl Judgement<'_> {
                 r.answers_path.display()
             )
         } else {
+            let tail = if bound.moved {
+                format!(
+                    ". Round {} is the last review round (Review: {}): the change since it is not reviewed",
+                    state.round,
+                    bound.mode.as_str()
+                )
+            } else {
+                String::new()
+            };
             return Outcome::pass(
                 self.overall,
                 Some(evidence.clone()),
-                &format!("round {}: {}", state.round, self.overall),
+                &format!("round {}: {}{tail}", state.round, self.overall),
             );
         };
         Outcome::fail(self.overall, Some(evidence.clone()), &note)
     }
 }
 
+/// The QUESTION horch asks the orchestrator when the last round leaves
+/// findings that block (TRF-27): 1 outbox row per round and set of ids.
+pub fn ask_orchestrator(
+    conn: &rusqlite::Connection,
+    task: &Task,
+    round: u32,
+    blocking: &[&Finding],
+    answers: &Path,
+    report: &Path,
+) -> Result<()> {
+    let list = ids(blocking);
+    let first = blocking.first().map_or("F1", |f| f.id.as_str());
+    let text = format!(
+        "QUESTION: {short} code-sweep round {round} is the last review round, and {n} findings still block ({list}). \
+         Waive each one that does not block: horch ledger waive {short} {first} \"<reason>\". \
+         Or tell the author to answer it in {answers}. Report: {report}",
+        short = task.short(),
+        n = blocking.len(),
+        answers = answers.display(),
+        report = report.display(),
+    );
+    conn.execute(
+        "INSERT OR IGNORE INTO outbox (id, run_id, event, key, text, created_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        rusqlite::params![
+            util::new_id(),
+            task.run_id,
+            OutboxEvent::Question.as_str(),
+            format!("{}:code-sweep:round-{round}:{list}", task.task_id),
+            text,
+            util::now(),
+        ],
+    )?;
+    Ok(())
+}
+
 /// The step.
 pub fn step(store: &mut Store, cx: &Ctx<'_>) -> Result<Outcome> {
-    let base = cx
-        .run
-        .run_branch
-        .clone()
-        .or(cx.run.base_branch.clone())
-        .context("the run has no run branch")?;
+    let mode = review_mode(cx.task);
+    if mode == ReviewMode::NoReview {
+        return Ok(Outcome::not_applicable("the ticket says Review: none"));
+    }
+    let base = cx.diff_base()?;
     let (mut state, tree) = match current_round(store, cx, &base)? {
         Ok(round) => round,
         Err(outcome) => return Ok(outcome),
@@ -1072,17 +1496,35 @@ pub fn step(store: &mut Store, cx: &Ctx<'_>) -> Result<Outcome> {
     if let Some(waiting) = wait_for_round(store, cx, &mut state, &tree)? {
         return Ok(waiting);
     }
-    let graded = grade_reviews(&state);
-    let rulings = Rulings::read(cx, &state);
+    let graded = grade_reviews(&mut state);
+    save(cx, &state)?;
+    let rulings = Rulings::read(cx, &state, &graded.verdicts);
     let judgement = judge(&graded, &rulings);
     let report = render_report(cx, &state, &graded, &rulings, judgement.overall);
     let evidence = cx
         .evidence_dir
         .join(format!("{}-code-sweep-report.md", cx.seq));
     std::fs::write(&evidence, &report)?;
-    std::fs::write(Path::new(&state.dir).join("report.md"), &report)?;
+    let round_report = Path::new(&state.dir).join("report.md");
+    std::fs::write(&round_report, &report)?;
+    let bound = Bound {
+        mode,
+        last: state.round >= max_rounds(mode),
+        moved: state.tree != tree,
+    };
+    let blocking = judgement.blocking();
+    if bound.last && !judgement.missing && !blocking.is_empty() {
+        ask_orchestrator(
+            store.conn(),
+            cx.task,
+            state.round,
+            &blocking,
+            &rulings.answers_path,
+            &round_report,
+        )?;
+    }
     Ok(judgement
-        .outcome(&state, &rulings, evidence)
+        .outcome(&state, &rulings, &bound, evidence)
         .judged(Some(tree)))
 }
 
@@ -1152,6 +1594,84 @@ mod tests {
                 ),
                 ("Minor".to_string(), "r".to_string(), "small".to_string()),
             ]
+        );
+    }
+
+    #[test]
+    fn trf_27_light_runs_1_round_and_full_runs_3() {
+        assert_eq!(max_rounds(ReviewMode::NoReview), 0);
+        assert_eq!(max_rounds(ReviewMode::Light), 1);
+        assert_eq!(max_rounds(ReviewMode::Full), 3);
+    }
+
+    #[test]
+    fn trf_28_rounds_2_and_3_diff_from_the_last_reviewed_tree() {
+        assert_eq!(diff_range("fleet/r", None), ["fleet/r...HEAD"]);
+        assert_eq!(diff_range("fleet/r", Some("abc")), ["abc", "HEAD"]);
+        let old = State {
+            round: 1,
+            tree: "t1".into(),
+            ..Default::default()
+        };
+        assert_eq!(next_round(None), (1, None));
+        assert_eq!(next_round(Some(&old)), (2, Some("t1".into())));
+        let redo = State {
+            round: 2,
+            since_tree: Some("t1".into()),
+            redo: true,
+            ..Default::default()
+        };
+        assert_eq!(next_round(Some(&redo)), (2, Some("t1".into())));
+    }
+
+    #[test]
+    fn trf_29_a_finding_keeps_its_id_when_its_line_moves() {
+        let k = finding_key("bug-hunter", "a.rs:2 Off by  one.");
+        assert_eq!(k, finding_key("bug-hunter", "a.rs:40 off by one"));
+        assert_ne!(k, finding_key("clarity-checker", "a.rs:2 off by one"));
+        assert_ne!(k, finding_key("bug-hunter", "b.rs:2 off by one"));
+        let mut st = State::default();
+        assert_eq!(st.stable_id("b", "a.rs:2 x").0, "F1");
+        assert_eq!(st.stable_id("b", "c.rs:1 y").0, "F2");
+        assert_eq!(st.stable_id("b", "a.rs:9 x").0, "F1");
+        assert_eq!(
+            st.stable_id("c", "F2 c.rs:5 y again"),
+            ("F2".to_string(), "c.rs:5 y again".to_string())
+        );
+        assert_eq!(st.stable_id("c", "F9 unknown id").0, "F3");
+    }
+
+    #[test]
+    fn trf_29_reviewers_accept_or_reject_each_answer() {
+        let v = parse_verdicts(
+            "r",
+            "## Important\n- F1 accepted\n## Answers\n- F1 accepted\n- F2 rejected: no check\n- F3 maybe\n- none\n",
+        );
+        assert_eq!(
+            v,
+            vec![
+                AnswerVerdict {
+                    id: "F1".into(),
+                    reviewer: "r".into(),
+                    rejected: None
+                },
+                AnswerVerdict {
+                    id: "F2".into(),
+                    reviewer: "r".into(),
+                    rejected: Some("no check".into())
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn trf_30_rounds_have_at_most_3_reviewers_and_later_rounds_are_cheaper() {
+        assert_eq!(max_reviewers(ReviewMode::Light), 2);
+        assert_eq!(max_reviewers(ReviewMode::Full), 3);
+        assert_eq!(cheaper_reviewer("codex-reviewer"), "codex-reviewer-light");
+        assert_eq!(
+            cheaper_reviewer("architect-reviewer"),
+            "architect-reviewer-light"
         );
     }
 }

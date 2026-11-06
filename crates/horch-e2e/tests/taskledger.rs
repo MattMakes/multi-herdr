@@ -125,18 +125,9 @@ fn the_ledger_path_is_in_horch_home_by_default() {
 fn legacy_plumbing_lives_under_ledger_legacy() {
     let h = world("tl-legacy");
     let p = ok(&h, &["ledger", "legacy", "path"]);
-    // `<state>/<project path with every non-alphanumeric byte as '-'>.json`.
-    let slug: String = h
-        .project
-        .to_string_lossy()
-        .chars()
-        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
-        .collect();
-    assert_eq!(
-        Path::new(p.trim()),
-        h.state.join(format!("{slug}.json")),
-        "{p}"
-    );
+    // TRF-45: 1 path on stdout, the task ledger file.
+    assert_eq!(p.lines().count(), 1, "{p}");
+    assert_eq!(Path::new(p.trim()), h.state.join("ledger.sqlite3"), "{p}");
 }
 
 #[test]
@@ -208,9 +199,13 @@ fn queue_claim_and_status_through_the_cli() {
     );
 
     let w2 = worker_new(&h, "opus");
+    // A claim that finds no task ends the worker and prints its done line
+    // (TRF-32).
     let none = ok_as(&h, &w2, &["ledger", "claim"]);
     assert!(
-        none.contains("NOTE: No task for opus. I exit. PID"),
+        none.contains(
+            "No task for opus. Run this line to close your pane:\nhorch done \"No task for opus.\""
+        ),
         "{none}"
     );
 
@@ -817,11 +812,12 @@ fn a_critical_finding_fails_until_a_fix_is_reviewed_again() {
         &["commit", "--quiet", "--no-gpg-sign", "-m", "a"],
     );
 
-    let review_round = |critical: &str, important: &str| {
+    // Round 2 goes to the cheaper reviewer persona (TRF-30).
+    let review_round = |persona: &str, critical: &str, important: &str| {
         let (_, r) = finish_json(&h, &w);
         let n = r["queued_reviews"].as_array().unwrap().len();
         for i in 0..n {
-            let rw = worker_new(&h, "codex-reviewer");
+            let rw = worker_new(&h, persona);
             let c: Value =
                 serde_json::from_str(&ok_as(&h, &rw, &["ledger", "claim", "--json"])).unwrap();
             let f = c["task"]["spec_ref"].as_str().unwrap().to_string();
@@ -838,7 +834,7 @@ fn a_critical_finding_fails_until_a_fix_is_reviewed_again() {
             ok_as(&h, &rw, &["ledger", "done", "reviewed"]);
         }
     };
-    review_round("- a.txt:1 data loss. Fix: x", "- none");
+    review_round("codex-reviewer", "- a.txt:1 data loss. Fix: x", "- none");
     let (code, r) = finish_json(&h, &w);
     assert_eq!(code, Some(1));
     assert!(r["message"].as_str().unwrap().contains("Critical"), "{r}");
@@ -850,7 +846,11 @@ fn a_critical_finding_fails_until_a_fix_is_reviewed_again() {
         &path,
         &["commit", "--quiet", "--no-gpg-sign", "-am", "fix"],
     );
-    review_round("- none", "- a.txt:1 slow. Fix: cache");
+    review_round(
+        "codex-reviewer-light",
+        "- none",
+        "- a.txt:1 slow. Fix: cache",
+    );
     let (code, r) = finish_json(&h, &w);
     assert_eq!(code, Some(1), "an unanswered Important finding fails");
     let msg = r["message"].as_str().unwrap().to_string();
@@ -859,7 +859,8 @@ fn a_critical_finding_fails_until_a_fix_is_reviewed_again() {
         .find(|t| t.ends_with("answers.md"))
         .expect("the message names the answers file")
         .to_string();
-    std::fs::write(&answers, "F1: the input is 3 items at most\n").unwrap();
+    // Finding ids are stable across rounds: round 1's Critical was F1.
+    std::fs::write(&answers, "F2: the input is 3 items at most\n").unwrap();
     let (code, r) = finish_json(&h, &w);
     assert_eq!(
         code,
@@ -928,10 +929,9 @@ fn a_failed_reviews_in_tell_wakes_the_orchestrator_once() {
             .iter()
             .filter(|e| {
                 e["kind"] == "woke"
-                    && e["text"]
-                        .as_str()
-                        .unwrap()
-                        .contains("The reviews of T-1 are in, but opus-1 was not told")
+                    && e["text"].as_str().unwrap().contains(
+                        "The reviews of T-1 are in. Make sure opus-1 runs horch ledger finish",
+                    )
             })
             .count()
     };
@@ -1626,14 +1626,14 @@ fn the_import_finds_work_that_never_landed() {
 }
 
 #[test]
-fn assign_refuses_in_a_ledger_run() {
+fn trf_43_assign_is_gone() {
     let mut h = fleet("tl-assign", "default");
     h.set("HORCH_NO_WATCHDOG", "1");
     ok(&h, &["ledger", "run", "new", "eta"]);
     let o = h.run(&["assign", "opus-1", "do it"]);
     assert!(!o.status.success());
     assert!(
-        text(&o).contains("assignment is queue plus claim"),
+        text(&o).contains("unrecognized subcommand 'assign'"),
         "{}",
         text(&o)
     );
@@ -1642,9 +1642,15 @@ fn assign_refuses_in_a_ledger_run() {
 /// Review every queued reviewer task of a finish round with `findings`.
 /// Returns the last reviewer's worker id.
 fn review_all(h: &Harness, n: usize, findings: &str) -> String {
+    review_all_as(h, "codex-reviewer", n, findings)
+}
+
+/// [`review_all`] with reviewer workers of `persona`: rounds 2 and 3 go to
+/// the cheaper reviewer persona (TRF-30).
+fn review_all_as(h: &Harness, persona: &str, n: usize, findings: &str) -> String {
     let mut last = String::new();
     for _ in 0..n {
-        let rw = worker_new(h, "codex-reviewer");
+        let rw = worker_new(h, persona);
         let c: Value =
             serde_json::from_str(&ok_as(h, &rw, &["ledger", "claim", "--json"])).unwrap();
         assert_eq!(c["outcome"], "claimed", "{c}");
@@ -1725,7 +1731,7 @@ fn the_whole_flow_on_the_fake_herdr() {
         ticket(
             &h,
             n,
-            &format!("# {t}\n\n**Persona:** primary `{persona}`\n"),
+            &format!("# {t}\n\n**Persona:** primary `{persona}`\n**Check:** none\n"),
         );
     }
     std::fs::write(
@@ -1847,9 +1853,11 @@ fn the_whole_flow_on_the_fake_herdr() {
             &std::process::id().to_string(),
         ],
     );
-    let none = ok_as(&h, &spare, &["ledger", "claim"]);
+    let none: Value =
+        serde_json::from_str(&ok_as(&h, &spare, &["ledger", "claim", "--json"])).unwrap();
+    assert_eq!(none["outcome"], "no_task", "{none}");
     assert!(
-        none.contains(&format!(
+        none["tell"].as_str().unwrap().contains(&format!(
             "No task for opus. I exit. PID {}.",
             std::process::id()
         )),
@@ -1984,7 +1992,12 @@ fn claimed_with_commit(
     file: &str,
 ) -> (String, PathBuf) {
     ok(h, &["ledger", "run", "new", "alpha", "--steps", steps]);
-    let p = ticket(h, "01-a", "# 01: Feature\n");
+    // No check: the ticket says so, or the task does not land (TRF-17).
+    let body = match check {
+        Some(_) => "# 01: Feature\n",
+        None => "# 01: Feature\n\n**Check:** none\n",
+    };
+    let p = ticket(h, "01-a", body);
     let mut add = vec![
         "ledger".to_string(),
         "add".into(),
@@ -2150,7 +2163,12 @@ fn a_commit_after_the_land_is_checked_and_reviewed_again() {
         r["steps"][0]["rounds"].as_i64().unwrap() > check_rounds,
         "check ran again: {r}"
     );
-    review_all(&h, r["queued_reviews"].as_array().unwrap().len(), clean);
+    review_all_as(
+        &h,
+        "codex-reviewer-light",
+        r["queued_reviews"].as_array().unwrap().len(),
+        clean,
+    );
     let (code, r) = finish_json(&h, &w);
     assert_eq!(code, Some(0), "{r}");
     let remote = h.root.join("remote.git");
@@ -3062,6 +3080,11 @@ fn a_closed_run_frees_the_project_for_the_next_run() {
     assert!(text(&o).contains("T-1 (queued)"), "{}", text(&o));
 
     ok(&h, &["ledger", "cancel", "T-1", "not needed"]);
+    // A settled run still needs a passing gate on its tip (TRF-20).
+    let o = h.run(&["ledger", "run", "close"]);
+    assert!(!o.status.success(), "{}", text(&o));
+    assert!(text(&o).contains("has no gate on its tip"), "{}", text(&o));
+    ok(&h, &["ledger", "run", "gate", "--check", "true"]);
     let closed = ok(&h, &["ledger", "run", "close"]);
     assert!(closed.contains("Run a closed as done."), "{closed}");
     ok(&h, &["ledger", "run", "new", "b"]);
@@ -3070,6 +3093,10 @@ fn a_closed_run_frees_the_project_for_the_next_run() {
     assert!(out(&o).starts_with("Run b (active)."), "{}", text(&o));
 
     // The slug of a closed run can be used again.
+    ok(
+        &h,
+        &["ledger", "run", "gate", "--run", "b", "--check", "true"],
+    );
     ok(&h, &["ledger", "run", "close", "--run", "b"]);
     ok(&h, &["ledger", "run", "new", "a"]);
     let runs = json_of(&h, &["ledger", "run", "list", "--json"]);
@@ -3101,6 +3128,7 @@ fn close_abandon_cancels_the_open_tasks() {
 fn run_new_refuses_an_old_run_branch_behind_the_main_branch() {
     let h = world("tl-oldbranch");
     ok(&h, &["ledger", "run", "new", "a"]);
+    ok(&h, &["ledger", "run", "gate", "--check", "true"]);
     ok(&h, &["ledger", "run", "close"]);
     project_file(&h, "new.txt", "x");
     git_commit_all(&h, "main moves on");
@@ -3122,6 +3150,7 @@ fn the_watchdog_of_a_closed_run_exits() {
     // It runs while the run is active.
     std::thread::sleep(Duration::from_millis(1500));
     assert!(child.try_wait().unwrap().is_none(), "the watchdog runs");
+    ok(&h, &["ledger", "run", "gate", "--check", "true"]);
     ok(&h, &["ledger", "run", "close"]);
     // 1 tick is 1 s at a 10 s check interval.
     let until = Instant::now() + Duration::from_secs(5);
@@ -3158,6 +3187,32 @@ fn second_workspace(h: &Harness) {
     assert!(o.status.success(), "{}", text(&o));
 }
 
+/// Queue 1 task for `persona` in `run`, so a claiming spawn of it passes
+/// the spawn guard (TRF-31: a task-less spawn needs a startable task).
+fn queue_for(h: &Harness, env: &[(&str, &str)], run: &str, persona: &str) {
+    let file = ticket(
+        h,
+        &format!("{run}-{persona}"),
+        "# Work\n**Check:** `true`\n",
+    );
+    let file = file.to_string_lossy().into_owned();
+    let o = run_env(
+        h,
+        env,
+        &[
+            "ledger",
+            "add",
+            "--file",
+            &file,
+            "--primary",
+            persona,
+            "--run",
+            run,
+        ],
+    );
+    assert!(o.status.success(), "{}", text(&o));
+}
+
 fn spawn_args<'a>(pane: &'a str, extra: &[&'a str]) -> Vec<&'a str> {
     let mut v = vec!["spawn"];
     v.extend_from_slice(extra);
@@ -3168,17 +3223,31 @@ fn spawn_args<'a>(pane: &'a str, extra: &[&'a str]) -> Vec<&'a str> {
 #[test]
 fn spawn_run_names_the_run_the_worker_joins() {
     let h = fleet("tl-spawn-run", "default");
-    ok(&h, &["ledger", "run", "new", "a"]);
+    // A workspace holds 1 planned run (TRF-34): run a is of workspace w2.
+    let o = run_env(
+        &h,
+        &[("HORCH_WORKSPACE_ID", "w2")],
+        &["ledger", "run", "new", "a"],
+    );
+    assert!(o.status.success(), "{}", text(&o));
     ok(&h, &["ledger", "run", "new", "b"]);
-    // Without --run, 2 active runs in no workspace of theirs: the error names
-    // a flag spawn accepts.
+    // Without --run, 2 active runs in no workspace of theirs: the spawn joins
+    // no run (TRF-34), and its NOTE names the flag that joins one.
     let o = run_env(
         &h,
         &[("HORCH_WORKSPACE_ID", "w9")],
         &spawn_args("w1:p1", &["codex-terra"]),
     );
-    assert!(!o.status.success(), "{}", text(&o));
-    assert!(text(&o).contains("--run <slug>"), "{}", text(&o));
+    assert!(o.status.success(), "{}", text(&o));
+    assert!(
+        text(&o).contains("NOTE: this spawn joins no task-ledger run."),
+        "{}",
+        text(&o)
+    );
+    assert!(text(&o).contains("Give --run <slug>"), "{}", text(&o));
+    assert_eq!(run_of_worker(&h, "a", "codex-terra"), 0);
+    assert_eq!(run_of_worker(&h, "b", "codex-terra"), 0);
+    queue_for(&h, &[], "b", "codex-terra");
     let o = h.run(&spawn_args("w1:p1", &["codex-terra", "--run", "b"]));
     assert!(o.status.success(), "{}", text(&o));
     assert_eq!(run_of_worker(&h, "b", "codex-terra"), 1);
@@ -3190,20 +3259,33 @@ fn a_spawn_joins_the_run_of_its_own_workspace() {
     let h = fleet("tl-spawn-ws", "default");
     second_workspace(&h);
     ok(&h, &["ledger", "run", "new", "a"]);
-    // Only W1 owns a run: a spawn from W2 joins it, with a NOTE that names it.
+    // Only W1 owns a run: a task-less spawn from W2 joins no run (TRF-34),
+    // and its NOTE names that run and the flag that joins it.
     let w2 = [("HORCH_WORKSPACE_ID", "w2")];
+    queue_for(&h, &[], "a", "codex-terra");
     let o = run_env(&h, &w2, &spawn_args("w2:p1", &["codex-terra"]));
     assert!(o.status.success(), "{}", text(&o));
     assert!(
-        text(&o).contains("NOTE: this command uses run a of workspace w1"),
+        text(&o).contains(
+            "NOTE: this spawn joins no task-ledger run. Run a (workspace w1) is not of this workspace w2. Give --run <slug> to join it."
+        ),
         "{}",
         text(&o)
     );
+    assert_eq!(run_of_worker(&h, "a", "codex-terra"), 0);
+    // --run reaches the run of another workspace.
+    let o = run_env(
+        &h,
+        &w2,
+        &spawn_args("w2:p1", &["codex-terra", "--run", "a"]),
+    );
+    assert!(o.status.success(), "{}", text(&o));
     assert_eq!(run_of_worker(&h, "a", "codex-terra"), 1);
 
     // W2 owns a run of its own now: the spawn goes there.
     let o = run_env(&h, &w2, &["ledger", "run", "new", "b"]);
     assert!(o.status.success(), "{}", text(&o));
+    queue_for(&h, &w2, "b", "opus");
     let o = run_env(&h, &w2, &spawn_args("w2:p1", &["opus"]));
     assert!(o.status.success(), "{}", text(&o));
     assert_eq!(run_of_worker(&h, "b", "opus"), 1);
@@ -3211,37 +3293,17 @@ fn a_spawn_joins_the_run_of_its_own_workspace() {
 }
 
 #[test]
-fn a_spawn_with_task_text_runs_outside_the_run() {
+fn trf_43_a_spawn_with_task_text_refuses_with_the_ledger_task_command() {
     let h = fleet("tl-spawn-text", "default");
     ok(&h, &["ledger", "run", "new", "a"]);
     let o = h.run(&spawn_args("w1:p1", &["codex-terra", "Review src/x.rs"]));
-    assert!(o.status.success(), "{}", text(&o));
+    assert!(!o.status.success(), "{}", text(&o));
     assert!(
-        text(&o).contains("NOTE: this spawn has task text, so it runs outside task-ledger run a"),
+        text(&o).contains("horch ledger task 'Review src/x.rs' --persona codex-terra"),
         "{}",
         text(&o)
     );
     assert_eq!(run_of_worker(&h, "a", "codex-terra"), 0);
-}
-
-#[test]
-fn assign_refuses_only_in_the_workspace_that_owns_the_run() {
-    let mut h = fleet("tl-assign-ws", "default");
-    h.set("HORCH_NO_WATCHDOG", "1");
-    second_workspace(&h);
-    ok(&h, &["ledger", "run", "new", "a"]);
-    // W2 owns no run: assign passes the ledger guard to the role lookup.
-    let o = run_env(
-        &h,
-        &[("HORCH_WORKSPACE_ID", "w2")],
-        &["assign", "opus-1", "do it"],
-    );
-    assert!(!o.status.success(), "{}", text(&o));
-    assert!(
-        text(&o).contains("no working session for role 'opus-1'"),
-        "{}",
-        text(&o)
-    );
 }
 
 // ─── #190: no pre-claim row outlives its process ─────────────────────────────
@@ -3450,13 +3512,14 @@ fn a_live_worker_that_does_not_claim_is_reported_once() {
         let o = run_env(&h, &env, &["ledger", "watch", "--once", "--force"]);
         assert!(o.status.success(), "{}", text(&o));
     };
-    // Within the claim grace the worker is never touched.
-    watch(Some(later(300)));
+    // Within the 3 min claim grace (TRF-23) the worker is never touched.
+    watch(Some(later(150)));
     assert_eq!(worker_status(&h, &id).0, "claiming");
     assert!(wakes(&h).is_empty(), "{:?}", wakes(&h));
     // Past it: 1 wake that names the pane, and only 1.
-    watch(Some(later(700)));
-    watch(Some(later(800)));
+    watch(Some(later(200)));
+    assert_eq!(wakes(&h).len(), 1, "{:?}", wakes(&h));
+    watch(Some(later(300)));
     let w = wakes(&h);
     assert_eq!(w.len(), 1, "{w:?}");
     assert!(w[0].contains("has not claimed a task"), "{w:?}");
@@ -3613,8 +3676,9 @@ fn an_unlanded_done_names_its_dependents_and_a_stuck_run_wakes_once() {
     );
     let all = wakes(&h);
     assert!(
-        all.iter()
-            .any(|w| w.contains("NOTE: T-1 was cancelled. T-2 wait for it.")),
+        all.iter().any(|w| w.contains(
+            "NOTE: T-2 waits: T-1 is parked unlanded. Run horch ledger requeue T-1 to resume it."
+        )),
         "{all:?}"
     );
     // No worker is live, nothing can start, T-2 is open: the run is stuck.
@@ -3626,7 +3690,8 @@ fn an_unlanded_done_names_its_dependents_and_a_stuck_run_wakes_once() {
     };
     let s = stuck(&h);
     assert_eq!(s.len(), 1, "{all:?}");
-    assert!(s[0].contains("T-2: T-1 was cancelled"), "{s:?}");
+    assert!(s[0].contains("T-1 is held (unlanded)"), "{s:?}");
+    assert!(s[0].contains("T-2: T-1 is parked unlanded"), "{s:?}");
     // The watchdog sees the same stuck run: no second wake.
     ok(&h, &["ledger", "watch", "--once", "--force"]);
     ok(&h, &["ledger", "watch", "--once", "--force"]);

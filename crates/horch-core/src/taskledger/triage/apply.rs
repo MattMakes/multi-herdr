@@ -659,7 +659,8 @@ fn write_ticket(root: &Path, row: &Row, wt: &WorktreeRow, direction: &str) -> Re
 }
 
 /// `FINISH`: queue a task with the direction as its brief; it inherits the
-/// worktree, as `ledger reopen` does.
+/// worktree, as `ledger reopen` does. A worktree whose task is parked
+/// unlanded resumes that task instead (trace-fixes D16).
 fn finish_decision(
     store: &mut Store,
     env: &Env<'_>,
@@ -667,6 +668,9 @@ fn finish_decision(
     wt: &WorktreeRow,
     direction: &str,
 ) -> Result<Done> {
+    if let Some(parked) = parked_task(store.conn(), wt)? {
+        return resume_parked(store, wt, &parked, direction);
+    }
     let (run, _) = runs::resolve(store.conn(), env.root, None, None)
         .context("FINISH needs an active run; start one with horch fleet")?;
     let ticket = write_ticket(env.root, row, wt, direction)?;
@@ -693,6 +697,42 @@ fn finish_decision(
         ),
         queued: Some(Queued {
             run_id: run.run_id.clone(),
+            task_id: task.task_id.clone(),
+            task: task.short(),
+        }),
+        ..Default::default()
+    })
+}
+
+/// The task of `wt` when it is parked unlanded.
+fn parked_task(conn: &Connection, wt: &WorktreeRow) -> Result<Option<tasks::Task>> {
+    let Some(id) = &wt.task_id else {
+        return Ok(None);
+    };
+    Ok(Some(tasks::get(conn, id)?).filter(|t| t.is_parked()))
+}
+
+/// `FINISH` on a parked task: requeue it on its own worktree, with the
+/// direction as the requeue reason. Its dependents keep waiting for it.
+fn resume_parked(
+    store: &mut Store,
+    wt: &WorktreeRow,
+    parked: &tasks::Task,
+    direction: &str,
+) -> Result<Done> {
+    let why = match direction.trim() {
+        "" => "worktree triage FINISH".to_string(),
+        d => format!("worktree triage FINISH: {d}"),
+    };
+    let task = store.immediate(|tx| tasks::requeue_by_operator(tx, parked, &why))?;
+    Ok(Done {
+        text: format!(
+            "{} resumed on {}; it keeps its ticket",
+            task.short(),
+            wt.path
+        ),
+        queued: Some(Queued {
+            run_id: task.run_id.clone(),
             task_id: task.task_id.clone(),
             task: task.short(),
         }),

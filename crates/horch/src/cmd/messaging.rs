@@ -1,6 +1,6 @@
-//! The channel between panes: `tell`, `inbox`, `assign`, `note`, `done`.
+//! The channel between panes: `tell`, `inbox`, `note`, `done`.
 //!
-//! Ports `bin/herdr-tell`, `bin/herdr-inbox`, `bin/horch-assign`,
+//! Ports `bin/herdr-tell`, `bin/herdr-inbox`,
 //! `bin/horch-note`, `bin/horch-done` and `scripts/lib/herdr-register.sh`.
 //!
 //! There is no AI-native agent-to-agent protocol here: a message is literally
@@ -11,27 +11,21 @@ use std::collections::BTreeMap;
 
 use anyhow::{bail, Context, Result};
 use horch_core::compaction::policy;
-use horch_core::competition::budget::UsageMeter;
-use horch_core::competition::observe::TelemetryUsage;
 use horch_core::execution::lifecycle::{
     self, ClaimLine, DoneRequest, DoneSteps, ReportStatus, ReportTarget,
 };
 use horch_core::execution::records::{SessionLedger, EVENT_REPORT_FAILED, EVENT_REPORT_QUEUED};
-use horch_core::execution::store::to_execution;
-use horch_core::execution::ExecutionKind;
-use horch_core::fleet_runs::facts::{record_run, RunSources};
-use horch_core::fleet_runs::rows::WrittenBy;
 use horch_core::harness::launch;
-use horch_core::measure::paths::DatasetPaths;
 use horch_core::messaging::channel;
 use horch_core::messaging::delivery;
-use horch_core::messaging::mail::Mail;
+use horch_core::messaging::mail::{Enqueued, Id, Mail};
 use horch_core::messaging::mailbox::{Mailbox, PaneState, RoleEntry};
 use horch_core::messaging::message;
+use horch_core::messaging::report;
 use horch_core::prompts;
 use horch_core::runtime::RuntimeContext;
 use horch_core::skills::catalog::marketplace::GitError;
-use horch_core::usage::Locations;
+use horch_core::taskledger::model::EventKind;
 use horch_core::vcs::git::GitCli;
 use horch_core::vcs::git::GitClient;
 use horch_core::vcs::landing::Landing;
@@ -40,6 +34,19 @@ use horch_core::workspace::herdr::Herdr;
 
 use super::context::{self, Sources};
 use crate::output;
+
+/// Report mode: a `horch_access: report` pane sends `request` to its
+/// report socket. `None` (any other command) is refused before anything
+/// else runs. The worker parent runs the request with its own identity.
+pub fn report_mode(socket: &std::path::Path, request: Option<report::Request>) -> Result<()> {
+    let Some(request) = request else {
+        bail!(
+            "this pane has horch_access: report. Only `horch ledger progress <text>`, \
+             `horch tell <report target> <text>` and `horch done <summary>` work here"
+        );
+    };
+    report::send(socket, &request)
+}
 
 /// Deliver `text` into the pane registered as `role`.
 ///
@@ -55,6 +62,22 @@ pub fn tell(ctx: &RuntimeContext, role: &str, text: &str) -> Result<()> {
             eprintln!("horch tell: queued, not yet acknowledged ({cause}); redelivered until horch inbox reads it");
             Ok(())
         }
+    }
+}
+
+/// `horch tell <role> --answers <id>`: deliver `text` to `role` as the
+/// answer to its open question `<id>`, then close that question and no
+/// other (C2). The line reads `[orchestrator re #<id>] <text>`. Only the
+/// orchestrator answers; an unknown id, or a question of another role,
+/// sends nothing.
+pub fn tell_answer(ctx: &RuntimeContext, role: &str, question: &str, text: &str) -> Result<()> {
+    let sender = ctx.worker.as_ref().and_then(|w| w.role.clone());
+    if sender.as_deref().is_some_and(|s| s != "orchestrator") {
+        bail!("only the orchestrator answers a question with --answers; send a QUESTION: or NOTE: line instead");
+    }
+    match queue_as(ctx, sender, role, text, false, Some(question))? {
+        Some(outgoing) => outgoing.push().map(|_| ()),
+        None => Ok(()),
     }
 }
 
@@ -78,7 +101,7 @@ pub fn tell_as(
     let _budget = (sender.as_deref() == Some(HORCH))
         .then(|| delivery::start_push_budget(delivery::DONE_PUSH_BUDGET))
         .flatten();
-    match queue_as(ctx, sender, role, text, false)? {
+    match queue_as(ctx, sender, role, text, false, None)? {
         Some(outgoing) => outgoing.push(),
         None => Ok(ReportStatus::Delivered),
     }
@@ -108,28 +131,56 @@ struct Outgoing<'a> {
     target: Option<String>,
     line: String,
     durable: bool,
+    /// The durable mail of the line: a push records its first push on it.
+    queued: Option<Id>,
     /// Start the courier after the push, as before #67: an unbounded push
     /// can outlast the courier's first redelivery and deliver the line twice.
     courier_after: bool,
+    /// The full id of the question this line answers: a delivered answer
+    /// closes it.
+    answers: Option<String>,
 }
 
 /// The first half of [`tell_as`]: an error here means nothing was sent or
 /// queued. `None`: the line went already, as there was nothing to queue.
 /// `take_back` is for the `done` report only: a courier that cannot start
 /// takes its mail back. Any other line stays queued and is pushed.
+/// `answers`: the id of the open question of `role` that this line answers.
 fn queue_as<'a>(
     ctx: &'a RuntimeContext,
     sender: Option<String>,
     role: &str,
     text: &str,
     take_back: bool,
+    answers: Option<&str>,
 ) -> Result<Option<Outgoing<'a>>> {
     // Inside a push budget, resolving the mailbox (a `pane get` without
     // HORCH_WORKSPACE_ID) ends at the push deadline too.
     let herdr = Herdr::with_bin(&ctx.bins.harness.herdr).until(delivery::push_deadline());
     let mailbox = Mailbox::resolve_in(&herdr, ctx)
         .context("horch tell must run inside a herdr pane, or with HORCH_WORKSPACE_ID set")?;
-    let line = render_line(ctx, mailbox.workspace_id(), sender.as_deref(), role, text)?;
+    let horch_text;
+    let text = if sender.as_deref() == Some(HORCH) {
+        // A horch QUESTION or BLOCKED that names no closing action is a NOTE.
+        horch_text = horch_core::messaging::mail::horch_line(text);
+        horch_text.as_str()
+    } else {
+        text
+    };
+    let question = answers
+        .map(|key| open_question(ctx, mailbox.workspace_id(), role, key))
+        .transpose()?;
+    let mut line = match &question {
+        // The answer tag replaces the sender tag.
+        Some(q) => render_line(
+            ctx,
+            mailbox.workspace_id(),
+            None,
+            role,
+            &answer_line(&q.id.short(), text),
+        )?,
+        None => render_line(ctx, mailbox.workspace_id(), sender.as_deref(), role, text)?,
+    };
     let target = mailbox.pane_for(role);
     let durable = is_durable(sender.as_deref(), role);
     // Inside a push budget (`horch done`), the courier starts now, before
@@ -137,9 +188,10 @@ fn queue_as<'a>(
     // mail with a courier. Its first redelivery is 30 s after the enqueue,
     // after the push budget ends.
     let courier_now = durable && delivery::push_time_left().is_some();
+    let mut queued = None;
     if durable {
         let from = sender.as_deref().expect("durable mail has a sender");
-        enqueue_durable(
+        let enqueued = enqueue_durable(
             ctx,
             mailbox.workspace_id(),
             role,
@@ -149,6 +201,15 @@ fn queue_as<'a>(
             courier_now,
             take_back,
         )?;
+        // A replay of a keyed mail that went out already pushes nothing
+        // (TRF-51): the first send pushed it, and the courier redelivers it.
+        if enqueued.already_published {
+            return Ok(None);
+        }
+        let id = enqueued.id;
+        // The first push shows the mail id too, as every redelivery does.
+        line = message::with_mail_id(&line, from, &id.short());
+        queued = Some(id);
         if role != "orchestrator" {
             // Worker mail holds no question for the orchestrator.
         } else if let Err(error) = sync_question_waits(ctx, mailbox.workspace_id()) {
@@ -166,8 +227,47 @@ fn queue_as<'a>(
         target,
         line,
         durable,
+        queued,
         courier_after: durable && !courier_now,
+        answers: question.map(|q| q.id.as_str().to_string()),
     }))
+}
+
+/// The open question `key` names, if it is a question of `role`.
+fn open_question(
+    ctx: &RuntimeContext,
+    workspace: &str,
+    role: &str,
+    key: &str,
+) -> Result<horch_core::messaging::mail::Message> {
+    let mail = Mail::under(&ctx.paths.state_root, workspace);
+    let Some(question) = mail.find_question(key)? else {
+        bail!(
+            "no open question #{}; horch inbox --roles lists the open questions",
+            key.trim_start_matches('#')
+        );
+    };
+    check_answer_role(&question.from, role, &question.id.short())?;
+    Ok(question)
+}
+
+/// An answer goes to the role that asked.
+fn check_answer_role(asker: &str, role: &str, short: &str) -> Result<()> {
+    if asker != role {
+        bail!("question #{short} is from {asker}, not {role}; run: horch tell {asker} --answers {short} \"<answer>\"");
+    }
+    Ok(())
+}
+
+/// `[orchestrator re #<id>] <text>` (C2). A leading `[orchestrator]` tag
+/// in `text` is dropped.
+fn answer_line(short: &str, text: &str) -> String {
+    let body = text.trim_start();
+    let body = body
+        .strip_prefix("[orchestrator]")
+        .unwrap_or(body)
+        .trim_start();
+    format!("[orchestrator re #{short}] {body}")
 }
 
 /// The line `tell` sends: tagged with the sender, and spooled to a file
@@ -211,18 +311,20 @@ fn enqueue_durable(
     original: &str,
     courier_now: bool,
     take_back: bool,
-) -> Result<()> {
+) -> Result<Enqueued> {
     let mail = Mail::for_role(&ctx.paths.state_root, workspace, role);
-    let id = mail.enqueue_with_questions(from, line, original)?;
-    if !courier_now {
-        return Ok(());
+    let queued = mail.enqueue_once(from, line, original)?;
+    // A replayed mail went out before: its courier ran then.
+    if !courier_now || queued.already_published {
+        return Ok(queued);
     }
+    let id = queued.id.clone();
     let Err(error) = super::mail::start_courier(ctx, workspace) else {
-        return Ok(());
+        return Ok(queued);
     };
     if !take_back {
         eprintln!("horch tell: {error:#}; `horch inbox` still shows the mail");
-        return Ok(());
+        return Ok(queued);
     }
     if let Err(ack_error) = mail.ack(&id) {
         eprintln!("horch tell: could not take back the queued line ({ack_error:#})");
@@ -257,6 +359,14 @@ impl Outgoing<'_> {
                 true,
             )
         };
+        // The courier sends the full text 1 time to mail with no first push.
+        if let (Ok(()), Some(id)) = (&pushed, &self.queued) {
+            let state_root = &self.ctx.paths.state_root;
+            let queued = Mail::for_role(state_root, self.mailbox.workspace_id(), &self.role);
+            if let Err(error) = queued.mark_pushed(id) {
+                eprintln!("horch tell: recording the push failed ({error:#})");
+            }
+        }
         if self.courier_after {
             if let Err(error) = super::mail::start_courier(self.ctx, self.mailbox.workspace_id()) {
                 eprintln!("horch tell: {error:#}; `horch inbox` still shows the mail");
@@ -280,8 +390,9 @@ impl Outgoing<'_> {
             });
         }
         pushed?;
-        if self.sender.as_deref().is_none_or(|s| s == "orchestrator") {
-            mail.answer(&self.role)?;
+        // Only an answer by id closes a question; a plain tell closes none.
+        if let Some(id) = &self.answers {
+            mail.close_question(id)?;
             sync_question_waits(self.ctx, self.mailbox.workspace_id())?;
         }
         Ok(ReportStatus::Delivered)
@@ -424,6 +535,10 @@ pub fn inbox(ctx: &RuntimeContext, roles_only: bool, peek: bool) -> Result<()> {
     let herdr = Herdr::with_bin(&ctx.bins.harness.herdr).with_timeout(pane_list_timeout());
     let mailbox = Mailbox::resolve_in(&herdr, ctx)?;
     let roles = mailbox.role_states(&herdr);
+    // A horch question whose ledger action ran closes before the listing.
+    if let Err(error) = sync_question_waits(ctx, mailbox.workspace_id()) {
+        eprintln!("horch inbox: question wait projection failed ({error:#})");
+    }
     let question_mail = Mail::under(&ctx.paths.state_root, mailbox.workspace_id());
     let questions = question_mail.open_questions()?;
     let now: std::time::SystemTime = horch_core::clock::now().into();
@@ -433,8 +548,10 @@ pub fn inbox(ctx: &RuntimeContext, roles_only: bool, peek: bool) -> Result<()> {
             .unwrap_or_default()
             .as_secs();
         output::println(&format!(
-            "  {} open ({age}s ago): {}",
-            question.from, question.text
+            "  {} #{} open ({age}s ago): {}",
+            question.from,
+            question.id.short(),
+            question.text
         ));
     };
     if roles.is_empty() {
@@ -544,7 +661,8 @@ fn print_mail(mail: &Mail, peek: bool) -> Result<()> {
     // that pipes this output into `tail` still sees how many it acknowledged.
     let pending = mail.pending()?;
     for message in &pending {
-        output::println(&message.text);
+        // The line shows the mail id, as the pane line does.
+        output::println(&message.line());
         if !peek {
             mail.ack(&message.id)?;
         }
@@ -621,42 +739,53 @@ fn inbox_listing(roles: &[RoleEntry], channel_live: bool) -> String {
     listing
 }
 
-/// Orchestrator-facing: give a task to a LIVE worker.
-///
-/// Records the task on that worker's ledger record, so the session history
-/// reflects what it is doing, then delivers it into the worker's terminal. For a
-/// worker that does not exist yet, use `horch spawn`.
-///
-/// The record is the role's live record in the mailbox's workspace
-/// ([`SessionLedger::live_for_role`], review finding 13): 2 fleets of 1 project can
-/// both have the role.
-pub fn assign(ctx: &RuntimeContext, role: &str, task: &str) -> Result<()> {
-    if let Some(run) = super::taskledger::active_run_slug(ctx) {
-        bail!(
-            "run {run} uses the task ledger: assignment is queue plus claim. Queue the work with \
-             horch ledger add --file <ticket> --primary <persona>, then spawn the workers \
-             horch ledger plan-workers names"
-        );
-    }
-    let herdr = Herdr::with_bin(&ctx.bins.harness.herdr);
-    let mailbox = Mailbox::resolve_in(&herdr, ctx)
-        .context("horch assign must run inside a herdr pane, or with HORCH_WORKSPACE_ID set")?;
-    SessionLedger::open_in(ctx)?.assign_in(role, Some(mailbox.workspace_id()), task)?;
-    tell(ctx, role, task)
+/// Worker-facing: append a progress note to this worker's own session record,
+/// so the session history shows what it is doing, not just start and end
+/// states. [`note_as`] with a note.
+pub fn note(ctx: &RuntimeContext, text: &str) -> Result<()> {
+    note_as(ctx, text, EventKind::Note)
 }
 
-/// Worker-facing: append a progress note to this worker's own ledger record, so
-/// the session history shows what it is doing, not just start and end states.
+/// The 1 progress command (TRF-45): `horch note`, `horch ledger progress`
+/// and `horch ledger note`. It appends `text` to this worker's session
+/// record (`HORCH_RECORD_ID`) and records `kind` on its task ledger row
+/// (`HORCH_WORKER_ID`), when it has one. With a record, a task ledger
+/// failure prints and never fails the note. Without a record, the task
+/// ledger row is the only record and its failure fails the command.
 ///
 /// Then the context check (CTX-10, design §6.10): when the session is over
 /// its threshold and was not asked in this compaction cycle, it records
 /// `context-warned` and prints the rendered `warning` line (the stopping
 /// point). Context follow-up never fails a saved note. Handoff scheduling
 /// errors are visible on stderr; a panic is silenced.
-pub fn note(ctx: &RuntimeContext, text: &str) -> Result<()> {
-    let record_id = require_env("HORCH_RECORD_ID", worker_var(ctx, |w| &w.record_id))?;
-    SessionLedger::open_in(ctx)?.note(&record_id, text)?;
-    super::taskledger::note_from_worker(ctx, text);
+pub fn note_as(ctx: &RuntimeContext, text: &str, kind: EventKind) -> Result<()> {
+    let record_id = worker_var(ctx, |w| &w.record_id);
+    let worker_id = super::taskledger::worker_id_opt(ctx);
+    if record_id.is_none() && worker_id.is_none() {
+        require_env("HORCH_RECORD_ID", record_id.clone())?;
+    }
+    let session = record_id
+        .as_deref()
+        .map(|id| SessionLedger::open_in(ctx).and_then(|l| l.note(id, text)));
+    let ledger = super::taskledger::progress_from_worker(ctx, kind, text);
+    match (session, ledger) {
+        (None, Ok(true)) | (Some(Ok(())), Ok(_)) => {}
+        (None, Ok(false)) => bail!(
+            "the task ledger has no worker {}",
+            worker_id.unwrap_or_default()
+        ),
+        (None, Err(e)) => return Err(e),
+        (Some(Ok(())), Err(e)) => {
+            eprintln!("horch: the task ledger did not record the note: {e:#}")
+        }
+        (Some(Err(e)), Ok(true)) => {
+            eprintln!("horch: the session record did not record the note: {e:#}")
+        }
+        (Some(Err(e)), _) => return Err(e),
+    }
+    if let Some(line) = super::taskledger::note_handoff_warning(ctx) {
+        output::println(&line);
+    }
     let hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(|_| {}));
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -678,7 +807,7 @@ fn quiet_note_check(ctx: &RuntimeContext, record_id: &str) -> Option<String> {
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let ledger = SessionLedger::open_in(ctx).ok()?;
         let roster = super::load_roster_unwarned(ctx, None).ok()?;
-        let loc = Locations::from_context(ctx);
+        let loc = horch_core::usage::Locations::from_context(ctx);
         let cache = context::cache_dir(ctx);
         let src = Sources {
             ctx,
@@ -744,10 +873,38 @@ fn warn_row(
 }
 
 /// Worker-facing self-shutdown, run only when the work is truly complete (not
-/// while waiting on a question). The order of the steps is
-/// [`lifecycle::done`]'s.
+/// while waiting on a question): the 1 done command (TRF-45), `horch done`
+/// and `horch ledger done`. A worker with a claimed task finishes it in the
+/// task ledger first ([`super::taskledger::done_cmd`]), which then runs
+/// [`done_then`] in its pane. Any other worker runs [`done_then`]. The
+/// order of the steps is [`lifecycle::done`]'s.
 pub fn done(ctx: &RuntimeContext, summary: &str, unlanded: Option<&str>) -> Result<()> {
-    done_then(ctx, summary, unlanded, &|| {})
+    if super::taskledger::is_ledger_worker(ctx) {
+        let store = horch_core::taskledger::open(ctx)?;
+        return super::taskledger::done_cmd(ctx, store, summary, unlanded);
+    }
+    done_then(ctx, summary, unlanded, &|| end_taskless_row(ctx))
+}
+
+/// End this pane's live ledger row when it holds no task, as a
+/// controller's report role does (T-38). `done` closes the pane next, and
+/// that ends the `horch worker` that would settle the row. A retry finds
+/// the row ended and changes nothing.
+fn end_taskless_row(ctx: &RuntimeContext) {
+    use horch_core::taskledger::{model::WorkerStatus, workers};
+    let Some(wid) = super::taskledger::worker_id_opt(ctx) else {
+        return;
+    };
+    let ended =
+        horch_core::taskledger::open(ctx).and_then(|s| match workers::find(s.conn(), &wid)? {
+            Some(w) if w.task_id.is_none() => {
+                workers::end(s.conn(), &wid, WorkerStatus::Done, "done", None).map(|_| ())
+            }
+            _ => Ok(()),
+        });
+    if let Err(e) = ended {
+        eprintln!("horch done: the task ledger did not end worker {wid}: {e:#}");
+    }
 }
 
 /// [`done`], with `after_mark_done` run once the record is done and before
@@ -774,12 +931,10 @@ pub fn done_then(
     }
 
     let herdr = Herdr::with_bin(&ctx.bins.harness.herdr);
-    let ledger = SessionLedger::open_in(ctx)?;
     let closed = lifecycle::done(
         &herdr,
         &CliDone {
             ctx,
-            settle: !coordinator_owns_layout(&ledger, &record_id),
             outgoing: std::cell::RefCell::new(None),
             after_mark_done,
         },
@@ -817,24 +972,6 @@ fn report_target(ctx: &RuntimeContext, workspace: Option<&str>, role: &str) -> R
         .map_or(ReportTarget::Orchestrator, |b| b.report_to)
 }
 
-/// Whether the dataset coordinator owns the layout this execution's pane is
-/// in. A candidate runs in the dataset workspace, which the coordinator lays
-/// out itself (its `watch` root pane and its candidate panes), and spawns
-/// with tiling off. A judge has no pane. Neither settles the grid on `done`.
-/// A record that cannot be read or typed settles, as every worker did.
-fn coordinator_owns_layout(ledger: &SessionLedger, record_id: &str) -> bool {
-    ledger
-        .get(record_id)
-        .ok()
-        .and_then(|r| to_execution(&r).ok())
-        .is_some_and(|e| {
-            matches!(
-                e.kind,
-                ExecutionKind::Candidate { .. } | ExecutionKind::Judge { .. }
-            )
-        })
-}
-
 /// Whether a failed `git rev-parse --show-toplevel` means there is no git
 /// or no work tree here, so nothing can be unregistered.
 fn outside_repo(error: &anyhow::Error) -> bool {
@@ -858,9 +995,6 @@ pub const CLOSING: &str = "closing: reporting to the orchestrator";
 /// The `done` steps against this process's ledger, mailbox and workspace.
 struct CliDone<'a> {
     ctx: &'a RuntimeContext,
-    /// `false` when the coordinator owns the layout: see
-    /// [`coordinator_owns_layout`].
-    settle: bool,
     /// The report [`DoneSteps::queue_report`] queued, for
     /// [`DoneSteps::push_report`].
     outgoing: std::cell::RefCell<Option<Outgoing<'a>>>,
@@ -988,7 +1122,7 @@ impl DoneSteps for CliDone<'_> {
     /// relay is an orchestrator too, with or without a registered pane.
     fn queue_report(&self, line: &str) -> Result<()> {
         let sender = self.ctx.worker.as_ref().and_then(|w| w.role.clone());
-        *self.outgoing.borrow_mut() = queue_as(self.ctx, sender, "orchestrator", line, true)?;
+        *self.outgoing.borrow_mut() = queue_as(self.ctx, sender, "orchestrator", line, true, None)?;
         Ok(())
     }
 
@@ -1016,9 +1150,7 @@ impl DoneSteps for CliDone<'_> {
     }
 
     fn settle(&self, workspace: &str) {
-        if self.settle {
-            arrange::settle_after_close(self.ctx, workspace);
-        }
+        arrange::settle_after_close(self.ctx, workspace);
     }
 
     fn record_session(&self, workspace: &str, role: &str, record_id: &str) -> Result<()> {
@@ -1028,23 +1160,6 @@ impl DoneSteps for CliDone<'_> {
             role,
             record_id,
         )
-    }
-
-    fn record_run(&self, record_id: &str) -> Result<()> {
-        let record = SessionLedger::open_in(self.ctx)?.get(record_id)?;
-        let project = self.ctx.paths.project()?;
-        let paths = DatasetPaths::new(&self.ctx.paths.state_root, &project);
-        let usage = TelemetryUsage {
-            locations: Locations::from_context(self.ctx),
-        };
-        let git = GitCli::new(self.ctx.bins.harness.git.clone());
-        let sources = RunSources {
-            usage: &usage,
-            meter: &UsageMeter::default(),
-            git: &git,
-        };
-        let now = horch_core::clock::now();
-        record_run(&paths, &project, &record, &sources, now, WrittenBy::Done).map(|_| ())
     }
 }
 
@@ -1069,9 +1184,17 @@ fn claim_line(
 }
 
 /// Record this pane's public id under `role` so other panes can address it.
+/// Role `orchestrator` takes the workspace orchestrator lock first, as a
+/// fleet launch does (TRF-39): while another live process holds it, this
+/// refuses, names the holder's PID and changes no route. The lock is free
+/// again when this returns.
 pub fn register(ctx: &mut RuntimeContext, role: &str) -> Result<()> {
-    let herdr = Herdr::with_bin(&ctx.bins.harness.herdr);
-    let (mailbox, pane_id) = Mailbox::register_in(&herdr, ctx, role)?;
+    let (mailbox, pane_id, _lock) = super::recipes::register_pane(
+        ctx,
+        role,
+        &super::recipes::PaneIdentity::default(),
+        role == "orchestrator",
+    )?;
     println!(
         "registered {role} as {pane_id} in {}",
         mailbox.dir().display()
@@ -1149,8 +1272,216 @@ fn ledger_role_state(ctx: &RuntimeContext, workspace: &str, role: &str) -> Strin
 #[cfg(test)]
 mod tests {
     use super::*;
-    use horch_core::execution::legacy::Record;
     use std::time::Duration;
+
+    /// A context in herdr pane p2 of workspace w1, with a fake herdr and a
+    /// scratch ledger. The second value is the folder of the workspace locks.
+    fn register_ctx(dir: &std::path::Path) -> (RuntimeContext, std::path::PathBuf) {
+        let bin = dir.join("herdr");
+        let warm = crate::test_support::write_warmed(
+            &bin,
+            "#!/bin/sh\n\
+             case \"$*\" in\n\
+             'pane get p2') echo '{\"result\":{\"pane\":{\"pane_id\":\"p2\",\"workspace_id\":\"w1\"}}}' ;;\n\
+             warm*) ;;\n\
+             *) exit 1 ;;\n\
+             esac\n",
+            &["warm"],
+        );
+        assert!(warm.status.success());
+        let db = dir.join("ledger.sqlite3");
+        let ctx = RuntimeContext::from_env(
+            &horch_core::runtime::MapEnv::new("/")
+                .with_exe("/opt/horch/bin/horch")
+                .with("HORCH_STATE_DIR", dir.join("state").to_str().unwrap())
+                .with("HORCH_LEDGER_DB", db.to_str().unwrap())
+                .with("HORCH_HERDR_BIN", bin.to_str().unwrap())
+                .with("HERDR_PANE_ID", "p2"),
+        )
+        .unwrap();
+        let locks = horch_core::taskledger::orchestrator::lock_dir(&db);
+        std::fs::create_dir_all(&locks).unwrap();
+        (ctx, locks)
+    }
+
+    /// TRF-39: `horch register orchestrator` while a live orchestrator holds
+    /// the workspace lock refuses with the holder's PID and keeps the route.
+    /// Other roles register as before.
+    #[test]
+    fn trf_39_register_refuses_the_orchestrator_role_while_another_holds_the_lock() {
+        use horch_core::taskledger::orchestrator;
+        let dir = tempfile::tempdir().unwrap();
+        let (mut ctx, locks) = register_ctx(dir.path());
+        let _live = orchestrator::lock(&locks, "w1").unwrap().unwrap();
+        let mailbox = Mailbox::under(&ctx.paths.state_root, "w1");
+        std::fs::create_dir_all(mailbox.dir()).unwrap();
+        mailbox.register_role("orchestrator", "p1").unwrap();
+
+        let err = register(&mut ctx, "orchestrator").unwrap_err().to_string();
+        assert_eq!(
+            err,
+            format!(
+                "an orchestrator already runs in workspace w1 (PID {}); \
+                 1 workspace has 1 orchestrator",
+                std::process::id()
+            )
+        );
+        assert!(!err.contains('\n'), "1 line: {err}");
+        assert_eq!(mailbox.pane_for("orchestrator").as_deref(), Some("p1"));
+
+        register(&mut ctx, "dev-1").unwrap();
+        assert_eq!(mailbox.pane_for("dev-1").as_deref(), Some("p2"));
+    }
+
+    /// TRF-39: with the workspace lock free, `horch register orchestrator`
+    /// takes the lock, writes the route, and frees the lock when it ends.
+    #[test]
+    fn trf_39_register_takes_the_orchestrator_role_when_the_lock_is_free() {
+        use horch_core::taskledger::orchestrator;
+        let dir = tempfile::tempdir().unwrap();
+        let (mut ctx, locks) = register_ctx(dir.path());
+
+        register(&mut ctx, "orchestrator").unwrap();
+        let mailbox = Mailbox::under(&ctx.paths.state_root, "w1");
+        assert_eq!(mailbox.pane_for("orchestrator").as_deref(), Some("p2"));
+        assert!(
+            orchestrator::lock(&locks, "w1").unwrap().is_some(),
+            "register frees the lock when it ends"
+        );
+    }
+
+    /// TRF-45: `horch note`, `horch ledger progress` and `horch ledger note`
+    /// are 1 command. With a record and a worker row, each writes the
+    /// session record's history and the worker row's progress. Without a
+    /// record, the worker row is the only record. No JSON file is written.
+    #[test]
+    fn trf_45_note_and_ledger_progress_are_1_command_and_write_no_json() {
+        use horch_core::runtime::MapEnv;
+        use horch_core::taskledger::runs::{self, NewRun};
+        use horch_core::taskledger::workers::{self, NewWorker};
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("repo");
+        let state = dir.path().join("state");
+        std::fs::create_dir_all(&root).unwrap();
+        let db = dir.path().join("ledger.sqlite3");
+        let mut store = horch_core::taskledger::Store::open(&db).unwrap();
+        let wid = store
+            .immediate(|tx| {
+                let run = runs::create(
+                    tx,
+                    &root,
+                    &NewRun {
+                        slug: "r1".into(),
+                        ..Default::default()
+                    },
+                )?;
+                let id = workers::insert(
+                    tx,
+                    &NewWorker {
+                        run_id: run.run_id,
+                        persona: "opus".into(),
+                        role: Some("opus-1".into()),
+                        legacy_record_id: Some("r-1".into()),
+                        ..Default::default()
+                    },
+                )?;
+                tx.execute(
+                    "UPDATE workers SET status = 'working' WHERE worker_id = ?1",
+                    [&id],
+                )?;
+                Ok(id)
+            })
+            .unwrap();
+        let ctx = |record: Option<&str>, worker: Option<&str>| {
+            let mut env = MapEnv::new(&root)
+                .with("HOME", &dir.path().to_string_lossy())
+                .with("HORCH_STATE_DIR", &state.to_string_lossy())
+                .with("HORCH_LEDGER_DB", &db.to_string_lossy())
+                .with("HORCH_PROJECT_DIR", &root.to_string_lossy())
+                .with("HORCH_ROLE", "opus-1");
+            if let Some(id) = record {
+                env = env.with("HORCH_RECORD_ID", id);
+            }
+            if let Some(id) = worker {
+                env = env.with("HORCH_WORKER_ID", id);
+            }
+            RuntimeContext::from_env(&env).unwrap()
+        };
+        let both = ctx(Some("r-1"), Some(&wid));
+        SessionLedger::open_in(&both)
+            .unwrap()
+            .add(horch_core::execution::records::NewRecord {
+                record_id: "r-1",
+                agent: "claude",
+                tier: "opus",
+                model: "opus",
+                role: "opus-1",
+                session_id: None,
+                task: "t",
+                phase: None,
+            })
+            .unwrap();
+
+        note(&both, "step one").unwrap();
+        note_as(&both, "milestone", EventKind::Progress).unwrap();
+        note_as(&ctx(None, Some(&wid)), "ledger only", EventKind::Progress).unwrap();
+        let err = note(&ctx(None, None), "x").unwrap_err();
+        assert!(format!("{err:#}").contains("HORCH_RECORD_ID"), "{err:#}");
+
+        let history: Vec<String> = SessionLedger::open_in(&both)
+            .unwrap()
+            .get("r-1")
+            .unwrap()
+            .history
+            .into_iter()
+            .filter(|h| h.event == "note")
+            .map(|h| h.text)
+            .collect();
+        assert_eq!(history, ["step one", "milestone"]);
+        let texts: Vec<String> = store
+            .conn()
+            .prepare("SELECT text FROM events WHERE worker_id = ?1 AND kind IN ('note', 'progress') ORDER BY rowid")
+            .unwrap()
+            .query_map([&wid], |r| r.get(0))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert_eq!(texts, ["step one", "milestone", "ledger only"]);
+        let json: Vec<_> = std::fs::read_dir(&state)
+            .unwrap()
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .filter(|n| n.ends_with(".json"))
+            .collect();
+        assert!(json.is_empty(), "{json:?}");
+    }
+
+    /// TRF-25: an answer carries `re #<id>` in the orchestrator tag, once.
+    #[test]
+    fn trf_25_an_answer_line_names_the_question_id() {
+        assert_eq!(
+            answer_line("0a1b2c3d", "Use A"),
+            "[orchestrator re #0a1b2c3d] Use A"
+        );
+        assert_eq!(
+            answer_line("0a1b2c3d", "  [orchestrator] Use A"),
+            "[orchestrator re #0a1b2c3d] Use A"
+        );
+    }
+
+    /// TRF-25: an answer to the role that did not ask is refused, and the
+    /// error names the command for the role that asked.
+    #[test]
+    fn trf_25_an_answer_goes_only_to_the_role_that_asked() {
+        assert!(check_answer_role("opus-1", "opus-1", "0a1b2c3d").is_ok());
+        let err = check_answer_role("opus-1", "opus-2", "0a1b2c3d")
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("horch tell opus-1 --answers 0a1b2c3d"),
+            "{err}"
+        );
+    }
 
     /// #67: inside `done`, a courier that cannot start fails the queue and
     /// leaves no mail, so the retry does not queue a second report.
@@ -1341,47 +1672,6 @@ mod tests {
         assert_eq!(left(30), Duration::ZERO);
         assert_eq!(left(3600), Duration::ZERO);
         assert_eq!(grace_left(None, grace), Duration::ZERO);
-    }
-
-    fn record(
-        id: &str,
-        experiment: Option<&str>,
-        round: Option<&str>,
-        label: Option<&str>,
-    ) -> Record {
-        Record {
-            record_id: id.into(),
-            agent: "claude".into(),
-            tier: "sonnet".into(),
-            model: "sonnet".into(),
-            role: format!("{id}-1"),
-            task: "work".into(),
-            experiment_id: experiment.map(Into::into),
-            round_id: round.map(Into::into),
-            label: label.map(Into::into),
-            ..Record::default()
-        }
-    }
-
-    /// A candidate's or a judge's `done` leaves the dataset workspace's
-    /// layout to the coordinator. A fleet worker, and a record that is not
-    /// there, settle the grid as before.
-    #[test]
-    fn done_settles_only_outside_the_coordinator_layout() {
-        let tmp = tempfile::tempdir().unwrap();
-        let ledger = SessionLedger::for_project(tmp.path(), "/work/alpha");
-        ledger.insert(record("worker", None, None, None)).unwrap();
-        ledger
-            .insert(record("candidate", Some("e1"), Some("r1"), Some("A")))
-            .unwrap();
-        ledger
-            .insert(record("judge", None, Some("r1"), Some("judge:1")))
-            .unwrap();
-
-        assert!(!coordinator_owns_layout(&ledger, "worker"));
-        assert!(coordinator_owns_layout(&ledger, "candidate"));
-        assert!(coordinator_owns_layout(&ledger, "judge"));
-        assert!(!coordinator_owns_layout(&ledger, "missing"));
     }
 
     mod note_warning {

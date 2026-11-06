@@ -229,7 +229,10 @@ fn run_close_refuses_while_a_parked_worktree_has_no_decision() {
     let h = world("i308-close");
     let (_, path) = claimed_worktree(&h);
     ok(&h, &["ledger", "cancel", "T-1", "not needed now"]);
-    let status = ok(&h, &["ledger", "status"]);
+    // A parked worktree with no decision leaves the run unsettled (TRF-15).
+    let o = h.run(&["ledger", "status"]);
+    assert_eq!(o.status.code(), Some(1), "{}", text(&o));
+    let status = out(&o);
     assert!(status.contains("Parked worktrees: 1 ("), "{status}");
     let o = h.run(&["ledger", "run", "close"]);
     assert!(!o.status.success(), "{}", text(&o));
@@ -238,6 +241,8 @@ fn run_close_refuses_while_a_parked_worktree_has_no_decision() {
     assert!(err.contains("horch worktree triage"), "{err}");
     let r = reply(&h, &[("W1", &name_of(&path), "KEEP", "")]);
     ok(&h, &["worktree", "triage", "apply", &r.to_string_lossy()]);
+    // Run close also needs a passing gate on the run-branch tip (TRF-20).
+    ok(&h, &["ledger", "run", "gate", "--check", "true"]);
     let said = ok(&h, &["ledger", "run", "close"]);
     assert!(said.contains("Run alpha closed as done."), "{said}");
 }

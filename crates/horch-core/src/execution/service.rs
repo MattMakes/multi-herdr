@@ -240,6 +240,7 @@ impl ExecutionService<'_> {
             report_to: plan.report_to,
             worker_id: None,
             ledger_db: None,
+            controller: plan.controller.clone(),
         };
         brief.set_overrides(ctx.bins.overrides.clone());
         brief.worker_id = self.ledger_worker.map(str::to_string);

@@ -86,6 +86,11 @@ pub struct Brief {
     /// (`HORCH_LEDGER_DB`). A pane does not inherit the variable.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ledger_db: Option<String>,
+    /// The role that spawned this worker under its `spawn_only` (the
+    /// skill-importer controller). A `report` pane may `tell` only this role.
+    /// `horch done` still reports as `report_to` says.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub controller: Option<String>,
 }
 
 fn report_to_orchestrator() -> ReportTarget {
@@ -242,6 +247,7 @@ mod tests {
             report_to: crate::execution::ReportTarget::Orchestrator,
             worker_id: None,
             ledger_db: None,
+            controller: None,
         }
     }
 

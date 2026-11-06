@@ -27,10 +27,7 @@
 use std::io::BufRead;
 use std::path::{Path, PathBuf};
 
-use horch_e2e::{
-    candidate_spec, hang, hash16, run_candidate, say, scenario, scenario_has, write_skills_report,
-    Call,
-};
+use horch_e2e::{hang, hash16, say, scenario, scenario_has, write_skills_report, Call};
 use serde_json::{json, Value};
 
 const ALLOWED: [&str; 3] = ["initialize", "initialized", "account/rateLimits/read"];
@@ -59,11 +56,6 @@ fn main() {
         update(&call);
     }
     if call.argv.first().map(String::as_str) != Some("app-server") {
-        if let Some((label, spec)) = candidate_spec() {
-            let id = write_rollout();
-            call.extra.insert("session_id".into(), json!(id));
-            run_candidate(&mut call, &label, &spec, |_| {});
-        }
         if scenario_has("inspect_skills") {
             inspect_skills();
         }

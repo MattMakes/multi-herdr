@@ -79,6 +79,55 @@ ledger_enum!(
 );
 
 ledger_enum!(
+    /// `tasks.work_kind`: the ticket's `**Kind:**` field (trace-fixes C1).
+    /// `tasks.kind` already means work vs review.
+    WorkKind {
+        Feature = "feature",
+        Quality = "quality",
+        Refactor = "refactor",
+        Security = "security",
+        Docs = "docs",
+        Report = "report",
+    }
+);
+
+ledger_enum!(
+    /// `tasks.review_mode`: the ticket's `**Review:**` field (trace-fixes C1).
+    ReviewMode { NoReview = "none", Light = "light", Full = "full" }
+);
+
+ledger_enum!(
+    /// `tasks.held_reason` words that horch acts on. The column is free text;
+    /// `unlanded` marks a task parked with its worktree (trace-fixes D16).
+    HeldReason { Unlanded = "unlanded" }
+);
+
+ledger_enum!(
+    /// `workers.end_reason` words that horch acts on. The column is free
+    /// text; `handed_off` marks a worker that ended through
+    /// `horch ledger handoff` (trace-fixes C4).
+    EndReason { HandedOff = "handed_off" }
+);
+
+ledger_enum!(
+    /// `outbox.event`: the wakes the task ledger writes for the orchestrator
+    /// (trace-fixes C3).
+    OutboxEvent {
+        Startable = "startable",
+        Settled = "settled",
+        Reaped = "reaped",
+        Held = "held",
+        Cancelled = "cancelled",
+        ReviewsIn = "reviews-in",
+        NoTask = "no-task",
+        UnclaimedSpawn = "unclaimed-spawn",
+        OrchestratorRespawned = "orchestrator-respawned",
+        // A ruling horch asks the orchestrator for (code-sweep TRF-27).
+        Question = "question",
+    }
+);
+
+ledger_enum!(
     /// `tasks.worktree_mode`.
     WorktreeMode { Shared = "shared", Worktree = "worktree" }
 );

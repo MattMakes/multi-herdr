@@ -146,22 +146,11 @@ impl Cursor {
 /// Feed every new complete line of `path` to `f`, with the byte offset the
 /// line starts at, and advance the cursor past it. Returns whether any line
 /// was consumed. A cursor for a different file identity, or past the end of
-/// a shrunken file, is reset first.
-pub(crate) fn poll_lines(
-    path: &Path,
-    cursor: &mut Cursor,
-    mut f: impl FnMut(&mut Cursor, u64, &str),
-) -> std::io::Result<bool> {
-    poll_lines_until(path, cursor, |c, at, line| {
-        f(c, at, line);
-        true
-    })
-}
-
-/// [`poll_lines`], stopping after the line for which `f` returns false. The
-/// cursor then points at the start of the first unread line, so the next
-/// call resumes there: no line is read twice and none is skipped (NFR-02:
-/// the collector's first read of a large history goes in batches).
+/// a shrunken file, is reset first. It stops after the line for which `f`
+/// returns false. The cursor then points at the start of the first unread
+/// line, so the next call resumes there: no line is read twice and none is
+/// skipped (NFR-02: the collector's first read of a large history goes in
+/// batches).
 pub(crate) fn poll_lines_until(
     path: &Path,
     cursor: &mut Cursor,
@@ -245,7 +234,11 @@ mod tests {
 
     fn lines_of(path: &Path, cursor: &mut Cursor) -> Vec<(u64, String)> {
         let mut out = Vec::new();
-        poll_lines(path, cursor, |_, at, l| out.push((at, l.to_string()))).unwrap();
+        poll_lines_until(path, cursor, |_, at, l| {
+            out.push((at, l.to_string()));
+            true
+        })
+        .unwrap();
         out
     }
 

@@ -6,7 +6,7 @@
 //!
 //! | kind        | where                                  | stale when                                            |
 //! |-------------|----------------------------------------|-------------------------------------------------------|
-//! | record      | `<state>/*.json` ledgers               | `working`, and herdr answers without its workspace or pane |
+//! | record      | session records (task ledger)          | `working`, and herdr answers without its workspace or pane |
 //! | spool       | `<state>/messages/<ws>/`               | older than 7 days, and no pending mail names it       |
 //! | socket      | `<state>/channels/*.sock`              | no relay answers a ping                               |
 //! | registry    | `herdr-orchestration-<ws>` (state, temp) | herdr answers without `<ws>`, and `<ws>` has no pending mail |
@@ -212,30 +212,44 @@ struct Scanner<'a> {
     plan: Plan,
 }
 
-/// Every record in every ledger under the state root, with its store.
+/// Every record of every project under the state root, with its store: the
+/// session records and old JSON ledgers, with the task ledger's worker rows
+/// laid over them (TRF-45). `stored` holds the ids of the records a store
+/// holds, which a sweep can end; a worker row with no record is the task
+/// ledger watchdog's to end.
 struct Records {
     rows: Vec<(ExecutionStore, LedgerRecordV1)>,
+    stored: BTreeSet<String>,
 }
 
 impl Records {
     fn read(state_root: &Path) -> Records {
+        let (db, task_ledger) = crate::execution::store::session_files(state_root);
+        Self::read_in(state_root, &db, task_ledger.as_deref())
+    }
+
+    fn read_in(state_root: &Path, db: &Path, task_ledger: Option<&Path>) -> Records {
+        use crate::execution::store::read_all_projects;
+        let stored = read_all_projects(state_root, db, None)
+            .into_iter()
+            .flat_map(|p| p.records)
+            .map(|r| r.record_id)
+            .collect();
         let mut rows = Vec::new();
-        for path in crate::execution::store::ledger_paths(state_root) {
-            let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else {
+        for p in read_all_projects(state_root, db, task_ledger) {
+            let Some(stem) = p.path.file_stem().and_then(|s| s.to_str()) else {
                 continue;
             };
-            // A ledger's name is the slug of its project, and a slug is its
-            // own slug: so the store of that name is this file.
-            if crate::execution::store::slug(stem) != stem {
-                continue;
+            // Without a project path, the slug stands for it: a slug is its
+            // own slug, so the store of that name reads the same records.
+            let project = p.project.unwrap_or_else(|| stem.to_string());
+            let mut store = ExecutionStore::in_db(state_root, db, &project);
+            if let Some(ledger) = task_ledger {
+                store = store.with_task_ledger(ledger, Path::new(&project));
             }
-            let store = ExecutionStore::for_project(state_root, stem);
-            let Some(records) = crate::execution::store::read_ledger_file(&path) else {
-                continue;
-            };
-            rows.extend(records.into_iter().map(|r| (store.clone(), r)));
+            rows.extend(p.records.into_iter().map(|r| (store.clone(), r)));
         }
-        Records { rows }
+        Records { rows, stored }
     }
 }
 
@@ -271,7 +285,10 @@ impl Scanner<'_> {
             if self.late() {
                 return;
             }
-            if r.status != STATUS_WORKING || r.is_orchestrator() {
+            if r.status != STATUS_WORKING
+                || r.is_orchestrator()
+                || !records.stored.contains(&r.record_id)
+            {
                 continue;
             }
             let (Some(pane), Some(ws)) = (r.pane_id.as_deref(), r.workspace_id.as_deref()) else {

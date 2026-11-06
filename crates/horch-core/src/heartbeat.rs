@@ -1,5 +1,5 @@
-//! The 1 liveness scheme of horch's background jobs: the judge job (CMP-16)
-//! and the compaction job (CTX-15).
+//! The 1 liveness scheme of horch's background jobs, such as the compaction
+//! job (CTX-15).
 //!
 //! The job rewrites a [`Heartbeat`] file in its job dir every
 //! [`HEARTBEAT_EVERY`] ([`start`]). A reader asks [`liveness`] whether the
@@ -118,8 +118,7 @@ impl Drop for Beat {
 /// Write `heartbeat` in `dir` once now, then rewrite it every
 /// [`HEARTBEAT_EVERY`] until the [`Beat`] is stopped or dropped. The first
 /// beat is written before this returns: a job that ends before the thread
-/// first runs still leaves a heartbeat, and the judge coordinator emits
-/// `judge.started` from it.
+/// first runs still leaves a heartbeat.
 pub fn start(dir: &Path) -> Beat {
     let dir: PathBuf = dir.to_path_buf();
     let pid = std::process::id();

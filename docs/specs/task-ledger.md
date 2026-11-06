@@ -2,13 +2,15 @@
 
 Status: shipped in v0.3.0 as `horch ledger`. Every item of section 8 is
 built. Later releases added the commands that section 6 marks as added
-after v0.3.0. 1 part differs from this design: `horch assign` is not
-retired. It stays for fleets that do not use a ledger run.
+after v0.3.0. The trace-fixes run (`docs/specs/trace-fixes.md`) made pull
+the only dispatch model: the assign command and task-text spawns are gone,
+and a one-off task goes through `horch ledger task`. The task ledger is the
+single record: session records live in its `session_records` table (4.12).
 
 ## 1. Why
 
 Today horch has no task model. A task is 1 free-text string on a worker's
-session record. `horch assign` overwrites it. Dependencies, waves,
+session record. The old assign command overwrote it. Dependencies, waves,
 parallelism and "is all the work done?" live only in prompts and markdown
 (`MAP.md`, `STATUS.md`). Workers have no heartbeat, the ledger has no PID,
 and the orchestrator pushes every task into a pane by typing.
@@ -66,7 +68,10 @@ projects ─< runs ─< tasks ─< task_deps
                       │      └─< stops
                       ├─< worktrees
                       ├─< task_steps
+                      ├─< run_gates
+                      ├─< outbox
                       └─< events
+session_records (1 per worker session record)
 ```
 
 | table | 1 row is | written by |
@@ -82,6 +87,9 @@ projects ─< runs ─< tasks ─< task_deps
 | `worktrees` | 1 git worktree, from create to deleted from disk | `horch ledger worktree ...` |
 | `events` | 1 line of history (note, question, claim, land ...) | everyone |
 | `task_steps` | 1 finish step of 1 attempt, with its evidence | `horch ledger finish` |
+| `run_gates` | 1 whole-run check on 1 run-branch tip | `horch ledger run gate` |
+| `outbox` | 1 wake for the orchestrator, written with the change that causes it | the ledger change; drained by the watchdog |
+| `session_records` | 1 worker session record (history, skills, routing, phase) | the spawn service, `horch note`, `horch done` |
 
 A worker never stays alive after its task. So 1 `workers` row is also
 "1 attempt at 1 task". When a worker dies and the task is retried, the old
@@ -124,6 +132,15 @@ answer.
 | `watchdog_checkin_at` | TEXT NULL | the watchdog's own heartbeat (section 10) |
 | `status` | TEXT | `active`, `done`, `abandoned` |
 | `started_at`, `ended_at` | TEXT | audit |
+| `default_check` | TEXT NULL | `run new --check`: the check of every task that names none (5.5) |
+| `pr_declined_reason` | TEXT NULL | `run close --pr-declined "<reason>"` |
+| `orchestrator_stopped_at` | TEXT NULL | a deliberate stop (`horch fleet stop`, `run close`): no respawn after it. An orchestrator launch clears it. |
+| `orchestrator_respawns`, `last_respawn_at` | INTEGER, TEXT NULL | the respawn guard: at most 1 in 10 min and 3 in a run (section 9) |
+
+A workspace holds at most 1 active run that is not a solo run
+(`solo-<workspace>`): `run new` refuses a 2nd. `run new` in a herdr pane
+sets `workspace_id`. An orchestrator launch claims its run: it sets
+`workspace_id` to its own workspace and clears `orchestrator_stopped_at`.
 
 The thresholds sit on the run, not in code, so every verdict in `checks`
 can be explained from the row it was made with.
@@ -363,18 +380,78 @@ PK (`task_id`, `worker_id`, `seq`). `not_applicable` is set only by horch,
 from facts (for example: the diff has no file in a language
 `complexity-sweep` reads), never by the worker.
 
+### 4.12 `session_records`
+
+1 row per worker session record. Schema v7 added it (trace-fixes ticket 29).
+Before v7, session records lived in 1 JSON file per project
+(`<state>/<project>.json`). horch no longer writes that file.
+
+```sql
+CREATE TABLE session_records (
+    record_id TEXT PRIMARY KEY,
+    worker_id TEXT,
+    project_root TEXT NOT NULL,
+    slug TEXT NOT NULL,
+    record_json TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE INDEX session_records_by_slug ON session_records(slug);
+```
+
+- Why a whole-record column: a session record holds fields that `workers`
+  rows do not hold (history, skills, routing, compact window, phase,
+  workdir, task text). `record_json` keeps every field, so every reader of
+  the session store works unchanged. Worker rows win over `record_json` for
+  the fields they hold.
+- `worker_id` is set on each write when a worker row has that id or names
+  the record in `legacy_record_id`. It has no foreign key: a record can
+  exist before its worker row.
+- Each write is 1 immediate transaction: read the project's rows, apply the
+  change, write the project's rows again.
+- An old JSON session ledger is read only. A record that only the JSON file
+  holds moves into the table at the next write. `horch ledger import` copies
+  every old record into the table once (`INSERT OR IGNORE` by `record_id`).
+- When `HORCH_STATE_DIR` moves the state dir (tests, smoke runs), the
+  records go to `<state root>/ledger.sqlite3` instead of the task ledger.
+
+### 4.13 `run_gates` and `outbox`
+
+- `run_gates`: `run_id`, `tip_sha`, `command`, `exit_code`, `log_path`,
+  `started_at`, `ended_at`. `horch ledger run gate` writes 1 row per gate.
+  `run close` needs a passing row for the current run-branch tip.
+- `outbox`: `id`, `run_id`, `event`, `key` (unique), `text`, `created_at`,
+  `delivered_at`. `event` is `startable`, `settled`, `reaped`, `held`,
+  `cancelled`, `reviews-in`, `no-task`, `unclaimed-spawn`,
+  `orchestrator-respawned` or `question`. The key dedups a wake. Every
+  watchdog pass (30 s) moves undelivered rows into durable mail and sets
+  `delivered_at`; a failed send leaves the row undelivered.
+
 ## 5. How the fields are used: the flows
 
 ### 5.1 Queue and spawn (orchestrator)
 
-1. The orchestrator runs `horch ledger add` once per ticket: `task_file`,
-   `primary_persona`, `fallback_persona`, `parallel`, `blocked_by`,
-   `own`/`do_not_touch` files, `land_check`.
+1. The orchestrator runs `horch ledger add-map --dry-run <MAP.md>`. It
+   checks the map and every ticket against `docs/specs/ticket-format.md`,
+   names each problem as `<file>:<line>: <problem>`, and writes nothing.
+   Then it runs `horch ledger add-map <MAP.md>`, or `horch ledger add` once
+   per ticket: `task_file`, `primary_persona`, `fallback_persona`,
+   `parallel`, `blocked_by`, `own`/`do_not_touch` files, `land_check`.
+   `add-map` also stores `ticket_snapshot`, `ticket_sha`, `work_kind`,
+   `review_mode` and `check_none`. It refuses a ticket that is already a
+   task of the run unless `--again` is given.
+   A one-off goes through `horch ledger task "<title>" --persona <p>
+   [--file <ticket>] [--check "<cmd>"|none]`. It queues the task in the
+   solo run `solo-<workspace>`, makes that run when it is absent, and prints
+   `Run next: horch spawn <p> --run solo-<workspace>`.
 2. It runs `horch ledger plan-workers`. For each persona that prints the
    number of tasks claimable now, minus the live workers of that persona in
    `spawning`, `starting` or `claiming`. That is how many to spawn.
-3. It spawns that many: `horch spawn <persona>` with no task text. The task
-   text the worker gets is fixed: "Run horch ledger claim."
+3. It spawns that many: `horch spawn <persona>`. A spawn takes no task text;
+   task text is refused with the `horch ledger task` line to use instead.
+   The task the worker gets is fixed: "Run horch ledger claim." A spawn
+   with no `--run` joins only the active run of its own workspace. A run
+   with no `workspace_id` (made outside herdr by an older horch) needs
+   `--run <slug>`. A `--resume` spawn inside a run claims too.
 4. Quota: `horch quota` and a REFUSED/NOTE line from spawn are warnings.
    The orchestrator tells the operator that a pool is low, then goes on
    unless the operator says stop. If the primary truly cannot start (the
@@ -393,10 +470,20 @@ from facts (for example: the diff has no file in a language
    `seq`, where `claimable_by = workers.persona`. It sets `tasks.status =
    running`, `current_worker_id`, `attempts + 1`, and on the worker
    `task_id`, `attempt`, `status = working`, `claimed_at`.
-4. The claim prints: the `task_file` to read, the `own` and `do_not_touch`
-   files, the worktree to use, and for a retry the previous attempts:
-   their `summary`, `transcript_path` and the worktree they left.
-5. **No task:** the claim sets `status = no_task` and prints the 1 line to
+4. The claim prints: the ticket snapshot (with the first 12 hex
+   characters of `ticket_sha`), then the `task_file` path, the `own` and
+   `do_not_touch` files, the worktree to use, and for a retry the previous
+   attempts: their `summary`, `transcript_path` and the worktree they left.
+   The snapshot is the ticket; the file is context only, and can differ.
+   When the last attempt ended `handed_off`, the claim prints
+   `PRIOR WORK: read <path> first` before the snapshot.
+5. **Handoff:** `horch ledger handoff <path>` (worker, path must exist).
+   In 1 transaction the worker ends `incomplete` with `end_reason =
+   handed_off` and `handoff_path`; the task returns to `queued` first in
+   line, holding its worktree; a `startable` wake is written. In a pane it
+   then reports and closes as `horch done` does. The compaction handoff
+   route and the orchestrator respawn both use it.
+6. **No task:** the claim sets `status = no_task` and prints the 1 line to
    send. The agent sends
    `horch tell orchestrator "[<role>] NOTE: No task for <persona>. I exit. PID <supervisor_pid>."`
    and ends its turn. `horch worker` sees the agent exit and closes its own
@@ -513,19 +600,35 @@ result; finish runs again` and starts a new run. Outside the worker's
 pane, and with `--wait` or `--json`, the steps run in the foreground;
 without a flag, 1 line on stderr says why.
 
-1. **check** - runs the task's `land_check` in the worktree. Passes on
-   exit 0. Evidence: the check log.
+1. **check** - runs the task's `land_check` in the worktree, else the run's
+   `default_check`. Passes on exit 0. Evidence: the check log. A task with
+   neither fails the step with verdict `no check`, unless its ticket says
+   `**Check:** none` (`check_none`): then the step is `not_applicable`. A
+   shared-checkout task diffs from its claim commit, so the sweeps see its
+   work.
 2. **code-sweep** - the `code-sweep` skill's review, on the branch diff
    against `run_branch`. A worker may not start subagents, so the review
    runs through the ledger: `finish` picks the reviewers by the skill's
    triage rules and queues 1 reviewer task per reviewer
    (`parallel`, persona `codex-reviewer` for Claude-built work and
-   `architect-reviewer` for Codex-built work, `blocked_by` nothing). Each
-   reviewer writes its findings file and ends. `finish` merges them into
-   the report with the skill's verdict rules. The author worker fixes every
-   Critical and Important finding, or answers an Important finding in the
-   answers file with a reason, then runs `finish` again, which re-reviews
-   the changed files. The author never answers a Critical finding. Only the
+   `architect-reviewer` for Codex-built work, `blocked_by` nothing). In a
+   herdr pane, `finish` then spawns each reviewer itself through
+   `horch spawn <persona> --run <slug>` (the spawn gate decides) and sends
+   the orchestrator 1 NOTE that names them; a refused spawn leaves its task
+   queued. The task's `review_mode` bounds the loop: `none` runs no review,
+   `light` 1 round of at most 2 reviewers, `full` at most 3 rounds of at
+   most 3 reviewers. Rounds 2 and 3 review only the change since the last
+   reviewed tree, with `codex-reviewer-light` and
+   `architect-reviewer-light`. A finding keeps its `F<n>` id in every
+   round, so answers and waivers carry. Each reviewer writes its findings
+   file and ends. `finish` merges them into the report with the skill's
+   verdict rules. The author worker fixes every Critical and Important
+   finding, or answers an Important finding with a line `F<n>: <reason>`
+   in the answers file, then runs `finish` again. The reviewers of the next
+   round rule on each answer under `## Answers`: `- F<n> accepted` or
+   `- F<n> rejected: <why>`. After the last round, an Important finding
+   with no accepted answer and no waiver becomes a QUESTION to the
+   orchestrator, not another round. The author never answers a Critical finding. Only the
    orchestrator waives a Critical or an Important finding
    (`horch ledger waive T-<n> F<k> "<reason>"`); the report and the PR body
    name each waiver and its reason. Passes when the verdict is `PASS`, or
@@ -541,16 +644,26 @@ without a flag, 1 line on stderr says why.
 3. **complexity-sweep** - the worker runs the `complexity-sweep` skill
    itself on the changed files and refactors what it flags. Passes when
    the analysis JSON has 0 violations in functions the branch changed.
+   Rust files go to `cargo clippy` with `clippy::cognitive_complexity`.
    Evidence: the analysis JSON. `not_applicable` when no changed file is in
-   a language the analyser reads.
+   a language that the analyser (TypeScript, JavaScript, Python) or clippy
+   (Rust) reads.
 4. **recheck** - the `land_check` again, because steps 2 and 3 changed code.
 5. **land** - rebases on `run_branch`, runs `land_check` outside the
    landing lock, then under the lock fast-forwards `run_branch` (only when
    it did not move meanwhile; else it rebases and checks again), pushes it
    to `remote`, writes `landed_commit`. Concurrent lands queue on the
    landing lock. A check runs at most its timeout
-   (`horch ledger add --check-timeout`, default 20 minutes). A red gate fails the step; the branch,
-   the worktree and `run_branch` stay unchanged.
+   (`horch ledger add --check-timeout`, default 20 minutes). A red gate fails the step and
+   `run_branch` stays unchanged. A red check after a successful rebase
+   resets the branch to its tip from before the rebase (`git reset --hard
+   <tip>` in the worktree), so the branch and the worktree are as they were.
+   The land lock is stale only after the check timeout (at most 24 h) plus
+   10 min. The holder writes that age into the lock, and a waiter uses the
+   longer of its own age and the holder's. A lock with no task (triage
+   apply) uses the default 20 min, so it is stale after 30 min. A land-lock
+   wait that times out (1 h) fails the step and sets the worktree row from
+   `landing` back to `open`, so the next `finish` lands it.
    The check of a Codex worker (its recorded harness, or a Codex persona)
    runs inside `codex sandbox` with the `fleet_write` profile of its pane:
    it can write only the worktree and the state root, and its TMPDIR is the
@@ -580,8 +693,9 @@ without a flag, 1 line on stderr says why.
 `horch ledger done "<summary>"` refuses until every step of the attempt is
 `passed` or `not_applicable`. The only way past a step is
 `--unlanded "<reason>"`, which keeps the branch and worktree, sets
-`unlanded`, and tells the orchestrator; the task shows in
-`ledger unfinished` until someone lands or dismisses it.
+`unlanded`, and tells the orchestrator. The task is parked (held with
+`held_reason = unlanded`) with its worktree: its dependents stay blocked
+on it, and `horch ledger requeue` resumes it on the same worktree.
 
 A worker in shared mode (no worktree) runs the same steps; `land` is a
 pathspec commit plus push, and `cleanup` is `not_applicable`.
@@ -591,11 +705,13 @@ pathspec commit plus push, and `cleanup` is `not_applicable`.
 1. The operator and the orchestrator discuss an idea until it is vetted.
 2. The orchestrator writes the brief and queues a spec-writer task, then a
    ticket-writer task, through the ledger like any other work.
-3. The ticket writer's `MAP.md` lists each ticket with its blockers,
-   persona, fallback and parallel flag. `horch ledger add-map <MAP.md>`
-   queues every ticket of it in 1 transaction, with `spec_ref` and
-   `issue_url` set. A run stays `active` while the operator keeps adding
-   ideas.
+3. The spec is `docs/specs/<slug>.md`; the tickets and `MAP.md` are in
+   `docs/tickets/<slug>/`. Each ticket starts with the field block of
+   `docs/specs/ticket-format.md`. `MAP.md` lists each ticket with its
+   blockers. `horch ledger add-map --dry-run <MAP.md>` checks them, then
+   `horch ledger add-map <MAP.md>` queues every ticket of it in 1
+   transaction, with `spec_ref` and `issue_url` set. A run stays `active`
+   while the operator keeps adding ideas.
 
 ### 5.6 Done and "is the run done?"
 
@@ -604,9 +720,17 @@ pathspec commit plus push, and `cleanup` is `not_applicable`.
   orchestrator `[<role>] DONE: ...` as today. `horch worker` then closes
   its exact pane.
 - `horch ledger status` prints each task with its state, worker and age,
-  and exits 0 only when every task is `done` or `cancelled` and every
-  worktree is `cleaned` or `unlanded`. The orchestrator uses that, not its
-  memory, to decide the run is finished.
+  and exits 0 only when the run is settled: every task is `done` or
+  `cancelled`, no task is parked, and every worktree is `cleaned`,
+  `archived`, `trashed` or `scratch`. It lists every unsettled item. The
+  `settled` wake and `run close` use the same function. The orchestrator
+  uses that, not its memory, to decide the run is finished.
+- `horch ledger run gate [--check <cmd>]` runs the run check on the
+  run-branch tip in `.worktrees/_gate-<slug>` and writes a `run_gates` row.
+  `horch ledger run close` refuses until the run is settled, a passing gate
+  exists for the current tip, and the run PR is merged (or
+  `--pr-declined "<reason>"` is given). It names the missing item.
+  `--abandon "<reason>"` cancels every open task and stops its worker.
 
 ## 6. The CLI
 
@@ -617,8 +741,9 @@ All under `horch ledger`. `--json` on every read command.
 | `add --file <ticket> --primary <p> [--fallback <p>] [--parallel\|--exclusive] [--blocked-by T-n ...] [--own <path> ...] [--no-touch <path> ...] [--check "<cmd>"] [--phase <ph>]` | orchestrator | queue 1 task |
 | `plan-workers` | orchestrator | per persona: how many workers to spawn now |
 | `fallback <task> "<reason>"` | orchestrator | let the fallback persona claim it |
-| `cancel <task> "<reason>"` | orchestrator | drop a queued or running task |
-| `status [--run <id>]` | anyone | the board; exit 0 only when all work is done |
+| `task "<title>" --persona <p> [--file <ticket>] [--check "<cmd>"\|none]` | orchestrator | queue 1 one-off task in the solo run `solo-<workspace>` (added by trace-fixes) |
+| `cancel <task> "<reason>"` | orchestrator | drop a queued or running task, and stop its worker by its recorded PIDs |
+| `status [--run <id>]` | anyone | the board; exit 0 only when the run is settled (5.6). Its `Orchestrator` line shows the respawns and a recorded stop. |
 | `show <task\|worker>` | anyone | 1 row with its events, checks, stops |
 | `claim` | worker | take the next matching task, or record `no_task` |
 | `progress "<text>"` | worker | a milestone; moves `last_progress_at` |
@@ -628,17 +753,19 @@ All under `horch ledger`. `--json` on every read command.
 | `worktree drop <name> --reason "<why>" [--keep-branch]` | worker | drop a clean worktree that will not land (added after v0.3.0) |
 | `finish` | worker | run the finish pipeline from the first step not passed (5.5) |
 | `steps [<task>]` | anyone | the finish steps of a task with their evidence |
-| `add-map <MAP.md>` | orchestrator | queue every ticket of a ticket map (5.5a) |
-| `run new <slug>` | orchestrator | create the run and its run branch from the main branch |
-| `run close`, `run list` | orchestrator | close a run whose work is done; list the project's runs (added after v0.3.0) |
+| `add-map <MAP.md> [--dry-run] [--again]` | orchestrator | queue every ticket of a ticket map (5.5a); `--dry-run` checks and writes nothing |
+| `run new <slug> [--check "<cmd>"]` | orchestrator | create the run and its run branch from the main branch; `--check` sets `default_check` |
+| `run gate [--check "<cmd>"]` | orchestrator | run the whole-run check on the run-branch tip (added by trace-fixes) |
+| `run close [--pr-declined "<reason>"\|--abandon "<reason>"]`, `run list` | orchestrator | close a settled, gated run with a merged or declined PR; list the project's runs (added after v0.3.0) |
 | `unblock <task> --from <task>` | orchestrator | drop 1 dependency (added after v0.3.0) |
 | `requeue <task>` | orchestrator | queue a held or cancelled task again (added after v0.3.0) |
 | `waive <task> <finding> "<reason>"` | orchestrator | rule that 1 code-sweep finding does not block (added after v0.3.0) |
 | `events` | anyone | the run's history, oldest first |
 | `path` | anyone | print the ledger file path |
 | `worker` | tests, debugging | worker rows (plumbing) |
-| `legacy` | anyone | the JSON session ledger plumbing (see `GLOSSARY.md`) |
+| `legacy` | anyone | the old session-ledger plumbing (see `GLOSSARY.md`) |
 | `done "<summary>" [--unlanded "<reason>"]` | worker | finish the task |
+| `handoff <path>` | worker | hand the running task to a fresh worker (5.2 step 5) |
 | `checkin` | `horch worker` (internal) | write `last_checkin_at = now` |
 | `watch` | the watchdog (internal) | the check loop of 5.3 |
 | `import [--dry-run]` | operator, once | section 11 |
@@ -648,9 +775,8 @@ All under `horch ledger`. `--json` on every read command.
 | `reap <worker>` | watchdog, orchestrator | 5.4 |
 | `stop <worker> "<reason>"` | orchestrator | stop 1 worker by its recorded PIDs and pane |
 
-`horch spawn`, `horch tell` and `horch inbox` stay. In a ledger run,
-assignment is the claim. `horch assign` stays only for fleets without a
-ledger run.
+`horch spawn`, `horch tell` and `horch inbox` stay. The claim is the only
+assignment. `horch fleet stop` records a deliberate orchestrator stop.
 
 ## 7. Deterministic stop
 
@@ -700,8 +826,18 @@ ledger run.
   - a watchdog verdict change (`no_progress`, `dead`, a reap);
   - newly claimable tasks (a blocker went `done`), so it spawns more
     workers;
-  - `ledger status` turning complete, so it verifies and tells the
-    operator the work is done.
+  - reviews that are in, a held task, a cancelled blocker;
+  - the run turning settled, so it runs the gate, and closes the run after
+    the operator merges the PR.
+- Every wake is an `outbox` row (4.13). The watchdog drains it every 30 s.
+- When the orchestrator's agent PID is gone in an active run, the
+  watchdog respawns it through `horch fleet`: at most 1 respawn in 10 min
+  and 3 in a run, 1 orchestrator per workspace (a lock), never after a
+  deliberate stop. The old row ends `handed_off` with
+  `ai_docs/handoffs/orchestrator-whats-next.md`. The new orchestrator's
+  first instruction names that file, `ai_docs/plans/<run>/decisions.md` and
+  `horch ledger status`, in that order. A full context or an idle pane
+  never causes a respawn.
 - It never polls the ledger and never sleeps. It answers questions for
   itself or for workers by asking the operator.
 

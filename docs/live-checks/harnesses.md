@@ -100,11 +100,13 @@ a fleet and a trusted directory, so the script does not run them:
 1. Trust the directory once: `cd <worktree> && agy`, choose to trust it, then
    exit.
 2. In a running fleet:
-   `horch spawn antigravity "Print the repo's top-level files and run horch done."`
+   `horch ledger task "Print the repo's top-level files" --persona antigravity --check none`,
+   then run the `horch spawn antigravity --run solo-<workspace>` line it prints.
 3. `horch sessions --json`: the record has a `session_id`.
 4. `AGY_READ_CACHE=1 scripts/live/harnesses.sh`: `agy-cache-format` passes.
-5. `horch spawn --resume <record_id> "Say what you did before."`: the worker
-   recalls the first task.
+5. `horch ledger task "Say what you did before" --persona antigravity --check none`,
+   then `horch spawn --resume <record_id>`: the worker claims the task and
+   recalls the first one.
 
 A worker in auto mode runs `agy --sandbox --dangerously-skip-permissions`.
 This check did not run that form: the agent's auto-mode safety check blocked

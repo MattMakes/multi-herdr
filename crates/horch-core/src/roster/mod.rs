@@ -57,7 +57,8 @@ pub use permission::PermissionMode;
 pub use phase::Phase;
 pub use repository::{Roster, TEMPLATE};
 pub use teammate::{
-    reserved_tier, Base, ExecDecision, ExecRule, HarnessDefault, OperatorSkills, Teammate,
+    reserved_tier, Base, ExecDecision, ExecRule, HarnessDefault, HorchAccess, OperatorSkills,
+    Teammate,
 };
 pub(crate) use teammate::{
     BRIEF_DESCRIPTION_MAX, FLEET_ORCHESTRATORS, ORCHESTRATOR_DENIED_TOOLS,

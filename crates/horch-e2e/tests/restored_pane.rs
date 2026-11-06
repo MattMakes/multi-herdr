@@ -30,7 +30,6 @@ fn fleet(name: &str, scenario: &str) -> Harness {
     h.set("HORCH_WORKSPACE_ID", "w1");
     h.set("HORCH_FAKE_SCENARIO", scenario);
     h.set("HORCH_NO_WATCHDOG", "1");
-    h.set("HORCH_TEST_MAIL_NO_ORCHESTRATOR_MS", "20");
     h.set("HORCH_TEST_MAIL_POLL_MS", "10");
     herdr(&h, &["workspace", "create", "--label", name]);
     h
@@ -56,7 +55,7 @@ fn records(h: &Harness) -> Vec<Value> {
             }
         })
         .collect();
-    std::fs::read_to_string(h.state.join(format!("{slug}.json")))
+    h.stored_ledger(&slug)
         .ok()
         .and_then(|t| serde_json::from_str(&t).ok())
         .unwrap_or_default()
@@ -71,14 +70,7 @@ fn record(h: &Harness, id: &str) -> Value {
 
 /// A spawned codex worker that runs, as `(pane, role, record id)`.
 fn running_worker(h: &Harness) -> (String, String, String) {
-    let o = h.run(&[
-        "spawn",
-        "codex-sol",
-        "build the thing",
-        "--from-pane",
-        "w1:p1",
-        "--no-tile",
-    ]);
+    let o = h.run(&["spawn", "codex-sol", "--from-pane", "w1:p1", "--no-tile"]);
     assert!(o.status.success(), "{}", text(&o));
     let pane = String::from_utf8_lossy(&o.stdout)
         .lines()

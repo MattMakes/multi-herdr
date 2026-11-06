@@ -9,6 +9,8 @@ pub mod git;
 pub mod import;
 pub mod map;
 pub mod model;
+pub mod orchestrator;
+pub mod outbox;
 pub mod runs;
 pub mod schema;
 pub mod sql_words;

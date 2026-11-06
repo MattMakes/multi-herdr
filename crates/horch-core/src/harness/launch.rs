@@ -65,6 +65,26 @@ pub struct LaunchEnv {
     pub codex_home: Option<PathBuf>,
     /// Horch's state root, where a Codex launch finds its v1 model catalog.
     pub state_root: Option<PathBuf>,
+    /// The folder of the task ledger database (`Paths::ledger_db`). A
+    /// sandboxed Claude launch opens it, and the state root, to Bash.
+    pub ledger_dir: Option<PathBuf>,
+    /// `$HERDR_SOCKET_PATH`. A sandboxed Claude launch allows Bash to
+    /// connect to it.
+    pub herdr_socket: Option<PathBuf>,
+    /// The pane's report socket (`messaging::report::socket_path`), for a
+    /// `horch_access: report` launch with a ledger record. Such a launch
+    /// opens only this socket to Bash, and gets no state root, ledger
+    /// folder or other socket.
+    pub report_socket: Option<PathBuf>,
+    /// The root of this launch's skills bundle
+    /// (`<state_root>/skill-bundles/<id>/`). [`command_with_skills_in`]
+    /// sets it for a bundle with activated skills. A sandboxed Claude launch
+    /// opens it to read and closes it to write.
+    pub skill_bundle: Option<PathBuf>,
+    /// The `$HORCH_TEAMMATES_DIR` the agent sees: the roster it was briefed
+    /// from. A sandboxed `full` Claude launch opens it to read and closes it
+    /// to write, so `horch spawn` works in the pane (ticket 35).
+    pub roster_dir: Option<PathBuf>,
     /// `$CLAUDE_CONFIG_DIR`: where the operator's Claude user settings live.
     pub claude_config_dir: Option<PathBuf>,
     /// `RuntimeContext.paths.claude_managed_settings`. `None` reads no
@@ -96,6 +116,11 @@ impl LaunchEnv {
                 .collect(),
             codex_home: ctx.inherited.codex_home.clone(),
             state_root: Some(ctx.paths.state_root.clone()),
+            ledger_dir: ctx.paths.ledger_db.parent().map(Path::to_path_buf),
+            herdr_socket: ctx.inherited.herdr_socket_path.clone(),
+            report_socket: None,
+            skill_bundle: None,
+            roster_dir: ctx.bins.roster_override.clone(),
             claude_config_dir: ctx.inherited.claude_config_dir.clone(),
             claude_managed_settings: Some(ctx.paths.claude_managed_settings.clone()),
             workdir: ctx.paths.cwd.clone(),
@@ -119,6 +144,11 @@ impl LaunchEnv {
             operator_env: BTreeMap::new(),
             codex_home: None,
             state_root: None,
+            ledger_dir: None,
+            herdr_socket: None,
+            report_socket: None,
+            skill_bundle: None,
+            roster_dir: None,
             claude_config_dir: None,
             claude_managed_settings: None,
             workdir: Some(PathBuf::from("/workdir")),
@@ -297,6 +327,10 @@ pub fn command_with_skills_in(
         );
     }
     let adjusted = adapter.expose_skills(teammate, bundle, env.home())?;
+    let env = &LaunchEnv {
+        skill_bundle: Some(bundle.root().to_path_buf()),
+        ..env.clone()
+    };
     let mut cmd = command_in(env, &adjusted, session, &prompt, model_override)?;
     adapter.expose_skills_env(
         &mut cmd,
@@ -651,6 +685,15 @@ fn launch_command(
         env.state_root = None;
     }
     env.compact_window = Some(launch.decision.clone());
+    env.report_socket = report_socket(ctx, req);
+    // The agent sees the briefed roster over the one this process has.
+    if let Some((_, dir)) = req
+        .child_env
+        .iter()
+        .rfind(|(key, value)| key == "HORCH_TEAMMATES_DIR" && !value.is_empty())
+    {
+        env.roster_dir = Some(PathBuf::from(dir));
+    }
     let tagged_prompt = if req.teammate.agent == HarnessKind::Codex && !req.session.is_resume() {
         req.record.as_ref().map(|r| {
             format!(
@@ -677,6 +720,19 @@ fn launch_command(
         cmd.env(key, value);
     }
     Ok((cmd, teammate))
+}
+
+/// The report socket of a `horch_access: report` launch with a ledger
+/// record. The worker parent serves the same path.
+fn report_socket(ctx: &RuntimeContext, req: &LaunchRequest<'_>) -> Option<PathBuf> {
+    let target = req
+        .record
+        .as_ref()
+        .filter(|_| req.teammate.horch_access == crate::roster::HorchAccess::Report)?;
+    Some(crate::messaging::report::socket_path(
+        &ctx.paths.state_root,
+        target.record_id,
+    ))
 }
 
 /// Record the window decision on the launch's ledger record, if it has one.
@@ -1102,7 +1158,7 @@ pub(crate) fn type_resumed_prompt(
     }
     let line = format!(
         "[{role}] BLOCKED: My resumed task did not reach my pane. Reason: {e:#}. \
-         Send it again with horch assign {role} \"<task>\"."
+         Tell me to claim it again with horch tell {role} \"Run horch ledger claim.\"."
     );
     if let Some(queue) = queue {
         if let Err(e) = queue(&line) {

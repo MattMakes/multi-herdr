@@ -5,8 +5,8 @@
 //! `just --justfile <repo>/justfile herdr-fleet` and so depended on the repo
 //! staying put. `horch` embeds its prompts and needs no repo, so installing is
 //! just putting one binary on PATH - no profile editing, nothing to keep in sync.
-//! The dataset binary, `multi-herdr-dataset`, and `herdr-install` go next to it,
-//! and so do the `herdr-fleet` and `herdr-run` launchers (unix only).
+//! `herdr-install` goes next to it, and so do the `herdr-fleet` and
+//! `herdr-run` launchers (unix only).
 
 use std::path::{Path, PathBuf};
 
@@ -38,8 +38,7 @@ pub fn install(ctx: &RuntimeContext, dir: Option<&str>) -> Result<()> {
         .context("the running binary has no file name")?;
     let target = dir.join(file_name);
 
-    remove_stale_old(&dir);
-    install_one("horch", &source, &target)?;
+    place_horch(&source, &dir, &target)?;
     // A live collector keeps running the binary it started with: old
     // prices, old readers. Restart it on the binary just installed.
     let herdr = horch_core::workspace::herdr::Herdr::with_bin(&ctx.bins.harness.herdr);
@@ -49,8 +48,8 @@ pub fn install(ctx: &RuntimeContext, dir: Option<&str>) -> Result<()> {
     // A task-ledger watchdog too (#216).
     super::taskledger_watch::restart_if_stale(ctx, &target);
 
-    // The sibling binaries are built next to horch (`cargo build --bin
-    // multi-herdr-dataset --bin herdr-install`), and are installed next to it too.
+    // The sibling binary is built next to horch (`cargo build --bin
+    // herdr-install`), and is installed next to it too.
     install_siblings(&source, &dir)?;
     install_launchers(&dir, ctx.bins.roster_override.as_deref())?;
 
@@ -62,6 +61,22 @@ pub fn install(ctx: &RuntimeContext, dir: Option<&str>) -> Result<()> {
     println!("{}", path_help(&dir, on_path));
 
     println!("\nInstalled version: {}", installed_version(&target)?);
+    Ok(())
+}
+
+/// Clears `dir` of leftovers and installs `source` as `target`.
+fn place_horch(source: &Path, dir: &Path, target: &Path) -> Result<()> {
+    remove_stale_old(dir);
+    remove_retired(dir)?;
+    install_one("horch", source, target)
+}
+
+/// Deletes each [`horch::RETIRED_BINARIES`] file in `dir` and prints 1 line
+/// that names its path.
+fn remove_retired(dir: &Path) -> Result<()> {
+    for path in horch::remove_retired_binaries(dir)? {
+        println!("removed the retired {}", path.display());
+    }
     Ok(())
 }
 
@@ -102,12 +117,6 @@ fn add_to_path_help(dir: &Path) -> String {
     }
 }
 
-/// The second binary that `horch install` puts on PATH.
-pub const DATASET_BIN: &str = "multi-herdr-dataset";
-
-/// The third binary. It is optional for a source build.
-pub const HERDR_INSTALL_BIN: &str = "herdr-install";
-
 /// The launcher scripts, with `__TEAMMATES_DIR__` as the roster placeholder.
 const FLEET_LAUNCHER: &str = include_str!("../../../../scripts/herdr-fleet");
 const RUN_LAUNCHER: &str = include_str!("../../../../scripts/herdr-run");
@@ -116,10 +125,11 @@ pub fn exe_name(name: &str) -> String {
     format!("{name}{}", std::env::consts::EXE_SUFFIX)
 }
 
-/// Installs each binary built beside `horch_source` into `dir`. A missing
-/// binary prints one line and the install goes on.
+/// Installs each release binary but `horch` that is built beside
+/// `horch_source` into `dir`. A missing binary prints one line and the
+/// install goes on.
 fn install_siblings(horch_source: &Path, dir: &Path) -> Result<()> {
-    for bin in [DATASET_BIN, HERDR_INSTALL_BIN] {
+    for &bin in &horch::RELEASE_BINARIES[1..] {
         let source = sibling(horch_source, bin);
         if source.is_file() {
             install_one(bin, &source, &dir.join(exe_name(bin)))?;
@@ -298,7 +308,7 @@ fn roll_back(
 /// The `.old` files that `install` removes at its start: one per installed
 /// binary in `dir`. Windows leaves them after a replacement.
 fn stale_old_paths(dir: &Path) -> Vec<PathBuf> {
-    ["horch", DATASET_BIN, HERDR_INSTALL_BIN]
+    horch::RELEASE_BINARIES
         .iter()
         .map(|bin| old_path(&dir.join(exe_name(bin))))
         .collect()
@@ -365,6 +375,7 @@ fn same_file(a: &Path, b: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use horch::HERDR_INSTALL_BIN;
 
     #[test]
     fn default_dir_is_platform_appropriate() {
@@ -448,25 +459,6 @@ mod tests {
         assert_eq!(names, vec![std::ffi::OsString::from("horch")]);
     }
 
-    #[test]
-    fn install_puts_the_dataset_binary_next_to_horch() {
-        let tmp = tempfile::tempdir().unwrap();
-        let build = tmp.path().join("release");
-        std::fs::create_dir_all(&build).unwrap();
-        let horch = build.join(exe_name("horch"));
-        std::fs::write(&horch, "horch").unwrap();
-        std::fs::write(build.join(exe_name(DATASET_BIN)), "dataset").unwrap();
-        let bin = tmp.path().join("bin");
-
-        let source = sibling(&horch, DATASET_BIN);
-        install_one(DATASET_BIN, &source, &bin.join(exe_name(DATASET_BIN))).unwrap();
-
-        assert_eq!(
-            std::fs::read_to_string(bin.join(exe_name(DATASET_BIN))).unwrap(),
-            "dataset"
-        );
-    }
-
     #[cfg(unix)]
     #[test]
     fn sibling_follows_a_link_to_horch() {
@@ -478,8 +470,8 @@ mod tests {
         std::os::unix::fs::symlink(build.join("horch"), &link).unwrap();
 
         assert_eq!(
-            sibling(&link, DATASET_BIN),
-            build.canonicalize().unwrap().join(DATASET_BIN)
+            sibling(&link, HERDR_INSTALL_BIN),
+            build.canonicalize().unwrap().join(HERDR_INSTALL_BIN)
         );
     }
 
@@ -493,30 +485,49 @@ mod tests {
     }
 
     #[test]
-    fn install_siblings_installs_both_sibling_binaries() {
+    fn trf_47_place_horch_removes_old_dataset_binary() {
         let tmp = tempfile::tempdir().unwrap();
-        let horch = build_dir(tmp.path(), &["horch", DATASET_BIN, HERDR_INSTALL_BIN]);
+        let horch = build_dir(tmp.path(), &["horch"]);
+        let bin = tmp.path().join("bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        let dataset = bin.join(exe_name(horch::RETIRED_BINARIES[0]));
+        std::fs::write(&dataset, "old").unwrap();
+        let target = bin.join(exe_name("horch"));
+
+        place_horch(&horch, &bin, &target).unwrap();
+
+        assert!(!dataset.exists());
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "horch");
+    }
+
+    #[test]
+    fn trf_47_install_siblings_installs_only_herdr_install() {
+        let tmp = tempfile::tempdir().unwrap();
+        let horch = build_dir(tmp.path(), &["horch", "old-sibling", HERDR_INSTALL_BIN]);
         let bin = tmp.path().join("bin");
 
         install_siblings(&horch, &bin).unwrap();
 
-        for name in [DATASET_BIN, HERDR_INSTALL_BIN] {
-            assert_eq!(
-                std::fs::read_to_string(bin.join(exe_name(name))).unwrap(),
-                name
-            );
-        }
+        let mut names: Vec<_> = std::fs::read_dir(&bin)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().into_string().unwrap())
+            .collect();
+        names.sort();
+        assert_eq!(names, vec![exe_name(HERDR_INSTALL_BIN)]);
+        assert_eq!(
+            std::fs::read_to_string(bin.join(exe_name(HERDR_INSTALL_BIN))).unwrap(),
+            HERDR_INSTALL_BIN
+        );
     }
 
     #[test]
     fn install_siblings_goes_on_without_herdr_install() {
         let tmp = tempfile::tempdir().unwrap();
-        let horch = build_dir(tmp.path(), &["horch", DATASET_BIN]);
+        let horch = build_dir(tmp.path(), &["horch"]);
         let bin = tmp.path().join("bin");
 
         install_siblings(&horch, &bin).unwrap();
 
-        assert!(bin.join(exe_name(DATASET_BIN)).is_file());
         assert!(!bin.join(exe_name(HERDR_INSTALL_BIN)).exists());
     }
 
@@ -593,15 +604,11 @@ mod tests {
     }
 
     #[test]
-    fn stale_old_paths_name_the_3_binaries() {
+    fn trf_47_stale_old_paths_name_the_2_binaries() {
         assert_eq!(
             stale_old_paths(Path::new("/d")),
             vec![
                 PathBuf::from(format!("/d/.horch{}.old", std::env::consts::EXE_SUFFIX)),
-                PathBuf::from(format!(
-                    "/d/.{DATASET_BIN}{}.old",
-                    std::env::consts::EXE_SUFFIX
-                )),
                 PathBuf::from(format!(
                     "/d/.{HERDR_INSTALL_BIN}{}.old",
                     std::env::consts::EXE_SUFFIX

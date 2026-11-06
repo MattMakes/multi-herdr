@@ -46,6 +46,9 @@ pub enum RowState {
     Unknown,
     Compacting,
     Pending,
+    /// Still at or over the threshold after 1 compaction: the session goes
+    /// to the handoff route, not a new cycle (TRF-09).
+    Handoff,
     CompactFailed,
     RequestStale,
     Requested,
@@ -54,7 +57,7 @@ pub enum RowState {
 }
 
 /// The names `horch context` prints, in declaration order of [`RowState`].
-const ROW_STATE_NAMES: [&str; 12] = [
+const ROW_STATE_NAMES: [&str; 13] = [
     "compact-lost",
     "no-session",
     "not-read",
@@ -62,6 +65,7 @@ const ROW_STATE_NAMES: [&str; 12] = [
     "unknown",
     "compacting",
     "pending",
+    "handoff",
     "compact-failed",
     "request-stale",
     "requested",
@@ -69,10 +73,52 @@ const ROW_STATE_NAMES: [&str; 12] = [
     "ok",
 ];
 
+/// The instruction id of each state, in declaration order of [`RowState`]
+/// (TRF-08). The briefing keys its instruction for a state by this id, so
+/// an id never changes once published. `ok` has no instruction.
+const INSTRUCTION_IDS: [Option<&str>; 13] = [
+    Some("ctx-compact-lost"),
+    Some("ctx-no-session"),
+    Some("ctx-not-read"),
+    Some("ctx-no-transcript"),
+    Some("ctx-unknown"),
+    Some("ctx-compacting"),
+    Some("ctx-pending"),
+    Some("ctx-handoff"),
+    Some("ctx-compact-failed"),
+    Some("ctx-request-stale"),
+    Some("ctx-requested"),
+    Some("ctx-over"),
+    None,
+];
+
 impl RowState {
+    /// Every state, in declaration order.
+    pub const ALL: [RowState; 13] = [
+        RowState::CompactLost,
+        RowState::NoSession,
+        RowState::NotRead,
+        RowState::NoTranscript,
+        RowState::Unknown,
+        RowState::Compacting,
+        RowState::Pending,
+        RowState::Handoff,
+        RowState::CompactFailed,
+        RowState::RequestStale,
+        RowState::Requested,
+        RowState::Over,
+        RowState::Ok,
+    ];
+
     /// The kebab-case name `horch context` prints.
     pub fn as_str(self) -> &'static str {
         ROW_STATE_NAMES[self as usize]
+    }
+
+    /// The stable id of the briefing instruction for this state (TRF-08);
+    /// None for `ok`, which needs no action.
+    pub fn instruction_id(self) -> Option<&'static str> {
+        INSTRUCTION_IDS[self as usize]
     }
 }
 
@@ -112,7 +158,7 @@ pub struct RowInputs<'a> {
 
 /// First match: compact-lost (job Lost), no-session, not-read,
 /// no-transcript, unknown (Failed, or tokens None and not pending),
-/// compacting (job Live), pending, compact-failed, request-stale,
+/// compacting (job Live), pending, handoff, compact-failed, request-stale,
 /// requested, over, ok.
 ///
 /// `compact-lost` is first: a lost job is a failure the orchestrator must
@@ -138,6 +184,8 @@ fn classify_reading(r: &Reading, i: &RowInputs) -> RowState {
         RowState::Compacting
     } else if r.pending {
         RowState::Pending
+    } else if still_over_after_compaction(i, r) {
+        RowState::Handoff
     } else if let Some(state) = ask_state(i, r.last_compaction.as_ref()) {
         state
     } else {
@@ -146,6 +194,50 @@ fn classify_reading(r: &Reading, i: &RowInputs) -> RowState {
             _ => RowState::Ok,
         }
     }
+}
+
+/// TRF-09: the newest compaction left the session at or over its threshold,
+/// and it is still there. A second compaction would not help, so the row
+/// outranks every ask of the cycle: no new cycle starts.
+fn still_over_after_compaction(i: &RowInputs, r: &Reading) -> bool {
+    let over = |n: Option<u64>| n.is_some_and(|n| n >= i.threshold);
+    over(r.tokens)
+        && over(post_compaction_tokens(
+            i.history,
+            r.last_compaction.as_ref(),
+        ))
+}
+
+/// The token count right after the newest compaction: the post count of the
+/// newest `compacted` event when it is at or after the newest marker (horch
+/// drove it), else the marker's post count. None when neither knows it.
+pub fn post_compaction_tokens(
+    history: &[HistoryEntry],
+    last: Option<&CompactionMark>,
+) -> Option<u64> {
+    let marked = last.and_then(|m| crate::clock::parse(&m.at));
+    let event = history
+        .iter()
+        .filter(|e| e.event == EVENT_COMPACTED)
+        .filter_map(|e| Some((crate::clock::parse(&e.at)?, e)))
+        .max_by_key(|(at, _)| *at)
+        .filter(|(at, _)| marked.is_none_or(|m| *at >= m));
+    event
+        .and_then(|(_, e)| compacted_post(&e.text))
+        .or_else(|| last.and_then(|m| m.post_tokens))
+}
+
+/// The text of a `compacted` event: `<pre> -> <post> tokens; handoff <path>`,
+/// `unknown` for a count the job did not read.
+pub fn compacted_text(pre: Option<u64>, post: Option<u64>, handoff: &str) -> String {
+    let n = |n: Option<u64>| n.map_or_else(|| "unknown".into(), |n| n.to_string());
+    format!("{} -> {} tokens; handoff {handoff}", n(pre), n(post))
+}
+
+/// The post count of a [`compacted_text`]; None when it is `unknown`.
+fn compacted_post(text: &str) -> Option<u64> {
+    let (_, rest) = text.split_once(" -> ")?;
+    rest.split_once(" tokens")?.0.parse().ok()
 }
 
 /// `compact-failed`, `request-stale` or `requested` when the cycle holds an
@@ -714,6 +806,7 @@ mod tests {
             (RowState::Unknown, "unknown"),
             (RowState::Compacting, "compacting"),
             (RowState::Pending, "pending"),
+            (RowState::Handoff, "handoff"),
             (RowState::CompactFailed, "compact-failed"),
             (RowState::RequestStale, "request-stale"),
             (RowState::Requested, "requested"),
@@ -723,6 +816,161 @@ mod tests {
         for (state, name) in names {
             assert_eq!(state.as_str(), name);
         }
+    }
+
+    #[test]
+    fn trf_08_every_non_ok_state_has_a_stable_instruction_id() {
+        let want = [
+            (RowState::CompactLost, Some("ctx-compact-lost")),
+            (RowState::NoSession, Some("ctx-no-session")),
+            (RowState::NotRead, Some("ctx-not-read")),
+            (RowState::NoTranscript, Some("ctx-no-transcript")),
+            (RowState::Unknown, Some("ctx-unknown")),
+            (RowState::Compacting, Some("ctx-compacting")),
+            (RowState::Pending, Some("ctx-pending")),
+            (RowState::Handoff, Some("ctx-handoff")),
+            (RowState::CompactFailed, Some("ctx-compact-failed")),
+            (RowState::RequestStale, Some("ctx-request-stale")),
+            (RowState::Requested, Some("ctx-requested")),
+            (RowState::Over, Some("ctx-over")),
+            (RowState::Ok, None),
+        ];
+        assert_eq!(want.len(), RowState::ALL.len());
+        for ((state, id), listed) in want.iter().zip(RowState::ALL) {
+            assert_eq!(*state, listed, "ALL is in declaration order");
+            assert_eq!(state.instruction_id(), *id, "{}", state.as_str());
+        }
+    }
+
+    fn compacted_at(at: &str, pre: u64, post: u64) -> HistoryEntry {
+        ev(
+            at,
+            EVENT_COMPACTED,
+            &compacted_text(Some(pre), Some(post), "h.md"),
+        )
+    }
+
+    fn mark(at: &str, post: Option<u64>) -> CompactionMark {
+        CompactionMark {
+            at: at.into(),
+            offset: 10,
+            trigger: Some("manual".into()),
+            pre_tokens: Some(311_225),
+            post_tokens: post,
+        }
+    }
+
+    fn with_mark(history: &[HistoryEntry], m: Option<CompactionMark>, now: &str) -> RowState {
+        let mut reading = over_reading();
+        reading.last_compaction = m;
+        classify(&RowInputs {
+            reading: Ok(&reading),
+            threshold: 300_000,
+            history,
+            job: &JobLiveness::None,
+            now: at(now),
+        })
+    }
+
+    #[test]
+    fn trf_09_still_over_after_1_compaction_is_handoff_not_a_new_cycle() {
+        let history = [
+            ev("2026-09-20T10:00:00Z", EVENT_REQUESTED, ""),
+            compacted_at("2026-09-20T10:05:00Z", 330_000, 305_000),
+        ];
+        let m = Some(mark("2026-09-20T10:04:00Z", Some(305_000)));
+        assert_eq!(
+            with_mark(&history, m.clone(), "2026-09-20T10:06:00Z"),
+            RowState::Handoff
+        );
+        // A new ask does not start a new cycle: the row stays handoff.
+        let asked_again = [
+            history[0].clone(),
+            history[1].clone(),
+            ev("2026-09-20T10:07:00Z", EVENT_REQUESTED, ""),
+        ];
+        assert_eq!(
+            with_mark(&asked_again, m, "2026-09-20T10:08:00Z"),
+            RowState::Handoff
+        );
+    }
+
+    /// TRF-09, ported from the ticket 01 L3 repro: 2 asks and 2 compactions,
+    /// the marker still over. Before the fix the row was `over` and the
+    /// `horch note` warning started a 3rd cycle.
+    #[test]
+    fn trf_09_l3_repro_over_after_compaction_starts_no_new_cycle() {
+        let history = [
+            ev("2026-09-20T10:00:00Z", EVENT_REQUESTED, ""),
+            ev("2026-09-20T10:03:00Z", EVENT_COMPACTED, ""),
+            ev("2026-09-20T10:10:00Z", EVENT_REQUESTED, ""),
+            ev("2026-09-20T10:13:00Z", EVENT_COMPACTED, ""),
+        ];
+        let mut reading = over_reading();
+        reading.tokens = Some(305_000);
+        reading.last_compaction = Some(mark("2026-09-20T10:12:59Z", Some(305_000)));
+        let i = RowInputs {
+            reading: Ok(&reading),
+            threshold: 300_000,
+            history: &history,
+            job: &JobLiveness::None,
+            now: at("2026-09-20T10:20:00Z"),
+        };
+        assert_eq!(classify(&i), RowState::Handoff);
+        assert!(!should_warn(&i), "no 3rd cycle starts");
+    }
+
+    #[test]
+    fn trf_09_a_native_compaction_that_leaves_the_row_over_is_handoff() {
+        let m = Some(mark("2026-09-20T10:04:00Z", Some(301_000)));
+        assert_eq!(with_mark(&[], m, "2026-09-20T10:06:00Z"), RowState::Handoff);
+    }
+
+    #[test]
+    fn trf_09_a_row_that_grew_back_after_a_good_compaction_is_over() {
+        let history = [compacted_at("2026-09-20T10:05:00Z", 330_000, 9_000)];
+        let m = Some(mark("2026-09-20T10:04:00Z", Some(9_000)));
+        assert_eq!(
+            with_mark(&history, m, "2026-09-20T12:00:00Z"),
+            RowState::Over
+        );
+        // An unknown post count is not proof: the row is over.
+        let unknown = [ev(
+            "2026-09-20T10:05:00Z",
+            EVENT_COMPACTED,
+            &compacted_text(Some(330_000), None, "h.md"),
+        )];
+        assert_eq!(
+            with_mark(&unknown, None, "2026-09-20T10:06:00Z"),
+            RowState::Over
+        );
+    }
+
+    #[test]
+    fn trf_09_a_newer_native_marker_wins_over_an_older_compacted_event() {
+        let history = [compacted_at("2026-09-20T10:05:00Z", 330_000, 305_000)];
+        let m = Some(mark("2026-09-20T11:00:00Z", Some(9_000)));
+        assert_eq!(post_compaction_tokens(&history, m.as_ref()), Some(9_000));
+        // Still over by tokens, but the newest compaction worked: over.
+        assert_eq!(
+            with_mark(&history, m, "2026-09-20T11:30:00Z"),
+            RowState::Over
+        );
+    }
+
+    #[test]
+    fn trf_09_handoff_needs_the_current_tokens_over_too() {
+        let history = [compacted_at("2026-09-20T10:05:00Z", 330_000, 305_000)];
+        let mut reading = over_reading();
+        reading.tokens = Some(200_000);
+        let got = classify(&RowInputs {
+            reading: Ok(&reading),
+            threshold: 300_000,
+            history: &history,
+            job: &JobLiveness::None,
+            now: at("2026-09-20T10:06:00Z"),
+        });
+        assert_eq!(got, RowState::Ok);
     }
 
     fn caps(command: CompactCommand, max_sends: u8) -> CompactionCaps {

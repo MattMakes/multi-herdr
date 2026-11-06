@@ -89,7 +89,7 @@ impl Harness {
             unique()
         ));
         let _ = std::fs::remove_dir_all(&root);
-        let h = Harness {
+        let mut h = Harness {
             home: root.join("home"),
             state: root.join("state"),
             tmp: root.join("tmp"),
@@ -105,6 +105,13 @@ impl Harness {
             std::fs::create_dir_all(dir).expect("creating harness dirs");
         }
         check_built_fakes();
+        warm_built_fakes();
+        // A fake that starts slowly under load must not fail the local health
+        // check: its deadline is the e2e deadline here, not production's 5 s.
+        h.set(
+            "HORCH_LOCAL_PROBE_TIMEOUT_MS",
+            DEADLINE.as_millis().to_string(),
+        );
         let built = bin_dir();
         for (name, fake) in FAKES {
             let from = built.join(exe(fake));
@@ -281,6 +288,15 @@ impl Harness {
         cmd.args(args);
         self.seal(&mut cmd);
         cmd
+    }
+
+    /// The session records of the project with slug `slug`, rendered as its
+    /// JSON ledger was (TRF-45: no code writes that file now; the records
+    /// live in `<state>/ledger.sqlite3`, an old JSON ledger read only).
+    pub fn stored_ledger(&self, slug: &str) -> Result<String, String> {
+        horch_core::execution::store::ExecutionStore::for_project(&self.state, slug)
+            .stored_json()
+            .map_err(|e| format!("{e:#}"))
     }
 
     /// Run `horch`, returning its output.
@@ -677,6 +693,34 @@ fn check_built_fakes() {
             path.display()
         );
     }
+}
+
+/// Run every built fake once, untimed, before the first test uses it.
+///
+/// macOS scans a new executable at its first exec (syspolicyd `GK
+/// performScan` and an XProtect pass). The scans run one at a time, about
+/// 0.2 s each, so with 30 new executables at once the last waits 5.5 s
+/// (T-24). The harness links the built fakes into `bin/`, so the first call
+/// of a fake inside a test would carry that wait into a timed probe. The
+/// first harness of a test process pays the scan here, and the others wait
+/// on the same [`std::sync::Once`]. The exit status does not matter: a fake
+/// answers an unknown argument at once and writes no log without
+/// `HORCH_FAKE_LOG`.
+fn warm_built_fakes() {
+    static WARMED: std::sync::Once = std::sync::Once::new();
+    WARMED.call_once(|| {
+        let built = bin_dir();
+        for (_, fake) in FAKES {
+            let path = built.join(exe(fake));
+            let out = warm(
+                Command::new(&path)
+                    .arg("warm")
+                    .stdin(std::process::Stdio::null())
+                    .env_remove("HORCH_FAKE_LOG"),
+            );
+            assert!(out.is_ok(), "warming {}: {:?}", path.display(), out.err());
+        }
+    });
 }
 
 /// The one deadline of every e2e wait. A passing run never reaches it, so it

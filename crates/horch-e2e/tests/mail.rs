@@ -4,6 +4,7 @@ use std::fs::File;
 use std::path::Path;
 use std::process::Output;
 
+use horch_core::messaging::mail::Mail;
 use horch_e2e::harness::{wait_for_or, Harness};
 
 fn text(output: &Output) -> String {
@@ -48,10 +49,12 @@ fn fleet() -> Harness {
     harness
 }
 
+/// The first push is lost (`mail_drop`). The courier then names the unread
+/// DONE in 1 digest line, without its text, until `horch inbox` acks it.
 #[test]
-fn mail_u1_courier_redelivers_to_an_idle_orchestrator_until_inbox_acks() {
+fn mail_u1_courier_digests_unread_mail_to_an_idle_orchestrator_until_inbox_acks() {
     let harness = fleet();
-    let mut tell = harness.horch(&["tell", "orchestrator", "NOTE: do not lose this"]);
+    let mut tell = harness.horch(&["tell", "orchestrator", "DONE: do not lose this"]);
     tell.env("HERDR_PANE_ID", "w1:p2")
         .env("HORCH_ROLE", "sonnet-1")
         .env("HORCH_RECORD_ID", "r1");
@@ -64,30 +67,27 @@ fn mail_u1_courier_redelivers_to_an_idle_orchestrator_until_inbox_acks() {
         || courier_holds(&lock_path)?.then_some(()),
         || format!("calls: {:?}", harness.calls_of("herdr")),
     );
-    let redelivery = wait_for_or(
-        "the redelivery line",
+    let digest = "[horch] NOTE: 1 unread message (sonnet-1 DONE). Run horch inbox.";
+    wait_for_or(
+        "the digest line",
         || {
-            harness.calls_of("herdr").into_iter().find_map(|call| {
-                let args = call["argv"].as_array()?;
-                let line = args.get(3)?.as_str()?;
-                // A cold start may miss the first scaled retry slot. The
-                // courier skips missed slots instead of replaying a burst.
-                let retry = line.split_once("(redelivery ")?.1;
-                let attempt = retry
-                    .split_once(": not acknowledged; run horch inbox)")?
-                    .0
-                    .parse::<usize>()
-                    .ok()?;
-                (attempt > 0).then(|| line.to_string())
-            })
+            harness
+                .calls_of("herdr")
+                .iter()
+                .any(|call| call["argv"].get(3).and_then(|a| a.as_str()) == Some(digest))
+                .then_some(())
         },
         || format!("calls: {:?}", harness.calls_of("herdr")),
     );
-    assert!(redelivery.starts_with("[sonnet-1] NOTE: do not lose this"));
+    let id = Mail::under(&harness.state, "w1").pending().unwrap()[0]
+        .id
+        .short();
 
     let inbox = harness.run(&["inbox"]);
     assert!(inbox.status.success(), "{}", text(&inbox));
-    assert!(String::from_utf8_lossy(&inbox.stdout).contains("[sonnet-1] NOTE: do not lose this"));
+    // TRF-03: the inbox shows the mail id of the message.
+    assert!(String::from_utf8_lossy(&inbox.stdout)
+        .contains(&format!("[sonnet-1 #{id}] DONE: do not lose this")));
     wait_for_or(
         "the courier to exit",
         || (!courier_holds(&lock_path)?).then_some(()),
@@ -95,13 +95,13 @@ fn mail_u1_courier_redelivers_to_an_idle_orchestrator_until_inbox_acks() {
     );
 }
 
-/// A pane id file can outlive its pane. The courier counts a pane herdr does
-/// not know as no orchestrator, so it exits after the limit instead of
-/// polling forever; the mail stays pending.
+/// TRF-04: a pane id file can outlive its pane. The courier counts a pane
+/// herdr does not know as no target, and it stays while the mail is pending:
+/// only `horch inbox`, which acknowledges the mail, lets it exit.
 #[test]
-fn mail_u1_courier_exits_when_the_orchestrator_pane_is_gone() {
-    let mut harness = fleet();
-    harness.set("HORCH_TEST_MAIL_NO_ORCHESTRATOR_MS", "1000");
+fn trf_04_courier_stays_while_mail_is_pending_and_the_pane_is_gone() {
+    let harness = fleet();
+    // The limit of an earlier release: it no longer ends the courier.
     let mailbox = harness.state.join("herdr-orchestration-w1");
     std::fs::write(mailbox.join("orchestrator.id"), "w1:p9").unwrap();
     let mut tell = harness.horch(&["tell", "orchestrator", "NOTE: still here"]);
@@ -116,11 +116,17 @@ fn mail_u1_courier_exits_when_the_orchestrator_pane_is_gone() {
         || courier_holds(&lock_path)?.then_some(()),
         || format!("calls: {:?}", harness.calls_of("herdr")),
     );
+    // 10 times the old limit: the courier still holds the lock.
+    std::thread::sleep(std::time::Duration::from_millis(1000));
+    assert_eq!(courier_holds(&lock_path), Some(true), "the courier stays");
+    let pending = std::fs::read_dir(harness.state.join("mail/w1/pending")).unwrap();
+    assert_eq!(pending.count(), 1, "the message stays pending");
+
+    let inbox = harness.run(&["inbox"]);
+    assert!(inbox.status.success(), "{}", text(&inbox));
     wait_for_or(
         "the courier to exit",
         || (!courier_holds(&lock_path)?).then_some(()),
         || format!("calls: {:?}", harness.calls_of("herdr")),
     );
-    let pending = std::fs::read_dir(harness.state.join("mail/w1/pending")).unwrap();
-    assert_eq!(pending.count(), 1, "the message stays pending");
 }

@@ -19,7 +19,7 @@ worker_channel: true
 # levers, and `horch teammates --check` rejects them on a codex teammate. Codex
 # controls what an agent can reach through its sandbox and its execpolicy rules,
 # which `_base/codex-orchestrator-execpolicy.md` installs before this pane
-# starts - without them this orchestrator launches unable to spawn or assign.
+# starts - without them this orchestrator launches unable to spawn or queue work.
 # Fleet rule: no subagents. Ask the orchestrator for more workers.
 args: ["-c", "features.multi_agent=false"]
 ---
@@ -44,14 +44,14 @@ codex-sol. Never delegate the thinking itself downward and hope.
 
 == Run every horch command on its own ==
 Your commands run in Codex's sandbox. The sandbox blocks herdr's
-socket, so a sandboxed `horch spawn`, `assign`, `tell`, `inbox`
+socket, so a sandboxed `horch spawn`, `tell`, `inbox`
 or `layout` fails with `PermissionDenied: Operation not permitted`. Your
 execpolicy rules lift the sandbox for a horch command, but only when that
 command is the whole command.
 - Send each horch command as its own exec call: `horch spawn codex-sol --role
-  api 'Read and follow ai_docs/plans/03-api.md exactly.'` and nothing else.
+  api` and nothing else.
 - Never put a horch command after `;`, `&&` or a newline, or with `|`, `2>&1`,
-  `>` or a heredoc. Write a plan file in one call, then spawn in the next.
+  `>` or a heredoc. Write a ticket file in one call, then queue it in the next.
 - A `PermissionDenied` from horch means the command was not on its own. Run it
   again correctly. It is not a blocker, and you do not report it to the
   operator.

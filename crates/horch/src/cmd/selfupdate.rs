@@ -184,15 +184,11 @@ pub fn install_dir(current_exe: Option<&Path>, default_dir: &Path) -> Result<Pat
 /// The binaries every release archive holds, which are absent from `dir`.
 /// An install with only some of them would mix versions.
 fn missing_binaries(dir: &Path) -> Vec<String> {
-    [
-        "horch",
-        super::install::DATASET_BIN,
-        super::install::HERDR_INSTALL_BIN,
-    ]
-    .iter()
-    .map(|bin| super::install::exe_name(bin))
-    .filter(|file| !dir.join(file).is_file())
-    .collect()
+    horch::RELEASE_BINARIES
+        .iter()
+        .map(|bin| super::install::exe_name(bin))
+        .filter(|file| !dir.join(file).is_file())
+        .collect()
 }
 
 /// The 2 lines the boot check prints.
@@ -809,24 +805,16 @@ mod tests {
     }
 
     #[test]
-    fn missing_binaries_names_each_absent_file() {
+    fn trf_47_missing_binaries_names_each_absent_file() {
         let tmp = tempfile::tempdir().unwrap();
         let exe = super::super::install::exe_name;
         assert_eq!(
             missing_binaries(tmp.path()),
-            vec![
-                exe("horch"),
-                exe("multi-herdr-dataset"),
-                exe("herdr-install")
-            ]
+            vec![exe("horch"), exe("herdr-install")]
         );
         std::fs::write(tmp.path().join(exe("horch")), "").unwrap();
+        assert_eq!(missing_binaries(tmp.path()), vec![exe("herdr-install")]);
         std::fs::write(tmp.path().join(exe("herdr-install")), "").unwrap();
-        assert_eq!(
-            missing_binaries(tmp.path()),
-            vec![exe("multi-herdr-dataset")]
-        );
-        std::fs::write(tmp.path().join(exe("multi-herdr-dataset")), "").unwrap();
         assert!(missing_binaries(tmp.path()).is_empty());
     }
 

@@ -165,8 +165,8 @@ mod tests {
 
     use super::super::activation::ResolvedSkillRef;
     use super::*;
+    use crate::digest::Digest;
     use crate::ids::SkillId;
-    use crate::measure::digest::Digest;
     use crate::roster::{OperatorSkills, Teammate};
 
     const REPORT: &str = " Report unresolved dependencies through horch tell orchestrator.\n";

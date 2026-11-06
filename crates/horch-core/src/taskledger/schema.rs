@@ -4,13 +4,15 @@
 //! list is the code's own list. `PRAGMA user_version` holds the version;
 //! [`migrate`] brings an older file forward and never goes back.
 
+use std::path::{Path, PathBuf};
+
 use anyhow::{bail, Context, Result};
 use rusqlite::Connection;
 
 use super::model::*;
 
 /// The schema version this binary writes.
-pub const VERSION: i64 = 6;
+pub const VERSION: i64 = 7;
 
 /// A rule that applies to rows this ledger writes, not to imported ones
 /// (section 11.2): `CHECK (origin = 'import' OR <expr>)`.
@@ -431,6 +433,63 @@ ALTER TABLE worktrees_v5 RENAME TO worktrees;"
 const V6: &str = "ALTER TABLE worktrees ADD COLUMN bytes INTEGER;
              ALTER TABLE worktrees ADD COLUMN bytes_measured_at TEXT;";
 
+/// Version 7: every field of the trace-fixes plan (docs/specs/trace-fixes.md
+/// section 4), in 1 migration so no 2 tickets race on the version. The
+/// ticket fields of a task (C1), the run check, PR decline and orchestrator
+/// respawn of a run (C5, C7), the run gates (C5), the wake outbox (C3),
+/// the handoff of a worker (C4) and the session records that replace the
+/// JSON session ledger (D10, TRF-45). `held_reason` and `end_reason` stay free
+/// text: their new words live in [`HeldReason`] and [`EndReason`].
+fn v7() -> String {
+    format!(
+        "ALTER TABLE tasks ADD COLUMN work_kind TEXT {work_kind};
+ALTER TABLE tasks ADD COLUMN review_mode TEXT {review_mode};
+ALTER TABLE tasks ADD COLUMN ticket_snapshot TEXT;
+ALTER TABLE tasks ADD COLUMN ticket_sha TEXT;
+ALTER TABLE tasks ADD COLUMN check_none INTEGER NOT NULL DEFAULT 0 CHECK (check_none IN (0, 1));
+ALTER TABLE runs ADD COLUMN default_check TEXT;
+ALTER TABLE runs ADD COLUMN pr_declined_reason TEXT;
+ALTER TABLE runs ADD COLUMN orchestrator_stopped_at TEXT;
+ALTER TABLE runs ADD COLUMN orchestrator_respawns INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE runs ADD COLUMN last_respawn_at TEXT;
+ALTER TABLE workers ADD COLUMN handoff_path TEXT;
+CREATE TABLE run_gates (
+    gate_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id TEXT NOT NULL REFERENCES runs(run_id),
+    tip_sha TEXT NOT NULL,
+    command TEXT NOT NULL,
+    exit_code INTEGER,
+    log_path TEXT,
+    started_at TEXT NOT NULL,
+    ended_at TEXT
+);
+CREATE INDEX run_gates_by_tip ON run_gates(run_id, tip_sha);
+CREATE TABLE outbox (
+    id TEXT PRIMARY KEY,
+    run_id TEXT NOT NULL REFERENCES runs(run_id),
+    event TEXT NOT NULL {event},
+    key TEXT NOT NULL UNIQUE,
+    text TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    delivered_at TEXT
+);
+CREATE INDEX outbox_undelivered ON outbox(created_at) WHERE delivered_at IS NULL;
+ALTER TABLE workers ADD COLUMN target_task_id TEXT REFERENCES tasks(task_id);
+CREATE TABLE session_records (
+    record_id TEXT PRIMARY KEY,
+    worker_id TEXT,
+    project_root TEXT NOT NULL,
+    slug TEXT NOT NULL,
+    record_json TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE INDEX session_records_by_slug ON session_records(slug);",
+        work_kind = WorkKind::check("work_kind"),
+        review_mode = ReviewMode::check("review_mode"),
+        event = OutboxEvent::check("event"),
+    )
+}
+
 /// Bring the database to [`VERSION`]. A file from a newer binary is refused:
 /// this one would not know its columns.
 ///
@@ -438,27 +497,122 @@ const V6: &str = "ALTER TABLE worktrees ADD COLUMN bytes INTEGER;
 /// (`v5`) is dropped while other rows point at it. They are checked before
 /// the commit, and turned back on after it.
 pub fn migrate(conn: &mut Connection) -> Result<()> {
+    migrate_guarded(conn, &|_| Ok(()))
+}
+
+/// [`migrate`], but an existing file (version 1 or more) is migrated only
+/// when `guard(version)` is `Ok`, and only after a backup (`backup`).
+pub fn migrate_guarded(conn: &mut Connection, guard: &dyn Fn(i64) -> Result<()>) -> Result<()> {
     // The pragma is a no-op inside a transaction, so it is set before one.
     let keys: bool = conn.query_row("PRAGMA foreign_keys", [], |r| r.get(0))?;
     conn.pragma_update(None, "foreign_keys", false)?;
-    let migrated = migrate_unchecked(conn);
+    let migrated = migrate_unchecked(conn, guard);
     conn.pragma_update(None, "foreign_keys", keys)?;
     migrated
 }
 
-fn migrate_unchecked(conn: &mut Connection) -> Result<()> {
+/// The file of `conn`, or `None` for an in-memory database.
+fn file_of(conn: &Connection) -> Option<PathBuf> {
+    conn.path().filter(|p| !p.is_empty()).map(PathBuf::from)
+}
+
+/// How many backups `backup` keeps in 1 folder.
+pub const BACKUPS_KEPT: usize = 3;
+
+/// The backups in `dir`, `ledger.v<n>-backup-<stamp>.sqlite3`, oldest
+/// name first.
+pub fn backups_in(dir: &Path) -> Vec<PathBuf> {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    let mut found: Vec<PathBuf> = entries
+        .filter_map(|e| e.ok())
+        .filter(|e| {
+            let name = e.file_name();
+            let name = name.to_string_lossy();
+            name.strip_prefix("ledger.v")
+                .and_then(|rest| rest.split_once("-backup-"))
+                .is_some_and(|(v, rest)| {
+                    !v.is_empty()
+                        && v.bytes().all(|b| b.is_ascii_digit())
+                        && rest.ends_with(".sqlite3")
+                })
+        })
+        .map(|e| e.path())
+        .collect();
+    found.sort();
+    found
+}
+
+/// Copy the ledger `file` at version `from` to
+/// `<dir>/ledger.v<from>-backup-<UTC yyyymmddTHHMMSSZ>.sqlite3`, then keep
+/// the newest [`BACKUPS_KEPT`]. The caller holds the write lock, so the copy
+/// is the state the migration starts from. `VACUUM INTO` cannot run inside a
+/// transaction, so it runs on a second connection.
+fn backup(file: &Path, from: i64) -> Result<PathBuf> {
+    let dir = file.parent().unwrap_or(Path::new("."));
+    let stamp = chrono::Utc::now().format("%Y%m%dT%H%M%SZ");
+    let mut copy = dir.join(format!("ledger.v{from}-backup-{stamp}.sqlite3"));
+    // 2 migrations in 1 second: the second copy gets a number.
+    let mut n = 2;
+    while copy.exists() {
+        copy = dir.join(format!("ledger.v{from}-backup-{stamp}-{n}.sqlite3"));
+        n += 1;
+    }
+    let source = Connection::open(file)
+        .with_context(|| format!("opening {} for a backup", file.display()))?;
+    source.busy_timeout(super::store::BUSY_TIMEOUT)?;
+    source
+        .execute("VACUUM INTO ?1", [copy.to_string_lossy()])
+        .with_context(|| format!("writing the ledger backup {}", copy.display()))?;
+    let all = backups_in(dir);
+    for old in &all[..all.len().saturating_sub(BACKUPS_KEPT)] {
+        let _ = std::fs::remove_file(old);
+    }
+    Ok(copy)
+}
+
+/// The error for a file at version `current` above [`VERSION`]: 1 sentence
+/// and 1 instruction line.
+fn newer_schema(file: Option<&Path>, current: i64) -> anyhow::Error {
+    let what = match file {
+        Some(f) => format!("the task ledger {}", f.display()),
+        None => "the task ledger".to_string(),
+    };
+    let newest = file
+        .and_then(|f| f.parent())
+        .and_then(|dir| backups_in(dir).pop());
+    let todo = match newest {
+        Some(b) => format!(
+            "Run horch self-update, or stop every fleet and copy the backup {} over the ledger \
+             (rows written after the backup are lost).",
+            b.display()
+        ),
+        None => "Run horch self-update, or use the horch that migrated the file.".to_string(),
+    };
+    anyhow::anyhow!(
+        "{what} is schema version {current} and this horch knows only up to {VERSION}: \
+         a newer or development horch migrated the file.\n{todo}"
+    )
+}
+
+fn migrate_unchecked(conn: &mut Connection, guard: &dyn Fn(i64) -> Result<()>) -> Result<()> {
     // The write lock first, then the version: 2 processes that open a fresh
     // file at once must not both create the tables.
+    let file = file_of(conn);
     let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
     let current: i64 = tx.query_row("PRAGMA user_version", [], |r| r.get(0))?;
     if current > VERSION {
-        bail!(
-            "the task ledger is schema version {current}; this horch knows only up to {VERSION}. \
-             Run horch self-update."
-        );
+        return Err(newer_schema(file.as_deref(), current));
     }
     if current == VERSION {
         return Ok(());
+    }
+    if current > 0 {
+        guard(current)?;
+        if let Some(file) = &file {
+            backup(file, current)?;
+        }
     }
     if current < 1 {
         tx.execute_batch(&v1())
@@ -482,6 +636,10 @@ fn migrate_unchecked(conn: &mut Connection) -> Result<()> {
     }
     if current < 6 {
         tx.execute_batch(V6)?;
+    }
+    if current < 7 {
+        tx.execute_batch(&v7())
+            .context("adding the trace-fixes columns and tables")?;
     }
     tx.pragma_update(None, "user_version", VERSION)?;
     tx.commit()?;
@@ -521,7 +679,7 @@ mod tests {
                 |r| r.get(0),
             )
             .unwrap();
-        assert_eq!(tables, 15);
+        assert_eq!(tables, 18);
     }
 
     /// A ledger file as version 3 left it, with 1 run.
@@ -676,7 +834,7 @@ mod v6_tests {
         let v: i64 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(v, 6);
+        assert_eq!(v, VERSION);
         let kept: (String, i64, Option<String>, Option<i64>, Option<String>) = conn
             .query_row(
                 "SELECT reason, bytes_on_disk, decision, bytes, bytes_measured_at FROM worktrees WHERE worktree_id = 'wt1'",
@@ -701,5 +859,263 @@ mod v6_tests {
             .query_row("SELECT bytes FROM worktrees", [], |r| r.get(0))
             .unwrap();
         assert_eq!(bytes, 5);
+    }
+}
+
+#[cfg(test)]
+mod v7_tests {
+    use super::*;
+    use rusqlite::types::Value;
+
+    /// A ledger file as version 6 left it, with rows in every table.
+    fn version_6_file(path: &std::path::Path) {
+        let conn = Connection::open(path).unwrap();
+        conn.execute_batch(&v1()).unwrap();
+        for sql in [V2, V3, V4] {
+            conn.execute_batch(sql).unwrap();
+        }
+        conn.execute_batch(&v5()).unwrap();
+        conn.execute_batch(V6).unwrap();
+        conn.pragma_update(None, "user_version", 6).unwrap();
+        conn.execute_batch(
+            "INSERT INTO projects VALUES ('p', '/r', 'now');
+             INSERT INTO runs (run_id, project_id, slug, workspace_id, orchestrator_worker_id, status, started_at)
+                VALUES ('r1', 'p', 's', 'ws1', 'o1', 'active', 'now');
+             INSERT INTO tasks (task_id, run_id, seq, title, task_file, primary_persona, claimable_by, status,
+                    held_reason, created_at, updated_at)
+                VALUES ('t1', 'r1', 1, 'a', 'a.md', 'opus', 'opus', 'queued', '2 attempts failed', 'now', 'now'),
+                       ('t2', 'r1', 2, 'b', 'b.md', 'opus', 'opus', 'running', NULL, 'now', 'now');
+             INSERT INTO task_deps VALUES ('t2', 't1');
+             INSERT INTO task_files VALUES ('t1', 'src/a.rs', 'own');
+             INSERT INTO workers (worker_id, run_id, persona, host, task_id, status, end_reason)
+                VALUES ('w1', 'r1', 'opus', 'h', 't1', 'stopped', 'reaped');
+             INSERT INTO checks (worker_id, at, verdict, round) VALUES ('w1', 'now', 'progress', 1);
+             INSERT INTO stops (worker_id, requested_by, reason, target, result, at)
+                VALUES ('w1', 'watchdog', 'stall', 'agent', 'sent', 'now');
+             INSERT INTO worktrees (worktree_id, task_id, worker_id, repo_root, path, branch, base, status,
+                    created_at, decision, bytes, bytes_measured_at)
+                VALUES ('wt1', 't1', 'w1', '/r', '/r/.worktrees/a', 'a', 'main', 'unlanded', 'then', 'KEEP', 5, 'now');
+             INSERT INTO events (at, run_id, task_id, actor, kind, text) VALUES ('now', 'r1', 't1', 'horch', 'added', 'x');
+             INSERT INTO task_steps (task_id, worker_id, seq, name, status) VALUES ('t1', 'w1', 1, 'check', 'passed');
+             INSERT INTO import_raw (source_kind, source_path, source_key, raw_json, imported_at)
+                VALUES ('pending_mail', '/m', 'k', '{}', 'now');
+             INSERT INTO import_findings (kind, detail, created_at) VALUES ('disk_heavy', 'd', 'now');
+             INSERT INTO worker_waits VALUES ('w1', 'question', 'q', 'now', 'later', '[]');
+             INSERT INTO worktree_modes VALUES ('wt1', 'r1', 'a', 0);",
+        )
+        .unwrap();
+    }
+
+    /// Every table, with its columns and rows, ordered so 2 dumps compare.
+    type Dump = Vec<(String, Vec<String>, Vec<Vec<Value>>)>;
+
+    fn dump(conn: &Connection, only: Option<&Dump>) -> Dump {
+        let tables: Vec<String> = match only {
+            Some(d) => d.iter().map(|(t, _, _)| t.clone()).collect(),
+            None => conn
+                .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name")
+                .unwrap()
+                .query_map([], |r| r.get(0))
+                .unwrap()
+                .collect::<rusqlite::Result<_>>()
+                .unwrap(),
+        };
+        tables
+            .into_iter()
+            .map(|table| {
+                let columns: Vec<String> = match only {
+                    Some(d) => d.iter().find(|(t, _, _)| *t == table).unwrap().1.clone(),
+                    None => conn
+                        .prepare("SELECT name FROM pragma_table_info(?1) ORDER BY cid")
+                        .unwrap()
+                        .query_map([&table], |r| r.get(0))
+                        .unwrap()
+                        .collect::<rusqlite::Result<_>>()
+                        .unwrap(),
+                };
+                let list = columns.join(", ");
+                let sql = format!("SELECT {list} FROM {table} ORDER BY {list}");
+                let rows = conn
+                    .prepare(&sql)
+                    .unwrap()
+                    .query_map([], |r| {
+                        (0..columns.len()).map(|i| r.get::<_, Value>(i)).collect()
+                    })
+                    .unwrap()
+                    .collect::<rusqlite::Result<_>>()
+                    .unwrap();
+                (table, columns, rows)
+            })
+            .collect()
+    }
+
+    #[test]
+    fn trf_01_migration_keeps_every_row_and_defaults_the_new_fields() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("ledger.sqlite3");
+        version_6_file(&path);
+        let before = {
+            let conn = Connection::open(&path).unwrap();
+            dump(&conn, None)
+        };
+        assert_eq!(before.len(), 15);
+        assert!(
+            before
+                .iter()
+                .all(|(t, _, rows)| !rows.is_empty() || t == "sqlite_sequence"),
+            "every table holds a row: {before:?}"
+        );
+
+        let store = crate::taskledger::Store::open(&path).unwrap();
+        let conn = store.conn();
+        let v: i64 = conn
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(v, VERSION);
+        assert_eq!(dump(conn, Some(&before)), before, "no row changed");
+
+        type TaskRow = (
+            Option<String>,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+            i64,
+        );
+        let task: Vec<TaskRow> = conn
+            .prepare(
+                "SELECT work_kind, review_mode, ticket_snapshot, ticket_sha, check_none FROM tasks",
+            )
+            .unwrap()
+            .query_map([], |r| {
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))
+            })
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert_eq!(task, vec![(None, None, None, None, 0); 2]);
+        let run: (Option<String>, Option<String>, Option<String>, i64, Option<String>) = conn
+            .query_row(
+                "SELECT default_check, pr_declined_reason, orchestrator_stopped_at, orchestrator_respawns, last_respawn_at FROM runs",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+            )
+            .unwrap();
+        assert_eq!(run, (None, None, None, 0, None));
+        let handoff: Option<String> = conn
+            .query_row("SELECT handoff_path FROM workers", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(handoff, None);
+        for table in ["run_gates", "outbox"] {
+            let n: i64 = conn
+                .query_row(&format!("SELECT count(*) FROM {table}"), [], |r| r.get(0))
+                .unwrap();
+            assert_eq!(n, 0, "{table} starts empty");
+        }
+
+        // The new words are the enums' words, and the CHECK lists hold.
+        conn.execute(
+            "UPDATE tasks SET work_kind = ?1, review_mode = ?2, held_reason = ?3 WHERE task_id = 't1'",
+            [WorkKind::Security.as_str(), ReviewMode::NoReview.as_str(), HeldReason::Unlanded.as_str()],
+        )
+        .unwrap();
+        assert!(conn
+            .execute("UPDATE tasks SET work_kind = 'chore'", [])
+            .is_err());
+        assert!(conn
+            .execute("UPDATE tasks SET review_mode = 'some'", [])
+            .is_err());
+        assert!(conn.execute("UPDATE tasks SET check_none = 2", []).is_err());
+        conn.execute(
+            "UPDATE workers SET end_reason = ?1, handoff_path = 'h.md'",
+            [EndReason::HandedOff.as_str()],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO run_gates (run_id, tip_sha, command, exit_code, log_path, started_at, ended_at)
+                VALUES ('r1', 'abc', 'just gate', 0, '/l', 'now', 'now')",
+            [],
+        )
+        .unwrap();
+        let wake = "INSERT INTO outbox (id, run_id, event, key, text, created_at) VALUES (?1, 'r1', ?2, 'r1:settled:run', 'x', 'now')";
+        conn.execute(wake, ["u1", OutboxEvent::Settled.as_str()])
+            .unwrap();
+        assert!(
+            conn.execute(wake, ["u2", "settled"]).is_err(),
+            "key is unique"
+        );
+        assert!(conn
+            .execute("INSERT INTO outbox (id, run_id, event, key, text, created_at) VALUES ('u3', 'r1', 'woke', 'k3', 'x', 'now')", [])
+            .is_err());
+        assert!(conn
+            .execute("INSERT INTO outbox (id, run_id, event, key, text, created_at) VALUES ('u4', 'nope', 'held', 'k4', 'x', 'now')", [])
+            .is_err(), "run_id must name a run");
+        drop(store);
+        // A second open migrates nothing and keeps the new rows.
+        let store = crate::taskledger::Store::open(&path).unwrap();
+        let n: i64 = store
+            .conn()
+            .query_row("SELECT count(*) FROM outbox", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(n, 1);
+    }
+
+    /// A ledger file at `path` that the real steps 1..=`version` built, with
+    /// 1 project row.
+    fn file_at(path: &std::path::Path, version: i64) {
+        let conn = Connection::open(path).unwrap();
+        let steps = [v1(), V2.into(), V3.into(), V4.into(), v5(), V6.into(), v7()];
+        assert_eq!(steps.len() as i64, VERSION, "add the new step here");
+        for sql in &steps[..version as usize] {
+            conn.execute_batch(sql).unwrap();
+        }
+        conn.execute("INSERT INTO projects VALUES ('p', '/r', 'now')", [])
+            .unwrap();
+        conn.pragma_update(None, "user_version", version).unwrap();
+    }
+
+    /// Every table, index and trigger with its SQL text.
+    fn schema_text(conn: &Connection) -> Vec<(String, String, Option<String>)> {
+        conn.prepare("SELECT type, name, sql FROM sqlite_master ORDER BY type, name")
+            .unwrap()
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap()
+    }
+
+    #[test]
+    fn trf_48_every_old_version_migrates_to_current() {
+        let fresh_dir = tempfile::tempdir().unwrap();
+        let fresh = crate::taskledger::Store::open(&fresh_dir.path().join("l.sqlite3")).unwrap();
+        let want = schema_text(fresh.conn());
+        for version in 1..VERSION {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("ledger.sqlite3");
+            file_at(&path, version);
+            let store = crate::taskledger::Store::open(&path)
+                .unwrap_or_else(|e| panic!("version {version}: {e:#}"));
+            let v: i64 = store
+                .conn()
+                .query_row("PRAGMA user_version", [], |r| r.get(0))
+                .unwrap();
+            assert_eq!(v, VERSION, "version {version}");
+            assert_eq!(schema_text(store.conn()), want, "version {version}");
+            let rows: i64 = store
+                .conn()
+                .query_row("SELECT count(*) FROM projects", [], |r| r.get(0))
+                .unwrap();
+            assert_eq!(rows, 1, "version {version}");
+            let copies = backups_in(dir.path());
+            assert_eq!(copies.len(), 1, "version {version}: {copies:?}");
+            let name = copies[0]
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+                .into_owned();
+            assert!(
+                name.starts_with(&format!("ledger.v{version}-backup-")),
+                "{name}"
+            );
+        }
     }
 }

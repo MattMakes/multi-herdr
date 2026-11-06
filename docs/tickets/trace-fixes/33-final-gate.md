@@ -1,0 +1,41 @@
+# 33: Full gate on the run branch
+
+<!-- horch-ticket: 1 -->
+**Persona:** primary `opus`, fallback `backend-developer` · **Parallel:** yes
+**Kind:** report
+**Review:** none
+**Check:** `HORCH_REQUIRE_GIT=1 HORCH_REQUIRE_SQLITE=1 just gate`
+
+Spec: `docs/specs/trace-fixes.md` (contracts in section 3, schema in 4, timings in 5, conventions in 8).
+Waits for: 30 (Rewrite the briefings and docs for the new behaviour); 31 (Review: delivery, supervision and respawn); 32 (Review: session ledger retirement). Wave 11.
+
+## Goal
+
+Prove the run branch is releasable (D4: this ticket is the run gate until ticket 13's `run gate` exists, then it runs that).
+
+## Steps
+
+1. Run `horch ledger run gate --check "HORCH_REQUIRE_GIT=1 HORCH_REQUIRE_SQLITE=1 just gate"` on the run-branch tip.
+2. Confirm `scripts/check-req-coverage.sh` finds a test for every TRF id.
+3. On a failure, send QUESTION with the failing step and the ticket that owns the file. Do not fix it here.
+4. Confirm that 31 and 32 have no open Critical finding.
+
+Amendment: drop the scratch worktree `.worktrees/_scratch/t01` with `horch ledger worktree drop`. Its 1 uncommitted test is evidence for ticket 08 only. Name the result in your report.
+
+Amendment (report 34): `utc_offset_date` in `crates/horch-core/tests/common/mod.rs` has no caller (the e2e crate has its own copy). Delete it if `git grep -n -e utc_offset_date -- crates/horch-core` still shows no caller.
+
+Amendment (reports 10, 34, 35): ticket checks do not run `cargo fmt`. Before the gate, run `cargo fmt --all`, commit the changed files by exact path in 1 commit, then run the gate. Known drift: `taskledger/map.rs`, `taskledger/status.rs`, `tests/trf_02_ticket_template.rs`.
+
+Amendment (report 26): `cargo fmt` drift also includes `crates/horch/src/cmd/spawn.rs`.
+
+Amendment (orchestrator): the ledger cannot add blockers to this task after add-map. Before any step, run `horch ledger status` and confirm that every task from T-34 to the last task is `done`. If one is not, send `horch tell orchestrator "BLOCKED: T-33 waits for <tasks>"` and end your turn.
+
+Amendment (report 30): in the same pre-gate commit as `cargo fmt`, fix 2 stale texts: `skills/godot-fleet-game-dev/references/fleet-roles.md:23` spawns with task text "Read and follow <plan> exactly." (use `horch ledger task '<task>' --persona <teammate>` then `horch spawn <teammate>`), and the doc comment at `crates/horch-core/src/fsx.rs:215` names `docs/specs/dataset-competition.md`, which is gone (drop the reference). Report 30 saw `execution_store::store_dirlock_excludes_concurrent_writers` fail once in a combined run. If the gate shows it, check whether it still tests a live path (ticket 29 removed the DirLock write path from `ExecutionStore`) and send the orchestrator a QUESTION; do not retry the gate until it passes by luck.
+
+## Done when
+
+The gate passes on the tip and the run gate row is recorded.
+
+## Report
+
+Write `ai_docs/reports/trace-fixes/33.md` (spec section 8). Then run `horch ledger finish`; when every step passed, run `horch ledger done "<summary>"`.

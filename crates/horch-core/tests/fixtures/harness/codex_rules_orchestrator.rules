@@ -4,11 +4,6 @@ prefix_rule(
     justification = "herdr-fleet: create a worker pane, fresh or resumed",
 )
 prefix_rule(
-    pattern = ["horch", "assign"],
-    decision = "allow",
-    justification = "herdr-fleet: record a task on the ledger and deliver it to a worker",
-)
-prefix_rule(
     pattern = ["horch", "tell"],
     decision = "allow",
     justification = "herdr-fleet: message any worker in the fleet",
@@ -57,4 +52,9 @@ prefix_rule(
     pattern = ["horch", "ledger"],
     decision = "allow",
     justification = "herdr-fleet: queue, plan, stop and reap tasks through the task ledger",
+)
+prefix_rule(
+    pattern = ["horch", "fleet"],
+    decision = "allow",
+    justification = "herdr-fleet: record a deliberate orchestrator stop with horch fleet stop",
 )

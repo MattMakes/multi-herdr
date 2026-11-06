@@ -42,7 +42,7 @@ fn records(h: &Harness) -> Vec<Value> {
             }
         })
         .collect();
-    std::fs::read_to_string(h.state.join(format!("{slug}.json")))
+    h.stored_ledger(&slug)
         .ok()
         .and_then(|t| serde_json::from_str(&t).ok())
         .unwrap_or_default()
@@ -117,14 +117,7 @@ fn worker_done_reports_without_the_default_tell_grace() {
     let out = register.output().unwrap();
     assert!(out.status.success(), "{}", text(&out));
 
-    let out = h.run(&[
-        "spawn",
-        "smoke",
-        "verify the tell grace",
-        "--from-pane",
-        "w1:p1",
-        "--no-tile",
-    ]);
+    let out = h.run(&["spawn", "smoke", "--from-pane", "w1:p1", "--no-tile"]);
     assert!(out.status.success(), "{}", text(&out));
     let pane = String::from_utf8_lossy(&out.stdout)
         .lines()
