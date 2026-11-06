@@ -3235,15 +3235,22 @@ fn spawn_run_names_the_run_the_worker_joins() {
     let h = fleet("tl-spawn-run", "default");
     ok(&h, &["ledger", "run", "new", "a"]);
     ok(&h, &["ledger", "run", "new", "b"]);
-    // Without --run, 2 active runs in no workspace of theirs: the error names
-    // a flag spawn accepts.
+    // Without --run, 2 active runs in no workspace of theirs: the spawn joins
+    // no run (TRF-34), and its NOTE names the flag that joins one.
     let o = run_env(
         &h,
         &[("HORCH_WORKSPACE_ID", "w9")],
         &spawn_args("w1:p1", &["codex-terra"]),
     );
-    assert!(!o.status.success(), "{}", text(&o));
-    assert!(text(&o).contains("--run <slug>"), "{}", text(&o));
+    assert!(o.status.success(), "{}", text(&o));
+    assert!(
+        text(&o).contains("NOTE: this spawn joins no task-ledger run."),
+        "{}",
+        text(&o)
+    );
+    assert!(text(&o).contains("Give --run <slug>"), "{}", text(&o));
+    assert_eq!(run_of_worker(&h, "a", "codex-terra"), 0);
+    assert_eq!(run_of_worker(&h, "b", "codex-terra"), 0);
     queue_for(&h, &[], "b", "codex-terra");
     let o = h.run(&spawn_args("w1:p1", &["codex-terra", "--run", "b"]));
     assert!(o.status.success(), "{}", text(&o));
@@ -3256,16 +3263,27 @@ fn a_spawn_joins_the_run_of_its_own_workspace() {
     let h = fleet("tl-spawn-ws", "default");
     second_workspace(&h);
     ok(&h, &["ledger", "run", "new", "a"]);
-    // Only W1 owns a run: a spawn from W2 joins it, with a NOTE that names it.
+    // Only W1 owns a run: a task-less spawn from W2 joins no run (TRF-34),
+    // and its NOTE names that run and the flag that joins it.
     let w2 = [("HORCH_WORKSPACE_ID", "w2")];
     queue_for(&h, &[], "a", "codex-terra");
     let o = run_env(&h, &w2, &spawn_args("w2:p1", &["codex-terra"]));
     assert!(o.status.success(), "{}", text(&o));
     assert!(
-        text(&o).contains("NOTE: this command uses run a of workspace w1"),
+        text(&o).contains(
+            "NOTE: this spawn joins no task-ledger run. Run a (workspace w1) is not of this workspace w2. Give --run <slug> to join it."
+        ),
         "{}",
         text(&o)
     );
+    assert_eq!(run_of_worker(&h, "a", "codex-terra"), 0);
+    // --run reaches the run of another workspace.
+    let o = run_env(
+        &h,
+        &w2,
+        &spawn_args("w2:p1", &["codex-terra", "--run", "a"]),
+    );
+    assert!(o.status.success(), "{}", text(&o));
     assert_eq!(run_of_worker(&h, "a", "codex-terra"), 1);
 
     // W2 owns a run of its own now: the spawn goes there.

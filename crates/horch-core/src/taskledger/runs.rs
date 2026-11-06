@@ -512,12 +512,18 @@ pub struct Closed {
 /// cancelled first (the 1 cancel path) and the run closes as `abandoned`;
 /// an undecided worktree then keeps the run active, with the cancels done
 /// ([`Closed::parked`]).
-pub fn close_run(conn: &Connection, run: &Run, abandon: Option<&str>) -> Result<Closed> {
-    close_inner(conn, run, abandon, None)
+pub fn close_run(
+    conn: &Connection,
+    git: &super::git::Git,
+    run: &Run,
+    abandon: Option<&str>,
+) -> Result<Closed> {
+    close_inner(conn, git, run, abandon, None)
 }
 
 fn close_inner(
     conn: &Connection,
+    git: &super::git::Git,
     run: &Run,
     abandon: Option<&str>,
     guards: Option<&CloseGuards>,
@@ -598,7 +604,7 @@ fn close_inner(
     };
     close(conn, &run.run_id, status)?;
     super::orchestrator::record_stop(conn, &run.run_id)?;
-    notes.extend(remove_gate_worktree(conn, run)?);
+    notes.extend(remove_gate_worktree(conn, git, run)?);
     if let Some(orch) = &run.orchestrator_worker_id {
         super::workers::end(
             conn,
@@ -757,7 +763,11 @@ fn gate_worktree_row(conn: &Connection, run: &Run, tip: &str) -> Result<()> {
 /// Remove the open gate folder of `run` at its close: `git worktree remove`,
 /// never forced. The row becomes `cleaned`. A `NOTE:` line when git refuses;
 /// the folder and the open row then stay.
-fn remove_gate_worktree(conn: &Connection, run: &Run) -> Result<Option<String>> {
+fn remove_gate_worktree(
+    conn: &Connection,
+    git: &super::git::Git,
+    run: &Run,
+) -> Result<Option<String>> {
     let found: Option<(String, String)> = optional(conn.query_row(
         &format!(
             "SELECT w.worktree_id, w.path FROM worktrees w
@@ -772,7 +782,6 @@ fn remove_gate_worktree(conn: &Connection, run: &Run) -> Result<Option<String>> 
         return Ok(None);
     };
     if Path::new(&path).exists() {
-        let git = super::git::Git::new("git");
         let out = git.try_run(Path::new(&run.project_root), &["worktree", "remove", &path])?;
         if !out.ok {
             return Ok(Some(format!(
@@ -967,11 +976,12 @@ fn check_guards(conn: &Connection, run: &Run, g: &CloseGuards) -> Result<Vec<Str
 /// a merged, not applicable or declined PR. `--abandon` skips the C5 checks.
 pub fn close_run_with(
     conn: &Connection,
+    git: &super::git::Git,
     run: &Run,
     abandon: Option<&str>,
     guards: &CloseGuards,
 ) -> Result<Closed> {
-    close_inner(conn, run, abandon, Some(guards))
+    close_inner(conn, git, run, abandon, Some(guards))
 }
 
 #[cfg(test)]
@@ -1090,23 +1100,50 @@ mod tests {
         let root = Path::new(&run.project_root);
         let na = || PrCheck::NotApplicable("the run has no remote".into());
         let tip = git(root, &["rev-parse", "fleet/r1"]);
-        let err = close_run_with(store.conn(), &run, None, &guards(&tip, na(), None)).unwrap_err();
+        let err = close_run_with(
+            store.conn(),
+            &Git::new("git"),
+            &run,
+            None,
+            &guards(&tip, na(), None),
+        )
+        .unwrap_err();
         assert!(err.to_string().contains("has no gate on its tip"), "{err}");
 
         let logs = dir.path().join("logs");
         gate(&mut store, &run, "false", &logs);
-        let err = close_run_with(store.conn(), &run, None, &guards(&tip, na(), None)).unwrap_err();
+        let err = close_run_with(
+            store.conn(),
+            &Git::new("git"),
+            &run,
+            None,
+            &guards(&tip, na(), None),
+        )
+        .unwrap_err();
         assert!(err.to_string().contains("no passing gate"), "{err}");
 
         gate(&mut store, &run, "true", &logs);
         // The tip moves: the passing gate is for an old tip.
         git(root, &["checkout", "-q", "fleet/r1"]);
         let new_tip = commit(root, "c");
-        let err =
-            close_run_with(store.conn(), &run, None, &guards(&new_tip, na(), None)).unwrap_err();
+        let err = close_run_with(
+            store.conn(),
+            &Git::new("git"),
+            &run,
+            None,
+            &guards(&new_tip, na(), None),
+        )
+        .unwrap_err();
         assert!(err.to_string().contains(&new_tip), "{err}");
 
-        let closed = close_run_with(store.conn(), &run, None, &guards(&tip, na(), None)).unwrap();
+        let closed = close_run_with(
+            store.conn(),
+            &Git::new("git"),
+            &run,
+            None,
+            &guards(&tip, na(), None),
+        )
+        .unwrap();
         assert_eq!(closed.status, "done");
         assert_eq!(
             closed.notes,
@@ -1123,8 +1160,14 @@ mod tests {
             number: 7,
             state: "open".into(),
         };
-        let err =
-            close_run_with(store.conn(), &run, None, &guards(&tip, open(), None)).unwrap_err();
+        let err = close_run_with(
+            store.conn(),
+            &Git::new("git"),
+            &run,
+            None,
+            &guards(&tip, open(), None),
+        )
+        .unwrap_err();
         assert!(
             err.to_string().contains("PR #7 is open, not merged"),
             "{err}"
@@ -1132,6 +1175,7 @@ mod tests {
         assert!(err.to_string().contains("--pr-declined"), "{err}");
         let err = close_run_with(
             store.conn(),
+            &Git::new("git"),
             &run,
             None,
             &guards(&tip, PrCheck::Missing, None),
@@ -1142,6 +1186,7 @@ mod tests {
 
         let merged = close_run_with(
             store.conn(),
+            &Git::new("git"),
             &run,
             None,
             &guards(&tip, PrCheck::Merged(7), None),
@@ -1153,6 +1198,7 @@ mod tests {
         let tip = gate(&mut store, &run, "true", &dir.path().join("logs")).tip_sha;
         let closed = close_run_with(
             store.conn(),
+            &Git::new("git"),
             &run,
             None,
             &guards(&tip, open(), Some("superseded by #9")),
@@ -1206,7 +1252,14 @@ mod tests {
             .is_empty());
 
         let na = PrCheck::NotApplicable("the run has no remote".into());
-        let closed = close_run_with(store.conn(), &run, None, &guards(&tip, na, None)).unwrap();
+        let closed = close_run_with(
+            store.conn(),
+            &Git::new("git"),
+            &run,
+            None,
+            &guards(&tip, na, None),
+        )
+        .unwrap();
         assert_eq!(closed.status, "done");
         assert!(
             !gate_dir(&run).exists(),
@@ -1223,6 +1276,7 @@ mod tests {
         let (_dir, store, run) = world();
         let closed = close_run_with(
             store.conn(),
+            &Git::new("git"),
             &run,
             Some("stop"),
             &guards("0000", PrCheck::Missing, None),

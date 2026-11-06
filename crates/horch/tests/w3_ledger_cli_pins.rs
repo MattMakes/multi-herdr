@@ -282,7 +282,20 @@ fn the_board_commands_print_their_pinned_text() {
         events[4],
         "orchestrator note          T-2 no longer waits for T-1."
     );
-    assert_eq!(events.len(), 9, "{events:?}");
+    // 1 undelivered wake stays in the outbox. The requeue brings the board
+    // back to the same state, so it writes no second wake (TRF-21).
+    assert!(
+        events[5].ends_with(
+            "; it stays in the outbox: [horch] NOTE: Tasks can start: T-1, T-2. Spawn: dev x1, dev2 x1."
+        ),
+        "{events:?}"
+    );
+    assert_eq!(events[6], "orchestrator cancelled     T-2 cancelled: nope");
+    assert_eq!(
+        events[7],
+        "orchestrator requeued      T-2 is queued again by the operator: again"
+    );
+    assert_eq!(events.len(), 8, "{events:?}");
     let close = w.run(&["ledger", "run", "close"]);
     assert_eq!(close.code, 1);
     assert!(

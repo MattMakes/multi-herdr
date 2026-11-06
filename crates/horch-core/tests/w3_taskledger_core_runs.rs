@@ -216,9 +216,14 @@ fn a_run_with_open_work_closes_only_with_abandon_and_closes_once() {
     })
     .unwrap();
 
-    let err = runs::close_run(s.conn(), &run, None)
-        .unwrap_err()
-        .to_string();
+    let err = runs::close_run(
+        s.conn(),
+        &horch_core::taskledger::git::Git::new("git"),
+        &run,
+        None,
+    )
+    .unwrap_err()
+    .to_string();
     assert!(err.starts_with("run a still has open work: "), "{err}");
     assert!(
         err.ends_with(
@@ -228,7 +233,14 @@ fn a_run_with_open_work_closes_only_with_abandon_and_closes_once() {
     );
 
     let closed = s
-        .immediate(|tx| runs::close_run(tx, &run, Some("not needed")))
+        .immediate(|tx| {
+            runs::close_run(
+                tx,
+                &horch_core::taskledger::git::Git::new("git"),
+                &run,
+                Some("not needed"),
+            )
+        })
         .unwrap();
     assert_eq!(closed.status, "abandoned");
     assert_eq!(closed.cancelled.len(), 1);
@@ -236,9 +248,14 @@ fn a_run_with_open_work_closes_only_with_abandon_and_closes_once() {
 
     let (after, _) = resolve(&s, Some(&run.run_id), None).unwrap();
     assert_eq!(after.status, "abandoned");
-    let err = runs::close_run(s.conn(), &after, None)
-        .unwrap_err()
-        .to_string();
+    let err = runs::close_run(
+        s.conn(),
+        &horch_core::taskledger::git::Git::new("git"),
+        &after,
+        None,
+    )
+    .unwrap_err()
+    .to_string();
     assert_eq!(err, "run a is already abandoned");
 }
 
@@ -265,9 +282,14 @@ fn a_parked_worktree_without_a_decision_keeps_the_run_open() {
         )
         .unwrap();
 
-    let err = runs::close_run(s.conn(), &run, None)
-        .unwrap_err()
-        .to_string();
+    let err = runs::close_run(
+        s.conn(),
+        &horch_core::taskledger::git::Git::new("git"),
+        &run,
+        None,
+    )
+    .unwrap_err()
+    .to_string();
     assert!(
         err.starts_with("run a has 1 parked worktrees with no decision: "),
         "{err}"
@@ -281,7 +303,14 @@ fn a_parked_worktree_without_a_decision_keeps_the_run_open() {
     );
 
     let closed = s
-        .immediate(|tx| runs::close_run(tx, &run, Some("done with it")))
+        .immediate(|tx| {
+            runs::close_run(
+                tx,
+                &horch_core::taskledger::git::Git::new("git"),
+                &run,
+                Some("done with it"),
+            )
+        })
         .unwrap();
     assert_eq!(closed.status, "active", "the run stays open");
     assert_eq!(closed.parked.len(), 1);

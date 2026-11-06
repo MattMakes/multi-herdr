@@ -434,9 +434,12 @@ pub fn unsettled(conn: &Connection, run_id: &str) -> Result<Vec<Unsettled>> {
             ))
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
-    out.extend(rows.into_iter().filter_map(|(path, status, decision, scratch)| {
-        worktree_unsettled(path, status, decision.as_deref(), scratch != 0)
-    }));
+    out.extend(
+        rows.into_iter()
+            .filter_map(|(path, status, decision, scratch)| {
+                worktree_unsettled(path, status, decision.as_deref(), scratch != 0)
+            }),
+    );
     Ok(out)
 }
 
@@ -805,9 +808,7 @@ mod trf_15_tests {
     ];
 
     /// A run with 1 done task and 1 worktree row of `case`.
-    fn fixture(
-        case: (&str, bool, Option<&str>, bool, bool),
-    ) -> (tempfile::TempDir, Store, Run) {
+    fn fixture(case: (&str, bool, Option<&str>, bool, bool)) -> (tempfile::TempDir, Store, Run) {
         let (status, on_disk, decision, scratch, _) = case;
         let dir = tempfile::tempdir().unwrap();
         let mut store = Store::open(&dir.path().join("ledger.sqlite3")).unwrap();
@@ -873,7 +874,12 @@ mod trf_15_tests {
                 !settled,
                 "{case:?}"
             );
-            let closed = runs::close_run(store.conn(), &run, None);
+            let closed = runs::close_run(
+                store.conn(),
+                &crate::taskledger::git::Git::new("git"),
+                &run,
+                None,
+            );
             assert_eq!(closed.is_ok(), settled, "{case:?}: {closed:?}");
         }
     }
@@ -894,7 +900,16 @@ mod trf_15_tests {
             ["T-1 (held: two failures)"]
         );
         assert!(!report(store.conn(), &run).unwrap().complete);
-        let err = runs::close_run(store.conn(), &run, None).unwrap_err();
-        assert!(err.to_string().contains("T-1 (held: two failures)"), "{err}");
+        let err = runs::close_run(
+            store.conn(),
+            &crate::taskledger::git::Git::new("git"),
+            &run,
+            None,
+        )
+        .unwrap_err();
+        assert!(
+            err.to_string().contains("T-1 (held: two failures)"),
+            "{err}"
+        );
     }
 }

@@ -559,7 +559,12 @@ mod trf_15_tests {
             assert_eq!(note.is_some(), settled, "{case:?}");
             let board = status::report(store.conn(), &run).unwrap();
             assert_eq!(board.complete, settled, "{case:?}");
-            let closed = runs::close_run(store.conn(), &run, None);
+            let closed = runs::close_run(
+                store.conn(),
+                &horch_core::taskledger::git::Git::new("git"),
+                &run,
+                None,
+            );
             assert_eq!(closed.is_ok(), settled, "{case:?}: {closed:?}");
         }
     }

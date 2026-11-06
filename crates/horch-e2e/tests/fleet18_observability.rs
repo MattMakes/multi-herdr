@@ -320,6 +320,16 @@ fn g52_concurrent_workers_get_their_own_session_and_transcript() {
         &h,
         &["ledger", "run", "new", "race", "--heartbeat-every", "1"],
     );
+    // A task-less spawn needs a startable task (TRF-31): 1 per worker.
+    for n in 1..=2 {
+        let file = h.project.join(format!("race-{n}.md"));
+        std::fs::write(&file, format!("# Race {n}\n**Check:** `true`\n")).unwrap();
+        let file = file.to_string_lossy().into_owned();
+        ok(
+            &h,
+            &["ledger", "add", "--file", &file, "--primary", "codex-terra"],
+        );
+    }
     let argv = [
         "spawn",
         "codex-terra",
@@ -352,7 +362,8 @@ fn g52_concurrent_workers_get_their_own_session_and_transcript() {
     }
     let workers = wait("two session transcripts", || {
         let state: serde_json::Value =
-            serde_json::from_str(&ok(&h, &["ledger", "status", "--json"])).ok()?;
+            // The queued tasks keep the run open, so status exits 1 (TRF-15).
+            serde_json::from_str(&out(&h.run(&["ledger", "status", "--json"]))).ok()?;
         let ws: Vec<_> = state["workers"]
             .as_array()?
             .iter()

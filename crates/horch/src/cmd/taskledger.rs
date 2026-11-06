@@ -1747,11 +1747,11 @@ fn close_run_cmd(
     // C6 first: an unsettled run gets the settled rule's refusal, before gh.
     let settled = status::unsettled(store.conn(), &r.run_id)?.is_empty();
     let closed = match abandon {
-        Some(_) => store.immediate(|tx| runs::close_run(tx, r, abandon))?,
-        None if !settled => store.immediate(|tx| runs::close_run(tx, r, None))?,
+        Some(_) => store.immediate(|tx| runs::close_run(tx, &t.git, r, abandon))?,
+        None if !settled => store.immediate(|tx| runs::close_run(tx, &t.git, r, None))?,
         None => {
             let guards = close_guards(t, r, pr_declined)?;
-            store.immediate(|tx| runs::close_run_with(tx, r, None, &guards))?
+            store.immediate(|tx| runs::close_run_with(tx, &t.git, r, None, &guards))?
         }
     };
     for note in &closed.notes {

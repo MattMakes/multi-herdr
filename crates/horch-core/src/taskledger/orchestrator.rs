@@ -1051,7 +1051,14 @@ mod tests {
         let now = crate::clock::now_stamp();
         let run = runs::get(store.conn(), &run_id).unwrap();
         store
-            .immediate(|tx| runs::close_run(tx, &run, Some("test")))
+            .immediate(|tx| {
+                runs::close_run(
+                    tx,
+                    &crate::taskledger::git::Git::new("git"),
+                    &run,
+                    Some("test"),
+                )
+            })
             .unwrap();
         assert!(guard(store.conn(), &run_id).unwrap().stopped_at.is_some());
         // Even with the stop cleared, a closed run does not respawn.
