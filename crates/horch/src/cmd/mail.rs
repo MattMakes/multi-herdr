@@ -99,6 +99,8 @@ impl<'a> Courier<'a> {
 
     fn run(&mut self) -> Result<()> {
         loop {
+            // Undelivered ledger wakes become mail first (trace-fixes C3).
+            super::taskledger_wake::drain_workspace(self.ctx, self.workspace);
             let pending = self.mail.pending()?;
             let role_mail = pending_role_mail(&self.mail);
             match self.next_step(&pending, &role_mail)? {
