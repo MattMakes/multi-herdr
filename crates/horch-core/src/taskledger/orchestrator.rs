@@ -296,8 +296,8 @@ pub fn check(tx: &Transaction, run_id: &str, now: &str, probe: &dyn Probe) -> Re
 /// Record the live lock holder as the orchestrator's agent, when it is not
 /// already recorded.
 fn register(tx: &Transaction, orch: &Worker, h: Holder) -> Result<Checked> {
-    let same = orch.agent_pid == Some(h.pid as i64)
-        && orch.agent_started == h.started.map(|s| s as i64);
+    let same =
+        orch.agent_pid == Some(h.pid as i64) && orch.agent_started == h.started.map(|s| s as i64);
     if same {
         return Ok(Checked {
             outcome: Outcome::Nothing,
@@ -605,16 +605,28 @@ mod tests {
         assert_eq!(old.handoff_path.as_deref(), handoff.to_str());
 
         let new = workers::get(store.conn(), &r.new_worker_id).unwrap();
-        assert_eq!((new.kind.as_str(), new.status.as_str()), ("orchestrator", "working"));
-        assert_eq!(new.previous_worker_id.as_deref(), Some(r.old_worker_id.as_str()));
+        assert_eq!(
+            (new.kind.as_str(), new.status.as_str()),
+            ("orchestrator", "working")
+        );
+        assert_eq!(
+            new.previous_worker_id.as_deref(),
+            Some(r.old_worker_id.as_str())
+        );
         let run = runs::get(store.conn(), &run_id).unwrap();
-        assert_eq!(run.orchestrator_worker_id.as_deref(), Some(r.new_worker_id.as_str()));
+        assert_eq!(
+            run.orchestrator_worker_id.as_deref(),
+            Some(r.new_worker_id.as_str())
+        );
 
         let first = first_instruction(&r.slug, r.number);
         let handoff_at = first.find(HANDOFF_FILE).unwrap();
         let decisions_at = first.find("ai_docs/plans/r1/decisions.md").unwrap();
         let status_at = first.find("horch ledger status").unwrap();
-        assert!(handoff_at < decisions_at && decisions_at < status_at, "{first}");
+        assert!(
+            handoff_at < decisions_at && decisions_at < status_at,
+            "{first}"
+        );
         assert_eq!(
             parse_respawn_env(&r.env_value()),
             Some(("r1".to_string(), 1))
@@ -630,7 +642,10 @@ mod tests {
             pid: 777,
             started: Some(9),
         }));
-        assert_eq!(pass(&mut store, &run_id, &now, &probe), Outcome::Registered(777));
+        assert_eq!(
+            pass(&mut store, &run_id, &now, &probe),
+            Outcome::Registered(777)
+        );
         let run = runs::get(store.conn(), &run_id).unwrap();
         let w = workers::get(store.conn(), run.orchestrator_worker_id.as_deref().unwrap()).unwrap();
         assert_eq!((w.agent_pid, w.agent_started), (Some(777), Some(9)));
@@ -655,9 +670,15 @@ mod tests {
         // No agent PID was ever recorded.
         store
             .conn()
-            .execute("UPDATE workers SET agent_pid = NULL WHERE worker_id = ?1", [&orch])
+            .execute(
+                "UPDATE workers SET agent_pid = NULL WHERE worker_id = ?1",
+                [&orch],
+            )
             .unwrap();
-        assert_eq!(pass(&mut store, &run_id, &now, &Fake::dead()), Outcome::Nothing);
+        assert_eq!(
+            pass(&mut store, &run_id, &now, &Fake::dead()),
+            Outcome::Nothing
+        );
         assert_eq!(guard(store.conn(), &run_id).unwrap().respawns, 0);
     }
 
@@ -668,8 +689,15 @@ mod tests {
         let probe = Fake::dead();
         probe.open.set(Some(false));
         let out = pass(&mut store, &run_id, &now, &probe);
-        assert!(matches!(&out, Outcome::NotRespawned(why) if why.contains("w1 is gone")), "{out:?}");
-        assert_eq!(pass(&mut store, &run_id, &now, &probe), Outcome::Nothing, "1 event only");
+        assert!(
+            matches!(&out, Outcome::NotRespawned(why) if why.contains("w1 is gone")),
+            "{out:?}"
+        );
+        assert_eq!(
+            pass(&mut store, &run_id, &now, &probe),
+            Outcome::Nothing,
+            "1 event only"
+        );
         assert_eq!(guard(store.conn(), &run_id).unwrap().respawns, 0);
     }
 
@@ -679,9 +707,15 @@ mod tests {
         let now = crate::clock::now_stamp();
         assert!(record_stop(store.conn(), &run_id).unwrap());
         let first = guard(store.conn(), &run_id).unwrap().stopped_at;
-        assert!(!record_stop(store.conn(), &run_id).unwrap(), "the first stop stays");
+        assert!(
+            !record_stop(store.conn(), &run_id).unwrap(),
+            "the first stop stays"
+        );
         assert_eq!(guard(store.conn(), &run_id).unwrap().stopped_at, first);
-        assert_eq!(pass(&mut store, &run_id, &now, &Fake::dead()), Outcome::Nothing);
+        assert_eq!(
+            pass(&mut store, &run_id, &now, &Fake::dead()),
+            Outcome::Nothing
+        );
         assert_eq!(guard(store.conn(), &run_id).unwrap().respawns, 0);
         let line = status_line(store.conn(), &run_id).unwrap().unwrap();
         assert!(line.contains("stopped at"), "{line}");
@@ -704,7 +738,10 @@ mod tests {
                 [&run_id],
             )
             .unwrap();
-        assert_eq!(pass(&mut store, &run_id, &now, &Fake::dead()), Outcome::Nothing);
+        assert_eq!(
+            pass(&mut store, &run_id, &now, &Fake::dead()),
+            Outcome::Nothing
+        );
         assert_eq!(guard(store.conn(), &run_id).unwrap().respawns, 0);
     }
 
@@ -758,7 +795,10 @@ mod tests {
             &crate::taskledger::status::report(store.conn(), &run).unwrap(),
         );
         assert!(
-            board.contains(&format!("Orchestrator: respawned 3 of 3, last at {}.", at(&t0, 1200))),
+            board.contains(&format!(
+                "Orchestrator: respawned 3 of 3, last at {}.",
+                at(&t0, 1200)
+            )),
             "{board}"
         );
     }
@@ -766,14 +806,25 @@ mod tests {
     #[test]
     fn trf_40_the_workspace_lock_admits_1_orchestrator() {
         let dir = tempfile::tempdir().unwrap();
-        let held = lock(dir.path(), "w1").unwrap().expect("the first launcher locks");
+        let held = lock(dir.path(), "w1")
+            .unwrap()
+            .expect("the first launcher locks");
         let me = holder(dir.path(), "w1").expect("this process holds it");
         assert_eq!(me.pid, std::process::id());
-        assert!(lock(dir.path(), "w1").unwrap().is_none(), "a 2nd orchestrator refuses");
-        assert!(lock(dir.path(), "w2").unwrap().is_some(), "another workspace has its own");
+        assert!(
+            lock(dir.path(), "w1").unwrap().is_none(),
+            "a 2nd orchestrator refuses"
+        );
+        assert!(
+            lock(dir.path(), "w2").unwrap().is_some(),
+            "another workspace has its own"
+        );
         drop(held);
         assert!(holder(dir.path(), "w1").is_none());
-        assert!(lock(dir.path(), "w1").unwrap().is_some(), "free after the holder ends");
+        assert!(
+            lock(dir.path(), "w1").unwrap().is_some(),
+            "free after the holder ends"
+        );
         assert_eq!(lock_name("ws/1:a"), "orchestrator-ws_1_a");
     }
 }

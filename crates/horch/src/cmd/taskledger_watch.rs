@@ -12,6 +12,7 @@ use horch_core::runtime::RuntimeContext;
 use horch_core::taskledger::finish::land;
 use horch_core::taskledger::git::Git;
 use horch_core::taskledger::model::StopRequester;
+use horch_core::taskledger::orchestrator;
 use horch_core::taskledger::runs::{self, Run};
 use horch_core::taskledger::stop;
 use horch_core::taskledger::watchdog::{self, Observation, Observer, Sighting};
@@ -156,7 +157,22 @@ fn pass(
         act_on(ctx, store, run, c);
     }
     taskledger_wake::after_watch(ctx, store, run);
-    reconcile_at(ctx, store, run, &horch_core::taskledger::util::now(), seen);
+    let now = horch_core::taskledger::util::now();
+    reconcile_at(ctx, store, run, &now, seen);
+    let herdr = Herdr::with_bin(&ctx.bins.harness.herdr);
+    let open = |ws: &str| {
+        herdr
+            .workspace_list()
+            .ok()
+            .map(|l| l.iter().any(|w| w.workspace_id == ws))
+    };
+    let probe = orchestrator::Os {
+        lock_dir: &orchestrator::lock_dir(&ctx.paths.ledger_db),
+        herdr_open: &open,
+    };
+    orchestrator_at(ctx, store, run, &now, &probe, &|r| {
+        super::recipes::respawn_orchestrator(ctx, r)
+    });
     let git = Git::new(&ctx.bins.harness.git);
     for (path, o) in land::retry_cleanup(store, &git)? {
         eprintln!("horch ledger watch: cleanup of {path}: {}", o.note);
@@ -194,6 +210,46 @@ fn reconcile_at(
     taskledger_wake::wake_as(ctx, store, run, |tx| {
         watchdog::startable_rewake(tx, run, now, seen)
     });
+}
+
+/// The orchestrator check of a pass at `now` (trace-fixes C7): record a
+/// live orchestrator's PID, and start a respawn the guards allow with
+/// `launch`. A failure is printed; a failed launch is recorded.
+fn orchestrator_at(
+    ctx: &RuntimeContext,
+    store: &mut Store,
+    run: &Run,
+    now: &str,
+    probe: &dyn orchestrator::Probe,
+    launch: &dyn Fn(&orchestrator::Respawn) -> Result<()>,
+) {
+    let checked = match store.immediate(|tx| orchestrator::check(tx, &run.run_id, now, probe)) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("horch ledger watch: the orchestrator check failed: {e:#}");
+            return;
+        }
+    };
+    match &checked.outcome {
+        orchestrator::Outcome::Respawned(r) => {
+            if let Err(e) = launch(r) {
+                eprintln!("horch ledger watch: the orchestrator respawn did not start: {e:#}");
+                if let Err(e) = orchestrator::launch_failed(store.conn(), r, &format!("{e:#}")) {
+                    eprintln!("horch ledger watch: recording the failed respawn failed: {e:#}");
+                }
+            }
+        }
+        orchestrator::Outcome::NotRespawned(why) => {
+            eprintln!(
+                "horch ledger watch: the orchestrator of run {} is gone; no respawn: {why}",
+                run.slug
+            );
+        }
+        _ => {}
+    }
+    // The wake goes out after the launch, so the new orchestrator's mailbox
+    // can take it; durable mail keeps it either way.
+    taskledger_wake::drain_run(ctx, store, run, checked.wake_id.as_deref());
 }
 
 /// What the watchdog does about 1 verdict: reap the dead, wake the
@@ -830,5 +886,221 @@ mod reconcile_tests {
             rows(&store, &run, "startable").is_empty(),
             "a claiming worker is on its way to the task"
         );
+    }
+}
+
+#[cfg(test)]
+mod orchestrator_tests {
+    use std::cell::{Cell, RefCell};
+    use std::path::Path;
+
+    use horch_core::runtime::MapEnv;
+    use horch_core::taskledger::model::WorkerKind;
+    use horch_core::taskledger::orchestrator::{Holder, Probe, Respawn};
+    use horch_core::taskledger::runs::NewRun;
+    use horch_core::taskledger::workers::{self, NewWorker};
+
+    use super::*;
+
+    /// No lock holder, no live PID, and the workspace is open.
+    struct Dead;
+
+    impl Probe for Dead {
+        fn holder(&self, _: &str) -> Option<Holder> {
+            None
+        }
+        fn alive(&self, _: u32, _: Option<u64>) -> bool {
+            false
+        }
+        fn workspace_open(&self, _: &str) -> Option<bool> {
+            Some(true)
+        }
+    }
+
+    /// A run in workspace `w1` whose orchestrator's agent PID is recorded,
+    /// and a context with no workspace: each send fails, so wakes stay.
+    fn world() -> (tempfile::TempDir, RuntimeContext, Store, Run) {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("ledger.sqlite3");
+        let ctx = RuntimeContext::from_env(
+            &MapEnv::new("/")
+                .with(
+                    "HORCH_STATE_DIR",
+                    dir.path().join("state").to_str().unwrap(),
+                )
+                .with("HORCH_LEDGER_DB", db.to_str().unwrap()),
+        )
+        .unwrap();
+        let mut store = Store::open(&db).unwrap();
+        let run = store
+            .immediate(|tx| {
+                let run = runs::create(
+                    tx,
+                    Path::new("/repo"),
+                    &NewRun {
+                        slug: "r1".into(),
+                        workspace_id: Some("w1".into()),
+                        ..Default::default()
+                    },
+                )?;
+                let id = workers::insert(
+                    tx,
+                    &NewWorker {
+                        run_id: run.run_id.clone(),
+                        kind: Some(WorkerKind::Orchestrator),
+                        persona: "orchestrator".into(),
+                        role: Some("orchestrator".into()),
+                        workspace_id: Some("w1".into()),
+                        ..Default::default()
+                    },
+                )?;
+                tx.execute(
+                    "UPDATE workers SET status = 'working', agent_pid = 4242, agent_started = 1
+                     WHERE worker_id = ?1",
+                    [&id],
+                )?;
+                runs::set_orchestrator(tx, &run.run_id, &id)?;
+                Ok(run)
+            })
+            .unwrap();
+        (dir, ctx, store, run)
+    }
+
+    fn at(t0: &chrono::DateTime<chrono::Utc>, secs: i64) -> String {
+        horch_core::clock::stamp(*t0 + chrono::Duration::seconds(secs))
+    }
+
+    /// Give the current orchestrator row a recorded agent PID, as the
+    /// pass after a launch does from the lock holder.
+    fn registered(store: &Store, run: &Run) {
+        let id = runs::get(store.conn(), &run.run_id)
+            .unwrap()
+            .orchestrator_worker_id
+            .unwrap();
+        store
+            .conn()
+            .execute(
+                "UPDATE workers SET agent_pid = 5000, agent_started = 2 WHERE worker_id = ?1",
+                [&id],
+            )
+            .unwrap();
+    }
+
+    #[test]
+    fn trf_38_a_pass_starts_the_respawn_of_a_dead_orchestrator() {
+        let (_dir, ctx, mut store, run) = world();
+        let launched = RefCell::new(Vec::<Respawn>::new());
+        let launch = |r: &Respawn| {
+            launched.borrow_mut().push(r.clone());
+            Ok(())
+        };
+        orchestrator_at(
+            &ctx,
+            &mut store,
+            &run,
+            &at(&horch_core::clock::now(), 0),
+            &Dead,
+            &launch,
+        );
+        let launched = launched.into_inner();
+        assert_eq!(launched.len(), 1);
+        let r = &launched[0];
+        assert_eq!(
+            (r.slug.as_str(), r.workspace_id.as_str(), r.number),
+            ("r1", "w1", 1)
+        );
+        let wake: String = store
+            .conn()
+            .query_row(
+                "SELECT text FROM outbox WHERE run_id = ?1 AND event = 'orchestrator-respawned'",
+                [&run.run_id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(
+            wake.contains("ai_docs/handoffs/orchestrator-whats-next.md"),
+            "{wake}"
+        );
+        assert!(wake.contains("ai_docs/plans/r1/decisions.md"), "{wake}");
+        assert!(wake.contains("horch ledger status"), "{wake}");
+    }
+
+    #[test]
+    fn trf_38_a_failed_respawn_launch_is_recorded_and_still_counts() {
+        let (_dir, ctx, mut store, run) = world();
+        let launch = |_: &Respawn| anyhow::bail!("herdr is down");
+        orchestrator_at(
+            &ctx,
+            &mut store,
+            &run,
+            &at(&horch_core::clock::now(), 0),
+            &Dead,
+            &launch,
+        );
+        let run_now = runs::get(store.conn(), &run.run_id).unwrap();
+        let new = workers::get(
+            store.conn(),
+            run_now.orchestrator_worker_id.as_deref().unwrap(),
+        )
+        .unwrap();
+        assert_eq!(new.status, "launch_failed");
+        assert!(new.end_reason.unwrap().contains("herdr is down"));
+        let g = orchestrator::guard(store.conn(), &run.run_id).unwrap();
+        assert_eq!(g.respawns, 1, "a launch that always fails cannot loop");
+    }
+
+    #[test]
+    fn trf_39_a_pass_after_fleet_stop_launches_nothing() {
+        let (_dir, ctx, mut store, run) = world();
+        orchestrator::record_stop(store.conn(), &run.run_id).unwrap();
+        let count = Cell::new(0);
+        let launch = |_: &Respawn| {
+            count.set(count.get() + 1);
+            Ok(())
+        };
+        let t0 = horch_core::clock::now();
+        for secs in (0..=1200).step_by(watchdog::RECONCILE_S as usize) {
+            orchestrator_at(
+                &ctx,
+                &mut store,
+                &run,
+                &at(&t0, secs as i64),
+                &Dead,
+                &launch,
+            );
+        }
+        assert_eq!(count.get(), 0);
+    }
+
+    #[test]
+    fn trf_40_passes_every_30_s_respawn_at_most_once_per_10_min_and_3_times() {
+        let (_dir, ctx, mut store, run) = world();
+        let times = RefCell::new(Vec::new());
+        let t0 = horch_core::clock::now();
+        for secs in (0..=3600).step_by(watchdog::RECONCILE_S as usize) {
+            let launch = |_: &Respawn| {
+                times.borrow_mut().push(secs);
+                Ok(())
+            };
+            orchestrator_at(
+                &ctx,
+                &mut store,
+                &run,
+                &at(&t0, secs as i64),
+                &Dead,
+                &launch,
+            );
+            // Each new orchestrator registers, then dies at once.
+            registered(&store, &run);
+        }
+        assert_eq!(times.into_inner(), vec![0, 600, 1200]);
+        let board = horch_core::taskledger::status::render(
+            &horch_core::taskledger::status::report(
+                store.conn(),
+                &runs::get(store.conn(), &run.run_id).unwrap(),
+            )
+            .unwrap(),
+        );
+        assert!(board.contains("Orchestrator: respawned 3 of 3"), "{board}");
     }
 }

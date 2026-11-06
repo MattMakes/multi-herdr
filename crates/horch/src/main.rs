@@ -78,7 +78,11 @@ enum LaunchCommand {
 
     /// Launch the herdr-fleet workspace: ONE orchestrator pane, which spawns
     /// exactly the workers the work needs, with a per-project session ledger.
+    /// `horch fleet stop` records a deliberate stop: no orchestrator respawn.
+    #[command(args_conflicts_with_subcommands = true)]
     Fleet {
+        #[command(subcommand)]
+        action: Option<FleetAction>,
         /// Who orchestrates, by model: `opus` (the default; also `cc`/`claude`)
         /// or `fable` for Claude Code, `astra` (also `codex`) or `sol` for
         /// Codex, or `auto`: Opus or Sol, whichever usage pool can serve it.
@@ -623,6 +627,17 @@ enum ChannelSubcommand {
 }
 
 #[derive(Subcommand)]
+enum FleetAction {
+    /// Record a deliberate stop of the orchestrator of each active run of
+    /// the project. The watchdog then does not respawn it.
+    Stop {
+        /// Project directory. Defaults to the current directory.
+        #[arg(long)]
+        cwd: Option<String>,
+    },
+}
+
+#[derive(Subcommand)]
 enum MailSubcommand {
     /// Redeliver pending mail until it is acknowledged.
     Courier {
@@ -878,6 +893,11 @@ impl LaunchCommand {
                 MailSubcommand::Courier { workspace } => done(cmd::mail::courier(ctx, &workspace)),
             },
             LaunchCommand::Fleet {
+                action: Some(FleetAction::Stop { cwd }),
+                ..
+            } => cmd::recipes::fleet_stop(ctx, cwd.as_deref()),
+            LaunchCommand::Fleet {
+                action: None,
                 cwd,
                 flavor,
                 no_update,
@@ -891,6 +911,7 @@ impl LaunchCommand {
                     no_update,
                     resume,
                     verify,
+                    respawn: None,
                 },
             )),
             LaunchCommand::Orchestration { cwd, no_update } => {
