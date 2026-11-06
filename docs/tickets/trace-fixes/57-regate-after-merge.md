@@ -21,6 +21,8 @@ Prove the run branch is releasable again after PR #338 was merged into it.
 4. On a failure, send QUESTION with the failing step, the test and the owner (ticket 56 or an earlier ticket). Do not fix it here, and do not rerun the gate hoping it passes.
 5. The run gate row cannot be recorded with installed horch 0.4.5 (report 33). Never set `HORCH_ALLOW_LEDGER_MIGRATE=1`. Never run a branch-built horch against the shared ledger.
 
+Amendment (report 58), before step 2: in your task worktree, change `teammates/README.md:337` from `intake-sanitizer | claude, sonnet, medium` to `claude, opus, medium` (ticket 58 moved the role to Opus), run `cargo fmt --all --check`, commit that 1 file by exact path, and run `horch ledger finish` once so it lands. Then gate the new tip. This ticket's Check is none; the file is approved.
+
 ## Done when
 
 The gate prints GATE GREEN on the tip, and report 57 names the tip sha.
