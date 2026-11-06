@@ -13,10 +13,15 @@ fn template() -> String {
 /// The first fenced block after the line `marker`, without its fences.
 fn fenced_after(text: &str, marker: &str) -> String {
     let mut lines = text.lines().skip_while(|l| l.trim() != marker);
-    assert!(lines.next().is_some(), "the template has no '{marker}' line");
+    assert!(
+        lines.next().is_some(),
+        "the template has no '{marker}' line"
+    );
     let mut lines = lines.skip_while(|l| !l.trim_start().starts_with("```"));
     assert!(lines.next().is_some(), "no fenced block after '{marker}'");
-    let body: Vec<&str> = lines.take_while(|l| !l.trim_start().starts_with("```")).collect();
+    let body: Vec<&str> = lines
+        .take_while(|l| !l.trim_start().starts_with("```"))
+        .collect();
     assert!(!body.is_empty(), "the block after '{marker}' is empty");
     body.join("\n") + "\n"
 }
@@ -33,7 +38,10 @@ fn lay_out(dir: &Path, ticket: &str, map_text: &str) -> PathBuf {
             linked += 1;
         }
     }
-    assert!(linked >= 2, "the example MAP links {linked} ticket files; want 2 or more");
+    assert!(
+        linked >= 2,
+        "the example MAP links {linked} ticket files; want 2 or more"
+    );
     let map_path = tickets.join("MAP.md");
     std::fs::write(&map_path, map_text).unwrap();
     map_path
@@ -77,11 +85,18 @@ fn trf_02_template_example_map_parses_with_the_ticket() {
     let map_path = lay_out(dir.path(), &ticket, &map_text);
 
     let parsed = map::read(&map_path, dir.path()).expect("the example MAP parses");
-    assert!(parsed.spec_ref.as_deref().is_some_and(|s| s.starts_with("docs/specs/")));
+    assert!(parsed
+        .spec_ref
+        .as_deref()
+        .is_some_and(|s| s.starts_with("docs/specs/")));
     assert!(parsed.items.len() >= 2);
     for item in &parsed.items {
         let t = &item.task;
-        assert!(!t.primary.is_empty(), "ticket {} has no primary persona", item.key);
+        assert!(
+            !t.primary.is_empty(),
+            "ticket {} has no primary persona",
+            item.key
+        );
         assert!(t.land_check.is_some(), "ticket {} has no Check", item.key);
         assert!(!t.own.is_empty(), "ticket {} has no Own paths", item.key);
         assert!(t.task_file.starts_with("docs/tickets/"), "{}", t.task_file);

@@ -147,9 +147,13 @@ impl World {
     }
 
     /// A claimed worktree task with `check`, and its worktree with 1 commit
-    /// of `file`.
+    /// of `file`. No `check` means its ticket says `**Check:** none`: a
+    /// task with no check lands only then (TRF-17).
     fn task(&mut self, check: Option<&str>, file: &str) -> (String, PathBuf) {
-        let w = self.claimed("opus", |t| t.land_check = check.map(Into::into));
+        let w = self.claimed("opus", |t| {
+            t.land_check = check.map(Into::into);
+            t.check_none = check.is_none();
+        });
         let wt = finish::worktree_new(&mut self.store, &self.tools.git, &w, "feat").unwrap();
         let path = PathBuf::from(&wt.path);
         commit(&path, file, "work\n");
@@ -440,6 +444,7 @@ fn a_task_that_is_not_landing_lands_nothing() {
         root: w.root.clone(),
         evidence_dir: evidence,
         seq: 1,
+        default_check: None,
     };
     let o = land::land(&mut w.store, &cx).unwrap();
     assert_eq!(o.verdict.as_deref(), Some("not landed"));
@@ -678,6 +683,59 @@ fn complexity_sweep_fails_on_a_violation_in_a_changed_function() {
     assert!(step(&r, "complexity-sweep").judged_rev.is_some());
 }
 
+/// A cargo crate whose `tangled` function is over the threshold that
+/// `clippy.toml` sets (2).
+const RUST_LIB: &str = "pub fn simple(x: u32) -> u32 {
+    x + 1
+}
+
+pub fn tangled(v: &[u32]) -> u32 {
+    let mut n = 0;
+    for a in v {
+        if *a > 1 {
+            for b in v {
+                if *b > *a && *a % 2 == 0 || *b == 3 {
+                    n += 1;
+                }
+            }
+        }
+    }
+    n
+}
+";
+
+#[test]
+fn trf_07_complexity_sweep_runs_clippy_on_a_changed_rust_function() {
+    let mut w = World::new(&[StepName::ComplexitySweep], false);
+    let files = [
+        (
+            "Cargo.toml",
+            "[package]\nname = \"fx\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[workspace]\n",
+        ),
+        ("clippy.toml", "cognitive-complexity-threshold = 2\n"),
+        (".gitignore", "target\nCargo.lock\n"),
+        ("src/lib.rs", RUST_LIB),
+    ];
+    std::fs::create_dir_all(w.root.join("src")).unwrap();
+    for (f, body) in files {
+        std::fs::write(w.root.join(f), body).unwrap();
+        git(&w.root, &["add", f]);
+    }
+    git(&w.root, &["commit", "--quiet", "-m", "crate"]);
+    git(&w.root, &["branch", "-f", RUN_BRANCH, "main"]);
+    let id = w.claimed("opus", |_| {});
+    let wt = finish::worktree_new(&mut w.store, &w.tools.git, &id, "feat").unwrap();
+    let path = PathBuf::from(&wt.path);
+    commit(&path, "src/lib.rs", &RUST_LIB.replace("n += 1", "n += 2"));
+    let r = w.finish(&id);
+    assert_eq!(verdict(&r, "complexity-sweep"), "1 violations", "{r:?}");
+    let n = note(&r, "complexity-sweep");
+    assert!(
+        n.contains("src/lib.rs:5 tangled cognitiveComplexity=5 (max 2)"),
+        "{n}"
+    );
+}
+
 // ---- pr (#146) ----
 
 const FAKE_GH: &str = r#"#!/bin/sh
@@ -811,7 +869,7 @@ fn pr_is_not_applicable_when_the_task_landed_no_commit_the_base_lacks() {
     let mut w = World::new(&[StepName::Land, StepName::Pr], true);
     let state = fake_gh(&w);
     // A research task: its worktree holds no commit beyond the base.
-    let id = w.claimed("opus", |_| {});
+    let id = w.claimed("opus", |t| t.check_none = true);
     finish::worktree_new(&mut w.store, &w.tools.git, &id, "feat").unwrap();
     let r = w.finish(&id);
     assert!(r.complete, "{r:?}");

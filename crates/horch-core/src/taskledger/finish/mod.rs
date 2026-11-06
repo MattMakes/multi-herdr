@@ -39,7 +39,10 @@ pub struct Tools {
     /// `node`, for the complexity analyser.
     pub node: PathBuf,
     /// The complexity-sweep skill's analyser (`code/cli/dist/index.js`), or
-    /// an executable that takes the same arguments.
+    /// an executable that takes the same arguments. It reads changed
+    /// ts/js/py files. Changed Rust files do not use it: complexity-sweep
+    /// runs `cargo clippy` (lint `clippy::cognitive_complexity`) from PATH
+    /// for them, when the work dir has a `Cargo.toml`.
     pub complexity_cli: Option<PathBuf>,
     /// The code-sweep skill's directory (it holds `reviewers/`).
     pub code_sweep_dir: Option<PathBuf>,
@@ -166,6 +169,48 @@ pub struct Ctx<'a> {
     pub root: PathBuf,
     pub evidence_dir: PathBuf,
     pub seq: i64,
+    /// The run's default check (`run new --check`): the check of a task
+    /// that names none (TRF-16).
+    pub default_check: Option<String>,
+}
+
+impl Ctx<'_> {
+    /// The commit the task's diff starts from, for code-sweep and
+    /// complexity-sweep: the claim commit of a shared-checkout task, whose
+    /// commits are on the run branch already (TRF-18); else the run branch.
+    pub fn diff_base(&self) -> Result<String> {
+        if !self.task.uses_worktree() {
+            if let Some(start) = shared_start(&self.tools.evidence_root, &self.task.task_id) {
+                return Ok(start);
+            }
+        }
+        self.run
+            .run_branch
+            .clone()
+            .or(self.run.base_branch.clone())
+            .context("the run has no run branch")
+    }
+}
+
+/// The default check of run `run_id`, when `run new --check` set one.
+pub fn default_check(conn: &Connection, run_id: &str) -> Result<Option<String>> {
+    let check: Option<String> = conn
+        .query_row(
+            "SELECT default_check FROM runs WHERE run_id = ?1",
+            [run_id],
+            |r| r.get(0),
+        )
+        .with_context(|| format!("no run {run_id}"))?;
+    Ok(check.filter(|c| !c.trim().is_empty()))
+}
+
+/// Set the default check of run `run_id` (`run new --check`).
+pub fn set_default_check(conn: &Connection, run_id: &str, check: &str) -> Result<()> {
+    conn.execute(
+        "UPDATE runs SET default_check = ?2 WHERE run_id = ?1",
+        params![run_id, check],
+    )?;
+    Ok(())
 }
 
 /// 1 worktree row.
@@ -579,6 +624,8 @@ struct Attempt<'a> {
     dir: PathBuf,
     evidence_dir: PathBuf,
     wt: Option<WorktreeRow>,
+    /// The run's default check (TRF-16).
+    default_check: Option<String>,
     /// The seq of the land step, when the run has one.
     land_seq: Option<i64>,
 }
@@ -626,8 +673,10 @@ impl<'a> Attempt<'a> {
         let dir = work_dir(wt.as_ref(), &root);
         let evidence_dir = tools.evidence_root.join(&task.task_id).join(&w.worker_id);
         std::fs::create_dir_all(&evidence_dir)?;
+        let default_check = default_check(store.conn(), &run.run_id)?;
         Ok(Attempt {
             tools,
+            default_check,
             land_seq: land_seq(&names),
             run,
             task,
@@ -728,6 +777,7 @@ impl<'a> Attempt<'a> {
             root: self.root.clone(),
             evidence_dir: self.evidence_dir.clone(),
             seq,
+            default_check: self.default_check.clone(),
         };
         store.immediate(|tx| {
             tx.execute(

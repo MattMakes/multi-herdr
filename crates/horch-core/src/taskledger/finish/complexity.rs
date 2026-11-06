@@ -433,12 +433,7 @@ pub fn rust_violations(
 /// The step.
 pub fn step(cx: &Ctx<'_>) -> Result<Outcome> {
     let git = &cx.tools.git;
-    let base = cx
-        .run
-        .run_branch
-        .clone()
-        .or(cx.run.base_branch.clone())
-        .context("the run has no run branch")?;
+    let base = cx.diff_base()?;
     let names = git.run(
         &cx.dir,
         &[

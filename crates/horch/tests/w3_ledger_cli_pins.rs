@@ -309,6 +309,8 @@ fn the_board_commands_print_their_pinned_text() {
 #[test]
 fn a_worker_claims_makes_a_worktree_and_finishes() {
     let w = World::new();
+    // A task with no check lands only when its ticket says so (TRF-17).
+    std::fs::write(w.proj().join("t1.md"), "# Ticket One\n\n**Check:** none\n").unwrap();
     w.ok(&["ledger", "run", "new", "r1", "--verify", "full"]);
     w.ok(&["ledger", "add", "--file", "t1.md", "--primary", "dev"]);
     let id = w

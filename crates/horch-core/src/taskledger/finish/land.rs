@@ -227,12 +227,24 @@ mod signals {
     pub(super) fn forget() {}
 }
 
-/// The task's check command, if it has one.
-fn check_command<'a>(cx: &'a Ctx<'_>) -> Option<&'a str> {
-    cx.task
-        .land_check
-        .as_deref()
-        .filter(|c| !c.trim().is_empty())
+/// The check command of the task: its own, else the run's default
+/// (TRF-16). `None` only when the ticket says `**Check:** none`. A task with
+/// neither is an error: work never lands untested by default (TRF-17).
+fn check_command<'a>(cx: &'a Ctx<'_>) -> Result<Option<&'a str>> {
+    let own = cx.task.land_check.as_deref();
+    let run = cx.default_check.as_deref();
+    if let Some(cmd) = own.or(run).filter(|c| !c.trim().is_empty()) {
+        return Ok(Some(cmd));
+    }
+    if cx.task.check_none {
+        return Ok(None);
+    }
+    bail!(
+        "{} has no check command, and the run has no default check. Give the task a check \
+         (horch ledger add --check), give the run one (horch ledger run new --check), \
+         or write `**Check:** none` in the ticket",
+        cx.task.short()
+    )
 }
 
 /// The process that runs the check `command` in `dir`: the shell, or for a
@@ -257,10 +269,10 @@ fn check_process(cx: &Ctx<'_>, dir: &Path, command: &str, sandboxed: bool) -> Re
     Ok(cmd)
 }
 
-/// Run the task's check in `dir`. `None` when it passed or there is none,
-/// else how it ended and why it did not pass.
+/// Run the task's check in `dir`. `None` when it passed or the ticket says
+/// `**Check:** none`, else how it ended and why it did not pass.
 fn check_in(cx: &Ctx<'_>, dir: &Path, log: &Path) -> Result<Option<(Checked, String)>> {
-    let Some(cmd) = check_command(cx) else {
+    let Some(cmd) = check_command(cx)? else {
         return Ok(None);
     };
     let timeout = check_timeout(&cx.tools.evidence_root, &cx.task.task_id);
@@ -305,12 +317,13 @@ fn require_clean(git: &Git, dir: &Path, shared: bool) -> Result<()> {
     Ok(())
 }
 
-/// `check` and `recheck`: the task's check command, exit 0 to pass.
+/// `check` and `recheck`: the task's check command, exit 0 to pass. A task
+/// with no check fails unless its ticket says `**Check:** none`.
 pub fn check(cx: &Ctx<'_>, name: StepName) -> Result<Outcome> {
-    let Some(cmd) = check_command(cx) else {
-        return Ok(Outcome::not_applicable(
-            "the task has no check command (horch ledger add --check)",
-        ));
+    let cmd = match check_command(cx) {
+        Ok(Some(cmd)) => cmd,
+        Ok(None) => return Ok(Outcome::not_applicable("the ticket says `**Check:** none`")),
+        Err(e) => return Ok(Outcome::fail("no check", None, &format!("{e:#}"))),
     };
     require_clean(&cx.tools.git, &cx.dir, !cx.task.uses_worktree())?;
     let log = cx
@@ -436,6 +449,9 @@ pub fn land(store: &mut Store, cx: &Ctx<'_>) -> Result<Outcome> {
         .clone()
         .context("the run has no run branch")?;
     let log = cx.evidence_dir.join(format!("{}-land.log", cx.seq));
+    if let Err(e) = check_command(cx) {
+        return Ok(Outcome::fail("no check", None, &format!("{e:#}")));
+    }
     let Some(wt) = cx.worktree.clone() else {
         return land_shared(cx, &run_branch, &log);
     };
@@ -1181,6 +1197,11 @@ mod tests {
 
     impl World {
         fn new(check: &str) -> World {
+            World::shaped(|t| t.land_check = Some(check.into()))
+        }
+
+        /// Like [`World::new`], with the task shaped by `shape`.
+        fn shaped(shape: impl FnOnce(&mut NewTask)) -> World {
             let tmp = tempfile::tempdir().unwrap();
             let top = tmp.path().canonicalize().unwrap();
             let root = top.join("repo");
@@ -1223,7 +1244,7 @@ mod tests {
                 codex: CodexSandbox::default(),
             };
             let mut t = NewTask::work("feature", "t.md", "opus");
-            t.land_check = Some(check.into());
+            shape(&mut t);
             let worker = store
                 .immediate(|tx| {
                     tasks::add(tx, &run, &t, Actor::Orchestrator)?;
@@ -1298,6 +1319,56 @@ mod tests {
             s.verdict.clone().unwrap_or_default(),
             s.note.clone().unwrap_or_default(),
         )
+    }
+
+    #[test]
+    fn trf_16_a_task_with_no_check_runs_the_run_default_check() {
+        let mut w = World::shaped(|_| {});
+        finish::set_default_check(w.store.conn(), &w.run.run_id, "false").unwrap();
+        w.move_run_branch();
+        let r = w.finish();
+        let (verdict, note) = land_note(&r);
+        assert_eq!(verdict, "not landed", "{note}");
+        assert!(note.contains("`false` failed"), "{note}");
+
+        finish::set_default_check(w.store.conn(), &w.run.run_id, "touch ran-default").unwrap();
+        let r = w.finish();
+        assert!(r.complete, "{r:?}");
+        assert!(w.wt.join("ran-default").exists(), "the default check ran");
+        assert_eq!(w.row().status, "landed");
+    }
+
+    #[test]
+    fn trf_16_the_task_check_wins_over_the_run_default() {
+        let mut w = World::new("true");
+        finish::set_default_check(w.store.conn(), &w.run.run_id, "false").unwrap();
+        w.move_run_branch();
+        let r = w.finish();
+        assert!(r.complete, "{r:?}");
+        assert_eq!(w.row().status, "landed");
+    }
+
+    #[test]
+    fn trf_17_land_refuses_a_task_with_no_check() {
+        let mut w = World::shaped(|_| {});
+        let tip = w.head();
+        let r = w.finish();
+        assert!(!r.complete, "{r:?}");
+        let (verdict, note) = land_note(&r);
+        assert_eq!(verdict, "no check");
+        assert!(note.contains("`**Check:** none`"), "{note}");
+        assert!(note.contains("run new --check"), "{note}");
+        assert_eq!(w.row().status, "open", "nothing landed");
+        assert_eq!(w.head(), tip);
+        assert_ne!(git(&w.root, &["rev-parse", RUN_BRANCH]), tip);
+    }
+
+    #[test]
+    fn trf_17_a_ticket_with_check_none_lands_without_a_check() {
+        let mut w = World::shaped(|t| t.check_none = true);
+        let r = w.finish();
+        assert!(r.complete, "{r:?}");
+        assert_eq!(w.row().status, "landed");
     }
 
     #[test]
@@ -1379,6 +1450,7 @@ mod tests {
             root: w.root.clone(),
             evidence_dir: w.tools.evidence_root.join("ev"),
             seq: 1,
+            default_check: None,
         };
         let stale_after = |g: &crate::fsx::DirLockGuard| {
             let owner: serde_json::Value =

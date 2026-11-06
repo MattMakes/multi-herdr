@@ -1725,7 +1725,7 @@ fn the_whole_flow_on_the_fake_herdr() {
         ticket(
             &h,
             n,
-            &format!("# {t}\n\n**Persona:** primary `{persona}`\n"),
+            &format!("# {t}\n\n**Persona:** primary `{persona}`\n**Check:** none\n"),
         );
     }
     std::fs::write(
@@ -1984,7 +1984,12 @@ fn claimed_with_commit(
     file: &str,
 ) -> (String, PathBuf) {
     ok(h, &["ledger", "run", "new", "alpha", "--steps", steps]);
-    let p = ticket(h, "01-a", "# 01: Feature\n");
+    // No check: the ticket says so, or the task does not land (TRF-17).
+    let body = match check {
+        Some(_) => "# 01: Feature\n",
+        None => "# 01: Feature\n\n**Check:** none\n",
+    };
+    let p = ticket(h, "01-a", body);
     let mut add = vec![
         "ledger".to_string(),
         "add".into(),

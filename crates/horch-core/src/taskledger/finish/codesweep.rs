@@ -1059,12 +1059,7 @@ impl Judgement<'_> {
 
 /// The step.
 pub fn step(store: &mut Store, cx: &Ctx<'_>) -> Result<Outcome> {
-    let base = cx
-        .run
-        .run_branch
-        .clone()
-        .or(cx.run.base_branch.clone())
-        .context("the run has no run branch")?;
+    let base = cx.diff_base()?;
     let (mut state, tree) = match current_round(store, cx, &base)? {
         Ok(round) => round,
         Err(outcome) => return Ok(outcome),

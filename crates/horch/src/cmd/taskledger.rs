@@ -353,6 +353,11 @@ pub struct NewRunArgs {
     /// (default 3).
     #[arg(long)]
     max_attempts: Option<i64>,
+    /// The run's default check command: the check of each task that names
+    /// none. A task with no check, and no `**Check:** none` in its ticket,
+    /// does not land.
+    #[arg(long, value_name = "CMD")]
+    check: Option<String>,
 }
 
 #[derive(Subcommand)]
@@ -1731,7 +1736,8 @@ fn new_run_cmd(
             max_attempts: a.max_attempts,
         },
     };
-    let r = insert_run(ctx, store, root, &new)?;
+    let check = a.check.as_deref().filter(|c| !c.trim().is_empty());
+    let r = insert_run(ctx, store, root, &new, check)?;
     report_created(&r);
     Ok(ExitCode::SUCCESS)
 }
@@ -1840,10 +1846,20 @@ fn run_branches(
 
 /// Insert the run and the orchestrator's own row: the pane it runs in. It is
 /// never watched for progress (section 9).
-fn insert_run(ctx: &RuntimeContext, store: &mut Store, root: &Path, new: &NewRun) -> Result<Run> {
+/// `check` is the run's default check (TRF-16).
+fn insert_run(
+    ctx: &RuntimeContext,
+    store: &mut Store,
+    root: &Path,
+    new: &NewRun,
+    check: Option<&str>,
+) -> Result<Run> {
     let pane = ctx.herdr.pane.as_ref().map(|p| p.as_str().to_string());
     store.immediate(|tx| {
         let r = runs::create(tx, root, new)?;
+        if let Some(check) = check {
+            finish::set_default_check(tx, &r.run_id, check)?;
+        }
         let id = workers::insert(
             tx,
             &NewWorker {
@@ -2874,6 +2890,40 @@ mod tests {
         let (ctx, store, mut c) = claimed(other.path(), &root, Some("fleet/r1"), |_| {});
         absolute_ticket_if_missing(&ctx, &store, &mut c);
         assert_eq!(Path::new(ticket_of(&c)), root.join("tickets/t.md"));
+    }
+
+    #[test]
+    fn trf_16_run_new_check_sets_the_run_default_check() {
+        use clap::Parser;
+        #[derive(Parser)]
+        struct Cli {
+            #[command(flatten)]
+            a: super::NewRunArgs,
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let root = project(dir.path(), false);
+        let ctx = RuntimeContext::from_env(&MapEnv::new(dir.path())).unwrap();
+        let mut store = Store::open(&dir.path().join("ledger.sqlite3")).unwrap();
+        for (slug, check, want) in [
+            ("r1", Some("cargo test"), Some("cargo test")),
+            ("r2", Some(" "), None),
+            ("r3", None, None),
+        ] {
+            let mut argv = vec!["run-new", slug];
+            if let Some(c) = check {
+                argv.extend(["--check", c]);
+            }
+            let a = Cli::try_parse_from(argv).unwrap().a;
+            super::new_run_cmd(&ctx, &mut store, &root, a).unwrap();
+            let run = runs::of_project(store.conn(), &root)
+                .unwrap()
+                .into_iter()
+                .find(|r| r.slug == slug)
+                .unwrap();
+            let got =
+                horch_core::taskledger::finish::default_check(store.conn(), &run.run_id).unwrap();
+            assert_eq!(got.as_deref(), want, "{slug}");
+        }
     }
 
     /// Whether `cmd` or a subcommand under it takes `--check`.
