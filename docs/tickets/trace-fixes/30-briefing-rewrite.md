@@ -40,6 +40,8 @@ Amendment (report 10): `horch ledger claim` now prints the ticket snapshot, then
 
 Amendment (decision R11): add `question` to the C3 event list in `docs/specs/trace-fixes.md` section 3, and name the 2 light reviewer personas in the docs that list teammates.
 
+Amendment (report 34): `docs/specs/architecture.md` lines near 1211 and 1274 still describe `footprint_bytes`, which ticket 34 deleted. The module doc of `crates/horch-core/src/harness/capabilities.rs` names the competition preflight. Fix both texts (approved outside Own).
+
 ## Done when
 
 TRF-46 and the golden tests pass.

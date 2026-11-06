@@ -22,6 +22,8 @@ Prove the run branch is releasable (D4: this ticket is the run gate until ticket
 
 Amendment: drop the scratch worktree `.worktrees/_scratch/t01` with `horch ledger worktree drop`. Its 1 uncommitted test is evidence for ticket 08 only. Name the result in your report.
 
+Amendment (report 34): `utc_offset_date` in `crates/horch-core/tests/common/mod.rs` has no caller (the e2e crate has its own copy). Delete it if `git grep -n -e utc_offset_date -- crates/horch-core` still shows no caller.
+
 ## Done when
 
 The gate passes on the tip and the run gate row is recorded.
