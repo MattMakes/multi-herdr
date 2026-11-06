@@ -208,9 +208,13 @@ fn queue_claim_and_status_through_the_cli() {
     );
 
     let w2 = worker_new(&h, "opus");
+    // A claim that finds no task ends the worker and prints its done line
+    // (TRF-32).
     let none = ok_as(&h, &w2, &["ledger", "claim"]);
     assert!(
-        none.contains("NOTE: No task for opus. I exit. PID"),
+        none.contains(
+            "No task for opus. Run this line to close your pane:\nhorch done \"No task for opus.\""
+        ),
         "{none}"
     );
 
@@ -1859,9 +1863,11 @@ fn the_whole_flow_on_the_fake_herdr() {
             &std::process::id().to_string(),
         ],
     );
-    let none = ok_as(&h, &spare, &["ledger", "claim"]);
+    let none: Value =
+        serde_json::from_str(&ok_as(&h, &spare, &["ledger", "claim", "--json"])).unwrap();
+    assert_eq!(none["outcome"], "no_task", "{none}");
     assert!(
-        none.contains(&format!(
+        none["tell"].as_str().unwrap().contains(&format!(
             "No task for opus. I exit. PID {}.",
             std::process::id()
         )),
@@ -3191,6 +3197,32 @@ fn second_workspace(h: &Harness) {
     assert!(o.status.success(), "{}", text(&o));
 }
 
+/// Queue 1 task for `persona` in `run`, so a claiming spawn of it passes
+/// the spawn guard (TRF-31: a task-less spawn needs a startable task).
+fn queue_for(h: &Harness, env: &[(&str, &str)], run: &str, persona: &str) {
+    let file = ticket(
+        h,
+        &format!("{run}-{persona}"),
+        "# Work\n**Check:** `true`\n",
+    );
+    let file = file.to_string_lossy().into_owned();
+    let o = run_env(
+        h,
+        env,
+        &[
+            "ledger",
+            "add",
+            "--file",
+            &file,
+            "--primary",
+            persona,
+            "--run",
+            run,
+        ],
+    );
+    assert!(o.status.success(), "{}", text(&o));
+}
+
 fn spawn_args<'a>(pane: &'a str, extra: &[&'a str]) -> Vec<&'a str> {
     let mut v = vec!["spawn"];
     v.extend_from_slice(extra);
@@ -3212,6 +3244,7 @@ fn spawn_run_names_the_run_the_worker_joins() {
     );
     assert!(!o.status.success(), "{}", text(&o));
     assert!(text(&o).contains("--run <slug>"), "{}", text(&o));
+    queue_for(&h, &[], "b", "codex-terra");
     let o = h.run(&spawn_args("w1:p1", &["codex-terra", "--run", "b"]));
     assert!(o.status.success(), "{}", text(&o));
     assert_eq!(run_of_worker(&h, "b", "codex-terra"), 1);
@@ -3225,6 +3258,7 @@ fn a_spawn_joins_the_run_of_its_own_workspace() {
     ok(&h, &["ledger", "run", "new", "a"]);
     // Only W1 owns a run: a spawn from W2 joins it, with a NOTE that names it.
     let w2 = [("HORCH_WORKSPACE_ID", "w2")];
+    queue_for(&h, &[], "a", "codex-terra");
     let o = run_env(&h, &w2, &spawn_args("w2:p1", &["codex-terra"]));
     assert!(o.status.success(), "{}", text(&o));
     assert!(
@@ -3237,6 +3271,7 @@ fn a_spawn_joins_the_run_of_its_own_workspace() {
     // W2 owns a run of its own now: the spawn goes there.
     let o = run_env(&h, &w2, &["ledger", "run", "new", "b"]);
     assert!(o.status.success(), "{}", text(&o));
+    queue_for(&h, &w2, "b", "opus");
     let o = run_env(&h, &w2, &spawn_args("w2:p1", &["opus"]));
     assert!(o.status.success(), "{}", text(&o));
     assert_eq!(run_of_worker(&h, "b", "opus"), 1);
