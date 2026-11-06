@@ -28,6 +28,8 @@ Amendment (reports 10, 34, 35): ticket checks do not run `cargo fmt`. Before the
 
 Amendment (report 26): `cargo fmt` drift also includes `crates/horch/src/cmd/spawn.rs`.
 
+Amendment (orchestrator): the ledger cannot add blockers to this task after add-map. Before any step, run `horch ledger status` and confirm that every task from T-34 to the last task is `done`. If one is not, send `horch tell orchestrator "BLOCKED: T-33 waits for <tasks>"` and end your turn.
+
 ## Done when
 
 The gate passes on the tip and the run gate row is recorded.
