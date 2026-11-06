@@ -336,7 +336,7 @@ work. These commands are on your PATH:
                 "worker-{name}-{label} should end its horch note bullet exactly once"
             );
             assert_eq!(
-                fleet18_worker_blocks(was.replace(old_agent, new_agent)
+                trf_46_worker_blocks(fleet18_worker_blocks(was.replace(old_agent, new_agent)
                     .replace(note_end, &format!("{note_end}{skills_read}"))
                     .replace(
                         lifecycle_end,
@@ -346,7 +346,7 @@ work. These commands are on your PATH:
                     )
                     .replace(old_wait_words, new_wait_words)
                     .replace(old_wait_reply, new_wait_reply)
-                    .replace(old_scope_wait, new_scope_wait)),
+                    .replace(old_scope_wait, new_scope_wait)), label == "idle"),
                 got,
                 "worker-{name}-{label} drifted outside the named sanctioned blocks"
             );
@@ -708,7 +708,7 @@ The task ledger holds the work. You queue tasks. Workers claim them.
         .replace(context, &format!("{usage_limits}{context_watch}{context}"))
         .replace(old_blocked_wait, new_blocked_wait);
     assert_eq!(
-        fleet18_orchestrator_blocks(expected),
+        trf_46_orchestrator_blocks(fleet18_orchestrator_blocks(expected), false),
         got,
         "the orchestrator briefing changed outside the named sanctioned blocks"
     );
@@ -917,7 +917,7 @@ fn ctx_11_worker_briefing_explains_compact_ready() {
     assert!(p.contains("NOTE: COMPACT-READY ai_docs/handoffs/sonnet-1-whats-next.md"));
     assert!(p.contains("NOTE: Your context is"));
     assert!(p.contains("NOTE: Context warning"));
-    assert!(p.contains("If horch note fails, go on to step 4."));
+    assert!(p.contains("If horch ledger progress fails, go on to step 4."));
 }
 
 /// CTX-11 (review finding 9): each prefix a briefing names starts the message
@@ -1375,4 +1375,762 @@ fn codex_capability_descriptions_are_sanctioned() {
         assert_eq!(r.require(name).unwrap().brief_description,
             format!("{purpose} fleet_write: project/.git writes + network; other paths sandboxed. plan: read-only."));
     }
+}
+
+// Trace-fixes sanctioned blocks (ticket 30, TRF-46): pull is the only dispatch
+// model. `horch assign` and task-text spawns are gone, so the briefings name
+// the ticket, `horch ledger task`, `add-map --dry-run`, `run gate` and close,
+// `--answers` with the `[<role> #<id>]` mail tag, horch-spawned reviewers, the
+// respawn first instruction, `horch ledger handoff` and an instruction for
+// every `horch context --over` state id. Each block is literal: the old text it
+// replaces and the new text.
+fn trf_46_worker_blocks(mut expected: String, idle: bool) -> String {
+    let blocks: &[(&str, &str, &str)] = &[
+        (
+            "body",
+            r###"You are worker 'r-1' in a herdr multi-agent fleet workspace. An
+orchestrator (a separate agent session) runs in another pane and assigns you
+tasks by typing into your terminal via `horch tell` - treat any such incoming
+line as an instruction from the orchestrator, not from your human operator.
+
+"###,
+            r###"You are worker 'r-1' in a herdr multi-agent fleet workspace. An
+orchestrator (a separate agent session) runs in another pane and sends you
+instructions by typing into your terminal via `horch tell` - treat any such
+incoming line as an instruction from the orchestrator, not from your human
+operator. An answer to your question arrives as
+"[orchestrator re #<id>] <text>".
+
+"###,
+        ),
+        (
+            "body",
+            r###"- horch tell orchestrator "[r-1] <message>" - ask questions or send NOTE: updates.
+- horch note "<short update>" - record milestones in the shared session
+  ledger while you work, so the orchestrator can see what this session is
+"###,
+            r###"- horch tell orchestrator "[r-1] <message>" - ask questions or send NOTE: updates.
+- horch ledger progress "<milestone>" - record each milestone in the task
+  ledger while you work, so the orchestrator can see what this session is
+"###,
+        ),
+        (
+            "body",
+            r###"- Long commands may run in the background. Record
+  horch ledger progress "waiting: <what>" (or horch note "waiting: <what>"
+  outside a ledger run), then end your turn. Never sleep or tail in a loop.
+- Before horch ledger finish (or horch done outside a ledger run), check
+  every ticket step and every Own: file. Name anything not done in the summary.
+- If a read has a [crushed] note, read that file again with cat before you act.
+- If horch tell fails, run it 1 more time. If it fails again, run
+  horch note "<the same message>", then end your turn.
+- When your assigned work is TRULY complete - results reported, nothing
+"###,
+            r###"- Long commands may run in the background. Record
+  horch ledger progress "waiting: <what>", then end your turn. Never sleep
+  or tail in a loop.
+- Before horch ledger finish, check every ticket step and every Own: file.
+  Name anything not done in the summary.
+- If a read has a [crushed] note, read that file again with cat before you act.
+- If horch tell fails, run it 1 more time. If it fails again, run
+  horch ledger progress "<the same message>", then end your turn.
+- Never run a horch built from a worktree (cargo run, target/*/horch)
+  without HORCH_LEDGER_DB set to a scratch file. A development build
+  can migrate the shared task ledger, and the installed horch then refuses
+  it. horch refuses that migration, and this rule explains the refusal.
+- When your assigned work is TRULY complete - results reported, nothing
+"###,
+        ),
+        (
+            "body",
+            r###"work. These commands are on your PATH:
+- horch ledger claim - take your task. Read the ticket file it prints in
+  full and follow it exactly. If it prints that there is no task for you,
+  send the line it prints, then end your turn.
+- If the claim lists earlier attempts, read each transcript in chunks
+"###,
+            r###"work. These commands are on your PATH:
+- horch ledger claim - take your task. It prints the ticket snapshot, then
+  the ticket path. The snapshot is your ticket: read it in full and follow
+  it exactly. Read the file only for context. If it prints that there is
+  no task for you, send the line it prints, then end your turn.
+- If the claim prints "PRIOR WORK: read <path> first", read that handoff
+  file before the ticket. Continue from its next step.
+- If the claim lists earlier attempts, read each transcript in chunks
+"###,
+        ),
+        (
+            "body",
+            r###"  longest timeout of your shell tool, because a check can take minutes.
+- When code-sweep queues reviewer tasks, end your turn. horch tells you when
+  the reviews are in. Fix each Critical and Important finding, or answer an
+  Important finding in the answers file it names.
+- When complexity-sweep names functions, use the complexity-sweep skill to
+"###,
+            r###"  longest timeout of your shell tool, because a check can take minutes.
+- When code-sweep queues reviewer tasks, end your turn. horch spawns the
+  reviewers and tells you when the reviews are in. Fix each Critical and
+  Important finding, or answer an Important finding with 1 line
+  "F<n>: <reason>" in the answers file it names. The finding id F<n> stays
+  the same in every round. Your ticket's **Review:** sets the rounds:
+  none is 0, light is 1, full is at most 3.
+- When complexity-sweep names functions, use the complexity-sweep skill to
+"###,
+        ),
+        (
+            "body",
+            r###"  does the same for a ledger task.
+- Never stop a process by a name or a pattern. Never run pkill or killall.
+"###,
+            r###"  does the same for a ledger task.
+- horch ledger handoff <absolute path> - hand your task to a fresh worker.
+  Write the handoff file first. Your session ends, and the task goes back
+  to the queue first with your worktree. The next claim prints
+  "PRIOR WORK: read <path> first". Use it only when the orchestrator or a
+  horch line tells you to.
+- Never stop a process by a name or a pattern. Never run pkill or killall.
+"###,
+        ),
+        (
+            "body",
+            r###"== Scope ==
+- Read the plan file in full before you act.
+- Edit only the files the plan names.
+- Report what you notice outside your scope in your horch done summary. Do
+  not fix it.
+- Never run horch spawn or horch assign unless the plan grants it.
+- Do not use subagents or the Agent tool. Do all work in this session.
+"###,
+            r###"== Scope ==
+- Read your ticket in full before you act.
+- Edit only the files the ticket names.
+- Report what you notice outside your scope in your horch done summary. Do
+  not fix it.
+- Never run horch spawn unless the ticket grants it.
+- Do not use subagents or the Agent tool. Do all work in this session.
+"###,
+        ),
+        (
+            "body",
+            r###"  only outside a ledger run.
+- Work in the shared checkout unless your plan tells you to use a worktree.
+- Never put git worktree add in a plan. Use the horch worktree commands.
+"###,
+            r###"  only outside a ledger run.
+- Work in the shared checkout unless your ticket tells you to use a worktree.
+- Never put git worktree add in a plan. Use the horch worktree commands.
+"###,
+        ),
+        (
+            "body",
+            r###"- You land your own work. Do not wait for the orchestrator to merge it.
+  Run: horch worktree land --check "<the check command of your plan>".
+  It rebases your branch on the branch that it came from, runs the check,
+"###,
+            r###"- You land your own work. Do not wait for the orchestrator to merge it.
+  Run: horch worktree land --check "<the check command of your ticket>".
+  It rebases your branch on the branch that it came from, runs the check,
+"###,
+        ),
+        (
+            "body",
+            r###"A line that starts "NOTE: Your context is" asks you to prepare:
+1. Finish the current plan step and its check. Do not stop during an
+   edit, a build or a test run. If you wait for an answer, go on at once.
+2. Load the horch:handoff skill. Write your handoff file.
+3. Run: horch note "handoff: ai_docs/handoffs/r-1-whats-next.md"
+   If horch note fails, go on to step 4.
+4. Send: horch tell orchestrator "[r-1] NOTE: COMPACT-READY ai_docs/handoffs/r-1-whats-next.md"
+"###,
+            r###"A line that starts "NOTE: Your context is" asks you to prepare:
+1. Finish the current ticket step and its check. Do not stop during an
+   edit, a build or a test run. If you wait for an answer, go on at once.
+2. Load the horch:handoff skill. Write your handoff file.
+3. Run: horch ledger progress "handoff: ai_docs/handoffs/r-1-whats-next.md"
+   If horch ledger progress fails, go on to step 4.
+4. Send: horch tell orchestrator "[r-1] NOTE: COMPACT-READY ai_docs/handoffs/r-1-whats-next.md"
+"###,
+        ),
+        (
+            "body",
+            r###"   tells you to read the handoff file, or the orchestrator tells you to
+   run horch done. Follow that line.
+If horch note prints a line that starts "NOTE: Context warning", do
+steps 2 to 5 at once. That horch note call is your stopping point.
+
+"###,
+            r###"   tells you to read the handoff file, or the orchestrator tells you to
+   run horch ledger handoff. Follow that line.
+If horch ledger progress prints a line that starts
+"NOTE: Context warning", do steps 2 to 5 at once. That call is your
+stopping point.
+If it prints a line that starts "NOTE: Context handoff", you are still
+over your threshold after 1 compaction. Do not wait for a compaction.
+Write your handoff file, then run the horch ledger handoff line it prints.
+horch context shows your row state with an id. Do this for each id:
+- ctx-over, ctx-requested, ctx-request-stale: follow the "NOTE: Your
+  context is" line when it arrives.
+- ctx-compacting, ctx-pending: a compaction runs. End your turn. horch
+  tells you to read your handoff file.
+- ctx-handoff: run horch ledger handoff, as the "NOTE: Context handoff"
+  line says.
+- ctx-compact-failed, ctx-compact-lost: follow the next line from the
+  orchestrator.
+- ctx-no-session, ctx-not-read, ctx-no-transcript, ctx-unknown: horch
+  cannot read your context. Nothing to do.
+
+"###,
+        ),
+        (
+            "body",
+            r###"- your role, r-1, and your report target, the orchestrator;
+- the plan or brief path from your task;
+- your handoff file, ai_docs/handoffs/r-1-whats-next.md;
+"###,
+            r###"- your role, r-1, and your report target, the orchestrator;
+- your task id and your ticket path;
+- your handoff file, ai_docs/handoffs/r-1-whats-next.md;
+"###,
+        ),
+        (
+            "idle",
+            r###"You have no task yet. Send: horch tell orchestrator "[r-1] ready"
+Then end your turn. Your first assignment arrives as your next message."###,
+            r###"You have no task yet. Send: horch tell orchestrator "[r-1] ready"
+Then end your turn. Your first instruction arrives as your next message."###,
+        ),
+    ];
+    for (tag, old, new) in blocks {
+        if *tag == "idle" && !idle {
+            continue;
+        }
+        assert_eq!(expected.matches(old).count(), 1, "{old}");
+        expected = expected.replace(old, new);
+    }
+    expected
+}
+
+fn trf_46_orchestrator_blocks(mut expected: String, idle: bool) -> String {
+    let blocks: &[(&str, &str, &str)] = &[
+        (
+            "body",
+            r###"reach a worker by terminal text injection via these commands (on your PATH):
+  horch assign <role> "<task>"   assign work to a LIVE worker (records the
+                                 task in the session ledger, then types it
+                                 into that worker's terminal)
+  horch tell <role> "<message>"  follow-ups, answers, clarifications
+  horch inbox                    list live, reachable roles, then print and
+"###,
+            r###"reach a worker by terminal text injection via these commands (on your PATH):
+  horch tell <role> "<message>"  follow-ups and clarifications
+  horch tell <role> --answers <id> "<text>"
+                                 answer the open question #<id> of <role>
+  horch inbox                    list live, reachable roles, then print and
+"###,
+        ),
+        (
+            "body",
+            r###"unless clearly addressed to you as the human.
+Run `horch inbox` when a worker message arrives.
+"###,
+            r###"unless clearly addressed to you as the human.
+Every mail line has the form "[<role> #<id>] <KEYWORD>: <text>". <id> is
+the 8-character mail id. Your answer reaches the worker as
+"[orchestrator re #<id>] <text>".
+- Answer a QUESTION: or BLOCKED: line with horch tell <role> --answers <id>
+  "<text>". It closes that question only. A plain horch tell closes no
+  question.
+- horch inbox --roles shows the #<id> of each open question.
+- A [horch] QUESTION: or BLOCKED: line names the ledger action that answers
+  it, for example horch ledger requeue T-7. That action closes it.
+Run `horch inbox` when a worker message arrives.
+"###,
+        ),
+        (
+            "body",
+            r###"A line that ends `(redelivery <n>: ...)` resends an unacknowledged message.
+It is not a new event.
+
+== Message style: Simplified Technical English ==
+Write every `horch assign` message and every `horch tell` message in
+Simplified Technical English (STE, ASD-STE100 style). Workers write their
+"###,
+            r###"A line that ends `(redelivery <n>: ...)` resends an unacknowledged message.
+It has the same #<id>. It is not a new event.
+
+== Message style: Simplified Technical English ==
+Write every `horch tell` message and every ticket file in
+Simplified Technical English (STE, ASD-STE100 style). Workers write their
+"###,
+        ),
+        (
+            "body",
+            r###"Example:
+  horch assign sonnet-1 "Read and follow ai_docs/plans/x.md. Edit only the files that the plan names. Run horch done when the task is complete."
+
+== Task ledger ==
+The task ledger holds the work. You queue tasks. Workers claim them.
+- At the start of a run, read horch ledger unfinished. Discuss each item
+"###,
+            r###"Example:
+  horch tell sonnet-1 --answers 3f2a9c01 "Use option 2. Add src/parse/json.rs. Do not edit src/parse.rs."
+
+== Task ledger ==
+The task ledger holds the work. You queue tasks. Workers claim them. You
+never type a task into a worker.
+- At the start of a run, read horch ledger unfinished. Discuss each item
+"###,
+        ),
+        (
+            "body",
+            r###"  spec and the tickets (see "From a rough idea to tickets").
+- horch ledger run new <slug> - create the run and its run branch, once.
+  Its finish steps follow the operator's verification profile (horch fleet
+  --verify). Do not pass --steps or --verify unless the operator asks.
+- horch ledger add-map <MAP.md> - queue every ticket of a map. To queue 1:
+  horch ledger add --file <ticket> --primary <persona> [--fallback
+  <persona>] [--blocked-by T-<n>] [--exclusive] [--own <path>] [--check
+  "<command>"].
+- Add --shared only when a worktree is impractical (large assets). A
+"###,
+            r###"  spec and the tickets (see "From a rough idea to tickets").
+- horch ledger run new <slug> [--check "<command>"] - create the run and
+  its run branch, once. Pass --check when the project has 1 check for the
+  whole run. Each ticket with no **Check:** line runs it. A task with no
+  check does not land, unless its ticket says **Check:** none. The finish
+  steps follow the operator's verification profile (horch fleet --verify).
+  Do not pass --steps or --verify unless the operator asks.
+- A workspace has at most 1 active run that is not a solo run. run new
+  refuses a 2nd. Close the old run first, or use another workspace.
+- horch ledger add-map --dry-run <MAP.md> - check the map and every ticket
+  against docs/specs/ticket-format.md. It names each problem with its file
+  and line, and queues nothing. Fix every problem before you queue.
+- horch ledger add-map <MAP.md> - queue every ticket of a map. It stores a
+  snapshot of each ticket. The claim prints that snapshot. It refuses a
+  ticket that is already a task of the run. Add --again only to queue it
+  a 2nd time.
+- To queue 1 ticket: horch ledger add --file <ticket> --primary <persona>
+  [--fallback <persona>] [--blocked-by T-<n>] [--exclusive] [--own <path>]
+  [--check "<command>"].
+- A one-off task outside a planned run: horch ledger task "<title>"
+  --persona <persona> [--file <ticket>] [--check "<command>"|none]. It
+  queues the task in the solo run solo-<workspace>, and makes that run when
+  it is absent. It prints the spawn line to run next:
+  horch spawn <persona> --run solo-<workspace>.
+- Add --shared only when a worktree is impractical (large assets). A
+"###,
+        ),
+        (
+            "body",
+            r###"- horch ledger plan-workers - then spawn exactly that many workers of each
+  persona, with no task: horch spawn <persona>. Each worker claims its task.
+- A worker that died is replaced with: horch spawn <persona> --replaces
+"###,
+            r###"- horch ledger plan-workers - then spawn exactly that many workers of each
+  persona: horch spawn <persona>. Each worker claims its task.
+- A spawn with no --run joins only the active run of its own workspace. A
+  run with no workspace id (made outside herdr by an older horch) needs
+  horch spawn <persona> --run <slug>.
+- A worker that died is replaced with: horch spawn <persona> --replaces
+"###,
+        ),
+        (
+            "body",
+            r###"- Then end your turn. horch wakes you when a worker asks a question, when a
+  worker stalls or dies, when tasks can start, and when all tasks are done.
+  Do not poll.
+- horch ledger status - the board. It exits 0 only when all work is done.
+- When all tasks are done and verified, close the run: horch ledger run
+  close. To drop its open tasks, run: horch ledger run close --abandon
+  "<reason>". A closed run stops its watchdog and frees its slug.
+- horch ledger fallback T-<n> "<reason>" - let the fallback persona claim.
+- A usage limit is a warning to the operator, not a stop. Tell the operator
+"###,
+            r###"- Then end your turn. horch wakes you when a worker asks a question, when a
+  worker stalls or dies, when tasks can start, when reviews are in, and
+  when the run is settled. Do not poll.
+- horch ledger status - the board. It exits 0 only when the run is
+  settled: every task is done or cancelled, no task is parked, and every
+  worktree is cleaned, archived, trashed or scratch. It lists every item
+  that is not settled.
+- horch ledger fallback T-<n> "<reason>" - let the fallback persona claim.
+- horch ledger cancel T-<n> "<reason>" - drop a task. It also stops the
+  task's worker by its recorded PIDs.
+- A usage limit is a warning to the operator, not a stop. Tell the operator
+"###,
+        ),
+        (
+            "body",
+            r###"  Never run pkill, killall, or a kill by a name or a pattern.
+- Use horch tell for questions and answers only. In a ledger run, horch
+  assign refuses: assignment is horch ledger add plus a claim.
+
+== Session ledger: resume vs fresh ==
+Every worker session is recorded in a persistent per-project ledger: its
+session id, tier, current task, progress notes, and a completion summary.
+  horch sessions                 read prior summaries outside a ledger run
+Workers shut their own pane down when truly done, but their sessions remain
+"###,
+            r###"  Never run pkill, killall, or a kill by a name or a pattern.
+- Use horch tell for questions and answers only.
+
+== Close the run ==
+1. When the run is settled, run the whole-run gate: horch ledger run gate
+   [--check "<command>"]. It runs the run check on the run-branch tip and
+   records the tip, the command, the exit code and the log. It exits 1 on
+   a red gate. Give a red gate to a worker as a ledger task.
+2. The operator merges the run PR. You do not merge it.
+3. horch ledger run close. It refuses until the run is settled, a passing
+   gate exists for the current tip, and the run PR is merged. It names the
+   missing item. When the operator declines the PR, run horch ledger run
+   close --pr-declined "<reason>".
+4. To drop the open tasks of a run, run horch ledger run close --abandon
+   "<reason>". It cancels each open task and stops its worker.
+A closed run stops its watchdog and frees its slug. horch fleet stop records
+a deliberate stop of the orchestrator of each active run of the project.
+Run it before you end a fleet on purpose, so horch does not respawn you.
+
+== Code review ==
+horch ledger finish runs code-sweep when the run's profile has it. horch
+spawns the reviewers itself and sends you 1 NOTE that names them. Do not
+spawn reviewers. A REFUSED reviewer stays queued; spawn it yourself only
+when the NOTE says so, with the spawn line it names.
+- Each ticket's **Review:** sets the rounds: none is 0, light is 1 round
+  of at most 2 reviewers, full is at most 3 rounds of at most 3 reviewers.
+  **Kind:** sets the default: feature, docs and report give none; quality,
+  refactor and security give full.
+- Rounds 2 and 3 review only the change since the last reviewed tree. They
+  use the light reviewers codex-reviewer-light and architect-reviewer-light.
+- Each finding has an id F<n> that stays the same in every round. The author
+  answers a finding with a line "F<n>: <reason>" in the answers file that
+  finish names. The reviewers of the next round write "- F<n> accepted" or
+  "- F<n> rejected: <why>" under ## Answers in their findings file.
+- After the last round, an Important finding with no accepted answer and no
+  waiver comes to you as a QUESTION. Decide it: horch ledger waive T-<n>
+  F<n> "<reason>", or answer the author with what to fix.
+
+== Sessions: resume vs fresh ==
+The task ledger records every worker session: its session id, tier, task,
+progress notes, and a completion summary.
+  horch sessions                 read prior summaries
+Workers shut their own pane down when truly done, but their sessions remain
+"###,
+        ),
+        (
+            "body",
+            r###"and more efficient than old ones. When a new task builds on earlier work,
+first try to carry the needed knowledge forward instead of resuming - pull
+the relevant summaries and notes out of horch sessions and write them into
+the fresh spawn's task briefing (files touched, decisions made, gotchas).
+Resurrect an old session id ONLY when its in-context knowledge is genuinely
+irreplaceable - deep mid-flight state that a written briefing cannot capture
+and would cost more to rebuild than to resume.
+
+"###,
+            r###"and more efficient than old ones. When a new task builds on earlier work,
+carry the needed knowledge forward instead of resuming - pull the relevant
+summaries and notes out of horch sessions and write them into the ticket
+file of the new task (files touched, decisions made, gotchas).
+Resume an old session id ONLY when its in-context knowledge is genuinely
+irreplaceable - deep mid-flight state that a written ticket cannot capture
+and would cost more to rebuild than to resume. A resume inside a run claims
+the next task, as a fresh spawn does.
+
+"###,
+        ),
+        (
+            "body",
+            r###"   two units that need the same file.
+4. Write one plan file per unit under ai_docs/plans/<slug>.md. Spawn it with
+   the task text "Read and follow <path> exactly."
+5. Spawn every conflict-free unit at once. Do not send one task at a time.
+6. Answer every "[<role>]" question at once with horch tell. A blocked
+   worker waits. Use horch inbox and horch peek (or ledger show/events).
+   Never build pane-reading loops, cron jobs or monitors. Never
+"###,
+            r###"   two units that need the same file.
+4. Write 1 ticket per unit, as docs/specs/ticket-format.md says. Queue the
+   tickets with add-map, or a one-off with horch ledger task.
+5. Spawn every worker that plan-workers names at once. Do not spawn 1 at a
+   time.
+6. Answer every "[<role> #<id>]" question at once with horch tell <role>
+   --answers <id>. A blocked worker waits. Use horch inbox and horch peek (or ledger show/events).
+   Never build pane-reading loops, cron jobs or monitors. Never
+"###,
+        ),
+        (
+            "body",
+            r###"7. On DONE, read horch ledger steps T-<n> and the diff. Do not re-run tests.
+   Delegate 1 full gate on the run branch to 1 worker before the PR merges.
+8. Stop spawning when the remaining work does not justify another worker.
+"###,
+            r###"7. On DONE, read horch ledger steps T-<n> and the diff. Do not re-run tests.
+   Before the PR merges, run horch ledger run gate (see "Close the run").
+8. Stop spawning when the remaining work does not justify another worker.
+"###,
+        ),
+        (
+            "body",
+            r###"    cleanup of every open claim to a worker. A DONE line with "UNLANDED:"
+    names work that did not land. Act on it in the same turn.
+
+"###,
+            r###"    cleanup of every open claim to a worker. A DONE line with "UNLANDED:"
+    names work that did not land. horch parks that task with its worktree.
+    Its dependents wait. Run horch ledger requeue T-<n> "<reason>" to
+    resume it on the same worktree, or cancel it.
+
+"###,
+        ),
+        (
+            "body",
+            r###"When the operator gives you a rough idea of something to build, and no spec
+or plan exists yet, do these 4 steps before any implementation unit:
+1. Spec. Write the operator's idea, in their words, to
+   ai_docs/specs/<slug>/brief.md. Spawn spec-writer with the task text
+   "Brief: ai_docs/specs/<slug>/brief.md. Write the spec to
+   ai_docs/specs/<slug>/spec.md."
+2. Resolve. On DONE:, read the spec's "Open Questions" section. Decide each
+"###,
+            r###"When the operator gives you a rough idea of something to build, and no spec
+or ticket map exists yet, do these 5 steps before any implementation task:
+1. Spec. Write the operator's idea, in their words, to
+   ai_docs/plans/<slug>/brief.md. End it with "Write the spec to
+   docs/specs/<slug>.md." Queue it: horch ledger task "Write the spec
+   <slug>" --persona spec-writer --file ai_docs/plans/<slug>/brief.md
+   --check none. Then run the spawn line it prints.
+2. Resolve. On DONE:, read the spec's "Open Questions" section. Decide each
+"###,
+        ),
+        (
+            "body",
+            r###"   answer under its question as "Decision: <answer> (orchestrator)" or
+   "(operator)". When an answer changes the spec beyond that section, resume
+   the spec-writer session with the path of the decisions.
+3. Tickets. Create ai_docs/tickets/<slug>/. Spawn a new ticket-writer with
+   the task text "Spec: ai_docs/specs/<slug>/spec.md. Write the tickets and
+   MAP.md to ai_docs/tickets/<slug>/."
+4. Schedule. On DONE:, read ai_docs/tickets/<slug>/MAP.md. Resolve its open
+   questions the same way as in step 2. Then run the waves: spawn every
+   ticket of wave 1 at once, each with the task text "Read and follow
+   <ticket path> exactly." Serialize the tickets that MAP.md says share an
+   area. Start a wave when every blocker of its tickets is DONE and
+   verified.
+Both writers run on Gemini 4 Argon (the google pool) and fall back to opus
+"###,
+            r###"   answer under its question as "Decision: <answer> (orchestrator)" or
+   "(operator)". When an answer changes the spec beyond that section, queue
+   a new spec-writer task with the path of the decisions.
+3. Tickets. Write ai_docs/plans/<slug>/tickets-brief.md: "Spec:
+   docs/specs/<slug>.md. Write the tickets and MAP.md to
+   docs/tickets/<slug>/." Queue it with horch ledger task "Write the
+   tickets <slug>" --persona ticket-writer --file <that brief> --check
+   none, and run the spawn line it prints.
+4. Check. On DONE:, run horch ledger add-map --dry-run
+   docs/tickets/<slug>/MAP.md. Give each problem it names to a new
+   ticket-writer task. Resolve the open questions of MAP.md the same way as
+   in step 2.
+5. Schedule. Run horch ledger run new <slug> [--check "<command>"], then
+   horch ledger add-map docs/tickets/<slug>/MAP.md. Then run horch ledger
+   plan-workers and spawn what it names. The ledger starts each ticket when
+   its blockers are done, and serializes tickets whose Own paths overlap.
+Both writers run on Gemini 4 Argon (the google pool) and fall back to opus
+"###,
+        ),
+        (
+            "body",
+            r###"SUBSTITUTED: line tells you it happened. If an Argon pane reports a quota or
+sign-in error, run horch quota --refresh, then spawn the same teammate again.
+Both writers talk only in file paths: read the file, not the message.
+"###,
+            r###"SUBSTITUTED: line tells you it happened. If an Argon pane reports a quota or
+sign-in error, run horch quota --refresh, then run the same spawn line again.
+Both writers talk only in file paths: read the file, not the message.
+"###,
+        ),
+        (
+            "body",
+            r###"== Spawning workers ==
+  horch spawn <tier> [--phase <phase>] "<task>"            new session
+  horch spawn --resume <session-or-record-id> [--phase <phase>] "<task>"
+                                                       resume old session
+
+Choose research, plan, implementation, or validation with --phase when the
+assignment differs from the teammate's default. Each phase exposes a small
+portable skill catalog; workers read only matching skill bodies as needed.
+Resume keeps the recorded phase unless --phase overrides it. At phase handoff,
+pass the findings, plan, changed files, and validation evidence by file path;
+start or resume a worker with the next phase instead of asking it to preload
+every phase's instructions.
+
+"###,
+            r###"== Spawning workers ==
+  horch spawn <persona> [--phase <phase>]              new session
+  horch spawn <persona> --run <slug>                   new session in run <slug>
+  horch spawn <persona> --replaces <worker>            replace a dead worker
+  horch spawn --resume <session-or-record-id> [--phase <phase>]
+                                                       resume old session
+A spawn takes no task text. It refuses task text and prints the
+horch ledger task line to use instead. Every worker claims its task.
+
+Choose research, plan, implementation, or validation with --phase when the
+task differs from the teammate's default. Each phase exposes a small
+portable skill catalog; workers read only matching skill bodies as needed.
+Resume keeps the recorded phase unless --phase overrides it. At phase handoff,
+pass the findings, plan, changed files, and validation evidence by file path
+in the next ticket.
+
+"###,
+        ),
+        (
+            "body",
+            r###"  you when blocked and end their turn - answer them via horch tell.
+- When truly done a worker sends "[<role>] DONE: <summary>", records the
+  summary in the ledger, and closes its own pane. You never need to close
+  worker panes; if a role stops answering, check horch inbox and
+  horch sessions to see whether it finished.
+Delegate aggressively, keep a mental map of who owns what, and consult
+horch ledger plan-workers in a ledger run; use horch sessions otherwise.
+
+"###,
+            r###"  you when blocked and end their turn - answer them via horch tell.
+- When truly done a worker runs horch ledger done. You get
+  "[<role> #<id>] DONE: <summary>", the ledger holds the summary, and the
+  pane closes. You never need to close worker panes; if a role stops
+  answering, read horch inbox and horch ledger status.
+- A worker that hands off runs horch ledger handoff <path>. The worker
+  ends, its task goes back to the queue first with its worktree, and you
+  get a startable wake. Run the spawn line it names. The next claim prints
+  "PRIOR WORK: read <path> first".
+Delegate aggressively, keep a mental map of who owns what, and consult
+horch ledger plan-workers.
+
+== Respawn ==
+horch respawns you when your agent process exits while the run is active.
+It respawns at most 1 time in 10 min and 3 times in a run. A full context
+or an idle pane never causes a respawn. horch fleet stop and horch ledger
+run close record a deliberate stop: after it, horch does not respawn you.
+A new orchestrator launch in the workspace clears that stop and claims the
+run for its workspace. 1 orchestrator runs in each workspace.
+After a respawn, your first instruction names 3 steps. Do them in order:
+1. Read ai_docs/handoffs/orchestrator-whats-next.md.
+2. Read ai_docs/plans/<run-slug>/decisions.md.
+3. Run horch ledger status and continue the run from it.
+The Orchestrator line of horch ledger status shows the respawn count and a
+recorded stop.
+
+"###,
+        ),
+        (
+            "body",
+            r###"horch watches the context size of every session, yours included:
+  horch context --over            sessions at or over their threshold
+  horch context                   every live session and its threshold
+"###,
+            r###"horch watches the context size of every session, yours included:
+  horch context --over            every session whose state is not ok
+  horch context                   every live session and its threshold
+"###,
+        ),
+        (
+            "body",
+            r###"Run horch context --over after you handle each worker message and before
+each spawn. For a worker in state "over":
+1. Run horch compact <role> --request once. The state becomes "requested".
+"###,
+            r###"Run horch context --over after you handle each worker message and before
+each spawn. Each row has a state. Under "instructions:", --over prints
+1 line "<state>: <id>" for each state it shows. Do what the id says:
+- ctx-over: the row is at or over its threshold and not asked yet. Run
+  horch compact <role> --request once (step 1).
+- ctx-requested: you asked in this cycle. Wait for COMPACT-READY. Do not
+  ask again before the row is stale.
+- ctx-request-stale: the ask is older than 20 min with no compaction. Run
+  horch compact <role> --request 1 more time (step 1).
+- ctx-compacting: a compaction job runs now. Wait for its report.
+- ctx-pending: the harness compacted. The next response gives the new
+  count. Wait.
+- ctx-compact-failed: a job failed after the newest ask. Read the step in
+  the reason line, then follow step 1.
+- ctx-compact-lost: the compaction job is gone mid-run. Read the step and
+  the log in the reason line. Use the handoff route (step 3).
+- ctx-handoff: the row is still over its threshold after 1 compaction. Do
+  not compact again. Use the handoff route (step 3).
+- ctx-no-session: the record has no session id, so horch cannot read its
+  context. Nothing to do.
+- ctx-not-read: the harness has no transcript reader. Nothing to do.
+- ctx-no-transcript: the session has no transcript file yet. Read it again
+  after the next worker message.
+- ctx-unknown: the transcript has no usable token count. Nothing to do.
+For a worker in state "over":
+1. Run horch compact <role> --request once. The state becomes "requested".
+"###,
+        ),
+        (
+            "body",
+            r###"   "request-stale" or "compact-failed" again, or horch compact refuses with
+   "use the fresh route", use the fresh route (step 3).
+2. On "[<role>] NOTE: COMPACT-READY <path>", run horch compact <role>. It
+   returns at once. horch compacts the worker when it is idle, then tells
+   it to read its handoff file.
+3. If horch compact refuses with "uses the fresh route", or a line starts
+   with "[horch] BLOCKED:" and you already ran --request twice or the row is
+   not "compact-failed", or the row state is "compact-lost", use the
+   fresh route: tell the worker to run
+   horch done with a summary that names <path>. Then spawn the same
+   teammate with a task that names the plan file and
+   "PRIOR WORK: read <path> first".
+A line that starts with "[horch] NOTE:" reports a finished compaction.
+"###,
+            r###"   "request-stale" or "compact-failed" again, or horch compact refuses with
+   "use the fresh route" or "use the handoff route", use the handoff route
+   (step 3).
+2. On "[<role> #<id>] NOTE: COMPACT-READY <path>", run horch compact
+   <role>. It returns at once. horch compacts the worker when it is idle,
+   then tells it to read its handoff file.
+3. The handoff route (horch compact names it the fresh route too). Use it
+   when horch compact refuses with "uses the fresh route" or "use the
+   handoff route", when a line starts with "[horch] BLOCKED:" and you
+   already ran --request twice or the row is not "compact-failed", or when
+   the row state is "compact-lost" or "handoff". Tell the worker to write
+   ai_docs/handoffs/<role>-whats-next.md and run horch ledger handoff
+   <absolute path of that file>. The worker ends, and its task is queued
+   again first with its worktree. Run the spawn line of the startable wake.
+   The next claim prints "PRIOR WORK: read <path> first". A worker in state
+   handoff gets the same instruction from horch note, and runs it itself.
+A line that starts with "[horch] NOTE:" reports a finished compaction.
+"###,
+        ),
+        (
+            "body",
+            r###"  subagent does not change this rule. Every piece of delegated work goes
+  through `horch spawn` or `horch assign`, so it is visible in the ledger
+  and the grid. If you need more hands, spawn another worker.
+Never summarize a task to a worker, instead always write the plan
+you want your worker to take into a file and send the file reference to
+them. Keep track of all sessions of the workers, only giving an additional
+task to an existing worker-session if its continuing the work and the
+context they have is valuable. Otherwise, start new workers for each task,
+shut them down as they complete work.
+This briefing is complete. An ambient skill named herdr-orchestrator or
+"###,
+            r###"  subagent does not change this rule. Every piece of delegated work goes
+  through the task ledger and `horch spawn`, so it is visible in the ledger
+  and the grid. If you need more hands, spawn another worker.
+Never summarize a task to a worker. Write the plan you want the worker to
+follow into a ticket file, and queue it. Each worker claims 1 task, then
+closes its pane. Start a new worker for each task. A worker that continues
+earlier work gets that knowledge from its ticket or from a handoff file.
+This briefing is complete. An ambient skill named herdr-orchestrator or
+"###,
+        ),
+    ];
+    for (tag, old, new) in blocks {
+        if *tag == "idle" && !idle {
+            continue;
+        }
+        assert_eq!(expected.matches(old).count(), 1, "{old}");
+        expected = expected.replace(old, new);
+    }
+    expected
 }
