@@ -25,6 +25,8 @@ Close questions precisely (C2, D8).
 2. Keep question waits in `workers.rs` keyed by question id, not by role.
 3. A horch-raised QUESTION names its ledger action and closes when that action runs; otherwise send it as NOTE.
 
+Amendment (report 05): `horch inbox` prints mail without its `#<id>` tag. Print each message with `Message::line` from `crates/horch-core/src/messaging/mail.rs`, so the id in the inbox matches the pane line. Remove the dead `HORCH_TEST_MAIL_NO_ORCHESTRATOR_MS` settings from the e2e tests (approved outside Own); horch ignores it since ticket 05.
+
 ## Done when
 
 Both tests pass.

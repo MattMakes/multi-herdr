@@ -32,6 +32,10 @@ Amendment (reports 06, 08):
 - The briefing: add 1 instruction for each new context state id in report 08, including `handoff`.
 - `docs/specs/task-ledger.md` section 5.5: name the land-lock stale age (check timeout plus 10 min) and the reset after a red land (report 06).
 
+Amendment (report 05, incident of 2026-11-06):
+- Describe the `[<role> #<id>]` mail tag in the INSTRUCTIONS text of `crates/horch-core/src/messaging/channel.rs` and in `teammates/_base/fleet-orchestrator.md`.
+- Add 1 rule to the worker base briefing: never run a horch built from a worktree (`cargo run`, `target/*/horch`) without `HORCH_LEDGER_DB` set to a scratch file. Ticket 35 adds the code guard; the rule explains it.
+
 ## Done when
 
 TRF-46 and the golden tests pass.
