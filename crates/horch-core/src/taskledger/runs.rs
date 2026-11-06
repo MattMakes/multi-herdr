@@ -570,6 +570,7 @@ fn close_inner(
         RunStatus::Done
     };
     close(conn, &run.run_id, status)?;
+    super::orchestrator::record_stop(conn, &run.run_id)?;
     notes.extend(remove_gate_worktree(conn, run)?);
     if let Some(orch) = &run.orchestrator_worker_id {
         super::workers::end(

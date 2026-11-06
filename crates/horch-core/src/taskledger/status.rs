@@ -74,6 +74,8 @@ pub struct Report {
     pub watchdog: Option<WatchdogLine>,
     /// The run's parked worktrees on disk (#308).
     pub parked: Parked,
+    /// The orchestrator's respawns and stop (trace-fixes C7).
+    pub orchestrator: Option<String>,
 }
 
 /// The parked worktrees of a run: on disk, and no step takes them to an
@@ -469,6 +471,7 @@ pub fn report_for(conn: &Connection, run: &Run, current: Option<&ExeIdentity>) -
         counts,
         watchdog: WatchdogLine::of(run, current),
         parked: Parked::of(conn, &run.run_id, &now)?,
+        orchestrator: super::orchestrator::status_line(conn, &run.run_id)?,
     })
 }
 
@@ -495,6 +498,9 @@ pub fn render(r: &Report) -> String {
         run.pr_url.as_deref().unwrap_or("none")
     );
     render_watchdog(&mut out, r.watchdog.as_ref());
+    if let Some(line) = &r.orchestrator {
+        let _ = writeln!(out, "{line}");
+    }
     render_tasks(&mut out, &r.tasks);
     render_live(&mut out, &r.workers);
     render_open_worktrees(&mut out, &r.worktrees);
