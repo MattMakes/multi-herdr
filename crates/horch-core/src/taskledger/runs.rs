@@ -761,8 +761,8 @@ fn gate_worktree_row(conn: &Connection, run: &Run, tip: &str) -> Result<()> {
 }
 
 /// Remove the open gate folder of `run` at its close: `git worktree remove`,
-/// never forced. The row becomes `cleaned`. A `NOTE:` line when git refuses;
-/// the folder and the open row then stay.
+/// never forced. The row becomes `cleaned`. A `NOTE:` line when git refuses
+/// or cannot run (TRF-52); the folder and the open row then stay.
 fn remove_gate_worktree(
     conn: &Connection,
     git: &super::git::Git,
@@ -782,11 +782,17 @@ fn remove_gate_worktree(
         return Ok(None);
     };
     if Path::new(&path).exists() {
-        let out = git.try_run(Path::new(&run.project_root), &["worktree", "remove", &path])?;
-        if !out.ok {
+        // TRF-52: any git error keeps the folder and its open row, and the
+        // run still closes.
+        let refused =
+            match git.try_run(Path::new(&run.project_root), &["worktree", "remove", &path]) {
+                Ok(out) if out.ok => None,
+                Ok(out) => Some(out.stderr.trim().to_string()),
+                Err(e) => Some(format!("{e:#}")),
+            };
+        if let Some(why) = refused {
             return Ok(Some(format!(
-                "NOTE: the gate folder {path} stays: git worktree remove refused: {}. Remove it yourself.",
-                out.stderr.trim()
+                "NOTE: the gate folder {path} stays: git worktree remove refused: {why}. Remove it yourself."
             )));
         }
     }
@@ -1268,6 +1274,33 @@ mod tests {
         assert_eq!(
             gate_rows(&store, &run),
             vec![("cleaned".to_string(), 1, run.run_id.clone())]
+        );
+    }
+
+    #[test]
+    fn trf_52_a_git_spawn_error_keeps_the_gate_and_closes_the_run() {
+        let (dir, mut store, run) = world();
+        let logs = dir.path().join("logs");
+        let tip = gate(&mut store, &run, "true", &logs).tip_sha;
+        assert!(gate_dir(&run).exists());
+
+        let missing = Git::new(dir.path().join("no-such-git"));
+        let na = PrCheck::NotApplicable("the run has no remote".into());
+        let closed =
+            close_run_with(store.conn(), &missing, &run, None, &guards(&tip, na, None)).unwrap();
+        assert_eq!(closed.status, "done");
+        let path = gate_dir(&run).to_string_lossy().into_owned();
+        let notes: Vec<&String> = closed
+            .notes
+            .iter()
+            .filter(|n| n.starts_with(&format!("NOTE: the gate folder {path} stays")))
+            .collect();
+        assert_eq!(notes.len(), 1, "1 NOTE line: {:?}", closed.notes);
+        assert!(gate_dir(&run).exists(), "the gate folder stays");
+        assert_eq!(
+            gate_rows(&store, &run),
+            vec![("open".to_string(), 1, run.run_id.clone())],
+            "the gate row stays open"
         );
     }
 
