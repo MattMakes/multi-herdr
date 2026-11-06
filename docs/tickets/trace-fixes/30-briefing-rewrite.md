@@ -50,6 +50,8 @@ Amendment (report 13): document `horch ledger run gate [--check <cmd>]` and `hor
 
 Amendment (reports 16, 18): `horch ledger finish` now spawns code-sweep reviewers itself and sends 1 NOTE naming them. Remove every briefing line that tells the orchestrator to spawn reviewers. Describe the review cap (none 0, light 1, full 3 rounds), the `## Answers` section with `F<n> accepted|rejected`, and the light reviewers for rounds 2-3.
 
+Amendment (report 22): `horch ledger cancel` always stops the worker now; `--stop` is hidden and does nothing. Remove `--stop` from every briefing and doc, and say that cancel and `run close --abandon` stop the worker.
+
 ## Done when
 
 TRF-46 and the golden tests pass.
