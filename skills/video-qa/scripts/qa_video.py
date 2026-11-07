@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Numeric render QA gate for a video project.
 
-Runs 18 numeric checks on render/master.mp4 against timeline.json, writes
+Runs 19 numeric checks on render/master.mp4 against timeline.json, writes
 qa/render-check.json, and draws 3 inspection sheets:
 qa/contact-sheet-360p.png, qa/phone-sheet-360w.png and qa/hook-strip.png.
 
@@ -54,6 +54,7 @@ CHECKS = (
     "motion_contrast",
     "loop_seam",
     "raster_upscale",
+    "music_continuity",
 )
 
 DURATION_TOL_SEC = 0.05
@@ -502,6 +503,28 @@ def check_boundary_pops(ctx):
     return {"cut_peaks_dbfs": peaks, "max_dbfs": POP_PEAK_MAX_DBFS}, errors
 
 
+def read_music_report(path):
+    """Return (the report object, True when its `pass` is true). Raise InputError on bad JSON."""
+    label = f"cannot read music continuity report {path}"
+    try:
+        data = json.loads(path.read_text())
+    except (OSError, ValueError) as exc:
+        raise InputError(f"{label}: {exc}") from exc
+    report = data if isinstance(data, dict) else {}
+    passed = report.get("pass") is True
+    return report, passed
+
+
+def check_music_continuity(ctx):
+    path = ctx.music_continuity
+    if not path.is_file():
+        return {"skipped": True, "reason": f"no music continuity report at {path}"}, []
+    report, passed = read_music_report(path)
+    details = {"report": str(path), "pass": report.get("pass"),
+               "digital_silence": report.get("digital_silence"), "worst": report.get("worst", [])}
+    return details, [] if passed else [(f"audio/music-continuity.json pass is {report.get('pass')!r}, not true", None)]
+
+
 def caption_time(text):
     m = re.fullmatch(r"(?:(\d+):)?(\d{2}):(\d{2})[,.](\d{3})", text.strip())
     if not m:
@@ -543,32 +566,83 @@ def check_captions(path, vtt, duration):
     return errors
 
 
+def frame_count(video_stream):
+    value = str(video_stream.get("nb_frames", ""))
+    return int(value) if value.isdigit() else None
+
+
+def master_frame_count(ctx):
+    count = frame_count(stream(ctx.info, "video") or {})
+    return len(ctx.analysis["frames"]) if count is None else count
+
+
+def size_error(name, v, size):
+    got = (v.get("width"), v.get("height"))
+    return None if got == size else f"{name} is {got[0]}x{got[1]}, expected {size[0]}x{size[1]}"
+
+
+def duration_error(name, dur, duration):
+    near = dur is not None and abs(dur - duration) <= DURATION_TOL_SEC
+    return None if near else f"{name} duration {dur} s differs from {duration} s by > {DURATION_TOL_SEC} s"
+
+
+def count_error(name, count, master_count):
+    return None if count == master_count else f"{name} frame count {count}, expected master.mp4 frame count {master_count}"
+
+
+def check_variant(path, expected):
+    """Return (frame count, [error messages]) for 1 derived video.
+
+    `expected` holds the target "size", the master "duration" and the master "frames".
+    """
+    info = ffprobe(path)
+    v = stream(info, "video") or {}
+    count = frame_count(v)
+    errors = (size_error(path.name, v, expected["size"]),
+              duration_error(path.name, stream_duration(info, "video"), expected["duration"]),
+              count_error(path.name, count, expected["frames"]))
+    return count, [e for e in errors if e]
+
+
+def variant_targets(meta):
+    short, long_ = sorted((int(meta["width"]), int(meta["height"])))
+    return {"16x9.mp4": (long_, short), "9x16.mp4": (short, long_), "1x1.mp4": (short, short)}
+
+
+CAPTION_FILES = (("captions.srt", False), ("captions.vtt", True))
+
+
+def present(root, names):
+    return [name for name in names if (root / name).is_file()]
+
+
+def variant_report(ctx):
+    """Return ({video name: frame count}, [error messages]) for master.mp4 and each present derived video."""
+    expected = {"duration": float(ctx.meta["duration_sec"]), "frames": master_frame_count(ctx)}
+    targets = variant_targets(ctx.meta)
+    results = {name: check_variant(ctx.render_dir / name, {**expected, "size": targets[name]})
+               for name in present(ctx.render_dir, targets)}
+    frame_counts = {"master.mp4": expected["frames"], **{name: res[0] for name, res in results.items()}}
+    return frame_counts, [msg for res in results.values() for msg in res[1]]
+
+
+def caption_errors(root, duration):
+    return [msg for name, vtt in CAPTION_FILES if (root / name).is_file()
+            for msg in check_captions(root / name, vtt, duration)]
+
+
+def checked_files(root, frame_counts):
+    """The derived videos and caption files present in `root`."""
+    return [name for name in frame_counts if name != "master.mp4"] + present(root, [n for n, _ in CAPTION_FILES])
+
+
 def check_variants_captions(ctx):
-    root = ctx.render_dir
-    short, long_ = sorted((int(ctx.meta["width"]), int(ctx.meta["height"])))
-    targets = {"16x9.mp4": (long_, short), "9x16.mp4": (short, long_), "1x1.mp4": (short, short)}
-    duration = float(ctx.meta["duration_sec"])
-    seen, errors = [], []
-    for name, (tw, th) in targets.items():
-        path = root / name
-        if not path.is_file():
-            continue
-        seen.append(name)
-        info = ffprobe(path)
-        v = stream(info, "video") or {}
-        if (v.get("width"), v.get("height")) != (tw, th):
-            errors.append((f"{name} is {v.get('width')}x{v.get('height')}, expected {tw}x{th}", None))
-        dur = stream_duration(info, "video")
-        if dur is None or abs(dur - duration) > DURATION_TOL_SEC:
-            errors.append((f"{name} duration {dur} s differs from {duration} s by > {DURATION_TOL_SEC} s", None))
-    for name, vtt in (("captions.srt", False), ("captions.vtt", True)):
-        path = root / name
-        if path.is_file():
-            seen.append(name)
-            errors += [(msg, None) for msg in check_captions(path, vtt, duration)]
+    frame_counts, errors = variant_report(ctx)
+    seen = checked_files(ctx.render_dir, frame_counts)
     if not seen:
-        return {"skipped": True, "reason": f"no variants or captions in {root}"}, []
-    return {"checked": seen}, errors
+        return {"skipped": True, "reason": f"no variants or captions in {ctx.render_dir}"}, []
+    errors += caption_errors(ctx.render_dir, float(ctx.meta["duration_sec"]))
+    return {"checked": seen, "frame_counts": frame_counts}, [(msg, None) for msg in errors]
 
 
 def check_safe_zone_flash(ctx):
@@ -668,19 +742,27 @@ def still_runs(motion):
     return runs
 
 
+def dead_runs(ctx):
+    """Return (start, end, planned) for each still run of DEAD_MAX_SEC or longer."""
+    windows, tol = hold_windows(ctx.scenes), 1.0 / ctx.motion.fps
+    runs = [(start, end) for start, end in still_runs(ctx.motion) if end - start >= DEAD_MAX_SEC]
+    return [(start, end, inside(start, end, windows, tol)) for start, end in runs]
+
+
+def dead_message(scenes, start, end):
+    return (f"dead time {stamp(start)}-{stamp(end)} ({end - start:.2f} s without motion) "
+            f"in scene {scene_at(scenes, start)} outside a static_hold scene")
+
+
+def dead_intervals(runs):
+    return [{"start_sec": round(start, 3), "end_sec": round(end, 3), "planned": planned}
+            for start, end, planned in runs]
+
+
 def check_dead_time(ctx):
-    tol = 1.0 / ctx.motion.fps
-    windows = hold_windows(ctx.scenes)
-    found, errors = [], []
-    for start, end in still_runs(ctx.motion):
-        if end - start <= DEAD_MAX_SEC:
-            continue
-        planned = inside(start, end, windows, tol)
-        found.append({"start_sec": round(start, 3), "end_sec": round(end, 3), "planned": planned})
-        if not planned:
-            errors.append((f"dead time {stamp(start)}-{stamp(end)} ({end - start:.2f} s without motion) "
-                           f"in scene {scene_at(ctx.scenes, start)} outside a static_hold scene", start))
-    return {"max_sec": DEAD_MAX_SEC, "still_diff": DEAD_DIFF, "intervals": found}, errors
+    runs = dead_runs(ctx)
+    errors = [(dead_message(ctx.scenes, start, end), start) for start, end, planned in runs if not planned]
+    return {"max_sec": DEAD_MAX_SEC, "still_diff": DEAD_DIFF, "intervals": dead_intervals(runs)}, errors
 
 
 def motion_per_second(motion):
@@ -764,26 +846,50 @@ def longest_run(series, step):
     return longest, start
 
 
+def raster_series(samples):
+    """Map each raster source to its [(time, drawn scale)] samples, in time order."""
+    by_src = {}
+    for t, src, natural, drawn in sorted(samples):
+        by_src.setdefault(src, []).append((t, max(drawn[0] / natural[0], drawn[1] / natural[1])))
+    return sorted(by_src.items())
+
+
+def raster_error(src, series):
+    t_max, peak = max(series, key=operator.itemgetter(1))
+    message = f"{src} drawn at {peak:.2f}x its natural size (fail at {RASTER_FAIL_SCALE:g}x)"
+    return (message, t_max) if peak >= RASTER_FAIL_SCALE else None
+
+
+def raster_warning(src, series, step):
+    longest, start = longest_run(series, step)
+    if max(scale for _, scale in series) >= RASTER_FAIL_SCALE or longest < RASTER_WARN_SEC:
+        return None
+    return ("raster_upscale", f"{src} drawn above {RASTER_WARN_SCALE:g}x for {longest:.2f} s "
+            f"(warn at {RASTER_WARN_SEC:g} s)", start)
+
+
+def raster_errors(series):
+    return [e for e in (raster_error(src, points) for src, points in series) if e]
+
+
+def raster_warnings(series, step):
+    return [w for w in (raster_warning(src, points, step) for src, points in series) if w]
+
+
+def raster_worst(series):
+    return {src: round(max(scale for _, scale in points), 3) for src, points in series}
+
+
 def check_raster_upscale(ctx):
     path = ctx.raster_sizes
     if path is None or not path.is_file():
         return {"skipped": True, "reason": f"no raster size report at {path}"}, []
     step, samples = load_raster_sizes(path)
-    by_src = {}
-    for t, src, natural, drawn in sorted(samples):
-        by_src.setdefault(src, []).append((t, max(drawn[0] / natural[0], drawn[1] / natural[1])))
-    worst, errors = {}, []
-    for src, series in sorted(by_src.items()):
-        t_max, peak = max(series, key=lambda p: p[1])
-        worst[src] = round(peak, 3)
-        if peak >= RASTER_FAIL_SCALE:
-            errors.append((f"{src} drawn at {peak:.2f}x its natural size (fail at {RASTER_FAIL_SCALE:g}x)", t_max))
-        longest, start = longest_run(series, step)
-        if peak < RASTER_FAIL_SCALE and longest >= RASTER_WARN_SEC:
-            ctx.warnings.append(("raster_upscale", f"{src} drawn above {RASTER_WARN_SCALE:g}x for {longest:.2f} s "
-                                 f"(warn at {RASTER_WARN_SEC:g} s)", start))
-    return {"report": str(path), "samples": len(samples), "max_scale": worst,
-            "warn_scale": RASTER_WARN_SCALE, "fail_scale": RASTER_FAIL_SCALE}, errors
+    series = raster_series(samples)
+    ctx.warnings += raster_warnings(series, step)
+    details = {"report": str(path), "samples": len(samples), "max_scale": raster_worst(series),
+               "warn_scale": RASTER_WARN_SCALE, "fail_scale": RASTER_FAIL_SCALE}
+    return details, raster_errors(series)
 
 
 CHECK_FUNCS = {
@@ -796,6 +902,7 @@ CHECK_FUNCS = {
     "freeze_frames": check_freeze,
     "audio_loudness": check_loudness,
     "audio_boundary_pops": check_boundary_pops,
+    "music_continuity": check_music_continuity,
     "variants_captions": check_variants_captions,
     "safe_zone_flash": check_safe_zone_flash,
     "frame_pops": check_frame_pops,
@@ -892,26 +999,48 @@ def make_sheet(ctx, out, fps, end_sec, max_tiles=None, tile_w=None):
 
 # ---------------------------------------------------------------- driver
 
+def path_or(value, default):
+    return Path(value) if value else default
+
+
 class Context:
     def __init__(self, args):
         self.video = Path(args.video)
         self.timeline = Path(args.timeline)
         if not self.video.is_file():
             raise InputError(f"video not found: {self.video}")
-        self.meta, self.scenes = load_timeline(self.timeline)
         project = self.timeline.resolve().parent
-        self.scenes_dir = Path(args.scenes_dir) if args.scenes_dir else project / "scenes"
-        self.render_dir = Path(args.render_dir) if args.render_dir else self.video.resolve().parent
-        self.out = Path(args.out) if args.out else project / "qa" / "render-check.json"
-        self.contact_sheet = Path(args.contact_sheet) if args.contact_sheet else project / "qa" / "contact-sheet-360p.png"
-        self.hook_strip = Path(args.hook_strip) if args.hook_strip else project / "qa" / "hook-strip.png"
-        self.phone_sheet = Path(args.phone_sheet) if args.phone_sheet else project / "qa" / "phone-sheet-360w.png"
-        self.raster_sizes = Path(args.raster_sizes) if args.raster_sizes else self.render_dir / "raster-sizes.json"
+        self.load_timelines(project)
+        self.set_paths(args, project)
         self.warnings = []
+        self.set_probes(args)
+        self.analyse_video()
+
+    def load_timelines(self, project):
+        """Read meta from timeline.json, and scenes from timeline-master.json when it exists."""
+        self.meta, self.scenes = load_timeline(self.timeline)
+        master = project / "timeline-master.json"
+        self.scene_timeline = master if master.is_file() else self.timeline
+        self.scenes = load_timeline(self.scene_timeline)[1]
+
+    def set_paths(self, args, project):
+        qa = project / "qa"
+        self.scenes_dir = path_or(args.scenes_dir, project / "scenes")
+        self.render_dir = path_or(args.render_dir, self.video.resolve().parent)
+        self.out = path_or(args.out, qa / "render-check.json")
+        self.contact_sheet = path_or(args.contact_sheet, qa / "contact-sheet-360p.png")
+        self.hook_strip = path_or(args.hook_strip, qa / "hook-strip.png")
+        self.phone_sheet = path_or(args.phone_sheet, qa / "phone-sheet-360w.png")
+        self.raster_sizes = path_or(args.raster_sizes, self.render_dir / "raster-sizes.json")
+        self.music_continuity = project / "audio" / "music-continuity.json"
+
+    def set_probes(self, args):
         if (args.probe_forward is None) != (args.probe_reverse is None):
             raise InputError("--probe-forward and --probe-reverse go together")
-        self.probe_forward = Path(args.probe_forward) if args.probe_forward else None
-        self.probe_reverse = Path(args.probe_reverse) if args.probe_reverse else None
+        self.probe_forward = path_or(args.probe_forward, None)
+        self.probe_reverse = path_or(args.probe_reverse, None)
+
+    def analyse_video(self):
         self.info = ffprobe(self.video)
         if stream(self.info, "video") is None:
             raise InputError(f"{self.video} has no video stream")
@@ -919,32 +1048,49 @@ class Context:
         self.motion = motion_frames(self.video, self.meta)
 
 
-def run_gate(args):
-    ctx = Context(args)
-    report = {"passed": True, "video": str(ctx.video), "timeline": str(ctx.timeline), "checks": {}, "errors": []}
-    for name in CHECKS:
-        details, errors = CHECK_FUNCS[name](ctx)
-        details["passed"] = not errors
-        report["checks"][name] = details
-        for message, t in errors:
-            entry = {"check": name, "message": message}
-            if t is not None:
-                entry["time_sec"] = round(t, 3)
-                entry["timestamp"] = stamp(t)
-            report["errors"].append(entry)
-    report["passed"] = not report["errors"]
-    report["warnings"] = [{"check": name, "message": message, **({"time_sec": round(t, 3), "timestamp": stamp(t)}
-                                                                  if t is not None else {})}
-                          for name, message, t in ctx.warnings]
+def time_fields(t):
+    return {} if t is None else {"time_sec": round(t, 3), "timestamp": stamp(t)}
+
+
+def run_checks(ctx):
+    """Return ({check name: details}, [error entries]) for every check in CHECKS."""
+    results = {name: CHECK_FUNCS[name](ctx) for name in CHECKS}
+    checks = {name: {**details, "passed": not found} for name, (details, found) in results.items()}
+    return checks, error_entries(results)
+
+
+def error_entries(results):
+    return [{"check": name, "message": message, **time_fields(t)}
+            for name, (_, found) in results.items() for message, t in found]
+
+
+def warning_entries(warnings):
+    return [{"check": name, "message": message, **time_fields(t)} for name, message, t in warnings]
+
+
+def write_report(out, report):
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(json.dumps(report, indent=2) + "\n")
+
+
+def make_sheets(ctx):
     duration = float(ctx.meta["duration_sec"])
-    report["artifacts"] = {
+    return {
         "contact_sheet": make_sheet(ctx, ctx.contact_sheet, CONTACT_FPS, duration),
         "hook_strip": make_sheet(ctx, ctx.hook_strip, HOOK_FPS, HOOK_WINDOW_SEC,
                                  max_tiles=int(HOOK_WINDOW_SEC * HOOK_FPS)),
         "phone_sheet": make_sheet(ctx, ctx.phone_sheet, CONTACT_FPS, duration, tile_w=PHONE_TILE_W),
     }
-    ctx.out.parent.mkdir(parents=True, exist_ok=True)
-    ctx.out.write_text(json.dumps(report, indent=2) + "\n")
+
+
+def run_gate(args):
+    ctx = Context(args)
+    checks, errors = run_checks(ctx)
+    report = {"passed": not errors, "video": str(ctx.video), "timeline": str(ctx.timeline),
+              "scene_timeline": str(ctx.scene_timeline), "checks": checks, "errors": errors}
+    report["warnings"] = warning_entries(ctx.warnings)
+    report["artifacts"] = make_sheets(ctx)
+    write_report(ctx.out, report)
     return report, ctx.out
 
 
@@ -999,11 +1145,8 @@ def tone_gain_db(tmp):
     return -14.0 - lufs
 
 
-def make_project(root, video_vf="null", clip=False, scene_html=SCENE_OK, gain=0.0, probes=True, static_hold=False):
-    root.mkdir(parents=True)
-    (root / "render").mkdir()
-    make_fixture_video(root / "render" / "master.mp4", vf=video_vf, tone_db=gain, clip=clip)
-    timeline = {
+def fixture_timeline(static_hold):
+    return {
         "meta": {"id": "self-test", "title": "Self test", "aspect": "16:9", "fps": 30, "width": 320,
                  "height": 180, "duration_sec": 4.0, "lufs_target": -14.0},
         "scenes": [
@@ -1014,21 +1157,51 @@ def make_project(root, video_vf="null", clip=False, scene_html=SCENE_OK, gain=0.
              "critical_regions": [[0.2, 0.3, 0.6, 0.3]], "focal_point": [0.5, 0.45]},
         ],
     }
-    (root / "timeline.json").write_text(json.dumps(timeline, indent=2))
-    scene_dir = root / "scenes" / "s01-hook"
-    scene_dir.mkdir(parents=True)
-    (scene_dir / "index.html").write_text(scene_html)
+
+
+def make_variants(render, fps):
+    sizes = (("16x9.mp4", "320:180"), ("9x16.mp4", "180:320"), ("1x1.mp4", "180:180"))
+    codec = ["-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p", "-r", str(fps)]
+    master = str(render / "master.mp4")
+    for name, size in sizes:
+        sh("-i", master, "-vf", f"scale={size}", "-an", *codec, str(render / name))
+
+
+def make_probe_frame(side, frame):
+    side.mkdir(parents=True, exist_ok=True)
+    sh("-f", "lavfi", "-i", "testsrc2=s=320x180:r=30:d=4", "-vf", f"select=eq(n\\,{frame})",
+       "-frames:v", "1", str(side / f"frame-{frame:06d}.png"))
+
+
+def make_probes(probe):
+    sides = (probe / "forward", probe / "reverse")
+    frames = [(side, frame) for side in sides for frame in (0, 30, 60)]
+    for side, frame in frames:
+        make_probe_frame(side, frame)
+
+
+def write_fixture_files(root, opts):
+    (root / "timeline.json").write_text(json.dumps(fixture_timeline(opts["static_hold"]), indent=2))
+    (root / "scenes" / "s01-hook").mkdir(parents=True)
+    (root / "scenes" / "s01-hook" / "index.html").write_text(opts["scene_html"])
     (root / "render" / "captions.srt").write_text(SRT_OK)
     (root / "render" / "captions.vtt").write_text(VTT_OK)
-    for name, size in (("16x9.mp4", "320:180"), ("9x16.mp4", "180:320"), ("1x1.mp4", "180:180")):
-        sh("-i", str(root / "render" / "master.mp4"), "-vf", f"scale={size}", "-an", "-c:v", "libx264",
-           "-preset", "ultrafast", "-pix_fmt", "yuv420p", str(root / "render" / name))
-    if probes:
-        for side in ("forward", "reverse"):
-            (root / "probe" / side).mkdir(parents=True)
-            for frame in (0, 30, 60):
-                sh("-f", "lavfi", "-i", "testsrc2=s=320x180:r=30:d=4", "-vf", f"select=eq(n\\,{frame})",
-                   "-frames:v", "1", str(root / "probe" / side / f"frame-{frame:06d}.png"))
+
+
+FIXTURE_DEFAULTS = {"video_vf": "null", "clip": False, "scene_html": SCENE_OK, "gain": 0.0, "probes": True,
+                    "static_hold": False, "variant_fps": 30}
+
+
+def make_project(root, **options):
+    """Build a self-test project. `options` override FIXTURE_DEFAULTS."""
+    opts = {**FIXTURE_DEFAULTS, **options}
+    render = root / "render"
+    render.mkdir(parents=True)
+    make_fixture_video(render / "master.mp4", vf=opts["video_vf"], tone_db=opts["gain"], clip=opts["clip"])
+    write_fixture_files(root, opts)
+    make_variants(render, opts["variant_fps"])
+    if opts["probes"]:
+        make_probes(root / "probe")
     return root
 
 
@@ -1056,66 +1229,129 @@ def assert_png(path, width, height):
     assert (w, h) == (width, height), f"{path} is {w}x{h}, expected {width}x{height}"
 
 
-def self_test():
-    require_tools()
+GATE_CASES = [  # (name, make_project options, failed checks, text that 1 error message must hold)
+    ("pass", {}, set(), None),
+    ("black-frame", {"video_vf": "drawbox=x=0:y=0:w=iw:h=ih:color=black:t=fill:enable='between(t,1.2,1.7)'"},
+     {"black_frames", "cuts_vs_plan"}, None),
+    ("dark-background", {"video_vf": "drawbox=x=0:y=0:w=iw:h=ih:color=0x0B1020:t=fill:enable='between(t,1.2,1.7)'"},
+     {"cuts_vs_plan"}, None),  # the jump to the dark plate is a cut, but not black
+    ("frozen", {"video_vf": "trim=end=2,tpad=stop_mode=clone:stop_duration=2"},
+     {"dead_time", "freeze_frames"}, None),
+    ("raf-scene", {"scene_html": SCENE_RAF}, {"scene_determinism"}, None),
+    ("variant-frame-count", {"variant_fps": 24}, {"variants_captions"}, "frame count"),
+    ("clipped-audio", {"clip": True}, {"audio_loudness", "audio_boundary_pops"}, None),
+]
+
+
+def stray_files(skill_dir):
+    """Files in the skill that are not text sources."""
+    files = [p for p in skill_dir.rglob("*") if p.is_file() and "__pycache__" not in p.parts]
+    return [p for p in files if p.suffix not in (".md", ".py", ".mjs", ".html")]
+
+
+def self_test_static():
     skill_dir = Path(__file__).resolve().parent.parent
-    skill_md = skill_dir / "SKILL.md"
-    assert skill_md.stat().st_size < SKILL_MD_MAX_BYTES, f"SKILL.md is {skill_md.stat().st_size} bytes"
-    stray = [p for p in skill_dir.rglob("*") if p.is_file() and p.suffix not in (".md", ".py", ".mjs", ".html")
-             and "__pycache__" not in p.parts]
-    assert not stray, f"non-text files in skill: {stray}"
+    size = (skill_dir / "SKILL.md").stat().st_size
+    assert size < SKILL_MD_MAX_BYTES, f"SKILL.md is {size} bytes"
+    assert not stray_files(skill_dir), f"non-text files in skill: {stray_files(skill_dir)}"
     assert (parse_captions(SRT_OK, False)[1] == (2.1, 3.8)), "SRT parser"
     for bad in ("1\n00:00:02,000 --> 00:00:01,000\nx\n", "2\n00:00:00,000 --> 00:00:02,000\na\n\n"
                 "3\n00:00:01,000 --> 00:00:03,000\nb\n"):
         assert check_captions_text(bad), f"caption error not found in {bad!r}"
 
+
+def assert_sheets(qa):
+    assert_png(qa / "contact-sheet-360p.png", 6 * 640, 2 * 360)
+    assert_png(qa / "hook-strip.png", 6 * 640, 2 * 360)
+    assert_png(qa / "phone-sheet-360w.png", 6 * PHONE_TILE_W, 2 * 202)
+
+
+def assert_gate_report(root, case):
+    """Check the report of 1 GATE_CASES run. Return the failed check names."""
+    name, _, expected, must_say = case
+    report, failed = failed_checks(root)
+    assert failed == expected, f"{name}: failed checks {sorted(failed)}, expected {sorted(expected)}\n" \
+                               f"{json.dumps(report['errors'], indent=2)}"
+    assert report["passed"] is (not expected), f"{name}: passed flag wrong"
+    assert must_say is None or any(must_say in e["message"] for e in report["errors"]), \
+        f"{name}: no {must_say!r} error in {report['errors']}"
+    return failed
+
+
+def self_test_gate_case(tmp, gain, case):
+    root = make_project(tmp / case[0], gain=gain, **case[1])
+    code, proc = invoke(gate_args(root))
+    failed = assert_gate_report(root, case)
+    assert code == (1 if case[2] else 0), f"{case[0]}: exit {code}\n{proc.stderr}"
+    assert_sheets(root / "qa")
+    print(f"ok {case[0]}: failed={sorted(failed)} exit={code}")
+
+
+def self_test_timeline_master(root):
+    timeline = json.loads((root / "timeline.json").read_text())
+    timeline["scenes"][1]["static_hold"] = True
+    (root / "timeline-master.json").write_text(json.dumps(timeline))
+    code, _ = invoke(gate_args(root))
+    assert code == 0, "timeline-master.json static_hold scene must allow a planned freeze"
+    print("ok timeline-master-static-hold: exit=0")
+
+
+def write_music_report(root, passed):
+    report = {"window_ms": 50, "phrase_bars": 4, "max_drop_db": 12,
+              "digital_silence": False, "worst": [], "edits": [], "loop_joins": 0, "pass": passed}
+    (root / "audio").mkdir(exist_ok=True)
+    (root / "audio" / "music-continuity.json").write_text(json.dumps(report))
+
+
+def self_test_music(root):
+    write_music_report(root, False)
+    code, _ = invoke(gate_args(root))
+    _, failed = failed_checks(root)
+    assert code == 1 and failed == {"music_continuity"}, f"music fail: {sorted(failed)}"
+    print("ok music-continuity-fail: failed=['music_continuity'] exit=1")
+    write_music_report(root, True)
+    code, _ = invoke(gate_args(root))
+    assert code == 0, "music-continuity pass must pass the gate"
+    print("ok music-continuity-pass: exit=0")
+
+
+def self_test_probe_mismatch(root):
+    sh("-f", "lavfi", "-i", "color=c=white:s=320x180:d=1", "-frames:v", "1",
+       str(root / "probe" / "reverse" / "frame-000030.png"))
+    code, _ = invoke(gate_args(root))
+    _, failed = failed_checks(root)
+    assert code == 1 and failed == {"render_determinism"}, f"probe mismatch: {sorted(failed)}"
+    print("ok probe-mismatch: failed=['render_determinism'] exit=1")
+
+
+def self_test_missing_input(tmp, root):
+    code, _ = invoke(["--video", str(tmp / "missing.mp4"), "--timeline", str(root / "timeline.json")])
+    assert code == 2, f"missing video: exit {code}"
+    print("ok missing-input: exit=2")
+
+
+def self_test_gate(tmp):
+    gain = tone_gain_db(tmp)
+    for case in GATE_CASES:
+        self_test_gate_case(tmp, gain, case)
+    self_test_timeline_master(tmp / "frozen")
+    self_test_music(tmp / "pass")
+    self_test_probe_mismatch(tmp / "pass")
+    self_test_missing_input(tmp, tmp / "pass")
+
+
+def self_test_in(tmp):
+    self_test_motion(tmp)
+    self_test_dead_time_boundary()
+    self_test_raster(tmp)
+    self_test_gate(tmp)
+
+
+def self_test():
+    require_tools()
+    self_test_static()
     with tempfile.TemporaryDirectory(prefix="qa-video-") as tmp_name:
-        tmp = Path(tmp_name)
-        self_test_motion(tmp)
-        self_test_raster(tmp)
-        gain = tone_gain_db(tmp)
-        cases = [
-            ("pass", {}, set()),
-            ("black-frame", {"video_vf": "drawbox=x=0:y=0:w=iw:h=ih:color=black:t=fill:enable='between(t,1.2,1.7)'"},
-             {"black_frames", "cuts_vs_plan"}),
-            ("dark-background", {"video_vf": "drawbox=x=0:y=0:w=iw:h=ih:color=0x0B1020:t=fill:enable='between(t,1.2,1.7)'"},
-             {"cuts_vs_plan"}),  # the jump to the dark plate is a cut, but not black
-            ("frozen", {"video_vf": "trim=end=2,tpad=stop_mode=clone:stop_duration=2"}, {"freeze_frames"}),
-            ("raf-scene", {"scene_html": SCENE_RAF}, {"scene_determinism"}),
-            ("clipped-audio", {"clip": True}, {"audio_loudness", "audio_boundary_pops"}),
-        ]
-        for name, kwargs, expected in cases:
-            root = make_project(tmp / name, gain=gain, **kwargs)
-            code, proc = invoke(gate_args(root))
-            report, failed = failed_checks(root)
-            assert failed == expected, f"{name}: failed checks {sorted(failed)}, expected {sorted(expected)}\n" \
-                                       f"{json.dumps(report['errors'], indent=2)}"
-            assert code == (1 if expected else 0), f"{name}: exit {code}\n{proc.stderr}"
-            assert report["passed"] is (not expected), f"{name}: passed flag wrong"
-            assert_png(root / "qa" / "contact-sheet-360p.png", 6 * 640, 2 * 360)
-            assert_png(root / "qa" / "hook-strip.png", 6 * 640, 2 * 360)
-            assert_png(root / "qa" / "phone-sheet-360w.png", 6 * PHONE_TILE_W, 2 * 202)
-            print(f"ok {name}: failed={sorted(failed)} exit={code}")
-
-        root = tmp / "frozen"
-        timeline = json.loads((root / "timeline.json").read_text())
-        timeline["scenes"][1]["static_hold"] = True
-        (root / "timeline.json").write_text(json.dumps(timeline))
-        code, _ = invoke(gate_args(root))
-        assert code == 0, "static_hold scene must allow a planned freeze"
-        print("ok frozen-with-static-hold: exit=0")
-
-        root = tmp / "pass"
-        sh("-f", "lavfi", "-i", "color=c=white:s=320x180:d=1", "-frames:v", "1",
-           str(root / "probe" / "reverse" / "frame-000030.png"))
-        code, _ = invoke(gate_args(root))
-        _, failed = failed_checks(root)
-        assert code == 1 and failed == {"render_determinism"}, f"probe mismatch: {sorted(failed)}"
-        print("ok probe-mismatch: failed=['render_determinism'] exit=1")
-
-        code, proc = invoke(["--video", str(tmp / "missing.mp4"), "--timeline", str(root / "timeline.json")])
-        assert code == 2, f"missing video: exit {code}"
-        print("ok missing-input: exit=2")
+        self_test_in(Path(tmp_name))
     print("self-test passed")
     return 0
 
@@ -1150,6 +1386,18 @@ def motion_failures(path, loop=False):
     ctx = types.SimpleNamespace(meta=meta, scenes=scenes, motion=motion_frames(path, meta))
     results = {name: CHECK_FUNCS[name](ctx) for name in MOTION_CHECKS}
     return {name for name, (_, errors) in results.items() if errors}, results
+
+
+def self_test_dead_time_boundary():
+    motion = types.SimpleNamespace(diffs=[0.0] * 61 + [0.1], fps=30.0)
+    scene = {"id": "s01", "start_sec": 0.0, "duration_sec": 2.1}
+    ctx = types.SimpleNamespace(motion=motion, scenes=[scene])
+    _, errors = check_dead_time(ctx)
+    assert errors, "dead time of exactly 2.0 s must fail"
+    scene["static_hold"] = True
+    _, errors = check_dead_time(ctx)
+    assert not errors, "static_hold must allow dead time of exactly 2.0 s"
+    print("ok dead-time boundary: fail at 2.0 s, pass with static_hold")
 
 
 def self_test_motion(tmp):

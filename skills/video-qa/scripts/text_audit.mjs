@@ -5,7 +5,7 @@
 // computed style) and canvas text (a fillText/strokeText wrapper installed before load).
 //
 //   text_audit.mjs --scene <index.html> [--out <report.json>] [--duration <sec>]
-//                  [--fps <n>] [--width <px>] [--height <px>] [--step 0.1] [--min-phone-px 8]
+//                  [--fps <n>] [--width <px>] [--height <px>] [--step 0.1] [--min-phone-px 10.5]
 //   text_audit.mjs --self-test
 //
 // Size, fps and duration default to window.__videoMeta, then 1920x1080, 30 fps.
@@ -620,12 +620,14 @@ const always = (...items) => () => items;
 const between = (from, to, ...items) => (i) => (i >= from && i < to ? items : []);
 const counter = (i) => [item("a", `Users: ${i * 97}`, [100, 100, 400, 80])];
 const slideIn = (i) => [item("a", "Launch", [Math.min(100, -400 + i * 100), 100, 400, 80])];
-const UNIT_OPTS = { width: 1920, height: 1080, step: 0.1, minPhonePx: 8 };
+const UNIT_OPTS = { width: 1920, height: 1080, step: 0.1, minPhonePx: 10.5 };
 const PORTRAIT = { ...UNIT_OPTS, width: 1080, height: 1920 };
 
 // [name, samples, options, expected rules]
 const UNIT_CASES = [
   ["clean title", series(20, always(item("a", "Ship it", [100, 100, 400, 80]))), UNIT_OPTS, []],
+  ["caption at 56 px", series(20, always(item("a", "Proof", [100, 100, 400, 80], 56))), UNIT_OPTS, []],
+  ["caption below 56 px", series(20, always(item("a", "Proof", [100, 100, 400, 80], 55))), UNIT_OPTS, ["too_small"]],
   ["tiny label", series(20, always(item("a", "beta", [100, 100, 60, 20], 20))), UNIT_OPTS, ["too_small"]],
   ["flashed word", series(20, between(5, 7, item("a", "Now", [100, 100, 200, 80]))), UNIT_OPTS, ["too_short"]],
   ["4 words for 1 s", series(20, between(0, 10, item("a", "one two three four", [100, 100, 600, 80]))), UNIT_OPTS, ["too_short"]],
@@ -664,7 +666,7 @@ const FIXTURE_CASES = [
 const findingLine = (f) => `${f.rule} ${f.text}`;
 
 async function testFixture(name, rules) {
-  const result = await auditScene({ scene: join(FIXTURES, name), step: 0.1, minPhonePx: 8 });
+  const result = await auditScene({ scene: join(FIXTURES, name), step: 0.1, minPhonePx: 10.5 });
   const lines = result.findings.map(findingLine).join("; ");
   assertEq(ruleSet(result.findings), rules, `${name} rules (${lines})`);
   check(result.findings.length === rules.length, `${name}: expected ${rules.length} findings, got ${lines}`);
@@ -691,7 +693,7 @@ async function selfTest() {
 // ---------------------------------------------------------------- CLI
 
 const HELP = `usage: text_audit.mjs --scene <index.html> [--out <report.json>] [--duration <sec>]
-       [--fps <n>] [--width <px>] [--height <px>] [--step 0.1] [--min-phone-px 8]
+       [--fps <n>] [--width <px>] [--height <px>] [--step 0.1] [--min-phone-px 10.5]
        text_audit.mjs --self-test`;
 
 const positiveOrFail = (n, text, flag) => (n > 0 ? n : fail(`${flag}: "${text}" is not a positive number`, UsageError));
@@ -703,7 +705,7 @@ function cliOptions(argv) {
     options: {
       scene: { type: "string" }, out: { type: "string" }, duration: { type: "string" },
       fps: { type: "string" }, width: { type: "string" }, height: { type: "string" },
-      step: { type: "string", default: "0.1" }, "min-phone-px": { type: "string", default: "8" },
+      step: { type: "string", default: "0.1" }, "min-phone-px": { type: "string", default: "10.5" },
       "self-test": { type: "boolean" }, help: { type: "boolean", short: "h" },
     },
   });

@@ -1,6 +1,6 @@
 ---
 name: video-storyboard
-description: "Use when a video project has BRIEF.md and DIRECTION.md and needs a beat-timed plan before capture, animation, audio or render start. Writes STORYBOARD.md and the canonical timeline.json (meta plus scenes with timing, beats, narration, captions, plates, motion, safe-zone regions and focal points), then proves it with scripts/check_timeline.py: 15 gates for the 3 s hook, 2-8 s scenes, caption density, 2.7 words/s narration, visual variety, safe zones, contiguous timing, read holds, key terms, the rhythm sheet, event gaps, the hero and payoff silence, the 3 directions in DIRECTION.md, captured materials for capture scenes, and schema."
+description: "Use when a video project has BRIEF.md and DIRECTION.md and needs a beat-timed plan before capture, animation, audio or render start. Writes STORYBOARD.md and the canonical timeline.json (meta plus scenes with timing, beats, narration, captions, plates, motion, safe-zone regions and focal points), then proves it with scripts/check_timeline.py: numeric gates for the hook, scenes, captions, narration, visual variety, safe zones, timing, sync, terms, rhythm, hero, menu time, directions, materials and schema."
 ---
 
 # Video Storyboard
@@ -119,7 +119,7 @@ bottom edge.
 | Field | Type | Rule |
 |---|---|---|
 | `id` | string | Non-empty, unique. Use `sNN-slug`. Other phases name files by it: `captures/<id>.mp4`, `audio/vo-<id>.wav`, `scenes/<id>/`. |
-| `kind` | string | `hook`, `capture`, `motion`, `character`, `diagram`, `callout` or `cta`. Scene 1 is `hook`. |
+| `kind` | string | `hook`, `capture`, `motion`, `character`, `diagram`, `callout`, `ui`, `menu` or `cta`. Scene 1 is `hook`. |
 | `start_sec` | number | 0.0 for scene 1. Then the end of the scene before. |
 | `duration_sec` | number | 2.0 s to 8.0 s. |
 | `duration_override_reason` | string | Optional. When non-empty, the bounds widen to 1.0 s to 12.0 s. Say why (a beat-matched stinger, a long live run). |
@@ -149,7 +149,10 @@ the film, in time order, with no overlap.
 Extra fields are allowed. The checker ignores them. Add them only when a
 later phase reads them, and write them into `STORYBOARD.md` too.
 
-## The 15 plan gates
+See `references/scene-fields.md` for optional reframes, proof insets, plate
+holds, UI crops and declared static holds.
+
+## The 18 plan gates
 
 `check_timeline.py` checks these. Each error in `qa/plan-check.json` has a
 `rule`, a `message` and, when it applies, a `scene` id.
@@ -171,6 +174,9 @@ later phase reads them, and write them into `STORYBOARD.md` too.
 | 13 | `directions` | `DIRECTION.md` next to `timeline.json` passes the direction rules of `video-direction` (3 directions, key frames, 1 `chosen:` line). |
 | 14 | `materials` | When a scene has kind `capture`, `materials/materials.md` exists (written by `materials.mjs` of `video-capture`) and every file in its table exists in `materials/`. |
 | 15 | `schema` | Every field in the tables above has the right type. IDs are non-empty and unique. A schema error stops the other gates, so fix it first. |
+| 16 | `caption_place` | A supplied `caption_box` stays in the aspect safe area. |
+| 17 | `sync` | With music, cuts are within 0.020 s of a beat and locked actions are within 0.070 s. |
+| 18 | `menu_time` | UI and menu scenes total at most 8 s per 80 s of film, scaled by duration. |
 
 ## Fix a failing gate
 
@@ -191,3 +197,5 @@ the scenes. A time inside a scene that grew scales with that scene.
 Send the capture, audio and animation phases the path of `timeline.json`
 and the passing `qa/plan-check.json`. List any scene with an override
 reason and any scene with a capture risk.
+
+Every DONE report lists each moved beat as `<beat>: <before> s -> <after> s`.

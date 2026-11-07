@@ -29,7 +29,10 @@ CHANNELS = 2
 DURATION_TOLERANCE_SEC = 0.05
 LUFS_MIN = -15.0
 LUFS_MAX = -13.0
-TRUE_PEAK_MAX_DBTP = -1.0
+TRUE_PEAK_MAX_DBTP = -2.0
+CUT_PEAK_MAX_DBFS = -3.0
+CUT_PEAK_RADIUS_SEC = 0.020
+CHECK_INPUTS = ("timeline_path", "beats_path", "sync_path", "cues_path", "bus", "bed", "music")
 EDGE_SILENCE_MAX_SEC = 0.20
 DROPOUT_MAX_SEC = 0.80
 ALLOWED_SILENCE_SLACK_SEC = 0.05
@@ -299,23 +302,31 @@ def check_sync_sheet(sheet, timeline, duration, errors):
 
 # ---------------------------------------------------------------- sample analysis
 
-def _pcm(path, audio_filter=None):
-    """Decode path to mono signed 16-bit samples at ANALYSIS_RATE."""
-    cmd = ["ffmpeg", "-hide_banner", "-v", "error", "-i", path]
-    if audio_filter:
-        cmd += ["-af", audio_filter]
-    cmd += ["-ac", "1", "-ar", str(ANALYSIS_RATE), "-f", "s16le", "-"]
-    try:
-        proc = subprocess.run(cmd, capture_output=True, check=False)
-    except FileNotFoundError as exc:
-        raise ToolError("ffmpeg is not on PATH") from exc
-    if proc.returncode != 0:
-        raise ToolError(f"ffmpeg cannot decode {path}: {proc.stderr.decode(errors='replace')[-400:]}")
+def _decode_cmd(path, audio_filter, rate):
+    """Return the ffmpeg command that decodes path to mono s16le at rate."""
+    if not shutil.which("ffmpeg"):
+        raise ToolError("ffmpeg is not on PATH")
+    filters = ["-af", audio_filter] if audio_filter else []
+    return (["ffmpeg", "-hide_banner", "-v", "error", "-i", path] + filters
+            + ["-ac", "1", "-ar", str(rate), "-f", "s16le", "-"])
+
+
+def _s16(raw):
+    """Return signed 16-bit little-endian samples from raw bytes."""
     samples = array.array("h")
-    samples.frombytes(proc.stdout[:len(proc.stdout) // 2 * 2])
+    samples.frombytes(raw[:len(raw) // 2 * 2])
     if sys.byteorder == "big":
         samples.byteswap()
     return samples
+
+
+def _pcm(path, audio_filter=None, rate=ANALYSIS_RATE):
+    """Decode path to mono signed 16-bit samples at the selected rate."""
+    proc = subprocess.run(_decode_cmd(path, audio_filter, rate), capture_output=True, check=False)
+    tail = proc.stderr.decode(errors="replace")[-400:]
+    if proc.returncode != 0:
+        raise ToolError(f"ffmpeg cannot decode {path}: {tail}")
+    return _s16(proc.stdout)
 
 
 def _rms_db(samples, start_sec, end_sec):
@@ -330,6 +341,38 @@ def _rms_db(samples, start_sec, end_sec):
 def _levels(samples, window_sec):
     count = int(len(samples) / (window_sec * ANALYSIS_RATE))
     return [_rms_db(samples, k * window_sec, (k + 1) * window_sec) for k in range(count)]
+
+
+def _cut_times(timeline):
+    """Return the sorted scene start times after 0 s."""
+    scenes = timeline.get("scenes", []) if isinstance(timeline, dict) else []
+    starts = (scene.get("start_sec") for scene in scenes if isinstance(scene, dict))
+    return sorted({float(start) for start in starts if _is_num(start) and start > 0})
+
+
+def _peak_dbfs(samples, sec):
+    """Return the sample peak in dBFS within CUT_PEAK_RADIUS_SEC of sec."""
+    lo = max(0, int((sec - CUT_PEAK_RADIUS_SEC) * SAMPLE_RATE))
+    hi = math.ceil((sec + CUT_PEAK_RADIUS_SEC) * SAMPLE_RATE)
+    peak = max((abs(value) for value in samples[lo:hi]), default=0) / 32768.0
+    return 20 * math.log10(peak) if peak else -math.inf
+
+
+def _cut_result(samples, cut, errors):
+    """Check the peak at 1 cut and return its metric."""
+    peak = _peak_dbfs(samples, cut)
+    message = (f"peak within {CUT_PEAK_RADIUS_SEC * 1000:.0f} ms of the cut at {cut:.3f} s is "
+               f"{peak:.2f} dBFS; it must be <= {CUT_PEAK_MAX_DBFS} dBFS")
+    if peak > CUT_PEAK_MAX_DBFS:
+        _err(errors, "mix.cut_peak", message)
+    return {"sec": cut, "peak_dbfs": None if math.isinf(peak) else round(peak, 2)}
+
+
+def check_cut_peaks(mix, timeline, errors):
+    """Check the sample peak within 20 ms on each scene cut."""
+    cuts = _cut_times(timeline)
+    samples = _pcm(mix, rate=SAMPLE_RATE) if cuts else []
+    return [_cut_result(samples, cut, errors) for cut in cuts]
 
 
 def sync_points(path):
@@ -551,35 +594,86 @@ def _check_arc(mix, metrics, timeline, beats, music, errors):
     return plan
 
 
-def check(mix, timeline_path=None, beats_path=None, sync_path=None, cues_path=None,
-          bus=None, bed=None, music=None):
-    """Return the report dict. Raises ToolError when an input cannot be read."""
-    errors = []
+def _check_mix(mix, timeline_path, errors):
+    """Check the format, the loudness and the cut peaks of the mix."""
     info = probe(mix)
-    metrics = dict(info)
-    metrics.update(measure(mix))
+    metrics = {**info, **measure(mix)}
     timeline = _load_json(timeline_path) if timeline_path else {}
     _check_format(info, timeline, bool(timeline_path), errors)
     _check_loudness(metrics, errors)
+    metrics["cut_peaks"] = check_cut_peaks(mix, timeline, errors)
+    return metrics, timeline
 
-    beats = _load_json(beats_path) if beats_path else None
-    if beats_path:
-        check_beats(beats, info["duration_sec"], errors)
+
+def _check_sheet(sync_path, timeline, duration, errors):
+    """Check the sync sheet and return it, or None without a path."""
+    sheet = _load_json(sync_path) if sync_path else None
     if sync_path:
-        sheet = _load_json(sync_path)
-        check_sync_sheet(sheet, timeline, info["duration_sec"], errors)
-        beats = beats if beats is not None else sheet
-    if cues_path:
-        metrics["sfx"] = check_sfx(cues_path, bus, bed, errors)
-    plan = _check_arc(mix, metrics, timeline, beats, music, errors)
-    allowed = _allowed(timeline) + ([plan["payoff_silence_sec"]] if plan["payoff_silence_sec"] else [])
-    check_silences(metrics["silences"], info["duration_sec"], allowed, errors)
+        check_sync_sheet(sheet, timeline, duration, errors)
+    return sheet
 
+
+def _check_grid(inputs, timeline, duration, errors):
+    """Check beats.json and the sync sheet, and return the bar grid."""
+    beats = _load_json(inputs["beats_path"]) if inputs["beats_path"] else None
+    if inputs["beats_path"]:
+        check_beats(beats, duration, errors)
+    sheet = _check_sheet(inputs["sync_path"], timeline, duration, errors)
+    return beats if beats is not None else sheet
+
+
+def _cue_metrics(inputs, errors):
+    """Check the SFX cues and return their metric, or {} without a cue file."""
+    cues = inputs["cues_path"]
+    sfx = check_sfx(cues, inputs["bus"], inputs["bed"], errors) if cues else None
+    return {"sfx": sfx} if cues else {}
+
+
+def _check_grid_and_cues(inputs, metrics, timeline, errors):
+    """Check the bar grid, then the SFX cues, and return the bar grid."""
+    beats = _check_grid(inputs, timeline, metrics["duration_sec"], errors)
+    metrics.update(_cue_metrics(inputs, errors))
+    return beats
+
+
+def _silence_ranges(timeline, plan):
+    """Return the allowed silence ranges, with the planned payoff silence."""
+    payoff = plan["payoff_silence_sec"]
+    return _allowed(timeline) + ([payoff] if payoff else [])
+
+
+def _check_all(mix, inputs):
+    """Run every check that inputs select and return the report dict."""
+    errors = []
+    metrics, timeline = _check_mix(mix, inputs["timeline_path"], errors)
+    plan = _check_arc(mix, metrics, timeline, _check_grid_and_cues(inputs, metrics, timeline, errors),
+                      inputs["music"], errors)
+    check_silences(metrics["silences"], metrics["duration_sec"], _silence_ranges(timeline, plan), errors)
+    return _report(mix, metrics, errors)
+
+
+def check(mix, *paths, **named):
+    """Return the report dict. Raises ToolError when an input cannot be read.
+
+    paths and named give the CHECK_INPUTS, in that order or by name.
+    """
+    inputs = dict.fromkeys(CHECK_INPUTS)
+    inputs.update(zip(CHECK_INPUTS, paths), **named)
+    return _check_all(mix, inputs)
+
+
+def _finite(value):
+    """Return value, or None when it is infinite."""
+    return None if math.isinf(value) else value
+
+
+def _report(mix, metrics, errors):
+    """Return the report dict with JSON-safe loudness metrics."""
     del metrics["momentary"]
-    for key in ("integrated_lufs", "true_peak_dbtp"):
-        if math.isinf(metrics[key]):
-            metrics[key] = None
-    return {"passed": not errors, "file": mix, "errors": errors, "metrics": metrics}
+    metrics.update({key: _finite(metrics[key]) for key in ("integrated_lufs", "true_peak_dbtp")})
+    return {"passed": not errors, "file": mix, "errors": errors, "metrics": metrics,
+            "notes": ["Keep the WAV at or below -2.0 dBTP because AAC adds about +1 dB.",
+                      "video-render measures the encoded MP4 at or below -1.0 dBTP."]}
 
 
 def write_report(report, out):
@@ -800,7 +894,15 @@ def self_test():
 
         burst = f"{tone}+if(between(t,1.5,1.52),0.8*sin(2*PI*3000*t),0)"
         _synth(p("hot.wav"), burst, 4, -14.0)
-        expect("fail true peak > -1.0 dBTP", check(p("hot.wav")), ["loudness.true_peak"])
+        expect("fail true peak > -2.0 dBTP", check(p("hot.wav")), ["loudness.true_peak"])
+
+        _render(p("cut-hot.wav"),
+                "0.12*sin(2*PI*440*t)+if(between(t,1.99,2.01),0.85*sin(2*PI*3000*t),0)", 4)
+        _write(p("cuts.json"), {"meta": {"duration_sec": 4.0}, "scenes": [
+            {"id": "a", "start_sec": 0.0}, {"id": "b", "start_sec": 2.0}]})
+        expect("fail a cut peak above -3.0 dBFS", check(p("cut-hot.wav"), p("cuts.json")),
+               ["mix.cut_peak"])
+        expect("pass cut peaks below -3.0 dBFS", check(p("good.wav"), p("cuts.json")), [])
 
         gap = f"if(between(t,1.8,3.0),0,{tone})"
         _synth(p("gap.wav"), gap, 5, -14.0)

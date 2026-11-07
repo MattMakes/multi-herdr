@@ -94,26 +94,28 @@ const VIDEO_SKILLS: [&str; 10] = [
 ];
 
 /// The script entrypoints the pipeline calls, each with an execute bit.
-const ENTRYPOINTS: [&str; 9] = [
+const ENTRYPOINTS: [&str; 10] = [
     "video-produce/scripts/lint_notes.py",
     "video-produce/scripts/validate_batch.py",
     "video-produce/scripts/ab_blind.py",
     "video-produce/scripts/check_share.py",
     "video-storyboard/scripts/check_timeline.py",
     "video-audio/scripts/check_audio.py",
+    "video-audio/scripts/check_music.py",
     "video-motion-match/scripts/compare_frames.py",
     "video-render/scripts/render_frames.mjs",
     "video-qa/scripts/qa_video.py",
 ];
 
 /// The checkers whose `--self-test` needs only python3 and ffmpeg.
-const PYTHON_SELF_TESTS: [&str; 8] = [
+const PYTHON_SELF_TESTS: [&str; 9] = [
     "skills/video-produce/scripts/lint_notes.py",
     "skills/video-produce/scripts/validate_batch.py",
     "skills/video-produce/scripts/ab_blind.py",
     "skills/video-produce/scripts/check_share.py",
     "skills/video-storyboard/scripts/check_timeline.py",
     "skills/video-audio/scripts/check_audio.py",
+    "skills/video-audio/scripts/check_music.py",
     "skills/video-motion-match/scripts/compare_frames.py",
     "skills/video-qa/scripts/qa_video.py",
 ];

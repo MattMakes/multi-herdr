@@ -89,6 +89,13 @@ export async function probe(file) {
   return { video, audio, width: video.width, height: video.height, fps: rate(video.r_frame_rate), duration: Number(data.format.duration) };
 }
 
+export async function probeFrameCount(file) {
+  const text = await run("ffprobe", ["-v", "error", "-count_frames", "-select_streams", "v:0", "-show_entries", "stream=nb_read_frames", "-of", "default=nokey=1:noprint_wrappers=1", file]);
+  const count = Number(text.trim());
+  check(Number.isInteger(count) && count >= 0, `${file}: ffprobe returned invalid frame count ${JSON.stringify(text.trim())}`);
+  return count;
+}
+
 // The master and every export share these H.264 settings: CFR, High profile at level 4.2,
 // a 1 s GOP and 2 B-frames, with the moov atom at the front for streaming.
 export function h264Args(fps) {
@@ -1179,14 +1186,54 @@ async function writeCover({ master, outDir, hook, coverSec, report }) {
   report.outputs.push(file);
 }
 
-async function writePreviews({ master, outDir, hook, info, report }) {
+// preview.mp4 is the full film, so it keeps the master frame count.
+async function writePreviewMp4({ master, outDir, report }) {
+  const mp4 = join(outDir, "preview.mp4");
+  await ffmpeg(["-i", master, "-an", ...PREVIEW_MP4_ARGS, mp4]);
+  report.outputs.push(mp4);
+}
+
+async function writePreviewGif({ master, outDir, hook, info, report }) {
   const len = Math.min(5, info.duration - hook.start_sec);
-  const clipArgs = ["-ss", String(hook.start_sec), "-t", String(len), "-i", master, "-an"];
-  const [mp4, gif] = [join(outDir, "preview.mp4"), join(outDir, "preview.gif")];
-  await ffmpeg([...clipArgs, ...PREVIEW_MP4_ARGS, mp4]);
-  await ffmpeg([...clipArgs, "-filter_complex", GIF_FILTER, "-loop", "0", gif]);
-  report.outputs.push(mp4, gif);
+  const gif = join(outDir, "preview.gif");
+  await ffmpeg(["-ss", String(hook.start_sec), "-t", String(len), "-i", master, "-an", "-filter_complex", GIF_FILTER, "-loop", "0", gif]);
+  report.outputs.push(gif);
   report.warnings.push(...(len < 5 ? [`preview: master holds ${len.toFixed(2)} s after the hook start, not 5 s`] : []));
+}
+
+async function writePreviews(ctx) {
+  await writePreviewMp4(ctx);
+  await writePreviewGif(ctx);
+}
+
+// [name, path] of master.mp4 first, then of every derived MP4.
+function encodedFiles({ master, outDir, aspects }) {
+  const files = [["master.mp4", master]];
+  for (const name of ["preview", ...aspects]) {
+    files.push([`${name}.mp4`, join(outDir, `${name}.mp4`)]);
+  }
+  return files;
+}
+
+async function probeEntry([name, file]) {
+  return [name, await probeFrameCount(file)];
+}
+
+// "<name>=<count>" for each derived entry whose count differs from the first (master) entry.
+function frameMismatches([[, master], ...derived]) {
+  const bad = [];
+  for (const [name, count] of derived) {
+    bad.push(...(count === master ? [] : [`${name}=${count}`]));
+  }
+  return bad;
+}
+
+// Every derived MP4 must decode to the master frame count: a packaging step never cuts the film.
+async function encodedFrameCounts(ctx) {
+  const entries = await Promise.all(encodedFiles(ctx).map(probeEntry));
+  const mismatches = frameMismatches(entries);
+  check(mismatches.length === 0, `derived frame counts differ from master.mp4 (${entries[0][1]}): ${mismatches.join(", ")}`);
+  return Object.fromEntries(entries);
 }
 
 async function writeAspect(ctx, aspect) {
@@ -1207,6 +1254,7 @@ export async function packagePublish(opts) {
   await writeCover(ctx);
   await writePreviews(ctx);
   await inSequence(opts.aspects, (aspect) => writeAspect(ctx, aspect));
+  ctx.report.frame_counts = await encodedFrameCounts(ctx);
   return ctx.report;
 }
 
@@ -1360,7 +1408,7 @@ async function checkStills(outDir) {
   const cover = await probe(join(outDir, "cover.jpg"));
   assertEq([cover.width, cover.height], [1920, 1080], "cover size");
   const prev = await probe(join(outDir, "preview.mp4"));
-  check(prev.audio === null && prev.width === 1280, "preview.mp4 is muted and 1280 px wide");
+  check(prev.audio === null && prev.width === 1280 && prev.video.nb_frames === "90", "preview.mp4 is muted, full length and 1280 px wide");
   check(statSync(join(outDir, "preview.gif")).size > 0, "preview.gif written");
 }
 
@@ -1372,6 +1420,7 @@ async function testPackage(root) {
   assertEq(readFileSync(join(outDir, "captions.srt"), "utf8"), EXPECTED_SRT, "packaged srt");
   await inSequence(Object.entries(ASPECTS), (entry) => checkAspectExport(outDir, entry));
   assertEq(report.reframe["9x16"].map((m) => m.mode), ["fit", "crop", "fit"], "9x16 modes");
+  assertEq(report.frame_counts, { "master.mp4": 90, "preview.mp4": 90, "16x9.mp4": 90, "9x16.mp4": 90, "1x1.mp4": 90 }, "encoded frame counts");
   await checkStills(outDir);
 }
 

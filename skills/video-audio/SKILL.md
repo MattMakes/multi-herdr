@@ -1,6 +1,6 @@
 ---
 name: video-audio
-description: Use when a video project needs its sound - per-scene voice-over from local TTS (piper, kokoro or macOS say), scene timings reconciled to the spoken length in timeline.json, a beat grid in audio/beats.json, procedural ffmpeg SFX on clicks, keys and transitions, music ducked under the voice, and a -14 LUFS / -1 dBTP stereo master in audio/mix.wav proved by scripts/check_audio.py.
+description: Use when a video project needs its sound - per-scene voice-over from local TTS (piper, kokoro or macOS say), scene timings reconciled to the spoken length in timeline.json, a beat grid in audio/beats.json, procedural ffmpeg SFX on clicks, keys and transitions, music ducked under the voice, and a -14 LUFS / -2 dBTP stereo master in audio/mix.wav proved by scripts/check_audio.py.
 ---
 
 # Video audio
@@ -33,6 +33,8 @@ Generated `.wav`, `.aiff` and `.mp3` files are build output. Do not commit them.
 Recipes for steps 3 to 5 are in `<skill-dir>/references/lavfi-sfx-recipes.md`.
 The sync sheet, the effect placement and the arc rules are in
 `<skill-dir>/references/sync-and-placement.md`.
+Lock picture before the final continuous music bed, then run `scripts/check_music.py`.
+The edit, continuity and SFX variation rules are in `<skill-dir>/references/music-laid-last.md`.
 
 ## 1. Voice-over
 
@@ -178,7 +180,7 @@ every edge, and do not use more than 1 key sound per `60 ms`.
    check.
 3. Mix voice, ducked music and SFX with `amix ... normalize=0` into
    `audio/premix.wav`.
-4. Master in 2 passes with `loudnorm=I=-14:TP=-1.0:LRA=7`: measure first, then
+4. Master in 2 passes with `loudnorm=I=-14:TP=-2.0:LRA=7`: measure first, then
    apply the measured values with `linear=true`. Write `audio/mix.wav` as
    `48 kHz` stereo 24-bit PCM (`pcm_s24le`). 16-bit is also accepted.
 
@@ -207,7 +209,8 @@ Exit `2`: an input or a tool is missing.
 | `format.channels` | `2` | Add `-ac 2` |
 | `format.duration` | within `+-0.05 s` of `meta.duration_sec` | `apad=whole_dur=<d>,atrim=0:<d>` |
 | `loudness.integrated` | `-15.0` to `-13.0` LUFS | Run both loudnorm passes again |
-| `loudness.true_peak` | `<= -1.0` dBTP | Master again with `TP=-1.5` |
+| `loudness.true_peak` | WAV `<= -2.0` dBTP; AAC can add about `+1 dB` | Master again with `TP=-2.0`; video-render checks MP4 `<= -1.0` dBTP |
+| `mix.cut_peak` | peak within `20 ms` of each cut `<= -3.0` dBFS | Limit transients on the SFX bus only |
 | `silence.leading` | `<= 0.20 s` | Start the bed or the voice at `0.0 s` |
 | `silence.trailing` | `<= 0.20 s` | Let the bed fade to the last frame |
 | `silence.dropout` | no internal gap `> 0.80 s` below `-50 dBFS` | Extend the bed, or list the gap |
