@@ -12,6 +12,9 @@ Output: `BRIEF.md` and `DIRECTION.md` at the root of the video project
 pack. The storyboard (`video-storyboard`) reads both. Nothing is captured,
 animated or recorded until both exist.
 
+Apply the phone framing, proof, hero, and brand intro rules in
+[`references/phone-framing.md`](references/phone-framing.md) before hand-off.
+
 ## Order of work
 
 1. Read `.video/NOTES.md` in the video project folder when it exists.
