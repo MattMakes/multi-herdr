@@ -11,6 +11,7 @@
   launch reports an error. `horch install` run from a gate or task worktree
   no longer bakes that worktree's roster into the `herdr-fleet` launcher; it
   uses the main checkout's.
+- `herdr-fleet sol` launches its Codex orchestrator on `gpt-6.1-sol`.
 
 ## v0.4.6 - 2026-11-06
 
