@@ -118,8 +118,8 @@ def is_pair(value):
 
 
 def sample_scale(sample):
-    """The larger drawn/natural ratio of 1 raster sample."""
-    natural, drawn = (sample.get("natural_px"), sample.get("drawn_px")) if isinstance(sample, dict) else (None, None)
+    """The larger drawn/real ratio of 1 raster sample."""
+    natural, drawn = (sample.get("real_px", sample.get("natural_px")), sample.get("drawn_px")) if isinstance(sample, dict) else (None, None)
     if not (is_pair(natural) and is_pair(drawn) and min(natural) > 0):
         raise ValueError(SAMPLE_ERROR)
     return max(d / n for d, n in zip(drawn, natural))
@@ -151,7 +151,9 @@ def report_hits(lines, summary, failed):
 
 
 def raster_line(path, sample, scale):
-    return f"{path}: {sample.get('src', '<unknown>')} at {sample.get('t_sec', '<unknown>')} s is {scale:.3f}x; maximum is {MAX_RASTER_SCALE:.1f}x"
+    real = sample.get("real_px")
+    measured = f"; measured real resolution is {real[0]:g}x{real[1]:g}" if is_pair(real) else ""
+    return f"{path}: {sample.get('src', '<unknown>')} at {sample.get('t_sec', '<unknown>')} s is {scale:.3f}x; maximum is {MAX_RASTER_SCALE:.1f}x{measured}"
 
 
 def check_raster_sizes(path):
@@ -243,11 +245,15 @@ def raster_failures(root):
         ("raster-clean.json", [120, 60], 0, "1.2x raster sample does not pass"),
         ("raster-bad.json", [121, 50], 1, "1.21x raster sample does not fail"),
     ]
-    return [message for name, drawn, want, message in cases if raster_exit(root / name, drawn) != want]
+    failures = [message for name, drawn, want, message in cases if raster_exit(root / name, drawn) != want]
+    failures += [] if raster_exit(root / "raster-pre-upscaled.json", [100, 50], [50, 25]) == 1 else ["a pre-upscaled raster does not fail at its measured real resolution"]
+    return failures
 
 
-def raster_exit(path, drawn):
+def raster_exit(path, drawn, real=None):
     sample = {"t_sec": 0, "src": "plate.png", "natural_px": [100, 50], "drawn_px": drawn}
+    if real:
+        sample["real_px"] = real
     path.write_text(json.dumps({"samples": [sample]}), encoding="utf-8")
     return check_raster_sizes(path)
 

@@ -39,6 +39,17 @@ Visible means a non-zero box that touches the viewport and passes
 are vector, so they are skipped. 2 copies of 1 image at 1 time give 1 sample,
 the larger one, so a copy does not lengthen a warning run.
 
+## Pre-upscaled plates
+
+The render also checks whether a raster was enlarged before the 1.2x gate.
+It downscales the decoded pixels by the claimed 2x export factor, enlarges
+them back with nearest-neighbour sampling, and compares the RGB pixels with
+the decoded source. A round-trip PSNR above 40 dB means the file contains no
+meaningful detail above half its dimensions. The report then adds `real_px`,
+`detail_scale`, and `detail_psnr_db` to the sample. The gate uses `real_px`,
+reports that measured resolution, and therefore rejects a pre-upscaled plate
+even when its file dimensions equal its drawn dimensions.
+
 Limits:
 
 - A canvas keeps its image draws until the next seek calls `drawImage` or

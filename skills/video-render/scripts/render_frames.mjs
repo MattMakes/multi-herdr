@@ -519,6 +519,8 @@ export async function renderScene(opts) {
 // Format and rules: skills/video-qa/references/motion-checks.md, check 18. How the
 // render samples them: references/raster-sizes.md.
 export const RASTER_STEP_SEC = 0.1;
+export const PRE_UPSCALE_FACTOR = 2;
+export const PRE_UPSCALE_PSNR_DB = 40;
 
 // The probe runs in the page before the scene scripts. It keeps the <img> draws of every 2D
 // canvas for the current seek: the first drawImage or clearRect after a seek drops older draws.
@@ -589,17 +591,78 @@ function isShown(el, r) {
   return onScreen && el.checkVisibility({ opacityProperty: true, visibilityProperty: true });
 }
 
-async function loadNatural(url) {
+async function loadRaster(url) {
+  const cache = (window.__rasterImages ??= new Map());
+  if (cache.has(url)) return cache.get(url);
   const img = new Image();
   img.src = url;
   await img.decode().catch(Boolean);
-  return img.naturalWidth > 0 ? [img.naturalWidth, img.naturalHeight] : null;
+  const loaded = img.naturalWidth > 0 ? img : null;
+  cache.set(url, loaded);
+  return loaded;
+}
+
+async function loadNatural(url) {
+  const img = await loadRaster(url);
+  return img ? [img.naturalWidth, img.naturalHeight] : null;
 }
 
 // The pixel size of the image file, decoded once per url.
 function naturalSize(url) {
   const cache = (window.__rasterNatural ??= new Map());
   return cache.get(url) ?? cache.set(url, loadNatural(url)).get(url);
+}
+
+function pixelCanvas(width, height) {
+  return new OffscreenCanvas(width, height);
+}
+
+function pixelsOf(canvas) {
+  return canvas.getContext("2d", { willReadFrequently: true }).getImageData(0, 0, canvas.width, canvas.height).data;
+}
+
+function rgbPsnr(a, b) {
+  let squared = 0;
+  for (let i = 0; i < a.length; i += 4) {
+    squared += (a[i] - b[i]) ** 2 + (a[i + 1] - b[i + 1]) ** 2 + (a[i + 2] - b[i + 2]) ** 2;
+  }
+  const mse = squared / (a.length * 0.75);
+  return mse === 0 ? 99 : 10 * Math.log10((255 * 255) / mse);
+}
+
+function originalPixels(img, natural) {
+  const original = pixelCanvas(natural[0], natural[1]);
+  original.getContext("2d").drawImage(img, 0, 0);
+  return pixelsOf(original);
+}
+
+function roundTripPixels(img, natural, real) {
+  const small = pixelCanvas(real[0], real[1]);
+  const smallContext = small.getContext("2d");
+  smallContext.imageSmoothingEnabled = false;
+  smallContext.drawImage(img, 0, 0, real[0], real[1]);
+  const restored = pixelCanvas(natural[0], natural[1]);
+  const context = restored.getContext("2d");
+  context.imageSmoothingEnabled = false;
+  context.drawImage(small, 0, 0, natural[0], natural[1]);
+  return pixelsOf(restored);
+}
+
+async function measureDetail(url, natural, factor, threshold) {
+  try {
+    const img = await loadRaster(url);
+    const real = natural.map((v) => Math.max(1, Math.floor(v / factor)));
+    const psnr = rgbPsnr(originalPixels(img, natural), roundTripPixels(img, natural, real));
+    return psnr > threshold ? { real_px: real, detail_scale: factor, detail_psnr_db: Math.round(psnr * 10) / 10 } : null;
+  } catch (_) {
+    return null;
+  }
+}
+
+function detailFacts(url, natural, factor, threshold) {
+  const cache = (window.__rasterDetail ??= new Map());
+  const key = `${url}|${factor}|${threshold}`;
+  return cache.get(key) ?? cache.set(key, measureDetail(url, natural, factor, threshold)).get(key);
 }
 
 function fitScales(box, n) {
@@ -721,8 +784,13 @@ function usableSample(s) {
   return Boolean(s) && s[1][0] > 0 && s[1][1] > 0;
 }
 
-function sampleRecord([url, n, size]) {
-  return { src: rasterName(url), natural_px: n.map(roundTenth), drawn_px: size.map(deviceTenth) };
+async function enrichSample(sample) {
+  const detail = await detailFacts(sample[0], sample[1], 2, 40);
+  return [...sample, detail];
+}
+
+function sampleRecord([url, n, size, detail]) {
+  return { src: rasterName(url), natural_px: n.map(roundTenth), drawn_px: size.map(deviceTenth), ...(detail ?? {}) };
 }
 
 async function measureRasters() {
@@ -733,12 +801,15 @@ async function measureRasters() {
     ...[...(window.__rasterProbe?.canvases ?? [])].flatMap(canvasSamples),
     ...[...document.querySelectorAll("*")].flatMap(backgroundSamples),
   ]);
-  return found.filter(usableSample).map(sampleRecord);
+  const usable = found.filter(usableSample);
+  return (await Promise.all(usable.map(enrichSample))).map(sampleRecord);
 }
 
-const PAGE_FUNCTIONS = [rasterName, isRaster, isShown, loadNatural, naturalSize, fitScales, fitSize, trimmed, splitLayers, layerUrl,
+const PAGE_FUNCTIONS = [rasterName, isRaster, isShown, loadRaster, loadNatural, naturalSize, pixelCanvas, pixelsOf, rgbPsnr,
+  originalPixels, roundTripPixels, measureDetail, detailFacts,
+  fitScales, fitSize, trimmed, splitLayers, layerUrl,
   axisLength, keepRatio, lengthSize, backgroundSize, boxSample, imageSample, svgFit, svgImageSample, posterSample, scaledDraw,
-  canvasSamples, layerSample, axisScale, backgroundBox, backgroundSamples, roundTenth, deviceTenth, usableSample, sampleRecord,
+  canvasSamples, layerSample, axisScale, backgroundBox, backgroundSamples, roundTenth, deviceTenth, usableSample, enrichSample, sampleRecord,
   measureRasters];
 
 const measureScript = (f, fps) => `(async () => {
@@ -1622,7 +1693,7 @@ const VECTOR_SVG = '<svg xmlns="http://www.w3.org/2000/svg" width="10" height="1
 async function rasterDir(root, name, files) {
   const dir = join(root, name);
   mkdirSync(dir, { recursive: true });
-  await ffmpeg(["-f", "lavfi", "-i", "color=c=0x4cf2aa:s=100x100", "-frames:v", "1", join(dir, files[0])]);
+  await ffmpeg(["-f", "lavfi", "-i", "testsrc2=s=100x100", "-frames:v", "1", join(dir, files[0])]);
   files.slice(1).forEach((f) => copyFileSync(join(dir, files[0]), join(dir, f)));
   return dir;
 }
@@ -1675,9 +1746,23 @@ async function testRasterClean(root) {
   const dir = await rasterDir(root, "raster-clean", ["img.png"]);
   writeFileSync(join(dir, "clean.html"), imgHtml(100));
   await rasterRender(join(dir, "clean.html"), join(dir, "clean"), join(dir, "clean.json"));
-  assertEq(readJson(join(dir, "clean.json")).samples.length, 5, "5 samples in 0.5 s");
+  const samples = readJson(join(dir, "clean.json")).samples;
+  assertEq(samples.length, 5, "5 samples in 0.5 s");
+  check(samples.every((sample) => !sample.real_px), "sharp 100 px frame is reported as pre-upscaled");
   if (noQa()) return NO_QA;
   check(qaRasterPasses(join(dir, "clean.json")), "qa_video raster_upscale fails the clean 1x report");
+}
+
+async function testPreUpscaledRaster(root) {
+  const dir = join(root, "raster-pre-upscaled");
+  mkdirSync(dir, { recursive: true });
+  await ffmpeg(["-f", "lavfi", "-i", "testsrc2=s=100x100", "-vf", "scale=50:50:flags=neighbor,scale=100:100:flags=neighbor", "-frames:v", "1", join(dir, "img.png")]);
+  writeFileSync(join(dir, "index.html"), imgHtml(100));
+  const reportFile = join(dir, "raster-sizes.json");
+  await rasterRender(join(dir, "index.html"), join(dir, "frames"), reportFile);
+  const sample = readJson(reportFile).samples[0];
+  assertEq(sample.real_px, [50, 50], "measured real resolution");
+  check(sample.detail_psnr_db > PRE_UPSCALE_PSNR_DB, "pre-upscaled plate does not exceed the PSNR threshold");
 }
 
 async function rasterProject(root) {
@@ -1734,6 +1819,7 @@ const CHROME_TESTS = [
   ["scope check passes a fix inside scope and names a changed scene outside it", testScope],
   ["raster sizes cover background, canvas, poster and SVG image, not SVG files", testRasterKinds],
   ["qa_video raster_upscale passes a 1x image from --scene --raster-sizes", testRasterClean],
+  ["raster sizes detect a frame pre-upscaled by 2x", testPreUpscaledRaster],
   ["qa_video raster_upscale fails a 1.3x image in render/raster-sizes.json from --scenes", testRasterScenes],
 ];
 
