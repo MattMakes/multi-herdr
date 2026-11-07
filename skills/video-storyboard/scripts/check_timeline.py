@@ -18,6 +18,7 @@ import math
 import os
 import re
 import sys
+from functools import partial
 
 RULES = [
     "hook_window",
@@ -181,34 +182,47 @@ def has_exact_fields(value, fields):
 
 
 def check_scene_schema(scene, label, report):
-    for message in scene_schema_errors(scene):
-        report.add("schema", message, label)
+    messages = scene_schema_errors(scene)
+    rule = "schema"
+    for message in messages:
+        report.add(rule, message, label)
 
 
 def scene_schema_errors(scene):
-    if not isinstance(scene, dict):
-        return ["scene must be an object"]
-    errors = [message for valid, message in SCENE_RULES if not valid(scene)]
+    if isinstance(scene, dict):
+        return scene_rule_errors(scene) + optional_field_errors(scene)
+    message = "scene must be an object"
+    return [message]
+
+
+def scene_rule_errors(scene):
+    return [message for valid, message in SCENE_RULES if not valid(scene)]
+
+
+def optional_field_errors(scene):
     duration = scene.get("duration_sec")
-    optional = [message for key, valid, message in OPTIONAL_SCENE_FIELDS
-                if key in scene and not valid(scene[key], duration)]
-    return errors + optional
+    present = [entry for entry in OPTIONAL_SCENE_FIELDS if entry[0] in scene]
+    return [message for key, valid, message in present if not valid(scene[key], duration)]
 
 
-def scene_number_at_least_0(key):
-    return lambda scene: is_number(scene.get(key)) and scene[key] >= 0
+def scene_number_at_least_0(key, scene):
+    return is_number(scene.get(key)) and scene[key] >= 0
 
 
-def scene_optional_type(key, kind):
-    return lambda scene: key not in scene or isinstance(scene[key], kind)
+def scene_optional_type(key, kind, scene):
+    return key not in scene or isinstance(scene[key], kind)
 
 
-def scene_string(key):
-    return lambda scene: isinstance(scene.get(key), str)
+def scene_string(key, scene):
+    return isinstance(scene.get(key), str)
 
 
-def scene_non_empty_string(key):
-    return lambda scene: non_empty_str(scene.get(key))
+def scene_non_empty_string(key, scene):
+    return non_empty_str(scene.get(key))
+
+
+def scene_kind_known(scene):
+    return scene.get("kind") in KINDS
 
 
 def has_static_hold_reason(scene):
@@ -247,20 +261,20 @@ def has_focal_point(scene):
 
 
 SCENE_RULES = (
-    (scene_non_empty_string("id"), "id must be a non-empty string"),
-    (lambda scene: scene.get("kind") in KINDS, "kind must be one of %s" % sorted(KINDS)),
-    (scene_number_at_least_0("start_sec"), "start_sec must be a number >= 0"),
-    (scene_number_at_least_0("duration_sec"), "duration_sec must be a number >= 0"),
-    (scene_optional_type("duration_override_reason", str), "duration_override_reason must be a string when present"),
-    (scene_optional_type("static_hold", bool), "static_hold must be a boolean when present"),
+    (partial(scene_non_empty_string, "id"), "id must be a non-empty string"),
+    (scene_kind_known, "kind must be one of %s" % sorted(KINDS)),
+    (partial(scene_number_at_least_0, "start_sec"), "start_sec must be a number >= 0"),
+    (partial(scene_number_at_least_0, "duration_sec"), "duration_sec must be a number >= 0"),
+    (partial(scene_optional_type, "duration_override_reason", str), "duration_override_reason must be a string when present"),
+    (partial(scene_optional_type, "static_hold", bool), "static_hold must be a boolean when present"),
     (has_static_hold_reason, "static_hold true needs a non-empty static_hold_reason string"),
-    (scene_optional_type("static_hold_reason", str), "static_hold_reason must be a string when present"),
+    (partial(scene_optional_type, "static_hold_reason", str), "static_hold_reason must be a string when present"),
     (has_on_screen_text, "on_screen_text must be a list of non-empty strings when present"),
     (has_beat_range, "beat_in and beat_out must be integers with 0 <= beat_in <= beat_out"),
-    (scene_string("narration"), "narration must be a string (empty allowed)"),
-    (scene_string("caption"), "caption must be a string (empty allowed)"),
-    (scene_non_empty_string("plate"), "plate must be a non-empty string"),
-    (scene_non_empty_string("transition_out"), "transition_out must be a non-empty string"),
+    (partial(scene_string, "narration"), "narration must be a string (empty allowed)"),
+    (partial(scene_string, "caption"), "caption must be a string (empty allowed)"),
+    (partial(scene_non_empty_string, "plate"), "plate must be a non-empty string"),
+    (partial(scene_non_empty_string, "transition_out"), "transition_out must be a non-empty string"),
     (has_motion_template, "motion must be an object with a non-empty template"),
     (has_valid_reveal, "motion.reveal_sec must be a number >= 0 when present"),
     (has_critical_regions, "critical_regions must be a list of [x, y, w, h] number lists"),
@@ -284,31 +298,45 @@ def in_scene(sec, duration):
     return is_number(sec) and is_number(duration) and 0.0 <= sec <= duration
 
 
+REFRAME_FIELDS = ("scale", "focal_point", "from_sec", "to_sec")
+GAUGE_INSET_FIELDS = ("source_rect", "scale", "event_sec", "lead_sec", "tail_sec", "anchor")
+
+
+def is_scene_span(start, end, duration):
+    return in_scene(start, duration) and in_scene(end, duration) and start < end
+
+
 def valid_reframe(value, duration):
-    if not has_exact_fields(value, ("scale", "focal_point", "from_sec", "to_sec")):
-        return False
-    start, end = value["from_sec"], value["to_sec"]
-    if not (in_scene(start, duration) and in_scene(end, duration) and start < end):
-        return False
-    return positive(value, "scale") and is_normalized_point(value["focal_point"])
+    return (
+        has_exact_fields(value, REFRAME_FIELDS)
+        and is_scene_span(value["from_sec"], value["to_sec"], duration)
+        and positive(value, "scale")
+        and is_normalized_point(value["focal_point"])
+    )
+
+
+def has_gauge_window(value):
+    return at_least(value, "lead_sec", GAUGE_LEAD_MIN_SEC) and at_least(value, "tail_sec", GAUGE_TAIL_MIN_SEC)
 
 
 def valid_gauge_inset(value, duration):
-    if not has_exact_fields(value, ("source_rect", "scale", "event_sec", "lead_sec", "tail_sec", "anchor")):
-        return False
-    if not (is_normalized_rect(value["source_rect"]) and positive(value, "scale")):
-        return False
-    if not (at_least(value, "lead_sec", GAUGE_LEAD_MIN_SEC) and at_least(value, "tail_sec", GAUGE_TAIL_MIN_SEC)):
-        return False
-    return in_scene(value["event_sec"], duration) and non_empty_str(value["anchor"])
+    return (
+        has_exact_fields(value, GAUGE_INSET_FIELDS)
+        and is_normalized_rect(value["source_rect"])
+        and positive(value, "scale")
+        and has_gauge_window(value)
+        and in_scene(value["event_sec"], duration)
+        and non_empty_str(value["anchor"])
+    )
 
 
 def valid_plate_hold(value, duration):
-    if not has_exact_fields(value, ("at_sec", "duration_sec")):
-        return False
-    if not (at_least(value, "at_sec", 0.0) and positive(value, "duration_sec")):
-        return False
-    return in_scene(value["at_sec"] + value["duration_sec"], duration)
+    return (
+        has_exact_fields(value, ("at_sec", "duration_sec"))
+        and at_least(value, "at_sec", 0.0)
+        and positive(value, "duration_sec")
+        and in_scene(value["at_sec"] + value["duration_sec"], duration)
+    )
 
 
 def valid_locked_actions(value, duration):
