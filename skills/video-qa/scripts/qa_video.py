@@ -518,11 +518,14 @@ def check_boundary_pops(ctx):
 def read_gate_result(path):
     """Read one gate result. Producers use either `pass` or `passed`."""
     label = f"cannot read gate result {path}"
+    data = None
     try:
         data = json.loads(path.read_text())
     except (OSError, ValueError) as exc:
         raise InputError(f"{label}: {exc}") from exc
-    return data if isinstance(data, dict) else {}
+    if not isinstance(data, dict):
+        return {}
+    return data
 
 
 def result_source(ctx, path):
@@ -535,27 +538,36 @@ def result_pass(report):
     return key, report.get(key) if key else None
 
 
+def pass_field_error(path, key, passed):
+    if key is None:
+        return f"gate result {path} has no pass or passed field"
+    if passed is not True:
+        return f"gate result {path} {key} is {passed!r}, not true"
+    return None
+
+
+def freshness_error(path, source):
+    if not source.is_file():
+        return f"gate result {path} checks missing source {source}"
+    if path.stat().st_mtime < source.stat().st_mtime:
+        return f"gate result {path} is older than {source}"
+    return None
+
+
+def inspect_gate_result(path, source):
+    item = {"result": str(path), "source": str(source)}
+    if not path.is_file():
+        return item, [f"expected gate result is missing: {path}"]
+    key, passed = result_pass(read_gate_result(path))
+    item.update({"field": key, "pass": passed})
+    errors = [message for message in (pass_field_error(path, key, passed), freshness_error(path, source)) if message]
+    return item, errors
+
+
 def check_gate_results(ctx):
-    checked, errors = [], []
-    for path in ctx.expected_gate_results:
-        source = result_source(ctx, path)
-        item = {"result": str(path), "source": str(source)}
-        if not path.is_file():
-            errors.append((f"expected gate result is missing: {path}", None))
-            checked.append(item)
-            continue
-        report = read_gate_result(path)
-        key, passed = result_pass(report)
-        item.update({"field": key, "pass": passed})
-        if key is None:
-            errors.append((f"gate result {path} has no pass or passed field", None))
-        elif passed is not True:
-            errors.append((f"gate result {path} {key} is {passed!r}, not true", None))
-        if not source.is_file():
-            errors.append((f"gate result {path} checks missing source {source}", None))
-        elif path.stat().st_mtime < source.stat().st_mtime:
-            errors.append((f"gate result {path} is older than {source}", None))
-        checked.append(item)
+    results = [inspect_gate_result(path, result_source(ctx, path)) for path in ctx.expected_gate_results]
+    checked = [item for item, _ in results]
+    errors = [(message, None) for _, messages in results for message in messages]
     return {"expected": checked}, errors
 
 
@@ -729,21 +741,26 @@ def scene_last_frames(scene, motion):
     return end_frame - 2, end_frame - 1
 
 
+def cut_flash_result(scene, motion):
+    first, last = scene_last_frames(scene, motion)
+    if first < 0 or last >= len(motion.frames):
+        return None
+    lumas = [mean_luma(motion.frames[i]) for i in (first, last)]
+    exempt = fade_hold(scene)
+    measured = {"scene": scene.get("id"), "frames": [first, last],
+                "luma": [round(value * 255, 2) for value in lumas], "fade_hold": exempt}
+    if exempt or abs(lumas[1] - lumas[0]) <= CUT_LUMA_DELTA:
+        return measured, None
+    message = (f"scene {scene.get('id')} frames {first} and {last} mean luma "
+               f"{lumas[0] * 255:.2f} and {lumas[1] * 255:.2f} differ by "
+               f"{abs(lumas[1] - lumas[0]):.1%} (max {CUT_LUMA_DELTA:.0%})")
+    return measured, (message, first / motion.fps)
+
+
 def check_cut_flash(ctx):
-    measured, errors = [], []
-    for scene in ctx.scenes:
-        first, last = scene_last_frames(scene, ctx.motion)
-        if first < 0 or last >= len(ctx.motion.frames):
-            continue
-        lumas = [mean_luma(ctx.motion.frames[i]) for i in (first, last)]
-        exempt = fade_hold(scene)
-        measured.append({"scene": scene.get("id"), "frames": [first, last],
-                         "luma": [round(v * 255, 2) for v in lumas], "fade_hold": exempt})
-        if not exempt and abs(lumas[1] - lumas[0]) > CUT_LUMA_DELTA:
-            message = (f"scene {scene.get('id')} frames {first} and {last} mean luma "
-                       f"{lumas[0] * 255:.2f} and {lumas[1] * 255:.2f} differ by "
-                       f"{abs(lumas[1] - lumas[0]):.1%} (max {CUT_LUMA_DELTA:.0%})")
-            errors.append((message, first / ctx.motion.fps))
+    results = [result for scene in ctx.scenes if (result := cut_flash_result(scene, ctx.motion))]
+    measured = [item for item, _ in results]
+    errors = [error for _, error in results if error]
     return {"max_delta": CUT_LUMA_DELTA, "scenes": measured}, errors
 
 
