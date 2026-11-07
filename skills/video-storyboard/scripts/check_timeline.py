@@ -63,6 +63,7 @@ VERTICAL_CAPTION_BOTTOM, VERTICAL_CAPTION_RIGHT = 0.80, 0.85
 CUT_SYNC_SEC, ACTION_SYNC_SEC = 0.020, 0.070
 MENU_SEC_PER_FILM_SEC = 8.0 / 80.0
 GAUGE_LEAD_MIN_SEC, GAUGE_TAIL_MIN_SEC = 0.3, 1.2
+MENU_MESSAGE = "ui and menu scenes total %.3f s; the scaled limit is %.3f s (8 s per 80 s of film)"
 ENERGY_MIN, ENERGY_MAX = 0, 10
 MAX_GAP_BARS = 2
 BEATS_PER_BAR = 4
@@ -599,8 +600,8 @@ SYNC_MESSAGE = "%s at %.3f s is %.3f s from the beat; the limit is %.3f s"
 
 def beat_errors(points, beat_sec, limit, name):
     """The sync errors of the (scene id, film second) `points` farther than `limit` from a beat."""
-    gaps = [(scene_id, sec, distance_to_beat(sec, beat_sec)) for scene_id, sec in points]
-    return [(scene_id, SYNC_MESSAGE % (name, sec, gap, limit)) for scene_id, sec, gap in gaps if gap > limit]
+    gaps = [(point, distance_to_beat(point[1], beat_sec)) for point in points]
+    return [(point[0], SYNC_MESSAGE % (name, point[1], gap, limit)) for point, gap in gaps if gap > limit]
 
 
 def cut_sync_errors(scenes, beat_sec):
@@ -727,9 +728,6 @@ def check_hero(meta, report):
         report.add("hero", "meta.payoff_silence_sec ends at %.3f s, after the hero start %.3f s" % (silence[1], hero[0]))
 
 
-MENU_MESSAGE = "ui and menu scenes total %.3f s; the scaled limit is %.3f s (8 s per 80 s of film)"
-
-
 def check_menu_time(meta, scenes, report):
     menu_sec = sum(scene["duration_sec"] for scene in scenes if scene["kind"] in ("ui", "menu"))
     limit = meta["duration_sec"] * MENU_SEC_PER_FILM_SEC
@@ -823,12 +821,6 @@ def check_materials(timeline, folder):
     return report.errors
 
 
-SCENE_GATES = (check_hook, check_durations, check_captions)
-META_SCENE_GATES = (check_caption_place,)
-LATE_SCENE_GATES = (check_speaking_rate, check_variety)
-TIMING_GATES = (check_safe_zone, check_timing, check_sync)
-
-
 def check_timeline(timeline):
     """Return the list of rule-keyed errors for a parsed timeline."""
     report = Report()
@@ -841,11 +833,18 @@ def check_timeline(timeline):
 def run_gates(timeline, report):
     """Run every gate after a clean schema, in the order of RULES."""
     meta, scenes = timeline["meta"], timeline["scenes"]
-    rhythm = timeline.get("rhythm", [])
+    run_layout_gates(meta, scenes, report)
+    run_story_gates(meta, scenes, timeline.get("rhythm", []), report)
+
+
+def run_layout_gates(meta, scenes, report):
     run_scene_gates(scenes, report, SCENE_GATES)
     run_meta_gates(meta, scenes, report, META_SCENE_GATES)
     run_scene_gates(scenes, report, LATE_SCENE_GATES)
     run_meta_gates(meta, scenes, report, TIMING_GATES)
+
+
+def run_story_gates(meta, scenes, rhythm, report):
     check_read_hold(scenes, report)
     check_terms(meta, scenes, report)
     check_rhythm(meta, rhythm, report)
@@ -866,6 +865,12 @@ def run_meta_gates(meta, scenes, report, gates):
     for gate in gates:
         gate(meta, scenes, report)
     return count
+
+
+SCENE_GATES = (check_hook, check_durations, check_captions)
+META_SCENE_GATES = (check_caption_place,)
+LATE_SCENE_GATES = (check_speaking_rate, check_variety)
+TIMING_GATES = (check_safe_zone, check_timing, check_sync)
 
 
 def run(timeline_path, out_path):
