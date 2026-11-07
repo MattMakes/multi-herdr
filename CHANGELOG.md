@@ -4,6 +4,14 @@
 
 ## Unreleased
 
+- `herdr-fleet` starts again while another fleet runs in the same project.
+  In v0.4.6 the new orchestrator exited at launch and its workspace closed,
+  while `horch fleet` still said "Done". Now the new fleet leaves the other
+  run alone and starts its own, and a fleet whose orchestrator does exit at
+  launch reports an error. `horch install` run from a gate or task worktree
+  no longer bakes that worktree's roster into the `herdr-fleet` launcher; it
+  uses the main checkout's.
+
 ## v0.4.6 - 2026-11-06
 
 - Fleet work now flows to an end with no silent stop. Pull is the only

@@ -51,7 +51,13 @@ pub fn install(ctx: &RuntimeContext, dir: Option<&str>) -> Result<()> {
     // The sibling binary is built next to horch (`cargo build --bin
     // herdr-install`), and is installed next to it too.
     install_siblings(&source, &dir)?;
-    install_launchers(&dir, ctx.bins.roster_override.as_deref())?;
+    let git = horch_core::taskledger::git::Git::new(&ctx.bins.harness.git);
+    let roster = ctx
+        .bins
+        .roster_override
+        .as_deref()
+        .map(|dir| durable_roster(&git, dir));
+    install_launchers(&dir, roster.as_deref())?;
 
     let on_path = ctx
         .inherited
@@ -161,6 +167,41 @@ fn install_launchers(dir: &Path, teammates: Option<&Path>) -> Result<()> {
         println!("installed {name} to {}", target.display());
     }
     Ok(())
+}
+
+/// The roster dir a launcher bakes in for `teammates`. A linked worktree (a
+/// gate or task worktree) is deleted once its work lands, and a launcher
+/// that names a dir in one then runs every fleet on the built-in roster. So
+/// a dir inside a linked worktree becomes the same dir of the main checkout,
+/// when that dir exists. Any other dir is kept.
+fn durable_roster(git: &horch_core::taskledger::git::Git, teammates: &Path) -> PathBuf {
+    let kept = teammates.to_path_buf();
+    let Ok(top) = git.run(teammates, &["rev-parse", "--show-toplevel"]) else {
+        return kept;
+    };
+    let top = PathBuf::from(top);
+    let top = top.canonicalize().unwrap_or(top);
+    let Some(main) = git.main_root(teammates) else {
+        return kept;
+    };
+    if top == main {
+        return kept;
+    }
+    let dir = teammates.canonicalize().unwrap_or(kept.clone());
+    let Ok(rel) = dir.strip_prefix(&top) else {
+        return kept;
+    };
+    let durable = main.join(rel);
+    if !durable.is_dir() {
+        return kept;
+    }
+    println!(
+        "{} is in a linked worktree, which is deleted when its work lands; \
+         the launchers use {} instead",
+        teammates.display(),
+        durable.display()
+    );
+    durable
 }
 
 /// The roster assignment line of a launcher template.
@@ -576,6 +617,59 @@ mod tests {
             );
         }
         assert_eq!(std::fs::read_dir(&bin).unwrap().count(), 2);
+    }
+
+    /// `just install` run in a gate worktree baked that worktree's roster
+    /// into herdr-fleet; the gate was then removed, and every fleet ran on
+    /// the built-in roster. The launcher names the main checkout's roster.
+    #[test]
+    fn a_roster_in_a_linked_worktree_maps_to_the_main_checkout() {
+        let tmp = tempfile::tempdir().unwrap();
+        let main = tmp.path().join("repo");
+        let git = |dir: &Path, args: &[&str]| {
+            let out = std::process::Command::new("git")
+                .arg("-C")
+                .arg(dir)
+                .args(args)
+                .env_remove("GIT_DIR")
+                .env_remove("GIT_WORK_TREE")
+                .output()
+                .unwrap();
+            assert!(out.status.success(), "{args:?}: {out:?}");
+        };
+        std::fs::create_dir_all(main.join("teammates")).unwrap();
+        std::fs::write(main.join("teammates/a.md"), "a").unwrap();
+        git(&main, &["init", "-q", "-b", "main"]);
+        git(&main, &["add", "."]);
+        git(
+            &main,
+            &[
+                "-c",
+                "user.name=t",
+                "-c",
+                "user.email=t@t",
+                "commit",
+                "-q",
+                "-m",
+                "init",
+            ],
+        );
+        let gate = main.join(".worktrees/_gate");
+        git(
+            &main,
+            &["worktree", "add", "-q", "--detach", gate.to_str().unwrap()],
+        );
+        let g = horch_core::taskledger::git::Git::new("git");
+        let main_roster = main.canonicalize().unwrap().join("teammates");
+
+        assert_eq!(durable_roster(&g, &gate.join("teammates")), main_roster);
+        assert_eq!(
+            durable_roster(&g, &main.join("teammates")),
+            main.join("teammates")
+        );
+        let outside = tmp.path().join("elsewhere");
+        std::fs::create_dir_all(&outside).unwrap();
+        assert_eq!(durable_roster(&g, &outside), outside);
     }
 
     #[test]
