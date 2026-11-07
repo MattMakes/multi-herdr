@@ -376,8 +376,8 @@ Audio: ffmpeg decode to mono 22050 Hz. STFT hop 256.
 3. Grid fit: T0 = 60/bpm or the median beat interval. Beat numbers: 0, then the running sum of max(1, round(interval /
    T0)). Least-squares fit beat time = t0 + k T. Repeat 5 times on the inliers (|residual| < 35 ms); with fewer than 8
    inliers use all beats. Report the median absolute residual and the inlier fraction. With `--bpm`, T = 60/bpm.
-4. Transient snap (unless `--no-snap`): the beat tracker's onset envelope lags real attacks by 20-50 ms, and a splice on
-   a lagging grid chops the downbeat's attack. Compute a log-compressed spectral flux: Hann window 512 samples (23 ms),
+4. Transient snap (unless `--no-snap`): beat-tracker grids trail the true attacks by 20-50 ms, so splicing on the raw
+   grid would cut off the front of each downbeat. Compute a log-compressed spectral flux: Hann window 512 samples (23 ms),
    hop 64 (2.9 ms), log(1 + 100 |X|), the sum of positive frame-to-frame differences. Try shifts from -s to +s in 1 ms
    steps, s = min(100 ms, 0.3 T). Score each shift by the mean flux at the grid points t0 + shift + kT that stay
    inside the track. Take the best shift. The fit ratio = best score / median score. t0 += shift.
@@ -437,10 +437,10 @@ ready-to-paste music block; the file written.
 The downbeat is the weak point. The source measured its phase choice on 2 hand-labelled tracks, both seen while it
 was built: one correct (confidence 0.93), one half a bar off (confidence 0.15, flagged LOW, a bass on beats 1 and 3
 whose accents move by half a bar later in the track). On both, the top drop candidate matched a section start that the
-music supervisor marked by hand. This is not independent validation. Under LOW confidence the music supervisor decides
-between the 2 printed grids from the first note, the section entrances and the chord changes, and runs again with
-`--phase N`. The draft is a first draft: every splice is checked (QA edges, hark timeline), and `at` is nudged by a few
-ms so the measured downbeat transient lands on the picture's downbeat.
+music supervisor marked by hand. This is not independent validation. Under LOW confidence the music supervisor picks
+one of the 2 printed grids by looking at where the first note falls, where sections come in and where chords move,
+then reruns with `--phase N`. The draft is a first draft: every splice is checked (QA edges, hark timeline), and `at` moves by a few ms
+until the measured transient of each downbeat coincides with the picture's downbeat.
 
 ## 6. `variant.py`
 
@@ -513,7 +513,7 @@ design's `cues` when it has one. Sample `file` paths stay relative to `--root`.
 written, so `master.json` lands in DIR too). Print the last 1200 characters of its output and 800 of its errors. Stop
 with its exit code when it fails. `--qa` then runs `qa.py --root <root> --design DIR/sounddesign.json --report
 DIR/report.json --trace DIR/adds.json --stems DIR/stems --master DIR/soundtrack.wav --out DIR/qa.json [--cache]` and
-prints its digest. `DIR/qa.json` then sits next to the base render's `out/qa/qa.json` for a before/after comparison.
+prints its digest. Comparing `DIR/qa.json` with the base render's `out/qa/qa.json` gives the before/after view.
 
 ## 7. `mux.py`
 

@@ -72,11 +72,11 @@ audio/assets/manifests/<category>.json  one entry per recording
 audio/assets/manifests/rights.json    the usage-rights audit (+ rights.md, rights.prev.json)
 audio/assets/manifests/music_choice.json  the music decision record
 audio/sounddesign.json                top level: include, buses, master
-audio/design/<category>.json          one fragment per designer
-out/cues.json                         the picture's cue events
+audio/design/<category>.json          a designer's fragment (one each)
+out/cues.json                         cue events exported from the picture
 out/audio/soundtrack.wav, premaster.wav, stems/, cache/
 out/qa/                               mix_report.json, master.json, adds.json, cues_sounded.json, qa.json
-out/audio-review/                     per-category and per-critic work, variants, dumps, backups
+out/audio-review/                     working folders of each category and critic: dumps, variants, backups
 CREDITS.md, out/CREDITS_description.txt
 ```
 

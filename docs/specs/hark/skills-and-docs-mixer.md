@@ -44,9 +44,9 @@ Event fields:
 | `apexFrac` | number | where in `dur` a whoosh peaks (0..1). |
 | `pitch` | number | optional pitch hint. Not read by the mixer. |
 
-The sync point of each event is where the eye reads the cause: an impact on its contact frame, a pop-in at 50 % of
-its travel, a whoosh on the velocity peak of the move, a riser on the frame of the hit it leads into, a logo sound on
-the frame where the wordmark becomes readable. Cue frames come from the picture code. Hand-typed sync points land
+Each event's sync point is the frame where a viewer sees the cause. For an impact that is the contact. For a pop-in it
+is the frame at half its travel. For a whoosh it is the fastest frame of the move. For a riser it is the hit it builds
+to, and for a logo sound it is the first frame on which the wordmark can be read. Cue frames come from the picture code. Hand-typed sync points land
 8-11 frames off in practice.
 
 ### 1.2 The design (input, written by the lead and the designers)
@@ -800,8 +800,8 @@ samples), `tail_50ms_rms_dbfs` (last 2400), `tail_10ms_peak_dbfs` (last 480), an
 
 A sample, a rule, a free placement or a music segment may carry `"qa_ok": "<reason>"`. The mixer ignores it. QA then
 reports that item's edge, sync, audibility or harshness finding as acknowledged instead of a warning. It is for
-decisions a critic has already confirmed (a riser choked 25 ms before a pop on purpose, a chime that rings past its
-cue, a hard music cut into a quiet breakdown).
+decisions a critic has already confirmed (for example a chime left ringing beyond its cue, a deliberate abrupt music
+cut into a soft breakdown, or a riser intentionally stopped 25 ms ahead of a pop).
 
 ### 4.12 Section `listen` (`--listen`, `--realness`)
 
