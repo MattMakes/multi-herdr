@@ -449,6 +449,12 @@ pub fn land(store: &mut Store, cx: &Ctx<'_>) -> Result<Outcome> {
         .clone()
         .context("the run has no run branch")?;
     let log = cx.evidence_dir.join(format!("{}-land.log", cx.seq));
+    if let Some(wt) = cx.worktree.as_ref() {
+        if no_commits_since_claim(&cx.tools.git, wt)? {
+            return Ok(Outcome::not_applicable("no commits")
+                .judged(cx.tools.git.tree(Path::new(&wt.path)).ok()));
+        }
+    }
     if let Err(e) = check_command(cx) {
         return Ok(Outcome::fail("no check", None, &format!("{e:#}")));
     }
@@ -470,6 +476,16 @@ pub fn land(store: &mut Store, cx: &Ctx<'_>) -> Result<Outcome> {
             Err(e)
         }
     }
+}
+
+/// Whether a worktree is clean and still at the commit where it was made.
+/// Such a task has no work to land or push.
+pub(crate) fn no_commits_since_claim(git: &Git, wt: &WorktreeRow) -> Result<bool> {
+    let Some(base) = wt.base_commit.as_deref() else {
+        return Ok(false);
+    };
+    let dir = Path::new(&wt.path);
+    Ok(dir.exists() && git.dirty(dir)?.is_empty() && git.rev(dir, "HEAD")? == base)
 }
 
 /// A worktree still `landing` is `open` again, with why.
@@ -1311,6 +1327,56 @@ mod tests {
                 .unwrap()
                 .unwrap()
         }
+
+        fn remove_feature_commit(&self) {
+            let base = self.row().base_commit.unwrap();
+            git(&self.wt, &["reset", "--hard", "--quiet", &base]);
+        }
+
+        fn set_steps(&self, steps: &[StepName]) {
+            let words: Vec<&str> = steps.iter().map(|s| s.as_str()).collect();
+            self.store
+                .conn()
+                .execute(
+                    "UPDATE runs SET finish_steps = ?2 WHERE run_id = ?1",
+                    params![self.run.run_id, serde_json::to_string(&words).unwrap()],
+                )
+                .unwrap();
+        }
+
+        /// Add `origin`. When `reject` is true, each push writes `marker`
+        /// before its hook rejects the push.
+        fn remote(&self, reject: bool) -> (PathBuf, PathBuf) {
+            use std::os::unix::fs::PermissionsExt;
+
+            let remote = self._tmp.path().join("remote.git");
+            let marker = self._tmp.path().join("push-attempted");
+            std::fs::create_dir_all(&remote).unwrap();
+            git(&remote, &["init", "--quiet", "--bare"]);
+            git(
+                &self.root,
+                &["remote", "add", "origin", remote.to_str().unwrap()],
+            );
+            self.store
+                .conn()
+                .execute(
+                    "UPDATE runs SET remote = 'origin' WHERE run_id = ?1",
+                    [&self.run.run_id],
+                )
+                .unwrap();
+            if reject {
+                let hook = remote.join("hooks/pre-receive");
+                std::fs::write(
+                    &hook,
+                    format!("#!/bin/sh\ntouch '{}'\nexit 1\n", marker.display()),
+                )
+                .unwrap();
+                let mut permissions = std::fs::metadata(&hook).unwrap().permissions();
+                permissions.set_mode(0o755);
+                std::fs::set_permissions(hook, permissions).unwrap();
+            }
+            (remote, marker)
+        }
     }
 
     fn land_note(r: &FinishReport) -> (String, String) {
@@ -1369,6 +1435,88 @@ mod tests {
         let r = w.finish();
         assert!(r.complete, "{r:?}");
         assert_eq!(w.row().status, "landed");
+    }
+
+    #[test]
+    fn a_clean_zero_commit_task_skips_push_and_pr_then_cleans_up_and_finishes() {
+        let mut w = World::shaped(|_| {});
+        w.remove_feature_commit();
+        w.set_steps(&[StepName::Land, StepName::Pr, StepName::Cleanup]);
+        let row = w.row();
+        let (_, push_attempted) = w.remote(true);
+
+        let r = w.finish();
+        assert!(r.complete, "{r:?}");
+        for name in ["land", "pr"] {
+            let step = r.steps.iter().find(|s| s.name == name).unwrap();
+            assert_eq!(step.status, "not_applicable", "{step:?}");
+            assert_eq!(step.note.as_deref(), Some("no commits"), "{step:?}");
+        }
+        assert_eq!(
+            r.steps.iter().find(|s| s.name == "cleanup").unwrap().status,
+            "passed"
+        );
+        assert!(
+            !push_attempted.exists(),
+            "no push reached the rejecting hook"
+        );
+        assert!(!w.wt.exists(), "cleanup removed the worktree");
+        assert_eq!(
+            finish::worktree(w.store.conn(), &row.worktree_id)
+                .unwrap()
+                .status,
+            "cleaned"
+        );
+        assert!(!w.tools.git.branch_exists(&w.root, &row.branch));
+
+        let done = finish::complete(&mut w.store, &w.worker, "no changes required", None).unwrap();
+        assert!(!done.unlanded);
+        assert_eq!(
+            tasks::get(w.store.conn(), &w.task_id()).unwrap().status,
+            "done"
+        );
+        assert_eq!(
+            tasks::requeue(w.store.conn(), &w.task_id(), "worker ended").unwrap(),
+            tasks::Requeue::Skipped,
+            "a completed zero-commit task never re-queues"
+        );
+    }
+
+    #[test]
+    fn a_task_with_one_commit_still_lands_and_pushes() {
+        let mut w = World::new("true");
+        let head = w.head();
+        let (remote, _) = w.remote(false);
+
+        let r = w.finish();
+        assert!(r.complete, "{r:?}");
+        assert_eq!(git(&w.root, &["rev-parse", RUN_BRANCH]), head);
+        assert_eq!(git(&remote, &["rev-parse", RUN_BRANCH]), head);
+    }
+
+    #[test]
+    fn a_dirty_zero_commit_worktree_still_fails_land_and_parks() {
+        let mut w = World::new("true");
+        w.remove_feature_commit();
+        std::fs::write(w.wt.join("dirty.txt"), "dirty\n").unwrap();
+
+        let r = w.finish();
+        assert!(!r.complete, "{r:?}");
+        let (verdict, note) = land_note(&r);
+        assert_eq!(verdict, "error");
+        assert!(note.contains("has uncommitted changes"), "{note}");
+        let done = finish::complete(
+            &mut w.store,
+            &w.worker,
+            "dirty worktree kept",
+            Some("uncommitted work"),
+        )
+        .unwrap();
+        assert!(done.unlanded);
+        assert!(tasks::get(w.store.conn(), &w.task_id())
+            .unwrap()
+            .is_parked());
+        assert_eq!(w.row().status, "unlanded");
     }
 
     #[test]

@@ -322,6 +322,12 @@ fn verdict(h: &Heads<'_>, head: &str, n: &str, short: &str, wait: &HeadWait) -> 
 
 /// The pr step.
 pub fn step(store: &mut Store, cx: &Ctx<'_>) -> Result<Outcome> {
+    if let Some(wt) = cx.worktree.as_ref() {
+        if land::no_commits_since_claim(&cx.tools.git, wt)? {
+            return Ok(Outcome::not_applicable("no commits")
+                .judged(cx.tools.git.tree(Path::new(&wt.path)).ok()));
+        }
+    }
     let Some(remote) = &cx.run.remote else {
         return Ok(Outcome::not_applicable(
             "the run has no remote, so it has no pull request",
