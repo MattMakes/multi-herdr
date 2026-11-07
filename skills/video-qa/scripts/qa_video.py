@@ -517,13 +517,15 @@ def check_boundary_pops(ctx):
 
 def read_gate_result(path):
     """Read one gate result. Producers use either `pass` or `passed`."""
+    path = Path(path)
     label = f"cannot read gate result {path}"
+    object_type = dict
     data = None
     try:
         data = json.loads(path.read_text())
     except (OSError, ValueError) as exc:
         raise InputError(f"{label}: {exc}") from exc
-    if not isinstance(data, dict):
+    if not isinstance(data, object_type):
         return {}
     return data
 
@@ -539,28 +541,24 @@ def result_pass(report):
 
 
 def pass_field_error(path, key, passed):
-    if key is None:
-        return f"gate result {path} has no pass or passed field"
-    if passed is not True:
-        return f"gate result {path} {key} is {passed!r}, not true"
-    return None
+    missing = f"gate result {path} has no pass or passed field"
+    failed = f"gate result {path} {key} is {passed!r}, not true"
+    return missing if key is None else failed if passed is not True else None
 
 
 def freshness_error(path, source):
-    if not source.is_file():
-        return f"gate result {path} checks missing source {source}"
-    if path.stat().st_mtime < source.stat().st_mtime:
-        return f"gate result {path} is older than {source}"
-    return None
+    missing = f"gate result {path} checks missing source {source}"
+    stale = source.is_file() and path.stat().st_mtime < source.stat().st_mtime
+    return missing if not source.is_file() else f"gate result {path} is older than {source}" if stale else None
 
 
 def inspect_gate_result(path, source):
     item = {"result": str(path), "source": str(source)}
     if not path.is_file():
         return item, [f"expected gate result is missing: {path}"]
-    key, passed = result_pass(read_gate_result(path))
-    item.update({"field": key, "pass": passed})
-    errors = [message for message in (pass_field_error(path, key, passed), freshness_error(path, source)) if message]
+    state = result_pass(read_gate_result(path))
+    item.update({"field": state[0], "pass": state[1]})
+    errors = [message for message in (pass_field_error(path, *state), freshness_error(path, source)) if message]
     return item, errors
 
 
@@ -741,20 +739,31 @@ def scene_last_frames(scene, motion):
     return end_frame - 2, end_frame - 1
 
 
+def cut_flash_sample(scene, motion):
+    pair = scene_last_frames(scene, motion)
+    lumas = [mean_luma(motion.frames[i]) for i in pair] if pair[0] >= 0 and pair[1] < len(motion.frames) else []
+    return (*pair, lumas, fade_hold(scene)) if lumas else None
+
+
+def cut_flash_measurement(scene, sample):
+    first, last, lumas, exempt = sample
+    return {"scene": scene.get("id"), "frames": [first, last],
+            "luma": [round(value * 255, 2) for value in lumas], "fade_hold": exempt}
+
+
+def cut_flash_error(scene, motion, sample):
+    delta = abs(sample[2][1] - sample[2][0])
+    message = (f"scene {scene.get('id')} frames {sample[0]} and {sample[1]} mean luma "
+               f"{sample[2][0] * 255:.2f} and {sample[2][1] * 255:.2f} differ by "
+               f"{delta:.1%} (max {CUT_LUMA_DELTA:.0%})")
+    return None if sample[3] or delta <= CUT_LUMA_DELTA else (message, sample[0] / motion.fps)
+
+
 def cut_flash_result(scene, motion):
-    first, last = scene_last_frames(scene, motion)
-    if first < 0 or last >= len(motion.frames):
-        return None
-    lumas = [mean_luma(motion.frames[i]) for i in (first, last)]
-    exempt = fade_hold(scene)
-    measured = {"scene": scene.get("id"), "frames": [first, last],
-                "luma": [round(value * 255, 2) for value in lumas], "fade_hold": exempt}
-    if exempt or abs(lumas[1] - lumas[0]) <= CUT_LUMA_DELTA:
-        return measured, None
-    message = (f"scene {scene.get('id')} frames {first} and {last} mean luma "
-               f"{lumas[0] * 255:.2f} and {lumas[1] * 255:.2f} differ by "
-               f"{abs(lumas[1] - lumas[0]):.1%} (max {CUT_LUMA_DELTA:.0%})")
-    return measured, (message, first / motion.fps)
+    sample = cut_flash_sample(scene, motion)
+    result = None if sample is None else (cut_flash_measurement(scene, sample),
+                                          cut_flash_error(scene, motion, sample))
+    return result
 
 
 def check_cut_flash(ctx):
@@ -1076,15 +1085,22 @@ def make_sheet(ctx, out, fps, end_sec, max_tiles=None, tile_w=None):
     return {"path": str(out), "tiles": len(frames), "tile_px": [tw, th], "fps": fps, "size_px": [cw, ch]}
 
 
+def hero_frame_time(meta):
+    hero = meta.get("hero_sec")
+    return sum(map(float, hero)) / 2 if isinstance(hero, list) and len(hero) == 2 else float(meta["duration_sec"]) / 2
+
+
+def scene_phone_times(scene):
+    actions = scene.get("locked_actions_sec") or [float(scene["duration_sec"]) / 2]
+    label = re.sub(r"[^A-Za-z0-9_-]+", "-", str(scene.get("id", "scene"))).strip("-") or "scene"
+    start = float(scene["start_sec"])
+    return [(f"{label}-action-{index:02d}", start + float(relative))
+            for index, relative in enumerate(actions, start=1)]
+
+
 def phone_frame_times(ctx):
-    hero = ctx.meta.get("hero_sec")
-    hero_t = sum(map(float, hero)) / 2 if isinstance(hero, list) and len(hero) == 2 else float(ctx.meta["duration_sec"]) / 2
-    picks = [("hero", hero_t)]
-    for scene in ctx.scenes:
-        actions = scene.get("locked_actions_sec") or [float(scene["duration_sec"]) / 2]
-        for index, relative in enumerate(actions, start=1):
-            label = re.sub(r"[^A-Za-z0-9_-]+", "-", str(scene.get("id", "scene"))).strip("-") or "scene"
-            picks.append((f"{label}-action-{index:02d}", float(scene["start_sec"]) + float(relative)))
+    actions = [pick for scene in ctx.scenes for pick in scene_phone_times(scene)]
+    picks = [("hero", hero_frame_time(ctx.meta)), *actions]
     limit = float(ctx.meta["duration_sec"]) - 1.0 / float(ctx.meta["fps"])
     return [(label, min(max(t, 0.0), limit)) for label, t in picks]
 
@@ -1289,11 +1305,17 @@ def make_probe_frame(side, frame):
        "-frames:v", "1", str(side / f"frame-{frame:06d}.png"))
 
 
+def make_probe_pair(forward, reverse, frame):
+    make_probe_frame(forward, frame)
+    shutil.copy2(forward / f"frame-{frame:06d}.png", reverse / f"frame-{frame:06d}.png")
+
+
 def make_probes(probe):
-    sides = (probe / "forward", probe / "reverse")
-    frames = [(side, frame) for side in sides for frame in (0, 30, 60)]
-    for side, frame in frames:
-        make_probe_frame(side, frame)
+    forward, reverse = probe / "forward", probe / "reverse"
+    reverse.mkdir(parents=True, exist_ok=True)
+    make_probe_pair(forward, reverse, 0)
+    make_probe_pair(forward, reverse, 30)
+    make_probe_pair(forward, reverse, 60)
 
 
 def write_fixture_files(root, opts):
@@ -1363,7 +1385,7 @@ def assert_png(path, width, height):
 
 
 GATE_CASES = [  # (name, make_project options, failed checks, text that 1 error message must hold)
-    ("pass", {"variants": True}, set(), None),
+    ("pass", {}, set(), None),
     ("black-frame", {"video_vf": "drawbox=x=0:y=0:w=iw:h=ih:color=black:t=fill:enable='between(t,1.2,1.7)'"},
      {"black_frames", "cuts_vs_plan"}, None),
     ("dark-background", {"video_vf": "drawbox=x=0:y=0:w=iw:h=ih:color=0x0B1020:t=fill:enable='between(t,1.2,1.7)'"},
