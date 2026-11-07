@@ -74,12 +74,12 @@ comes from the styles option or is "".
 | `crest_lu` | loudness | LU | 1 | loudest 3 s (short-term max) minus integrated |
 | `intro_lu` | arc | LU | 1 | opening level: energy mean of the first 10 % against integrated |
 | `end_lu` | arc | LU | 1 | closing level: the last 10 % |
-| `peak_pos` | arc | 0-1 | 2 | where the loudest 3 s sit (0 = start, 1 = end) |
+| `peak_pos` | arc | 0-1 | 2 | position of the loudest 3 s span (0 = start, 1 = end) |
 | `first_sound_s` | arc | s | 2 | time to the first sound |
 | `max_gap_s` | arc | s | 2 | longest near-silent gap between first and last sound |
 | `end_silence_s` | ending | s | 2 | dead air after the last sound |
-| `fade_s` | ending | s | 2 | last moment at full level to the end of sound (< 0.5 s = hard out) |
-| `final_lu` | ending | LU | 1 | loudest 0.4 s of the last 3 s of sound against integrated (is there a final hit?) |
+| `fade_s` | ending | s | 2 | time from the last full-level moment to the end of sound (under 0.5 s means a hard out) |
+| `final_lu` | ending | LU | 1 | level of the loudest 0.4 s inside the final 3 s of sound, relative to integrated loudness (tells whether the film ends on a hit) |
 | `tail_s` | ending | s | 2 | how long the final hit rings out; null when there is no final hit |
 | `music_frac` | music | share | 2 | share of 5 s windows with AudioSet Music >= 0.3 |
 | `speech_frac` | music | share | 2 | share of 5 s windows with Speech >= 0.5 |
@@ -88,9 +88,9 @@ comes from the styles option or is "".
 | `hit_rate` | density | /s | 2 | salient hits per second |
 | `stopdowns_min` | density | /min | 1 | stop-downs per minute |
 | `cut_rate` | sync | /s | 2 | visual events (cuts, big picture changes) per second |
-| `cuts_with_sound` | sync | share | 2 | visual events with an onset within ±100 ms |
-| `cut_hit_frac` | sync | share | 2 | visual events with a salient hit within ±100 ms |
-| `cut_frame_sync` | sync | share | 2 | visual events with an onset within ±1 frame |
+| `cuts_with_sound` | sync | share | 2 | share of visual events that have an onset at most 100 ms away |
+| `cut_hit_frac` | sync | share | 2 | share of visual events that have a salient hit at most 100 ms away |
+| `cut_frame_sync` | sync | share | 2 | share of visual events that have an onset at most 1 frame away |
 | `cuts_on_beat` | sync | share | 2 | visual events within ±70 ms of a tracked beat |
 | `band_sub` | spectrum | dB | 1 | energy share of 20-60 Hz |
 | `band_low` | spectrum | dB | 1 | 60-250 Hz |
@@ -210,9 +210,10 @@ lands within 8 LU of the integrated level.
 
 ### P4. Stop-downs
 
-A stop-down is a short dip before a hit: at least 10 dB below the median of
-the preceding 2 s, for 0.15 to 1.5 s, back to within 3 dB of that median
-within 0.3 s.
+A stop-down is a short drop in level before a hit. The level falls 10 dB
+or more under the median level of the 2 s before it, stays down for 0.15 to
+1.5 s, and comes back to no more than 3 dB under that median in 0.3 s or
+less.
 
 1. Fast blocks, h = 0.02 s, w = 100 blocks (2 s). Fewer than 3 blocks, or at
    most w blocks: none.
@@ -227,8 +228,8 @@ within 0.3 s.
 
 ### P5. Move to the attack
 
-Spectral-flux peaks lag the attack by 10 to 30 ms; an editor aligns on the
-attack. For each time t, look at 2 ms frames from 60 ms before to 20 ms after
+A spectral-flux peak comes 10 to 30 ms after the true attack, and editors
+cut on the attack. For each time t, look at 2 ms frames from 60 ms before to 20 ms after
 t; the new time = the frame with the steepest rise (largest frame-to-frame
 dB increase). When the range has fewer than 2 frames, keep t. Round to 4
 decimals.
@@ -274,7 +275,7 @@ I = the integrated loudness (-70 when unknown). d = duration.
 - `stopdowns_min` = stop-downs / d × 60, when d >= 6 s.
 - `tempo` = the tracked tempo, when more than 4 beats were tracked.
 - When d < 10 s: `lra`, `crest_lu`, `intro_lu`, `end_lu`, `final_lu` are null
-  (on a short clip they measure the clip, not a film).
+  (these describe a whole film; a short clip gives no useful value).
 - With AST: `music_frac` = share of windows with Music >= 0.3; `speech_frac`
   = share with Speech >= 0.5.
 
@@ -282,7 +283,8 @@ I = the integrated loudness (-70 when unknown). d = duration.
 
 With visual event times V (only when there are at least 3):
 
-- near(V, targets, tol) = share of events with a target within ±tol.
+- near(V, targets, tol) = the share of the events in V that have a target
+  no more than tol away.
   None when V is empty; 0 when targets is empty.
 - `cuts_with_sound` = near(V, onsets, 0.1).
 - `cut_hit_frac` = near(V, hits, 0.1).
@@ -343,8 +345,8 @@ For a 100 ms block centred at t, with 2 ms frames e2:
 
 Visual events (timeline unit): grey frames of 96 × 54 pixels; a frame
 difference peak at least 4× the median of the surrounding second, or a mean
-grey change of at least 15 %, is a visual event. This catches cuts on
-white-background motion graphics where a plain scene score finds almost
+grey change of at least 15 %, is a visual event. These rules find
+cuts in motion graphics on a white background, where a plain scene score finds almost
 nothing.
 
 ## Data assets

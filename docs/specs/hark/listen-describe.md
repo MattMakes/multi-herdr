@@ -283,8 +283,9 @@ The facts, in order:
 - match where the query equals a vocabulary term: it ties with that term (rank
   and percentile count neither direction); `closest_vocab` text leaves that
   term out of "sounds most like".
-- rank with a given path that yields no media file: an error naming it, even
-  when other paths are fine (a typo must not vanish from a batch).
+- rank with a given path that yields no media file: an error that names
+  the path, also when the other paths are valid (so a mistyped path is
+  reported, not skipped).
 - rank with undecodable files: they are skipped and listed; the rest are
   ranked.
 - rank with every file near-silent: all are listed last with verdict

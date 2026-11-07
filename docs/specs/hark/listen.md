@@ -11,7 +11,7 @@ answers questions about it in calibrated numbers and plain words:
   sample-exact trims.
 - `compare`: how a sound sits against a set of reference recordings.
 - `ab`: which of two sounds (or two trims) is closer to a description or a
-  reference set, and how B differs from A in measurable terms.
+  reference set, and which measurements of B differ from A.
 - `realness`: is a sound a real recording or professionally produced audio,
   or cheap audio synthesized in code.
 - `profile`: a numeric sound profile of a set of reference films or
@@ -169,7 +169,7 @@ Result fields (the top-level score fields belong to the best query by z):
 | `cosine` | float | raw cosine, 3 decimals |
 | `z` | float | calibrated z, 2 decimals |
 | `percentile` | float | share of vocabulary terms the query beats, in %, 1 decimal |
-| `rank_in_vocab` | int | where the query would rank among the vocabulary terms (1 = best) |
+| `rank_in_vocab` | int | the position the query would take in the vocabulary order (1 = best) |
 | `p_vs_alts` | float or null | forced-choice probability, 3 decimals |
 | `verdict` | str | `strong`, `plausible`, `weak` or `no match` |
 | `validated` | bool | false when the query reads as an unvalidated category |
@@ -238,7 +238,7 @@ key `{value, refs_median, robust_z, refs_p10_p90}`), `feature_distance`
 
 | Argument | Type | Default | Meaning |
 |---|---|---|---|
-| `A`, `B` | path | required | the 2 sounds; B may be the same file as A with other trims |
+| `A`, `B` | path | required | the 2 sounds; A and B can be one file with different trims |
 | `--query` | str | none | a description both should match |
 | `--refs` | 1 or more | none | references both should resemble |
 | `--a-start`, `--a-end`, `--b-start`, `--b-end` | float s | none | trims of A and B |
@@ -323,8 +323,8 @@ behaviour (see the named part):
   with CLAP and returns the best non-overlapping ones as trims.
 - `compare` places a sound among references by CLAP similarity (nearest
   references, typicality z) and by robust z of measurements.
-- `ab` reports which of two sounds is closer to a query or a reference set
-  and how B differs from A in words.
+- `ab` tells which of 2 sounds is nearer to a text or a reference set, and
+  describes in words the measurements of B that differ from A.
 - `realness` gives `p_real` from a logistic model on the CLAP embedding, with
   signal measurements as evidence in words and one rule for pure tones.
 - `profile` measures reference films the same way each time and stores the

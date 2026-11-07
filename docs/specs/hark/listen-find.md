@@ -40,8 +40,8 @@ decimals), z text, verdict, kind, peak (1 decimal), head and tail dB
 
 | Kind | What it is |
 |---|---|
-| `stroke` | one onset, from just before its attack until it has decayed by 35 dB, never into the next onset |
-| `event` | strokes that belong together: a pair (gap under 0.25 s, such as the down- and up-stroke of one key) or a longer chain, at most 2 s, never across an edit gap |
+| `stroke` | one onset: starts just before the attack, ends when the level is 35 dB down or at the next onset, whichever is first |
+| `event` | 2 or more strokes of one action: a pair (gap under 0.25 s, for example the press and release of one key) or a longer chain; at most 2 s long and it does not span an edit gap |
 | `window` | sliding windows that cover the whole range with no gaps |
 
 An **edit gap** is 10 ms or more of exact digital silence (at or below
@@ -65,11 +65,12 @@ An **edit gap** is 10 ms or more of exact digital silence (at or below
 
 "Window filters": a window that holds 2 or more separate sounds is never
 returned, and a window is replaced by the best stroke or event inside it
-when that one scores within 0.5 z (a tighter trim of the same moment).
+when its z is no more than 0.5 below the window's z (it is a tighter trim of
+the same moment).
 
 "Edge judging": a candidate whose first 5 ms or last 10 ms are above -15 dB
 against its own peak is cut into a sound. It is flagged `head cut` /
-`tail cut` and ranked 0.5 z lower. Plain windows of `either` and `texture`
+`tail cut` and gets 0.5 subtracted from its ranking z. Plain windows of `either` and `texture`
 queries are not judged: they are cut anywhere by design and are meant to be
 crossfaded.
 
@@ -78,13 +79,13 @@ crossfaded.
 - A stroke or event starts 5 ms before its measured attack.
 - A snapped window starts 5 ms before its sound and ends 20 ms after the
   sound has decayed.
-- With `--start` / `--end`, only segments whose attack lies inside the range
-  are returned. The audio is read from 0.1 s before `start`, so an attack at
-  the boundary is seen whole.
+- With `--start` / `--end`, a segment is returned only when its attack is in
+  the range. Decoding begins 0.1 s before `start`, so the full attack of a
+  sound that starts on the boundary is available.
 
 ### Speed
 
-Every candidate costs one CLAP window (0.3 to 1 s on a CPU in the source's
+Each candidate needs one CLAP window embedding (0.3 to 1 s on a CPU in the source's
 measurements). Candidates do not depend on the query and their embeddings are
 cached, so a second query on the same file is fast (1.2 s against 29.9 s
 cold for an 18 s file in the source's timing run).
@@ -132,8 +133,9 @@ start t0 = off. span = d - t0.
    last window ends more than 1 ms before d, add a start at d - win.
 5. Windows have priority 0.
 
-So the default keeps about 40 windows at most: the window grows to 10 s
-first, then the hop grows up to the window length, before the count grows.
+So the default stays near 40 windows or fewer: first the window length
+increases to 10 s, then the hop increases until it equals the window length,
+and only after that does the window count go up.
 
 ### F4. Window edge snapping (prefer_events only)
 
@@ -204,8 +206,8 @@ Input: the local mono audio. Output: `(start, end, kind, priority)`.
 5. **Joins.** Two consecutive strokes a, b are joined when b.start - a.end
    < 0.25 s and there is no edit gap between a.start and b.start (F8).
 6. **Pairs.** For each joined consecutive pair with b.end - a.start <= 2 s and
-   a.prominence >= b.prominence - 15 dB (a pair is never led by a stroke
-   15 dB weaker): an `event` from a.start to b.end with priority =
+   a.prominence >= b.prominence - 15 dB (so the first stroke of a pair
+   is at most 15 dB below the second): an `event` from a.start to b.end with priority =
    max of the 2 prominences.
 7. **Chains.** Walk the strokes from the first. From stroke i, extend while
    the next stroke is joined and the chain would still end within 2 s of
@@ -279,8 +281,8 @@ A window `[a, b)` (frames by rounding) holds 2 or more separate sounds when:
    when the peak >= -70 dBFS.
 9. Walk the candidates by score descending (excluded ones never). Take a
    candidate when it overlaps no taken candidate (1 ms tolerance) and, for a
-   loud file, its own stereo peak is at least -70 dBFS (a near-silent
-   stretch of a sounding file is never an answer). Stop at `top`.
+   loud file, its own stereo peak is at least -70 dBFS (so a quiet gap
+   inside a loud file is not returned). Stop at `top`.
 10. Output times = m0 + local time.
 
 ### F11. Summary

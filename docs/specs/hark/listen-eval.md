@@ -187,8 +187,8 @@ sensitivity check, per split:
 ### Mood check
 
 `heldout` also checks the music mood tags, which are not validated. All
-music tracks in both libraries were chosen for one bright, playful film. So
-a dark top mood is very likely wrong. For each music track: compute z over
+music tracks in both libraries were chosen for one bright, playful film. A
+dark, sad or tense top mood is therefore almost certainly an error. For each music track: compute z over
 the vocabulary; take the mood term with the highest z among the
 `music_mood` category. Report the share of tracks whose top mood is one of
 the 5 negative moods (dark and tense, sad and melancholic, mysterious,
@@ -349,7 +349,7 @@ Label set rule (DERIVE):
 A hit for key-press recordings (a labelled slice list per recording):
 
 1. Attack of a labelled slice = the time of the first sample in the slice
-   whose magnitude reaches 10 % (−20 dB) of the slice's peak sample. This
+   with |x| ≥ 0.1 × the largest |x| in the slice (−20 dB). This
    is measured apart from the trim rule of `find`.
 2. For each returned segment, take the press whose attack is nearest to
    the segment start. lead = attack − start.
@@ -398,8 +398,8 @@ of the query's events. Tight trim: a finding segment that is not a
 ### E13. Real-effects check
 
 Input: a library JSON of real licensed one-shot effects. Each sound has a
-file, a duration, its published title, and the film jobs it was filed
-under, each with the description used to judge that job.
+file, a duration, the title it was published with, and a list of the
+film jobs assigned to it, each with the text that was used to judge the job.
 
 1. Jobs = the jobs that have 2 sound-only phrasings. The phrasings say what
    the job's sound is, never the job, and are written before any score.
@@ -407,16 +407,17 @@ under, each with the description used to judge that job.
 2. Ways of asking, per job: `job` = the filed description; `sound_only` =
    the 2 phrasings; `union` = the description and the 2 phrasings. A way's
    score for (sound, job) is the best z over its texts.
-3. `title`: each sound's own title as the query. Report the verdict counts
+3. `title`: the query for each sound is its own title. Report the verdict counts
    of the own-title z, the median, the AUC of own-title pairs against
    pairs with a different title (equal titles after trim and lower case
    count as own), top-1 and top-5 (fewer than 1 or 5 titles beat its own).
 4. For each way: the own job of a sound = its filed job with the highest z.
    Report verdict counts and the median of own-job z; the AUC of own-job
    pairs against other-job pairs (pairwise, ties count half); the mean
-   share of other jobs a sound passes (z ≥ 2); and how often the forced
-   choice (calibration A12) between the own-job text's cosine and 4
-   cheap-synth descriptions goes to a cheap synth.
+   share of other jobs where a sound reaches z ≥ 2; and the count of sounds
+   where the forced choice (calibration A12) between the own-job text's
+   cosine and 4 cheap-synth texts gives the highest probability to a cheap
+   synth text.
 5. Run all of it for repeatpad, spaced and zero padding.
 
 This check measures whether the model hears real effects as what they are.
@@ -523,7 +524,7 @@ Readings:
   → 0.977 lenient, 0.543 → 0.606 strict) but not file ranking (class MAP
   0.669 → 0.646).
 - Raw cosine ranks files better on the held-out library (class MAP 0.700)
-  but worse on the tuning library (0.627). Calibration stays because the
+  but less well on the tuning library (0.627). Calibration stays because the
   verdicts need absolute numbers.
 
 Mood check: on 45 held-out music tracks, the top mood was negative for
@@ -545,11 +546,11 @@ The one test event read as texture was "a bird chirp".
 
 | Check | Result |
 |---|---|
-| K1 | 16 usable trims on 16 distinct presses; the 17th segment is the stray double hit in the skip range. Lead 5–54 ms, median 16 ms, never negative |
+| K1 | 16 of 17 segments are usable trims, each on a different press; the remaining segment is on the stray double hit in the skip range. Lead 5–54 ms, median 16 ms, never negative |
 | K3 | 9 of 10 usable, lead 6–8 ms |
 | K2 | 2 segments on labelled slow presses, 3 strokes from the fast part |
 | K2b | 5 of 5 windows in the fast part |
-| S1 | top-1 on the right event 8 of 8; 7 tight trims (lead 5–66 ms); the small bell came back as a 5 s window |
+| S1 | top-1 on the right event 8 of 8; 7 tight trims (lead 5–66 ms); the small bell was returned as a 5 s window |
 | S2 | 5 of 5 events found as tight trims |
 
 ### Real effects (195 sounds, 148 shorter than 1 s, 26 jobs)
@@ -571,9 +572,10 @@ Readings:
 - 2 or 3 sound-only phrasings, best kept, pass more sounds and separate
   jobs slightly better. The cost: a sound passes more of the other jobs,
   because jobs overlap.
-- Spaced padding lifts title matches at the same AUC. Zero padding is worse
-  on every row (title no match 38). Spaced padding is not shipped: the
-  verdict bands were set with repeatpad, so a switch needs a new held-out
+- Spaced padding gives more title matches with no change in AUC. Zero
+  padding gives lower results in all rows (38 titles with no match). We do
+  not ship spaced padding, because the verdict bands were set with
+  repeatpad. A change of padding needs a new held-out
   run.
 
 ### Precision and timings
@@ -586,7 +588,7 @@ describe short key 17.0 s; describe 31 s rain 52.5 s; match new query on a
 cached file 2.0 s; find 18 s file 29.9 s cold, 1.2 s new query; find
 300 s file 61.8 s cold; rank 20 foley files (804 s of audio) 55.8 s cold
 (2.8 s per file), 3.4 s new query. A CLI `match` on a cached file and a
-cached query loads no model: 1.5 s wall.
+cached query does not load a model: 1.5 s of wall time.
 
 ## Data assets
 

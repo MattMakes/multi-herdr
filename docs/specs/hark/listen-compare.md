@@ -9,8 +9,8 @@ calibration are in `docs/specs/hark/listen-calibration.md`.
   references are nearest, whether the sound is typical of the set, and which
   measurements stand out against the set.
 - `ab` judges two sounds or two trims (even of the same file): which is
-  closer to a description and / or to a reference set, how similar they are,
-  and how B differs from A in measurable terms an ear can hear.
+  nearer to a text, to a reference set or to both, how alike the two are,
+  and which audible measurements of B differ from A.
 
 ## Interface
 
@@ -31,7 +31,7 @@ A dict with these keys (a key is absent when its value is unknown):
 | `decay_ms` | ms | core-io decay |
 | `length_s` | s | sounding length (C1), 3 decimals |
 | `duration` | s | decoded length |
-| `noise_floor_dbfs` | dBFS | core-io noise floor, floored at -120; only for sounds of 1 s or more |
+| `noise_floor_dbfs` | dBFS | core-io noise floor, floored at -120; measured only when the sound lasts at least 1 s |
 | `width_db` | dB | side-to-mid ratio, floored at -40 (= mono); -40 when unknown |
 | `low_end_db` | dB | energy sum of the `sub` (20-60 Hz) and `low` (60-250 Hz) bands: 10 log10(10^(sub/10) + 10^(low/10)); 1 decimal; only when both bands are known |
 
@@ -98,8 +98,8 @@ calibration part (A7) for each sound; `closer` from C5; `dz` = |z_a - z_b|,
     2 decimals; null when there are none.
 11. Summary facts: the name (with the trim when given) and the number of
     references; the 3 nearest with cosines (2 decimals); typicality z text,
-    its percentile as an ordinal ("37th percentile of how close the
-    references are to each other") and its words; the outliers in words,
+    its percentile as an ordinal (for example "37th percentile" of the
+    distances among the references themselves) and its words; the outliers in words,
     or that every measurement is within the references' spread; the skipped
     note (count, first 3 names, "..." when more).
 
@@ -119,8 +119,8 @@ calibration part (A7) for each sound; `closer` from C5; `dz` = |z_a - z_b|,
    as <words> (cosine, 2 decimals).
 6. Measurements of A and B with their trims (C4). Differences (C6, at most
    4). `differences` = their keys. Summary: "B is <phrases>." or "Measured:
-   no measurable difference big enough to hear (level, brightness,
-   envelope, low end, noise)."
+   nothing audible differs in level, brightness, envelope, low end or
+   noise." (exact wording free)
 7. The summary starts with "A = <name and trim>, B = <name and trim>."
    A name with a trim prints as `name [m:ss.ss-m:ss.ss]`, or `[m:ss.ss-end]`
    when only the start is given.
@@ -275,8 +275,8 @@ in 10..20 gets "th").
 - Zero or negative values on a ratio key: no difference is reported for it.
 - A and B the same file without trims: cosine 1.0, "nearly the same sound",
   no differences.
-- A whole-file A/B of multi-take files compares every take plus the silence
-  between them. Use trims to judge one take.
+- An A/B over two whole files that hold several takes compares all takes
+  and the gaps between them at once. Use trims to judge one take.
 
 ## Acceptance tests
 
@@ -312,7 +312,7 @@ Fixtures: `click.wav` (as in listen-describe.md); `sine.wav` (2 s, 440 Hz,
   is never reported as an attack difference.
 - **AB-3** No difference. A and B = the same file with trims around the same
   click (different silence around it) -> `differences` == [] and the summary
-  says no measurable difference.
+  says that nothing audible differs.
 - **AB-4** Closer dead band. z_a 2.1, z_b 2.3 -> `closer` null; z_a 1.0,
   z_b 2.2 -> `closer` "b", "clearly"; z_a 2.0, z_b 2.5 -> "b", "slightly".
 - **AB-5** Similarity words. cosine 0.95, 0.8, 0.6, 0.2 -> nearly the same

@@ -102,8 +102,8 @@ Input: a list of phrases P, the templates T (5).
 
 Caching: a request for more than 16 phrases is cached as one file keyed by
 (templates, whole list). A request for 16 or fewer phrases is cached per
-phrase, keyed by (templates, phrase). So a repeated query needs no model
-load. A cached array whose shape is wrong is recomputed.
+phrase, keyed by (templates, phrase). A query seen before is read from
+the cache, and the model is not loaded. A cached array whose shape is wrong is recomputed.
 
 ### A2. Audio windows of a range
 
@@ -132,7 +132,7 @@ padded to 10 s. Padding modes:
 |---|---|
 | `repeatpad` (default, shipped) | the CLAP feature extractor tiles the sound back to back to fill 10 s, then fills any remainder with silence |
 | `zero` | silence after the sound up to 10 s |
-| `spaced` | a span shorter than 1 s is first padded with silence to 1 s, then tiled (one hit per second); a span of 1 s or more is tiled as in `repeatpad` |
+| `spaced` | a span shorter than 1 s is first padded with silence to 1 s, then repeated (the hit then occurs once each second); a span of 1 s or more is tiled as in `repeatpad` |
 
 A span shorter than 10 ms (480 samples) is zero-padded to 480 samples first
 so the CLAP front end has something to read.
@@ -164,7 +164,7 @@ The term bias of a text q is its mean cosine over the reference recordings:
 where m is the folder-balanced mean of the reference audio embeddings
 (the statistics file's `mean`, not renormalised). Because cosine is linear in
 the audio embedding, q · m equals the weighted mean of the cosines of q over
-the references. So the bias works for any query, not only vocabulary terms.
+the references. So the bias is defined for any text, including texts outside the vocabulary.
 Without statistics, b(q) = 0.
 
 ### A6. Calibration
@@ -225,8 +225,8 @@ Inputs: reference audio embeddings R (n, 512) of paths p₁..pₙ.
 
 1. Folder weight of file i: 1 / (number of reference files in the same
    parent folder). Folders are compared after making paths absolute and
-   case-normalised. Normalise the weights to sum 1. So every source folder
-   counts equally, whatever its size.
+   case-normalised. Normalise the weights to sum 1. So each folder has the
+   same total weight, independent of its file count.
 2. m = Σ wᵢ Rᵢ (float64).
 3. Per term t: mean cosine μₜ = Σ wᵢ (Rᵢ · Eₜ), std σₜ = sqrt(Σ wᵢ (Rᵢ · Eₜ - μₜ)²).
 4. Write the statistics file (format above), with `logit_scale` from the
@@ -326,14 +326,14 @@ JSON keys per band: `z` (the text in column 2), `lr`, `precision_library`,
 Meaning of the columns:
 
 - LR = P(z in band | true pair) / P(z in band | wrong pair).
-- precision_library = share of pairs in the band that are true when about 3 %
-  of candidate pairs are true (searching a library).
+- precision_library = the true share of the pairs in the band at a base
+  rate of about 3 % true pairs (the case of a library search).
 - precision_even_odds = LR / (LR + 1): when the caller already half expects
   a fit.
-- lenient leaves out pairs of related classes (an Enter key judged as "a
-  spacebar press"). strict counts them as wrong: it is the number to use
-  when the exact variant matters.
-- The strong LR rests on only 3 wrong pairs (95 % range about 440 to 6200; 170
+- lenient ignores pairs of closely related classes (an Enter key scored
+  against "a spacebar press"). strict counts them as wrong. Use strict
+  when the caller needs that exact variant.
+- Only 3 wrong pairs fall in the strong band, so its LR is uncertain (95 % range about 440 to 6200; 170
   on the tuning library). So text output quotes precision, not the LR.
 
 ## Data assets
@@ -342,9 +342,10 @@ Meaning of the columns:
 
 - Origin: hand-written short caption-like phrases. History in the source:
   217 terms written before any evaluation; 67 added after seeing the tuning
-  library's classes (so tuning numbers are optimistic); 38 general everyday
-  terms (vehicles, household, tools, animals, people) added from general
-  knowledge; then frozen before the held-out library was scored.
+  library's classes (so tuning numbers are optimistic); 38 common terms
+  (vehicles, household, tools, animals, people) added without data; no
+  change after that, and the held-out library was scored only after this
+  freeze.
 - Re-creation: write our own phrases, about the same count per category as
   the table above, in the style "a/an + concrete sound source + action",
   for example "a door slamming shut", 2 to 8 words, no proper names, no
@@ -386,7 +387,7 @@ Meaning of the columns:
   from the model.
 - A range shorter than 10 ms still gets one span (A4 makes it at least
   10 ms long; A3 pads it to 480 samples).
-- The near-silence helper gives the sample peak of the mono decode in dB;
+- The near-silence helper returns the peak sample of the mono decoded audio, in dB;
   an empty decode counts as peak 0 (minus infinity dB, floored by core-io's
   dB helper).
 
