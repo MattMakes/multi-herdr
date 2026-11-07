@@ -2158,6 +2158,7 @@ fn facts_of(root: &Path, file: &str) -> map::TicketFacts {
 /// The task `add` queues: what a flag names, else what the ticket says.
 fn new_task(root: &Path, file: String, facts: map::TicketFacts, a: AddArgs) -> NewTask {
     let review_mode = facts.review_mode();
+    let (check_none, land_check) = resolve_check(a.check, facts.check_none, facts.check);
     NewTask {
         title: a.title.unwrap_or_else(|| ticket_title(&root.join(&file))),
         task_file: file,
@@ -2174,8 +2175,8 @@ fn new_task(root: &Path, file: String, facts: map::TicketFacts, a: AddArgs) -> N
         } else {
             WorktreeMode::Worktree
         },
-        check_none: a.check.is_none() && facts.check_none,
-        land_check: a.check.or(facts.check),
+        check_none,
+        land_check,
         kind: TaskKind::Work,
         parent_task_id: None,
         blocked_by: a.blocked_by,
@@ -2188,6 +2189,22 @@ fn new_task(root: &Path, file: String, facts: map::TicketFacts, a: AddArgs) -> N
         work_kind: facts.kind,
         review_mode,
         ticket_snapshot: None,
+    }
+}
+
+/// The task's (check_none, land_check) from a `--check` flag and the
+/// ticket's `**Check:**` line. The flag value `none` means no check, the same
+/// as `**Check:** none`. It is never a shell command, and it overrides a
+/// ticket command. Without the flag, the ticket decides.
+fn resolve_check(
+    flag: Option<String>,
+    ticket_none: bool,
+    ticket_check: Option<String>,
+) -> (bool, Option<String>) {
+    match flag {
+        Some(c) if c.trim() == "none" => (true, None),
+        Some(c) => (false, Some(c)),
+        None => (ticket_none, ticket_check),
     }
 }
 
@@ -2267,21 +2284,17 @@ fn one_off_task(ctx: &RuntimeContext, root: &Path, a: TaskArgs) -> Result<NewTas
     if a.title.trim().is_empty() {
         bail!("a task needs a title");
     }
-    let check_none = a.check.as_deref().map(str::trim) == Some("none");
-    let check = a.check.filter(|_| !check_none);
     let Some(file) = a.file else {
         let mut new = NewTask::work(&a.title, ONE_OFF_TICKET, &a.persona);
         new.ticket_snapshot = Some(format!("# {}\n", a.title.trim()));
-        new.check_none = check_none;
-        new.land_check = check;
+        (new.check_none, new.land_check) = resolve_check(a.check, false, None);
         return Ok(new);
     };
     let file = ticket_path(root, &file, &cwd_or_root(ctx, root))?;
     let facts = facts_of(root, &file);
     let mut new = NewTask::work(&a.title, &file, &a.persona);
-    new.check_none = check_none || (check.is_none() && facts.check_none);
     new.review_mode = facts.review_mode();
-    new.land_check = check.or(facts.check);
+    (new.check_none, new.land_check) = resolve_check(a.check, facts.check_none, facts.check);
     new.work_kind = facts.kind;
     new.own = facts.own;
     new.no_touch = facts.no_touch;
