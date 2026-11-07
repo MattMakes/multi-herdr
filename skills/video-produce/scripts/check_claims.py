@@ -33,32 +33,67 @@ def cells(line):
     return [cell.strip() for cell in line[1:-1].split("|")]
 
 
+def header_at(lines, index):
+    """Return the normalized header at index, or None when no claims table starts there."""
+    header = cells(lines[index])
+    separator = cells(lines[index + 1])
+    if header is None or separator is None or len(header) != len(separator):
+        return None
+    normalized = [name.casefold() for name in header]
+    if not all(name in normalized for name in REQUIRED_COLUMNS):
+        return None
+    return normalized
+
+
+def separator_is_valid(line):
+    return all(SEPARATOR.fullmatch(cell) for cell in cells(line))
+
+
+def table_rows(lines, start, header):
+    """Return (line number, row dict or None) for each row from start to the table end."""
+    rows = []
+    for line_number, row_line in enumerate(lines[start:], start + 1):
+        row = cells(row_line)
+        if row is None:
+            if row_line.strip():
+                break
+            continue
+        rows.append((line_number, dict(zip(header, row)) if len(row) == len(header) else None))
+    return rows
+
+
 def find_claims_table(text):
     """Return (rows, errors) for the first table with the required columns."""
     lines = text.splitlines()
-    for index, line in enumerate(lines[:-1]):
-        header = cells(line)
-        separator = cells(lines[index + 1])
-        if header is None or separator is None or len(header) != len(separator):
+    for index in range(len(lines) - 1):
+        header = header_at(lines, index)
+        if header is None:
             continue
-        normalized = [name.casefold() for name in header]
-        if not all(name in normalized for name in REQUIRED_COLUMNS):
-            continue
-        if not all(SEPARATOR.fullmatch(cell) for cell in separator):
+        if not separator_is_valid(lines[index + 1]):
             return [], [f"line {index + 2}: invalid table separator"]
-        rows = []
-        for line_number, row_line in enumerate(lines[index + 2 :], index + 3):
-            row = cells(row_line)
-            if row is None:
-                if row_line.strip():
-                    break
-                continue
-            if len(row) != len(header):
-                rows.append((line_number, None))
-                continue
-            rows.append((line_number, dict(zip(normalized, row))))
-        return rows, []
+        return table_rows(lines, index + 2, header), []
     return [], ["no claims table with Caption claim, Verdict, and Evidence columns"]
+
+
+def verdict_error(verdict):
+    if verdict.casefold() not in ALLOWED_VERDICTS:
+        return f"unverified verdict '{verdict}'"
+    if verdict.casefold() == "false":
+        return "verdict is false"
+    return None
+
+
+def row_errors(row):
+    """Return the rule errors of 1 claims row."""
+    if row is None:
+        return ["table row has the wrong number of cells"]
+    found = [
+        "caption claim is empty" if not row["caption claim"] else None,
+        "[inferred] is not evidence" if "[inferred]" in " | ".join(row.values()).casefold() else None,
+        verdict_error(row["verdict"]),
+        "evidence is empty" if not row["evidence"] else None,
+    ]
+    return [error for error in found if error]
 
 
 def check(text):
@@ -67,24 +102,11 @@ def check(text):
         return errors
     if not rows:
         return ["claims table has no rows"]
-    for line_number, row in rows:
-        if row is None:
-            errors.append(f"line {line_number}: table row has the wrong number of cells")
-            continue
-        claim = row["caption claim"]
-        verdict = row["verdict"].casefold()
-        evidence = row["evidence"]
-        if not claim:
-            errors.append(f"line {line_number}: caption claim is empty")
-        if "[inferred]" in " | ".join(row.values()).casefold():
-            errors.append(f"line {line_number}: [inferred] is not evidence")
-        if verdict not in ALLOWED_VERDICTS:
-            errors.append(f"line {line_number}: unverified verdict '{row['verdict']}'")
-        elif verdict == "false":
-            errors.append(f"line {line_number}: verdict is false")
-        if not evidence:
-            errors.append(f"line {line_number}: evidence is empty")
-    return errors
+    return [
+        f"line {line_number}: {error}"
+        for line_number, row in rows
+        for error in row_errors(row)
+    ]
 
 
 GOOD = """# Claims
