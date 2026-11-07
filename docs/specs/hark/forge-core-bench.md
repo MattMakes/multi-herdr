@@ -303,3 +303,63 @@ pro_typing_key, pro_glitch, pro_whoosh_big, pro_sub_drop).
 - `audition*.wav` and `_*.wav` are never made sounds. (In the source, the audition file once entered four areas'
   first runs and polluted them.)
 - Run it with HARK_THREADS=2 so that it does not starve a shared machine.
+
+## 10.2 `frozen_tone.py`
+
+A fixed copy of the tone measures of part 3 as they stood when the benchmark started (round 0). The benchmark imports
+it from its own folder. Never edit it: a change moves every benchmark number. Add a new measure in `bench.py` and
+record it in the benchmark change log (10.6). When our part 3 code later changes, this file stays as specified here.
+
+Constants: SR 48000; band centres CEN = 1000 x 2^(k/3) for k = -15 .. 12 (28 bands, 31.5 Hz to 15.9 kHz); band edges
+centre / 2^(1/6) (inclusive) to centre x 2^(1/6) (exclusive); REGIONS `<150` 0-150 Hz, `150-1k` 150-1000, `1-4k`
+1000-4000, `4-12k` 4000-12000, `>12k` 12000-24000.
+
+Functions (all on the mono mean of the channels; a path is loaded through core-io audio load):
+- `label(c)`: `<c/1000 to 3 significant digits> kHz` when c >= 1000, else `<c, no decimals> Hz`.
+- `profile(x)`: power spectrum |rfft(m)|^2 of the whole file; band power = the sum over the band's bins + 1e-20;
+  result = max(10 log10(band / sum of bands), -60) per band.
+- `shares(x)`: per region, 10 log10(region power / (total + 1e-20) + 1e-12), 1 decimal.
+- `t40_ms(x, db=40, ms=5)`: n = 5 ms of samples; k = len // n. k < 2 gives 0.0. e = the RMS dB of the k whole frames
+  (no padding). i = the loudest frame. Return (the first frame after i, counted from i, that is more than db under
+  e[i]; else the number of frames from i to the end) x ms.
+- `ToneRef(refs, margin=3.0)`:
+  - P = stacked profiles (shape (0, 28) with no refs); med, lo, hi = the band median, min, max; t40 per ref; shares
+    per ref; length in seconds per ref.
+  - ref_dist (only with n >= 3): for each ref i, the RMS of (P_i - the median of the other refs).
+  - `spread`: (median, max) of ref_dist, or None with fewer than 3 refs.
+  - `check(x, exclude=None)`: `{}` with no refs. keep = all but exclude. med, lo, hi over kept refs. dev = profile(x)
+    - med. dist = RMS(dev). sp = ref_dist[keep] (empty when ref_dist is empty). ratio = dist / max(median(sp), 0.5)
+    when len(sp) >= 2, else None. over = max(p - hi - margin, 0) - max(lo - p - margin, 0). outside = for each band
+    with over != 0: (label, dev to 1 decimal, `above` when over > 0 else `below`). Return tone_db (2 decimals),
+    tone_ratio (2), tone_ref (the sp list, 2), band_dev (1), outside, t40_ms, t40_ref (min, max of kept), length_s
+    (3), shares, shares_ref_med (median per region of kept, 1 decimal), length_ref (min, max of kept, 3), words.
+  - `words(m)`: `tone <d:.1f> dB from the refs' median`, then ` (the refs sit <min>-<max> apart)` when tone_ref is not
+    empty, then `: <dev:+.0f> dB at <band> (<above|below> every ref)` for up to 3 outside bands with the largest |dev|
+    (comma separated), then `; tail t40 <t> ms (refs <a>-<b>)` when t40 > 1.5 b + 10 or t40 < 0.6 a - 5, then `;
+    energy share vs the refs: <region> <diff:+.0f> dB, ...` for regions more than 9 dB from the refs' median share,
+    then `; <len:.2f> s long (refs <lo>-<hi>)` when the length is more than 1.3 x the longest ref.
+  - `region_penalty(m, regions=('<150', '4-12k', '>12k'), margin=6, scale=6)`: the sum over regions of max(0, share
+    - ref median share - margin) / scale.
+  - `penalty(m)`: 0 when m is empty or tone_ratio is None. Else max(0, tone_ratio - 1), plus 0.5 x min(2, (t40 - b) /
+    b) when the longest ref t40 b > 0 and t40 > b.
+
+The benchmark uses `profile`, `t40_ms` and `ToneRef.check` only. The rest is kept so the copy stays whole.
+
+## 10.5 `scrub_paths.py` (results hygiene, used by `bench.py`)
+
+The results JSON names every registry file and ref path. Absolute machine paths do not belong in a committed results
+file. Before the write, `scrub(obj)` rewrites every string (dict keys too) of the result:
+- Roots, longest first: the pro-study trims folder (env `HARK_REFS_PRO`, default `<repo>/out/refs_pro`) as
+  `<refs_pro>`; `<repo>/out/refs` as `<refs>`; the cache home (`HARK_HOME`, else the config home, else `<repo>/.cache`)
+  as `<HARK_HOME>`; the repo itself as a repo-relative path (`.` for the root itself). When the registry's ref paths
+  share a common folder 3 levels above the files, that is outside the repo and longer than 3 characters, it is also
+  `<refs>`. Drop duplicate roots (case-insensitive).
+- Match a root on a word boundary, with `/` or `\` separators (case-insensitive), followed by the rest of the path
+  up to a space, quote, back quote, `;`, `,`, `)`, `]`, `<`, `>`, `|`, `*` or `?`. Write the rest with `/`.
+- Ref file names stay. They are the evidence of which recording a row measured.
+- `leftovers(text)`: any remaining drive path (`X:/...` or `X:\...`) or home path (`/Users/...`, `/home/...`).
+
+CLI `python eval/forge/scrub_paths.py [FILES] [--check]`: default files are `eval/forge/results_*.json` and
+`results_*.md`. JSON files are rewritten with indent 1 (a trailing newline kept); other files as text. Print `<file>:
+scrubbed|clean|would change` plus `; left: <up to 3>`. Exit 1 when any file has leftovers or, with `--check`, would
+change.
