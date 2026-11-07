@@ -18,6 +18,7 @@ import os
 import re
 import sys
 import tempfile
+from pathlib import Path
 
 
 REQUIRED_COLUMNS = ("caption claim", "verdict", "evidence")
@@ -131,53 +132,60 @@ SELF_TEST_CASES = {
 
 
 def check_file(path):
-    with open(path, encoding="utf-8") as handle:
-        return check(handle.read())
+    return check(Path(path).read_text(encoding="utf-8"))
 
 
 def case_result(folder, content):
-    path = os.path.join(folder, "claims.md")
-    with open(path, "w", encoding="utf-8") as handle:
-        handle.write(content)
+    path = Path(folder) / "claims.md"
+    path.write_text(content, encoding="utf-8")
     return 1 if check_file(path) else 0
 
 
+def case_failures():
+    folder = tempfile.TemporaryDirectory()
+    failures = [
+        f"{name}: expected {expected}"
+        for name, (content, expected) in SELF_TEST_CASES.items()
+        if case_result(folder.name, content) != expected
+    ]
+    folder.cleanup()
+    return failures
+
+
 def self_test():
-    with tempfile.TemporaryDirectory() as folder:
-        failures = [
-            f"{name}: expected {expected}"
-            for name, (content, expected) in SELF_TEST_CASES.items()
-            if case_result(folder, content) != expected
-        ]
-    for failure in failures:
-        print(f"FAIL {failure}")
+    failures = case_failures()
     status = "FAILED" if failures else f"{len(SELF_TEST_CASES)} cases passed"
-    print(f"check_claims self-test: {status}")
+    lines = [f"FAIL {failure}" for failure in failures]
+    print("\n".join(lines + [f"check_claims self-test: {status}"]))
     return 1 if failures else 0
 
 
 def usage_error(argv):
     if len(argv) != 1:
         return __doc__.strip()
-    return None if os.path.isfile(argv[0]) else f"{argv[0]}: no such file"
+    path = argv[0]
+    exists = os.path.isfile(path)
+    return None if exists else f"{path}: no such file"
+
+
+def usage(argv):
+    error = usage_error(argv)
+    if error:
+        print(error, file=sys.stderr)
+    return 2 if error else 0
 
 
 def report(path):
     errors = check_file(path)
-    for error in errors:
-        print(f"{path}: {error}")
-    print(f"{path}: {'FAIL' if errors else 'PASS'}")
+    lines = [f"{path}: {error}" for error in errors]
+    print("\n".join(lines + [f"{path}: {'FAIL' if errors else 'PASS'}"]))
     return 1 if errors else 0
 
 
 def main(argv):
     if argv == ["--self-test"]:
         return self_test()
-    error = usage_error(argv)
-    if error:
-        print(error, file=sys.stderr)
-        return 2
-    return report(argv[0])
+    return usage(argv) or report(argv[0])
 
 
 if __name__ == "__main__":
