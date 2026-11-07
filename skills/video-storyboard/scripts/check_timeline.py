@@ -23,21 +23,24 @@ RULES = [
     "hook_window",
     "scene_duration",
     "caption_density",
+    "caption_place",
     "speaking_rate",
     "visual_variety",
     "safe_zone",
     "contiguous_timing",
+    "sync",
     "read_hold",
     "terms",
     "rhythm",
     "event_gap",
     "hero",
+    "menu_time",
     "directions",
     "materials",
     "schema",
 ]
 
-KINDS = {"hook", "capture", "motion", "character", "diagram", "callout", "cta"}
+KINDS = {"hook", "capture", "motion", "character", "diagram", "callout", "cta", "ui", "menu"}
 ASPECTS = {"16:9": (1920, 1080), "9:16": (1080, 1920), "1:1": (1080, 1080)}
 FPS_VALUES = {30, 60}
 
@@ -54,6 +57,10 @@ VERTICAL_UI_EDGE = 0.85
 START_TOLERANCE_SEC = 1e-3
 TOTAL_TOLERANCE_SEC = 0.05
 READ_MIN_SEC, READ_BASE_SEC, READ_PER_WORD_SEC = 1.5, 1.0, 0.3
+CAPTION_BAND_TOP, CAPTION_BAND_BOTTOM = 0.84, 0.95
+VERTICAL_CAPTION_BOTTOM, VERTICAL_CAPTION_RIGHT = 0.80, 0.85
+CUT_SYNC_SEC, ACTION_SYNC_SEC = 0.020, 0.070
+MENU_SEC_PER_FILM_SEC = 8.0 / 80.0
 ENERGY_MIN, ENERGY_MAX = 0, 10
 MAX_GAP_BARS = 2
 BEATS_PER_BAR = 4
@@ -156,6 +163,22 @@ def check_box(value, size):
     return isinstance(value, list) and len(value) == size and all(is_number(v) for v in value)
 
 
+def is_normalized_rect(value):
+    return (
+        check_box(value, 4)
+        and value[0] >= 0.0
+        and value[1] >= 0.0
+        and value[2] > 0.0
+        and value[3] > 0.0
+        and value[0] + value[2] <= 1.0
+        and value[1] + value[3] <= 1.0
+    )
+
+
+def has_exact_fields(value, fields):
+    return isinstance(value, dict) and set(value) == set(fields)
+
+
 def check_scene_schema(scene, label, report):
     if not isinstance(scene, dict):
         report.add("schema", "scene must be an object", label)
@@ -171,6 +194,10 @@ def check_scene_schema(scene, label, report):
         report.add("schema", "duration_override_reason must be a string when present", label)
     if "static_hold" in scene and not isinstance(scene["static_hold"], bool):
         report.add("schema", "static_hold must be a boolean when present", label)
+    if scene.get("static_hold") is True and not non_empty_str(scene.get("static_hold_reason")):
+        report.add("schema", "static_hold true needs a non-empty static_hold_reason string", label)
+    if "static_hold_reason" in scene and not isinstance(scene["static_hold_reason"], str):
+        report.add("schema", "static_hold_reason must be a string when present", label)
     text = scene.get("on_screen_text", [])
     if not (isinstance(text, list) and all(non_empty_str(t) for t in text)):
         report.add("schema", "on_screen_text must be a list of non-empty strings when present", label)
@@ -194,6 +221,52 @@ def check_scene_schema(scene, label, report):
     focal = scene.get("focal_point")
     if not check_box(focal, 2) or not all(0.0 <= v <= 1.0 for v in focal):
         report.add("schema", "focal_point must be [x, y] with values in [0.0, 1.0]", label)
+    check_optional_scene_fields(scene, label, report)
+
+
+def check_optional_scene_fields(scene, label, report):
+    duration = scene.get("duration_sec")
+    reframe = scene.get("reframe")
+    if reframe is not None:
+        fields = ("scale", "focal_point", "from_sec", "to_sec")
+        valid = has_exact_fields(reframe, fields) and is_number(duration)
+        valid = valid and is_number(reframe["scale"]) and reframe["scale"] > 0
+        valid = valid and check_box(reframe["focal_point"], 2)
+        valid = valid and all(0.0 <= value <= 1.0 for value in reframe["focal_point"])
+        valid = valid and all(is_number(reframe[key]) for key in ("from_sec", "to_sec"))
+        valid = valid and 0.0 <= reframe["from_sec"] < reframe["to_sec"] <= duration
+        if not valid:
+            report.add("schema", "reframe must have positive scale, normalized focal_point and 0 <= from_sec < to_sec <= duration_sec", label)
+    inset = scene.get("gauge_inset")
+    if inset is not None:
+        fields = ("source_rect", "scale", "event_sec", "lead_sec", "tail_sec", "anchor")
+        valid = has_exact_fields(inset, fields) and is_number(duration)
+        valid = valid and is_normalized_rect(inset["source_rect"])
+        valid = valid and is_number(inset["scale"]) and inset["scale"] > 0
+        valid = valid and is_number(inset["event_sec"]) and 0.0 <= inset["event_sec"] <= duration
+        valid = valid and is_number(inset["lead_sec"]) and inset["lead_sec"] >= 0.3
+        valid = valid and is_number(inset["tail_sec"]) and inset["tail_sec"] >= 1.2
+        valid = valid and non_empty_str(inset["anchor"])
+        if not valid:
+            report.add("schema", "gauge_inset needs a normalized source_rect, positive scale, in-scene event_sec, lead_sec >= 0.3, tail_sec >= 1.2 and anchor", label)
+    hold = scene.get("plate_hold")
+    if hold is not None:
+        valid = has_exact_fields(hold, ("at_sec", "duration_sec")) and is_number(duration)
+        valid = valid and is_number(hold["at_sec"]) and hold["at_sec"] >= 0.0
+        valid = valid and is_number(hold["duration_sec"]) and hold["duration_sec"] > 0.0
+        valid = valid and hold["at_sec"] + hold["duration_sec"] <= duration
+        if not valid:
+            report.add("schema", "plate_hold needs 0 <= at_sec and positive duration_sec inside the scene", label)
+    if "hud_crop" in scene and not is_normalized_rect(scene["hud_crop"]):
+        report.add("schema", "hud_crop must be a normalized [x, y, w, h] rectangle", label)
+    if "caption_box" in scene and not is_normalized_rect(scene["caption_box"]):
+        report.add("schema", "caption_box must be a normalized [x, y, w, h] rectangle", label)
+    if "locked_actions_sec" in scene:
+        actions = scene["locked_actions_sec"]
+        valid = is_number(duration) and isinstance(actions, list)
+        valid = valid and all(is_number(value) and 0.0 <= value <= duration for value in actions)
+        if not valid:
+            report.add("schema", "locked_actions_sec must be a list of scene-relative seconds inside the scene", label)
 
 
 def check_schema(timeline, report):
@@ -298,6 +371,29 @@ def check_captions(scenes, report):
             )
 
 
+def check_caption_place(meta, scenes, report):
+    aspect = meta["aspect"]
+    for scene in scenes:
+        box = scene.get("caption_box")
+        if box is None:
+            continue
+        x, y, width, height = box
+        if aspect == "16:9" and (y < CAPTION_BAND_TOP or y + height > CAPTION_BAND_BOTTOM):
+            report.add(
+                "caption_place",
+                "caption_box y range %.3f to %.3f must stay in the 16:9 safe band %.2f to %.2f"
+                % (y, y + height, CAPTION_BAND_TOP, CAPTION_BAND_BOTTOM),
+                scene["id"],
+            )
+        if aspect == "9:16" and (y + height > VERTICAL_CAPTION_BOTTOM or x + width > VERTICAL_CAPTION_RIGHT):
+            report.add(
+                "caption_place",
+                "caption_box must stay above y = %.2f and left of x = %.2f in 9:16"
+                % (VERTICAL_CAPTION_BOTTOM, VERTICAL_CAPTION_RIGHT),
+                scene["id"],
+            )
+
+
 def check_speaking_rate(scenes, report):
     for scene in scenes:
         words = word_count(scene["narration"])
@@ -387,6 +483,36 @@ def check_timing(meta, scenes, report):
             "contiguous_timing",
             "scene durations sum to %.3f s; meta.duration_sec is %.3f s" % (total, meta["duration_sec"]),
         )
+
+
+def distance_to_beat(value, beat_sec):
+    return abs(value - round(value / beat_sec) * beat_sec)
+
+
+def check_sync(meta, scenes, report):
+    if "bpm" not in meta:
+        return
+    beat_sec = 60.0 / meta["bpm"]
+    for scene in scenes[1:]:
+        distance = distance_to_beat(scene["start_sec"], beat_sec)
+        if distance > CUT_SYNC_SEC:
+            report.add(
+                "sync",
+                "cut at %.3f s is %.3f s from the beat; the limit is %.3f s"
+                % (scene["start_sec"], distance, CUT_SYNC_SEC),
+                scene["id"],
+            )
+    for scene in scenes:
+        for action_sec in scene.get("locked_actions_sec", []):
+            film_sec = scene["start_sec"] + action_sec
+            distance = distance_to_beat(film_sec, beat_sec)
+            if distance > ACTION_SYNC_SEC:
+                report.add(
+                    "sync",
+                    "locked action at %.3f s is %.3f s from the beat; the limit is %.3f s"
+                    % (film_sec, distance, ACTION_SYNC_SEC),
+                    scene["id"],
+                )
 
 
 def shown_text(scene):
@@ -496,6 +622,17 @@ def check_hero(meta, report):
         report.add("hero", "meta.payoff_silence_sec ends at %.3f s, after the hero start %.3f s" % (silence[1], hero[0]))
 
 
+def check_menu_time(meta, scenes, report):
+    menu_sec = sum(scene["duration_sec"] for scene in scenes if scene["kind"] in ("ui", "menu"))
+    limit = meta["duration_sec"] * MENU_SEC_PER_FILM_SEC
+    if menu_sec > limit:
+        report.add(
+            "menu_time",
+            "ui and menu scenes total %.3f s; the scaled limit is %.3f s (8 s per 80 s of film)"
+            % (menu_sec, limit),
+        )
+
+
 def direction_blocks(text):
     """Map each `### D<n>` heading under `## Directions` to its `- Key: value` lines."""
     section = re.search(r"^## Directions[ \t]*$(.*?)(?=^## |\Z)", text, re.M | re.S)
@@ -592,16 +729,19 @@ def check_timeline(timeline):
     check_hook(scenes, report)
     check_durations(scenes, report)
     check_captions(scenes, report)
+    check_caption_place(meta, scenes, report)
     check_speaking_rate(scenes, report)
     check_variety(scenes, report)
     check_safe_zone(meta, scenes, report)
     check_timing(meta, scenes, report)
+    check_sync(meta, scenes, report)
     rhythm = timeline.get("rhythm", [])
     check_read_hold(scenes, report)
     check_terms(meta, scenes, report)
     check_rhythm(meta, rhythm, report)
     check_event_gap(meta, scenes, rhythm, report)
     check_hero(meta, report)
+    check_menu_time(meta, scenes, report)
     return report.errors
 
 
@@ -854,6 +994,20 @@ def self_test():
             self.scenes[1]["caption"] = "a\nb\nc"
             self.assertIn("caption_density", rules_of(self.timeline))
 
+        def test_3_caption_place_pass_and_fail(self):
+            self.scenes[1]["caption_box"] = [0.1, 0.85, 0.8, 0.08]
+            self.assertEqual(rules_of(self.timeline), set())
+            self.scenes[1]["caption_box"] = [0.1, 0.75, 0.8, 0.08]
+            self.assertEqual(rules_of(self.timeline), {"caption_place"})
+
+        def test_3_caption_place_vertical_pass_and_fail(self):
+            meta = self.timeline["meta"]
+            meta.update({"aspect": "9:16", "width": 1080, "height": 1920})
+            self.scenes[1]["caption_box"] = [0.1, 0.7, 0.7, 0.1]
+            self.assertEqual(rules_of(self.timeline), set())
+            self.scenes[1]["caption_box"] = [0.2, 0.7, 0.7, 0.1]
+            self.assertEqual(rules_of(self.timeline), {"caption_place"})
+
         def test_4_speaking_rate(self):
             self.scenes[0]["narration"] = "Flaky tests waste hours of every engineer's week, every week."
             self.assertEqual(rules_of(self.timeline), {"speaking_rate"})
@@ -904,9 +1058,46 @@ def self_test():
 
         def test_8_static_hold(self):
             self.scenes[2]["static_hold"] = True
+            self.scenes[2]["static_hold_reason"] = "A planned end-card hold."
             self.assertEqual(rules_of(self.timeline), set())
             self.scenes[2]["static_hold"] = "yes"
             self.assertEqual(rules_of(self.timeline), {"schema"})
+
+        def test_8_optional_scene_fields_pass(self):
+            self.scenes[1].update({
+                "reframe": {"scale": 1.5, "focal_point": [0.5, 0.4], "from_sec": 0.0, "to_sec": 1.2},
+                "gauge_inset": {"source_rect": [0.7, 0.05, 0.2, 0.12], "scale": 2.0,
+                                "event_sec": 1.1, "lead_sec": 0.3, "tail_sec": 1.2, "anchor": "top-right"},
+                "plate_hold": {"at_sec": 2.0, "duration_sec": 0.5},
+                "hud_crop": [0.72, 0.0, 0.28, 0.18],
+                "caption_box": [0.1, 0.85, 0.8, 0.08],
+                "locked_actions_sec": [0.5, 1.5],
+            })
+            self.assertEqual(rules_of(self.timeline), set())
+
+        def test_8_optional_scene_fields_fail(self):
+            bad_values = {
+                "reframe": {"scale": 1.5, "focal_point": [1.5, 0.4], "from_sec": 0.0, "to_sec": 1.2},
+                "gauge_inset": {"source_rect": [0.7, 0.05, 0.2, 0.12], "scale": 2.0,
+                                "event_sec": 1.1, "lead_sec": 0.2, "tail_sec": 1.2, "anchor": "top-right"},
+                "plate_hold": {"at_sec": 4.9, "duration_sec": 0.5},
+                "hud_crop": [0.9, 0.0, 0.2, 0.2],
+                "caption_box": [0.9, 0.8, 0.2, 0.1],
+                "locked_actions_sec": [5.1],
+            }
+            for key, value in bad_values.items():
+                timeline = valid_timeline()
+                timeline["scenes"][1][key] = value
+                self.assertEqual(rules_of(timeline), {"schema"}, key)
+            timeline = valid_timeline()
+            timeline["scenes"][1]["static_hold"] = True
+            self.assertEqual(rules_of(timeline), {"schema"}, "static_hold_reason")
+            timeline = valid_timeline()
+            timeline["scenes"][1]["gauge_inset"] = {
+                "source_rect": [0.7, 0.05, 0.2, 0.12], "scale": 2.0,
+                "event_sec": 1.1, "lead_sec": 0.3, "tail_sec": 1.1, "anchor": "top-right",
+            }
+            self.assertEqual(rules_of(timeline), {"schema"}, "gauge_inset.tail_sec")
 
         def test_8_allowed_silences(self):
             self.timeline["meta"]["allowed_silences"] = [[2.0, 3.5]]
@@ -967,6 +1158,31 @@ def self_test():
                 proc = subprocess.run([sys.executable, script, write_project(tmp, self.timeline)],
                                       capture_output=True, text=True, timeout=60)
             self.assertEqual(proc.returncode, 0, proc.stdout)
+
+        def test_11_sync_cut_pass_and_fail(self):
+            self.timeline = music_timeline()
+            self.assertNotIn("sync", rules_of(self.timeline))
+            self.scenes = self.timeline["scenes"]
+            self.scenes[0]["duration_sec"] = 2.519
+            self.scenes[1]["start_sec"] = 2.519
+            self.scenes[1]["duration_sec"] = 4.981
+            self.assertNotIn("sync", rules_of(self.timeline))
+            self.scenes[0]["duration_sec"] = 2.021
+            self.scenes[1]["start_sec"] = 2.021
+            self.scenes[1]["duration_sec"] = 5.479
+            self.assertEqual(rules_of(self.timeline), {"sync"})
+
+        def test_11_sync_locked_action_pass_and_fail(self):
+            self.timeline = music_timeline()
+            self.timeline["scenes"][1]["locked_actions_sec"] = [0.068]
+            self.assertNotIn("sync", rules_of(self.timeline))
+            self.timeline["scenes"][1]["locked_actions_sec"] = [0.072]
+            self.assertEqual(rules_of(self.timeline), {"sync"})
+
+        def test_11_menu_time_pass_and_fail(self):
+            self.assertNotIn("menu_time", rules_of(self.timeline))
+            self.scenes[1]["kind"] = "ui"
+            self.assertEqual(rules_of(self.timeline), {"menu_time"})
 
         def test_11_rhythm_energy_range(self):
             self.timeline = music_timeline()
