@@ -183,9 +183,7 @@ def report(path):
 
 
 def main(argv):
-    if argv == ["--self-test"]:
-        return self_test()
-    return usage(argv) or report(argv[0])
+    return self_test() if argv == ["--self-test"] else (usage(argv) or report(argv[0]))
 
 
 if __name__ == "__main__":
