@@ -504,24 +504,25 @@ def check_boundary_pops(ctx):
 
 
 def read_music_report(path):
+    """Return (the report object, True when its `pass` is true). Raise InputError on bad JSON."""
+    label = f"cannot read music continuity report {path}"
     try:
         data = json.loads(path.read_text())
     except (OSError, ValueError) as exc:
-        raise InputError(f"cannot read music continuity report {path}: {exc}") from exc
-    if not isinstance(data, dict) or not isinstance(data.get("pass"), bool):
-        raise InputError(f"{path}: pass must be a boolean")
-    return data
+        raise InputError(f"{label}: {exc}") from exc
+    report = data if isinstance(data, dict) else {}
+    passed = report.get("pass") is True
+    return report, passed
 
 
 def check_music_continuity(ctx):
     path = ctx.music_continuity
     if not path.is_file():
         return {"skipped": True, "reason": f"no music continuity report at {path}"}, []
-    data = read_music_report(path)
-    passed = data["pass"]
-    details = {"report": str(path), "pass": passed,
-               "digital_silence": data.get("digital_silence"), "worst": data.get("worst", [])}
-    return details, [] if passed else [("audio/music-continuity.json reports pass false", None)]
+    report, passed = read_music_report(path)
+    details = {"report": str(path), "pass": report.get("pass"),
+               "digital_silence": report.get("digital_silence"), "worst": report.get("worst", [])}
+    return details, [] if passed else [(f"audio/music-continuity.json pass is {report.get('pass')!r}, not true", None)]
 
 
 def caption_time(text):
@@ -575,21 +576,32 @@ def master_frame_count(ctx):
     return len(ctx.analysis["frames"]) if count is None else count
 
 
-def check_variant(path, size, duration, master_count):
-    """Return (frame count, [error messages]) for 1 derived video."""
-    name, (tw, th) = path.name, size
+def size_error(name, v, size):
+    got = (v.get("width"), v.get("height"))
+    return None if got == size else f"{name} is {got[0]}x{got[1]}, expected {size[0]}x{size[1]}"
+
+
+def duration_error(name, dur, duration):
+    near = dur is not None and abs(dur - duration) <= DURATION_TOL_SEC
+    return None if near else f"{name} duration {dur} s differs from {duration} s by > {DURATION_TOL_SEC} s"
+
+
+def count_error(name, count, master_count):
+    return None if count == master_count else f"{name} frame count {count}, expected master.mp4 frame count {master_count}"
+
+
+def check_variant(path, expected):
+    """Return (frame count, [error messages]) for 1 derived video.
+
+    `expected` holds the target "size", the master "duration" and the master "frames".
+    """
     info = ffprobe(path)
     v = stream(info, "video") or {}
-    errors = []
-    if (v.get("width"), v.get("height")) != (tw, th):
-        errors.append(f"{name} is {v.get('width')}x{v.get('height')}, expected {tw}x{th}")
-    dur = stream_duration(info, "video")
-    if dur is None or abs(dur - duration) > DURATION_TOL_SEC:
-        errors.append(f"{name} duration {dur} s differs from {duration} s by > {DURATION_TOL_SEC} s")
     count = frame_count(v)
-    if count != master_count:
-        errors.append(f"{name} frame count {count}, expected master.mp4 frame count {master_count}")
-    return count, errors
+    errors = (size_error(path.name, v, expected["size"]),
+              duration_error(path.name, stream_duration(info, "video"), expected["duration"]),
+              count_error(path.name, count, expected["frames"]))
+    return count, [e for e in errors if e]
 
 
 def variant_targets(meta):
@@ -597,22 +609,39 @@ def variant_targets(meta):
     return {"16x9.mp4": (long_, short), "9x16.mp4": (short, long_), "1x1.mp4": (short, short)}
 
 
+CAPTION_FILES = (("captions.srt", False), ("captions.vtt", True))
+
+
+def present(root, names):
+    return [name for name in names if (root / name).is_file()]
+
+
+def variant_report(ctx):
+    """Return ({video name: frame count}, [error messages]) for master.mp4 and each present derived video."""
+    expected = {"duration": float(ctx.meta["duration_sec"]), "frames": master_frame_count(ctx)}
+    targets = variant_targets(ctx.meta)
+    results = {name: check_variant(ctx.render_dir / name, {**expected, "size": targets[name]})
+               for name in present(ctx.render_dir, targets)}
+    frame_counts = {"master.mp4": expected["frames"], **{name: res[0] for name, res in results.items()}}
+    return frame_counts, [msg for res in results.values() for msg in res[1]]
+
+
+def caption_errors(root, duration):
+    return [msg for name, vtt in CAPTION_FILES if (root / name).is_file()
+            for msg in check_captions(root / name, vtt, duration)]
+
+
+def checked_files(root, frame_counts):
+    """The derived videos and caption files present in `root`."""
+    return [name for name in frame_counts if name != "master.mp4"] + present(root, [n for n, _ in CAPTION_FILES])
+
+
 def check_variants_captions(ctx):
-    root = ctx.render_dir
-    duration = float(ctx.meta["duration_sec"])
-    frame_counts = {"master.mp4": master_frame_count(ctx)}
-    seen, errors = [], []
-    for name, size in variant_targets(ctx.meta).items():
-        if (root / name).is_file():
-            seen.append(name)
-            frame_counts[name], msgs = check_variant(root / name, size, duration, frame_counts["master.mp4"])
-            errors += msgs
-    for name, vtt in (("captions.srt", False), ("captions.vtt", True)):
-        if (root / name).is_file():
-            seen.append(name)
-            errors += check_captions(root / name, vtt, duration)
+    frame_counts, errors = variant_report(ctx)
+    seen = checked_files(ctx.render_dir, frame_counts)
     if not seen:
-        return {"skipped": True, "reason": f"no variants or captions in {root}"}, []
+        return {"skipped": True, "reason": f"no variants or captions in {ctx.render_dir}"}, []
+    errors += caption_errors(ctx.render_dir, float(ctx.meta["duration_sec"]))
     return {"checked": seen, "frame_counts": frame_counts}, [(msg, None) for msg in errors]
 
 
@@ -713,19 +742,27 @@ def still_runs(motion):
     return runs
 
 
+def dead_runs(ctx):
+    """Return (start, end, planned) for each still run of DEAD_MAX_SEC or longer."""
+    windows, tol = hold_windows(ctx.scenes), 1.0 / ctx.motion.fps
+    runs = [(start, end) for start, end in still_runs(ctx.motion) if end - start >= DEAD_MAX_SEC]
+    return [(start, end, inside(start, end, windows, tol)) for start, end in runs]
+
+
+def dead_message(scenes, start, end):
+    return (f"dead time {stamp(start)}-{stamp(end)} ({end - start:.2f} s without motion) "
+            f"in scene {scene_at(scenes, start)} outside a static_hold scene")
+
+
+def dead_intervals(runs):
+    return [{"start_sec": round(start, 3), "end_sec": round(end, 3), "planned": planned}
+            for start, end, planned in runs]
+
+
 def check_dead_time(ctx):
-    tol = 1.0 / ctx.motion.fps
-    windows = hold_windows(ctx.scenes)
-    found, errors = [], []
-    for start, end in still_runs(ctx.motion):
-        if end - start < DEAD_MAX_SEC:
-            continue
-        planned = inside(start, end, windows, tol)
-        found.append({"start_sec": round(start, 3), "end_sec": round(end, 3), "planned": planned})
-        if not planned:
-            errors.append((f"dead time {stamp(start)}-{stamp(end)} ({end - start:.2f} s without motion) "
-                           f"in scene {scene_at(ctx.scenes, start)} outside a static_hold scene", start))
-    return {"max_sec": DEAD_MAX_SEC, "still_diff": DEAD_DIFF, "intervals": found}, errors
+    runs = dead_runs(ctx)
+    errors = [(dead_message(ctx.scenes, start, end), start) for start, end, planned in runs if not planned]
+    return {"max_sec": DEAD_MAX_SEC, "still_diff": DEAD_DIFF, "intervals": dead_intervals(runs)}, errors
 
 
 def motion_per_second(motion):
