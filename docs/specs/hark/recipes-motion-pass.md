@@ -1,7 +1,7 @@
 # recipes-motion, part 1: the pass engine (whoosh, swish, swipe, brightswish)
 
 This part belongs to the index `recipes-motion.md`. Read the index first: it defines the recipe contract, the shared
-primitives (P1 to P14) and the seed-bank format that this part uses.
+primitives (P1 to P26) and the seed-bank format that this part uses.
 
 The 4 recipes of this part share one engine, the **pass engine** of the `whoosh` recipe. `swish`, `swipe` and
 `brightswish` are parameter sets (and in one case one extra layer) on top of that engine.
@@ -62,9 +62,9 @@ Times are seconds, frequencies Hz, levels dB.
 | fall_k | 0.5 | 2.2 | | exponent of the fall curve (> 1 holds then drops, < 1 drops into a long tail) |
 | start_db | -44 | -22 | | level of the first sample relative to the peak |
 | track | 0.3 | 1.2 | | filter motion m = amplitude^track |
-| f_peak | 60 | 4000 | log | air band centre at the peak |
-| up_oct | 0 | 3 | | octaves under f_peak at the start |
-| down_oct | 0 | 3.5 | | octaves under f_peak at the end |
+| f_peak | 60 | 4000 | log | centre frequency of the air band at peak level |
+| up_oct | 0 | 3 | | how many octaves below f_peak the air band begins |
+| down_oct | 0 | 3.5 | | how many octaves below f_peak the air band finishes |
 | dop_st | 0 | 12 | | Doppler glide in semitones (total, high to low) |
 | dop_w | 0.005 | 0.15 | log | width of the Doppler glide |
 | q_air | 0.6 | 5 | log | Q of the air bands |
@@ -107,14 +107,14 @@ Times are seconds, frequencies Hz, levels dB.
 | low_lag | 0 | 0.08 | | delay of the low weight envelope (optional) |
 | hiss_pre | 0.3 | 3 | | hiss envelope exponent before the peak (optional) |
 | hiss_tail | 0.3 | 3 | | hiss envelope exponent after the peak (optional) |
-| hiss_mfloor | 0 | 1 | | floor of the hiss low-pass motion (optional) |
+| hiss_mfloor | 0 | 1 | | lowest point of the hiss low-pass movement, as a fraction (optional) |
 | hiss_width | 0 | 1 | | level of an independent hiss as side signal (optional) |
 | room_damp | 0.1 | 0.8 | | reverb high damping (optional) |
 | low_width | 0 | 1 | | level of an independent low band as side signal (optional) |
-| tail_sweep | 0 | 3 | | octaves the hiss band and half of it the air body keep sinking after the peak (optional) |
+| tail_sweep | 0 | 3 | | after the peak, the hiss band goes down by this many more octaves, the air body by half of it (optional) |
 | tail_tau | 0.05 | 0.6 | log | time constant of that sink (optional) |
 | hiss_q | 0.6 | 3 | | resonance of the hiss low-pass (optional) |
-| tail_gust | 0 | 0.8 | | slow gust AM of the hiss in the tail only (optional) |
+| tail_gust | 0 | 0.8 | | depth of a slow gust-like amplitude modulation on the hiss, after the peak only (optional) |
 
 ### 1.4 OPTIONAL (off values)
 
@@ -223,7 +223,7 @@ tone and grain keys from R2, and so on).
 | sleeve | hiss_rustle 0.5, hiss_pre 1.3, hiss_db -20, hiss_lo 1200, eq_hi_db -10 | fabric friction on the hiss, duller top |
 | whistle | tone_db -3, tone_q 50, tone_pure 1.0, tone_ratio 1.5, dop_st 12, dop_w 0.04, tail_tau 0.4, hiss_q 2.2 | a pure tone gliding a full octave (the designed motion-graphics whoosh) |
 | heavy | fall 0.19, f_peak 300, flut_depth 0.35, flut_f 20, room_wet 0.14, rt60 0.55, tail_tau 0.4, hiss_q 2.2 | heavier, fluttering swing |
-| reverse | rise 0.25, rise_k 0.55, hold 0.0, fall 0.08, fall_k 1.0, room_wet 0.15 | a "suck" that accelerates into the cut and stops softly |
+| reverse | rise 0.25, rise_k 0.55, hold 0.0, fall 0.08, fall_k 1.0, room_wet 0.15 | an inward "suck" that gets faster toward the cut and ends with a soft stop |
 | tight | fall 0.1, fall_k 0.75, f_peak 750, q_air 2.5, room_wet 0.12, rt60 0.35, grain_db -20, grain_rate 2000, grain_f 6000, tail_sweep 0.0, hiss_q 0.6 | a short thin zip with no tail sweep |
 
 ### 1.7 Members of `big`
@@ -237,8 +237,8 @@ tone and grain keys from R2, and so on).
 | gust | rise 0.45, rise_k 1.1, fall 0.45, f_peak 700, up_oct 1.8, down_oct 2.4, q_air 0.8, lp_ratio 3.5, low_db -12, sub_db -50, hiss_db -14, hiss_hp 2200, flut_depth 0.6, flut_f 6, width 0.5, room_wet 0.35, rt60 1.0 |
 | reverse | rise 0.6, rise_k 0.55, hold 0.0, fall 0.06, fall_k 1.4, room_wet 0.2, rt60 0.6 |
 
-Characters: swell = smooth air swell; cape = a flapping cape or sail (flutter plus fabric, wide); jet = a gliding
-whistle over a thin air bed; deep = a dark sub boom; gust = a bright gusting pass with a long room (6 Hz flutter at
+Characters: swell = smooth air swell; cape = a flapping cape or sail (flutter plus fabric, wide); jet = a whistle tone that
+glides over a quiet air layer; deep = a dark sub boom; gust = a bright gusting pass with a long room (6 Hz flutter at
 full depth); reverse = a suck-in that stops at the cut.
 
 ### 1.8 Members of `pro_big`
@@ -407,7 +407,7 @@ Input: stereo y, end_db (negative), end_fade (s). A 1.5 ms start ramp.
 
 ### 1.13 Version 1 (old parameter sets)
 
-Version-1 parameter sets are a physical model of a stick swung past a close microphone. They have no key `rise`.
+Version-1 parameter sets model a stick that moves quickly past a microphone at short distance. They have no key `rise`.
 Three seed-bank entries of the `whoosh` bank are version-1 sets. The render stays so that those entries reproduce.
 
 Fixed constants: length 0.8 s, 6 shedding bands, band root 0.45, wake ratio 0.9, hiss pink share 0.5.
@@ -473,9 +473,10 @@ Steps (d = t - tc, noises from P7/P13 as named):
 ### 2.1 The sound
 
 A thin, fast object cuts the air: a cane, a rod, a blade, a thrown stick. Compared to a whoosh it is short and steep
-(80 to 300 ms around the pass), thin (little or no low weight, the air band higher and narrower) and it can carry an
-aeolian whistle: a thin rod sheds a near-pure tone at f = 0.2 U / d (Strouhal number 0.2; 30 m/s past a 1 cm rod gives
-about 600 Hz), heard as a narrow band (Q 15 to 40) that glides with the speed and the Doppler shift.
+(80 to 300 ms around the pass), thin (little or no low weight, the air band higher and narrower) and it can have an
+aeolian tone: air flowing past a thin rod makes an almost pure tone at f = 0.2 U / d (Strouhal number 0.2; at
+30 m/s and a 1 cm rod this is about 600 Hz). It sounds as a narrow band (Q 15 to 40) whose pitch follows the speed
+and the Doppler shift.
 
 Target "a thin quick swish of a cane through the air". Alternatives: "a sword being sharpened", "a short burst of
 steam", "a page being flipped", "a bird wing flap". Refset `swish`. No default refs. One kind, `swish`.
@@ -523,11 +524,11 @@ hiss_pre 0.8.
 
 ### 3.1 The sound
 
-Cloth or paper slid or swept past, for UI slides and panel moves. A soft wide surface moves much air slowly: the low
-weight layer carries most of the energy (real cloth recordings hold nearly all of it under 150 Hz) with a soft mid band
-on top. Texture, not tone: the air band is roughened by fast AM (rustle, 50 to 200 Hz) and fine crackles (grains,
-denser at speed). No whistle. Slower, smoother envelopes than a whoosh: 40 to 150 ms rise, an optional hold, a soft
-fall. Wider in stereo (real cloth sits at L/R correlation 0.3 to 0.6).
+The sound of cloth or paper moved past the listener, for UI slides and panel movements. A large soft surface moves a
+lot of air at low speed, so the low layer has most of the energy (in real cloth recordings almost all energy is
+below 150 Hz), with a quiet mid band above it. It is noise texture, with no tone: fast amplitude modulation at 50 to
+200 Hz (rustle) and small crackles (grains, more of them at high speed) roughen the air band. There is no whistle.
+The envelopes are slower and smoother than a whoosh: a rise of 40 to 150 ms, an optional hold, and a gentle fall. Wider in stereo (real cloth sits at L/R correlation 0.3 to 0.6).
 
 Target "a soft cloth swipe". Alternatives: "a gust of wind", "a broom on a floor", "paper tearing", "a zipper
 pulled". Refset `swipe`. No default refs. One kind, `swipe`.
@@ -554,9 +555,9 @@ grain_rate 1500, grain_f 5500, width 0.4, eq_hi_db -4, eq_hi_f 9000.
 Step C (`DEFAULTS`) = B with: hiss_pre 0.4, hiss_tail 0.5, hiss_mfloor 0.6, hiss_width 0.7, room_damp 0.3,
 low_lag 0.02, low_smooth 0.05, low_db -5, low_width 0.75, hiss_db -20.
 
-Design intent of step C: the brush leads and outlives the body, the low swell follows close behind the brush (not a
-thump on the onset), and an independent fabric hiss and low band as side signals make the image wide (L/R correlation
-near 0.6) with the mono sum unchanged.
+Design intent of step C: the brush layer starts before the body and ends after it; the low swell comes just after
+the brush (it must not be a thump at the start); and a separate fabric hiss and low band, used as side signals, widen
+the stereo image (L/R correlation about 0.6) without changing the mono sum.
 
 ### 3.4 Members (kind `swipe`)
 
@@ -572,20 +573,20 @@ near 0.6) with the mono sum unchanged.
 
 ### 4.1 The sound
 
-High, wide air flicks for text and pane moves, and a designed bright whip. Measured targets from the source's private
+Short, bright, wide air flicks for text and panel movements, and a bright designed whip. Measured targets from the source's private
 study set (facts, used as design goals):
 
 - Bright swish: about 0.25 s long (0.21 to 0.29), centroid about 2.1 kHz (0.8 to 3.6 kHz), its loudest point about
-  134 ms (115 to 150) after the first moment within 20 dB of the peak (it rises, then stops), fairly wide (L/R
-  correlation 0.76, range 0.43 to 0.94).
+  134 ms (115 to 150) after the first moment within 20 dB of the peak (a rise, then a stop), moderately wide
+  (L/R correlation 0.76, range 0.43 to 0.94).
 - Designed whip: about 0.74 s, centroid about 2.7 kHz, decorrelated (correlation 0.07), reaches its peak in about
-  15 ms, then falls about 45 semitones while it rings out (-20 dB about 0.45 s after the peak), with a comb-like fan of
-  falling partials and a granular flutter.
+  15 ms, then drops about 45 semitones during its decay (-20 dB about 0.45 s after the peak). It contains a set of falling
+  partials like a comb filter, and a granular flutter.
 - The whip always falls. A rising synth whip is out of scope for this recipe: no member may have a rising glide.
 
-Build: the pass engine with the air band high (f_peak 2 to 5 kHz), no low weight or sub, the hiss about as loud as the
-air body, a decorrelated hiss side and air side. The whip adds a fast rise, a band that sinks after the peak (track >
-1, so it falls with the level), a deep fast flutter and one extra layer: a feedback comb whose fundamental falls over
+Build: the pass engine with a high air band (f_peak 2 to 5 kHz), with the low and sub layers off, the hiss at about
+the level of the air body, and decorrelated side signals for hiss and air. For the whip: a quick rise, plus a band that
+moves down after the peak (track > 1, so it goes down together with the level), a deep fast flutter and one extra layer: a feedback comb whose fundamental falls over
 the file.
 
 Two categories: `swish` (target "a bright quick swish") and `whoosh_fast` (target "a bright whip whoosh").
@@ -613,7 +614,7 @@ The duration and apex knobs of the whoosh family (forge-core knobs, "dur shape" 
 | key | lo | hi | scale | meaning |
 |---|---|---|---|---|
 | comb_mix | 0 | 1 | | parallel mix of the comb (0 = off below 0.01) |
-| comb_f0 | 150 | 4000 | log | comb fundamental at the first sample (Hz) |
+| comb_f0 | 150 | 4000 | log | comb fundamental (Hz) at sample 0 |
 | comb_f1 | 40 | 1500 | log | comb fundamental at the last sample (Hz) |
 | comb_fb | 0 | 0.92 | | comb feedback |
 
@@ -672,14 +673,14 @@ grain_f 2753, room_wet 0.0, rt60 0.4884, pan 0.1457, width 0.4008, eq_lo_db -10.
 hiss_width 0.7457, comb_f0 327.0, comb_f1 66.57, comb_fb 0.5578.
 (comb_mix stays 0, so the comb is off. grain_db stays -50, so the grains are off. room_wet 0 turns the reverb off.)
 
-`flick` (rises and stops dead: higher, fluttering, decorrelated, a touch of falling comb), overrides of SWISH:
+`flick` (a rise and an abrupt stop; higher, with flutter, decorrelated, with a little of the falling comb), overrides of SWISH:
 rise 0.09435, rise_k 0.45, fall 0.03, fall_k 1.335, track 0.7737, f_peak 800.3, up_oct 1.338, down_oct 3.046,
 dop_st 2.201, q_air 0.6, lp_ratio 2.779, flut_depth 0.524, flut_f 44.69, hiss_db -2.058, hiss_hp 3720,
 hiss_open 0.7442, hiss_pow 1.669, grain_rate 381.1, grain_f 3588, room_wet 0.06281, rt60 0.307, pan 0.05213,
 width 0.5124, end_fade 0.02, eq_lo_db -12.61, eq_hi_db 0.8779, hiss_width 1.0, comb_mix 0.3188, comb_f0 4000,
 comb_f1 99.3, comb_fb 0.4513.
 
-Category `whoosh_fast`, one member: `whip` (a 20 ms hit, a band and a ringing comb falling about 45 semitones, wide),
+Category `whoosh_fast`, one member: `whip` (a 20 ms attack, then a band and a resonant comb that both go down about 45 semitones; wide),
 overrides of WHIP:
 rise 0.02, rise_k 0.7391, hold 0.05657, fall_k 1.127, track 1.071, f_peak 4000, up_oct 0.2647, dop_st 10.95,
 q_air 3.505, lp_ratio 1.2, flut_f 25.21, hiss_db 0.0, hiss_hp 1807, hiss_open 0.0, hiss_pow 1.51, grain_db -46.8,

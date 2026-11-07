@@ -18,17 +18,17 @@ A clean implementation keeps this split. It need not reproduce the source's exac
 
 ### 10.1 The sound
 
-A designed digital glitch or stutter for edits: crackle first, then a gated stutter that speeds up into the cut and
-stops dead on it. Measured facts about one pro example (0.7 s): crackle first (sparse high grains, 4 to 12 kHz), then a
-dense broadband stutter of 11 bursts at 28 ms median spacing (36 per second), speeding up from 32 ms to 22 ms into the
+A designed digital stutter for a video edit. It opens with crackle, then a gated stutter accelerates toward the cut
+and ends exactly there. Measured facts about one pro example (0.7 s): first sparse high crackle grains (4 to 12 kHz),
+then 11 dense broadband bursts at 28 ms median spacing (36 per second), speeding up from 32 ms to 22 ms into the
 cut; bright (centroid 9.2 kHz, tilt +3.8 dB/octave, the 8 kHz band strongest); energy shares re total: under 150 Hz
--21.7 dB, 150 Hz to 1 kHz -24.8, 1 to 4 kHz -17.0, 4 to 12 kHz -1.2, over 12 kHz -6.6; fully decorrelated (L/R
-correlation 0.04, side as loud as mid); it ends exactly on the cut.
+-21.7 dB, 150 Hz to 1 kHz -24.8, 1 to 4 kHz -17.0, 4 to 12 kHz -1.2, over 12 kHz -6.6; L/R correlation 0.04 (the
+side signal is as strong as the mid); the last burst stops on the cut.
 
 Techniques the design uses: buffer repeats of 5 to 50 ms slices, bit-crush 4 to 10 bits, sample-rate reduction (2 to
-8 kHz, aliasing on purpose), data chirps (square bursts at 1 to 4 kHz, a new pitch per burst), sharp pitched transients
-that survive chopping, a steady low layer so it does not thin out. Mistakes to avoid: chops drifting off the grid,
-stacked harshness, a thin low end.
+8 kHz, aliasing on purpose), data chirps (square-wave bursts at 1 to 4 kHz, each burst on another pitch), sharp pitched
+transients that stay audible when chopped, and a constant low layer that keeps the body. Faults to avoid: chops that
+are not on the timing grid, too many harsh layers at once, and a weak low end.
 
 Target "a short digital glitch stutter with bit-crushed noise bursts that speed up and cut off". Alternatives: "radio
 static", "a helicopter", "a woodpecker", "rain on a tin roof". Refset `pro_glitch`. The seed bank also serves the
@@ -47,8 +47,8 @@ other set (all `pro_glitch` members, the old `glitch` members) renders with the 
 
 | key | range | scale | default | meaning |
 |---|---|---|---|---|
-| dur | 0.35 to 0.85 | | 0.65 | length up to the hard end |
-| crackle | 0.12 to 0.5 | | 0.35 | share of the length that is crackle before the stutter |
+| dur | 0.35 to 0.85 | | 0.65 | time from the start to the cut (s) |
+| crackle | 0.12 to 0.5 | | 0.35 | fraction of dur given to crackle before the stutter starts |
 | crackle_rate | 40 to 300 | log | 200 | crackle grains per second at the end of the crackle |
 | crackle_hp | 1500 to 6000 | log | 3500 | |
 | crackle_db | -30 to -6 | | -14 | |
@@ -70,17 +70,17 @@ other set (all `pro_glitch` members, the old `glitch` members) renders with the 
 | decay | 0.15 to 3 | log | 0.6 | burst decay, in slots |
 | lvl_jit | 0 to 8 | | 4.0 | burst level spread (dB) |
 | floor_db | -72 to -36 | | -52 | bed between bursts |
-| width | 0 to 1 | | 0.9 | share of bursts whose right channel reads its own buffer |
+| width | 0 to 1 | | 0.9 | probability that a burst's right channel uses a separate buffer |
 | hp | 300 to 7000 | log | 4500 | stutter high-pass |
 | bright | -6 to 9 | | 3.0 | 6 kHz peaking gain |
 | drive | 0 to 12 | | 4.0 | tanh glue (dB) |
-| end_tail | 0.004 to 0.025 | log | 0.012 | the last burst's own decay after the cut |
+| end_tail | 0.004 to 0.025 | log | 0.012 | decay time of the final burst past the cut |
 | pattern | 0 to 999 | int | 11 | layout seed |
 | skip | 0 to 0.5 | | 0.0 | round 3: share of stutter slots left empty |
-| accent_db | 0 to 12 | | 0.0 | round 3: unaccented bursts sit this far under the accented ones |
+| accent_db | 0 to 12 | | 0.0 | round 3: level difference between accented and other bursts (dB) |
 
-`skip` and `accent_db` are read only when the parameter set has them. The render does not fill them in from
-`DEFAULTS`, so older sets render as before. The presence of `skip` also switches the crackle grain window (10.4 step 9).
+`skip` and `accent_db` are read only when the parameter set has them. They are not taken from `DEFAULTS` when
+absent, so older sets render as before. The presence of `skip` also switches the crackle grain window (10.4 step 9).
 
 ### 10.4 render, version 2
 
@@ -133,7 +133,7 @@ Merge p over `DEFAULTS` without skip and accent_db.
      window when skip is present (round 3), else the square root of a Hann window.
    - With chance 0.2 the grain is instead a low blip: 1.5 × sin(2π f t) × Hann, f uniform 150 to 900 Hz.
    - Gain 10^((crackle_db + 18 log10(uniform(0.05, 1)) + 6u) / 20).
-   - Filter: 0.85 × `bw(2)` high-pass at crackle_hp + 0.15 × `bw(2)` high-pass at 120 Hz (the low pops keep a little
+   - Filter: 0.85 × `bw(2)` high-pass at crackle_hp + 0.15 × `bw(2)` high-pass at 120 Hz (this keeps some low end in the pops
      body).
    - Add the crackle times the current absolute peak of y.
 9. **Bed** (only when floor_db > -71.5): stereo white noise, `bw(2)` high-pass 3 kHz, crushed at 6 bits and srate.
@@ -147,12 +147,13 @@ The output of version 2 is not peak-normalised (the forge wrapper does it).
 
 ### 10.5 What version 6 changes and why
 
-Version 2 at its round-3 settings is sparse high-passed hiss ticks: it reads as "static" at best. Version 6 chops a
-SOURCE with clear pitch and transients (a stepped synth chord, data chirps, an FM modem, a little noise). The repeat
-slice shrinks across the glitch (roll0 to roll1 s), so the repeat turns into a rising buzz (the beat-repeat roll).
+With its round-3 settings, version 2 gives only sparse high-passed noise ticks, which a listener hears as static.
+Version 6 instead cuts up a source signal that has clear pitch and sharp onsets: a synth chord in steps, data
+chirps, an FM modem sound and some noise. The length of the repeated slice gets shorter over the glitch (roll0 to
+roll1 s), so fast repeats become a buzz that rises in pitch (a beat-repeat roll).
 Bursts sit on an accelerating grid with hard gates and digital drop-outs between them. Each burst has its own
 bit-crush (bits0 to bits1) and sample-rate drop (srate0 to srate1, plus random octave drops). Stereo is wide: the
-right channel reads its own slice, and bursts jump hard left or right. It ends on the cut.
+right channel can play a different slice, and some bursts move hard to the left or right. It ends on the cut.
 
 ### 10.6 Version 6: SPACE6, DEFAULTS6, FAMILY6, render6
 
@@ -167,7 +168,7 @@ right channel reads its own slice, and bursts jump hard left or right. It ends o
 | gate | 0.45 to 1 | | 0.8 | 1 = back to back |
 | roll0 | 0.006 to 0.07 | log | 0.03 | repeat slice length at the start |
 | roll1 | 0.0025 to 0.03 | log | 0.006 | at the cut (1 / slice = the buzz pitch) |
-| srate0 | 2500 to 24000 | log | 16000 | sample-and-hold rate at the start |
+| srate0 | 2500 to 24000 | log | 16000 | sample-and-hold rate (Hz) of the first burst |
 | srate1 | 700 to 12000 | log | 3000 | at the cut |
 | sdrop | 0 to 0.8 | | 0.3 | chance a burst drops 1 or 2 more octaves of sample rate |
 | bits0 | 4 to 12 | | 8 | |
@@ -178,13 +179,13 @@ right channel reads its own slice, and bursts jump hard left or right. It ends o
 | chirp | 0 to 1 | | 0.3 | data chirp share |
 | fm | 0 to 1 | | 0.3 | |
 | noise | 0 to 1 | | 0.3 | |
-| jump | 0 to 1 | | 0.5 | chance a burst reads from a new place (else it plays on) |
+| jump | 0 to 1 | | 0.5 | probability that a burst starts at a new source position (else it continues) |
 | rev | 0 to 0.5 | | 0.15 | |
 | pitch_step | -2 to 2 | | 0.0 | semitones per burst |
 | drop | 0 to 0.4 | | 0.12 | chance a burst is a drop-out |
-| width | 0 to 1 | | 0.8 | chance the right channel reads its own slice and rate |
-| pan_jump | 0 to 1 | | 0.3 | chance a burst jumps hard to one side |
-| decay | 0.3 to 6 | log | 2.0 | burst decay in slots (large = flat) |
+| width | 0 to 1 | | 0.8 | probability that the right channel uses its own slice and rate |
+| pan_jump | 0 to 1 | | 0.3 | probability that a burst is panned hard to one side |
+| decay | 0.3 to 6 | log | 2.0 | burst decay time in grid slots (a large value gives a flat burst) |
 | swell | 0 to 10 | | 4.0 | |
 | lvl_jit | 0 to 8 | | 3.0 | |
 | low_db | -60 to -10 | | -30 | low thump under loud bursts (-55 or less = none) |
@@ -233,9 +234,9 @@ right channel reads its own slice, and bursts jump hard left or right. It ends o
 
 A dash means the DEFAULTS6 value. Characters: stutter = a beat-repeat roll (slices 35 to 4 ms, a rising buzz, 16 to
 2.5 kHz, 8 to 4 bits); crush = crushed noise bursts with random sample-rate octave drops and hard left/right jumps;
-data = data chirps and FM modem, fast slices, fully wide; dropout = a synth line breaking up (long slices, drop-outs,
-24 kHz to 1.2 kHz, 10 to 3 bits); scramble = reversed slices from all over the source, FM, climbing a semitone per
-burst; hit = a 0.3 s dense roll with low thumps.
+data = chirps and modem-like FM with short slices at full width; dropout = a synth melody that falls apart (long slices, gaps,
+24 kHz to 1.2 kHz, 10 to 3 bits); scramble = reversed slices taken from anywhere in the source, with FM, each burst a
+semitone higher; hit = a 0.3 s dense roll with low thumps.
 
 **Source** (0.6 s, peak 1). All layout draws use the pattern generator; the noise uses the render generator.
 - Chord (tone > 0.01): a pitch track that holds tone_f × 2^(k / 12) (k integer -7 to +7) for uniform(40, 120) ms at a
@@ -324,7 +325,8 @@ Return -min(3, 0.6 × sum).
 
 ### 11.1 The sound
 
-A digital glitch that HITS: its loudest burst comes first (within about 20 ms), then bursts speed up into the cut.
+A digital glitch with an impact at the start: the strongest burst is first (within about 20 ms), and the bursts after
+it accelerate toward the cut.
 Measured design targets (the source's private study set, as facts): onset 18 ms (16 to 22) from the first moment
 within 20 dB of the peak to the peak, 0.23 s long (0.1 to 0.45), falling 20 dB in 76 ms (71 to 118). Music-video
 glitches are mid (centroid 902 Hz, 802 to 1281) and near mono (correlation 0.98). The effects-led film's glitch is
@@ -345,7 +347,7 @@ shutter". Refset `glitch`. Category `glitch`.
 |---|---|---|---|
 | dur | 0.1 to 0.8 | | |
 | crackle | 0 to 0.6 | | share of the length before the first burst |
-| crackle_db | -45 to -20 | | under the bursts' peak (kept under -20 so the first burst is the onset) |
+| crackle_db | -45 to -20 | | under the bursts' peak (at most -20, so that the first burst stays the onset) |
 | crackle_rate | 40 to 600 | log | |
 | crackle_hp | 1500 to 9000 | log | |
 | grid0 | 0.018 to 0.07 | log | first interval (s) |
@@ -353,8 +355,8 @@ shutter". Refset `glitch`. Category `glitch`.
 | accel | 0.5 to 2.5 | log | |
 | gate | 0.25 to 0.9 | | |
 | decay | 0.15 to 2 | log | burst decay in slots |
-| accent_db | 0 to 12 | | the first burst over the others |
-| fall_db | -12 to 6 | | level change across the rest of the train |
+| accent_db | 0 to 12 | | level of the first burst above the rest (dB) |
+| fall_db | -12 to 6 | | level change from the second burst to the last (dB) |
 | lvl_jit | 0 to 8 | | |
 | bits | 3 to 10 | | |
 | srate | 1500 to 20000 | log | |
@@ -364,7 +366,7 @@ shutter". Refset `glitch`. Category `glitch`.
 | lo_f | 150 to 7000 | log | band-pass low edge on the bursts |
 | hi_f | 1500 to 18000 | log | high edge |
 | width | 0 to 1 | | |
-| low_db | -50 to 0 | | low pulse under each burst re the bursts' peak (-50 = none) |
+| low_db | -50 to 0 | | level of a low pulse per burst, relative to the burst peak (-50 = off) |
 | low_f | 60 to 500 | log | |
 | end_tail | 0.004 to 0.06 | log | |
 | pattern | 0 to 999 | int | |
@@ -399,9 +401,9 @@ shutter". Refset `glitch`. Category `glitch`.
 | end_tail | 0.02849 | 0.005826 | 0.02571 |
 | pattern | 17 | 5 | 29 |
 
-Characters: burst = quiet crackle, then a bright 5 to 17 kHz burst train speeding up into the cut, wide, a faint low
-thud under each burst; mid = a 0.22 s crushed stutter around 1 kHz that hits first, near mono; chirp = a pitched,
-crushed stutter (square tones stepping down) that hits first and rolls faster.
+Characters: burst = soft crackle, then a wide, bright train of 5 to 17 kHz bursts that accelerates to the cut, each
+burst with a quiet low thump; mid = a crushed 0.22 s stutter near 1 kHz, loudest at the start, almost mono; chirp =
+a crushed stutter of square tones that step down in pitch, loudest at the start, with a faster roll.
 
 ### 11.5 render(p, rng)
 

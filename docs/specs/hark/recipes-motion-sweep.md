@@ -1,7 +1,7 @@
 # recipes-motion, part 2: sweeps (riser, downlifter, zip, darkriser, revcymbal)
 
 This part belongs to the index `recipes-motion.md`. Read the index first: it defines the recipe contract, the shared
-primitives (P1 to P14) and the seed-bank format.
+primitives (P1 to P26) and the seed-bank format.
 
 Notation as in part 1: `lp`, `hp`, `bp`, `bpn` are the state-variable filter modes of P2; `bw(order)` is a
 Butterworth filter (P3); u = t / length is the progress from 0 to 1.
@@ -10,16 +10,17 @@ Butterworth filter (P3); u = t / length is the progress from 0 to 1.
 
 ### 5.1 The sound
 
-A designed riser (uplifter, build) for edits: 0.8 to 4 s of rising tension that ends exactly on the hit. The file's
-last sample is the cut. It is a designed sound, not a physical model. Rules that the design follows:
+A designed riser (uplifter, build) for video edits: 0.8 to 4 s of growing tension. The last sample of the file is
+the moment of the hit, and the cut falls there. The sound is designed; it does not model a physical source. Rules that the design follows:
 
 - One motion leads, the others support. Up to 7 layers, each owning a band: noise, tonal, octave, shepard, drone,
   metal, reverb send.
-- Curves accelerate (concave in dB). Level, filter and pitch move on w = u^curve. With curve 2 to 3, most of the change
-  lands in the last third.
-- A stutter gate whose period shrinks from gate_p0 to gate_p1. Its phase is laid out backwards from the end, so the
-  last pulse is open on the final sample. The gate also opens fully over the last 45 ms. The riser stops on its peak.
-- The end is hard: the loudest moment is the last ~50 ms, then a 2 to 20 ms fade.
+- The curves speed up toward the end (concave in dB). The level, the filters and the pitch all follow w = u^curve. With curve 2
+  to 3, the largest part of each change happens in the final third.
+- A stutter gate whose period shrinks from gate_p0 to gate_p1. The gate phase is computed from the end backward, so
+  the gate is open on the final sample. Over the final 45 ms the gate opens completely. The level is at its maximum
+  when the riser stops.
+- A hard end: the highest level is in the final ~50 ms, followed by a fade of 2 to 20 ms.
 - No layer piles up energy under 100 to 200 Hz except the drone.
 
 Target "a cinematic riser building tension into a hit". Alternatives: "a jet engine", "an air raid siren", "heavy
@@ -49,7 +50,7 @@ digital riser into a cut" (`TARGETS`).
 |---|---|---|---|
 | length | 0.8 to 4.0 | | s; the hit lands on the last sample |
 | curve | 1 to 4 | | acceleration of level, filter and pitch (1 = straight in dB) |
-| rise_db | 12 to 45 | | level rise over the build |
+| rise_db | 12 to 45 | | level increase from the start to the end (dB) |
 | noise_db | -36 to 0 | | noise layer level |
 | nf0 | 150 to 1500 | log | noise low-pass at the start |
 | nf1 | 2500 to 16000 | log | noise low-pass at the end |
@@ -67,25 +68,25 @@ digital riser into a cut" (`TARGETS`).
 | shep_rate | 0.3 to 1.6 | | shepard glide, octaves per second |
 | drone_db | -48 to -3 | | drone level |
 | drone_f | 35 to 110 | log | drone pitch |
-| metal_db | -48 to 0 | | inharmonic metal partials (a reverse-cymbal wash) |
-| metal_f | 1500 to 5000 | log | lowest metal partial |
+| metal_db | -48 to 0 | | level of non-harmonic metallic partials (like a reversed cymbal) |
+| metal_f | 1500 to 5000 | log | frequency of the lowest metallic partial |
 | gate_depth | 0 to 1 | | |
-| gate_on | 0 to 0.7 | | share of the length where the gate fades in |
+| gate_on | 0 to 0.7 | | the gate starts to fade in at this fraction of the length |
 | gate_p0 | 0.02 to 0.5 | log | gate period at the start (s) |
 | gate_p1 | 0.012 to 0.08 | log | gate period at the end (s) |
 | gate_duty | 0.25 to 0.8 | | |
 | gate_sharp | 0 to 1 | | 0 smooth tremolo, 1 hard gate with 1.2 ms ramps |
-| gate_drone | 0 to 1 | | how much the gate also chops the drone |
+| gate_drone | 0 to 1 | | gate depth applied to the drone |
 | blip_dec | 0.1 to 0.5 | | blip decay time constant as a share of the pulse period |
 | verb | 0 to 0.6 | | reverb return level |
 | rt60 | 0.6 to 3.5 | log | reverb decay |
 | width | 0 to 1 | | |
-| sat | 0 to 12 | | tanh drive on the sum (dB) |
+| sat | 0 to 12 | | tanh saturation of the mix (dB) |
 | hp | 60 to 500 | log | high-pass of every layer except the drone |
 | end_ms | 2 to 20 | log | final fade (ms) |
-| drone_oct | 0 to 1.5 | | octaves the drone glides up with the build |
+| drone_oct | 0 to 1.5 | | drone pitch rise over the build (octaves) |
 | drone_noise | 0 to 1 | | 0 saw + sine drone, 1 a low noise rumble |
-| metal_n | 9 to 40 | int | metal partial count; 9 = the fixed ratio table, more = random dense ratios |
+| metal_n | 9 to 40 | int | metal partial count; 9 = the fixed ratio table, above 9 = random ratios, closer together |
 | metal_glide | 0 to 1 | | octaves the metal partials glide up |
 | nb_q | 2 to 16 | log | Q of each noise blip (tmode nblips) |
 
@@ -133,10 +134,10 @@ drone_oct 0.08, drone_noise 0.0, metal_n 9, metal_glide 0.0, nb_q 6.0.
 | hp | 180 | 120 | 250 | 140 | 200 | 400 |
 | end_ms | 6 | 5 | 4 | 8 | 4 | 4 |
 
-Characters: air = a bright noise swell (the filter leads, a faint glide, growing space); tension = a supersaw build
+Characters: air = bright noise that grows (the filter moves first, a slight glide, more and more reverb); tension = a supersaw build
 (pitch leads 2 octaves, a tremolo speeding up); stutter = the pro stutter riser (stepped tone blips about 2 to 8 kHz on
-an accelerating gate over a gated drone); shepard = an endless rise in a big space; rush = the noise leads (a resonant
-whistle opening 500 Hz to 15 kHz) with a sine glide under it and a smooth flutter speeding up; cymbal = a
+an accelerating gate over a gated drone); shepard = an endless rise in a big space; rush = noise in front (a resonant
+whistle that sweeps from 500 Hz to 15 kHz) over a gliding sine, with a smooth flutter that gets faster; cymbal = a
 reverse-cymbal wash of metal partials and bright noise, no tone.
 
 ### 5.5 PRO (old pro set, record only)
@@ -230,7 +231,7 @@ partials gliding together), keep every curve concave.
 
 ### 5.9 The "build" render (round 6)
 
-A parameter set with r6 > 0.5 renders with `render_build`. The build has no drone, no sub, no metal partials and no
+A parameter set with r6 > 0.5 renders with `render_build`. The build leaves out the drone, the sub, the metallic partials and the
 saturated low layer: what reads as a jet engine (a rumble that opens, no rhythm, partials gliding together, no stop) is
 removed. It has: a noise band that moves up, a unison chord rising about 2 octaves, an accelerating gate on everything,
 an optional reversed reverb swell, and a hard end on the peak.
@@ -240,13 +241,13 @@ an optional reversed reverb swell, and a hard end on the peak.
 | key | range | meaning |
 |---|---|---|
 | r6 | 0 to 1 | 1 = the build render |
-| nbw | 0.8 to 4 | noise band width in octaves (moving high-pass at fc / 2^nbw) |
+| nbw | 0.8 to 4 | width of the noise band in octaves (a moving high-pass at fc / 2^nbw) |
 | fifth_db | -48 to 0 | the fifth (× 1.5) of the chord, relative to the root |
-| tone_gate | 0 to 1 | how much the gate chops the tonal layer (the noise always gets the full gate) |
+| tone_gate | 0 to 1 | gate depth applied to the tonal layer (the noise always gets the full gate) |
 | gate_pow | 0.6 to 3 | how late the gate accelerates |
 | rswell_db | -48 to 0 | reverse reverb swell level |
-| rswell_rt | 1 to 4 | its decay (s) |
-| pre_dip_ms | 0 to 60 | a short duck just before the last open pulse; 0 = none |
+| rswell_rt | 1 to 4 | RT60 of that reverb (s) |
+| pre_dip_ms | 0 to 60 | length of a short level dip before the final open pulse; 0 = off |
 
 `R6_OFF` = r6 0, nbw 2.0, fifth_db -48, tone_gate 1.0, gate_pow 1.4, rswell_db -48, rswell_rt 2.0, pre_dip_ms 0.
 
@@ -365,7 +366,7 @@ If r6 > 0.5: `render_build`. Else merge p over `DEFAULTS`.
      mean, tone = mid + (each - mid) × min(1, 0.5 width + 0.2).
    - blips: tone = unison of fb with detune (constant), width 0.25 width, phases 1 to 5.
    - Multiply by (percussive gate × fin + 1 - fin), where the percussive gate is P16 with sharp 1 and perc blip_dec.
-     So the blips sustain over the last 45 ms.
+     So the blips are held over the final 45 ms.
    Glide mode: tone = unison of f with detune × (0.6 + 0.8 w), width 0.5 width, phases 1 to 5.
 6. Octave layer:
    - nblips: one white noise through `bp` at min(2 fb, 16000) with Q 1.5 nb_q, duplicated to stereo.
@@ -414,7 +415,7 @@ If r6 > 0.5: `render_build`. Else merge p over `DEFAULTS`.
 |---|---|---|
 | length_s | samples / SR, 3 decimals | 0.8 to 4 |
 | last_third | (b - two) / max(b - a, 0.001); a = median of the first k/10 blocks, b = max of the last k/10, two = 5-point moving average of e at block int(2k/3) | ≥ 0.5 (concave) |
-| end_db | max of the last 5 blocks - pk | about 0 (stops on its peak) |
+| end_db | max of the last 5 blocks - pk | about 0 (the level is at its maximum at the end) |
 | hf_rise_db | `band_env_db(x, 4000, 20000)`: max of the last k/10 blocks - median of the first k/4 | +30 to +35 |
 | cent_oct | log2(median centroid of the last 3 loud frames / max(median of the first 3, 1)); loud = power > 1e-4 × max; 0 when fewer than 6 loud frames | positive |
 | side_db | `side_db(x)` | -14 to -18 |
@@ -433,13 +434,13 @@ If r6 > 0.5: `render_build`. Else merge p over `DEFAULTS`.
 
 ### 6.1 The sound
 
-A designed downsweep for the push-and-release right after an impact; the mirror of the riser. Curves decelerate:
-v = 1 - (1 - u)^curve (fast first, settling at the end). A stereo reverb of the whole fall keeps ringing after the dry
-layers fade, so the space gets relatively wetter as it sinks. The start swells in over att_ms (a 2 to 8 ms push reads
-as a hit, 40 to 200 ms reads as a sweep). The end is a natural fade to silence, never a cut.
+A designed downward sweep for the moment directly after an impact; the riser in reverse. The curves slow down:
+v = 1 - (1 - u)^curve (fast at first, then settling). A stereo reverb of the full fall continues after the dry layers
+have faded, so the sound becomes more reverberant as it goes down. The start fades in over att_ms (2 to 8 ms sounds
+like a hit, 40 to 200 ms like a sweep). The end decays to silence; it is never cut.
 
 Target "a downlifter sound effect: a sinking filtered sweep". Alternatives: "a jet engine", "an air raid siren", "a
-plane flying overhead", "a gust of wind". Refset `downlifter` (empty, so the forge runs in designed mode with
+plane flying overhead", "a gust of wind". Refset `downlifter` (it has no references, so the forge uses designed mode with
 `target_check`).
 
 ### 6.2 Interface
@@ -454,7 +455,7 @@ plane flying overhead", "a gust of wind". Refset `downlifter` (empty, so the for
 |---|---|---|---|
 | length | 1 to 4 | | s |
 | curve | 1 to 4 | | deceleration (1 straight, 3 a fast fall with a long sag) |
-| drop_db | 24 to 50 | | dry level fall over the length |
+| drop_db | 24 to 50 | | total drop of the dry level from start to end (dB) |
 | att_ms | 2 to 300 | log | swell-in at the start |
 | noise_db | -36 to 0 | | |
 | nf0 | 5000 to 16000 | log | noise low-pass at the start |
@@ -475,7 +476,7 @@ plane flying overhead", "a gust of wind". Refset `downlifter` (empty, so the for
 | shep_db | -48 to 0 | | |
 | shep_rate | 0.3 to 1.6 | | |
 | flange | 0 to 0.8 | | comb mix |
-| fl_rate | 0.3 to 4 | log | comb sweep rate at the start (Hz), slowing to about a third |
+| fl_rate | 0.3 to 4 | log | initial comb sweep rate (Hz); it falls to about a third by the end |
 | verb | 0 to 0.7 | | |
 | rt60 | 0.8 to 4 | log | |
 | width | 0 to 1 | | |
@@ -516,11 +517,11 @@ plane flying overhead", "a gust of wind". Refset `downlifter` (empty, so the for
 | sat | 1 | 3 | 4 | 3 | 1 | 1 |
 | hp | 80 | 60 | 40 | 50 | 70 | 90 |
 
-Characters: air_fall = a white-noise downsweep (the filter closes 14 kHz to 250 Hz, wide); synth_fall = a supersaw
+Characters: air_fall = white noise sweeping down (the low-pass moves from 14 kHz to 250 Hz; wide); synth_fall = a supersaw
 falling 2 octaves with a slow flanger (its noise stays at -30 dB: louder noise under saw partials reads as aliasing to
-the polish check); sub_sink = a sine-square tone sinking over a sub drop, short and dark; tape = a held chord slowing
-to a halt; shepard_fall = an endless fall in a big space; flange_air = noise through a deep flanger that slows as it
-falls.
+the polish check); sub_sink = a sine-square tone sinking over a sub drop, short and dark; tape = a sustained chord that
+slows down until it stops; shepard_fall = an endless fall in a big space; flange_air = noise through a deep flanger
+whose sweep slows during the fall.
 
 ### 6.5 render(p, rng)
 
@@ -581,13 +582,13 @@ fall = max(pk - sm[end], 0.001).
 
 ### 7.1 The sound
 
-A designed tonal zip: one fast exponential pitch sweep (up, down or an arc), 0.06 to 0.3 s. The glide is a straight
-line on a log-frequency axis (constant octaves per second). Measured pro zips: about +20 oct/s (100 Hz to 1.5 kHz in
+A designed tonal zip: a single fast exponential pitch sweep (upward, downward or an arc), 0.06 to 0.3 s long. On a
+logarithmic frequency axis the glide is a straight line (a constant number of octaves per second). Measured pro zips: about +20 oct/s (100 Hz to 1.5 kHz in
 0.2 s), +30 oct/s (120 Hz to 10 kHz in 0.22 to 0.25 s), -60 oct/s (7.2 kHz to 420 Hz in about 60 ms), and an arc
 1 kHz to 3 kHz to 1 kHz over 0.25 s. Timbre: a sine plus harmonics 2, 3, 5 (each fades before it would pass 18 kHz),
 optional FM sheen, a filtered saw body, a thin air band that follows the pitch, a wide noise band and zipper "teeth"
-(AM roughness) so it does not read as a toy "boing". Envelope: raised-cosine attack (pro 20 to 35 ms), a level tilt
-across the sweep, a short release: it ends on the cut. Near mono (side 15 to 25 dB under mid).
+(AM roughness) so it does not read as a toy "boing". Envelope: a raised-cosine attack (20 to 35 ms in pro
+zips), a level slope over the sweep, and a short release that ends on the cut. Near mono (side 15 to 25 dB under mid).
 
 Target "a quick tonal zip, a fast synth pitch sweep". Alternatives: "a bird chirp", "a squeaky door hinge", "a car
 horn", "a phone ringing". Refset `pro_zip` (no forge refs, designed mode with `target_check`).
@@ -618,12 +619,12 @@ horn", "a phone ringing". Refset `pro_zip` (no forge refs, designed mode with `t
 | fm_ratio | 1.0, 2.0 | choice | |
 | saw_db | -48 to 0 | | filtered saw body |
 | saw_lp | 1.5 to 6 | log | its low-pass = pitch × saw_lp |
-| air_db | -40 to -10 | | noise band following the pitch |
+| air_db | -40 to -10 | | level of a noise band that tracks the pitch |
 | air_q | 2 to 8 | log | |
 | detune | 0 to 15 | | cents |
 | att_ms | 3 to 40 | log | |
 | rel_ms | 4 to 40 | log | |
-| tilt_db | -9 to 9 | | level change across the sweep |
+| tilt_db | -9 to 9 | | level difference from the start to the end of the sweep (dB) |
 | verb | 0 to 0.3 | | |
 | width | 0 to 0.35 | | |
 | sat | 0 to 9 | | tanh drive (dB) |
@@ -782,8 +783,8 @@ Return -min(3, penalty).
 
 ### 8.1 The sound
 
-A short dark riser: noise and sub that build through an accelerating stutter gate into a cut, with no rising synth
-tone. Measured design targets (from the source's private study set, as facts): risers in edits are short and dark,
+A short, dark riser: noise and a sub grow through a stutter gate that gets faster, up to a cut. There is no rising
+synth tone. Measured design targets (from the source's private study set, as facts): risers in edits are short and dark,
 0.74 s (0.42 to 1.77), loudest point 248 ms (112 to 433) after the first moment within 20 dB of it, centroid 458 Hz
 (374 to 590), 17 % (10 to 57 %) of the energy under 150 Hz, near mono (L/R correlation 0.94); they end about 23 ms
 before the cut and fall 20 dB in about 91 ms (79 to 128). A designed sub-heavy build is 1.3 s with 86 % under 150 Hz,
@@ -810,7 +811,7 @@ with module name `darkriser`, a copy of SPACE, `DEFAULTS` = the chosen member (b
 | start_db | 12 to 48 | | first sample under the peak |
 | curve | 0.5 to 3.5 | log | > 1: slow, then accelerating |
 | tail_tau | 0.01 to 0.12 | log | fall after the peak (time constant, s) |
-| body_f0 | 60 to 600 | log | body band centre at the start |
+| body_f0 | 60 to 600 | log | initial centre frequency of the body band |
 | body_f1 | 150 to 3000 | log | at the peak |
 | body_q | 0.5 to 2 | | |
 | sub_f | 32 to 90 | log | |
@@ -852,9 +853,9 @@ with module name `darkriser`, a copy of SPACE, `DEFAULTS` = the chosen member (b
 | width | 0.2022 | 0.0 | 0.0431 |
 | room | 0.2256 | 0.1399 | 0.2851 |
 
-Characters: dark = the short dark riser of music edits (0.74 s, about 430 Hz, a fifth of the energy in the sub, a deep
-late gate); build = a designed build (1.2 s, a driven 34 Hz sub under a low body band, loud high crackle, a stutter
-from a fifth of the way in); snatch = a half-second steep late build under a light fast stutter.
+Characters: dark = the short, dark riser heard in music edits (0.74 s, about 430 Hz, 20 % of its energy in the
+sub layer, a deep gate that starts late); build = a designed build (1.2 s, a saturated 34 Hz sub below a low body band, strong
+high crackle, a stutter that starts at 20 % of the length); snatch = a half-second steep late build under a light fast stutter.
 
 ### 8.5 Curves
 
@@ -896,17 +897,17 @@ Merge p over `DEFAULTS`.
 
 ### 9.1 The sound
 
-A reverse cymbal: a bright wide swell that rises into a cut and stops just after it, plus the darker reverse swell of
-music edits. Measured design targets (source's private study set, as facts): about 1 per film at a section change,
+A reverse cymbal: a bright, wide swell that grows up to a cut and ends shortly after it. The recipe also makes the
+darker reverse swell used in music edits. Measured design targets (source's private study set, as facts): about 1 per film at a section change,
 about 1 s long (0.57 to 1.29), the loudest point 42 ms after the cut (+23 to +62 ms). Designed reverse cymbals are
 bright (centroid 2.8 to 3.2 kHz, energy between 1 and 16 kHz), fully decorrelated (L/R correlation 0.08 to 0.16), with a
 granular shimmer; one stops about 250 ms after its peak, one rings out (-20 dB 0.5 s later). The music-edit swells are
 darker and near mono: centroid 556 Hz (310 to 884), 19 % under 150 Hz, rise 189 ms (76 to 413) to the peak, -20 dB
 130 ms (68 to 243) after it.
 
-A real reverse cymbal is a struck ring played backwards: the long-ringing low partials come first, the fast-dying
-highs arrive last, and it ends on the strike. This recipe builds that order directly. Nothing is reversed, so the
-stop is designed.
+A real reverse cymbal is a cymbal recording played in reverse. So the low partials, which decay slowly, are heard
+first; the high partials, which decay fast, come last; and the sound stops at the moment of the strike. This recipe
+synthesises that order forward in time. No signal is reversed, so the stop can be shaped freely.
 
 Target "a reverse cymbal swell". Alternatives: "a jet engine", "a wind gust", "rain", "a sword being sharpened".
 Refset `reverse_swell`. Category `reverse_swell` only.
@@ -921,18 +922,18 @@ module name `revcymbal`).
 
 | key | range | scale | meaning |
 |---|---|---|---|
-| length | 0.3 to 2 | | s from the first sample to the peak |
+| length | 0.3 to 2 | | time from sample 0 to the peak (s) |
 | swell_db | 12 to 60 | | how far under the peak it starts |
 | curve | 0.5 to 3.5 | log | rise shape in dB (1 = straight, a reversed exponential ring) |
 | hold | 0 to 0.45 | | s of plateau after the peak |
 | hold_db | -12 to 0 | | level change across the plateau |
 | tail_tau | 0.008 to 0.6 | log | fall after the plateau (time constant, s) |
-| cym_f | 300 to 7000 | log | centre of the metal band |
+| cym_f | 300 to 7000 | log | centre frequency of the metallic band |
 | bw | 1 to 6 | | band width in octaves |
 | metal | 0 to 1 | | partials (1) vs noise (0) |
 | partials | 12 to 160 | int | |
 | shimmer | 0 to 1 | | slow random AM per partial |
-| open | 0 to 4 | | octaves the low-pass opens with the level |
+| open | 0 to 4 | | how many octaves the low-pass opens as the level grows |
 | hp | 80 to 2500 | log | |
 | low_db | -50 to 0 | | low noise body (100 to 450 Hz) following the level |
 | flut_depth | 0 to 1 | | |
@@ -965,9 +966,9 @@ module name `revcymbal`).
 | room | 0.0 | 0.129 | 0.08302 | 0.05 | 0.2272 |
 | rt60 | 1.386 | 1.209 | 0.5783 | 0.8 | 0.5846 |
 
-Characters: cymbal = bright, wide, grainy, a plateau after the peak, then a stop; ring = swells harder and rings out
+Characters: cymbal = bright, wide and grainy, with a flat part after the peak and then a stop; ring = swells harder and rings out
 (-20 dB a quarter second later); dark = darker, near mono, a low body, a quick fall; short = 0.33 s into the peak for a
-quick cut; breath = a mid-band reverse breath, more noise than metal, half wide.
+quick cut; breath = a reversed breath in the mid band, more noise than metallic tone, half the full width.
 
 ### 9.5 Level curve
 
