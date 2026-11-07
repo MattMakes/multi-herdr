@@ -26,6 +26,7 @@ import subprocess
 import sys
 import tempfile
 
+sys.dont_write_bytecode = True
 from beat_grid import BeatError, measure as measure_beats
 
 SAMPLE_RATE = 48000

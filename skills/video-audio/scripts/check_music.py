@@ -26,6 +26,7 @@ import sys
 import tempfile
 import wave
 
+sys.dont_write_bytecode = True
 from beat_grid import BeatError, measure as measure_beats
 
 RATE = 8000
