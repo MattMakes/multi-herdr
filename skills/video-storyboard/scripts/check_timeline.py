@@ -19,6 +19,7 @@ import os
 import re
 import sys
 from functools import partial
+from pathlib import Path
 
 RULES = [
     "hook_window",
@@ -755,43 +756,47 @@ def required_capture_scale(zoom_need):
     return steps * CAPTURE_SCALE_STEP
 
 
+def zoom_error(scene):
+    zoom_need = scene_zoom_need(scene)
+    capture_scale = scene.get("capture_scale", 1.0)
+    needed = required_capture_scale(zoom_need)
+    message = "zoom need %.3fx with capture_scale %.3fx needs capture scale %.1fx"
+    return "" if zoom_need / capture_scale <= MAX_RASTER_ZOOM else message % (zoom_need, capture_scale, needed)
+
+
 def check_zoom(scenes, report):
-    for scene in scenes:
-        zoom_need = scene_zoom_need(scene)
-        capture_scale = scene.get("capture_scale", 1.0)
-        if zoom_need / capture_scale > MAX_RASTER_ZOOM:
-            needed = required_capture_scale(zoom_need)
-            report.add(
-                "zoom",
-                "zoom need %.3fx with capture_scale %.3fx needs capture scale %.1fx"
-                % (zoom_need, capture_scale, needed),
-                scene["id"],
-            )
+    found = [(scene["id"], zoom_error(scene)) for scene in scenes]
+    add_scene_errors(report, "zoom", [error for error in found if error[1]])
+
+
+def zoom_plan_row(scene):
+    if not isinstance(scene, dict):
+        return None
+    zoom_need = scene_zoom_need(scene)
+    if zoom_need <= 1.0:
+        return None
+    return {
+        "scene_id": scene.get("id"),
+        "plate": scene.get("plate"),
+        "zoom_need": zoom_need,
+        "required_capture_scale": required_capture_scale(zoom_need),
+    }
 
 
 def zoom_plan_rows(timeline):
     """Return one capture request for each scene that plans a zoom above 1.0x."""
     scenes = timeline.get("scenes", []) if isinstance(timeline, dict) else []
-    rows = []
-    for scene in scenes:
-        if not isinstance(scene, dict):
-            continue
-        zoom_need = scene_zoom_need(scene)
-        if zoom_need > 1.0:
-            rows.append({
-                "scene_id": scene.get("id"),
-                "plate": scene.get("plate"),
-                "zoom_need": zoom_need,
-                "required_capture_scale": required_capture_scale(zoom_need),
-            })
-    return rows
+    return list(filter(None, map(zoom_plan_row, scenes)))
+
+
+def write_json(path, data):
+    target = Path(path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
 
 
 def write_zoom_plan(timeline, path):
-    os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
-    with open(path, "w", encoding="utf-8") as handle:
-        json.dump(zoom_plan_rows(timeline), handle, indent=2)
-        handle.write("\n")
+    write_json(path, zoom_plan_rows(timeline))
 
 
 def direction_blocks(text):
@@ -932,7 +937,7 @@ LATE_SCENE_GATES = (check_speaking_rate, check_variety, check_zoom)
 TIMING_GATES = (check_safe_zone, check_timing, check_sync)
 
 
-def run(timeline_path, out_path, zoom_plan_path=None):
+def load_timeline(timeline_path):
     timeline = None
     try:
         with open(timeline_path, encoding="utf-8") as handle:
@@ -940,10 +945,20 @@ def run(timeline_path, out_path, zoom_plan_path=None):
         errors = check_timeline(timeline)
     except (OSError, ValueError) as exc:
         errors = [{"rule": "schema", "message": "cannot read timeline: %s" % exc}]
+    return timeline, errors
+
+
+def project_errors(timeline_path, timeline):
     folder = os.path.dirname(os.path.abspath(timeline_path))
-    errors += check_directions(folder) + check_materials(timeline, folder)
+    return check_directions(folder) + check_materials(timeline, folder)
+
+
+def maybe_write_zoom_plan(timeline, zoom_plan_path):
     if zoom_plan_path is not None and timeline is not None:
         write_zoom_plan(timeline, zoom_plan_path)
+
+
+def report_result(timeline_path, out_path, errors):
     result = {
         "passed": not errors,
         "timeline": os.path.abspath(timeline_path),
@@ -952,12 +967,16 @@ def run(timeline_path, out_path, zoom_plan_path=None):
     }
     if out_path is None:
         out_path = os.path.join(os.path.dirname(os.path.abspath(timeline_path)), "qa", "plan-check.json")
-    os.makedirs(os.path.dirname(os.path.abspath(out_path)), exist_ok=True)
-    with open(out_path, "w", encoding="utf-8") as handle:
-        json.dump(result, handle, indent=2)
-        handle.write("\n")
+    write_json(out_path, result)
     print(json.dumps(result, indent=2))
     return 0 if result["passed"] else 1
+
+
+def run(timeline_path, out_path, zoom_plan_path=None):
+    timeline, errors = load_timeline(timeline_path)
+    errors += project_errors(timeline_path, timeline)
+    maybe_write_zoom_plan(timeline, zoom_plan_path)
+    return report_result(timeline_path, out_path, errors)
 
 
 def self_test():

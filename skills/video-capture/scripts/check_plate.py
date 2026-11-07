@@ -123,16 +123,28 @@ def zoom_required_scale(path, zoom_plan):
     return max(valid, default=None)
 
 
+def render_scale_of(sidecar):
+    return sidecar.get("render_scale") if isinstance(sidecar, dict) else None
+
+
+def scale_satisfies(actual, required):
+    return required is None or (valid_number(actual, 1.0) and actual >= required)
+
+
+def scale_label(value):
+    return f"{value:g}x" if valid_number(value) else "missing"
+
+
+def failure_list(passed, message):
+    return [] if passed else [message]
+
+
 def zoom_plan_failures(path, sidecar, zoom_plan):
     required = zoom_required_scale(path, zoom_plan)
-    if required is None:
-        return []
-    if sidecar is None:
-        return [f"G6 zoom plan plate {path} needs a sidecar with render_scale"]
-    actual = sidecar.get("render_scale")
-    if valid_number(actual, 1.0) and actual < required:
-        return [f"G6 sidecar render_scale {actual:g}x is below zoom plan required scale {required:g}x for {path}"]
-    return []
+    actual = render_scale_of(sidecar)
+    message = (f"G6 sidecar render_scale {scale_label(actual)} is below zoom plan "
+               f"required scale {scale_label(required)} for {path}")
+    return failure_list(scale_satisfies(actual, required), message)
 
 
 def parse_rate(text):
@@ -197,11 +209,18 @@ def load_scene(sid):
     return next(x for x in timeline["scenes"] if x["id"] == sid), timeline["meta"]
 
 
+def failed_checks(checks):
+    return [message for ok, message in checks if not ok]
+
+
+def metadata_failures(path, info, zoom_plan):
+    sidecar, failures = read_sidecar(path, info) if has_sidecar(path) else (None, [])
+    return failures + zoom_plan_failures(path, sidecar, zoom_plan)
+
+
 def plate_failures(path, scene, meta, info, frozen, zoom_plan):
-    checks = stream_checks(info, meta, scene, path) + picture_checks(path, frozen)
-    sidecar, sidecar_fails = read_sidecar(path, info) if has_sidecar(path) else (None, [])
-    return ([msg for ok, msg in checks if not ok] + sidecar_fails
-            + zoom_plan_failures(path, sidecar, zoom_plan))
+    return (failed_checks(stream_checks(info, meta, scene, path) + picture_checks(path, frozen))
+            + metadata_failures(path, info, zoom_plan))
 
 
 def gate(sid, zoom_plan=()):
@@ -285,19 +304,27 @@ def fail_mismatch(want, fails):
     return unexpected, [prefix for prefix in want if not any(f.startswith(prefix) for f in fails)]
 
 
-def run_cases(root):
-    """Gate every case in root. self_test restores the working folder after the run."""
+def prepare_case_root(root):
     os.chdir(root)
     os.makedirs("captures")
     os.makedirs("plates")
     json.dump({"meta": {"fps": 60, "width": 320, "height": 180},
                "scenes": [scene_for(case) for case in CASES]}, open("timeline.json", "w"))
-    zoom_plan = [
+
+
+def self_test_zoom_plan():
+    return [
         {"scene_id": "zoom-plan-pass", "plate": "plates/zoom-plan-pass.mp4",
          "zoom_need": 2.0, "required_capture_scale": 2.0},
         {"scene_id": "zoom-plan-fail", "plate": "plates/zoom-plan-fail.mp4",
          "zoom_need": 2.0, "required_capture_scale": 2.0},
     ]
+
+
+def run_cases(root):
+    """Gate every case in root. self_test restores the working folder after the run."""
+    prepare_case_root(root)
+    zoom_plan = self_test_zoom_plan()
     return [failure for failure in (case_failure(case, zoom_plan) for case in CASES) if failure]
 
 
@@ -311,21 +338,28 @@ def self_test():
     return 1 if failures else 0
 
 
-def main():
+def cli_args():
     parser = argparse.ArgumentParser(description="Gate one captured video plate.")
     parser.add_argument("scene_id", nargs="?", help="timeline scene id")
     parser.add_argument("--zoom-plan", help="zoom plan written by check_timeline.py")
     parser.add_argument("--self-test", action="store_true", help="gate synthetic plates")
     args = parser.parse_args()
-    if args.self_test:
-        sys.exit(self_test())
-    if not args.scene_id:
+    if not args.self_test and not args.scene_id:
         parser.error("give a scene id or --self-test")
+    return args
+
+
+def run_cli(args):
     zoom_plan = json.load(open(args.zoom_plan)) if args.zoom_plan else []
     duration, fails, frozen = gate(args.scene_id, zoom_plan)
     print(json.dumps({"scene_id": args.scene_id, "duration_sec": duration,
                       "longest_frozen_run": frozen, "fails": fails}))
-    sys.exit(1 if fails else 0)
+    return 1 if fails else 0
+
+
+def main():
+    args = cli_args()
+    sys.exit(self_test() if args.self_test else run_cli(args))
 
 
 if __name__ == "__main__":
