@@ -59,6 +59,11 @@ prefix_rule(
     justification = "herdr-fleet: finish the worker's task and close its pane",
 )
 prefix_rule(
+    pattern = ["horch", "ledger", "handoff"],
+    decision = "allow",
+    justification = "herdr-fleet: hand the worker's task to a fresh worker and close its pane",
+)
+prefix_rule(
     pattern = ["horch", "ledger", "add"],
     decision = "forbidden",
     justification = "herdr-fleet: a worker never queues a task, and its check command would run unsandboxed",

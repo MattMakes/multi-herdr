@@ -281,8 +281,8 @@ fn failed(
     )
 }
 
-/// The folder must be on the branch the ledger recorded: removing a
-/// checkout that moved would keep the wrong commit.
+/// A checked-out branch must be the recorded branch. A clean detached HEAD
+/// is also safe when a durable branch, remote, or tag already reaches it.
 fn check_identity(git: &Git, wt: &WorktreeRow) -> Result<()> {
     let dir = Path::new(&wt.path);
     if !dir.exists() || wt.branch.is_empty() {
@@ -294,10 +294,28 @@ fn check_identity(git: &Git, wt: &WorktreeRow) -> Result<()> {
             "the worktree is on {b}, not its recorded branch {}; nothing removed",
             wt.branch
         ),
-        None => bail!(
-            "the worktree HEAD is detached, not on its recorded branch {}; nothing removed",
-            wt.branch
-        ),
+        None => {
+            if !git.dirty(dir)?.is_empty() {
+                bail!("the worktree HEAD is detached with uncommitted files; nothing removed");
+            }
+            let head = git.rev(dir, "HEAD")?;
+            let refs = git.run(
+                Path::new(&wt.repo_root),
+                &[
+                    "for-each-ref",
+                    "--format=%(refname)",
+                    "--contains",
+                    &head,
+                    "refs/heads",
+                    "refs/remotes",
+                    "refs/tags",
+                ],
+            )?;
+            if refs.is_empty() {
+                bail!("the worktree HEAD is detached at a unique commit; nothing removed");
+            }
+            Ok(())
+        }
     }
 }
 

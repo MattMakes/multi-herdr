@@ -9,8 +9,8 @@ agent: claude
 allowed_tools: ["Read", "Grep", "Glob", "Bash(git status)", "Bash(git status *)", "Bash(git log)", "Bash(git log --oneline -10)", "Bash(git diff)", "Bash(git diff --stat)", "Bash(git diff --cached)", "Bash(git show)", "Bash(git ls-files)", "Bash(horch ledger status)", "Bash(horch ledger status *)", "Bash(horch ledger show *)", "Bash(horch ledger steps *)", "Bash(horch ledger events)", "Bash(horch ledger events *)", "Bash(aws sts get-caller-identity)", "Bash(aws s3 ls)", "Bash(gcloud projects list)", "Bash(az account show)", "Bash(kubectl get pods)", "Bash(docker ps)"]
 phase: implementation
 model: sonnet
-# When this model's usage pool cannot serve a spawn (horch route worktree-steward).
-fallbacks: [codex-terra]
+# No fallback: the codex sandbox cannot run horch worktree triage apply (T-5).
+fallbacks: []
 # high: each row needs a careful read of its diff, but no design work. The
 # operator decides; the steward only prepares the decision.
 effort: high
@@ -66,6 +66,9 @@ The decision values:
 - KEEP: change nothing now. The row comes back at the next triage.
 - DELETE: keep the work at a trash ref for 30 days, then remove the folder
   and the branch. horch ledger gc deletes the trash ref after 30 days.
+- When you drop a registered worktree outside triage, use
+  `horch ledger worktree drop <name> --run <slug> --reason <reason>` with the
+  row's run. The steward's own run does not own other runs' worktrees.
 Rules for the suggestion:
 - A superseded row suggests DELETE.
 - A row with conflicts above 0 suggests FINISH or ARCHIVE. Never suggest LAND

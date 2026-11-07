@@ -250,6 +250,11 @@ fn check_command<'a>(cx: &'a Ctx<'_>) -> Result<Option<&'a str>> {
 /// The process that runs the check `command` in `dir`: the shell, or for a
 /// Codex worker the shell inside the sandbox of its pane (#181), with the
 /// pane's TMPDIR, as `/tmp` is read-only there.
+///
+/// Only the shell gets that TMPDIR. `codex sandbox` reads its own `TMPDIR`
+/// for the profile's `":tmpdir"="read"` entry, so a pane TMPDIR on `codex`
+/// makes that dir read-only for the check. A `finish` run from a Codex
+/// pane inherits the pane TMPDIR, so `codex` runs without one.
 fn check_process(cx: &Ctx<'_>, dir: &Path, command: &str, sandboxed: bool) -> Result<Command> {
     let codex = &cx.tools.codex;
     let mut cmd = if sandboxed {
@@ -257,10 +262,14 @@ fn check_process(cx: &Ctx<'_>, dir: &Path, command: &str, sandboxed: bool) -> Re
         let tmpdir = crate::harness::codex::pane_tmpdir(&codex.state_root, role);
         std::fs::create_dir_all(&tmpdir)
             .with_context(|| format!("creating {}", tmpdir.display()))?;
+        let mut tmp_pair = std::ffi::OsString::from("TMPDIR=");
+        tmp_pair.push(&tmpdir);
         let mut cmd = Command::new(&codex.bin);
         cmd.args(crate::harness::codex::sandbox_args(&codex.state_root, dir))
+            .arg("/usr/bin/env")
+            .arg(tmp_pair)
             .arg(&cx.tools.shell)
-            .env("TMPDIR", tmpdir);
+            .env_remove("TMPDIR");
         cmd
     } else {
         Command::new(&cx.tools.shell)
@@ -453,6 +462,13 @@ pub fn land(store: &mut Store, cx: &Ctx<'_>) -> Result<Outcome> {
         return Ok(Outcome::fail("no check", None, &format!("{e:#}")));
     }
     let Some(wt) = cx.worktree.clone() else {
+        // Only a one-off `--check none` task passes finish without its
+        // worktree (`require_worktree`): it made no change, so nothing lands (T-5).
+        if cx.task.uses_worktree() && cx.task.is_no_change_one_off() {
+            return Ok(Outcome::not_applicable(
+                "the task has no worktree and changed no file",
+            ));
+        }
         return land_shared(cx, &run_branch, &log);
     };
     if is_landed(&wt) && !reopen_if_new_commits(store, &cx.tools.git, &cx.root, &wt, &run_branch)? {
@@ -1319,6 +1335,57 @@ mod tests {
             s.verdict.clone().unwrap_or_default(),
             s.note.clone().unwrap_or_default(),
         )
+    }
+
+    /// A Codex worker's check can write its pane TMPDIR. `codex sandbox`
+    /// makes its own `TMPDIR` read-only (`":tmpdir"="read"`), so only the
+    /// shell inside the sandbox gets the pane TMPDIR, never `codex` itself.
+    #[test]
+    fn a_codex_workers_check_gets_the_pane_tmpdir_and_codex_does_not() {
+        let mut w = World::new("echo \"$TMPDIR\" > check-tmpdir");
+        let top = w.root.parent().unwrap().to_path_buf();
+        let state = top.join("state");
+        let pane_tmp = crate::harness::codex::pane_tmpdir(&state, "opus-1");
+        let fake = top.join("codex");
+        std::fs::write(
+            &fake,
+            format!(
+                "#!/bin/sh\necho \"${{TMPDIR-unset}}\" > '{}'\n\
+                 while [ \"$1\" != -- ]; do shift; done\nshift\nexec \"$@\"\n",
+                top.join("codex-tmpdir").display()
+            ),
+        )
+        .unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        // Warm the new executable (first exec scan on macOS).
+        assert!(Command::new(&fake)
+            .args(["--", "true"])
+            .status()
+            .unwrap()
+            .success());
+        w.tools.codex = CodexSandbox {
+            bin: fake,
+            state_root: state,
+            personas: vec!["opus".into()],
+        };
+        let seen = w.wt.join("check-tmpdir");
+        let r = w.finish();
+        assert!(r.complete, "{r:?}");
+        let read = |p: &Path| std::fs::read_to_string(p).unwrap().trim().to_string();
+        assert_eq!(
+            read(&seen),
+            pane_tmp.to_string_lossy(),
+            "the check's TMPDIR"
+        );
+        assert_ne!(
+            read(&top.join("codex-tmpdir")),
+            pane_tmp.to_string_lossy(),
+            "codex itself must not get the pane TMPDIR"
+        );
     }
 
     #[test]

@@ -46,3 +46,12 @@ pub fn open_existing(ctx: &RuntimeContext) -> Result<Option<Store>> {
     }
     open(ctx).map(Some)
 }
+
+/// Open an existing ledger for a command that only reads it. This does not
+/// create, migrate, or change the journal mode of the database.
+pub fn open_existing_read_only(ctx: &RuntimeContext) -> Result<Option<Store>> {
+    if !ctx.paths.ledger_db.is_file() {
+        return Ok(None);
+    }
+    Store::open_read_only(&ctx.paths.ledger_db).map(Some)
+}

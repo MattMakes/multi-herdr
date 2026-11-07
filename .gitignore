@@ -5,3 +5,7 @@
 
 # Local scratch: plans, reports and explainers; never committed
 ai_docs/
+
+# Python bytecode from skill self-tests
+__pycache__/
+*.pyc

@@ -769,6 +769,7 @@ fn execpolicy_blocks_are_unchanged() {
         ("steps", "allow"),
         ("finish", "allow"),
         ("done", "allow"),
+        ("handoff", "allow"),
         ("add", "forbidden"),
         ("add-map", "forbidden"),
         ("reopen", "forbidden"),
