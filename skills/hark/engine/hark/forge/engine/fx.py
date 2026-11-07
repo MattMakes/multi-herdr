@@ -617,9 +617,9 @@ def _target_profile(target: Any) -> np.ndarray:
     from hark.forge.engine import tone
 
     if isinstance(target, tone.ToneRef):
-        return np.asarray(target.median, dtype=float)
+        return np.asarray(target.med, dtype=float)
     if isinstance(target, (list, tuple)) and target:
-        return np.asarray(tone.ToneRef(list(target)).median, dtype=float)
+        return np.asarray(tone.ToneRef(list(target)).med, dtype=float)
     a = np.asarray(target, dtype=float)
     if a.ndim == 1 and len(a) == len(tone.CEN):
         return a
