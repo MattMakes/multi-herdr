@@ -108,37 +108,58 @@ def scan(paths):
     return [(f, *hit) for f in scene_files(paths) for hit in scan_text(f.read_text(encoding="utf-8"))]
 
 
+SAMPLE_ERROR = "each sample needs positive natural_px and 2-value drawn_px"
+
+
+def is_pair(value):
+    return isinstance(value, list) and len(value) == 2 and all(isinstance(v, (int, float)) for v in value)
+
+
+def sample_scale(sample):
+    """The larger drawn/natural ratio of 1 raster sample."""
+    if not isinstance(sample, dict):
+        raise ValueError("each sample must be an object")
+    natural, drawn = sample.get("natural_px"), sample.get("drawn_px")
+    if not (is_pair(natural) and is_pair(drawn) and min(natural) > 0):
+        raise ValueError(SAMPLE_ERROR)
+    return max(d / n for d, n in zip(drawn, natural))
+
+
 def raster_upscales(report):
     """Samples whose drawn width or height is more than 1.2x its natural size."""
-    if not isinstance(report, dict) or not isinstance(report.get("samples"), list):
+    samples = report.get("samples") if isinstance(report, dict) else None
+    if not isinstance(samples, list):
         raise ValueError("report needs a samples list")
-    hits = []
-    for sample in report.get("samples", []):
-        if not isinstance(sample, dict):
-            raise ValueError("each sample must be an object")
-        natural = sample.get("natural_px", [])
-        drawn = sample.get("drawn_px", [])
-        if not isinstance(natural, list) or not isinstance(drawn, list):
-            raise ValueError("each sample needs positive natural_px and 2-value drawn_px")
-        values = [*natural, *drawn]
-        if len(natural) != 2 or len(drawn) != 2 or any(not isinstance(v, (int, float)) for v in values) or any(v <= 0 for v in natural):
-            raise ValueError("each sample needs positive natural_px and 2-value drawn_px")
-        scale = max(drawn[i] / natural[i] for i in range(2))
-        if scale > MAX_RASTER_SCALE + 1e-9:
-            hits.append((sample, scale))
-    return hits
+    scaled = [(sample, sample_scale(sample)) for sample in samples]
+    return [(sample, scale) for sample, scale in scaled if scale > MAX_RASTER_SCALE + 1e-9]
+
+
+def read_raster_upscales(path):
+    report = json.loads(Path(path).read_text(encoding="utf-8"))
+    return raster_upscales(report)
 
 
 def check_raster_sizes(path):
     try:
-        report = json.loads(Path(path).read_text(encoding="utf-8"))
-        hits = raster_upscales(report)
+        hits = read_raster_upscales(path)
     except (FileNotFoundError, UnicodeDecodeError, json.JSONDecodeError, ValueError) as e:
         print(f"scan_linear_motion: cannot read raster sizes: {e}", file=sys.stderr)
         return 2
     for sample, scale in hits:
         print(f"{path}: {sample.get('src', '<unknown>')} at {sample.get('t_sec', '<unknown>')} s is {scale:.3f}x; maximum is {MAX_RASTER_SCALE:.1f}x")
     print(f"scan_linear_motion: {len(hits)} raster upscale(s) over {MAX_RASTER_SCALE:.1f}x" if hits else "scan_linear_motion: raster sizes pass")
+    return 1 if hits else 0
+
+
+def check_linear_motion(paths):
+    try:
+        hits = scan(paths)
+    except (FileNotFoundError, UnicodeDecodeError) as e:
+        print(f"scan_linear_motion: cannot read {e}", file=sys.stderr)
+        return 2
+    for f, line_no, rule, snippet in hits:
+        print(f"{f}:{line_no}: {rule}: {snippet}")
+    print(f"scan_linear_motion: {len(hits)} linear move(s)" if hits else "scan_linear_motion: no linear moves")
     return 1 if hits else 0
 
 
@@ -150,15 +171,7 @@ def main(argv):
         return self_test()
     if len(argv) == 2 and argv[0] == "--raster-sizes":
         return check_raster_sizes(argv[1])
-    try:
-        hits = scan(argv)
-    except (FileNotFoundError, UnicodeDecodeError) as e:
-        print(f"scan_linear_motion: cannot read {e}", file=sys.stderr)
-        return 2
-    for f, line_no, rule, snippet in hits:
-        print(f"{f}:{line_no}: {rule}: {snippet}")
-    print(f"scan_linear_motion: {len(hits)} linear move(s)" if hits else "scan_linear_motion: no linear moves")
-    return 1 if hits else 0
+    return check_linear_motion(argv)
 
 
 # ---------------------------------------------------------------- self-test
