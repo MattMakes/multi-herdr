@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Numeric render QA gate for a video project.
 
-Runs 18 numeric checks on render/master.mp4 against timeline.json, writes
+Runs 19 numeric checks on render/master.mp4 against timeline.json, writes
 qa/render-check.json, and draws 3 inspection sheets:
 qa/contact-sheet-360p.png, qa/phone-sheet-360w.png and qa/hook-strip.png.
 
@@ -54,6 +54,7 @@ CHECKS = (
     "motion_contrast",
     "loop_seam",
     "raster_upscale",
+    "music_continuity",
 )
 
 DURATION_TOL_SEC = 0.05
@@ -502,6 +503,22 @@ def check_boundary_pops(ctx):
     return {"cut_peaks_dbfs": peaks, "max_dbfs": POP_PEAK_MAX_DBFS}, errors
 
 
+def check_music_continuity(ctx):
+    path = ctx.music_continuity
+    if not path.is_file():
+        return {"skipped": True, "reason": f"no music continuity report at {path}"}, []
+    try:
+        data = json.loads(path.read_text())
+    except (OSError, ValueError) as exc:
+        raise InputError(f"cannot read music continuity report {path}: {exc}") from exc
+    if not isinstance(data, dict) or not isinstance(data.get("pass"), bool):
+        raise InputError(f"{path}: pass must be a boolean")
+    details = {"report": str(path), "pass": data["pass"],
+               "digital_silence": data.get("digital_silence"), "worst": data.get("worst", [])}
+    errors = [] if data["pass"] else [("audio/music-continuity.json reports pass false", None)]
+    return details, errors
+
+
 def caption_time(text):
     m = re.fullmatch(r"(?:(\d+):)?(\d{2}):(\d{2})[,.](\d{3})", text.strip())
     if not m:
@@ -548,7 +565,10 @@ def check_variants_captions(ctx):
     short, long_ = sorted((int(ctx.meta["width"]), int(ctx.meta["height"])))
     targets = {"16x9.mp4": (long_, short), "9x16.mp4": (short, long_), "1x1.mp4": (short, short)}
     duration = float(ctx.meta["duration_sec"])
-    seen, errors = [], []
+    master_stream = stream(ctx.info, "video") or {}
+    master_count = int(master_stream["nb_frames"]) if str(master_stream.get("nb_frames", "")).isdigit() \
+        else len(ctx.analysis["frames"])
+    seen, errors, frame_counts = [], [], {"master.mp4": master_count}
     for name, (tw, th) in targets.items():
         path = root / name
         if not path.is_file():
@@ -561,6 +581,10 @@ def check_variants_captions(ctx):
         dur = stream_duration(info, "video")
         if dur is None or abs(dur - duration) > DURATION_TOL_SEC:
             errors.append((f"{name} duration {dur} s differs from {duration} s by > {DURATION_TOL_SEC} s", None))
+        count = int(v["nb_frames"]) if str(v.get("nb_frames", "")).isdigit() else None
+        frame_counts[name] = count
+        if count != master_count:
+            errors.append((f"{name} frame count {count}, expected master.mp4 frame count {master_count}", None))
     for name, vtt in (("captions.srt", False), ("captions.vtt", True)):
         path = root / name
         if path.is_file():
@@ -568,7 +592,7 @@ def check_variants_captions(ctx):
             errors += [(msg, None) for msg in check_captions(path, vtt, duration)]
     if not seen:
         return {"skipped": True, "reason": f"no variants or captions in {root}"}, []
-    return {"checked": seen}, errors
+    return {"checked": seen, "frame_counts": frame_counts}, errors
 
 
 def check_safe_zone_flash(ctx):
@@ -673,7 +697,7 @@ def check_dead_time(ctx):
     windows = hold_windows(ctx.scenes)
     found, errors = [], []
     for start, end in still_runs(ctx.motion):
-        if end - start <= DEAD_MAX_SEC:
+        if end - start < DEAD_MAX_SEC:
             continue
         planned = inside(start, end, windows, tol)
         found.append({"start_sec": round(start, 3), "end_sec": round(end, 3), "planned": planned})
@@ -796,6 +820,7 @@ CHECK_FUNCS = {
     "freeze_frames": check_freeze,
     "audio_loudness": check_loudness,
     "audio_boundary_pops": check_boundary_pops,
+    "music_continuity": check_music_continuity,
     "variants_captions": check_variants_captions,
     "safe_zone_flash": check_safe_zone_flash,
     "frame_pops": check_frame_pops,
@@ -900,6 +925,11 @@ class Context:
             raise InputError(f"video not found: {self.video}")
         self.meta, self.scenes = load_timeline(self.timeline)
         project = self.timeline.resolve().parent
+        self.scene_timeline = project / "timeline-master.json"
+        if self.scene_timeline.is_file():
+            _, self.scenes = load_timeline(self.scene_timeline)
+        else:
+            self.scene_timeline = self.timeline
         self.scenes_dir = Path(args.scenes_dir) if args.scenes_dir else project / "scenes"
         self.render_dir = Path(args.render_dir) if args.render_dir else self.video.resolve().parent
         self.out = Path(args.out) if args.out else project / "qa" / "render-check.json"
@@ -907,6 +937,7 @@ class Context:
         self.hook_strip = Path(args.hook_strip) if args.hook_strip else project / "qa" / "hook-strip.png"
         self.phone_sheet = Path(args.phone_sheet) if args.phone_sheet else project / "qa" / "phone-sheet-360w.png"
         self.raster_sizes = Path(args.raster_sizes) if args.raster_sizes else self.render_dir / "raster-sizes.json"
+        self.music_continuity = project / "audio" / "music-continuity.json"
         self.warnings = []
         if (args.probe_forward is None) != (args.probe_reverse is None):
             raise InputError("--probe-forward and --probe-reverse go together")
@@ -921,7 +952,8 @@ class Context:
 
 def run_gate(args):
     ctx = Context(args)
-    report = {"passed": True, "video": str(ctx.video), "timeline": str(ctx.timeline), "checks": {}, "errors": []}
+    report = {"passed": True, "video": str(ctx.video), "timeline": str(ctx.timeline),
+              "scene_timeline": str(ctx.scene_timeline), "checks": {}, "errors": []}
     for name in CHECKS:
         details, errors = CHECK_FUNCS[name](ctx)
         details["passed"] = not errors
@@ -999,7 +1031,8 @@ def tone_gain_db(tmp):
     return -14.0 - lufs
 
 
-def make_project(root, video_vf="null", clip=False, scene_html=SCENE_OK, gain=0.0, probes=True, static_hold=False):
+def make_project(root, video_vf="null", clip=False, scene_html=SCENE_OK, gain=0.0, probes=True,
+                 static_hold=False, variant_fps=30):
     root.mkdir(parents=True)
     (root / "render").mkdir()
     make_fixture_video(root / "render" / "master.mp4", vf=video_vf, tone_db=gain, clip=clip)
@@ -1022,7 +1055,7 @@ def make_project(root, video_vf="null", clip=False, scene_html=SCENE_OK, gain=0.
     (root / "render" / "captions.vtt").write_text(VTT_OK)
     for name, size in (("16x9.mp4", "320:180"), ("9x16.mp4", "180:320"), ("1x1.mp4", "180:180")):
         sh("-i", str(root / "render" / "master.mp4"), "-vf", f"scale={size}", "-an", "-c:v", "libx264",
-           "-preset", "ultrafast", "-pix_fmt", "yuv420p", str(root / "render" / name))
+           "-preset", "ultrafast", "-pix_fmt", "yuv420p", "-r", str(variant_fps), str(root / "render" / name))
     if probes:
         for side in ("forward", "reverse"):
             (root / "probe" / side).mkdir(parents=True)
@@ -1072,6 +1105,7 @@ def self_test():
     with tempfile.TemporaryDirectory(prefix="qa-video-") as tmp_name:
         tmp = Path(tmp_name)
         self_test_motion(tmp)
+        self_test_dead_time_boundary()
         self_test_raster(tmp)
         gain = tone_gain_db(tmp)
         cases = [
@@ -1080,8 +1114,10 @@ def self_test():
              {"black_frames", "cuts_vs_plan"}),
             ("dark-background", {"video_vf": "drawbox=x=0:y=0:w=iw:h=ih:color=0x0B1020:t=fill:enable='between(t,1.2,1.7)'"},
              {"cuts_vs_plan"}),  # the jump to the dark plate is a cut, but not black
-            ("frozen", {"video_vf": "trim=end=2,tpad=stop_mode=clone:stop_duration=2"}, {"freeze_frames"}),
+            ("frozen", {"video_vf": "trim=end=2,tpad=stop_mode=clone:stop_duration=2"},
+             {"dead_time", "freeze_frames"}),
             ("raf-scene", {"scene_html": SCENE_RAF}, {"scene_determinism"}),
+            ("variant-frame-count", {"variant_fps": 24}, {"variants_captions"}),
             ("clipped-audio", {"clip": True}, {"audio_loudness", "audio_boundary_pops"}),
         ]
         for name, kwargs, expected in cases:
@@ -1092,6 +1128,9 @@ def self_test():
                                        f"{json.dumps(report['errors'], indent=2)}"
             assert code == (1 if expected else 0), f"{name}: exit {code}\n{proc.stderr}"
             assert report["passed"] is (not expected), f"{name}: passed flag wrong"
+            if name == "variant-frame-count":
+                assert any("frame count" in error["message"] for error in report["errors"]), \
+                    f"{name}: no frame-count error in {report['errors']}"
             assert_png(root / "qa" / "contact-sheet-360p.png", 6 * 640, 2 * 360)
             assert_png(root / "qa" / "hook-strip.png", 6 * 640, 2 * 360)
             assert_png(root / "qa" / "phone-sheet-360w.png", 6 * PHONE_TILE_W, 2 * 202)
@@ -1100,12 +1139,26 @@ def self_test():
         root = tmp / "frozen"
         timeline = json.loads((root / "timeline.json").read_text())
         timeline["scenes"][1]["static_hold"] = True
-        (root / "timeline.json").write_text(json.dumps(timeline))
+        (root / "timeline-master.json").write_text(json.dumps(timeline))
         code, _ = invoke(gate_args(root))
-        assert code == 0, "static_hold scene must allow a planned freeze"
-        print("ok frozen-with-static-hold: exit=0")
+        assert code == 0, "timeline-master.json static_hold scene must allow a planned freeze"
+        print("ok timeline-master-static-hold: exit=0")
 
         root = tmp / "pass"
+        (root / "audio").mkdir()
+        continuity = {"window_ms": 50, "phrase_bars": 4, "max_drop_db": 12,
+                      "digital_silence": False, "worst": [], "edits": [], "loop_joins": 0, "pass": False}
+        (root / "audio" / "music-continuity.json").write_text(json.dumps(continuity))
+        code, _ = invoke(gate_args(root))
+        _, failed = failed_checks(root)
+        assert code == 1 and failed == {"music_continuity"}, f"music fail: {sorted(failed)}"
+        print("ok music-continuity-fail: failed=['music_continuity'] exit=1")
+        continuity["pass"] = True
+        (root / "audio" / "music-continuity.json").write_text(json.dumps(continuity))
+        code, _ = invoke(gate_args(root))
+        assert code == 0, "music-continuity pass must pass the gate"
+        print("ok music-continuity-pass: exit=0")
+
         sh("-f", "lavfi", "-i", "color=c=white:s=320x180:d=1", "-frames:v", "1",
            str(root / "probe" / "reverse" / "frame-000030.png"))
         code, _ = invoke(gate_args(root))
@@ -1150,6 +1203,18 @@ def motion_failures(path, loop=False):
     ctx = types.SimpleNamespace(meta=meta, scenes=scenes, motion=motion_frames(path, meta))
     results = {name: CHECK_FUNCS[name](ctx) for name in MOTION_CHECKS}
     return {name for name, (_, errors) in results.items() if errors}, results
+
+
+def self_test_dead_time_boundary():
+    motion = types.SimpleNamespace(diffs=[0.0] * 61 + [0.1], fps=30.0)
+    scene = {"id": "s01", "start_sec": 0.0, "duration_sec": 2.1}
+    ctx = types.SimpleNamespace(motion=motion, scenes=[scene])
+    _, errors = check_dead_time(ctx)
+    assert errors, "dead time of exactly 2.0 s must fail"
+    scene["static_hold"] = True
+    _, errors = check_dead_time(ctx)
+    assert not errors, "static_hold must allow dead time of exactly 2.0 s"
+    print("ok dead-time boundary: fail at 2.0 s, pass with static_hold")
 
 
 def self_test_motion(tmp):
