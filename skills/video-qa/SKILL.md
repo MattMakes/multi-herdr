@@ -1,6 +1,6 @@
 ---
 name: video-qa
-description: "Use when a rendered video (render/master.mp4) must pass the final quality gate - runs scripts/qa_video.py for 19 numeric render checks, draws phone inspection sheets, then scores the video blind on 8 axes and writes qa/critique-round-<N>.md with ranked fixes."
+description: "Use when a rendered video (render/master.mp4) must pass the final quality gate - runs scripts/qa_video.py for 20 numeric render checks, draws phone inspection sheets, then scores the video blind on 8 axes and writes qa/critique-round-<N>.md with ranked fixes."
 ---
 
 # Video QA: numeric gate and blind critic
@@ -41,10 +41,12 @@ Optional flags:
 | `--contact-sheet` | `qa/contact-sheet-360p.png` | Contact sheet path |
 | `--hook-strip` | `qa/hook-strip.png` | Hook strip path |
 | `--phone-sheet` | `qa/phone-sheet-360w.png` | Phone sheet path |
+| `--phone-frames` | not written | Hero and key-action PNGs scaled to `360 px` high |
 | `--raster-sizes` | `raster-sizes.json` in the render dir | Image natural vs drawn sizes for check 18 |
+| `--expect` | 4 production gate result files | Repeat to override the expected gate result list |
 | `--probe-forward`, `--probe-reverse` | not set | Probe PNG folders for the render determinism check |
 
-Exit codes: `0` all 19 checks pass, `1` at least 1 check fails, `2` the input
+Exit codes: `0` all 20 checks pass, `1` at least 1 check fails, `2` the input
 is bad (missing file, unreadable `timeline.json`, missing `ffmpeg`).
 
 The probe folders hold the same file names, for frames `0`, `K` and `2K`. The
@@ -99,7 +101,8 @@ warning does not fail the gate, but put it in the critique report).
 | 16 | `motion_contrast` | The busiest seconds have under `1.5x` the motion of the calmest (90th vs 10th percentile, films of `6 s` or more) |
 | 17 | `loop_seam` | `meta.loop` is `true` and the last frame to frame 0 step is above `max(0.02, 3x` the typical step near the ends`)` |
 | 18 | `raster_upscale` | A raster image is drawn at `1.2x` its natural size or more; above `1.12x` for `0.5 s` or more is a warning |
-| 19 | `music_continuity` | `audio/music-continuity.json` exists and its `pass` field is `false` |
+| 19 | `cut_flash` | The final 2 frames of a scene differ in mean luma by more than `6%`, except a declared fade hold |
+| 20 | `gate_results` | An expected result is missing, has no `pass`/`passed` field, reports failure, or predates its master |
 
 Variant sizes follow the master's short side `S` and long side `L`:
 `16x9.mp4` is `L x S`, `9x16.mp4` is `S x L`, `1x1.mp4` is `S x S`. For a
@@ -109,8 +112,8 @@ Scan scope for check 1: files under `node_modules/`, `vendor/` or `lib/`
 folders and `*.min.js` files are vendored libraries and are not scanned.
 Comments are not scanned.
 
-Checks 12 to 17 read every frame in grey at `96 px` on the long side. The measures, the
-thresholds and the `raster-sizes.json` format for check 18 are in
+Checks 12 to 17 and 19 read every frame in grey at `96 px` on the long side. The measures,
+thresholds, gate-result defaults and the `raster-sizes.json` format for check 18 are in
 `<skill-dir>/references/motion-checks.md`. Without that file check 18
 reports `skipped` and passes.
 

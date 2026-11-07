@@ -29,6 +29,24 @@ axis. If the file does not exist, treat the accepted-exception list as empty.
 The anchors for each axis below make these levels concrete. When the evidence
 fits 2 levels, give the lower score and write the reason in the report.
 
+## Phone-size self-review
+
+A numeric self-review is not enough. In a prior production, 4 of 5 solo-built
+episodes passed 15-18 of 18 self-review checks, then scored only `3.00-3.75` in
+blind review. Every fault hid the key action at phone size: a `100 px` subject,
+a `2 px` ring, a ring lost in ground texture, a hero weaker than an earlier
+shot, or a health bar that rose between shots.
+
+Run `qa_video.py --phone-frames qa/phone-frames`, then view `hero.png` and every
+key-action frame at its generated `360 px` height. Answer both questions for
+each frame:
+
+1. Can a new viewer see what happened within `1 s`?
+2. Is the hero the strongest moment?
+
+A no to either question is a `BLOCKER`. This self-review never replaces the
+fresh blind critic.
+
 ## Axis 1: Hook & First-Frame Read
 
 Evidence: `qa/hook-strip.png`, frame 0, checks 4 and 5, `BRIEF.md`.
@@ -181,7 +199,7 @@ does not identify a file, inspect its evidence and name the file that produced i
 
 VERDICT: <PASS|FAIL>
 
-Numeric gate: <passed|failed> (<k>/19 checks passed, qa/render-check.json)
+Numeric gate: <passed|failed> (<k>/20 checks passed, qa/render-check.json)
 Average score: <x.xx> / 5. Lowest axis: <axis name> (<score>).
 
 | # | Axis | Score | Reason |

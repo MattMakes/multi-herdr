@@ -15,7 +15,9 @@ Usage:
               [--contact-sheet qa/contact-sheet-360p.png]
               [--hook-strip qa/hook-strip.png]
               [--phone-sheet qa/phone-sheet-360w.png]
+              [--phone-frames qa/phone-frames]
               [--raster-sizes render/raster-sizes.json]
+              [--expect GATE-RESULT ...]
               [--probe-forward DIR --probe-reverse DIR]
   qa_video.py --self-test
 """
@@ -24,6 +26,7 @@ import argparse
 import json
 import math
 import operator
+import os
 import re
 import shutil
 import struct
@@ -54,7 +57,8 @@ CHECKS = (
     "motion_contrast",
     "loop_seam",
     "raster_upscale",
-    "music_continuity",
+    "cut_flash",
+    "gate_results",
 )
 
 DURATION_TOL_SEC = 0.05
@@ -104,6 +108,14 @@ RASTER_WARN_SEC = 0.5
 RASTER_FAIL_SCALE = 1.2
 RASTER_DEFAULT_STEP_SEC = 0.1
 PHONE_TILE_W = 360
+CUT_LUMA_DELTA = 0.06
+PHONE_FRAME_H = 360
+DEFAULT_GATE_RESULTS = (
+    "qa/audio-check.json",
+    "audio/music-continuity.json",
+    "qa/timeline-check.json",
+    "qa/plate-check.json",
+)
 
 SCAN_SUFFIXES = {".html", ".js", ".mjs", ".ts"}
 SCAN_SKIP_DIRS = {"node_modules", "vendor", "lib"}
@@ -503,26 +515,48 @@ def check_boundary_pops(ctx):
     return {"cut_peaks_dbfs": peaks, "max_dbfs": POP_PEAK_MAX_DBFS}, errors
 
 
-def read_music_report(path):
-    """Return (the report object, True when its `pass` is true). Raise InputError on bad JSON."""
-    label = f"cannot read music continuity report {path}"
+def read_gate_result(path):
+    """Read one gate result. Producers use either `pass` or `passed`."""
+    label = f"cannot read gate result {path}"
     try:
         data = json.loads(path.read_text())
     except (OSError, ValueError) as exc:
         raise InputError(f"{label}: {exc}") from exc
-    report = data if isinstance(data, dict) else {}
-    passed = report.get("pass") is True
-    return report, passed
+    return data if isinstance(data, dict) else {}
 
 
-def check_music_continuity(ctx):
-    path = ctx.music_continuity
-    if not path.is_file():
-        return {"skipped": True, "reason": f"no music continuity report at {path}"}, []
-    report, passed = read_music_report(path)
-    details = {"report": str(path), "pass": report.get("pass"),
-               "digital_silence": report.get("digital_silence"), "worst": report.get("worst", [])}
-    return details, [] if passed else [(f"audio/music-continuity.json pass is {report.get('pass')!r}, not true", None)]
+def result_source(ctx, path):
+    audio_result = path.name in ("audio-check.json", "music-continuity.json")
+    return ctx.mix if audio_result else ctx.video
+
+
+def result_pass(report):
+    key = "pass" if "pass" in report else "passed" if "passed" in report else None
+    return key, report.get(key) if key else None
+
+
+def check_gate_results(ctx):
+    checked, errors = [], []
+    for path in ctx.expected_gate_results:
+        source = result_source(ctx, path)
+        item = {"result": str(path), "source": str(source)}
+        if not path.is_file():
+            errors.append((f"expected gate result is missing: {path}", None))
+            checked.append(item)
+            continue
+        report = read_gate_result(path)
+        key, passed = result_pass(report)
+        item.update({"field": key, "pass": passed})
+        if key is None:
+            errors.append((f"gate result {path} has no pass or passed field", None))
+        elif passed is not True:
+            errors.append((f"gate result {path} {key} is {passed!r}, not true", None))
+        if not source.is_file():
+            errors.append((f"gate result {path} checks missing source {source}", None))
+        elif path.stat().st_mtime < source.stat().st_mtime:
+            errors.append((f"gate result {path} is older than {source}", None))
+        checked.append(item)
+    return {"expected": checked}, errors
 
 
 def caption_time(text):
@@ -684,6 +718,33 @@ def find_pops(motion):
 
 def mean_luma(frame):
     return sum(frame) / (255.0 * len(frame))
+
+
+def fade_hold(scene):
+    return scene.get("static_hold") is True and "fade" in str(scene.get("static_hold_reason", "")).lower()
+
+
+def scene_last_frames(scene, motion):
+    end_frame = min(len(motion.frames), math.ceil(scene_end(scene) * motion.fps))
+    return end_frame - 2, end_frame - 1
+
+
+def check_cut_flash(ctx):
+    measured, errors = [], []
+    for scene in ctx.scenes:
+        first, last = scene_last_frames(scene, ctx.motion)
+        if first < 0 or last >= len(ctx.motion.frames):
+            continue
+        lumas = [mean_luma(ctx.motion.frames[i]) for i in (first, last)]
+        exempt = fade_hold(scene)
+        measured.append({"scene": scene.get("id"), "frames": [first, last],
+                         "luma": [round(v * 255, 2) for v in lumas], "fade_hold": exempt})
+        if not exempt and abs(lumas[1] - lumas[0]) > CUT_LUMA_DELTA:
+            message = (f"scene {scene.get('id')} frames {first} and {last} mean luma "
+                       f"{lumas[0] * 255:.2f} and {lumas[1] * 255:.2f} differ by "
+                       f"{abs(lumas[1] - lumas[0]):.1%} (max {CUT_LUMA_DELTA:.0%})")
+            errors.append((message, first / ctx.motion.fps))
+    return {"max_delta": CUT_LUMA_DELTA, "scenes": measured}, errors
 
 
 def check_frame_pops(ctx):
@@ -902,9 +963,10 @@ CHECK_FUNCS = {
     "freeze_frames": check_freeze,
     "audio_loudness": check_loudness,
     "audio_boundary_pops": check_boundary_pops,
-    "music_continuity": check_music_continuity,
+    "gate_results": check_gate_results,
     "variants_captions": check_variants_captions,
     "safe_zone_flash": check_safe_zone_flash,
+    "cut_flash": check_cut_flash,
     "frame_pops": check_frame_pops,
     "cuts_vs_plan": check_cuts_vs_plan,
     "dead_time": check_dead_time,
@@ -997,6 +1059,36 @@ def make_sheet(ctx, out, fps, end_sec, max_tiles=None, tile_w=None):
     return {"path": str(out), "tiles": len(frames), "tile_px": [tw, th], "fps": fps, "size_px": [cw, ch]}
 
 
+def phone_frame_times(ctx):
+    hero = ctx.meta.get("hero_sec")
+    hero_t = sum(map(float, hero)) / 2 if isinstance(hero, list) and len(hero) == 2 else float(ctx.meta["duration_sec"]) / 2
+    picks = [("hero", hero_t)]
+    for scene in ctx.scenes:
+        actions = scene.get("locked_actions_sec") or [float(scene["duration_sec"]) / 2]
+        for index, relative in enumerate(actions, start=1):
+            label = re.sub(r"[^A-Za-z0-9_-]+", "-", str(scene.get("id", "scene"))).strip("-") or "scene"
+            picks.append((f"{label}-action-{index:02d}", float(scene["start_sec"]) + float(relative)))
+    limit = float(ctx.meta["duration_sec"]) - 1.0 / float(ctx.meta["fps"])
+    return [(label, min(max(t, 0.0), limit)) for label, t in picks]
+
+
+def extract_phone_frame(video, out, time_sec):
+    proc = ffmpeg("-y", "-ss", f"{time_sec:.6f}", "-i", str(video), "-frames:v", "1",
+                  "-vf", f"scale=-2:{PHONE_FRAME_H}", str(out))
+    if proc.returncode != 0 or not out.is_file():
+        raise InputError(f"cannot extract phone frame at {time_sec:.3f} s: {proc.stderr.strip()[-300:]}")
+
+
+def make_phone_frames(ctx):
+    ctx.phone_frames.mkdir(parents=True, exist_ok=True)
+    files = []
+    for label, time_sec in phone_frame_times(ctx):
+        out = ctx.phone_frames / f"{label}.png"
+        extract_phone_frame(ctx.video, out, time_sec)
+        files.append({"path": str(out), "time_sec": round(time_sec, 3)})
+    return {"directory": str(ctx.phone_frames), "height_px": PHONE_FRAME_H, "frames": files}
+
+
 # ---------------------------------------------------------------- driver
 
 def path_or(value, default):
@@ -1024,6 +1116,7 @@ class Context:
         self.scenes = load_timeline(self.scene_timeline)[1]
 
     def set_paths(self, args, project):
+        self.project = project
         qa = project / "qa"
         self.scenes_dir = path_or(args.scenes_dir, project / "scenes")
         self.render_dir = path_or(args.render_dir, self.video.resolve().parent)
@@ -1031,8 +1124,11 @@ class Context:
         self.contact_sheet = path_or(args.contact_sheet, qa / "contact-sheet-360p.png")
         self.hook_strip = path_or(args.hook_strip, qa / "hook-strip.png")
         self.phone_sheet = path_or(args.phone_sheet, qa / "phone-sheet-360w.png")
+        self.phone_frames = path_or(args.phone_frames, None)
         self.raster_sizes = path_or(args.raster_sizes, self.render_dir / "raster-sizes.json")
-        self.music_continuity = project / "audio" / "music-continuity.json"
+        self.mix = project / "audio" / "mix.wav"
+        expected = args.expect if args.expect is not None else DEFAULT_GATE_RESULTS
+        self.expected_gate_results = [project / value for value in expected]
 
     def set_probes(self, args):
         if (args.probe_forward is None) != (args.probe_reverse is None):
@@ -1075,12 +1171,15 @@ def write_report(out, report):
 
 def make_sheets(ctx):
     duration = float(ctx.meta["duration_sec"])
-    return {
+    artifacts = {
         "contact_sheet": make_sheet(ctx, ctx.contact_sheet, CONTACT_FPS, duration),
         "hook_strip": make_sheet(ctx, ctx.hook_strip, HOOK_FPS, HOOK_WINDOW_SEC,
                                  max_tiles=int(HOOK_WINDOW_SEC * HOOK_FPS)),
         "phone_sheet": make_sheet(ctx, ctx.phone_sheet, CONTACT_FPS, duration, tile_w=PHONE_TILE_W),
     }
+    if ctx.phone_frames is not None:
+        artifacts["phone_frames"] = make_phone_frames(ctx)
+    return artifacts
 
 
 def run_gate(args):
@@ -1148,10 +1247,10 @@ def tone_gain_db(tmp):
 def fixture_timeline(static_hold):
     return {
         "meta": {"id": "self-test", "title": "Self test", "aspect": "16:9", "fps": 30, "width": 320,
-                 "height": 180, "duration_sec": 4.0, "lufs_target": -14.0},
+                 "height": 180, "duration_sec": 4.0, "lufs_target": -14.0, "hero_sec": [2.5, 3.5]},
         "scenes": [
             {"id": "s01-hook", "kind": "hook", "start_sec": 0.0, "duration_sec": 2.0,
-             "transition_out": {"type": "cut", "duration_sec": 0.0},
+             "transition_out": {"type": "cut", "duration_sec": 0.0}, "locked_actions_sec": [0.5, 1.5],
              "critical_regions": [[0.1, 0.2, 0.8, 0.4]], "focal_point": [0.5, 0.4]},
             {"id": "s02-cta", "kind": "cta", "start_sec": 2.0, "duration_sec": 2.0, "static_hold": static_hold,
              "critical_regions": [[0.2, 0.3, 0.6, 0.3]], "focal_point": [0.5, 0.45]},
@@ -1188,8 +1287,21 @@ def write_fixture_files(root, opts):
     (root / "render" / "captions.vtt").write_text(VTT_OK)
 
 
-FIXTURE_DEFAULTS = {"video_vf": "null", "clip": False, "scene_html": SCENE_OK, "gain": 0.0, "probes": True,
-                    "static_hold": False, "variant_fps": 30}
+def write_gate_results(root):
+    values = {
+        "qa/audio-check.json": {"passed": True},
+        "audio/music-continuity.json": {"pass": True},
+        "qa/timeline-check.json": {"passed": True},
+        "qa/plate-check.json": {"passed": True},
+    }
+    for name, value in values.items():
+        path = root / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(value))
+
+
+FIXTURE_DEFAULTS = {"video_vf": "null", "clip": False, "scene_html": SCENE_OK, "gain": 0.0, "probes": False,
+                    "static_hold": False, "variants": False, "variant_fps": 30}
 
 
 def make_project(root, **options):
@@ -1199,13 +1311,17 @@ def make_project(root, **options):
     render.mkdir(parents=True)
     make_fixture_video(render / "master.mp4", vf=opts["video_vf"], tone_db=opts["gain"], clip=opts["clip"])
     write_fixture_files(root, opts)
-    make_variants(render, opts["variant_fps"])
+    (root / "audio").mkdir(exist_ok=True)
+    (root / "audio" / "mix.wav").write_bytes(b"self-test audio source")
+    write_gate_results(root)
+    if opts["variants"]:
+        make_variants(render, opts["variant_fps"])
     if opts["probes"]:
         make_probes(root / "probe")
     return root
 
 
-def gate_args(root, probes=True):
+def gate_args(root, probes=False):
     argv = ["--video", str(root / "render" / "master.mp4"), "--timeline", str(root / "timeline.json")]
     if probes:
         argv += ["--probe-forward", str(root / "probe" / "forward"), "--probe-reverse", str(root / "probe" / "reverse")]
@@ -1230,7 +1346,7 @@ def assert_png(path, width, height):
 
 
 GATE_CASES = [  # (name, make_project options, failed checks, text that 1 error message must hold)
-    ("pass", {}, set(), None),
+    ("pass", {"variants": True}, set(), None),
     ("black-frame", {"video_vf": "drawbox=x=0:y=0:w=iw:h=ih:color=black:t=fill:enable='between(t,1.2,1.7)'"},
      {"black_frames", "cuts_vs_plan"}, None),
     ("dark-background", {"video_vf": "drawbox=x=0:y=0:w=iw:h=ih:color=0x0B1020:t=fill:enable='between(t,1.2,1.7)'"},
@@ -1238,7 +1354,7 @@ GATE_CASES = [  # (name, make_project options, failed checks, text that 1 error 
     ("frozen", {"video_vf": "trim=end=2,tpad=stop_mode=clone:stop_duration=2"},
      {"dead_time", "freeze_frames"}, None),
     ("raf-scene", {"scene_html": SCENE_RAF}, {"scene_determinism"}, None),
-    ("variant-frame-count", {"variant_fps": 24}, {"variants_captions"}, "frame count"),
+    ("variant-frame-count", {"variants": True, "variant_fps": 24}, {"variants_captions"}, "frame count"),
     ("clipped-audio", {"clip": True}, {"audio_loudness", "audio_boundary_pops"}, None),
 ]
 
@@ -1307,18 +1423,32 @@ def self_test_music(root):
     write_music_report(root, False)
     code, _ = invoke(gate_args(root))
     _, failed = failed_checks(root)
-    assert code == 1 and failed == {"music_continuity"}, f"music fail: {sorted(failed)}"
-    print("ok music-continuity-fail: failed=['music_continuity'] exit=1")
+    assert code == 1 and failed == {"gate_results"}, f"music fail: {sorted(failed)}"
+    print("ok music-continuity-fail: failed=['gate_results'] exit=1")
     write_music_report(root, True)
     code, _ = invoke(gate_args(root))
     assert code == 0, "music-continuity pass must pass the gate"
     print("ok music-continuity-pass: exit=0")
 
 
+def self_test_phone_frames(root):
+    out = root / "qa" / "phone-frames"
+    meta, scenes = load_timeline(root / "timeline.json")
+    ctx = types.SimpleNamespace(video=root / "render" / "master.mp4", phone_frames=out,
+                                meta=meta, scenes=scenes)
+    result = make_phone_frames(ctx)
+    frames = sorted(out.glob("*.png"))
+    assert len(frames) == len(result["frames"]) == 4, f"phone frames: found {len(frames)}, expected 4"
+    for path in frames:
+        assert_png(path, 640, PHONE_FRAME_H)
+    print("ok phone-frames: count=4 size=640x360")
+
+
 def self_test_probe_mismatch(root):
+    make_probes(root / "probe")
     sh("-f", "lavfi", "-i", "color=c=white:s=320x180:d=1", "-frames:v", "1",
        str(root / "probe" / "reverse" / "frame-000030.png"))
-    code, _ = invoke(gate_args(root))
+    code, _ = invoke(gate_args(root, probes=True))
     _, failed = failed_checks(root)
     assert code == 1 and failed == {"render_determinism"}, f"probe mismatch: {sorted(failed)}"
     print("ok probe-mismatch: failed=['render_determinism'] exit=1")
@@ -1336,15 +1466,50 @@ def self_test_gate(tmp):
         self_test_gate_case(tmp, gain, case)
     self_test_timeline_master(tmp / "frozen")
     self_test_music(tmp / "pass")
+    self_test_phone_frames(tmp / "pass")
     self_test_probe_mismatch(tmp / "pass")
     self_test_missing_input(tmp, tmp / "pass")
 
 
 def self_test_in(tmp):
+    self_test_new_checks(tmp)
     self_test_motion(tmp)
     self_test_dead_time_boundary()
     self_test_raster(tmp)
     self_test_gate(tmp)
+
+
+def self_test_new_checks(tmp):
+    fps = 10.0
+    scenes = [{"id": "s01", "start_sec": 0.0, "duration_sec": 0.4}]
+    motion = types.SimpleNamespace(frames=[bytes([80])] * 4, fps=fps)
+    _, errors = check_cut_flash(types.SimpleNamespace(motion=motion, scenes=scenes))
+    assert not errors, f"equal cut luma must pass: {errors}"
+    motion.frames[-1] = bytes([0])
+    _, errors = check_cut_flash(types.SimpleNamespace(motion=motion, scenes=scenes))
+    assert len(errors) == 1 and "frames 2 and 3" in errors[0][0], f"dark cut frame must fail: {errors}"
+    scenes[0].update({"static_hold": True, "static_hold_reason": "Fade to the end card."})
+    _, errors = check_cut_flash(types.SimpleNamespace(motion=motion, scenes=scenes))
+    assert not errors, f"declared fade hold must allow a luma change: {errors}"
+    print("ok cut-flash: equal luma passes, dark last frame fails")
+
+    gate_root = tmp / "gate-results"
+    gate_root.mkdir()
+    master, mix = gate_root / "master.mp4", gate_root / "mix.wav"
+    master.write_bytes(b"video")
+    mix.write_bytes(b"audio")
+    expected = gate_root / "audio-check.json"
+    gate_ctx = types.SimpleNamespace(expected_gate_results=[expected], video=master, mix=mix)
+    _, errors = check_gate_results(gate_ctx)
+    assert len(errors) == 1 and "missing" in errors[0][0], f"missing gate result must fail: {errors}"
+    expected.write_text(json.dumps({"passed": True}))
+    os.utime(expected, (master.stat().st_mtime - 2, master.stat().st_mtime - 2))
+    _, errors = check_gate_results(gate_ctx)
+    assert len(errors) == 1 and "older" in errors[0][0], f"stale gate result must fail: {errors}"
+    expected.write_text(json.dumps({"status": "ok"}))
+    _, errors = check_gate_results(gate_ctx)
+    assert len(errors) == 1 and "no pass" in errors[0][0], f"missing pass field must fail: {errors}"
+    print("ok gate-results: missing, stale, and fieldless results fail")
 
 
 def self_test():
@@ -1466,7 +1631,10 @@ def main(argv=None):
     parser.add_argument("--contact-sheet", help="default: <timeline dir>/qa/contact-sheet-360p.png")
     parser.add_argument("--hook-strip", help="default: <timeline dir>/qa/hook-strip.png")
     parser.add_argument("--phone-sheet", help="default: <timeline dir>/qa/phone-sheet-360w.png")
+    parser.add_argument("--phone-frames", help="write hero and key-action PNGs at 360 px high")
     parser.add_argument("--raster-sizes", help="image natural vs drawn sizes (default: <render dir>/raster-sizes.json)")
+    parser.add_argument("--expect", action="append", metavar="GATE-RESULT",
+                        help="expected result JSON relative to the project; repeat to override defaults")
     parser.add_argument("--probe-forward", help="cold-forward probe PNG frames (0, K, 2K)")
     parser.add_argument("--probe-reverse", help="warm-reverse probe PNG frames, same file names")
     args = parser.parse_args(argv)
