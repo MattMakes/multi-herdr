@@ -139,14 +139,10 @@ def read_raster_upscales(path):
     return raster_upscales(report)
 
 
-def load_or_none(load, arg, errors, prefix):
-    """load(arg), or None after it prints the error of a bad input."""
-    result = None
-    try:
-        result = load(arg)
-    except errors as e:
-        print(f"scan_linear_motion: {prefix}{e}", file=sys.stderr)
-    return result
+def read_error(prefix, error):
+    """Print the error of a bad input and give exit code 2."""
+    print(f"scan_linear_motion: {prefix}{error}", file=sys.stderr)
+    return 2
 
 
 def report_hits(lines, summary, failed):
@@ -159,18 +155,20 @@ def raster_line(path, sample, scale):
 
 
 def check_raster_sizes(path):
-    hits = load_or_none(read_raster_upscales, path, RASTER_ERRORS, "cannot read raster sizes: ")
-    if hits is None:
-        return 2
+    try:
+        hits = read_raster_upscales(path)
+    except RASTER_ERRORS as e:
+        return read_error("cannot read raster sizes: ", e)
     lines = [raster_line(path, sample, scale) for sample, scale in hits]
     summary = f"scan_linear_motion: {len(hits)} raster upscale(s) over {MAX_RASTER_SCALE:.1f}x" if hits else "scan_linear_motion: raster sizes pass"
     return report_hits(lines, summary, hits)
 
 
 def check_linear_motion(paths):
-    hits = load_or_none(scan, paths, SCAN_ERRORS, "cannot read ")
-    if hits is None:
-        return 2
+    try:
+        hits = scan(paths)
+    except SCAN_ERRORS as e:
+        return read_error("cannot read ", e)
     lines = [f"{f}:{line_no}: {rule}: {snippet}" for f, line_no, rule, snippet in hits]
     summary = f"scan_linear_motion: {len(hits)} linear move(s)" if hits else "scan_linear_motion: no linear moves"
     return report_hits(lines, summary, hits)
@@ -216,19 +214,17 @@ FIXTURES = {
 }
 
 
-def write_fixtures(root):
-    for name, (text, _) in FIXTURES.items():
-        (root / name).write_text(text, encoding="utf-8")
-
-
-def count_failure(root, name, want):
-    got = scan_text((root / name).read_text(encoding="utf-8"))
+def count_failure(root, name, text, want):
+    """Write 1 fixture file, then scan it."""
+    path = root / name
+    path.write_text(text, encoding="utf-8")
+    got = scan_text(path.read_text(encoding="utf-8"))
     return [f"{name}: {len(got)} hit(s), want {want}: {got}"] if len(got) != want else []
 
 
 def fixture_failures(root):
-    write_fixtures(root)
-    failures = [f for name, (_, want) in FIXTURES.items() for f in count_failure(root, name, want)]
+    """Writes every fixture file; exit_failures reads them after this runs."""
+    failures = [f for name, (text, want) in FIXTURES.items() for f in count_failure(root, name, text, want)]
     line = scan_text(FIXTURES["none-scale.js"][0])[0][0]
     return failures + ([f"none-scale.js hit on line {line}, want 1"] if line != 1 else [])
 

@@ -1206,17 +1206,33 @@ async function writePreviews(ctx) {
   await writePreviewGif(ctx);
 }
 
+// [name, path] of master.mp4 first, then of every derived MP4.
 function encodedFiles({ master, outDir, aspects }) {
-  const derived = ["preview", ...aspects].map((name) => [`${name}.mp4`, join(outDir, `${name}.mp4`)]);
-  return [["master.mp4", master], ...derived];
+  const files = [["master.mp4", master]];
+  for (const name of ["preview", ...aspects]) {
+    files.push([`${name}.mp4`, join(outDir, `${name}.mp4`)]);
+  }
+  return files;
+}
+
+async function probeEntry([name, file]) {
+  return [name, await probeFrameCount(file)];
+}
+
+// "<name>=<count>" for each derived entry whose count differs from the first (master) entry.
+function frameMismatches([[, master], ...derived]) {
+  const bad = [];
+  for (const [name, count] of derived) {
+    if (count !== master) bad.push(`${name}=${count}`);
+  }
+  return bad;
 }
 
 // Every derived MP4 must decode to the master frame count: a packaging step never cuts the film.
 async function encodedFrameCounts(ctx) {
-  const entries = await Promise.all(encodedFiles(ctx).map(async ([name, file]) => [name, await probeFrameCount(file)]));
-  const [[, master], ...derived] = entries;
-  const mismatches = derived.filter(([, count]) => count !== master).map(([name, count]) => `${name}=${count}`);
-  check(mismatches.length === 0, `derived frame counts differ from master.mp4 (${master}): ${mismatches.join(", ")}`);
+  const entries = await Promise.all(encodedFiles(ctx).map(probeEntry));
+  const mismatches = frameMismatches(entries);
+  check(mismatches.length === 0, `derived frame counts differ from master.mp4 (${entries[0][1]}): ${mismatches.join(", ")}`);
   return Object.fromEntries(entries);
 }
 
