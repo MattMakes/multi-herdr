@@ -1,28 +1,27 @@
 """hark: listen to, measure, make and review sound effects."""
 
 import importlib
+from pathlib import Path
 
 __version__ = "0.1.0"
 
 _API_EXTRA = ("llm_critique",)
+_ROOT = Path(__file__).parent
 
 
-def _none_if_absent(exc: ModuleNotFoundError, absent: tuple):
-    if exc.name in absent:
-        return None
-    raise exc
+def _exists(dotted: str) -> bool:
+    """True when the hark module or package named by ``dotted`` is on disk."""
+    base = _ROOT.joinpath(*dotted.split(".")[1:])
+    return base.with_suffix(".py").is_file() or (base / "__init__.py").is_file()
 
 
-def _import_or_none(module: str, absent: tuple):
-    """Import a module, or return None when the module itself is absent."""
-    try:
-        return importlib.import_module(module)
-    except ModuleNotFoundError as exc:
-        return _none_if_absent(exc, absent)
+def _api():
+    return importlib.import_module("hark.core.api") if _exists("hark.core.api") else None
 
 
 def _api_names(api) -> tuple:
-    return tuple(getattr(api, "__all__", ())) + _API_EXTRA
+    extra = _API_EXTRA if api is not None else ()
+    return tuple(getattr(api, "__all__", ())) + extra
 
 
 def __getattr__(name: str):
@@ -31,11 +30,9 @@ def __getattr__(name: str):
     Nothing heavy is imported by ``import hark``. Any other name is a normal
     submodule import.
     """
-    api = _import_or_none("hark.core.api", ("hark.core", "hark.core.api"))
-    if api is not None and name in _api_names(api):
+    api = _api()
+    if name in _api_names(api):
         return getattr(api, name)
-    full = f"{__name__}.{name}"
-    module = _import_or_none(full, (full,))
-    if module is None:
+    if not _exists(f"{__name__}.{name}"):
         raise AttributeError(f"module 'hark' has no attribute {name!r}")
-    return module
+    return importlib.import_module(f"{__name__}.{name}")
