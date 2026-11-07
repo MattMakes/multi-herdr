@@ -568,9 +568,24 @@ fn reap(root: &Path, log: &Path) -> std::io::Result<Vec<String>> {
         marks.push(format!("{}/", canonical.display()));
     }
     let me = std::process::id();
-    let all = listed(try_processes, REAP_GRACE)?;
     // SAFETY: plain syscall without arguments.
     let own_group = u32::try_from(unsafe { libc::getpgrp() }).ok();
+    let recorded: Vec<u32> = state["pids"]
+        .as_object()
+        .into_iter()
+        .flatten()
+        .filter_map(|(_, pid)| u32::try_from(pid.as_u64()?).ok())
+        .collect();
+    let Some(all) = process_list_or_sandbox(
+        try_processes,
+        REAP_GRACE,
+        &recorded,
+        own_group,
+        signal_groups,
+    )?
+    else {
+        return Ok(Vec::new());
+    };
     let mut groups: Vec<u32> = state["pids"]
         .as_object()
         .into_iter()
@@ -680,11 +695,44 @@ fn listed<T>(
     let until = std::time::Instant::now() + grace;
     loop {
         match list() {
-            Err(_) if std::time::Instant::now() < until => {
+            Err(e)
+                if e.kind() != std::io::ErrorKind::PermissionDenied
+                    && std::time::Instant::now() < until =>
+            {
                 std::thread::sleep(std::time::Duration::from_millis(50))
             }
             done => return done,
         }
+    }
+}
+
+/// List processes for the full leak scan. A sandbox can deny `ps`; then
+/// signal the pane groups fake-herdr recorded and skip only the leak scan.
+#[cfg(unix)]
+fn process_list_or_sandbox<T>(
+    list: impl Fn() -> std::io::Result<T>,
+    grace: std::time::Duration,
+    recorded: &[u32],
+    own_group: Option<u32>,
+    mut signal: impl FnMut(&[u32], &str),
+) -> std::io::Result<Option<T>> {
+    match listed(list, grace) {
+        Ok(all) => Ok(Some(all)),
+        Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => {
+            let mut groups: Vec<u32> = recorded
+                .iter()
+                .copied()
+                .filter(|g| *g > 1 && Some(*g) != own_group)
+                .collect();
+            groups.sort_unstable();
+            groups.dedup();
+            signal(&groups, "TERM");
+            eprintln!(
+                "warning: teardown signalled recorded pane groups but skipped the process leak scan in a sandbox: {error}"
+            );
+            Ok(None)
+        }
+        Err(error) => Err(error),
     }
 }
 
@@ -856,11 +904,11 @@ fn walk(dir: &Path, out: &mut Vec<PathBuf>) {
 
 #[cfg(all(test, unix))]
 mod tests {
-    use std::cell::Cell;
+    use std::cell::{Cell, RefCell};
     use std::path::{Path, PathBuf};
     use std::time::Duration;
 
-    use super::{choose_harness_root, listed};
+    use super::{choose_harness_root, listed, process_list_or_sandbox};
 
     #[test]
     fn harness_root_prefers_writable_tmp_and_checks_the_tmpdir_socket_path() {
@@ -882,6 +930,25 @@ mod tests {
             "{message}"
         );
         assert!(message.contains(&long.display().to_string()), "{message}");
+    }
+
+    #[test]
+    fn a_permission_denied_process_scan_signals_recorded_groups_and_passes() {
+        let signals = RefCell::new(Vec::new());
+        let got = process_list_or_sandbox(
+            || Err::<Vec<u32>, _>(std::io::Error::from(std::io::ErrorKind::PermissionDenied)),
+            Duration::from_secs(5),
+            &[9, 7, 9, 1, 5],
+            Some(5),
+            |groups, signal| {
+                signals
+                    .borrow_mut()
+                    .push((groups.to_vec(), signal.to_string()))
+            },
+        )
+        .unwrap();
+        assert!(got.is_none(), "the sandbox skips the leak scan");
+        assert_eq!(signals.into_inner(), [(vec![7, 9], "TERM".into())]);
     }
 
     /// A `ps` that failed to fork once is asked again, so teardown still
