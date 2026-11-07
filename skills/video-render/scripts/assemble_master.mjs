@@ -195,6 +195,13 @@ function ffmpegArgs(root, plan, inputs, out) {
 }
 
 const sceneReport = (inputs, fps) => (s, i) => ({ id: s.id, source: inputs.clips[i], frames: s.frames, transition_out: s.transition.type, transition_sec: s.handle / fps });
+const masterTimelinePath = (root) => join(root, "timeline-master.json");
+
+function writeMasterTimeline(root, timeline) {
+  const file = masterTimelinePath(root);
+  writeFileSync(file, `${JSON.stringify(timeline, null, 2)}\n`);
+  return file;
+}
 
 export async function assembleMaster(timelineFile, out) {
   const root = dirname(resolve(timelineFile));
@@ -204,8 +211,9 @@ export async function assembleMaster(timelineFile, out) {
   const beatChecked = checkBeats(root, timeline, plan.fps);
   mkdirSync(dirname(resolve(out)), { recursive: true });
   await ffmpeg(ffmpegArgs(root, plan, inputs, resolve(out)));
+  const master_timeline = writeMasterTimeline(root, timeline);
   const scenes = plan.scenes.map(sceneReport(inputs, plan.fps));
-  return { out, frames: plan.frames, duration_sec: plan.frames / plan.fps, beat_checked: beatChecked, scenes, overlays: inputs.overlays };
+  return { out, master_timeline, frames: plan.frames, duration_sec: plan.frames / plan.fps, beat_checked: beatChecked, scenes, overlays: inputs.overlays };
 }
 
 // ---------------------------------------------------------------- self-test
@@ -350,6 +358,7 @@ async function testAssemble(root) {
   await writeProject(root);
   const report = await assembleMaster(join(root, "timeline.json"), join(root, "render/master.mp4"));
   assertEq([report.beat_checked, report.overlays], [true, ["render/overlays/captions"]], "report");
+  assertEq(JSON.parse(readFileSync(report.master_timeline, "utf8")), TIMELINE, "timeline-master.json");
   const file = join(root, "render/master.mp4");
   return `${await checkStreams(file)}; ${await checkPictures(file)}`;
 }

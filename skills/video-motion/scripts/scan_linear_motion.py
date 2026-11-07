@@ -3,6 +3,7 @@
 
 Usage:
   scan_linear_motion.py <file-or-dir> [...]
+  scan_linear_motion.py --raster-sizes <raster-sizes.json>
   scan_linear_motion.py --self-test
 
 A thing that moves, grows or turns at a constant speed looks mechanical. The
@@ -21,6 +22,7 @@ Exit codes: 0 clean, 1 a linear move found, 2 usage or input error.
 Needs only the Python standard library.
 """
 
+import json
 import re
 import sys
 import tempfile
@@ -28,6 +30,7 @@ from pathlib import Path
 
 SUFFIXES = {".html", ".htm", ".js", ".mjs", ".css"}
 ALLOW = "motion-ok: linear"
+MAX_RASTER_SCALE = 1.2
 
 CALL = re.compile(r"\.(to|fromTo|from|animate)\s*\(")
 MOVING_KEY = re.compile(
@@ -105,12 +108,48 @@ def scan(paths):
     return [(f, *hit) for f in scene_files(paths) for hit in scan_text(f.read_text(encoding="utf-8"))]
 
 
+def raster_upscales(report):
+    """Samples whose drawn width or height is more than 1.2x its natural size."""
+    if not isinstance(report, dict) or not isinstance(report.get("samples"), list):
+        raise ValueError("report needs a samples list")
+    hits = []
+    for sample in report.get("samples", []):
+        if not isinstance(sample, dict):
+            raise ValueError("each sample must be an object")
+        natural = sample.get("natural_px", [])
+        drawn = sample.get("drawn_px", [])
+        if not isinstance(natural, list) or not isinstance(drawn, list):
+            raise ValueError("each sample needs positive natural_px and 2-value drawn_px")
+        values = [*natural, *drawn]
+        if len(natural) != 2 or len(drawn) != 2 or any(not isinstance(v, (int, float)) for v in values) or any(v <= 0 for v in natural):
+            raise ValueError("each sample needs positive natural_px and 2-value drawn_px")
+        scale = max(drawn[i] / natural[i] for i in range(2))
+        if scale > MAX_RASTER_SCALE + 1e-9:
+            hits.append((sample, scale))
+    return hits
+
+
+def check_raster_sizes(path):
+    try:
+        report = json.loads(Path(path).read_text(encoding="utf-8"))
+        hits = raster_upscales(report)
+    except (FileNotFoundError, UnicodeDecodeError, json.JSONDecodeError, ValueError) as e:
+        print(f"scan_linear_motion: cannot read raster sizes: {e}", file=sys.stderr)
+        return 2
+    for sample, scale in hits:
+        print(f"{path}: {sample.get('src', '<unknown>')} at {sample.get('t_sec', '<unknown>')} s is {scale:.3f}x; maximum is {MAX_RASTER_SCALE:.1f}x")
+    print(f"scan_linear_motion: {len(hits)} raster upscale(s) over {MAX_RASTER_SCALE:.1f}x" if hits else "scan_linear_motion: raster sizes pass")
+    return 1 if hits else 0
+
+
 def main(argv):
     if not argv:
         print(__doc__.strip(), file=sys.stderr)
         return 2
     if argv == ["--self-test"]:
         return self_test()
+    if len(argv) == 2 and argv[0] == "--raster-sizes":
+        return check_raster_sizes(argv[1])
     try:
         hits = scan(argv)
     except (FileNotFoundError, UnicodeDecodeError) as e:
@@ -160,6 +199,18 @@ def self_test():
         line = scan_text(FIXTURES["none-scale.js"][0])[0][0]
         if line != 1:
             failures.append(f"none-scale.js hit on line {line}, want 1")
+        clean = root / "raster-clean.json"
+        clean.write_text(json.dumps({"samples": [
+            {"t_sec": 0, "src": "plate.png", "natural_px": [100, 50], "drawn_px": [120, 60]}
+        ]}), encoding="utf-8")
+        bad = root / "raster-bad.json"
+        bad.write_text(json.dumps({"samples": [
+            {"t_sec": 0.1, "src": "plate.png", "natural_px": [100, 50], "drawn_px": [121, 50]}
+        ]}), encoding="utf-8")
+        if check_raster_sizes(clean) != 0:
+            failures.append("1.2x raster sample does not pass")
+        if check_raster_sizes(bad) != 1:
+            failures.append("1.21x raster sample does not fail")
     for f in failures:
         print(f"FAIL {f}", file=sys.stderr)
     print("scan_linear_motion self-test: " + ("FAILED" if failures else f"{len(FIXTURES)} fixtures pass"))
