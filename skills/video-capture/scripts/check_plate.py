@@ -2,10 +2,11 @@
 """Plate gate for 1 capture scene. Python standard library, ffmpeg and ffprobe only.
 
 Usage, from the video project root:
-  check_plate.py <scene-id>     print 1 JSON line, exit 0 on pass and 1 on any fail
+  check_plate.py <scene-id> [--zoom-plan <plan.json>]
+                                print 1 JSON line, exit 0 on pass and 1 on any fail
   check_plate.py --self-test    gate synthetic plates in a temp folder
 """
-import json, math, os, re, subprocess, sys, tempfile
+import argparse, json, math, os, re, subprocess, sys, tempfile
 from itertools import accumulate, groupby
 from operator import itemgetter
 
@@ -49,6 +50,10 @@ def valid_actions(actions):
         isinstance(name, str) and name and valid_number(sec) for name, sec in actions.items())
 
 
+def valid_names(names):
+    return isinstance(names, list) and all(isinstance(name, str) and name for name in names)
+
+
 PIXEL_FACT_KEYS = {"subject_width_px", "nearest_distance_px"}
 
 
@@ -66,6 +71,8 @@ SIDECAR_RULES = {
     "key_actions_sec": (valid_actions, "key_actions_sec must map names to non-negative seconds"),
     "pixel_facts": (valid_pixel_facts, "pixel_facts must contain non-negative pixel measurements"),
     "max_frozen_sec": (valid_number, "max_frozen_sec must be non-negative seconds"),
+    "render_scale": (lambda value: valid_number(value, 1.0), "render_scale must be a number >= 1.0"),
+    "timers_forced": (valid_names, "timers_forced must be a list of names"),
 }
 
 
@@ -98,15 +105,34 @@ def has_sidecar(path):
     return path.startswith("plates/") and os.path.exists(sidecar_path_of(path))
 
 
-def read_sidecar_failures(path, info):
+def read_sidecar(path, info):
     """Validate plates/<clip>.json against its contract and against the clip."""
     expected = {"clip": path, "fps": info["fps"], "frame_count": info["frame_count"]}
     sidecar_path = sidecar_path_of(path)
     try:
         sidecar = json.load(open(sidecar_path))
     except (json.JSONDecodeError, OSError) as error:
-        return [f"G6 sidecar cannot be read: {error}"]
-    return sidecar_failures(sidecar, expected)
+        return None, [f"G6 sidecar cannot be read: {error}"]
+    return sidecar, sidecar_failures(sidecar, expected)
+
+
+def zoom_required_scale(path, zoom_plan):
+    scales = [row.get("required_capture_scale") for row in zoom_plan
+              if isinstance(row, dict) and row.get("plate") == path]
+    valid = [scale for scale in scales if valid_number(scale, 1.0)]
+    return max(valid, default=None)
+
+
+def zoom_plan_failures(path, sidecar, zoom_plan):
+    required = zoom_required_scale(path, zoom_plan)
+    if required is None:
+        return []
+    if sidecar is None:
+        return [f"G6 zoom plan plate {path} needs a sidecar with render_scale"]
+    actual = sidecar.get("render_scale")
+    if valid_number(actual, 1.0) and actual < required:
+        return [f"G6 sidecar render_scale {actual:g}x is below zoom plan required scale {required:g}x for {path}"]
+    return []
 
 
 def parse_rate(text):
@@ -171,18 +197,19 @@ def load_scene(sid):
     return next(x for x in timeline["scenes"] if x["id"] == sid), timeline["meta"]
 
 
-def plate_failures(path, scene, meta, info, frozen):
+def plate_failures(path, scene, meta, info, frozen, zoom_plan):
     checks = stream_checks(info, meta, scene, path) + picture_checks(path, frozen)
-    sidecar = read_sidecar_failures(path, info) if has_sidecar(path) else []
-    return [msg for ok, msg in checks if not ok] + sidecar
+    sidecar, sidecar_fails = read_sidecar(path, info) if has_sidecar(path) else (None, [])
+    return ([msg for ok, msg in checks if not ok] + sidecar_fails
+            + zoom_plan_failures(path, sidecar, zoom_plan))
 
 
-def gate(sid):
+def gate(sid, zoom_plan=()):
     scene, meta = load_scene(sid)
     path = scene.get("plate", f"captures/{sid}.mp4")
     info = probe(path)
     frozen = longest_frozen_run(path, info["fps"])
-    return info["duration"], plate_failures(path, scene, meta, info, frozen), frozen
+    return info["duration"], plate_failures(path, scene, meta, info, frozen, zoom_plan), frozen
 
 
 CASES = [
@@ -195,7 +222,10 @@ CASES = [
     {"id": "freeze-pass", "source": "testsrc2=size=320x180:rate=60", "seconds": 1.0, "width": 320, "want": []},
     {"id": "freeze-fail", "source": "testsrc2=size=320x180:rate=60,trim=end_frame=1,tpad=stop_mode=clone:stop_duration=1", "seconds": 1.0, "width": 320, "want": ["G5"]},
     {"id": "sidecar-pass", "source": "testsrc2=size=320x180:rate=60", "seconds": 1.0, "width": 320, "plate": True, "want": []},
-    {"id": "sidecar-fail", "source": "testsrc2=size=320x180:rate=60", "seconds": 1.0, "width": 320, "plate": True, "bad_sidecar": True, "want": ["G6 sidecar fields", "G6 sidecar fps", "G6 sidecar frame_count"]},
+    {"id": "sidecar-fail", "source": "testsrc2=size=320x180:rate=60", "seconds": 1.0, "width": 320, "plate": True, "bad_sidecar": True, "want": ["G6 sidecar fields", "G6 sidecar fps", "G6 sidecar frame_count", "G6 sidecar timers_forced"]},
+    {"id": "render-scale-fail", "source": "testsrc2=size=320x180:rate=60", "seconds": 1.0, "width": 320, "plate": True, "render_scale": 0.5, "want": ["G6 sidecar render_scale must"]},
+    {"id": "zoom-plan-pass", "source": "testsrc2=size=320x180:rate=60", "seconds": 1.0, "width": 320, "plate": True, "render_scale": 2.0, "want": []},
+    {"id": "zoom-plan-fail", "source": "testsrc2=size=320x180:rate=60", "seconds": 1.0, "width": 320, "plate": True, "render_scale": 1.0, "want": ["G6 sidecar render_scale 1x is below zoom plan required scale 2x"]},
 ]
 
 
@@ -223,9 +253,11 @@ def sidecar_for(case):
         "key_actions_sec": {"action": 0.5},
         "pixel_facts": {"subject_width_px": 120, "nearest_distance_px": 40},
         "max_frozen_sec": 0.017,
+        "render_scale": case.get("render_scale", 1.0),
+        "timers_forced": ["hit_stop"],
     }
     if case.get("bad_sidecar"):
-        sidecar.update({"fps": 30, "frame_count": 59, "unexpected": True})
+        sidecar.update({"fps": 30, "frame_count": 59, "timers_forced": "hit_stop", "unexpected": True})
     return sidecar
 
 
@@ -236,11 +268,11 @@ def write_metadata(case):
     json.dump(data, open(os.path.splitext(case_path(case))[0] + ".json", "w"))
 
 
-def case_failure(case):
+def case_failure(case, zoom_plan):
     """Gate 1 synthetic case. Return a failure line, or None when the fails match the case."""
     write_clip(case)
     write_metadata(case)
-    _, fails, _ = gate(case["id"])
+    _, fails, _ = gate(case["id"], zoom_plan)
     unexpected, missing = fail_mismatch(case["want"], fails)
     if unexpected or missing:
         return f"{case['id']}: unexpected {unexpected}, missing {missing}"
@@ -260,7 +292,13 @@ def run_cases(root):
     os.makedirs("plates")
     json.dump({"meta": {"fps": 60, "width": 320, "height": 180},
                "scenes": [scene_for(case) for case in CASES]}, open("timeline.json", "w"))
-    return [failure for failure in map(case_failure, CASES) if failure]
+    zoom_plan = [
+        {"scene_id": "zoom-plan-pass", "plate": "plates/zoom-plan-pass.mp4",
+         "zoom_need": 2.0, "required_capture_scale": 2.0},
+        {"scene_id": "zoom-plan-fail", "plate": "plates/zoom-plan-fail.mp4",
+         "zoom_need": 2.0, "required_capture_scale": 2.0},
+    ]
+    return [failure for failure in (case_failure(case, zoom_plan) for case in CASES) if failure]
 
 
 def self_test():
@@ -274,13 +312,18 @@ def self_test():
 
 
 def main():
-    if sys.argv[1:] == ["--self-test"]:
+    parser = argparse.ArgumentParser(description="Gate one captured video plate.")
+    parser.add_argument("scene_id", nargs="?", help="timeline scene id")
+    parser.add_argument("--zoom-plan", help="zoom plan written by check_timeline.py")
+    parser.add_argument("--self-test", action="store_true", help="gate synthetic plates")
+    args = parser.parse_args()
+    if args.self_test:
         sys.exit(self_test())
-    if len(sys.argv) != 2:
-        sys.exit(__doc__)
-    sid = sys.argv[1]
-    duration, fails, frozen = gate(sid)
-    print(json.dumps({"scene_id": sid, "duration_sec": duration,
+    if not args.scene_id:
+        parser.error("give a scene id or --self-test")
+    zoom_plan = json.load(open(args.zoom_plan)) if args.zoom_plan else []
+    duration, fails, frozen = gate(args.scene_id, zoom_plan)
+    print(json.dumps({"scene_id": args.scene_id, "duration_sec": duration,
                       "longest_frozen_run": frozen, "fails": fails}))
     sys.exit(1 if fails else 0)
 

@@ -4,6 +4,34 @@ Use these fields in a `timeline.json` scene when the shot needs them. All
 times are seconds from the scene start. All rectangles use normalized values
 from `0.0` to `1.0`.
 
+## `capture_scale` and the zoom plan
+
+`capture_scale` is the effective plate resolution available to a scene. It is
+a number of at least `1.0` and defaults to `1.0`. Set it high enough that the
+largest `reframe.scale` or `gauge_inset.scale`, divided by `capture_scale`, is
+no more than `1.2`.
+
+The storyboard writes the zoom plan before any capture unit starts:
+
+```sh
+python3 "<skill-dir>/scripts/check_timeline.py" timeline.json --zoom-plan zoom-plan.json
+```
+
+The plan contains 1 row for each scene whose zoom need is above `1.0`. Each
+row names `scene_id`, `plate`, `zoom_need`, and `required_capture_scale`. The
+required scale is `zoom_need / 1.2`, rounded up to `0.5` steps.
+
+```json
+[
+  {
+    "scene_id": "s02-proof",
+    "plate": "plates/s02-proof.mp4",
+    "zoom_need": 2.0,
+    "required_capture_scale": 2.0
+  }
+]
+```
+
 ## `reframe`
 
 `reframe` defines a push-in on a wide plate. It has `scale`, `focal_point`,

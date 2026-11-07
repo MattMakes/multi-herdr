@@ -150,9 +150,9 @@ Extra fields are allowed. The checker ignores them. Add them only when a
 later phase reads them, and write them into `STORYBOARD.md` too.
 
 See `references/scene-fields.md` for optional reframes, proof insets, plate
-holds, UI crops and declared static holds.
+holds, UI crops, declared static holds, `capture_scale`, and the pre-capture zoom plan.
 
-## The 18 plan gates
+## The 19 plan gates
 
 `check_timeline.py` checks these. Each error in `qa/plan-check.json` has a
 `rule`, a `message` and, when it applies, a `scene` id.
@@ -177,6 +177,7 @@ holds, UI crops and declared static holds.
 | 16 | `caption_place` | A supplied `caption_box` stays in the aspect safe area. |
 | 17 | `sync` | With music, cuts are within 0.020 s of a beat and locked actions are within 0.070 s. |
 | 18 | `menu_time` | UI and menu scenes total at most 8 s per 80 s of film, scaled by duration. |
+| 19 | `zoom` | The largest reframe or inset scale divided by `capture_scale` is at most 1.2. See `references/scene-fields.md`. |
 
 ## Fix a failing gate
 

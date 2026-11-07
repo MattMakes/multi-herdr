@@ -2,7 +2,7 @@
 """Numeric plan checker for a video project timeline.json.
 
 Usage:
-  check_timeline.py <timeline.json> [--out <qa/plan-check.json>]
+  check_timeline.py <timeline.json> [--out <qa/plan-check.json>] [--zoom-plan <out.json>]
   check_timeline.py --self-test
 
 Exit 0 when every gate passes, 1 when a gate fails, 2 on a usage error.
@@ -36,6 +36,7 @@ RULES = [
     "event_gap",
     "hero",
     "menu_time",
+    "zoom",
     "directions",
     "materials",
     "schema",
@@ -63,6 +64,8 @@ VERTICAL_CAPTION_BOTTOM, VERTICAL_CAPTION_RIGHT = 0.80, 0.85
 CUT_SYNC_SEC, ACTION_SYNC_SEC = 0.020, 0.070
 MENU_SEC_PER_FILM_SEC = 8.0 / 80.0
 GAUGE_LEAD_MIN_SEC, GAUGE_TAIL_MIN_SEC = 0.3, 1.2
+MAX_RASTER_ZOOM = 1.2
+CAPTURE_SCALE_STEP = 0.5
 MENU_MESSAGE = "ui and menu scenes total %.3f s; the scaled limit is %.3f s (8 s per 80 s of film)"
 ENERGY_MIN, ENERGY_MAX = 0, 10
 MAX_GAP_BARS = 2
@@ -349,6 +352,8 @@ def valid_rect(value, _duration):
 
 
 OPTIONAL_SCENE_FIELDS = (
+    ("capture_scale", lambda value, _duration: is_number(value) and value >= 1.0,
+     "capture_scale must be a number >= 1.0"),
     ("reframe", valid_reframe,
      "reframe must have positive scale, normalized focal_point and 0 <= from_sec < to_sec <= duration_sec"),
     ("gauge_inset", valid_gauge_inset,
@@ -735,6 +740,60 @@ def check_menu_time(meta, scenes, report):
     add_scene_errors(report, "menu_time", errors)
 
 
+def scene_zoom_need(scene):
+    """Return the largest planned reframe or inset scale for one scene."""
+    values = [scene.get(name) for name in ("reframe", "gauge_inset")]
+    scales = [value.get("scale", 1.0) for value in values if isinstance(value, dict)]
+    scales = [scale for scale in scales if is_number(scale)]
+    scales.append(1.0)
+    return max(scales)
+
+
+def required_capture_scale(zoom_need):
+    """Round the capture scale needed by the raster gate up to a 0.5x step."""
+    steps = math.ceil((zoom_need / MAX_RASTER_ZOOM) / CAPTURE_SCALE_STEP)
+    return steps * CAPTURE_SCALE_STEP
+
+
+def check_zoom(scenes, report):
+    for scene in scenes:
+        zoom_need = scene_zoom_need(scene)
+        capture_scale = scene.get("capture_scale", 1.0)
+        if zoom_need / capture_scale > MAX_RASTER_ZOOM:
+            needed = required_capture_scale(zoom_need)
+            report.add(
+                "zoom",
+                "zoom need %.3fx with capture_scale %.3fx needs capture scale %.1fx"
+                % (zoom_need, capture_scale, needed),
+                scene["id"],
+            )
+
+
+def zoom_plan_rows(timeline):
+    """Return one capture request for each scene that plans a zoom above 1.0x."""
+    scenes = timeline.get("scenes", []) if isinstance(timeline, dict) else []
+    rows = []
+    for scene in scenes:
+        if not isinstance(scene, dict):
+            continue
+        zoom_need = scene_zoom_need(scene)
+        if zoom_need > 1.0:
+            rows.append({
+                "scene_id": scene.get("id"),
+                "plate": scene.get("plate"),
+                "zoom_need": zoom_need,
+                "required_capture_scale": required_capture_scale(zoom_need),
+            })
+    return rows
+
+
+def write_zoom_plan(timeline, path):
+    os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as handle:
+        json.dump(zoom_plan_rows(timeline), handle, indent=2)
+        handle.write("\n")
+
+
 def direction_blocks(text):
     """Map each `### D<n>` heading under `## Directions` to its `- Key: value` lines."""
     section = re.search(r"^## Directions[ \t]*$(.*?)(?=^## |\Z)", text, re.M | re.S)
@@ -869,11 +928,11 @@ def run_meta_gates(meta, scenes, report, gates):
 
 SCENE_GATES = (check_hook, check_durations, check_captions)
 META_SCENE_GATES = (check_caption_place,)
-LATE_SCENE_GATES = (check_speaking_rate, check_variety)
+LATE_SCENE_GATES = (check_speaking_rate, check_variety, check_zoom)
 TIMING_GATES = (check_safe_zone, check_timing, check_sync)
 
 
-def run(timeline_path, out_path):
+def run(timeline_path, out_path, zoom_plan_path=None):
     timeline = None
     try:
         with open(timeline_path, encoding="utf-8") as handle:
@@ -883,6 +942,8 @@ def run(timeline_path, out_path):
         errors = [{"rule": "schema", "message": "cannot read timeline: %s" % exc}]
     folder = os.path.dirname(os.path.abspath(timeline_path))
     errors += check_directions(folder) + check_materials(timeline, folder)
+    if zoom_plan_path is not None and timeline is not None:
+        write_zoom_plan(timeline, zoom_plan_path)
     result = {
         "passed": not errors,
         "timeline": os.path.abspath(timeline_path),
@@ -1070,6 +1131,28 @@ def self_test():
                 self.assertEqual(proc.returncode, 0, proc.stdout)
                 self.assertTrue(os.path.isfile(out))
 
+        def test_zoom_plan_writes_only_zoomed_scenes(self):
+            self.scenes[1].update({
+                "capture_scale": 2.0,
+                "reframe": {"scale": 1.6, "focal_point": [0.5, 0.4], "from_sec": 0.0, "to_sec": 1.2},
+                "gauge_inset": {"source_rect": [0.7, 0.05, 0.2, 0.12], "scale": 2.0,
+                                "event_sec": 1.1, "lead_sec": 0.3, "tail_sec": 1.2, "anchor": "top-right"},
+            })
+            with tempfile.TemporaryDirectory() as tmp:
+                path = write_project(tmp, self.timeline)
+                zoom_plan = os.path.join(tmp, "capture", "zoom-plan.json")
+                proc = subprocess.run([sys.executable, script, path, "--zoom-plan", zoom_plan],
+                                      capture_output=True, text=True, timeout=60)
+                self.assertEqual(proc.returncode, 0, proc.stdout)
+                with open(zoom_plan, encoding="utf-8") as handle:
+                    rows = json.load(handle)
+            self.assertEqual(rows, [{
+                "scene_id": "s02-demo",
+                "plate": "captures/s02-demo.mp4",
+                "zoom_need": 2.0,
+                "required_capture_scale": 2.0,
+            }])
+
         def test_1_hook_window(self):
             # The caption still holds 2.0 s after the late reveal, so only the hook fails.
             self.scenes[0]["motion"]["reveal_sec"] = 3.2
@@ -1193,6 +1276,7 @@ def self_test():
 
         def test_8_optional_scene_fields_pass(self):
             self.scenes[1].update({
+                "capture_scale": 2.0,
                 "reframe": {"scale": 1.5, "focal_point": [0.5, 0.4], "from_sec": 0.0, "to_sec": 1.2},
                 "gauge_inset": {"source_rect": [0.7, 0.05, 0.2, 0.12], "scale": 2.0,
                                 "event_sec": 1.1, "lead_sec": 0.3, "tail_sec": 1.2, "anchor": "top-right"},
@@ -1202,6 +1286,21 @@ def self_test():
                 "locked_actions_sec": [0.5, 1.5],
             })
             self.assertEqual(rules_of(self.timeline), set())
+
+        def test_8_capture_scale_schema(self):
+            self.assert_scene_field_fails("capture_scale", 0.99)
+            self.assert_scene_field_fails("capture_scale", True)
+
+        def test_8_zoom_scale_boundary_passes_and_excess_fails(self):
+            reframe = {"scale": 1.5, "focal_point": [0.5, 0.4], "from_sec": 0.0, "to_sec": 1.2}
+            self.scenes[1].update({"reframe": reframe, "capture_scale": 1.25})
+            self.assertEqual(rules_of(self.timeline), set())
+            self.scenes[1]["capture_scale"] = 1.24
+            self.assertEqual(rules_of(self.timeline), {"zoom"})
+            error = next(error for error in check_timeline(self.timeline) if error["rule"] == "zoom")
+            self.assertEqual(error["scene"], "s02-demo")
+            self.assertIn("zoom need 1.500x", error["message"])
+            self.assertIn("needs capture scale 1.5x", error["message"])
 
         def assert_scene_field_fails(self, key, value):
             timeline = valid_timeline()
@@ -1466,13 +1565,14 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description="Check a video timeline.json against the numeric plan gates.")
     parser.add_argument("timeline", nargs="?", help="path to timeline.json")
     parser.add_argument("--out", help="report path (default: <timeline dir>/qa/plan-check.json)")
+    parser.add_argument("--zoom-plan", help="write capture scale requests for every planned zoom")
     parser.add_argument("--self-test", action="store_true", help="run the built-in tests")
     args = parser.parse_args(argv)
     if args.self_test:
         return self_test()
     if not args.timeline:
         parser.error("give a timeline.json path or --self-test")
-    return run(args.timeline, args.out)
+    return run(args.timeline, args.out, args.zoom_plan)
 
 
 if __name__ == "__main__":

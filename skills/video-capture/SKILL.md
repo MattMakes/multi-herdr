@@ -9,7 +9,7 @@ Record product UI and CLI walkthroughs as plates that are the same on every
 run, and record every interaction as telemetry. The audio phase places click
 and key sounds from the telemetry. The editor applies camera zoom from it.
 This skill covers CDP, terminal, and desktop app or engine capture.
-For app and engine staging, isolation, sidecars, and freeze checks, read
+For app and engine staging, zoom plans, forced timers, sidecars, and freeze checks, read
 `<skill-dir>/references/app-engine-capture.md`.
 
 `<skill-dir>` means the directory where this SKILL.md sits. The harness and the
