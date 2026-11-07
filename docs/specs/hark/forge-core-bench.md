@@ -363,3 +363,117 @@ CLI `python eval/forge/scrub_paths.py [FILES] [--check]`: default files are `eva
 `results_*.md`. JSON files are rewritten with indent 1 (a trailing newline kept); other files as text. Print `<file>:
 scrubbed|clean|would change` plus `; left: <up to 3>`. Exit 1 when any file has leftovers or, with `--check`, would
 change.
+
+## 10.3 `build_refsets.py`
+
+Builds the reference sets of part 9 from a local licensed library. Dev machine only. It commits nothing: the cut WAVs,
+the manifest and the registry stay local.
+
+### Inputs
+
+- A sources list (JSON array). Each entry: `id`, `path` (a local file), `title`, `author`, `license`, `page_url`. Ids
+  are `fs-<n>` (Freesound), `mk-<n>` (Mixkit), `vsco-<name>` (the VSCO library).
+- A kit manifest (JSON): `areas[].sounds[]`, each with `name`, `source.path`, `source.trim_s` [t0, t1],
+  `processing.fade_out_s`, and `evidence` (`match_query`, `match_z`, `realness_p`). Kit sounds are re-cut from their
+  source with trim and fades only (no high-pass).
+- The plan table `CATS` (Constants).
+- Outputs: `<repo>/out/refs/<category>/{forge,bench}/*.wav` (PCM 24-bit, 48 kHz), `out/refs/manifest.json`, the
+  registry at `refsets.registry_path()` (or `--registry`), and a find cache `out/refs/_work/find_cache.json`.
+
+CLI: `python eval/forge/build_refsets.py [--cats CAT ...] [--plan] [--registry PATH]`.
+
+### Source family (the split unit)
+
+`family(src)`: `vsco` for any `vsco-` id (one library); `fs-author:<author>` for an `fs-` id (sister takes and packs
+of one author stay together); else the id itself (Mixkit goes file by file). A family may be forge or bench in any
+number of categories, but never forge in one place and bench in another.
+
+### Cut modes
+
+Each plan entry is `kit:<kit sound name>` or `(source id, k, mode)` or `(source id, k, mode, {start, end})`. The
+start / end options limit the searched range in seconds.
+
+1. `kit`: the kit sound's trim of its source. When longer than the category's max length, cap it at the max and use a
+   0.25 s fade out; else the kit's own fade out, or 0.03 s. File name `kit-<name>.wav`.
+2. `find`: run the listen unit's find on the source with the category query, `top` = max(8, 3k), and the range.
+   Cache the segments by `path|query|top|start|end`. Keep the best k segments, by descending score, that pass every
+   test; the first failed test names the rejection:
+   - `edge cut`: find flagged `head cut` or `tail cut`, except a head cut when the segment starts within 30 ms of the
+     range start, or a tail cut when it ends within 30 ms of the range end (a file that starts on the attack is not
+     cut).
+   - `length <d> s`: the duration is outside the category's range.
+   - `z <z> < <zmin>`: z under zmin (2.0; toggle 1.5, because CLAP hears switches only weakly).
+   - `<n> dB under the loudest`: the peak is more than 18 dB under the loudest candidate of the file.
+   - `overlaps a kept trim`: it overlaps a trim already kept from the same source in this split.
+   - Past k kept: `enough kept`.
+   Fade out = min(0.03 s, duration / 4). File name `<id>_<q>.wav` (q from 1). No pick: log `nothing usable`.
+3. `whole`: the one sound in the file (within the range). On 5 ms RMS dB frames (whole frames only, at least 1):
+   p = the loudest; onset = the first frame within 30 dB of p; a = onset start - 5 ms (not below 0); last = the last
+   frame within 45 dB of p; b = end of last + 20 ms (not past the end). When b - a is above the max length: b = a + max,
+   capped, 0.25 s fade out. Else 0.03 s.
+4. `rise`: a crescendo. Walk back from the loudest frame while the previous frame is within 35 dB of the peak and the
+   span stays under (max - 0.3 s). b = the peak + 0.3 s. Fade out 0.25 s.
+   A whole or rise cut shorter than the min length is rejected (`<mode> cut <d> s shorter than the range`).
+
+`export(x, a, b, path, fade_out)`: copy samples [a, b) of the stereo source; linear fade in over min(len / 4, 2 ms);
+linear fade out over max(1, min(len / 3, fade_out)); peak gain to -1 dBFS; write PCM 24-bit. Return the gain in dB (2
+decimals). Nothing else touches the audio.
+
+### Manifest entry per WAV
+
+`file`, `source_id`, `family`, `title`, `author`, `licence`, `page_url`, `source_path`, `trim_s` (3 decimals),
+`fade_in_s` 0.002, `fade_out_s`, `gain_db`, and `evidence`: `how` (`kit trim`, `find`, `whole`, `rise`, with
+` (capped)` when capped); for kit: the kit sound and its match query, match z and realness p; for find: find z,
+verdict, kind, head_db, tail_db, and an `edge` note when a file-edge cut was kept; always the measured frozen `t40_ms`
+and `length_s`; after the category is built, the listen unit's rank of all its files against the query adds `rank_z`,
+`rank_verdict` and `sounds_most_like`. Per category: `query`, `dur`, `note`, `forge`, `bench`, `rejected` (each
+rejection with source id, split, start, end, z, why).
+
+### Run
+
+1. `plan`: for each category and split, print the distinct source ids, and collect the families per split. Print
+   `family leaks: <list>` or `none`. Any leak, or `--plan`, ends the run before audio work.
+2. Read the existing manifest. For each category of `--cats` (default all): delete the files in its split folders,
+   build it, print `forge <n>, bench <n>, rejected <n>`, and write the manifest after each category (so a crash keeps
+   the finished ones).
+3. Keep only plan categories in plan order and write the manifest again.
+4. Registry: `{version 1, built_by, root, categories: {cat: {forge: [files], bench: [files], note}}}`. Run
+   `refsets.check_split(reg, family by file)`. Any problem: exit with `split leak, registry not written: ...`. Else
+   `refsets.write(reg)` and print the path.
+
+### Constants: the plan table
+
+Query (used only to locate and evidence the trims; the benchmark phrasings of 10.1 differ), length range in seconds,
+and the planned entries. `k` is the number of find picks.
+
+| category | query | range s | forge entries | bench entries |
+|---|---|---|---|---|
+| whoosh_fast | a fast crisp whoosh of a stick swung through the air | 0.2-0.9 | kit whoosh_fast_01..04; fs-719636 whole | fs-352719 whole; fs-216675 whole; fs-463763 find 3 |
+| whoosh_big | a big deep heavy whoosh passing by | 0.7-3.2 | kit whoosh_big_01; mk-1167 whole; mk-1168 whole from 0.9 s | kit whoosh_big_02; fs-711122 find 3 in 13.0-19.5 s |
+| swish | a quick light swish of something thrown | 0.12-0.55 | fs-427979 find 4; fs-719637 whole; fs-425856 find 2 | fs-463763 find 4; fs-216675 whole; fs-352719 whole |
+| swipe | a soft cloth swipe, fabric swished quickly | 0.25-1.0 | kit swipe_02; kit whoosh_med_03; fs-425856 find 2 | kit swipe_01; fs-495390 find 3 |
+| riser | a rising swell building up to a loud peak | 1.5-6.0 | kit riser_01 | kit riser_02; fs-425434 rise |
+| downlifter | a falling downlifter sweep sinking away | 1.0-4.0 | none | none |
+| impact | a deep cinematic boom impact hit | 1.0-8.0 | kit impact_01, impact_02 | kit impact_03 |
+| sub_drop | a deep sub bass drop | 1.0-4.0 | none | fs-428073 whole |
+| click | a small plastic button click | 0.03-0.35 | kit ui_click_01..04; fs-167829 find 2; fs-383863 find 2 | mk-1124 whole; mk-2364 whole; fs-610524, fs-461799, fs-431419 find 2 each |
+| tap | a soft finger tap on a hard surface | 0.03-0.3 | kit ui_click_01; fs-704862 find 3; fs-452621 find 3 | fs-631822 find 3; fs-707827 find 3 |
+| toggle (zmin 1.5) | a toggle switch flipped with a crisp click | 0.05-0.45 | kit ui_toggle_01, 02; fs-364200 whole; fs-448393 whole | fs-278205 whole; mk-2585 whole; fs-401803 find 2 up to 5.0 s |
+| hover_tick | a tiny soft tick | 0.012-0.15 | kit ui_tick_01, 02; fs-376195 find 2; fs-329098 find 2 | fs-401803 find 3 from 72.0 s; fs-873306 find 2 up to 5.2 s; fs-326470 find 2 |
+| pop | a short round pop | 0.04-0.5 | kit ui_pop_01..04; mk-3000 whole; fs-543200 find 2 | fs-202230, fs-33369, fs-545201 find 1 each; fs-573152 find 2; mk-3192 whole; mk-3070 whole |
+| notify | a short bright notification ding | 0.4-2.0 | kit ui_notify_01; fs-681787, fs-681789, fs-681792, fs-549899 whole | fs-410636, fs-410649, fs-410664 whole; fs-170237 whole up to 1.3 s; vsco Triangle6-Hit_v1_rr1 whole |
+| shimmer | a magical shimmering chime sweep | 1.0-6.0 | kit shimmer_02; fs-271355 find 1; mk-2014 whole; fs-495327 find 2 | kit shimmer_01; fs-257558 find 1; vsco BellTree_Stroke1 whole; vsco glock_fx_up_chromatic_slow_01 whole |
+| typing_key | a single mechanical keyboard key press | 0.06-0.45 | kit kb_thock_01..04, kb_enter_01, kb_space_01, kb_click_01, 02, kb_enter_02; fs-561697, fs-561699 find 1; fs-709460, fs-665075 find 2 | fs-378083, fs-378084, fs-378085, fs-570754, fs-766639, fs-766640, fs-515810 find 1; fs-609534 find 3; fs-815614 find 2 |
+| glitch | a digital glitch stutter | 0.1-1.0 | none | none |
+| logo_sting | a struck chime ringing out, a logo sting | 1.0-6.0 | kit sting_tail_01; mk-3108 whole | vsco Triangle6-Hit_v1_rr1 whole; fs-170237 whole up to 1.3 s |
+
+Category notes (the registry `note`, in our words): whoosh_big forge is designed Mixkit whooshes and bench is real air
+and cape swoops; swipe is cloth only; riser is thin (one designed riser, bench two real cymbal swells); downlifter and
+glitch are empty (trim and fade only, so no reversing or pitching of other sounds), and their made sounds get only the
+phrasing, AudioSet and artifact checks; impact is thin (3 hits, all used by v1 as refs, one held out); sub_drop has one
+designed source held out as bench; notify refs are struck bells, glass, kalimba, celesta and triangle, capped at 2 s;
+shimmer_01 is bench because its author also recorded a notify bench ref; logo_sting refs are struck rings (tail shape
+and tone only, since real stings are composed).
+
+Rule kept from the source: the sources that the first-version recipes used as refs are on the forge side, so the
+bench is held out from those recipes too.
