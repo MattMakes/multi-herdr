@@ -495,7 +495,7 @@ Source model values (facts, for checking a rebuild):
 | C | clap 0.001, signal 0.1 |
 | signal coefficients (standardised) | silence_frac -0.107, floor_db 0.318, quiet_flat 0.898, pitch_wobble 0.199, env_resid_db 0.007, crest_db 0.756, all others 0 |
 | training clips | 2198 (1484 clean: 691 real, 793 synth; 714 augmented) |
-| groups | ambience, cinetic, film, foley, garden, generic, keyboard, magic, motion, music:ch, music:mk, music:other, music:sb, retired, toy |
+| groups (15; one synth-engine group renamed here to `engine`) | ambience, engine, film, foley, garden, generic, keyboard, magic, motion, music:ch, music:mk, music:other, music:sb, retired, toy |
 
 Source facts (feature, side, op, value, precision, support):
 
