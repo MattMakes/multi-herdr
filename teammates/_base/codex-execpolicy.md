@@ -40,6 +40,8 @@ rules:
     justification: run the finish steps, then land and push the worker's work
   - pattern: '"horch", "ledger", "done"'
     justification: finish the worker's task and close its pane
+  - pattern: '"horch", "ledger", "handoff"'
+    justification: hand the worker's task to a fresh worker and close its pane
   - pattern: '"horch", "ledger", "add"'
     decision: forbidden
     justification: a worker never queues a task, and its check command would run unsandboxed

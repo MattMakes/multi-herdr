@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use anyhow::{Context, Result};
-use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior};
+use rusqlite::{Connection, OpenFlags, OptionalExtension, Transaction, TransactionBehavior};
 
 use super::schema;
 
@@ -156,6 +156,18 @@ impl Store {
         })
     }
 
+    /// Open an existing ledger without creating, migrating, or changing its
+    /// journal settings. Read-only commands use this in a sandbox.
+    pub fn open_read_only(path: &Path) -> Result<Store> {
+        let conn = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)
+            .with_context(|| format!("opening the task ledger {} read-only", path.display()))?;
+        conn.busy_timeout(BUSY_TIMEOUT)?;
+        Ok(Store {
+            conn,
+            path: path.to_path_buf(),
+        })
+    }
+
     /// The file this store reads and writes.
     pub fn path(&self) -> &Path {
         &self.path
@@ -218,6 +230,20 @@ mod tests {
         drop(store);
         // Reopening is a no-op migration.
         Store::open(&path).unwrap();
+    }
+
+    #[test]
+    fn read_only_open_reads_without_accepting_a_write() {
+        let dir = temp();
+        let path = dir.path().join("ledger.sqlite3");
+        drop(Store::open(&path).unwrap());
+        let store = Store::open_read_only(&path).unwrap();
+        let version: i64 = store
+            .conn()
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(version, schema::VERSION);
+        assert!(store.conn().execute("PRAGMA user_version = 0", []).is_err());
     }
 
     #[test]

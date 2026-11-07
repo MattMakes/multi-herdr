@@ -5,6 +5,7 @@
 //! the board (`status`, `show`). The old session-ledger plumbing lives under
 //! `horch ledger legacy`.
 
+use horch_core::taskledger::tasks::ONE_OFF_TICKET;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
@@ -307,6 +308,9 @@ pub enum WorktreeCommand {
         reason: String,
         #[arg(long)]
         keep_branch: bool,
+        /// The run that owns the worktree. Default: this worker's run.
+        #[command(flatten)]
+        run: RunArg,
     },
 }
 
@@ -1105,21 +1109,33 @@ fn worktree_cmd(
             name,
             reason,
             keep_branch,
-        } => drop_worktree_cmd(store, &git, &wid, &name, &reason, keep_branch)?,
+            run,
+        } => {
+            let run_id = drop_run_id(ctx, store, &wid, &run)?;
+            drop_worktree_cmd(store, &git, &run_id, &name, &reason, keep_branch)?
+        }
     }
     Ok(ExitCode::SUCCESS)
+}
+
+/// The run whose worktree `drop` looks for: `--run`, else the worker's run.
+fn drop_run_id(ctx: &RuntimeContext, store: &Store, wid: &str, run: &RunArg) -> Result<String> {
+    if named_run(run).is_some() {
+        return Ok(resolve_run(ctx, store, run)?.run_id);
+    }
+    workers::get(store.conn(), wid)?
+        .run_id
+        .context("worker has no run")
 }
 
 fn drop_worktree_cmd(
     store: &mut Store,
     git: &Git,
-    wid: &str,
+    run_id: &str,
     name: &str,
     reason: &str,
     keep_branch: bool,
 ) -> Result<()> {
-    let worker = workers::get(store.conn(), wid)?;
-    let run_id = worker.run_id.as_deref().context("worker has no run")?;
     let wt =
         taskledger::worktree_ops::drop_worktree(store, git, run_id, name, reason, keep_branch)?;
     output::println(&format!("abandoned: {} ({reason})", wt.path));
@@ -2142,6 +2158,7 @@ fn facts_of(root: &Path, file: &str) -> map::TicketFacts {
 /// The task `add` queues: what a flag names, else what the ticket says.
 fn new_task(root: &Path, file: String, facts: map::TicketFacts, a: AddArgs) -> NewTask {
     let review_mode = facts.review_mode();
+    let (check_none, land_check) = resolve_check(a.check, facts.check_none, facts.check);
     NewTask {
         title: a.title.unwrap_or_else(|| ticket_title(&root.join(&file))),
         task_file: file,
@@ -2158,8 +2175,8 @@ fn new_task(root: &Path, file: String, facts: map::TicketFacts, a: AddArgs) -> N
         } else {
             WorktreeMode::Worktree
         },
-        check_none: a.check.is_none() && facts.check_none,
-        land_check: a.check.or(facts.check),
+        check_none,
+        land_check,
         kind: TaskKind::Work,
         parent_task_id: None,
         blocked_by: a.blocked_by,
@@ -2172,6 +2189,22 @@ fn new_task(root: &Path, file: String, facts: map::TicketFacts, a: AddArgs) -> N
         work_kind: facts.kind,
         review_mode,
         ticket_snapshot: None,
+    }
+}
+
+/// The task's (check_none, land_check) from a `--check` flag and the
+/// ticket's `**Check:**` line. The flag value `none` means no check, the same
+/// as `**Check:** none`. It is never a shell command, and it overrides a
+/// ticket command. Without the flag, the ticket decides.
+fn resolve_check(
+    flag: Option<String>,
+    ticket_none: bool,
+    ticket_check: Option<String>,
+) -> (bool, Option<String>) {
+    match flag {
+        Some(c) if c.trim() == "none" => (true, None),
+        Some(c) => (false, Some(c)),
+        None => (ticket_none, ticket_check),
     }
 }
 
@@ -2199,10 +2232,6 @@ fn add(ctx: &RuntimeContext, store: &mut Store, a: AddArgs) -> Result<ExitCode> 
     ));
     Ok(ExitCode::SUCCESS)
 }
-
-/// The ticket file name of a one-off task that has no ticket file. Its
-/// snapshot holds the title.
-const ONE_OFF_TICKET: &str = "(one-off: no ticket file)";
 
 fn task_cmd(ctx: &RuntimeContext, store: &mut Store, a: TaskArgs) -> Result<ExitCode> {
     let (run, primary) = queue_one_off_in(ctx, store, a)?;
@@ -2255,21 +2284,17 @@ fn one_off_task(ctx: &RuntimeContext, root: &Path, a: TaskArgs) -> Result<NewTas
     if a.title.trim().is_empty() {
         bail!("a task needs a title");
     }
-    let check_none = a.check.as_deref().map(str::trim) == Some("none");
-    let check = a.check.filter(|_| !check_none);
     let Some(file) = a.file else {
         let mut new = NewTask::work(&a.title, ONE_OFF_TICKET, &a.persona);
         new.ticket_snapshot = Some(format!("# {}\n", a.title.trim()));
-        new.check_none = check_none;
-        new.land_check = check;
+        (new.check_none, new.land_check) = resolve_check(a.check, false, None);
         return Ok(new);
     };
     let file = ticket_path(root, &file, &cwd_or_root(ctx, root))?;
     let facts = facts_of(root, &file);
     let mut new = NewTask::work(&a.title, &file, &a.persona);
-    new.check_none = check_none || (check.is_none() && facts.check_none);
     new.review_mode = facts.review_mode();
-    new.land_check = check.or(facts.check);
+    (new.check_none, new.land_check) = resolve_check(a.check, facts.check_none, facts.check);
     new.work_kind = facts.kind;
     new.own = facts.own;
     new.no_touch = facts.no_touch;
@@ -3958,7 +3983,8 @@ mod tests {
 
         let (check, land) = land_one_off(dir.path(), &ctx, &mut store, &root);
         assert_eq!(check.status, StepStatus::NotApplicable, "{check:?}");
-        assert_eq!(land.status, StepStatus::Passed, "{land:?}");
+        // A worktree task with no worktree changed no file: nothing lands (T-5).
+        assert_eq!(land.status, StepStatus::NotApplicable, "{land:?}");
     }
 
     #[test]

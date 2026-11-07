@@ -645,9 +645,11 @@ fn work_dir(wt: Option<&WorktreeRow>, root: &Path) -> PathBuf {
         .unwrap_or_else(|| root.to_path_buf())
 }
 
-/// A task that uses a worktree finishes only once it has one.
+/// A task that uses a worktree finishes only once it has one. A one-off
+/// `--check none` task with no worktree changed no file (the worktree
+/// steward, T-5): its steps run on the checkout and land nothing.
 fn require_worktree(task: &Task, wt: Option<&WorktreeRow>) -> Result<()> {
-    if task.uses_worktree() && wt.is_none() {
+    if task.uses_worktree() && wt.is_none() && !task.is_no_change_one_off() {
         bail!(
             "{} has no worktree. Make it with horch ledger worktree new <name>, work and commit there, then run finish",
             task.short()
