@@ -680,3 +680,99 @@ than min(finals, bench refs). No growth possible: exit `cannot build <n> trials:
    row (the last one tried otherwise).
 7. Sides: half the trials real-as-A, the rest B (an odd count gets one extra A when a coin flip from a generator seeded
    with [seed, 3] says so), then permuted with the same generator. Store `real_is`.
+
+### Build the blind test
+
+`build_blind(out, n, seed, quiet=False, allow_fail=False, dry_run=False)`:
+1. Fingerprint (size, modification time) every PLAN final and bench ref.
+2. trials = pick_trials(n, seed). Clock t = LEAD.
+3. For each trial i (from 1): load both; trim the pair; match the levels; made x 10^((g + gc) / 20), real x
+   10^(gc / 20). Measure both clips (pre-roll = the first 4 ms). Run the cleanliness check with the real gain gc.
+   Put the real clip on side `real_is`. A starts at round(t, 2) and B at round(A start + A length + GAP, 2): the
+   sheet times are exact on a 10 ms grid. Also make `t<NN>_A.wav` and `t<NN>_B.wav` with 0.25 s of silence on each
+   side. Next t = round(B start + B length + BETWEEN, 2).
+4. Key entry per trial: trial, category, sound, tier, A_start, B_start, lengths of A and B, `real` (A or B), the real
+   and made files (repo-relative), source reused, clean-trim flags, the file lengths and audible extents, class, onset
+   and end levels, both trim fact sets, the pool the made final was drawn from, a text that names the match method,
+   made gain, pair gain, the peak-cap drop, the levels as played, the fails and warnings, the category note, and the
+   md5 of both files.
+5. Fingerprint again. Any change: exit with `input files changed while building (...)`, nothing written. A polish
+   round may be writing finals. The folder keeps its previous complete build.
+6. Total length = t - BETWEEN + TAIL. Place the clips into one zero buffer of round(total x SR) + 1 frames. Check that
+   every sample outside the clips is exactly 0 (else a FAIL `gaps are not digital silence`) and that no sample is above
+   10^(TP_MAX / 20) + 1e-6 (else a FAIL).
+7. Summary: status PASS or FAIL, trials, pairs with fails, pairs with warnings, the max of loudest-moment difference,
+   meter difference, true peak, true-peak difference, pre-roll level, floor as played, length ratio; the min floor
+   margin; gaps silent; all fails and warnings (each prefixed `trial <i> (<sound>):`).
+8. `--dry-run`: print a one-line status with the fails and warnings, write nothing, return.
+9. Any FAIL without `--allow-fail`: print `CLEANLINESS FAIL (nothing written; ...)` and the fails, exit code 2.
+10. Check that the key and the cleanliness record serialise to JSON before anything is replaced. Delete the old
+    `t*_[AB].wav`, write the trial files and `blind_test.wav` (48 kHz, PCM 24-bit stereo; every sample must be
+    finite).
+11. Verify from the written files: read each trial file back, drop the 0.25 s pads, and measure again the pair-measure
+    difference and the max true peak. Store them as `verified_from_written_files`. Above the FAIL limits: status FAIL
+    with `the written trial files do not hold the matched levels`.
+12. Write `cleanliness.json` (indent 1): a short text that says no answers are inside, the FAIL and WARN limits, the
+    method in 3 short texts (trim, level, floor), the summary and the symmetric rows.
+13. Write `KEY_open_after.json`: seed, built time, trials (the key), excluded categories, the cleanliness summary, a
+    `how` text, and `residual_signs_made_vs_real`: for the other loudness window (eps 0.1 LU), the meter (0.1 LU), the
+    true peak (0.5 dB) and the length (log ratio, eps ln 1.1), the counts of trials where the made clip is more, less
+    or the same.
+14. Write `score_answers.py` (below).
+15. Write `answer_sheet.txt`: listening instructions in our words (A then B per trial; one is a real recording, the
+    other was made entirely in code by the forge; write which one is real, or `?`; do not open the key first; both are
+    trimmed alike, play equally loud at their loudest moment, and the real ones come from a held-out set); the scoring
+    command with the trial count; the chance line `By chance you would get about <n/2> of <n> right; <k05> or more is
+    unlikely by luck (p = <p>)`, where k05 is the smallest k with P(at least k of n by guessing) < 0.05; the cleanliness
+    paragraph (status, max loudest-moment difference, max true peak, the fade facts, floors and margin, warnings
+    count), wrapped at 112 columns; a table of trial, sound, A start, B start and a blank `____`; and the total length,
+    format and counts. Print it unless quiet, with the warnings.
+
+For n = 20, k05 = 15 and p = 0.021 (P(>= 14) = 0.058).
+
+### `score_answers.py` (written into the test folder)
+
+`python score_answers.py A B B A ...`: one letter per trial in trial order (commas allowed), A or B for the side the
+listener thinks is real, `?` for undecided. A wrong count or letter exits with a usage message. It reads
+`KEY_open_after.json` beside itself. It prints per trial: the trial number, sound, answer, the real side, `right`,
+`wrong` or `skipped`, and both file names. Then per sound `<k> of <n> right`; per tier (strong, middle, weak) `<k> of
+<n> right (p = ...)`; overall `<k> of <n> right; ... p = ...` with p = the one-sided binomial P(at least k of n) =
+sum over i >= k of C(n, i) / 2^n. A `?` is left out of n. It prints that p < 0.05 means the listener can tell made from
+real for at least some sounds, and otherwise the test could not show it. When P(at most k of n) < 0.05 it adds that so
+few right is itself unlikely: the listener heard the made sounds as real more often than not.
+
+### The progress file
+
+`build_progress(pdir, results_path=None, quiet=False)` (skipped with `--dry-run` or `--only blind`; default folder
+`<out>/../progress`):
+- V1 sounds (answer name, category, first-version final folder, file stem): key press / typing_key, UI click / click,
+  pop / pop, fast whoosh / whoosh_fast, impact / impact. Their finals are `<stem>_01.wav` and `<stem>_02.wav`.
+- Results: the first-version results `eval/forge/results_v1.json` and the newest `eval/forge/results_v2r<N>.json`
+  (largest N), or `--results`. None found: exit.
+- Listening file `v1_vs_v2.wav`: per sound, v1 final 1, its nearest v2 final, v1 final 2, its nearest v2 final (each v2
+  final used once). Nearest = the smallest RMS dB distance of the frozen tone profiles + 6 x |log2(extent ratio)|. The
+  4 sounds of a group are set to TARGET on the pair measure of the group class (long when any sound is 1 s or more),
+  and one common drop per group keeps every true peak at or under -1 dBTP. 1 s between sounds, 3 s between groups
+  (2 s added after the 1 s), lead 1 s, tail 1 s. `progress.txt` lists every start, version, loudest level, true peak,
+  file and the nearest distance. `progress.json` lists the picks with gains.
+- `progress.md`: per V1 sound a table of 13 checks (label, v1 median, v2 median, real loo, real x, verdict), plus the
+  inside row (`more` / `fewer` / `same` with a 0.4 step on the medians). A stale warning names categories whose
+  finals changed after the v2 results were made (a different file set, or a file modified more than 60 s after the
+  results' `created` time). A `KEPT_*.txt` marker in a final folder adds its stem to the heading. A closing table
+  counts better / worse model-free checks per sound, and a short "how to read" list in our words: verdicts compare
+  against the real rows; model checks saturate and are only up / down; the inside row mixes 4 model and 3 model-free
+  checks; first-version impact numbers are optimistic; the blind test decides.
+- Checks (key, rule, eps): var_cos span 0.01; tone_db low 0.3; env_oct low 0.03; curve_db low 0.5; t40_ratio one
+  0.03; artifacts low 0.5; stereo_corr span 0.02; floor_db span 1.0; darken span 0.05; typ_z, phrase_z, margin,
+  as_names model 0.05. For var_cos the real values are the bench and forge diversity cos_mean.
+- `verdict(rule, a, b, reals, eps)` (reals = the real loo and real x values, Nones dropped; empty when a or b is None):
+  - model: `up` when b > a + eps, `down` when b < a - eps, else `same`; add ` (v1 sat above the real rows)` when a >
+    max(reals).
+  - low: dist(v) = max(0, v - min(reals)) (min 0 with no reals).
+  - one: lo = min(1, reals), hi = max(1, reals); dist(v) = max(0, ln(lo / max(v, 1e-3)), ln(max(v, 1e-3) / hi)).
+  - span: no reals gives ''; dist(v) = max(0, min - v, v - max).
+  - Both distances 0: `same (both within the real rows)`. Else `better` when dist(b) < dist(a) - eps, `worse` when
+    dist(b) > dist(a) + eps, else `same`.
+
+CLI options: `--out`, `--progress`, `--seed` (default 2026), `--n` (20), `--results`, `--only blind|progress`,
+`--allow-fail`, `--dry-run`. Relative paths are relative to the repo.
