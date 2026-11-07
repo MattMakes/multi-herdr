@@ -20,22 +20,47 @@ class BeatError(Exception):
 
 def _decode(path):
     """Decode path to mono signed 16-bit PCM."""
-    if not shutil.which("ffmpeg"):
-        raise BeatError("ffmpeg is not on PATH")
-    proc = subprocess.run(
-        ["ffmpeg", "-hide_banner", "-v", "error", "-i", path, "-ac", "1",
-         "-ar", str(RATE), "-f", "s16le", "-"],
-        capture_output=True, check=False,
-    )
-    if proc.returncode != 0:
-        tail = proc.stderr.decode(errors="replace")[-300:]
-        raise BeatError(f"ffmpeg cannot decode {path}: {tail}")
-    samples = array.array("h")
-    samples.frombytes(proc.stdout[:len(proc.stdout) // 2 * 2])
-    if sys.byteorder == "big":
-        samples.byteswap()
+    raw = _ffmpeg_pcm(path)
+    samples = _pcm_samples(raw)
     if len(samples) < RATE:
         raise BeatError("beat measurement needs at least 1 second of audio")
+    return samples
+
+
+def _ffmpeg_pcm(path):
+    """Return mono PCM bytes decoded by ffmpeg."""
+    _require_ffmpeg()
+    proc = subprocess.run(_ffmpeg_command(path), capture_output=True, check=False)
+    _require_decode(proc, path)
+    return proc.stdout
+
+
+def _require_ffmpeg():
+    """Require ffmpeg on PATH."""
+    binary = shutil.which("ffmpeg")
+    if not binary:
+        raise BeatError("ffmpeg is not on PATH")
+
+
+def _ffmpeg_command(path):
+    """Return the command that decodes path for beat analysis."""
+    return ["ffmpeg", "-hide_banner", "-v", "error", "-i", path, "-ac", "1",
+            "-ar", str(RATE), "-f", "s16le", "-"]
+
+
+def _require_decode(proc, path):
+    """Raise a beat error when ffmpeg did not decode path."""
+    tail = proc.stderr.decode(errors="replace")[-300:]
+    if proc.returncode != 0:
+        raise BeatError(f"ffmpeg cannot decode {path}: {tail}")
+
+
+def _pcm_samples(raw):
+    """Return native-endian signed 16-bit samples from little-endian bytes."""
+    samples = array.array("h")
+    samples.frombytes(raw[:len(raw) // 2 * 2])
+    if sys.byteorder == "big":
+        samples.byteswap()
     return samples
 
 
@@ -62,7 +87,26 @@ def _tempo_lag(flux):
 
 def _phase(flux, lag):
     """Return the strongest beat phase in frames."""
-    return max(range(lag), key=lambda phase: sum(flux[phase::lag]))
+    scores = [sum(flux[phase::lag]) for phase in range(lag)]
+    return max(range(lag), key=scores.__getitem__)
+
+
+def _beat_times(first_sec, step_sec, duration_sec):
+    """Return measured beat times through the audio duration."""
+    count = math.floor((duration_sec - first_sec) / step_sec) + 1
+    return [round(first_sec + index * step_sec, 6) for index in range(count)]
+
+
+def _grid(lag, phase, sample_count):
+    """Build a grid from the measured lag and phase."""
+    step_sec = lag * HOP / RATE
+    beats = _beat_times(phase * HOP / RATE, step_sec, sample_count / RATE)
+    return {
+        "tempo_bpm": round(60.0 / step_sec, 4),
+        "bar_sec": round(BEATS_PER_BAR * step_sec, 6),
+        "beats_sec": beats,
+        "downbeats_sec": beats[::BEATS_PER_BAR],
+    }
 
 
 def measure(path):
@@ -70,18 +114,4 @@ def measure(path):
     samples = _decode(path)
     flux = _flux(samples)
     lag = _tempo_lag(flux)
-    phase = _phase(flux, lag)
-    step_sec = lag * HOP / RATE
-    duration_sec = len(samples) / RATE
-    first_sec = phase * HOP / RATE
-    beats = []
-    beat = first_sec
-    while beat <= duration_sec + 1e-9:
-        beats.append(round(beat, 6))
-        beat += step_sec
-    return {
-        "tempo_bpm": round(60.0 / step_sec, 4),
-        "bar_sec": round(BEATS_PER_BAR * step_sec, 6),
-        "beats_sec": beats,
-        "downbeats_sec": beats[::BEATS_PER_BAR],
-    }
+    return _grid(lag, _phase(flux, lag), len(samples))

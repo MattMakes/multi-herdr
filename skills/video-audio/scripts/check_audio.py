@@ -383,21 +383,29 @@ def check_cut_peaks(mix, timeline, errors):
 def check_bed_beats(path, timeline, errors):
     """Measure path and check every timeline cut against its nearest beat."""
     measured = measure_beats(path)
-    beats = measured["beats_sec"]
-    entries = []
-    for cut in _cut_times(timeline):
-        nearest = min(beats, key=lambda beat: abs(beat - cut))
-        entries.append({"cut_sec": cut, "nearest_beat_sec": nearest,
-                        "drift_sec": round(abs(cut - nearest), 6)})
+    entries = [_bed_beat_entry(cut, measured["beats_sec"]) for cut in _cut_times(timeline)]
     worst = max(entries, key=lambda entry: entry["drift_sec"], default=None)
-    if worst and worst["drift_sec"] > BED_BEAT_TOLERANCE_SEC:
-        _err(errors, "bed.beat_alignment",
-             f"worst cut drift is {worst['drift_sec']:.3f} s at {worst['cut_sec']:.3f} s; "
-             f"the nearest measured bed beat is {worst['nearest_beat_sec']:.3f} s "
-             f"(tolerance {BED_BEAT_TOLERANCE_SEC:.3f} s)")
+    _check_worst_bed_beat(worst, errors)
     return {"tempo_bpm": measured["tempo_bpm"], "cuts": entries,
             "worst_drift_sec": worst["drift_sec"] if worst else 0.0,
             "worst_cut_sec": worst["cut_sec"] if worst else None}
+
+
+def _bed_beat_entry(cut, beats):
+    """Return the nearest measured beat and drift for 1 cut."""
+    nearest = min(beats, key=lambda beat: abs(beat - cut))
+    return {"cut_sec": cut, "nearest_beat_sec": nearest,
+            "drift_sec": round(abs(cut - nearest), 6)}
+
+
+def _check_worst_bed_beat(worst, errors):
+    """Record an error when the worst cut exceeds the tolerance."""
+    if not worst or worst["drift_sec"] <= BED_BEAT_TOLERANCE_SEC:
+        return
+    _err(errors, "bed.beat_alignment",
+         f"worst cut drift is {worst['drift_sec']:.3f} s at {worst['cut_sec']:.3f} s; "
+         f"the nearest measured bed beat is {worst['nearest_beat_sec']:.3f} s "
+         f"(tolerance {BED_BEAT_TOLERANCE_SEC:.3f} s)")
 
 
 def sync_points(path):
@@ -714,7 +722,8 @@ def write_report(report, out):
         handle.write("\n")
 
 
-def main(argv=None):
+def _parser():
+    """Return the command-line parser."""
     parser = argparse.ArgumentParser(description="Check audio/mix.wav against the Phase 3 gates.")
     parser.add_argument("mix", nargs="?", help="path to audio/mix.wav")
     parser.add_argument("--timeline", help="timeline.json with meta.duration_sec")
@@ -729,27 +738,57 @@ def main(argv=None):
     parser.add_argument("--measure-sfx", help="print the sync points of every .wav in a folder")
     parser.add_argument("--out", help="write the JSON report here, e.g. qa/audio-check.json")
     parser.add_argument("--self-test", action="store_true", help="run the built-in tests")
-    args = parser.parse_args(argv)
-    if args.self_test:
-        return self_test()
-    try:
-        if args.measure_sfx:
-            print(json.dumps(measure_sfx(args.measure_sfx), indent=2))
-            return 0
-        if not args.mix:
-            parser.error("give a mix path, --measure-sfx or --self-test")
-        if args.sync_sheet and not args.timeline:
-            parser.error("--sync-sheet needs --timeline")
-        if args.bed_beats and not args.timeline:
-            parser.error("--bed-beats needs --timeline")
-        report = check(args.mix, args.timeline, args.beats, args.sync_sheet, args.sfx_cues,
-                       args.sfx_bus, args.bed, args.music, args.bed_beats)
-    except (BeatError, ToolError, OSError) as exc:
-        print(json.dumps({"passed": False, "errors": [{"rule": "input", "message": str(exc)}]}))
-        return 2
+    return parser
+
+
+def _validate_cli(parser, args):
+    """Reject incomplete combinations of command-line options."""
+    missing_mix = not args.mix
+    missing_sync_timeline = args.sync_sheet and not args.timeline
+    missing_bed_timeline = args.bed_beats and not args.timeline
+    if missing_mix:
+        parser.error("give a mix path, --measure-sfx or --self-test")
+    if missing_sync_timeline:
+        parser.error("--sync-sheet needs --timeline")
+    if missing_bed_timeline:
+        parser.error("--bed-beats needs --timeline")
+
+
+def _print_sfx(folder):
+    """Print measured effect sync points and return success."""
+    print(json.dumps(measure_sfx(folder), indent=2))
+    return 0
+
+
+def _run_gate(args):
+    """Run the audio gate, write its report, and return its exit code."""
+    report = check(args.mix, args.timeline, args.beats, args.sync_sheet, args.sfx_cues,
+                   args.sfx_bus, args.bed, args.music, args.bed_beats)
     write_report(report, args.out)
     print(json.dumps(report, indent=2))
     return 0 if report["passed"] else 1
+
+
+def _run_cli(parser, args):
+    """Run the command selected by parsed arguments."""
+    if args.self_test:
+        return self_test()
+    if args.measure_sfx:
+        return _print_sfx(args.measure_sfx)
+    _validate_cli(parser, args)
+    return _run_gate(args)
+
+
+def main(argv=None):
+    parser = _parser()
+    return _run_cli(parser, parser.parse_args(argv))
+
+
+def _input_error(exc):
+    """Print an input error and return exit code 2."""
+    error = {"passed": False, "errors": [{"rule": "input", "message": str(exc)}]}
+    print(json.dumps(error))
+    return 2
 
 
 # ---------------------------------------------------------------- self-test
@@ -1013,4 +1052,7 @@ def self_test():
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    try:
+        sys.exit(main())
+    except (BeatError, ToolError, OSError) as exc:
+        sys.exit(_input_error(exc))
