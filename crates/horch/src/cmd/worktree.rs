@@ -157,7 +157,7 @@ fn triage_root(ctx: &RuntimeContext, git: &Git) -> Result<PathBuf> {
 pub fn triage_rows(ctx: &RuntimeContext, measure: Measure) -> Result<Vec<triage::Row>> {
     let git = Git::new(&ctx.bins.harness.git);
     let root = triage_root(ctx, &git)?;
-    match taskledger::open_existing(ctx)? {
+    match taskledger::open_existing_read_only(ctx)? {
         Some(store) => triage::collect(store.conn(), &git, &root, measure),
         None => triage::collect_without_ledger(&git, &root, measure),
     }

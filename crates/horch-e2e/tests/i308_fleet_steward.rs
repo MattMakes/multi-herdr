@@ -40,6 +40,25 @@ fn ok(h: &Harness, args: &[&str]) -> String {
     String::from_utf8_lossy(&o.stdout).into_owned()
 }
 
+fn as_worker(h: &Harness, worker: &str, args: &[&str]) -> std::process::Output {
+    h.horch(args)
+        .env("HORCH_WORKER_ID", worker)
+        .output()
+        .unwrap()
+}
+
+fn worker_ok(h: &Harness, worker: &str, args: &[&str]) -> String {
+    let o = as_worker(h, worker, args);
+    assert!(o.status.success(), "horch {}: {}", args.join(" "), text(&o));
+    String::from_utf8_lossy(&o.stdout).into_owned()
+}
+
+fn git(h: &Harness, dir: &std::path::Path, args: &[&str]) -> String {
+    let o = h.git_cmd(args).current_dir(dir).output().unwrap();
+    assert!(o.status.success(), "git {}: {}", args.join(" "), text(&o));
+    String::from_utf8_lossy(&o.stdout).trim().to_string()
+}
+
 /// A run whose task T-1 was cancelled with its worktree on disk: the
 /// worktree is `abandoned`.
 fn abandoned_worktree(h: &Harness) -> PathBuf {
@@ -61,15 +80,8 @@ fn abandoned_worktree(h: &Harness) -> PathBuf {
     let w = ok(h, &["ledger", "worker", "new", "--persona", "opus"])
         .trim()
         .to_string();
-    let as_worker = |args: &[&str]| {
-        let mut cmd = h.horch(args);
-        cmd.env("HORCH_WORKER_ID", &w);
-        let o = cmd.output().unwrap();
-        assert!(o.status.success(), "horch {}: {}", args.join(" "), text(&o));
-        String::from_utf8_lossy(&o.stdout).into_owned()
-    };
-    as_worker(&["ledger", "claim"]);
-    let said = as_worker(&["ledger", "worktree", "new", "f"]);
+    worker_ok(h, &w, &["ledger", "claim"]);
+    let said = worker_ok(h, &w, &["ledger", "worktree", "new", "f"]);
     ok(h, &["ledger", "cancel", "T-1", "not needed now"]);
     PathBuf::from(said.lines().find_map(|l| l.strip_prefix("path: ")).unwrap())
 }
@@ -119,6 +131,31 @@ fn a_fleet_with_an_abandoned_worktree_spawns_the_worktree_steward() {
 }
 
 #[test]
+fn a_codex_fallback_steward_can_write_the_ledger_directory() {
+    let mut h = harness("i308-codex-state");
+    h.set(
+        "HORCH_QUOTA_FILE",
+        fixtures()
+            .join("quota/claude-exhausted-codex-ok.json")
+            .to_string_lossy(),
+    );
+    abandoned_worktree(&h);
+    fleet(&h);
+    let steward = launches(&h)
+        .into_iter()
+        .find(|line| line.contains("worktree-steward"))
+        .unwrap();
+    assert!(
+        steward.contains("permissions.fleet_write.workspace_roots"),
+        "{steward}"
+    );
+    assert!(
+        steward.contains(h.root.to_string_lossy().as_ref()),
+        "{steward}"
+    );
+}
+
+#[test]
 fn a_fleet_with_no_parked_worktree_spawns_no_steward() {
     let h = harness("i308-no-steward");
     let said = fleet(&h);
@@ -126,4 +163,120 @@ fn a_fleet_with_no_parked_worktree_spawns_no_steward() {
     let runs = launches(&h);
     assert_eq!(runs.len(), 1, "only the orchestrator: {runs:#?}");
     assert!(!runs[0].contains("worktree-steward"), "{runs:#?}");
+}
+
+#[test]
+fn triage_delete_accepts_a_clean_detached_head_reachable_from_a_branch() {
+    let h = harness("i308-detached-reachable");
+    let path = abandoned_worktree(&h);
+    git(&h, &path, &["checkout", "--detach"]);
+    let listed: serde_json::Value =
+        serde_json::from_str(&ok(&h, &["worktree", "triage", "--json"])).unwrap();
+    let row = &listed["rows"].as_array().unwrap()[0];
+    let id = row["id"].as_str().unwrap();
+    let name = row["name"].as_str().unwrap();
+    let reply = h.root.join("reply.md");
+    std::fs::write(
+        &reply,
+        format!(
+            "| ID | Worktree | Suggested | Decision | Direction |\n|----|----------|-----------|----------|-----------|\n| {id} | {name} | DELETE | DELETE | |\n"
+        ),
+    )
+    .unwrap();
+    ok(
+        &h,
+        &["worktree", "triage", "apply", &reply.to_string_lossy()],
+    );
+    assert!(!path.exists());
+}
+
+#[test]
+fn triage_delete_refuses_a_detached_unique_commit() {
+    let h = harness("i308-detached-unique");
+    let path = abandoned_worktree(&h);
+    git(&h, &path, &["checkout", "--detach"]);
+    std::fs::write(path.join("unique.txt"), "unique\n").unwrap();
+    git(&h, &path, &["add", "unique.txt"]);
+    git(&h, &path, &["commit", "-q", "-m", "unique detached"]);
+    let listed: serde_json::Value =
+        serde_json::from_str(&ok(&h, &["worktree", "triage", "--json"])).unwrap();
+    let row = &listed["rows"].as_array().unwrap()[0];
+    let reply = h.root.join("reply.md");
+    std::fs::write(
+        &reply,
+        format!(
+            "| ID | Worktree | Suggested | Decision | Direction |\n|----|----------|-----------|----------|-----------|\n| {} | {} | DELETE | DELETE | |\n",
+            row["id"].as_str().unwrap(),
+            row["name"].as_str().unwrap()
+        ),
+    )
+    .unwrap();
+    let o = h.run(&["worktree", "triage", "apply", &reply.to_string_lossy()]);
+    assert!(!o.status.success(), "{}", text(&o));
+    assert!(
+        text(&o).contains("detached at a unique commit"),
+        "{}",
+        text(&o)
+    );
+    assert!(path.exists());
+}
+
+#[test]
+fn a_worker_can_drop_a_clean_worktree_from_an_explicit_other_run() {
+    let h = harness("i308-cross-run-drop");
+    let path = abandoned_worktree(&h);
+    ok(&h, &["ledger", "run", "new", "beta"]);
+    let worker = ok(
+        &h,
+        &[
+            "ledger",
+            "worker",
+            "new",
+            "--persona",
+            "opus",
+            "--run",
+            "beta",
+        ],
+    )
+    .trim()
+    .to_string();
+    worker_ok(
+        &h,
+        &worker,
+        &[
+            "ledger",
+            "worktree",
+            "drop",
+            path.file_name().unwrap().to_str().unwrap(),
+            "--run",
+            "alpha",
+            "--reason",
+            "steward cleanup",
+        ],
+    );
+    assert!(!path.exists());
+}
+
+#[test]
+fn the_no_change_steward_task_finishes_without_a_worktree() {
+    let h = harness("i308-no-worktree-finish");
+    abandoned_worktree(&h);
+    fleet(&h);
+    let board: serde_json::Value =
+        serde_json::from_str(&ok(&h, &["ledger", "status", "--run", "solo-w1", "--json"])).unwrap();
+    let worker = board["workers"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|w| w["worker"]["persona"] == "worktree-steward")
+        .and_then(|w| w["worker"]["worker_id"].as_str())
+        .unwrap();
+    worker_ok(&h, worker, &["ledger", "claim"]);
+    let finished = worker_ok(&h, worker, &["ledger", "finish", "--wait"]);
+    assert!(finished.contains("every finish step passed"), "{finished}");
+    worker_ok(&h, worker, &["ledger", "done", "triage complete"]);
+    let board: serde_json::Value =
+        serde_json::from_str(&ok(&h, &["ledger", "status", "--run", "solo-w1", "--json"])).unwrap();
+    assert_eq!(board["tasks"][0]["task"]["status"], "done");
+    assert!(board["worktrees"].as_array().unwrap().is_empty());
 }

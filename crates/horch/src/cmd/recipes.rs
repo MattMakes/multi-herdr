@@ -514,6 +514,7 @@ fn steward_task(parked: usize) -> Result<super::taskledger::TaskArgs> {
         WORKTREE_STEWARD,
         "--check",
         "none",
+        "--shared",
     ];
     Ok(<Task as clap::Parser>::try_parse_from(argv)?.args)
 }
@@ -1466,6 +1467,8 @@ mod tests {
         assert_eq!(queued[0].title, "parked worktrees: 3");
         assert_eq!(queued[0].claimable_by.as_deref(), Some(WORKTREE_STEWARD));
         assert_eq!(queued[0].status, "queued");
+        assert!(!queued[0].uses_worktree());
+        assert!(queued[0].check_none);
         assert_eq!(run.run_id, all[0].run_id);
 
         let args = steward_spawn_args("w7:p1", &run.slug);

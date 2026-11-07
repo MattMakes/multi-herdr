@@ -66,6 +66,9 @@ The decision values:
 - KEEP: change nothing now. The row comes back at the next triage.
 - DELETE: keep the work at a trash ref for 30 days, then remove the folder
   and the branch. horch ledger gc deletes the trash ref after 30 days.
+- When you drop a registered worktree outside triage, use
+  `horch ledger worktree drop <name> --run <slug> --reason <reason>` with the
+  row's run. The steward's own run does not own other runs' worktrees.
 Rules for the suggestion:
 - A superseded row suggests DELETE.
 - A row with conflicts above 0 suggests FINISH or ARCHIVE. Never suggest LAND

@@ -307,6 +307,9 @@ pub enum WorktreeCommand {
         reason: String,
         #[arg(long)]
         keep_branch: bool,
+        /// The run that owns the worktree. Default: this worker's run.
+        #[command(flatten)]
+        run: RunArg,
     },
 }
 
@@ -489,6 +492,9 @@ pub struct TaskArgs {
     /// check. Default: the ticket's `**Check:**`.
     #[arg(long)]
     check: Option<String>,
+    /// Run without a worktree. A no-change task can finish only with --check none.
+    #[arg(long)]
+    shared: bool,
 }
 
 /// The project root a command means: the main checkout of the repository
@@ -1105,23 +1111,31 @@ fn worktree_cmd(
             name,
             reason,
             keep_branch,
-        } => drop_worktree_cmd(store, &git, &wid, &name, &reason, keep_branch)?,
+            run,
+        } => drop_worktree_cmd(ctx, store, &git, &wid, &name, &reason, keep_branch, &run)?,
     }
     Ok(ExitCode::SUCCESS)
 }
 
 fn drop_worktree_cmd(
+    ctx: &RuntimeContext,
     store: &mut Store,
     git: &Git,
     wid: &str,
     name: &str,
     reason: &str,
     keep_branch: bool,
+    run: &RunArg,
 ) -> Result<()> {
-    let worker = workers::get(store.conn(), wid)?;
-    let run_id = worker.run_id.as_deref().context("worker has no run")?;
+    let run_id = if named_run(run).is_some() {
+        resolve_run(ctx, store, run)?.run_id
+    } else {
+        workers::get(store.conn(), wid)?
+            .run_id
+            .context("worker has no run")?
+    };
     let wt =
-        taskledger::worktree_ops::drop_worktree(store, git, run_id, name, reason, keep_branch)?;
+        taskledger::worktree_ops::drop_worktree(store, git, &run_id, name, reason, keep_branch)?;
     output::println(&format!("abandoned: {} ({reason})", wt.path));
     Ok(())
 }
@@ -2259,6 +2273,9 @@ fn one_off_task(ctx: &RuntimeContext, root: &Path, a: TaskArgs) -> Result<NewTas
     let check = a.check.filter(|_| !check_none);
     let Some(file) = a.file else {
         let mut new = NewTask::work(&a.title, ONE_OFF_TICKET, &a.persona);
+        if a.shared {
+            new.worktree_mode = WorktreeMode::Shared;
+        }
         new.ticket_snapshot = Some(format!("# {}\n", a.title.trim()));
         new.check_none = check_none;
         new.land_check = check;
@@ -2267,6 +2284,9 @@ fn one_off_task(ctx: &RuntimeContext, root: &Path, a: TaskArgs) -> Result<NewTas
     let file = ticket_path(root, &file, &cwd_or_root(ctx, root))?;
     let facts = facts_of(root, &file);
     let mut new = NewTask::work(&a.title, &file, &a.persona);
+    if a.shared {
+        new.worktree_mode = WorktreeMode::Shared;
+    }
     new.check_none = check_none || (check.is_none() && facts.check_none);
     new.review_mode = facts.review_mode();
     new.land_check = check.or(facts.check);
@@ -3769,6 +3789,7 @@ mod tests {
             persona: "opus".into(),
             file: file.map(Path::to_path_buf),
             check: check.map(str::to_string),
+            shared: false,
         }
     }
 
