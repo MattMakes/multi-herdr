@@ -181,61 +181,91 @@ def has_exact_fields(value, fields):
 
 
 def check_scene_schema(scene, label, report):
+    for message in scene_schema_errors(scene):
+        report.add("schema", message, label)
+
+
+def scene_schema_errors(scene):
     if not isinstance(scene, dict):
-        report.add("schema", "scene must be an object", label)
-        return
-    for check in (check_scene_identity, check_scene_holds, check_scene_text, check_scene_layout,
-                  check_optional_scene_fields):
-        check(scene, label, report)
+        return ["scene must be an object"]
+    errors = [message for valid, message in SCENE_RULES if not valid(scene)]
+    duration = scene.get("duration_sec")
+    optional = [message for key, valid, message in OPTIONAL_SCENE_FIELDS
+                if key in scene and not valid(scene[key], duration)]
+    return errors + optional
 
 
-def check_scene_identity(scene, label, report):
-    if not non_empty_str(scene.get("id")):
-        report.add("schema", "id must be a non-empty string", label)
-    if scene.get("kind") not in KINDS:
-        report.add("schema", "kind must be one of %s" % sorted(KINDS), label)
-    for key in ("start_sec", "duration_sec"):
-        if not is_number(scene.get(key)) or scene.get(key) < 0:
-            report.add("schema", "%s must be a number >= 0" % key, label)
+def scene_number_at_least_0(key):
+    return lambda scene: is_number(scene.get(key)) and scene[key] >= 0
 
 
-def check_scene_holds(scene, label, report):
-    if "duration_override_reason" in scene and not isinstance(scene["duration_override_reason"], str):
-        report.add("schema", "duration_override_reason must be a string when present", label)
-    if "static_hold" in scene and not isinstance(scene["static_hold"], bool):
-        report.add("schema", "static_hold must be a boolean when present", label)
-    if scene.get("static_hold") is True and not non_empty_str(scene.get("static_hold_reason")):
-        report.add("schema", "static_hold true needs a non-empty static_hold_reason string", label)
-    if "static_hold_reason" in scene and not isinstance(scene["static_hold_reason"], str):
-        report.add("schema", "static_hold_reason must be a string when present", label)
+def scene_optional_type(key, kind):
+    return lambda scene: key not in scene or isinstance(scene[key], kind)
 
 
-def check_scene_text(scene, label, report):
+def scene_string(key):
+    return lambda scene: isinstance(scene.get(key), str)
+
+
+def scene_non_empty_string(key):
+    return lambda scene: non_empty_str(scene.get(key))
+
+
+def has_static_hold_reason(scene):
+    return scene.get("static_hold") is not True or non_empty_str(scene.get("static_hold_reason"))
+
+
+def has_on_screen_text(scene):
     text = scene.get("on_screen_text", [])
-    if not (isinstance(text, list) and all(non_empty_str(t) for t in text)):
-        report.add("schema", "on_screen_text must be a list of non-empty strings when present", label)
-    for key in ("narration", "caption"):
-        if not isinstance(scene.get(key), str):
-            report.add("schema", "%s must be a string (empty allowed)" % key, label)
-    for key in ("plate", "transition_out"):
-        if not non_empty_str(scene.get(key)):
-            report.add("schema", "%s must be a non-empty string" % key, label)
+    return isinstance(text, list) and all(non_empty_str(t) for t in text)
 
 
-def check_scene_layout(scene, label, report):
+def has_beat_range(scene):
     beat_in, beat_out = scene.get("beat_in"), scene.get("beat_out")
-    if not (is_int(beat_in) and is_int(beat_out) and 0 <= beat_in <= beat_out):
-        report.add("schema", "beat_in and beat_out must be integers with 0 <= beat_in <= beat_out", label)
+    return is_int(beat_in) and is_int(beat_out) and 0 <= beat_in <= beat_out
+
+
+def has_motion_template(scene):
     motion = scene.get("motion")
-    if not isinstance(motion, dict) or not non_empty_str(motion.get("template")):
-        report.add("schema", "motion must be an object with a non-empty template", label)
-    elif "reveal_sec" in motion and not at_least(motion, "reveal_sec", 0):
-        report.add("schema", "motion.reveal_sec must be a number >= 0 when present", label)
+    return isinstance(motion, dict) and non_empty_str(motion.get("template"))
+
+
+def has_valid_reveal(scene):
+    motion = scene.get("motion")
+    if not has_motion_template(scene) or "reveal_sec" not in motion:
+        return True
+    return at_least(motion, "reveal_sec", 0)
+
+
+def has_critical_regions(scene):
     regions = scene.get("critical_regions")
-    if not isinstance(regions, list) or not all(check_box(r, 4) for r in regions):
-        report.add("schema", "critical_regions must be a list of [x, y, w, h] number lists", label)
-    if not is_normalized_point(scene.get("focal_point")):
-        report.add("schema", "focal_point must be [x, y] with values in [0.0, 1.0]", label)
+    return isinstance(regions, list) and all(check_box(r, 4) for r in regions)
+
+
+def has_focal_point(scene):
+    return is_normalized_point(scene.get("focal_point"))
+
+
+SCENE_RULES = (
+    (scene_non_empty_string("id"), "id must be a non-empty string"),
+    (lambda scene: scene.get("kind") in KINDS, "kind must be one of %s" % sorted(KINDS)),
+    (scene_number_at_least_0("start_sec"), "start_sec must be a number >= 0"),
+    (scene_number_at_least_0("duration_sec"), "duration_sec must be a number >= 0"),
+    (scene_optional_type("duration_override_reason", str), "duration_override_reason must be a string when present"),
+    (scene_optional_type("static_hold", bool), "static_hold must be a boolean when present"),
+    (has_static_hold_reason, "static_hold true needs a non-empty static_hold_reason string"),
+    (scene_optional_type("static_hold_reason", str), "static_hold_reason must be a string when present"),
+    (has_on_screen_text, "on_screen_text must be a list of non-empty strings when present"),
+    (has_beat_range, "beat_in and beat_out must be integers with 0 <= beat_in <= beat_out"),
+    (scene_string("narration"), "narration must be a string (empty allowed)"),
+    (scene_string("caption"), "caption must be a string (empty allowed)"),
+    (scene_non_empty_string("plate"), "plate must be a non-empty string"),
+    (scene_non_empty_string("transition_out"), "transition_out must be a non-empty string"),
+    (has_motion_template, "motion must be an object with a non-empty template"),
+    (has_valid_reveal, "motion.reveal_sec must be a number >= 0 when present"),
+    (has_critical_regions, "critical_regions must be a list of [x, y, w, h] number lists"),
+    (has_focal_point, "focal_point must be [x, y] with values in [0.0, 1.0]"),
+)
 
 
 def is_normalized_point(value):
@@ -301,13 +331,6 @@ OPTIONAL_SCENE_FIELDS = (
     ("locked_actions_sec", valid_locked_actions,
      "locked_actions_sec must be a list of scene-relative seconds inside the scene"),
 )
-
-
-def check_optional_scene_fields(scene, label, report):
-    duration = scene.get("duration_sec")
-    for key, valid, message in OPTIONAL_SCENE_FIELDS:
-        if key in scene and not valid(scene[key], duration):
-            report.add("schema", message, label)
 
 
 def check_schema(timeline, report):
