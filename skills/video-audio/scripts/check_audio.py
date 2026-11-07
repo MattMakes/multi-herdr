@@ -29,7 +29,9 @@ CHANNELS = 2
 DURATION_TOLERANCE_SEC = 0.05
 LUFS_MIN = -15.0
 LUFS_MAX = -13.0
-TRUE_PEAK_MAX_DBTP = -1.0
+TRUE_PEAK_MAX_DBTP = -2.0
+CUT_PEAK_MAX_DBFS = -3.0
+CUT_PEAK_RADIUS_SEC = 0.020
 EDGE_SILENCE_MAX_SEC = 0.20
 DROPOUT_MAX_SEC = 0.80
 ALLOWED_SILENCE_SLACK_SEC = 0.05
@@ -299,12 +301,12 @@ def check_sync_sheet(sheet, timeline, duration, errors):
 
 # ---------------------------------------------------------------- sample analysis
 
-def _pcm(path, audio_filter=None):
-    """Decode path to mono signed 16-bit samples at ANALYSIS_RATE."""
+def _pcm(path, audio_filter=None, rate=ANALYSIS_RATE):
+    """Decode path to mono signed 16-bit samples at the selected rate."""
     cmd = ["ffmpeg", "-hide_banner", "-v", "error", "-i", path]
     if audio_filter:
         cmd += ["-af", audio_filter]
-    cmd += ["-ac", "1", "-ar", str(ANALYSIS_RATE), "-f", "s16le", "-"]
+    cmd += ["-ac", "1", "-ar", str(rate), "-f", "s16le", "-"]
     try:
         proc = subprocess.run(cmd, capture_output=True, check=False)
     except FileNotFoundError as exc:
@@ -330,6 +332,29 @@ def _rms_db(samples, start_sec, end_sec):
 def _levels(samples, window_sec):
     count = int(len(samples) / (window_sec * ANALYSIS_RATE))
     return [_rms_db(samples, k * window_sec, (k + 1) * window_sec) for k in range(count)]
+
+
+def check_cut_peaks(mix, timeline, errors):
+    """Check the sample peak within 20 ms on each scene cut."""
+    scenes = timeline.get("scenes", []) if isinstance(timeline, dict) else []
+    cuts = sorted({float(scene["start_sec"]) for scene in scenes
+                   if isinstance(scene, dict) and _is_num(scene.get("start_sec"))
+                   and scene["start_sec"] > 0})
+    if not cuts:
+        return []
+    samples = _pcm(mix, rate=SAMPLE_RATE)
+    results = []
+    for cut in cuts:
+        lo = max(0, int((cut - CUT_PEAK_RADIUS_SEC) * SAMPLE_RATE))
+        hi = min(len(samples), math.ceil((cut + CUT_PEAK_RADIUS_SEC) * SAMPLE_RATE))
+        peak = max((abs(value) for value in samples[lo:hi]), default=0) / 32768.0
+        peak_dbfs = 20 * math.log10(peak) if peak else -math.inf
+        results.append({"sec": cut, "peak_dbfs": None if math.isinf(peak_dbfs) else round(peak_dbfs, 2)})
+        if peak_dbfs > CUT_PEAK_MAX_DBFS:
+            _err(errors, "mix.cut_peak",
+                 f"peak within {CUT_PEAK_RADIUS_SEC * 1000:.0f} ms of the cut at {cut:.3f} s is "
+                 f"{peak_dbfs:.2f} dBFS; it must be <= {CUT_PEAK_MAX_DBFS} dBFS")
+    return results
 
 
 def sync_points(path):
@@ -561,6 +586,8 @@ def check(mix, timeline_path=None, beats_path=None, sync_path=None, cues_path=No
     timeline = _load_json(timeline_path) if timeline_path else {}
     _check_format(info, timeline, bool(timeline_path), errors)
     _check_loudness(metrics, errors)
+    if timeline_path:
+        metrics["cut_peaks"] = check_cut_peaks(mix, timeline, errors)
 
     beats = _load_json(beats_path) if beats_path else None
     if beats_path:
@@ -579,7 +606,9 @@ def check(mix, timeline_path=None, beats_path=None, sync_path=None, cues_path=No
     for key in ("integrated_lufs", "true_peak_dbtp"):
         if math.isinf(metrics[key]):
             metrics[key] = None
-    return {"passed": not errors, "file": mix, "errors": errors, "metrics": metrics}
+    return {"passed": not errors, "file": mix, "errors": errors, "metrics": metrics,
+            "notes": ["Keep the WAV at or below -2.0 dBTP because AAC adds about +1 dB.",
+                      "video-render measures the encoded MP4 at or below -1.0 dBTP."]}
 
 
 def write_report(report, out):
@@ -800,7 +829,15 @@ def self_test():
 
         burst = f"{tone}+if(between(t,1.5,1.52),0.8*sin(2*PI*3000*t),0)"
         _synth(p("hot.wav"), burst, 4, -14.0)
-        expect("fail true peak > -1.0 dBTP", check(p("hot.wav")), ["loudness.true_peak"])
+        expect("fail true peak > -2.0 dBTP", check(p("hot.wav")), ["loudness.true_peak"])
+
+        _render(p("cut-hot.wav"),
+                "0.12*sin(2*PI*440*t)+if(between(t,1.99,2.01),0.85*sin(2*PI*3000*t),0)", 4)
+        _write(p("cuts.json"), {"meta": {"duration_sec": 4.0}, "scenes": [
+            {"id": "a", "start_sec": 0.0}, {"id": "b", "start_sec": 2.0}]})
+        expect("fail a cut peak above -3.0 dBFS", check(p("cut-hot.wav"), p("cuts.json")),
+               ["mix.cut_peak"])
+        expect("pass cut peaks below -3.0 dBFS", check(p("good.wav"), p("cuts.json")), [])
 
         gap = f"if(between(t,1.8,3.0),0,{tone})"
         _synth(p("gap.wav"), gap, 5, -14.0)
