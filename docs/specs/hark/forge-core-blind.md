@@ -299,3 +299,43 @@ few right is itself unlikely: the listener heard the made sounds as real more of
 
 CLI options: `--out`, `--progress`, `--seed` (default 2026), `--n` (20), `--results`, `--only blind|progress`,
 `--allow-fail`, `--dry-run`. Relative paths are relative to the repo.
+
+## Errors and edge cases
+
+- Fewer finals than planned trials, or no unused bench ref left: exit with an error that names the category.
+- Inputs that change during the build: exit, nothing written, the previous build stays.
+- A cleanliness FAIL: exit code 2 and nothing written, unless `--allow-fail` (then the files say FAIL).
+- A bench ref whose source recording is not on this machine has no floor; the floor checks are skipped for it.
+- A file without a 4 ms lead before its onset is zero-padded at the front.
+- A pair where both sounds build to their end (risers) keeps the files' own endings with a 2 ms safety fade.
+- The answer key is never opened by the build output that a listener reads first: `cleanliness.json` holds only
+  differences, maxima and sorted pairs.
+
+## Data assets
+
+The made finals and the bench refs are inputs (part 10 data assets). The written test folder is REGENERATE: one
+command rebuilds it from the current finals.
+
+## Acceptance tests
+
+BT1. `allocate(20)` gives the PLAN counts (6 categories with 2, 8 with 1; sum 20). `allocate(14)` gives 1 to each.
+BT2. `pick_trials(20, 2026)` twice gives the same trials, order and sides; exactly 10 have `real_is` A; no category is
+     next to itself; no bench ref digest is used twice.
+BT3. With n = 20 the answer sheet says 15 or more is unlikely by luck with p = 0.021.
+BT4. `score_answers.py` with every answer right prints `20 of 20 right` and p = 0.000 (9.5e-7); with every answer
+     wrong it also prints the note that so few right is itself unlikely; a `?` lowers n by 1; 19 letters exit with
+     the usage message.
+BT5. `match_pair`: after the gains, the two clips' loud_max on the pair window differ by under 0.01 LU and the higher
+     true peak is at or under -1 dBTP.
+BT6. `cut` with L_on -40 and L_end -40 on a struck sine with a 1 s exponential decay: the clip starts 4 ms before the
+     onset with a raised-cosine fade in, ends where the envelope last stands at -40 dB, and its fade out is at least
+     5 ms.
+BT7. `pair_levels` caps both levels at -6 dB; with no floors, heads or reaches above -50 the levels are -50.
+BT8. A built test folder has `blind_test.wav`, `answer_sheet.txt`, `cleanliness.json`, `KEY_open_after.json`,
+     `score_answers.py` and 2 trial files per trial; every sample outside the clips of `blind_test.wav` is exactly 0;
+     `cleanliness.json` contains no `real` or `made` side for any trial.
+BT9. The written trial files, read back, give a max loudest-moment difference <= 0.5 LU (source: 0.00 LU) and a max
+     true peak <= -0.95 dBTP.
+BT10. Touching a final during a build (a changed modification time) makes the build exit without writing.
+BT11. `verdict('low', 10, 8, [9, 12], 0.3)` is `better`; `verdict('low', 8, 7, [9, 12], 0.3)` is `same (both within
+      the real rows)`; `verdict('model', 2.0, 1.0, [0.5], 0.05)` is `down (v1 sat above the real rows)`.
