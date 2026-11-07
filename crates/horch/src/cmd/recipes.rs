@@ -146,7 +146,7 @@ impl FleetFlavor {
             FleetFlavor::Opus | FleetFlavor::Auto => "opus",
             FleetFlavor::Fable => "fable",
             FleetFlavor::Astra => "gpt-6-astra",
-            FleetFlavor::Sol => "gpt-5.6-sol",
+            FleetFlavor::Sol => "gpt-6.1-sol",
         }
     }
 
@@ -1538,7 +1538,7 @@ mod tests {
             (
                 FleetFlavor::Sol,
                 PaneKind::FleetCodexOrchestrator,
-                "gpt-5.6-sol",
+                "gpt-6.1-sol",
             ),
         ] {
             assert_eq!(flavor.pane_kind(), kind, "{flavor}");
