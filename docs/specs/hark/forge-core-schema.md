@@ -42,10 +42,10 @@ Rule: every delivered sound re-renders from its report.json alone, sample for sa
 | `mode` | the critic mode the pick was chosen in (`designed`, `real` ...), or null |
 | `peak_db` | float; the render is peak-normalised to this first (-1.0) |
 | `gain_db` | float, 2 decimals: the gain after normalisation (palette loudness match; 0.0 for a plain forge pick) |
-| `gain` | optional exact linear gain, when the writer knew it (palette). Else the gain is 10^(gain_db / 20). |
+| `gain` | optional exact linear gain, written when it is known (palette). Without it, the gain is 10^(gain_db / 20). |
 
 The written WAV equals float32(normalise(fn(params, rng(seed)), peak_db) x gain), stored as PCM 24-bit. A re-render
-matches it to one 24-bit step (about 1.2e-7).
+must equal it within one 24-bit step (about 1.2e-7).
 
 ### CLI
 

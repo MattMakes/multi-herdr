@@ -45,16 +45,16 @@ Each SPACE key maps to a unit coordinate in [0, 1], in SPACE order.
   log: (ln max(v, 1e-12) - ln lo) / (ln hi - ln lo); linear and int: (v - lo) / (hi - lo). Clip to [0, 1].
 - Inside test: a choice is inside when the list holds it; a range when lo <= v <= hi and, for int, v is integral. A
   type error means outside.
-- Clip to a numeric spec: the nearest value in [lo, hi], rounded for int; None for a choice list or a value that is
-  not a number.
+- Clip to a numeric spec: the nearest value in [lo, hi], rounded for int; None for a choice list or a non-numeric
+  value.
 - `midrange(spec)` = the decode of 0.5.
 
 ### `recipe_defaults(recipe)`
 
 own = the object's DEFAULTS. Find the module that defines the object's `render` (unwrap a partial). When that module
 is not the object itself and has a dict SPACE and a dict DEFAULTS, return module DEFAULTS overlaid by own. Else own.
-A stand-in object (a family member whose DEFAULTS is one preset, a driver's final-pass object) still reaches the
-recipe module's DEFAULTS this way.
+So a stand-in object (for example a family member whose DEFAULTS hold one preset, or the object of a driver's final
+pass) still gets the recipe module's DEFAULTS.
 
 ### `fill_start(space, start, defaults, own=None)`
 
@@ -135,7 +135,7 @@ Construction:
    env + 0.75 polish penalties.
 4. With refs: tone_db = RMS(profile - median) (2 decimals); tone_ratio = tone_db / spread (3 decimals); env_z per key
    = (vector - median) / sd (2 decimals); env_pen = mean over env_keys (default t40, crest, end) of max(0, |z| -
-   1.5) (both directions: a tail that dies too fast counts); pre = -(tone_ratio + env_w env_pen + art).
+   1.5) (both signs count, so a tail that is too short is penalised too); pre = -(tone_ratio + env_w env_pen + art).
 5. Without refs: pre = -art.
 6. The row holds `art`, `desc`, and the keys above. Higher pre is better.
 
@@ -214,8 +214,8 @@ rendered_per_min (1 decimal).
 
 Design note (source measurements on a key-press recipe with 2 render threads): at 96-240 scored candidates CMA-ES
 did not beat the ES. On a model-free proxy objective, ES -1.23 vs CMA -1.26 to -1.36 at 96, and -1.136 vs -1.154 at
-240. With the real critic (2 seeds, 96): best 6.55 vs 6.03, top-5 mean 5.77 vs 5.30. Elitist and small-mu CMA
-variants were worse. The pre-screen is what helps: ES with a 48-render pre-screen raised the passing candidates from
+240. With the real critic (2 seeds, 96): best 6.55 vs 6.03, top-5 mean 5.77 vs 5.30. Elitist CMA and CMA with a small mu
+scored lower still. The gain comes from the pre-screen: ES with a 48-render pre-screen raised the passing candidates from
 10.5 to 36.5 of 96 and the top-5 mean from 5.77 to 6.17 (CMA with the pre-screen: 25.5 and 5.92). The text-audio
 model is about 70 % of a generation's time; the measurements cost about 10 ms a sound (45 ms with polish).
 
@@ -281,8 +281,8 @@ dicts.
    new entries come first).
 7. Write atomically (temporary file `<path>.tmp<pid>`, then replace), indent 1. Create the folder when missing.
 
-Reason for pins: before pins, a delivered member could be pushed out by higher-scoring attempts that were never
-delivered (one category kept 1 of its 5 delivered members).
+Reason for pins: without them, attempts that scored higher but were never delivered could push a delivered member
+out of the bank (one category kept 1 of its 5 delivered members).
 
 `report_members(report)`: for each pick, a dict of its `score`, `robust`, `seed`, `family`, `preset`, `member`,
 `name` (present ones), with `params` = the pick's `family_params` overlaid by its `params`, and `score` default {}.

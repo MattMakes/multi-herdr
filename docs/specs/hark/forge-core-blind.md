@@ -4,12 +4,12 @@ Index: [forge-core.md](forge-core.md). This part covers the script `eval/forge/b
 benchmark, the refset build and the target numbers.
 
 Builds a clean A/B listening test: forge finals against held-out real recordings of the same category. It also builds
-a "progress" listening file (first version against second version). Nothing is synthesised: every sound is an existing
-file (forge finals, first-version finals, bench refs), only trimmed, faded, gain-changed and placed on silence. There
-are no markers, beeps or voice. Trials are separated by silence.
+a "progress" listening file (first version against second version). The script makes no new sound. It takes
+existing files (forge finals, first-version finals, bench refs) and only cuts them, fades them, changes their gain and
+puts them on silence. The output has no beeps, spoken cues or other markers between trials, only silence.
 
-Main rule: nothing but the sound itself may give the answer away. A real recording carries a room floor and a made
-sound sits on digital silence, so neither clip may play any floor before or after its sound. Both clips must play
+Main rule: a listener may use only the sound itself to decide. Real recordings have background noise from the room;
+made sounds start and end in digital silence. So no clip may play background noise before or after its sound. Both clips must play
 equally loud at their loudest moment.
 
 CLI: `python eval/forge/blind_v2.py [--out DIR] [--n 20] [--seed S] [--dry-run] [--allow-fail] [--progress DIR]`.
@@ -29,7 +29,7 @@ Default out `out/showcase/blind_v2`. `--dry-run` checks cleanliness and writes n
 | name | value | meaning |
 |---|---|---|
 | LEAD, GAP, BETWEEN, TAIL | 1.0, 1.2, 2.5, 1.0 s | silence before trial 1, between A and B, between trials, after the last |
-| COMPAT | 1.3 | a made final is length-compatible when its audible extent is within this factor of an available bench ref |
+| COMPAT | 1.3 | max ratio between a made final's audible extent and the nearest unused bench ref's extent |
 | ON_DB, END_DB | -50, -50 dB | the lowest onset and end levels |
 | REACH_MARGIN, FLOOR_MARGIN, HEAD_MARGIN | 3, 10, 1 dB | margins added to reach, floor and head |
 | LEVEL_CAP | -6 dB | onset and end levels never go above this |
@@ -73,11 +73,11 @@ Weak categories are in the test on purpose, so the test is honest.
 
 Excluded categories and why (written to the key): logo_sting (its bench refs are a triangle hit and a struck ring, the
 same files as the notify bench, so a pair would test form, not realism); downlifter and glitch (no bench refs);
-sub_drop (one bench ref, a designed tom pitched down 24 semitones, not a recording of a real event); every `pro_*`
+sub_drop (its only bench ref is a tom that its author lowered by 24 semitones, so it is designed, not a real event); every `pro_*`
 category (its refs are trims of launch films, mostly under music or voice, so no clean A/B is possible).
 Notes per category for the listener: the impact bench ref is a library cinematic hit (designed by a person from
-recordings); riser bench refs are real cymbal swells while the made risers are designed; swish bench refs are the same
-files as three whoosh_fast bench refs (each used once).
+recordings); riser bench refs are real cymbal swells while the made risers are designed; three whoosh_fast bench refs also serve
+as the swish bench refs (the test uses each file once).
 
 ## Audio measures
 
@@ -104,8 +104,8 @@ files as three whoosh_fast bench refs (each used once).
   has none.
 - `source_floor(p)`: the recording floor of a bench ref, measured in its source recording. Read the source from 20 s
   before the trim to 20 s after (inside the file). Power per 50 ms frame. Drop frames at or under 2e-10 (digital
-  silence, -100 dB). Floor = the 5th percentile x 10^(gain_db / 10) (the trim's gain). None when the source is not on
-  this machine. Cached per path.
+  silence, -100 dB). Floor = the 5th percentile x 10^(gain_db / 10) (the trim's gain). The result is None when the
+  source file is absent. Cached per path.
 - `end_fade_s(p)`: a ref's `fade_out_s` from the manifest (else 0.03); a made final 0.01.
 - `analyse(x, cls, fade_s, floor_pow=None, cut_file=True)`: with hop and smooth of ENV[cls]:
   - p = the smoothed power frames; top = their max in dB; e = frame dB - top. e1 = unsmoothed 1 ms frame dB - top.
@@ -242,11 +242,11 @@ than min(finals, bench refs). No growth possible: exit `cannot build <n> trials:
     true peak (0.5 dB) and the length (log ratio, eps ln 1.1), the counts of trials where the made clip is more, less
     or the same.
 14. Write `score_answers.py` (below).
-15. Write `answer_sheet.txt`: listening instructions in our words (A then B per trial; one is a real recording, the
-    other was made entirely in code by the forge; write which one is real, or `?`; do not open the key first; both are
-    trimmed alike, play equally loud at their loudest moment, and the real ones come from a held-out set); the scoring
-    command with the trial count; the chance line `By chance you would get about <n/2> of <n> right; <k05> or more is
-    unlikely by luck (p = <p>)`, where k05 is the smallest k with P(at least k of n by guessing) < 0.05; the cleanliness
+15. Write `answer_sheet.txt`: listening instructions in our words (A then B per trial; one clip comes from a real
+    recording and the forge rendered the other from code alone; write which one is real, or `?`; do not open the key first; both clips
+    get the same trim, both peak at the same loudness, and the real clips come from refs that no search used); the scoring
+    command with the trial count; a chance line that gives the expected score from guessing (n / 2) and the smallest count k05 that guessing
+    reaches with p < 0.05, with that p, where k05 is the smallest k with P(at least k of n by guessing) < 0.05; the cleanliness
     paragraph (status, max loudest-moment difference, max true peak, the fade facts, floors and margin, warnings
     count), wrapped at 112 columns; a table of trial, sound, A start, B start and a blank `____`; and the total length,
     format and counts. Print it unless quiet, with the warnings.
@@ -275,7 +275,7 @@ few right is itself unlikely: the listener heard the made sounds as real more of
 - Listening file `v1_vs_v2.wav`: per sound, v1 final 1, its nearest v2 final, v1 final 2, its nearest v2 final (each v2
   final used once). Nearest = the smallest RMS dB distance of the frozen tone profiles + 6 x |log2(extent ratio)|. The
   4 sounds of a group are set to TARGET on the pair measure of the group class (long when any sound is 1 s or more),
-  and one common drop per group keeps every true peak at or under -1 dBTP. 1 s between sounds, 3 s between groups
+  and the whole group is then lowered by one shared amount when needed so that no true peak passes -1 dBTP. 1 s between sounds, 3 s between groups
   (2 s added after the 1 s), lead 1 s, tail 1 s. `progress.txt` lists every start, version, loudest level, true peak,
   file and the nearest distance. `progress.json` lists the picks with gains.
 - `progress.md`: per V1 sound a table of 13 checks (label, v1 median, v2 median, real loo, real x, verdict), plus the

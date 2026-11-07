@@ -91,7 +91,7 @@ Length method:
 
 ### Tonal spec
 
-Refuse a fit ("a fitted recording has no <knob> parameter (its fit knobs are pitch and length)"), a category with no
+Refuse a fit entry (message: the knob does not exist for a fitted recording; only pitch and length apply), a category with no
 TONAL entry for the knob (list the categories that have it), a parameter that is neither in the entry's params nor in
 the recipe module's DEFAULTS, and a `styles` restriction that the entry's style (params over DEFAULTS) does not meet.
 The recipe DEFAULTS cover a parameter added after the entry was built: it renders the entry unchanged.
@@ -174,8 +174,8 @@ Search:
 Tolerance: ok when |measured - target| <= max(abs, rel x |target|) with TONAL_TOL (rel, abs). A None measure is not
 ok.
 
-The bracket keeps the search stable: the catalog measures step where an envelope's peak moves along a plateau, so an
-unguarded secant can wander.
+The bracket stops the search from drifting. When the peak of an envelope slides along a flat top, the measured value
+jumps in steps, and a secant without a bracket can then move away from the answer.
 
 ### Length by a parameter
 
@@ -210,18 +210,19 @@ analytically at tp = rise x (max(-start_db, 1) / 30)^(1 / rise_k) (the recipes-m
    search_err_ms, rise (5 decimals), renders, fit (the place note), ok}`; with dur also dur `{target, method 'shape',
    post_scale (4 decimals), renders}`.
 
-Measured: the closed form lands within about 12 ms on the fast family. The 5 ms peak of a broad fluttering pass moves
-non-monotonically with rise (+-50 ms for a 10 % change on the big families), so only the placement guarantees
+Measured: the closed form lands within about 12 ms on the fast family. On the big families, a 10 % change of rise can
+move the 5 ms peak of a wide, fluttering pass by up to 50 ms in either direction. So only the placement guarantees
 APEX_TOL.
 
 ### `place_apex(x, pk, apex)`
 
-The shift n = round((pk - apex) x SR / 48) x 48 samples (a whole number of the peak measure's 1 ms hops; a shift off
-that grid can re-read a fluttering pass's near-equal maxima and move the measured peak by more than the shift).
+The shift n = round((pk - apex) x SR / 48) x 48 samples (whole 1 ms hops of the peak measure; a shift between hops can
+make a fluttering pass report a different one of its almost equal maxima, so the measured peak moves more than the
+shift).
 - n = 0: `exact`.
 - n < 0 (peak early): pad -n zeros in front: `head pad <ms:.1f> ms`.
 - n > 0: the head level = 20 log10(max |mono| over the first n samples / max |mono|). When it is above HEAD_MAX_DB
-  (-20 dB): keep x, note `head kept: trimming <ms:.0f> ms would cut into the pass (<lvl:.0f> dB re peak)`. Else drop
+  (-20 dB): keep x, note `head kept: a <ms:.0f> ms trim would remove part of the pass (<lvl:.0f> dB re peak)`. Else drop
   the first n samples and fade in the first min(len, 3 ms) with a half raised cosine: `head trim <ms:.1f> ms`.
 
 ### `fit_length(x, dur, keep_s=None)`
@@ -331,7 +332,8 @@ digital stutter), typing_key and pro_typing_key (keys are not tuned; takes and s
 | width | notify, pro_notify | width | 0.0-3.0 | lin, inverse |
 | width | ui_pop, drip, knock, mallet, shutter, pluck | width | 0.0-1.5 | lin, inverse |
 
-Knock has no bright knob: its centroid follows the contact's spectral nulls and the noise, not one parameter. The
+Knock has no bright knob: no single parameter controls its centroid, which depends on the nulls of the contact
+spectrum and on the noise. The
 decorrelator reaches a correlation of about 0 at width 1.43; notify halves its width internally, so its range is 2x.
 
 ## Errors and edge cases

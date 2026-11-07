@@ -9,8 +9,8 @@ each made sound beside its nearest reference).
 The reference recordings are licensed third-party sounds. They are never shipped. They live in a local registry, a
 JSON file. Users bring their own refs.
 
-Split rule: no source recording, and no sister take of it, is in both splits of any category. So a forge tuned
-against `forge` refs is measured against recordings it never heard.
+Split rule: a source recording and its sister takes go to one split only, in every category. The forge tunes on
+`forge` refs, and the benchmark then scores it on recordings the forge never heard.
 
 ### Interface
 
@@ -64,19 +64,19 @@ Relative paths are relative to the registry file.
 | swish | light thin quick swish of a thrown object, 0.15-0.5 s |
 | swipe | soft cloth or paper slide, 0.25-1 s |
 | riser | swell that builds to a peak, 1.5-6 s |
-| downlifter | falling sweep that sinks away after a hit, 1-4 s |
+| downlifter | downward sweep that fades out after a hit, 1-4 s |
 | impact | deep cinematic boom with a long tail, 1-8 s |
 | sub_drop | sub-bass pitch drop under a hit, 1-4 s |
 | click | small plastic UI button click, 30-350 ms |
 | tap | soft finger tap on glass or a hard surface, 30-300 ms |
 | toggle | a switch flipped, crisp, often two-part, 50-450 ms |
-| hover_tick | tiny soft tick for hovers and scroll detents, 15-150 ms |
+| hover_tick | very small soft tick for hover and scroll steps, 15-150 ms |
 | pop | short round pop (bubble, mouth, cork), 50-500 ms |
 | notify | short bright notification ding or chime, 0.4-2 s |
 | shimmer | sparkling chime sweep or bell-tree, 1-6 s |
 | typing_key | one mechanical keyboard key press, 60-450 ms |
 | glitch | digital glitch or stutter burst, designed, 0.1-1 s |
-| logo_sting | short logo sting: a struck hit with a ringing tail, 1-6 s |
+| logo_sting | brief logo sound: a struck hit that rings out, 1-6 s |
 
 `KIT_BENCH` in the source named 8 kit files of its own library. A clean build has its own kit (unit bank-kit-sfx):
 keep the mechanism (a stem list of kit files cut from bench sources) and fill the list from our own kit manifest when

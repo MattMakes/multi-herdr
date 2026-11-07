@@ -101,7 +101,7 @@ The search encodes each parameter to a unit coordinate in [0, 1] and decodes bac
 | `--tone W` | the critic's own (1.0 in v2) | weight of the tonal-balance penalty. 0 makes it report-only. |
 | `--mode auto|real|designed` | auto | critic mode. |
 | `--reps N` | 1 | renders per candidate inside the search, ranked by their mean. |
-| `--tone-target DB` | the refs' own spread | the distance from the refs' median balance that counts as typical. |
+| `--tone-target DB` | the refs' own spread | the tone distance to the refs' median that the critic treats as normal. |
 
 CLI dispatch order:
 1. `--check` given: run the schema checker on the folders and return its exit code.
@@ -364,10 +364,10 @@ member.
 ## Algorithms: tonal building blocks (`hark.forge.recipes._tonal`)
 
 A helper module for the tonal and UI recipes (pops, knocks, mallets, drips, shutters). It is not a recipe
-(leading underscore). It gives a soft onset with a real decay, a gliding tone with soft partials, noise that follows
-a pitch, short contact bursts, struck modes, and a finishing chain. The design reason: real UI sounds in the study
-films have 20-60 ms onsets, a real ring-down to 0.2-0.4 s, and a stereo correlation of 0.3-0.7 on mallet notes.
-An earlier bank had 5 ms onsets, a fade at the end of a 2 s ring, and a correlation of about 1.0.
+(leading underscore). Its parts: a soft onset followed by a natural decay; a pitch glide with gentle partials; noise
+shaped around a pitch; short contact bursts; struck modes; a finishing chain. Why: in the study films, real UI sounds
+start over 20-60 ms, ring down naturally within 0.2-0.4 s, and mallet notes have a stereo correlation of 0.3-0.7. An
+older bank started in 5 ms, faded out at the end of a 2 s ring, and was near mono (correlation about 1.0).
 
 `SR = 48000`. Time vectors come from part 2 (`t_of`, `n_of`).
 
@@ -428,8 +428,8 @@ mono in, stereo out.
 7. End fade: the last `fade` seconds times cos^2 from 0 to pi/2.
 8. Start: the first 0.3 ms times a raised cosine from 0 to 1.
 
-`measure(x)`: the model-free measurements of one render on silence (the same definitions as the film catalog of the
-recipes study, stage A). Steps:
+`measure(x)`: measures one render on silence without any model. The definitions match the film catalog of the
+recipes study (stage A). Steps:
 1. Make stereo. Mono mix m = mean of channels.
 2. Energy track: RMS-power in a 5 ms window every 1 ms (from a cumulative sum of m^2; window [c - w/2, c + w/2]
    clipped to the signal), smoothed by a 10-tap moving average ("same" mode). The peak index ip and value pk.

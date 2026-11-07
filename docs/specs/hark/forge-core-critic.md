@@ -4,8 +4,9 @@ Index: [forge-core.md](forge-core.md). This part covers module `hark.forge.criti
 sounds against a text target, text confusions and real reference recordings. It combines model terms (from the
 listen unit) with the model-free terms of parts 3 and 4.
 
-One text-audio (CLAP) embedding per sound feeds every model judgement (the vocabulary calibration and the realness
-head use the same padding), so a batch of 16 sounds costs about one batch of embedding windows.
+Each sound is embedded once with the text-audio (CLAP) model, and all model judgements reuse that embedding. This
+works because the vocabulary calibration and the realness head pad the audio the same way. A batch of 16 sounds
+therefore costs about one batch of embedding windows.
 
 ## Interface
 
@@ -115,14 +116,14 @@ Model-free terms:
 
 ### Study fallback (thin reference sets)
 
-Tone and envelope penalties are relative to the refs' own spread, which needs 3 refs. With 0-2 refs (many designed
-categories) they were 0 and polish had no range, so the search was steered only by the models and the artifact
-rules. The study fallback adds absolute targets for those categories, taken from a study of professional films and
+The tone and envelope penalties are measured against how far the refs sit from each other, and that spread needs at
+least 3 refs. Many designed categories have 0-2 refs. There, both penalties fell to 0 and polish had no range, and
+only the models and the artifact rules guided the search. The study fallback adds absolute targets for those categories, taken from a study of professional films and
 widened by about a third because 1 or 2 films were measured per row.
 
 Applies only when `study` is not empty and the ref count (minus the exclusion) is under 3.
 1. The refs' study measures are computed once per critic. tg = widen_targets(study, the measures of the refs other
-   than the excluded one): each range grows to include every ref's value (a trait the refs share is not a defect).
+   than the excluded one): each range grows to include every ref's value (when the refs all have a trait, that trait cannot count as a fault).
 2. sm = study_measures(sound). pen, off, words = study_penalties(sm, tg).
 3. When the row has no tone_ratio and pen.tone > 0: add it to tone_pen. When the row has no env_ratio and pen.env > 0:
    add it to env_pen. When pen.polish > 0: add it to polish_pen. (These run before total_v2, so they count.)
@@ -156,13 +157,16 @@ penalties are 0).
 passes = match_z >= 3 and alt_margin > 0 and (mode is not real or p_real >= 0.77) and (typ None or typ >= -2) and
 feat_pen <= 1 and no hard artifact and env_pen <= ENV_PASS and polish_pen <= POLISH_PASS and not tone_far.
 
-Why each weight: match 1, real 2, typ 0.5, feat 0.7, alt 1 come from the first version (calibrated on the first
-forge test; the model checks saturate after a search, so they mostly decide early rounds). tone 1.0 (the first
-version recommended 1.5 when tone was the only model-free check; the envelope now carries part of the same evidence,
-so 1.0 avoids counting it twice). env 1.0 (one point per typical ref-to-ref spread of excess plus 1 per 6 dB beyond
-every ref, the same scale as tone; the shape over time is what a blind listener heard in a forged impact). art 1.0
-(each detector is capped at 2, so one blatant defect costs as much as the whole realness term; hard defects also
-fail the pass). polish 0.75 (relative to ranges that 3-6 refs pin down loosely).
+Reasons for the weights:
+- match 1, real 2, typ 0.5, feat 0.7 and alt 1 are the first-version values, set on the first forge test. After a
+  search the model scores are near their ceiling, so these terms matter most in the early generations.
+- tone 1.0: the first version advised 1.5 while tone was its only model-free check. The envelope term now covers part
+  of the same ground, and 1.0 stops the overlap from being counted twice.
+- env 1.0: 1 point for each typical ref-to-ref spread of excess, plus 1 for each 6 dB outside all refs. This is the
+  tone scale. A blind listener picked out a forged impact by its shape over time.
+- art 1.0: a detector gives at most 2, so one clear fault weighs as much as the full realness term. A hard fault also
+  blocks the pass.
+- polish 0.75: its ranges come from only 3-6 refs, so they are loose.
 
 ### Summary
 
@@ -177,8 +181,7 @@ fail the pass). polish 0.75 (relative to ranges that 3-6 refs pin down loosely).
 ### `score_refs(loo=True)`
 
 Scores every ref with the same critic. With loo, ref i is compared with the other refs only (its typicality,
-feature spread, tone, envelope and polish ranges come from the others), so a real recording is not its own nearest
-neighbour. With fewer than 3 other refs, ref_typ_z and env_ratio are None. Memoised per critic by (loo, sorted
+feature spread, tone, envelope and polish ranges come from the others), so no recording can be matched against itself. With fewer than 3 other refs, ref_typ_z and env_ratio are None. Memoised per critic by (loo, sorted
 weights, mode, version, identity of extra, refs); return a deep copy of the memo.
 
 ### `consistency(xs)`

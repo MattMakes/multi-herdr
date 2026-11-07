@@ -6,8 +6,8 @@ onset brightness, tail smoothness, decay, body), loudness of a set of variants, 
 into critic terms.
 
 Purpose. A made sound effect is judged in an edit next to professional library sounds. A click from a hard gate,
-foldover on a sweep, a 3 kHz ring, a tail cut at -30 dB or a frozen spectrum is heard at once. The model checks do
-not reliably hear these defects, because they were trained to tell real from synthetic, not good from broken. Each
+foldover on a sweep, a 3 kHz ring, a tail cut at -30 dB or a frozen spectrum is heard at once. The model checks often
+miss these faults: their training separates real from synthetic sound, not clean from faulty sound. Each
 detector is a separate function that returns plain data.
 
 All detectors use the mono sum (channel mean) unless stated. Input is 48 kHz. A path is loaded with the core-io
@@ -56,8 +56,8 @@ Helpers used below:
 ### `clicks`
 
 Finds isolated discontinuities inside the sound.
-1. peak = max |m| + 1e-12. `edge_db` = 20 log10(max(|m[0]|, |m[-1]|) / peak + 1e-12). A file that starts or ends off
-   zero clicks when played.
+1. peak = max |m| + 1e-12. `edge_db` = 20 log10(max(|m[0]|, |m[-1]|) / peak + 1e-12). A file whose first or last sample
+   is far from zero gives a click on playback.
 2. d2 = the 2nd difference of m (it rises 12 dB per octave, so a jump stands far above smooth content). e = frame power
    dB of d2 in 1 ms frames (48 samples). lvl = frame power dB of m in 1 ms frames. k = min of the two lengths.
 3. Only when k >= 24: pad e by 12 frames at each end (edge values). For frame i, the window e[i-12 .. i+12]; pre =
@@ -109,7 +109,7 @@ harmonic grid and are not judged.
         window; Hann leakage from that harmonic at distance d = max(2.5, gap - hwn + 2) bins is hp x 10^((-31.5 -
         18 log2(d / 2.5)) / 10) (Hann side lobes: -31.5 dB at 2.5 bins, -18 dB per octave beyond). Threshold =
         10^(ALIAS_PEAK_DB / 10) x max(floor at the window centre, leakage). A hit when threshold < max w <=
-        ALIAS_LOUDEST x href (an alias of partial k is weaker than the partials under it). For first-fold
+        ALIAS_LOUDEST x href (an alias of partial k is quieter than the real partials below it). For first-fold
         positions count nf and hits. For every hit add max(0, sum w - floor x window length) to an excess.
      g. Numerator += min(th, excess) x min(1, (hits / max(1, nf)) / ALIAS_FAMILY) (at least half of the first-fold
         positions must show a peak: a family, not one partial); denominator += th.
@@ -147,7 +147,7 @@ How much the spectral shape changes, independent of level.
    [1789, 3578), [3578, 7155), [7155, inf). Q = group sums + 1e-12, smoothed over 3 frames (30 ms, "same" mode).
 3. tot = row sums. Active rows: 10 log10(tot) > 10 log10(max tot) - 30. With fewer than 8 active rows: both outputs
    None.
-4. R = max(10 log10(Q / tot), -40) (shape relative to the frame's own total, so a fade does not count).
+4. R = max(10 log10(Q / tot), -40) (each frame's shape against its own total, so a fade alone does not change R).
 5. lag = 5 frames (50 ms). Rows i that are active, i >= lag, and whose row i - lag is active. With fewer than 3: None.
 6. Group weights sh = the mean of the two rows' shares Q / tot. Change ch = sqrt(sum(sh (R_i - R_{i-lag})^2) /
    sum sh) (quiet groups' estimation noise does not count). `evolution_db` = sum(ch tot_i) / sum(tot_i), energy
@@ -169,8 +169,8 @@ Comb-like metallic ringing in the tail.
    asked, the bandwidth in Hz where the 2 kHz-smoothed spectrum (untrimmed) lies within 40 dB of its maximum.
 4. Get (z, ms, bandwidth) of the tail. None result: ring_z None.
 5. Output `ring_z` (1 decimal), `ring_ms` (2 decimals). Return it as is in legacy mode or when z < 8.
-6. Not judged, `ring_src 'narrow'`: bandwidth < RING_SPAN_HZ. (A sub drop's few low partials over an empty band put
-   z 120-390 at the 2 ms edge.)
+6. Not judged, `ring_src 'narrow'`: bandwidth < RING_SPAN_HZ. (In a sub drop, a few low partials over an otherwise
+   empty band gave z of 120-390 at the 2 ms edge.)
 7. Pitch test: the tail's teeth roughness (below) <= RING_SMOOTH_DB means deterministic partials. Else, take the body
    from 2 frames before to 6 frames after the peak; when it has at least 1920 samples, get its cepstral peak (zb,
    msb); when zb >= RING_PITCH_Z and ms / msb is within 30 % of 1, or within 10 % of 2, 3, 1/2 or 1/3, it is the
@@ -179,8 +179,9 @@ Comb-like metallic ringing in the tail.
 
 Teeth roughness of a segment at delay ms: f0 = 1000 / ms. Log power spectrum with N = 16384. For each multiple k f0
 from ceil(300 / f0) to 12000 / f0: the max level within -2..+2 bins of its bin. Keep levels within 50 dB of the
-spectrum's max. With fewer than 8, infinity. Else the median |2nd difference| of the levels. An oscillator's partials
-follow a smooth envelope (0.1-1.4 dB on buzzy hums); comb teeth fed with noise scatter 6-7 dB.
+spectrum's max. With fewer than 8, infinity. Else the median |2nd difference| of the levels. The partials of an
+oscillator lie on a smooth curve (0.1-1.4 dB on buzzy hums); the teeth of a comb filter driven by noise vary by
+6-7 dB.
 
 ### `truncated`
 
@@ -191,8 +192,8 @@ A tail cut while still decaying.
 4. before = frames from max(ip, len - 38) to len - 8 (150 ms to 40 ms before the end). slope = a least-squares line
    over them in dB per second (time step 5 ms), when at least 4 frames, else 0.
 5. fade_from = mean of frames len-10 .. len-8. expect = max(3, -slope x 0.04) (the natural drop over the last 40 ms).
-6. Cut level: when fade_from - end > 3 expect + 6 and fade_from > -50 (a final fade much faster than the decay before
-   it): trunc_db = fade_from. Else when slope < -20 dB/s and end > -50 (still decaying when the file stops): trunc_db =
+6. Cut level: when fade_from - end > 3 expect + 6 and fade_from > -50 (the level falls at the end far faster than the decay
+   before it): trunc_db = fade_from. Else when slope < -20 dB/s and end > -50 (still decaying when the file stops): trunc_db =
    end. Else None.
 7. Return trunc_db (1 decimal or None) and end_db (1 decimal).
 
@@ -269,11 +270,11 @@ For each rule with a value in the measure dict (None values are skipped):
 - rv = the kept refs' non-None values of that key (kept = all refs except `exclude`).
 - Bad = -1 (evolution): skip unless at least 2 refs and median(rv) >= 1.5 (the refs move). limit = 0.35 x median(rv);
   penalty = min(cap, max(0, 2 (limit - v) / max(limit, 1e-6))).
-- Bad = +1: limit = max(abs, max(rv) + margin) when rv is not empty, else abs (a trait the real recordings share is
-  not a defect). penalty = min(cap, max(0, (v - limit) / scale)).
+- Bad = +1: limit = max(abs, max(rv) + margin) when rv is not empty, else abs (when all real recordings have a trait,
+  it is not a fault). penalty = min(cap, max(0, (v - limit) / scale)).
 - Designed mode, keys clicks and silence_ms: kind becomes soft and the penalty halves.
 - Designed mode, key trunc_db: limit = max(limit, GATE_DB['gated'] when gated else GATE_DB['designed']); recompute the
-  penalty; when gated, kind becomes soft. A gate after the level has already fallen is a design choice.
+  penalty; when gated, kind becomes soft. A gate that closes after the level has already dropped is intended design.
 - Record limits[key] (2 decimals). A positive penalty is recorded (3 decimals). A hard rule at penalty >= HARD_AT
   (0.5) adds the key to `hard`.
 - art_pen = sum of the artifact penalties.

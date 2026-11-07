@@ -107,7 +107,7 @@ scalars or one value per sample. Cutoff is clipped into [20, 0.45 SR]. Per sampl
 - v3 = x_i - ic2; v1 = a1 ic1 + a2 v3; v2 = ic2 + a2 ic1 + a3 v3
 - ic1 = 2 v1 - ic1; ic2 = 2 v2 - ic2 (states start at 0)
 - output: `low` = v2; `band` = v1; `bandn` = k v1; `high` = x_i - k v1 - v2.
-Gains: low and high are 1 in their pass bands (q over 0.707 adds a peak of about q at the cutoff). `band` peaks at
+Gains: low and high are 1 in their pass bands (with q above 0.707 the response rises to about q at the cutoff). `band` peaks at
 q at the cutoff (q 8 is +18 dB). `bandn` peaks at 1.
 
 ### Room, microphone, stereo
@@ -391,8 +391,8 @@ Late noise field (Polack model), for n samples and width 1: twice (mid, then sid
 frame 1024 and overlap 768, multiply each bin at time t by exp(-6.91 t / rt(f)) (rt interpolated from the 64-point
 table), inverse STFT, cut to n. High-pass the side at 200 Hz (the low end stays coherent). L = m + w sd,
 R = m - w sd, divided by sqrt(1 + 0.9 w^2). Scale by sqrt(13.8 / (median(rt) x SR)) (unit energy at the median
-decay). The noise tail never rings: a pure FDN tail (late = 'fdn') shows long-FFT peaks 13-16 dB over the local mean
-at rt60 2.5-5 s, a noise tail 8-10 dB.
+decay). The noise tail has no ringing modes. Measured with a long FFT at rt60 2.5-5 s, a pure FDN tail (late = 'fdn') has
+peaks 13-16 dB above the local mean; the noise tail has 8-10 dB.
 
 `early(x, r, size, taps, damp, width)`: mono mix of x. t_hi = 0.006 + 0.05 size. IR length m = n_of(t_hi) + 2,
 2 channels. Per channel c: tap times = sort(exp(uniform(log 0.003, log t_hi, taps))); for c = 1 multiply by
@@ -413,8 +413,8 @@ Convolve the mono x with each channel. Output length len(x) + m - 1, stereo.
 6. Stereo: out = wet x wetv; add dry x the input (a mono input is copied to both channels).
 
 The wet IR has unit energy, so `wet` is the reverb level relative to the direct sound (0.3 is about -10 dB).
-The output length is len(x) + predelay + tail. Measured: on the whoosh recipe, the IR build was 43 % of a render
-(3.0 of 7.0 s for 4 renders). A fixed room (ir_seed) or a grid saves up to that share.
+The output length is len(x) + predelay + tail. Measured on the whoosh recipe: building the IR took
+3.0 s of 7.0 s for 4 renders (43 %). A fixed room (ir_seed) or a grid removes up to that share.
 
 ### `saturate`
 

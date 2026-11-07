@@ -134,8 +134,8 @@ loudest frame's total power, floored at -70 dB.
    d (1 + 0.5 |ln s|) (stretching costs a little).
 6. Coarse search: the minimum cost over both anchors and every stretch, with shift 0. Fine search: with the best
    anchor and stretch, try every non-zero shift; keep the minimum (the coarse best included).
-7. Return the cost of the best. The tolerance is small on purpose: a tail half as long as the ref's cannot be
-   stretched away.
+7. Return the cost of the best. The stretch range is kept small on purpose, so that a tail half the length of the
+   ref's tail still shows as a gap.
 8. With detail: cells. W = sum w + 1e-9. For each segment (frame range in tt) and each band group (centre frequency
    range): ww = w over those rows and bands. Skip when sum ww < 0.01 W. diff = sum(ww (Av - Bv)) / sum ww (signed:
    made minus ref). Cell key `'<segment> <group>'`, value (diff rounded to 1 decimal, sum ww / W rounded to 3
@@ -148,8 +148,8 @@ Construction:
 2. Bandgrams of all refs. D[i, j] = env_dist(G_i, G_j) for i != j (ref i judged against ref j), with detail.
 3. `cell_spread[key]` = median of |diff| over all ordered ref pairs that have the cell, kept when at least 2 pairs
    have it. It says how far real refs sit from each other in each cell.
-4. `out_ref[i]` = the excess (below) of ref i against all other refs. These cell spreads use all refs, a small leak
-   in leave-one-out scoring.
+4. `out_ref[i]` = the excess (below) of ref i against all other refs. These cell spreads use all refs, so
+   leave-one-out scoring leaks a little.
 
 Outside cells for a list of detailed results (one per compared ref), only with 2 or more results:
 - For every cell key of the first result that all results have: diffs = the signed diffs; share = mean of the shares.
@@ -174,8 +174,8 @@ D[i, j] over the other kept j.
    basename after replacing backslashes), `nearest_i`, `anchor`, `stretch`, `shift_ms`, `cells` (of the nearest),
    `outside`, `env_out` (excess, 2 decimals), `env_out_ref` (median of oref, 2 decimals, or None), `words`.
 
-The reason for the outside test: nearest-ref distances flatter averages. With few, diverse refs, a sound in their
-middle sits closer to each ref than the refs sit to each other, so env_ratio alone cannot find a gap. A cell where
+The reason for the outside test: a distance to the nearest ref favours an average sound. When the refs are few and
+different, a sound between them is nearer to each ref than the refs are to one another, so env_ratio alone cannot find a gap. A cell where
 the sound is beyond every ref in the same direction, where the refs agree, is a consistent gap no real recording
 shares.
 

@@ -9,7 +9,7 @@ library modules. They live in `eval/forge/` of our repo:
 
 The blind listening test (`blind_v2.py`) is part 11: [forge-core-blind.md](forge-core-blind.md).
 
-Rule of the benchmark: it is held out only while it decides nothing. Never select a candidate, steer a search or tune a
+Rule of the benchmark: its refs stay unseen only as long as no decision uses its numbers. Never select a candidate, steer a search or tune a
 recipe from benchmark numbers. Use it only to report.
 
 ## 10.1 `bench.py`
@@ -82,8 +82,7 @@ Frames outside the array are dropped.
 
 Flags, in this order: `clipped` (clipped_samples >= 3), `dc offset` (dc_db > -30), `start click` (first_sample > 0.05),
 `end click` (last_ms_rel > 0.02), `tail cut` (tail_db > -30), `late start` (lead_s > 0.1). The last 3 are not raised
-for a category in ENDS_ON_PEAK. Calibration in the source: 5 of 150 real trims raised one flag, all of them ticks cut
-from a flurry or plain 5 s windows.
+for a category in ENDS_ON_PEAK. Calibration in the source: 5 of 150 real trims raised one flag; each of the 5 was a tick taken out of a dense run of ticks, or a fixed 5 s window.
 
 `diversity(xs, E)` among one category's variants (E = their CLAP embeddings):
 - n < 2: `{'n': n}`.
@@ -458,8 +457,8 @@ designed source held out as bench; notify refs are struck bells, glass, kalimba,
 shimmer_01 is bench because its author also recorded a notify bench ref; logo_sting refs are struck rings (tail shape
 and tone only, since real stings are composed).
 
-Rule kept from the source: the sources that the first-version recipes used as refs are on the forge side, so the
-bench is held out from those recipes too.
+Rule kept from the source: any recording that a first-version recipe used as a ref goes to the forge split. The
+first-version recipes therefore never heard the bench either.
 
 ## 10.4 `scrub_paths.py` (results hygiene, used by `bench.py`)
 
@@ -472,7 +471,7 @@ file. Before the write, `scrub(obj)` rewrites every string (dict keys too) of th
   `<refs>`. Drop duplicate roots (case-insensitive).
 - Match a root on a word boundary, with `/` or `\` separators (case-insensitive), followed by the rest of the path
   up to a space, quote, back quote, `;`, `,`, `)`, `]`, `<`, `>`, `|`, `*` or `?`. Write the rest with `/`.
-- Ref file names stay. They are the evidence of which recording a row measured.
+- Keep the ref file names. A reader needs them to know which recording each row scored.
 - `leftovers(text)`: any remaining drive path (`X:/...` or `X:\...`) or home path (`/Users/...`, `/home/...`).
 
 CLI `python eval/forge/scrub_paths.py [FILES] [--check]`: default files are `eval/forge/results_*.json` and
@@ -542,9 +541,9 @@ categories, 0 family leaks.
 - The sets are small (1-15 refs per split; 1-3 source files in several categories). Quantiles from 2-3 rows are
   rough.
 - Ref tails and floors partly reflect the trim. `floor_db` on a short trim is mostly the trim's own tail.
-- tone dB and the envelope checks are the same kind of measure the forge can optimise, so they are held out but not
-  independent in kind.
-- AudioSet has no class for riser, downlifter or glitch, and it hears only up to 8 kHz.
+- tone dB and the envelope checks are the same kind of measure the forge can optimise, so the bench refs are unseen but the
+  kind of check is not new to the forge.
+- The AudioSet tagger has no exact class for a riser, a downlifter or a glitch, and its input stops at 8 kHz.
 - Tap, hover_tick and notify bench refs have weak CLAP evidence (rank z about 1.5-1.9).
 
 ### Data assets
