@@ -108,7 +108,9 @@ def scan(paths):
     return [(f, *hit) for f in scene_files(paths) for hit in scan_text(f.read_text(encoding="utf-8"))]
 
 
-SAMPLE_ERROR = "each sample needs positive natural_px and 2-value drawn_px"
+SAMPLE_ERROR = "each sample must be an object with positive natural_px and 2-value drawn_px"
+RASTER_ERRORS = (FileNotFoundError, UnicodeDecodeError, json.JSONDecodeError, ValueError)
+SCAN_ERRORS = (FileNotFoundError, UnicodeDecodeError)
 
 
 def is_pair(value):
@@ -117,9 +119,7 @@ def is_pair(value):
 
 def sample_scale(sample):
     """The larger drawn/natural ratio of 1 raster sample."""
-    if not isinstance(sample, dict):
-        raise ValueError("each sample must be an object")
-    natural, drawn = sample.get("natural_px"), sample.get("drawn_px")
+    natural, drawn = (sample.get("natural_px"), sample.get("drawn_px")) if isinstance(sample, dict) else (None, None)
     if not (is_pair(natural) and is_pair(drawn) and min(natural) > 0):
         raise ValueError(SAMPLE_ERROR)
     return max(d / n for d, n in zip(drawn, natural))
@@ -139,39 +139,61 @@ def read_raster_upscales(path):
     return raster_upscales(report)
 
 
-def check_raster_sizes(path):
+def load_or_none(load, arg, errors, prefix):
+    """load(arg), or None after it prints the error of a bad input."""
     try:
-        hits = read_raster_upscales(path)
-    except (FileNotFoundError, UnicodeDecodeError, json.JSONDecodeError, ValueError) as e:
-        print(f"scan_linear_motion: cannot read raster sizes: {e}", file=sys.stderr)
+        return load(arg)
+    except errors as e:
+        print(f"scan_linear_motion: {prefix}{e}", file=sys.stderr)
+        return None
+
+
+def report_hits(lines, summary, failed):
+    print(*lines, summary, sep="\n")
+    return 1 if failed else 0
+
+
+def raster_line(path, sample, scale):
+    return f"{path}: {sample.get('src', '<unknown>')} at {sample.get('t_sec', '<unknown>')} s is {scale:.3f}x; maximum is {MAX_RASTER_SCALE:.1f}x"
+
+
+def check_raster_sizes(path):
+    hits = load_or_none(read_raster_upscales, path, RASTER_ERRORS, "cannot read raster sizes: ")
+    if hits is None:
         return 2
-    for sample, scale in hits:
-        print(f"{path}: {sample.get('src', '<unknown>')} at {sample.get('t_sec', '<unknown>')} s is {scale:.3f}x; maximum is {MAX_RASTER_SCALE:.1f}x")
-    print(f"scan_linear_motion: {len(hits)} raster upscale(s) over {MAX_RASTER_SCALE:.1f}x" if hits else "scan_linear_motion: raster sizes pass")
-    return 1 if hits else 0
+    lines = [raster_line(path, sample, scale) for sample, scale in hits]
+    summary = f"scan_linear_motion: {len(hits)} raster upscale(s) over {MAX_RASTER_SCALE:.1f}x" if hits else "scan_linear_motion: raster sizes pass"
+    return report_hits(lines, summary, hits)
 
 
 def check_linear_motion(paths):
-    try:
-        hits = scan(paths)
-    except (FileNotFoundError, UnicodeDecodeError) as e:
-        print(f"scan_linear_motion: cannot read {e}", file=sys.stderr)
+    hits = load_or_none(scan, paths, SCAN_ERRORS, "cannot read ")
+    if hits is None:
         return 2
-    for f, line_no, rule, snippet in hits:
-        print(f"{f}:{line_no}: {rule}: {snippet}")
-    print(f"scan_linear_motion: {len(hits)} linear move(s)" if hits else "scan_linear_motion: no linear moves")
-    return 1 if hits else 0
+    lines = [f"{f}:{line_no}: {rule}: {snippet}" for f, line_no, rule, snippet in hits]
+    summary = f"scan_linear_motion: {len(hits)} linear move(s)" if hits else "scan_linear_motion: no linear moves"
+    return report_hits(lines, summary, hits)
+
+
+def usage(_argv=None):
+    print(__doc__.strip(), file=sys.stderr)
+    return 2
+
+
+def run_self_test(argv):
+    return self_test() if argv == ["--self-test"] else usage()
+
+
+def run_raster_sizes(argv):
+    return check_raster_sizes(argv[1]) if len(argv) == 2 else usage()
+
+
+COMMANDS = {None: usage, "--self-test": run_self_test, "--raster-sizes": run_raster_sizes}
 
 
 def main(argv):
-    if not argv:
-        print(__doc__.strip(), file=sys.stderr)
-        return 2
-    if argv == ["--self-test"]:
-        return self_test()
-    if len(argv) == 2 and argv[0] == "--raster-sizes":
-        return check_raster_sizes(argv[1])
-    return check_linear_motion(argv)
+    command = COMMANDS.get(argv[0] if argv else None, check_linear_motion)
+    return command(argv)
 
 
 # ---------------------------------------------------------------- self-test
@@ -193,37 +215,41 @@ FIXTURES = {
 }
 
 
-def self_test():
+def fixture_failures(root):
+    for name, (text, _) in FIXTURES.items():
+        (root / name).write_text(text, encoding="utf-8")
+    counts = {name: (scan_text((root / name).read_text(encoding="utf-8")), want) for name, (_, want) in FIXTURES.items()}
+    failures = [f"{name}: {len(got)} hit(s), want {want}: {got}" for name, (got, want) in counts.items() if len(got) != want]
+    line = scan_text(FIXTURES["none-scale.js"][0])[0][0]
+    return failures + ([f"none-scale.js hit on line {line}, want 1"] if line != 1 else [])
+
+
+def exit_failures(root):
+    cases = [
+        ([str(root / "linear-x.js")], 1, "main does not exit 1 on a linear move"),
+        ([str(root / "clean-spring.js"), str(root / "clean-css.css")], 0, "main does not exit 0 on clean files"),
+        ([str(root / "missing.js")], 2, "main does not exit 2 on a missing file"),
+    ]
+    return [message for argv, want, message in cases if main(argv) != want]
+
+
+def raster_failures(root):
+    cases = [
+        ("raster-clean.json", [120, 60], 0, "1.2x raster sample does not pass"),
+        ("raster-bad.json", [121, 50], 1, "1.21x raster sample does not fail"),
+    ]
     failures = []
+    for name, drawn, want, message in cases:
+        sample = {"t_sec": 0, "src": "plate.png", "natural_px": [100, 50], "drawn_px": drawn}
+        (root / name).write_text(json.dumps({"samples": [sample]}), encoding="utf-8")
+        failures += [message] if check_raster_sizes(root / name) != want else []
+    return failures
+
+
+def self_test():
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
-        for name, (text, _) in FIXTURES.items():
-            (root / name).write_text(text, encoding="utf-8")
-        for name, (_, want) in FIXTURES.items():
-            got = scan_text((root / name).read_text(encoding="utf-8"))
-            if len(got) != want:
-                failures.append(f"{name}: {len(got)} hit(s), want {want}: {got}")
-        if main([str(root / "linear-x.js")]) != 1:
-            failures.append("main does not exit 1 on a linear move")
-        if main([str(root / "clean-spring.js"), str(root / "clean-css.css")]) != 0:
-            failures.append("main does not exit 0 on clean files")
-        if main([str(root / "missing.js")]) != 2:
-            failures.append("main does not exit 2 on a missing file")
-        line = scan_text(FIXTURES["none-scale.js"][0])[0][0]
-        if line != 1:
-            failures.append(f"none-scale.js hit on line {line}, want 1")
-        clean = root / "raster-clean.json"
-        clean.write_text(json.dumps({"samples": [
-            {"t_sec": 0, "src": "plate.png", "natural_px": [100, 50], "drawn_px": [120, 60]}
-        ]}), encoding="utf-8")
-        bad = root / "raster-bad.json"
-        bad.write_text(json.dumps({"samples": [
-            {"t_sec": 0.1, "src": "plate.png", "natural_px": [100, 50], "drawn_px": [121, 50]}
-        ]}), encoding="utf-8")
-        if check_raster_sizes(clean) != 0:
-            failures.append("1.2x raster sample does not pass")
-        if check_raster_sizes(bad) != 1:
-            failures.append("1.21x raster sample does not fail")
+        failures = fixture_failures(root) + exit_failures(root) + raster_failures(root)
     for f in failures:
         print(f"FAIL {f}", file=sys.stderr)
     print("scan_linear_motion self-test: " + ("FAILED" if failures else f"{len(FIXTURES)} fixtures pass"))
