@@ -380,10 +380,9 @@ def write_report(report, path):
 
 def _sha256(path):
     """Return the SHA-256 digest of a file."""
-    digest = hashlib.sha256()
-    with open(path, "rb") as handle:
-        for block in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(block)
+    source = pathlib.Path(path)
+    with source.open("rb") as handle:
+        digest = hashlib.file_digest(handle, "sha256")
     return digest.hexdigest()
 
 
@@ -567,15 +566,33 @@ def _run_check(args):
 
 def _dispatch(parser, args):
     """Run the self-test or the check that args select."""
+    _require_dispatch_input(parser, args)
+    action = _dispatch_action(args)
+    return action(args)
+
+
+def _require_dispatch_input(parser, args):
+    """Require the inputs for one check_music mode."""
     missing = not args.self_test and not (args.bed and (args.beats or args.write_grid))
     if missing:
         parser.error("give the music bed WAV and beat grid, use --write-grid, or use --self-test")
-    if args.self_test:
-        return self_test()
-    if args.write_grid:
-        print(json.dumps(write_grid(args.bed, args.write_grid), indent=2))
-        return 0
-    return _run_check(args)
+    return not missing
+
+
+def _dispatch_action(args):
+    """Return the function for the selected command mode."""
+    return _run_self_test if args.self_test else (_run_grid if args.write_grid else _run_check)
+
+
+def _run_self_test(_args):
+    """Run the built-in tests through the command dispatcher."""
+    return self_test()
+
+
+def _run_grid(args):
+    """Write a measured grid through the command dispatcher."""
+    print(json.dumps(write_grid(args.bed, args.write_grid), indent=2))
+    return 0
 
 
 def _input_error(exc):
