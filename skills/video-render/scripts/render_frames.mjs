@@ -1223,7 +1223,7 @@ async function probeEntry([name, file]) {
 function frameMismatches([[, master], ...derived]) {
   const bad = [];
   for (const [name, count] of derived) {
-    if (count !== master) bad.push(`${name}=${count}`);
+    bad.push(...(count === master ? [] : [`${name}=${count}`]));
   }
   return bad;
 }
