@@ -23,9 +23,20 @@ For a series, select 1 signature end song. Blend each short into that song over
 
 ## Join checks
 
-Run `scripts/check_music.py` on the rendered bed. It checks `50 ms` windows
-against the median of the local 4-bar phrase and rejects a drop above `12 dB`
-or digital silence. It also checks each `film in` value in the edit plan.
+The music build script resolves and runs both audio gates at run time:
+
+```sh
+python3 "$(horch skills path video-audio --script scripts/check_audio.py)" <arguments>
+python3 "$(horch skills path video-audio --script scripts/check_music.py)" <arguments>
+```
+
+The build script never stores a `skill-bundles` path. It exits non-zero when
+resolution fails or either checker exits non-zero. A gate that did not run is
+a failure, not a pass.
+
+`check_music.py` checks `50 ms` windows against the median of the local 4-bar
+phrase and rejects a drop above `12 dB` or digital silence. It also checks each
+`film in` value in the edit plan.
 
 A short splice must have no beat-phase error above `15 ms`. A crossfade shorter
 than 1 bar must not join keys that are a half step or a tritone apart. Blend

@@ -133,6 +133,14 @@ Rename or delete a superseded build script as soon as its replacement passes.
 Name the superseded script and its replacement in every later unit plan. This
 prevents a worker from running the old script.
 
+A project tool must resolve each skill script from the installed skill root at
+run time with `"$(horch skills path <id> --script <rel>)"`. It must never store
+a temporary `skill-bundles` path, and it must exit non-zero when resolution or
+the resolved script fails. For example, resolve the audio gate with
+`"$(horch skills path video-audio --script scripts/check_audio.py)"`. Treat a
+gate that did not run as a failure, not a pass. `qa_video.py` also fails when a
+required gate result is missing.
+
 ## Wave 1: Direction & Storyboard
 
 - Teammates: 1 `video-director`, and 1 `video-capture` for the materials.
@@ -274,9 +282,8 @@ The loop:
 
 ## Rules for every unit plan
 
-- Do not point a production tool at a temporary skill-bundle path. Resolve
-  scripts from the installed skill root at run time. Fail when a required
-  script is missing.
+- Do not point a production tool at a temporary skill-bundle path. Follow the
+  run-time resolution and failure rule in **File ownership**.
 - Put each changed time in the DONE report as
   `<scene or beat>: <before> s -> <after> s`.
 
