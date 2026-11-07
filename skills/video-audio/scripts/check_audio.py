@@ -16,6 +16,7 @@ Needs ffmpeg and ffprobe on PATH. Python standard library only.
 
 import argparse
 import array
+import functools
 import json
 import math
 import os
@@ -393,9 +394,14 @@ def check_bed_beats(path, timeline, errors):
 
 def _bed_beat_entry(cut, beats):
     """Return the nearest measured beat and drift for 1 cut."""
-    nearest = min(beats, key=lambda beat: abs(beat - cut))
+    nearest = min(beats, key=functools.partial(_beat_distance, cut))
     return {"cut_sec": cut, "nearest_beat_sec": nearest,
             "drift_sec": round(abs(cut - nearest), 6)}
+
+
+def _beat_distance(cut, beat):
+    """Return the absolute distance between a cut and a beat."""
+    return abs(beat - cut)
 
 
 def _check_worst_bed_beat(worst, errors):
@@ -725,6 +731,13 @@ def write_report(report, out):
 def _parser():
     """Return the command-line parser."""
     parser = argparse.ArgumentParser(description="Check audio/mix.wav against the Phase 3 gates.")
+    _add_gate_arguments(parser)
+    _add_mode_arguments(parser)
+    return parser
+
+
+def _add_gate_arguments(parser):
+    """Add audio-gate input arguments."""
     parser.add_argument("mix", nargs="?", help="path to audio/mix.wav")
     parser.add_argument("--timeline", help="timeline.json with meta.duration_sec")
     parser.add_argument("--beats", help="audio/beats.json with bpm, beats_sec, downbeats_sec")
@@ -735,23 +748,44 @@ def _parser():
     parser.add_argument("--music", help="audio/music.wav: find the drop by low-band energy")
     parser.add_argument("--bed-beats", metavar="BED_WAV",
                         help="measure final bed beats and check every timeline cut within 20 ms")
+
+
+def _add_mode_arguments(parser):
+    """Add output and alternate-mode arguments."""
     parser.add_argument("--measure-sfx", help="print the sync points of every .wav in a folder")
     parser.add_argument("--out", help="write the JSON report here, e.g. qa/audio-check.json")
     parser.add_argument("--self-test", action="store_true", help="run the built-in tests")
-    return parser
 
 
 def _validate_cli(parser, args):
     """Reject incomplete combinations of command-line options."""
-    missing_mix = not args.mix
-    missing_sync_timeline = args.sync_sheet and not args.timeline
-    missing_bed_timeline = args.bed_beats and not args.timeline
-    if missing_mix:
+    _require_mix_argument(parser, args)
+    _require_sync_timeline(parser, args)
+    _require_bed_timeline(parser, args)
+
+
+def _require_mix_argument(parser, args):
+    """Require the mix path in gate mode."""
+    missing = not args.mix
+    if missing:
         parser.error("give a mix path, --measure-sfx or --self-test")
-    if missing_sync_timeline:
+    return args.mix
+
+
+def _require_sync_timeline(parser, args):
+    """Require a timeline when checking a sync sheet."""
+    missing = args.sync_sheet and not args.timeline
+    if missing:
         parser.error("--sync-sheet needs --timeline")
-    if missing_bed_timeline:
+    return args.timeline
+
+
+def _require_bed_timeline(parser, args):
+    """Require a timeline when checking final-bed beats."""
+    missing = args.bed_beats and not args.timeline
+    if missing:
         parser.error("--bed-beats needs --timeline")
+    return args.timeline
 
 
 def _print_sfx(folder):
@@ -771,10 +805,12 @@ def _run_gate(args):
 
 def _run_cli(parser, args):
     """Run the command selected by parsed arguments."""
-    if args.self_test:
+    self_test_requested = args.self_test
+    sfx_folder = args.measure_sfx
+    if self_test_requested:
         return self_test()
-    if args.measure_sfx:
-        return _print_sfx(args.measure_sfx)
+    if sfx_folder:
+        return _print_sfx(sfx_folder)
     _validate_cli(parser, args)
     return _run_gate(args)
 
@@ -935,16 +971,31 @@ def _arc_tests(p, expect):
 def _bed_beat_tests(p, expect, failures):
     """Check aligned cuts and a cut list that drifts 0.15 s by its end."""
     click = "if(lt(mod(t,0.5),0.01),0.8*sin(2*PI*1000*t),0)"
-    _render(p("bed-click.wav"), click, 4)
-    scenes = lambda cuts: [{"id": f"s{k}", "start_sec": cut}
-                           for k, cut in enumerate([0.0, *cuts])]
-    _write(p("bed-aligned.json"), {"meta": {"duration_sec": 4.0},
-                                    "scenes": scenes([1.0, 2.0, 3.0])})
+    bed = p("bed-click.wav")
+    _render(bed, click, 4)
+    _aligned_bed_case(p, expect, bed)
+    _drifting_bed_case(p, expect, failures, bed)
+
+
+def _bed_timeline(p, name, cuts):
+    """Write a 4 s timeline with the selected cut times."""
+    scenes = [{"id": f"s{k}", "start_sec": cut} for k, cut in enumerate([0.0, *cuts])]
+    path = p(name)
+    _write(path, {"meta": {"duration_sec": 4.0}, "scenes": scenes})
+    return path
+
+
+def _aligned_bed_case(p, expect, bed):
+    """Check cuts aligned to measured final-bed beats."""
+    timeline = _bed_timeline(p, "bed-aligned.json", [1.0, 2.0, 3.0])
     expect("pass cuts aligned to measured final-bed beats",
-           check(p("good.wav"), p("bed-aligned.json"), bed_beats=p("bed-click.wav")), [])
-    _write(p("bed-drift.json"), {"meta": {"duration_sec": 4.0},
-                                  "scenes": scenes([1.05, 2.10, 3.15])})
-    report = check(p("good.wav"), p("bed-drift.json"), bed_beats=p("bed-click.wav"))
+           check(p("good.wav"), timeline, bed_beats=bed), [])
+
+
+def _drifting_bed_case(p, expect, failures, bed):
+    """Check cuts that drift 0.15 s by the final cut."""
+    timeline = _bed_timeline(p, "bed-drift.json", [1.05, 2.10, 3.15])
+    report = check(p("good.wav"), timeline, bed_beats=bed)
     expect("fail a cut list that drifts 0.15 s by the end", report, ["bed.beat_alignment"])
     worst = report["metrics"]["bed_beats"]
     ok = worst["worst_drift_sec"] >= 0.149 and worst["worst_cut_sec"] == 3.15

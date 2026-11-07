@@ -29,30 +29,31 @@ def _decode(path):
 
 def _ffmpeg_pcm(path):
     """Return mono PCM bytes decoded by ffmpeg."""
-    _require_ffmpeg()
-    proc = subprocess.run(_ffmpeg_command(path), capture_output=True, check=False)
-    _require_decode(proc, path)
-    return proc.stdout
+    command = _ffmpeg_command(_ffmpeg_path(), path)
+    proc = subprocess.run(command, capture_output=True, check=False)
+    return _decoded_bytes(proc, path)
 
 
-def _require_ffmpeg():
-    """Require ffmpeg on PATH."""
+def _ffmpeg_path():
+    """Return the ffmpeg path or raise a beat error."""
     binary = shutil.which("ffmpeg")
     if not binary:
         raise BeatError("ffmpeg is not on PATH")
+    return binary
 
 
-def _ffmpeg_command(path):
+def _ffmpeg_command(binary, path):
     """Return the command that decodes path for beat analysis."""
-    return ["ffmpeg", "-hide_banner", "-v", "error", "-i", path, "-ac", "1",
+    return [binary, "-hide_banner", "-v", "error", "-i", path, "-ac", "1",
             "-ar", str(RATE), "-f", "s16le", "-"]
 
 
-def _require_decode(proc, path):
-    """Raise a beat error when ffmpeg did not decode path."""
+def _decoded_bytes(proc, path):
+    """Return decoded bytes or raise a beat error."""
     tail = proc.stderr.decode(errors="replace")[-300:]
     if proc.returncode != 0:
         raise BeatError(f"ffmpeg cannot decode {path}: {tail}")
+    return proc.stdout
 
 
 def _pcm_samples(raw):
