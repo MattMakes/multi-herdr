@@ -1112,13 +1112,16 @@ def extract_phone_frame(video, out, time_sec):
         raise InputError(f"cannot extract phone frame at {time_sec:.3f} s: {proc.stderr.strip()[-300:]}")
 
 
+def write_phone_frame(ctx, pick):
+    label, time_sec = pick
+    out = ctx.phone_frames / f"{label}.png"
+    extract_phone_frame(ctx.video, out, time_sec)
+    return {"path": str(out), "time_sec": round(time_sec, 3)}
+
+
 def make_phone_frames(ctx):
     ctx.phone_frames.mkdir(parents=True, exist_ok=True)
-    files = []
-    for label, time_sec in phone_frame_times(ctx):
-        out = ctx.phone_frames / f"{label}.png"
-        extract_phone_frame(ctx.video, out, time_sec)
-        files.append({"path": str(out), "time_sec": round(time_sec, 3)})
+    files = [write_phone_frame(ctx, pick) for pick in phone_frame_times(ctx)]
     return {"directory": str(ctx.phone_frames), "height_px": PHONE_FRAME_H, "frames": files}
 
 
@@ -1150,15 +1153,23 @@ class Context:
 
     def set_paths(self, args, project):
         self.project = project
-        qa = project / "qa"
+        self.set_input_paths(args, project)
+        self.set_output_paths(args, project / "qa")
+        self.set_gate_paths(args, project)
+
+    def set_input_paths(self, args, project):
         self.scenes_dir = path_or(args.scenes_dir, project / "scenes")
         self.render_dir = path_or(args.render_dir, self.video.resolve().parent)
+        self.raster_sizes = path_or(args.raster_sizes, self.render_dir / "raster-sizes.json")
+
+    def set_output_paths(self, args, qa):
         self.out = path_or(args.out, qa / "render-check.json")
         self.contact_sheet = path_or(args.contact_sheet, qa / "contact-sheet-360p.png")
         self.hook_strip = path_or(args.hook_strip, qa / "hook-strip.png")
         self.phone_sheet = path_or(args.phone_sheet, qa / "phone-sheet-360w.png")
         self.phone_frames = path_or(args.phone_frames, None)
-        self.raster_sizes = path_or(args.raster_sizes, self.render_dir / "raster-sizes.json")
+
+    def set_gate_paths(self, args, project):
         self.mix = project / "audio" / "mix.wav"
         expected = args.expect if args.expect is not None else DEFAULT_GATE_RESULTS
         self.expected_gate_results = [project / value for value in expected]
@@ -1326,37 +1337,44 @@ def write_fixture_files(root, opts):
     (root / "render" / "captions.vtt").write_text(VTT_OK)
 
 
+def write_gate_result(root, name, value):
+    path = root / name
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(value))
+
+
 def write_gate_results(root):
-    values = {
-        "qa/audio-check.json": {"passed": True},
-        "audio/music-continuity.json": {"pass": True},
-        "qa/timeline-check.json": {"passed": True},
-        "qa/plate-check.json": {"passed": True},
-    }
-    for name, value in values.items():
-        path = root / name
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(value))
+    write_gate_result(root, "qa/audio-check.json", {"passed": True})
+    write_gate_result(root, "audio/music-continuity.json", {"pass": True})
+    write_gate_result(root, "qa/timeline-check.json", {"passed": True})
+    write_gate_result(root, "qa/plate-check.json", {"passed": True})
 
 
 FIXTURE_DEFAULTS = {"video_vf": "null", "clip": False, "scene_html": SCENE_OK, "gain": 0.0, "probes": False,
                     "static_hold": False, "variants": False, "variant_fps": 30}
 
 
-def make_project(root, **options):
-    """Build a self-test project. `options` override FIXTURE_DEFAULTS."""
-    opts = {**FIXTURE_DEFAULTS, **options}
-    render = root / "render"
+def write_project_sources(root, render, opts):
     render.mkdir(parents=True)
     make_fixture_video(render / "master.mp4", vf=opts["video_vf"], tone_db=opts["gain"], clip=opts["clip"])
     write_fixture_files(root, opts)
     (root / "audio").mkdir(exist_ok=True)
     (root / "audio" / "mix.wav").write_bytes(b"self-test audio source")
     write_gate_results(root)
-    if opts["variants"]:
-        make_variants(render, opts["variant_fps"])
-    if opts["probes"]:
-        make_probes(root / "probe")
+
+
+def write_optional_fixtures(root, render, opts):
+    variants = make_variants(render, opts["variant_fps"]) if opts["variants"] else None
+    probes = make_probes(root / "probe") if opts["probes"] else None
+    return variants, probes
+
+
+def make_project(root, **options):
+    """Build a self-test project. `options` override FIXTURE_DEFAULTS."""
+    opts = {**FIXTURE_DEFAULTS, **options}
+    render = root / "render"
+    write_project_sources(root, render, opts)
+    write_optional_fixtures(root, render, opts)
     return root
 
 
@@ -1470,16 +1488,23 @@ def self_test_music(root):
     print("ok music-continuity-pass: exit=0")
 
 
-def self_test_phone_frames(root):
-    out = root / "qa" / "phone-frames"
+def phone_test_context(root, out):
     meta, scenes = load_timeline(root / "timeline.json")
-    ctx = types.SimpleNamespace(video=root / "render" / "master.mp4", phone_frames=out,
-                                meta=meta, scenes=scenes)
-    result = make_phone_frames(ctx)
+    return types.SimpleNamespace(video=root / "render" / "master.mp4", phone_frames=out,
+                                 meta=meta, scenes=scenes)
+
+
+def assert_phone_frames(out, result):
     frames = sorted(out.glob("*.png"))
     assert len(frames) == len(result["frames"]) == 4, f"phone frames: found {len(frames)}, expected 4"
     for path in frames:
         assert_png(path, 640, PHONE_FRAME_H)
+
+
+def self_test_phone_frames(root):
+    out = root / "qa" / "phone-frames"
+    result = make_phone_frames(phone_test_context(root, out))
+    assert_phone_frames(out, result)
     print("ok phone-frames: count=4 size=640x360")
 
 
@@ -1518,20 +1543,38 @@ def self_test_in(tmp):
     self_test_gate(tmp)
 
 
-def self_test_new_checks(tmp):
-    fps = 10.0
+def cut_flash_test_fixture():
     scenes = [{"id": "s01", "start_sec": 0.0, "duration_sec": 0.4}]
-    motion = types.SimpleNamespace(frames=[bytes([80])] * 4, fps=fps)
+    motion = types.SimpleNamespace(frames=[bytes([80])] * 4, fps=10.0)
+    return scenes, motion
+
+
+def assert_equal_cut_luma(scenes, motion):
     _, errors = check_cut_flash(types.SimpleNamespace(motion=motion, scenes=scenes))
     assert not errors, f"equal cut luma must pass: {errors}"
+
+
+def assert_dark_cut_frame(scenes, motion):
     motion.frames[-1] = bytes([0])
     _, errors = check_cut_flash(types.SimpleNamespace(motion=motion, scenes=scenes))
     assert len(errors) == 1 and "frames 2 and 3" in errors[0][0], f"dark cut frame must fail: {errors}"
+
+
+def assert_fade_hold(scenes, motion):
     scenes[0].update({"static_hold": True, "static_hold_reason": "Fade to the end card."})
     _, errors = check_cut_flash(types.SimpleNamespace(motion=motion, scenes=scenes))
     assert not errors, f"declared fade hold must allow a luma change: {errors}"
+
+
+def self_test_cut_flash():
+    scenes, motion = cut_flash_test_fixture()
+    assert_equal_cut_luma(scenes, motion)
+    assert_dark_cut_frame(scenes, motion)
+    assert_fade_hold(scenes, motion)
     print("ok cut-flash: equal luma passes, dark last frame fails")
 
+
+def gate_result_test_context(tmp):
     gate_root = tmp / "gate-results"
     gate_root.mkdir()
     master, mix = gate_root / "master.mp4", gate_root / "mix.wav"
@@ -1539,16 +1582,38 @@ def self_test_new_checks(tmp):
     mix.write_bytes(b"audio")
     expected = gate_root / "audio-check.json"
     gate_ctx = types.SimpleNamespace(expected_gate_results=[expected], video=master, mix=mix)
+    return gate_ctx, expected, master
+
+
+def assert_missing_gate_result(gate_ctx):
     _, errors = check_gate_results(gate_ctx)
     assert len(errors) == 1 and "missing" in errors[0][0], f"missing gate result must fail: {errors}"
+
+
+def assert_stale_gate_result(gate_ctx, expected, master):
     expected.write_text(json.dumps({"passed": True}))
     os.utime(expected, (master.stat().st_mtime - 2, master.stat().st_mtime - 2))
     _, errors = check_gate_results(gate_ctx)
     assert len(errors) == 1 and "older" in errors[0][0], f"stale gate result must fail: {errors}"
+
+
+def assert_fieldless_gate_result(gate_ctx, expected):
     expected.write_text(json.dumps({"status": "ok"}))
     _, errors = check_gate_results(gate_ctx)
     assert len(errors) == 1 and "no pass" in errors[0][0], f"missing pass field must fail: {errors}"
+
+
+def self_test_gate_results(tmp):
+    gate_ctx, expected, master = gate_result_test_context(tmp)
+    assert_missing_gate_result(gate_ctx)
+    assert_stale_gate_result(gate_ctx, expected, master)
+    assert_fieldless_gate_result(gate_ctx, expected)
     print("ok gate-results: missing, stale, and fieldless results fail")
+
+
+def self_test_new_checks(tmp):
+    self_test_cut_flash()
+    self_test_gate_results(tmp)
 
 
 def self_test():
