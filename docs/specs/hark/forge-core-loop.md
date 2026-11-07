@@ -19,7 +19,7 @@ All audio in the forge is float, 48 000 Hz. Mono is shape `(n,)`, stereo is shap
 |---|---|---|
 | `recipes()` | `()` | sorted list of recipe module names in `hark.forge.recipes`. A name that starts with `_` is a helper module and is not listed. |
 | `load_recipe(name)` | `(name: str)` | the imported recipe module `hark.forge.recipes.<name>`. |
-| `render_block(rec, params, seed, member=None, mode=None, gain=None)` | | the render block of one pick (part 4, schema), or `None` when the render function has no importable name. |
+| `render_block(rec, params, seed, member=None, mode=None, gain=None)` | | the render block of one pick (part 6, schema), or `None` when the render function has no importable name. |
 | `variant_recipe(render_fn, members, names=None, name=None, **attrs)` | | a stand-in recipe object that searches one key `variant` over a fixed list of complete member param dicts. |
 | `pick_refs(refs=None, refset=None, recipe=None, log=None)` | | tuple `(reference file list or None, refset category used or None)`. |
 | `resolve_refs(refs=None, refset=None, recipe=None, log=None)` | | the first element of `pick_refs`. |
@@ -49,7 +49,7 @@ attributes. The forge reads these attributes:
 | `TARGET` | yes | a text description that the critic aims for, for example "a clean bright user interface click". |
 | `ALTS` | yes | list of text confusions. The sound must match these less than the target. |
 | `render(p, r)` | yes | a function. `p` is a complete param dict. `r` is a `numpy.random.Generator`. It returns float audio at 48 kHz, mono `(n,)` or stereo `(n, 2)`. It is deterministic for a given `p` and a generator built from a given seed. No recorded audio is read: every sample is computed. |
-| `REFSET` | no | name of a reference-set category (part 5). The CLI uses its forge split as the default references. |
+| `REFSET` | no | name of a reference-set category (part 9). The CLI uses its forge split as the default references. |
 | `REFS` | no | list of reference file paths under the reference root. The last fallback for references. |
 | `TARGETS` | no | dict category -> target text, for a recipe that serves more than 1 category. |
 | family presets | no | dicts of named characters, for example `FAMILIES`. The forge does not read them itself. A driver passes them to `forge(families=...)`. |
@@ -69,7 +69,7 @@ A `SPACE` value is one of:
 - a tuple `(lo, hi, 'log')`: a float range searched in log units. `lo` is greater than 0.
 - a tuple `(lo, hi, 'int')`: an integer range, inclusive.
 
-The search encodes each parameter to a unit coordinate in [0, 1] and decodes back (part 5 gives the mapping).
+The search encodes each parameter to a unit coordinate in [0, 1] and decodes back (part 7 gives the mapping).
 
 ### CLI: `hark forge`
 
@@ -81,7 +81,7 @@ The search encodes each parameter to a unit coordinate in [0, 1] and decodes bac
 | `--list` | off | list every recipe with its TARGET and its refset, then the refset categories. |
 | `--render [RECIPE]` | off | render `--params` without a search. The recipe follows the flag or is the positional. |
 | `--params FILE` | | JSON: a params dict, a list of dicts, a report.json, or a seed bank file. |
-| `--check DIR...` | | re-render every pick of each output folder from its report.json and compare with the WAV files (part 4). |
+| `--check DIR...` | | re-render every pick of each output folder from its report.json and compare with the WAV files (part 6). |
 | `--seeds N...` | each pick's own seed, else 0 | seeds for `--render`. |
 | `--target TEXT` | the recipe's TARGET | |
 | `--alts TEXT...` | the recipe's ALTS | |
@@ -131,7 +131,7 @@ version of the loop (ES strategy, no pre-screen, no seed bank, no robust). The C
 | `<recipe>_NN.wav` | each pick, NN from 01. PCM 24-bit, 48 kHz. |
 | `report.json` | the run report (below). Written with indent 1. Arrays become lists. Other non-JSON objects become strings. |
 | `report.md` | `report_md(report)`. Only when `outputs` is true. |
-| `compare.png` | each pick beside its nearest reference (part 5, viz). Only when `outputs` is true. |
+| `compare.png` | each pick beside its nearest reference (part 9, viz). Only when `outputs` is true. |
 | `audition.wav`, `audition.txt` | the listening reel and its cue list. Only when `outputs` is true. |
 
 ### Run report (`forge()` return value)
@@ -150,10 +150,10 @@ version of the loop (ES strategy, no pre-screen, no seed bank, no robust). The C
 | `prescreen` | renders per generation of the pre-screen (0 when off). |
 | `restarts` | CMA restarts (0 for ES). |
 | `n_bank` | starts taken from the seed bank. |
-| `generations`, `gens`, `timing` | from the optimiser (part 5). `timing.forge_s` is added at the end: wall seconds of the whole call, 1 decimal. |
+| `generations`, `gens`, `timing` | from the optimiser (part 7). `timing.forge_s` is added at the end: wall seconds of the whole call, 1 decimal. |
 | `pick_rule` | one sentence that states how the picks were chosen. |
 | `space` | present only when a `space` was passed. |
-| `fill_warnings` | present only when the optimiser filled a key at mid-range (part 5). |
+| `fill_warnings` | present only when the optimiser filled a key at mid-range (part 7). |
 | `picks` | list of pick items (below). |
 | `ref_scores` | the critic's leave-one-out scores of the references (below). |
 | `ref_scores_loo` | `true`. |
@@ -203,11 +203,11 @@ dropped files.
 4. Start points: `init` (a list of param dicts). When `bank` is true and the recipe is a real recipe module (its
    name is in `recipes()`), load the seed bank entries for this recipe, target and refs, and add them. Count them
    as `n_bank`.
-5. Build the pre-screen for the critic's refs. Run the optimiser (part 5) with budget, pop, seed, starts, space,
+5. Build the pre-screen for the critic's refs. Run the optimiser (part 7) with budget, pop, seed, starts, space,
    sigma0, sigma1, reps, strategy, prescreen, workers and the pre-screen.
 6. The pick pool is the optimiser's best list followed by the 64 highest-total history entries.
 7. With `robust` > 0, the shortlist factor S is max(1, shortlist); else S = 1. Take `keep x S` diverse picks from
-   the pool (part 5, `diverse`).
+   the pool (part 7, `diverse`).
 8. With robust > 0, compute robust stats for each pick on `robust` new seeds. When S > 1, sort the picks: first those
    with a robust pass rate of at least 0.5, then by robust mean, descending (a missing mean counts as -1e9). Keep the
    first `keep`. The pick rule sentence says that `keep x S` diverse candidates were re-rendered on `robust` seeds
@@ -218,7 +218,7 @@ dropped files.
 10. Render each pick once more with its own seed. Compute held-out AudioSet tags for the rendered picks and for the
     loaded refs when `holdout` is true.
 11. Build each pick item. When the pre-screen has refs, measure the pick and find its nearest ref by sound distance
-    (part 5). The nearest-ref index is also the audition pair.
+    (part 7). The nearest-ref index is also the audition pair.
 12. Write each WAV when `out` is given.
 13. Drop the `schema` key when any pick lacks a render block.
 14. Build `ref_scores`.
@@ -269,9 +269,9 @@ Scores an exact member set together and writes it as one set of interchangeable 
 
 1. `members` items are dicts with `params` (a pick of a report works), or bare params dicts (seed 0). Each member's
    params are the recipe's DEFAULTS overlaid by the member's params. Seed = the member's seed or 0.
-2. Render every member (part 5 `render`). A member that fails or is silent is removed, and when `log` is given one
+2. Render every member (part 7 `render`). A member that fails or is silent is removed, and when `log` is given one
    line names the failed indices.
-3. Loudness match: measure the loudness spread of the renders (part 3, `loudness_spread`). When `loudness` is true,
+3. Loudness match: measure the loudness spread of the renders (part 4, `loudness_spread`). When `loudness` is true,
    each member gain is 10^((min LUFS - member LUFS) / 20): every member goes to the quietest member's
    momentary-maximum loudness. Then one common gain c = 10^(peak_db / 20) / max over members of (peak x gain). The
    loudest peak lands on `peak_db` (default -1 dBFS). Output samples are float32.
@@ -312,7 +312,7 @@ Otherwise the block names `rec.render` and the params.
 ### `render_params`
 
 Renders param sets without a search.
-- A report dict (has `picks`): for each pick, build its render block (part 4 `block`). When the pick has its own
+- A report dict (has `picks`): for each pick, build its render block (part 6 `block`). When the pick has its own
   render block, or the inferred block names this recipe, resolve the function and render the block's complete
   params with it. On a not-reproducible, key, type or value error, fall back to the pick's `params` on the recipe.
   The seed is the pick's own.
@@ -473,14 +473,14 @@ adds min(2, (lo - v) / scale); a value over hi adds min(2, (v - hi) / scale). Th
 
 ## Errors and edge cases
 
-- A recipe whose render returns nothing or silence gives a `None` render (part 5). The forge skips it in
+- A recipe whose render returns nothing or silence gives a `None` render (part 7). The forge skips it in
   `measured`, holdout and WAV writing, and palette drops it with a log line.
 - With no refs: no `measured`, no ref scores, no gap. The CLI prints a note.
 - A missing refset registry or unknown category when the recipe has REFSET: fall through to REFS.
 - A compare picture error is caught and recorded. The run still writes report.json.
 - A seed bank write error is logged and ignored.
 - The report drops `schema` when any pick cannot name its render function (a driver's lambda). The schema module
-  then infers a block for such reports (part 4).
+  then infers a block for such reports (part 6).
 - `--render` without a recipe or without `--params`: usage line and exit code 2.
 - A recipe that fails to import in `--list` shows `(does not load: <ErrorType>)` and the listing continues.
 
@@ -494,7 +494,7 @@ L3. `family_box` with a value at the range edge never leaves the range, and an e
 L4. `palette` with 3 members of different loudness returns `loudness.after.spread_lu` near 0 (under 0.5 LU), and the
     loudest member peak is -1.0 dBFS within 0.01 dB.
 L5. `forge(recipe, budget=32, pop=8, keep=2, out=D)` writes `<name>_01.wav`, `<name>_02.wav`, `report.json` with
-    `schema` 2, and every pick has a `render` block whose re-render matches the WAV within 1e-6 (part 4 check).
+    `schema` 2, and every pick has a `render` block whose re-render matches the WAV within 1e-6 (part 6 check).
 L6. `forge(..., families={'a': {...}, 'b': {...}})` returns a palette report with 2 picks, `runs` of length 2, and
     members named by family.
 L7. `audition` with made `[('m', x)]`, refs `[('r', y)]`, pairs `[0]` writes a WAV of length len(x) + 0.6 s + len(y) +
