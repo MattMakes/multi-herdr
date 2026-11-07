@@ -141,11 +141,12 @@ def read_raster_upscales(path):
 
 def load_or_none(load, arg, errors, prefix):
     """load(arg), or None after it prints the error of a bad input."""
+    result = None
     try:
-        return load(arg)
+        result = load(arg)
     except errors as e:
         print(f"scan_linear_motion: {prefix}{e}", file=sys.stderr)
-        return None
+    return result
 
 
 def report_hits(lines, summary, failed):
@@ -215,11 +216,19 @@ FIXTURES = {
 }
 
 
-def fixture_failures(root):
+def write_fixtures(root):
     for name, (text, _) in FIXTURES.items():
         (root / name).write_text(text, encoding="utf-8")
-    counts = {name: (scan_text((root / name).read_text(encoding="utf-8")), want) for name, (_, want) in FIXTURES.items()}
-    failures = [f"{name}: {len(got)} hit(s), want {want}: {got}" for name, (got, want) in counts.items() if len(got) != want]
+
+
+def count_failure(root, name, want):
+    got = scan_text((root / name).read_text(encoding="utf-8"))
+    return [f"{name}: {len(got)} hit(s), want {want}: {got}"] if len(got) != want else []
+
+
+def fixture_failures(root):
+    write_fixtures(root)
+    failures = [f for name, (_, want) in FIXTURES.items() for f in count_failure(root, name, want)]
     line = scan_text(FIXTURES["none-scale.js"][0])[0][0]
     return failures + ([f"none-scale.js hit on line {line}, want 1"] if line != 1 else [])
 
@@ -238,18 +247,25 @@ def raster_failures(root):
         ("raster-clean.json", [120, 60], 0, "1.2x raster sample does not pass"),
         ("raster-bad.json", [121, 50], 1, "1.21x raster sample does not fail"),
     ]
-    failures = []
-    for name, drawn, want, message in cases:
-        sample = {"t_sec": 0, "src": "plate.png", "natural_px": [100, 50], "drawn_px": drawn}
-        (root / name).write_text(json.dumps({"samples": [sample]}), encoding="utf-8")
-        failures += [message] if check_raster_sizes(root / name) != want else []
+    return [message for name, drawn, want, message in cases if raster_exit(root / name, drawn) != want]
+
+
+def raster_exit(path, drawn):
+    sample = {"t_sec": 0, "src": "plate.png", "natural_px": [100, 50], "drawn_px": drawn}
+    path.write_text(json.dumps({"samples": [sample]}), encoding="utf-8")
+    return check_raster_sizes(path)
+
+
+def all_failures():
+    tmp = tempfile.TemporaryDirectory()
+    root = Path(tmp.name)
+    failures = fixture_failures(root) + exit_failures(root) + raster_failures(root)
+    tmp.cleanup()
     return failures
 
 
 def self_test():
-    with tempfile.TemporaryDirectory() as tmp:
-        root = Path(tmp)
-        failures = fixture_failures(root) + exit_failures(root) + raster_failures(root)
+    failures = all_failures()
     for f in failures:
         print(f"FAIL {f}", file=sys.stderr)
     print("scan_linear_motion self-test: " + ("FAILED" if failures else f"{len(FIXTURES)} fixtures pass"))

@@ -203,17 +203,24 @@ function writeMasterTimeline(root, timeline) {
   return file;
 }
 
-export async function assembleMaster(timelineFile, out) {
+function prepareMaster(timelineFile) {
   const root = dirname(resolve(timelineFile));
   const timeline = loadTimeline(timelineFile);
   const plan = planMaster(timeline);
   const inputs = findInputs(root, plan);
-  const beatChecked = checkBeats(root, timeline, plan.fps);
-  mkdirSync(dirname(resolve(out)), { recursive: true });
-  await ffmpeg(ffmpegArgs(root, plan, inputs, resolve(out)));
-  const master_timeline = writeMasterTimeline(root, timeline);
+  return { root, timeline, plan, inputs, beatChecked: checkBeats(root, timeline, plan.fps) };
+}
+
+function masterReport(out, masterTimeline, { plan, inputs, beatChecked }) {
   const scenes = plan.scenes.map(sceneReport(inputs, plan.fps));
-  return { out, master_timeline, frames: plan.frames, duration_sec: plan.frames / plan.fps, beat_checked: beatChecked, scenes, overlays: inputs.overlays };
+  return { out, master_timeline: masterTimeline, frames: plan.frames, duration_sec: plan.frames / plan.fps, beat_checked: beatChecked, scenes, overlays: inputs.overlays };
+}
+
+export async function assembleMaster(timelineFile, out) {
+  const job = prepareMaster(timelineFile);
+  mkdirSync(dirname(resolve(out)), { recursive: true });
+  await ffmpeg(ffmpegArgs(job.root, job.plan, job.inputs, resolve(out)));
+  return masterReport(out, writeMasterTimeline(job.root, job.timeline), job);
 }
 
 // ---------------------------------------------------------------- self-test

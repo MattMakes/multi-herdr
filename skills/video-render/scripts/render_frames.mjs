@@ -1186,28 +1186,38 @@ async function writeCover({ master, outDir, hook, coverSec, report }) {
   report.outputs.push(file);
 }
 
-async function writePreviews({ master, outDir, hook, info, report }) {
-  const len = Math.min(5, info.duration - hook.start_sec);
-  const clipArgs = ["-ss", String(hook.start_sec), "-t", String(len), "-i", master, "-an"];
-  const [mp4, gif] = [join(outDir, "preview.mp4"), join(outDir, "preview.gif")];
+// preview.mp4 is the full film, so it keeps the master frame count.
+async function writePreviewMp4({ master, outDir, report }) {
+  const mp4 = join(outDir, "preview.mp4");
   await ffmpeg(["-i", master, "-an", ...PREVIEW_MP4_ARGS, mp4]);
-  await ffmpeg([...clipArgs, "-filter_complex", GIF_FILTER, "-loop", "0", gif]);
-  report.outputs.push(mp4, gif);
+  report.outputs.push(mp4);
+}
+
+async function writePreviewGif({ master, outDir, hook, info, report }) {
+  const len = Math.min(5, info.duration - hook.start_sec);
+  const gif = join(outDir, "preview.gif");
+  await ffmpeg(["-ss", String(hook.start_sec), "-t", String(len), "-i", master, "-an", "-filter_complex", GIF_FILTER, "-loop", "0", gif]);
+  report.outputs.push(gif);
   report.warnings.push(...(len < 5 ? [`preview: master holds ${len.toFixed(2)} s after the hook start, not 5 s`] : []));
 }
 
+async function writePreviews(ctx) {
+  await writePreviewMp4(ctx);
+  await writePreviewGif(ctx);
+}
+
+function encodedFiles({ master, outDir, aspects }) {
+  const derived = ["preview", ...aspects].map((name) => [`${name}.mp4`, join(outDir, `${name}.mp4`)]);
+  return [["master.mp4", master], ...derived];
+}
+
+// Every derived MP4 must decode to the master frame count: a packaging step never cuts the film.
 async function encodedFrameCounts(ctx) {
-  const files = {
-    "master.mp4": ctx.master,
-    "preview.mp4": join(ctx.outDir, "preview.mp4"),
-    ...Object.fromEntries(ctx.aspects.map((aspect) => [`${aspect}.mp4`, join(ctx.outDir, `${aspect}.mp4`)])),
-  };
-  const entries = await Promise.all(Object.entries(files).map(async ([name, file]) => [name, await probeFrameCount(file)]));
-  const counts = Object.fromEntries(entries);
-  const master = counts["master.mp4"];
-  const mismatches = entries.filter(([name, count]) => name !== "master.mp4" && count !== master);
-  check(mismatches.length === 0, `derived frame counts differ from master.mp4 (${master}): ${mismatches.map(([name, count]) => `${name}=${count}`).join(", ")}`);
-  return counts;
+  const entries = await Promise.all(encodedFiles(ctx).map(async ([name, file]) => [name, await probeFrameCount(file)]));
+  const [[, master], ...derived] = entries;
+  const mismatches = derived.filter(([, count]) => count !== master).map(([name, count]) => `${name}=${count}`);
+  check(mismatches.length === 0, `derived frame counts differ from master.mp4 (${master}): ${mismatches.join(", ")}`);
+  return Object.fromEntries(entries);
 }
 
 async function writeAspect(ctx, aspect) {
