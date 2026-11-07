@@ -621,11 +621,12 @@ function pixelsOf(canvas) {
   return canvas.getContext("2d", { willReadFrequently: true }).getImageData(0, 0, canvas.width, canvas.height).data;
 }
 
+const channelError = (a, b, i) => (a[i] - b[i]) ** 2;
+const pixelError = (a, b, i) => channelError(a, b, i) + channelError(a, b, i + 1) + channelError(a, b, i + 2);
+
 function rgbPsnr(a, b) {
   let squared = 0;
-  for (let i = 0; i < a.length; i += 4) {
-    squared += (a[i] - b[i]) ** 2 + (a[i + 1] - b[i + 1]) ** 2 + (a[i + 2] - b[i + 2]) ** 2;
-  }
+  for (let i = 0; i < a.length; i += 4) squared += pixelError(a, b, i);
   const mse = squared / (a.length * 0.75);
   return mse === 0 ? 99 : 10 * Math.log10((255 * 255) / mse);
 }
@@ -648,16 +649,15 @@ function roundTripPixels(img, natural, real) {
   return pixelsOf(restored);
 }
 
-async function measureDetail(url, natural, factor, threshold) {
-  try {
-    const img = await loadRaster(url);
-    const real = natural.map((v) => Math.max(1, Math.floor(v / factor)));
-    const psnr = rgbPsnr(originalPixels(img, natural), roundTripPixels(img, natural, real));
-    return psnr > threshold ? { real_px: real, detail_scale: factor, detail_psnr_db: Math.round(psnr * 10) / 10 } : null;
-  } catch (_) {
-    return null;
-  }
+async function detectDetail(url, natural, factor, threshold) {
+  const img = await loadRaster(url);
+  const real = natural.map((v) => Math.max(1, Math.floor(v / factor)));
+  const psnr = rgbPsnr(originalPixels(img, natural), roundTripPixels(img, natural, real));
+  return psnr > threshold ? { real_px: real, detail_scale: factor, detail_psnr_db: Math.round(psnr * 10) / 10 } : null;
 }
+
+const ignoreDetailError = () => null;
+const measureDetail = (...args) => detectDetail(...args).catch(ignoreDetailError);
 
 function detailFacts(url, natural, factor, threshold) {
   const cache = (window.__rasterDetail ??= new Map());
@@ -806,7 +806,7 @@ async function measureRasters() {
 }
 
 const PAGE_FUNCTIONS = [rasterName, isRaster, isShown, loadRaster, loadNatural, naturalSize, pixelCanvas, pixelsOf, rgbPsnr,
-  originalPixels, roundTripPixels, measureDetail, detailFacts,
+  channelError, pixelError, originalPixels, roundTripPixels, detectDetail, ignoreDetailError, measureDetail, detailFacts,
   fitScales, fitSize, trimmed, splitLayers, layerUrl,
   axisLength, keepRatio, lengthSize, backgroundSize, boxSample, imageSample, svgFit, svgImageSample, posterSample, scaledDraw,
   canvasSamples, layerSample, axisScale, backgroundBox, backgroundSamples, roundTenth, deviceTenth, usableSample, enrichSample, sampleRecord,

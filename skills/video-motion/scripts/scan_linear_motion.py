@@ -246,8 +246,12 @@ def raster_failures(root):
         ("raster-bad.json", [121, 50], 1, "1.21x raster sample does not fail"),
     ]
     failures = [message for name, drawn, want, message in cases if raster_exit(root / name, drawn) != want]
-    failures += [] if raster_exit(root / "raster-pre-upscaled.json", [100, 50], [50, 25]) == 1 else ["a pre-upscaled raster does not fail at its measured real resolution"]
-    return failures
+    return failures + pre_upscale_failures(root)
+
+
+def pre_upscale_failures(root):
+    exit_code = raster_exit(root / "raster-pre-upscaled.json", [100, 50], [50, 25])
+    return [] if exit_code == 1 else ["a pre-upscaled raster does not fail at its measured real resolution"]
 
 
 def raster_exit(path, drawn, real=None):
