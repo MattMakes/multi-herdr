@@ -85,8 +85,8 @@ Texture fields:
 
 1. STFT of the mono mix, size 2048, on the 5 ms grid. Power dB.
 2. Local floor on both sides: a median over 8 bins, read 6 bins below and 6 bins above, take the higher, plus 1.6 dB
-   (the median of an exponential is ln 2 under its mean). This keeps the edge of a band-limited noise from being a
-   peak.
+   (an exponential variable's median is its mean minus ln 2 in log terms). With this floor, the edge of a
+   band-limited noise does not count as a peak.
 3. Active frames: total power within 50 dB of the loudest frame.
 4. Per active frame: candidates in `[ridge_lo, 16 kHz]` that stand more than `ridge_db` over the floor and are a local
    maximum against 2 bins on each side. The 12 most prominent.
@@ -95,8 +95,8 @@ Texture fields:
 6. A track ends after 2 frames without a peak (also over inactive frames).
 7. Keep tracks with at least `max(2, round(ridge_ms / 5))` frames and a median prominence of at least `ridge_db + 2`.
    Order by total excess power. Keep `max_ridges`.
-8. Ridge model: amplitude `A = sqrt(6 p / 2048)` with p = peak minus floor density (a Hann peak bin of a sinusoid of
-   amplitude A has density `A^2 N / 6`). Keyframes by the greedy keyframe choice on
+8. Ridge model: amplitude `A = sqrt(6 p / 2048)` with p = peak minus floor density (with a Hann window, a sinusoid of
+   amplitude A gives a peak bin density of `A^2 N / 6`). Keyframes by the greedy keyframe choice on
    `[log2 f / 0.006, dB / 1.5]` with tolerance 1 and at most 60 keys. Jitter: the std of log2 f around its 5-frame
    smooth, times ln 2, clipped to [0.0005, 0.02].
 9. Remove each ridge from the band densities: `D -= W(f) A^2 sr / (4 bw)`, at least 5 % of the old value.
@@ -134,14 +134,15 @@ Texture fields:
 3. `diff = target - mean`, zero outside active cells, uniform filter over 3 bands x 3 frames.
 4. `gain += 0.85 x clip(diff, -12, 12)`, floored at `top - 90`.
 
-This pays back band overlap, window smear and the low bands' slow filters.
+These iterations correct the level losses from overlapping bands, window spread and the slow filters of the low
+bands.
 
 ### Stereo trajectory
 
 - Smooth the group L, R and cross powers over 7 frames.
 - `ild = clip(dB(PL) - dB(PR), -20, 20)`, `icc = clip(C / sqrt(PL PR), -1, 1)`.
-- Active cells: group power within 45 dB of the maximum. Quiet cells take the group's power-weighted mean over active
-  cells, so noise does not wander the image. A group with no active power gets ild 0 and icc 1.
+- Active cells: group power within 45 dB of the maximum. Each quiet cell gets the mean over the active cells of the
+  group, weighted by power, so low-level noise does not move the image around. A group with no active power gets ild 0 and icc 1.
 - Group weights: the share of each group's total power.
 
 ### Keyframes
@@ -181,8 +182,8 @@ Statistics of a mono signal against a group envelope (per group with at least 0.
    (without DC) times the variance.
 5. The same spectrum for each half of the active span (needs 12 frames per half).
 6. Impulsiveness: the std of the log analytic envelope (full rate) relative to the group envelope over the active
-   frames. Gaussian noise gives 0.64 nepers (Rayleigh). Sparse crackle gives up to about 1.5. This is robust where
-   kurtosis is ruled by the largest click.
+   frames. Gaussian noise gives 0.64 nepers (Rayleigh). Sparse crackle gives up to about 1.5. Unlike kurtosis,
+   this measure is not dominated by the single loudest click.
 7. Low-rate series: the centred log ratio low-passed at 64 Hz (for coherence).
 
 Averages over render seeds use the mean ignoring missing values.
@@ -194,7 +195,7 @@ Averages over render seeds use the mean ignoring missing values.
 3. Group weights: the original's shares over valid groups, normalised.
 4. Fast variance: the sum over rates at or above 128 Hz. `hx` = weighted excess of the original over Gaussian.
    `hratio` = weighted ratio. Grainy when `hx > max(0.03, 3 x weighted std over seeds)` and `hratio > 1.5`. With
-   `halves`, also each half's ratio must be above 1.5. Clicks put variance at every rate. Flutter does not.
+   `halves`, also each half's ratio must be above 1.5. Clicks add variance across all rates, flutter only at its own rate.
 5. Grain density (when grainy): loss = weighted squared difference of the impulsiveness statistic between renders
    with grains and the original. Grid 25, 60, 150, 400, 1000, 2500, 6000, 15000 per second. Then try the geometric
    mean with each neighbour of the best. Keep the lowest. Round to 1 decimal.
@@ -207,7 +208,7 @@ Averages over render seeds use the mean ignoring missing values.
    - None when `max(depth where group weight > 0.03) <= 0.08` or the shape is empty.
    - Coherence: the correlation of the low-rate series of the 2 loudest groups (over frames active in both, at least
      24), original minus base, clipped to [0, 1].
-7. When AM is found and grainy: refit the density with the AM in, then fit the AM again against grain-only renders.
+7. When AM is found and the sound is grainy: fit the density again with the AM included, then fit the AM again against grain-only renders.
 8. Depth correction: render with AM and grains. Per group, `depth x sqrt(clip(want / got, 0.25, 4))`, at most 0.6,
    with want = real minus base low variance and got = rendered minus base (at least 1e-6).
 9. Store the stats.
@@ -266,9 +267,9 @@ scale, roughness, fine curve and its shift, a power flag, optional ridge signal.
    mean))`, at most 0.45 sr, dB plus `20 log10(ridges)`.
 9. Synthesize with power.
 10. Level (`level` and `steady`): gain `10^((level_db + gain_db - peak 50 ms mean of expected power)/20) x take gain`.
-    The take gain puts the take's K-weighted energy (channel mean) on the expected K-weighted energy. Reason: a noise
-    band holds few independent bins over a short gesture, so levelled by its own loudest 50 ms, takes of one model
-    came out 2 to 7 LU apart. Now they are within about 0.5 LU. The fit quality numbers level both sounds, so they do
+    The take gain puts the take's K-weighted energy (channel mean) on the expected K-weighted energy. Reason: over a short gesture a noise
+    band contains few independent bins. When each take was levelled on its own loudest 50 ms, takes of the same
+    model differed by 2 to 7 LU. Now they are within about 0.5 LU. The fit quality numbers level both sounds, so they do
     not move.
 11. `steady=False`: gain to put the take's own loudest 50 ms RMS at `level_db + gain_db` (the older levelling; a
     hybrid's air layer uses it, because its post stage was measured so).

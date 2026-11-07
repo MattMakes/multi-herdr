@@ -13,8 +13,8 @@ Module: `hark.forge.fit.auto` (same module as the fitting side).
 | `render(model, seed=0, take=None, bed=None, **knobs)` | float64 at 48 kHz, `(n, 2)` when the source was stereo, else `(n,)`. A pure function of its arguments. |
 | `KNOBS` | Per kind: name -> (search range, identity, description). |
 | `knobs_of(model)` | The knob table of a model. |
-| `identity(model)` | `{name: identity value}`: the knob values that re-render the fit (a recipe's `DEFAULTS`). |
-| `finished(model)` | Does a render of this model end with the finish? |
+| `identity(model)` | `{name: identity value}`: the knob setting at which the render reproduces the fit (a recipe's `DEFAULTS`). |
+| `finished(model)` | True when renders of this model get the finish step. |
 | `morph(a, b, amount=0.5)` | A new model between 2 fits of one kind. |
 | `morph_model(a, b, amount=0.5)` | `{'kind': 'morph', 'version': 1, 'amount', 'a', 'b'}` (both without `fit_engine`). |
 | `fit_pair(xa, xb, clap=False, fast=False, verbose=False)` | 2 recordings fitted with one kind: `(model a, model b, {kind: (score a, score b)})`. |
@@ -118,11 +118,13 @@ listing the bad and the known names.
 7. Post stage with the scale, tail, the gate time map (when the stage has a gate) and the anchor.
 8. Space layer (when `post.space`): `render_space(space, y, seed, width=knob width, ring=take, limit=False)`.
 9. Bed layer (when `post.bed` and `bed` is not false): add `bed_noise(bed, len, seed)` (to both channels).
-10. Take: a causal 2nd-order Butterworth high-pass at 8 Hz per channel. Reason: a noise band modulated by its
-    envelope spreads energy down to DC, and a new seed could carry a DC offset of 1 to 2 % of the peak.
+10. Take: a causal 2nd-order Butterworth high-pass at 8 Hz per channel. Reason: amplitude modulation of a noise band by
+    its envelope puts some energy at very low frequencies, so a take with a new seed could have a DC offset of 1 to
+    2 % of its peak.
 11. Finish (only when the model is finished and the render is final): fade-in length
     `clip(onset_index(mono, -40 dB) / sr - 0.5 ms, 0.25 ms, 2 ms)` and the -1 dBFS peak gain (the sines finish).
-    Reason: 18 of 464 reference takes had peaked over 0 dBFS. A clip cut into its own attack keeps it.
+    Reason: 18 of 464 reference takes went above 0 dBFS. When a recording starts inside its own attack, the short
+    fade keeps that attack.
 
 Internal switches (not public knobs): `final=False` leaves out the finish (the engine measures levels and post
 stages on such renders). `space=False` leaves out the space layer (its dry).
@@ -158,8 +160,8 @@ and morph: always. A model fitted before these flags renders without the finish,
 
 ### Gate time map
 
-The knobs that move time move the gate's breakpoints (the decay knobs do not: a gate is the designer's cut, so a
-longer ring is cut at the same place).
+The knobs that move time move the gate's breakpoints (the decay knobs do not: the gate stands for an edit by the
+sound designer, so a longer ring still ends at the same time).
 
 - sines with stretch not 1: `t -> onset + (t - onset) x stretch`.
 - spectral with `length / speed` not 1: `t -> t x scale`.
@@ -268,13 +270,14 @@ Post stage mix:
   the morph axis first. Then union of times, each gate interpolated in dB (0 before), linear mix.
 - Space and bed: the nearer source's copy.
 
-Time maps for the gate (`_morph_maps`): modal, sines and spectral use their anchors. gesture uses its tones' when both
-have tones of one kind, else its air's. hybrid uses the first role (tone, body, air) both have with one kind.
+Time maps for the gate: modal, sines and spectral use their anchors. gesture uses the anchors of its tones
+when both sides have tones of the same kind, else those of its air. hybrid uses the first role (tone, body, air) both have with one kind.
 
-Measured (facts): 3 morphs at 0.5 (2 clicks as hybrids, 2 key presses as modal, 2 dings as sines) sat between their
-sources at CLAP 0.48 to 0.76 to each: new sounds, not copies. Known limits: strikes pair by index (a 2-strike key and
-a 4-strike key pair crudely). Partials more than an octave apart do not pair, so they fade instead of gliding. Exact
-pole copies that stop a ring in a later strike stop cancelling once morphed.
+Measured (facts): 3 morphs at 0.5 (2 clicks as hybrids, 2 key presses as modal, 2 dings as sines) had CLAP 0.48 to
+0.76 against each source, so they are new sounds and not copies of either. Known limits: strikes are paired by their
+index, which pairs a key with 2 strikes and a key with 4 strikes poorly. Partials more than 1 octave apart stay
+unpaired and cross-fade rather than glide. Pole copies in a later strike that cancel an earlier ring no longer
+cancel it after a morph.
 
 ### Fit pair
 

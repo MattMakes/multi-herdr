@@ -10,7 +10,7 @@ Module: `hark.forge.fit.auto`. Pure numpy and scipy. CLAP only with `clap=True`.
 
 | name | contract |
 |---|---|
-| `fit(x, kind='auto', layers=None, candidates=None, clap=False, fast=False, seeds=(0,), name=None, verbose=False, collect=None, post=True, bed=True, space=True, confirm=None)` | A model of x (path or 48 kHz array). |
+| `fit(x, kind='auto', layers=None, candidates=None, clap=False, fast=False, seeds=(0,), name=None, verbose=False, collect=None, post=True, bed=True, space=True, confirm=None)` | Fits x, given as a file path or a 48 kHz array, and returns the model. |
 | `fit_kind(x, kind, fast=False, name=None, **opts)` | One fitter: `modal`, `sines`, `spectral`, `gesture`. Other names raise `ValueError`. |
 | `fit_hybrid(x, layers=('modal', 'spectral'), fast=False, base=None, name=None)` | A hybrid model. |
 | `deterministic(model)` | A copy of a modal or sines model without its noise. Other kinds raise `ValueError`. |
@@ -62,22 +62,24 @@ A candidate row: `candidate`, `score` (3 decimals), `fit_s`, `quality` (the seed
 4. All failed: `RuntimeError` naming the errors.
 5. Confirm (default 3; 0 or 1 is off; only with one seed, more than one kept candidate and confirm seeds not in
    `seeds`): the 3 best by seed-0 score are scored on seeds 2 and 3 too. `score2` is the mean of the 3 scores,
-   `clap2` the mean of the 3 CLAP values. The choice is the lowest `score2`. Reason: on short noise-led sounds one
-   seed's CLAP spread 0.84 to 0.92 and its score 7 to 13, and the seed-0 choice took the lucky draws. Seeds 0 and 1
+   `clap2` the mean of the 3 CLAP values. The choice is the lowest `score2`. Reason: for short sounds led by noise,
+   CLAP of a single seed ranged 0.84 to 0.92 and the score 7 to 13, so a choice on seed 0 alone favoured chance. Seeds 0 and 1
    are not used because the post stage is fitted on them.
 6. CLAP margin rule (only after a confirm, with CLAP):
    - Alternatives: candidates with seed-0 CLAP at least 0.02 over the choice's and seed-0 score at most 1.5 over it.
      Score the alternatives on the confirm seeds when not done.
    - Pick: alternatives whose `clap2` is at least 0.02 over the choice's, `score2` at most 1.5 over it and `env_corr`
      at most 0.05 under it. The one with the highest `clap2` wins and gets `chosen_by: 'clap'`.
-   - Reason: the model-free terms decided near-ties against a clearly closer sound. On a held-out check 5 of 6
+   - Reason: when scores were almost equal, the model-free terms picked against a candidate that CLAP heard as
+     clearly closer. On a held-out check 5 of 6
      regressions were the gesture model chosen with 0.015 to 0.06 less CLAP. On dev clips 5 choices changed, all to a
-     higher CLAP. A score tolerance of 4 also took a candidate with an envelope r of 0.58, hence the envelope guard.
+     higher CLAP. With a score tolerance of 4 the rule picked a candidate whose envelope r was 0.58. The envelope guard prevents that.
 7. Bed check (with a bed): fit the winner's kind on X0 as it is (a gesture winner first fits sines on X0 for its
    tones), its post stage on X0 (judge without bed), score on the same seeds (plus the confirm seeds when confirmed).
    Add a `plain:<kind>` row. When it scores lower, use it and drop the bed (`kept: false`). An error keeps the
-   stripped fit and records the row. Reason: a whoosh's own steady approach 13.6 dB under its peak read as a bed,
-   and every stripped candidate fell (CLAP 0.88 to 0.64). On 12 dev clips with a bed the plain fit won on 8.
+   stripped fit and records the row. Reason: on one whoosh, the steady lead-in 13.6 dB under the peak was part of the sound but was detected as a
+   bed. All stripped candidates lost (CLAP 0.88 to 0.64). Over 12 dev clips that have a bed, the unstripped fit
+   scored better on 8.
 8. Finish: with `post`, the space layer (below) on the chosen model. Set the vary scale and the bed. Store
    `fit_engine` (with the space fit diagnostics and the tail correlation, and the bed entry).
 
@@ -103,7 +105,7 @@ fast. Sines and spectral models get `channels` from the input.
 ### Character
 
 On the mono sum:
-1. 1 ms envelope `e` (dB). Peak frame and level. Onset: the first frame within 30 dB of the peak. `t40_ms`: frames
+1. 1 ms envelope `e` (dB). Peak frame and level. Onset: the earliest frame no more than 30 dB under the peak. `t40_ms`: frames
    from the peak to the first frame 40 dB under it (or to the end). Active: within 40 dB.
 2. `rise_db`: on a 0.5 ms envelope, the largest rise over 4 frames (2 ms) among frames within 40 dB of the maximum.
 3. `crest_db`: `20 log10(max |m|)` minus the dB of the mean power over active 1 ms frames.
@@ -156,12 +158,12 @@ ALL = modal, sines, gesture, spectral, hybrid:modal+spectral, hybrid:sines+spect
 
 The order is the class list, then the rest of ALL. The maximum is 4 for long sounds and 7 otherwise. When gesture
 comes before sines, move it to just after sines. Reasons: under 1 s each fit takes 0.5 to 4 s (gesture 3 to 60 s),
-so all are tried. The 3-layer hybrid alone took 147 s on a 4.5 s impact.
+so all are tried. On a 4.5 s impact, the 3-layer hybrid needed 147 s by itself.
 
 ### Bed detection
 
-Purpose: a recording with a steady pre-roll 12 to 40 dB under the sound (a film's music) is stripped, and the sound
-alone is fitted.
+Purpose: find a steady layer that plays before the sound at 12 to 40 dB under it (for example music under a film
+clip), so the engine can remove it and fit only the sound.
 
 1. Mono. Return null when shorter than 30 ms or silent.
 2. 1 ms frame envelope. Onset frame k: the first k from frame 35 (30 ms + 5 ms) up to frame 119 (under 120 ms) with
@@ -179,8 +181,8 @@ alone is fitted.
    `sqrt(max(1 - 2 x bed power / cell power, 10^(-25/10)))`, smoothed over 3 frames (causal moving mean on an
    edge-padded grid, aligned).
 2. Apply the same gain to each channel's STFT. Inverse. Cut or pad to n.
-3. Silence the pre-roll: 0 up to 2 ms before the onset, a 1.5 ms raised-cosine rise ending 0.5 ms before the onset,
-   1 after.
+3. Mute the pre-roll with a gain: 0 until 2 ms before the onset, then a raised-cosine ramp of 1.5 ms up to 1,
+   which it reaches 0.5 ms before the onset, and 1 from there.
 
 ### Bed noise (the bed layer)
 
@@ -202,10 +204,11 @@ Layers: 2 or 3 of modal, sines, spectral, the last not sines. Else `ValueError`.
 2. For each layer: the first layer reuses a base fit of its kind when given. Else fit the kind on the residual.
 3. Every layer but the last becomes deterministic, and the residual loses what the layer takes:
    - The layer's seed-0 render (not finished) as `(n, channels of X)` (mono repeated, other channel counts mean-mixed).
-   - A sines layer with a fitted side on a stereo X: try 8 stereo renders (seeds 0 to 7) and take the one that leaves
-     the least side `sum((r_L - y_L - r_R + y_R)^2)` in the residual, or the mono render when none leaves less.
-     Reason: the hybrid renders that side, so the air must not model it again (a panned tone's side, counted twice,
-     came out about 3 dB too wide). The side's quadrature part has a random sign per seed, hence the search.
+   - A sines layer with a fitted side on a stereo X: try 8 stereo renders (seeds 0 to 7) and keep the one whose
+     residual has the smallest side energy `sum((r_L - y_L - r_R + y_R)^2)`, or the mono render when no stereo
+     render beats it. Reason: the hybrid already renders this side, and the air layer must not fit it a second time
+     (when it did, a panned tone came out about 3 dB too wide). The search over seeds is needed because the sign of
+     the side's quadrature component depends on the seed.
 4. Layer entry: role by kind, gain 0, the model.
 
 Deterministic copy: modal noise envelopes all at -240 dB, side null, no `side_t`, `channels` 1. Sines residual one
@@ -222,7 +225,7 @@ CLAP 0. With a judge, the judge's `(mean score, mean CLAP)` of the post-processe
 1. EQ, 2 iterations:
    - Current profile: the dB mean over renders of the power of each render's tone profile (after the current EQ).
    - `d = target - current`. Remove the power-weighted mean (level neutral, centred on loud bands). Where the
-     current band is under -50 dB, `d` is at most 6 (EQ cannot create what is not there). Smooth with 1/4, 1/2, 1/4
+     current band is under -50 dB, `d` is at most 6 (an EQ cannot boost energy that is absent). Smooth with 1/4, 1/2, 1/4
      (edge padded).
    - Total `clip(total + d, -12, 12)`.
    - The EQ is the forge-core minimum-phase third-octave EQ with 28 gains at the tone band centres.
@@ -235,27 +238,27 @@ CLAP 0. With a judge, the judge's `(mean score, mean CLAP)` of the post-processe
      envelope before the onset), 'attack_db' (the attack frames, struck only, else empty), 'v': 2}`. Noise kinds add
      `hp_hz: 200`.
    - Re-level: add the gain difference after the clamp.
-   - Noise kinds: drop the clamp (back to EQ and the first gain) unless it lowers `sc`. Measured: a whoosh's gesture
-     fit 10.46 to 8.67 without the clamp, a swish 12.68 to 11.37 high-passed, a glitch run keeps the plain clamp
-     (9.29 against 10.09).
+   - Noise kinds: drop the clamp (back to EQ and the first gain) unless it lowers `sc`. Measured scores: a gesture fit
+     of a whoosh went from 10.46 to 8.67 with no clamp, a swish from 12.68 to 11.37 with the high-passed clamp, and
+     a glitch run scored better with the plain clamp (9.29 against 10.09).
 4. Envelope calibration (off by default): the mean 5 ms envelope error after the attack as a gain curve
    (`{'hop': 0.005, 'db'}`, clip -12 to +6, 0 where both are 70 dB under the top, zero before the attack end + 2 ms,
-   smoothed twice with 1-2-1, the first 2 frames faded in by 0.33 and 0.67), then one more EQ and level pass. Reason
-   it is off: it lowered mel and raised envelope r, but CLAP fell from 0.925 to 0.918.
+   smoothed twice with 1-2-1, the first 2 frames faded in by 0.33 and 0.67), then one more EQ and level pass. It is off
+   because mel improved and envelope r rose, while CLAP dropped from 0.925 to 0.918.
 5. Gate (on by default): fit the gate on the post-processed renders. When one is found, re-level and keep it when
    `score < score without` and `CLAP >= CLAP without - 0.005`.
 
 ### Gate fit
 
-Purpose: modes and partials decay exponentially and cannot stop. A gated pulse falls 30 to 60 dB in 5 ms. The gate
-is a cut-only gain curve where the renders stand over the original after the onset: the gaps of a run of pulses, a
-hard stop, a tail the model lets ring on.
+Purpose: an exponential decay never ends abruptly, but a gated pulse drops by 30 to 60 dB within 5 ms. The gate is
+a gain curve that only reduces level. It acts after the onset where the renders are louder than the original:
+between pulses of a run, after an abrupt end, and on tails that the model rings too long.
 
 1. Envelopes on a 0.5 ms grid, frame k covering 2 hops (1 ms windows, half overlapping). Need 8 frames and a render.
 2. Render envelope: the power mean over renders (padded with -200 dB). 3-frame median on both.
 3. Fell: the original is at least 12 dB under its maximum over the previous 20 ms (a maximum filter of 41 frames
    ending at the frame), or at least 40 dB under its top.
-4. Start frame from `pre.t_on`, or the first frame within 20 dB of the maximum.
+4. Start frame from `pre.t_on`, or else the earliest frame no more than 20 dB under the maximum.
 5. Dips between pulses: a 10-frame mean of the original. Peaks with prominence 6 dB, distance 16 frames, within 25 dB
    of the maximum. Between 2 neighbouring peaks, frames more than 6 dB under the lower peak are dips.
 6. Hit: `(d < -4 and fell) or (d < -2 and dip)` with `d = original - renders`.
@@ -264,15 +267,15 @@ hard stop, a tail the model lets ring on.
    the start).
 9. For each run of negative cut: drop it when it does not reach -6 dB, or when it is shorter than 3 ms and does not
    reach the end. Runs of 5 or more frames: a 5-frame median then 1-2-1 smoothing. At most 0. When the run does not
-   reach the end, its last frame is 0 (the gate reopens a frame before the original rises, so the next pulse's onset
-   is never cut).
+   reach the end, its last frame is 0 (the gate opens again one frame ahead of the original's rise, so the start of
+   the following pulse stays intact).
 10. None when no frame is under -0.5 dB.
 11. Breakpoints at frame centres `(k + 1) x 0.5 ms`, Ramer-Douglas-Peucker at 0.5 dB:
-    `{'pts': [[t s (5 decimals), dB (1 decimal)], ...]}`. 0 dB before the first point. The last value holds past the
-    end, so a hard stop stays shut in a take that rings out.
+    `{'pts': [[t s (5 decimals), dB (1 decimal)], ...]}`. 0 dB before the first point. After the last point its value
+    continues, so where the recording stops abruptly a ringing take stays silent too.
 
-Measured: on 67 gated, multi-pulse and short-click dev clips the gate error fell from 21 to 1.7 dB. A gate that
-helped every model-free measure still cost CLAP on 4 of 67, hence the CLAP guard.
+Measured on 67 dev clips (gated sounds, pulse runs, short clicks): the gate error went from 21 dB to 1.7 dB. On 4 of
+the 67 the gate improved all model-free measures but lowered CLAP. The CLAP guard exists for those.
 
 ### Apply post
 
@@ -283,13 +286,13 @@ In order, on a mono or stereo render:
 4. Envelope gain (when `env`), time-scaled by `scale x tail` about the anchor.
 5. Gate (when `gate`): per-sample linear gain from the breakpoints (interpolated in dB, 0 before, last value after),
    with the time map (default: times multiplied by `scale` when it is not 1), then smoothed by a normalised Hann of
-   `round(1 ms x sr) | 1` samples (49) on an edge-padded signal. Reason: breakpoints sit 0.5 ms apart, and a 30 to 80
-   dB step between 2 of them put an audible click into a loud ring (a pop's gesture takes: 4 of 4 clicked).
+   `round(1 ms x sr) | 1` samples (49) on an edge-padded signal. Reason: the breakpoints are 0.5 ms apart, so a step of
+   30 to 80 dB between neighbours caused an audible click in a loud ring (all 4 gesture takes of a pop had one).
 
 ### Attack clamp
 
-Purpose: band noise and window smear leak energy before a strike and blunt it. The clamp keeps the attack as clean
-as the recording's.
+Purpose: band noise and analysis window spread put energy ahead of a strike, which softens it. The clamp restores
+an attack as sharp as in the recording.
 
 1. Frames of 0.25 ms (12 samples). Pre-onset frame count: `t_on x scale / 0.25 ms`, or with an anchor and a scale not
    1, `(anchor + (t_on - anchor) x scale) / 0.25 ms`. Attack frames: the stored count, times scale when not 1.
@@ -300,8 +303,9 @@ as the recording's.
 5. Attack: the original's attack contour resampled onto the attack frames. Gain `clip(want - e, -9, 9)`, faded out
    linearly over the last 2 ms (8 frames).
 6. Smooth: with `v = 2`, smooth the pre-onset part and the attack part apart (else together). Smoothing widens each
-   cut by one frame on each side (a minimum filter on the negative part) and applies 1-2-1. Reason for apart: the
-   joint smoothing carried half of a -20 dB pre-onset cut into the strike's first frame.
+   cut by one frame on each side (a minimum filter on the negative part) and applies 1-2-1. Reason for separate
+   smoothing: with one pass over both parts, half of a -20 dB cut before the onset spread into the first frame of
+   the strike.
 7. Gain per sample: interpolate the frame gains in dB at frame centres, 0 dB at the end of the clamped span, linear.
 8. Without `hp_hz`: multiply the clamped span. With `hp_hz`: the correction `y (g - 1)` over the span plus 20 ms is
    high-passed (4th-order Butterworth at 200 Hz, zero phase) and added. The correction cannot put energy into the
@@ -311,8 +315,8 @@ as the recording's.
 
 With `space` on, after the choice: when the recording X is stereo and needs space (tail correlation at most 0.7),
 fit the space model on X with the dry = the chosen model's seed-0 render through its post stage (without bed and
-space). When found, it becomes `post['space']`. Cost 0.6 to 1.6 s. Fitted per candidate it changed no choice, so it is
-fitted on the winner only.
+space). When found, it becomes `post['space']`. Cost 0.6 to 1.6 s. Fitting it for every candidate never changed the
+choice, so only the winner gets it.
 
 ### Judge
 

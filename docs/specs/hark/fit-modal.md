@@ -7,7 +7,7 @@ Module: `hark.forge.fit.modal`. Pure numpy and scipy. During a fit, limit the li
 when a thread-pool control is available (small matrices are about 5 times faster on 1 thread than on a contended
 pool). This is an optimisation, not a contract.
 
-Not for: glides and chirps (a rising pop or a zip splits into many false strikes). Designed impacts with long reverb
+Not suited: glides and chirps. The onset detector cuts a rising pop or a zip into many spurious strikes. Designed impacts with long reverb
 tails do fit, but their tail is mostly noise bands.
 
 ## Interface
@@ -20,7 +20,7 @@ tails do fit, but their tail is mostly noise bands.
 | `check(model)` | `ValueError` when it is not a dict of kind `modal`, or its version is above 1. |
 | `onsets(x, rel=0.2, floor_db=-36, min_gap_ms=12, max_n=10)` | Strike onsets in samples. |
 | `onset_strength(m, nper=256, hop=32, cap=1.5)` | `(flux, frame_db, frame_centre)`. |
-| `fade_out(x, cands=(0.005, 0.01, 0.02, 0.03, 0.05, 0.1, 0.25), gain_db=0.5)` | Length of a linear fade-out at the end, s, or 0. |
+| `fade_out(x, cands=(0.005, 0.01, 0.02, 0.03, 0.05, 0.1, 0.25), gain_db=0.5)` | Duration in s of a linear fade at the end of x, or 0 when there is none. |
 | `esprit(s, kmax=16, dyn_db=60)` | `(poles, order)`. |
 | `ls_modes(m, starts, freqs, taus, end=None, ridge=1e-5, cross=10)` | Complex amplitudes by least squares. |
 | `band_masks(n_fft, edges=NOISE_EDGES, h=0.4)`, `band_centres(edges=NOISE_EDGES, top=22000)` | The noise bands. |
@@ -42,15 +42,15 @@ tails do fit, but their tail is mostly noise bands.
 | `strikes` | One per onset: `t` (s, 6 decimals), `ramp_ms` (the modes' attack ramp), `modes` (rows `[Hz, tau s, amplitude, phase rad]` referenced at the onset, sorted by frequency), `attack` (the contact as fast modes, same row format, no ramp). |
 | `sub` | Null, or `{'rate': 100, 'x': [...]}`: the residual under 20 Hz, decimated to 100 Hz, 4 significant digits. |
 | `noise` | `edges` (27 band edges, Hz), `h_erb` (0.4), `env` (28 bands, each a list of `[t s, dB]` breakpoints of band power). |
-| `side` | Null for mono. For stereo: per noise band, the side / mid amplitude ratio of the whole recording, capped at 1.5, 4 decimals. |
+| `side` | Null for mono. For stereo: for each noise band, the ratio of side amplitude to mid amplitude over the full recording, capped at 1.5, 4 decimals. |
 | `side_t` | Stereo only: the sines module's side model of the recording (pan and diffuse gains per octave band and keyframe). |
 | `coherent` | true on every fit of this version. |
 | `fit` | `skip_ms`, `modes` (count), `mode_share_db`, `resid_db`. |
 | `layer` | `"deterministic"` on a hybrid's modal layer (set by the engine). |
 
-A mode row means `amp x exp(-t/tau) x cos(2 pi f t + phase) x ramp(t)` with t measured from the strike time. A
-later strike also holds exact copies of earlier poles that still ring at its onset, so it can re-excite or stop them
-(a finger that lifts or holds).
+A mode row means `amp x exp(-t/tau) x cos(2 pi f t + phase) x ramp(t)` with t measured from the strike time. The
+rows of a later strike include exact copies of earlier poles that are still ringing when it starts. Their amplitudes
+let the later strike add to that ring or cancel it (for example a finger that releases or damps the object).
 
 ## Algorithms
 
@@ -67,8 +67,8 @@ later strike also holds exact copies of earlier poles that still ring at its ons
 1. Silent or empty input: `[0]`.
 2. Candidates: frames that are a local flux maximum over +-6 frames (+-4 ms), with flux at least `rel x max flux`
    (0.2), the maximum frame energy over the frame and the next 8 within 36 dB of the loudest frame, and a rise of
-   that maximum over the minimum of the frame and the 8 before of at least 3 dB (1 dB when the flux is at least half
-   the maximum: a second contact over a loud ring).
+   that maximum over the minimum of the frame and the 8 before of at least 3 dB (1 dB when the flux is half the maximum or
+   more, which catches a second contact while a loud ring continues).
 3. Skip a candidate whose centre is under 128 samples (unless the first 5 ms already hold 25 % of the peak) or
    within 192 samples of the end (the STFT padding).
 4. Refine in a window of +-240 samples (+-5 ms), at least 100 samples and not silent:
@@ -96,7 +96,7 @@ later strike also holds exact copies of earlier poles that still ring at its ons
 ### Un-fading
 
 When a fade-out of length `fo` is found: over the last `nf = fo x sr` samples divide the signal by
-`max(ramp, 0.25)` where `ramp` falls linearly to 0. The modes are fitted on the un-faded signal, up to
+`max(ramp, 0.25)` where `ramp` falls linearly to 0. The mode fit uses this restored signal up to
 `n_fit = n - 0.25 nf`. The render applies the fade again.
 
 ### ESPRIT
@@ -150,8 +150,8 @@ Each mode k has pole `z_k = exp(-1/(tau sr) + 2j pi f / sr)` and start sample `s
 - Cancellation test, up to 5 tries, multiplying `lambda` by 10 each time a test fails:
   - Within one strike: when the sum of the modes' separate energies is more than 2 times the strike's joint energy
     (near-duplicates cancel).
-  - Across strikes: when the sum of strike energies is more than `cross` (10) times the total energy (a pile of
-    close strikes builds the sound from huge opposite rings). A stopped ring that cancels its own tail stays under
+  - Across strikes: when the sum of strike energies is more than `cross` (10) times the total energy (when many
+    strikes sit close together, the fit can build the sound from very large rings that cancel each other). A stopped ring that cancels its own tail stays under
     that ratio.
 - Result `c = x_re - 1j x_im`.
 
@@ -161,8 +161,8 @@ Mode energy: `0.5 |c|^2 / (1 - exp(-2/(tau sr)))`.
 
 Per strike, sort its modes by frequency. A cluster is a run of modes whose neighbours are closer than
 `max(2 Hz, half the sum of their bandwidths)` (bandwidth `1/(pi tau)`). In a cluster of 2 or more where the separate
-energies add to more than 2 times the energy of their sum, keep only the mode that alone explains the most of the
-signal (`b_k^T G_k^-1 b_k`, a matching-pursuit choice) and drop the others.
+energies add to more than 2 times the energy of their sum, keep the single mode with the largest explained
+energy (`b_k^T G_k^-1 b_k`, as matching pursuit picks) and remove the rest.
 
 ### The fit
 
@@ -178,7 +178,7 @@ signal (`b_k^T G_k^-1 b_k`, a matching-pursuit choice) and drop the others.
      within `prune_db` (-50 dB) of the sum. Subtract them from the working signal.
    - Carry-over: each later strike gets copies of earlier strikes' poles that still have more than 1 % amplitude
      (`exp(-(gap)/(tau sr)) > 0.01`) at its onset, the 40 longest, deduped. Its own modes follow, deduped against them.
-   - Joint fit of all strikes' modes on the un-faded signal up to `n_fit`. Prune per strike at -50 dB of the
+   - Joint fit of the modes of all strikes on the restored signal up to `n_fit`. Prune per strike at -50 dB of the
      strike's sum and refit when anything was pruned.
    - Up to 3 rounds: drop cancelling clusters and refit.
    - The working signal for the next pass = signal minus all modes.
@@ -217,8 +217,8 @@ Band centres: `e_0 / sqrt(2)`, the geometric means of neighbouring edges, and `s
 
 ### Noise envelopes
 
-Purpose: the noise carries what the deterministic part does not. Each band's power is the original's minus the
-deterministic part's, so modes plus noise keep the band energy even where the modes misfit.
+Purpose: the noise covers what the modes, contact and sub do not. A band's noise power is the recording's band power
+less that of the noise-free part. So the sum of both keeps each band's energy, also where the mode fit is poor.
 
 1. FFT size `next_fast_len(n + 16384)`. Grid every 0.5 ms (24 samples).
 2. Band power by the analytic signal: the band spectrum, doubled for positive frequencies, inverse FFT, half the
@@ -229,8 +229,8 @@ deterministic part's, so modes plus noise keep the band energy even where the mo
 5. Power = `near x short + (1 - near) x ((1 - far) x medium + far x long)`.
 6. Per band: `max(P_original - P_deterministic, 1e-6 x P_original)`.
 7. Pre-onset cap (2 ms): for each onset whose cap start index `a` is at least 1, the band power from `a` to the
-   onset may not rise above the minimum of the 3 grid values up to `a`. Reason: the analysis smeared a strike's
-   noise up to 1.5 ms ahead of it, 10 to 20 dB over the recording. This was the main cause of blunt modal onsets.
+   onset may not rise above the minimum of the 3 grid values up to `a`. Reason: the band analysis spread each strike's
+   noise as far as 1.5 ms before it, 10 to 20 dB louder than the recording there. It was the largest reason why modal onsets came out soft.
    Measured: on 27 modal dev clips the onset error fell from 0.39 to 0.25 octave (a glockenspiel note from 3.6 to
    0.1), CLAP and mel unchanged.
 8. Floor at the overall maximum minus 100 dB.
@@ -269,7 +269,7 @@ Steps:
 4. Per strike: `f = f0 / size x (1 + 0.006 vary zf)`, `tau = tau0 x stretch x exp(0.12 vary zt)`,
    `a = a0 x 10^((tilt log2(max(f, 20)/1000) + 1.5 vary za)/20)`.
 5. Phase continuity: when coherent and (vary > 0, size != 1 or spacing != 1), every mode of a later strike gets
-   `phase + 2 pi (f (tn_i - tn_0) - f0 (t_i - t_0))`, so it keeps its phase on the first strike's timeline.
+   `phase + 2 pi (f (tn_i - tn_0) - f0 (t_i - t_0))`, which holds its phase relation to the first strike.
 6. Drop modes and contact modes at or above 0.47 sr. Contact: `fa = f / size`,
    `ta = tau x size / sqrt(hardness)`, `aa = a x 10^(tilt log2(max(fa, 20)/1000)/20)`.
 7. Length: `last new strike + (length_s - last old strike) x max(1, stretch)`.
@@ -293,8 +293,8 @@ Steps:
 
 ### Ring-out
 
-Purpose: a trimmed recording stops while its modes still ring (a key's release 70 ms before the cut), and vary
-lengthens some decays further. A take must not stop on them.
+Purpose: an edited recording can end while modes are still audible (for example a key release 70 ms before the
+edit), and vary can make some decays longer still. A take must not end in the middle of that ring.
 
 1. Reference: the largest strike mode sum `sqrt(sum a^2)`. Threshold: 60 dB under it. Contact modes do not count.
 2. Ring end: the latest `t_strike + tau ln(a / threshold)` over modes above the threshold.
@@ -302,8 +302,9 @@ lengthens some decays further. A take must not stop on them.
 4. When the ring end is more than 1 ms past the nominal length, extend by
    `min(max(ring end - length, lo), max(lo, 0.5 x (length - first strike)))`, where `lo` is 200 ms when the level at
    the end is above -50 dB, else 60 ms.
-5. The added stretch fades 60 dB, linear in dB, over its length. A coherent model's noise continues un-faded into it
-   at its slope from before the recording's fade-out (from the fade, the modes rang alone: a comb in the tail).
+5. Over the extension the level falls by 60 dB, linear in dB. For a coherent model the noise also continues into the
+   extension, with no fade, following its slope from before the recording's own fade. Reason: when only the modes
+   continued past the fade, the tail sounded like a comb filter.
 
 ### Synthesis
 
@@ -349,8 +350,8 @@ ramp, mode count and the 5 strongest modes by `a^2 tau` as Hz and decay in ms.
 ### Standalone code
 
 `to_code` writes a script with the constants (sample rate, grid, sub decimation, ring constants, strike ramp), the
-model as a literal (one mode per line), its own copies of the plan, ring-end, masks, ring, modes, noise, room, side
-and render functions, and `render(seed, **knobs)`. Run as a script it writes a float32 WAV (argument 1: seed,
+model as a literal (one mode per line), and self-contained versions of every render step (plan, ring extension, band masks, modes, noise, room, side,
+render), and `render(seed, **knobs)`. Run as a script it writes a float32 WAV (argument 1: seed,
 argument 2: path). It renders the same samples as `render`. It must not import hark.
 
 ## Constants

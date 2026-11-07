@@ -20,7 +20,7 @@ All audio is 48 kHz float64. A sound is a path, a 1-D array (mono) or an `(n, 2)
 | `text(q, fl=None)` | One readable line of a quality dict, with the floor's `mel_db` when `fl` is given. |
 | `pair_png(path, original, resynth, title=None, q=None, extra=None)` | Writes the side-by-side picture. Returns `path`. `extra` is `(label, array)` for a third column (morph: A, morph, B). |
 | `peak_rms_db(x, win_s=0.05)` | The loudest 50 ms RMS (channel-mean power) in dB. |
-| `onset_index(m, db=-30, hop=48)` | The sample index of the first 1 ms frame within 30 dB of the loudest 1 ms frame. |
+| `onset_index(m, db=-30, hop=48)` | Sample index of the earliest 1 ms frame that is no more than 30 dB under the loudest 1 ms frame. |
 | `attack(m)` | `(attack_ms, sharpness_db_per_ms)` of the first onset. |
 | `env_db(m, ms=5)` | Non-overlapping frame power envelope in dB. |
 | `melspec(m, n_fft)` | Log-mel power, frames x 64. |
@@ -47,7 +47,7 @@ Field names are the public interface. A pair `(a, b)` holds the original's value
 | `level_db` | float, 2 decimals | Render minus original, loudest 50 ms RMS, dB. |
 | `len_s` | pair, 4 decimals | Lengths in seconds. |
 | `side_db` | pair, 2 decimals | Side / mid energy ratio over the original's active span, dB, floored at -40. |
-| `width_db` | float, 3 decimals | Per-octave-band width error, weighted by the original's band level. |
+| `width_db` | float, 3 decimals | Width error per octave band, averaged with the recording's band levels as weights. |
 | `tail_corr` | pair of float or null, 4 decimals | L/R correlation over the original's tail. Null when the tail is shorter than 20 ms. |
 | `tail_corr_err` | float, 4 decimals | Absolute difference of the 2 tail correlations. 0 when either is null. |
 | `clap_cos` | float, 4 decimals | Only with `clap=True`. Cosine of the 2 CLAP audio embeddings. |
@@ -116,8 +116,8 @@ For each `n_fft` in 256, 1024, 4096:
 6. Rise time = (crossing of `peak - 3 dB` minus crossing of `peak - 20 dB`) x 0.125 ms, at least 0.02 ms.
 7. `attack_ms` = 0.125 x (peak frame - onset frame). Sharpness = 17 dB / rise time.
 
-The sharpness does not depend on a recording floor or a fade-in under the sound, because it uses only the rise from
-20 dB to 3 dB under the local peak.
+Because the sharpness uses only the part of the rise between 20 dB and 3 dB below the local peak, a noise floor in
+the recording or a fade-in before the sound does not change it.
 
 ### onset_err
 
@@ -148,8 +148,8 @@ Parameters: tolerance 6 dB, depth 100 dB.
 5. `missing = mean over active cells of max(0, A - B - 6)`.
 6. When no cell is active, both are 0.
 
-Purpose: these catch a hiss band, a noise floor or a ring that outlives the original, 60 to 100 dB down, where the
-mel and envelope measures do not look. They follow CLAP's verdicts on fits closely.
+Purpose: these find errors 60 to 100 dB under the peak that the mel and envelope measures miss: a band of hiss, a
+noise floor, or a ring that continues after the original has ended. On fits they agree closely with CLAP.
 
 ### t40
 
@@ -158,7 +158,7 @@ the envelope never falls that far, the time to the last frame.
 
 ### Stereo measures
 
-The space helpers (`fit-space.md`) give: `_stereo(x)` (any input as `(n, 2)`, mono duplicated), `active_span`,
+The space helpers (`fit-space.md`) give: a helper that turns any input into `(n, 2)` (mono duplicated), `active_span`,
 `side_powers`, `tail_span` and `corr`.
 
 1. Make both `(n, 2)`. Cut both at `onset_index(mean of A's channels) - 240`. Zero-pad to one length. No levelling.
@@ -195,15 +195,15 @@ Missing optional fields count as 0. For a mono pair the stereo terms are 0.
 Measured reasons for the weights (facts from the source's evaluation):
 - With the excess and missing terms, the model-free score chose fits with a mean CLAP of 0.927 on 12 reference
   recordings. Without them it chose 0.856, and the worst choice was 0.52. The best candidates averaged 0.944.
-- The stereo terms cost a mono re-make of a wide recording (width error 15 dB, tail correlation off by 0.6) about
-  1.2, which is what 0.06 of CLAP costs. They break ties between candidates that sound alike. They do not override a
+- For a mono render of a wide recording (width error 15 dB, tail correlation 0.6 off) the stereo terms add about
+  1.2 to the score, the same as a CLAP loss of 0.06. They break ties between candidates that sound alike. They do not override a
   clearly closer candidate.
-- The CLAP-including choice agreed with the model-free choice on 11 of 12.
+- On 11 of the 12, the choice with CLAP in the score and the choice without it were the same candidate.
 
 ### Floor
 
-The floor is the quality of render seed 11 against render seed 12 of the same model. A model with noise in it cannot
-beat its own floor on `mel_db`. The report and the bank's grade use "mel gap" = render `mel_db` minus floor
+The floor is the quality of render seed 11 against render seed 12 of the same model. Since noise differs per seed, a
+noisy model's render cannot get closer than this floor on `mel_db`. The report and the bank's grade use "mel gap" = render `mel_db` minus floor
 `mel_db`.
 
 ### CLAP and describe

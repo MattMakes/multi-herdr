@@ -1,17 +1,18 @@
 # hark fit: gesture fitter, tones plus air (part of fit.md)
 
-This part specifies the gesture fitter. It fits designed gestures (whooshes, swishes, risers, reverse swells, camera
-moves, glitch runs) and short sounds where tones plus a little air beat partials plus residual noise. The model is
-"tones" (the deterministic part of a sines or modal fit) plus "air" (a detail noise model of what the tones leave in
-the recording). The split is in the STFT magnitude domain. The index is `fit.md`.
+This part specifies the gesture fitter. Its targets are designed gestures (whooshes, swishes, risers, reverse
+swells, camera moves, glitch runs), and short sounds that a few tones with some noise describe better than many
+partials with a residual. The model has 2 layers. "Tones" is the noise-free part of a sines or modal fit. "Air" is a
+fine-grained spectral noise model of the remainder after the tones are removed. The 2 layers are separated on STFT
+magnitudes. The index is `fit.md`.
 
 Module: `hark.forge.fit.gesture`. Pure numpy and scipy.
 
-Why it exists (measured facts): designed gestures are not plain noise. They hold steady and gliding tonal lines, short
-tonal grains, clicks, stutter gates and a noise body, panned and moving. Fitted alone, the sines fitter turned them
-into 60 to 180 partials (takes rang metallic) and the noise model into a smooth wash (CLAP 0.44 to 0.73). A hybrid
-subtracts the partials' render from the waveform, which leaves every tone it does not cancel in phase in the residual.
-A magnitude-domain split never adds energy that the tones have and the recording has not.
+Why it exists (measured facts): a designed gesture mixes tonal lines (steady or gliding), short tonal bursts, clicks,
+gated stutters and a noise body, often panned and moving. The sines fitter by itself made 60 to 180 partials of such
+sounds, and their takes sounded metallic. The spectral fitter by itself blurred them into an even noise (CLAP 0.44 to
+0.73). A hybrid removes the partial render from the waveform by subtraction, so any tone that does not cancel exactly
+in phase stays in the residual. A split on magnitudes cannot put tone energy into the air that the recording lacks.
 
 ## Interface
 
@@ -19,9 +20,9 @@ A magnitude-domain split never adds energy that the tones have and the recording
 |---|---|
 | `KIND = 'gesture'`, `VERSION = 1` | |
 | `KNOBS` | name -> (search range, identity, description); the engine's knob table format (see `fit-auto.md`). |
-| `fit(x, name=None, tones=None, alpha=3.0, tone_min=0.05, min_partial_ms=0, fast=False, tones_kind='sines', verbose=False, **air_kw)` | A gesture model. `tones`: a sines or modal model of the same x to take the tones from; null fits one here (`tones_kind` `'sines'` or `'modal'`); `False` gives air only. |
+| `fit(x, name=None, tones=None, alpha=3.0, tone_min=0.05, min_partial_ms=0, fast=False, tones_kind='sines', verbose=False, **air_kw)` | A gesture model. `tones`: an existing sines or modal fit of x that supplies the tones; null makes the fitter fit one (`tones_kind` `'sines'` or `'modal'`); `False` gives air only. |
 | `render(model, seed=0, length=1, sweep=1, doppler=0, proximity=0, pan=1, motion=0, width=1, roughness=1, tone_db=0, air_db=0, vary=0, gain_db=0, stereo=None, ring=False)` | float64 at 48 kHz: `(n, 2)` for a stereo source or `stereo=True`, else `(n,)`. |
-| `air(x, y_det=None, alpha=3.0, fast=False, name=None, mask_fft=1024, **kw)` | A spectral model of x, or of what the deterministic render `y_det` leaves in x. The hybrid engine uses it as the forced air layer. |
+| `air(x, y_det=None, alpha=3.0, fast=False, name=None, mask_fft=1024, **kw)` | A spectral model of x, or of the remainder of x after the noise-free render `y_det` is removed. The hybrid engine uses it for its fixed air layer. |
 | `residual(X, Y, alpha=3.0, n_fft=1024)` | X minus Y in the magnitude domain. |
 | `gain_tones(det, gain_db)` | A copy of a tones model, `gain_db` louder. |
 | `check(model)`, `summary(model)`, `save(model, path)`, `load(path)` | As for the other kinds. `tones_kind` other than sines or modal raises `ValueError`. |
@@ -30,17 +31,17 @@ A magnitude-domain split never adds energy that the tones have and the recording
 
 | knob | range | identity | effect |
 |---|---|---|---|
-| `length` | 0.8 .. 1.25 log | 1 | Time-stretch. The tones stretch about their first strike, the air with them. |
+| `length` | 0.8 .. 1.25 log | 1 | Time-stretch. The tones are stretched around their first strike, and the air follows. |
 | `sweep` | 0.7 .. 1.43 log | 1 | Factor on the air's centroid excursion. |
-| `doppler` | -2 .. 2 | 0 | Semitones of a pass-by pitch bend of the whole sound, turning at the air's peak. + approaches higher. |
-| `proximity` | -0.5 .. 1 | 0 | The air's quieter keyframes duller and quieter still. |
+| `doppler` | -2 .. 2 | 0 | Doppler bend of the full sound in semitones, with the turn at the air's peak. Positive: higher while it comes closer. |
+| `proximity` | -0.5 .. 1 | 0 | Makes the air's softer keyframes darker and softer. |
 | `pan` | 0.5 .. 1.5 | 1 | Factor on the air's L/R level differences. |
-| `motion` | -0.6 .. 0.6 | 0 | A pass-by pan of the whole sound. |
+| `motion` | -0.6 .. 0.6 | 0 | Moves the full sound across the stereo field as it passes. |
 | `width` | 0.5 .. 1.5 | 1 | Factor on the tones' side and the air's width. |
 | `roughness` | 0.5 .. 1.5 | 1 | The air's texture depth (flutter, crackle). |
 | `tone_db` | -6 .. 6 | 0 | Level of the tones. |
 | `air_db` | -6 .. 6 | 0 | Level of the air. |
-| `vary` | 0 .. 0.4 | 0 | Seeded jitter of the tones. The air is new noise on every seed anyway. |
+| `vary` | 0 .. 0.4 | 0 | Seeded jitter of the tones. The air already differs per seed. |
 
 Without tones, `tone_db` and `vary` do nothing. The engine leaves them out of the knob set of such a model.
 
@@ -68,8 +69,9 @@ is stereo when its channels are not equal (allclose).
 
 For each channel c, STFT of X and of Y (Y's channel c, or its last channel, cut or padded to n): Hann, size 1024, hop
 256. Gain per bin `sqrt(clip(1 - alpha |Y|^2 / (|X|^2 + 1e-30), 0, 1))`. Inverse STFT of `X x gain` (X's phase).
-Where Y explains a bin, the bin goes. Where Y is quiet, X stays. With `alpha = 3` the mask over-subtracts: a partial's
-skirt and its estimation error stay out of the air, where the ridges would re-make them as jittered whistles.
+A bin that Y accounts for is removed. A bin where Y is weak keeps X. `alpha = 3` removes more than Y holds, so the
+skirts of partials and their fit error do not reach the air. Otherwise the air's ridges would rebuild them as
+unsteady whistles.
 
 ### Deterministic tones
 
@@ -93,11 +95,11 @@ From a sines or modal model (without its `post` and `fit_engine` entries), deep 
    grain_halves=True`, then the fast options (`iters=1, texture=False, seeds=(1,)`) when fast, then the caller's.
 3. Spectral fit of R. Set `channels`: 1 when X's channels are equal, else 2.
 
-Reasons (facts): a 5 ms gesture with keyframes that follow cells down to 70 dB under the loudest keeps gaps and
-stutters dark. Against the first version (alpha 1, 10 ms, 50 dB) on 7 gesture dev clips the mean score fell from 10.21
-to 9.47 and CLAP rose from 0.857 to 0.875. The grain levelling over 5 ms and the stationarity test: on short
-noise-led fits (keys and ticks fitted as air) takes' CLAP had spread 0.84 to 0.92 from seed to seed. On 20 dev clips
-the takes' median gap under seed 0 fell from 0.046 to 0.031 CLAP.
+Reasons (facts): with a 5 ms gesture grid, and keyframes that track cells as far as 70 dB below the loudest one,
+silent gaps and stutters stay silent. Compared with the first settings (alpha 1, 10 ms, 50 dB) on 7 dev gesture
+clips, the mean score improved from 10.21 to 9.47 and CLAP from 0.857 to 0.875. The 5 ms grain levelling and the
+stationarity test exist because short fits made mostly of air (keys, ticks) gave takes whose CLAP ranged 0.84 to
+0.92 across seeds. Over 20 dev clips the median CLAP shortfall of takes against seed 0 dropped from 0.046 to 0.031.
 
 ### Fit
 
@@ -118,7 +120,7 @@ the takes' median gap under seed 0 fell from 0.046 to 0.031 CLAP.
    tones.
 4. Air render: `spectral.render(air, seed (seed x 7 + 101) & 0x7FFFFFFF, length=s, sweep, roughness, width, pan,
    proximity, gain_db=air_db, limit=False)`.
-5. Alignment: the tones stretch about their first strike, the air from 0. Shift the air by
+5. Alignment: the tones are stretched around their first strike, the air around time 0. Shift the air by
    `round(onset x (1 - s) x sr)` samples (pad zeros in front when positive, drop samples when negative).
 6. Sum as `(m, 2)` with `m = n`, or the longest of n, tones and air in ring mode.
 7. Doppler or motion: the stored trajectory's peak times s and tau (as the spectral part), then bend and pass pan of
@@ -149,8 +151,8 @@ this kind: the gesture model scored lower (better) on 4 of 7, each with higher C
 reverse swells 0.858 to 0.935 and 0.808 to 0.842, riser 0.871 to 0.921), and its takes passed the take check. It lost
 on short or bursty sounds: a 0.24 s swish (0.845 against modal's 0.884), a grainy whoosh (0.795 against 0.796) and a
 glitch run (0.905 against 0.885 CLAP, but a blunter first onset cost it the score). Modal tones scored worse on 6 of
-7, so modal tones are an option, not the default. In the engine's plans the gesture model won 38 of 78 dev clips,
-short ones too (keys, pops, ticks).
+7, so sines tones stay the default and modal tones are opt-in. Inside the engine's plans the gesture model was
+chosen on 38 of 78 dev clips, including short sounds such as keys, pops and ticks.
 
 ## Constants
 

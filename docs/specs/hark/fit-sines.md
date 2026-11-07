@@ -33,8 +33,8 @@ amplitude trajectory.
 | `to_code(model, name='sound')` | Standalone numpy source that renders the model at its identity. |
 | `save(model, path)`, `load(path)` | Compact JSON. `load` raises `ValueError` when the kind is not `sines`. |
 
-The private names in this spec (`_onsets`, `_analyze`) are descriptive. Our implementation may name them freely, but
-`analyze` and `onsets` must be reachable by the engine and the gesture fitter.
+Internal helper names are free. The engine and the gesture fitter need `analyze` and `onsets` as public
+functions.
 
 ### Model (plain JSON)
 
@@ -146,7 +146,7 @@ Parameters: maximum gap 2 frames, relative tolerance 0.025, minimum tolerance `1
    for padding), at least 0.
 5. Loud cells: above `top - 60`. Onset function: the mean rise over loud cells per frame.
 6. Zero the function where the total is under `total max - 45`, and where fewer than 3 bands rise by more than 6 dB
-   (a strike is broadband, a beating partial is not).
+   (a strike covers many bands, a partial that beats does not).
 7. Peaks of the function above 6 dB with a minimum distance of 25 frames (25 ms). Add the first frame whose total is
    above `total max - 25` (the first onset) as a candidate.
 8. Timing per candidate on the causal peak envelope (the maximum `|x|` over the trailing 2.5 ms, in dB, floor
@@ -174,7 +174,7 @@ For each band of `band_masks(centres)`:
 
 ### Split and fix onsets
 
-A long analysis window smears a strike backwards by half a window. With `half = W / (2 sr)`:
+With a long analysis window, a strike appears up to half a window earlier than it is. With `half = W / (2 sr)`:
 
 1. Split: a track that crosses a strike (it starts before `t - 0.5 half` and lasts past `t + 0.55 half`) and whose
    loudest level in the 2 half windows after `t + 0.55 half` is more than 10 dB above its loudest level in the zone
@@ -278,14 +278,15 @@ Grid: 16, 17, ..., 24 kHz.
 3. Relative to the 16 kHz value. Make it monotone falling (a running minimum, starting at 0). Floor at -80.
    1 decimal.
 
-Purpose: the top residual band is flat to Nyquist. Without `hf` a fit puts noise above 20 kHz that a band-limited
-recording never had (a click had -19 dB of its energy above 20 kHz against -34 dB in the recording). With `hf` the
+Purpose: the highest residual band stays level up to Nyquist. With no `hf`, a fit adds noise above 20 kHz that a
+band-limited recording does not have (on one click, -19 dB of the energy was above 20 kHz, against -34 dB in the
+recording). With `hf` the
 6 sines reference fits moved toward the recording (click -19.5 to -30.0 dB, recording -33.5) and `mel_db` changed by
 -0.10 to 0.00.
 
 ### Simplifier (breakpoints)
 
-Ramer-Douglas-Peucker with a vertical tolerance:
+Ramer-Douglas-Peucker, where the tolerance is measured on the value axis:
 1. Keep the first and last point. For a span (i, j), find the inner point with the largest
    `|v - line| / tol` (tolerance per point allowed). When it is above 1, keep it and split.
 2. When more than `max_pts` points remain, multiply the tolerance by 1.4 and repeat.
@@ -320,7 +321,7 @@ the mean over sizes, 0 when none applies.
 2. Keyframe times: 0, onset - 10 ms, onset, then steps after the onset: 10 ms steps up to 0.1 s, 20 ms up to 0.3 s,
    40 ms up to 0.7 s, 80 ms after that, and the end. The onset is the start of the space module's active span.
    Clip to the duration and drop duplicates.
-3. For each keyframe, sum the frame powers under a tent from the previous keyframe to the next (first and last use
+3. For each keyframe, weight the frame powers with a triangle that spans from the keyframe before to the keyframe after, and sum (first and last use
    10 ms beyond). When no frame falls under the tent, use the nearest frame.
 4. Gains from summed mid power PM, side power PS and cross power C:
    - `pan = clip(C / PM, -1.5, 1.5)`: the part of the side coherent with the mid, signed. A pan has
@@ -348,7 +349,7 @@ Knobs and defaults:
 | `vibrato_rate` | 5.5 | Hz. |
 | `drift` | 0 | Cents of slow random wander. |
 | `residual` | 1 | Gain on the residual noise. |
-| `transient` | 1 | Gain on the atoms and on the noise in the first 15 ms after each strike. |
+| `transient` | 1 | Gain on the strike atoms, and on the noise during the 15 ms that follow each strike. |
 | `vary` | 0 | 0 to 1. Seeded jitter for a new take. |
 | `partials` | null | Keep the N strongest partials. |
 | `inharm` | 0 | Partial ratio stretch: `f / f_low -> (f / f_low)^(1 + inharm)`. |
@@ -398,8 +399,8 @@ Steps:
 11. Atoms (when not identity or transient != 1): times through `T`, frequency times `ratio` and the detune,
     `tau / ratio`, amplitude times `transient` and `10^((gain_jitter + brightness x log2(max(f ratio, 20)/f_ref))/20)`.
     Coherent: one detune (sd `30 vary` cents) and one gain (sd `2 vary` dB) per strike for all its atoms. Not coherent:
-    one draw per atom. Reason: a strike's atoms are fitted jointly and cancel each other's step at the onset. Jittered
-    apart, the takes clicked.
+    one draw per atom. Reason: the atoms of one strike are fitted together, and their onset steps cancel each other. With separate
+    jitter per atom, the takes had clicks.
 12. Noise: `synth_noise` with the residual bands, times, levels, `seed` and `hf`.
 13. Transient knob on noise: a weight that rises from 0 at the strike to 1 at 7.5 ms and falls to 0 at 20 ms
     (triangle of half-width 12.5 ms centred 7.5 ms after the strike, only from 2 ms before the strike). The noise is
@@ -440,8 +441,8 @@ linear fall over `rel` ending at `t1 + rel`. Amplitude is 0 where the frequency 
 2. When `limit` and the peak is over `10^(peak_db/20)`, scale the whole signal down to it (a gain, no limiter).
 
 `fade_in_s(model)` is 0 for a model without `coherent` (it renders as before). Otherwise it is
-`clip(onset - 0.5 ms, 0.25 ms, 2 ms)`: shorter when the first strike is early, so a clip cut into its own attack
-keeps it. The limit applies when the model has `coherent` and is not a hybrid's deterministic layer.
+`clip(onset - 0.5 ms, 0.25 ms, 2 ms)`: shorter when the first strike is near the start, so a recording that starts inside its
+attack keeps that attack. The limit applies when the model has `coherent` and is not a hybrid's deterministic layer.
 
 Measured effect (fact): on 78 dev targets, median CLAP changed by -0.0002, renders over -1 dBFS fell from 7 to 0,
 renders that did not start at zero fell from 44 to 0.
