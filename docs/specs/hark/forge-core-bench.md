@@ -1,11 +1,13 @@
-# forge-core part 10: the held-out benchmark, the blind test kit and the refset build
+# forge-core part 10: the held-out benchmark and the refset build
 
 Index: [forge-core.md](forge-core.md). This part covers the evaluation tools of the forge. They are scripts, not
 library modules. They live in `eval/forge/` of our repo:
 - `bench.py`: scores made sounds against the held-out `bench` refs (part 9) with checks that no recipe optimises.
 - `frozen_tone.py`: a frozen copy of the tone checks, so the benchmark does not move when part 3 changes.
 - `build_refsets.py`: cuts the reference recordings and writes the registry of part 9.
-- `blind_v2.py`: builds a blind listening test (made against real) and scores the answers.
+- `scrub_paths.py`: removes machine paths from results files.
+
+The blind listening test (`blind_v2.py`) is part 11: [forge-core-blind.md](forge-core-blind.md).
 
 Rule of the benchmark: it is held out only while it decides nothing. Never select a candidate, steer a search or tune a
 recipe from benchmark numbers. Use it only to report.
@@ -171,7 +173,7 @@ import is skipped (it can be under edit).
 5. Load the CLAP and AudioSet models once. For each category run bench_category. Record `tag`, `made_from`,
    `registry`, `created` (`YYYY-MM-DD HH:MM`), `phrases`, `confusions`, `as_labels` (of the run's categories),
    `categories`, `seconds`.
-6. Scrub machine paths from the result (10.5) after a JSON round trip (arrays as lists, other objects as text). Write
+6. Scrub machine paths from the result (10.4) after a JSON round trip (arrays as lists, other objects as text). Write
    the JSON (indent 1) and the markdown table. Print `wrote <json> and <md> (<s> s)`.
 
 `table(res)`: a heading `# forge benchmark: <tag>`, a line with made_from, registry and created, a legend paragraph, and
@@ -184,7 +186,7 @@ near duplicate pair(s)` with the bench refs' values in brackets.
 ### Constants: phrasings, confusions and AudioSet labels
 
 The phrasings must stay independent of every recipe's TARGET and ALTS and of the build script's find queries. The
-benchmark numbers in 10.6 were measured with these exact texts, so keep them unchanged. Add new categories only as
+benchmark numbers in 10.5 were measured with these exact texts, so keep them unchanged. Add new categories only as
 additions.
 
 PHRASES (2 per category):
@@ -308,7 +310,7 @@ pro_typing_key, pro_glitch, pro_whoosh_big, pro_sub_drop).
 
 A fixed copy of the tone measures of part 3 as they stood when the benchmark started (round 0). The benchmark imports
 it from its own folder. Never edit it: a change moves every benchmark number. Add a new measure in `bench.py` and
-record it in the benchmark change log (10.6). When our part 3 code later changes, this file stays as specified here.
+record it in the benchmark change log (10.5). When our part 3 code later changes, this file stays as specified here.
 
 Constants: SR 48000; band centres CEN = 1000 x 2^(k/3) for k = -15 .. 12 (28 bands, 31.5 Hz to 15.9 kHz); band edges
 centre / 2^(1/6) (inclusive) to centre x 2^(1/6) (exclusive); REGIONS `<150` 0-150 Hz, `150-1k` 150-1000, `1-4k`
@@ -344,25 +346,6 @@ Functions (all on the mono mean of the channels; a path is loaded through core-i
     b) when the longest ref t40 b > 0 and t40 > b.
 
 The benchmark uses `profile`, `t40_ms` and `ToneRef.check` only. The rest is kept so the copy stays whole.
-
-## 10.5 `scrub_paths.py` (results hygiene, used by `bench.py`)
-
-The results JSON names every registry file and ref path. Absolute machine paths do not belong in a committed results
-file. Before the write, `scrub(obj)` rewrites every string (dict keys too) of the result:
-- Roots, longest first: the pro-study trims folder (env `HARK_REFS_PRO`, default `<repo>/out/refs_pro`) as
-  `<refs_pro>`; `<repo>/out/refs` as `<refs>`; the cache home (`HARK_HOME`, else the config home, else `<repo>/.cache`)
-  as `<HARK_HOME>`; the repo itself as a repo-relative path (`.` for the root itself). When the registry's ref paths
-  share a common folder 3 levels above the files, that is outside the repo and longer than 3 characters, it is also
-  `<refs>`. Drop duplicate roots (case-insensitive).
-- Match a root on a word boundary, with `/` or `\` separators (case-insensitive), followed by the rest of the path
-  up to a space, quote, back quote, `;`, `,`, `)`, `]`, `<`, `>`, `|`, `*` or `?`. Write the rest with `/`.
-- Ref file names stay. They are the evidence of which recording a row measured.
-- `leftovers(text)`: any remaining drive path (`X:/...` or `X:\...`) or home path (`/Users/...`, `/home/...`).
-
-CLI `python eval/forge/scrub_paths.py [FILES] [--check]`: default files are `eval/forge/results_*.json` and
-`results_*.md`. JSON files are rewritten with indent 1 (a trailing newline kept); other files as text. Print `<file>:
-scrubbed|clean|would change` plus `; left: <up to 3>`. Exit 1 when any file has leftovers or, with `--check`, would
-change.
 
 ## 10.3 `build_refsets.py`
 
@@ -478,301 +461,131 @@ and tone only, since real stings are composed).
 Rule kept from the source: the sources that the first-version recipes used as refs are on the forge side, so the
 bench is held out from those recipes too.
 
-## 10.4 `blind_v2.py`: the blind listening test
+## 10.4 `scrub_paths.py` (results hygiene, used by `bench.py`)
 
-Builds a clean A/B listening test: forge finals against held-out real recordings of the same category. It also builds
-a "progress" listening file (first version against second version). Nothing is synthesised: every sound is an existing
-file (forge finals, first-version finals, bench refs), only trimmed, faded, gain-changed and placed on silence. There
-are no markers, beeps or voice. Trials are separated by silence.
+The results JSON names every registry file and ref path. Absolute machine paths do not belong in a committed results
+file. Before the write, `scrub(obj)` rewrites every string (dict keys too) of the result:
+- Roots, longest first: the pro-study trims folder (env `HARK_REFS_PRO`, default `<repo>/out/refs_pro`) as
+  `<refs_pro>`; `<repo>/out/refs` as `<refs>`; the cache home (`HARK_HOME`, else the config home, else `<repo>/.cache`)
+  as `<HARK_HOME>`; the repo itself as a repo-relative path (`.` for the root itself). When the registry's ref paths
+  share a common folder 3 levels above the files, that is outside the repo and longer than 3 characters, it is also
+  `<refs>`. Drop duplicate roots (case-insensitive).
+- Match a root on a word boundary, with `/` or `\` separators (case-insensitive), followed by the rest of the path
+  up to a space, quote, back quote, `;`, `,`, `)`, `]`, `<`, `>`, `|`, `*` or `?`. Write the rest with `/`.
+- Ref file names stay. They are the evidence of which recording a row measured.
+- `leftovers(text)`: any remaining drive path (`X:/...` or `X:\...`) or home path (`/Users/...`, `/home/...`).
 
-Main rule: nothing but the sound itself may give the answer away. A real recording carries a room floor and a made
-sound sits on digital silence, so neither clip may play any floor before or after its sound. Both clips must play
-equally loud at their loudest moment.
+CLI `python eval/forge/scrub_paths.py [FILES] [--check]`: default files are `eval/forge/results_*.json` and
+`results_*.md`. JSON files are rewritten with indent 1 (a trailing newline kept); other files as text. Print `<file>:
+scrubbed|clean|would change` plus `; left: <up to 3>`. Exit 1 when any file has leftovers or, with `--check`, would
+change.
 
-CLI: `python eval/forge/blind_v2.py [--out DIR] [--n 20] [--seed S] [--dry-run] [--allow-fail] [--progress DIR]`.
-Default out `out/showcase/blind_v2`. `--dry-run` checks cleanliness and writes nothing. After listening:
-`python <out>/score_answers.py A B B A ...`.
 
-### Inputs
+## 10.5 Method, target numbers, data assets and acceptance tests
 
-- Made finals: `<repo>/out/forge_v2/<category>/final/<category>_NN.wav` (two digits).
-- Bench refs: `refsets.refset(cat, 'bench')` (part 9) and the refset manifest `out/refs/manifest.json` (10.3) for each
-  ref's source path, trim, fade out and gain.
-- Audio load: read as float64, 2-D. Resample to 48 kHz with a polyphase resampler when needed. Mono becomes 2 equal
-  channels. Keep the first 2 channels. A start and stop time read only that range.
+### Method
 
-### Constants
+1. Build the registry once (10.3, or a user's own layout through part 9 `write(scan(root))`). The forge searches use
+   only the `forge` split. The benchmark uses the `bench` split.
+2. After every round of recipe work, run `bench.py --made <finals folder> --out eval/forge/results_<tag>.json` once
+   on the delivered tree. Never tune or pick on it.
+3. Read each category against its real rows: `real x` (the forge refs scored against the bench) is the yardstick.
+   `real loo` shows how far real recordings sit from each other.
+4. Progress shows as: variant variety (var cos) inside the real band; t40 x near 1; tone and curve distances at or
+   under real x; zero artifact flags; rows for categories that had none. Model checks (typ z, phrase z, margin) are
+   saturated: a search tuned on CLAP sits above real on them, so do not read progress from them.
+5. The deciding test is the blind listening test (part 11).
+6. Benchmark changes are additions only, each recorded with its date in a change log beside the results (the source's
+   log: round 0 created refsets v1 with 18 categories and 152 refs, bench v1, the frozen tone copy and the baselines;
+   round 2 added the pro_* phrasings, confusions and labels, `pro_riser` in ENDS_ON_PEAK, the `final/` layout and the
+   audition skip).
 
-| name | value | meaning |
+### Target numbers (from the source's runs; acceptance goals for our forge finals)
+
+Our recipes differ, so these numbers are goals with a tolerance, not exact matches. The benchmark functions themselves
+are deterministic and are tested exactly (B1-B14).
+
+| target | source value | our goal |
 |---|---|---|
-| LEAD, GAP, BETWEEN, TAIL | 1.0, 1.2, 2.5, 1.0 s | silence before trial 1, between A and B, between trials, after the last |
-| COMPAT | 1.3 | a made final is length-compatible when its audible extent is within this factor of an available bench ref |
-| ON_DB, END_DB | -50, -50 dB | the lowest onset and end levels |
-| REACH_MARGIN, FLOOR_MARGIN, HEAD_MARGIN | 3, 10, 1 dB | margins added to reach, floor and head |
-| LEVEL_CAP | -6 dB | onset and end levels never go above this |
-| FADE_IN_S | 0.004 s | the raised-cosine fade in before the onset |
-| FADE_DB, FADE_MIN_S | 6 dB, 0.005 s | the fade out covers the last 6 dB of decay above the end level, at least 5 ms |
-| REF_FADE_DEFAULT, MADE_FADE_GUARD | 0.03, 0.01 s | a bench ref's end fade when the manifest has none; a made final's end guard |
-| ENV | short: hop 2.5 ms, smooth 3 frames; long: hop 5 ms, smooth 6 frames | the trim envelope per pair class |
-| CLEAN_HEAD, CLEAN_REACH, CLEAN_FLOOR | -30, -30, -50 dB | pick preference: quiet start, natural decay, low floor |
-| SHORT_S | 1.0 s | a pair is long when the longer audible extent is at least this |
-| WIN | short 0.1 s, long 0.4 s | the loudness window of the pair measure |
-| TARGET | short -15 LUFS, long -16 LUFS | the level the pair is set to |
-| TP_MAX | -1.0 dBTP | the true-peak ceiling |
+| artifact flags over all delivered finals | 0 of 183 (34 categories) | 0 |
+| artifact flags on real trims (calibration) | 5 of 150 | at most 5 % of real refs |
+| re-render error of every delivered pick (part 6) | max 1.19e-7, 183 of 183 | <= 1.2e-7 for all |
+| variety (var cos) of made variants, the 5 first-version categories | click 0.681-0.723, typing_key 0.705, pop 0.735, impact 0.849, whoosh_fast 0.768-0.831 | each inside the real band 0.48-0.86 |
+| tail ratio t40 x | click 1.22, typing_key 1.29, whoosh_fast 0.90, swish 1.04, shimmer 0.97, logo_sting 1.03, tap 1.00 | 0.8-1.3 for each |
+| tone at least as close as real x (made tone dB <= real x tone dB) | 18 of 21 categories with refs | at least 18 of 21 |
+| inside count: made median >= a real recording's median | 11 of 22 categories | at least 11 of 22 |
+| first-version baseline (prototypes) | inside 7 of 7 (impact 5 of 6) against real 6; var cos 0.89-0.97 | a new forge must not fall below the baseline on tone, env oct and curve dB |
+| blind test cleanliness | PASS; 20 trials; 0.00 LU apart at the loudest moment; true peaks <= -1 dBTP; about 115-118 s; real = A on 10 | PASS with the same limits |
+| blind test significance | 15 of 20 right gives p = 0.021 | report p; p < 0.05 means listeners tell made from real |
+| run time, embeddings cached, HARK_THREADS=2 | 5 categories 12-25 s; 18 real-only categories 19-49 s; full 34-category run 112 s | same order |
+| run time, cold cache | 14 min for the first real-only run | same order |
 
-FAIL limits: loudest-moment difference 0.5 LU; true peak above TP_MAX + 0.05; floor margin under 6 dB; pre-roll above
-5 ms; trim edges that differ by more than 10 dB while the louder is above -20 dB; floor heard for more than 100 ms
-inside a clip at above -70 dBFS.
-WARN limits: length ratio 1.6; true-peak difference 6 dB; other-window difference 2 LU; mono corr 0.995 with the other
-clip under wide corr 0.9; a floor above -60 dBFS as played; floor heard for more than 30 ms.
+The first-version medians that serve as the baseline (made / real x / real loo):
 
-PLAN (category, answer-sheet name, trials at N = 20, tier). The tier comes from the round 3 and round 4 benchmark
-verdicts:
+| category | typ z | tone dB | env oct | curve dB | t40 x | var cos |
+|---|---|---|---|---|---|---|
+| click | 1.89 / 0.16 / -0.1 | 7.6 / 11.33 / 9.85 | 0.56 / 0.22 / 0.46 | 8.85 / 9.92 / 13.19 | 0.56 / 1.33 / 0.86 | 0.886 / 0.651 / 0.576 |
+| impact | - | 6.7 / 6.19 / - | 1.54 / 2.5 / - | 24.86 / 31.98 / - | 0.5 / 0.46 / - | 0.931 / 0.659 / - |
+| pop | 1.33 / -0.09 / 1.13 | 8.59 / 16.06 / 13.66 | 0.68 / 1.51 / 0.41 | 6.29 / 20.54 / 12.5 | 1 / 0.91 / 1.02 | 0.917 / 0.501 / 0.522 |
+| typing_key | 1.2 / 0.26 / 0.23 | 8.2 / 8.88 / 5.47 | 1.07 / 1.01 / 1.52 | 14.32 / 12.2 / 16.7 | 1.67 / 1.29 / 1 | 0.965 / 0.721 / 0.673 |
+| whoosh_fast | 2.05 / 0.57 / 1.52 | 8.58 / 10.31 / 4.58 | 0.89 / 1.22 / 0.4 | 15.93 / 20.2 / 8.21 | 0.51 / 0.6 / 1.08 | 0.957 / 0.826 / 0.772 |
 
-| category | name | trials | tier |
-|---|---|---|---|
-| whoosh_big | big whoosh | 2 | strong |
-| whoosh_fast | fast whoosh | 2 | strong |
-| click | UI click | 2 | strong |
-| typing_key | key press | 2 | strong |
-| shimmer | shimmer | 2 | strong |
-| pop | pop | 2 | strong |
-| swipe | cloth swipe | 1 | strong |
-| swish | swish | 1 | strong |
-| impact | impact | 1 | strong |
-| hover_tick | hover tick | 1 | middle |
-| tap | tap | 1 | weak |
-| toggle | toggle | 1 | middle |
-| notify | notification ding | 1 | weak |
-| riser | riser | 1 | weak |
+Registry sizes the source's build produced (forge refs (source files) / bench refs (source files)): whoosh_fast 5 (4) /
+5 (3); whoosh_big 3 (3) / 3 (2); swish 7 (3) / 3 (3); swipe 4 (1) / 4 (1); riser 1 (1) / 2 (2); downlifter 0 / 0;
+impact 2 (2) / 1 (1); sub_drop 0 / 1 (1); click 8 (5) / 7 (5); tap 7 (2) / 6 (2); toggle 4 (4) / 4 (3); hover_tick
+6 (2) / 6 (3); pop 7 (6) / 6 (6); notify 5 (5) / 5 (5); shimmer 5 (4) / 4 (4); typing_key 15 (10) / 12 (9); glitch
+0 / 0; logo_sting 2 (2) / 2 (2). Total 81 forge refs from 40 families and 71 bench refs from 37 families, 18
+categories, 0 family leaks.
 
-Weak categories are in the test on purpose, so the test is honest.
+### Limits of the method (state them in every results file)
 
-Excluded categories and why (written to the key): logo_sting (its bench refs are a triangle hit and a struck ring, the
-same files as the notify bench, so a pair would test form, not realism); downlifter and glitch (no bench refs);
-sub_drop (one bench ref, a designed tom pitched down 24 semitones, not a recording of a real event); every `pro_*`
-category (its refs are trims of launch films, mostly under music or voice, so no clean A/B is possible).
-Notes per category for the listener: the impact bench ref is a library cinematic hit (designed by a person from
-recordings); riser bench refs are real cymbal swells while the made risers are designed; swish bench refs are the same
-files as three whoosh_fast bench refs (each used once).
+- The sets are small (1-15 refs per split; 1-3 source files in several categories). Quantiles from 2-3 rows are
+  rough.
+- Ref tails and floors partly reflect the trim. `floor_db` on a short trim is mostly the trim's own tail.
+- tone dB and the envelope checks are the same kind of measure the forge can optimise, so they are held out but not
+  independent in kind.
+- AudioSet has no class for riser, downlifter or glitch, and it hears only up to 8 kHz.
+- Tap, hover_tick and notify bench refs have weak CLAP evidence (rank z about 1.5-1.9).
 
-### Audio measures
+### Data assets
 
-- `frames_db(x, ms)`: channel-mean power per whole frame in dB (+1e-20). A file shorter than one frame gives one
-  value over the whole file.
-- `onset(x, below=40)`: the sample of the first 1 ms frame within 40 dB of the loudest. `end_of(x, below=50)`: the end
-  sample of the last 5 ms frame within 50 dB of the loudest. `extent_s(x)` = (end_of - onset) / SR: the audible
-  extent. It is used only for picks and the pair class.
-- `raised(n)` = 0.5 - 0.5 cos(pi k / max(1, n)) for k = 0 .. n-1.
-- `power_frames(x, n, smooth=1)`: channel-summed power, mean per n-sample frame, the last partial frame zero-padded.
-  With smooth > 1 and more than 1 frame: a centred moving average of `smooth` frames (same length).
-- `loud_max(x, win)`: pad 50 ms of silence on both sides, K-weight (BS.1770, from unit listen features), channel-summed
-  square. A signal shorter than the window is zero-padded to it. Return -0.691 + 10 log10(max mean over every
-  win-sample window, at every sample position, + 1e-20).
-- `meter_m400(x)`: the listen unit's momentary loudness curve (400 ms window, 10 ms hop) of x padded to 400 ms; its max.
-  A cross-check.
-- `true_peak(x)`: the listen unit's true peak in dBTP (4x oversampled).
-- `rms_dbfs(x)` = 10 log10(mean square + 1e-20), -200 for an empty signal. `stereo_corr(x)` = sum(L R) / sqrt(sum L^2
-  sum R^2 + 1e-30).
+| asset | class | fallback |
+|---|---|---|
+| refs registry and the cut WAVs | NEEDS-DATA (licensed third-party recordings) | (1) the plan table of 10.3 names public Freesound, Mixkit and VSCO items, so a user can fetch the same CC0 / CC BY files and run the build; (2) a user's own `<root>/<cat>/{forge,bench}/` layout; (3) with no registry the benchmark exits with the part 9 message and the forge runs in designed mode |
+| sources list and kit manifest of the build | NEEDS-DATA (they describe the source's own library and kit) | replace `kit:<name>` entries with our kit (unit bank-kit-sfx) where a kit sound shares a source; otherwise drop them |
+| results JSON and markdown (`results_*.json`, `.md`) | REGENERATE | run `bench.py` on our finals; commit only scrubbed results |
+| frozen tone copy | DERIVE | 10.2 gives it whole; freeze it at our first benchmark run |
+| phrasings, confusions, AudioSet labels | kept as constants (10.1) | none needed |
+| pro_* study refs (trims of launch films) | NEEDS-DATA | pro_* categories get phrasing, AudioSet, artifact, texture and diversity rows only |
+| first-version finals (for the progress file of part 11) | NEEDS-DATA | skip the progress file, or use our own first delivered finals as "v1" |
 
-### File facts
+### Acceptance tests
 
-- `manifest_entry(p)`: the refset manifest record of a ref file (matched by normalised path), or None. A made final
-  has none.
-- `source_floor(p)`: the recording floor of a bench ref, measured in its source recording. Read the source from 20 s
-  before the trim to 20 s after (inside the file). Power per 50 ms frame. Drop frames at or under 2e-10 (digital
-  silence, -100 dB). Floor = the 5th percentile x 10^(gain_db / 10) (the trim's gain). None when the source is not on
-  this machine. Cached per path.
-- `end_fade_s(p)`: a ref's `fade_out_s` from the manifest (else 0.03); a made final 0.01.
-- `analyse(x, cls, fade_s, floor_pow=None, cut_file=True)`: with hop and smooth of ENV[cls]:
-  - p = the smoothed power frames; top = their max in dB; e = frame dB - top. e1 = unsmoothed 1 ms frame dB - top.
-  - ip = the loudest frame. guard = ceil((fade_s + 5 ms) / hop) frames; stop = max(ip + 1, frames - guard): the
-    sound before the file's own end fade.
-  - `reach` = the min of e over the last 15 ms before stop (not before ip): where the sound stands as the end fade
-    begins.
-  - `head` (only for a cut file, a bench ref) = the max of e1 at 2-5 ms (frames 2..4; the whole e1 max when there are 5
-    frames or fewer). It shows whether the cut went into the sound just after the ref's own 2 ms fade in. Made finals
-    start from digital silence: head None.
-  - `peak_late` = the loudest frame starts at or after 85 % of the file (a riser that builds to its end).
-  - `strike` = max e1 over the first 15 ms >= -6 (a struck sound).
-  - `floor` = floor_pow in dB - top, or None.
-- `facts(p)` = (extent, trims cleanly). Analyse on the class of the file's own extent. Clean when all hold: head is
-  None, or head <= -30, or a strike; reach <= -30 or peak_late; floor None or <= -50; stereo_corr > -0.5. Cached.
-
-### The trim of a pair
-
-Both sounds of a pair are trimmed the same way. Levels are dB relative to each sound's own loudest envelope frame.
-
-1. Class: `long` when max(extent of real, extent of made) >= 1.0 s, else `short`.
-2. Analyse the real clip with its end fade and source floor; the made clip with its end guard, no floor, not a cut file.
-3. Pair levels:
-   - L_end = max(-50, each reach + 3, each floor + 10), capped at -6. A level both decays reach naturally, above any
-     floor.
-   - L_on = max(-50, each head + 1, each floor + 10), capped at -6.
-4. keep_end = both clips are peak_late.
-5. `cut(x, info, L_on, L_end, keep_end)`:
-   - on = the start of the first 1 ms frame with e1 >= L_on (0 when none). start = on - 4 ms.
-   - j = the last envelope frame before stop with e >= L_end (ip when none). end = min(len, (j + 1) hop).
-   - f0 = the end of the last frame up to j with e >= L_end + 6 (or the end of ip). Clamp f0 into [on, end - 5 ms].
-   - keep_end holds only when also e[stop - 1] >= L_end. Then end = the file's end, j = the last frame, and f0 = end
-     - 2 ms (a safety fade).
-   - Clip = x[max(0, start):end]; zero-pad the front when start < 0 (the file has no 4 ms lead). Multiply the first
-     4 ms by raised(4 ms). Multiply the last (end - f0) samples by the reversed raised curve.
-   - Edge facts: `cut_in_db` = the max e1 over the first half of the fade in (from max(0, start)), -200 when empty
-     (what the fade in audibly ramps); `cut_out_db` = the max e over the 5 ms after frame j (the last frame value when
-     j is the last frame) (what the trim dropped); `floor_exposed_ms` (with a floor) = the time of envelope frames
-     from on to f0 that are under floor + 6 dB (the sound dips to the floor between events).
-   - Facts kept: onset_s, start_s, end_s (4 decimals), fade_out_ms, cut_in_db, cut_out_db, reach_db, head_db, floor_db,
-     floor_exposed_ms, kept_file_end, end_fade_s, top_db.
-
-### Level match
-
-`match_pair(real, made, cls)`: g = loud_max(real) - loud_max(made) on WIN[cls] (the made gain); gc = TARGET[cls] -
-loud_max(real) (the common gain); tp = max(true_peak(real), true_peak(made) + g) + gc; over = max(0, tp - TP_MAX).
-Return (g, gc - over, over): when a true peak would pass -1 dBTP, both clips go down together.
-
-### Cleanliness of one pair, as played
-
-Per clip measure: loud_pair_measure (WIN[cls]), loud_other_window (the other WIN), meter_m400, true_peak_dbtp,
-sample_peak_dbfs, preroll_dbfs (RMS of the clip before its onset), length_s, stereo_corr.
-
-Pair numbers: the absolute differences of pair measure, other window, meter and true peak; the max true peak; the max
-pre-roll level; floor as played = floor_db + top_db + real gain - 10 log10(2) (dBFS per channel); floor margin =
-min(L_end, L_on) - floor_db; pre-roll ms = the max over clips of (onset - start); the length ratio; the differences of
-cut_in_db and cut_out_db.
-
-FAIL, with these messages in our words: pair difference > 0.5 LU; max true peak > -0.95 dBTP; pre-roll > 5 ms; a
-cut_in_db >= L_on (the pre-roll holds sound); floor margin < 6 dB; floor exposed > 100 ms while the floor as played is
-above -70 dBFS (else a warning when exposed > 30 ms); onset trims differ by > 10 dB with the louder above -20 dB; the
-same for end trims.
-WARN: length ratio > 1.6; true-peak difference > 6 dB; other-window difference > 2 LU; floor as played > -60 dBFS;
-one clip mono (corr >= 0.995) and the other wide (< 0.9); a clip with anti-phase stereo (corr < 0).
-
-The symmetric row (it never says which side is real, so it is safe to read before listening): class, `matched_on`
-(`K-weighted loudest <ms> ms`), the 4 differences, max true peak, max pre-roll level, pre-roll ms, floor as played,
-floor margin, floor exposed ms, onset and end levels, the sorted lengths and ratio, the sorted onset and end trim
-levels, the sorted fade-out lengths and the sorted stereo correlations.
-
-### Picks
-
-`allocate(n)`: pass 1 gives each PLAN category 1 trial, pass 2 raises each to min(2, its PLAN count), in PLAN order,
-while trials remain. More trials than the plan: round-robin over the plan, adding 1 to a category while it has fewer
-than min(finals, bench refs). No growth possible: exit `cannot build <n> trials: not enough finals / bench refs`.
-
-`source_of(p)` = the file stem without a trailing `_<digits>` (sister trims share a source).
-
-`pick_trials(n, seed)`:
-1. alloc = allocate(n). Bench refs per category. digest = md5 of each bench ref's float32 samples (the same file can
-   sit in two categories).
-2. Order categories by (distinct clean digests / trials, distinct sources / trials, name): the most constrained picks
-   first.
-3. `available(c)`: the unused (by digest) bench refs. Pools in order: clean and from an unused source; clean; unused
-   source; any. Return the first non-empty pool.
-4. Per category: fewer finals than trials exits with an error. gap(m) = min over available refs of |ln(extent(ref) /
-   extent(m))|. Pool = finals with gap <= ln 1.3 that trim cleanly; if too few, all with gap <= ln 1.3; if still too
-   few, the trials-count finals with the smallest gap (ties by name). Draw the made finals at random from the pool
-   without replacement (generator seeded with [seed, 1]), kept in pool order. The pick looks only at length and edge
-   facts, never at a score.
-5. For each made final: real = the available ref with the closest extent (|ln ratio|, ties by path); exit when none is
-   left. Mark the digest and the source used. Record category, sound name, tier, made, real, `source_reused`, the
-   pool's basenames, and the clean flags of both.
-6. Order: up to 5000 permutations from a generator seeded with [seed, 2]; take the first with no category twice in a
-   row (the last one tried otherwise).
-7. Sides: half the trials real-as-A, the rest B (an odd count gets one extra A when a coin flip from a generator seeded
-   with [seed, 3] says so), then permuted with the same generator. Store `real_is`.
-
-### Build the blind test
-
-`build_blind(out, n, seed, quiet=False, allow_fail=False, dry_run=False)`:
-1. Fingerprint (size, modification time) every PLAN final and bench ref.
-2. trials = pick_trials(n, seed). Clock t = LEAD.
-3. For each trial i (from 1): load both; trim the pair; match the levels; made x 10^((g + gc) / 20), real x
-   10^(gc / 20). Measure both clips (pre-roll = the first 4 ms). Run the cleanliness check with the real gain gc.
-   Put the real clip on side `real_is`. A starts at round(t, 2) and B at round(A start + A length + GAP, 2): the
-   sheet times are exact on a 10 ms grid. Also make `t<NN>_A.wav` and `t<NN>_B.wav` with 0.25 s of silence on each
-   side. Next t = round(B start + B length + BETWEEN, 2).
-4. Key entry per trial: trial, category, sound, tier, A_start, B_start, lengths of A and B, `real` (A or B), the real
-   and made files (repo-relative), source reused, clean-trim flags, the file lengths and audible extents, class, onset
-   and end levels, both trim fact sets, the pool the made final was drawn from, a text that names the match method,
-   made gain, pair gain, the peak-cap drop, the levels as played, the fails and warnings, the category note, and the
-   md5 of both files.
-5. Fingerprint again. Any change: exit with `input files changed while building (...)`, nothing written. A polish
-   round may be writing finals. The folder keeps its previous complete build.
-6. Total length = t - BETWEEN + TAIL. Place the clips into one zero buffer of round(total x SR) + 1 frames. Check that
-   every sample outside the clips is exactly 0 (else a FAIL `gaps are not digital silence`) and that no sample is above
-   10^(TP_MAX / 20) + 1e-6 (else a FAIL).
-7. Summary: status PASS or FAIL, trials, pairs with fails, pairs with warnings, the max of loudest-moment difference,
-   meter difference, true peak, true-peak difference, pre-roll level, floor as played, length ratio; the min floor
-   margin; gaps silent; all fails and warnings (each prefixed `trial <i> (<sound>):`).
-8. `--dry-run`: print a one-line status with the fails and warnings, write nothing, return.
-9. Any FAIL without `--allow-fail`: print `CLEANLINESS FAIL (nothing written; ...)` and the fails, exit code 2.
-10. Check that the key and the cleanliness record serialise to JSON before anything is replaced. Delete the old
-    `t*_[AB].wav`, write the trial files and `blind_test.wav` (48 kHz, PCM 24-bit stereo; every sample must be
-    finite).
-11. Verify from the written files: read each trial file back, drop the 0.25 s pads, and measure again the pair-measure
-    difference and the max true peak. Store them as `verified_from_written_files`. Above the FAIL limits: status FAIL
-    with `the written trial files do not hold the matched levels`.
-12. Write `cleanliness.json` (indent 1): a short text that says no answers are inside, the FAIL and WARN limits, the
-    method in 3 short texts (trim, level, floor), the summary and the symmetric rows.
-13. Write `KEY_open_after.json`: seed, built time, trials (the key), excluded categories, the cleanliness summary, a
-    `how` text, and `residual_signs_made_vs_real`: for the other loudness window (eps 0.1 LU), the meter (0.1 LU), the
-    true peak (0.5 dB) and the length (log ratio, eps ln 1.1), the counts of trials where the made clip is more, less
-    or the same.
-14. Write `score_answers.py` (below).
-15. Write `answer_sheet.txt`: listening instructions in our words (A then B per trial; one is a real recording, the
-    other was made entirely in code by the forge; write which one is real, or `?`; do not open the key first; both are
-    trimmed alike, play equally loud at their loudest moment, and the real ones come from a held-out set); the scoring
-    command with the trial count; the chance line `By chance you would get about <n/2> of <n> right; <k05> or more is
-    unlikely by luck (p = <p>)`, where k05 is the smallest k with P(at least k of n by guessing) < 0.05; the cleanliness
-    paragraph (status, max loudest-moment difference, max true peak, the fade facts, floors and margin, warnings
-    count), wrapped at 112 columns; a table of trial, sound, A start, B start and a blank `____`; and the total length,
-    format and counts. Print it unless quiet, with the warnings.
-
-For n = 20, k05 = 15 and p = 0.021 (P(>= 14) = 0.058).
-
-### `score_answers.py` (written into the test folder)
-
-`python score_answers.py A B B A ...`: one letter per trial in trial order (commas allowed), A or B for the side the
-listener thinks is real, `?` for undecided. A wrong count or letter exits with a usage message. It reads
-`KEY_open_after.json` beside itself. It prints per trial: the trial number, sound, answer, the real side, `right`,
-`wrong` or `skipped`, and both file names. Then per sound `<k> of <n> right`; per tier (strong, middle, weak) `<k> of
-<n> right (p = ...)`; overall `<k> of <n> right; ... p = ...` with p = the one-sided binomial P(at least k of n) =
-sum over i >= k of C(n, i) / 2^n. A `?` is left out of n. It prints that p < 0.05 means the listener can tell made from
-real for at least some sounds, and otherwise the test could not show it. When P(at most k of n) < 0.05 it adds that so
-few right is itself unlikely: the listener heard the made sounds as real more often than not.
-
-### The progress file
-
-`build_progress(pdir, results_path=None, quiet=False)` (skipped with `--dry-run` or `--only blind`; default folder
-`<out>/../progress`):
-- V1 sounds (answer name, category, first-version final folder, file stem): key press / typing_key, UI click / click,
-  pop / pop, fast whoosh / whoosh_fast, impact / impact. Their finals are `<stem>_01.wav` and `<stem>_02.wav`.
-- Results: the first-version results `eval/forge/results_v1.json` and the newest `eval/forge/results_v2r<N>.json`
-  (largest N), or `--results`. None found: exit.
-- Listening file `v1_vs_v2.wav`: per sound, v1 final 1, its nearest v2 final, v1 final 2, its nearest v2 final (each v2
-  final used once). Nearest = the smallest RMS dB distance of the frozen tone profiles + 6 x |log2(extent ratio)|. The
-  4 sounds of a group are set to TARGET on the pair measure of the group class (long when any sound is 1 s or more),
-  and one common drop per group keeps every true peak at or under -1 dBTP. 1 s between sounds, 3 s between groups
-  (2 s added after the 1 s), lead 1 s, tail 1 s. `progress.txt` lists every start, version, loudest level, true peak,
-  file and the nearest distance. `progress.json` lists the picks with gains.
-- `progress.md`: per V1 sound a table of 13 checks (label, v1 median, v2 median, real loo, real x, verdict), plus the
-  inside row (`more` / `fewer` / `same` with a 0.4 step on the medians). A stale warning names categories whose
-  finals changed after the v2 results were made (a different file set, or a file modified more than 60 s after the
-  results' `created` time). A `KEPT_*.txt` marker in a final folder adds its stem to the heading. A closing table
-  counts better / worse model-free checks per sound, and a short "how to read" list in our words: verdicts compare
-  against the real rows; model checks saturate and are only up / down; the inside row mixes 4 model and 3 model-free
-  checks; first-version impact numbers are optimistic; the blind test decides.
-- Checks (key, rule, eps): var_cos span 0.01; tone_db low 0.3; env_oct low 0.03; curve_db low 0.5; t40_ratio one
-  0.03; artifacts low 0.5; stereo_corr span 0.02; floor_db span 1.0; darken span 0.05; typ_z, phrase_z, margin,
-  as_names model 0.05. For var_cos the real values are the bench and forge diversity cos_mean.
-- `verdict(rule, a, b, reals, eps)` (reals = the real loo and real x values, Nones dropped; empty when a or b is None):
-  - model: `up` when b > a + eps, `down` when b < a - eps, else `same`; add ` (v1 sat above the real rows)` when a >
-    max(reals).
-  - low: dist(v) = max(0, v - min(reals)) (min 0 with no reals).
-  - one: lo = min(1, reals), hi = max(1, reals); dist(v) = max(0, ln(lo / max(v, 1e-3)), ln(max(v, 1e-3) / hi)).
-  - span: no reals gives ''; dist(v) = max(0, min - v, v - max).
-  - Both distances 0: `same (both within the real rows)`. Else `better` when dist(b) < dist(a) - eps, `worse` when
-    dist(b) > dist(a) + eps, else `same`.
-
-CLI options: `--out`, `--progress`, `--seed` (default 2026), `--n` (20), `--results`, `--only blind|progress`,
-`--allow-fail`, `--dry-run`. Relative paths are relative to the repo.
+B1. `env_feats` of 10 ms of silence, then a 1 kHz sine burst with a 2 ms linear attack and an exponential decay with
+    t40 = 200 ms: onset_s = 0.010 +/- 0.001, attack_ms in [1, 3], t40_ms in [195, 210].
+B2. `artifacts` of a 0.5 s sine that starts at full phase (first sample = peak) flags `start click`; the same sine with
+    10 ms fades flags nothing; a constant 0.2 offset added flags `dc offset`; a signal with 5 samples at 1.0 flags
+    `clipped`; a sine cut at its loudest flags `end click` and `tail cut` except with cat `riser`.
+B3. `artifacts` of a signal with 150 ms of silence before its sound flags `late start`; with cat `pro_riser` it does
+    not.
+B4. `diversity` of 3 identical sounds gives cos_mean 1.0 and 3 near-duplicate pairs; of 1 sound gives `{'n': 1}`.
+B5. `inside_real` with made rows [{'tone_db': 5}], real rows tone_db [4, 6, 8, 10, 12]: the limit is the 0.8 quantile
+    10.4 and per_sound is [1]; a high metric with real typ_z [0, 1, 2, 3, 4] has the limit 0.8 (the 0.2 quantile).
+B6. `EnvRef([x]).check(x)` gives env_oct 0 and curve_db 0; `check(x, exclude=0)` on a 1-ref set gives `{}`.
+B7. `Yardstick.check` gives no typ_z with 2 refs and a typ_z with 3 refs.
+B8. `gather` skips `audition.wav` and `_tmp.wav`, and reads `<cat>/final/` when it exists.
+B9. A PHRASES text equal to a recipe's TARGET (case and spaces ignored) stops `main` with a clash error before any
+    model loads.
+B10. A made category not in PHRASES stops `main` with the list of known categories.
+B11. `--retable` on an existing JSON rewrites only the `.md`, and the table has one `made`, `real x` and `real loo`
+     row per category that has those rows.
+B12. Frozen `t40_ms` of white noise with an exponential decay whose 5 ms RMS falls 40 dB in 300 ms returns 300 +/- 10
+     ms; a file shorter than 10 ms returns 0.0. `profile` of any signal has 28 values, all >= -60, and does not change
+     when the signal is scaled by 0.1.
+B13. `scrub` of `{"f": "<repo>/out/refs/click/bench/a.wav"}` gives `<refs>/click/bench/a.wav`; a path inside the repo
+     becomes repo-relative; `leftovers` of `/Users/x/y.wav` is not empty.
+B14. Build script: `family` of `fs-1` with author `u` is `fs-author:u`, of `vsco-x` is `vsco`, of `mk-7` is `mk-7`; a
+     plan with one family in both splits makes `--plan` print the leak and the build write nothing; `cut_whole` of a
+     sound longer than the max returns capped True and a length of exactly the max.
+B15. On our registry, a real-only run gives every category with at least 3 bench refs a `real_loo` row with typ_z, and
+     the made-vs-real tables of 10.5 hold for our finals (the target table above).
