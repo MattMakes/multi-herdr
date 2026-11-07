@@ -49,38 +49,40 @@ def separator_is_valid(line):
     return all(SEPARATOR.fullmatch(cell) for cell in cells(line))
 
 
+def table_end(lines, start):
+    """Return the index of the first non-blank line after start that is not a table row."""
+    return next(
+        (i for i in range(start, len(lines)) if cells(lines[i]) is None and lines[i].strip()),
+        len(lines),
+    )
+
+
+def to_row(header, row):
+    return dict(zip(header, row)) if len(row) == len(header) else None
+
+
 def table_rows(lines, start, header):
     """Return (line number, row dict or None) for each row from start to the table end."""
-    rows = []
-    for line_number, row_line in enumerate(lines[start:], start + 1):
-        row = cells(row_line)
-        if row is None:
-            if row_line.strip():
-                break
-            continue
-        rows.append((line_number, dict(zip(header, row)) if len(row) == len(header) else None))
-    return rows
+    found = [(i + 1, cells(lines[i])) for i in range(start, table_end(lines, start))]
+    return [(number, to_row(header, row)) for number, row in found if row is not None]
 
 
 def find_claims_table(text):
     """Return (rows, errors) for the first table with the required columns."""
     lines = text.splitlines()
-    for index in range(len(lines) - 1):
-        header = header_at(lines, index)
-        if header is None:
-            continue
-        if not separator_is_valid(lines[index + 1]):
-            return [], [f"line {index + 2}: invalid table separator"]
-        return table_rows(lines, index + 2, header), []
-    return [], ["no claims table with Caption claim, Verdict, and Evidence columns"]
+    index = next((i for i in range(len(lines) - 1) if header_at(lines, i)), None)
+    if index is None:
+        return [], ["no claims table with Caption claim, Verdict, and Evidence columns"]
+    if not separator_is_valid(lines[index + 1]):
+        return [], [f"line {index + 2}: invalid table separator"]
+    return table_rows(lines, index + 2, header_at(lines, index)), []
 
 
 def verdict_error(verdict):
-    if verdict.casefold() not in ALLOWED_VERDICTS:
-        return f"unverified verdict '{verdict}'"
-    if verdict.casefold() == "false":
+    key = verdict.casefold()
+    if key == "false":
         return "verdict is false"
-    return None
+    return None if key in ALLOWED_VERDICTS else f"unverified verdict '{verdict}'"
 
 
 def row_errors(row):
@@ -118,50 +120,64 @@ GOOD = """# Claims
 """
 
 
+SELF_TEST_CASES = {
+    "clean ledger": (GOOD, 0),
+    "false verdict": (GOOD.replace("| true |", "| false |", 1), 1),
+    "empty evidence": (GOOD.replace("Measurement: 4.0 s in the release build.", ""), 1),
+    "inferred text": (GOOD.replace("Play test:", "[inferred] Play test:"), 1),
+    "unknown verdict": (GOOD.replace("| true |", "| unverified |", 1), 1),
+    "missing table": ("# Claims\n\nNo claims yet.\n", 1),
+}
+
+
+def check_file(path):
+    with open(path, encoding="utf-8") as handle:
+        return check(handle.read())
+
+
+def case_result(folder, content):
+    path = os.path.join(folder, "claims.md")
+    with open(path, "w", encoding="utf-8") as handle:
+        handle.write(content)
+    return 1 if check_file(path) else 0
+
+
 def self_test():
-    cases = {
-        "clean ledger": (GOOD, 0),
-        "false verdict": (GOOD.replace("| true |", "| false |", 1), 1),
-        "empty evidence": (GOOD.replace("Measurement: 4.0 s in the release build.", ""), 1),
-        "inferred text": (GOOD.replace("Play test:", "[inferred] Play test:"), 1),
-        "unknown verdict": (GOOD.replace("| true |", "| unverified |", 1), 1),
-        "missing table": ("# Claims\n\nNo claims yet.\n", 1),
-    }
-    failures = []
     with tempfile.TemporaryDirectory() as folder:
-        for name, (content, expected) in cases.items():
-            path = os.path.join(folder, "claims.md")
-            with open(path, "w", encoding="utf-8") as handle:
-                handle.write(content)
-            with open(path, encoding="utf-8") as handle:
-                result = 1 if check(handle.read()) else 0
-            if result != expected:
-                failures.append(f"{name}: expected {expected}, got {result}")
+        failures = [
+            f"{name}: expected {expected}"
+            for name, (content, expected) in SELF_TEST_CASES.items()
+            if case_result(folder, content) != expected
+        ]
     for failure in failures:
         print(f"FAIL {failure}")
-    print(
-        "check_claims self-test: "
-        + ("FAILED" if failures else f"{len(cases)} cases passed")
-    )
+    status = "FAILED" if failures else f"{len(SELF_TEST_CASES)} cases passed"
+    print(f"check_claims self-test: {status}")
     return 1 if failures else 0
+
+
+def usage_error(argv):
+    if len(argv) != 1:
+        return __doc__.strip()
+    return None if os.path.isfile(argv[0]) else f"{argv[0]}: no such file"
+
+
+def report(path):
+    errors = check_file(path)
+    for error in errors:
+        print(f"{path}: {error}")
+    print(f"{path}: {'FAIL' if errors else 'PASS'}")
+    return 1 if errors else 0
 
 
 def main(argv):
     if argv == ["--self-test"]:
         return self_test()
-    if len(argv) != 1:
-        print(__doc__.strip(), file=sys.stderr)
+    error = usage_error(argv)
+    if error:
+        print(error, file=sys.stderr)
         return 2
-    path = argv[0]
-    if not os.path.isfile(path):
-        print(f"{path}: no such file", file=sys.stderr)
-        return 2
-    with open(path, encoding="utf-8") as handle:
-        errors = check(handle.read())
-    for error in errors:
-        print(f"{path}: {error}")
-    print(f"{path}: {'FAIL' if errors else 'PASS'}")
-    return 1 if errors else 0
+    return report(argv[0])
 
 
 if __name__ == "__main__":
