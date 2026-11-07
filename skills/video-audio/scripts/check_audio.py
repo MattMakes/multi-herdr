@@ -301,23 +301,32 @@ def check_sync_sheet(sheet, timeline, duration, errors):
 
 # ---------------------------------------------------------------- sample analysis
 
-def _pcm(path, audio_filter=None, rate=ANALYSIS_RATE):
-    """Decode path to mono signed 16-bit samples at the selected rate."""
-    cmd = ["ffmpeg", "-hide_banner", "-v", "error", "-i", path]
-    if audio_filter:
-        cmd += ["-af", audio_filter]
-    cmd += ["-ac", "1", "-ar", str(rate), "-f", "s16le", "-"]
-    try:
-        proc = subprocess.run(cmd, capture_output=True, check=False)
-    except FileNotFoundError as exc:
-        raise ToolError("ffmpeg is not on PATH") from exc
-    if proc.returncode != 0:
-        raise ToolError(f"ffmpeg cannot decode {path}: {proc.stderr.decode(errors='replace')[-400:]}")
+def _decode_cmd(path, audio_filter, rate):
+    """Return the ffmpeg command that decodes path to mono s16le at rate."""
+    filters = ["-af", audio_filter] if audio_filter else []
+    return (["ffmpeg", "-hide_banner", "-v", "error", "-i", path] + filters
+            + ["-ac", "1", "-ar", str(rate), "-f", "s16le", "-"])
+
+
+def _s16(raw):
+    """Return signed 16-bit little-endian samples from raw bytes."""
     samples = array.array("h")
-    samples.frombytes(proc.stdout[:len(proc.stdout) // 2 * 2])
+    samples.frombytes(raw[:len(raw) // 2 * 2])
     if sys.byteorder == "big":
         samples.byteswap()
     return samples
+
+
+def _pcm(path, audio_filter=None, rate=ANALYSIS_RATE):
+    """Decode path to mono signed 16-bit samples at the selected rate."""
+    try:
+        proc = subprocess.run(_decode_cmd(path, audio_filter, rate), capture_output=True, check=False)
+    except FileNotFoundError as exc:
+        raise ToolError("ffmpeg is not on PATH") from exc
+    if proc.returncode != 0:
+        tail = proc.stderr.decode(errors="replace")[-400:]
+        raise ToolError(f"ffmpeg cannot decode {path}: {tail}")
+    return _s16(proc.stdout)
 
 
 def _rms_db(samples, start_sec, end_sec):
@@ -334,26 +343,33 @@ def _levels(samples, window_sec):
     return [_rms_db(samples, k * window_sec, (k + 1) * window_sec) for k in range(count)]
 
 
+def _cut_times(timeline):
+    """Return the sorted scene start times after 0 s."""
+    scenes = timeline.get("scenes", []) if isinstance(timeline, dict) else []
+    starts = (scene.get("start_sec") for scene in scenes if isinstance(scene, dict))
+    return sorted({float(start) for start in starts if _is_num(start) and start > 0})
+
+
+def _peak_dbfs(samples, sec):
+    """Return the sample peak in dBFS within CUT_PEAK_RADIUS_SEC of sec."""
+    lo = max(0, int((sec - CUT_PEAK_RADIUS_SEC) * SAMPLE_RATE))
+    hi = math.ceil((sec + CUT_PEAK_RADIUS_SEC) * SAMPLE_RATE)
+    peak = max((abs(value) for value in samples[lo:hi]), default=0) / 32768.0
+    return 20 * math.log10(peak) if peak else -math.inf
+
+
 def check_cut_peaks(mix, timeline, errors):
     """Check the sample peak within 20 ms on each scene cut."""
-    scenes = timeline.get("scenes", []) if isinstance(timeline, dict) else []
-    cuts = sorted({float(scene["start_sec"]) for scene in scenes
-                   if isinstance(scene, dict) and _is_num(scene.get("start_sec"))
-                   and scene["start_sec"] > 0})
-    if not cuts:
-        return []
-    samples = _pcm(mix, rate=SAMPLE_RATE)
+    cuts = _cut_times(timeline)
+    samples = _pcm(mix, rate=SAMPLE_RATE) if cuts else []
     results = []
     for cut in cuts:
-        lo = max(0, int((cut - CUT_PEAK_RADIUS_SEC) * SAMPLE_RATE))
-        hi = min(len(samples), math.ceil((cut + CUT_PEAK_RADIUS_SEC) * SAMPLE_RATE))
-        peak = max((abs(value) for value in samples[lo:hi]), default=0) / 32768.0
-        peak_dbfs = 20 * math.log10(peak) if peak else -math.inf
-        results.append({"sec": cut, "peak_dbfs": None if math.isinf(peak_dbfs) else round(peak_dbfs, 2)})
-        if peak_dbfs > CUT_PEAK_MAX_DBFS:
+        peak = _peak_dbfs(samples, cut)
+        results.append({"sec": cut, "peak_dbfs": None if math.isinf(peak) else round(peak, 2)})
+        if peak > CUT_PEAK_MAX_DBFS:
             _err(errors, "mix.cut_peak",
                  f"peak within {CUT_PEAK_RADIUS_SEC * 1000:.0f} ms of the cut at {cut:.3f} s is "
-                 f"{peak_dbfs:.2f} dBFS; it must be <= {CUT_PEAK_MAX_DBFS} dBFS")
+                 f"{peak:.2f} dBFS; it must be <= {CUT_PEAK_MAX_DBFS} dBFS")
     return results
 
 
@@ -602,6 +618,11 @@ def check(mix, timeline_path=None, beats_path=None, sync_path=None, cues_path=No
     allowed = _allowed(timeline) + ([plan["payoff_silence_sec"]] if plan["payoff_silence_sec"] else [])
     check_silences(metrics["silences"], info["duration_sec"], allowed, errors)
 
+    return _report(mix, metrics, errors)
+
+
+def _report(mix, metrics, errors):
+    """Return the report dict with JSON-safe loudness metrics."""
     del metrics["momentary"]
     for key in ("integrated_lufs", "true_peak_dbtp"):
         if math.isinf(metrics[key]):
