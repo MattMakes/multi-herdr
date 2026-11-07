@@ -24,6 +24,15 @@ def _api_names(api) -> tuple:
     return tuple(getattr(api, "__all__", ())) + extra
 
 
+def _missing(name: str):
+    raise AttributeError(f"module 'hark' has no attribute {name!r}")
+
+
+def _submodule(name: str):
+    full = f"{__name__}.{name}"
+    return importlib.import_module(full) if _exists(full) else _missing(name)
+
+
 def __getattr__(name: str):
     """Forward the public API names to hark.core.api on first use.
 
@@ -31,8 +40,4 @@ def __getattr__(name: str):
     submodule import.
     """
     api = _api()
-    if name in _api_names(api):
-        return getattr(api, name)
-    if not _exists(f"{__name__}.{name}"):
-        raise AttributeError(f"module 'hark' has no attribute {name!r}")
-    return importlib.import_module(f"{__name__}.{name}")
+    return getattr(api, name) if name in _api_names(api) else _submodule(name)
