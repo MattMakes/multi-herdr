@@ -503,20 +503,25 @@ def check_boundary_pops(ctx):
     return {"cut_peaks_dbfs": peaks, "max_dbfs": POP_PEAK_MAX_DBFS}, errors
 
 
-def check_music_continuity(ctx):
-    path = ctx.music_continuity
-    if not path.is_file():
-        return {"skipped": True, "reason": f"no music continuity report at {path}"}, []
+def read_music_report(path):
     try:
         data = json.loads(path.read_text())
     except (OSError, ValueError) as exc:
         raise InputError(f"cannot read music continuity report {path}: {exc}") from exc
     if not isinstance(data, dict) or not isinstance(data.get("pass"), bool):
         raise InputError(f"{path}: pass must be a boolean")
-    details = {"report": str(path), "pass": data["pass"],
+    return data
+
+
+def check_music_continuity(ctx):
+    path = ctx.music_continuity
+    if not path.is_file():
+        return {"skipped": True, "reason": f"no music continuity report at {path}"}, []
+    data = read_music_report(path)
+    passed = data["pass"]
+    details = {"report": str(path), "pass": passed,
                "digital_silence": data.get("digital_silence"), "worst": data.get("worst", [])}
-    errors = [] if data["pass"] else [("audio/music-continuity.json reports pass false", None)]
-    return details, errors
+    return details, [] if passed else [("audio/music-continuity.json reports pass false", None)]
 
 
 def caption_time(text):
@@ -560,39 +565,55 @@ def check_captions(path, vtt, duration):
     return errors
 
 
+def frame_count(video_stream):
+    value = str(video_stream.get("nb_frames", ""))
+    return int(value) if value.isdigit() else None
+
+
+def master_frame_count(ctx):
+    count = frame_count(stream(ctx.info, "video") or {})
+    return len(ctx.analysis["frames"]) if count is None else count
+
+
+def check_variant(path, size, duration, master_count):
+    """Return (frame count, [error messages]) for 1 derived video."""
+    name, (tw, th) = path.name, size
+    info = ffprobe(path)
+    v = stream(info, "video") or {}
+    errors = []
+    if (v.get("width"), v.get("height")) != (tw, th):
+        errors.append(f"{name} is {v.get('width')}x{v.get('height')}, expected {tw}x{th}")
+    dur = stream_duration(info, "video")
+    if dur is None or abs(dur - duration) > DURATION_TOL_SEC:
+        errors.append(f"{name} duration {dur} s differs from {duration} s by > {DURATION_TOL_SEC} s")
+    count = frame_count(v)
+    if count != master_count:
+        errors.append(f"{name} frame count {count}, expected master.mp4 frame count {master_count}")
+    return count, errors
+
+
+def variant_targets(meta):
+    short, long_ = sorted((int(meta["width"]), int(meta["height"])))
+    return {"16x9.mp4": (long_, short), "9x16.mp4": (short, long_), "1x1.mp4": (short, short)}
+
+
 def check_variants_captions(ctx):
     root = ctx.render_dir
-    short, long_ = sorted((int(ctx.meta["width"]), int(ctx.meta["height"])))
-    targets = {"16x9.mp4": (long_, short), "9x16.mp4": (short, long_), "1x1.mp4": (short, short)}
     duration = float(ctx.meta["duration_sec"])
-    master_stream = stream(ctx.info, "video") or {}
-    master_count = int(master_stream["nb_frames"]) if str(master_stream.get("nb_frames", "")).isdigit() \
-        else len(ctx.analysis["frames"])
-    seen, errors, frame_counts = [], [], {"master.mp4": master_count}
-    for name, (tw, th) in targets.items():
-        path = root / name
-        if not path.is_file():
-            continue
-        seen.append(name)
-        info = ffprobe(path)
-        v = stream(info, "video") or {}
-        if (v.get("width"), v.get("height")) != (tw, th):
-            errors.append((f"{name} is {v.get('width')}x{v.get('height')}, expected {tw}x{th}", None))
-        dur = stream_duration(info, "video")
-        if dur is None or abs(dur - duration) > DURATION_TOL_SEC:
-            errors.append((f"{name} duration {dur} s differs from {duration} s by > {DURATION_TOL_SEC} s", None))
-        count = int(v["nb_frames"]) if str(v.get("nb_frames", "")).isdigit() else None
-        frame_counts[name] = count
-        if count != master_count:
-            errors.append((f"{name} frame count {count}, expected master.mp4 frame count {master_count}", None))
-    for name, vtt in (("captions.srt", False), ("captions.vtt", True)):
-        path = root / name
-        if path.is_file():
+    frame_counts = {"master.mp4": master_frame_count(ctx)}
+    seen, errors = [], []
+    for name, size in variant_targets(ctx.meta).items():
+        if (root / name).is_file():
             seen.append(name)
-            errors += [(msg, None) for msg in check_captions(path, vtt, duration)]
+            frame_counts[name], msgs = check_variant(root / name, size, duration, frame_counts["master.mp4"])
+            errors += msgs
+    for name, vtt in (("captions.srt", False), ("captions.vtt", True)):
+        if (root / name).is_file():
+            seen.append(name)
+            errors += check_captions(root / name, vtt, duration)
     if not seen:
         return {"skipped": True, "reason": f"no variants or captions in {root}"}, []
-    return {"checked": seen, "frame_counts": frame_counts}, errors
+    return {"checked": seen, "frame_counts": frame_counts}, [(msg, None) for msg in errors]
 
 
 def check_safe_zone_flash(ctx):
