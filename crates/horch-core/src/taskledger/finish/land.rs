@@ -453,6 +453,13 @@ pub fn land(store: &mut Store, cx: &Ctx<'_>) -> Result<Outcome> {
         return Ok(Outcome::fail("no check", None, &format!("{e:#}")));
     }
     let Some(wt) = cx.worktree.clone() else {
+        // Only a one-off `--check none` task passes finish without its
+        // worktree (`require_worktree`): it made no change, so nothing lands (T-5).
+        if cx.task.uses_worktree() && cx.task.is_no_change_one_off() {
+            return Ok(Outcome::not_applicable(
+                "the task has no worktree and changed no file",
+            ));
+        }
         return land_shared(cx, &run_branch, &log);
     };
     if is_landed(&wt) && !reopen_if_new_commits(store, &cx.tools.git, &cx.root, &wt, &run_branch)? {
@@ -878,14 +885,6 @@ fn land_shared(cx: &Ctx<'_>, run_branch: &str, log: &Path) -> Result<Outcome> {
     }
     let head = git.rev(&cx.root, "HEAD")?;
     if let Some(start) = super::shared_start(&cx.tools.evidence_root, &cx.task.task_id) {
-        if head == start && cx.task.check_none {
-            std::fs::write(log, format!("{run_branch} unchanged at {head}\n"))?;
-            return Ok(Outcome::pass(
-                &head,
-                Some(log.to_path_buf()),
-                "no repository change was required",
-            ));
-        }
         if head == start || !git.is_ancestor(&cx.root, &start, &head) {
             bail!(
                 "{run_branch} has no commit since the claim (it started at {}). Commit your work on {run_branch}, then run horch ledger finish again",

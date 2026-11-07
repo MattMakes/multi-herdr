@@ -630,18 +630,15 @@ fn launch_sandbox_args(
     sandbox: Option<&str>,
     prepared: &mut Prepared,
 ) -> Result<()> {
-    let roots = state_roots(ctx);
+    let state_root = ctx.paths.state_root.to_string_lossy().into_owned();
     let profile_form = write_profile_form(req.teammate) || plan_profile_form(req.teammate);
     match sandbox {
         // A write pane runs the fleet write profile; a plan pane defines
         // it for `horch mode <role> write` (X6 repro 5). The profile holds
-        // the state root, ledger folder, and the pane's own TMPDIR.
+        // the state root and the pane's own TMPDIR.
         _ if profile_form => profile_form_args(ctx, req.role, prepared)?,
         None | Some(WORKSPACE_WRITE) => {
-            prepared.extra_args = roots
-                .into_iter()
-                .flat_map(|root| ["--add-dir".to_string(), root])
-                .collect();
+            prepared.extra_args = vec!["--add-dir".into(), state_root];
         }
         // Another read-only launch names it as a workspace-write root:
         // codex reads it only after a switch to workspace-write, and
@@ -651,14 +648,7 @@ fn launch_sandbox_args(
         {
             prepared.extra_args = vec![
                 "-c".into(),
-                format!(
-                    "{WRITABLE_ROOTS_KEY}=[{}]",
-                    roots
-                        .iter()
-                        .map(|root| toml_string(root))
-                        .collect::<Vec<_>>()
-                        .join(",")
-                ),
+                format!("{WRITABLE_ROOTS_KEY}=[{}]", toml_string(&state_root)),
             ];
         }
         _ => {}
@@ -666,24 +656,12 @@ fn launch_sandbox_args(
     Ok(())
 }
 
-/// The narrow state folders a worker command writes: horch's state root and
-/// the folder that holds the ledger, its WAL, locks, and evidence.
-fn state_roots(ctx: &RuntimeContext) -> Vec<String> {
-    let mut roots = vec![ctx.paths.state_root.to_string_lossy().into_owned()];
-    if let Some(ledger) = ctx.paths.ledger_db.parent() {
-        let ledger = ledger.to_string_lossy().into_owned();
-        if !roots.contains(&ledger) {
-            roots.push(ledger);
-        }
-    }
-    roots
-}
-
 /// The fleet write profile, with a private TMPDIR that `finish` removes.
 fn profile_form_args(ctx: &RuntimeContext, role: &str, prepared: &mut Prepared) -> Result<()> {
+    let state_root = ctx.paths.state_root.to_string_lossy().into_owned();
     let tmpdir = pane_tmpdir(&ctx.paths.state_root, role);
     std::fs::create_dir_all(&tmpdir).with_context(|| format!("creating {}", tmpdir.display()))?;
-    prepared.extra_args = fleet_write_profile_args(&state_roots(ctx));
+    prepared.extra_args = fleet_write_profile_args(&state_root);
     let value = serde_json::to_string(&tmpdir.to_string_lossy()).context("encoding TMPDIR")?;
     prepared.extra_args.push("-c".into());
     prepared
@@ -750,9 +728,9 @@ impl Harness for Codex {
     /// A private `CODEX_HOME` holding only this pane's rules, with the
     /// skills bundle linked in. Finished once the CLI has exited.
     ///
-    /// The state root and ledger folder are the pane's extra writable roots:
-    /// `horch done` updates the ledger, and `horch tell` spools messages.
-    /// An execpolicy `allow` lifts
+    /// The state root is the pane's one extra writable root: `horch note`
+    /// and `horch done` lock and replace the ledger directly in it, and
+    /// `horch tell` spools long messages there. An execpolicy `allow` lifts
     /// the sandbox only for a command that matches its prefix, so
     /// `horch note x 2>&1; echo $?` ran sandboxed and failed on the lock
     /// (live check B2). A write or plan pane gets the root inside
@@ -1141,14 +1119,15 @@ pub const FLEET_WRITE_PROFILE: &str = "fleet_write";
 ///   `.git`, `.codex`, `.agents` and `.aws` too, which `:workspace` keeps
 ///   read-only. So a Codex worker can commit and make worktrees.
 /// - Everything else stays read-only: `/tmp` and the system temp dir as
-///   well. Horch's state root and ledger folder are the extra writable roots;
-///   the pane's `TMPDIR` lives under the state root ([`pane_tmpdir`]).
+///   well. `state_root` is the one extra writable root: `horch note` and
+///   `horch done` write the ledger in it, and the pane's `TMPDIR` lives
+///   under it ([`pane_tmpdir`]).
 /// - The network is on.
 ///
 /// The sandbox itself keeps processes apart: a sandboxed command can signal
 /// only processes in its own sandbox (Seatbelt `signal (target
 /// same-sandbox)`; a PID namespace on Linux).
-fn fleet_write_profile_args(roots: &[String]) -> Vec<String> {
+fn fleet_write_profile_args(state_root: &str) -> Vec<String> {
     let p = FLEET_WRITE_PROFILE;
     [
         format!("permissions.{p}.extends=\":workspace\""),
@@ -1158,12 +1137,8 @@ fn fleet_write_profile_args(roots: &[String]) -> Vec<String> {
              \":slash_tmp\"=\"read\",\":tmpdir\"=\"read\"}}"
         ),
         format!(
-            "permissions.{p}.workspace_roots={{{}}}",
-            roots
-                .iter()
-                .map(|root| format!("{}=true", toml_string(root)))
-                .collect::<Vec<_>>()
-                .join(",")
+            "permissions.{p}.workspace_roots={{{}=true}}",
+            toml_string(state_root)
         ),
         format!("permissions.{p}.network.enabled=true"),
     ]
@@ -1179,9 +1154,7 @@ fn fleet_write_profile_args(roots: &[String]) -> Vec<String> {
 /// group, so killing the group of `codex` kills the command too.
 pub fn sandbox_args(state_root: &Path, dir: &Path) -> Vec<String> {
     let mut args = vec!["sandbox".to_string()];
-    args.extend(fleet_write_profile_args(&[state_root
-        .to_string_lossy()
-        .into_owned()]));
+    args.extend(fleet_write_profile_args(&state_root.to_string_lossy()));
     args.extend([
         "-P".into(),
         FLEET_WRITE_PROFILE.into(),
@@ -2592,22 +2565,19 @@ mod tests {
 
     /// Live check B2: an execpolicy `allow` does not lift the sandbox for a
     /// compound command, so the ledger lock under the state root failed. The
-    /// The pane gets only horch's state root and ledger folder.
+    /// state root is the one writable root a pane gets, and nothing else.
     #[cfg(unix)]
     #[test]
-    fn a_pane_gets_exactly_the_horch_state_dirs_as_writable_dirs() {
+    fn a_pane_gets_exactly_the_state_root_as_a_writable_dir() {
         let tmp = tempfile::tempdir().unwrap();
         let teammate = Teammate::default();
         let (ctx, prepared) = prepare_in(tmp.path(), &teammate);
         assert_eq!(ctx.paths.state_root, tmp.path().join("state"));
-        let ledger = ctx.paths.ledger_db.parent().unwrap().to_path_buf();
         assert_eq!(
             prepared.extra_args,
             vec![
                 "--add-dir".to_string(),
-                tmp.path().join("state").to_string_lossy().into_owned(),
-                "--add-dir".to_string(),
-                ledger.to_string_lossy().into_owned(),
+                tmp.path().join("state").to_string_lossy().into_owned()
             ]
         );
     }
@@ -2642,8 +2612,7 @@ mod tests {
             .map(|w| w[1].as_str())
             .collect();
         let state = ctx.paths.state_root.to_string_lossy().into_owned();
-        let ledger = ctx.paths.ledger_db.parent().unwrap().to_string_lossy();
-        assert_eq!(dirs, vec!["/teammate/own", state.as_str(), ledger.as_ref()]);
+        assert_eq!(dirs, vec!["/teammate/own", state.as_str()]);
         assert_eq!(args.last().map(String::as_str), Some("P"));
     }
 
@@ -2703,7 +2672,7 @@ mod tests {
             };
             assert_eq!(
                 fleet_dirs(&teammate, None).len(),
-                usize::from(expect) * 2,
+                usize::from(expect),
                 "permission_mode {mode:?}"
             );
         }
@@ -2712,7 +2681,7 @@ mod tests {
     /// The `-c` pairs a prepared launch for `teammate` passes, and its state
     /// root.
     #[cfg(unix)]
-    fn config_pairs(teammate: &Teammate) -> (String, String, Vec<String>) {
+    fn config_pairs(teammate: &Teammate) -> (String, Vec<String>) {
         let tmp = tempfile::tempdir().unwrap();
         let (ctx, prepared) = prepare_in(tmp.path(), teammate);
         let pairs = prepared
@@ -2721,16 +2690,7 @@ mod tests {
             .filter(|w| w[0] == "-c")
             .map(|w| w[1].clone())
             .collect();
-        (
-            ctx.paths.state_root.to_string_lossy().into_owned(),
-            ctx.paths
-                .ledger_db
-                .parent()
-                .unwrap()
-                .to_string_lossy()
-                .into_owned(),
-            pairs,
-        )
+        (ctx.paths.state_root.to_string_lossy().into_owned(), pairs)
     }
 
     /// Write and plan panes define the fleet write profile. A plan pane
@@ -2749,7 +2709,7 @@ mod tests {
                 permission_mode: Some(mode),
                 ..Default::default()
             };
-            let (state, ledger, got) = config_pairs(&teammate);
+            let (state, got) = config_pairs(&teammate);
             assert_eq!(
                 got,
                 vec![
@@ -2758,9 +2718,7 @@ mod tests {
                      \".git\"=\"write\",\".codex\"=\"write\",\".agents\"=\"write\",\".aws\"=\"write\"},\
                      \":slash_tmp\"=\"read\",\":tmpdir\"=\"read\"}"
                         .to_string(),
-                    format!(
-                        "permissions.fleet_write.workspace_roots={{\"{state}\"=true,\"{ledger}\"=true}}"
-                    ),
+                    format!("permissions.fleet_write.workspace_roots={{\"{state}\"=true}}"),
                     "permissions.fleet_write.network.enabled=true".to_string(),
                     format!("shell_environment_policy.set.TMPDIR=\"{state}/tmp/codex-1\""),
                 ],
@@ -2773,7 +2731,7 @@ mod tests {
                 ..Default::default()
             };
             assert!(
-                config_pairs(&teammate).2.is_empty(),
+                config_pairs(&teammate).1.is_empty(),
                 "permission_mode {mode:?}"
             );
         }
@@ -2809,11 +2767,11 @@ mod tests {
             args: vec!["-s".into(), "read-only".into()],
             ..Default::default()
         };
-        let (state, ledger, got) = config_pairs(&legacy);
+        let (state, got) = config_pairs(&legacy);
         assert_eq!(
             got,
             vec![format!(
-                "sandbox_workspace_write.writable_roots=[\"{state}\",\"{ledger}\"]"
+                "sandbox_workspace_write.writable_roots=[\"{state}\"]"
             )]
         );
         let own = Teammate {
@@ -2825,7 +2783,7 @@ mod tests {
             ],
             ..Default::default()
         };
-        assert!(config_pairs(&own).2.is_empty());
+        assert!(config_pairs(&own).1.is_empty());
     }
 
     /// The plan argv: `default_permissions=":read-only"` and no `-s`, so

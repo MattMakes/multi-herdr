@@ -436,7 +436,8 @@ pub fn collect(conn: &Connection, git: &Git, root: &Path, measure: Measure) -> R
         row.id = format!("W{}", i + 1);
         facts::measure(git, root, row, measure);
     }
-    if measure == Measure::Full {
+    // A read-only open lists without the bytes cache: the cache is optional.
+    if measure == Measure::Full && !conn.is_readonly(rusqlite::MAIN_DB)? {
         store_bytes(conn, &rows)?;
     }
     Ok(rows)

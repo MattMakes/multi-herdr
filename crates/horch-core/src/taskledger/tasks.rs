@@ -22,6 +22,10 @@ use super::workers::{self, Worker};
 /// How much a retried task moves ahead of the queue (section 5.4).
 pub const RETRY_PRIORITY_BOOST: i64 = 1000;
 
+/// The ticket file name of a one-off task that has no ticket file. Its
+/// snapshot holds the title.
+pub const ONE_OFF_TICKET: &str = "(one-off: no ticket file)";
+
 /// 1 task row.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Task {
@@ -87,6 +91,12 @@ impl Task {
 
     pub fn uses_worktree(&self) -> bool {
         self.worktree_mode == WorktreeMode::Worktree.as_str()
+    }
+
+    /// A one-off task with no ticket file and no check, such as the
+    /// worktree steward's: it may finish with no worktree and no change (T-5).
+    pub fn is_no_change_one_off(&self) -> bool {
+        self.check_none && self.task_file.as_deref() == Some(ONE_OFF_TICKET)
     }
 
     /// Parked by `done --unlanded`: queued, held, with its worktree kept

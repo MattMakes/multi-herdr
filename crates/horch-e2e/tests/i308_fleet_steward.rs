@@ -130,29 +130,36 @@ fn a_fleet_with_an_abandoned_worktree_spawns_the_worktree_steward() {
     );
 }
 
+/// Fix B (T-5): the codex sandbox cannot write the ledger, so the steward
+/// has no codex fallback. An exhausted claude pool starts no steward, and
+/// `horch fleet` says why.
 #[test]
-fn a_codex_fallback_steward_can_write_the_ledger_directory() {
-    let mut h = harness("i308-codex-state");
+fn an_exhausted_claude_pool_starts_no_codex_steward() {
+    let mut h = harness("i308-no-codex-steward");
     h.set(
         "HORCH_QUOTA_FILE",
         fixtures()
             .join("quota/claude-exhausted-codex-ok.json")
             .to_string_lossy(),
     );
+    // The fixture's quota is current at this time.
+    h.set("HORCH_NOW", "2026-09-28T18:00:00Z");
     abandoned_worktree(&h);
-    fleet(&h);
-    let steward = launches(&h)
-        .into_iter()
-        .find(|line| line.contains("worktree-steward"))
-        .unwrap();
+    let cwd = h.project.to_string_lossy().into_owned();
+    let o = h.run(&["fleet", "opus", "--no-update", "--cwd", &cwd]);
+    assert!(o.status.success(), "{}", text(&o));
+    let said = String::from_utf8_lossy(&o.stdout);
     assert!(
-        steward.contains("permissions.fleet_write.workspace_roots"),
-        "{steward}"
+        said.contains("REFUSED: worktree-steward cannot start. claude exhausted"),
+        "{said}"
     );
     assert!(
-        steward.contains(h.root.to_string_lossy().as_ref()),
-        "{steward}"
+        said.contains("the worktree steward did not start: spawn refused over usage limits"),
+        "{said}"
     );
+    let runs = launches(&h);
+    assert_eq!(runs.len(), 1, "only the orchestrator: {runs:#?}");
+    assert!(!runs[0].contains("worktree-steward"), "{runs:#?}");
 }
 
 #[test]
@@ -163,6 +170,24 @@ fn a_fleet_with_no_parked_worktree_spawns_no_steward() {
     let runs = launches(&h);
     assert_eq!(runs.len(), 1, "only the orchestrator: {runs:#?}");
     assert!(!runs[0].contains("worktree-steward"), "{runs:#?}");
+}
+
+/// Fix B keeps the read-only listing (T-5): a caller that cannot write the
+/// ledger still lists the parked rows. The full listing skips its bytes cache.
+#[test]
+fn triage_lists_rows_from_a_ledger_it_cannot_write() {
+    use std::os::unix::fs::PermissionsExt;
+    let h = harness("i308-read-only-triage");
+    let path = abandoned_worktree(&h);
+    let db = h.root.join("ledger.sqlite3");
+    std::fs::set_permissions(&db, std::fs::Permissions::from_mode(0o444)).unwrap();
+    let o = h.run(&["worktree", "triage", "--json"]);
+    std::fs::set_permissions(&db, std::fs::Permissions::from_mode(0o644)).unwrap();
+    assert!(o.status.success(), "{}", text(&o));
+    let listed: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap();
+    let rows = listed["rows"].as_array().unwrap();
+    assert_eq!(rows.len(), 1, "{listed:#}");
+    assert_eq!(rows[0]["path"], path.to_string_lossy().as_ref());
 }
 
 #[test]
@@ -221,12 +246,20 @@ fn triage_delete_refuses_a_detached_unique_commit() {
     assert!(path.exists());
 }
 
+/// Bug 3: a steward in its solo run drops a clean scratch worktree of
+/// another run when it names that run with `--run`.
 #[test]
 fn a_worker_can_drop_a_clean_worktree_from_an_explicit_other_run() {
     let h = harness("i308-cross-run-drop");
-    let path = abandoned_worktree(&h);
+    ok(&h, &["ledger", "run", "new", "alpha"]);
+    let owner = ok(&h, &["ledger", "worker", "new", "--persona", "opus"])
+        .trim()
+        .to_string();
+    let said = worker_ok(&h, &owner, &["ledger", "worktree", "scratch", "bisect"]);
+    let path = PathBuf::from(said.lines().find_map(|l| l.strip_prefix("path: ")).unwrap());
+    assert!(path.exists(), "{said}");
     ok(&h, &["ledger", "run", "new", "beta"]);
-    let worker = ok(
+    let steward = ok(
         &h,
         &[
             "ledger",
@@ -240,31 +273,39 @@ fn a_worker_can_drop_a_clean_worktree_from_an_explicit_other_run() {
     )
     .trim()
     .to_string();
-    worker_ok(
-        &h,
-        &worker,
-        &[
-            "ledger",
-            "worktree",
-            "drop",
-            path.file_name().unwrap().to_str().unwrap(),
-            "--run",
-            "alpha",
-            "--reason",
-            "steward cleanup",
-        ],
-    );
+    let drop = [
+        "ledger",
+        "worktree",
+        "drop",
+        "bisect",
+        "--reason",
+        "steward cleanup",
+    ];
+    let own_run = as_worker(&h, &steward, &drop);
+    assert!(!own_run.status.success(), "{}", text(&own_run));
+    assert!(path.exists());
+    let mut other_run = drop.to_vec();
+    other_run.extend(["--run", "alpha"]);
+    worker_ok(&h, &steward, &other_run);
     assert!(!path.exists());
 }
 
+/// The `ledger status --json` board of `run`. Status exits 1 while the run
+/// is not complete, so only its JSON counts.
+fn board(h: &Harness, run: &str) -> serde_json::Value {
+    let o = h.run(&["ledger", "status", "--run", run, "--json"]);
+    serde_json::from_slice(&o.stdout).unwrap_or_else(|e| panic!("{e}: {}", text(&o)))
+}
+
+/// Bug 4: the steward task changes no file and makes no worktree. Its
+/// finish passes and its done records the task as done, not UNLANDED.
 #[test]
 fn the_no_change_steward_task_finishes_without_a_worktree() {
     let h = harness("i308-no-worktree-finish");
     abandoned_worktree(&h);
     fleet(&h);
-    let board: serde_json::Value =
-        serde_json::from_str(&ok(&h, &["ledger", "status", "--run", "solo-w1", "--json"])).unwrap();
-    let worker = board["workers"]
+    let status = board(&h, "solo-w1");
+    let worker = status["workers"]
         .as_array()
         .unwrap()
         .iter()
@@ -275,8 +316,7 @@ fn the_no_change_steward_task_finishes_without_a_worktree() {
     let finished = worker_ok(&h, worker, &["ledger", "finish", "--wait"]);
     assert!(finished.contains("every finish step passed"), "{finished}");
     worker_ok(&h, worker, &["ledger", "done", "triage complete"]);
-    let board: serde_json::Value =
-        serde_json::from_str(&ok(&h, &["ledger", "status", "--run", "solo-w1", "--json"])).unwrap();
-    assert_eq!(board["tasks"][0]["task"]["status"], "done");
-    assert!(board["worktrees"].as_array().unwrap().is_empty());
+    let status = board(&h, "solo-w1");
+    assert_eq!(status["tasks"][0]["task"]["status"], "done");
+    assert!(status["worktrees"].as_array().unwrap().is_empty());
 }

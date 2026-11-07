@@ -5,6 +5,7 @@
 //! the board (`status`, `show`). The old session-ledger plumbing lives under
 //! `horch ledger legacy`.
 
+use horch_core::taskledger::tasks::ONE_OFF_TICKET;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
@@ -492,9 +493,6 @@ pub struct TaskArgs {
     /// check. Default: the ticket's `**Check:**`.
     #[arg(long)]
     check: Option<String>,
-    /// Run without a worktree. A no-change task can finish only with --check none.
-    #[arg(long)]
-    shared: bool,
 }
 
 /// The project root a command means: the main checkout of the repository
@@ -1112,30 +1110,34 @@ fn worktree_cmd(
             reason,
             keep_branch,
             run,
-        } => drop_worktree_cmd(ctx, store, &git, &wid, &name, &reason, keep_branch, &run)?,
+        } => {
+            let run_id = drop_run_id(ctx, store, &wid, &run)?;
+            drop_worktree_cmd(store, &git, &run_id, &name, &reason, keep_branch)?
+        }
     }
     Ok(ExitCode::SUCCESS)
 }
 
+/// The run whose worktree `drop` looks for: `--run`, else the worker's run.
+fn drop_run_id(ctx: &RuntimeContext, store: &Store, wid: &str, run: &RunArg) -> Result<String> {
+    if named_run(run).is_some() {
+        return Ok(resolve_run(ctx, store, run)?.run_id);
+    }
+    workers::get(store.conn(), wid)?
+        .run_id
+        .context("worker has no run")
+}
+
 fn drop_worktree_cmd(
-    ctx: &RuntimeContext,
     store: &mut Store,
     git: &Git,
-    wid: &str,
+    run_id: &str,
     name: &str,
     reason: &str,
     keep_branch: bool,
-    run: &RunArg,
 ) -> Result<()> {
-    let run_id = if named_run(run).is_some() {
-        resolve_run(ctx, store, run)?.run_id
-    } else {
-        workers::get(store.conn(), wid)?
-            .run_id
-            .context("worker has no run")?
-    };
     let wt =
-        taskledger::worktree_ops::drop_worktree(store, git, &run_id, name, reason, keep_branch)?;
+        taskledger::worktree_ops::drop_worktree(store, git, run_id, name, reason, keep_branch)?;
     output::println(&format!("abandoned: {} ({reason})", wt.path));
     Ok(())
 }
@@ -2214,10 +2216,6 @@ fn add(ctx: &RuntimeContext, store: &mut Store, a: AddArgs) -> Result<ExitCode> 
     Ok(ExitCode::SUCCESS)
 }
 
-/// The ticket file name of a one-off task that has no ticket file. Its
-/// snapshot holds the title.
-const ONE_OFF_TICKET: &str = "(one-off: no ticket file)";
-
 fn task_cmd(ctx: &RuntimeContext, store: &mut Store, a: TaskArgs) -> Result<ExitCode> {
     let (run, primary) = queue_one_off_in(ctx, store, a)?;
     output::println(&spawn_line(&primary, &run));
@@ -2273,9 +2271,6 @@ fn one_off_task(ctx: &RuntimeContext, root: &Path, a: TaskArgs) -> Result<NewTas
     let check = a.check.filter(|_| !check_none);
     let Some(file) = a.file else {
         let mut new = NewTask::work(&a.title, ONE_OFF_TICKET, &a.persona);
-        if a.shared {
-            new.worktree_mode = WorktreeMode::Shared;
-        }
         new.ticket_snapshot = Some(format!("# {}\n", a.title.trim()));
         new.check_none = check_none;
         new.land_check = check;
@@ -2284,9 +2279,6 @@ fn one_off_task(ctx: &RuntimeContext, root: &Path, a: TaskArgs) -> Result<NewTas
     let file = ticket_path(root, &file, &cwd_or_root(ctx, root))?;
     let facts = facts_of(root, &file);
     let mut new = NewTask::work(&a.title, &file, &a.persona);
-    if a.shared {
-        new.worktree_mode = WorktreeMode::Shared;
-    }
     new.check_none = check_none || (check.is_none() && facts.check_none);
     new.review_mode = facts.review_mode();
     new.land_check = check.or(facts.check);
@@ -3789,7 +3781,6 @@ mod tests {
             persona: "opus".into(),
             file: file.map(Path::to_path_buf),
             check: check.map(str::to_string),
-            shared: false,
         }
     }
 
@@ -3979,7 +3970,8 @@ mod tests {
 
         let (check, land) = land_one_off(dir.path(), &ctx, &mut store, &root);
         assert_eq!(check.status, StepStatus::NotApplicable, "{check:?}");
-        assert_eq!(land.status, StepStatus::Passed, "{land:?}");
+        // A worktree task with no worktree changed no file: nothing lands (T-5).
+        assert_eq!(land.status, StepStatus::NotApplicable, "{land:?}");
     }
 
     #[test]

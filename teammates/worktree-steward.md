@@ -9,8 +9,8 @@ agent: claude
 allowed_tools: ["Read", "Grep", "Glob", "Bash(git status)", "Bash(git status *)", "Bash(git log)", "Bash(git log --oneline -10)", "Bash(git diff)", "Bash(git diff --stat)", "Bash(git diff --cached)", "Bash(git show)", "Bash(git ls-files)", "Bash(horch ledger status)", "Bash(horch ledger status *)", "Bash(horch ledger show *)", "Bash(horch ledger steps *)", "Bash(horch ledger events)", "Bash(horch ledger events *)", "Bash(aws sts get-caller-identity)", "Bash(aws s3 ls)", "Bash(gcloud projects list)", "Bash(az account show)", "Bash(kubectl get pods)", "Bash(docker ps)"]
 phase: implementation
 model: sonnet
-# When this model's usage pool cannot serve a spawn (horch route worktree-steward).
-fallbacks: [codex-terra]
+# No fallback: the codex sandbox cannot run horch worktree triage apply (T-5).
+fallbacks: []
 # high: each row needs a careful read of its diff, but no design work. The
 # operator decides; the steward only prepares the decision.
 effort: high

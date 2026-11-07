@@ -157,7 +157,13 @@ fn triage_root(ctx: &RuntimeContext, git: &Git) -> Result<PathBuf> {
 pub fn triage_rows(ctx: &RuntimeContext, measure: Measure) -> Result<Vec<triage::Row>> {
     let git = Git::new(&ctx.bins.harness.git);
     let root = triage_root(ctx, &git)?;
-    match taskledger::open_existing_read_only(ctx)? {
+    // A sandboxed caller (a codex pane) cannot write the ledger. The listing
+    // then reads it read-only and skips the bytes cache (T-5).
+    let store = match taskledger::open_existing(ctx) {
+        Ok(store) => store,
+        Err(_) => taskledger::open_existing_read_only(ctx)?,
+    };
+    match store {
         Some(store) => triage::collect(store.conn(), &git, &root, measure),
         None => triage::collect_without_ledger(&git, &root, measure),
     }
