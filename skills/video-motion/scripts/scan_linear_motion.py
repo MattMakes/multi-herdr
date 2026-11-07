@@ -241,12 +241,13 @@ def exit_failures(root):
 
 
 def raster_failures(root):
-    failures = []
-    if raster_exit(root / "raster-clean.json", [120, 60]) != 0:
-        failures.append("1.2x raster sample does not pass")
-    if raster_exit(root / "raster-bad.json", [121, 50]) != 1:
-        failures.append("1.21x raster sample does not fail")
-    return failures + pre_upscale_failures(root)
+    clean = failure_if(raster_exit(root / "raster-clean.json", [120, 60]), 0, "1.2x raster sample does not pass")
+    bad = failure_if(raster_exit(root / "raster-bad.json", [121, 50]), 1, "1.21x raster sample does not fail")
+    return clean + bad + pre_upscale_failures(root)
+
+
+def failure_if(got, want, message):
+    return [] if got == want else [message]
 
 
 def pre_upscale_failures(root):
