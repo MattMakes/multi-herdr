@@ -6,7 +6,8 @@ Usage, from the video project root:
   check_plate.py --self-test    gate synthetic plates in a temp folder
 """
 import json, math, os, re, subprocess, sys, tempfile
-from itertools import groupby
+from itertools import accumulate, groupby
+from operator import itemgetter
 
 
 def run(*a):
@@ -21,12 +22,8 @@ def frame_hashes(path):
 
 def run_lengths(hashes):
     """Return (start frame, frame count) for each run of identical frames."""
-    runs, start = [], 0
-    for _, group in groupby(hashes):
-        count = len(list(group))
-        runs.append((start, count))
-        start += count
-    return runs
+    counts = [len(list(group)) for _, group in groupby(hashes)]
+    return list(zip(accumulate([0] + counts[:-1]), counts))
 
 
 def seconds(frames, fps):
@@ -34,7 +31,7 @@ def seconds(frames, fps):
 
 
 def longest_frozen_run(path, fps):
-    start, count = max(run_lengths(frame_hashes(path)), key=lambda r: r[1], default=(0, 0))
+    start, count = max(run_lengths(frame_hashes(path)), key=itemgetter(1), default=(0, 0))
     return {"start_sec": seconds(start, fps), "length_sec": seconds(count, fps), "frames": count}
 
 
@@ -72,67 +69,120 @@ SIDECAR_RULES = {
 }
 
 
-def sidecar_failures(sidecar, path, fps, frame_count):
+def rule_failures(sidecar):
+    return [f"G6 sidecar {msg}" for key, (ok, msg) in SIDECAR_RULES.items() if not ok(sidecar[key])]
+
+
+def match_failures(sidecar, expected):
+    """Compare each well-formed sidecar field with the value measured from the clip."""
+    return [f"G6 sidecar {key} {sidecar[key]!r}, clip {want!r}" for key, want in expected.items()
+            if SIDECAR_RULES[key][0](sidecar[key]) and sidecar[key] != want]
+
+
+def sidecar_failures(sidecar, expected):
     if not isinstance(sidecar, dict):
         return ["G6 sidecar must be a JSON object"]
-    fails = []
-    if set(sidecar) != set(SIDECAR_RULES):
-        fails.append("G6 sidecar fields do not match the capture contract")
-    if not set(SIDECAR_RULES).issubset(sidecar):
-        return fails
-    valid = {key for key, (ok, _) in SIDECAR_RULES.items() if ok(sidecar[key])}
-    fails += [f"G6 sidecar {msg}" for key, (_, msg) in SIDECAR_RULES.items() if key not in valid]
-    expected = {"clip": path, "fps": fps, "frame_count": frame_count}
-    fails += [f"G6 sidecar {key} {sidecar[key]!r}, clip {want!r}"
-              for key, want in expected.items() if key in valid and sidecar[key] != want]
+    fields = set(SIDECAR_RULES)
+    fails = [] if set(sidecar) == fields else ["G6 sidecar fields do not match the capture contract"]
+    if fields.issubset(sidecar):
+        fails += rule_failures(sidecar) + match_failures(sidecar, expected)
     return fails
 
 
-def gate(sid):
-    timeline = json.load(open("timeline.json"))
-    scene = next(x for x in timeline["scenes"] if x["id"] == sid)
-    meta = timeline["meta"]
-    path = scene.get("plate", f"captures/{sid}.mp4")
-    sidecar_path = os.path.splitext(path)[0] + ".json"
-    is_app_plate = path.startswith("plates/")
-    telemetry = None if is_app_plate else json.load(open(f"captures/{sid}.json"))
-    probe = json.loads(run("ffprobe", "-v", "error", "-count_frames", "-select_streams", "v:0",
+def sidecar_path_of(path):
+    return os.path.splitext(path)[0] + ".json"
+
+
+def has_sidecar(path):
+    """Only an app plate under plates/ has a sidecar. Its sidecar is optional."""
+    return path.startswith("plates/") and os.path.exists(sidecar_path_of(path))
+
+
+def read_sidecar_failures(path, info):
+    """Validate plates/<clip>.json against its contract and against the clip."""
+    expected = {"clip": path, "fps": info["fps"], "frame_count": info["frame_count"]}
+    sidecar_path = sidecar_path_of(path)
+    try:
+        sidecar = json.load(open(sidecar_path))
+    except (json.JSONDecodeError, OSError) as error:
+        return [f"G6 sidecar cannot be read: {error}"]
+    return sidecar_failures(sidecar, expected)
+
+
+def parse_rate(text):
+    parts = text.split("/")
+    if len(parts) != 2 or not float(parts[1]):
+        return 0
+    return float(parts[0]) / float(parts[1])
+
+
+def probe(path):
+    data = json.loads(run("ffprobe", "-v", "error", "-count_frames", "-select_streams", "v:0",
         "-show_entries", "stream=codec_type,width,height,r_frame_rate,nb_read_frames:format=duration",
         "-of", "json", path))
-    video = (probe.get("streams") or [{}])[0]
-    duration = float(probe.get("format", {}).get("duration", 0))
-    rate = video.get("r_frame_rate", "0/1").split("/")
-    fps = float(rate[0]) / float(rate[1]) if len(rate) == 2 and float(rate[1]) else 0
-    frame_count = int(video.get("nb_read_frames") or 0)
-    y = dict(re.findall(r"signalstats\.(YMIN|YMAX)=(\d+)", run("ffmpeg", "-v", "error", "-i", path, "-vf",
+    video = (data.get("streams") or [{}])[0]
+    rate = video.get("r_frame_rate", "0/1")
+    return {"codec_type": video.get("codec_type"), "size": (video.get("width"), video.get("height")),
+            "rate": rate, "fps": parse_rate(rate), "frame_count": int(video.get("nb_read_frames") or 0),
+            "duration": float(data.get("format", {}).get("duration", 0))}
+
+
+def luma(path):
+    return dict(re.findall(r"signalstats\.(YMIN|YMAX)=(\d+)", run("ffmpeg", "-v", "error", "-i", path, "-vf",
         r"select=eq(n\,0),signalstats,metadata=print:file=-", "-frames:v", "1", "-f", "null", "-")))
-    plate_size = (video.get("width"), video.get("height"))
+
+
+def size_ok(size, meta, telemetry):
+    """An app plate is 1x or 2x the timeline size. A CDP plate matches its telemetry."""
+    width, height = meta["width"], meta["height"]
     if telemetry is None:
-        size_ok = plate_size in {
-            (meta["width"], meta["height"]),
-            (2 * meta["width"], 2 * meta["height"]),
-        }
-    else:
-        size_ok = (plate_size == (telemetry.get("width"), telemetry.get("height"))
-                   and telemetry.get("width") in (meta["width"], 2 * meta["width"]))
-    frozen = longest_frozen_run(path, fps)
-    fails = [msg for ok, msg in [
-        (video.get("codec_type") == "video", "G1 no video stream"),
-        (fps == meta["fps"], f"G1 rate {video.get('r_frame_rate')}"),
-        (size_ok, f"G1 size {video.get('width')}x{video.get('height')}"),
-        (abs(duration - scene["duration_sec"]) <= 0.05,
-         f"G2 duration {duration} s, timeline {scene['duration_sec']} s"),
-        (int(y.get("YMAX", 0)) - int(y.get("YMIN", 0)) >= 24,
-         f"G3 frame 0 is blank: {y}"),
-        (frozen["frames"] <= 1,
-         f"G5 frozen run starts at {frozen['start_sec']} s and lasts {frozen['length_sec']} s ({frozen['frames']} frames)"),
-    ] if not ok]
-    if is_app_plate and os.path.exists(sidecar_path):
-        try:
-            fails.extend(sidecar_failures(json.load(open(sidecar_path)), path, fps, frame_count))
-        except (json.JSONDecodeError, OSError) as error:
-            fails.append(f"G6 sidecar cannot be read: {error}")
-    return duration, fails, frozen
+        return size in {(width, height), (2 * width, 2 * height)}
+    return (size == (telemetry.get("width"), telemetry.get("height"))
+            and telemetry.get("width") in (width, 2 * width))
+
+
+def telemetry_for(sid, path):
+    return None if path.startswith("plates/") else json.load(open(f"captures/{sid}.json"))
+
+
+def stream_checks(info, meta, scene, path):
+    telemetry = telemetry_for(scene["id"], path)
+    width, height = info["size"]
+    return [
+        (info["codec_type"] == "video", "G1 no video stream"),
+        (info["fps"] == meta["fps"], f"G1 rate {info['rate']}"),
+        (size_ok(info["size"], meta, telemetry), f"G1 size {width}x{height}"),
+        (abs(info["duration"] - scene["duration_sec"]) <= 0.05,
+         f"G2 duration {info['duration']} s, timeline {scene['duration_sec']} s"),
+    ]
+
+
+def picture_checks(path, frozen):
+    y = luma(path)
+    return [
+        (int(y.get("YMAX", 0)) - int(y.get("YMIN", 0)) >= 24, f"G3 frame 0 is blank: {y}"),
+        (frozen["frames"] <= 1, f"G5 frozen run starts at {frozen['start_sec']} s and lasts "
+                                f"{frozen['length_sec']} s ({frozen['frames']} frames)"),
+    ]
+
+
+def load_scene(sid):
+    timeline = json.load(open("timeline.json"))
+    return next(x for x in timeline["scenes"] if x["id"] == sid), timeline["meta"]
+
+
+def plate_failures(path, scene, meta, info, frozen):
+    checks = stream_checks(info, meta, scene, path) + picture_checks(path, frozen)
+    sidecar = read_sidecar_failures(path, info) if has_sidecar(path) else []
+    return [msg for ok, msg in checks if not ok] + sidecar
+
+
+def gate(sid):
+    scene, meta = load_scene(sid)
+    path = scene.get("plate", f"captures/{sid}.mp4")
+    info = probe(path)
+    frozen = longest_frozen_run(path, info["fps"])
+    return info["duration"], plate_failures(path, scene, meta, info, frozen), frozen
 
 
 CASES = [
@@ -149,49 +199,77 @@ CASES = [
 ]
 
 
+def case_path(case):
+    folder = "plates" if case.get("plate") else "captures"
+    return f"{folder}/{case['id']}.mp4"
+
+
+def scene_for(case):
+    scene = {"id": case["id"], "kind": "capture", "duration_sec": 1.0}
+    if case.get("plate"):
+        scene["plate"] = case_path(case)
+    return scene
+
+
+def write_clip(case):
+    subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i", case["source"],
+                    "-t", str(case["seconds"]), "-c:v", "libx264", "-pix_fmt", "yuv420p",
+                    case_path(case)], check=True)
+
+
+def sidecar_for(case):
+    sidecar = {
+        "clip": case_path(case), "fps": 60, "frame_count": 60, "seed": 7, "build": "self-test",
+        "key_actions_sec": {"action": 0.5},
+        "pixel_facts": {"subject_width_px": 120, "nearest_distance_px": 40},
+        "max_frozen_sec": 0.017,
+    }
+    if case.get("bad_sidecar"):
+        sidecar.update({"fps": 30, "frame_count": 59, "unexpected": True})
+    return sidecar
+
+
+def write_metadata(case):
+    """Write the sidecar of an app plate, or the telemetry of a CDP capture."""
+    telemetry = {"width": case["width"], "height": case["width"] * 9 // 16}
+    data = sidecar_for(case) if case.get("plate") else telemetry
+    json.dump(data, open(os.path.splitext(case_path(case))[0] + ".json", "w"))
+
+
+def case_failure(case):
+    """Gate 1 synthetic case. Return a failure line, or None when the fails match the case."""
+    write_clip(case)
+    write_metadata(case)
+    _, fails, _ = gate(case["id"])
+    unexpected, missing = fail_mismatch(case["want"], fails)
+    if unexpected or missing:
+        return f"{case['id']}: unexpected {unexpected}, missing {missing}"
+    return None
+
+
+def fail_mismatch(want, fails):
+    """Return the fails no wanted prefix covers, and the wanted prefixes no fail has."""
+    unexpected = [f for f in fails if not f.startswith(tuple(want))]
+    return unexpected, [prefix for prefix in want if not any(f.startswith(prefix) for f in fails)]
+
+
+def run_cases(root):
+    """Gate every case in root. self_test restores the working folder after the run."""
+    os.chdir(root)
+    os.makedirs("captures")
+    os.makedirs("plates")
+    json.dump({"meta": {"fps": 60, "width": 320, "height": 180},
+               "scenes": [scene_for(case) for case in CASES]}, open("timeline.json", "w"))
+    return [failure for failure in map(case_failure, CASES) if failure]
+
+
 def self_test():
-    failures = []
     old_cwd = os.getcwd()
     with tempfile.TemporaryDirectory(prefix="check-plate-") as root:
-        os.makedirs(os.path.join(root, "captures"))
-        os.makedirs(os.path.join(root, "plates"))
-        os.chdir(root)
-        scenes = []
-        for case in CASES:
-            scene = {"id": case["id"], "kind": "capture", "duration_sec": 1.0}
-            if case.get("plate"):
-                scene["plate"] = f"plates/{case['id']}.mp4"
-            scenes.append(scene)
-        json.dump({"meta": {"fps": 60, "width": 320, "height": 180}, "scenes": scenes},
-                  open("timeline.json", "w"))
-        for case in CASES:
-            sid = case["id"]
-            path = f"plates/{sid}.mp4" if case.get("plate") else f"captures/{sid}.mp4"
-            subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i", case["source"],
-                            "-t", str(case["seconds"]), "-c:v", "libx264", "-pix_fmt", "yuv420p", path], check=True)
-            if case.get("plate"):
-                sidecar = {
-                    "clip": path, "fps": 60, "frame_count": 60, "seed": 7, "build": "self-test",
-                    "key_actions_sec": {"action": 0.5},
-                    "pixel_facts": {"subject_width_px": 120, "nearest_distance_px": 40},
-                    "max_frozen_sec": 0.017,
-                }
-                if case.get("bad_sidecar"):
-                    sidecar.update({"fps": 30, "frame_count": 59, "unexpected": True})
-                json.dump(sidecar, open(f"plates/{sid}.json", "w"))
-            else:
-                width = case["width"]
-                json.dump({"width": width, "height": width * 9 // 16}, open(f"captures/{sid}.json", "w"))
-            _, fails, _ = gate(sid)
-            want = case["want"]
-            unexpected = [f for f in fails if not any(f.startswith(prefix) for prefix in want)]
-            missing = [prefix for prefix in want if not any(f.startswith(prefix) for f in fails)]
-            if unexpected or missing:
-                failures.append(f"{sid}: unexpected {unexpected}, missing {missing}")
-        os.chdir(old_cwd)
+        failures = run_cases(root)
+    os.chdir(old_cwd)
     print(f"check_plate self-test: {len(CASES) - len(failures)} of {len(CASES)} cases pass")
-    for failure in failures:
-        print("  " + failure)
+    sys.stdout.write("".join(f"  {failure}\n" for failure in failures))
     return 1 if failures else 0
 
 
