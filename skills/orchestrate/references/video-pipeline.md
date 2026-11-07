@@ -280,7 +280,9 @@ The loop:
 - Put each changed time in the DONE report as
   `<scene or beat>: <before> s -> <after> s`.
 
-Use the seat skill for the remaining media rules. [video-capture](../../video-capture/SKILL.md)
+Use the seat skill for the remaining media rules.
+[video-produce](../../video-produce/SKILL.md) owns the audience rules, insider
+content and the caption claims ledger. [video-capture](../../video-capture/SKILL.md)
 owns capture staging and plate quality. [video-audio](../../video-audio/SKILL.md)
 owns music continuity and the single continuous mix.
 [video-render](../../video-render/SKILL.md) owns frame selection, master
