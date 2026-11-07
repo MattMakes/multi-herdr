@@ -6,6 +6,7 @@ Usage, from the video project root:
   check_plate.py --self-test    gate synthetic plates in a temp folder
 """
 import json, math, os, re, subprocess, sys, tempfile
+from itertools import groupby
 
 
 def run(*a):
@@ -18,24 +19,23 @@ def frame_hashes(path):
             if line and not line.startswith("#")]
 
 
+def run_lengths(hashes):
+    """Return (start frame, frame count) for each run of identical frames."""
+    runs, start = [], 0
+    for _, group in groupby(hashes):
+        count = len(list(group))
+        runs.append((start, count))
+        start += count
+    return runs
+
+
+def seconds(frames, fps):
+    return round(frames / fps, 6) if fps else 0
+
+
 def longest_frozen_run(path, fps):
-    hashes = frame_hashes(path)
-    best_start = current_start = 0
-    best_count = current_count = 1 if hashes else 0
-    for index in range(1, len(hashes)):
-        if hashes[index] == hashes[index - 1]:
-            current_count += 1
-        else:
-            if current_count > best_count:
-                best_start, best_count = current_start, current_count
-            current_start, current_count = index, 1
-    if current_count > best_count:
-        best_start, best_count = current_start, current_count
-    return {
-        "start_sec": round(best_start / fps, 6) if fps else 0,
-        "length_sec": round(best_count / fps, 6) if fps else 0,
-        "frames": best_count,
-    }
+    start, count = max(run_lengths(frame_hashes(path)), key=lambda r: r[1], default=(0, 0))
+    return {"start_sec": seconds(start, fps), "length_sec": seconds(count, fps), "frames": count}
 
 
 def valid_number(value, minimum=0):
@@ -43,44 +43,48 @@ def valid_number(value, minimum=0):
             and math.isfinite(value) and value >= minimum)
 
 
+def is_int(value):
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
+def valid_actions(actions):
+    return isinstance(actions, dict) and all(
+        isinstance(name, str) and name and valid_number(sec) for name, sec in actions.items())
+
+
+PIXEL_FACT_KEYS = {"subject_width_px", "nearest_distance_px"}
+
+
+def valid_pixel_facts(facts):
+    return (isinstance(facts, dict) and set(facts) == PIXEL_FACT_KEYS
+            and all(valid_number(facts[k]) for k in PIXEL_FACT_KEYS))
+
+
+SIDECAR_RULES = {
+    "clip": (lambda v: isinstance(v, str), "clip must be a string"),
+    "fps": (lambda v: is_int(v) and v > 0, "fps must be a positive integer"),
+    "frame_count": (lambda v: is_int(v) and v >= 0, "frame_count must be a non-negative integer"),
+    "seed": (is_int, "seed must be an integer"),
+    "build": (lambda v: isinstance(v, str) and bool(v), "build must be a non-empty string"),
+    "key_actions_sec": (valid_actions, "key_actions_sec must map names to non-negative seconds"),
+    "pixel_facts": (valid_pixel_facts, "pixel_facts must contain non-negative pixel measurements"),
+    "max_frozen_sec": (valid_number, "max_frozen_sec must be non-negative seconds"),
+}
+
+
 def sidecar_failures(sidecar, path, fps, frame_count):
-    fails = []
-    required = {
-        "clip", "fps", "frame_count", "seed", "build", "key_actions_sec",
-        "pixel_facts", "max_frozen_sec",
-    }
     if not isinstance(sidecar, dict):
         return ["G6 sidecar must be a JSON object"]
-    if set(sidecar) != required:
+    fails = []
+    if set(sidecar) != set(SIDECAR_RULES):
         fails.append("G6 sidecar fields do not match the capture contract")
-    if not required.issubset(sidecar):
+    if not set(SIDECAR_RULES).issubset(sidecar):
         return fails
-    if sidecar["clip"] != path or not isinstance(sidecar["clip"], str):
-        fails.append(f"G6 sidecar clip {sidecar['clip']!r}, expected {path!r}")
-    if not isinstance(sidecar["fps"], int) or isinstance(sidecar["fps"], bool) or sidecar["fps"] <= 0:
-        fails.append("G6 sidecar fps must be a positive integer")
-    elif sidecar["fps"] != fps:
-        fails.append(f"G6 sidecar fps {sidecar['fps']}, clip {fps}")
-    if (not isinstance(sidecar["frame_count"], int) or isinstance(sidecar["frame_count"], bool)
-            or sidecar["frame_count"] < 0):
-        fails.append("G6 sidecar frame_count must be a non-negative integer")
-    elif sidecar["frame_count"] != frame_count:
-        fails.append(f"G6 sidecar frame_count {sidecar['frame_count']}, clip {frame_count}")
-    if not isinstance(sidecar["seed"], int) or isinstance(sidecar["seed"], bool):
-        fails.append("G6 sidecar seed must be an integer")
-    if not isinstance(sidecar["build"], str) or not sidecar["build"]:
-        fails.append("G6 sidecar build must be a non-empty string")
-    actions = sidecar["key_actions_sec"]
-    if (not isinstance(actions, dict) or not all(isinstance(k, str) and k and valid_number(v)
-                                                  for k, v in actions.items())):
-        fails.append("G6 sidecar key_actions_sec must map names to non-negative seconds")
-    facts = sidecar["pixel_facts"]
-    fact_keys = {"subject_width_px", "nearest_distance_px"}
-    if (not isinstance(facts, dict) or set(facts) != fact_keys
-            or not all(valid_number(facts.get(k)) for k in fact_keys)):
-        fails.append("G6 sidecar pixel_facts must contain non-negative pixel measurements")
-    if not valid_number(sidecar["max_frozen_sec"]):
-        fails.append("G6 sidecar max_frozen_sec must be non-negative seconds")
+    valid = {key for key, (ok, _) in SIDECAR_RULES.items() if ok(sidecar[key])}
+    fails += [f"G6 sidecar {msg}" for key, (_, msg) in SIDECAR_RULES.items() if key not in valid]
+    expected = {"clip": path, "fps": fps, "frame_count": frame_count}
+    fails += [f"G6 sidecar {key} {sidecar[key]!r}, clip {want!r}"
+              for key, want in expected.items() if key in valid and sidecar[key] != want]
     return fails
 
 
