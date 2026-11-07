@@ -7,14 +7,18 @@ __version__ = "0.1.0"
 _API_EXTRA = ("llm_critique",)
 
 
+def _none_if_absent(exc: ModuleNotFoundError, absent: tuple):
+    if exc.name in absent:
+        return None
+    raise exc
+
+
 def _import_or_none(module: str, absent: tuple):
     """Import a module, or return None when the module itself is absent."""
     try:
         return importlib.import_module(module)
     except ModuleNotFoundError as exc:
-        if exc.name not in absent:
-            raise
-        return None
+        return _none_if_absent(exc, absent)
 
 
 def _api_names(api) -> tuple:
