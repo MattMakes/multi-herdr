@@ -61,6 +61,7 @@ CAPTION_BAND_TOP, CAPTION_BAND_BOTTOM = 0.84, 0.95
 VERTICAL_CAPTION_BOTTOM, VERTICAL_CAPTION_RIGHT = 0.80, 0.85
 CUT_SYNC_SEC, ACTION_SYNC_SEC = 0.020, 0.070
 MENU_SEC_PER_FILM_SEC = 8.0 / 80.0
+GAUGE_LEAD_MIN_SEC, GAUGE_TAIL_MIN_SEC = 0.3, 1.2
 ENERGY_MIN, ENERGY_MAX = 0, 10
 MAX_GAP_BARS = 2
 BEATS_PER_BAR = 4
@@ -183,6 +184,12 @@ def check_scene_schema(scene, label, report):
     if not isinstance(scene, dict):
         report.add("schema", "scene must be an object", label)
         return
+    for check in (check_scene_identity, check_scene_holds, check_scene_text, check_scene_layout,
+                  check_optional_scene_fields):
+        check(scene, label, report)
+
+
+def check_scene_identity(scene, label, report):
     if not non_empty_str(scene.get("id")):
         report.add("schema", "id must be a non-empty string", label)
     if scene.get("kind") not in KINDS:
@@ -190,6 +197,9 @@ def check_scene_schema(scene, label, report):
     for key in ("start_sec", "duration_sec"):
         if not is_number(scene.get(key)) or scene.get(key) < 0:
             report.add("schema", "%s must be a number >= 0" % key, label)
+
+
+def check_scene_holds(scene, label, report):
     if "duration_override_reason" in scene and not isinstance(scene["duration_override_reason"], str):
         report.add("schema", "duration_override_reason must be a string when present", label)
     if "static_hold" in scene and not isinstance(scene["static_hold"], bool):
@@ -198,75 +208,106 @@ def check_scene_schema(scene, label, report):
         report.add("schema", "static_hold true needs a non-empty static_hold_reason string", label)
     if "static_hold_reason" in scene and not isinstance(scene["static_hold_reason"], str):
         report.add("schema", "static_hold_reason must be a string when present", label)
+
+
+def check_scene_text(scene, label, report):
     text = scene.get("on_screen_text", [])
     if not (isinstance(text, list) and all(non_empty_str(t) for t in text)):
         report.add("schema", "on_screen_text must be a list of non-empty strings when present", label)
-    beat_in, beat_out = scene.get("beat_in"), scene.get("beat_out")
-    if not (is_int(beat_in) and is_int(beat_out) and 0 <= beat_in <= beat_out):
-        report.add("schema", "beat_in and beat_out must be integers with 0 <= beat_in <= beat_out", label)
     for key in ("narration", "caption"):
         if not isinstance(scene.get(key), str):
             report.add("schema", "%s must be a string (empty allowed)" % key, label)
     for key in ("plate", "transition_out"):
         if not non_empty_str(scene.get(key)):
             report.add("schema", "%s must be a non-empty string" % key, label)
+
+
+def check_scene_layout(scene, label, report):
+    beat_in, beat_out = scene.get("beat_in"), scene.get("beat_out")
+    if not (is_int(beat_in) and is_int(beat_out) and 0 <= beat_in <= beat_out):
+        report.add("schema", "beat_in and beat_out must be integers with 0 <= beat_in <= beat_out", label)
     motion = scene.get("motion")
     if not isinstance(motion, dict) or not non_empty_str(motion.get("template")):
         report.add("schema", "motion must be an object with a non-empty template", label)
-    elif "reveal_sec" in motion and not (is_number(motion["reveal_sec"]) and motion["reveal_sec"] >= 0):
+    elif "reveal_sec" in motion and not at_least(motion, "reveal_sec", 0):
         report.add("schema", "motion.reveal_sec must be a number >= 0 when present", label)
     regions = scene.get("critical_regions")
     if not isinstance(regions, list) or not all(check_box(r, 4) for r in regions):
         report.add("schema", "critical_regions must be a list of [x, y, w, h] number lists", label)
-    focal = scene.get("focal_point")
-    if not check_box(focal, 2) or not all(0.0 <= v <= 1.0 for v in focal):
+    if not is_normalized_point(scene.get("focal_point")):
         report.add("schema", "focal_point must be [x, y] with values in [0.0, 1.0]", label)
-    check_optional_scene_fields(scene, label, report)
+
+
+def is_normalized_point(value):
+    return check_box(value, 2) and all(0.0 <= v <= 1.0 for v in value)
+
+
+def at_least(value, key, floor):
+    return is_number(value[key]) and value[key] >= floor
+
+
+def positive(value, key):
+    return is_number(value[key]) and value[key] > 0
+
+
+def in_scene(sec, duration):
+    return is_number(sec) and is_number(duration) and 0.0 <= sec <= duration
+
+
+def valid_reframe(value, duration):
+    if not has_exact_fields(value, ("scale", "focal_point", "from_sec", "to_sec")):
+        return False
+    start, end = value["from_sec"], value["to_sec"]
+    if not (in_scene(start, duration) and in_scene(end, duration) and start < end):
+        return False
+    return positive(value, "scale") and is_normalized_point(value["focal_point"])
+
+
+def valid_gauge_inset(value, duration):
+    if not has_exact_fields(value, ("source_rect", "scale", "event_sec", "lead_sec", "tail_sec", "anchor")):
+        return False
+    if not (is_normalized_rect(value["source_rect"]) and positive(value, "scale")):
+        return False
+    if not (at_least(value, "lead_sec", GAUGE_LEAD_MIN_SEC) and at_least(value, "tail_sec", GAUGE_TAIL_MIN_SEC)):
+        return False
+    return in_scene(value["event_sec"], duration) and non_empty_str(value["anchor"])
+
+
+def valid_plate_hold(value, duration):
+    if not has_exact_fields(value, ("at_sec", "duration_sec")):
+        return False
+    if not (at_least(value, "at_sec", 0.0) and positive(value, "duration_sec")):
+        return False
+    return in_scene(value["at_sec"] + value["duration_sec"], duration)
+
+
+def valid_locked_actions(value, duration):
+    return isinstance(value, list) and all(in_scene(sec, duration) for sec in value)
+
+
+def valid_rect(value, _duration):
+    return is_normalized_rect(value)
+
+
+OPTIONAL_SCENE_FIELDS = (
+    ("reframe", valid_reframe,
+     "reframe must have positive scale, normalized focal_point and 0 <= from_sec < to_sec <= duration_sec"),
+    ("gauge_inset", valid_gauge_inset,
+     "gauge_inset needs a normalized source_rect, positive scale, in-scene event_sec, lead_sec >= 0.3, tail_sec >= 1.2 and anchor"),
+    ("plate_hold", valid_plate_hold,
+     "plate_hold needs 0 <= at_sec and positive duration_sec inside the scene"),
+    ("hud_crop", valid_rect, "hud_crop must be a normalized [x, y, w, h] rectangle"),
+    ("caption_box", valid_rect, "caption_box must be a normalized [x, y, w, h] rectangle"),
+    ("locked_actions_sec", valid_locked_actions,
+     "locked_actions_sec must be a list of scene-relative seconds inside the scene"),
+)
 
 
 def check_optional_scene_fields(scene, label, report):
     duration = scene.get("duration_sec")
-    reframe = scene.get("reframe")
-    if reframe is not None:
-        fields = ("scale", "focal_point", "from_sec", "to_sec")
-        valid = has_exact_fields(reframe, fields) and is_number(duration)
-        valid = valid and is_number(reframe["scale"]) and reframe["scale"] > 0
-        valid = valid and check_box(reframe["focal_point"], 2)
-        valid = valid and all(0.0 <= value <= 1.0 for value in reframe["focal_point"])
-        valid = valid and all(is_number(reframe[key]) for key in ("from_sec", "to_sec"))
-        valid = valid and 0.0 <= reframe["from_sec"] < reframe["to_sec"] <= duration
-        if not valid:
-            report.add("schema", "reframe must have positive scale, normalized focal_point and 0 <= from_sec < to_sec <= duration_sec", label)
-    inset = scene.get("gauge_inset")
-    if inset is not None:
-        fields = ("source_rect", "scale", "event_sec", "lead_sec", "tail_sec", "anchor")
-        valid = has_exact_fields(inset, fields) and is_number(duration)
-        valid = valid and is_normalized_rect(inset["source_rect"])
-        valid = valid and is_number(inset["scale"]) and inset["scale"] > 0
-        valid = valid and is_number(inset["event_sec"]) and 0.0 <= inset["event_sec"] <= duration
-        valid = valid and is_number(inset["lead_sec"]) and inset["lead_sec"] >= 0.3
-        valid = valid and is_number(inset["tail_sec"]) and inset["tail_sec"] >= 1.2
-        valid = valid and non_empty_str(inset["anchor"])
-        if not valid:
-            report.add("schema", "gauge_inset needs a normalized source_rect, positive scale, in-scene event_sec, lead_sec >= 0.3, tail_sec >= 1.2 and anchor", label)
-    hold = scene.get("plate_hold")
-    if hold is not None:
-        valid = has_exact_fields(hold, ("at_sec", "duration_sec")) and is_number(duration)
-        valid = valid and is_number(hold["at_sec"]) and hold["at_sec"] >= 0.0
-        valid = valid and is_number(hold["duration_sec"]) and hold["duration_sec"] > 0.0
-        valid = valid and hold["at_sec"] + hold["duration_sec"] <= duration
-        if not valid:
-            report.add("schema", "plate_hold needs 0 <= at_sec and positive duration_sec inside the scene", label)
-    if "hud_crop" in scene and not is_normalized_rect(scene["hud_crop"]):
-        report.add("schema", "hud_crop must be a normalized [x, y, w, h] rectangle", label)
-    if "caption_box" in scene and not is_normalized_rect(scene["caption_box"]):
-        report.add("schema", "caption_box must be a normalized [x, y, w, h] rectangle", label)
-    if "locked_actions_sec" in scene:
-        actions = scene["locked_actions_sec"]
-        valid = is_number(duration) and isinstance(actions, list)
-        valid = valid and all(is_number(value) and 0.0 <= value <= duration for value in actions)
-        if not valid:
-            report.add("schema", "locked_actions_sec must be a list of scene-relative seconds inside the scene", label)
+    for key, valid, message in OPTIONAL_SCENE_FIELDS:
+        if key in scene and not valid(scene[key], duration):
+            report.add("schema", message, label)
 
 
 def check_schema(timeline, report):
