@@ -463,27 +463,40 @@ def check_captions(scenes, report):
             )
 
 
+def add_scene_errors(report, rule, errors):
+    """Add each (scene id, message) pair of `errors` under `rule`."""
+    count = len(errors)
+    for scene_id, message in errors:
+        report.add(rule, message, scene_id)
+    return count
+
+
+WIDE_CAPTION_MESSAGE = "caption_box y range %.3f to %.3f must stay in the 16:9 safe band %.2f to %.2f"
+TALL_CAPTION_MESSAGE = "caption_box must stay above y = %.2f and left of x = %.2f in 9:16" % (
+    VERTICAL_CAPTION_BOTTOM, VERTICAL_CAPTION_RIGHT)
+
+
+def wide_caption_error(box):
+    top, bottom = box[1], box[1] + box[3]
+    inside = CAPTION_BAND_TOP <= top and bottom <= CAPTION_BAND_BOTTOM
+    message = WIDE_CAPTION_MESSAGE % (top, bottom, CAPTION_BAND_TOP, CAPTION_BAND_BOTTOM)
+    return "" if inside else message
+
+
+def tall_caption_error(box):
+    bottom, right = box[1] + box[3], box[0] + box[2]
+    inside = bottom <= VERTICAL_CAPTION_BOTTOM and right <= VERTICAL_CAPTION_RIGHT
+    return "" if inside else TALL_CAPTION_MESSAGE
+
+
+CAPTION_PLACE_CHECKS = {"16:9": wide_caption_error, "9:16": tall_caption_error}
+
+
 def check_caption_place(meta, scenes, report):
-    aspect = meta["aspect"]
-    for scene in scenes:
-        box = scene.get("caption_box")
-        if box is None:
-            continue
-        x, y, width, height = box
-        if aspect == "16:9" and (y < CAPTION_BAND_TOP or y + height > CAPTION_BAND_BOTTOM):
-            report.add(
-                "caption_place",
-                "caption_box y range %.3f to %.3f must stay in the 16:9 safe band %.2f to %.2f"
-                % (y, y + height, CAPTION_BAND_TOP, CAPTION_BAND_BOTTOM),
-                scene["id"],
-            )
-        if aspect == "9:16" and (y + height > VERTICAL_CAPTION_BOTTOM or x + width > VERTICAL_CAPTION_RIGHT):
-            report.add(
-                "caption_place",
-                "caption_box must stay above y = %.2f and left of x = %.2f in 9:16"
-                % (VERTICAL_CAPTION_BOTTOM, VERTICAL_CAPTION_RIGHT),
-                scene["id"],
-            )
+    place_error = CAPTION_PLACE_CHECKS.get(meta["aspect"], lambda box: "")
+    boxed = [scene for scene in scenes if "caption_box" in scene]
+    found = [(scene["id"], place_error(scene["caption_box"])) for scene in boxed]
+    add_scene_errors(report, "caption_place", [pair for pair in found if pair[1]])
 
 
 def check_speaking_rate(scenes, report):
@@ -581,30 +594,30 @@ def distance_to_beat(value, beat_sec):
     return abs(value - round(value / beat_sec) * beat_sec)
 
 
+SYNC_MESSAGE = "%s at %.3f s is %.3f s from the beat; the limit is %.3f s"
+
+
+def beat_errors(points, beat_sec, limit, name):
+    """The sync errors of the (scene id, film second) `points` farther than `limit` from a beat."""
+    gaps = [(scene_id, sec, distance_to_beat(sec, beat_sec)) for scene_id, sec in points]
+    return [(scene_id, SYNC_MESSAGE % (name, sec, gap, limit)) for scene_id, sec, gap in gaps if gap > limit]
+
+
+def cut_sync_errors(scenes, beat_sec):
+    cuts = [(scene["id"], scene["start_sec"]) for scene in scenes[1:]]
+    return beat_errors(cuts, beat_sec, CUT_SYNC_SEC, "cut")
+
+
+def action_sync_errors(scenes, beat_sec):
+    actions = [(scene["id"], scene["start_sec"] + sec)
+               for scene in scenes for sec in scene.get("locked_actions_sec", [])]
+    return beat_errors(actions, beat_sec, ACTION_SYNC_SEC, "locked action")
+
+
 def check_sync(meta, scenes, report):
-    if "bpm" not in meta:
-        return
-    beat_sec = 60.0 / meta["bpm"]
-    for scene in scenes[1:]:
-        distance = distance_to_beat(scene["start_sec"], beat_sec)
-        if distance > CUT_SYNC_SEC:
-            report.add(
-                "sync",
-                "cut at %.3f s is %.3f s from the beat; the limit is %.3f s"
-                % (scene["start_sec"], distance, CUT_SYNC_SEC),
-                scene["id"],
-            )
-    for scene in scenes:
-        for action_sec in scene.get("locked_actions_sec", []):
-            film_sec = scene["start_sec"] + action_sec
-            distance = distance_to_beat(film_sec, beat_sec)
-            if distance > ACTION_SYNC_SEC:
-                report.add(
-                    "sync",
-                    "locked action at %.3f s is %.3f s from the beat; the limit is %.3f s"
-                    % (film_sec, distance, ACTION_SYNC_SEC),
-                    scene["id"],
-                )
+    beat_sec = 60.0 / meta["bpm"] if "bpm" in meta else None
+    errors = cut_sync_errors(scenes, beat_sec) + action_sync_errors(scenes, beat_sec) if beat_sec else []
+    add_scene_errors(report, "sync", errors)
 
 
 def shown_text(scene):
@@ -714,15 +727,14 @@ def check_hero(meta, report):
         report.add("hero", "meta.payoff_silence_sec ends at %.3f s, after the hero start %.3f s" % (silence[1], hero[0]))
 
 
+MENU_MESSAGE = "ui and menu scenes total %.3f s; the scaled limit is %.3f s (8 s per 80 s of film)"
+
+
 def check_menu_time(meta, scenes, report):
     menu_sec = sum(scene["duration_sec"] for scene in scenes if scene["kind"] in ("ui", "menu"))
     limit = meta["duration_sec"] * MENU_SEC_PER_FILM_SEC
-    if menu_sec > limit:
-        report.add(
-            "menu_time",
-            "ui and menu scenes total %.3f s; the scaled limit is %.3f s (8 s per 80 s of film)"
-            % (menu_sec, limit),
-        )
+    errors = [(None, MENU_MESSAGE % (menu_sec, limit))] if menu_sec > limit else []
+    add_scene_errors(report, "menu_time", errors)
 
 
 def direction_blocks(text):
@@ -811,30 +823,49 @@ def check_materials(timeline, folder):
     return report.errors
 
 
+SCENE_GATES = (check_hook, check_durations, check_captions)
+META_SCENE_GATES = (check_caption_place,)
+LATE_SCENE_GATES = (check_speaking_rate, check_variety)
+TIMING_GATES = (check_safe_zone, check_timing, check_sync)
+
+
 def check_timeline(timeline):
     """Return the list of rule-keyed errors for a parsed timeline."""
     report = Report()
     check_schema(timeline, report)
-    if report.errors:
-        return report.errors
+    if not report.errors:
+        run_gates(timeline, report)
+    return report.errors
+
+
+def run_gates(timeline, report):
+    """Run every gate after a clean schema, in the order of RULES."""
     meta, scenes = timeline["meta"], timeline["scenes"]
-    check_hook(scenes, report)
-    check_durations(scenes, report)
-    check_captions(scenes, report)
-    check_caption_place(meta, scenes, report)
-    check_speaking_rate(scenes, report)
-    check_variety(scenes, report)
-    check_safe_zone(meta, scenes, report)
-    check_timing(meta, scenes, report)
-    check_sync(meta, scenes, report)
     rhythm = timeline.get("rhythm", [])
+    run_scene_gates(scenes, report, SCENE_GATES)
+    run_meta_gates(meta, scenes, report, META_SCENE_GATES)
+    run_scene_gates(scenes, report, LATE_SCENE_GATES)
+    run_meta_gates(meta, scenes, report, TIMING_GATES)
     check_read_hold(scenes, report)
     check_terms(meta, scenes, report)
     check_rhythm(meta, rhythm, report)
     check_event_gap(meta, scenes, rhythm, report)
     check_hero(meta, report)
     check_menu_time(meta, scenes, report)
-    return report.errors
+
+
+def run_scene_gates(scenes, report, gates):
+    count = len(gates)
+    for gate in gates:
+        gate(scenes, report)
+    return count
+
+
+def run_meta_gates(meta, scenes, report, gates):
+    count = len(gates)
+    for gate in gates:
+        gate(meta, scenes, report)
+    return count
 
 
 def run(timeline_path, out_path):
@@ -1167,29 +1198,27 @@ def self_test():
             })
             self.assertEqual(rules_of(self.timeline), set())
 
-        def test_8_optional_scene_fields_fail(self):
-            bad_values = {
-                "reframe": {"scale": 1.5, "focal_point": [1.5, 0.4], "from_sec": 0.0, "to_sec": 1.2},
-                "gauge_inset": {"source_rect": [0.7, 0.05, 0.2, 0.12], "scale": 2.0,
-                                "event_sec": 1.1, "lead_sec": 0.2, "tail_sec": 1.2, "anchor": "top-right"},
-                "plate_hold": {"at_sec": 4.9, "duration_sec": 0.5},
-                "hud_crop": [0.9, 0.0, 0.2, 0.2],
-                "caption_box": [0.9, 0.8, 0.2, 0.1],
-                "locked_actions_sec": [5.1],
-            }
-            for key, value in bad_values.items():
-                timeline = valid_timeline()
-                timeline["scenes"][1][key] = value
-                self.assertEqual(rules_of(timeline), {"schema"}, key)
+        def assert_scene_field_fails(self, key, value):
             timeline = valid_timeline()
-            timeline["scenes"][1]["static_hold"] = True
-            self.assertEqual(rules_of(timeline), {"schema"}, "static_hold_reason")
-            timeline = valid_timeline()
-            timeline["scenes"][1]["gauge_inset"] = {
-                "source_rect": [0.7, 0.05, 0.2, 0.12], "scale": 2.0,
-                "event_sec": 1.1, "lead_sec": 0.3, "tail_sec": 1.1, "anchor": "top-right",
-            }
-            self.assertEqual(rules_of(timeline), {"schema"}, "gauge_inset.tail_sec")
+            timeline["scenes"][1][key] = value
+            self.assertEqual(rules_of(timeline), {"schema"}, key)
+
+        def test_8_timed_scene_fields_fail(self):
+            self.assert_scene_field_fails(
+                "reframe", {"scale": 1.5, "focal_point": [1.5, 0.4], "from_sec": 0.0, "to_sec": 1.2})
+            self.assert_scene_field_fails("plate_hold", {"at_sec": 4.9, "duration_sec": 0.5})
+            self.assert_scene_field_fails("locked_actions_sec", [5.1])
+            self.assert_scene_field_fails("static_hold", True)
+
+        def test_8_rect_scene_fields_fail(self):
+            self.assert_scene_field_fails("hud_crop", [0.9, 0.0, 0.2, 0.2])
+            self.assert_scene_field_fails("caption_box", [0.9, 0.8, 0.2, 0.1])
+
+        def test_8_gauge_inset_window_fails(self):
+            inset = {"source_rect": [0.7, 0.05, 0.2, 0.12], "scale": 2.0,
+                     "event_sec": 1.1, "lead_sec": 0.2, "tail_sec": 1.2, "anchor": "top-right"}
+            self.assert_scene_field_fails("gauge_inset", inset)
+            self.assert_scene_field_fails("gauge_inset", dict(inset, lead_sec=0.3, tail_sec=1.1))
 
         def test_8_allowed_silences(self):
             self.timeline["meta"]["allowed_silences"] = [[2.0, 3.5]]
@@ -1251,17 +1280,18 @@ def self_test():
                                       capture_output=True, text=True, timeout=60)
             self.assertEqual(proc.returncode, 0, proc.stdout)
 
+        def move_first_cut(self, cut_sec):
+            scenes = self.timeline["scenes"]
+            end_sec = scenes[1]["start_sec"] + scenes[1]["duration_sec"]
+            scenes[0]["duration_sec"] = cut_sec
+            scenes[1].update({"start_sec": cut_sec, "duration_sec": end_sec - cut_sec})
+
         def test_11_sync_cut_pass_and_fail(self):
             self.timeline = music_timeline()
             self.assertNotIn("sync", rules_of(self.timeline))
-            self.scenes = self.timeline["scenes"]
-            self.scenes[0]["duration_sec"] = 2.519
-            self.scenes[1]["start_sec"] = 2.519
-            self.scenes[1]["duration_sec"] = 4.981
+            self.move_first_cut(2.519)
             self.assertNotIn("sync", rules_of(self.timeline))
-            self.scenes[0]["duration_sec"] = 2.021
-            self.scenes[1]["start_sec"] = 2.021
-            self.scenes[1]["duration_sec"] = 5.479
+            self.move_first_cut(2.021)
             self.assertEqual(rules_of(self.timeline), {"sync"})
 
         def test_11_sync_locked_action_pass_and_fail(self):
