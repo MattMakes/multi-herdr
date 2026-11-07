@@ -1,0 +1,43 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "hark"
+version = "0.1.0"
+description = "Listen to, measure, make and review sound effects for video and games."
+requires-python = ">=3.11"
+dependencies = [
+    "numpy>=1.26",
+    "scipy>=1.11",
+    "soundfile>=0.12",
+    "soxr>=0.3",
+    "librosa>=0.10",
+    "pillow>=10",
+    "matplotlib>=3.8",
+]
+
+[project.optional-dependencies]
+# torch: install from the CPU wheel index first (see docs/specs/hark/ARCHITECTURE.md 5.2).
+ml = ["torch>=2.6", "transformers>=4.40"]
+mcp = ["mcp>=2"]
+dev = ["pytest>=8"]
+
+[project.scripts]
+hark = "hark.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["hark*"]
+
+[tool.setuptools.package-data]
+"*" = ["*.json", "*.npz"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "--import-mode=importlib"
+markers = [
+    "ml: needs the ML extras (torch and transformers); skipped when they are absent",
+    "live: calls a real external program over the network; runs only with HARK_LIVE=1",
+    "slow: takes more than 30 s",
+]
