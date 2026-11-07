@@ -1724,43 +1724,79 @@ def check_captions_text(text):
         return check_captions(path, False, 4.0)
 
 
-def main(argv=None):
-    parser = argparse.ArgumentParser(description="Numeric render QA gate and inspection sheets.")
+def add_input_args(parser):
     parser.add_argument("--self-test", action="store_true", help="run the built-in tests and exit")
     parser.add_argument("--video", help="render/master.mp4")
     parser.add_argument("--timeline", help="timeline.json")
     parser.add_argument("--scenes-dir", help="scene sources (default: <timeline dir>/scenes)")
     parser.add_argument("--render-dir", help="aspect variants and captions (default: video dir)")
+
+
+def add_output_args(parser):
     parser.add_argument("--out", help="report path (default: <timeline dir>/qa/render-check.json)")
     parser.add_argument("--contact-sheet", help="default: <timeline dir>/qa/contact-sheet-360p.png")
     parser.add_argument("--hook-strip", help="default: <timeline dir>/qa/hook-strip.png")
     parser.add_argument("--phone-sheet", help="default: <timeline dir>/qa/phone-sheet-360w.png")
     parser.add_argument("--phone-frames", help="write hero and key-action PNGs at 360 px high")
+
+
+def add_gate_args(parser):
     parser.add_argument("--raster-sizes", help="image natural vs drawn sizes (default: <render dir>/raster-sizes.json)")
     parser.add_argument("--expect", action="append", metavar="GATE-RESULT",
                         help="expected result JSON relative to the project; repeat to override defaults")
     parser.add_argument("--probe-forward", help="cold-forward probe PNG frames (0, K, 2K)")
     parser.add_argument("--probe-reverse", help="warm-reverse probe PNG frames, same file names")
-    args = parser.parse_args(argv)
-    try:
-        if args.self_test:
-            return self_test()
-        if not args.video or not args.timeline:
-            parser.error("--video and --timeline are required")
-        require_tools()
-        report, out = run_gate(args)
-    except InputError as exc:
-        print(f"qa_video: {exc}", file=sys.stderr)
-        return 2
-    for warn in report["warnings"]:
-        where = f"[{warn['timestamp']}] " if "timestamp" in warn else ""
-        print(f"WARN {warn['check']}: {where}{warn['message']}")
-    for err in report["errors"]:
-        where = f"[{err['timestamp']}] " if "timestamp" in err else ""
-        print(f"FAIL {err['check']}: {where}{err['message']}")
+
+
+def make_parser():
+    parser = argparse.ArgumentParser(description="Numeric render QA gate and inspection sheets.")
+    add_input_args(parser)
+    add_output_args(parser)
+    add_gate_args(parser)
+    return parser
+
+
+def print_finding(prefix, finding):
+    where = f"[{finding['timestamp']}] " if "timestamp" in finding else ""
+    print(f"{prefix} {finding['check']}: {where}{finding['message']}")
+
+
+def print_report(report, out):
+    [print_finding("WARN", finding) for finding in report["warnings"]]
+    [print_finding("FAIL", finding) for finding in report["errors"]]
     print(f"{'PASS' if report['passed'] else 'FAIL'}: {sum(c['passed'] for c in report['checks'].values())}"
           f"/{len(CHECKS)} checks passed; report {out}")
+
+
+def run_command(args, parser):
+    if args.self_test:
+        return self_test()
+    if not args.video or not args.timeline:
+        parser.error("--video and --timeline are required")
+    require_tools()
+    report, out = run_gate(args)
+    print_report(report, out)
     return 0 if report["passed"] else 1
+
+
+def report_input_error(exc):
+    print(f"qa_video: {exc}", file=sys.stderr)
+    return 2
+
+
+def run_safely(args, parser):
+    command = run_command
+    arguments = (args, parser)
+    failure = report_input_error
+    try:
+        return command(*arguments)
+    except InputError as exc:
+        return failure(exc)
+
+
+def main(argv=None):
+    parser = make_parser()
+    return run_safely(parser.parse_args(argv), parser)
 
 
 if __name__ == "__main__":
