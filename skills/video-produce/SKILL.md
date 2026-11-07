@@ -12,9 +12,6 @@ step names another folder.
 The producer runs the production. The other `video-*` teammates make the
 film. You write only these files:
 
-Before wave 1, gate the viewer-facing script and `claims.md` with the
-[`promo brief`](references/promo-brief.md) and [`check_claims.py`](scripts/check_claims.py). Production starts only after the gate passes and the operator approves the script.
-
 | File | What it holds |
 |---|---|
 | `PRODUCTION.md` | the request, the workflow, the plan values, the direction pick, the round log |
@@ -27,6 +24,9 @@ Before wave 1, gate the viewer-facing script and `claims.md` with the
 You write no `BRIEF.md`, `DIRECTION.md`, `STORYBOARD.md`, `timeline.json`,
 scenes, captures, audio or renders. Send a change in those files to the
 orchestrator.
+
+Before wave 1, gate the viewer-facing script and `claims.md` with the
+[`promo brief`](references/promo-brief.md) and [`check_claims.py`](scripts/check_claims.py). Production starts only after the gate passes and the operator approves the script.
 
 ## Steps
 
