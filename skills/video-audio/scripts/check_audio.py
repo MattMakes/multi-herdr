@@ -5,6 +5,7 @@ Usage:
   check_audio.py <audio/mix.wav> [--timeline timeline.json] [--beats audio/beats.json]
                  [--sync-sheet audio/sync-sheet.json] [--sfx-cues audio/sfx-cues.json]
                  [--sfx-bus audio/sfx-bus.wav] [--bed audio/bed.wav] [--music audio/music.wav]
+                 [--bed-beats audio/bed.wav]
                  [--out qa/audio-check.json]
   check_audio.py --measure-sfx audio/sfx
   check_audio.py --self-test
@@ -24,6 +25,8 @@ import subprocess
 import sys
 import tempfile
 
+from beat_grid import BeatError, measure as measure_beats
+
 SAMPLE_RATE = 48000
 CHANNELS = 2
 DURATION_TOLERANCE_SEC = 0.05
@@ -32,7 +35,9 @@ LUFS_MAX = -13.0
 TRUE_PEAK_MAX_DBTP = -2.0
 CUT_PEAK_MAX_DBFS = -3.0
 CUT_PEAK_RADIUS_SEC = 0.020
-CHECK_INPUTS = ("timeline_path", "beats_path", "sync_path", "cues_path", "bus", "bed", "music")
+BED_BEAT_TOLERANCE_SEC = 0.020
+CHECK_INPUTS = ("timeline_path", "beats_path", "sync_path", "cues_path", "bus", "bed", "music",
+                "bed_beats")
 EDGE_SILENCE_MAX_SEC = 0.20
 DROPOUT_MAX_SEC = 0.80
 ALLOWED_SILENCE_SLACK_SEC = 0.05
@@ -375,6 +380,26 @@ def check_cut_peaks(mix, timeline, errors):
     return [_cut_result(samples, cut, errors) for cut in cuts]
 
 
+def check_bed_beats(path, timeline, errors):
+    """Measure path and check every timeline cut against its nearest beat."""
+    measured = measure_beats(path)
+    beats = measured["beats_sec"]
+    entries = []
+    for cut in _cut_times(timeline):
+        nearest = min(beats, key=lambda beat: abs(beat - cut))
+        entries.append({"cut_sec": cut, "nearest_beat_sec": nearest,
+                        "drift_sec": round(abs(cut - nearest), 6)})
+    worst = max(entries, key=lambda entry: entry["drift_sec"], default=None)
+    if worst and worst["drift_sec"] > BED_BEAT_TOLERANCE_SEC:
+        _err(errors, "bed.beat_alignment",
+             f"worst cut drift is {worst['drift_sec']:.3f} s at {worst['cut_sec']:.3f} s; "
+             f"the nearest measured bed beat is {worst['nearest_beat_sec']:.3f} s "
+             f"(tolerance {BED_BEAT_TOLERANCE_SEC:.3f} s)")
+    return {"tempo_bpm": measured["tempo_bpm"], "cuts": entries,
+            "worst_drift_sec": worst["drift_sec"] if worst else 0.0,
+            "worst_cut_sec": worst["cut_sec"] if worst else None}
+
+
 def sync_points(path):
     """Return onset, peak and end of a rendered effect, in seconds from its first sample."""
     levels = _levels(_pcm(path), ENVELOPE_WINDOW_SEC)
@@ -633,6 +658,8 @@ def _check_grid_and_cues(inputs, metrics, timeline, errors):
     """Check the bar grid, then the SFX cues, and return the bar grid."""
     beats = _check_grid(inputs, timeline, metrics["duration_sec"], errors)
     metrics.update(_cue_metrics(inputs, errors))
+    if inputs["bed_beats"]:
+        metrics["bed_beats"] = check_bed_beats(inputs["bed_beats"], timeline, errors)
     return beats
 
 
@@ -697,6 +724,8 @@ def main(argv=None):
     parser.add_argument("--sfx-bus", help="audio/sfx-bus.wav: with --bed, check the margin")
     parser.add_argument("--bed", help="audio/bed.wav: the ducked music bed alone")
     parser.add_argument("--music", help="audio/music.wav: find the drop by low-band energy")
+    parser.add_argument("--bed-beats", metavar="BED_WAV",
+                        help="measure final bed beats and check every timeline cut within 20 ms")
     parser.add_argument("--measure-sfx", help="print the sync points of every .wav in a folder")
     parser.add_argument("--out", help="write the JSON report here, e.g. qa/audio-check.json")
     parser.add_argument("--self-test", action="store_true", help="run the built-in tests")
@@ -711,9 +740,11 @@ def main(argv=None):
             parser.error("give a mix path, --measure-sfx or --self-test")
         if args.sync_sheet and not args.timeline:
             parser.error("--sync-sheet needs --timeline")
+        if args.bed_beats and not args.timeline:
+            parser.error("--bed-beats needs --timeline")
         report = check(args.mix, args.timeline, args.beats, args.sync_sheet, args.sfx_cues,
-                       args.sfx_bus, args.bed, args.music)
-    except (ToolError, OSError) as exc:
+                       args.sfx_bus, args.bed, args.music, args.bed_beats)
+    except (BeatError, ToolError, OSError) as exc:
         print(json.dumps({"passed": False, "errors": [{"rule": "input", "message": str(exc)}]}))
         return 2
     write_report(report, args.out)
@@ -862,6 +893,27 @@ def _arc_tests(p, expect):
                rules)
 
 
+def _bed_beat_tests(p, expect, failures):
+    """Check aligned cuts and a cut list that drifts 0.15 s by its end."""
+    click = "if(lt(mod(t,0.5),0.01),0.8*sin(2*PI*1000*t),0)"
+    _render(p("bed-click.wav"), click, 4)
+    scenes = lambda cuts: [{"id": f"s{k}", "start_sec": cut}
+                           for k, cut in enumerate([0.0, *cuts])]
+    _write(p("bed-aligned.json"), {"meta": {"duration_sec": 4.0},
+                                    "scenes": scenes([1.0, 2.0, 3.0])})
+    expect("pass cuts aligned to measured final-bed beats",
+           check(p("good.wav"), p("bed-aligned.json"), bed_beats=p("bed-click.wav")), [])
+    _write(p("bed-drift.json"), {"meta": {"duration_sec": 4.0},
+                                  "scenes": scenes([1.05, 2.10, 3.15])})
+    report = check(p("good.wav"), p("bed-drift.json"), bed_beats=p("bed-click.wav"))
+    expect("fail a cut list that drifts 0.15 s by the end", report, ["bed.beat_alignment"])
+    worst = report["metrics"]["bed_beats"]
+    ok = worst["worst_drift_sec"] >= 0.149 and worst["worst_cut_sec"] == 3.15
+    print(f"{'ok  ' if ok else 'FAIL'} report worst bed-beat drift and location: {worst}")
+    if not ok:
+        failures.append(f"wrong worst bed-beat drift: {worst}")
+
+
 def self_test():
     here = os.path.dirname(os.path.abspath(__file__))
     skill_dir = os.path.dirname(here)
@@ -929,6 +981,7 @@ def self_test():
         _sync_tests(p, expect, failures)
         _sfx_tests(p, expect)
         _arc_tests(p, expect)
+        _bed_beat_tests(p, expect, failures)
 
         out = p("qa/audio-check.json")
         code = subprocess.run([sys.executable, os.path.abspath(__file__), p("quiet.wav"),

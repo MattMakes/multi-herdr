@@ -33,6 +33,8 @@ Generated `.wav`, `.aiff` and `.mp3` files are build output. Do not commit them.
 Recipes for steps 3 to 5 are in `<skill-dir>/references/lavfi-sfx-recipes.md`.
 The sync sheet, the effect placement and the arc rules are in
 `<skill-dir>/references/sync-and-placement.md`.
+Measure 1 series grid per song, then check cuts against the final bed; see
+`<skill-dir>/references/sync-and-placement.md`.
 Lock picture before the final continuous music bed, then run `scripts/check_music.py`.
 The edit, continuity and SFX variation rules are in `<skill-dir>/references/music-laid-last.md`.
 

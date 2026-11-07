@@ -5,6 +5,7 @@ Usage:
   check_music.py audio/bed.wav audio/beats.json
                  [--edit-plan audio/music-edit.md]
                  [--out audio/music-continuity.json]
+  check_music.py path/to/song.wav --write-grid <series-root>/music/grids/<song-id>.json
   check_music.py --self-test
 
 Exit codes: 0 every check passes, 1 a check fails, 2 an input or tool fails.
@@ -13,6 +14,7 @@ Python standard library and ffmpeg only.
 
 import argparse
 import array
+import hashlib
 import json
 import math
 import os
@@ -23,6 +25,8 @@ import subprocess
 import sys
 import tempfile
 import wave
+
+from beat_grid import BeatError, measure as measure_beats
 
 RATE = 8000
 WINDOW_MS = 50
@@ -37,6 +41,7 @@ CLASH_STEPS = (1, 6, 11)
 FLUX_HZ = (80, 160, 320, 640, 1280, 2000, 3000, 3800)
 FLUX_FRAME = RATE // 100
 PCM_FORMAT = "s16le" if sys.byteorder == "little" else "s16be"
+GRID_MEASURER = "check_music.py 1"
 
 
 class CheckError(Exception):
@@ -373,6 +378,30 @@ def write_report(report, path):
     target.write_text(json.dumps(report, indent=2, allow_nan=False) + "\n", encoding="utf-8")
 
 
+def _sha256(path):
+    """Return the SHA-256 digest of a file."""
+    digest = hashlib.sha256()
+    with open(path, "rb") as handle:
+        for block in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def write_grid(song_path, out_path):
+    """Measure song_path and write its series-level grid file."""
+    measured = measure_beats(song_path)
+    grid = {
+        "song": pathlib.Path(out_path).stem,
+        "source_sha256": _sha256(song_path),
+        "tempo_bpm": measured["tempo_bpm"],
+        "bar_sec": measured["bar_sec"],
+        "downbeats_sec": measured["downbeats_sec"],
+        "measured_by": GRID_MEASURER,
+    }
+    write_report(grid, out_path)
+    return grid
+
+
 # ---------------------------------------------------------------- self-test
 
 TEST_RATE = 16000
@@ -426,6 +455,28 @@ def _write_beats(tmp):
     return path
 
 
+def _click_track(path, bpm=120.0):
+    """Write an 8 s click track with its first click at 0 s."""
+    beat_samples = round(TEST_RATE * 60.0 / bpm)
+    click_samples = TEST_RATE // 100
+    values = array.array("h", (24000 if i % beat_samples < click_samples else 0
+                                for i in range(TEST_SECONDS * TEST_RATE)))
+    with wave.open(path, "wb") as wav:
+        wav.setparams((1, 2, TEST_RATE, len(values), "NONE", "not compressed"))
+        wav.writeframes(values.tobytes())
+
+
+def _grid_case(tmp):
+    """Write and validate a grid measured from a synthetic click track."""
+    song = os.path.join(tmp, "synthetic-click.wav")
+    out = os.path.join(tmp, "music", "grids", "synthetic-click.json")
+    _click_track(song)
+    grid = write_grid(song, out)
+    saved = json.loads(pathlib.Path(out).read_text(encoding="utf-8"))
+    return (abs(grid["tempo_bpm"] - 120.0) <= 0.1 and saved == grid
+            and len(grid["source_sha256"]) == 64 and len(grid["downbeats_sec"]) >= 2)
+
+
 def _level_case(tmp, beats, case):
     """Run 1 level case and return True when its result is as expected."""
     name, spec, passed = case
@@ -465,7 +516,10 @@ def _case_list(tmp, beats):
     """Return the name, the function and the arguments of each case."""
     levels = [(case[0], _level_case, (tmp, beats, case)) for case in LEVEL_CASES]
     edits = [(case[0], _edit_case, (tmp, beats, n, case)) for n, case in enumerate(EDIT_CASES, 1)]
-    return levels + edits + [("writes music-continuity.json", _report_case, (tmp, beats))]
+    return levels + edits + [
+        ("writes music-continuity.json", _report_case, (tmp, beats)),
+        ("writes a measured grid within 0.1 BPM", _grid_case, (tmp,)),
+    ]
 
 
 def _run_case(name, func, args):
@@ -496,6 +550,8 @@ def _parser():
     parser.add_argument("--edit-plan", default="audio/music-edit.md")
     parser.add_argument("--out", default="audio/music-continuity.json")
     parser.add_argument("--excerpt-dir", default="audio/edit-excerpts")
+    parser.add_argument("--write-grid", metavar="OUT_JSON",
+                        help="measure BED as a song and write its series grid")
     parser.add_argument("--self-test", action="store_true")
     return parser
 
@@ -511,10 +567,15 @@ def _run_check(args):
 
 def _dispatch(parser, args):
     """Run the self-test or the check that args select."""
-    missing = not args.self_test and not (args.bed and args.beats)
+    missing = not args.self_test and not (args.bed and (args.beats or args.write_grid))
     if missing:
-        parser.error("give the music bed WAV and beat grid, or use --self-test")
-    return self_test() if args.self_test else _run_check(args)
+        parser.error("give the music bed WAV and beat grid, use --write-grid, or use --self-test")
+    if args.self_test:
+        return self_test()
+    if args.write_grid:
+        print(json.dumps(write_grid(args.bed, args.write_grid), indent=2))
+        return 0
+    return _run_check(args)
 
 
 def _input_error(exc):
@@ -532,5 +593,5 @@ def main(argv=None):
 if __name__ == "__main__":
     try:
         sys.exit(main())
-    except (CheckError, OSError, ValueError) as exc:
+    except (BeatError, CheckError, OSError, ValueError) as exc:
         sys.exit(_input_error(exc))
