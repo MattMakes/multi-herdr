@@ -939,9 +939,10 @@ TIMING_GATES = (check_safe_zone, check_timing, check_sync)
 
 def load_timeline(timeline_path):
     """Read and validate a timeline, or return its schema read error."""
+    path = Path(timeline_path)
     timeline = None
     try:
-        timeline = json.loads(Path(timeline_path).read_text(encoding="utf-8"))
+        timeline = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError) as exc:
         return timeline, [{"rule": "schema", "message": "cannot read timeline: %s" % exc}]
     return timeline, check_timeline(timeline)
