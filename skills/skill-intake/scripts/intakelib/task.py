@@ -96,6 +96,15 @@ MODE_ENV = "SKILL_INTAKE_MODE"
 HORCH_ENV = "SKILL_INTAKE_HORCH"
 FLEET_VARS = ("HORCH_ROLE", "HORCH_RECORD_ID", "HERDR_PANE_ID")
 VERSION_TIMEOUT = 5  # seconds
+# Test seam: a shorter `horch --version` timeout in seconds, so a test of a
+# hanging horch does not wait the full 5 s.
+VERSION_TIMEOUT_ENV = "SKILL_INTAKE_VERSION_TIMEOUT"
+
+
+def version_timeout() -> float:
+    """The `horch --version` timeout: VERSION_TIMEOUT unless the env knob sets it."""
+    raw = os.environ.get(VERSION_TIMEOUT_ENV)
+    return float(raw) if raw else VERSION_TIMEOUT
 
 
 def horch_bin() -> str:
@@ -116,7 +125,7 @@ def mode() -> str:
         return "plain"
     try:
         r = subprocess.run([horch_bin(), "--version"], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                           stderr=subprocess.DEVNULL, timeout=VERSION_TIMEOUT)
+                           stderr=subprocess.DEVNULL, timeout=version_timeout())
     except (OSError, subprocess.TimeoutExpired):
         return "plain"
     return "fleet" if r.returncode == 0 else "plain"

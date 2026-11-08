@@ -73,6 +73,91 @@ godot_skills() {
   python3 scripts/godot/csharp_blocks_check.py --strict-own skills/copied.json "${dirs[@]}"
 }
 
+# skill-intake: the `intake` tool's unittest suite (stdlib only, no network;
+# every test sets HOME and XDG_STATE_HOME to a temp dir). Each test module
+# runs in its own process, 8 at a time (U7: 1 process took 138 to 265 s).
+# A failed module prints its log, and the step fails.
+skill_intake_tests() {
+  local logs
+  logs=$(mktemp -d "${TMPDIR:-/tmp}/gate-intake.XXXXXX")
+  local status=0
+  (cd scripts/skill-intake/tests && ls test_*.py) | sed 's/\.py$//' |
+    xargs -P 8 -I{} sh -c '
+      cd scripts/skill-intake/tests || exit 255
+      if python3 -m unittest "$1" >"$2/$1.log" 2>&1; then
+        echo "ok: $1"
+      else
+        echo "FAILED: $1"
+        cat "$2/$1.log"
+        exit 1
+      fi' sh {} "$logs" || status=1
+  rm -rf "$logs"
+  return "$status"
+}
+
+# The base for "changed" checks: GATE_BASE when set, else the fork point
+# from origin/main. With no base, every optional suite runs.
+gate_base() {
+  if [ -n "${GATE_BASE:-}" ]; then
+    echo "$GATE_BASE"
+  else
+    git merge-base HEAD origin/main 2>/dev/null || true
+  fi
+}
+
+# Exit 0 when the path differs from the base (commits or working tree).
+changed() {
+  local base
+  base=$(gate_base)
+  [ -z "$base" ] || ! git diff --quiet "$base" -- "$1"
+}
+
+# hark: the engine pytest suite (Q2), only when skills/hark/ changed. It
+# needs the hark venv (HARK_PYTHON, default ~/.local/state/hark/venv) with
+# pytest. Without it the step prints a skip line and passes. Each test file
+# runs in its own pytest process, 8 at a time: 1 process took 1172 s. Exit
+# 5 (every test in the file deselected) passes.
+hark_tests() {
+  if ! changed skills/hark/; then
+    echo "skipped: skills/hark/ did not change"
+    return 0
+  fi
+  local py="${HARK_PYTHON:-$HOME/.local/state/hark/venv/bin/python}"
+  if [ ! -x "$py" ] || ! "$py" -c "import pytest" 2>/dev/null; then
+    echo "skipped: no hark venv with pytest at $py"
+    return 0
+  fi
+  local logs
+  logs=$(mktemp -d "${TMPDIR:-/tmp}/gate-hark.XXXXXX")
+  local status=0
+  (cd skills/hark/engine && find tests -name 'test_*.py' | sort) |
+    xargs -P 8 -I{} sh -c '
+      cd skills/hark/engine || exit 255
+      log="$3/$(echo "$1" | tr / _).log"
+      PYTHONPATH=. "$2" -m pytest "$1" -q -p no:cacheprovider \
+        -m "not ml and not live" >"$log" 2>&1
+      code=$?
+      if [ "$code" -eq 0 ] || [ "$code" -eq 5 ]; then
+        echo "ok: $1"
+      else
+        echo "FAILED: $1"
+        cat "$log"
+        exit 1
+      fi' sh {} "$py" "$logs" || status=1
+  rm -rf "$logs"
+  return "$status"
+}
+
+# one-page-design: the check_page unittest suite (Q2), only when
+# skills/one-page-design/ changed.
+one_page_design_tests() {
+  if ! changed skills/one-page-design/; then
+    echo "skipped: skills/one-page-design/ did not change"
+    return 0
+  fi
+  python3 -m unittest discover -s skills/one-page-design/scripts/tests
+}
+
 step no_spec_todo
 step cargo fmt --all --check
 step cargo build --workspace --all-targets
@@ -89,8 +174,8 @@ step env HORCH_TEAMMATES_DIR=teammates cargo run --quiet --bin horch -- teammate
 step scripts/check-req-coverage.sh
 step scripts/check-deps.sh
 step scripts/verify-telemetry-e2e.sh
-# skill-intake: the `intake` tool's unittest suite (stdlib only, no network;
-# every test sets HOME and XDG_STATE_HOME to a temp dir).
-step python3 -m unittest discover -s scripts/skill-intake/tests
+step skill_intake_tests
+step hark_tests
+step one_page_design_tests
 step godot_skills
 echo "GATE GREEN"

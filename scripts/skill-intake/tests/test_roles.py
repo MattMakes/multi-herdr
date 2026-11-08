@@ -126,9 +126,21 @@ class ModeTest(RolesCase):
         self.assertEqual(self.mode(**FLEET, SKILL_INTAKE_HORCH=str(self.tmp / "no-horch")), "plain")
 
     def test_a_horch_that_hangs_past_5_s_is_plain(self):
+        # The knob cuts the 5 s wait to 300 ms. The stub sleeps 30 s, so a
+        # run under 3 s shows that the knob reaches the subprocess timeout.
         start = time.monotonic()
-        self.assertEqual(self.mode(**FLEET, STUB_HANG="1"), "plain")
-        self.assertLess(time.monotonic() - start, 15)
+        self.assertEqual(self.mode(**FLEET, STUB_HANG="1", SKILL_INTAKE_VERSION_TIMEOUT="0.3"), "plain")
+        self.assertLess(time.monotonic() - start, 3)
+
+    def test_the_version_timeout_default_is_5_s(self):
+        # Spec 6.2: `horch --version` must exit 0 within 5 seconds.
+        env = {k: v for k, v in os.environ.items() if k != tasklib.VERSION_TIMEOUT_ENV}
+        env.update(FLEET)
+        done = mock.Mock(returncode=0)
+        with mock.patch.dict(os.environ, env, clear=True), \
+                mock.patch.object(tasklib.subprocess, "run", return_value=done) as run:
+            self.assertEqual(tasklib.mode(), "fleet")
+        self.assertEqual(run.call_args.kwargs["timeout"], 5)
 
     def test_the_override(self):
         self.assertEqual(self.mode(**FLEET, SKILL_INTAKE_MODE="plain"), "plain")
