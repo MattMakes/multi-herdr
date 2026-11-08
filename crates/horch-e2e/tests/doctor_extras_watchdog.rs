@@ -42,12 +42,36 @@ fn doctor_warns_for_a_harness_the_watchdog_cannot_see() {
     );
 }
 
+/// Every repo teammate that runs on antigravity. The list comes from the
+/// roster files, so a new antigravity teammate does not break the test.
+fn antigravity_teammates() -> Vec<String> {
+    let mut names: Vec<String> = std::fs::read_dir(repo_root().join("teammates"))
+        .unwrap()
+        .filter_map(|e| {
+            let path = e.unwrap().path();
+            let text = std::fs::read_to_string(&path).ok()?;
+            text.lines()
+                .any(|l| l == "agent: antigravity")
+                .then(|| path.file_stem()?.to_str().map(str::to_owned))?
+        })
+        .collect();
+    names.sort();
+    names
+}
+
 #[test]
 fn doctor_is_quiet_when_no_offered_teammate_uses_such_a_harness() {
-    // The 3 teammates that run on antigravity.
-    let text = doctor_text(
-        "extras-watchdog-quiet",
-        &["antigravity", "ticket-writer", "spec-writer"],
-    );
+    let moved = antigravity_teammates();
+    // The scan must find the antigravity teammates, or the test proves nothing.
+    for known in [
+        "antigravity",
+        "audio-reviewer",
+        "spec-writer",
+        "ticket-writer",
+    ] {
+        assert!(moved.iter().any(|m| m == known), "{known} not in {moved:?}");
+    }
+    let moved: Vec<&str> = moved.iter().map(String::as_str).collect();
+    let text = doctor_text("extras-watchdog-quiet", &moved);
     assert!(!text.contains("no timer format"), "{text}");
 }

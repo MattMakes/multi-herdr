@@ -99,7 +99,7 @@ pub fn tell_as(
     text: &str,
 ) -> Result<ReportStatus> {
     let _budget = (sender.as_deref() == Some(HORCH))
-        .then(|| delivery::start_push_budget(delivery::DONE_PUSH_BUDGET))
+        .then(|| delivery::start_push_budget(delivery::done_push_budget(&ctx.settings.faults)))
         .flatten();
     match queue_as(ctx, sender, role, text, false, None)? {
         Some(outgoing) => outgoing.push(),
@@ -925,7 +925,7 @@ pub fn done_then(
     .context("horch done must run inside a herdr pane")?;
     let workspace = ctx.herdr.workspace.as_ref().map(|w| w.to_string());
     // `horch ledger done` started the budget and printed the line already.
-    let budget = delivery::start_push_budget(delivery::DONE_PUSH_BUDGET);
+    let budget = delivery::start_push_budget(delivery::done_push_budget(&ctx.settings.faults));
     if budget.is_some() {
         eprintln!("{CLOSING}");
     }

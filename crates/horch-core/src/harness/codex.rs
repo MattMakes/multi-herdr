@@ -1631,8 +1631,12 @@ mod tests {
     fn fake_codex(dir: &Path, name: &str, body: &str) -> PathBuf {
         let path = dir.join(name);
         // Warm the new script without a deadline. macOS can spend tens of
-        // seconds on its first exec while syspolicyd inspects it.
-        let _ = crate::test_support::write_warmed(&path, &format!("#!/bin/sh\n{body}\n"), &[]);
+        // seconds on its first exec while syspolicyd inspects it. The
+        // argument `warm` ends the script before its body, so a slow body
+        // (`sleep 30`) costs nothing here. Callers never pass `warm`.
+        let script = format!("#!/bin/sh\nif [ \"$1\" = warm ]; then exit 0; fi\n{body}\n");
+        let warm = crate::test_support::write_warmed(&path, &script, &["warm"]);
+        assert!(warm.status.success(), "warming {} failed", path.display());
         path
     }
 

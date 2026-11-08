@@ -1,6 +1,6 @@
 ---
 name: video-audio
-description: Use when a video project needs its sound - per-scene voice-over from local TTS (piper, kokoro or macOS say), scene timings reconciled to the spoken length in timeline.json, a beat grid in audio/beats.json, procedural ffmpeg SFX on clicks, keys and transitions, music ducked under the voice, and a -14 LUFS / -1 dBTP stereo master in audio/mix.wav proved by scripts/check_audio.py.
+description: Use when a video project needs its sound - per-scene voice-over from local TTS (piper, kokoro or macOS say), scene timings reconciled to the spoken length in timeline.json, a beat grid in audio/beats.json, procedural ffmpeg SFX on clicks, keys and transitions, music ducked under the voice, and a -14 LUFS / -2 dBTP stereo master in audio/mix.wav proved by scripts/check_audio.py.
 ---
 
 # Video audio
@@ -33,6 +33,10 @@ Generated `.wav`, `.aiff` and `.mp3` files are build output. Do not commit them.
 Recipes for steps 3 to 5 are in `<skill-dir>/references/lavfi-sfx-recipes.md`.
 The sync sheet, the effect placement and the arc rules are in
 `<skill-dir>/references/sync-and-placement.md`.
+Measure 1 series grid per song, then check cuts against the final bed; see
+`<skill-dir>/references/sync-and-placement.md`.
+Lock picture before the final continuous music bed, then run `scripts/check_music.py`.
+The edit, continuity and SFX variation rules are in `<skill-dir>/references/music-laid-last.md`.
 
 ## 1. Voice-over
 
@@ -81,7 +85,7 @@ end of a scene that grew moves up to the next beat (`k * 60 / bpm`), so every
 cut stays on the step 3 grid, and every `beat_in` and `beat_out` is
 recomputed from the new edges. The script applies the pad, recomputes every `start_sec` and `meta.duration_sec`, and moves the other
 project times with the scenes: `rhythm[]` `start_sec`, `end_sec` and
-`events_sec`, `meta.hero_sec`, `meta.payoff_silence_sec` and
+`events_sec`, `meta.hero_sec`, `meta.payoff_breakdown_sec` and
 `meta.allowed_silences`. A time inside a scene that grew keeps its fraction of
 that scene. A time after it moves by the same change. It records
 `vo_duration_sec` on each narrated scene and prints each changed scene.
@@ -123,8 +127,9 @@ Both lists are strictly increasing and inside `[0, meta.duration_sec]`. Snap
 cuts and hero reveals to a beat when the beat is within `40 ms` (`2` frames at
 `60 fps`). Tell the director which cuts moved.
 
-Trim or loop the bed to `meta.duration_sec`. Fade it out over the last `1.0 s`
-with `afade=t=out`.
+End on the song's real final phrase: edit whole bars out of the middle so the
+song's own ending lands on `meta.duration_sec`. A pad loop with a
+`1.0 s` `afade=t=out` is a fallback only, when the song has no usable ending.
 
 ## 3b. Sync sheet
 
@@ -178,7 +183,7 @@ every edge, and do not use more than 1 key sound per `60 ms`.
    check.
 3. Mix voice, ducked music and SFX with `amix ... normalize=0` into
    `audio/premix.wav`.
-4. Master in 2 passes with `loudnorm=I=-14:TP=-1.0:LRA=7`: measure first, then
+4. Master in 2 passes with `loudnorm=I=-14:TP=-2.0:LRA=7`: measure first, then
    apply the measured values with `linear=true`. Write `audio/mix.wav` as
    `48 kHz` stereo 24-bit PCM (`pcm_s24le`). 16-bit is also accepted.
 
@@ -207,7 +212,8 @@ Exit `2`: an input or a tool is missing.
 | `format.channels` | `2` | Add `-ac 2` |
 | `format.duration` | within `+-0.05 s` of `meta.duration_sec` | `apad=whole_dur=<d>,atrim=0:<d>` |
 | `loudness.integrated` | `-15.0` to `-13.0` LUFS | Run both loudnorm passes again |
-| `loudness.true_peak` | `<= -1.0` dBTP | Master again with `TP=-1.5` |
+| `loudness.true_peak` | WAV `<= -2.0` dBTP; AAC can add about `+1 dB` | Master again with `TP=-2.0`; video-render checks MP4 `<= -1.0` dBTP |
+| `mix.cut_peak` | peak within `20 ms` of each cut `<= -3.0` dBFS | Limit transients on the SFX bus only |
 | `silence.leading` | `<= 0.20 s` | Start the bed or the voice at `0.0 s` |
 | `silence.trailing` | `<= 0.20 s` | Let the bed fade to the last frame |
 | `silence.dropout` | no internal gap `> 0.80 s` below `-50 dBFS` | Extend the bed, or list the gap |
@@ -216,11 +222,12 @@ Exit `2`: an input or a tool is missing.
 | `sfx.sync` | Each cue's sync point lands within `40 ms` of `time_sec` | Set `start_sec` from `--measure-sfx` |
 | `sfx.margin` | Effect level minus bed level in the effect's band is `>= 3 dB` | Raise `gain_db` or duck the bed |
 | `mix.hero_loudest` | Loudest moment inside `meta.hero_sec` | Lift the hero |
-| `mix.payoff_silence` | `>= 0.4 s` quiet run inside `meta.payoff_silence_sec` | Cut bed and SFX there |
+| `mix.payoff_breakdown` | Optional `meta.payoff_breakdown_sec` dips `<= 12 dB` and is never under `-50 dBFS` | Low-pass or thin the bed, do not cut it |
 | `music.drop` | The bed's drop within 1 beat of the hero start | Offset the bed |
 
-When `meta.bpm` is set, the film has music, and `meta.hero_sec` and
-`meta.payoff_silence_sec` are required.
+When `meta.bpm` is set, the film has music, and `meta.hero_sec` is required.
+No gate requires or exempts silence before the payoff. The old
+`meta.payoff_silence_sec` fails `plan.removed_field`.
 
 A planned silence (a dramatic pause) is allowed only when
 `timeline.json` lists it: `"meta": { "allowed_silences": [[12.4, 13.6]] }`, in seconds.

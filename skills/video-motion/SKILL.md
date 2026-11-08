@@ -78,6 +78,9 @@ Take every value from `MOTION.md` or `BRAND.md` tokens when they exist. These ar
 - Animate a connector by its stroke length (`strokeDashoffset`) from source to target over 300-600 ms.
 - Hold each finished step for at least 0.6 s before the next step starts.
 
+For organic chains, result-driven impacts and the 1.2x raster plate gate, read `references/organic-motion.md`.
+Run its `raster-sizes.json` check before you hand off a scene that uses a raster plate.
+
 ## Workflow
 
 1. Read `MOTION.md` in full, then the other inputs. List the beats of the scene, each with a start time, a focal point and its tokens.

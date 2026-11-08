@@ -1993,6 +1993,8 @@ fn g60_optional_question_projection_error_does_not_abort_courier_startup() {
 fn a_pass_with_an_unknown_orchestrator_ends_within_the_push_budget() {
     let (mut h, _store, run, _worker, _agent) = pinned_worker("t177-unknown-orchestrator");
     h.set("HORCH_NO_WAKE", "0");
+    // A 2 s budget in place of the real 20 s.
+    h.set("HORCH_FAULT", "done-push-budget-ms:2000");
     fake(&h, &["workspace", "create", "--label", "orchestrator"]);
     fake(
         &h,
@@ -2018,8 +2020,14 @@ fn a_pass_with_an_unknown_orchestrator_ends_within_the_push_budget() {
     let took = began.elapsed();
 
     assert_eq!(c["verdict"], "no_progress", "{c}");
-    // The budget is 20 s; without it the readiness wait alone is 120 s.
-    assert!(took < Duration::from_secs(60), "the pass took {took:?}");
+    // The pass waits for the orchestrator until the 2 s budget ends, and
+    // no longer: without a budget the readiness wait alone is 120 s, and
+    // the real budget is 20 s.
+    assert!(
+        took >= Duration::from_secs(2),
+        "the pass took {took:?}, so it did not wait out the budget"
+    );
+    assert!(took < Duration::from_secs(10), "the pass took {took:?}");
     let pending = Mail::under(&h.state, "w1").pending().unwrap();
     assert_eq!(pending.len(), 1, "{pending:?}");
     assert!(

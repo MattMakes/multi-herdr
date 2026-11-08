@@ -1,0 +1,25 @@
+{
+ "_doc": "Cue events exported from the picture code. f is the frame where the viewer sees the cause: the contact, the pop-in at 50 % of its travel, the fastest frame of a move, the hit a riser builds to, the first frame the wordmark is legible. Keep ids stable (act:thing:n) so a rule regex can match a whole class. This example is a 12 s demo at 60 fps on a 120 BPM grid.",
+ "fps": 60,
+ "bpm": 120,
+ "total": 720,
+ "acts": {"ui": {"from": 0, "dur": 300}, "cards": {"from": 300, "dur": 180}, "reveal": {"from": 480, "dur": 120}, "logo": {"from": 600, "dur": 120}},
+ "cue": {"drop": 480, "logo": 600},
+ "events": [
+  {"f": 60, "kind": "click", "id": "ui:cursor:0", "pan": 0.3},
+  {"f": 120, "kind": "key", "id": "ui:type:key:0", "variant": "word"},
+  {"f": 128, "kind": "key", "id": "ui:type:key:1", "variant": "word"},
+  {"f": 135, "kind": "key", "id": "ui:type:key:2", "variant": "word"},
+  {"f": 143, "kind": "key", "id": "ui:type:key:3", "variant": "space"},
+  {"f": 152, "kind": "key", "id": "ui:type:key:4", "variant": "word"},
+  {"f": 160, "kind": "key", "id": "ui:type:key:5", "variant": "word"},
+  {"f": 220, "kind": "click", "id": "ui:confirm:0", "variant": "confirm"},
+  {"f": 300, "kind": "whoosh", "id": "cards:zoom:0", "dur": 30, "apexFrac": 0.6, "pan": -0.4},
+  {"f": 360, "kind": "pop", "id": "cards:card:0", "pan": -0.6},
+  {"f": 372, "kind": "pop", "id": "cards:card:1", "pan": 0.0},
+  {"f": 384, "kind": "pop", "id": "cards:card:2", "pan": 0.6},
+  {"f": 480, "kind": "riser", "id": "reveal:build:0", "dur": 120},
+  {"f": 480, "kind": "hit", "id": "reveal:hero:0"},
+  {"f": 600, "kind": "bell", "id": "logo:lockup:0"}
+ ]
+}

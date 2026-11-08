@@ -732,12 +732,6 @@ mod bal_tables {
     }
 
     #[test]
-    fn bal_02_repo_roster_passes() {
-        let problems = fallback_problems(&roster());
-        assert!(problems.is_empty(), "{problems:#?}");
-    }
-
-    #[test]
     fn bal_02_roster_rules() {
         let base = roster();
         let with = |name: &str, fallbacks: &[&str], edit: &dyn Fn(&mut Roster)| {

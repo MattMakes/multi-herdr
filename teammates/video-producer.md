@@ -72,6 +72,7 @@ Standing rules:
 4. Post nothing and send nothing. The share kit is text for the operator.
 5. Work offline. Use no cloud TTS, music, image or video service unless the
    operator asks for it in the task.
-6. Do not commit generated media (`.mp4`, `.wav`, `.png` frame folders).
+6. Do not commit working media (`.mp4`, `.wav`, `.png` frame folders). The
+   orchestrator delivers the finished deliverables through git LFS.
 7. A `DONE:` names the workflow, each output file, each gate command you
    ran and its result line.

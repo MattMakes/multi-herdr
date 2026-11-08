@@ -1,0 +1,43 @@
+#!/usr/bin/env bash
+# hark launcher: run the hark engine beside this script with the hark venv python.
+# HARK_PYTHON names another python. When the venv is absent, offer to create it
+# (TTY: ask y/N; not a TTY: print the command and exit 3).
+set -euo pipefail
+
+resolve_self() {
+  local path="$1" dir
+  while [ -L "$path" ]; do
+    dir="$(cd -P "$(dirname "$path")" && pwd)"
+    path="$(readlink "$path")"
+    case "$path" in /*) ;; *) path="$dir/$path" ;; esac
+  done
+  cd -P "$(dirname "$path")" && pwd
+}
+
+SCRIPT_DIR="$(resolve_self "${BASH_SOURCE[0]}")"
+ENGINE="$(cd -P "$SCRIPT_DIR/../engine" && pwd)"
+PY="${HARK_PYTHON:-$HOME/.local/state/hark/venv/bin/python}"
+VENV="$(dirname "$(dirname "$PY")")"
+DEPS='"numpy>=1.26" "scipy>=1.11" "soundfile>=0.12" "soxr>=0.3" "librosa>=0.10" "pillow>=10" "matplotlib>=3.8"'
+CREATE="python3 -m venv \"$VENV\" && \"$VENV/bin/python\" -m pip install $DEPS"
+
+if [ ! -x "$PY" ]; then
+  if [ -t 0 ] && [ -t 1 ]; then
+    echo "hark: no python at $PY. Create the hark venv with:" >&2
+    echo "  $CREATE" >&2
+    printf 'Create it now? [y/N] ' >&2
+    read -r answer || answer=""
+    case "$(printf '%s' "$answer" | tr '[:upper:]' '[:lower:]')" in
+      y|yes) bash -c "$CREATE" || { echo "hark: error: the venv setup failed" >&2; exit 1; } ;;
+      *) exit 3 ;;
+    esac
+  else
+    echo "hark: error: no python at $PY. Create the hark venv with: $CREATE" >&2
+    exit 3
+  fi
+fi
+
+export PYTHONPATH="$ENGINE${PYTHONPATH:+:$PYTHONPATH}"
+# The engine beside this script wins: python -m must not put the current folder first (Python 3.11+).
+export PYTHONSAFEPATH=1
+exec "$PY" -m hark "$@"

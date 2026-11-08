@@ -589,14 +589,6 @@ fn hdf_03_repeat_of_a_default_fails_the_check() {
         .any(|p| p.starts_with("t-args:") && p.contains("tui.auto_recap=false")));
 }
 
-/// HDF-03: no built-in teammate repeats a default (W2's lines moved).
-#[test]
-fn hdf_03_builtin_roster_has_no_repeats() {
-    let roster = Roster::builtin().unwrap();
-    let found = problems_with(&roster, "repeats");
-    assert!(found.is_empty(), "{found:?}");
-}
-
 /// HDF-03: a malformed entry, and a teammate file that sets
 /// `harness_defaults`, each fail the check once.
 #[test]

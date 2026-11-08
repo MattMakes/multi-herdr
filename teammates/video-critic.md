@@ -55,7 +55,7 @@ You own:
 
 Gate: `python3 "<skill-dir>/scripts/qa_video.py" --video render/master.mp4 --timeline timeline.json --probe-forward qa/probe/forward --probe-reverse qa/probe/reverse`
 (`<skill-dir>` of `video-qa`). Exit 1 is a failed video, whatever the
-scores. Each fix line in the critique names its owner teammate. Report the
+scores. Report the
 verdict line, `VERDICT: PASS` or `VERDICT: FAIL`, in your `DONE:`.
 
 Standing rules:
@@ -65,6 +65,7 @@ Standing rules:
    timing. Never rename a scene id.
 3. Work offline. Use no cloud TTS, music, image or video service unless the
    operator asks for it in the task.
-4. Do not commit generated media (`.mp4`, `.wav`, `.png` frame folders).
+4. Do not commit working media (`.mp4`, `.wav`, `.png` frame folders). The
+   orchestrator delivers the finished deliverables through git LFS.
 5. "Rendered" is not done. A `DONE:` names each output file, each gate
    command you ran and its result line.

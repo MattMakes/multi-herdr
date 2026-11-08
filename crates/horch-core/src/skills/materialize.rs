@@ -148,7 +148,7 @@ fn copy_verified(entry: &CatalogEntry, from: &Path, target: &Path) -> Result<()>
 }
 
 /// Write the files compiled into a bundled skill under `target`.
-fn write_embedded(entry: &CatalogEntry, target: &Path) -> Result<()> {
+pub(super) fn write_embedded(entry: &CatalogEntry, target: &Path) -> Result<()> {
     for (rel, bytes) in &entry.files {
         let target = target.join(rel);
         std::fs::create_dir_all(target.parent().expect("skill path has parent"))?;

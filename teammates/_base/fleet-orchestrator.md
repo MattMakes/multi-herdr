@@ -128,8 +128,8 @@ never type a task into a worker.
 - horch ledger fallback T-<n> "<reason>" - let the fallback persona claim.
 - horch ledger cancel T-<n> "<reason>" - drop a task. It also stops the
   task's worker by its recorded PIDs.
-- A usage limit is a warning to the operator, not a stop. Tell the operator
-  and go on, unless the operator redirects you.
+- Hold all spawns while a pool pace is over 1.5x. Never reap or replace a
+  worker that shows the usage-limit message.
 - Stop a worker only with: horch ledger stop <worker> "<reason>".
   Never run pkill, killall, or a kill by a name or a pattern.
 - Use horch tell for questions and answers only.

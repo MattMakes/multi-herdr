@@ -3,6 +3,47 @@
 This reference holds the detail of step 3b (the sync sheet), the effect
 placement in step 4, the bed file of step 5 and the arc rules of the gate.
 
+## Series song grids and final-bed cut checks
+
+Keep exactly 1 measured grid for each song at
+`<series root>/music/grids/<song id>.json`. Create it from the source song:
+
+```bash
+python3 "<skill-dir>/scripts/check_music.py" path/to/song.wav \
+  --write-grid "<series root>/music/grids/<song id>.json"
+```
+
+The file has this schema:
+
+```json
+{
+  "song": "song-id",
+  "source_sha256": "64 lowercase hexadecimal characters",
+  "tempo_bpm": 120.0,
+  "bar_sec": 2.0,
+  "downbeats_sec": [0.498, 2.498, 4.498],
+  "measured_by": "check_music.py 1"
+}
+```
+
+`song` identifies the source, and `source_sha256` proves which source file was
+measured. `tempo_bpm`, `bar_sec`, and `downbeats_sec` are measurements from that
+file. `measured_by` records the script and measurement version. An episode reads
+this series file. It never copies a tempo, bar length, or downbeat number by hand.
+
+The final bed can change the source timing through a warp, trim, or loop. At
+render time, measure the final bed again and compare every scene cut from
+`timeline-master.json` (or `timeline.json`) with its nearest measured beat:
+
+```bash
+python3 "<skill-dir>/scripts/check_audio.py" audio/mix.wav \
+  --timeline timeline-master.json --bed-beats audio/bed.wav
+```
+
+Every cut must be within `20 ms` of a measured final-bed beat. The report records
+the worst drift in seconds and its cut time. Rebuild the timing when this check
+fails; do not replace the series grid with a copied bar length.
+
 ## 1. The sync sheet: `audio/sync-sheet.json`
 
 `video-motion` locks word highlights to it. `video-character` builds visemes
@@ -131,26 +172,28 @@ in that band over the effect span, from onset to end. The effect level minus
 the bed level must be `3 dB` or more (`sfx.margin`). Fix: raise the cue `gain_db`, move
 the effect to a band where the bed is quiet, or duck the bed for the cue.
 
-## 4. The arc: hero, planned silence, drop
+## 4. The arc: hero, breakdown, drop
 
 The director writes these `timeline.json` fields:
 
 | Field | Meaning |
 | --- | --- |
-| `meta.bpm` | Optional. A number `> 0` says that the film has music. Then `meta.hero_sec` and `meta.payoff_silence_sec` are required. |
+| `meta.bpm` | Optional. A number `> 0` says that the film has music. Then `meta.hero_sec` is required. |
 | `meta.hero_sec` | `[start_sec, end_sec]` of the hero moment |
-| `meta.payoff_silence_sec` | `[start_sec, end_sec]` of the planned silence before the payoff |
+| `meta.payoff_breakdown_sec` | Optional. `[start_sec, end_sec]` of a breakdown before the payoff. The music dips, it never stops. |
 
 Rules:
 
 - `mix.hero_loudest`: the loudest momentary loudness (`400 ms`) of the mix is
   inside the hero range, within `0.5 LU`. Fix: lift the hero (an impact, the
   full bed) or lower the louder place.
-- `mix.payoff_silence`: inside the planned range there is a run of at least
-  `0.4 s` that is `15 dB` or more under the 90th percentile of the `100 ms`
-  levels and under `-30 dBFS`. Fix: cut the bed and the effects in that range,
-  and end the voice before it. A planned silence also counts as an allowed
-  silence for `silence.dropout`.
+- `mix.payoff_breakdown` (only when the field is present): the RMS level of
+  the range is at most `12 dB` under the median `100 ms` level of the rest of
+  the mix, and no `silencedetect` run (under `-50 dBFS`) touches the range.
+  Fix: low-pass the bed or remove the drums there. Do not cut the bed. The
+  range is not an allowed silence for `silence.dropout`.
+- `plan.removed_field`: `meta.payoff_silence_sec` is removed. Delete it, or
+  replace it with `meta.payoff_breakdown_sec`.
 - `music.drop` (with `--music audio/music.wav`): the drop is the downbeat whose
   bar has the largest rise in energy under `150 Hz`. When that rise is at least
   `6 dB` and the plan has a hero, the drop must be within 1 beat of the hero

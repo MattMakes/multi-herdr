@@ -5,6 +5,70 @@ a product demo, a CLI walkthrough, a concept explainer or a social cut. 7
 `video-*` teammates make it: `video-producer` in wave 0, then 6 build
 waves. Each wave passes a numeric gate before the next wave starts.
 
+## Production control files
+
+Create these text files before production work starts:
+
+- `CONTEXT.md` contains the brief context and the absolute path to the shared
+  media root. Every worker reads it.
+- `decisions.md` contains every operator answer and every triage decision with
+  its reason. Every worker reads it.
+- `plans/<unit>.md` contains one unit's goal, context, prior work, changes,
+  owned files, excluded files, checks and report shape. Use 1 plan per unit.
+
+Workers do not commit working media. Commit text sources such as plans,
+scripts, timelines, storyboards, scene HTML and audio scripts. Each worker runs in a git
+worktree. Its worktree does not contain untracked media from another checkout.
+Every plan uses absolute paths to the shared media root from `CONTEXT.md`.
+
+Deliver the finished video. The finished deliverables are the product: an
+operator said "The mp4's are missing ... THATS THE MOST IMPORTANT PART". After
+the last critic round passes, the orchestrator does these steps:
+
+1. Commit the finished deliverables through git LFS in 1 PR.
+2. Check `git lfs ls-files` against the deliverable list. Every deliverable
+   must be in the list.
+3. Check the PR state before each push. Do not push to a merged or closed PR.
+4. Give the operator 1 link to the PR.
+
+### Queue each unit with horch 0.4.6
+
+Horch 0.4.6 refuses `horch spawn <persona> "task"`. Queue each one-off unit,
+then run the spawn line that the command prints:
+
+```sh
+horch ledger task "<title>" --persona <seat> --file <plan> --check none
+```
+
+Do not put task text in `horch spawn`. The worker reads its plan from the task
+ledger.
+
+## Required order and operator gates
+
+The first production uses this order:
+
+1. The producer writes the production files.
+2. The director presents 3 directions, and the operator or producer picks 1.
+3. Capture records the selected product proof.
+4. Audio makes the measured beat grid.
+5. The animators build the scenes.
+6. The editor builds the film.
+7. A fresh critic scores the film.
+
+Before step 1, the operator runs the script and claims gate. The operator
+approves the script and runs the `video-produce` claims check on the ledger:
+
+```sh
+python3 "<skill-dir>/scripts/check_claims.py" claims.md
+```
+
+Do not start a production unit when this gate fails or the operator has not
+approved the script.
+
+Build the brand intro as a separate small unit before the episodes. For each
+round of operator notes, queue 1 animator unit and 1 audio unit. Do not make an
+episode unit own the intro.
+
 ## Wave 0: Production
 
 - Teammate: 1 `video-producer`. Resume it after each wave for its next step.
@@ -37,7 +101,9 @@ plan as it is.
 
 ```text
 <project>/
-  PRODUCTION.md  BRIEF.md  DIRECTION.md  STORYBOARD.md  timeline.json  MOTION.md
+  CONTEXT.md  decisions.md  claims.md  PRODUCTION.md  BRIEF.md  DIRECTION.md
+  STORYBOARD.md  timeline.json  MOTION.md
+  plans/      <unit>.md
   .video/     NOTES.md, ab-labels.json (producer only)
   directions/ d<n>/index.html (key frame pages)
   materials/  materials.md, first-screen.png, full-page.png, colors.json, ...
@@ -51,7 +117,7 @@ plan as it is.
               share.md, ab/A.mp4, ab/B.mp4
   qa/         plan-check.json, directions/, audio-check.json, self-notes.md,
               render-check.json, contact-sheet-360p.png, hook-strip.png,
-              probe/, critique-round-<N>.md, ab-rank.md
+              probe/, critique-round-<N>.md, accepted-exceptions.md, ab-rank.md
 ```
 
 ## File ownership
@@ -68,6 +134,22 @@ plan as it is.
 
 Give each unit `own` and `do not touch` from this table. 2 animators in
 wave 4 split `scenes/` by scene id. Only 1 of them owns `MOTION.md`.
+
+Assign exactly 1 owner to each output folder in each round. Before a new owner
+starts, tell the old owner that its ownership ended. A new owner does not move
+or replace the old owner's files without this notice.
+
+Rename or delete a superseded build script as soon as its replacement passes.
+Name the superseded script and its replacement in every later unit plan. This
+prevents a worker from running the old script.
+
+A project tool must resolve each skill script from the installed skill root at
+run time with `"$(horch skills path <id> --script <rel>)"`. It must never store
+a temporary `skill-bundles` path, and it must exit non-zero when resolution or
+the resolved script fails. For example, resolve the audio gate with
+`"$(horch skills path video-audio --script scripts/check_audio.py)"`. Treat a
+gate that did not run as a failure, not a pass. `qa_video.py` also fails when a
+required gate result is missing.
 
 ## Wave 1: Direction & Storyboard
 
@@ -165,8 +247,9 @@ timing to `video-director` before wave 4.
   Do not hand-build an `ffmpeg` command for the master.
 - Probe: the editor renders frames `0`, `K` and `2K` of the hook scene cold
   forward to `qa/probe/forward/`, then the same frames with `--reverse` to
-  `qa/probe/reverse/`. Without the probe, wave 6 skips the determinism
-  check.
+  `qa/probe/reverse/`. Without the probe, the determinism check reports
+  skip. A check reports pass, fail or skip. A skip of a check that applies
+  is a FAIL.
 - Gate: `ffprobe` on `render/master.mp4`, as the `video-render` skill shows.
 - Pass rule: `h264` High level `42`, `yuv420p`, CFR at `meta.fps`, frame
   count equal to `meta.duration_sec` x fps, AAC `48000` Hz stereo.
@@ -179,8 +262,9 @@ timing to `video-director` before wave 4.
 
 - Teammate: a new `video-critic` for each round. Never resume one.
 - Inputs: `BRIEF.md`, `DIRECTION.md`, `STORYBOARD.md`, `timeline.json`,
-  `render/`, `scenes/`, `qa/`. Do not put builder notes, earlier critiques
-  or the fix history in its plan.
+  `render/`, `scenes/`, `qa/accepted-exceptions.md`. Do not put builder notes,
+  earlier critiques or the fix history in its plan. The critic reads accepted
+  exceptions before it scores.
 - Outputs: `qa/render-check.json`, `qa/contact-sheet-360p.png`,
   `qa/hook-strip.png`, `qa/critique-round-<N>.md`.
 - Gate: `python3 "<skill-dir>/scripts/qa_video.py" --video render/master.mp4 --timeline timeline.json --probe-forward qa/probe/forward --probe-reverse qa/probe/reverse`
@@ -191,15 +275,36 @@ timing to `video-director` before wave 4.
 
 The loop:
 
-1. Round `N` starts at 1. Spawn a fresh `video-critic` and give it `N`.
-2. On `VERDICT: FAIL`, group the fix lines by owner teammate. Send each
-   group to a fresh teammate of that kind as a fix plan.
-3. Run the waves again from the earliest owner: a director fix runs waves 1
-   to 5 for the changed scenes, an audio fix runs waves 3 and 5, an
-   animator fix runs waves 4 and 5, an editor fix runs wave 5.
-4. Spawn a new `video-critic` for round `N + 1`. Stop after round 3. If
-   round 3 fails, report the 3 critiques to the human. Do not start round
-   4.
+1. Round `N` starts at 1. Queue a fresh `video-critic` and give it `N`.
+2. On `VERDICT: FAIL`, resolve each fix to the owner of the file that must
+   change. Ignore the seat name that the critic suggests when file ownership
+   identifies a different owner.
+3. Reject a fix that breaks the brief or asks for content that does not exist.
+   Write the fix and its rejection reason in `qa/accepted-exceptions.md`.
+4. Write 1 fix plan per owner. Tell an old folder owner before a new owner
+   starts.
+5. Run the round in this order: director and capture in parallel; audio and
+   scenes in parallel; editor; then a fresh critic. Start at the earliest
+   owner that has an accepted fix.
+6. The next critic reads `qa/accepted-exceptions.md` before it scores. It does
+   not receive builder notes, earlier critiques or the accepted fix history.
+7. Stop after round 3. If round 3 fails, give all 3 critiques to the operator.
+   Do not start round 4.
+
+## Rules for every unit plan
+
+- Do not point a production tool at a temporary skill-bundle path. Follow the
+  run-time resolution and failure rule in **File ownership**.
+- Put each changed time in the DONE report as
+  `<scene or beat>: <before> s -> <after> s`.
+
+Use the seat skill for the remaining media rules.
+[video-produce](../../video-produce/SKILL.md) owns the audience rules, insider
+content and the caption claims ledger. [video-capture](../../video-capture/SKILL.md)
+owns capture staging and plate quality. [video-audio](../../video-audio/SKILL.md)
+owns music continuity and the single continuous mix.
+[video-render](../../video-render/SKILL.md) owns frame selection, master
+assembly and package length. Do not copy those rules into an orchestrator plan.
 
 ## Harvest and share kit
 

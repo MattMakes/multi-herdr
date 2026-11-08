@@ -17,7 +17,7 @@ there is no grid: a scene that grew is not snapped, and the beats stay.
 Then every scene start_sec and meta.duration_sec are recomputed, and every
 other project time moves with the scenes:
   rhythm[].start_sec, rhythm[].end_sec, rhythm[].events_sec,
-  meta.hero_sec, meta.payoff_silence_sec, meta.allowed_silences.
+  meta.hero_sec, meta.payoff_breakdown_sec, meta.allowed_silences.
 
 A time inside a scene that grew scales with that scene: it keeps its fraction
 of the scene. The voice now runs slower than planned, so an event planned at
@@ -35,13 +35,20 @@ Needs ffprobe on PATH. Python standard library only.
 """
 
 import argparse
+import functools
 import json
 import math
 import os
+import pathlib
 import subprocess
 import sys
 
+# The self-test imports check_timeline from video-storyboard. A .pyc there
+# would be bundled with that skill and break its size budget.
+sys.dont_write_bytecode = True
+
 BREATH_PAD_SEC = 0.25
+INPUT_ERRORS = (OSError, KeyError, TypeError, ValueError, IndexError)
 
 
 class ToolError(Exception):
@@ -61,14 +68,116 @@ def probe_duration(path):
 
 def time_map(old_edges, new_edges):
     """Return a function that moves a project time from the old scene edges to the new ones."""
-    def move(t):
-        if t <= old_edges[0]:
-            return t
-        for (a, b), (na, nb) in zip(zip(old_edges, old_edges[1:]), zip(new_edges, new_edges[1:])):
-            if t < b:
-                return round(na + (t - a) * (nb - na) / (b - a), 3)
-        return round(t + new_edges[-1] - old_edges[-1], 3)
-    return move
+    spans = list(zip(zip(old_edges, old_edges[1:]), zip(new_edges, new_edges[1:])))
+    return functools.partial(_move_time, old_edges[0], spans, new_edges[-1] - old_edges[-1])
+
+
+def _scale_into(t, span):
+    """Scale time t from an old scene span to its new span."""
+    (a, b), (na, nb) = span
+    return round(na + (t - a) * (nb - na) / (b - a), 3)
+
+
+def _move_time(first, spans, shift, t):
+    """Keep t before the first edge, scale it inside a scene, shift it after the film end."""
+    inside = [span for span in spans if t < span[0][1]]
+    moved = _scale_into(t, inside[0]) if inside else round(t + shift, 3)
+    return t if t <= first else moved
+
+
+RANGE_KEYS = ("hero_sec", "payoff_breakdown_sec")
+
+
+def _scene_edges(scenes):
+    """Return every scene start and the end of the last scene."""
+    last = scenes[-1]
+    return [scene["start_sec"] for scene in scenes] + [last["start_sec"] + last["duration_sec"]]
+
+
+def _record_voice(scene, vo_durations):
+    """Record vo_duration_sec on a narrated scene. Return it rounded, or None."""
+    vo = vo_durations.get(scene["id"])
+    narrated = vo is not None
+    if narrated:
+        scene["vo_duration_sec"] = round(vo, 3)
+    return scene["vo_duration_sec"] if narrated else None
+
+
+def _grown_end(start, vo, planned, beat):
+    """Return the end of a scene that grows to its voice plus the pad, snapped up to a beat.
+
+    Return None when the voice plus the pad fits in the planned duration.
+    """
+    grows = vo is not None and round(vo + BREATH_PAD_SEC, 3) > planned
+    end = start + (vo or 0.0) + BREATH_PAD_SEC
+    snapped = math.ceil(end / beat - 1e-6) * beat if beat else end
+    return snapped if grows else None
+
+
+def _grow(scene, start, vo, beat):
+    """Grow the scene when its voice plus the pad is longer than planned. Return its end."""
+    planned = scene["duration_sec"]
+    end = _grown_end(start, vo, planned, beat)
+    scene["duration_sec"] = planned if end is None else round(end - start, 3)
+    return start + planned if end is None else end
+
+
+def _change_list(scene, planned):
+    """Return [the change entry] when the scene grew, else []."""
+    grew = scene["duration_sec"] != planned
+    change = {"scene": scene["id"], "old_duration_sec": planned,
+              "new_duration_sec": scene["duration_sec"]}
+    return [change] if grew else []
+
+
+def _fit_scene(scene, start, plan):
+    """Set the scene start, record its voice and grow it to fit. Return its end."""
+    scene["start_sec"] = round(start, 3)
+    planned = scene["duration_sec"]
+    end = _grow(scene, start, _record_voice(scene, plan["vo"]), plan["beat"])
+    plan["changes"].extend(_change_list(scene, planned))
+    return end
+
+
+def _lay_out(scenes, vo_durations, beat):
+    """Lay the scenes end to end from 0 s. Return (new_edges, changes)."""
+    edges, changes = [0.0], []
+    plan = {"vo": vo_durations, "beat": beat, "changes": changes}
+    for scene in scenes:
+        edges.append(_fit_scene(scene, edges[-1], plan))
+    return [round(edge, 3) for edge in edges], changes
+
+
+def _beat_marks(scene, beat):
+    """Return beat_in and beat_out of the scene on the beat grid."""
+    return {"beat_in": round(scene["start_sec"] / beat),
+            "beat_out": round((scene["start_sec"] + scene["duration_sec"]) / beat)}
+
+
+def _set_beats(scenes, beat):
+    """With a beat grid, recompute beat_in and beat_out of every scene from its edges."""
+    targets = scenes if beat else []
+    marks = [_beat_marks(scene, beat) for scene in targets]
+    for scene, mark in zip(targets, marks):
+        scene.update(mark)
+
+
+def _move_rhythm(item, move):
+    """Move 1 rhythm stretch and its events with the scenes."""
+    item["start_sec"] = move(item["start_sec"])
+    item["end_sec"] = move(item["end_sec"])
+    item.update({"events_sec": [move(t) for t in item["events_sec"]]} if "events_sec" in item else {})
+
+
+def _move_times(timeline, move):
+    """Move rhythm, the meta ranges and meta.allowed_silences with the scenes."""
+    meta = timeline["meta"]
+    for item in timeline.get("rhythm", []):
+        _move_rhythm(item, move)
+    meta.update({key: [move(t) for t in meta[key]] for key in RANGE_KEYS if key in meta})
+    silences = meta.get("allowed_silences")
+    moved = [[move(a), move(b)] for a, b in silences or []]
+    meta.update({"allowed_silences": moved} if silences is not None else {})
 
 
 def reconcile(timeline, vo_durations):
@@ -76,121 +185,139 @@ def reconcile(timeline, vo_durations):
 
     Return the changed scenes as [{"scene", "old_duration_sec", "new_duration_sec"}].
     """
-    scenes = timeline["scenes"]
-    old_edges = [scene["start_sec"] for scene in scenes]
-    old_edges.append(scenes[-1]["start_sec"] + scenes[-1]["duration_sec"])
-    meta = timeline["meta"]
-    beat = 60.0 / meta["bpm"] if "bpm" in meta else None
-    changes = []
-    start = 0.0
-    new_edges = []
-    for scene in scenes:
-        scene["start_sec"] = round(start, 3)
-        new_edges.append(scene["start_sec"])
-        end = start + scene["duration_sec"]
-        if scene["id"] in vo_durations:
-            vo = round(vo_durations[scene["id"]], 3)
-            scene["vo_duration_sec"] = vo
-            planned = scene["duration_sec"]
-            if round(vo + BREATH_PAD_SEC, 3) > planned:
-                end = start + vo + BREATH_PAD_SEC
-                if beat:
-                    end = math.ceil(end / beat - 1e-6) * beat
-                scene["duration_sec"] = round(end - start, 3)
-                changes.append({"scene": scene["id"], "old_duration_sec": planned,
-                                "new_duration_sec": scene["duration_sec"]})
-        start = end
-    new_edges.append(round(start, 3))
-    meta["duration_sec"] = round(start, 3)
-    if beat:
-        for scene in scenes:
-            scene["beat_in"] = round(scene["start_sec"] / beat)
-            scene["beat_out"] = round((scene["start_sec"] + scene["duration_sec"]) / beat)
-
-    move = time_map(old_edges, new_edges)
-    for item in timeline.get("rhythm", []):
-        item["start_sec"] = move(item["start_sec"])
-        item["end_sec"] = move(item["end_sec"])
-        if "events_sec" in item:
-            item["events_sec"] = [move(t) for t in item["events_sec"]]
-    for key in ("hero_sec", "payoff_silence_sec"):
-        if key in meta:
-            meta[key] = [move(t) for t in meta[key]]
-    if "allowed_silences" in meta:
-        meta["allowed_silences"] = [[move(a), move(b)] for a, b in meta["allowed_silences"]]
+    old_edges = _scene_edges(timeline["scenes"])
+    beat = 60.0 / timeline["meta"]["bpm"] if "bpm" in timeline["meta"] else None
+    new_edges, changes = _lay_out(timeline["scenes"], vo_durations, beat)
+    timeline["meta"]["duration_sec"] = new_edges[-1]
+    _set_beats(timeline["scenes"], beat)
+    _move_times(timeline, time_map(old_edges, new_edges))
     return changes
 
 
 def measure(timeline, audio_dir):
-    durations = {}
-    for scene in timeline["scenes"]:
-        if scene.get("narration"):
-            path = os.path.join(audio_dir, f"vo-{scene['id']}.wav")
-            if not os.path.isfile(path):
-                raise ToolError(f"missing voice file {path}")
-            durations[scene["id"]] = probe_duration(path)
-    return durations
+    """Return {scene id: voice seconds} for every narrated scene."""
+    narrated = [scene["id"] for scene in timeline["scenes"] if scene.get("narration")]
+    return {sid: _voice_duration(audio_dir, sid) for sid in narrated}
 
 
-def main(argv=None):
+def _voice_duration(audio_dir, sid):
+    """Return the length of audio/vo-<sid>.wav. Raise ToolError when it is missing."""
+    path = os.path.join(audio_dir, f"vo-{sid}.wav")
+    missing = not os.path.isfile(path)
+    if missing:
+        raise ToolError(f"missing voice file {path}")
+    return probe_duration(path)
+
+
+class _Captured:
+    """Keep an input error raised inside the block as text, instead of raising it."""
+
+    def __init__(self):
+        self.error = None
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, kind, exc, trace):
+        self.error = str(exc) if isinstance(exc, (ToolError, *INPUT_ERRORS)) else None
+        return self.error is not None
+
+
+def _parser():
     parser = argparse.ArgumentParser(description="Reconcile timeline.json to the voice-over lengths.")
     parser.add_argument("timeline", nargs="?", help="timeline.json, written in place")
     parser.add_argument("--audio-dir", help="folder with vo-<scene-id>.wav (default: audio/ next to the timeline)")
     parser.add_argument("--self-test", action="store_true", help="run the built-in tests")
+    return parser
+
+
+def _audio_dir(args):
+    """Return --audio-dir, or audio/ next to the timeline."""
+    return args.audio_dir or os.path.join(os.path.dirname(os.path.abspath(args.timeline)), "audio")
+
+
+def _reconcile_file(path, audio_dir):
+    """Read the timeline, reconcile it to the measured voices, and return (timeline, changes)."""
+    timeline = json.loads(pathlib.Path(path).read_text(encoding="utf-8"))
+    return timeline, reconcile(timeline, measure(timeline, audio_dir))
+
+
+def _reconciled(path, audio_dir):
+    """Return (timeline, changes, None), or (None, None, error text) on an input error."""
+    captured = _Captured()
+    result = (None, None)
+    with captured:
+        result = _reconcile_file(path, audio_dir)
+    return result + (captured.error,)
+
+
+def _written(path, timeline, changes):
+    """Write the timeline in place and return the report."""
+    pathlib.Path(path).write_text(json.dumps(timeline, indent=2) + "\n", encoding="utf-8")
+    return {"written": path, "duration_sec": timeline["meta"]["duration_sec"], "changed": changes}
+
+
+def _run(args):
+    """Reconcile the timeline file, print the report and return the exit code."""
+    timeline, changes, error = _reconciled(args.timeline, _audio_dir(args))
+    ok = error is None
+    report = _written(args.timeline, timeline, changes) if ok else {"written": False, "error": error}
+    print(json.dumps(report))
+    return 0 if ok else 2
+
+
+def main(argv=None):
+    parser = _parser()
     args = parser.parse_args(argv)
-    if args.self_test:
-        return self_test()
-    if not args.timeline:
+    missing = not args.self_test and not args.timeline
+    if missing:
         parser.error("give timeline.json or --self-test")
-    audio_dir = args.audio_dir or os.path.join(os.path.dirname(os.path.abspath(args.timeline)), "audio")
-    try:
-        with open(args.timeline, encoding="utf-8") as handle:
-            timeline = json.load(handle)
-        changes = reconcile(timeline, measure(timeline, audio_dir))
-    except (OSError, ToolError, KeyError, TypeError, ValueError, IndexError) as exc:
-        print(json.dumps({"written": False, "error": str(exc)}))
-        return 2
-    with open(args.timeline, "w", encoding="utf-8") as handle:
-        json.dump(timeline, handle, indent=2)
-        handle.write("\n")
-    print(json.dumps({"written": args.timeline, "duration_sec": timeline["meta"]["duration_sec"],
-                      "changed": changes}))
-    return 0
+    return self_test() if args.self_test else _run(args)
 
 
 # ---------------------------------------------------------------- self-test
 
+FIXTURE_KEYS = ("id", "kind", "start_sec", "duration_sec", "template", "focal_point", "caption",
+                "narration")
+
+
+def _fixture_scene(*spec):
+    """Return 1 fixture scene from values in FIXTURE_KEYS order."""
+    scene = dict(zip(FIXTURE_KEYS, spec))
+    end = scene["start_sec"] + scene["duration_sec"]
+    scene.update(beat_in=int(scene["start_sec"] * 2), beat_out=int(end * 2),
+                 plate=f"scenes/{scene['id']}/index.html", motion={"template": scene.pop("template")},
+                 transition_out="cut", critical_regions=[[0.1, 0.2, 0.6, 0.4]])
+    return scene
+
+
+FIXTURE_META = {"id": "demo", "title": "Demo", "aspect": "16:9", "fps": 60, "width": 1920,
+                "height": 1080, "duration_sec": 15.0, "lufs_target": -14, "bpm": 120,
+                "hero_sec": [10.0, 11.5], "payoff_breakdown_sec": [9.5, 10.0],
+                "allowed_silences": [[9.5, 10.0]]}
+FIXTURE_SCENES = (
+    ("s01-hook", "hook", 0.0, 2.5, "slam-in", [0.5, 0.45], "Stop flaky tests",
+     "Flaky tests waste hours."),
+    ("s02-demo", "capture", 2.5, 5.0, "zoom-follow", [0.4, 0.5],
+     "One command finds them", "Run one command and see every flaky test."),
+    ("s03-how", "diagram", 7.5, 4.5, "build-up", [0.6, 0.4], "",
+     "It reruns each test and compares results."),
+    ("s04-cta", "cta", 12.0, 3.0, "fade-up", [0.5, 0.5], "Try it today", "Try it today."),
+)
+FIXTURE_RHYTHM = [
+    {"start_sec": 0.0, "end_sec": 2.5, "energy": 8},
+    {"start_sec": 2.5, "end_sec": 7.5, "energy": 5, "events_sec": [5.0]},
+    {"start_sec": 7.5, "end_sec": 9.5, "energy": 6},
+    {"start_sec": 9.5, "end_sec": 10.0, "energy": 0, "stop": True},
+    {"start_sec": 10.0, "end_sec": 12.0, "energy": 10},
+    {"start_sec": 12.0, "end_sec": 15.0, "energy": 7},
+]
+
+
 def _music_timeline():
     """A plan that passes check_timeline.py: bpm 120 (2 bars = 4.0 s), 4 scenes, 15.0 s."""
-    def scene(sid, kind, start, duration, template, focal, caption, narration):
-        return {"id": sid, "kind": kind, "start_sec": start, "duration_sec": duration,
-                "beat_in": int(start * 2), "beat_out": int((start + duration) * 2),
-                "narration": narration, "caption": caption, "plate": f"scenes/{sid}/index.html",
-                "motion": {"template": template}, "transition_out": "cut",
-                "critical_regions": [[0.1, 0.2, 0.6, 0.4]], "focal_point": focal}
-    return {
-        "meta": {"id": "demo", "title": "Demo", "aspect": "16:9", "fps": 60, "width": 1920,
-                 "height": 1080, "duration_sec": 15.0, "lufs_target": -14, "bpm": 120,
-                 "hero_sec": [10.0, 11.5], "payoff_silence_sec": [9.5, 10.0],
-                 "allowed_silences": [[9.5, 10.0]]},
-        "scenes": [
-            scene("s01-hook", "hook", 0.0, 2.5, "slam-in", [0.5, 0.45], "Stop flaky tests",
-                  "Flaky tests waste hours."),
-            scene("s02-demo", "capture", 2.5, 5.0, "zoom-follow", [0.4, 0.5],
-                  "One command finds them", "Run one command and see every flaky test."),
-            scene("s03-how", "diagram", 7.5, 4.5, "build-up", [0.6, 0.4], "",
-                  "It reruns each test and compares results."),
-            scene("s04-cta", "cta", 12.0, 3.0, "fade-up", [0.5, 0.5], "Try it today", "Try it today."),
-        ],
-        "rhythm": [
-            {"start_sec": 0.0, "end_sec": 2.5, "energy": 8},
-            {"start_sec": 2.5, "end_sec": 7.5, "energy": 5, "events_sec": [5.0]},
-            {"start_sec": 7.5, "end_sec": 9.5, "energy": 6},
-            {"start_sec": 9.5, "end_sec": 10.0, "energy": 0, "stop": True},
-            {"start_sec": 10.0, "end_sec": 12.0, "energy": 10},
-            {"start_sec": 12.0, "end_sec": 15.0, "energy": 7},
-        ],
-    }
+    scenes = [_fixture_scene(*spec) for spec in FIXTURE_SCENES]
+    return json.loads(json.dumps({"meta": FIXTURE_META, "scenes": scenes, "rhythm": FIXTURE_RHYTHM}))
 
 
 def _starts_only(timeline, vo_durations):
@@ -244,8 +371,8 @@ def self_test():
         {"scene": "s02-demo", "old_duration_sec": 5.0, "new_duration_sec": 7.0}], changes)
     expect("scene starts and film length", [s["start_sec"] for s in new["scenes"]]
            == [0.0, 2.5, 9.5, 14.0] and new["meta"]["duration_sec"] == 17.0, new["scenes"])
-    expect("hero, silence and allowed silences move by 2.0 s",
-           new["meta"]["hero_sec"] == [12.0, 13.5] and new["meta"]["payoff_silence_sec"] == [11.5, 12.0]
+    expect("hero, breakdown and allowed silences move by 2.0 s",
+           new["meta"]["hero_sec"] == [12.0, 13.5] and new["meta"]["payoff_breakdown_sec"] == [11.5, 12.0]
            and new["meta"]["allowed_silences"] == [[11.5, 12.0]], new["meta"])
     expect("an event inside the grown scene scales (5.0 s -> 6.0 s)",
            new["rhythm"][1] == {"start_sec": 2.5, "end_sec": 9.5, "energy": 5, "events_sec": [6.0]},

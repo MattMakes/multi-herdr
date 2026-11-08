@@ -22,7 +22,7 @@ node "<skill-dir>/scripts/text_audit.mjs" \
 | `--fps` | `window.__videoMeta.fps`, then `30` | Frame rate for `__seekToFrame` |
 | `--width`, `--height` | `window.__videoMeta`, then `1920x1080` | Viewport size |
 | `--step` | `0.1` | Seconds between samples |
-| `--min-phone-px` | `8` | Smallest font size in px at 360 px phone width |
+| `--min-phone-px` | `10.5` | Smallest font size in px at 360 px phone width; this is `56 px` in a `1920x1080` frame |
 
 Exit codes: `0` no finding, `1` at least 1 finding or a scene failure, `2` a
 usage error or no Chrome. Set `CHROME_PATH` when Chrome is not at
@@ -56,7 +56,7 @@ An item keeps 1 identity while its digits change, so a counter from `0` to
 
 | Rule | Fails when |
 | :--- | :--- |
-| `too_small` | Font size x `360 / width` is below `--min-phone-px`. At `1920` wide, `8 px` needs a `43 px` font. At `1080` wide, it needs `24 px`. |
+| `too_small` | Font size x `360 / width` is below `--min-phone-px`. At `1920` wide, `10.5 px` needs a `56 px` font. |
 | `too_short` | 1 continuous showing is shorter than `0.4 s + 0.2 s` per word. The showing time is the sample count x `--step`. |
 | `overlap` | 2 items with different words cover at least `10 %` of the smaller line box. The same words on 2 layers (glow, outline) do not count. |
 | `off_frame` | A settled box goes more than `1 px` past a frame edge. |
@@ -69,6 +69,16 @@ rests there fails.
 
 Each rule reports an item once (`too_short` reports each short showing). The
 first time it fails is `time_sec`.
+
+## Caption presentation
+
+- Use caption text that is at least `56 px` in a `1920x1080` frame.
+- Put each caption on a dark scrim with about `75 %` opacity. Round its corners and pad the text.
+- Never put a caption on the subject or on product UI text.
+- Hold each caption long enough for a viewer to read it twice.
+
+The `too_small` rule enforces size, and `too_short` enforces a minimum hold.
+Inspect the phone sheet to verify the scrim, clear placement, and 2 comfortable reads.
 
 ## The report
 

@@ -339,6 +339,23 @@ fn a_worker_claims_makes_a_worktree_and_finishes() {
         .trim()
         .to_string();
     let as_worker = |args: &[&str]| w.run_as(Some(&id), args);
+    assert_claim_prints_the_ticket(&w, &id);
+    make_and_drop_worktrees(&w, &id);
+    assert_finish_steps(&w, &id);
+    let done = as_worker(&["ledger", "done", "all", "good"]);
+    assert_eq!(done.code, 0, "{}", done.err);
+    assert_eq!(done.out, "T-1 done.\n");
+    let shown = w.ok(&["ledger", "show", "dev1"]);
+    assert!(shown.starts_with("dev1 done ("), "{shown}");
+    assert!(shown.contains("persona dev.\n"), "{shown}");
+    let worker_json = json(&w.ok(&["ledger", "show", "dev1", "--json"]));
+    assert_eq!(worker_json["worker"]["role"], "dev1");
+    assert!(worker_json["stops"].is_array());
+}
+
+/// A claim needs HORCH_WORKER_ID and prints the ticket and the next steps.
+fn assert_claim_prints_the_ticket(w: &World, id: &str) {
+    let as_worker = |args: &[&str]| w.run_as(Some(id), args);
     let none = w.run(&["ledger", "claim"]);
     assert_eq!(none.code, 1);
     assert!(
@@ -366,6 +383,11 @@ fn a_worker_claims_makes_a_worktree_and_finishes() {
         lines[4],
         "When the work is complete, run: horch ledger finish"
     );
+}
+
+/// Finish refuses without a worktree. A scratch worktree drops cleanly.
+fn make_and_drop_worktrees(w: &World, id: &str) {
+    let as_worker = |args: &[&str]| w.run_as(Some(id), args);
     assert_eq!(as_worker(&["ledger", "steps"]).out, "");
     assert_eq!(as_worker(&["ledger", "progress", "half way"]).code, 0);
     let early = as_worker(&["ledger", "finish", "--json"]);
@@ -391,7 +413,11 @@ fn a_worker_claims_makes_a_worktree_and_finishes() {
         "{}",
         dropped.out
     );
+}
 
+/// Finish reports all 7 steps, and ledger steps prints the same steps.
+fn assert_finish_steps(w: &World, id: &str) {
+    let as_worker = |args: &[&str]| w.run_as(Some(id), args);
     let report = json(&as_worker(&["ledger", "finish", "--json"]).out);
     assert_eq!(report["task"], "T-1");
     let steps: Vec<(&str, &str)> = report["steps"]
@@ -407,7 +433,9 @@ fn a_worker_claims_makes_a_worktree_and_finishes() {
             ("code-sweep", "not_applicable"),
             ("complexity-sweep", "not_applicable"),
             ("recheck", "not_applicable"),
-            ("land", "passed"),
+            // The worktree has no commit, so nothing lands and nothing is
+            // pushed (video-lessons T-15).
+            ("land", "not_applicable"),
             ("pr", "not_applicable"),
             ("cleanup", "passed"),
         ]
@@ -419,19 +447,10 @@ fn a_worker_claims_makes_a_worktree_and_finishes() {
         .collect();
     assert_eq!(rows.len(), 7);
     assert_eq!(&rows[0][..4], ["1", "check", "not_applicable", "not"]);
-    assert_eq!(&rows[4][..3], ["5", "land", "passed"]);
+    assert_eq!(&rows[4][..3], ["5", "land", "not_applicable"]);
     assert_eq!(rows[6][..3], ["7", "cleanup", "passed"]);
     let by_task = w.ok(&["ledger", "steps", "T-1", "--json"]);
     assert_eq!(json(&by_task).as_array().unwrap().len(), 7);
-    let done = as_worker(&["ledger", "done", "all", "good"]);
-    assert_eq!(done.code, 0, "{}", done.err);
-    assert_eq!(done.out, "T-1 done.\n");
-    let shown = w.ok(&["ledger", "show", "dev1"]);
-    assert!(shown.starts_with("dev1 done ("), "{shown}");
-    assert!(shown.contains("persona dev.\n"), "{shown}");
-    let worker_json = json(&w.ok(&["ledger", "show", "dev1", "--json"]));
-    assert_eq!(worker_json["worker"]["role"], "dev1");
-    assert!(worker_json["stops"].is_array());
 }
 
 #[test]

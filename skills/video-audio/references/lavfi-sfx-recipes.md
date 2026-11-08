@@ -205,7 +205,7 @@ Pass 1, measure:
 
 ```bash
 ffmpeg -hide_banner -nostats -i audio/premix.wav \
-  -af loudnorm=I=-14:TP=-1.0:LRA=7:print_format=json -f null - 2>&1 \
+  -af loudnorm=I=-14:TP=-2.0:LRA=7:print_format=json -f null - 2>&1 \
   | sed -n '/^{/,/^}/p' > audio/loudnorm-pass1.json
 ```
 
@@ -220,7 +220,7 @@ print(f"measured_I={d['input_i']}:measured_TP={d['input_tp']}:"
       f"offset={d['target_offset']}")
 PY
 ffmpeg -hide_banner -v error -y -i audio/premix.wav \
-  -af "loudnorm=I=-14:TP=-1.0:LRA=7:$(cat audio/loudnorm-args.txt):linear=true,aresample=48000" \
+  -af "loudnorm=I=-14:TP=-2.0:LRA=7:$(cat audio/loudnorm-args.txt):linear=true,aresample=48000" \
   -ac 2 -c:a pcm_s24le audio/mix.wav
 ```
 
@@ -232,7 +232,8 @@ string.
 When the second pass reports `normalization_type: dynamic`, the true-peak
 target was not reachable in linear mode. Add `alimiter=limit=0.8:level=false`
 before pass 1 and run both passes again. When `check_audio.py` reports a true
-peak above `-1.0 dBTP`, run both passes again with `TP=-1.5`.
+peak above `-2.0 dBTP`, run both passes again with a lower `TP`. AAC can add
+about `+1 dB`; video-render checks the encoded MP4 at `-1.0 dBTP` or lower.
 
 ## 7. Beat grid from a music bed
 

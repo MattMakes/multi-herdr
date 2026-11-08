@@ -1,0 +1,17 @@
+{
+ "_doc": "One record of audio/assets/manifests/rights.json. The rights auditor fills in rights_seen, rights_confirmed and agent_notes, and nothing else. rights_audit.py computes every other field on each run (listed under _script_fields so you can see them). Set rights_confirmed to true only after you read the item page in this session and its terms are allowed.",
+ "id": "fs-123456",
+ "rights_seen": {
+  "site": "freesound",
+  "page_url": "https://freesound.org/people/AUTHOR/sounds/123456/",
+  "licence_as_shown": "Attribution 4.0",
+  "licence_url": "https://creativecommons.org/licenses/by/4.0/",
+  "read_on": "YYYY-MM-DD",
+  "author": "AUTHOR",
+  "title": "TITLE",
+  "ids_match": "the preview id 123456 and user id 7890 in download_url match this page"
+ },
+ "rights_confirmed": false,
+ "agent_notes": "The credit form the author asks for, word for word. Any restriction, for example: do not post the raw file.",
+ "_script_fields": ["manifest", "need", "rank", "in_scope", "severity", "rights_in_manifest", "rights", "rights_status", "attribution_required", "attribution_ok", "attribution_in_manifest", "file_ok", "file_check", "earlier_file_check", "problems", "warnings", "audit_tool", "duplicate_of"]
+}

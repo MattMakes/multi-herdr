@@ -1335,42 +1335,57 @@ fn bal_06_route_matches_gate() {
     }
 }
 
+/// `horch fleet auto` on the quota `fixture` picks `flavor` and runs the
+/// orchestrator persona `kind`. One test per fixture, so the 4 fleets run
+/// in parallel.
+fn bal_08_fleet_auto_choice(fixture: &str, flavor: &str, kind: &str) {
+    let mut h = Harness::new(&format!("bal08-{fixture}"));
+    h.set("HORCH_QUOTA_FILE", quota_fixture(fixture));
+    h.set("HORCH_NOW", NOW);
+    let project = h.project.to_string_lossy().into_owned();
+    let out = h.run(&["fleet", "auto", "--cwd", &project]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    let line = stdout(&out)
+        .lines()
+        .find(|l| l.starts_with("fleet: auto chose"))
+        .unwrap()
+        .to_string();
+    assert!(
+        line.starts_with(&format!("fleet: auto chose {flavor} - claude ")),
+        "{fixture}: {line}"
+    );
+    assert!(line.contains(", codex "), "{line}");
+    let ran = h
+        .calls_of("herdr")
+        .into_iter()
+        .find(|c| c["argv"][1] == "run")
+        .unwrap();
+    assert!(
+        ran["ran"].as_str().unwrap().contains(kind),
+        "{fixture}: {ran}"
+    );
+}
+
 #[test]
-fn bal_08_fleet_auto_choice() {
-    for (fixture, flavor, kind) in [
-        ("all-ok", "opus", "fleet-orchestrator"),
-        (
-            "claude-exhausted-codex-ok",
-            "sol",
-            "fleet-codex-orchestrator",
-        ),
-        ("claude-unknown-codex-ok", "sol", "fleet-codex-orchestrator"),
-        ("all-exhausted", "opus", "fleet-orchestrator"),
-    ] {
-        let mut h = Harness::new(&format!("bal08-{fixture}"));
-        h.set("HORCH_QUOTA_FILE", quota_fixture(fixture));
-        h.set("HORCH_NOW", NOW);
-        let project = h.project.to_string_lossy().into_owned();
-        let out = h.run(&["fleet", "auto", "--cwd", &project]);
-        assert!(out.status.success(), "{}", stderr(&out));
-        let line = stdout(&out)
-            .lines()
-            .find(|l| l.starts_with("fleet: auto chose"))
-            .unwrap()
-            .to_string();
-        assert!(
-            line.starts_with(&format!("fleet: auto chose {flavor} - claude ")),
-            "{fixture}: {line}"
-        );
-        assert!(line.contains(", codex "), "{line}");
-        let ran = h
-            .calls_of("herdr")
-            .into_iter()
-            .find(|c| c["argv"][1] == "run")
-            .unwrap();
-        assert!(
-            ran["ran"].as_str().unwrap().contains(kind),
-            "{fixture}: {ran}"
-        );
-    }
+fn bal_08_fleet_auto_choice_all_ok() {
+    bal_08_fleet_auto_choice("all-ok", "opus", "fleet-orchestrator");
+}
+
+#[test]
+fn bal_08_fleet_auto_choice_claude_exhausted_codex_ok() {
+    bal_08_fleet_auto_choice(
+        "claude-exhausted-codex-ok",
+        "sol",
+        "fleet-codex-orchestrator",
+    );
+}
+
+#[test]
+fn bal_08_fleet_auto_choice_claude_unknown_codex_ok() {
+    bal_08_fleet_auto_choice("claude-unknown-codex-ok", "sol", "fleet-codex-orchestrator");
+}
+
+#[test]
+fn bal_08_fleet_auto_choice_all_exhausted() {
+    bal_08_fleet_auto_choice("all-exhausted", "opus", "fleet-orchestrator");
 }

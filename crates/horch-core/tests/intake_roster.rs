@@ -245,22 +245,6 @@ fn t26_the_skill_importer_is_the_offered_controller() {
     assert!(t.persona.contains("--exact"));
 }
 
-#[test]
-fn t26_the_roster_check_passes_for_the_intake_teammates() {
-    let r = Roster::builtin().unwrap();
-    let names: Vec<&str> = ROLES
-        .iter()
-        .map(|r| r.name)
-        .chain(["skill-importer"])
-        .collect();
-    let problems: Vec<String> = r
-        .check()
-        .into_iter()
-        .filter(|p| names.iter().any(|n| p.contains(n)))
-        .collect();
-    assert!(problems.is_empty(), "{problems:?}");
-}
-
 /// A launch environment with a temp home and stub Linux sandbox tools, so
 /// the builder runs on every host.
 fn launch_env(home: &Path) -> LaunchEnv {

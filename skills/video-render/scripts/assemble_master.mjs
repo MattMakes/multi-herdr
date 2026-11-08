@@ -14,7 +14,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
-import { AAC_ARGS, UsageError, check, fail, ffmpeg, h264Args, loadTimeline, probe, run } from "./render_frames.mjs";
+import { UsageError, aacArgs, check, fail, ffmpeg, h264Args, loadTimeline, probe, run } from "./render_frames.mjs";
 
 const SCRIPT = fileURLToPath(import.meta.url);
 const SAMPLE_RATE = 48000;
@@ -191,21 +191,36 @@ function inputArgs(root, plan, inputs) {
 
 function ffmpegArgs(root, plan, inputs, out) {
   const graph = filterGraph(plan, inputs.overlays.length);
-  return [...inputArgs(root, plan, inputs), "-filter_complex", graph, ...MAPS, ...h264Args(plan.fps), ...AAC_ARGS, out];
+  return [...inputArgs(root, plan, inputs), "-filter_complex", graph, ...MAPS, ...h264Args(plan.fps), ...aacArgs(), out];
 }
 
 const sceneReport = (inputs, fps) => (s, i) => ({ id: s.id, source: inputs.clips[i], frames: s.frames, transition_out: s.transition.type, transition_sec: s.handle / fps });
+const masterTimelinePath = (root) => join(root, "timeline-master.json");
 
-export async function assembleMaster(timelineFile, out) {
+function writeMasterTimeline(root, timeline) {
+  const file = masterTimelinePath(root);
+  writeFileSync(file, `${JSON.stringify(timeline, null, 2)}\n`);
+  return file;
+}
+
+function prepareMaster(timelineFile) {
   const root = dirname(resolve(timelineFile));
   const timeline = loadTimeline(timelineFile);
   const plan = planMaster(timeline);
   const inputs = findInputs(root, plan);
-  const beatChecked = checkBeats(root, timeline, plan.fps);
-  mkdirSync(dirname(resolve(out)), { recursive: true });
-  await ffmpeg(ffmpegArgs(root, plan, inputs, resolve(out)));
+  return { root, timeline, plan, inputs, beatChecked: checkBeats(root, timeline, plan.fps) };
+}
+
+function masterReport(out, masterTimeline, { plan, inputs, beatChecked }) {
   const scenes = plan.scenes.map(sceneReport(inputs, plan.fps));
-  return { out, frames: plan.frames, duration_sec: plan.frames / plan.fps, beat_checked: beatChecked, scenes, overlays: inputs.overlays };
+  return { out, master_timeline: masterTimeline, frames: plan.frames, duration_sec: plan.frames / plan.fps, beat_checked: beatChecked, scenes, overlays: inputs.overlays };
+}
+
+export async function assembleMaster(timelineFile, out) {
+  const job = prepareMaster(timelineFile);
+  mkdirSync(dirname(resolve(out)), { recursive: true });
+  await ffmpeg(ffmpegArgs(job.root, job.plan, job.inputs, resolve(out)));
+  return masterReport(out, writeMasterTimeline(job.root, job.timeline), job);
 }
 
 // ---------------------------------------------------------------- self-test
@@ -350,6 +365,7 @@ async function testAssemble(root) {
   await writeProject(root);
   const report = await assembleMaster(join(root, "timeline.json"), join(root, "render/master.mp4"));
   assertEq([report.beat_checked, report.overlays], [true, ["render/overlays/captions"]], "report");
+  assertEq(JSON.parse(readFileSync(report.master_timeline, "utf8")), TIMELINE, "timeline-master.json");
   const file = join(root, "render/master.mp4");
   return `${await checkStreams(file)}; ${await checkPictures(file)}`;
 }

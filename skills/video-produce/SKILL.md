@@ -25,6 +25,10 @@ You write no `BRIEF.md`, `DIRECTION.md`, `STORYBOARD.md`, `timeline.json`,
 scenes, captures, audio or renders. Send a change in those files to the
 orchestrator.
 
+Before wave 1, gate the viewer-facing script and `claims.md` with the
+[`promo brief`](references/promo-brief.md) and [`check_claims.py`](scripts/check_claims.py). Production starts only after the gate passes and the operator approves the script.
+Project tools resolve skill scripts at run time and fail when resolution or execution fails; follow [project tools and skill scripts](references/project-tools.md).
+
 ## Steps
 
 1. Read the request. Pick 1 workflow (below). Write `PRODUCTION.md`.

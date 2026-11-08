@@ -111,20 +111,10 @@ Every input path is relative to the folder of `timeline.json`:
    render), then `captures/<scene-id>.mp4`. Each clip is normalized to
    `meta.fps`, fitted and padded to `meta.width` x `meta.height`, and trimmed
    by frame count. A short clip holds its last frame.
-2. Transitions from each scene's `transition_out`, a string or
-   `{"type": ..., "duration_sec": ...}`. The duration is clamped to
-   `0.25-0.40 s`, default `0.30 s`. The last scene's value is ignored.
-
-   | `transition_out` | ffmpeg |
-   |---|---|
-   | `cut` | `concat` |
-   | `fade`, `crossfade` | `xfade` `fade` |
-   | `wipeleft`, `wipe` | `xfade` `wipeleft` |
-   | `smoothleft`, `push-left` | `xfade` `smoothleft` |
-   | `circleopen` | `xfade` `circleopen` |
-
-   Any other name fails. The transition starts at the `start_sec` of
-   the next scene, so render each clip with its tail handle (Step 1).
+2. Transitions come from each scene's `transition_out`. The transition starts
+   at the next scene's `start_sec`, so render each clip with its tail handle.
+   The accepted names and exact ffmpeg mapping are in
+   `references/ffmpeg-compositing.md`.
 3. Beat check: when `audio/beats.json` exists, every scene start after the
    first must be within `1` frame of a value in `beats_sec` or
    `downbeats_sec`. A miss fails. The script never shifts a cut.
@@ -139,16 +129,8 @@ script prints a JSON report: `frames`, `duration_sec`, `beat_checked`, the
 source and transition of each scene, and the overlays used.
 
 The filter graph is explained in `references/ffmpeg-compositing.md`.
-
-Verify before you hand off:
-
-```sh
-ffprobe -v error -show_entries stream=codec_name,profile,level,pix_fmt,width,height,r_frame_rate,avg_frame_rate,nb_frames,sample_rate,channels -of json render/master.mp4
-```
-
-Pass rule: `h264`, `High`, level `42`, `yuv420p`, `1920x1080`,
-`r_frame_rate == avg_frame_rate == 60/1`, `nb_frames == round(meta.duration_sec x 60)`,
-audio `aac`, `48000`, `2` channels.
+The encoded-file checks and `timeline-master.json` contract are in
+`references/encoded-gates.md`. Run them on the real encoded outputs.
 
 ## Step 4 - publish pack
 
@@ -165,8 +147,8 @@ It writes, with the same inputs giving the same text files every run:
 | `captions.srt`, `captions.vtt` | 1 cue group per scene from `narration` (else `caption`). At most 2 lines of 42 chars per cue. A long scene splits into cues sized by word count. |
 | `chapters.txt` | `M:SS Title` lines. Scene 0 at `0:00`, then every scene with a `title`. With no titles, every scene. |
 | `cover.jpg` | `1920x1080` frame at `--cover-sec`, default 75% into the first `hook` scene |
-| `preview.mp4` | `5 s` from the hook start, muted, `1280 px` wide |
-| `preview.gif` | the same `5 s`, `15 fps`, `480 px` wide, looping |
+| `preview.mp4` | Full film, muted, `1280 px` wide, with the master frame count |
+| `preview.gif` | `5 s` from the hook start, `15 fps`, `480 px` wide, looping |
 | `16x9.mp4`, `9x16.mp4`, `1x1.mp4` | `1920x1080`, `1080x1920`, `1080x1080`, master codec settings |
 
 Reframing, per scene and per aspect:
@@ -181,8 +163,8 @@ Reframing, per scene and per aspect:
    the report prints a warning. Re-render that scene (path 1). Never ship a
    blind centre crop that cuts a critical region.
 
-The script prints a JSON report: `outputs`, `warnings` and the `reframe` mode
-of each scene (`crop` with `x`, `y`, `w`, `h`, `fit` or `clip`).
+The script prints `outputs`, `warnings`, `frame_counts` and each scene's
+`reframe` mode (`crop` with `x`, `y`, `w`, `h`, `fit` or `clip`).
 
 Chapter warnings repeat the YouTube rules: 3 or more chapters, each 10 s or
 longer. Scenes are 2-8 s, so give `title` only to the scene that opens each
