@@ -47,8 +47,8 @@ def _parser() -> argparse.ArgumentParser:
     return p
 
 
-def _run_script(prelude: str, path: str, args: list, cwd: str, env: dict) -> None:
-    code = prelude + f"import runpy\nsys.argv = [{path!r}] + {args!r}\nrunpy.run_path({path!r}, run_name='__main__')\n"
+def _run_script(path: str, args: list, cwd: str, env: dict) -> None:
+    code = f"import runpy, sys\nsys.argv = [{path!r}] + {args!r}\nrunpy.run_path({path!r}, run_name='__main__')\n"
     subprocess.run([sys.executable, "-c", code], check=True, cwd=cwd, env=env, capture_output=True)
 
 
@@ -119,11 +119,11 @@ def test_c_5_morph_recipe(sounds, tmp_path):
     assert np.array_equal(rec.render_seed(0, morph=1), auto.render(_strip(b), seed=0))
 
 
-def test_c_6_name_and_main_block(models, tmp_path, child_prelude, child_env):
+def test_c_6_name_and_main_block(models, tmp_path, child_env):
     path = codegen.write_recipe(str(tmp_path / "out" / "my-fit.v2.py"), models["modal"])
     rec = codegen.load_recipe(path)
     assert rec.__name__ == "my_fit_v2"
-    _run_script(child_prelude, os.path.abspath(path), [], str(tmp_path), child_env)
+    _run_script(os.path.abspath(path), [], str(tmp_path), child_env)
     y, rate = soundfile.read(str(tmp_path / "my_fit_v2.wav"), dtype="float32")
     assert rate == SR and soundfile.info(str(tmp_path / "my_fit_v2.wav")).subtype == "FLOAT"
     assert np.array_equal(y, rec.render_seed(0).astype(np.float32))
@@ -274,7 +274,7 @@ def test_c_13_forge_mode(models, tmp_path, monkeypatch):
     assert (seen["budget"], seen["pop"], seen["keep"]) == (96, 16, 4)
 
 
-def test_a_15_cli_fit_with_report(sounds, write_wav, tmp_path, monkeypatch, capsys, child_prelude, child_env,
+def test_a_15_cli_fit_with_report(sounds, write_wav, tmp_path, monkeypatch, capsys, child_env,
                                   stub_clap):
     src = write_wav("S1.wav", sounds["S1"])
     monkeypatch.chdir(tmp_path)
@@ -286,7 +286,7 @@ def test_a_15_cli_fit_with_report(sounds, write_wav, tmp_path, monkeypatch, caps
         assert (tmp_path / "out" / f"s1{ext}").exists(), ext
     assert {"kind", "chosen", "quality", "floor", "files", "seconds", "candidates"} <= set(res)
     assert res["code_renders_fit"] is True
-    _run_script(child_prelude, str(tmp_path / "out" / "s1.py"), ["0", "x.wav"], str(tmp_path), child_env)
+    _run_script(str(tmp_path / "out" / "s1.py"), ["0", "x.wav"], str(tmp_path), child_env)
     a, _ = soundfile.read(str(tmp_path / "x.wav"), dtype="float32")
     b, _ = soundfile.read(str(tmp_path / "out" / "s1.wav"), dtype="float32")
     assert np.array_equal(a, b)

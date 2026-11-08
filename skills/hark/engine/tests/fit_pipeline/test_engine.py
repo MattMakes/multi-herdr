@@ -63,12 +63,12 @@ def test_a_5_recipe_renders_as_engine(name, sounds, tmp_path):
                 assert a.dtype == b.dtype and np.array_equal(a, b), (name, kind, knobs, s)
 
 
-def test_a_6_renders_and_fits_are_deterministic(sounds, tmp_path, child_prelude):
+def test_a_6_renders_and_fits_are_deterministic(sounds, tmp_path):
     m = auto.fit(sounds["S3"], kind="spectral")
     path = str(tmp_path / "m.json")
     auto.save(m, path)
-    code = child_prelude + (
-        "import numpy as np\nfrom hark.fit.pipeline import auto\n"
+    code = (
+        "import sys\nimport numpy as np\nfrom hark.fit.pipeline import auto\n"
         f"m = auto.load({path!r})\nnp.save(sys.argv[1], auto.render(m, seed=3, width=1.2))\n")
     outs = []
     for i in range(2):
@@ -163,7 +163,7 @@ def test_a_10_finish_caps_the_peak_and_fades_in(sounds):
             assert _fade_ok(y, raw)
 
 
-def test_a_11_gate_cuts_after_each_pulse(sounds, analysis_is_real):
+def test_a_11_gate_cuts_after_each_pulse(sounds):
     x = sounds["S4"]
     m = auto.fit(x)
     assert m["post"].get("gate"), m["fit_engine"]["chosen"]
@@ -179,8 +179,7 @@ def test_a_11_gate_cuts_after_each_pulse(sounds, analysis_is_real):
         if i:
             # the gate is open again at each pulse onset
             assert abs(_rms_db(y[s: s + 240]) - _rms_db(y_open[s: s + 240])) <= 1.0, i
-            if analysis_is_real:
-                assert abs(_rms_db(y[s: s + 240]) - _rms_db(x[s: s + 240])) <= 1.0, i
+            assert abs(_rms_db(y[s: s + 240]) - _rms_db(x[s: s + 240])) <= 1.0, i
 
 
 def test_a_12_bed_strip_and_check(sounds, bed_lead):
@@ -199,7 +198,7 @@ def test_a_12_bed_strip_and_check(sounds, bed_lead):
     assert "bed" not in (plain.get("post") or {})
 
 
-def test_a_13_auto_chooses_by_character(sounds, analysis_is_real):
+def test_a_13_auto_chooses_by_character(sounds):
     s1, s3 = auto.fit(sounds["S1"]), auto.fit(sounds["S3"])
     k1 = auto.kind_of(s1)
     # Spec test adjustment (orchestrator approved): a gesture whose tones layer is sines or modal also passes.
@@ -213,8 +212,6 @@ def test_a_13_auto_chooses_by_character(sounds, analysis_is_real):
         assert s3["layers"][int(np.argmax(parts))]["role"] == "air"
     else:
         assert k3 in ("spectral", "gesture")
-    if not analysis_is_real:
-        pytest.skip("the 3-point floor target measures the real fitters (unit 20a); stand-ins are installed")
     for name in ("S1", "S2", "S3"):
         m = auto.fit(sounds[name])
         q = Q.quality(sounds[name], auto.render(m))

@@ -1,66 +1,13 @@
-"""Fixtures of the fit analysis tests: synthetic sounds S1 .. S5 and core stand-ins.
-
-The stand-ins replace hark.core.audio and hark.core.features only while the
-real modules (T-13) are absent. They are never part of the package.
-"""
+"""Fixtures of the fit analysis tests: synthetic sounds S1 .. S5."""
 
 from __future__ import annotations
 
-import importlib.util
-import sys
 import types
 
 import numpy as np
 import pytest
 
 SR = 48000
-
-
-def _k_weight(x, sr=48000):
-    """ITU-R BS.1770 K filter at 48 kHz (stand-in for hark.core.features.k_weight)."""
-    from scipy.signal import lfilter
-    b1 = [1.53512485958697, -2.69169618940638, 1.19839281085285]
-    a1 = [1.0, -1.69065929318241, 0.73248077421585]
-    b2 = [1.0, -2.0, 1.0]
-    a2 = [1.0, -1.99004745483398, 0.99007225036621]
-    return lfilter(b2, a2, lfilter(b1, a1, np.asarray(x, dtype=float), axis=0), axis=0)
-
-
-def _load(path, sr=48000, mono=False, start=None, end=None, cache=True):
-    import soundfile as sf
-    x, fs = sf.read(path, dtype="float32", always_2d=True)
-    if fs != sr:
-        from scipy.signal import resample_poly
-        x = resample_poly(x, sr, fs, axis=0).astype(np.float32)
-    x = x[:, :2]
-    if mono:
-        return x.mean(axis=1)
-    return x[:, 0] if x.shape[1] == 1 else x
-
-
-def _absent(name: str) -> bool:
-    try:
-        return importlib.util.find_spec(name) is None
-    except ModuleNotFoundError:
-        return True
-
-
-def _install_stand_ins() -> None:
-    if _absent("hark.core"):
-        sys.modules["hark.core"] = types.ModuleType("hark.core")
-    if _absent("hark.core.features"):
-        mod = types.ModuleType("hark.core.features")
-        mod.k_weight = _k_weight
-        sys.modules["hark.core.features"] = mod
-    if _absent("hark.core.audio"):
-        mod = types.ModuleType("hark.core.audio")
-        mod.SR = SR
-        mod.load = _load
-        mod.to_mono = lambda x: np.asarray(x).mean(axis=1) if np.ndim(x) == 2 else np.asarray(x)
-        sys.modules["hark.core.audio"] = mod
-
-
-_install_stand_ins()
 
 
 def make_s1(seed: int = 7) -> np.ndarray:

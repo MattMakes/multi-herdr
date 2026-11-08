@@ -377,7 +377,7 @@ def test_build_from_forge_finals(fixture_bank, tmp_path):
     assert not (tmp_path / "other.json").exists()
 
 
-def test_build_pluck_with_real_recipe(tmp_path, hark_home, real_registry):
+def test_build_pluck_with_real_recipe(tmp_path, hark_home):
     pytest.importorskip("hark.forge.recipes.impacts.pluck")
     doc = bank.build_pluck(str(tmp_path / "pluck.json"))
     assert sorted(doc["entries"]) == ["pluck/kalimba", "pluck/kalimba_ring", "pluck/kalimba_soft"]

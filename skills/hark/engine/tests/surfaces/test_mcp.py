@@ -21,7 +21,6 @@ import pytest
 from hark.surfaces import mcp_server as ms
 
 ENGINE = Path(__file__).resolve().parents[2]
-CONFTEST = Path(__file__).with_name("conftest.py")
 TOOL_ORDER = ["measure", "describe", "match", "rank", "find", "compare", "ab", "realness", "timeline", "sheet",
               "critique", "doctor", "llm_critique", "sfx_list", "sfx_render", "kit_render"]
 
@@ -68,8 +67,7 @@ def test_m_t1_tools_text():
 # ---------------------------------------------------------------- stdio
 
 BOOT = """
-import os, runpy, sys, types
-runpy.run_path(os.environ["SURFACES_CONFTEST"])["install_standins"]()
+import os, sys, types
 if os.environ.get("FAKE_DOCTOR"):
     def check(load=False):
         print("noise on stdout from the backing function")
@@ -93,7 +91,7 @@ def _stdio(calls, fake_doctor: bool = False):
     from mcp.client.stdio import stdio_client
 
     path = os.pathsep.join(p for p in (str(ENGINE), os.environ.get("PYTHONPATH", "")) if p)
-    env = dict(os.environ, PYTHONPATH=path, SURFACES_CONFTEST=str(CONFTEST))
+    env = dict(os.environ, PYTHONPATH=path)
     if fake_doctor:
         env["FAKE_DOCTOR"] = "1"
     params = StdioServerParameters(command=sys.executable, args=["-c", BOOT], env=env)
