@@ -668,6 +668,12 @@ without a flag, 1 line on stderr says why.
    runs inside `codex sandbox` with the `fleet_write` profile of its pane:
    it can write only the worktree and the state root, and its TMPDIR is the
    pane's (#181). This holds for check, recheck and land.
+   Every git `fetch`, `ls-remote` and `push` that horch runs (land, pr,
+   triage apply, the run branch push) goes through `vcs::network`: it sets
+   ssh and http stall limits as `-c` config unless the operator's environment
+   or git config sets them, and kills the git child after 10 min for a push
+   and 3 min for the others. The step then
+   fails with the command and the bound, and the next `finish` runs it again.
 6. **pr** - makes sure the run's PR exists (creates it from `run_branch`
    into `base_branch` if `runs.pr_number` is empty) and updates its
    description: 1 section per task between markers

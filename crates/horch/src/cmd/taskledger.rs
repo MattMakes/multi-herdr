@@ -2016,7 +2016,7 @@ fn run_branches(
         );
     }
     if let Some(remote) = remote {
-        let out = git.try_run(root, &["push", "--set-upstream", remote, run_branch])?;
+        let out = git.try_network(root, &["push", "--set-upstream", remote, run_branch])?;
         if !out.ok {
             eprintln!(
                 "horch ledger: warning: could not push {run_branch} to {remote}: {}",

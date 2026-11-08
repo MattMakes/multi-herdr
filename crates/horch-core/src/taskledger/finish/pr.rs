@@ -227,8 +227,14 @@ impl Heads<'_> {
     /// The tip of the run branch on the remote, or "" when it has none.
     fn remote_tip(&self) -> Result<String> {
         let rf = format!("refs/heads/{}", self.run_branch);
-        let out = self.git.run(self.root, &["ls-remote", self.remote, &rf])?;
+        let out = self
+            .git
+            .try_network(self.root, &["ls-remote", self.remote, &rf])?;
+        if !out.ok {
+            bail!("git ls-remote {} {rf} failed: {}", self.remote, out.stderr);
+        }
         Ok(out
+            .stdout
             .lines()
             .find(|l| l.ends_with(&rf))
             .and_then(|l| l.split_whitespace().next())
@@ -252,7 +258,7 @@ impl Heads<'_> {
         if !here(self) {
             let _ = self
                 .git
-                .try_run(self.root, &["fetch", self.remote, self.run_branch]);
+                .try_network(self.root, &["fetch", self.remote, self.run_branch]);
         }
         self.holds(tip)
     }
