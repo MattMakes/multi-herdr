@@ -14,6 +14,8 @@ use serde::Deserialize;
 
 use super::{Ctx, Outcome};
 
+mod config;
+
 /// The extensions the analyser parses: TypeScript and JavaScript (its core
 /// is `ts-morph`), and Python. It has no Rust or GDScript parser: it reads
 /// those files as TypeScript and reports functions that do not exist, so
@@ -349,20 +351,32 @@ fn sources(names: &str) -> Vec<String> {
         .collect()
 }
 
-/// The command that runs the analyser on `files`.
-fn analyser(cx: &Ctx<'_>, cli: &Path, files: &[String]) -> Command {
-    let mut cmd = if cli.extension().is_some_and(|e| e == "js") {
-        let mut c = Command::new(&cx.tools.node);
-        c.arg(cli);
-        c
-    } else {
-        Command::new(cli)
-    };
-    cmd.args(["--format", "json", "--threshold-action", "none"])
-        .args(files)
-        .current_dir(&cx.dir);
-    crate::runtime::process::scrub_child_env(&mut cmd);
-    cmd
+/// The analyser and where it runs.
+struct Analyser<'a> {
+    node: &'a Path,
+    cli: &'a Path,
+    dir: &'a Path,
+}
+
+impl Analyser<'_> {
+    /// The command that runs the analyser on `files`, with `config` when
+    /// they have one.
+    fn command(&self, files: &[String], config: Option<&Path>) -> Command {
+        let mut cmd = if self.cli.extension().is_some_and(|e| e == "js") {
+            let mut c = Command::new(self.node);
+            c.arg(self.cli);
+            c
+        } else {
+            Command::new(self.cli)
+        };
+        cmd.args(["--format", "json", "--threshold-action", "none"]);
+        if let Some(config) = config {
+            cmd.arg("--config").arg(config);
+        }
+        cmd.args(files).current_dir(self.dir);
+        crate::runtime::process::scrub_child_env(&mut cmd);
+        cmd
+    }
 }
 
 /// The failed outcome that names the first 10 violations.
@@ -389,33 +403,61 @@ fn violations(found: &[Violation], evidence: &[PathBuf]) -> Outcome {
     )
 }
 
-/// Run the analyser on `files` and return the analysis, or the failed
-/// outcome when it printed nothing. Its JSON goes to `evidence`.
-fn analyse(
-    cx: &Ctx<'_>,
-    cli: &Path,
-    files: &[String],
-    evidence: &Path,
-) -> Result<std::result::Result<String, Outcome>> {
-    let mut cmd = analyser(cx, cli, files);
-    // The report goes to a file, not a pipe: node exits before a piped
-    // stdout drains, and a pipe keeps only the first 64 KiB.
-    cmd.stdout(std::fs::File::create(evidence)?);
-    let out = cmd
-        .output()
-        .with_context(|| format!("running {}", cli.display()))?;
-    let json = std::fs::read_to_string(evidence)?;
-    if json.trim().is_empty() {
-        return Ok(Err(Outcome::fail(
-            "no output",
-            Some(evidence.to_path_buf()),
-            &format!(
-                "the analyser printed nothing: {}",
-                String::from_utf8_lossy(&out.stderr).trim()
-            ),
-        )));
+impl Analyser<'_> {
+    /// Run the analyser on `files` and return the analysis, or the failed
+    /// outcome when it printed nothing. Its JSON goes to `evidence`.
+    fn run(
+        &self,
+        files: &[String],
+        config: Option<&Path>,
+        evidence: &Path,
+    ) -> Result<std::result::Result<String, Outcome>> {
+        let mut cmd = self.command(files, config);
+        // The report goes to a file, not a pipe: node exits before a piped
+        // stdout drains, and a pipe keeps only the first 64 KiB.
+        cmd.stdout(std::fs::File::create(evidence)?);
+        let out = cmd
+            .output()
+            .with_context(|| format!("running {}", self.cli.display()))?;
+        let json = std::fs::read_to_string(evidence)?;
+        if json.trim().is_empty() {
+            return Ok(Err(Outcome::fail(
+                "no output",
+                Some(evidence.to_path_buf()),
+                &format!(
+                    "the analyser printed nothing: {}",
+                    String::from_utf8_lossy(&out.stderr).trim()
+                ),
+            )));
+        }
+        Ok(Ok(json))
     }
-    Ok(Ok(json))
+
+    /// Run the analyser once per nearest config of `files` (T-35): each
+    /// file is judged by the config nearest to it, and a file without one
+    /// by the defaults. The first report goes to `<seq>-complexity.json`,
+    /// the next to `<seq>-complexity-2.json`, and so on. The reports with
+    /// their evidence paths, or the first failed outcome.
+    fn run_groups(
+        &self,
+        files: &[String],
+        evidence_dir: &Path,
+        seq: i64,
+    ) -> Result<std::result::Result<Vec<(PathBuf, String)>, Outcome>> {
+        let mut reports = Vec::new();
+        for (i, (cfg, group)) in config::groups(self.dir, files).into_iter().enumerate() {
+            let name = match i {
+                0 => format!("{seq}-complexity.json"),
+                n => format!("{seq}-complexity-{}.json", n + 1),
+            };
+            let path = evidence_dir.join(name);
+            match self.run(&group, cfg.as_deref(), &path)? {
+                Ok(json) => reports.push((path, json)),
+                Err(failed) => return Ok(Err(failed)),
+            }
+        }
+        Ok(Ok(reports))
+    }
 }
 
 /// The violations in changed functions of the Rust `files`, from clippy
@@ -456,7 +498,7 @@ pub fn step(cx: &Ctx<'_>) -> Result<Outcome> {
     }
     let mut found = Vec::new();
     let mut evidence = Vec::new();
-    let mut ts_json = None;
+    let mut reports = Vec::new();
     if !files.is_empty() {
         let Some(cli) = &cx.tools.complexity_cli else {
             return Ok(Outcome::fail(
@@ -465,17 +507,21 @@ pub fn step(cx: &Ctx<'_>) -> Result<Outcome> {
                 "the complexity-sweep skill's analyser was not found. Install the code plugin's complexity-sweep skill (and run npm install in its code/core and code/cli), or set HORCH_COMPLEXITY_CLI to its code/cli/dist/index.js",
             ));
         };
-        let path = cx.evidence_dir.join(format!("{}-complexity.json", cx.seq));
-        match analyse(cx, cli, &files, &path)? {
-            Ok(json) => ts_json = Some(json),
+        let analyser = Analyser {
+            node: &cx.tools.node,
+            cli,
+            dir: &cx.dir,
+        };
+        match analyser.run_groups(&files, &cx.evidence_dir, cx.seq)? {
+            Ok(r) => reports = r,
             Err(failed) => return Ok(failed),
         }
-        evidence.push(path);
     }
     let diff = git.run(&cx.dir, &["diff", "-U0", &format!("{base}...HEAD"), "--"])?;
     let changed = changed_lines(&diff);
-    if let Some(json) = ts_json {
+    for (path, json) in reports {
         found.extend(in_changed_functions(&json, &changed, &cx.dir)?);
+        evidence.push(path);
     }
     if !rust.is_empty() {
         let path = cx.evidence_dir.join(format!("{}-clippy.json", cx.seq));
@@ -656,6 +702,79 @@ pub fn tangled(v: &[u32]) -> u32 {
             out.note
                 .contains("src/lib.rs:5 tangled cognitiveComplexity=5 (max 2)"),
             "{out:?}"
+        );
+    }
+
+    /// A fake analyser, run as `/bin/sh <script>`: 1 violation per file,
+    /// whose metric names the `--config` it got, or "default".
+    const FAKE: &str = r#"cfg=default
+files=
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --config) cfg="$2"; shift ;;
+    --format|--threshold-action) shift ;;
+    *) files="$files $1" ;;
+  esac
+  shift
+done
+printf '{"files":[],"violations":['
+sep=
+for f in $files; do
+  printf '%s{"functionName":"f","filePath":"%s","line":1,"metric":"%s","value":2,"threshold":1}' "$sep" "$f" "$cfg"
+  sep=,
+done
+printf ']}\n'
+"#;
+
+    #[test]
+    fn t_35_each_file_is_judged_by_its_nearest_config_and_both_groups_report() {
+        let top = tempfile::tempdir().unwrap();
+        let dir = top.path().join("repo");
+        let evidence = top.path().join("evidence");
+        std::fs::create_dir_all(dir.join("skills/hark/engine/hark")).unwrap();
+        std::fs::create_dir_all(&evidence).unwrap();
+        let cfg = dir.join("skills/hark/engine/.static-analysisrc.json");
+        std::fs::write(&cfg, "{}").unwrap();
+        let cli = top.path().join("cli.js");
+        std::fs::write(&cli, FAKE).unwrap();
+        let analyser = Analyser {
+            node: Path::new("/bin/sh"),
+            cli: &cli,
+            dir: &dir,
+        };
+        let files = vec![
+            "skills/hark/engine/hark/dsp.py".to_string(),
+            "lib.ts".to_string(),
+        ];
+        let reports = analyser
+            .run_groups(&files, &evidence, 3)
+            .unwrap()
+            .expect("the analyser runs");
+        let paths: Vec<&PathBuf> = reports.iter().map(|(p, _)| p).collect();
+        assert_eq!(
+            paths,
+            vec![
+                &evidence.join("3-complexity.json"),
+                &evidence.join("3-complexity-2.json")
+            ]
+        );
+        let changed: BTreeMap<String, Vec<(u64, u64)>> =
+            files.iter().map(|f| (f.clone(), vec![(1, 1)])).collect();
+        let mut found = Vec::new();
+        for (_, json) in &reports {
+            found.extend(in_changed_functions(json, &changed, &dir).unwrap());
+        }
+        let judged: Vec<(&str, &str)> = found
+            .iter()
+            .map(|v| (v.file_path.as_str(), v.metric.as_str()))
+            .collect();
+        let cfg = cfg.to_string_lossy();
+        assert_eq!(
+            judged,
+            vec![
+                ("lib.ts", "default"),
+                ("skills/hark/engine/hark/dsp.py", cfg.as_ref()),
+            ]
         );
     }
 
