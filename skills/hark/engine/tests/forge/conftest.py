@@ -63,7 +63,20 @@ def _audio_stand_in() -> types.ModuleType:
         sf.write(str(p), np.asarray(x, dtype=np.float64), sr, subtype=subtype)
         return str(p)
 
+    def list_media(paths, recursive=True, exts=None):
+        exts = exts or mod.MEDIA_EXTS
+        out = []
+        for p in [paths] if isinstance(paths, (str, Path)) else paths:
+            p = Path(p)
+            if p.is_dir():
+                out += sorted(str(f) for f in (p.rglob("*") if recursive else p.iterdir())
+                              if f.is_file() and f.suffix.lower() in exts)
+            elif p.is_file():
+                out.append(str(p))
+        return out
+
     mod.AudioError, mod.to_mono, mod.load, mod.write_wav = AudioError, to_mono, load, write_wav
+    mod.list_media = list_media
     mod.MEDIA_EXTS = frozenset({".wav", ".flac", ".aif", ".aiff", ".ogg", ".mp3"})
     return mod
 
@@ -213,3 +226,77 @@ class ToyCritic:
 def toy_critic():
     """Factory of model-free critics: toy_critic(flat=False, refs=None)."""
     return ToyCritic
+
+
+# ---------------------------------------------------------------- stub listen services
+
+class StubServices:
+    """Deterministic stand-ins for the listen models (no ML). Counts embeddings."""
+
+    def __init__(self):
+        self.embeds = 0
+        self.tag_calls = 0
+
+    @staticmethod
+    def _vec(x):
+        from hark.forge.engine import tone
+
+        p = 10 ** (tone.profile(x) / 20)
+        return p / (np.linalg.norm(p) + 1e-12)
+
+    def embed_text(self, texts):
+        out = []
+        for t in texts:
+            v = np.random.default_rng(sum(map(ord, t))).random(28)
+            out.append(v / np.linalg.norm(v))
+        return np.array(out)
+
+    def calibrate_z(self, E, Q):
+        return 3.5 + 10 * (np.asarray(E) @ np.asarray(Q).T - 0.7)
+
+    def top_terms(self, e, k=3):
+        return ["ping", "tone", "chime"][:k]
+
+    def embed_files(self, paths):
+        from hark.core.audio import load
+
+        self.embeds += 1
+        return np.array([self._vec(load(p)) for p in paths])
+
+    def embed_audio(self, arrays):
+        self.embeds += 1
+        return np.array([self._vec(a) for a in arrays])
+
+    def audible(self, m):
+        return float(np.max(np.abs(m))) > 1e-4
+
+    def pure_tone(self, m):
+        return False
+
+    def p_real(self, m, e):
+        return 0.9
+
+    def feats(self, x):
+        m = np.asarray(x, dtype=float).mean(axis=1)
+        return {"length_s": len(m) / SR, "attack_ms": 2.0 + float(np.argmax(np.abs(m))) / 48}
+
+    def typicality(self, e, A, k):
+        c = np.sort(np.asarray(A) @ e)[::-1][:k]
+        return float((c.mean() - 0.9) * 20)
+
+    def tagger_name(self):
+        return "stub-tagger"
+
+    def tags(self, m):
+        self.tag_calls += 1
+        return [("Ping", 0.8), ("Chime", 0.1), ("Tone", 0.05)], 0.02
+
+
+@pytest.fixture
+def stub_listen(monkeypatch):
+    """Install stub listen services in the critic; returns the stub."""
+    from hark.forge.engine import critic
+
+    stub = StubServices()
+    monkeypatch.setattr(critic, "services", lambda: stub)
+    return stub
