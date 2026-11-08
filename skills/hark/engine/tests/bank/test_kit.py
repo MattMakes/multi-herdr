@@ -322,14 +322,22 @@ def test_audition_default_folder_under_hark_home(fixture_bank, hark_home, tmp_pa
 # ---------------------------------------------------------------- presets (AT-33, AT-34)
 
 
-def test_at_33_presets_validate_shipped(shipped, open_ids):
+def test_at_33_presets_validate_shipped(shipped):
     for name, count in PRESET_TAKES.items():
         doc = kit.preset(name)
-        # a role whose sound is an open forge04 member (left out of the bank) is a known gap, not a new one
-        problems = [p for p in kit.problems(doc) if not any(f"'{i}'" in p for i in open_ids["forge04"])]
-        assert problems == []
-        if not any(f"'{i}'" in p for p in kit.problems(doc) for i in open_ids["forge04"]):
-            assert len(kit.plan(doc)) == count
+        assert kit.problems(doc) == []
+        assert len(kit.plan(doc)) == count
+
+
+def test_launch_swap_logged_and_clean(shipped, open_ids):
+    # T-41: the text role swaps the refused mallet/pluck for the closest passing bank sound, and logs why
+    doc = kit.preset("launch")
+    swap = doc["swaps"]["text"]
+    assert swap["from"] == "mallet/pluck" and swap["from"] in open_ids["forge04"]
+    assert swap["from"] not in shipped.ids() and swap["reason"]
+    assert doc["roles"]["text"]["sound"] == swap["to"] == "mallet/celesta"
+    role = {k: v for k, v in doc["roles"]["text"].items() if k in kit.ROLE_KEYS}
+    assert kit.check({"kit": 1, "sr": 48000, "roles": {"text": role}})["ok"]
 
 
 @pytest.mark.parametrize("name", sorted(PRESET_TAKES))
