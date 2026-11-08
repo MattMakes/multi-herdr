@@ -166,19 +166,95 @@ def t40_text(ms: Any) -> str:
     return "-" if not _finite(ms) else (f"{ms:.0f} ms" if ms < 1000 else f"{ms / 1000:.2f} s")
 
 
+def _yes_no(v: bool) -> str:
+    return "yes" if v else "no"
+
+
+def _param_float(v: float) -> str:
+    return str(v) if not math.isfinite(v) else (f"{v:.0f}" if abs(v) >= 1000 else f"{v:.4g}")
+
+
+def _param_list(v: list | tuple) -> str:
+    return ", ".join(param_text(x) for x in v[:8]) + (" ..." if len(v) > 8 else "")
+
+
+def _param_dict(v: dict) -> str:
+    return "{" + ", ".join(f"{k}: {param_text(x)}" for k, x in list(v.items())[:6]) + "}"
+
+
+_PARAM_FORMATS: tuple[tuple[Any, Any], ...] = (
+    (bool, _yes_no), (int, str), (float, _param_float), ((list, tuple), _param_list), (dict, _param_dict))
+
+
 def param_text(v: Any) -> str:
     """Parameter values: yes/no, ints as is, floats to 4 significant digits, short lists and dicts."""
-    if isinstance(v, bool):
-        return "yes" if v else "no"
-    if isinstance(v, int):
-        return str(v)
-    if isinstance(v, float):
-        return str(v) if not math.isfinite(v) else (f"{v:.0f}" if abs(v) >= 1000 else f"{v:.4g}")
-    if isinstance(v, (list, tuple)):
-        return ", ".join(param_text(x) for x in v[:8]) + (" ..." if len(v) > 8 else "")
-    if isinstance(v, dict):
-        return "{" + ", ".join(f"{k}: {param_text(x)}" for k, x in list(v.items())[:6]) + "}"
-    return str(v)
+    fn = next((f for kind, f in _PARAM_FORMATS if isinstance(v, kind)), str)
+    return fn(v)
+
+
+def fmt_num(v: Any, fmt: str) -> str:
+    return fmt.format(v) if _finite(v) else "-"
+
+
+def known_passes(sounds: list[dict]) -> list[dict]:
+    """The sounds whose critic pass value is known."""
+    return [s for s in sounds if s["critic"] and s["critic"].get("passes") is not None]
+
+
+def passed(known: list[dict]) -> int:
+    return sum(1 for s in known if s["critic"]["passes"])
+
+
+def all_same(v: dict) -> bool:
+    """Every sound of the version is the same file as in an earlier version."""
+    return bool(v["sounds"]) and all(s["same_as"] for s in v["sounds"])
+
+
+def shown_name(name: str, variant: str | None) -> str:
+    """Only the trailing digits of ``name_07`` when the sound has a variant name."""
+    tail = name.rsplit("_", 1)
+    return tail[1] if variant and len(tail) == 2 and tail[1].isdigit() else name
+
+
+def pills(s: dict) -> str:
+    same = (f'<span class="pill same" title="same file as in that version">= {esc(s["same_as"])}</span>'
+            if s.get("same_as") else "")
+    passes = (s.get("critic") or {}).get("passes")
+    word = {True: "pass", False: "no pass"}.get(passes)
+    cls = "pass" if passes else "nopass"
+    return same + (f'<span class="pill {cls}">{word}</span>' if word else "")
+
+
+def phrase_cells(b: dict) -> list[tuple[str, str, str, bool]]:
+    return [("phrase z", fmt_num(b.get("phrase_z"), "{:.2f}"), "benchmark phrase z", True),
+            ("AudioSet", b.get("audioset") or "-", "top class", True),
+            ("stereo r", fmt_num(b.get("stereo_corr"), "{:.2f}"), "stereo correlation", True)]
+
+
+def bench_value_cells(b: dict) -> list[tuple[str, str, str, bool]]:
+    inside = f"{b['inside']:g} / {b['n_checks']}" if _finite(b.get("inside")) and b.get("n_checks") else "-"
+    return [("bench tone", fmt_num(b.get("tone_db"), "{:.1f} dB"), "distance to the bench median", True),
+            ("bench tail", fmt_num(b.get("t40_ratio"), "{:.2f} x"), "tail over bench median", True),
+            ("inside", inside, "checks inside the real spread", True)]
+
+
+def param_head(sounds: list[dict]) -> str:
+    cells = "".join(f"<th>{esc(s['name'].rsplit('_', 1)[-1])} {esc(s.get('variant') or '')}</th>" for s in sounds)
+    return f"<tr><th>parameter</th>{cells}</tr>"
+
+
+def seed_row(sounds: list[dict]) -> str:
+    cells = "".join(f"<td>{esc(s['seed'] if s['seed'] is not None else '-')}</td>" for s in sounds)
+    return f"<tr><td>seed</td>{cells}</tr>"
+
+
+def param_row(key: str, sounds: list[dict]) -> str:
+    cells = "".join(f"<td>{esc(param_text(s['params'][key]) if key in s['params'] else '-')}</td>" for s in sounds)
+    return f"<tr><td>{esc(key)}</td>{cells}</tr>"
+
+
+SPAN_HTML = ('<span title="time span of every picture on this card; log frequency 30 Hz to 20 kHz, 72 dB range">'
+             'span {:.2f} s</span>')
 
 
 def loudness_target(lufs: list[float]) -> float | None:
@@ -263,14 +339,16 @@ class Page:
                  if self.multi else " Each category shows its variants in 1 row.")
         return f'<p class="lede">{esc(text)}</p>'
 
+    def _label_sounds(self, label: str) -> list[dict]:
+        versions = [v for c in self.cards for v in c["versions"] if v and v["label"] == label]
+        return [s for v in versions for s in v["sounds"]]
+
+    def _pass_part(self, label: str) -> str:
+        known = known_passes(self._label_sounds(label))
+        return f"{label + ' ' if self.multi else ''}{passed(known)} / {len(known)}"
+
     def _pass_text(self) -> str:
-        parts = []
-        for lab in self.labels:
-            known = [s for c in self.cards for v in c["versions"] if v and v["label"] == lab
-                     for s in v["sounds"] if s["critic"] and s["critic"].get("passes") is not None]
-            a = sum(1 for s in known if s["critic"]["passes"])
-            parts.append(f"{lab + ' ' if self.multi else ''}{a} / {len(known)}")
-        return "critic pass " + ", ".join(parts)
+        return "critic pass " + ", ".join(self._pass_part(lab) for lab in self.labels)
 
     def _meta(self) -> str:
         items = [f"{len(self.cards)} categories", f"{len(self._made())} sounds", self._pass_text()]
@@ -305,23 +383,27 @@ class Page:
             cells += ["variety (refs)", "tail", "tone dB", "inside"] if lab in bench else []
         return "<tr>" + "".join(f"<th>{esc(c)}</th>" for c in cells) + "</tr>"
 
-    def _overview_cells(self, v: dict | None, bench: set[str], lab: str) -> list[str]:
-        if not v:
-            return ["-", "-"] + (["-"] * 4 if lab in bench else [])
+    def _count_cells(self, v: dict) -> list[str]:
         n = len(v["sounds"])
-        same = f"= {v['sounds'][0]['same_as']} " if n and all(s["same_as"] for s in v["sounds"]) else ""
-        known = [s for s in v["sounds"] if s["critic"] and s["critic"].get("passes") is not None]
-        pas = f"{sum(1 for s in known if s['critic']['passes'])} / {n}" if known else "-"
-        return [f"{same}{n}", pas] + (self._bench_values(v) if lab in bench else [])
+        known = known_passes(v["sounds"])
+        same = f"= {v['sounds'][0]['same_as']} " if all_same(v) else ""
+        return [f"{same}{n}", f"{passed(known)} / {n}" if known else "-"]
+
+    def _overview_cells(self, v: dict | None, bench: set[str], lab: str) -> list[str]:
+        cells = self._count_cells(v) if v else ["-", "-"]
+        more = (self._bench_values(v) if v else ["-"] * 4) if lab in bench else []
+        return cells + more
+
+    @staticmethod
+    def _bench_value(rows: dict[str, dict], name: str, refs: bool = False) -> str:
+        r = rows.get(name)
+        extra = f" ({r['forge']})" if r and refs and r["forge"] != "-" else ""
+        return r["made"] + extra if r else "-"
 
     def _bench_values(self, v: dict) -> list[str]:
         rows = {r["label"]: r for r in (v["bench_summary"] or {}).get("rows", [])}
-        def cell(name: str, refs: bool = False) -> str:
-            r = rows.get(name)
-            if not r:
-                return "-"
-            return r["made"] + (f" ({r['forge']})" if refs and r["forge"] != "-" else "")
-        return [cell("variety", True), cell("tail t40"), cell("tone distance"), cell("inside")]
+        return [self._bench_value(rows, "variety", True), self._bench_value(rows, "tail t40"),
+                self._bench_value(rows, "tone distance"), self._bench_value(rows, "inside")]
 
     def _overview(self) -> str:
         bench = self._bench_cols()
@@ -379,16 +461,8 @@ class Page:
                 ("tail t40", t40_text(c.get("t40_ms")), "time to drop 40 dB", False)]
 
     def _bench_cells(self, b: dict) -> list[tuple[str, str, str, bool]]:
-        if b.get("tone_db") is None and b.get("t40_ratio") is None:
-            pz = f"{b['phrase_z']:.2f}" if _finite(b.get("phrase_z")) else "-"
-            sr = f"{b['stereo_corr']:.2f}" if _finite(b.get("stereo_corr")) else "-"
-            return [("phrase z", pz, "benchmark phrase z", True), ("AudioSet", b.get("audioset") or "-", "top class", True),
-                    ("stereo r", sr, "stereo correlation", True)]
-        tone = f"{b['tone_db']:.1f} dB" if _finite(b.get("tone_db")) else "-"
-        tail = f"{b['t40_ratio']:.2f} x" if _finite(b.get("t40_ratio")) else "-"
-        inside = f"{b['inside']:g} / {b['n_checks']}" if _finite(b.get("inside")) and b.get("n_checks") else "-"
-        return [("bench tone", tone, "distance to the bench median", True), ("bench tail", tail, "tail over bench median", True),
-                ("inside", inside, "checks inside the real spread", True)]
+        plain = b.get("tone_db") is None and b.get("t40_ratio") is None
+        return phrase_cells(b) if plain else bench_value_cells(b)
 
     def _kv(self, cells: list[tuple[str, str, str, bool]]) -> str:
         return '<div class="kv">' + "".join(
@@ -397,15 +471,9 @@ class Page:
 
     def _name_line(self, s: dict) -> str:
         name, var = s["name"], s.get("variant")
-        tail = name.rsplit("_", 1)
-        shown = tail[1] if var and len(tail) == 2 and tail[1].isdigit() else name
         v = f'<span class="v">{esc(var)}</span>' if var else ""
-        pills = f'<span class="pill same" title="same file as in that version">= {esc(s["same_as"])}</span>' if s.get("same_as") else ""
-        passes = (s.get("critic") or {}).get("passes")
-        if passes is not None:
-            pills += f'<span class="pill {"pass" if passes else "nopass"}">{"pass" if passes else "no pass"}</span>'
         tip = name + (f" ({var})" if var else "")
-        return f'<div class="name" title="{esc(tip)}">{esc(shown)} {v}{pills}</div>'
+        return f'<div class="name" title="{esc(tip)}">{esc(shown_name(name, var))} {v}{pills(s)}</div>'
 
     def _words(self, c: dict) -> str:
         words = str(c.get("words") or "")
@@ -451,22 +519,18 @@ class Page:
                  (os.path.join(os.path.dirname(v["folder"]), "LOG.md"), "LOG.md")]
         return "".join(f' <a href="{esc(self.media.url(p))}">{esc(t)}</a>' for p, t in items if os.path.isfile(p))
 
+    def _meta_part(self, lab: str, v: dict | None) -> str:
+        pre = f"{lab} " if self.multi else ""
+        sounds = v["sounds"] if v else []
+        known = known_passes(sounds)
+        text = f"{pre}critic pass {passed(known)} / {len(sounds)}" if known else f"{pre}{len(sounds)} sounds"
+        return esc(text if v else f"{lab}: -")
+
     def _card_meta(self, card: dict) -> str:
-        parts = []
-        for lab, v in zip(self.labels, card["versions"]):
-            pre = f"{lab} " if self.multi else ""
-            if not v:
-                parts.append(esc(f"{lab}: -"))
-                continue
-            known = [s for s in v["sounds"] if s["critic"] and s["critic"].get("passes") is not None]
-            n = len(v["sounds"])
-            parts.append(esc(f"{pre}critic pass {sum(1 for s in known if s['critic']['passes'])} / {n}"
-                             if known else f"{pre}{n} sounds"))
+        parts = [self._meta_part(lab, v) for lab, v in zip(self.labels, card["versions"])]
         newest = self._newest(card)
         links = self._links(newest) if newest else ""
-        span = (f'<span title="time span of every picture on this card; log frequency 30 Hz to 20 kHz, 72 dB range">'
-                f'span {card["span"]:.2f} s</span>')
-        return f'<p class="meta">{" · ".join(parts)}{links} · {span}</p>'
+        return f'<p class="meta">{" · ".join(parts)}{links} · {SPAN_HTML.format(card["span"])}</p>'
 
     def _bench_block(self, card: dict) -> str:
         blocks = [self._bench_one(v) for v in card["versions"] if v]
@@ -500,18 +564,18 @@ class Page:
             return f'<div class="row solo">{grid}</div>'
         return f'<div class="row"><div class="lab">{esc(label)}<small>{esc(sub)}</small></div>{grid}</div>'
 
+    def _version_row(self, lab: str, v: dict | None, cols: int, labelled: bool) -> str:
+        if not v:
+            return self._row(lab, "", f'<p class="meta">no {esc(lab)} sounds for this category</p>', cols, labelled)
+        sub = "unchanged" if all_same(v) else f"{len(v['sounds'])} sounds"
+        tiles = "".join(self.tile(s) for s in v["order"])
+        return self._row(lab if self.multi else "made", sub, tiles, cols, labelled)
+
     def _rows(self, card: dict) -> str:
         cols, labelled = self._cols(card), self.multi or bool(card["refs"])
-        out = []
-        for lab, v in zip(self.labels, card["versions"]):
-            shown = lab if self.multi else "made"
-            if not v:
-                out.append(self._row(lab, "", f'<p class="meta">no {esc(lab)} sounds for this category</p>', cols, labelled))
-                continue
-            sub = "unchanged" if v["sounds"] and all(s["same_as"] for s in v["sounds"]) else f"{len(v['sounds'])} sounds"
-            out.append(self._row(shown, sub, "".join(self.tile(s) for s in v["order"]), cols, labelled))
-        if card["refs"]:
-            out.append(self._row("ref", "nearest forge ref", "".join(self.ref_tile(r) for r in card["refs"]), cols, True))
+        out = [self._version_row(lab, v, cols, labelled) for lab, v in zip(self.labels, card["versions"])]
+        refs = "".join(self.ref_tile(r) for r in card["refs"])
+        out += [self._row("ref", "nearest forge ref", refs, cols, True)] if card["refs"] else []
         return "".join(out)
 
     def _audition(self, card: dict) -> str:
@@ -531,18 +595,18 @@ class Page:
         body = "".join(self._param_table(v) for v in versions)
         return f"<details><summary>Recipe and parameters ({n} sounds)</summary>{body}</details>"
 
-    def _param_table(self, v: dict) -> str:
-        rep, sounds = v["report"], v["sounds"]
+    def _method_line(self, v: dict) -> str:
+        rep = v["report"]
         pre = f"{v['label']}: " if self.multi else ""
-        method = f"<p><b>{esc(pre)}recipe {esc(rep.get('recipe') or '?')}</b>{esc('. ' + rep['method']) if rep.get('method') else ''}</p>"
+        method = esc(". " + rep["method"]) if rep.get("method") else ""
+        return f"<p><b>{esc(pre)}recipe {esc(rep.get('recipe') or '?')}</b>{method}</p>"
+
+    def _param_table(self, v: dict) -> str:
+        sounds = v["sounds"]
         keys = list(dict.fromkeys(k for s in sounds for k in s["params"]))
-        head = "<tr><th>parameter</th>" + "".join(
-            f"<th>{esc(s['name'].rsplit('_', 1)[-1])} {esc(s.get('variant') or '')}</th>" for s in sounds) + "</tr>"
-        seed = "<tr><td>seed</td>" + "".join(f"<td>{esc(s['seed'] if s['seed'] is not None else '-')}</td>" for s in sounds) + "</tr>"
-        rows = "".join("<tr><td>" + esc(k) + "</td>" + "".join(
-            f"<td>{esc(param_text(s['params'][k]) if k in s['params'] else '-')}</td>" for s in sounds) + "</tr>" for k in keys)
         label = f'<tr><td colspan="{len(sounds) + 1}"><b>{esc(v["label"])}</b></td></tr>' if self.multi else ""
-        return f"{method}<table>{label}{head}{seed}{rows}</table>"
+        rows = "".join(param_row(k, sounds) for k in keys)
+        return f"{self._method_line(v)}<table>{label}{param_head(sounds)}{seed_row(sounds)}{rows}</table>"
 
     def card(self, card: dict) -> str:
         pro = '<span class="badge" title="modelled on the designed effects of reference launch films">pro</span>' \
