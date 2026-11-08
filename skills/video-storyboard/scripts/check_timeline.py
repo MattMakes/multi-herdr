@@ -79,6 +79,11 @@ RANGE_KEYS = ("hero_sec", "payoff_breakdown_sec")
 RANGE_MESSAGE = "meta.%s must be [start_sec, end_sec] with 0 <= start_sec < end_sec <= meta.duration_sec"
 BEATS_PER_BAR = 4
 HERO_EARLIEST, HERO_LATEST = 0.30, 0.90
+HERO_WINDOW_MESSAGE = "meta.hero_sec [%.3f, %.3f] s must sit inside %.3f s to %.3f s (30 %% to 90 %% of the film)"
+BREAKDOWN_LATE_MESSAGE = "meta.payoff_breakdown_sec ends at %.3f s, after the hero start %.3f s"
+HERO_MISSING_MESSAGE = "a film with music (meta.bpm) needs meta.hero_sec"
+EVENT_GAP_MESSAGE = ("%.3f s to %.3f s has no event for %.2f s; the limit is %d bars (%.2f s) "
+                     "outside a declared stop")
 MIN_DIRECTIONS = 3
 PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
 HEX_COLOR = re.compile(r"#[0-9A-Fa-f]{6}\b")
@@ -109,6 +114,10 @@ class Report:
         if scene is not None:
             entry["scene"] = scene
         self.errors.append(entry)
+
+    def add_all(self, rule, messages):
+        """Add 1 error with rule for each message."""
+        self.errors.extend({"rule": rule, "message": message} for message in messages)
 
 
 def scene_label(scene, index):
@@ -746,39 +755,50 @@ def open_pieces(start, end, stops):
 
 
 def check_event_gap(meta, scenes, rhythm, report):
-    if "bpm" not in meta:
-        return
-    limit = MAX_GAP_BARS * BEATS_PER_BAR * 60.0 / meta["bpm"]
+    has_music = "bpm" in meta
+    gaps = event_gaps(meta, scenes, rhythm) if has_music else []
+    report.add_all("event_gap", [EVENT_GAP_MESSAGE % gap for gap in gaps])
+
+
+def event_times(meta, scenes, rhythm):
+    """Return the sorted event times: film edges, scene starts and rhythm events."""
     events = {0.0, meta["duration_sec"]} | {scene["start_sec"] for scene in scenes}
     events |= {event for item in rhythm for event in item.get("events_sec", [])}
+    return sorted(events)
+
+
+def event_gaps(meta, scenes, rhythm):
+    """Return (start, end, length, bars, limit) for each gap over the limit outside a stop."""
+    limit = MAX_GAP_BARS * BEATS_PER_BAR * 60.0 / meta["bpm"]
+    ordered = event_times(meta, scenes, rhythm)
     stops = [(item["start_sec"], item["end_sec"]) for item in rhythm if item.get("stop")]
-    ordered = sorted(events)
-    for a, b in zip(ordered, ordered[1:]):
-        for start, end in open_pieces(a, b, stops):
-            if end - start > limit + START_TOLERANCE_SEC:
-                report.add(
-                    "event_gap",
-                    "%.3f s to %.3f s has no event for %.2f s; the limit is %d bars (%.2f s) outside a declared stop"
-                    % (start, end, end - start, MAX_GAP_BARS, limit),
-                )
+    pieces = [piece for a, b in zip(ordered, ordered[1:]) for piece in open_pieces(a, b, stops)]
+    return [(a, b, b - a, MAX_GAP_BARS, limit) for a, b in pieces if b - a > limit + START_TOLERANCE_SEC]
 
 
 def check_hero(meta, report):
-    duration = meta["duration_sec"]
+    report.add_all("hero", hero_errors(meta))
+
+
+def hero_errors(meta):
+    """Return the hero messages: a missing hero with music, a hero out of its window, a late breakdown."""
     hero = meta.get("hero_sec")
-    if hero is None:
-        if "bpm" in meta:
-            report.add("hero", "a film with music (meta.bpm) needs meta.hero_sec")
-        return
-    if hero[0] < HERO_EARLIEST * duration or hero[1] > HERO_LATEST * duration:
-        report.add(
-            "hero",
-            "meta.hero_sec [%.3f, %.3f] s must sit inside %.3f s to %.3f s (30 %% to 90 %% of the film)"
-            % (hero[0], hero[1], HERO_EARLIEST * duration, HERO_LATEST * duration),
-        )
-    breakdown = meta.get("payoff_breakdown_sec")
-    if breakdown is not None and breakdown[1] > hero[0] + START_TOLERANCE_SEC:
-        report.add("hero", "meta.payoff_breakdown_sec ends at %.3f s, after the hero start %.3f s" % (breakdown[1], hero[0]))
+    missing = [HERO_MISSING_MESSAGE] if "bpm" in meta else []
+    return missing if hero is None else hero_window_errors(meta, hero) + breakdown_errors(meta, hero)
+
+
+def hero_window_errors(meta, hero):
+    """Return a message when the hero is outside 30 % to 90 % of the film."""
+    earliest, latest = HERO_EARLIEST * meta["duration_sec"], HERO_LATEST * meta["duration_sec"]
+    outside = hero[0] < earliest or hero[1] > latest
+    return [HERO_WINDOW_MESSAGE % (hero[0], hero[1], earliest, latest)] if outside else []
+
+
+def breakdown_errors(meta, hero):
+    """Return a message when meta.payoff_breakdown_sec ends after the hero start."""
+    end = (meta.get("payoff_breakdown_sec") or [0.0, -math.inf])[1]
+    late = end > hero[0] + START_TOLERANCE_SEC
+    return [BREAKDOWN_LATE_MESSAGE % (end, hero[0])] if late else []
 
 
 def check_menu_time(meta, scenes, report):
@@ -1026,6 +1046,18 @@ def run(timeline_path, out_path, zoom_plan_path=None):
     return report_result(timeline_path, out_path, errors)
 
 
+# valid_timeline() plus these fields is a film with music: bpm 120, 1 bar = 2 s.
+MUSIC_META = {"bpm": 120, "terms": ["flaky tests"], "hero_sec": [12.0, 13.5],
+              "payoff_breakdown_sec": [11.5, 12.0]}
+MUSIC_RHYTHM = [
+    {"start_sec": 0.0, "end_sec": 2.5, "energy": 8},
+    {"start_sec": 2.5, "end_sec": 7.5, "energy": 5, "events_sec": [5.0]},
+    {"start_sec": 7.5, "end_sec": 11.5, "energy": 6, "events_sec": [10.0]},
+    {"start_sec": 11.5, "end_sec": 12.0, "energy": 0, "stop": True},
+    {"start_sec": 12.0, "end_sec": 15.0, "energy": 10},
+]
+
+
 def self_test():
     import copy
     import subprocess
@@ -1144,21 +1176,9 @@ def self_test():
     def music_timeline():
         """valid_timeline() with music: bpm 120 (1 bar = 2 s), rhythm, hero, breakdown and terms."""
         timeline = valid_timeline()
-        timeline["meta"].update({
-            "bpm": 120,
-            "terms": ["flaky tests"],
-            "hero_sec": [12.0, 13.5],
-            "payoff_breakdown_sec": [11.5, 12.0],
-        })
-        timeline["scenes"][0]["narration"] = "Flaky tests waste hours."
-        timeline["scenes"][0]["caption"] = "Stop flaky tests"
-        timeline["rhythm"] = [
-            {"start_sec": 0.0, "end_sec": 2.5, "energy": 8},
-            {"start_sec": 2.5, "end_sec": 7.5, "energy": 5, "events_sec": [5.0]},
-            {"start_sec": 7.5, "end_sec": 11.5, "energy": 6, "events_sec": [10.0]},
-            {"start_sec": 11.5, "end_sec": 12.0, "energy": 0, "stop": True},
-            {"start_sec": 12.0, "end_sec": 15.0, "energy": 10},
-        ]
+        timeline["meta"].update(copy.deepcopy(MUSIC_META))
+        timeline["scenes"][0].update(narration="Flaky tests waste hours.", caption="Stop flaky tests")
+        timeline["rhythm"] = copy.deepcopy(MUSIC_RHYTHM)
         return timeline
 
     def reframe(scale):
@@ -1560,6 +1580,8 @@ def self_test():
                 timeline = music_timeline()
                 timeline["meta"][key] = value
                 self.assertEqual(rules_of(timeline), {"schema"}, key)
+
+        def test_14_schema_of_rhythm_and_on_screen_text(self):
             timeline = valid_timeline()
             timeline["rhythm"] = [{"start_sec": 0.0, "end_sec": 2.0, "energy": 3}]
             self.assertEqual(rules_of(timeline), {"schema"}, "rhythm without meta.bpm")

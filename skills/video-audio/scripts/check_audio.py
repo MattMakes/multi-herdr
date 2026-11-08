@@ -1084,7 +1084,8 @@ def _drop_case(p, expect, name, hero, rules):
 
 def _breakdown_dip_tests(p, expect, tone):
     """A breakdown dips <= 12 dB and is never silent."""
-    _write(p("breakdown.json"), {"meta": {"duration_sec": 5.0, "payoff_breakdown_sec": [2.0, 2.6]}})
+    plan = p("breakdown.json")
+    _write(plan, {"meta": {"duration_sec": 5.0, "payoff_breakdown_sec": [2.0, 2.6]}})
     # Gains 0.5, 0.1 and 0 are dips of 6 dB, 20 dB and silence.
     for case in BREAKDOWN_CASES:
         _dip_case(p, expect, tone, case)

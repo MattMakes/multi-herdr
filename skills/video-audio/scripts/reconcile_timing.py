@@ -39,10 +39,12 @@ import functools
 import json
 import math
 import os
+import pathlib
 import subprocess
 import sys
 
 BREATH_PAD_SEC = 0.25
+INPUT_ERRORS = (OSError, KeyError, TypeError, ValueError, IndexError)
 
 
 class ToolError(Exception):
@@ -199,30 +201,70 @@ def measure(timeline, audio_dir):
     return durations
 
 
-def main(argv=None):
+class _Captured:
+    """Keep an input error raised inside the block as text, instead of raising it."""
+
+    def __init__(self):
+        self.error = None
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, kind, exc, trace):
+        self.error = str(exc) if isinstance(exc, (ToolError, *INPUT_ERRORS)) else None
+        return self.error is not None
+
+
+def _parser():
     parser = argparse.ArgumentParser(description="Reconcile timeline.json to the voice-over lengths.")
     parser.add_argument("timeline", nargs="?", help="timeline.json, written in place")
     parser.add_argument("--audio-dir", help="folder with vo-<scene-id>.wav (default: audio/ next to the timeline)")
     parser.add_argument("--self-test", action="store_true", help="run the built-in tests")
+    return parser
+
+
+def _audio_dir(args):
+    """Return --audio-dir, or audio/ next to the timeline."""
+    return args.audio_dir or os.path.join(os.path.dirname(os.path.abspath(args.timeline)), "audio")
+
+
+def _reconcile_file(path, audio_dir):
+    """Read the timeline, reconcile it to the measured voices, and return (timeline, changes)."""
+    timeline = json.loads(pathlib.Path(path).read_text(encoding="utf-8"))
+    return timeline, reconcile(timeline, measure(timeline, audio_dir))
+
+
+def _reconciled(path, audio_dir):
+    """Return (timeline, changes, None), or (None, None, error text) on an input error."""
+    captured = _Captured()
+    result = (None, None)
+    with captured:
+        result = _reconcile_file(path, audio_dir)
+    return result + (captured.error,)
+
+
+def _written(path, timeline, changes):
+    """Write the timeline in place and return the report."""
+    pathlib.Path(path).write_text(json.dumps(timeline, indent=2) + "\n", encoding="utf-8")
+    return {"written": path, "duration_sec": timeline["meta"]["duration_sec"], "changed": changes}
+
+
+def _run(args):
+    """Reconcile the timeline file, print the report and return the exit code."""
+    timeline, changes, error = _reconciled(args.timeline, _audio_dir(args))
+    ok = error is None
+    report = _written(args.timeline, timeline, changes) if ok else {"written": False, "error": error}
+    print(json.dumps(report))
+    return 0 if ok else 2
+
+
+def main(argv=None):
+    parser = _parser()
     args = parser.parse_args(argv)
-    if args.self_test:
-        return self_test()
-    if not args.timeline:
+    missing = not args.self_test and not args.timeline
+    if missing:
         parser.error("give timeline.json or --self-test")
-    audio_dir = args.audio_dir or os.path.join(os.path.dirname(os.path.abspath(args.timeline)), "audio")
-    try:
-        with open(args.timeline, encoding="utf-8") as handle:
-            timeline = json.load(handle)
-        changes = reconcile(timeline, measure(timeline, audio_dir))
-    except (OSError, ToolError, KeyError, TypeError, ValueError, IndexError) as exc:
-        print(json.dumps({"written": False, "error": str(exc)}))
-        return 2
-    with open(args.timeline, "w", encoding="utf-8") as handle:
-        json.dump(timeline, handle, indent=2)
-        handle.write("\n")
-    print(json.dumps({"written": args.timeline, "duration_sec": timeline["meta"]["duration_sec"],
-                      "changed": changes}))
-    return 0
+    return self_test() if args.self_test else _run(args)
 
 
 # ---------------------------------------------------------------- self-test
@@ -241,32 +283,33 @@ def _fixture_scene(*spec):
     return scene
 
 
+FIXTURE_META = {"id": "demo", "title": "Demo", "aspect": "16:9", "fps": 60, "width": 1920,
+                "height": 1080, "duration_sec": 15.0, "lufs_target": -14, "bpm": 120,
+                "hero_sec": [10.0, 11.5], "payoff_breakdown_sec": [9.5, 10.0],
+                "allowed_silences": [[9.5, 10.0]]}
+FIXTURE_SCENES = (
+    ("s01-hook", "hook", 0.0, 2.5, "slam-in", [0.5, 0.45], "Stop flaky tests",
+     "Flaky tests waste hours."),
+    ("s02-demo", "capture", 2.5, 5.0, "zoom-follow", [0.4, 0.5],
+     "One command finds them", "Run one command and see every flaky test."),
+    ("s03-how", "diagram", 7.5, 4.5, "build-up", [0.6, 0.4], "",
+     "It reruns each test and compares results."),
+    ("s04-cta", "cta", 12.0, 3.0, "fade-up", [0.5, 0.5], "Try it today", "Try it today."),
+)
+FIXTURE_RHYTHM = [
+    {"start_sec": 0.0, "end_sec": 2.5, "energy": 8},
+    {"start_sec": 2.5, "end_sec": 7.5, "energy": 5, "events_sec": [5.0]},
+    {"start_sec": 7.5, "end_sec": 9.5, "energy": 6},
+    {"start_sec": 9.5, "end_sec": 10.0, "energy": 0, "stop": True},
+    {"start_sec": 10.0, "end_sec": 12.0, "energy": 10},
+    {"start_sec": 12.0, "end_sec": 15.0, "energy": 7},
+]
+
+
 def _music_timeline():
     """A plan that passes check_timeline.py: bpm 120 (2 bars = 4.0 s), 4 scenes, 15.0 s."""
-    scene = _fixture_scene
-    return {
-        "meta": {"id": "demo", "title": "Demo", "aspect": "16:9", "fps": 60, "width": 1920,
-                 "height": 1080, "duration_sec": 15.0, "lufs_target": -14, "bpm": 120,
-                 "hero_sec": [10.0, 11.5], "payoff_breakdown_sec": [9.5, 10.0],
-                 "allowed_silences": [[9.5, 10.0]]},
-        "scenes": [
-            scene("s01-hook", "hook", 0.0, 2.5, "slam-in", [0.5, 0.45], "Stop flaky tests",
-                  "Flaky tests waste hours."),
-            scene("s02-demo", "capture", 2.5, 5.0, "zoom-follow", [0.4, 0.5],
-                  "One command finds them", "Run one command and see every flaky test."),
-            scene("s03-how", "diagram", 7.5, 4.5, "build-up", [0.6, 0.4], "",
-                  "It reruns each test and compares results."),
-            scene("s04-cta", "cta", 12.0, 3.0, "fade-up", [0.5, 0.5], "Try it today", "Try it today."),
-        ],
-        "rhythm": [
-            {"start_sec": 0.0, "end_sec": 2.5, "energy": 8},
-            {"start_sec": 2.5, "end_sec": 7.5, "energy": 5, "events_sec": [5.0]},
-            {"start_sec": 7.5, "end_sec": 9.5, "energy": 6},
-            {"start_sec": 9.5, "end_sec": 10.0, "energy": 0, "stop": True},
-            {"start_sec": 10.0, "end_sec": 12.0, "energy": 10},
-            {"start_sec": 12.0, "end_sec": 15.0, "energy": 7},
-        ],
-    }
+    scenes = [_fixture_scene(*spec) for spec in FIXTURE_SCENES]
+    return json.loads(json.dumps({"meta": FIXTURE_META, "scenes": scenes, "rhythm": FIXTURE_RHYTHM}))
 
 
 def _starts_only(timeline, vo_durations):
