@@ -424,6 +424,19 @@ def _median_abs_cells(details: Any) -> dict:
     return {cell_name: float(median(dev_v)) for cell_name, dev_v in by_cell.items() if len(dev_v) >= 2}
 
 
+def _cells_in_all(pair_dets: list[dict]) -> list[str]:
+    """Cell names of the first comparison that every comparison has."""
+    return [name for name in pair_dets[0]["cells"] if all(name in det["cells"] for det in pair_dets)]
+
+
+def _rank_hits(found: list[tuple]) -> tuple[list, float]:
+    """Outside entries sorted by weighted size, and the summed excess in input order."""
+    surplus = 0.0
+    for _, extra in found:
+        surplus += extra
+    return sorted((hit[0] for hit in found), key=lambda entry: -abs(entry[1]) * entry[2]), surplus
+
+
 class EnvRef:
     """Bandgrams of a reference set, their pairwise envelope distances and typical cell gaps."""
 
@@ -461,13 +474,8 @@ class EnvRef:
     def _beyond_all(self, pair_dets: list[dict]) -> tuple[list, float]:
         if len(pair_dets) < 2:
             return [], 0.0
-        common = [name for name in pair_dets[0]["cells"] if all(name in det["cells"] for det in pair_dets)]
-        found = [hit for hit in (self._cell_overshoot(name, pair_dets) for name in common) if hit is not None]
-        surplus = 0.0
-        for _, extra in found:
-            surplus += extra
-        beyond = sorted((hit[0] for hit in found), key=lambda entry: -abs(entry[1]) * entry[2])
-        return beyond, surplus
+        hits = [self._cell_overshoot(name, pair_dets) for name in _cells_in_all(pair_dets)]
+        return _rank_hits([hit for hit in hits if hit is not None])
 
     def spread(self, exclude: Any = None) -> list[float]:
         """For each kept ref, the distance to its closest kept neighbour; empty below 3 kept refs."""
