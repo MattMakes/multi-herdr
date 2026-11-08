@@ -140,10 +140,15 @@ impl<'a> Courier<'a> {
         Ok(Step::Deliver { pane, relay_live })
     }
 
-    /// The orchestrator's pane, else whether its relay socket is live.
+    /// Whether the orchestrator's relay socket is live, else its pane. A live
+    /// relay comes first: an idle pane can hold the operator's draft, and
+    /// typed text lands on it.
     fn orchestrator_target(&self, pending: &[Message]) -> (Option<(String, bool)>, bool) {
         if pending.is_empty() {
             return (None, false);
+        }
+        if channel::is_live(&self.socket) {
+            return (None, true);
         }
         // A pane id file can outlive its pane: a pane herdr does not answer
         // for is no target.
@@ -153,8 +158,7 @@ impl<'a> Courier<'a> {
                 .ok()
                 .map(|state| (id, state.at_prompt()))
         });
-        let relay_live = pane.is_none() && channel::is_live(&self.socket);
-        (pane, relay_live)
+        (pane, false)
     }
 
     /// The queue is empty. A message enqueued while this courier was deciding

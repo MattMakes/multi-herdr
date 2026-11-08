@@ -8,6 +8,9 @@ use horch_core::runtime::RuntimeContext;
 use horch_core::workspace::{herdr::Herdr, model::Direction, paneshell::PaneShell};
 
 const PROBE: &str = "[horch] NOTE: run horch inbox to confirm delivery";
+/// The probe through a live relay. The relay's answer confirms it, so the
+/// line asks the orchestrator for nothing.
+const RELAY_PROBE: &str = "[horch] NOTE: the channel relay delivers your fleet's reports";
 const MARKER: &str = "HORCH_DELIVERY_73";
 
 fn budget(ctx: &RuntimeContext) -> Duration {
@@ -87,16 +90,19 @@ fn doctor_check(ctx: &RuntimeContext) -> Result<()> {
     }
 }
 
-/// Queue a startup probe and confirm only its explicit acknowledgement. A
-/// deadline or failed push leaves the probe durable for the normal courier.
+/// Queue a startup probe and confirm it. A live relay gets the probe, and
+/// its answer confirms it. Only with no relay is the probe typed into the
+/// pane, and then only `horch inbox` confirms it. A deadline or failed push
+/// leaves the probe durable for the normal courier.
 pub fn fleet(ctx: &RuntimeContext, workspace: &str, pane: &str) {
     match fleet_check(ctx, workspace, pane) {
-        Ok(()) => println!("fleet delivery: confirmed by horch inbox."),
+        Ok(by) => println!("fleet delivery: confirmed by {by}."),
         Err(e) => eprintln!("warning: fleet delivery {e:#}; mail remains pending for the courier."),
     }
 }
 
-fn fleet_check(ctx: &RuntimeContext, workspace: &str, pane: &str) -> Result<()> {
+/// Returns what confirmed the delivery.
+fn fleet_check(ctx: &RuntimeContext, workspace: &str, pane: &str) -> Result<&'static str> {
     let mail = Mail::under(&ctx.paths.state_root, workspace);
     let id = mail.enqueue("horch", PROBE)?;
     if let Err(error) = super::mail::start_courier(ctx, workspace) {
@@ -106,14 +112,27 @@ fn fleet_check(ctx: &RuntimeContext, workspace: &str, pane: &str) -> Result<()> 
     let herdr = Herdr::with_bin(&ctx.bins.harness.herdr)
         .with_timeout(call_timeout(ctx, Duration::from_secs(1)))
         .until(Some(deadline));
+    let socket = channel::socket_path(&ctx.paths.state_root, workspace);
     let mut attempted = false;
     let mut reason = "not acknowledged";
     loop {
         if !mail.pending()?.iter().any(|m| m.id == id) {
-            return Ok(());
+            return Ok("horch inbox");
         }
         if Instant::now() >= deadline {
             bail!("{reason}");
+        }
+        if !attempted && channel::is_live(&socket) {
+            // An idle pane can hold the operator's draft: never type
+            // while a relay answers.
+            let left = deadline.saturating_duration_since(Instant::now());
+            return match channel::send(&socket, "horch", RELAY_PROBE, left) {
+                Ok(()) => {
+                    mail.ack(&id)?;
+                    Ok("the channel relay")
+                }
+                Err(error) => bail!("relay did not take the probe ({error}); not acknowledged"),
+            };
         }
         if !attempted {
             match herdr.pane_get(pane) {
@@ -129,14 +148,7 @@ fn fleet_check(ctx: &RuntimeContext, workspace: &str, pane: &str) -> Result<()> 
                     }
                 }
                 Ok(_) => reason = "orchestrator not idle; not acknowledged",
-                Err(_) => {
-                    let socket = channel::socket_path(&ctx.paths.state_root, workspace);
-                    reason = if channel::is_live(&socket) {
-                        "not acknowledged"
-                    } else {
-                        "no relay or orchestrator pane; not acknowledged"
-                    };
-                }
+                Err(_) => reason = "no relay or orchestrator pane; not acknowledged",
             }
         }
         std::thread::sleep(

@@ -4,6 +4,10 @@
 
 ## Unreleased
 
+- horch no longer types mail over your prompt when the channel relay is live.
+  The courier's redeliveries and the `horch fleet` startup probe go through
+  the relay, and the probe no longer asks the orchestrator to run `horch inbox`.
+
 ## v0.4.7 - 2026-11-08
 
 - `herdr-fleet` starts again while another fleet runs in the same project.
