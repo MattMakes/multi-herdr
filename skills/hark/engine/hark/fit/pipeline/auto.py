@@ -177,15 +177,24 @@ def _confirm_row(ctx: _Ctx, model: dict, row: dict) -> None:
         row["clap2"] = round((row.get("clap", 0.0) + 2 * clap) / 3, 4)
 
 
-def _clap_margin(ctx: _Ctx, kept: dict, rows: dict, choice: str) -> str:
+def _clap_alts(kept: dict, rows: dict, choice: str) -> list:
+    """Candidates whose seed-0 CLAP beats the choice by the margin at a near score."""
     base = rows[choice]
-    alts = [c for c in kept if c != choice and rows[c].get("clap", 0) >= base.get("clap", 0) + CLAP_MARGIN
+    return [c for c in kept if c != choice and rows[c].get("clap", 0) >= base.get("clap", 0) + CLAP_MARGIN
             and rows[c]["score"] <= base["score"] + CLAP_TOL]
+
+
+def _clap_holds(row: dict, base: dict) -> bool:
+    """The confirmed test: CLAP margin, score tolerance and envelope tolerance."""
+    return (row["clap2"] >= base["clap2"] + CLAP_MARGIN and row["score2"] <= base["score2"] + CLAP_TOL
+            and row["quality"]["env_corr"] >= base["quality"]["env_corr"] - CLAP_ENV_TOL)
+
+
+def _clap_margin(ctx: _Ctx, kept: dict, rows: dict, choice: str) -> str:
+    alts = _clap_alts(kept, rows, choice)
     for c in alts:
         _confirm_row(ctx, kept[c], rows[c])
-    env0 = base["quality"]["env_corr"]
-    ok = [c for c in alts if rows[c]["clap2"] >= base["clap2"] + CLAP_MARGIN
-          and rows[c]["score2"] <= base["score2"] + CLAP_TOL and rows[c]["quality"]["env_corr"] >= env0 - CLAP_ENV_TOL]
+    ok = [c for c in alts if _clap_holds(rows[c], rows[choice])]
     if not ok:
         return choice
     best = max(ok, key=lambda c: rows[c]["clap2"])
@@ -279,28 +288,60 @@ def _candidate_loop(ctx: _Ctx, cands: list, post: bool, verbose: bool) -> tuple[
     return kept, rows, order
 
 
+def _check_bed(ctx: _Ctx, model: dict, chosen: str, rows: dict, post: bool, fe: dict) -> dict:
+    """Run the bed check, record it in fe, and return the model it keeps."""
+    if not (ctx.bed and BED_CHECK):
+        return model
+    seeds = ctx.seeds + CONFIRM_SEEDS if "score2" in rows[chosen] else ctx.seeds
+    model, info = _bed_check(ctx, model, chosen, rows[chosen], post, seeds)
+    fe["candidates"].append(info["row"])
+    fe["bed"] = info["bed"]
+    if not info["bed"]["kept"]:
+        model.get("post", {}).pop("bed", None)
+    return model
+
+
+def _plan_of(candidates: list | None, char: dict) -> list:
+    return list(candidates) if candidates else plan(char)
+
+
+def _after_choice(ctx: _Ctx, model: dict, chosen: str, rows: dict, post: bool, space: bool, fe: dict) -> dict:
+    """The bed check and the space layer of the chosen model."""
+    model = _check_bed(ctx, model, chosen, rows, post, fe)
+    if post and space:
+        fe["space"] = _add_space(_space_input(ctx, fe), model)
+    return model
+
+
+def _space_input(ctx: _Ctx, fe: dict) -> np.ndarray:
+    """The stripped recording, or the original when the bed check dropped the bed."""
+    return ctx.X if fe.get("bed", {}).get("kept", True) else ctx.X0
+
+
+def _collect(collect: list | None, order: list) -> None:
+    if collect is not None:
+        collect.extend(order)
+
+
 def _fit_auto(ctx: _Ctx, candidates: list | None, post: bool, space: bool, confirm: int | None,
               verbose: bool, collect: list | None) -> dict:
     char = character(ctx.X)
-    cands = list(candidates) if candidates else plan(char)
-    kept, rows, order = _candidate_loop(ctx, cands, post, verbose)
+    kept, rows, order = _candidate_loop(ctx, _plan_of(candidates, char), post, verbose)
     chosen = _choose(ctx, kept, rows, CONFIRM if confirm is None else confirm)
-    model = kept[chosen]
     fe: dict[str, Any] = {"kind": "auto", "chosen": chosen, "character": char, "candidates": order,
                           "seeds": list(ctx.seeds)}
-    if ctx.bed and BED_CHECK:
-        seeds = ctx.seeds + CONFIRM_SEEDS if "score2" in rows[chosen] else ctx.seeds
-        model, info = _bed_check(ctx, model, chosen, rows[chosen], post, seeds)
-        order.append(info["row"])
-        fe["bed"] = info["bed"]
-        if not info["bed"]["kept"]:
-            model.get("post", {}).pop("bed", None)
-    if post and space:
-        X = ctx.X if fe.get("bed", {}).get("kept", True) else ctx.X0
-        fe["space"] = _add_space(X, model)
-    if collect is not None:
-        collect.extend(order)
+    model = _after_choice(ctx, kept[chosen], chosen, rows, post, space, fe)
+    _collect(collect, order)
     model["fit_engine"] = fe
+    return model
+
+
+def _single(X0: np.ndarray, kind: str, layers: tuple | None, fast: bool, name: str | None, post: bool,
+            bed: dict | None, space: bool) -> dict:
+    if kind not in KINDS:
+        raise ValueError(f"fit: unknown kind {kind!r}; expected auto or one of {KINDS}")
+    model = _fit_single(X0, kind, layers, fast, name, post, bed, space)
+    model["fit_engine"] = {"kind": kind}
     return model
 
 
@@ -309,18 +350,21 @@ def fit(x: Any, kind: str = "auto", layers: tuple | None = None, candidates: lis
         verbose: bool = False, collect: list | None = None, post: bool = True, bed: bool = True,
         space: bool = True, confirm: int | None = None) -> dict:
     """Fit a recording (a path or a 48 kHz array) and return the model."""
-    t0 = time.perf_counter()
+    return _timed(time.perf_counter(), x, bed, kind, layers=layers, candidates=candidates, clap=clap, fast=fast,
+                  seeds=seeds, name=name, verbose=verbose, collect=collect, post=post, space=space, confirm=confirm)
+
+
+def _timed(t0: float, x: Any, bed: bool, kind: str, **opts: Any) -> dict:
+    """Load, detect the bed, fit, and stamp the seconds since t0."""
     X0 = load_input(x)
     found = bed_of(X0) if bed else None
-    if kind != "auto":
-        if kind not in KINDS:
-            raise ValueError(f"fit: unknown kind {kind!r}; expected auto or one of {KINDS}")
-        model = _fit_single(X0, kind, layers, fast, name, post, found, space)
-        model = _finish_model(model, name)
-        model["fit_engine"] = {"kind": kind, "seconds": round(time.perf_counter() - t0, 3)}
-        return model
-    ctx = _Ctx(X0, found, tuple(seeds), clap, name, fast)
-    model = _fit_auto(ctx, candidates, post, space, confirm, verbose, collect)
-    model = _finish_model(model, name)
+    model = _finish_model(_fit_any(X0, found, kind, opts), opts["name"])
     model["fit_engine"]["seconds"] = round(time.perf_counter() - t0, 3)
     return model
+
+
+def _fit_any(X0: np.ndarray, found: dict | None, kind: str, o: dict) -> dict:
+    if kind == "auto":
+        ctx = _Ctx(X0, found, tuple(o["seeds"]), o["clap"], o["name"], o["fast"])
+        return _fit_auto(ctx, o["candidates"], o["post"], o["space"], o["confirm"], o["verbose"], o["collect"])
+    return _single(X0, kind, o["layers"], o["fast"], o["name"], o["post"], found, o["space"])
