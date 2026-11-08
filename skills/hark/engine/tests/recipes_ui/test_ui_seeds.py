@@ -122,5 +122,8 @@ def test_at_17_seed_store(tmp_path):
 def test_at_17_shipped_bank_loads_delivered_first():
     search = pytest.importorskip("hark.forge.engine.search")
     click = load("click")
+    entries = bank("click")["entries"]
+    loaded = search.load_seeds("click", target=click.TARGETS["click"], refs=[], folder=SEEDS)
+    assert loaded[0] == entries[5]["params"]  # the first entry delivered in the click context
     loaded = search.load_seeds("click", target=click.TARGETS["pro_click"], refs=[], folder=SEEDS)
-    assert loaded[0] == bank("click")["entries"][5]["params"]
+    assert loaded[0] == entries[0]["params"]  # the first entry delivered in the pro_click context

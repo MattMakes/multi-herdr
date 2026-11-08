@@ -105,10 +105,12 @@ def metric_info(key: str) -> dict:
         return {"group": "realness", "label": "realness (p_real)", "unit": "p", "decimals": 2}
     from hark.listen.profile import METRICS
 
-    row = METRICS.get(key) if isinstance(METRICS, dict) else next((m for m in METRICS if m.get("key") == key), None)
-    row = dict(row or {})
-    return {"group": row.get("group", ""), "label": row.get("label", key), "unit": row.get("unit", ""),
-            "decimals": row.get("decimals", 2)}
+    # listen rows are (key, group, unit, decimals, label)
+    row = next((m for m in METRICS if m[0] == key), None)
+    if row is None:
+        return {"group": "", "label": key, "unit": "", "decimals": 2}
+    _, group, unit, decimals, label = row
+    return {"group": group, "label": label, "unit": unit, "decimals": decimals}
 
 
 def fmt_value(key: str, v) -> str:
@@ -299,7 +301,7 @@ def leave_one_out(profile: dict, match: str) -> dict:
     if len(others) < 2:
         return profile
     loo = aggregate(others)
-    loo.update(loo_of=match, n_full=profile.get("n"))
+    loo.update(n=len(others), films=others, loo_of=match, n_full=profile.get("n"))
     return loo
 
 
@@ -894,11 +896,11 @@ def _check_media(path: str, video: str | None) -> str | None:
     from hark.listen.profile import media_problem
     from hark.timeline.timeline import is_picture
 
-    if video and os.path.abspath(video) == os.path.abspath(path) and not is_picture(path, probe(path)):
-        video = None
     problem = media_problem(path)
     if problem:
-        raise _error(problem)
+        raise _error(f"file not found: {path}" if problem == "not found" else problem)
+    if video and os.path.abspath(video) == os.path.abspath(path) and not is_picture(path, probe(path)):
+        video = None
     if video:
         _check_video(video)
     return video or (path if is_picture(path, probe(path)) else None)

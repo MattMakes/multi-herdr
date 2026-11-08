@@ -22,7 +22,7 @@ def clap_cached(cfg, snapshot, pin_files):
 
 @pytest.fixture
 def fake_bank(monkeypatch, tmp_path):
-    """Install a stand-in hark.forge.bank.bank (only while the real module is absent)."""
+    """Put a fake hark.forge.bank.bank in sys.modules for one test (doctor imports it by name)."""
 
     def install(ids=(), version="t1", broken=None, files=()):
         mod = types.ModuleType("hark.forge.bank.bank")
@@ -41,11 +41,7 @@ def fake_bank(monkeypatch, tmp_path):
         monkeypatch.setitem(sys.modules, "hark.forge.bank.bank", mod)
         return mod
 
-    try:
-        import hark.forge.bank.bank  # noqa: F401
-    except ModuleNotFoundError:
-        return install
-    pytest.skip("the real bank module exists; doctor uses it")
+    return install
 
 
 def test_at_25_cached_and_missing_models(cfg, clap_cached, run_hark):

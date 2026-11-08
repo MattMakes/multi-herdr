@@ -1424,7 +1424,7 @@
       "name": "hark",
       "copied_files": [],
       "verbatim": false,
-      "budget_exempt": "own skill that bundles the hark engine (Python package, tests and launcher) the skill runs; the engine is code, not prompt text"
+      "budget_exempt": "clean-room engine package under engine/"
     },
     {
       "name": "improve-codebase-architecture",

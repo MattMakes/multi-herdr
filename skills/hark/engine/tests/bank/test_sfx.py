@@ -14,20 +14,12 @@ from hark.forge.bank import bank, sfx
 SR = 48000
 
 
-def _stand_in_knobs() -> bool:
-    from hark.forge.engine import knobs
-
-    return bool(getattr(knobs, "STAND_IN", False))
-
-
-def _knob_sound(fixture_id: str, category: str, recipe_module: str, tmp_path, monkeypatch) -> str:
-    """The fixture sound on the stand-in knob engine; with the real engine, the real recipe's default."""
-    if _stand_in_knobs():
-        return fixture_id
+def _knob_sound(category: str, recipe_module: str, tmp_path, monkeypatch, **params) -> str:
+    """The real recipe's default (plus params) as a one-entry extra bank; returns its id."""
     mod = pytest.importorskip(recipe_module)
     sound_id = f"{category}/real_default"
     entry = {"type": "forge", "category": category, "member": "real_default", "recipe": recipe_module.rsplit(".", 1)[1],
-             "fn": "render", "params": dict(mod.DEFAULTS), "seed": 1, "peak_db": -1.0, "gain_db": 0.0}
+             "fn": "render", "params": {**mod.DEFAULTS, **params}, "seed": 1, "peak_db": -1.0, "gain_db": 0.0}
     raw = bank.renderer({**entry, "id": sound_id})()
     entry["meta"] = bank.meta_of(bank.normalize(raw, -1.0).astype(np.float32))
     path = tmp_path / "real.json"
@@ -48,7 +40,7 @@ def _glide(f0: float, f1: float, rise_s: float, hold_s: float) -> np.ndarray:
     f = np.concatenate([f0 * (f1 / f0) ** (np.arange(n_rise) / n_rise), np.full(n_hold, f1)])
     x = 0.5 * np.sin(2 * np.pi * np.cumsum(f) / SR)
     x[:96] *= np.linspace(0, 1, 96)
-    x[-1440:] *= np.linspace(1, 0, 1440) ** 2
+    x[-n_hold:] *= 10 ** (-3.5 * np.linspace(0, 1, n_hold))  # the hold dies away to -70 dB (no cut tail)
     return x
 
 
@@ -81,13 +73,13 @@ def test_at_3_cli_render(fixture_bank, tmp_path, cli, capsys):
 
 
 def test_at_4_dur_gives_exact_length(fixture_bank, tmp_path, monkeypatch):
-    sound = _knob_sound("whoosh_fast/crisp", "whoosh_fast", "hark.forge.recipes.motion.whoosh", tmp_path, monkeypatch)
+    sound = _knob_sound("whoosh_fast", "hark.forge.recipes.motion.whoosh", tmp_path, monkeypatch)
     y, meta = bank.render(sound, dur=0.5, checks=False)
     assert len(y) == 24000 and meta["edits"]["dur"]["target"] == 0.5
 
 
 def test_at_5_apex_lands_within_5_ms(fixture_bank, tmp_path, monkeypatch):
-    sound = _knob_sound("whoosh_fast/crisp", "whoosh_fast", "hark.forge.recipes.motion.whoosh", tmp_path, monkeypatch)
+    sound = _knob_sound("whoosh_fast", "hark.forge.recipes.motion.whoosh", tmp_path, monkeypatch)
     y, meta = bank.render(sound, apex=0.3, dur=0.8, checks=False)
     assert len(y) == round(0.8 * SR)
     assert abs(bank.times(y)["peak_s"] - 0.3) <= 0.005 and meta["edits"]["apex"]["ok"] is True
@@ -101,7 +93,7 @@ def test_at_6_apex_refused_outside_whoosh_family(fixture_bank):
 
 
 def test_at_7_pitch_e5_on_pluck(fixture_bank, tmp_path, monkeypatch):
-    sound = _knob_sound("pluck/kalimba", "pluck", "hark.forge.recipes.impacts.pluck", tmp_path, monkeypatch)
+    sound = _knob_sound("pluck", "hark.forge.recipes.impacts.pluck", tmp_path, monkeypatch, f0=523.25)
     y, meta = bank.render(sound, pitch="E5")
     f = bank.estimate_pitch(y, near_hz=659.26)
     assert f is not None and abs(1200 * math.log2(f / 659.26)) <= 50
@@ -145,11 +137,12 @@ def test_sfx_without_subcommand_exits_2(cli, capsys):
 # ---------------------------------------------------------------- sfx list (AT-12)
 
 
-def test_at_12_kind_filter_shipped(shipped):
+def test_at_12_kind_filter_shipped(shipped, open_ids):
     rows = sfx.sfx_list(kind="whoosh.long")
     cats = {r["category"] for r in rows["sounds"]}
-    assert len(rows["sounds"]) == 15 and cats <= {"whoosh_big", "pro_whoosh_big"}
-    assert rows["summary"].startswith("15 sounds")
+    want = 15 - len({"whoosh_big/thump_deep"} & open_ids["forge04"])  # an open forge04 member is left out
+    assert len(rows["sounds"]) == want and cats <= {"whoosh_big", "pro_whoosh_big"}
+    assert rows["summary"].startswith(f"{want} sounds")
 
 
 def test_at_12_kind_filter_fixture(fixture_bank):

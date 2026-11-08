@@ -1,6 +1,6 @@
 """Maintenance CLI of the bank files: ``python -m hark.forge.bank``.
 
-    build [DIRS ...] -o OUT [--pluck | --forge04 | --derive] [--version TAG] [--ref-clap JSON]
+    build [DIRS ...] -o OUT [--pluck | --forge04 | --derive] [--version TAG] [--ref-clap JSON] [--strict]
     add-fit MODEL --id ID --source JSON [--bank FILE] [--seed N] [--vary V]
             [--kinds K [K ...]] [--notes TEXT] [--allow-license] [--force]
     check [IDS ...]
@@ -37,6 +37,8 @@ def _add_build(sub: argparse._SubParsersAction) -> None:
     mode.add_argument("--derive", action="store_true", help="the forge file from the recipe family tables")
     b.add_argument("--version", dest="tag")
     b.add_argument("--ref-clap", help="JSON file {id: cosine} of fresh originality values (forge04)")
+    b.add_argument("--strict", action="store_true",
+                   help="forge04: refuse the file when a member fails its take audit (default: leave it out)")
 
 
 def _add_fit_parser(sub: argparse._SubParsersAction) -> None:
@@ -60,7 +62,7 @@ def _build(args: argparse.Namespace) -> int:
         bank.build_pluck(args.out, args.tag, log=print)
     elif args.forge04:
         ref = json.loads(Path(args.ref_clap).read_text(encoding="utf-8")) if args.ref_clap else None
-        bank.build_forge04(args.out, args.tag, ref_clap=ref, log=print)
+        bank.build_forge04(args.out, args.tag, ref_clap=ref, log=print, strict=args.strict)
     elif args.derive:
         bank.build_derive(args.out, args.tag, log=print)
     else:

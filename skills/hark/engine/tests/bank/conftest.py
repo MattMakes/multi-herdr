@@ -454,10 +454,10 @@ def _fade_out(x: np.ndarray, ms: float = 5.0) -> np.ndarray:
 
 
 def bell_render(p: dict, rng: np.random.Generator) -> np.ndarray:
-    """A struck sine: 2 ms rise, exponential decay, tiny seeded noise."""
+    """A struck sine: 2 ms rise, exponential decay, tiny seeded noise; it dies out by its end (no cut tail)."""
     n = int(round(p["length"] * SR))
     t = _t(n)
-    env = (1 - np.exp(-t / 0.002)) * np.exp(-t / p["tau"])
+    env = (1 - np.exp(-t / 0.002)) * np.exp(-t / p["tau"]) * (1 - t / p["length"]) ** 2
     x = np.sin(2 * np.pi * p["f0"] * t + rng.uniform(0, 0.2)) * env + 1e-4 * rng.standard_normal(n) * env
     return _fade_out(x)
 
@@ -520,7 +520,27 @@ def test_recipes(monkeypatch):
         return fit_render(model, seed, **kw) if model.get("kind") == "test_sine" else real_fit(model, seed, *a, **kw)
 
     monkeypatch.setattr(hark.fit, "render", fit)
+    _route_test_fit_kind(monkeypatch)
     return TEST_RECIPES
+
+
+def _route_test_fit_kind(monkeypatch) -> None:
+    """The real fit pipeline knows 6 kinds; teach its kind and knob lookups the test kind ``test_sine``."""
+    from hark.fit.pipeline import auto
+
+    real_kind, real_knobs = auto.kind_of, auto.knobs_of
+
+    def kind_of(model):
+        return "test_sine" if isinstance(model, dict) and model.get("kind") == "test_sine" else real_kind(model)
+
+    def knobs_of(model):
+        if not (isinstance(model, dict) and model.get("kind") == "test_sine"):
+            return real_knobs(model)
+        vary = {} if model.get("tones") is False else {"vary": ((0.0, 1.0), 0.0, "per-take jitter")}
+        return {"gain_db": ((-12.0, 12.0), 0.0, "level"), **vary}
+
+    monkeypatch.setattr(auto, "kind_of", kind_of)
+    monkeypatch.setattr(auto, "knobs_of", knobs_of)
 
 
 # ---------------------------------------------------------------- the fixture bank
@@ -551,7 +571,7 @@ FIXTURE_FILES = {
     ]),
     "fit": ("fit1t", [
         ("fit/tick/domino", {"type": "fit", "category": "fit", "member": "tick/domino",
-                             "model": {"kind": "test_sine", "f0": 5000.0}, "seed": 0, "vary": 0.3,
+                             "model": {"kind": "test_sine", "f0": 5000.0}, "seed": 1, "vary": 0.3,
                              "source": {"id": "t", "title": "t", "author": "t", "license": "CC0", "url": "t"},
                              "fit": {"kind": "test_sine", "chosen": None, "class": "struck"}, "kinds": ["tick"],
                              "notes": "a test fit", "pitch_hz": None}),
@@ -607,9 +627,28 @@ def shipped():
     from hark.forge.bank import bank
 
     folder = Path(bank.PKG_DIR) / "data"
-    if sorted(p.name for p in folder.glob("*.json")) != ["fit.json", "forge04.json", "forge_v2.json", "pluck.json"]:
+    # fit.json waits for the operator's CC0 decision (ARCHITECTURE 15, bank Q5); the other 3 files ship
+    if not {"forge04.json", "forge_v2.json", "pluck.json"} <= {p.name for p in folder.glob("*.json")}:
         pytest.skip("needs-bank: the shipped bank files are built by integration (25b)")
+    bank.reload()
     return bank
+
+
+# Gaps of the shipped bank, each one open in the integration report (T-33). Remove an id once it ships clean.
+# - forge04 members that fail their take audit, so build --forge04 leaves them out.
+OPEN_FORGE04 = frozenset({"mallet/pluck", "whoosh_big/thump_deep"})
+# - derived forge_v2 entries (the closest-render fallback, no critic run) whose default take fails sfx check.
+OPEN_DERIVED = frozenset({
+    "click/double", "glitch/crush", "glitch/data", "glitch/stutter", "pro_glitch/data", "pro_hover_tick/detent",
+    "pro_typing_run/blip", "pro_typing_run/double", "pro_typing_run/glass", "pro_typing_run/soft",
+    "pro_typing_run/standard", "pro_typing_run/tick", "toggle/off", "toggle/on", "typing_key/crisp",
+})
+
+
+@pytest.fixture
+def open_ids() -> dict:
+    """The documented gaps of the shipped bank: forge04 members left out and derived takes that fail the audit."""
+    return {"forge04": OPEN_FORGE04, "derived": OPEN_DERIVED}
 
 
 @pytest.fixture

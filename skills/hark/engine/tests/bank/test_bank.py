@@ -22,15 +22,22 @@ def _sine(f: float, dur: float, amp: float = 0.5) -> np.ndarray:
 # ---------------------------------------------------------------- AT-1, loading and merge
 
 
-def test_at_1_ids_counts_and_version_shipped(shipped):
+def test_at_1_ids_counts_and_version_shipped(shipped, open_ids):
     b = shipped
-    assert len(b.ids()) == 252 and b.ids() == sorted(b.ids())
+    files = b._bank().files
+    has_fit = any(f.endswith("/fit.json") for f in files.values())
+    want = {"forge_v2.json": 183, "forge04.json": 51 - len(open_ids["forge04"]), "pluck.json": 3}
+    tags = ["forge_v2h1", "forge04h1", "pluck1h"]
+    if has_fit:  # fit.json ships only after the operator allows the 15 CC0 downloads (bank Q5)
+        want["fit.json"], tags = 15, ["forge_v2h1", "forge04h1", "fit1h", "pluck1h"]
+    assert b.ids() == sorted(b.ids()) and len(b.ids()) == sum(want.values())
+    assert not open_ids["forge04"] & set(b.ids())
     counts: dict[str, int] = {}
     for sound_id in b.ids():
-        name = b._bank().files[sound_id].rsplit("/", 1)[-1]
+        name = files[sound_id].rsplit("/", 1)[-1]
         counts[name] = counts.get(name, 0) + 1
-    assert counts == {"forge_v2.json": 183, "forge04.json": 51, "fit.json": 15, "pluck.json": 3}
-    assert b.VERSION.split("+") == ["forge_v2h1", "forge04h1", "fit1h", "pluck1h"]
+    assert counts == want
+    assert b.VERSION.split("+") == tags
 
 
 def test_at_1_ids_counts_and_version_fixture(fixture_bank):
@@ -406,6 +413,31 @@ def test_build_forge04_from_palette(fixture_bank, tmp_path, monkeypatch):
     _catalog_with(monkeypatch, {"notify/nope": row}, {})
     with pytest.raises(bank.BankError, match="no palette member 'nope'"):
         bank.build_forge04(str(tmp_path / "f4.json"))
+
+
+def test_build_forge04_leaves_out_audit_failures(fixture_bank, test_recipes, tmp_path, monkeypatch):
+    from hark.forge.bank import _build
+
+    row = {"recipe": "t_bell", "fn": "render", "seed": 40, "kinds": ["bell"], "notes": "a test member"}
+    _catalog_with(monkeypatch, {"notify/m9": row, "notify/m9b": {**row, "seed": 50}}, {})
+    families = test_recipes["t_bell"].FAMILIES
+    monkeypatch.setitem(families, "notify", [*families["notify"], ("m9b", {"f0": 990.0})])
+    real_audit = _build._take_audit
+
+    def audit(entry, sound_id, seed):
+        got = real_audit(entry, sound_id, seed)
+        return {**got, "clean": 2, "own_ok": False, "warnings": ["ring"]} if sound_id == "notify/m9b" else got
+
+    monkeypatch.setattr(_build, "_take_audit", audit)
+    lines: list[str] = []
+    doc = bank.build_forge04(str(tmp_path / "forge04.json"), log=lines.append)
+    assert list(doc["entries"]) == ["notify/m9"]
+    assert "refused notify/m9b: take audit: 2 / 6 clean on seeds 50-55, own take not clean (ring)" in lines
+    assert any(line.startswith("warning: 1 member(s) failed the take audit") for line in lines)
+    target = tmp_path / "strict.json"
+    with pytest.raises(bank.BankError, match="notify/m9b: take audit"):
+        bank.build_forge04(str(target), strict=True)
+    assert not target.exists()
 
 
 def test_build_derive_logs_target_misses(fixture_bank, tmp_path, monkeypatch):

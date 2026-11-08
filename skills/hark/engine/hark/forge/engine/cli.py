@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 from typing import Any
 
 USAGE_RENDER = "usage: hark forge --render <recipe> --params file.json [--seeds 1 2 3] [--dir out]"
@@ -78,40 +79,57 @@ def _render(args: argparse.Namespace) -> int:
     if not name or not args.params:
         print(USAGE_RENDER)
         return 2
+    from hark.core.report import emit
     from hark.forge.engine import loop
 
     with open(args.params) as fh:
         data = json.load(fh)
     rec = loop.load_recipe(name)
-    refs = loop.resolve_refs(args.refs, args.refset, rec, print)
+    refs = loop.resolve_refs(args.refs, args.refset, rec, _note_printer(args))
     res = loop.render_params(rec, data, seeds=args.seeds, out=args.dir or ".", refs=refs)
-    for f in res["files"]:
-        print(_render_line(f))
+    lines = [_render_line(f) for f in res["files"]]
+    made = sum(1 for f in res["files"] if f.get("file"))
+    summary = f"{name}: {made} of {len(res['files'])} render(s) written"
+    emit({"summary": summary, "recipe": name, "files": res["files"]}, args, text="\n".join(lines))
     return 0
+
+
+def _note_printer(args: argparse.Namespace) -> Any:
+    """Progress notes go to stdout, or to stderr when stdout carries JSON."""
+    if getattr(args, "json", False):
+        return lambda msg: print(msg, file=sys.stderr)
+    return print
 
 
 # ---------------------------------------------------------------- --list
 
-def _recipe_line(loop: Any, name: str) -> str:
+def _recipe_row(loop: Any, name: str) -> dict:
     try:
         rec = loop.load_recipe(name)
     except Exception as e:  # noqa: BLE001 - the listing goes on
-        return f"  {name}: (does not load: {type(e).__name__})"
-    rs = getattr(rec, "REFSET", None)
-    return f"  {name}: {getattr(rec, 'TARGET', '')}" + (f"  [refset {rs}]" if rs else "")
+        return {"name": name, "error": type(e).__name__}
+    return {"name": name, "target": getattr(rec, "TARGET", ""), "refset": getattr(rec, "REFSET", None)}
+
+
+def _recipe_line(row: dict) -> str:
+    if "error" in row:
+        return f"  {row['name']}: (does not load: {row['error']})"
+    return f"  {row['name']}: {row['target']}" + (f"  [refset {row['refset']}]" if row["refset"] else "")
 
 
 def _list(args: argparse.Namespace | None = None) -> int:
+    from hark.core.report import emit
     from hark.forge.engine import loop, refsets
 
-    print("recipes (name: TARGET):")
-    for name in loop.recipes():
-        print(_recipe_line(loop, name))
+    rows = [_recipe_row(loop, name) for name in loop.recipes()]
     try:
         cats = refsets.categories()
     except refsets.RefsetsMissing:
         cats = []
-    print(f"refsets: {', '.join(cats)}" if cats else "refsets: none on this machine (no refs registry)")
+    lines = ["recipes (name: TARGET):", *(_recipe_line(r) for r in rows),
+             f"refsets: {', '.join(cats)}" if cats else "refsets: none on this machine (no refs registry)"]
+    result = {"summary": f"{len(rows)} recipes, {len(cats)} refset categories", "recipes": rows, "refsets": cats}
+    emit(result, args if args is not None else argparse.Namespace(), text="\n".join(lines))
     return 0
 
 

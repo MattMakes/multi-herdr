@@ -483,8 +483,12 @@ def test_m_t23_unvalidated(wav, tone):
     assert "held-out library search" not in js["summary"]
 
 
-def test_m_t22_match_cli(wav, tone, capsys):
+def test_m_t22_match_cli(wav, tone, capsys, monkeypatch):
+    import hark.models
+
     match = pytest.importorskip("hark.listen.match", reason="needs unit listen (T-14)")
+    # the bad --start fails at decode, before any model loads; let it run without the ML extras too
+    monkeypatch.setattr(hark.models, "require_ml", lambda feature: None)
     path = wav(tone(dur=2.0), name="two.wav")
     parser = argparse.ArgumentParser(prog="hark")
     match.add_cli(parser.add_subparsers(dest="command"))

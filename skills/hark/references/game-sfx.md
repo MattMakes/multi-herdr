@@ -20,7 +20,7 @@ rate sets the length: more than 8 per second, 30-90 ms; 2-8 per second, at most 
 | kit | a set of roles with takes and a lock file | `hark kit init`, edit roles and `takes`, `hark kit render kit.json --out sfx/kit` |
 | forge | a sound nothing in the bank covers | `forge.md`, loop 4 |
 | fit | the user has a CC0 recording to turn into code | `hark fit <file> -o recipe.py --takes` |
-| recordings | the user wants real recordings | the `sound-sourcing` skill (sourcing, rights audit, credits) |
+| recordings | the task calls for real recordings | the `sound-sourcing` skill (sourcing, rights audit, credits) |
 
 Pick between candidates with `hark rank` and `hark ab` (`listening.md`), and judge each by measurement, never by the
 critic score alone.
