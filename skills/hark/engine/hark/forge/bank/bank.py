@@ -77,11 +77,15 @@ def _package_files() -> tuple[str, ...]:
     folder = Path(BANK_DIR)
     if not folder.is_dir():
         return ()
-    names = sorted(p.name for p in folder.glob("*.json"))
-    first = [n for n in names if n == "forge_v2.json"]
-    forge = [n for n in names if n.startswith("forge") and n != "forge_v2.json"]
-    rest = [n for n in names if not n.startswith("forge")]
-    return tuple(str(folder / n) for n in first + forge + rest)
+    names = sorted((p.name for p in folder.glob("*.json")), key=_load_rank)
+    return tuple(str(folder / n) for n in names)
+
+
+def _load_rank(name: str) -> tuple[int, str]:
+    """forge_v2.json first, then the other forge files, then the rest; by name inside each group."""
+    if name == "forge_v2.json":
+        return 0, name
+    return (1 if name.startswith("forge") else 2), name
 
 
 def _env_files() -> tuple[str, ...]:
@@ -231,20 +235,28 @@ def _is_number(v: Any) -> bool:
 
 def level(peak_db: float = DEFAULT_PEAK, weight: float | None = None) -> float:
     """The sample peak in dBFS that a take is written at (part 1, 5.2)."""
-    if not _is_number(peak_db):
-        raise BankError("peak_db must be a number")
-    if peak_db > 0:
-        raise BankError(f"peak_db {peak_db} is over 0 dBFS and clips: give 0 or less")
+    _check_peak(peak_db)
     if weight is None:
         return float(peak_db)
-    if not _is_number(weight):
-        raise BankError("weight must be a finite number")
-    if not 0 < weight <= WEIGHT_MAX:
-        raise BankError(f"weight {weight} is outside (0, {WEIGHT_MAX:g}]")
+    _check_weight(weight)
     out = float(peak_db) + 20 * math.log10(weight)
     if out > 0:
         raise BankError(f"weight {weight} on peak_db {peak_db} gives {out:.2f} dBFS, over 0: lower peak_db")
     return out
+
+
+def _check_peak(peak_db: Any) -> None:
+    if not _is_number(peak_db):
+        raise BankError("peak_db must be a number")
+    if peak_db > 0:
+        raise BankError(f"peak_db {peak_db} is over 0 dBFS and clips: give 0 or less")
+
+
+def _check_weight(weight: Any) -> None:
+    if not _is_number(weight):
+        raise BankError("weight must be a finite number")
+    if not 0 < weight <= WEIGHT_MAX:
+        raise BankError(f"weight {weight} is outside (0, {WEIGHT_MAX:g}]")
 
 
 def check_sr(sr: Any) -> int:

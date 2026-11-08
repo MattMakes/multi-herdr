@@ -60,18 +60,27 @@ def _r4(v: float) -> float:
 def times(y: np.ndarray, sr: int = SR) -> dict[str, float]:
     """``{onset_s, peak_s, end_s, dur_s}`` of a take (part 1, 6.1)."""
     m = mono(y)
-    n = len(m)
+    peak, end = _peak_end(m, sr)
+    return {"onset_s": _r4(_onset(m, sr) / sr), "peak_s": _r4(peak / sr), "end_s": _r4(end / sr),
+            "dur_s": _r4(len(m) / sr)}
+
+
+def _onset(m: np.ndarray, sr: int) -> int:
+    """First sample of the 1 ms envelope within ONSET_DB of its loudest."""
     ms = sr / 1000.0
-    win1, hop1 = int(round(ms)), max(1, int(round(ms / 4)))
-    win5, hop5 = int(round(5 * ms)), int(round(ms))
-    e1 = rms_env(m, win1, hop1)
-    onset = int(np.argmax(e1 >= e1.max() * 10 ** (ONSET_DB / 20))) * hop1
-    e5 = rms_env(m, win5, hop5)
-    ip = int(np.argmax(e5))
-    live = np.nonzero(e5 >= e5[ip] * 10 ** (END_DB / 20))[0]
-    end = min(n, int(live[-1]) * hop5 + win5)
-    return {"onset_s": _r4(onset / sr), "peak_s": _r4((ip * hop5 + win5 / 2) / sr),
-            "end_s": _r4(end / sr), "dur_s": _r4(n / sr)}
+    hop = max(1, int(round(ms / 4)))
+    e = rms_env(m, int(round(ms)), hop)
+    return int(np.argmax(e >= e.max() * 10 ** (ONSET_DB / 20))) * hop
+
+
+def _peak_end(m: np.ndarray, sr: int) -> tuple[float, int]:
+    """Peak centre and end (samples) on the 5 ms envelope; the end is the last frame within END_DB."""
+    ms = sr / 1000.0
+    win, hop = int(round(5 * ms)), int(round(ms))
+    e = rms_env(m, win, hop)
+    ip = int(np.argmax(e))
+    live = np.nonzero(e >= e[ip] * 10 ** (END_DB / 20))[0]
+    return ip * hop + win / 2, min(len(m), int(live[-1]) * hop + win)
 
 
 def peak_db(y: np.ndarray) -> float:
@@ -160,12 +169,19 @@ def compare_fp(stored: dict[str, Any], new: dict[str, Any], sr: int = SR) -> dic
     """Compare a stored meta with a new one (part 1, section 9)."""
     len_diff = int(round((float(new["dur_s"]) - float(stored["dur_s"])) * sr))
     peak_diff = round(1000 * (float(new["peak_s"]) - float(stored["peak_s"])), 2)
-    a = (stored.get("fp") or {}).get("env_db") or []
-    b = (new.get("fp") or {}).get("env_db") or []
-    diffs = [abs(x - y) for x, y in zip(a, b) if x > FP_COMPARE_FLOOR_DB]
-    env = round(max(diffs), 2) if diffs else 0.0
+    env = _env_diff(_env_of(stored), _env_of(new))
     ok = len_diff == 0 and abs(peak_diff) <= CHECK_PEAK_MS and env <= CHECK_ENV_DB
     return {"len_diff": len_diff, "peak_diff_ms": peak_diff, "env_db": env, "ok": ok}
+
+
+def _env_of(meta: dict[str, Any]) -> list[float]:
+    return (meta.get("fp") or {}).get("env_db") or []
+
+
+def _env_diff(a: list[float], b: list[float]) -> float:
+    """Largest envelope difference over the stored frames above FP_COMPARE_FLOOR_DB."""
+    diffs = [abs(x - y) for x, y in zip(a, b) if x > FP_COMPARE_FLOOR_DB]
+    return round(max(diffs), 2) if diffs else 0.0
 
 
 def _power_spectrum(seg: np.ndarray, nfft: int) -> np.ndarray:
@@ -183,16 +199,26 @@ def _parabola(logp: np.ndarray, j: int) -> float:
     return 0.0 if den == 0 else 0.5 * (a - c) / den
 
 
-def _peak_near(power: np.ndarray, nfft: int, sr: int, near_hz: float, span_st: float) -> float | None:
-    df = sr / nfft
+def _span_bins(size: int, df: float, near_hz: float, span_st: float) -> np.ndarray:
+    """FFT bins within ``span_st`` semitones of ``near_hz``, without the 2 edge bins."""
     lo, hi = near_hz * 2 ** (-span_st / 12), near_hz * 2 ** (span_st / 12)
     band = np.arange(int(math.ceil(lo / df)), int(math.floor(hi / df)) + 1)
-    band = band[(band >= 1) & (band < len(power) - 1)]
+    return band[(band >= 1) & (band < size - 1)]
+
+
+def _clear_of_octave(power: np.ndarray, j: int, df: float, near_hz: float) -> bool:
+    """True when bin ``j`` is PITCH_REJECT times the median of the octave around ``near_hz``."""
+    octave = power[int(math.ceil(near_hz / 2 / df)): int(math.ceil(2 * near_hz / df))]
+    return len(octave) > 0 and power[j] >= PITCH_REJECT * float(np.median(octave))
+
+
+def _peak_near(power: np.ndarray, nfft: int, sr: int, near_hz: float, span_st: float) -> float | None:
+    df = sr / nfft
+    band = _span_bins(len(power), df, near_hz, span_st)
     if len(band) < 3:
         return None
     j = int(band[np.argmax(power[band])])
-    octave = power[int(math.ceil(near_hz / 2 / df)): int(math.ceil(2 * near_hz / df))]
-    if len(octave) == 0 or power[j] < PITCH_REJECT * float(np.median(octave)):
+    if not _clear_of_octave(power, j, df, near_hz):
         return None
     logp = np.log(power + 1e-300)
     return float((j + _parabola(logp, j)) * sr / nfft)
