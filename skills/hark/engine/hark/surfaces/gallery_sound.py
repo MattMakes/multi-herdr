@@ -190,26 +190,38 @@ def _power(m: np.ndarray, rate: int, nfft: int, hop: int) -> tuple[np.ndarray, n
     return f, t, np.abs(Z) ** 2
 
 
-def spectrogram(x: np.ndarray, rate: int, span: float) -> np.ndarray:
-    """A 132 x 520 RGB uint8 picture of the sound from its onset over ``span`` seconds."""
+def _window(x: np.ndarray, rate: int, span: float) -> np.ndarray:
+    """The mono signal from its onset, cut or zero-padded to the span (at least 64 samples)."""
     m = np.asarray(x, dtype=np.float64)
     m = m.mean(axis=1) if m.ndim == 2 else m
-    m = m[onset_index(m, rate):]
     n_span = max(int(math.floor(span * rate)), 64)
-    m = np.pad(m[:n_span], (0, max(0, n_span - len(m[:n_span]))))
+    m = m[onset_index(m, rate):][:n_span]
+    return np.pad(m, (0, n_span - len(m)))
+
+
+def _grid(m: np.ndarray, rate: int, span: float) -> tuple[np.ndarray, np.ndarray]:
+    """Power on 132 log-frequency rows x 520 time columns, streaks smoothed, plus the row edges."""
     nfft = _nfft(span, len(m))
-    hop = int(np.clip(n_span // (2 * THUMB_W), 8, nfft // 2))
+    hop = int(np.clip(len(m) // (2 * THUMB_W), 8, nfft // 2))
     f, t, P = _power(m, rate, nfft, hop)
     edges = np.geomspace(F_LO, min(F_HI, rate / 2), THUMB_H + 1)
     rows = _bin_mean(P, f, edges)
-    dt_col = n_span / rate / THUMB_W
-    S = _bin_mean(rows.T, t, np.linspace(0, n_span / rate, THUMB_W + 1)).T
-    S = _smooth_streaks(S, edges, rate, nfft, dt_col)
+    S = _bin_mean(rows.T, t, np.linspace(0, len(m) / rate, THUMB_W + 1)).T
+    return _smooth_streaks(S, edges, rate, nfft, len(m) / rate / THUMB_W), edges
+
+
+def _image(S: np.ndarray, edges: np.ndarray) -> np.ndarray:
     db = 10 * np.log10(S + 1e-20)
     db = np.maximum(db - db.max(), -DB_RANGE)
     v = ((db + DB_RANGE) / DB_RANGE)[::-1]
     img = _guides(colour(v), v, np.sqrt(edges[:-1] * edges[1:]))
     return np.round(np.clip(img, 0, 1) * 255).astype(np.uint8)
+
+
+def spectrogram(x: np.ndarray, rate: int, span: float) -> np.ndarray:
+    """A 132 x 520 RGB uint8 picture of the sound from its onset over ``span`` seconds."""
+    S, edges = _grid(_window(x, rate, span), rate, span)
+    return _image(S, edges)
 
 
 def thumb_name(label: str, category: str, path: str, span: float) -> str:
