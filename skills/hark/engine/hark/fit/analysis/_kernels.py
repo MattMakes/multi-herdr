@@ -504,7 +504,9 @@ def render_model(model, seed=0, size=1.0, damping=1.0, brightness=0.0, hardness=
     n_grid = int(np.ceil(n / (GRID_S * SR))) + 2
     env = modal_noise_env(model, plan, n_grid, stretch, size, brightness, hardness, noise, vary,
                           ring, gens[1])
-    mid = det + modal_noise(env, n, model["noise"]["edges"], gens[2])
+    mid = det
+    if env.size and np.max(env) > -200.0:
+        mid = det + modal_noise(env, n, model["noise"]["edges"], gens[2])
     if ring and n > n_nom:
         mid[n_nom:] *= 10.0 ** (-3.0 * np.arange(n - n_nom) / (n - n_nom))
     chans = [mid]
