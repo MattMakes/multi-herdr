@@ -449,6 +449,7 @@ const EXEMPT_FROM_TEXT_ONLY: &[&str] = &[
     "one-page-design",
     "skill-creator",
     "skill-intake",
+    "sound-sourcing",
     "video-audio",
     "video-capture",
     "video-motion",

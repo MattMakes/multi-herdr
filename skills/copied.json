@@ -1416,6 +1416,11 @@
       "verbatim": false
     },
     {
+      "name": "hark",
+      "copied_files": [],
+      "verbatim": false
+    },
+    {
       "name": "improve-codebase-architecture",
       "copied_files": [
         "HTML-REPORT.md",
@@ -1551,6 +1556,12 @@
       ],
       "verbatim": false,
       "budget_exempt": "bundles the ported clean-room tooling, its schemas and the whole intake pipeline (spec 9.1, decision Q2)"
+    },
+    {
+      "name": "sound-sourcing",
+      "copied_files": [],
+      "verbatim": false,
+      "budget_exempt": "workflow scripts: the mixer, master, QA, rights audit, music edit and variant tools with self-tests"
     },
     {
       "name": "swift-code-audit",
