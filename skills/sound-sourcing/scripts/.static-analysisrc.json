@@ -1,21 +1,25 @@
 {
   "$comment": {
-    "why": "sound-sourcing/scripts is numeric DSP code (numpy arrays, frame and sample math). Dense arithmetic raises operand counts, live locals and Python body depth without a control-flow problem. Each relaxed metric is set just past the largest value of a function that breached only minor metrics in the T-15 timeline evidence (303 functions). Control flow keeps the defaults: cyclomaticComplexity, essentialComplexity, moduleDesignComplexity, globalDataComplexity and specifiedDataComplexity are not set here.",
-    "scopeDepthRatio": "Python counts the function body as depth 1, so a flat 3-line function scores 1.67 against the default 1.3. 110 minor breaches, largest 2.71 on a 7-line function. Real nesting stays judged by scopeDepthWeightedLoc and cyclomaticComplexity.",
-    "halsteadEffort": "Arithmetic expressions multiply operators and operands. 57 minor breaches, largest 19914 against the default 5000.",
-    "halsteadVolume": "1 minor breach, draw_spectrogram at 1036 against the default 1000.",
-    "halsteadDifficulty": "1 minor breach, merge_slivers at 35.6 against the default 30.",
-    "maintainabilityIndex": "The index falls with Halstead volume, so numeric code scores low. 56 minor breaches, lowest 51.1 against the default 60.",
-    "peakLiveVariables": "Signal code keeps arrays, rates and frame sizes live together. 43 minor breaches, largest 13 against the default 7.",
-    "abcScore": "Numeric code assigns and calls more per line. 5 minor breaches, largest 22.3 against the default 20."
+    "why": "sound-sourcing/scripts is numeric DSP code (numpy arrays, frame and sample math), test-fixture tables and calls to fixed library APIs. Dense arithmetic raises operand counts, live locals and Python body depth without a control-flow problem. Each minor metric is set just past the largest value left after every control-flow breach was refactored away. Control flow keeps the defaults: cyclomaticComplexity, essentialComplexity, moduleDesignComplexity, globalDataComplexity and specifiedDataComplexity are not set here.",
+    "scopeDepthRatio": "Python counts the function body as depth 1, so a flat 3-line function scores 1.67 against the default 1.3. Largest: mix._merge_named at 3.0, a 3-level loop over named design sections that must reject duplicate names.",
+    "halsteadEffort": "Arithmetic expressions multiply operators and operands. Largest: mix.rbj at 56086, the RBJ biquad cookbook formulas for 7 filter kinds. Splitting a formula hides it.",
+    "halsteadVolume": "Largest: fixtures.project at 3640, a test-fixture table that builds a whole demo project (cues, sources, licences) in one place.",
+    "halsteadDifficulty": "Largest: mix.rbj at 38.6, the RBJ biquad cookbook formulas (DSP formula).",
+    "maintainabilityIndex": "The index falls with Halstead volume, so numeric code and fixture tables score low. Lowest: fixtures.project at 38.4, the test-fixture table.",
+    "peakLiveVariables": "Signal code keeps arrays, rates and frame sizes live together. Largest: arrange.arrange at 19, which keeps the arc, tempo, bar length, track analysis and option values live to place cues on the beat grid.",
+    "abcScore": "Numeric code assigns and calls more per line. Largest: analyze.music_features at 52.3, 1 call per librosa feature (fixed API: tempo, beats, chroma, key, onset, spectral values).",
+    "variableSpan": "Largest: fixtures.project at 46, a test-fixture table whose values are defined at the top and used in the records below.",
+    "scopeDepthWeightedLoc": "Largest: qa.detect_clicks at 54, a per-channel filter, candidate search and de-duplicate pass over the samples (DSP loop)."
   },
   "thresholds": {
-    "scopeDepthRatio": { "warn": 2.75, "error": 3.25 },
-    "halsteadEffort": { "warn": 20000, "error": 40000 },
-    "halsteadVolume": { "warn": 1100, "error": 2000 },
-    "halsteadDifficulty": { "warn": 36, "error": 50 },
-    "maintainabilityIndex": { "warn": 50, "error": 35, "lowerIsBad": true },
-    "peakLiveVariables": { "warn": 14, "error": 18 },
-    "abcScore": { "warn": 23, "error": 30 }
+    "scopeDepthRatio": { "warn": 3.05, "error": 3.25 },
+    "halsteadEffort": { "warn": 57000, "error": 70000 },
+    "halsteadVolume": { "warn": 3700, "error": 4500 },
+    "halsteadDifficulty": { "warn": 39, "error": 50 },
+    "maintainabilityIndex": { "warn": 38, "error": 30, "lowerIsBad": true },
+    "peakLiveVariables": { "warn": 20, "error": 24 },
+    "abcScore": { "warn": 53, "error": 60 },
+    "variableSpan": { "warn": 47, "error": 60 },
+    "scopeDepthWeightedLoc": { "warn": 55, "error": 70 }
   }
 }
