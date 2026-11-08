@@ -68,14 +68,16 @@ def audition(path: Any, made: Sequence[tuple[str, Any]], refs: Sequence[tuple[st
 
 def _f(v: Any, nd: int = 2) -> str:
     if v is None:
-        return "-"
-    if isinstance(v, bool):
-        return "yes" if v else "no"
-    if isinstance(v, float):
-        return f"{v:.{nd}f}" if math.isfinite(v) else "-"
-    if isinstance(v, (list, tuple)):
-        return ", ".join(_f(u, nd) for u in v) or "-"
-    return str(v)
+        res = "-"
+    elif isinstance(v, bool):
+        res = "yes" if v else "no"
+    elif isinstance(v, float):
+        res = f"{v:.{nd}f}" if math.isfinite(v) else "-"
+    elif isinstance(v, (list, tuple)):
+        res = ", ".join(_f(u, nd) for u in v) or "-"
+    else:
+        res = str(v)
+    return res
 
 
 def _base(p: Any) -> str:
@@ -84,12 +86,14 @@ def _base(p: Any) -> str:
 
 def _round(v: Any) -> Any:
     if isinstance(v, float):
-        return round(v, 5)
-    if isinstance(v, dict):
-        return {k: _round(u) for k, u in v.items()}
-    if isinstance(v, (list, tuple)):
-        return [_round(u) for u in v]
-    return v
+        res = round(v, 5)
+    elif isinstance(v, dict):
+        res = {k: _round(u) for k, u in v.items()}
+    elif isinstance(v, (list, tuple)):
+        res = [_round(u) for u in v]
+    else:
+        res = v
+    return res
 
 
 def _table(head: Sequence[str], rows: list[list[str]]) -> list[str]:
@@ -208,11 +212,15 @@ def report_md(r: dict) -> str:
 
 # ---------------------------------------------------------------- palette_md
 
+# (source, key) per palette column after the name; source None is the pick itself
+_PALETTE_COLS = ((None, "family"), ("score", "total"), ("score", "passes"), ("measured", "tone_db"),
+                 ("score", "env_pen"), ("score", "art_pen"), ("score", "polish_pen"), ("score", "hard"),
+                 (None, "gain_db"), ("measured", "nearest_ref"))
+
+
 def _palette_row(p: dict) -> list[str]:
-    s, m = p.get("score") or {}, p.get("measured") or {}
-    return [str(p.get("name")), _f(p.get("family")), _f(s.get("total")), _f(s.get("passes")), _f(m.get("tone_db")),
-            _f(s.get("env_pen")), _f(s.get("art_pen")), _f(s.get("polish_pen")), _f(s.get("hard")),
-            _f(p.get("gain_db")), _f(m.get("nearest_ref"))]
+    parts = {None: p, "score": p.get("score") or {}, "measured": p.get("measured") or {}}
+    return [str(p.get("name"))] + [_f(parts[src].get(k)) for src, k in _PALETTE_COLS]
 
 
 def palette_md(r: dict) -> str:
