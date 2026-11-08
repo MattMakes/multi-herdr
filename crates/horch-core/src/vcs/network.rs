@@ -74,9 +74,9 @@ impl std::error::Error for Timeout {}
 
 fn show(d: Duration) -> String {
     let ms = d.as_millis();
-    if ms % 60_000 == 0 {
+    if ms.is_multiple_of(60_000) {
         format!("{} min", ms / 60_000)
-    } else if ms % 1000 == 0 {
+    } else if ms.is_multiple_of(1000) {
         format!("{} s", ms / 1000)
     } else {
         format!("{} s", ms as f64 / 1000.0)

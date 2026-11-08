@@ -60,16 +60,14 @@ impl Git {
     pub fn try_network(&self, dir: &Path, args: &[&str]) -> Result<Out> {
         let out = match network::output(self.runner.bin(), dir, args) {
             Ok(out) => out,
-            Err(e) => match e.downcast::<network::Timeout>() {
-                Ok(timeout) => {
-                    return Ok(Out {
-                        ok: false,
-                        stdout: String::new(),
-                        stderr: timeout.to_string(),
-                    })
-                }
-                Err(e) => return Err(e),
-            },
+            Err(e) => {
+                let timeout = e.downcast::<network::Timeout>()?;
+                return Ok(Out {
+                    ok: false,
+                    stdout: String::new(),
+                    stderr: timeout.to_string(),
+                });
+            }
         };
         Ok(Out {
             ok: out.status == 0,
