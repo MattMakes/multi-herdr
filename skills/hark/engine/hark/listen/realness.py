@@ -19,7 +19,7 @@ from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
-import numpy as np
+import numpy
 
 from hark.core import audio, report
 from hark.listen import vocabulary as voc
@@ -70,13 +70,13 @@ class ModelMissing(FileNotFoundError):
 # ================================================================ model
 
 
-def load_model(path: str | Path | None = None, resolve: bool = True) -> dict:
+def load_model(fpath: str | Path | None = None, resolve: bool = True) -> dict:
     """The realness model file as a dict. A zero-shot model gets its prompt embeddings when ``resolve``."""
-    p = Path(path) if path else MODEL_PATH
-    if not p.exists():
-        raise ModelMissing(f"realness model file {p} is missing; train one with "
+    pth = Path(fpath) if fpath else MODEL_PATH
+    if not pth.exists():
+        raise ModelMissing(f"realness model file {pth} is missing; train one with "
                            "python -m hark.listen.realness --train <labelled dir>")
-    model = json.loads(p.read_text(encoding="utf-8"))
+    model = json.loads(pth.read_text(encoding="utf-8"))
     if resolve:
         resolve_head(model)
     return model
@@ -89,279 +89,279 @@ def is_zero_shot(model: Mapping) -> bool:
 
 def resolve_head(model: dict) -> dict:
     """Add the prompt embeddings a zero-shot CLAP head needs (embeds 12 plain texts once, cached)."""
-    head = model["heads"]["clap"]
-    if head.get("kind") == "zero_shot" and "real" not in head:
-        head["real"] = voc.embed_plain_text(model["prompts"]["real"]).astype(np.float64)
-        head["synth"] = voc.embed_plain_text(model["prompts"]["synth"]).astype(np.float64)
+    lead = model["heads"]["clap"]
+    if lead.get("kind") == "zero_shot" and "real" not in lead:
+        lead["real"] = voc.embed_plain_text(model["prompts"]["real"]).astype(numpy.float64)
+        lead["synth"] = voc.embed_plain_text(model["prompts"]["synth"]).astype(numpy.float64)
     return model
 
 
 def thresholds_of(model: Mapping, file: bool = False) -> dict:
     """{lo, hi} of the clip thresholds, or of the file thresholds."""
-    t = model["file_thresholds"] if file else model["thresholds"]
-    return {"lo": float(t["lo"]), "hi": float(t["hi"])}
+    tx = model["file_thresholds"] if file else model["thresholds"]
+    return {"lo": float(tx["lo"]), "hi": float(tx["hi"])}
 
 
-def _lse(v: np.ndarray) -> float:
-    m = float(np.max(v))
-    return m + math.log(float(np.sum(np.exp(v - m))))
+def _lse(vec: numpy.ndarray) -> float:
+    mat = float(numpy.max(vec))
+    return mat + math.log(float(numpy.sum(numpy.exp(vec - mat))))
 
 
-def head_logit(head: Mapping, v: Sequence[float] | np.ndarray) -> float:
+def head_logit(lead: Mapping, vec: Sequence[float] | numpy.ndarray) -> float:
     """The logit of one head: fill NaN, clip, standardise, dot with the coefficients (zero-shot: prompt LSE)."""
-    x = np.asarray(v, np.float64)
-    if head.get("kind") == "zero_shot":
-        s = float(head.get("logit_scale", ZERO_SHOT_SCALE))
-        return _lse(s * (np.asarray(head["real"]) @ x)) - _lse(s * (np.asarray(head["synth"]) @ x))
-    mean = np.asarray(head["mean"], np.float64)
-    x = np.where(np.isfinite(x), x, mean)
-    x = np.clip(x, np.asarray(head["clip"][0], np.float64), np.asarray(head["clip"][1], np.float64))
-    z = (x - mean) / np.asarray(head["scale"], np.float64)
-    return float(z @ np.asarray(head["coef"], np.float64) + float(head["intercept"]))
+    sig = numpy.asarray(vec, numpy.float64)
+    if lead.get("kind") == "zero_shot":
+        sv = float(lead.get("logit_scale", ZERO_SHOT_SCALE))
+        return _lse(sv * (numpy.asarray(lead["real"]) @ sig)) - _lse(sv * (numpy.asarray(lead["synth"]) @ sig))
+    mean = numpy.asarray(lead["mean"], numpy.float64)
+    sig = numpy.where(numpy.isfinite(sig), sig, mean)
+    sig = numpy.clip(sig, numpy.asarray(lead["clip"][0], numpy.float64), numpy.asarray(lead["clip"][1], numpy.float64))
+    z = (sig - mean) / numpy.asarray(lead["scale"], numpy.float64)
+    return float(z @ numpy.asarray(lead["coef"], numpy.float64) + float(lead["intercept"]))
 
 
-def sigmoid(s: float) -> float:
+def sigmoid(sv: float) -> float:
     """The logistic function."""
-    return 1.0 / (1.0 + math.exp(-max(-500.0, min(500.0, s))))
+    return 1.0 / (1.0 + math.exp(-max(-500.0, min(500.0, sv))))
 
 
 def fuse(model: Mapping, logits: Mapping[str, float] | Sequence[float]) -> float:
     """p_real from the head logits (a mapping by head name, or a sequence in fusion order)."""
-    f = model["fusion"]
-    vals = [logits[h] for h in f["heads"]] if isinstance(logits, Mapping) else list(logits)
-    return sigmoid(float(f["intercept"]) + sum(float(w) * float(v) for w, v in zip(f["coef"], vals)))
+    fv = model["fusion"]
+    vals = [logits[h] for h in fv["heads"]] if isinstance(logits, Mapping) else list(logits)
+    return sigmoid(float(fv["intercept"]) + sum(float(win_n) * float(vec) for win_n, vec in zip(fv["coef"], vals)))
 
 
-def verdict_of(p: float, th: Mapping[str, float]) -> str:
+def verdict_of(pth: float, th: Mapping[str, float]) -> str:
     """real or pro-produced at or above hi, likely code-synthesized at or below lo, else uncertain (R11)."""
-    if p >= th["hi"]:
+    if pth >= th["hi"]:
         return REAL
-    return SYNTH if p <= th["lo"] else UNCERTAIN
+    return SYNTH if pth <= th["lo"] else UNCERTAIN
 
 
 # ================================================================ signal measurements (R3)
 
 
-def _frames(y: np.ndarray, n: int, hop: int | None = None) -> np.ndarray:
-    hop = hop or n
-    if len(y) < n:
-        return np.pad(y, (0, n - len(y)))[None, :]
-    k = 1 + (len(y) - n) // hop
-    idx = np.arange(n)[None, :] + hop * np.arange(k)[:, None]
-    return y[idx]
+def _frames(yv: numpy.ndarray, count: int, hop: int | None = None) -> numpy.ndarray:
+    hop = hop or count
+    if len(yv) < count:
+        return numpy.pad(yv, (0, count - len(yv)))[None, :]
+    kk = 1 + (len(yv) - count) // hop
+    idx = numpy.arange(count)[None, :] + hop * numpy.arange(kk)[:, None]
+    return yv[idx]
 
 
-def _floor_db(y: np.ndarray) -> float:
-    r = 20 * np.log10(np.sqrt((_frames(y, 640) ** 2).mean(axis=1) + 1e-30))
-    return float(max(-140.0, np.percentile(r, 10) - r.max()))
+def _floor_db(yv: numpy.ndarray) -> float:
+    row_ = 20 * numpy.log10(numpy.sqrt((_frames(yv, 640) ** 2).mean(axis=1) + 1e-30))
+    return float(max(-140.0, numpy.percentile(row_, 10) - row_.max()))
 
 
-def _welch_psd(y: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+def _welch_psd(yv: numpy.ndarray) -> tuple[numpy.ndarray, numpy.ndarray]:
     from scipy import signal as sps
 
-    seg = min(2048, len(y))
-    f, P = sps.welch(y, fs=ANALYSIS_SR, window="hann", nperseg=seg, noverlap=seg // 2, scaling="density")
-    keep = (f >= BAND[0]) & (f <= BAND[1])
-    return f[keep], P[keep] + 1e-30
+    seg = min(2048, len(yv))
+    fv, P = sps.welch(yv, fs=ANALYSIS_SR, window="hann", nperseg=seg, noverlap=seg // 2, scaling="density")
+    keep = (fv >= BAND[0]) & (fv <= BAND[1])
+    return fv[keep], P[keep] + 1e-30
 
 
-def _line_share(P: np.ndarray) -> float:
-    k = max(1, int(math.floor(0.01 * len(P))))
-    return float(np.sort(P)[-k:].sum() / P.sum())
+def _line_share(P: numpy.ndarray) -> float:
+    kk = max(1, int(math.floor(0.01 * len(P))))
+    return float(numpy.sort(P)[-kk:].sum() / P.sum())
 
 
-def _bandwidth_khz(f: np.ndarray, P: np.ndarray) -> float:
-    db = 10 * np.log10(P)
-    return float(f[np.nonzero(db >= db.max() - 60)[0][-1]] / 1000)
+def _bandwidth_khz(fv: numpy.ndarray, P: numpy.ndarray) -> float:
+    db = 10 * numpy.log10(P)
+    return float(fv[numpy.nonzero(db >= db.max() - 60)[0][-1]] / 1000)
 
 
-def _welch(y: np.ndarray, out: dict) -> None:
-    f, P = _welch_psd(y)
-    out["log_flatness"] = float(np.log10(np.exp(np.mean(np.log(P))) / P.mean()))
-    out["peakiness_db"] = float(10 * np.log10(P.max() / np.median(P)))
-    out["line_share"] = _line_share(P)
-    out["bandwidth_khz"] = _bandwidth_khz(f, P)
+def _welch(yv: numpy.ndarray, result: dict) -> None:
+    fv, P = _welch_psd(yv)
+    result["log_flatness"] = float(numpy.log10(numpy.exp(numpy.mean(numpy.log(P))) / P.mean()))
+    result["peakiness_db"] = float(10 * numpy.log10(P.max() / numpy.median(P)))
+    result["line_share"] = _line_share(P)
+    result["bandwidth_khz"] = _bandwidth_khz(fv, P)
 
 
-def _stft(y: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-    fr = _frames(y, 1024, 256) * np.hanning(1024)[None, :]
-    P = np.abs(np.fft.rfft(fr, axis=1)) ** 2 + 1e-30
-    f = np.fft.rfftfreq(1024, 1 / ANALYSIS_SR)
-    keep = (f >= BAND[0]) & (f <= BAND[1])
-    return f[keep], P[:, keep]
+def _stft(yv: numpy.ndarray) -> tuple[numpy.ndarray, numpy.ndarray]:
+    fr = _frames(yv, 1024, 256) * numpy.hanning(1024)[None, :]
+    P = numpy.abs(numpy.fft.rfft(fr, axis=1)) ** 2 + 1e-30
+    fv = numpy.fft.rfftfreq(1024, 1 / ANALYSIS_SR)
+    keep = (fv >= BAND[0]) & (fv <= BAND[1])
+    return fv[keep], P[:, keep]
 
 
-def _quiet_flat(P: np.ndarray, e: np.ndarray, active: np.ndarray) -> float:
-    ae = e[active]
-    quiet = active & (e <= np.percentile(ae, 25)) if active.sum() >= 8 else active
+def _quiet_flat(P: numpy.ndarray, ex: numpy.ndarray, active: numpy.ndarray) -> float:
+    ae = ex[active]
+    quiet = active & (ex <= numpy.percentile(ae, 25)) if active.sum() >= 8 else active
     qs = P[quiet].mean(axis=0) if quiet.any() else P.mean(axis=0)
-    return float(np.log10(np.exp(np.mean(np.log(qs))) / qs.mean()))
+    return float(numpy.log10(numpy.exp(numpy.mean(numpy.log(qs))) / qs.mean()))
 
 
-def _peaks(P: np.ndarray) -> np.ndarray:
+def _peaks(P: numpy.ndarray) -> numpy.ndarray:
     inner = P[:, 2:-2]
-    return np.argmax(inner, axis=1) + 2
+    return numpy.argmax(inner, axis=1) + 2
 
 
-def _wobble(f: np.ndarray, P: np.ndarray, tonal: np.ndarray, pk: np.ndarray) -> float:
-    trip = [i for i in range(len(tonal) - 2) if tonal[i] and tonal[i + 1] and tonal[i + 2]]
+def _wobble(fv: numpy.ndarray, P: numpy.ndarray, tonal: numpy.ndarray, pk: numpy.ndarray) -> float:
+    trip = [ix for ix in range(len(tonal) - 2) if tonal[ix] and tonal[ix + 1] and tonal[ix + 2]]
     if len(trip) < 4:
         return float("nan")
-    L = np.log(P)
-    rows = np.arange(len(P))
-    a, b, c = L[rows, pk - 1], L[rows, pk], L[rows, pk + 1]
-    freq = f[pk] + 0.5 * (a - c) / (a - 2 * b + c - 1e-12) * (ANALYSIS_SR / 1024)
-    cents = 1200 * np.log2(np.maximum(freq, 20.0))
-    d2 = [abs(cents[i + 2] - 2 * cents[i + 1] + cents[i]) for i in trip]
-    return float(np.log10(np.median(d2) + 0.01))
+    L = numpy.log(P)
+    records = numpy.arange(len(P))
+    lhs, rhs, cand = L[records, pk - 1], L[records, pk], L[records, pk + 1]
+    freq = fv[pk] + 0.5 * (lhs - cand) / (lhs - 2 * rhs + cand - 1e-12) * (ANALYSIS_SR / 1024)
+    cents = 1200 * numpy.log2(numpy.maximum(freq, 20.0))
+    d2 = [abs(cents[ix + 2] - 2 * cents[ix + 1] + cents[ix]) for ix in trip]
+    return float(numpy.log10(numpy.median(d2) + 0.01))
 
 
-def _spec_floor(e: np.ndarray, P: np.ndarray) -> float:
-    dbP = 10 * np.log10(P)
-    loud = e > e.max() - 30
-    return float(np.median(np.percentile(dbP[loud], 10, axis=1) - dbP[loud].max(axis=1)))
+def _spec_floor(ex: numpy.ndarray, P: numpy.ndarray) -> float:
+    dbP = 10 * numpy.log10(P)
+    loud = ex > ex.max() - 30
+    return float(numpy.median(numpy.percentile(dbP[loud], 10, axis=1) - dbP[loud].max(axis=1)))
 
 
-def _tonal(P: np.ndarray, active: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+def _tonal(P: numpy.ndarray, active: numpy.ndarray) -> tuple[numpy.ndarray, numpy.ndarray]:
     """The peak bin of every frame and the frames whose peak lobe holds over half the energy."""
     pk = _peaks(P)
-    rows = np.arange(len(P))
-    lobe = sum(P[rows, pk + d] for d in range(-2, 3))
+    records = numpy.arange(len(P))
+    lobe = sum(P[records, pk + dd] for dd in range(-2, 3))
     return pk, active & (lobe / P.sum(axis=1) > 0.5)
 
 
-def _spectral_frames(y: np.ndarray, out: dict) -> None:
-    f, P = _stft(y)
-    e = 10 * np.log10(P.sum(axis=1))
-    out["spec_floor_db"] = _spec_floor(e, P)
-    active = e > e.max() - 50
-    out["quiet_flat"] = _quiet_flat(P, e, active)
+def _spectral_frames(yv: numpy.ndarray, result: dict) -> None:
+    fv, P = _stft(yv)
+    ex = 10 * numpy.log10(P.sum(axis=1))
+    result["spec_floor_db"] = _spec_floor(ex, P)
+    active = ex > ex.max() - 50
+    result["quiet_flat"] = _quiet_flat(P, ex, active)
     pk, tonal = _tonal(P, active)
-    out["tonal_frames"] = float(tonal.sum() / max(1, active.sum()))
-    out["pitch_wobble"] = _wobble(f, P, tonal, pk)
+    result["tonal_frames"] = float(tonal.sum() / max(1, active.sum()))
+    result["pitch_wobble"] = _wobble(fv, P, tonal, pk)
 
 
-def _env_resid(y: np.ndarray) -> float:
+def _env_resid(yv: numpy.ndarray) -> float:
     from scipy import signal as sps
 
-    e = 10 * np.log10((_frames(y, 160) ** 2).mean(axis=1) + 1e-30)
-    counted = e >= e.max() - 40
+    ex = 10 * numpy.log10((_frames(yv, 160) ** 2).mean(axis=1) + 1e-30)
+    counted = ex >= ex.max() - 40
     if counted.sum() < 9:
         return float("nan")
-    trend = sps.medfilt(e, 7)
-    return float(np.log10(np.median(np.abs(e - trend)[counted]) + 0.01))
+    trend = sps.medfilt(ex, 7)
+    return float(numpy.log10(numpy.median(numpy.abs(ex - trend)[counted]) + 0.01))
 
 
-def _texture_kurt(y: np.ndarray) -> float:
+def _texture_kurt(yv: numpy.ndarray) -> float:
     from scipy import signal as sps
 
     sos = sps.butter(4, [2000, 8000], "bandpass", fs=ANALYSIS_SR, output="sos")
-    band = sps.sosfilt(sos, y)
-    env = np.sqrt(np.convolve(band ** 2, np.ones(320) / 320, mode="same")) + 1e-9
-    mask = (band != 0) & (env >= env.max() * 10 ** (-40 / 20))
+    band = sps.sosfilt(sos, yv)
+    envl = numpy.sqrt(numpy.convolve(band ** 2, numpy.ones(320) / 320, mode="same")) + 1e-9
+    mask = (band != 0) & (envl >= envl.max() * 10 ** (-40 / 20))
     if mask.sum() <= 100:
         return float("nan")
-    s = band[mask] / env[mask]
-    return float(np.log(np.mean(s ** 4) / (np.mean(s ** 2) ** 2 + 1e-30) + 1e-9))
+    sv = band[mask] / envl[mask]
+    return float(numpy.log(numpy.mean(sv ** 4) / (numpy.mean(sv ** 2) ** 2 + 1e-30) + 1e-9))
 
 
-def _crest(y: np.ndarray) -> float:
-    nz = y[y != 0]
-    return float(20 * np.log10(1 / (np.sqrt(np.mean(nz ** 2)) + 1e-12))) if len(nz) else 0.0
+def _crest(yv: numpy.ndarray) -> float:
+    nz = yv[yv != 0]
+    return float(20 * numpy.log10(1 / (numpy.sqrt(numpy.mean(nz ** 2)) + 1e-12))) if len(nz) else 0.0
 
 
-def _analysis_signal(x: np.ndarray) -> np.ndarray:
+def _analysis_signal(sig: numpy.ndarray) -> numpy.ndarray:
     """The clip peak-normalised, resampled to the analysis rate and normalised again."""
-    pre = x / np.max(np.abs(x))  # level-free before the float32 resampler, so level never matters
-    y = np.asarray(audio.resample(pre.astype(np.float32), SR, ANALYSIS_SR), np.float64)
-    return y / (np.max(np.abs(y)) + 1e-12)
+    pre = sig / numpy.max(numpy.abs(sig))  # level-free before the float32 resampler, so level never matters
+    yv = numpy.asarray(audio.resample(pre.astype(numpy.float32), SR, ANALYSIS_SR), numpy.float64)
+    return yv / (numpy.max(numpy.abs(yv)) + 1e-12)
 
 
-def _judgeable(x: np.ndarray) -> bool:
-    return len(x) >= MIN_CLIP_S * SR and np.max(np.abs(x)) >= MIN_PEAK
+def _judgeable(sig: numpy.ndarray) -> bool:
+    return len(sig) >= MIN_CLIP_S * SR and numpy.max(numpy.abs(sig)) >= MIN_PEAK
 
 
-def signal_features(x: np.ndarray) -> dict | None:
+def signal_features(sig: numpy.ndarray) -> dict | None:
     """The 13 signal measurements of a mono 48 kHz clip, or None when it cannot be judged (R3)."""
-    x = audio.to_mono(np.asarray(x, np.float64)) if np.ndim(x) == 2 else np.asarray(x, np.float64)
-    if not _judgeable(x):
+    sig = audio.to_mono(numpy.asarray(sig, numpy.float64)) if numpy.ndim(sig) == 2 else numpy.asarray(sig, numpy.float64)
+    if not _judgeable(sig):
         return None
-    y = _analysis_signal(x)
-    out: dict[str, float] = {"silence_frac": float(np.mean(np.abs(x) < ZERO_SAMPLE)), "floor_db": _floor_db(y)}
-    _welch(y, out)
-    _spectral_frames(y, out)
-    out.update(env_resid_db=_env_resid(y), texture_kurt=_texture_kurt(y), crest_db=_crest(y))
-    return {k: out[k] for k in SIGNAL_INPUTS}
+    yv = _analysis_signal(sig)
+    result: dict[str, float] = {"silence_frac": float(numpy.mean(numpy.abs(sig) < ZERO_SAMPLE)), "floor_db": _floor_db(yv)}
+    _welch(yv, result)
+    _spectral_frames(yv, result)
+    result.update(env_resid_db=_env_resid(yv), texture_kurt=_texture_kurt(yv), crest_db=_crest(yv))
+    return {kk: result[kk] for kk in SIGNAL_INPUTS}
 
 
-def signal_vector(feats: Mapping[str, float]) -> np.ndarray:
+def signal_vector(feats: Mapping[str, float]) -> numpy.ndarray:
     """The signal head input vector in model order."""
-    return np.array([feats.get(k, float("nan")) for k in SIGNAL_INPUTS], np.float64)
+    return numpy.array([feats.get(kk, float("nan")) for kk in SIGNAL_INPUTS], numpy.float64)
 
 
-def rms_db(x: np.ndarray) -> float:
+def rms_db(sig: numpy.ndarray) -> float:
     """RMS in dB (-200 for empty input)."""
-    x = np.asarray(x, np.float64)
-    return float(20 * np.log10(max(np.sqrt(np.mean(x ** 2)), 1e-10))) if x.size else -200.0
+    sig = numpy.asarray(sig, numpy.float64)
+    return float(20 * numpy.log10(max(numpy.sqrt(numpy.mean(sig ** 2)), 1e-10))) if sig.size else -200.0
 
 
-def audible(x: np.ndarray) -> bool:
+def audible(sig: numpy.ndarray) -> bool:
     """True when the clip's RMS is above -60 dBFS and it has signal measurements."""
-    return rms_db(x) > SILENT_DB and signal_features(x) is not None
+    return rms_db(sig) > SILENT_DB and signal_features(sig) is not None
 
 
-def pure_tone(x_or_feats: np.ndarray | Mapping[str, float] | None) -> bool:
+def pure_tone(x_or_feats: numpy.ndarray | Mapping[str, float] | None) -> bool:
     """The pure dead-steady tone rule (R5); takes a clip or its signal measurements."""
-    f = x_or_feats if isinstance(x_or_feats, Mapping) or x_or_feats is None else signal_features(x_or_feats)
-    if not f:
+    fv = x_or_feats if isinstance(x_or_feats, Mapping) or x_or_feats is None else signal_features(x_or_feats)
+    if not fv:
         return False
-    wob = f.get("pitch_wobble", float("nan"))
-    return (f["tonal_frames"] >= 0.95 and f["line_share"] >= 0.9 and f["crest_db"] <= 4.5
-            and (not np.isfinite(wob) or wob <= -1.0))
+    wob = fv.get("pitch_wobble", float("nan"))
+    return (fv["tonal_frames"] >= 0.95 and fv["line_share"] >= 0.9 and fv["crest_db"] <= 4.5
+            and (not numpy.isfinite(wob) or wob <= -1.0))
 
 
 # ================================================================ lift and clips
 
 
-def lift_gain(x: np.ndarray) -> float:
+def lift_gain(sig: numpy.ndarray) -> float:
     """The quiet-source gain in dB (R1); 0 when no lift applies."""
-    x = np.asarray(x, np.float64)
-    if not x.size:
+    sig = numpy.asarray(sig, numpy.float64)
+    if not sig.size:
         return 0.0
-    r, p = rms_db(x), float(20 * np.log10(max(float(np.max(np.abs(x))), 1e-10)))
-    g = min(LIFT_RMS_DB - r, LIFT_PEAK_DB - p)
-    return 0.0 if p < LIFT_FLOOR_DB or g <= 0 else float(g)
+    row_, pth = rms_db(sig), float(20 * numpy.log10(max(float(numpy.max(numpy.abs(sig))), 1e-10)))
+    grp = min(LIFT_RMS_DB - row_, LIFT_PEAK_DB - pth)
+    return 0.0 if pth < LIFT_FLOOR_DB or grp <= 0 else float(grp)
 
 
-def clip_starts(n: int) -> list[int]:
+def clip_starts(count: int) -> list[int]:
     """Clip start samples of an n-sample sound (R2); one clip up to 6 s."""
-    w = int(WIN_S * SR)
-    if n <= int(LONG_S * SR):
+    win_n = int(WIN_S * SR)
+    if count <= int(LONG_S * SR):
         return [0]
-    starts = list(range(0, n - w + 1, w))
-    if starts[-1] + w != n:
-        starts.append(n - w)
+    starts = list(range(0, count - win_n + 1, win_n))
+    if starts[-1] + win_n != count:
+        starts.append(count - win_n)
     if len(starts) > 2 and (starts[-1] - starts[-2]) < DROP_LAST_S * SR:
         starts.pop()
     return starts
 
 
-def clips_of(x: np.ndarray) -> list[tuple[float, float, np.ndarray]]:
+def clips_of(sig: numpy.ndarray) -> list[tuple[float, float, numpy.ndarray]]:
     """(local start s, local end s, samples) of every clip."""
-    n = len(x)
-    if n <= int(LONG_S * SR):
-        return [(0.0, n / SR, x)]
-    w = int(WIN_S * SR)
-    return [(s / SR, (s + w) / SR, x[s:s + w]) for s in clip_starts(n)]
+    count = len(sig)
+    if count <= int(LONG_S * SR):
+        return [(0.0, count / SR, sig)]
+    win_n = int(WIN_S * SR)
+    return [(sv / SR, (sv + win_n) / SR, sig[sv:sv + win_n]) for sv in clip_starts(count)]
 
 
 # ================================================================ facts and words
 
 
-def pct(v: float) -> str:
+def pct(vec: float) -> str:
     """A percentage: 1 decimal strictly between 0 and 9.5 %, else an integer."""
-    p = 100 * v
-    return f"{p:.1f}%" if 0 < p < 9.5 else f"{int(round(p))}%"
+    pth = 100 * vec
+    return f"{pth:.1f}%" if 0 < pth < 9.5 else f"{int(round(pth))}%"
 
 
 FACT_WORDS: dict[str, tuple[Callable[[float], str], Callable[[float], str]]] = {
@@ -385,37 +385,37 @@ FACT_WORDS: dict[str, tuple[Callable[[float], str], Callable[[float], str]]] = {
 }
 
 
-def fact_phrase(feature: str, side: str, v: float) -> str:
+def fact_phrase(feature: str, side: str, vec: float) -> str:
     """A fired fact in words."""
     pair = FACT_WORDS.get(feature)
     if pair is None:
-        return f"{feature} {v:.3g}"
-    return pair[0 if side == "real" else 1](v)
+        return f"{feature} {vec:.3g}"
+    return pair[0 if side == "real" else 1](vec)
 
 
 def fired_facts(model: Mapping, feats: Mapping[str, float]) -> list[dict]:
     """Facts whose test passes, by precision descending, with their phrases (R6)."""
-    out = []
-    for f in model.get("facts", []):
-        v = feats.get(f["feature"], float("nan"))
-        if f["feature"] == "silence_frac" or not np.isfinite(v):
+    result = []
+    for fv in model.get("facts", []):
+        vec = feats.get(fv["feature"], float("nan"))
+        if fv["feature"] == "silence_frac" or not numpy.isfinite(vec):
             continue
-        if (v <= f["value"]) if f["op"] == "<=" else (v >= f["value"]):
-            who = "were real/pro" if f["side"] == "real" else "were synthesized"
-            text = f"{fact_phrase(f['feature'], f['side'], v)} ({pct(f['precision'])} of training clips past this {who})"
-            out.append({"side": f["side"], "precision": f["precision"], "text": text})
-    return sorted(out, key=lambda f: -f["precision"])
+        if (vec <= fv["value"]) if fv["op"] == "<=" else (vec >= fv["value"]):
+            who = "were real/pro" if fv["side"] == "real" else "were synthesized"
+            text = f"{fact_phrase(fv['feature'], fv['side'], vec)} ({pct(fv['precision'])} of training clips past this {who})"
+            result.append({"side": fv["side"], "precision": fv["precision"], "text": text})
+    return sorted(result, key=lambda fv: -fv["precision"])
 
 
-def silence_line(model: Mapping, v: float) -> str | None:
+def silence_line(model: Mapping, vec: float) -> str | None:
     """The digital-silence context line (R7), or None."""
-    rows = [r for r in model.get("silence_base", []) if r["at_least"] <= v]
-    if v < SILENCE_LINE or not rows:
+    records = [row_ for row_ in model.get("silence_base", []) if row_["at_least"] <= vec]
+    if vec < SILENCE_LINE or not records:
         return None
-    r = rows[-1]
-    return (f"{pct(v)} of the samples are exact digital silence: weak evidence (edited, gated or synthesized); "
-            f"{pct(r['real'])} of real and {pct(r['synth'])} of synthesized training clips had at least "
-            f"{pct(r['at_least'])}")
+    row_ = records[-1]
+    return (f"{pct(vec)} of the samples are exact digital silence: weak evidence (edited, gated or synthesized); "
+            f"{pct(row_['real'])} of real and {pct(row_['synth'])} of synthesized training clips had at least "
+            f"{pct(row_['at_least'])}")
 
 
 def _pure_fact() -> dict:
@@ -426,90 +426,90 @@ def _pure_fact() -> dict:
 # ================================================================ clip scoring
 
 
-def _score_clip(model: dict, emb: np.ndarray, feats: dict) -> dict:
+def _score_clip(model: dict, emb: numpy.ndarray, feats: dict) -> dict:
     lc = head_logit(model["heads"]["clap"], emb)
     ls = head_logit(model["heads"]["signal"], signal_vector(feats))
-    p = fuse(model, {"clap": lc, "signal": ls})
+    pth = fuse(model, {"clap": lc, "signal": ls})
     pure = pure_tone(feats)
     facts = fired_facts(model, feats)
     if pure:
-        p = min(p, PURE_CAP)
+        pth = min(pth, PURE_CAP)
         facts = [_pure_fact()] + facts
-    return {"p": p, "clap": lc, "signal": ls, "pure": pure, "facts": facts, "feats": feats, "emb": emb}
+    return {"p": pth, "clap": lc, "signal": ls, "pure": pure, "facts": facts, "feats": feats, "emb": emb}
 
 
-def _prompt_line(model: dict, emb: np.ndarray, side: str) -> str:
-    cos = {s: voc.embed_plain_text(model["prompts"][s]).astype(np.float64) @ emb for s in ("real", "synth")}
-    best = max(("real", "synth"), key=lambda s: cos[s].max())
-    other = "synth" if best == "real" else "real"
-    bi, oi = int(np.argmax(cos[best])), int(np.argmax(cos[other]))
+def _prompt_line(model: dict, emb: numpy.ndarray, side: str) -> str:
+    cos = {sv: voc.embed_plain_text(model["prompts"][sv]).astype(numpy.float64) @ emb for sv in ("real", "synth")}
+    winner = max(("real", "synth"), key=lambda sv: cos[sv].max())
+    other = "synth" if winner == "real" else "real"
+    bi, oi = int(numpy.argmax(cos[winner])), int(numpy.argmax(cos[other]))
     name = {"real": "real", "synth": "synthesized"}
-    return (f"closest prompt '{model['prompts'][best][bi]}' ({name[best]}, cosine {cos[best][bi]:.2f}); best "
+    return (f"closest prompt '{model['prompts'][winner][bi]}' ({name[winner]}, cosine {cos[winner][bi]:.2f}); best "
             f"{name[other]} prompt '{model['prompts'][other][oi]}' (cosine {cos[other][oi]:.2f}); prompt cosines "
             "add context and do not decide")
 
 
-def clap_line(model: dict, c: dict) -> str:
+def clap_line(model: dict, cand: dict) -> str:
     """The CLAP evidence line of one scored clip (R8)."""
-    toward = "toward real" if c["clap"] >= 0 else "toward synthesized"
-    lead = (f"pure-tone rule decided (the CLAP head alone: {c['clap']:+.1f} {toward})" if c["pure"] else
-            f"CLAP head score {c['clap']:+.1f} ({toward})")
-    return f"{lead}; {_prompt_line(model, c['emb'], 'real' if c['p'] >= LEAN else 'synth')}"
+    toward = "toward real" if cand["clap"] >= 0 else "toward synthesized"
+    lead = (f"pure-tone rule decided (the CLAP head alone: {cand['clap']:+.1f} {toward})" if cand["pure"] else
+            f"CLAP head score {cand['clap']:+.1f} ({toward})")
+    return f"{lead}; {_prompt_line(model, cand['emb'], 'real' if cand['p'] >= LEAN else 'synth')}"
 
 
-def _ast_line(clip: np.ndarray) -> str:
+def _ast_line(clip: numpy.ndarray) -> str:
     from hark.models import ast
 
     model = ast.get()
-    p = np.asarray(model.probs([np.asarray(clip, np.float32)]))[0]
-    syn = sorted(((model.prob_of(p, lab), lab) for lab in SYNTH_CLASSES), reverse=True)[:3]
-    top = model.top(p, k=3)
+    pth = numpy.asarray(model.probs([numpy.asarray(clip, numpy.float32)]))[0]
+    syn = sorted(((model.prob_of(pth, lab), lab) for lab in SYNTH_CLASSES), reverse=True)[:3]
+    best_n = model.top(pth, k=3)
     return ("AudioSet synth classes: " + ", ".join(f"{lab} {pp:.2f}" for pp, lab in syn) +
-            "; top classes: " + ", ".join(f"{lab} {pp:.2f}" for lab, pp in top))
+            "; top classes: " + ", ".join(f"{lab} {pp:.2f}" for lab, pp in best_n))
 
 
 # ================================================================ realness of one file
 
 
-def _name(path: str, start: float | None, end: float | None, dur: float) -> str:
-    base = os.path.basename(path)
-    if start is None and end is None:
+def _name(fpath: str, t_from: float | None, t_to: float | None, secs: float) -> str:
+    base = os.path.basename(fpath)
+    if t_from is None and t_to is None:
         return base
-    return f"{base} [{report.fmt_t(start or 0.0)}-{report.fmt_t(end if end is not None else dur)}]"
+    return f"{base} [{report.fmt_t(t_from or 0.0)}-{report.fmt_t(t_to if t_to is not None else secs)}]"
 
 
-def _probed_duration(path: str) -> float | None:
+def _probed_duration(fpath: str) -> float | None:
     try:
-        return audio.duration(path)
+        return audio.duration(fpath)
     except audio.AudioError:
         raise
     except Exception:
         return None
 
 
-def _past_end(path: str, start: float | None, dur: float | None) -> str | None:
-    if start is None or dur is None or start < dur:
+def _past_end(fpath: str, t_from: float | None, secs: float | None) -> str | None:
+    if t_from is None or secs is None or t_from < secs:
         return None
-    return f"start {start:g} s is at or past the end of {path} ({dur:.3f} s long)"
+    return f"start {t_from:g} s is at or past the end of {fpath} ({secs:.3f} s long)"
 
 
-def check_range(path: str, start: float | None, end: float | None) -> float | None:
+def check_range(fpath: str, t_from: float | None, t_to: float | None) -> float | None:
     """The realness range checks (R10); returns the probed duration when known."""
-    s = 0.0 if start is None else start
-    voc.raise_first([(s < 0, "start must be >= 0 s"), (end is not None and end <= s, "end must be greater than start")])
-    dur = _probed_duration(path)
-    voc.raise_first([(True, _past_end(path, start, dur))])
-    return dur
+    sv = 0.0 if t_from is None else t_from
+    voc.raise_first([(sv < 0, "start must be >= 0 s"), (t_to is not None and t_to <= sv, "end must be greater than start")])
+    secs = _probed_duration(fpath)
+    voc.raise_first([(True, _past_end(fpath, t_from, secs))])
+    return secs
 
 
-def _cache_path(path: str, start: float | None, end: float | None, ast: bool, model: Mapping) -> Path:
-    key = voc.key_of("realness", audio.file_id(path), start, end, ast, model.get("version"), model.get("trained"),
+def _cache_path(fpath: str, t_from: float | None, t_to: float | None, ast: bool, model: Mapping) -> Path:
+    kname = voc.key_of("realness", audio.file_id(fpath), t_from, t_to, ast, model.get("version"), model.get("trained"),
                      CACHE_VERSION)
-    return voc.cache_dir() / "realness" / f"r_{key}.json"
+    return voc.cache_dir() / "realness" / f"r_{kname}.json"
 
 
-def _silent_result(path: str, name: str, x: np.ndarray, base: dict) -> dict:
-    peak = 20 * np.log10(max(float(np.max(np.abs(x))) if x.size else 0.0, 1e-10))
+def _silent_result(fpath: str, name: str, sig: numpy.ndarray, base: dict) -> dict:
+    peak = 20 * numpy.log10(max(float(numpy.max(numpy.abs(sig))) if sig.size else 0.0, 1e-10))
     why = ("exact digital silence" if peak <= DIGITAL_ZERO_DB else
            f"silent: no part is above -60 dBFS RMS (peak {peak:.1f} dBFS)")
     return {**base, "p_real": None, "verdict": SILENT, "why": why, "evidence": ["nothing to judge: the audio is silent"],
@@ -517,30 +517,30 @@ def _silent_result(path: str, name: str, x: np.ndarray, base: dict) -> dict:
 
 
 def _scored(model: dict, clips: list, ast: bool) -> list[dict]:
-    judged = [(a, b, c, f) for a, b, c in clips for f in [signal_features(c)] if f and rms_db(c) > SILENT_DB]
+    judged = [(lhs, rhs, cand, fv) for lhs, rhs, cand in clips for fv in [signal_features(cand)] if fv and rms_db(cand) > SILENT_DB]
     if not judged:
         return []
     resolve_head(model)
-    E = voc.embed_audio([c for _, _, c, _ in judged]).astype(np.float64)
-    out = []
-    for (a, b, c, f), e in zip(judged, E):
-        s = _score_clip(model, e, f)
-        s.update({"t0": a, "t1": b})
+    E = voc.embed_audio([cand for _, _, cand, _ in judged]).astype(numpy.float64)
+    result = []
+    for (lhs, rhs, cand, fv), ex in zip(judged, E):
+        sv = _score_clip(model, ex, fv)
+        sv.update({"t0": lhs, "t1": rhs})
         if ast:
-            s["ast"] = _ast_line(c)
-        out.append(s)
-    return out
+            sv["ast"] = _ast_line(cand)
+        result.append(sv)
+    return result
 
 
-def _side(p: float) -> str:
-    return "real" if p >= LEAN else "synth"
+def _side(pth: float) -> str:
+    return "real" if pth >= LEAN else "synth"
 
 
 def _fact_lines(rep: dict) -> tuple[list[str], list[str]]:
     side = _side(rep["p"])
-    mine = [f["text"] for f in rep["facts"] if f["side"] == side][:3]
-    other = [f["text"] for f in rep["facts"] if f["side"] != side][:1]
-    return mine, [f"but: {t}" for t in other]
+    mine = [fv["text"] for fv in rep["facts"] if fv["side"] == side][:3]
+    other = [fv["text"] for fv in rep["facts"] if fv["side"] != side][:1]
+    return mine, [f"but: {tx}" for tx in other]
 
 
 def _gain_line(gain: float, x_stats: tuple[float, float]) -> str | None:
@@ -551,9 +551,9 @@ def _gain_line(gain: float, x_stats: tuple[float, float]) -> str | None:
 
 
 def _fusion_line(model: dict, rep: dict, any_fact: bool) -> str | None:
-    w = model["fusion"]["coef"]
-    if float(w[1]) != 0:
-        return f"fusion: CLAP x {w[0]:.2f}, signal x {w[1]:.2f}; signal head score {rep['signal']:+.1f}"
+    win_n = model["fusion"]["coef"]
+    if float(win_n[1]) != 0:
+        return f"fusion: CLAP x {win_n[0]:.2f}, signal x {win_n[1]:.2f}; signal head score {rep['signal']:+.1f}"
     return "the measurements are context, not votes: the signal head's fusion weight is 0" if any_fact else None
 
 
@@ -570,14 +570,14 @@ def _why_short(rep: dict) -> str:
     if rep["pure"]:
         return f"pure-tone rule (the CLAP head alone: {rep['clap']:+.1f})"
     side = "real" if rep["p"] >= LEAN else "synth"
-    first = next((f["text"] for f in rep["facts"] if f["side"] == side), None)
+    first = next((fv["text"] for fv in rep["facts"] if fv["side"] == side), None)
     return f"CLAP head score {rep['clap']:+.1f} ({toward})" + (f"; {first}" if first else "")
 
 
-def p_text(p: float, th: Mapping[str, float]) -> str:
+def p_text(pth: float, th: Mapping[str, float]) -> str:
     """p_real with 2 decimals, or 3 when 2 would read as a threshold it is not equal to."""
-    two = f"{p:.2f}"
-    return f"{p:.3f}" if any(two == f"{t:.2f}" and abs(p - t) > 1e-9 for t in th.values()) else two
+    two = f"{pth:.2f}"
+    return f"{pth:.3f}" if any(two == f"{tx:.2f}" and abs(pth - tx) > 1e-9 for tx in th.values()) else two
 
 
 def _note(model: Mapping, long: bool) -> str:
@@ -592,133 +592,133 @@ def _note(model: Mapping, long: bool) -> str:
             "depends on the sound, not its origin; a clean professional synth tone can read as synthesized." + zs)
 
 
-def _segments(model: dict, clips: list, scored: list, s: float, dur: float) -> list[dict]:
+def _segments(model: dict, clips: list, graded: list, sv: float, secs: float) -> list[dict]:
     th = thresholds_of(model)
-    by_t = {round(c["t0"], 6): c for c in scored}
-    out = []
-    for a, b, _ in clips:
-        rec: dict[str, Any] = {"start": round(s + a, 3), "end": round(min(s + b, s + dur), 3)}
-        c = by_t.get(round(a, 6))
-        if c is None:
+    by_t = {round(cand["t0"], 6): cand for cand in graded}
+    result = []
+    for lhs, rhs, _ in clips:
+        rec: dict[str, Any] = {"start": round(sv + lhs, 3), "end": round(min(sv + rhs, sv + secs), 3)}
+        cand = by_t.get(round(lhs, 6))
+        if cand is None:
             rec.update(p_real=None, verdict=SILENT)
         else:
-            rec.update(p_real=round(c["p"], 3), verdict=verdict_of(c["p"], th))
-            side = "real" if c["p"] >= LEAN else "synth"
-            first = next((f["text"] for f in c["facts"] if f["side"] == side), None)
+            rec.update(p_real=round(cand["p"], 3), verdict=verdict_of(cand["p"], th))
+            side = "real" if cand["p"] >= LEAN else "synth"
+            first = next((fv["text"] for fv in cand["facts"] if fv["side"] == side), None)
             if first:
                 rec["why"] = first
-        out.append(rec)
-    return out
+        result.append(rec)
+    return result
 
 
 def _merged_spans(segs: Sequence[dict]) -> list[tuple[float, float]]:
     spans: list[list[float]] = []
-    for g in segs:
-        if spans and g["start"] <= spans[-1][1] + 1e-6:
-            spans[-1][1] = max(spans[-1][1], g["end"])
+    for grp in segs:
+        if spans and grp["start"] <= spans[-1][1] + 1e-6:
+            spans[-1][1] = max(spans[-1][1], grp["end"])
         else:
-            spans.append([g["start"], g["end"]])
-    return [(a, b) for a, b in spans]
+            spans.append([grp["start"], grp["end"]])
+    return [(lhs, rhs) for lhs, rhs in spans]
 
 
 def _span_text(spans: Sequence[tuple[float, float]]) -> str:
-    text = ", ".join(f"{report.fmt_t(a)}-{report.fmt_t(b)}" for a, b in spans[:6])
+    text = ", ".join(f"{report.fmt_t(lhs)}-{report.fmt_t(rhs)}" for lhs, rhs in spans[:6])
     return text + (", ..." if len(spans) > 6 else "")
 
 
 def _lowest_text(segs: list[dict]) -> str:
-    pmin = min(g["p_real"] for g in segs if g["p_real"] is not None)
+    pmin = min(grp["p_real"] for grp in segs if grp["p_real"] is not None)
     return (f" No window leans synthesized (lowest window p_real {pmin:.2f}); a quiet code-made layer can "
             "still sit below a louder real mix.")
 
 
 def _long_tail(model: dict, segs: list[dict]) -> str:
     lo = thresholds_of(model)["lo"]
-    lean = [g for g in segs if g["p_real"] is not None and g["p_real"] < LEAN]
+    lean = [grp for grp in segs if grp["p_real"] is not None and grp["p_real"] < LEAN]
     if not lean:
         return _lowest_text(segs)
-    low = [g for g in lean if g["p_real"] <= lo]
+    low = [grp for grp in lean if grp["p_real"] <= lo]
     text = f" Windows that lean synthesized: {_span_text(_merged_spans(lean))}."
     if low:
         return text + f" {len(low)} at or below the clip lo {lo:.2f}: {_span_text(_merged_spans(low))}."
     return text + f" None at or below the clip lo {lo:.2f}."
 
 
-def _long_fields(model: dict, clips: list, scored: list, s: float, dur: float) -> tuple[dict, str, str]:
-    segs = _segments(model, clips, scored, s, dur)
+def _long_fields(model: dict, clips: list, graded: list, sv: float, secs: float) -> tuple[dict, str, str]:
+    segs = _segments(model, clips, graded, sv, secs)
     lo = thresholds_of(model)["lo"]
-    ps = [c["p"] for c in scored]
-    lean = sum(p < LEAN for p in ps)
-    pure = sum(c["pure"] for c in scored)
-    why = (f"{lean} of {len(scored)} windows lean synthesized (p_real < 0.5); mean CLAP head score "
-           f"{np.mean([c['clap'] for c in scored]):+.1f}" + (f"; {pure} decided by the pure-tone rule" if pure else ""))
-    fields = {"segments": segs, "synth_windows": sum(p <= lo for p in ps), "lean_synth_windows": lean,
+    ps = [cand["p"] for cand in graded]
+    lean = sum(pth < LEAN for pth in ps)
+    pure = sum(cand["pure"] for cand in graded)
+    why = (f"{lean} of {len(graded)} windows lean synthesized (p_real < 0.5); mean CLAP head score "
+           f"{numpy.mean([cand['clap'] for cand in graded]):+.1f}" + (f"; {pure} decided by the pure-tone rule" if pure else ""))
+    fields = {"segments": segs, "synth_windows": sum(pth <= lo for pth in ps), "lean_synth_windows": lean,
               "p_real_min": round(min(ps), 3)}
     return fields, why, _long_tail(model, segs)
 
 
-def _base(path: str, start: float | None, end: float | None, dur: float) -> dict:
-    base: dict[str, Any] = {"path": path, "duration": round(dur, 3)}
-    if start is not None or end is not None:
-        s = start or 0.0
-        base["range"] = [round(s, 3), round(s + dur, 3)]
+def _base(fpath: str, t_from: float | None, t_to: float | None, secs: float) -> dict:
+    base: dict[str, Any] = {"path": fpath, "duration": round(secs, 3)}
+    if t_from is not None or t_to is not None:
+        sv = t_from or 0.0
+        base["range"] = [round(sv, 3), round(sv + secs, 3)]
     return base
 
 
-def _lifted(x: np.ndarray, base: dict) -> tuple[np.ndarray, float, tuple[float, float]]:
+def _lifted(sig: numpy.ndarray, base: dict) -> tuple[numpy.ndarray, float, tuple[float, float]]:
     """The quiet-source lift: (lifted audio, gain dB, (RMS, peak) before the lift)."""
-    gain = lift_gain(x)
-    stats = (rms_db(x), float(20 * np.log10(max(float(np.max(np.abs(x))) if x.size else 0, 1e-10))))
+    gain = lift_gain(sig)
+    stats = (rms_db(sig), float(20 * numpy.log10(max(float(numpy.max(numpy.abs(sig))) if sig.size else 0, 1e-10))))
     if gain > 0:
         base["gain_db"] = round(gain, 1)
-        return x * 10 ** (gain / 20), gain, stats
-    return x, gain, stats
+        return sig * 10 ** (gain / 20), gain, stats
+    return sig, gain, stats
 
 
-def _long_result(cx: dict, p: float, rep: dict, th: dict) -> dict:
-    s, dur, scored = cx["s"], cx["dur"], cx["scored"]
-    fields, why, tail = _long_fields(cx["model"], cx["clips"], scored, s, dur)
-    kind = "real" if p >= LEAN else "synthesized"
-    note = (f"evidence from the most {kind}-sounding window {report.fmt_t(s + rep['t0'])}-"
-            f"{report.fmt_t(min(s + rep['t1'], s + dur))} (p_real {rep['p']:.2f})")
-    summary = (f"{cx['name']}: {verdict_of(p, th)} (p_real {p_text(p, th)}, mean of {len(scored)} 4 s windows; file "
+def _long_result(cx: dict, pth: float, rep: dict, th: dict) -> dict:
+    sv, secs, graded = cx["s"], cx["dur"], cx["scored"]
+    fields, why, tail = _long_fields(cx["model"], cx["clips"], graded, sv, secs)
+    kind = "real" if pth >= LEAN else "synthesized"
+    note = (f"evidence from the most {kind}-sounding window {report.fmt_t(sv + rep['t0'])}-"
+            f"{report.fmt_t(min(sv + rep['t1'], sv + secs))} (p_real {rep['p']:.2f})")
+    summary = (f"{cx['name']}: {verdict_of(pth, th)} (p_real {p_text(pth, th)}, mean of {len(graded)} 4 s windows; file "
                f"thresholds lo {th['lo']:.2f} / hi {th['hi']:.2f}, weak calibration): {why}." + tail)
     return {"why": why, "evidence": _evidence(cx["model"], rep, note, cx["gain"], cx["stats"]), **fields,
             "summary": summary}
 
 
-def _short_result(cx: dict, p: float, rep: dict, th: dict) -> dict:
+def _short_result(cx: dict, pth: float, rep: dict, th: dict) -> dict:
     why = _why_short(rep)
-    summary = (f"{cx['name']}: {verdict_of(p, th)} (p_real {p_text(p, th)}; clip thresholds lo {th['lo']:.2f} / "
+    summary = (f"{cx['name']}: {verdict_of(pth, th)} (p_real {p_text(pth, th)}; clip thresholds lo {th['lo']:.2f} / "
                f"hi {th['hi']:.2f}): {why}.")
     return {"why": why, "evidence": _evidence(cx["model"], rep, None, cx["gain"], cx["stats"]), "summary": summary}
 
 
 def _verdict_result(cx: dict, base: dict) -> dict:
-    scored, model = cx["scored"], cx["model"]
-    p = float(np.mean([c["p"] for c in scored]))
+    graded, model = cx["scored"], cx["model"]
+    pth = float(numpy.mean([cand["p"] for cand in graded]))
     long = len(cx["clips"]) > 1
     th = thresholds_of(model, file=long)
-    rep = max(scored, key=lambda c: c["p"]) if p >= LEAN else min(scored, key=lambda c: c["p"])
-    r = {**base, "p_real": round(p, 3), "verdict": verdict_of(p, th),
-         **(_long_result if long else _short_result)(cx, p, rep, th)}
+    rep = max(graded, key=lambda cand: cand["p"]) if pth >= LEAN else min(graded, key=lambda cand: cand["p"])
+    row_ = {**base, "p_real": round(pth, 3), "verdict": verdict_of(pth, th),
+         **(_long_result if long else _short_result)(cx, pth, rep, th)}
     if is_zero_shot(model):
-        r["summary"] += " (zero-shot fallback model)"
-    r["note"] = _note(model, long)
-    return r
+        row_["summary"] += " (zero-shot fallback model)"
+    row_["note"] = _note(model, long)
+    return row_
 
 
-def _judge(path: str, start: float | None, end: float | None, ast: bool, model: dict) -> dict:
-    x = np.asarray(audio.load(path, mono=True, start=start, end=end), np.float64)
-    dur = len(x) / SR
-    name = _name(path, start, end, dur)
-    base = _base(path, start, end, dur)
-    x, gain, stats = _lifted(x, base)
-    clips = clips_of(x)
-    scored = _scored(model, clips, ast)
-    if not scored:
-        return _silent_result(path, name, x, base)
-    cx = {"model": model, "clips": clips, "scored": scored, "s": start or 0.0, "dur": dur, "name": name,
+def _judge(fpath: str, t_from: float | None, t_to: float | None, ast: bool, model: dict) -> dict:
+    sig = numpy.asarray(audio.load(fpath, mono=True, start=t_from, end=t_to), numpy.float64)
+    secs = len(sig) / SR
+    name = _name(fpath, t_from, t_to, secs)
+    base = _base(fpath, t_from, t_to, secs)
+    sig, gain, stats = _lifted(sig, base)
+    clips = clips_of(sig)
+    graded = _scored(model, clips, ast)
+    if not graded:
+        return _silent_result(fpath, name, sig, base)
+    cx = {"model": model, "clips": clips, "scored": graded, "s": t_from or 0.0, "dur": secs, "name": name,
           "gain": gain, "stats": stats}
     return _verdict_result(cx, base)
 
@@ -732,25 +732,25 @@ def realness(path: str, start: float | None = None, end: float | None = None, as
     hit = voc.load_json(cpath) if cpath else None
     if isinstance(hit, dict) and "verdict" in hit:
         return {**hit, "path": path}
-    r = _judge(path, start, end, ast, model)
+    row_ = _judge(path, start, end, ast, model)
     if cpath:
-        voc.save_json(cpath, report.clean(r))
-    return r
+        voc.save_json(cpath, report.clean(row_))
+    return row_
 
 
 # ================================================================ many files
 
 
-def _error_row(path: str, why: str) -> dict:
-    return {"path": path, "p_real": None, "verdict": ERROR, "why": why[:200],
-            "summary": f"{os.path.basename(path) or path}: error: {why[:200]}"}
+def _error_row(fpath: str, why: str) -> dict:
+    return {"path": fpath, "p_real": None, "verdict": ERROR, "why": why[:200],
+            "summary": f"{os.path.basename(fpath) or fpath}: error: {why[:200]}"}
 
 
-def bad_path_reason(path: str) -> str | None:
+def bad_path_reason(fpath: str) -> str | None:
     """Why a given path names no media, or None when it does."""
-    if not os.path.exists(path) and not any(ch in path for ch in "*?["):
+    if not os.path.exists(fpath) and not any(ch in fpath for ch in "*?["):
         return "no such file or folder"
-    return None if audio.list_media([path]) else "no audio or video files in it"
+    return None if audio.list_media([fpath]) else "no audio or video files in it"
 
 
 def realness_many(paths: Sequence[str], ast: bool = False, start: float | None = None,
@@ -758,54 +758,54 @@ def realness_many(paths: Sequence[str], ast: bool = False, start: float | None =
     """realness of every media file under the given paths, with verdict counts."""
     paths = [paths] if isinstance(paths, str) else list(paths)
     files, bad = [], []
-    for p in paths:
-        reason = bad_path_reason(p)
+    for pth in paths:
+        reason = bad_path_reason(pth)
         if reason:
-            bad.append(_error_row(p, reason))
+            bad.append(_error_row(pth, reason))
         else:
-            files += audio.list_media([p])
-    rows = []
-    for f in files:
+            files += audio.list_media([pth])
+    records = []
+    for fv in files:
         try:
-            rows.append(realness(f, start=start, end=end, ast=ast))
+            records.append(realness(fv, start=start, end=end, ast=ast))
         except Exception as exc:  # one bad file never stops the batch
-            rows.append(_error_row(f, f"{type(exc).__name__}: {voc.first_line(exc)}"))
-    rows += bad
-    counts = {v: sum(r["verdict"] == v for r in rows) for v in VERDICTS}
-    return {"files": rows, "counts": counts, "summary": many_summary(len(rows), counts, start, end)}
+            records.append(_error_row(fv, f"{type(exc).__name__}: {voc.first_line(exc)}"))
+    records += bad
+    counts = {vec: sum(row_["verdict"] == vec for row_ in records) for vec in VERDICTS}
+    return {"files": records, "counts": counts, "summary": many_summary(len(records), counts, start, end)}
 
 
-def many_summary(n: int, counts: Mapping[str, int], start: float | None, end: float | None) -> str:
+def many_summary(count: int, counts: Mapping[str, int], t_from: float | None, t_to: float | None) -> str:
     """'<N> files: ...' with the verdict counts."""
-    parts = [f"{counts[REAL]} real or pro-produced", f"{counts[UNCERTAIN]} uncertain", f"{counts[SYNTH]} likely "
+    pieces = [f"{counts[REAL]} real or pro-produced", f"{counts[UNCERTAIN]} uncertain", f"{counts[SYNTH]} likely "
              "code-synthesized"]
     if counts[SILENT]:
-        parts.append(f"{counts[SILENT]} silent")
+        pieces.append(f"{counts[SILENT]} silent")
     if counts[ERROR]:
-        parts.append(f"{counts[ERROR]} unreadable")
+        pieces.append(f"{counts[ERROR]} unreadable")
     rng = ""
-    if start is not None or end is not None:
-        rng = f" (each judged over {start or 0:g}-{'end' if end is None else f'{end:g}'} s)"
-    return f"{n} files: " + ", ".join(parts) + rng + "."
+    if t_from is not None or t_to is not None:
+        rng = f" (each judged over {t_from or 0:g}-{'end' if t_to is None else f'{t_to:g}'} s)"
+    return f"{count} files: " + ", ".join(pieces) + rng + "."
 
 
 # ================================================================ text output
 
 
-def _segment_line(g: dict) -> str:
-    p = "-" if g["p_real"] is None else f"{g['p_real']:.2f}"
-    leans = g["verdict"] == UNCERTAIN and g["p_real"] is not None and g["p_real"] < LEAN
-    why = f" ({g['why']})" if g.get("why") and g["verdict"] != REAL else ""
-    return (f"  {report.fmt_t(g['start'])}-{report.fmt_t(g['end'])}  {p}  {g['verdict']}"
+def _segment_line(grp: dict) -> str:
+    pth = "-" if grp["p_real"] is None else f"{grp['p_real']:.2f}"
+    leans = grp["verdict"] == UNCERTAIN and grp["p_real"] is not None and grp["p_real"] < LEAN
+    why = f" ({grp['why']})" if grp.get("why") and grp["verdict"] != REAL else ""
+    return (f"  {report.fmt_t(grp['start'])}-{report.fmt_t(grp['end'])}  {pth}  {grp['verdict']}"
             f"{', leans synthesized' if leans else ''}{why}")
 
 
-def single_text(r: dict) -> str:
+def single_text(row_: dict) -> str:
     """Text output of one file."""
-    lines = [r["summary"]] + [f"  - {e}" for e in r.get("evidence", [])]
-    lines += [_segment_line(g) for g in r.get("segments", [])]
-    if r.get("note"):
-        lines.append(f"  note: {r['note']}")
+    lines = [row_["summary"]] + [f"  - {ex}" for ex in row_.get("evidence", [])]
+    lines += [_segment_line(grp) for grp in row_.get("segments", [])]
+    if row_.get("note"):
+        lines.append(f"  note: {row_['note']}")
     return "\n".join(lines)
 
 
@@ -813,15 +813,15 @@ def table_text(result: dict, model: Mapping | None = None) -> str:
     """Text output of several files."""
     lines = [result["summary"]]
     if model:
-        c, f = thresholds_of(model), thresholds_of(model, file=True)
-        lines.append(f"-- clip thresholds lo {c['lo']:.2f} / hi {c['hi']:.2f}; file thresholds lo {f['lo']:.2f} / "
-                     f"hi {f['hi']:.2f} (weakly calibrated); judge a trim of a multi-take file --")
+        cand, fv = thresholds_of(model), thresholds_of(model, file=True)
+        lines.append(f"-- clip thresholds lo {cand['lo']:.2f} / hi {cand['hi']:.2f}; file thresholds lo {fv['lo']:.2f} / "
+                     f"hi {fv['hi']:.2f} (weakly calibrated); judge a trim of a multi-take file --")
     lines.append(f"{'p_real':>6}  verdict  file  reason")
-    for r in result["files"]:
-        p = "-" if r.get("p_real") is None else f"{r['p_real']:.2f}"
-        kind = " (file)" if r.get("segments") else ""
-        low = f" [{r['synth_windows']} low window(s)]" if r.get("synth_windows") else ""
-        lines.append(f"{p:>6}  {r['verdict']}{kind}  {os.path.basename(r['path'])}{low}  {r.get('why', '')}")
+    for row_ in result["files"]:
+        pth = "-" if row_.get("p_real") is None else f"{row_['p_real']:.2f}"
+        kind = " (file)" if row_.get("segments") else ""
+        low = f" [{row_['synth_windows']} low window(s)]" if row_.get("synth_windows") else ""
+        lines.append(f"{pth:>6}  {row_['verdict']}{kind}  {os.path.basename(row_['path'])}{low}  {row_.get('why', '')}")
     return "\n".join(lines)
 
 
@@ -829,14 +829,14 @@ def table_text(result: dict, model: Mapping | None = None) -> str:
 
 
 def _bad_paths(paths: Sequence[str]) -> list[tuple[str, str]]:
-    return [(p, r) for p in paths for r in [bad_path_reason(p)] if r]
+    return [(pth, row_) for pth in paths for row_ in [bad_path_reason(pth)] if row_]
 
 
 def _judge_paths(args: argparse.Namespace) -> int:
     files = audio.list_media(list(args.paths))
     if len(files) == 1:
-        r = realness(files[0], start=args.start, end=args.end, ast=args.ast)
-        report.emit(r, args, text=single_text(r))
+        row_ = realness(files[0], start=args.start, end=args.end, ast=args.ast)
+        report.emit(row_, args, text=single_text(row_))
         return 0
     res = realness_many(args.paths, ast=args.ast, start=args.start, end=args.end)
     report.emit(res, args, text=table_text(res, load_model(resolve=False)))
@@ -847,8 +847,8 @@ def _run(args: argparse.Namespace) -> int | None:
     import hark.models
 
     bad = _bad_paths(args.paths)
-    for p, reason in bad:
-        report.error_line("realness", f"{p}: {reason}")
+    for pth, reason in bad:
+        report.error_line("realness", f"{pth}: {reason}")
     if bad:
         return 1
     hark.models.require_ml("realness")
@@ -861,13 +861,13 @@ def _run(args: argparse.Namespace) -> int | None:
 
 def add_cli(sub: argparse._SubParsersAction) -> None:
     """Register ``realness``."""
-    p = sub.add_parser("realness", help="Real recording or pro production, or cheap code-synthesized audio?")
-    p.add_argument("paths", nargs="+", help="files or folders (audio or video)")
-    p.add_argument("--start", type=float, default=None)
-    p.add_argument("--end", type=float, default=None)
-    p.add_argument("--ast", action="store_true", help="also run the AudioSet tagger for evidence (slower)")
-    report.add_common(p)
-    p.set_defaults(func=_run)
+    pth = sub.add_parser("realness", help="Real recording or pro production, or cheap code-synthesized audio?")
+    pth.add_argument("paths", nargs="+", help="files or folders (audio or video)")
+    pth.add_argument("--start", type=float, default=None)
+    pth.add_argument("--end", type=float, default=None)
+    pth.add_argument("--ast", action="store_true", help="also run the AudioSet tagger for evidence (slower)")
+    report.add_common(pth)
+    pth.set_defaults(func=_run)
 
 
 def main(argv: Sequence[str] | None = None) -> int:
