@@ -19,6 +19,19 @@ def rule_body(css, selector):
     return hit.group(1) if hit else None
 
 
+def chrome_cannot_run(chrome):
+    """Reason the found Chrome cannot run, or None when --version exits 0."""
+    try:
+        done = subprocess.run([chrome, "--version"], stdout=subprocess.DEVNULL,
+                              stderr=subprocess.DEVNULL, timeout=60,
+                              check=False)
+    except (OSError, subprocess.TimeoutExpired) as err:
+        return f"{chrome} --version failed: {err}"
+    if done.returncode != 0:
+        return f"{chrome} --version exited {done.returncode}"
+    return None
+
+
 def page_sizes_in_pdf(data):
     boxes = re.findall(rb"/MediaBox\s*\[\s*([\d.\s]+)\]", data)
     return [tuple(round(float(v) / 72, 2) for v in box.split()[2:4])
@@ -104,6 +117,9 @@ class Starter(unittest.TestCase):
         chrome = check_page.find_chrome()
         if chrome is None:
             self.skipTest("no headless Chrome on this machine")
+        broken = chrome_cannot_run(chrome)
+        if broken:
+            self.skipTest(broken)
         with tempfile.TemporaryDirectory() as tmp:
             source = Path(tmp) / "big.html"
             pdf = Path(tmp) / "big.pdf"
@@ -113,6 +129,21 @@ class Starter(unittest.TestCase):
                            stdout=subprocess.DEVNULL,
                            stderr=subprocess.DEVNULL, timeout=120, check=True)
             self.assertEqual(page_sizes_in_pdf(pdf.read_bytes()), [(30.0, 20.0)])
+
+
+class ChromeProbe(unittest.TestCase):
+    # System binaries with known exit codes stand in for Chrome.
+    def test_a_chrome_that_exits_0_can_run(self):
+        self.assertIsNone(chrome_cannot_run("/usr/bin/true"))
+
+    def test_a_chrome_that_exits_1_cannot_run(self):
+        self.assertEqual(chrome_cannot_run("/usr/bin/false"),
+                         "/usr/bin/false --version exited 1")
+
+    def test_a_missing_chrome_cannot_run(self):
+        reason = chrome_cannot_run("/nonexistent/chrome")
+        self.assertTrue(reason.startswith("/nonexistent/chrome --version failed:"),
+                        reason)
 
 
 if __name__ == "__main__":
