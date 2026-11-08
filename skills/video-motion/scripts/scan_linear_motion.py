@@ -118,6 +118,20 @@ RASTER_ERRORS = (FileNotFoundError, UnicodeDecodeError, json.JSONDecodeError, Va
 SCAN_ERRORS = (FileNotFoundError, UnicodeDecodeError)
 
 
+class Caught:
+    """A with-block that keeps 1 exception of the given kinds in .error instead of raising it."""
+
+    def __init__(self, kinds):
+        self.kinds, self.error = kinds, None
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, kind, error, _trace):
+        self.error = error if kind is not None and issubclass(kind, self.kinds) else None
+        return self.error is not None
+
+
 def is_pair(value):
     return isinstance(value, list) and len(value) == 2 and all(isinstance(v, (int, float)) for v in value)
 
@@ -172,27 +186,33 @@ def raster_line(path, sample, scale):
     return f"{path}: {sample.get('src', '<unknown>')} at {sample.get('t_sec', '<unknown>')} s is {scale:.3f}x; maximum is {MAX_RASTER_SCALE:.1f}x{measured}"
 
 
-def read_raster_report(path):
-    """Return (samples, upscaled samples) of a raster size report."""
+def raster_report(path):
     samples = read_raster_samples(path)
-    return samples, raster_upscales(samples)
+    return samples, raster_upscales(samples), None
+
+
+def read_raster_report(path):
+    """Return (samples, upscaled samples, read error) of a raster size report."""
+    caught = Caught(RASTER_ERRORS)
+    with caught:
+        return raster_report(path)
+    return [], [], caught.error
 
 
 def raster_summary(path, samples, hits):
-    if not samples:
-        return f"scan_linear_motion: {path} has 0 samples; an empty size report fails"
-    if hits:
-        return f"scan_linear_motion: {len(hits)} raster upscale(s) over {MAX_RASTER_SCALE:.1f}x"
-    return "scan_linear_motion: raster sizes pass"
+    empty = f"scan_linear_motion: {path} has 0 samples; an empty size report fails"
+    upscaled = f"scan_linear_motion: {len(hits)} raster upscale(s) over {MAX_RASTER_SCALE:.1f}x"
+    return empty if not samples else upscaled if hits else "scan_linear_motion: raster sizes pass"
+
+
+def report_raster(path, samples, hits):
+    lines = [raster_line(path, sample, scale) for sample, scale in hits]
+    return report_hits(lines, raster_summary(path, samples, hits), hits or not samples)
 
 
 def check_raster_sizes(path):
-    try:
-        samples, hits = read_raster_report(path)
-    except RASTER_ERRORS as e:
-        return read_error("cannot read raster sizes: ", e)
-    lines = [raster_line(path, sample, scale) for sample, scale in hits]
-    return report_hits(lines, raster_summary(path, samples, hits), hits or not samples)
+    samples, hits, error = read_raster_report(path)
+    return read_error("cannot read raster sizes: ", error) if error else report_raster(path, samples, hits)
 
 
 def check_linear_motion(paths):

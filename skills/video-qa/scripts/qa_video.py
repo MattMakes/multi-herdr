@@ -146,6 +146,20 @@ class InputError(Exception):
     """Bad input: the gate cannot run. Exit code 2."""
 
 
+class Caught:
+    """A with-block that keeps 1 exception of the given kinds in .error instead of raising it."""
+
+    def __init__(self, kinds):
+        self.kinds, self.error = kinds, None
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, kind, error, _trace):
+        self.error = error if kind is not None and issubclass(kind, self.kinds) else None
+        return self.error is not None
+
+
 # ---------------------------------------------------------------- helpers
 
 def run(cmd, binary=False):
@@ -392,10 +406,15 @@ def forbidden_call_errors(rel, text):
             for name, pattern in FORBIDDEN_CALLS for m in re.finditer(pattern, text)]
 
 
-def css_motion_errors(rel, text, suffix):
+def css_motions(text, suffix):
+    """(offset, match) of each CSS animation or transition that is not none."""
     found = [(offset + m.start(), m) for offset, block in css_blocks(text, suffix) for m in CSS_MOTION.finditer(block)]
+    return [(at, m) for at, m in found if m.group(2).strip().lower() not in ("", "none")]
+
+
+def css_motion_errors(rel, text, suffix):
     return [(f"{rel}:{line_at(text, at)}: free-running CSS {m.group(1)}: {m.group(2).strip()}", None)
-            for at, m in found if m.group(2).strip().lower() not in ("", "none")]
+            for at, m in css_motions(text, suffix)]
 
 
 def scan_scene_file(root, path):
@@ -418,16 +437,22 @@ def empty_scan_errors(root, scanned):
     return [] if scanned else [(message, None)]
 
 
+def hook_errors(units):
+    return [(f"scene {unit} does not define window.__seekToFrame", None)
+            for unit, has_hook in sorted(units.items()) if not has_hook]
+
+
+def scan_errors(root, scans, units):
+    return sum((scan[2] for scan in scans), []) + hook_errors(units) + empty_scan_errors(root, len(scans))
+
+
 def check_scene_determinism(ctx):
     root = ctx.scenes_dir
     if root is None or not root.is_dir():
         return skip("no scenes directory")
     scans = [scan_scene_file(root, path) for path in scene_files(root)]
     units = scene_units(scans)
-    errors = [error for _, _, found in scans for error in found]
-    errors += [(f"scene {unit} does not define window.__seekToFrame", None)
-               for unit, has_hook in sorted(units.items()) if not has_hook]
-    return {"files_scanned": len(scans), "scenes": sorted(units)}, errors + empty_scan_errors(root, len(scans))
+    return {"files_scanned": len(scans), "scenes": sorted(units)}, scan_errors(root, scans, units)
 
 
 def psnr_avg(a, b):
@@ -438,28 +463,49 @@ def psnr_avg(a, b):
     return math.inf if m.group(1) == "inf" else float(m.group(1))
 
 
+def missing_probes(ctx):
+    reason = "no --probe-forward/--probe-reverse frame sets"
+    if has_html_scenes(ctx):
+        return skip_applicable(f"{reason} for the HTML scenes in {ctx.scenes_dir}")
+    return skip(f"{reason}; no HTML scenes")
+
+
+def probe_set_errors(fwd_names, rev_names, pairs):
+    differ = (f"probe sets differ: forward-only {sorted(fwd_names - rev_names)}, "
+              f"reverse-only {sorted(rev_names - fwd_names)}", None)
+    few = (f"need >= 3 probe frames (0, K, 2K), found {len(pairs)}", None)
+    return [differ] * (fwd_names != rev_names) + [few] * (len(pairs) < 3)
+
+
+def psnr_error(name, value):
+    message = f"{name}: cold-forward vs warm-reverse PSNR {value:.2f} dB < {PSNR_MIN_DB} dB"
+    return [(message, None)] if value < PSNR_MIN_DB else []
+
+
+def png_names(folder):
+    return {p.name for p in folder.glob("*.png")}
+
+
+def psnr_values(fwd, rev, pairs):
+    return {name: psnr_avg(fwd / name, rev / name) for name in pairs}
+
+
+def psnr_errors(psnr):
+    return [error for name, value in psnr.items() for error in psnr_error(name, value)]
+
+
+def rounded_db(psnr):
+    return {name: "inf" if math.isinf(value) else round(value, 2) for name, value in psnr.items()}
+
+
 def check_render_determinism(ctx):
-    fwd, rev = ctx.probe_forward, ctx.probe_reverse
-    if fwd is None:
-        reason = "no --probe-forward/--probe-reverse frame sets"
-        return skip_applicable(f"{reason} for the HTML scenes in {ctx.scenes_dir}") if has_html_scenes(ctx) \
-            else skip(f"{reason}; no HTML scenes")
-    fwd_names = {p.name for p in fwd.glob("*.png")}
-    rev_names = {p.name for p in rev.glob("*.png")}
-    errors = []
-    if fwd_names != rev_names:
-        errors.append((f"probe sets differ: forward-only {sorted(fwd_names - rev_names)}, "
-                       f"reverse-only {sorted(rev_names - fwd_names)}", None))
+    if ctx.probe_forward is None:
+        return missing_probes(ctx)
+    fwd_names, rev_names = png_names(ctx.probe_forward), png_names(ctx.probe_reverse)
     pairs = sorted(fwd_names & rev_names)
-    if len(pairs) < 3:
-        errors.append((f"need >= 3 probe frames (0, K, 2K), found {len(pairs)}", None))
-    values = {}
-    for name in pairs:
-        value = psnr_avg(fwd / name, rev / name)
-        values[name] = "inf" if math.isinf(value) else round(value, 2)
-        if value < PSNR_MIN_DB:
-            errors.append((f"{name}: cold-forward vs warm-reverse PSNR {value:.2f} dB < {PSNR_MIN_DB} dB", None))
-    return {"psnr_avg_db": values, "min_db": PSNR_MIN_DB}, errors
+    psnr = psnr_values(ctx.probe_forward, ctx.probe_reverse, pairs)
+    errors = probe_set_errors(fwd_names, rev_names, pairs) + psnr_errors(psnr)
+    return {"psnr_avg_db": rounded_db(psnr), "min_db": PSNR_MIN_DB}, errors
 
 
 def check_stream_integrity(ctx):
@@ -938,6 +984,12 @@ def motion_per_second(motion):
     return [round(v, 4) for v in per]
 
 
+def flat_opening_errors(opening, rest):
+    message = (f"flat opening: motion {opening:.3f}/s in 0-{OPENING_SEC:g} s is under "
+               f"{OPENING_MIN_RATIO:g} x the rest of the film ({rest:.3f}/s)")
+    return [(message, 0.0)] if opening < OPENING_MIN_RATIO * rest else []
+
+
 def check_flat_opening(ctx):
     per = motion_per_second(ctx.motion)
     head = int(OPENING_SEC)
@@ -945,53 +997,83 @@ def check_flat_opening(ctx):
         return skip(f"shorter than {OPENING_SEC + OPENING_MIN_REST_SEC:g} s")
     opening, rest = sum(per[:head]) / head, sum(per[head:]) / len(per[head:])
     details = {"opening_per_sec": round(opening, 4), "rest_per_sec": round(rest, 4), "min_ratio": OPENING_MIN_RATIO}
-    if opening < OPENING_MIN_RATIO * rest:
-        return details, [(f"flat opening: motion {opening:.3f}/s in 0-{OPENING_SEC:g} s is under "
-                          f"{OPENING_MIN_RATIO:g} x the rest of the film ({rest:.3f}/s)", 0.0)]
-    return details, []
+    return details, flat_opening_errors(opening, rest)
+
+
+def percentiles_10_90(values):
+    ranked = sorted(values)
+    return ranked[int(0.1 * (len(ranked) - 1))], ranked[int(math.ceil(0.9 * (len(ranked) - 1)))]
+
+
+def contrast_errors(low, high):
+    message = (f"flat motion: 90th percentile {high:.3f}/s is under {CONTRAST_MIN_RATIO:g} x the "
+               f"10th percentile {low:.3f}/s; no calm or busy stretch stands out")
+    return [(message, None)] if 0 < high < CONTRAST_MIN_RATIO * low else []
 
 
 def check_motion_contrast(ctx):
     per = motion_per_second(ctx.motion)
     if len(per) < CONTRAST_MIN_SECONDS:
         return skip(f"shorter than {CONTRAST_MIN_SECONDS} s", per_second=per)
-    ranked = sorted(per)
-    low, high = ranked[int(0.1 * (len(ranked) - 1))], ranked[int(math.ceil(0.9 * (len(ranked) - 1)))]
+    low, high = percentiles_10_90(per)
     details = {"per_second": per, "p10": low, "p90": high, "min_ratio": CONTRAST_MIN_RATIO}
-    if high > 0 and high < CONTRAST_MIN_RATIO * low:
-        return details, [(f"flat motion: 90th percentile {high:.3f}/s is under {CONTRAST_MIN_RATIO:g} x the "
-                          f"10th percentile {low:.3f}/s; no calm or busy stretch stands out", None)]
-    return details, []
+    return details, contrast_errors(low, high)
+
+
+def typical_seam_step(motion):
+    """The median frame step in the first and last second, around the loop seam."""
+    n = max(1, int(motion.fps))
+    near = sorted(motion.diffs[1:n + 1] + motion.diffs[-n:])
+    return near[len(near) // 2]
+
+
+def seam_errors(motion, seam, typical, limit):
+    message = (f"loop seam: last frame to frame 0 differs by {seam:.3f}, above {limit:.3f} "
+               f"({LOOP_SEAM_FACTOR:g} x the typical step {typical:.3f})")
+    return [(message, (len(motion.frames) - 1) / motion.fps)] if seam > limit else []
 
 
 def check_loop_seam(ctx):
     if ctx.meta.get("loop") is not True:
         return skip("meta.loop is not true")
-    m = ctx.motion
-    n = max(1, int(m.fps))
-    near = sorted(m.diffs[1:n + 1] + m.diffs[-n:])
-    typical = near[len(near) // 2]
-    seam = frame_diff(m.frames[-1], m.frames[0])
+    typical = typical_seam_step(ctx.motion)
+    seam = frame_diff(ctx.motion.frames[-1], ctx.motion.frames[0])
     limit = max(LOOP_SEAM_FLOOR, LOOP_SEAM_FACTOR * typical)
     details = {"seam_diff": round(seam, 4), "typical_diff": round(typical, 4), "max_diff": round(limit, 4)}
-    if seam > limit:
-        t = (len(m.frames) - 1) / m.fps
-        return details, [(f"loop seam: last frame to frame 0 differs by {seam:.3f}, above {limit:.3f} "
-                          f"({LOOP_SEAM_FACTOR:g} x the typical step {typical:.3f})", t)]
-    return details, []
+    return details, seam_errors(ctx.motion, seam, typical, limit)
+
+
+def raster_sample(s):
+    """(t_sec, src, natural_px, drawn_px, nearest) of 1 report sample."""
+    return (float(s["t_sec"]), str(s["src"]), [float(v) for v in s["natural_px"]],
+            [float(v) for v in s["drawn_px"]], s.get("sampling") == "nearest")
+
+
+def detail_errors(raw):
+    """A sample whose pre-upscale detail check threw has no proof of its real resolution: a fail."""
+    return [(f"{s['src']}: pre-upscale detail check failed: {s['detail_error']}", float(s["t_sec"]))
+            for s in raw if s.get("detail_error")]
+
+
+def parse_raster_sizes(text):
+    data = json.loads(text)
+    step = float(data.get("step_sec", RASTER_DEFAULT_STEP_SEC))
+    return step, [raster_sample(s) for s in data["samples"]], detail_errors(data["samples"])
+
+
+def read_raster_sizes(path):
+    caught = Caught((OSError, ValueError, KeyError, TypeError, AttributeError))
+    with caught:
+        return parse_raster_sizes(path.read_text())
+    raise InputError(f"cannot read raster sizes {path}: {caught.error}") from caught.error
 
 
 def load_raster_sizes(path):
-    try:
-        data = json.loads(path.read_text())
-        step = float(data.get("step_sec", RASTER_DEFAULT_STEP_SEC))
-        samples = [(float(s["t_sec"]), str(s["src"]), [float(v) for v in s["natural_px"]],
-                    [float(v) for v in s["drawn_px"]], s.get("sampling") == "nearest") for s in data["samples"]]
-    except (OSError, ValueError, KeyError, TypeError, AttributeError) as exc:
-        raise InputError(f"cannot read raster sizes {path}: {exc}") from exc
-    if any(min(n) <= 0 for _, _, n, _, _ in samples):
+    """Return (step_sec, samples, detail check errors) of a raster size report."""
+    report = read_raster_sizes(path)
+    if any(min(n) <= 0 for _, _, n, _, _ in report[1]):
         raise InputError(f"{path}: natural_px must be positive")
-    return step, samples
+    return report
 
 
 def longest_run(series, step):
@@ -1021,14 +1103,20 @@ def pixel_art(sample):
     return nearest and integer_scale(natural, drawn) is not None
 
 
+def drawn_scale(sample):
+    """The larger axis ratio drawn / natural of 1 sample."""
+    natural, drawn = sample[2], sample[3]
+    return max(drawn[0] / natural[0], drawn[1] / natural[1])
+
+
 def raster_series(samples):
     """Map each raster source to its [(time, drawn scale)] samples, in time order.
 
     Pixel-art samples (nearest-neighbour at a whole-number scale) are left out: they pass.
     """
     by_src = {}
-    for t, src, natural, drawn, _ in sorted(s for s in samples if not pixel_art(s)):
-        by_src.setdefault(src, []).append((t, max(drawn[0] / natural[0], drawn[1] / natural[1])))
+    for sample in sorted(s for s in samples if not pixel_art(s)):
+        by_src.setdefault(sample[1], []).append((sample[0], drawn_scale(sample)))
     return sorted(by_src.items())
 
 
@@ -1058,20 +1146,32 @@ def raster_worst(series):
     return {src: round(max(scale for _, scale in points), 3) for src, points in series}
 
 
+def raster_details(path, samples, series):
+    return {"report": str(path), "samples": len(samples), "max_scale": raster_worst(series),
+            "pixel_art_samples": sum(map(pixel_art, samples)),
+            "warn_scale": RASTER_WARN_SCALE, "fail_scale": RASTER_FAIL_SCALE}
+
+
+def missing_raster_report(ctx, path):
+    reason = f"no raster size report at {path}"
+    if draws_rasters(ctx):
+        return skip_applicable(f"{reason}; the scenes draw images, video or capture plates")
+    return skip(f"{reason}; no scene draws a raster")
+
+
+def empty_report_errors(path, samples):
+    return [] if samples else [(f"{path} has 0 samples; an empty size report proves nothing", None)]
+
+
 def check_raster_upscale(ctx):
     path = ctx.raster_sizes
     if path is None or not path.is_file():
-        reason = f"no raster size report at {path}"
-        return skip_applicable(f"{reason}; the scenes draw images, video or capture plates") if draws_rasters(ctx) \
-            else skip(f"{reason}; no scene draws a raster")
-    step, samples = load_raster_sizes(path)
+        return missing_raster_report(ctx, path)
+    step, samples, detail = load_raster_sizes(path)
     series = raster_series(samples)
     ctx.warnings += raster_warnings(series, step)
-    details = {"report": str(path), "samples": len(samples), "max_scale": raster_worst(series),
-               "pixel_art_samples": sum(map(pixel_art, samples)),
-               "warn_scale": RASTER_WARN_SCALE, "fail_scale": RASTER_FAIL_SCALE}
-    empty = [(f"{path} has 0 samples; an empty size report proves nothing", None)] if not samples else []
-    return details, empty + raster_errors(series)
+    errors = empty_report_errors(path, samples) + detail + raster_errors(series)
+    return raster_details(path, samples, series), errors
 
 
 CHECK_FUNCS = {
@@ -1328,14 +1428,17 @@ def make_sheets(ctx):
     return artifacts
 
 
-def run_gate(args):
-    ctx = Context(args)
-    checks, errors = run_checks(ctx)
+def gate_report(ctx, checks, errors):
     counts = state_counts(checks)
     failed = bool(errors) or counts["fail"] > 0
-    report = {"passed": not failed, "state": "fail" if failed else "pass", "counts": counts,
-              "video": str(ctx.video), "timeline": str(ctx.timeline),
-              "scene_timeline": str(ctx.scene_timeline), "checks": checks, "errors": errors}
+    return {"passed": not failed, "state": "fail" if failed else "pass", "counts": counts,
+            "video": str(ctx.video), "timeline": str(ctx.timeline),
+            "scene_timeline": str(ctx.scene_timeline), "checks": checks, "errors": errors}
+
+
+def run_gate(args):
+    ctx = Context(args)
+    report = gate_report(ctx, *run_checks(ctx))
     report["warnings"] = warning_entries(ctx.warnings)
     report["artifacts"] = make_sheets(ctx)
     write_report(ctx.out, report)
@@ -1673,7 +1776,7 @@ def assert_state(name, result, want):
     assert got == want, f"{name}: state {got}, expected {want}: {details} {errors}"
 
 
-def self_test_states(tmp):
+def self_test_scan_states(tmp):
     assert_state("empty scenes dir", check_scene_determinism(state_ctx(tmp / "st-empty")), "fail")
     assert_state("no scenes dir", check_scene_determinism(types.SimpleNamespace(scenes_dir=tmp / "none")), "skip")
     html = state_ctx(tmp / "st-html", SCENE_OK)
@@ -1681,6 +1784,10 @@ def self_test_states(tmp):
     assert_state("no raster report, no raster", check_raster_upscale(html), "skip")
     no_html = types.SimpleNamespace(scenes_dir=tmp / "none", probe_forward=None, probe_reverse=None)
     assert_state("no probes, no HTML scenes", check_render_determinism(no_html), "skip")
+
+
+def self_test_states(tmp):
+    self_test_scan_states(tmp)
     img = state_ctx(tmp / "st-img", SCENE_OK.replace("<body>", '<body><img src="plate.png">'))
     assert_state("no raster report, scene draws an image", check_raster_upscale(img), "fail")
     video = state_ctx(tmp / "st-video", "<canvas></canvas><script>ctx.drawImage(clip, 0, 0);</script>")
@@ -1877,7 +1984,10 @@ def self_test_raster(tmp):
     assert len(errors) == 1, f"3x smoothed draw must fail: {errors}"
     errors, _ = raster_result(tmp, "nearest-2.5x", [{**pixel, "drawn_px": [40, 60], "sampling": "nearest"}])
     assert len(errors) == 1, f"2.5x nearest draw is not a whole-number scale and must fail: {errors}"
-    print("ok raster: clean, brief, warn, fail at 1.3x, bad input, 0 samples fail, 3x nearest passes")
+    errors, _ = raster_result(tmp, "detail-error", [{**pixel, "drawn_px": [16, 24], "detail_error": "canvas is tainted"}])
+    assert len(errors) == 1 and "canvas is tainted" in errors[0][0], f"detail_error must fail: {errors}"
+    print("ok raster: clean, brief, warn, fail at 1.3x, bad input, 0 samples fail, 3x nearest passes, "
+          "detail_error fails")
 
 
 def check_captions_text(text):
@@ -1938,15 +2048,13 @@ def print_report(report, out):
 
 def report_path(args):
     """The --out path, or None when the command writes no report."""
-    if args.self_test or not args.video or not args.timeline:
-        return None
-    return path_or(args.out, Path(args.timeline).resolve().parent / "qa" / "render-check.json")
+    no_report = args.self_test or not args.video or not args.timeline
+    return None if no_report else path_or(args.out, Path(args.timeline).resolve().parent / "qa" / "render-check.json")
 
 
 def remove_old_report(out):
     """An old report must never read as the result of this run."""
-    if out is not None and out.is_file():
-        out.unlink()
+    return out is not None and out.unlink(missing_ok=True)
 
 
 def run_command(args, parser):
@@ -1960,23 +2068,26 @@ def run_command(args, parser):
     return 0 if report["passed"] else 1
 
 
+def write_input_error(exc, out):
+    error = {"check": "input", "message": str(exc)}
+    write_report(out, {"passed": False, "state": "fail", "input_error": str(exc), "checks": {},
+                       "errors": [error], "warnings": []})
+    print(f"FAIL: input error; report {out}", file=sys.stderr)
+
+
 def report_input_error(exc, out):
     print(f"qa_video: {exc}", file=sys.stderr)
-    if out is not None:
-        error = {"check": "input", "message": str(exc)}
-        write_report(out, {"passed": False, "state": "fail", "input_error": str(exc), "checks": {},
-                           "errors": [error], "warnings": []})
-        print(f"FAIL: input error; report {out}", file=sys.stderr)
+    _ = out is not None and write_input_error(exc, out)
     return 2
 
 
 def run_safely(args, parser):
     out = report_path(args)
     remove_old_report(out)
-    try:
+    caught = Caught(InputError)
+    with caught:
         return run_command(args, parser)
-    except InputError as exc:
-        return report_input_error(exc, out)
+    return report_input_error(caught.error, out)
 
 
 def main(argv=None):

@@ -56,7 +56,9 @@ It downscales the decoded pixels by the claimed 2x export factor, enlarges
 them back with nearest-neighbour sampling, and compares the RGB pixels with
 the decoded source. A round-trip PSNR above 40 dB means the file contains no
 meaningful detail above half its dimensions. The report then adds `real_px`,
-`detail_scale`, and `detail_psnr_db` to the sample. The gate uses `real_px`,
+`detail_scale`, and `detail_psnr_db` to the sample. When the detail check
+throws, the sample gets `detail_error` (the error message) instead, and the
+gate fails that sample with the message. The gate uses `real_px`,
 reports that measured resolution, and therefore rejects a pre-upscaled plate
 even when its file dimensions equal its drawn dimensions.
 
