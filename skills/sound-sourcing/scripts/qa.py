@@ -653,89 +653,105 @@ def judge_audibility(E, a, b, att, long, ctx) -> dict:
             "verdict": verdict, "covered_by": "music/amb" if vb < 3 else "other effects"}
 
 
-def section_audibility(ctx, groups, G, layers_flag) -> dict:
-    rows = []
-    for g in groups:
-        row = {"t": g["t"], "label": g["label"], "kind": g["kind"], "n_layers": len(g["layers"]), "rules": g["rules"],
-               "peak_db": g["peak_db"]}
-        if g["qa_ok"]:
-            row["qa_ok"] = g["qa_ok"]
-        if g["silent"]:
-            row.update(verdict="silent", samples=sorted({q["sample"] for q in g["layers"]}))
-        elif ctx["no_bed"]:
-            row["verdict"] = "not judged"
-        else:
-            row.update(judge_audibility(g["sig"], g["a"], g["b"], g["att"], g["long"], ctx))
-        rows.append(row)
+def _audibility_row(g: dict, ctx: dict) -> dict:
+    row = {"t": g["t"], "label": g["label"], "kind": g["kind"], "n_layers": len(g["layers"]), "rules": g["rules"],
+           "peak_db": g["peak_db"]}
+    if g["qa_ok"]:
+        row["qa_ok"] = g["qa_ok"]
+    if g["silent"]:
+        row.update(verdict="silent", samples=sorted({q["sample"] for q in g["layers"]}))
+    elif ctx["no_bed"]:
+        row["verdict"] = "not judged"
+    else:
+        row.update(judge_audibility(g["sig"], g["a"], g["b"], g["att"], g["long"], ctx))
+    return row
+
+
+def _audibility_status(silent: list, masked: list, no_bed: bool) -> str:
+    if any(not r.get("qa_ok") for r in silent):
+        return "fail"
+    return "skipped" if no_bed else ("warn" if masked else "ok")
+
+
+def _dead_layer(g: dict, L: dict, G: float, ctx: dict):
+    """A layer that adds nothing to its group: silent, or masked by the rest. None when it reads."""
+    if L["peak_db"] + G < -70:
+        return {"t": g["t"], "rule": L["rule"], "sample": L["sample"], "read_db": None, "silent": True}
+    r = None if ctx["no_bed"] else judge_audibility(L["sig"], L["a"], L["b"], L["att"], g["long"], ctx)
+    if r is None or r["read_db"] >= 0:
+        return None
+    return {"t": g["t"], "rule": L["rule"], "sample": L["sample"], "read_db": r["read_db"]}
+
+
+def _dead_layers(groups: list, G: float, ctx: dict) -> list[dict]:
+    dead = []
+    for g in (g for g in groups if not g["silent"] and len(g["layers"]) >= 2):
+        dead += [x for x in (_dead_layer(g, L, G, ctx) for L in g["layers"]) if x is not None]
+    return dead
+
+
+def _partition(rows: list) -> tuple[list, list, list]:
+    """(silent rows, judged rows quietest first, masked rows without qa_ok)."""
     silent = [r for r in rows if r["verdict"] == "silent"]
     judged = sorted([r for r in rows if "read_db" in r], key=lambda r: r["read_db"])
-    masked = [r for r in judged if r["verdict"] == "masked" and not r.get("qa_ok")]
-    if any(not r.get("qa_ok") for r in silent):
-        status = "fail"
-    elif ctx["no_bed"]:
-        status = "skipped"
-    else:
-        status = "warn" if masked else "ok"
-    out = {"status": status, "items": (silent + judged)[:40], "events": rows,
-           "summary": (f"{len(silent)} silent, {len(masked)} masked of {len(rows)} event(s)" if not ctx["no_bed"]
-                       else f"no bed (solo render): {len(silent)} silent of {len(rows)} event(s), the rest not judged")}
+    return silent, judged, [r for r in judged if r["verdict"] == "masked" and not r.get("qa_ok")]
+
+
+def section_audibility(ctx, groups, G, layers_flag) -> dict:
+    rows = [_audibility_row(g, ctx) for g in groups]
+    silent, judged, masked = _partition(rows)
+    summ = (f"{len(silent)} silent, {len(masked)} masked of {len(rows)} event(s)" if not ctx["no_bed"]
+            else f"no bed (solo render): {len(silent)} silent of {len(rows)} event(s), the rest not judged")
+    out = {"status": _audibility_status(silent, masked, ctx["no_bed"]), "items": (silent + judged)[:40],
+           "events": rows, "summary": summ}
     if layers_flag:
-        dead = []
-        for g in groups:
-            if g["silent"] or len(g["layers"]) < 2:
-                continue
-            for L in g["layers"]:
-                if L["peak_db"] + G < -70:
-                    dead.append({"t": g["t"], "rule": L["rule"], "sample": L["sample"], "read_db": None, "silent": True})
-                elif not ctx["no_bed"]:
-                    r = judge_audibility(L["sig"], L["a"], L["b"], L["att"], g["long"], ctx)
-                    if r["read_db"] < 0:
-                        dead.append({"t": g["t"], "rule": L["rule"], "sample": L["sample"], "read_db": r["read_db"]})
-        out["dead_layers"] = dead
-        out["summary"] += f"; {len(dead)} dead layer(s)"
+        out["dead_layers"] = _dead_layers(groups, G, ctx)
+        out["summary"] += f"; {len(out['dead_layers'])} dead layer(s)"
     return out
 
 
 # ---------------------------------------------------------------- harshness
 
-def section_harshness(ctx, groups, G) -> dict:
-    bp = sos(4, [2000, 6000], "bandpass")
-    lowp = sos(4, [80, 400], "bandpass")
-    mus = signal.sosfilt(bp, ctx["stems"]["music"].mean(axis=1).astype(np.float64))
-    mp = uniform_filter1d(mus * mus, 240)
-    has_music = mp.max() > 1e-10
-    ref = dbp(float(mp.max())) + G if has_music else None
-    rows, bright = [], []
-    pad = int(0.01 * SR)
-    for g in groups:
-        if g["silent"]:
-            continue
-        m = np.concatenate([np.zeros(pad), g["sig"].mean(axis=1).astype(np.float64)])
-        hi_b, lo_b = signal.sosfilt(bp, m)[pad:], signal.sosfilt(lowp, m)[pad:]
-        a0 = max(0, g["att"] - g["a"] - pad)
-        a1 = len(hi_b) if g["long"] else min(len(hi_b), g["att"] - g["a"] + int(0.08 * SR))
-        if a1 - a0 < 240:
-            continue
-        ph = uniform_filter1d(hi_b[a0:a1] ** 2, 240).max()
-        pl = uniform_filter1d(lo_b[a0:a1] ** 2, 240).max()
-        seg = m[pad + a0:pad + a1]
-        spec = np.abs(np.fft.rfft(seg * np.hanning(len(seg)))) ** 2
-        f = np.fft.rfftfreq(len(seg), 1 / SR)
-        cen = float((spec * f).sum() / max(spec.sum(), 1e-30))
-        pres = dbp(float(ph)) + G
-        row = {"t": g["t"], "label": g["label"], "rules": g["rules"], "pres_db": round(pres, 2),
-               "pres_minus_low_db": round(pres - dbp(float(pl)) - G, 2), "centroid_hz": round(cen),
-               "music_pres_db": None, "over_music_max_db": None, "issues": [], "bright": cen > 6500}
-        if has_music:
-            c, r = g["att"], int(0.25 * SR)
-            row["music_pres_db"] = round(dbp(float(np.mean(mus[max(0, c - r):c + r] ** 2))) + G, 2)
-            row["over_music_max_db"] = round(pres - ref, 2)
-            if pres - ref > 6 and not g["qa_ok"]:
-                row["issues"].append(f"2-6 kHz {pres - ref:.1f} dB above the music's loudest presence")
-        if row["bright"]:
-            bright.append({"t": g["t"], "label": g["label"], "centroid_hz": row["centroid_hz"]})
-        rows.append(row)
-    rows.sort(key=lambda r: -r["pres_db"])
+def _band_peaks(g: dict, cx: dict):
+    """(2-6 kHz power peak, 80-400 Hz power peak, centroid) over the attack window, or None when it is short."""
+    pad = cx["pad"]
+    m = np.concatenate([np.zeros(pad), g["sig"].mean(axis=1).astype(np.float64)])
+    hi_b, lo_b = signal.sosfilt(cx["bp"], m)[pad:], signal.sosfilt(cx["lowp"], m)[pad:]
+    a0 = max(0, g["att"] - g["a"] - pad)
+    a1 = len(hi_b) if g["long"] else min(len(hi_b), g["att"] - g["a"] + int(0.08 * SR))
+    if a1 - a0 < 240:
+        return None
+    ph = uniform_filter1d(hi_b[a0:a1] ** 2, 240).max()
+    pl = uniform_filter1d(lo_b[a0:a1] ** 2, 240).max()
+    seg = m[pad + a0:pad + a1]
+    spec = np.abs(np.fft.rfft(seg * np.hanning(len(seg)))) ** 2
+    f = np.fft.rfftfreq(len(seg), 1 / SR)
+    return ph, pl, float((spec * f).sum() / max(spec.sum(), 1e-30))
+
+
+def _vs_music(row: dict, g: dict, pres: float, cx: dict) -> None:
+    c, r = g["att"], int(0.25 * SR)
+    row["music_pres_db"] = round(dbp(float(np.mean(cx["mus"][max(0, c - r):c + r] ** 2))) + cx["G"], 2)
+    row["over_music_max_db"] = round(pres - cx["ref"], 2)
+    if pres - cx["ref"] > 6 and not g["qa_ok"]:
+        row["issues"].append(f"2-6 kHz {pres - cx['ref']:.1f} dB above the music's loudest presence")
+
+
+def _harsh_row(g: dict, cx: dict):
+    bands = None if g["silent"] else _band_peaks(g, cx)
+    if bands is None:
+        return None
+    ph, pl, cen = bands
+    pres = dbp(float(ph)) + cx["G"]
+    row = {"t": g["t"], "label": g["label"], "rules": g["rules"], "pres_db": round(pres, 2),
+           "pres_minus_low_db": round(pres - dbp(float(pl)) - cx["G"], 2), "centroid_hz": round(cen),
+           "music_pres_db": None, "over_music_max_db": None, "issues": [], "bright": cen > 6500}
+    if cx["has_music"]:
+        _vs_music(row, g, pres, cx)
+    return row
+
+
+def _harsh_result(rows: list, bright: list, has_music: bool, ref) -> dict:
     hot = [r for r in rows if r["issues"]]
     items = hot[:20] + [r for r in rows if not r["issues"]][: max(0, 10 - len(hot[:20]))]
     summ = (f"{len(hot)} event(s) over the music's 2-6 kHz peak by more than 6 dB" if has_music
@@ -743,63 +759,94 @@ def section_harshness(ctx, groups, G) -> dict:
     return {"status": "warn" if hot else "ok", "summary": summ, "items": items, "bright": bright, "music_ref_db": ref}
 
 
+def section_harshness(ctx, groups, G) -> dict:
+    bp = sos(4, [2000, 6000], "bandpass")
+    mus = signal.sosfilt(bp, ctx["stems"]["music"].mean(axis=1).astype(np.float64))
+    mp = uniform_filter1d(mus * mus, 240)
+    has_music = mp.max() > 1e-10
+    ref = dbp(float(mp.max())) + G if has_music else None
+    cx = {"bp": bp, "lowp": sos(4, [80, 400], "bandpass"), "mus": mus, "has_music": has_music, "ref": ref, "G": G,
+          "pad": int(0.01 * SR)}
+    rows = [r for r in (_harsh_row(g, cx) for g in groups) if r is not None]
+    bright = [{"t": r["t"], "label": r["label"], "centroid_hz": r["centroid_hz"]} for r in rows if r["bright"]]
+    rows.sort(key=lambda r: -r["pres_db"])
+    return _harsh_result(rows, bright, has_music, ref)
+
+
 # ---------------------------------------------------------------- sync
 
-def _sync_issue(test, m, s):
+def _build_issue(test: str, m: dict, s: float):
     if test == "end":
         v = m["end_ms"] - s
         return None if -300 <= v <= 60 else f"ends {v:.0f} ms from the hit (allowed -300..+60)"
-    if test == "apex":
-        v = m["apex_ms"] - s
-        return None if abs(v) <= 45 else f"apex {v:+.0f} ms off the cue (allowed +-45)"
+    v = m["apex_ms"] - s
+    return None if abs(v) <= 45 else f"apex {v:+.0f} ms off the cue (allowed +-45)"
+
+
+def _impact_issue(m: dict, s: float):
     if m["attack_ms"] - s < -45:
         return f"sound before picture: attack {m['attack_ms'] - s:+.0f} ms"
-    if m["peak_ms"] - s > 75:
-        return f"lands late: peak {m['peak_ms'] - s:+.0f} ms"
-    return None
+    return f"lands late: peak {m['peak_ms'] - s:+.0f} ms" if m["peak_ms"] - s > 75 else None
+
+
+def _sync_issue(test, m, s):
+    return _build_issue(test, m, s) if test in ("end", "apex") else _impact_issue(m, s)
+
+
+def _sync_test(g: dict):
+    """end, apex or impact; None for a group aligned by its start or end."""
+    L = g["loud"]
+    if g["builds"]:
+        return "apex" if L["align"] == "peak" else "end"
+    if L["align"] in ("start", "end"):
+        return None
+    return "apex" if g["long"] else "impact"
+
+
+def _sync_marks(g: dict, x: np.ndarray, cue: float) -> dict:
+    nb = len(x) // 240
+    pk = (int(np.argmax(x[: nb * 240].reshape(nb, 240).max(axis=1))) * 240 + 120) if nb else 0
+    pw = uniform_filter1d((g["sig"].astype(np.float64) ** 2).sum(axis=1), 2400)
+    return {"attack_ms": ms(g["loud"]["att"] - cue), "peak_ms": ms(g["a"] + pk - cue),
+            "apex_ms": ms(g["a"] + int(np.argmax(pw)) - cue)}
+
+
+def _explain(row: dict, g: dict, test: str, m: dict, issue):
+    """Clear an issue that a rule offset or a qa_ok explains. Returns the issue left."""
+    q = next((q for q in g["layers"] if abs(q["offset"]) >= 0.03 and _sync_issue(test, m, q["offset"] * 1000) is None),
+             None)
+    if q is not None:
+        row.update(deliberate=True, offset_s=q["offset"], offset_rule=q["rule"],
+                   explanation=f"sits {q['offset'] * 1000:+.0f} ms off the cue by the offset of rule {q['rule']}")
+        return None
+    if g["qa_ok"]:
+        row.update(deliberate=True, explanation=f"acknowledged: {g['qa_ok']}")
+        return None
+    tried = [q["offset"] for q in g["layers"] if abs(q["offset"]) >= 0.03]
+    if tried:
+        row["offsets_tried_s"] = tried
+    return issue
+
+
+def _sync_row(g: dict):
+    test = None if g["silent"] else _sync_test(g)
+    if test is None:
+        return None
+    x = np.abs(g["sig"]).max(axis=1)
+    cue = g["cue"] * SR
+    m = _sync_marks(g, x, cue)
+    row = {"t_cue": g["t"], "label": g["label"], "kind": g["kind"], "test": test, "align": g["loud"]["align"], **m,
+           "long": g["long"], "issue": None}
+    if test == "end":
+        idx = np.nonzero(x > 0.1 * x.max())[0]
+        row["end_ms"] = m["end_ms"] = ms(g["a"] + (idx[-1] if len(idx) else 0) - cue)
+    issue = _sync_issue(test, m, 0)
+    row["issue"] = _explain(row, g, test, m, issue) if issue else None
+    return row
 
 
 def section_sync(groups) -> dict:
-    rows = []
-    for g in groups:
-        if g["silent"]:
-            continue
-        L = g["loud"]
-        if g["builds"]:
-            test = "apex" if L["align"] == "peak" else "end"
-        elif L["align"] in ("start", "end"):
-            continue
-        else:
-            test = "apex" if g["long"] else "impact"
-        x = np.abs(g["sig"]).max(axis=1)
-        cue = g["cue"] * SR
-        nb = len(x) // 240
-        pk = (int(np.argmax(x[: nb * 240].reshape(nb, 240).max(axis=1))) * 240 + 120) if nb else 0
-        pw = uniform_filter1d((g["sig"].astype(np.float64) ** 2).sum(axis=1), 2400)
-        m = {"attack_ms": ms(L["att"] - cue), "peak_ms": ms(g["a"] + pk - cue), "apex_ms": ms(g["a"] + int(np.argmax(pw)) - cue)}
-        row = {"t_cue": g["t"], "label": g["label"], "kind": g["kind"], "test": test, "align": L["align"], **m,
-               "long": g["long"], "issue": None}
-        if test == "end":
-            idx = np.nonzero(x > 0.1 * x.max())[0]
-            row["end_ms"] = m["end_ms"] = ms(g["a"] + (idx[-1] if len(idx) else 0) - cue)
-        issue = _sync_issue(test, m, 0)
-        if issue:
-            tried = []
-            for q in g["layers"]:
-                if abs(q["offset"]) >= 0.03:
-                    tried.append(q["offset"])
-                    if _sync_issue(test, m, q["offset"] * 1000) is None:
-                        row.update(deliberate=True, offset_s=q["offset"], offset_rule=q["rule"],
-                                   explanation=f"sits {q['offset'] * 1000:+.0f} ms off the cue by the offset of rule {q['rule']}")
-                        issue = None
-                        break
-            if issue and g["qa_ok"]:
-                row.update(deliberate=True, explanation=f"acknowledged: {g['qa_ok']}")
-                issue = None
-            if issue and tried:
-                row["offsets_tried_s"] = tried
-        row["issue"] = issue
-        rows.append(row)
+    rows = [r for r in (_sync_row(g) for g in groups) if r is not None]
     issues = [r for r in rows if r["issue"]]
     deliberate = [r for r in rows if r.get("deliberate")]
     return {"status": "warn" if issues else "ok", "items": issues + deliberate, "events": rows,
