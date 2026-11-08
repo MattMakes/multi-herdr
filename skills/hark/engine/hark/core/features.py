@@ -13,6 +13,7 @@ from typing import Any
 import numpy as np
 
 from hark.core import audio, report
+from hark.core.safe import attempt
 
 SR = 48000
 LIBROSA_SR = 22050
@@ -59,25 +60,30 @@ def _signal():
 # ---------------------------------------------------------------- envelope
 
 
+def _centred_bounds(n: int, w2: int) -> tuple[np.ndarray, np.ndarray]:
+    """[a, b) of the window around each 1 ms centre 48 k + 24, clipped to [0, n]."""
+    centres = 48 * np.arange((n + 47) // 48) + 24
+    return np.clip(centres - w2, 0, n), np.clip(centres + w2, 0, n)
+
+
 def smooth_env(m: np.ndarray, win_ms: float) -> np.ndarray:
     """Centred RMS of win_ms, one value per millisecond."""
     m = np.asarray(m, dtype=np.float64)
-    n = len(m)
-    w2 = max(1, int(win_ms * SR / 2000))
+    a, b = _centred_bounds(len(m), max(1, int(win_ms * SR / 2000)))
     csum = np.concatenate([[0.0], np.cumsum(m * m)])
-    centres = 48 * np.arange((n + 47) // 48) + 24
-    a = np.clip(centres - w2, 0, n)
-    b = np.clip(centres + w2, 0, n)
     return np.sqrt((csum[b] - csum[a]) / np.maximum(b - a, 1) + 1e-20)
+
+
+def _rms_rows(frames: np.ndarray) -> np.ndarray:
+    return np.sqrt(np.mean(frames * frames, axis=-1) + 1e-20)
 
 
 def frame_rms(m: np.ndarray, win: int) -> np.ndarray:
     """RMS of non-overlapping frames of win samples; one value when shorter."""
     m = np.asarray(m, dtype=np.float64)
     if len(m) < win:
-        return np.array([np.sqrt(np.mean(m * m) + 1e-20)])
-    frames = m[: len(m) - len(m) % win].reshape(-1, win)
-    return np.sqrt(np.mean(frames * frames, axis=1) + 1e-20)
+        return np.atleast_1d(_rms_rows(m))
+    return _rms_rows(m[: len(m) - len(m) % win].reshape(-1, win))
 
 
 def _decay_ms(e10: np.ndarray, ip: int) -> float | None:
@@ -112,20 +118,37 @@ def true_peak_dbtp(x: np.ndarray) -> float:
     return audio.db(float(np.max(np.abs(up))) if up.size else 0.0)
 
 
-def _shelf(sr: int) -> tuple[tuple, tuple]:
-    k = np.tan(np.pi * 1681.974450955533 / sr)
-    vh = 10 ** (3.999843853973347 / 20)
-    vb, q = vh ** 0.4996667741545416, 0.7071752369554196
+_SHELF_HZ = 1681.974450955533
+_SHELF_GAIN_DB = 3.999843853973347
+_SHELF_Q = 0.7071752369554196
+_SHELF_VB_EXP = 0.4996667741545416
+_HIGHPASS_HZ = 38.13547087602444
+_HIGHPASS_Q = 0.5003270373238773
+
+
+def _denominator(k: float, q: float) -> tuple[float, tuple[float, float, float]]:
+    """a0 and the normalised denominator of a bilinear biquad with prewarped k."""
     a0 = 1 + k / q + k * k
-    b = ((vh + vb * k / q + k * k) / a0, 2 * (k * k - vh) / a0, (vh - vb * k / q + k * k) / a0)
-    return b, (1.0, 2 * (k * k - 1) / a0, (1 - k / q + k * k) / a0)
+    return a0, (1.0, 2 * (k * k - 1) / a0, (1 - k / q + k * k) / a0)
+
+
+def _shelf_numerator(k: float, a0: float) -> tuple[float, float, float]:
+    vh = 10 ** (_SHELF_GAIN_DB / 20)
+    vbq = vh ** _SHELF_VB_EXP * k / _SHELF_Q
+    return (vh + vbq + k * k) / a0, 2 * (k * k - vh) / a0, (vh - vbq + k * k) / a0
+
+
+def _shelf(sr: int) -> tuple[tuple, tuple]:
+    """BS.1770 stage 1 (high shelf) at any rate."""
+    k = np.tan(np.pi * _SHELF_HZ / sr)
+    a0, a = _denominator(k, _SHELF_Q)
+    return _shelf_numerator(k, a0), a
 
 
 def _highpass(sr: int) -> tuple[tuple, tuple]:
-    k = np.tan(np.pi * 38.13547087602444 / sr)
-    q = 0.5003270373238773
-    a0 = 1 + k / q + k * k
-    return (1.0, -2.0, 1.0), (1.0, 2 * (k * k - 1) / a0, (1 - k / q + k * k) / a0)
+    """BS.1770 stage 2 (high pass) at any rate."""
+    _, a = _denominator(np.tan(np.pi * _HIGHPASS_HZ / sr), _HIGHPASS_Q)
+    return (1.0, -2.0, 1.0), a
 
 
 def k_weight(x: np.ndarray, sr: int = 48000) -> np.ndarray:
@@ -137,19 +160,24 @@ def k_weight(x: np.ndarray, sr: int = 48000) -> np.ndarray:
     return y
 
 
+def _block_starts(n: int, w: int, h: int) -> np.ndarray:
+    return np.array([0]) if n < w else np.arange(0, n - w + 1, h)
+
+
+def _block_power(y: np.ndarray, starts: np.ndarray, w: int) -> np.ndarray:
+    """Mean square per block and channel, from running sums."""
+    csum = np.vstack([np.zeros((1, y.shape[1])), np.cumsum(y * y, axis=0)])
+    return (csum[np.minimum(starts + w, len(y))] - csum[starts]) / w
+
+
 def loudness_curve(x: np.ndarray, win: float = 0.4, hop: float = 0.1) -> tuple[np.ndarray, np.ndarray]:
     """Block loudness (LUFS) at block mid times."""
     y = k_weight(_as_stereo(x))
-    n = len(y)
-    csum = np.vstack([np.zeros((1, y.shape[1])), np.cumsum(y * y, axis=0)])
-    w, h = int(win * SR), max(1, int(hop * SR))
-    if n < w:
-        starts, w = np.array([0]), max(n, 1)
-    else:
-        starts = np.arange(0, n - w + 1, h)
-    power = (csum[np.minimum(starts + w, n)] - csum[starts]) / w
-    lufs = -0.691 + 10 * np.log10(power.sum(axis=1) + 1e-20)
-    return (starts + w / 2) / SR, lufs
+    w = int(win * SR)
+    starts = _block_starts(len(y), w, max(1, int(hop * SR)))
+    w = w if len(y) >= w else max(len(y), 1)
+    power = _block_power(y, starts, w).sum(axis=1)
+    return (starts + w / 2) / SR, -0.691 + 10 * np.log10(power + 1e-20)
 
 
 def _power_mean(levels: np.ndarray) -> float:
@@ -187,46 +215,58 @@ def _levels(x: np.ndarray) -> dict:
     }
 
 
+def _lufs_field(x: np.ndarray, dur: float) -> dict:
+    return {"lufs": _r(integrated_lufs(x), 1)} if dur >= LUFS_FROM_S else {}
+
+
+def _short_term_field(x: np.ndarray, dur: float) -> dict:
+    peak = float(np.max(loudness_curve(x, 3.0, 0.5)[1])) if dur >= SHORT_TERM_FROM_S else None
+    return {} if peak is None else {"short_term_max_lufs": _r(peak, 1)}
+
+
+def _lra_field(x: np.ndarray, dur: float) -> dict:
+    value = lra(x) if dur >= LRA_FROM_S else None
+    return {} if value is None else {"lra_lu": _r(value, 1)}
+
+
 def _loudness(x: np.ndarray, dur: float) -> dict:
-    out: dict[str, Any] = {}
-    if dur >= LUFS_FROM_S:
-        out["lufs"] = _r(integrated_lufs(x), 1)
-    if dur >= SHORT_TERM_FROM_S:
-        out["short_term_max_lufs"] = _r(float(np.max(loudness_curve(x, 3.0, 0.5)[1])), 1)
-    if dur >= LRA_FROM_S:
-        value = lra(x)
-        if value is not None:
-            out["lra_lu"] = _r(value, 1)
-    return out
+    return {**_lufs_field(x, dur), **_short_term_field(x, dur), **_lra_field(x, dur)}
 
 
 # ---------------------------------------------------------------- time domain
 
 
+def _rms(v: np.ndarray) -> float:
+    return float(np.sqrt(np.mean(v * v)))
+
+
+def _side_to_mid(left: np.ndarray, right: np.ndarray) -> float | None:
+    side, mid = _rms((left - right) / 2), _rms((left + right) / 2)
+    return _r(audio.db(side) - audio.db(mid + 1e-12), 1) if side > 1e-7 else None
+
+
+def _correlation(left: np.ndarray, right: np.ndarray) -> dict:
+    """{"correlation": r}, or {} when either channel is constant."""
+    varied = np.std(left) > 1e-9 and np.std(right) > 1e-9
+    return {"correlation": _r(float(np.corrcoef(left, right)[0, 1]), 3)} if varied else {}
+
+
 def _stereo_image(x: np.ndarray) -> dict:
     left, right = x[:, 0], x[:, 1]
-    mid, side = (left + right) / 2, (left - right) / 2
-    side_rms = float(np.sqrt(np.mean(side * side)))
-    mid_rms = float(np.sqrt(np.mean(mid * mid)))
-    out: dict[str, Any] = {"side_to_mid_db": _r(audio.db(side_rms) - audio.db(mid_rms + 1e-12), 1)
-                           if side_rms > 1e-7 else None}
-    if np.std(left) > 1e-9 and np.std(right) > 1e-9:
-        out["correlation"] = _r(float(np.corrcoef(left, right)[0, 1]), 3)
-    return out
+    return {"side_to_mid_db": _side_to_mid(left, right), **_correlation(left, right)}
+
+
+def _floor_fields(m: np.ndarray) -> dict:
+    frames = frame_rms(m, 960)
+    floor = _r(audio.db(float(np.percentile(frames, 10))), 1)
+    return {"noise_floor_dbfs": floor, "dynamic_range_db": _r(audio.db(float(frames.max())) - floor, 1)}
 
 
 def _time_domain(x: np.ndarray, m: np.ndarray) -> dict:
-    frames = frame_rms(m, 960)
-    floor = _r(audio.db(float(np.percentile(frames, 10))), 1)
-    out = {
-        "clipped_samples": int(np.count_nonzero(np.abs(x) >= CLIP)),
-        "dc": _r(float(np.mean(m)), 5),
-        "noise_floor_dbfs": floor,
-        "dynamic_range_db": _r(audio.db(float(frames.max())) - floor, 1),
-        "digital_silence_frac": _r(float(np.mean(np.abs(m) < DIGITAL_ZERO)), 4),
-    }
-    out.update(_stereo_image(x))
-    return out
+    clipped = int(np.count_nonzero(np.abs(x) >= CLIP))
+    zeros = _r(float(np.mean(np.abs(m) < DIGITAL_ZERO)), 4)
+    return {"clipped_samples": clipped, "dc": _r(float(np.mean(m)), 5), **_floor_fields(m),
+            "digital_silence_frac": zeros, **_stereo_image(x)}
 
 
 def _envelope(m: np.ndarray) -> dict:
@@ -245,15 +285,19 @@ def _welch(m: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     return f, p + 1e-30
 
 
-def _bandwidth(f: np.ndarray, p: np.ndarray) -> int | None:
-    edges = 20.0 * 2.0 ** (np.arange(31) / 3)
-    levels = []
-    for lo, hi in zip(edges[:-1], edges[1:]):
-        sel = p[(f >= lo) & (f < hi)]
-        levels.append(10 * np.log10(np.mean(sel)) if sel.size else -300.0)
-    levels = np.array(levels)
+_THIRD_EDGES = 20.0 * 2.0 ** (np.arange(31) / 3)
+
+
+def _band_level(f: np.ndarray, p: np.ndarray, lo: float, hi: float) -> float:
+    sel = p[(f >= lo) & (f < hi)]
+    return 10 * np.log10(np.mean(sel)) if sel.size else -300.0
+
+
+def _bandwidth(f: np.ndarray, p: np.ndarray) -> int:
+    """Upper edge of the highest third-octave band within 60 dB of the loudest band."""
+    levels = np.array([_band_level(f, p, lo, hi) for lo, hi in zip(_THIRD_EDGES[:-1], _THIRD_EDGES[1:])])
     kept = np.nonzero(levels >= levels.max() - 60)[0]
-    return int(edges[kept[-1] + 1]) if kept.size else None
+    return int(_THIRD_EDGES[kept[-1] + 1])
 
 
 def _bands(f: np.ndarray, p: np.ndarray, total: float) -> dict:
@@ -261,19 +305,39 @@ def _bands(f: np.ndarray, p: np.ndarray, total: float) -> dict:
             for name, (lo, hi) in BANDS.items()}
 
 
+def _rolloff(f: np.ndarray, p: np.ndarray, total: float) -> int:
+    cum = np.cumsum(p) / total
+    return int(f[min(int(np.searchsorted(cum, 0.95, side="left")), len(f) - 1)])
+
+
+def _shape_fields(p: np.ndarray) -> dict:
+    flatness = float(np.exp(np.mean(np.log(p))) / np.mean(p))
+    return {"flatness": _r(flatness, 4), "tonal_peak_ratio_db": _r(10 * np.log10(np.max(p) / np.median(p)), 1)}
+
+
 def _spectrum(m: np.ndarray) -> dict:
     f, p = _welch(m)
     total = float(p.sum())
-    cum = np.cumsum(p) / total
-    roll = min(int(np.searchsorted(cum, 0.95, side="left")), len(f) - 1)
-    return {
-        "centroid_hz": int(np.sum(f * p) / total),
-        "rolloff95_hz": int(f[roll]),
-        "bands_db": _bands(f, p, total),
-        "bandwidth_hz": _bandwidth(f, p),
-        "flatness": _r(float(np.exp(np.mean(np.log(p))) / np.mean(p)), 4),
-        "tonal_peak_ratio_db": _r(10 * np.log10(np.max(p) / np.median(p)), 1),
-    }
+    return {"centroid_hz": int(np.sum(f * p) / total), "rolloff95_hz": _rolloff(f, p, total),
+            "bands_db": _bands(f, p, total), "bandwidth_hz": _bandwidth(f, p), **_shape_fields(p)}
+
+
+def _stft_mag(m: np.ndarray, sr: int) -> tuple[np.ndarray, np.ndarray]:
+    f, _, z = _signal().stft(m, fs=sr, window="hann", nperseg=1024, noverlap=768, boundary=None, padded=True)
+    return f, np.abs(z)
+
+
+def _active_frames(mag: np.ndarray) -> np.ndarray:
+    """Frames whose magnitude sum is within 30 dB (amplitude) of the loudest frame."""
+    energy = mag.sum(axis=0)
+    return mag[:, energy >= energy.max() * 10 ** (-30 / 20)] if energy.max() > 0 else mag[:, :0]
+
+
+def _median_centroid(f: np.ndarray, active: np.ndarray) -> int | None:
+    if active.shape[1] == 0:
+        return None
+    cents = (f[:, None] * active).sum(axis=0) / (active.sum(axis=0) + 1e-20)
+    return int(np.median(cents))
 
 
 def brightness_hz(m: np.ndarray, sr: int = 48000) -> int | None:
@@ -281,14 +345,8 @@ def brightness_hz(m: np.ndarray, sr: int = 48000) -> int | None:
     m = audio.to_mono(np.asarray(m, dtype=np.float64))
     if len(m) < 1024:
         return None
-    f, _, z = _signal().stft(m, fs=sr, window="hann", nperseg=1024, noverlap=768, boundary=None, padded=True)
-    mag = np.abs(z)
-    energy = mag.sum(axis=0)
-    active = energy >= energy.max() * 10 ** (-30 / 20)
-    if not active.any() or energy.max() <= 0:
-        return None
-    cents = (f[:, None] * mag[:, active]).sum(axis=0) / (mag[:, active].sum(axis=0) + 1e-20)
-    return int(np.median(cents))
+    f, mag = _stft_mag(m, sr)
+    return _median_centroid(f, _active_frames(mag))
 
 
 # ---------------------------------------------------------------- librosa features
@@ -315,20 +373,18 @@ def _f0(yt: np.ndarray) -> float | None:
     return float(np.median(voiced)) if voiced.size else None
 
 
+def _f0_field(yt: np.ndarray, ratio: float) -> dict:
+    """f0_hz when harmonic_ratio >= 0.8; a pitch-tracker failure only drops it (E-F10)."""
+    f0 = attempt(_f0, yt) if ratio >= 0.8 else None
+    return {} if f0 is None else {"f0_hz": round(f0, 1)}
+
+
 def _tonality(y22: np.ndarray) -> dict:
     yt = y22[: int(TONALITY_S * LIBROSA_SR)]
     if len(yt) < 2048:
         return {}
     ratio = round(_harmonic_ratio(yt), 3)
-    out: dict[str, Any] = {"harmonic_ratio": ratio}
-    if ratio >= 0.8:
-        try:
-            f0 = _f0(yt)
-        except Exception:  # noqa: BLE001 - a pitch-tracker failure only drops f0_hz (E-F10)
-            f0 = None
-        if f0 is not None:
-            out["f0_hz"] = round(f0, 1)
-    return out
+    return {"harmonic_ratio": ratio, **_f0_field(yt, ratio)}
 
 
 def _onset_times(y22: np.ndarray, delta: float) -> list[float]:
@@ -350,18 +406,15 @@ def _onset_fields(y22: np.ndarray, dur: float) -> dict:
             "onsets_per_s": round(len(times) / dur, 2) if dur > 0 else 0.0}
 
 
-def _rotations(profile: tuple[float, ...]) -> list[np.ndarray]:
-    base = np.array(profile)
-    return [np.roll(base, k) for k in range(12)]
+def _key_row(chroma: np.ndarray, mode: str, k: int, profile: tuple[float, ...]) -> dict:
+    """Pearson r of the chroma with the profile rotated right by k."""
+    r = float(np.corrcoef(chroma, np.roll(np.array(profile), k))[0, 1])
+    return {"key": f"{NOTE_NAMES[k]} {mode}", "r": r if np.isfinite(r) else -1.0}
 
 
 def _key_rows(chroma: np.ndarray) -> list[dict]:
-    rows = []
-    for mode, profile in (("major", KEY_MAJOR), ("minor", KEY_MINOR)):
-        for k, rotated in enumerate(_rotations(profile)):
-            r = float(np.corrcoef(chroma, rotated)[0, 1])
-            rows.append({"key": f"{NOTE_NAMES[k]} {mode}", "r": r if np.isfinite(r) else -1.0})
-    return rows
+    profiles = (("major", KEY_MAJOR), ("minor", KEY_MINOR))
+    return [_key_row(chroma, mode, k, profile) for mode, profile in profiles for k in range(12)]
 
 
 def key_estimate(m: np.ndarray, sr: int = 48000) -> list[dict]:
@@ -374,15 +427,22 @@ def key_estimate(m: np.ndarray, sr: int = 48000) -> list[dict]:
     return [{"key": d["key"], "r": round(d["r"], 3)} for d in rows[:3]]
 
 
-def _music(y22: np.ndarray, m: np.ndarray) -> dict:
+def _beats(y22: np.ndarray) -> tuple[float, np.ndarray]:
     import librosa
 
     env = librosa.onset.onset_strength(y=y22, sr=LIBROSA_SR, hop_length=256)
     tempo, beats = librosa.beat.beat_track(onset_envelope=env, sr=LIBROSA_SR, hop_length=256, units="time")
-    out: dict[str, Any] = {"tempo": round(float(np.atleast_1d(tempo)[0]), 1),
-                           "beats": [round(float(b), 3) for b in beats]}
-    if len(beats) > 4:
-        out["beat_ibi_std_ms"] = round(1000 * float(np.std(np.diff(beats))), 1)
+    return float(np.atleast_1d(tempo)[0]), np.asarray(beats)
+
+
+def _ibi_field(beats: np.ndarray) -> dict:
+    return {"beat_ibi_std_ms": round(1000 * float(np.std(np.diff(beats))), 1)} if len(beats) > 4 else {}
+
+
+def _music(y22: np.ndarray, m: np.ndarray) -> dict:
+    tempo, beats = _beats(y22)
+    out: dict[str, Any] = {"tempo": round(tempo, 1), "beats": [round(float(b), 3) for b in beats]}
+    out.update(_ibi_field(beats))
     out["key"] = key_estimate(m)
     return out
 
@@ -394,16 +454,29 @@ def _num(v: float | None) -> str:
     return "?" if v is None else f"{v:g}"
 
 
+def _require(ok: bool, message: str) -> None:
+    """Raise ValueError(message) when ok is false."""
+    failed = not ok
+    error = ValueError(message)
+    if failed:
+        raise error
+
+
+def _probed_duration(src: Any, start: float | None) -> float:
+    """The probed duration of a path when start > 0, else 0 (not checked)."""
+    checked = isinstance(src, (str, os.PathLike)) and bool(start)
+    return (audio.probe(str(src)).get("duration") or 0.0) if checked else 0.0
+
+
 def _check_range(src: Any, start: float | None, end: float | None) -> None:
-    if start is not None and start < 0:
-        raise ValueError(f"start must be >= 0 s (got {_num(start)})")
-    if end is not None and end <= (start or 0.0):
-        raise ValueError(f"end ({_num(end)} s) must be greater than start ({_num(start or 0.0)} s)")
-    if isinstance(src, (str, os.PathLike)) and start:
-        known = audio.probe(str(src)).get("duration") or 0.0
-        if known and start >= known:
-            raise ValueError(f"start {_num(start)} s is at or beyond the end of "
-                             f"{os.path.basename(str(src))} ({_num(known)} s long)")
+    """The range ValueErrors of core-io 3.10, before any decode."""
+    first = start or 0.0
+    _require(start is None or start >= 0, f"start must be >= 0 s (got {_num(start)})")
+    _require(end is None or end > first, f"end ({_num(end)} s) must be greater than start ({_num(first)} s)")
+    known = _probed_duration(src, start)
+    name = os.path.basename(str(src)) if known else ""
+    _require(not known or first < known, f"start {_num(start)} s is at or beyond the end of {name} "
+                                         f"({_num(known)} s long)")
 
 
 def _input(src: Any, start: float | None, end: float | None) -> np.ndarray:
@@ -415,20 +488,17 @@ def _input(src: Any, start: float | None, end: float | None) -> np.ndarray:
     return x[i0:i1]
 
 
-def _analysis(x: np.ndarray, m: np.ndarray, dur: float, music: bool, light: bool, sr: int = SR) -> dict:
-    out: dict[str, Any] = {}
-    out.update(_levels(x))
-    out.update(_loudness(x, dur))
-    out.update(_time_domain(x, m))
-    out.update(_envelope(m))
-    out.update(_spectrum(m))
-    out["brightness_hz"] = brightness_hz(m, sr)
-    if not light:
-        y22 = _to22(m, sr)
-        out.update(_tonality(y22))
-        out.update(_onset_fields(y22, dur))
-        if music and dur >= MUSIC_FROM_S:
-            out.update(_music(y22, m))
+def _librosa_fields(m: np.ndarray, dur: float, music: bool) -> dict:
+    y22 = _to22(m, SR)
+    out = {**_tonality(y22), **_onset_fields(y22, dur)}
+    out.update(_music(y22, m) if music and dur >= MUSIC_FROM_S else {})
+    return out
+
+
+def _analysis(x: np.ndarray, m: np.ndarray, dur: float, music: bool, light: bool) -> dict:
+    out = {**_levels(x), **_loudness(x, dur), **_time_domain(x, m), **_envelope(m), **_spectrum(m)}
+    out["brightness_hz"] = brightness_hz(m, SR)
+    out.update({} if light else _librosa_fields(m, dur, music))
     return out
 
 
@@ -507,18 +577,27 @@ def _measure_file(path: str, args: argparse.Namespace) -> dict:
     return {"file": path, "summary": summary_line(os.path.basename(path), r), **r}
 
 
+def _media_files(inputs: list[str]) -> list[str]:
+    audio.check_paths(inputs, what="files")
+    files = audio.list_media(inputs)
+    if not files:
+        raise audio.AudioError(f"files: nothing playable in {', '.join(inputs)}")
+    return files
+
+
+def _combined(results: list[dict]) -> tuple[dict, str]:
+    """The result to emit and its text form: one file as is, several under `files`."""
+    single = len(results) == 1
+    whole = {"summary": f"{len(results)} files measured.", "files": results}
+    text = "\n".join(r["summary"] for r in results)
+    return (results[0], text) if single else (whole, text)
+
+
 def run_cli(args: argparse.Namespace) -> int:
     """Handler of `hark measure`."""
-    audio.check_paths(args.files, what="files")
-    files = audio.list_media(args.files)
-    if not files:
-        raise audio.AudioError(f"files: nothing playable in {', '.join(args.files)}")
-    results = [_measure_file(f, args) for f in files]
-    if len(results) == 1:
-        report.emit(results[0], args, text=results[0]["summary"])
-    else:
-        whole = {"summary": f"{len(results)} files measured.", "files": results}
-        report.emit(whole, args, text="\n".join(r["summary"] for r in results))
+    results = [_measure_file(f, args) for f in _media_files(args.files)]
+    result, text = _combined(results)
+    report.emit(result, args, text=text)
     return 0
 
 
