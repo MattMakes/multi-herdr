@@ -10,6 +10,7 @@ from __future__ import annotations
 import math
 import re
 from collections.abc import Callable
+from types import SimpleNamespace
 from typing import Any
 
 import numpy as np
@@ -171,18 +172,21 @@ def midi(pitch: Any) -> int | None:
     return 12 * (int(m.group(3)) + 1) + _PC[m.group(1).upper()] + acc.count("#") + acc.count("s") - acc.count("b")
 
 
-def _raw_hz(pitch: Any) -> float:
-    if isinstance(pitch, bool):
-        raise KnobError("pitch must be a note name, a number of Hz or text like 440hz, not a bool")
-    if isinstance(pitch, (int, float)):
-        return float(pitch)
+def _parse_hz(pitch: Any) -> float | None:
     n = midi(pitch)
     if n is not None:
         return 440.0 * 2 ** ((n - 69) / 12)
     m = _HZ.match(str(pitch))
-    if m:
-        return float(m.group(1))
-    raise KnobError(f"pitch {pitch!r} is not a note name (A4, C#5, Cs5, Eb3), a number of Hz, or text like 440hz")
+    return float(m.group(1)) if m else None
+
+
+def _raw_hz(pitch: Any) -> float:
+    if isinstance(pitch, bool):
+        raise KnobError("pitch must be a note name, a number of Hz or text like 440hz, not a bool")
+    f = float(pitch) if isinstance(pitch, (int, float)) else _parse_hz(pitch)
+    if f is None:
+        raise KnobError(f"pitch {pitch!r} is not a note name (A4, C#5, Cs5, Eb3), a number of Hz, or text like 440hz")
+    return f
 
 
 def hz(pitch: Any) -> float:
@@ -247,11 +251,8 @@ def _dur_method(entry: dict) -> str:
     if _is_fit(entry):
         return "param" if _fit_length_knob(entry) else "trim"
     cat = entry.get("category")
-    if cat in WHOOSH:
-        return "shape"
-    if cat in LENGTH and LENGTH[cat] in (entry.get("params") or {}):
-        return "param"
-    return "trim"
+    has_len = cat in LENGTH and LENGTH[cat] in (entry.get("params") or {})
+    return "shape" if cat in WHOOSH else "param" if has_len else "trim"
 
 
 def _fit_pitch_spec(entry: dict) -> dict:
@@ -278,9 +279,8 @@ def _partial_spec(entry: dict, ps: dict, v: float) -> dict:
     return {**spec, "native_hz": heard, "note": note(heard), "range_hz": [lo * r, hi * r]}
 
 
-def _pitch_spec(entry: dict) -> dict:
-    if _is_fit(entry):
-        return _fit_pitch_spec(entry)
+def _pitch_param(entry: dict) -> tuple[dict, dict]:
+    """The PITCH row of the entry's category and its params; raises when it has no pitch parameter."""
     cat = entry.get("category")
     if cat in UNTUNED:
         raise _err(entry, UNTUNED[cat])
@@ -288,24 +288,43 @@ def _pitch_spec(entry: dict) -> dict:
     params = entry.get("params") or {}
     if ps is None or ps["param"] not in params:
         raise _err(entry, "its recipe has no pitch parameter")
+    return ps, params
+
+
+def _hz_spec(entry: dict, ps: dict, params: dict) -> dict:
     v = params[ps["param"]]
-    if ps["mode"] == "pc":
-        return {"param": ps["param"], "mode": "pc", "key": int(v), "note": _NAMES[int(v) % 12]}
-    if ps["mode"] == "partial":
-        return _partial_spec(entry, ps, v)
     if ps["needs"] and float(params.get(ps["needs"][0], -1e9)) < ps["needs"][1]:
         raise _err(entry, f"its tonal layer is off ({ps['needs'][0]} under {ps['needs'][1]}), it has no note to tune")
     return {"param": ps["param"], "native_hz": float(v), "note": note(float(v)), "range_hz": list(ps["range"])}
 
 
-def _tonal_spec(entry: dict, knob: str) -> dict:
+def _pitch_spec(entry: dict) -> dict:
+    if _is_fit(entry):
+        return _fit_pitch_spec(entry)
+    ps, params = _pitch_param(entry)
+    v = params[ps["param"]]
+    if ps["mode"] == "pc":
+        spec = {"param": ps["param"], "mode": "pc", "key": int(v), "note": _NAMES[int(v) % 12]}
+    elif ps["mode"] == "partial":
+        spec = _partial_spec(entry, ps, v)
+    else:
+        spec = _hz_spec(entry, ps, params)
+    return spec
+
+
+def _tonal_row(entry: dict, knob: str) -> dict:
+    """The TONAL row of the entry's category for a knob; raises for a fit or a category without it."""
     if _is_fit(entry):
         raise _err(entry, f"the {knob} knob does not exist for a fitted recording; only pitch and length apply")
     cats = TONAL[knob]
     cat = entry.get("category")
     if cat not in cats:
         raise _err(entry, f"no {knob} knob for category {cat}; categories with it: {', '.join(sorted(cats))}")
-    spec = cats[cat]
+    return cats[cat]
+
+
+def _tonal_spec(entry: dict, knob: str) -> dict:
+    spec = _tonal_row(entry, knob)
     base = {**_recipe_defaults(entry), **(entry.get("params") or {})}
     if spec["param"] not in base:
         raise _err(entry, f"its recipe has no {spec['param']} parameter for the {knob} knob")
@@ -372,22 +391,29 @@ def _validate_tonal(entry: dict, tonal: dict) -> None:
         _tonal_spec(entry, knob)
 
 
-def _validate_time(entry: dict, dur: Any, apex: Any) -> None:
-    whoosh = entry.get("category") in WHOOSH
-    if dur is not None:
-        d = _number(entry, "dur", dur)
-        if not 0.01 <= d <= 60:
-            raise _err(entry, f"dur {d:g} s is outside 0.01..60 s")
-        if whoosh and d > WHOOSH_MAX_S:
-            raise _err(entry, f"dur {d:g} s is over {WHOOSH_MAX_S} s, the longest pass this engine renders")
-    if apex is None:
-        return
+def _validate_dur(entry: dict, dur: Any, whoosh: bool) -> None:
+    d = _number(entry, "dur", dur)
+    if not 0.01 <= d <= 60:
+        raise _err(entry, f"dur {d:g} s is outside 0.01..60 s")
+    if whoosh and d > WHOOSH_MAX_S:
+        raise _err(entry, f"dur {d:g} s is over {WHOOSH_MAX_S} s, the longest pass this engine renders")
+
+
+def _apex_value(entry: dict, apex: Any, whoosh: bool) -> float:
     a = _number(entry, "apex", apex)
     if not whoosh:
         raise _err(entry, "apex works only on whooshes; aim a riser with dur and align its end")
     if not 0.01 <= a <= WHOOSH_MAX_S - 0.1:
         raise _err(entry, f"apex {a:g} s is outside 0.01..{WHOOSH_MAX_S - 0.1:g} s")
-    if dur is not None and a >= float(dur) - 0.02:
+    return a
+
+
+def _validate_time(entry: dict, dur: Any, apex: Any) -> None:
+    whoosh = entry.get("category") in WHOOSH
+    if dur is not None:
+        _validate_dur(entry, dur, whoosh)
+    a = _apex_value(entry, apex, whoosh) if apex is not None else None
+    if a is not None and dur is not None and a >= float(dur) - 0.02:
         raise _err(entry, "apex must come at least 20 ms before the end (dur)")
 
 
@@ -410,34 +436,37 @@ def _plan_pc(spec: dict, pitch: Any) -> tuple[dict, dict, dict]:
     return {spec["param"]: n % 12}, {}, info
 
 
-def _plan_pitch(entry: dict, pitch: Any) -> tuple[dict, dict, dict]:
-    """(param updates, fit-knob updates, info)."""
-    spec = _pitch_spec(entry)
-    if spec.get("mode") == "pc":
-        return _plan_pc(spec, pitch)
-    f = hz(pitch)
+def _plan_unmeasured(entry: dict, spec: dict, f: float) -> tuple[dict, dict, dict]:
+    """A click or toggle whose heard partial is not measured yet: land it after a render."""
     lo, hi = spec["range_hz"]
-    if spec.get("mode") == "partial" and spec["native_hz"] is None:
-        if not lo <= f <= hi:
-            raise _err(entry, f"{note(f)} ({f:.1f} Hz) is outside {lo:g}-{hi:g} Hz")
-        return {}, {}, {"target_hz": round(f, 3), "note": note(f), "native_hz": None, "param": spec["param"],
-                        "mode": "partial"}
+    if not lo <= f <= hi:
+        raise _err(entry, f"{note(f)} ({f:.1f} Hz) is outside {lo:g}-{hi:g} Hz")
+    return {}, {}, {"target_hz": round(f, 3), "note": note(f), "native_hz": None, "param": spec["param"],
+                    "mode": "partial"}
+
+
+def _check_range(entry: dict, spec: dict, f: float) -> None:
+    lo, hi = spec["range_hz"]
     if not lo <= f <= hi:
         raise _err(entry, f"{note(f)} ({f:.1f} Hz) is outside {lo:g}-{hi:g} Hz ({note(lo)} to {note(hi)}); "
                           f"the sound sits at {spec['note']}")
-    native = spec["native_hz"]
-    st = 12 * math.log2(f / native)
-    info = {"target_hz": round(f, 3), "note": note(f), "native_hz": native, "semitones": round(st, 2),
-            "param": spec["param"]}
-    if spec.get("fit"):
-        v = 2 ** (-st / 12) if spec["param"] == "size" else st
-        info["knobs"] = {spec["param"]: v}
-        return {}, {spec["param"]: v}, info
+
+
+def _plan_fit(spec: dict, st: float, info: dict) -> tuple[dict, dict, dict]:
+    v = 2 ** (-st / 12) if spec["param"] == "size" else st
+    info["knobs"] = {spec["param"]: v}
+    return {}, {spec["param"]: v}, info
+
+
+def _plan_partial(entry: dict, spec: dict, ratio: tuple[float, float], info: dict) -> tuple[dict, dict, dict]:
+    upd = {spec["param"]: entry["params"][spec["param"]] * ratio[0] / ratio[1]}
+    info.update(mode="partial", params={k: round(v, 3) for k, v in upd.items()})
+    return upd, {}, info
+
+
+def _plan_hz(entry: dict, spec: dict, ratio: tuple[float, float], info: dict) -> tuple[dict, dict, dict]:
+    f, native = ratio
     params = entry["params"]
-    if spec.get("mode") == "partial":
-        upd = {spec["param"]: params[spec["param"]] * f / native}
-        info.update(mode="partial", params={k: round(v, 3) for k, v in upd.items()})
-        return upd, {}, info
     upd = {spec["param"]: f}
     for c in PITCH[entry["category"]]["co"]:
         v = params.get(c)
@@ -447,36 +476,69 @@ def _plan_pitch(entry: dict, pitch: Any) -> tuple[dict, dict, dict]:
     return upd, {}, info
 
 
-def _land_partial(entry: dict, run: Callable, pe: dict, fk: dict, info: dict) -> dict:
-    ps = PITCH[entry["category"]]
-    k, f = ps["param"], info["target_hz"]
-    lo, hi = ps["range"]
-    p0 = float(entry["params"][k])
-    v, renders = pe.get(k), 0
-    if v is None:
-        x = run({**pe}, fk)
-        renders += 1
-        heard = _estimate_pitch(x, p0, PARTIAL_SPAN_ST)
-        if heard is None:
-            raise _err(entry, "no clear tonal partial near its tink in the render")
-        info["native_hz"] = heard
-        v = p0 * f / heard
+def _plan_shift(entry: dict, spec: dict, f: float) -> tuple[dict, dict, dict]:
+    native = spec["native_hz"]
+    st = 12 * math.log2(f / native)
+    info = {"target_hz": round(f, 3), "note": note(f), "native_hz": native, "semitones": round(st, 2),
+            "param": spec["param"]}
+    if spec.get("fit"):
+        res = _plan_fit(spec, st, info)
+    elif spec.get("mode") == "partial":
+        res = _plan_partial(entry, spec, (f, native), info)
+    else:
+        res = _plan_hz(entry, spec, (f, native), info)
+    return res
+
+
+def _plan_pitch(entry: dict, pitch: Any) -> tuple[dict, dict, dict]:
+    """(param updates, fit-knob updates, info)."""
+    spec = _pitch_spec(entry)
+    if spec.get("mode") == "pc":
+        return _plan_pc(spec, pitch)
+    f = hz(pitch)
+    if spec.get("mode") == "partial" and spec["native_hz"] is None:
+        return _plan_unmeasured(entry, spec, f)
+    _check_range(entry, spec, f)
+    return _plan_shift(entry, spec, f)
+
+
+def _measure_native(entry: dict, run: Callable, pe: dict, fk: dict, p0: float) -> float:
+    heard = _estimate_pitch(run({**pe}, fk), p0, PARTIAL_SPAN_ST)
+    if heard is None:
+        raise _err(entry, "no clear tonal partial near its tink in the render")
+    return heard
+
+
+def _aim_partial(render: Callable, v: float, f: float, rng: tuple) -> tuple[tuple[float, float], int]:
+    """Re-render until the heard partial is within half the tolerance of f; (best (value, cents), renders)."""
+    lo, hi = rng
     best: tuple[float, float] | None = None
+    n = 0
     for _ in range(MAX_FIX + 1):
         v = min(hi, max(lo, v))
-        x = run({**pe, k: v}, fk)
-        renders += 1
-        got = _estimate_pitch(x, f, PARTIAL_SPAN_ST)
+        got = _estimate_pitch(render(v), f, PARTIAL_SPAN_ST)
+        n += 1
         if got is None:
             best = best or (v, math.inf)
             break
         c = 1200 * math.log2(got / f)
-        if best is None or abs(c) < abs(best[1]):
-            best = (v, c)
+        best = (v, c) if best is None or abs(c) < abs(best[1]) else best
         if abs(c) <= PITCH_TOL_CENTS / 2:
             break
         v *= f / got
-    info.update(params={k: round(best[0], 3)}, renders=renders)
+    return best, n
+
+
+def _land_partial(entry: dict, run: Callable, pe: dict, fk: dict, info: dict) -> dict:
+    ps = PITCH[entry["category"]]
+    k, f = ps["param"], info["target_hz"]
+    p0 = float(entry["params"][k])
+    v, renders = pe.get(k), 0
+    if v is None:
+        info["native_hz"] = _measure_native(entry, run, pe, fk, p0)
+        v, renders = p0 * f / info["native_hz"], 1
+    best, n = _aim_partial(lambda val: run({**pe, k: val}, fk), v, f, ps["range"])
+    info.update(params={k: round(best[0], 3)}, renders=renders + n)
     return {k: best[0]}
 
 
@@ -531,48 +593,69 @@ class _Aim:
     def best(self) -> tuple[float, float | None]:
         return min(self.pts, key=lambda p: math.inf if p[1] is None else abs(p[1] - self.target))
 
-    def _bracket(self) -> float | None:
-        yt = self.Y(self.target)
+    def _sides(self, yt: float) -> tuple[list, list]:
+        """Measured points (search coordinates) under and over the target."""
         pts = [(self.X(v), self.Y(m)) for v, m in self.pts if m is not None]
-        under = [p for p in pts if p[1] < yt]
-        over = [p for p in pts if p[1] > yt]
+        return [p for p in pts if p[1] < yt], [p for p in pts if p[1] > yt]
+
+    def _nearest_pair(self, yt: float) -> tuple | None:
+        """The closest (under, over) pair of measured points around the target."""
+        under, over = self._sides(yt)
         if not under or not over:
             return None
-        a, b = min(((u, o) for u in under for o in over), key=lambda uo: abs(uo[0][0] - uo[1][0]))
+        return min(((u, o) for u in under for o in over), key=lambda uo: abs(uo[0][0] - uo[1][0]))
+
+    def _bracket(self) -> float | None:
+        yt = self.Y(self.target)
+        pair = self._nearest_pair(yt)
+        if pair is None:
+            return None
+        a, b = pair
         x = a[0] + (yt - a[1]) * (b[0] - a[0]) / (b[1] - a[1])
         lo, hi = sorted((a[0], b[0]))
         return self.Xi(min(hi - 0.15 * (hi - lo), max(lo + 0.15 * (hi - lo), x)))
 
-    def _secant(self) -> float | None:
+    def _last_two(self) -> tuple | None:
+        """(x0, x1, y0, y1) of the last 2 points when a secant through them is defined."""
         if self.knob == "width" or len(self.pts) < 2:
             return None
         (v0, m0), (v1, m1) = self.pts[-2], self.pts[-1]
-        if m0 is None or m1 is None or v0 == v1 or m0 == m1:
-            return None
-        x0, x1, y0, y1 = self.X(v0), self.X(v1), self.Y(m0), self.Y(m1)
-        slope = (y1 - y0) / (x1 - x0)
+        ok = not (m0 is None or m1 is None or v0 == v1 or m0 == m1)
+        return (self.X(v0), self.X(v1), self.Y(m0), self.Y(m1)) if ok else None
+
+    def _secant(self) -> float | None:
+        got = self._last_two()
+        slope = (got[3] - got[2]) / (got[1] - got[0]) if got else 0.0
         if slope * self.sign <= 0:
             return None
+        x1, y1 = got[1], got[3]
         lo, hi = self.spec["range"]
         reach = 0.5 * (hi - lo) if self.spec["lin"] else math.log(4)
         x = x1 + (self.Y(self.target) - y1) / slope
         return self.Xi(min(x1 + reach, max(x1 - reach, x)))
 
-    def _first_step(self) -> float:
+    def _width_step(self) -> float:
+        v1, m1 = self.pts[-1]
+        if abs(v1) < 1e-9 or m1 is None:
+            return 0.5
+        return math.sqrt(self.Y(self.target) / max(self.Y(m1) / (v1 * v1), 1e-9))
+
+    def _lin_step(self) -> float:
         v1, m1 = self.pts[-1]
         lo, hi = self.spec["range"]
-        if self.knob == "width":
-            if abs(v1) < 1e-9 or m1 is None:
-                return 0.5
-            return math.sqrt(self.Y(self.target) / max(self.Y(m1) / (v1 * v1), 1e-9))
-        if self.spec["lin"] and self.knob == "onset" and m1 is not None:
+        if self.knob == "onset" and m1 is not None:
             return v1 + 0.9 * (self.target - m1) / 1000
-        if self.spec["lin"]:
-            d = 1 if m1 is None else math.copysign(1, self.target - m1) * self.sign
-            return v1 + 0.25 * (hi - lo) * d
-        if not m1:
-            return v1 * 2
-        return v1 * (self.target / m1) ** self.sign
+        d = 1 if m1 is None else math.copysign(1, self.target - m1) * self.sign
+        return v1 + 0.25 * (hi - lo) * d
+
+    def _log_step(self) -> float:
+        v1, m1 = self.pts[-1]
+        return v1 * 2 if not m1 else v1 * (self.target / m1) ** self.sign
+
+    def _first_step(self) -> float:
+        if self.knob == "width":
+            return self._width_step()
+        return self._lin_step() if self.spec["lin"] else self._log_step()
 
     def propose(self) -> float:
         for step in (self._bracket, self._secant):
@@ -617,6 +700,21 @@ def _aim_tonal(entry: dict, run: Callable, knob: str, target: float, pe: dict, f
 
 # ---------------------------------------------------------------- length
 
+def _fade_len(n: int, keep_s: float | None) -> int:
+    k = min(n, max(int(0.01 * SR), min(int(0.15 * SR), n // 4)))
+    if keep_s is not None:
+        k = min(n, max(int(FADE_MIN_S * SR), min(k, n - int(round(keep_s * SR)))))
+    return k
+
+
+def _cut_fade(x: np.ndarray, n: int, k: int) -> np.ndarray:
+    y = x[:n].astype(float)
+    g = 0.5 + 0.5 * np.cos(np.linspace(0, np.pi, k))
+    g[-1] = 0.0
+    y[n - k:] *= g[:, None] if y.ndim == 2 else g
+    return y
+
+
 def fit_length(x: np.ndarray, dur: float, keep_s: float | None = None) -> tuple[np.ndarray, str]:
     """Pad or cut a render to dur seconds; a cut ends with a half raised-cosine fade."""
     x = np.asarray(x)
@@ -626,18 +724,17 @@ def fit_length(x: np.ndarray, dur: float, keep_s: float | None = None) -> tuple[
     if len(x) < n:
         pad = np.zeros((n - len(x),) + x.shape[1:])
         return np.concatenate([x, pad]), f"pad {(n - len(x)) / SR * 1000:.0f} ms"
-    cut = len(x) - n
-    k = min(n, max(int(0.01 * SR), min(int(0.15 * SR), n // 4)))
-    if keep_s is not None:
-        k = min(n, max(int(FADE_MIN_S * SR), min(k, n - int(round(keep_s * SR)))))
-    y = x[:n].astype(float)
-    g = 0.5 + 0.5 * np.cos(np.linspace(0, np.pi, k))
-    g[-1] = 0.0
-    y[n - k:] *= g[:, None] if y.ndim == 2 else g
-    note_ = f"trim {cut / SR * 1000:.0f} ms"
-    if keep_s is not None:
-        note_ += f" (fade {k / SR * 1000:.0f} ms)"
-    return y, note_
+    k = _fade_len(n, keep_s)
+    note_ = f"trim {(len(x) - n) / SR * 1000:.0f} ms" + (f" (fade {k / SR * 1000:.0f} ms)" if keep_s is not None else "")
+    return _cut_fade(x, n, k), note_
+
+
+def _secant_done(L: float, Lp: float, s: float, sp: float, target: float, tol: float) -> bool:
+    return abs(L - target) <= tol or abs(L - Lp) < 1e-4 or s == sp
+
+
+def _secant_step(s: float, sp: float, L: float, Lp: float, target: float) -> float:
+    return min(SCALE[1], max(SCALE[0], s + (target - L) * (s - sp) / (L - Lp)))
 
 
 def _secant_len(make: Callable, measure: Callable, s0: float, L0: float, target: float,
@@ -649,15 +746,13 @@ def _secant_len(make: Callable, measure: Callable, s0: float, L0: float, target:
     best, renders = (abs(L - target), x, s), 1
     sp, Lp = s0, L0
     for _ in range(MAX_FIX):
-        if abs(L - target) <= tol or abs(L - Lp) < 1e-4 or s == sp:
+        if _secant_done(L, Lp, s, sp, target, tol):
             break
-        s_new = min(SCALE[1], max(SCALE[0], s + (target - L) * (s - sp) / (L - Lp)))
-        sp, Lp, s = s, L, s_new
+        sp, Lp, s = s, L, _secant_step(s, sp, L, Lp, target)
         x = make(s)
         L = measure(x)
         renders += 1
-        if abs(L - target) < best[0]:
-            best = (abs(L - target), x, s)
+        best = (abs(L - target), x, s) if abs(L - target) < best[0] else best
     return best[1], best[2], renders
 
 
@@ -685,15 +780,8 @@ def _param_length(entry: dict, run: Callable, dur: float, pe: dict, fk: dict) ->
 
 # ---------------------------------------------------------------- whoosh path
 
-def place_apex(x: np.ndarray, pk: float, apex: float) -> tuple[np.ndarray, str]:
-    """Shift a render so its peak lands on apex (whole 1 ms hops)."""
-    x = np.asarray(x)
-    n = int(round((pk - apex) * SR / 48)) * 48
-    if n == 0:
-        return x, "exact"
-    if n < 0:
-        pad = np.zeros((-n,) + x.shape[1:])
-        return np.concatenate([pad, x]), f"head pad {-n / SR * 1000:.1f} ms"
+def _head_trim(x: np.ndarray, n: int) -> tuple[np.ndarray, str]:
+    """Cut n samples off the head with a 3 ms fade in, unless that would cut into the pass."""
     mono = np.abs(x.mean(axis=1) if x.ndim == 2 else x)
     lvl = 20 * math.log10(float(mono[:n].max()) / (float(mono.max()) + 1e-30) + 1e-30)
     if lvl > HEAD_MAX_DB:
@@ -703,6 +791,19 @@ def place_apex(x: np.ndarray, pk: float, apex: float) -> tuple[np.ndarray, str]:
     g = 0.5 - 0.5 * np.cos(np.linspace(0, np.pi, k))
     y[:k] *= g[:, None] if y.ndim == 2 else g
     return y, f"head trim {n / SR * 1000:.1f} ms"
+
+
+def place_apex(x: np.ndarray, pk: float, apex: float) -> tuple[np.ndarray, str]:
+    """Shift a render so its peak lands on apex (whole 1 ms hops)."""
+    x = np.asarray(x)
+    n = int(round((pk - apex) * SR / 48)) * 48
+    if n == 0:
+        res = (x, "exact")
+    elif n < 0:
+        res = (np.concatenate([np.zeros((-n,) + x.shape[1:]), x]), f"head pad {-n / SR * 1000:.1f} ms")
+    else:
+        res = _head_trim(x, n)
+    return res
 
 
 def _whoosh_base(entry: dict, pe: dict) -> dict:
@@ -719,31 +820,54 @@ def _whoosh_dur(entry: dict, run: Callable, dur: float, pe: dict, L0: float) -> 
     return x, {"target": dur, "method": "shape", "scale": round(s, 4), "renders": n}
 
 
+def _apex_plan(b: dict, apex: float, dur: float | None, L0: float, pk0: float) -> SimpleNamespace:
+    """Targets and first guesses of an apex search: rise r1 and post-peak scale q0."""
+    k = (max(-b["start_db"], 1) / 30) ** (1 / b["rise_k"])
+    post_t = dur - apex if dur is not None else None
+    q0 = 1.0 if dur is None else min(SCALE[1], max(SCALE[0], post_t / max(L0 - pk0, 1e-6)))
+    return SimpleNamespace(apex=apex, dur=dur, post_t=post_t, r1=apex / k, q0=q0)
+
+
+def _apex_err(a: SimpleNamespace, pk: float, L: float) -> float:
+    return abs(pk - a.apex) + (abs((L - pk) - a.post_t) if a.dur is not None else 0.0)
+
+
+def _apex_done(a: SimpleNamespace, pk: float, L: float) -> bool:
+    return abs(pk - a.apex) <= APEX_TOL and (a.dur is None or abs(L - a.dur) <= max(DUR_ABS, DUR_REL * a.dur))
+
+
+def _apex_next(a: SimpleNamespace, rise: float, q: float, pk: float, L: float) -> tuple[float, float]:
+    rise = min(4 * a.r1, max(0.25 * a.r1, rise * a.apex / max(pk, 1e-3)))
+    if a.dur is not None:
+        q = min(SCALE[1], max(SCALE[0], q * a.post_t / max(L - pk, 1e-3)))
+    return rise, q
+
+
+def _apex_search(render: Callable, a: SimpleNamespace) -> tuple[tuple, int]:
+    """Best (err, x, peak, rise, q) over the search, and the number of renders."""
+    rise, q, best = a.r1, a.q0, None
+    for i in range(MAX_FIX + 1):
+        x = render(rise, q)
+        pk, L = _peak_s(x), _len_s(x)
+        err = _apex_err(a, pk, L)
+        best = (err, x, pk, rise, q) if best is None or err < best[0] else best
+        if _apex_done(a, pk, L):
+            break
+        rise, q = _apex_next(a, rise, q, pk, L)
+    return best, i + 1
+
+
 def _whoosh_apex(entry: dict, run: Callable, apex: float, dur: float | None, pe: dict, L0: float,
                  pk0: float) -> tuple[np.ndarray, dict, dict | None]:
     b = _whoosh_base(entry, pe)
-    k = (max(-b["start_db"], 1) / 30) ** (1 / b["rise_k"])
-    r1 = apex / k
-    rise = r1
-    post_t = dur - apex if dur is not None else None
-    q = 1.0 if dur is None else min(SCALE[1], max(SCALE[0], post_t / max(L0 - pk0, 1e-6)))
-    best = None
-    for i in range(MAX_FIX + 1):
-        x = run({**pe, "rise": rise, "hold": b.get("hold", 0) * q, "fall": b["fall"] * q})
-        pk, L = _peak_s(x), _len_s(x)
-        err = abs(pk - apex) + (abs((L - pk) - post_t) if dur is not None else 0.0)
-        if best is None or err < best[0]:
-            best = (err, x, pk, rise, q)
-        if abs(pk - apex) <= APEX_TOL and (dur is None or abs(L - dur) <= max(DUR_ABS, DUR_REL * dur)):
-            break
-        rise = min(4 * r1, max(0.25 * r1, rise * apex / max(pk, 1e-3)))
-        if dur is not None:
-            q = min(SCALE[1], max(SCALE[0], q * post_t / max(L - pk, 1e-3)))
+    a = _apex_plan(b, apex, dur, L0, pk0)
+    best, n = _apex_search(lambda rise, q: run({**pe, "rise": rise, "hold": b.get("hold", 0) * q,
+                                                "fall": b["fall"] * q}), a)
     _, x, pk, rise, q = best
     x, place = place_apex(x, pk, apex)
     info = {"target": apex, "search_err_ms": round((pk - apex) * 1000, 1), "rise": round(rise, 5),
-            "renders": i + 1, "fit": place}
-    dinfo = {"target": dur, "method": "shape", "post_scale": round(q, 4), "renders": i + 1} if dur else None
+            "renders": n, "fit": place}
+    dinfo = {"target": dur, "method": "shape", "post_scale": round(q, 4), "renders": n} if dur else None
     return x, info, dinfo
 
 
@@ -805,19 +929,19 @@ def _tonal_results(x: np.ndarray, tonal: dict, edits: dict) -> None:
         edits[knob]["ok"] = _tol_ok(knob, got, float(target))
 
 
-def apply(entry: dict, run: Callable, dur: Any = None, apex: Any = None, pitch: Any = None, decay: Any = None,
-          onset: Any = None, bright: Any = None, width: Any = None) -> tuple[np.ndarray, dict]:
-    """Re-render an entry aimed at the given targets; returns (raw render, edits)."""
-    validate(entry, dur, apex, pitch, decay, onset, bright, width)
+def _aim_all(entry: dict, run: Callable, tonal: dict, pe: dict, fk: dict, edits: dict) -> None:
+    for knob, target in tonal.items():
+        upd, edits[knob] = _aim_tonal(entry, run, knob, target, pe, fk)
+        pe.update(upd)
+
+
+def _apply(entry: dict, run: Callable, dur: Any, apex: Any, pitch: Any, tonal: dict) -> tuple[np.ndarray, dict]:
     pe: dict = {}
     fk: dict = {}
     edits: dict = {}
     if pitch is not None:
         _apply_pitch(entry, run, pitch, pe, fk, edits)
-    tonal = {k: v for k, v in zip(TONAL_ORDER, (decay, onset, bright, width)) if v is not None}
-    for knob, target in tonal.items():
-        upd, edits[knob] = _aim_tonal(entry, run, knob, target, pe, fk)
-        pe.update(upd)
+    _aim_all(entry, run, tonal, pe, fk, edits)
     x = _render(entry, run, dur, apex, pe, fk, edits)
     x = _finish_length(x, dur, apex, edits)
     if "pitch" in edits:
@@ -825,3 +949,11 @@ def apply(entry: dict, run: Callable, dur: Any = None, apex: Any = None, pitch: 
     if tonal:
         _tonal_results(x, tonal, edits)
     return x, edits
+
+
+def apply(entry: dict, run: Callable, dur: Any = None, apex: Any = None, pitch: Any = None, decay: Any = None,
+          onset: Any = None, bright: Any = None, width: Any = None) -> tuple[np.ndarray, dict]:
+    """Re-render an entry aimed at the given targets; returns (raw render, edits)."""
+    validate(entry, dur, apex, pitch, decay, onset, bright, width)
+    tonal = {k: v for k, v in zip(TONAL_ORDER, (decay, onset, bright, width)) if v is not None}
+    return _apply(entry, run, dur, apex, pitch, tonal)
