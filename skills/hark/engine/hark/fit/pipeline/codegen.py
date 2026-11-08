@@ -54,22 +54,25 @@ _LICENCE = ("A fit derives from its recording: keep the source's attribution and
 # ---------------------------------------------------------------- model literal
 
 
+_INF = {math.inf: "float('inf')", -math.inf: "float('-inf')"}
+
+
+def _float_text(v: Any) -> str:
+    f = float(v)
+    return "float('nan')" if math.isnan(f) else _INF.get(f, repr(f))
+
+
+_SCALARS = (
+    ((bool, np.bool_), lambda v: "True" if v else "False"),
+    ((int, np.integer), lambda v: str(int(v))),
+    ((float, np.floating), _float_text),
+    ((str, type(None)), repr),
+)
+
+
 def _scalar(v: Any) -> str | None:
     """Source text of a scalar, or None when v is not a scalar."""
-    if isinstance(v, (bool, np.bool_)):
-        return "True" if v else "False"
-    if isinstance(v, (int, np.integer)):
-        return str(int(v))
-    if isinstance(v, (float, np.floating)):
-        f = float(v)
-        if math.isnan(f):
-            return "float('nan')"
-        if math.isinf(f):
-            return "float('inf')" if f > 0 else "float('-inf')"
-        return repr(f)
-    if v is None or isinstance(v, str):
-        return repr(v)
-    return None
+    return next((text(v) for types, text in _SCALARS if isinstance(v, types)), None)
 
 
 def _wrap(items: list, ind: int) -> str:
@@ -117,17 +120,23 @@ def _dict(d: dict, ind: int) -> str:
     return "\n".join(out)
 
 
+def _container(v: Any, ind: int) -> str:
+    write = next((fn for types, fn in _CONTAINERS if isinstance(v, types)), None)
+    if write is None:
+        raise TypeError(f"literal: cannot write a value of type {type(v).__name__}")
+    return write(v, ind)
+
+
 def _value(v: Any, ind: int) -> str:
     s = _scalar(v)
-    if s is not None:
-        return s
-    if isinstance(v, dict):
-        return _dict(v, ind)
-    if isinstance(v, np.ndarray):
-        return _seq(v.tolist(), ind)
-    if isinstance(v, (list, tuple)):
-        return _seq(v, ind)
-    raise TypeError(f"literal: cannot write a value of type {type(v).__name__}")
+    return s if s is not None else _container(v, ind)
+
+
+_CONTAINERS = (
+    (dict, _dict),
+    (np.ndarray, lambda v, ind: _seq(v.tolist(), ind)),
+    ((list, tuple), _seq),
+)
 
 
 def literal(model: dict, name: str = "MODEL") -> str:
@@ -142,37 +151,45 @@ def _norm(p: str) -> str:
     return os.path.normcase(os.path.abspath(p))
 
 
+def _registry_files(entry: dict) -> list:
+    return list(entry.get("forge") or []) + list(entry.get("bench") or [])
+
+
+def _find_category(reg: dict, want: str) -> str | None:
+    cats = reg.get("categories", {}).items()
+    return next((cat for cat, entry in cats if any(_norm(f) == want for f in _registry_files(entry))), None)
+
+
 def _category_of(source: str | None) -> str | None:
     if not source:
         return None
     try:
         from hark.forge.engine import refsets
 
-        reg = refsets.load()
-        want = _norm(source)
-        for cat, entry in reg.get("categories", {}).items():
-            files = list(entry.get("forge") or []) + list(entry.get("bench") or [])
-            if any(_norm(f) == want for f in files):
-                return cat
+        return _find_category(refsets.load(), _norm(source))
     except Exception:
         return None
-    return None
+
+
+def _load_or_none(recipes: ModuleType, name: str) -> ModuleType | None:
+    try:
+        return recipes.load(name)
+    except Exception:
+        return None
+
+
+def _recipe_target(mod: ModuleType, category: str) -> tuple[str, list]:
+    targets = getattr(mod, "TARGETS", None)
+    target = targets[category] if isinstance(targets, dict) and category in targets else mod.TARGET
+    return target, list(getattr(mod, "ALTS", None) or [])
 
 
 def _recipe_words(category: str) -> tuple[str, list] | None:
     from hark.forge import recipes
 
-    for name in recipes.names():
-        try:
-            mod = recipes.load(name)
-        except Exception:
-            continue
-        if getattr(mod, "REFSET", None) != category:
-            continue
-        targets = getattr(mod, "TARGETS", None)
-        target = targets[category] if isinstance(targets, dict) and category in targets else mod.TARGET
-        return target, list(getattr(mod, "ALTS", None) or [])
-    return None
+    mods = (_load_or_none(recipes, n) for n in recipes.names())
+    mod = next((m for m in mods if m is not None and getattr(m, "REFSET", None) == category), None)
+    return None if mod is None else _recipe_target(mod, category)
 
 
 def _category_words(category: str) -> str | None:
@@ -289,29 +306,43 @@ if __name__ == "__main__":
 '''
 
 
+def _critic(model: dict, source: str | None, target: str | None, alts: list | None,
+            refset: str | None) -> tuple[str, list, str | None]:
+    """TARGET, ALTS and REFSET: the given values, else the critic's words."""
+    character = (model.get("fit_engine") or {}).get("character")
+    t, a, cat = critic_words(source, refset, character)
+    return target or t, (a if alts is None else list(alts)), refset or cat
+
+
+def _header(target: str, alts: list, refset: str | None, refs: list, kind: str) -> list:
+    out = ["", "import numpy as np", "", "import hark.fit as _hark_fit", "", f"TARGET = {target!r}",
+           f"ALTS = {alts!r}"]
+    if refset:
+        out.append(f"REFSET = {refset!r}  # the refset category of the critic's default references")
+    return out + [f"REFS = {refs!r}", f"KIND = {kind!r}"]
+
+
+def _defaults_line(ident: dict) -> str:
+    defaults = ", ".join(f"{k!r}: {_value(v, 0)}" for k, v in ident.items())
+    return "DEFAULTS = {" + defaults + "}  # these values re-render the fit"
+
+
+def _model_parts(model: dict) -> tuple[str, dict, dict]:
+    """(kind, knob table, identity knob values) of a model."""
+    from hark.fit.pipeline.render import identity, kind_of, knobs_of
+
+    return kind_of(model), knobs_of(model), identity(model)
+
+
 def to_recipe(model: dict, name: str = "fitted", source: str | None = None, quality: dict | None = None,
               floor: dict | None = None, target: str | None = None, alts: list | None = None,
               refset: str | None = None, refs: list | None = None, licence: str | None = None) -> str:
     """The full source text of a recipe module."""
-    from hark.fit.pipeline.render import identity, kind_of, knobs_of
-
-    kind = kind_of(model)
-    knobs = knobs_of(model)
-    character = (model.get("fit_engine") or {}).get("character")
-    t, a, cat = critic_words(source, refset, character)
-    target = target or t
-    alts = a if alts is None else list(alts)
-    refset = refset or cat
+    target, alts, refset = _critic(model, source, target, alts, refset)
+    kind, knobs, ident = _model_parts(model)
     doc = _docstring(name, model, kind, source, refset, quality, floor, licence, next(iter(knobs), None))
-    out = ['"""' + doc, '"""', "", "import numpy as np", "", "import hark.fit as _hark_fit", "",
-           f"TARGET = {target!r}", f"ALTS = {alts!r}"]
-    if refset:
-        out.append(f"REFSET = {refset!r}  # the refset category of the critic's default references")
-    out += [f"REFS = {_refs_for(source, refs)!r}", f"KIND = {kind!r}"]
-    out += _space_lines(knobs)
-    defaults = ", ".join(f"{k!r}: {_value(v, 0)}" for k, v in identity(model).items())
-    out.append("DEFAULTS = {" + defaults + "}  # these values re-render the fit")
-    out.append(literal(model))
+    out = ['"""' + doc, '"""'] + _header(target, alts, refset, _refs_for(source, refs), kind)
+    out += _space_lines(knobs) + [_defaults_line(ident), literal(model)]
     return "\n".join(out) + _BODY.replace("__WAV__", repr(name + ".wav"))
 
 
