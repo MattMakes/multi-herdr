@@ -868,21 +868,18 @@ fn pr_creates_the_pull_request_and_writes_the_section_of_the_task() {
 }
 
 #[test]
-fn pr_is_not_applicable_when_the_task_landed_no_commit_the_base_lacks() {
+fn pr_is_not_applicable_when_the_worktree_has_no_commit() {
     let mut w = World::new(&[StepName::Land, StepName::Pr], true);
     let state = fake_gh(&w);
-    // A research task: its worktree holds no commit beyond the base.
+    // A research task: its worktree holds no commit since the claim, so
+    // nothing lands and the PR needs nothing from it (video-lessons T-15).
     let id = w.claimed("opus", |t| t.check_none = true);
     finish::worktree_new(&mut w.store, &w.tools.git, &id, "feat").unwrap();
     let r = w.finish(&id);
     assert!(r.complete, "{r:?}");
-    assert_eq!(step(&r, "land").status, "passed", "{r:?}");
-    assert_eq!(w.worktree().landed_commit.as_deref(), Some(w.base.as_str()));
+    assert_eq!(step(&r, "land").status, "not_applicable", "{r:?}");
     assert_eq!(step(&r, "pr").status, "not_applicable", "{r:?}");
-    assert_eq!(
-        note(&r, "pr"),
-        "the task landed no commit that main lacks, so it needs no pull request"
-    );
+    assert_eq!(note(&r, "pr"), "no commits");
     assert!(
         gh_calls(&state).is_empty(),
         "no gh call: {:?}",
@@ -894,27 +891,22 @@ fn pr_is_not_applicable_when_the_task_landed_no_commit_the_base_lacks() {
 fn pr_writes_no_section_for_a_task_that_landed_no_commit_of_its_own() {
     let mut w = World::new(&[StepName::Land, StepName::Pr], true);
     let state = fake_gh(&w);
-    let (first, path) = w.task(None, "feature.txt");
-    let head = git(&path, &["rev-parse", "HEAD"]);
-    view(&state, "", &head);
+    // 2 tasks make the same change from the same run branch tip. The 2nd
+    // rebase drops its commit, so it lands at the 1st task's commit.
+    let (first, path) = w.task(None, "same.txt");
+    let (second, _) = w.task(None, "same.txt");
+    view(&state, "", &git(&path, &["rev-parse", "HEAD"]));
     assert!(w.finish(&first).complete);
     let calls = gh_calls(&state).len();
-    // A gate task: its worktree starts at the first land and adds nothing,
-    // so it lands at the same commit.
-    let second = w.claimed("opus", |t| t.check_none = true);
-    finish::worktree_new(&mut w.store, &w.tools.git, &second, "gate").unwrap();
     let r = w.finish(&second);
     assert!(r.complete, "{r:?}");
+    assert_eq!(step(&r, "land").status, "passed", "{r:?}");
     assert_eq!(step(&r, "pr").status, "not_applicable", "{r:?}");
     assert_eq!(
         note(&r, "pr"),
         "the task landed no commit of its own, so the PR has no section for it"
     );
-    assert_eq!(
-        gh_calls(&state).len(),
-        calls,
-        "no gh call for the gate task"
-    );
+    assert_eq!(gh_calls(&state).len(), calls, "no gh call for the 2nd task");
 }
 
 #[test]

@@ -446,6 +446,7 @@ const EXEMPT_FROM_TEXT_ONLY: &[&str] = &[
     "blender-time-of-day",
     "blender-video-editing",
     "blender-weather-fx",
+    "hark",
     "one-page-design",
     "skill-creator",
     "skill-intake",

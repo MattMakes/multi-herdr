@@ -407,7 +407,9 @@ fn a_worker_claims_makes_a_worktree_and_finishes() {
             ("code-sweep", "not_applicable"),
             ("complexity-sweep", "not_applicable"),
             ("recheck", "not_applicable"),
-            ("land", "passed"),
+            // The worktree has no commit, so nothing lands and nothing is
+            // pushed (video-lessons T-15).
+            ("land", "not_applicable"),
             ("pr", "not_applicable"),
             ("cleanup", "passed"),
         ]
@@ -419,7 +421,7 @@ fn a_worker_claims_makes_a_worktree_and_finishes() {
         .collect();
     assert_eq!(rows.len(), 7);
     assert_eq!(&rows[0][..4], ["1", "check", "not_applicable", "not"]);
-    assert_eq!(&rows[4][..3], ["5", "land", "passed"]);
+    assert_eq!(&rows[4][..3], ["5", "land", "not_applicable"]);
     assert_eq!(rows[6][..3], ["7", "cleanup", "passed"]);
     let by_task = w.ok(&["ledger", "steps", "T-1", "--json"]);
     assert_eq!(json(&by_task).as_array().unwrap().len(), 7);
