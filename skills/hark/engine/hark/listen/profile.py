@@ -131,18 +131,17 @@ def _round_metrics(m: Mapping[str, Any]) -> dict:
 # ================================================================ media checks
 
 
+def _probe_problem(info: Mapping[str, Any]) -> str | None:
+    if info.get("probe_error"):
+        return f"not a readable audio or video file ({str(info['probe_error'])[:160]})"
+    return None if info.get("codec") else "no audio track"
+
+
 def media_problem(path: str) -> str | None:
     """Why a path cannot be profiled (not found, folder, unreadable, no audio), or None."""
     if not os.path.exists(path):
         return "not found"
-    if os.path.isdir(path):
-        return "a folder, not a file"
-    info = audio.probe(path)
-    if info.get("probe_error"):
-        return f"not a readable audio or video file ({str(info['probe_error'])[:160]})"
-    if not info.get("codec"):
-        return "no audio track"
-    return None
+    return "a folder, not a file" if os.path.isdir(path) else _probe_problem(audio.probe(path))
 
 
 def unscorable(metrics: Mapping[str, Any]) -> str | None:
@@ -319,24 +318,40 @@ def _arc(mt: np.ndarray, ml: np.ndarray, d: float, I: float) -> list[float | Non
     return out
 
 
+def _series(ap: dict, name: str) -> tuple[np.ndarray, np.ndarray]:
+    return np.asarray(ap[name][0]), np.asarray(ap[name][1])
+
+
+def _mean_where(ml: np.ndarray, sel: np.ndarray, I: float) -> float | None:
+    return energy_mean(ml[sel]) - I if sel.any() else None
+
+
+def _intro_end(ap: dict, I: float, d: float) -> dict:
+    mt, ml = _series(ap, "momentary")
+    if len(mt) <= 2:
+        return {}
+    span = max(0.1 * d, 0.5)
+    return {"intro_lu": _mean_where(ml, mt <= span, I), "end_lu": _mean_where(ml, mt >= d - span, I)}
+
+
+def _peak_pos(ap: dict, d: float) -> dict:
+    st, sl = _series(ap, "short")
+    return {"peak_pos": float(st[int(np.argmax(sl))] / d)} if len(st) >= 2 and d >= 6 else {}
+
+
+def _crest(m: Mapping[str, Any], I: float) -> dict:
+    if m.get("short_term_max_lufs") is None or m.get("lufs") is None:
+        return {}
+    return {"crest_lu": m["short_term_max_lufs"] - I}
+
+
 def _loudness_metrics(ap: dict, I: float, d: float) -> dict:
     m = ap["measure"]
-    mt, ml = np.asarray(ap["momentary"][0]), np.asarray(ap["momentary"][1])
-    st, sl = np.asarray(ap["short"][0]), np.asarray(ap["short"][1])
-    out: dict[str, Any] = {"lufs_i": m.get("lufs"), "true_peak": m.get("true_peak_dbtp"), "lra": m.get("lra_lu"),
-                           "correlation": m.get("correlation"), "brightness_hz": m.get("brightness_hz")}
-    if m.get("short_term_max_lufs") is not None and m.get("lufs") is not None:
-        out["crest_lu"] = m["short_term_max_lufs"] - I
-    if len(mt) > 2:
-        span = max(0.1 * d, 0.5)
-        out["intro_lu"] = energy_mean(ml[mt <= span]) - I if (mt <= span).any() else None
-        out["end_lu"] = energy_mean(ml[mt >= d - span]) - I if (mt >= d - span).any() else None
-    if len(st) >= 2 and d >= 6:
-        out["peak_pos"] = float(st[int(np.argmax(sl))] / d)
     bands = m.get("bands_db") or {}
-    for b in ("sub", "low", "lowmid", "mid", "presence", "air"):
-        out[f"band_{b}"] = bands.get(b)
-    return out
+    return {"lufs_i": m.get("lufs"), "true_peak": m.get("true_peak_dbtp"), "lra": m.get("lra_lu"),
+            "correlation": m.get("correlation"), "brightness_hz": m.get("brightness_hz"), **_crest(m, I),
+            **_intro_end(ap, I, d), **_peak_pos(ap, d),
+            **{f"band_{b}": bands.get(b) for b in ("sub", "low", "lowmid", "mid", "presence", "air")}}
 
 
 def _tail(ap: dict, t_end: float) -> float | None:
@@ -351,9 +366,31 @@ def _tail(ap: dict, t_end: float) -> float | None:
     return t_end - on[best] if strength[best] >= np.percentile(strength, 75) else None
 
 
+def _longest_run(flags: np.ndarray) -> int:
+    run = best = 0
+    for g in flags:
+        run = run + 1 if g else 0
+        best = max(best, run)
+    return best
+
+
+def _max_gap(ft: np.ndarray, fl: np.ndarray, first: float, t_end: float, I: float) -> float:
+    rng = (ft >= first) & (ft <= t_end)
+    return _longest_run(fl[rng] < I - 30) * FAST[1] if rng.sum() > 1 else 0.0
+
+
+def _fade_final(ap: dict, I: float, t_end: float) -> dict:
+    mt, ml = _series(ap, "momentary")
+    full = mt[(ml >= I - 6) & (mt <= t_end)]
+    fin = ml[(mt >= t_end - 3) & (mt <= t_end)]
+    out = {"final_lu": float(fin.max()) - I if len(fin) else None}
+    if len(full):
+        out["fade_s"] = max(0.0, t_end - float(full[-1]) - 0.2)
+    return out
+
+
 def _ending_metrics(ap: dict, I: float, d: float) -> dict:
-    ft, fl = np.asarray(ap["fast"][0]), np.asarray(ap["fast"][1])
-    mt, ml = np.asarray(ap["momentary"][0]), np.asarray(ap["momentary"][1])
+    ft, fl = _series(ap, "fast")
     e2 = np.asarray(ap["e2"])
     out: dict[str, Any] = {}
     loud, aud = np.nonzero(fl > I - 20)[0], np.nonzero(fl > I - 30)[0]
@@ -362,39 +399,40 @@ def _ending_metrics(ap: dict, I: float, d: float) -> dict:
     if not len(aud):
         return out
     t_end = min(d, _edge(e2, float(ft[aud[-1]]), False))
-    out["end_silence_s"] = max(0.0, d - t_end)
-    full = mt[(ml >= I - 6) & (mt <= t_end)]
-    if len(full):
-        out["fade_s"] = max(0.0, t_end - float(full[-1]) - 0.2)
-    rng = (ft >= (out.get("first_sound_s") or 0.0)) & (ft <= t_end)
-    gap = fl[rng] < I - 30
-    run = best = 0
-    for g in gap:
-        run = run + 1 if g else 0
-        best = max(best, run)
-    out["max_gap_s"] = best * FAST[1] if rng.sum() > 1 else 0.0
-    fin = ml[(mt >= t_end - 3) & (mt <= t_end)]
-    out["final_lu"] = float(fin.max()) - I if len(fin) else None
-    out["tail_s"] = _tail(ap, t_end)
+    out.update(end_silence_s=max(0.0, d - t_end), **_fade_final(ap, I, t_end),
+               max_gap_s=_max_gap(ft, fl, out.get("first_sound_s") or 0.0, t_end, I), tail_s=_tail(ap, t_end))
     return out
+
+
+def _per_s(n: int, d: float) -> float | None:
+    return n / d if d else None
+
+
+def _rates(ap: dict, hits: list[float], stops: list, d: float) -> dict:
+    return {"onset_rate": _per_s(len(ap["onsets"]), d), "hit_rate": _per_s(len(hits), d),
+            "stopdowns_min": len(stops) / d * 60 if d >= 6 else None,
+            "tempo": ap["tempo"] if len(ap["beats"]) > 4 else None}
+
+
+def integrated(m: Mapping[str, Any]) -> float:
+    """The integrated loudness, or -70 when unknown."""
+    return m.get("lufs") if m.get("lufs") is not None else -70.0
+
+
+def is_mono(m: Mapping[str, Any], I: float) -> bool:
+    return m.get("side_to_mid_db") is None and I > SILENT_LUFS
 
 
 def film_core(ap: dict, hits: list[float], stops: list, d: float) -> tuple[dict, list[float] | None]:
     """The audio metrics and the arc of one film (P6)."""
     m = ap["measure"]
-    I = m.get("lufs") if m.get("lufs") is not None else -70.0
-    out = {**_loudness_metrics(ap, I, d), **_ending_metrics(ap, I, d)}
-    mono = m.get("side_to_mid_db") is None and I > SILENT_LUFS
-    out["side_to_mid_db"] = MONO_DB if mono else m.get("side_to_mid_db")
-    out["onset_rate"] = len(ap["onsets"]) / d if d else None
-    out["hit_rate"] = len(hits) / d if d else None
-    out["stopdowns_min"] = len(stops) / d * 60 if d >= 6 else None
-    out["tempo"] = ap["tempo"] if len(ap["beats"]) > 4 else None
+    I = integrated(m)
+    out = {**_loudness_metrics(ap, I, d), **_ending_metrics(ap, I, d), **_rates(ap, hits, stops, d),
+           "side_to_mid_db": MONO_DB if is_mono(m, I) else m.get("side_to_mid_db")}
     if d < MIN_FILM_S:
         out.update({k: None for k in SHAPE_METRICS})
-    mt = np.asarray(ap["momentary"][0])
-    arc = _arc(mt, np.asarray(ap["momentary"][1]), d, I) if len(mt) > 2 else None
-    return out, arc
+    mt, ml = _series(ap, "momentary")
+    return out, _arc(mt, ml, d, I) if len(mt) > 2 else None
 
 
 # ================================================================ P7 sync
@@ -483,35 +521,46 @@ def _film_summary(path: str, r: dict) -> str:
     return ", ".join(parts) + "."
 
 
+def _picture(path: str, video: str | None, ap: dict, hits: list[float], d: float) -> dict:
+    """The picture source, its events, the sync metrics and their chance values."""
+    t1 = time.perf_counter()
+    src = _picture_source(path, video)
+    if not src:
+        return {"src": None, "fps": None, "V": [], "strength": [], "chances": {k: None for k in SYNC_KEYS},
+                "sync": {k: None for k in ("cut_rate",) + SYNC_KEYS}, "seconds": time.perf_counter() - t1}
+    fps, V, strength = picture_events(src, d)
+    sync, chances = sync_metrics(V, ap, hits, fps, d)
+    return {"src": src, "fps": fps, "V": V, "strength": strength, "sync": sync, "chances": chances,
+            "seconds": time.perf_counter() - t1}
+
+
+def _events(ap: dict, hits: list[float], stops: list, pic: dict, windows: list | None) -> dict:
+    return {"hits": hits, "visual": pic["V"], "visual_strength": pic["strength"], "stopdowns": stops,
+            "beats": [round(b, 3) for b in ap["beats"]], "music_windows": windows, "onsets_n": len(ap["onsets"])}
+
+
+def _media_info(path: str, ap: dict) -> dict:
+    info = audio.probe(path)
+    m = ap["measure"]
+    return {"codec": info.get("codec"), "lossy": bool(info.get("lossy")), "mono": is_mono(m, integrated(m))}
+
+
 def film_metrics(path: str, video: str | None = None, use_ast: bool = True) -> dict:
     """Every profile metric of one film or soundtrack."""
     t0 = time.perf_counter()
     ap = audio_pass(path)
     d = ap["duration"]
-    m0 = ap["measure"]
-    I = m0.get("lufs") if m0.get("lufs") is not None else -70.0
-    e2 = np.asarray(ap["e2"])
-    hits = salient_hits(ap["fast"], I, ap["env"], e2)
+    hits = salient_hits(ap["fast"], integrated(ap["measure"]), ap["env"], np.asarray(ap["e2"]))
     stops = stopdowns(ap["fast"])
     metrics, arc = film_core(ap, hits, stops, d)
     t_audio = time.perf_counter() - t0
     shares, windows, t_ast = _music(path, d, use_ast)
-    metrics.update(shares)
-    t1 = time.perf_counter()
-    src = _picture_source(path, video)
-    fps, V, strength = picture_events(src, d) if src else (None, [], [])
-    sync, chances = sync_metrics(V, ap, hits, fps, d) if src else ({k: None for k in ("cut_rate",) + SYNC_KEYS},
-                                                                     {k: None for k in SYNC_KEYS})
-    metrics.update(sync)
-    info = audio.probe(path)
-    r = {"path": path, "video": src, "duration": round(d, 3), "fps": fps, "codec": info.get("codec"),
-         "lossy": bool(info.get("lossy")), "mono": m0.get("side_to_mid_db") is None and I > SILENT_LUFS,
-         "short": d < MIN_FILM_S, "metrics": _round_metrics(metrics), "chance": chances, "arc": arc,
-         "events": {"hits": hits, "visual": V, "visual_strength": strength, "stopdowns": stops,
-                    "beats": [round(b, 3) for b in ap["beats"]], "music_windows": windows,
-                    "onsets_n": len(ap["onsets"])},
-         "timing": {"audio": round(t_audio, 2), "audioset": round(t_ast, 2),
-                    "picture": round(time.perf_counter() - t1, 2)}}
+    pic = _picture(path, video, ap, hits, d)
+    metrics.update(**shares, **pic["sync"])
+    r = {"path": path, "video": pic["src"], "duration": round(d, 3), "fps": pic["fps"], **_media_info(path, ap),
+         "short": d < MIN_FILM_S, "metrics": _round_metrics(metrics), "chance": pic["chances"], "arc": arc,
+         "events": _events(ap, hits, stops, pic, windows),
+         "timing": {"audio": round(t_audio, 2), "audioset": round(t_ast, 2), "picture": round(pic["seconds"], 2)}}
     r["seconds"] = round(time.perf_counter() - t0, 2)
     r["summary"] = _film_summary(path, r)
     return r
@@ -549,17 +598,20 @@ def aggregate(films: Sequence[Mapping]) -> dict:
             "arc": _arc_stats([f.get("arc") for f in films])}
 
 
+def _styles_file(p: Path) -> Any:
+    if not p.exists():
+        raise ProfileError(f"styles file {p} does not exist")
+    try:
+        return json.loads(p.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise ProfileError(f"styles file {p} is not valid JSON: {exc}") from exc
+
+
 def read_styles(styles: Any) -> Any:
     """A styles option: None, a list, a dict, or a JSON file path holding one of them."""
     if styles is None or isinstance(styles, (list, dict)):
         return styles
-    p = Path(str(styles))
-    if not p.exists():
-        raise ProfileError(f"styles file {p} does not exist")
-    try:
-        data = json.loads(p.read_text(encoding="utf-8"))
-    except json.JSONDecodeError as exc:
-        raise ProfileError(f"styles file {p} is not valid JSON: {exc}") from exc
+    data = _styles_file(Path(str(styles)))
     if not isinstance(data, (list, dict)):
         raise ProfileError("styles must be a JSON list or object")
     return data

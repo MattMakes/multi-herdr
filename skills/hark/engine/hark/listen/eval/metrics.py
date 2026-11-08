@@ -316,15 +316,22 @@ def lead_stats(leads: Sequence[float]) -> dict:
             "lead_range_ms": [round(float(ms.min()), 1), round(float(ms.max()), 1)]}
 
 
+def _segment_class(start: float, unlabelled: Sequence[tuple[float, float]],
+                   skips: Sequence[tuple[float, float]]) -> str:
+    if _inside(start, unlabelled):
+        return "unlabelled"
+    return "skip" if _inside(start, skips) else "judged"
+
+
 def key_report(segments: Sequence[tuple[float, float]], attacks: Sequence[float],
                unlabelled: Sequence[tuple[float, float]] = (), skips: Sequence[tuple[float, float]] = ()) -> dict:
     """Hits, distinct presses, lead stats, unlabelled and skip-range segments (E12)."""
-    n_unlab = sum(_inside(s[0], unlabelled) for s in segments)
-    n_skip = sum(_inside(s[0], skips) and not _inside(s[0], unlabelled) for s in segments)
-    judged = [key_hit(s, attacks) for s in segments if not (_inside(s[0], unlabelled) or _inside(s[0], skips))]
+    kinds = [_segment_class(s[0], unlabelled, skips) for s in segments]
+    judged = [key_hit(s, attacks) for s, k in zip(segments, kinds) if k == "judged"]
     hits = [(idx, lead) for ok, idx, lead in judged if ok]
     return {"segments": len(segments), "hits": len(hits), "presses_hit": len({i for i, _ in hits}),
-            **lead_stats([lead for _, lead in hits]), "unlabelled": n_unlab, "in_skip": n_skip}
+            **lead_stats([lead for _, lead in hits]), "unlabelled": kinds.count("unlabelled"),
+            "in_skip": kinds.count("skip")}
 
 
 def _hit_events(seg: Mapping, events: Sequence[float]) -> list[float]:

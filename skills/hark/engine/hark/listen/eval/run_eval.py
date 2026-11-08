@@ -309,22 +309,26 @@ def vocab_row(name: str, m: Mapping) -> str:
             f"tag {_r(m['tagging']['accuracy'])} AUC {_r(m['auc'])} strict {_r(m['auc_strict'])}")
 
 
+def heldout_result(held: ds.Library, A: np.ndarray, queries: Mapping, v: voc.Vocab) -> dict:
+    """Every vocabulary variant and the band table of the shipped one on the held-out library."""
+    texts, parts = query_columns(queries)
+    classes = class_ids(queries)
+    variants, note = heldout_variants(v)
+    scored = {name: library_metrics(held, *heldout_scores(vocab or v, A, texts, raw=vocab is None), parts, classes)
+              for name, vocab in variants}
+    result = {"n": len(held.paths), "with_class": sum(bool(c) for c in held.classes), "vocabularies": scored,
+              "bands": bands_of(held, heldout_scores(v, A, texts)[1], parts, classes)}
+    return {**result, "note": note} if note else result
+
+
 def cmd_heldout(args, out: Path) -> None:
     root = ds.location("HARK_EVAL_ASSETS")
     queries = ds.read_label("queries.json")
     held = ds.heldout_library(root, ds.read_label("heldout_labels.json"))
-    texts, parts = query_columns(queries)
-    A = embed_set(held.paths, voc.PAD)
     v = voc.get()
-    variants, note = heldout_variants(v)
-    scored = {name: library_metrics(held, *heldout_scores(vocab or v, A, texts, raw=vocab is None), parts,
-                                    class_ids(queries)) for name, vocab in variants}
-    mood = mood_check(v, root, queries)
-    result = {"n": len(held.paths), "with_class": sum(bool(c) for c in held.classes), "vocabularies": scored,
-              "bands": bands_of(held, heldout_scores(v, A, texts)[1], parts, class_ids(queries)), "mood": mood}
-    if note:
-        result["note"] = note
-    rows = [vocab_row(n, m) for n, m in scored.items()]
+    result = heldout_result(held, embed_set(held.paths, voc.PAD), queries, v)
+    mood = result["mood"] = mood_check(v, root, queries)
+    rows = [vocab_row(n, m) for n, m in result["vocabularies"].items()]
     rows.append(f"mood negative {mood['negative']}/{mood['n']} chance {_r(mood['chance'])}")
     write_result(out, "heldout.json", result, rows)
 

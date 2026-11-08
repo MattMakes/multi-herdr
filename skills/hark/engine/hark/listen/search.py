@@ -94,25 +94,39 @@ def _band_counts(rows: Sequence[dict]) -> dict[str, int]:
     return {b: sum(r["verdict"] == b for r in live) for b in voc.VERDICT_THRESHOLDS_Z}
 
 
-def _rank_summary(query: str, rows: list[dict], listed: list[dict], skipped: list[dict]) -> str:
+def _best_text(listed: list[dict]) -> str:
     live = [r for r in listed if not r["near_silent"]][:3]
-    best = ", ".join(f"{r['name']} (z {voc.zf(r['z'])}, {r['verdict']})" for r in live) or "none (all near-silent)"
-    counts = _band_counts(rows)
-    parts = [f"Ranked {len(rows)} files for '{query}'. Best: {best}.",
-             f"Bands: {counts['strong']} strong, {counts['plausible']} plausible, {counts['weak']} weak."]
+    return ", ".join(f"{r['name']} (z {voc.zf(r['z'])}, {r['verdict']})" for r in live) or "none (all near-silent)"
+
+
+def _weak_best_text(listed: list[dict]) -> str | None:
     first = listed[0] if listed else None
-    if first and not first["near_silent"] and first["verdict"] in ("weak", voc.NO_MATCH):
-        how = "only a weak match" if first["verdict"] == "weak" else "not a match"
-        parts.append(f"Even the best is {how}; it sounds more like {first['sounds_most_like']}.")
-    if counts["strong"] > 1:
-        ev = voc.VERDICT_EVIDENCE["strong"]
-        parts.append(f"Held-out precision of strong: the right kind of sound {round(ev['precision_library'] * 100)}%"
-                     f", the exact variant {round(ev['precision_library_strict'] * 100)}% (a close variant, such as a "
-                     "return key for a space bar, counts as wrong in the strict number).")
-    n_silent = sum(r["near_silent"] for r in rows)
-    if n_silent:
-        parts.append(f"{n_silent} near-silent file(s) ranked last; their scores mean nothing.")
-    return " ".join(parts) + _skipped_note(skipped)
+    if not first or first["near_silent"] or first["verdict"] not in ("weak", voc.NO_MATCH):
+        return None
+    how = "only a weak match" if first["verdict"] == "weak" else "not a match"
+    return f"Even the best is {how}; it sounds more like {first['sounds_most_like']}."
+
+
+def _strong_text(n_strong: int) -> str | None:
+    if n_strong <= 1:
+        return None
+    ev = voc.VERDICT_EVIDENCE["strong"]
+    return (f"Held-out precision of strong: the right kind of sound {round(ev['precision_library'] * 100)}%"
+            f", the exact variant {round(ev['precision_library_strict'] * 100)}% (a close variant, such as a "
+            "return key for a space bar, counts as wrong in the strict number).")
+
+
+def _silent_text(rows: list[dict]) -> str | None:
+    n = sum(r["near_silent"] for r in rows)
+    return f"{n} near-silent file(s) ranked last; their scores mean nothing." if n else None
+
+
+def _rank_summary(query: str, rows: list[dict], listed: list[dict], skipped: list[dict]) -> str:
+    counts = _band_counts(rows)
+    parts = [f"Ranked {len(rows)} files for '{query}'. Best: {_best_text(listed)}.",
+             f"Bands: {counts['strong']} strong, {counts['plausible']} plausible, {counts['weak']} weak.",
+             _weak_best_text(listed), _strong_text(counts["strong"]), _silent_text(rows)]
+    return " ".join(p for p in parts if p) + _skipped_note(skipped)
 
 
 def _skipped_note(skipped: Sequence[dict]) -> str:

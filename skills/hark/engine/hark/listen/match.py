@@ -94,16 +94,19 @@ def _evidence_text(best: dict) -> str:
             "for example a return key heard for a space bar).")
 
 
+def _like_text(rows: list[dict], closest: list[dict]) -> str:
+    queries = {r["query"] for r in rows}
+    like = [c for c in closest if c["term"] not in queries]
+    if not like:
+        return ""
+    return "It sounds most like: " + ", ".join(f"'{c['term']}' (z {voc.zf(c['z'])})" for c in like) + "."
+
+
 def build_summary(path: str, start: float | None, end: float | None, rows: list[dict], closest: list[dict],
                   peak: float) -> str:
     """The match paragraph (surfaces-mcp M3.3)."""
-    parts = [f"{os.path.basename(path)}{segment_text(start, end)}: " + "; ".join(_row_text(r) for r in rows) + "."]
-    parts.append(_choice_text(rows))
-    queries = {r["query"] for r in rows}
-    like = [c for c in closest if c["term"] not in queries]
-    if like:
-        parts.append("It sounds most like: " + ", ".join(f"'{c['term']}' (z {voc.zf(c['z'])})" for c in like) + ".")
-    parts.append(_evidence_text(rows[0]))
+    parts = [f"{os.path.basename(path)}{segment_text(start, end)}: " + "; ".join(_row_text(r) for r in rows) + ".",
+             _choice_text(rows), _like_text(rows, closest), _evidence_text(rows[0])]
     text = " ".join(p for p in parts if p)
     if peak < NEAR_SILENT_DB:
         text = f"Warning: the input is near-silent (peak {peak:.0f} dBFS), so these scores mean nothing. " + text

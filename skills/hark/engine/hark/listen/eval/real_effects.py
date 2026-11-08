@@ -60,12 +60,11 @@ def way_stats(Z: np.ndarray, C: np.ndarray, filed: Sequence[set[int]], cheap: np
     """Own-job verdicts, AUC own against other jobs, other jobs passed and cheap-synth wins (Z, C: sounds x jobs)."""
     rows = [_own_job(i, jobs, Z, C, cheap, scale) for i, jobs in enumerate(filed) if jobs]
     own_z = [r["z"] for r in rows]
-    neg = [float(z) for r in rows for z in r["others"]]
+    neg = np.concatenate([r["others"] for r in rows]) if rows else np.zeros(0)
     passed = [float(np.mean(r["others"] >= PASS_Z)) for r in rows if len(r["others"])]
-    return {"n": len(rows), "verdicts": verdict_counts(own_z),
-            "median_z": round(float(np.median(own_z)), 2) if own_z else None,
-            "auc": mt.auc_pairwise(own_z, neg), "other_jobs_passed": mt.mean_or_none(passed),
-            "cheap_won": sum(r["cheap"] for r in rows)}
+    median = round(float(np.median(own_z)), 2) if own_z else None
+    return {"n": len(rows), "verdicts": verdict_counts(own_z), "median_z": median, "auc": mt.auc_pairwise(own_z, neg),
+            "other_jobs_passed": mt.mean_or_none(passed), "cheap_won": sum(r["cheap"] for r in rows)}
 
 
 def best_over(Zt: np.ndarray, Ct: np.ndarray, groups: Sequence[Sequence[int]]) -> tuple[np.ndarray, np.ndarray]:
