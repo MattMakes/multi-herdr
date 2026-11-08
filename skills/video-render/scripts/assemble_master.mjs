@@ -14,7 +14,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
-import { AAC_ARGS, UsageError, check, fail, ffmpeg, h264Args, loadTimeline, probe, run } from "./render_frames.mjs";
+import { UsageError, aacArgs, check, fail, ffmpeg, h264Args, loadTimeline, probe, run } from "./render_frames.mjs";
 
 const SCRIPT = fileURLToPath(import.meta.url);
 const SAMPLE_RATE = 48000;
@@ -191,7 +191,7 @@ function inputArgs(root, plan, inputs) {
 
 function ffmpegArgs(root, plan, inputs, out) {
   const graph = filterGraph(plan, inputs.overlays.length);
-  return [...inputArgs(root, plan, inputs), "-filter_complex", graph, ...MAPS, ...h264Args(plan.fps), ...AAC_ARGS, out];
+  return [...inputArgs(root, plan, inputs), "-filter_complex", graph, ...MAPS, ...h264Args(plan.fps), ...aacArgs(), out];
 }
 
 const sceneReport = (inputs, fps) => (s, i) => ({ id: s.id, source: inputs.clips[i], frames: s.frames, transition_out: s.transition.type, transition_sec: s.handle / fps });

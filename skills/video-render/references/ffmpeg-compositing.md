@@ -190,7 +190,8 @@ Notes:
   to video-audio. Do not pad it here.
 - Do not run `loudnorm` on the master. `audio/mix.wav` is already mastered to
   `-14 LUFS` and `-1.0 dBTP`. AAC encoding can raise the true peak by up to
-  about `0.5 dB`. Check the result with `ebur128` (Section 7).
+  `+4 dB` with native `aac`. The scripts prefer macOS `aac_at`. Check the
+  encoded result with `ebur128` (Section 7).
 - Level 4.2 covers `1920x1080` and `1080x1920` at `60 fps`.
 
 ## 7. Verify the master
