@@ -1,7 +1,8 @@
-"""hark timeline unit: timeline, sheet, critique and the video helpers.
+"""The hark timeline unit: timeline, sheet, critique and video.
 
-The package is also callable: ``hark.timeline(path, ...)`` runs ``hark.timeline.timeline.timeline``.
-Names load on first access, so importing the package imports nothing heavy.
+Calling the package itself, ``hark.timeline(path, ...)``, forwards to
+``hark.timeline.timeline.timeline``. Attributes resolve on first use, so a bare
+``import hark.timeline`` stays cheap.
 """
 
 from __future__ import annotations
@@ -10,35 +11,31 @@ import importlib
 import sys
 import types
 
-_LAZY = {
-    "detect_events": "hark.timeline.timeline",
-    "level_envs": "hark.timeline.timeline",
-    "level_peak": "hark.timeline.timeline",
-    "loudness": "hark.timeline.timeline",
-    "music_grid": "hark.timeline.timeline",
-    "read_cues": "hark.timeline.timeline",
-    "sync": "hark.timeline.timeline",
-    "top_accents": "hark.timeline.timeline",
-    "novelty_bounds": "hark.timeline.timeline",
-    "scorecard": "hark.timeline.critique",
-    "real_thresholds": "hark.timeline.critique",
+_SUBMODULES = frozenset({"timeline", "sheet", "video", "critique"})
+
+_EXPORTS = {
+    "timeline": ("detect_events", "level_envs", "level_peak", "loudness", "music_grid",
+                 "read_cues", "sync", "top_accents", "novelty_bounds"),
+    "critique": ("scorecard", "real_thresholds"),
 }
-
-
-class _CallablePackage(types.ModuleType):
-    def __call__(self, *args, **kwargs):
-        from hark.timeline.timeline import timeline as run
-
-        return run(*args, **kwargs)
+_OWNER = {attr: f"{__name__}.{mod}" for mod, attrs in _EXPORTS.items() for attr in attrs}
 
 
 def __getattr__(name: str):
-    target = _LAZY.get(name)
-    if target is None:
-        if name in ("timeline", "sheet", "video", "critique"):
-            return importlib.import_module(f"{__name__}.{name}")
-        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-    return getattr(importlib.import_module(target), name)
+    home = _OWNER.get(name)
+    if home is not None:
+        return getattr(importlib.import_module(home), name)
+    if name in _SUBMODULES:
+        return importlib.import_module(f"{__name__}.{name}")
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
-sys.modules[__name__].__class__ = _CallablePackage
+class _TimelinePackage(types.ModuleType):
+    """Module type whose instances can be called like the timeline function."""
+
+    def __call__(self, *args, **kwargs):
+        entry = importlib.import_module(f"{__name__}.timeline").timeline
+        return entry(*args, **kwargs)
+
+
+sys.modules[__name__].__class__ = _TimelinePackage
