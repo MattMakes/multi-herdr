@@ -1649,7 +1649,11 @@ mod tests {
         let min = |m: u64| Duration::from_secs(m * 60);
         assert_eq!(lock_stale_age(CHECK_TIMEOUT), min(30));
         assert_eq!(lock_stale_age(min(120)), min(130));
-        assert_eq!(lock_stale_age(min(48 * 60)), min(24 * 60 + 10), "capped at 24 h");
+        assert_eq!(
+            lock_stale_age(min(48 * 60)),
+            min(24 * 60 + 10),
+            "capped at 24 h"
+        );
         let w = World::new("true");
         let task_id = w.task_id();
         set_check_timeout(&w.tools.evidence_root, &task_id, min(120)).unwrap();
