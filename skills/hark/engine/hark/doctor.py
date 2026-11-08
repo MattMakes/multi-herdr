@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Any
 
 from hark.core import config, report
+from hark.core.safe import attempt, outcome
 from hark.models import MLMissing, hub, install_command, missing_ml
 
 PACKAGES: dict[str, str] = {
@@ -41,17 +42,14 @@ DATA_FILES = ("listen/vocab.json", "listen/vocab_stats.json", "listen/realness_m
 # ---------------------------------------------------------------- basics
 
 
+def _version(dist: str) -> str:
+    return attempt(importlib.metadata.version, dist, errors=(importlib.metadata.PackageNotFoundError,), default="ok")
+
+
 def _package_state(name: str, dist: str) -> str:
-    try:
-        found = importlib.util.find_spec(name) is not None
-    except (ImportError, ValueError) as exc:
-        return f"MISSING ({type(exc).__name__})"
-    if not found:
-        return "MISSING (ModuleNotFoundError)"
-    try:
-        return importlib.metadata.version(dist)
-    except importlib.metadata.PackageNotFoundError:
-        return "ok"
+    spec, error = outcome(importlib.util.find_spec, name, errors=(ImportError, ValueError))
+    missing = type(error).__name__ if error is not None else "ModuleNotFoundError"
+    return _version(dist) if spec is not None else f"MISSING ({missing})"
 
 
 def packages() -> dict[str, str]:
@@ -295,24 +293,31 @@ def _gather(fetch_missing: bool) -> dict[str, Any]:
     return result
 
 
-def _problems(result: dict) -> tuple[list[str], list[str], list[str]]:
-    fetched = result.get("fetched", {})
-    rows = result["models"]
+def _install_problems(result: dict) -> list[str]:
+    bank_error = result["bank"].get("error")
     problems = _package_problems(result["packages"])
-    if "error" in result["bank"]:
-        problems.append(f"sound bank: {result['bank']['error']}")
+    problems += [f"sound bank: {bank_error}"] if bank_error is not None else []
     problems += _tool_problems({k: result[k] for k in ("ffmpeg", "ffprobe")})
-    problems += [f"data file {Path(config.PKG_DIR).name}/data/{n} missing" for n, ok in result["data_files"].items()
-                 if not ok]
-    problems += [f"{mid}: {msg}" for mid, msg in fetched.items() if msg.startswith("failed")]
-    problems += _folder_problems(rows, fetched)
-    uncached = _uncached(rows, fetched)
-    if uncached and result["offline"]:
-        problems.append(_offline_problem(uncached, result["offline"]))
-    notes = _model_notes(uncached, result["offline"]) + _ml_note()
-    if not shutil.which("agy"):
-        notes.append("agy not found on PATH; the optional LLM critique needs it")
-    return problems, notes, uncached
+    data_dir = f"{Path(config.PKG_DIR).name}/data"
+    return problems + [f"data file {data_dir}/{n} missing" for n, ok in result["data_files"].items() if not ok]
+
+
+def _model_problems(result: dict, uncached: list[str]) -> list[str]:
+    fetched, offline = result.get("fetched", {}), result["offline"]
+    problems = [f"{mid}: {msg}" for mid, msg in fetched.items() if msg.startswith("failed")]
+    problems += _folder_problems(result["models"], fetched)
+    return problems + ([_offline_problem(uncached, offline)] if uncached and offline else [])
+
+
+def _notes(result: dict, uncached: list[str]) -> list[str]:
+    agy = [] if shutil.which("agy") else ["agy not found on PATH; the optional LLM critique needs it"]
+    return _model_notes(uncached, result["offline"]) + _ml_note() + agy
+
+
+def _problems(result: dict) -> tuple[list[str], list[str], list[str]]:
+    uncached = _uncached(result["models"], result.get("fetched", {}))
+    problems = _install_problems(result) + _model_problems(result, uncached)
+    return problems, _notes(result, uncached), uncached
 
 
 def check(load: bool = False, fetch_missing: bool = False) -> dict:

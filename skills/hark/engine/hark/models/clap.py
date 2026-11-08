@@ -25,6 +25,16 @@ _LOCK = threading.RLock()
 _INSTANCE: Clap | None = None
 
 
+def _as_list(arrays: np.ndarray | Sequence[np.ndarray]) -> list[np.ndarray]:
+    single = isinstance(arrays, np.ndarray) and arrays.ndim == 1
+    return [arrays] if single else list(arrays)
+
+
+def _split(rows: np.ndarray, counts: list[int]) -> list[np.ndarray]:
+    bounds = np.cumsum([0] + counts)
+    return [rows[a:b] for a, b in zip(bounds[:-1], bounds[1:])]
+
+
 def native_bf16(torch: Any) -> bool:
     """True only when the CPU has native bf16 matrix instructions."""
     return _common.native_bf16(torch)
@@ -113,14 +123,14 @@ class Clap:
         if not items:
             return np.zeros((0, DIM), np.float32)
         keys = [_common.key24(t) for t in items]
-        todo = list(dict.fromkeys(t for t, k in zip(items, keys) if k not in self._text))
-        for i in range(0, len(todo), batch):
-            part = todo[i: i + batch]
-            for text, row in zip(part, self._embed_text_batch(part)):
-                self._text[_common.key24(text)] = row
+        self._fill_text(list(dict.fromkeys(t for t, k in zip(items, keys) if k not in self._text)), batch)
+        return np.stack([self._text[k] for k in keys]).astype(np.float32)
+
+    def _fill_text(self, todo: list[str], batch: int) -> None:
+        for part in (todo[i: i + batch] for i in range(0, len(todo), batch)):
+            self._text.update(zip(map(_common.key24, part), self._embed_text_batch(part)))
         if todo:
             self._save_text_cache()
-        return np.stack([self._text[k] for k in keys]).astype(np.float32)
 
     # ------------------------------------------------------------ audio
 
@@ -138,14 +148,10 @@ class Clap:
     def embed_audio(self, arrays: np.ndarray | Sequence[np.ndarray], pad: str = "repeatpad", batch: int = AUDIO_BATCH,
                     per_window: bool = False) -> np.ndarray | list[np.ndarray]:
         """Embed 48 kHz arrays: (n, 512) means, or one (k_i, 512) array per input."""
-        items = [arrays] if isinstance(arrays, np.ndarray) and arrays.ndim == 1 else list(arrays)
-        groups = [[_prepare(s, pad) for s in _segments(x)] for x in items]
+        groups = [[_prepare(s, pad) for s in _segments(x)] for x in _as_list(arrays)]
         counts = [len(g) for g in groups]
         rows = self._embed_segments([s for g in groups for s in g], batch)
-        if per_window:
-            bounds = np.cumsum([0] + counts)
-            return [rows[a:b] for a, b in zip(bounds[:-1], bounds[1:])]
-        return _group_means(rows, counts)
+        return _split(rows, counts) if per_window else _group_means(rows, counts)
 
     def _audio_path(self, path: str, start: float | None, end: float | None, pad: str) -> str:
         return os.path.join(self.cache_dir, f"a_{_common.file_key(path, start, end, pad)}.npy")

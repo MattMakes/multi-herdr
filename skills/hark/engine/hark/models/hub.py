@@ -17,6 +17,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from hark.core import config
+from hark.core.safe import outcome
 from hark.models import MLMissing, require_ml
 
 SAFETENSORS = ("model.safetensors", "model.safetensors.index.json")
@@ -199,21 +200,28 @@ def _still_missing(spec: Spec, again: Spec) -> RuntimeError:
                         f"in {model_dir(spec.model_id)}{extra}")
 
 
-def fetch(spec: Spec) -> Spec:
-    """Download the wanted revision into <HARK_HOME>/hf and return the new Spec."""
+def _check_fetchable(spec: Spec) -> None:
+    flag = None if spec.folder else config.offline()
     if spec.folder:
         raise _folder_error(spec)
-    flag = config.offline()
     if flag:
         raise _offline_error(spec, flag)
+
+
+def _download_or_raise(spec: Spec) -> None:
     config.ensure_dirs()
-    try:
-        _download(spec.model_id, spec.revision, config.HF_CACHE, allow_list(spec))
-    except MLMissing:
-        raise
-    except Exception as exc:  # noqa: BLE001 - every download failure becomes one RuntimeError line
+    _, error = outcome(_download, spec.model_id, spec.revision, config.HF_CACHE, allow_list(spec))
+    if isinstance(error, MLMissing):
+        raise error
+    if error is not None:
         raise RuntimeError(f"could not download {spec.label} into {config.HF_CACHE}: "
-                           f"{type(exc).__name__}: {exc}") from exc
+                           f"{type(error).__name__}: {error}") from error
+
+
+def fetch(spec: Spec) -> Spec:
+    """Download the wanted revision into <HARK_HOME>/hf and return the new Spec."""
+    _check_fetchable(spec)
+    _download_or_raise(spec)
     again = resolve(spec.model_id, None if spec.pinned else spec.revision)
     if again.state != "cached":
         raise _still_missing(spec, again)
