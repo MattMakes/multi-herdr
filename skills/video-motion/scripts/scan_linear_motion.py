@@ -172,17 +172,27 @@ def raster_line(path, sample, scale):
     return f"{path}: {sample.get('src', '<unknown>')} at {sample.get('t_sec', '<unknown>')} s is {scale:.3f}x; maximum is {MAX_RASTER_SCALE:.1f}x{measured}"
 
 
+def read_raster_report(path):
+    """Return (samples, upscaled samples) of a raster size report."""
+    samples = read_raster_samples(path)
+    return samples, raster_upscales(samples)
+
+
+def raster_summary(path, samples, hits):
+    if not samples:
+        return f"scan_linear_motion: {path} has 0 samples; an empty size report fails"
+    if hits:
+        return f"scan_linear_motion: {len(hits)} raster upscale(s) over {MAX_RASTER_SCALE:.1f}x"
+    return "scan_linear_motion: raster sizes pass"
+
+
 def check_raster_sizes(path):
     try:
-        samples = read_raster_samples(path)
-        hits = raster_upscales(samples)
+        samples, hits = read_raster_report(path)
     except RASTER_ERRORS as e:
         return read_error("cannot read raster sizes: ", e)
-    if not samples:
-        return report_hits([], f"scan_linear_motion: {path} has 0 samples; an empty size report fails", True)
     lines = [raster_line(path, sample, scale) for sample, scale in hits]
-    summary = f"scan_linear_motion: {len(hits)} raster upscale(s) over {MAX_RASTER_SCALE:.1f}x" if hits else "scan_linear_motion: raster sizes pass"
-    return report_hits(lines, summary, hits)
+    return report_hits(lines, raster_summary(path, samples, hits), hits or not samples)
 
 
 def check_linear_motion(paths):

@@ -305,17 +305,25 @@ def frame_diff(a, b):
     return sum(map(abs, map(operator.sub, a, b))) / (255.0 * len(a))
 
 
-def motion_frames(video, meta):
-    """Every frame as small grey raw bytes, plus diffs[i] = diff(frame i-1, frame i), diffs[0] = 0."""
+def motion_size(meta):
+    """Frame size for motion analysis: MOTION_LONG_SIDE px on the long side, at least 2 px."""
     width, height = float(meta["width"]), float(meta["height"])
     scale = MOTION_LONG_SIDE / max(width, height)
-    w, h = max(2, round(width * scale)), max(2, round(height * scale))
+    return max(2, round(width * scale)), max(2, round(height * scale))
+
+
+def grey_frames(video, w, h):
     proc = ffmpeg("-i", str(video), "-map", "0:v:0", "-vf", f"scale={w}:{h}:flags=area", "-fps_mode", "passthrough",
                   "-f", "rawvideo", "-pix_fmt", "gray", "-", binary=True)
     if proc.returncode != 0:
         raise InputError(f"ffmpeg cannot decode grey frames of {video}")
     size = w * h
-    frames = [proc.stdout[i:i + size] for i in range(0, len(proc.stdout) - size + 1, size)]
+    return [proc.stdout[i:i + size] for i in range(0, len(proc.stdout) - size + 1, size)]
+
+
+def motion_frames(video, meta):
+    """Every frame as small grey raw bytes, plus diffs[i] = diff(frame i-1, frame i), diffs[0] = 0."""
+    frames = grey_frames(video, *motion_size(meta))
     diffs = [0.0] + [frame_diff(a, b) for a, b in zip(frames, frames[1:])]
     return types.SimpleNamespace(frames=frames, diffs=diffs, fps=float(meta["fps"]))
 
@@ -375,32 +383,51 @@ def css_blocks(text, suffix):
     return blocks
 
 
+def line_at(text, offset):
+    return text.count("\n", 0, offset) + 1
+
+
+def forbidden_call_errors(rel, text):
+    return [(f"{rel}:{line_at(text, m.start())}: scene code calls {name}", None)
+            for name, pattern in FORBIDDEN_CALLS for m in re.finditer(pattern, text)]
+
+
+def css_motion_errors(rel, text, suffix):
+    found = [(offset + m.start(), m) for offset, block in css_blocks(text, suffix) for m in CSS_MOTION.finditer(block)]
+    return [(f"{rel}:{line_at(text, at)}: free-running CSS {m.group(1)}: {m.group(2).strip()}", None)
+            for at, m in found if m.group(2).strip().lower() not in ("", "none")]
+
+
+def scan_scene_file(root, path):
+    """Return (scene unit, defines the seek hook, errors) for 1 scene source file."""
+    rel = path.relative_to(root)
+    text = strip_comments(path.read_text(errors="replace"))
+    errors = forbidden_call_errors(rel, text) + css_motion_errors(rel, text, path.suffix)
+    return rel.parts[0] if len(rel.parts) > 1 else ".", bool(SEEK_HOOK.search(text)), errors
+
+
+def scene_units(scans):
+    units = {}
+    for unit, has_hook, _ in scans:
+        units[unit] = units.get(unit, False) or has_hook
+    return units
+
+
+def empty_scan_errors(root, scanned):
+    message = f"files_scanned: 0; {root} holds no scene source ({', '.join(sorted(SCAN_SUFFIXES))})"
+    return [] if scanned else [(message, None)]
+
+
 def check_scene_determinism(ctx):
     root = ctx.scenes_dir
     if root is None or not root.is_dir():
         return skip("no scenes directory")
-    errors, units, scanned = [], {}, 0
-    for path in scene_files(root):
-        rel = path.relative_to(root)
-        scanned += 1
-        unit = rel.parts[0] if len(rel.parts) > 1 else "."
-        text = strip_comments(path.read_text(errors="replace"))
-        units[unit] = units.get(unit, False) or bool(SEEK_HOOK.search(text))
-        for name, pattern in FORBIDDEN_CALLS:
-            for m in re.finditer(pattern, text):
-                line = text.count("\n", 0, m.start()) + 1
-                errors.append((f"{rel}:{line}: scene code calls {name}", None))
-        for offset, block in css_blocks(text, path.suffix):
-            for m in CSS_MOTION.finditer(block):
-                if m.group(2).strip().lower() not in ("", "none"):
-                    line = text.count("\n", 0, offset + m.start()) + 1
-                    errors.append((f"{rel}:{line}: free-running CSS {m.group(1)}: {m.group(2).strip()}", None))
-    for unit, has_hook in sorted(units.items()):
-        if not has_hook:
-            errors.append((f"scene {unit} does not define window.__seekToFrame", None))
-    if scanned == 0:
-        errors.append((f"files_scanned: 0; {root} holds no scene source ({', '.join(sorted(SCAN_SUFFIXES))})", None))
-    return {"files_scanned": scanned, "scenes": sorted(units)}, errors
+    scans = [scan_scene_file(root, path) for path in scene_files(root)]
+    units = scene_units(scans)
+    errors = [error for _, _, found in scans for error in found]
+    errors += [(f"scene {unit} does not define window.__seekToFrame", None)
+               for unit, has_hook in sorted(units.items()) if not has_hook]
+    return {"files_scanned": len(scans), "scenes": sorted(units)}, errors + empty_scan_errors(root, len(scans))
 
 
 def psnr_avg(a, b):
