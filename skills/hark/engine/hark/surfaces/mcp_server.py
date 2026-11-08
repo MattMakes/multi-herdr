@@ -19,6 +19,7 @@ import re
 import sys
 import threading
 import time
+import types
 from dataclasses import dataclass
 from typing import Any, Callable
 
@@ -757,8 +758,7 @@ def _sdk_tool(name: str) -> Callable:
         res = call_tool(name, **kwargs)
         if res.image is None:
             return res.text
-        from mcp.server.fastmcp import Image
-        return [res.text, Image(data=res.image, format="jpeg")]
+        return [res.text, _sdk().Image(data=res.image, format="jpeg")]
 
     run.__name__ = name
     run.__doc__ = description(name)
@@ -792,12 +792,19 @@ def _version() -> str:
     return hark.__version__
 
 
+def _sdk() -> Any:
+    """The server module of the MCP SDK: ``mcpserver`` (mcp 2.x), else ``fastmcp`` (mcp 1.x)."""
+    name = "mcp.server.mcpserver" if importlib.util.find_spec("mcp.server.mcpserver") else "mcp.server.fastmcp"
+    mod = importlib.import_module(name)
+    return types.SimpleNamespace(Server=getattr(mod, "MCPServer", None) or mod.FastMCP, Image=mod.Image)
+
+
 def _new_server() -> Any:
-    from mcp.server.fastmcp import FastMCP
+    server_cls = _sdk().Server
     try:
-        return FastMCP(SERVER_NAME, instructions=INSTRUCTIONS, log_level="WARNING", version=_version())
+        return server_cls(SERVER_NAME, instructions=INSTRUCTIONS, log_level="WARNING", version=_version())
     except TypeError:
-        server = FastMCP(SERVER_NAME, instructions=INSTRUCTIONS, log_level="WARNING")
+        server = server_cls(SERVER_NAME, instructions=INSTRUCTIONS, log_level="WARNING")
         low = getattr(server, "_mcp_server", None)
         if low is not None and hasattr(low, "version"):
             low.version = _version()

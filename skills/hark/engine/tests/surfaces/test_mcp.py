@@ -82,12 +82,18 @@ sys.exit(main())
 """
 
 
+def field(obj, snake: str, camel: str):
+    """A result field under its mcp 2.x (snake) or 1.x (camel) name."""
+    return getattr(obj, snake) if hasattr(obj, snake) else getattr(obj, camel)
+
+
 def _stdio(calls, fake_doctor: bool = False):
     pytest.importorskip("mcp")
     from mcp import ClientSession, StdioServerParameters
     from mcp.client.stdio import stdio_client
 
-    env = dict(os.environ, PYTHONPATH=str(ENGINE), SURFACES_CONFTEST=str(CONFTEST))
+    path = os.pathsep.join(p for p in (str(ENGINE), os.environ.get("PYTHONPATH", "")) if p)
+    env = dict(os.environ, PYTHONPATH=path, SURFACES_CONFTEST=str(CONFTEST))
     if fake_doctor:
         env["FAKE_DOCTOR"] = "1"
     params = StdioServerParameters(command=sys.executable, args=["-c", BOOT], env=env)
@@ -107,13 +113,13 @@ def test_m_t2_stdio_tools():
         return await session.list_tools()
 
     init, listed = _stdio(calls)
-    assert init.serverInfo.name == "hark"
+    assert field(init, "server_info", "serverInfo").name == "hark"
     assert init.instructions and "absolute" in init.instructions
     tools = listed.tools
     assert [t.name for t in tools] == TOOL_ORDER
     for t in tools:
         assert t.annotations.title == f"hark {t.name}"
-        assert t.annotations.destructiveHint is False
+        assert field(t.annotations, "destructive_hint", "destructiveHint") is False
 
 
 @pytest.mark.slow
@@ -122,7 +128,7 @@ def test_m_t3_stdio_measure(sine1):
         return await session.call_tool("measure", {"path": sine1})
 
     _, res = _stdio(calls)
-    assert not res.isError and len(res.content) == 1
+    assert not field(res, "is_error", "isError") and len(res.content) == 1
     text = res.content[0].text
     assert text.splitlines()[0].startswith("1.000 s")
     js = compact_of(text)
@@ -135,7 +141,7 @@ def test_m_t16_stdout_during_call():
         return await session.call_tool("doctor", {})
 
     _, res = _stdio(calls, fake_doctor=True)
-    assert not res.isError and "doctor ok" in res.content[0].text
+    assert not field(res, "is_error", "isError") and "doctor ok" in res.content[0].text
 
 
 def test_m_t16_stdout_goes_to_stderr(fake_module, capsys):
