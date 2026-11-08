@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from hark.surfaces import gallery_inputs as gi
+from hark.surfaces._flow import raise_if
 
 CODECS = ("flac", "wav", "mp3", "opus", "vorbis")
 LOSSY = {  # codec: (encoder, container, mime, extension, default kbps)
@@ -97,21 +98,24 @@ def display_name(cat: str) -> str:
 # ---------------------------------------------------------------- options
 
 
+KBPS_NEEDS_LOSSY = "--kbps needs an embedded lossy codec (--embed-compressed or --embed-codec mp3|opus|vorbis)"
+
+
+def _kbps_error(embed: bool, codec: str, kbps: int) -> str | None:
+    lossy = embed and codec in LOSSY
+    in_range = KBPS_RANGE[0] <= kbps <= KBPS_RANGE[1]
+    out_of_range = f"--kbps must be {KBPS_RANGE[0]} to {KBPS_RANGE[1]} (got {kbps})"
+    return None if lossy and in_range else (out_of_range if lossy else KBPS_NEEDS_LOSSY)
+
+
 def _codec_options(embed: bool, codec: str | None, compressed: bool, kbps: int | None) -> tuple[bool, str, int | None]:
     codec = codec or "flac"
-    if codec not in CODECS:
-        raise ValueError(f"unknown codec {codec!r}; codecs: {', '.join(CODECS)}")
-    if compressed:
-        embed = True
-        codec = codec if codec in LOSSY else "mp3"
-    if kbps is not None:
-        if not (embed and codec in LOSSY):
-            raise ValueError("--kbps needs an embedded lossy codec (--embed-compressed or --embed-codec mp3|opus|vorbis)")
-        if not KBPS_RANGE[0] <= kbps <= KBPS_RANGE[1]:
-            raise ValueError(f"--kbps must be {KBPS_RANGE[0]} to {KBPS_RANGE[1]} (got {kbps})")
-    elif codec in LOSSY:
-        kbps = LOSSY[codec][4]
-    return embed, codec, kbps
+    raise_if(codec not in CODECS, ValueError(f"unknown codec {codec!r}; codecs: {', '.join(CODECS)}"))
+    embed, codec = (True, codec if codec in LOSSY else "mp3") if compressed else (embed, codec)
+    err = _kbps_error(embed, codec, kbps) if kbps is not None else None
+    raise_if(err, ValueError(err or ""))
+    default = LOSSY[codec][4] if codec in LOSSY else None
+    return embed, codec, kbps if kbps is not None else default
 
 
 def _check_refs(refs: str | None) -> None:
@@ -188,21 +192,26 @@ def _bench_warnings(cat: str, label: str, notes: dict[str, list[str]], warnings:
                         f"changed after the run: {'; '.join(notes['stale'][:3])}{more}")
 
 
+def _borrowable(e: dict | None, s: dict, res: dict) -> bool:
+    """The other run measured this exact file, and it did not change since."""
+    same = bool(e) and gi.same_file(str(e.get("file") or ""), s["path"], res["path"])
+    return same and not gi.stale_reason(e, s, res["created"], gi.RENAME_TOL_S)
+
+
+def _borrow_sound(s: dict, c: dict, res: dict) -> bool:
+    e = c["made"].get(os.path.basename(s["path"]))
+    ok = _borrowable(e, s, res)
+    n_checks = (c.get("inside") or {}).get("n_checks")
+    s.update({"bench": gi.bench_numbers(e, n_checks), "same_as": res["label"]} if ok else {})
+    return ok
+
+
 def _borrow_one(v: dict, cat: str, res: dict) -> bool:
     c = res["cats"].get(cat)
-    if c is None:
-        return False
-    n_checks = (c.get("inside") or {}).get("n_checks")
-    hit = 0
-    for s in v["sounds"]:
-        e = c["made"].get(os.path.basename(s["path"]))
-        if e and gi.same_file(str(e.get("file") or ""), s["path"], res["path"]) and \
-                not gi.stale_reason(e, s, res["created"], gi.RENAME_TOL_S):
-            s.update(bench=gi.bench_numbers(e, n_checks), same_as=res["label"])
-            hit += 1
-    if hit and hit == len(v["sounds"]):
-        v.update(bench_summary=gi.bench_summary(c), bench_from=res["label"])
-    return hit > 0
+    hits = [s for s in v["sounds"] if c is not None and _borrow_sound(s, c, res)]
+    whole = bool(hits) and len(hits) == len(v["sounds"])
+    v.update({"bench_summary": gi.bench_summary(c), "bench_from": res["label"]} if whole else {})
+    return bool(hits)
 
 
 def _apply_results(v: dict, cat: str, results: list[dict], warnings: list[str]) -> None:
@@ -242,23 +251,35 @@ def _refs_for(card: dict, refs: str | None, warnings: list[str]) -> None:
     card["audition"] = gi.audition_reel(newest["folder"], card["cat"], warnings)
 
 
+def _set_orders(versions: list[dict | None]) -> None:
+    orders = gi.align([v["sounds"] if v else None for v in versions])
+    pairs = [(v, order) for v, order in zip(versions, orders) if v]
+    for v, order in pairs:
+        v["order"] = order or []
+
+
+def _card_versions(cat: str, vmap: dict[str, dict[str, str]], opts: dict, warnings: list[str]) -> list[dict | None]:
+    versions = [_version(label, cats.get(cat), warnings) for label, cats in vmap.items()]
+    for v in [v for v in versions if v]:
+        _apply_results(v, cat, opts["results"], warnings)
+    _mark_identical(versions)
+    _set_orders(versions)
+    return versions
+
+
+def _durations(card: dict) -> list[Any]:
+    made = [s["dur_s"] for v in card["versions"] if v for s in v["sounds"]]
+    return made + [r.get("dur_s") for r in card["refs"]]
+
+
 def _card(cat: str, vmap: dict[str, dict[str, str]], opts: dict, warnings: list[str]) -> dict[str, Any]:
     from hark.surfaces import gallery_sound as gs
-    versions = [_version(label, cats.get(cat), warnings) for label, cats in vmap.items()]
-    for v in versions:
-        if v:
-            _apply_results(v, cat, opts["results"], warnings)
-    _mark_identical(versions)
-    orders = gi.align([v["sounds"] if v else None for v in versions])
-    for v, order in zip(versions, orders):
-        if v:
-            v["order"] = order or []
-    card = {"cat": cat, "family": family_of(cat), "display": display_name(cat), "versions": versions,
+    card = {"cat": cat, "family": family_of(cat), "display": display_name(cat),
+            "versions": _card_versions(cat, vmap, opts, warnings),
             "desc": gi.category_description(cat, PRO_TEXT), "refs": [], "audition": None,
             "max_refs": opts["max_refs"]}
     _refs_for(card, opts["refs"], warnings)
-    durs = [s["dur_s"] for v in versions if v for s in v["sounds"]] + [r.get("dur_s") for r in card["refs"]]
-    card["span"] = gs.card_span(durs)
+    card["span"] = gs.card_span(_durations(card))
     return card
 
 
@@ -290,17 +311,19 @@ def _thumb(card: dict, label: str, s: dict, assets: str, stats: dict, warnings: 
     s["thumb"] = gi.slash(os.path.join(assets, name))
 
 
+def _prune_enc(enc: str, used: set[str]) -> None:
+    exts = tuple(v[3] for v in LOSSY.values()) + (".part",)
+    stale = [n for n in os.listdir(enc) if n.endswith(exts) and n not in used]
+    for name in stale:
+        _rm(os.path.join(enc, name))
+
+
 def _prune(assets: str, used: set[str], enc_used: set[str], lossy: bool) -> int:
-    pruned = 0
-    for name in os.listdir(assets):
-        if name.endswith(".png") and name not in used and _rm(os.path.join(assets, name)):
-            pruned += 1
+    stale = [n for n in os.listdir(assets) if n.endswith(".png") and n not in used]
+    pruned = sum(_rm(os.path.join(assets, n)) for n in stale)
     enc = os.path.join(assets, "enc")
     if lossy and os.path.isdir(enc):
-        exts = tuple(v[3] for v in LOSSY.values()) + (".part",)
-        for name in os.listdir(enc):
-            if name.endswith(exts) and name not in enc_used:
-                _rm(os.path.join(enc, name))
+        _prune_enc(enc, enc_used)
     return pruned
 
 
@@ -329,13 +352,18 @@ def _version_counts(cards: list[dict], labels: list[str]) -> dict[str, int]:
     return {lab: sum(1 for c in cards for v in c["versions"] if v and v["label"] == lab) for lab in labels}
 
 
+def _sounds_of(cards: list[dict], label: str) -> list[dict]:
+    versions = [v for c in cards for v in c["versions"] if v and v["label"] == label]
+    return [s for v in versions for s in v["sounds"]]
+
+
+def _pass_count(cards: list[dict], label: str) -> list[int]:
+    known = [s for s in _sounds_of(cards, label) if s["critic"] and s["critic"].get("passes") is not None]
+    return [sum(1 for s in known if s["critic"]["passes"]), len(known)]
+
+
 def _critic_pass(cards: list[dict], labels: list[str]) -> dict[str, list[int]]:
-    out = {}
-    for lab in labels:
-        sounds = [s for c in cards for v in c["versions"] if v and v["label"] == lab for s in v["sounds"]]
-        known = [s for s in sounds if s["critic"] and s["critic"].get("passes") is not None]
-        out[lab] = [sum(1 for s in known if s["critic"]["passes"]), len(known)]
-    return out
+    return {label: _pass_count(cards, label) for label in labels}
 
 
 def _codec_text(embed: bool, codec: str, kbps: int | None) -> str | None:
@@ -344,52 +372,97 @@ def _codec_text(embed: bool, codec: str, kbps: int | None) -> str | None:
     return f"{codec} {kbps} kbps" if codec in LOSSY else codec
 
 
+def _prepare(a: dict[str, Any]) -> dict[str, Any]:
+    """Checked options, the versions and their labels, and an empty warning list."""
+    _check_refs(a["refs"])
+    media_opts = _codec_options(a["embed"], a["codec"], a["compressed"], a["kbps"])
+    vmap = _versions(a["folder"], a["compare"], a["sub"], gi.parse_alias(a["alias"]))
+    labels = list(vmap)
+    opts = {"results": _results_list(a["results"], labels), "refs": a["refs"], "max_refs": a["max_refs"]}
+    title = a["title"] or (TITLE_ONE if len(labels) == 1 else TITLE_MANY)
+    return dict(zip(("embed", "codec", "kbps"), media_opts), vmap=vmap, labels=labels, opts=opts, title=title,
+                warnings=[], out=a["out"], max_mb=a["max_mb"])
+
+
+def _cards(b: dict[str, Any]) -> list[dict]:
+    from hark.surfaces import gallery_sound
+    gallery_sound.clear_cache()
+    cats = card_order(sorted({c for cs in b["vmap"].values() for c in cs}))
+    return [_card(c, b["vmap"], b["opts"], b["warnings"]) for c in cats]
+
+
+def _paths(out: str) -> tuple[str, str]:
+    html_path = os.path.abspath(out)
+    os.makedirs(os.path.dirname(html_path), exist_ok=True)
+    return html_path, os.path.splitext(html_path)[0] + "_files"
+
+
+def _render(b: dict[str, Any], cards: list[dict], media: Any) -> str:
+    from hark.surfaces import gallery_page
+    page = gallery_page.Page(cards, b["labels"], b["opts"]["results"], media, b["title"], b["warnings"],
+                             FAMILIES + (OTHER,))
+    return page.render()
+
+
+def _write(b: dict[str, Any], cards: list[dict]) -> dict[str, Any]:
+    """Thumbnails, previews and the page on disk, then the prune."""
+    from hark.surfaces import gallery_page
+    html_path, assets = _paths(b["out"])
+    thumbs = _thumbs(cards, assets, b["warnings"])
+    media = gallery_page.Media(html_path, assets, b["embed"], b["codec"], b["kbps"])
+    media.prepare(_all_audio(cards))
+    html = _render(b, cards, media)
+    Path(html_path).write_text(html, encoding="utf-8")
+    pruned = _prune(assets, thumbs["used"], media.enc_used, b["codec"] in LOSSY and b["embed"])
+    return {"html": html_path, "assets": assets, "thumbs": thumbs, "media": media, "pruned": pruned,
+            "size_mb": round(len(html.encode("utf-8")) / 1e6, 2)}
+
+
+def _size_warning(b: dict[str, Any], size_mb: float) -> None:
+    over = b["embed"] and size_mb > b["max_mb"]
+    note = (f"the page is {size_mb} MB, over the {b['max_mb']} MB limit; try a lower --kbps, "
+            "--embed-codec opus, or fewer categories")
+    b["warnings"].extend([note] if over else [])
+
+
+def _counts(cards: list[dict], labels: list[str]) -> dict[str, Any]:
+    return {"versions": _version_counts(cards, labels), "categories": len(cards),
+            "sounds": sum(len(v["sounds"]) for c in cards for v in c["versions"] if v),
+            "refs": sum(1 for c in cards for r in c["refs"] if r.get("path"))}
+
+
+def _embedded_mb(media: Any) -> dict[str, Any]:
+    return {"embedded_mb": {"audio": round(media.audio_bytes * 4 / 3 / 1e6, 2),
+                            "images": round(media.image_bytes * 4 / 3 / 1e6, 2)}}
+
+
+def _result(b: dict[str, Any], cards: list[dict], w: dict[str, Any], t0: float) -> dict[str, Any]:
+    media, thumbs = w["media"], w["thumbs"]
+    result = {"html": gi.slash(w["html"]), "assets": gi.slash(w["assets"]), "url": Path(w["html"]).as_uri()}
+    result.update(_counts(cards, b["labels"]))
+    result.update({"images": {"made": thumbs["made"], "reused": thumbs["reused"], "pruned": w["pruned"]},
+                   "embedded": b["embed"], "codec": _codec_text(b["embed"], b["codec"], b["kbps"]),
+                   "size_mb": w["size_mb"], "critic_pass": _critic_pass(cards, b["labels"]),
+                   "seconds": round(time.monotonic() - t0, 1), "warnings": b["warnings"], "same_audio": media.dedup})
+    result.update(_embedded_mb(media) if b["embed"] else {})
+    result["encoded"] = media.encoded
+    result["text"] = summary_text(result)
+    result["summary"] = result["text"].splitlines()[0]
+    return result
+
+
 def gallery(folder: str | None = None, out: str = "gallery.html", results: Any = None, refs: str | None = None,
             compare: list[str] | None = None, embed: bool = False, codec: str = "flac", sub: str = "final",
             title: str | None = None, max_refs: int = 6, compressed: bool = False, kbps: int | None = None,
             max_mb: float = 25.0, alias: Any = None) -> dict[str, Any]:
     """Build 1 static HTML listening page from forge output folders."""
-    from hark.surfaces import gallery_page, gallery_sound
+    args = dict(locals())
     t0 = time.monotonic()
-    _check_refs(refs)
-    embed, codec, kbps = _codec_options(embed, codec, compressed, kbps)
-    vmap = _versions(folder, compare, sub, gi.parse_alias(alias))
-    labels = list(vmap)
-    opts = {"results": _results_list(results, labels), "refs": refs, "max_refs": max_refs}
-    warnings: list[str] = []
-    gallery_sound.clear_cache()
-    cats = card_order(sorted({c for cs in vmap.values() for c in cs}))
-    cards = [_card(c, vmap, opts, warnings) for c in cats]
-    html_path = os.path.abspath(out)
-    os.makedirs(os.path.dirname(html_path), exist_ok=True)
-    assets = os.path.splitext(html_path)[0] + "_files"
-    thumbs = _thumbs(cards, assets, warnings)
-    media = gallery_page.Media(html_path, assets, embed, codec, kbps)
-    media.prepare(_all_audio(cards))
-    page = gallery_page.Page(cards, labels, opts["results"], media, title or (TITLE_ONE if len(labels) == 1 else TITLE_MANY),
-                             warnings, FAMILIES + (OTHER,))
-    html = page.render()
-    Path(html_path).write_text(html, encoding="utf-8")
-    pruned = _prune(assets, thumbs["used"], media.enc_used, codec in LOSSY and embed)
-    size_mb = round(len(html.encode("utf-8")) / 1e6, 2)
-    if embed and size_mb > max_mb:
-        warnings.append(f"the page is {size_mb} MB, over the {max_mb} MB limit; try a lower --kbps, "
-                        "--embed-codec opus, or fewer categories")
-    result = {"html": gi.slash(html_path), "assets": gi.slash(assets), "url": Path(html_path).as_uri(),
-              "versions": _version_counts(cards, labels), "categories": len(cards),
-              "sounds": sum(len(v["sounds"]) for c in cards for v in c["versions"] if v),
-              "refs": sum(1 for c in cards for r in c["refs"] if r.get("path")),
-              "images": {"made": thumbs["made"], "reused": thumbs["reused"], "pruned": pruned},
-              "embedded": embed, "codec": _codec_text(embed, codec, kbps), "size_mb": size_mb,
-              "critic_pass": _critic_pass(cards, labels), "seconds": round(time.monotonic() - t0, 1),
-              "warnings": warnings, "same_audio": media.dedup}
-    if embed:
-        result["embedded_mb"] = {"audio": round(media.audio_bytes * 4 / 3 / 1e6, 2),
-                                 "images": round(media.image_bytes * 4 / 3 / 1e6, 2)}
-    result["encoded"] = media.encoded
-    result["text"] = summary_text(result)
-    result["summary"] = result["text"].splitlines()[0]
-    return result
+    build = _prepare(args)
+    cards = _cards(build)
+    written = _write(build, cards)
+    _size_warning(build, written["size_mb"])
+    return _result(build, cards, written, t0)
 
 
 def _plural(n: int, one: str, many: str) -> str:
