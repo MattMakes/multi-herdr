@@ -44,28 +44,6 @@ def _mel(a, b):
     return modal.mel_distance(a, b)[0]
 
 
-# ---------------------------------------------------------------- A-1 .. A-4
-
-@pytest.mark.skip(reason="needs-data: the 12 validation references")
-def test_a_1_validation_clap():
-    pass
-
-
-@pytest.mark.skip(reason="needs-data: the 12 validation references")
-def test_a_2_validation_mel_gap():
-    pass
-
-
-@pytest.mark.skip(reason="needs-data: the 12 validation references and describe (ML)")
-def test_a_3_validation_describe_tag():
-    pass
-
-
-@pytest.mark.skip(reason="needs-data: the replication benchmark set")
-def test_a_4_replication_benchmark():
-    pass
-
-
 # ---------------------------------------------------------------- A-5
 
 @pytest.mark.parametrize("knobs", [{}, {"size": 1.1}])

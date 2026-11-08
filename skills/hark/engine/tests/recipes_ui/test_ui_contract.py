@@ -166,15 +166,3 @@ def test_duration_pop():
     assert len(take(pop, blip, 1)) == n_of(0.03)
     short = dict(blip, box=0.005, length=0.03)
     assert len(take(pop, short, 1)) == n_of(0.005 + 0.003 + 0.004 + 0.004)
-
-
-NOT_UI = {
-    3: "peak of cuthit, subdrop and thump", 4: "subdrop length", 5: "subdrop band", 6: "subdrop search space",
-    7: "thump", 8: "knock profile", 9: "knock family space", 10: "mallet gate", 11: "run frequencies (mallet)",
-    12: "note names (mallet)", 13: "drip allowance", 14: "drip profile", 15: "pluck pitch", 16: "pluck bank",
-}
-
-
-@pytest.mark.parametrize("at", sorted(NOT_UI))
-def test_at_3_to_16_belong_to_impacts(at):
-    pytest.skip(f"AT-{at} ({NOT_UI[at]}) tests an impacts recipe; tests/recipes_impacts owns it")
