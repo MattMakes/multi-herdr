@@ -283,21 +283,25 @@ class _Page:
     def __init__(self, res: dict, width: int):
         self.res = res
         self.begin, self.until = res["start"], res["end"]
+        self._size_text(width)
+        names = [tally for tally in _LANES if tally != "frames" or res.get("video")]
+        self.lanes = [(tally, _LANES[tally][0]) for tally in names]
+        self.titles = {tally: t for tally, (_, t) in _LANES.items()}
+        self.header = header_lines(res, self.pt)
+        self._head_in = _header_inches(self.header)
+        lanes_in = sum(h for _, h in self.lanes)
+        self.height_in = round((self._head_in + lanes_in + 0.55) * 100) / 100
+        self.fig = None
+        self.pane: dict = {}
+
+    def _size_text(self, width: int) -> None:
+        """Page width, font size, left margin, plot width and label glyph width."""
         self.width = int(min(max(width, 1000), 2400))
         self.pt = max(11.0, self.width / 125)
         self.left = max(92, int(6.4 * self.pt) + 8)
         self.plot_px = self.width - self.left - 64
         self.label_pt = 0.85 * self.pt
         self.char_px = 0.602 * self.label_pt * 100 / 72
-        names = [tally for tally in _LANES if tally != "frames" or res.get("video")]
-        self.lanes = [(tally, _LANES[tally][0]) for tally in names]
-        self.titles = {tally: t for tally, (_, t) in _LANES.items()}
-        self.header = header_lines(res, self.pt)
-        head_in = _header_inches(self.header)
-        self.height_in = round((head_in + sum(h for _, h in self.lanes) + 0.55) * 100) / 100
-        self.fig = None
-        self.pane: dict = {}
-        self._head_in = head_in
 
     @property
     def span(self) -> float:
@@ -341,19 +345,23 @@ class _Page:
         n_slots = max(1, int(self.plot_px // (thumb_w + 6)))
         _bare_y(pane, 0, 1)
         slot = self.span / n_slots
-        shown = 0
-        for k in range(n_slots):
-            a, b = self.begin + k * slot, self.begin + (k + 1) * slot
-            when = next((min(c + 0.15, b - 0.05) for c in self.res["cuts"] if a <= c < b - 0.2), (a + b) / 2)
-            img = vid.frame(src, when, width=int(1.5 * thumb_w))
-            _stroke(pane, when, 0, 0.12, color="#222222", linewidth=1.0)
-            if img is not None:
-                centre, half = (a + b) / 2, thumb_w / self.px_per_s / 2
-                pane.imshow(numpy.asarray(img), extent=(centre - half, centre + half, 0.12, 1.0), aspect="auto",
-                          zorder=2)
-                shown += 1
+        shown = sum(self._thumbnail(pane, src, self.begin + k * slot, self.begin + (k + 1) * slot, thumb_w)
+                    for k in range(n_slots))
         pane.set_xlim(self.begin, self.until)
         return shown
+
+    def _thumbnail(self, pane, src: str, a: float, b: float, thumb_w: float) -> int:
+        """Draw one slot's frame and its tick; return 1 when a frame was drawn."""
+        from hark.timeline import video as vid
+
+        when = next((min(c + 0.15, b - 0.05) for c in self.res["cuts"] if a <= c < b - 0.2), (a + b) / 2)
+        img = vid.frame(src, when, width=int(1.5 * thumb_w))
+        _stroke(pane, when, 0, 0.12, color="#222222", linewidth=1.0)
+        if img is None:
+            return 0
+        centre, half = (a + b) / 2, thumb_w / self.px_per_s / 2
+        pane.imshow(numpy.asarray(img), extent=(centre - half, centre + half, 0.12, 1.0), aspect="auto", zorder=2)
+        return 1
 
     def sections_lane(self, pane) -> None:
         from matplotlib.patches import Rectangle
@@ -427,17 +435,20 @@ class _Page:
             pane.plot(mt, mv, color="#5b9bd5", linewidth=0.8, label="momentary")
         if st.size:
             pane.plot(st, sv, color="#1f3c88", linewidth=2.0, label="short-term")
-        whole = lv.get("integrated_lufs")
-        if whole is not None and whole > -60:
-            pane.axhline(whole, color="#d62728", linestyle="--", linewidth=1.0, label="integrated")
-            pane.text(1.005, (whole + 60) / 60, f"{whole:.1f}", transform=pane.transAxes, ha="left", va="center",
-                    fontsize=0.72 * self.pt, color="#d62728")
+        self._integrated_mark(pane, lv.get("integrated_lufs"))
         for clip_t in lv.get("clipping", {}).get("times", []):
             _stroke(pane, clip_t, -3, 0, color="#d62728", linewidth=1.2)
         pane.set_ylim(-60, 0)
         pane.set_yticks([-50, -40, -30, -20, -10])
         if mt.size or st.size:
             pane.legend(loc="lower left", fontsize=0.65 * self.pt, frameon=False, ncol=3)
+
+    def _integrated_mark(self, pane, whole) -> None:
+        if whole is None or whole <= -60:
+            return
+        pane.axhline(whole, color="#d62728", linestyle="--", linewidth=1.0, label="integrated")
+        pane.text(1.005, (whole + 60) / 60, f"{whole:.1f}", transform=pane.transAxes, **_AT_LEFT,
+                  fontsize=0.72 * self.pt, color="#d62728")
 
     def sync_lane(self, pane) -> None:
         music = self.res["music"]
