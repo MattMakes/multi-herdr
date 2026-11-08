@@ -10,7 +10,7 @@ import copy
 from typing import Any
 
 import numpy as np
-from scipy.fft import fft, ifft, irfft, next_fast_len, rfft
+from scipy.fft import fft, ifft, next_fast_len, rfft
 from scipy.signal import butter, fftconvolve, resample_poly, sosfiltfilt, stft
 
 from hark.fit.analysis import _kernels as K

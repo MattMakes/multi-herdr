@@ -14,7 +14,7 @@ import numpy as np
 from scipy.fft import irfft, next_fast_len, rfft, rfftfreq
 from scipy.ndimage import convolve1d, median_filter, uniform_filter, uniform_filter1d
 
-from hark.fit.analysis._common import (SR, as_stereo, check_kind, db, hann_norm, is_mono_pair,
+from hark.fit.analysis._common import (SR, as_stereo, check_kind, db, is_mono_pair,
                                        load_json, mel_db_distance, resample, save_json,
                                        source_name, threads)
 
@@ -466,47 +466,53 @@ def _excitation(n, nfft, tex, roughness, rate_scale, r) -> np.ndarray:
 
 def _synth(n, kt, kdb, cents, seed, stereo=None, texture=None, ridges=None, mono=True,
            rate_scale=1.0, roughness=1.0, fine=None, fine_shift=0.0, power=False, ridge_sig=None):
+    """The synthesis core: band noise on keyframes, with optional stereo, texture and ridges."""
     gA, gB, gC, gM, gR = _gens(seed)
+    tex = texture or {}
     nfft = next_fast_len(max(n, 64))
     f = rfftfreq(nfft, 1 / SR)
     W = weights(f, cents)
     fg = _fine_gain(fine, fine_shift, f)
-    SA = _excitation(n, nfft, texture, roughness, rate_scale, gC if (texture or {}).get("grains") else gA) * fg
-    if (texture or {}).get("grains"):
-        gA.standard_normal(1)
+    SA = _excitation(n, nfft, tex, roughness, rate_scale, gC if tex.get("grains") else gA) * fg
     two = not mono and stereo is not None
     SB = rfft(gB.standard_normal(nfft)) * fg if two else None
     Gb = _group_blend(cents)
-    mod = _modulation(n, (texture or {}).get("am"), rate_scale, roughness, gM, Gb)
-    t = np.arange(n) / SR
+    mod = _modulation(n, tex.get("am"), rate_scale, roughness, gM, Gb)
     kdb = np.asarray(kdb, dtype=float)
-    L = np.zeros(n)
-    R = np.zeros(n) if two else None
     ctrl = _stereo_ctrl(stereo, kt, n, Gb) if two else None
-    for b in range(len(cents)):
+    L, R = _band_mix(n, kt, kdb, SA, SB, W, nfft, mod, ctrl)
+    rs = ridge_sig if ridge_sig is not None else _ridge_wave(n, ridges, gR)
+    if rs is not None:
+        gl, gr = (1.0, 1.0)
+        if two and ridge_sig is None:
+            gl, gr = _ridge_gains(ridges, ctrl, cents)
+        L += rs * gl
+        if two:
+            R += rs * gr
+    y = L if mono else np.column_stack([L, R if two else L])
+    if not power:
+        return y
+    return y, _expected(n, kt, kdb, cents, nfft, W, ridges)
+
+
+def _band_mix(n, kt, kdb, SA, SB, W, nfft, mod, ctrl):
+    """Sum of the band noises: L only, or L and R from 2 excitations and the stereo control."""
+    t = np.arange(n) / SR
+    L = np.zeros(n)
+    R = np.zeros(n) if ctrl is not None else None
+    for b in range(kdb.shape[1]):
         amp = 10 ** (np.interp(t, kt, kdb[:, b]) / 20)
         if mod is not None:
             amp = amp * mod[b]
         nA = irfft(SA * W[b], nfft)[:n]
-        if not two:
+        if ctrl is None:
             L += amp * nA
             continue
         nB = irfft(SB * W[b], nfft)[:n]
         c, s, gl, gr = (p[b] for p in ctrl)
         L += amp * gl * (c * nA + s * nB)
         R += amp * gr * (c * nA - s * nB)
-    rs = ridge_sig if ridge_sig is not None else _ridge_wave(n, ridges, gR)
-    if rs is not None:
-        if two:
-            gl, gr = _ridge_gains(ridges, ctrl, cents) if ridge_sig is None else (1.0, 1.0)
-            L += rs * gl
-            R += rs * gr
-        else:
-            L += rs
-    y = np.column_stack([L, R if two else L]) if not mono else L
-    if not power:
-        return y
-    return y, _expected(n, kt, kdb, cents, nfft, W, ridges)
+    return L, R
 
 
 def _ridge_wave(n: int, ridges: list | None, r) -> np.ndarray | None:
