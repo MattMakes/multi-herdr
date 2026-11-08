@@ -71,6 +71,12 @@ MENU_MESSAGE = "ui and menu scenes total %.3f s; the scaled limit is %.3f s (8 s
 ENERGY_MIN, ENERGY_MAX = 0, 10
 MAX_GAP_BARS = 2
 REMOVED_SILENCE_KEY = "payoff_silence_sec"
+REMOVED_FIELD_MESSAGE = (
+    "meta.%s is removed: do not plan silence before the payoff. Delete it, or use the optional "
+    "meta.payoff_breakdown_sec (a dip of at most 12 dB, never silent)" % REMOVED_SILENCE_KEY
+)
+RANGE_KEYS = ("hero_sec", "payoff_breakdown_sec")
+RANGE_MESSAGE = "meta.%s must be [start_sec, end_sec] with 0 <= start_sec < end_sec <= meta.duration_sec"
 BEATS_PER_BAR = 4
 HERO_EARLIEST, HERO_LATEST = 0.30, 0.90
 MIN_DIRECTIONS = 3
@@ -112,43 +118,84 @@ def scene_label(scene, index):
 
 
 def check_meta(meta, report):
-    if not isinstance(meta, dict):
-        report.add("schema", "meta must be an object")
-        return
-    for key in ("id", "title"):
-        if not non_empty_str(meta.get(key)):
-            report.add("schema", "meta.%s must be a non-empty string" % key)
+    is_object = isinstance(meta, dict)
+    fields = meta if is_object else {}
+    messages = meta_errors(fields) if is_object else ["meta must be an object"]
+    for message in messages:
+        report.add("schema", message)
+    if "allowed_silences" in fields:
+        check_allowed_silences(fields["allowed_silences"], fields.get("duration_sec"), report)
+
+
+def meta_errors(meta):
+    """Return the schema messages for the meta object."""
+    return meta_identity_errors(meta) + meta_value_errors(meta) + meta_range_errors(meta)
+
+
+def failed(checks):
+    """Return the message of every (bad, message) pair that is bad."""
+    return [message for bad, message in checks if bad]
+
+
+def optional_ok(meta, key, test):
+    """Return True when meta has no key, or its value passes test."""
+    return key not in meta or test(meta[key])
+
+
+def is_positive(value):
+    return is_number(value) and value > 0
+
+
+def is_term_list(value):
+    return isinstance(value, list) and all(non_empty_str(t) for t in value)
+
+
+def meta_identity_errors(meta):
+    """Return the schema messages for id, title, aspect, fps and the frame size."""
     aspect = meta.get("aspect")
-    if aspect not in ASPECTS:
-        report.add("schema", "meta.aspect must be one of %s" % sorted(ASPECTS))
-    if meta.get("fps") not in FPS_VALUES or not is_int(meta.get("fps")):
-        report.add("schema", "meta.fps must be 30 or 60")
-    width, height = meta.get("width"), meta.get("height")
-    if not (is_int(width) and is_int(height)):
-        report.add("schema", "meta.width and meta.height must be integers")
-    elif aspect in ASPECTS and (width, height) != ASPECTS[aspect]:
-        report.add("schema", "meta.width x meta.height must be %dx%d for aspect %s" % (ASPECTS[aspect] + (aspect,)))
-    if not is_number(meta.get("duration_sec")) or meta.get("duration_sec") <= 0:
-        report.add("schema", "meta.duration_sec must be a number > 0")
-    if not is_number(meta.get("lufs_target")):
-        report.add("schema", "meta.lufs_target must be a number")
-    if "allow_dark_intro" in meta and not isinstance(meta["allow_dark_intro"], bool):
-        report.add("schema", "meta.allow_dark_intro must be a boolean when present")
-    if "allowed_silences" in meta:
-        check_allowed_silences(meta["allowed_silences"], meta.get("duration_sec"), report)
-    if "bpm" in meta and not (is_number(meta["bpm"]) and meta["bpm"] > 0):
-        report.add("schema", "meta.bpm must be a number > 0 when present")
-    if "terms" in meta and not (isinstance(meta["terms"], list) and all(non_empty_str(t) for t in meta["terms"])):
-        report.add("schema", "meta.terms must be a list of non-empty strings when present")
-    for key in ("hero_sec", "payoff_breakdown_sec"):
-        if key in meta and not is_range(meta[key], meta.get("duration_sec")):
-            report.add("schema", "meta.%s must be [start_sec, end_sec] with 0 <= start_sec < end_sec <= meta.duration_sec" % key)
-    if "payoff_breakdown_sec" in meta and "hero_sec" not in meta:
-        report.add("schema", "meta.payoff_breakdown_sec needs meta.hero_sec")
-    if REMOVED_SILENCE_KEY in meta:
-        report.add("schema", "meta.%s is removed: do not plan silence before the payoff. "
-                   "Delete it, or use the optional meta.payoff_breakdown_sec (a dip of at most 12 dB, never silent)"
-                   % REMOVED_SILENCE_KEY)
+    names = failed((not non_empty_str(meta.get(key)), "meta.%s must be a non-empty string" % key)
+                   for key in ("id", "title"))
+    checks = (
+        (aspect not in ASPECTS, "meta.aspect must be one of %s" % sorted(ASPECTS)),
+        (meta.get("fps") not in FPS_VALUES or not is_int(meta.get("fps")), "meta.fps must be 30 or 60"),
+    )
+    return names + failed(checks) + frame_size_errors((meta.get("width"), meta.get("height")), aspect)
+
+
+def frame_size_errors(size, aspect):
+    """Return the schema messages for meta.width and meta.height."""
+    integers = all(is_int(value) for value in size)
+    expected = ASPECTS.get(aspect)
+    wrong = integers and expected is not None and size != expected
+    return failed((
+        (not integers, "meta.width and meta.height must be integers"),
+        (wrong, "meta.width x meta.height must be %s for aspect %s" % ("%dx%d" % (expected or (0, 0)), aspect)),
+    ))
+
+
+def meta_value_errors(meta):
+    """Return the schema messages for the duration, loudness and optional value fields."""
+    return failed((
+        (not is_positive(meta.get("duration_sec")), "meta.duration_sec must be a number > 0"),
+        (not is_number(meta.get("lufs_target")), "meta.lufs_target must be a number"),
+        (not optional_ok(meta, "allow_dark_intro", lambda v: isinstance(v, bool)),
+         "meta.allow_dark_intro must be a boolean when present"),
+        (not optional_ok(meta, "bpm", is_positive), "meta.bpm must be a number > 0 when present"),
+        (not optional_ok(meta, "terms", is_term_list),
+         "meta.terms must be a list of non-empty strings when present"),
+    ))
+
+
+def meta_range_errors(meta):
+    """Return the schema messages for the hero, the breakdown and the removed silence field."""
+    duration = meta.get("duration_sec")
+    ranges = failed((key in meta and not is_range(meta[key], duration), RANGE_MESSAGE % key)
+                    for key in RANGE_KEYS)
+    return ranges + failed((
+        ("payoff_breakdown_sec" in meta and "hero_sec" not in meta,
+         "meta.payoff_breakdown_sec needs meta.hero_sec"),
+        (REMOVED_SILENCE_KEY in meta, REMOVED_FIELD_MESSAGE),
+    ))
 
 
 def is_range(value, duration):

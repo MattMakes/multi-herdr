@@ -35,6 +35,7 @@ Needs ffprobe on PATH. Python standard library only.
 """
 
 import argparse
+import functools
 import json
 import math
 import os
@@ -61,14 +62,21 @@ def probe_duration(path):
 
 def time_map(old_edges, new_edges):
     """Return a function that moves a project time from the old scene edges to the new ones."""
-    def move(t):
-        if t <= old_edges[0]:
-            return t
-        for (a, b), (na, nb) in zip(zip(old_edges, old_edges[1:]), zip(new_edges, new_edges[1:])):
-            if t < b:
-                return round(na + (t - a) * (nb - na) / (b - a), 3)
-        return round(t + new_edges[-1] - old_edges[-1], 3)
-    return move
+    spans = list(zip(zip(old_edges, old_edges[1:]), zip(new_edges, new_edges[1:])))
+    return functools.partial(_move_time, old_edges[0], spans, new_edges[-1] - old_edges[-1])
+
+
+def _scale_into(t, span):
+    """Scale time t from an old scene span to its new span."""
+    (a, b), (na, nb) = span
+    return round(na + (t - a) * (nb - na) / (b - a), 3)
+
+
+def _move_time(first, spans, shift, t):
+    """Keep t before the first edge, scale it inside a scene, shift it after the film end."""
+    inside = [span for span in spans if t < span[0][1]]
+    moved = _scale_into(t, inside[0]) if inside else round(t + shift, 3)
+    return t if t <= first else moved
 
 
 RANGE_KEYS = ("hero_sec", "payoff_breakdown_sec")
@@ -219,14 +227,23 @@ def main(argv=None):
 
 # ---------------------------------------------------------------- self-test
 
+FIXTURE_KEYS = ("id", "kind", "start_sec", "duration_sec", "template", "focal_point", "caption",
+                "narration")
+
+
+def _fixture_scene(*spec):
+    """Return 1 fixture scene from values in FIXTURE_KEYS order."""
+    scene = dict(zip(FIXTURE_KEYS, spec))
+    end = scene["start_sec"] + scene["duration_sec"]
+    scene.update(beat_in=int(scene["start_sec"] * 2), beat_out=int(end * 2),
+                 plate=f"scenes/{scene['id']}/index.html", motion={"template": scene.pop("template")},
+                 transition_out="cut", critical_regions=[[0.1, 0.2, 0.6, 0.4]])
+    return scene
+
+
 def _music_timeline():
     """A plan that passes check_timeline.py: bpm 120 (2 bars = 4.0 s), 4 scenes, 15.0 s."""
-    def scene(sid, kind, start, duration, template, focal, caption, narration):
-        return {"id": sid, "kind": kind, "start_sec": start, "duration_sec": duration,
-                "beat_in": int(start * 2), "beat_out": int((start + duration) * 2),
-                "narration": narration, "caption": caption, "plate": f"scenes/{sid}/index.html",
-                "motion": {"template": template}, "transition_out": "cut",
-                "critical_regions": [[0.1, 0.2, 0.6, 0.4]], "focal_point": focal}
+    scene = _fixture_scene
     return {
         "meta": {"id": "demo", "title": "Demo", "aspect": "16:9", "fps": 60, "width": 1920,
                  "height": 1080, "duration_sec": 15.0, "lufs_target": -14, "bpm": 120,

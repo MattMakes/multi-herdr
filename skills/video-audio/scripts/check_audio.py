@@ -1086,18 +1086,21 @@ def _breakdown_dip_tests(p, expect, tone):
     """A breakdown dips <= 12 dB and is never silent."""
     _write(p("breakdown.json"), {"meta": {"duration_sec": 5.0, "payoff_breakdown_sec": [2.0, 2.6]}})
     # Gains 0.5, 0.1 and 0 are dips of 6 dB, 20 dB and silence.
-    cases = (("6db", 0.5, []), ("20db", 0.1, ["mix.payoff_breakdown"]),
-             ("silent", 0, ["mix.payoff_breakdown"]))
-    for name, gain, rules in cases:
-        _dip_case(p, expect, tone, (name, gain, rules))
+    for case in BREAKDOWN_CASES:
+        _dip_case(p, expect, tone, case)
+
+
+# (name, gain in the breakdown, failed rules)
+BREAKDOWN_CASES = (("6db", 0.5, []), ("20db", 0.1, ["mix.payoff_breakdown"]),
+                   ("silent", 0, ["mix.payoff_breakdown"]))
 
 
 def _dip_case(p, expect, tone, case):
-    """Render a 5 s tone with the breakdown at gain, and check it."""
-    name, gain, rules = case
-    _synth(p(f"breakdown-{name}.wav"), f"{tone}*if(between(t,2.0,2.6),{gain},1)", 5, -14.0)
-    report = check(p(f"breakdown-{name}.wav"), p("breakdown.json"))
-    expect(f"{'pass' if not rules else 'fail'} a breakdown dip of {name}", report, rules)
+    """Render a 5 s tone with the breakdown at the case gain, and check it."""
+    wav = p(f"breakdown-{case[0]}.wav")
+    _synth(wav, f"{tone}*if(between(t,2.0,2.6),{case[1]},1)", 5, -14.0)
+    expect(f"{'pass' if not case[2] else 'fail'} a breakdown dip of {case[0]}",
+           check(wav, p("breakdown.json")), case[2])
 
 
 def _breakdown_plan_tests(p, expect, tone):
@@ -1137,11 +1140,15 @@ def _cli_over_stale(out, args):
 
 def _cli_case(out, case, failures):
     """The CLI exits with the wanted code and leaves passed: false with an error."""
-    name, args, want = case
-    code, report = _cli_over_stale(out, args)
-    ok = code == want and report.get("passed") is False and bool(report.get("errors"))
-    print(f"{'ok  ' if ok else 'FAIL'} {name}")
-    failures.extend([] if ok else [f"{name}: exit {code}, report {report}"])
+    code, report = _cli_over_stale(out, case[1])
+    ok = code == case[2] and _is_failed_report(report)
+    print(f"{'ok  ' if ok else 'FAIL'} {case[0]}")
+    failures.extend([] if ok else [f"{case[0]}: exit {code}, report {report}"])
+
+
+def _is_failed_report(report):
+    """Return True when the report says passed: false and names an error."""
+    return report.get("passed") is False and bool(report.get("errors"))
 
 
 def _bed_beat_tests(p, expect, failures):
