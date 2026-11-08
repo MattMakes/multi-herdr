@@ -346,11 +346,22 @@ def _stereo_fields(x):
     return {"side_to_mid_db": width, "correlation": None if corr is None else round(corr, 2)}, rs <= 1e-7
 
 
+def _start_edge(m, t):
+    """Listen P9 start edge: the first 2 ms frame within 20 dB of the loudest of the 150 ms from the block start."""
+    n = len(m) // 96
+    e2 = 20 * np.log10(np.sqrt((m[: n * 96].reshape(n, 96) ** 2).mean(axis=1)) + 1e-9)
+    a, b = max(0, int((t - 0.05) / 0.002)), min(n, int((t + 0.05) / 0.002) + 1)
+    if b <= a:
+        return max(0.0, t)
+    ok = np.flatnonzero(e2[a:b] >= e2[a: a + 75].max() - 20)
+    return round((a + ok[0]) * 0.002, 3) if ok.size else max(0.0, t)
+
+
 def _arc_fields(x, dur, I):
     tf, Lf = loudness_curve(x, 0.1, 0.02)
     loud = np.flatnonzero(Lf >= I - 20)
     aud = np.flatnonzero(Lf >= I - 30)
-    first = round(max(0.0, tf[loud[0]] - 0.05), 2) if loud.size else None
+    first = round(_start_edge(x.mean(axis=1), tf[loud[0]]), 2) if loud.size else None
     last_end = tf[aud[-1]] + 0.05 if aud.size else dur
     out = {"first_sound_s": first, "end_silence_s": round(max(0.0, dur - last_end), 2)}
     gap, run = 0, 0

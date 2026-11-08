@@ -322,3 +322,13 @@ def test_package_import_is_light():
     out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, check=True).stdout
     assert out.strip() == "[]"
 
+
+
+def test_cli_handler_json(six_s_clicks, stub_models, hark_home, capsys, cli_parser, tmp_path):
+    from hark.timeline.timeline import add_cli
+
+    out = tmp_path / "res" / "r.json"
+    args = cli_parser(add_cli).parse_args(["timeline", six_s_clicks, "--detail", "low", "--json", "--out", str(out)])
+    assert args.func(args) == 0
+    printed = json.loads(capsys.readouterr().out)
+    assert printed["detail"] == "low" and json.loads(out.read_text())["summary"] == printed["summary"]
