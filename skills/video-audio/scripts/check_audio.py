@@ -56,6 +56,10 @@ MOMENTARY_WINDOW_SEC = 0.4
 LEVEL_WINDOW_SEC = 0.1
 BREAKDOWN_MAX_DIP_DB = 12.0
 REMOVED_SILENCE_KEY = "payoff_silence_sec"
+REMOVED_FIELD_MESSAGE = (f"meta.{REMOVED_SILENCE_KEY} is removed: do not plan silence before the payoff. "
+                         f"Delete it, or use the optional meta.payoff_breakdown_sec "
+                         f"(a dip of at most {BREAKDOWN_MAX_DIP_DB:g} dB)")
+MUSIC_GRID_MESSAGE = "--music needs --beats or --sync-sheet for the bar grid"
 DROP_MIN_JUMP_DB = 6.0
 ANALYSIS_RATE = 16000
 BANDS = {"low": "lowpass=f=150", "mid": "highpass=f=150,lowpass=f=2000",
@@ -539,16 +543,23 @@ def _silent_runs(silences, planned):
     return [[round(a, 3), round(b, 3)] for a, b in silences if a < planned[1] and b > planned[0]]
 
 
+def _silent_message(planned, silent):
+    return (f"the breakdown {list(planned)} s is silent (under {SILENCE_FLOOR_DB:g} dBFS) at "
+            f"{silent} s; a breakdown dips, it never stops")
+
+
+def _dip_message(planned, dip):
+    return (f"the breakdown {list(planned)} s dips {dip:.1f} dB under the rest of the mix; "
+            f"the limit is {BREAKDOWN_MAX_DIP_DB:g} dB")
+
+
 def _breakdown_problem(planned, silent, levels):
     """Return the error message for a breakdown, or None when it passes."""
-    if silent or levels["breakdown_dbfs"] is None:
-        return (f"the breakdown {list(planned)} s is silent (under {SILENCE_FLOOR_DB:g} dBFS) at "
-                f"{silent} s; a breakdown dips, it never stops")
     dip = levels["dip_db"]
-    if dip is not None and dip > BREAKDOWN_MAX_DIP_DB:
-        return (f"the breakdown {list(planned)} s dips {dip:.1f} dB under the rest of the mix; "
-                f"the limit is {BREAKDOWN_MAX_DIP_DB:g} dB")
-    return None
+    is_silent = bool(silent) or levels["breakdown_dbfs"] is None
+    too_deep = dip is not None and dip > BREAKDOWN_MAX_DIP_DB
+    deep = _dip_message(planned, dip) if too_deep else None
+    return _silent_message(planned, silent) if is_silent else deep
 
 
 def check_payoff_breakdown(mix, planned, silences, errors):
@@ -636,52 +647,68 @@ def _has_music(timeline, errors):
     return True
 
 
+def _range_problem(key, value, required):
+    """Return the error message for meta.<key>, or None when it is valid."""
+    bad = f"meta.{key} must be [start_sec, end_sec] with start_sec < end_sec"
+    missing = f"meta.{key} is required when meta.bpm says the film has music" if required else None
+    return bad if value == "bad" else (missing if value is None else None)
+
+
 def _plan_range(timeline, key, rule, required, errors):
     """Return meta.<key> as (start, end) or None. Report a bad or a missing required range."""
     value = _meta_range(timeline, key)
-    if value == "bad":
-        _err(errors, rule, f"meta.{key} must be [start_sec, end_sec] with start_sec < end_sec")
-        return None
-    if value is None and required:
-        _err(errors, rule, f"meta.{key} is required when meta.bpm says the film has music")
-    return value
+    message = _range_problem(key, value, required)
+    if message:
+        _err(errors, rule, message)
+    return None if value == "bad" else value
 
 
 def _reject_removed_field(timeline, errors):
     """Reject meta.payoff_silence_sec: no gate plans silence before the payoff."""
-    if _meta_range(timeline, REMOVED_SILENCE_KEY) is None:
-        return
-    _err(errors, "plan.removed_field",
-         f"meta.{REMOVED_SILENCE_KEY} is removed: do not plan silence before the payoff. Delete it, "
-         f"or use the optional meta.payoff_breakdown_sec (a dip of at most {BREAKDOWN_MAX_DIP_DB:g} dB)")
+    present = _meta_range(timeline, REMOVED_SILENCE_KEY) is not None
+    if present:
+        _err(errors, "plan.removed_field", REMOVED_FIELD_MESSAGE)
 
 
 def _plan_ranges(timeline, errors):
+    """Return (hero_sec, payoff_breakdown_sec), each (start, end) or None."""
     music = _has_music(timeline, errors)
     _reject_removed_field(timeline, errors)
-    return {"hero_sec": _plan_range(timeline, "hero_sec", "mix.hero_loudest", music, errors),
-            "payoff_breakdown_sec": _plan_range(timeline, "payoff_breakdown_sec",
-                                                "mix.payoff_breakdown", False, errors)}
+    return (_plan_range(timeline, "hero_sec", "mix.hero_loudest", music, errors),
+            _plan_range(timeline, "payoff_breakdown_sec", "mix.payoff_breakdown", False, errors))
 
 
-def _check_music_drop(metrics, beats, music, hero, errors):
-    """With --music, find the drop of the bed on the bar grid."""
-    if not music:
-        return
-    if beats is None:
-        _err(errors, "music.drop", "--music needs --beats or --sync-sheet for the bar grid")
-        return
-    metrics["music_drop"] = check_drop(music, beats, hero, errors)
+def _music_drop_metrics(beats, music, hero, errors):
+    """With --music, return {"music_drop": ...} for the drop of the bed on the bar grid."""
+    grid_missing = bool(music) and beats is None
+    if grid_missing:
+        _err(errors, "music.drop", MUSIC_GRID_MESSAGE)
+    can_measure = bool(music) and beats is not None
+    return {"music_drop": check_drop(music, beats, hero, errors)} if can_measure else {}
+
+
+def _hero_metrics(metrics, hero, errors):
+    """Return {"hero": ...} when the plan has a hero, else {}."""
+    return {"hero": check_hero(metrics["momentary"], hero, errors)} if hero else {}
+
+
+def _breakdown_metrics(mix, metrics, breakdown, errors):
+    """Return {"payoff_breakdown": ...} when the plan has a breakdown, else {}."""
+    found = check_payoff_breakdown(mix, breakdown, metrics["silences"], errors) if breakdown else None
+    return {"payoff_breakdown": found} if breakdown else {}
+
+
+def _check_plan(mix, metrics, timeline, errors):
+    """Check the hero and the breakdown of the plan. Return the hero range."""
+    hero, breakdown = _plan_ranges(timeline, errors)
+    metrics.update(_hero_metrics(metrics, hero, errors))
+    metrics.update(_breakdown_metrics(mix, metrics, breakdown, errors))
+    return hero
 
 
 def _check_arc(mix, metrics, timeline, beats, music, errors):
-    plan = _plan_ranges(timeline, errors)
-    if plan["hero_sec"]:
-        metrics["hero"] = check_hero(metrics["momentary"], plan["hero_sec"], errors)
-    if plan["payoff_breakdown_sec"]:
-        metrics["payoff_breakdown"] = check_payoff_breakdown(
-            mix, plan["payoff_breakdown_sec"], metrics["silences"], errors)
-    _check_music_drop(metrics, beats, music, plan["hero_sec"], errors)
+    """Check the hero, the breakdown and the music drop."""
+    metrics.update(_music_drop_metrics(beats, music, _check_plan(mix, metrics, timeline, errors), errors))
 
 
 def _check_mix(mix, timeline_path, errors):
@@ -839,17 +866,37 @@ def _print_sfx(folder):
     return 0
 
 
+class _InputErrorReport:
+    """On an input error inside the block, write a passed: false report to out."""
+
+    def __init__(self, out, mix):
+        self.out = out
+        self.mix = mix
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, kind, exc, trace):
+        failed = isinstance(exc, (BeatError, ToolError, OSError))
+        if failed:
+            write_report(_input_report(exc, self.mix), self.out)
+        return False
+
+
+def _gate_report(args):
+    """Run check() on the CLI inputs. An input error writes passed: false to --out."""
+    inputs = (args.mix, args.timeline, args.beats, args.sync_sheet, args.sfx_cues,
+              args.sfx_bus, args.bed, args.music, args.bed_beats)
+    with _InputErrorReport(args.out, args.mix):
+        return check(*inputs)
+
+
 def _run_gate(args):
     """Run the audio gate, write its report, and return its exit code.
 
     An input error writes a passed: false report to --out and returns 2.
     """
-    try:
-        report = check(args.mix, args.timeline, args.beats, args.sync_sheet, args.sfx_cues,
-                       args.sfx_bus, args.bed, args.music, args.bed_beats)
-    except (BeatError, ToolError, OSError) as exc:
-        write_report(_input_report(exc, args.mix), args.out)
-        raise
+    report = _gate_report(args)
     write_report(report, args.out)
     print(json.dumps(report, indent=2))
     return 0 if report["passed"] else 1
@@ -875,7 +922,8 @@ def main(argv=None):
 
 def _remove_stale_report(out):
     """Delete an earlier --out report, so a failed run never leaves an old pass."""
-    if out and os.path.lexists(out):
+    stale = bool(out) and os.path.lexists(out)
+    if stale:
         os.remove(out)
 
 
@@ -1010,8 +1058,13 @@ def _arc_tests(p, expect):
     expect("fail the loudest moment off the hero",
            check(p("hero.wav"), p("hero-bad.json")), ["mix.hero_loudest"])
 
-    _breakdown_tests(p, expect, tone)
+    _breakdown_dip_tests(p, expect, tone)
+    _breakdown_plan_tests(p, expect, tone)
+    _drop_tests(p, expect, tone)
 
+
+def _drop_tests(p, expect, tone):
+    """The drop of the bed lands on the hero start."""
     _synth(p("good8.wav"), tone, 8, -14.0)
     _render(p("music.wav"), "if(lt(t,4),0.02,0.5)*sin(2*PI*60*t)", 8)
     _write(p("beats8.json"), {"bpm": 120, "beats_sec": [k * 0.5 for k in range(16)],
@@ -1023,8 +1076,8 @@ def _arc_tests(p, expect):
                rules)
 
 
-def _breakdown_tests(p, expect, tone):
-    """A breakdown dips <= 12 dB and is never silent. No payoff field is required."""
+def _breakdown_dip_tests(p, expect, tone):
+    """A breakdown dips <= 12 dB and is never silent."""
     _write(p("breakdown.json"), {"meta": {"duration_sec": 5.0, "payoff_breakdown_sec": [2.0, 2.6]}})
     # Gains 0.5, 0.1 and 0 are dips of 6 dB, 20 dB and silence.
     for name, gain, rules in (("6db", 0.5, []), ("20db", 0.1, ["mix.payoff_breakdown"]),
@@ -1032,6 +1085,10 @@ def _breakdown_tests(p, expect, tone):
         _synth(p(f"breakdown-{name}.wav"), f"{tone}*if(between(t,2.0,2.6),{gain},1)", 5, -14.0)
         expect(f"{'pass' if not rules else 'fail'} a breakdown dip of {name}",
                check(p(f"breakdown-{name}.wav"), p("breakdown.json")), rules)
+
+
+def _breakdown_plan_tests(p, expect, tone):
+    """No payoff field is required, the old silence field fails, and bpm needs a hero."""
     _write(p("music.json"), {"meta": {"duration_sec": 4.0, "bpm": 120, "hero_sec": [1.5, 2.5]}})
     _synth(p("music-hero.wav"), f"{tone}*if(between(t,1.6,2.4),2,1)", 4, -14.0)
     expect("pass meta.bpm with no payoff field", check(p("music-hero.wav"), p("music.json")), [])
