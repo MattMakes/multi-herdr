@@ -19,7 +19,16 @@
 - The `video-*` skills take the promo film's lessons: capture staging,
   zoom plans, beat grids, music continuity, caption holds and stricter QA.
 - New bundled engine `hark`: a clean-room sound engine with analysis,
-  timeline, recipes and a sound bank. Its skill text lands later.
+  timeline, recipes and a sound bank, with its skill, the `sound-sourcing`
+  skill and the `sound-engineer` and `audio-reviewer` teammates. Every
+  hark code file is under 30 % similarity to its reference.
+- Video pipeline: the orchestrator delivers finished videos through git LFS
+  in 1 PR. QA checks report pass, fail or skip, and a skip that applies, an
+  empty scan or a stale report fails. A designed payoff silence is gone, the
+  audio ends on the song's real ending, and renders drop `-shortest`.
+- The test suite runs faster: the e2e delivery probe, the done push budget
+  and slow unit tests no longer wait on real timeouts, and tautological
+  tests are rewritten or removed.
 - `horch skills path` prints a stable skill script path. A task with no
   commits finishes without a land or push, and 2 first openers of a new
   ledger no longer collide.
