@@ -873,13 +873,12 @@ fn pr_is_not_applicable_when_the_task_landed_no_commit_the_base_lacks() {
     finish::worktree_new(&mut w.store, &w.tools.git, &id, "feat").unwrap();
     let r = w.finish(&id);
     assert!(r.complete, "{r:?}");
-    assert_eq!(step(&r, "land").status, "passed", "{r:?}");
-    assert_eq!(w.worktree().landed_commit.as_deref(), Some(w.base.as_str()));
+    // A task with 0 commits skips land and pr with the note "no commits".
+    assert_eq!(step(&r, "land").status, "not_applicable", "{r:?}");
+    assert_eq!(note(&r, "land"), "no commits");
+    assert_eq!(w.worktree().landed_commit, None);
     assert_eq!(step(&r, "pr").status, "not_applicable", "{r:?}");
-    assert_eq!(
-        note(&r, "pr"),
-        "the task landed no commit that main lacks, so it needs no pull request"
-    );
+    assert_eq!(note(&r, "pr"), "no commits");
     assert!(
         gh_calls(&state).is_empty(),
         "no gh call: {:?}",
