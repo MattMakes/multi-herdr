@@ -1254,13 +1254,13 @@ const chainOf = (p) => p.chain;
 const modeOf = (p) => p.mode;
 const asInput = (file) => ["-i", file];
 const audioArgs = (info) => (info.audio ? ["-map", "[a]", ...aacArgs()] : []);
-const sceneLength = (p) => p.frames;
+const addFrames = (n, p) => n + p.frames;
 const clipFileFor = (ctx) => (s) => sceneClip(ctx.sceneClips, s.id, ctx.aspect);
 const planFor = (ctx) => (s, i) => planScene(s, i, ctx);
 
 // Pad (or cut) the audio to the exact video length. A mux that stops at the first stream end cut 3 frames.
 function padAudio(plans, fps) {
-  const samples = Math.round((plans.reduce((n, p) => n + sceneLength(p), 0) / fps) * 48000);
+  const samples = Math.round((plans.reduce(addFrames, 0) / fps) * 48000);
   return `[0:a:0]aresample=48000,apad,atrim=end_sample=${samples}[a]`;
 }
 
@@ -1759,20 +1759,33 @@ const readJson = (file) => JSON.parse(readFileSync(file, "utf8"));
 const rasterRender = (scene, out, rasterSizes) => renderScene({ scene, out, fps: 10, width: 720, height: 160, rasterSizes });
 const sizeLine = (s) => `${s.src} ${s.natural_px.join("x")} -> ${s.drawn_px.join("x")}`;
 
-async function testRasterKinds(root) {
+// Every image kind, a vector SVG that is skipped, and a 100 px video clip for a canvas draw.
+async function rasterKindsDir(root) {
   const dir = await rasterDir(root, "raster-kinds", ["bg.png", "canvas.png", "poster.png", "svg.png"]);
   writeFileSync(join(dir, "vector.svg"), VECTOR_SVG);
   writeFileSync(join(dir, "index.html"), KINDS_HTML);
   await ffmpeg(["-f", "lavfi", "-i", "testsrc2=s=100x100:rate=10:duration=1", "-pix_fmt", "yuv420p", join(dir, "clip.mp4")]);
+  return dir;
+}
+
+async function testRasterKinds(root) {
+  const dir = await rasterKindsDir(root);
   await rasterRender(join(dir, "index.html"), join(dir, "frames"), join(dir, "raster-sizes.json"));
   const report = readJson(join(dir, "raster-sizes.json"));
   assertEq(report.step_sec, RASTER_STEP_SEC, "step_sec");
   const at = (t) => report.samples.filter((s) => s.t_sec === t).map(sizeLine);
-  const want = ["bg.png", "canvas.png", "clip.mp4", "poster.png", "svg.png"].map((f) => `${f} 100x100 -> 130x130`);
+  const want = KIND_FILES.map((f) => `${f} 100x100 -> 130x130`);
   assertEq([at(0), at(0.1)], [want, want], "samples at 0 and 0.1 s");
-  const facts = (src) => report.samples.filter((s) => s.src === src).map((s) => [s.source, s.sampling, s.real_px]);
-  assertEq(facts("clip.mp4")[0], ["video", "nearest", undefined], "canvas video draw");
-  assertEq(facts("canvas.png")[0], [undefined, "smooth", undefined], "canvas image draw");
+  checkDrawFacts(report.samples);
+}
+
+const KIND_FILES = ["bg.png", "canvas.png", "clip.mp4", "poster.png", "svg.png"];
+const drawFactsOf = (samples, src) => samples.filter((s) => s.src === src).map((s) => [s.source, s.sampling, s.real_px])[0];
+
+// A canvas video draw is marked as video and nearest (smoothing off); an image draw is smooth.
+function checkDrawFacts(samples) {
+  assertEq(drawFactsOf(samples, "clip.mp4"), ["video", "nearest", undefined], "canvas video draw");
+  assertEq(drawFactsOf(samples, "canvas.png"), [undefined, "smooth", undefined], "canvas image draw");
 }
 
 const QA_SCRIPTS = join(SKILL_DIR, "..", "video-qa", "scripts");
