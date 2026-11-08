@@ -381,3 +381,48 @@ def test_block_digest_is_stable():
 
     e = {"recipe": "r", "fn": "render", "params": {"b": 1, "a": 2.0}, "seed": 3, "meta": {"x": 1}}
     assert _build.block_digest(e) == _build.block_digest({**e, "meta": None}) and len(_build.block_digest(e)) == 10
+
+
+def _catalog_with(monkeypatch, forge04: dict, targets: dict) -> None:
+    cat = bank.catalog()
+    monkeypatch.setitem(cat, "forge04", forge04)
+    monkeypatch.setitem(cat, "targets", targets)
+    monkeypatch.setitem(cat, "categories", {**cat["categories"], "notify": {**cat["categories"]["notify"],
+                                                                         "recipe": "t_bell"}})
+
+
+def test_build_forge04_from_palette(fixture_bank, tmp_path, monkeypatch):
+    row = {"recipe": "t_bell", "fn": "render", "seed": 40, "kinds": ["bell"], "notes": "a test member"}
+    _catalog_with(monkeypatch, {"notify/m9": row}, {})
+    doc = bank.build_forge04(str(tmp_path / "forge04.json"))
+    entry = doc["entries"]["notify/m9"]
+    assert entry["params"] == {"f0": 880.0, "tau": 0.1, "length": 0.4} and entry["kinds"] == ["bell"]
+    assert entry["audit"]["seeds"] == [40, 45] and entry["audit"]["clean"] >= 5 and entry["audit"]["role"] == "bell"
+    assert entry["original"] == {"made": "recipe", "max_ref_clap": None, "ref": "none"}
+    fresh = bank.build_forge04(str(tmp_path / "f2.json"), ref_clap={"notify/m9": 0.7})
+    assert fresh["entries"]["notify/m9"]["original"] == {"made": "recipe", "max_ref_clap": 0.7}
+    with pytest.raises(bank.BankError, match="over the limit"):
+        bank.build_forge04(str(tmp_path / "f3.json"), ref_clap={"notify/m9": 0.97})
+    _catalog_with(monkeypatch, {"notify/nope": row}, {})
+    with pytest.raises(bank.BankError, match="no palette member 'nope'"):
+        bank.build_forge04(str(tmp_path / "f4.json"))
+
+
+def test_build_derive_logs_target_misses(fixture_bank, tmp_path, monkeypatch):
+    target = {"dur_s": 2.0, "peak_s": 0.005, "centroid_hz": 880.0, "lufs_m_max": -20.0}
+    _catalog_with(monkeypatch, {}, {"notify/m9": target, "fit/x/y": {}, "pluck/kalimba": {}})
+    lines: list[str] = []
+    doc = bank.build_derive(str(tmp_path / "forge_v2.json"), log=lines.append)
+    entry = doc["entries"]["notify/m9"]
+    assert list(doc["entries"]) == ["notify/m9"] and entry["seed"] == 0 and entry["mode"] == "designed"
+    assert any(line.startswith("notify/m9: ") and "misses dur" in line for line in lines)
+    assert lines[-1].startswith("wrote ") and "1 entries (forge_v2h1)" in lines[-1]
+
+
+def test_maintenance_cli_build_error(fixture_bank, tmp_path, monkeypatch, capsys):
+    from hark.forge.bank.__main__ import main
+
+    _catalog_with(monkeypatch, {}, {"notify/bad": {}})
+    assert main(["build", "--derive", "-o", str(tmp_path / "x.json")]) == 1
+    err = capsys.readouterr().err
+    assert err.startswith("bank: 1 pick(s) refused, nothing written:") and not (tmp_path / "x.json").exists()

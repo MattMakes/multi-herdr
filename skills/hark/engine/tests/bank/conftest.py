@@ -409,6 +409,7 @@ _maybe("hark.forge.engine.polish", _polish)
 _maybe("hark.forge.engine.knobs", _knobs)
 _maybe("hark.forge.engine.schema", _schema)
 _maybe("hark.forge.recipes", _recipes)
+_maybe("hark.forge.recipes.tonal", lambda: {"measure": lambda x: {"dur_s": len(x) / SR, "corr": 1.0}})
 _maybe("hark.fit", _fit)
 _maybe("hark.fit.pipeline.auto", _fit_auto)
 
@@ -475,6 +476,9 @@ TEST_RECIPES = {
     "t_air": _recipe(air_render, {"rise": 0.12, "fall": 0.25}),
     "t_double": _recipe(double_render, {"gap": 0.12, "length": 0.4}),
 }
+
+
+TEST_RECIPES["t_bell"].FAMILIES = {"notify": [("m9", {"f0": 880.0, "tau": 0.1}), ("bad", {"length": 0.0})]}
 
 
 def fit_render(model: dict, seed: int = 0, take=None, bed=True, **knobs) -> np.ndarray:
