@@ -39,6 +39,17 @@ def dbv(x: float) -> float:
     return round(mst.db(float(x)), 2)
 
 
+def _kbps(*rates):
+    """The first plausible bit rate in kbps, or None."""
+    def one(br):
+        try:
+            v = float(br)
+        except (TypeError, ValueError):
+            return None
+        return round(v / 1000.0, 1) if 1 <= v <= 10_000_000 else None
+    return next((k for k in map(one, rates) if k is not None), None)
+
+
 def probe(path: str) -> dict:
     r = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "a:0", "-show_entries",
                         "stream=codec_name,sample_rate,channels,bit_rate:format=bit_rate", "-of", "json", path],
@@ -49,17 +60,9 @@ def probe(path: str) -> dict:
     st = (data.get("streams") or [{}])[0]
     if not st:
         return {"probe_error": "no audio stream"}
-    kbps = None
-    for br in (st.get("bit_rate"), (data.get("format") or {}).get("bit_rate")):
-        try:
-            v = float(br)
-        except (TypeError, ValueError):
-            continue
-        if 1 <= v <= 10_000_000:
-            kbps = round(v / 1000.0, 1)
-            break
+    fmt = data.get("format") or {}
     return {"codec": st.get("codec_name"), "src_rate": int(st.get("sample_rate") or 0),
-            "channels": int(st.get("channels") or 0), "kbps": kbps}
+            "channels": int(st.get("channels") or 0), "kbps": _kbps(st.get("bit_rate"), fmt.get("bit_rate"))}
 
 
 def frame_rms(x: np.ndarray, n: int) -> np.ndarray:
@@ -141,66 +144,91 @@ def spectrogram(path: str, folder: str) -> dict:
     return {"png": png}
 
 
-def analyse(path: str, music: bool = False, png_dir: str | None = None) -> dict:
-    res = {"file": path}
+def _load(path: str, res: dict):
+    """Probe and decode path into res. Returns the samples, or None with res["error"] set."""
     if not os.path.isfile(path):
         res["error"] = "file not found"
-        return res
-    pr = probe(path)
-    res.update(pr)
+        return None
+    res.update(probe(path))
     try:
         x = mix.decode(path).astype(np.float64)
     except mix.DesignError as e:
         res["error"] = f"decode failed: {e}"
+        return None
+    res["duration"] = round(len(x) / SR, 3)
+    return x
+
+
+def _levels(x: np.ndarray, mono: np.ndarray, peak: float, dur: float) -> dict:
+    lufs = mst.integrated(x) if dur > 0.45 else None
+    r20 = frame_rms(mono, int(0.02 * SR))
+    floor, loud = dbv(np.percentile(r20, 10)), dbv(np.max(r20))
+    return {"peak_dbfs": dbv(peak), "rms_dbfs": dbv(math.sqrt(float(np.mean(x ** 2)))),
+            "clipped_samples": int(np.count_nonzero(np.abs(x) >= 0.999)), "dc": round(float(np.mean(mono)), 6),
+            "lufs": round(lufs, 2) if lufs is not None and math.isfinite(lufs) else None,
+            "noise_floor_dbfs": floor, "loudest_20ms_dbfs": loud, "dynamic_range_db": round(loud - floor, 2)}
+
+
+def _stereo(x: np.ndarray) -> dict:
+    side = (x[:, 0] - x[:, 1]) / 2
+    if not np.any(side != 0):
+        return {"side_to_mid_db": None}
+    mid = (x[:, 0] + x[:, 1]) / 2
+    return {"side_to_mid_db": round(dbv(math.sqrt(float(np.mean(side ** 2))))
+                                    - dbv(math.sqrt(float(np.mean(mid ** 2)))), 2)}
+
+
+def _envelope(mono: np.ndarray) -> dict:
+    r1 = frame_rms(mono, int(0.001 * SR))
+    attack = round(float(np.argmax(r1 >= 0.1 * r1.max())) * 0.001, 4) if r1.max() > 0 else None
+    return {"attack_at": attack, "peak_at": round(float(np.argmax(r1)) * 0.001, 4)}
+
+
+def _spectral(y: np.ndarray, audible: bool) -> tuple[dict, np.ndarray]:
+    """Centroid and rolloff of the feature signal, and its onset times."""
+    import librosa
+    if len(y) < N_FFT or not audible:
+        return {"centroid_hz": None, "rolloff95_hz": None}, np.array([])
+    S = np.abs(librosa.stft(y, n_fft=N_FFT, hop_length=HOP))
+    cen = librosa.feature.spectral_centroid(S=S, sr=FEAT_SR)[0]
+    roll = librosa.feature.spectral_rolloff(S=S, sr=FEAT_SR, roll_percent=0.95)[0]
+    live = S.sum(axis=0) > 1e-6
+    if live.any():
+        cen, roll = cen[live], roll[live]
+    on = librosa.onset.onset_detect(y=y, sr=FEAT_SR, hop_length=HOP, backtrack=False, units="time")
+    return {"centroid_hz": round(float(np.median(cen)), 1),
+            "rolloff95_hz": round(float(np.percentile(roll, 90)), 1)}, on
+
+
+def _spikes(mono: np.ndarray) -> dict:
+    w = frame_rms(mono, int(0.1 * SR))
+    med = float(np.median(w)) if len(w) else 0.0
+    spikes = [round(i * 0.1, 1) for i, v in enumerate(w) if med > 0 and v > 4 * med]
+    std = round(float(np.std(20 * np.log10(w + 1e-10))), 2) if len(w) > 1 else 0.0
+    return {"spikes_over_12db": spikes[:30], "level_std_db_100ms": std}
+
+
+def analyse(path: str, music: bool = False, png_dir: str | None = None) -> dict:
+    res = {"file": path}
+    x = _load(path, res)
+    if x is None:
         return res
     dur = len(x) / SR
-    res["duration"] = round(dur, 3)
     if dur < 0.02:
         return {"file": path, "error": "too short"}
     mono = x.mean(axis=1)
     peak = float(np.max(np.abs(x)))
-    res["peak_dbfs"] = dbv(peak)
-    res["rms_dbfs"] = dbv(math.sqrt(float(np.mean(x ** 2))))
-    res["clipped_samples"] = int(np.count_nonzero(np.abs(x) >= 0.999))
-    res["dc"] = round(float(np.mean(mono)), 6)
-    lufs = mst.integrated(x) if dur > 0.45 else None
-    res["lufs"] = round(lufs, 2) if lufs is not None and math.isfinite(lufs) else None
-    r20 = frame_rms(mono, int(0.02 * SR))
-    res["noise_floor_dbfs"] = dbv(np.percentile(r20, 10))
-    res["loudest_20ms_dbfs"] = dbv(np.max(r20))
-    res["dynamic_range_db"] = round(res["loudest_20ms_dbfs"] - res["noise_floor_dbfs"], 2)
-    side = (x[:, 0] - x[:, 1]) / 2
-    if np.any(side != 0):
-        mid = (x[:, 0] + x[:, 1]) / 2
-        res["side_to_mid_db"] = round(dbv(math.sqrt(float(np.mean(side ** 2))))
-                                      - dbv(math.sqrt(float(np.mean(mid ** 2)))), 2)
-    else:
-        res["side_to_mid_db"] = None
-    r1 = frame_rms(mono, int(0.001 * SR))
-    res["attack_at"] = round(float(np.argmax(r1 >= 0.1 * r1.max())) * 0.001, 4) if r1.max() > 0 else None
-    res["peak_at"] = round(float(np.argmax(r1)) * 0.001, 4)
-
-    import librosa
+    res.update(_levels(x, mono, peak, dur))
+    res.update(_stereo(x))
+    res.update(_envelope(mono))
     import soxr
     y = soxr.resample(mono.astype(np.float32), SR, FEAT_SR).astype(np.float32)
-    if len(y) >= N_FFT and peak > 0:
-        S = np.abs(librosa.stft(y, n_fft=N_FFT, hop_length=HOP))
-        cen = librosa.feature.spectral_centroid(S=S, sr=FEAT_SR)[0]
-        roll = librosa.feature.spectral_rolloff(S=S, sr=FEAT_SR, roll_percent=0.95)[0]
-        live = S.sum(axis=0) > 1e-6
-        res["centroid_hz"] = round(float(np.median(cen[live] if live.any() else cen)), 1)
-        res["rolloff95_hz"] = round(float(np.percentile(roll[live] if live.any() else roll, 90)), 1)
-        on = librosa.onset.onset_detect(y=y, sr=FEAT_SR, hop_length=HOP, backtrack=False, units="time")
-    else:
-        res["centroid_hz"], res["rolloff95_hz"], on = None, None, np.array([])
+    spec, on = _spectral(y, peak > 0)
+    res.update(spec)
     res["band_db_rel_1_4k"] = band_rel(mono)
     res["onset_count"] = int(len(on))
     res["onsets"] = [round(float(t), 3) for t in on[:40]]
-    w = frame_rms(mono, int(0.1 * SR))
-    med = float(np.median(w)) if len(w) else 0.0
-    spikes = [round(i * 0.1, 1) for i, v in enumerate(w) if med > 0 and v > 4 * med]
-    res["spikes_over_12db"] = spikes[:30]
-    res["level_std_db_100ms"] = round(float(np.std(20 * np.log10(w + 1e-10))), 2) if len(w) > 1 else 0.0
+    res.update(_spikes(mono))
     if music:
         res.update(music_features(y, FEAT_SR, dur))
     if png_dir:
@@ -209,34 +237,43 @@ def analyse(path: str, music: bool = False, png_dir: str | None = None) -> dict:
     return res
 
 
-def line(r: dict, music: bool) -> str:
+def _format_parts(r: dict) -> list[str]:
     fmt = f"{r.get('codec')} {r.get('kbps') or '?'} kbps {(r.get('src_rate') or 0) / 1000:g} kHz {r.get('channels')}ch"
     lufs = f"{r['lufs']:.1f} LUFS" if r.get("lufs") is not None else "LUFS n.a."
     stereo = "mono" if r.get("side_to_mid_db") is None else f"side/mid {r['side_to_mid_db']:.1f} dB"
-    parts = [os.path.basename(r["file"]), fmt, f"{r['duration']:.2f} s", f"peak {r['peak_dbfs']:.1f}", lufs,
-             f"floor {r['noise_floor_dbfs']:.1f}", f"attack {r['attack_at']} s",
-             f"centroid {r.get('centroid_hz')} Hz", f"rolloff95 {r.get('rolloff95_hz')} Hz", stereo]
-    if music:
-        bpm = r.get("tempo_from_ibi") or r.get("tempo")
-        parts.append(f"{bpm} BPM")
-        if "ibi_std_ms" in r:
-            parts.append(f"beat spread {r['ibi_std_ms']} ms")
-        if r.get("key"):
-            parts.append(r["key"][0]["key"])
-    checks = []
+    return [os.path.basename(r["file"]), fmt, f"{r['duration']:.2f} s", f"peak {r['peak_dbfs']:.1f}", lufs,
+            f"floor {r['noise_floor_dbfs']:.1f}", f"attack {r['attack_at']} s",
+            f"centroid {r.get('centroid_hz')} Hz", f"rolloff95 {r.get('rolloff95_hz')} Hz", stereo]
+
+
+def _music_parts(r: dict) -> list[str]:
+    parts = [f"{r.get('tempo_from_ibi') or r.get('tempo')} BPM"]
+    if "ibi_std_ms" in r:
+        parts.append(f"beat spread {r['ibi_std_ms']} ms")
+    if r.get("key"):
+        parts.append(r["key"][0]["key"])
+    return parts
+
+
+def _is_dull(r: dict, silent: bool) -> bool:
+    roll = r.get("rolloff95_hz")
+    return not silent and roll is not None and roll < 8000
+
+
+def _checks(r: dict) -> list[str]:
     silent = r["peak_dbfs"] <= -90
-    if silent:
-        checks.append("digital silence")
-    if r["clipped_samples"] > 0:
-        checks.append(f"clipped samples ({r['clipped_samples']})")
-    if r.get("codec") == "mp3" and r.get("kbps") and r["kbps"] < 192:
-        checks.append("low-bitrate mp3")
-    if r.get("src_rate") and r["src_rate"] < 44100:
-        checks.append("low sample rate")
-    if r.get("rolloff95_hz") is not None and r["rolloff95_hz"] < 8000 and not silent:
-        checks.append("dull")
-    if r["spikes_over_12db"]:
-        checks.append(f"spikes ({len(r['spikes_over_12db'])})")
+    tests = [(silent, "digital silence"),
+             (r["clipped_samples"] > 0, f"clipped samples ({r['clipped_samples']})"),
+             (r.get("codec") == "mp3" and (r.get("kbps") or 999) < 192, "low-bitrate mp3"),
+             ((r.get("src_rate") or 44100) < 44100, "low sample rate"),
+             (_is_dull(r, silent), "dull"),
+             (bool(r["spikes_over_12db"]), f"spikes ({len(r['spikes_over_12db'])})")]
+    return [label for cond, label in tests if cond]
+
+
+def line(r: dict, music: bool) -> str:
+    parts = _format_parts(r) + (_music_parts(r) if music else [])
+    checks = _checks(r)
     text = ", ".join(parts)
     return text + ("; CHECK: " + ", ".join(checks) if checks else "")
 
@@ -252,6 +289,35 @@ def parse(argv):
     return p.parse_args(argv)
 
 
+def _show(results: list, as_json: bool) -> None:
+    if as_json:
+        say(json.dumps(results, indent=1))
+        return
+    for r in results:
+        say(r["summary"] if "summary" in r else f"{os.path.basename(r['file'])}: {r['error']}")
+
+
+def _status(results: list, failed: list) -> str:
+    msg = f"{len(results)} file(s) analysed, {len(failed)} failed"
+    if failed:
+        msg += " (" + ", ".join(os.path.basename(r["file"]) for r in failed[:6]) + ")"
+    return msg
+
+
+def _write_out(out: str, results: list) -> str:
+    os.makedirs(os.path.dirname(os.path.abspath(out)), exist_ok=True)
+    with open(out, "w", encoding="utf-8") as fh:
+        json.dump(results, fh, indent=1)
+    return f"; wrote {out}"
+
+
+def _close(a, results: list, failed: list) -> None:
+    """Write --out and print the status line (not with --json)."""
+    msg = _status(results, failed) + (_write_out(a.out, results) if a.out else "")
+    if not a.json:
+        say(msg)
+
+
 def main(argv=None) -> int:
     a = parse(sys.argv[1:] if argv is None else argv)
     if a.self_test:
@@ -261,22 +327,41 @@ def main(argv=None) -> int:
         return 2
     results = [analyse(f, a.music, a.png) for f in a.files]
     failed = [r for r in results if r.get("error")]
-    if a.json:
-        say(json.dumps(results, indent=1))
-    else:
-        for r in results:
-            say(r["summary"] if "summary" in r else f"{os.path.basename(r['file'])}: {r['error']}")
-    msg = f"{len(results)} file(s) analysed, {len(failed)} failed"
-    if failed:
-        msg += " (" + ", ".join(os.path.basename(r["file"]) for r in failed[:6]) + ")"
-    if a.out:
-        os.makedirs(os.path.dirname(os.path.abspath(a.out)), exist_ok=True)
-        with open(a.out, "w", encoding="utf-8") as fh:
-            json.dump(results, fh, indent=1)
-        msg += f"; wrote {a.out}"
-    if not a.json:
-        say(msg)
+    _show(results, a.json)
+    _close(a, results, failed)
     return 1 if failed else 0
+
+
+def _test_mono(ck, fx, d: str) -> str:
+    x = np.zeros(SR)
+    b = fx.burst(0.1, 900, 40, 1, 0.8)[:, 0]
+    x[int(0.25 * SR):int(0.25 * SR) + len(b)] = b
+    mono = fx.write(os.path.join(d, "mono.wav"), x, subtype="FLOAT")
+    r = analyse(mono, png_dir=os.path.join(d, "png"))
+    ck("S9 mono: 1 channel, side_to_mid null", r["channels"] == 1 and r["side_to_mid_db"] is None)
+    ck("S9 attack at 0.25 s +-2 ms", abs(r["attack_at"] - 0.25) <= 0.002)
+    ck("S9 peak equals the burst peak (no 3 dB loss)", abs(r["peak_dbfs"] - dbv(np.max(np.abs(b)))) < 0.05)
+    ck("spectrogram written", os.path.isfile(r.get("png", "")))
+    short = fx.write(os.path.join(d, "short.wav"), np.zeros(int(0.01 * SR)) + 0.1)
+    ck("S10 a 10 ms file is too short, exit 1",
+       analyse(short).get("error") == "too short" and main([short]) == 1)
+    return mono
+
+
+def _test_bed(ck, fx, d: str) -> None:
+    bed = fx.noise_bed(3.0, 0.05)
+    bed[int(1.5 * SR):int(1.6 * SR)] *= 20
+    r = analyse(fx.write(os.path.join(d, "amb.wav"), bed))
+    spikes = r["spikes_over_12db"]
+    ck("a loud event in a bed is a spike", bool(spikes) and abs(spikes[0] - 1.5) < 0.11
+       and r["side_to_mid_db"] is not None and "CHECK: " in r["summary"])
+
+
+def _test_music(ck, fx, d: str) -> None:
+    r = analyse(fx.write(os.path.join(d, "song.wav"), fx.click_track(120, 12)), music=True)
+    ck("music: tempo near 120 and a key", abs((r.get("tempo_from_ibi") or 0) - 120) < 4 and len(r["key"]) == 3)
+    ck("music: bars and sections", len(r.get("bar_starts_if_beat0_is_downbeat", [])) > 2 and
+       ("sections_at" in r or "sections_error" in r))
 
 
 def self_test() -> int:
@@ -284,30 +369,9 @@ def self_test() -> int:
     import fixtures as fx
     ck = fx.Checker()
     with tempfile.TemporaryDirectory() as d:
-        n = SR
-        x = np.zeros(n)
-        b = fx.burst(0.1, 900, 40, 1, 0.8)[:, 0]
-        x[int(0.25 * SR):int(0.25 * SR) + len(b)] = b
-        mono = fx.write(os.path.join(d, "mono.wav"), x, subtype="FLOAT")
-        r = analyse(mono, png_dir=os.path.join(d, "png"))
-        ck("S9 mono: 1 channel, side_to_mid null", r["channels"] == 1 and r["side_to_mid_db"] is None)
-        ck("S9 attack at 0.25 s +-2 ms", abs(r["attack_at"] - 0.25) <= 0.002)
-        ck("S9 peak equals the burst peak (no 3 dB loss)", abs(r["peak_dbfs"] - dbv(np.max(np.abs(b)))) < 0.05)
-        ck("spectrogram written", os.path.isfile(r.get("png", "")))
-        short = fx.write(os.path.join(d, "short.wav"), np.zeros(int(0.01 * SR)) + 0.1)
-        ck("S10 a 10 ms file is too short, exit 1",
-           analyse(short).get("error") == "too short" and main([short]) == 1)
-        bed = fx.noise_bed(3.0, 0.05)
-        bed[int(1.5 * SR):int(1.6 * SR)] *= 20
-        amb = fx.write(os.path.join(d, "amb.wav"), bed)
-        r = analyse(amb)
-        ck("a loud event in a bed is a spike", r["spikes_over_12db"] and abs(r["spikes_over_12db"][0] - 1.5) < 0.11
-           and r["side_to_mid_db"] is not None and "CHECK: " in r["summary"])
-        song = fx.write(os.path.join(d, "song.wav"), fx.click_track(120, 12))
-        r = analyse(song, music=True)
-        ck("music: tempo near 120 and a key", abs((r.get("tempo_from_ibi") or 0) - 120) < 4 and len(r["key"]) == 3)
-        ck("music: bars and sections", len(r.get("bar_starts_if_beat0_is_downbeat", [])) > 2 and
-           ("sections_at" in r or "sections_error" in r))
+        mono = _test_mono(ck, fx, d)
+        _test_bed(ck, fx, d)
+        _test_music(ck, fx, d)
         out = os.path.join(d, "o", "a.json")
         ck("--out writes the list", main([mono, "--out", out]) == 0 and len(json.load(open(out))) == 1)
     return ck.code()
