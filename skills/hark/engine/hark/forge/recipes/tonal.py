@@ -1,10 +1,10 @@
-"""Shared tonal building blocks for the UI and tonal recipes.
+"""Tonal parts that the UI and tonal recipes build on.
 
-A soft onset with a natural ring-down, pitch tracks, partials, pitch-following
-noise, contact bursts, struck modes, a small room and a finishing chain. Film UI
-sounds start over 20-60 ms, ring down within 0.2-0.4 s and have some stereo
-width, so these blocks default to that shape. Every random draw uses the
-generator that the caller passes.
+The parts here are envelopes, pitch curves, sine voices with overtones, noise
+that tracks a pitch, short noise hits, damped resonances, a small room and the
+output chain. Interface sounds in film rise over 20 to 60 ms, die away in 0.2 to
+0.4 s and sit a little wide in stereo, and the defaults follow that. All
+randomness comes from the generator argument.
 """
 
 from __future__ import annotations
@@ -13,277 +13,357 @@ from collections.abc import Sequence
 from typing import Any
 
 import numpy as np
+from numpy import (
+    arange,
+    argmax,
+    array,
+    asarray,
+    broadcast_to,
+    clip,
+    column_stack,
+    concatenate,
+    convolve,
+    cos,
+    cumsum,
+    exp,
+    flatnonzero,
+    hanning,
+    linspace,
+    log2,
+    maximum,
+    mean,
+    median,
+    minimum,
+    ndarray,
+    ones,
+    pi,
+    sin,
+    sqrt,
+    zeros,
+)
+from numpy.lib.stride_tricks import sliding_window_view
 
 from hark.forge.engine import dsp, fx
 
 SR = 48000
-_NYQ_EDGE = 0.45 * SR
-_TWO_PI = 2.0 * np.pi
+_FADE_TOP_HZ = 0.45 * SR
+_CYCLE = 2.0 * pi
+_TINY = 1e-12
+_EMPTY = 1e-30
+_SHORTEST = 1e-4  # seconds; keeps time constants above 0
+_SHORTEST_HIT = 1e-5
+_BYPASS = 0.005  # width, pan and wet at or under this do nothing
+_SEMITONES = 12.0
+_MS = 48  # samples in 1 ms
+_HALF_SPAN = 120  # samples each side of a level window
+_HOP = 240
+_QUARTER_OCT = 2 ** 0.25
 
 
-def _rise(t: np.ndarray, onset: float, curve: float) -> np.ndarray:
-    u = np.clip(t / max(onset, 1e-4), 0.0, 1.0) ** curve
-    return 0.5 - 0.5 * np.cos(np.pi * u)
+def _falloff(tt: ndarray, span: float, floor: float) -> ndarray:
+    return exp(-tt / max(span, floor))
 
 
-def env(t: np.ndarray, onset: float, tau: float, hold: float = 0, curve: float = 1,
-        dcurve: float = 1) -> np.ndarray:
-    """Raised-cosine rise over `onset` s, then an exponential-like decay."""
-    x = np.maximum(t - onset - hold, 0.0) / max(tau, 1e-4)
-    decay = np.exp(-x) if dcurve == 1 else np.exp(-(x ** dcurve))
-    return _rise(t, onset, curve) * decay
+def _hann_up(u: Any) -> Any:
+    return 0.5 - 0.5 * cos(pi * u)
 
 
-def two_rate(t: np.ndarray, onset: float, fast: float, tf: float, ts: float, curve: float = 1) -> np.ndarray:
-    """Rise, then a fast decay share and a slow ring share."""
-    tm = np.maximum(t - onset, 0.0)
-    mix = fast * np.exp(-tm / max(tf, 1e-4)) + (1 - fast) * np.exp(-tm / max(ts, 1e-4))
-    return _rise(t, onset, curve) * mix
+def _unit_peak(sig: ndarray) -> ndarray:
+    return sig / (np.max(np.abs(sig)) + _TINY)
 
 
-def glide(t: np.ndarray, f0: float, bend_st: float = 0, ptau: float = 0.02) -> np.ndarray:
-    """Pitch track that starts bend_st semitones off f0 and settles on f0."""
-    return f0 * 2.0 ** ((bend_st / 12.0) * np.exp(-t / max(ptau, 1e-4)))
+def _phase(gen: np.random.Generator, hz_curve: Any) -> ndarray:
+    return _CYCLE * cumsum(hz_curve) / SR + gen.uniform(0, _CYCLE)
 
 
-def rise_track(t: np.ndarray, f0: float, rise_st: float, rtau: float) -> np.ndarray:
-    """Pitch track that rises rise_st semitones from f0 (a bubble)."""
-    return f0 * 2.0 ** ((rise_st / 12.0) * (1.0 - np.exp(-t / max(rtau, 1e-4))))
+def _shift_semis(base: float, semis: Any) -> Any:
+    return base * 2.0 ** semis
+
+
+def _soft_attack(tt: ndarray, onset: float, curve: float) -> ndarray:
+    return _hann_up(clip(tt / max(onset, _SHORTEST), 0.0, 1.0) ** curve)
+
+
+def env(t: ndarray, onset: float, tau: float, hold: float = 0, curve: float = 1,
+        dcurve: float = 1) -> ndarray:
+    """Rise on a half cosine for `onset` seconds, hold, then fall away."""
+    lag = maximum(t - onset - hold, 0.0) / max(tau, _SHORTEST)
+    if dcurve != 1:
+        lag = lag ** dcurve
+    return _soft_attack(t, onset, curve) * exp(-lag)
+
+
+def two_rate(t: ndarray, onset: float, fast: float, tf: float, ts: float, curve: float = 1) -> ndarray:
+    """Rise, then a quick fall weighted by `fast` over a slower ring."""
+    since = maximum(t - onset, 0.0)
+    quick = fast * _falloff(since, tf, _SHORTEST)
+    slow = (1 - fast) * _falloff(since, ts, _SHORTEST)
+    return _soft_attack(t, onset, curve) * (quick + slow)
+
+
+def glide(t: ndarray, f0: float, bend_st: float = 0, ptau: float = 0.02) -> ndarray:
+    """Pitch curve that begins bend_st semitones away and settles to f0."""
+    return _shift_semis(f0, (bend_st / _SEMITONES) * _falloff(t, ptau, _SHORTEST))
+
+
+def rise_track(t: ndarray, f0: float, rise_st: float, rtau: float) -> ndarray:
+    """Pitch curve that climbs rise_st semitones above f0, as a bubble does."""
+    return _shift_semis(f0, (rise_st / _SEMITONES) * (1.0 - _falloff(t, rtau, _SHORTEST)))
 
 
 def nyquist_fade(f: Any, q: float = 1.0) -> Any:
-    """Gain of a partial at ratio q on track f: fades out over 2.4 kHz below 0.45 SR."""
-    return np.clip((_NYQ_EDGE - q * np.asarray(f, dtype=float)) / 2400.0, 0.0, 1.0)
+    """Level for overtone q of pitch f, going to 0 across the 2.4 kHz under 0.45 SR."""
+    return clip((_FADE_TOP_HZ - q * asarray(f, dtype=float)) / 2400.0, 0.0, 1.0)
 
 
 def tone(f: Any, r: np.random.Generator, parts: Sequence[tuple[float, float, float]] = (),
-         e: np.ndarray | None = None) -> np.ndarray:
-    """Sine on track f with optional partials (ratio, amp, decay power)."""
-    f = np.asarray(f, dtype=float)
-    e = np.ones(len(f)) if e is None else np.asarray(e, dtype=float)
-    phase = _TWO_PI * np.cumsum(f) / SR + r.uniform(0, _TWO_PI)
-    y = np.sin(phase) * e
-    for q, a, d in parts:
-        if a <= 0:
-            continue
-        y = y + a * nyquist_fade(f, q) * e ** d * np.sin(q * phase + r.uniform(0, _TWO_PI))
-    return y
+         e: ndarray | None = None) -> ndarray:
+    """Sine voice that follows pitch f, plus overtones given as (ratio, level, envelope power)."""
+    hz_curve = asarray(f, dtype=float)
+    shape = ones(len(hz_curve)) if e is None else asarray(e, dtype=float)
+    base_ph = _phase(r, hz_curve)
+    voice = sin(base_ph) * shape
+    for mult, level, power in parts:
+        if level > 0:
+            over = level * nyquist_fade(hz_curve, mult) * shape ** power
+            voice = voice + over * sin(mult * base_ph + r.uniform(0, _CYCLE))
+    return voice
 
 
-def follow_noise(n: int, r: np.random.Generator, fc: Any, q: float, e: np.ndarray) -> np.ndarray:
-    """Band-passed noise around fc, as strong as a unit sine where e is live."""
-    fc = np.broadcast_to(np.minimum(np.asarray(fc, dtype=float), 16000.0), (n,)).copy()
-    b = dsp.svf(r.standard_normal(n), fc, q, "band")
-    e = np.asarray(e, dtype=float)
-    live = e > 0.1 * (np.max(e) + 1e-12)
-    rms = np.sqrt(np.mean(b[live] ** 2)) if np.any(live) else 0.0
-    return b * (np.sqrt(0.5) / (rms + 1e-12)) * e
+def follow_noise(n: int, r: np.random.Generator, fc: Any, q: float, e: ndarray) -> ndarray:
+    """Noise band-passed at fc and scaled to the level of a unit sine where e is on."""
+    shape = asarray(e, dtype=float)
+    on = shape > 0.1 * (np.max(shape) + _TINY)
+    cutoff = broadcast_to(minimum(asarray(fc, dtype=float), 16000.0), (n,)).copy()
+    banded = dsp.svf(r.standard_normal(n), cutoff=cutoff, q=q, mode="band")
+    level = sqrt(mean(banded[on] ** 2)) if on.any() else 0.0
+    gain = sqrt(0.5) / (level + _TINY)
+    return banded * gain * shape
 
 
 def burst(n: int, r: np.random.Generator, lo: float, hi: float, tau: float, rise: float = 0.0003,
-          order: int = 2) -> np.ndarray:
-    """Short band-passed noise contact, peak 1, zero-padded to n."""
-    k = min(n, dsp.n_of(max(6 * tau + rise, 0.002)))
-    w = dsp.butter(r.standard_normal(k), "band", (max(lo, 20.0), min(hi, _NYQ_EDGE)), order)
-    t = dsp.t_of(k)
-    w = w * (1 - np.exp(-t / max(rise, 1e-5))) * np.exp(-t / max(tau, 1e-5))
-    out = np.zeros(n)
-    out[:k] = w / (np.max(np.abs(w)) + 1e-12)
-    return out
+          order: int = 2) -> ndarray:
+    """Brief band of noise for a contact, peak 1, padded with zeros to n samples."""
+    used = min(n, dsp.n_of(max(6 * tau + rise, 0.002)))
+    tt = dsp.t_of(used)
+    noise = r.standard_normal(used)
+    hit = dsp.butter(noise, kind="band", f=(max(lo, 20.0), min(hi, _FADE_TOP_HZ)), order=order)
+    hit = hit * (1 - _falloff(tt, rise, _SHORTEST_HIT))
+    hit = hit * _falloff(tt, tau, _SHORTEST_HIT)
+    return concatenate([_unit_peak(hit), zeros(n - used)])
 
 
-def thump(n: int, f: float, tau: float, rise: float = 0.002) -> np.ndarray:
-    """Soft low sine thump, peak 1, no random draw."""
-    t = dsp.t_of(n)
-    y = np.sin(_TWO_PI * f * t) * (1 - np.exp(-t / max(rise, 1e-4))) * np.exp(-t / max(tau, 1e-4))
-    return y / (np.max(np.abs(y)) + 1e-12)
+def thump(n: int, f: float, tau: float, rise: float = 0.002) -> ndarray:
+    """Low soft sine knock, peak 1, uses no randomness."""
+    tt = dsp.t_of(n)
+    knock = sin(_CYCLE * f * tt) * (1 - _falloff(tt, rise, _SHORTEST)) * _falloff(tt, tau, _SHORTEST)
+    return _unit_peak(knock)
 
 
 def modes(n: int, r: np.random.Generator, freqs: Sequence[float], amps: Sequence[float], taus: Sequence[float],
-          jitter: float = 0, bend: float = 0, bend_tau: float = 0.004) -> np.ndarray:
-    """Sum of damped sines; a hard strike starts slightly sharp (bend)."""
-    t = dsp.t_of(n)
-    b = 1.0 + bend * np.exp(-t / max(bend_tau, 1e-4))
-    y = np.zeros(n)
-    for f, a, tau in zip(freqs, amps, taus):
-        if a <= 0 or f >= _NYQ_EDGE:
-            continue
-        fj = f * (1 + jitter * r.standard_normal())
-        phase = _TWO_PI * np.cumsum(fj * b) / SR + r.uniform(0, _TWO_PI)
-        y += a * np.exp(-t / max(tau, 1e-5)) * np.sin(phase)
-    return y
+          jitter: float = 0, bend: float = 0, bend_tau: float = 0.004) -> ndarray:
+    """Damped sines added together; `bend` makes a hard hit begin a little sharp."""
+    tt = dsp.t_of(n)
+    sharpen = 1.0 + bend * _falloff(tt, bend_tau, _SHORTEST)
+    total = zeros(n)
+    for hz, level, ring in zip(freqs, amps, taus):
+        if level > 0 and hz < _FADE_TOP_HZ:
+            moved = hz * (1 + jitter * r.standard_normal())
+            total += level * _falloff(tt, ring, _SHORTEST_HIT) * sin(_phase(r, moved * sharpen))
+    return total
 
 
-def strike(y: np.ndarray, r: np.random.Generator, contact_s: float, bright: float = 0.5) -> np.ndarray:
-    """Drive a resonator response with a contact pulse of contact_s seconds."""
-    return dsp.excite(y, dsp.contact(contact_s, r, bright))
+def strike(y: ndarray, r: np.random.Generator, contact_s: float, bright: float = 0.5) -> ndarray:
+    """Excite resonator output y with a contact pulse that lasts contact_s seconds."""
+    pulse = dsp.contact(seconds=contact_s, r=r, bright=bright)
+    return dsp.excite(resonance=y, excitation=pulse)
 
 
-def room(y: np.ndarray, r: np.random.Generator, wet: float, rt60: float, size: float = 0.15,
-         width: float = 0.3) -> np.ndarray:
-    """Small stereo room; a wet level at or under 0.005 is a bypass with no draw."""
-    if wet <= 0.005:
+def room(y: ndarray, r: np.random.Generator, wet: float, rt60: float, size: float = 0.15,
+         width: float = 0.3) -> ndarray:
+    """Small stereo space. At wet _BYPASS or less it passes y through and draws nothing."""
+    if wet <= _BYPASS:
         return y
-    return fx.reverb(y, r, rt60=rt60, size=size, predelay=0.004, damp=0.6, wet=wet, stereo=True, width=width)
+    space = {"rt60": rt60, "size": size, "predelay": 0.004, "damp": 0.6, "wet": wet, "stereo": True, "width": width}
+    return fx.reverb(y, r, **space)
 
 
-def _cos2_tail(y: np.ndarray, k: int) -> np.ndarray:
-    if k <= 0:
-        return y
-    g = np.cos(np.linspace(0, np.pi / 2, k)) ** 2
-    g[-1] = 0.0  # cos(pi/2) is not exactly 0 in floating point
-    y = y.copy()
-    y[-k:] = y[-k:] * (g[:, None] if y.ndim == 2 else g)
-    return y
+def _apply_gain(sig: ndarray, span: slice, gain: ndarray) -> ndarray:
+    held = sig.copy()
+    per_row = gain.reshape((-1,) + (1,) * (held.ndim - 1))
+    held[span] = held[span] * per_row
+    return held
 
 
-def _start_rise(y: np.ndarray) -> np.ndarray:
-    k = min(len(y), dsp.n_of(0.0003))
-    if k <= 0:
-        return y
-    g = 0.5 - 0.5 * np.cos(np.pi * np.linspace(0, 1, k))
-    y = y.copy()
-    y[:k] = y[:k] * (g[:, None] if y.ndim == 2 else g)
-    return y
+def _taper_end(sig: ndarray, cnt: int) -> ndarray:
+    if cnt <= 0:
+        return sig
+    gain = cos(linspace(0, pi / 2, cnt)) ** 2
+    gain[-1] = 0.0  # the float cosine of pi/2 is a little above 0
+    return _apply_gain(sig, slice(-cnt, None), gain)
 
 
-def _to_stereo(y: np.ndarray, width: float, cut: float, pan: float) -> np.ndarray:
-    s = fx.decorrelate(y, width, cut) if width > 0.005 else np.column_stack([y, y])
-    if abs(pan) > 0.005:
-        th = (np.clip(pan, -1, 1) + 1) * np.pi / 4
-        s = s * np.array([np.cos(th), np.sin(th)]) * np.sqrt(2)
-    return s
+def _taper_start(sig: ndarray) -> ndarray:
+    cnt = min(len(sig), dsp.n_of(0.0003))
+    if cnt <= 0:
+        return sig
+    return _apply_gain(sig, slice(None, cnt), _hann_up(linspace(0, 1, cnt)))
 
 
-def finish(y: np.ndarray, r: np.random.Generator, hp: float = 80, lp: float = 12000, room_wet: float = 0,
+def _spread_pan(sig: ndarray, width: float, cut: float, pan: float) -> ndarray:
+    if width > _BYPASS:
+        pair = fx.decorrelate(sig, amount=width, cut=cut)
+    else:
+        pair = column_stack([sig, sig])
+    if abs(pan) <= _BYPASS:
+        return pair
+    angle = (clip(pan, -1, 1) + 1) * pi / 4
+    return pair * array([cos(angle), sin(angle)]) * sqrt(2)
+
+
+def _mono_stage(sig: ndarray, hp: float, lp: float) -> ndarray:
+    pre_n = min(len(sig), dsp.n_of(0.02), int(0.15 * len(sig)))
+    sig = dsp.butter(_taper_end(sig, pre_n), kind="high", f=hp, order=4)
+    if lp >= 17500:
+        return sig
+    return dsp.butter(sig, kind="low", f=lp, order=2)
+
+
+def _close_edges(pair: ndarray, floor_db: float, fade_s: float) -> ndarray:
+    pair = dsp.trim_tail(pair, floor_db=floor_db, keep=0.01)
+    pair = _taper_end(pair, min(len(pair), dsp.n_of(fade_s)))
+    return _taper_start(pair)
+
+
+def finish(y: ndarray, r: np.random.Generator, hp: float = 80, lp: float = 12000, room_wet: float = 0,
            rt60: float = 0.15, width: float = 0, cut: float = 500, end_db: float = -60, fade: float = 0.006,
-           pan: float = 0, size: float = 0.15) -> np.ndarray:
-    """Mono in, stereo out: dry pre-fade, filters, width, pan, room, trim, fades."""
-    y = np.asarray(y, dtype=float)
-    y = _cos2_tail(y, min(len(y), dsp.n_of(0.02), int(0.15 * len(y))))
-    y = dsp.butter(y, "high", hp, 4)
-    if lp < 17500:
-        y = dsp.butter(y, "low", lp, 2)
-    s = _to_stereo(y, width, cut, pan)
-    s = room(s, r, room_wet, rt60, size, 0.3 + width)
-    s = dsp.trim_tail(s, end_db, 0.01)
-    s = _cos2_tail(s, min(len(s), dsp.n_of(fade)))
-    return _start_rise(s)
+           pan: float = 0, size: float = 0.15) -> ndarray:
+    """Takes mono and returns stereo: early fade, high and low cut, width, pan, room, trim, edge fades."""
+    dry = _mono_stage(asarray(y, dtype=float), hp, lp)
+    placed = _spread_pan(dry, width, cut, pan)
+    spaced = room(placed, r, wet=room_wet, rt60=rt60, size=size, width=0.3 + width)
+    return _close_edges(spaced, end_db, fade)
 
 
-# ---------------------------------------------------------------- measure
+# Measures of a finished render. They need no model.
 
-def _level_track(m: np.ndarray) -> np.ndarray:
-    n = len(m)
-    cs = np.concatenate([[0.0], np.cumsum(m * m)])
-    c = np.arange(0, n, 48)
-    a = np.clip(c - 120, 0, n)
-    b = np.clip(c + 120, 0, n)
-    p = (cs[b] - cs[a]) / np.maximum(b - a, 1)
-    return np.convolve(p, np.ones(10) / 10, mode="same")
+def _first_at(mask: ndarray) -> int | None:
+    found = flatnonzero(mask)
+    if len(found):
+        return int(found[0])
+    return None
 
 
-def _first(cond: np.ndarray) -> int | None:
-    idx = np.flatnonzero(cond)
-    return int(idx[0]) if len(idx) else None
+def _power_curve(sig: ndarray) -> ndarray:
+    size = len(sig)
+    acc = concatenate([[0.0], cumsum(sig * sig)])
+    mid = arange(0, size, _MS)
+    left, right = (clip(mid + side, 0, size) for side in (-_HALF_SPAN, _HALF_SPAN))
+    window = (acc[right] - acc[left]) / maximum(right - left, 1)
+    return convolve(window, ones(10) / 10, mode="same")
 
 
-def _level_measures(m: np.ndarray) -> dict:
-    tr = _level_track(m)
-    ip = int(np.argmax(tr))
-    pk = float(tr[ip])
-    before = np.flatnonzero(tr[: ip + 1] >= pk * 1e-2)
-    on = _first(tr >= pk * 1e-3) or 0
-    ends = np.flatnonzero(tr >= pk * 10 ** -4.5)
-    end = int(ends[-1]) if len(ends) else len(m) / 48
-    t20 = _first(tr[ip:] < pk * 1e-2)
-    t40 = _first(tr[ip:] < pk * 1e-4)
-    return {"dur_s": round(end * 0.001 - on * 0.001, 3),
-            "attack_ms": ip - int(before[0]) if len(before) else None,
-            "t20_ms": t20, "t40_ms": t40}
+# Power ratios for drops of 20, 30, 40 and 45 dB.
+_DROP_20 = 1e-2
+_DROP_30 = 1e-3
+_DROP_40 = 1e-4
+_DROP_45 = 10 ** -4.5
 
 
-def _frames(m: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-    if len(m) < 2048:
-        m = np.concatenate([m, np.zeros(2048 - len(m))])
-    k = 1 + (len(m) - 2048) // 240
-    idx = np.arange(2048)[None, :] + 240 * np.arange(k)[:, None]
-    P = np.abs(np.fft.rfft(m[idx] * np.hanning(2048), axis=1)) ** 2
-    return P, np.fft.rfftfreq(2048, 1 / SR)
+def _time_stats(sig: ndarray) -> dict:
+    pw = _power_curve(sig)
+    at = int(argmax(pw))
+    top = float(pw[at])
+    rising = flatnonzero(pw[: at + 1] >= top * _DROP_20)
+    audible = flatnonzero(pw >= top * _DROP_45)
+    begin = _first_at(pw >= top * _DROP_30) or 0
+    last = int(audible[-1]) if len(audible) else len(sig) / _MS
+    stats: dict = {"dur_s": round(last * 0.001 - begin * 0.001, 3),
+                   "attack_ms": at - int(rising[0]) if len(rising) else None}
+    after = pw[at:]
+    for key, drop in (("t20_ms", _DROP_20), ("t40_ms", _DROP_40)):
+        stats[key] = _first_at(after < top * drop)
+    return stats
 
 
-def _ridge(P: np.ndarray, f: np.ndarray) -> tuple[list[float], list[float]]:
-    band = (f >= 80) & (f <= 12000)
-    fb = f[band]
-    ridge, share = [], []
-    for row in P[:, band]:
-        if row.max() <= 0:
-            continue
-        fr = fb[int(np.argmax(row))]
-        near = (fb >= fr / 2 ** 0.25) & (fb <= fr * 2 ** 0.25)
-        ridge.append(float(fr))
-        share.append(float(row[near].sum() / (row.sum() + 1e-30)))
-    return ridge, share
+def _stft_power(sig: ndarray) -> tuple[ndarray, ndarray]:
+    win = 2048
+    if len(sig) < win:
+        sig = concatenate([sig, zeros(win - len(sig))])
+    frames = sliding_window_view(sig, win)[::_HOP]
+    spec = np.abs(np.fft.rfft(frames * hanning(win), axis=1)) ** 2
+    return spec, np.fft.rfftfreq(win, 1 / SR)
 
 
-def _active(P: np.ndarray) -> np.ndarray:
-    e = P.sum(axis=1)
-    return P[e >= 0.01 * e.max()] if e.max() > 0 else P[:0]
+def _peak_path(spec: ndarray, axis_hz: ndarray) -> tuple[list[float], list[float]]:
+    inside = (axis_hz >= 80) & (axis_hz <= 12000)
+    sub = axis_hz[inside]
+    pitch, focus = [], []
+    for frame in spec[:, inside]:
+        if frame.max() > 0:
+            best = sub[int(argmax(frame))]
+            near = (sub >= best / _QUARTER_OCT) & (sub <= best * _QUARTER_OCT)
+            pitch.append(float(best))
+            focus.append(float(frame[near].sum() / (frame.sum() + _EMPTY)))
+    return pitch, focus
 
 
-def _band_measures(act: np.ndarray, f: np.ndarray) -> dict:
-    spec = act.mean(axis=0)
-    tot = spec.sum() + 1e-30
-    return {"centroid_hz": int(round(float((spec * f).sum() / tot))),
-            "lo150": round(float(spec[f < 150].sum() / tot), 3),
-            "hi4k": round(float(spec[f >= 4000].sum() / tot), 3)}
+def _spectrum_stats(sig: ndarray) -> dict:
+    spec, axis_hz = _stft_power(sig)
+    stats: dict = dict.fromkeys(("centroid_hz", "lo150", "hi4k", "tonal", "glide_st"))
+    energy = spec.sum(axis=1)
+    if energy.max() <= 0:
+        return stats
+    loud = spec[energy >= 0.01 * energy.max()]
+    if not len(loud):
+        return stats
+    avg = loud.mean(axis=0)
+    whole = avg.sum() + _EMPTY
+    stats["centroid_hz"] = int(round(float((avg * axis_hz).sum() / whole)))
+    stats["lo150"] = round(float(avg[axis_hz < 150].sum() / whole), 3)
+    stats["hi4k"] = round(float(avg[axis_hz >= 4000].sum() / whole), 3)
+    pitch, focus = _peak_path(loud, axis_hz)
+    if len(focus) >= 2:
+        ends = max(1, min(3, len(pitch) // 3))
+        stats["tonal"] = round(float(mean(focus)), 2)
+        stats["glide_st"] = round(float(12 * log2(median(pitch[-ends:]) / median(pitch[:ends]))), 1)
+    return stats
 
 
-def _tonal_measures(act: np.ndarray, f: np.ndarray) -> dict:
-    ridge, share = _ridge(act, f)
-    res: dict = {}
-    if len(share) >= 2:
-        k3 = max(1, min(3, len(ridge) // 3))
-        res = {"tonal": round(float(np.mean(share)), 2),
-               "glide_st": round(float(12 * np.log2(np.median(ridge[-k3:]) / np.median(ridge[:k3]))), 1)}
-    return res
+def measure(x: ndarray) -> dict:
+    """Catalogue measures for 1 render over silence. No model is used."""
+    pair = dsp.stereo_of(asarray(x, dtype=float))
+    mid = pair.mean(axis=1)
+    found = _time_stats(mid)
+    found.update(_spectrum_stats(mid))
+    a, b = pair[:, 0], pair[:, 1]
+    norm = sqrt(np.sum(a * a) * np.sum(b * b)) + _EMPTY
+    found["corr"] = round(float(np.sum(a * b) / norm), 2)
+    return found
 
 
-def _spectral_measures(m: np.ndarray) -> dict:
-    P, f = _frames(m)
-    act = _active(P)
-    out: dict = {"centroid_hz": None, "lo150": None, "hi4k": None, "tonal": None, "glide_st": None}
-    if len(act):
-        out.update(_band_measures(act, f))
-        out.update(_tonal_measures(act, f))
-    return out
-
-
-def measure(x: np.ndarray) -> dict:
-    """Catalog measures of one render on silence (no model)."""
-    s = dsp.stereo_of(np.asarray(x, dtype=float))
-    m = s.mean(axis=1)
-    out = _level_measures(m)
-    out.update(_spectral_measures(m))
-    L, R = s[:, 0], s[:, 1]
-    out["corr"] = round(float(np.sum(L * R) / (np.sqrt(np.sum(L * L) * np.sum(R * R)) + 1e-30)), 2)
-    return out
+def _range_miss(got: Any, lo: float, hi: float, scale: float) -> float:
+    if got is None:
+        return 1.0
+    if got < lo:
+        return min(2.0, (lo - got) / scale)
+    if got > hi:
+        return min(2.0, (got - hi) / scale)
+    return 0.0
 
 
 def outside(m: dict, targets: dict) -> float:
-    """Distance of measures m from target ranges {key: (lo, hi, scale)}; 0 when all met."""
-    total = 0.0
-    for key, (lo, hi, scale) in targets.items():
-        v = m.get(key)
-        if v is None:
-            total += 1.0
-        elif v < lo:
-            total += min(2.0, (lo - v) / scale)
-        elif v > hi:
-            total += min(2.0, (v - hi) / scale)
-    return float(total)
+    """How far measures m fall from target ranges {key: (lo, hi, scale)}. 0 means all are met."""
+    miss = 0.0
+    for want, bounds in targets.items():
+        miss += _range_miss(m.get(want), *bounds)
+    return float(miss)
 
 
 def family_space(space: dict, params: dict, fine: Sequence[str]) -> dict:
-    """Keep the fine keys' ranges; pin every other key to the member's value."""
-    return {k: (spec if k in fine else [params[k]]) for k, spec in space.items() if k in params}
+    """Keep ranges for the keys in fine. Fix each other key at the value in params."""
+    pinned = {}
+    for key, rng in space.items():
+        if key in params:
+            pinned[key] = rng if key in fine else [params[key]]
+    return pinned
