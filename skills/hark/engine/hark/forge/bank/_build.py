@@ -622,17 +622,19 @@ def _candidates(recipe: str, fn: str, category: str, cache: dict) -> dict:
 
         base = _defaults_for(recipes.load(recipe), fn)
         pool = {m: {**base, **p} for m, p in _seed_members(recipe, category).items()} or {"defaults": base}
-        cache[key] = {m: (p, _meta(_render_entry(_entry(category, m, recipe, fn, p, 0), f"{category}/{m}"),
-                                   category, p)) for m, p in pool.items()}
+        rows = {m: (p, _meta(_render_entry(_entry(category, m, recipe, fn, p, 0), f"{category}/{m}"), category, p))
+                for m, p in pool.items()}
+        # Row order (T-41; the spec gives no rule): ascending rendered length, then member id. It breaks distance ties.
+        cache[key] = dict(sorted(rows.items(), key=lambda kv: (kv[1][1]["dur_s"], kv[0])))
     return cache[key]
 
 
 def _ranked(sound_id: str, recipe: str, fn: str, cache: dict, used: set) -> list[str]:
-    """Candidates nearest first; a candidate used before costs 1 tolerance unit more."""
+    """Candidates nearest first; a candidate used before costs 1 tolerance unit more; ties keep the row order."""
     category = sound_id.split("/", 1)[0]
     row = B.catalog()["targets"].get(sound_id) or {}
     pool = _candidates(recipe, fn, category, cache)
-    return sorted(pool, key=lambda m: (_target_distance(row, pool[m][1]) + ((category, m) in used), m))
+    return sorted(pool, key=lambda m: _target_distance(row, pool[m][1]) + ((category, m) in used))
 
 
 def _closest(sound_id: str, recipe: str, fn: str, cache: dict, used: set) -> tuple[str, dict]:
