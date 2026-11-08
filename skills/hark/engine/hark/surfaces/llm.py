@@ -7,6 +7,7 @@ Nothing leaves the machine without explicit consent (``--yes-upload`` or ``conse
 from __future__ import annotations
 
 import argparse
+import importlib
 import io
 import json
 import os
@@ -262,7 +263,7 @@ def _measured_line(path: str, clip: dict[str, Any]) -> str | None:
 
 
 def _transcript_lines(path: str, clip: dict[str, Any], video: str | None) -> list[str]:
-    from hark.timeline import timeline as tl
+    tl = importlib.import_module("hark.timeline.timeline")
     res = tl.timeline(path, video=video, start=clip["start"], end=clip["end"], detail="low")
     body = str(res.get("text") or res.get("summary") or "")[:TRANSCRIPT_CAP]
     head = "hark's machine-made listening transcript follows, in file seconds"
@@ -276,7 +277,7 @@ def _num(v: float) -> str:
 
 
 def _cut_line(clip: dict[str, Any], video: str) -> str | None:
-    from hark.timeline import video as vid
+    vid = importlib.import_module("hark.timeline.video")
     a, b = clip["start"], clip["end"]
     kept = [round(c - a, 2) for c in vid.cuts(video) if a <= c < b][:CUT_CAP]
     if not kept:

@@ -58,9 +58,20 @@ def to_48k(x: np.ndarray, rate: int) -> np.ndarray:
     return resample_poly(x, RATE // g, int(rate) // g, axis=0)
 
 
+# BS.1770 K-weighting at 48 kHz: a high shelf, then a high-pass. The gallery keeps its own copy, so a
+# page builds without core or forge code.
+K_STAGES = (
+    ((1.53512485958697, -2.69169618940638, 1.19839281085285), (1.0, -1.69065929318241, 0.73248077421585)),
+    ((1.0, -2.0, 1.0), (1.0, -1.99004745483398, 0.99007225036621)),
+)
+
+
 def _k_weight(ch: np.ndarray) -> np.ndarray:
-    from hark.core.features import k_weight
-    return np.asarray(k_weight(ch, sr=RATE), dtype=np.float64)
+    from scipy.signal import lfilter
+    y = np.asarray(ch, dtype=np.float64)
+    for b, a in K_STAGES:
+        y = lfilter(b, a, y)
+    return y
 
 
 def lufs_max(x: np.ndarray, rate: int) -> float | None:
