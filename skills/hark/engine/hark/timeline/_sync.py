@@ -100,11 +100,17 @@ def chance(times, lo: float, hi: float, tol: float) -> float:
 
 # ---------------------------------------------------------------- sync
 
+def _prominence_thresholds(prom: np.ndarray) -> tuple[float, float]:
+    """(strong, accent) prominence thresholds in dB."""
+    if not prom.size:
+        return 6.0, 6.0
+    return min(6.0, float(np.percentile(prom, 40))), max(6.0, float(np.percentile(prom, 80)))
+
+
 class _Sets:
     def __init__(self, events: list[dict]):
         prom = np.array([e.get("prominence_db", 0.0) for e in events], dtype=float)
-        strong_thr = min(6.0, float(np.percentile(prom, 40))) if prom.size else 6.0
-        self.accent_thr = max(6.0, float(np.percentile(prom, 80))) if prom.size else 6.0
+        strong_thr, self.accent_thr = _prominence_thresholds(prom)
         self.all = _Index(events)
         self.strong = _Index([e for e, p in zip(events, prom) if p >= strong_thr])
         self.swells = _Index([e for e in events if e.get("shape") == "swell"])
@@ -140,26 +146,34 @@ def answer(t: float, sets: _Sets, tol1: float, levels: dict | None) -> tuple[dic
     return (ev, "off") if ev is not None else (None, "no sound")
 
 
+def _ms(a: dict | None, t: float) -> float | None:
+    """Offset of event a from time t in ms, or None when there is no event."""
+    return round((a["t"] - t) * 1000, 1) if a is not None else None
+
+
+def _target_fields(target: Any) -> dict:
+    if not isinstance(target, dict):
+        return {}
+    return {k: target[k] for k in ("kind", "id") if target.get(k) is not None}
+
+
+def _event_fields(ev: dict | None) -> dict:
+    if ev is None:
+        return {}
+    out = {"event_t": ev["t"], "event_prominence_db": ev.get("prominence_db")}
+    if ev.get("label"):
+        out["event"] = ev["label"]
+    return out
+
+
 def _item(target: Any, sets: _Sets, tol1: float, levels, beats: np.ndarray | None) -> dict:
     t = float(target["t"] if isinstance(target, dict) else target)
-    item: dict = {"t": round(t, 3)}
-    if isinstance(target, dict):
-        for k in ("kind", "id"):
-            if target.get(k) is not None:
-                item[k] = target[k]
+    item: dict = {"t": round(t, 3), **_target_fields(target)}
     ev, status = answer(t, sets, tol1, levels)
-    item["offset_ms"] = round((ev["t"] - t) * 1000, 1) if ev is not None else None
-    item["status"] = status
-    if ev is not None:
-        item["event_t"] = ev["t"]
-        item["event_prominence_db"] = ev.get("prominence_db")
-        if ev.get("label"):
-            item["event"] = ev["label"]
-    acc = sets.accents.within(t, 0.1)
-    item["accent_offset_ms"] = round((acc["t"] - t) * 1000, 1) if acc is not None else None
+    item.update(offset_ms=_ms(ev, t), status=status, **_event_fields(ev))
+    item["accent_offset_ms"] = _ms(sets.accents.within(t, 0.1), t)
     if beats is not None and beats.size:
-        b = beats[nearest(beats, t)]
-        item["beat_offset_ms"] = round((t - b) * 1000, 1)
+        item["beat_offset_ms"] = round((t - beats[nearest(beats, t)]) * 1000, 1)
     return item
 
 
@@ -167,34 +181,60 @@ def _share(items: list[dict], ok) -> float:
     return round(sum(1 for i in items if ok(i)) / len(items), 3)
 
 
+def _count(items: list[dict], *status: str) -> int:
+    return sum(1 for i in items if i["status"] in status)
+
+
+def _hit_stats(items: list[dict], K: str) -> dict:
+    offs = [abs(i["offset_ms"]) for i in items if i["offset_ms"] is not None]
+    return {"hit_" + K: _share(items, lambda i: i["status"] == "OK"),
+            "hit_within_100ms": _share(items, lambda i: i["status"] in ("OK", "near")),
+            "median_abs_offset_ms": round(float(np.median(offs)), 1) if offs else None,
+            "answered_by_swell": _count(items, "swell"), "answered_by_level_peak": _count(items, "peak"),
+            "no_sound": [i["t"] for i in items if i["status"] in ("no sound", "off")]}
+
+
+def _accent_hit(lim: float):
+    return lambda i: i["accent_offset_ms"] is not None and abs(i["accent_offset_ms"]) <= lim
+
+
+def _accent_stats(items: list[dict], sets: _Sets, tol1: float, K: str, span: tuple) -> dict:
+    if not sets.accents.times.size:
+        return {}
+    lo, hi = span
+    return {"accent_min_db": round(sets.accent_thr, 1),
+            "accent_" + K: _share(items, _accent_hit(tol1 * 1000 + 1e-6)),
+            "accent_chance_" + K: chance(sets.accents.times, lo, hi, tol1),
+            "accent_within_100ms": _share(items, _accent_hit(100 + 1e-6)),
+            "accent_chance_within_100ms": chance(sets.accents.times, lo, hi, 0.1)}
+
+
+def _chance_stats(sets: _Sets, tol1: float, K: str, span: tuple) -> dict:
+    if not sets.all.times.size:
+        return {}
+    lo, hi = span
+    return {"chance_" + K: chance(sets.all.times, lo, hi, tol1),
+            "chance_within_100ms": chance(sets.all.times, lo, hi, 0.1)}
+
+
+def _beat_stats(items: list[dict], beats) -> dict:
+    if beats is None or beats.size < 2:
+        return {}
+    return {"on_beat": _share(items, lambda i: abs(i.get("beat_offset_ms", 1e9)) <= 50),
+            "on_beat_chance": round(min(1.0, 2 * 0.05 / float(np.median(np.diff(beats)))), 3)}
+
+
 def _stats(items: list[dict], sets: _Sets, tol1: float, frame_s, beats) -> dict:
-    n = len(items)
-    st: dict = {"n": n}
-    if n == 0:
+    st: dict = {"n": len(items)}
+    if not items:
         return st
     K = "within_1_frame" if frame_s else "within_40ms"
-    st["hit_" + K] = _share(items, lambda i: i["status"] == "OK")
-    st["hit_within_100ms"] = _share(items, lambda i: i["status"] in ("OK", "near"))
-    offs = [abs(i["offset_ms"]) for i in items if i["offset_ms"] is not None]
-    st["median_abs_offset_ms"] = round(float(np.median(offs)), 1) if offs else None
-    st["answered_by_swell"] = sum(1 for i in items if i["status"] == "swell")
-    st["answered_by_level_peak"] = sum(1 for i in items if i["status"] == "peak")
-    st["no_sound"] = [i["t"] for i in items if i["status"] in ("no sound", "off")]
+    span = (min(i["t"] for i in items) - 1, max(i["t"] for i in items) + 1)
+    st.update(_hit_stats(items, K))
     st["frame_ms" if frame_s else "tolerance_ms"] = round(tol1 * 1000, 1)
-    lo, hi = min(i["t"] for i in items) - 1, max(i["t"] for i in items) + 1
-    if sets.all.times.size:
-        st["chance_" + K] = chance(sets.all.times, lo, hi, tol1)
-        st["chance_within_100ms"] = chance(sets.all.times, lo, hi, 0.1)
-    if sets.accents.times.size:
-        st["accent_min_db"] = round(sets.accent_thr, 1)
-        hit = lambda lim: lambda i: i["accent_offset_ms"] is not None and abs(i["accent_offset_ms"]) <= lim  # noqa: E731
-        st["accent_" + K] = _share(items, hit(tol1 * 1000 + 1e-6))
-        st["accent_chance_" + K] = chance(sets.accents.times, lo, hi, tol1)
-        st["accent_within_100ms"] = _share(items, hit(100 + 1e-6))
-        st["accent_chance_within_100ms"] = chance(sets.accents.times, lo, hi, 0.1)
-    if beats is not None and beats.size >= 2:
-        st["on_beat"] = _share(items, lambda i: abs(i.get("beat_offset_ms", 1e9)) <= 50)
-        st["on_beat_chance"] = round(min(1.0, 2 * 0.05 / float(np.median(np.diff(beats)))), 3)
+    st.update(_chance_stats(sets, tol1, K, span))
+    st.update(_accent_stats(items, sets, tol1, K, span))
+    st.update(_beat_stats(items, beats))
     return st
 
 

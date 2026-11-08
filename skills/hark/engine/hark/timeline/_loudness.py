@@ -47,27 +47,29 @@ def _where(start: float, end: float, dur: float, at_start: bool, at_end: bool) -
     return "lead-in" if s else "tail" if e else None
 
 
+def _gap(t: np.ndarray, F: np.ndarray, s: int, e: int, seg_ctx: tuple) -> dict:
+    """The gap dict of the low run F[s:e]. seg_ctx is (dur, amax, at_start, at_end)."""
+    dur, amax, at_start, at_end = seg_ctx
+    start = 0.0 if s == 0 else max(0.0, t[s] - 0.05)
+    end = dur if e == F.size else min(dur, t[e - 1] + 0.05)
+    seg = amax[int(start * SR): max(int(start * SR) + 1, int(end * SR))]
+    kind = ("digital silence" if seg.size and seg.max() < 1e-5
+            else "near silence" if F[s:e].max() < -60 else "drop")
+    gap = {"start": round(float(start), 2), "end": round(float(end), 2), "dur": round(float(end - start), 2),
+           "kind": kind, "level_lufs": round(float(F[s:e].mean()), 1)}
+    where = _where(start, end, dur, at_start, at_end)
+    if where:
+        gap["where"] = where
+    return gap
+
+
 def gaps(x: np.ndarray, integrated: float | None, at_start: bool = True, at_end: bool = True) -> list[dict]:
     dur = len(x) / SR
     if dur < 0.5:
         return []
     t, F = _curve(x, 0.1, 0.05)
-    thr = _threshold(integrated)
-    amax = _abs_max(x)
-    out = []
-    for s, e in runs(_low_mask(F, integrated, thr), 5):
-        start = 0.0 if s == 0 else max(0.0, t[s] - 0.05)
-        end = dur if e == F.size else min(dur, t[e - 1] + 0.05)
-        seg = amax[int(start * SR): max(int(start * SR) + 1, int(end * SR))]
-        kind = ("digital silence" if seg.size and seg.max() < 1e-5
-                else "near silence" if F[s:e].max() < -60 else "drop")
-        gap = {"start": round(float(start), 2), "end": round(float(end), 2), "dur": round(float(end - start), 2),
-               "kind": kind, "level_lufs": round(float(F[s:e].mean()), 1)}
-        where = _where(start, end, dur, at_start, at_end)
-        if where:
-            gap["where"] = where
-        out.append(gap)
-    return out
+    ctx = (dur, _abs_max(x), at_start, at_end)
+    return [_gap(t, F, s, e, ctx) for s, e in runs(_low_mask(F, integrated, _threshold(integrated)), 5)]
 
 
 def _momentary(x: np.ndarray, out: dict) -> float | None:

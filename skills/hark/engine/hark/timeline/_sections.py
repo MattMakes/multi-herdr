@@ -32,24 +32,36 @@ def _frames(m: np.ndarray) -> np.ndarray:
     return logmel(m, n_fft=2048, hop=2400, n_mels=40, fmin=30, fmax=16000)
 
 
+def _unit_frames(L: np.ndarray, n: int) -> np.ndarray:
+    """0.5 s frames of L, z-scored per band, then unit length per frame."""
+    F = L[:, : n * 10].reshape(L.shape[0], n, 10).mean(axis=2)
+    F = (F - F.mean(axis=1, keepdims=True)) / (F.std(axis=1, keepdims=True) + 1e-6)
+    return F / (np.linalg.norm(F, axis=0, keepdims=True) + 1e-12)
+
+
+def _checker(w: int) -> np.ndarray:
+    """Gaussian-tapered checkerboard kernel of size 2w."""
+    g = np.exp(-0.5 * ((np.arange(-w, w) + 0.5) / (0.5 * w)) ** 2)
+    sign = np.where(np.arange(2 * w) < w, -1.0, 1.0)
+    return np.outer(g, g) * np.outer(sign, sign)
+
+
+def _novelty(S: np.ndarray, w: int) -> np.ndarray:
+    K = _checker(w)
+    nov = np.zeros(S.shape[0])
+    for i in range(w, S.shape[0] - w):
+        nov[i] = float((K * S[i - w: i + w, i - w: i + w]).sum())
+    return nov
+
+
 def novelty_bounds(m: np.ndarray, kernel_s: float = 4.0, zthr: float = 3.0) -> list[tuple[float, float]]:
     """Strong timbre or level changes as (time, z) pairs."""
     L = _frames(np.asarray(m, dtype=np.float64))
-    n = L.shape[1] // 10
-    w = int(kernel_s / 0.5)
+    n, w = L.shape[1] // 10, int(kernel_s / 0.5)
     if n < 4 * w:
         return []
-    F = L[:, : n * 10].reshape(L.shape[0], n, 10).mean(axis=2)
-    F = (F - F.mean(axis=1, keepdims=True)) / (F.std(axis=1, keepdims=True) + 1e-6)
-    F = F / (np.linalg.norm(F, axis=0, keepdims=True) + 1e-12)
-    S = F.T @ F
-    g = np.exp(-0.5 * ((np.arange(-w, w) + 0.5) / (0.5 * w)) ** 2)
-    sign = np.ones(2 * w)
-    sign[:w] = -1
-    K = np.outer(g, g) * np.outer(sign, sign)
-    nov = np.zeros(n)
-    for i in range(w, n - w):
-        nov[i] = float((K * S[i - w: i + w, i - w: i + w]).sum())
+    F = _unit_frames(L, n)
+    nov = _novelty(F.T @ F, w)
     z = robust_z(nov, n)
     peak = nov == ndimage.maximum_filter1d(nov, size=2 * w + 1, mode="nearest")
     return [(round(i * 0.5, 2), round(float(z[i]), 1)) for i in range(w, n - w) if peak[i] and z[i] >= zthr]
@@ -209,17 +221,31 @@ def _extras(sec: dict, music: bool) -> str | None:
     return None
 
 
-def label(sec: dict) -> str:
+def _is_music(sec: dict) -> bool:
+    ast = sec.get("ast")
+    if ast:
+        return ast["Music"] >= 0.3
+    return _zof(_top(sec, "music_genre")) >= _zof(_top(sec, "ambience"))
+
+
+def _voice_part(sec: dict) -> str:
+    voice, ast = _top(sec, "voice"), sec.get("ast")
+    sure = voice and (ast["Speech"] >= 0.3 if ast else voice["z"] >= 2.5)
+    return "voice: " + voice["tag"] if sure else ""
+
+
+def _quiet_label(sec: dict) -> str | None:
     if sec.get("digital_silence"):
         return "digital silence"
-    if sec.get("lufs") is None or sec["lufs"] < -55:
-        return "near silence"
-    ast = sec.get("ast")
-    music = ast["Music"] >= 0.3 if ast else _zof(_top(sec, "music_genre")) >= _zof(_top(sec, "ambience"))
-    parts = [p for p in (_music_part(sec) if music else "", _extras(sec, music)) if p]
-    voice = _top(sec, "voice")
-    if voice and ((ast and ast["Speech"] >= 0.3) or (not ast and voice["z"] >= 2.5)):
-        parts.append("voice: " + voice["tag"])
+    return "near silence" if sec.get("lufs") is None or sec["lufs"] < -55 else None
+
+
+def label(sec: dict) -> str:
+    quiet = _quiet_label(sec)
+    if quiet:
+        return quiet
+    music = _is_music(sec)
+    parts = [p for p in (_music_part(sec) if music else "", _extras(sec, music), _voice_part(sec)) if p]
     return " | ".join(parts) if parts else "no confident music, ambience or voice tag"
 
 
@@ -283,26 +309,8 @@ def section_ast(secs, budget, m, offset, cache) -> int:
 
 # ---------------------------------------------------------------- the pass
 
-def sections(x: np.ndarray, t0: float, win: float, hop: float, ast_budget: int, cache) -> tuple[list[dict], dict]:
-    """Sections of the window x (times relative to x; t0 is its file time for the cache keys)."""
-    m = mono_of(x)
-    dur = m.size / SR
-    if dur < 1.0:
-        return [], {"windows": 0, "ast": 0}
-    from hark.listen import vocabulary
-    from hark.models import clap as clap_mod
-    from hark.timeline._tags import cached_vectors
-
-    clap = clap_mod.get()
-    spans = [(s, round(min(dur, s + win), 3)) for s in window_starts(dur, win, hop)]
-    emb = cached_vectors(spans, m, "clap-repeat", cache, lambda xs: clap.embed_audio(xs, pad="repeatpad"), t0)
-    emb = emb / (np.linalg.norm(emb, axis=1, keepdims=True) + 1e-12)
-    bounds = novelty_bounds(m)
-    segs = merge_windows(spans, emb, dur, win, hop, bounds)
-    segs, edges = merge_slivers(segs, boundaries(segs, m, dur, win, hop))
-    vocab = vocabulary.get()
-    vecs = np.vstack([s.vec for s in segs])
-    cal = vocab.calibrate(vecs)
+def _section_rows(segs, edges, emb, x, vocab) -> list[dict]:
+    cal = vocab.calibrate(np.vstack([s.vec for s in segs]))
     secs = []
     for k, s in enumerate(segs):
         sec = {"start": round(edges[k], 2), "end": round(edges[k + 1], 2), "windows": len(s.idx),
@@ -310,6 +318,32 @@ def sections(x: np.ndarray, t0: float, win: float, hop: float, ast_budget: int, 
         sec.update(tag_fields(np.asarray(cal.Z[k]), np.asarray(cal.C[k]), vocab))
         sec["lufs"], sec["digital_silence"] = _level(x, sec["start"], sec["end"])
         secs.append(sec)
+    return secs
+
+
+def _window_embeddings(m: np.ndarray, spans: list, t0: float, cache) -> np.ndarray:
+    from hark.models import clap as clap_mod
+    from hark.timeline._tags import cached_vectors
+
+    clap = clap_mod.get()
+    emb = cached_vectors(spans, m, "clap-repeat", cache, lambda xs: clap.embed_audio(xs, pad="repeatpad"), t0)
+    return emb / (np.linalg.norm(emb, axis=1, keepdims=True) + 1e-12)
+
+
+def sections(x: np.ndarray, t0: float, win: float, hop: float, ast_budget: int, cache) -> tuple[list[dict], dict]:
+    """Sections of the window x (times relative to x; t0 is its file time for the cache keys)."""
+    m = mono_of(x)
+    dur = m.size / SR
+    if dur < 1.0:
+        return [], {"windows": 0, "ast": 0}
+    from hark.listen import vocabulary
+
+    spans = [(s, round(min(dur, s + win), 3)) for s in window_starts(dur, win, hop)]
+    emb = _window_embeddings(m, spans, t0, cache)
+    bounds = novelty_bounds(m)
+    segs = merge_windows(spans, emb, dur, win, hop, bounds)
+    segs, edges = merge_slivers(segs, boundaries(segs, m, dur, win, hop))
+    secs = _section_rows(segs, edges, emb, x, vocabulary.get())
     n_ast = section_ast(secs, ast_budget, m, t0, cache)
     for sec in secs:
         sec["label"] = label(sec)

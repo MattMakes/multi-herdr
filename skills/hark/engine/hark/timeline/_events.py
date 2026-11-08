@@ -153,18 +153,42 @@ def level_envs(x: np.ndarray) -> dict[str, np.ndarray]:
     return out
 
 
+def _is_swell(s: np.ndarray, i: int, j: int) -> bool:
+    """A rise of 8 dB or more over 0.25 s or more, mostly rising, then a fall of 4 dB or more."""
+    after = s[i: i + 100]
+    if s[i] - s[j] < 8 or i - j < 25 or after.size < 10 or s[i] - after.min() < 4:
+        return False
+    return bool(np.mean(np.diff(s[j: i + 1]) > 0) >= 0.6)
+
+
 def _swell_at(s: np.ndarray, i: int):
     a = max(0, i - 200)
-    if i - a < 25:
+    j = a + int(np.argmin(s[a: i - 15])) if i - a >= 25 else -1
+    if j < 0 or not _is_swell(s, i, j):
         return None
-    j = a + int(np.argmin(s[a: i - 15]))
-    rise, dur, after = s[i] - s[j], (i - j) / 100, s[i: i + 100]
-    if rise < 8 or dur < 0.25 or after.size < 10 or s[i] - after.min() < 4:
-        return None
-    if np.mean(np.diff(s[j: i + 1]) > 0) < 0.6:
-        return None
-    below = np.flatnonzero(after < s[i] - 10)
-    return j, float(rise), dur, int(10 * below[0]) if below.size else 1000
+    below = np.flatnonzero(s[i: i + 100] < s[i] - 10)
+    return j, float(s[i] - s[j]), (i - j) / 100, int(10 * below[0]) if below.size else 1000
+
+
+def _swell_row(s: np.ndarray, band: str, t: float, r: tuple) -> dict:
+    j, rise, dur, length = r
+    return {"t": float(t), "shape": "swell", "band": band, "contrast_db": rise, "prominence_db": rise,
+            "bed_db": round(float(s[j]), 1), "z": 0.0, "rise_ms": int(dur * 1000), "length_ms": length}
+
+
+def _taken(t: float, hit_t: np.ndarray, found: list[dict]) -> bool:
+    """True when a hit explains the level rise at t, or a swell is already within 0.15 s."""
+    if hit_t.size and np.any(np.abs(hit_t - (t - 0.03)) <= 0.05):
+        return True
+    return any(abs(w["t"] - t) <= 0.15 for w in found)
+
+
+def _band_swells(s: np.ndarray, band: str, hit_t: np.ndarray, found: list[dict]) -> None:
+    peaks = np.flatnonzero((s == ndimage.maximum_filter1d(s, size=31, mode="nearest")) & (s > -70))
+    for i in peaks:
+        r = _swell_at(s, int(i))
+        if r is not None and not _taken(i / 100, hit_t, found):
+            found.append(_swell_row(s, band, i / 100, r))
 
 
 def swells(envs: dict, hits: list[dict]) -> list[dict]:
@@ -173,42 +197,32 @@ def swells(envs: dict, hits: list[dict]) -> list[dict]:
     hit_t = np.array([h["t"] for h in hits])
     found: list[dict] = []
     for band, s in envs.items():
-        peaks = np.flatnonzero((s == ndimage.maximum_filter1d(s, size=31, mode="nearest")) & (s > -70))
-        for i in peaks:
-            r = _swell_at(s, int(i))
-            if r is None:
-                continue
-            t = i / 100
-            if hit_t.size and np.any(np.abs(hit_t - (t - 0.03)) <= 0.05):
-                continue
-            if any(abs(w["t"] - t) <= 0.15 for w in found):
-                continue
-            j, rise, dur, length = r
-            found.append({"t": float(t), "shape": "swell", "band": band, "contrast_db": rise, "prominence_db": rise,
-                          "bed_db": round(float(s[j]), 1), "z": 0.0, "rise_ms": int(dur * 1000),
-                          "length_ms": length})
+        _band_swells(s, band, hit_t, found)
     return found
+
+
+def _falls(s: np.ndarray, i: int, min_fall_db: float) -> bool:
+    after = s[i: i + 31]
+    return bool(after.size >= 5 and s[i] - after.min() >= min_fall_db)
+
+
+def _band_peak(s: np.ndarray, c: int, rf: int, lf: int, min_rise_db: float, min_fall_db: float):
+    """(frame, rise dB) of the local level maximum within rf frames of frame c, or None."""
+    lo, hi = max(0, c - rf), min(s.size, c + rf + 1)
+    i = lo + int(np.argmax(s[lo:hi])) if hi - lo >= 3 else -1
+    ok = i >= 5 and s[i] >= s[max(0, i - lf): i + lf + 1].max() and _falls(s, i, min_fall_db)
+    rise = float(s[i] - s[max(0, i - 60): i].min()) if ok else -np.inf
+    return (i, rise) if rise >= min_rise_db else None
 
 
 def level_peak(envs: dict, t: float, radius: float = 0.15, min_rise_db: float = 3.0, min_fall_db: float = 2.0,
                local: float = 0.3) -> dict | None:
-    best = None
-    rf, lf = int(round(radius * 100)), int(round(local * 100))
-    for band, s in envs.items():
-        c = int(round(t * 100))
-        lo, hi = max(0, c - rf), min(s.size, c + rf + 1)
-        if hi - lo < 3:
-            continue
-        i = lo + int(np.argmax(s[lo:hi]))
-        if i < 5 or s[i] < s[max(0, i - lf): i + lf + 1].max():
-            continue
-        rise = float(s[i] - s[max(0, i - 60): i].min())
-        after = s[i: i + 31]
-        if rise < min_rise_db or after.size < 5 or s[i] - after.min() < min_fall_db:
-            continue
-        if best is None or rise > best["rise_db"]:
-            best = {"t": round(i / 100, 3), "band": band, "rise_db": round(rise, 1)}
-    return best
+    rf, lf, c = int(round(radius * 100)), int(round(local * 100)), int(round(t * 100))
+    found = [(r, band) for band, s in envs.items() if (r := _band_peak(s, c, rf, lf, min_rise_db, min_fall_db))]
+    if not found:
+        return None
+    (i, rise), band = max(found, key=lambda f: f[0][1])
+    return {"t": round(i / 100, 3), "band": band, "rise_db": round(rise, 1)}
 
 
 # ---------------------------------------------------------------- per-event levels

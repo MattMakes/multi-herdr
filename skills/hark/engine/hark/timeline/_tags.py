@@ -90,12 +90,8 @@ def _burst_order(events: list[dict], order: list[int]) -> list[int]:
     return kept + followers
 
 
-def pick(events: list[dict], n: int, near_times, lo: float, hi: float) -> tuple[list[int], list[int]]:
-    """Chosen event indices (sorted) and the combined priority order."""
-    if n <= 0 or not events:
-        return [], []
-    combined = _burst_order(events, _priority(events, near_times))
-    bins = max(1, n // 2)
+def _first_per_bin(events: list[dict], combined: list[int], bins: int, lo: float, hi: float) -> list[int]:
+    """The first index in priority order that falls in each of `bins` equal time bins."""
     width = (hi - lo) / bins if hi > lo else 1.0
     seen, first = set(), []
     for i in combined:
@@ -103,7 +99,17 @@ def pick(events: list[dict], n: int, near_times, lo: float, hi: float) -> tuple[
         if b not in seen:
             seen.add(b)
             first.append(i)
-    rest = [i for i in combined if i not in set(first)]
+    return first
+
+
+def pick(events: list[dict], n: int, near_times, lo: float, hi: float) -> tuple[list[int], list[int]]:
+    """Chosen event indices (sorted) and the combined priority order."""
+    if n <= 0 or not events:
+        return [], []
+    combined = _burst_order(events, _priority(events, near_times))
+    first = _first_per_bin(events, combined, max(1, n // 2), lo, hi)
+    taken = set(first)
+    rest = [i for i in combined if i not in taken]
     return sorted((first + rest)[:n]), combined
 
 

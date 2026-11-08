@@ -52,23 +52,29 @@ def period(env: np.ndarray, min_bpm: float, max_bpm: float):
     return float(score[k]), P, float(ac[int(round(P))]), ac
 
 
-def track(env: np.ndarray, P: float) -> list[int]:
-    n = env.size
+def _forward(env: np.ndarray, P: float) -> tuple[np.ndarray, np.ndarray]:
+    """Dynamic-programming pass: cumulative score and back-pointer per frame."""
     lags = np.arange(max(1, int(P / 2)), int(2 * P) + 1)
     pen = 100 * np.log(lags / P) ** 2
     score = env.astype(np.float64).copy()
-    back = np.full(n, -1)
-    for t in range(int(P / 2), n):
-        ok = lags <= t
-        if not ok.any():
-            continue
-        c = score[t - lags[ok]] - pen[ok]
-        k = int(np.argmax(c))
-        if c[k] > 0:
-            score[t] += c[k]
-            back[t] = t - lags[ok][k]
+    back = np.full(env.size, -1)
+    for t in range(max(int(P / 2), int(lags[0])), env.size):
+        _step(score, back, t, lags[lags <= t], pen[lags <= t])
+    return score, back
+
+
+def _step(score: np.ndarray, back: np.ndarray, t: int, lags: np.ndarray, pen: np.ndarray) -> None:
+    c = score[t - lags] - pen
+    k = int(np.argmax(c))
+    if c[k] > 0:
+        score[t] += c[k]
+        back[t] = t - lags[k]
+
+
+def track(env: np.ndarray, P: float) -> list[int]:
+    score, back = _forward(env, P)
     tail = max(1, int(P))
-    t = n - tail + int(np.argmax(score[n - tail:]))
+    t = env.size - tail + int(np.argmax(score[env.size - tail:]))
     beats = []
     while t >= 0:
         beats.append(int(t))
@@ -92,19 +98,26 @@ def _chroma_low(m: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     return np.concatenate(chroma), np.concatenate(energy)
 
 
+def _beat_profiles(chroma: np.ndarray, b: np.ndarray) -> np.ndarray:
+    """Unit-length mean chroma of each beat span."""
+    ends = np.append(b[1:], b[-1])
+    prof = np.array([chroma[a:z].mean(axis=0) if z > a else chroma[a] for a, z in zip(b, ends)])
+    return prof / (np.linalg.norm(prof, axis=1, keepdims=True) + 1e-9)
+
+
+def _kick(low: np.ndarray, b: np.ndarray) -> np.ndarray:
+    dlow = np.zeros_like(low)
+    dlow[1:] = np.maximum(np.diff(low), 0)
+    return np.array([dlow[max(0, i - 3): i + 4].max() for i in b])
+
+
 def downbeat_phase(m: np.ndarray, beats: list[int]) -> int:
     chroma, low = _chroma_low(m)
     b = np.minimum(np.asarray(beats), chroma.shape[0] - 1)
-    prof = np.zeros((b.size, 12))
-    for k in range(b.size):
-        a, z = b[k], (b[k + 1] if k + 1 < b.size else b[k])
-        prof[k] = chroma[a:z].mean(axis=0) if z > a else chroma[a]
-    prof /= np.linalg.norm(prof, axis=1, keepdims=True) + 1e-9
+    prof = _beat_profiles(chroma, b)
     harm = np.zeros(b.size)
     harm[1:] = 1 - (prof[1:] * prof[:-1]).sum(axis=1)
-    dlow = np.zeros_like(low)
-    dlow[1:] = np.maximum(np.diff(low), 0)
-    kick = np.array([dlow[max(0, i - 3): i + 4].max() for i in b])
+    kick = _kick(low, b)
     accent = harm / (harm.std() + 1e-9) + kick / (kick.std() + 1e-9)
     return int(np.argmax([accent[p::4].mean() if accent[p::4].size else -np.inf for p in range(4)]))
 
@@ -115,26 +128,32 @@ def _confidence(clarity: float, regularity: float) -> str:
     return "weak" if clarity >= 0.15 else "none"
 
 
-def music_grid(m: np.ndarray, min_bpm: float = 60, max_bpm: float = 200) -> dict:
-    """Beat grid of the mono signal m."""
-    m = np.asarray(m, dtype=np.float64)
-    short = "the file is too short for a beat grid (under 5 s)"
-    if m.size < 5 * SR:
-        return empty_grid(short)
+def _best_period(m: np.ndarray, min_bpm: float, max_bpm: float):
+    """((score, P, clarity, ac), envelope) of the clearer pulse envelope, or None."""
     pairs = [(period(e, min_bpm, max_bpm), e) for e in pulse_envelopes(m)]
     pairs = [(r, e) for r, e in pairs if r is not None]
-    if not pairs:
-        return empty_grid(short)
-    (score, P, clarity, ac), env = max(pairs, key=lambda p: p[0][0])
-    beats = track(env, P)
-    if len(beats) < 4:
-        return empty_grid("no steady pulse was found")
+    return max(pairs, key=lambda p: p[0][0]) if pairs else None
+
+
+def _grid(m: np.ndarray, beats: list[int], P: float, clarity: float, ac: np.ndarray, max_bpm: float) -> dict:
     ibi = np.diff(beats)
     regularity = float(ibi.std() / ibi.mean())
     phase = downbeat_phase(m, beats)
-    half = int(round(P / 2))
-    alt = round(12000 / P, 1) if 12000 / P <= max_bpm and ac[half] >= 0.5 * clarity else None
+    alt = round(12000 / P, 1) if 12000 / P <= max_bpm and ac[int(round(P / 2))] >= 0.5 * clarity else None
     times = [round(b / 100, 3) for b in beats]
     return {"tempo": round(6000 / P, 1), "tempo_alt": alt, "beats": times, "downbeats": times[phase::4],
             "pulse_clarity": round(clarity, 3), "beat_regularity": round(regularity, 3),
             "confidence": _confidence(clarity, regularity), "note": NOTE}
+
+
+def music_grid(m: np.ndarray, min_bpm: float = 60, max_bpm: float = 200) -> dict:
+    """Beat grid of the mono signal m."""
+    m = np.asarray(m, dtype=np.float64)
+    best = _best_period(m, min_bpm, max_bpm) if m.size >= 5 * SR else None
+    if best is None:
+        return empty_grid("the file is too short for a beat grid (under 5 s)")
+    (_, P, clarity, ac), env = best
+    beats = track(env, P)
+    if len(beats) < 4:
+        return empty_grid("no steady pulse was found")
+    return _grid(m, beats, P, clarity, ac, max_bpm)

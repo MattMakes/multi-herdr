@@ -24,6 +24,22 @@ def _pct(v) -> str:
 
 # ---------------------------------------------------------------- summary
 
+def _lufs_sentence(L: dict) -> str:
+    s = f"Integrated {L['integrated_lufs']:.1f} LUFS, true peak {L['true_peak_dbtp']:.1f} dBTP"
+    if L.get("lra_lu") is not None:
+        s += f", LRA {L['lra_lu']:.1f} LU"
+    st = L.get("max_short_term")
+    if st:
+        s += f"; loudest 3 s at {fmt_t(st['start'])}-{fmt_t(st['end'])} ({st['lufs']:.1f} LUFS)"
+    return s + "."
+
+
+def _ungated_sentence(r: dict) -> str:
+    tail = "below the -70 LUFS gate: near silence" if r["duration"] >= 0.4 else "too short for a loudness measurement"
+    tp = r["loudness"]["true_peak_dbtp"]
+    return f"True peak {tp:.1f} dBTP; {tail}." if tp is not None else f"{tail.capitalize()}."
+
+
 def _level_sentence(r: dict) -> str:
     L = r["loudness"]
     if not r["has_audio"]:
@@ -31,34 +47,29 @@ def _level_sentence(r: dict) -> str:
                 f"without sound.")
     if L["digital_silence"]:
         return "DIGITAL SILENCE: every sample is zero."
-    if L["integrated_lufs"] is not None:
-        s = f"Integrated {L['integrated_lufs']:.1f} LUFS, true peak {L['true_peak_dbtp']:.1f} dBTP"
-        if L.get("lra_lu") is not None:
-            s += f", LRA {L['lra_lu']:.1f} LU"
-        st = L.get("max_short_term")
-        if st:
-            s += f"; loudest 3 s at {fmt_t(st['start'])}-{fmt_t(st['end'])} ({st['lufs']:.1f} LUFS)"
-        return s + "."
-    tail = "below the -70 LUFS gate: near silence" if r["duration"] >= 0.4 else "too short for a loudness measurement"
-    tp = L["true_peak_dbtp"]
-    return f"True peak {tp:.1f} dBTP; {tail}." if tp is not None else f"{tail.capitalize()}."
+    return _lufs_sentence(L) if L["integrated_lufs"] is not None else _ungated_sentence(r)
+
+
+OVERSHOOT = {
+    "risk": "True peak {tp:.1f} dBTP risks overs after encoding; limit the master to -1 dBTP.",
+    "clips": ("The decoded lossy audio peaks at {tp:.1f} dBTP and clips on playback; leave the master at -1 dBTP "
+              "or lower before encoding."),
+    "codec": "True peak {tp:.1f} dBTP includes codec overshoot, which is fine for a delivered file.",
+}
+
+
+def _overshoot_sentence(tp: float, lossy) -> str | None:
+    if tp <= -1:
+        return None
+    key = "clips" if lossy and tp > 0 else "codec" if lossy else "risk"
+    return OVERSHOOT[key].format(tp=tp)
 
 
 def _peak_sentence(r: dict) -> str | None:
-    L, lossy = r["loudness"], r.get("lossy")
-    clip, tp = L["clipping"], L["true_peak_dbtp"]
+    clip, tp = r["loudness"]["clipping"], r["loudness"]["true_peak_dbtp"]
     if clip["runs"]:
         return f"CLIPPING: {clip['runs']} run(s) of clipped samples, the first at {fmt_t(clip['times'][0])}."
-    if tp is None:
-        return None
-    if lossy and tp > 0:
-        return (f"The decoded lossy audio peaks at {tp:.1f} dBTP and clips on playback; leave the master at -1 dBTP "
-                f"or lower before encoding.")
-    if lossy and tp > -1:
-        return f"True peak {tp:.1f} dBTP includes codec overshoot, which is fine for a delivered file."
-    if tp > -1:
-        return f"True peak {tp:.1f} dBTP risks overs after encoding; limit the master to -1 dBTP."
-    return None
+    return _overshoot_sentence(tp, r.get("lossy")) if tp is not None else None
 
 
 def _gap_sentences(r: dict) -> list[str]:
@@ -94,45 +105,56 @@ def _section_sentence(r: dict) -> str | None:
     return f"{len(r['sections'])} section(s): " + "; ".join(parts) + "."
 
 
+def _hints(tagged: list[dict]) -> str:
+    if not tagged:
+        return ""
+    kinds = Counter(e["kind"].lower() for e in tagged).most_common()
+    return " (hints: " + ", ".join(f"{n} {k}" for k, n in kinds) + ")"
+
+
+def _accent_text(e: dict) -> str:
+    return f"{fmt_t(e['t'])} +{e['prominence_db']:.0f} dB" + (f" {e['label']}" if e.get("label") else "")
+
+
 def _event_sentence(r: dict) -> str:
     ev = r["events"]
     rate = len(ev) / r["duration"] if r["duration"] > 0 else 0.0
     tagged = [e for e in ev if e.get("kind")]
-    s = f"{len(ev)} event(s) ({rate:.1f}/s), {len(tagged)} tagged"
-    if tagged:
-        kinds = Counter(e["kind"].lower() for e in tagged).most_common()
-        s += " (hints: " + ", ".join(f"{n} {k}" for k, n in kinds) + ")"
     acc = top_accents(ev)
+    s = f"{len(ev)} event(s) ({rate:.1f}/s), {len(tagged)} tagged" + _hints(tagged)
     if acc:
-        s += "; strongest accents " + ", ".join(
-            f"{fmt_t(e['t'])} +{e['prominence_db']:.0f} dB" + (f" {e['label']}" if e.get("label") else "")
-            for e in acc)
+        s += "; strongest accents " + ", ".join(_accent_text(e) for e in acc)
     return s + "."
+
+
+def _accent_clause(st: dict, fr: str, zoomed: bool) -> str:
+    if "accent_" + fr not in st:
+        return ""
+    ctx = ", ranked over the +-30 s context" if zoomed else ""
+    return (f"; accents (+{st['accent_min_db']:.1f} dB over the bed{ctx}) {_pct(st['accent_' + fr])} "
+            f"(chance {_pct(st['accent_chance_' + fr])})")
+
+
+def _tail_clauses(st: dict) -> list[str]:
+    """The optional on-beat, swell, level-peak and no-hit clauses of a sync sentence."""
+    out = [f"; on beat {_pct(st['on_beat'])} (chance {_pct(st['on_beat_chance'])})" if "on_beat" in st else "",
+           f"; {st['answered_by_swell']} met by a whoosh or riser peak" if st["answered_by_swell"] else "",
+           f"; {st['answered_by_level_peak']} met only by a level peak" if st["answered_by_level_peak"] else ""]
+    if st["no_sound"]:
+        out.append(f"; {len(st['no_sound'])} without a hit: " + ", ".join(fmt_t(t) for t in st["no_sound"][:6]))
+    return out
 
 
 def _sync_sentence(kind: str, block: dict, zoomed: bool) -> str | None:
-    st, items = block["stats"], block["items"]
-    if not items:
+    st = block["stats"]
+    if not block["items"]:
         return None
-    fr = "within_1_frame" if "frame_ms" in st else "within_40ms"
-    word = "within 1 frame" if fr == "within_1_frame" else "within 40 ms"
+    fr, word = ("within_1_frame", "within 1 frame") if "frame_ms" in st else ("within_40ms", "within 40 ms")
     s = (f"{kind.capitalize()}: {st['n']}; {_pct(st['hit_' + fr])} {word} (chance {_pct(st.get('chance_' + fr, 0))}), "
          f"{_pct(st['hit_within_100ms'])} within 100 ms")
-    if st.get("median_abs_offset_ms") is not None:
-        s += f", median offset {st['median_abs_offset_ms']:.1f} ms"
-    if "accent_" + fr in st:
-        ctx = ", ranked over the +-30 s context" if zoomed else ""
-        s += (f"; accents (+{st['accent_min_db']:.1f} dB over the bed{ctx}) {_pct(st['accent_' + fr])} "
-              f"(chance {_pct(st['accent_chance_' + fr])})")
-    if "on_beat" in st:
-        s += f"; on beat {_pct(st['on_beat'])} (chance {_pct(st['on_beat_chance'])})"
-    if st["answered_by_swell"]:
-        s += f"; {st['answered_by_swell']} met by a whoosh or riser peak"
-    if st["answered_by_level_peak"]:
-        s += f"; {st['answered_by_level_peak']} met only by a level peak"
-    if st["no_sound"]:
-        s += f"; {len(st['no_sound'])} without a hit: " + ", ".join(fmt_t(t) for t in st["no_sound"][:6])
-    return s + "."
+    med = st.get("median_abs_offset_ms")
+    s += f", median offset {med:.1f} ms" if med is not None else ""
+    return s + _accent_clause(st, fr, zoomed) + "".join(_tail_clauses(st)) + "."
 
 
 def summary(r: dict) -> str:
@@ -179,24 +201,30 @@ def _event_row(e: dict, marks: list[str]) -> str:
     return row + (" | " + "; ".join(marks) if marks else "")
 
 
-def _unanswered_row(item: dict, who: str) -> str:
+def _cue_head(item: dict, who: str) -> str:
     head = f"{fmt_t(item['t']):>8}  {'CUT' if who == 'cut' else 'CUE'}"
-    if who != "cut":
-        if item.get("kind") and item["kind"] != "cue":
-            head += f" {item['kind']}"
-        if item.get("id"):
-            head += f" {item['id']}"
+    if who == "cut":
+        return head
+    kind = item.get("kind")
+    head += f" {kind}" if kind and kind != "cue" else ""
+    return head + (f" {item['id']}" if item.get("id") else "")
+
+
+def _why(item: dict) -> str:
     if item["status"] == "peak":
-        why = (f"no onset; level peak {item['offset_ms']:+.0f} ms, +{item['event_prominence_db']:.1f} dB: a soft "
-               f"whoosh or swell, or just the bed? <- CHECK")
-    elif item["status"] == "off":
-        why = f"no onset within 100 ms; strong sound at {item['offset_ms']:+.0f} ms <- NO HIT"
-    else:
-        why = "no onset or level peak within 250 ms <- NO HIT"
+        return (f"no onset; level peak {item['offset_ms']:+.0f} ms, +{item['event_prominence_db']:.1f} dB: a soft "
+                f"whoosh or swell, or just the bed? <- CHECK")
+    if item["status"] == "off":
+        return f"no onset within 100 ms; strong sound at {item['offset_ms']:+.0f} ms <- NO HIT"
+    return "no onset or level peak within 250 ms <- NO HIT"
+
+
+def _unanswered_row(item: dict, who: str) -> str:
+    why = _why(item)
     text = f"{item.get('kind') or ''} {item.get('id') or ''}".lower()
     if any(w in text for w in BUILD_WORDS):
         why += " (a soft build-up can still be missed: look at the sheet)"
-    return f"{head}  {why}"
+    return f"{_cue_head(item, who)}  {why}"
 
 
 def _gap_row(g: dict) -> str:
@@ -205,16 +233,20 @@ def _gap_row(g: dict) -> str:
     return f"{fmt_t(g['start']):>8}  GAP     {g['kind']} {g['dur']:.2f} s at {lvl} LUFS{where}"
 
 
+def _mark_item(it: dict, who: str | None, marks: dict, unanswered: list) -> None:
+    if it["status"] in ("no sound", "off", "peak"):
+        unanswered.append((it, "cut" if who else "cue"))
+    if it.get("event_t") is not None and it["status"] not in ("off", "peak"):
+        name = who or it.get("kind") or "cue"
+        marks.setdefault(it["event_t"], []).append(f"{name} {it['offset_ms']:+.0f} ms {it['status']}")
+
+
 def _marks(r: dict) -> tuple[dict, list]:
     marks: dict[float, list[str]] = {}
-    unanswered = []
+    unanswered: list = []
     for kind, who in (("cuts", "cut"), ("cues", None)):
         for it in r["sync"].get(kind, {}).get("items", []):
-            name = who or it.get("kind") or "cue"
-            if it["status"] in ("no sound", "off", "peak"):
-                unanswered.append((it, "cut" if who else "cue"))
-            if it.get("event_t") is not None and it["status"] not in ("off", "peak"):
-                marks.setdefault(it["event_t"], []).append(f"{name} {it['offset_ms']:+.0f} ms {it['status']}")
+            _mark_item(it, who, marks, unanswered)
     for e in top_accents(r["events"]):
         marks.setdefault(e["t"], []).append("strong accent (summary)")
     return marks, unanswered
