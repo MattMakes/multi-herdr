@@ -22,7 +22,7 @@ def ref_root() -> str:
     return root.rstrip("/") or root
 
 
-def _scalar(word: str) -> Any:
+def scalar(word: str) -> Any:
     """Read one table cell: an int, else a float, else the bare word."""
     for kind in (int, float):
         try:
@@ -41,16 +41,34 @@ def space_table(text: str) -> dict[str, Any]:
     for row in text.strip().splitlines():
         name, *cells = row.split()
         if cells[0] == "|":
-            out[name] = [_scalar(c) for c in cells[1:]]
+            out[name] = [scalar(c) for c in cells[1:]]
         else:
-            out[name] = tuple(_scalar(c) for c in cells)
+            out[name] = tuple(scalar(c) for c in cells)
     return out
 
 
 def value_table(text: str) -> dict[str, Any]:
     """Build a parameter set from ``name value`` pairs, several pairs per row allowed."""
     words = text.split()
-    return {words[i]: _scalar(words[i + 1]) for i in range(0, len(words), 2)}
+    return {words[i]: scalar(words[i + 1]) for i in range(0, len(words), 2)}
+
+
+def spec_rows(text: str) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Build a search space and its defaults from rows of ``name lo hi [scale] = default``.
+
+    A row ``name | a b = default`` gives a list of choices.
+    """
+    space: dict[str, Any] = {}
+    defaults: dict[str, Any] = {}
+    for row in text.strip().splitlines():
+        left, right = row.split("=")
+        name, *cells = left.split()
+        if cells[0] == "|":
+            space[name] = [scalar(c) for c in cells[1:]]
+        else:
+            space[name] = tuple(scalar(c) for c in cells)
+        defaults[name] = scalar(right.strip())
+    return space, defaults
 
 
 def decay(t: np.ndarray, tau: float) -> np.ndarray:
