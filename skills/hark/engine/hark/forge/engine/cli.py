@@ -9,51 +9,57 @@ from typing import Any
 USAGE_RENDER = "usage: hark forge --render <recipe> --params file.json [--seeds 1 2 3] [--dir out]"
 
 
+_ARGS: list[tuple[tuple[str, ...], dict]] = [
+    (("recipe",), dict(nargs="?", default=None)),
+    (("--list",), dict(action="store_true")),
+    (("--render",), dict(nargs="?", const="", default=None, metavar="RECIPE")),
+    (("--params",), dict(default=None)),
+    (("--check",), dict(nargs="+", default=None, metavar="DIR")),
+    (("--seeds",), dict(nargs="+", type=int, default=None)),
+    (("--target",), dict(default=None)),
+    (("--alts",), dict(nargs="+", default=None)),
+    (("--refs",), dict(nargs="+", default=None)),
+    (("--refset",), dict(default=None)),
+    (("--budget",), dict(type=int, default=160)),
+    (("--pop",), dict(type=int, default=16)),
+    (("--variants", "--keep"), dict(dest="keep", type=int, default=4)),
+    (("--seed",), dict(type=int, default=0)),
+    (("--dir",), dict(default=None)),
+    (("--strategy",), dict(choices=("es", "cma"), default="es")),
+    (("--prescreen",), dict(type=int, default=None)),
+    (("--robust",), dict(type=int, default=3)),
+    (("--shortlist",), dict(type=int, default=2)),
+    (("--no-bank",), dict(action="store_true")),
+    (("--workers",), dict(type=int, default=None)),
+    (("--tone",), dict(type=float, default=None)),
+    (("--mode",), dict(choices=("auto", "real", "designed"), default="auto")),
+    (("--reps",), dict(type=int, default=1)),
+    (("--tone-target",), dict(type=float, default=None)),
+]
+
+
 def add_cli(sub: argparse._SubParsersAction) -> None:
     """Register the forge subcommand."""
     from hark.core.report import add_common
 
     p = sub.add_parser("forge", help="make sounds in code and search them against a critic")
-    p.add_argument("recipe", nargs="?", default=None)
-    p.add_argument("--list", action="store_true")
-    p.add_argument("--render", nargs="?", const="", default=None, metavar="RECIPE")
-    p.add_argument("--params", default=None)
-    p.add_argument("--check", nargs="+", default=None, metavar="DIR")
-    p.add_argument("--seeds", nargs="+", type=int, default=None)
-    p.add_argument("--target", default=None)
-    p.add_argument("--alts", nargs="+", default=None)
-    p.add_argument("--refs", nargs="+", default=None)
-    p.add_argument("--refset", default=None)
-    p.add_argument("--budget", type=int, default=160)
-    p.add_argument("--pop", type=int, default=16)
-    p.add_argument("--variants", "--keep", dest="keep", type=int, default=4)
-    p.add_argument("--seed", type=int, default=0)
-    p.add_argument("--dir", default=None)
-    p.add_argument("--strategy", choices=("es", "cma"), default="es")
-    p.add_argument("--prescreen", type=int, default=None)
-    p.add_argument("--robust", type=int, default=3)
-    p.add_argument("--shortlist", type=int, default=2)
-    p.add_argument("--no-bank", action="store_true")
-    p.add_argument("--workers", type=int, default=None)
-    p.add_argument("--tone", type=float, default=None)
-    p.add_argument("--mode", choices=("auto", "real", "designed"), default="auto")
-    p.add_argument("--reps", type=int, default=1)
-    p.add_argument("--tone-target", type=float, default=None)
+    for names, kw in _ARGS:
+        p.add_argument(*names, **kw)
     add_common(p)
     p.set_defaults(func=handler)
 
 
+def _check(args: argparse.Namespace) -> int:
+    from hark.forge.engine import schema
+
+    return int(schema.main(list(args.check)) or 0)
+
+
 def handler(args: argparse.Namespace) -> int:
     """Dispatch: --check, then --render, then --list, else a search."""
-    if args.check:
-        from hark.forge.engine import schema
-
-        return int(schema.main(list(args.check)) or 0)
-    if args.render is not None:
-        return _render(args)
-    if args.list or not args.recipe:
-        return _list()
-    return _search(args)
+    action = (_check if args.check else _render if args.render is not None
+              else _list if args.list or not args.recipe else _search)
+    return action(args)
 
 
 # ---------------------------------------------------------------- --render
@@ -95,7 +101,7 @@ def _recipe_line(loop: Any, name: str) -> str:
     return f"  {name}: {getattr(rec, 'TARGET', '')}" + (f"  [refset {rs}]" if rs else "")
 
 
-def _list() -> int:
+def _list(args: argparse.Namespace | None = None) -> int:
     from hark.forge.engine import loop, refsets
 
     print("recipes (name: TARGET):")

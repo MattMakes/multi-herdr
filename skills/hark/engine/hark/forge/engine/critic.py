@@ -205,18 +205,31 @@ def _dist(v: float, lo: float, hi: float) -> float:
     return max(lo - v, v - hi, 0.0)
 
 
-def _study_one(key: str, v: float, lo: float, hi: float) -> tuple[str, float, str]:
-    if key in SHARE_KEYS:
-        return "tone", min(2.0, _dist(v, lo, hi) / 6), f"{SHARE_KEYS[key]} share {v:+.1f} dB (target {lo}..{hi})"
-    if key == "corr":
-        return "polish", min(1.5, _dist(v, lo, hi) / 0.3), f"stereo corr {v:.2f} (target {lo}..{hi})"
-    if key == "peak_frac":
-        return "env", min(1.5, _dist(v, lo, hi) / 0.25), \
-            f"peak at {v:.0%} of the sound (target {lo:.0%}..{hi:.0%})"
+def _study_share(key: str, v: float, lo: float, hi: float) -> tuple[str, float, str]:
+    return "tone", min(2.0, _dist(v, lo, hi) / 6), f"{SHARE_KEYS[key]} share {v:+.1f} dB (target {lo}..{hi})"
+
+
+def _study_corr(key: str, v: float, lo: float, hi: float) -> tuple[str, float, str]:
+    return "polish", min(1.5, _dist(v, lo, hi) / 0.3), f"stereo corr {v:.2f} (target {lo}..{hi})"
+
+
+def _study_peak(key: str, v: float, lo: float, hi: float) -> tuple[str, float, str]:
+    return "env", min(1.5, _dist(v, lo, hi) / 0.25), f"peak at {v:.0%} of the sound (target {lo:.0%}..{hi:.0%})"
+
+
+def _study_time(key: str, v: float, lo: float, hi: float) -> tuple[str, float, str]:
     fl, unit = (1e-3, "s") if key == "length" else (1.0, "ms")
     vv, lo2, hi2 = max(v, fl), max(lo, fl), max(hi, lo, fl)
     p = min(1.5, max(math.log2(lo2 / vv), math.log2(vv / hi2), 0.0))
     return "env", p, f"{key} {v}{unit} (target {lo}..{hi})"
+
+
+_STUDY = {"corr": _study_corr, "peak_frac": _study_peak}
+
+
+def _study_one(key: str, v: float, lo: float, hi: float) -> tuple[str, float, str]:
+    fn = _study_share if key in SHARE_KEYS else _STUDY.get(key, _study_time)
+    return fn(key, v, lo, hi)
 
 
 def study_penalties(sm: dict, targets: dict) -> tuple[dict, dict, str]:
@@ -252,21 +265,33 @@ def resolve_mode(mode: str, target: str, refs: Sequence[Any] | None) -> str:
     return "real"
 
 
+def _total(r: dict, W: dict, mode: str) -> float:
+    def g(k: str) -> float:
+        return float(r.get(k) or 0.0)
+
+    typ = r.get("ref_typ_z")
+    gain = {"match": min(g("match_z"), 6), "real": 2 * g("p_real") - 1 if mode == "real" else 0.0,
+            "typ": float(np.clip(typ, -3, 2)) if typ is not None else 0.0}
+    cost = {"feat": g("feat_pen"), "alt": max(0.0, 0.5 - g("alt_margin")), "tone": g("tone_pen"),
+            "env": g("env_pen"), "art": g("art_pen"), "polish": g("polish_pen")}
+    return sum(W[k] * v for k, v in gain.items()) - sum(W[k] * v for k, v in cost.items())
+
+
+def _passes(r: dict, mode: str) -> bool:
+    def g(k: str) -> float:
+        return float(r.get(k) or 0.0)
+
+    typ = r.get("ref_typ_z")
+    checks = [g("match_z") >= 3, g("alt_margin") > 0, mode != "real" or g("p_real") >= 0.77,
+              typ is None or typ >= -2, g("feat_pen") <= 1, not r.get("hard"), g("env_pen") <= ENV_PASS,
+              g("polish_pen") <= POLISH_PASS, not r.get("tone_far")]
+    return all(checks)
+
+
 def total_v2(r: dict, W: dict | None = None, mode: str = "real") -> tuple[float, bool]:
     """The version-2 total and pass of a critic row."""
     W = {**W2, **(W or {})}
-    real = W["real"] if mode == "real" else 0.0
-    typ = r.get("ref_typ_z")
-    g = lambda k: float(r.get(k) or 0.0)  # noqa: E731
-    total = (W["match"] * min(g("match_z"), 6) + real * (2 * g("p_real") - 1)
-             + W["typ"] * (float(np.clip(typ, -3, 2)) if typ is not None else 0.0)
-             - W["feat"] * g("feat_pen") - W["alt"] * max(0.0, 0.5 - g("alt_margin"))
-             - W["tone"] * g("tone_pen") - W["env"] * g("env_pen") - W["art"] * g("art_pen")
-             - W["polish"] * g("polish_pen"))
-    passes = bool(g("match_z") >= 3 and g("alt_margin") > 0 and (mode != "real" or g("p_real") >= 0.77)
-                  and (typ is None or typ >= -2) and g("feat_pen") <= 1 and not r.get("hard")
-                  and g("env_pen") <= ENV_PASS and g("polish_pen") <= POLISH_PASS and not r.get("tone_far"))
-    return float(total), passes
+    return float(_total(r, W, mode)), _passes(r, mode)
 
 
 def _mono(x: Any) -> np.ndarray:
