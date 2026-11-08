@@ -308,6 +308,24 @@ def _peak_path(spec: ndarray, axis_hz: ndarray) -> tuple[list[float], list[float
     return pitch, focus
 
 
+def _balance_into(stats: dict, loud: ndarray, axis_hz: ndarray) -> None:
+    avg = loud.mean(axis=0)
+    whole = avg.sum() + _EMPTY
+    stats["centroid_hz"] = int(round(float((avg * axis_hz).sum() / whole)))
+    stats["lo150"] = round(float(avg[axis_hz < 150].sum() / whole), 3)
+    stats["hi4k"] = round(float(avg[axis_hz >= 4000].sum() / whole), 3)
+
+
+def _pitch_into(stats: dict, loud: ndarray, axis_hz: ndarray) -> None:
+    pitch, focus = _peak_path(loud, axis_hz)
+    if len(focus) < 2:
+        return
+    ends = max(1, min(3, len(pitch) // 3))
+    stats["tonal"] = round(float(mean(focus)), 2)
+    shift = median(pitch[-ends:]) / median(pitch[:ends])
+    stats["glide_st"] = round(float(12 * log2(shift)), 1)
+
+
 def _spectrum_stats(sig: ndarray) -> dict:
     spec, axis_hz = _stft_power(sig)
     stats: dict = dict.fromkeys(("centroid_hz", "lo150", "hi4k", "tonal", "glide_st"))
@@ -315,18 +333,9 @@ def _spectrum_stats(sig: ndarray) -> dict:
     if energy.max() <= 0:
         return stats
     loud = spec[energy >= 0.01 * energy.max()]
-    if not len(loud):
-        return stats
-    avg = loud.mean(axis=0)
-    whole = avg.sum() + _EMPTY
-    stats["centroid_hz"] = int(round(float((avg * axis_hz).sum() / whole)))
-    stats["lo150"] = round(float(avg[axis_hz < 150].sum() / whole), 3)
-    stats["hi4k"] = round(float(avg[axis_hz >= 4000].sum() / whole), 3)
-    pitch, focus = _peak_path(loud, axis_hz)
-    if len(focus) >= 2:
-        ends = max(1, min(3, len(pitch) // 3))
-        stats["tonal"] = round(float(mean(focus)), 2)
-        stats["glide_st"] = round(float(12 * log2(median(pitch[-ends:]) / median(pitch[:ends]))), 1)
+    if len(loud):
+        _balance_into(stats, loud, axis_hz)
+        _pitch_into(stats, loud, axis_hz)
     return stats
 
 
@@ -345,11 +354,8 @@ def measure(x: ndarray) -> dict:
 def _range_miss(got: Any, lo: float, hi: float, scale: float) -> float:
     if got is None:
         return 1.0
-    if got < lo:
-        return min(2.0, (lo - got) / scale)
-    if got > hi:
-        return min(2.0, (got - hi) / scale)
-    return 0.0
+    gap = lo - got if got < lo else (got - hi if got > hi else 0.0)
+    return min(2.0, gap / scale) if gap else 0.0
 
 
 def outside(m: dict, targets: dict) -> float:
