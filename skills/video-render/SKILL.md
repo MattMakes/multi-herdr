@@ -166,6 +166,26 @@ Reframing, per scene and per aspect:
 The script prints `outputs`, `warnings`, `frame_counts` and each scene's
 `reframe` mode (`crop` with `x`, `y`, `w`, `h`, `fit` or `clip`).
 
+### Formats: `short` and `long`
+
+The script reads `meta.format` from `timeline.json`. Each rule below names its format.
+
+`short` rules (every rule above stays in force for `short`):
+
+- Write `9x16` and `1x1` variants when the plan asks for them.
+- Take `chapters.txt` from scene titles.
+- Take `cover.jpg` from the hook scene.
+
+`long` rules:
+
+- Write `chapters.txt` from `meta.chapters`: 1 line per chapter, `M:SS <title>`.
+- The first line is `0:00`.
+- Write the `16x9` export only. Skip `9x16` and `1x1` and print a warning.
+  A short cut of a long film is a separate `short` production.
+- Take `cover.jpg` from the hero chapter, the last chapter, 75% into it.
+  `--cover-sec` overrides this.
+- Keep the end screen clear of captions for the last `meta.end_screen_sec` seconds.
+
 Chapter warnings repeat the YouTube rules: 3 or more chapters, each 10 s or
 longer. Scenes are 2-8 s, so give `title` only to the scene that opens each
 chapter.
