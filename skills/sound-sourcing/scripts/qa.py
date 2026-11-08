@@ -47,16 +47,18 @@ def dbp(p: float) -> float:
     return 10 * math.log10(p) if p > 0 else -200.0
 
 
+def _clean_scalar(o):
+    if isinstance(o, np.generic):
+        o = o.item()
+    return None if isinstance(o, float) and not math.isfinite(o) else o
+
+
 def clean(o):
     if isinstance(o, dict):
         return {str(k): clean(v) for k, v in o.items()}
     if isinstance(o, (list, tuple)):
         return [clean(v) for v in o]
-    if isinstance(o, np.generic):
-        o = o.item()
-    if isinstance(o, float) and not math.isfinite(o):
-        return None
-    return o
+    return _clean_scalar(o)
 
 
 def sos(order, hz, kind):
@@ -70,19 +72,16 @@ def read(path: str) -> np.ndarray:
     return mst.as_stereo(sf.read(path, dtype="float32", always_2d=True)[0]).astype(np.float32)
 
 
-def load_inputs(a) -> dict:
-    root = os.path.abspath(a.root)
-    solo = a.only is not None
-    tag = mix.safe(a.only, "A-Za-z0-9._-") if solo else None
-    rp = lambda p: mix.rpath(root, p)
-    dpath = rp(a.design)
-    if not os.path.isfile(dpath):
-        raise InputError(f"design not found: {dpath} (--design)")
-    design = mix.load_design(a.design, root, a.only)
-    report_p = rp(a.report or (f"out/audio-review/solo/{tag}_report.json" if solo else "out/qa/mix_report.json"))
-    if not os.path.isfile(report_p):
-        raise InputError(f"report not found: {report_p} (--report)")
-    stems_p = rp(a.stems or (f"out/audio-review/solo/{tag}_stems" if solo else "out/audio/stems"))
+def _mix_paths(a, rp) -> tuple[str, str]:
+    """(report path, stems folder); a solo QA (--only) reads the solo render's files."""
+    if a.only is None:
+        return rp(a.report or "out/qa/mix_report.json"), rp(a.stems or "out/audio/stems")
+    tag = mix.safe(a.only, "A-Za-z0-9._-")
+    return (rp(a.report or f"out/audio-review/solo/{tag}_report.json"),
+            rp(a.stems or f"out/audio-review/solo/{tag}_stems"))
+
+
+def _read_stems(stems_p: str) -> dict:
     stems = {}
     for b in mix.BUSES:
         f = os.path.join(stems_p, f"{b}.wav")
@@ -91,32 +90,118 @@ def load_inputs(a) -> dict:
         stems[b] = read(f)
     if len({len(x) for x in stems.values()}) != 1:
         raise InputError(f"stems of one length not found: {stems_p} (--stems)")
-    master = None
-    if a.master != "none":
-        mp = rp(a.master) if a.master else (None if solo else rp("out/audio/soundtrack.wav"))
-        if mp and os.path.isfile(mp):
-            master = read(mp)
-            if abs(len(master) - len(stems["sfx"])) > 1:
-                raise InputError(f"master of the stems' length not found: {mp} (--master)")
-            master = np.pad(master, ((0, max(0, len(stems['sfx']) - len(master))), (0, 0)))[: len(stems["sfx"])]
-        elif a.master:
-            raise InputError(f"master not found: {mp} (--master)")
+    return stems
+
+
+def _master_path(a, rp, solo: bool):
+    if a.master:
+        return rp(a.master)
+    return None if solo else rp("out/audio/soundtrack.wav")
+
+
+def _fit_master(master: np.ndarray, n: int, mp: str) -> np.ndarray:
+    if abs(len(master) - n) > 1:
+        raise InputError(f"master of the stems' length not found: {mp} (--master)")
+    return np.pad(master, ((0, max(0, n - len(master))), (0, 0)))[:n]
+
+
+def _read_master(a, rp, solo: bool, n: int):
+    mp = None if a.master == "none" else _master_path(a, rp, solo)
+    if mp and os.path.isfile(mp):
+        return _fit_master(read(mp), n, mp)
+    if a.master and a.master != "none":
+        raise InputError(f"master not found: {mp} (--master)")
+    return None
+
+
+def _side_inputs(a, design: dict, root: str, rp) -> dict:
+    """Cues, trace and cache, with their paths."""
     cp = mix.cue_path(a.cues, design, root)
-    cues = mix.load_cues(cp) if os.path.isfile(cp) else {"fps": 60, "events": []}
     tp = rp(a.trace)
     trace = mix.load_json(tp) if os.path.isfile(tp) else None
-    cache = rp(a.cache) if a.cache else os.path.join(root, "out/audio/cache")
-    return {"root": root, "design": design, "report": mix.load_json(report_p), "stems": stems, "master": master,
-            "cues": cues, "trace": trace, "cache": cache, "solo": solo,
-            "paths": {"design": dpath, "report": report_p, "stems": stems_p, "trace": tp if trace else None,
-                      "cues": cp, "master": a.master}}
+    return {"cues": mix.load_cues(cp) if os.path.isfile(cp) else {"fps": 60, "events": []}, "cues_path": cp,
+            "trace": trace, "trace_path": tp if trace else None,
+            "cache": rp(a.cache) if a.cache else os.path.join(root, "out/audio/cache")}
+
+
+def load_inputs(a) -> dict:
+    root = os.path.abspath(a.root)
+    rp = lambda p: mix.rpath(root, p)
+    dpath = rp(a.design)
+    if not os.path.isfile(dpath):
+        raise InputError(f"design not found: {dpath} (--design)")
+    design = mix.load_design(a.design, root, a.only)
+    report_p, stems_p = _mix_paths(a, rp)
+    if not os.path.isfile(report_p):
+        raise InputError(f"report not found: {report_p} (--report)")
+    stems = _read_stems(stems_p)
+    solo = a.only is not None
+    side = _side_inputs(a, design, root, rp)
+    return {"root": root, "design": design, "report": mix.load_json(report_p), "stems": stems,
+            "master": _read_master(a, rp, solo, len(stems["sfx"])),
+            "cues": side["cues"], "trace": side["trace"], "cache": side["cache"], "solo": solo,
+            "paths": {"design": dpath, "report": report_p, "stems": stems_p, "trace": side["trace_path"],
+                      "cues": side["cues_path"], "master": a.master}}
 
 
 # ---------------------------------------------------------------- layers and groups
 
+def _layer_meta(pl: dict, rules: dict, places) -> dict:
+    """pitch, offset, align, cue time, rule name and qa_ok of 1 placement."""
+    if pl["kind"] == "place":
+        item = next(places, {})
+        return {"pitch": float(item.get("pitch", 0)), "off": float(item.get("offset", 0)),
+                "align": item.get("align", "attack"), "cue": float(item.get("at", pl["t"])), "rule": "place",
+                "qok": item.get("qa_ok")}
+    r = rules.get(str(pl["rule"]), {})
+    off = float(r.get("offset", 0))
+    return {"pitch": float(pl.get("pitch", 0)), "off": off, "align": pl.get("align", "attack"),
+            "cue": pl["t"] - off, "rule": str(pl["rule"]), "qok": r.get("qa_ok")}
+
+
+def _get(lib, name: str, pitch: float):
+    try:
+        return lib.get(name, pitch)
+    except mix.DesignError:
+        return None
+
+
+def _layer_span(x: np.ndarray, rec: dict, d: dict, N: int):
+    """(a, b, signal in the film, attack sample), or None for a sound wholly outside the film."""
+    s = rec["start"]
+    a, b = max(0, s), min(N, s + len(x))
+    if not len(x):
+        # an empty trim stays as a silent layer, so audibility can name it
+        a = min(max(0, s), N)
+        return a, a, np.zeros((0, 2), np.float32), a
+    if a >= b:
+        return None
+    gl, gr = mix.pan_gains(rec["pan"])
+    y = x[a - s:b - s].astype(np.float32) * np.float32(rec["gain"])
+    y = y * np.array([gl, gr], np.float32) * mix.bus_curve(d, "sfx", a, b - a)[:, None]
+    return a, b, y, s + mix.align_index(x, "attack")
+
+
+_BAD = "bad"
+
+
+def _layer(st: dict, rec: dict, pl: dict):
+    """The rebuilt sfx layer of 1 trace record, None when it is not an sfx layer in the film, or _BAD."""
+    m = _layer_meta(pl, st["rules"], st["places"])
+    x = _get(st["lib"], pl["sample"], m["pitch"])
+    if x is None or len(x) != rec["n"]:
+        return _BAD
+    span = _layer_span(x, rec, st["design"], st["N"]) if rec["bus"] == "sfx" else None
+    if span is None:
+        return None
+    a, b, y, att = span
+    return {"sample": pl["sample"], "rule": m["rule"], "kind": pl["kind"], "event": pl.get("event"),
+            "cue": m["cue"], "offset": m["off"], "align": m["align"], "start": rec["start"], "n": len(x), "a": a,
+            "b": b, "sig": y, "qa_ok": m["qok"], "att": att, "peak_db": mst.db(_peak(y))}
+
+
 def rebuild(ctx: dict) -> tuple[list, list[str]]:
     d, rep, trace = ctx["design"], ctx["report"], ctx["trace"]
-    notes = []
     recs = [r for r in trace if "sample" in r]
     pls = rep["placements"]
     if len(recs) != len(pls):
@@ -124,90 +209,78 @@ def rebuild(ctx: dict) -> tuple[list, list[str]]:
                       "run the mix again with --trace"]
     lib = mix.Library(d, ctx["root"], ctx["cache"])
     ctx["lib"] = lib
-    N = len(ctx["stems"]["sfx"])
-    rules = {mix.rule_key(r, i): r for i, r in enumerate(d["rules"])}
-    places = iter(d["place"])
-    layers, bad = [], 0
-    for rec, pl in zip(recs, pls):
-        if pl["kind"] == "place":
-            item = next(places, {})
-            pitch, off, align = float(item.get("pitch", 0)), float(item.get("offset", 0)), item.get("align", "attack")
-            cue, rule, qok = float(item.get("at", pl["t"])), "place", item.get("qa_ok")
-        else:
-            r = rules.get(str(pl["rule"]), {})
-            pitch, off, align = float(pl.get("pitch", 0)), float(r.get("offset", 0)), pl.get("align", "attack")
-            cue, rule, qok = pl["t"] - off, str(pl["rule"]), r.get("qa_ok")
-        try:
-            x = lib.get(pl["sample"], pitch)
-        except mix.DesignError:
-            bad += 1
-            continue
-        if len(x) != rec["n"]:
-            bad += 1
-            continue
-        if rec["bus"] != "sfx":
-            continue
-        s = rec["start"]
-        a, b = max(0, s), min(N, s + len(x))
-        if a >= b and len(x):
-            continue  # a sound wholly outside the film
-        if not len(x):
-            # an empty trim stays as a silent layer, so audibility can name it
-            a = b = min(max(0, s), N)
-            y, att = np.zeros((0, 2), np.float32), a
-        else:
-            gl, gr = mix.pan_gains(rec["pan"])
-            y = x[a - s:b - s].astype(np.float32) * np.float32(rec["gain"])
-            y = y * np.array([gl, gr], np.float32) * mix.bus_curve(d, "sfx", a, b - a)[:, None]
-            att = s + mix.align_index(x, "attack")
-        layers.append({"sample": pl["sample"], "rule": rule, "kind": pl["kind"], "event": pl.get("event"),
-                       "cue": cue, "offset": off, "align": align, "start": s, "n": len(x), "a": a, "b": b, "sig": y,
-                       "qa_ok": qok, "att": att, "peak_db": mst.db(_peak(y))})
-    if bad:
-        notes.append(f"{bad} placement(s) could not be rebuilt: the design changed after the mix")
-    return layers, notes
+    st = {"lib": lib, "design": d, "N": len(ctx["stems"]["sfx"]), "places": iter(d["place"]),
+          "rules": {mix.rule_key(r, i): r for i, r in enumerate(d["rules"])}}
+    return _sort_built([_layer(st, rec, pl) for rec, pl in zip(recs, pls)])
+
+
+def _sort_built(built: list) -> tuple[list, list[str]]:
+    """(the layers, a note on the placements that could not be rebuilt)."""
+    bad = sum(1 for L in built if L is _BAD)
+    notes = [f"{bad} placement(s) could not be rebuilt: the design changed after the mix"] if bad else []
+    return [L for L in built if isinstance(L, dict)], notes
 
 
 def _peak(x: np.ndarray) -> float:
     return float(np.max(np.abs(x))) if x.size else 0.0
 
 
-def group(layers: list, G: float) -> list[dict]:
+def _free_group(groups: list, L: dict) -> dict:
+    """A hand placement joins a free group that started up to 140 ms earlier, or starts one."""
+    g = next((c for c in reversed(groups[-12:])
+              if c["free"] and L["att"] - c["layers"][0]["att"] <= int(0.14 * SR)), None)
+    if g is None:
+        g = {"free": True, "layers": []}
+        groups.append(g)
+    return g
+
+
+def _cue_group(groups: list, index: dict, L: dict) -> dict:
+    k = (L["event"], round(L["cue"], 4))
+    if k not in index:
+        index[k] = {"free": False, "layers": []}
+        groups.append(index[k])
+    return index[k]
+
+
+def _bucket(layers: list) -> list[dict]:
     groups, index = [], {}
     for L in sorted(layers, key=lambda q: q["att"]):
-        if L["kind"] == "place":
-            g = None
-            for cand in reversed(groups[-12:]):
-                if cand["free"] and L["att"] - cand["layers"][0]["att"] <= int(0.14 * SR):
-                    g = cand
-                    break
-            if g is None:
-                g = {"free": True, "layers": []}
-                groups.append(g)
-        else:
-            k = (L["event"], round(L["cue"], 4))
-            if k not in index:
-                index[k] = {"free": False, "layers": []}
-                groups.append(index[k])
-            g = index[k]
+        g = _free_group(groups, L) if L["kind"] == "place" else _cue_group(groups, index, L)
         g["layers"].append(L)
-    out = []
-    for g in groups:
-        ls = g["layers"]
-        a, b = min(q["a"] for q in ls), max(q["b"] for q in ls)
-        sig = np.zeros((b - a, 2), np.float32)
-        for q in ls:
-            sig[q["a"] - a:q["b"] - a] += q["sig"]
-        loud = max(ls, key=lambda q: q["peak_db"])
-        pk = mst.db(_peak(sig)) + G
-        out.append({"a": a, "b": b, "sig": sig, "layers": ls, "cue": min(q["cue"] for q in ls), "loud": loud,
-                    "kind": loud["kind"], "label": ls[0]["event"] if not g["free"] else f"place:{ls[0]['sample']}",
-                    "long": any(q["kind"] in LONG_KINDS or q["align"] == "peak" for q in ls),
-                    "builds": any(q["kind"] in ("riser", "swell") for q in ls),
-                    "qa_ok": next((q["qa_ok"] for q in ls if q.get("qa_ok")), None),
-                    "att": min(q["att"] for q in ls), "peak_db": round(pk, 2), "silent": pk < -70,
-                    "rules": sorted({q["rule"] for q in ls}), "t": round(min(q["cue"] for q in ls), 4)})
-    return out
+    return groups
+
+
+def _sum_layers(ls: list) -> tuple[int, int, np.ndarray]:
+    a, b = min(q["a"] for q in ls), max(q["b"] for q in ls)
+    sig = np.zeros((b - a, 2), np.float32)
+    for q in ls:
+        sig[q["a"] - a:q["b"] - a] += q["sig"]
+    return a, b, sig
+
+
+def _flags(ls: list) -> dict:
+    return {"long": any(q["kind"] in LONG_KINDS or q["align"] == "peak" for q in ls),
+            "builds": any(q["kind"] in ("riser", "swell") for q in ls),
+            "qa_ok": next((q["qa_ok"] for q in ls if q.get("qa_ok")), None)}
+
+
+def _group_row(g: dict, G: float) -> dict:
+    ls = g["layers"]
+    a, b, sig = _sum_layers(ls)
+    loud = max(ls, key=lambda q: q["peak_db"])
+    pk = mst.db(_peak(sig)) + G
+    cue = min(q["cue"] for q in ls)
+    label = f"place:{ls[0]['sample']}" if g["free"] else ls[0]["event"]
+    row = {"a": a, "b": b, "sig": sig, "layers": ls, "cue": cue, "loud": loud, "kind": loud["kind"], "label": label}
+    row.update(_flags(ls))
+    row.update({"att": min(q["att"] for q in ls), "peak_db": round(pk, 2), "silent": pk < -70,
+                "rules": sorted({q["rule"] for q in ls}), "t": round(cue, 4)})
+    return row
+
+
+def group(layers: list, G: float) -> list[dict]:
+    return [_group_row(g, G) for g in _bucket(layers)]
 
 
 # ---------------------------------------------------------------- clicks
