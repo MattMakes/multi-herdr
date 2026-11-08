@@ -276,7 +276,8 @@ def test_a_15_cli_fit_with_report(sounds, write_wav, tmp_path, monkeypatch, caps
     monkeypatch.chdir(tmp_path)
     args = _parser().parse_args(["fit", src, "-o", "out/s1.py", "--report", "--json"])
     assert args.func(args) == 0
-    res = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
+    out = capsys.readouterr().out
+    res = json.loads(out[out.index("{"):])  # report.emit prints the JSON over several lines
     for ext in (".py", ".wav", ".png", ".json", ".report.json"):
         assert (tmp_path / "out" / f"s1{ext}").exists(), ext
     assert {"kind", "chosen", "quality", "floor", "files", "seconds", "candidates"} <= set(res)
