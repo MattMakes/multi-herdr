@@ -302,8 +302,8 @@ def _frame_distance(cand: ndarray, ref_rows: ndarray, factor: float) -> float:
     return dist * (1 + 0.5 * abs(math.log(factor)))
 
 
-def _align_search(judged: ndarray, target: ndarray, factors: Sequence[float], offsets: Sequence[int]) -> dict:
-    """Pick anchor and stretch with the lowest distance, then try whole-frame nudges of the winner."""
+def _coarse_pick(judged: ndarray, target: ndarray, factors: Sequence[float]) -> tuple:
+    """Anchor and stretch with the lowest distance: (cost, anchor, stretch, offsets, ref rows, start)."""
     marks_j, marks_t = _landmarks(judged), _landmarks(target)
     low, pick = None, None
     for mark in ("onset", "peak"):
@@ -312,9 +312,13 @@ def _align_search(judged: ndarray, target: ndarray, factors: Sequence[float], of
         for factor in factors:
             dist = _frame_distance(_sample_frames(judged, marks_j[mark] + offs / factor), ref_rows, factor)
             if low is None or dist < low:
-                low, pick = dist, (mark, factor, offs, ref_rows)
-    mark, factor, offs, ref_rows = pick
-    start = marks_j[mark] + offs / factor
+                low, pick = dist, (mark, factor, offs, ref_rows, marks_j[mark] + offs / factor)
+    return (low, *pick)
+
+
+def _nudge_pick(judged: ndarray, ref_rows: ndarray, factor: float, start: ndarray, low: float,
+                offsets: Sequence[int]) -> tuple[float, int]:
+    """Best whole-frame shift of the coarse pick: (cost, shift); shift 0 keeps the coarse pick."""
     moved = 0
     for nudge in offsets:
         if nudge == 0:
@@ -322,6 +326,13 @@ def _align_search(judged: ndarray, target: ndarray, factors: Sequence[float], of
         dist = _frame_distance(_sample_frames(judged, start + nudge), ref_rows, factor)
         if dist < low:
             low, moved = dist, nudge
+    return low, moved
+
+
+def _align_search(judged: ndarray, target: ndarray, factors: Sequence[float], offsets: Sequence[int]) -> dict:
+    """Pick anchor and stretch with the lowest distance, then try whole-frame nudges of the winner."""
+    low, mark, factor, offs, ref_rows, start = _coarse_pick(judged, target, factors)
+    low, moved = _nudge_pick(judged, ref_rows, factor, start, low, offsets)
     return {"cost": low, "anchor": mark, "stretch": factor, "shift": moved, "offs": offs,
             "ref_rows": ref_rows, "cand": _sample_frames(judged, start + moved)}
 
@@ -450,16 +461,12 @@ class EnvRef:
     def _beyond_all(self, pair_dets: list[dict]) -> tuple[list, float]:
         if len(pair_dets) < 2:
             return [], 0.0
-        beyond, surplus = [], 0.0
-        for cell_name in pair_dets[0]["cells"]:
-            if not all(cell_name in dists["cells"] for dists in pair_dets):
-                continue
-            result = self._cell_overshoot(cell_name, pair_dets)
-            if result is None:
-                continue
-            beyond.append(result[0])
-            surplus += result[1]
-        beyond.sort(key=lambda entry: -abs(entry[1]) * entry[2])
+        common = [name for name in pair_dets[0]["cells"] if all(name in det["cells"] for det in pair_dets)]
+        found = [hit for hit in (self._cell_overshoot(name, pair_dets) for name in common) if hit is not None]
+        surplus = 0.0
+        for _, extra in found:
+            surplus += extra
+        beyond = sorted((hit[0] for hit in found), key=lambda entry: -abs(entry[1]) * entry[2])
         return beyond, surplus
 
     def spread(self, exclude: Any = None) -> list[float]:
