@@ -25,7 +25,7 @@ A bundle is one of these kinds:
 
 ## Copied files
 
-[copied.json](copied.json) has one entry per bundled skill: `{"name", "copied_files", "verbatim"}` and, when needed, `"budget_exempt"`, sorted by name. `copied_files` lists the files, relative to the skill directory, that were copied into this repository; an own-text skill has `"copied_files": []`. The Godot checks (`scripts/godot/*_check.py --strict-own skills/copied.json`) report a problem in a copied file but do not fail on it; a problem in any other file fails. `"verbatim": true` marks an unchanged copy: `copied_files` lists every file in the directory, and nobody edited them. A test fails a verbatim skill that holds a file outside `copied_files`. A verbatim skill is exempt from the bundled size budget. A renamed, adapted or combined skill over the budget is not verbatim: its entry gives the reason in `"budget_exempt": "<reason>"` instead. Set `budget_exempt` only on a skill over the budget; a test fails a stale one. Every bundled skill needs an entry. A new skill keeps `SKILL.md` at or under 12 KB and its whole directory at or under 160 KB, in `.md` and `.txt` files only; every verbatim skill and every skill with a `budget_exempt` reason is exempt from the size budget, and only `skill-creator`, the 27 copied [Blender skills that ship scripts](#blender-skills), the own-text `blender-3d-print` (2 Python scripts), the 8 [`video-*` skills that ship scripts](#video-skills), the own-text `one-page-design` (its page checker, the checker tests and an HTML starter page) and [`skill-intake`](#skill-intake) (its `intake` tool) are exempt from the text-only rule, plus 1 file: `godot-build-verify/scripts/godot-run.sh`, the wrapper for every Godot call (SKL-11 keeps its execute bit). No skill directory holds a licence or notice file. `horch skills show <id>` prints the copied files. The build never bundles a file or directory whose name starts with `.`.
+[copied.json](copied.json) has one entry per bundled skill: `{"name", "copied_files", "verbatim"}` and, when needed, `"budget_exempt"`, sorted by name. `copied_files` lists the files, relative to the skill directory, that were copied into this repository; an own-text skill has `"copied_files": []`. The Godot checks (`scripts/godot/*_check.py --strict-own skills/copied.json`) report a problem in a copied file but do not fail on it; a problem in any other file fails. `"verbatim": true` marks an unchanged copy: `copied_files` lists every file in the directory, and nobody edited them. A test fails a verbatim skill that holds a file outside `copied_files`. A verbatim skill is exempt from the bundled size budget. A renamed, adapted or combined skill over the budget is not verbatim: its entry gives the reason in `"budget_exempt": "<reason>"` instead. Set `budget_exempt` only on a skill over the budget; a test fails a stale one. Every bundled skill needs an entry. A new skill keeps `SKILL.md` at or under 12 KB and its whole directory at or under 160 KB, in `.md` and `.txt` files only; every verbatim skill and every skill with a `budget_exempt` reason is exempt from the size budget, and only `skill-creator`, the 27 copied [Blender skills that ship scripts](#blender-skills), the own-text `blender-3d-print` (2 Python scripts), the 8 [`video-*` skills that ship scripts](#video-skills), the own-text `one-page-design` (its page checker, the checker tests and an HTML starter page) [`skill-intake`](#skill-intake) (its `intake` tool), and the 2 [sound skills](#sound-skills): `hark` (its engine package and launcher) and `sound-sourcing` (its workflow scripts and JSON templates) are exempt from the text-only rule, plus 1 file: `godot-build-verify/scripts/godot-run.sh`, the wrapper for every Godot call (SKL-11 keeps its execute bit). No skill directory holds a licence or notice file. `horch skills show <id>` prints the copied files. The build never bundles a file or directory whose name starts with `.`.
 
 To refresh a copied skill:
 
@@ -237,6 +237,15 @@ These 10 skills are own text and belong to no phase; a `video-*` teammate attach
 | Skill | Kind |
 | --- | --- |
 | [skill-intake](skill-intake/SKILL.md) | combined |
+
+## Sound skills
+
+`hark` and `sound-sourcing` are own text, written clean-room from the behaviour specs in `docs/specs/hark/`. `hark` teaches the hark engine (listen, measure, forge, fit, bank, kit, timeline, critique) for video SFX and game SFX, and ships the engine package under `engine/` and its launcher `scripts/hark`. `sound-sourcing` builds a film soundtrack from real recordings (brief, sourcing, usage-rights audit, music edit, mix, master, QA, variants, credits, mux) and ships its Python scripts, each with a `--self-test`, and JSON templates. Both are exempt from the text-only rule.
+
+| Skill | Kind |
+| --- | --- |
+| [hark](hark/SKILL.md) | own text |
+| [sound-sourcing](sound-sourcing/SKILL.md) | own text |
 
 ## Godot skills
 
