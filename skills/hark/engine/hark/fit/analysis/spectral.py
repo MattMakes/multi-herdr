@@ -73,18 +73,21 @@ def weights(freqs: Any, cents: Any) -> np.ndarray:
     """Raised-cosine band weights (B, F) on the warp axis."""
     e = warp(freqs)
     ec = warp(cents)
-    B = len(ec)
-    W = np.zeros((B, len(e)))
-    for b in range(B):
-        lo = ec[b - 1] if b > 0 else ec[0] - (ec[1] - ec[0])
-        rise = (e >= lo) & (e <= ec[b])
-        W[b, rise] = np.sin(0.5 * np.pi * (e[rise] - lo) / (ec[b] - lo)) ** 2
-        if b == B - 1:
-            W[b, e > ec[b]] = 1.0
-            continue
-        fall = (e > ec[b]) & (e < ec[b + 1])
-        W[b, fall] = np.cos(0.5 * np.pi * (e[fall] - ec[b]) / (ec[b + 1] - ec[b])) ** 2
+    W = np.zeros((len(ec), len(e)))
+    for b in range(len(ec)):
+        _fill_weight(W[b], e, ec, b)
     return W
+
+
+def _fill_weight(row: np.ndarray, e: np.ndarray, ec: np.ndarray, b: int) -> None:
+    lo = ec[b - 1] if b > 0 else ec[0] - (ec[1] - ec[0])
+    rise = (e >= lo) & (e <= ec[b])
+    row[rise] = np.sin(0.5 * np.pi * (e[rise] - lo) / (ec[b] - lo)) ** 2
+    if b == len(ec) - 1:
+        row[e > ec[b]] = 1.0
+    else:
+        fall = (e > ec[b]) & (e < ec[b + 1])
+        row[fall] = np.cos(0.5 * np.pi * (e[fall] - ec[b]) / (ec[b + 1] - ec[b])) ** 2
 
 
 @functools.lru_cache(maxsize=8)
@@ -142,21 +145,28 @@ def _frames_fft(x: np.ndarray, N: int, T: int) -> np.ndarray:
 def analyse(x: Any, cents: Any = None, stereo: bool = True) -> dict:
     """Band power density (B, T), group stereo powers or None, and the frame count."""
     a = x if (isinstance(x, np.ndarray) and x.ndim == 1) else as_stereo(x)
-    two = a.ndim == 2
     cents = centers() if cents is None else np.asarray(cents)
-    n = len(a)
-    T = n_frames(n)
+    T = n_frames(len(a))
+    D = _density(a, cents, T)
+    st = _stereo_powers(a, T) if (a.ndim == 2 and stereo and not is_mono_pair(a)) else None
+    return {"D": D, "stereo": st, "T": T}
+
+
+def _density(a: np.ndarray, cents: np.ndarray, T: int) -> np.ndarray:
+    chans = [a[:, 0], a[:, 1]] if a.ndim == 2 else [a]
     sizes = _band_sizes(cents)
     D = np.zeros((len(cents), T))
     for N in np.unique(sizes):
-        chans = [a[:, 0], a[:, 1]] if two else [a]
-        P = np.mean([np.abs(_frames_fft(c, N, T)) ** 2 for c in chans], axis=0)
-        W = weights(rfftfreq(N, 1 / SR), cents)
         sel = np.flatnonzero(sizes == N)
-        Wn = W[sel] / np.maximum(W[sel].sum(axis=1, keepdims=True), 1e-30)
-        D[sel] = Wn @ P.T
-    st = _stereo_powers(a, T) if (two and stereo and not is_mono_pair(a)) else None
-    return {"D": D, "stereo": st, "T": T}
+        D[sel] = _size_density(chans, N, T, cents, sel)
+    return D
+
+
+def _size_density(chans: list, N: int, T: int, cents: np.ndarray, sel: np.ndarray) -> np.ndarray:
+    P = np.mean([np.abs(_frames_fft(c, N, T)) ** 2 for c in chans], axis=0)
+    W = weights(rfftfreq(N, 1 / SR), cents)
+    Wn = W[sel] / np.maximum(W[sel].sum(axis=1, keepdims=True), 1e-30)
+    return Wn @ P.T
 
 
 def _stereo_powers(a: np.ndarray, T: int) -> dict:
@@ -204,27 +214,35 @@ def _track_ridges(Pdb, floor, active, f, opts) -> list:
     live, done = [], []
     for k in range(Pdb.shape[1]):
         peaks = _frame_peaks(Pdb[:, k], floor[:, k], f, lo_bin, hi_bin, opts["ridge_db"]) if active[k] else []
-        used = set()
-        for tr in live:
-            best = None
-            for j, p in enumerate(peaks):
-                if j in used:
-                    continue
-                d = abs(np.log2(p[0] / tr["f"][-1]))
-                if d < 0.04 and (best is None or d < best[0]):
-                    best = (d, j)
-            if best is not None:
-                used.add(best[1])
-                _extend_ridge(tr, peaks[best[1]], k, floor)
-            else:
-                tr["miss"] += 1
-        for j, p in enumerate(peaks):
-            if j not in used:
-                live.append({"k": [], "f": [], "db": [], "ex": [], "miss": 0})
-                _extend_ridge(live[-1], p, k, floor)
+        _step_ridges(live, peaks, k, floor)
         done += [tr for tr in live if tr["miss"] > 2]
         live = [tr for tr in live if tr["miss"] <= 2]
     return done + live
+
+
+def _step_ridges(live: list, peaks: list, k: int, floor) -> None:
+    """Extend each live ridge with its nearest free peak. Free peaks start new ridges."""
+    used = set()
+    for tr in live:
+        best = _nearest_peak(tr, peaks, used)
+        if best is None:
+            tr["miss"] += 1
+        else:
+            used.add(best[1])
+            _extend_ridge(tr, peaks[best[1]], k, floor)
+    for j, p in enumerate(peaks):
+        if j not in used:
+            live.append({"k": [], "f": [], "db": [], "ex": [], "miss": 0})
+            _extend_ridge(live[-1], p, k, floor)
+
+
+def _nearest_peak(tr: dict, peaks: list, used: set):
+    best = None
+    for j in (j for j in range(len(peaks)) if j not in used):
+        d = abs(np.log2(peaks[j][0] / tr["f"][-1]))
+        if d < 0.04 and (best is None or d < best[0]):
+            best = (d, j)
+    return best
 
 
 def _extend_ridge(tr, p, k, floor) -> None:
@@ -255,15 +273,22 @@ def _ridges(m: np.ndarray, opts: dict) -> list:
 def _ridge_model(tr: dict) -> dict:
     t = np.array(tr["k"]) * HOP / SR
     f = np.array(tr["f"])
-    p = np.maximum(10 ** (np.array(tr["db"]) / 10) - 10 ** (np.array(tr["fl"]) / 10), 1e-30)
-    A = np.sqrt(6 * p / 2048)
-    adb = 20 * np.log10(A)
+    adb = _ridge_db(tr)
     keep = _greedy_keys(t, np.column_stack([np.log2(f) / 0.006, adb / 1.5]), None, 1.0, 60, [])
+    return {"t": [round(float(t[i]), 4) for i in keep], "f": [round(float(f[i]), 1) for i in keep],
+            "db": [round(float(adb[i]), 1) for i in keep], "jitter": _jitter(f)}
+
+
+def _ridge_db(tr: dict) -> np.ndarray:
+    """Sine amplitude (dB) of each ridge point above its floor."""
+    p = np.maximum(10 ** (np.array(tr["db"]) / 10) - 10 ** (np.array(tr["fl"]) / 10), 1e-30)
+    return 20 * np.log10(np.sqrt(6 * p / 2048))
+
+
+def _jitter(f: np.ndarray) -> float:
     lf = np.log2(f)
     sm = uniform_filter1d(lf, 5, mode="nearest")
-    jit = float(np.clip(np.std(lf - sm) * np.log(2), 0.0005, 0.02))
-    return {"t": [round(float(t[i]), 4) for i in keep], "f": [round(float(f[i]), 1) for i in keep],
-            "db": [round(float(adb[i]), 1) for i in keep], "jitter": round(jit, 5)}
+    return round(float(np.clip(np.std(lf - sm) * np.log(2), 0.0005, 0.02)), 5)
 
 
 def _remove_ridges(D: np.ndarray, ridges: list, cents) -> None:
@@ -317,19 +342,24 @@ def _wander(S: np.ndarray, k: int, on: int) -> float | None:
 def _gesture(D: np.ndarray, opts: dict) -> tuple[np.ndarray, int, float]:
     k = max(0, round(opts["gesture_ms"] / 5))
     on = _onset_frame(D)
-    T = D.shape[1]
     wander = 0.0
     if opts["adapt"]:
-        k_max = max(k, min(32, T // 6))
-        while True:
-            w = _wander(_smooth(D, k, on), max(k, 1), on)
-            wander = w or 0.0
-            if w is None or w <= 2 * opts["tol_db"] or k >= k_max:
-                break
-            k = min(k_max, int(np.ceil(1.5 * max(k, 1))))
+        k, wander = _adapt_k(D, k, on, opts["tol_db"])
     S = db(_smooth(D, k, on))
     S = np.maximum(S, S.max() - 90)
     return S, k, wander
+
+
+def _adapt_k(D: np.ndarray, k: int, on: int, tol_db: float) -> tuple[int, float]:
+    """Widen the smoothing until the level wander is within 2 tol_db."""
+    k_max = max(k, min(32, D.shape[1] // 6))
+    while True:
+        w = _wander(_smooth(D, k, on), max(k, 1), on)
+        wander = w or 0.0
+        if w is None or w <= 2 * tol_db or k >= k_max:
+            break
+        k = min(k_max, int(np.ceil(1.5 * max(k, 1))))
+    return k, wander
 
 
 # ================================================================ denoise
@@ -390,14 +420,18 @@ def _clicks(n: int, rate: float, spread: float, norm_ms: float, r) -> np.ndarray
     pos = r.integers(0, n, count)
     amp = np.exp(spread * r.standard_normal(count)) * np.where(r.uniform(size=count) < 0.5, -1, 1)
     np.add.at(x, pos, amp)
-    if norm_ms > 0 and rate > 0:
-        win = int(max(norm_ms, 20 * 1000.0 / rate) * SR / 1000) | 1
-        if win < n / 2:
-            p = uniform_filter1d(x ** 2, win, mode="nearest")
-            g = uniform_filter1d(1 / np.sqrt(np.maximum(p, 1e-3 * p.mean())), win, mode="nearest")
-            x = x * g
+    x = _even_clicks(x, rate, norm_ms)
     rms = np.sqrt(np.mean(x ** 2))
     return x / rms if rms > 0 else x
+
+
+def _even_clicks(x: np.ndarray, rate: float, norm_ms: float) -> np.ndarray:
+    """Level the click train over a window of norm_ms (at least 20 clicks)."""
+    win = int(max(norm_ms, 20 * 1000.0 / rate) * SR / 1000) | 1 if norm_ms > 0 and rate > 0 else len(x)
+    if win < len(x) / 2:
+        p = uniform_filter1d(x ** 2, win, mode="nearest")
+        x = x * uniform_filter1d(1 / np.sqrt(np.maximum(p, 1e-3 * p.mean())), win, mode="nearest")
+    return x
 
 
 def _gp(m: int, rates, spec, r, unit_hi: float | None = None) -> np.ndarray:
@@ -469,30 +503,42 @@ def _synth(n, kt, kdb, cents, seed, stereo=None, texture=None, ridges=None, mono
     """The synthesis core: band noise on keyframes, with optional stereo, texture and ridges."""
     gA, gB, gC, gM, gR = _gens(seed)
     tex = texture or {}
-    nfft = next_fast_len(max(n, 64))
-    f = rfftfreq(nfft, 1 / SR)
-    W = weights(f, cents)
-    fg = _fine_gain(fine, fine_shift, f)
-    SA = _excitation(n, nfft, tex, roughness, rate_scale, gC if tex.get("grains") else gA) * fg
     two = not mono and stereo is not None
-    SB = rfft(gB.standard_normal(nfft)) * fg if two else None
+    nfft = next_fast_len(max(n, 64))
+    W, SA, SB = _spectra(n, nfft, cents, tex, (gA, gB, gC), two, (fine, fine_shift), (roughness, rate_scale))
     Gb = _group_blend(cents)
     mod = _modulation(n, tex.get("am"), rate_scale, roughness, gM, Gb)
     kdb = np.asarray(kdb, dtype=float)
     ctrl = _stereo_ctrl(stereo, kt, n, Gb) if two else None
     L, R = _band_mix(n, kt, kdb, SA, SB, W, nfft, mod, ctrl)
-    rs = ridge_sig if ridge_sig is not None else _ridge_wave(n, ridges, gR)
-    if rs is not None:
-        gl, gr = (1.0, 1.0)
-        if two and ridge_sig is None:
-            gl, gr = _ridge_gains(ridges, ctrl, cents)
-        L += rs * gl
-        if two:
-            R += rs * gr
+    _ridge_layer(L, R, ridges, ridge_sig, gR, ctrl, cents)
     y = L if mono else np.column_stack([L, R if two else L])
-    if not power:
-        return y
-    return y, _expected(n, kt, kdb, cents, nfft, W, ridges)
+    return (y, _expected(n, kt, kdb, cents, nfft, W, ridges)) if power else y
+
+
+def _spectra(n, nfft, cents, tex, gens, two, fine_args, rough_args):
+    """Band weights and the excitation spectra: A always, B only for stereo."""
+    gA, gB, gC = gens
+    roughness, rate_scale = rough_args
+    f = rfftfreq(nfft, 1 / SR)
+    W = weights(f, cents)
+    fg = _fine_gain(*fine_args, f)
+    SA = _excitation(n, nfft, tex, roughness, rate_scale, gC if tex.get("grains") else gA) * fg
+    SB = rfft(gB.standard_normal(nfft)) * fg if two else None
+    return W, SA, SB
+
+
+def _ridge_layer(L, R, ridges, ridge_sig, r, ctrl, cents) -> None:
+    rs = ridge_sig if ridge_sig is not None else _ridge_wave(len(L), ridges, r)
+    own = rs is not None and R is not None and ridge_sig is None
+    _add_ridge_sig(L, R, rs, _ridge_gains(ridges, ctrl, cents) if own else (1.0, 1.0))
+
+
+def _add_ridge_sig(L: np.ndarray, R, rs, gains) -> None:
+    if rs is not None:
+        L += rs * gains[0]
+        if R is not None:
+            R += rs * gains[1]
 
 
 def _band_mix(n, kt, kdb, SA, SB, W, nfft, mod, ctrl):
@@ -521,19 +567,22 @@ def _ridge_wave(n: int, ridges: list | None, r) -> np.ndarray | None:
     t = np.arange(n) / SR
     out = np.zeros(n)
     for rd in ridges:
-        rt = np.asarray(rd["t"], dtype=float)
-        inside = (t >= rt[0]) & (t <= rt[-1])
-        z = _gp(n // 48 + 2, None, None, r, unit_hi=16.0)
-        start = r.uniform(0, 2 * np.pi)
-        if not inside.any():
-            continue
+        _add_ridge(out, t, rd, r)
+    return out
+
+
+def _add_ridge(out: np.ndarray, t: np.ndarray, rd: dict, r) -> None:
+    """Add one jittered ridge sine. The random draws happen even when the ridge is outside t."""
+    rt = np.asarray(rd["t"], dtype=float)
+    inside = (t >= rt[0]) & (t <= rt[-1])
+    z = _gp(len(t) // 48 + 2, None, None, r, unit_hi=16.0)
+    start = r.uniform(0, 2 * np.pi)
+    if inside.any():
         zi = np.interp(t[inside], np.arange(len(z)) * 48 / SR, z)
-        f = np.interp(t[inside], rt, rd["f"]) * (1 + rd["jitter"] * zi)
-        f = np.minimum(f, 0.45 * SR)
+        f = np.minimum(np.interp(t[inside], rt, rd["f"]) * (1 + rd["jitter"] * zi), 0.45 * SR)
         ph = start + 2 * np.pi * np.cumsum(f) / SR
         a = 10 ** (np.interp(t[inside], rt, rd["db"]) / 20) * _edge_fade(int(inside.sum()))
         out[inside] += a * np.cos(ph)
-    return out
 
 
 def _edge_fade(m: int) -> np.ndarray:
@@ -612,16 +661,21 @@ def _stereo_traj(st: dict | None) -> dict | None:
     ild = np.clip(db(PL) - db(PR), -20, 20)
     icc = np.clip(C / np.sqrt(np.maximum(PL * PR, 1e-300)), -1, 1)
     Pg = PL + PR
+    _fill_quiet(ild, icc, Pg)
+    share = Pg.sum(axis=1) / max(Pg.sum(), 1e-300)
+    return {"ild": ild, "icc": icc, "share": share, "level": db(Pg.sum(axis=0))}
+
+
+def _fill_quiet(ild: np.ndarray, icc: np.ndarray, Pg: np.ndarray) -> None:
+    """Quiet frames take the power-weighted mean of the group's active frames."""
     act = Pg >= Pg.max() * 10 ** -4.5
     for g in range(len(Pg)):
         w = Pg[g] * act[g]
         if w.sum() <= 0:
             ild[g], icc[g] = 0.0, 1.0
-            continue
-        ild[g, ~act[g]] = np.sum(w * ild[g]) / w.sum()
-        icc[g, ~act[g]] = np.sum(w * icc[g]) / w.sum()
-    share = Pg.sum(axis=1) / max(Pg.sum(), 1e-300)
-    return {"ild": ild, "icc": icc, "share": share, "level": db(Pg.sum(axis=0))}
+        else:
+            ild[g, ~act[g]] = np.sum(w * ild[g]) / w.sum()
+            icc[g, ~act[g]] = np.sum(w * icc[g]) / w.sum()
 
 
 # ================================================================ keyframes
@@ -635,33 +689,40 @@ def _greedy_keys(t, Y, W, tol, max_keys, required) -> list[int]:
     den = np.maximum(sw, 0.25 * sw.max()) if sw.max() > 0 else np.ones(T)
     keys = sorted(set([0, T - 1] + [int(r) for r in required]))
     while len(keys) < max_keys:
-        ks = np.array(keys)
-        Yh = np.array([np.interp(t, t[ks], Y[ks, c]) for c in range(Y.shape[1])]).T
-        err = np.sqrt(np.sum(W * (Yh - Y) ** 2, axis=1) / den)
-        err[ks] = 0.0
-        i = int(np.argmax(err))
-        if err[i] <= tol:
+        i = _worst_frame(t, Y, W, den, keys, tol)
+        if i is None:
             break
         keys = sorted(keys + [i])
     return keys
 
 
+def _worst_frame(t, Y, W, den, keys, tol) -> int | None:
+    """The frame worst fit by interpolation between keys, or None when every error is within tol."""
+    ks = np.array(keys)
+    Yh = np.array([np.interp(t, t[ks], Y[ks, c]) for c in range(Y.shape[1])]).T
+    err = np.sqrt(np.sum(W * (Yh - Y) ** 2, axis=1) / den)
+    err[ks] = 0.0
+    i = int(np.argmax(err))
+    return None if err[i] <= tol else i
+
+
 def _keyframes(gain, st, bw, opts, wander) -> tuple[list[int], np.ndarray]:
-    T = gain.shape[1]
-    t = np.arange(T) * HOP / SR
-    Wb = _cell_weights(gain, bw, opts["quiet_db"]).T
-    rows, Ws = [gain.T], [Wb]
+    t = np.arange(gain.shape[1]) * HOP / SR
+    rows, Ws = [gain.T], [_cell_weights(gain, bw, opts["quiet_db"]).T]
     if st is not None:
-        lev = st["level"]
-        lw = np.clip((lev - (lev.max() - 40)) / 20, 0, 1)
-        sw = 0.5 * lw[:, None] * st["share"][None, :] * 7
         rows += [st["ild"].T / 2, st["icc"].T * 10]
-        Ws += [sw, sw]
-    Y, W = np.hstack(rows), np.hstack(Ws)
+        Ws += [_stereo_key_weight(st)] * 2
     tot = db(np.sum(10 ** (gain / 10), axis=0))
     pk = int(np.argmax(tot))
     on = int(np.argmax(tot >= tot[pk] - 30))
-    return _greedy_keys(t, Y, W, max(opts["tol_db"], wander), opts["max_keys"], [pk, on]), t
+    return _greedy_keys(t, np.hstack(rows), np.hstack(Ws), max(opts["tol_db"], wander), opts["max_keys"],
+                        [pk, on]), t
+
+
+def _stereo_key_weight(st: dict) -> np.ndarray:
+    lev = st["level"]
+    lw = np.clip((lev - (lev.max() - 40)) / 20, 0, 1)
+    return 0.5 * lw[:, None] * st["share"][None, :] * 7
 
 
 # ================================================================ fine curve
@@ -742,29 +803,45 @@ def _group_stats(y: np.ndarray, genv: np.ndarray, onset_s: float) -> list:
 
 
 def _one_group(Y, f, nfft, n, lo, hi, env, onset_s) -> dict | None:
-    from scipy.signal import hilbert
     yb = irfft(Y * ((f >= lo) & (f < hi)), nfft)[:n]
     m = min(len(env), n // 48)
     a = np.sqrt(np.mean(yb[:m * 48].reshape(m, 48) ** 2, axis=1))
     e = env[:m]
     t = np.arange(m) * 48 / SR
     act = (e >= e.max() * 10 ** -1.5) & (t > onset_s + 0.015) & (a > 0) & (e > 0)
-    if act.sum() < 24:
-        return None
+    return _active_stats(yb, a, e, t, act) if act.sum() >= 24 else None
+
+
+def _active_stats(yb, a, e, t, act) -> dict:
     r = np.where(act, np.log(np.maximum(a, 1e-30)) - np.log(np.maximum(e, 1e-30)), 0.0)
     w = uniform_filter1d(act.astype(float), 5) * act
+    return {"spec": _rate_spectrum(r, w), "halves": _halves(r, w, act), "lenv": _lenv(yb, t, e, act),
+            "low": _low_part(r, w) * act, "act": act}
+
+
+def _halves(r: np.ndarray, w: np.ndarray, act: np.ndarray) -> list:
+    m = len(act)
     idx = np.flatnonzero(act)
     half = idx[len(idx) // 2] if len(idx) else 0
-    halves = []
+    out = []
     for sel in (np.arange(m) < half, np.arange(m) >= half):
-        halves.append(_rate_spectrum(r, w * sel) if (act & sel).sum() >= 12 else None)
+        out.append(_rate_spectrum(r, w * sel) if (act & sel).sum() >= 12 else None)
+    return out
+
+
+def _lenv(yb: np.ndarray, t: np.ndarray, e: np.ndarray, act: np.ndarray) -> float:
+    """Std of the log Hilbert envelope over the band envelope, on active frames."""
+    from scipy.signal import hilbert
+    n = len(yb)
     ae = np.abs(hilbert(yb))
     eu = np.interp(np.arange(n), t, e)
     on_s = np.repeat(act, 48)[:n]
     on_s = np.pad(on_s, (0, n - len(on_s)))
-    lenv = float(np.std(np.log(np.maximum(ae[on_s], 1e-30)) - np.log(np.maximum(eu[on_s], 1e-30))))
-    low = uniform_filter1d(r - np.sum(w * r) / max(w.sum(), 1e-12), 15) if m > 15 else r
-    return {"spec": _rate_spectrum(r, w), "halves": halves, "lenv": lenv, "low": low * act, "act": act}
+    return float(np.std(np.log(np.maximum(ae[on_s], 1e-30)) - np.log(np.maximum(eu[on_s], 1e-30))))
+
+
+def _low_part(r: np.ndarray, w: np.ndarray) -> np.ndarray:
+    return uniform_filter1d(r - np.sum(w * r) / max(w.sum(), 1e-12), 15) if len(r) > 15 else r
 
 
 def _fast(st: dict) -> float:
@@ -789,6 +866,12 @@ def _tex_renders(model, texture, ridge_sigs, n) -> list:
 
 
 def _texture(m: np.ndarray, model: dict, opts: dict) -> dict | None:
+    start = _tex_context(m, model, opts)
+    return None if start is None else _tex_fit(*start)
+
+
+def _tex_context(m: np.ndarray, model: dict, opts: dict):
+    """(context, plain-noise stats) for the texture fit, or None when no group has stats."""
     n = len(m)
     on = _onset_frame(analyse(m, centers(), False)["D"]) * HOP / SR
     rs = [_ridge_wave(n, model.get("ridges"), _gens(s)[4]) for s in (31, 32, 33)]
@@ -799,48 +882,64 @@ def _texture(m: np.ndarray, model: dict, opts: dict) -> dict | None:
         return None
     share = (_group_env(model, n) ** 2).sum(axis=1)[valid]
     gw = dict(zip(valid, share / max(share.sum(), 1e-300)))
-    ctx = {"m": m, "model": model, "rs": rs, "on": on, "n": n, "gw": gw, "Sr": Sr, "opts": opts}
+    return {"m": m, "model": model, "rs": rs, "on": on, "n": n, "gw": gw, "Sr": Sr, "opts": opts}, S0
+
+
+def _tex_fit(ctx: dict, S0: list) -> dict | None:
     grains, stats = _grain_fit(ctx, S0)
-    base = S0 if grains is None else _texture_stats(model, _tex_renders(model, {"grains": grains}, rs, n), on, n)
+    base = S0 if grains is None else _tex_stats(ctx, {"grains": grains})
     am = _am_fit(ctx, base)
     if am is not None and grains is not None:
         grains, _ = _grain_fit(ctx, S0, am)
-        gonly = _texture_stats(model, _tex_renders(model, {"grains": grains}, rs, n), on, n)
-        am = _am_fit(ctx, gonly) or am
-        base = gonly
+        base = _tex_stats(ctx, {"grains": grains})
+        am = _am_fit(ctx, base) or am
     if am is not None:
         am = _depth_fix(ctx, am, grains, base)
-    if grains is None and am is None:
-        return None
-    return {"am": am, "grains": grains, "stats": stats}
+    return None if grains is None and am is None else {"am": am, "grains": grains, "stats": stats}
+
+
+def _tex_stats(ctx: dict, texture: dict) -> list:
+    return _texture_stats(ctx["model"], _tex_renders(ctx["model"], texture, ctx["rs"], ctx["n"]), ctx["on"], ctx["n"])
 
 
 def _grain_fit(ctx, S0, am=None):
-    gw, Sr = ctx["gw"], ctx["Sr"]
-    fr = sum(w * _fast(Sr[g]) for g, w in gw.items())
-    fg_seeds = [sum(w * _fast(s[g]) for g, w in gw.items()) for s in S0]
+    stats, grainy = _grain_stats(ctx, S0)
+    return (_grain_density(ctx, am) if grainy else None), stats
+
+
+def _grain_stats(ctx, S0) -> tuple[dict, bool]:
+    """Fast-fluctuation stats of the recording against plain noise, and whether it is grainy."""
+    fr = _fast_mix(ctx["gw"], ctx["Sr"])
+    fg_seeds = [_fast_mix(ctx["gw"], s) for s in S0]
     fg = float(np.mean(fg_seeds))
-    hx, hratio = fr - fg, fr / max(fg, 1e-12)
-    stats = {"lenv_real": _nanmean([Sr[g]["lenv"] for g in gw]),
-             "lenv_gauss": _nanmean([s[g]["lenv"] for s in S0 for g in gw]),
-             "fast_var_real": round(fr, 5), "fast_var_gauss": round(fg, 5), "fast_ratio": round(hratio, 3)}
-    halves_ok, hr = _halves_ratio(ctx, S0)
-    stats["fast_ratio_halves"] = hr
-    grainy = hx > max(0.03, 3 * float(np.std(fg_seeds))) and hratio > 1.5
-    if ctx["opts"]["grain_halves"]:
-        grainy = grainy and halves_ok
-    if not grainy:
-        return None, stats
-    return _grain_density(ctx, am), stats
+    hratio = fr / max(fg, 1e-12)
+    stats = _lenv_stats(ctx, S0)
+    stats.update({"fast_var_real": round(fr, 5), "fast_var_gauss": round(fg, 5), "fast_ratio": round(hratio, 3)})
+    halves_ok, stats["fast_ratio_halves"] = _halves_ratio(ctx, S0)
+    grainy = fr - fg > max(0.03, 3 * float(np.std(fg_seeds))) and hratio > 1.5
+    return stats, bool(grainy and (halves_ok or not ctx["opts"]["grain_halves"]))
+
+
+def _fast_mix(gw: dict, stats: list) -> float:
+    return sum(w * _fast(stats[g]) for g, w in gw.items())
+
+
+def _lenv_stats(ctx, S0) -> dict:
+    gw, Sr = ctx["gw"], ctx["Sr"]
+    return {"lenv_real": _nanmean([Sr[g]["lenv"] for g in gw]),
+            "lenv_gauss": _nanmean([s[g]["lenv"] for s in S0 for g in gw])}
 
 
 def _halves_ratio(ctx, S0):
-    out = []
-    for h in (0, 1):
-        num = sum(w * _hfast(ctx["Sr"][g]["halves"][h]) for g, w in ctx["gw"].items())
-        den = sum(w * _nanmean([_hfast(s[g]["halves"][h]) for s in S0]) for g, w in ctx["gw"].items())
-        out.append(round(num / den, 3) if den and np.isfinite(den) and den > 0 else None)
+    out = [_half_ratio(ctx, S0, h) for h in (0, 1)]
     return all(v is not None and v > 1.5 for v in out), out
+
+
+def _half_ratio(ctx, S0, h: int) -> float | None:
+    num = sum(w * _hfast(ctx["Sr"][g]["halves"][h]) for g, w in ctx["gw"].items())
+    den = sum(w * _nanmean([_hfast(s[g]["halves"][h]) for s in S0]) for g, w in ctx["gw"].items())
+    ok = den and np.isfinite(den) and den > 0
+    return round(num / den, 3) if ok else None
 
 
 def _hfast(spec) -> float | None:
@@ -880,15 +979,7 @@ def _grain_density(ctx, am) -> dict:
 
 def _am_fit(ctx, base) -> dict | None:
     rates = np.asarray(RATES)
-    low = (rates >= 6) & (rates <= 64)
-    depth, shape = [], np.zeros(len(rates))
-    for g in range(len(GROUPS) - 1):
-        if g not in ctx["gw"]:
-            depth.append(0.0)
-            continue
-        ex = _am_excess(ctx["Sr"][g], [b[g] for b in base], low)
-        depth.append(float(min(np.sqrt(ex.sum()), 0.6)))
-        shape += ctx["gw"][g] * ex
+    depth, shape = _am_depths(ctx, base, (rates >= 6) & (rates <= 64))
     big = [d for g, d in enumerate(depth) if ctx["gw"].get(g, 0) > 0.03]
     if not big or max(big) <= 0.08 or shape.sum() <= 0:
         return None
@@ -896,36 +987,58 @@ def _am_fit(ctx, base) -> dict | None:
             "depth": [round(d, 4) for d in depth], "coh": round(_coherence(ctx, base), 3)}
 
 
+def _am_depths(ctx, base, low) -> tuple[list[float], np.ndarray]:
+    """AM depth per group and the weighted shape of the excess rate spectrum."""
+    depth, shape = [], np.zeros(len(low))
+    for g in range(len(GROUPS) - 1):
+        if g in ctx["gw"]:
+            ex = _am_excess(ctx["Sr"][g], [b[g] for b in base], low)
+            depth.append(float(min(np.sqrt(ex.sum()), 0.6)))
+            shape += ctx["gw"][g] * ex
+        else:
+            depth.append(0.0)
+    return depth, shape
+
+
 def _am_excess(real, bases, low) -> np.ndarray:
     bs = [b for b in bases if b is not None]
-    if not bs:
-        return np.zeros(len(low))
+    ex = _halves_cap(_spec_excess(real, bs, low), real, bs) if bs else None
+    return np.zeros(len(low)) if ex is None else np.maximum(ex, 0.0)
+
+
+def _spec_excess(real, bs, low) -> np.ndarray:
     sb = np.mean([b["spec"] for b in bs], axis=0)
     sd = np.std([b["spec"] for b in bs], axis=0)
-    sig_ = real["spec"] > 1.25 * sb + 2 * sd
-    ex = np.where(sig_ & low, real["spec"] - sb, 0.0)
+    return np.where((real["spec"] > 1.25 * sb + 2 * sd) & low, real["spec"] - sb, 0.0)
+
+
+def _halves_cap(ex, real, bs):
+    """ex capped by the excess of each half, or None when a half has no stats."""
     for h in (0, 1):
         hr = real["halves"][h]
         hb = [b["halves"][h] for b in bs if b["halves"][h] is not None]
         if hr is None or not hb:
-            return np.zeros(len(low))
+            return None
         ex = np.minimum(ex, np.maximum(hr - 1.25 * np.mean(hb, axis=0), 0.0))
-    return np.maximum(ex, 0.0)
+    return ex
 
 
 def _coherence(ctx, base) -> float:
     top = sorted(ctx["gw"], key=lambda g: -ctx["gw"][g])[:2]
-    if len(top) < 2:
-        return 1.0
+    return 1.0 if len(top) < 2 else _pair_coherence(ctx, base, top)
+
+
+def _pair_coherence(ctx, base, top) -> float:
     a, b = (ctx["Sr"][g] for g in top)
     both = a["act"] & b["act"]
-    if both.sum() < 24:
-        return 0.0
-    la = a["low"] - _nanmean_arr([bb[top[0]]["low"] for bb in base if bb[top[0]]], len(a["low"]))
-    lb = b["low"] - _nanmean_arr([bb[top[1]]["low"] for bb in base if bb[top[1]]], len(b["low"]))
-    if np.std(la[both]) == 0 or np.std(lb[both]) == 0:
-        return 0.0
-    return float(np.clip(np.corrcoef(la[both], lb[both])[0, 1], 0, 1))
+    la = _low_excess(a, base, top[0])
+    lb = _low_excess(b, base, top[1])
+    ok = both.sum() >= 24 and np.std(la[both]) != 0 and np.std(lb[both]) != 0
+    return float(np.clip(np.corrcoef(la[both], lb[both])[0, 1], 0, 1)) if ok else 0.0
+
+
+def _low_excess(st: dict, base: list, g: int) -> np.ndarray:
+    return st["low"] - _nanmean_arr([bb[g]["low"] for bb in base if bb[g]], len(st["low"]))
 
 
 def _nanmean_arr(arrs, m) -> np.ndarray:
@@ -933,19 +1046,24 @@ def _nanmean_arr(arrs, m) -> np.ndarray:
 
 
 def _depth_fix(ctx, am, grains, base) -> dict:
-    S = _texture_stats(ctx["model"], _tex_renders(ctx["model"], {"am": am, "grains": grains}, ctx["rs"], ctx["n"]),
-                       ctx["on"], ctx["n"])
+    S = _tex_stats(ctx, {"am": am, "grains": grains})
     low = (np.asarray(RATES) >= 6) & (np.asarray(RATES) <= 64)
     out = dict(am)
     depth = list(am["depth"])
     for g in ctx["gw"]:
-        bvar = _nanmean([np.sum(b[g]["spec"][low]) for b in base if b[g]])
-        want = np.sum(ctx["Sr"][g]["spec"][low]) - bvar
-        got = max(_nanmean([np.sum(s[g]["spec"][low]) for s in S if s[g]]) - bvar, 1e-6)
-        if np.isfinite(want) and np.isfinite(got):
-            depth[g] = round(float(min(depth[g] * np.sqrt(np.clip(want / got, 0.25, 4)), 0.6)), 4)
+        depth[g] = _fixed_depth(ctx["Sr"][g], depth[g], [b[g] for b in base], [s[g] for s in S], low)
     out["depth"] = depth
     return out
+
+
+def _fixed_depth(real: dict, d: float, bases: list, rendered: list, low: np.ndarray) -> float:
+    """Depth scaled so the rendered low-rate variance matches the recording's."""
+    bvar = _nanmean([np.sum(b["spec"][low]) for b in bases if b])
+    want = np.sum(real["spec"][low]) - bvar
+    got = max(_nanmean([np.sum(s["spec"][low]) for s in rendered if s]) - bvar, 1e-6)
+    if np.isfinite(want) and np.isfinite(got):
+        d = round(float(min(d * np.sqrt(np.clip(want / got, 0.25, 4)), 0.6)), 4)
+    return d
 
 
 # ================================================================ fit
@@ -972,30 +1090,31 @@ def fit(x: Any, name: str | None = None, verbose: bool = False, sr: int = SR, **
     t0 = time.time()
     opts = _opts(**kw)
     a = as_stereo(x) if isinstance(x, str) else as_stereo(resample(np.asarray(x, float), sr))
-    mono_src = is_mono_pair(a)
+    model = _fit_model(a, opts, lambda: name or source_name(x))
+    model["fit"]["seconds"] = round(time.time() - t0, 3)
+    if verbose:
+        print(summary(model))
+    return model
+
+
+def _fit_model(a: np.ndarray, opts: dict, name) -> dict:
     m = a.mean(axis=1)
     n = len(m)
     cents = centers(opts["n_bands"])
-    an = analyse(a, cents, opts["stereo"] and not mono_src)
+    an = analyse(a, cents, opts["stereo"] and not is_mono_pair(a))
     D = an["D"]
     ridges = _ridges(m, opts) if opts["ridges"] and n >= 2048 else []
     _remove_ridges(D, ridges, cents)
     S, k, wander = _gesture(D, opts)
-    rank = 0
-    if opts["denoise"]:
-        S, rank = _denoise(S, n, k, cents)
-    active = S > S.max() - 70
-    gain = _gain_iter(S, k, _onset_frame(D), n, cents, active, opts)
+    S, rank = _denoise(S, n, k, cents) if opts["denoise"] else (S, 0)
+    gain = _gain_iter(S, k, _onset_frame(D), n, cents, S > S.max() - 70, opts)
     st = _stereo_traj(an["stereo"])
     keys, t = _keyframes(gain, st, bandwidths(cents), opts, wander)
-    model = _store(a, name or source_name(x), n, cents, gain, st, keys, t, ridges, opts, k, rank, wander)
+    model = _store(a, name(), n, cents, gain, st, keys, t, ridges, opts, k, rank, wander)
     if opts["fine"]:
         model["fine"] = _fine(m, model, cents)
     if opts["texture"]:
         model["texture"] = _texture(m, model, opts)
-    model["fit"]["seconds"] = round(time.time() - t0, 3)
-    if verbose:
-        print(summary(model))
     return model
 
 
@@ -1085,26 +1204,47 @@ def render(model: dict, seed: int = 0, length: float = 1, speed: float = 1, swee
            motion: float = 0, level: bool = True, limit: bool = True, steady: bool = True) -> np.ndarray:
     """A take of the model: (n, 2) float32 at 48 kHz."""
     check(model)
-    speed = max(speed, 0.001)
-    s = max(length, 0.001) / speed
-    n = max(64, int(round(model["dur"] * s * SR)))
+    k = {"length": length, "speed": speed, "sweep": sweep, "shift": shift, "tilt": tilt,
+         "roughness": roughness, "width": width, "ridges": ridges, "gain_db": gain_db, "doppler": doppler,
+         "proximity": proximity, "pan": pan, "motion": motion, "level": level, "limit": limit,
+         "steady": steady}
+    return _render_knobs(model, seed, k).astype(np.float32)
+
+
+def _render_knobs(model: dict, seed: int, k: dict) -> np.ndarray:
+    s, n, kt, oct_ = _take_time(model, k)
     cents = centers(model["bands"]["n"])
-    kt = np.asarray(model["env"]["t"], dtype=float) * s
-    oct_ = shift + 0.5 * np.log2(speed)
-    kdb, c, mean = _edit_keys(model, np.asarray(model["env"]["db"], float), cents, oct_, sweep, tilt, proximity)
-    rd = _edit_ridges(model.get("ridges"), s, oct_, sweep, c, mean, kt, ridges)
-    st = _edit_stereo(model.get("stereo"), width, pan)
+    kdb, rd, st = _edited(model, k, s, kt, cents, oct_)
     y, P = _synth(n, kt, kdb, cents, seed, st, model.get("texture"), rd, mono=False, rate_scale=1 / s,
-                  roughness=roughness, fine=model.get("fine"), fine_shift=oct_, power=True)
-    y = _level(y, P, model, gain_db, level, steady, n)
-    if doppler or motion:
-        y = _motion(y, model, s, doppler, motion)
-    if limit:
-        pk = float(np.max(np.abs(y))) if y.size else 0.0
-        cap = 10 ** (-0.5 / 20)
-        if pk > cap:
-            y = y * (cap / pk)
-    return y.astype(np.float32)
+                  roughness=k["roughness"], fine=model.get("fine"), fine_shift=oct_, power=True)
+    y = _level(y, P, model, k["gain_db"], k["level"], k["steady"], n)
+    if k["doppler"] or k["motion"]:
+        y = _motion(y, model, s, k["doppler"], k["motion"])
+    return _peak_cap(y) if k["limit"] else y
+
+
+def _take_time(model: dict, k: dict) -> tuple[float, int, np.ndarray, float]:
+    """Time stretch, sample count, key times and pitch shift (octaves) of a take."""
+    speed = max(k["speed"], 0.001)
+    s = max(k["length"], 0.001) / speed
+    n = max(64, int(round(model["dur"] * s * SR)))
+    kt = np.asarray(model["env"]["t"], dtype=float) * s
+    return s, n, kt, k["shift"] + 0.5 * np.log2(speed)
+
+
+def _edited(model: dict, k: dict, s: float, kt: np.ndarray, cents: np.ndarray, oct_: float):
+    """Edited keyframes, ridges and stereo for a take."""
+    kdb, c, mean = _edit_keys(model, np.asarray(model["env"]["db"], float), cents, oct_, k["sweep"], k["tilt"],
+                              k["proximity"])
+    rd = _edit_ridges(model.get("ridges"), s, oct_, k["sweep"], c, mean, kt, k["ridges"])
+    return kdb, rd, _edit_stereo(model.get("stereo"), k["width"], k["pan"])
+
+
+def _peak_cap(y: np.ndarray) -> np.ndarray:
+    """Scale y down so its peak is at most -0.5 dBFS."""
+    pk = float(np.max(np.abs(y))) if y.size else 0.0
+    cap = 10 ** (-0.5 / 20)
+    return y * (cap / pk) if pk > cap else y
 
 
 def _level(y, P, model, gain_db, level, steady, n):
@@ -1133,7 +1273,15 @@ def _motion(y, model, s, doppler, motion):
 def bend(y: np.ndarray, t_pk: float, tau: float, semitones: float) -> np.ndarray:
     """A pass-by pitch bend as a time warp: higher while it approaches, lower as it recedes."""
     y = np.asarray(y, dtype=float)
-    n = len(y)
+    pos = _bend_pos(len(y), t_pk, tau, semitones)
+    src = np.arange(len(y))
+    if y.ndim == 1:
+        return np.interp(pos, src, y, left=0.0, right=0.0)
+    return np.column_stack([np.interp(pos, src, y[:, c], left=0.0, right=0.0) for c in range(y.shape[1])])
+
+
+def _bend_pos(n: int, t_pk: float, tau: float, semitones: float) -> np.ndarray:
+    """Source read positions of the warp, aligned at the peak and cut at the source end."""
     m = int(np.ceil(n * 2 ** (abs(semitones) / 12))) + 2
     t = np.arange(m) / SR
     rate = 2 ** (semitones * np.tanh((t_pk - t) / max(tau, 1e-9)) / 12)
@@ -1141,12 +1289,7 @@ def bend(y: np.ndarray, t_pk: float, tau: float, semitones: float) -> np.ndarray
     k = min(int(round(t_pk * SR)), m - 1)
     pos = pos - pos[k] + t_pk * SR
     stop = np.flatnonzero(pos > n - 1)
-    end = int(stop[0]) if len(stop) else m
-    pos = pos[:end]
-    src = np.arange(n)
-    if y.ndim == 1:
-        return np.interp(pos, src, y, left=0.0, right=0.0)
-    return np.column_stack([np.interp(pos, src, y[:, c], left=0.0, right=0.0) for c in range(y.shape[1])])
+    return pos[:int(stop[0]) if len(stop) else m]
 
 
 def pass_pan(y: np.ndarray, t_pk: float, tau: float, amount: float) -> np.ndarray:
@@ -1166,18 +1309,21 @@ def trajectory(model: dict) -> dict:
     cents = centers(model["bands"]["n"])
     kdb = np.asarray(model["env"]["db"], dtype=float)
     t = np.asarray(model["env"]["t"], dtype=float)
-    p = 10 ** (kdb / 10) * bandwidths(cents)[None, :]
-    lev = db(p.sum(axis=1))
+    lev = db((10 ** (kdb / 10) * bandwidths(cents)[None, :]).sum(axis=1))
     c, _ = _centroids(kdb, cents)
-    pk = int(np.argmax(lev))
-    near = lev >= lev[pk] - 20
-    first = int(np.argmax(near))
-    last = pk + int(np.flatnonzero(near[pk:])[-1])
+    pk, first, last = _peak_span(lev)
     out = {"t": t.tolist(), "level_db": np.round(lev, 2).tolist(), "centroid_hz": np.round(2 ** c, 1).tolist(),
            "tilt_db_oct": [round(_tilt(kdb[i], cents), 2) for i in range(len(t))],
            "peak_s": float(t[pk]), "rise_s": float(t[pk] - t[first]), "fall_s": float(t[last] - t[pk])}
     out.update(_traj_stereo(model.get("stereo"), cents, kdb))
     return out
+
+
+def _peak_span(lev: np.ndarray) -> tuple[int, int, int]:
+    """Peak key and the first and last keys within 20 dB of it."""
+    pk = int(np.argmax(lev))
+    near = lev >= lev[pk] - 20
+    return pk, int(np.argmax(near)), pk + int(np.flatnonzero(near[pk:])[-1])
 
 
 def _tilt(row: np.ndarray, cents) -> float:
@@ -1305,20 +1451,29 @@ def compare(a: Any, b: Any, clap: bool = False) -> dict:
     ta, tb = _lev50(_trim(xa)), _lev50(_trim(xb))
     n = max(len(ta), len(tb))
     ta, tb = np.pad(ta, (0, n - len(ta))), np.pad(tb, (0, n - len(tb)))
+    out = {"mel_db": round(mel_db_distance(ta, tb)[0], 3), "env_corr": round(_env_corr5(ta, tb), 4),
+           "attack_ms": [_attack_ms(ta), _attack_ms(tb)],
+           "tone_db": round(float(np.sqrt(np.mean((_tone_profile(xa) - _tone_profile(xb)) ** 2))), 3),
+           "len_s": [round(len(xa) / SR, 4), round(len(xb) / SR, 4)]}
+    if clap:
+        out["clap"] = _clap_sim(xa, xb)
+    return out
+
+
+def _env_corr5(ta: np.ndarray, tb: np.ndarray) -> float:
+    """Correlation of the 5 ms level envelopes over frames within 60 dB of a's peak."""
     ea = db(np.convolve(ta ** 2, np.ones(240) / 240, mode="same")[::240])
     eb = db(np.convolve(tb ** 2, np.ones(240) / 240, mode="same")[::240])
     fl = ea.max() - 60
     act = (ea > fl) | (eb > fl)
     ec = float(np.corrcoef(np.maximum(ea, fl)[act], np.maximum(eb, fl)[act])[0, 1]) if act.sum() > 3 else 0.0
-    out = {"mel_db": round(mel_db_distance(ta, tb)[0], 3), "env_corr": round(ec if np.isfinite(ec) else 0.0, 4),
-           "attack_ms": [_attack_ms(ta), _attack_ms(tb)],
-           "tone_db": round(float(np.sqrt(np.mean((_tone_profile(xa) - _tone_profile(xb)) ** 2))), 3),
-           "len_s": [round(len(xa) / SR, 4), round(len(xb) / SR, 4)]}
-    if clap:
-        from hark.models.clap import get
-        E = get().embed_audio([xa.astype(np.float32), xb.astype(np.float32)])
-        out["clap"] = round(float(E[0] @ E[1] / (np.linalg.norm(E[0]) * np.linalg.norm(E[1]))), 4)
-    return out
+    return ec if np.isfinite(ec) else 0.0
+
+
+def _clap_sim(xa: np.ndarray, xb: np.ndarray) -> float:
+    from hark.models.clap import get
+    E = get().embed_audio([xa.astype(np.float32), xb.astype(np.float32)])
+    return round(float(E[0] @ E[1] / (np.linalg.norm(E[0]) * np.linalg.norm(E[1]))), 4)
 
 
 def fit_report(x: Any, clap: bool = False, seeds=(11, 12), **fit_kw) -> dict:
