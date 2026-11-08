@@ -30,17 +30,23 @@ def _home() -> str:
     return os.environ.get("HARK_HOME") or os.path.join(os.path.expanduser("~"), ".cache", "hark")
 
 
-def _registry_root(registry: dict | None, repo: str) -> str | None:
-    files = [f for e in ((registry or {}).get("categories") or {}).values() for s in ("forge", "bench")
-             for f in e.get(s) or []]
-    if not files:
-        return None
-    tops = {_slash(Path(_slash(f)).parents[2]) for f in files if len(Path(_slash(f)).parents) > 2}
-    if len(tops) != 1:
-        return None
-    top = tops.pop()
+def _ref_files(registry: dict | None) -> list:
+    return [f for e in ((registry or {}).get("categories") or {}).values() for s in ("forge", "bench")
+            for f in e.get(s) or []]
+
+
+def _tops(files: list) -> set[str]:
+    return {_slash(Path(_slash(f)).parents[2]) for f in files if len(Path(_slash(f)).parents) > 2}
+
+
+def _outside_repo(top: str, repo: str) -> str | None:
     inside = top.lower() == repo.lower() or top.lower().startswith(repo.lower() + "/")
     return None if inside or len(top) <= 3 else top
+
+
+def _registry_root(registry: dict | None, repo: str) -> str | None:
+    tops = _tops(_ref_files(registry))
+    return _outside_repo(tops.pop(), repo) if len(tops) == 1 else None
 
 
 def roots(registry: dict | None = None, repo: Any = None) -> list[tuple[str, str]]:
@@ -85,12 +91,14 @@ def scrub(obj: Any, registry: dict | None = None, rs: Sequence[tuple[str, str]] 
     """The object with every string (and dict key) scrubbed."""
     rs = roots(registry) if rs is None else rs
     if isinstance(obj, str):
-        return scrub_text(obj, rs)
-    if isinstance(obj, dict):
-        return {scrub(k, rs=rs): scrub(v, rs=rs) for k, v in obj.items()}
-    if isinstance(obj, (list, tuple)):
-        return [scrub(v, rs=rs) for v in obj]
-    return obj
+        res = scrub_text(obj, rs)
+    elif isinstance(obj, dict):
+        res = {scrub(k, rs=rs): scrub(v, rs=rs) for k, v in obj.items()}
+    elif isinstance(obj, (list, tuple)):
+        res = [scrub(v, rs=rs) for v in obj]
+    else:
+        res = obj
+    return res
 
 
 def leftovers(text: str) -> list[str]:
