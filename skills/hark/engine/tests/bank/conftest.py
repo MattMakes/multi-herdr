@@ -457,7 +457,7 @@ def double_render(p: dict, rng: np.random.Generator) -> np.ndarray:
     """Two noise bursts ``gap`` s apart."""
     n = int(round(p["length"] * SR))
     t = _t(n)
-    x = np.zeros(n)
+    x = 1e-4 * rng.standard_normal(n) * np.exp(-t / 0.2)
     for start in (0.01, 0.01 + p["gap"]):
         on = t >= start
         x[on] += rng.standard_normal(int(on.sum())) * np.exp(-(t[on] - start) / 0.006)
