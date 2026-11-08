@@ -324,6 +324,11 @@ fn skills_verbatim_lists_every_file() {
 const MAX_SKILL_MD_BYTES: usize = 12 * 1024;
 const MAX_SKILL_DIR_BYTES: usize = 160 * 1024;
 
+/// Skill directories with no copied.json entry yet that are exempt from the
+/// size budget. hark SKILL.md and copied.json entry land with T-22; T-33
+/// moves this to budget_exempt.
+const EXEMPT_FROM_SIZE_BUDGET: &[&str] = &["hark"];
+
 /// Skill ids exempt from the size budget: every skill whose copied.json
 /// entry says `verbatim: true` or gives a `budget_exempt` reason.
 ///
@@ -340,6 +345,7 @@ fn budget_exempt() -> BTreeSet<String> {
                 .is_some_and(|c| c.verbatim || c.budget_exempt.is_some())
         })
         .map(|e| e.id.to_string())
+        .chain(EXEMPT_FROM_SIZE_BUDGET.iter().map(|id| (*id).to_owned()))
         .collect()
 }
 
