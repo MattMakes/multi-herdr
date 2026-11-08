@@ -5,12 +5,29 @@ the orchestrator starts a production unit.
 
 ## Write for the viewer
 
+Read `Format:` in `PRODUCTION.md`. Use the list of that format.
+
+Both formats:
+
 - Name the audience as the buyer or player who can act on the CTA.
 - Use words that this audience uses. Do not show team jargon, commit hashes,
   tool names, internal file names, or production details.
+- End with 1 CTA. Name 1 action and its destination.
+
+`short`:
+
 - Put 1 hook in the first 2 s. The first shot must prove the hook line.
 - Pick 1 hero moment for the episode. Save it for the main payoff.
-- End with 1 CTA. Name 1 action and its destination.
+
+`long`:
+
+- Make the first 30 s prove the promise of the title and the thumbnail.
+- Write 3 or more chapters. Give each chapter 1 payoff and 1 hook caption.
+- Put the main hero moment in the final chapter.
+- Write 3 title options, 1 thumbnail concept and the chapter timestamps.
+
+A devlog series with shorts is 2 productions for each episode: 1 `long` and 1 `short`.
+The `short` has its own script. It is not a cut of the `long` master.
 
 Write the complete script before production starts. Include every caption,
 the hook, the hero moment, and the CTA. The operator must approve this script.

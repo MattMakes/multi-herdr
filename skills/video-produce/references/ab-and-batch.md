@@ -75,10 +75,13 @@ film passes every gate on its own.
   "films": [
     {"slug": "launch-v3", "request": "30 s launch film for the CLI",
      "workflow": "launch-film", "folder": "launch-v3",
-     "length_sec": 30, "aspects": ["16:9", "9:16"]},
+     "format": "short", "length_sec": 30, "aspects": ["16:9", "9:16"]},
     {"slug": "cli-demo", "request": "show the ledger in the terminal",
      "workflow": "app-explainer", "folder": "cli-demo",
-     "length_sec": 60, "aspects": ["16:9"]}
+     "format": "short", "length_sec": 60, "aspects": ["16:9"]},
+    {"slug": "devlog-ep1", "request": "devlog episode 1 for YouTube",
+     "workflow": "launch-film", "folder": "devlog-ep1",
+     "format": "long", "length_sec": 300, "aspects": ["16:9"]}
   ]
 }
 ```
@@ -87,6 +90,11 @@ Keep the manifest in the batch folder, for example
 `video/batches/weekly-2026-45/batch.json`. Each `folder` is relative to the
 manifest folder. `workflow` is `launch-film`, `app-explainer` or `ab`. A
 batch never holds a batch.
+
+Each film has `format`. A `short` film has `length_sec` 15, 30, 60 or 90.
+A `long` film has `length_sec` from 180 to 900 and `aspects` equal to
+`["16:9"]`. A devlog series with shorts holds 2 films for each episode: 1
+`long` and 1 `short`.
 
 ### Run
 

@@ -15,15 +15,17 @@ The manifest:
     "films": [
       {"slug": "launch-v3", "request": "30 s launch film for the CLI",
        "workflow": "launch-film", "folder": "video/launch-v3",
-       "length_sec": 30, "aspects": ["16:9", "9:16"]}
+       "format": "short", "length_sec": 30, "aspects": ["16:9", "9:16"]}
     ]
   }
 
 Rules: "batch" is a slug. "shared" holds only brand, voice and notes, each a
 non-empty string. "films" holds 1 or more films. Each film has exactly the 6
-keys above. slug is unique and uses a-z, 0-9 and "-". folder is unique and
-relative. workflow is launch-film, app-explainer or ab. length_sec is 15, 30,
-60 or 90. aspects is a non-empty list of 16:9, 9:16 and 1:1, with no repeat.
+keys above, including format. slug is unique and uses a-z, 0-9 and "-".
+folder is unique and relative. workflow is launch-film, app-explainer or ab.
+format is short or long. A short film has length_sec 15, 30, 60 or 90. A long
+film has length_sec from 180 to 900 and aspects equal to ["16:9"]. aspects is
+a non-empty list of 16:9, 9:16 and 1:1, with no repeat.
 
 --summary reads each film folder (relative to the manifest folder) and
 writes 1 table row per film: critic rounds, the verdict and average of the
@@ -41,9 +43,11 @@ import sys
 import tempfile
 
 WORKFLOWS = ("launch-film", "app-explainer", "ab")
-LENGTHS = (15, 30, 60, 90)
+FORMATS = ("short", "long")
+LENGTHS = (15, 30, 60, 90)  # short only
+LONG_RANGE = (180, 900)  # long only
 ASPECTS = ("16:9", "9:16", "1:1")
-FILM_KEYS = {"slug", "request", "workflow", "folder", "length_sec", "aspects"}
+FILM_KEYS = {"slug", "request", "workflow", "folder", "format", "length_sec", "aspects"}
 SHARED_KEYS = {"brand", "voice", "notes"}
 SLUG_RE = re.compile(r"^[a-z0-9]+(-[a-z0-9]+)*$")
 
@@ -74,8 +78,20 @@ def check_film(index, film, slugs, folders):
         errors.append(f"{where}: folder '{folder}' is used twice")
     else:
         folders.add(os.path.normpath(folder))
-    if film.get("length_sec") not in LENGTHS or isinstance(film.get("length_sec"), bool):
-        errors.append(f"{where}: length_sec must be 1 of {LENGTHS}")
+    fmt = film.get("format")
+    length = film.get("length_sec")
+    if "format" in film and fmt not in FORMATS:
+        errors.append(f"{where}: format must be 1 of {', '.join(FORMATS)}")
+    elif fmt == "short":
+        if length not in LENGTHS or isinstance(length, bool):
+            errors.append(f"{where}: a short film needs length_sec 1 of {LENGTHS}")
+    elif fmt == "long":
+        if (
+            isinstance(length, bool)
+            or not isinstance(length, (int, float))
+            or not LONG_RANGE[0] <= length <= LONG_RANGE[1]
+        ):
+            errors.append(f"{where}: a long film needs length_sec from {LONG_RANGE[0]} to {LONG_RANGE[1]}")
     aspects = film.get("aspects")
     if (
         not isinstance(aspects, list)
@@ -84,6 +100,8 @@ def check_film(index, film, slugs, folders):
         or len(set(aspects)) != len(aspects)
     ):
         errors.append(f"{where}: aspects must be a non-empty list of {', '.join(ASPECTS)} with no repeat")
+    elif fmt == "long" and aspects != ["16:9"]:
+        errors.append(f"{where}: a long film needs aspects [\"16:9\"]")
     return errors
 
 
@@ -160,7 +178,13 @@ def load(path):
 
 
 def good_manifest():
-    film = {"request": "30 s launch film", "workflow": "launch-film", "length_sec": 30, "aspects": ["16:9"]}
+    film = {
+        "request": "30 s launch film",
+        "workflow": "launch-film",
+        "format": "short",
+        "length_sec": 30,
+        "aspects": ["16:9"],
+    }
     return {
         "batch": "weekly-2026-45",
         "shared": {"brand": "brand/BRAND.md", "voice": "Samantha", "notes": ".video/NOTES.md"},
@@ -187,6 +211,11 @@ def bad_cases():
         "bad workflow": edit(lambda m: m["films"][0].update(workflow="trailer")),
         "bad length": edit(lambda m: m["films"][0].update(length_sec=45)),
         "bad aspect": edit(lambda m: m["films"][0].update(aspects=["4:3"])),
+        "no format": edit(lambda m: m["films"][0].pop("format")),
+        "bad format": edit(lambda m: m["films"][0].update(format="medium")),
+        "long 74 s": edit(lambda m: m["films"][0].update(format="long", length_sec=74)),
+        "long 9:16": edit(lambda m: m["films"][0].update(format="long", length_sec=300, aspects=["9:16"])),
+        "short 300 s": edit(lambda m: m["films"][0].update(length_sec=300)),
         "unknown film key": edit(lambda m: m["films"][0].update(music="x.wav")),
     }
 
@@ -201,6 +230,10 @@ def self_test():
     failures = []
     if validate(good_manifest()):
         failures.append(f"clean manifest: {validate(good_manifest())}")
+    long_ok = good_manifest()
+    long_ok["films"][0].update(format="long", length_sec=300, aspects=["16:9"])
+    if validate(long_ok):
+        failures.append(f"long 300 s 16:9: {validate(long_ok)}")
     for name, manifest in bad_cases().items():
         errors = validate(manifest)
         if len(errors) != 1:
@@ -228,7 +261,7 @@ def self_test():
             failures.append("summary must count 1 of 2 films shipped")
     for failure in failures:
         print(f"FAIL {failure}")
-    print("validate_batch self-test: " + ("FAILED" if failures else f"{2 + len(bad_cases())} cases passed"))
+    print("validate_batch self-test: " + ("FAILED" if failures else f"{3 + len(bad_cases())} cases passed"))
     return 1 if failures else 0
 
 
