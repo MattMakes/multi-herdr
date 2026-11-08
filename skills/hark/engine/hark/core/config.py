@@ -76,19 +76,25 @@ def _home() -> str:
     return str(root.resolve())
 
 
+def _paths() -> dict[str, str]:
+    home = _home()
+    folders = {"HF_CACHE": "hf", "EMB_CACHE": "emb", "DEC_CACHE": "decoded"}
+    return {"HOME": home, **{name: str(Path(home) / sub) for name, sub in folders.items()}}
+
+
+def _models() -> dict[str, str | None]:
+    return {
+        "CLAP_MODEL": _env("HARK_CLAP") or DEFAULT_CLAP,
+        "AST_MODEL": _env("HARK_AST") or DEFAULT_AST,
+        "CLAP_REVISION": _env("HARK_CLAP_REVISION"),
+        "AST_REVISION": _env("HARK_AST_REVISION"),
+        "PRECISION": (os.environ.get("HARK_PRECISION") or "bf16").strip().lower(),
+    }
+
+
 def refresh() -> None:
-    """Read the environment again and set every path and model attribute."""
-    global HOME, HF_CACHE, EMB_CACHE, DEC_CACHE
-    global CLAP_MODEL, AST_MODEL, CLAP_REVISION, AST_REVISION, PRECISION
-    HOME = _home()
-    HF_CACHE = str(Path(HOME) / "hf")
-    EMB_CACHE = str(Path(HOME) / "emb")
-    DEC_CACHE = str(Path(HOME) / "decoded")
-    CLAP_MODEL = _env("HARK_CLAP") or DEFAULT_CLAP
-    AST_MODEL = _env("HARK_AST") or DEFAULT_AST
-    CLAP_REVISION = _env("HARK_CLAP_REVISION")
-    AST_REVISION = _env("HARK_AST_REVISION")
-    PRECISION = (os.environ.get("HARK_PRECISION") or "bf16").strip().lower()
+    """Read the environment again and set every path and model attribute of this module."""
+    globals().update({**_paths(), **_models()})
 
 
 HOME = HF_CACHE = EMB_CACHE = DEC_CACHE = ""
@@ -99,12 +105,13 @@ PRECISION = "bf16"
 refresh()
 
 
+def _flag_on(flag: str) -> bool:
+    return os.environ.get(flag, "").strip().upper() in _TRUE_WORDS
+
+
 def offline() -> str | None:
     """Name of the first offline flag that is set now, else None."""
-    for flag in OFFLINE_FLAGS:
-        if os.environ.get(flag, "").strip().upper() in _TRUE_WORDS:
-            return flag
-    return None
+    return next((flag for flag in OFFLINE_FLAGS if _flag_on(flag)), None)
 
 
 def default_threads() -> int:
@@ -123,5 +130,7 @@ def threads() -> int:
 
 def ensure_dirs() -> None:
     """Make the cache root and its hf, emb and decoded folders."""
-    for folder in (HOME, HF_CACHE, EMB_CACHE, DEC_CACHE):
-        Path(folder).mkdir(parents=True, exist_ok=True)
+    root = Path(HOME)
+    root.mkdir(parents=True, exist_ok=True)
+    for name in ("hf", "emb", "decoded"):
+        (root / name).mkdir(exist_ok=True)

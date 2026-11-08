@@ -6,9 +6,11 @@ atomic replace and the dB helper.
 
 from __future__ import annotations
 
+import functools
 import glob
 import hashlib
 import json
+import operator
 import os
 import re
 import shutil
@@ -21,6 +23,7 @@ from pathlib import Path
 import numpy as np
 
 from hark.core import config
+from hark.core.safe import attempt, outcome
 
 Audio = np.ndarray
 
@@ -53,25 +56,31 @@ def _sample_offsets(size: int) -> list[int]:
     return sorted({(i * span) // max(1, _BLOCKS - 1) for i in range(_BLOCKS)})
 
 
+def _block(fh, offset: int) -> bytes:
+    fh.seek(offset)
+    return fh.read(_BLOCK)
+
+
+def _hash_blocks(path: str, size: int) -> str:
+    offsets = _sample_offsets(size)
+    with open(path, "rb") as fh:
+        data = b"".join(_block(fh, offset) for offset in offsets)
+    return hashlib.sha1(data).hexdigest()[:12]
+
+
 def _sampled_hash(path: str, size: int) -> str:
-    try:
-        digest = hashlib.sha1()
-        with open(path, "rb") as fh:
-            for offset in _sample_offsets(size):
-                fh.seek(offset)
-                digest.update(fh.read(_BLOCK))
-        return digest.hexdigest()[:12]
-    except OSError:
-        return "unreadable"
+    """SHA-1 of 16 sampled 4 KiB blocks, 12 hex; `unreadable` when the file cannot be read."""
+    return attempt(_hash_blocks, path, size, errors=(OSError,), default="unreadable")
+
+
+def _size_mtime(full: str) -> tuple[int, int]:
+    st = attempt(os.stat, full, errors=(OSError,))
+    return (st.st_size, st.st_mtime_ns) if st is not None else (-1, -1)
 
 
 def _state(path: str) -> str:
     full = os.path.abspath(path)
-    try:
-        st = os.stat(full)
-        size, mtime = st.st_size, st.st_mtime_ns
-    except OSError:
-        size, mtime = -1, -1
+    size, mtime = _size_mtime(full)
     return f"{full}|{size}|{mtime}|{_sampled_hash(full, max(size, 0))}"
 
 
@@ -104,20 +113,20 @@ def db(v: float, floor: float = 1e-12) -> float:
     return float(20.0 * np.log10(max(float(v), floor)))
 
 
+def _rename_once(tmp: str, dst: str, attempt_no: int, tries: int) -> bool:
+    """One atomic rename; after a failure that is not the last, sleep 0.05 * (attempt + 1) s."""
+    _, error = outcome(os.replace, tmp, dst, errors=(OSError,))
+    if error is not None and attempt_no + 1 < tries:
+        time.sleep(0.05 * (attempt_no + 1))
+    return error is None
+
+
 def replace_quietly(tmp: str, dst: str, tries: int = 5) -> bool:
     """Rename tmp over dst with retries. Never raises; False when all tries fail."""
-    for attempt in range(max(1, tries)):
-        try:
-            os.replace(tmp, dst)
-            return True
-        except OSError:
-            if attempt + 1 < tries:
-                time.sleep(0.05 * (attempt + 1))
-    try:
-        os.remove(tmp)
-    except OSError:
-        pass
-    return False
+    done = any(_rename_once(tmp, dst, i, tries) for i in range(max(1, tries)))
+    if not done:
+        attempt(os.remove, tmp, errors=(OSError,))
+    return done
 
 
 def to_mono(x: np.ndarray) -> np.ndarray:
@@ -153,13 +162,14 @@ def _tool(name: str) -> str:
     return found
 
 
+def _reason_text(line: str) -> str:
+    return _PREFIX.sub("", line.strip()).strip()
+
+
 def ffmpeg_reason(stderr: str) -> str:
     """The last meaningful ffmpeg stderr line, cut to 200 characters."""
-    kept = []
-    for line in stderr.splitlines():
-        text = _PREFIX.sub("", line.strip()).strip()
-        if text and not text.lower().startswith(_DROP_STARTS):
-            kept.append(text)
+    lines = (_reason_text(line) for line in stderr.splitlines())
+    kept = [text for text in lines if text and not text.lower().startswith(_DROP_STARTS)]
     return (kept[-1] if kept else "ffmpeg failed")[:_REASON_MAX]
 
 
@@ -186,17 +196,20 @@ def _decode_error(path: str, proc: subprocess.CompletedProcess) -> AudioError:
     return AudioError(f"cannot decode {path}: {ffmpeg_reason(stderr)}")
 
 
-def _decode(path: str, sr: int, mono: bool) -> np.ndarray:
-    duplicate = not mono and _source_channels(path) == 1
-    channels = 1 if (mono or duplicate) else 2
-    data, proc = _ffmpeg_decode(path, sr, channels)
-    if proc.returncode != 0 or data.size == 0:
-        raise _decode_error(path, proc)
+def _shape(data: np.ndarray, mono: bool, duplicate: bool) -> np.ndarray:
+    """(n,) for mono; (n, 2) for stereo, a mono source duplicated at unity gain."""
     if mono:
         return data
-    if duplicate:
-        return np.column_stack([data, data])
-    return data[: data.size - data.size % 2].reshape(-1, 2)
+    pairs = data[: data.size - data.size % 2].reshape(-1, 2)
+    return np.column_stack([data, data]) if duplicate else pairs
+
+
+def _decode(path: str, sr: int, mono: bool) -> np.ndarray:
+    duplicate = not mono and _source_channels(path) == 1
+    data, proc = _ffmpeg_decode(path, sr, 1 if (mono or duplicate) else 2)
+    if proc.returncode != 0 or data.size == 0:
+        raise _decode_error(path, proc)
+    return _shape(data, mono, duplicate)
 
 
 # ---------------------------------------------------------------- cache
@@ -207,39 +220,40 @@ def _cache_file(path: str, sr: int, mono: bool) -> Path:
 
 
 def _read_cache(target: Path) -> np.ndarray | None:
-    try:
-        return np.load(str(target), allow_pickle=False) if target.is_file() else None
-    except (OSError, ValueError):
-        return None
+    """The cached decode, or None when absent or unreadable."""
+    reader = functools.partial(np.load, allow_pickle=False)
+    return attempt(reader, str(target), errors=(OSError, ValueError)) if target.is_file() else None
+
+
+def _save(tmp: Path, x: np.ndarray) -> None:
+    config.ensure_dirs()
+    np.save(str(tmp), x)
 
 
 def _write_cache(target: Path, x: np.ndarray) -> None:
+    """Save next to the target with the process id, then move it into place; failures only lose the entry."""
     tmp = target.with_name(f"{target.stem}.{os.getpid()}.tmp.npy")
-    try:
-        config.ensure_dirs()
-        np.save(str(tmp), x)
-    except OSError:
-        _remove(tmp)
-        return
-    replace_quietly(str(tmp), str(target))
+    saved = outcome(_save, tmp, x, errors=(OSError,))[1] is None
+    moved = saved and replace_quietly(str(tmp), str(target))
+    if not moved:
+        attempt(os.remove, str(tmp), errors=(OSError,))
 
 
-def _remove(path: Path) -> None:
-    try:
-        path.unlink()
-    except OSError:
-        pass
+def _bad_frames(x: np.ndarray) -> np.ndarray:
+    bad = ~np.isfinite(x)
+    return bad.any(axis=1) if bad.ndim == 2 else bad
+
+
+def _finite_message(path: str, count: int, first_s: float) -> str:
+    return (f"{path}: {count} NaN / Inf sample(s), first at {first_s:.3f} s: "
+            "the file is corrupt, or the code that made it divided by zero")
 
 
 def _check_finite(path: str, x: np.ndarray, sr: int) -> None:
-    bad = ~np.isfinite(x)
-    if bad.ndim == 2:
-        bad = bad.any(axis=1)
+    bad = _bad_frames(x)
     count = int(bad.sum())
     if count:
-        first = int(np.argmax(bad)) / sr
-        raise AudioError(f"{path}: {count} NaN / Inf sample(s), first at {first:.3f} s: "
-                         "the file is corrupt, or the code that made it divided by zero")
+        raise AudioError(_finite_message(path, count, int(np.argmax(bad)) / sr))
 
 
 def _cut(x: np.ndarray, sr: int, start: float | None, end: float | None) -> np.ndarray:
@@ -251,20 +265,35 @@ def _cut(x: np.ndarray, sr: int, start: float | None, end: float | None) -> np.n
     return x[i0:i1]
 
 
-def load(path: str, sr: int = 48000, mono: bool = False, start: float | None = None,
-         end: float | None = None, cache: bool = True) -> np.ndarray:
-    """Decode a media file to float32: (n, 2) stereo or (n,) mono."""
+def _cached_or_decoded(path: str, sr: int, mono: bool, cache: bool) -> np.ndarray:
+    target = _cache_file(path, sr, mono) if cache else None
+    x = _read_cache(target) if target is not None else None
+    if x is not None:
+        return x
+    x = _decode(path, sr, mono)
+    if target is not None:
+        _write_cache(target, x)
+    return x
+
+
+def _checked(path: str, sr: int, mono: bool, cache: bool) -> np.ndarray:
+    x = _cached_or_decoded(path, sr, mono, cache)
+    _check_finite(path, x, sr)
+    return x
+
+
+def _existing(path: str) -> str:
     path = str(path)
     if not os.path.exists(path):
         raise AudioError(f"no such file: {path}")
-    target = _cache_file(path, sr, mono) if cache else None
-    x = _read_cache(target) if target is not None else None
-    if x is None:
-        x = _decode(path, sr, mono)
-        if target is not None:
-            _write_cache(target, x)
-    _check_finite(path, x, sr)
-    return _cut(x, sr, start, end)
+    return path
+
+
+def load(path: str, sr: int = 48000, mono: bool = False, start: float | None = None,
+         end: float | None = None, cache: bool = True) -> np.ndarray:
+    """Decode a media file to float32: (n, 2) stereo or (n,) mono."""
+    path = _existing(path)
+    return _cut(_checked(path, sr, mono, cache), sr, start, end)
 
 
 def duration(path: str) -> float:
@@ -290,11 +319,8 @@ def _is_picture(stream: dict) -> bool:
 
 
 def _fps(rate: str | None) -> float | None:
-    try:
-        frac = Fraction(rate or "0/0")
-    except (ValueError, ZeroDivisionError):
-        return None
-    return round(float(frac), 3)
+    frac = attempt(Fraction, rate or "0/0", errors=(ValueError, ZeroDivisionError))
+    return None if frac is None else round(float(frac), 3)
 
 
 def _kbps(audio: dict, fmt: dict, has_picture: bool) -> int | None:
@@ -311,96 +337,123 @@ def _video_info(stream: dict) -> dict:
     return {"width": stream.get("width"), "height": stream.get("height"), "fps": _fps(stream.get("r_frame_rate"))}
 
 
-def _probe_fields(raw: dict) -> dict:
+def _streams(raw: dict) -> tuple[dict, list[dict]]:
+    """The first audio stream ({} when none) and every video stream."""
     streams = raw.get("streams") or []
-    fmt = raw.get("format") or {}
     audio = next((s for s in streams if s.get("codec_type") == "audio"), {})
-    videos = [s for s in streams if s.get("codec_type") == "video"]
-    moving = [s for s in videos if not _is_picture(s)]
+    return audio, [s for s in streams if s.get("codec_type") == "video"]
+
+
+def _audio_fields(audio: dict, fmt: dict, has_picture: bool) -> dict:
     codec = audio.get("codec_name")
-    out = {
-        "codec": codec,
-        "src_rate": int(audio.get("sample_rate") or 0),
-        "channels": int(audio.get("channels") or 0),
-        "kbps": _kbps(audio, fmt, bool(videos)),
-        "lossy": codec in LOSSY_CODECS,
-        "duration": round(float(fmt.get("duration") or 0.0), 3),
-        "has_video": bool(moving),
-    }
-    if moving:
-        out["video"] = _video_info(moving[0])
+    return {"codec": codec, "src_rate": int(audio.get("sample_rate") or 0),
+            "channels": int(audio.get("channels") or 0), "kbps": _kbps(audio, fmt, has_picture),
+            "lossy": codec in LOSSY_CODECS}
+
+
+def _probe_fields(raw: dict) -> dict:
+    fmt = raw.get("format") or {}
+    audio, videos = _streams(raw)
+    moving = [s for s in videos if not _is_picture(s)]
+    out = _audio_fields(audio, fmt, bool(videos))
+    out.update(duration=round(float(fmt.get("duration") or 0.0), 3), has_video=bool(moving))
+    out.update({"video": _video_info(moving[0])} if moving else {})
     return out
+
+
+def _probe_once(path: str) -> dict:
+    return _probe_fields(_run_ffprobe(path))
 
 
 def probe(path: str) -> dict:
     """ffprobe facts of the first audio stream and the container."""
-    try:
-        return _probe_fields(_run_ffprobe(str(path)))
-    except (OSError, subprocess.SubprocessError, ValueError, AudioError) as exc:
-        return {"probe_error": str(exc)[:_REASON_MAX]}
+    info, error = outcome(_probe_once, str(path), errors=(OSError, subprocess.SubprocessError, ValueError, AudioError))
+    return info if error is None else {"probe_error": str(error)[:_REASON_MAX]}
 
 
 # ---------------------------------------------------------------- windows and paths
 
 
+def _starts(n: int, w: int, h: int, pad_last: bool) -> list[int]:
+    starts = list(range(0, n - w + 1, h))
+    tail = [n - w] if pad_last and starts[-1] + w < n else []
+    return starts + tail
+
+
 def windows(x: np.ndarray, win: float, hop: float, sr: int = 48000,
             pad_last: bool = False) -> list[tuple[float, np.ndarray]]:
     """Cut x into (start_seconds, segment) windows."""
-    w, h, n = int(round(win * sr)), max(1, int(round(hop * sr))), len(x)
-    if n <= w:
+    w = int(round(win * sr))
+    if len(x) <= w:
         return [(0.0, x)]
-    starts = list(range(0, n - w + 1, h))
-    if pad_last and starts[-1] + w < n:
-        starts.append(n - w)
+    starts = _starts(len(x), w, max(1, int(round(hop * sr))), pad_last)
     return [(s / sr, x[s: s + w]) for s in starts]
 
 
-def _walk(folder: str, recursive: bool, exts: Iterable[str]) -> list[str]:
-    found = []
-    for root, dirs, files in os.walk(folder):
-        dirs.sort()
-        found += [os.path.join(root, f) for f in sorted(files) if Path(f).suffix.lower() in exts]
-        if not recursive:
-            break
-    return found
+def _scan(folder: str) -> list[os.DirEntry]:
+    return list(os.scandir(folder))
 
 
-def _expand_one(path: str, recursive: bool, exts: Iterable[str]) -> list[str]:
-    if os.path.isdir(path):
-        return _walk(path, recursive, exts)
+def _entries(folder: str) -> list[os.DirEntry]:
+    found = attempt(_scan, folder, errors=(OSError,), default=[])
+    return sorted(found, key=operator.attrgetter("name"))
+
+
+def _walk(folder: str, recursive: bool, exts: frozenset[str]) -> list[str]:
+    """Media files of a folder in sorted order, its own files before its sub-folders."""
+    entries = _entries(folder)
+    files = [e.path for e in entries if e.is_file() and Path(e.name).suffix.lower() in exts]
+    subs = [e.path for e in entries if e.is_dir(follow_symlinks=False)] if recursive else []
+    return files + [path for sub in subs for path in _walk(sub, True, exts)]
+
+
+def _glob_media(pattern: str) -> list[str]:
+    hits = sorted(glob.glob(pattern, recursive=True))
+    return [h for h in hits if os.path.isfile(h) and Path(h).suffix.lower() in MEDIA_EXTS]
+
+
+def _expand_one(path: str, recursive: bool, exts: frozenset[str]) -> list[str]:
     if os.path.isfile(path):
         return [path]
-    hits = sorted(glob.glob(path, recursive=True))
-    return [h for h in hits if os.path.isfile(h) and Path(h).suffix.lower() in MEDIA_EXTS]
+    folder = os.path.isdir(path)
+    return _walk(path, recursive, exts) if folder else _glob_media(path)
 
 
 def _norm_key(path: str) -> str:
     return os.path.normcase(os.path.abspath(path)).casefold()
 
 
+def _as_list(paths: str | os.PathLike | Sequence[str]) -> list:
+    return [paths] if isinstance(paths, (str, os.PathLike)) else list(paths)
+
+
+def _first_per_key(found: list[str]) -> list[str]:
+    unique: dict[str, str] = {}
+    for path in found:
+        unique.setdefault(_norm_key(path), path)
+    return list(unique.values())
+
+
 def list_media(paths: str | Sequence[str], recursive: bool = True,
                exts: Iterable[str] = MEDIA_EXTS) -> list[str]:
     """Expand files, folders and globs to a list of media files without duplicates."""
-    items = [paths] if isinstance(paths, (str, os.PathLike)) else list(paths)
-    seen, out = set(), []
-    for item in items:
-        for found in _expand_one(str(item), recursive, frozenset(exts)):
-            key = _norm_key(found)
-            if key not in seen:
-                seen.add(key)
-                out.append(found)
-    return out
+    wanted = frozenset(exts)
+    found = [f for item in _as_list(paths) for f in _expand_one(str(item), recursive, wanted)]
+    return _first_per_key(found)
+
+
+def _missing_part(item: str) -> str | None:
+    """The check_paths part of an input that yields no media file, else None."""
+    if list_media([item]):
+        return None
+    exists = os.path.exists(item) or bool(glob.glob(item, recursive=True))
+    return f"{item} (no audio or video files in it)" if exists else f"{item} (no such file or folder)"
 
 
 def check_paths(paths: str | Sequence[str], what: str = "paths") -> None:
     """Raise AudioError naming every given path that yields no media file."""
-    items = [paths] if isinstance(paths, (str, os.PathLike)) else list(paths)
-    parts = []
-    for item in map(str, items):
-        if list_media([item]):
-            continue
-        exists = os.path.exists(item) or bool(glob.glob(item, recursive=True))
-        parts.append(f"{item} (no audio or video files in it)" if exists else f"{item} (no such file or folder)")
-    if parts:
-        more = " ..." if len(parts) > _PARTS_LISTED else ""
-        raise AudioError(f"{what}: nothing playable in " + ", ".join(parts[:_PARTS_LISTED]) + more)
+    parts = [part for part in map(_missing_part, map(str, _as_list(paths))) if part]
+    if not parts:
+        return
+    more = " ..." if len(parts) > _PARTS_LISTED else ""
+    raise AudioError(f"{what}: nothing playable in " + ", ".join(parts[:_PARTS_LISTED]) + more)

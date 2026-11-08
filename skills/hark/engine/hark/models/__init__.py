@@ -24,16 +24,14 @@ class MLMissing(RuntimeError):
         super().__init__(f"{feature} needs the {extra} extras. Install them with: {command}")
 
 
+def _findable(name: str) -> bool:
+    """True when the top-level module is loaded or has an import spec. Imports nothing."""
+    loaded = sys.modules.get(name) is not None
+    return loaded or importlib.util.find_spec(name) is not None
+
+
 def _absent(names: tuple[str, ...]) -> tuple[str, ...]:
-    out = []
-    for name in names:
-        try:
-            found = importlib.util.find_spec(name) is not None
-        except (ImportError, ValueError):
-            found = False
-        if not found:
-            out.append(name)
-    return tuple(out)
+    return tuple(name for name in names if not _findable(name))
 
 
 def missing_ml() -> tuple[str, ...]:
@@ -55,11 +53,17 @@ def install_command(extra: str = "ml") -> str:
             f' && {py} -m pip install "transformers>=4.40"')
 
 
+def _modules_of(extra: str) -> tuple[str, ...]:
+    modules = EXTRA_MODULES.get(extra)
+    if modules is None:
+        raise ValueError(f"unknown extra: {extra}")
+    return modules
+
+
 def require_extra(extra: str, feature: str) -> None:
     """Raise MLMissing when a module of the extra ("ml" or "mcp") is absent."""
-    if extra not in EXTRA_MODULES:
-        raise ValueError(f"unknown extra: {extra}")
-    absent = _absent(EXTRA_MODULES[extra])
+    modules = _modules_of(extra)
+    absent = _absent(modules)
     if absent:
         raise MLMissing(feature, absent, install_command(extra), extra)
 
