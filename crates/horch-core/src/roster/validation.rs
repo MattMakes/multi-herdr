@@ -2188,7 +2188,7 @@ w3-codex: sandbox is Claude only; agent codex cannot honour it";
                 // agy exposes no skills, so its teammates can have no phase.
                 "smoke" | "judge" | "antigravity" | "spec-writer" | "ticket-writer"
                 | "skill-importer" | "intake-auditor" | "intake-analyst" | "intake-sanitizer"
-                | "intake-writer" | "intake-reviewer" => None,
+                | "intake-writer" | "intake-reviewer" | "audio-reviewer" => None,
                 "researcher" | "product-lead" | "designer" | "design-director"
                 | "one-page-design" => Some(Phase::Research),
                 "staff-engineer"
@@ -2873,12 +2873,16 @@ w3-codex: sandbox is Claude only; agent codex cannot honour it";
         // teammate and on the orchestrator.
         let mut r = Roster::builtin().unwrap();
         assert!(r.check().is_empty(), "{:?}", r.check());
-        let covered = r
+        let covered: Vec<&str> = r
             .teammates
             .values()
             .filter(|t| t.agent == HarnessKind::Claude && (!t.hidden || t.name == "orchestrator"))
-            .count();
-        assert_eq!(covered, 77, "the rule should cover 77 claude teammates");
+            .map(|t| t.name.as_str())
+            .collect();
+        assert_eq!(covered.len(), 78, "the rule should cover 78 claude teammates");
+        // sound-engineer runs on claude; audio-reviewer runs on agy.
+        assert!(covered.contains(&"sound-engineer"), "{covered:?}");
+        assert!(!covered.contains(&"audio-reviewer"), "{covered:?}");
 
         // Take the deny away from a worker and the check fails by name.
         r.teammates.get_mut("opus").unwrap().disallowed_tools = Vec::new();
