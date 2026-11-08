@@ -117,9 +117,13 @@ STUDY_PLUCK: dict[str, tuple[float, float, float]] = {
 }
 
 
+_FAMILY_BOX = (SPACE, DEFAULTS, FINE)
+
+
 def family_space(params: dict) -> dict[str, Any]:
     """The pinned family space around 1 member: fine keys keep their full range."""
-    return tonal.family_space(SPACE, {**DEFAULTS, **params}, FINE)
+    space, defaults, fine = _FAMILY_BOX
+    return tonal.family_space(space, {**defaults, **params}, fine)
 
 
 def _n(seconds: float) -> int:
@@ -177,6 +181,18 @@ def _note(p: dict, rng: np.random.Generator, n: int, f0: float) -> np.ndarray:
     return y
 
 
+def _harmonic_level(p: dict, k: int, f: float) -> float:
+    """String harmonic k: tilt, pluck-point comb and the finger-contact low-pass."""
+    return k ** -p["tilt"] * abs(math.sin(math.pi * k * p["pos"])) / (1 + (2 * math.pi * f * p["contact"] / 6) ** 2)
+
+
+def _with_body(y: np.ndarray, p: dict) -> np.ndarray:
+    if not _on(p["body"]):
+        return y
+    bd = _body_res(y, p["body_f"])
+    return y + 10 ** (p["body"] / 20) * bd / (np.max(np.abs(bd)) + 1e-12) * np.max(np.abs(y))
+
+
 def _pluck(p: dict, rng: np.random.Generator, n: int, f0: float) -> np.ndarray:
     t = np.arange(n) / SR
     y = np.zeros(n)
@@ -184,14 +200,10 @@ def _pluck(p: dict, rng: np.random.Generator, n: int, f0: float) -> np.ndarray:
         f = f0 * k * (1 + 0.0004 * k * k)
         if f >= 0.4 * SR:
             break
-        a = k ** -p["tilt"] * abs(math.sin(math.pi * k * p["pos"])) / (1 + (2 * math.pi * f * p["contact"] / 6) ** 2)
         tau = max(p["decay"] * k ** -p["slope"], 0.004)
-        y += a * np.exp(-t / tau) * np.sin(2 * np.pi * f * t + rng.uniform(0, 0.3))
+        y += _harmonic_level(p, k, f) * np.exp(-t / tau) * np.sin(2 * np.pi * f * t + rng.uniform(0, 0.3))
     y *= damper(t, p["gate"], p["gate_tau"]) * _rise(t, p["onset"])
-    if _on(p["body"]):
-        bd = _body_res(y, p["body_f"])
-        y = y + 10 ** (p["body"] / 20) * bd / (np.max(np.abs(bd)) + 1e-12) * np.max(np.abs(y))
-    return y
+    return _with_body(y, p)
 
 
 def _body_res(y: np.ndarray, f: float) -> np.ndarray:
@@ -247,16 +259,19 @@ RUN_SPACE: dict[str, Any] = {**SPACE, **{k: v[0] for k, v in _RUN_TABLE.items()}
 RUN_DEFAULTS: dict[str, Any] = {**DEFAULTS, **{k: v[1] for k, v in _RUN_TABLE.items()}}
 
 
+def _arc(idx: list[int]) -> list[int]:
+    k = len(idx)
+    h = (k + 1) // 2
+    return idx[:h] + idx[: k - h][::-1]
+
+
+_CONTOURS = {"up": list, "down": lambda idx: idx[::-1], "arc": _arc}
+
+
 def _degrees(k: int, span: int, pattern: str) -> list[int]:
-    idx = [i * span for i in range(k)]
-    if pattern == "down":
-        return idx[::-1]
-    if pattern == "arc":
-        h = (k + 1) // 2
-        return idx[:h] + idx[: k - h][::-1]
-    if pattern != "up":
+    if pattern not in _CONTOURS:
         raise ValueError(f"mallet: unknown pattern {pattern!r}")
-    return idx
+    return _CONTOURS[pattern]([i * span for i in range(k)])
 
 
 def run_semitones(p: dict) -> list[int]:

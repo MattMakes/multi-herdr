@@ -114,9 +114,13 @@ STUDY: dict[str, tuple[float, float, float]] = {
 }
 
 
+_FAMILY_BOX = (SPACE, DEFAULTS, FINE)
+
+
 def family_space(params: dict) -> dict[str, Any]:
     """The pinned family space around 1 member: fine keys keep their full range."""
-    return tonal.family_space(SPACE, {**DEFAULTS, **params}, FINE)
+    space, defaults, fine = _FAMILY_BOX
+    return tonal.family_space(space, {**defaults, **params}, fine)
 
 
 def _on(db: float) -> bool:

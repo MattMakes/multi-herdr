@@ -82,6 +82,12 @@ def peq(x, f0, gain_db, q=0.9):
 
 
 @njit(cache=False)
+def _svf_pick(mode, xi, v1, v2, k):
+    """The output of 1 SVF step: low (0), band (1), normalised band (2) or high (3)."""
+    return (v2, v1, k * v1, xi - k * v1 - v2)[mode]
+
+
+@njit(cache=False)
 def _svf_kernel(x, fc, q, mode):
     out = np.empty_like(x)
     ic1 = 0.0
@@ -97,14 +103,7 @@ def _svf_kernel(x, fc, q, mode):
         v2 = ic2 + a2 * ic1 + a3 * v3
         ic1 = 2 * v1 - ic1
         ic2 = 2 * v2 - ic2
-        if mode == 0:
-            out[i] = v2
-        elif mode == 1:
-            out[i] = v1
-        elif mode == 2:
-            out[i] = k * v1
-        else:
-            out[i] = x[i] - k * v1 - v2
+        out[i] = _svf_pick(mode, x[i], v1, v2, k)
     return out
 
 
@@ -249,14 +248,7 @@ def reverb(x, r, rt60=1.6, size=0.6, predelay=0.01, damp=0.5, wet=0.3, dry=1.0, 
     t = np.arange(n) / SR
     pre = n_of(predelay) if predelay > 0 else 0
     mono = x if x.ndim == 1 else x.mean(axis=1)
-    irs = []
-    for _c in range(2):
-        tail = r.standard_normal(n) * np.exp(-6.91 * t / max(rt60, 0.05))
-        tail = butter(tail, "low", 2000 + (1 - damp) * 12000, 1)
-        ir = np.concatenate([np.zeros(pre), tail])
-        irs.append(ir / (np.sqrt(np.sum(ir ** 2)) + 1e-12))
-    shared = 0.5 * (irs[0] + irs[1])
-    irs = [(1 - width) * shared + width * ir for ir in irs] if width < 1 else irs
+    irs = _reverb_irs(r, t, pre, rt60, damp, width)
     w = np.column_stack([signal.fftconvolve(mono, ir) for ir in irs])
     if not st:
         out = w.mean(axis=1) * np.sqrt(2) * wet
@@ -265,6 +257,18 @@ def reverb(x, r, rt60=1.6, size=0.6, predelay=0.01, damp=0.5, wet=0.3, dry=1.0, 
     out = w * wet
     out[: len(x)] += dry * stereo_of(x)
     return out
+
+
+def _reverb_irs(r, t, pre, rt60, damp, width):
+    """2 unit-energy noise-tail impulse responses, pulled together when width < 1."""
+    irs = []
+    for _c in range(2):
+        tail = r.standard_normal(len(t)) * np.exp(-6.91 * t / max(rt60, 0.05))
+        tail = butter(tail, "low", 2000 + (1 - damp) * 12000, 1)
+        ir = np.concatenate([np.zeros(pre), tail])
+        irs.append(ir / (np.sqrt(np.sum(ir ** 2)) + 1e-12))
+    shared = 0.5 * (irs[0] + irs[1])
+    return [(1 - width) * shared + width * ir for ir in irs] if width < 1 else irs
 
 
 # ---------------------------------------------------------------- tonal
@@ -364,17 +368,28 @@ def _cos2_tail(y, k):
 
 def finish(y, r, hp=80, lp=12000, room_wet=0, rt60=0.15, width=0, cut=500, end_db=-60, fade=0.006, pan=0,
            size=0.15):
+    y = _finish_band(y, hp, lp)
+    y = _finish_image(y, width, cut, pan)
+    y = room_t(y, r, room_wet, rt60, size, 0.3 + width)
+    return _finish_edges(trim_tail(y, end_db, 0.01), fade)
+
+
+def _finish_band(y, hp, lp):
     y = np.array(y, dtype=float, copy=True)
     _cos2_tail(y, min(len(y), n_of(0.02), int(0.15 * len(y))))
     y = butter(y, "high", hp, 4)
-    if lp < 17500:
-        y = butter(y, "low", lp, 2)
+    return butter(y, "low", lp, 2) if lp < 17500 else y
+
+
+def _finish_image(y, width, cut, pan):
     y = decorrelate(y, width, cut) if width > 0.005 else np.column_stack([y, y])
     if abs(pan) > 0.005:
         th = (np.clip(pan, -1, 1) + 1) * np.pi / 4
         y = y * np.array([np.sqrt(2) * np.cos(th), np.sqrt(2) * np.sin(th)])
-    y = room_t(y, r, room_wet, rt60, size, 0.3 + width)
-    y = trim_tail(y, end_db, 0.01)
+    return y
+
+
+def _finish_edges(y, fade):
     y = _cos2_tail(np.array(y), min(len(y), n_of(fade)))
     k = min(len(y), n_of(0.0003))
     if k > 1:
@@ -401,33 +416,35 @@ def _spectrum(m):
     return p, np.fft.rfftfreq(2048, 1 / SR)
 
 
-def measure(x):
-    x = np.asarray(x, dtype=float)
-    x = x if x.ndim == 2 else np.column_stack([x, x])
-    m = x.mean(axis=1)
-    lev = _level_track(m)
+def _level_keys(lev, n):
     ip = int(np.argmax(lev))
     pk = lev[ip]
     on = np.nonzero(lev >= pk * 10 ** -3)[0]
     last = np.nonzero(lev >= pk * 10 ** -4.5)[0]
-    end = last[-1] if len(last) else len(m) / 48
+    end = last[-1] if len(last) else n / 48
     out = {"dur_s": round((end - on[0]) * 0.001, 3)}
     before = np.nonzero(lev[: ip + 1] >= pk * 1e-2)[0]
     out["attack_ms"] = int(ip - before[0]) if len(before) else None
     for key, thr in (("t20_ms", 1e-2), ("t40_ms", 1e-4)):
         below = np.nonzero(lev[ip:] < pk * thr)[0]
         out[key] = int(below[0]) if len(below) else None
-    p, f = _spectrum(m)
-    fe = p.sum(axis=1)
-    act = fe >= 0.01 * fe.max()
-    spec = p[act].mean(axis=0)
-    out["centroid_hz"] = int(round(np.sum(f * spec) / (np.sum(spec) + 1e-30)))
+    return out
+
+
+def _balance_keys(spec, f):
     tot = np.sum(spec) + 1e-30
-    out["lo150"] = round(float(np.sum(spec[f < 150]) / tot), 3)
-    out["hi4k"] = round(float(np.sum(spec[f >= 4000]) / tot), 3)
+    return {
+        "centroid_hz": int(round(np.sum(f * spec) / (np.sum(spec) + 1e-30))),
+        "lo150": round(float(np.sum(spec[f < 150]) / tot), 3),
+        "hi4k": round(float(np.sum(spec[f >= 4000]) / tot), 3),
+    }
+
+
+def _frame_ridges(rows, f):
+    """Per active frame: the strongest-bin frequency in 80-12000 Hz and its quarter-octave energy share."""
     band = (f >= 80) & (f <= 12000)
     shares, ridge = [], []
-    for row in p[act]:
+    for row in rows:
         sub = row[band]
         if sub.max() <= 0:
             continue
@@ -435,14 +452,33 @@ def measure(x):
         sel = band & (f >= fr / 2 ** 0.25) & (f <= fr * 2 ** 0.25)
         shares.append(np.sum(row[sel]) / (np.sum(sub) + 1e-30))
         ridge.append(fr)
-    out["tonal"] = round(float(np.mean(shares)), 2) if len(shares) >= 2 else None
+    return shares, ridge
+
+
+def _tonal_keys(rows, f):
+    shares, ridge = _frame_ridges(rows, f)
+    out = {"tonal": round(float(np.mean(shares)), 2) if len(shares) >= 2 else None, "glide_st": None}
     if len(ridge) >= 2:
         k3 = max(1, min(3, len(ridge) // 3))
         out["glide_st"] = round(float(12 * np.log2(np.median(ridge[-k3:]) / np.median(ridge[:k3]))), 1)
-    else:
-        out["glide_st"] = None
-    left, right = x[:, 0], x[:, 1]
-    out["corr"] = round(float(np.sum(left * right) / (np.sqrt(np.sum(left ** 2) * np.sum(right ** 2)) + 1e-30)), 2)
+    return out
+
+
+def _corr(left, right):
+    return round(float(np.sum(left * right) / (np.sqrt(np.sum(left ** 2) * np.sum(right ** 2)) + 1e-30)), 2)
+
+
+def measure(x):
+    x = np.asarray(x, dtype=float)
+    x = x if x.ndim == 2 else np.column_stack([x, x])
+    m = x.mean(axis=1)
+    out = _level_keys(_level_track(m), len(m))
+    p, f = _spectrum(m)
+    fe = p.sum(axis=1)
+    act = fe >= 0.01 * fe.max()
+    out.update(_balance_keys(p[act].mean(axis=0), f))
+    out.update(_tonal_keys(p[act], f))
+    out["corr"] = _corr(x[:, 0], x[:, 1])
     return out
 
 
@@ -489,9 +525,5 @@ def search_render(recipe, params, seed):
         y = np.asarray(recipe.render(dict(params), rng(seed)), dtype=np.float64)
     except Exception:
         return None
-    if y.size == 0 or not np.all(np.isfinite(y)):
-        return None
-    peak = float(np.max(np.abs(y)))
-    if peak < 1e-7:
-        return None
-    return (y * (10 ** (-1 / 20) / peak)).astype(np.float32)
+    peak = float(np.max(np.abs(y))) if y.size and np.all(np.isfinite(y)) else 0.0
+    return (y * (10 ** (-1 / 20) / peak)).astype(np.float32) if peak >= 1e-7 else None

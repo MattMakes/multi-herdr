@@ -251,27 +251,48 @@ def _joint_peak(a: np.ndarray, b: np.ndarray) -> float:
     return float(max(np.max(np.abs(a)), np.max(np.abs(b)))) + 1e-12
 
 
+def _draw(p: dict, n: int, t: np.ndarray, rng: np.random.Generator) -> dict:
+    """Every layer, in the fixed draw order, whatever its level (so a seed is 1 take)."""
+    s = {}
+    s["sub"] = _sub(p, t, rng)
+    s["kick"] = _kick(p, t, rng)
+    s["click"] = _click(p, n, rng)
+    s["punch"] = _punch(p, t, rng)
+    s["air"] = _air(p, t, rng)
+    s["rumble"] = (_rumble_channel(p, n, t, rng), _rumble_channel(p, n, t, rng))
+    return s
+
+
+def _pair(left: np.ndarray, right: np.ndarray, rk: float, w: float) -> tuple[np.ndarray, np.ndarray, float]:
+    """Mix the right channel toward the left by width; return both and their joint peak."""
+    right = rk * left + w * right
+    return left, right, _joint_peak(left, right)
+
+
+def _mix(p: dict, s: dict, n: int, rng: np.random.Generator) -> np.ndarray:
+    top = 0.6 * p["kick"] * s["kick"] + 0.5 * p["click"] * s["click"] + 0.6 * p["punch"] * s["punch"]
+    top = _room_top(p, top, n, rng)
+    w = p["width"]
+    rk = np.sqrt(max(0.0, 1 - w * w))
+    top_l, top_r = _width_top(top, w, rk)
+    rum_l, rum_r, rl = _pair(*s["rumble"], rk, w)
+    air_l, air_r, al = _pair(*s["air"], rk, w)
+    left = _channel(p, s["sub"][0] + top_l, (rum_l, rl), (air_l, al))
+    right = _channel(p, s["sub"][1] + top_r, (rum_r, rl), (air_r, al))
+    return np.column_stack([left, right])
+
+
+def _channel(p: dict, base: np.ndarray, rum: tuple, air: tuple) -> np.ndarray:
+    """One output channel: sub and top, plus the rumble and air layers over their joint peaks."""
+    return base + 0.7 * p["rumble"] * rum[0] / rum[1] + 0.35 * p["air"] * air[0] / air[1]
+
+
 def render(p: dict, rng: np.random.Generator) -> np.ndarray:
     """One take: stereo float64, at most `length` s, peak 0.89."""
     p = {**DEFAULTS, **p}
     n = dsp.n_of(p["length"])
     t = np.arange(n) / SR
-    sub_l, sub_r = _sub(p, t, rng)
-    kick = _kick(p, t, rng)
-    click = _click(p, n, rng)
-    punch = _punch(p, t, rng)
-    air_l, air_r = _air(p, t, rng)
-    rum_l = _rumble_channel(p, n, t, rng)
-    rum_r = _rumble_channel(p, n, t, rng)
-    top = _room_top(p, 0.6 * p["kick"] * kick + 0.5 * p["click"] * click + 0.6 * p["punch"] * punch, n, rng)
-    w = p["width"]
-    rk = np.sqrt(max(0.0, 1 - w * w))
-    top_l, top_r = _width_top(top, w, rk)
-    rum_r = rk * rum_l + w * rum_r
-    air_r = rk * air_l + w * air_r
-    rl, al = _joint_peak(rum_l, rum_r), _joint_peak(air_l, air_r)
-    left = sub_l + top_l + 0.7 * p["rumble"] * rum_l / rl + 0.35 * p["air"] * air_l / al
-    right = sub_r + top_r + 0.7 * p["rumble"] * rum_r / rl + 0.35 * p["air"] * air_r / al
-    y = end_cut(dsp.butter(np.column_stack([left, right]), "high", 24.0, 2), -60.0)
+    y = _mix(p, _draw(p, n, t, rng), n, rng)
+    y = end_cut(dsp.butter(y, "high", 24.0, 2), -60.0)
     y = dsp.fade(y, 0.0004, min(p["fade"], 0.9 * len(y) / SR))
     return y * PEAK / (np.max(np.abs(y)) + 1e-12)

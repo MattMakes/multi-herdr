@@ -86,11 +86,15 @@ def preset_full(cat: str, params: dict) -> dict[str, Any]:
     return {**BASE, **params}
 
 
+_RECIPE_DATA = (SPACE, TARGETS, ALTS)
+
+
 def recipe(cat: str = "whoosh_big", preset_name: str = "thump") -> types.SimpleNamespace:
     """A recipe object for 1 member."""
+    space, targets, alts = _RECIPE_DATA
     return types.SimpleNamespace(
-        MODULE=__name__, SPACE=dict(SPACE), DEFAULTS=preset(preset_name, cat), render=render,
-        TARGET=TARGETS[cat], ALTS=list(ALTS), REFSET="whoosh_big", PRESET=preset_name,
+        MODULE=__name__, SPACE=dict(space), DEFAULTS=preset(preset_name, cat), render=render,
+        TARGET=targets[cat], ALTS=list(alts), REFSET="whoosh_big", PRESET=preset_name,
     )
 
 

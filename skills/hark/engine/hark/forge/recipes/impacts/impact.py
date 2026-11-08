@@ -359,17 +359,22 @@ def _v2_channel(c: int, s: dict, p: dict, rng: np.random.Generator) -> tuple[np.
 
 
 def _v2_swell(out: np.ndarray, s: dict, p: dict, rng: np.random.Generator) -> None:
-    pre, kp = p["pre_len"], s["kp"]
     m = _n(0.2)
     head = s["crack"][:m] / (np.max(np.abs(s["crack"])) + 1e-12) + p["pre_low"] * _peak1(s["low"])[:m]
     pk = np.max(np.abs(out))
     for c in range(2):
-        ir = hall_ir(max(0.3, 1.6 * pre), 0.4, 0.6, 0.0, seconds=1.2 * pre + 0.25, rng=rng)
-        sw = _filt(_fit(signal.fftconvolve(head, ir), kp)[::-1], "low", p["pre_bright"], 2)
-        sw = dsp.fade(sw, min(0.25 * pre, 0.1), 0.003)
-        out[:kp, c] += sw * p["pre_level"] * pk / (np.max(np.abs(sw)) + 1e-12)
-        if p["riser_level"] > 0.005 and kp > 64:
-            out[:kp, c] += p["riser_level"] * pk * dsp.fade(_air_riser(kp, p["riser_f"], rng), 0.01, 0.002)
+        _v2_swell_channel(out[:s["kp"], c], head, pk, p, rng)
+
+
+def _v2_swell_channel(dst: np.ndarray, head: np.ndarray, pk: float, p: dict, rng: np.random.Generator) -> None:
+    """Add the reversed hall swell (and the optional air riser) to the first kp samples of 1 channel."""
+    pre, kp = p["pre_len"], len(dst)
+    ir = hall_ir(max(0.3, 1.6 * pre), 0.4, 0.6, 0.0, seconds=1.2 * pre + 0.25, rng=rng)
+    sw = _filt(_fit(signal.fftconvolve(head, ir), kp)[::-1], "low", p["pre_bright"], 2)
+    sw = dsp.fade(sw, min(0.25 * pre, 0.1), 0.003)
+    dst += sw * p["pre_level"] * pk / (np.max(np.abs(sw)) + 1e-12)
+    if p["riser_level"] > 0.005 and kp > 64:
+        dst += p["riser_level"] * pk * dsp.fade(_air_riser(kp, p["riser_f"], rng), 0.01, 0.002)
 
 
 def _v2_roll(out: np.ndarray, kp: int, p: dict, rng: np.random.Generator) -> None:
@@ -384,20 +389,29 @@ def _v2_roll(out: np.ndarray, kp: int, p: dict, rng: np.random.Generator) -> Non
         _add(out[:, c], p["roll_level"] * pk * dsp.fade(rl, 0.0, 0.3), kp)
 
 
-def _v2_sources(p: dict, rng: np.random.Generator) -> dict:
-    K = _n(TAIL)
-    tl = np.arange(int(LO * TAIL)) / LO
+def _v2_low(tl: np.ndarray, K: int, p: dict, rng: np.random.Generator) -> np.ndarray:
+    """The low layer: body, sub and shell at the 6 kHz base, upsampled and saturated."""
     low = _v2_body(tl, p, rng)
     low = low + p["sub_level"] * np.sin(2 * np.pi * p["sub_f"] * tl + rng.uniform(0, 1)) * _env(tl, 0.02, p["sub_tau"])
     low = low + p["shell_level"] * _shell(tl, p["shell_lo"], p["shell_span"], p["shell_tau"], rng)
-    low = _console(_up(low, K), p["drive"], p["sat_tone"])
+    return _console(_up(low, K), p["drive"], p["sat_tone"])
+
+
+def _v2_halls(p: dict, rng: np.random.Generator) -> tuple[np.ndarray, np.ndarray]:
+    ir1 = hall_ir(p["hall_rt"], p["hall_damp"], 0.8, p["predelay"], rng=rng)
+    ir2 = hall_ir(p["hall_rt"], p["hall_damp"], 0.8, p["predelay"] + rng.uniform(0.001, 0.006), rng=rng)
+    return ir1, ir2
+
+
+def _v2_sources(p: dict, rng: np.random.Generator) -> dict:
+    K = _n(TAIL)
+    tl = np.arange(int(LO * TAIL)) / LO
+    low = _v2_low(tl, K, p, rng)
     crack = _v2_crack(K, p, rng)
     s = {"K": K, "tl": tl, "low": low, "crack": crack, "direct": low + p["crack_level"] * crack}
     s["rum"] = _up(_v2_rumble(tl, p, rng), K)
     s["swp"] = _v2_sweep(K, p, rng)
-    ir1 = hall_ir(p["hall_rt"], p["hall_damp"], 0.8, p["predelay"], rng=rng)
-    ir2 = hall_ir(p["hall_rt"], p["hall_damp"], 0.8, p["predelay"] + rng.uniform(0.001, 0.006), rng=rng)
-    s["irs"] = (ir1, ir2)
+    s["irs"] = _v2_halls(p, rng)
     return s
 
 
@@ -456,25 +470,39 @@ def _swell_wash(n: int, u: np.ndarray, seconds: float, f_end: float, rng: np.ran
     return _peak1(_filt(tail, "low", 0.8 * f_end, 2)) * (0.3 + 0.7 * u)
 
 
-def swell(seconds: float, rng: np.random.Generator, f_start: float = 150, f_end: float = 6000, q: float = 1.2,
-          curve: float = 1.5, grow: float = 3.5, width: float = 0.6, room_wet: float = 0.25, tube: float = 0.5,
-          tube_lo: float = 90, tube_hi: float = 600, flutter: float = 0.25, rev: float = 0.5) -> np.ndarray:
-    """A stand-alone air riser whose last sample is its loudest. Stereo, peak 1."""
-    n = _n(seconds)
-    u = np.arange(n) / max(n - 1, 1)
-    k = dict(f_start=f_start, f_end=f_end, q=q, curve=curve, grow=grow, tube=tube, tube_lo=tube_lo,
-             tube_hi=tube_hi, flutter=flutter)
+SWELL_DEFAULTS: dict[str, float] = {
+    "f_start": 150, "f_end": 6000, "q": 1.2, "curve": 1.5, "grow": 3.5, "width": 0.6, "room_wet": 0.25,
+    "tube": 0.5, "tube_lo": 90, "tube_hi": 600, "flutter": 0.25, "rev": 0.5,
+}
+
+
+def _swell_channels(n: int, u: np.ndarray, seconds: float, k: dict, rng: np.random.Generator) -> np.ndarray:
     shared = _swell_layer(n, u, rng, k)
     chans = []
     for _c in range(2):
-        y = _peak1((1 - width) * shared + width * _swell_layer(n, u, rng, k))
-        if rev > 0:
-            y = y + rev * _swell_wash(n, u, seconds, f_end, rng)
+        y = _peak1((1 - k["width"]) * shared + k["width"] * _swell_layer(n, u, rng, k))
+        if k["rev"] > 0:
+            y = y + k["rev"] * _swell_wash(n, u, seconds, k["f_end"], rng)
         chans.append(y)
-    y = np.column_stack(chans)
+    return np.column_stack(chans)
+
+
+def swell(seconds: float, rng: np.random.Generator, **opts: float) -> np.ndarray:
+    """A stand-alone air riser whose last sample is its loudest. Stereo, peak 1.
+
+    Keyword options and their defaults are SWELL_DEFAULTS (f_start, f_end, q, curve, grow, width, room_wet, tube,
+    tube_lo, tube_hi, flutter, rev).
+    """
+    unknown = set(opts) - set(SWELL_DEFAULTS)
+    if unknown:
+        raise TypeError(f"swell: unknown options {sorted(unknown)}")
+    k = {**SWELL_DEFAULTS, **opts}
+    n = _n(seconds)
+    u = np.arange(n) / max(n - 1, 1)
+    y = _swell_channels(n, u, seconds, k, rng)
     ir = hall_ir(0.9, 0.5, 0.6, 0.004, rng=rng)
     wet = np.column_stack([signal.fftconvolve(y[:, c], ir)[:n] for c in range(2)])
-    y = y + room_wet * wet / np.sqrt(np.sum(ir ** 2))
+    y = y + k["room_wet"] * wet / np.sqrt(np.sum(ir ** 2))
     y = dsp.fade(_mic(y, rng, -80.0), 0.03, 0.006)
     return _peak1(y)
 
@@ -522,16 +550,19 @@ def _j2_debris(m: int, p: dict, rng: np.random.Generator) -> np.ndarray:
     return _peak1(_filt(d, "band", (0.35 * p["crack_f"], min(4 * p["crack_f"], 21600.0)), 2))
 
 
+def _crack_noise(L: int, p: dict, rng: np.random.Generator) -> np.ndarray:
+    i = np.arange(L)
+    w = rng.standard_normal(L) * (1 - i / L) ** 3 * (1 - np.exp(-i / (SR * 0.0003)))
+    return _filt(w, "band", (0.5 * p["crack_f"], min(3 * p["crack_f"], 21600.0)), 2)
+
+
 def _j2_crack(n: int, p: dict, rng: np.random.Generator) -> np.ndarray:
     m = min(n, _n(0.4))
     y = np.zeros(m)
     k = min(m, max(2, _n(0.0006)))
     y[:k] += 0.5 - 0.5 * np.cos(np.linspace(0, 2 * np.pi, k))
     L = min(m, max(8, _n(p["crack_ms"] / 1000)))
-    i = np.arange(L)
-    w = rng.standard_normal(L) * (1 - i / L) ** 3 * (1 - np.exp(-i / (SR * 0.0003)))
-    w = _filt(w, "band", (0.5 * p["crack_f"], min(3 * p["crack_f"], 21600.0)), 2)
-    y[:L] += 1.4 * _peak1(w)
+    y[:L] += 1.4 * _peak1(_crack_noise(L, p, rng))
     if p["debris"] > 0.01:
         y = y + 0.5 * p["debris"] * _j2_debris(m, p, rng)
     return _fit(_peak1(_filt(y, "high", 40.0, 1)), n)
@@ -557,21 +588,28 @@ def _j4_sheen(n: int, p: dict, rng: np.random.Generator) -> np.ndarray:
     return _fit(_peak1(np.column_stack(chans)), n)
 
 
-def _j5_plate(n: int, p: dict, rng: np.random.Generator) -> np.ndarray:
+def _plate_modes(p: dict, rng: np.random.Generator) -> tuple[np.ndarray, ...]:
+    """40 plate modes: frequencies, amplitudes, time constants and per-channel phases."""
     pf = p["plate_f"]
-    m = min(n, _n(min(4.0, 5 * p["plate_tau"] + 0.1)))
     f = np.sort(pf * np.exp(rng.uniform(0, np.log(min(16.0, 9000.0 / pf)), 40)))
     a = (f / pf) ** -0.6 * rng.uniform(0.3, 1.0, 40)
     tau = p["plate_tau"] * (f / pf) ** -0.55
     ph = rng.uniform(0, 2 * np.pi, (40, 2))
+    return f, a, tau, ph
+
+
+def _j5_plate(n: int, p: dict, rng: np.random.Generator) -> np.ndarray:
+    m = min(n, _n(min(4.0, 5 * p["plate_tau"] + 0.1)))
+    f, a, tau, ph = _plate_modes(p, rng)
     t = np.arange(m) / SR
     tg = t + 0.0012 * (1 - np.exp(-t / 0.1))
     on = 1 - np.exp(-t / 0.0008)
     y = np.zeros((m, 2))
     for k in range(40):
         amp = a[k] * np.exp(-t / tau[k]) * on
-        y[:, 0] += amp * np.sin(2 * np.pi * f[k] * tg + ph[k, 0])
-        y[:, 1] += amp * np.sin(2 * np.pi * f[k] * tg + ph[k, 1])
+        w = 2 * np.pi * f[k] * tg
+        y[:, 0] += amp * np.sin(w + ph[k, 0])
+        y[:, 1] += amp * np.sin(w + ph[k, 1])
     return _fit(_peak1(y), n)
 
 
@@ -595,21 +633,31 @@ def _j6_scatter(n: int, p: dict, rng: np.random.Generator) -> np.ndarray:
     return _fit(_peak1(np.column_stack([_j6_channel(L, T, rng) for _ in range(2)])), n)
 
 
+def _membrane(x: np.ndarray, tl: np.ndarray, late: np.ndarray, p: dict, rng: np.random.Generator) -> np.ndarray:
+    """Add the membrane overtones, each gliding with the body and dying sooner."""
+    for j, ratio in enumerate(MEMBRANE[1:]):
+        amp = p["modes"] * 0.75 ** j * rng.uniform(0.6, 1.0)
+        g = _glide(tl, p["body_f0"] * ratio, p["body_f1"] * ratio, p["drop_tau"], rng)
+        x = x + amp * g * np.exp(-late / (p["body_tau"] / (1.5 + 0.8 * j)))
+    return x
+
+
+def _body_drive(x: np.ndarray, drive: float) -> np.ndarray:
+    g = 1 + 6 * drive
+    pk = np.max(np.abs(x)) + 1e-12
+    x = pk * np.tanh(g * x / pk) / np.tanh(g)
+    return _filt(x, "low", min(2700.0, 900 + 2500 * (1 - drive)), 2, LO)
+
+
 def _j7_body(tl: np.ndarray, p: dict, rng: np.random.Generator) -> np.ndarray:
     a = p["body_attack"]
     late = np.maximum(tl - a, 0)
     x = _glide(tl, p["body_f0"], p["body_f1"], p["drop_tau"], rng) * np.exp(-late / p["body_tau"])
     if p["modes"] > 0.005:
-        for j, ratio in enumerate(MEMBRANE[1:]):
-            amp = p["modes"] * 0.75 ** j * rng.uniform(0.6, 1.0)
-            g = _glide(tl, p["body_f0"] * ratio, p["body_f1"] * ratio, p["drop_tau"], rng)
-            x = x + amp * g * np.exp(-late / (p["body_tau"] / (1.5 + 0.8 * j)))
+        x = _membrane(x, tl, late, p, rng)
     x = x * _rise(tl, a)
     if p["drive"] > 0.01:
-        g = 1 + 6 * p["drive"]
-        pk = np.max(np.abs(x)) + 1e-12
-        x = pk * np.tanh(g * x / pk) / np.tanh(g)
-        x = _filt(x, "low", min(2700.0, 900 + 2500 * (1 - p["drive"])), 2, LO)
+        x = _body_drive(x, p["drive"])
     return _peak1(x)
 
 
@@ -993,10 +1041,14 @@ LIMITS: dict[str, dict[str, tuple]] = {
 }
 
 
+_SEARCH = (SPACE, SEARCH_KEYS, LIMITS)
+
+
 def space_for(cat: str) -> dict[str, Any]:
     """The search space of a category: its search keys, at the limit range when one exists."""
-    limits = LIMITS.get(cat, {})
-    return {k: limits.get(k, SPACE[k]) for k in SEARCH_KEYS[cat]}
+    space, keys, limits = _SEARCH
+    narrow = limits.get(cat, {})
+    return {k: narrow.get(k, space[k]) for k in keys[cat]}
 
 
 def _member(cat: str, preset: int | str) -> tuple[str, dict]:
@@ -1033,27 +1085,40 @@ def _first(mask: np.ndarray, default: int) -> int:
     return int(idx[0]) if len(idx) else default
 
 
-def _envelope_keys(m: np.ndarray) -> dict:
-    e, edb = _frames_db(m)
-    pk = int(np.argmax(e))
-    out: dict[str, Any] = {"attack_ms": pk - _first(edb >= edb[pk] - 20, pk), "peak_ms": pk}
-    sdb = 10 * np.log10(np.convolve(e ** 2, np.ones(10) / 10, mode="same") + 1e-20)
+def _decay_keys(sdb: np.ndarray) -> dict:
+    """t20, t40 and the straight-line decay slope, from the smoothed level peak."""
     spk = int(np.argmax(sdb))
     top = sdb[spk]
     rest = sdb[spk:]
-    out["t20"] = _first(rest < top - 20, len(rest))
-    out["t40"] = _first(rest < top - 40, len(rest))
+    out: dict[str, Any] = {"t20": _first(rest < top - 20, len(rest)), "t40": _first(rest < top - 40, len(rest))}
     a = spk + _first(rest < top - 6, 0)
     b = spk + _first(rest < top - 40, len(rest))
     if b - a > 5:
         out["slope_dBs"] = round(float(np.polyfit(np.arange(a, b) / 1000, sdb[a:b], 1)[0]), 1)
     else:
         out["slope_dBs"] = float("nan")
+    return out
+
+
+def _tail_keys(sdb: np.ndarray) -> dict:
+    """len50 and the level drop over the last 40 ms and 60 ms of the active part."""
+    top = sdb[int(np.argmax(sdb))]
     act = np.nonzero(sdb > top - 50)[0]
     end = int(act[-1])
-    out["len50"] = round((end - int(act[0])) / 1000, 3)
-    out["gate_db40ms"] = round(float(sdb[end - 40] - sdb[end]), 1) if end > 40 else 0.0
-    out["pre_gate"] = round(float(sdb[end - 60] - top), 1) if end > 60 else 0.0
+    return {
+        "len50": round((end - int(act[0])) / 1000, 3),
+        "gate_db40ms": round(float(sdb[end - 40] - sdb[end]), 1) if end > 40 else 0.0,
+        "pre_gate": round(float(sdb[end - 60] - top), 1) if end > 60 else 0.0,
+    }
+
+
+def _envelope_keys(m: np.ndarray) -> dict:
+    e, edb = _frames_db(m)
+    pk = int(np.argmax(e))
+    out: dict[str, Any] = {"attack_ms": pk - _first(edb >= edb[pk] - 20, pk), "peak_ms": pk}
+    sdb = 10 * np.log10(np.convolve(e ** 2, np.ones(10) / 10, mode="same") + 1e-20)
+    out.update(_decay_keys(sdb))
+    out.update(_tail_keys(sdb))
     return out
 
 
@@ -1062,17 +1127,24 @@ def _band_db(f: np.ndarray, pxx: np.ndarray, lo: float, hi: float, total: float)
     return float(10 * np.log10(s / total)) if s > 0 else -120.0
 
 
+_OCTAVES = (31.5, 63, 125, 250, 500, 1000, 2000, 4000, 8000, 16000)
+_THIRDS = 1000 * 2 ** (np.arange(-17, 14) / 3)
+
+
+def _tilt(f: np.ndarray, pxx: np.ndarray, total: float) -> float:
+    """Slope of the third-octave balance (dB) against log2 of the centre, for 100-10000 Hz."""
+    bal = np.array([_band_db(f, pxx, c / 2 ** (1 / 6), c * 2 ** (1 / 6), total) for c in _THIRDS])
+    sel = (_THIRDS >= 100) & (_THIRDS <= 10000)
+    return round(float(np.polyfit(np.log2(_THIRDS[sel]), bal[sel], 1)[0]), 2)
+
+
 def _spectral_keys(m: np.ndarray) -> dict:
     f, pxx = signal.welch(m, SR, nperseg=min(len(m), 16384))
     total = np.sum(pxx) + 1e-30
-    centres = 1000 * 2 ** (np.arange(-17, 14) / 3)
-    bal = np.array([_band_db(f, pxx, c / 2 ** (1 / 6), c * 2 ** (1 / 6), total) for c in centres])
-    sel = (centres >= 100) & (centres <= 10000)
-    octs = (31.5, 63, 125, 250, 500, 1000, 2000, 4000, 8000, 16000)
     return {
         "sh150": round(float(np.sum(pxx[f < 150]) / total), 3),
-        "tilt": round(float(np.polyfit(np.log2(centres[sel]), bal[sel], 1)[0]), 2),
-        "oct": {int(c): round(_band_db(f, pxx, c / np.sqrt(2), c * np.sqrt(2), total), 1) for c in octs},
+        "tilt": _tilt(f, pxx, total),
+        "oct": {int(c): round(_band_db(f, pxx, c / np.sqrt(2), c * np.sqrt(2), total), 1) for c in _OCTAVES},
         "cen": int(round(np.sum(f * pxx) / total)),
     }
 
@@ -1100,12 +1172,18 @@ def measure(x: np.ndarray) -> dict:
     out: dict[str, Any] = {"dur": round(len(m) / SR, 3)}
     out.update(_envelope_keys(m))
     out.update(_spectral_keys(m))
-    left, right = x[:, 0], x[:, 1]
-    out["corr"] = round(float(np.sum(left * right) / (np.sqrt(np.sum(left ** 2) * np.sum(right ** 2)) + 1e-30)), 2)
-    side, mid = (left - right) / 2, (left + right) / 2
-    out["side_db"] = round(float(10 * np.log10((np.sum(side ** 2) + 1e-30) / (np.sum(mid ** 2) + 1e-30))), 1)
+    out.update(_image_keys(x[:, 0], x[:, 1]))
     out["ridge"] = _ridge(m)
     return out
+
+
+def _image_keys(left: np.ndarray, right: np.ndarray) -> dict:
+    """L/R correlation and the side level relative to the mid."""
+    side, mid = (left - right) / 2, (left + right) / 2
+    return {
+        "corr": round(float(np.sum(left * right) / (np.sqrt(np.sum(left ** 2) * np.sum(right ** 2)) + 1e-30)), 2),
+        "side_db": round(float(10 * np.log10((np.sum(side ** 2) + 1e-30) / (np.sum(mid ** 2) + 1e-30))), 1),
+    }
 
 
 STUDY: dict[str, dict[str, tuple[float, float]]] = {

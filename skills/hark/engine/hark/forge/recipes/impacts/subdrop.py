@@ -93,10 +93,14 @@ __all__ = [
 ]
 
 
+_SEARCH = (SPACE, FINE, LIMITS)
+
+
 def space_for(cat: str) -> dict[str, Any]:
     """The search space of a category: its fine keys, at the limit range when one exists."""
-    limits = LIMITS.get(cat, {})
-    return {k: limits.get(k, SPACE[k]) for k in FINE[cat]}
+    space, fine, limits = _SEARCH
+    narrow = limits.get(cat, {})
+    return {k: narrow.get(k, space[k]) for k in fine[cat]}
 
 
 def _member(cat: str, preset: int | str) -> tuple[str, dict]:
