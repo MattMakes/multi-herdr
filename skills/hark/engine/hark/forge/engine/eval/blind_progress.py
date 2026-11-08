@@ -47,20 +47,35 @@ def _dist(rule: str, v: float, reals: list[float]) -> float:
     return max(0.0, min(reals) - v, v - max(reals))
 
 
-def verdict(rule: str, a: Any, b: Any, reals: Sequence[Any], eps: float) -> str:
-    """Direction of change from v1 (a) to v2 (b) against the real rows."""
-    reals = [float(r) for r in reals if r is not None]
-    if a is None or b is None:
-        return ""
-    if rule == "model":
-        v = "up" if b > a + eps else "down" if b < a - eps else "same"
-        return v + (" (v1 sat above the real rows)" if reals and a > max(reals) else "")
-    if rule == "span" and not reals:
-        return ""
+def _step(a: float, b: float, eps: float, words: tuple[str, str]) -> str:
+    """words[0] when b rises past a by more than eps, words[1] when it falls by more than eps, else "same"."""
+    return words[0] if b > a + eps else words[1] if b < a - eps else "same"
+
+
+def _model_verdict(a: Any, b: Any, reals: list[float], eps: float) -> str:
+    above = " (v1 sat above the real rows)" if reals and a > max(reals) else ""
+    return _step(a, b, eps, ("up", "down")) + above
+
+
+def _dist_verdict(rule: str, a: Any, b: Any, reals: list[float], eps: float) -> str:
     da, db = _dist(rule, float(a), reals), _dist(rule, float(b), reals)
     if da == 0 and db == 0:
-        return "same (both within the real rows)"
-    return "better" if db < da - eps else "worse" if db > da + eps else "same"
+        res = "same (both within the real rows)"
+    else:
+        res = _step(da, db, eps, ("worse", "better"))
+    return res
+
+
+def verdict(rule: str, a: Any, b: Any, reals: Sequence[Any], eps: float) -> str:
+    """Direction of change from v1 (a) to v2 (b) against the real rows."""
+    vals = [float(r) for r in reals if r is not None]
+    if a is None or b is None or (rule == "span" and not vals):
+        res = ""
+    elif rule == "model":
+        res = _model_verdict(a, b, vals, eps)
+    else:
+        res = _dist_verdict(rule, a, b, vals, eps)
+    return res
 
 
 # ---------------------------------------------------------------- results
@@ -114,19 +129,28 @@ def _c(v: Any) -> str:
     return "-" if v is None else f"{v:g}" if isinstance(v, (int, float)) else str(v)
 
 
-def _stale(r2: dict, cats: Sequence[str]) -> list[str]:
+def _made_time(r2: dict) -> float | None:
     try:
-        made = time.mktime(time.strptime(r2.get("created", ""), "%Y-%m-%d %H:%M"))
+        res = time.mktime(time.strptime(r2.get("created", ""), "%Y-%m-%d %H:%M"))
     except ValueError:
-        return []
-    out = []
-    for cat in cats:
-        files = sorted(glob.glob(str(V2_ROOT / cat / "final" / f"{cat}_[0-9][0-9].wav")))
-        seen = sorted(os.path.basename(m["file"]) for m in ((r2.get("categories") or {}).get(cat) or {})
-                      .get("made") or [])
-        if [os.path.basename(f) for f in files] != seen or any(os.path.getmtime(f) > made + 60 for f in files):
-            out.append(cat)
-    return out
+        res = None
+    return res
+
+
+def _seen_names(r2: dict, cat: str) -> list[str]:
+    made = ((r2.get("categories") or {}).get(cat) or {}).get("made") or []
+    return sorted(os.path.basename(m["file"]) for m in made)
+
+
+def _cat_stale(r2: dict, cat: str, made: float) -> bool:
+    files = sorted(glob.glob(str(V2_ROOT / cat / "final" / f"{cat}_[0-9][0-9].wav")))
+    seen = _seen_names(r2, cat)
+    return [os.path.basename(f) for f in files] != seen or any(os.path.getmtime(f) > made + 60 for f in files)
+
+
+def _stale(r2: dict, cats: Sequence[str]) -> list[str]:
+    made = _made_time(r2)
+    return [] if made is None else [cat for cat in cats if _cat_stale(r2, cat, made)]
 
 
 # ---------------------------------------------------------------- listening file
@@ -189,6 +213,17 @@ def _reel(groups: list[list[dict]]) -> np.ndarray:
     return np.concatenate(parts)
 
 
+def _progress_line(s: dict) -> str:
+    near = f"  nearest {s['nearest_db']}" if "nearest_db" in s else ""
+    return (f"{s['start']:8.2f} s  {s['sound']:<12} {s['version']}  loudest {s['loud']} LUFS  tp {s['tp']} dBTP  "
+            f"{os.path.basename(s['file'])}" + near + "\n")
+
+
+def _progress_rows(flat: list[dict]) -> list[dict]:
+    keys = ("sound", "version", "file", "start", "gain_db", "loud", "tp")
+    return [{k: s[k] for k in keys if k in s} for s in flat]
+
+
 def build_progress(pdir: Any, results_path: Any = None, quiet: bool = False) -> Path:
     """Write v1_vs_v2.wav, progress.txt, progress.json and progress.md."""
     from hark.core.audio import write_wav
@@ -202,13 +237,8 @@ def build_progress(pdir: Any, results_path: Any = None, quiet: bool = False) -> 
     pdir.mkdir(parents=True, exist_ok=True)
     write_wav(str(pdir / "v1_vs_v2.wav"), reel, SR, "PCM_24")
     flat = [s for g in groups for s in g]
-    (pdir / "progress.txt").write_text("".join(
-        f"{s['start']:8.2f} s  {s['sound']:<12} {s['version']}  loudest {s['loud']} LUFS  tp {s['tp']} dBTP  "
-        f"{os.path.basename(s['file'])}" + (f"  nearest {s['nearest_db']}" if "nearest_db" in s else "") + "\n"
-        for s in flat))
-    (pdir / "progress.json").write_text(json.dumps(
-        [{k: s[k] for k in ("sound", "version", "file", "start", "gain_db", "loud", "tp") if k in s} for s in flat],
-        indent=1))
+    (pdir / "progress.txt").write_text("".join(_progress_line(s) for s in flat))
+    (pdir / "progress.json").write_text(json.dumps(_progress_rows(flat), indent=1))
     (pdir / "progress.md").write_text(_markdown(r1, r2, rpath))
     if not quiet:
         print(f"wrote {pdir}")
