@@ -8,6 +8,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::{bail, Result};
 
+use crate::runtime::Faults;
 use crate::workspace::client::WorkspaceClient;
 use crate::workspace::model::Pane;
 
@@ -240,6 +241,18 @@ pub fn send_line_when_ready(
 /// The total time `horch done` lets all its pushes take: the report and the
 /// ledger's wake lines. Claude Code kills a command after 120 s (P18).
 pub const DONE_PUSH_BUDGET: Duration = Duration::from_secs(20);
+
+/// The push budget of `horch done`: [`DONE_PUSH_BUDGET`], or the
+/// `done-push-budget-ms:<n>` fault point (1 to 30000 ms). A test sets the
+/// fault point so it does not wait the full 20 s.
+pub fn done_push_budget(faults: &Faults) -> Duration {
+    faults
+        .indexed("done-push-budget-ms")
+        .and_then(|ms| ms.parse::<u64>().ok())
+        .map_or(DONE_PUSH_BUDGET, |ms| {
+            Duration::from_millis(ms.clamp(1, 30_000))
+        })
+}
 
 thread_local! {
     static PUSH_DEADLINE: std::cell::Cell<Option<Instant>> = const { std::cell::Cell::new(None) };

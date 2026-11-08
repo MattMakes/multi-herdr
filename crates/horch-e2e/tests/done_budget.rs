@@ -21,9 +21,15 @@ const ORCHESTRATOR: &str = "w1:p1";
 const WORKER: &str = "w2:p1";
 const ROLE: &str = "opus-1";
 const RECORD: &str = "r-done";
-/// The acceptance limit; Claude Code kills a command at 120 s.
-const LIMIT: Duration = Duration::from_secs(30);
 const CLOSING: &str = "closing: reporting to the orchestrator";
+/// The push budget the timed tests set through `done-push-budget-ms`, in
+/// place of the real 20 s.
+const BUDGET: Duration = Duration::from_secs(2);
+/// A command that spent the budget and stopped at its end takes less than
+/// this. It is inside the 30 s acceptance limit (Claude Code kills a
+/// command at 120 s). The real 20 s budget takes longer, so this bound
+/// fails if the fault point is ignored.
+const BOUNDED: Duration = Duration::from_secs(10);
 
 fn text(o: &Output) -> String {
     format!(
@@ -100,6 +106,25 @@ fn as_worker(h: &Harness, args: &[&str]) -> Command {
     cmd
 }
 
+/// Give `h` the short push budget.
+fn short_budget(h: &mut Harness) {
+    h.set(
+        "HORCH_FAULT",
+        format!("done-push-budget-ms:{}", BUDGET.as_millis()),
+    );
+}
+
+/// `took` spent the push budget, waiting for the stuck orchestrator, and
+/// the budget then ended the wait.
+fn assert_bounded(what: &str, took: Duration, o: &Output) {
+    assert!(
+        took >= BUDGET,
+        "{what} took {took:?}, less than the {BUDGET:?} budget: {}",
+        text(o)
+    );
+    assert!(took < BOUNDED, "{what} took {took:?}: {}", text(o));
+}
+
 fn record(h: &Harness) -> Value {
     SessionLedger::for_project(&h.state, &h.project.to_string_lossy())
         .get(RECORD)
@@ -141,14 +166,15 @@ fn worker_pane_closed(h: &Harness) -> bool {
 /// is the closing line, the report is pending mail and the record is done.
 #[test]
 fn done_finishes_in_time_against_a_stuck_orchestrator() {
-    let h = world("done-stuck");
+    let mut h = world("done-stuck");
+    short_budget(&mut h);
     let started = Instant::now();
     let o = as_worker(&h, &["done", "finished the work"])
         .output()
         .unwrap();
     let took = started.elapsed();
     assert!(o.status.success(), "{}", text(&o));
-    assert!(took < LIMIT, "done took {took:?}: {}", text(&o));
+    assert_bounded("done", took, &o);
     assert_eq!(
         String::from_utf8_lossy(&o.stderr).lines().next(),
         Some(CLOSING),
@@ -226,15 +252,16 @@ fn finished_task(h: &Harness) -> String {
 /// and the report are both pending mail, in under 30 s in total.
 #[test]
 fn ledger_done_finishes_in_time_against_a_stuck_orchestrator() {
-    let h = world("ldone-stuck");
+    let mut h = world("ldone-stuck");
     let worker = finished_task(&h);
+    short_budget(&mut h);
 
     let started = Instant::now();
     let mut done = as_worker(&h, &["ledger", "done", "finished the task"]);
     let o = done.env("HORCH_WORKER_ID", &worker).output().unwrap();
     let took = started.elapsed();
     assert!(o.status.success(), "{}", text(&o));
-    assert!(took < LIMIT, "ledger done took {took:?}: {}", text(&o));
+    assert_bounded("ledger done", took, &o);
     assert_eq!(
         String::from_utf8_lossy(&o.stderr).lines().next(),
         Some(CLOSING),
@@ -367,6 +394,7 @@ fn done_retried_after_a_kill_during_the_push_records_one_done() {
 fn done_returns_in_time_when_herdr_hangs_on_pane_get() {
     let mut h = world("done-hung-get");
     h.unset("HORCH_WORKSPACE_ID");
+    short_budget(&mut h);
     let fake = std::fs::canonicalize(h.bin.join("herdr")).unwrap();
     let flag = h.root.join("hang-pane-get");
     std::fs::write(&flag, "").unwrap();
@@ -382,5 +410,5 @@ fn done_returns_in_time_when_herdr_hangs_on_pane_get() {
         .unwrap();
     let took = started.elapsed();
     std::fs::remove_file(&flag).unwrap();
-    assert!(took < LIMIT, "done took {took:?}: {}", text(&o));
+    assert_bounded("done", took, &o);
 }

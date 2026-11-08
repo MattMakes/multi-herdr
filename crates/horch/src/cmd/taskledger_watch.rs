@@ -151,7 +151,7 @@ fn pass(
     // pane that is not ready holds the pass no longer, and the courier
     // delivers the queued wakes.
     let _budget = horch_core::messaging::delivery::start_push_budget(
-        horch_core::messaging::delivery::DONE_PUSH_BUDGET,
+        horch_core::messaging::delivery::done_push_budget(&ctx.settings.faults),
     );
     for c in &checked {
         act_on(ctx, store, run, c);
