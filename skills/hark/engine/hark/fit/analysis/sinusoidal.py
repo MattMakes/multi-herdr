@@ -146,11 +146,18 @@ def _time_strike(pe: np.ndarray, k: int, value: float | None, sr: int) -> dict |
     base = max(float(pe[imin]), peak - 70)
     if value is not None and peak - base < 3:
         return None
+    out = _strike_rise(pe, imin, ip, base, sr)
+    out["strength"] = float(value if value is not None else peak - base)
+    return out
+
+
+def _strike_rise(pe: np.ndarray, imin: int, ip: int, base: float, sr: int) -> dict:
+    """Start time and rise time of the strike that peaks at ip."""
+    peak = pe[ip]
     lev = max(base + 0.25 * (peak - base), peak - 30)
     start = imin + int(np.argmax(pe[imin:ip + 1] >= lev))
     rend = start + int(np.argmax(pe[start:ip + 1] >= peak - 1))
-    return {"t": start / sr, "rise": max(0.0003, (rend - start) / sr),
-            "strength": float(value if value is not None else peak - base)}
+    return {"t": start / sr, "rise": max(0.0003, (rend - start) / sr)}
 
 
 def _merge_strikes(found: list[dict]) -> list[dict]:
@@ -183,21 +190,25 @@ def _stft_frames(x: np.ndarray, W: int) -> dict:
 def _frame_peaks(mag_db: np.ndarray, phase: np.ndarray, gref: float, fr: dict, opts: dict,
                  sr: int) -> np.ndarray:
     """Peaks of one frame: rows (freq, amp, phase, dB, contrast)."""
-    N = fr["N"]
-    pw = 10 ** (mag_db / 10)
+    b = _peak_bins(mag_db, gref, fr["N"], opts, sr)
+    if len(b) == 0:
+        return np.zeros((0, 5))
+    return _interp_peaks(b, mag_db, phase, _block_floor(mag_db), fr, sr)
+
+
+def _peak_bins(d: np.ndarray, gref: float, N: int, opts: dict, sr: int) -> np.ndarray:
+    """Bins of the strongest prominent local maxima."""
+    pw = 10 ** (d / 10)
     local = 10 * np.log10(np.maximum(uniform_filter1d(pw, 33, mode="nearest"), 1e-30))
-    d = mag_db
     pk = np.zeros(len(d), bool)
     pk[1:-1] = (d[1:-1] > d[:-2]) & (d[1:-1] >= d[2:])
     pk &= (d > gref - opts["dyn_db"]) & (d > d.max() - opts["dyn_db"]) & (d > local + opts["prom_db"])
     pk[:int(np.ceil(30 * N / sr))] = False
     pk[-2:] = False
     b = np.nonzero(pk)[0]
-    if len(b) == 0:
-        return np.zeros((0, 5))
     if len(b) > opts["max_peaks"]:
         b = np.sort(b[np.argsort(d[b])[-opts["max_peaks"]:]])
-    return _interp_peaks(b, d, phase, _block_floor(d), fr, sr)
+    return b
 
 
 def _block_floor(d: np.ndarray) -> np.ndarray:
@@ -242,22 +253,30 @@ def _track(peaks: list[np.ndarray], W: int, sr: int) -> list[dict]:
 def _assign(active: list[dict], P: np.ndarray, k: int, min_tol: float) -> set:
     if not active or not len(P):
         return set()
+    return _greedy_match(active, P, k, _match_cost(active, P, k, min_tol))
+
+
+def _match_cost(active: list[dict], P: np.ndarray, k: int, min_tol: float) -> np.ndarray:
+    """Track-to-peak cost: frequency error over tolerance plus a small level term. inf past tolerance."""
     pred = np.array([tr["rows"][-1][0] + tr["slope"] * (k - tr["k"][-1]) for tr in active])
     last_db = np.array([tr["rows"][-1][3] for tr in active])
     tol = np.maximum(min_tol, 0.025 * pred)
     df = np.abs(P[None, :, 0] - pred[:, None])
     cost = df / tol[:, None] + 0.01 * np.abs(P[None, :, 3] - last_db[:, None])
     cost[df > tol[:, None]] = np.inf
+    return cost
+
+
+def _greedy_match(active: list[dict], P: np.ndarray, k: int, cost: np.ndarray) -> set:
     used_t, used_p = set(), set()
     for flat in np.argsort(cost, axis=None):
         i, j = divmod(int(flat), len(P))
         if not np.isfinite(cost[i, j]):
             break
-        if i in used_t or j in used_p:
-            continue
-        used_t.add(i)
-        used_p.add(j)
-        _extend(active[i], P[j], k)
+        if i not in used_t and j not in used_p:
+            used_t.add(i)
+            used_p.add(j)
+            _extend(active[i], P[j], k)
     return used_p
 
 
@@ -305,18 +324,21 @@ def _filter_tracks(tracks: list[dict], fr: dict, opts: dict, sr: int, room: int,
     hop, W = fr["hop"], fr["W"]
     min_len = max(3, math.ceil(max(opts["min_ms"] / 1000, 1.25 * W / sr) * sr / hop))
     tracks = [t for t in tracks if len(t["k"]) >= min_len]
-    if not tracks:
-        return []
-    peaks = np.array([20 * np.log10(max(t["a"].max(), 1e-30)) for t in tracks])
-    top = peaks.max() if ref_peak is None else ref_peak
-    keep = []
-    for t, p in zip(tracks, peaks):
-        e = t["a"] ** 2
-        contrast = float(np.sum(e * t["c"]) / max(np.sum(e), 1e-30))
-        if p > top - opts["keep_db"] and contrast >= opts["snr_db"]:
-            keep.append(t)
+    keep = _loud_clear(tracks, opts, ref_peak) if tracks else []
     keep.sort(key=lambda t: -float(np.sum(t["a"] ** 2)))
     return keep[:room]
+
+
+def _loud_clear(tracks: list[dict], opts: dict, ref_peak: float | None) -> list[dict]:
+    """Tracks within keep_db of the top peak and with enough contrast over the floor."""
+    peaks = np.array([20 * np.log10(max(t["a"].max(), 1e-30)) for t in tracks])
+    top = peaks.max() if ref_peak is None else ref_peak
+    return [t for t, p in zip(tracks, peaks) if p > top - opts["keep_db"] and _contrast(t) >= opts["snr_db"]]
+
+
+def _contrast(t: dict) -> float:
+    e = t["a"] ** 2
+    return float(np.sum(e * t["c"]) / max(np.sum(e), 1e-30))
 
 
 # ================================================================ onset fixes
@@ -347,22 +369,29 @@ def _split_tracks(tracks, strikes, hop, half, sr):
     for t in tracks:
         parts = [t]
         for s in strikes:
-            cur = parts[-1]
-            tt = _times(cur, hop, sr)
-            ts = s["t"]
-            if not (tt[0] < ts - 0.5 * half and tt[-1] > ts + 0.55 * half):
-                continue
-            after = (tt >= ts + 0.55 * half) & (tt < ts + 0.55 * half + 2 * half)
-            before = (tt >= ts - 2 * half) & (tt < ts - 0.5 * half)
-            if not after.any() or not before.any():
-                continue
-            if db(cur["a"][after].max() ** 2) - db(cur["a"][before].max() ** 2) <= 10:
-                continue
-            cut = tt < ts
-            head, tail = _slice(cur, cut), _slice(cur, ~cut)
-            parts = parts[:-1] + ([head] if len(head["k"]) >= 3 else []) + [tail]
+            cut = _split_at(parts[-1], s["t"], hop, half, sr)
+            if cut is not None:
+                parts = parts[:-1] + cut
         out.extend(parts)
     return out
+
+
+def _split_at(cur: dict, ts: float, hop: int, half: float, sr: int) -> list | None:
+    """[head, tail] (head only when 3+ frames) when cur jumps over 10 dB at strike ts, else None."""
+    tt = _times(cur, hop, sr)
+    if not _jumps(cur, tt, ts, half):
+        return None
+    cut = tt < ts
+    head, tail = _slice(cur, cut), _slice(cur, ~cut)
+    return ([head] if len(head["k"]) >= 3 else []) + [tail]
+
+
+def _jumps(cur: dict, tt: np.ndarray, ts: float, half: float) -> bool:
+    span = tt[0] < ts - 0.5 * half and tt[-1] > ts + 0.55 * half
+    after = (tt >= ts + 0.55 * half) & (tt < ts + 0.55 * half + 2 * half)
+    before = (tt >= ts - 2 * half) & (tt < ts - 0.5 * half)
+    ok = span and after.any() and before.any()
+    return bool(ok and db(cur["a"][after].max() ** 2) - db(cur["a"][before].max() ** 2) > 10)
 
 
 def _pre_echo(t, strikes, hop, half, sr) -> bool:
@@ -380,11 +409,24 @@ def _pre_echo(t, strikes, hop, half, sr) -> bool:
 def _fix_head(t, strikes, hop, half, sr) -> None:
     tt = _times(t, hop, sr)
     born = [s for s in strikes if s["t"] - 0.25 * half <= tt[0] <= s["t"] + 1.05 * half]
-    if not born:
-        return
-    s = max(born, key=lambda s: s["strength"])
+    if born:
+        _rebuild_head(t, tt, max(born, key=lambda s: s["strength"]), hop, half, sr)
+
+
+def _rebuild_head(t: dict, tt: np.ndarray, s: dict, hop: int, half: float, sr: int) -> None:
+    """Start the track at strike s, with its smeared head replaced by the clean decay line."""
     ts = s["t"]
     ad = 20 * np.log10(np.maximum(t["a"], 1e-30))
+    a0 = _unsmear(ad, tt, ts, hop, half, sr)
+    t["a"] = 10 ** (ad / 20)
+    after = _after(tt, ts)
+    for key in ("k", "f", "a", "c", "ph"):
+        t[key] = t[key][after]
+    t["t0"], t["rise"], t["a0"] = ts, s["rise"], 10 ** (a0 / 20)
+
+
+def _unsmear(ad: np.ndarray, tt: np.ndarray, ts: float, hop: int, half: float, sr: int) -> float:
+    """Rewrite the head of ad (dB, in place) from the clean frames. Returns the onset level (dB)."""
     mx = ad.max()
     clean0 = ts + 0.55 * half
     sel = (tt >= clean0) & (tt <= clean0 + max(4 * hop / sr, half))
@@ -399,14 +441,15 @@ def _fix_head(t, strikes, hop, half, sr) -> None:
     else:
         a0 = float(mx)
         ad[:] = mx
-    t["a"] = 10 ** (ad / 20)
+    return a0
+
+
+def _after(tt: np.ndarray, ts: float) -> np.ndarray:
     after = tt > ts
     if not after.any():
         after = np.zeros(len(tt), bool)
         after[-1] = True
-    for key in ("k", "f", "a", "c", "ph"):
-        t[key] = t[key][after]
-    t["t0"], t["rise"], t["a0"] = ts, s["rise"], 10 ** (a0 / 20)
+    return after
 
 
 # ================================================================ phase-exact synthesis
@@ -467,23 +510,24 @@ def _put(y, start, seg):
 # ================================================================ atoms
 
 def _pencil(seg: np.ndarray, max_atoms: int, max_t60: float, ridge: float, sr: float) -> list:
-    L = len(seg)
-    if L < 16 or not np.any(seg):
-        return []
-    P = L // 3
+    z = _pencil_poles(seg, max_atoms) if len(seg) >= 16 and np.any(seg) else None
+    return [] if z is None else _atom_ls(seg, _pole_limits(z, max_t60, sr), ridge, sr)[:max_atoms]
+
+
+def _pencil_poles(seg: np.ndarray, max_atoms: int):
+    """Matrix-pencil poles of seg, or None when the SVD fails or no order is left."""
+    P = len(seg) // 3
     H = np.lib.stride_tricks.sliding_window_view(seg, P + 1)
     try:
         _, s, vh = np.linalg.svd(H, full_matrices=False)
     except np.linalg.LinAlgError:
-        return []
+        return None
     e = np.cumsum(s ** 2) / np.sum(s ** 2)
     order = min(int(np.searchsorted(e, 0.998)) + 2, 2 * max_atoms, len(s) - 1)
     if order < 1:
-        return []
+        return None
     V = vh[:order].T
-    z = np.linalg.eigvals(np.linalg.pinv(V[:-1]) @ V[1:])
-    z = _pole_limits(z, max_t60, sr)
-    return _atom_ls(seg, z, ridge, sr)[:max_atoms]
+    return np.linalg.eigvals(np.linalg.pinv(V[:-1]) @ V[1:])
 
 
 def _pole_limits(z, max_t60, sr):
@@ -494,7 +538,10 @@ def _pole_limits(z, max_t60, sr):
     else:
         big = np.abs(z) > rmax
         z = np.where(big, z / np.maximum(np.abs(z), 1e-30) * rmax, z)
-    z = z[np.abs(z) >= 0.001]
+    return _distinct_poles(z[np.abs(z) >= 0.001])
+
+
+def _distinct_poles(z) -> np.ndarray:
     out = []
     for p in z:
         if not any(abs(np.angle(p) - np.angle(q)) < 1e-4 and abs(abs(p) - abs(q)) < 1e-3 for q in out):
@@ -505,7 +552,15 @@ def _pole_limits(z, max_t60, sr):
 def _atom_ls(seg, z, ridge, sr):
     if not len(z):
         return []
-    k = np.arange(len(seg))
+    B, owner = _damped_basis(z, len(seg))
+    lam = ridge * np.trace(B.T @ B) / B.shape[1]
+    coef = np.linalg.solve(B.T @ B + lam * np.eye(B.shape[1]), B.T @ seg)
+    return _atoms_of(z, owner, coef, sr)
+
+
+def _damped_basis(z, L: int):
+    """Cosine (and sine, when not at 0 Hz) columns per pole, with (pole, part) owners."""
+    k = np.arange(L)
     cols, owner = [], []
     for i, p in enumerate(z):
         r, w = abs(p), np.angle(p)
@@ -514,9 +569,11 @@ def _atom_ls(seg, z, ridge, sr):
         if w > 1e-9:
             cols.append(r ** k * np.sin(w * k))
             owner.append((i, 1))
-    B = np.array(cols).T
-    lam = ridge * np.trace(B.T @ B) / B.shape[1]
-    coef = np.linalg.solve(B.T @ B + lam * np.eye(B.shape[1]), B.T @ seg)
+    return np.array(cols).T, owner
+
+
+def _atoms_of(z, owner, coef, sr) -> list:
+    """Atoms [Hz, tau s, amp, phase], strongest first."""
     cs = np.zeros((len(z), 2))
     for (i, j), v in zip(owner, coef):
         cs[i, j] = v
@@ -533,34 +590,40 @@ def _strike_atoms(res: np.ndarray, strikes: list[dict], sr: int) -> list[dict]:
     sos = butter(4, 400, "low", fs=sr, output="sos")
     lo = sosfiltfilt(sos, res)
     hi = res - lo
-    top = max(float(np.max(np.abs(res))), 1e-30) if len(res) else 1e-30
-    sig_peak = top
+    sig_peak = max(float(np.max(np.abs(res))), 1e-30) if len(res) else 1e-30
     out = []
     for s in sorted(strikes, key=lambda s: -s["strength"])[:16]:
-        a0 = max(0, int(round((s["t"] - 0.0005) * sr)))
-        atoms = _band_atoms(hi, a0, int(0.008 * sr), 1, 24, 0.02, 1e-4, (240, sr), sig_peak, sr)
-        atoms += _band_atoms(lo, a0, int(0.064 * sr), 8, 6, 0.096, 1e-3, (40, 600), sig_peak, sr)
-        if atoms:
-            out.append({"t": round(a0 / sr, 6),
-                        "atoms": [[round(f, 2), round(t, 7), round(a, 7), round(p, 4)]
-                                  for f, t, a, p in atoms]})
+        e = _one_strike(hi, lo, s, sig_peak, sr)
+        if e is not None:
+            out.append(e)
     return sorted(out, key=lambda e: e["t"])
+
+
+def _one_strike(hi, lo, s, sig_peak, sr) -> dict | None:
+    a0 = max(0, int(round((s["t"] - 0.0005) * sr)))
+    atoms = (_band_atoms(hi, a0, int(0.008 * sr), 1, 24, 0.02, 1e-4, (240, sr), sig_peak, sr)
+             + _band_atoms(lo, a0, int(0.064 * sr), 8, 6, 0.096, 1e-3, (40, 600), sig_peak, sr))
+    if not atoms:
+        return None
+    return {"t": round(a0 / sr, 6), "atoms": [[round(f, 2), round(t, 7), round(a, 7), round(p, 4)]
+                                              for f, t, a, p in atoms]}
 
 
 def _band_atoms(band, a0, length, dec, max_atoms, t60, ridge, frange, sig_peak, sr):
     seg = band[a0:a0 + length]
-    if len(seg) < 32 or np.max(np.abs(seg)) < sig_peak * 10 ** (-40 / 20):
-        return []
-    atoms = _pencil(seg[::dec], max_atoms, t60, ridge, sr / dec)
-    atoms = [a for a in atoms if frange[0] <= a[0] <= frange[1]]
-    if not atoms:
-        return []
+    loud = len(seg) >= 32 and np.max(np.abs(seg)) >= sig_peak * 10 ** (-40 / 20)
+    atoms = []
+    if loud:
+        atoms = [a for a in _pencil(seg[::dec], max_atoms, t60, ridge, sr / dec) if frange[0] <= a[0] <= frange[1]]
+    return atoms if atoms and _atoms_help(band, a0, length, atoms, sr) else []
+
+
+def _atoms_help(band, a0, length, atoms, sr) -> bool:
+    """True when the atoms remove over 30 % of the band energy after a0."""
     span = min(len(band) - a0, 2 * length + int(0.02 * sr))
     ref = band[a0:a0 + span]
     syn = synth_atoms([{"t": 0.0, "atoms": atoms}], span, sr)
-    if np.sum((ref - syn) ** 2) >= 0.7 * np.sum(ref ** 2):
-        return []
-    return atoms
+    return bool(np.sum((ref - syn) ** 2) < 0.7 * np.sum(ref ** 2))
 
 
 # ================================================================ residual model
@@ -584,23 +647,31 @@ def _bias(bands: tuple) -> np.ndarray:
 def _noise_share(res: np.ndarray, bands, times: np.ndarray, strikes, sr: int) -> np.ndarray:
     _, _, Z = stft(res, nperseg=2048, noverlap=2048 - 240, boundary="zeros")
     P = np.abs(Z) ** 2
-    Pw = P / np.maximum(median_filter(P, size=(31, 1), mode="nearest"), 1e-30)
-    f = np.fft.rfftfreq(2048, 1 / sr)
-    lb = np.log2(np.asarray(bands))
-    edges = np.concatenate([[-np.inf], (lb[:-1] + lb[1:]) / 2, [np.inf]])
-    lf = np.log2(np.maximum(f, 1e-9))
-    share = np.zeros((len(bands), P.shape[1]))
-    for b in range(len(bands)):
-        sel = (lf >= edges[b]) & (lf < edges[b + 1])
-        if sel.sum() >= 5:
-            q = np.median(Pw[sel], axis=0) / np.log(2) / np.maximum(Pw[sel].mean(axis=0), 1e-30)
-            share[b] = 10 * np.log10(np.clip(q, 1e-4, 1))
-    share = median_filter(share, size=(1, 5), mode="nearest")
+    share = median_filter(_band_flatness(P, bands, sr), size=(1, 5), mode="nearest")
     ft = np.arange(P.shape[1]) * 240 / sr
     out = np.array([np.interp(times, ft, s) for s in share])
     for s in strikes:
         out[:, (times >= s["t"] - 0.002) & (times <= s["t"] + 0.03)] = 0.0
     return out
+
+
+def _band_flatness(P: np.ndarray, bands, sr: int) -> np.ndarray:
+    """Noise share (dB) per band and frame from the median-to-mean ratio of whitened power."""
+    Pw = P / np.maximum(median_filter(P, size=(31, 1), mode="nearest"), 1e-30)
+    share = np.zeros((len(bands), P.shape[1]))
+    for b, sel in enumerate(_band_bins(bands, sr)):
+        if sel.sum() >= 5:
+            q = np.median(Pw[sel], axis=0) / np.log(2) / np.maximum(Pw[sel].mean(axis=0), 1e-30)
+            share[b] = 10 * np.log10(np.clip(q, 1e-4, 1))
+    return share
+
+
+def _band_bins(bands, sr: int) -> list[np.ndarray]:
+    """Bin masks of a 2048-point spectrum, split halfway between band centres in log frequency."""
+    lf = np.log2(np.maximum(np.fft.rfftfreq(2048, 1 / sr), 1e-9))
+    lb = np.log2(np.asarray(bands))
+    edges = np.concatenate([[-np.inf], (lb[:-1] + lb[1:]) / 2, [np.inf]])
+    return [(lf >= edges[b]) & (lf < edges[b + 1]) for b in range(len(bands))]
 
 
 def _residual_model(res: np.ndarray, strikes, peak_db: float, opts: dict, sr: int) -> dict:
@@ -610,10 +681,7 @@ def _residual_model(res: np.ndarray, strikes, peak_db: float, opts: dict, sr: in
     floor = peak_db - opts["res_range_db"]
     env = np.maximum(env, floor)
     live = env.max(axis=1) > floor + 1
-    if live.any() and len(times) > 2:
-        keep = rdp_rows(times, env[live], 2.0, 96)
-    else:
-        keep = [0, len(times) - 1] if len(times) > 1 else [0]
+    keep = _res_keys(times, env, live)
     lev = np.round(env[:, keep], 1)
     lev[np.abs(lev - floor) <= 0.05] = -150.0
     lev[~live] = -150.0
@@ -621,18 +689,29 @@ def _residual_model(res: np.ndarray, strikes, peak_db: float, opts: dict, sr: in
             "db": lev.tolist(), "hf": hf_rolloff(res, sr)}
 
 
+def _res_keys(times: np.ndarray, env: np.ndarray, live: np.ndarray) -> list[int]:
+    if live.any() and len(times) > 2:
+        return rdp_rows(times, env[live], 2.0, 96)
+    return [0, len(times) - 1] if len(times) > 1 else [0]
+
+
 def hf_rolloff(x: np.ndarray, sr: int = 48000, points=HF_POINTS) -> list:
     """Roll-off of x above 16 kHz: [[Hz, dB re 16 kHz], ...], monotone falling."""
     x = np.asarray(x, dtype=float)
     seg = min(4096, 2 ** int(np.floor(np.log2(max(len(x), 256)))))
     f, p = welch(np.pad(x, (0, max(0, seg - len(x)))), fs=sr, nperseg=seg)
+    vals = _point_levels(f, p, points, sr)
+    rel = np.minimum.accumulate(np.minimum(np.asarray(vals) - vals[0], 0.0))
+    rel = np.maximum(rel, -80.0)
+    return [[float(c), round(float(v), 1)] for c, v in zip(points, rel)]
+
+
+def _point_levels(f: np.ndarray, p: np.ndarray, points, sr: int) -> list[float]:
     vals = []
     for c in points:
         sel = (f >= c * 2 ** (-1 / 12)) & (f <= min(c * 2 ** (1 / 12), sr / 2))
         vals.append(10 * np.log10(max(p[sel].mean(), 1e-300)) if sel.any() else -300.0)
-    rel = np.minimum.accumulate(np.minimum(np.asarray(vals) - vals[0], 0.0))
-    rel = np.maximum(rel, -80.0)
-    return [[float(c), round(float(v), 1)] for c, v in zip(points, rel)]
+    return vals
 
 
 # ================================================================ breakpoints
@@ -641,24 +720,33 @@ def _breakpoints(t: dict, hop: int, sr: int, opts: dict) -> dict:
     tt = t["k"] * hop / sr
     ad = 20 * np.log10(np.maximum(t["a"], 1e-30))
     f = t["f"] if len(t["f"]) < 5 else median_filter(t["f"], 5, mode="nearest")
-    if t.get("t0") is not None:
-        t0, rise = t["t0"], max(t["rise"], 0.0002)
-        a0 = 20 * np.log10(max(t["a0"], 1e-30))
-        ph = t["ph"][0] - 2 * np.pi * f[0] * (tt[0] - t0)
-    else:
-        t0, rise, a0 = tt[0] - hop / sr, max(hop / sr, 0.0002), ad[0]
-        ph = t["ph"][0] - 2 * np.pi * f[0] * hop / sr
-    at = np.concatenate([[t0], tt])
-    av = np.concatenate([[a0], ad])
-    fv = np.concatenate([[f[0]], f])
+    t0, rise, a0, ph = _start_point(t, tt, ad, f, hop, sr)
+    at, av, fv = np.concatenate([[t0], tt]), np.concatenate([[a0], ad]), np.concatenate([[f[0]], f])
+    return _breakpoint_dict(t0, rise, tt[-1], hop / sr, ph, (at, av, fv), opts)
+
+
+def _breakpoint_dict(t0, rise, t1, rel, ph, knots, opts) -> dict:
+    at, av, fv = knots
     ia = rdp(at, av, opts["amp_tol_db"], 64)
-    cents = 1200 * np.log2(np.maximum(fv, 1))
-    ftol = opts["freq_tol_cents"] * 2 ** np.clip((av.max() - av) / 20, 0, 4)
-    iff = rdp(at, cents, ftol, 48)
-    return {"t0": round(float(t0), 5), "rise": round(float(rise), 5), "t1": round(float(tt[-1]), 5),
-            "rel": round(hop / sr, 5), "ph": round(float(np.angle(np.exp(1j * ph))), 3),
+    iff = _freq_keys(at, av, fv, opts)
+    return {"t0": round(float(t0), 5), "rise": round(float(rise), 5), "t1": round(float(t1), 5),
+            "rel": round(rel, 5), "ph": round(float(np.angle(np.exp(1j * ph))), 3),
             "freq": [[round(float(at[i]), 5), round(float(fv[i]), 2)] for i in iff],
             "amp": [[round(float(at[i]), 5), round(float(av[i]), 1)] for i in ia]}
+
+
+def _start_point(t: dict, tt, ad, f, hop: int, sr: int):
+    """(t0, rise, level dB, phase) at the start: the fixed strike onset, or one hop before the track."""
+    if t.get("t0") is not None:
+        t0, rise = t["t0"], max(t["rise"], 0.0002)
+        return t0, rise, 20 * np.log10(max(t["a0"], 1e-30)), t["ph"][0] - 2 * np.pi * f[0] * (tt[0] - t0)
+    return tt[0] - hop / sr, max(hop / sr, 0.0002), ad[0], t["ph"][0] - 2 * np.pi * f[0] * hop / sr
+
+
+def _freq_keys(at, av, fv, opts) -> list[int]:
+    cents = 1200 * np.log2(np.maximum(fv, 1))
+    ftol = opts["freq_tol_cents"] * 2 ** np.clip((av.max() - av) / 20, 0, 4)
+    return rdp(at, cents, ftol, 48)
 
 
 def _peak_of(p: dict) -> float:
@@ -695,25 +783,32 @@ def analyze(x: np.ndarray, sr: int, W: int, onsets: list[dict], width: float, op
     x = np.asarray(x, dtype=float)
     n = len(x)
     tracks, fr = _tracks_of(x, W, onsets, opts, sr, opts["max_partials"])
-    hop = fr["hop"]
-    det = _synth_exact(tracks, n, hop, sr)
+    det = _synth_exact(tracks, n, fr["hop"], sr)
     if opts["passes"] >= 2 and opts["max_partials"] - len(tracks) > 0:
         tracks, det = _second_pass(x, det, tracks, W, onsets, opts, sr, fr)
     res = x - det
     trans = _strike_atoms(res, onsets, sr) if opts["transients"] and onsets else []
     atoms = synth_atoms(trans, n, sr)
+    model = _sines_model(x, sr, onsets, width, tracks, fr["hop"], trans, res - atoms, opts)
+    model["analysis"] = _analysis_info(x, det, res - atoms, W, fr["hop"])
+    return {"model": model, "det": det, "res": res, "atoms": atoms, "tracks": tracks}
+
+
+def _analysis_info(x, det, rest, W: int, hop: int) -> dict:
+    ex = max(float(np.sum(x ** 2)), 1e-30)
+    return {"window": W, "hop": hop, "sines_share_db": round(float(db(np.sum(det ** 2) / ex)), 2),
+            "residual_db": round(float(db(np.sum(rest ** 2) / ex)), 2)}
+
+
+def _sines_model(x, sr, onsets, width, tracks, hop, trans, rest, opts) -> dict:
+    n = len(x)
     peak_db = float(20 * np.log10(max(np.max(np.abs(x)), 1e-30))) if n else -300.0
     partials = sorted((_breakpoints(t, hop, sr, opts) for t in tracks), key=lambda p: -_peak_of(p))
-    model = {"kind": KIND, "version": VERSION, "sr": SR, "duration": round(n / sr, 5),
-             "onset": round(onsets[0]["t"], 5) if onsets else 0.0,
-             "onsets": [round(s["t"], 5) for s in onsets], "peak_db": round(peak_db, 2),
-             "width": round(float(width), 1), "partials": partials, "transients": trans,
-             "residual": _residual_model(res - atoms, onsets, peak_db, opts, sr), "coherent": True}
-    ex = max(float(np.sum(x ** 2)), 1e-30)
-    model["analysis"] = {"window": W, "hop": hop,
-                         "sines_share_db": round(float(db(np.sum(det ** 2) / ex)), 2),
-                         "residual_db": round(float(db(np.sum((res - atoms) ** 2) / ex)), 2)}
-    return {"model": model, "det": det, "res": res, "atoms": atoms, "tracks": tracks}
+    return {"kind": KIND, "version": VERSION, "sr": SR, "duration": round(n / sr, 5),
+            "onset": round(onsets[0]["t"], 5) if onsets else 0.0,
+            "onsets": [round(s["t"], 5) for s in onsets], "peak_db": round(peak_db, 2),
+            "width": round(float(width), 1), "partials": partials, "transients": trans,
+            "residual": _residual_model(rest, onsets, peak_db, opts, sr), "coherent": True}
 
 
 def _second_pass(x, det, tracks, W, strikes, opts, sr, fr):
@@ -734,17 +829,18 @@ def _second_pass(x, det, tracks, W, strikes, opts, sr, fr):
 def _lsd(a: np.ndarray, b: np.ndarray) -> float:
     n = max(len(a), len(b))
     a, b = np.pad(a, (0, n - len(a))), np.pad(b, (0, n - len(b)))
-    out = []
-    for size in (256, 1024, 4096):
-        if n < size:
-            continue
-        A = 20 * np.log10(np.maximum(np.abs(stft(a, nperseg=size, noverlap=size - size // 4)[2]), 1e-12))
-        B = 20 * np.log10(np.maximum(np.abs(stft(b, nperseg=size, noverlap=size - size // 4)[2]), 1e-12))
-        fl = max(A.max(), B.max()) - 60
-        act = (A > fl) | (B > fl)
-        if act.any():
-            out.append(float(np.mean(np.minimum(np.abs(np.maximum(A, fl) - np.maximum(B, fl)), 40)[act])))
+    out = [v for v in (_lsd_at(a, b, size) for size in (256, 1024, 4096) if n >= size) if v is not None]
     return float(np.mean(out)) if out else 0.0
+
+
+def _lsd_at(a: np.ndarray, b: np.ndarray, size: int) -> float | None:
+    A = 20 * np.log10(np.maximum(np.abs(stft(a, nperseg=size, noverlap=size - size // 4)[2]), 1e-12))
+    B = 20 * np.log10(np.maximum(np.abs(stft(b, nperseg=size, noverlap=size - size // 4)[2]), 1e-12))
+    fl = max(A.max(), B.max()) - 60
+    act = (A > fl) | (B > fl)
+    if not act.any():
+        return None
+    return float(np.mean(np.minimum(np.abs(np.maximum(A, fl) - np.maximum(B, fl)), 40)[act]))
 
 
 def fit(x: Any, sr: int = 48000, windows=WINDOWS, max_partials: int = 160, dyn_db: float = 80,
@@ -755,32 +851,41 @@ def fit(x: Any, sr: int = 48000, windows=WINDOWS, max_partials: int = 160, dyn_d
     """A sines model of a path or an array at ``sr`` (mono or (n, 2))."""
     name = source or source_name(x)
     a = as_stereo(x) if isinstance(x, str) else as_stereo(resample(np.asarray(x, float), sr))
-    stereo = not is_mono_pair(a)
-    mono = a.mean(axis=1)
-    width = _width_db(a) if stereo else -120.0
     opts = _default_opts(max_partials=max_partials, dyn_db=dyn_db, keep_db=keep_db, prom_db=prom_db,
                          max_peaks=max_peaks, min_ms=min_ms, amp_tol_db=amp_tol_db,
                          freq_tol_cents=freq_tol_cents, res_range_db=res_range_db,
                          transients=transients, passes=passes, snr_db=snr_db)
-    strikes = onsets(mono, SR)
-    best, tried = None, {}
-    for W in windows:
-        if best is not None and W > 2 * len(mono):
-            continue
-        m = analyze(mono, SR, W, strikes, width, opts)["model"]
-        d = _lsd(render(m, 0), mono)
-        tried[str(W)] = round(d, 3)
-        if best is None or d < best[0]:
-            best = (d, m)
-    model = best[1]
-    if stereo and width > -60:
-        model["side"] = side_model(a, model["duration"])
-    model["channels"] = 2 if stereo else 1
-    model["analysis"].update({"lsd_db": round(best[0], 3), "tried": tried,
-                              "onset_rise_ms": round(strikes[0]["rise"] * 1000, 3) if strikes else None})
+    model = _fit_sines(a, windows, opts)
     model["source"] = name
     model["summary"] = summary(model)
     return model
+
+
+def _fit_sines(a: np.ndarray, windows, opts: dict) -> dict:
+    stereo = not is_mono_pair(a)
+    mono = a.mean(axis=1)
+    width = _width_db(a) if stereo else -120.0
+    strikes = onsets(mono, SR)
+    d, model, tried = _best_window(mono, windows, strikes, width, opts)
+    if stereo and width > -60:
+        model["side"] = side_model(a, model["duration"])
+    model["channels"] = 2 if stereo else 1
+    model["analysis"].update({"lsd_db": round(d, 3), "tried": tried,
+                              "onset_rise_ms": round(strikes[0]["rise"] * 1000, 3) if strikes else None})
+    return model
+
+
+def _best_window(mono: np.ndarray, windows, strikes, width: float, opts: dict):
+    """(LSD, model, tried) of the window size whose render is closest to mono."""
+    best, tried = None, {}
+    for W in windows:
+        if best is None or W <= 2 * len(mono):
+            m = analyze(mono, SR, W, strikes, width, opts)["model"]
+            d = _lsd(render(m, 0), mono)
+            tried[str(W)] = round(d, 3)
+            if best is None or d < best[0]:
+                best = (d, m)
+    return best[0], best[1], tried
 
 
 def _width_db(a: np.ndarray) -> float:
@@ -862,14 +967,15 @@ def _quiet_fix(PM, PS, C, pan, dif):
 def morph_side(sa: dict | None, sb: dict | None, w: float, map_a: Callable | None = None,
                map_b: Callable | None = None) -> dict | None:
     """The side of a morph: both sides on the union of mapped times, mixed linearly."""
-    if not sa and not sb:
-        return None
     if sa and sb and list(sa["bands"]) != list(sb["bands"]):
         raise ValueError("side bands differ between the two models")
+    return _morph(sa, sb, w, map_a, map_b) if (sa or sb) else None
+
+
+def _morph(sa, sb, w, map_a, map_b) -> dict:
     ref = sa or sb
     nb = len(ref["bands"])
-    ta = _mapped(sa, map_a) if sa else np.zeros(0)
-    tb = _mapped(sb, map_b) if sb else np.zeros(0)
+    ta, tb = _mapped(sa, map_a), _mapped(sb, map_b)
     grid = np.unique(np.round(np.concatenate([ta, tb]), 6))
     out = {"bands": list(ref["bands"]), "times": grid.tolist()}
     for key in ("pan", "diffuse"):
@@ -880,6 +986,8 @@ def morph_side(sa: dict | None, sb: dict | None, w: float, map_a: Callable | Non
 
 
 def _mapped(s, fn):
+    if not s:
+        return np.zeros(0)
     t = np.asarray(s["times"], dtype=float)
     return np.asarray([fn(v) for v in t]) if fn else t
 
@@ -949,12 +1057,30 @@ def render(model: dict, seed: int = 0, knobs: dict | None = None, **kw) -> np.nd
     k = _knobs(knobs, kw)
     ident = _is_identity(k)
     rj = np.random.default_rng((int(seed) * 7919 + 17) & 0xFFFFFFFF)
+    ctx = _render_ctx(model, k, rj)
+    parts, times, levels, n = _moved(model, k, ctx, rj, ident)
+    cents = _bend(n, k, ctx, rj)
+    y = synth_partials(parts, n, SR, cents)
+    y = y + synth_atoms(_moved_atoms(model, k, ctx, rj, ident), n, SR)
+    y = y + _render_noise(model, times, levels, n, seed, k, ctx)
+    y = y * 10 ** (k["gain_db"] / 20)
+    if k["stereo"]:
+        y = _stereo(model, y, seed, k, ctx)
+    return K.sines_finish(model, y)
+
+
+def _render_ctx(model: dict, k: dict, rj) -> dict:
     summ = model.get("summary") or {}
     ctx = {"ratio": 2 ** (k["transpose"] / 12), "f_ref": summ.get("centroid") or 1000.0,
            "f_low": summ.get("f_low") or 100.0, "on": float(model.get("onset", 0.0)),
            "fields": None}
     if model.get("coherent") and k["vary"] > 0:
         ctx["fields"] = [vary_field(rj) for _ in range(3)]
+    return ctx
+
+
+def _moved(model: dict, k: dict, ctx: dict, rj, ident: bool):
+    """Edited partials, residual times and levels, and the take length in samples."""
     parts = sorted(model["partials"], key=lambda p: -_peak_of(p))
     if k["partials"] is not None:
         parts = parts[:int(k["partials"])]
@@ -967,20 +1093,20 @@ def render(model: dict, seed: int = 0, knobs: dict | None = None, **kw) -> np.nd
     n = _length(model, parts, k, ctx)
     if k["ring"]:
         n, times, levels = _ring(model, n, times, levels, k, ctx)
-    cents = _bend(n, k, ctx, rj)
-    y = synth_partials(parts, n, SR, cents)
+    return parts, times, levels, n
+
+
+def _moved_atoms(model: dict, k: dict, ctx: dict, rj, ident: bool) -> list:
     trans = model.get("transients", [])
-    if not ident or k["transient"] != 1:
-        trans = _move_atoms(trans, k, ctx, rj)
-    y = y + synth_atoms(trans, n, SR)
+    return _move_atoms(trans, k, ctx, rj) if (not ident or k["transient"] != 1) else trans
+
+
+def _render_noise(model: dict, times, levels, n: int, seed: int, k: dict, ctx: dict) -> np.ndarray:
+    res = model["residual"]
     noise = synth_noise(res["bands"], times, levels, n, seed, SR, hf=res.get("hf"))
     if k["transient"] != 1:
         noise = noise * (1 + (k["transient"] - 1) * _strike_weight(model, n, ctx, k))
-    y = y + noise
-    y = y * 10 ** (k["gain_db"] / 20)
-    if k["stereo"]:
-        y = _stereo(model, y, seed, k, ctx)
-    return K.sines_finish(model, y)
+    return noise
 
 
 def _T(t, k, ctx):
@@ -990,33 +1116,49 @@ def _T(t, k, ctx):
 def _move_partial(p: dict, k: dict, ctx: dict, rj) -> dict:
     p = copy.deepcopy(p)
     fmed = partial_freq(p)
-    fac = ctx["ratio"] * (fmed / ctx["f_low"]) ** k["inharm"]
-    v = k["vary"]
-    if ctx["fields"]:
-        det, lev, dj = (8 * v * ctx["fields"][0](fmed), 2 * v * ctx["fields"][1](fmed),
-                        np.exp(0.15 * v * ctx["fields"][2](fmed)))
-    else:
-        det, lev, dj = 8 * v * rj.standard_normal(), 2 * v * rj.standard_normal(), \
-            np.exp(0.15 * v * rj.standard_normal())
+    det, lev, dj = _partial_offsets(fmed, k["vary"], ctx, rj)
     if k["phases"] == "random":
         p["ph"] = float(rj.uniform(-np.pi, np.pi))
-    mul = fac * 2 ** (float(det) / 1200)
+    mul = ctx["ratio"] * (fmed / ctx["f_low"]) ** k["inharm"] * 2 ** (float(det) / 1200)
     p["freq"] = [[t, f * mul] for t, f in p["freq"]]
     bright = k["brightness"] * np.log2(max(fmed * ctx["ratio"], 1) / ctx["f_ref"])
-    amp = [[t, a + float(lev) + bright] for t, a in p["amp"]]
-    tp = max(amp, key=lambda r: r[1])[0]
-    fd = k["decay"] * float(dj)
-    amp = [[tp + (t - tp) * fd if t > tp else t, a] for t, a in amp]
-    if p["t1"] > tp:
-        p["t1"] = tp + (p["t1"] - tp) * fd
-    p["amp"] = [[float(_T(t, k, ctx)), a] for t, a in amp]
-    p["freq"] = [[float(_T(t, k, ctx)), f] for t, f in p["freq"]]
-    p["t0"], p["t1"] = float(_T(p["t0"], k, ctx)), float(_T(p["t1"], k, ctx))
-    p["rel"] = p["rel"] * max(1.0, k["stretch"])
+    _decay_amp(p, [[t, a + float(lev) + bright] for t, a in p["amp"]], k["decay"] * float(dj))
+    _stretch_partial(p, k, ctx)
     return p
 
 
+def _partial_offsets(fmed: float, v: float, ctx: dict, rj):
+    """Detune (cents), level (dB) and decay factor of one partial, from the fields or the generator."""
+    fields = ctx["fields"]
+    if fields:
+        return 8 * v * fields[0](fmed), 2 * v * fields[1](fmed), np.exp(0.15 * v * fields[2](fmed))
+    return 8 * v * rj.standard_normal(), 2 * v * rj.standard_normal(), np.exp(0.15 * v * rj.standard_normal())
+
+
+def _decay_amp(p: dict, amp: list, fd: float) -> None:
+    """Scale the time after the amplitude peak by fd."""
+    tp = max(amp, key=lambda r: r[1])[0]
+    p["amp"] = [[tp + (t - tp) * fd if t > tp else t, a] for t, a in amp]
+    if p["t1"] > tp:
+        p["t1"] = tp + (p["t1"] - tp) * fd
+
+
+def _stretch_partial(p: dict, k: dict, ctx: dict) -> None:
+    p["amp"] = [[float(_T(t, k, ctx)), a] for t, a in p["amp"]]
+    p["freq"] = [[float(_T(t, k, ctx)), f] for t, f in p["freq"]]
+    p["t0"], p["t1"] = float(_T(p["t0"], k, ctx)), float(_T(p["t1"], k, ctx))
+    p["rel"] = p["rel"] * max(1.0, k["stretch"])
+
+
 def _move_residual(res: dict, k: dict, ctx: dict, rj):
+    lev = _moved_levels(res, k, ctx, rj)
+    t = np.asarray(res["times"], dtype=float)
+    piv = ctx["on"] + 0.01
+    t = np.where(t > piv, piv + (t - piv) * k["decay"], t)
+    return _T(t, k, ctx).tolist(), lev.tolist()
+
+
+def _moved_levels(res: dict, k: dict, ctx: dict, rj) -> np.ndarray:
     lev = np.asarray(res["db"], dtype=float)
     off = lev <= -149
     bands = np.asarray(res["bands"], dtype=float)
@@ -1026,13 +1168,9 @@ def _move_residual(res: dict, k: dict, ctx: dict, rj):
     lev = lev + (k["brightness"] * np.log2(bands * ctx["ratio"] / ctx["f_ref"]))[:, None]
     if k["vary"]:
         lev = lev + (1.5 * k["vary"] * rj.standard_normal(len(bands)))[:, None]
-    t = np.asarray(res["times"], dtype=float)
-    piv = ctx["on"] + 0.01
-    t = np.where(t > piv, piv + (t - piv) * k["decay"], t)
-    t = _T(t, k, ctx)
     lev = lev + 20 * np.log10(max(k["residual"], 1e-6))
     lev[off] = -150.0
-    return t.tolist(), lev.tolist()
+    return lev
 
 
 def _length(model, parts, k, ctx) -> int:
@@ -1096,48 +1234,68 @@ def _strike_weight(model, n, ctx, k):
 
 def _stereo(model, y, seed, k, ctx):
     side = model.get("side")
-    if side:
-        t = np.asarray(side["times"], dtype=float)
-        piv = ctx["on"] + 0.01
-        t = _T(np.where(t > piv, piv + (t - piv) * k["decay"], t), k, ctx)
-        r = np.random.default_rng((int(seed) * 31 + 7) & 0xFFFFFFFF)
-        sign = -1.0 if r.uniform() < 0.5 else 1.0
-        s = space.shaped_side(y, np.asarray(side["bands"]) * ctx["ratio"], t, side["pan"],
-                              side["diffuse"], sign)
-    else:
-        res = model["residual"]
-        s = synth_noise(res["bands"], res["times"], res["db"], len(y), int(seed) + 1000003, SR,
-                        hf=res.get("hf")) * 10 ** (model.get("width", -120) / 20) * 10 ** (k["gain_db"] / 20)
+    s = _fitted_side(side, y, seed, k, ctx) if side else _noise_side(model, len(y), seed, k)
     s = s * k["width"]
     return np.column_stack([y + s, y - s])
+
+
+def _fitted_side(side: dict, y, seed, k, ctx) -> np.ndarray:
+    t = np.asarray(side["times"], dtype=float)
+    piv = ctx["on"] + 0.01
+    t = _T(np.where(t > piv, piv + (t - piv) * k["decay"], t), k, ctx)
+    r = np.random.default_rng((int(seed) * 31 + 7) & 0xFFFFFFFF)
+    sign = -1.0 if r.uniform() < 0.5 else 1.0
+    return space.shaped_side(y, np.asarray(side["bands"]) * ctx["ratio"], t, side["pan"], side["diffuse"], sign)
+
+
+def _noise_side(model: dict, n: int, seed, k) -> np.ndarray:
+    res = model["residual"]
+    return synth_noise(res["bands"], res["times"], res["db"], n, int(seed) + 1000003, SR,
+                       hf=res.get("hf")) * 10 ** (model.get("width", -120) / 20) * 10 ** (k["gain_db"] / 20)
 
 
 # ================================================================ summary, io, code
 
 def summary(model: dict) -> dict:
     parts = model.get("partials") or []
-    if not parts:
-        return {"partials": 0}
+    return _summary(parts) if parts else {"partials": 0}
+
+
+def _summary(parts: list) -> dict:
     peaks = np.array([_peak_of(p) for p in parts])
     fm = np.array([partial_freq(p) for p in parts])
-    life = np.array([p["t1"] - p["t0"] for p in parts])
-    strong = (peaks >= peaks.max() - 30) & (life >= min(0.1, 0.5 * life.max()))
-    if not strong.any():
-        strong = peaks >= peaks.max() - 30
+    strong = _strong(peaks, parts)
     f_low = float(fm[strong].min())
-    pw = 10 ** (peaks[strong] / 10)
-    centroid = float(2 ** (np.sum(pw * np.log2(fm[strong])) / pw.sum()))
+    centroid = _centroid(peaks[strong], fm[strong])
     ratios = np.sort(fm[strong] / f_low)[:12]
-    inh = float(np.median(np.abs(ratios - np.round(ratios)) / np.maximum(np.round(ratios), 1))) \
-        if strong.sum() > 1 else 0.0
-    order = np.argsort(-peaks)[:8]
-    top = [{"f": round(float(fm[i]), 1), "db": round(float(peaks[i]), 1), "t60": _t60(parts[i])}
-           for i in order]
+    inh = _inharmonicity(ratios) if strong.sum() > 1 else 0.0
     glide = [round(1200 * np.log2(p["freq"][-1][1] / p["freq"][0][1]), 1) for p in parts[:8]]
     return {"partials": len(parts), "f_low": round(f_low, 2), "centroid": round(centroid, 2),
-            "f_range": [round(float(fm.min()), 1), round(float(fm.max()), 1)], "top": top,
+            "f_range": [round(float(fm.min()), 1), round(float(fm.max()), 1)], "top": _top(parts, peaks, fm),
             "ratios": [round(float(r), 3) for r in ratios], "inharmonicity": round(inh, 4),
             "glide_cents": glide}
+
+
+def _centroid(peaks: np.ndarray, fm: np.ndarray) -> float:
+    """Power-weighted mean log frequency, in Hz."""
+    pw = 10 ** (peaks / 10)
+    return float(2 ** (np.sum(pw * np.log2(fm)) / pw.sum()))
+
+
+def _strong(peaks: np.ndarray, parts: list) -> np.ndarray:
+    """Partials within 30 dB of the top that live long enough (or all within 30 dB)."""
+    life = np.array([p["t1"] - p["t0"] for p in parts])
+    strong = (peaks >= peaks.max() - 30) & (life >= min(0.1, 0.5 * life.max()))
+    return strong if strong.any() else peaks >= peaks.max() - 30
+
+
+def _inharmonicity(ratios: np.ndarray) -> float:
+    return float(np.median(np.abs(ratios - np.round(ratios)) / np.maximum(np.round(ratios), 1)))
+
+
+def _top(parts: list, peaks: np.ndarray, fm: np.ndarray) -> list[dict]:
+    return [{"f": round(float(fm[i]), 1), "db": round(float(peaks[i]), 1), "t60": _t60(parts[i])}
+            for i in np.argsort(-peaks)[:8]]
 
 
 def _t60(p: dict) -> float | None:
@@ -1156,18 +1314,27 @@ def describe(model: dict) -> str:
     head = f"strike at {model.get('onset', 0) * 1000:.0f} ms ({len(on)} strikes)"
     an = model.get("analysis", {})
     tail = f"residual {an.get('residual_db', 'n/a')} dB, window {an.get('window')}, LSD {an.get('lsd_db')}"
-    if not s.get("partials"):
-        return f"{head}; noise only, no partials; {tail}"
+    body = _partials_text(s) if s.get("partials") else "noise only, no partials"
+    return f"{head}; {body}; {tail}"
+
+
+def _partials_text(s: dict) -> str:
     inh = s["inharmonicity"]
     word = "harmonic" if inh < 0.01 else "slightly inharmonic" if inh < 0.04 else "inharmonic"
-    t60s = [t["t60"] for t in s["top"] if t["t60"]]
-    t60 = f"T60 {min(t60s):.2f}-{max(t60s):.2f} s" if t60s else "T60 n/a"
-    glide = max(s["glide_cents"], key=abs) if s["glide_cents"] else 0
-    gl = f", glide {glide:+.0f} cents" if abs(glide) > 50 else ""
     ratios = ", ".join(f"{r:g}" for r in s["ratios"][:5])
-    return (f"{head}; {s['partials']} partials {s['f_range'][0]:.0f}-{s['f_range'][1]:.0f} Hz, lowest "
+    return (f"{s['partials']} partials {s['f_range'][0]:.0f}-{s['f_range'][1]:.0f} Hz, lowest "
             f"strong {s['f_low']:.0f} Hz, {word} (ratios {ratios}), centroid {s['centroid']:.0f} Hz, "
-            f"{t60}{gl}; {tail}")
+            f"{_t60_text(s)}{_glide_text(s)}")
+
+
+def _t60_text(s: dict) -> str:
+    t60s = [t["t60"] for t in s["top"] if t["t60"]]
+    return f"T60 {min(t60s):.2f}-{max(t60s):.2f} s" if t60s else "T60 n/a"
+
+
+def _glide_text(s: dict) -> str:
+    glide = max(s["glide_cents"], key=abs) if s["glide_cents"] else 0
+    return f", glide {glide:+.0f} cents" if abs(glide) > 50 else ""
 
 
 def save(model: dict, path: str) -> None:
