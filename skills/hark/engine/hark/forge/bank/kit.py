@@ -218,21 +218,33 @@ def _edits_shape(role: str, spec: dict) -> list[str]:
 
 
 def _shape_problems(role: str, spec: dict) -> list[str]:
+    return _pitch_shape(role, spec) + _scalar_shape(role, spec) + _mix_shape(role, spec)
+
+
+def _pitch_shape(role: str, spec: dict) -> list[str]:
     out = []
     if "pitches" in spec and _pitches_of(spec) is None:
         out.append(f"role {role}: pitches must be a non-empty list")
     if _pitches_of(spec) is not None and "pitch" in _edits_of(spec):
         out.append(f"role {role}: give pitches or edits.pitch, not both")
+    return out
+
+
+def _scalar_shape(role: str, spec: dict) -> list[str]:
+    out = []
     if spec.get("align", default_align(role)) not in ALIGNS:
         out.append(f"role {role}: align must be one of {', '.join(ALIGNS)}")
     if "level_db" in spec and not _number(spec["level_db"]):
         out.append(f"role {role}: level_db must be a finite number")
     if spec.get("max_s") is not None and not (_number(spec["max_s"]) and spec["max_s"] >= MAX_S_MIN):
         out.append(f"role {role}: max_s must be a number of at least {MAX_S_MIN}")
-    for key, (lo, hi) in MIX_RANGES.items():
-        if key in spec and not (_number(spec[key]) and lo <= spec[key] <= hi):
-            out.append(f"role {role}: {key} must be a number from {lo:g} to {hi:g}")
     return out
+
+
+def _mix_shape(role: str, spec: dict) -> list[str]:
+    return [f"role {role}: {key} must be a number from {lo:g} to {hi:g}"
+            for key, (lo, hi) in MIX_RANGES.items()
+            if key in spec and not (_number(spec[key]) and lo <= spec[key] <= hi)]
 
 
 def _value_problems(role: str, spec: dict) -> list[str]:
@@ -243,10 +255,14 @@ def _value_problems(role: str, spec: dict) -> list[str]:
         return out + [f"role {role}: dur and apex must be numbers"]
     if spec.get("sound") not in bank.ids():
         return out
+    return out + _knob_problems(role, spec, edits, timing)
+
+
+def _knob_problems(role: str, spec: dict, edits: dict, timing: dict) -> list[str]:
+    """Problems the knob engine finds in the timing and pitch edits of a known sound."""
     entry = bank.get(spec["sound"])
     knobs = _knobs()
-    if timing:
-        out += _knob_problem(role, "", lambda: knobs.validate(entry, **timing))
+    out = _knob_problem(role, "", lambda: knobs.validate(entry, **timing)) if timing else []
     for p in _pitches_of(spec) or ([edits["pitch"]] if "pitch" in edits else []):
         out += _knob_problem(role, f" pitch {p!r}", lambda p=p: knobs.validate(entry, pitch=p))
     return out
@@ -392,15 +408,21 @@ def _render_once(take: dict, seed: int, entry: dict) -> tuple[np.ndarray, dict, 
     y, meta = bank.render(take["sound"], seed=seed, dur=edits.get("dur"), apex=edits.get("apex"),
                           pitch=take.get("pitch"), peak_db=edits.get("peak_db", bank.DEFAULT_PEAK),
                           weight=edits.get("weight"), checks=False)
+    y = _shape_take(y, meta, take)
+    audit = sfx.check(y, category=entry.get("category"), role=take["role"], sound=take["sound"])
+    bank.add_warning(audit, _knobs().pitch_warning(meta.get("edits") or {}))
+    return y, audit, meta
+
+
+def _shape_take(y: np.ndarray, meta: dict, take: dict) -> np.ndarray:
+    """Apply ``max_s`` and ``width``; the width info goes into ``meta``."""
     max_s = take.get("max_s")
     if max_s is not None and len(y) > round(max_s * SR):
         y = np.asarray(_knobs().fit_length(y, max_s)[0], dtype=np.float32)
     if "width" in take:
         y, meta["width"] = stereo_width(y, take["width"])
         y = y.astype(np.float32)
-    audit = sfx.check(y, category=entry.get("category"), role=take["role"], sound=take["sound"])
-    bank.add_warning(audit, _knobs().pitch_warning(meta.get("edits") or {}))
-    return y, audit, meta
+    return y
 
 
 def render_take(take: dict) -> tuple[np.ndarray, dict, dict, int]:
@@ -533,33 +555,44 @@ def _log_take(log: Callable | None, take: dict, rec: dict) -> None:
 def render(kit: Any, out: str | os.PathLike, force: bool = False, log: Callable | None = None) -> dict:
     """Render every take into ``out`` and write ``out/kit.lock.json`` (part 3, 5.4)."""
     t0 = time.monotonic()
-    doc = load(kit)
-    sr = int(doc.get("sr", SR))
-    folder = Path(out)
-    folder.mkdir(parents=True, exist_ok=True)
+    doc, sr, folder = _open(kit, out)
     old_lock = _old_lock(folder)
-    old = _old_takes(old_lock)
     lock = _new_lock(doc, sr)
     stats = {"takes": 0, "rendered": 0, "cached": 0, "removed": 0}
+    old = _old_takes(old_lock)
     for take in plan(doc):
-        spec = doc["roles"][take["role"]]
-        key, path = take_key(take, sr), folder / take["file"]
-        rec = _cached(old, take, key, path, force)
-        if rec is not None:
-            if "bed_db" in spec and "l50_lufs" not in rec:
-                _add_l50(rec, path, sr)
-            stats["cached"] += 1
-        else:
-            rec = _record(take, key, path, sr, spec)
-            stats["rendered"] += 1
-            _log_take(log, take, rec)
+        rec = _take_record(take, doc["roles"][take["role"]], old, folder, sr, force, stats, log)
         lock["roles"][take["role"]]["takes"].append(rec)
-        stats["takes"] += 1
     stats["removed"] = _remove_stale(folder, old_lock, lock)
     lock_path = _write_lock(folder, lock)
     stats["seconds"] = round(time.monotonic() - t0, 1)
     return {**lock, "stats": stats, "summary": _render_summary(lock, folder, stats),
             "file": str(lock_path).replace(os.sep, "/")}
+
+
+def _open(kit: Any, out: str | os.PathLike) -> tuple[dict, int, Path]:
+    """Load the kit and create the takes folder: ``(doc, sr, folder)``."""
+    doc = load(kit)
+    folder = Path(out)
+    folder.mkdir(parents=True, exist_ok=True)
+    return doc, int(doc.get("sr", SR)), folder
+
+
+def _take_record(take: dict, spec: dict, old: dict, folder: Path, sr: int, force: bool, stats: dict,
+                 log: Callable | None) -> dict:
+    """The lock record of one take: reused from the cache, or rendered now. Counts it in ``stats``."""
+    key, path = take_key(take, sr), folder / take["file"]
+    stats["takes"] += 1
+    rec = _cached(old, take, key, path, force)
+    if rec is None:
+        rec = _record(take, key, path, sr, spec)
+        stats["rendered"] += 1
+        _log_take(log, take, rec)
+        return rec
+    if "bed_db" in spec and "l50_lufs" not in rec:
+        _add_l50(rec, path, sr)
+    stats["cached"] += 1
+    return rec
 
 
 # ---------------------------------------------------------------- check
@@ -632,15 +665,21 @@ def _audit_take(take: dict, index: dict, out: str | os.PathLike | None, sr: int)
 def _check_summary(doc: dict, rows: list[dict], notes: list[str]) -> str:
     clean = sum(1 for r in rows if r["ok"])
     out = f"kit {doc.get('name')}: {clean} / {len(rows)} takes clean"
+    return out + _bad_part(rows) + _off_part(doc) + _notes_part(notes)
+
+
+def _bad_part(rows: list[dict]) -> str:
     bad = [f"{r['file']}: {','.join(w['code'] for w in r['warnings'])}" for r in rows if not r["ok"]]
-    if bad:
-        out += f", {len(bad)} with warnings: " + "; ".join(bad)
+    return f", {len(bad)} with warnings: " + "; ".join(bad) if bad else ""
+
+
+def _off_part(doc: dict) -> str:
     off = [r for r, s in doc["roles"].items() if s is None]
-    if off:
-        out += f"; off: {', '.join(off)}"
-    if notes:
-        out += f"; {len(notes)} note{'' if len(notes) == 1 else 's'}"
-    return out
+    return f"; off: {', '.join(off)}" if off else ""
+
+
+def _notes_part(notes: list[str]) -> str:
+    return f"; {len(notes)} note{'' if len(notes) == 1 else 's'}" if notes else ""
 
 
 def check(kit: Any, out: str | os.PathLike | None = None, log: Callable | None = None) -> dict:
@@ -648,13 +687,24 @@ def check(kit: Any, out: str | os.PathLike | None = None, log: Callable | None =
     try:
         doc = _read(kit)
     except KitError as exc:
-        return {"ok": False, "summary": f"kit unreadable: {exc}", "problems": [str(exc)], "roles": {}, "notes": []}
+        return _failed(f"kit unreadable: {exc}", [str(exc)])
     found = problems(doc)
     if found:
         n = len(found)
-        return {"ok": False, "summary": f"{n} problem{'' if n == 1 else 's'}: " + "; ".join(found),
-                "problems": found, "roles": {}, "notes": []}
+        return _failed(f"{n} problem{'' if n == 1 else 's'}: " + "; ".join(found), found)
     notes = [n for r, s in doc["roles"].items() for n in _role_notes(r, s)]
+    roles = _audit_roles(doc, out, log)
+    rows = [r for rs in roles.values() for r in rs]
+    return {"ok": all(r["ok"] for r in rows), "summary": _check_summary(doc, rows, notes), "problems": [],
+            "roles": roles, "notes": notes}
+
+
+def _failed(summary: str, found: list[str]) -> dict:
+    return {"ok": False, "summary": summary, "problems": found, "roles": {}, "notes": []}
+
+
+def _audit_roles(doc: dict, out: str | os.PathLike | None, log: Callable | None) -> dict[str, list[dict]]:
+    """Audit every planned take; rows grouped by role."""
     index, sr = _lock_index(out), int(doc.get("sr", SR))
     roles: dict[str, list[dict]] = {}
     for take in plan(doc):
@@ -662,9 +712,7 @@ def check(kit: Any, out: str | os.PathLike | None = None, log: Callable | None =
         roles.setdefault(take["role"], []).append(row)
         if log is not None:
             log(f"{row['file']}: {row['sound']} " + ("ok" if row["ok"] else "; ".join(w["msg"] for w in row["warnings"])))
-    rows = [r for rs in roles.values() for r in rs]
-    return {"ok": all(r["ok"] for r in rows), "summary": _check_summary(doc, rows, notes), "problems": [],
-            "roles": roles, "notes": notes}
+    return roles
 
 
 # ---------------------------------------------------------------- audition
@@ -693,20 +741,35 @@ def _audition_parts(lock: dict, folder: Path, gap_s: float, role_gap_s: float) -
     import soundfile
 
     sr = int(lock["sr"])
-    parts, index, t = [], [], 0.0
+    gap, role_gap = int(round(gap_s * sr)), int(round(role_gap_s * sr))
+    parts: list[np.ndarray] = []
+    index: list[dict] = []
     for role, spec in lock["roles"].items():
         if not spec:
             continue
         for take in spec["takes"]:
             x, _ = soundfile.read(str(folder / take["file"]), dtype="float32", always_2d=True)
             x = _stereo(x) * 10 ** (gain_db(take, spec, AUDITION_BED) / 20)
-            index.append({"t": round(t, 3), "role": role, "file": take["file"], "sound": spec["sound"],
-                          "pitch": take.get("pitch")})
-            parts += [x, np.zeros((int(round(gap_s * sr)), 2), dtype=np.float32)]
-            t += (len(x) + int(round(gap_s * sr))) / sr
-        parts.append(np.zeros((int(round(role_gap_s * sr)), 2), dtype=np.float32))
-        t += int(round(role_gap_s * sr)) / sr
+            index.append({"t": round(_frames(parts) / sr, 3), "role": role, "file": take["file"],
+                          "sound": spec["sound"], "pitch": take.get("pitch")})
+            parts += [x, _silence(gap)]
+        parts.append(_silence(role_gap))
     return parts, index
+
+
+def _silence(frames: int) -> np.ndarray:
+    return np.zeros((frames, 2), dtype=np.float32)
+
+
+def _frames(parts: list[np.ndarray]) -> int:
+    return sum(len(x) for x in parts)
+
+
+def _under_ceiling(mix: np.ndarray) -> np.ndarray:
+    """Scale the mix down when its peak is over AUDITION_CEILING."""
+    peak = float(np.max(np.abs(mix))) if mix.size else 0.0
+    ceiling = 10 ** (AUDITION_CEILING / 20)
+    return mix * (ceiling / peak) if peak > ceiling else mix
 
 
 def _index_text(index: list[dict]) -> str:
@@ -722,18 +785,18 @@ def audition(kit: Any, out_wav: str, takes: str | None = None, gap_s: float = 0.
     folder = Path(takes) if takes else audition_dir(doc)
     lock = render(doc, folder)
     parts, index = _audition_parts(lock, folder, gap_s, role_gap_s)
-    mix = np.concatenate(parts, axis=0)
-    peak = float(np.max(np.abs(mix))) if mix.size else 0.0
-    if peak > 10 ** (AUDITION_CEILING / 20):
-        mix = mix * (10 ** (AUDITION_CEILING / 20) / peak)
-    file = sfx.write(out_wav, mix, int(lock["sr"]))
-    txt = str(Path(out_wav).with_suffix(".txt"))
-    Path(txt).write_text(_index_text(index), encoding="utf-8")
+    mix = _under_ceiling(np.concatenate(parts, axis=0))
+    return {**_write_audition(out_wav, mix, int(lock["sr"]), index), "takes_dir": str(folder).replace(os.sep, "/")}
+
+
+def _write_audition(out_wav: str, mix: np.ndarray, sr: int, index: list[dict]) -> dict:
+    """Write the WAV and its ``.txt`` index: ``{summary, file, index}``."""
+    file = sfx.write(out_wav, mix, sr)
+    txt = Path(out_wav).with_suffix(".txt")
+    txt.write_text(_index_text(index), encoding="utf-8")
     roles = len({e["role"] for e in index})
-    summary = (f"wrote {file}: {len(index)} takes of {roles} roles, {len(mix) / lock['sr']:.1f} s "
-               f"(index in {Path(txt).name})")
-    return {"summary": summary, "file": file, "index": txt.replace(os.sep, "/"),
-            "takes_dir": str(folder).replace(os.sep, "/")}
+    summary = f"wrote {file}: {len(index)} takes of {roles} roles, {len(mix) / sr:.1f} s (index in {txt.name})"
+    return {"summary": summary, "file": file, "index": str(txt).replace(os.sep, "/")}
 
 
 # ---------------------------------------------------------------- presets and init
@@ -900,6 +963,13 @@ def _side_for(m: np.ndarray, s: np.ndarray, c0: float, target: float) -> np.ndar
     return s + _bisect(lambda h: with_side(s + h * d), 0.0, DECOR_MAX, target) * d
 
 
+def _rebuild(m: np.ndarray, side: np.ndarray, peak: float) -> np.ndarray:
+    """L/R from mid and side, scaled back to the original ``peak``."""
+    x = np.column_stack([m + side, m - side])
+    now = float(np.max(np.abs(x)))
+    return x * (peak / now) if now > 0 else x
+
+
 def stereo_width(y: np.ndarray, target: float, tol: float = WIDTH_TOL) -> tuple[np.ndarray, dict]:
     """Set the L/R correlation of a take to ``target`` (part 3, 6.5): ``(take, info)``."""
     x = _as_stereo64(y)
@@ -907,10 +977,7 @@ def stereo_width(y: np.ndarray, target: float, tol: float = WIDTH_TOL) -> tuple[
     m, s = (x[:, 0] + x[:, 1]) / 2, (x[:, 0] - x[:, 1]) / 2
     c0, goal = corr(x), min(1.0, max(0.0, float(target)))
     if abs(c0 - goal) > tol / 4:
-        side = _side_for(m, s, c0, goal)
-        x = np.column_stack([m + side, m - side])
-        now = float(np.max(np.abs(x)))
-        x = x * (peak / now) if now > 0 else x
+        x = _rebuild(m, _side_for(m, s, c0, goal), peak)
     measured = corr(x)
     info = {"target": round(goal, 3), "before": round(c0, 3), "measured": round(measured, 3),
             "ok": abs(measured - goal) <= tol}
@@ -974,19 +1041,31 @@ def add_cli(sub: argparse._SubParsersAction) -> None:
     ip.add_argument("--force", action="store_true")
     report.add_common(ip)
     ip.set_defaults(func=_cmd_init)
+    for leaf in (_add_render(s), _add_check(s), _add_audition(s)):
+        _plain_flags(leaf)
+
+
+def _add_render(s: argparse._SubParsersAction) -> argparse.ArgumentParser:
     rp = s.add_parser("render", help="render the takes and the lock")
     rp.add_argument("kit")
     rp.add_argument("--out", required=True, help="the takes folder")
     rp.add_argument("--force", action="store_true")
     rp.set_defaults(func=_cmd_render)
+    return rp
+
+
+def _add_check(s: argparse._SubParsersAction) -> argparse.ArgumentParser:
     cp = s.add_parser("check", help="validate the kit and audit every take")
     cp.add_argument("kit")
     cp.add_argument("--out", help="the folder of rendered takes")
     cp.set_defaults(func=_cmd_check)
+    return cp
+
+
+def _add_audition(s: argparse._SubParsersAction) -> argparse.ArgumentParser:
     ap = s.add_parser("audition", help="every take in one WAV with an index")
     ap.add_argument("kit")
     ap.add_argument("-o", "--output", required=True)
     ap.add_argument("--out", help="the takes folder (default: a cache folder under HARK_HOME)")
     ap.set_defaults(func=_cmd_audition)
-    for leaf in (rp, cp, ap):
-        _plain_flags(leaf)
+    return ap
