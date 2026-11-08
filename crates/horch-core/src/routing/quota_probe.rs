@@ -878,38 +878,41 @@ mod tests {
         bin
     }
 
-    /// Production gives each command of the local health check 5 s:
-    /// `ollama list` that takes 7 s is a timeout.
+    /// Production gives each command of the local health check 5 s, and
+    /// `probe_local` stops an `ollama list` that runs past its deadline. The
+    /// timeout runs at 300 ms against `sleep 1`, so the test does not wait
+    /// for the 5 s production value.
     #[cfg(unix)]
     #[test]
-    fn a_slow_ollama_times_out_at_the_5_s_production_deadline() {
+    fn a_slow_ollama_times_out_at_the_local_deadline_of_5_s_in_production() {
         let tmp = tempfile::tempdir().unwrap();
-        let pi = fake(tmp.path(), "pi", "#!/bin/sh\necho 0.70.0\n");
-        let ollama = fake(tmp.path(), "ollama", "#!/bin/sh\nsleep 7\necho NAME\n");
         let bins = crate::runtime::HarnessBins::resolve(
             &crate::runtime::BinOverrides::default(),
             None,
             None,
         );
-        let deadline = ProbeBins::new(&bins, tmp.path().join("sessions")).local_timeout;
-        assert_eq!(deadline, StdDuration::from_secs(5));
+        let production = ProbeBins::new(&bins, tmp.path().join("sessions")).local_timeout;
+        assert_eq!(production, StdDuration::from_secs(5));
 
+        let pi = fake(tmp.path(), "pi", "#!/bin/sh\necho 0.70.0\n");
+        let ollama = fake(tmp.path(), "ollama", "#!/bin/sh\nsleep 1\necho NAME\n");
+        let deadline = StdDuration::from_millis(300);
         let started = Instant::now();
         let got = probe_local(&pi, &ollama, deadline);
         let took = started.elapsed();
         assert_eq!(
             got,
-            Err("ollama list timed out after 5s".to_string()),
+            Err("ollama list timed out after 0s".to_string()),
             "after {took:?}"
         );
         assert!(
-            took >= deadline && took < StdDuration::from_secs(7),
+            took >= deadline && took < StdDuration::from_secs(1),
             "{took:?}"
         );
     }
 
     /// `HORCH_LOCAL_PROBE_TIMEOUT_MS` sets the local health deadline, and the
-    /// same slow `ollama list` then answers.
+    /// same slow `ollama list` then answers within that longer deadline.
     #[cfg(unix)]
     #[test]
     fn horch_local_probe_timeout_ms_sets_the_local_deadline() {
@@ -923,15 +926,17 @@ mod tests {
             LOCAL_TIMEOUT
         );
 
+        // A slow `ollama list` answers within a longer deadline. It runs at
+        // 2 s against `sleep 0.5`, so the test does not wait for 60 s.
         let tmp = tempfile::tempdir().unwrap();
         let pi = fake(tmp.path(), "pi", "#!/bin/sh\necho 0.70.0\n");
         let ollama = fake(
             tmp.path(),
             "ollama",
-            "#!/bin/sh\nsleep 7\necho 'NAME ID'\necho 'qwen3.8:latest 0123'\n",
+            "#!/bin/sh\nsleep 0.5\necho 'NAME ID'\necho 'qwen3.8:latest 0123'\n",
         );
         assert_eq!(
-            probe_local(&pi, &ollama, deadline),
+            probe_local(&pi, &ollama, StdDuration::from_secs(2)),
             Ok(vec!["qwen3.8:latest".to_string()])
         );
     }

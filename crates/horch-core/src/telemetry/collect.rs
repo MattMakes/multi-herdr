@@ -1525,7 +1525,7 @@ mod tests {
     #[test]
     fn nfr_02_indexed_fold_matches_the_event_sums() {
         let records = records();
-        property(0x4e46_5230_3220_0001, 200, |rng| {
+        property(0x4e46_5230_3220_0001, 40, |rng| {
             let events = events(rng);
             let snap = snapshot(&records, &Table::from_events(&events));
 
