@@ -205,44 +205,54 @@ def drop_candidates(rel: np.ndarray, nov: np.ndarray) -> list[dict]:
              "novelty": round(float(nov[i]), 3)} for i in idx]
 
 
-def walk(feat, loud, rel, arc, jump, phrase, drop_k, drop_bar, start_bar, end_bar):
-    n, K = len(feat), len(arc)
+INF = 1e18
+
+
+def _jumps(feat: np.ndarray, loud: np.ndarray, jump: float) -> tuple[np.ndarray, np.ndarray]:
+    """The cost of going from source bar i to bar j, and the continuation mask (j = i + 1)."""
+    n = len(feat)
     dist = np.linalg.norm(feat[:, None, :] - feat[None, :, :], axis=2)
     D = dist + np.abs(loud[:, None] - loud[None, :]) / 6
     nxt = np.minimum(np.arange(n) + 1, n - 1)
     J = jump + 2.5 * D[nxt, :]
-    for i in range(n - 1):
-        J[i, i + 1] = 0.0
-    J[np.arange(n), np.arange(n)] += 1.5
     cont = np.zeros((n, n), bool)
-    for i in range(n - 1):
-        cont[i, i + 1] = True
-    fit = lambda k: np.abs(rel - arc[k]) / 3
-    INF = 1e18
-    cost = fit(0) + 0.4 * np.arange(n)
-    if start_bar is not None:
-        keep = np.full(n, INF)
-        keep[start_bar] = fit(0)[start_bar]
-        cost = keep
-    if K > 1 and drop_bar is not None and drop_k == 0:
-        m = np.full(n, INF)
-        m[drop_bar] = cost[drop_bar]
-        cost = m
-    back = []
-    for k in range(1, K):
-        step = J + (0.0 if k % phrase == 0 else 1.0) * (~cont)
-        tot = cost[:, None] + step
-        arg = np.argmin(tot, axis=0)
-        cost = tot[arg, np.arange(n)] + fit(k)
-        if K > 1 and drop_bar is not None and k == drop_k:
-            m = np.full(n, INF)
-            m[drop_bar] = cost[drop_bar]
-            cost = m
-        if K > 1 and end_bar is not None and k == K - 1:
-            m = np.full(n, INF)
-            m[end_bar] = cost[end_bar]
-            cost = m
-        back.append(arg)
+    cont[np.arange(n - 1), np.arange(1, n)] = True
+    J[cont] = 0.0
+    J[np.arange(n), np.arange(n)] += 1.5
+    return J, cont
+
+
+def _pin(cost: np.ndarray, bar: int) -> np.ndarray:
+    """Only bar stays reachable."""
+    m = np.full(len(cost), INF)
+    m[bar] = cost[bar]
+    return m
+
+
+def _pins(K: int, opt: dict) -> list[tuple[int, int]]:
+    """(film bar index, source bar) pairs the walk must pass, in the order they apply."""
+    pins = []
+    if K > 1 and opt["drop_bar"] is not None:
+        pins.append((opt["drop_k"], opt["drop_bar"]))
+    if K > 1 and opt["end_bar"] is not None:
+        pins.append((K - 1, opt["end_bar"]))
+    return pins
+
+
+def _apply_pins(cost: np.ndarray, k: int, pins: list) -> np.ndarray:
+    for pk, bar in pins:
+        cost = _pin(cost, bar) if pk == k else cost
+    return cost
+
+
+def _start_cost(rel: np.ndarray, first: float, start_bar) -> np.ndarray:
+    cost = np.abs(rel - first) / 3
+    if start_bar is None:
+        return cost + 0.4 * np.arange(len(rel))
+    return _pin(cost, start_bar)
+
+
+def _backtrack(cost: np.ndarray, back: list) -> tuple[list[int], float]:
     j = int(np.argmin(cost))
     total = float(cost[j])
     path = [j]
@@ -252,27 +262,51 @@ def walk(feat, loud, rel, arc, jump, phrase, drop_k, drop_bar, start_bar, end_ba
     return path[::-1], total
 
 
+def walk(feat, loud, rel, arc, opt: dict):
+    """The cheapest source-bar path for the film arc.
+
+    opt: jump, phrase, drop_k, drop_bar, start_bar, end_bar.
+    """
+    n, K = len(feat), len(arc)
+    J, cont = _jumps(feat, loud, opt["jump"])
+    pins = _pins(K, opt)
+    cost = _apply_pins(_start_cost(rel, arc[0], opt["start_bar"]), 0, pins)
+    back = []
+    for k in range(1, K):
+        step = J + (0.0 if k % opt["phrase"] == 0 else 1.0) * (~cont)
+        tot = cost[:, None] + step
+        arg = np.argmin(tot, axis=0)
+        cost = _apply_pins(tot[arg, np.arange(n)] + np.abs(rel - arc[k]) / 3, k, pins)
+        back.append(arg)
+    return _backtrack(cost, back)
+
+
 # ------------------------------------------------------------------ main flow
 
-def arrange(a) -> dict:
+def _check_drop_arg(drop: str) -> None:
+    if drop in ("auto", "none"):
+        return
+    try:
+        int(drop)
+    except ValueError:
+        raise ArrangeError(f"--drop must be auto, none or a bar number, not {drop!r}")
+
+
+def _beats(y: np.ndarray, bpm) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """(magnitude spectrogram, onset envelope, beat times)."""
     import librosa
-    if a.drop not in ("auto", "none"):
-        try:
-            int(a.drop)
-        except ValueError:
-            raise ArrangeError(f"--drop must be auto, none or a bar number, not {a.drop!r}")
-    arc, meta = read_arc(a.arc)
-    film_bpm = float(meta.get("film_bpm", a.film_bpm))
-    B = int(meta.get("beats_per_bar", a.beats_per_bar))
-    y = decode(a.track)
-    dur = len(y) / SR
     S = np.abs(librosa.stft(y, n_fft=N_FFT, hop_length=HOP))
     onset_env = librosa.onset.onset_strength(S=librosa.amplitude_to_db(S, ref=np.max), sr=SR, hop_length=HOP)
     _, bt = librosa.beat.beat_track(onset_envelope=onset_env, sr=SR, hop_length=HOP,
-                                    start_bpm=a.bpm or 120.0, tightness=400)
+                                    start_bpm=bpm or 120.0, tightness=400)
     beats = librosa.frames_to_time(bt, sr=SR, hop_length=HOP)
     if len(beats) < 8:
         raise ArrangeError(f"only {len(beats)} beats tracked: not a steady track, or too short")
+    return S, onset_env, beats
+
+
+def _grid(y: np.ndarray, beats: np.ndarray, a, dur: float) -> dict:
+    """The fitted beat grid: g (fit_grid), t0, T, shift, ratio and the grid times."""
     g = fit_grid(beats, a.bpm)
     t0, T = g["t0"], g["T"]
     shift, ratio = 0.0, 1.0
@@ -281,89 +315,155 @@ def arrange(a) -> dict:
     start = t0 % T
     if start - T >= -0.03:
         start -= T  # a beat a few ms before 0 is the track's first beat, not a lost one
-    grid = np.maximum(0.0, np.arange(start, dur, T))
-    chroma = librosa.feature.chroma_stft(S=S ** 2, sr=SR)
-    scores, z = downbeat(S, chroma, grid, T, B)
+    return {"g": g, "t0": t0, "T": T, "shift": shift, "ratio": ratio,
+            "grid": np.maximum(0.0, np.arange(start, dur, T))}
+
+
+def _phase(scores: np.ndarray, B: int, phase_arg: str) -> tuple[int, int, float, bool]:
+    """(downbeat phase, alternative phase, confidence, low confidence)."""
     order = list(np.argsort(-scores))
-    auto_phase = int(order[0])
+    auto = int(order[0])
+    second = int(order[1]) if B > 1 else auto
     conf = float(scores[order[0]] - scores[order[1]]) if B > 1 else 99.0
-    if a.phase == "auto":
-        phase = auto_phase
-        alt = int(order[1]) if B > 1 else auto_phase
-    else:
-        phase = int(a.phase)
-        if not 0 <= phase < B:
-            raise ArrangeError(f"--phase must be auto or 0..{B - 1}")
-        alt = auto_phase if auto_phase != phase else (int(order[1]) if B > 1 else phase)
-    low_conf = a.phase == "auto" and conf < 0.5
-    disagree = local_disagreements(z, grid, B, phase)
-    bar_len = B * T
+    if phase_arg == "auto":
+        return auto, second, conf, conf < 0.5
+    phase = int(phase_arg)
+    if not 0 <= phase < B:
+        raise ArrangeError(f"--phase must be auto or 0..{B - 1}")
+    return phase, (auto if auto != phase else second), conf, False
+
+
+def _bar_times(grid: np.ndarray, phase: int, B: int, bar_len: float, dur: float) -> list[float]:
     bars_t = [float(grid[i]) for i in range(phase, len(grid), B) if grid[i] + bar_len <= dur + 0.001]
     if len(bars_t) < 2:
         raise ArrangeError(f"only {len(bars_t)} whole bar(s) in the track: need at least 2")
-    feat, loud, dens = bar_features(y, S, chroma, onset_env, bars_t, bar_len)
-    nb = len(bars_t)
-    rel = loud - np.percentile(loud, 90)
-    nov = np.array([0.0] + [float(np.linalg.norm(feat[i] - feat[i - 1])) for i in range(1, nb)])
-    rise = np.array([0.0] + [float(loud[i] - loud[i - 1]) for i in range(1, nb)])
-    cands = drop_candidates(rel, nov)
+    return bars_t
 
+
+def _diffs(v: np.ndarray, fn) -> np.ndarray:
+    return np.array([0.0] + [float(fn(v[i], v[i - 1])) for i in range(1, len(v))])
+
+
+def _film(a, meta: dict, arc) -> tuple[int, int, list]:
+    """(film bars, drop film bar, arc)."""
     K = len(arc) if arc else int(a.bars)
     drop_film = int(a.drop_film_bar or meta.get("drop_film_bar") or round(0.7 * K))
     if not 1 <= drop_film <= K:
         raise ArrangeError(f"the drop film bar {drop_film} is outside 1..{K}")
-    if arc is None:
-        arc = default_arc(K, drop_film)
-    if a.drop == "auto":
-        drop_bar = cands[0]["bar"] if cands else None
-    elif a.drop == "none":
-        drop_bar = None
-    else:
-        drop_bar = int(a.drop)
-    for name, v in (("--drop", drop_bar), ("--start-bar", a.start_bar), ("--end-bar", a.end_bar)):
+    return K, drop_film, (default_arc(K, drop_film) if arc is None else arc)
+
+
+def _drop_bar(drop: str, cands: list):
+    if drop == "auto":
+        return cands[0]["bar"] if cands else None
+    return None if drop == "none" else int(drop)
+
+
+def _check_source_bars(nb: int, pairs) -> None:
+    for name, v in pairs:
         if v is not None and not 0 <= v < nb:
             raise ArrangeError(f"{name} {v} is outside the source bars 0..{nb - 1}")
-    path, total = walk(feat, loud, rel, arc, a.jump, max(1, a.phrase), drop_film - 1, drop_bar,
-                       a.start_bar, a.end_bar)
-    film_bar_len = B * 60.0 / film_bpm
-    segs, k = [], 0
+
+
+def _runs(path: list[int], K: int) -> list[tuple[int, int]]:
+    """(first, last) film-bar index of each run of consecutive source bars."""
+    runs, k = [], 0
     while k < K:
         e = k
         while e + 1 < K and path[e + 1] == path[e] + 1:
             e += 1
-        n = e - k + 1
-        src_from = bars_t[path[k]]
-        segs.append({"src_from": round(src_from, 4), "src_to": round(src_from + n * B * T, 4),
-                     "at": round(a.film_offset + k * film_bar_len, 4),
-                     "src_bars": [path[k], path[e]], "film_bars": [k + 1, e + 1]})
+        runs.append((k, e))
         k = e + 1
+    return runs
+
+
+def _segments(path: list[int], K: int, bars_t: list[float], B: int, T: float, at0: float,
+              film_bar_len: float) -> list[dict]:
+    segs = []
+    for k, e in _runs(path, K):
+        src_from = bars_t[path[k]]
+        segs.append({"src_from": round(src_from, 4), "src_to": round(src_from + (e - k + 1) * B * T, 4),
+                     "at": round(at0 + k * film_bar_len, 4),
+                     "src_bars": [path[k], path[e]], "film_bars": [k + 1, e + 1]})
+    return segs
+
+
+def _music(file: str, segs: list, bpm: float, film_bpm: float) -> dict:
+    none = abs(film_bpm / bpm - 1) < 0.002
+    return {"file": file, "src_bpm": round(film_bpm if none else bpm, 3), "target_bpm": film_bpm,
+            "stretch": "none" if none else "rubberband", "gain_db": 0,
+            "segments": [{"label": f"source bars {s['src_bars'][0]}-{s['src_bars'][1]} -> film bars "
+                                   f"{s['film_bars'][0]}-{s['film_bars'][1]}",
+                          "src_from": s["src_from"], "src_to": s["src_to"], "at": s["at"],
+                          "fade_in": 0.008, "fade_out": 0.06} for s in segs]}
+
+
+def _grid_at(grid: np.ndarray, i: int, fallback: float) -> float:
+    return float(grid[i]) if i < len(grid) else fallback
+
+
+def _bar_rows(bars_t: list[float], table: dict) -> list[dict]:
+    return [{"i": i, "t": round(bars_t[i], 4), "rel_db": round(float(table["rel"][i]), 2),
+             "novelty": round(float(table["nov"][i]), 3), "rise_db": round(float(table["rise"][i]), 2),
+             "density": round(float(table["dens"][i]), 3)} for i in range(len(bars_t))]
+
+
+def _bar_table(y, S, chroma, onset_env, bars_t: list[float], bar_len: float) -> dict:
+    """Per source bar: features, loudness, density, level under the top, novelty and rise."""
+    feat, loud, dens = bar_features(y, S, chroma, onset_env, bars_t, bar_len)
+    return {"feat": feat, "loud": loud, "dens": dens, "rel": loud - np.percentile(loud, 90),
+            "nov": _diffs(feat, lambda u, w: np.linalg.norm(u - w)), "rise": _diffs(loud, lambda u, w: u - w)}
+
+
+def _analyse_track(a, B: int) -> dict:
+    """Decode, beat-track, fit the grid, read the downbeat and the bar table."""
+    import librosa
+    y = decode(a.track)
+    dur = len(y) / SR
+    S, onset_env, beats = _beats(y, a.bpm)
+    v = _grid(y, beats, a, dur)
+    grid, T = v["grid"], v["T"]
+    chroma = librosa.feature.chroma_stft(S=S ** 2, sr=SR)
+    scores, z = downbeat(S, chroma, grid, T, B)
+    phase, alt, conf, low_conf = _phase(scores, B, a.phase)
+    bars_t = _bar_times(grid, phase, B, B * T, dur)
+    v.update(dur=dur, scores=scores, phase=phase, alt=alt, conf=conf, low_conf=low_conf, bars_t=bars_t,
+             disagree=local_disagreements(z, grid, B, phase),
+             table=_bar_table(y, S, chroma, onset_env, bars_t, B * T))
+    return v
+
+
+def arrange(a) -> dict:
+    _check_drop_arg(a.drop)
+    arc, meta = read_arc(a.arc)
+    film_bpm = float(meta.get("film_bpm", a.film_bpm))
+    B = int(meta.get("beats_per_bar", a.beats_per_bar))
+    v = _analyse_track(a, B)
+    tb, bars_t, T = v["table"], v["bars_t"], v["T"]
+    nb = len(bars_t)
+    cands = drop_candidates(tb["rel"], tb["nov"])
+    K, drop_film, arc = _film(a, meta, arc)
+    drop_bar = _drop_bar(a.drop, cands)
+    _check_source_bars(nb, (("--drop", drop_bar), ("--start-bar", a.start_bar), ("--end-bar", a.end_bar)))
+    opt = {"jump": a.jump, "phrase": max(1, a.phrase), "drop_k": drop_film - 1, "drop_bar": drop_bar,
+           "start_bar": a.start_bar, "end_bar": a.end_bar}
+    path, total = walk(tb["feat"], tb["loud"], tb["rel"], arc, opt)
+    segs = _segments(path, K, bars_t, B, T, a.film_offset, B * 60.0 / film_bpm)
     bpm = 60.0 / T
-    sratio = film_bpm / bpm
-    none = abs(sratio - 1) < 0.002
-    music = {"file": a.file or a.track, "src_bpm": round(film_bpm if none else bpm, 3), "target_bpm": film_bpm,
-             "stretch": "none" if none else "rubberband", "gain_db": 0,
-             "segments": [{"label": f"source bars {s['src_bars'][0]}-{s['src_bars'][1]} -> film bars "
-                                    f"{s['film_bars'][0]}-{s['film_bars'][1]}",
-                           "src_from": s["src_from"], "src_to": s["src_to"], "at": s["at"],
-                           "fade_in": 0.008, "fade_out": 0.06} for s in segs]}
-    first_down = float(grid[phase]) if phase < len(grid) else t0
-    alt_down = float(grid[alt]) if alt < len(grid) else t0
-    res = {"track": a.track, "duration": round(dur, 3), "bpm": round(bpm, 3), "beat_period": round(T, 6),
+    g, t0 = v["g"], v["t0"]
+    res = {"track": a.track, "duration": round(v["dur"], 3), "bpm": round(bpm, 3), "beat_period": round(T, 6),
            "film_bpm": film_bpm, "beats_per_bar": B, "film_bars": K, "drop_film_bar": drop_film, "arc": arc,
-           "stretch_ratio_to_film": round(sratio, 5), "t0": round(t0, 4),
-           "transient_shift_ms": round(shift * 1000, 1), "transient_fit_ratio": round(ratio, 3),
+           "stretch_ratio_to_film": round(film_bpm / bpm, 5), "t0": round(t0, 4),
+           "transient_shift_ms": round(v["shift"] * 1000, 1), "transient_fit_ratio": round(v["ratio"], 3),
            "grid_median_residual_ms": round(g["median_residual_ms"], 2),
-           "grid_inlier_frac": round(g["inlier_frac"], 3), "downbeat_phase": phase,
-           "phase_scores": [round(float(s), 3) for s in scores], "phase_confidence": round(conf, 3),
-           "phase_low_confidence": bool(low_conf),
-           "phase_alternative": {"phase": alt, "first_downbeat": round(alt_down, 4)},
-           "local_phase_disagreements": disagree, "drop_source_bar": drop_bar,
-           "bars": [{"i": i, "t": round(bars_t[i], 4), "rel_db": round(float(rel[i]), 2),
-                     "novelty": round(float(nov[i]), 3), "rise_db": round(float(rise[i]), 2),
-                     "density": round(float(dens[i]), 3)} for i in range(nb)],
-           "drop_candidates": cands, "map": path, "segments": segs, "music": music,
-           "total_cost": round(total, 3)}
-    res["summary"] = summary(res, first_down, a.phase)
+           "grid_inlier_frac": round(g["inlier_frac"], 3), "downbeat_phase": v["phase"],
+           "phase_scores": [round(float(s), 3) for s in v["scores"]], "phase_confidence": round(v["conf"], 3),
+           "phase_low_confidence": bool(v["low_conf"]),
+           "phase_alternative": {"phase": v["alt"], "first_downbeat": round(_grid_at(v["grid"], v["alt"], t0), 4)},
+           "local_phase_disagreements": v["disagree"], "drop_source_bar": drop_bar,
+           "bars": _bar_rows(bars_t, tb), "drop_candidates": cands, "map": path, "segments": segs,
+           "music": _music(a.file or a.track, segs, bpm, film_bpm), "total_cost": round(total, 3)}
+    res["summary"] = summary(res, _grid_at(v["grid"], v["phase"], t0), a.phase)
     return res
 
 
@@ -432,22 +532,21 @@ def parse(argv):
     return p.parse_args(argv)
 
 
-def main(argv=None) -> int:
-    a = parse(sys.argv[1:] if argv is None else argv)
-    if a.self_test:
-        return self_test()
-    if not a.track:
-        say("arrange.py: give a TRACK", file=sys.stderr)
-        return 2
+def _write_out(out: str | None, r: dict) -> None:
+    if not out:
+        return
+    os.makedirs(os.path.dirname(os.path.abspath(out)), exist_ok=True)
+    with open(out, "w", encoding="utf-8") as fh:
+        json.dump(r, fh, indent=1)
+
+
+def _run(a) -> int:
     try:
         r = arrange(a)
     except ArrangeError as e:
         say(f"arrange.py: {e}", file=sys.stderr)
         return 1
-    if a.out:
-        os.makedirs(os.path.dirname(os.path.abspath(a.out)), exist_ok=True)
-        with open(a.out, "w", encoding="utf-8") as fh:
-            json.dump(r, fh, indent=1)
+    _write_out(a.out, r)
     if a.json:
         say(json.dumps(r, indent=1))
     else:
@@ -455,9 +554,48 @@ def main(argv=None) -> int:
     return 0
 
 
-def self_test() -> int:
+def main(argv=None) -> int:
+    a = parse(sys.argv[1:] if argv is None else argv)
+    if a.self_test:
+        return self_test()
+    if not a.track:
+        say("arrange.py: give a TRACK", file=sys.stderr)
+        return 2
+    return _run(a)
+
+
+def _quiet(argv, err=False):
+    """main(argv) with stdout (or stderr) captured. Returns (code, text)."""
     import contextlib
     import io
+    buf = io.StringIO()
+    with (contextlib.redirect_stderr(buf) if err else contextlib.redirect_stdout(buf)):
+        code = main(argv)
+    return code, buf.getvalue()
+
+
+def _test_grid(ck, song: str, out: str) -> None:
+    code, _ = _quiet([song, "--bars", "8", "--out", out])
+    r = json.load(open(out))
+    ck("S11 bpm 120 +-0.05", code == 0 and abs(r["bpm"] - 120) <= 0.05)
+    down = r["bars"][0]["t"]
+    ck("S11 the downbeat phase is the accent", abs(((down + 0.25) % 2.0) - 0.25) < 0.03)
+    ck("S11 stretch none for film 120", r["music"]["stretch"] == "none" and r["music"]["src_bpm"] == 120)
+    bar_times = [b["t"] for b in r["bars"]]
+    ck("S11 segments start on bar times", all(any(abs(s["src_from"] - t) < 1e-3 for t in bar_times)
+                                              for s in r["segments"]))
+    drop = r["map"][r["drop_film_bar"] - 1]
+    ck("S11 the drop bar is in the louder half", r["bars"][drop]["t"] >= 19.5)
+
+
+def _test_errors(ck, song: str, d: str) -> None:
+    code, err = _quiet([song, "--bars", "8", "--drop", "99"], err=True)
+    ck("S12 --drop 99 names the range 0..19", code == 1 and "0..19" in err)
+    ck("bad --drop word", _quiet([song, "--drop", "loud"], err=True)[0] == 1)
+    ck("missing track", _quiet([os.path.join(d, "none.wav")], err=True)[0] == 1)
+
+
+def self_test() -> int:
     import tempfile
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
     import fixtures as fx
@@ -465,30 +603,12 @@ def self_test() -> int:
     with tempfile.TemporaryDirectory() as d:
         song = fx.write(os.path.join(d, "song.wav"), fx.click_track(120, 20, louder_from=10))
         out = os.path.join(d, "arr.json")
-        with contextlib.redirect_stdout(io.StringIO()):
-            code = main([song, "--bars", "8", "--out", out])
-        r = json.load(open(out))
-        ck("S11 bpm 120 +-0.05", code == 0 and abs(r["bpm"] - 120) <= 0.05)
-        down = r["bars"][0]["t"]
-        ck("S11 the downbeat phase is the accent", abs(((down + 0.25) % 2.0) - 0.25) < 0.03)
-        ck("S11 stretch none for film 120", r["music"]["stretch"] == "none" and r["music"]["src_bpm"] == 120)
-        bar_times = [b["t"] for b in r["bars"]]
-        ck("S11 segments start on bar times", all(any(abs(s["src_from"] - t) < 1e-3 for t in bar_times)
-                                                  for s in r["segments"]))
-        drop = r["map"][r["drop_film_bar"] - 1]
-        ck("S11 the drop bar is in the louder half", r["bars"][drop]["t"] >= 19.5)
-        err = io.StringIO()
-        with contextlib.redirect_stderr(err):
-            code = main([song, "--bars", "8", "--drop", "99"])
-        ck("S12 --drop 99 names the range 0..19", code == 1 and "0..19" in err.getvalue())
-        with contextlib.redirect_stderr(io.StringIO()):
-            ck("bad --drop word", main([song, "--drop", "loud"]) == 1)
-            ck("missing track", main([os.path.join(d, "none.wav")]) == 1)
+        _test_grid(ck, song, out)
+        _test_errors(ck, song, d)
         ck("default arc shape", default_arc(15, 9)[8] == 0.0 and default_arc(15, 9)[0] == -14.0)
         arcf = fx.put_json(os.path.join(d, "arc.json"), {"film_bpm": 120, "beats_per_bar": 4, "drop_film_bar": 3,
                                                          "arc": [-14, -10, 0, 0, -9]})
-        with contextlib.redirect_stdout(io.StringIO()):
-            code = main([song, "--arc", arcf, "--out", out])
+        code, _ = _quiet([song, "--arc", arcf, "--out", out])
         r = json.load(open(out))
         ck("arc file: 5 film bars, drop on film bar 3", code == 0 and r["film_bars"] == 5 and r["drop_film_bar"] == 3)
     return ck.code()
