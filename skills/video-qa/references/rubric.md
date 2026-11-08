@@ -84,7 +84,7 @@ check 1, check 2, check 7.
 
 ## Axis 5: Product Desire & Demo Clarity
 
-Evidence: capture plates in the contact sheet, extracted frames, `BRIEF.md`.
+Evidence: capture plates in the contact sheet, frames, `BRIEF.md`.
 
 Ask: **Does it make a viewer WANT the product?** Score proof clarity and desire.
 
