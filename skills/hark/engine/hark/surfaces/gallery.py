@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from hark.surfaces import gallery_inputs as gi
-from hark.surfaces._flow import raise_if
+from hark.surfaces._flow import bind, raise_if, signature
 
 CODECS = ("flac", "wav", "mp3", "opus", "vorbis")
 LOSSY = {  # codec: (encoder, container, mime, extension, default kbps)
@@ -451,18 +451,31 @@ def _result(b: dict[str, Any], cards: list[dict], w: dict[str, Any], t0: float) 
     return result
 
 
-def gallery(folder: str | None = None, out: str = "gallery.html", results: Any = None, refs: str | None = None,
-            compare: list[str] | None = None, embed: bool = False, codec: str = "flac", sub: str = "final",
-            title: str | None = None, max_refs: int = 6, compressed: bool = False, kbps: int | None = None,
-            max_mb: float = 25.0, alias: Any = None) -> dict[str, Any]:
-    """Build 1 static HTML listening page from forge output folders."""
-    args = dict(locals())
+GALLERY_PARAMS = (
+    ("folder", "str | None", None), ("out", "str", "gallery.html"), ("results", "Any", None),
+    ("refs", "str | None", None), ("compare", "list[str] | None", None), ("embed", "bool", False),
+    ("codec", "str", "flac"), ("sub", "str", "final"), ("title", "str | None", None), ("max_refs", "int", 6),
+    ("compressed", "bool", False), ("kbps", "int | None", None), ("max_mb", "float", 25.0), ("alias", "Any", None),
+)
+_GALLERY_SIG = signature(GALLERY_PARAMS).replace(return_annotation="dict[str, Any]")
+
+
+def gallery(*args: Any, **kwargs: Any) -> dict[str, Any]:
+    """Build 1 static HTML listening page from forge output folders.
+
+    The signature is GALLERY_PARAMS (surfaces.md 1.1): gallery(folder=None, out='gallery.html', results=None,
+    refs=None, compare=None, embed=False, codec='flac', sub='final', title=None, max_refs=6, compressed=False,
+    kbps=None, max_mb=25.0, alias=None).
+    """
     t0 = time.monotonic()
-    build = _prepare(args)
+    build = _prepare(bind(_GALLERY_SIG, args, kwargs))
     cards = _cards(build)
     written = _write(build, cards)
     _size_warning(build, written["size_mb"])
     return _result(build, cards, written, t0)
+
+
+gallery.__signature__ = _GALLERY_SIG  # type: ignore[attr-defined]
 
 
 def _plural(n: int, one: str, many: str) -> str:

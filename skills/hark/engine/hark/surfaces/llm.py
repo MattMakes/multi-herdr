@@ -519,21 +519,27 @@ def _dict(v: Any) -> dict:
     return v if isinstance(v, dict) else {}
 
 
+def _scores_and_notes(obj: dict) -> dict[str, Any]:
+    scores, notes = _dict(obj.get("scores")), _dict(obj.get("notes"))
+    kept = {k: str(notes.get(k) or "").strip() for k in SCORE_KEYS}
+    return {"scores": {k: score_of(scores.get(k)) for k in SCORE_KEYS},
+            "notes": {k: v for k, v in kept.items() if v}}
+
+
+def _lists(obj: dict) -> dict[str, Any]:
+    answer = str(obj.get("answer") or "").strip()
+    out = {"strengths": _strings(obj.get("strengths"), 8), "top_fixes": _strings(obj.get("top_fixes"), 5)}
+    out.update({"answer": answer} if answer else {})
+    return out
+
+
 def normalize(obj: dict, offset: float = 0.0, clip_len: float = 1e9) -> dict[str, Any]:
     """The model answer in hark's fixed shape, with times in file seconds."""
-    scores, notes = _dict(obj.get("scores")), _dict(obj.get("notes"))
-    out: dict[str, Any] = {
-        "overall": _overall(obj),
-        "scores": {k: score_of(scores.get(k)) for k in SCORE_KEYS},
-        "notes": {k: str(notes[k]).strip() for k in SCORE_KEYS if str(notes.get(k) or "").strip()},
-        "synthetic_or_cheap": _timed(obj.get("synthetic_or_cheap"), ("what", "why"), offset, clip_len),
-        "issues": _issues(obj.get("issues"), offset, clip_len),
-        "strengths": _strings(obj.get("strengths"), 8),
-        "top_fixes": _strings(obj.get("top_fixes"), 5),
-    }
-    answer = str(obj.get("answer") or "").strip()
-    if answer:
-        out["answer"] = answer
+    out: dict[str, Any] = {"overall": _overall(obj)}
+    out.update(_scores_and_notes(obj))
+    out["synthetic_or_cheap"] = _timed(obj.get("synthetic_or_cheap"), ("what", "why"), offset, clip_len)
+    out["issues"] = _issues(obj.get("issues"), offset, clip_len)
+    out.update(_lists(obj))
     return out
 
 
