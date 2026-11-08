@@ -14,7 +14,7 @@ import numpy as np
 from scipy.fft import irfft, next_fast_len, rfft, rfftfreq
 from scipy.ndimage import convolve1d, median_filter, uniform_filter, uniform_filter1d
 
-from hark.fit.analysis._common import (SR, as_stereo, check_kind, db, is_mono_pair,
+from hark.fit.analysis._common import (SR, as_stereo, check_kind, merge_knobs, db, is_mono_pair,
                                        load_json, mel_db_distance, resample, save_json,
                                        source_name, threads)
 
@@ -81,13 +81,21 @@ def weights(freqs: Any, cents: Any) -> np.ndarray:
 
 def _fill_weight(row: np.ndarray, e: np.ndarray, ec: np.ndarray, b: int) -> None:
     lo = ec[b - 1] if b > 0 else ec[0] - (ec[1] - ec[0])
-    rise = (e >= lo) & (e <= ec[b])
-    row[rise] = np.sin(0.5 * np.pi * (e[rise] - lo) / (ec[b] - lo)) ** 2
+    _rise_part(row, e, lo, ec[b])
     if b == len(ec) - 1:
         row[e > ec[b]] = 1.0
     else:
-        fall = (e > ec[b]) & (e < ec[b + 1])
-        row[fall] = np.cos(0.5 * np.pi * (e[fall] - ec[b]) / (ec[b + 1] - ec[b])) ** 2
+        _fall_part(row, e, ec[b], ec[b + 1])
+
+
+def _rise_part(row: np.ndarray, e: np.ndarray, lo: float, c: float) -> None:
+    rise = (e >= lo) & (e <= c)
+    row[rise] = np.sin(0.5 * np.pi * (e[rise] - lo) / (c - lo)) ** 2
+
+
+def _fall_part(row: np.ndarray, e: np.ndarray, c: float, hi: float) -> None:
+    fall = (e > c) & (e < hi)
+    row[fall] = np.cos(0.5 * np.pi * (e[fall] - c) / (hi - c)) ** 2
 
 
 @functools.lru_cache(maxsize=8)
@@ -194,18 +202,22 @@ def _ridge_floor(P_db: np.ndarray) -> np.ndarray:
 
 def _frame_peaks(col, floor, f, lo_bin, hi_bin, ridge_db) -> list:
     ex = col - floor
-    cand = []
-    for i in range(max(lo_bin, 2), min(hi_bin, len(col) - 2)):
-        if ex[i] > ridge_db and col[i] == col[i - 2:i + 3].max():
-            cand.append(i)
-    cand = sorted(cand, key=lambda i: -ex[i])[:12]
-    out = []
-    for i in cand:
-        a, b, c = col[i - 1], col[i], col[i + 1]
-        curv = a - 2 * b + c
-        d = 0.5 * (a - c) / curv if curv < 0 else 0.0
-        out.append((f[i] + d * (f[1] - f[0]), b - 0.25 * (a - c) * d, ex[i], i))
-    return out
+    return [_peak_point(col, ex, f, i) for i in _peak_cands(col, ex, lo_bin, hi_bin, ridge_db)]
+
+
+def _peak_cands(col, ex, lo_bin, hi_bin, ridge_db) -> list[int]:
+    """The 12 strongest local maxima above the floor by ridge_db."""
+    cand = [i for i in range(max(lo_bin, 2), min(hi_bin, len(col) - 2))
+            if ex[i] > ridge_db and col[i] == col[i - 2:i + 3].max()]
+    return sorted(cand, key=lambda i: -ex[i])[:12]
+
+
+def _peak_point(col, ex, f, i: int) -> tuple:
+    """(Hz, dB, excess, bin) of the peak at bin i, refined by a parabola."""
+    a, b, c = col[i - 1], col[i], col[i + 1]
+    curv = a - 2 * b + c
+    d = 0.5 * (a - c) / curv if curv < 0 else 0.0
+    return (f[i] + d * (f[1] - f[0]), b - 0.25 * (a - c) * d, ex[i], i)
 
 
 def _track_ridges(Pdb, floor, active, f, opts) -> list:
@@ -255,19 +267,25 @@ def _extend_ridge(tr, p, k, floor) -> None:
 
 
 def _ridges(m: np.ndarray, opts: dict) -> list:
-    T = n_frames(len(m))
-    X = _frames_fft(m, 2048, T)
+    Pdb, floor, active = _ridge_spectrum(m)
+    tracks = _track_ridges(Pdb, floor, active, rfftfreq(2048, 1 / SR), opts)
+    return [_ridge_model(t) for t in _best_ridges(tracks, opts)]
+
+
+def _ridge_spectrum(m: np.ndarray):
+    """2048-point power (dB), its ridge floor, and the frames within 50 dB of the loudest."""
+    X = _frames_fft(m, 2048, n_frames(len(m)))
     P = np.abs(X.T) ** 2
     Pdb = db(P)
-    floor = _ridge_floor(Pdb)
     tot = db(P.sum(axis=0))
-    active = tot >= tot.max() - 50
-    f = rfftfreq(2048, 1 / SR)
-    tracks = _track_ridges(Pdb, floor, active, f, opts)
+    return Pdb, _ridge_floor(Pdb), tot >= tot.max() - 50
+
+
+def _best_ridges(tracks: list, opts: dict) -> list:
     min_len = max(2, round(opts["ridge_ms"] / 5))
     good = [t for t in tracks if len(t["k"]) >= min_len and np.median(t["ex"]) >= opts["ridge_db"] + 2]
     good.sort(key=lambda t: -float(np.sum(10 ** (np.array(t["db"]) / 10) - 10 ** (np.array(t["fl"]) / 10))))
-    return [_ridge_model(t) for t in good[:opts["max_ridges"]]]
+    return good[:opts["max_ridges"]]
 
 
 def _ridge_model(tr: dict) -> dict:
@@ -498,22 +516,36 @@ def _excitation(n, nfft, tex, roughness, rate_scale, r) -> np.ndarray:
     return rfft(x)
 
 
-def _synth(n, kt, kdb, cents, seed, stereo=None, texture=None, ridges=None, mono=True,
-           rate_scale=1.0, roughness=1.0, fine=None, fine_shift=0.0, power=False, ridge_sig=None):
-    """The synthesis core: band noise on keyframes, with optional stereo, texture and ridges."""
-    gA, gB, gC, gM, gR = _gens(seed)
-    tex = texture or {}
-    two = not mono and stereo is not None
-    nfft = next_fast_len(max(n, 64))
-    W, SA, SB = _spectra(n, nfft, cents, tex, (gA, gB, gC), two, (fine, fine_shift), (roughness, rate_scale))
-    Gb = _group_blend(cents)
-    mod = _modulation(n, tex.get("am"), rate_scale, roughness, gM, Gb)
+SYNTH_DEFAULTS = {"stereo": None, "texture": None, "ridges": None, "mono": True, "rate_scale": 1.0,
+                  "roughness": 1.0, "fine": None, "fine_shift": 0.0, "power": False, "ridge_sig": None}
+
+
+def _synth(n, kt, kdb, cents, seed, **opt):
+    """The synthesis core: band noise on keyframes, with optional stereo, texture and ridges.
+
+    Options and defaults: SYNTH_DEFAULTS. With power=True it also returns the expected power."""
+    o = merge_knobs(SYNTH_DEFAULTS, opt, "synth")
+    g = _gens(seed)
     kdb = np.asarray(kdb, dtype=float)
-    ctrl = _stereo_ctrl(stereo, kt, n, Gb) if two else None
-    L, R = _band_mix(n, kt, kdb, SA, SB, W, nfft, mod, ctrl)
-    _ridge_layer(L, R, ridges, ridge_sig, gR, ctrl, cents)
-    y = L if mono else np.column_stack([L, R if two else L])
-    return (y, _expected(n, kt, kdb, cents, nfft, W, ridges)) if power else y
+    bed = _noise_bed(n, kt, kdb, cents, o, g)
+    L, R = bed["L"], bed["R"]
+    _ridge_layer(L, R, o["ridges"], o["ridge_sig"], g[4], bed["ctrl"], cents)
+    y = L if o["mono"] else np.column_stack([L, R if R is not None else L])
+    return (y, _expected(n, kt, kdb, cents, bed["nfft"], bed["W"], o["ridges"])) if o["power"] else y
+
+
+def _noise_bed(n, kt, kdb, cents, o: dict, g: list) -> dict:
+    """The band-noise layer: L (and R for stereo), with the weights, FFT size and stereo control."""
+    tex = o["texture"] or {}
+    two = not o["mono"] and o["stereo"] is not None
+    nfft = next_fast_len(max(n, 64))
+    W, SA, SB = _spectra(n, nfft, cents, tex, g[:3], two, (o["fine"], o["fine_shift"]),
+                         (o["roughness"], o["rate_scale"]))
+    Gb = _group_blend(cents)
+    mod = _modulation(n, tex.get("am"), o["rate_scale"], o["roughness"], g[3], Gb)
+    ctrl = _stereo_ctrl(o["stereo"], kt, n, Gb) if two else None
+    L, R = _band_mix(n, kt, kdb, (SA, SB, W, nfft), mod, ctrl)
+    return {"L": L, "R": R, "W": W, "nfft": nfft, "ctrl": ctrl}
 
 
 def _spectra(n, nfft, cents, tex, gens, two, fine_args, rough_args):
@@ -541,8 +573,10 @@ def _add_ridge_sig(L: np.ndarray, R, rs, gains) -> None:
             R += rs * gains[1]
 
 
-def _band_mix(n, kt, kdb, SA, SB, W, nfft, mod, ctrl):
-    """Sum of the band noises: L only, or L and R from 2 excitations and the stereo control."""
+def _band_mix(n, kt, kdb, spec, mod, ctrl):
+    """Sum of the band noises: L only, or L and R from 2 excitations and the stereo control.
+
+    spec is (SA, SB, W, nfft): the excitation spectra, band weights and FFT size."""
     t = np.arange(n) / SR
     L = np.zeros(n)
     R = np.zeros(n) if ctrl is not None else None
@@ -550,15 +584,25 @@ def _band_mix(n, kt, kdb, SA, SB, W, nfft, mod, ctrl):
         amp = 10 ** (np.interp(t, kt, kdb[:, b]) / 20)
         if mod is not None:
             amp = amp * mod[b]
-        nA = irfft(SA * W[b], nfft)[:n]
-        if ctrl is None:
-            L += amp * nA
-            continue
-        nB = irfft(SB * W[b], nfft)[:n]
-        c, s, gl, gr = (p[b] for p in ctrl)
+        _mix_band(L, R, amp, _band_noise(spec, b, n, ctrl is not None),
+                  None if ctrl is None else [p[b] for p in ctrl])
+    return L, R
+
+
+def _band_noise(spec, b: int, n: int, two: bool):
+    SA, SB, W, nfft = spec
+    nA = irfft(SA * W[b], nfft)[:n]
+    return nA, (irfft(SB * W[b], nfft)[:n] if two else None)
+
+
+def _mix_band(L, R, amp, noises, cb) -> None:
+    nA, nB = noises
+    if cb is None:
+        L += amp * nA
+    else:
+        c, s, gl, gr = cb
         L += amp * gl * (c * nA + s * nB)
         R += amp * gr * (c * nA - s * nB)
-    return L, R
 
 
 def _ridge_wave(n: int, ridges: list | None, r) -> np.ndarray | None:
@@ -1099,18 +1143,9 @@ def fit(x: Any, name: str | None = None, verbose: bool = False, sr: int = SR, **
 
 def _fit_model(a: np.ndarray, opts: dict, name) -> dict:
     m = a.mean(axis=1)
-    n = len(m)
     cents = centers(opts["n_bands"])
-    an = analyse(a, cents, opts["stereo"] and not is_mono_pair(a))
-    D = an["D"]
-    ridges = _ridges(m, opts) if opts["ridges"] and n >= 2048 else []
-    _remove_ridges(D, ridges, cents)
-    S, k, wander = _gesture(D, opts)
-    S, rank = _denoise(S, n, k, cents) if opts["denoise"] else (S, 0)
-    gain = _gain_iter(S, k, _onset_frame(D), n, cents, S > S.max() - 70, opts)
-    st = _stereo_traj(an["stereo"])
-    keys, t = _keyframes(gain, st, bandwidths(cents), opts, wander)
-    model = _store(a, name(), n, cents, gain, st, keys, t, ridges, opts, k, rank, wander)
+    shape = _fit_shape(a, m, cents, opts)
+    model = _store(a, name(), len(m), cents, shape, opts)
     if opts["fine"]:
         model["fine"] = _fine(m, model, cents)
     if opts["texture"]:
@@ -1118,19 +1153,43 @@ def _fit_model(a: np.ndarray, opts: dict, name) -> dict:
     return model
 
 
-def _store(a, name, n, cents, gain, st, keys, t, ridges, opts, k, rank, wander) -> dict:
-    stereo = None
-    if st is not None:
-        stereo = {"groups": list(GROUPS), "ild": np.round(st["ild"][:, keys].T, 2).tolist(),
-                  "icc": np.round(st["icc"][:, keys].T, 3).tolist()}
+def _fit_shape(a: np.ndarray, m: np.ndarray, cents, opts: dict) -> dict:
+    """Ridges, the gain keyframes and the stereo trajectory of the recording."""
+    an = analyse(a, cents, opts["stereo"] and not is_mono_pair(a))
+    ridges = _ridges(m, opts) if opts["ridges"] and len(m) >= 2048 else []
+    _remove_ridges(an["D"], ridges, cents)
+    g = _gain_fit(an["D"], len(m), cents, opts)
+    st = _stereo_traj(an["stereo"])
+    keys, t = _keyframes(g["gain"], st, bandwidths(cents), opts, g["wander"])
+    return dict(g, st=st, keys=keys, t=t, ridges=ridges)
+
+
+def _gain_fit(D: np.ndarray, n: int, cents, opts: dict) -> dict:
+    S, k, wander = _gesture(D, opts)
+    S, rank = _denoise(S, n, k, cents) if opts["denoise"] else (S, 0)
+    gain = _gain_iter(S, k, _onset_frame(D), n, cents, S > S.max() - 70, opts)
+    return {"gain": gain, "k": k, "rank": rank, "wander": wander}
+
+
+def _store(a, name, n, cents, sh: dict, opts) -> dict:
+    keys = sh["keys"]
+    stereo = _stereo_keys(sh["st"], keys)
     return {"kind": KIND, "version": VERSION, "source": name, "sr": SR, "dur": round(n / SR, 4),
             "level_db": round(_level_db(a), 2),
             "bands": {"n": len(cents), "f_lo": F_LO, "f_hi": F_HI, "scale": "ln(1+f/80)"},
-            "fit": {"gesture_ms": 5 * k, "rank": rank, "tol_db": opts["tol_db"], "fluct_db": round(wander, 3)},
-            "env": {"t": [round(float(t[i]), 4) for i in keys],
-                    "db": np.round(gain[:, keys].T, 1).tolist()},
-            "stereo": stereo, "fine": None, "texture": None, "ridges": ridges, "finish": True,
+            "fit": {"gesture_ms": 5 * sh["k"], "rank": sh["rank"], "tol_db": opts["tol_db"],
+                    "fluct_db": round(sh["wander"], 3)},
+            "env": {"t": [round(float(sh["t"][i]), 4) for i in keys],
+                    "db": np.round(sh["gain"][:, keys].T, 1).tolist()},
+            "stereo": stereo, "fine": None, "texture": None, "ridges": sh["ridges"], "finish": True,
             "channels": 2 if stereo else 1}
+
+
+def _stereo_keys(st: dict | None, keys) -> dict | None:
+    if st is None:
+        return None
+    return {"groups": list(GROUPS), "ild": np.round(st["ild"][:, keys].T, 2).tolist(),
+            "icc": np.round(st["icc"][:, keys].T, 3).tolist()}
 
 
 # ================================================================ render
@@ -1198,16 +1257,15 @@ def _take_gain(y: np.ndarray, Pk: np.ndarray, n: int) -> float:
     return float(np.sqrt(want / got)) if got > 0 else 1.0
 
 
-def render(model: dict, seed: int = 0, length: float = 1, speed: float = 1, sweep: float = 1,
-           shift: float = 0, tilt: float = 0, roughness: float = 1, width: float = 1, ridges: float = 1,
-           gain_db: float = 0, doppler: float = 0, proximity: float = 0, pan: float = 1,
-           motion: float = 0, level: bool = True, limit: bool = True, steady: bool = True) -> np.ndarray:
-    """A take of the model: (n, 2) float32 at 48 kHz."""
+RENDER_DEFAULTS = {"length": 1, "speed": 1, "sweep": 1, "shift": 0, "tilt": 0, "roughness": 1, "width": 1,
+                   "ridges": 1, "gain_db": 0, "doppler": 0, "proximity": 0, "pan": 1, "motion": 0,
+                   "level": True, "limit": True, "steady": True}
+
+
+def render(model: dict, seed: int = 0, **knobs) -> np.ndarray:
+    """A take of the model: (n, 2) float32 at 48 kHz. Knobs and defaults: RENDER_DEFAULTS."""
     check(model)
-    k = {"length": length, "speed": speed, "sweep": sweep, "shift": shift, "tilt": tilt,
-         "roughness": roughness, "width": width, "ridges": ridges, "gain_db": gain_db, "doppler": doppler,
-         "proximity": proximity, "pan": pan, "motion": motion, "level": level, "limit": limit,
-         "steady": steady}
+    k = merge_knobs(RENDER_DEFAULTS, knobs, "spectral render")
     return _render_knobs(model, seed, k).astype(np.float32)
 
 
@@ -1215,8 +1273,9 @@ def _render_knobs(model: dict, seed: int, k: dict) -> np.ndarray:
     s, n, kt, oct_ = _take_time(model, k)
     cents = centers(model["bands"]["n"])
     kdb, rd, st = _edited(model, k, s, kt, cents, oct_)
-    y, P = _synth(n, kt, kdb, cents, seed, st, model.get("texture"), rd, mono=False, rate_scale=1 / s,
-                  roughness=k["roughness"], fine=model.get("fine"), fine_shift=oct_, power=True)
+    y, P = _synth(n, kt, kdb, cents, seed, stereo=st, texture=model.get("texture"), ridges=rd, mono=False,
+                  rate_scale=1 / s, roughness=k["roughness"], fine=model.get("fine"), fine_shift=oct_,
+                  power=True)
     y = _level(y, P, model, k["gain_db"], k["level"], k["steady"], n)
     if k["doppler"] or k["motion"]:
         y = _motion(y, model, s, k["doppler"], k["motion"])
@@ -1308,15 +1367,18 @@ def trajectory(model: dict) -> dict:
     """The gesture's motion per keyframe."""
     cents = centers(model["bands"]["n"])
     kdb = np.asarray(model["env"]["db"], dtype=float)
-    t = np.asarray(model["env"]["t"], dtype=float)
+    out = _traj_core(np.asarray(model["env"]["t"], dtype=float), kdb, cents)
+    out.update(_traj_stereo(model.get("stereo"), cents, kdb))
+    return out
+
+
+def _traj_core(t: np.ndarray, kdb: np.ndarray, cents) -> dict:
     lev = db((10 ** (kdb / 10) * bandwidths(cents)[None, :]).sum(axis=1))
     c, _ = _centroids(kdb, cents)
     pk, first, last = _peak_span(lev)
-    out = {"t": t.tolist(), "level_db": np.round(lev, 2).tolist(), "centroid_hz": np.round(2 ** c, 1).tolist(),
-           "tilt_db_oct": [round(_tilt(kdb[i], cents), 2) for i in range(len(t))],
-           "peak_s": float(t[pk]), "rise_s": float(t[pk] - t[first]), "fall_s": float(t[last] - t[pk])}
-    out.update(_traj_stereo(model.get("stereo"), cents, kdb))
-    return out
+    return {"t": t.tolist(), "level_db": np.round(lev, 2).tolist(), "centroid_hz": np.round(2 ** c, 1).tolist(),
+            "tilt_db_oct": [round(_tilt(kdb[i], cents), 2) for i in range(len(t))],
+            "peak_s": float(t[pk]), "rise_s": float(t[pk] - t[first]), "fall_s": float(t[last] - t[pk])}
 
 
 def _peak_span(lev: np.ndarray) -> tuple[int, int, int]:
@@ -1447,17 +1509,25 @@ def _attack_ms(x: np.ndarray) -> float:
 
 def compare(a: Any, b: Any, clap: bool = False) -> dict:
     """The fitter's own distance set: mel, envelope correlation, attack, tone, lengths, optional CLAP."""
-    xa, xb = (np.asarray(v, float).mean(axis=1) if np.ndim(v) == 2 else np.asarray(v, float) for v in (a, b))
-    ta, tb = _lev50(_trim(xa)), _lev50(_trim(xb))
-    n = max(len(ta), len(tb))
-    ta, tb = np.pad(ta, (0, n - len(ta))), np.pad(tb, (0, n - len(tb)))
+    xa, xb, ta, tb = _compare_inputs(a, b)
     out = {"mel_db": round(mel_db_distance(ta, tb)[0], 3), "env_corr": round(_env_corr5(ta, tb), 4),
-           "attack_ms": [_attack_ms(ta), _attack_ms(tb)],
-           "tone_db": round(float(np.sqrt(np.mean((_tone_profile(xa) - _tone_profile(xb)) ** 2))), 3),
+           "attack_ms": [_attack_ms(ta), _attack_ms(tb)], "tone_db": _tone_db(xa, xb),
            "len_s": [round(len(xa) / SR, 4), round(len(xb) / SR, 4)]}
     if clap:
         out["clap"] = _clap_sim(xa, xb)
     return out
+
+
+def _compare_inputs(a: Any, b: Any):
+    """Channel means of a and b, and their trimmed, level-matched copies padded to one length."""
+    xa, xb = (np.asarray(v, float).mean(axis=1) if np.ndim(v) == 2 else np.asarray(v, float) for v in (a, b))
+    ta, tb = _lev50(_trim(xa)), _lev50(_trim(xb))
+    n = max(len(ta), len(tb))
+    return xa, xb, np.pad(ta, (0, n - len(ta))), np.pad(tb, (0, n - len(tb)))
+
+
+def _tone_db(xa: np.ndarray, xb: np.ndarray) -> float:
+    return round(float(np.sqrt(np.mean((_tone_profile(xa) - _tone_profile(xb)) ** 2))), 3)
 
 
 def _env_corr5(ta: np.ndarray, tb: np.ndarray) -> float:

@@ -14,7 +14,7 @@ from scipy.fft import fft, ifft, next_fast_len, rfft
 from scipy.signal import butter, fftconvolve, resample_poly, sosfiltfilt, stft
 
 from hark.fit.analysis import _kernels as K
-from hark.fit.analysis._common import (SR, as_stereo, check_kind, db, is_mono_pair, load_json,
+from hark.fit.analysis._common import (SR, as_stereo, check_kind, merge_knobs, db, is_mono_pair, load_json,
                                        mel_db_distance, rdp, resample, save_json, sig, source_name)
 
 KIND = "modal"
@@ -128,11 +128,16 @@ def _refine(x: np.ndarray, c: int) -> int:
     pk = float(np.max(np.abs(w))) if len(w) else 0.0
     if len(w) < 100 or pk <= 0:
         return c
+    return a + _rise_index(w, pk)
+
+
+def _rise_index(w: np.ndarray, pk: float) -> int:
+    """Index of the strike start in w: the first loud sample after silence, else the first big step."""
     if np.sqrt(np.mean(w[:96] ** 2)) < 0.05 * pk:
-        return a + int(np.argmax(np.abs(w) >= 0.1 * pk))
+        return int(np.argmax(np.abs(w) >= 0.1 * pk))
     d = np.abs(np.diff(w))
     thr = min(max(0.3 * d.max(), 4 * np.median(d[:96])), d.max())
-    return a + int(np.argmax(d >= thr))
+    return int(np.argmax(d >= thr))
 
 
 def _gap_filter(found: list, min_gap_ms: float) -> list:
@@ -821,19 +826,18 @@ def _side_ratio(a: np.ndarray) -> list[float]:
 
 # ================================================================ fit
 
-def fit(x: Any, max_strikes: int = 10, kmax: int = 16, nmax: int = 384, passes: int = 2,
-        skip_ms: float = 0.5, prune_db: float = -50, max_modes: int = 80, onset_rel: float = 0.2,
-        noise_tol_db: float = 1, analysis_s: float = 3, attack_ms: float = 2.5,
-        verbose: bool = False, ramps=RAMPS_MS, pre_cap_s: float = 0.002, side_t: bool = True,
-        sr: int = SR) -> dict:
-    """A modal model of a path or a 48 kHz array, (n,) or (n, 2)."""
-    k = {"max_strikes": max_strikes, "kmax": kmax, "nmax": nmax, "passes": passes, "skip_ms": skip_ms,
-         "prune_db": prune_db, "max_modes": max_modes, "onset_rel": onset_rel, "noise_tol_db": noise_tol_db,
-         "analysis_s": analysis_s, "attack_ms": attack_ms, "pre_cap_s": pre_cap_s, "side_t": side_t}
-    a = as_stereo(x) if isinstance(x, str) else as_stereo(resample(np.asarray(x, float), sr))
+FIT_KNOBS = {"max_strikes": 10, "kmax": 16, "nmax": 384, "passes": 2, "skip_ms": 0.5, "prune_db": -50,
+             "max_modes": 80, "onset_rel": 0.2, "noise_tol_db": 1, "analysis_s": 3, "attack_ms": 2.5,
+             "verbose": False, "ramps": RAMPS_MS, "pre_cap_s": 0.002, "side_t": True, "sr": SR}
+
+
+def fit(x: Any, **kw) -> dict:
+    """A modal model of a path or a 48 kHz array, (n,) or (n, 2). Knobs and defaults: FIT_KNOBS."""
+    k = merge_knobs(FIT_KNOBS, kw, "modal fit")
+    a = as_stereo(x) if isinstance(x, str) else as_stereo(resample(np.asarray(x, float), k["sr"]))
     model = _fit(a, k)
     model["source"] = source_name(x)
-    if verbose:
+    if k["verbose"]:
         print(summary(model))
     return model
 
@@ -841,20 +845,24 @@ def fit(x: Any, max_strikes: int = 10, kmax: int = 16, nmax: int = 384, passes: 
 def _fit(a: np.ndarray, k: dict) -> dict:
     stereo = not is_mono_pair(a)
     m = a.mean(axis=1)
-    n = len(m)
-    ons = onsets(m, rel=k["onset_rel"], max_n=k["max_strikes"])
-    fo = fade_out(m)
-    y, n_fit = _unfade(m, fo)
-    opts = _fit_opts(k, n_fit, _active_end(m, n_fit))
+    ons, fo, y, opts = _fit_setup(m, k)
     det, strikes, sub, n_modes, modesig = _deterministic(y, ons, opts, k["attack_ms"])
     _fade_tail(det, fo)
-    model = {"kind": KIND, "version": VERSION, "sr": SR, "length_s": round(n / SR, 6),
+    model = {"kind": KIND, "version": VERSION, "sr": SR, "length_s": round(len(m) / SR, 6),
              "channels": 2 if stereo else 1, "fade_out_s": float(fo), "strikes": strikes, "sub": sub,
              "noise": _noise_env(m, det, ons, k["noise_tol_db"], k["pre_cap_s"]), "side": None,
              "coherent": True, "fit": _diag(m, modesig, det, k["skip_ms"], n_modes)}
     if stereo:
         _add_side(model, a, k["side_t"])
     return model
+
+
+def _fit_setup(m: np.ndarray, k: dict):
+    """Onsets, fade-out length, the unfaded signal and the pass options."""
+    ons = onsets(m, rel=k["onset_rel"], max_n=k["max_strikes"])
+    fo = fade_out(m)
+    y, n_fit = _unfade(m, fo)
+    return ons, fo, y, _fit_opts(k, n_fit, _active_end(m, n_fit))
 
 
 def _fit_opts(k: dict, n_fit: int, active_end: int) -> dict:

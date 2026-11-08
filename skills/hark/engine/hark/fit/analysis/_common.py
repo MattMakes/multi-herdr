@@ -167,6 +167,14 @@ def check_kind(model: Any, kind: str, version: int = 1) -> None:
         raise ValueError(problem)
 
 
+def merge_knobs(defaults: dict, given: dict, what: str) -> dict:
+    """defaults updated by given. TypeError for a name that defaults does not have."""
+    bad = sorted(set(given) - set(defaults))
+    if bad:
+        raise TypeError(f"unknown {what} argument(s) {bad}; known: {sorted(defaults)}")
+    return dict(defaults, **given)
+
+
 def threads() -> int:
     """FFT worker count from HARK_THREADS (default 2)."""
     try:

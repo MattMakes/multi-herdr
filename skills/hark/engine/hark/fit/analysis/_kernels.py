@@ -380,18 +380,25 @@ def strike_wave(p, n, first, coherent, sr=SR):
     return s0, w
 
 
-def modal_noise_env(model, plan, n_grid, stretch, size, brightness, hardness, noise, vary,
-                    ring, rj):
-    """Noise band levels (dB) on the new 0.5 ms grid, shape (bands, n_grid)."""
+def modal_noise_env(model, plan, n_grid, stretch, k, rj):
+    """Noise band levels (dB) on the new 0.5 ms grid, shape (bands, n_grid). k holds the render knobs."""
     nz = model["noise"]
     tg = np.arange(n_grid) * GRID_S
     old = _old_times(plan, tg, stretch)
-    cut = _segment_cuts(model, plan, tg, stretch, ring)
+    cut = _segment_cuts(model, plan, tg, stretch, k["ring"])
     env = np.array([_band_level(b, old, cut) for b in nz["env"]])
     cent = erb_centres(nz["edges"])
-    env = _size_shift(env, cent, size) + (brightness * np.log2(cent / 1000.0))[:, None] + noise
+    env = _size_shift(env, cent, k["size"]) + (k["brightness"] * np.log2(cent / 1000.0))[:, None] + k["noise"]
+    return _vary_env(_hard_env(env, cent, plan, tg, k["hardness"]), cent, k["vary"], rj)
+
+
+def _hard_env(env, cent, plan, tg, hardness):
     if hardness != 1:
         env = env + np.outer(4 * np.log2(hardness) * np.log2(cent / 1000.0), _hard_window(plan, tg))
+    return env
+
+
+def _vary_env(env, cent, vary, rj):
     if vary:
         env = env + (1.5 * vary * rj.standard_normal(len(cent)))[:, None]
     return env
@@ -518,14 +525,24 @@ def add_room(chans, room, size, r):
     return out
 
 
-def render_model(model, seed=0, size=1.0, damping=1.0, brightness=0.0, hardness=1.0, noise=0.0,
-                 width=1.0, room=0.0, vary=0.0, spacing=1.0, gain=0.0, stereo=None, ring=None):
-    """Render a modal model: float64 at 48 kHz, (n,) or (n, 2)."""
-    k = {"size": size, "damping": damping, "brightness": brightness, "hardness": hardness,
-         "noise": noise, "width": width, "room": room, "vary": vary, "spacing": spacing,
-         "ring": vary > 0 if ring is None else ring,
-         "stereo": int(model.get("channels", 1)) == 2 if stereo is None else stereo}
-    return _render_knobs(model, seed, k) * 10.0 ** (gain / 20.0)
+MODAL_KNOBS = {"size": 1.0, "damping": 1.0, "brightness": 0.0, "hardness": 1.0, "noise": 0.0, "width": 1.0,
+               "room": 0.0, "vary": 0.0, "spacing": 1.0, "gain": 0.0, "stereo": None, "ring": None}
+
+
+def render_model(model, seed=0, **knobs):
+    """Render a modal model: float64 at 48 kHz, (n,) or (n, 2). Knobs and defaults: MODAL_KNOBS."""
+    k = _modal_knobs(model, knobs)
+    return _render_knobs(model, seed, k) * 10.0 ** (k["gain"] / 20.0)
+
+
+def _modal_knobs(model, knobs):
+    bad = sorted(set(knobs) - set(MODAL_KNOBS))
+    if bad:
+        raise TypeError(f"unknown modal knob(s) {bad}; known: {sorted(MODAL_KNOBS)}")
+    k = dict(MODAL_KNOBS, **knobs)
+    k["ring"] = k["vary"] > 0 if k["ring"] is None else k["ring"]
+    k["stereo"] = int(model.get("channels", 1)) == 2 if k["stereo"] is None else k["stereo"]
+    return k
 
 
 def _render_knobs(model, seed, k):
@@ -533,8 +550,7 @@ def _render_knobs(model, seed, k):
     plan, stretch = modal_plan(model, seed, k["size"], k["damping"], k["brightness"], k["hardness"],
                                k["vary"], k["spacing"])
     n, n_nom = _render_lengths(model, plan, stretch, k["ring"])
-    env = modal_noise_env(model, plan, int(np.ceil(n / (GRID_S * SR))) + 2, stretch, k["size"],
-                          k["brightness"], k["hardness"], k["noise"], k["vary"], k["ring"], gens[1])
+    env = modal_noise_env(model, plan, int(np.ceil(n / (GRID_S * SR))) + 2, stretch, k, gens[1])
     mid = _modal_mid(model, plan, env, n, n_nom, k["ring"], gens[2])
     side = None
     if k["stereo"]:
@@ -561,6 +577,12 @@ def _modal_mid(model, plan, env, n, n_nom, ring, r):
     mid = _modal_det(model, plan, n, n_nom, ring)
     if env.size and np.max(env) > -200.0:
         mid = mid + modal_noise(env, n, model["noise"]["edges"], r)
+    return _ring_fade(mid, n_nom, ring)
+
+
+def _ring_fade(mid, n_nom, ring):
+    """Fade the ring extension after n_nom by 60 dB."""
+    n = len(mid)
     if ring and n > n_nom:
         mid[n_nom:] *= 10.0 ** (-3.0 * np.arange(n - n_nom) / (n - n_nom))
     return mid

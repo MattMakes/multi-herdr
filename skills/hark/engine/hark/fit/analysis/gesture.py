@@ -15,7 +15,7 @@ import numpy as np
 from scipy.signal import istft, stft
 
 from hark.fit.analysis import modal, sinusoidal, spectral
-from hark.fit.analysis._common import (SR, as_stereo, check_kind, is_mono_pair, load_json, resample,
+from hark.fit.analysis._common import (SR, as_stereo, check_kind, merge_knobs, is_mono_pair, load_json, resample,
                                        save_json, source_name)
 
 KIND = "gesture"
@@ -182,23 +182,33 @@ def _tones_layer(a: np.ndarray, two: bool, tones: Any, kind: str, fast: bool,
     return det, share, y_det
 
 
-def fit(x: Any, name: str | None = None, tones: Any = None, alpha: float = ALPHA,
-        tone_min: float = 0.05, min_partial_ms: float = 0, fast: bool = False,
-        tones_kind: str = "sines", verbose: bool = False, sr: int = SR, **air_kw) -> dict:
-    """A gesture model: deterministic tones plus a fine spectral air model of the rest."""
-    if tones_kind not in ("sines", "modal"):
-        raise ValueError(f"tones_kind must be 'sines' or 'modal', not {tones_kind!r}")
-    t0 = time.time()
-    a = as_stereo(x) if isinstance(x, str) else as_stereo(resample(np.asarray(x, float), sr))
-    two = not is_mono_pair(a)
-    det, share, y_det = _tones_layer(a, two, tones, tones_kind, fast, min_partial_ms, tone_min)
-    t1 = time.time()
-    nm = name or source_name(x)
-    am = air(a, y_det, alpha, fast, nm, **air_kw)
-    model = _store(a, nm, det, am, alpha, share, two, (t1 - t0, time.time() - t1))
-    if verbose:
+FIT_KNOBS = {"tones": None, "alpha": ALPHA, "tone_min": 0.05, "min_partial_ms": 0, "fast": False,
+             "tones_kind": "sines", "verbose": False, "sr": SR}
+
+
+def fit(x: Any, name: str | None = None, **kw) -> dict:
+    """A gesture model: deterministic tones plus a fine spectral air model of the rest.
+
+    Knobs and defaults: FIT_KNOBS. Other keywords go to the air fit (spectral.fit options)."""
+    k = dict(FIT_KNOBS, **{key: kw.pop(key) for key in list(kw) if key in FIT_KNOBS})
+    if k["tones_kind"] not in ("sines", "modal"):
+        raise ValueError(f"tones_kind must be 'sines' or 'modal', not {k['tones_kind']!r}")
+    a = as_stereo(x) if isinstance(x, str) else as_stereo(resample(np.asarray(x, float), k["sr"]))
+    model = _fit(a, lambda: name or source_name(x), k, kw)
+    if k["verbose"]:
         print(summary(model))
     return model
+
+
+def _fit(a: np.ndarray, name, k: dict, air_kw: dict) -> dict:
+    t0 = time.time()
+    two = not is_mono_pair(a)
+    det, share, y_det = _tones_layer(a, two, k["tones"], k["tones_kind"], k["fast"], k["min_partial_ms"],
+                                     k["tone_min"])
+    t1 = time.time()
+    nm = name()
+    am = air(a, y_det, k["alpha"], k["fast"], nm, **air_kw)
+    return _store(a, nm, det, am, k["alpha"], share, two, (t1 - t0, time.time() - t1))
 
 
 def _fit_len(y: np.ndarray, n: int) -> np.ndarray:
@@ -277,25 +287,30 @@ def _pass_by(y: np.ndarray, traj: dict, s: float, doppler: float, motion: float)
     return y
 
 
-def render(model: dict, seed: int = 0, length: float = 1, sweep: float = 1, doppler: float = 0,
-           proximity: float = 0, pan: float = 1, motion: float = 0, width: float = 1,
-           roughness: float = 1, tone_db: float = 0, air_db: float = 0, vary: float = 0,
-           gain_db: float = 0, stereo: bool | None = None, ring: bool = False) -> np.ndarray:
-    """float64 at 48 kHz: (n, 2) for a stereo source or stereo=True, else (n,)."""
+RENDER_DEFAULTS = {"length": 1, "sweep": 1, "doppler": 0, "proximity": 0, "pan": 1, "motion": 0, "width": 1,
+                   "roughness": 1, "tone_db": 0, "air_db": 0, "vary": 0, "gain_db": 0, "stereo": None,
+                   "ring": False}
+
+
+def render(model: dict, seed: int = 0, **knobs) -> np.ndarray:
+    """float64 at 48 kHz: (n, 2) for a stereo source or stereo=True, else (n,). Knobs and defaults: RENDER_DEFAULTS."""
     check(model)
-    two = model.get("channels", 1) == 2 if stereo is None else bool(stereo)
-    s = max(length, 0.001)
+    k = merge_knobs(RENDER_DEFAULTS, knobs, "gesture render")
+    two = model.get("channels", 1) == 2 if k["stereo"] is None else bool(k["stereo"])
+    y = _render_both(model, seed, k, two)
+    return y if two else y.mean(axis=1)
+
+
+def _render_both(model: dict, seed: int, k: dict, two: bool) -> np.ndarray:
+    s = max(k["length"], 0.001)
     n = max(64, int(round(model["dur"] * s * SR)))
-    k = {"sweep": sweep, "proximity": proximity, "pan": pan, "width": width, "roughness": roughness,
-         "tone_db": tone_db, "air_db": air_db, "vary": vary}
+    ring = k["ring"]
     parts = _layers(model, seed, s, k, two, ring)
     y = _place(parts, max([n] + [len(p) for p in parts]) if ring else n)
-    if doppler or motion:
-        y = _pass_by(y, model["traj"], s, doppler, motion)
-    y = y * 10 ** (gain_db / 20)
-    if ring:
-        y = _end_fade(y)
-    return y if two else y.mean(axis=1)
+    if k["doppler"] or k["motion"]:
+        y = _pass_by(y, model["traj"], s, k["doppler"], k["motion"])
+    y = y * 10 ** (k["gain_db"] / 20)
+    return _end_fade(y) if ring else y
 
 
 def _end_fade(y: np.ndarray) -> np.ndarray:

@@ -17,7 +17,7 @@ from scipy.signal import butter, find_peaks, get_window, sosfiltfilt, stft, welc
 
 from hark.fit.analysis import _kernels as K
 from hark.fit.analysis import space
-from hark.fit.analysis._common import (SR, as_stereo, check_kind, db, is_mono_pair, load_json,
+from hark.fit.analysis._common import (SR, as_stereo, check_kind, merge_knobs, db, is_mono_pair, load_json,
                                        rdp, rdp_rows, resample, save_json, source_name)
 
 KIND = "sines"
@@ -615,7 +615,8 @@ def _band_atoms(band, a0, length, dec, max_atoms, t60, ridge, frange, sig_peak, 
     atoms = []
     if loud:
         atoms = [a for a in _pencil(seg[::dec], max_atoms, t60, ridge, sr / dec) if frange[0] <= a[0] <= frange[1]]
-    return atoms if atoms and _atoms_help(band, a0, length, atoms, sr) else []
+    helps = bool(atoms) and _atoms_help(band, a0, length, atoms, sr)
+    return atoms if helps else []
 
 
 def _atoms_help(band, a0, length, atoms, sr) -> bool:
@@ -843,19 +844,17 @@ def _lsd_at(a: np.ndarray, b: np.ndarray, size: int) -> float | None:
     return float(np.mean(np.minimum(np.abs(np.maximum(A, fl) - np.maximum(B, fl)), 40)[act]))
 
 
-def fit(x: Any, sr: int = 48000, windows=WINDOWS, max_partials: int = 160, dyn_db: float = 80,
-        keep_db: float = 60, prom_db: float = 4, max_peaks: int = 100, min_ms: float = 15,
-        amp_tol_db: float = 1, freq_tol_cents: float = 1, res_range_db: float = 140,
-        transients: bool = True, passes: int = 2, snr_db: float = 10,
-        source: str | None = None) -> dict:
-    """A sines model of a path or an array at ``sr`` (mono or (n, 2))."""
-    name = source or source_name(x)
-    a = as_stereo(x) if isinstance(x, str) else as_stereo(resample(np.asarray(x, float), sr))
-    opts = _default_opts(max_partials=max_partials, dyn_db=dyn_db, keep_db=keep_db, prom_db=prom_db,
-                         max_peaks=max_peaks, min_ms=min_ms, amp_tol_db=amp_tol_db,
-                         freq_tol_cents=freq_tol_cents, res_range_db=res_range_db,
-                         transients=transients, passes=passes, snr_db=snr_db)
-    model = _fit_sines(a, windows, opts)
+FIT_KNOBS = {"sr": 48000, "windows": WINDOWS, "max_partials": 160, "dyn_db": 80, "keep_db": 60, "prom_db": 4,
+             "max_peaks": 100, "min_ms": 15, "amp_tol_db": 1, "freq_tol_cents": 1, "res_range_db": 140,
+             "transients": True, "passes": 2, "snr_db": 10, "source": None}
+
+
+def fit(x: Any, **kw) -> dict:
+    """A sines model of a path or an array at ``sr`` (mono or (n, 2)). Knobs and defaults: FIT_KNOBS."""
+    k = merge_knobs(FIT_KNOBS, kw, "sines fit")
+    name = k["source"] or source_name(x)
+    a = as_stereo(x) if isinstance(x, str) else as_stereo(resample(np.asarray(x, float), k["sr"]))
+    model = _fit_sines(a, k["windows"], _default_opts(**k))
     model["source"] = name
     model["summary"] = summary(model)
     return model
@@ -918,12 +917,18 @@ def side_model(st: np.ndarray, duration: float | None = None, bands=SIDE_BANDS,
     """The fitted side of a stereo source: pan and diffuse gains per band and keyframe."""
     a = as_stereo(st)
     dur = len(a) / SR if duration is None else float(duration)
-    P = space.side_powers(a, bands)
-    onset = space.active_span(a)[0] / SR
-    keys = _key_times(onset, dur)
+    keys = _key_times(space.active_span(a)[0] / SR, dur)
+    pan, dif = _side_gains(space.side_powers(a, bands), keys)
+    return _side_dict(bands, keys, pan, dif, tol)
+
+
+def _side_gains(P: dict, keys: np.ndarray):
     PM, PS, C = (_tent_sum(P["t"], P[k], keys) for k in ("PM", "PS", "C"))
     pan, dif = _gains(PM, PS, C)
-    pan, dif = _quiet_fix(PM, PS, C, pan, dif)
+    return _quiet_fix(PM, PS, C, pan, dif)
+
+
+def _side_dict(bands, keys: np.ndarray, pan: np.ndarray, dif: np.ndarray, tol: float) -> dict:
     keep = rdp_rows(keys, np.vstack([pan, dif]), tol) if len(keys) > 2 else list(range(len(keys)))
     return {"bands": [float(b) for b in bands], "times": [round(float(keys[i]), 5) for i in keep],
             "pan": np.round(pan[:, keep], 3).tolist(), "diffuse": np.round(dif[:, keep], 3).tolist()}
@@ -1205,20 +1210,27 @@ def _bend(n, k, ctx, rj):
 
 
 def _move_atoms(trans, k, ctx, rj):
-    out = []
+    coherent = bool(ctx["fields"] is not None or k["vary"] == 0)
+    return [{"t": float(_T(tr["t"], k, ctx)), "atoms": _atom_list(tr, k, ctx, rj, coherent)} for tr in trans]
+
+
+def _atom_list(tr: dict, k: dict, ctx: dict, rj, coherent: bool) -> list:
+    """Moved atoms of one transient. Coherent: one random offset per transient, else one per atom."""
     v = k["vary"]
-    coherent = bool(ctx["fields"] is not None or v == 0)
-    for tr in trans:
-        dc, dg = (30 * v * rj.standard_normal(), 2 * v * rj.standard_normal()) if coherent else (0, 0)
-        atoms = []
-        for f, tau, a, ph in tr["atoms"]:
-            if not coherent:
-                dc, dg = 30 * v * rj.standard_normal(), 2 * v * rj.standard_normal()
-            f2 = f * ctx["ratio"] * 2 ** (dc / 1200)
-            g = 10 ** ((dg + k["brightness"] * np.log2(max(f * ctx["ratio"], 20) / ctx["f_ref"])) / 20)
-            atoms.append([f2, tau / ctx["ratio"], a * k["transient"] * g, ph])
-        out.append({"t": float(_T(tr["t"], k, ctx)), "atoms": atoms})
-    return out
+    dc, dg = (30 * v * rj.standard_normal(), 2 * v * rj.standard_normal()) if coherent else (0, 0)
+    atoms = []
+    for f, tau, a, ph in tr["atoms"]:
+        if not coherent:
+            dc, dg = 30 * v * rj.standard_normal(), 2 * v * rj.standard_normal()
+        atoms.append(_moved_atom((f, tau, a, ph), dc, dg, k, ctx))
+    return atoms
+
+
+def _moved_atom(atom, dc: float, dg: float, k: dict, ctx: dict) -> list:
+    f, tau, a, ph = atom
+    f2 = f * ctx["ratio"] * 2 ** (dc / 1200)
+    g = 10 ** ((dg + k["brightness"] * np.log2(max(f * ctx["ratio"], 20) / ctx["f_ref"])) / 20)
+    return [f2, tau / ctx["ratio"], a * k["transient"] * g, ph]
 
 
 def _strike_weight(model, n, ctx, k):
@@ -1265,15 +1277,20 @@ def _summary(parts: list) -> dict:
     peaks = np.array([_peak_of(p) for p in parts])
     fm = np.array([partial_freq(p) for p in parts])
     strong = _strong(peaks, parts)
-    f_low = float(fm[strong].min())
-    centroid = _centroid(peaks[strong], fm[strong])
-    ratios = np.sort(fm[strong] / f_low)[:12]
-    inh = _inharmonicity(ratios) if strong.sum() > 1 else 0.0
+    h = _harmony(peaks[strong], fm[strong])
     glide = [round(1200 * np.log2(p["freq"][-1][1] / p["freq"][0][1]), 1) for p in parts[:8]]
-    return {"partials": len(parts), "f_low": round(f_low, 2), "centroid": round(centroid, 2),
+    return {"partials": len(parts), "f_low": h["f_low"], "centroid": h["centroid"],
             "f_range": [round(float(fm.min()), 1), round(float(fm.max()), 1)], "top": _top(parts, peaks, fm),
-            "ratios": [round(float(r), 3) for r in ratios], "inharmonicity": round(inh, 4),
-            "glide_cents": glide}
+            "ratios": h["ratios"], "inharmonicity": h["inh"], "glide_cents": glide}
+
+
+def _harmony(pk: np.ndarray, f: np.ndarray) -> dict:
+    """Lowest frequency, centroid, ratios and inharmonicity of the strong partials."""
+    f_low = float(f.min())
+    ratios = np.sort(f / f_low)[:12]
+    inh = _inharmonicity(ratios) if len(f) > 1 else 0.0
+    return {"f_low": round(f_low, 2), "centroid": round(_centroid(pk, f), 2),
+            "ratios": [round(float(r), 3) for r in ratios], "inh": round(inh, 4)}
 
 
 def _centroid(peaks: np.ndarray, fm: np.ndarray) -> float:
