@@ -671,10 +671,15 @@ without a flag, 1 line on stderr says why.
 6. **pr** - makes sure the run's PR exists (creates it from `run_branch`
    into `base_branch` if `runs.pr_number` is empty) and updates its
    description: 1 section per task between markers
-   `<!-- horch:task T-<n> -->`, holding the title, the summary, "Closes
-   #<n>" when `issue_url` is set, and the sweep verdicts. Updates run under
-   the landing lock, so 2 workers never overwrite each other's section.
-   Passes when the PR's head contains `landed_commit`.
+   `<!-- horch:task T-<n> -->`, holding the title, the subjects of the
+   task's own commits, the files they touch (folded), who landed it at
+   which commit, the verdicts of the sweeps that ran, and "Closes #<n>"
+   when `issue_url` is set. The task's own commits are those of
+   `landed_commit` that neither `base_branch` nor an earlier land of the
+   run holds. A task with no commit of its own (a gate task) gets no
+   section, and the step is not applicable. Updates run under the landing
+   lock, so 2 workers never overwrite each other's section. Passes when
+   the PR's head contains `landed_commit`.
 7. **cleanup** - removes the worktree only when no work can be lost. All of
    these must hold first; if one does not, the step fails and nothing is
    deleted:

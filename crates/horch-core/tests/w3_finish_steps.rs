@@ -810,8 +810,11 @@ fn pr_creates_the_pull_request_and_writes_the_section_of_the_task() {
     assert!(r.complete, "{r:?}");
     assert_eq!(verdict(&r, "pr"), "PR #7");
     assert_eq!(note(&r, "pr"), "PR #7 holds T-1");
+    let short = git(&path, &["rev-parse", "--short", "HEAD"]);
+    // The section says what the task's commits did and which files they
+    // touch; steps that never ran are left out.
     let section = format!(
-        "<!-- horch:task T-1 -->\n### T-1 feature\n\nLanded by opus-1.\n\n- Commit: `{}`\n- code-sweep: -\n- complexity-sweep: -\n- check: -\n<!-- /horch:task T-1 -->",
+        "<!-- horch:task T-1 -->\n### T-1 feature\n\n- feature.txt (`{short}`)\n\n<details><summary>1 file changed</summary>\n\n- `feature.txt`\n\n</details>\n\nLanded by opus-1 at `{}`.\n<!-- /horch:task T-1 -->",
         &head[..12]
     );
     let created = format!(
@@ -885,6 +888,50 @@ fn pr_is_not_applicable_when_the_task_landed_no_commit_the_base_lacks() {
         "no gh call: {:?}",
         gh_calls(&state)
     );
+}
+
+#[test]
+fn pr_writes_no_section_for_a_task_that_landed_no_commit_of_its_own() {
+    let mut w = World::new(&[StepName::Land, StepName::Pr], true);
+    let state = fake_gh(&w);
+    let (first, path) = w.task(None, "feature.txt");
+    let head = git(&path, &["rev-parse", "HEAD"]);
+    view(&state, "", &head);
+    assert!(w.finish(&first).complete);
+    let calls = gh_calls(&state).len();
+    // A gate task: its worktree starts at the first land and adds nothing,
+    // so it lands at the same commit.
+    let second = w.claimed("opus", |t| t.check_none = true);
+    finish::worktree_new(&mut w.store, &w.tools.git, &second, "gate").unwrap();
+    let r = w.finish(&second);
+    assert!(r.complete, "{r:?}");
+    assert_eq!(step(&r, "pr").status, "not_applicable", "{r:?}");
+    assert_eq!(
+        note(&r, "pr"),
+        "the task landed no commit of its own, so the PR has no section for it"
+    );
+    assert_eq!(
+        gh_calls(&state).len(),
+        calls,
+        "no gh call for the gate task"
+    );
+}
+
+#[test]
+fn pr_lists_only_the_commits_a_task_added_after_the_earlier_lands() {
+    let mut w = World::new(&[StepName::Land, StepName::Pr], true);
+    let state = fake_gh(&w);
+    let (first, path) = w.task(None, "one.txt");
+    view(&state, "", &git(&path, &["rev-parse", "HEAD"]));
+    assert!(w.finish(&first).complete);
+    let (second, path) = w.task(None, "two.txt");
+    view(&state, "", &git(&path, &["rev-parse", "HEAD"]));
+    let r = w.finish(&second);
+    assert_eq!(step(&r, "pr").status, "passed", "{r:?}");
+    let body = std::fs::read_to_string(state.join("edited")).unwrap();
+    assert!(body.contains("- two.txt (`"), "{body}");
+    assert!(body.contains("- `two.txt`"), "{body}");
+    assert!(!body.contains("one.txt"), "the first task's commit: {body}");
 }
 
 #[test]

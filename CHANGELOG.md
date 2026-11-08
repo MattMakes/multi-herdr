@@ -12,6 +12,10 @@
   no longer bakes that worktree's roster into the `herdr-fleet` launcher; it
   uses the main checkout's.
 - `herdr-fleet sol` launches its Codex orchestrator on `gpt-6.1-sol`.
+- A fleet run's PR now says what each task did: the subjects of the task's
+  own commits and the files they touch, folded. A task that added no commit
+  of its own, such as a gate task, gets no section, and steps that did not
+  run are left out instead of showing `-`.
 
 ## v0.4.6 - 2026-11-06
 
