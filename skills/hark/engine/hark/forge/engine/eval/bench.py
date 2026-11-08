@@ -194,30 +194,46 @@ class EnvRef:
             return {}
         f = env_feats(x)
         out = {k: f[k] for k in ("attack_ms", "t40_ms", "active_s", "onset_s")}
+        logs, med = self._logs(f, keep)
+        out.update(self._distances(x, keep, logs))
+        out.update({f"{k.split('_')[0]}_ratio": round(2 ** v, 3) for k, v in logs.items()})
+        out["ref_median"] = {k: round(v, 3) for k, v in med.items()}
+        return out
+
+    def _logs(self, f: dict, keep: list[int]) -> tuple[dict, dict]:
+        """Octave offsets of x's envelope features from the kept refs' medians, and those medians."""
         logs, med = {}, {}
         for k, floor in _ENV_KEYS:
             med[k] = float(np.median([self.feats[i][k] for i in keep]))
             logs[k] = math.log2(max(f[k], floor) / max(med[k], floor))
+        return logs, med
+
+    def _distances(self, x: Any, keep: list[int], logs: dict) -> dict:
         c = curve(x, self.PRE, self.post)
-        out["env_oct"] = round(float(np.mean([abs(v) for v in logs.values()])), 3)
-        out["curve_db"] = round(float(np.sqrt(np.mean((c - np.median(self.C[keep], axis=0)) ** 2))), 2)
-        out.update({f"{k.split('_')[0]}_ratio": round(2 ** v, 3) for k, v in logs.items()})
-        out["ref_median"] = {k: round(v, 3) for k, v in med.items()}
-        return out
+        return {"env_oct": round(float(np.mean([abs(v) for v in logs.values()])), 3),
+                "curve_db": round(float(np.sqrt(np.mean((c - np.median(self.C[keep], axis=0)) ** 2))), 2)}
+
+
+def _end_numbers(m: np.ndarray, pk: float) -> dict:
+    e1, e5 = frames_db(m, 1), frames_db(m, 5)
+    return {"tail_db": round(float(frames_db(m[-480:], 10)[-1] - e5.max()), 1),
+            "last_ms_rel": round(float(np.sqrt(np.mean(m[-48:] ** 2))) / pk, 3),
+            "lead_s": round(int(np.argmax(e1 >= e1.max() - 50)) / 1000, 3)}
+
+
+def _start_numbers(a: np.ndarray, m: np.ndarray, pk: float) -> dict:
+    return {"clipped_samples": int(np.sum(np.abs(a) >= 0.999)),
+            "dc_db": round(float(20 * np.log10(abs(float(np.mean(m))) / pk + 1e-12)), 1),
+            "first_sample": round(abs(float(m[0])) / pk, 3)}
 
 
 def _art_numbers(x: Any) -> dict:
     a = _load(x)
     m = a.mean(axis=1) if a.ndim == 2 else a
     pk = float(np.max(np.abs(m))) + 1e-12
-    e1, e5 = frames_db(m, 1), frames_db(m, 5)
-    return {"clipped_samples": int(np.sum(np.abs(a) >= 0.999)),
-            "dc_db": round(float(20 * np.log10(abs(float(np.mean(m))) / pk + 1e-12)), 1),
-            "first_sample": round(abs(float(m[0])) / pk, 3),
-            "tail_db": round(float(frames_db(m[-480:], 10)[-1] - e5.max()), 1),
-            "last_ms_rel": round(float(np.sqrt(np.mean(m[-48:] ** 2))) / pk, 3),
-            "lead_s": round(int(np.argmax(e1 >= e1.max() - 50)) / 1000, 3),
-            "peak_dbfs": round(float(20 * np.log10(np.max(np.abs(a)) + 1e-12)), 2)}
+    d = {**_start_numbers(a, m, pk), **_end_numbers(m, pk)}
+    d["peak_dbfs"] = round(float(20 * np.log10(np.max(np.abs(a)) + 1e-12)), 2)
+    return d
 
 
 def artifacts(x: Any, cat: str | None = None) -> dict:
@@ -232,15 +248,10 @@ def artifacts(x: Any, cat: str | None = None) -> dict:
     return d
 
 
-def diversity(xs: Sequence[Any], E: Any) -> dict:
-    """Embedding and tone variety among one category's variants."""
-    n = len(xs)
-    if n < 2:
-        return {"n": n}
-    U = np.asarray(E, dtype=float)
-    U = U / (np.linalg.norm(U, axis=1, keepdims=True) + 1e-12)
-    P = [ft.profile(x) for x in xs]
+def _pairs(U: np.ndarray, P: list) -> tuple[list, list, list]:
+    """Cosine and tone distance of every pair, and the near-duplicate pairs."""
     cos, td, near = [], [], []
+    n = len(P)
     for i in range(n):
         for j in range(i + 1, n):
             c, d = float(U[i] @ U[j]), float(np.sqrt(np.mean((P[i] - P[j]) ** 2)))
@@ -248,6 +259,17 @@ def diversity(xs: Sequence[Any], E: Any) -> dict:
             td.append(d)
             if c > 0.985 and d < 1.5:
                 near.append([i, j])
+    return cos, td, near
+
+
+def diversity(xs: Sequence[Any], E: Any) -> dict:
+    """Embedding and tone variety among one category's variants."""
+    n = len(xs)
+    if n < 2:
+        return {"n": n}
+    U = np.asarray(E, dtype=float)
+    U = U / (np.linalg.norm(U, axis=1, keepdims=True) + 1e-12)
+    cos, td, near = _pairs(U, [ft.profile(x) for x in xs])
     return {"n": n, "cos_mean": round(float(np.mean(cos)), 3), "cos_max": round(max(cos), 3),
             "tone_min_db": round(min(td), 2), "tone_mean_db": round(float(np.mean(td)), 2), "near_duplicates": near}
 
@@ -339,6 +361,15 @@ def _as_terms(tagger: Any, path: str, labs: Sequence[str]) -> dict:
             "as_p": round(max((float(p[tagger.index[lab]]) for lab in labs), default=0.0), 3)}
 
 
+def _cat_texts(cat: str) -> tuple[list, list]:
+    return PHRASES.get(cat, []), CONFUSIONS.get(cat, [])
+
+
+def _cat_labels(cat: str, tagger: Any) -> list[str]:
+    index = getattr(tagger, "index", {}) or {}
+    return [lab for lab in AS_LABELS.get(cat, []) if lab in index]
+
+
 class _Cat:
     """The loaded state of one category run."""
 
@@ -348,15 +379,20 @@ class _Cat:
         self.X = [_load(p) for p in self.allp]
         vocab, self.tagger = models
         self.E = _embed_files(vocab, self.allp)
-        phr, self.conf = PHRASES.get(cat, []), CONFUSIONS.get(cat, [])
+        self._phrases(vocab)
+        self.labs = _cat_labels(cat, self.tagger)
+        self._yardsticks()
+
+    def _phrases(self, vocab: Any) -> None:
+        phr, self.conf = _cat_texts(self.cat)
         self.nph = len(phr)
         self.Z = np.asarray(vocab.calibrate(self.E, vocab.embed_text(phr + self.conf)).z_q) if phr else None
-        index = getattr(self.tagger, "index", {}) or {}
-        self.labs = [lab for lab in AS_LABELS.get(cat, []) if lab in index]
-        nm, nb = len(made), len(B)
+
+    def _yardsticks(self) -> None:
+        nm, nb = len(self.made), len(self.B)
         self.ib, self.if_ = list(range(nm, nm + nb)), list(range(nm + nb, len(self.allp)))
-        self.ys_b = Yardstick(B, [self.X[i] for i in self.ib], self.E[nm:nm + nb])
-        self.ys_f = Yardstick(F, [self.X[i] for i in self.if_], self.E[nm + nb:])
+        self.ys_b = Yardstick(self.B, [self.X[i] for i in self.ib], self.E[nm:nm + nb])
+        self.ys_f = Yardstick(self.F, [self.X[i] for i in self.if_], self.E[nm + nb:])
 
     def row(self, i: int, ys: Yardstick, exclude: int | None = None) -> dict:
         x = self.X[i]
@@ -374,15 +410,20 @@ class _Cat:
         return r
 
 
-def summ(rows: Sequence[dict]) -> dict:
-    """Medians of the metric keys, the as_names share and the total flag count."""
-    if not rows:
-        return {}
-    out: dict = {"n": len(rows)}
+def _medians(rows: Sequence[dict]) -> dict:
+    out = {}
     for k in [m for m, _ in METRICS] + list(SUMM_EXTRA):
         vals = [r[k] for r in rows if r.get(k) is not None]
         if vals:
             out[k] = round(float(np.median(vals)), 2)
+    return out
+
+
+def summ(rows: Sequence[dict]) -> dict:
+    """Medians of the metric keys, the as_names share and the total flag count."""
+    if not rows:
+        return {}
+    out: dict = {"n": len(rows), **_medians(rows)}
     names = [bool(r["as_names"]) for r in rows if "as_names" in r]
     if names:
         out["as_names"] = round(float(np.mean(names)), 2)
@@ -390,31 +431,48 @@ def summ(rows: Sequence[dict]) -> dict:
     return out
 
 
-def inside_real(made: Sequence[dict], real: Sequence[dict], metrics: Sequence[tuple] = METRICS,
-                q: float = 0.8) -> dict:
-    """Per made row, the number of metrics inside the real q limits."""
+def _real_limits(real: Sequence[dict], metrics: Sequence[tuple], q: float) -> tuple[dict, dict]:
     limits, kinds = {}, {}
     for key, kind in metrics:
         vals = [r[key] for r in real if r.get(key) is not None]
         if vals:
             limits[key] = float(np.quantile(vals, q if kind == "low" else 1 - q))
             kinds[key] = kind
-    per = []
-    for r in made:
-        per.append(sum(1 for k, lim in limits.items() if r.get(k) is not None and
-                       (r[k] <= lim if kinds[k] == "low" else r[k] >= lim)))
+    return limits, kinds
+
+
+def _inside_count(r: dict, limits: dict, kinds: dict) -> int:
+    def ok(k: str, lim: float) -> bool:
+        return r[k] <= lim if kinds[k] == "low" else r[k] >= lim
+
+    return sum(1 for k, lim in limits.items() if r.get(k) is not None and ok(k, lim))
+
+
+def inside_real(made: Sequence[dict], real: Sequence[dict], metrics: Sequence[tuple] = METRICS,
+                q: float = 0.8) -> dict:
+    """Per made row, the number of metrics inside the real q limits."""
+    limits, kinds = _real_limits(real, metrics, q)
+    per = [_inside_count(r, limits, kinds) for r in made]
     return {"per_sound": per, "n_checks": len(limits), "limits": {k: round(v, 3) for k, v in limits.items()}}
 
 
-def _real_sets(c: _Cat, res: dict) -> None:
+def _real_rows(c: _Cat, res: dict) -> None:
     if c.B:
         res["real_cross"] = [c.row(i, c.ys_b) for i in c.if_]
     if len(c.B) >= 2:
         res["real_loo"] = [c.row(i, c.ys_b, exclude=k) for k, i in enumerate(c.ib)]
     if c.F:
         res["real_rev"] = [c.row(i, c.ys_f) for i in c.ib]
-    res["diversity_bench"] = diversity([c.X[i] for i in c.ib], c.E[c.ib]) if c.ib else {"n": 0}
-    res["diversity_forge"] = diversity([c.X[i] for i in c.if_], c.E[c.if_]) if c.if_ else {"n": 0}
+
+
+def _div_of(c: _Cat, idx: list[int]) -> dict:
+    return diversity([c.X[i] for i in idx], c.E[idx]) if idx else {"n": 0}
+
+
+def _real_sets(c: _Cat, res: dict) -> None:
+    _real_rows(c, res)
+    res["diversity_bench"] = _div_of(c, c.ib)
+    res["diversity_forge"] = _div_of(c, c.if_)
     real = (res.get("real_cross") or []) + (res.get("real_loo") or [])
     if res["made"] and real:
         res["inside"] = inside_real(res["made"], real)
@@ -434,18 +492,22 @@ def _summaries(res: dict) -> dict:
     return out
 
 
+def _entry_lists(reg: dict, cat: str) -> tuple[dict, list, list]:
+    entry = (reg.get("categories") or {}).get(cat) or {}
+    return entry, list(entry.get("bench") or []), list(entry.get("forge") or [])
+
+
 def bench_category(cat: str, made_paths: Sequence[str], reg: dict, models: tuple, real: bool = True,
                    log: Callable | None = print) -> dict:
     """Score one category's made sounds and real ceilings."""
-    entry = (reg.get("categories") or {}).get(cat) or {}
-    B, F = list(entry.get("bench") or []), list(entry.get("forge") or [])
+    entry, B, F = _entry_lists(reg, cat)
     made = list(made_paths)
     if not made + B + F:
         return {"n_bench": 0, "n_forge": 0, "note": entry.get("note", ""), "made": [], "summary": {}}
     c = _Cat(cat, made, B, F, models)
     res: dict = {"n_bench": len(B), "n_forge": len(F), "note": entry.get("note", ""),
                  "made": [c.row(i, c.ys_b) for i in range(len(made))]}
-    res["diversity"] = diversity([c.X[i] for i in range(len(made))], c.E[: len(made)]) if made else {"n": 0}
+    res["diversity"] = _div_of(c, list(range(len(made))))
     if real:
         _real_sets(c, res)
     res["summary"] = _summaries(res)
@@ -470,13 +532,17 @@ def _skip(path: Any) -> bool:
     return b.startswith("audition") or b.startswith("_")
 
 
+def _made_dirs(made: Any) -> dict[str, list[str]]:
+    out: dict[str, list[str]] = {}
+    for sub in sorted(p for p in Path(made).iterdir() if p.is_dir()):
+        d = sub / "final" if (sub / "final").is_dir() else sub
+        out[sub.name] = sorted(str(f) for f in d.glob("*.wav") if not _skip(f))
+    return out
+
+
 def gather(made: Any = None, files: Sequence[str] | None = None) -> dict[str, list[str]]:
     """Made sounds per category: <cat>/final/*.wav (else <cat>/*.wav), plus CAT=GLOB specs."""
-    out: dict[str, list[str]] = {}
-    if made:
-        for sub in sorted(p for p in Path(made).iterdir() if p.is_dir()):
-            d = sub / "final" if (sub / "final").is_dir() else sub
-            out[sub.name] = sorted(str(f) for f in d.glob("*.wav") if not _skip(f))
+    out = _made_dirs(made) if made else {}
     for spec in files or []:
         cat, pat = spec.split("=", 1)
         out.setdefault(cat, []).extend(sorted(f for f in glob.glob(pat) if not _skip(f)))
@@ -558,6 +624,23 @@ def _retable(out: Path) -> int:
     return 0
 
 
+_TEXT_TABLES = (("phrases", PHRASES), ("confusions", CONFUSIONS), ("as_labels", AS_LABELS))
+
+
+def _run_header(a: argparse.Namespace, out: Path, reg_path: Any, cats: list[str]) -> dict:
+    head = {"tag": a.tag or out.stem.removeprefix("results_"), "made_from": a.made, "registry": str(reg_path),
+            "created": time.strftime("%Y-%m-%d %H:%M")}
+    head.update({name: {c: tab.get(c) for c in cats} for name, tab in _TEXT_TABLES})
+    return head
+
+
+def _write_results(out: Path, res: dict) -> None:
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(json.dumps(res, indent=1))
+    out.with_suffix(".md").write_text(table(res))
+    print(f"wrote {out} and {out.with_suffix('.md')} ({res['seconds']} s)")
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     """Run the benchmark (or rewrite the table with --retable)."""
     from hark.forge.engine import refsets
@@ -573,16 +656,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     cats = _categories(a, made, reg)
     t0 = time.time()
     models = _load_models()
-    res: dict = {"tag": a.tag or out.stem.removeprefix("results_"), "made_from": a.made, "registry": str(reg_path),
-                 "created": time.strftime("%Y-%m-%d %H:%M"), "phrases": {c: PHRASES.get(c) for c in cats},
-                 "confusions": {c: CONFUSIONS.get(c) for c in cats}, "as_labels": {c: AS_LABELS.get(c) for c in cats},
-                 "categories": {c: bench_category(c, made.get(c, []), reg, models, real=not a.no_real) for c in cats}}
+    res = _run_header(a, out, reg_path, cats)
+    res["categories"] = {c: bench_category(c, made.get(c, []), reg, models, real=not a.no_real) for c in cats}
     res["seconds"] = round(time.time() - t0, 1)
     res = scrub_paths.scrub(_json_round(res), registry=reg)
-    out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_text(json.dumps(res, indent=1))
-    out.with_suffix(".md").write_text(table(res))
-    print(f"wrote {out} and {out.with_suffix('.md')} ({res['seconds']} s)")
+    _write_results(out, res)
     return 0
 
 
@@ -639,23 +717,24 @@ def _div_text(d: dict) -> str:
             "near duplicate pair(s)")
 
 
+def _table_head(res: dict, head: list[str]) -> list[str]:
+    return [f"# forge benchmark: {res.get('tag')}", "",
+            f"made from {res.get('made_from')}, registry {res.get('registry')}, created {res.get('created')}", "",
+            LEGEND, "", "| " + " | ".join(head) + " |", "|" + "---|" * len(head)]
+
+
 def table(res: dict) -> str:
     """Markdown table of a results dict."""
     head = ["category", "set", "n"] + [h for h, _ in _COLS] + ["inside"]
-    out = [f"# forge benchmark: {res.get('tag')}", "",
-           f"made from {res.get('made_from')}, registry {res.get('registry')}, created {res.get('created')}", "",
-           LEGEND, "", "| " + " | ".join(head) + " |", "|" + "---|" * len(head)]
+    out = _table_head(res, head)
     notes = []
     for cat, c in (res.get("categories") or {}).items():
-        rows = _cat_rows(cat, c)
-        out += rows or [f"| {cat} | no rows |" + " |" * (len(head) - 2)]
-        if c.get("note"):
-            notes.append(f"- {cat} note: {c['note']}")
+        out += _cat_rows(cat, c) or [f"| {cat} | no rows |" + " |" * (len(head) - 2)]
+        notes += [f"- {cat} note: {c['note']}"] if c.get("note") else []
     out += [""] + notes + _texture_rows(res) + ["", "## Diversity", ""]
     for cat, c in (res.get("categories") or {}).items():
         out.append(f"- {cat}: {_div_text(c.get('diversity') or {})} [bench: {_div_text(c.get('diversity_bench'))}]")
     return "\n".join(out) + "\n"
-
 
 if __name__ == "__main__":
     raise SystemExit(main())
