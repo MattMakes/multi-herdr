@@ -27,39 +27,39 @@ class ArrangeError(Exception):
 
 
 def say(*parts, file=None):
-    text = " ".join(str(p) for p in parts)
+    text = " ".join(str(pp) for pp in parts)
     print(text.encode("ascii", "replace").decode("ascii"), file=file or sys.stdout)
 
 
-def decode(path: str) -> np.ndarray:
-    if not os.path.isfile(path):
-        raise ArrangeError(f"track not found: {path}")
-    r = subprocess.run(["ffmpeg", "-v", "error", "-nostdin", "-i", path, "-vn", "-f", "f32le", "-acodec",
+def decode(src: str) -> np.ndarray:
+    if not os.path.isfile(src):
+        raise ArrangeError(f"track not found: {src}")
+    rep = subprocess.run(["ffmpeg", "-v", "error", "-nostdin", "-i", src, "-vn", "-f", "f32le", "-acodec",
                         "pcm_f32le", "-ac", "1", "-ar", str(SR), "-"], capture_output=True)
-    if r.returncode != 0:
-        raise ArrangeError(f"decode failed for {path}: {r.stderr.decode('utf-8', 'replace')[:200]}")
-    return np.frombuffer(r.stdout, dtype=np.float32).astype(np.float64)
+    if rep.returncode != 0:
+        raise ArrangeError(f"decode failed for {src}: {rep.stderr.decode('utf-8', 'replace')[:200]}")
+    return np.frombuffer(rep.stdout, dtype=np.float32).astype(np.float64)
 
 
 # ------------------------------------------------------------------ the arc
 
-def default_arc(n: int, d: int) -> list[float]:
-    big_until = d + max(2, round(0.6 * (n - d)))
-    arc = []
-    for k in range(1, n + 1):
-        if k < d:
-            x = (k - 1) / max(1, d - 2)
-            v = -14 + 10 * min(1.0, x / 0.45)
-            if 0.55 <= x < 0.8:
-                v = -9.5
-            if x >= 0.8:
-                v = -9 + 4 * (x - 0.8) / 0.2
-        elif k < big_until:
-            v = 0.0
+def default_arc(count: int, dd: int) -> list[float]:
+    big_until = dd + max(2, round(0.6 * (count - dd)))
+    curve_ = []
+    for ki in range(1, count + 1):
+        if ki < dd:
+            xv = (ki - 1) / max(1, dd - 2)
+            val = -14 + 10 * min(1.0, xv / 0.45)
+            if 0.55 <= xv < 0.8:
+                val = -9.5
+            if xv >= 0.8:
+                val = -9 + 4 * (xv - 0.8) / 0.2
+        elif ki < big_until:
+            val = 0.0
         else:
-            v = -13 + 2 * min(3, n - k)
-        arc.append(round(v, 1))
-    return arc
+            val = -13 + 2 * min(3, count - ki)
+        curve_.append(round(val, 1))
+    return curve_
 
 
 def read_arc(spec: str | None) -> tuple[list[float] | None, dict]:
@@ -68,141 +68,141 @@ def read_arc(spec: str | None) -> tuple[list[float] | None, dict]:
     if spec.endswith(".json"):
         with open(spec, encoding="utf-8") as fh:
             data = json.load(fh)
-        meta = {k: data[k] for k in ("film_bpm", "beats_per_bar", "drop_film_bar") if data.get(k) is not None}
-        return [float(v) for v in data["arc"]], meta
-    return [float(v) for v in spec.split(",") if v.strip()], {}
+        meta = {ki: data[ki] for ki in ("film_bpm", "beats_per_bar", "drop_film_bar") if data.get(ki) is not None}
+        return [float(val) for val in data["arc"]], meta
+    return [float(val) for val in spec.split(",") if val.strip()], {}
 
 
 # ------------------------------------------------------------------ grid
 
-def fit_grid(beats: np.ndarray, bpm: float | None) -> dict:
-    ibi = np.diff(beats)
-    T0 = 60.0 / bpm if bpm else float(np.median(ibi))
-    k = np.concatenate([[0], np.cumsum(np.maximum(1, np.round(ibi / T0)))])
-    use = np.ones(len(beats), bool)
-    t0, T = beats[0], T0
+def fit_grid(beat_t: np.ndarray, tempo: float | None) -> dict:
+    ibi = np.diff(beat_t)
+    T0 = 60.0 / tempo if tempo else float(np.median(ibi))
+    ki = np.concatenate([[0], np.cumsum(np.maximum(1, np.round(ibi / T0)))])
+    use = np.ones(len(beat_t), bool)
+    origin, period = beat_t[0], T0
     for _ in range(5):
-        kk, tt = k[use], beats[use]
-        if bpm:
-            T = 60.0 / bpm
-            t0 = float(np.mean(tt - kk * T))
+        kk, tt = ki[use], beat_t[use]
+        if tempo:
+            period = 60.0 / tempo
+            origin = float(np.mean(tt - kk * period))
         else:
             A = np.vstack([np.ones_like(kk), kk]).T
-            t0, T = np.linalg.lstsq(A, tt, rcond=None)[0]
-        res = beats - (t0 + k * T)
-        use = np.abs(res) < 0.035
+            origin, period = np.linalg.lstsq(A, tt, rcond=None)[0]
+        fit = beat_t - (origin + ki * period)
+        use = np.abs(fit) < 0.035
         if use.sum() < 8:
-            use = np.ones(len(beats), bool)
-    res = beats - (t0 + k * T)
-    inl = np.abs(res) < 0.035
-    return {"t0": float(t0), "T": float(T), "median_residual_ms": float(np.median(np.abs(res)) * 1000),
+            use = np.ones(len(beat_t), bool)
+    fit = beat_t - (origin + ki * period)
+    inl = np.abs(fit) < 0.035
+    return {"t0": float(origin), "T": float(period), "median_residual_ms": float(np.median(np.abs(fit)) * 1000),
             "inlier_frac": float(inl.mean())}
 
 
-def flux_curve(y: np.ndarray) -> tuple[np.ndarray, float]:
+def flux_curve(wave: np.ndarray) -> tuple[np.ndarray, float]:
     import librosa
-    S = np.abs(librosa.stft(y, n_fft=512, hop_length=64, window="hann", center=True))
-    L = np.log1p(100 * S)
-    f = np.concatenate([[0.0], np.maximum(0, np.diff(L, axis=1)).sum(axis=0)])
-    return f, 64 / SR
+    spec_mag = np.abs(librosa.stft(wave, n_fft=512, hop_length=64, window="hann", center=True))
+    L = np.log1p(100 * spec_mag)
+    flux = np.concatenate([[0.0], np.maximum(0, np.diff(L, axis=1)).sum(axis=0)])
+    return flux, 64 / SR
 
 
-def snap(y: np.ndarray, t0: float, T: float, dur: float) -> tuple[float, float, float]:
-    f, dt = flux_curve(y)
-    s = min(0.1, 0.3 * T)
-    shifts = np.arange(-s, s + 1e-9, 0.001)
+def snap(wave: np.ndarray, origin: float, period: float, dur: float) -> tuple[float, float, float]:
+    flux, dt = flux_curve(wave)
+    sv = min(0.1, 0.3 * period)
+    shifts = np.arange(-sv, sv + 1e-9, 0.001)
     scores = []
     for sh in shifts:
-        start = (t0 + sh) % T
-        pts = np.arange(start, dur, T)
+        start = (origin + sh) % period
+        pts = np.arange(start, dur, period)
         idx = np.round(pts / dt).astype(int)
-        idx = idx[(idx >= 0) & (idx < len(f))]
-        scores.append(float(f[idx].mean()) if len(idx) else 0.0)
+        idx = idx[(idx >= 0) & (idx < len(flux))]
+        scores.append(float(flux[idx].mean()) if len(idx) else 0.0)
     scores = np.array(scores)
-    b = int(np.argmax(scores))
+    bv = int(np.argmax(scores))
     med = float(np.median(scores))
-    return float(shifts[b]), (float(scores[b] / med) if med > 0 else 1.0), t0 + float(shifts[b])
+    return float(shifts[bv]), (float(scores[bv] / med) if med > 0 else 1.0), origin + float(shifts[bv])
 
 
-def zscore(v: np.ndarray) -> np.ndarray:
-    sd = float(np.std(v))
-    return (v - float(np.mean(v))) / sd if sd > 0 else np.zeros_like(v)
+def zscore(val: np.ndarray) -> np.ndarray:
+    sd = float(np.std(val))
+    return (val - float(np.mean(val))) / sd if sd > 0 else np.zeros_like(val)
 
 
-def downbeat(S: np.ndarray, chroma: np.ndarray, grid: np.ndarray, T: float, B: int):
+def downbeat(spec_mag: np.ndarray, chroma: np.ndarray, beat_grid: np.ndarray, period: float, per_bar: int):
     freqs = np.fft.rfftfreq(N_FFT, 1 / SR)
-    low = S[freqs < 150].sum(axis=0)
+    low = spec_mag[freqs < 150].sum(axis=0)
     lo_on = np.concatenate([[0.0], np.maximum(0, np.diff(low))])
-    nfr = S.shape[1]
-    fr = np.round(grid * SR / HOP).astype(int)
-    tf = int(round(T * SR / HOP))
+    nfr = spec_mag.shape[1]
+    fr = np.round(beat_grid * SR / HOP).astype(int)
+    tf = int(round(period * SR / HOP))
     lows, chg = [], []
-    for f in fr:
-        a, b = max(0, f - 2), min(nfr, f + 4)
-        lows.append(float(lo_on[a:b].max()) if b > a else 0.0)
-        p = chroma[:, max(0, f - tf):max(1, f)].mean(axis=1) if f > 0 else np.zeros(chroma.shape[0])
-        n = chroma[:, f:min(nfr, f + tf)].mean(axis=1) if f < nfr else np.zeros(chroma.shape[0])
-        den = float(np.linalg.norm(p) * np.linalg.norm(n))
-        chg.append(1 - float(p @ n) / den if den > 0 else 0.0)
+    for flux in fr:
+        cli, bv = max(0, flux - 2), min(nfr, flux + 4)
+        lows.append(float(lo_on[cli:bv].max()) if bv > cli else 0.0)
+        pp = chroma[:, max(0, flux - tf):max(1, flux)].mean(axis=1) if flux > 0 else np.zeros(chroma.shape[0])
+        count = chroma[:, flux:min(nfr, flux + tf)].mean(axis=1) if flux < nfr else np.zeros(chroma.shape[0])
+        den = float(np.linalg.norm(pp) * np.linalg.norm(count))
+        chg.append(1 - float(pp @ count) / den if den > 0 else 0.0)
     z = zscore(np.array(lows)) + zscore(np.array(chg))
-    scores = [float(z[p::B].mean()) if len(z[p::B]) else -1e9 for p in range(B)]
+    scores = [float(z[pp::per_bar].mean()) if len(z[pp::per_bar]) else -1e9 for pp in range(per_bar)]
     return np.array(scores), z
 
 
-def local_disagreements(z: np.ndarray, grid: np.ndarray, B: int, phase: int) -> list[dict]:
-    out = []
-    win, hop = 8 * B, 4 * B
-    for s in range(0, max(1, len(z) - win + 1), hop):
-        seg = z[s:s + win]
-        idx = np.arange(s, s + len(seg))
-        sc = [float(seg[(idx % B) == p].mean()) if np.any((idx % B) == p) else -1e9 for p in range(B)]
+def local_disagreements(z: np.ndarray, beat_grid: np.ndarray, per_bar: int, ph: int) -> list[dict]:
+    dest = []
+    win, hop = 8 * per_bar, 4 * per_bar
+    for sv in range(0, max(1, len(z) - win + 1), hop):
+        span = z[sv:sv + win]
+        idx = np.arange(sv, sv + len(span))
+        sc = [float(span[(idx % per_bar) == pp].mean()) if np.any((idx % per_bar) == pp) else -1e9 for pp in range(per_bar)]
         best = int(np.argmax(sc))
-        gap = sc[best] - sc[phase]
-        if best != phase and gap >= 0.5:
-            item = {"from": round(float(grid[s]), 2), "to": round(float(grid[min(len(grid) - 1, s + len(seg) - 1)]), 2),
+        gap = sc[best] - sc[ph]
+        if best != ph and gap >= 0.5:
+            item = {"from": round(float(beat_grid[sv]), 2), "to": round(float(beat_grid[min(len(beat_grid) - 1, sv + len(span) - 1)]), 2),
                     "phase": best, "gap": round(gap, 2)}
-            if out and out[-1]["phase"] == best and out[-1]["to"] >= item["from"]:
-                out[-1]["to"] = item["to"]
-                out[-1]["gap"] = max(out[-1]["gap"], item["gap"])
+            if dest and dest[-1]["phase"] == best and dest[-1]["to"] >= item["from"]:
+                dest[-1]["to"] = item["to"]
+                dest[-1]["gap"] = max(dest[-1]["gap"], item["gap"])
             else:
-                out.append(item)
-    return out
+                dest.append(item)
+    return dest
 
 
 # ------------------------------------------------------------------ bars and the walk
 
-def bar_features(y, S, chroma, onset_env, bars_t, bar_len):
+def bar_features(wave, spec_mag, chroma, onset_env, bars_t, bar_len):
     import librosa
-    mel = librosa.feature.melspectrogram(S=S ** 2, sr=SR)
+    mel = librosa.feature.melspectrogram(S=spec_mag ** 2, sr=SR)
     mfcc = librosa.feature.mfcc(S=librosa.power_to_db(mel), n_mfcc=13)
     med = float(np.median(onset_env)) if len(onset_env) else 0.0
     feats, loud, dens = [], [], []
-    for t in bars_t:
-        a, b = int(t * SR), int((t + bar_len) * SR)
-        seg = y[a:b]
-        loud.append(20 * math.log10(math.sqrt(float(np.mean(seg ** 2))) + 1e-10) if len(seg) else -200.0)
-        fa, fb = int(t * SR / HOP), max(int(t * SR / HOP) + 1, int((t + bar_len) * SR / HOP))
+    for tv in bars_t:
+        cli, bv = int(tv * SR), int((tv + bar_len) * SR)
+        span = wave[cli:bv]
+        loud.append(20 * math.log10(math.sqrt(float(np.mean(span ** 2))) + 1e-10) if len(span) else -200.0)
+        fa, fb = int(tv * SR / HOP), max(int(tv * SR / HOP) + 1, int((tv + bar_len) * SR / HOP))
         oe = onset_env[fa:fb]
         dens.append(float(np.mean(oe > 1.5 * med)) if len(oe) else 0.0)
-        c = chroma[:, fa:fb].mean(axis=1)
-        m = mfcc[1:13, fa:fb].mean(axis=1)
-        c = c / (np.linalg.norm(c) + 1e-12)
-        m = m / (np.linalg.norm(m) + 1e-12)
-        feats.append(np.concatenate([c, m]))
+        cv = chroma[:, fa:fb].mean(axis=1)
+        mv = mfcc[1:13, fa:fb].mean(axis=1)
+        cv = cv / (np.linalg.norm(cv) + 1e-12)
+        mv = mv / (np.linalg.norm(mv) + 1e-12)
+        feats.append(np.concatenate([cv, mv]))
     return np.array(feats), np.array(loud), np.array(dens)
 
 
 def drop_candidates(rel: np.ndarray, nov: np.ndarray) -> list[dict]:
-    n = len(rel)
-    lift = np.array([0.0] + [rel[i] - float(np.median(rel[max(0, i - 4):i])) for i in range(1, n)])
-    nxt = np.array([float(np.mean(rel[i:i + 4])) for i in range(n)])
+    count = len(rel)
+    lift = np.array([0.0] + [rel[ix] - float(np.median(rel[max(0, ix - 4):ix])) for ix in range(1, count)])
+    nxt = np.array([float(np.mean(rel[ix:ix + 4])) for ix in range(count)])
     elig = (rel > -3) & (nxt > -4)
     if not elig.any():
         elig = rel > np.percentile(rel, 75)
     score = lift / 3 + 2 * nov
-    idx = [i for i in np.argsort(-score) if elig[i]][:6]
-    return [{"bar": int(i), "score": round(float(score[i]), 3), "lift_db": round(float(lift[i]), 2),
-             "novelty": round(float(nov[i]), 3)} for i in idx]
+    idx = [ix for ix in np.argsort(-score) if elig[ix]][:6]
+    return [{"bar": int(ix), "score": round(float(score[ix]), 3), "lift_db": round(float(lift[ix]), 2),
+             "novelty": round(float(nov[ix]), 3)} for ix in idx]
 
 
 INF = 1e18
@@ -210,23 +210,23 @@ INF = 1e18
 
 def _jumps(feat: np.ndarray, loud: np.ndarray, jump: float) -> tuple[np.ndarray, np.ndarray]:
     """The cost of going from source bar i to bar j, and the continuation mask (j = i + 1)."""
-    n = len(feat)
+    count = len(feat)
     dist = np.linalg.norm(feat[:, None, :] - feat[None, :, :], axis=2)
     D = dist + np.abs(loud[:, None] - loud[None, :]) / 6
-    nxt = np.minimum(np.arange(n) + 1, n - 1)
+    nxt = np.minimum(np.arange(count) + 1, count - 1)
     J = jump + 2.5 * D[nxt, :]
-    cont = np.zeros((n, n), bool)
-    cont[np.arange(n - 1), np.arange(1, n)] = True
+    cont = np.zeros((count, count), bool)
+    cont[np.arange(count - 1), np.arange(1, count)] = True
     J[cont] = 0.0
-    J[np.arange(n), np.arange(n)] += 1.5
+    J[np.arange(count), np.arange(count)] += 1.5
     return J, cont
 
 
-def _pin(cost: np.ndarray, bar: int) -> np.ndarray:
+def _pin(costs: np.ndarray, bar: int) -> np.ndarray:
     """Only bar stays reachable."""
-    m = np.full(len(cost), INF)
-    m[bar] = cost[bar]
-    return m
+    mv = np.full(len(costs), INF)
+    mv[bar] = costs[bar]
+    return mv
 
 
 def _pins(K: int, opt: dict) -> list[tuple[int, int]]:
@@ -239,46 +239,46 @@ def _pins(K: int, opt: dict) -> list[tuple[int, int]]:
     return pins
 
 
-def _apply_pins(cost: np.ndarray, k: int, pins: list) -> np.ndarray:
+def _apply_pins(costs: np.ndarray, ki: int, pins: list) -> np.ndarray:
     for pk, bar in pins:
-        cost = _pin(cost, bar) if pk == k else cost
-    return cost
+        costs = _pin(costs, bar) if pk == ki else costs
+    return costs
 
 
 def _start_cost(rel: np.ndarray, first: float, start_bar) -> np.ndarray:
-    cost = np.abs(rel - first) / 3
+    costs = np.abs(rel - first) / 3
     if start_bar is None:
-        return cost + 0.4 * np.arange(len(rel))
-    return _pin(cost, start_bar)
+        return costs + 0.4 * np.arange(len(rel))
+    return _pin(costs, start_bar)
 
 
-def _backtrack(cost: np.ndarray, back: list) -> tuple[list[int], float]:
-    j = int(np.argmin(cost))
-    total = float(cost[j])
-    path = [j]
+def _backtrack(costs: np.ndarray, back: list) -> tuple[list[int], float]:
+    jj = int(np.argmin(costs))
+    total = float(costs[jj])
+    route = [jj]
     for arg in reversed(back):
-        j = int(arg[j])
-        path.append(j)
-    return path[::-1], total
+        jj = int(arg[jj])
+        route.append(jj)
+    return route[::-1], total
 
 
-def walk(feat, loud, rel, arc, opt: dict):
+def walk(feat, loud, rel, curve_, opt: dict):
     """The cheapest source-bar path for the film arc.
 
     opt: jump, phrase, drop_k, drop_bar, start_bar, end_bar.
     """
-    n, K = len(feat), len(arc)
+    count, K = len(feat), len(curve_)
     J, cont = _jumps(feat, loud, opt["jump"])
     pins = _pins(K, opt)
-    cost = _apply_pins(_start_cost(rel, arc[0], opt["start_bar"]), 0, pins)
+    costs = _apply_pins(_start_cost(rel, curve_[0], opt["start_bar"]), 0, pins)
     back = []
-    for k in range(1, K):
-        step = J + (0.0 if k % opt["phrase"] == 0 else 1.0) * (~cont)
-        tot = cost[:, None] + step
+    for ki in range(1, K):
+        step = J + (0.0 if ki % opt["phrase"] == 0 else 1.0) * (~cont)
+        tot = costs[:, None] + step
         arg = np.argmin(tot, axis=0)
-        cost = _apply_pins(tot[arg, np.arange(n)] + np.abs(rel - arc[k]) / 3, k, pins)
+        costs = _apply_pins(tot[arg, np.arange(count)] + np.abs(rel - curve_[ki]) / 3, ki, pins)
         back.append(arg)
-    return _backtrack(cost, back)
+    return _backtrack(costs, back)
 
 
 # ------------------------------------------------------------------ main flow
@@ -292,65 +292,65 @@ def _check_drop_arg(drop: str) -> None:
         raise ArrangeError(f"--drop must be auto, none or a bar number, not {drop!r}")
 
 
-def _beats(y: np.ndarray, bpm) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+def _beats(wave: np.ndarray, tempo) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """(magnitude spectrogram, onset envelope, beat times)."""
     import librosa
-    S = np.abs(librosa.stft(y, n_fft=N_FFT, hop_length=HOP))
-    onset_env = librosa.onset.onset_strength(S=librosa.amplitude_to_db(S, ref=np.max), sr=SR, hop_length=HOP)
+    spec_mag = np.abs(librosa.stft(wave, n_fft=N_FFT, hop_length=HOP))
+    onset_env = librosa.onset.onset_strength(S=librosa.amplitude_to_db(spec_mag, ref=np.max), sr=SR, hop_length=HOP)
     _, bt = librosa.beat.beat_track(onset_envelope=onset_env, sr=SR, hop_length=HOP,
-                                    start_bpm=bpm or 120.0, tightness=400)
-    beats = librosa.frames_to_time(bt, sr=SR, hop_length=HOP)
-    if len(beats) < 8:
-        raise ArrangeError(f"only {len(beats)} beats tracked: not a steady track, or too short")
-    return S, onset_env, beats
+                                    start_bpm=tempo or 120.0, tightness=400)
+    beat_t = librosa.frames_to_time(bt, sr=SR, hop_length=HOP)
+    if len(beat_t) < 8:
+        raise ArrangeError(f"only {len(beat_t)} beats tracked: not a steady track, or too short")
+    return spec_mag, onset_env, beat_t
 
 
-def _grid(y: np.ndarray, beats: np.ndarray, a, dur: float) -> dict:
+def _grid(wave: np.ndarray, beat_t: np.ndarray, cli, dur: float) -> dict:
     """The fitted beat grid: g (fit_grid), t0, T, shift, ratio and the grid times."""
-    g = fit_grid(beats, a.bpm)
-    t0, T = g["t0"], g["T"]
+    gd = fit_grid(beat_t, cli.bpm)
+    origin, period = gd["t0"], gd["T"]
     shift, ratio = 0.0, 1.0
-    if not a.no_snap:
-        shift, ratio, t0 = snap(y, t0, T, dur)
-    start = t0 % T
-    if start - T >= -0.03:
-        start -= T  # a beat a few ms before 0 is the track's first beat, not a lost one
-    return {"g": g, "t0": t0, "T": T, "shift": shift, "ratio": ratio,
-            "grid": np.maximum(0.0, np.arange(start, dur, T))}
+    if not cli.no_snap:
+        shift, ratio, origin = snap(wave, origin, period, dur)
+    start = origin % period
+    if start - period >= -0.03:
+        start -= period  # a beat a few ms before 0 is the track's first beat, not a lost one
+    return {"g": gd, "t0": origin, "T": period, "shift": shift, "ratio": ratio,
+            "grid": np.maximum(0.0, np.arange(start, dur, period))}
 
 
-def _phase(scores: np.ndarray, B: int, phase_arg: str) -> tuple[int, int, float, bool]:
+def _phase(scores: np.ndarray, per_bar: int, phase_arg: str) -> tuple[int, int, float, bool]:
     """(downbeat phase, alternative phase, confidence, low confidence)."""
     order = list(np.argsort(-scores))
     auto = int(order[0])
-    second = int(order[1]) if B > 1 else auto
-    conf = float(scores[order[0]] - scores[order[1]]) if B > 1 else 99.0
+    second = int(order[1]) if per_bar > 1 else auto
+    conf = float(scores[order[0]] - scores[order[1]]) if per_bar > 1 else 99.0
     if phase_arg == "auto":
         return auto, second, conf, conf < 0.5
-    phase = int(phase_arg)
-    if not 0 <= phase < B:
-        raise ArrangeError(f"--phase must be auto or 0..{B - 1}")
-    return phase, (auto if auto != phase else second), conf, False
+    ph = int(phase_arg)
+    if not 0 <= ph < per_bar:
+        raise ArrangeError(f"--phase must be auto or 0..{per_bar - 1}")
+    return ph, (auto if auto != ph else second), conf, False
 
 
-def _bar_times(grid: np.ndarray, phase: int, B: int, bar_len: float, dur: float) -> list[float]:
-    bars_t = [float(grid[i]) for i in range(phase, len(grid), B) if grid[i] + bar_len <= dur + 0.001]
+def _bar_times(beat_grid: np.ndarray, ph: int, per_bar: int, bar_len: float, dur: float) -> list[float]:
+    bars_t = [float(beat_grid[ix]) for ix in range(ph, len(beat_grid), per_bar) if beat_grid[ix] + bar_len <= dur + 0.001]
     if len(bars_t) < 2:
         raise ArrangeError(f"only {len(bars_t)} whole bar(s) in the track: need at least 2")
     return bars_t
 
 
-def _diffs(v: np.ndarray, fn) -> np.ndarray:
-    return np.array([0.0] + [float(fn(v[i], v[i - 1])) for i in range(1, len(v))])
+def _diffs(val: np.ndarray, fn) -> np.ndarray:
+    return np.array([0.0] + [float(fn(val[ix], val[ix - 1])) for ix in range(1, len(val))])
 
 
-def _film(a, meta: dict, arc) -> tuple[int, int, list]:
+def _film(cli, meta: dict, curve_) -> tuple[int, int, list]:
     """(film bars, drop film bar, arc)."""
-    K = len(arc) if arc else int(a.bars)
-    drop_film = int(a.drop_film_bar or meta.get("drop_film_bar") or round(0.7 * K))
+    K = len(curve_) if curve_ else int(cli.bars)
+    drop_film = int(cli.drop_film_bar or meta.get("drop_film_bar") or round(0.7 * K))
     if not 1 <= drop_film <= K:
         raise ArrangeError(f"the drop film bar {drop_film} is outside 1..{K}")
-    return K, drop_film, (default_arc(K, drop_film) if arc is None else arc)
+    return K, drop_film, (default_arc(K, drop_film) if curve_ is None else curve_)
 
 
 def _drop_bar(drop: str, cands: list):
@@ -360,208 +360,208 @@ def _drop_bar(drop: str, cands: list):
 
 
 def _check_source_bars(nb: int, pairs) -> None:
-    for name, v in pairs:
-        if v is not None and not 0 <= v < nb:
-            raise ArrangeError(f"{name} {v} is outside the source bars 0..{nb - 1}")
+    for name, val in pairs:
+        if val is not None and not 0 <= val < nb:
+            raise ArrangeError(f"{name} {val} is outside the source bars 0..{nb - 1}")
 
 
-def _runs(path: list[int], K: int) -> list[tuple[int, int]]:
+def _runs(route: list[int], K: int) -> list[tuple[int, int]]:
     """(first, last) film-bar index of each run of consecutive source bars."""
-    runs, k = [], 0
-    while k < K:
-        e = k
-        while e + 1 < K and path[e + 1] == path[e] + 1:
-            e += 1
-        runs.append((k, e))
-        k = e + 1
+    runs, ki = [], 0
+    while ki < K:
+        end_i = ki
+        while end_i + 1 < K and route[end_i + 1] == route[end_i] + 1:
+            end_i += 1
+        runs.append((ki, end_i))
+        ki = end_i + 1
     return runs
 
 
-def _segments(path: list[int], K: int, bars_t: list[float], B: int, T: float, at0: float,
+def _segments(route: list[int], K: int, bars_t: list[float], per_bar: int, period: float, at0: float,
               film_bar_len: float) -> list[dict]:
-    segs = []
-    for k, e in _runs(path, K):
-        src_from = bars_t[path[k]]
-        segs.append({"src_from": round(src_from, 4), "src_to": round(src_from + (e - k + 1) * B * T, 4),
-                     "at": round(at0 + k * film_bar_len, 4),
-                     "src_bars": [path[k], path[e]], "film_bars": [k + 1, e + 1]})
-    return segs
+    spans = []
+    for ki, end_i in _runs(route, K):
+        src_from = bars_t[route[ki]]
+        spans.append({"src_from": round(src_from, 4), "src_to": round(src_from + (end_i - ki + 1) * per_bar * period, 4),
+                     "at": round(at0 + ki * film_bar_len, 4),
+                     "src_bars": [route[ki], route[end_i]], "film_bars": [ki + 1, end_i + 1]})
+    return spans
 
 
-def _music(file: str, segs: list, bpm: float, film_bpm: float) -> dict:
-    none = abs(film_bpm / bpm - 1) < 0.002
-    return {"file": file, "src_bpm": round(film_bpm if none else bpm, 3), "target_bpm": film_bpm,
+def _music(file: str, spans: list, tempo: float, film_bpm: float) -> dict:
+    none = abs(film_bpm / tempo - 1) < 0.002
+    return {"file": file, "src_bpm": round(film_bpm if none else tempo, 3), "target_bpm": film_bpm,
             "stretch": "none" if none else "rubberband", "gain_db": 0,
-            "segments": [{"label": f"source bars {s['src_bars'][0]}-{s['src_bars'][1]} -> film bars "
-                                   f"{s['film_bars'][0]}-{s['film_bars'][1]}",
-                          "src_from": s["src_from"], "src_to": s["src_to"], "at": s["at"],
-                          "fade_in": 0.008, "fade_out": 0.06} for s in segs]}
+            "segments": [{"label": f"source bars {sv['src_bars'][0]}-{sv['src_bars'][1]} -> film bars "
+                                   f"{sv['film_bars'][0]}-{sv['film_bars'][1]}",
+                          "src_from": sv["src_from"], "src_to": sv["src_to"], "at": sv["at"],
+                          "fade_in": 0.008, "fade_out": 0.06} for sv in spans]}
 
 
-def _grid_at(grid: np.ndarray, i: int, fallback: float) -> float:
-    return float(grid[i]) if i < len(grid) else fallback
+def _grid_at(beat_grid: np.ndarray, ix: int, fallback: float) -> float:
+    return float(beat_grid[ix]) if ix < len(beat_grid) else fallback
 
 
 def _bar_rows(bars_t: list[float], table: dict) -> list[dict]:
-    return [{"i": i, "t": round(bars_t[i], 4), "rel_db": round(float(table["rel"][i]), 2),
-             "novelty": round(float(table["nov"][i]), 3), "rise_db": round(float(table["rise"][i]), 2),
-             "density": round(float(table["dens"][i]), 3)} for i in range(len(bars_t))]
+    return [{"i": ix, "t": round(bars_t[ix], 4), "rel_db": round(float(table["rel"][ix]), 2),
+             "novelty": round(float(table["nov"][ix]), 3), "rise_db": round(float(table["rise"][ix]), 2),
+             "density": round(float(table["dens"][ix]), 3)} for ix in range(len(bars_t))]
 
 
-def _bar_table(y, S, chroma, onset_env, bars_t: list[float], bar_len: float) -> dict:
+def _bar_table(wave, spec_mag, chroma, onset_env, bars_t: list[float], bar_len: float) -> dict:
     """Per source bar: features, loudness, density, level under the top, novelty and rise."""
-    feat, loud, dens = bar_features(y, S, chroma, onset_env, bars_t, bar_len)
+    feat, loud, dens = bar_features(wave, spec_mag, chroma, onset_env, bars_t, bar_len)
     return {"feat": feat, "loud": loud, "dens": dens, "rel": loud - np.percentile(loud, 90),
-            "nov": _diffs(feat, lambda u, w: np.linalg.norm(u - w)), "rise": _diffs(loud, lambda u, w: u - w)}
+            "nov": _diffs(feat, lambda u, wv: np.linalg.norm(u - wv)), "rise": _diffs(loud, lambda u, wv: u - wv)}
 
 
-def _analyse_track(a, B: int) -> dict:
+def _analyse_track(cli, per_bar: int) -> dict:
     """Decode, beat-track, fit the grid, read the downbeat and the bar table."""
     import librosa
-    y = decode(a.track)
-    dur = len(y) / SR
-    S, onset_env, beats = _beats(y, a.bpm)
-    v = _grid(y, beats, a, dur)
-    grid, T = v["grid"], v["T"]
-    chroma = librosa.feature.chroma_stft(S=S ** 2, sr=SR)
-    scores, z = downbeat(S, chroma, grid, T, B)
-    phase, alt, conf, low_conf = _phase(scores, B, a.phase)
-    bars_t = _bar_times(grid, phase, B, B * T, dur)
-    v.update(dur=dur, scores=scores, phase=phase, alt=alt, conf=conf, low_conf=low_conf, bars_t=bars_t,
-             disagree=local_disagreements(z, grid, B, phase),
-             table=_bar_table(y, S, chroma, onset_env, bars_t, B * T))
-    return v
+    wave = decode(cli.track)
+    dur = len(wave) / SR
+    spec_mag, onset_env, beat_t = _beats(wave, cli.bpm)
+    val = _grid(wave, beat_t, cli, dur)
+    beat_grid, period = val["grid"], val["T"]
+    chroma = librosa.feature.chroma_stft(S=spec_mag ** 2, sr=SR)
+    scores, z = downbeat(spec_mag, chroma, beat_grid, period, per_bar)
+    ph, alt, conf, low_conf = _phase(scores, per_bar, cli.phase)
+    bars_t = _bar_times(beat_grid, ph, per_bar, per_bar * period, dur)
+    val.update(dur=dur, scores=scores, phase=ph, alt=alt, conf=conf, low_conf=low_conf, bars_t=bars_t,
+             disagree=local_disagreements(z, beat_grid, per_bar, ph),
+             table=_bar_table(wave, spec_mag, chroma, onset_env, bars_t, per_bar * period))
+    return val
 
 
-def arrange(a) -> dict:
-    _check_drop_arg(a.drop)
-    arc, meta = read_arc(a.arc)
-    film_bpm = float(meta.get("film_bpm", a.film_bpm))
-    B = int(meta.get("beats_per_bar", a.beats_per_bar))
-    v = _analyse_track(a, B)
-    tb, bars_t, T = v["table"], v["bars_t"], v["T"]
+def arrange(cli) -> dict:
+    _check_drop_arg(cli.drop)
+    curve_, meta = read_arc(cli.arc)
+    film_bpm = float(meta.get("film_bpm", cli.film_bpm))
+    per_bar = int(meta.get("beats_per_bar", cli.beats_per_bar))
+    val = _analyse_track(cli, per_bar)
+    tb, bars_t, period = val["table"], val["bars_t"], val["T"]
     nb = len(bars_t)
     cands = drop_candidates(tb["rel"], tb["nov"])
-    K, drop_film, arc = _film(a, meta, arc)
-    drop_bar = _drop_bar(a.drop, cands)
-    _check_source_bars(nb, (("--drop", drop_bar), ("--start-bar", a.start_bar), ("--end-bar", a.end_bar)))
-    opt = {"jump": a.jump, "phrase": max(1, a.phrase), "drop_k": drop_film - 1, "drop_bar": drop_bar,
-           "start_bar": a.start_bar, "end_bar": a.end_bar}
-    path, total = walk(tb["feat"], tb["loud"], tb["rel"], arc, opt)
-    segs = _segments(path, K, bars_t, B, T, a.film_offset, B * 60.0 / film_bpm)
-    bpm = 60.0 / T
-    g, t0 = v["g"], v["t0"]
-    res = {"track": a.track, "duration": round(v["dur"], 3), "bpm": round(bpm, 3), "beat_period": round(T, 6),
-           "film_bpm": film_bpm, "beats_per_bar": B, "film_bars": K, "drop_film_bar": drop_film, "arc": arc,
-           "stretch_ratio_to_film": round(film_bpm / bpm, 5), "t0": round(t0, 4),
-           "transient_shift_ms": round(v["shift"] * 1000, 1), "transient_fit_ratio": round(v["ratio"], 3),
-           "grid_median_residual_ms": round(g["median_residual_ms"], 2),
-           "grid_inlier_frac": round(g["inlier_frac"], 3), "downbeat_phase": v["phase"],
-           "phase_scores": [round(float(s), 3) for s in v["scores"]], "phase_confidence": round(v["conf"], 3),
-           "phase_low_confidence": bool(v["low_conf"]),
-           "phase_alternative": {"phase": v["alt"], "first_downbeat": round(_grid_at(v["grid"], v["alt"], t0), 4)},
-           "local_phase_disagreements": v["disagree"], "drop_source_bar": drop_bar,
-           "bars": _bar_rows(bars_t, tb), "drop_candidates": cands, "map": path, "segments": segs,
-           "music": _music(a.file or a.track, segs, bpm, film_bpm), "total_cost": round(total, 3)}
-    res["summary"] = summary(res, _grid_at(v["grid"], v["phase"], t0), a.phase)
-    return res
+    K, drop_film, curve_ = _film(cli, meta, curve_)
+    drop_bar = _drop_bar(cli.drop, cands)
+    _check_source_bars(nb, (("--drop", drop_bar), ("--start-bar", cli.start_bar), ("--end-bar", cli.end_bar)))
+    opt = {"jump": cli.jump, "phrase": max(1, cli.phrase), "drop_k": drop_film - 1, "drop_bar": drop_bar,
+           "start_bar": cli.start_bar, "end_bar": cli.end_bar}
+    route, total = walk(tb["feat"], tb["loud"], tb["rel"], curve_, opt)
+    spans = _segments(route, K, bars_t, per_bar, period, cli.film_offset, per_bar * 60.0 / film_bpm)
+    tempo = 60.0 / period
+    gd, origin = val["g"], val["t0"]
+    fit = {"track": cli.track, "duration": round(val["dur"], 3), "bpm": round(tempo, 3), "beat_period": round(period, 6),
+           "film_bpm": film_bpm, "beats_per_bar": per_bar, "film_bars": K, "drop_film_bar": drop_film, "arc": curve_,
+           "stretch_ratio_to_film": round(film_bpm / tempo, 5), "t0": round(origin, 4),
+           "transient_shift_ms": round(val["shift"] * 1000, 1), "transient_fit_ratio": round(val["ratio"], 3),
+           "grid_median_residual_ms": round(gd["median_residual_ms"], 2),
+           "grid_inlier_frac": round(gd["inlier_frac"], 3), "downbeat_phase": val["phase"],
+           "phase_scores": [round(float(sv), 3) for sv in val["scores"]], "phase_confidence": round(val["conf"], 3),
+           "phase_low_confidence": bool(val["low_conf"]),
+           "phase_alternative": {"phase": val["alt"], "first_downbeat": round(_grid_at(val["grid"], val["alt"], origin), 4)},
+           "local_phase_disagreements": val["disagree"], "drop_source_bar": drop_bar,
+           "bars": _bar_rows(bars_t, tb), "drop_candidates": cands, "map": route, "segments": spans,
+           "music": _music(cli.file or cli.track, spans, tempo, film_bpm), "total_cost": round(total, 3)}
+    fit["summary"] = summary(fit, _grid_at(val["grid"], val["phase"], origin), cli.phase)
+    return fit
 
 
-def summary(r: dict, first_down: float, phase_arg: str) -> str:
-    bar = r["beat_period"] * r["beats_per_bar"]
-    s = (f"{r['bpm']:.2f} BPM (grid residual {r['grid_median_residual_ms']:.1f} ms, "
-         f"{100 * r['grid_inlier_frac']:.0f}% inliers); downbeats at {first_down:.3f} + {bar:.3f}*n s "
-         f"(phase {r['downbeat_phase']}, confidence {r['phase_confidence']:.2f}")
-    alt = r["phase_alternative"]
-    if r["phase_low_confidence"]:
-        s += (f", LOW: the other grid is {alt['first_downbeat']:.3f} + {bar:.3f}*n s, select it with "
+def summary(rep: dict, first_down: float, phase_arg: str) -> str:
+    bar = rep["beat_period"] * rep["beats_per_bar"]
+    sv = (f"{rep['bpm']:.2f} BPM (grid residual {rep['grid_median_residual_ms']:.1f} ms, "
+         f"{100 * rep['grid_inlier_frac']:.0f}% inliers); downbeats at {first_down:.3f} + {bar:.3f}*n s "
+         f"(phase {rep['downbeat_phase']}, confidence {rep['phase_confidence']:.2f}")
+    alt = rep["phase_alternative"]
+    if rep["phase_low_confidence"]:
+        sv += (f", LOW: the other grid is {alt['first_downbeat']:.3f} + {bar:.3f}*n s, select it with "
               f"--phase {alt['phase']}")
     elif phase_arg != "auto":
-        s += f", the automatic choice was phase {alt['phase']}"
-    s += (f"); {len(r['bars'])} source bars, {r['film_bars']} film bars, {len(r['segments'])} segment(s); "
-          f"drop on film bar {r['drop_film_bar']} from "
-          + (f"source bar {r['drop_source_bar']}" if r["drop_source_bar"] is not None else "the bar the arc chose")
-          + f"; stretch ratio {r['stretch_ratio_to_film']:.4f}")
-    if r["local_phase_disagreements"]:
-        s += "; local phase disagreements: " + ", ".join(
-            f"{d['from']:.1f}-{d['to']:.1f} s phase {d['phase']}" for d in r["local_phase_disagreements"][:4])
-    return s
+        sv += f", the automatic choice was phase {alt['phase']}"
+    sv += (f"); {len(rep['bars'])} source bars, {rep['film_bars']} film bars, {len(rep['segments'])} segment(s); "
+          f"drop on film bar {rep['drop_film_bar']} from "
+          + (f"source bar {rep['drop_source_bar']}" if rep["drop_source_bar"] is not None else "the bar the arc chose")
+          + f"; stretch ratio {rep['stretch_ratio_to_film']:.4f}")
+    if rep["local_phase_disagreements"]:
+        sv += "; local phase disagreements: " + ", ".join(
+            f"{dd['from']:.1f}-{dd['to']:.1f} s phase {dd['phase']}" for dd in rep["local_phase_disagreements"][:4])
+    return sv
 
 
-def print_text(r: dict, out: str | None):
-    say(r["summary"])
-    say(f"transient shift {r['transient_shift_ms']} ms, fit ratio {r['transient_fit_ratio']}")
-    say("phase scores: " + " ".join(f"{p}:{v}" for p, v in enumerate(r["phase_scores"])))
-    say("drop candidates: " + ", ".join(f"bar {c['bar']} ({c['score']})" for c in r["drop_candidates"]))
-    if r["phase_low_confidence"]:
+def print_text(rep: dict, dest: str | None):
+    say(rep["summary"])
+    say(f"transient shift {rep['transient_shift_ms']} ms, fit ratio {rep['transient_fit_ratio']}")
+    say("phase scores: " + " ".join(f"{pp}:{val}" for pp, val in enumerate(rep["phase_scores"])))
+    say("drop candidates: " + ", ".join(f"bar {cv['bar']} ({cv['score']})" for cv in rep["drop_candidates"]))
+    if rep["phase_low_confidence"]:
         say("LOW downbeat confidence: look where the first note falls, where sections enter and where chords "
-            f"change, then rerun with --phase {r['downbeat_phase']} or --phase {r['phase_alternative']['phase']}")
-    top = {c["bar"] for c in r["drop_candidates"][:3]}
+            f"change, then rerun with --phase {rep['downbeat_phase']} or --phase {rep['phase_alternative']['phase']}")
+    top = {cv["bar"] for cv in rep["drop_candidates"][:3]}
     say("bar      t  rel_dB    nov  rise  dens")
-    for b in r["bars"]:
-        mark = "  <- drop candidate" if b["i"] in top else ""
-        say(f"{b['i']:3d} {b['t']:7.3f} {b['rel_db']:7.2f} {b['novelty']:6.3f} {b['rise_db']:5.1f} "
-            f"{b['density']:5.2f}{mark}")
-    say("map film:source " + " ".join(f"{k + 1}:{s}" for k, s in enumerate(r["map"])))
-    say(json.dumps({"music": r["music"]}, indent=1))
-    if out:
-        say("wrote", out)
+    for bv in rep["bars"]:
+        mark = "  <- drop candidate" if bv["i"] in top else ""
+        say(f"{bv['i']:3d} {bv['t']:7.3f} {bv['rel_db']:7.2f} {bv['novelty']:6.3f} {bv['rise_db']:5.1f} "
+            f"{bv['density']:5.2f}{mark}")
+    say("map film:source " + " ".join(f"{ki + 1}:{sv}" for ki, sv in enumerate(rep["map"])))
+    say(json.dumps({"music": rep["music"]}, indent=1))
+    if dest:
+        say("wrote", dest)
 
 
 def parse(argv):
-    p = argparse.ArgumentParser(prog="arrange.py", description="Fit a track's bar grid and draft a bar-line edit.")
-    p.add_argument("track", nargs="?", metavar="TRACK")
-    p.add_argument("--bpm", type=float)
-    p.add_argument("--phase", default="auto")
-    p.add_argument("--film-bpm", type=float, default=120.0)
-    p.add_argument("--beats-per-bar", type=int, default=4)
-    p.add_argument("--bars", type=int, default=30)
-    p.add_argument("--arc")
-    p.add_argument("--drop-film-bar", type=int)
-    p.add_argument("--drop", default="auto")
-    p.add_argument("--start-bar", type=int)
-    p.add_argument("--end-bar", type=int)
-    p.add_argument("--phrase", type=int, default=2)
-    p.add_argument("--film-offset", type=float, default=0.0)
-    p.add_argument("--jump", type=float, default=3.0)
-    p.add_argument("--no-snap", action="store_true")
-    p.add_argument("--file")
-    p.add_argument("--out")
-    p.add_argument("--json", action="store_true")
-    p.add_argument("--self-test", action="store_true")
-    return p.parse_args(argv)
+    ap = argparse.ArgumentParser(prog="arrange.py", description="Fit a track's bar grid and draft a bar-line edit.")
+    ap.add_argument("track", nargs="?", metavar="TRACK")
+    ap.add_argument("--bpm", type=float)
+    ap.add_argument("--phase", default="auto")
+    ap.add_argument("--film-bpm", type=float, default=120.0)
+    ap.add_argument("--beats-per-bar", type=int, default=4)
+    ap.add_argument("--bars", type=int, default=30)
+    ap.add_argument("--arc")
+    ap.add_argument("--drop-film-bar", type=int)
+    ap.add_argument("--drop", default="auto")
+    ap.add_argument("--start-bar", type=int)
+    ap.add_argument("--end-bar", type=int)
+    ap.add_argument("--phrase", type=int, default=2)
+    ap.add_argument("--film-offset", type=float, default=0.0)
+    ap.add_argument("--jump", type=float, default=3.0)
+    ap.add_argument("--no-snap", action="store_true")
+    ap.add_argument("--file")
+    ap.add_argument("--out")
+    ap.add_argument("--json", action="store_true")
+    ap.add_argument("--self-test", action="store_true")
+    return ap.parse_args(argv)
 
 
-def _write_out(out: str | None, r: dict) -> None:
-    if not out:
+def _write_out(dest: str | None, rep: dict) -> None:
+    if not dest:
         return
-    os.makedirs(os.path.dirname(os.path.abspath(out)), exist_ok=True)
-    with open(out, "w", encoding="utf-8") as fh:
-        json.dump(r, fh, indent=1)
+    os.makedirs(os.path.dirname(os.path.abspath(dest)), exist_ok=True)
+    with open(dest, "w", encoding="utf-8") as fh:
+        json.dump(rep, fh, indent=1)
 
 
-def _run(a) -> int:
+def _run(cli) -> int:
     try:
-        r = arrange(a)
-    except ArrangeError as e:
-        say(f"arrange.py: {e}", file=sys.stderr)
+        rep = arrange(cli)
+    except ArrangeError as end_i:
+        say(f"arrange.py: {end_i}", file=sys.stderr)
         return 1
-    _write_out(a.out, r)
-    if a.json:
-        say(json.dumps(r, indent=1))
+    _write_out(cli.out, rep)
+    if cli.json:
+        say(json.dumps(rep, indent=1))
     else:
-        print_text(r, a.out)
+        print_text(rep, cli.out)
     return 0
 
 
 def main(argv=None) -> int:
-    a = parse(sys.argv[1:] if argv is None else argv)
-    if a.self_test:
+    cli = parse(sys.argv[1:] if argv is None else argv)
+    if cli.self_test:
         return self_test()
-    if not a.track:
+    if not cli.track:
         say("arrange.py: give a TRACK", file=sys.stderr)
         return 2
-    return _run(a)
+    return _run(cli)
 
 
 def _quiet(argv, err=False):
@@ -574,25 +574,25 @@ def _quiet(argv, err=False):
     return code, buf.getvalue()
 
 
-def _test_grid(ck, song: str, out: str) -> None:
-    code, _ = _quiet([song, "--bars", "8", "--out", out])
-    r = json.load(open(out))
-    ck("S11 bpm 120 +-0.05", code == 0 and abs(r["bpm"] - 120) <= 0.05)
-    down = r["bars"][0]["t"]
+def _test_grid(ck, song: str, dest: str) -> None:
+    code, _ = _quiet([song, "--bars", "8", "--out", dest])
+    rep = json.load(open(dest))
+    ck("S11 bpm 120 +-0.05", code == 0 and abs(rep["bpm"] - 120) <= 0.05)
+    down = rep["bars"][0]["t"]
     ck("S11 the downbeat phase is the accent", abs(((down + 0.25) % 2.0) - 0.25) < 0.03)
-    ck("S11 stretch none for film 120", r["music"]["stretch"] == "none" and r["music"]["src_bpm"] == 120)
-    bar_times = [b["t"] for b in r["bars"]]
-    ck("S11 segments start on bar times", all(any(abs(s["src_from"] - t) < 1e-3 for t in bar_times)
-                                              for s in r["segments"]))
-    drop = r["map"][r["drop_film_bar"] - 1]
-    ck("S11 the drop bar is in the louder half", r["bars"][drop]["t"] >= 19.5)
+    ck("S11 stretch none for film 120", rep["music"]["stretch"] == "none" and rep["music"]["src_bpm"] == 120)
+    bar_times = [bv["t"] for bv in rep["bars"]]
+    ck("S11 segments start on bar times", all(any(abs(sv["src_from"] - tv) < 1e-3 for tv in bar_times)
+                                              for sv in rep["segments"]))
+    drop = rep["map"][rep["drop_film_bar"] - 1]
+    ck("S11 the drop bar is in the louder half", rep["bars"][drop]["t"] >= 19.5)
 
 
-def _test_errors(ck, song: str, d: str) -> None:
+def _test_errors(ck, song: str, tmp: str) -> None:
     code, err = _quiet([song, "--bars", "8", "--drop", "99"], err=True)
     ck("S12 --drop 99 names the range 0..19", code == 1 and "0..19" in err)
     ck("bad --drop word", _quiet([song, "--drop", "loud"], err=True)[0] == 1)
-    ck("missing track", _quiet([os.path.join(d, "none.wav")], err=True)[0] == 1)
+    ck("missing track", _quiet([os.path.join(tmp, "none.wav")], err=True)[0] == 1)
 
 
 def self_test() -> int:
@@ -600,17 +600,17 @@ def self_test() -> int:
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
     import fixtures as fx
     ck = fx.Checker()
-    with tempfile.TemporaryDirectory() as d:
-        song = fx.write(os.path.join(d, "song.wav"), fx.click_track(120, 20, louder_from=10))
-        out = os.path.join(d, "arr.json")
-        _test_grid(ck, song, out)
-        _test_errors(ck, song, d)
+    with tempfile.TemporaryDirectory() as tmp:
+        song = fx.write(os.path.join(tmp, "song.wav"), fx.click_track(120, 20, louder_from=10))
+        dest = os.path.join(tmp, "arr.json")
+        _test_grid(ck, song, dest)
+        _test_errors(ck, song, tmp)
         ck("default arc shape", default_arc(15, 9)[8] == 0.0 and default_arc(15, 9)[0] == -14.0)
-        arcf = fx.put_json(os.path.join(d, "arc.json"), {"film_bpm": 120, "beats_per_bar": 4, "drop_film_bar": 3,
+        arcf = fx.put_json(os.path.join(tmp, "arc.json"), {"film_bpm": 120, "beats_per_bar": 4, "drop_film_bar": 3,
                                                          "arc": [-14, -10, 0, 0, -9]})
-        code, _ = _quiet([song, "--arc", arcf, "--out", out])
-        r = json.load(open(out))
-        ck("arc file: 5 film bars, drop on film bar 3", code == 0 and r["film_bars"] == 5 and r["drop_film_bar"] == 3)
+        code, _ = _quiet([song, "--arc", arcf, "--out", dest])
+        rep = json.load(open(dest))
+        ck("arc file: 5 film bars, drop on film bar 3", code == 0 and rep["film_bars"] == 5 and rep["drop_film_bar"] == 3)
     return ck.code()
 
 
