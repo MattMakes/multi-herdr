@@ -235,18 +235,28 @@ def _head_level(fine: np.ndarray, cut_file: bool) -> float | None:
     return float(np.max(fine[2:5] if len(fine) > 5 else fine))
 
 
-def analyse(x: np.ndarray, cls: str, fade_s: float, floor_pow: float | None = None, cut_file: bool = True) -> dict:
-    """Envelope facts the trim needs: reach, head, peak_late, strike and floor."""
+def _envelopes(x: np.ndarray, cls: str) -> tuple[np.ndarray, np.ndarray, float, int]:
+    """(coarse envelope, 1 ms envelope, top level in dB, coarse hop in samples), levels relative to the top."""
     hop_s, smooth = ENV[cls]
     hop = int(round(hop_s * SR))
     coarse_power = power_frames(x, hop, smooth)
     top = float(_to_db(coarse_power.max()))
-    env = _to_db(coarse_power) - top
-    fine = _to_db(power_frames(x, _MS)) - top
+    return _to_db(coarse_power) - top, _to_db(power_frames(x, _MS)) - top, top, hop
+
+
+def _reach_level(env: np.ndarray, peak: int, stop: int, hop_s: float) -> float:
+    """Lowest level in the last 15 ms before the fade region, never earlier than the peak."""
+    window = max(1, math.ceil(0.015 / hop_s))
+    return float(np.min(env[max(peak, stop - window):stop]))
+
+
+def analyse(x: np.ndarray, cls: str, fade_s: float, floor_pow: float | None = None, cut_file: bool = True) -> dict:
+    """Envelope facts the trim needs: reach, head, peak_late, strike and floor."""
+    hop_s = ENV[cls][0]
+    env, fine, top, hop = _envelopes(x, cls)
     peak = int(np.argmax(env))
     stop = max(peak + 1, len(env) - math.ceil((fade_s + 0.005) / hop_s))
-    window = max(1, math.ceil(0.015 / hop_s))
-    reach = float(np.min(env[max(peak, stop - window):stop]))
+    reach = _reach_level(env, peak, stop, hop_s)
     floor = None if floor_pow is None else float(10 * np.log10(floor_pow + 1e-30) - top)
     return {"e": env, "e1": fine, "top": top, "ip": peak, "stop": stop, "hop": hop, "reach": reach,
             "head": _head_level(fine, cut_file), "peak_late": peak * hop >= 0.85 * len(x),

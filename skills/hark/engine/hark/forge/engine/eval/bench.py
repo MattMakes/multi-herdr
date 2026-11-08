@@ -217,12 +217,14 @@ class EnvRef:
         report = {key: mine[key] for key in ("attack_ms", "t40_ms", "active_s", "onset_s")}
         octaves, typical = self._octave_offsets(mine, chosen)
         report["env_oct"] = round(float(np.mean([abs(val) for val in octaves.values()])), 3)
-        gap = curve(x, self.PRE, self.post) - np.median(self.C[chosen], axis=0)
-        report["curve_db"] = round(float(np.sqrt(np.mean(gap ** 2))), 2)
-        for key, val in octaves.items():
-            report[key.split("_")[0] + "_ratio"] = round(2 ** val, 3)
+        report["curve_db"] = self._curve_gap(x, chosen)
+        report.update(_ratio_fields(octaves))
         report["ref_median"] = {key: round(val, 3) for key, val in typical.items()}
         return report
+
+    def _curve_gap(self, x: Any, chosen: list[int]) -> float:
+        gap = curve(x, self.PRE, self.post) - np.median(self.C[chosen], axis=0)
+        return round(float(np.sqrt(np.mean(gap ** 2))), 2)
 
     def _octave_offsets(self, mine: dict, chosen: list[int]) -> tuple[dict, dict]:
         """log2 distance of each feature from the kept refs' median, plus the medians."""
@@ -234,20 +236,32 @@ class EnvRef:
         return octaves, typical
 
 
+def _ratio_fields(octaves: dict) -> dict:
+    """attack_ratio, t40_ratio and active_ratio from the octave offsets."""
+    return {key.split("_")[0] + "_ratio": round(2 ** val, 3) for key, val in octaves.items()}
+
+
+def _head_defects(raw: np.ndarray, mono: np.ndarray, scale: float) -> dict:
+    mean_level = abs(float(np.mean(mono))) / scale
+    return {"clipped_samples": int(np.sum(np.abs(raw) >= 0.999)),
+            "dc_db": round(float(20 * np.log10(mean_level + 1e-12)), 1),
+            "first_sample": round(abs(float(mono[0])) / scale, 3)}
+
+
+def _tail_defects(mono: np.ndarray, scale: float) -> dict:
+    fine, coarse = frames_db(mono, 1), frames_db(mono, 5)
+    return {"tail_db": round(float(frames_db(mono[-480:], 10)[-1] - coarse.max()), 1),
+            "last_ms_rel": round(float(np.sqrt(np.mean(mono[-48:] ** 2))) / scale, 3),
+            "lead_s": round(int(np.argmax(fine >= fine.max() - 50)) / 1000, 3)}
+
+
 def _defect_numbers(raw: np.ndarray) -> dict:
     mono = _downmix(raw)
     scale = float(np.max(np.abs(mono))) + 1e-12
-    fine, coarse = frames_db(mono, 1), frames_db(mono, 5)
-    mean_level = abs(float(np.mean(mono))) / scale
-    return {
-        "clipped_samples": int(np.sum(np.abs(raw) >= 0.999)),
-        "dc_db": round(float(20 * np.log10(mean_level + 1e-12)), 1),
-        "first_sample": round(abs(float(mono[0])) / scale, 3),
-        "tail_db": round(float(frames_db(mono[-480:], 10)[-1] - coarse.max()), 1),
-        "last_ms_rel": round(float(np.sqrt(np.mean(mono[-48:] ** 2))) / scale, 3),
-        "lead_s": round(int(np.argmax(fine >= fine.max() - 50)) / 1000, 3),
-        "peak_dbfs": round(float(20 * np.log10(np.max(np.abs(raw)) + 1e-12)), 2),
-    }
+    found = _head_defects(raw, mono, scale)
+    found.update(_tail_defects(mono, scale))
+    found["peak_dbfs"] = round(float(20 * np.log10(np.max(np.abs(raw)) + 1e-12)), 2)
+    return found
 
 
 _PEAK_END_EXEMPT = ("end click", "tail cut", "late start")
@@ -444,10 +458,7 @@ def summ(rows: Sequence[dict]) -> dict:
     if not rows:
         return {}
     digest: dict = {"n": len(rows)}
-    for key in [name for name, _ in METRICS] + list(SUMM_EXTRA):
-        present = [line[key] for line in rows if line.get(key) is not None]
-        if present:
-            digest[key] = round(float(np.median(present)), 2)
+    digest.update(_metric_medians(rows))
     named = [bool(line["as_names"]) for line in rows if "as_names" in line]
     if named:
         digest["as_names"] = round(float(np.mean(named)), 2)
@@ -455,23 +466,39 @@ def summ(rows: Sequence[dict]) -> dict:
     return digest
 
 
+def _metric_medians(rows: Sequence[dict]) -> dict:
+    medians = {}
+    for key in [name for name, _ in METRICS] + list(SUMM_EXTRA):
+        present = [line[key] for line in rows if line.get(key) is not None]
+        if present:
+            medians[key] = round(float(np.median(present)), 2)
+    return medians
+
+
 def _passes(value: float, limit: float, direction: str) -> bool:
     return value <= limit if direction == "low" else value >= limit
 
 
-def inside_real(made: Sequence[dict], real: Sequence[dict], metrics: Sequence[tuple] = METRICS,
-                q: float = 0.8) -> dict:
-    """For each made row, how many metrics fall inside the q limits of the real rows."""
+def _real_bounds(real: Sequence[dict], metrics: Sequence[tuple], q: float) -> tuple[dict, dict]:
     bounds, direction = {}, {}
     for key, kind in metrics:
         present = [line[key] for line in real if line.get(key) is not None]
         if present:
             bounds[key] = float(np.quantile(present, q if kind == "low" else 1 - q))
             direction[key] = kind
-    counts = []
-    for line in made:
-        counts.append(sum(1 for key, limit in bounds.items()
-                          if line.get(key) is not None and _passes(line[key], limit, direction[key])))
+    return bounds, direction
+
+
+def _count_inside(line: dict, bounds: dict, direction: dict) -> int:
+    return sum(1 for key, limit in bounds.items()
+               if line.get(key) is not None and _passes(line[key], limit, direction[key]))
+
+
+def inside_real(made: Sequence[dict], real: Sequence[dict], metrics: Sequence[tuple] = METRICS,
+                q: float = 0.8) -> dict:
+    """For each made row, how many metrics fall inside the q limits of the real rows."""
+    bounds, direction = _real_bounds(real, metrics, q)
+    counts = [_count_inside(line, bounds, direction) for line in made]
     return {"per_sound": counts, "n_checks": len(bounds), "limits": {key: round(val, 3) for key, val in bounds.items()}}
 
 
@@ -481,7 +508,7 @@ def _variety(state: _Cat, picks: list[int]) -> dict:
     return diversity([state.X[idx] for idx in picks], state.E[picks])
 
 
-def _add_real(state: _Cat, res: dict) -> None:
+def _real_rows(state: _Cat, res: dict) -> None:
     """Score the refs against each other: forge vs bench, bench leave-one-out, bench vs forge."""
     if state.B:
         res["real_cross"] = [state.row(idx, state.ys_b) for idx in state.if_]
@@ -489,6 +516,10 @@ def _add_real(state: _Cat, res: dict) -> None:
         res["real_loo"] = [state.row(idx, state.ys_b, exclude=pos) for pos, idx in enumerate(state.ib)]
     if state.F:
         res["real_rev"] = [state.row(idx, state.ys_f) for idx in state.ib]
+
+
+def _add_real(state: _Cat, res: dict) -> None:
+    _real_rows(state, res)
     res["diversity_bench"] = _variety(state, state.ib)
     res["diversity_forge"] = _variety(state, state.if_)
     pooled = (res.get("real_cross") or []) + (res.get("real_loo") or [])
@@ -513,13 +544,16 @@ def _set_summaries(res: dict) -> dict:
     return digests
 
 
+def _registry_entry(reg: dict, cat: str) -> tuple[list, list, str]:
+    entry = (reg.get("categories") or {}).get(cat) or {}
+    return list(entry.get("bench") or []), list(entry.get("forge") or []), entry.get("note", "")
+
+
 def bench_category(cat: str, made_paths: Sequence[str], reg: dict, models: tuple, real: bool = True,
                    log: Callable | None = print) -> dict:
     """Score the made sounds of one category, and the real-recording ceilings."""
-    entry = (reg.get("categories") or {}).get(cat) or {}
-    bench_refs, forge_refs = list(entry.get("bench") or []), list(entry.get("forge") or [])
+    bench_refs, forge_refs, note = _registry_entry(reg, cat)
     made = list(made_paths)
-    note = entry.get("note", "")
     if not made + bench_refs + forge_refs:
         return {"n_bench": 0, "n_forge": 0, "note": note, "made": [], "summary": {}}
     state = _Cat(cat, made, bench_refs, forge_refs, models)
@@ -555,13 +589,17 @@ def _wavs_in(folder: Path) -> list[str]:
     return sorted(str(item) for item in folder.glob("*.wav") if not _ignored(item))
 
 
+def _scan_made(made: Any) -> dict[str, list[str]]:
+    found: dict[str, list[str]] = {}
+    for sub in sorted(item for item in Path(made).iterdir() if item.is_dir()):
+        finals = sub / "final"
+        found[sub.name] = _wavs_in(finals if finals.is_dir() else sub)
+    return found
+
+
 def gather(made: Any = None, files: Sequence[str] | None = None) -> dict[str, list[str]]:
     """Made sounds by category from <cat>/final/*.wav (or <cat>/*.wav), plus any CAT=GLOB entries."""
-    found: dict[str, list[str]] = {}
-    if made:
-        for sub in sorted(item for item in Path(made).iterdir() if item.is_dir()):
-            finals = sub / "final"
-            found[sub.name] = _wavs_in(finals if finals.is_dir() else sub)
+    found = _scan_made(made) if made else {}
     for spec in files or []:
         cat, pattern = spec.split("=", 1)
         found.setdefault(cat, []).extend(sorted(hit for hit in glob.glob(pattern) if not _ignored(hit)))
@@ -654,10 +692,13 @@ def _rewrite_table(out: Path) -> int:
     return 0
 
 
+_TEXT_SOURCES = (("phrases", PHRASES), ("confusions", CONFUSIONS), ("as_labels", AS_LABELS))
+
+
 def _header(opts: argparse.Namespace, out: Path, reg_path: Any, cats: list[str]) -> dict:
     head = {"tag": opts.tag or out.stem.removeprefix("results_"), "made_from": opts.made,
             "registry": str(reg_path), "created": time.strftime("%Y-%m-%d %H:%M")}
-    for key, source in (("phrases", PHRASES), ("confusions", CONFUSIONS), ("as_labels", AS_LABELS)):
+    for key, source in _TEXT_SOURCES:
         head[key] = {cat: source.get(cat) for cat in cats}
     return head
 
@@ -757,12 +798,16 @@ def _variety_text(spread: dict) -> str:
         spread["cos_mean"], spread["cos_max"], spread["tone_min_db"], len(spread["near_duplicates"]))
 
 
+def _report_head(res: dict, columns: list[str]) -> list[str]:
+    origin = "made from %s, registry %s, created %s" % (res.get("made_from"), res.get("registry"), res.get("created"))
+    return ["# forge benchmark: %s" % res.get("tag"), "", origin, "", LEGEND, "",
+            "| " + " | ".join(columns) + " |", "|" + "---|" * len(columns)]
+
+
 def table(res: dict) -> str:
     """The results dict as a markdown report."""
     columns = ["category", "set", "n"] + [title for title, _ in _COLUMNS] + ["inside"]
-    lines = ["# forge benchmark: %s" % res.get("tag"), "",
-             "made from %s, registry %s, created %s" % (res.get("made_from"), res.get("registry"), res.get("created")),
-             "", LEGEND, "", "| " + " | ".join(columns) + " |", "|" + "---|" * len(columns)]
+    lines = _report_head(res, columns)
     blocks = res.get("categories") or {}
     notes = []
     for cat, block in blocks.items():
