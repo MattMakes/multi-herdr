@@ -19,6 +19,13 @@ TARGET = "a short bright ping"
 ALTS = ["a dull thud", "a long hiss"]
 
 
+def _fade_end(y):
+    fade = np.cos(np.linspace(0, np.pi / 2, 480)) ** 2
+    fade[-1] = 0.0
+    y[-480:] *= fade
+    return y
+
+
 def render(p, r):
     n = int(0.25 * SR)
     t = np.arange(n) / SR
@@ -28,10 +35,7 @@ def render(p, r):
         ph = 2 * np.pi * p["freq"] * k * t + r.uniform(0, 2 * np.pi)
         w = np.sin(ph) if p["shape"] == "sine" else 2 / np.pi * np.arcsin(np.sin(ph))
         y += w / k
-    y = y * e + p["noise"] * r.standard_normal(n) * e * 0.3
-    fade = np.cos(np.linspace(0, np.pi / 2, 480)) ** 2
-    fade[-1] = 0.0
-    y[-480:] *= fade
+    y = _fade_end(y * e + p["noise"] * r.standard_normal(n) * e * 0.3)
     return np.column_stack([y, 0.9 * y + 0.1 * np.roll(y, 7)])
 
 
