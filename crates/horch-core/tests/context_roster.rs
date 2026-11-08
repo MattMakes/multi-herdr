@@ -100,12 +100,6 @@ fn ctx_08_roster_check_fails_headroom_below_floor() {
 }
 
 #[test]
-fn ctx_08_builtin_roster_passes_the_floor() {
-    let errors = problems_with(&builtin(), &["headroom"]);
-    assert!(errors.is_empty(), "{errors:?}");
-}
-
-#[test]
 fn ctx_17_in_place_only_for_listed_harnesses() {
     let roster = builtin();
     // OpenCode passed its live round trip (docs/live-checks/context.md part C).

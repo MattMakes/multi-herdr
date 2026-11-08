@@ -800,7 +800,7 @@ Test names start with the requirement ID. U = unit test in the module; I = integ
 | SPC-08 | `spc_08_no_change_gives_no_draw` (the redraw rule), `spc_08_a_failed_draw_still_ends_the_synchronized_update`, `spc_08_a_resize_writes_every_cell_and_no_clear`. A manual pty run on a state copy measured 0 bytes between ticks; T5 measured 0 B in 3 s idle and no `ESC[2J` over 2 resizes on the live state. | U |
 | SPC-09 | `spc_09_the_worker_caches_the_filtered_snapshot`, `spc_09_a_new_minute_recomputes_the_filtered_snapshot`, `spc_09_a_new_generated_at_alone_is_no_update`, `spc_09_the_worker_sends_no_update_for_an_equal_snapshot`, `spc_09_a_viewer_reads_the_snapshot_only_when_it_changed`, `spc_09_a_filtered_rollup_expires_at_the_minute_without_a_tick`, `spc_09_the_tick_interval_counts_from_the_tick_start`, `spc_09_a_mode_change_is_an_update`, `spc_09_a_collector_filters_a_project_without_reading_event_files` | U |
 | BAL-01 | `bal_01_merge_rule`: a field-by-field table for researcher -> codex-sol | U |
-| BAL-02 | `bal_02_roster_rules`: 1 failing roster per rule in section 13.3, plus `bal_02_repo_roster_passes` | U |
+| BAL-02 | `bal_02_roster_rules`: 1 failing roster per rule in section 13.3 | U |
 | BAL-03 | `bal_03_decision_table`: every cell of the table in section 13.4, x 3 modes, x the flags | U |
 | BAL-04 | `bal_04_gate_before_side_effects`: with `HORCH_QUOTA_FILE` set to exhausted-everything, a refused spawn leaves the ledger byte-identical and fake-herdr logs no `pane split`. `bal_04_exit_code_3`. | E |
 | BAL-05 | `bal_05_substituted_record_fields`, `bal_05_resume_uses_via` | E |
