@@ -148,6 +148,7 @@ const SKIP_NEW_TEAMMATES: &[&str] = &[
     "opus-creative",
     "pixel-vfx-artist",
     "skill-importer",
+    "sound-engineer",
     "spec-writer",
     "swift-developer",
     "swift-qa-engineer",
