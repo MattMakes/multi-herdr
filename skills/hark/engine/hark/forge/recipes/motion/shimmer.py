@@ -50,15 +50,15 @@ _TABLE: tuple[tuple[str, Any, Any], ...] = (
     ("detune", (0.0, 12.0), 0.0), ("swing", (0.0, 8.0), 0.0), ("sizzle", (-60.0, -8.0), -60.0),
     ("f_decay", (0.0, 0.8), 0.0), ("tail_fade", (0.2, 1.2), 0.3),
 )
-SPACE: dict[str, Any] = {k: spec for k, spec, _ in _TABLE}
-DEFAULTS: dict[str, Any] = {k: v for k, _, v in _TABLE}
+SPACE: dict[str, Any] = {kn: spec for kn, spec, _ in _TABLE}
+DEFAULTS: dict[str, Any] = {kn: v for kn, _, v in _TABLE}
 
 
 def _m(**kw: Any) -> dict[str, Any]:
     return {**DEFAULTS, **kw}
 
 
-_RING = dict(style="run", ring=1, tone_db=-40)
+_RING = {"style": "run", "ring": 1, "tone_db": -40}
 FAMILY: dict[str, list[dict[str, Any]]] = {
     "pro_shimmer": [
         _m(),
@@ -117,381 +117,381 @@ TARGETS: dict[str, tuple[tuple[str, float, float, float], ...]] = {
 }
 
 
-def family_space(params: dict, style: str | None = None) -> dict:
+def family_space(pset: dict, style: str | None = None) -> dict:
     """SPACE with every key outside FINE[style] pinned to the member's value."""
-    free = _free_keys(params, style)
-    return {k: spec if k in free else [params.get(k, DEFAULTS[k])] for k, spec in SPACE.items()}
+    free = _free_keys(pset, style)
+    return {kn: spec if kn in free else [pset.get(kn, DEFAULTS[kn])] for kn, spec in SPACE.items()}
 
 
-def _free_keys(params: dict, style: str | None) -> tuple[str, ...]:
-    return FINE.get(style or params.get("style") or "sparkle", ())
+def _free_keys(pset: dict, style: str | None) -> tuple[str, ...]:
+    return FINE.get(style or pset.get("style") or "sparkle", ())
 
 
-def scale_freqs(lo: float, hi: float, scale: str, key: int) -> list[float]:
+def scale_freqs(lo: float, hiv: float, scale: str, key: int) -> list[float]:
     """The scale notes between lo and hi Hz, sorted; [sqrt(lo hi)] when none."""
-    fs = sorted(C0 * 2 ** (o + (s + key) / 12.0) for o in range(11) for s in SCALES[scale])
-    kept = [f for f in fs if lo <= f <= hi]
-    return kept if kept else [float(np.sqrt(lo * hi))]
+    fs = sorted(C0 * 2 ** (o + (sv + key) / 12.0) for o in range(11) for sv in SCALES[scale])
+    kept = [freq for freq in fs if lo <= freq <= hiv]
+    return kept if kept else [float(np.sqrt(lo * hiv))]
 
 
-def envelope(p: dict, n: int) -> np.ndarray:
+def envelope(cfg: dict, ns: int) -> np.ndarray:
     """The linear level curve: a swell from start_db, a hold, then a straight dB fade."""
-    t = u.times(n)
-    up = np.clip(t / p["swell"], 0, 1)
-    db = p["start_db"] * (1 - up ** (1 / max(p["rise_curve"], 0.001)))
-    after = t > p["swell"] + p["hold"]
-    db = np.where(after, -45.0 * np.maximum((t - p["swell"] - p["hold"]) / p["fade"], 0), db)
+    tax = u.times(ns)
+    up = np.clip(tax / cfg["swell"], 0, 1)
+    db = cfg["start_db"] * (1 - up ** (1 / max(cfg["rise_curve"], 0.001)))
+    after = tax > cfg["swell"] + cfg["hold"]
+    db = np.where(after, -45.0 * np.maximum((tax - cfg["swell"] - cfg["hold"]) / cfg["fade"], 0), db)
     return 10 ** (np.maximum(db, -90.0) / 20.0)
 
 
-def _tilt_gain(p: dict, f: float) -> float:
-    return 10 ** (p["tilt"] * np.log2(f / 2000.0) / 20.0)
+def _tilt_gain(cfg: dict, freq: float) -> float:
+    return 10 ** (cfg["tilt"] * np.log2(freq / 2000.0) / 20.0)
 
 
-def _wobble(t: np.ndarray, swing: float, rng: np.random.Generator) -> np.ndarray | None:
+def _wobble(tax: np.ndarray, swing: float, gen: np.random.Generator) -> np.ndarray | None:
     if swing <= 0.05:
         return None
-    return 2 ** ((swing / 1200.0) * np.sin(2 * np.pi * rng.uniform(0.7, 2.0) * t + rng.uniform(0, 6.3)))
+    return 2 ** ((swing / 1200.0) * np.sin(2 * np.pi * gen.uniform(0.7, 2.0) * tax + gen.uniform(0, 6.3)))
 
 
-def _partial(f: float, t: np.ndarray, wob, beat: float, q: float, rng) -> np.ndarray:
-    phase = rng.uniform(0, 6.3)
+def _partial(freq: float, tax: np.ndarray, wob, beat: float, qv: float, gen) -> np.ndarray:
+    phase = gen.uniform(0, 6.3)
     if wob is None:
-        z = np.sin(2 * np.pi * f * t + phase)
+        z = np.sin(2 * np.pi * freq * tax + phase)
     else:
-        z = np.sin(2 * np.pi * f * np.cumsum(wob) / SR + phase)
+        z = np.sin(2 * np.pi * freq * np.cumsum(wob) / SR + phase)
     if beat > 0.02:
-        fb = f + beat * rng.uniform(0.5, 1.5) * np.sqrt(q)
-        z = (z + 0.7 * np.sin(2 * np.pi * fb * t + phase)) / 1.7
+        fb = freq + beat * gen.uniform(0.5, 1.5) * np.sqrt(qv)
+        z = (z + 0.7 * np.sin(2 * np.pi * fb * tax + phase)) / 1.7
     return z
 
 
-def _strike_noise(f: float, n: int, k: int, hard: float, sizzle, rng) -> np.ndarray:
-    y = np.zeros(n)
+def _strike_noise(freq: float, ns: int, kn: int, hard: float, sizzle, gen) -> np.ndarray:
+    sig = np.zeros(ns)
     if hard > 0.05:
-        m = min(n, u.samples(0.003))
-        y[:m] += _mallet(f, m, hard, rng)
+        mv = min(ns, u.samples(0.003))
+        sig[:mv] += _mallet(freq, mv, hard, gen)
     if sizzle is not None and sizzle > -59:
-        m = min(n, u.samples(0.08))
-        y[:m] += _sizzle(f, m, k, sizzle, rng)
-    return y
+        mv = min(ns, u.samples(0.08))
+        sig[:mv] += _sizzle(freq, mv, kn, sizzle, gen)
+    return sig
 
 
-def _mallet(f: float, m: int, hard: float, rng: np.random.Generator) -> np.ndarray:
+def _mallet(freq: float, mv: int, hard: float, gen: np.random.Generator) -> np.ndarray:
     """Step 4 of note: a 3 ms high-passed noise click."""
-    w = dsp.butter(rng.standard_normal(m), "high", min(2 * f, 12000.0), 2)
-    return 0.25 * hard * u.unit_peak(w * np.exp(-u.times(m) / 0.0006))
+    wv = dsp.butter(gen.standard_normal(mv), "high", min(2 * freq, 12000.0), 2)
+    return 0.25 * hard * u.unit_peak(wv * np.exp(-u.times(mv) / 0.0006))
 
 
-def _sizzle(f: float, m: int, k: int, sizzle: float, rng: np.random.Generator) -> np.ndarray:
+def _sizzle(freq: float, mv: int, kn: int, sizzle: float, gen: np.random.Generator) -> np.ndarray:
     """Step 5 of note: a 5 to 18 kHz strike noise, level sizzle dB re the note."""
-    w = dsp.butter(rng.standard_normal(m), "band", (max(5000.0, 1.5 * f), 18000.0), 2)
-    w = w * np.exp(-u.times(m) / rng.uniform(0.005, 0.016))
-    w[:k] *= u.raised_cos_in(min(k, m))
-    ref = u.rms(w[: u.samples(0.01)]) + u.EPS
-    return 10 ** (sizzle / 20.0) * 0.35 * w / ref
+    wv = dsp.butter(gen.standard_normal(mv), "band", (max(5000.0, 1.5 * freq), 18000.0), 2)
+    wv = wv * np.exp(-u.times(mv) / gen.uniform(0.005, 0.016))
+    wv[:kn] *= u.raised_cos_in(min(kn, mv))
+    ref = u.rms(wv[: u.samples(0.01)]) + u.EPS
+    return 10 ** (sizzle / 20.0) * 0.35 * wv / ref
 
 
-def note(f: float, n: int, tau: float, partials, hard: float, bell: float,
-         rng: np.random.Generator, beat: float = 0.0, swing: float = 0.0,
+def note(freq: float, ns: int, tc: float, partials, hard: float, bell: float,
+         gen: np.random.Generator, beat: float = 0.0, swing: float = 0.0,
          sizzle: float | None = None) -> np.ndarray:
     """A struck note of n samples: damped partials, a mallet click and optional sizzle."""
-    t = u.times(n)
-    y = _partials(f, t, tau, partials, (hard, bell, beat), _wobble(t, swing, rng), rng)
-    k = min(n, u.samples(0.0006))
-    y[:k] *= u.raised_cos_in(k)
-    return y + _strike_noise(f, n, k, hard, sizzle, rng)
+    tax = u.times(ns)
+    sig = _partials(freq, tax, tc, partials, (hard, bell, beat), _wobble(tax, swing, gen), gen)
+    kn = min(ns, u.samples(0.0006))
+    sig[:kn] *= u.raised_cos_in(kn)
+    return sig + _strike_noise(freq, ns, kn, hard, sizzle, gen)
 
 
-def _partials(f: float, t: np.ndarray, tau: float, partials, tone: tuple[float, float, float],
-              wob, rng: np.random.Generator) -> np.ndarray:
+def _partials(freq: float, tax: np.ndarray, tc: float, partials, tone: tuple[float, float, float],
+              wob, gen: np.random.Generator) -> np.ndarray:
     """Step 2 of note: the damped partials; tone = (hard, bell, beat)."""
     hard, bell, beat = tone
-    y = np.zeros(len(t))
-    for q, a in zip(*partials):
-        fq = f * q
-        if (q > 1 and bell <= 0) or fq > 18000:
+    sig = np.zeros(len(tax))
+    for qv, amp in zip(*partials):
+        fqv = freq * qv
+        if (qv > 1 and bell <= 0) or fqv > 18000:
             continue
-        aa = a * (bell if q > 1 else 1.0) * q ** (1.2 * (hard - 0.5))
-        env = np.exp(-t / max(tau * q**-0.9, 0.002))
-        y += aa * env * _partial(fq, t, wob, beat, q, rng)
-    return y
+        aa = amp * (bell if qv > 1 else 1.0) * qv ** (1.2 * (hard - 0.5))
+        env = np.exp(-tax / max(tc * qv**-0.9, 0.002))
+        sig += aa * env * _partial(fqv, tax, wob, beat, qv, gen)
+    return sig
 
 
-def _pan_add(bus: np.ndarray, y: np.ndarray, gain: float, pos: float, at: int) -> None:
+def _pan_add(bus: np.ndarray, sig: np.ndarray, gain: float, pos: float, at: int) -> None:
     gl, gr = u.pan_gains(pos)
-    u.add_at(bus[:, 0], gain * gl * y, at)
-    u.add_at(bus[:, 1], gain * gr * y, at)
+    u.add_at(bus[:, 0], gain * gl * sig, at)
+    u.add_at(bus[:, 1], gain * gr * sig, at)
 
 
-def _grain_times(p: dict, env: np.ndarray, rng: np.random.Generator) -> list[float]:
-    n = len(env)
-    dur, out, t = n / SR, [], 0.0
-    while t < dur:
-        t += rng.exponential(1.0 / p["rate"])
-        e = env[min(n - 1, int(t * SR))]
-        d = p["dens_floor"] + (1 - p["dens_floor"]) * min(1.0, e)
-        if rng.random() < d and t < dur - 0.01:
-            out.append(t)
-    return out
+def _grain_times(cfg: dict, env: np.ndarray, gen: np.random.Generator) -> list[float]:
+    ns = len(env)
+    dur, res, tax = ns / SR, [], 0.0
+    while tax < dur:
+        tax += gen.exponential(1.0 / cfg["rate"])
+        e = env[min(ns - 1, int(tax * SR))]
+        dv = cfg["dens_floor"] + (1 - cfg["dens_floor"]) * min(1.0, e)
+        if gen.random() < dv and tax < dur - 0.01:
+            res.append(tax)
+    return res
 
 
-def _grain(p: dict, notes: list[float], m: int, rng: np.random.Generator) -> np.ndarray:
-    y = np.zeros(m)
-    f = notes[0]
-    for _ in range(int(p["cluster"])):
-        f = notes[int(rng.integers(len(notes)))]
-        y += _cluster_note(p, f, m, rng) * _tilt_gain(p, f)
-    if p["octave"] > 0.01 and 2 * f < 0.42 * SR:
-        y += _octave_echo(p, f, m, rng)
-    return y
+def _grain(cfg: dict, notes: list[float], mv: int, gen: np.random.Generator) -> np.ndarray:
+    sig = np.zeros(mv)
+    freq = notes[0]
+    for _ in range(int(cfg["cluster"])):
+        freq = notes[int(gen.integers(len(notes)))]
+        sig += _cluster_note(cfg, freq, mv, gen) * _tilt_gain(cfg, freq)
+    if cfg["octave"] > 0.01 and 2 * freq < 0.42 * SR:
+        sig += _octave_echo(cfg, freq, mv, gen)
+    return sig
 
 
-def _cluster_note(p: dict, f: float, m: int, rng: np.random.Generator) -> np.ndarray:
+def _cluster_note(cfg: dict, freq: float, mv: int, gen: np.random.Generator) -> np.ndarray:
     """Step 4 of sparkle: one grain note, part bar note and part band noise."""
-    yc = (1 - p["g_noise"]) * note(f, m, p["g_tau"], BAR, 0.0, p["g_bell"], rng)
-    if p["g_noise"] > 0.01:
-        w = dsp.butter(rng.standard_normal(m), "band", (f / 1.25, min(1.25 * f, 20000.0)), 2)
-        yc = yc + p["g_noise"] * u.unit_peak(w * np.exp(-u.times(m) / p["g_tau"]))
+    yc = (1 - cfg["g_noise"]) * note(freq, mv, cfg["g_tau"], BAR, 0.0, cfg["g_bell"], gen)
+    if cfg["g_noise"] > 0.01:
+        wv = dsp.butter(gen.standard_normal(mv), "band", (freq / 1.25, min(1.25 * freq, 20000.0)), 2)
+        yc = yc + cfg["g_noise"] * u.unit_peak(wv * np.exp(-u.times(mv) / cfg["g_tau"]))
     return yc
 
 
-def _octave_echo(p: dict, f: float, m: int, rng: np.random.Generator) -> np.ndarray:
+def _octave_echo(cfg: dict, freq: float, mv: int, gen: np.random.Generator) -> np.ndarray:
     """Step 6 of sparkle: a sine an octave up, 6 ms late, cut to m."""
-    y2 = note(2 * f, m, 0.7 * p["g_tau"], BAR, 0.0, 0.0, rng)
-    return p["octave"] * np.concatenate([np.zeros(u.samples(0.006)), y2])[:m]
+    y2 = note(2 * freq, mv, 0.7 * cfg["g_tau"], BAR, 0.0, 0.0, gen)
+    return cfg["octave"] * np.concatenate([np.zeros(u.samples(0.006)), y2])[:mv]
 
 
 def _decor_bus(bus: np.ndarray, amount: float, cut: float) -> np.ndarray:
     mid = (bus[:, 0] + bus[:, 1]) / 2
-    side = (bus[:, 0] - bus[:, 1]) / 2
-    return fx.decorrelate(mid, amount, cut=cut)[: len(mid)] + np.column_stack([side, -side])
+    sidev = (bus[:, 0] - bus[:, 1]) / 2
+    return fx.decorrelate(mid, amount, cut=cut)[: len(mid)] + np.column_stack([sidev, -sidev])
 
 
-def sparkle(p: dict, n: int, rng: np.random.Generator) -> tuple[np.ndarray, np.ndarray]:
+def sparkle(cfg: dict, ns: int, gen: np.random.Generator) -> tuple[np.ndarray, np.ndarray]:
     """The grain cloud: (stereo grains, envelope)."""
-    env = envelope(p, n)
-    notes = scale_freqs(p["g_lo"], p["g_hi"], p["scale"], int(p["key"]))
-    gl = u.samples(min(0.35, 7 * p["g_tau"]))
-    bus = np.zeros((n, 2))
-    for t in _grain_times(p, env, rng):
-        i = int(t * SR)
-        m = min(gl, n - i)
-        if m < 16:
+    env = envelope(cfg, ns)
+    notes = scale_freqs(cfg["g_lo"], cfg["g_hi"], cfg["scale"], int(cfg["key"]))
+    gl = u.samples(min(0.35, 7 * cfg["g_tau"]))
+    bus = np.zeros((ns, 2))
+    for tax in _grain_times(cfg, env, gen):
+        ix = int(tax * SR)
+        mv = min(gl, ns - ix)
+        if mv < 16:
             continue
-        y = _grain(p, notes, m, rng)
-        g = env[i] * 10 ** (rng.uniform(-1, 1) * p["g_jit_db"] / 20.0) / np.sqrt(p["cluster"])
-        sign = 1.0 if rng.random() < 0.5 else -1.0
-        _pan_add(bus, y, g, sign * rng.uniform(0.35, 1) * p["spread"], i)
+        sig = _grain(cfg, notes, mv, gen)
+        g = env[ix] * 10 ** (gen.uniform(-1, 1) * cfg["g_jit_db"] / 20.0) / np.sqrt(cfg["cluster"])
+        sign = 1.0 if gen.random() < 0.5 else -1.0
+        _pan_add(bus, sig, g, sign * gen.uniform(0.35, 1) * cfg["spread"], ix)
     bus *= 0.25
-    if p["decor"] > 0.01:
-        bus = _decor_bus(bus, p["decor"], 400.0)
+    if cfg["decor"] > 0.01:
+        bus = _decor_bus(bus, cfg["decor"], 400.0)
     return bus, env
 
 
-def _r2(p: dict) -> bool:
-    return bool(p.get("r2_path"))
+def _r2(cfg: dict) -> bool:
+    return bool(cfg.get("r2_path"))
 
 
-def _run_index(direction: str, count: int, size: int) -> np.ndarray:
+def _run_index(direction: str, count: int, room: int) -> np.ndarray:
     if direction == "down":
-        idx = np.linspace(size - 1, 0, count)
+        idx = np.linspace(room - 1, 0, count)
     elif direction == "arc":
-        idx = (size - 1) * np.sin(np.linspace(0, np.pi, count)) ** 0.8
+        idx = (room - 1) * np.sin(np.linspace(0, np.pi, count)) ** 0.8
     else:
-        idx = np.linspace(0, size - 1, count)
+        idx = np.linspace(0, room - 1, count)
     return np.round(idx).astype(int)
 
 
-def _struck(p: dict, f: float, rng: np.random.Generator) -> tuple[float, float]:
+def _struck(cfg: dict, freq: float, gen: np.random.Generator) -> tuple[float, float]:
     """(pitch with the per-strike detune, decay time) of one run note or chime strike."""
-    if not _r2(p):
-        f = f * 2 ** (rng.uniform(-1, 1) * p["detune"] / 1200.0)
-    return f, p["n_decay"] * (f / 1000.0) ** -p["f_decay"]
+    if not _r2(cfg):
+        freq = freq * 2 ** (gen.uniform(-1, 1) * cfg["detune"] / 1200.0)
+    return freq, cfg["n_decay"] * (freq / 1000.0) ** -cfg["f_decay"]
 
 
-def run(p: dict, n: int, rng: np.random.Generator) -> tuple[np.ndarray, np.ndarray]:
+def run(cfg: dict, ns: int, gen: np.random.Generator) -> tuple[np.ndarray, np.ndarray]:
     """A run of bar notes, alternating left and right: (stereo x 0.3, envelope)."""
-    notes = scale_freqs(p["g_lo"], p["g_hi"], p["scale"], int(p["key"]))
-    count = int(p["notes"])
-    idx = _run_index(p["direction"], count, len(notes))
-    bus = np.zeros((n, 2))
-    for k in range(count):
-        i = _run_start(p, k, count, rng)
-        m = min(u.samples(min(6 * p["n_decay"], _cap(p))), n - i)
-        if m >= 16:
-            _run_note(p, bus, notes[idx[k]], (k, i, m), rng)
-    return bus * 0.3, envelope(p, n)
+    notes = scale_freqs(cfg["g_lo"], cfg["g_hi"], cfg["scale"], int(cfg["key"]))
+    count = int(cfg["notes"])
+    idx = _run_index(cfg["direction"], count, len(notes))
+    bus = np.zeros((ns, 2))
+    for kn in range(count):
+        ix = _run_start(cfg, kn, count, gen)
+        mv = min(u.samples(min(6 * cfg["n_decay"], _cap(cfg))), ns - ix)
+        if mv >= 16:
+            _run_note(cfg, bus, notes[idx[kn]], (kn, ix, mv), gen)
+    return bus * 0.3, envelope(cfg, ns)
 
 
-def _cap(p: dict) -> float:
+def _cap(cfg: dict) -> float:
     """The longest note in s: 4 on the round-2 path, else 6."""
-    return 4.0 if _r2(p) else 6.0
+    return 4.0 if _r2(cfg) else 6.0
 
 
-def _run_start(p: dict, k: int, count: int, rng: np.random.Generator) -> int:
+def _run_start(cfg: dict, kn: int, count: int, gen: np.random.Generator) -> int:
     """Step 2 of run: the start sample of note k, with a 4 ms jitter after the first."""
-    tk = p["run_t"] * (k / max(count - 1, 1)) ** p["accel"]
-    tk += rng.uniform(-0.004, 0.004) if k > 0 else 0.0
-    return int(max(tk, 0.0) * SR)
+    tkv = cfg["run_t"] * (kn / max(count - 1, 1)) ** cfg["accel"]
+    tkv += gen.uniform(-0.004, 0.004) if kn > 0 else 0.0
+    return int(max(tkv, 0.0) * SR)
 
 
-def _run_note(p: dict, bus: np.ndarray, f0: float, where: tuple[int, int, int],
-              rng: np.random.Generator) -> None:
+def _run_note(cfg: dict, bus: np.ndarray, fa: float, where: tuple[int, int, int],
+              gen: np.random.Generator) -> None:
     """Render run note k of m samples at sample i (where = (k, i, m)) and pan it into bus."""
-    k, i, m = where
-    f, tau = _struck(p, f0, rng)
-    y = note(f, m, tau, BAR, p["hard"], 0.8 * p["g_bell"] + 0.2, rng, p["beat"], p["swing"],
-             p["sizzle"])
-    g = _tilt_gain(p, f) * 10 ** (rng.uniform(-1, 1) * p["g_jit_db"] / 40.0)
-    pos = (1.0 if k % 2 else -1.0) * p["spread"] * rng.uniform(0.6, 1)
-    _pan_add(bus, y, g, pos, i)
+    kn, ix, mv = where
+    freq, tc = _struck(cfg, fa, gen)
+    sig = note(freq, mv, tc, BAR, cfg["hard"], 0.8 * cfg["g_bell"] + 0.2, gen, cfg["beat"], cfg["swing"],
+             cfg["sizzle"])
+    g = _tilt_gain(cfg, freq) * 10 ** (gen.uniform(-1, 1) * cfg["g_jit_db"] / 40.0)
+    pos = (1.0 if kn % 2 else -1.0) * cfg["spread"] * gen.uniform(0.6, 1)
+    _pan_add(bus, sig, g, pos, ix)
 
 
-def chimes(p: dict, n: int, rng: np.random.Generator) -> tuple[np.ndarray, np.ndarray]:
+def chimes(cfg: dict, ns: int, gen: np.random.Generator) -> tuple[np.ndarray, np.ndarray]:
     """Tuned tubes struck at random, the strikes thinning out: (stereo x 0.3, ones)."""
-    tubes = _tubes(p, rng)
-    bus, t = np.zeros((n, 2)), 0.0
-    for k in range(int(p["strikes"])):
-        i = int(t * SR)
-        if i >= n - 16:
+    tubes = _tubes(cfg, gen)
+    bus, tax = np.zeros((ns, 2)), 0.0
+    for kn in range(int(cfg["strikes"])):
+        ix = int(tax * SR)
+        if ix >= ns - 16:
             break
-        _strike(p, bus, tubes[int(rng.integers(len(tubes)))], (k, i), rng)
-        t += rng.exponential(0.06 + 0.012 * k)
-    return bus * 0.3, np.ones(n)
+        _strike(cfg, bus, tubes[int(gen.integers(len(tubes)))], (kn, ix), gen)
+        tax += gen.exponential(0.06 + 0.012 * kn)
+    return bus * 0.3, np.ones(ns)
 
 
-def _tubes(p: dict, rng: np.random.Generator) -> list[tuple[float, float]]:
+def _tubes(cfg: dict, gen: np.random.Generator) -> list[tuple[float, float]]:
     """Step 1 of chimes: (pitch, pan) of each tube, spread over the scale notes."""
-    notes = scale_freqs(p["g_lo"], p["g_hi"], p["scale"], int(p["key"]))
-    pick = np.round(np.linspace(0, len(notes) - 1, min(int(p["tubes"]), len(notes)))).astype(int)
-    return [(notes[j], rng.uniform(-1, 1) * p["spread"]) for j in pick]
+    notes = scale_freqs(cfg["g_lo"], cfg["g_hi"], cfg["scale"], int(cfg["key"]))
+    pick = np.round(np.linspace(0, len(notes) - 1, min(int(cfg["tubes"]), len(notes)))).astype(int)
+    return [(notes[nth], gen.uniform(-1, 1) * cfg["spread"]) for nth in pick]
 
 
-def _strike(p: dict, bus: np.ndarray, tube: tuple[float, float], when: tuple[int, int],
-            rng: np.random.Generator) -> None:
+def _strike(cfg: dict, bus: np.ndarray, tube: tuple[float, float], when: tuple[int, int],
+            gen: np.random.Generator) -> None:
     """Strike k of a tube at sample i (when = (k, i)) and pan it into bus."""
-    k, i = when
-    f, tau = _struck(p, tube[0], rng)
-    m = min(u.samples(min(5 * p["n_decay"], _cap(p))), len(bus) - i)
-    y = note(f, m, tau, TUBE, p["hard"], 0.8, rng, p["beat"], p["swing"], p["sizzle"])
-    g = 10 ** (rng.uniform(-1, 1) * p["g_jit_db"] / 20.0) * 0.92**k
-    _pan_add(bus, y, g, tube[1], i)
+    kn, ix = when
+    freq, tc = _struck(cfg, tube[0], gen)
+    mv = min(u.samples(min(5 * cfg["n_decay"], _cap(cfg))), len(bus) - ix)
+    sig = note(freq, mv, tc, TUBE, cfg["hard"], 0.8, gen, cfg["beat"], cfg["swing"], cfg["sizzle"])
+    g = 10 ** (gen.uniform(-1, 1) * cfg["g_jit_db"] / 20.0) * 0.92**kn
+    _pan_add(bus, sig, g, tube[1], ix)
 
 
-def bed(p: dict, n: int, benv: np.ndarray, rng: np.random.Generator) -> np.ndarray:
+def bed(cfg: dict, ns: int, benv: np.ndarray, gen: np.random.Generator) -> np.ndarray:
     """The tone bed on the scale root and 2 independent air washes, stereo."""
-    tone = _bed_tone(p, n, rng)
-    if p["tone_db"] <= -39 and not _r2(p):
-        tone = np.zeros(n)
-    out = fx.decorrelate(tone * benv, p["tone_w"], cut=200.0)[:n]
-    return out + np.column_stack([_air_wash(p, n, rng) * benv for _ in range(2)])
+    tone = _bed_tone(cfg, ns, gen)
+    if cfg["tone_db"] <= -39 and not _r2(cfg):
+        tone = np.zeros(ns)
+    res = fx.decorrelate(tone * benv, cfg["tone_w"], cut=200.0)[:ns]
+    return res + np.column_stack([_air_wash(cfg, ns, gen) * benv for _ in range(2)])
 
 
-def _bed_tone(p: dict, n: int, rng: np.random.Generator) -> np.ndarray:
+def _bed_tone(cfg: dict, ns: int, gen: np.random.Generator) -> np.ndarray:
     """Steps 1 and 2 of bed: the tone on the scale root with vibrato, RMS 0.05 x tone level."""
-    root = C0 * 2 ** (int(p["key"]) / 12.0)
-    f = root * 2 ** round(np.log2(p["tone_hz"] / root))
-    vib = 1 + p["vib"] * np.sin(2 * np.pi * 5.1 * u.times(n) + rng.uniform(0, 6.3))
-    ph = 2 * np.pi * np.cumsum(f * vib) / SR
-    tone = np.sin(ph) + p["tone_h"] * (0.5 * np.sin(2 * ph) + 0.3 * np.sin(3 * ph))
-    return tone * 0.05 * 10 ** (p["tone_db"] / 20.0) / (u.rms(tone) + u.EPS)
+    root = C0 * 2 ** (int(cfg["key"]) / 12.0)
+    freq = root * 2 ** round(np.log2(cfg["tone_hz"] / root))
+    vib = 1 + cfg["vib"] * np.sin(2 * np.pi * 5.1 * u.times(ns) + gen.uniform(0, 6.3))
+    ph = 2 * np.pi * np.cumsum(freq * vib) / SR
+    tone = np.sin(ph) + cfg["tone_h"] * (0.5 * np.sin(2 * ph) + 0.3 * np.sin(3 * ph))
+    return tone * 0.05 * 10 ** (cfg["tone_db"] / 20.0) / (u.rms(tone) + u.EPS)
 
 
-def _air_wash(p: dict, n: int, rng: np.random.Generator) -> np.ndarray:
+def _air_wash(cfg: dict, ns: int, gen: np.random.Generator) -> np.ndarray:
     """Step 5 of bed: one band of white noise, RMS 0.05 x air level."""
-    a = dsp.butter(dsp.butter(rng.standard_normal(n), "high", p["air_hp"], 2), "low", 14000.0, 2)
-    return a * 0.05 * 10 ** (p["air_db"] / 20.0) / (u.rms(a) + u.EPS)
+    amp = dsp.butter(dsp.butter(gen.standard_normal(ns), "high", cfg["air_hp"], 2), "low", 14000.0, 2)
+    return amp * 0.05 * 10 ** (cfg["air_db"] / 20.0) / (u.rms(amp) + u.EPS)
 
 
-def _bed_ref(y: np.ndarray, n: int) -> float:
-    h = u.samples(0.2)
-    k = max(1, n // h)
-    power = np.mean(y * y, axis=1)
-    blocks = [power[j * h : (j + 1) * h].mean() for j in range(k) if power[j * h : (j + 1) * h].size]
+def _bed_ref(sig: np.ndarray, ns: int) -> float:
+    hv = u.samples(0.2)
+    kn = max(1, ns // hv)
+    power = np.mean(sig * sig, axis=1)
+    blocks = [power[nth * hv : (nth + 1) * hv].mean() for nth in range(kn) if power[nth * hv : (nth + 1) * hv].size]
     return float(np.sqrt(max(blocks))) + 1e-9
 
 
-def _ring_env(y: np.ndarray, n: int) -> np.ndarray:
-    h = u.samples(0.02)
-    kk = max(1, n // h)
-    power = np.mean(y * y, axis=1)
-    e = np.array([np.sqrt(power[j * h : (j + 1) * h].mean()) for j in range(kk)])
-    centres = (np.arange(kk) + 0.5) * h
-    env = np.interp(np.arange(n), centres, e)
+def _ring_env(sig: np.ndarray, ns: int) -> np.ndarray:
+    hv = u.samples(0.02)
+    kk = max(1, ns // hv)
+    power = np.mean(sig * sig, axis=1)
+    e = np.array([np.sqrt(power[nth * hv : (nth + 1) * hv].mean()) for nth in range(kk)])
+    centres = (np.arange(kk) + 0.5) * hv
+    env = np.interp(np.arange(ns), centres, e)
     return env / (e.max() + u.EPS)
 
 
-def _with_bed(p: dict, y: np.ndarray, env: np.ndarray, n: int, rng) -> np.ndarray:
-    if not (p["tone_db"] > -39 or p["air_db"] > -49):
-        return y
-    ref = _bed_ref(y, n)
-    if p["style"] == "sparkle":
+def _with_bed(cfg: dict, sig: np.ndarray, env: np.ndarray, ns: int, gen) -> np.ndarray:
+    if not (cfg["tone_db"] > -39 or cfg["air_db"] > -49):
+        return sig
+    ref = _bed_ref(sig, ns)
+    if cfg["style"] == "sparkle":
         benv = env
-    elif p["ring"]:
-        benv = _ring_env(y, n)
+    elif cfg["ring"]:
+        benv = _ring_env(sig, ns)
     else:
-        benv = envelope(p, n)
-    return y + bed(p, n, benv, rng) * ref / 0.05
+        benv = envelope(cfg, ns)
+    return sig + bed(cfg, ns, benv, gen) * ref / 0.05
 
 
-def _end(p: dict, y: np.ndarray, n: int) -> np.ndarray:
-    if p["gate_end"]:
-        k = u.samples(0.03)
-    elif p["ring"]:
-        k = u.samples(min(p["tail_fade"], 0.4 * p["length"]))
+def _end(cfg: dict, sig: np.ndarray, ns: int) -> np.ndarray:
+    if cfg["gate_end"]:
+        kn = u.samples(0.03)
+    elif cfg["ring"]:
+        kn = u.samples(min(cfg["tail_fade"], 0.4 * cfg["length"]))
     else:
-        k = u.samples(min(0.3, 0.15 * p["length"]))
-    k = min(k, n)
-    if k > 1:
-        y[-k:] *= (np.cos(0.5 * np.pi * np.arange(k) / (k - 1)) ** 2)[:, None]
-    if p["ring"]:
-        r = min(n, u.samples(0.0005))
-        y[:r] *= u.raised_cos_in(r)[:, None]
-    return y
+        kn = u.samples(min(0.3, 0.15 * cfg["length"]))
+    kn = min(kn, ns)
+    if kn > 1:
+        sig[-kn:] *= (np.cos(0.5 * np.pi * np.arange(kn) / (kn - 1)) ** 2)[:, None]
+    if cfg["ring"]:
+        r = min(ns, u.samples(0.0005))
+        sig[:r] *= u.raised_cos_in(r)[:, None]
+    return sig
 
 
 _LAYERS: dict[str, Callable] = {"sparkle": sparkle, "run": run}
 
 
-def render(p: dict, rng: np.random.Generator) -> np.ndarray:
+def render(cfg: dict, gen: np.random.Generator) -> np.ndarray:
     """One take of the shimmer (section 13.7), float64 stereo at 48 kHz."""
-    q = {**DEFAULTS, **p}
-    n = u.samples(q["length"])
-    y, env = _LAYERS.get(q["style"], chimes)(q, n, rng)
-    y = _with_bed(q, y, env, n, rng)
-    if q["ring"] and q["style"] != "sparkle" and q["decor"] > 0.01:
-        y = _decor_bus(y, q["decor"], 500.0)
-    y = dsp.butter(y, "high", q["hp"], 4)
-    if q["deess"] > 0.2:
-        y = dsp.peq(y, 9000.0, -q["deess"], 0.8)
-    if q["verb"] > 0.01:
-        y = fx.reverb(y, rng, rt60=q["rt60"], size=0.7, predelay=0.015, damp=0.45, wet=q["verb"],
+    qv = {**DEFAULTS, **cfg}
+    ns = u.samples(qv["length"])
+    sig, env = _LAYERS.get(qv["style"], chimes)(qv, ns, gen)
+    sig = _with_bed(qv, sig, env, ns, gen)
+    if qv["ring"] and qv["style"] != "sparkle" and qv["decor"] > 0.01:
+        sig = _decor_bus(sig, qv["decor"], 500.0)
+    sig = dsp.butter(sig, "high", qv["hp"], 4)
+    if qv["deess"] > 0.2:
+        sig = dsp.peq(sig, 9000.0, -qv["deess"], 0.8)
+    if qv["verb"] > 0.01:
+        sig = fx.reverb(sig, gen, rt60=qv["rt60"], size=0.7, predelay=0.015, damp=0.45, wet=qv["verb"],
                       stereo=True, width=1.0)
-    y = np.array(y[:n], dtype=float)
-    if q["style"] != "sparkle" and not q["ring"]:
-        y = y * envelope(q, n)[:, None]
-    return u.below_full_scale(_end(q, y, n))
+    sig = np.array(sig[:ns], dtype=float)
+    if qv["style"] != "sparkle" and not qv["ring"]:
+        sig = sig * envelope(qv, ns)[:, None]
+    return u.below_full_scale(_end(qv, sig, ns))
 
 
-def _low_db(m: dict) -> float:
-    shares = m.get("shares")
+def _low_db(mv: dict) -> float:
+    shares = mv.get("shares")
     first = list(shares.values())[0] if isinstance(shares, dict) else shares[0]
     return float(10 * np.log10(10 ** (first / 10.0) + 1e-12))
 
 
-def pro_penalty(x: np.ndarray, cat: str) -> float:
+def pro_penalty(wav: np.ndarray, cat: str) -> float:
     """The summed outside distance of the measures from TARGETS[cat] (0 for an unknown cat)."""
-    targets = TARGETS.get(cat)
-    if not targets:
+    tgts = TARGETS.get(cat)
+    if not tgts:
         return 0.0
-    m = dict(measure(x))
-    m["low_db"] = _low_db(m)
-    return float(sum(min(2.0, outside(m.get(k), lo, hi, s)) for k, lo, hi, s in targets))
+    mv = dict(measure(wav))
+    mv["low_db"] = _low_db(mv)
+    return float(sum(min(2.0, outside(mv.get(kn), lo, hiv, sv)) for kn, lo, hiv, sv in tgts))
 
 
 def extra_for(cat: str, weight: float = 1.0) -> Callable:
     """A critic extra check: (x, row) -> -weight x pro_penalty(x, cat)."""
-    def extra(x: np.ndarray, row: Any = None) -> float:
-        return -weight * pro_penalty(x, cat)
+    def extra(wav: np.ndarray, row: Any = None) -> float:
+        return -weight * pro_penalty(wav, cat)
     return extra
