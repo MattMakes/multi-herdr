@@ -234,7 +234,7 @@ def _docstring(name: str, model: dict, kind: str, source: str | None, refset: st
     lines += ["", src, licence or _LICENCE]
     if quality is not None:
         lines += ["", "Measured: the original against this recipe at DEFAULTS and seed 0:", "  " + Q.text(quality, floor)]
-    lines += ["", "Usage:", "  import numpy as np", f"  y = render(DEFAULTS, np.random.default_rng(1))   # one take",
+    lines += ["", "Usage:", "  import numpy as np", "  y = render(DEFAULTS, np.random.default_rng(1))   # one take",
               "  y = render_seed(0)                              # the fit as measured"]
     if first_knob:
         lines.append(f"  y = render_seed(0, {first_knob}=SPACE[{first_knob!r}][1])   # a variation")

@@ -245,10 +245,11 @@ def handler(args: argparse.Namespace) -> int:
     if not args.file:
         print(USAGE)
         return 2
-    if args.clap or args.describe:
+    flag = next((f for f in ("clap", "describe", "report") if getattr(args, f)), None)
+    if flag:
         from hark.models import require_ml
 
-        require_ml("fit --clap" if args.clap else "fit --describe")
+        require_ml(f"fit --{flag}")
     return _emit(run_fit(args.file, **_args_fit(args)), args)
 
 
