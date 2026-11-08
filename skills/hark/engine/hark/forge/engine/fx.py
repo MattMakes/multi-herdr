@@ -6,6 +6,7 @@ the function says it returns stereo.
 
 from __future__ import annotations
 
+import inspect
 import threading
 from collections import OrderedDict
 from typing import Any
@@ -365,27 +366,43 @@ def _diffused(n: int, size: float, diffuse: float, c: int) -> np.ndarray:
     return x
 
 
-def _one_input(r: np.random.Generator, rm: _Room, dl: np.ndarray, shelves: tuple, c: int) -> np.ndarray:
-    p, n = rm.p, rm.n
-    gm, lows, highs, lb0, lb1, _ = shelves
+def _fdn_for(r: np.random.Generator, p: dict, dl: np.ndarray, shelves: tuple) -> "_Fdn":
+    """The feedback delay network of one input; draws taps, then depth, rate and phase from r."""
     nl = len(dl)
-    x = _diffused(n, p["size"], p["diffuse"], c)
+    lows, highs, lb0, lb1 = shelves[1], shelves[2], shelves[3], shelves[4]
     b, cm = _taps(r, nl)
     depth = p["mod"] * (3 + 9 * r.uniform(0, 1, nl)) * (0.5 + 0.5 * p["size"])
     rate = r.uniform(0.15, 1.1, nl)
     phase = r.uniform(0, 2 * np.pi, nl)
-    fdn = _Fdn(dl, depth, rate, phase, (lb0, lb1, lows[0][2]), highs[0], b, cm)
-    y = fdn.run(x, n) / np.sqrt(np.mean(gm ** 2 / (1 - gm ** 2)) / nl)
+    return _Fdn(dl, depth, rate, phase, (lb0, lb1, lows[0][2]), highs[0], b, cm)
+
+
+def _add_early(y: np.ndarray, r: np.random.Generator, p: dict, n: int) -> np.ndarray:
+    if not (p["early_db"] is not None and p["early_db"] > -90):
+        return y
+    e = 10 ** (p["early_db"] / 10)
+    imp = np.array([1.0])
+    er = early(imp, r, p["size"], damp=p["damp"], width=p["width"])[:n]
+    y = y / np.sqrt(1 + e)
+    y[: len(er)] += er * np.sqrt(e / (1 + e))
+    return y
+
+
+def _ms_width(y: np.ndarray, w: float) -> np.ndarray:
+    mid, side = (y[:, 0] + y[:, 1]) / 2, (y[:, 0] - y[:, 1]) / 2
+    return np.column_stack([mid + w * side, mid - w * side])
+
+
+def _one_input(r: np.random.Generator, rm: _Room, dl: np.ndarray, shelves: tuple, c: int) -> np.ndarray:
+    p, n = rm.p, rm.n
+    gm = shelves[0]
+    x = _diffused(n, p["size"], p["diffuse"], c)
+    fdn = _fdn_for(r, p, dl, shelves)
+    y = fdn.run(x, n) / np.sqrt(np.mean(gm ** 2 / (1 - gm ** 2)) / len(dl))
     if p["late"] == "noise":
         y = _cross_late(r, rm, y, dl, shelves)
-    if p["early_db"] is not None and p["early_db"] > -90:
-        e = 10 ** (p["early_db"] / 10)
-        imp = np.array([1.0])
-        er = early(imp, r, p["size"], damp=p["damp"], width=p["width"])[:n]
-        y = y / np.sqrt(1 + e)
-        y[: len(er)] += er * np.sqrt(e / (1 + e))
-    mid, side = (y[:, 0] + y[:, 1]) / 2, (y[:, 0] - y[:, 1]) / 2
-    return np.column_stack([mid + p["width"] * side, mid - p["width"] * side])
+    y = _add_early(y, r, p, n)
+    return _ms_width(y, p["width"])
 
 
 def _cross_late(r: np.random.Generator, rm: _Room, y: np.ndarray, dl: np.ndarray, shelves: tuple) -> np.ndarray:
@@ -423,22 +440,59 @@ _IR_KEYS = ("rt60", "size", "predelay", "damp", "bass", "mod", "diffuse", "early
             "tail", "inputs", "hf_hz", "lf_hz", "air", "lowcut")
 
 
-def reverb_ir(r: np.random.Generator, rt60: float = 1.6, size: float = 0.6, predelay: float = 0.01,
-              damp: float = 0.5, bass: float = 1.2, mod: float = 1.0, diffuse: float = 0.7, early_db: float = -6.0,
-              width: float = 1.0, late: str = "noise", lines: int = 16, tail: float | None = None, inputs: int = 1,
-              hf_hz: float = 4000.0, lf_hz: float = 250.0, air: float = 1.0, lowcut: float = 0.0,
-              seed: int | None = None, cache: bool = True) -> np.ndarray:
-    """Reverb impulse response of shape (n, inputs, 2), cached per settings and generator state."""
-    p = dict(rt60=float(rt60), size=float(size), predelay=float(predelay), damp=float(damp), bass=float(bass),
-             mod=float(mod), diffuse=float(diffuse), early_db=None if early_db is None else float(early_db),
-             width=float(width), late=str(late), lines=int(lines), tail=None if tail is None else float(tail),
-             inputs=int(inputs), hf_hz=float(hf_hz), lf_hz=float(lf_hz), air=float(air), lowcut=float(lowcut))
+def _ir_params(a: dict) -> dict:
+    """The settings of reverb_ir's arguments, typed, in _IR_KEYS order."""
+    return dict(rt60=float(a["rt60"]), size=float(a["size"]), predelay=float(a["predelay"]), damp=float(a["damp"]),
+                bass=float(a["bass"]), mod=float(a["mod"]), diffuse=float(a["diffuse"]),
+                early_db=None if a["early_db"] is None else float(a["early_db"]), width=float(a["width"]),
+                late=str(a["late"]), lines=int(a["lines"]), tail=None if a["tail"] is None else float(a["tail"]),
+                inputs=int(a["inputs"]), hf_hz=float(a["hf_hz"]), lf_hz=float(a["lf_hz"]), air=float(a["air"]),
+                lowcut=float(a["lowcut"]))
+
+
+def _bind(name: str, defaults: dict, args: tuple, opts: dict) -> dict:
+    """Bind optional arguments like a signature with these defaults, in order: positional, then keyword."""
+    if len(args) > len(defaults):
+        raise TypeError(f"{name}() takes at most {len(defaults)} optional positional arguments ({len(args)} given)")
+    a = dict(zip(defaults, args))
+    twice = sorted(set(a) & set(opts))
+    unknown = sorted(set(opts) - set(defaults))
+    if twice or unknown:
+        what = f"multiple values for {twice[0]!r}" if twice else f"an unexpected keyword argument {unknown[0]!r}"
+        raise TypeError(f"{name}() got {what}")
+    return {**defaults, **a, **opts}
+
+
+def _signature(lead: tuple[str, ...], defaults: dict) -> inspect.Signature:
+    P = inspect.Parameter
+    return inspect.Signature([P(n, P.POSITIONAL_OR_KEYWORD) for n in lead]
+                             + [P(k, P.POSITIONAL_OR_KEYWORD, default=v) for k, v in defaults.items()])
+
+
+IR_DEFAULTS: dict[str, Any] = dict(
+    rt60=1.6, size=0.6, predelay=0.01, damp=0.5, bass=1.2, mod=1.0, diffuse=0.7, early_db=-6.0, width=1.0,
+    late="noise", lines=16, tail=None, inputs=1, hf_hz=4000.0, lf_hz=250.0, air=1.0, lowcut=0.0, seed=None,
+    cache=True)
+
+
+def reverb_ir(r: np.random.Generator, *args: Any, **opts: Any) -> np.ndarray:
+    """Reverb impulse response of shape (n, inputs, 2), cached per settings and generator state.
+
+    Settings and defaults are IR_DEFAULTS, in signature order.
+    """
+    a = _bind("reverb_ir", IR_DEFAULTS, args, opts)
+    p = _ir_params(a)
     params = tuple(p[k] for k in _IR_KEYS)
-    if seed is not None:
-        return _seeded_ir(int(seed), p, params)
-    if cache and r is not None and hasattr(r, "bit_generator"):
-        return _stateful_ir(r, p, params)
-    return _build_ir(r, p)
+    if a["seed"] is not None:
+        ir = _seeded_ir(int(a["seed"]), p, params)
+    elif a["cache"] and r is not None and hasattr(r, "bit_generator"):
+        ir = _stateful_ir(r, p, params)
+    else:
+        ir = _build_ir(r, p)
+    return ir
+
+
+reverb_ir.__signature__ = _signature(("r",), IR_DEFAULTS)  # type: ignore[attr-defined]
 
 
 def _seeded_ir(seed: int, p: dict, params: tuple) -> np.ndarray:
@@ -462,22 +516,18 @@ def _stateful_ir(r: np.random.Generator, p: dict, params: tuple) -> np.ndarray:
     return ir
 
 
-def reverb(x: np.ndarray, r: np.random.Generator, rt60: float = 1.6, size: float = 0.6, predelay: float = 0.01,
-           damp: float = 0.5, bass: float = 1.2, mod: float = 1.0, diffuse: float = 0.7, early_db: float = -6.0,
-           width: float = 1.0, wet: float = 0.3, dry: float = 1.0, late: str = "noise", lines: int = 16,
-           tail: float | None = None, stereo: bool | None = None, air: float = 1.0, lowcut: float = 0.0,
-           ir_seed: int | None = None, grid: bool = False) -> np.ndarray:
-    """FDN reverb; wet is the level of the unit-energy tail relative to the dry sound."""
-    x = np.asarray(x, dtype=float)
-    xs = x[:, None] if x.ndim == 1 else x
-    stereo = x.ndim == 2 if stereo is None else stereo
-    room = dict(rt60=rt60, size=size, predelay=predelay, damp=damp, bass=bass, mod=mod, diffuse=diffuse,
-                width=width, tail=tail, lowcut=lowcut)
-    if grid:
+_ROOM_KEYS = ("rt60", "size", "predelay", "damp", "bass", "mod", "diffuse", "width", "tail", "lowcut")
+
+
+def _reverb_ir_of(a: dict, inputs: int) -> np.ndarray:
+    room = {k: a[k] for k in _ROOM_KEYS}
+    if a["grid"]:
         room = ir_grid(**room)
-    ir = reverb_ir(r, early_db=early_db, late=late, lines=lines, inputs=xs.shape[1], air=air, seed=ir_seed, **room)
-    wetsig = sum(np.column_stack([signal.fftconvolve(xs[:, c], ir[:, c, o]) for o in range(2)])
-                 for c in range(xs.shape[1]))
+    return reverb_ir(a["r"], early_db=a["early_db"], late=a["late"], lines=a["lines"], inputs=inputs, air=a["air"],
+                     seed=a["ir_seed"], **room)
+
+
+def _wet_dry(x: np.ndarray, xs: np.ndarray, wetsig: np.ndarray, wet: float, dry: float, stereo: bool) -> np.ndarray:
     if not stereo:
         out = wet * wetsig.mean(axis=1) * np.sqrt(2)
         out[: len(x)] += dry * xs.mean(axis=1)
@@ -487,6 +537,28 @@ def reverb(x: np.ndarray, r: np.random.Generator, rt60: float = 1.6, size: float
     return out
 
 
+REVERB_DEFAULTS: dict[str, Any] = dict(
+    rt60=1.6, size=0.6, predelay=0.01, damp=0.5, bass=1.2, mod=1.0, diffuse=0.7, early_db=-6.0, width=1.0, wet=0.3,
+    dry=1.0, late="noise", lines=16, tail=None, stereo=None, air=1.0, lowcut=0.0, ir_seed=None, grid=False)
+
+
+def reverb(x: np.ndarray, r: np.random.Generator, *args: Any, **opts: Any) -> np.ndarray:
+    """FDN reverb; wet is the level of the unit-energy tail relative to the dry sound.
+
+    Settings and defaults are REVERB_DEFAULTS, in signature order.
+    """
+    a = {"r": r, **_bind("reverb", REVERB_DEFAULTS, args, opts)}
+    x = np.asarray(x, dtype=float)
+    xs = x[:, None] if x.ndim == 1 else x
+    ir = _reverb_ir_of(a, xs.shape[1])
+    wetsig = sum(np.column_stack([signal.fftconvolve(xs[:, c], ir[:, c, o]) for o in range(2)])
+                 for c in range(xs.shape[1]))
+    return _wet_dry(x, xs, wetsig, a["wet"], a["dry"], x.ndim == 2 if a["stereo"] is None else a["stereo"])
+
+
+reverb.__signature__ = _signature(("x", "r"), REVERB_DEFAULTS)  # type: ignore[attr-defined]
+
+
 # ---------------------------------------------------------------- dynamics
 
 def _shelf_filter(x: np.ndarray, kind: str, db: float, fc: float) -> np.ndarray:
@@ -494,17 +566,30 @@ def _shelf_filter(x: np.ndarray, kind: str, db: float, fc: float) -> np.ndarray:
     return signal.lfilter([b0, b1], [1.0, a1], x, axis=0)
 
 
-def _curve(u: np.ndarray, mode: str, g: float, bias: float, os_: int) -> np.ndarray:
-    if mode == "tape":
-        u = _shelf_filter(u, "high", 4.0, 3000.0 / os_)
-        bb = 0.12 + bias
-        u = np.tanh(g * u + bb) - np.tanh(bb)
-        return _shelf_filter(u, "high", -4.0, 3000.0 / os_)
-    if mode == "hard":
-        return np.clip(g * u + bias, -1, 1) - np.clip(bias, -1, 1)
-    if mode == "fold":
-        return np.sin(np.pi / 2 * (g * u + bias)) - np.sin(np.pi / 2 * bias)
+def _tape_curve(u: np.ndarray, g: float, bias: float, os_: int) -> np.ndarray:
+    u = _shelf_filter(u, "high", 4.0, 3000.0 / os_)
+    bb = 0.12 + bias
+    u = np.tanh(g * u + bb) - np.tanh(bb)
+    return _shelf_filter(u, "high", -4.0, 3000.0 / os_)
+
+
+def _hard_curve(u: np.ndarray, g: float, bias: float, os_: int) -> np.ndarray:
+    return np.clip(g * u + bias, -1, 1) - np.clip(bias, -1, 1)
+
+
+def _fold_curve(u: np.ndarray, g: float, bias: float, os_: int) -> np.ndarray:
+    return np.sin(np.pi / 2 * (g * u + bias)) - np.sin(np.pi / 2 * bias)
+
+
+def _tanh_curve(u: np.ndarray, g: float, bias: float, os_: int) -> np.ndarray:
     return np.tanh(g * u + bias) - np.tanh(bias)
+
+
+_CURVES = {"tape": _tape_curve, "hard": _hard_curve, "fold": _fold_curve}
+
+
+def _curve(u: np.ndarray, mode: str, g: float, bias: float, os_: int) -> np.ndarray:
+    return _CURVES.get(mode, _tanh_curve)(u, g, bias, os_)
 
 
 def _match_level(y: np.ndarray, x: np.ndarray, level: str | None) -> np.ndarray:
@@ -546,23 +631,33 @@ def _db_ratio(a: np.ndarray, b: np.ndarray, scale: float) -> np.ndarray:
     return np.clip(20 * np.log10((a + 1e-9) / (b + 1e-9)) / scale, 0, 1)
 
 
+def _attack_env(m: np.ndarray, s: float, attack_ms: float) -> np.ndarray:
+    ef = _follow(m, _coef(0.1 * s), _coef(15 * s))
+    es = _slow_rise(ef, _coef(attack_ms * s))
+    return _db_ratio(ef, es, 6.0)
+
+
+def _sustain_env(m: np.ndarray, s: float, a: np.ndarray, floor_db: float) -> tuple[np.ndarray, np.ndarray]:
+    el = _follow(m, _coef(0.3 * s), _coef(350 * s))
+    eq = _follow(m, _coef(0.3 * s), _coef(25 * s))
+    d = _db_ratio(el, eq, 9.0) * (1 - a)
+    gate = np.clip((20 * np.log10(el / (m.max() + 1e-12) + 1e-12) - floor_db) / 12, 0, 1)
+    return d, gate
+
+
+def _smooth_gain(gain: np.ndarray) -> np.ndarray:
+    lo = gain.min() if len(gain) else 0.0
+    return _follow(gain - lo, _coef(0.2), _coef(5)) + lo
+
+
 def transient(x: np.ndarray, attack_db: float = 3.0, sustain_db: float = 0.0, attack_ms: float = 8.0,
               speed: float = 1.0, floor_db: float = -60.0) -> np.ndarray:
     """Level-independent attack and sustain shaper, stereo linked."""
     x = np.asarray(x, dtype=float)
     m = np.abs(x).max(axis=1) if x.ndim == 2 else np.abs(x)
-    s = speed
-    ef = _follow(m, _coef(0.1 * s), _coef(15 * s))
-    es = _slow_rise(ef, _coef(attack_ms * s))
-    a = _db_ratio(ef, es, 6.0)
-    el = _follow(m, _coef(0.3 * s), _coef(350 * s))
-    eq = _follow(m, _coef(0.3 * s), _coef(25 * s))
-    d = _db_ratio(el, eq, 9.0) * (1 - a)
-    gate = np.clip((20 * np.log10(el / (m.max() + 1e-12) + 1e-12) - floor_db) / 12, 0, 1)
-    gain = attack_db * a + sustain_db * d * gate
-    lo = gain.min() if len(gain) else 0.0
-    gain = _follow(gain - lo, _coef(0.2), _coef(5)) + lo
-    g = 10 ** (gain / 20)
+    a = _attack_env(m, speed, attack_ms)
+    d, gate = _sustain_env(m, speed, a, floor_db)
+    g = 10 ** (_smooth_gain(attack_db * a + sustain_db * d * gate) / 20)
     return x * (g[:, None] if x.ndim == 2 else g)
 
 
@@ -577,21 +672,28 @@ def _release(g: np.ndarray, coef: float) -> np.ndarray:
     return out
 
 
-def limit(x: np.ndarray, ceiling_db: float = -1.0, lookahead: float = 0.0025, release: float = 0.08,
-          true_peak: bool = True) -> np.ndarray:
-    """Offline look-ahead peak limiter with a true-peak detector."""
-    x = np.asarray(x, dtype=float)
-    c = 10 ** (ceiling_db / 20)
+def _peak_env(x: np.ndarray, true_peak: bool) -> np.ndarray:
     pk = np.abs(x).max(axis=1) if x.ndim == 2 else np.abs(x)
     if true_peak and len(x) > 1:
         up = np.abs(signal.resample_poly(x, 4, 1, axis=0))
         up = up.max(axis=1) if up.ndim == 2 else up
         pk = np.maximum(pk, up[: 4 * len(x)].reshape(len(x), 4).max(axis=1))
-    need = np.minimum(1.0, c / np.maximum(pk, 1e-12))
-    w = 2 * max(1, n_of(lookahead)) + 1
+    return pk
+
+
+def _limit_gain(need: np.ndarray, w: int, release: float) -> np.ndarray:
     g = ndimage.minimum_filter1d(need, w, mode="nearest")
     g = _release(g, _coef(release * 1000))
-    g = ndimage.uniform_filter1d(g, w, mode="nearest")
+    return ndimage.uniform_filter1d(g, w, mode="nearest")
+
+
+def limit(x: np.ndarray, ceiling_db: float = -1.0, lookahead: float = 0.0025, release: float = 0.08,
+          true_peak: bool = True) -> np.ndarray:
+    """Offline look-ahead peak limiter with a true-peak detector."""
+    x = np.asarray(x, dtype=float)
+    c = 10 ** (ceiling_db / 20)
+    need = np.minimum(1.0, c / np.maximum(_peak_env(x, true_peak), 1e-12))
+    g = _limit_gain(need, 2 * max(1, n_of(lookahead)) + 1, release)
     y = x * (g[:, None] if x.ndim == 2 else g)
     return np.clip(y, -c, c)
 
@@ -613,17 +715,22 @@ def split(x: np.ndarray, freqs: Any) -> list[np.ndarray]:
 
 # ---------------------------------------------------------------- EQ match
 
+def _array_profile(a: np.ndarray) -> np.ndarray:
+    from hark.forge.engine import tone
+
+    return a if a.ndim == 1 and len(a) == len(tone.CEN) else tone.profile(a)
+
+
 def _target_profile(target: Any) -> np.ndarray:
     from hark.forge.engine import tone
 
     if isinstance(target, tone.ToneRef):
-        return np.asarray(target.med, dtype=float)
-    if isinstance(target, (list, tuple)) and target:
-        return np.asarray(tone.ToneRef(list(target)).med, dtype=float)
-    a = np.asarray(target, dtype=float)
-    if a.ndim == 1 and len(a) == len(tone.CEN):
-        return a
-    return tone.profile(a)
+        prof = np.asarray(target.med, dtype=float)
+    elif isinstance(target, (list, tuple)) and target:
+        prof = np.asarray(tone.ToneRef(list(target)).med, dtype=float)
+    else:
+        prof = _array_profile(np.asarray(target, dtype=float))
+    return prof
 
 
 def match_curve(x: np.ndarray, target: Any, amount: float = 1.0, max_db: float = 12.0, smooth: int = 1) -> list:
@@ -695,6 +802,29 @@ def _emission_times(t: np.ndarray, t0: float, v: float, dist: float, c: float) -
     return t0 + (c * c * b - np.sqrt(v * v * c * c * b * b + dist * dist * (c * c - v * v))) / (c * c - v * v)
 
 
+def _pass_times(dur: float, v: float, dist: float, t0: float, c: float) -> tuple[np.ndarray, np.ndarray]:
+    """Emission times and distances of the heard samples of a straight pass."""
+    def dist_at(te: Any) -> Any:
+        return np.hypot(v * (te - t0), dist)
+
+    t_first, t_last = dist_at(0.0) / c, dur + dist_at(dur) / c
+    t = t_first + np.arange(int((t_last - t_first) * SR)) / SR
+    te = _emission_times(t, t0, v, dist, c)
+    return te, dist_at(te)
+
+
+def _air_lowpass(y: np.ndarray, rr: np.ndarray, dist: float, air: float) -> np.ndarray:
+    att = air * 0.17 * np.maximum(rr - dist, 0)
+    fc = np.clip(10000 / np.maximum(10 ** (att / 10) - 1, 1e-9) ** 0.25, 200, 0.45 * SR)
+    return dsp.svf(y, fc, 0.707, "low")
+
+
+def _pass_pan(y: np.ndarray, side: np.ndarray, width: float) -> np.ndarray:
+    s = np.clip(side, -1, 1) * width
+    theta = (s + 1) * np.pi / 4
+    return np.column_stack([y * np.cos(theta), y * np.sin(theta)]) * np.sqrt(2)
+
+
 def doppler(x: np.ndarray, speed: float = 40.0, dist: float = 4.0, t_close: float | None = None, air: float = 1.0,
             width: float = 0.8, stereo: bool = True, c: float = 343.0, floor_db: float = -30.0) -> np.ndarray:
     """A source passing the listener on a straight line."""
@@ -702,23 +832,12 @@ def doppler(x: np.ndarray, speed: float = 40.0, dist: float = 4.0, t_close: floa
     dur = len(xm) / SR
     t0 = dur / 2 if t_close is None else t_close
     v = float(np.clip(speed, 1e-3, 0.95 * c))
-
-    def dist_at(te: Any) -> Any:
-        return np.hypot(v * (te - t0), dist)
-
-    t_first, t_last = dist_at(0.0) / c, dur + dist_at(dur) / c
-    t = t_first + np.arange(int((t_last - t_first) * SR)) / SR
-    te = _emission_times(t, t0, v, dist, c)
-    rr = dist_at(te)
+    te, rr = _pass_times(dur, v, dist, t0, c)
     y = _hermite(xm, te * SR) * np.maximum(dist / rr, 10 ** (floor_db / 20))
-    att = air * 0.17 * np.maximum(rr - dist, 0)
-    fc = np.clip(10000 / np.maximum(10 ** (att / 10) - 1, 1e-9) ** 0.25, 200, 0.45 * SR)
-    y = dsp.svf(y, fc, 0.707, "low")
+    y = _air_lowpass(y, rr, dist, air)
     if not stereo:
         return y
-    s = np.clip(v * (te - t0) / rr, -1, 1) * width
-    theta = (s + 1) * np.pi / 4
-    return np.column_stack([y * np.cos(theta), y * np.sin(theta)]) * np.sqrt(2)
+    return _pass_pan(y, v * (te - t0) / rr, width)
 
 
 def decorrelate(x: np.ndarray, amount: float = 1.0, cut: float = 250.0) -> np.ndarray:
@@ -841,18 +960,31 @@ def _octave_up(sl: np.ndarray, k: int) -> np.ndarray:
     return out
 
 
-def _glitch_slice(sl: np.ndarray, u: float, th: np.ndarray, prev: np.ndarray | None, k: int) -> np.ndarray:
-    if u < th[0] and prev is not None and len(prev) == len(sl):
-        return prev.copy()
-    if u < th[1]:
-        return sl[::-1].copy()
-    if u < th[2]:
-        return np.zeros_like(sl)
-    if u < th[3]:
-        return _octave_up(sl, k)
-    if u < th[4]:
-        return crush(sl, 6, 6000)
+def _glitch_reverse(sl: np.ndarray, k: int) -> np.ndarray:
+    return sl[::-1].copy()
+
+
+def _glitch_drop(sl: np.ndarray, k: int) -> np.ndarray:
+    return np.zeros_like(sl)
+
+
+def _glitch_crush(sl: np.ndarray, k: int) -> np.ndarray:
+    return crush(sl, 6, 6000)
+
+
+def _glitch_keep(sl: np.ndarray, k: int) -> np.ndarray:
     return sl.copy()
+
+
+# Edit by the number of cumulative thresholds at or under u; 0 (repeat) falls back to reverse with no previous slice.
+_GLITCH = (_glitch_reverse, _glitch_reverse, _glitch_drop, _octave_up, _glitch_crush, _glitch_keep)
+
+
+def _glitch_slice(sl: np.ndarray, u: float, th: np.ndarray, prev: np.ndarray | None, k: int) -> np.ndarray:
+    i = int(np.searchsorted(th, u, side="right"))
+    if i == 0 and prev is not None and len(prev) == len(sl):
+        return prev.copy()
+    return _GLITCH[i](sl, k)
 
 
 def glitch(x: np.ndarray, r: np.random.Generator, grid: float = 0.03, repeat: float = 0.25, reverse: float = 0.1,
@@ -877,25 +1009,39 @@ def _pos_control(pos: Any, n: int) -> np.ndarray:
     return dsp.curve(pos, n)
 
 
-def granular(src: np.ndarray, seconds: float, r: np.random.Generator, grain: float = 0.06, density: float = 40.0,
-             pos: Any = (0.0, 1.0), pos_jitter: float = 0.02, pitch: float = 0.0, pitch_jitter: float = 0.0,
-             time_jitter: float = 0.5, spread: float = 0.6, reverse: float = 0.0) -> np.ndarray:
-    """Stereo granular cloud read from a source."""
-    s = _mono(src)
-    n = n_of(seconds)
-    out = np.zeros((n, 2))
-    pc = _pos_control(pos, n)
-    period = 1.0 / max(density, 1e-3)
-    gl = n_of(grain)
+def _scatter(out: np.ndarray, s: np.ndarray, r: np.random.Generator, pc: np.ndarray, timing: tuple,
+             knobs: tuple) -> None:
+    """Add grains at a jittered period until seconds."""
+    seconds, period, time_jitter, gl = timing
     win = np.hanning(gl)
+    n = len(out)
     t = 0.0
     while t < seconds:
         tt = t + time_jitter * period * r.uniform(-0.5, 0.5)
         i = n_of(tt) if tt > 0 else 0
         if i < n:
-            _add_grain(out, s, r, i, pc, gl, win, (pitch, pitch_jitter, pos_jitter, reverse, spread))
+            _add_grain(out, s, r, i, pc, gl, win, knobs)
         t += period
+
+
+def granular(src: np.ndarray, seconds: float, r: np.random.Generator, grain: float = 0.06, density: float = 40.0,
+             pos: Any = (0.0, 1.0), pos_jitter: float = 0.02, pitch: float = 0.0, pitch_jitter: float = 0.0,
+             time_jitter: float = 0.5, spread: float = 0.6, reverse: float = 0.0) -> np.ndarray:
+    """Stereo granular cloud read from a source."""
+    knobs = (pitch, pitch_jitter, pos_jitter, reverse, spread)
+    s = _mono(src)
+    n = n_of(seconds)
+    out = np.zeros((n, 2))
+    pc = _pos_control(pos, n)
+    period = 1.0 / max(density, 1e-3)
+    _scatter(out, s, r, pc, (seconds, period, time_jitter, n_of(grain)), knobs)
     return out / np.sqrt(max(1.0, density * grain * 0.375))
+
+
+def _pan_add(out: np.ndarray, g: np.ndarray, i: int, theta: float) -> None:
+    m = min(len(g), len(out) - i)
+    out[i:i + m, 0] += g[:m] * np.cos(theta) * np.sqrt(2)
+    out[i:i + m, 1] += g[:m] * np.sin(theta) * np.sqrt(2)
 
 
 def _add_grain(out: np.ndarray, s: np.ndarray, r: np.random.Generator, i: int, pc: np.ndarray, gl: int,
@@ -907,10 +1053,21 @@ def _add_grain(out: np.ndarray, s: np.ndarray, r: np.random.Generator, i: int, p
     g = _hermite(s, start + np.arange(gl) * rate) * win
     if r.uniform() < reverse:
         g = g[::-1]
-    theta = (np.clip(spread * r.uniform(-1, 1), -1, 1) + 1) * np.pi / 4
-    m = min(gl, len(out) - i)
-    out[i:i + m, 0] += g[:m] * np.cos(theta) * np.sqrt(2)
-    out[i:i + m, 1] += g[:m] * np.sin(theta) * np.sqrt(2)
+    _pan_add(out, g, i, (np.clip(spread * r.uniform(-1, 1), -1, 1) + 1) * np.pi / 4)
+
+
+def _swell_head(wet: np.ndarray, k: int, seconds: float) -> np.ndarray:
+    sw = wet[:k][::-1].copy()
+    kf = min(k, n_of(0.35 * seconds))
+    sw[:kf] *= (np.linspace(0, 1, kf) ** 2)[:, None]
+    return sw
+
+
+def _hit_after(hm: np.ndarray, r: np.random.Generator, room: tuple, hit_room: float) -> np.ndarray:
+    rt60, size, damp = room
+    if hit_room > 0:
+        return reverb(hm, r, 0.6 * rt60, size, predelay=0.0, damp=damp, wet=hit_room, dry=1.0, stereo=True)
+    return dsp.stereo_of(hm)
 
 
 def reverse_swell(hit: np.ndarray, r: np.random.Generator, seconds: float = 1.0, rt60: float = 2.5,
@@ -921,13 +1078,8 @@ def reverse_swell(hit: np.ndarray, r: np.random.Generator, seconds: float = 1.0,
     wet = reverb(hm, r, rt60, size, predelay=0.0, damp=damp, wet=1.0, dry=0.0, stereo=True,
                  tail=max(seconds, rt60) + 0.1)
     k = n_of(seconds)
-    sw = wet[:k][::-1].copy()
-    kf = min(k, n_of(0.35 * seconds))
-    sw[:kf] *= (np.linspace(0, 1, kf) ** 2)[:, None]
-    if hit_room > 0:
-        after = reverb(hm, r, 0.6 * rt60, size, predelay=0.0, damp=damp, wet=hit_room, dry=1.0, stereo=True)
-    else:
-        after = dsp.stereo_of(hm)
+    sw = _swell_head(wet, k, seconds)
+    after = _hit_after(hm, r, (rt60, size, damp), hit_room)
     sw = sw * np.max(np.abs(after)) * 10 ** (swell_db / 20) / (np.max(np.abs(sw)) + 1e-12)
     g = n_of(gap) if gap > 0 else 0
     out = np.zeros((k + g + len(after), 2))
