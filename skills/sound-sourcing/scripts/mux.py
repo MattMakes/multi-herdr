@@ -58,56 +58,59 @@ def fps_of(st: dict) -> float | None:
     return None
 
 
-def mux(a) -> list[str]:
-    root = os.path.abspath(a.root)
-    rp = lambda p: p if os.path.isabs(p) else os.path.join(root, p)
-    video, audio = rp(a.video), rp(a.audio)
-    out = rp(a.out) if a.out else video
-    lines = []
-    if not os.path.isfile(audio):
-        raise MuxError(f"audio not found: {audio}")
-    if not os.path.isfile(video):
-        raise MuxError(f"video not found: {video}")
+def _need_file(path: str, kind: str) -> None:
+    if not os.path.isfile(path):
+        raise MuxError(f"{kind} not found: {path}")
+
+
+def _picture(video: str) -> tuple[dict, float, float]:
+    """The video stream, its frame rate (60 when unknown) and its duration."""
     vi = probe(video)
     vs = stream(vi, "video")
     if vs is None:
         raise MuxError(f"no video stream in {video}")
-    fps = fps_of(vs) or 60.0
     vdur = duration(vi, vs)
     if vdur is None:
         raise MuxError(f"cannot read the duration of {video}")
-    ai = probe(audio)
-    adur = duration(ai, stream(ai, "audio"))
+    return vs, fps_of(vs) or 60.0, vdur
+
+
+def _length_note(adur, vdur: float, fps: float) -> list[str]:
     frame = 1.0 / fps
-    if adur is not None and abs(adur - vdur) > frame:
-        d = adur - vdur
-        if d > 0:
-            lines.append(f"note: the audio is longer by {d:.3f} s ({d / frame:.1f} frames); it is cut at the "
-                         "picture's end")
-        else:
-            lines.append(f"note: the audio is SHORTER by {-d:.3f} s ({-d / frame:.1f} frames); the end will be "
-                         "silent")
-    src = video
-    keep = None
-    if os.path.abspath(out) == os.path.abspath(video):
-        stem, ext = os.path.splitext(os.path.basename(video))
-        keep = rp(a.keep_old) if a.keep_old else os.path.join(root, "out", "superseded", f"{stem}_prev{ext}")
-        if os.path.exists(keep):
-            raise MuxError(f"the keep-old file exists: {keep}; move it or give another --keep-old")
-        os.makedirs(os.path.dirname(keep), exist_ok=True)
-        shutil.move(video, keep)
-        src = keep
-        lines.append(f"the previous video is at {keep}")
-    stem, ext = os.path.splitext(out)
-    tmp = f"{stem}.muxing{ext}"
+    if adur is None or abs(adur - vdur) <= frame:
+        return []
+    d = adur - vdur
+    if d > 0:
+        return [f"note: the audio is longer by {d:.3f} s ({d / frame:.1f} frames); it is cut at the picture's end"]
+    return [f"note: the audio is SHORTER by {-d:.3f} s ({-d / frame:.1f} frames); the end will be silent"]
+
+
+def _keep_old(keep: str, video: str) -> None:
+    """Move the video aside before an in-place mux."""
+    if os.path.exists(keep):
+        raise MuxError(f"the keep-old file exists: {keep}; move it or give another --keep-old")
+    os.makedirs(os.path.dirname(keep), exist_ok=True)
+    shutil.move(video, keep)
+
+
+def _keep_path(a, root: str, video: str) -> str:
+    if a.keep_old:
+        return a.keep_old if os.path.isabs(a.keep_old) else os.path.join(root, a.keep_old)
+    stem, ext = os.path.splitext(os.path.basename(video))
+    return os.path.join(root, "out", "superseded", f"{stem}_prev{ext}")
+
+
+def _ffmpeg_cmd(src: str, audio: str, abr: str, vdur: float, tmp: str) -> list[str]:
     cmd = ["ffmpeg", "-v", "error", "-nostdin", "-y", "-i", src, "-i", audio, "-map", "0:v:0", "-map", "1:a:0",
-           "-c:v", "copy", "-c:a", "aac", "-b:a", a.abr, "-ar", "48000", "-ac", "2", "-t", f"{vdur:.6f}"]
-    if ext.lower() in (".mp4", ".m4v", ".mov"):
+           "-c:v", "copy", "-c:a", "aac", "-b:a", abr, "-ar", "48000", "-ac", "2", "-t", f"{vdur:.6f}"]
+    if os.path.splitext(tmp)[1].lower() in (".mp4", ".m4v", ".mov"):
         cmd += ["-movflags", "+faststart"]
-    cmd.append(tmp)
-    os.makedirs(os.path.dirname(os.path.abspath(out)), exist_ok=True)
+    return cmd + [tmp]
+
+
+def _encode(cmd: list[str], tmp: str, where: str) -> tuple[dict, dict, dict]:
+    """Run ffmpeg into tmp and probe it. Returns (info, video stream, audio stream)."""
     r = subprocess.run(cmd, capture_output=True, text=True)
-    where = f"; the original video is kept at {keep}" if keep else ""
     if r.returncode != 0:
         if os.path.exists(tmp):
             os.remove(tmp)
@@ -117,14 +120,43 @@ def mux(a) -> list[str]:
     if ov is None or oa is None:
         os.remove(tmp)
         raise MuxError(f"the result lacks a video or an audio stream{where}")
-    os.replace(tmp, out)
+    return oi, ov, oa
+
+
+def _wrote_line(out: str, result: tuple, fps: float, vdur: float) -> str:
+    oi, ov, oa = result
     mb = os.path.getsize(out) / 1e6
     abr = oa.get("bit_rate")
     abr = f"{int(abr) // 1000} kbps" if abr and str(abr).isdigit() else "? kbps"
     odur = duration(oi, oa)
-    lines.append(f"wrote {out} ({mb:.2f} MB): video {ov.get('codec_name')} copied, {fps:.3f} fps, "
-                 f"{duration(oi, ov) or vdur:.3f} s; audio {oa.get('codec_name')} {abr}, "
-                 f"{odur if odur is not None else 0:.3f} s")
+    return (f"wrote {out} ({mb:.2f} MB): video {ov.get('codec_name')} copied, {fps:.3f} fps, "
+            f"{duration(oi, ov) or vdur:.3f} s; audio {oa.get('codec_name')} {abr}, "
+            f"{odur if odur is not None else 0:.3f} s")
+
+
+def mux(a) -> list[str]:
+    root = os.path.abspath(a.root)
+    rp = lambda p: p if os.path.isabs(p) else os.path.join(root, p)
+    video, audio = rp(a.video), rp(a.audio)
+    out = rp(a.out) if a.out else video
+    _need_file(audio, "audio")
+    _need_file(video, "video")
+    _, fps, vdur = _picture(video)
+    ai = probe(audio)
+    lines = _length_note(duration(ai, stream(ai, "audio")), vdur, fps)
+    src, keep = video, None
+    if os.path.abspath(out) == os.path.abspath(video):
+        keep = _keep_path(a, root, video)
+        _keep_old(keep, video)
+        src = keep
+        lines.append(f"the previous video is at {keep}")
+    stem, ext = os.path.splitext(out)
+    tmp = f"{stem}.muxing{ext}"
+    os.makedirs(os.path.dirname(os.path.abspath(out)), exist_ok=True)
+    result = _encode(_ffmpeg_cmd(src, audio, a.abr, vdur, tmp), tmp,
+                     f"; the original video is kept at {keep}" if keep else "")
+    os.replace(tmp, out)
+    lines.append(_wrote_line(out, result, fps, vdur))
     return lines
 
 
@@ -153,9 +185,50 @@ def main(argv=None) -> int:
     return 0
 
 
-def self_test() -> int:
+def _quiet(fn, argv, stream_name="stdout"):
+    """Run fn(argv) with 1 output stream captured. Returns (result, captured text)."""
     import contextlib
     import io
+    buf = io.StringIO()
+    redirect = contextlib.redirect_stdout if stream_name == "stdout" else contextlib.redirect_stderr
+    with redirect(buf):
+        code = fn(argv)
+    return code, buf.getvalue()
+
+
+def _streams_ok(vs: list, aus: list) -> bool:
+    video_ok = len(vs) == 1 and vs[0]["codec_name"] == "h264"
+    audio = aus[0] if len(aus) == 1 else {}
+    return video_ok and (audio.get("codec_name"), audio.get("sample_rate"), audio.get("channels")) == ("aac", "48000", 2)
+
+
+def _test_mux(ck, d: str, film: str, wav: str) -> None:
+    out = os.path.join(d, "film_sound.mp4")
+    code, text = _quiet(main, ["--video", film, "--audio", wav, "--out", out])
+    info = probe(out)
+    vs = [s for s in info["streams"] if s["codec_type"] == "video"]
+    aus = [s for s in info["streams"] if s["codec_type"] == "audio"]
+    ck("S16 note that the audio is longer and cut", code == 0 and "audio is longer" in text)
+    ck("S16 1 copied video stream, 1 AAC 48 kHz stereo stream", _streams_ok(vs, aus))
+    ck("S16 audio duration within 1 AAC frame of 2.0 s", abs(float(aus[0]["duration"]) - 2.0) <= 1024 / 48000 + 1e-3)
+
+
+def _test_in_place(ck, d: str, film: str, wav: str) -> None:
+    keep = os.path.join(d, "keep.mp4")
+    open(keep, "wb").write(b"x")
+    before = open(film, "rb").read()
+    code, err = _quiet(main, ["--video", film, "--audio", wav, "--out", film, "--keep-old", keep], "stderr")
+    ck("S17 an existing keep-old file refuses; the video is untouched",
+       code == 1 and open(film, "rb").read() == before and "keep-old" in err)
+    os.remove(keep)
+    code, _ = _quiet(main, ["--video", film, "--audio", wav, "--keep-old", keep])
+    ck("in-place mux keeps the old video", code == 0 and open(keep, "rb").read() == before
+       and stream(probe(film), "audio") is not None)
+    code, _ = _quiet(main, ["--video", film, "--audio", os.path.join(d, "no.wav")], "stderr")
+    ck("missing audio fails", code == 1)
+
+
+def self_test() -> int:
     import tempfile
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
     import fixtures as fx
@@ -169,32 +242,8 @@ def self_test() -> int:
         t = np.arange(int(2.5 * 48000)) / 48000
         tone = 0.3 * np.sin(2 * np.pi * 440 * t)
         wav = fx.write(os.path.join(d, "s.wav"), np.stack([tone, tone], 1))
-        out = os.path.join(d, "film_sound.mp4")
-        o = io.StringIO()
-        with contextlib.redirect_stdout(o):
-            code = main(["--video", film, "--audio", wav, "--out", out])
-        info = probe(out)
-        vs = [s for s in info["streams"] if s["codec_type"] == "video"]
-        aus = [s for s in info["streams"] if s["codec_type"] == "audio"]
-        ck("S16 note that the audio is longer and cut", code == 0 and "audio is longer" in o.getvalue())
-        ck("S16 1 copied video stream, 1 AAC 48 kHz stereo stream",
-           len(vs) == 1 and vs[0]["codec_name"] == "h264" and len(aus) == 1 and aus[0]["codec_name"] == "aac"
-           and aus[0]["sample_rate"] == "48000" and aus[0]["channels"] == 2)
-        ck("S16 audio duration within 1 AAC frame of 2.0 s", abs(float(aus[0]["duration"]) - 2.0) <= 1024 / 48000 + 1e-3)
-        keep = os.path.join(d, "keep.mp4")
-        open(keep, "wb").write(b"x")
-        before = open(film, "rb").read()
-        with contextlib.redirect_stderr(io.StringIO()) as e:
-            code = main(["--video", film, "--audio", wav, "--out", film, "--keep-old", keep])
-        ck("S17 an existing keep-old file refuses; the video is untouched",
-           code == 1 and open(film, "rb").read() == before and "keep-old" in e.getvalue())
-        os.remove(keep)
-        with contextlib.redirect_stdout(io.StringIO()):
-            code = main(["--video", film, "--audio", wav, "--keep-old", keep])
-        ck("in-place mux keeps the old video", code == 0 and open(keep, "rb").read() == before
-           and stream(probe(film), "audio") is not None)
-        with contextlib.redirect_stderr(io.StringIO()):
-            ck("missing audio fails", main(["--video", film, "--audio", os.path.join(d, "no.wav")]) == 1)
+        _test_mux(ck, d, film, wav)
+        _test_in_place(ck, d, film, wav)
     return ck.code()
 
 
