@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import importlib.util
 import os
+import sys
 from collections.abc import Callable, Sequence
 
 import numpy as np
@@ -17,6 +18,7 @@ import pytest
 
 SR = 48000
 ML_MODULES = ("torch", "transformers")
+OFFLINE_VARS = ("HF_HUB_OFFLINE", "TRANSFORMERS_OFFLINE")
 
 
 def _ml_present() -> bool:
@@ -31,6 +33,26 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
             item.add_marker(skip_ml)
         if skip_live is not None and "live" in item.keywords:
             item.add_marker(skip_live)
+
+
+@pytest.fixture(autouse=True)
+def _hub_offline(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep every test that is not marked ``ml`` or ``live`` off the Hugging Face Hub.
+
+    huggingface_hub reads HF_HUB_OFFLINE once, at import, into
+    ``huggingface_hub.constants``. The fixture sets the variables for an import
+    during the test and patches the constant when the package is already loaded.
+    An ``ml`` or ``live`` test gets the constant that the caller's environment gives.
+    """
+    keywords = request.node.keywords
+    hermetic = "ml" not in keywords and "live" not in keywords
+    if hermetic:
+        for var in OFFLINE_VARS:
+            monkeypatch.setenv(var, "1")
+    constants = sys.modules.get("huggingface_hub.constants")
+    if constants is not None:
+        caller = any(os.environ.get(v, "").upper() in ("1", "ON", "YES", "TRUE") for v in OFFLINE_VARS)
+        monkeypatch.setattr(constants, "HF_HUB_OFFLINE", hermetic or caller)
 
 
 def _n(seconds: float) -> int:
