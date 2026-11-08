@@ -12,7 +12,7 @@ from typing import Any
 
 import numpy as np
 
-from hark.timeline._dsp import ascii_safe
+from hark.timeline._dsp import ascii_safe, runs
 
 __all__ = ["critique", "scorecard", "real_thresholds", "SPEC", "add_cli"]
 
@@ -142,31 +142,47 @@ def fmt_p(v: float) -> str:
 
 # ---------------------------------------------------------------- scorecard
 
-def window(key: str, stats: dict, lossy: bool) -> tuple[float | None, float | None, str]:
-    """(lo, hi, basis) of the ok range of one metric."""
-    _, tol, sides, practice, _ = SPEC[key]
+def _fixed_window(key: str, practice, lossy: bool):
+    """(lo, hi, basis) when the range does not come from the references, else None."""
     if key == "p_real":
         return real_thresholds(True)["hi"], None, "realness model"
     if key == "true_peak" and lossy:
         return None, 0.0, "decoded lossy"
-    if practice is not None:
-        return practice[0], practice[1], "web"
+    return (practice[0], practice[1], "web") if practice is not None else None
+
+
+def _floor(key: str, stats: dict, lo: float):
+    """Lower edge for a unit that cannot go below 0: half the reference minimum for rates, else none."""
+    unit = metric_info(key)["unit"]
+    if lo > 0 or unit not in FLOOR_UNITS:
+        return lo
+    return round(stats["min"] / 2, 3) if unit == "/s" and stats["min"] > 0 else None
+
+
+def _ref_window(key: str, stats: dict, tol: float, sides: str):
     if not stats or not stats.get("n"):
         return None, None, "no reference data"
-    lo, hi = stats["min"] - tol, stats["max"] + tol
-    if lo <= 0 and metric_info(key)["unit"] in FLOOR_UNITS:
-        lo = round(stats["min"] / 2, 3) if metric_info(key)["unit"] == "/s" and stats["min"] > 0 else None
+    lo, hi = _floor(key, stats, stats["min"] - tol), stats["max"] + tol
     return (lo if sides in ("both", "lower") else None), (hi if sides in ("both", "upper") else None), "references"
+
+
+def window(key: str, stats: dict, lossy: bool) -> tuple[float | None, float | None, str]:
+    """(lo, hi, basis) of the ok range of one metric."""
+    _, tol, sides, practice, _ = SPEC[key]
+    fixed = _fixed_window(key, practice, lossy)
+    return fixed if fixed is not None else _ref_window(key, stats, tol, sides)
+
+
+def _side(value, lo, hi) -> str:
+    if lo is not None and value < lo:
+        return "low"
+    return "high" if hi is not None and value > hi else "ok"
 
 
 def status_of(value, lo, hi, basis: str, weight: int) -> str:
     if basis == "no reference data" or value is None:
         return "n.a."
-    if weight == 0:
-        return "info"
-    if lo is not None and value < lo:
-        return "low"
-    return "high" if hi is not None and value > hi else "ok"
+    return "info" if weight == 0 else _side(value, lo, hi)
 
 
 def final_weight(key: str, value, status: str, lo, hi) -> int:
@@ -198,14 +214,25 @@ def metric_row(key: str, value, stats: dict, chance: dict | None, lossy: bool) -
     return row
 
 
+WEIGHT_NUM = {"critical": 3, "major": 2, "minor": 1}
+VERDICTS = ((0.9, True, "launch-grade"), (0.75, True, "close"), (0.5, False, "needs work"))
+
+
 def verdict_of(score, critical: int) -> str:
     if score is None:
         return "n.a."
-    if score >= 0.9 and not critical:
-        return "launch-grade"
-    if score >= 0.75 and not critical:
-        return "close"
-    return "needs work" if score >= 0.5 else "not launch-grade"
+    ok = (v for floor, clean, v in VERDICTS if score >= floor and not (clean and critical))
+    return next(ok, "not launch-grade")
+
+
+def _score(scored: list[dict]) -> float | None:
+    total = sum(WEIGHT_NUM[r["weight"]] for r in scored)
+    ok = sum(WEIGHT_NUM[r["weight"]] for r in scored if r["status"] == "ok")
+    return round(ok / total, 3) if total else None
+
+
+def _issues(scored: list[dict], weight: str) -> int:
+    return sum(1 for r in scored if r["weight"] == weight and r["status"] != "ok")
 
 
 def scorecard(values: dict, profile: dict, chance: dict | None = None, lossy: bool = False) -> dict:
@@ -213,27 +240,15 @@ def scorecard(values: dict, profile: dict, chance: dict | None = None, lossy: bo
     stats = profile.get("metrics", {})
     rows = [metric_row(k, values.get(k), stats.get(k, {}), chance, lossy) for k in SPEC]
     scored = [r for r in rows if r["weight"] != "info" and r["status"] != "n.a."]
-    w = {"critical": 3, "major": 2, "minor": 1}
-    total = sum(w[r["weight"]] for r in scored)
-    ok = sum(w[r["weight"]] for r in scored if r["status"] == "ok")
-    score = round(ok / total, 3) if total else None
-    crit = sum(1 for r in scored if r["weight"] == "critical" and r["status"] != "ok")
-    major = sum(1 for r in scored if r["weight"] == "major" and r["status"] != "ok")
-    return {"metrics": rows, "score": score, "verdict": verdict_of(score, crit), "in_range":
-            sum(1 for r in scored if r["status"] == "ok"), "scored": len(scored), "critical_issues": crit,
-            "major_issues": major}
+    score, crit = _score(scored), _issues(scored, "critical")
+    return {"metrics": rows, "score": score, "verdict": verdict_of(score, crit),
+            "in_range": sum(1 for r in scored if r["status"] == "ok"), "scored": len(scored),
+            "critical_issues": crit, "major_issues": _issues(scored, "major")}
 
 
 # ---------------------------------------------------------------- profile, match, leave-one-out
 
-def load_profile_arg(profile) -> tuple[dict, str]:
-    from hark.listen.profile import load_profile
-
-    if isinstance(profile, dict):
-        return profile, "custom"
-    if profile is None:
-        return load_profile(), "bundled launch films"
-    path = os.fspath(profile)
+def _read_profile(path: str) -> dict:
     if not os.path.isfile(path):
         raise _error(f"profile not found: {path}")
     how = "make one with: hark profile <reference films> -o profile.json"
@@ -244,19 +259,36 @@ def load_profile_arg(profile) -> tuple[dict, str]:
         raise _error(f"{path} is not a profile JSON ({exc}); {how}") from None
     if not isinstance(data, dict) or not isinstance(data.get("metrics"), dict):
         raise _error(f"{path} is not a profile JSON: 'metrics' is missing; {how}")
-    return data, path
+    return data
+
+
+def load_profile_arg(profile) -> tuple[dict, str]:
+    from hark.listen.profile import load_profile
+
+    if isinstance(profile, dict):
+        return profile, "custom"
+    if profile is None:
+        return load_profile(), "bundled launch films"
+    path = os.fspath(profile)
+    return _read_profile(path), path
+
+
+def _same_metrics(fm: dict, film: dict) -> bool:
+    ref = film.get("metrics") or {}
+    pairs = [(fm["metrics"].get(k), ref.get(k), tol) for k, tol in MATCH_TOL.items()]
+    pairs = [(a, b, tol) for a, b, tol in pairs if a is not None and b is not None]
+    return len(pairs) >= 3 and all(abs(a - b) <= tol + 1e-9 for a, b, tol in pairs)
+
+
+def _is_match(fm: dict, film: dict) -> bool:
+    d = film.get("duration")
+    return d is not None and abs(d - fm["duration"]) <= 0.05 and _same_metrics(fm, film)
 
 
 def reference_match(fm: dict, profile: dict) -> str | None:
     """The id of the profile film this file is, by duration and 4 metrics."""
-    for film in profile.get("films") or []:
-        if film.get("duration") is None or abs(film["duration"] - fm["duration"]) > 0.05:
-            continue
-        pairs = [(fm["metrics"].get(k), (film.get("metrics") or {}).get(k), tol) for k, tol in MATCH_TOL.items()]
-        pairs = [(a, b, tol) for a, b, tol in pairs if a is not None and b is not None]
-        if len(pairs) >= 3 and all(abs(a - b) <= tol + 1e-9 for a, b, tol in pairs):
-            return film.get("id") or "a reference"
-    return None
+    film = next((f for f in profile.get("films") or [] if _is_match(fm, f)), None)
+    return None if film is None else (film.get("id") or "a reference")
 
 
 def leave_one_out(profile: dict, match: str) -> dict:
@@ -376,20 +408,19 @@ def body_extremes(f: Film) -> tuple | None:
     return max(0.0, ts[q] - 1.5), ts[q] + 1.5, round(float(Ls[q]), 1), float(ts[k]), round(float(Ls[k]), 1)
 
 
+def _hole_ok(tf: np.ndarray, s: int, e: int, keep: tuple) -> bool:
+    """A closed run of 0.5 s or more between the first sound and the end silence. keep is (hop, first, last, n)."""
+    hop, first, last, n = keep
+    return e < n and (e - s) * hop >= 0.5 and tf[s] > first and tf[e] < last
+
+
 def holes(f: Film) -> list[tuple[float, float]]:
     tf, Lf = f.fast
     first = f.values.get("first_sound_s") or 0.0
     last = f.dur - (f.values.get("end_silence_s") or 0.0)
-    hop = float(tf[1] - tf[0]) if tf.size > 1 else 0.02
-    out, start = [], None
-    for k, below in enumerate(Lf < f.lufs - 30):
-        if below and start is None:
-            start = k
-        elif not below and start is not None:
-            if (k - start) * hop >= 0.5 and tf[start] > first and tf[k] < last:
-                out.append((round(tf[start] - 0.05, 2), round(tf[k - 1] + 0.05, 2)))
-            start = None
-    return out
+    keep = (float(tf[1] - tf[0]) if tf.size > 1 else 0.02, first, last, Lf.size)
+    return [(round(tf[s] - 0.05, 2), round(tf[e - 1] + 0.05, 2)) for s, e in runs(Lf < f.lufs - 30, 1)
+            if _hole_ok(tf, s, e, keep)]
 
 
 def without(times, targets, r: float = 0.1) -> list[float]:
@@ -455,22 +486,28 @@ def _span(a: float, b: float) -> str:
     return f"{fmt_t(a)}-{fmt_t(b)}"
 
 
-def act_shape(f: Film, key: str, v: float, status: str) -> str:
-    ext = body_extremes(f) if status == "high" else None
-    if status == "high" and ext is not None:
-        qa, qb, ql, lt, ll = ext
-        if key == "lra":
-            return _end(f"The level swings {v:.1f} LU: the body is quietest at {_span(qa, qb)} ({ql:.1f} LUFS) and "
-                        f"the loudest 3 s is {_span(max(0, lt - 1.5), lt + 1.5)} ({ll:.1f} LUFS); lift the quiet "
-                        f"parts or compress the music bus 2-4 dB", _rng(f, key))
-        return _end(f"The loudest 3 s at {_span(max(0, lt - 1.5), lt + 1.5)} ({ll:.1f} LUFS) stands {v:.1f} LU "
-                    f"above integrated, so the rest plays quiet next to it; lift the body (quietest at "
-                    f"{_span(qa, qb)}) or tame that peak", _rng(f, key))
+def _shape_high(f: Film, key: str, v: float, ext: tuple) -> str:
+    qa, qb, ql, lt, ll = ext
+    loud = _span(max(0, lt - 1.5), lt + 1.5)
+    if key == "lra":
+        return _end(f"The level swings {v:.1f} LU: the body is quietest at {_span(qa, qb)} ({ql:.1f} LUFS) and "
+                    f"the loudest 3 s is {loud} ({ll:.1f} LUFS); lift the quiet parts or compress the music bus "
+                    f"2-4 dB", _rng(f, key))
+    return _end(f"The loudest 3 s at {loud} ({ll:.1f} LUFS) stands {v:.1f} LU above integrated, so the rest plays "
+                f"quiet next to it; lift the body (quietest at {_span(qa, qb)}) or tame that peak", _rng(f, key))
+
+
+def _shape_flat(f: Film, key: str, v: float) -> str:
     if key == "lra":
         return _end(f"LRA is {v:.1f} LU, so the level never moves; give the film sections (a calmer voice or UI "
                     f"passage, a lift into the reveal) or ease the limiter", _rng(f, key))
     return _end(f"The loudest 3 s is only {v:.1f} LU above integrated, so no moment stands out; let the main "
                 f"reveal or the logo hit rise 2-3 LU above the body, or ease the limiter", _rng(f, key))
+
+
+def act_shape(f: Film, key: str, v: float, status: str) -> str:
+    ext = body_extremes(f) if status == "high" else None
+    return _shape_high(f, key, v, ext) if ext is not None else _shape_flat(f, key, v)
 
 
 def act_first(f: Film, key: str, v: float, status: str) -> str:
@@ -626,67 +663,83 @@ def act_realness(f: Film, key: str, p: float, status: str) -> str | None:
 ACTIONS["p_real"] = act_realness
 
 
+def _action(f: Film, row: dict) -> dict | None:
+    """The action of one out-of-range row (also written into the row), or None."""
+    key, status = row["metric"], row["status"]
+    usable = status in ("low", "high") and (key, status) not in NO_ACTION and key in ACTIONS
+    text = ACTIONS[key](f, key, row["value"], status) if usable else None
+    if not text:
+        return None
+    edge = row["range"][0] if status == "low" else row["range"][1]
+    dist = abs(row["value"] - edge) / max(SPEC[key][1], 0.001)
+    row["actions"] = [ascii_safe(text)]
+    return {"metric": key, "weight": row["weight"], "w": WEIGHT_NUM[row["weight"]], "dist": round(dist, 3),
+            "action": ascii_safe(text)}
+
+
 def build_actions(f: Film, rows: list[dict]) -> list[dict]:
-    w = {"critical": 3, "major": 2, "minor": 1}
-    out = []
-    for row in rows:
-        key, status = row["metric"], row["status"]
-        if status not in ("low", "high") or (key, status) in NO_ACTION or key not in ACTIONS:
-            continue
-        text = ACTIONS[key](f, key, row["value"], status)
-        if not text:
-            continue
-        lo, hi = row["range"]
-        edge = lo if status == "low" else hi
-        dist = abs(row["value"] - edge) / max(SPEC[key][1], 0.001)
-        row["actions"] = [ascii_safe(text)]
-        out.append({"metric": key, "weight": row["weight"], "w": w[row["weight"]], "dist": round(dist, 3),
-                    "action": ascii_safe(text)})
+    out = [a for a in (_action(f, row) for row in rows) if a is not None]
     return sorted(out, key=lambda a: (-a["w"], -a["dist"]))
 
 
 # ---------------------------------------------------------------- tips and not measured
 
-def tips(f: Film, acted: set) -> list[str]:
-    out = []
+def _cut_tip(f: Film, acted: set) -> str | None:
     nos, peaks = f.nosound(), f.peak_only()
-    if nos and f.values.get("cuts_with_sound") is not None and "cuts_with_sound" not in acted:
-        s = (f"{len(nos)} of {len(f.visual)} visual events get no sound at all (no onset within 100 ms, no whoosh "
-             f"or riser peak within 300 ms, no level peak within 150 ms): {_times(nos)}. Give the ones that matter "
-             f"a whoosh into the cut, a hit or a UI click, or keep one as a deliberate stop-down.")
-        if peaks:
-            s += f" {len(peaks)} more are met only by a level peak; check them on the sheet: {_times(peaks, 4)}."
-        out.append(s)
-    p = f.values.get("p_real")
-    if p is not None and "p_real" not in acted and p < real_thresholds(True)["hi"] and quiet_miss(f, p):
-        segs = _segments(f)
-        low = f" (lowest window {min(s['p_real'] for s in segs):.2f})" if segs else ""
-        out.append(f"Realness {fmt_p(p)} is under the {real_thresholds(True)['hi']:.2f} line for real sound, but "
-                   f"nothing synthetic was found{low}; there is no layer to replace on this evidence. Check the "
-                   f"stems with `hark realness`.")
+    if not nos or f.values.get("cuts_with_sound") is None or "cuts_with_sound" in acted:
+        return None
+    s = (f"{len(nos)} of {len(f.visual)} visual events get no sound at all (no onset within 100 ms, no whoosh "
+         f"or riser peak within 300 ms, no level peak within 150 ms): {_times(nos)}. Give the ones that matter "
+         f"a whoosh into the cut, a hit or a UI click, or keep one as a deliberate stop-down.")
+    more = f" {len(peaks)} more are met only by a level peak; check them on the sheet: {_times(peaks, 4)}."
+    return s + (more if peaks else "")
+
+
+def _realness_tip(f: Film, acted: set) -> str | None:
+    p, line = f.values.get("p_real"), real_thresholds(True)["hi"]
+    if p is None or "p_real" in acted or p >= line or not quiet_miss(f, p):
+        return None
+    segs = _segments(f)
+    low = f" (lowest window {min(s['p_real'] for s in segs):.2f})" if segs else ""
+    return (f"Realness {fmt_p(p)} is under the {line:.2f} line for real sound, but nothing synthetic was "
+            f"found{low}; there is no layer to replace on this evidence. Check the stems with `hark realness`.")
+
+
+def _stopdown_tip(f: Film) -> str | None:
+    if f.values.get("stopdowns_min") != 0 or not f.visual:
+        return None
     ev = f.fm.get("events", {})
-    if f.values.get("stopdowns_min") == 0 and f.visual:
-        pairs = list(zip(ev.get("visual") or [], ev.get("visual_strength") or []))
-        big = max(pairs, key=lambda q: q[1])[0] if pairs else f.visual[0]
-        out.append(f"No stop-downs: 4 of 7 references drop the sound out for 0.2-1 s right before a big hit; try one "
-                   f"before the biggest visual change at {fmt_t(big)}.")
+    pairs = list(zip(ev.get("visual") or [], ev.get("visual_strength") or []))
+    big = max(pairs, key=lambda q: q[1])[0] if pairs else f.visual[0]
+    return (f"No stop-downs: 4 of 7 references drop the sound out for 0.2-1 s right before a big hit; try one "
+            f"before the biggest visual change at {fmt_t(big)}.")
+
+
+def _voice_tip(f: Film) -> str | None:
     sp = f.values.get("speech_frac")
-    if sp is not None and sp >= 0.5:
-        out.append(f"Voice in {100 * sp:.0f}% of the film: duck the music 3-6 dB under the voice and keep the SFX "
-                   f"out of 1-4 kHz while it speaks.")
-    return [ascii_safe(t) for t in out]
+    if sp is None or sp < 0.5:
+        return None
+    return (f"Voice in {100 * sp:.0f}% of the film: duck the music 3-6 dB under the voice and keep the SFX "
+            f"out of 1-4 kHz while it speaks.")
+
+
+def tips(f: Film, acted: set) -> list[str]:
+    found = (_cut_tip(f, acted), _realness_tip(f, acted), _stopdown_tip(f), _voice_tip(f))
+    return [ascii_safe(t) for t in found if t]
+
+
+NOT_MEASURED = {"p_real": "realness unavailable", "music_frac": "no AudioSet windows"}
 
 
 def not_measured_reason(f: Film, key: str) -> str:
-    if key == "p_real":
-        return "skipped by --fast" if f.fast_mode else "realness unavailable"
-    if key == "music_frac":
-        return "skipped by --fast" if f.fast_mode else "no AudioSet windows"
+    if key in NOT_MEASURED and f.fast_mode:
+        return "skipped by --fast"
+    reason = NOT_MEASURED.get(key)
     if key == "cuts_with_sound":
-        return "no picture (pass --video film.mp4)" if not f.video else "fewer than 3 visual events"
-    if key in SHAPE_KEYS and f.dur < 10:
-        return "clip under 10 s; the references are 20-93 s films"
-    return "not measurable on this file"
+        reason = "fewer than 3 visual events" if f.video else "no picture (pass --video film.mp4)"
+    if reason is None and key in SHAPE_KEYS and f.dur < 10:
+        reason = "clip under 10 s; the references are 20-93 s films"
+    return reason or "not measurable on this file"
 
 
 def not_measured(f: Film, rows: list[dict]) -> dict:
@@ -793,25 +846,43 @@ def _partial_note(partial: list[str]) -> str | None:
     return None
 
 
-def critique_text(res: dict) -> str:
-    lines = [f"hark critique: {os.path.basename(res['path'])} ({res['duration']:.1f} s) {_vs(res)}", _loo_note(res),
-             f"VERDICT: {verdict_line(res)}", _partial_note(res["partial"])]
+def _fix_lines(res: dict) -> list[str]:
+    lines = []
     if res["actions"]:
         lines.append("FIX FIRST (most important first):")
         lines += [f"  {k}. [{a['weight']}] {a['action']}" for k, a in enumerate(res["actions"], 1)]
     lines += [f"  tip: {t}" for t in res["tips"]]
     if res["not_measured"]:
         lines.append(f"NOT MEASURED: {_nm_text(res['not_measured'])}")
-    lines += [""] + _scorecard_lines(res["metrics"]) + _arc_lines(res.get("arc")) + _info_lines(res["metrics"])
-    real = res.get("realness") or {}
+    return lines
+
+
+def _realness_lines(real: dict | None) -> list[str]:
+    real = real or {}
     if real.get("summary"):
-        lines += ["", f"realness: {real['summary']}"]
-    elif real.get("error"):
-        lines += ["", f"realness: not available ({real['error'][:120]})"]
+        return ["", f"realness: {real['summary']}"]
+    return ["", f"realness: not available ({real['error'][:120]})"] if real.get("error") else []
+
+
+def critique_text(res: dict) -> str:
+    lines = [f"hark critique: {os.path.basename(res['path'])} ({res['duration']:.1f} s) {_vs(res)}", _loo_note(res),
+             f"VERDICT: {verdict_line(res)}", _partial_note(res["partial"]), *_fix_lines(res), "",
+             *_scorecard_lines(res["metrics"]), *_arc_lines(res.get("arc")), *_info_lines(res["metrics"]),
+             *_realness_lines(res.get("realness"))]
     return ascii_safe("\n".join(line for line in lines if line is not None))
 
 
 # ---------------------------------------------------------------- the run
+
+def _check_video(video: str) -> None:
+    from hark.core.audio import probe
+    from hark.timeline.timeline import is_picture
+
+    if not os.path.exists(video):
+        raise _error(f"file not found: {video}")
+    if not is_picture(video, probe(video)):
+        raise _error(f"{video} has no picture (no video stream)")
+
 
 def _check_media(path: str, video: str | None) -> str | None:
     from hark.core.audio import probe
@@ -824,13 +895,8 @@ def _check_media(path: str, video: str | None) -> str | None:
     if problem:
         raise _error(problem)
     if video:
-        if not os.path.exists(video):
-            raise _error(f"file not found: {video}")
-        if not is_picture(video, probe(video)):
-            raise _error(f"{video} has no picture (no video stream)")
-    elif is_picture(path, probe(path)):
-        video = path
-    return video
+        _check_video(video)
+    return video or (path if is_picture(path, probe(path)) else None)
 
 
 def unscored(path: str, video, dur: float, reason: str) -> dict:
@@ -871,24 +937,36 @@ def _events_block(f: Film) -> dict:
             "hits": ev.get("hits") or [], "stopdowns": ev.get("stopdowns") or []}
 
 
-def _result(f: Film, card: dict, label: str, t_start: float) -> dict:
-    actions = build_actions(f, card["metrics"])
-    partial = [n for n, k in (("realness", "p_real"), ("music presence", "music_frac")) if f.values.get(k) is None]
+CARD_KEYS = ("verdict", "score", "in_range", "scored", "critical_issues", "major_issues")
+
+
+def _arc_block(f: Film) -> dict:
     arc = f.profile.get("arc") or {}
-    res = {"path": f.path, "video": f.video, "duration": round(f.dur, 3), "profile_n": f.profile.get("n"),
-           "lossy": bool(f.fm.get("lossy")), "profile": label, **{k: card[k] for k in
-           ("verdict", "score", "in_range", "scored", "critical_issues", "major_issues")},
-           "partial": partial, "actions": [{"weight": a["weight"], "metric": a["metric"], "action": a["action"]}
-                                           for a in actions],
-           "tips": tips(f, {a["metric"] for a in actions}), "metrics": card["metrics"],
-           "reference_match": ({"id": f.profile["loo_of"], "scored_against": f.profile.get("n")}
-                               if f.profile.get("loo_of") else None),
-           "events": _events_block(f), "arc": {"film": f.fm.get("arc"), "refs_median": arc.get("median"),
-                                               "refs_p10": arc.get("p10"), "refs_p90": arc.get("p90")},
-           "realness": f.realness, "not_measured": not_measured(f, card["metrics"])}
+    return {"film": f.fm.get("arc"), "refs_median": arc.get("median"), "refs_p10": arc.get("p10"),
+            "refs_p90": arc.get("p90")}
+
+
+def _match_block(f: Film) -> dict | None:
+    if not f.profile.get("loo_of"):
+        return None
+    return {"id": f.profile["loo_of"], "scored_against": f.profile.get("n")}
+
+
+def _partial(f: Film) -> list[str]:
+    return [n for n, k in (("realness", "p_real"), ("music presence", "music_frac")) if f.values.get(k) is None]
+
+
+def _result(f: Film, card: dict, label: str, t_start: float) -> dict:
     from hark.core.report import clean
 
-    res["seconds"] = round(time.perf_counter() - t_start, 1)
+    actions = build_actions(f, card["metrics"])
+    res = {"path": f.path, "video": f.video, "duration": round(f.dur, 3), "profile_n": f.profile.get("n"),
+           "lossy": bool(f.fm.get("lossy")), "profile": label, **{k: card[k] for k in CARD_KEYS},
+           "partial": _partial(f), "actions": [{k: a[k] for k in ("weight", "metric", "action")} for a in actions],
+           "tips": tips(f, {a["metric"] for a in actions}), "metrics": card["metrics"],
+           "reference_match": _match_block(f), "events": _events_block(f), "arc": _arc_block(f),
+           "realness": f.realness, "not_measured": not_measured(f, card["metrics"]),
+           "seconds": round(time.perf_counter() - t_start, 1)}
     res = clean(res)
     res["summary"] = summary_text(res)
     res["text"] = critique_text(res)
