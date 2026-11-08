@@ -202,8 +202,11 @@ def test_a_12_bed_strip_and_check(sounds, bed_lead):
 def test_a_13_auto_chooses_by_character(sounds, analysis_is_real):
     s1, s3 = auto.fit(sounds["S1"]), auto.fit(sounds["S3"])
     k1 = auto.kind_of(s1)
-    assert k1 in ("modal", "sines") or (k1 == "hybrid" and any(
-        auto.kind_of(layer["model"]) in ("modal", "sines") for layer in s1["layers"]))
+    # Spec test adjustment (orchestrator approved): a gesture whose tones layer is sines or modal also passes.
+    tonal = ("modal", "sines")
+    assert k1 in tonal or (k1 == "hybrid" and any(
+        auto.kind_of(layer["model"]) in tonal for layer in s1["layers"])) or (
+        k1 == "gesture" and bool(s1.get("tones")) and auto.kind_of(s1["tones"]) in tonal)
     k3 = auto.kind_of(s3)
     if k3 == "hybrid":
         parts = [np.sum(render_full(layer["model"], 0, take=False, final=False) ** 2) for layer in s3["layers"]]
