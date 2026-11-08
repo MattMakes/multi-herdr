@@ -59,7 +59,7 @@ def torch_ready(feature: str) -> Any:
 
 
 @contextlib.contextmanager
-def quiet() -> Iterator[None]:
+def hush_loaders() -> Iterator[None]:
     """Quiet transformers during a load: errors only, no progress bars, no mel or future warnings."""
     drop_redirects_note()
     import transformers
@@ -85,17 +85,17 @@ def load_error(spec: hub.Spec, cls: str, exc: BaseException) -> RuntimeError:
     return RuntimeError(f"{head}; {tail}")
 
 
-def from_pretrained(cls: Any, spec: hub.Spec, **extra: Any) -> Any:
+def load_pretrained(cls: Any, spec: hub.Spec, **extra: Any) -> Any:
     """Load a class from the spec's snapshot with local files only."""
     kwargs: dict[str, Any] = {"local_files_only": True, **extra}
     try:
-        with quiet():
+        with hush_loaders():
             return cls.from_pretrained(spec.snapshot, **kwargs)
     except Exception as exc:  # noqa: BLE001 - every load failure becomes one RuntimeError
         raise load_error(spec, cls.__name__, exc) from exc
 
 
-def model_kwargs(spec: hub.Spec) -> dict:
+def load_options(spec: hub.Spec) -> dict:
     """use_safetensors unless the spec's weights are a pickle."""
     return {} if spec.weights in PICKLE_WEIGHTS else {"use_safetensors": True}
 
@@ -140,13 +140,13 @@ def choose_precision(torch: Any, model: Any) -> tuple[Any, str]:
         return model.float(), "fp32"
 
 
-def cast_inputs(torch: Any, inputs: Any, dtype: Any) -> dict:
+def to_model_inputs(torch: Any, inputs: Any, dtype: Any) -> dict:
     """Floating input tensors to the model dtype; other tensors as they are."""
     return {k: (v.to(dtype) if hasattr(v, "is_floating_point") and v.is_floating_point() else v)
             for k, v in dict(inputs).items()}
 
 
-def pooled(out: Any) -> Any:
+def pool_output(out: Any) -> Any:
     """The tensor of a features call: the pooled output when it is an output object."""
     if hasattr(out, "pooler_output") and out.pooler_output is not None:
         return out.pooler_output
@@ -159,7 +159,7 @@ def unit_rows(a: np.ndarray) -> np.ndarray:
     return (a / (np.linalg.norm(a, axis=-1, keepdims=True) + 1e-12)).astype(np.float32)
 
 
-def cache_folder(kind: str, spec: hub.Spec, precision: str) -> str:
+def embed_store(kind: str, spec: hub.Spec, precision: str) -> str:
     """<EMB_CACHE>/<kind>/<cache_name>--<precision>, made."""
     folder = os.path.join(config.EMB_CACHE, kind, f"{spec.cache_name}--{precision}")
     os.makedirs(folder, exist_ok=True)

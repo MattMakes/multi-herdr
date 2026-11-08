@@ -73,12 +73,12 @@ class Clap:
         self.spec = hub.ensure(self.model_id, self.revision)
         self.weights = self.spec.weights
         self.dir = self.spec.snapshot
-        self.processor = _common.from_pretrained(ClapProcessor, self.spec)
-        model = _common.from_pretrained(ClapModel, self.spec, **_common.model_kwargs(self.spec))
+        self.processor = _common.load_pretrained(ClapProcessor, self.spec)
+        model = _common.load_pretrained(ClapModel, self.spec, **_common.load_options(self.spec))
         self.model, self.precision = _common.choose_precision(torch, model.eval())
         self.dtype = torch.bfloat16 if self.precision == "bf16" else torch.float32
         self.logit_scale = self._logit_scale()
-        self.cache_dir = _common.cache_folder("clap", self.spec, self.precision)
+        self.cache_dir = _common.embed_store("clap", self.spec, self.precision)
         self._torch = torch
         self._text: dict[str, np.ndarray] = self._read_text_cache()
 
@@ -114,7 +114,7 @@ class Clap:
     def _embed_text_batch(self, texts: list[str]) -> np.ndarray:
         inputs = self.processor.tokenizer(texts, padding=True, return_tensors="pt")
         with self._torch.inference_mode():
-            out = _common.pooled(self.model.get_text_features(**inputs))
+            out = _common.pool_output(self.model.get_text_features(**inputs))
         return _common.unit_rows(out.float().cpu().numpy())
 
     def embed_text(self, texts: str | Sequence[str], batch: int = TEXT_BATCH) -> np.ndarray:
@@ -139,9 +139,9 @@ class Clap:
         for i in range(0, len(segs), batch):
             feats = self.processor.feature_extractor(segs[i: i + batch], sampling_rate=audio.SR,
                                                      return_tensors="pt")
-            inputs = _common.cast_inputs(self._torch, feats, self.dtype)
+            inputs = _common.to_model_inputs(self._torch, feats, self.dtype)
             with self._torch.inference_mode():
-                out = _common.pooled(self.model.get_audio_features(**inputs))
+                out = _common.pool_output(self.model.get_audio_features(**inputs))
             rows.append(_common.unit_rows(out.float().cpu().numpy()))
         return np.concatenate(rows) if rows else np.zeros((0, DIM), np.float32)
 
