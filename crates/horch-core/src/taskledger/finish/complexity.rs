@@ -351,6 +351,10 @@ fn sources(names: &str) -> Vec<String> {
         .collect()
 }
 
+/// What the analyser prints on stderr, with exit 2, when every file it got
+/// is excluded by its config (tests, for example).
+const NO_SOURCES: &str = "No source files found matching the provided patterns";
+
 /// The analyser and where it runs.
 struct Analyser<'a> {
     node: &'a Path,
@@ -404,14 +408,15 @@ fn violations(found: &[Violation], evidence: &[PathBuf]) -> Outcome {
 }
 
 impl Analyser<'_> {
-    /// Run the analyser on `files` and return the analysis, or the failed
-    /// outcome when it printed nothing. Its JSON goes to `evidence`.
+    /// Run the analyser on `files` and return the analysis, `None` when
+    /// its config excluded every file, or the failed outcome when it
+    /// printed nothing for another reason. Its JSON goes to `evidence`.
     fn run(
         &self,
         files: &[String],
         config: Option<&Path>,
         evidence: &Path,
-    ) -> Result<std::result::Result<String, Outcome>> {
+    ) -> Result<std::result::Result<Option<String>, Outcome>> {
         let mut cmd = self.command(files, config);
         // The report goes to a file, not a pipe: node exits before a piped
         // stdout drains, and a pipe keeps only the first 64 KiB.
@@ -421,6 +426,9 @@ impl Analyser<'_> {
             .with_context(|| format!("running {}", self.cli.display()))?;
         let json = std::fs::read_to_string(evidence)?;
         if json.trim().is_empty() {
+            if String::from_utf8_lossy(&out.stderr).contains(NO_SOURCES) {
+                return Ok(Ok(None));
+            }
             return Ok(Err(Outcome::fail(
                 "no output",
                 Some(evidence.to_path_buf()),
@@ -430,14 +438,15 @@ impl Analyser<'_> {
                 ),
             )));
         }
-        Ok(Ok(json))
+        Ok(Ok(Some(json)))
     }
 
     /// Run the analyser once per nearest config of `files` (T-35): each
     /// file is judged by the config nearest to it, and a file without one
     /// by the defaults. The first report goes to `<seq>-complexity.json`,
     /// the next to `<seq>-complexity-2.json`, and so on. The reports with
-    /// their evidence paths, or the first failed outcome.
+    /// their evidence paths, or the first failed outcome. A group whose
+    /// files the analyser excluded gives no report.
     fn run_groups(
         &self,
         files: &[String],
@@ -452,7 +461,8 @@ impl Analyser<'_> {
             };
             let path = evidence_dir.join(name);
             match self.run(&group, cfg.as_deref(), &path)? {
-                Ok(json) => reports.push((path, json)),
+                Ok(Some(json)) => reports.push((path, json)),
+                Ok(None) => {}
                 Err(failed) => return Ok(Err(failed)),
             }
         }
@@ -515,6 +525,9 @@ pub fn step(cx: &Ctx<'_>) -> Result<Outcome> {
         match analyser.run_groups(&files, &cx.evidence_dir, cx.seq)? {
             Ok(r) => reports = r,
             Err(failed) => return Ok(failed),
+        }
+        if reports.is_empty() && rust.is_empty() {
+            return Ok(Outcome::not_applicable("no analysable source files").judged(tree));
         }
     }
     let diff = git.run(&cx.dir, &["diff", "-U0", &format!("{base}...HEAD"), "--"])?;
@@ -775,6 +788,45 @@ printf ']}\n'
                 ("lib.ts", "default"),
                 ("skills/hark/engine/hark/dsp.py", cfg.as_ref()),
             ]
+        );
+    }
+
+    /// A fake analyser that excludes every file, as the real one does for
+    /// tests: no stdout, the message on stderr, exit 2.
+    const EXCLUDES_ALL: &str =
+        "echo 'No source files found matching the provided patterns.' >&2\nexit 2\n";
+
+    /// A fake analyser that crashes: no stdout, another error, exit 1.
+    const CRASHES: &str = "echo 'TypeError: x is undefined' >&2\nexit 1\n";
+
+    #[test]
+    fn a_group_with_no_analysable_files_gives_no_report_but_a_crash_fails() {
+        let top = tempfile::tempdir().unwrap();
+        // The reports, or the failed outcome.
+        let run = |script: &str| -> (Vec<(PathBuf, String)>, Option<Outcome>) {
+            let cli = top.path().join("cli.js");
+            std::fs::write(&cli, script).unwrap();
+            let analyser = Analyser {
+                node: Path::new("/bin/sh"),
+                cli: &cli,
+                dir: top.path(),
+            };
+            match analyser
+                .run_groups(&["tests/test_a.py".to_string()], top.path(), 2)
+                .unwrap()
+            {
+                Ok(reports) => (reports, None),
+                Err(failed) => (Vec::new(), Some(failed)),
+            }
+        };
+        let (reports, failed) = run(EXCLUDES_ALL);
+        assert_eq!(reports, Vec::new());
+        assert!(failed.is_none(), "{failed:?}");
+        let failed = run(CRASHES).1.expect("a crash fails");
+        assert_eq!(failed.verdict.as_deref(), Some("no output"));
+        assert!(
+            failed.note.contains("TypeError: x is undefined"),
+            "{failed:?}"
         );
     }
 
