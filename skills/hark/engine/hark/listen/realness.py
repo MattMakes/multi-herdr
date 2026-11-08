@@ -15,7 +15,7 @@ import json
 import math
 import os
 import sys
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -337,29 +337,33 @@ def pct(v: float) -> str:
     return f"{p:.1f}%" if 0 < p < 9.5 else f"{int(round(p))}%"
 
 
+FACT_WORDS: dict[str, tuple[Callable[[float], str], Callable[[float], str]]] = {
+    "floor_db": (lambda v: f"a noise floor like a microphone or room, {abs(v):.0f} dB under the peak",
+                 lambda v: "quietest parts very far under the peak: cleaner than a microphone records"),
+    "spec_floor_db": (lambda v: f"a broadband noise floor {abs(v):.0f} dB under the spectral peak",
+                      lambda v: "no measurable noise between the partials"),
+    "line_share": (lambda v: "energy spread over the spectrum", lambda v: f"{pct(v)} of the energy in a few pure lines"),
+    "pitch_wobble": (lambda v: "natural pitch drift", lambda v: "dead-steady pitch with no natural drift"),
+    "env_resid_db": (lambda v: "micro-fluctuations of a recorded source",
+                     lambda v: "a mathematically smooth envelope (exponential or linear ramps)"),
+    "texture_kurt": (lambda v: "a crackly, impulsive high-frequency texture",
+                     lambda v: "Gaussian noise like filtered random numbers"),
+    "quiet_flat": (lambda v: "quiet parts are broadband room or mic noise", lambda v: "quiet parts are tonal tails"),
+    "tonal_frames": (lambda v: "few pure-tone frames", lambda v: f"{pct(v)} of frames ruled by one pure tone"),
+    "log_flatness": (lambda v: "a dense, noise-rich spectrum", lambda v: "a few pure lines over near-silence"),
+    "peakiness_db": (lambda v: "no dominant spectral line", lambda v: f"one line {v:.0f} dB above the median bin"),
+    "bandwidth_khz": (lambda v: f"content reaches {v:.1f} kHz", lambda v: f"content reaches {v:.1f} kHz"),
+    "crest_db": (lambda v: f"crest {v:.0f} dB: sharp natural transients",
+                 lambda v: f"crest only {v:.0f} dB: a steady, oscillator-like level"),
+}
+
+
 def fact_phrase(feature: str, side: str, v: float) -> str:
     """A fired fact in words."""
-    real = side == "real"
-    words = {
-        "floor_db": (f"a noise floor like a microphone or room, {abs(v):.0f} dB under the peak" if real else
-                     "quietest parts very far under the peak: cleaner than a microphone records"),
-        "spec_floor_db": (f"a broadband noise floor {abs(v):.0f} dB under the spectral peak" if real else
-                          "no measurable noise between the partials"),
-        "line_share": "energy spread over the spectrum" if real else f"{pct(v)} of the energy in a few pure lines",
-        "pitch_wobble": "natural pitch drift" if real else "dead-steady pitch with no natural drift",
-        "env_resid_db": ("micro-fluctuations of a recorded source" if real else
-                         "a mathematically smooth envelope (exponential or linear ramps)"),
-        "texture_kurt": ("a crackly, impulsive high-frequency texture" if real else
-                         "Gaussian noise like filtered random numbers"),
-        "quiet_flat": ("quiet parts are broadband room or mic noise" if real else "quiet parts are tonal tails"),
-        "tonal_frames": "few pure-tone frames" if real else f"{pct(v)} of frames ruled by one pure tone",
-        "log_flatness": "a dense, noise-rich spectrum" if real else "a few pure lines over near-silence",
-        "peakiness_db": "no dominant spectral line" if real else f"one line {v:.0f} dB above the median bin",
-        "bandwidth_khz": f"content reaches {v:.1f} kHz",
-        "crest_db": (f"crest {v:.0f} dB: sharp natural transients" if real else
-                     f"crest only {v:.0f} dB: a steady, oscillator-like level"),
-    }
-    return words.get(feature, f"{feature} {v:.3g}")
+    pair = FACT_WORDS.get(feature)
+    if pair is None:
+        return f"{feature} {v:.3g}"
+    return pair[0 if side == "real" else 1](v)
 
 
 def fired_facts(model: Mapping, feats: Mapping[str, float]) -> list[dict]:
@@ -447,19 +451,24 @@ def _name(path: str, start: float | None, end: float | None, dur: float) -> str:
     return f"{base} [{report.fmt_t(start or 0.0)}-{report.fmt_t(end if end is not None else dur)}]"
 
 
-def check_range(path: str, start: float | None, end: float | None) -> float | None:
-    """The realness range checks (R10); returns the probed duration when known."""
-    if start is not None and start < 0:
-        raise ValueError("start must be >= 0 s")
-    if end is not None and end <= (start or 0.0):
-        raise ValueError("end must be greater than start")
+def _probed_duration(path: str) -> float | None:
     try:
-        dur = audio.duration(path)
+        return audio.duration(path)
     except audio.AudioError:
         raise
     except Exception:
         return None
-    if start is not None and start >= dur:
+
+
+def check_range(path: str, start: float | None, end: float | None) -> float | None:
+    """The realness range checks (R10); returns the probed duration when known."""
+    s = 0.0 if start is None else start
+    if s < 0:
+        raise ValueError("start must be >= 0 s")
+    if end is not None and end <= s:
+        raise ValueError("end must be greater than start")
+    dur = _probed_duration(path)
+    if start is not None and dur is not None and start >= dur:
         raise ValueError(f"start {start:g} s is at or past the end of {path} ({dur:.3f} s long)")
     return dur
 
@@ -494,27 +503,37 @@ def _scored(model: dict, clips: list, ast: bool) -> list[dict]:
     return out
 
 
-def _evidence(model: dict, rep: dict, long_note: str | None, gain: float, x_stats: tuple[float, float]) -> list[str]:
-    side = "real" if rep["p"] >= LEAN else "synth"
-    ev = [long_note] if long_note else []
-    ev.append(clap_line(model, rep))
+def _side(p: float) -> str:
+    return "real" if p >= LEAN else "synth"
+
+
+def _fact_lines(rep: dict) -> tuple[list[str], list[str]]:
+    side = _side(rep["p"])
     mine = [f["text"] for f in rep["facts"] if f["side"] == side][:3]
     other = [f["text"] for f in rep["facts"] if f["side"] != side][:1]
-    ev += mine + [f"but: {t}" for t in other]
-    sil = silence_line(model, rep["feats"]["silence_frac"])
-    if sil:
-        ev.append(sil)
-    if rep.get("ast"):
-        ev.append(rep["ast"])
-    if gain >= GAIN_LINE_DB:
-        ev.append(f"quiet source (RMS {x_stats[0]:.1f} dBFS, peak {x_stats[1]:.1f} dBFS) lifted by {gain:.1f} dB "
-                  "before judging")
+    return mine, [f"but: {t}" for t in other]
+
+
+def _gain_line(gain: float, x_stats: tuple[float, float]) -> str | None:
+    if gain < GAIN_LINE_DB:
+        return None
+    return (f"quiet source (RMS {x_stats[0]:.1f} dBFS, peak {x_stats[1]:.1f} dBFS) lifted by {gain:.1f} dB "
+            "before judging")
+
+
+def _fusion_line(model: dict, rep: dict, any_fact: bool) -> str | None:
     w = model["fusion"]["coef"]
     if float(w[1]) != 0:
-        ev.append(f"fusion: CLAP x {w[0]:.2f}, signal x {w[1]:.2f}; signal head score {rep['signal']:+.1f}")
-    elif mine or other or sil:
-        ev.append("the measurements are context, not votes: the signal head's fusion weight is 0")
-    return ev
+        return f"fusion: CLAP x {w[0]:.2f}, signal x {w[1]:.2f}; signal head score {rep['signal']:+.1f}"
+    return "the measurements are context, not votes: the signal head's fusion weight is 0" if any_fact else None
+
+
+def _evidence(model: dict, rep: dict, long_note: str | None, gain: float, x_stats: tuple[float, float]) -> list[str]:
+    mine, other = _fact_lines(rep)
+    sil = silence_line(model, rep["feats"]["silence_frac"])
+    lines = [long_note, clap_line(model, rep), *mine, *other, sil, rep.get("ast"), _gain_line(gain, x_stats),
+             _fusion_line(model, rep, bool(mine or other or sil))]
+    return [line for line in lines if line]
 
 
 def _why_short(rep: dict) -> str:
@@ -578,13 +597,17 @@ def _span_text(spans: Sequence[tuple[float, float]]) -> str:
     return text + (", ..." if len(spans) > 6 else "")
 
 
+def _lowest_text(segs: list[dict]) -> str:
+    pmin = min(g["p_real"] for g in segs if g["p_real"] is not None)
+    return (f" No window leans synthesized (lowest window p_real {pmin:.2f}); a quiet code-made layer can "
+            "still sit below a louder real mix.")
+
+
 def _long_tail(model: dict, segs: list[dict]) -> str:
     lo = thresholds_of(model)["lo"]
     lean = [g for g in segs if g["p_real"] is not None and g["p_real"] < LEAN]
     if not lean:
-        pmin = min(g["p_real"] for g in segs if g["p_real"] is not None)
-        return (f" No window leans synthesized (lowest window p_real {pmin:.2f}); a quiet code-made layer can "
-                "still sit below a louder real mix.")
+        return _lowest_text(segs)
     low = [g for g in lean if g["p_real"] <= lo]
     text = f" Windows that lean synthesized: {_span_text(_merged_spans(lean))}."
     if low:
@@ -605,45 +628,70 @@ def _long_fields(model: dict, clips: list, scored: list, s: float, dur: float) -
     return fields, why, _long_tail(model, segs)
 
 
-def _judge(path: str, start: float | None, end: float | None, ast: bool, model: dict) -> dict:
-    x = np.asarray(audio.load(path, mono=True, start=start, end=end), np.float64)
-    dur = len(x) / SR
-    s = start or 0.0
-    name = _name(path, start, end, dur)
+def _base(path: str, start: float | None, end: float | None, dur: float) -> dict:
     base: dict[str, Any] = {"path": path, "duration": round(dur, 3)}
     if start is not None or end is not None:
+        s = start or 0.0
         base["range"] = [round(s, 3), round(s + dur, 3)]
+    return base
+
+
+def _lifted(x: np.ndarray, base: dict) -> tuple[np.ndarray, float, tuple[float, float]]:
+    """The quiet-source lift: (lifted audio, gain dB, (RMS, peak) before the lift)."""
     gain = lift_gain(x)
     stats = (rms_db(x), float(20 * np.log10(max(float(np.max(np.abs(x))) if x.size else 0, 1e-10))))
     if gain > 0:
-        x = x * 10 ** (gain / 20)
         base["gain_db"] = round(gain, 1)
-    clips = clips_of(x)
-    scored = _scored(model, clips, ast)
-    if not scored:
-        return _silent_result(path, name, x, base)
+        return x * 10 ** (gain / 20), gain, stats
+    return x, gain, stats
+
+
+def _long_result(cx: dict, p: float, rep: dict, th: dict) -> dict:
+    s, dur, scored = cx["s"], cx["dur"], cx["scored"]
+    fields, why, tail = _long_fields(cx["model"], cx["clips"], scored, s, dur)
+    kind = "real" if p >= LEAN else "synthesized"
+    note = (f"evidence from the most {kind}-sounding window {report.fmt_t(s + rep['t0'])}-"
+            f"{report.fmt_t(min(s + rep['t1'], s + dur))} (p_real {rep['p']:.2f})")
+    summary = (f"{cx['name']}: {verdict_of(p, th)} (p_real {p_text(p, th)}, mean of {len(scored)} 4 s windows; file "
+               f"thresholds lo {th['lo']:.2f} / hi {th['hi']:.2f}, weak calibration): {why}." + tail)
+    return {"why": why, "evidence": _evidence(cx["model"], rep, note, cx["gain"], cx["stats"]), **fields,
+            "summary": summary}
+
+
+def _short_result(cx: dict, p: float, rep: dict, th: dict) -> dict:
+    why = _why_short(rep)
+    summary = (f"{cx['name']}: {verdict_of(p, th)} (p_real {p_text(p, th)}; clip thresholds lo {th['lo']:.2f} / "
+               f"hi {th['hi']:.2f}): {why}.")
+    return {"why": why, "evidence": _evidence(cx["model"], rep, None, cx["gain"], cx["stats"]), "summary": summary}
+
+
+def _verdict_result(cx: dict, base: dict) -> dict:
+    scored, model = cx["scored"], cx["model"]
     p = float(np.mean([c["p"] for c in scored]))
-    long = len(clips) > 1
+    long = len(cx["clips"]) > 1
     th = thresholds_of(model, file=long)
     rep = max(scored, key=lambda c: c["p"]) if p >= LEAN else min(scored, key=lambda c: c["p"])
-    verdict = verdict_of(p, th)
-    r = {**base, "p_real": round(p, 3), "verdict": verdict}
-    if long:
-        fields, why, tail = _long_fields(model, clips, scored, s, dur)
-        kind = "real" if p >= LEAN else "synthesized"
-        note = (f"evidence from the most {kind}-sounding window {report.fmt_t(s + rep['t0'])}-"
-                f"{report.fmt_t(min(s + rep['t1'], s + dur))} (p_real {rep['p']:.2f})")
-        r.update(why=why, evidence=_evidence(model, rep, note, gain, stats), **fields)
-        r["summary"] = (f"{name}: {verdict} (p_real {p_text(p, th)}, mean of {len(scored)} 4 s windows; file thresholds "
-                        f"lo {th['lo']:.2f} / hi {th['hi']:.2f}, weak calibration): {why}." + tail)
-    else:
-        why = _why_short(rep)
-        r.update(why=why, evidence=_evidence(model, rep, None, gain, stats))
-        r["summary"] = f"{name}: {verdict} (p_real {p_text(p, th)}; clip thresholds lo {th['lo']:.2f} / hi {th['hi']:.2f}): {why}."
+    r = {**base, "p_real": round(p, 3), "verdict": verdict_of(p, th),
+         **(_long_result if long else _short_result)(cx, p, rep, th)}
     if is_zero_shot(model):
         r["summary"] += " (zero-shot fallback model)"
     r["note"] = _note(model, long)
     return r
+
+
+def _judge(path: str, start: float | None, end: float | None, ast: bool, model: dict) -> dict:
+    x = np.asarray(audio.load(path, mono=True, start=start, end=end), np.float64)
+    dur = len(x) / SR
+    name = _name(path, start, end, dur)
+    base = _base(path, start, end, dur)
+    x, gain, stats = _lifted(x, base)
+    clips = clips_of(x)
+    scored = _scored(model, clips, ast)
+    if not scored:
+        return _silent_result(path, name, x, base)
+    cx = {"model": model, "clips": clips, "scored": scored, "s": start or 0.0, "dur": dur, "name": name,
+          "gain": gain, "stats": stats}
+    return _verdict_result(cx, base)
 
 
 def realness(path: str, start: float | None = None, end: float | None = None, ast: bool = False,
@@ -715,14 +763,18 @@ def many_summary(n: int, counts: Mapping[str, int], start: float | None, end: fl
 # ================================================================ text output
 
 
+def _segment_line(g: dict) -> str:
+    p = "-" if g["p_real"] is None else f"{g['p_real']:.2f}"
+    leans = g["verdict"] == UNCERTAIN and g["p_real"] is not None and g["p_real"] < LEAN
+    why = f" ({g['why']})" if g.get("why") and g["verdict"] != REAL else ""
+    return (f"  {report.fmt_t(g['start'])}-{report.fmt_t(g['end'])}  {p}  {g['verdict']}"
+            f"{', leans synthesized' if leans else ''}{why}")
+
+
 def single_text(r: dict) -> str:
     """Text output of one file."""
     lines = [r["summary"]] + [f"  - {e}" for e in r.get("evidence", [])]
-    for g in r.get("segments", []):
-        p = "-" if g["p_real"] is None else f"{g['p_real']:.2f}"
-        lean = ", leans synthesized" if g["verdict"] == UNCERTAIN and g["p_real"] is not None and g["p_real"] < LEAN else ""
-        why = f" ({g['why']})" if g.get("why") and g["verdict"] != REAL else ""
-        lines.append(f"  {report.fmt_t(g['start'])}-{report.fmt_t(g['end'])}  {p}  {g['verdict']}{lean}{why}")
+    lines += [_segment_line(g) for g in r.get("segments", [])]
     if r.get("note"):
         lines.append(f"  note: {r['note']}")
     return "\n".join(lines)
@@ -751,6 +803,17 @@ def _bad_paths(paths: Sequence[str]) -> list[tuple[str, str]]:
     return [(p, r) for p in paths for r in [bad_path_reason(p)] if r]
 
 
+def _judge_paths(args: argparse.Namespace) -> int:
+    files = audio.list_media(list(args.paths))
+    if len(files) == 1:
+        r = realness(files[0], start=args.start, end=args.end, ast=args.ast)
+        report.emit(r, args, text=single_text(r))
+        return 0
+    res = realness_many(args.paths, ast=args.ast, start=args.start, end=args.end)
+    report.emit(res, args, text=table_text(res, load_model(resolve=False)))
+    return 1 if res["counts"][ERROR] else 0
+
+
 def _run(args: argparse.Namespace) -> int | None:
     import hark.models
 
@@ -760,18 +823,11 @@ def _run(args: argparse.Namespace) -> int | None:
     if bad:
         return 1
     hark.models.require_ml("realness")
-    files = audio.list_media(list(args.paths))
     try:
-        if len(files) == 1:
-            r = realness(files[0], start=args.start, end=args.end, ast=args.ast)
-            report.emit(r, args, text=single_text(r))
-            return 0
-        res = realness_many(args.paths, ast=args.ast, start=args.start, end=args.end)
+        return _judge_paths(args)
     except (ValueError, audio.AudioError, ModelMissing) as exc:
         report.error_line("realness", str(exc))
         return 1
-    report.emit(res, args, text=table_text(res, load_model(resolve=False)))
-    return 1 if res["counts"][ERROR] else 0
 
 
 def add_cli(sub: argparse._SubParsersAction) -> None:
