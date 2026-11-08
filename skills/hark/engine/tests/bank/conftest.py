@@ -199,174 +199,176 @@ PITCH = {"notify": ("f0", 220.0, 3200.0), "pluck": ("f0", 130.0, 2100.0)}
 NAMES = ("C", "C#", "D", "Eb", "E", "F", "F#", "G", "Ab", "A", "Bb", "B")
 
 
-def _knobs() -> dict:
-    class KnobError(ValueError):
-        pass
+class KnobError(ValueError):
+    pass
 
-    def midi(p):
-        m = re.fullmatch(r"([A-Ga-g])([#sb]{0,2})(-?\d+)", str(p).strip())
+def midi(p):
+    m = re.fullmatch(r"([A-Ga-g])([#sb]{0,2})(-?\d+)", str(p).strip())
+    if not m:
+        return None
+    pc = {"C": 0, "D": 2, "E": 4, "F": 5, "G": 7, "A": 9, "B": 11}[m.group(1).upper()]
+    acc = m.group(2)
+    return 12 * (int(m.group(3)) + 1) + pc + acc.count("#") + acc.count("s") - acc.count("b")
+
+def hz(p):
+    if isinstance(p, bool):
+        raise KnobError("a pitch must be a note or Hz")
+    if isinstance(p, (int, float)):
+        f = float(p)
+    elif midi(p) is not None:
+        f = 440.0 * 2 ** ((midi(p) - 69) / 12)
+    else:
+        m = re.fullmatch(r"\s*(\d+(?:\.\d+)?)\s*(hz)?\s*", str(p), re.I)
         if not m:
-            return None
-        pc = {"C": 0, "D": 2, "E": 4, "F": 5, "G": 7, "A": 9, "B": 11}[m.group(1).upper()]
-        acc = m.group(2)
-        return 12 * (int(m.group(3)) + 1) + pc + acc.count("#") + acc.count("s") - acc.count("b")
+            raise KnobError(f"pitch {p!r}: give a note (E5, Fs4) or Hz (440, 440hz)")
+        f = float(m.group(1))
+    if not 8 <= f <= 20000:
+        raise KnobError(f"pitch {p!r} is outside 8 Hz - 20 kHz")
+    return f
 
-    def hz(p):
-        if isinstance(p, bool):
-            raise KnobError("a pitch must be a note or Hz")
-        if isinstance(p, (int, float)):
-            f = float(p)
-        elif midi(p) is not None:
-            f = 440.0 * 2 ** ((midi(p) - 69) / 12)
-        else:
-            m = re.fullmatch(r"\s*(\d+(?:\.\d+)?)\s*(hz)?\s*", str(p), re.I)
-            if not m:
-                raise KnobError(f"pitch {p!r}: give a note (E5, Fs4) or Hz (440, 440hz)")
-            f = float(m.group(1))
-        if not 8 <= f <= 20000:
-            raise KnobError(f"pitch {p!r} is outside 8 Hz - 20 kHz")
-        return f
+def note(f):
+    n = 69 + 12 * math.log2(f / 440)
+    k = round(n)
+    cents = round(100 * (n - k))
+    name = f"{NAMES[k % 12]}{k // 12 - 1}"
+    return name + (f" {cents:+d}c" if abs(cents) >= 5 else "")
 
-    def note(f):
-        n = 69 + 12 * math.log2(f / 440)
-        k = round(n)
-        cents = round(100 * (n - k))
-        name = f"{NAMES[k % 12]}{k // 12 - 1}"
-        return name + (f" {cents:+d}c" if abs(cents) >= 5 else "")
+def label(p):
+    f = hz(p)
+    n = 69 + 12 * math.log2(f / 440)
+    if abs(n - round(n)) < 0.05:
+        return note(440 * 2 ** ((round(n) - 69) / 12)).replace("#", "s")
+    return f"{round(f, 2):g}hz"
 
-    def label(p):
-        f = hz(p)
-        n = 69 + 12 * math.log2(f / 440)
-        if abs(n - round(n)) < 0.05:
-            return note(440 * 2 ** ((round(n) - 69) / 12)).replace("#", "s")
-        return f"{round(f, 2):g}hz"
+def describe(entry):
+    cat = entry.get("category")
+    spec = PITCH.get(cat)
+    pitch = None if spec is None else {"param": spec[0], "native_hz": entry["params"][spec[0]],
+                                       "note": note(entry["params"][spec[0]]), "range_hz": [spec[1], spec[2]]}
+    out = {"dur": "shape" if cat in WHOOSH else "trim", "apex": cat in WHOOSH, "pitch": pitch,
+           "tonal": {"decay": None, "onset": None, "bright": None, "width": None}}
+    if pitch is None:
+        out["why"] = "a noise sound has no pitch" if cat in NOISE else "this category has no pitch parameter"
+    return out
 
-    def describe(entry):
-        cat = entry.get("category")
+def validate(entry, dur=None, apex=None, pitch=None, **_):
+    sid, cat = entry.get("id"), entry.get("category")
+    if apex is not None and cat not in WHOOSH:
+        raise KnobError(f"{sid}: apex works only on the whoosh family; use dur and align on end")
+    if dur is not None and not 0.01 <= dur <= (4.4 if cat in WHOOSH else 60):
+        raise KnobError(f"{sid}: dur {dur} is out of range")
+    if apex is not None and not (0.01 <= apex <= 4.3 and (dur is None or apex < dur - 0.02)):
+        raise KnobError(f"{sid}: apex {apex} is out of range")
+    if pitch is not None:
+        f = hz(pitch)
+        if cat in NOISE:
+            raise KnobError(f"{sid}: a noise sound has no pitch")
         spec = PITCH.get(cat)
-        pitch = None if spec is None else {"param": spec[0], "native_hz": entry["params"][spec[0]],
-                                           "note": note(entry["params"][spec[0]]), "range_hz": [spec[1], spec[2]]}
-        out = {"dur": "shape" if cat in WHOOSH else "trim", "apex": cat in WHOOSH, "pitch": pitch,
-               "tonal": {"decay": None, "onset": None, "bright": None, "width": None}}
-        if pitch is None:
-            out["why"] = "a noise sound has no pitch" if cat in NOISE else "this category has no pitch parameter"
-        return out
+        if spec is None:
+            raise KnobError(f"{sid}: this category has no pitch parameter")
+        if not spec[1] <= f <= spec[2]:
+            raise KnobError(f"{sid}: pitch {note(f)} ({f:.1f} Hz) is outside {spec[1]:g}-{spec[2]:g} Hz")
 
-    def validate(entry, dur=None, apex=None, pitch=None, **_):
-        sid, cat = entry.get("id"), entry.get("category")
-        if apex is not None and cat not in WHOOSH:
-            raise KnobError(f"{sid}: apex works only on the whoosh family; use dur and align on end")
-        if dur is not None and not 0.01 <= dur <= (4.4 if cat in WHOOSH else 60):
-            raise KnobError(f"{sid}: dur {dur} is out of range")
-        if apex is not None and not (0.01 <= apex <= 4.3 and (dur is None or apex < dur - 0.02)):
-            raise KnobError(f"{sid}: apex {apex} is out of range")
-        if pitch is not None:
-            f = hz(pitch)
-            if cat in NOISE:
-                raise KnobError(f"{sid}: a noise sound has no pitch")
-            spec = PITCH.get(cat)
-            if spec is None:
-                raise KnobError(f"{sid}: this category has no pitch parameter")
-            if not spec[1] <= f <= spec[2]:
-                raise KnobError(f"{sid}: pitch {note(f)} ({f:.1f} Hz) is outside {spec[1]:g}-{spec[2]:g} Hz")
+def fit_length(x, dur, keep_s=None):
+    n = int(round(dur * SR))
+    x = np.asarray(x, dtype=np.float64)
+    if len(x) <= n:
+        pad = np.zeros((n - len(x),) + x.shape[1:])
+        return np.concatenate([x, pad]), f"pad {round((n - len(x)) / 48)} ms"
+    y = x[:n].copy()
+    k = min(n, max(480, min(7200, n // 4)))
+    fade = 0.5 * (1 + np.cos(np.linspace(0, np.pi, k)))
+    y[-k:] *= fade.reshape(-1, *([1] * (y.ndim - 1)))
+    return y, f"trim {round((len(x) - n) / 48)} ms"
 
-    def fit_length(x, dur, keep_s=None):
-        n = int(round(dur * SR))
-        x = np.asarray(x, dtype=np.float64)
-        if len(x) <= n:
-            pad = np.zeros((n - len(x),) + x.shape[1:])
-            return np.concatenate([x, pad]), f"pad {round((n - len(x)) / 48)} ms"
-        y = x[:n].copy()
-        k = min(n, max(480, min(7200, n // 4)))
-        fade = 0.5 * (1 + np.cos(np.linspace(0, np.pi, k)))
-        y[-k:] *= fade.reshape(-1, *([1] * (y.ndim - 1)))
-        return y, f"trim {round((len(x) - n) / 48)} ms"
+def place_apex(x, pk, apex):
+    shift = int(round((apex - pk) * 1000)) * 48
+    x = np.asarray(x, dtype=np.float64)
+    if shift >= 0:
+        return np.concatenate([np.zeros((shift,) + x.shape[1:]), x]), f"head pad {shift // 48} ms"
+    return x[-shift:], f"head trim {-shift // 48} ms"
 
-    def place_apex(x, pk, apex):
-        shift = int(round((apex - pk) * 1000)) * 48
-        x = np.asarray(x, dtype=np.float64)
-        if shift >= 0:
-            return np.concatenate([np.zeros((shift,) + x.shape[1:]), x]), f"head pad {shift // 48} ms"
-        return x[-shift:], f"head trim {-shift // 48} ms"
+def apply(entry, run, dur=None, apex=None, pitch=None, **_):
+    from hark.forge.bank import bank
 
-    def apply(entry, run, dur=None, apex=None, pitch=None, **_):
-        from hark.forge.bank import bank
+    validate(entry, dur=dur, apex=apex, pitch=pitch)
+    edits, edit = {}, {}
+    if pitch is not None:
+        param = PITCH[entry["category"]][0]
+        edit[param] = hz(pitch)
+    x = run(edit) if edit else run()
+    if apex is not None:
+        x, fit = place_apex(x, bank.times(x)["peak_s"], apex)
+        edits["apex"] = {"target": apex, "fit": fit}
+    if dur is not None:
+        x, fit = fit_length(x, dur)
+        edits["dur"] = {"target": dur, "method": describe(entry)["dur"], "renders": 1, "fit": fit}
+    if apex is not None:
+        m = bank.times(x)["peak_s"]
+        edits["apex"].update(measured=m, err_ms=round(1000 * (m - apex), 1), ok=abs(m - apex) <= 0.005)
+    if pitch is not None:
+        f = hz(pitch)
+        got = bank.estimate_pitch(x, near_hz=f, span_st=2.0)
+        cents = None if got is None else round(1200 * math.log2(got / f))
+        edits["pitch"] = {"target_hz": f, "note": note(f), "param": param, "params": edit, "measured_hz": got,
+                          "cents_off": cents, "ok": cents is not None and abs(cents) <= 50}
+    return x, edits
 
-        validate(entry, dur=dur, apex=apex, pitch=pitch)
-        edits, edit = {}, {}
-        if pitch is not None:
-            param = PITCH[entry["category"]][0]
-            edit[param] = hz(pitch)
-        x = run(edit) if edit else run()
-        if apex is not None:
-            x, fit = place_apex(x, bank.times(x)["peak_s"], apex)
-            edits["apex"] = {"target": apex, "fit": fit}
-        if dur is not None:
-            x, fit = fit_length(x, dur)
-            edits["dur"] = {"target": dur, "method": describe(entry)["dur"], "renders": 1, "fit": fit}
-        if apex is not None:
-            m = bank.times(x)["peak_s"]
-            edits["apex"].update(measured=m, err_ms=round(1000 * (m - apex), 1), ok=abs(m - apex) <= 0.005)
-        if pitch is not None:
-            f = hz(pitch)
-            got = bank.estimate_pitch(x, near_hz=f, span_st=2.0)
-            cents = None if got is None else round(1200 * math.log2(got / f))
-            edits["pitch"] = {"target_hz": f, "note": note(f), "param": param, "params": edit, "measured_hz": got,
-                              "cents_off": cents, "ok": cents is not None and abs(cents) <= 50}
-        return x, edits
+def pitch_warning(edits):
+    p = (edits or {}).get("pitch") or {}
+    if p.get("ok") is not False:
+        return None
+    if p.get("measured_hz") is None:
+        return {"code": "pitch_off", "msg": f"pitch {p.get('note')} missed: the render has no clear partial"}
+    return {"code": "pitch_off", "msg": f"pitch {p.get('note')} missed: measured {p['measured_hz']:.1f} Hz"}
 
-    def pitch_warning(edits):
-        p = (edits or {}).get("pitch") or {}
-        if p.get("ok") is not False:
-            return None
-        if p.get("measured_hz") is None:
-            return {"code": "pitch_off", "msg": f"pitch {p.get('note')} missed: the render has no clear partial"}
-        return {"code": "pitch_off", "msg": f"pitch {p.get('note')} missed: measured {p['measured_hz']:.1f} Hz"}
 
+def _knobs() -> dict:
     return {"KnobError": KnobError, "midi": midi, "hz": hz, "note": note, "label": label, "describe": describe,
             "validate": validate, "apply": apply, "fit_length": fit_length, "place_apex": place_apex,
             "pitch_warning": pitch_warning}
 
 
+class NotReproducible(ValueError):
+    pass
+
+def resolve(b):
+    from hark.forge import recipes
+
+    return getattr(recipes.load(b["recipe"]), b.get("fn", "render"))
+
+def raw(b):
+    from hark.forge.engine import dsp
+
+    x = np.asarray(resolve(b)(dict(b["params"]), dsp.rng(b.get("seed", 0))), dtype=np.float64)
+    return None if not x.size or float(np.max(np.abs(x))) < 1e-7 else x
+
+def level(x, b):
+    gain = b.get("gain", 10 ** (b.get("gain_db", 0.0) / 20))
+    return (x * (10 ** (b.get("peak_db", -1.0) / 20) / np.max(np.abs(x))) * gain).astype(np.float32)
+
+def rerender(b):
+    x = raw(b)
+    if x is None:
+        raise NotReproducible("the render failed")
+    return level(x, b)
+
+def compare(x, y):
+    x, y = np.asarray(x), np.asarray(y)
+    if x.ndim == 1:
+        x = x[:, None]
+    if y.ndim == 1:
+        y = y[:, None]
+    return float(np.max(np.abs(x - y))) if x.shape == y.shape else math.inf
+
+def block(report, pick):
+    return {**pick["render"]}
+
+def render_ref(fn):
+    return None
+
+
 def _schema() -> dict:
-    class NotReproducible(ValueError):
-        pass
-
-    def resolve(b):
-        from hark.forge import recipes
-
-        return getattr(recipes.load(b["recipe"]), b.get("fn", "render"))
-
-    def raw(b):
-        from hark.forge.engine import dsp
-
-        x = np.asarray(resolve(b)(dict(b["params"]), dsp.rng(b.get("seed", 0))), dtype=np.float64)
-        return None if not x.size or float(np.max(np.abs(x))) < 1e-7 else x
-
-    def level(x, b):
-        gain = b.get("gain", 10 ** (b.get("gain_db", 0.0) / 20))
-        return (x * (10 ** (b.get("peak_db", -1.0) / 20) / np.max(np.abs(x))) * gain).astype(np.float32)
-
-    def rerender(b):
-        x = raw(b)
-        if x is None:
-            raise NotReproducible("the render failed")
-        return level(x, b)
-
-    def compare(x, y):
-        x, y = np.asarray(x), np.asarray(y)
-        if x.ndim == 1:
-            x = x[:, None]
-        if y.ndim == 1:
-            y = y[:, None]
-        return float(np.max(np.abs(x - y))) if x.shape == y.shape else math.inf
-
-    def block(report, pick):
-        return {**pick["render"]}
-
-    def render_ref(fn):
-        return None
-
     return {"NotReproducible": NotReproducible, "resolve": resolve, "raw": raw, "level": level,
             "rerender": rerender, "compare": compare, "block": block, "render_ref": render_ref, "TOL": 1e-6}
 

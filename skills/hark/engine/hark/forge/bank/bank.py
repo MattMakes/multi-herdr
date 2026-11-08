@@ -25,7 +25,7 @@ from hark.forge.bank._measures import (  # noqa: F401  (public re-exports)
     SR, compare_fp, estimate_pitch, fingerprint, measure, meta_of, times,
 )
 
-__all__ = [
+__all__ = [  # noqa: F822  (VERSION comes from the module __getattr__)
     "VERSION", "BankError", "ids", "get", "list", "list_sounds", "category_info", "renderer", "render",
     "render_final", "level", "check_sr", "normalize", "add_warning", "times", "measure", "meta_of",
     "fingerprint", "compare_fp", "estimate_pitch", "build", "build_pluck", "build_forge04", "build_derive",
