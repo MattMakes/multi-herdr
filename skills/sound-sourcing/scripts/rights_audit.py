@@ -35,22 +35,22 @@ MAX_FETCH = 200 * 1024 * 1024
 
 
 def say(*parts, file=None):
-    text = " ".join(str(p) for p in parts)
+    text = " ".join(str(pv) for pv in parts)
     print(text.encode("ascii", "replace").decode("ascii"), file=file or sys.stdout)
 
 
 # ------------------------------------------------------------------ file checks
 
-def _ffprobe_json(path: str):
+def _ffprobe_json(fpath: str):
     """(parsed ffprobe JSON, None) or (None, error text)."""
-    cmd = ["ffprobe", "-v", "error", "-show_streams", "-show_format", "-of", "json", path]
+    cmd = ["ffprobe", "-v", "error", "-show_streams", "-show_format", "-of", "json", fpath]
     try:
-        out = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
-    except (OSError, subprocess.TimeoutExpired) as e:
-        return None, str(e)
-    if out.returncode != 0:
-        return None, (out.stderr.strip().splitlines() or ["ffprobe failed"])[-1]
-    return json.loads(out.stdout or "{}"), None
+        acc = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+    except (OSError, subprocess.TimeoutExpired) as ent:
+        return None, str(ent)
+    if acc.returncode != 0:
+        return None, (acc.stderr.strip().splitlines() or ["ffprobe failed"])[-1]
+    return json.loads(acc.stdout or "{}"), None
 
 
 def _kbps(br):
@@ -62,8 +62,8 @@ def _kbps(br):
 
 
 def _has_video(streams: list) -> bool:
-    return any(s.get("codec_type") == "video" and not (s.get("disposition") or {}).get("attached_pic")
-               for s in streams)
+    return any(sv.get("codec_type") == "video" and not (sv.get("disposition") or {}).get("attached_pic")
+               for sv in streams)
 
 
 def _probe_facts(audio: dict, fmt: dict, streams: list) -> dict:
@@ -73,13 +73,13 @@ def _probe_facts(audio: dict, fmt: dict, streams: list) -> dict:
             "duration_s": round(float(dur), 3) if dur not in (None, "N/A") else None, "video": _has_video(streams)}
 
 
-def probe(path: str) -> dict:
+def probe(fpath: str) -> dict:
     """ffprobe facts of a file: the first audio stream, and any real video stream."""
-    data, err = _ffprobe_json(path)
+    data, err = _ffprobe_json(fpath)
     if err is not None:
         return {"probe_error": err}
     streams, fmt = data.get("streams", []), data.get("format", {})
-    audio = next((s for s in streams if s.get("codec_type") == "audio"), None)
+    audio = next((sv for sv in streams if sv.get("codec_type") == "audio"), None)
     if audio is None:
         return {"probe_error": "no audio stream"}
     return _probe_facts(audio, fmt, streams)
@@ -89,58 +89,58 @@ def _decode_errors(err: str) -> list[str]:
     return [ln for ln in err.splitlines() if re.search(r"\b(error|fatal)\b", ln, re.I) and "volumedetect" not in ln]
 
 
-def decode_check(path: str) -> dict:
+def decode_check(fpath: str) -> dict:
     """One full decode of the first audio stream to null, with volume detection."""
-    cmd = ["ffmpeg", "-hide_banner", "-nostdin", "-nostats", "-i", path,
+    cmd = ["ffmpeg", "-hide_banner", "-nostdin", "-nostats", "-i", fpath,
            "-map", "0:a:0", "-af", "volumedetect", "-f", "null", "-"]
     try:
-        out = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
-    except (OSError, subprocess.TimeoutExpired) as e:
-        return {"decodes_clean": False, "decode_error": str(e)}
-    err = out.stderr or ""
+        acc = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
+    except (OSError, subprocess.TimeoutExpired) as ent:
+        return {"decodes_clean": False, "decode_error": str(ent)}
+    err = acc.stderr or ""
     bad = _decode_errors(err)
     vols = re.findall(r"max_volume:\s*(-?[0-9.]+|-inf) dB", err)
-    res = {"decodes_clean": out.returncode == 0 and not bad}
+    result_ = {"decodes_clean": acc.returncode == 0 and not bad}
     if vols:
-        res["max_volume_db"] = -200.0 if vols[-1] == "-inf" else float(vols[-1])
+        result_["max_volume_db"] = -200.0 if vols[-1] == "-inf" else float(vols[-1])
     if bad:
-        res["decode_error"] = bad[0][:200]
-    return res
+        result_["decode_error"] = bad[0][:200]
+    return result_
 
 
-def sha1_file(path: str) -> str:
-    h = hashlib.sha1()
-    with open(path, "rb") as fh:
+def sha1_file(fpath: str) -> str:
+    hasher = hashlib.sha1()
+    with open(fpath, "rb") as fh:
         for block in iter(lambda: fh.read(1 << 20), b""):
-            h.update(block)
-    return h.hexdigest()
+            hasher.update(block)
+    return hasher.hexdigest()
 
 
 def _blocked_host(url: str):
     host = (urllib.request.urlparse(url).hostname or "").lower()
-    return host if any(host == h or host.endswith("." + h) for h in SKIP_FETCH_HOSTS) else None
+    return host if any(host == hasher or host.endswith("." + hasher) for hasher in SKIP_FETCH_HOSTS) else None
 
 
 def _fetch(url: str):
     """(body, None) or (None, a note)."""
     req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
     try:
-        with urllib.request.urlopen(req, timeout=60) as r:
-            body = r.read(MAX_FETCH + 1)
-    except Exception as e:  # network errors are notes, not crashes
-        return None, f"fetch failed: {e}"[:200]
+        with urllib.request.urlopen(req, timeout=60) as row_:
+            body = row_.read(MAX_FETCH + 1)
+    except Exception as ent:  # network errors are notes, not crashes
+        return None, f"fetch failed: {ent}"[:200]
     if len(body) > MAX_FETCH:
         return None, "remote file is over 200 MB: not compared"
     return body, None
 
 
-def fetch_compare(url: str, path: str) -> dict:
+def fetch_compare(url: str, fpath: str) -> dict:
     """Download url into memory (never to disk, never run) and compare its SHA-1 with the local file."""
     host = _blocked_host(url)
     body, note = (None, f"{host} blocks scripted downloads: compare by hand") if host else _fetch(url)
     if note:
         return {"fetch_note": note}
-    remote, local = hashlib.sha1(body).hexdigest(), sha1_file(path)
+    remote, local = hashlib.sha1(body).hexdigest(), sha1_file(fpath)
     return {"bytes_match_download_url": remote == local, "sha1_local": local, "sha1_remote": remote}
 
 
@@ -154,72 +154,72 @@ _READ_NOTE = re.compile(r"[^.]*\b(?:rights?|licen[cs]e\w*)\b.{0,40}?\b(?:read|ve
 
 
 def _id_number(eid: str, prefix: str):
-    n = re.match(prefix + r"-(\d+)$", eid)
-    return int(n.group(1)) if n else None
+    num = re.match(prefix + r"-(\d+)$", eid)
+    return int(num.group(1)) if num else None
 
 
 def _preview_warnings(dl: str, sid: int) -> list[str]:
-    p = _FS_PREVIEW.search(dl)
-    if not p:
+    pv = _FS_PREVIEW.search(dl)
+    if not pv:
         return []
-    folder, pid = int(p.group(1)), int(p.group(2))
+    folder, pid = int(pv.group(1)), int(pv.group(2))
     checks = [(pid != sid, f"the preview URL is sound {pid}, the page is sound {sid}"),
               (folder != pid // 1000, f"the preview folder {folder} is not {pid} // 1000 = {pid // 1000}"),
-              (p.group(4).lower() == "lq", "the download is the -lq preview: use -hq")]
+              (pv.group(4).lower() == "lq", "the download is the -lq preview: use -hq")]
     return [msg for bad, msg in checks if bad]
 
 
-def _freesound_warnings(e: dict, eid: str, dl: str) -> list[str]:
-    m = _FS_PAGE.search(e.get("page_url") or "")
-    if not m:
+def _freesound_warnings(ent: dict, eid: str, dl: str) -> list[str]:
+    hit = _FS_PAGE.search(ent.get("page_url") or "")
+    if not hit:
         return []
-    user, sid = m.group(1), int(m.group(2))
+    user, sid = hit.group(1), int(hit.group(2))
     num = _id_number(eid, "fs")
-    out = [f"id {eid} does not match the Freesound page sound {sid}"] if num is not None and num != sid else []
-    out += _preview_warnings(dl, sid)
-    if e.get("author") and str(e["author"]).lower() != user.lower():
-        out.append(f"author {e['author']!r} is not the page user {user!r}")
-    return out
+    acc = [f"id {eid} does not match the Freesound page sound {sid}"] if num is not None and num != sid else []
+    acc += _preview_warnings(dl, sid)
+    if ent.get("author") and str(ent["author"]).lower() != user.lower():
+        acc.append(f"author {ent['author']!r} is not the page user {user!r}")
+    return acc
 
 
 def _mixkit_warnings(eid: str, dl: str) -> list[str]:
-    m = _MK.search(dl)
-    if not m:
+    hit = _MK.search(dl)
+    if not hit:
         return []
-    a, b = int(m.group(1)), int(m.group(2))
+    cli, bv = int(hit.group(1)), int(hit.group(2))
     num = _id_number(eid, "mk")
-    checks = [(a != b, f"the Mixkit URL folder {a} and file {b} differ"),
-              (num is not None and num != a, f"id {eid} does not match the Mixkit item {a}")]
+    checks = [(cli != bv, f"the Mixkit URL folder {cli} and file {bv} differ"),
+              (num is not None and num != cli, f"id {eid} does not match the Mixkit item {cli}")]
     return [msg for bad, msg in checks if bad]
 
 
-def url_warnings(e: dict) -> list[str]:
-    eid = str(e.get("id") or "")
-    dl = e.get("download_url") or ""
-    return _freesound_warnings(e, eid, dl) + _mixkit_warnings(eid, dl)
+def url_warnings(ent: dict) -> list[str]:
+    eid = str(ent.get("id") or "")
+    dl = ent.get("download_url") or ""
+    return _freesound_warnings(ent, eid, dl) + _mixkit_warnings(eid, dl)
 
 
-def _field_findings(e: dict, cls: dict) -> tuple[list, list]:
-    problems = [msg for f, msg in (("file", "no file in the manifest entry"), ("rights", "no rights in the manifest entry"))
-                if not e.get(f)]
-    warnings = [f"no {f}" for f in ("id", "title", "author", "page_url") if not e.get(f)]
-    if cls["status"] != "allowed" and e.get("rights"):
-        problems.append(f"rights {cls['key']} ({cls['status']}): {cls['reason']}")
-    return problems, warnings
+def _field_findings(ent: dict, cls: dict) -> tuple[list, list]:
+    issues = [msg for fld, msg in (("file", "no file in the manifest entry"), ("rights", "no rights in the manifest entry"))
+                if not ent.get(fld)]
+    warnings = [f"no {fld}" for fld in ("id", "title", "author", "page_url") if not ent.get(fld)]
+    if cls["status"] != "allowed" and ent.get("rights"):
+        issues.append(f"rights {cls['key']} ({cls['status']}): {cls['reason']}")
+    return issues, warnings
 
 
-def _reading_problems(e: dict, seen, confirmed: bool) -> list[str]:
+def _reading_problems(ent: dict, seen, confirmed: bool) -> list[str]:
     if seen:
         return [] if confirmed else ["rights_seen is recorded but rights_confirmed is not true"]
-    m = _READ_NOTE.search(e.get("notes") or "")
-    note = (f"no page reading in rights_seen, but the notes say: \"{m.group(0).strip()[:90]}\"; "
-            "copy that reading into rights_seen") if m else None
+    hit = _READ_NOTE.search(ent.get("notes") or "")
+    note = (f"no page reading in rights_seen, but the notes say: \"{hit.group(0).strip()[:90]}\"; "
+            "copy that reading into rights_seen") if hit else None
     return [note or "no page reading: read the item page and fill in rights_seen"]
 
 
 def _seen_text(seen) -> str:
     if isinstance(seen, dict):
-        joined = " ".join(str(seen.get(k, "")) for k in ("rights", "licence", "license", "text"))
+        joined = " ".join(str(seen.get(key_, "")) for key_ in ("rights", "licence", "license", "text"))
         return joined or json.dumps(seen)
     return seen if isinstance(seen, str) else json.dumps(seen)
 
@@ -233,28 +233,28 @@ def _seen_warnings(seen, cls: dict) -> list[str]:
     return []
 
 
-def _attribution_warnings(e: dict, attr: str) -> list[str]:
+def _attribution_warnings(ent: dict, attr: str) -> list[str]:
     if not attr:
         return []
     low = attr.lower()
-    checks = [(e.get("author") and str(e["author"]).lower() not in attr.split(" (")[0].lower(),
+    checks = [(ent.get("author") and str(ent["author"]).lower() not in attr.split(" (")[0].lower(),
                "the attribution does not name the author"),
               (not ("cc by" in low or "attribution" in low or "creativecommons.org" in low),
                "the attribution names no licence")]
     return [msg for bad, msg in checks if bad]
 
 
-def _attribution(e: dict, cls: dict) -> tuple:
+def _attribution(ent: dict, cls: dict) -> tuple:
     """(attribution ok or None when not required, problems, warnings)."""
     if not cls["attribution"]:
         return None, [], []
-    missing = [f for f in ("attribution", "author", "page_url") if not e.get(f)]
-    problems = ["CC BY credit incomplete: no " + ", ".join(missing)] if missing else []
-    return not missing, problems, _attribution_warnings(e, e.get("attribution") or "")
+    missing = [fld for fld in ("attribution", "author", "page_url") if not ent.get(fld)]
+    issues = ["CC BY credit incomplete: no " + ", ".join(missing)] if missing else []
+    return not missing, issues, _attribution_warnings(ent, ent.get("attribution") or "")
 
 
-def _probe_warnings(pr: dict, e: dict) -> list[str]:
-    want = (e.get("analysis") or {}).get("duration")
+def _probe_warnings(pr: dict, ent: dict) -> list[str]:
+    want = (ent.get("analysis") or {}).get("duration")
     replaced = want is not None and pr["duration_s"] is not None and abs(float(want) - pr["duration_s"]) > 0.05
     checks = [(pr["video"], "the file carries a video stream"),
               (0 < (pr["sample_rate"] or 0) < 44100, f"sample rate {pr['sample_rate']} Hz is under 44100"),
@@ -264,55 +264,55 @@ def _probe_warnings(pr: dict, e: dict) -> list[str]:
     return [msg for bad, msg in checks if bad]
 
 
-def _decode_findings(ap: str, fc: dict) -> tuple[list, list]:
-    dc = decode_check(ap)
-    fc["decodes_clean"] = dc["decodes_clean"]
+def _decode_findings(apath: str, fchk: dict) -> tuple[list, list]:
+    dc = decode_check(apath)
+    fchk["decodes_clean"] = dc["decodes_clean"]
     if "max_volume_db" in dc:
-        fc["max_volume_db"] = dc["max_volume_db"]
-    problems = [] if dc["decodes_clean"] else ["decode errors: " + dc.get("decode_error", "ffmpeg failed")]
+        fchk["max_volume_db"] = dc["max_volume_db"]
+    issues = [] if dc["decodes_clean"] else ["decode errors: " + dc.get("decode_error", "ffmpeg failed")]
     mv = dc.get("max_volume_db")
     if mv is not None and mv <= -90:
-        problems.append("digital silence (max volume <= -90 dB)")
+        issues.append("digital silence (max volume <= -90 dB)")
     warnings = [f"very quiet file (max volume {mv} dB)"] if mv is not None and -90 < mv < -60 else []
-    return problems, warnings
+    return issues, warnings
 
 
-def _file_findings(e: dict, root: str, decode: bool) -> tuple[dict, list, list]:
+def _file_findings(ent: dict, base_dir: str, decode: bool) -> tuple[dict, list, list]:
     """(file_check, problems, warnings) of the entry's file."""
-    path = rights.rel(e.get("file") or "", root)
-    ap = os.path.join(root, path)
-    fc = {"path": path, "exists": os.path.isfile(ap)}
-    if not fc["exists"]:
-        return fc, [f"file missing: {path}"], []
-    pr = probe(ap)
+    fpath = rights.rel(ent.get("file") or "", base_dir)
+    apath = os.path.join(base_dir, fpath)
+    fchk = {"path": fpath, "exists": os.path.isfile(apath)}
+    if not fchk["exists"]:
+        return fchk, [f"file missing: {fpath}"], []
+    pr = probe(apath)
     if "probe_error" in pr:
-        return fc, [f"ffprobe failed: {pr['probe_error']}"], []
-    fc.update(pr)
-    problems, warnings = _decode_findings(ap, fc) if decode else ([], [])
-    return fc, problems, _probe_warnings(pr, e) + warnings
+        return fchk, [f"ffprobe failed: {pr['probe_error']}"], []
+    fchk.update(pr)
+    issues, warnings = _decode_findings(apath, fchk) if decode else ([], [])
+    return fchk, issues, _probe_warnings(pr, ent) + warnings
 
 
-def check_entry(e: dict, root: str, decode: bool, earlier: dict | None) -> dict:
-    cls = rights.classify(e.get("rights"))
-    agent = {k: (earlier or {}).get(k) for k in AGENT_FIELDS}
+def check_entry(ent: dict, base_dir: str, decode: bool, earlier: dict | None) -> dict:
+    cls = rights.classify(ent.get("rights"))
+    agent = {key_: (earlier or {}).get(key_) for key_ in AGENT_FIELDS}
     seen = agent.get("rights_seen")
     confirmed = bool(agent.get("rights_confirmed")) and bool(seen)
-    problems, warnings = _field_findings(e, cls)
-    problems += _reading_problems(e, seen, confirmed)
+    issues, warnings = _field_findings(ent, cls)
+    issues += _reading_problems(ent, seen, confirmed)
     warnings += _seen_warnings(seen, cls)
-    attr_ok, ap, aw = _attribution(e, cls)
-    problems += ap
-    warnings += aw + url_warnings(e)
-    fc, fp, fw = _file_findings(e, root, decode)
-    problems += fp
+    attr_ok, apath, aw = _attribution(ent, cls)
+    issues += apath
+    warnings += aw + url_warnings(ent)
+    fchk, fp, fw = _file_findings(ent, base_dir, decode)
+    issues += fp
     warnings += fw
-    file_ok = fc["exists"] and fc.get("decodes_clean", True) is not False and "codec" in fc
-    return {"id": e.get("id"), "manifest": e.get("_manifest"), "need": e.get("need"), "rank": e.get("rank"),
-            "in_scope": True, "severity": "ok", "rights_in_manifest": e.get("rights"), "rights": cls["key"],
+    file_ok = fchk["exists"] and fchk.get("decodes_clean", True) is not False and "codec" in fchk
+    return {"id": ent.get("id"), "manifest": ent.get("_manifest"), "need": ent.get("need"), "rank": ent.get("rank"),
+            "in_scope": True, "severity": "ok", "rights_in_manifest": ent.get("rights"), "rights": cls["key"],
             "rights_status": cls["status"], "rights_seen": seen, "rights_confirmed": confirmed,
             "attribution_required": bool(cls["attribution"]), "attribution_ok": attr_ok,
-            "attribution_in_manifest": e.get("attribution"), "file_ok": bool(file_ok), "file_check": fc,
-            "problems": problems, "warnings": warnings, "agent_notes": agent.get("agent_notes"),
+            "attribution_in_manifest": ent.get("attribution"), "file_ok": bool(file_ok), "file_check": fchk,
+            "problems": issues, "warnings": warnings, "agent_notes": agent.get("agent_notes"),
             "audit_tool": TOOL}
 
 
@@ -322,69 +322,69 @@ _KNOWN = set(AGENT_FIELDS) | {"id", "manifest", "need", "rank", "in_scope", "sev
                               "problem", "fix", "earlier_file_check", "audit_tool", "duplicate_of", "file"}
 
 
-def _as_list(v) -> list:
-    if isinstance(v, list):
-        return list(v)
-    return [v] if v else []
+def _as_list(val) -> list:
+    if isinstance(val, list):
+        return list(val)
+    return [val] if val else []
 
 
-def _hand_notes(old: dict, notes) -> list | None:
+def _hand_notes(prior: dict, notes) -> list | None:
     """A hand-written record's notes, warnings, problem and fix as 1 notes list."""
-    out = _as_list(notes)
-    for k in ("warnings", "problem", "fix"):
-        v = old.get(k)
-        out += v if isinstance(v, list) else ([f"{k}: {v}"] if v else [])
-    return out or None
+    acc = _as_list(notes)
+    for key_ in ("warnings", "problem", "fix"):
+        val = prior.get(key_)
+        acc += val if isinstance(val, list) else ([f"{key_}: {val}"] if val else [])
+    return acc or None
 
 
-def _byte_fields(fc: dict) -> dict:
-    return {k: fc[k] for k in BYTE_FIELDS if k in fc}
+def _byte_fields(fchk: dict) -> dict:
+    return {key_: fchk[key_] for key_ in BYTE_FIELDS if key_ in fchk}
 
 
-def _hand_file_fields(fc: dict) -> dict:
-    return {k: v for k, v in fc.items() if k not in TOOL_FILE_FIELDS}
+def _hand_file_fields(fchk: dict) -> dict:
+    return {key_: val for key_, val in fchk.items() if key_ not in TOOL_FILE_FIELDS}
 
 
-def _unknown_keys(old: dict) -> dict:
-    return {k: v for k, v in old.items() if k not in _KNOWN}
+def _unknown_keys(prior: dict) -> dict:
+    return {key_: val for key_, val in prior.items() if key_ not in _KNOWN}
 
 
-def carry(old: dict | None) -> tuple[dict, dict, dict]:
+def carry(prior: dict | None) -> tuple[dict, dict, dict]:
     """From an earlier record: (agent fields, earlier_file_check, extra keys kept)."""
-    if not old:
+    if not prior:
         return {}, {}, {}
-    agent = {k: old.get(k) for k in AGENT_FIELDS}
-    efc = dict(old.get("earlier_file_check") or {})
-    fc = old.get("file_check") or {}
-    if old.get("audit_tool"):
-        efc.update(_byte_fields(fc))
+    agent = {key_: prior.get(key_) for key_ in AGENT_FIELDS}
+    efc = dict(prior.get("earlier_file_check") or {})
+    fchk = prior.get("file_check") or {}
+    if prior.get("audit_tool"):
+        efc.update(_byte_fields(fchk))
         return agent, efc, {}
-    agent["agent_notes"] = _hand_notes(old, agent.get("agent_notes"))
-    efc.update(_hand_file_fields(fc))
-    return agent, efc, _unknown_keys(old)
+    agent["agent_notes"] = _hand_notes(prior, agent.get("agent_notes"))
+    efc.update(_hand_file_fields(fchk))
+    return agent, efc, _unknown_keys(prior)
 
 
-def severity(rec: dict) -> str:
-    if rec["in_scope"]:
-        return "blocker" if rec["problems"] else ("warning" if rec["warnings"] else "ok")
-    return "info" if (rec["problems"] or rec["warnings"]) else "ok"
+def severity(record: dict) -> str:
+    if record["in_scope"]:
+        return "blocker" if record["problems"] else ("warning" if record["warnings"] else "ok")
+    return "info" if (record["problems"] or record["warnings"]) else "ok"
 
 
 # ------------------------------------------------------------------ run
 
-def load_used(report: str | None, root: str) -> set | None:
+def load_used(report: str | None, base_dir: str) -> set | None:
     if not report:
         return None
     with open(report, encoding="utf-8") as fh:
         rep = json.load(fh)
-    return {rights.rel(f, root).lower() for f in rep.get("files_used", [])}
+    return {rights.rel(fld, base_dir).lower() for fld in rep.get("files_used", [])}
 
 
-def load_earlier(path: str | None) -> tuple[list, bool]:
-    if not path or not os.path.isfile(path):
+def load_earlier(fpath: str | None) -> tuple[list, bool]:
+    if not fpath or not os.path.isfile(fpath):
         return [], False
     try:
-        with open(path, encoding="utf-8") as fh:
+        with open(fpath, encoding="utf-8") as fh:
             data = json.load(fh)
     except (OSError, ValueError):
         return [], True
@@ -395,124 +395,124 @@ class AuditError(Exception):
     """An input error: exit 2."""
 
 
-def _inputs(a, root: str) -> dict:
+def _inputs(cli, base_dir: str) -> dict:
     """Paths of the run: mdir, out, existing, report. Raises AuditError on a missing input."""
-    mdir = os.path.join(root, a.manifests)
-    if not os.path.isdir(mdir):
-        raise AuditError(f"manifest folder not found: {mdir}")
-    out = os.path.join(root, a.out) if a.out else os.path.join(mdir, "rights.json")
-    report = os.path.join(root, a.report) if a.report else None
+    man_dir = os.path.join(base_dir, cli.manifests)
+    if not os.path.isdir(man_dir):
+        raise AuditError(f"manifest folder not found: {man_dir}")
+    acc = os.path.join(base_dir, cli.out) if cli.out else os.path.join(man_dir, "rights.json")
+    report = os.path.join(base_dir, cli.report) if cli.report else None
     if report and not os.path.isfile(report):
         raise AuditError(f"mix report not found: {report}")
-    return {"mdir": mdir, "out": out, "existing": os.path.join(root, a.existing) if a.existing else out,
+    return {"mdir": man_dir, "out": acc, "existing": os.path.join(base_dir, cli.existing) if cli.existing else acc,
             "report": report}
 
 
-def _earlier_index(earlier: list, root: str) -> dict:
+def _earlier_index(earlier: list, base_dir: str) -> dict:
     by_key = {}
-    for r in (r for r in earlier if isinstance(r, dict)):
-        path = rights.rel((r.get("file_check") or {}).get("path") or r.get("file") or "", root).lower()
-        by_key.setdefault((r.get("id"), path), r)
-        by_key.setdefault((r.get("id"), ""), r)
+    for row_ in (row_ for row_ in earlier if isinstance(row_, dict)):
+        fpath = rights.rel((row_.get("file_check") or {}).get("path") or row_.get("file") or "", base_dir).lower()
+        by_key.setdefault((row_.get("id"), fpath), row_)
+        by_key.setdefault((row_.get("id"), ""), row_)
     return by_key
 
 
-def _duplicate(e: dict, root: str, agent: dict, first: dict) -> dict:
+def _duplicate(ent: dict, base_dir: str, agent: dict, first: dict) -> dict:
     """The info row of a file listed again, and its note on the first record."""
-    cls = rights.classify(e.get("rights"))
-    rec = {"id": e.get("id"), "manifest": e.get("_manifest"), "need": e.get("need"), "rank": e.get("rank"),
-           "in_scope": False, "rights_in_manifest": e.get("rights"), "rights": cls["key"],
+    cls = rights.classify(ent.get("rights"))
+    record = {"id": ent.get("id"), "manifest": ent.get("_manifest"), "need": ent.get("need"), "rank": ent.get("rank"),
+           "in_scope": False, "rights_in_manifest": ent.get("rights"), "rights": cls["key"],
            "rights_status": cls["status"],
            "rights_seen": agent.get("rights_seen"), "rights_confirmed": bool(agent.get("rights_confirmed")),
-           "file_check": {"path": rights.rel(e["file"], root)}, "problems": [],
+           "file_check": {"path": rights.rel(ent["file"], base_dir)}, "problems": [],
            "warnings": [f"duplicate of {first['id']}: the same file is already audited"],
            "agent_notes": agent.get("agent_notes"), "audit_tool": TOOL, "duplicate_of": first["id"]}
-    if rec["rights_status"] != "allowed":
-        first["problems"].append(f"the same file is listed again as {e.get('id')} under "
-                                 f"{e.get('rights')!r}: one recording has one licence")
-    elif rec["rights"] != first["rights"]:
-        first["warnings"].append(f"the same file is listed again as {e.get('id')} under another "
-                                 f"licence ({rec['rights']})")
-    return rec
+    if record["rights_status"] != "allowed":
+        first["problems"].append(f"the same file is listed again as {ent.get('id')} under "
+                                 f"{ent.get('rights')!r}: one recording has one licence")
+    elif record["rights"] != first["rights"]:
+        first["warnings"].append(f"the same file is listed again as {ent.get('id')} under another "
+                                 f"licence ({record['rights']})")
+    return record
 
 
-def _in_scope(path: str, used, old) -> bool:
-    if used is not None:
-        return path in used
-    return old.get("in_scope", True) if old else True
+def _in_scope(fpath: str, in_use, prior) -> bool:
+    if in_use is not None:
+        return fpath in in_use
+    return prior.get("in_scope", True) if prior else True
 
 
-def _record(a, root: str, e: dict, old, used) -> dict:
-    agent, efc, extra = carry(old)
-    in_scope = _in_scope(rights.rel(e["file"], root).lower(), used, old)
-    do_decode = a.decode == "all" or (a.decode == "scope" and in_scope)
-    rec = check_entry(e, root, do_decode, agent)
-    rec["in_scope"] = bool(in_scope)
+def _record(cli, base_dir: str, ent: dict, prior, in_use) -> dict:
+    agent, efc, extra = carry(prior)
+    in_scope = _in_scope(rights.rel(ent["file"], base_dir).lower(), in_use, prior)
+    do_decode = cli.decode == "all" or (cli.decode == "scope" and in_scope)
+    record = check_entry(ent, base_dir, do_decode, agent)
+    record["in_scope"] = bool(in_scope)
     if efc:
-        rec["earlier_file_check"] = efc
-    rec.update(extra)
-    return rec
+        record["earlier_file_check"] = efc
+    record.update(extra)
+    return record
 
 
-def _records(a, root: str, entries: list, by_key: dict, used) -> tuple[list, dict]:
+def _records(cli, base_dir: str, entries: list, by_key: dict, in_use) -> tuple[list, dict]:
     """(records, first record by lower-case path)."""
     records, seen_files = [], {}
-    for e in entries:
-        path = rights.rel(e["file"], root).lower()
-        old = by_key.get((e.get("id"), path)) or by_key.get((e.get("id"), ""))
-        if path in seen_files:
-            records.append(_duplicate(e, root, carry(old)[0], seen_files[path]))
+    for ent in entries:
+        fpath = rights.rel(ent["file"], base_dir).lower()
+        prior = by_key.get((ent.get("id"), fpath)) or by_key.get((ent.get("id"), ""))
+        if fpath in seen_files:
+            records.append(_duplicate(ent, base_dir, carry(prior)[0], seen_files[fpath]))
             continue
-        rec = _record(a, root, e, old, used)
-        seen_files[path] = rec
-        records.append(rec)
+        record = _record(cli, base_dir, ent, prior, in_use)
+        seen_files[fpath] = record
+        records.append(record)
     return records, seen_files
 
 
-def _fetch_targets(a, root: str, records: list, entries: list) -> list:
+def _fetch_targets(cli, base_dir: str, records: list, entries: list) -> list:
     """(record, url, local path) of every record to compare with its download_url."""
-    out = []
-    for rec, e in zip(records, entries):
-        wanted = not rec.get("duplicate_of") and (a.fetch_all or rec["in_scope"])
-        url, ap = e.get("download_url"), os.path.join(root, rec["file_check"]["path"])
-        if wanted and url and os.path.isfile(ap):
-            out.append((rec, url, ap))
-    return out
+    acc = []
+    for record, ent in zip(records, entries):
+        wanted = not record.get("duplicate_of") and (cli.fetch_all or record["in_scope"])
+        url, apath = ent.get("download_url"), os.path.join(base_dir, record["file_check"]["path"])
+        if wanted and url and os.path.isfile(apath):
+            acc.append((record, url, apath))
+    return acc
 
 
 def _fetch_all(targets: list) -> None:
-    for i, (rec, url, ap) in enumerate(targets):
-        if i:
+    for ix, (record, url, apath) in enumerate(targets):
+        if ix:
             time.sleep(1.5)
-        res = fetch_compare(url, ap)
-        rec["file_check"].update(res)
-        if res.get("bytes_match_download_url") is False:
-            rec["warnings"].append("the local bytes differ from download_url (re-encoded or edited file)")
+        result_ = fetch_compare(url, apath)
+        record["file_check"].update(result_)
+        if result_.get("bytes_match_download_url") is False:
+            record["warnings"].append("the local bytes differ from download_url (re-encoded or edited file)")
 
 
-def _unlisted(used: set, listed: set) -> list:
-    return [{"id": None, "in_scope": True, "file_check": {"path": f, "exists": None},
+def _unlisted(in_use: set, listed: set) -> list:
+    return [{"id": None, "in_scope": True, "file_check": {"path": fld, "exists": None},
              "rights": None, "rights_status": "unknown", "rights_confirmed": False,
              "problems": ["used in the film but in no manifest"], "warnings": [], "audit_tool": TOOL}
-            for f in sorted(used - listed)]
+            for fld in sorted(in_use - listed)]
 
 
 def _byte_counts(records: list) -> tuple[int, int, int]:
     """(records with auditor notes, byte matches this run, byte matches from earlier audits)."""
-    with_notes = sum(1 for r in records if r.get("agent_notes"))
-    now = sum(1 for r in records if (r.get("file_check") or {}).get("bytes_match_download_url") is True)
-    before = sum(1 for r in records if (r.get("earlier_file_check") or {}).get("bytes_match_download_url"))
+    with_notes = sum(1 for row_ in records if row_.get("agent_notes"))
+    now = sum(1 for row_ in records if (row_.get("file_check") or {}).get("bytes_match_download_url") is True)
+    before = sum(1 for row_ in records if (row_.get("earlier_file_check") or {}).get("bytes_match_download_url"))
     return with_notes, now, before
 
 
 def _rights_counts(scope: list) -> str:
-    keys = Counter(r.get("rights") for r in scope)
-    return ", ".join(f"{k} x{n}" for k, n in keys.most_common()) or "none"
+    keys = Counter(row_.get("rights") for row_ in scope)
+    return ", ".join(f"{key_} x{num}" for key_, num in keys.most_common()) or "none"
 
 
 def _summary(entries: list, records: list) -> tuple[str, Counter]:
-    scope = [r for r in records if r["in_scope"]]
-    sev = Counter(r["severity"] for r in scope)
+    scope = [row_ for row_ in records if row_["in_scope"]]
+    sev = Counter(row_["severity"] for row_ in scope)
     with_notes, matched_now, matched_before = _byte_counts(records)
     summary = (f"{len(entries)} entries, {len(scope)} in scope: {sev['ok']} ok, {sev['warning']} warning, "
                f"{sev['blocker']} blocker; rights in scope: " + _rights_counts(scope)
@@ -523,154 +523,154 @@ def _summary(entries: list, records: list) -> tuple[str, Counter]:
     return summary, sev
 
 
-def _stem(out: str) -> str:
-    return out[:-5] if out.endswith(".json") else out
+def _stem(acc: str) -> str:
+    return acc[:-5] if acc.endswith(".json") else acc
 
 
-def _hand_written(out: str) -> bool:
+def _hand_written(acc: str) -> bool:
     """True when the audit file was not written by this tool, or is not valid JSON."""
-    old_list, _ = load_earlier(out)
+    old_list, _ = load_earlier(acc)
     try:
-        with open(out, encoding="utf-8") as fh:
+        with open(acc, encoding="utf-8") as fh:
             json.load(fh)
     except ValueError:
         return True
-    return not any(isinstance(r, dict) and r.get("audit_tool") for r in old_list)
+    return not any(isinstance(row_, dict) and row_.get("audit_tool") for row_ in old_list)
 
 
-def _backups(out: str) -> list[str]:
+def _backups(acc: str) -> list[str]:
     """Keep rights.prev.json, and rights.handwritten.json once for a hand-written file."""
-    if not os.path.isfile(out):
+    if not os.path.isfile(acc):
         return []
-    prev, hw = _stem(out) + ".prev.json", _stem(out) + ".handwritten.json"
-    shutil.copyfile(out, prev)
-    if _hand_written(out) and not os.path.exists(hw):
-        shutil.copyfile(out, hw)
+    prev, hw = _stem(acc) + ".prev.json", _stem(acc) + ".handwritten.json"
+    shutil.copyfile(acc, prev)
+    if _hand_written(acc) and not os.path.exists(hw):
+        shutil.copyfile(acc, hw)
         return [prev, hw]
     return [prev]
 
 
-def _write_audit(out: str, table: str, records: list, summary: str) -> list[str]:
-    os.makedirs(os.path.dirname(out), exist_ok=True)
-    with open(out, "w", encoding="utf-8") as fh:
+def _write_audit(acc: str, table: str, records: list, summary: str) -> list[str]:
+    os.makedirs(os.path.dirname(acc), exist_ok=True)
+    with open(acc, "w", encoding="utf-8") as fh:
         json.dump(records, fh, indent=1, ensure_ascii=False)
         fh.write("\n")
     with open(table, "w", encoding="utf-8") as fh:
         fh.write(markdown(records, summary))
-    return [out, table]
+    return [acc, table]
 
 
-def _audit(a, root: str) -> tuple[int, dict]:
-    io_ = _inputs(a, root)
+def _audit(cli, base_dir: str) -> tuple[int, dict]:
+    io_ = _inputs(cli, base_dir)
     entries, notes = rights.load_manifests(io_["mdir"])
     if not entries:
         raise AuditError(f"no manifest entries in {io_['mdir']}")
-    used = load_used(io_["report"], root)
+    in_use = load_used(io_["report"], base_dir)
     earlier, _ = load_earlier(io_["existing"])
-    records, seen_files = _records(a, root, entries, _earlier_index(earlier, root), used)
-    if a.fetch or a.fetch_all:
-        _fetch_all(_fetch_targets(a, root, records, entries))
-    records += _unlisted(used, set(seen_files)) if used is not None else []
-    for rec in records:
-        rec["severity"] = severity(rec)
+    records, seen_files = _records(cli, base_dir, entries, _earlier_index(earlier, base_dir), in_use)
+    if cli.fetch or cli.fetch_all:
+        _fetch_all(_fetch_targets(cli, base_dir, records, entries))
+    records += _unlisted(in_use, set(seen_files)) if in_use is not None else []
+    for record in records:
+        record["severity"] = severity(record)
     summary, sev = _summary(entries, records)
-    out = io_["out"]
-    backups = _backups(out)
-    table = os.path.join(root, a.table) if a.table else _stem(out) + ".md"
-    written = _write_audit(out, table, records, summary)
+    acc = io_["out"]
+    backups = _backups(acc)
+    table = os.path.join(base_dir, cli.table) if cli.table else _stem(acc) + ".md"
+    written = _write_audit(acc, table, records, summary)
     return (1 if sev["blocker"] else 0), {"summary": summary, "notes": notes, "records": records,
                                           "written": written, "backups": backups}
 
 
-def audit(a) -> tuple[int, dict]:
+def audit(cli) -> tuple[int, dict]:
     try:
-        return _audit(a, os.path.abspath(a.root))
-    except AuditError as e:
-        return 2, {"error": str(e)}
+        return _audit(cli, os.path.abspath(cli.root))
+    except AuditError as ent:
+        return 2, {"error": str(ent)}
 
 
-def _file_cell(fc: dict) -> str:
-    if fc.get("codec"):
-        sr = (fc.get("sample_rate") or 0) / 1000.0
-        return f"{fc['codec']} {sr:g}k {fc.get('channels')}ch {fc.get('duration_s')}s"
-    return "MISSING" if not fc.get("exists") else "?"
+def _file_cell(fchk: dict) -> str:
+    if fchk.get("codec"):
+        sr = (fchk.get("sample_rate") or 0) / 1000.0
+        return f"{fchk['codec']} {sr:g}k {fchk.get('channels')}ch {fchk.get('duration_s')}s"
+    return "MISSING" if not fchk.get("exists") else "?"
 
 
-def _credit_cell(r: dict) -> str:
-    if not r.get("attribution_required"):
+def _credit_cell(row_: dict) -> str:
+    if not row_.get("attribution_required"):
         return "n/a"
-    return "ok" if r.get("attribution_ok") else "MISSING"
+    return "ok" if row_.get("attribution_ok") else "MISSING"
 
 
-def _row(r: dict) -> str:
-    issues = "; ".join(r.get("problems", []) + r.get("warnings", []))[:300].replace("|", "/")
-    return (f"| {r.get('id')} | {'yes' if r['in_scope'] else 'no'} | {r['severity']} | {r.get('rights')} | "
-            f"{'yes' if r.get('rights_confirmed') else 'NO'} | {_credit_cell(r)} | "
-            f"{_file_cell(r.get('file_check') or {})} | {issues} |")
+def _row(row_: dict) -> str:
+    issues = "; ".join(row_.get("problems", []) + row_.get("warnings", []))[:300].replace("|", "/")
+    return (f"| {row_.get('id')} | {'yes' if row_['in_scope'] else 'no'} | {row_['severity']} | {row_.get('rights')} | "
+            f"{'yes' if row_.get('rights_confirmed') else 'NO'} | {_credit_cell(row_)} | "
+            f"{_file_cell(row_.get('file_check') or {})} | {issues} |")
 
 
 def markdown(records: list, summary: str) -> str:
     order = {"blocker": 0, "warning": 1, "info": 2, "ok": 3}
-    rows = sorted(records, key=lambda r: (not r["in_scope"], order.get(r["severity"], 9), str(r.get("id"))))
+    table = sorted(records, key=lambda row_: (not row_["in_scope"], order.get(row_["severity"], 9), str(row_.get("id"))))
     lines = ["# Usage-rights audit", "", summary, "",
              "| id | in film | severity | rights | verified | credit | file | issues |",
              "|---|---|---|---|---|---|---|---|"]
-    return "\n".join(lines + [_row(r) for r in rows]) + "\n"
+    return "\n".join(lines + [_row(row_) for row_ in table]) + "\n"
 
 
 def _issue_groups(records: list) -> tuple[Counter, dict]:
     """Count of each (level, message) over in-scope records that are not ok, and the ids per group."""
     groups, ids = Counter(), {}
-    for r in (r for r in records if r["in_scope"] and r["severity"] != "ok"):
-        for level, msgs in (("BLOCKER", r["problems"]), ("warning", r["warnings"])):
-            for m in msgs:
-                groups[(level, m)] += 1
-                ids.setdefault((level, m), []).append(str(r.get("id")))
+    for row_ in (row_ for row_ in records if row_["in_scope"] and row_["severity"] != "ok"):
+        for level, msgs in (("BLOCKER", row_["problems"]), ("warning", row_["warnings"])):
+            for hit in msgs:
+                groups[(level, hit)] += 1
+                ids.setdefault((level, hit), []).append(str(row_.get("id")))
     return groups, ids
 
 
-def print_result(res: dict):
-    say(res["summary"])
-    for n in res["notes"]:
-        say("  note:", n)
-    groups, ids = _issue_groups(res["records"])
-    for (level, m), n in sorted(groups.items(), key=lambda kv: (kv[0][0] != "BLOCKER", -kv[1], kv[0][1])):
-        more = " ..." if len(ids[(level, m)]) > 8 else ""
-        say(f"  {level} x{n}: {m}  [{' '.join(ids[(level, m)][:8])}{more}]")
-    for w in res["written"]:
-        say("wrote", w)
-    for b in res["backups"]:
-        say("kept", b)
+def print_result(result_: dict):
+    say(result_["summary"])
+    for num in result_["notes"]:
+        say("  note:", num)
+    groups, ids = _issue_groups(result_["records"])
+    for (level, hit), num in sorted(groups.items(), key=lambda kv: (kv[0][0] != "BLOCKER", -kv[1], kv[0][1])):
+        more = " ..." if len(ids[(level, hit)]) > 8 else ""
+        say(f"  {level} x{num}: {hit}  [{' '.join(ids[(level, hit)][:8])}{more}]")
+    for wv in result_["written"]:
+        say("wrote", wv)
+    for bv in result_["backups"]:
+        say("kept", bv)
 
 
 def parse(argv):
-    p = argparse.ArgumentParser(prog="rights_audit.py", description="Usage-rights and file audit of the manifests.")
-    p.add_argument("--root", default=".")
-    p.add_argument("--manifests", default="audio/assets/manifests")
-    p.add_argument("--report", help="mix report: its files_used are in scope")
-    p.add_argument("--out", help="audit file (default <manifests>/rights.json)")
-    p.add_argument("--existing", help="read the auditor fields from this file instead of --out")
-    p.add_argument("--table", help="Markdown table (default --out with .md)")
-    p.add_argument("--fetch", action="store_true", help="compare local bytes with download_url, in scope only")
-    p.add_argument("--fetch-all", action="store_true", help="the same for every entry")
-    p.add_argument("--decode", choices=("scope", "all", "none"), default="scope")
-    p.add_argument("--json", action="store_true")
-    p.add_argument("--self-test", action="store_true")
-    return p.parse_args(argv)
+    ap = argparse.ArgumentParser(prog="rights_audit.py", description="Usage-rights and file audit of the manifests.")
+    ap.add_argument("--root", default=".")
+    ap.add_argument("--manifests", default="audio/assets/manifests")
+    ap.add_argument("--report", help="mix report: its files_used are in scope")
+    ap.add_argument("--out", help="audit file (default <manifests>/rights.json)")
+    ap.add_argument("--existing", help="read the auditor fields from this file instead of --out")
+    ap.add_argument("--table", help="Markdown table (default --out with .md)")
+    ap.add_argument("--fetch", action="store_true", help="compare local bytes with download_url, in scope only")
+    ap.add_argument("--fetch-all", action="store_true", help="the same for every entry")
+    ap.add_argument("--decode", choices=("scope", "all", "none"), default="scope")
+    ap.add_argument("--json", action="store_true")
+    ap.add_argument("--self-test", action="store_true")
+    return ap.parse_args(argv)
 
 
 def main(argv=None) -> int:
-    a = parse(sys.argv[1:] if argv is None else argv)
-    if a.self_test:
+    cli = parse(sys.argv[1:] if argv is None else argv)
+    if cli.self_test:
         return self_test()
-    code, res = audit(a)
+    code, result_ = audit(cli)
     if code == 2:
-        say(f"rights_audit.py: {res['error']}", file=sys.stderr)
+        say(f"rights_audit.py: {result_['error']}", file=sys.stderr)
         return 2
-    if a.json:
-        say(json.dumps({k: v for k, v in res.items()}, indent=1))
+    if cli.json:
+        say(json.dumps({key_: val for key_, val in result_.items()}, indent=1))
     else:
-        print_result(res)
+        print_result(result_)
     return code
 
 
@@ -682,94 +682,94 @@ ENTRY = {"id": "fs-123456", "category": "ui", "file": "audio/assets/ui/fs-123456
          "attribution": "\"Tap\" by alice, licensed under CC BY 4.0", "need": "click", "rank": 1}
 
 
-def _records_of(mdir: str) -> list:
-    with open(os.path.join(mdir, "rights.json"), encoding="utf-8") as fh:
+def _records_of(man_dir: str) -> list:
+    with open(os.path.join(man_dir, "rights.json"), encoding="utf-8") as fh:
         return json.load(fh)
 
 
-def _test_reading(ck, fx, d: str, mdir: str) -> None:
-    code = main(["--root", d])
-    recs = _records_of(mdir)
+def _test_reading(ck, fx, tmp: str, man_dir: str) -> None:
+    code = main(["--root", tmp])
+    recs = _records_of(man_dir)
     ck("S2 no page reading is a blocker, exit 1, files written",
        code == 1 and recs[0]["severity"] == "blocker"
-       and any("no page reading" in p for p in recs[0]["problems"])
-       and os.path.isfile(os.path.join(mdir, "rights.md")))
+       and any("no page reading" in pv for pv in recs[0]["problems"])
+       and os.path.isfile(os.path.join(man_dir, "rights.md")))
     recs[0]["rights_seen"] = {"site": "freesound", "rights": "Attribution 4.0", "read": "2026-11-07"}
     recs[0]["rights_confirmed"] = True
     recs[0]["agent_notes"] = "author asks for the credit form in the manifest"
-    fx.put_json(os.path.join(mdir, "rights.json"), recs)
-    code = main(["--root", d])
-    ck("S3 a confirmed reading clears the entry", code == 0 and _records_of(mdir)[0]["severity"] == "ok")
-    code = main(["--root", d])
-    recs = _records_of(mdir)
+    fx.put_json(os.path.join(man_dir, "rights.json"), recs)
+    code = main(["--root", tmp])
+    ck("S3 a confirmed reading clears the entry", code == 0 and _records_of(man_dir)[0]["severity"] == "ok")
+    code = main(["--root", tmp])
+    recs = _records_of(man_dir)
     ck("S3 a second run keeps the agent fields and writes rights.prev.json",
        code == 0 and recs[0]["rights_confirmed"] is True and bool(recs[0]["agent_notes"])
-       and os.path.isfile(os.path.join(mdir, "rights.prev.json")))
+       and os.path.isfile(os.path.join(man_dir, "rights.prev.json")))
 
 
-def _test_scope(ck, fx, d: str, mdir: str) -> None:
-    rep = fx.put_json(os.path.join(d, "out", "qa", "mix_report.json"),
+def _test_scope(ck, fx, tmp: str, man_dir: str) -> None:
+    rep = fx.put_json(os.path.join(tmp, "out", "qa", "mix_report.json"),
                       {"files_used": ["audio/assets/ui/fs-123456_tap.wav", "audio/assets/ui/stray.wav"]})
-    code = main(["--root", d, "--report", "out/qa/mix_report.json"])
+    code = main(["--root", tmp, "--report", "out/qa/mix_report.json"])
     ck("S4 a used file in no manifest is a blocker row with id null",
-       code == 1 and any(r["id"] is None and r["severity"] == "blocker" for r in _records_of(mdir)))
+       code == 1 and any(row_["id"] is None and row_["severity"] == "blocker" for row_ in _records_of(man_dir)))
     other = dict(ENTRY, id="fs-999", file="audio/assets/ui/other.wav", rights="CC BY-NC 4.0")
-    fx.write(os.path.join(d, other["file"]), fx.burst(0.2))
-    fx.put_json(os.path.join(mdir, "ui.json"), [ENTRY, other])
+    fx.write(os.path.join(tmp, other["file"]), fx.burst(0.2))
+    fx.put_json(os.path.join(man_dir, "ui.json"), [ENTRY, other])
     fx.put_json(rep, {"files_used": ["audio/assets/ui/fs-123456_tap.wav"]})
-    code = main(["--root", d, "--report", "out/qa/mix_report.json"])
+    code = main(["--root", tmp, "--report", "out/qa/mix_report.json"])
     ck("S4 an entry outside files_used is out of scope and does not block",
-       code == 0 and [r["in_scope"] for r in _records_of(mdir)] == [True, False])
+       code == 0 and [row_["in_scope"] for row_ in _records_of(man_dir)] == [True, False])
 
 
-def _test_duplicate(ck, fx, d: str, mdir: str) -> None:
-    fx.put_json(os.path.join(mdir, "zz.json"), [dict(ENTRY, id="fs-123456b", rights="CC BY-NC 4.0")])
-    main(["--root", d])
-    recs = _records_of(mdir)
-    first = next(r for r in recs if r["id"] == "fs-123456")
-    d2 = next(r for r in recs if r["id"] == "fs-123456b")
+def _test_duplicate(ck, fx, tmp: str, man_dir: str) -> None:
+    fx.put_json(os.path.join(man_dir, "zz.json"), [dict(ENTRY, id="fs-123456b", rights="CC BY-NC 4.0")])
+    main(["--root", tmp])
+    recs = _records_of(man_dir)
+    first = next(row_ for row_ in recs if row_["id"] == "fs-123456")
+    d2 = next(row_ for row_ in recs if row_["id"] == "fs-123456b")
     ck("S5 a duplicate under NC: a problem on the first, info row with duplicate_of",
-       any("one recording has one licence" in p for p in first["problems"])
+       any("one recording has one licence" in pv for pv in first["problems"])
        and d2["severity"] == "info" and d2["duplicate_of"] == "fs-123456")
-    os.remove(os.path.join(mdir, "zz.json"))
+    os.remove(os.path.join(man_dir, "zz.json"))
 
 
 def _test_urls(ck) -> None:
     bad = dict(ENTRY, page_url="https://freesound.org/people/alice/sounds/123457/",
                download_url="https://cdn.freesound.org/previews/123/123456_9-lq.ogg")
-    w = " | ".join(url_warnings(bad))
+    wv = " | ".join(url_warnings(bad))
     ck("S6 Freesound id, page/preview and lq warnings; folder 123 is right",
-       "does not match the Freesound page" in w and "preview URL is sound 123456" in w
-       and "-lq" in w and "folder" not in w)
+       "does not match the Freesound page" in wv and "preview URL is sound 123456" in wv
+       and "-lq" in wv and "folder" not in wv)
     ck("Mixkit id check", url_warnings({"id": "mk-5", "download_url":
                                         "https://assets.mixkit.co/active_storage/sfx/7/7.wav"}) != [])
 
 
-def _test_entries(ck, fx, d: str) -> None:
-    empty = os.path.join(d, "empty")
+def _test_entries(ck, fx, tmp: str) -> None:
+    empty = os.path.join(tmp, "empty")
     os.makedirs(os.path.join(empty, "audio", "assets", "manifests"))
     ck("exit 2 without entries", main(["--root", empty]) == 2)
-    rec = check_entry(dict(ENTRY, notes="Licence read on the item page on 2026-11-06. Close and dry."), d, False, {})
-    ck("a notes sentence about a reading is quoted", any("Licence read on the item page" in p
-                                                         for p in rec["problems"]))
-    fx.write(os.path.join(d, "audio", "assets", "ui", "silent.wav"), fx.burst(0.3) * 0)
-    rec = check_entry(dict(ENTRY, file="audio/assets/ui/silent.wav"), d, True, {})
-    ck("digital silence is a problem", any("digital silence" in p for p in rec["problems"]))
+    record = check_entry(dict(ENTRY, notes="Licence read on the item page on 2026-11-06. Close and dry."), tmp, False, {})
+    ck("a notes sentence about a reading is quoted", any("Licence read on the item page" in pv
+                                                         for pv in record["problems"]))
+    fx.write(os.path.join(tmp, "audio", "assets", "ui", "silent.wav"), fx.burst(0.3) * 0)
+    record = check_entry(dict(ENTRY, file="audio/assets/ui/silent.wav"), tmp, True, {})
+    ck("digital silence is a problem", any("digital silence" in pv for pv in record["problems"]))
 
 
 def self_test() -> int:
     import tempfile
     import fixtures as fx
     ck = fx.Checker()
-    with tempfile.TemporaryDirectory() as d:
-        mdir = os.path.join(d, "audio", "assets", "manifests")
-        fx.write(os.path.join(d, "audio", "assets", "ui", "fs-123456_tap.wav"), fx.burst(0.3))
-        fx.put_json(os.path.join(mdir, "ui.json"), [ENTRY])
-        _test_reading(ck, fx, d, mdir)
-        _test_scope(ck, fx, d, mdir)
-        _test_duplicate(ck, fx, d, mdir)
+    with tempfile.TemporaryDirectory() as tmp:
+        man_dir = os.path.join(tmp, "audio", "assets", "manifests")
+        fx.write(os.path.join(tmp, "audio", "assets", "ui", "fs-123456_tap.wav"), fx.burst(0.3))
+        fx.put_json(os.path.join(man_dir, "ui.json"), [ENTRY])
+        _test_reading(ck, fx, tmp, man_dir)
+        _test_scope(ck, fx, tmp, man_dir)
+        _test_duplicate(ck, fx, tmp, man_dir)
         _test_urls(ck)
-        _test_entries(ck, fx, d)
+        _test_entries(ck, fx, tmp)
     return ck.code()
 
 
