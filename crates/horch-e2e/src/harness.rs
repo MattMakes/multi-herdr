@@ -486,9 +486,11 @@ fn choose_harness_root(preferred: &Path, fallback: &Path, preferred_writable: bo
     if preferred_writable {
         return preferred.to_path_buf();
     }
+    // SAFETY: plain syscall without arguments; it cannot fail.
+    let uid = unsafe { libc::getuid() };
     let socket = fallback
         .join("state/prime/ffffffffffff")
-        .join(format!("prime-agent-{}/d.sock", unsafe { libc::getuid() }));
+        .join(format!("prime-agent-{uid}/d.sock"));
     let socket_len = socket.as_os_str().as_encoded_bytes().len();
     assert!(
         socket_len < UNIX_SOCKET_PATH_LIMIT,
