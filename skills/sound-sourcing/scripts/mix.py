@@ -864,7 +864,71 @@ def self_test() -> int:
             ck("M4 duplicate name is an error", False)
         except DesignError as e:
             ck("M4 duplicate name names the fragment and the name", "dup.json" in str(e) and "ui.tap" in str(e))
+        template_checks(ck, os.path.join(d, "tpl"))
     return ck.code()
+
+
+def template_checks(ck, d: str):
+    """W1, W2, W5: the templates in a new project, then with each placeholder swapped for a fixture."""
+    import contextlib
+    import io
+    import shutil
+    import fixtures as fx
+    tpl = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "templates")
+    os.makedirs(os.path.join(d, "audio", "design"))
+    os.makedirs(os.path.join(d, "out"))
+    shutil.copy(os.path.join(tpl, "cues.json"), os.path.join(d, "out", "cues.json"))
+    shutil.copy(os.path.join(tpl, "design_fragment.json"), os.path.join(d, "audio", "design", "demo.json"))
+    top = load_json(os.path.join(tpl, "sounddesign.json"))
+    top["include"] = ["audio/design/demo.json"]
+    fx.put_json(os.path.join(d, "audio", "sounddesign.json"), top)
+    err = io.StringIO()
+    with contextlib.redirect_stderr(err):
+        code = main(["--root", d])
+    design = load_design("audio/sounddesign.json", d)
+    names = [(k, n) for k, n, _ in recordings(design)]
+    ck("W1 the template stops and lists every placeholder by kind and name",
+       code != 0 and all(f"{k} {n}:" in err.getvalue() for k, n in names) and len(names) >= 12)
+    made = {}
+    for k, n, f in recordings(design):
+        if f in made:
+            continue
+        ap = rpath(d, f)
+        if k == "music":
+            x = fx.click_track(120, 20)
+        elif k == "ambience":
+            x = fx.noise_bed(45.0, 0.02, 7)
+        elif k == "slices":
+            x = fx.hits_track(16)
+        elif "cymbal" in f or "air" in f:
+            x = fx.noise_bed(2.5, 0.1, 11)
+        else:
+            x = fx.burst(0.6, 300 + 50 * len(made), 12, len(made) + 1, 0.7, 0.12)
+        made[f] = fx.write(ap, x)
+    with contextlib.redirect_stdout(io.StringIO()):
+        code = main(["--root", d, "--trace", "out/qa/adds.json"])
+    rep = load_json(os.path.join(d, "out", "qa", "mix_report.json"))
+    played = {q.get("rule") for q in rep["placements"]}
+    ck("W2 the swapped template renders and passes the master gate", code == 0)
+    ck("W2 every template rule has placements, no unsounded cue",
+       {r["name"] for r in design["rules"]} <= played and not rep["unsounded_events"])
+    import rights_audit
+    import credits
+    entries = [{"id": f"fx-{i}", "category": f.split("/")[2], "file": f, "title": os.path.basename(f),
+                "author": "test", "page_url": f"https://example.org/{i}", "rights": "CC0"}
+               for i, f in enumerate(sorted(made))]
+    fx.put_json(os.path.join(d, "audio", "assets", "manifests", "all.json"), entries)
+    fx.put_json(os.path.join(d, "audio", "assets", "manifests", "rights.json"),
+                [{"id": e["id"], "file_check": {"path": e["file"]}, "rights_seen": "CC0 read on the page",
+                  "rights_confirmed": True, "audit_tool": rights_audit.TOOL} for e in entries])
+    with contextlib.redirect_stdout(io.StringIO()):
+        c1 = rights_audit.main(["--root", d, "--report", "out/qa/mix_report.json", "--decode", "none"])
+        c2 = credits.main(["--root", d, "--design", "audio/sounddesign.json",
+                           "--rights", "audio/assets/manifests/rights.json"])
+    md = open(os.path.join(d, "CREDITS.md")).read()
+    ck("W5 the rights audit and the credits exit 0",  c1 == 0 and c2 == 0)
+    ck("W5 CREDITS.md names each used file once",
+       all(md.count(f'"{os.path.basename(f)}"') == 1 for f in rep["files_used"]))
 
 
 def parse(argv):
