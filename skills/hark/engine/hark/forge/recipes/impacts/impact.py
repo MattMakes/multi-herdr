@@ -680,14 +680,20 @@ def _g3_sheen(n: int, p: dict, rng: np.random.Generator) -> np.ndarray:
     return _to_size(_unit(np.column_stack(sides)), n)
 
 
-def _g3_plate(n: int, p: dict, rng: np.random.Generator) -> np.ndarray:
-    """40 plate modes with a slight pitch sag; each channel gets its own phases."""
-    m = min(n, _samples(min(4.0, 5 * p["plate_tau"] + 0.1)))
+def _plate_modes(p: dict, rng: np.random.Generator) -> tuple[np.ndarray, ...]:
+    """Draw 40 plate modes: frequency, level, decay and a start phase per channel."""
     base = p["plate_f"]
     hz = np.sort(base * np.exp(rng.uniform(0, np.log(min(16.0, 9000.0 / base)), 40)))
     gains = (hz / base) ** -0.6 * rng.uniform(0.3, 1.0, 40)
     falls = p["plate_tau"] * (hz / base) ** -0.55
     starts = rng.uniform(0, cm.TWO_PI, (40, 2))
+    return hz, gains, falls, starts
+
+
+def _g3_plate(n: int, p: dict, rng: np.random.Generator) -> np.ndarray:
+    """40 plate modes with a slight pitch sag; each channel gets its own phases."""
+    m = min(n, _samples(min(4.0, 5 * p["plate_tau"] + 0.1)))
+    hz, gains, falls, starts = _plate_modes(p, rng)
     tt = cm.times(m)
     bent = tt + 0.0012 * (1 - cm.decay(tt, 0.1))
     onset = 1 - cm.decay(tt, 0.0008)
@@ -695,8 +701,8 @@ def _g3_plate(n: int, p: dict, rng: np.random.Generator) -> np.ndarray:
     for k in range(40):
         level = gains[k] * cm.decay(tt, falls[k]) * onset
         arg = cm.TWO_PI * hz[k] * bent
-        out[:, 0] += level * np.sin(arg + starts[k, 0])
-        out[:, 1] += level * np.sin(arg + starts[k, 1])
+        for ch in (0, 1):
+            out[:, ch] += level * np.sin(arg + starts[k, ch])
     return _to_size(_unit(out), n)
 
 
@@ -1264,6 +1270,13 @@ def _spectrum_stats(mono: np.ndarray) -> dict:
     }
 
 
+def _loud_frames(loudest: np.ndarray) -> np.ndarray:
+    """Mask of frames within 25 dB of the loudest frame; all false for silence."""
+    if loudest.max() > 0:
+        return loudest >= loudest.max() * 10 ** (-25 / 20)
+    return np.zeros_like(loudest, bool)
+
+
 def _pitch_track(mono: np.ndarray) -> tuple[int, int, int]:
     """Start, median and end of the strongest 25 Hz - 3 kHz bin over the loud frames."""
     seg = min(8192, len(mono))
@@ -1272,11 +1285,7 @@ def _pitch_track(mono: np.ndarray) -> tuple[int, int, int]:
     if spec.shape[1] == 0 or not np.any(band):
         return (0, 0, 0)
     mag = np.abs(spec[band])
-    loudest = mag.max(axis=0)
-    if loudest.max() > 0:
-        loud = loudest >= loudest.max() * 10 ** (-25 / 20)
-    else:
-        loud = np.zeros_like(loudest, bool)
+    loud = _loud_frames(mag.max(axis=0))
     if not np.any(loud):
         return (0, 0, 0)
     track = hz[band][np.argmax(mag, axis=0)][loud]

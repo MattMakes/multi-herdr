@@ -326,15 +326,20 @@ def _lead_in(cfg: dict, gen: np.random.Generator, newer: bool) -> float:
     return lead
 
 
+def _add_jacket(buf: np.ndarray, cfg: dict, gen: np.random.Generator, lead: float, hit_n: int) -> None:
+    """Add the rattle of the keycap jacket just before the bottom-out."""
+    rattle = cloud(2500, 15000, 24, 0.0012, 0.0004, hit_n, key_rng(cfg["key"], 6), gen, tilt=0.0)
+    rattle = _strike(kit.unit(rattle), 4e-5)
+    when = max(0.0, lead - cfg["jacket_dt"] * (1 + 0.06 * gen.standard_normal()))
+    kit.add_at(buf, rattle, kit.n_of(when), cfg["jacket_lvl"])
+
+
 def _down(buf: np.ndarray, cfg: dict, gen: np.random.Generator, lead: float, hit_n: int, newer: bool) -> None:
     total = len(buf)
     force = math.exp(0.1 * gen.standard_normal())
     kit.add_at(buf, _travel(cfg, gen, total), kit.n_of(max(0.0, lead - cfg["pre_len"])), cfg["pre_lvl"])
     if newer and cfg["jacket_lvl"] > 0.005:
-        rattle = cloud(2500, 15000, 24, 0.0012, 0.0004, hit_n, key_rng(cfg["key"], 6), gen, tilt=0.0)
-        rattle = _strike(kit.unit(rattle), 4e-5)
-        when = max(0.0, lead - cfg["jacket_dt"] * (1 + 0.06 * gen.standard_normal()))
-        kit.add_at(buf, rattle, kit.n_of(when), cfg["jacket_lvl"])
+        _add_jacket(buf, cfg, gen, lead, hit_n)
     at = kit.n_of(lead)
     kit.add_at(buf, _plastic_hit(cfg, gen, hit_n, 0, bright=force), at)
     kit.add_at(buf, _spring(cfg, gen, hit_n), at, cfg["ping_lvl"])
@@ -402,24 +407,33 @@ def _level_frames(sig: np.ndarray, hop: int) -> np.ndarray:
     return 10 * np.log10(power + 1e-14)
 
 
-def key_stats(x: np.ndarray) -> dict:
-    """Measure a render: attack time in the 2-12 kHz band, its power share in dB, and the -40 dB time."""
-    mono = x.mean(axis=1) if x.ndim == 2 else np.asarray(x, dtype=float)
-
+def _attack_ms(mono: np.ndarray) -> float:
+    """Rise time in 1 ms frames of the 2-12 kHz band, from 20 dB under its peak to the peak."""
     band = _level_frames(kit.bandpass(mono, 2000, 12000, 4), 48)
     top = int(np.argmax(band))
-    onset = float(top - np.nonzero(band[: top + 1] >= band[top] - 20)[0][0])
+    return float(top - np.nonzero(band[: top + 1] >= band[top] - 20)[0][0])
 
+
+def _bright_share_db(mono: np.ndarray) -> float:
+    """Share of the power between 2 and 12 kHz, in dB with 1 decimal."""
     spec = np.abs(np.fft.rfft(mono)) ** 2
     hz = np.fft.rfftfreq(len(mono), 1 / kit.SR)
     share = float(spec[(hz >= 2000) & (hz < 12000)].sum() / (spec.sum() + 1e-30))
-    share_db = round(10 * math.log10(share + 1e-14), 1)
+    return round(10 * math.log10(share + 1e-14), 1)
 
+
+def _tail_ms(mono: np.ndarray) -> float:
+    """Milliseconds from the loudest 5 ms frame until 40 dB under it, or to the end."""
     coarse = _level_frames(mono, 240)
     loud = int(np.argmax(coarse))
     quiet = np.nonzero(coarse[loud:] <= coarse[loud] - 40)[0]
-    tail = float(quiet[0] * 5) if len(quiet) else float((len(coarse) - loud) * 5)
-    return {"onset_ms": onset, "top_db": share_db, "t40_ms": tail}
+    return float(quiet[0] * 5) if len(quiet) else float((len(coarse) - loud) * 5)
+
+
+def key_stats(x: np.ndarray) -> dict:
+    """Measure a render: attack time in the 2-12 kHz band, its power share in dB, and the -40 dB time."""
+    mono = x.mean(axis=1) if x.ndim == 2 else np.asarray(x, dtype=float)
+    return {"onset_ms": _attack_ms(mono), "top_db": _bright_share_db(mono), "t40_ms": _tail_ms(mono)}
 
 
 def key_penalty(x: np.ndarray) -> float:
