@@ -91,7 +91,21 @@ def _features_stand_in() -> types.ModuleType:
     def k_weight(x, sr=SR):
         return signal.sosfilt(_K, np.asarray(x, dtype=float), axis=0)
 
-    mod.k_weight = k_weight
+    def true_peak_dbtp(x):
+        a = np.asarray(x, dtype=float)
+        up = signal.resample_poly(a, 4, 1, axis=0)
+        return round(float(20 * np.log10(max(np.max(np.abs(up)), np.max(np.abs(a))) + 1e-20)), 1)
+
+    def loudness_curve(x, win=0.4, hop=0.1):
+        a = np.asarray(x, dtype=float).reshape(len(x), -1)
+        s = np.sum(k_weight(a) ** 2, axis=1)
+        w, h = int(win * SR), max(1, int(hop * SR))
+        c = np.concatenate([[0.0], np.cumsum(s)])
+        starts = np.arange(0, max(1, len(s) - w + 1), h)
+        ms = (c[np.minimum(starts + w, len(s))] - c[starts]) / w
+        return (starts + w / 2) / SR, -0.691 + 10 * np.log10(ms + 1e-20)
+
+    mod.k_weight, mod.true_peak_dbtp, mod.loudness_curve = k_weight, true_peak_dbtp, loudness_curve
     return mod
 
 
