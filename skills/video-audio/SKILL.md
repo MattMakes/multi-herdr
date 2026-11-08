@@ -22,6 +22,10 @@ Generated `.wav`, `.aiff` and `.mp3` files are build output. Do not commit them.
 
 ## Steps
 
+Read `meta.format` in `timeline.json` first. It is `short` or `long`.
+A `long` film has no voice-over by default and has chapters in `meta.chapters`.
+Every rule below applies to both formats, unless it names a format.
+
 1. Voice-over per scene -> `audio/vo-<scene-id>.wav`.
 2. Reconcile timings in `timeline.json`, then run the plan checker again.
 3. Beat grid -> `audio/beats.json`.
@@ -39,6 +43,11 @@ Lock picture before the final continuous music bed, then run `scripts/check_musi
 The edit, continuity and SFX variation rules are in `<skill-dir>/references/music-laid-last.md`.
 
 ## 1. Voice-over
+
+A `long` film has no voice-over by default. Captions carry the story.
+When no scene has `narration`, skip this step and step 2.
+Then write no `audio/vo-*.wav` file and run no `reconcile_timing.py`.
+Run the plan checker from step 2 once, then go to step 3.
 
 Make 1 file for each scene with non-empty `narration`: `48 kHz` mono PCM.
 
@@ -130,6 +139,16 @@ cuts and hero reveals to a beat when the beat is within `40 ms` (`2` frames at
 End on the song's real final phrase: edit whole bars out of the middle so the
 song's own ending lands on `meta.duration_sec`. A pad loop with a
 `1.0 s` `afade=t=out` is a fallback only, when the song has no usable ending.
+This is a `short` rule: a `short` film has 1 bed.
+
+`long` rules (`meta.format: long`):
+
+- Use 1 music bed for each chapter or group of chapters in `meta.chapters`.
+- Never loop 1 song for the whole film.
+- Crossfade 2 beds at a chapter `start_sec`. Put the crossfade on a beat.
+- Write 1 grid for each bed. Join the grids in `audio/beats.json`.
+- Keep a music tail in the end screen. The end screen is the last `meta.end_screen_sec` seconds.
+- End the last bed on its real final phrase at `meta.duration_sec`.
 
 ## 3b. Sync sheet
 
@@ -187,8 +206,16 @@ every edge, and do not use more than 1 key sound per `60 ms`.
    apply the measured values with `linear=true`. Write `audio/mix.wav` as
    `48 kHz` stereo 24-bit PCM (`pcm_s24le`). 16-bit is also accepted.
 
-Single-pass `loudnorm` missed by `1.5 LU` on a `6 s` test mix. Always run 2 passes.
+Single-pass `loudnorm` missed by `1.5 LU` on a `6 s` test mix (a `short` clip).
+Always run 2 passes. A `long` film requires 2 passes too.
 The exact commands are in the reference, sections 4 to 6.
+
+`long` rules (`meta.format: long`):
+
+- With no voice-over, skip the voice ducking. Keep the music under the game or product audio.
+- Crossfade beds at each chapter start on a beat. Write the joined beds to `audio/bed.wav`.
+- Keep the music tail on the end screen. Fade the last bed to the final frame.
+- Master the whole film in 1 pair of `loudnorm` passes.
 
 Pad or trim the master to `meta.duration_sec`. The gate allows `+-0.05 s`.
 

@@ -200,6 +200,7 @@ This makes a hard step. Prefer `sidechaincompress` when the step is audible.
 
 Single-pass `loudnorm` misses the target on clips shorter than about `30 s`.
 A measured `6 s` premix landed at `-15.5 LUFS`. Always run 2 passes.
+This is a `short` clip note. A `long` film (`meta.format: long`) also requires 2 passes, at any length.
 
 Pass 1, measure:
 
