@@ -58,24 +58,50 @@ def _peaks(db: np.ndarray, over: float, med_n: int, floor: np.ndarray) -> np.nda
 # ---------------------------------------------------------------- envelope measures
 
 
+def _db(p: np.ndarray) -> np.ndarray:
+    return 10 * np.log10(np.maximum(p, 1e-20))
+
+
+def _t40_frames(e: np.ndarray, pk: int) -> float:
+    below = np.nonzero(e[pk:] <= e[pk] - 40)[0]
+    return float(below[0]) if len(below) else float(len(e) - 1 - pk)
+
+
+def _crest_db(m: np.ndarray, e: np.ndarray, pk: int) -> float:
+    mean_p = float(np.mean(10 ** (e[e >= e[pk] - 40] / 10)))
+    return 20 * math.log10(max(float(np.max(np.abs(m))), 1e-10)) - 10 * math.log10(max(mean_p, 1e-20))
+
+
+def _rise_db(m: np.ndarray) -> float:
+    """The largest 2 ms rise on a 0.5 ms envelope, within 40 dB of its maximum."""
+    e = frame_db(m, 24)
+    if len(e) <= 4:
+        return 0.0
+    ok = e[4:] >= e.max() - 40
+    return float((e[4:] - e[:-4])[ok].max()) if ok.any() else 0.0
+
+
 def _env_measures(m: np.ndarray) -> dict:
     e = frame_db(m, 48)
     if len(e) == 0:
         return {"attack_ms": 0.0, "t40_ms": 0.0, "crest_db": 0.0, "rise_db": 0.0}
     pk = int(np.argmax(e))
     on = int(np.argmax(e >= e[pk] - 30))
-    below = np.nonzero(e[pk:] <= e[pk] - 40)[0]
-    t40 = float(below[0]) if len(below) else float(len(e) - 1 - pk)
-    act = e >= e[pk] - 40
-    mean_p = np.mean(10 ** (e[act] / 10))
-    crest = 20 * math.log10(max(float(np.max(np.abs(m))), 1e-10)) - 10 * math.log10(max(mean_p, 1e-20))
-    e2 = frame_db(m, 24)
-    rise = 0.0
-    if len(e2) > 4:
-        d = e2[4:] - e2[:-4]
-        ok = e2[4:] >= e2.max() - 40
-        rise = float(d[ok].max()) if ok.any() else 0.0
-    return {"attack_ms": float(pk - on), "t40_ms": t40, "crest_db": float(crest), "rise_db": rise}
+    return {"attack_ms": float(pk - on), "t40_ms": _t40_frames(e, pk), "crest_db": _crest_db(m, e, pk),
+            "rise_db": _rise_db(m)}
+
+
+def _weighted_flatness(p: np.ndarray, w: np.ndarray) -> float:
+    flat = np.exp(np.mean(np.log(np.maximum(p, 1e-30)), axis=1)) / np.maximum(p.mean(axis=1), 1e-30)
+    return float(np.exp(np.sum(w * np.log(np.maximum(flat, 1e-30))) / w.sum()))
+
+
+def _persistence(p: np.ndarray, pk: np.ndarray, mask: np.ndarray, act: np.ndarray) -> float:
+    """Share of peak power whose bin is still under the next active frame's mask."""
+    both = act[:-1] & act[1:]
+    pp = (p[:-1] * pk[:-1])[both]
+    den = float(pp.sum())
+    return float((pp * mask[1:][both]).sum()) / den if den > 0 else 0.0
 
 
 def _spectral_measures(m: np.ndarray) -> dict:
@@ -84,41 +110,35 @@ def _spectral_measures(m: np.ndarray) -> dict:
     act = en > en.max() * 10 ** -3.5 if en.max() > 0 else np.zeros(len(en), bool)
     if not act.any():
         return {"tonal_share": 0.0, "flatness": 1.0, "persistence": 0.0}
-    db = 10 * np.log10(np.maximum(p, 1e-20))
+    db = _db(p)
     pk = _peaks(db, 12, 21, db.max(axis=1, keepdims=True) - 50)
     mask = ndimage.maximum_filter1d(pk.astype(np.uint8), 5, axis=1).astype(bool)
-    share = (p * mask).sum(axis=1) / np.maximum(en, 1e-30)
     w = en * act
-    tonal = float(np.sum(share * w) / w.sum())
-    flat = np.exp(np.mean(np.log(np.maximum(p, 1e-30)), axis=1)) / np.maximum(p.mean(axis=1), 1e-30)
-    flatness = float(np.exp(np.sum(w * np.log(np.maximum(flat, 1e-30))) / w.sum()))
-    num = den = 0.0
-    for t in range(len(act) - 1):
-        if act[t] and act[t + 1]:
-            pp = p[t] * pk[t]
-            num += float((pp * mask[t + 1]).sum())
-            den += float(pp.sum())
-    return {"tonal_share": tonal, "flatness": flatness, "persistence": num / den if den > 0 else 0.0}
+    share = (p * mask).sum(axis=1) / np.maximum(en, 1e-30)
+    return {"tonal_share": float(np.sum(share * w) / w.sum()), "flatness": _weighted_flatness(p, w),
+            "persistence": _persistence(p, pk, mask, act)}
+
+
+def _refined_hz(row: np.ndarray, k: int, f: np.ndarray) -> float:
+    """Parabolic peak refinement, only for a negative curvature."""
+    if not 0 < k < len(f) - 1:
+        return float(f[k])
+    a, b, c = row[k - 1], row[k], row[k + 1]
+    curv = a - 2 * b + c
+    return float(f[k] + 0.5 * (a - c) / curv * (f[1] - f[0])) if curv < 0 else float(f[k])
 
 
 def _glide_points(m: np.ndarray) -> list:
-    p = _stft_power(m, 1024, 128)
     sel = _band(1024)
     f = (np.arange(513) * SR / 1024)[sel]
-    p = p[:, sel]
-    db = 10 * np.log10(np.maximum(p, 1e-20))
+    p = _stft_power(m, 1024, 128)[:, sel]
+    db = _db(p)
     en = p.sum(axis=1)
     pk = _peaks(db, 15, 11, np.full((1, 1), db.max() - 50))
     pts = []
     for t in np.nonzero((en > en.max() * 10 ** -3.5) & pk.any(axis=1))[0]:
         k = int(np.argmax(np.where(pk[t], db[t], -np.inf)))
-        fk = f[k]
-        if 0 < k < len(f) - 1:
-            a, b, c = db[t, k - 1], db[t, k], db[t, k + 1]
-            curv = a - 2 * b + c
-            if curv < 0:
-                fk = f[k] + 0.5 * (a - c) / curv * (f[1] - f[0])
-        pts.append((int(t), math.log2(max(fk, 20.0)), float(db[t, k])))
+        pts.append((int(t), math.log2(max(_refined_hz(db[t], k, f), 20.0)), float(db[t, k])))
     return pts
 
 
