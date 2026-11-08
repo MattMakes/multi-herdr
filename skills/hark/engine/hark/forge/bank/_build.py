@@ -700,25 +700,29 @@ def build_derive(out: str, version: str | None = None, log: Callable | None = No
     no passing render is left out and listed under ``dropped`` with its reason.
     """
     doc = _header("forge_v2", version, "derived from the recipe family tables (seed 0, designed); no critic run")
-    doc["dropped"], doc["categories"], doc["entries"], failures = {}, {}, {}, []
+    doc["dropped"], doc["categories"], doc["entries"] = {}, {}, {}
     cache: dict = {}
     used: set = set()
-    for sound_id in _forge_v2_ids():
-        try:
-            entry = _derive_entry(sound_id, cache, used, log)
-        except Dropped as exc:
-            doc["dropped"][sound_id] = str(exc)
-            _say(log, f"{sound_id}: dropped: {exc}")
-            continue
-        except (ValueError, B.BankError, ImportError, AttributeError, KeyError) as exc:
-            failures.append(f"{sound_id}: {exc}")
-            continue
-        doc["entries"][sound_id] = entry
-        doc["categories"].setdefault(entry["category"], _category(entry["category"]))
-        misses = target_misses(sound_id, entry["meta"])
-        _say(log, f"{sound_id}: {entry['meta']['dur_s']:.3f} s" + (f"; misses {'; '.join(misses)}" if misses else ""))
+    failures = [f for sound_id in _forge_v2_ids() if (f := _derive_into(doc, sound_id, cache, used, log))]
     _refuse(failures)
     return _wrote(log, out, doc)
+
+
+def _derive_into(doc: dict, sound_id: str, cache: dict, used: set, log: Callable | None) -> str | None:
+    """Add one derived id to ``doc`` (entry or dropped); the failure line when it is refused, else None."""
+    try:
+        entry = _derive_entry(sound_id, cache, used, log)
+    except Dropped as exc:
+        doc["dropped"][sound_id] = str(exc)
+        _say(log, f"{sound_id}: dropped: {exc}")
+        return None
+    except (ValueError, B.BankError, ImportError, AttributeError, KeyError) as exc:
+        return f"{sound_id}: {exc}"
+    doc["entries"][sound_id] = entry
+    doc["categories"].setdefault(entry["category"], _category(entry["category"]))
+    misses = target_misses(sound_id, entry["meta"])
+    _say(log, f"{sound_id}: {entry['meta']['dur_s']:.3f} s" + (f"; misses {'; '.join(misses)}" if misses else ""))
+    return None
 
 
 # ---------------------------------------------------------------- 7.4 add-fit
