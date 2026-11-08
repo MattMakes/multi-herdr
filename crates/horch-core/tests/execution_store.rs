@@ -16,6 +16,7 @@ use horch_core::execution::{ExecutionStatus, FailureKind, LaunchStage};
 use horch_core::ids::SkillId;
 use horch_core::roster::Phase;
 use horch_core::skills::{InvocationPolicy, ResolvedSkillRef};
+use horch_core::taskledger::Store;
 use horch_marketplace::SkillVersion;
 use serde::Deserialize;
 
@@ -284,6 +285,30 @@ fn skl_04_execution_records_skill_refs() {
 }
 
 // ─── locking ────────────────────────────────────────────────────────────────
+
+#[test]
+fn eight_first_openers_of_a_new_ledger_all_succeed() {
+    let tmp = tempfile::tempdir().unwrap();
+    let path = tmp.path().join("ledger.sqlite3");
+    let barrier = std::sync::Arc::new(std::sync::Barrier::new(8));
+    let openers: Vec<_> = (0..8)
+        .map(|_| {
+            let path = path.clone();
+            let barrier = barrier.clone();
+            std::thread::spawn(move || {
+                barrier.wait();
+                Store::open(&path)
+                    .map(drop)
+                    .map_err(|error| format!("{error:#}"))
+            })
+        })
+        .collect();
+    let errors: Vec<_> = openers
+        .into_iter()
+        .filter_map(|opener| opener.join().unwrap().err())
+        .collect();
+    assert!(errors.is_empty(), "open errors: {errors:#?}");
+}
 
 #[test]
 fn store_dirlock_excludes_concurrent_writers() {
