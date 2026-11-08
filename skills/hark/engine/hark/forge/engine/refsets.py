@@ -89,17 +89,25 @@ def categories(path: Any = None) -> list[str]:
     return sorted(load(path).get("categories") or {})
 
 
-def refset(category: str, split: str = "forge", path: Any = None) -> list[str]:
-    """The files of one category split; every file must exist."""
+def _check_split_name(split: str) -> None:
     if split not in SPLITS:
         raise ValueError(f"split must be one of {SPLITS}, not {split!r}")
+
+
+def _check_present(files: list[str], category: str, split: str) -> None:
+    gone = [f for f in files if not os.path.isfile(f)]
+    if gone:
+        raise RefsetsMissing(f"{len(gone)} {category}/{split} ref(s) missing, e.g. {gone[0]}: rebuild the refs")
+
+
+def refset(category: str, split: str = "forge", path: Any = None) -> list[str]:
+    """The files of one category split; every file must exist."""
+    _check_split_name(split)
     cats = load(path).get("categories") or {}
     if category not in cats:
         raise KeyError(f"unknown refset category {category!r}; known: {', '.join(sorted(cats))}")
     files = list(cats[category].get(split) or [])
-    gone = [f for f in files if not os.path.isfile(f)]
-    if gone:
-        raise RefsetsMissing(f"{len(gone)} {category}/{split} ref(s) missing, e.g. {gone[0]}: rebuild the refs")
+    _check_present(files, category, split)
     return files
 
 
@@ -146,16 +154,19 @@ def scan(root: Any, exts: Sequence[str] = AUDIO_EXTS) -> dict:
     return {"version": 1, "categories": cats}
 
 
-def _source_problems(cats: dict, sources: dict) -> list[str]:
+def _source_sides(cats: dict, sources: dict) -> dict[str, dict[str, set]]:
     where: dict[str, dict[str, set]] = {}
-    for cat, entry in cats.items():
-        for split in SPLITS:
-            for f in entry.get(split) or []:
-                sid = sources.get(f)
-                if sid is not None:
-                    where.setdefault(sid, {s: set() for s in SPLITS})[split].add(cat)
+    rows = [(sources.get(f), split, cat) for cat, entry in cats.items() for split in SPLITS
+            for f in entry.get(split) or []]
+    for sid, split, cat in rows:
+        if sid is not None:
+            where.setdefault(sid, {s: set() for s in SPLITS})[split].add(cat)
+    return where
+
+
+def _source_problems(cats: dict, sources: dict) -> list[str]:
     return [f"source {sid} is forge in {sorted(w['forge'])} and bench in {sorted(w['bench'])}"
-            for sid, w in where.items() if w["forge"] and w["bench"]]
+            for sid, w in _source_sides(cats, sources).items() if w["forge"] and w["bench"]]
 
 
 def check_split(reg: dict, sources: dict | None = None) -> list[str]:
