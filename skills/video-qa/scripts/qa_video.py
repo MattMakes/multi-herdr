@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Numeric render QA gate for a video project.
 
-Runs 19 numeric checks on render/master.mp4 against timeline.json, writes
+Runs 21 numeric checks on render/master.mp4 against timeline.json, writes
 qa/render-check.json, and draws 3 inspection sheets:
 qa/contact-sheet-360p.png, qa/phone-sheet-360w.png and qa/hook-strip.png.
 
@@ -48,6 +48,7 @@ CHECKS = (
     "scene_determinism",
     "render_determinism",
     "stream_integrity",
+    "format_fit",
     "frame0_readiness",
     "hook_motion",
     "black_frames",
@@ -68,6 +69,8 @@ CHECKS = (
 )
 
 DURATION_TOL_SEC = 0.05
+# Master length range of each meta.format, from docs/specs/video-formats.md.
+FORMAT_RANGES_SEC = {"short": (15.0, 90.0), "long": (180.0, 900.0)}
 PSNR_MIN_DB = 45.0
 FRAME0_YAVG_RANGE = (18.0, 240.0)
 HOOK_WINDOW_SEC = 3.0
@@ -540,6 +543,24 @@ def check_stream_integrity(ctx):
                "width": v.get("width"), "height": v.get("height"), "nb_frames": nb,
                "durations_sec": durations}
     return details, errors
+
+
+def format_fit_errors(fmt, length):
+    if fmt not in FORMAT_RANGES_SEC:
+        return [(f"meta.format is {fmt!r}; it must be 'short' or 'long'", None)]
+    low, high = FORMAT_RANGES_SEC[fmt]
+    if length is None:
+        return [("master length is unknown", None)]
+    if not low - DURATION_TOL_SEC <= length <= high + DURATION_TOL_SEC:
+        return [(f"master length {length:.2f} s is outside the {fmt} range {low:g}-{high:g} s", None)]
+    return []
+
+
+def check_format_fit(ctx):
+    """The encoded master length must fit the range of meta.format."""
+    fmt, length = ctx.meta.get("format"), stream_duration(ctx.info, "video")
+    details = {"format": fmt, "master_sec": length, "range_sec": FORMAT_RANGES_SEC.get(fmt)}
+    return details, format_fit_errors(fmt, length)
 
 
 def check_frame0(ctx):
@@ -1034,6 +1055,8 @@ def seam_errors(motion, seam, typical, limit):
 
 
 def check_loop_seam(ctx):
+    if ctx.meta.get("format") != "short":
+        return skip("meta.format is not short")
     if ctx.meta.get("loop") is not True:
         return skip("meta.loop is not true")
     typical = typical_seam_step(ctx.motion)
@@ -1178,6 +1201,7 @@ CHECK_FUNCS = {
     "scene_determinism": check_scene_determinism,
     "render_determinism": check_render_determinism,
     "stream_integrity": check_stream_integrity,
+    "format_fit": check_format_fit,
     "frame0_readiness": check_frame0,
     "hook_motion": check_hook_motion,
     "black_frames": check_black,
@@ -1478,8 +1502,13 @@ def sh(*args):
         raise RuntimeError(f"ffmpeg fixture failed: {' '.join(args)}\n{proc.stderr}")
 
 
-def make_fixture_video(path, vf="null", tone_db=None, clip=False, width=320, height=180, fps=30, dur=4.0):
+FIXTURE_SEC = 15.0   # the shortest short film
+CALM_FROM_SEC = 8.0  # a plate covers most of the frame from here, so motion_contrast sees a calm stretch
+
+
+def make_fixture_video(path, vf="null", tone_db=None, clip=False, width=320, height=180, fps=30, dur=FIXTURE_SEC):
     src = f"testsrc2=s={width}x{height}:r={fps}:d={dur}"
+    vf = f"{vf},drawbox=x=0:y=0:w=iw:h=ih*0.5:color=0x203040:t=fill:enable='gte(t,{CALM_FROM_SEC:g})'"
     audio = f"aevalsrc=sin(440*2*PI*t)|sin(440*2*PI*t):s=48000:d={dur}" if clip else f"sine=f=440:sample_rate=48000:d={dur}"
     afilter = "anull" if clip else f"volume={tone_db}dB"
     sh("-f", "lavfi", "-i", src, "-f", "lavfi", "-i", audio, "-vf", vf, "-af", afilter, "-ac", "2",
@@ -1499,12 +1528,15 @@ def tone_gain_db(tmp):
 def fixture_timeline(static_hold):
     return {
         "meta": {"id": "self-test", "title": "Self test", "aspect": "16:9", "fps": 30, "width": 320,
-                 "height": 180, "duration_sec": 4.0, "lufs_target": -14.0, "hero_sec": [2.5, 3.5]},
+                 "height": 180, "duration_sec": FIXTURE_SEC, "format": "short", "lufs_target": -14.0, "hero_sec": [2.5, 3.5]},
         "scenes": [
             {"id": "s01-hook", "kind": "hook", "start_sec": 0.0, "duration_sec": 2.0,
              "transition_out": {"type": "cut", "duration_sec": 0.0}, "locked_actions_sec": [0.5, 1.5],
              "critical_regions": [[0.1, 0.2, 0.8, 0.4]], "focal_point": [0.5, 0.4]},
-            {"id": "s02-cta", "kind": "cta", "start_sec": 2.0, "duration_sec": 2.0, "static_hold": static_hold,
+            {"id": "s02-demo", "kind": "demo", "start_sec": 2.0, "duration_sec": CALM_FROM_SEC - 2.0,
+             "transition_out": {"type": "cut", "duration_sec": 0.0}, "focal_point": [0.5, 0.5]},
+            {"id": "s03-cta", "kind": "cta", "start_sec": CALM_FROM_SEC, "duration_sec": FIXTURE_SEC - CALM_FROM_SEC,
+             "static_hold": static_hold,
              "critical_regions": [[0.2, 0.3, 0.6, 0.3]], "focal_point": [0.5, 0.45]},
         ],
     }
@@ -1617,7 +1649,7 @@ GATE_CASES = [  # (name, make_project options, failed checks, text that 1 error 
      {"black_frames", "cuts_vs_plan"}, None),
     ("dark-background", {"video_vf": "drawbox=x=0:y=0:w=iw:h=ih:color=0x0B1020:t=fill:enable='between(t,1.2,1.7)'"},
      {"cuts_vs_plan"}, None),  # the jump to the dark plate is a cut, but not black
-    ("frozen", {"video_vf": "trim=end=2,tpad=stop_mode=clone:stop_duration=2"},
+    ("frozen", {"video_vf": "trim=end=2,tpad=stop_mode=clone:stop_duration=13"},
      {"dead_time", "freeze_frames"}, None),
     ("raf-scene", {"scene_html": SCENE_RAF}, {"scene_determinism"}, None),
     ("variant-frame-count", {"variants": True, "variant_fps": 24}, {"variants_captions"}, "frame count"),
@@ -1643,9 +1675,9 @@ def self_test_static():
 
 
 def assert_sheets(qa):
-    assert_png(qa / "contact-sheet-360p.png", 6 * 640, 2 * 360)
+    assert_png(qa / "contact-sheet-360p.png", 6 * 640, 5 * 360)
     assert_png(qa / "hook-strip.png", 6 * 640, 2 * 360)
-    assert_png(qa / "phone-sheet-360w.png", 6 * PHONE_TILE_W, 2 * 202)
+    assert_png(qa / "phone-sheet-360w.png", 6 * PHONE_TILE_W, 5 * 202)
 
 
 def assert_gate_report(root, case):
@@ -1660,14 +1692,14 @@ def assert_gate_report(root, case):
     return failed
 
 
-# The pass fixture is 4 s long with no loop and no raster: flat_opening, motion_contrast,
-# loop_seam and raster_upscale do not apply.
-PASS_COUNTS = {"pass": len(CHECKS) - 4, "skip": 4, "fail": 0}
+# The pass fixture is a 15 s short film with no loop and no raster: loop_seam and
+# raster_upscale do not apply.
+PASS_COUNTS = {"pass": len(CHECKS) - 2, "skip": 2, "fail": 0}
 
 
 def assert_pass_counts(report, stdout):
     assert report["counts"] == PASS_COUNTS and report["state"] == "pass", f"pass counts: {report['counts']}"
-    line = f"{PASS_COUNTS['pass']} pass / 4 skip / 0 fail"
+    line = f"{PASS_COUNTS['pass']} pass / {PASS_COUNTS['skip']} skip / 0 fail"
     assert line in stdout, f"headline lacks {line!r}: {stdout}"
 
 
@@ -1684,7 +1716,8 @@ def self_test_gate_case(tmp, gain, case):
 
 def self_test_timeline_master(root):
     timeline = json.loads((root / "timeline.json").read_text())
-    timeline["scenes"][1]["static_hold"] = True
+    for scene in timeline["scenes"][1:]:
+        scene["static_hold"] = True
     (root / "timeline-master.json").write_text(json.dumps(timeline))
     code, _ = invoke(gate_args(root))
     assert code == 0, "timeline-master.json static_hold scene must allow a planned freeze"
@@ -1718,7 +1751,7 @@ def phone_test_context(root, out):
 
 def assert_phone_frames(out, result):
     frames = sorted(out.glob("*.png"))
-    assert len(frames) == len(result["frames"]) == 4, f"phone frames: found {len(frames)}, expected 4"
+    assert len(frames) == len(result["frames"]) == 5, f"phone frames: found {len(frames)}, expected 5"
     for path in frames:
         assert_png(path, 640, PHONE_FRAME_H)
 
@@ -1727,7 +1760,7 @@ def self_test_phone_frames(root):
     out = root / "qa" / "phone-frames"
     result = make_phone_frames(phone_test_context(root, out))
     assert_phone_frames(out, result)
-    print("ok phone-frames: count=4 size=640x360")
+    print("ok phone-frames: count=5 size=640x360")
 
 
 def self_test_probe_mismatch(root):
@@ -1872,9 +1905,39 @@ def self_test_gate_results(tmp):
     print("ok gate-results: missing, stale, and fieldless results fail")
 
 
+def format_clip(path, seconds):
+    """A tiny still clip: 64x36 at 5 fps, so a 20 s clip encodes in well under 1 s."""
+    sh("-f", "lavfi", "-i", f"color=c=0x203040:s=64x36:r=5:d={seconds}", "-c:v", "libx264",
+       "-preset", "ultrafast", "-pix_fmt", "yuv420p", str(path))
+    return ffprobe(path)
+
+
+def format_fit_state(fmt, info):
+    meta = {} if fmt is None else {"format": fmt}
+    return check_state(*check_format_fit(types.SimpleNamespace(meta=meta, info=info)))
+
+
+def fake_probe(seconds):
+    """ffprobe output of a master of this length; a real 300 s clip would slow the self-test."""
+    return {"streams": [{"codec_type": "video", "duration": str(seconds)}], "format": {"duration": str(seconds)}}
+
+
+def self_test_format_fit(tmp):
+    short_pass, short_fail = format_clip(tmp / "format-20s.mp4", 20), format_clip(tmp / "format-10s.mp4", 10)
+    # The long cases fake the master length with fake_probe instead of encoding 3 min or more.
+    cases = [("short 20 s", "short", short_pass, "pass"), ("short 10 s", "short", short_fail, "fail"),
+             ("long 300 s", "long", fake_probe(300.0), "pass"), ("long 74 s", "long", fake_probe(74.0), "fail"),
+             ("no format", None, short_pass, "fail"), ("bad format", "medium", short_pass, "fail")]
+    for name, fmt, info, want in cases:
+        got = format_fit_state(fmt, info)
+        assert got == want, f"format_fit {name}: state {got}, expected {want}"
+    print("ok format-fit: short 20 s and long 300 s pass; short 10 s, long 74 s, no format, bad format fail")
+
+
 def self_test_new_checks(tmp):
     self_test_cut_flash()
     self_test_gate_results(tmp)
+    self_test_format_fit(tmp)
 
 
 def self_test():
@@ -1909,8 +1972,8 @@ def motion_clip(path, amp, cut_at=None, flash_frame=None, freeze=None):
        str(path))
 
 
-def motion_failures(path, loop=False):
-    meta = {"fps": 30, "width": 160, "height": 90, "duration_sec": 8.0, "loop": loop}
+def motion_failures(path, loop=False, fmt="short"):
+    meta = {"fps": 30, "width": 160, "height": 90, "duration_sec": 8.0, "loop": loop, "format": fmt}
     scenes = [{"id": "s01", "start_sec": 0.0, "duration_sec": 4.0, "transition_out": "cut"},
               {"id": "s02", "start_sec": 4.0, "duration_sec": 4.0}]
     ctx = types.SimpleNamespace(meta=meta, scenes=scenes, motion=motion_frames(path, meta))
@@ -1940,11 +2003,12 @@ def self_test_motion(tmp):
         ("flat-motion", {"amp": "50"}, False, {"motion_contrast"}),
         ("loop-clean", {"amp": AMP_BUSY_THEN_CALM}, True, set()),
         ("loop-seam", {"amp": AMP_BUSY_THEN_CALM, "cut_at": 4.0}, True, {"loop_seam"}),
+        ("loop-seam-long", {"amp": AMP_BUSY_THEN_CALM, "cut_at": 4.0}, True, set()),  # loop_seam is short only
     ]
     for name, clip, loop, expected in cases:
         path = tmp / f"motion-{name}.mp4"
         motion_clip(path, **clip)
-        failed, results = motion_failures(path, loop)
+        failed, results = motion_failures(path, loop, "long" if name.endswith("-long") else "short")
         assert failed == expected, f"motion {name}: failed {sorted(failed)}, expected {sorted(expected)}\n" \
                                    f"{json.dumps({k: v[1] for k, v in results.items()}, indent=1)}"
         print(f"ok motion {name}: failed={sorted(failed)}")

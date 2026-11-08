@@ -1,6 +1,6 @@
 ---
 name: video-qa
-description: "Use when a rendered video (render/master.mp4) must pass the final quality gate - runs scripts/qa_video.py for 20 numeric render checks, draws phone inspection sheets, then scores the video blind on 8 axes and writes qa/critique-round-<N>.md with ranked fixes."
+description: "Use when a rendered video (render/master.mp4) must pass the final quality gate - runs scripts/qa_video.py for 21 numeric render checks, draws phone inspection sheets, then scores the video blind on 8 axes and writes qa/critique-round-<N>.md with ranked fixes."
 ---
 
 # Video QA: numeric gate and blind critic
@@ -62,7 +62,7 @@ video-editor renders them with the video-render skill: a cold forward pass to
 `probe/forward/` and a warm reverse pass to `probe/reverse/`. Without probe
 folders the render determinism check fails when `scenes/` holds HTML.
 
-Self-test (synthesizes all fixtures in a temp folder, about 10 s):
+Self-test (synthesizes all fixtures in a temp folder, about 35 s):
 
 ```bash
 python3 "<skill-dir>/scripts/qa_video.py" --self-test
@@ -107,10 +107,11 @@ warning does not fail the gate, but put it in the critique report).
 | 14 | `dead_time` | Little motion for `2.0 s` or longer outside a `static_hold` scene |
 | 15 | `flat_opening` | Motion per second in `0-5 s` is under `0.5x` the rest of the film (films of `7 s` or more) |
 | 16 | `motion_contrast` | The busiest seconds have under `1.5x` the motion of the calmest (90th vs 10th percentile, films of `6 s` or more) |
-| 17 | `loop_seam` | `meta.loop` is `true` and the last frame to frame 0 step is above `max(0.02, 3x` the typical step near the ends`)` |
+| 17 | `loop_seam` | `short` only: `meta.loop` is `true` and the last frame to frame 0 step is above `max(0.02, 3x` the typical step near the ends`)` |
 | 18 | `raster_upscale` | A raster image is drawn at `1.2x` its natural size or more; above `1.12x` for `0.5 s` or more is a warning |
 | 19 | `cut_flash` | The final 2 frames of a scene differ in mean luma by more than `6%`, except a declared fade hold |
 | 20 | `gate_results` | An expected result is missing, has no `pass`/`passed` field, reports failure, or predates its master |
+| 21 | `format_fit` | `meta.format` is absent or not `short` or `long`; the master length is outside `15-90 s` (`short`) or `180-900 s` (`long`), `+-0.05 s` |
 
 Variant sizes follow the master's short side `S` and long side `L`:
 `16x9.mp4` is `L x S`, `9x16.mp4` is `S x L`, `1x1.mp4` is `S x S`. For a
@@ -128,7 +129,7 @@ fails when a scene draws an image or video, and skips otherwise.
 The gate reads scene bounds from `timeline-master.json` when it exists.
 Otherwise, it reads scene bounds from `timeline.json`. Required fields are:
 
-- `meta`: `fps`, `width`, `height`, `duration_sec` (required);
+- `meta`: `fps`, `width`, `height`, `duration_sec`, `format` (required);
   `lufs_target`, `aspect`, `allow_dark_intro`, `loop` (optional).
 - `scenes[]`: `id`, `start_sec`, `duration_sec` (required);
   `transition_out` (string or `{type, duration_sec}`; a type that contains
@@ -150,7 +151,8 @@ the critique report with its timestamp and target file.
 
 Read both images at full size. At `360 px` high, text that you cannot read is
 too small for a phone. Use the hook strip for axis 1 and the contact sheet for
-pacing, layout drift, safe zones and visual cohesion. To see 1 moment in
+pacing, layout drift, safe zones and visual cohesion. For `long`, the contact
+sheet must sample each chapter in `meta.chapters`. Name a chapter without tiles in the report. To see 1 moment in
 detail, extract 1 frame:
 
 ```bash
@@ -179,6 +181,13 @@ Verdict rule. All 3 conditions must be true for `VERDICT: PASS`:
 - No axis scores below `3`.
 
 Otherwise the verdict is `VERDICT: FAIL`.
+
+Read `meta.format` before you score. The axis 1 and axis 2 anchors in
+`rubric.md` are `short` rules. For `long`, use these rules:
+
+- Axis 1: judge whether the first `30 s` prove the title and the thumbnail.
+- Axis 2: judge the chapter re-hooks and the pacing over the full runtime.
+- Do not fail a `long` film for missing `short` rules: a cut every `2-3 s` or a hook before `1.5 s`.
 
 ## Step 5: write qa/critique-round-<N>.md
 
