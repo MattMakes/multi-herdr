@@ -84,6 +84,16 @@ def curve_mix(ca: list, cb: list, ma: TMap, mb: TMap, w: float, nd: int = 6) -> 
     return t, (1 - w) * va + w * vb
 
 
+def _farthest(p: np.ndarray, i: int, j: int) -> tuple[int, float]:
+    """The point between i and j farthest in value from the line i-j, and its error."""
+    t = p[i + 1: j, 0]
+    span = p[j, 0] - p[i, 0]
+    line = p[i, 1] + (p[j, 1] - p[i, 1]) * ((t - p[i, 0]) / span if span > 0 else 0.0)
+    err = np.abs(p[i + 1: j, 1] - line)
+    k = int(np.argmax(err))
+    return i + 1 + k, float(err[k])
+
+
 def rdp(pts: list, tol: float) -> list:
     """Ramer-Douglas-Peucker on [[t, v], ...] with the value error as distance."""
     if len(pts) < 3:
@@ -96,16 +106,30 @@ def rdp(pts: list, tol: float) -> list:
         i, j = stack.pop()
         if j - i < 2:
             continue
-        t = p[i + 1: j, 0]
-        span = p[j, 0] - p[i, 0]
-        line = p[i, 1] + (p[j, 1] - p[i, 1]) * ((t - p[i, 0]) / span if span > 0 else 0.0)
-        err = np.abs(p[i + 1: j, 1] - line)
-        k = int(np.argmax(err))
-        if err[k] > tol:
-            m = i + 1 + k
+        m, e = _farthest(p, i, j)
+        if e > tol:
             keep[m] = True
             stack += [(i, m), (m, j)]
     return p[keep].tolist()
+
+
+def extras(w: float, xa: list, xb: list, fa: Callable, fb: Callable) -> list:
+    """Unpaired items of both sides: a's while w < 1, then b's while w > 0."""
+    out = [fa(x) for x in xa] if w < 1 else []
+    return out + ([fb(x) for x in xb] if w > 0 else [])
+
+
+def left(items: list, used: set) -> list:
+    """The items whose index is not in used."""
+    return [x for i, x in enumerate(items) if i not in used]
+
+
+def set_or_drop(m: dict, key: str, value: Any) -> None:
+    """m[key] = value when value is truthy, else remove key."""
+    if value:
+        m[key] = value
+    else:
+        m.pop(key, None)
 
 
 # ---------------------------------------------------------------- mode rows
@@ -122,17 +146,25 @@ def _row_db(r: list) -> float:
     return 10 * math.log10(max(r[2] ** 2 * r[1], 1e-30))
 
 
+def _row_pairs(ra: list, rb: list) -> list:
+    return pair([r[0] for r in ra], [_row_db(r) for r in ra], [r[0] for r in rb], [_row_db(r) for r in rb])
+
+
+def _scale_row(r: list, g: float) -> list:
+    return [r[0], r[1], r[2] * g, r[3]]
+
+
+def _paired_row(x: list, y: list, w: float) -> list:
+    return [geo(x[0], y[0], w), geo(x[1], y[1], w), geo(x[2], y[2], w), circ(x[3], y[3], w)]
+
+
 def rows_mix(ra: list, rb: list, w: float) -> list:
     """Mix 2 sets of [f, tau, amp, phase] rows; unpaired rows fade with their side's weight."""
     ra, rb = _pos(ra or []), _pos(rb or [])
-    pairs = pair([r[0] for r in ra], [_row_db(r) for r in ra], [r[0] for r in rb], [_row_db(r) for r in rb])
-    used_a, used_b = {i for i, _ in pairs}, {j for _, j in pairs}
-    out = [[geo(ra[i][0], rb[j][0], w), geo(ra[i][1], rb[j][1], w), geo(ra[i][2], rb[j][2], w),
-            circ(ra[i][3], rb[j][3], w)] for i, j in pairs]
-    if w < 1:
-        out += [[r[0], r[1], r[2] * (1 - w), r[3]] for i, r in enumerate(ra) if i not in used_a]
-    if w > 0:
-        out += [[r[0], r[1], r[2] * w, r[3]] for j, r in enumerate(rb) if j not in used_b]
+    pairs = _row_pairs(ra, rb)
+    out = [_paired_row(ra[i], rb[j], w) for i, j in pairs]
+    out += extras(w, left(ra, {i for i, _ in pairs}), left(rb, {j for _, j in pairs}),
+                  lambda r: _scale_row(r, 1 - w), lambda r: _scale_row(r, w))
     return sorted(out, key=lambda r: r[0])
 
 
@@ -167,27 +199,50 @@ def _spectral_anchors(m: dict) -> list:
     return [0.0, _keyframe_peak(m), float(m.get("dur", 0.0))]
 
 
+def _modal_maps(a: dict, b: dict, w: float) -> tuple:
+    k = min(len(a.get("strikes", [])), len(b.get("strikes", [])))
+    return anchor_maps(_modal_anchors(a, k), _modal_anchors(b, k), w)
+
+
+def _sines_maps(a: dict, b: dict, w: float) -> tuple:
+    k = min(len(_sines_onsets(a)), len(_sines_onsets(b)))
+    return anchor_maps(_sines_anchors(a, k), _sines_anchors(b, k), w)
+
+
+def _spectral_maps(a: dict, b: dict, w: float) -> tuple:
+    return anchor_maps(_spectral_anchors(a), _spectral_anchors(b), w)
+
+
+def _gesture_maps(a: dict, b: dict, w: float) -> tuple:
+    ta, tb = a.get("tones"), b.get("tones")
+    same = ta and tb and kind_of(ta) == kind_of(tb)
+    return maps_for(ta, tb, w) if same else maps_for(a["air"], b["air"], w)
+
+
+def _shared_layer(a: dict, b: dict) -> tuple | None:
+    """The models of the first role (tone, body, air) that both hybrids hold with one kind."""
+    pairs = ((_layer(a, r), _layer(b, r)) for r in ("tone", "body", "air"))
+    return next(((la["model"], lb["model"]) for la, lb in pairs
+                 if la and lb and kind_of(la["model"]) == kind_of(lb["model"])), None)
+
+
+def _hybrid_maps(a: dict, b: dict, w: float) -> tuple | None:
+    shared = _shared_layer(a, b)
+    return None if shared is None else maps_for(shared[0], shared[1], w)
+
+
+_MAPS: dict[str, Callable] = {
+    "modal": _modal_maps, "sines": _sines_maps, "spectral": _spectral_maps,
+    "gesture": _gesture_maps, "hybrid": _hybrid_maps,
+}
+
+
 def maps_for(a: dict, b: dict, w: float) -> tuple[TMap, TMap, list]:
     """The time maps a -> morph and b -> morph of 2 models of one kind."""
-    name = kind_of(a)
-    if name == "modal":
-        k = min(len(a.get("strikes", [])), len(b.get("strikes", [])))
-        return anchor_maps(_modal_anchors(a, k), _modal_anchors(b, k), w)
-    if name == "sines":
-        k = min(len(_sines_onsets(a)), len(_sines_onsets(b)))
-        return anchor_maps(_sines_anchors(a, k), _sines_anchors(b, k), w)
-    if name == "spectral":
-        return anchor_maps(_spectral_anchors(a), _spectral_anchors(b), w)
-    if name == "gesture":
-        ta, tb = a.get("tones"), b.get("tones")
-        if ta and tb and kind_of(ta) == kind_of(tb):
-            return maps_for(ta, tb, w)
-        return maps_for(a["air"], b["air"], w)
-    if name == "hybrid":
-        for role in ("tone", "body", "air"):
-            la, lb = _layer(a, role), _layer(b, role)
-            if la and lb and kind_of(la["model"]) == kind_of(lb["model"]):
-                return maps_for(la["model"], lb["model"], w)
+    maker = _MAPS.get(kind_of(a))
+    maps = maker(a, b, w) if maker else None
+    if maps is not None:
+        return maps
     ident = tmap([0.0, 1.0], [0.0, 1.0])
     return ident, ident, [0.0, 1.0]
 
@@ -210,10 +265,7 @@ def _modal_strikes(a: dict, b: dict, w: float, tm: list, ma: TMap, mb: TMap) -> 
     sa, sb = a.get("strikes", []), b.get("strikes", [])
     k = min(len(sa), len(sb))
     out = [_strike_mix(sa[i], sb[i], tm[i + 1], w) for i in range(k)]
-    if w < 1:
-        out += [_strike_extra(s, ma, 1 - w) for s in sa[k:]]
-    if w > 0:
-        out += [_strike_extra(s, mb, w) for s in sb[k:]]
+    out += extras(w, sa[k:], sb[k:], lambda s: _strike_extra(s, ma, 1 - w), lambda s: _strike_extra(s, mb, w))
     return sorted(out, key=lambda s: s["t"])
 
 
@@ -255,6 +307,15 @@ def _side_morph(sa: Any, sb: Any, w: float, ma: TMap, mb: TMap) -> Any:
     return _model.module("sines").morph_side(sa, sb, w, map_a=ma, map_b=mb)
 
 
+def _modal_scalars(a: dict, b: dict, w: float) -> dict:
+    return {
+        "channels": max(int(a.get("channels", 1)), int(b.get("channels", 1))),
+        "fade_out_s": lin(float(a.get("fade_out_s", 0)), float(b.get("fade_out_s", 0)), w),
+        "coherent": bool(a.get("coherent") or b.get("coherent")),
+        "version": max(int(a.get("version", 1)), int(b.get("version", 1))),
+    }
+
+
 def morph_modal(a: dict, b: dict, w: float) -> dict:
     ma, mb, tm = maps_for(a, b, w)
     m = copy.deepcopy(a)
@@ -262,16 +323,9 @@ def morph_modal(a: dict, b: dict, w: float) -> dict:
     m["noise"] = _modal_noise(a, b, w, ma, mb)
     m["sub"] = _modal_sub(a, b, w)
     m["side"] = _modal_side(a, b, w)
-    st = _side_morph(a.get("side_t"), b.get("side_t"), w, ma, mb)
-    if st:
-        m["side_t"] = st
-    else:
-        m.pop("side_t", None)
+    set_or_drop(m, "side_t", _side_morph(a.get("side_t"), b.get("side_t"), w, ma, mb))
     m["length_s"] = round(tm[-1], 6)
-    m["channels"] = max(int(a.get("channels", 1)), int(b.get("channels", 1)))
-    m["fade_out_s"] = lin(float(a.get("fade_out_s", 0)), float(b.get("fade_out_s", 0)), w)
-    m["coherent"] = bool(a.get("coherent") or b.get("coherent"))
-    m["version"] = max(int(a.get("version", 1)), int(b.get("version", 1)))
+    m.update(_modal_scalars(a, b, w))
     return m
 
 
@@ -303,15 +357,24 @@ def _life_mix(ca: list, cb: list, pa: dict, pb: dict, ma: TMap, mb: TMap, w: flo
     return u, (2 ** v if log else v)
 
 
-def _partial_mix(pa: dict, pb: dict, ma: TMap, mb: TMap, w: float) -> dict:
+def _partial_span(pa: dict, pb: dict, ma: TMap, mb: TMap, w: float) -> tuple[float, float]:
     t0 = lin(ma(float(pa["t0"])), mb(float(pb["t0"])), w)
     t1 = max(lin(ma(float(pa["t1"])), mb(float(pb["t1"])), w), t0 + 0.0001)
-    uf, vf = _life_mix(pa["freq"], pb["freq"], pa, pb, ma, mb, w, True)
-    ua, va = _life_mix(pa["amp"], pb["amp"], pa, pb, ma, mb, w, False)
+    return t0, t1
+
+
+def _on_span(uv: tuple, t0: float, t1: float) -> list:
+    """Life-relative curve points (u in 0..1) as absolute [t, value] points."""
+    return [[float(t0 + u * (t1 - t0)), float(v)] for u, v in zip(*uv)]
+
+
+def _partial_mix(pa: dict, pb: dict, ma: TMap, mb: TMap, w: float) -> dict:
+    t0, t1 = _partial_span(pa, pb, ma, mb, w)
+    freq = _life_mix(pa["freq"], pb["freq"], pa, pb, ma, mb, w, True)
+    amp = _life_mix(pa["amp"], pb["amp"], pa, pb, ma, mb, w, False)
     return {"t0": t0, "rise": lin(float(pa["rise"]), float(pb["rise"]), w), "t1": t1,
             "rel": lin(float(pa["rel"]), float(pb["rel"]), w), "ph": circ(float(pa["ph"]), float(pb["ph"]), w),
-            "freq": [[float(t0 + u * (t1 - t0)), float(f)] for u, f in zip(uf, vf)],
-            "amp": [[float(t0 + u * (t1 - t0)), float(d)] for u, d in zip(ua, va)]}
+            "freq": _on_span(freq, t0, t1), "amp": _on_span(amp, t0, t1)}
 
 
 def _partial_mapped(p: dict, mp: TMap, gain_db: float) -> dict:
@@ -322,17 +385,18 @@ def _partial_mapped(p: dict, mp: TMap, gain_db: float) -> dict:
     return q
 
 
-def _sines_partials(a: dict, b: dict, w: float, ma: TMap, mb: TMap) -> list:
+def _partial_pairs(pa: list, pb: list) -> list:
     sines = _model.module("sines")
+    return pair([sines.partial_freq(p) for p in pa], [_energy_db(p) for p in pa],
+                [sines.partial_freq(p) for p in pb], [_energy_db(p) for p in pb])
+
+
+def _sines_partials(a: dict, b: dict, w: float, ma: TMap, mb: TMap) -> list:
     pa, pb = a.get("partials", []), b.get("partials", [])
-    pairs = pair([sines.partial_freq(p) for p in pa], [_energy_db(p) for p in pa],
-                 [sines.partial_freq(p) for p in pb], [_energy_db(p) for p in pb])
-    ua, ub = {i for i, _ in pairs}, {j for _, j in pairs}
+    pairs = _partial_pairs(pa, pb)
     out = [_partial_mix(pa[i], pb[j], ma, mb, w) for i, j in pairs]
-    if w < 1:
-        out += [_partial_mapped(p, ma, wdb(1 - w)) for i, p in enumerate(pa) if i not in ua]
-    if w > 0:
-        out += [_partial_mapped(p, mb, wdb(w)) for j, p in enumerate(pb) if j not in ub]
+    out += extras(w, left(pa, {i for i, _ in pairs}), left(pb, {j for _, j in pairs}),
+                  lambda p: _partial_mapped(p, ma, wdb(1 - w)), lambda p: _partial_mapped(p, mb, wdb(w)))
     return sorted(out, key=_peak_db, reverse=True)
 
 
@@ -341,23 +405,31 @@ def _transients(a: dict, b: dict, w: float, ma: TMap, mb: TMap) -> list:
     k = min(len(ta), len(tb))
     out = [{"t": lin(float(ta[i]["t"]), float(tb[i]["t"]), w), "atoms": rows_mix(ta[i]["atoms"], tb[i]["atoms"], w)}
            for i in range(k)]
-    if w < 1:
-        out += [{"t": float(ma(float(s["t"]))), "atoms": _scale_rows(s["atoms"], 1 - w)} for s in ta[k:]]
-    if w > 0:
-        out += [{"t": float(mb(float(s["t"]))), "atoms": _scale_rows(s["atoms"], w)} for s in tb[k:]]
+    out += extras(w, ta[k:], tb[k:], lambda s: _transient_extra(s, ma, 1 - w), lambda s: _transient_extra(s, mb, w))
     return sorted(out, key=lambda s: s["t"])
+
+
+def _transient_extra(s: dict, mp: TMap, g: float) -> dict:
+    return {"t": float(mp(float(s["t"]))), "atoms": _scale_rows(s["atoms"], g)}
+
+
+def _mapped_times(r: dict, mp: TMap) -> np.ndarray:
+    return np.atleast_1d(mp(np.asarray(r.get("times", [0.0]))))
+
+
+def _band_rows(t: np.ndarray, tA: np.ndarray, tB: np.ndarray, ra: dict, rb: dict, w: float) -> list:
+    return [np.round((1 - w) * np.interp(t, tA, da) + w * np.interp(t, tB, dbb), 2).tolist()
+            for da, dbb in zip(ra.get("db", []), rb.get("db", []))]
 
 
 def _residual(a: dict, b: dict, w: float, ma: TMap, mb: TMap) -> dict:
     ra, rb = a.get("residual") or {}, b.get("residual") or {}
     if list(ra.get("bands", [])) != list(rb.get("bands", [])):
         raise ValueError("sines morph: the residual bands of the 2 models do not match")
-    tA, tB = np.atleast_1d(ma(np.asarray(ra.get("times", [0.0])))), np.atleast_1d(mb(np.asarray(rb.get("times", [0.0]))))
+    tA, tB = _mapped_times(ra, ma), _mapped_times(rb, mb)
     t = np.unique(np.round(np.concatenate([tA, tB]), 6))
-    db = [np.round((1 - w) * np.interp(t, tA, da) + w * np.interp(t, tB, dbb), 2).tolist()
-          for da, dbb in zip(ra.get("db", []), rb.get("db", []))]
     out = copy.deepcopy(ra if w < 0.5 else rb)
-    out.update({"bands": list(ra.get("bands", [])), "times": t.tolist(), "db": db})
+    out.update({"bands": list(ra.get("bands", [])), "times": t.tolist(), "db": _band_rows(t, tA, tB, ra, rb, w)})
     return out
 
 
@@ -365,11 +437,26 @@ def _onsets(a: dict, b: dict, w: float, tm: list, ma: TMap, mb: TMap) -> list:
     oa, ob = list(a.get("onsets") or []), list(b.get("onsets") or [])
     k = min(len(oa), len(ob))
     out = [lin(float(x), float(y), w) for x, y in zip(oa[:k], ob[:k])]
-    if w < 1:
-        out += [float(ma(float(t))) for t in oa[k:]]
-    if w > 0:
-        out += [float(mb(float(t))) for t in ob[k:]]
+    out += extras(w, oa[k:], ob[k:], lambda t: float(ma(float(t))), lambda t: float(mb(float(t))))
     return sorted(out)
+
+
+def _sines_scalars(a: dict, b: dict, w: float, tm: list) -> dict:
+    return {
+        "duration": round(tm[-1], 5),
+        "peak_db": lin(float(a.get("peak_db", 0)), float(b.get("peak_db", 0)), w),
+        "width": lin(float(a.get("width", -120)), float(b.get("width", -120)), w),
+        "channels": max(_model.channels_of(a), _model.channels_of(b)),
+        "coherent": bool(a.get("coherent") or b.get("coherent")),
+        "analysis": {},
+    }
+
+
+def _with_summary(m: dict) -> dict:
+    s = _model.module("sines").summary(m)
+    if isinstance(s, dict):
+        m["summary"] = s
+    return m
 
 
 def morph_sines(a: dict, b: dict, w: float) -> dict:
@@ -380,21 +467,9 @@ def morph_sines(a: dict, b: dict, w: float) -> dict:
     m["residual"] = _residual(a, b, w, ma, mb)
     m["onsets"] = _onsets(a, b, w, tm, ma, mb)
     m["onset"] = m["onsets"][0] if m["onsets"] else 0.0
-    m["duration"] = round(tm[-1], 5)
-    m["peak_db"] = lin(float(a.get("peak_db", 0)), float(b.get("peak_db", 0)), w)
-    m["width"] = lin(float(a.get("width", -120)), float(b.get("width", -120)), w)
-    side = _side_morph(a.get("side"), b.get("side"), w, ma, mb)
-    if side:
-        m["side"] = side
-    else:
-        m.pop("side", None)
-    m["channels"] = max(_model.channels_of(a), _model.channels_of(b))
-    m["coherent"] = bool(a.get("coherent") or b.get("coherent"))
-    m["analysis"] = {}
-    s = _model.module("sines").summary(m)
-    if isinstance(s, dict):
-        m["summary"] = s
-    return m
+    m.update(_sines_scalars(a, b, w, tm))
+    set_or_drop(m, "side", _side_morph(a.get("side"), b.get("side"), w, ma, mb))
+    return _with_summary(m)
 
 
 # ---------------------------------------------------------------- spectral
@@ -445,36 +520,45 @@ def _ridges(a: dict, b: dict, w: float, ma: TMap, mb: TMap) -> list:
     return out
 
 
+def _grains(ta: dict | None, tb: dict | None, near: dict, w: float) -> dict | None:
+    ga, gb = (ta or {}).get("grains"), (tb or {}).get("grains")
+    if ga and gb:
+        return dict(near.get("grains") or ga, density=geo(float(ga["density"]), float(gb["density"]), w))
+    one, weight = (ga, 1 - w) if ga else (gb, w)
+    return copy.deepcopy(one) if one and weight >= 0.5 else None
+
+
 def _texture(a: dict, b: dict, w: float) -> dict | None:
     ta, tb = a.get("texture"), b.get("texture")
     near = (ta if w < 0.5 else tb) or ta or tb
     if not near:
         return None
     out = copy.deepcopy(near)
-    ga, gb = (ta or {}).get("grains"), (tb or {}).get("grains")
-    if ga and gb:
-        out["grains"] = dict(near.get("grains") or ga, density=geo(float(ga["density"]), float(gb["density"]), w))
-    else:
-        one, weight = (ga, 1 - w) if ga else (gb, w)
-        out["grains"] = copy.deepcopy(one) if one and weight >= 0.5 else None
+    out["grains"] = _grains(ta, tb, near, w)
     out["am"] = _am(ta, tb, w)
     return out
 
 
-def _am(ta: dict | None, tb: dict | None, w: float) -> dict | None:
-    aa, ab = (ta or {}).get("am"), (tb or {}).get("am")
-    if aa and ab and len(aa["depth"]) == len(ab["depth"]):
-        out = copy.deepcopy(aa if w < 0.5 else ab)
+def _am_both(aa: dict, ab: dict, w: float) -> dict:
+    out = copy.deepcopy(aa if w < 0.5 else ab)
+    if len(aa["depth"]) == len(ab["depth"]):
         out["depth"] = [lin(x, y, w) for x, y in zip(aa["depth"], ab["depth"])]
-        return out
-    if aa and ab:
-        return copy.deepcopy(aa if w < 0.5 else ab)
-    one, weight = (aa, 1 - w) if aa else (ab, w)
+    return out
+
+
+def _am_one(one: dict | None, weight: float) -> dict | None:
     if not one:
         return None
     out = copy.deepcopy(one)
     out["depth"] = [d * weight for d in one["depth"]]
     return out
+
+
+def _am(ta: dict | None, tb: dict | None, w: float) -> dict | None:
+    aa, ab = (ta or {}).get("am"), (tb or {}).get("am")
+    if aa and ab:
+        return _am_both(aa, ab, w)
+    return _am_one(*((aa, 1 - w) if aa else (ab, w)))
 
 
 def _fine(a: dict, b: dict, w: float) -> dict | None:
@@ -483,6 +567,17 @@ def _fine(a: dict, b: dict, w: float) -> dict | None:
         return dict(fa, db=[lin(x, y, w) for x, y in zip(fa["db"], fb["db"])])
     near = fa if w < 0.5 else fb
     return copy.deepcopy(near)
+
+
+def _spectral_scalars(a: dict, b: dict, w: float, tm: list) -> dict:
+    return {
+        "level_db": lin(float(a.get("level_db", 0)), float(b.get("level_db", 0)), w),
+        "dur": round(tm[-1], 4),
+        "channels": max(_model.channels_of(a), _model.channels_of(b)),
+        "finish": bool(a.get("finish") or b.get("finish")),
+        "source": None,
+        "fit": {},
+    }
 
 
 def morph_spectral(a: dict, b: dict, w: float) -> dict:
@@ -496,32 +591,32 @@ def morph_spectral(a: dict, b: dict, w: float) -> dict:
     m["ridges"] = _ridges(a, b, w, ma, mb)
     m["texture"] = _texture(a, b, w)
     m["fine"] = _fine(a, b, w)
-    m["level_db"] = lin(float(a.get("level_db", 0)), float(b.get("level_db", 0)), w)
-    m["dur"] = round(tm[-1], 4)
-    m["channels"] = max(_model.channels_of(a), _model.channels_of(b))
-    m["finish"] = bool(a.get("finish") or b.get("finish"))
-    m["source"] = None
-    m["fit"] = {}
+    m.update(_spectral_scalars(a, b, w, tm))
     return m
 
 
 # ---------------------------------------------------------------- gesture and hybrid
 
 
-def _tones(a: dict, b: dict, w: float) -> dict | None:
-    ta, tb = a.get("tones"), b.get("tones")
-    if ta and tb and kind_of(ta) == kind_of(tb):
-        t = KIND_MORPH[kind_of(ta)](ta, tb, w)
-        t["layer"] = "deterministic"
-        if kind_of(t) == "modal" and t.get("strikes"):
-            t["onset"] = t["strikes"][0]["t"]
-        return t
-    if ta and tb:
-        return copy.deepcopy(ta if w < 0.5 else tb)
-    one, weight = (ta, 1 - w) if ta else (tb, w)
+def _tones_same(ta: dict, tb: dict, w: float) -> dict:
+    t = KIND_MORPH[kind_of(ta)](ta, tb, w)
+    t["layer"] = "deterministic"
+    if kind_of(t) == "modal" and t.get("strikes"):
+        t["onset"] = t["strikes"][0]["t"]
+    return t
+
+
+def _tones_one(one: dict | None, weight: float) -> dict | None:
     if not one or weight <= 0:
         return None
     return _model.module("gesture").gain_tones(one, wdb(weight))
+
+
+def _tones(a: dict, b: dict, w: float) -> dict | None:
+    ta, tb = a.get("tones"), b.get("tones")
+    if ta and tb:
+        return _tones_same(ta, tb, w) if kind_of(ta) == kind_of(tb) else copy.deepcopy(ta if w < 0.5 else tb)
+    return _tones_one(*((ta, 1 - w) if ta else (tb, w)))
 
 
 def morph_gesture(a: dict, b: dict, w: float) -> dict:
@@ -542,21 +637,23 @@ def _layer(m: dict, role: str) -> dict | None:
     return next((layer for layer in m.get("layers", []) if layer.get("role") == role), None)
 
 
+def _role_layer(role: str, la: dict | None, lb: dict | None, w: float) -> dict | None:
+    """The morph layer of one role: both mixed, or one side faded by its weight."""
+    if la and lb:
+        return {"role": role, "gain_db": lin(float(la.get("gain_db", 0)), float(lb.get("gain_db", 0)), w),
+                "model": morph(la["model"], lb["model"], w)}
+    one, weight = (la, 1 - w) if la else (lb, w)
+    if not one or weight <= 0:
+        return None
+    q = copy.deepcopy(one)
+    q["gain_db"] = float(one.get("gain_db", 0)) + wdb(weight)
+    return q
+
+
 def morph_hybrid(a: dict, b: dict, w: float) -> dict:
-    layers = []
-    for role in ("tone", "body", "air"):
-        la, lb = _layer(a, role), _layer(b, role)
-        if la and lb:
-            layers.append({"role": role, "gain_db": lin(float(la.get("gain_db", 0)), float(lb.get("gain_db", 0)), w),
-                           "model": morph(la["model"], lb["model"], w)})
-        elif la or lb:
-            one, weight = (la, 1 - w) if la else (lb, w)
-            if weight > 0:
-                q = copy.deepcopy(one)
-                q["gain_db"] = float(one.get("gain_db", 0)) + wdb(weight)
-                layers.append(q)
+    layers = [_role_layer(r, _layer(a, r), _layer(b, r), w) for r in ("tone", "body", "air")]
     m = copy.deepcopy(a)
-    m["layers"] = layers
+    m["layers"] = [layer for layer in layers if layer is not None]
     m["length_s"] = lin(float(a.get("length_s", 0)), float(b.get("length_s", 0)), w)
     m["channels"] = max(int(a.get("channels", 1)), int(b.get("channels", 1)))
     return m
@@ -580,20 +677,29 @@ def _resample(v: list, n: int) -> np.ndarray:
     return np.interp(np.linspace(0, 1, n), np.linspace(0, 1, len(v)), v)
 
 
-def _pre_mix(pa: dict, pb: dict, w: float) -> dict:
-    t_on = lin(float(pa["t_on"]), float(pb["t_on"]), w)
-    n = max(1, int(round(t_on / 0.00025)))
-    out = {"t_on": t_on, "db": ((1 - w) * _resample(pa.get("db") or [], n) + w * _resample(pb.get("db") or [], n)).tolist()}
+def _attack_mix(pa: dict, pb: dict, w: float) -> list:
     aa, ab = pa.get("attack_db") or [], pb.get("attack_db") or []
-    if aa and ab:
-        k = max(2, int(round(lin(len(aa), len(ab), w))))
-        out["attack_db"] = ((1 - w) * _resample(aa, k) + w * _resample(ab, k)).tolist()
-    else:
-        out["attack_db"] = []
+    if not (aa and ab):
+        return []
+    k = max(2, int(round(lin(len(aa), len(ab), w))))
+    return ((1 - w) * _resample(aa, k) + w * _resample(ab, k)).tolist()
+
+
+def _pre_flags(pa: dict, pb: dict) -> dict:
+    out = {}
     if pa.get("v") == 2 and pb.get("v") == 2:
         out["v"] = 2
     if pa.get("hp_hz") and pb.get("hp_hz"):
         out["hp_hz"] = max(pa["hp_hz"], pb["hp_hz"])
+    return out
+
+
+def _pre_mix(pa: dict, pb: dict, w: float) -> dict:
+    t_on = lin(float(pa["t_on"]), float(pb["t_on"]), w)
+    n = max(1, int(round(t_on / 0.00025)))
+    db = (1 - w) * _resample(pa.get("db") or [], n) + w * _resample(pb.get("db") or [], n)
+    out = {"t_on": t_on, "db": db.tolist(), "attack_db": _attack_mix(pa, pb, w)}
+    out.update(_pre_flags(pa, pb))
     return out
 
 
@@ -608,46 +714,61 @@ def _gate_mix(ga: dict | None, gb: dict | None, w: float, ma: TMap, mb: TMap) ->
     return {"pts": [[float(x), round(float(y), 3)] for x, y in zip(t, (1 - w) * va + w * vb)]}
 
 
-def post_mix(a: dict, b: dict, w: float) -> dict | None:
-    pa, pb = a.get("post"), b.get("post")
-    if not pa and not pb:
-        return None
-    zero = {"eq_db": [0.0] * 28, "gain_db": 0.0}
-    xa, xb = pa or zero, pb or zero
-    out: dict = {"eq_db": [lin(float(x), float(y), w) for x, y in zip(xa.get("eq_db") or zero["eq_db"],
-                                                                     xb.get("eq_db") or zero["eq_db"])],
-                 "gain_db": lin(float(xa.get("gain_db", 0)), float(xb.get("gain_db", 0)), w)}
+_ZERO_POST = {"eq_db": [0.0] * 28, "gain_db": 0.0}
+
+
+def _mix_eq(xa: dict, xb: dict, w: float) -> list:
+    ea, eb = xa.get("eq_db") or _ZERO_POST["eq_db"], xb.get("eq_db") or _ZERO_POST["eq_db"]
+    return [lin(float(x), float(y), w) for x, y in zip(ea, eb)]
+
+
+def _pre_and_gate(a: dict, b: dict, xa: dict, xb: dict, w: float) -> dict:
+    out = {}
     if xa.get("pre") and xb.get("pre"):
         out["pre"] = _pre_mix(xa["pre"], xb["pre"], w)
     if xa.get("gate") or xb.get("gate"):
         ma, mb, _ = maps_for(a, b, w)
         out["gate"] = _gate_mix(xa.get("gate"), xb.get("gate"), w, ma, mb)
-    near = xa if w < 0.5 else xb
-    for key in ("space", "bed", "env"):
-        if near.get(key):
-            out[key] = copy.deepcopy(near[key])
+    return out
+
+
+def _near_parts(near: dict) -> dict:
+    """Space, bed and envelope entries, copied from the nearer source."""
+    return {key: copy.deepcopy(near[key]) for key in ("space", "bed", "env") if near.get(key)}
+
+
+def post_mix(a: dict, b: dict, w: float) -> dict | None:
+    pa, pb = a.get("post"), b.get("post")
+    if not pa and not pb:
+        return None
+    xa, xb = pa or _ZERO_POST, pb or _ZERO_POST
+    out: dict = {"eq_db": _mix_eq(xa, xb, w), "gain_db": lin(float(xa.get("gain_db", 0)), float(xb.get("gain_db", 0)), w)}
+    out.update(_pre_and_gate(a, b, xa, xb, w))
+    out.update(_near_parts(xa if w < 0.5 else xb))
     return out
 
 
 # ---------------------------------------------------------------- entry
 
 
-def morph(a: dict, b: dict, amount: float = 0.5) -> dict:
-    """A new model between 2 fits of one kind; amount 0 or 1 gives that source exactly."""
-    ka, kb = kind_of(a), kind_of(b)
+def _check_pair(ka: str, kb: str) -> None:
     if "morph" in (ka, kb):
         raise ValueError("a morph of a morph model is not supported")
     if ka != kb:
         raise ValueError(f"cannot morph a {ka} model with a {kb} model; refit both with one kind")
-    w = float(min(max(amount, 0.0), 1.0))
-    if w in (0.0, 1.0):
-        return strip(a if w == 0.0 else b)
-    m = KIND_MORPH[ka](strip(a), strip(b), w)
-    post = post_mix(a, b, w)
-    if post:
-        m["post"] = post
-    else:
-        m.pop("post", None)
+
+
+def _mixed(a: dict, b: dict, kind: str, w: float) -> dict:
+    m = KIND_MORPH[kind](strip(a), strip(b), w)
+    set_or_drop(m, "post", post_mix(a, b, w))
     if "vary_scale" in a or "vary_scale" in b:
         m["vary_scale"] = round(lin(float(a.get("vary_scale", 1)), float(b.get("vary_scale", 1)), w), 4)
     return m
+
+
+def morph(a: dict, b: dict, amount: float = 0.5) -> dict:
+    """A new model between 2 fits of one kind; amount 0 or 1 gives that source exactly."""
+    ka = kind_of(a)
+    _check_pair(ka, kind_of(b))
+    w = float(min(max(amount, 0.0), 1.0))
+    return strip(a if w == 0.0 else b) if w in (0.0, 1.0) else _mixed(a, b, ka, w)
