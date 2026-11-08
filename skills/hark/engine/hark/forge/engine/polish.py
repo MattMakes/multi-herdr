@@ -16,7 +16,7 @@ from typing import Any
 
 import numpy as np
 from scipy import fft as sp_fft
-from scipy import ndimage, signal
+from scipy import ndimage
 
 from hark.forge.engine import tone
 from hark.forge.engine.tone import CEN
@@ -62,739 +62,740 @@ PRINT_KEYS = ("clicks edge_db fold nyq_db dc_db res_db res_hz ring_z trunc_db si
 
 # ---------------------------------------------------------------- helpers
 
-def _raw(x: Any) -> np.ndarray:
-    if isinstance(x, (str, os.PathLike)):
+def _as_array(sig: Any) -> np.ndarray:
+    if isinstance(sig, (str, os.PathLike)):
         from hark.core import audio
 
-        x = audio.load(str(x), sr=SR)
-    return np.asarray(x, dtype=float)
+        sig = audio.load(str(sig), sr=SR)
+    return np.asarray(sig, dtype=float)
 
 
-def _mono(x: Any) -> np.ndarray:
-    a = _raw(x)
-    return a.mean(axis=1) if a.ndim == 2 else a
+def _one_channel(sig: Any) -> np.ndarray:
+    lhs = _as_array(sig)
+    return lhs.mean(axis=1) if lhs.ndim == 2 else lhs
 
 
-def _r(v: Any, d: int) -> Any:
-    return None if v is None else round(float(v), d)
+def _rounded(val: Any, dd: int) -> Any:
+    return None if val is None else round(float(val), dd)
 
 
 def frame_db(x: np.ndarray, n: int) -> np.ndarray:
     """Power in dB of consecutive n-sample frames."""
-    k = len(x) // n
-    if k < 1:
+    ky = len(x) // n
+    if ky < 1:
         return np.array([-240.0])
-    return 10 * np.log10(np.mean(x[: k * n].reshape(k, n) ** 2, axis=1) + 1e-24)
+    return 10 * np.log10(np.mean(x[: ky * n].reshape(ky, n) ** 2, axis=1) + 1e-24)
 
 
 def power_stft(x: np.ndarray, nfft: int, hop: int) -> np.ndarray:
     """Hann-windowed power STFT, shape (frames, bins)."""
     if len(x) < nfft:
         x = np.concatenate([x, np.zeros(nfft - len(x))])
-    k = 1 + (len(x) - nfft) // hop
-    idx = np.arange(nfft)[None, :] + hop * np.arange(k)[:, None]
-    return np.abs(np.fft.rfft(x[idx] * np.hanning(nfft), axis=1)) ** 2
+    ky = 1 + (len(x) - nfft) // hop
+    grid_ix = np.arange(nfft)[None, :] + hop * np.arange(ky)[:, None]
+    return np.abs(np.fft.rfft(x[grid_ix] * np.hanning(nfft), axis=1)) ** 2
 
 
-def _k_weight(x: np.ndarray) -> np.ndarray:
+def _kw_filter(sig: np.ndarray) -> np.ndarray:
     from hark.core.features import k_weight
 
-    return np.asarray(k_weight(np.asarray(x, dtype=float), SR), dtype=float)
+    return np.asarray(k_weight(np.asarray(sig, dtype=float), SR), dtype=float)
 
 
-def _lsq_slope(y: np.ndarray, dt: float) -> float:
-    t = np.arange(len(y)) * dt
-    return float(np.polyfit(t, y, 1)[0])
+def _fit_slope(vals_y: np.ndarray, step: float) -> float:
+    tm = np.arange(len(vals_y)) * step
+    return float(np.polyfit(tm, vals_y, 1)[0])
 
 
 # ---------------------------------------------------------------- clicks
 
-def _impulsive(d2: np.ndarray, k: int) -> np.ndarray:
-    fr = d2[: k * 48].reshape(k, 48) ** 2
-    top2 = np.sort(fr, axis=1)[:, -2:].sum(axis=1)
-    return top2 / (fr.sum(axis=1) + 1e-30)
+def _spike_share(curv: np.ndarray, ky: int) -> np.ndarray:
+    fs = curv[: ky * 48].reshape(ky, 48) ** 2
+    two_top = np.sort(fs, axis=1)[:, -2:].sum(axis=1)
+    return two_top / (fs.sum(axis=1) + 1e-30)
 
 
-def _edge_db(m: np.ndarray) -> float:
-    if not len(m):
+def _boundary_level(mono: np.ndarray) -> float:
+    if not len(mono):
         return -240.0
-    peak = float(np.max(np.abs(m))) + 1e-12
-    return 20 * math.log10(max(abs(m[0]), abs(m[-1])) / peak + 1e-12)
+    pk_v = float(np.max(np.abs(mono))) + 1e-12
+    return 20 * math.log10(max(abs(mono[0]), abs(mono[-1])) / pk_v + 1e-12)
 
 
-def _click_times(m: np.ndarray, thr: float) -> list[float]:
-    d2 = np.diff(m, 2) if len(m) > 2 else np.zeros(0)
-    e, lvl = frame_db(d2, 48), frame_db(m, 48)
-    k = min(len(e), len(lvl))
-    ok = k >= 24 and len(d2) >= 48 * k
-    return _click_runs(e[:k], lvl[:k], _impulsive(d2, k), thr) if ok else []
+def _find_clicks(mono: np.ndarray, gate_db: float) -> list[float]:
+    curv = np.diff(mono, 2) if len(mono) > 2 else np.zeros(0)
+    lev, lev2 = frame_db(curv, 48), frame_db(mono, 48)
+    ky = min(len(lev), len(lev2))
+    usable = ky >= 24 and len(curv) >= 48 * ky
+    return _click_centres(lev[:ky], lev2[:ky], _spike_share(curv, ky), gate_db) if usable else []
 
 
 def clicks(x: Any, thr: float = 18.0) -> dict:
     """Isolated discontinuities inside the sound."""
-    m = _mono(x)
-    times = _click_times(m, thr)
-    return {"clicks": len(times), "click_times": times[:8], "edge_db": round(_edge_db(m), 1)}
+    mono = _one_channel(x)
+    tlist = _find_clicks(mono, thr)
+    return {"clicks": len(tlist), "click_times": tlist[:8], "edge_db": round(_boundary_level(mono), 1)}
 
 
-def _click_hits(e: np.ndarray, lvl: np.ndarray, imp: np.ndarray, thr: float) -> np.ndarray:
-    k = len(e)
-    ep = np.pad(e, 12, mode="edge")
-    win = np.lib.stride_tricks.sliding_window_view(ep, 25)[:k]
-    pre = np.median(win[:, 2:10], axis=1)
-    post = np.median(win[:, 15:23], axis=1)
-    far = np.abs(np.arange(k) - int(np.argmax(lvl))) > 3
-    return (e - np.maximum(pre, post) > thr) & (np.abs(post - pre) < 8) & (lvl > lvl.max() - 70) & far & (imp > 0.6)
+def _click_mask(lev: np.ndarray, lev2: np.ndarray, spiky: np.ndarray, gate_db: float) -> np.ndarray:
+    ky = len(lev)
+    padded = np.pad(lev, 12, mode="edge")
+    windows = np.lib.stride_tricks.sliding_window_view(padded, 25)[:ky]
+    before_m = np.median(windows[:, 2:10], axis=1)
+    after_m = np.median(windows[:, 15:23], axis=1)
+    distant = np.abs(np.arange(ky) - int(np.argmax(lev2))) > 3
+    return (lev - np.maximum(before_m, after_m) > gate_db) & (np.abs(after_m - before_m) < 8) & (lev2 > lev2.max() - 70) & distant & (spiky > 0.6)
 
 
-def _run_mids(hit: np.ndarray) -> list[float]:
+def _streak_centres(flagged: np.ndarray) -> list[float]:
     """Mid times (s, 1 ms frames) of the runs of True."""
-    out, i, k = [], 0, len(hit)
-    while i < k:
-        j = i
-        while hit[i] and j + 1 < k and hit[j + 1]:
-            j += 1
-        if hit[i]:
-            out.append(round(((i + j + 1) / 2) / 1000, 3))
-        i = j + 1
-    return out
+    acc, ix, ky = [], 0, len(flagged)
+    while ix < ky:
+        jx = ix
+        while flagged[ix] and jx + 1 < ky and flagged[jx + 1]:
+            jx += 1
+        if flagged[ix]:
+            acc.append(round(((ix + jx + 1) / 2) / 1000, 3))
+        ix = jx + 1
+    return acc
 
 
-def _click_runs(e: np.ndarray, lvl: np.ndarray, imp: np.ndarray, thr: float) -> list[float]:
-    return _run_mids(_click_hits(e, lvl, imp, thr))
+def _click_centres(lev: np.ndarray, lev2: np.ndarray, spiky: np.ndarray, gate_db: float) -> list[float]:
+    return _streak_centres(_click_mask(lev, lev2, spiky, gate_db))
 
 
 # ---------------------------------------------------------------- aliasing
 
-class _Alias:
+class _FoldScan:
     """Shared state of the aliasing detector."""
 
-    def __init__(self, nfft: int, hop: int):
-        self.nfft, self.hop = nfft, hop
-        self.df = SR / nfft
-        self.freqs = np.arange(nfft // 2 + 1) * self.df
-        self.c0 = 150.0 * 2 ** (np.arange(0, int(96 * math.log2(3000 / 150)) + 1) / 96)
-        self.c0 = self.c0[self.c0 < 3000]
-        self.H = np.arange(1, int(4000 / 150) + 1)
+    def __init__(self, size: int, stride: int):
+        self.size, self.stride = size, stride
+        self.bin_hz = SR / size
+        self.bin_f = np.arange(size // 2 + 1) * self.bin_hz
+        self.cands_hz = 150.0 * 2 ** (np.arange(0, int(96 * math.log2(3000 / 150)) + 1) / 96)
+        self.cands_hz = self.cands_hz[self.cands_hz < 3000]
+        self.mults = np.arange(1, int(4000 / 150) + 1)
 
-    def fit(self, s: np.ndarray, pw: np.ndarray) -> tuple[float, float] | None:
-        band = (self.freqs >= 60) & (self.freqs < 4000)
-        tl = s[band].sum()
-        if tl <= 0:
+    def harmonic_fit(self, s: np.ndarray, pw: np.ndarray) -> tuple[float, float] | None:
+        rng_b = (self.bin_f >= 60) & (self.bin_f < 4000)
+        band_sum = s[rng_b].sum()
+        if band_sum <= 0:
             return None
-        best, bi = -1e9, -1
-        for i, c in enumerate(self.c0):
-            g = c * self.H
-            g = g[(g >= 60) & (g < 4000)]
-            b = np.unique(np.round(g / self.df).astype(int))
-            share = pw[b].sum() / tl - 0.02 * len(b)
-            if share > best:
-                best, bi = share, i
-        if best < 0.7:
+        top_share, best_ix = -1e9, -1
+        for ix, cc in enumerate(self.cands_hz):
+            grid = cc * self.mults
+            grid = grid[(grid >= 60) & (grid < 4000)]
+            rhs = np.unique(np.round(grid / self.bin_hz).astype(int))
+            frac = pw[rhs].sum() / band_sum - 0.02 * len(rhs)
+            if frac > top_share:
+                top_share, best_ix = frac, ix
+        if top_share < 0.7:
             return None
-        return self._refine(s, self.c0[bi]), best
+        return self._sharpen(s, self.cands_hz[best_ix]), top_share
 
-    def _refine(self, s: np.ndarray, c0: float) -> float:
-        num = den = 0.0
-        for h in range(1, int(4000 / c0) + 1):
-            got = self._harmonic(s, h, c0)
-            if got is not None:
-                f, w = got
-                num += w * h * f
-                den += w * h * h
-        return num / den if den > 0 else c0
+    def _sharpen(self, sv: np.ndarray, start_hz: float) -> float:
+        upper = lower = 0.0
+        for order_n in range(1, int(4000 / start_hz) + 1):
+            hit_v = self._partial_near(sv, order_n, start_hz)
+            if hit_v is not None:
+                hz, wv = hit_v
+                upper += wv * order_n * hz
+                lower += wv * order_n * order_n
+        return upper / lower if lower > 0 else start_hz
 
-    def _harmonic(self, s: np.ndarray, h: int, c0: float) -> tuple[float, float] | None:
-        k0 = int(round(h * c0 / self.df))
-        lo, hi = max(1, k0 - 3), min(len(s) - 2, k0 + 3)
-        if hi < lo:
+    def _partial_near(self, sv: np.ndarray, order_n: int, start_hz: float) -> tuple[float, float] | None:
+        centre_k = int(round(order_n * start_hz / self.bin_hz))
+        low, high = max(1, centre_k - 3), min(len(sv) - 2, centre_k + 3)
+        if high < low:
             return None
-        k = lo + int(np.argmax(s[lo:hi + 1]))
-        return self._peak_hz(s, k), s[k]
+        ky = low + int(np.argmax(sv[low:high + 1]))
+        return self._interp_hz(sv, ky), sv[ky]
 
-    def _peak_hz(self, s: np.ndarray, k: int) -> float:
-        a, b, c = np.log(s[k - 1:k + 2] + 1e-30)
-        den_p = a - 2 * b + c
-        off = 0.5 * (a - c) / den_p if den_p != 0 else 0.0
-        return (k + float(np.clip(off, -1, 1))) * self.df
+    def _interp_hz(self, sv: np.ndarray, ky: int) -> float:
+        lhs, rhs, cc = np.log(sv[ky - 1:ky + 2] + 1e-30)
+        curvature = lhs - 2 * rhs + cc
+        shift = 0.5 * (lhs - cc) / curvature if curvature != 0 else 0.0
+        return (ky + float(np.clip(shift, -1, 1))) * self.bin_hz
 
 
-def _alias_band(al: _Alias, r: float, smear: float) -> tuple | None:
+def _judged_range(scan: _FoldScan, f0v: float, blur: float) -> tuple | None:
     """(harmonics, half widths, top Hz, first bin, last bin) of the judged band, or None."""
-    df = al.df
-    hs = np.arange(math.ceil(4000 / r), int(20000 / r) + 1)
-    hw = 2 + hs * smear
-    ok = 2 * hw * df < 0.5 * r
-    if len(hs) == 0 or not ok[0]:
+    bin_hz = scan.bin_hz
+    orders = np.arange(math.ceil(4000 / f0v), int(20000 / f0v) + 1)
+    halfw = 2 + orders * blur
+    usable = 2 * halfw * bin_hz < 0.5 * f0v
+    if len(orders) == 0 or not usable[0]:
         return None
-    last = int(np.argmin(ok)) if not ok.all() else len(ok)
-    hs, hw = hs[:last], hw[:last]
-    top = min(20000.0, (hs[-1] + 0.5) * r)
-    return hs, hw, top, int(math.ceil(4000 / df)), int(top / df)
+    n_ok = int(np.argmin(usable)) if not usable.all() else len(usable)
+    orders, halfw = orders[:n_ok], halfw[:n_ok]
+    ceiling = min(20000.0, (orders[-1] + 0.5) * f0v)
+    return orders, halfw, ceiling, int(math.ceil(4000 / bin_hz)), int(ceiling / bin_hz)
 
 
-def _band_power(s: np.ndarray, band: tuple | None) -> float | None:
-    if band is None:
+def _range_energy(sv: np.ndarray, rng_b: tuple | None) -> float | None:
+    if rng_b is None:
         return None
-    b0, b1 = band[3], band[4]
-    th = s[b0:b1 + 1].sum()
-    return None if b1 - b0 < 20 or th < 1e-3 * s.sum() else th
+    lo_b, hi_b = rng_b[3], rng_b[4]
+    band_e = sv[lo_b:hi_b + 1].sum()
+    return None if hi_b - lo_b < 20 or band_e < 1e-3 * sv.sum() else band_e
 
 
-def _harm_windows(hs: np.ndarray, hw: np.ndarray, r: float, df: float) -> list[tuple[int, int]]:
-    return [(int(round(h * r / df - w)), int(round(h * r / df + w))) for h, w in zip(hs, hw)]
+def _partial_slots(orders: np.ndarray, halfw: np.ndarray, f0v: float, bin_hz: float) -> list[tuple[int, int]]:
+    return [(int(round(order_n * f0v / bin_hz - wv)), int(round(order_n * f0v / bin_hz + wv))) for order_n, wv in zip(orders, halfw)]
 
 
-def _alias_frame(al: _Alias, s: np.ndarray, r: float, smear: float, legacy: bool) -> tuple[float, float] | None:
-    band = _alias_band(al, r, smear)
-    th = _band_power(s, band)
-    if th is None:
+def _fold_frame(scan: _FoldScan, sv: np.ndarray, f0v: float, blur: float, old_mode: bool) -> tuple[float, float] | None:
+    rng_b = _judged_range(scan, f0v, blur)
+    band_e = _range_energy(sv, rng_b)
+    if band_e is None:
         return None
-    fr = SimpleNamespace(s=s, r=r, smear=smear, df=al.df, th=th, hs=band[0], top=band[2], b0=band[3], b1=band[4])
-    fr.win = _harm_windows(band[0], band[1], r, al.df)
-    if legacy:
-        on = sum(s[max(a, fr.b0):min(b, fr.b1) + 1].sum() for a, b in fr.win)
-        res = ((1 - min(1.0, on / th)) * th, th)
+    fs = SimpleNamespace(spec=sv, f0v=f0v, blur=blur, bin_hz=scan.bin_hz, band_pw=band_e, orders=rng_b[0],
+                         ceil_hz=rng_b[2], lo_bin=rng_b[3], hi_bin=rng_b[4])
+    fs.slots = _partial_slots(rng_b[0], rng_b[1], f0v, scan.bin_hz)
+    if old_mode:
+        in_slots = sum(sv[max(lhs, fs.lo_bin):min(rhs, fs.hi_bin) + 1].sum() for lhs, rhs in fs.slots)
+        outcome = ((1 - min(1.0, in_slots / band_e)) * band_e, band_e)
     else:
-        res = _alias_excess(fr)
-    return res
+        outcome = _fold_energy(fs)
+    return outcome
 
 
-def _alias_lines(r: float, smear: float, top: float, df: float) -> tuple:
+def _mirror_lines(f0v: float, blur: float, ceiling: float, bin_hz: float) -> tuple:
     """Alias lines in the band that sit clear of the nearest harmonic: ka, fa, hn, hwn, gap."""
-    ka = np.arange(int(SR / 2 / r) + 1, int(4 * SR / r) + 1)
-    fa = np.abs(((ka * r + SR / 2) % SR) - SR / 2)
-    keep = (fa >= 4000) & (fa <= top)
-    ka, fa = ka[keep], fa[keep]
-    hn = np.maximum(1, np.round(fa / r))
-    hwn = 2 + hn * smear
-    gap = np.abs(fa - hn * r) / df
-    judge = gap >= hwn + 1
-    return ka[judge], fa[judge], hn[judge], hwn[judge], gap[judge]
+    alias_k = np.arange(int(SR / 2 / f0v) + 1, int(4 * SR / f0v) + 1)
+    fold_hz = np.abs(((alias_k * f0v + SR / 2) % SR) - SR / 2)
+    kept = (fold_hz >= 4000) & (fold_hz <= ceiling)
+    alias_k, fold_hz = alias_k[kept], fold_hz[kept]
+    near_n = np.maximum(1, np.round(fold_hz / f0v))
+    half_w = 2 + near_n * blur
+    dist = np.abs(fold_hz - near_n * f0v) / bin_hz
+    clear = dist >= half_w + 1
+    return alias_k[clear], fold_hz[clear], near_n[clear], half_w[clear], dist[clear]
 
 
-def _href(fr: SimpleNamespace) -> float:
-    return max([fr.s[a:b + 1].max() for (a, b), h in zip(fr.win, fr.hs) if h * fr.r >= 0.5 * fr.top and b >= a]
+def _top_partial(fs: SimpleNamespace) -> float:
+    return max([fs.spec[lhs:rhs + 1].max() for (lhs, rhs), order_n in zip(fs.slots, fs.orders) if order_n * fs.f0v >= 0.5 * fs.ceil_hz and rhs >= lhs]
                or [0.0])
 
 
-def _line_thr(fr: SimpleNamespace, c: int, hn: float, hwn: float, gap: float) -> float:
+def _line_gate(fs: SimpleNamespace, cc: int, near_n: float, half_w: float, dist: float) -> float:
     """Level a line must pass: over the local floor and over the leak of the nearest harmonic."""
-    hc = int(round(hn * fr.r / fr.df))
-    hpk = fr.s[max(0, int(hc - hwn)):int(hc + hwn) + 1].max()
-    d = max(2.5, gap - hwn + 2)
-    leak = hpk * 10 ** ((-31.5 - 18 * math.log2(d / 2.5)) / 10)
-    return 10 ** (ALIAS_PEAK_DB / 10) * max(fr.floor[c], leak)
+    centre_b = int(round(near_n * fs.f0v / fs.bin_hz))
+    near_pk = fs.spec[max(0, int(centre_b - half_w)):int(centre_b + half_w) + 1].max()
+    dd = max(2.5, dist - half_w + 2)
+    leak_v = near_pk * 10 ** ((-31.5 - 18 * math.log2(dd / 2.5)) / 10)
+    return 10 ** (ALIAS_PEAK_DB / 10) * max(fs.bed[cc], leak_v)
 
 
-def _alias_line(fr: SimpleNamespace, f: float, aw: float, hn: float, hwn: float, gap: float) -> tuple:
+def _judge_line(fs: SimpleNamespace, hz: float, aw_v: float, near_n: float, half_w: float, dist: float) -> tuple:
     """(judged, hit, excess power or None) of one alias line."""
-    c = int(round(f / fr.df))
-    a, b = max(fr.b0, int(round(c - aw))), min(fr.b1, int(round(c + aw)))
-    if b < a:
+    cc = int(round(hz / fs.bin_hz))
+    lhs, rhs = max(fs.lo_bin, int(round(cc - aw_v))), min(fs.hi_bin, int(round(cc + aw_v)))
+    if rhs < lhs:
         return False, False, None
-    w = fr.s[a:b + 1]
-    hit = _line_thr(fr, c, hn, hwn, gap) < w.max() <= ALIAS_LOUDEST * fr.href
-    return True, hit, (max(0.0, w.sum() - fr.floor[c] * len(w)) if hit else None)
+    wv = fs.spec[lhs:rhs + 1]
+    flagged = _line_gate(fs, cc, near_n, half_w, dist) < wv.max() <= ALIAS_LOUDEST * fs.ref_peak
+    return True, flagged, (max(0.0, wv.sum() - fs.bed[cc] * len(wv)) if flagged else None)
 
 
-def _alias_count(fr: SimpleNamespace, cols: np.ndarray, first: np.ndarray) -> tuple[int, int, float]:
-    nf = hits = 0
-    excess = 0.0
-    for row, fst in zip(cols, first):
-        judged, hit, add = _alias_line(fr, *row)
-        nf += int(judged and bool(fst))
-        hits += int(judged and bool(fst) and bool(hit))
-        excess = excess + add if add is not None else excess
-    return nf, hits, excess
+def _tally_lines(fs: SimpleNamespace, table: np.ndarray, is_first: np.ndarray) -> tuple[int, int, float]:
+    n_first = n_hit = 0
+    extra = 0.0
+    for line, first_f in zip(table, is_first):
+        was_judged, flagged, gain = _judge_line(fs, *line)
+        n_first += int(was_judged and bool(first_f))
+        n_hit += int(was_judged and bool(first_f) and bool(flagged))
+        extra = extra + gain if gain is not None else extra
+    return n_first, n_hit, extra
 
 
-def _alias_excess(fr: SimpleNamespace) -> tuple[float, float] | None:
-    ka, fa, hn, hwn, gap = _alias_lines(fr.r, fr.smear, fr.top, fr.df)
-    first = ka < SR / fr.r
-    if first.sum() < 4:
+def _fold_energy(fs: SimpleNamespace) -> tuple[float, float] | None:
+    alias_k, fold_hz, near_n, half_w, dist = _mirror_lines(fs.f0v, fs.blur, fs.ceil_hz, fs.bin_hz)
+    is_first = alias_k < SR / fs.f0v
+    if is_first.sum() < 4:
         return None
-    aw = np.minimum(1 + ka * fr.smear, np.maximum(0.5, gap - hwn - 0.5))
-    fr.floor = ndimage.median_filter(fr.s, size=65, mode="nearest")
-    fr.href = _href(fr)
-    nf, hits, excess = _alias_count(fr, np.column_stack([fa, aw, hn, hwn, gap]), first)
-    return min(fr.th, excess) * min(1.0, (hits / max(1, nf)) / ALIAS_FAMILY), fr.th
+    aw_v = np.minimum(1 + alias_k * fs.blur, np.maximum(0.5, dist - half_w - 0.5))
+    fs.bed = ndimage.median_filter(fs.spec, size=65, mode="nearest")
+    fs.ref_peak = _top_partial(fs)
+    n_first, n_hit, extra = _tally_lines(fs, np.column_stack([fold_hz, aw_v, near_n, half_w, dist]), is_first)
+    return min(fs.band_pw, extra) * min(1.0, (n_hit / max(1, n_first)) / ALIAS_FAMILY), fs.band_pw
 
 
-def _alias_f0(S: np.ndarray, al: _Alias, frames: int) -> dict:
+def _frame_pitches(spg: np.ndarray, scan: _FoldScan, max_frames: int) -> dict:
     """Fitted f0 of each active frame with a harmonic fit."""
-    lv = 10 * np.log10(S.sum(axis=1) + 1e-30)
-    act = np.nonzero(lv > lv.max() - 30)[0][:frames]
-    pw = sum(np.roll(S, k, axis=1) for k in range(-2, 3))
-    fits = {int(i): al.fit(S[i], pw[i]) for i in act}
-    return {i: v[0] for i, v in fits.items() if v is not None}
+    lev_list = 10 * np.log10(spg.sum(axis=1) + 1e-30)
+    busy = np.nonzero(lev_list > lev_list.max() - 30)[0][:max_frames]
+    pow2 = sum(np.roll(spg, ky, axis=1) for ky in range(-2, 3))
+    fit_map = {int(ix): scan.harmonic_fit(spg[ix], pow2[ix]) for ix in busy}
+    return {ix: val[0] for ix, val in fit_map.items() if val is not None}
 
 
-def _f0_rate(f0: dict, i: int, r: float, hop: int) -> float:
-    return max([abs(r - f0[j]) for j in (i - 1, i + 1) if j in f0] or [0.0]) / (hop / SR)
+def _pitch_slew(pitch: dict, ix: int, f0v: float, stride: int) -> float:
+    return max([abs(f0v - pitch[jx]) for jx in (ix - 1, ix + 1) if jx in pitch] or [0.0]) / (stride / SR)
 
 
-def _alias_sum(al: _Alias, S: np.ndarray, f0: dict, hop: int, legacy: bool) -> tuple[float, float, int]:
-    num = den = 0.0
-    harm = 0
-    for i, r in f0.items():
-        smear = 0.5 * _f0_rate(f0, i, r, hop) * (al.nfft / SR) / al.df
-        res = _alias_frame(al, S[i], r, smear, legacy)
-        if res is not None:
-            num += res[0]
-            den += res[1]
-            harm += 1
-    return num, den, harm
+def _fold_totals(scan: _FoldScan, spg: np.ndarray, pitch: dict, stride: int, old_mode: bool) -> tuple[float, float, int]:
+    upper = lower = 0.0
+    n_harm = 0
+    for ix, f0v in pitch.items():
+        blur = 0.5 * _pitch_slew(pitch, ix, f0v, stride) * (scan.size / SR) / scan.bin_hz
+        outcome = _fold_frame(scan, spg[ix], f0v, blur, old_mode)
+        if outcome is not None:
+            upper += outcome[0]
+            lower += outcome[1]
+            n_harm += 1
+    return upper, lower, n_harm
 
 
 def aliasing(x: Any, nfft: int = 4096, hop: int = 1024, frames: int = 64, legacy: bool = False) -> dict:
     """Foldover of moving harmonic partials; inharmonic sounds are not judged."""
-    S = power_stft(_mono(x), nfft, hop)
-    al = _Alias(nfft, hop)
-    tot = S.sum() + 1e-30
-    nyq = 10 * math.log10(S[:, al.freqs >= 20000].sum() / tot + 1e-12)
-    num, den, harm = _alias_sum(al, S, _alias_f0(S, al, frames), hop, legacy)
-    fold = num / den if den > 0 and harm >= 2 else 0.0
-    return {"fold": round(fold, 3), "harmonic_frames": harm, "nyq_db": round(nyq, 1)}
+    spg = power_stft(_one_channel(x), nfft, hop)
+    scan = _FoldScan(nfft, hop)
+    total = spg.sum() + 1e-30
+    air_db = 10 * math.log10(spg[:, scan.bin_f >= 20000].sum() / total + 1e-12)
+    upper, lower, n_harm = _fold_totals(scan, spg, _frame_pitches(spg, scan, frames), hop, legacy)
+    fold_v = upper / lower if lower > 0 and n_harm >= 2 else 0.0
+    return {"fold": round(fold_v, 3), "harmonic_frames": n_harm, "nyq_db": round(air_db, 1)}
 
 
 # ---------------------------------------------------------------- dc, resonances, evolution
 
 def dc(x: Any) -> dict:
     """DC offset and infrasound share."""
-    m = _mono(x)
-    peak = float(np.max(np.abs(m))) + 1e-12 if len(m) else 1e-12
-    n = sp_fft.next_fast_len(max(len(m), 1), real=True)
-    p = np.abs(np.fft.rfft(m, n)) ** 2
-    f = np.fft.rfftfreq(n, 1 / SR)
-    infra = 10 * math.log10(p[f < 15].sum() / (p.sum() + 1e-30) + 1e-12)
-    return {"dc_db": round(20 * math.log10(abs(float(np.mean(m))) / peak + 1e-12), 1), "infra_db": round(infra, 1)}
+    mono = _one_channel(x)
+    pk_v = float(np.max(np.abs(mono))) + 1e-12 if len(mono) else 1e-12
+    cnt = sp_fft.next_fast_len(max(len(mono), 1), real=True)
+    pwr = np.abs(np.fft.rfft(mono, cnt)) ** 2
+    hz = np.fft.rfftfreq(cnt, 1 / SR)
+    sub_db = 10 * math.log10(pwr[hz < 15].sum() / (pwr.sum() + 1e-30) + 1e-12)
+    return {"dc_db": round(20 * math.log10(abs(float(np.mean(mono))) / pk_v + 1e-12), 1), "infra_db": round(sub_db, 1)}
 
 
-def _ear(f: np.ndarray) -> np.ndarray:
-    w = np.full(len(f), 0.5)
-    w[(f >= 1000) & (f < 9000)] = 0.7
-    w[(f >= 2000) & (f < 6000)] = 1.0
-    return w
+def _hearing_weight(hz: np.ndarray) -> np.ndarray:
+    wv = np.full(len(hz), 0.5)
+    wv[(hz >= 1000) & (hz < 9000)] = 0.7
+    wv[(hz >= 2000) & (hz < 6000)] = 1.0
+    return wv
 
 
-def _res_nfft(n: int) -> int:
-    return 4096 if n >= 4096 else max(1024, 1 << max(0, int(math.ceil(math.log2(max(n, 1))))))
+def _peak_fft_size(cnt: int) -> int:
+    return 4096 if cnt >= 4096 else max(1024, 1 << max(0, int(math.ceil(math.log2(max(cnt, 1))))))
 
 
-def _res_grid(m: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+def _fine_grid(mono: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """1/48-octave grid from 100 Hz, the cell maxima and their prominence."""
-    nfft = _res_nfft(len(m))
-    L = 10 * np.log10(power_stft(m, nfft, nfft // 4).sum(axis=0) + 1e-30)
-    f = np.fft.rfftfreq(nfft, 1 / SR)
-    g = 100.0 * 2 ** (np.arange(0, 48 * 8) / 48)
-    g = g[g < 16000]
-    lg = np.array([_cell_max(L, f, c) for c in g])
-    return g, lg, lg - ndimage.median_filter(lg, size=33, mode="nearest")
+    size = _peak_fft_size(len(mono))
+    lvl_db = 10 * np.log10(power_stft(mono, size, size // 4).sum(axis=0) + 1e-30)
+    hz = np.fft.rfftfreq(size, 1 / SR)
+    grid = 100.0 * 2 ** (np.arange(0, 48 * 8) / 48)
+    grid = grid[grid < 16000]
+    grid_db = np.array([_grid_cell_top(lvl_db, hz, cc) for cc in grid])
+    return grid, grid_db, grid_db - ndimage.median_filter(grid_db, size=33, mode="nearest")
 
 
-def _local_max(prom: np.ndarray) -> np.ndarray:
-    loc = np.zeros(len(prom), dtype=bool)
-    loc[1:-1] = (prom[1:-1] >= prom[:-2]) & (prom[1:-1] >= prom[2:])
-    return loc
+def _is_summit(stick_out: np.ndarray) -> np.ndarray:
+    summit = np.zeros(len(stick_out), dtype=bool)
+    summit[1:-1] = (stick_out[1:-1] >= stick_out[:-2]) & (stick_out[1:-1] >= stick_out[2:])
+    return summit
 
 
 def resonances(x: Any, top: int = 3) -> dict:
     """The harshest narrow spectral peak."""
-    g, lg, prom = _res_grid(_mono(x))
-    cand = np.nonzero((lg > lg.max() - 30) & (prom > 0) & _local_max(prom))[0]
-    if len(cand) == 0:
+    grid, grid_db, stick_out = _fine_grid(_one_channel(x))
+    picks = np.nonzero((grid_db > grid_db.max() - 30) & (stick_out > 0) & _is_summit(stick_out))[0]
+    if len(picks) == 0:
         return {"res_db": 0.0, "res_hz": None, "res_peaks": []}
-    score = prom[cand] * _ear(g[cand])
-    order = cand[np.argsort(-score)]
-    return {"res_db": round(float(score.max()), 1), "res_hz": int(round(g[order[0]])),
-            "res_peaks": [(int(round(g[i])), round(float(prom[i]), 1)) for i in order[:top]]}
+    weighted = stick_out[picks] * _hearing_weight(grid[picks])
+    ranked = picks[np.argsort(-weighted)]
+    return {"res_db": round(float(weighted.max()), 1), "res_hz": int(round(grid[ranked[0]])),
+            "res_peaks": [(int(round(grid[ix])), round(float(stick_out[ix]), 1)) for ix in ranked[:top]]}
 
 
-def _cell_max(L: np.ndarray, f: np.ndarray, c: float) -> float:
-    sel = (f >= c / 2 ** (1 / 96)) & (f < c * 2 ** (1 / 96))
-    if not sel.any():
-        sel = np.zeros(len(f), dtype=bool)
-        sel[int(np.argmin(np.abs(f - c)))] = True
-    return float(L[sel].max())
+def _grid_cell_top(lvl_db: np.ndarray, hz: np.ndarray, cc: float) -> float:
+    mask = (hz >= cc / 2 ** (1 / 96)) & (hz < cc * 2 ** (1 / 96))
+    if not mask.any():
+        mask = np.zeros(len(hz), dtype=bool)
+        mask[int(np.argmin(np.abs(hz - cc)))] = True
+    return float(lvl_db[mask].max())
 
 
-_OCT = (0, 112, 224, 447, 894, 1789, 3578, 7155, math.inf)
+_BAND_EDGES = (0, 112, 224, 447, 894, 1789, 3578, 7155, math.inf)
 
 
-def _oct_power(G: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-    P = 10 ** (G / 10)
-    Q = np.column_stack([P[:, (CEN >= _OCT[j]) & (CEN < _OCT[j + 1])].sum(axis=1) for j in range(8)]) + 1e-12
-    return P, ndimage.uniform_filter1d(Q, 3, axis=0, mode="constant")
+def _band_energy(bandg: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    lin = 10 ** (bandg / 10)
+    bands = np.column_stack([lin[:, (CEN >= _BAND_EDGES[jx]) & (CEN < _BAND_EDGES[jx + 1])].sum(axis=1) for jx in range(8)]) + 1e-12
+    return lin, ndimage.uniform_filter1d(bands, 3, axis=0, mode="constant")
 
 
-def _evo_db(Q: np.ndarray, tot: np.ndarray, act: np.ndarray) -> float | None:
-    R = np.maximum(10 * np.log10(Q / tot[:, None]), -40)
-    rows = [i for i in range(5, len(Q)) if act[i] and act[i - 5]]
-    if len(rows) < 3:
+def _shape_change(bands: np.ndarray, total: np.ndarray, busy: np.ndarray) -> float | None:
+    rel_db = np.maximum(10 * np.log10(bands / total[:, None]), -40)
+    pairs = [ix for ix in range(5, len(bands)) if busy[ix] and busy[ix - 5]]
+    if len(pairs) < 3:
         return None
-    sh_all = Q / tot[:, None]
-    ch = np.array([math.sqrt(np.sum((s := (sh_all[i] + sh_all[i - 5]) / 2) * (R[i] - R[i - 5]) ** 2) / np.sum(s))
-                   for i in rows])
-    return float(np.sum(ch * tot[rows]) / np.sum(tot[rows]))
+    shares = bands / total[:, None]
+    change = np.array([math.sqrt(np.sum((sv := (shares[ix] + shares[ix - 5]) / 2) * (rel_db[ix] - rel_db[ix - 5]) ** 2) / np.sum(sv))
+                   for ix in pairs])
+    return float(np.sum(change * total[pairs]) / np.sum(total[pairs]))
 
 
-def _cent_spread(P: np.ndarray, act: np.ndarray) -> float:
-    cent = np.log2((P[act] * CEN).sum(axis=1) / P[act].sum(axis=1))
-    return round(float(np.percentile(cent, 90) - np.percentile(cent, 10)), 2)
+def _centre_range(lin: np.ndarray, busy: np.ndarray) -> float:
+    cent_oct = np.log2((lin[busy] * CEN).sum(axis=1) / lin[busy].sum(axis=1))
+    return round(float(np.percentile(cent_oct, 90) - np.percentile(cent_oct, 10)), 2)
 
 
 def evolution(x: Any, G: np.ndarray | None = None) -> dict:
     """Change of spectral shape over 50 ms, independent of level."""
-    G = tone.bandgram(_mono(x)) if G is None else G
-    P, Q = _oct_power(G)
-    tot = Q.sum(axis=1)
-    act = 10 * np.log10(tot) > 10 * np.log10(tot.max()) - 30
-    evo = _evo_db(Q, tot, act) if act.sum() >= 8 else None
-    if evo is None:
+    G = tone.bandgram(_one_channel(x)) if G is None else G
+    lin, bands = _band_energy(G)
+    total = bands.sum(axis=1)
+    busy = 10 * np.log10(total) > 10 * np.log10(total.max()) - 30
+    evo_v = _shape_change(bands, total, busy) if busy.sum() >= 8 else None
+    if evo_v is None:
         return {"evolution_db": None, "centroid_oct": None}
-    return {"evolution_db": round(evo, 2), "centroid_oct": _cent_spread(P, act)}
+    return {"evolution_db": round(evo_v, 2), "centroid_oct": _centre_range(lin, busy)}
 
 
 # ---------------------------------------------------------------- ring
 
-def _log_spec(seg: np.ndarray, N: int) -> tuple[np.ndarray, np.ndarray]:
-    w = seg * np.hanning(len(seg))
-    p = np.abs(np.fft.rfft(w, N)) ** 2
-    return np.fft.rfftfreq(N, 1 / SR), 10 * np.log10(p + 1e-30)
+def _db_spectrum(chunk: np.ndarray, fft_n: int) -> tuple[np.ndarray, np.ndarray]:
+    wv = chunk * np.hanning(len(chunk))
+    pwr = np.abs(np.fft.rfft(wv, fft_n)) ** 2
+    return np.fft.rfftfreq(fft_n, 1 / SR), 10 * np.log10(pwr + 1e-30)
 
 
-def _cepstrum(L: np.ndarray, f: np.ndarray, df: float, nb: int) -> tuple | None:
+def _ripple_cep(lvl_db: np.ndarray, hz: np.ndarray, bin_hz: float, width_n: int) -> tuple | None:
     """Cepstrum values and quefrencies (s) between 2 and 40 ms of the 300 Hz - 12 kHz ripple."""
-    sel = (f >= 300) & (f <= 12000)
-    Ls = np.maximum(L[sel], L[sel].max() - 60)
-    res = Ls - ndimage.uniform_filter1d(Ls, nb, mode="nearest")
-    cep = np.abs(np.fft.rfft(res * np.hanning(len(res))))
-    q = np.arange(len(cep)) / (len(res) * df)
-    keep = (q >= 0.002) & (q <= 0.040)
-    return (cep[keep], q[keep]) if keep.sum() >= 8 else None
+    mask = (hz >= 300) & (hz <= 12000)
+    lvl_c = np.maximum(lvl_db[mask], lvl_db[mask].max() - 60)
+    outcome = lvl_c - ndimage.uniform_filter1d(lvl_c, width_n, mode="nearest")
+    cepv = np.abs(np.fft.rfft(outcome * np.hanning(len(outcome))))
+    quef = np.arange(len(cepv)) / (len(outcome) * bin_hz)
+    kept = (quef >= 0.002) & (quef <= 0.040)
+    return (cepv[kept], quef[kept]) if kept.sum() >= 8 else None
 
 
-def _robust_z(c: np.ndarray) -> tuple[float, int]:
-    i = int(np.argmax(c))
-    med = np.median(c)
-    return (c[i] - med) / (1.4826 * np.median(np.abs(c - med)) + 1e-12), i
+def _mad_score(cc: np.ndarray) -> tuple[float, int]:
+    ix = int(np.argmax(cc))
+    middle = np.median(cc)
+    return (cc[ix] - middle) / (1.4826 * np.median(np.abs(cc - middle)) + 1e-12), ix
 
 
-def _bandwidth(L: np.ndarray, df: float, nb: int) -> float:
-    smooth_full = ndimage.uniform_filter1d(L, nb, mode="nearest")
-    return float(np.sum(smooth_full >= smooth_full.max() - 40) * df)
+def _live_width(lvl_db: np.ndarray, bin_hz: float, width_n: int) -> float:
+    smooth_l = ndimage.uniform_filter1d(lvl_db, width_n, mode="nearest")
+    return float(np.sum(smooth_l >= smooth_l.max() - 40) * bin_hz)
 
 
-def _cep_peak(seg: np.ndarray, want_bw: bool = False) -> tuple | None:
-    N = 8192 if len(seg) <= 8192 else 16384
-    f, L = _log_spec(seg, N)
-    df = SR / N
-    nb = max(3, int(round(2000 / df)))
-    got = _cepstrum(L, f, df, nb)
-    if got is None:
+def _cep_top(chunk: np.ndarray, with_bw: bool = False) -> tuple | None:
+    fft_n = 8192 if len(chunk) <= 8192 else 16384
+    hz, lvl_db = _db_spectrum(chunk, fft_n)
+    bin_hz = SR / fft_n
+    width_n = max(3, int(round(2000 / bin_hz)))
+    hit_v = _ripple_cep(lvl_db, hz, bin_hz, width_n)
+    if hit_v is None:
         return None
-    c, qq = got
-    z, i = _robust_z(c)
-    out = (float(z), float(qq[i] * 1000))
-    return out + (_bandwidth(L, df, nb),) if want_bw else out
+    cc, quefs = hit_v
+    zv, ix = _mad_score(cc)
+    acc = (float(zv), float(quefs[ix] * 1000))
+    return acc + (_live_width(lvl_db, bin_hz, width_n),) if with_bw else acc
 
 
-def _teeth(seg: np.ndarray, ms: float) -> float:
-    f0 = 1000 / ms
-    f, L = _log_spec(seg, 16384)
-    df = SR / 16384
-    lv = []
-    for k in range(math.ceil(300 / f0), int(12000 / f0) + 1):
-        b = int(round(k * f0 / df))
-        lv.append(L[max(0, b - 2):b + 3].max())
-    lv = np.array([v for v in lv if v >= L.max() - 50])
-    if len(lv) < 8:
+def _comb_rough(chunk: np.ndarray, per_ms: float) -> float:
+    pitch = 1000 / per_ms
+    hz, lvl_db = _db_spectrum(chunk, 16384)
+    bin_hz = SR / 16384
+    lev_list = []
+    for ky in range(math.ceil(300 / pitch), int(12000 / pitch) + 1):
+        rhs = int(round(ky * pitch / bin_hz))
+        lev_list.append(lvl_db[max(0, rhs - 2):rhs + 3].max())
+    lev_list = np.array([val for val in lev_list if val >= lvl_db.max() - 50])
+    if len(lev_list) < 8:
         return math.inf
-    return float(np.median(np.abs(np.diff(lv, 2))))
+    return float(np.median(np.abs(np.diff(lev_list, 2))))
 
 
-def _body_period(m: np.ndarray, ip: int) -> tuple | None:
+def _body_cep(mono: np.ndarray, pk_ix: int) -> tuple | None:
     """The cepstral peak of the body around the loudest frame, when it is strong."""
-    body = m[max(0, (ip - 2) * 480):(ip + 6) * 480]
-    cb = _cep_peak(body) if len(body) >= 1920 else None
-    return cb if cb is not None and cb[0] >= RING_PITCH_Z else None
+    body_seg = mono[max(0, (pk_ix - 2) * 480):(pk_ix + 6) * 480]
+    bodyc = _cep_top(body_seg) if len(body_seg) >= 1920 else None
+    return bodyc if bodyc is not None and bodyc[0] >= RING_PITCH_Z else None
 
 
-def _period_match(ms: float, period: float) -> bool:
-    ratio = ms / period
-    return abs(ratio - 1) <= 0.3 or any(abs(ratio / k - 1) <= 0.1 for k in (2, 3, 0.5, 1 / 3))
+def _same_period(per_ms: float, per: float) -> bool:
+    rel = per_ms / per
+    return abs(rel - 1) <= 0.3 or any(abs(rel / ky - 1) <= 0.1 for ky in (2, 3, 0.5, 1 / 3))
 
 
-def _is_pitch(m: np.ndarray, ip: int, tailseg: np.ndarray, ms: float) -> bool:
-    if _teeth(tailseg, ms) <= RING_SMOOTH_DB:
+def _pitched(mono: np.ndarray, pk_ix: int, tail_chunk: np.ndarray, per_ms: float) -> bool:
+    if _comb_rough(tail_chunk, per_ms) <= RING_SMOOTH_DB:
         return True
-    cb = _body_period(m, ip)
-    return cb is not None and _period_match(ms, cb[1])
+    bodyc = _body_cep(mono, pk_ix)
+    return bodyc is not None and _same_period(per_ms, bodyc[1])
 
 
-def _tail_seg(m: np.ndarray) -> tuple[int, np.ndarray | None]:
+def _tail_slice(mono: np.ndarray) -> tuple[int, np.ndarray | None]:
     """The loudest 10 ms frame and the tail from 30 ms after it down to -50 dB (None when short)."""
-    e = frame_db(m, 480)
-    ip = int(np.argmax(e))
-    s = ip + 3
-    below = np.nonzero(e[s:] < e[ip] - 50)[0]
-    end = s + int(below[0]) if len(below) else len(e) - 1
-    return ip, (m[s * 480:(end + 1) * 480][:16384] if end - s >= 6 else None)
+    lev = frame_db(mono, 480)
+    pk_ix = int(np.argmax(lev))
+    sv = pk_ix + 3
+    under_ix = np.nonzero(lev[sv:] < lev[pk_ix] - 50)[0]
+    stop = sv + int(under_ix[0]) if len(under_ix) else len(lev) - 1
+    return pk_ix, (mono[sv * 480:(stop + 1) * 480][:16384] if stop - sv >= 6 else None)
 
 
-def _ring_src(m: np.ndarray, ip: int, seg: np.ndarray, ms: float, bw: float) -> str | None:
+def _ring_excuse(mono: np.ndarray, pk_ix: int, chunk: np.ndarray, per_ms: float, width_hz: float) -> str | None:
     """Why a strong cepstral peak is not a ring: narrow band or pitch; None when it is a ring."""
-    narrow = bw < RING_SPAN_HZ
-    pitch = not narrow and _is_pitch(m, ip, seg, ms)
-    return "narrow" if narrow else "pitch" if pitch else None
+    is_narrow = width_hz < RING_SPAN_HZ
+    is_pitch = not is_narrow and _pitched(mono, pk_ix, chunk, per_ms)
+    return "narrow" if is_narrow else "pitch" if is_pitch else None
 
 
 def ring(x: Any, legacy: bool = False) -> dict:
     """Comb-like metallic ringing in the tail."""
-    m = _mono(x)
-    ip, seg = _tail_seg(m)
-    cp = _cep_peak(seg, want_bw=True) if seg is not None else None
-    if cp is None:
+    mono = _one_channel(x)
+    pk_ix, chunk = _tail_slice(mono)
+    cep_info = _cep_top(chunk, with_bw=True) if chunk is not None else None
+    if cep_info is None:
         return {"ring_z": None, "ring_ms": None}
-    z, ms, bw = cp
-    src = None if legacy or z < 8 else _ring_src(m, ip, seg, ms, bw)
-    if src is None:
-        return {"ring_z": round(z, 1), "ring_ms": round(ms, 2)}
-    return {"ring_z": None, "ring_ms": round(ms, 2), "ring_raw_z": round(z, 1), "ring_src": src}
+    zv, per_ms, width_hz = cep_info
+    reason = None if legacy or zv < 8 else _ring_excuse(mono, pk_ix, chunk, per_ms, width_hz)
+    if reason is None:
+        return {"ring_z": round(zv, 1), "ring_ms": round(per_ms, 2)}
+    return {"ring_z": None, "ring_ms": round(per_ms, 2), "ring_raw_z": round(zv, 1), "ring_src": reason}
 
 
 # ---------------------------------------------------------------- truncated, silence, clipping
 
-def _cut_level(e: np.ndarray, ip: int, end: float) -> float | None:
-    before = e[max(ip, len(e) - 38):len(e) - 8]
-    slope = _lsq_slope(before, 0.005) if len(before) >= 4 else 0.0
-    fade_from = float(np.mean(e[len(e) - 10:len(e) - 7]))
-    expect = max(3.0, -slope * 0.04)
-    cut = None
-    if fade_from - end > 3 * expect + 6 and fade_from > -50:
-        cut = fade_from
-    elif slope < -20 and end > -50:
-        cut = end
-    return cut
+def _cut_db(lev: np.ndarray, pk_ix: int, stop: float) -> float | None:
+    tail_part = lev[max(pk_ix, len(lev) - 38):len(lev) - 8]
+    rate = _fit_slope(tail_part, 0.005) if len(tail_part) >= 4 else 0.0
+    fade_lvl = float(np.mean(lev[len(lev) - 10:len(lev) - 7]))
+    expect_db = max(3.0, -rate * 0.04)
+    cut_v = None
+    if fade_lvl - stop > 3 * expect_db + 6 and fade_lvl > -50:
+        cut_v = fade_lvl
+    elif rate < -20 and stop > -50:
+        cut_v = stop
+    return cut_v
 
 
 def truncated(x: Any) -> dict:
     """A tail cut while it is still decaying."""
-    e = frame_db(_mono(x), 240)
-    if len(e) < 12:
+    lev = frame_db(_one_channel(x), 240)
+    if len(lev) < 12:
         return {"trunc_db": None, "end_db": None}
-    ip = int(np.argmax(e))
-    e = e - e[ip]
-    end = float(np.mean(e[-2:]))
-    cut = None if len(e) - ip - 1 < 12 or end < -55 else _cut_level(e, ip, end)
-    return {"trunc_db": _r(cut, 1), "end_db": round(end, 1)}
+    pk_ix = int(np.argmax(lev))
+    lev = lev - lev[pk_ix]
+    stop = float(np.mean(lev[-2:]))
+    cut_v = None if len(lev) - pk_ix - 1 < 12 or stop < -55 else _cut_db(lev, pk_ix, stop)
+    return {"trunc_db": _rounded(cut_v, 1), "end_db": round(stop, 1)}
 
 
 def silence(x: Any) -> dict:
     """Runs of exact zeros inside the sound."""
-    m = np.abs(_mono(x))
-    peak = (m.max() if len(m) else 0.0) + 1e-12
-    aud = np.nonzero(m > 1e-3 * peak)[0]
-    if len(aud) < 2:
+    mono = np.abs(_one_channel(x))
+    pk_v = (mono.max() if len(mono) else 0.0) + 1e-12
+    audible = np.nonzero(mono > 1e-3 * pk_v)[0]
+    if len(audible) < 2:
         return {"silence_ms": 0.0, "silence_max_ms": 0.0}
-    z = m[aud[0]:aud[-1] + 1] < 1e-6
-    runs = _run_lengths(z)
-    runs = [r for r in runs if r >= 96]
-    return {"silence_ms": round(sum(runs) / 48, 1), "silence_max_ms": round(max(runs, default=0) / 48, 1)}
+    zv = mono[audible[0]:audible[-1] + 1] < 1e-6
+    streaks = _streaks(zv)
+    streaks = [f0v for f0v in streaks if f0v >= 96]
+    return {"silence_ms": round(sum(streaks) / 48, 1), "silence_max_ms": round(max(streaks, default=0) / 48, 1)}
 
 
-def _run_lengths(flags: np.ndarray) -> list[int]:
-    d = np.diff(np.concatenate([[0], flags.astype(int), [0]]))
-    return list(np.nonzero(d == -1)[0] - np.nonzero(d == 1)[0])
+def _streaks(mask_b: np.ndarray) -> list[int]:
+    dd = np.diff(np.concatenate([[0], mask_b.astype(int), [0]]))
+    return list(np.nonzero(dd == -1)[0] - np.nonzero(dd == 1)[0])
 
 
 def clipping(x: Any) -> dict:
     """Flat tops and samples over full scale."""
-    a = _raw(x)
-    chans = [a] if a.ndim == 1 else [a[:, c] for c in range(a.shape[1])]
-    runs = overs = 0
-    for c in chans:
-        pk = np.max(np.abs(c)) if len(c) else 0.0
-        if pk <= 0:
+    lhs = _as_array(x)
+    channels = [lhs] if lhs.ndim == 1 else [lhs[:, cc] for cc in range(lhs.shape[1])]
+    streaks = n_over = 0
+    for cc in channels:
+        chan_pk = np.max(np.abs(cc)) if len(cc) else 0.0
+        if chan_pk <= 0:
             continue
-        overs += int(np.sum(np.abs(c) > 1.0))
-        flag = (np.abs(c[1:]) >= 0.99 * pk) & (np.abs(np.diff(c)) < 2e-6)
-        runs += sum(1 for r in _run_lengths(flag) if r >= 2)
-    return {"clip_runs": runs, "overs": overs}
+        n_over += int(np.sum(np.abs(cc) > 1.0))
+        flat_mask = (np.abs(cc[1:]) >= 0.99 * chan_pk) & (np.abs(np.diff(cc)) < 2e-6)
+        streaks += sum(1 for f0v in _streaks(flat_mask) if f0v >= 2)
+    return {"clip_runs": streaks, "overs": n_over}
 
 
 # ---------------------------------------------------------------- polish measures
 
-def _attack_idx(m: np.ndarray, n: int) -> tuple[int, int]:
+def _rise_frames(mono: np.ndarray, cnt: int) -> tuple[int, int]:
     """The 10 % and 90 % frames (0.25 ms) of the onset."""
-    pw = np.mean(m[: n * 12].reshape(n, 12) ** 2, axis=1)
-    env = np.sqrt(np.convolve(pw, np.ones(2) / 2, mode="same"))
-    i90 = int(np.argmax(env >= 0.9 * env.max()))
-    low = np.nonzero(env[: i90 + 1] < 0.1 * env.max())[0]
-    return (int(low[-1]) if len(low) else 0), i90
+    pow2 = np.mean(mono[: cnt * 12].reshape(cnt, 12) ** 2, axis=1)
+    envv = np.sqrt(np.convolve(pow2, np.ones(2) / 2, mode="same"))
+    top_ix = int(np.argmax(envv >= 0.9 * envv.max()))
+    quiet = np.nonzero(envv[: top_ix + 1] < 0.1 * envv.max())[0]
+    return (int(quiet[-1]) if len(quiet) else 0), top_ix
 
 
-def _onset_hf(seg: np.ndarray) -> float | None:
-    if len(seg) < 32:
+def _onset_air(chunk: np.ndarray) -> float | None:
+    if len(chunk) < 32:
         return None
-    p = np.abs(np.fft.rfft(seg * np.hanning(len(seg)), 1024)) ** 2
-    f = np.fft.rfftfreq(1024, 1 / SR)
-    return 10 * math.log10(p[f >= 6000].sum() / (p.sum() + 1e-30) + 1e-12)
+    pwr = np.abs(np.fft.rfft(chunk * np.hanning(len(chunk)), 1024)) ** 2
+    hz = np.fft.rfftfreq(1024, 1 / SR)
+    return 10 * math.log10(pwr[hz >= 6000].sum() / (pwr.sum() + 1e-30) + 1e-12)
 
 
 def attack(x: Any) -> dict:
     """10 %-90 % attack time and the high-frequency share of the onset."""
-    m = _mono(x)
-    n = len(m) // 12
-    if n < 4:
+    mono = _one_channel(x)
+    cnt = len(mono) // 12
+    if cnt < 4:
         return {"attack_ms": None, "onset_hf_db": None}
-    i10, i90 = _attack_idx(m, n)
-    hf = _onset_hf(m[12 * i10:12 * i10 + 480])
-    return {"attack_ms": round((i90 - i10) * 0.25, 2), "onset_hf_db": _r(hf, 1)}
+    low_ix, top_ix = _rise_frames(mono, cnt)
+    air = _onset_air(mono[12 * low_ix:12 * low_ix + 480])
+    return {"attack_ms": round((top_ix - low_ix) * 0.25, 2), "onset_hf_db": _rounded(air, 1)}
 
 
-def _tail_curve(m: np.ndarray, k: int) -> np.ndarray:
+def _decay_curve(mono: np.ndarray, ky: int) -> np.ndarray:
     """10 ms levels from the loudest frame on, re that frame."""
-    pw = np.mean(m[: k * 480].reshape(k, 480) ** 2, axis=1)
-    e = 10 * np.log10(np.convolve(pw, np.ones(3) / 3, mode="same") + 1e-24)
-    ip = int(np.argmax(e))
-    return e[ip:] - e[ip]
+    pow2 = np.mean(mono[: ky * 480].reshape(ky, 480) ** 2, axis=1)
+    lev = 10 * np.log10(np.convolve(pow2, np.ones(3) / 3, mode="same") + 1e-24)
+    pk_ix = int(np.argmax(lev))
+    return lev[pk_ix:] - lev[pk_ix]
 
 
-def _bump(after: np.ndarray) -> float:
-    live = after > -45
-    live[:2] = False
-    rise = after - np.minimum.accumulate(after)
-    return float(rise[live].max()) if live.any() else 0.0
+def _rerise(curve: np.ndarray) -> float:
+    active = curve > -45
+    active[:2] = False
+    lift = curve - np.minimum.accumulate(curve)
+    return float(lift[active].max()) if active.any() else 0.0
 
 
-def _decay(after: np.ndarray) -> float | None:
-    fit = (after >= -45) & (after <= -6)
-    if fit.sum() < 3:
+def _fall_rate(curve: np.ndarray) -> float | None:
+    use = (curve >= -45) & (curve <= -6)
+    if use.sum() < 3:
         return None
-    t = np.nonzero(fit)[0] * 0.01
-    return float(np.polyfit(t, after[fit], 1)[0])
+    tm = np.nonzero(use)[0] * 0.01
+    return float(np.polyfit(tm, curve[use], 1)[0])
 
 
 def tail(x: Any) -> dict:
     """Tail bump, decay rate and t40."""
-    m = _mono(x)
-    k = len(m) // 480
-    if k < 4:
+    mono = _one_channel(x)
+    ky = len(mono) // 480
+    if ky < 4:
         return {"bump_db": 0.0, "decay_db_s": None, "t40_ms": None}
-    after = _tail_curve(m, k)
-    under = np.nonzero(after < -40)[0]
-    t40 = 10.0 * (int(under[0]) if len(under) else len(after))
-    return {"bump_db": round(_bump(after), 1), "decay_db_s": _r(_decay(after), 1), "t40_ms": t40}
+    curve = _decay_curve(mono, ky)
+    gone = np.nonzero(curve < -40)[0]
+    t40_v = 10.0 * (int(gone[0]) if len(gone) else len(curve))
+    return {"bump_db": round(_rerise(curve), 1), "decay_db_s": _rounded(_fall_rate(curve), 1), "t40_ms": t40_v}
 
 
 def body(x: Any) -> dict:
     """Crest factor of the loudest 50 ms, K-weighted."""
-    m = _mono(x)
-    km = _k_weight(m)
-    sq = km ** 2
-    if len(sq) >= 2400:
-        loud = float(np.max(np.convolve(sq, np.ones(2400) / 2400, mode="valid")))
+    mono = _one_channel(x)
+    kmono = _kw_filter(mono)
+    sq_k = kmono ** 2
+    if len(sq_k) >= 2400:
+        loud_v = float(np.max(np.convolve(sq_k, np.ones(2400) / 2400, mode="valid")))
     else:
-        loud = float(sq.sum() / 2400)
-    peak = float(np.max(np.abs(m))) if len(m) else 0.0
-    return {"crest_db": round(20 * math.log10(peak + 1e-12) - 10 * math.log10(loud + 1e-24), 1)}
+        loud_v = float(sq_k.sum() / 2400)
+    pk_v = float(np.max(np.abs(mono))) if len(mono) else 0.0
+    return {"crest_db": round(20 * math.log10(pk_v + 1e-12) - 10 * math.log10(loud_v + 1e-24), 1)}
 
 
 def lufs_max(x: Any) -> float:
     """Momentary maximum loudness (400 ms) in LUFS."""
-    a = _raw(x)
-    chans = [a] if a.ndim == 1 else [a[:, c] for c in range(a.shape[1])]
-    sq = sum(_k_weight(c) ** 2 for c in chans)
-    if len(sq) >= 19200:
-        v = float(np.max(np.convolve(sq, np.ones(19200) / 19200, mode="valid")))
+    lhs = _as_array(x)
+    channels = [lhs] if lhs.ndim == 1 else [lhs[:, cc] for cc in range(lhs.shape[1])]
+    sq_k = sum(_kw_filter(cc) ** 2 for cc in channels)
+    if len(sq_k) >= 19200:
+        val = float(np.max(np.convolve(sq_k, np.ones(19200) / 19200, mode="valid")))
     else:
-        v = float(np.sum(sq) / 19200)
-    return -0.691 + 10 * math.log10(v + 1e-24)
+        val = float(np.sum(sq_k) / 19200)
+    return -0.691 + 10 * math.log10(val + 1e-24)
 
 
 def loudness_spread(xs: Sequence[Any]) -> dict:
     """Loudness of a set of variants: values, range and standard deviation."""
-    v = [lufs_max(x) for x in xs]
-    if not v:
+    val = [lufs_max(sig) for sig in xs]
+    if not val:
         return {"lufs": [], "spread_lu": None, "std_lu": None}
-    return {"lufs": [round(u, 2) for u in v], "spread_lu": round(max(v) - min(v), 2),
-            "std_lu": round(float(np.std(v)), 2)}
+    return {"lufs": [round(lv_u, 2) for lv_u in val], "spread_lu": round(max(val) - min(val), 2),
+            "std_lu": round(float(np.std(val)), 2)}
 
 
 def measure(x: Any, G: np.ndarray | None = None) -> dict:
     """Every detector and polish measure of one sound."""
-    a = _raw(x)
-    out: dict = {}
-    for fn in (clicks, aliasing, dc, resonances, ring, truncated, silence, clipping, attack, tail, body):
-        out.update(fn(a))
-    out.update(evolution(a, G))
-    return out
+    lhs = _as_array(x)
+    acc: dict = {}
+    for meas in (clicks, aliasing, dc, resonances, ring, truncated, silence, clipping, attack, tail, body):
+        acc.update(meas(lhs))
+    acc.update(evolution(lhs, G))
+    return acc
 
 
 # ---------------------------------------------------------------- PolishRef
 
-def _low_penalty(v: float, rv: list, margin: float, cap: float, kind: str) -> tuple[float, float | None, str]:
+def _under_cost(val: float, refv: list, slack: float, maxc: float, sev: str) -> tuple[float, float | None, str]:
     """Penalty of a measure where low is bad, against the refs' median."""
-    if len(rv) < 2 or np.median(rv) < 1.5:
-        return 0.0, None, kind
-    limit = margin * float(np.median(rv))
-    return min(cap, max(0.0, 2 * (limit - v) / max(limit, 1e-6))), limit, kind
+    if len(refv) < 2 or np.median(refv) < 1.5:
+        return 0.0, None, sev
+    bound = slack * float(np.median(refv))
+    return min(maxc, max(0.0, 2 * (bound - val) / max(bound, 1e-6))), bound, sev
 
 
-def _designed(key: str, v: float, pen: float, limit: float, kind: str, gated: bool) -> tuple[float, float, str]:
+def _designed_adjust(name: str, val: float, cost: float, bound: float, sev: str, is_gated: bool) -> tuple[float, float, str]:
     """Designed sounds: clicks and silence count half; a tail cut is judged against the gate level."""
-    scale, cap = RULES[key][3], RULES[key][5]
-    if key in ("clicks", "silence_ms"):
-        kind, pen = "soft", pen / 2
-    elif key == "trunc_db":
-        limit = max(limit, GATE_DB["gated"] if gated else GATE_DB["designed"])
-        pen = min(cap, max(0.0, (v - limit) / scale))
-        kind = "soft" if gated else kind
-    return pen, limit, kind
+    unit, maxc = RULES[name][3], RULES[name][5]
+    if name in ("clicks", "silence_ms"):
+        sev, cost = "soft", cost / 2
+    elif name == "trunc_db":
+        bound = max(bound, GATE_DB["gated"] if is_gated else GATE_DB["designed"])
+        cost = min(maxc, max(0.0, (val - bound) / unit))
+        sev = "soft" if is_gated else sev
+    return cost, bound, sev
 
 
-def _art_penalty(key: str, v: float, rv: list, designed: bool, gated: bool) -> tuple[float, float | None, str]:
-    bad, ab, margin, scale, kind, cap = RULES[key]
-    if bad < 0:
-        return _low_penalty(v, rv, margin, cap, kind)
-    limit = max(ab, max(rv) + margin) if rv else ab
-    pen = min(cap, max(0.0, (v - limit) / scale))
-    if designed:
-        pen, limit, kind = _designed(key, v, pen, limit, kind, gated)
-    return pen, limit, kind
+def _artifact_cost(name: str, val: float, refv: list, is_designed: bool, is_gated: bool) -> tuple[float, float | None, str]:
+    sign, floor_v, slack, unit, sev, maxc = RULES[name]
+    if sign < 0:
+        return _under_cost(val, refv, slack, maxc, sev)
+    bound = max(floor_v, max(refv) + slack) if refv else floor_v
+    cost = min(maxc, max(0.0, (val - bound) / unit))
+    if is_designed:
+        cost, bound, sev = _designed_adjust(name, val, cost, bound, sev, is_gated)
+    return cost, bound, sev
 
 
-def _log_penalty(v: float, rv: list, bad: float, margin: float, scale: float) -> tuple[float, float]:
-    if bad > 0:
-        limit = margin * max(rv) + 1
-        return math.log2(max(v, 1e-3) / limit) / scale, limit
-    limit = margin * min(rv)
-    return math.log2(limit / max(v, 1e-3)) / scale, limit
+def _ratio_cost(val: float, refv: list, sign: float, slack: float, unit: float) -> tuple[float, float]:
+    if sign > 0:
+        bound = slack * max(refv) + 1
+        return math.log2(max(val, 1e-3) / bound) / unit, bound
+    bound = slack * min(refv)
+    return math.log2(bound / max(val, 1e-3)) / unit, bound
 
 
-def _lin_penalty(v: float, rv: list, bad: float, margin: float, scale: float) -> tuple[float, float]:
-    mg = max(margin, 0.25 * (max(rv) - min(rv)))
-    if bad > 0:
-        limit = max(rv) + mg
-        return (v - limit) / scale, limit
-    limit = min(rv) - mg
-    return (limit - v) / scale, limit
+def _diff_cost(val: float, refv: list, sign: float, slack: float, unit: float) -> tuple[float, float]:
+    pad = max(slack, 0.25 * (max(refv) - min(refv)))
+    if sign > 0:
+        bound = max(refv) + pad
+        return (val - bound) / unit, bound
+    bound = min(refv) - pad
+    return (bound - val) / unit, bound
 
 
-def _polish_penalty(key: str, v: float, rv: list) -> tuple[float, float] | None:
-    bad, kind, margin, scale = POLISH[key]
-    if key == "bump_db":
-        limit = max(4.0, max(rv) + margin) if rv else 4.0
-        res = ((v - limit) / scale, limit)
-    elif len(rv) < 2:
-        res = None
-    elif kind == "log":
-        res = _log_penalty(v, rv, bad, margin, scale)
+def _finish_cost(name: str, val: float, refv: list) -> tuple[float, float] | None:
+    sign, sev, slack, unit = POLISH[name]
+    if name == "bump_db":
+        bound = max(4.0, max(refv) + slack) if refv else 4.0
+        outcome = ((val - bound) / unit, bound)
+    elif len(refv) < 2:
+        outcome = None
+    elif sev == "log":
+        outcome = _ratio_cost(val, refv, sign, slack, unit)
     else:
-        res = _lin_penalty(v, rv, bad, margin, scale)
-    return res
+        outcome = _diff_cost(val, refv, sign, slack, unit)
+    return outcome
 
 
 class PolishRef:
@@ -802,121 +803,121 @@ class PolishRef:
 
     def __init__(self, refs: Sequence[Any] = (), designed: bool = False, gated: bool = False,
                  targets: dict | None = None):
-        self.M = [measure(r) for r in refs]
+        self.M = [measure(f0v) for f0v in refs]
         self.n = len(self.M)
-        self.designed = designed
-        self.gated = gated
-        self.targets = dict(targets or {})
+        self.is_designed = designed
+        self.is_gated = gated
+        self.fallback = dict(targets or {})
 
-    def _rv(self, key: str, keep: list[int]) -> list:
-        return [self.M[i][key] for i in keep if self.M[i].get(key) is not None]
+    def _ref_vals(self, name: str, kept: list[int]) -> list:
+        return [self.M[ix][name] for ix in kept if self.M[ix].get(name) is not None]
 
     def check(self, x: Any, exclude: Any = None, G: np.ndarray | None = None, m: dict | None = None) -> dict:
         """Penalties, limits, hard faults and words for one sound."""
-        drop = set() if exclude is None else ({exclude} if np.isscalar(exclude) else set(exclude))
-        keep = [i for i in range(self.n) if i not in drop]
+        skip = set() if exclude is None else ({exclude} if np.isscalar(exclude) else set(exclude))
+        kept = [ix for ix in range(self.n) if ix not in skip]
         m = measure(x, G) if m is None else m
-        c = {"measures": m, "limits": {}, "art": {}, "polish": {}, "hard": []}
-        self._artifacts(c, m, keep)
-        self._polish(c, m, keep)
-        c["art_pen"] = round(sum(c["art"].values()), 3)
-        c["polish_pen"] = round(sum(c["polish"].values()), 3)
-        c["words"] = self.words(c, keep)
-        return c
+        cc = {"measures": m, "limits": {}, "art": {}, "polish": {}, "hard": []}
+        self._artifact_terms(cc, m, kept)
+        self._finish_terms(cc, m, kept)
+        cc["art_pen"] = round(sum(cc["art"].values()), 3)
+        cc["polish_pen"] = round(sum(cc["polish"].values()), 3)
+        cc["words"] = self.words(cc, kept)
+        return cc
 
-    def _artifacts(self, c: dict, m: dict, keep: list[int]) -> None:
-        for key in RULES:
-            v = m.get(key)
-            if v is None:
+    def _artifact_terms(self, cc: dict, mono: dict, kept: list[int]) -> None:
+        for name in RULES:
+            val = mono.get(name)
+            if val is None:
                 continue
-            pen, limit, kind = _art_penalty(key, float(v), self._rv(key, keep), self.designed, self.gated)
-            if limit is None:
+            cost, bound, sev = _artifact_cost(name, float(val), self._ref_vals(name, kept), self.is_designed, self.is_gated)
+            if bound is None:
                 continue
-            c["limits"][key] = round(limit, 2)
-            if pen > 0:
-                c["art"][key] = round(pen, 3)
-            if kind == "hard" and pen >= HARD_AT:
-                c["hard"].append(key)
+            cc["limits"][name] = round(bound, 2)
+            if cost > 0:
+                cc["art"][name] = round(cost, 3)
+            if sev == "hard" and cost >= HARD_AT:
+                cc["hard"].append(name)
 
-    def _polish(self, c: dict, m: dict, keep: list[int]) -> None:
-        for key in POLISH:
-            v = m.get(key)
-            if v is None:
+    def _finish_terms(self, cc: dict, mono: dict, kept: list[int]) -> None:
+        for name in POLISH:
+            val = mono.get(name)
+            if val is None:
                 continue
-            rv = self._rv(key, keep)
-            if key != "bump_db" and len(rv) < 2 and key in self.targets:
-                rv = list(self.targets[key])
-            res = _polish_penalty(key, float(v), rv)
-            if res is None:
+            refv = self._ref_vals(name, kept)
+            if name != "bump_db" and len(refv) < 2 and name in self.fallback:
+                refv = list(self.fallback[name])
+            outcome = _finish_cost(name, float(val), refv)
+            if outcome is None:
                 continue
-            p, limit = res
-            c["limits"][key] = round(limit, 2)
-            if p > 0:
-                c["polish"][key] = round(min(2.0, p), 3)
+            pwr, bound = outcome
+            cc["limits"][name] = round(bound, 2)
+            if pwr > 0:
+                cc["polish"][name] = round(min(2.0, pwr), 3)
 
     def words(self, c: dict, keep: list[int] | None = None) -> str:
         """Plain text of the flagged artifacts and polish items."""
         keep = list(range(self.n)) if keep is None else keep
-        m = c["measures"]
-        art = [_word(k, m, self._rv(k, keep)) for k in sorted(c["art"], key=lambda k: -c["art"][k])]
-        pol = [_word(k, m, self._rv(k, keep)) for k in sorted(c["polish"], key=lambda k: -c["polish"][k])]
-        parts = []
-        if art:
-            parts.append("artifacts: " + "; ".join(art))
-        if pol:
-            parts.append("polish: " + "; ".join(pol))
-        return "; ".join(parts) if parts else "clean (no artifact or polish flag)"
+        mono = c["measures"]
+        art_w = [_phrase(ky, mono, self._ref_vals(ky, keep)) for ky in sorted(c["art"], key=lambda ky: -c["art"][ky])]
+        pol_w = [_phrase(ky, mono, self._ref_vals(ky, keep)) for ky in sorted(c["polish"], key=lambda ky: -c["polish"][ky])]
+        bits = []
+        if art_w:
+            bits.append("artifacts: " + "; ".join(art_w))
+        if pol_w:
+            bits.append("polish: " + "; ".join(pol_w))
+        return "; ".join(bits) if bits else "clean (no artifact or polish flag)"
 
 
-def _rng_txt(rv: list, d: int | None = None) -> str:
-    if not rv:
+def _ref_range(refv: list, dd: int | None = None) -> str:
+    if not refv:
         return ""
-    lo, hi = min(rv), max(rv)
-    return f" (refs {lo:.{d}f}-{hi:.{d}f})" if d is not None else f" (refs {lo}-{hi})"
+    low, high = min(refv), max(refv)
+    return f" (refs {low:.{dd}f}-{high:.{dd}f})" if dd is not None else f" (refs {low}-{high})"
 
 
-_WORDS = {
-    "clicks": lambda v, m, rv: f"{v} click(s) ({', '.join(f'{t:.3f} s' for t in m.get('click_times', [])[:3])})",
-    "edge_db": lambda v, m, rv: f"starts / ends off zero ({v} dB re peak)",
-    "fold": lambda v, m, rv: f"aliasing: {v * 100:.0f}% of the moving partials fold back",
-    "nyq_db": lambda v, m, rv: f"energy above 20 kHz {v} dB" + _rng_txt(rv),
-    "dc_db": lambda v, m, rv: f"DC offset {v} dB re peak",
-    "infra_db": lambda v, m, rv: f"infrasound below 15 Hz {v} dB" + _rng_txt(rv),
-    "res_db": lambda v, m, rv: f"narrow resonance at {m.get('res_hz')} Hz +{v} dB" + _rng_txt(rv),
-    "ring_z": lambda v, m, rv: f"metallic comb ring every {m.get('ring_ms') or 0:.1f} ms (z {v})" + _rng_txt(rv),
-    "trunc_db": lambda v, m, rv: f"tail cut at {v} dB",
-    "silence_ms": lambda v, m, rv: f"{v} ms of digital silence inside",
-    "clip_runs": lambda v, m, rv: f"clipped ({v} flat tops)",
-    "evolution_db": lambda v, m, rv: f"frozen spectrum ({v:.1f} dB of change, refs median "
-                                     f"{float(np.median(rv)) if rv else 0:.1f})",
-    "attack_ms": lambda v, m, rv: f"attack {v} ms" + _rng_txt(rv, 1),
-    "onset_hf_db": lambda v, m, rv: f"dull onset (>6 kHz share {v} dB" + _rng_txt(rv) + ")",
-    "bump_db": lambda v, m, rv: f"bumpy tail (+{v} dB re-rise)",
-    "t40_ms": lambda v, m, rv: f"tail dies fast (t40 {v} ms" + _rng_txt(rv) + ")",
-    "crest_db": lambda v, m, rv: f"thin body (crest {v:.1f} dB" + _rng_txt(rv, 1) + ")",
+_PHRASES = {
+    "clicks": lambda val, mono, refv: f"{val} click(s) ({', '.join(f'{tm:.3f} s' for tm in mono.get('click_times', [])[:3])})",
+    "edge_db": lambda val, mono, refv: f"starts / ends off zero ({val} dB re peak)",
+    "fold": lambda val, mono, refv: f"aliasing: {val * 100:.0f}% of the moving partials fold back",
+    "nyq_db": lambda val, mono, refv: f"energy above 20 kHz {val} dB" + _ref_range(refv),
+    "dc_db": lambda val, mono, refv: f"DC offset {val} dB re peak",
+    "infra_db": lambda val, mono, refv: f"infrasound below 15 Hz {val} dB" + _ref_range(refv),
+    "res_db": lambda val, mono, refv: f"narrow resonance at {mono.get('res_hz')} Hz +{val} dB" + _ref_range(refv),
+    "ring_z": lambda val, mono, refv: f"metallic comb ring every {mono.get('ring_ms') or 0:.1f} ms (z {val})" + _ref_range(refv),
+    "trunc_db": lambda val, mono, refv: f"tail cut at {val} dB",
+    "silence_ms": lambda val, mono, refv: f"{val} ms of digital silence inside",
+    "clip_runs": lambda val, mono, refv: f"clipped ({val} flat tops)",
+    "evolution_db": lambda val, mono, refv: f"frozen spectrum ({val:.1f} dB of change, refs median "
+                                     f"{float(np.median(refv)) if refv else 0:.1f})",
+    "attack_ms": lambda val, mono, refv: f"attack {val} ms" + _ref_range(refv, 1),
+    "onset_hf_db": lambda val, mono, refv: f"dull onset (>6 kHz share {val} dB" + _ref_range(refv) + ")",
+    "bump_db": lambda val, mono, refv: f"bumpy tail (+{val} dB re-rise)",
+    "t40_ms": lambda val, mono, refv: f"tail dies fast (t40 {val} ms" + _ref_range(refv) + ")",
+    "crest_db": lambda val, mono, refv: f"thin body (crest {val:.1f} dB" + _ref_range(refv, 1) + ")",
 }
 
 
-def _word(key: str, m: dict, rv: list) -> str:
-    return _WORDS[key](m.get(key), m, rv)
+def _phrase(name: str, mono: dict, refv: list) -> str:
+    return _PHRASES[name](mono.get(name), mono, refv)
 
 
-def _files(paths: Sequence[str]) -> list[str]:
-    exts = (".wav", ".flac", ".aif", ".aiff", ".ogg", ".mp3")
-    out = []
-    for p in paths:
-        if os.path.isdir(p):
-            out += sorted(os.path.join(d, f) for d, _, fs in os.walk(p) for f in fs if f.lower().endswith(exts))
+def _audio_list(plist: Sequence[str]) -> list[str]:
+    suffixes = (".wav", ".flac", ".aif", ".aiff", ".ogg", ".mp3")
+    acc = []
+    for pwr in plist:
+        if os.path.isdir(pwr):
+            acc += sorted(os.path.join(dd, hz) for dd, _, fnames in os.walk(pwr) for hz in fnames if hz.lower().endswith(suffixes))
         else:
-            out.append(p)
-    return out
+            acc.append(pwr)
+    return acc
 
 
 def main(argv: Sequence[str] | None = None) -> int:
     """Print the detector values of each audio file."""
-    for path in _files(list(sys.argv[1:] if argv is None else argv)):
-        m = measure(path)
-        print(os.path.basename(path), " ".join(f"{k}={m.get(k)}" for k in PRINT_KEYS))
+    for fpath in _audio_list(list(sys.argv[1:] if argv is None else argv)):
+        mono = measure(fpath)
+        print(os.path.basename(fpath), " ".join(f"{ky}={mono.get(ky)}" for ky in PRINT_KEYS))
     return 0
 
 
