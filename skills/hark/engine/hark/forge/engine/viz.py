@@ -120,6 +120,22 @@ def _row(axes: Any, item: tuple, refs: list, j: int | None, max_s: float, first:
     _plot_tone(axes[3], made, [r for _, r in refs], first)
 
 
+def _figure(plt: Any, path: Any, made: list, refs: list, pairs: Sequence[int | None], title: str | None,
+            max_s: float) -> int:
+    rows = max(1, len(made))
+    fig, axes = plt.subplots(rows, 4, figsize=(15, 2.25 * rows + (0.5 if title else 0.2)),
+                             gridspec_kw={"width_ratios": [1.25, 1.25, 1, 1]}, squeeze=False)
+    for i, item in enumerate(made):
+        _row(axes[i], item, refs, pairs[i], max_s, i == 0)
+    axes[-1][0].set_xlabel("ms from onset")
+    if title:
+        fig.suptitle(title)
+    fig.tight_layout()
+    fig.savefig(str(path), dpi=90)
+    plt.close(fig)
+    return rows
+
+
 def compare_png(path: Any, made: Sequence[tuple[str, Any]], refs: Sequence[tuple[str, Any]] = (),
                 pairs: Sequence[int | None] | None = None, title: str | None = None, max_s: float = 8.0) -> dict:
     """Write the comparison picture; return {'file', 'rows', 'pairs'}."""
@@ -132,17 +148,7 @@ def compare_png(path: Any, made: Sequence[tuple[str, Any]], refs: Sequence[tuple
     refs = [(n, _mono(x)) for n, x in refs]
     if pairs is None:
         pairs = [_nearest(x, [r for _, r in refs]) for _, x in made]
-    rows = max(1, len(made))
     with matplotlib.rc_context({"font.size": 7.5}):
-        fig, axes = plt.subplots(rows, 4, figsize=(15, 2.25 * rows + (0.5 if title else 0.2)),
-                                 gridspec_kw={"width_ratios": [1.25, 1.25, 1, 1]}, squeeze=False)
-        for i, item in enumerate(made):
-            _row(axes[i], item, refs, pairs[i], max_s, i == 0)
-        axes[-1][0].set_xlabel("ms from onset")
-        if title:
-            fig.suptitle(title)
-        fig.tight_layout()
-        fig.savefig(str(path), dpi=90)
-        plt.close(fig)
+        rows = _figure(plt, path, made, refs, pairs, title, max_s)
     return {"file": str(path), "rows": rows,
             "pairs": [refs[j][0] if j is not None else None for j in pairs]}
