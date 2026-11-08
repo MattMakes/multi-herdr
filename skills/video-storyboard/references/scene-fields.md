@@ -93,3 +93,15 @@ in-point.
 ```json
 "locked_actions_sec": [0.5, 1.5]
 ```
+
+## Top-level `rhythm[]`
+
+Optional top-level list, required with `meta.bpm`. 1 entry per stretch of
+the film, in time order, with no overlap.
+
+| Field | Type | Rule |
+|---|---|---|
+| `start_sec`, `end_sec` | number | The stretch, inside `0` to `meta.duration_sec`. |
+| `energy` | integer | 0 (still) to 10 (peak). A lift after the hook, a dip before the payoff, the peak on the hero. |
+| `events_sec` | list | Optional. Times of planned events inside the stretch: a reveal, a hit, a text landing. Scene starts count as events already. |
+| `stop` | boolean | Optional. `true` marks a declared stop, a planned still part with no events. |
