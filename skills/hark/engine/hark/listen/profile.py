@@ -245,20 +245,29 @@ def _hit_time(run: list[int], t: np.ndarray, env: np.ndarray) -> float:
     return float(ft[sel[np.argmax(env[sel])]]) if len(sel) else float(t[run[0]] + 0.03)
 
 
+def _jumps(lv: np.ndarray, I: float) -> np.ndarray:
+    """Frames where the max of the next 4 levels is >= 6 dB over the min of the 10 before, near the level I."""
+    padded = np.concatenate([np.full(10, lv[0]), lv, np.full(3, lv[-1])])
+    pre = np.array([padded[i:i + 10].min() for i in range(len(lv))])
+    post = np.array([padded[i + 10:i + 14].max() for i in range(len(lv))])
+    return np.nonzero((post - pre >= 6) & (post >= I - 8))[0]
+
+
+def _spaced(times: Sequence[float], gap: float = 0.1) -> list[float]:
+    out: list[float] = []
+    for h in times:
+        if not out or h - out[-1] > gap:
+            out.append(h)
+    return out
+
+
 def salient_hits(fast: Sequence[Sequence[float]], I: float, env: Sequence[float], e2: np.ndarray) -> list[float]:
     """Times where the 100 ms loudness jumps >= 6 dB within 80 ms and lands near the integrated level (P3)."""
     t, lv = np.asarray(fast[0]), np.asarray(fast[1])
     if len(lv) < 20:
         return []
-    padded = np.concatenate([np.full(10, lv[0]), lv, np.full(3, lv[-1])])
-    pre = np.array([padded[i:i + 10].min() for i in range(len(lv))])
-    post = np.array([padded[i + 10:i + 14].max() for i in range(len(lv))])
-    cand = np.nonzero((post - pre >= 6) & (post >= I - 8))[0]
-    hits: list[float] = []
-    for run in _runs(cand.tolist()):
-        h = _hit_time(run, t, np.asarray(env, np.float64))
-        if not hits or h - hits[-1] > 0.1:
-            hits.append(h)
+    env_a = np.asarray(env, np.float64)
+    hits = _spaced([_hit_time(run, t, env_a) for run in _runs(_jumps(lv, I).tolist())])
     return [round(to_attack(h, e2), 3) for h in hits]
 
 
@@ -272,28 +281,37 @@ def _stop_at(lv: np.ndarray, i: int, w: int) -> tuple[int, float, float] | None:
     return j, ref, float(lv[i:j].min())
 
 
+def _stop_record(t: np.ndarray, lv: np.ndarray, i: int, found: tuple[int, float, float]) -> list[float] | None:
+    """A stop-down that starts at frame i, or None when its length or recovery is out of range."""
+    j, ref, low = found
+    length = (j - i) * FAST[1]
+    if 0.15 <= length <= 1.5 and j < len(lv) and lv[j:j + 16].max() >= ref - 3:
+        return [round(float(t[i]) - 0.05, 3), round(length, 3), round(ref - low, 1)]
+    return None
+
+
 def stopdowns(fast: Sequence[Sequence[float]]) -> list[list[float]]:
     """Short drops >= 10 dB under the 2 s median, 0.15 to 1.5 s long, back within 3 dB in 0.3 s (P4)."""
     t, lv = np.asarray(fast[0]), np.asarray(fast[1])
-    h, w = FAST[1], 100
+    w = 100
     out: list[list[float]] = []
-    if len(lv) < 3 or len(lv) <= w:
-        return out
     i = w
-    while i < len(lv):
+    while len(lv) >= 3 and i < len(lv):
         found = _stop_at(lv, i, w)
-        if found:
-            j, ref, low = found
-            length = (j - i) * h
-            if 0.15 <= length <= 1.5 and j < len(lv) and lv[j:j + 16].max() >= ref - 3:
-                out.append([round(float(t[i]) - 0.05, 3), round(length, 3), round(ref - low, 1)])
-                i = j + 25
-                continue
-        i += 1
+        rec = _stop_record(t, lv, i, found) if found else None
+        if rec:
+            out.append(rec)
+            i = found[0] + 25
+        else:
+            i += 1
     return out
 
 
 # ================================================================ P6 metrics, P9 edges
+
+
+def _edge_index(ok: np.ndarray, a: int, start: bool) -> float:
+    return (a + int(ok[0])) * E2_S if start else (a + int(ok[-1]) + 1) * E2_S
 
 
 def _edge(e2: np.ndarray, t: float, start: bool) -> float:
@@ -304,9 +322,7 @@ def _edge(e2: np.ndarray, t: float, start: bool) -> float:
     span = int(0.15 / E2_S)
     ref = float(e2[a:a + span].max()) if start else float(e2[max(0, b - span):b].max())
     ok = np.nonzero(e2[a:b] >= ref - 20)[0]
-    if not len(ok):
-        return round(max(0.0, t), 3)
-    return round((a + int(ok[0])) * E2_S if start else (a + int(ok[-1]) + 1) * E2_S, 3)
+    return round(_edge_index(ok, a, start), 3) if len(ok) else round(max(0.0, t), 3)
 
 
 def _arc(mt: np.ndarray, ml: np.ndarray, d: float, I: float) -> list[float | None]:
@@ -545,22 +561,30 @@ def _media_info(path: str, ap: dict) -> dict:
     return {"codec": info.get("codec"), "lossy": bool(info.get("lossy")), "mono": is_mono(m, integrated(m))}
 
 
-def film_metrics(path: str, video: str | None = None, use_ast: bool = True) -> dict:
-    """Every profile metric of one film or soundtrack."""
+def _audio_part(path: str) -> dict:
+    """The audio pass, hits, stop-downs, audio metrics and arc, with the seconds it took."""
     t0 = time.perf_counter()
     ap = audio_pass(path)
     d = ap["duration"]
     hits = salient_hits(ap["fast"], integrated(ap["measure"]), ap["env"], np.asarray(ap["e2"]))
     stops = stopdowns(ap["fast"])
     metrics, arc = film_core(ap, hits, stops, d)
-    t_audio = time.perf_counter() - t0
+    return {"ap": ap, "d": d, "hits": hits, "stops": stops, "metrics": metrics, "arc": arc,
+            "seconds": time.perf_counter() - t0}
+
+
+def film_metrics(path: str, video: str | None = None, use_ast: bool = True) -> dict:
+    """Every profile metric of one film or soundtrack."""
+    t0 = time.perf_counter()
+    au = _audio_part(path)
+    ap, d, hits = au["ap"], au["d"], au["hits"]
     shares, windows, t_ast = _music(path, d, use_ast)
     pic = _picture(path, video, ap, hits, d)
-    metrics.update(**shares, **pic["sync"])
+    metrics = {**au["metrics"], **shares, **pic["sync"]}
     r = {"path": path, "video": pic["src"], "duration": round(d, 3), "fps": pic["fps"], **_media_info(path, ap),
-         "short": d < MIN_FILM_S, "metrics": _round_metrics(metrics), "chance": pic["chances"], "arc": arc,
-         "events": _events(ap, hits, stops, pic, windows),
-         "timing": {"audio": round(t_audio, 2), "audioset": round(t_ast, 2), "picture": round(pic["seconds"], 2)}}
+         "short": d < MIN_FILM_S, "metrics": _round_metrics(metrics), "chance": pic["chances"], "arc": au["arc"],
+         "events": _events(ap, hits, au["stops"], pic, windows),
+         "timing": {"audio": round(au["seconds"], 2), "audioset": round(t_ast, 2), "picture": round(pic["seconds"], 2)}}
     r["seconds"] = round(time.perf_counter() - t0, 2)
     r["summary"] = _film_summary(path, r)
     return r
@@ -681,26 +705,36 @@ def _profile_summary(n: int, agg: dict, warnings: Sequence[str]) -> str:
     return ", ".join(parts) + "." + "".join(f" {w}" for w in warnings)
 
 
+def _film_entry(f: Mapping) -> dict:
+    return {"id": f["id"], "style": f["style"], "duration": f["duration"], "has_video": f["video"] is not None,
+            "metrics": f["metrics"], "chance": f["chance"], "arc": f["arc"]}
+
+
+def _profile_warnings(n: int, skips: list[str]) -> list[str]:
+    warnings = [f"{len(skips)} file(s) skipped"] if skips else []
+    if n < 3:
+        warnings.append(f"only {n} film(s): the ranges are the min-max of so few values; use 5 or more references")
+        _warn(warnings[-1])
+    return warnings
+
+
+def _write_profile(out: str, prof: dict) -> None:
+    Path(out).parent.mkdir(parents=True, exist_ok=True)
+    Path(out).write_text(json.dumps(report.clean(prof), indent=1), encoding="utf-8")
+
+
 def profile(paths: str | Sequence[str], styles: Any = None, use_ast: bool = True, out: str | None = None) -> dict:
     """Measure reference films and store the spread of every metric."""
     paths = [paths] if isinstance(paths, str) else list(paths)
-    styles = read_styles(styles)
-    films, skips = _collect(paths, styles, use_ast)
+    films, skips = _collect(paths, read_styles(styles), use_ast)
     if not films:
         raise ProfileError("no usable reference films: " + "; ".join(skips) if skips else "no media files given")
-    warnings = [f"{len(skips)} file(s) skipped"] if skips else []
-    if len(films) < 3:
-        warnings.append(f"only {len(films)} film(s): the ranges are the min-max of so few values; use 5 or more "
-                        "references")
-        _warn(warnings[-1])
+    warnings = _profile_warnings(len(films), skips)
     agg = aggregate(films)
-    prof = {"version": VERSION, "n": len(films), **agg,
-            "films": [{"id": f["id"], "style": f["style"], "duration": f["duration"], "has_video": f["video"] is not None,
-                       "metrics": f["metrics"], "chance": f["chance"], "arc": f["arc"]} for f in films],
+    prof = {"version": VERSION, "n": len(films), **agg, "films": [_film_entry(f) for f in films],
             "warnings": warnings, "summary": _profile_summary(len(films), agg, warnings)}
     if out:
-        Path(out).parent.mkdir(parents=True, exist_ok=True)
-        Path(out).write_text(json.dumps(report.clean(prof), indent=1), encoding="utf-8")
+        _write_profile(out, prof)
     return prof
 
 

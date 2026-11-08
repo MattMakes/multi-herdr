@@ -115,15 +115,20 @@ def unit(v: np.ndarray) -> np.ndarray:
 # ---------------------------------------------------------------- ranges and batches
 
 
+def raise_first(checks: Sequence[tuple[bool, str | None]]) -> None:
+    """Raise ValueError with the message of the first (failed, message) pair whose message is set."""
+    msg = next((m for failed, m in checks if failed and m), None)
+    if msg:
+        raise ValueError(msg)
+
+
 def check_range(path: str, start: float | None = None, end: float | None = None) -> float:
     """Validate a range against the file; return the file duration in seconds."""
     duration = audio.duration(path)
-    if start is not None and start < 0:
-        raise ValueError(f"start {start:g} s is negative")
-    if start is not None and start >= duration:
-        raise ValueError(f"start {start:g} s is at or past the end of {path} ({duration:.3f} s long)")
-    if end is not None and end <= (start or 0.0):
-        raise ValueError("end must be after start")
+    known, st = start is not None, "" if start is None else format(start, "g")
+    raise_first([(known and start < 0, f"start {st} s is negative"),
+                 (known and start >= duration, f"start {st} s is at or past the end of {path} ({duration:.3f} s long)"),
+                 (end is not None and end <= (start or 0.0), "end must be after start")])
     return duration
 
 
@@ -646,20 +651,22 @@ def stats_text(stats: dict) -> str:
     return "\n".join(lines + ["}"]) + "\n"
 
 
+def _stats_dict(v: Vocab, paths: Sequence[str], R: np.ndarray, max_win: int) -> dict:
+    m, mu, sd = reference_stats(R, paths, v.E)
+    n_folders = len({os.path.normcase(os.path.dirname(os.path.abspath(p))) for p in paths})
+    return {"model": v.model_id, "precision": str(config.PRECISION), "pad": PAD, "templates": v.templates,
+            "logit_scale": round(_model_logit_scale(), 4), "n_ref": len(paths), "n_folders": n_folders,
+            "max_win": max_win, "reference_set": f"{len(paths)} files in {n_folders} folders",
+            "mean": [round(float(x), 5) for x in m],
+            "term_cos": {t: [round(float(a), 4), round(float(b), 4)] for t, a, b in zip(v.terms, mu, sd)}}
+
+
 def build_stats(refs: Sequence[str], out: Path = STATS_PATH, max_win: int = REF_MAX_WIN) -> dict:
     """Embed the references, compute the statistics and write the statistics file."""
     paths = audio.list_media(list(refs))
     if not paths:
         raise ValueError("no reference media files given")
-    v = get()
-    R = embed_files(paths, max_win=max_win)
-    m, mu, sd = reference_stats(R, paths, v.E)
-    folders = {os.path.normcase(os.path.dirname(os.path.abspath(p))) for p in paths}
-    stats = {"model": v.model_id, "precision": str(config.PRECISION), "pad": PAD, "templates": v.templates,
-             "logit_scale": round(_model_logit_scale(), 4), "n_ref": len(paths), "n_folders": len(folders),
-             "max_win": max_win, "reference_set": f"{len(paths)} files in {len(folders)} folders",
-             "mean": [round(float(x), 5) for x in m],
-             "term_cos": {t: [round(float(a), 4), round(float(b), 4)] for t, a, b in zip(v.terms, mu, sd)}}
+    stats = _stats_dict(get(), paths, embed_files(paths, max_win=max_win), max_win)
     Path(out).parent.mkdir(parents=True, exist_ok=True)
     Path(out).write_text(stats_text(stats), encoding="utf-8")
     return stats

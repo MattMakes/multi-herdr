@@ -113,24 +113,32 @@ def build_summary(path: str, start: float | None, end: float | None, rows: list[
     return text
 
 
+BEST_KEYS = ("query", "cosine", "z", "percentile", "rank_in_vocab", "p_vs_alts", "verdict", "validated")
+
+
+def _closest(v: voc.Vocab, a: np.ndarray) -> list[dict]:
+    return [{"term": t, "category": c, "z": z, "cosine": cos}
+            for t, c, z, cos in v.top_terms(a, CLOSEST, exclude=voc.NOT_SOUNDS_LIKE)]
+
+
+def _alt_list(alts: Sequence[str] | None) -> list[str]:
+    return [a.strip() for a in (alts or []) if isinstance(a, str) and a.strip()]
+
+
 def match(path: str, query: str | Sequence[str], alts: Sequence[str] | None = None, start: float | None = None,
           end: float | None = None) -> dict:
     """Judge how well a sound fits each query."""
-    queries = normalise_queries(query)
-    alt_list = [a.strip() for a in (alts or []) if isinstance(a, str) and a.strip()]
+    queries, alt_list = normalise_queries(query), _alt_list(alts)
     voc.check_range(path, start, end)
     v = voc.get()
     a = voc.embed_file(path, start, end)
     rows = score_rows(v, np.asarray(a, np.float64), queries, alt_list)
-    closest = [{"term": t, "category": c, "z": z, "cosine": cos}
-               for t, c, z, cos in v.top_terms(a, CLOSEST, exclude=voc.NOT_SOUNDS_LIKE)]
+    closest = _closest(v, a)
     peak = voc.peak_db(path, start, end)
     best = rows[0]
     result: dict[str, Any] = {
         "summary": build_summary(path, start, end, rows, closest, peak), "path": path, "start": start, "end": end,
-        "peak_dbfs": round(peak, 1), "query": best["query"], "cosine": best["cosine"], "z": best["z"],
-        "percentile": best["percentile"], "rank_in_vocab": best["rank_in_vocab"], "p_vs_alts": best["p_vs_alts"],
-        "verdict": best["verdict"], "validated": best["validated"]}
+        "peak_dbfs": round(peak, 1), **{k: best[k] for k in BEST_KEYS}}
     if alt_list:
         result["alts"] = best["alts"]
     result.update({"results": rows, "closest_vocab": closest, "verdict_thresholds_z": dict(voc.VERDICT_THRESHOLDS_Z),

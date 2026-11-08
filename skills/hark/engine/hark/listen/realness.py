@@ -156,19 +156,31 @@ def _floor_db(y: np.ndarray) -> float:
     return float(max(-140.0, np.percentile(r, 10) - r.max()))
 
 
-def _welch(y: np.ndarray, out: dict) -> None:
+def _welch_psd(y: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     from scipy import signal as sps
 
     seg = min(2048, len(y))
     f, P = sps.welch(y, fs=ANALYSIS_SR, window="hann", nperseg=seg, noverlap=seg // 2, scaling="density")
     keep = (f >= BAND[0]) & (f <= BAND[1])
-    f, P = f[keep], P[keep] + 1e-30
+    return f[keep], P[keep] + 1e-30
+
+
+def _line_share(P: np.ndarray) -> float:
+    k = max(1, int(math.floor(0.01 * len(P))))
+    return float(np.sort(P)[-k:].sum() / P.sum())
+
+
+def _bandwidth_khz(f: np.ndarray, P: np.ndarray) -> float:
+    db = 10 * np.log10(P)
+    return float(f[np.nonzero(db >= db.max() - 60)[0][-1]] / 1000)
+
+
+def _welch(y: np.ndarray, out: dict) -> None:
+    f, P = _welch_psd(y)
     out["log_flatness"] = float(np.log10(np.exp(np.mean(np.log(P))) / P.mean()))
     out["peakiness_db"] = float(10 * np.log10(P.max() / np.median(P)))
-    k = max(1, int(math.floor(0.01 * len(P))))
-    out["line_share"] = float(np.sort(P)[-k:].sum() / P.sum())
-    db = 10 * np.log10(P)
-    out["bandwidth_khz"] = float(f[np.nonzero(db >= db.max() - 60)[0][-1]] / 1000)
+    out["line_share"] = _line_share(P)
+    out["bandwidth_khz"] = _bandwidth_khz(f, P)
 
 
 def _stft(y: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
@@ -204,18 +216,27 @@ def _wobble(f: np.ndarray, P: np.ndarray, tonal: np.ndarray, pk: np.ndarray) -> 
     return float(np.log10(np.median(d2) + 0.01))
 
 
-def _spectral_frames(y: np.ndarray, out: dict) -> None:
-    f, P = _stft(y)
-    e = 10 * np.log10(P.sum(axis=1))
+def _spec_floor(e: np.ndarray, P: np.ndarray) -> float:
     dbP = 10 * np.log10(P)
     loud = e > e.max() - 30
-    out["spec_floor_db"] = float(np.median(np.percentile(dbP[loud], 10, axis=1) - dbP[loud].max(axis=1)))
-    active = e > e.max() - 50
-    out["quiet_flat"] = _quiet_flat(P, e, active)
+    return float(np.median(np.percentile(dbP[loud], 10, axis=1) - dbP[loud].max(axis=1)))
+
+
+def _tonal(P: np.ndarray, active: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """The peak bin of every frame and the frames whose peak lobe holds over half the energy."""
     pk = _peaks(P)
     rows = np.arange(len(P))
     lobe = sum(P[rows, pk + d] for d in range(-2, 3))
-    tonal = active & (lobe / P.sum(axis=1) > 0.5)
+    return pk, active & (lobe / P.sum(axis=1) > 0.5)
+
+
+def _spectral_frames(y: np.ndarray, out: dict) -> None:
+    f, P = _stft(y)
+    e = 10 * np.log10(P.sum(axis=1))
+    out["spec_floor_db"] = _spec_floor(e, P)
+    active = e > e.max() - 50
+    out["quiet_flat"] = _quiet_flat(P, e, active)
+    pk, tonal = _tonal(P, active)
     out["tonal_frames"] = float(tonal.sum() / max(1, active.sum()))
     out["pitch_wobble"] = _wobble(f, P, tonal, pk)
 
@@ -249,21 +270,27 @@ def _crest(y: np.ndarray) -> float:
     return float(20 * np.log10(1 / (np.sqrt(np.mean(nz ** 2)) + 1e-12))) if len(nz) else 0.0
 
 
+def _analysis_signal(x: np.ndarray) -> np.ndarray:
+    """The clip peak-normalised, resampled to the analysis rate and normalised again."""
+    pre = x / np.max(np.abs(x))  # level-free before the float32 resampler, so level never matters
+    y = np.asarray(audio.resample(pre.astype(np.float32), SR, ANALYSIS_SR), np.float64)
+    return y / (np.max(np.abs(y)) + 1e-12)
+
+
+def _judgeable(x: np.ndarray) -> bool:
+    return len(x) >= MIN_CLIP_S * SR and np.max(np.abs(x)) >= MIN_PEAK
+
+
 def signal_features(x: np.ndarray) -> dict | None:
     """The 13 signal measurements of a mono 48 kHz clip, or None when it cannot be judged (R3)."""
     x = audio.to_mono(np.asarray(x, np.float64)) if np.ndim(x) == 2 else np.asarray(x, np.float64)
-    if len(x) < MIN_CLIP_S * SR or np.max(np.abs(x)) < MIN_PEAK:
+    if not _judgeable(x):
         return None
-    out: dict[str, float] = {"silence_frac": float(np.mean(np.abs(x) < ZERO_SAMPLE))}
-    pre = x / np.max(np.abs(x))  # level-free before the float32 resampler, so level never matters
-    y = np.asarray(audio.resample(pre.astype(np.float32), SR, ANALYSIS_SR), np.float64)
-    y = y / (np.max(np.abs(y)) + 1e-12)
-    out["floor_db"] = _floor_db(y)
+    y = _analysis_signal(x)
+    out: dict[str, float] = {"silence_frac": float(np.mean(np.abs(x) < ZERO_SAMPLE)), "floor_db": _floor_db(y)}
     _welch(y, out)
     _spectral_frames(y, out)
-    out["env_resid_db"] = _env_resid(y)
-    out["texture_kurt"] = _texture_kurt(y)
-    out["crest_db"] = _crest(y)
+    out.update(env_resid_db=_env_resid(y), texture_kurt=_texture_kurt(y), crest_db=_crest(y))
     return {k: out[k] for k in SIGNAL_INPUTS}
 
 
@@ -460,16 +487,18 @@ def _probed_duration(path: str) -> float | None:
         return None
 
 
+def _past_end(path: str, start: float | None, dur: float | None) -> str | None:
+    if start is None or dur is None or start < dur:
+        return None
+    return f"start {start:g} s is at or past the end of {path} ({dur:.3f} s long)"
+
+
 def check_range(path: str, start: float | None, end: float | None) -> float | None:
     """The realness range checks (R10); returns the probed duration when known."""
     s = 0.0 if start is None else start
-    if s < 0:
-        raise ValueError("start must be >= 0 s")
-    if end is not None and end <= s:
-        raise ValueError("end must be greater than start")
+    voc.raise_first([(s < 0, "start must be >= 0 s"), (end is not None and end <= s, "end must be greater than start")])
     dur = _probed_duration(path)
-    if start is not None and dur is not None and start >= dur:
-        raise ValueError(f"start {start:g} s is at or past the end of {path} ({dur:.3f} s long)")
+    voc.raise_first([(True, _past_end(path, start, dur))])
     return dur
 
 

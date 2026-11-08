@@ -286,9 +286,14 @@ def _snap_start(env: np.ndarray, i0: int, i1: int, q: float, nlo: int) -> int:
     return hit if hit is not None else i0
 
 
+def _keeps_decaying(env: np.ndarray, i: int, low: float, qe: float) -> bool:
+    return env[i] > qe and env[i + 1] <= low + CLIMB_DB
+
+
 def _decay_walk(env: np.ndarray, last: int, qe: float, nhi: int) -> int:
     i, low = last, float(env[last])
-    while i + 1 < nhi and i + 1 - last <= SNAP_FRAMES and env[i] > qe and env[i + 1] <= low + CLIMB_DB:
+    stop = min(nhi - 1, last + SNAP_FRAMES)
+    while i < stop and _keeps_decaying(env, i, low, qe):
         i += 1
         low = min(low, float(env[i]))
     return i + 1
@@ -313,6 +318,15 @@ def _tighten(env: np.ndarray, i0: int, i1: int, q: float, qe: float) -> tuple[in
     return i0, i1
 
 
+def _snapped(env: np.ndarray, i0: int, i1: int, q: float, qe: float, near: tuple[int, int]) -> tuple[int, int]:
+    """Frame edges moved to the quiet around the sound, inside the near frames (nlo, nhi)."""
+    if env[i0] > q:
+        i0 = _snap_start(env, i0, i1, q, near[0])
+    if env[i1 - 1] > qe:
+        i1 = _snap_end(env, i0, i1, q, qe, near[1])
+    return _tighten(env, i0, i1, q, qe)
+
+
 def snap_window(env: np.ndarray, floor: float, a: float, b: float, lo: float, hi: float) -> tuple[float, float]:
     """Move window edges to the quiet before and after the sound (F4)."""
     n = len(env)
@@ -321,12 +335,7 @@ def snap_window(env: np.ndarray, floor: float, a: float, b: float, lo: float, hi
     if i0 >= i1 - 1:
         return a, b
     q, qe = _quiet_levels(env, floor, i0, i1)
-    nlo, nhi = max(0, int(round(lo / FRAME_S))), min(n, int(round(hi / FRAME_S)))
-    if env[i0] > q:
-        i0 = _snap_start(env, i0, i1, q, nlo)
-    if env[i1 - 1] > qe:
-        i1 = _snap_end(env, i0, i1, q, qe, nhi)
-    i0, i1 = _tighten(env, i0, i1, q, qe)
+    i0, i1 = _snapped(env, i0, i1, q, qe, (max(0, int(round(lo / FRAME_S))), min(n, int(round(hi / FRAME_S)))))
     end = i1 * FRAME_S
     return max(lo, i0 * FRAME_S), min(hi, end + END_PAD_S if end < hi else end)
 
@@ -544,23 +553,37 @@ def _segment(ctx: dict, c: dict) -> dict:
 # ================================================================ find: driver
 
 
-def _context(path: str, query: str, kind: str, start: float | None, end: float | None) -> dict:
-    if kind not in KINDS:
-        raise ValueError(f"kind must be one of {', '.join(KINDS)}")
+def _span_of(path: str, start: float | None, end: float | None) -> tuple[float, float, float]:
+    """(searched start, searched end, load start with the margin)."""
     dur = voc.check_range(path, start, end)
     s0 = start or 0.0
     s1 = min(end, dur) if end is not None else dur
-    m0 = max(0.0, s0 - MARGIN_S)
-    x = audio.load(path, start=m0, end=s1)
-    m = audio.to_mono(np.asarray(x, np.float32))
+    return s0, s1, max(0.0, s0 - MARGIN_S)
+
+
+def _query_read(query: str) -> dict:
     v = voc.get()
     q = np.asarray(v.embed_text([query])[0], np.float64)
     read, kscore = query_kind(v, q)
+    return {"vocab": v, "q": q, "read": read, "kind_score": kscore}
+
+
+def _plan(kind: str, read: str) -> dict:
+    return {"use_events": kind == "event" or (kind == "auto" and read != "texture"),
+            "prefer": kind == "event" or (kind == "auto" and read == "event")}
+
+
+def _context(path: str, query: str, kind: str, start: float | None, end: float | None) -> dict:
+    if kind not in KINDS:
+        raise ValueError(f"kind must be one of {', '.join(KINDS)}")
+    s0, s1, m0 = _span_of(path, start, end)
+    x = audio.load(path, start=m0, end=s1)
+    m = audio.to_mono(np.asarray(x, np.float32))
+    qr = _query_read(query)
     env = envelope(m)
     return {"path": path, "query": query, "kind": kind, "s0": s0, "s1": s1, "m0": m0, "off": s0 - m0, "x": x,
-            "m": m, "d": len(m) / SR, "vocab": v, "q": q, "read": read, "kind_score": kscore, "env": env,
-            "floor": noise_floor(env), "use_events": kind == "event" or (kind == "auto" and read != "texture"),
-            "prefer": kind == "event" or (kind == "auto" and read == "event"), "n_onset": 0, "stages": 0}
+            "m": m, "d": len(m) / SR, **qr, "env": env, "floor": noise_floor(env), **_plan(kind, qr["read"]),
+            "n_onset": 0, "stages": 0}
 
 
 def _candidates(ctx: dict, win: float | None, hop: float | None) -> list[dict]:

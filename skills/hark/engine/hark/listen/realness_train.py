@@ -275,35 +275,52 @@ def file_thresholds(p: np.ndarray, y: np.ndarray, sources: Sequence[str], clip: 
 # ---------------------------------------------------------------- model
 
 
-def train_model(root: str | None, forge_negatives: int = 0) -> dict:
-    """Train both heads and the fusion layer; return the model dict (R12, without augmentation)."""
+def _training_set(root: str | None, forge_negatives: int) -> dict:
+    """Featurised clips with labels, groups and weights; ValueError without both classes."""
     clips = (labelled_clips(root) if root else []) + (forge_clips(forge_negatives) if forge_negatives else [])
     E, S, kept = featurise(clips)
     y = np.array([c["y"] for c in kept], np.float64)
     if len(set(y.tolist())) < 2:
         raise ValueError("training needs both real and synthesized clips")
     groups = [c["group"] for c in kept]
-    w = sample_weights(y, groups)
+    return {"E": E, "S": S, "kept": kept, "y": y, "groups": groups, "w": sample_weights(y, groups)}
+
+
+def _fit(ts: dict) -> dict:
+    """C, the fusion layer on out-of-fold head scores, clip thresholds and both heads."""
+    E, S, y, w, groups = ts["E"], ts["S"], ts["y"], ts["w"], ts["groups"]
     C = choose_c(E, S, y, w, groups)
     oof = out_of_fold(E, S, y, w, groups, C)
     fc, fb = fit_logistic(oof, y, w, 1.0, [(0.0, None), (0.0, None)])
     p_oof = 1 / (1 + np.exp(-(oof @ fc + fb)))
-    clip_th = {"hi": threshold_hi(p_oof, y), "lo": threshold_lo(p_oof, y)}
-    clap_head = {**fit_head(E, y, w, C), "inputs": "clap_embedding_512"}
-    signal_head = {**fit_head(S, y, w, SIGNAL_C, signal_bounds()), "inputs": list(rl.SIGNAL_INPUTS)}
+    return {"C": C, "fc": fc, "fb": fb, "p_oof": p_oof,
+            "clip_th": {"hi": threshold_hi(p_oof, y), "lo": threshold_lo(p_oof, y)},
+            "clap": {**fit_head(E, y, w, C), "inputs": "clap_embedding_512"},
+            "signal": {**fit_head(S, y, w, SIGNAL_C, signal_bounds()), "inputs": list(rl.SIGNAL_INPUTS)}}
+
+
+def _data_block(kept: list, y: np.ndarray, groups: list[str]) -> dict:
+    return {"clips": len(kept), "clean": len(kept), "augmented": 0, "real": int(y.sum()),
+            "synth": int((1 - y).sum()), "groups": sorted(set(groups))}
+
+
+def train_model(root: str | None, forge_negatives: int = 0) -> dict:
+    """Train both heads and the fusion layer; return the model dict (R12, without augmentation)."""
+    ts = _training_set(root, forge_negatives)
+    kept, y, S, groups = ts["kept"], ts["y"], ts["S"], ts["groups"]
+    fit = _fit(ts)
     ids = sorted(c["id"] for c in kept)
     return {
         "version": 1, "trained": hashlib.sha1("\n".join(ids).encode()).hexdigest()[:12],
         "about": f"trained on {len(kept)} clips in {len(set(groups))} groups (no augmented copies)",
-        "data": {"clips": len(kept), "clean": len(kept), "augmented": 0, "real": int(y.sum()),
-                 "synth": int((1 - y).sum()), "groups": sorted(set(groups))},
-        "long_s": rl.LONG_S, "win_s": rl.WIN_S, "silent_db": rl.SILENT_DB,
-        "heads": {"clap": clap_head, "signal": signal_head},
-        "fusion": {"heads": ["clap", "signal"], "coef": [float(fc[0]), float(fc[1])], "intercept": fb},
-        "C": {"clap": C, "signal": SIGNAL_C}, "thresholds": clip_th,
-        "file_thresholds": file_thresholds(p_oof, y, [c["source"] for c in kept], clip_th),
+        "data": _data_block(kept, y, groups), "long_s": rl.LONG_S, "win_s": rl.WIN_S, "silent_db": rl.SILENT_DB,
+        "heads": {"clap": fit["clap"], "signal": fit["signal"]},
+        "fusion": {"heads": ["clap", "signal"], "coef": [float(fit["fc"][0]), float(fit["fc"][1])],
+                   "intercept": fit["fb"]},
+        "C": {"clap": fit["C"], "signal": SIGNAL_C}, "thresholds": fit["clip_th"],
+        "file_thresholds": file_thresholds(fit["p_oof"], y, [c["source"] for c in kept], fit["clip_th"]),
         "prompts": {"real": list(rl.REAL_PROMPTS), "synth": list(rl.SYNTH_PROMPTS)},
-        "facts": facts_of(S, y), "silence_base": silence_base(S, y), "clap_direction": clap_direction(clap_head),
+        "facts": facts_of(S, y), "silence_base": silence_base(S, y), "clap_direction": clap_direction(fit["clap"]),
         "eval": {"how": "grouped 5-fold out-of-fold predictions", "n": len(y)},
     }
 
