@@ -21,7 +21,7 @@ DROP = ("fit_engine",)
 WIDTH = 116
 MARGIN = 6
 
-_NOTES = {
+_NOTE_TEXT = {
     "strikes": "one entry per strike: time, mode ramp, damped modes and contact modes",
     "modes": "rows [Hz, tau s, amplitude, phase rad] from the strike time",
     "attack": "contact as fast modes, rows [Hz, tau s, amplitude, phase rad]",
@@ -38,242 +38,242 @@ _NOTES = {
     "layers": "hybrid layers in order: role, gain and the layer model",
 }
 
-_CHARACTER_WORDS = (
-    (lambda c: c.get("gliding"), "a short round pop with a pitch glide"),
-    (lambda c: c.get("tonal") and c.get("t40_ms", 0) > 400, "a bright ringing chime"),
-    (lambda c: c.get("tonal"), "a short pitched ding"),
-    (lambda c: c.get("impulsive") and c.get("dur_s", 1) < 0.5, "a short crisp click"),
-    (lambda c: c.get("impulsive"), "a deep hit with a long tail"),
-    (lambda c: c.get("noisy"), "an air whoosh"),
+_CHAR_WORDS = (
+    (lambda cv: cv.get("gliding"), "a short round pop with a pitch glide"),
+    (lambda cv: cv.get("tonal") and cv.get("t40_ms", 0) > 400, "a bright ringing chime"),
+    (lambda cv: cv.get("tonal"), "a short pitched ding"),
+    (lambda cv: cv.get("impulsive") and cv.get("dur_s", 1) < 0.5, "a short crisp click"),
+    (lambda cv: cv.get("impulsive"), "a deep hit with a long tail"),
+    (lambda cv: cv.get("noisy"), "an air whoosh"),
 )
 
-_LICENCE = ("A fit derives from its recording: keep the source's attribution and licence with this file, and prefer "
+_LICENCE_LINE = ("A fit derives from its recording: keep the source's attribution and licence with this file, and prefer "
             "CC0 sources for anything you ship.")
 
 
 # ---------------------------------------------------------------- model literal
 
 
-_INF = {math.inf: "float('inf')", -math.inf: "float('-inf')"}
+_INFINITY = {math.inf: "float('inf')", -math.inf: "float('-inf')"}
 
 
-def _float_text(v: Any) -> str:
-    f = float(v)
-    return "float('nan')" if math.isnan(f) else _INF.get(f, repr(f))
+def _num_text(val: Any) -> str:
+    fv = float(val)
+    return "float('nan')" if math.isnan(fv) else _INFINITY.get(fv, repr(fv))
 
 
-_SCALARS = (
-    ((bool, np.bool_), lambda v: "True" if v else "False"),
-    ((int, np.integer), lambda v: str(int(v))),
-    ((float, np.floating), _float_text),
+_ATOM_TYPES = (
+    ((bool, np.bool_), lambda val: "True" if val else "False"),
+    ((int, np.integer), lambda val: str(int(val))),
+    ((float, np.floating), _num_text),
     ((str, type(None)), repr),
 )
 
 
-def _scalar(v: Any) -> str | None:
+def _atom_text(val: Any) -> str | None:
     """Source text of a scalar, or None when v is not a scalar."""
-    return next((text(v) for types, text in _SCALARS if isinstance(v, types)), None)
+    return next((text(val) for types, text in _ATOM_TYPES if isinstance(val, types)), None)
 
 
-def _wrap(items: list, ind: int) -> str:
-    one = "[" + ", ".join(items) + "]"
-    if len(one) + ind <= WIDTH:
-        return one
-    lines, cur = [], ""
-    for it in items:
-        if cur and len(cur) + len(it) + ind + MARGIN > WIDTH:
-            lines.append(cur.rstrip())
-            cur = ""
-        cur += it + ", "
-    if cur:
-        lines.append(cur.rstrip())
-    pad = " " * (ind + 4)
-    return "[\n" + "\n".join(pad + ln for ln in lines) + "\n" + " " * ind + "]"
+def _wrap_lines(items: list, indent: int) -> str:
+    single = "[" + ", ".join(items) + "]"
+    if len(single) + indent <= WIDTH:
+        return single
+    line_l, now_v = [], ""
+    for itv in items:
+        if now_v and len(now_v) + len(itv) + indent + MARGIN > WIDTH:
+            line_l.append(now_v.rstrip())
+            now_v = ""
+        now_v += itv + ", "
+    if now_v:
+        line_l.append(now_v.rstrip())
+    padv = " " * (indent + 4)
+    return "[\n" + "\n".join(padv + lnv for lnv in line_l) + "\n" + " " * indent + "]"
 
 
-def _seq(v: list | tuple, ind: int) -> str:
-    if not v:
+def _seq_text(val: list | tuple, indent: int) -> str:
+    if not val:
         return "[]"
-    items = [_scalar(x) for x in v]
-    if all(s is not None for s in items):
-        return _wrap(items, ind)
-    pad = " " * (ind + 4)
-    return "[\n" + "".join(f"{pad}{_value(x, ind + 4)},\n" for x in v) + " " * ind + "]"
+    items = [_atom_text(x) for x in val]
+    if all(sv is not None for sv in items):
+        return _wrap_lines(items, indent)
+    padv = " " * (indent + 4)
+    return "[\n" + "".join(f"{padv}{_value_text(x, indent + 4)},\n" for x in val) + " " * indent + "]"
 
 
-def _dict(d: dict, ind: int) -> str:
-    if not d:
+def _dict_text(dv: dict, indent: int) -> str:
+    if not dv:
         return "{}"
-    pad = " " * (ind + 4)
-    out = ["{"]
-    for k, v in d.items():
-        text = _value(v, ind + 4)
-        note = _NOTES.get(k) if isinstance(k, str) else None
-        if note and "\n" in text:
-            out.append(f"{pad}# {note}")
-            out.append(f"{pad}{k!r}: {text},")
-        elif note:
-            out.append(f"{pad}{k!r}: {text},  # {note}")
+    padv = " " * (indent + 4)
+    acc = ["{"]
+    for key_, val in dv.items():
+        text = _value_text(val, indent + 4)
+        note_v = _NOTE_TEXT.get(key_) if isinstance(key_, str) else None
+        if note_v and "\n" in text:
+            acc.append(f"{padv}# {note_v}")
+            acc.append(f"{padv}{key_!r}: {text},")
+        elif note_v:
+            acc.append(f"{padv}{key_!r}: {text},  # {note_v}")
         else:
-            out.append(f"{pad}{k!r}: {text},")
-    out.append(" " * ind + "}")
-    return "\n".join(out)
+            acc.append(f"{padv}{key_!r}: {text},")
+    acc.append(" " * indent + "}")
+    return "\n".join(acc)
 
 
-def _container(v: Any, ind: int) -> str:
-    write = next((fn for types, fn in _CONTAINERS if isinstance(v, types)), None)
+def _box_text(val: Any, indent: int) -> str:
+    write = next((fnv for types, fnv in _BOX_TYPES if isinstance(val, types)), None)
     if write is None:
-        raise TypeError(f"literal: cannot write a value of type {type(v).__name__}")
-    return write(v, ind)
+        raise TypeError(f"literal: cannot write a value of type {type(val).__name__}")
+    return write(val, indent)
 
 
-def _value(v: Any, ind: int) -> str:
-    s = _scalar(v)
-    return s if s is not None else _container(v, ind)
+def _value_text(val: Any, indent: int) -> str:
+    sv = _atom_text(val)
+    return sv if sv is not None else _box_text(val, indent)
 
 
-_CONTAINERS = (
-    (dict, _dict),
-    (np.ndarray, lambda v, ind: _seq(v.tolist(), ind)),
-    ((list, tuple), _seq),
+_BOX_TYPES = (
+    (dict, _dict_text),
+    (np.ndarray, lambda val, indent: _seq_text(val.tolist(), indent)),
+    ((list, tuple), _seq_text),
 )
 
 
 def literal(model: dict, name: str = "MODEL") -> str:
     """'<name> = <literal>' for the model without its fit_engine key."""
-    return f"{name} = " + _value({k: v for k, v in model.items() if k not in DROP}, 0)
+    return f"{name} = " + _value_text({key_: val for key_, val in model.items() if key_ not in DROP}, 0)
 
 
 # ---------------------------------------------------------------- critic words
 
 
-def _norm(p: str) -> str:
-    return os.path.normcase(os.path.abspath(p))
+def _normalise(pv: str) -> str:
+    return os.path.normcase(os.path.abspath(pv))
 
 
-def _registry_files(entry: dict) -> list:
-    return list(entry.get("forge") or []) + list(entry.get("bench") or [])
+def _registry_paths(ent: dict) -> list:
+    return list(ent.get("forge") or []) + list(ent.get("bench") or [])
 
 
-def _find_category(reg: dict, want: str) -> str | None:
-    cats = reg.get("categories", {}).items()
-    return next((cat for cat, entry in cats if any(_norm(f) == want for f in _registry_files(entry))), None)
+def _lookup_category(regv: dict, wanted: str) -> str | None:
+    cat_l = regv.get("categories", {}).items()
+    return next((catv for catv, ent in cat_l if any(_normalise(fv) == wanted for fv in _registry_paths(ent))), None)
 
 
-def _category_of(source: str | None) -> str | None:
-    if not source:
+def _cat_for(src_v: str | None) -> str | None:
+    if not src_v:
         return None
     try:
         from hark.forge.engine import refsets
 
-        return _find_category(refsets.load(), _norm(source))
+        return _lookup_category(set_l.load(), _normalise(src_v))
     except Exception:
         return None
 
 
-def _load_or_none(recipes: ModuleType, name: str) -> ModuleType | None:
+def _try_load(recipes: ModuleType, name: str) -> ModuleType | None:
     try:
         return recipes.load(name)
     except Exception:
         return None
 
 
-def _recipe_target(mod: ModuleType, category: str) -> tuple[str, list]:
-    targets = getattr(mod, "TARGETS", None)
-    target = targets[category] if isinstance(targets, dict) and category in targets else mod.TARGET
-    return target, list(getattr(mod, "ALTS", None) or [])
+def _target_of_recipe(modv: ModuleType, cat_v: str) -> tuple[str, list]:
+    tgt_l = getattr(modv, "TARGETS", None)
+    tgt = tgt_l[cat_v] if isinstance(tgt_l, dict) and cat_v in tgt_l else modv.TARGET
+    return tgt, list(getattr(modv, "ALTS", None) or [])
 
 
-def _recipe_words(category: str) -> tuple[str, list] | None:
+def _words_of_recipe(cat_v: str) -> tuple[str, list] | None:
     from hark.forge import recipes
 
-    mods = (_load_or_none(recipes, n) for n in recipes.names())
-    mod = next((m for m in mods if m is not None and getattr(m, "REFSET", None) == category), None)
-    return None if mod is None else _recipe_target(mod, category)
+    mod_l = (_try_load(recipes, cnt) for cnt in recipes.names())
+    modv = next((mv for mv in mod_l if mv is not None and getattr(mv, "REFSET", None) == cat_v), None)
+    return None if modv is None else _target_of_recipe(modv, cat_v)
 
 
-def _category_words(category: str) -> str | None:
+def _words_of_category(cat_v: str) -> str | None:
     try:
         from hark.forge.engine import refsets
 
-        text = refsets.CATEGORIES.get(category)
+        text = set_l.CATEGORIES.get(cat_v)
     except Exception:
         return None
     return re.sub(r"\s*\([^()]*\)\s*$", "", text) if text else None
 
 
-def _character_target(character: dict | None) -> str:
-    c = character or {}
-    for rule, words in _CHARACTER_WORDS:
-        if rule(c):
-            return words
+def _target_of_character(character: dict | None) -> str:
+    cv = character or {}
+    for rule_v, word_l in _CHAR_WORDS:
+        if rule_v(cv):
+            return word_l
     return "a sound effect"
 
 
 def critic_words(source: str | None = None, category: str | None = None,
                  character: dict | None = None) -> tuple[str, list, str | None]:
     """(TARGET, ALTS, REFSET): the critic's words for a fitted recipe."""
-    category = category or _category_of(source)
+    category = category or _cat_for(source)
     if category:
         try:
-            found = _recipe_words(category)
+            got = _words_of_recipe(category)
         except Exception:
-            found = None
-        if found is not None:
-            return found[0], found[1], category
-        desc = _category_words(category)
-        if desc:
-            return desc, [], category
-    return _character_target(character), [], None
+            got = None
+        if got is not None:
+            return got[0], got[1], category
+        desc_v = _words_of_category(category)
+        if desc_v:
+            return desc_v, [], category
+    return _target_of_character(character), [], None
 
 
 # ---------------------------------------------------------------- recipe text
 
 
-def _escape(text: str) -> str:
+def _escaped(text: str) -> str:
     return text.replace('"""', "'''").replace("\\", "/")
 
 
-def _source_name(source: str | None, model: dict) -> str:
-    if source:
-        return os.path.basename(str(source))
+def _src_label(src_v: str | None, model: dict) -> str:
+    if src_v:
+        return os.path.basename(str(src_v))
     return str(model.get("source") or "unknown")
 
 
-def _docstring(name: str, model: dict, kind: str, source: str | None, refset: str | None, quality: dict | None,
+def _doc_text(name: str, model: dict, kind_v: str, src_v: str | None, ref_set: str | None, quality: dict | None,
                floor: dict | None, licence: str | None, first_knob: str | None) -> str:
     from hark.fit.pipeline import quality as Q
     from hark.fit.pipeline.render import summary
 
-    lines = [f"{name}: a recipe that hark fit made from a recording ({kind} model).", ""]
-    lines += [ln.rstrip() for ln in summary(model).splitlines()]
-    src = f"Source: {_source_name(source, model)}" + (f" (refset {refset})" if refset else "")
-    lines += ["", src, licence or _LICENCE]
+    line_l = [f"{name}: a recipe that hark fit made from a recording ({kind_v} model).", ""]
+    line_l += [lnv.rstrip() for lnv in summary(model).splitlines()]
+    src = f"Source: {_src_label(src_v, model)}" + (f" (refset {ref_set})" if ref_set else "")
+    line_l += ["", src, licence or _LICENCE_LINE]
     if quality is not None:
-        lines += ["", "Measured: the original against this recipe at DEFAULTS and seed 0:", "  " + Q.text(quality, floor)]
-    lines += ["", "Usage:", "  import numpy as np", "  y = render(DEFAULTS, np.random.default_rng(1))   # one take",
+        line_l += ["", "Measured: the original against this recipe at DEFAULTS and seed 0:", "  " + Q.text(quality, floor)]
+    line_l += ["", "Usage:", "  import numpy as np", "  y = render(DEFAULTS, np.random.default_rng(1))   # one take",
               "  y = render_seed(0)                              # the fit as measured"]
     if first_knob:
-        lines.append(f"  y = render_seed(0, {first_knob}=SPACE[{first_knob!r}][1])   # a variation")
-    lines += [f"  hark fit --forge {name}.py --budget 96 --dir made/{name}",
+        line_l.append(f"  y = render_seed(0, {first_knob}=SPACE[{first_knob!r}][1])   # a variation")
+    line_l += [f"  hark fit --forge {name}.py --budget 96 --dir made/{name}",
               "  As a forge recipe: copy this file into a recipe folder of hark/forge/recipes/.", "",
               "SPACE holds the knob search ranges. DEFAULTS is the identity: it re-renders the fit."]
-    return _escape("\n".join(lines))
+    return _escaped("\n".join(line_l))
 
 
-def _space_lines(knobs: dict) -> list:
-    out = ["SPACE = {"]
-    for k, (rng, _ident, desc) in knobs.items():
-        out.append(f"    {k!r}: {_value(tuple(rng), 4)},  # {desc}")
-    out.append("}")
-    return out
+def _lines_for_space(knobs: dict) -> list:
+    acc = ["SPACE = {"]
+    for key_, (rng, _ident, desc_v) in knobs.items():
+        acc.append(f"    {key_!r}: {_value_text(tuple(rng), 4)},  # {desc_v}")
+    acc.append("}")
+    return acc
 
 
-def _refs_for(source: str | None, refs: list | None) -> list:
-    if refs is not None:
-        return [str(r) for r in refs]
-    if source and os.path.exists(source):
-        return [os.path.abspath(source).replace("\\", "/")]
+def _ref_list(src_v: str | None, ref_l: list | None) -> list:
+    if ref_l is not None:
+        return [str(rv) for rv in ref_l]
+    if src_v and os.path.exists(src_v):
+        return [os.path.abspath(src_v).replace("\\", "/")]
     return []
 
 
@@ -306,28 +306,28 @@ if __name__ == "__main__":
 '''
 
 
-def _critic(model: dict, source: str | None, target: str | None, alts: list | None,
-            refset: str | None) -> tuple[str, list, str | None]:
+def _critic_line(model: dict, src_v: str | None, tgt: str | None, alt_l: list | None,
+            ref_set: str | None) -> tuple[str, list, str | None]:
     """TARGET, ALTS and REFSET: the given values, else the critic's words."""
     character = (model.get("fit_engine") or {}).get("character")
-    t, a, cat = critic_words(source, refset, character)
-    return target or t, (a if alts is None else list(alts)), refset or cat
+    t, a, catv = critic_words(src_v, ref_set, character)
+    return tgt or t, (a if alt_l is None else list(alt_l)), ref_set or catv
 
 
-def _header(target: str, alts: list, refset: str | None, refs: list, kind: str) -> list:
-    out = ["", "import numpy as np", "", "import hark.fit as _hark_fit", "", f"TARGET = {target!r}",
-           f"ALTS = {alts!r}"]
-    if refset:
-        out.append(f"REFSET = {refset!r}  # the refset category of the critic's default references")
-    return out + [f"REFS = {refs!r}", f"KIND = {kind!r}"]
+def _head_text(tgt: str, alt_l: list, ref_set: str | None, ref_l: list, kind_v: str) -> list:
+    acc = ["", "import numpy as np", "", "import hark.fit as _hark_fit", "", f"TARGET = {tgt!r}",
+           f"ALTS = {alt_l!r}"]
+    if ref_set:
+        acc.append(f"REFSET = {ref_set!r}  # the refset category of the critic's default references")
+    return acc + [f"REFS = {ref_l!r}", f"KIND = {kind_v!r}"]
 
 
-def _defaults_line(ident: dict) -> str:
-    defaults = ", ".join(f"{k!r}: {_value(v, 0)}" for k, v in ident.items())
+def _line_of_defaults(ident_v: dict) -> str:
+    defaults = ", ".join(f"{key_!r}: {_value_text(val, 0)}" for key_, val in ident_v.items())
     return "DEFAULTS = {" + defaults + "}  # these values re-render the fit"
 
 
-def _model_parts(model: dict) -> tuple[str, dict, dict]:
+def _parts_of_model(model: dict) -> tuple[str, dict, dict]:
     """(kind, knob table, identity knob values) of a model."""
     from hark.fit.pipeline.render import identity, kind_of, knobs_of
 
@@ -338,12 +338,12 @@ def to_recipe(model: dict, name: str = "fitted", source: str | None = None, qual
               floor: dict | None = None, target: str | None = None, alts: list | None = None,
               refset: str | None = None, refs: list | None = None, licence: str | None = None) -> str:
     """The full source text of a recipe module."""
-    target, alts, refset = _critic(model, source, target, alts, refset)
-    kind, knobs, ident = _model_parts(model)
-    doc = _docstring(name, model, kind, source, refset, quality, floor, licence, next(iter(knobs), None))
-    out = ['"""' + doc, '"""'] + _header(target, alts, refset, _refs_for(source, refs), kind)
-    out += _space_lines(knobs) + [_defaults_line(ident), literal(model)]
-    return "\n".join(out) + _BODY.replace("__WAV__", repr(name + ".wav"))
+    target, alts, refset = _critic_line(model, source, target, alts, refset)
+    kind_v, knobs, ident_v = _parts_of_model(model)
+    doc = _doc_text(name, model, kind_v, source, refset, quality, floor, licence, next(iter(knobs), None))
+    acc = ['"""' + doc, '"""'] + _head_text(target, alts, refset, _ref_list(source, refs), kind_v)
+    acc += _lines_for_space(knobs) + [_line_of_defaults(ident_v), literal(model)]
+    return "\n".join(acc) + _BODY.replace("__WAV__", repr(name + ".wav"))
 
 
 # ---------------------------------------------------------------- files
@@ -360,8 +360,8 @@ def write_recipe(path: str, model: dict, **kw: Any) -> str:
     kw.setdefault("name", clean_name(path))
     folder = os.path.dirname(os.path.abspath(str(path)))
     os.makedirs(folder, exist_ok=True)
-    with open(path, "w", encoding="utf-8") as f:
-        f.write(to_recipe(model, **kw))
+    with open(path, "w", encoding="utf-8") as fv:
+        fv.write(to_recipe(model, **kw))
     return path
 
 
@@ -371,10 +371,10 @@ _COUNTER = itertools.count()
 def load_recipe(path: str) -> ModuleType:
     """Import a recipe file as a new, independent module object."""
     name = clean_name(path)
-    spec = importlib.util.spec_from_file_location(f"_hark_fit_recipe_{next(_COUNTER)}_{name}", str(path))
-    if spec is None or spec.loader is None:
+    spec_v = importlib.util.spec_from_file_location(f"_hark_fit_recipe_{next(_COUNTER)}_{name}", str(path))
+    if spec_v is None or spec_v.loader is None:
         raise ImportError(f"load_recipe: cannot import {path}")
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    mod.__name__ = name
-    return mod
+    modv = importlib.util.module_from_spec(spec_v)
+    spec_v.loader.exec_module(modv)
+    modv.__name__ = name
+    return modv
