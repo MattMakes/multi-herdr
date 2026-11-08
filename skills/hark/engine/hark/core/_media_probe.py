@@ -77,27 +77,36 @@ def _bitrate(track: dict, container: dict, has_picture: bool) -> int | None:
     return None
 
 
+def _of_type(streams: list[dict], kind: str) -> list[dict]:
+    return [s for s in streams if s.get("codec_type") == kind]
+
+
+def _is_cover_art(stream: dict) -> bool:
+    return bool((stream.get("disposition") or {}).get("attached_pic"))
+
+
+def _sound_fields(track: dict, container: dict, has_picture: bool) -> dict:
+    """The audio part of a probe record, from the first audio stream ({} when none)."""
+    name = track.get("codec_name")
+    return {
+        "codec": name,
+        "src_rate": int(track.get("sample_rate") or 0),
+        "channels": int(track.get("channels") or 0),
+        "kbps": _bitrate(track, container, has_picture),
+        "lossy": name in LOSSY_CODECS,
+    }
+
+
 def _probe_fields(raw: dict) -> dict:
     """Flatten raw ffprobe JSON into hark's probe record."""
     container = raw.get("format") or {}
     every = raw.get("streams") or []
-    track = {}
-    for stream in every:
-        if stream.get("codec_type") == "audio":
-            track = stream
-            break
-    visual = [s for s in every if s.get("codec_type") == "video"]
-    motion = [s for s in visual if not (s.get("disposition") or {}).get("attached_pic")]
-    name = track.get("codec_name")
-    record = {
-        "codec": name,
-        "src_rate": int(track.get("sample_rate") or 0),
-        "channels": int(track.get("channels") or 0),
-        "kbps": _bitrate(track, container, bool(visual)),
-        "lossy": name in LOSSY_CODECS,
-        "duration": round(float(container.get("duration") or 0.0), 3),
-        "has_video": bool(motion),
-    }
+    audio_streams = _of_type(every, "audio")
+    visual = _of_type(every, "video")
+    motion = [s for s in visual if not _is_cover_art(s)]
+    record = _sound_fields(audio_streams[0] if audio_streams else {}, container, bool(visual))
+    record["duration"] = round(float(container.get("duration") or 0.0), 3)
+    record["has_video"] = bool(motion)
     if motion:
         first = motion[0]
         record["video"] = {"width": first.get("width"), "height": first.get("height"),

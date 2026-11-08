@@ -46,28 +46,38 @@ def _count_entries(path: str) -> int | None:
     return len(table)
 
 
+def _kind_counts(bank: Any, names: list[str]) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for sound in names:
+        kind = bank.get(sound).get("type") or "forge"
+        counts[kind] = counts.get(kind, 0) + 1
+    return counts
+
+
+def _file_rows(bank: Any) -> list[dict]:
+    """One {file, entries} row per bank file; files in hark's own data folder show their base name."""
+    lister = getattr(bank, "bank_files", None)
+    if not callable(lister):
+        return []
+    shipped = os.path.abspath(str(Path(bank.__file__).parent / "data"))
+    rows = []
+    for item in map(str, lister()):
+        inside = os.path.dirname(os.path.abspath(item)) == shipped
+        rows.append({"file": os.path.basename(item) if inside else item, "entries": _count_entries(item)})
+    return rows
+
+
 def bank_info() -> dict:
     """What the loaded sound bank holds, or {error} when it cannot load."""
     try:
         bank = importlib.import_module("hark.forge.bank.bank")
         names = list(bank.ids())
-        kinds: dict[str, int] = {}
-        for sound in names:
-            kind = bank.get(sound).get("type") or "forge"
-            kinds[kind] = kinds.get(kind, 0) + 1
-        files = []
-        lister = getattr(bank, "bank_files", None)
-        if callable(lister):
-            shipped = os.path.abspath(str(Path(bank.__file__).parent / "data"))
-            for item in map(str, lister()):
-                inside = os.path.dirname(os.path.abspath(item)) == shipped
-                files.append({"file": os.path.basename(item) if inside else item, "entries": _count_entries(item)})
         return {
             "version": bank.VERSION,
             "sounds": len(names),
-            "types": kinds,
+            "types": _kind_counts(bank, names),
             "pluck": len([s for s in names if s.startswith("pluck/")]),
-            "files": files,
+            "files": _file_rows(bank),
             "extra": [piece for piece in os.environ.get("HARK_BANK", "").split(os.pathsep) if piece],
         }
     except Exception as exc:  # noqa: BLE001 - report a broken bank and keep checking

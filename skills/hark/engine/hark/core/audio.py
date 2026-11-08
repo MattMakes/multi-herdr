@@ -111,20 +111,23 @@ def _explain_failure(path: str, done: subprocess.CompletedProcess) -> AudioError
     return AudioError(f"cannot decode {path}: {ffmpeg_reason(log)}")
 
 
-def _fresh_decode(path: str, sr: int, mono: bool) -> np.ndarray:
-    """Decode with ffmpeg; a mono source asked for in stereo is copied to both sides."""
-    copy_up = False
-    if not mono:
-        copy_up = int(probe(path).get("channels") or 0) == 1
-    samples, done = _run_ffmpeg(path, sr, 1 if mono or copy_up else 2)
-    if done.returncode != 0 or samples.size == 0:
-        raise _explain_failure(path, done)
+def _arrange(samples: np.ndarray, mono: bool, copy_up: bool) -> np.ndarray:
+    """Shape interleaved ffmpeg output: (n,) for mono, (n, 2) for stereo."""
     if mono:
         return samples
     if copy_up:
         return np.column_stack([samples, samples])
     even = samples.size - samples.size % 2
     return samples[:even].reshape(-1, 2)
+
+
+def _fresh_decode(path: str, sr: int, mono: bool) -> np.ndarray:
+    """Decode with ffmpeg; a mono source asked for in stereo is copied to both sides."""
+    copy_up = not mono and int(probe(path).get("channels") or 0) == 1
+    samples, done = _run_ffmpeg(path, sr, 1 if mono or copy_up else 2)
+    if done.returncode != 0 or samples.size == 0:
+        raise _explain_failure(path, done)
+    return _arrange(samples, mono, copy_up)
 
 
 def _cache_path(path: str, sr: int, mono: bool) -> Path:
@@ -161,24 +164,36 @@ def _refuse_non_finite(path: str, x: np.ndarray, sr: int) -> None:
                          "the file is corrupt, or the code that made it divided by zero")
 
 
+def _decoded(path: str, sr: int, mono: bool, cache: bool) -> np.ndarray:
+    """The decode from the cache when present; otherwise a fresh one, stored when caching."""
+    if not cache:
+        return _fresh_decode(path, sr, mono)
+    where = _cache_path(path, sr, mono)
+    hit = _from_cache(where)
+    if hit is not None:
+        return hit
+    fresh = _fresh_decode(path, sr, mono)
+    _into_cache(where, fresh)
+    return fresh
+
+
+def _span(x: np.ndarray, sr: int, start: float | None, end: float | None) -> np.ndarray:
+    if start is None and end is None:
+        return x
+    first = max(0, int(round((start or 0.0) * sr)))
+    stop = len(x) if end is None else min(len(x), int(round(end * sr)))
+    return x[first:stop]
+
+
 def load(path: str, sr: int = 48000, mono: bool = False, start: float | None = None,
          end: float | None = None, cache: bool = True) -> np.ndarray:
     """Read a media file as float32 samples: shape (n, 2) for stereo, (n,) for mono."""
     path = str(path)
     if not os.path.exists(path):
         raise AudioError(f"no such file: {path}")
-    where = _cache_path(path, sr, mono) if cache else None
-    x = _from_cache(where) if where is not None else None
-    if x is None:
-        x = _fresh_decode(path, sr, mono)
-        if where is not None:
-            _into_cache(where, x)
+    x = _decoded(path, sr, mono, cache)
     _refuse_non_finite(path, x, sr)
-    if start is None and end is None:
-        return x
-    first = max(0, int(round((start or 0.0) * sr)))
-    stop = len(x) if end is None else min(len(x), int(round(end * sr)))
-    return x[first:stop]
+    return _span(x, sr, start, end)
 
 
 def duration(path: str) -> float:
