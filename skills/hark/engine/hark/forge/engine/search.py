@@ -55,34 +55,50 @@ def _kind(spec: Any) -> str:
     return spec[2] if len(spec) > 2 else "lin"
 
 
+def _dec_log(lo: float, hi: float, v: float) -> float:
+    return float(math.exp(math.log(lo) + v * (math.log(hi) - math.log(lo))))
+
+
+def _dec_int(lo: float, hi: float, v: float) -> int:
+    return int(round(lo + v * (hi - lo)))
+
+
+def _dec_lin(lo: float, hi: float, v: float) -> float:
+    return float(lo + v * (hi - lo))
+
+
+_DECODE = {"log": _dec_log, "int": _dec_int}
+
+
 def _decode_one(spec: Any, v: float) -> Any:
     v = min(1.0, max(0.0, float(v)))
-    kind = _kind(spec)
-    if kind == "choice":
+    if isinstance(spec, list):
         return spec[min(len(spec) - 1, int(v * len(spec)))]
-    lo, hi = spec[0], spec[1]
+    return _DECODE.get(_kind(spec), _dec_lin)(spec[0], spec[1], v)
+
+
+def _unit(kind: str, lo: float, hi: float, v: Any) -> float:
     if kind == "log":
-        return float(math.exp(math.log(lo) + v * (math.log(hi) - math.log(lo))))
-    if kind == "int":
-        return int(round(lo + v * (hi - lo)))
-    return float(lo + v * (hi - lo))
+        return (math.log(max(float(v), 1e-12)) - math.log(lo)) / (math.log(hi) - math.log(lo))
+    return (float(v) - lo) / (hi - lo) if hi != lo else 0.5
+
+
+def _encode_range(spec: Any, v: Any) -> float:
+    try:
+        u = _unit(_kind(spec), spec[0], spec[1], v)
+    except (TypeError, ValueError):
+        u = 0.5
+    return min(1.0, max(0.0, u))
 
 
 def _encode_one(spec: Any, v: Any) -> float:
     if v is None:
-        return 0.5
-    kind = _kind(spec)
-    if kind == "choice":
-        return (spec.index(v) + 0.5) / len(spec) if v in spec else 0.5
-    lo, hi = spec[0], spec[1]
-    try:
-        if kind == "log":
-            u = (math.log(max(float(v), 1e-12)) - math.log(lo)) / (math.log(hi) - math.log(lo))
-        else:
-            u = (float(v) - lo) / (hi - lo) if hi != lo else 0.5
-    except (TypeError, ValueError):
-        return 0.5
-    return min(1.0, max(0.0, u))
+        u = 0.5
+    elif isinstance(spec, list):
+        u = (spec.index(v) + 0.5) / len(spec) if v in spec else 0.5
+    else:
+        u = _encode_range(spec, v)
+    return u
 
 
 def encode(space: dict, params: dict) -> np.ndarray:
@@ -141,21 +157,28 @@ def recipe_defaults(recipe: Any) -> dict:
     return own
 
 
-def _fill_key(key: str, spec: Any, start: dict, defaults: dict, own: dict) -> tuple[Any, dict | None]:
-    if key in start:
-        v, src = start[key], "start"
-    elif key in defaults:
-        v, src = defaults[key], "DEFAULTS" if key in own else "module DEFAULTS"
-    else:
-        mid = midrange(spec)
-        return mid, {"key": key, "value": mid, "from": "mid-range"}
-    if inside(spec, v):
-        return v, ({"key": key, "value": v, "from": src} if src == "module DEFAULTS" else None)
+def _fill_source(key: str, start: dict, defaults: dict, own: dict) -> tuple[Any, str]:
+    layers = ((start, "start"), (defaults, "DEFAULTS" if key in own else "module DEFAULTS"))
+    return next(((d[key], label) for d, label in layers if key in d), (None, "mid-range"))
+
+
+def _clipped(key: str, spec: Any, v: Any, src: str) -> tuple[Any, dict]:
     to = clip_to(spec, v)
     to = midrange(spec) if to is None else to
-    if src == "start":
-        return v, {"key": key, "value": to, "from": "start clipped", "was": v}
-    return to, {"key": key, "value": to, "from": "DEFAULTS clipped", "was": v}
+    kept, label = (v, "start clipped") if src == "start" else (to, "DEFAULTS clipped")
+    return kept, {"key": key, "value": to, "from": label, "was": v}
+
+
+def _fill_key(key: str, spec: Any, start: dict, defaults: dict, own: dict) -> tuple[Any, dict | None]:
+    v, src = _fill_source(key, start, defaults, own)
+    if src == "mid-range":
+        mid = midrange(spec)
+        res = (mid, {"key": key, "value": mid, "from": "mid-range"})
+    elif inside(spec, v):
+        res = (v, {"key": key, "value": v, "from": src} if src == "module DEFAULTS" else None)
+    else:
+        res = _clipped(key, spec, v, src)
+    return res
 
 
 def fill_start(space: dict, start: dict, defaults: dict, own: dict | None = None) -> tuple[dict, list[dict]]:
@@ -241,6 +264,24 @@ def _crest(m: np.ndarray, e: np.ndarray, on: int, pk: float, n: int) -> float:
     return float(20 * math.log10(np.max(np.abs(m)) / rms)) if rms > 0 else 0.0
 
 
+def _env_times(e: np.ndarray, ip: int, on: int, hop_ms: float) -> dict:
+    pk = float(np.max(e))
+    out = {"attack_ms": (ip - on) * hop_ms + hop_ms / 2}
+    out.update({f"t{d}_ms": _drop_time(e, ip, pk, d, hop_ms) for d in (10, 20, 40)})
+    return out
+
+
+def _centroid_ms(pw: np.ndarray, on: int, hop_ms: float) -> float:
+    idx = np.arange(on, len(pw))
+    w = pw[on:]
+    return float(np.sum((idx - on) * w) / (np.sum(w) + 1e-30)) * hop_ms + hop_ms / 2
+
+
+def _end_db(pw: np.ndarray, pk: float) -> float:
+    q = max(1, len(pw) // 4)
+    return max(-90.0, float(10 * math.log10(np.mean(pw[-q:]) + 1e-18) - pk))
+
+
 def envelope_stats(x: Any, hop_ms: float = 2.0) -> dict:
     """Attack, decay times, centroid time, crest and end level of the mono sum."""
     m = _mono(x)
@@ -250,15 +291,9 @@ def envelope_stats(x: Any, hop_ms: float = 2.0) -> dict:
     pw, e = _env_frames(m, n)
     ip, pk = int(np.argmax(e)), float(np.max(e))
     on = int(np.argmax(e > pk - 30))
-    idx = np.arange(on, len(pw))
-    w = pw[on:]
-    q = max(1, len(pw) // 4)
-    return {"attack_ms": (ip - on) * hop_ms + hop_ms / 2,
-            "t10_ms": _drop_time(e, ip, pk, 10, hop_ms), "t20_ms": _drop_time(e, ip, pk, 20, hop_ms),
-            "t40_ms": _drop_time(e, ip, pk, 40, hop_ms),
-            "centroid_ms": float(np.sum((idx - on) * w) / (np.sum(w) + 1e-30)) * hop_ms + hop_ms / 2,
-            "crest_db": _crest(m, e, on, pk, n),
-            "end_db": max(-90.0, float(10 * math.log10(np.mean(pw[-q:]) + 1e-18) - pk))}
+    out = _env_times(e, ip, on, hop_ms)
+    out.update(centroid_ms=_centroid_ms(pw, on, hop_ms), crest_db=_crest(m, e, on, pk, n), end_db=_end_db(pw, pk))
+    return out
 
 
 def _longest_run(flags: np.ndarray) -> int:
@@ -281,17 +316,24 @@ def _ultra_db(m: np.ndarray) -> float:
     return float(10 * math.log10(P[f > 20000].sum() / (P.sum() + 1e-30) + 1e-12))
 
 
-def _art_checks(m: np.ndarray, pk: float) -> list[tuple[str, Any, float]]:
-    out: list[tuple[str, Any, float]] = []
+def _flat_top(m: np.ndarray, pk: float) -> list[tuple[str, Any, float]]:
     flat = (np.abs(m[1:]) > 0.98 * pk) & (np.abs(np.diff(m)) <= 1e-6 * pk)
     run = _longest_run(flat)
-    if flat.sum() >= 4 and run >= 4:
-        out.append(("flat_top", run, 1.0))
+    return [("flat_top", run, 1.0)] if flat.sum() >= 4 and run >= 4 else []
+
+
+def _shape_checks(m: np.ndarray, pk: float) -> list[tuple[str, Any, float]]:
+    out = _flat_top(m, pk)
     rms = math.sqrt(float(np.mean(m ** 2))) + 1e-30
     if abs(float(np.mean(m))) / rms > 0.1:
         out.append(("dc", round(float(np.mean(m)) / rms, 3), 0.5))
     if abs(m[0]) / pk > 0.05:
         out.append(("start_jump", round(float(abs(m[0]) / pk), 3), 0.5))
+    return out
+
+
+def _edge_checks(m: np.ndarray, pk: float) -> list[tuple[str, Any, float]]:
+    out: list[tuple[str, Any, float]] = []
     end = m[-int(0.005 * SR):]
     end_db = 20 * math.log10(math.sqrt(float(np.mean(end ** 2))) / pk + 1e-12)
     if end_db > -45:
@@ -303,6 +345,10 @@ def _art_checks(m: np.ndarray, pk: float) -> list[tuple[str, Any, float]]:
     if ultra > -25:
         out.append(("ultrasonic", round(ultra, 1), 0.5))
     return out
+
+
+def _art_checks(m: np.ndarray, pk: float) -> list[tuple[str, Any, float]]:
+    return _shape_checks(m, pk) + _edge_checks(m, pk)
 
 
 def artifacts(x: Any) -> dict:
@@ -504,13 +550,31 @@ class SepCMA:
         nps = float(np.linalg.norm(self.ps))
         hs = nps / math.sqrt(1 - (1 - cs) ** (2 * self.g)) < (1.4 + 2 / (self.d + 1)) * self.chi
         self.pc = (1 - cc) * self.pc + hs * math.sqrt(cc * (2 - cc) * me) * yw
+        self._update_cov(hs, w, Y)
+        self.sigma = float(np.clip(self.sigma * math.exp((cs / self.ds) * (nps / self.chi - 1)), 1e-3, 0.6))
+
+    def _update_cov(self, hs: bool, w: np.ndarray, Y: np.ndarray) -> None:
+        cc = self.cc
         self.C = ((1 - self.c1 - self.cmu) * self.C + self.c1 * (self.pc ** 2 + (1 - hs) * cc * (2 - cc) * self.C)
                   + self.cmu * (w @ (Y ** 2)))
         self.C = np.clip(self.C, 1e-4, 16)
-        self.sigma = float(np.clip(self.sigma * math.exp((cs / self.ds) * (nps / self.chi - 1)), 1e-3, 0.6))
 
 
 # ---------------------------------------------------------------- optimiser
+
+def _warn_message(warn: list[dict]) -> str:
+    items = "; ".join(f"start {w['start']} {w['key']} = {w['value']} ({w['from']})" for w in warn[:8])
+    msg = f"forge: {len(warn)} start value(s) not from the start or DEFAULTS: {items}"
+    return msg + (" ..." if len(warn) > 8 else "")
+
+
+def _announce(warn: list[dict], log: Callable | None) -> None:
+    msg = _warn_message(warn)
+    if log:
+        log(msg)
+    if any(w["from"] == "mid-range" for w in warn):
+        warnings.warn(msg, MidRangeFill, stacklevel=5)
+
 
 def _fill_warnings(space: dict, starts: list[dict], recipe: Any, defaults: dict, log: Callable | None) -> tuple:
     rdef = recipe_defaults(recipe)
@@ -520,14 +584,7 @@ def _fill_warnings(space: dict, starts: list[dict], recipe: Any, defaults: dict,
         full.append(f)
         warn += [{"start": j, **n} for n in notes if n["from"] != "module DEFAULTS"]
     if warn:
-        items = "; ".join(f"start {w['start']} {w['key']} = {w['value']} ({w['from']})" for w in warn[:8])
-        msg = f"forge: {len(warn)} start value(s) not from the start or DEFAULTS: {items}"
-        if len(warn) > 8:
-            msg += " ..."
-        if log:
-            log(msg)
-        if any(w["from"] == "mid-range" for w in warn):
-            warnings.warn(msg, MidRangeFill, stacklevel=3)
+        _announce(warn, log)
     return full, warn
 
 
@@ -540,9 +597,7 @@ class _Search:
         self.space = kw["space"] if kw["space"] is not None else recipe.SPACE
         self.keys = list(self.space)
         self.R = np.random.default_rng(kw["seed"])
-        starts = [dict(self.base)] + [{**self.base, **i} for i in kw["init"] or []]
-        self.starts, self.fill_warn = _fill_warnings(self.space, starts, recipe, self.base, kw["log"])
-        self.U0 = [encode(self.space, s) for s in self.starts]
+        self._starts_setup()
         self.gens = max(1, kw["budget"] // kw["pop"])
         self.K = kw["prescreen"] if kw["prescreen"] > kw["pop"] else 0
         self.pre = kw["pre"] if kw["pre"] is not None else (prescreen_for(critic) if self.K else None)
@@ -552,6 +607,11 @@ class _Search:
         self.timing = {"render_s": 0.0, "pre_s": 0.0, "score_s": 0.0, "rendered": 0, "scored": 0}
         self.t0 = time.time()
         self._cma_setup()
+
+    def _starts_setup(self) -> None:
+        starts = [dict(self.base)] + [{**self.base, **i} for i in self.kw["init"] or []]
+        self.starts, self.fill_warn = _fill_warnings(self.space, starts, self.rec, self.base, self.kw["log"])
+        self.U0 = [encode(self.space, s) for s in self.starts]
 
     def _cma_setup(self) -> None:
         self.cma = None
@@ -631,16 +691,17 @@ class _Search:
         reps = max(1, self.kw["reps"])
         jobs = [(j, k, seeds[j] + 7919 * k) for j in range(len(P)) for k in range(reps)]
         todo = [(j, k, s) for j, k, s in jobs if first is None or k > 0]
+        renders = self._render_jobs(P, todo, count=first is None)
+        renders.update({(j, 0): x for j, x in enumerate(first or [])})
+        self.rep0 = [renders.get((j, 0)) for j in range(len(P))]
+        return self._score_reps(len(P), reps, renders)
+
+    def _render_jobs(self, P: list[dict], todo: list[tuple], count: bool) -> dict:
         t = time.time()
         X = render_many(self.rec, [(P[j], s) for j, _, s in todo], self.kw["workers"])
         self.timing["render_s"] += time.time() - t
-        if first is None:
-            self.timing["rendered"] += len(X)
-        renders = {(j, k): x for (j, k, _), x in zip(todo, X)}
-        if first is not None:
-            renders.update({(j, 0): x for j, x in enumerate(first)})
-        self.rep0 = [renders.get((j, 0)) for j in range(len(P))]
-        return self._score_reps(len(P), reps, renders)
+        self.timing["rendered"] += len(X) if count else 0
+        return {(j, k): x for (j, k, _), x in zip(todo, X)}
 
     def _score_reps(self, n: int, reps: int, renders: dict) -> list[dict | None]:
         live = [(jk, x) for jk, x in sorted(renders.items()) if x is not None]
@@ -649,11 +710,7 @@ class _Search:
         self.timing["score_s"] += time.time() - t
         self.timing["scored"] += len(rows)
         got = {jk: r for (jk, _), r in zip(live, rows)}
-        out: list[dict | None] = []
-        for j in range(n):
-            rs = [got.get((j, k)) for k in range(reps)]
-            out.append(None if any(r is None for r in rs) else _merge_reps(rs))
-        return out
+        return [_merged(got, j, reps) for j in range(n)]
 
     # -- generation
 
@@ -661,19 +718,27 @@ class _Search:
         n_new = self.K or self.kw["pop"]
         U, seeds, fixed = (self._cma_candidates if self.cma else self._es_candidates)(g, n_new)
         P = [self._params(u, f) for u, f in zip(U, fixed)]
-        pre_rows = first = None
-        if self.K:
-            order, first, pre_rows, _ = self._prescreen(P, seeds, fixed)
-            U, seeds, fixed, P = ([v[i] for i in order] for v in (U, seeds, fixed, P))
+        U, seeds, P, first, pre_rows = self._screen(U, seeds, fixed, P)
         rows = self._evaluate(P, seeds, first)
         descs = self._descs(pre_rows)
-        gen_rows = [self._record(g, U[i], P[i], seeds[i], rows[i], descs[i], pre_rows[i] if pre_rows else None)
-                    for i in range(len(P))]
-        self.elites = sorted([h for h in self.history if math.isfinite(h["score"]["total"])],
-                             key=lambda h: -h["score"]["total"])[: self.kw["elite"]]
-        self._gen_stats(g, gen_rows, len(P) if not self.K else self.K)
+        pres = pre_rows or [None] * len(P)
+        gen_rows = [self._record(g, U[i], P[i], seeds[i], rows[i], descs[i], pres[i]) for i in range(len(P))]
+        self._update_elites()
+        self._gen_stats(g, gen_rows, self.K or len(P))
         if self.cma:
             self._cma_tell(g, U, gen_rows)
+
+    def _screen(self, U: list, seeds: list, fixed: list, P: list) -> tuple:
+        """With a prescreen: the kept candidates in prescreen order, their renders and prescreen rows."""
+        if not self.K:
+            return U, seeds, P, None, None
+        order, first, pre_rows, _ = self._prescreen(P, seeds, fixed)
+        U, seeds, P = ([v[i] for i in order] for v in (U, seeds, P))
+        return U, seeds, P, first, pre_rows
+
+    def _update_elites(self) -> None:
+        self.elites = sorted([h for h in self.history if math.isfinite(h["score"]["total"])],
+                             key=lambda h: -h["score"]["total"])[: self.kw["elite"]]
 
     def _descs(self, pre_rows: list | None) -> list:
         if pre_rows is not None:
@@ -726,13 +791,17 @@ class _Search:
         fin = [(u, r["score"]["total"]) for u, r in zip(U, rows) if math.isfinite(r["score"]["total"])]
         if fin:
             self.cma.tell(np.array([u for u, _ in fin]), [t for _, t in fin])
+        self._track_best()
+        stuck = self.cma.sigma < self.kw["sigma_stop"] or self.stale >= self.kw["patience"]
+        if g < self.gens - 1 and stuck:
+            self._restart()
+
+    def _track_best(self) -> None:
         best = self.elites[0]["score"]["total"] if self.elites else -math.inf
         if best > self.best_seen + 1e-3:
             self.best_seen, self.stale = best, 0
         else:
             self.stale += 1
-        if g < self.gens - 1 and (self.cma.sigma < self.kw["sigma_stop"] or self.stale >= self.kw["patience"]):
-            self._restart()
 
     def _restart(self) -> None:
         self.tried.append(self.cma.m.copy())
@@ -764,6 +833,11 @@ class _Search:
                 "fill_warnings": self.fill_warn}
 
 
+def _merged(got: dict, j: int, reps: int) -> dict | None:
+    rs = [got.get((j, k)) for k in range(reps)]
+    return None if any(r is None for r in rs) else _merge_reps(rs)
+
+
 def _merge_reps(rows: list[dict]) -> dict:
     if len(rows) == 1:
         return rows[0]
@@ -775,15 +849,21 @@ def _merge_reps(rows: list[dict]) -> dict:
     return out
 
 
-def optimize(recipe: Any, critic: Any, budget: int = 160, pop: int = 16, elite: int = 4, seed: int = 0,
-             init: Sequence[dict] | None = None, sigma0: float = 0.22, sigma1: float = 0.04, fresh: float = 0.15,
-             log: Callable | None = None, space: dict | None = None, reps: int = 1, strategy: str = "es",
-             prescreen: int = 0, workers: int | None = None, patience: int = 4, sigma_stop: float = 0.03,
-             pre: Prescreen | None = None, cma: dict | None = None) -> dict:
-    """Search a recipe's SPACE against a critic; returns best, history, generations and timing."""
-    kw = dict(budget=budget, pop=pop, elite=elite, seed=seed, init=init, sigma0=sigma0, sigma1=sigma1, fresh=fresh,
-              log=log, space=space, reps=reps, strategy=strategy, prescreen=prescreen, workers=workers,
-              patience=patience, sigma_stop=sigma_stop, pre=pre, cma=cma)
+OPTIMIZE_DEFAULTS: dict[str, Any] = dict(
+    budget=160, pop=16, elite=4, seed=0, init=None, sigma0=0.22, sigma1=0.04, fresh=0.15, log=None, space=None,
+    reps=1, strategy="es", prescreen=0, workers=None, patience=4, sigma_stop=0.03, pre=None, cma=None)
+
+
+def optimize(recipe: Any, critic: Any, **opts: Any) -> dict:
+    """Search a recipe's SPACE against a critic; returns best, history, generations and timing.
+
+    Options and defaults are OPTIMIZE_DEFAULTS: budget, pop, elite, seed, init, sigma0, sigma1, fresh, log,
+    space, reps, strategy ("es" or "cma"), prescreen, workers, patience, sigma_stop, pre and cma.
+    """
+    unknown = sorted(set(opts) - set(OPTIMIZE_DEFAULTS))
+    if unknown:
+        raise TypeError(f"optimize() got unexpected keyword argument(s): {', '.join(unknown)}")
+    kw = {**OPTIMIZE_DEFAULTS, **opts}
     s = _Search(recipe, critic, kw)
     for g in range(s.gens):
         s.generation(g)
@@ -792,39 +872,51 @@ def optimize(recipe: Any, critic: Any, budget: int = 160, pop: int = 16, elite: 
 
 # ---------------------------------------------------------------- robust and diverse
 
+def _spread(tots: list[float]) -> dict:
+    if not tots:
+        return {"mean": None, "min": None, "max": None, "sd": None}
+    return {"mean": float(np.mean(tots)), "min": min(tots), "max": max(tots), "sd": float(np.std(tots))}
+
+
+def _pass_rate(rows: list[dict], n: int) -> float:
+    return round(sum(1 for r in rows if r.get("passes")) / max(1, n), 3)
+
+
+def _tone_mean(rows: list[dict]) -> dict:
+    tdb = [r["tone_db"] for r in rows if r.get("tone_db") is not None]
+    return {"tone_db_mean": float(np.mean(tdb))} if tdb else {}
+
+
+def _seed_list(seeds: Any, seed0: int) -> list:
+    return list(seeds) if isinstance(seeds, (list, tuple)) else list(range(seed0, seed0 + int(seeds)))
+
+
 def robust(recipe: Any, critic: Any, params: dict, seeds: Any = 4, seed0: int = 5000,
            workers: int | None = None) -> dict:
     """Score a parameter set on several seeds: mean, min, max, sd and pass rate."""
-    sl = list(seeds) if isinstance(seeds, (list, tuple)) else list(range(seed0, seed0 + int(seeds)))
+    sl = _seed_list(seeds, seed0)
     X = render_many(recipe, [(params, s) for s in sl], workers)
     live = [x for x in X if x is not None]
     rows = critic.score(live) if live else []
     tots = [float(r["total"]) for r in rows if math.isfinite(r["total"])]
     out = {"n": len(sl), "seeds": sl, "totals": [round(t, 3) for t in tots], "failed": len(X) - len(live),
-           "mean": None, "min": None, "max": None, "sd": None,
-           "pass_rate": round(sum(1 for r in rows if r.get("passes")) / max(1, len(sl)), 3)}
-    if tots:
-        out.update(mean=float(np.mean(tots)), min=min(tots), max=max(tots), sd=float(np.std(tots)))
-    tdb = [r["tone_db"] for r in rows if r.get("tone_db") is not None]
-    if tdb:
-        out["tone_db_mean"] = float(np.mean(tdb))
+           **_spread(tots), "pass_rate": _pass_rate(rows, len(sl))}
+    out.update(_tone_mean(rows))
     return out
-
 
 def _rank_key(r: dict) -> tuple:
     return (not r["score"].get("passes"), -r["score"]["total"])
 
 
+def _too_close(r: dict, c: dict, min_dist: float, min_sound: float, sound: bool) -> bool:
+    u, v = np.asarray(r["u"]), np.asarray(c["u"])
+    near = np.linalg.norm(u - v) / math.sqrt(max(1, len(u))) < min_dist
+    same = bool(sound and r.get("desc") and c.get("desc") and sound_dist(r["desc"], c["desc"]) < min_sound)
+    return c is r or near or same
+
+
 def _accept(r: dict, chosen: list[dict], min_dist: float, min_sound: float, sound: bool) -> bool:
-    for c in chosen:
-        if c is r:
-            return False
-        u, v = np.asarray(r["u"]), np.asarray(c["u"])
-        if np.linalg.norm(u - v) / math.sqrt(max(1, len(u))) < min_dist:
-            return False
-        if sound and r.get("desc") and c.get("desc") and sound_dist(r["desc"], c["desc"]) < min_sound:
-            return False
-    return True
+    return not any(_too_close(r, c, min_dist, min_sound, sound) for c in chosen)
 
 
 def diverse(results: Sequence[dict], recipe: Any, k: int = 4, min_dist: float = 0.08,
@@ -861,13 +953,13 @@ def _context(target: str | None, refs: Any) -> str:
 
 
 def _sig6(v: Any) -> Any:
-    if isinstance(v, float) and math.isfinite(v):
-        return float(f"{v:.6g}")
-    if isinstance(v, np.floating):
-        return float(f"{float(v):.6g}")
     if isinstance(v, np.integer):
-        return int(v)
-    return v
+        out = int(v)
+    elif isinstance(v, np.floating) or (isinstance(v, float) and math.isfinite(v)):
+        out = float(f"{float(v):.6g}")
+    else:
+        out = v
+    return out
 
 
 def _read_bank(path: Path, name: str) -> dict:
@@ -895,40 +987,70 @@ def load_seeds(recipe: Any, target: str | None = None, refs: Any = None, n: int 
     return [dict(e["params"]) for e in entries[:n]]
 
 
+def _finite(v: Any) -> bool:
+    return isinstance(v, (int, float)) and math.isfinite(v)
+
+
+def _member(p: dict) -> Any:
+    return next((p[k] for k in ("family", "preset", "member", "name") if p.get(k) is not None), None)
+
+
+def _entry_extra(p: dict, rb: dict, tag: str | None) -> dict:
+    extra = {}
+    if rb:
+        extra.update(robust_mean=rb.get("mean"), robust_pass_rate=rb.get("pass_rate"))
+    if tag is not None:
+        extra.update(delivered=tag, member=_member(p), seed=p.get("seed"))
+    return extra
+
+
 def _entry(p: dict, ctx: str, source: str, tag: str | None) -> dict | None:
     sc = p.get("score") or {}
     rb = p.get("robust") or {}
     rank = rb.get("mean") if rb.get("mean") is not None else sc.get("total")
-    finite = isinstance(rank, (int, float)) and math.isfinite(rank)
+    finite = _finite(rank)
     if not finite and tag is None:
         return None
     e = {"params": {k: _sig6(v) for k, v in p["params"].items()}, "rank_score": round(rank, 3) if finite else None,
          "context": ctx, "total": sc.get("total"), "tone_db": sc.get("tone_db"), "passes": sc.get("passes"),
          "source": source}
-    if rb:
-        e.update(robust_mean=rb.get("mean"), robust_pass_rate=rb.get("pass_rate"))
-    if tag is not None:
-        member = next((p[k] for k in ("family", "preset", "member", "name") if p.get(k) is not None), None)
-        e.update(delivered=tag, member=member, seed=p.get("seed"))
+    e.update(_entry_extra(p, rb, tag))
     return e
+
+
+def _keep_context(entries: list[dict], pinned: list[dict], ctx: Any, per_context: int) -> list[dict]:
+    """Up to per_context best undelivered entries of one context, without repeated params."""
+    seen = [e["params"] for e in pinned if e.get("context") == ctx]
+    kept: list[dict] = []
+    free = sorted([e for e in entries if e.get("context") == ctx and not e.get("delivered")], key=lambda e: -_rank(e))
+    for e in free:
+        if len(kept) < per_context and e["params"] not in seen:
+            seen.append(e["params"])
+            kept.append(e)
+    return kept
 
 
 def _keep_entries(entries: list[dict], per_context: int, cap: int) -> list[dict]:
     pinned = [e for e in entries if e.get("delivered")]
     kept: list[dict] = []
     for ctx in dict.fromkeys(e.get("context") for e in entries):
-        seen = [e["params"] for e in pinned if e.get("context") == ctx]
-        added = 0
-        for e in sorted([e for e in entries if e.get("context") == ctx and not e.get("delivered")],
-                        key=lambda e: -_rank(e)):
-            if added >= per_context:
-                break
-            if e["params"] in seen:
-                continue
-            seen.append(e["params"])
-            kept.append(e)
-            added += 1
+        kept += _keep_context(entries, pinned, ctx, per_context)
     return pinned + kept[: max(0, cap - len(pinned))]
+
+
+def _unpin(old: list[dict], tag: str | None) -> None:
+    """Earlier entries delivered under the same tag lose the tag."""
+    for e in old:
+        if tag is not None and e.get("delivered") == tag:
+            e.pop("delivered")
+            e["was_delivered"] = tag
+
+
+def _write_bank(path: Path, bank: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(f"{path.name}.tmp{os.getpid()}")
+    tmp.write_text(json.dumps(bank, indent=1, default=str))
+    os.replace(tmp, path)
 
 
 def save_seeds(recipe: Any, picks: Sequence[dict], target: str | None = None, refs: Any = None, source: str = "",
@@ -936,21 +1058,13 @@ def save_seeds(recipe: Any, picks: Sequence[dict], target: str | None = None, re
     """Add picks to the seed bank and write it atomically."""
     name = recipe if isinstance(recipe, str) else _name_of(recipe)
     path = seeds_path(recipe, folder)
-    bank = _read_bank(path, name)
+    old = _read_bank(path, name).get("entries") or []
     ctx = _context(target, refs)
     tag = ctx if delivered is True else (str(delivered) if delivered else None)
     new = [e for e in (_entry(p, ctx, source, tag) for p in picks) if e is not None]
-    old = bank.get("entries") or []
-    if tag is not None:
-        for e in old:
-            if e.get("delivered") == tag:
-                e.pop("delivered")
-                e["was_delivered"] = tag
+    _unpin(old, tag)
     bank = {"recipe": name, "entries": _keep_entries(new + old, per_context, cap)}
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_name(f"{path.name}.tmp{os.getpid()}")
-    tmp.write_text(json.dumps(bank, indent=1, default=str))
-    os.replace(tmp, path)
+    _write_bank(path, bank)
     return bank
 
 
