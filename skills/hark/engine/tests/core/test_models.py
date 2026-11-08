@@ -241,3 +241,26 @@ def test_at_38_ast_probs(real_models):
     assert p.shape == (527,) and p.min() >= 0 and p.max() <= 1
     top = tagger.top(p, 5)
     assert [v for _, v in top] == sorted((v for _, v in top), reverse=True)
+
+
+def test_redirects_note_filtered_by_exact_message(caplog):
+    # T-41: only the exact torch redirects note is dropped; other records of that logger still pass
+    import logging
+
+    _common.drop_redirects_note()
+    _common.drop_redirects_note()  # idempotent
+    logger = logging.getLogger(_common.REDIRECTS_LOGGER)
+    assert logger.filters.count(_common._not_redirects_note) == 1
+    with caplog.at_level(logging.WARNING, logger=_common.REDIRECTS_LOGGER):
+        logger.warning(_common.REDIRECTS_NOTE)
+        logger.warning("NOTE: something else")
+    assert [r.getMessage() for r in caplog.records] == ["NOTE: something else"]
+
+
+@pytest.mark.ml
+def test_torch_import_prints_no_redirects_note():
+    import subprocess
+
+    code = "from hark.models import _common; _common.torch_ready('CLAP'); import transformers"
+    got = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, timeout=300, check=True)
+    assert "Redirects are currently not supported" not in got.stderr

@@ -21,6 +21,20 @@ from hark.models import hub, require_ml
 NO_BF16_CAPS = frozenset({"DEFAULT", "NO AVX", "AVX", "AVX2", "ZVECTOR", "VSX"})
 NO_BF16_ONEDNN = frozenset({"SSE41", "AVX", "AVX2", "AVX2_VNNI", "AVX512_CORE", "AVX512_CORE_VNNI"})
 PICKLE_WEIGHTS = frozenset(hub.PICKLE)
+# torch logs this 1 line on macOS when it imports torch.distributed; it says nothing about hark.
+REDIRECTS_LOGGER = "torch.distributed.elastic.multiprocessing.redirects"
+REDIRECTS_NOTE = "NOTE: Redirects are currently not supported in MacOs."
+
+
+def _not_redirects_note(record: logging.LogRecord) -> bool:
+    return record.getMessage() != REDIRECTS_NOTE
+
+
+def drop_redirects_note() -> None:
+    """Filter the torch redirects note by its exact message; other records of that logger pass."""
+    logger = logging.getLogger(REDIRECTS_LOGGER)
+    if _not_redirects_note not in logger.filters:
+        logger.addFilter(_not_redirects_note)
 
 
 def key24(text: str) -> str:
@@ -37,6 +51,7 @@ def wanted(model_id: str | None, configured: str, configured_rev: str | None) ->
 def torch_ready(feature: str) -> Any:
     """Check the extras, import torch, set its thread count."""
     require_ml(feature)
+    drop_redirects_note()
     import torch
 
     torch.set_num_threads(config.threads())
@@ -46,6 +61,7 @@ def torch_ready(feature: str) -> Any:
 @contextlib.contextmanager
 def quiet() -> Iterator[None]:
     """Quiet transformers during a load: errors only, no progress bars, no mel or future warnings."""
+    drop_redirects_note()
     import transformers
 
     transformers.logging.set_verbosity_error()
