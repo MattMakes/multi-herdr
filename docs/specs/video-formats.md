@@ -64,7 +64,7 @@ The critic reads `meta.format`. For `long`, axis 1 judges whether the first 30 s
 
 ## Regression lock
 
-`crates/horch-core/tests/video_pipeline_wave.rs` keeps a test that fails when a video skill loses the format split. It checks that each skill file in this list names both `short` and `long`, and names `meta.format` where it reads the timeline:
+`crates/horch-core/tests/video_pipeline_wave.rs` keeps a test that fails when a video skill loses the format split. It checks that each skill file in this list names both `short` and `long`. A file that reads the timeline also names `meta.format`. `skills/video-produce/SKILL.md` and `skills/video-direction/SKILL.md` read the format from `PRODUCTION.md`, so they name the literal `Format:` line instead. The 2 `references/` files need only `short` and `long`:
 
 - `skills/video-produce/SKILL.md`
 - `skills/video-produce/references/promo-brief.md`

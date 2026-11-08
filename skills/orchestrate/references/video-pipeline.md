@@ -73,9 +73,15 @@ episode unit own the intro.
 
 - Teammate: 1 `video-producer`. Resume it after each wave for its next step.
 - Inputs: the operator's request, unchanged.
-- Outputs: `PRODUCTION.md` (workflow, reading, project folder, length,
-  aspects, channel) and `.video/NOTES.md` (the taste notes loaded for this
-  film).
+- Outputs: `PRODUCTION.md` (workflow, reading, project folder, `Format`,
+  length, aspects, channel) and `.video/NOTES.md` (the taste notes loaded for
+  this film).
+- Record `Format: short` or `Format: long` with the length. A `short` film is
+  15 s to 90 s. A `long` film is 180 s to 900 s and `16:9` only.
+- A request for "N videos and M shorts" gives N `long` productions and M
+  `short` productions.
+- A short is never a reframe of a long master. Each short is its own
+  production with its own script, timeline and review.
 - Gate: `python3 "<skill-dir>/scripts/lint_notes.py" .video/NOTES.md`
   (`video-produce`).
 - The workflow is `launch-film`, `app-explainer`, `ab` or `batch`. `ab` adds
@@ -86,9 +92,9 @@ episode unit own the intro.
 1. The project folder is the one in `PRODUCTION.md`, for example
    `video/<slug>/`. Every teammate runs its commands from that folder. Put
    its path in `CONTEXT` of every plan.
-2. Put the request, the audience, the length in seconds, the aspects
-   (`16:9`, `9:16`, `1:1`) and any brand files from `PRODUCTION.md` in the
-   wave 1 plan.
+2. Put the request, the audience, the `Format`, the length in seconds, the
+   aspects (`16:9`, `9:16`, `1:1`) and any brand files from `PRODUCTION.md`
+   in the wave 1 plan. The timeline carries the format as `meta.format`.
 3. Each teammate checks its host tools first (`ffmpeg`, `ffprobe`, `node`,
    `python3`, Chrome, macOS `say`). A `BLOCKED:` line names the install
    step. Take it to the human. Do not install tools yourself.

@@ -425,3 +425,35 @@ fn vpw_07_the_gsap_file_matcher_finds_script_names() {
     assert!(gsap_files_named("use gsap.timeline({ paused: true })").is_empty());
     assert!(gsap_files_named("the motion-gsap skill").is_empty());
 }
+
+/// What each skill file must name to keep the format split: the file, and
+/// the field it reads the format from (`None` for a reference that only
+/// names both formats). See "Regression lock" in `docs/specs/video-formats.md`.
+const FORMAT_LOCK: [(&str, Option<&str>); 9] = [
+    ("skills/video-produce/SKILL.md", Some("Format:")),
+    ("skills/video-produce/references/promo-brief.md", None),
+    ("skills/video-direction/SKILL.md", Some("Format:")),
+    ("skills/video-direction/references/archetypes.md", None),
+    ("skills/video-storyboard/SKILL.md", Some("meta.format")),
+    ("skills/video-qa/SKILL.md", Some("meta.format")),
+    ("skills/video-audio/SKILL.md", Some("meta.format")),
+    ("skills/video-render/SKILL.md", Some("meta.format")),
+    (
+        "skills/orchestrate/references/video-pipeline.md",
+        Some("meta.format"),
+    ),
+];
+
+#[test]
+fn vpw_08_every_video_skill_keeps_the_short_and_long_split() {
+    for (path, field) in FORMAT_LOCK {
+        let text =
+            std::fs::read_to_string(repo().join(path)).unwrap_or_else(|e| panic!("{path}: {e}"));
+        for word in ["short", "long"].into_iter().chain(field) {
+            assert!(
+                text.contains(word),
+                "{path} does not contain `{word}`; it must keep the format split"
+            );
+        }
+    }
+}
