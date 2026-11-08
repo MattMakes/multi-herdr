@@ -7,6 +7,8 @@
 - horch no longer types mail over your prompt when the channel relay is live.
   The courier's redeliveries and the `horch fleet` startup probe go through
   the relay, and the probe no longer asks the orchestrator to run `horch inbox`.
+  When a live relay refuses or does not confirm a `horch tell orchestrator`
+  line, the courier redelivers it through the relay instead of typing it.
 
 ## v0.4.7 - 2026-11-08
 

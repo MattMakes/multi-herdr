@@ -84,7 +84,11 @@ impl Relay {
             r#"{{"jsonrpc":"2.0","id":1,"method":"initialize","params":{{"protocolVersion":"2025-06-18"}}}}"#
         )
         .unwrap();
-        writeln!(input, r#"{{"jsonrpc":"2.0","method":"notifications/initialized"}}"#).unwrap();
+        writeln!(
+            input,
+            r#"{{"jsonrpc":"2.0","method":"notifications/initialized"}}"#
+        )
+        .unwrap();
         input.flush().unwrap();
         let mut relay = Relay {
             child,
@@ -157,7 +161,9 @@ fn a_live_relay_gets_the_courier_redelivery_and_the_idle_pane_gets_no_text() {
 
     // A horch notice has no first push: the courier owes it 1 resend.
     let mail = Mail::under(&h.state, "w1");
-    let id = mail.enqueue("horch", "[horch] NOTE: Tasks can start: T-9").unwrap();
+    let id = mail
+        .enqueue("horch", "[horch] NOTE: Tasks can start: T-9")
+        .unwrap();
     let mut courier = h
         .horch(&["mail", "courier", "--workspace", "w1"])
         .stdout(Stdio::null())
@@ -222,4 +228,148 @@ fn a_live_relay_gets_the_fleet_probe_and_the_idle_pane_gets_no_text() {
         .filter(|c| c["argv"][2].as_str().is_some_and(|p| p.starts_with("w1:")))
         .collect();
     assert_eq!(probes, Vec::<Value>::new(), "{text}");
+}
+
+/// How a fake relay answers a message. It answers every ping with `ok`, so
+/// `channel::is_live` is true.
+#[derive(Clone, Copy)]
+enum FakeAnswer {
+    /// An error line: `channel::send` gives NotDelivered.
+    Refuse,
+    /// No answer before the send timeout: `channel::send` gives Unconfirmed.
+    Silent,
+}
+
+/// A fake relay on the socket of `workspace`. It returns the messages it
+/// received. Each connection gets its own thread, so a silent message does
+/// not hold a ping.
+fn fake_relay(h: &Harness, workspace: &str, answer: FakeAnswer) -> Receiver<String> {
+    use std::os::unix::net::UnixListener;
+
+    let socket = channel::socket_path(&h.state, workspace);
+    std::fs::create_dir_all(socket.parent().unwrap()).unwrap();
+    let listener = UnixListener::bind(&socket).expect("binding the fake relay");
+    let (tx, messages) = mpsc::channel();
+    std::thread::spawn(move || {
+        for stream in listener.incoming().map_while(Result::ok) {
+            let tx = tx.clone();
+            std::thread::spawn(move || {
+                let mut request = String::new();
+                let mut reader = BufReader::new(&stream);
+                if reader.read_line(&mut request).is_err() {
+                    return;
+                }
+                let mut stream = &stream;
+                if request.contains("\"ping\"") {
+                    let _ = stream.write_all(b"ok\n");
+                    return;
+                }
+                let _ = tx.send(request);
+                match answer {
+                    FakeAnswer::Refuse => {
+                        let _ = stream.write_all(b"error: the relay refused\n");
+                    }
+                    FakeAnswer::Silent => std::thread::sleep(Duration::from_millis(500)),
+                }
+            });
+        }
+    });
+    assert!(channel::is_live(&socket), "the fake relay answers a ping");
+    messages
+}
+
+/// A worker world: an idle orchestrator pane w1:p1 that holds an operator
+/// draft, registered as the orchestrator of w1.
+fn worker_world(name: &str) -> (Harness, TempDir) {
+    let (mut h, short) = short_world(name);
+    h.set("HORCH_WORKSPACE_ID", "w1");
+    h.set("HORCH_TEST_CHANNEL_SEND_TIMEOUT_MS", "100");
+    fake(&h, &["workspace", "create", "--label", "relay-first"]);
+    fake(
+        &h,
+        &[
+            "pane",
+            "test-state",
+            "w1:p1",
+            "--text",
+            "> half-typed operator prompt",
+            "--status",
+            "idle",
+            "--agent",
+            "claude",
+        ],
+    );
+    let mailbox = h.state.join("herdr-orchestration-w1");
+    std::fs::create_dir_all(&mailbox).unwrap();
+    std::fs::write(mailbox.join("orchestrator.id"), "w1:p1").unwrap();
+    (h, short)
+}
+
+/// `horch tell orchestrator` from worker sonnet-1. It returns the stderr.
+fn worker_tell(h: &Harness, text: &str) -> String {
+    let out = h
+        .horch(&["tell", "orchestrator", text])
+        .env("HORCH_ROLE", "sonnet-1")
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
+    assert!(out.status.success(), "{stderr}");
+    stderr
+}
+
+/// The pending orchestrator mail lines of w1. `horch inbox` then reads
+/// them, so the courier that the tell started stops.
+fn pending_then_read(h: &Harness) -> Vec<String> {
+    let lines = Mail::under(&h.state, "w1")
+        .pending()
+        .unwrap()
+        .iter()
+        .map(|m| m.text.clone())
+        .collect();
+    assert!(h.run(&["inbox"]).status.success());
+    lines
+}
+
+/// Case A: a live relay refuses the tell. Nothing is typed into the idle
+/// pane, and the mail stays pending for the courier's relay redelivery.
+#[test]
+fn a_live_relay_that_refuses_a_tell_gets_no_pane_text_and_the_mail_stays() {
+    let (h, _short) = worker_world("relay-first-refused");
+    let messages = fake_relay(&h, "w1", FakeAnswer::Refuse);
+
+    let stderr = worker_tell(&h, "DONE: case A");
+
+    assert!(messages
+        .recv_timeout(Duration::from_secs(5))
+        .unwrap()
+        .contains("DONE: case A"));
+    assert!(
+        stderr.contains("the courier redelivers it through the relay"),
+        "{stderr}"
+    );
+    assert_eq!(stderr.lines().count(), 1, "{stderr}");
+    assert_eq!(pane_writes(&h), Vec::<Value>::new());
+    assert_eq!(pending_then_read(&h), ["[sonnet-1] DONE: case A"]);
+}
+
+/// Case B: a live relay does not confirm the tell. Nothing is typed into
+/// the idle pane, and the mail stays pending for the courier.
+#[test]
+fn a_live_relay_that_does_not_confirm_a_tell_gets_no_pane_text_and_the_mail_stays() {
+    let (h, _short) = worker_world("relay-first-unconfirmed");
+    let messages = fake_relay(&h, "w1", FakeAnswer::Silent);
+
+    let stderr = worker_tell(&h, "DONE: case B");
+
+    assert!(messages
+        .recv_timeout(Duration::from_secs(5))
+        .unwrap()
+        .contains("DONE: case B"));
+    assert!(
+        stderr.contains("the courier redelivers it through the relay"),
+        "{stderr}"
+    );
+    assert_eq!(stderr.lines().count(), 1, "{stderr}");
+    assert_eq!(pane_writes(&h), Vec::<Value>::new());
+    assert_eq!(pending_then_read(&h), ["[sonnet-1] DONE: case B"]);
 }
