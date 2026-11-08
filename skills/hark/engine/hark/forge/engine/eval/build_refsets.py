@@ -233,15 +233,21 @@ def _edge_cut(seg: dict, r0: float, r1: float) -> bool:
 
 def _reject(seg: dict, dur: tuple, zmin: float, loudest: float, kept: list) -> str | None:
     d = seg["end"] - seg["start"]
-    if not dur[0] <= d <= dur[1]:
-        return f"length {d:.2f} s"
-    if seg.get("z", 0.0) < zmin:
-        return f"z {seg.get('z', 0.0):.2f} < {zmin}"
-    if loudest - seg.get("peak_db", loudest) > PEAK_DROP_DB:
-        return f"{loudest - seg['peak_db']:.0f} dB under the loudest"
-    if any(seg["start"] < b and a < seg["end"] for a, b in kept):
-        return "overlaps a kept trim"
-    return None
+    z = seg.get("z", 0.0)
+    drop = loudest - seg.get("peak_db", loudest)
+    in_range = dur[0] <= d <= dur[1]
+    overlap = any(seg["start"] < b and a < seg["end"] for a, b in kept)
+    if not in_range:
+        res = f"length {d:.2f} s"
+    elif z < zmin:
+        res = f"z {z:.2f} < {zmin}"
+    elif drop > PEAK_DROP_DB:
+        res = f"{drop:.0f} dB under the loudest"
+    elif overlap:
+        res = "overlaps a kept trim"
+    else:
+        res = None
+    return res
 
 
 def pick_find(segs: list[dict], k: int, dur: tuple, zmin: float, r0: float, r1: float,
@@ -317,15 +323,11 @@ class _Build:
         r0, r1 = (opts.get("start") or 0.0), (opts.get("end") or len(x) / SR)
         segs = _find(src["path"], self.query, max(8, 3 * k), opts.get("start"), opts.get("end"), self.cache)
         picks, rej = pick_find(segs, k, self.dur, self.zmin, r0, r1, kept)
-        self.rec["rejected"] += [{"source_id": src["id"], "split": split, "start": s["start"], "end": s["end"],
-                                  "z": s.get("z"), "why": s["why"]} for s in rej]
+        self.rec["rejected"] += _rejected_rows(src, split, rej)
         if not picks:
             self.log(f"{self.cat} {split} {src['id']}: nothing usable")
         for q, s in enumerate(picks, start=1):
-            d = s["end"] - s["start"]
-            cut = {"a": int(round(s["start"] * SR)), "b": int(round(s["end"] * SR)), "fade_out": min(0.03, d / 4)}
-            ev = {"find_z": s.get("z"), "verdict": s.get("verdict"), "kind": s.get("kind"),
-                  "head_db": s.get("head_db"), "tail_db": s.get("tail_db")}
+            cut, ev = _find_trim(s)
             self._write(split, src, x, cut, f"{src['id']}_{q}.wav", "find", ev)
 
     def split(self, split: str, entries: list) -> None:
@@ -357,6 +359,19 @@ class _Build:
         self.log(f"{self.cat}: forge {len(self.rec['forge'])}, bench {len(self.rec['bench'])}, "
                  f"rejected {len(self.rec['rejected'])}")
         return self.rec
+
+
+def _rejected_rows(src: dict, split: str, rej: list[dict]) -> list[dict]:
+    return [{"source_id": src["id"], "split": split, "start": s["start"], "end": s["end"], "z": s.get("z"),
+             "why": s["why"]} for s in rej]
+
+
+def _find_trim(s: dict) -> tuple[dict, dict]:
+    d = s["end"] - s["start"]
+    cut = {"a": int(round(s["start"] * SR)), "b": int(round(s["end"] * SR)), "fade_out": min(0.03, d / 4)}
+    ev = {"find_z": s.get("z"), "verdict": s.get("verdict"), "kind": s.get("kind"),
+          "head_db": s.get("head_db"), "tail_db": s.get("tail_db")}
+    return cut, ev
 
 
 def _load(path: str) -> np.ndarray:
@@ -394,8 +409,7 @@ def _write_registry(manifest: dict, root: Path, reg_path: Any, log: Callable) ->
     return 0
 
 
-def main(argv: Sequence[str] | None = None) -> int:
-    """Plan, cut every category, write the manifest and the registry."""
+def _parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(prog="python -m hark.forge.engine.eval.build_refsets")
     ap.add_argument("--cats", nargs="+", default=None)
     ap.add_argument("--plan", action="store_true")
@@ -403,27 +417,41 @@ def main(argv: Sequence[str] | None = None) -> int:
     ap.add_argument("--sources", default=str(SOURCES_DEFAULT))
     ap.add_argument("--kit", default=str(KIT_DEFAULT))
     ap.add_argument("--root", default=str(OUT))
-    a = ap.parse_args(argv)
-    sources = {s["id"]: s for s in _read_json(Path(a.sources), [])}
-    kit = _kit_index(_read_json(Path(a.kit), {}))
-    if plan(CATS, sources, kit):
-        return 1
-    if a.plan:
-        return 0
-    root = Path(a.root)
+    return ap
+
+
+def _save(path: Path, text: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text)
+
+
+def _cut_cats(cats: Sequence[str], sources: dict, kit: dict, root: Path) -> dict:
     mpath = root / "manifest.json"
     manifest = _read_json(mpath, {})
     cache_path = root / "_work" / "find_cache.json"
     cache = _read_json(cache_path, {})
-    for cat in a.cats or list(CATS):
+    for cat in cats:
         manifest[cat] = _Build(cat, sources, kit, root, cache, print).run()
-        mpath.parent.mkdir(parents=True, exist_ok=True)
-        mpath.write_text(json.dumps(manifest, indent=1))
-        cache_path.parent.mkdir(parents=True, exist_ok=True)
-        cache_path.write_text(json.dumps(cache))
+        _save(mpath, json.dumps(manifest, indent=1))
+        _save(cache_path, json.dumps(cache))
     manifest = {c: manifest[c] for c in CATS if c in manifest}
     mpath.write_text(json.dumps(manifest, indent=1))
-    return _write_registry(manifest, root, a.registry, print)
+    return manifest
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    """Plan, cut every category, write the manifest and the registry."""
+    a = _parser().parse_args(argv)
+    sources = {s["id"]: s for s in _read_json(Path(a.sources), [])}
+    kit = _kit_index(_read_json(Path(a.kit), {}))
+    if plan(CATS, sources, kit):
+        res = 1
+    elif a.plan:
+        res = 0
+    else:
+        root = Path(a.root)
+        res = _write_registry(_cut_cats(a.cats or list(CATS), sources, kit, root), root, a.registry, print)
+    return res
 
 
 if __name__ == "__main__":
