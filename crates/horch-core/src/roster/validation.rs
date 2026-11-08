@@ -2879,7 +2879,11 @@ w3-codex: sandbox is Claude only; agent codex cannot honour it";
             .filter(|t| t.agent == HarnessKind::Claude && (!t.hidden || t.name == "orchestrator"))
             .map(|t| t.name.as_str())
             .collect();
-        assert_eq!(covered.len(), 78, "the rule should cover 78 claude teammates");
+        assert_eq!(
+            covered.len(),
+            78,
+            "the rule should cover 78 claude teammates"
+        );
         // sound-engineer runs on claude; audio-reviewer runs on agy.
         assert!(covered.contains(&"sound-engineer"), "{covered:?}");
         assert!(!covered.contains(&"audio-reviewer"), "{covered:?}");

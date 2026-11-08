@@ -63,7 +63,12 @@ fn antigravity_teammates() -> Vec<String> {
 fn doctor_is_quiet_when_no_offered_teammate_uses_such_a_harness() {
     let moved = antigravity_teammates();
     // The scan must find the antigravity teammates, or the test proves nothing.
-    for known in ["antigravity", "audio-reviewer", "spec-writer", "ticket-writer"] {
+    for known in [
+        "antigravity",
+        "audio-reviewer",
+        "spec-writer",
+        "ticket-writer",
+    ] {
         assert!(moved.iter().any(|m| m == known), "{known} not in {moved:?}");
     }
     let moved: Vec<&str> = moved.iter().map(String::as_str).collect();
