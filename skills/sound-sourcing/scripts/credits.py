@@ -173,9 +173,9 @@ def build(a) -> tuple[int, dict]:
             md.append(f"- {r['line']}")
             if r is effects[-1] or effects[effects.index(r) + 1]["cls"]["key"] != last:
                 md.append("")
-    tools = "ffmpeg, NumPy/SciPy, soxr, librosa and pyloudnorm"
+    tools = "ffmpeg, NumPy/SciPy, soxr, librosa and a BS.1770 loudness meter"
     if stretched(design):
-        tools = "ffmpeg, NumPy/SciPy, soxr, librosa, pyloudnorm and Rubber Band"
+        tools = "ffmpeg, NumPy/SciPy, soxr, librosa, a BS.1770 loudness meter and Rubber Band"
     md += ["## Tools", "", f"Mixed and mastered with {tools}.", ""]
     if problems:
         md += ["## PROBLEMS (fix before publishing)", ""] + [f"- {p}" for p in problems] + [""]
