@@ -43,6 +43,10 @@ import pathlib
 import subprocess
 import sys
 
+# The self-test imports check_timeline from video-storyboard. A .pyc there
+# would be bundled with that skill and break its size budget.
+sys.dont_write_bytecode = True
+
 BREATH_PAD_SEC = 0.25
 INPUT_ERRORS = (OSError, KeyError, TypeError, ValueError, IndexError)
 
