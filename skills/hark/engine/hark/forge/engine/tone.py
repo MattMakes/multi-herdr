@@ -96,13 +96,17 @@ class ToneRef:
         self.n = len(mono)
         self.margin = margin
         self.P = np.array([profile(m) for m in mono]) if mono else np.zeros((0, len(CEN)))
-        self.med = np.median(self.P, axis=0) if self.n else None
-        self.lo = self.P.min(axis=0) if self.n else None
-        self.hi = self.P.max(axis=0) if self.n else None
+        self._bounds()
         self.t40 = np.array([t40_ms(m) for m in mono])
         self.S = [shares(m) for m in mono]
         self.len_s = np.array([len(m) / SR for m in mono])
         self.ref_dist = self._loo() if self.n >= 3 else np.array([])
+
+    def _bounds(self) -> None:
+        if self.n:
+            self.med, self.lo, self.hi = np.median(self.P, axis=0), self.P.min(axis=0), self.P.max(axis=0)
+        else:
+            self.med = self.lo = self.hi = None
 
     def _loo(self) -> np.ndarray:
         out = []
@@ -126,24 +130,33 @@ class ToneRef:
         keep = self._keep(exclude)
         if not keep:
             return {}
-        P = self.P[keep]
-        med, lo, hi = np.median(P, axis=0), P.min(axis=0), P.max(axis=0)
         m = as_mono(x)
-        p = profile(m)
-        dev = p - med
-        sp = self.ref_dist[keep] if len(self.ref_dist) else np.array([])
-        ratio = float(np.sqrt(np.mean(dev ** 2))) / max(float(np.median(sp)), 0.5) if len(sp) >= 2 else None
-        out = _outside_bands(p, dev, lo, hi, self.margin)
-        res = {"tone_db": round(float(np.sqrt(np.mean(dev ** 2))), 2),
-               "tone_ratio": None if ratio is None else round(ratio, 2),
-               "tone_ref": [round(float(v), 2) for v in sp], "band_dev": [round(float(v), 1) for v in dev],
-               "outside": out, "t40_ms": t40_ms(m),
-               "t40_ref": (float(self.t40[keep].min()), float(self.t40[keep].max())),
-               "length_s": round(len(m) / SR, 3), "shares": shares(m),
-               "shares_ref_med": {k: round(float(np.median([self.S[i][k] for i in keep])), 1) for k in REGIONS},
-               "length_ref": (round(float(self.len_s[keep].min()), 3), round(float(self.len_s[keep].max()), 3))}
+        res = self._balance(profile(m), keep)
+        res.update(self._time_terms(m, keep))
         res["words"] = ToneRef.words(res)
         return res
+
+    def _ratio(self, dev: np.ndarray, sp: np.ndarray) -> float | None:
+        if len(sp) < 2:
+            return None
+        return float(np.sqrt(np.mean(dev ** 2))) / max(float(np.median(sp)), 0.5)
+
+    def _balance(self, p: np.ndarray, keep: list[int]) -> dict:
+        P = self.P[keep]
+        med, lo, hi = np.median(P, axis=0), P.min(axis=0), P.max(axis=0)
+        dev = p - med
+        sp = self.ref_dist[keep] if len(self.ref_dist) else np.array([])
+        ratio = self._ratio(dev, sp)
+        return {"tone_db": round(float(np.sqrt(np.mean(dev ** 2))), 2),
+                "tone_ratio": None if ratio is None else round(ratio, 2),
+                "tone_ref": [round(float(v), 2) for v in sp], "band_dev": [round(float(v), 1) for v in dev],
+                "outside": _outside_bands(p, dev, lo, hi, self.margin)}
+
+    def _time_terms(self, m: np.ndarray, keep: list[int]) -> dict:
+        return {"t40_ms": t40_ms(m), "t40_ref": (float(self.t40[keep].min()), float(self.t40[keep].max())),
+                "length_s": round(len(m) / SR, 3), "shares": shares(m),
+                "shares_ref_med": {k: round(float(np.median([self.S[i][k] for i in keep])), 1) for k in REGIONS},
+                "length_ref": (round(float(self.len_s[keep].min()), 3), round(float(self.len_s[keep].max()), 3))}
 
     @staticmethod
     def words(m: dict) -> str:
@@ -185,20 +198,25 @@ def _outside_bands(p: np.ndarray, dev: np.ndarray, lo: np.ndarray, hi: np.ndarra
     return out
 
 
-def _tone_tail_words(m: dict) -> str:
-    s = ""
+def _t40_words(m: dict) -> str:
     a, b = m.get("t40_ref", (0, 0))
     t = m.get("t40_ms", 0.0)
-    if t > 1.5 * b + 10 or t < 0.6 * a - 5:
-        s += f"; tail t40 {t:.0f} ms (refs {a:.0f}-{b:.0f})"
+    return f"; tail t40 {t:.0f} ms (refs {a:.0f}-{b:.0f})" if t > 1.5 * b + 10 or t < 0.6 * a - 5 else ""
+
+
+def _share_words(m: dict) -> str:
     ref = m.get("shares_ref_med", {})
     diffs = [(k, v - ref[k]) for k, v in m.get("shares", {}).items() if k in ref and abs(v - ref[k]) > 9]
-    if diffs:
-        s += "; energy share vs the refs: " + ", ".join(f"{k} {d:+.0f} dB" for k, d in diffs)
+    return "; energy share vs the refs: " + ", ".join(f"{k} {d:+.0f} dB" for k, d in diffs) if diffs else ""
+
+
+def _length_words(m: dict) -> str:
     lo, hi = m.get("length_ref", (0, 0))
-    if hi and m.get("length_s", 0) > 1.3 * hi:
-        s += f"; {m['length_s']:.2f} s long (refs {lo:.2f}-{hi:.2f})"
-    return s
+    return f"; {m['length_s']:.2f} s long (refs {lo:.2f}-{hi:.2f})" if hi and m.get("length_s", 0) > 1.3 * hi else ""
+
+
+def _tone_tail_words(m: dict) -> str:
+    return _t40_words(m) + _share_words(m) + _length_words(m)
 
 
 # ---------------------------------------------------------------- bandgram
@@ -310,6 +328,17 @@ def _name(ref: Any, i: int) -> str:
     return str(ref) if isinstance(ref, (str, os.PathLike)) else f"ref{i}"
 
 
+def _common_side(diffs: list[float]) -> float:
+    """The smallest offset when every diff has the same sign (negative side as -max), else 0."""
+    if all(d > 0 for d in diffs):
+        return min(diffs)
+    return -max(diffs) if all(d < 0 for d in diffs) else 0.0
+
+
+def _env_ratio(d: float, sp: list[float]) -> float | None:
+    return round(d / max(float(np.median(sp)), 1.0), 2) if sp else None
+
+
 class EnvRef:
     """Band-energy shapes of a set of references."""
 
@@ -319,15 +348,23 @@ class EnvRef:
         self.margin = margin
         self.G = [bandgram(r) for r in refs]
         self.n = len(self.G)
+        self._pair_dists()
+        self.cell_spread = self._cell_spread()
+        self.out_ref = self._out_ref()
+
+    def _pair_dists(self) -> None:
         self.D = np.full((self.n, self.n), np.inf)
         self._detail: dict = {}
         for i in range(self.n):
             for j in range(self.n):
                 if i != j:
                     self.D[i, j], self._detail[(i, j)] = env_dist(self.G[i], self.G[j], detail=True)
-        self.cell_spread = self._cell_spread()
-        self.out_ref = np.array([self._outside([self._detail[(i, j)] for j in range(self.n) if j != i])[1]
-                                 for i in range(self.n)]) if self.n >= 2 else np.array([])
+
+    def _out_ref(self) -> np.ndarray:
+        if self.n < 2:
+            return np.array([])
+        return np.array([self._outside([self._detail[(i, j)] for j in range(self.n) if j != i])[1]
+                         for i in range(self.n)])
 
     def _cell_spread(self) -> dict:
         pool: dict[str, list[float]] = {}
@@ -336,20 +373,25 @@ class EnvRef:
                 pool.setdefault(key, []).append(abs(diff))
         return {k: float(np.median(v)) for k, v in pool.items() if len(v) >= 2}
 
+    def _cell_excess(self, key: str, infos: list[dict]) -> tuple | None:
+        """(outside entry, excess) of a cell that every ref puts on the same side beyond tolerance."""
+        diffs = [i["cells"][key][0] for i in infos]
+        share = float(np.mean([i["cells"][key][1] for i in infos]))
+        lo = _common_side(diffs)
+        tol = max(self.margin, self.cell_spread.get(key, self.margin))
+        if lo > tol and share >= 0.02:
+            return (key, round(math.copysign(lo, diffs[0]), 1), round(share, 3)), (lo - tol) * min(1.0, share / 0.05)
+        return None
+
     def _outside(self, infos: list[dict]) -> tuple[list, float]:
         if len(infos) < 2:
             return [], 0.0
         out, excess = [], 0.0
         for key in infos[0]["cells"]:
-            if not all(key in i["cells"] for i in infos):
-                continue
-            diffs = [i["cells"][key][0] for i in infos]
-            share = float(np.mean([i["cells"][key][1] for i in infos]))
-            lo = min(diffs) if all(d > 0 for d in diffs) else (-max(diffs) if all(d < 0 for d in diffs) else 0.0)
-            tol = max(self.margin, self.cell_spread.get(key, self.margin))
-            if lo > tol and share >= 0.02:
-                out.append((key, round(math.copysign(lo, diffs[0]), 1), round(share, 3)))
-                excess += (lo - tol) * min(1.0, share / 0.05)
+            got = self._cell_excess(key, infos) if all(key in i["cells"] for i in infos) else None
+            if got is not None:
+                out.append(got[0])
+                excess += got[1]
         out.sort(key=lambda o: -abs(o[1]) * o[2])
         return out, excess
 
@@ -371,18 +413,24 @@ class EnvRef:
             return {}
         g = bandgram(x) if G is None else G
         res = [env_dist(g, self.G[i], detail=True) for i in keep]
+        m = self._env_terms(res, keep, exclude)
+        m["words"] = EnvRef.words(m)
+        return m
+
+    def _out_ref_med(self, keep: list[int]) -> float | None:
+        oref = self.out_ref[keep] if self.n >= 3 else np.array([])
+        return round(float(np.median(oref)), 2) if len(oref) else None
+
+    def _env_terms(self, res: list, keep: list[int], exclude: Any) -> dict:
         k = int(np.argmin([r[0] for r in res]))
         d, info = res[k]
         sp = self.spread(exclude)
         outside, excess = self._outside([r[1] for r in res])
-        oref = self.out_ref[keep] if self.n >= 3 else np.array([])
-        m = {"env_db": round(d, 2), "env_ratio": round(d / max(float(np.median(sp)), 1.0), 2) if sp else None,
-             "env_ref": [round(v, 2) for v in sp], "nearest": os.path.basename(self.names[keep[k]].replace("\\", "/")),
-             "nearest_i": keep[k], "anchor": info["anchor"], "stretch": info["stretch"],
-             "shift_ms": info["shift_ms"], "cells": info["cells"], "outside": outside, "env_out": round(excess, 2),
-             "env_out_ref": round(float(np.median(oref)), 2) if len(oref) else None}
-        m["words"] = EnvRef.words(m)
-        return m
+        return {"env_db": round(d, 2), "env_ratio": _env_ratio(d, sp), "env_ref": [round(v, 2) for v in sp],
+                "nearest": os.path.basename(self.names[keep[k]].replace("\\", "/")), "nearest_i": keep[k],
+                "anchor": info["anchor"], "stretch": info["stretch"], "shift_ms": info["shift_ms"],
+                "cells": info["cells"], "outside": outside, "env_out": round(excess, 2),
+                "env_out_ref": self._out_ref_med(keep)}
 
     @staticmethod
     def words(m: dict) -> str:

@@ -199,26 +199,33 @@ def _svf_lti(x: np.ndarray, k: float, a1: float, a2: float, a3: float, mode: str
     return signal.lfilter(b[0], a, x)
 
 
-def _svf_loop(x: np.ndarray, k: np.ndarray, a1: np.ndarray, a2: np.ndarray, a3: np.ndarray,
-              mode: str) -> np.ndarray:
-    y = np.empty(len(x))
+def _svf_states(xs: list, b1: list, b2: list, b3: list) -> tuple[np.ndarray, np.ndarray]:
+    """Band (v1) and low (v2) outputs of the TPT state-variable filter, sample by sample."""
+    v1s, v2s = [], []
     ic1 = ic2 = 0.0
-    xs, ks, b1, b2, b3 = x.tolist(), k.tolist(), a1.tolist(), a2.tolist(), a3.tolist()
     for i, xi in enumerate(xs):
         v3 = xi - ic2
         v1 = b1[i] * ic1 + b2[i] * v3
         v2 = ic2 + b2[i] * ic1 + b3[i] * v3
         ic1 = 2 * v1 - ic1
         ic2 = 2 * v2 - ic2
-        if mode == "low":
-            y[i] = v2
-        elif mode == "band":
-            y[i] = v1
-        elif mode == "bandn":
-            y[i] = ks[i] * v1
-        else:
-            y[i] = xi - ks[i] * v1 - v2
-    return y
+        v1s.append(v1)
+        v2s.append(v2)
+    return np.array(v1s, dtype=float), np.array(v2s, dtype=float)
+
+
+_SVF_OUT = {"low": lambda x, k, v1, v2: v2, "band": lambda x, k, v1, v2: v1,
+            "bandn": lambda x, k, v1, v2: k * v1}
+
+
+def _svf_high(x: np.ndarray, k: np.ndarray, v1: np.ndarray, v2: np.ndarray) -> np.ndarray:
+    return x - k * v1 - v2
+
+
+def _svf_loop(x: np.ndarray, k: np.ndarray, a1: np.ndarray, a2: np.ndarray, a3: np.ndarray,
+              mode: str) -> np.ndarray:
+    v1, v2 = _svf_states(x.tolist(), a1.tolist(), a2.tolist(), a3.tolist())
+    return _SVF_OUT.get(mode, _svf_high)(x, np.asarray(k, dtype=float), v1, v2)
 
 
 def svf(x: np.ndarray, cutoff: Any, q: Any = 0.7, mode: str = "band") -> np.ndarray:
@@ -358,16 +365,19 @@ def normalize(x: np.ndarray, peak_db: float = -1.0) -> np.ndarray:
 
 # ---------------------------------------------------------------- curves, oscillators
 
+def _resample_curve(a: np.ndarray, n: int) -> np.ndarray:
+    return a if len(a) == n else np.interp(np.linspace(0, len(a) - 1, n), np.arange(len(a)), a)
+
+
 def curve(spec: Any, n: int, shape: str = "lin") -> np.ndarray:
     """A control value per sample from a scalar, breakpoints or an array."""
     if np.isscalar(spec):
-        return np.full(n, float(spec))
-    if isinstance(spec, (list, tuple)) and spec and isinstance(spec[0], (list, tuple)):
-        return env_curve(spec, n / SR, shape)[:n]
-    a = np.asarray(spec, dtype=float)
-    if len(a) == n:
-        return a
-    return np.interp(np.linspace(0, len(a) - 1, n), np.arange(len(a)), a)
+        out = np.full(n, float(spec))
+    elif isinstance(spec, (list, tuple)) and spec and isinstance(spec[0], (list, tuple)):
+        out = env_curve(spec, n / SR, shape)[:n]
+    else:
+        out = _resample_curve(np.asarray(spec, dtype=float), n)
+    return out
 
 
 def sweep(f0: float, f1: float, seconds: float, curve: str = "exp", power: float = 1.0) -> np.ndarray:
@@ -396,6 +406,12 @@ def _square(ph: np.ndarray, dt: np.ndarray) -> np.ndarray:
     return sq + _blep(ph, dt) - _blep((ph + 0.5) % 1.0, dt)
 
 
+def _tri(f: np.ndarray, sq: np.ndarray, p0: float) -> np.ndarray:
+    zi = np.array([0.9995 * -0.9995 * (1 - 2 * p0)])
+    y, _ = signal.lfilter([1.0], [1.0, -0.9995], 4 * f / SR * sq, zi=zi)
+    return y
+
+
 def osc(freq: Any, shape: str = "sine", seconds: float | None = None, phase: float = 0.0) -> np.ndarray:
     """Band-limited oscillator (sine, saw, square, tri) with PolyBLEP edges."""
     f = np.asarray(freq, dtype=float)
@@ -405,15 +421,23 @@ def osc(freq: Any, shape: str = "sine", seconds: float | None = None, phase: flo
     p0 = phase % 1.0
     ph = (p0 + np.concatenate([[0.0], np.cumsum(dt[:-1])])) % 1.0
     if shape == "sine":
-        return np.sin(2 * np.pi * ph)
-    if shape == "saw":
-        return 2 * ph - 1 - _blep(ph, dt)
-    sq = _square(ph, dt)
-    if shape == "square":
-        return sq
-    zi = np.array([0.9995 * -0.9995 * (1 - 2 * p0)])
-    y, _ = signal.lfilter([1.0], [1.0, -0.9995], 4 * f / SR * sq, zi=zi)
+        y = np.sin(2 * np.pi * ph)
+    elif shape == "saw":
+        y = 2 * ph - 1 - _blep(ph, dt)
+    elif shape == "square":
+        y = _square(ph, dt)
+    else:
+        y = _tri(f, _square(ph, dt), p0)
     return y
+
+
+def _shepard_voice(r: np.random.Generator, n: int, u: np.ndarray, cfg: tuple) -> np.ndarray:
+    f_lo, octs, tilt, kind, q = cfg
+    f = f_lo * 2 ** (u * octs)
+    a = (0.5 - 0.5 * np.cos(2 * np.pi * u)) * 10 ** (tilt * u * octs / 20)
+    if kind == "tone":
+        return a * np.sin(2 * np.pi * np.cumsum(f) / SR + r.uniform(0, 2 * np.pi))
+    return a * svf(r.standard_normal(n), f, q, "bandn") * np.sqrt(q)
 
 
 def shepard(seconds: float, r: np.random.Generator, up: bool = True, rate: float = 0.5, f_lo: float = 40.0,
@@ -424,15 +448,10 @@ def shepard(seconds: float, r: np.random.Generator, up: bool = True, rate: float
     octs = np.log2(f_hi / f_lo)
     v = max(2, int(round(octs)))
     sign = 1.0 if up else -1.0
+    cfg = (f_lo, octs, tilt, kind, q)
     y = np.zeros(n)
     for k in range(v):
-        u = (k / v + sign * rate * t / octs) % 1.0
-        f = f_lo * 2 ** (u * octs)
-        a = (0.5 - 0.5 * np.cos(2 * np.pi * u)) * 10 ** (tilt * u * octs / 20)
-        if kind == "tone":
-            y += a * np.sin(2 * np.pi * np.cumsum(f) / SR + r.uniform(0, 2 * np.pi))
-        else:
-            y += a * svf(r.standard_normal(n), f, q, "bandn") * np.sqrt(q)
+        y += _shepard_voice(r, n, (k / v + sign * rate * t / octs) % 1.0, cfg)
     return y / _rms(y)
 
 
@@ -520,28 +539,42 @@ def _bell_strike(n: int, r: np.random.Generator, f0: float) -> np.ndarray:
     return s * np.exp(-t_of(k) / 0.0008)
 
 
+def _bell_partial(r: np.random.Generator, t: np.ndarray, f0: float, qa: tuple, cfg: tuple) -> np.ndarray | None:
+    """One beating partial pair; None above 0.45 SR (no random draws then)."""
+    q, a = qa
+    stretch, bright, beat, decay, slope = cfg
+    q2 = q ** (1 + stretch)
+    f = f0 * q2
+    if f > 0.45 * SR:
+        return None
+    a2 = a * q2 ** (1.2 * (bright - 0.5))
+    b = beat * r.uniform(0.4, 1.6) * (1.0 if q2 >= 1 else 0.5)
+    p1, p2 = r.uniform(0, 6.3), r.uniform(0, 6.3)
+    e = a2 * np.exp(-t / max(decay * q2 ** -slope, 1e-4))
+    return e * (np.sin(2 * np.pi * f * t + p1) + 0.7 * np.sin(2 * np.pi * (f + b) * t + p2)) / 1.7
+
+
+def _add_strike(y: np.ndarray, r: np.random.Generator, f0: float, strike: float) -> None:
+    s = _bell_strike(len(y), r, f0)
+    y[: len(s)] += strike * s * _peak(y) / (_peak(s) + 1e-12)
+
+
 def bell(f0: float, seconds: float, r: np.random.Generator, partials: Any = "bar", decay: float = 1.2,
          slope: float = 0.8, bright: float = 0.5, beat: float = 1.0, stretch: float = 0.0,
          strike: float = 0.3) -> np.ndarray:
     """Additive bell with beating partial pairs, -1 dBFS."""
     n = n_of(seconds)
     t = t_of(n)
+    cfg = (stretch, bright, beat, decay, slope)
     y = np.zeros(n)
-    for q, a in zip(*_bell_partials(partials)):
-        q2 = q ** (1 + stretch)
-        f = f0 * q2
-        if f > 0.45 * SR:
-            continue
-        a2 = a * q2 ** (1.2 * (bright - 0.5))
-        b = beat * r.uniform(0.4, 1.6) * (1.0 if q2 >= 1 else 0.5)
-        p1, p2 = r.uniform(0, 6.3), r.uniform(0, 6.3)
-        e = a2 * np.exp(-t / max(decay * q2 ** -slope, 1e-4))
-        y += e * (np.sin(2 * np.pi * f * t + p1) + 0.7 * np.sin(2 * np.pi * (f + b) * t + p2)) / 1.7
+    for qa in zip(*_bell_partials(partials)):
+        part = _bell_partial(r, t, f0, qa, cfg)
+        if part is not None:
+            y += part
     k = min(n, n_of(0.0015))
     y[:k] *= np.linspace(0, 1, k)
     if strike > 0:
-        s = _bell_strike(n, r, f0)
-        y[: len(s)] += strike * s * _peak(y) / (_peak(s) + 1e-12)
+        _add_strike(y, r, f0, strike)
     return normalize(fade(y, 0.0, 0.15 * seconds), -1.0)
 
 
@@ -603,21 +636,33 @@ def _layer_start(ly: dict, onset_db: float | None) -> dict:
     return ly
 
 
+def _stereo_needed(lys: list[dict]) -> bool:
+    return any(ly["x"].ndim == 2 or ly["pan"] is not None for ly in lys)
+
+
+def _mix_len(lys: list[dict], length: float | None) -> int:
+    return n_of(length) if length is not None else max(int(round(ly["t"] * SR)) + len(ly["x"]) for ly in lys)
+
+
+def _place_layer(out: np.ndarray, ly: dict, st: bool) -> None:
+    x = ly["x"]
+    if st and (x.ndim == 1 or ly["pan"] is not None):
+        x = pan_to_stereo(x, ly["pan"] or 0.0)
+    i = int(round(ly["t"] * SR))
+    if i < len(out):
+        m = min(len(x), len(out) - i)
+        out[i:i + m] += 10 ** (ly["gain"] / 20) * x[:m]
+
+
 def stack(layers: Sequence[Any], length: float | None = None, onset_db: float | None = None,
           peak_db: float | None = None) -> np.ndarray:
     """Mix layers placed in time, with gain in dB and optional pan."""
     lys = [_layer_start(_layer(it), onset_db) for it in layers]
-    st = any(ly["x"].ndim == 2 or ly["pan"] is not None for ly in lys)
-    n = n_of(length) if length is not None else max(int(round(ly["t"] * SR)) + len(ly["x"]) for ly in lys)
+    st = _stereo_needed(lys)
+    n = _mix_len(lys, length)
     out = np.zeros((n, 2) if st else n)
     for ly in lys:
-        x = ly["x"]
-        if st and (x.ndim == 1 or ly["pan"] is not None):
-            x = pan_to_stereo(x, ly["pan"] or 0.0)
-        i = int(round(ly["t"] * SR))
-        if i < n:
-            m = min(len(x), n - i)
-            out[i:i + m] += 10 ** (ly["gain"] / 20) * x[:m]
+        _place_layer(out, ly, st)
     return normalize(out, peak_db) if peak_db is not None else out
 
 
