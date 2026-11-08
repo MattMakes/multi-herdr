@@ -527,6 +527,30 @@ def _median(values):
     return ordered[len(ordered) // 2] if ordered else -math.inf
 
 
+def _outside_window(levels, planned):
+    """Return the finite 0.1 s levels that lie fully outside the planned window."""
+    def outside(k):
+        return (k + 1) * LEVEL_WINDOW_SEC <= planned[0] or k * LEVEL_WINDOW_SEC >= planned[1]
+    return [v for k, v in enumerate(levels) if v != -math.inf and outside(k)]
+
+
+def _silent_runs(silences, planned):
+    """Return the silencedetect runs that overlap the planned window, rounded."""
+    return [[round(a, 3), round(b, 3)] for a, b in silences if a < planned[1] and b > planned[0]]
+
+
+def _breakdown_problem(planned, silent, levels):
+    """Return the error message for a breakdown, or None when it passes."""
+    if silent or levels["breakdown_dbfs"] is None:
+        return (f"the breakdown {list(planned)} s is silent (under {SILENCE_FLOOR_DB:g} dBFS) at "
+                f"{silent} s; a breakdown dips, it never stops")
+    dip = levels["dip_db"]
+    if dip is not None and dip > BREAKDOWN_MAX_DIP_DB:
+        return (f"the breakdown {list(planned)} s dips {dip:.1f} dB under the rest of the mix; "
+                f"the limit is {BREAKDOWN_MAX_DIP_DB:g} dB")
+    return None
+
+
 def check_payoff_breakdown(mix, planned, silences, errors):
     """meta.payoff_breakdown_sec is a dip of <= 12 dB under the rest of the mix, never silent.
 
@@ -534,23 +558,14 @@ def check_payoff_breakdown(mix, planned, silences, errors):
     Silent means a silencedetect run (under SILENCE_FLOOR_DB) overlaps the window.
     """
     samples = _pcm(mix)
-    levels = _levels(samples, LEVEL_WINDOW_SEC)
-    outside = [v for k, v in enumerate(levels) if v != -math.inf
-               and ((k + 1) * LEVEL_WINDOW_SEC <= planned[0] or k * LEVEL_WINDOW_SEC >= planned[1])]
-    reference = _median(outside)
+    reference = _median(_outside_window(_levels(samples, LEVEL_WINDOW_SEC), planned))
     inside = _rms_db(samples, planned[0], planned[1])
-    dip = reference - inside
-    silent = [(a, b) for a, b in silences if a < planned[1] and b > planned[0]]
-    if silent or inside == -math.inf:
-        _err(errors, "mix.payoff_breakdown",
-             f"the breakdown {list(planned)} s is silent (under {SILENCE_FLOOR_DB:g} dBFS) at "
-             f"{[[round(a, 3), round(b, 3)] for a, b in silent]} s; a breakdown dips, it never stops")
-    elif dip > BREAKDOWN_MAX_DIP_DB:
-        _err(errors, "mix.payoff_breakdown",
-             f"the breakdown {list(planned)} s dips {dip:.1f} dB under the rest of the mix; "
-             f"the limit is {BREAKDOWN_MAX_DIP_DB:g} dB")
-    return {"reference_dbfs": _round_db(reference), "breakdown_dbfs": _round_db(inside),
-            "dip_db": _round_db(dip)}
+    levels = {"reference_dbfs": _round_db(reference), "breakdown_dbfs": _round_db(inside),
+              "dip_db": _round_db(reference - inside)}
+    problem = _breakdown_problem(planned, _silent_runs(silences, planned), levels)
+    if problem:
+        _err(errors, "mix.payoff_breakdown", problem)
+    return levels
 
 
 def _round_db(value):
@@ -621,22 +636,42 @@ def _has_music(timeline, errors):
     return True
 
 
+def _plan_range(timeline, key, rule, required, errors):
+    """Return meta.<key> as (start, end) or None. Report a bad or a missing required range."""
+    value = _meta_range(timeline, key)
+    if value == "bad":
+        _err(errors, rule, f"meta.{key} must be [start_sec, end_sec] with start_sec < end_sec")
+        return None
+    if value is None and required:
+        _err(errors, rule, f"meta.{key} is required when meta.bpm says the film has music")
+    return value
+
+
+def _reject_removed_field(timeline, errors):
+    """Reject meta.payoff_silence_sec: no gate plans silence before the payoff."""
+    if _meta_range(timeline, REMOVED_SILENCE_KEY) is None:
+        return
+    _err(errors, "plan.removed_field",
+         f"meta.{REMOVED_SILENCE_KEY} is removed: do not plan silence before the payoff. Delete it, "
+         f"or use the optional meta.payoff_breakdown_sec (a dip of at most {BREAKDOWN_MAX_DIP_DB:g} dB)")
+
+
 def _plan_ranges(timeline, errors):
     music = _has_music(timeline, errors)
-    out = {}
-    for key, rule in (("hero_sec", "mix.hero_loudest"), ("payoff_breakdown_sec", "mix.payoff_breakdown")):
-        value = _meta_range(timeline, key)
-        if value == "bad":
-            _err(errors, rule, f"meta.{key} must be [start_sec, end_sec] with start_sec < end_sec")
-            value = None
-        elif value is None and music and key == "hero_sec":
-            _err(errors, rule, f"meta.{key} is required when meta.bpm says the film has music")
-        out[key] = value
-    if _meta_range(timeline, REMOVED_SILENCE_KEY) is not None:
-        _err(errors, "plan.removed_field",
-             f"meta.{REMOVED_SILENCE_KEY} is removed: do not plan silence before the payoff. Delete it, "
-             f"or use the optional meta.payoff_breakdown_sec (a dip of at most {BREAKDOWN_MAX_DIP_DB:g} dB)")
-    return out
+    _reject_removed_field(timeline, errors)
+    return {"hero_sec": _plan_range(timeline, "hero_sec", "mix.hero_loudest", music, errors),
+            "payoff_breakdown_sec": _plan_range(timeline, "payoff_breakdown_sec",
+                                                "mix.payoff_breakdown", False, errors)}
+
+
+def _check_music_drop(metrics, beats, music, hero, errors):
+    """With --music, find the drop of the bed on the bar grid."""
+    if not music:
+        return
+    if beats is None:
+        _err(errors, "music.drop", "--music needs --beats or --sync-sheet for the bar grid")
+        return
+    metrics["music_drop"] = check_drop(music, beats, hero, errors)
 
 
 def _check_arc(mix, metrics, timeline, beats, music, errors):
@@ -646,12 +681,7 @@ def _check_arc(mix, metrics, timeline, beats, music, errors):
     if plan["payoff_breakdown_sec"]:
         metrics["payoff_breakdown"] = check_payoff_breakdown(
             mix, plan["payoff_breakdown_sec"], metrics["silences"], errors)
-    if music:
-        if beats is None:
-            _err(errors, "music.drop", "--music needs --beats or --sync-sheet for the bar grid")
-        else:
-            metrics["music_drop"] = check_drop(music, beats, plan["hero_sec"], errors)
-    return plan
+    _check_music_drop(metrics, beats, music, plan["hero_sec"], errors)
 
 
 def _check_mix(mix, timeline_path, errors):
