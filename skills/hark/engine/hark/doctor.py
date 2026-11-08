@@ -115,42 +115,62 @@ def _failed(outcomes: dict, model_id: str) -> bool:
     return outcomes.get(model_id, "").startswith("failed")
 
 
-def _findings(state: dict) -> tuple[list[str], list[str], list[str]]:
-    """Problems, notes and the model ids that are neither cached nor a folder nor failed."""
-    rows, outcomes, offline = state["models"], state.get("fetched", {}), state["offline"]
-    absent = [model_id for model_id, row in rows.items()
-              if row["snapshot"] is None and not hub.is_folder(model_id) and not _failed(outcomes, model_id)]
-    data_dir = f"{Path(config.PKG_DIR).name}/data"
+def _data_dir() -> str:
+    return f"{Path(config.PKG_DIR).name}/data"
 
+
+def _not_cached(state: dict) -> list[str]:
+    """Model ids that are not cached, not a local folder, and did not just fail to download."""
+    outcomes = state.get("fetched", {})
+    return [model_id for model_id, row in state["models"].items()
+            if row["snapshot"] is None and not hub.is_folder(model_id) and not _failed(outcomes, model_id)]
+
+
+def _install_faults(state: dict) -> list[str]:
     faults = _package_problems(state["packages"])
     if state["bank"].get("error") is not None:
         faults.append(f"sound bank: {state['bank']['error']}")
     faults += _tool_problems({k: state[k] for k in ("ffmpeg", "ffprobe")})
-    faults += [f"data file {data_dir}/{file_name} missing" for file_name, present in state["data_files"].items()
-                 if not present and file_name not in OPTIONAL_DATA]
-    faults += [f"{model_id}: {said}" for model_id, said in outcomes.items() if said.startswith("failed")]
+    faults += [f"data file {_data_dir()}/{rel} missing" for rel, present in state["data_files"].items()
+               if not present and rel not in OPTIONAL_DATA]
+    return faults
+
+
+def _model_faults(state: dict, absent: list[str]) -> list[str]:
+    outcomes, offline = state.get("fetched", {}), state["offline"]
+    faults = [f"{model_id}: {said}" for model_id, said in outcomes.items() if said.startswith("failed")]
     faults += [f"{model_id}: the local model folder lacks {' and '.join(row['missing'])} "
-                 "(hark never downloads into a folder)"
-                 for model_id, row in rows.items()
-                 if hub.is_folder(model_id) and row["cached"] == "incomplete" and not _failed(outcomes, model_id)]
+               "(hark never downloads into a folder)"
+               for model_id, row in state["models"].items()
+               if hub.is_folder(model_id) and row["cached"] == "incomplete" and not _failed(outcomes, model_id)]
     if absent and offline:
         faults.append(f"{' and '.join(absent)} not cached in {config.HF_CACHE} and {offline} is set; run hark "
-                        f"doctor --fetch once without {offline}, or copy a cache there")
+                      f"doctor --fetch once without {offline}, or copy a cache there")
+    return faults
 
+
+def _advice(state: dict, absent: list[str]) -> list[str]:
     advice: list[str] = []
-    if absent and not offline:
+    if absent and not state["offline"]:
         advice.append(f"{' and '.join(absent)} not cached yet; the first call that needs them downloads the pinned "
-                     f"safetensors files (about 1.1 GB for both) into {config.HF_CACHE}; or run hark doctor "
-                     "--fetch now")
+                      f"safetensors files (about 1.1 GB for both) into {config.HF_CACHE}; or run hark doctor "
+                      "--fetch now")
     lacking = missing_ml()
     if lacking:
         advice.append(f"the ML extras are not installed ({', '.join(lacking)}); listening commands need them; "
-                     f"install them with: {install_command('ml')}")
+                      f"install them with: {install_command('ml')}")
     if not shutil.which("agy"):
         advice.append("agy not found on PATH; the optional LLM critique needs it")
-    advice += [f"data file {data_dir}/{file_name} is not built; build it with: {OPTIONAL_DATA[file_name]}"
-              for file_name, present in state["data_files"].items() if not present and file_name in OPTIONAL_DATA]
-    return faults, advice, absent
+    advice += [f"data file {_data_dir()}/{rel} is not built; build it with: {OPTIONAL_DATA[rel]}"
+               for rel, present in state["data_files"].items() if not present and rel in OPTIONAL_DATA]
+    return advice
+
+
+def _findings(state: dict) -> tuple[list[str], list[str], list[str]]:
+    """Problems, notes and the model ids that are neither cached nor a folder nor failed."""
+    absent = _not_cached(state)
+    faults = _install_faults(state) + _model_faults(state, absent)
+    return faults, _advice(state, absent), absent
 
 
 def _summary(bank: dict, faults: list[str], advice: list[str]) -> str:
@@ -170,9 +190,7 @@ def _summary(bank: dict, faults: list[str], advice: list[str]) -> str:
     return " ".join(piece for piece in pieces if piece)
 
 
-def check(load: bool = False, fetch_missing: bool = False) -> dict:
-    """The full doctor report (2.7); a problem it can name never raises."""
-    config.ensure_dirs()
+def _gather(fetch_missing: bool) -> dict[str, Any]:
     state: dict[str, Any] = {
         "python": platform.python_version(),
         "hark_home": config.HOME,
@@ -193,15 +211,27 @@ def check(load: bool = False, fetch_missing: bool = False) -> dict:
     state["agy"] = shutil.which("agy")
     state["data_files"] = _data_files()
     state["bank"] = bank_info()
+    return state
+
+
+def _try_load(state: dict, faults: list[str]) -> None:
+    """Add load timings to state; a load failure becomes one more problem."""
+    try:
+        state.update(_load_models())
+    except MLMissing as exc:
+        faults.append(f"model load failed: {exc.feature} needs torch and transformers; "
+                      f"install them with: {exc.command}")
+    except RuntimeError as exc:
+        faults.append(f"model load failed: {report.one_line(exc)}")
+
+
+def check(load: bool = False, fetch_missing: bool = False) -> dict:
+    """The full doctor report (2.7); a problem it can name never raises."""
+    config.ensure_dirs()
+    state = _gather(fetch_missing)
     faults, advice, absent = _findings(state)
     if load and not (state["offline"] and absent):
-        try:
-            state.update(_load_models())
-        except MLMissing as exc:
-            faults.append(f"model load failed: {exc.feature} needs torch and transformers; "
-                            f"install them with: {exc.command}")
-        except RuntimeError as exc:
-            faults.append(f"model load failed: {report.one_line(exc)}")
+        _try_load(state, faults)
     state["problems"] = faults
     state["notes"] = advice
     state["summary"] = _summary(state["bank"], faults, advice)
