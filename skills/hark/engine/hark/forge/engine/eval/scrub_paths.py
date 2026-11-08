@@ -1,7 +1,8 @@
-"""Remove machine paths from benchmark results before they are committed.
+"""Strip machine-specific paths out of benchmark results before a commit.
 
-`scrub(obj)` rewrites every string (dict keys too): known roots become `<refs_pro>`, `<refs>`, `<HARK_HOME>` or a
-repo-relative path. File names are kept. `leftovers(text)` finds the drive and home paths that remain.
+`scrub(obj)` walks a JSON-like value and rewrites each string, keys included. A known root turns into `<refs_pro>`,
+`<refs>` or `<HARK_HOME>`, and the engine folder itself turns into a relative path. The file name at the end stays.
+`leftovers(text)` reports any drive-letter or home-folder path still present.
 """
 
 from __future__ import annotations
@@ -15,126 +16,142 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
-# The hark engine project folder (skills/hark/engine): the "repo" of the eval scripts.
+# skills/hark/engine, which the eval scripts treat as their repo root.
 REPO = Path(__file__).resolve().parents[4]
 EVAL_DIR = Path(__file__).resolve().parent
-_STOP = r"[^\s\"'`;,)\]<>|*?]*"
-_LEFT = re.compile(r"(?<![\w])(?:[A-Za-z]:[/\\][^\s\"'`]*|/(?:Users|home)/[^\s\"'`]*)")
+
+_SEP = r"[/\\]"
+_TRAIL = r"[^\s\"'`<>|;,*?)\]]*"
+_MACHINE_PATH = re.compile(r"(?<![\w])(?:/(?:Users|home)/[^\s\"'`]*|[A-Za-z]:[/\\][^\s\"'`]*)")
+_REGISTRY_GROUPS = ("forge", "bench")
 
 
-def _slash(p: Any) -> str:
-    return str(p).replace("\\", "/").rstrip("/")
+def _forward(value: Any) -> str:
+    """Forward slashes only, and no slash at the end."""
+    return str(value).replace("\\", "/").rstrip("/")
 
 
-def _home() -> str:
-    return os.environ.get("HARK_HOME") or os.path.join(os.path.expanduser("~"), ".cache", "hark")
+def _cache_home() -> str:
+    explicit = os.environ.get("HARK_HOME")
+    if explicit:
+        return explicit
+    return os.path.join(os.path.expanduser("~"), ".cache", "hark")
 
 
-def _ref_files(registry: dict | None) -> list:
-    return [f for e in ((registry or {}).get("categories") or {}).values() for s in ("forge", "bench")
-            for f in e.get(s) or []]
-
-
-def _tops(files: list) -> set[str]:
-    return {_slash(Path(_slash(f)).parents[2]) for f in files if len(Path(_slash(f)).parents) > 2}
-
-
-def _outside_repo(top: str, repo: str) -> str | None:
-    inside = top.lower() == repo.lower() or top.lower().startswith(repo.lower() + "/")
-    return None if inside or len(top) <= 3 else top
-
-
-def _registry_root(registry: dict | None, repo: str) -> str | None:
-    tops = _tops(_ref_files(registry))
-    return _outside_repo(tops.pop(), repo) if len(tops) == 1 else None
+def _library_folder(registry: dict | None, repo: str) -> str | None:
+    """The one library folder (three levels above every ref file) when it lies outside the repo."""
+    groups = ((registry or {}).get("categories") or {}).values()
+    folders = set()
+    for entry in groups:
+        for key in _REGISTRY_GROUPS:
+            for item in entry.get(key) or []:
+                ancestors = Path(_forward(item)).parents
+                if len(ancestors) > 2:
+                    folders.add(_forward(ancestors[2]))
+    if len(folders) != 1:
+        return None
+    folder = folders.pop()
+    lowered, base = folder.lower(), repo.lower()
+    if lowered == base or lowered.startswith(base + "/") or len(folder) <= 3:
+        return None
+    return folder
 
 
 def roots(registry: dict | None = None, repo: Any = None) -> list[tuple[str, str]]:
-    """(root, label) pairs, longest root first, duplicates dropped (case-insensitive)."""
-    repo = _slash(repo or REPO)
-    cand = [(_slash(os.environ.get("HARK_REFS_PRO") or f"{repo}/out/refs_pro"), "<refs_pro>"),
-            (f"{repo}/out/refs", "<refs>"), (_slash(_home()), "<HARK_HOME>"), (repo, "")]
-    extra = _registry_root(registry, repo)
-    if extra:
-        cand.append((extra, "<refs>"))
-    seen, out = set(), []
-    for r, lab in sorted(cand, key=lambda c: -len(c[0])):
-        if r.lower() not in seen:
-            seen.add(r.lower())
-            out.append((r, lab))
-    return out
+    """(root, label) pairs sorted longest first; a root seen twice (ignoring case) is kept once."""
+    engine = _forward(repo or REPO)
+    pro = os.environ.get("HARK_REFS_PRO") or engine + "/out/refs_pro"
+    options = [(_forward(pro), "<refs_pro>"), (engine + "/out/refs", "<refs>"),
+               (_forward(_cache_home()), "<HARK_HOME>"), (engine, "")]
+    library = _library_folder(registry, engine)
+    if library:
+        options.append((library, "<refs>"))
+    taken: set[str] = set()
+    ordered = []
+    for path, tag in sorted(options, key=lambda pair: -len(pair[0])):
+        key = path.lower()
+        if key in taken:
+            continue
+        taken.add(key)
+        ordered.append((path, tag))
+    return ordered
 
 
-def _pattern(root: str) -> re.Pattern:
-    body = r"[/\\]".join(re.escape(part) for part in root.split("/"))
-    return re.compile(rf"(?<![\w.]){body}(?![\w.\-])((?:[/\\]{_STOP})?)", re.IGNORECASE)
+def _root_regex(root: str) -> re.Pattern:
+    escaped = _SEP.join(map(re.escape, root.split("/")))
+    return re.compile(r"(?<![\w.])" + escaped + r"(?![\w.\-])((?:" + _SEP + _TRAIL + r")?)", re.IGNORECASE)
 
 
-def _sub_one(text: str, root: str, lab: str) -> str:
-    def rep(m: re.Match) -> str:
-        rest = m.group(1).replace("\\", "/")
-        if lab:
-            return lab + rest
-        return rest.lstrip("/") or "."
+def _replace_root(text: str, root: str, tag: str) -> str:
+    def swap(found: re.Match) -> str:
+        tail = found.group(1).replace("\\", "/")
+        return tag + tail if tag else (tail.lstrip("/") or ".")
 
-    return _pattern(root).sub(rep, text)
+    return _root_regex(root).sub(swap, text)
 
 
 def scrub_text(text: str, rs: Sequence[tuple[str, str]]) -> str:
-    """The text with every root rewritten."""
-    for root, lab in rs:
-        text = _sub_one(text, root, lab)
+    """Apply every (root, label) rewrite to one string, in order."""
+    for root, tag in rs:
+        text = _replace_root(text, root, tag)
     return text
 
 
 def scrub(obj: Any, registry: dict | None = None, rs: Sequence[tuple[str, str]] | None = None) -> Any:
-    """The object with every string (and dict key) scrubbed."""
-    rs = roots(registry) if rs is None else rs
+    """Copy of obj with each string and dict key scrubbed; tuples come back as lists."""
+    pairs = roots(registry) if rs is None else rs
     if isinstance(obj, str):
-        res = scrub_text(obj, rs)
-    elif isinstance(obj, dict):
-        res = {scrub(k, rs=rs): scrub(v, rs=rs) for k, v in obj.items()}
-    elif isinstance(obj, (list, tuple)):
-        res = [scrub(v, rs=rs) for v in obj]
-    else:
-        res = obj
-    return res
+        return scrub_text(obj, pairs)
+    if isinstance(obj, dict):
+        return {scrub(key, rs=pairs): scrub(val, rs=pairs) for key, val in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [scrub(val, rs=pairs) for val in obj]
+    return obj
 
 
 def leftovers(text: str) -> list[str]:
-    """Drive paths and home paths that remain in the text."""
-    return _LEFT.findall(text)
+    """Every drive-letter or home-folder path that is still in the text."""
+    return _MACHINE_PATH.findall(text)
 
 
-def _scrub_file(path: Path, check: bool) -> tuple[str, list[str]]:
-    old = path.read_text()
-    if path.suffix == ".json":
-        new = json.dumps(scrub(json.loads(old)), indent=1) + ("\n" if old.endswith("\n") else "")
+def _rewritten(path: Path, before: str) -> str:
+    if path.suffix != ".json":
+        return scrub_text(before, roots())
+    ending = "\n" if before.endswith("\n") else ""
+    return json.dumps(scrub(json.loads(before)), indent=1) + ending
+
+
+def _process(path: Path, dry_run: bool) -> tuple[str, list[str]]:
+    before = path.read_text()
+    after = _rewritten(path, before)
+    if after == before:
+        outcome = "clean"
+    elif dry_run:
+        outcome = "would change"
     else:
-        new = scrub_text(old, roots())
-    if new == old:
-        state = "clean"
-    elif check:
-        state = "would change"
-    else:
-        path.write_text(new)
-        state = "scrubbed"
-    return state, leftovers(new)
+        path.write_text(after)
+        outcome = "scrubbed"
+    return outcome, leftovers(after)
+
+
+def _default_targets() -> list[str]:
+    found = glob.glob(str(EVAL_DIR / "results_*.json")) + glob.glob(str(EVAL_DIR / "results_*.md"))
+    return sorted(found)
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    """Scrub results files; exit 1 on leftovers, or with --check when a file would change."""
-    ap = argparse.ArgumentParser(prog="python -m hark.forge.engine.eval.scrub_paths")
-    ap.add_argument("files", nargs="*")
-    ap.add_argument("--check", action="store_true")
-    a = ap.parse_args(argv)
-    files = a.files or sorted(glob.glob(str(EVAL_DIR / "results_*.json")) + glob.glob(str(EVAL_DIR / "results_*.md")))
-    bad = False
-    for f in files:
-        state, left = _scrub_file(Path(f), a.check)
-        print(f"{f}: {state}" + (f"; left: {', '.join(left[:3])}" if left else ""))
-        bad = bad or bool(left) or state == "would change"
-    return 1 if bad else 0
+    """Scrub the results files. Exit 1 when a path is left, or under --check when a file would change."""
+    parser = argparse.ArgumentParser(prog="python -m hark.forge.engine.eval.scrub_paths")
+    parser.add_argument("files", nargs="*")
+    parser.add_argument("--check", action="store_true")
+    opts = parser.parse_args(argv)
+    failed = False
+    for name in opts.files or _default_targets():
+        outcome, remaining = _process(Path(name), opts.check)
+        note = "; left: " + ", ".join(remaining[:3]) if remaining else ""
+        print(name + ": " + outcome + note)
+        failed = failed or bool(remaining) or outcome == "would change"
+    return 1 if failed else 0
 
 
 if __name__ == "__main__":
