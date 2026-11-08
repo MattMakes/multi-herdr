@@ -39,15 +39,19 @@ def is_picture(path: str, probe: dict) -> bool:
     return bool(fps) and 0 < fps <= 240 and ext not in AUDIO_EXTS
 
 
+def _check_args(path, video, detail) -> None:
+    if detail not in DETAILS:
+        raise TimelineError(f"detail must be one of low, normal, high (got {detail!r})")
+    missing = [p for p in (path, video) if p is not None and not os.path.exists(p)]
+    if missing:
+        raise FileNotFoundError(f"file not found: {missing[0]}")
+
+
 class _Inputs:
     def __init__(self, path, video, cues, detail):
         from hark.core.audio import probe
 
-        if detail not in DETAILS:
-            raise TimelineError(f"detail must be one of low, normal, high (got {detail!r})")
-        for p in (path, video):
-            if p is not None and not os.path.exists(p):
-                raise FileNotFoundError(f"file not found: {p}")
+        _check_args(path, video, detail)
         self.path, self.probe = path, probe(path)
         self.has_audio = bool(self.probe.get("codec"))
         self.video = self._picture(video)
@@ -265,54 +269,74 @@ def _window_events(events, rg: _Range, grid: dict) -> list[dict]:
 
 # ---------------------------------------------------------------- the run
 
-def _analyse(inp: _Inputs, rg: _Range, detail: str, reuse: bool, clock: _Clock) -> dict:
-    from hark.core.audio import file_id
-    from hark.timeline._tags import SpanCache, tag_events
-
+def _sound_pass(rg: _Range, clock: _Clock) -> dict:
+    """Loudness, onset events, level envelopes and the beat grid of the context."""
     L = loudness(rg.win, at_start=rg.t0 <= 0.01, at_end=rg.t0 + rg.dur >= rg.duration - 0.01)
     clock.mark("loudness_s")
-    silent = bool(L["digital_silence"])
-    events = [] if silent else detect_events(rg.ctx, lead=rg.c0 == 0)
+    events = [] if L["digital_silence"] else detect_events(rg.ctx, lead=rg.c0 == 0)
     clock.mark("events_s")
-    envs = level_envs(rg.ctx)
-    grid = music_grid(mono_of(rg.ctx))
+    envs, grid = level_envs(rg.ctx), music_grid(mono_of(rg.ctx))
     clock.mark("beats_s")
+    return {"L": L, "silent": bool(L["digital_silence"]), "events": events, "envs": envs, "grid": grid}
+
+
+def _tag_pass(rg: _Range, events: list[dict], near: list[float], detail: str, span_cache) -> dict:
+    from hark.timeline._tags import tag_events
+
+    win_ev = [e for e in events if rg.wa - 1e-6 <= e["t"] < rg.wb]
+    return tag_events(win_ev, mono_of(rg.ctx), len(rg.ctx) / SR, detail, near, rg.wa, rg.wb, span_cache, rg.c0)
+
+
+def _analyse(inp: _Inputs, rg: _Range, detail: str, reuse: bool, clock: _Clock) -> dict:
+    from hark.core.audio import file_id
+    from hark.timeline._tags import SpanCache
+
+    snd = _sound_pass(rg, clock)
     cuts, fps = _picture_cuts(inp, rg)
     clock.mark("cuts_s")
     cues = _window_cues(inp, rg)
     span_cache = SpanCache(file_id(inp.path) if inp.has_audio else None, reuse)
-    win_ev = [e for e in events if rg.wa - 1e-6 <= e["t"] < rg.wb]
-    near = cuts + [c["t"] for c in cues]
-    tags = tag_events(win_ev, mono_of(rg.ctx), len(rg.ctx) / SR, detail, near, rg.wa, rg.wb, span_cache, rg.c0)
+    tags = _tag_pass(rg, snd["events"], cuts + [c["t"] for c in cues], detail, span_cache)
     clock.mark("tag_events_s")
-    secs, sec_calls = _section_pass(rg, silent, detail, span_cache)
+    secs, sec_calls = _section_pass(rg, snd["silent"], detail, span_cache)
     clock.mark("sections_s")
-    blocks = _sync_blocks(cuts, fps, cues, inp, events, grid, envs)
-    return {"L": L, "events": _window_events(events, rg, grid), "grid": grid, "cuts": cuts, "fps": fps,
-            "blocks": blocks, "secs": secs, "tags": tags, "sec_calls": sec_calls}
+    blocks = _sync_blocks(cuts, fps, cues, inp, snd["events"], snd["grid"], snd["envs"])
+    return {"L": snd["L"], "events": _window_events(snd["events"], rg, snd["grid"]), "grid": snd["grid"],
+            "cuts": cuts, "fps": fps, "blocks": blocks, "secs": secs, "tags": tags, "sec_calls": sec_calls}
 
 
-def _assemble(inp: _Inputs, rg: _Range, a: dict, detail: str, clock: _Clock) -> dict:
-    from hark.timeline import _text
+def _model_calls(a: dict) -> dict:
+    return {"clap_event_windows": a["tags"]["clap_windows"], "ast_event_windows": a["tags"]["ast"],
+            "clap_section_windows": a["sec_calls"]["windows"], "ast_section_windows": a["sec_calls"]["ast"]}
 
+
+def _span_fields(inp: _Inputs, rg: _Range) -> dict:
+    return {"file": inp.path, "video": inp.video, "start": round(rg.t0, 3), "end": round(rg.t0 + rg.dur, 3),
+            "duration": round(rg.dur, 3), "file_duration": round(rg.duration, 3),
+            "context": [round(rg.c0, 3), round(rg.c0 + len(rg.ctx) / SR, 3)], "has_audio": inp.has_audio,
+            "lossy": inp.lossy}
+
+
+def _shift_all(a: dict, rg: _Range) -> None:
+    """Move every time in the analysis from window time to file time."""
     _shift_loudness(a["L"], rg.t0)
     _shift_sync(a["blocks"], rg.c0)
     for s in a["secs"]:
         s["start"], s["end"] = round(s["start"] + rg.t0, 2), round(s["end"] + rg.t0, 2)
+
+
+def _assemble(inp: _Inputs, rg: _Range, a: dict, detail: str, clock: _Clock) -> dict:
+    from hark.core.report import clean
+    from hark.timeline import _text
+
+    _shift_all(a, rg)
     r: dict[str, Any] = {
-        "file": inp.path, "video": inp.video, "start": round(rg.t0, 3), "end": round(rg.t0 + rg.dur, 3),
-        "duration": round(rg.dur, 3), "file_duration": round(rg.duration, 3),
-        "context": [round(rg.c0, 3), round(rg.c0 + len(rg.ctx) / SR, 3)], "has_audio": inp.has_audio,
-        "lossy": inp.lossy, "loudness": a["L"], "music": _shift_grid(a["grid"], rg.c0, rg.t0, rg.t0 + rg.dur),
-        "events": a["events"], "sections": a["secs"], "sync": a["blocks"],
-        "cuts": [round(c + rg.c0, 3) for c in a["cuts"]], "cut_method": "frame difference" if inp.video else None,
-        "fps": a["fps"],
-        "model_calls": {"clap_event_windows": a["tags"]["clap_windows"], "ast_event_windows": a["tags"]["ast"],
-                        "clap_section_windows": a["sec_calls"]["windows"], "ast_section_windows": a["sec_calls"]["ast"]},
+        **_span_fields(inp, rg), "loudness": a["L"],
+        "music": _shift_grid(a["grid"], rg.c0, rg.t0, rg.t0 + rg.dur), "events": a["events"],
+        "sections": a["secs"], "sync": a["blocks"], "cuts": [round(c + rg.c0, 3) for c in a["cuts"]],
+        "cut_method": "frame difference" if inp.video else None, "fps": a["fps"], "model_calls": _model_calls(a),
         "timing_s": clock.done(), "detail": detail,
     }
-    from hark.core.report import clean
-
     r = clean(r)
     r["summary"] = _text.summary(r)
     r["text"] = _text.transcript(r)
