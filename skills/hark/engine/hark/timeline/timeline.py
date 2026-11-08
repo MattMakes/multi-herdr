@@ -311,6 +311,9 @@ def _assemble(inp: _Inputs, rg: _Range, a: dict, detail: str, clock: _Clock) -> 
                         "clap_section_windows": a["sec_calls"]["windows"], "ast_section_windows": a["sec_calls"]["ast"]},
         "timing_s": clock.done(), "detail": detail,
     }
+    from hark.core.report import clean
+
+    r = clean(r)
     r["summary"] = _text.summary(r)
     r["text"] = _text.transcript(r)
     r["cached"] = False

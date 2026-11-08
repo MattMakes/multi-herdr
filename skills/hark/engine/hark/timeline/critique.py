@@ -871,7 +871,7 @@ def _events_block(f: Film) -> dict:
             "hits": ev.get("hits") or [], "stopdowns": ev.get("stopdowns") or []}
 
 
-def _result(f: Film, card: dict, label: str, full_n, t_start: float) -> dict:
+def _result(f: Film, card: dict, label: str, t_start: float) -> dict:
     actions = build_actions(f, card["metrics"])
     partial = [n for n, k in (("realness", "p_real"), ("music presence", "music_frac")) if f.values.get(k) is None]
     arc = f.profile.get("arc") or {}
@@ -886,7 +886,10 @@ def _result(f: Film, card: dict, label: str, full_n, t_start: float) -> dict:
            "events": _events_block(f), "arc": {"film": f.fm.get("arc"), "refs_median": arc.get("median"),
                                                "refs_p10": arc.get("p10"), "refs_p90": arc.get("p90")},
            "realness": f.realness, "not_measured": not_measured(f, card["metrics"])}
+    from hark.core.report import clean
+
     res["seconds"] = round(time.perf_counter() - t_start, 1)
+    res = clean(res)
     res["summary"] = summary_text(res)
     res["text"] = critique_text(res)
     return res
@@ -905,7 +908,7 @@ def critique(path, profile=None, video=None, use_ast=True, use_realness=True) ->
     f = Film(path, video, x, dur, lufs, profile=prof, fast_mode=not (use_ast or use_realness))
     _measure(f, use_ast, use_realness)
     card = scorecard(f.values, f.profile, f.fm.get("chance"), bool(f.fm.get("lossy")))
-    return _result(f, card, label, prof.get("n"), t_start)
+    return _result(f, card, label, t_start)
 
 
 # ---------------------------------------------------------------- CLI
