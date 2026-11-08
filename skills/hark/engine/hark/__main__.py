@@ -1,8 +1,6 @@
-"""`python -m hark` runs the hark command line."""
+"""Lets `python -m hark` behave like the `hark` command."""
 
-import sys
-
-from hark.cli import main
+from hark import cli
 
 if __name__ == "__main__":
-    sys.exit(main())
+    raise SystemExit(cli.main())
