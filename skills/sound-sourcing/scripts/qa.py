@@ -1124,74 +1124,112 @@ def section_listen(ctx, a, outdir) -> dict:
 
 # ---------------------------------------------------------------- main
 
+def _lufs(x) -> float:
+    return mst.integrated(x) if x is not None and len(x) >= int(0.4 * SR) else float("-inf")
+
+
+def _layers_groups(ctx: dict, G: float) -> tuple:
+    """(layers, groups, notes); layers and groups are None without a usable trace."""
+    if ctx["trace"] is None:
+        return None, None, []
+    layers, notes = rebuild(ctx)
+    return layers, (group(layers, G) if layers is not None else None), notes
+
+
+def _skip(ctx: dict) -> dict:
+    return {"status": "skipped", "summary": "no trace: run the mix with --trace" if ctx["trace"] is None else
+            "the trace and the report disagree: run the mix again with --trace"}
+
+
+def _group_sections(ctx: dict, a, groups, G: float) -> dict:
+    fns = (("audibility", lambda: section_audibility(ctx, groups, G, a.layers)),
+           ("harshness", lambda: section_harshness(ctx, groups, G)),
+           ("sync", lambda: section_sync(groups)), ("density", lambda: section_density(ctx, groups)))
+    return {name: fn() if groups is not None else dict(_skip(ctx)) for name, fn in fns}
+
+
+def _listen_section(ctx: dict, a) -> dict:
+    outdir = os.path.dirname(mix.rpath(ctx["root"], a.out)) or "."
+    os.makedirs(outdir, exist_ok=True)
+    if a.listen or a.realness:
+        return section_listen(ctx, a, outdir)
+    return {"status": "skipped", "summary": "not requested (--listen, --realness)"}
+
+
+def _overall(sections: dict, G: float, master_scale: bool) -> tuple[str, str]:
+    """(summary line, worst status)."""
+    worst = max((s["status"] for s in sections.values()), key=lambda s: ORDER[s])
+    named = lambda status: ", ".join(k for k, s in sections.items() if s["status"] == status) or "none"
+    scale = f"levels at master scale (master {G:+.2f} dB over the stems)" if master_scale else "levels at stem scale"
+    return (f"QA {worst.upper()}: fail {named('fail')}; warn {named('warn')}; not run {named('skipped')}; {scale}"), worst
+
+
+def _gain(ctx: dict) -> tuple[float, bool, float]:
+    """(premaster LUFS, both measurable, master minus premaster in dB or 0)."""
+    st = ctx["stems"]
+    pre, mas = _lufs(st["sfx"] + st["amb"] + st["music"]), _lufs(ctx["master"])
+    scaled = math.isfinite(pre) and math.isfinite(mas)
+    return pre, scaled, (mas - pre if scaled else 0.0)
+
+
 def analyse(a) -> dict:
     ctx = load_inputs(a)
     st = ctx["stems"]
     ctx["no_bed"] = not np.any(st["music"]) and not np.any(st["amb"])
     target = float((ctx["design"].get("master") or {}).get("lufs", -14))
-    total = st["sfx"] + st["amb"] + st["music"]
-    pre = mst.integrated(total) if len(total) >= int(0.4 * SR) else float("-inf")
-    mas = mst.integrated(ctx["master"]) if ctx["master"] is not None and len(ctx["master"]) >= int(0.4 * SR) else float("-inf")
-    scaled = math.isfinite(pre) and math.isfinite(mas)
-    G = mas - pre if scaled else 0.0
-    sections, notes = {}, []
-    layers = groups = None
-    if ctx["trace"] is not None:
-        layers, n = rebuild(ctx)
-        notes += n
-        if layers is not None:
-            groups = group(layers, G)
-    sections["clicks"] = section_clicks(ctx, layers, G)
-    sections["loudness"] = section_loudness(ctx, target, round(pre, 2) if math.isfinite(pre) else None)
-    sections["coverage"] = section_coverage(ctx, groups)
-    skip = {"status": "skipped", "summary": "no trace: run the mix with --trace" if ctx["trace"] is None else
-            "the trace and the report disagree: run the mix again with --trace"}
-    if ctx["trace"] is not None:
-        sections["edges"] = section_edges(ctx)
-    else:
-        sections["edges"] = dict(skip)
-    for name, fn in (("audibility", lambda: section_audibility(ctx, groups, G, a.layers)),
-                     ("harshness", lambda: section_harshness(ctx, groups, G)),
-                     ("sync", lambda: section_sync(groups)), ("density", lambda: section_density(ctx, groups))):
-        sections[name] = fn() if groups is not None else dict(skip)
-    outdir = os.path.dirname(mix.rpath(ctx["root"], a.out)) or "."
-    os.makedirs(outdir, exist_ok=True)
-    if a.listen or a.realness:
-        sections["listen"] = section_listen(ctx, a, outdir)
-    else:
-        sections["listen"] = {"status": "skipped", "summary": "not requested (--listen, --realness)"}
+    pre, scaled, G = _gain(ctx)
+    layers, groups, notes = _layers_groups(ctx, G)
+    sections = {"clicks": section_clicks(ctx, layers, G),
+                "loudness": section_loudness(ctx, target, round(pre, 2) if math.isfinite(pre) else None),
+                "coverage": section_coverage(ctx, groups),
+                "edges": section_edges(ctx) if ctx["trace"] is not None else dict(_skip(ctx))}
+    sections.update(_group_sections(ctx, a, groups, G))
+    sections["listen"] = _listen_section(ctx, a)
     if all(not np.any(x) for x in st.values()):
         sections["mix"] = {"status": "fail", "summary": "every stem is silent: check the trims (--dump), gains and cue matches"}
-    worst = max((s["status"] for s in sections.values()), key=lambda s: ORDER[s])
-    fails = [k for k, s in sections.items() if s["status"] == "fail"]
-    warns = [k for k, s in sections.items() if s["status"] == "warn"]
-    skipped = [k for k, s in sections.items() if s["status"] == "skipped"]
-    scale = f"levels at master scale (master {G:+.2f} dB over the stems)" if scaled and ctx["master"] is not None else "levels at stem scale"
-    summary = (f"QA {worst.upper()}: fail {', '.join(fails) or 'none'}; warn {', '.join(warns) or 'none'}; "
-               f"not run {', '.join(skipped) or 'none'}; {scale}")
+    summary, worst = _overall(sections, G, scaled and ctx["master"] is not None)
     return {"summary": summary, "status": worst, "note": "; ".join(notes) or None, "sections": sections,
             "inputs": ctx["paths"]}
 
 
+def _owner_text(c: dict) -> str:
+    return f"{c['owners'][0]['what']} ({c['owners'][0]['where']})" if c["owners"] else "no owner"
+
+
+def _click_rows(s: dict) -> list[str]:
+    return [f"{c['in']} {tfmt(c['t'])} {c['level_db']} dB " + _owner_text(c) for c in s.get("items", [])[:8]]
+
+
+def _edge_rows(s: dict) -> list[str]:
+    rows = [f"{i.get('sample') or i.get('slices')}: {'; '.join(i['defects'])}" for i in s.get("items", []) if i.get("defects")][:8]
+    return rows + [f"music {r['label']}: {'; '.join(r['defects'])}" for r in s.get("music_splices", []) if r["defects"]][:4]
+
+
+def _read_text(r: dict) -> str:
+    return f" read {r['read_db']} dB ({r['covered_by']})" if "read_db" in r else ""
+
+
+def _audibility_rows(s: dict) -> list[str]:
+    return [f"{tfmt(r['t'])} {r['label']}: {r['verdict']}" + _read_text(r) for r in s.get("items", [])[:6]]
+
+
+def _harshness_rows(s: dict) -> list[str]:
+    return [f"{tfmt(r['t'])} {r['label']}: {'; '.join(r['issues'])}" for r in s.get("items", []) if r["issues"]][:5]
+
+
+def _sync_rows(s: dict) -> list[str]:
+    return [f"{tfmt(r['t_cue'])} {r['label']}: {r['issue'] or r.get('explanation')}" for r in s.get("items", [])[:8]]
+
+
+_DIGEST_ROWS = {"clicks": _click_rows, "edges": _edge_rows, "audibility": _audibility_rows,
+                "harshness": _harshness_rows, "sync": _sync_rows}
+
+
 def digest(res: dict) -> str:
-    out = [res["summary"]]
-    if res.get("note"):
-        out.append("note: " + res["note"])
+    out = [res["summary"]] + (["note: " + res["note"]] if res.get("note") else [])
     for name, s in res["sections"].items():
         out.append(f"{name.upper():11s} {s['status'].upper():7s} {s.get('summary', '')}")
-        rows = []
-        if name == "clicks":
-            rows = [f"{c['in']} {tfmt(c['t'])} {c['level_db']} dB " + (f"{c['owners'][0]['what']} ({c['owners'][0]['where']})" if c["owners"] else "no owner") for c in s.get("items", [])[:8]]
-        elif name == "edges":
-            rows = [f"{i.get('sample') or i.get('slices')}: {'; '.join(i['defects'])}" for i in s.get("items", []) if i.get("defects")][:8]
-            rows += [f"music {r['label']}: {'; '.join(r['defects'])}" for r in s.get("music_splices", []) if r["defects"]][:4]
-        elif name == "audibility":
-            rows = [f"{tfmt(r['t'])} {r['label']}: {r['verdict']}" + (f" read {r['read_db']} dB ({r['covered_by']})" if "read_db" in r else "") for r in s.get("items", [])[:6]]
-        elif name == "harshness":
-            rows = [f"{tfmt(r['t'])} {r['label']}: {'; '.join(r['issues'])}" for r in s.get("items", []) if r["issues"]][:5]
-        elif name == "sync":
-            rows = [f"{tfmt(r['t_cue'])} {r['label']}: {r['issue'] or r.get('explanation')}" for r in s.get("items", [])[:8]]
-        out += ["    " + r for r in rows]
+        out += ["    " + r for r in _DIGEST_ROWS.get(name, lambda _: [])(s)]
     return "\n".join(out)
 
 
@@ -1217,23 +1255,21 @@ def parse(argv):
     return p.parse_args(argv)
 
 
-def main(argv=None) -> int:
-    a = parse(sys.argv[1:] if argv is None else argv)
-    if a.self_test:
-        return self_test()
+def _run(a) -> int:
     try:
         res = clean(analyse(a))
-    except InputError as e:
+    except (InputError, mix.DesignError) as e:
         mix.ascii_print(f"qa.py: {e}", file=sys.stderr)
         return 2
-    except mix.DesignError as e:
-        mix.ascii_print(f"qa.py: {e}", file=sys.stderr)
-        return 2
-    out = mix.rpath(os.path.abspath(a.root), a.out)
-    with open(out, "w") as fh:
+    with open(mix.rpath(os.path.abspath(a.root), a.out), "w") as fh:
         json.dump(res, fh, indent=1)
     mix.ascii_print(json.dumps(res, indent=1) if a.json else digest(res))
     return 1 if res["status"] == "fail" else 0
+
+
+def main(argv=None) -> int:
+    a = parse(sys.argv[1:] if argv is None else argv)
+    return self_test() if a.self_test else _run(a)
 
 
 def self_test() -> int:
