@@ -56,22 +56,36 @@ def _riser_members() -> list[tuple[str, str, dict]]:
     return rows
 
 
+def _downlifter_members() -> list[tuple[str, str, dict, int]]:
+    names = ("shepard_fall", "flange_air", "synth_fall", "air_fall", "tape", "sub_sink")
+    return [("downlifter", name, downlifter.FAMILIES[name], 0) for name in names]
+
+
+def _glitch_members() -> list[tuple[str, str, dict, int]]:
+    rows = [("pro_glitch", "pro_glitch_01", dict(glitch.DEFAULTS), 0)]
+    return rows + [("glitch", name, glitch.full6(name), 3) for name, _ in glitch.FAMILY6]
+
+
+def _notify_members() -> list[tuple[str, str, dict, int]]:
+    pro = [("pro_notify", m, p, 0) for m, p in notify.delivered("pro_notify")]
+    return pro + [("notify", f"notify_{i + 1:02d}", p, 0) for i, (_, p) in enumerate(notify.delivered("notify"))]
+
+
+def _sting_members() -> list[tuple[str, str, dict, int]]:
+    return [(cat, m, p, 0) for cat in ("pro_logo_sting", "logo_sting") for m, p in sting.FAMILIES[cat]]
+
+
+def _riser_rows() -> list[tuple[str, str, dict, int]]:
+    return [(c, m, p, 0) for c, m, p in _riser_members()]
+
+
+_MEMBERS = (("riser", _riser_rows), ("downlifter", _downlifter_members), ("glitch", _glitch_members),
+            ("notify", _notify_members), ("sting", _sting_members))
+
+
 def _members(bank: str) -> list[tuple[str, str, dict, int]]:
-    """(category, member, params, seed) of every delivered entry of a bank."""
-    if bank == "riser":
-        return [(c, m, p, 0) for c, m, p in _riser_members()]
-    if bank == "downlifter":
-        names = ("shepard_fall", "flange_air", "synth_fall", "air_fall", "tape", "sub_sink")
-        return [("downlifter", name, downlifter.FAMILIES[name], 0) for name in names]
-    if bank == "glitch":
-        rows = [("pro_glitch", "pro_glitch_01", dict(glitch.DEFAULTS), 0)]
-        return rows + [("glitch", name, glitch.full6(name), 3) for name, _ in glitch.FAMILY6]
-    if bank == "notify":
-        pro = [("pro_notify", m, p, 0) for m, p in notify.delivered("pro_notify")]
-        return pro + [("notify", f"notify_{i + 1:02d}", p, 0) for i, (_, p) in enumerate(notify.delivered("notify"))]
-    if bank == "sting":
-        return [(cat, m, p, 0) for cat in ("pro_logo_sting", "logo_sting") for m, p in sting.FAMILIES[cat]]
-    raise KeyError(bank)
+    """(category, member, params, seed) of every delivered entry of a bank; KeyError for an unknown bank."""
+    return dict(_MEMBERS)[bank]()
 
 
 def _target(bank: str, category: str) -> str:

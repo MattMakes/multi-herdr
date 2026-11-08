@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import types
+
 import numpy as np
 
 from hark.forge.engine import dsp, fx
@@ -115,65 +117,83 @@ def _at(db: float, x: np.ndarray) -> np.ndarray:
     return 10 ** (db / 20) * x / lvl(x)
 
 
+def _curves(p: dict) -> types.SimpleNamespace:
+    """Sample count, time, progress u, the slowing curve v, the attack and the dry level of 6.5 steps 1 to 3."""
+    n = n_of(p["length"])
+    t = t_of(n)
+    u = t / p["length"]
+    att = np.sin(0.5 * np.pi * np.clip(t / (p["att_ms"] / 1000), 0, 1)) ** 2
+    v = 1 - (1 - u) ** p["curve"]
+    lv = att * 10 ** (-p["drop_db"] * v / 20) * np.clip((1 - u) / 0.12, 0, 1) ** 1.5
+    return types.SimpleNamespace(n=n, t=t, u=u, v=v, att=att, lv=lv)
+
+
+def _shepard_fall(p: dict, c: types.SimpleNamespace, fc: np.ndarray, rng) -> np.ndarray:
+    sh = dsp.shepard(p["length"], rng, up=False, rate=p["shep_rate"], f_lo=60.0, f_hi=9000.0)[:c.n]
+    sh = svf(bw(sh, "high", p["hp"], 2), np.minimum(1.3 * fc, 18000), 0.7, "low")
+    return _at(p["shep_db"], fx.width(fx.decorrelate(sh, 0.6), 0.6 * p["width"]))
+
+
+def _dry(p: dict, c: types.SimpleNamespace, rng) -> np.ndarray:
+    """6.5 step 11: noise, tone and shepard layers on the dry level curve."""
+    noise, fc = _noise(p, c.n, c.v, rng)
+    dry = _at(p["noise_db"], noise) + _at(p["tone_db"], _tone(p, c.n, c.u, c.v, rng))
+    if p["shep_db"] > -47:
+        dry = dry + _shepard_fall(p, c, fc, rng)
+    return dry * c.lv[:, None]
+
+
+def _tail_room(p: dict, c: types.SimpleNamespace, dry: np.ndarray) -> np.ndarray:
+    """The dry fall and the sub in a buffer with room for the tail, plus the reverb of the dry fall."""
+    out = np.zeros((c.n + n_of(min(1.5, 0.6 * p["rt60"])), 2))
+    out[:c.n] = dry
+    if p["sub_db"] > -47:
+        out[:c.n] += _at(p["sub_db"], stereo_of(_sub(p, c.n, c.t, c.u, c.att)))
+    if p["verb"] > 0.005:
+        wet = wet_of(dry, p["rt60"], len(out), size=0.8, predelay=0.015, lowcut=150.0)
+        out = out + p["verb"] * wet / lvl(wet) * lvl(dry)
+    return out
+
+
 def render(p: dict, rng: np.random.Generator) -> np.ndarray:
     """One downlifter take, (n, 2): the dry fall, then its reverb tail, trimmed at -62 dB."""
-    q = dict(DEFAULTS)
-    q.update(p or {})
-    p = q
-    L = p["length"]
-    n = n_of(L)
-    t = t_of(n)
-    u = t / L
-    v = 1 - (1 - u) ** p["curve"]
-    att = np.sin(0.5 * np.pi * np.clip(t / (p["att_ms"] / 1000), 0, 1)) ** 2
-    lv = att * 10 ** (-p["drop_db"] * v / 20) * np.clip((1 - u) / 0.12, 0, 1) ** 1.5
-    noise, fc = _noise(p, n, v, rng)
-    tone = _tone(p, n, u, v, rng)
-    dry = _at(p["noise_db"], noise) + _at(p["tone_db"], tone)
-    if p["shep_db"] > -47:
-        sh = dsp.shepard(L, rng, up=False, rate=p["shep_rate"], f_lo=60.0, f_hi=9000.0)[:n]
-        sh = svf(bw(sh, "high", p["hp"], 2), np.minimum(1.3 * fc, 18000), 0.7, "low")
-        dry = dry + _at(p["shep_db"], fx.width(fx.decorrelate(sh, 0.6), 0.6 * p["width"]))
-    dry = dry * lv[:, None]
-    tail = n_of(min(1.5, 0.6 * p["rt60"]))
-    out = np.zeros((n + tail, 2))
-    out[:n] = dry
-    if p["sub_db"] > -47:
-        out[:n] += _at(p["sub_db"], stereo_of(_sub(p, n, t, u, att)))
-    if p["verb"] > 0.005:
-        wet = wet_of(dry, p["rt60"], n + tail, size=0.8, predelay=0.015, lowcut=150.0)
-        out = out + p["verb"] * wet / lvl(wet) * lvl(dry)
+    p = {**DEFAULTS, **(p or {})}
+    c = _curves(p)
+    out = _tail_room(p, c, _dry(p, c, rng))
     if p["sat"] > 0.1:
         out = fx.saturate(out, p["sat"])
-    out = bw(out, "high", 25, 2)
-    out = dsp.trim_tail(out, -62.0, 0.02)
+    out = dsp.trim_tail(bw(out, "high", 25, 2), -62.0, 0.02)
     return headroom(dsp.fade(out, 0.0015, min(0.12, 0.25 * len(out) / SR)))
+
+
+def _shape(e: np.ndarray) -> tuple[float, float]:
+    """(peak_frac, sag) of 6.6: how early the peak is, and how much of the fall is done after a third."""
+    k = len(e)
+    ip = int(np.argmax(e))
+    active = np.nonzero(e > e[ip] - 45)[0]
+    end = int(active[-1]) if len(active) else k - 1
+    sm = np.convolve(e, np.ones(5) / 5, mode="same")
+    third = min(ip + max(1, (end - ip) // 3), k - 1)
+    return ip / k, float((e[ip] - sm[third]) / max(e[ip] - sm[end], 0.001))
+
+
+def _cent_oct(x: np.ndarray) -> float:
+    cent, power = centroid_track(x)
+    loud = cent[power > 1e-3 * (power.max() if power.size else 0)]
+    return 0.0 if len(loud) < 6 else float(np.log2(np.median(loud[-3:]) / max(np.median(loud[:3]), 1.0)))
+
+
+def _tail_db(x: np.ndarray, pk: float) -> float:
+    m = x.mean(axis=1) if x.ndim == 2 else x
+    return float(20 * np.log10(np.sqrt(np.mean(m[-480:] ** 2)) + 1e-12) - pk)
 
 
 def measure(x: np.ndarray) -> dict:
     """Model-free downlifter measurements (6.6)."""
     e = env_db(x)
-    k = len(e)
-    ip = int(np.argmax(e))
-    pk = float(e[ip])
-    active = np.nonzero(e > pk - 45)[0]
-    end = int(active[-1]) if len(active) else k - 1
-    third = ip + max(1, (end - ip) // 3)
-    sm = np.convolve(e, np.ones(5) / 5, mode="same")
-    fall = max(pk - float(sm[end]), 0.001)
-    cent, power = centroid_track(x)
-    loud = cent[power > 1e-3 * (power.max() if power.size else 0)]
-    cent_oct = 0.0 if len(loud) < 6 else float(np.log2(np.median(loud[-3:]) / max(np.median(loud[:3]), 1.0)))
-    m = x.mean(axis=1) if x.ndim == 2 else x
-    return {
-        "length_s": round(len(x) / SR, 3),
-        "peak_frac": ip / k,
-        "sag": (pk - float(sm[min(third, k - 1)])) / fall,
-        "cent_oct": cent_oct,
-        "tail_db": 20 * np.log10(np.sqrt(np.mean(m[-480:] ** 2)) + 1e-12) - pk,
-        "side_db": side_db(x),
-        "low_db": low_share_db(x),
-    }
+    peak_frac, sag = _shape(e)
+    return {"length_s": round(len(x) / SR, 3), "peak_frac": peak_frac, "sag": sag, "cent_oct": _cent_oct(x),
+            "tail_db": _tail_db(x, float(e.max())), "side_db": side_db(x), "low_db": low_share_db(x)}
 
 
 def target_check(x: np.ndarray, row=None) -> float:

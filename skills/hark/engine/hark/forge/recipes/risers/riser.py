@@ -7,6 +7,7 @@ The module also holds the helpers that downlifter and zip import.
 from __future__ import annotations
 
 import functools
+import types
 
 import numpy as np
 from scipy.signal import fftconvolve
@@ -47,9 +48,9 @@ R6_OFF = {"r6": 0.0, "nbw": 2.0, "fifth_db": -48.0, "tone_gate": 1.0, "gate_pow"
 
 # ---------------------------------------------------------------- presets (5.4)
 
-_KEYS = ("length curve rise_db noise_db nf0 nf1 nq pink tone_db tmode wave tf0 toct tbright detune oct_db "
+_KEYS = tuple(("length curve rise_db noise_db nf0 nf1 nq pink tone_db tmode wave tf0 toct tbright detune oct_db "
          "shep_db shep_rate drone_db drone_f metal_db metal_f gate_depth gate_on gate_p0 gate_p1 gate_duty "
-         "gate_sharp gate_drone blip_dec verb rt60 width sat hp end_ms").split()
+         "gate_sharp gate_drone blip_dec verb rt60 width sat hp end_ms").split())
 
 _FAM_COLS = {
     "air": (2.6, 2.4, 36, 0, 300, 12000, 1.6, 0.55, -20, "glide", "tri", 400, 1.5, 4, 12, -30, -48, 0.8, -30,
@@ -129,16 +130,18 @@ _R3_FIX = {
 }
 
 
-def _by_cat_riser(name: str) -> dict:
-    p = dict(FAMILIES[name])
-    p.update({k: (float(v) if not isinstance(v, str) else v) for k, v in zip(_R2_KEYS, _R2[name])})
-    p.update(_R3_FIX[name])
+def _by_cat_riser(base: dict, tuned: tuple, fix: dict) -> dict:
+    """A round-1 member, then its round-2 tuned values, then its round-3 fix."""
+    p = dict(base)
+    p.update({k: (float(v) if not isinstance(v, str) else v) for k, v in zip(_R2_KEYS, tuned)})
+    p.update(fix)
     return p
 
 
 _PRO_COMMON = {"metal_n": 9, "metal_glide": 0.0}
 FAMILIES_BY_CAT = {
-    "riser": {name: _by_cat_riser(name) for name in ("air", "tension", "shepard", "rush", "cymbal")},
+    "riser": {name: _by_cat_riser(FAMILIES[name], _R2[name], _R3_FIX[name])
+              for name in ("air", "tension", "shepard", "rush", "cymbal")},
     "pro_riser": {
         "nblips": _over(_ST, length=1.0, tmode="nblips", nb_q=7, tf0=1700, toct=2.4, tone_db=0, noise_db=-10,
                         nf0=900, nf1=13000, nq=1.2, gate_p0=0.05, gate_p1=0.024, gate_duty=0.5, blip_dec=0.25,
@@ -333,14 +336,23 @@ def _layer_at(db: float, x: np.ndarray, frac: float | None = 0.25) -> np.ndarray
 
 def _gate_parts(p: dict, t: np.ndarray, u: np.ndarray, power: float):
     """Gate period, phase, value and depth of 5.9 steps 2 and 3."""
-    L = p["length"]
     per = p["gate_p0"] * (p["gate_p1"] / p["gate_p0"]) ** (u ** power)
     phase = phase_from_end(1.0 / per, 0.5 * p["gate_duty"])
     g = gate_shape(phase, per, p["gate_duty"], p["gate_sharp"])
-    on = np.clip((u - p["gate_on"]) / 0.2, 0, 1)
-    fin = np.clip((L - t) / FINAL_OPEN, 0, 1)
-    depth = p["gate_depth"] * smooth01(on) * smooth01(fin)
+    fin = np.clip((p["length"] - t) / FINAL_OPEN, 0, 1)
+    depth = p["gate_depth"] * smooth01(np.clip((u - p["gate_on"]) / 0.2, 0, 1)) * smooth01(fin)
     return per, phase, g, depth, fin
+
+
+def _frame(p: dict, gate_power: float) -> types.SimpleNamespace:
+    """Sample count, time, progress u, curve w = u^curve, level lv and the gate of one render."""
+    n = n_of(p["length"])
+    t = t_of(n)
+    u = t / p["length"]
+    w = u ** p["curve"]
+    per, phase, g, depth, fin = _gate_parts(p, t, u, gate_power)
+    return types.SimpleNamespace(n=n, t=t, u=u, w=w, lv=10 ** (-p["rise_db"] * (1 - w) / 20), per=per,
+                                 phase=phase, g=g, depth=depth, fin=fin)
 
 
 def _noise_source(p: dict, n: int, rng: np.random.Generator) -> np.ndarray:
@@ -356,7 +368,7 @@ def _spread(x: np.ndarray, amount: float, w) -> np.ndarray:
 
 def _shepard(p: dict, n: int, rng, f_lo: float, up: bool = True) -> np.ndarray:
     sh = fit(dsp.shepard(n / SR, rng, up=up, rate=p["shep_rate"], f_lo=f_lo, f_hi=9000.0), n)
-    return bw(sh, "high", p["hp"], 2)
+    return _spread(bw(sh, "high", p["hp"], 2), 0.6, 0.6 * p["width"])
 
 
 def _pitch(p: dict, u: np.ndarray) -> np.ndarray:
@@ -383,6 +395,11 @@ def _add_reverb(mix: np.ndarray, send: np.ndarray, p: dict, n: int) -> np.ndarra
     return mix + p["verb"] * wet / lvl(wet, 0.25) * lvl(send, 0.25)
 
 
+def _octave_rise(u: np.ndarray) -> np.ndarray:
+    """The +12 layer fades in over the second 60 % of the build."""
+    return (np.clip((u - 0.4) / 0.6, 0, 1) ** 2)[:, None]
+
+
 # ---------------------------------------------------------------- the round-6 build (5.9)
 
 
@@ -393,8 +410,7 @@ def _build_chord(p: dict, u: np.ndarray, w: np.ndarray, rng) -> tuple[np.ndarray
     chord = unison(f, p["wave"], det, 0.5 * p["width"], ph[0:5])
     if p["fifth_db"] > -47:
         chord = chord + 10 ** (p["fifth_db"] / 20) * unison(1.5 * f, p["wave"], det, 0.7 * p["width"], ph[5:10])
-    octave = unison(2 * f, p["wave"], 0.7 * det, 0.6 * p["width"], ph[10:15])
-    octave = octave * (np.clip((u - 0.4) / 0.6, 0, 1) ** 2)[:, None]
+    octave = unison(2 * f, p["wave"], 0.7 * det, 0.6 * p["width"], ph[10:15]) * _octave_rise(u)
     if p["wave"] == "saw":
         chord = _saw_lp(chord, f, p, 0.7)
         octave = _saw_lp(octave, f, p, 0.7, 2.0)
@@ -404,52 +420,13 @@ def _build_chord(p: dict, u: np.ndarray, w: np.ndarray, rng) -> tuple[np.ndarray
 def _reverse_swell(p: dict, n: int, rng) -> np.ndarray:
     k = n_of(0.03)
     burst = bw(rng.standard_normal(k), "high", 1500, 2) * np.exp(-t_of(k) / 0.008)
-    m = n_of(p["rswell_rt"] + 0.1)
-    wet = wet_of(burst, p["rswell_rt"], m, predelay=0.0, damp=0.3, lowcut=400.0)[::-1]
+    wet = wet_of(burst, p["rswell_rt"], n_of(p["rswell_rt"] + 0.1), predelay=0.0, damp=0.3, lowcut=400.0)[::-1]
     out = np.zeros((n, 2))
     if len(wet) >= n:
         out[:] = wet[len(wet) - n:]
     else:
         out[n - len(wet):] = wet
-    out = bw(out, "high", p["hp"], 2)
-    return fx.width(out, 0.25 + 0.5 * p["width"])
-
-
-def render_build(p: dict, rng: np.random.Generator) -> np.ndarray:
-    """The round-6 build: noise band, unison chord, accelerating gate, optional reverse swell, hard end."""
-    q = dict(DEFAULTS)
-    q.update(R6_OFF)
-    q.update(p)
-    p = q
-    L = p["length"]
-    n = n_of(L)
-    t = t_of(n)
-    u = t / L
-    w = u ** p["curve"]
-    lv = 10 ** (-p["rise_db"] * (1 - w) / 20)
-    _, _, g, depth, _ = _gate_parts(p, t, u, p["gate_pow"])
-    noise_gate = 1 - depth * (1 - g)
-    tone_gate = 1 - p["tone_gate"] * depth * (1 - g)
-    fc = p["nf0"] * (p["nf1"] / p["nf0"]) ** w
-    noise = _noise_source(p, n, rng)
-    noise = _lp24(noise, np.minimum(fc, 18000))
-    noise = _hp24(noise, np.maximum(fc / 2 ** p["nbw"], 20))
-    noise = _spread(bw(noise, "high", p["hp"], 4), 1.0, p["width"] * (0.35 + 0.65 * w))
-    chord, octave = _build_chord(p, u, w, rng)
-    send = _layer_at(p["noise_db"], noise) * noise_gate[:, None]
-    send = send + (_layer_at(p["tone_db"], chord) + _layer_at(p["oct_db"], octave)) * tone_gate[:, None]
-    if p["shep_db"] > -47:
-        sh = _spread(_shepard(p, n, rng, 150.0), 0.6, 0.6 * p["width"])
-        send = send + _layer_at(p["shep_db"], sh) * tone_gate[:, None]
-    send = send * lv[:, None]
-    if p["rswell_db"] > -47:
-        sw = _reverse_swell(p, n, rng)
-        send = send + _layer_at(p["rswell_db"], sw) * (0.25 + 0.75 * noise_gate)[:, None]
-    mix = _add_reverb(send, send, p, n)
-    if p["pre_dip_ms"] > 0.5:
-        d0 = L - FINAL_OPEN - p["pre_dip_ms"] / 1000
-        mix = mix * (1 - 0.5 * np.exp(-0.5 * ((t - d0) / (0.35 * p["pre_dip_ms"] / 1000)) ** 2))[:, None]
-    return _finish_tail(mix, p, 120.0)
+    return fx.width(bw(out, "high", p["hp"], 2), 0.25 + 0.5 * p["width"])
 
 
 def _lp24(x: np.ndarray, fc) -> np.ndarray:
@@ -461,7 +438,54 @@ def _hp24(x: np.ndarray, fc) -> np.ndarray:
     return svf(svf(x, fc, 0.54, "high"), fc, 1.31, "high")
 
 
+def _noise_band(p: dict, f: types.SimpleNamespace, rng) -> np.ndarray:
+    """The build's noise: an unresonant band nbw octaves wide whose top moves from nf0 to nf1."""
+    fc = p["nf0"] * (p["nf1"] / p["nf0"]) ** f.w
+    noise = _hp24(_lp24(_noise_source(p, f.n, rng), np.minimum(fc, 18000)), np.maximum(fc / 2 ** p["nbw"], 20))
+    return _spread(bw(noise, "high", p["hp"], 4), 1.0, p["width"] * (0.35 + 0.65 * f.w))
+
+
+def _build_tonal(p: dict, f: types.SimpleNamespace, rng) -> np.ndarray:
+    chord, octave = _build_chord(p, f.u, f.w, rng)
+    tonal = _layer_at(p["tone_db"], chord) + _layer_at(p["oct_db"], octave)
+    if p["shep_db"] > -47:
+        tonal = tonal + _layer_at(p["shep_db"], _shepard(p, f.n, rng, 150.0))
+    return tonal
+
+
+def _build_send(p: dict, f: types.SimpleNamespace, rng) -> np.ndarray:
+    """5.9 step 11: the gated noise and tonal layers on the level curve, plus the reverse swell."""
+    closed = f.depth * (1 - f.g)
+    noise_gate = (1 - closed)[:, None]
+    tonal = _build_tonal(p, f, rng) * (1 - p["tone_gate"] * closed)[:, None]
+    send = (_layer_at(p["noise_db"], _noise_band(p, f, rng)) * noise_gate + tonal) * f.lv[:, None]
+    if p["rswell_db"] > -47:
+        send = send + _layer_at(p["rswell_db"], _reverse_swell(p, f.n, rng)) * (0.25 + 0.75 * noise_gate)
+    return send
+
+
+def _pre_dip(p: dict, t: np.ndarray) -> np.ndarray:
+    d = p["pre_dip_ms"] / 1000
+    d0 = p["length"] - FINAL_OPEN - d
+    return (1 - 0.5 * np.exp(-0.5 * ((t - d0) / (0.35 * d)) ** 2))[:, None]
+
+
+def render_build(p: dict, rng: np.random.Generator) -> np.ndarray:
+    """The round-6 build: noise band, unison chord, accelerating gate, optional reverse swell, hard end."""
+    p = {**DEFAULTS, **R6_OFF, **p}
+    f = _frame(p, p["gate_pow"])
+    send = _build_send(p, f, rng)
+    mix = _add_reverb(send, send, p, f.n)
+    if p["pre_dip_ms"] > 0.5:
+        mix = mix * _pre_dip(p, f.t)
+    return _finish_tail(mix, p, 120.0)
+
+
 # ---------------------------------------------------------------- rounds 1 to 4 (5.11)
+
+
+def _is_blip(p: dict) -> bool:
+    return p["tmode"] in ("blips", "nblips")
 
 
 def _held(f: np.ndarray, phase: np.ndarray) -> np.ndarray:
@@ -472,125 +496,150 @@ def _held(f: np.ndarray, phase: np.ndarray) -> np.ndarray:
     return f[first]
 
 
-def _blip_layers(p: dict, f, phase, per, fin, rng, ph) -> tuple[np.ndarray, np.ndarray]:
-    held = _held(f, phase)
-    frac = np.mod(phase, 1.0)
-    fb = held * 2.0 ** (-0.35 * frac)
-    n = len(f)
-    if p["tmode"] == "nblips":
-        a = svf(rng.standard_normal(n), np.minimum(fb, 16000), p["nb_q"], "band")
-        b = svf(rng.standard_normal(n), np.minimum(fb, 16000), p["nb_q"], "band")
-        mid = (a + b) / 2
-        k = min(1.0, 0.5 * p["width"] + 0.2)
-        tone = np.column_stack([mid + (a - mid) * k, mid + (b - mid) * k])
-        o = svf(rng.standard_normal(n), np.minimum(2 * fb, 16000), 1.5 * p["nb_q"], "band")
-        octave = stereo2(o)
-    else:
-        tone = unison(fb, p["wave"], p["detune"], 0.25 * p["width"], ph[0:5])
-        octave = unison(2 * fb, p["wave"], 0.7 * p["detune"], 0.6 * p["width"], ph[5:10])
-    pg = gate_shape(phase, per, p["gate_duty"], 1.0, perc=p["blip_dec"])
-    pg2 = gate_shape(phase, per, p["gate_duty"], 1.0, perc=0.7 * p["blip_dec"])
-    return tone * (pg * fin + 1 - fin)[:, None], octave * (pg2 * fin + 1 - fin)[:, None]
+def _noise_blips(p: dict, fb: np.ndarray, rng) -> tuple[np.ndarray, np.ndarray]:
+    """2 band-passed noises per blip (their spread set by width), and a noise octave."""
+    n = len(fb)
+    fc = np.minimum(fb, 16000)
+    a = svf(rng.standard_normal(n), fc, p["nb_q"], "band")
+    b = svf(rng.standard_normal(n), fc, p["nb_q"], "band")
+    mid = (a + b) / 2
+    k = min(1.0, 0.5 * p["width"] + 0.2)
+    octave = svf(rng.standard_normal(n), np.minimum(2 * fb, 16000), 1.5 * p["nb_q"], "band")
+    return np.column_stack([mid + (a - mid) * k, mid + (b - mid) * k]), stereo2(octave)
 
 
-def _tonal(p: dict, u, w, phase, per, fin, rng) -> tuple[np.ndarray, np.ndarray]:
-    f = _pitch(p, u)
+def _tone_blips(p: dict, fb: np.ndarray, ph: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    tone = unison(fb, p["wave"], p["detune"], 0.25 * p["width"], ph[0:5])
+    return tone, unison(2 * fb, p["wave"], 0.7 * p["detune"], 0.6 * p["width"], ph[5:10])
+
+
+def _blip_gate(p: dict, f: types.SimpleNamespace, scale: float) -> np.ndarray:
+    """The percussive blip gate, held open over the final 45 ms."""
+    pg = gate_shape(f.phase, f.per, p["gate_duty"], 1.0, perc=scale * p["blip_dec"])
+    return (pg * f.fin + 1 - f.fin)[:, None]
+
+
+def _blip_layers(p: dict, pitch: np.ndarray, f: types.SimpleNamespace, rng, ph) -> tuple[np.ndarray, np.ndarray]:
+    fb = _held(pitch, f.phase) * 2.0 ** (-0.35 * np.mod(f.phase, 1.0))
+    tone, octave = _noise_blips(p, fb, rng) if p["tmode"] == "nblips" else _tone_blips(p, fb, ph)
+    return tone * _blip_gate(p, f, 1.0), octave * _blip_gate(p, f, 0.7)
+
+
+def _glide_layers(p: dict, pitch: np.ndarray, w: np.ndarray, ph) -> tuple[np.ndarray, np.ndarray]:
+    det = p["detune"] * (0.6 + 0.8 * w)
+    tone = unison(pitch, p["wave"], det, 0.5 * p["width"], ph[0:5])
+    return tone, unison(2 * pitch, p["wave"], 0.7 * det, 0.6 * p["width"], ph[5:10])
+
+
+def _tonal(p: dict, f: types.SimpleNamespace, rng) -> tuple[np.ndarray, np.ndarray]:
+    pitch = _pitch(p, f.u)
     ph = rng.random(10)
-    blip = p["tmode"] in ("blips", "nblips")
-    if blip:
-        tone, octave = _blip_layers(p, f, phase, per, fin, rng, ph)
+    if _is_blip(p):
+        tone, octave = _blip_layers(p, pitch, f, rng, ph)
     else:
-        det = p["detune"] * (0.6 + 0.8 * w)
-        tone = unison(f, p["wave"], det, 0.5 * p["width"], ph[0:5])
-        octave = unison(2 * f, p["wave"], 0.7 * det, 0.6 * p["width"], ph[5:10])
-    octave = octave * (np.clip((u - 0.4) / 0.6, 0, 1) ** 2)[:, None]
+        tone, octave = _glide_layers(p, pitch, f.w, ph)
+    octave = octave * _octave_rise(f.u)
     if p["wave"] == "saw":
-        tone = _saw_lp(tone, f, p, 0.8)
-        octave = _saw_lp(octave, f, p, 0.8, 2.0)
+        tone = _saw_lp(tone, pitch, p, 0.8)
+        octave = _saw_lp(octave, pitch, p, 0.8, 2.0)
     return bw(tone, "high", 0.8 * p["hp"], 2), bw(octave, "high", p["hp"], 2)
 
 
-def _drone(p: dict, w, phase, per, g, depth, rng) -> np.ndarray:
-    n = len(w)
-    df = p["drone_f"] * 2.0 ** (p["drone_oct"] * w)
+def _drone_tone(df: np.ndarray, rng) -> np.ndarray:
+    """3 detuned saws (-7, 0, +7 cents) low-passed at 500 Hz, plus a sine."""
     saws = sum(dsp.osc(df * 2.0 ** (c / 1200), "saw", phase=float(rng.random())) for c in (-7, 0, 7)) / 3
-    d = 0.8 * bw(saws, "low", 500, 2) + 0.35 * np.sin(2 * np.pi * np.cumsum(df) / SR + 2 * np.pi * rng.random())
+    sine = np.sin(2 * np.pi * np.cumsum(df) / SR + 2 * np.pi * rng.random())
+    return 0.8 * bw(saws, "low", 500, 2) + 0.35 * sine
+
+
+def _with_rumble(d: np.ndarray, df: np.ndarray, share: float, rng) -> np.ndarray:
+    """Blend the tonal drone with a band-passed noise rumble that follows the drone pitch."""
+    rumble = svf(rng.standard_normal(len(df)), np.clip(2.2 * df, 60, 2000), 1.2, "band")
+    rumble = bw(rumble, "low", 600, 2)
+    return (1 - share) * d / (np.std(d) + 1e-12) + share * rumble / (np.std(rumble) + 1e-12)
+
+
+def _drone(p: dict, f: types.SimpleNamespace, rng) -> np.ndarray:
+    df = p["drone_f"] * 2.0 ** (p["drone_oct"] * f.w)
+    d = _drone_tone(df, rng)
     if p["drone_noise"] > 0.01:
-        rumble = svf(rng.standard_normal(n), np.clip(2.2 * df, 60, 2000), 1.2, "band")
-        rumble = bw(rumble, "low", 600, 2)
-        dn = p["drone_noise"]
-        d = (1 - dn) * d / (np.std(d) + 1e-12) + dn * rumble / (np.std(rumble) + 1e-12)
-    d = bw(d, "high", 30, 2) * 10 ** (-0.3 * p["rise_db"] * (1 - w) / 20)
-    if p["tmode"] in ("blips", "nblips"):
-        g = gate_shape(phase * 2, per / 2, p["gate_duty"], p["gate_sharp"])
-    return d * (1 - p["gate_drone"] * depth * (1 - g))
+        d = _with_rumble(d, df, p["drone_noise"], rng)
+    d = bw(d, "high", 30, 2) * 10 ** (-0.3 * p["rise_db"] * (1 - f.w) / 20)
+    g = gate_shape(f.phase * 2, f.per / 2, p["gate_duty"], p["gate_sharp"]) if _is_blip(p) else f.g
+    return d * (1 - p["gate_drone"] * f.depth * (1 - g))
 
 
 _METAL_RATIOS = (1.0, 1.37, 1.71, 2.13, 2.58, 3.11, 3.66, 4.29, 5.02)
 
 
-def _metal(p: dict, u, w, rng) -> np.ndarray:
-    n = len(u)
+def _metal_ratios(p: dict, rng) -> np.ndarray:
+    """The fixed 9 ratios, or metal_n random ratios (sorted, closer together) when metal_n > 9."""
     count = int(round(p["metal_n"]))
-    dense = count > 9
-    ratios = np.sort(np.exp(rng.uniform(0, np.log(6), count))) if dense else np.array(_METAL_RATIOS)
-    count = len(ratios)
-    glide = 2.0 ** (p["metal_glide"] * u ** 1.2)
-    y = np.zeros(n)
+    if count > 9:
+        return np.sort(np.exp(rng.uniform(0, np.log(6), count)))
+    return np.array(_METAL_RATIOS)
+
+
+def _opening(k: int, count: int, w: np.ndarray, rng) -> np.ndarray:
+    """When partial k opens: its own random point (dense), or higher partials later (fixed)."""
+    if count > 9:
+        u_on = -1.0 if k % 5 == 0 else rng.uniform(0, 0.75)
+        return np.clip((w - u_on) / 0.25, 0, 1)
+    return np.clip(0.9 * w * count - 0.6 * k + 1, 0, 1)
+
+
+def _metal_partial(p: dict, fk: float, k: int, count: int, glide: np.ndarray, rng) -> np.ndarray:
+    am = np.abs(bw(rng.standard_normal(len(glide)), "low", 220, 2))
+    am = am / (am.mean() + 1e-12)
+    if p["metal_glide"] > 0.001:
+        phs = 2 * np.pi * np.cumsum(fk * glide) / SR + 2 * np.pi * rng.random()
+        return np.sin(phs) * am / (1 + 0.15 * k * 9 / count)
+    return np.sin(2 * np.pi * fk * t_of(len(glide))) / (1 + 0.15 * k)
+
+
+def _metal(p: dict, f: types.SimpleNamespace, rng) -> np.ndarray:
+    ratios = _metal_ratios(p, rng)
+    glide = 2.0 ** (p["metal_glide"] * f.u ** 1.2)
+    y = np.zeros(f.n)
     for k, ratio in enumerate(ratios):
-        if dense:
-            u_on = -1.0 if k % 5 == 0 else rng.uniform(0, 0.75)
-            opening = np.clip((w - u_on) / 0.25, 0, 1)
-        else:
-            opening = np.clip(0.9 * w * count - 0.6 * k + 1, 0, 1)
+        opening = _opening(k, len(ratios), f.w, rng)
         fk = p["metal_f"] * ratio * (1 + 0.004 * rng.standard_normal())
-        if fk * 2 ** p["metal_glide"] > 19000:
-            continue
-        am = np.abs(bw(rng.standard_normal(n), "low", 220, 2))
-        am = am / (am.mean() + 1e-12)
-        if p["metal_glide"] > 0.001:
-            phs = 2 * np.pi * np.cumsum(fk * glide) / SR + 2 * np.pi * rng.random()
-            y += np.sin(phs) * am * opening / (1 + 0.15 * k * 9 / count)
-        else:
-            y += np.sin(2 * np.pi * fk * t_of(n)) * opening / (1 + 0.15 * k)
+        if fk * 2 ** p["metal_glide"] <= 19000:
+            y += _metal_partial(p, fk, k, len(ratios), glide, rng) * opening
     return _spread(bw(y, "high", 1200, 2), 1.0, p["width"])
+
+
+def _beds(p: dict, f: types.SimpleNamespace, rng) -> np.ndarray:
+    """The noise, shepard and metal layers: the layers that the gate always rides."""
+    noise = svf(_noise_source(p, f.n, rng), p["nf0"] * (p["nf1"] / p["nf0"]) ** f.w, p["nq"], "low")
+    beds = _layer_at(p["noise_db"], _spread(bw(noise, "high", p["hp"], 4), 1.0, p["width"] * (0.35 + 0.65 * f.w)))
+    if p["shep_db"] > -47:
+        beds = beds + _layer_at(p["shep_db"], _shepard(p, f.n, rng, 60.0))
+    if p["metal_db"] > -47:
+        beds = beds + _layer_at(p["metal_db"], _metal(p, f, rng))
+    return beds
+
+
+def _send(p: dict, f: types.SimpleNamespace, rng) -> np.ndarray:
+    """5.11 step 12: blips carry their own gate; a glide build is gated as a whole."""
+    gate = (1 - f.depth * (1 - f.g))[:, None]
+    beds = _beds(p, f, rng)
+    tone, octave = _tonal(p, f, rng)
+    tonal = _layer_at(p["tone_db"], tone) + _layer_at(p["oct_db"], octave)
+    if _is_blip(p):
+        return (beds * gate + tonal) * f.lv[:, None]
+    return (beds + tonal) * gate * f.lv[:, None]
 
 
 def render(p: dict, rng: np.random.Generator) -> np.ndarray:
     """One riser take, (n, 2) float64 at 48 kHz; n = samples of length."""
     if float((p or {}).get("r6", 0.0)) > 0.5:
         return render_build(p, rng)
-    q = dict(DEFAULTS)
-    q.update(p or {})
-    p = q
-    L = p["length"]
-    n = n_of(L)
-    t = t_of(n)
-    u = t / L
-    w = u ** p["curve"]
-    lv = 10 ** (-p["rise_db"] * (1 - w) / 20)
-    per, phase, g, depth, fin = _gate_parts(p, t, u, 1.4)
-    gate = 1 - depth * (1 - g)
-    noise = svf(_noise_source(p, n, rng), p["nf0"] * (p["nf1"] / p["nf0"]) ** w, p["nq"], "low")
-    noise = _spread(bw(noise, "high", p["hp"], 4), 1.0, p["width"] * (0.35 + 0.65 * w))
-    tone, octave = _tonal(p, u, w, phase, per, fin, rng)
-    shep = None
-    if p["shep_db"] > -47:
-        shep = _spread(_shepard(p, n, rng, 60.0), 0.6, 0.6 * p["width"])
-    drone = _drone(p, w, phase, per, g, depth, rng)
-    N = _layer_at(p["noise_db"], noise)
-    S = _layer_at(p["shep_db"], shep) if shep is not None else 0.0
-    if p["metal_db"] > -47:
-        N = N + _layer_at(p["metal_db"], _metal(p, u, w, rng))
-    T = _layer_at(p["tone_db"], tone)
-    O = _layer_at(p["oct_db"], octave)
-    if p["tmode"] in ("blips", "nblips"):
-        send = ((N + S) * gate[:, None] + T + O) * lv[:, None]
-    else:
-        send = (N + T + O + S) * (lv * gate)[:, None]
-    mix = send + _layer_at(p["drone_db"], stereo2(drone)) * (lv ** 0.3)[:, None]
-    mix = _add_reverb(mix, send, p, n)
-    return _finish_tail(mix, p, 30.0)
+    p = {**DEFAULTS, **(p or {})}
+    f = _frame(p, 1.4)
+    send = _send(p, f, rng)
+    drone = _layer_at(p["drone_db"], stereo2(_drone(p, f, rng))) * (f.lv ** 0.3)[:, None]
+    return _finish_tail(_add_reverb(send + drone, send, p, f.n), p, 30.0)
 
 
 # ---------------------------------------------------------------- measure (5.12)
@@ -608,21 +657,29 @@ def _cent_oct(x: np.ndarray, loud_rel: float) -> float:
     return float(np.log2(np.median(loud[-3:]) / max(np.median(loud[:3]), 1.0)))
 
 
+def _last_third(e: np.ndarray) -> float:
+    """How much of the rise happens in the final third: 0.5 or more is concave."""
+    k = len(e)
+    k10 = max(1, k // 10)
+    a, b = float(np.median(e[:k10])), float(e[-k10:].max())
+    two = float(_ma5(e)[min(k - 1, int(2 * k / 3))])
+    return (b - two) / max(b - a, 0.001)
+
+
+def _hf_rise(x: np.ndarray) -> float:
+    """Rise of the 4 to 20 kHz band: max of the last tenth minus the median of the first quarter (dB)."""
+    hf = band_env_db(x, 4000, 20000)
+    return float(hf[-max(1, len(hf) // 10):].max() - np.median(hf[:max(1, len(hf) // 4)]))
+
+
 def measure(x: np.ndarray) -> dict:
     """Model-free riser measurements of 5.12."""
     e = env_db(x)
-    k = len(e)
-    pk = float(e.max())
-    k10 = max(1, k // 10)
-    a = float(np.median(e[:k10]))
-    b = float(e[-k10:].max())
-    two = float(_ma5(e)[min(k - 1, int(2 * k / 3))])
-    hf = band_env_db(x, 4000, 20000)
     return {
         "length_s": round(len(x) / SR, 3),
-        "last_third": (b - two) / max(b - a, 0.001),
-        "end_db": float(e[-5:].max()) - pk,
-        "hf_rise_db": float(hf[-max(1, len(hf) // 10):].max() - np.median(hf[:max(1, len(hf) // 4)])),
+        "last_third": _last_third(e),
+        "end_db": float(e[-5:].max() - e.max()),
+        "hf_rise_db": _hf_rise(x),
         "cent_oct": _cent_oct(x, 1e-4),
         "side_db": side_db(x),
         "low_db": low_share_db(x),

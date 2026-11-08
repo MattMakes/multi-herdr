@@ -163,12 +163,15 @@ FAMILY_MID = {"mid_ding": [_over({"style": "chime", "drive": 0, "c_motif": "sing
 FAMILY_NAMES_MID = {"mid_ding": [name for name, _ in _MID_COLS]}
 
 
+_TABLES = (FAMILY, FAMILY_NAMES, R4_EDITS)
+
+
 def delivered(cat: str) -> list[tuple[str, dict]]:
     """The delivered members of a category as (name, full params): pro_notify round 5, notify with R4_EDITS."""
+    family, names, edits = _TABLES
     if cat == "notify":
-        return [(name, {**p, **edit}) for name, p, edit in
-                zip(FAMILY_NAMES["notify"], FAMILY["notify"], R4_EDITS["notify"])]
-    return list(zip(FAMILY_NAMES[cat], (dict(p) for p in FAMILY[cat])))
+        return [(name, {**p, **edit}) for name, p, edit in zip(names["notify"], family["notify"], edits["notify"])]
+    return list(zip(names[cat], (dict(p) for p in family[cat])))
 
 
 # ------------------------------------------------------------------------------------------------ knobs (12.7, 12.8)
@@ -192,11 +195,14 @@ RING_KEYS = {
 }
 
 
+_SPACE_TABLES = (FINE, SPACE, DEFAULTS)
+
+
 def family_space(params: dict, style: str | None = None) -> dict:
     """SPACE with every key pinned to the member's value except the FINE keys of its style."""
-    style = style or params.get("style") or "ding"
-    free = set(FINE.get(style, ()))
-    return {k: spec if k in free else [params.get(k, DEFAULTS[k])] for k, spec in SPACE.items()}
+    fine, space, defaults = _SPACE_TABLES
+    free = set(fine.get(style or params.get("style") or "ding", ()))
+    return {k: spec if k in free else [params.get(k, defaults[k])] for k, spec in space.items()}
 
 
 def ring_scaled(p: dict, ring: float | None = None) -> dict:
@@ -324,7 +330,8 @@ def _air(p: dict, t: np.ndarray, rng) -> np.ndarray:
     return 0.7 * 10 ** (p["air"] / 20) * w * ea
 
 
-def _body(p: dict, t: np.ndarray, rng) -> np.ndarray:
+def _body_tone(p: dict, t: np.ndarray, rng) -> np.ndarray:
+    """The body partial at F = f0 x body_ratio, with partials at 3 x and 6.965 x, normalised by their sum."""
     F = p["f0"] * p["body_ratio"]
     body = _partial(t, F, 1, 0.8, rng)
     norm = 1.0
@@ -332,11 +339,15 @@ def _body(p: dict, t: np.ndarray, rng) -> np.ndarray:
         if a > 0 and F * m < 0.45 * SR:
             body = body + a * _partial(t, F * m, 1, 0, rng)
             norm += a
+    return body / norm
+
+
+def _body(p: dict, t: np.ndarray, rng) -> np.ndarray:
     t0 = 0.6 * p["hold"]
     ein = np.clip((t - t0) / max(p["body_in"], 0.001), 0, 1)
     env = (0.5 - 0.5 * np.cos(np.pi * ein)) * np.exp(-np.maximum(t - t0, 0) / p["body_tau"])
     trem = 1 - p["trem"] * (0.5 - 0.5 * np.cos(2 * np.pi * p["trem_hz"] * t + rng.uniform(0, 1)))
-    return body / norm * env * trem * 10 ** (p["body_db"] / 20)
+    return _body_tone(p, t, rng) * env * trem * 10 ** (p["body_db"] / 20)
 
 
 def ding(p: dict, n: int, rng: np.random.Generator) -> tuple[np.ndarray, np.ndarray]:
@@ -375,22 +386,23 @@ def _render_ding(p: dict, n: int, n_len: int, rng) -> np.ndarray:
 # ------------------------------------------------------------------------------------------------ bell (12.10)
 
 
+def _bell_partial(p: dict, q: float, ge: float, t: np.ndarray, rng) -> np.ndarray:
+    """One bell partial of ratio q: a slow beat, a decay that is faster for higher partials, the early drop."""
+    tau = max(p["decay"] * q ** -p["slope"], 0.004)
+    am = 1 - 0.35 * (0.5 - 0.5 * np.cos(2 * np.pi * p["beat"] * rng.uniform(0.5, 1.5) * t))
+    env = np.exp(-t / tau)
+    if ge > 0:
+        env = env * (1 + ge * min(1.0, 0.5 + 0.25 * q) * np.exp(-t / p["early_tau"]))
+    return env * am * np.sin(2 * np.pi * p["f0"] * q * t + rng.uniform(0, 6.3))
+
+
 def _bell_partials(p: dict, t: np.ndarray, rng) -> np.ndarray:
     ratios, amps = PARTIALS[p["partials"]]
     ge = 10 ** (p["early_db"] / 20) - 1
     y = np.zeros(len(t))
     for q, a in zip(ratios, amps):
-        f = p["f0"] * q
-        if f > 0.45 * SR:
-            continue
-        a2 = a * q ** (1.5 * (p["hard"] - 0.5))
-        tau = max(p["decay"] * q ** -p["slope"], 0.004)
-        b = p["beat"] * rng.uniform(0.5, 1.5)
-        am = 1 - 0.35 * (0.5 - 0.5 * np.cos(2 * np.pi * b * t))
-        env = np.exp(-t / tau)
-        if ge > 0:
-            env = env * (1 + ge * min(1.0, 0.5 + 0.25 * q) * np.exp(-t / p["early_tau"]))
-        y += a2 * env * am * np.sin(2 * np.pi * f * t + rng.uniform(0, 6.3))
+        if p["f0"] * q <= 0.45 * SR:
+            y += a * q ** (1.5 * (p["hard"] - 0.5)) * _bell_partial(p, q, ge, t, rng)
     return y / (1 + 0.75 * ge) if ge > 0 else y
 
 
@@ -459,24 +471,32 @@ def _mat_tone(p: dict, f0: float, t, tm, bend, rng) -> np.ndarray:
     return y
 
 
+def _chime_mallet(p: dict, n: int, rng) -> np.ndarray:
+    """A short band of noise: felt (c_hard 0) is low and soft, metal (1) is high and short."""
+    k, h = min(n, n_of(0.008)), p["c_hard"]
+    w = bw(rng.standard_normal(k), "band", (1500 + 4000 * h, min(4000 + 12000 * h, 18000)), 2)
+    tk = t_of(k)
+    return 10 ** (p["c_mallet"] / 20) * _unit_peak(w * (1 - np.exp(-tk / 0.0003)) * np.exp(-tk / (0.0035 - 0.0027 * h)))
+
+
+def _sub_body(p: dict, f0: float, t: np.ndarray, tm: np.ndarray, bend: np.ndarray, rng) -> np.ndarray:
+    ramp = 0.5 - 0.5 * np.cos(np.pi * np.clip(t / 0.02, 0, 1))
+    return p["c_sub"] * ramp * np.exp(-tm / p["c_ts"]) * np.sin(_phase(0.5 * f0 * bend, rng))
+
+
 def strike(p: dict, n: int, f0: float, rng: np.random.Generator) -> np.ndarray:
     """One chime strike of the chosen material (mono)."""
     t = t_of(n)
     bend = 2.0 ** ((p["c_bend"] / 1200) * np.exp(-t / 0.01))
     a = max(p["att"], 0.0006)
-    rise = 0.5 - 0.5 * np.cos(np.pi * np.clip(t / a, 0, 1))
     tm = np.maximum(t - a, 0)
     y = _mat_tone(p, f0, t, tm, bend, rng)
     if p["c_sub"] > 0:
-        ramp = 0.5 - 0.5 * np.cos(np.pi * np.clip(t / 0.02, 0, 1))
-        y = y + p["c_sub"] * ramp * np.exp(-tm / p["c_ts"]) * np.sin(_phase(0.5 * f0 * bend, rng))
-    y = y * rise
+        y = y + _sub_body(p, f0, t, tm, bend, rng)
+    y = y * (0.5 - 0.5 * np.cos(np.pi * np.clip(t / a, 0, 1)))
     if p["c_mallet"] > -59:
-        k, h = min(n, n_of(0.008)), p["c_hard"]
-        w = bw(rng.standard_normal(k), "band", (1500 + 4000 * h, min(4000 + 12000 * h, 18000)), 2)
-        tk = t_of(k)
-        w = w * (1 - np.exp(-tk / 0.0003)) * np.exp(-tk / (0.0035 - 0.0027 * h))
-        y[:k] += 10 ** (p["c_mallet"] / 20) * _unit_peak(w)
+        mallet = _chime_mallet(p, n, rng)
+        y[:len(mallet)] += mallet
     return y
 
 
@@ -567,21 +587,44 @@ def _stereo_fields(x: np.ndarray) -> dict:
     return {"corr": round(corr, 3), "side_mid_db": round(float(side), 1)}
 
 
-def _ridge(m: np.ndarray) -> dict | None:
-    starts = range(0, len(m) - 512, 240)
-    if not len(starts):
-        return None
+def _frame_peaks(m: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """Level (dB) and peak frequency of 512-sample Hann frames every 240 samples."""
     w = _hann(512)
     f = np.fft.rfftfreq(4096, 1 / SR)
-    lv, pk = [], []
-    for i in starts:
-        fr = m[i:i + 512] * w
-        lv.append(10 * np.log10(np.mean(fr ** 2) + 1e-20))
-        pk.append(float(f[np.argmax(np.abs(np.fft.rfft(fr, 4096)))]))
-    lv_a = np.array(lv)
-    kept = [h for h, v in zip(pk, lv_a) if v >= lv_a.max() - 30]
-    return {"start_hz": round(kept[0]), "end_hz": round(kept[-1]), "max_hz": round(max(kept)),
-            "min_hz": round(min(kept)), "sweep_oct": round(float(np.log2(max(kept[-1], 1) / max(kept[0], 1))), 2)}
+    frames = [m[i:i + 512] * w for i in range(0, len(m) - 512, 240)]
+    lv = np.array([10 * np.log10(np.mean(fr ** 2) + 1e-20) for fr in frames])
+    pk = np.array([f[np.argmax(np.abs(np.fft.rfft(fr, 4096)))] for fr in frames])
+    return lv, pk
+
+
+def _ridge(m: np.ndarray) -> dict | None:
+    lv, pk = _frame_peaks(m)
+    if not len(lv):
+        return None
+    kept = pk[lv >= lv.max() - 30]
+    return {"start_hz": round(float(kept[0])), "end_hz": round(float(kept[-1])), "max_hz": round(float(kept.max())),
+            "min_hz": round(float(kept.min())),
+            "sweep_oct": round(float(np.log2(max(kept[-1], 1) / max(kept[0], 1))), 2)}
+
+
+def _time_fields(m: np.ndarray) -> tuple[dict, int]:
+    """Attack, t20, t40 and peak time, and the first 1 ms block within 20 dB of the peak."""
+    e1 = _env_db(m, 1)
+    pk = int(np.argmax(e1))
+    first = int(np.nonzero(e1 >= e1[pk] - 20)[0][0])
+    e2 = np.convolve(_env_db(m, 2), np.ones(5) / 5, mode="same")
+    return {"attack_ms": float(pk - first), "t20_ms": _fall_ms(e2, 20), "t40_ms": _fall_ms(e2, 40),
+            "peak_t": round(pk / 1000, 4)}, first
+
+
+def _head_hz(m: np.ndarray, first: int) -> dict:
+    """The strongest frequency of the 40 ms from the onset; absent for a very short signal."""
+    a = int(first * SR / 1000)
+    seg = m[a:a + 1920]
+    if len(seg) <= 256:
+        return {}
+    spec = np.abs(np.fft.rfft(seg * _hann(len(seg)), 8192))
+    return {"head_hz": round(float(np.fft.rfftfreq(8192, 1 / SR)[np.argmax(spec)]))}
 
 
 def measure(x: np.ndarray) -> dict:
@@ -589,19 +632,9 @@ def measure(x: np.ndarray) -> dict:
     x = np.asarray(x, float)
     x = x if x.ndim == 2 else np.column_stack([x, x])
     m = x.mean(axis=1)
-    e1 = _env_db(m, 1)
-    pk = int(np.argmax(e1))
-    first = int(np.nonzero(e1 >= e1[pk] - 20)[0][0])
-    e2 = np.convolve(_env_db(m, 2), np.ones(5) / 5, mode="same")
-    out: dict[str, Any] = {"length_s": round(len(m) / SR, 3), "attack_ms": float(pk - first),
-                           "t20_ms": _fall_ms(e2, 20), "t40_ms": _fall_ms(e2, 40), "peak_t": round(pk / 1000, 4)}
-    out.update(_spectrum_fields(m))
-    out.update(_stereo_fields(x))
-    a = int(first * SR / 1000)
-    seg = m[a:a + 1920]
-    if len(seg) > 256:
-        spec = np.abs(np.fft.rfft(seg * _hann(len(seg)), 8192))
-        out["head_hz"] = round(float(np.fft.rfftfreq(8192, 1 / SR)[np.argmax(spec)]))
+    times, first = _time_fields(m)
+    out: dict[str, Any] = {"length_s": round(len(m) / SR, 3), **times, **_spectrum_fields(m), **_stereo_fields(x),
+                           **_head_hz(m, first)}
     ridge = _ridge(m)
     if ridge is not None:
         out["ridge"] = ridge
@@ -615,11 +648,7 @@ def outside(v: float | None, lo: float, hi: float, s: float) -> float:
     """Distance of v outside [lo, hi] in units of s; 1.0 when v is missing."""
     if v is None:
         return 1.0
-    if v < lo:
-        return (lo - v) / s
-    if v > hi:
-        return (v - hi) / s
-    return 0.0
+    return max(lo - v, v - hi, 0.0) / s
 
 
 TARGETS = {

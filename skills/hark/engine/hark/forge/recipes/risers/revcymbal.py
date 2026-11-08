@@ -119,34 +119,48 @@ def _edit_end(y: np.ndarray, p: dict) -> int:
     return min(len(y), block * h + n_of(0.02))
 
 
-def render(p: dict, rng: np.random.Generator) -> np.ndarray:
-    """One take, (n, 2), normalised to an absolute peak of 0.89."""
-    q = dict(DEFAULTS)
-    q.update(p or {})
-    p = q
+def _sizes(p: dict) -> int:
+    """9.7 step 1: the peak, the plateau, the fall to -60 dB and 20 ms, plus some room tail; at most 4 s."""
     tail = p["length"] + p["hold"] + p["tail_tau"] * 60 / 8.686 + 0.02
-    n = n_of(min(4.0, tail + 0.3 * p["rt60"] * min(1.0, 4 * p["room"])))
-    t = t_of(n)
-    a = 10 ** (np.maximum(level_db(p, t)[0], -120) / 20)
-    (left, right), hi = _channels(p, n, rng)
+    return n_of(min(4.0, tail + 0.3 * p["rt60"] * min(1.0, 4 * p["room"])))
+
+
+def _shaped(p: dict, chans, hi: float, a: np.ndarray) -> np.ndarray:
+    """9.7 steps 5 and 6: a low-pass that opens as the level grows, the low body, the level and flutter."""
     cut = np.clip(1.3 * hi * 2.0 ** (-p["open"] * (1 - np.sqrt(a))), 300, 20000)
-    chans = []
-    for x, low, flut in (left, right):
+    out = []
+    for x, low, flut in chans:
         y = svf(x, cut, 0.7, "low")
         if p["low_db"] > -49.5:
             y = y + 10 ** (p["low_db"] / 20) * low / _rms(low)
-        chans.append(y * a * flut)
-    y = bw(np.column_stack(chans), "high", p["hp"], 2)
+        out.append(y * a * flut)
+    return bw(np.column_stack(out), "high", p["hp"], 2)
+
+
+def _room(p: dict, y: np.ndarray, rng) -> np.ndarray:
+    """The forge-core reverb, cut to the dry length; a non-finite result keeps the dry signal."""
+    wet = fx.reverb(y, rng, rt60=p["rt60"], size=0.5, predelay=0.008, damp=0.4, wet=p["room"], width=1.0,
+                    lines=16, stereo=True, tail=max(0.2, p["rt60"]))[:len(y)]
+    return wet if np.all(np.isfinite(wet)) and len(wet) == len(y) else y
+
+
+def render(p: dict, rng: np.random.Generator) -> np.ndarray:
+    """One take, (n, 2), normalised to an absolute peak of 0.89."""
+    p = {**DEFAULTS, **(p or {})}
+    n = _sizes(p)
+    a = 10 ** (np.maximum(level_db(p, t_of(n))[0], -120) / 20)
+    chans, hi = _channels(p, n, rng)
+    y = _shaped(p, chans, hi, a)
     if p["room"] > 0.01:
-        wet = fx.reverb(y, rng, rt60=p["rt60"], size=0.5, predelay=0.008, damp=0.4, wet=p["room"], width=1.0,
-                        lines=16, stereo=True, tail=max(0.2, p["rt60"]))[:n]
-        if np.all(np.isfinite(wet)) and len(wet) == n:
-            y = wet
+        y = _room(p, y, rng)
     y = bw(y, "low", 19000, 4)
     y = dsp.fade(y[:_edit_end(y, p)], 0.004, 0.02)
     return 0.89 * y / (np.max(np.abs(y)) + 1e-12)
 
 
+_RECIPE = (MODULE, FAMILIES, SPACE, TARGETS, ALTS, REFSET)
+
+
 def recipe_for(cat: str = "reverse_swell", preset=0) -> types.SimpleNamespace:
     """A recipe object around one member, by index or by name."""
-    return member_recipe(MODULE, FAMILIES, SPACE, TARGETS, ALTS, REFSET, render, cat, preset)
+    return member_recipe(*_RECIPE, render, cat, preset)

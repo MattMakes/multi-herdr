@@ -92,34 +92,47 @@ def _bodies(p: dict, n: int, t: np.ndarray, rng) -> tuple[np.ndarray, np.ndarray
     return out[0], out[1]
 
 
-def render(p: dict, rng: np.random.Generator) -> np.ndarray:
-    """One take, (n, 2), normalised to an absolute peak of 0.89."""
-    q = dict(DEFAULTS)
-    q.update(p or {})
-    p = q
-    T = p["length"]
-    n = n_of(T + p["tail_tau"] * 60 / 8.686 + 0.02)
-    t = t_of(n)
-    a = 10 ** (np.maximum(level_db(p, t), -120) / 20) * gate(p, t)
-    body1, body2 = _bodies(p, n, t, rng)
+def _sub(p: dict, t: np.ndarray, rng) -> np.ndarray:
+    """A constant sub with a little tanh drive."""
     gd = 1 + 2 * p["sub_drive"]
-    sub = np.tanh(gd * np.sin(2 * np.pi * p["sub_f"] * t + rng.uniform(0, 2 * np.pi))) / np.tanh(gd) / 0.7
+    return np.tanh(gd * np.sin(2 * np.pi * p["sub_f"] * t + rng.uniform(0, 2 * np.pi))) / np.tanh(gd) / 0.7
+
+
+def _channels(p: dict, n: int, t: np.ndarray, rng) -> tuple[tuple, tuple]:
+    """(bodies, crackles) per channel: the lows stay identical, width blends in a second body above 200 Hz."""
+    body1, body2 = _bodies(p, n, t, rng)
     cr1, cr2 = _crackle(p, n, rng), _crackle(p, n, rng)
     w = p["width"]
     kw = np.sqrt(max(0.0, 1 - w * w))
-    hi1, hi2 = bw(body1, "high", 200, 2), bw(body2, "high", 200, 2)
-    bodies = (body1, (body1 - hi1) + kw * hi1 + w * hi2)
-    crackles = (cr1, kw * cr1 + w * cr2)
-    chans = [(bodies[c] + 10 ** (p["sub_db"] / 20) * sub + 10 ** (p["crackle_db"] / 20) * crackles[c] / 0.25) * a
-             for c in range(2)]
-    y = np.column_stack(chans)
+    hi1 = bw(body1, "high", 200, 2)
+    right = (body1 - hi1) + kw * hi1 + w * bw(body2, "high", 200, 2)
+    return (body1, right), (cr1, kw * cr1 + w * cr2)
+
+
+def _mix(p: dict, n: int, rng) -> np.ndarray:
+    t = t_of(n)
+    a = 10 ** (np.maximum(level_db(p, t), -120) / 20) * gate(p, t)
+    sub = 10 ** (p["sub_db"] / 20) * _sub(p, t, rng)
+    bodies, crackles = _channels(p, n, t, rng)
+    cg = 10 ** (p["crackle_db"] / 20) / 0.25
+    return np.column_stack([(bodies[c] + sub + cg * crackles[c]) * a for c in range(2)])
+
+
+def render(p: dict, rng: np.random.Generator) -> np.ndarray:
+    """One take, (n, 2), normalised to an absolute peak of 0.89."""
+    p = {**DEFAULTS, **(p or {})}
+    tail = p["tail_tau"] * 60 / 8.686
+    n = n_of(p["length"] + tail + 0.02)
+    y = _mix(p, n, rng)
     if p["room"] > 0.01:
         y = dsp.room(y, rng, rt60=0.35, size=0.4, damp=0.6, wet=p["room"])[:n]
-    y = bw(bw(y, "high", 25, 2), "low", 18000, 4)
-    y = dsp.fade(y, 0.002, min(0.02, 0.5 * p["tail_tau"] * 60 / 8.686))
+    y = dsp.fade(bw(bw(y, "high", 25, 2), "low", 18000, 4), 0.002, min(0.02, 0.5 * tail))
     return 0.89 * y / (np.max(np.abs(y)) + 1e-12)
+
+
+_RECIPE = (MODULE, FAMILIES, SPACE, TARGETS, ALTS, REFSET)
 
 
 def recipe_for(cat: str = "riser", preset=0) -> types.SimpleNamespace:
     """A recipe object around one member, by index or by name."""
-    return member_recipe(MODULE, FAMILIES, SPACE, TARGETS, ALTS, REFSET, render, cat, preset)
+    return member_recipe(*_RECIPE, render, cat, preset)

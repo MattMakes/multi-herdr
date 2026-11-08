@@ -6,6 +6,8 @@ generator, seeded from ``pattern``, lays out the gesture; the render generator d
 
 from __future__ import annotations
 
+import types
+
 import numpy as np
 
 from hark.forge.engine import dsp, fx
@@ -116,14 +118,18 @@ def _buffer_v2(p: dict, size: int, rng, prng) -> np.ndarray:
     return crush(x / (gk.peak(x) + 1e-12), p["bits"], p["srate"])
 
 
-def _choice_v2(p: dict, c: int, last: bool, prev: list[int], left, nbuf: int, prng):
-    """(buffer index, reversed, offset) for channel c; the right channel may copy the left."""
-    if c == 1 and prng.random() > p["width"]:
-        return left
-    idx = prev[c] if prng.random() < p["repeat"] else int(prng.integers(nbuf))
-    rev = bool(prng.random() < p["rev"])
-    off = n_of(prng.uniform(0, 0.003)) if (c == 1 and not last) else 0
-    return idx, rev, off
+def _choices_v2(p: dict, b: types.SimpleNamespace, prev: list[int], nbuf: int, prng) -> tuple[tuple, tuple]:
+    """(buffer, reversed, offset) for left and right; with chance 1 - width the right copies the left."""
+    left = _pick_v2(p, prev[0], nbuf, 0, prng)
+    if prng.random() > p["width"]:
+        return left, left
+    off = 0 if b.last else n_of(prng.uniform(0, 0.003))
+    return left, _pick_v2(p, prev[1], nbuf, off, prng)
+
+
+def _pick_v2(p: dict, prev_idx: int, nbuf: int, offset: int, prng) -> tuple[int, bool, int]:
+    idx = prev_idx if prng.random() < p["repeat"] else int(prng.integers(nbuf))
+    return idx, bool(prng.random() < p["rev"]), offset
 
 
 def _burst_env_v2(p: dict, m: int, d: float, last: bool, tail_n: int) -> np.ndarray:
@@ -146,34 +152,55 @@ def _low_pulse(m: int, f0: float, tau: float, gain: float) -> np.ndarray:
     return np.sin(2 * np.pi * f0 * t) * np.exp(-t / tau) * gk.box(m, 0.001) * gain
 
 
-def _bursts_v2(p: dict, slots, bufs, n: int, n_end: int, tail_n: int, rng, prng):
-    y = np.zeros((n, 2))
-    low = np.zeros(n)
+def _layout(p: dict, t_st: float) -> types.SimpleNamespace:
+    """Sizes, the slot grid from t_st to the cut, and the buffer length (largest slot + 4 ms)."""
+    n_end, tail_n = n_of(p["dur"]), n_of(4 * p["end_tail"])
+    slots = gk.grid(t_st, p["dur"], p["grid0"], p["grid1"], p["accel"])
+    return types.SimpleNamespace(n_end=n_end, tail_n=tail_n, n=n_end + tail_n, t_st=t_st, slots=slots,
+                                 nb=len(slots), size=n_of(max(d for _, d in slots) + 0.004))
+
+
+def _burst_v2(p: dict, k: int, slot: tuple, ctx: types.SimpleNamespace, prng) -> types.SimpleNamespace:
+    """Start, level, speed and envelope of burst k; the last burst runs to the cut."""
+    t0, d = slot
+    last = k == ctx.nb - 1
+    start = gk.start_of(t0)
+    g = max(16, ctx.n_end - start) if last else max(16, n_of(d * p["gate"]))
+    m = g if last else min(g, ctx.size)
+    return types.SimpleNamespace(k=k, d=d, last=last, start=start, speed=2.0 ** (k * p["pitch_step"] / 12),
+                                 level=_level_v2(p, k, ctx.nb, last, prng),
+                                 env=_burst_env_v2(p, m, d, last, ctx.tail_n))
+
+
+def _skipped(p: dict, b: types.SimpleNamespace, prng) -> bool:
+    """Round 3: with chance skip, a slot that is not the first or the last stays empty."""
+    return "skip" in p and 0 < b.k and not b.last and prng.random() < p["skip"]
+
+
+def _write_v2(y: np.ndarray, b: types.SimpleNamespace, bufs, choices, rng) -> None:
+    for c, (idx, rev, off) in enumerate(choices):
+        seg = gk.body_segment(gk.read_slice(bufs[idx], rev, b.speed), len(b.env))
+        gk.add_clip(y[:, c], seg * b.env * b.level * np.exp(0.12 * rng.standard_normal()), b.start + off)
+
+
+def _low_v2(p: dict, low: np.ndarray, b: types.SimpleNamespace, prng) -> None:
+    m = min(n_of(b.d * p["gate"] + 0.006), len(low) - b.start)
+    f0 = prng.uniform(55, 110)
+    if m > 1:
+        gk.add_clip(low, _low_pulse(m, f0, 0.012, 10 ** (p["low_db"] / 20) * b.level), b.start)
+
+
+def _bursts_v2(p: dict, ctx: types.SimpleNamespace, bufs, rng, prng) -> tuple[np.ndarray, np.ndarray]:
+    y, low = np.zeros((ctx.n, 2)), np.zeros(ctx.n)
     prev = [0, 0]
-    nb = len(slots)
-    size = len(bufs[0])
-    for k, (t0, d) in enumerate(slots):
-        last = k == nb - 1
-        if "skip" in p and 0 < k and not last and prng.random() < p["skip"]:
-            continue
-        start = gk.start_of(t0)
-        g = max(16, n_end - start) if last else max(16, n_of(d * p["gate"]))
-        level = _level_v2(p, k, nb, last, prng)
-        speed = 2.0 ** (k * p["pitch_step"] / 12)
-        m = g if last else min(g, size)
-        env = _burst_env_v2(p, m, d, last, tail_n)
-        left = None
-        for c in range(2):
-            left = _choice_v2(p, c, last, prev, left, len(bufs), prng)
-            idx, rev, off = left
-            prev[c] = idx
-            seg = gk.body_segment(gk.read_slice(bufs[idx], rev, speed), len(env))
-            gk.add_clip(y[:, c], seg * env * level * np.exp(0.12 * rng.standard_normal()), start + off)
-        if p["low_db"] > -39.5:
-            mm = min(n_of(d * p["gate"] + 0.006), n - start)
-            f0 = prng.uniform(55, 110)
-            if mm > 1:
-                gk.add_clip(low, _low_pulse(mm, f0, 0.012, 10 ** (p["low_db"] / 20) * level), start)
+    for k, slot in enumerate(ctx.slots):
+        b = _burst_v2(p, k, slot, ctx, prng)
+        if not _skipped(p, b, prng):
+            choices = _choices_v2(p, b, prev, len(bufs), prng)
+            prev = [choices[0][0], choices[1][0]]
+            _write_v2(y, b, bufs, choices, rng)
+            if p["low_db"] > -39.5:
+                _low_v2(p, low, b, prng)
     return y, low
 
 
@@ -221,28 +248,28 @@ def _merged_v2(p: dict) -> dict:
     return q
 
 
+def _texture_v2(p: dict, ctx: types.SimpleNamespace, y: np.ndarray, rng) -> np.ndarray:
+    """The crackle lead-in and the crushed bed under the stutter, both scaled to the current peak."""
+    if p["crackle"] > 0.02 and ctx.t_st > 0.02:
+        y = y + _crackle_v2(p, ctx.n, ctx.t_st, rng) * gk.peak(y)
+    if p["floor_db"] > -71.5:
+        ramp = np.minimum(1.0, t_of(ctx.n) / max(0.02, ctx.t_st + 0.02))[:, None]
+        y = y + 10 ** (p["floor_db"] / 20) * gk.peak(y) * _bed(ctx.n, ctx.n_end, 3000, p["srate"], rng) * ramp
+    return y
+
+
 def render(p: dict, rng: np.random.Generator) -> np.ndarray:
     """One take. A set with roll0 renders with version 6; else version 2 (not peak-normalised below 0 dBFS)."""
     if "roll0" in (p or {}):
         return render6(p, rng)
     p = _merged_v2(p)
     prng = gk.pattern_rng(p["pattern"], 13)
-    n_end, tail_n = n_of(p["dur"]), n_of(4 * p["end_tail"])
-    n = n_end + tail_n
-    t_st = p["dur"] * p["crackle"]
-    slots = gk.grid(t_st, p["dur"], p["grid0"], p["grid1"], p["accel"])
-    size = n_of(max(d for _, d in slots) + 0.004)
-    bufs = [_buffer_v2(p, size, rng, prng) for _ in range(max(1, int(round(p["slices"]))))]
-    y, low = _bursts_v2(p, slots, bufs, n, n_end, tail_n, rng, prng)
+    ctx = _layout(p, p["dur"] * p["crackle"])
+    bufs = [_buffer_v2(p, ctx.size, rng, prng) for _ in range(max(1, int(round(p["slices"]))))]
+    y, low = _bursts_v2(p, ctx, bufs, rng, prng)
     y = bw(y, "high", p["hp"], 4)
-    y = y + (low * gk.peak(y))[:, None]
-    if p["crackle"] > 0.02 and t_st > 0.02:
-        y = y + _crackle_v2(p, n, t_st, rng) * gk.peak(y)
-    if p["floor_db"] > -71.5:
-        ramp = np.minimum(1.0, t_of(n) / max(0.02, t_st + 0.02))
-        y = y + 10 ** (p["floor_db"] / 20) * gk.peak(y) * _bed(n, n_end, 3000, p["srate"], rng) * ramp[:, None]
-    y = dsp.peq(y, 6000, p["bright"], 0.5)
-    return headroom(_finish(y, p["drive"]))
+    y = _texture_v2(p, ctx, y + (low * gk.peak(y))[:, None], rng)
+    return headroom(_finish(dsp.peq(y, 6000, p["bright"], 0.5), p["drive"]))
 
 
 # ------------------------------------------------------------------------------------------------ version 6
@@ -282,19 +309,28 @@ def _crackle6(p: dict, n: int, t_end: float, rng) -> np.ndarray:
     return np.column_stack(chans)
 
 
-def _segment6(p: dict, src, state: dict, c: int, ctx: dict, prng) -> np.ndarray:
-    ls, span = ctx["ls"], max(1, _NS - ctx["ls"] - 1)
-    if prng.random() < p["jump"]:
-        state["pos"][c] = int(prng.integers(0, max(1, _NS - ls - 1)))
-    rev = prng.random() < p["rev"]
-    srk = ctx["sr0"]
+def _rate_drop(p: dict, prng) -> float:
+    """With chance sdrop the sample rate drops 1 or 2 more octaves."""
     if prng.random() < p["sdrop"]:
-        srk = ctx["sr0"] / (2 if prng.random() < 0.5 else 4)
-    bk = int(round(ctx["b0"] + prng.uniform(-1, 1)))
-    a = min(state["pos"][c], _NS - ls - 1)
-    sl = gk.read_slice(src[max(0, a):max(0, a) + ls], rev, ctx["speed"])
-    seg = gk.body_segment(sl, ctx["m"]) / (gk.peak(sl) + 1e-12)
-    state["pos"][c] = (state["pos"][c] + n_of(ctx["d"])) % span
+        return 2.0 if prng.random() < 0.5 else 4.0
+    return 1.0
+
+
+def _draw6(p: dict, b: types.SimpleNamespace, pos: list[int], c: int, prng) -> tuple[int, bool, float, int]:
+    """Read start, reverse flag, rate and bits of one channel's segment; a jump moves the read position."""
+    if prng.random() < p["jump"]:
+        pos[c] = int(prng.integers(0, max(1, _NS - b.ls - 1)))
+    rev = bool(prng.random() < p["rev"])
+    srk = b.sr0 / _rate_drop(p, prng)
+    bk = int(round(b.b0 + prng.uniform(-1, 1)))
+    return max(0, min(pos[c], _NS - b.ls - 1)), rev, srk, bk
+
+
+def _segment6(p: dict, src, pos: list[int], c: int, b: types.SimpleNamespace, prng) -> np.ndarray:
+    a, rev, srk, bk = _draw6(p, b, pos, c, prng)
+    sl = gk.read_slice(src[a:a + b.ls], rev, b.speed)
+    pos[c] = (pos[c] + n_of(b.d)) % max(1, _NS - b.ls - 1)
+    seg = gk.body_segment(sl, b.m) / (gk.peak(sl) + 1e-12)
     return crush(seg, max(2, bk), min(srk, SR / 2))
 
 
@@ -304,75 +340,94 @@ def _env6(p: dict, g: int, d: float, last: bool, tail_n: int) -> np.ndarray:
     return gk.last_env(g, g / SR / 3.45, tail_n, p["end_tail"])
 
 
-def _dropped(p: dict, k: int, last: bool, state: dict, prng) -> bool:
-    if k > 0 and not last and prng.random() < p["drop"] and state["run"] < 2:
-        state["run"] += 1
-        return True
-    state["run"] = 0
-    return False
+def _drop_run(state: dict, want: bool) -> bool:
+    """A drop-out happens when wanted and fewer than 2 drop-outs came in a row; else the run resets."""
+    dropped = want and state["run"] < 2
+    state["run"] = state["run"] + 1 if dropped else 0
+    return dropped
 
 
-def _burst6(p: dict, k: int, slot, nb: int, ctx: dict, prng) -> dict:
-    """Layout values of burst k: gate length, slice length, speed, rate, bits, level and side gains."""
-    t0, d = slot
-    u = k / max(1, nb - 1)
-    last = k == nb - 1
-    start = gk.start_of(t0)
-    g = max(32, ctx["n_end"] - start) if last else max(32, n_of(d * p["gate"]))
+def _level6(p: dict, u: float, last: bool, prng) -> float:
     jit = abs(p["lvl_jit"] * prng.standard_normal())
-    sides = (1.0, 1.0)
+    return 10 ** ((p["swell"] * (u - 1) - jit * (not last)) / 20)
+
+
+def _sides6(p: dict, last: bool, prng) -> tuple[float, float]:
+    """With chance pan_jump (never the last burst) the burst plays hard left or hard right."""
     if prng.random() < p["pan_jump"] and not last:
-        sides = (1.0, 0.12) if prng.random() < 0.5 else (0.12, 1.0)
-    return dict(d=d, last=last, start=start, g=g, sides=sides, m=g + (ctx["tail_n"] if last else 0),
-                ls=max(24, n_of(p["roll0"] * (p["roll1"] / p["roll0"]) ** u)),
-                speed=2.0 ** (k * p["pitch_step"] / 12), sr0=p["srate0"] * (p["srate1"] / p["srate0"]) ** u,
-                b0=p["bits0"] + (p["bits1"] - p["bits0"]) * u,
-                level=10 ** ((p["swell"] * (u - 1) - jit * (not last)) / 20))
+        return (1.0, 0.12) if prng.random() < 0.5 else (0.12, 1.0)
+    return 1.0, 1.0
 
 
-def _write6(p: dict, y, low, b: dict, src, state, prng) -> None:
-    env = _env6(p, b["g"], b["d"], b["last"], b["m"] - b["g"])
+def _slice6(p: dict, k: int, u: float) -> dict:
+    """Slice length, speed, sample rate and bits of burst k at progress u."""
+    return {"ls": max(24, n_of(p["roll0"] * (p["roll1"] / p["roll0"]) ** u)),
+            "speed": 2.0 ** (k * p["pitch_step"] / 12), "sr0": p["srate0"] * (p["srate1"] / p["srate0"]) ** u,
+            "b0": p["bits0"] + (p["bits1"] - p["bits0"]) * u}
+
+
+def _burst6(p: dict, k: int, slot: tuple, ctx: types.SimpleNamespace, prng) -> types.SimpleNamespace:
+    t0, d = slot
+    u = k / max(1, ctx.nb - 1)
+    last = k == ctx.nb - 1
+    start = gk.start_of(t0)
+    g = max(32, ctx.n_end - start) if last else max(32, n_of(d * p["gate"]))
+    return types.SimpleNamespace(d=d, last=last, inner=k > 0 and not last, start=start, g=g,
+                                 m=g + (ctx.tail_n if last else 0), level=_level6(p, u, last, prng),
+                                 sides=_sides6(p, last, prng), **_slice6(p, k, u))
+
+
+def _thump6(p: dict, low: np.ndarray, b: types.SimpleNamespace, prng) -> None:
+    m = min(n_of(min(0.05, b.d)), len(low) - b.start)
+    f = prng.uniform(50, 90)
+    if m > 1:
+        gk.add_clip(low, _low_pulse(m, f, 0.015, 10 ** (p["low_db"] / 20) * b.level), b.start)
+
+
+def _write6(p: dict, y, b: types.SimpleNamespace, src, pos: list[int], prng) -> None:
+    env = _env6(p, b.g, b.d, b.last, b.m - b.g) * b.level
     own = prng.random() < p["width"]
-    seg_l = _segment6(p, src, state, 0, b, prng)
-    seg_r = _segment6(p, src, state, 1, b, prng) if own else seg_l
-    off = n_of(prng.uniform(0, 0.002)) if (own and not b["last"]) else 0
-    gk.add_clip(y[:, 0], seg_l * env * b["level"] * b["sides"][0], b["start"])
-    gk.add_clip(y[:, 1], seg_r * env * b["level"] * b["sides"][1], b["start"] + off)
-    if p["low_db"] > -55 and b["level"] > 0.5:
-        m = min(n_of(min(0.05, b["d"])), len(low) - b["start"])
-        f = prng.uniform(50, 90)
-        if m > 1:
-            gk.add_clip(low, _low_pulse(m, f, 0.015, 10 ** (p["low_db"] / 20) * b["level"]), b["start"])
+    seg_l = _segment6(p, src, pos, 0, b, prng)
+    seg_r = _segment6(p, src, pos, 1, b, prng) if own else seg_l
+    off = n_of(prng.uniform(0, 0.002)) if (own and not b.last) else 0
+    gk.add_clip(y[:, 0], seg_l * env * b.sides[0], b.start)
+    gk.add_clip(y[:, 1], seg_r * env * b.sides[1], b.start + off)
+
+
+def _bursts6(p: dict, ctx: types.SimpleNamespace, src, prng) -> tuple[np.ndarray, np.ndarray]:
+    pos = [int(v) for v in prng.integers(0, _NS // 2, 2)]
+    state = {"run": 0}
+    y, low = np.zeros((ctx.n, 2)), np.zeros(ctx.n)
+    for k, slot in enumerate(ctx.slots):
+        b = _burst6(p, k, slot, ctx, prng)
+        if not _drop_run(state, b.inner and prng.random() < p["drop"]):
+            _write6(p, y, b, src, pos, prng)
+            if p["low_db"] > -55 and b.level > 0.5:
+                _thump6(p, low, b, prng)
+    return y, low
+
+
+def _post6(p: dict, ctx: types.SimpleNamespace, y: np.ndarray, low: np.ndarray, rng) -> np.ndarray:
+    """10.6 steps 5 to 10: high-pass, low thumps, crackle lead-in, bed, EQ, drive, the final low-pass and peak."""
+    y = bw(y, "high", p["hp"], 2)
+    pk = gk.peak(y)
+    y = y + (low * 3 * pk)[:, None]
+    if ctx.t_st > 0.02:
+        y = y + _crackle6(p, ctx.n, ctx.t_st, rng) * 2 * pk
+    if p["floor_db"] > -71.5:
+        y = y + 10 ** (p["floor_db"] / 20) * pk * _bed(ctx.n, ctx.n_end, 2000, 8000, rng)
+    y = _finish(dsp.peq(bw(bw(y, "high", 25, 2), "low", p["lp"], 4), 6000, p["bright"], 0.5), p["drive"])
+    return 0.89 * y / (gk.peak(y) + 1e-12)
 
 
 def render6(p: dict, rng: np.random.Generator) -> np.ndarray:
     """Version 6: a beat-repeat roll cut from a pitched source, normalised to an absolute peak of 0.89."""
-    q = dict(DEFAULTS6)
-    q.update(p or {})
-    p = q
+    p = {**DEFAULTS6, **(p or {})}
     prng = gk.pattern_rng(p["pattern"], 61)
-    n_end, tail_n = n_of(p["dur"]), n_of(4 * p["end_tail"])
-    n = n_end + tail_n
-    t_st = p["dur"] * p["crackle"] if p["crackle"] > 0.02 else 0.0
-    slots = gk.grid(t_st, p["dur"], p["grid0"], p["grid1"], p["accel"])
+    ctx = _layout(p, p["dur"] * p["crackle"] if p["crackle"] > 0.02 else 0.0)
     src = source6(p, rng, prng)
-    state = {"pos": [int(v) for v in prng.integers(0, _NS // 2, 2)], "run": 0}
-    ctx = {"n_end": n_end, "tail_n": tail_n}
-    y, low = np.zeros((n, 2)), np.zeros(n)
-    for k, slot in enumerate(slots):
-        if _dropped(p, k, k == len(slots) - 1, state, prng):
-            continue
-        _write6(p, y, low, _burst6(p, k, slot, len(slots), ctx, prng), src, state, prng)
-    y = bw(y, "high", p["hp"], 2)
-    pk = gk.peak(y)
-    y = y + (low * 3 * pk)[:, None]
-    if t_st > 0.02:
-        y = y + _crackle6(p, n, t_st, rng) * 2 * pk
-    if p["floor_db"] > -71.5:
-        y = y + 10 ** (p["floor_db"] / 20) * pk * _bed(n, n_end, 2000, 8000, rng)
-    y = dsp.peq(bw(bw(y, "high", 25, 2), "low", p["lp"], 4), 6000, p["bright"], 0.5)
-    y = _finish(y, p["drive"])
-    return 0.89 * y / (gk.peak(y) + 1e-12)
+    y, low = _bursts6(p, ctx, src, prng)
+    return _post6(p, ctx, y, low, rng)
 
 
 # ------------------------------------------------------------------------------------------------ measures

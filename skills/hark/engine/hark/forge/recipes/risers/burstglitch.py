@@ -62,14 +62,18 @@ def _level_db(p: dict, k: int, nb: int, prng) -> float:
     return -p["accent_db"] + p["fall_db"] * (k - 1) / max(1, nb - 2) - jit
 
 
-def _choice(p: dict, c: int, k: int, last: bool, prev: list[int], left, prng):
-    """(set index, buffer index, offset) for channel c; a channel that is not its own reads the left choice."""
-    own = c == 0 or prng.random() <= p["width"]
-    if not own:
-        return left
-    idx = prev[c] if prng.random() < p["repeat"] else int(prng.integers(NBUF))
-    off = n_of(prng.uniform(0, 0.002)) if (c == 1 and not last and k > 0) else 0
-    return c, idx, off
+def _own_choice(p: dict, prev_idx: int, offset: int, prng) -> tuple[int, int]:
+    idx = prev_idx if prng.random() < p["repeat"] else int(prng.integers(NBUF))
+    return idx, offset
+
+
+def _choices(p: dict, b: types.SimpleNamespace, prev: list[int], prng) -> tuple[tuple, tuple]:
+    """(set, buffer, offset) for left and right; a right channel that is not its own reads the left choice."""
+    left = (0, *_own_choice(p, prev[0], 0, prng))
+    if prng.random() > p["width"]:
+        return left, left
+    off = n_of(prng.uniform(0, 0.002)) if b.inner else 0
+    return left, (1, *_own_choice(p, prev[1], off, prng))
 
 
 def _env(p: dict, m: int, d: float, last: bool, tail: int) -> np.ndarray:
@@ -80,25 +84,31 @@ def _env(p: dict, m: int, d: float, last: bool, tail: int) -> np.ndarray:
     return np.concatenate([body, end * np.exp(-t_of(tail) / (p["end_tail"] / 1.3))])
 
 
-def _bursts(p: dict, slots, sets, n: int, n_end: int, tail: int, rng, prng) -> np.ndarray:
-    y = np.zeros((n, 2))
+def _burst(p: dict, k: int, slot: tuple, ctx: types.SimpleNamespace, prng) -> types.SimpleNamespace:
+    """Start, gain and envelope of burst k; the last burst runs to the cut and on into the tail."""
+    t0, d = slot
+    last = k == ctx.nb - 1
+    start = gk.start_of(t0)
+    g = max(16, ctx.n_end - start) if last else max(16, n_of(d * p["gate"]))
+    m = g if last else min(g, ctx.size)
+    return types.SimpleNamespace(start=start, inner=not last and k > 0, env=_env(p, m, d, last, ctx.tail),
+                                 gain=10 ** (_level_db(p, k, ctx.nb, prng) / 20))
+
+
+def _write(y: np.ndarray, b: types.SimpleNamespace, sets, choices, rng) -> None:
+    for c, (s, idx, off) in enumerate(choices):
+        seg = gk.body_segment(sets[s][idx], len(b.env))
+        gk.add_clip(y[:, c], seg * b.env * b.gain * np.exp(0.1 * rng.standard_normal()), b.start + off)
+
+
+def _bursts(p: dict, ctx: types.SimpleNamespace, sets, rng, prng) -> np.ndarray:
+    y = np.zeros((ctx.n, 2))
     prev = [0, 0]
-    nb = len(slots)
-    size = len(sets[0][0])
-    for k, (t0, d) in enumerate(slots):
-        last = k == nb - 1
-        start = gk.start_of(t0)
-        g = max(16, n_end - start) if last else max(16, n_of(d * p["gate"]))
-        gain = 10 ** (_level_db(p, k, nb, prng) / 20)
-        m = g if last else min(g, size)
-        env = _env(p, m, d, last, tail)
-        left = None
-        for c in range(2):
-            left = _choice(p, c, k, last, prev, left, prng)
-            s, idx, off = left
-            prev[c] = idx
-            seg = gk.body_segment(sets[s][idx], len(env))
-            gk.add_clip(y[:, c], seg * env * gain * np.exp(0.1 * rng.standard_normal()), start + off)
+    for k, slot in enumerate(ctx.slots):
+        b = _burst(p, k, slot, ctx, prng)
+        choices = _choices(p, b, prev, prng)
+        prev = [choices[0][1], choices[1][1]]
+        _write(y, b, sets, choices, rng)
     return y
 
 
@@ -125,33 +135,42 @@ def _crackle(p: dict, n: int, t_st: float, rng) -> np.ndarray:
     return np.column_stack(chans)
 
 
-def render(p: dict, rng: np.random.Generator) -> np.ndarray:
-    """One take, (n, 2); n = samples of dur + samples of 5 end_tail; absolute peak 0.89."""
-    q = dict(DEFAULTS)
-    q.update(p or {})
-    p = q
-    prng = gk.pattern_rng(p["pattern"], 101)
+def _layout(p: dict) -> types.SimpleNamespace:
+    """Sizes, the crackle lead-in, the slot grid and the buffer length of one render."""
     n_end, tail = n_of(p["dur"]), n_of(5 * p["end_tail"])
-    n = n_end + tail
     t_st = p["dur"] * p["crackle"]
     slots = gk.grid(t_st, p["dur"], p["grid0"], p["grid1"], p["accel"])
-    size = n_of(max(d for _, d in slots) + 0.004)
-    sets = [[_buffer(p, size, rng, prng) for _ in range(NBUF)] for _ in range(2)]
-    y = _bursts(p, slots, sets, n, n_end, tail, rng, prng)
-    y = bw(y, "band", (p["lo_f"], max(p["hi_f"], 1.5 * p["lo_f"])), 2)
-    pk = gk.peak(y)
+    return types.SimpleNamespace(n_end=n_end, tail=tail, n=n_end + tail, t_st=t_st, slots=slots, nb=len(slots),
+                                 size=n_of(max(d for _, d in slots) + 0.004))
+
+
+def _extras(p: dict, ctx: types.SimpleNamespace, pk: float, rng, prng) -> np.ndarray:
+    """The low pulse under each burst and the crackle lead-in, both scaled to the bursts' peak pk."""
+    out = np.zeros((ctx.n, 2))
     if p.get("low_db", -50.0) > -49.5:
-        low = _low_pulses(p, slots, n, rng, prng)
-        y = y + (pk * 10 ** (p["low_db"] / 20) * low / (gk.peak(low) + 1e-12))[:, None]
-    if p["crackle"] > 0.02 and t_st > 0.01:
-        cr = _crackle(p, n, t_st, rng)
-        y = y + cr / (gk.peak(cr) + 1e-12) * pk * 10 ** (p["crackle_db"] / 20)
-    y = bw(y, "low", 18500, 6)
+        low = _low_pulses(p, ctx.slots, ctx.n, rng, prng)
+        out += (pk * 10 ** (p["low_db"] / 20) * low / (gk.peak(low) + 1e-12))[:, None]
+    if p["crackle"] > 0.02 and ctx.t_st > 0.01:
+        cr = _crackle(p, ctx.n, ctx.t_st, rng)
+        out += cr / (gk.peak(cr) + 1e-12) * pk * 10 ** (p["crackle_db"] / 20)
+    return out
+
+
+def render(p: dict, rng: np.random.Generator) -> np.ndarray:
+    """One take, (n, 2); n = samples of dur + samples of 5 end_tail; absolute peak 0.89."""
+    p = {**DEFAULTS, **(p or {})}
+    prng = gk.pattern_rng(p["pattern"], 101)
+    ctx = _layout(p)
+    sets = [[_buffer(p, ctx.size, rng, prng) for _ in range(NBUF)] for _ in range(2)]
+    y = bw(_bursts(p, ctx, sets, rng, prng), "band", (p["lo_f"], max(p["hi_f"], 1.5 * p["lo_f"])), 2)
+    y = bw(y + _extras(p, ctx, gk.peak(y), rng, prng), "low", 18500, 6)
     y[:2] = 0.0
-    y = 0.89 * y / (gk.peak(y) + 1e-12)
-    return dsp.fade(y, 0.0005, 0.003)
+    return dsp.fade(0.89 * y / (gk.peak(y) + 1e-12), 0.0005, 0.003)
+
+
+_RECIPE = (MODULE, FAMILIES, SPACE, TARGETS, ALTS, REFSET)
 
 
 def recipe_for(cat: str = "glitch", preset=0) -> types.SimpleNamespace:
     """A recipe object around one member, by index or by name."""
-    return member_recipe(MODULE, FAMILIES, SPACE, TARGETS, ALTS, REFSET, render, cat, preset)
+    return member_recipe(*_RECIPE, render, cat, preset)
