@@ -66,6 +66,10 @@ pub struct Harness {
 /// harness environment, so a commit hash is the same in every run.
 pub const GIT_DATE: &str = "2026-09-28T12:00:00+00:00";
 
+/// The default `HORCH_FAULT` of the sealed environment: a 100 ms delivery
+/// probe budget.
+pub const DELIVERY_PROBE_FAULT: &str = "delivery-probe-ms:100";
+
 fn exe(name: &str) -> String {
     format!("{name}{}", std::env::consts::EXE_SUFFIX)
 }
@@ -83,10 +87,8 @@ impl Harness {
             let preferred = Path::new("/tmp").join(&dir_name);
             let _ = std::fs::remove_dir_all(&preferred);
             let preferred_writable = std::fs::create_dir_all(&preferred).is_ok();
-            let fallback = std::env::var_os("TMPDIR")
-                .map(PathBuf::from)
-                .unwrap_or_else(std::env::temp_dir)
-                .join(format!("h{:x}-{:x}", std::process::id(), unique_sequence()));
+            let fallback =
+                tmpdir().join(format!("h{:x}-{:x}", std::process::id(), unique_sequence()));
             choose_harness_root(&preferred, &fallback, preferred_writable)
         };
         #[cfg(not(unix))]
@@ -107,6 +109,15 @@ impl Harness {
         for dir in [&h.home, &h.state, &h.tmp, &h.bin, &h.project] {
             std::fs::create_dir_all(dir).expect("creating harness dirs");
         }
+        write_owner(&h.root);
+        static STALE: std::sync::Once = std::sync::Once::new();
+        STALE.call_once(|| {
+            for parent in harness_parents() {
+                for line in stop_stale_harnesses(&parent) {
+                    eprintln!("warning: stopped a process of an earlier test run: {line}");
+                }
+            }
+        });
         check_built_fakes();
         warm_built_fakes();
         // A fake that starts slowly under load must not fail the local health
@@ -343,6 +354,11 @@ impl Harness {
         // `horch fleet` runs no agent CLI updater: a test asserts the exact
         // calls each fake saw. tests/update.rs uses `allow_updates`.
         env.insert("HORCH_NO_UPDATE".into(), "1".into());
+        // The fake herdr never runs the delivery probe's typed command, so
+        // the probe of `horch fleet` and `horch doctor` waits its full
+        // budget. 100 ms, not production's 5 s. A test of the probe sets its
+        // own `HORCH_FAULT`; `unset` brings this default back.
+        env.insert("HORCH_FAULT".into(), DELIVERY_PROBE_FAULT.into());
         env.insert(
             "CODEX_HOME".into(),
             self.home.join(".codex").to_string_lossy().into_owned(),
@@ -418,7 +434,7 @@ impl Harness {
     }
 
     /// Leave `key` out of the sealed environment, also when the harness sets
-    /// it by default (`HORCH_CLAUDE_BIN`, `HORCH_NO_UPDATE`). A later
+    /// it by default (`HORCH_CLAUDE_BIN`, `HORCH_NO_UPDATE`, `HORCH_FAULT`). A later
     /// [`Harness::set`] of the same key still wins.
     pub fn without(&mut self, key: &str) -> &mut Self {
         self.env.remove(key);
@@ -685,6 +701,66 @@ fn reap(_root: &Path, _log: &Path) -> std::io::Result<Vec<String>> {
     Ok(Vec::new())
 }
 
+/// The file in each harness root that names the test process that owns it:
+/// `<pid> <start time>`.
+const OWNER_FILE: &str = ".horch-e2e-owner";
+
+/// `TMPDIR`, or the platform temp dir.
+fn tmpdir() -> PathBuf {
+    std::env::var_os("TMPDIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(std::env::temp_dir)
+}
+
+/// The dirs that hold harness roots.
+fn harness_parents() -> Vec<PathBuf> {
+    #[cfg(unix)]
+    return vec![PathBuf::from("/tmp"), tmpdir()];
+    #[cfg(not(unix))]
+    return vec![std::env::temp_dir()];
+}
+
+/// Record this test process as the owner of `root`.
+fn write_owner(root: &Path) {
+    let pid = std::process::id();
+    let started = horch_core::procid::start_time(pid).unwrap_or(0);
+    let _ = std::fs::write(root.join(OWNER_FILE), format!("{pid} {started}"));
+}
+
+/// Stop the processes of every harness root in `parent` whose owner test
+/// process has ended. A test binary that is killed before teardown leaves
+/// its processes: the detached mail courier redelivers for hours (audit
+/// Q3). Teardown's [`reap`] finds them by the root in their environment.
+/// The owner file is then removed, so each root is stopped once. The dir
+/// stays: `HORCH_E2E_KEEP` can have kept it. Returns the processes that
+/// outlived SIGTERM.
+fn stop_stale_harnesses(parent: &Path) -> Vec<String> {
+    let Ok(entries) = std::fs::read_dir(parent) else {
+        return Vec::new();
+    };
+    let mut leaked = Vec::new();
+    for root in entries.flatten().map(|e| e.path()) {
+        let owner = root.join(OWNER_FILE);
+        let Ok(text) = std::fs::read_to_string(&owner) else {
+            continue;
+        };
+        let mut parts = text.split_whitespace().map(str::parse::<u64>);
+        let (Some(Ok(pid)), Some(Ok(started))) = (parts.next(), parts.next()) else {
+            continue;
+        };
+        let Ok(pid) = u32::try_from(pid) else {
+            continue;
+        };
+        let started = (started != 0).then_some(started);
+        if horch_core::procid::alive(pid, started) {
+            continue;
+        }
+        leaked.extend(reap(&root, &root.join("fake.log")).unwrap_or_default());
+        let _ = std::fs::remove_file(&owner);
+    }
+    leaked
+}
+
 /// What `list` returns, tried again every 50 ms while it fails, for at most
 /// `grace`. A `ps` that cannot fork on a loaded machine must not read as
 /// "no process runs": teardown would then signal nothing, report no leak,
@@ -910,7 +986,9 @@ mod tests {
     use std::path::{Path, PathBuf};
     use std::time::Duration;
 
-    use super::{choose_harness_root, listed, process_list_or_sandbox};
+    use super::{
+        choose_harness_root, listed, process_list_or_sandbox, stop_stale_harnesses, OWNER_FILE,
+    };
 
     #[test]
     fn harness_root_prefers_writable_tmp_and_checks_the_tmpdir_socket_path() {
@@ -982,5 +1060,71 @@ mod tests {
             Duration::from_millis(200),
         );
         assert_eq!(got.unwrap_err().to_string(), "fork failed");
+    }
+
+    /// A detached mail courier with pending orchestrator mail in
+    /// `root/state`, started as horch starts it: in its own process group,
+    /// with the root only in its environment. Returns its pid, read from
+    /// its lock.
+    fn courier_in(root: &Path) -> u32 {
+        let state = root.join("state");
+        horch_core::messaging::mail::Mail::under(&state, "w1")
+            .enqueue("sonnet-1", "DONE: x")
+            .unwrap();
+        let mut cmd = std::process::Command::new("/bin/sh");
+        cmd.env_clear()
+            .env("HOME", root)
+            .env("PATH", root)
+            .env("HORCH_STATE_DIR", &state)
+            .env("HORCH_HERDR_BIN", root.join("no-herdr"))
+            .args([
+                "-c",
+                "\"$0\" mail courier --workspace w1 </dev/null >/dev/null 2>&1 &",
+            ])
+            .arg(super::Harness::horch_bin());
+        // Never the test's own group: teardown does not signal that.
+        std::os::unix::process::CommandExt::process_group(&mut cmd, 0);
+        assert!(cmd.status().unwrap().success());
+        let lock = state.join("mail/w1/courier.lock");
+        super::wait_for("the courier to hold its lock", || {
+            let out = std::process::Command::new("lsof")
+                .arg("-t")
+                .arg(&lock)
+                .output()
+                .ok()?;
+            String::from_utf8_lossy(&out.stdout).trim().parse().ok()
+        })
+    }
+
+    /// Q3: a harness root whose owner test process has ended gets its
+    /// processes stopped; a root whose owner runs is left alone. Both
+    /// owners are this process's pid. Only the start time differs, so no
+    /// pid can be reused by another process during the test.
+    #[test]
+    fn a_harness_of_an_ended_test_process_has_its_processes_stopped() {
+        let parent = super::tmpdir().join(format!("h-stale-{:x}", super::unique()));
+        let (stale, live) = (parent.join("stale"), parent.join("live"));
+        let pid = std::process::id();
+        let started = horch_core::procid::start_time(pid).expect("own start time");
+        let stale_pid = courier_in(&stale);
+        let live_pid = courier_in(&live);
+        std::fs::write(stale.join(OWNER_FILE), format!("{pid} {}", started + 1)).unwrap();
+        std::fs::write(live.join(OWNER_FILE), format!("{pid} {started}")).unwrap();
+
+        let leaked = stop_stale_harnesses(&parent);
+
+        let stale_runs = horch_core::fsx::pid_alive(stale_pid);
+        let live_runs = horch_core::fsx::pid_alive(live_pid);
+        let owner_left = stale.join(OWNER_FILE).exists();
+        // SAFETY: plain syscall; the live process is ours to stop.
+        unsafe { libc::kill(live_pid as libc::pid_t, libc::SIGKILL) };
+        let _ = std::fs::remove_dir_all(&parent);
+        assert!(leaked.is_empty(), "the courier ends on SIGTERM: {leaked:?}");
+        assert!(!stale_runs, "the stale root's process still runs");
+        assert!(
+            !owner_left,
+            "the stale root is stopped once, so its owner file goes"
+        );
+        assert!(live_runs, "the live root's process was stopped");
     }
 }
