@@ -19,435 +19,435 @@ from hark.forge.engine.dsp import SR, n_of, t_of
 
 IR_CACHE_MB = 64
 
-_CACHE: OrderedDict = OrderedDict()
-_LOCK = threading.Lock()
-_STATS = {"hits": 0, "misses": 0}
+_IR_STORE: OrderedDict = OrderedDict()
+_STORE_GUARD = threading.Lock()
+_STORE_COUNTS = {"hits": 0, "misses": 0}
 
 
 # ---------------------------------------------------------------- helpers
 
-def _rms(x: np.ndarray) -> float:
-    return float(np.sqrt(np.mean(np.square(x)))) + 1e-12
+def _level_rms(sig: np.ndarray) -> float:
+    return float(np.sqrt(np.mean(np.square(sig)))) + 1e-12
 
 
-def _mono(x: np.ndarray) -> np.ndarray:
-    x = np.asarray(x, dtype=float)
-    return x.mean(axis=1) if x.ndim == 2 else x
+def _downmix(sig: np.ndarray) -> np.ndarray:
+    sig = np.asarray(sig, dtype=float)
+    return sig.mean(axis=1) if sig.ndim == 2 else sig
 
 
-def _allpass(x: np.ndarray, d: int, g: float) -> np.ndarray:
+def _schroeder_ap(sig: np.ndarray, dly: int, gn: float) -> np.ndarray:
     """Schroeder all-pass of delay d and gain g (exact LTI form)."""
-    b = np.zeros(d + 1)
-    a = np.zeros(d + 1)
-    b[0], b[d] = -g, 1.0
-    a[0], a[d] = 1.0, -g
-    return signal.lfilter(b, a, x, axis=0)
+    bv = np.zeros(dly + 1)
+    av = np.zeros(dly + 1)
+    bv[0], bv[dly] = -gn, 1.0
+    av[0], av[dly] = 1.0, -gn
+    return signal.lfilter(bv, av, sig, axis=0)
 
 
-def _shelf(kind: str, gain: float, fc: float) -> tuple[float, float, float]:
+def _shelf_coefs(kind_s: str, gain_v: float, corner: float) -> tuple[float, float, float]:
     """First-order shelf as (b0, b1, a1) for y = b0 x + b1 x1 - a1 y1."""
-    k = np.tan(np.pi * float(np.clip(fc, 20, 0.45 * SR)) / SR)
-    s = np.sqrt(gain)
-    if kind == "high":
-        b0, b1, a0, a1 = s + k, k - s, 1 / s + k, k - 1 / s
+    cnt = np.tan(np.pi * float(np.clip(corner, 20, 0.45 * SR)) / SR)
+    sv = np.sqrt(gain_v)
+    if kind_s == "high":
+        c_b0, c_b1, tap_a, tap_b = sv + cnt, cnt - sv, 1 / sv + cnt, cnt - 1 / sv
     else:
-        b0, b1, a0, a1 = 1 + k * s, k * s - 1, 1 + k / s, k / s - 1
-    return b0 / a0, b1 / a0, a1 / a0
+        c_b0, c_b1, tap_a, tap_b = 1 + cnt * sv, cnt * sv - 1, 1 + cnt / sv, cnt / sv - 1
+    return c_b0 / tap_a, c_b1 / tap_a, tap_b / tap_a
 
 
-def _hermite(x: np.ndarray, pos: np.ndarray) -> np.ndarray:
+def _cubic_read(sig: np.ndarray, where: np.ndarray) -> np.ndarray:
     """Cubic Hermite read at fractional positions; zero outside x."""
-    x = np.asarray(x, dtype=float)
-    pad = np.zeros((2,) + x.shape[1:])
-    xp = np.concatenate([pad, x, pad, pad])
-    i = np.floor(pos).astype(int)
-    fr = pos - i
-    ok = (i >= -1) & (i <= len(x))
-    j = np.clip(i, -1, len(x)) + 2
-    xm, x0, x1, x2 = xp[j - 1], xp[j], xp[j + 1], xp[j + 2]
-    if x.ndim == 2:
-        fr = fr[:, None]
-        ok = ok[:, None]
-    c1 = 0.5 * (x1 - xm)
-    c2 = xm - 2.5 * x0 + 2 * x1 - 0.5 * x2
-    c3 = 0.5 * (x2 - xm) + 1.5 * (x0 - x1)
-    return np.where(ok, ((c3 * fr + c2) * fr + c1) * fr + x0, 0.0)
+    sig = np.asarray(sig, dtype=float)
+    padn = np.zeros((2,) + sig.shape[1:])
+    xpad = np.concatenate([padn, sig, padn, padn])
+    ix = np.floor(where).astype(int)
+    frac = where - ix
+    good = (ix >= -1) & (ix <= len(sig))
+    jx = np.clip(ix, -1, len(sig)) + 2
+    mono_in, xa, xb, xc = xpad[jx - 1], xpad[jx], xpad[jx + 1], xpad[jx + 2]
+    if sig.ndim == 2:
+        frac = frac[:, None]
+        good = good[:, None]
+    cf1 = 0.5 * (xb - mono_in)
+    cf2 = mono_in - 2.5 * xa + 2 * xb - 0.5 * xc
+    cf3 = 0.5 * (xc - mono_in) + 1.5 * (xa - xb)
+    return np.where(good, ((cf3 * frac + cf2) * frac + cf1) * frac + xa, 0.0)
 
 
-def _coef(ms: float) -> float:
-    return float(np.exp(-1.0 / max(1.0, ms * 1e-3 * SR)))
+def _smoothing_k(msec: float) -> float:
+    return float(np.exp(-1.0 / max(1.0, msec * 1e-3 * SR)))
 
 
-def _follow(x: np.ndarray, att: float, rel: float) -> np.ndarray:
+def _env_follower(sig: np.ndarray, att_k: float, rel_k: float) -> np.ndarray:
     """Peak follower with separate attack and release coefficients."""
-    out = np.empty(len(x))
-    e = 0.0
-    for i, v in enumerate(x.tolist()):
-        a = att if v > e else rel
-        e = a * e + (1 - a) * v
-        out[i] = e
-    return out
+    acc = np.empty(len(sig))
+    ev = 0.0
+    for ix, vec in enumerate(sig.tolist()):
+        av = att_k if vec > ev else rel_k
+        ev = av * ev + (1 - av) * vec
+        acc[ix] = ev
+    return acc
 
 
-def _edge_fade(x: np.ndarray, k: int) -> np.ndarray:
-    x = np.array(x, dtype=float, copy=True)
-    k = int(min(k, len(x) // 2))
-    if k > 1:
-        w = 0.5 - 0.5 * np.cos(np.linspace(0, np.pi, k))
-        w = w if x.ndim == 1 else w[:, None]
-        x[:k] *= w
-        x[len(x) - k:] *= w[::-1]
-    return x
+def _soft_edges(sig: np.ndarray, cnt: int) -> np.ndarray:
+    sig = np.array(sig, dtype=float, copy=True)
+    cnt = int(min(cnt, len(sig) // 2))
+    if cnt > 1:
+        wt = 0.5 - 0.5 * np.cos(np.linspace(0, np.pi, cnt))
+        wt = wt if sig.ndim == 1 else wt[:, None]
+        sig[:cnt] *= wt
+        sig[len(sig) - cnt:] *= wt[::-1]
+    return sig
 
 
-def _primes(limit: int) -> np.ndarray:
-    sieve = np.ones(limit + 1, dtype=bool)
-    sieve[:2] = False
-    for p in range(2, int(limit ** 0.5) + 1):
-        if sieve[p]:
-            sieve[p * p::p] = False
-    return np.nonzero(sieve)[0]
+def _prime_list(upto: int) -> np.ndarray:
+    is_prime = np.ones(upto + 1, dtype=bool)
+    is_prime[:2] = False
+    for cfg in range(2, int(upto ** 0.5) + 1):
+        if is_prime[cfg]:
+            is_prime[cfg * cfg::cfg] = False
+    return np.nonzero(is_prime)[0]
 
 
 # ---------------------------------------------------------------- IR cache
 
 def ir_cache_stats() -> dict:
     """Hits, misses, entries and size in MB of the reverb IR cache."""
-    with _LOCK:
-        mb = sum(v[0].nbytes for v in _CACHE.values()) / 2 ** 20
-        return {"hits": _STATS["hits"], "misses": _STATS["misses"], "entries": len(_CACHE), "mb": round(mb, 1)}
+    with _STORE_GUARD:
+        mbytes = sum(vec[0].nbytes for vec in _IR_STORE.values()) / 2 ** 20
+        return {"hits": _STORE_COUNTS["hits"], "misses": _STORE_COUNTS["misses"], "entries": len(_IR_STORE), "mb": round(mbytes, 1)}
 
 
 def ir_cache_clear() -> None:
     """Empty the IR cache and zero its counters."""
-    with _LOCK:
-        _CACHE.clear()
-        _STATS["hits"] = _STATS["misses"] = 0
+    with _STORE_GUARD:
+        _IR_STORE.clear()
+        _STORE_COUNTS["hits"] = _STORE_COUNTS["misses"] = 0
 
 
-def _cache_get(key: Any) -> Any:
-    with _LOCK:
-        if key in _CACHE:
-            _CACHE.move_to_end(key)
-            _STATS["hits"] += 1
-            return _CACHE[key]
-        _STATS["misses"] += 1
+def _store_fetch(cache_key: Any) -> Any:
+    with _STORE_GUARD:
+        if cache_key in _IR_STORE:
+            _IR_STORE.move_to_end(cache_key)
+            _STORE_COUNTS["hits"] += 1
+            return _IR_STORE[cache_key]
+        _STORE_COUNTS["misses"] += 1
         return None
 
 
-def _cache_put(key: Any, ir: np.ndarray, state: Any) -> None:
-    with _LOCK:
-        _CACHE[key] = (ir.copy(), state)
-        budget = IR_CACHE_MB * 2 ** 20
-        while len(_CACHE) > 1 and sum(v[0].nbytes for v in _CACHE.values()) > budget:
-            _CACHE.popitem(last=False)
+def _store_save(cache_key: Any, resp: np.ndarray, st_v: Any) -> None:
+    with _STORE_GUARD:
+        _IR_STORE[cache_key] = (resp.copy(), st_v)
+        cap_b = IR_CACHE_MB * 2 ** 20
+        while len(_IR_STORE) > 1 and sum(vec[0].nbytes for vec in _IR_STORE.values()) > cap_b:
+            _IR_STORE.popitem(last=False)
 
 
-def _log_snap(v: Any, step: float) -> Any:
-    if v is None or v <= 0:
-        return v
-    return float(2 ** (round(np.log2(v) / step) * step))
+def _snap_log(vec: Any, stp: float) -> Any:
+    if vec is None or vec <= 0:
+        return vec
+    return float(2 ** (round(np.log2(vec) / stp) * stp))
 
 
-def _lin_snap(v: float, step: float = 0.05) -> float:
-    return round(round(v / step) * step, 4)
+def _snap_lin(vec: float, stp: float = 0.05) -> float:
+    return round(round(vec / stp) * stp, 4)
 
 
 def ir_grid(rt60: float = 1.6, size: float = 0.6, predelay: float = 0.01, damp: float = 0.5, bass: float = 1.2,
             mod: float = 1.0, diffuse: float = 0.7, width: float = 1.0, tail: float | None = None,
             lowcut: float = 0.0) -> dict:
     """Snap room settings to a grid so a search keeps hitting the IR cache."""
-    out = {"rt60": _log_snap(rt60, 1 / 24), "tail": _log_snap(tail, 1 / 24), "lowcut": _log_snap(lowcut, 1 / 12),
+    acc = {"rt60": _snap_log(rt60, 1 / 24), "tail": _snap_log(tail, 1 / 24), "lowcut": _snap_log(lowcut, 1 / 12),
            "predelay": round(round(predelay / 0.0005) * 0.0005, 5)}
-    for k, v in (("size", size), ("damp", damp), ("bass", bass), ("mod", mod), ("diffuse", diffuse),
+    for cnt, vec in (("size", size), ("damp", damp), ("bass", bass), ("mod", mod), ("diffuse", diffuse),
                  ("width", width)):
-        out[k] = _lin_snap(v)
-    return out
+        acc[cnt] = _snap_lin(vec)
+    return acc
 
 
 # ---------------------------------------------------------------- early reflections
 
-def _early_channel(r: np.random.Generator, m: int, t_hi: float, taps: int, width: float, c: int) -> np.ndarray:
-    ts = np.sort(np.exp(r.uniform(np.log(0.003), np.log(t_hi), taps)))
-    if c == 1:
-        ts = ts * (1 + width * r.uniform(-0.12, 0.12, taps))
-    signs = r.choice([-1.0, 1.0], taps)
-    ir = np.zeros(m)
-    for t, s in zip(ts, signs):
-        ir[min(m - 1, n_of(t))] += s * 0.003 / t
-    return ir
+def _reflection_taps(gen: np.random.Generator, mm: int, t_top: float, n_taps: int, spread_w: float, chan: int) -> np.ndarray:
+    tsec = np.sort(np.exp(gen.uniform(np.log(0.003), np.log(t_top), n_taps)))
+    if chan == 1:
+        tsec = tsec * (1 + spread_w * gen.uniform(-0.12, 0.12, n_taps))
+    sgn = gen.choice([-1.0, 1.0], n_taps)
+    resp = np.zeros(mm)
+    for tm, sv in zip(tsec, sgn):
+        resp[min(mm - 1, n_of(tm))] += sv * 0.003 / tm
+    return resp
 
 
-def _darken(ir: np.ndarray, damp: float) -> np.ndarray:
-    m = len(ir)
-    edges = np.linspace(0, m, 4).astype(int)
-    out = np.zeros(m)
-    for j in range(3):
-        part = np.zeros(m)
-        part[edges[j]:edges[j + 1]] = ir[edges[j]:edges[j + 1]]
-        out += dsp.butter(part, "low", 14000 - damp * 4000 * (j + 1), 1)
-    return out / (np.sqrt(np.sum(out * out)) + 1e-12)
+def _tilt_dark(resp: np.ndarray, damping: float) -> np.ndarray:
+    mm = len(resp)
+    edge_set = np.linspace(0, mm, 4).astype(int)
+    acc = np.zeros(mm)
+    for jx in range(3):
+        piece = np.zeros(mm)
+        piece[edge_set[jx]:edge_set[jx + 1]] = resp[edge_set[jx]:edge_set[jx + 1]]
+        acc += dsp.butter(piece, "low", 14000 - damping * 4000 * (jx + 1), 1)
+    return acc / (np.sqrt(np.sum(acc * acc)) + 1e-12)
 
 
 def early(x: np.ndarray, r: np.random.Generator, size: float = 0.5, taps: int = 18, damp: float = 0.5,
           width: float = 1.0) -> np.ndarray:
     """Stereo early reflections of the mono mix of x."""
-    xm = _mono(x)
-    t_hi = 0.006 + 0.05 * size
-    m = n_of(t_hi) + 2
-    chans = [_darken(_early_channel(r, m, t_hi, taps, width, c), damp) for c in range(2)]
-    return np.column_stack([signal.fftconvolve(xm, ch) for ch in chans])
+    mono_in = _downmix(x)
+    t_top = 0.006 + 0.05 * size
+    mm = n_of(t_top) + 2
+    n_ch = [_tilt_dark(_reflection_taps(r, mm, t_top, taps, width, chan), damp) for chan in range(2)]
+    return np.column_stack([signal.fftconvolve(mono_in, ch) for ch in n_ch])
 
 
 # ---------------------------------------------------------------- FDN reverb
 
-def _delays(r: np.random.Generator, size: float, nl: int) -> np.ndarray:
-    lo = (0.006 + 0.024 * size) * SR
-    targets = np.geomspace(lo, 2.7 * lo, nl) * np.exp(r.uniform(-0.06, 0.06, nl))
-    pool = list(_primes(int(3.2 * lo) + 50))
-    out = []
-    for tg in targets:
-        p = min(pool, key=lambda q: abs(q - tg))
-        pool.remove(p)
-        out.append(p)
-    return r.permutation(np.array(out, dtype=float))
+def _line_lengths(gen: np.random.Generator, room_size: float, n_lines: int) -> np.ndarray:
+    lo_c = (0.006 + 0.024 * room_size) * SR
+    goals = np.geomspace(lo_c, 2.7 * lo_c, n_lines) * np.exp(gen.uniform(-0.06, 0.06, n_lines))
+    pool_v = list(_prime_list(int(3.2 * lo_c) + 50))
+    acc = []
+    for goal_i in goals:
+        cfg = min(pool_v, key=lambda qv: abs(qv - goal_i))
+        pool_v.remove(cfg)
+        acc.append(cfg)
+    return gen.permutation(np.array(acc, dtype=float))
 
 
-def _taps(r: np.random.Generator, nl: int) -> tuple[np.ndarray, np.ndarray]:
-    b = r.choice([-1.0, 1.0], nl) / np.sqrt(nl)
-    cm = r.choice([-1.0, 1.0], (nl, 2))
-    if abs(cm[:, 0] @ cm[:, 1]) >= nl:
-        cm[nl // 2:, 1] *= -1
-    cm[:, 1] -= cm[:, 0] * (cm[:, 0] @ cm[:, 1]) / nl
-    return b, cm / np.linalg.norm(cm, axis=0)
+def _io_weights(gen: np.random.Generator, n_lines: int) -> tuple[np.ndarray, np.ndarray]:
+    bv = gen.choice([-1.0, 1.0], n_lines) / np.sqrt(n_lines)
+    out_mix = gen.choice([-1.0, 1.0], (n_lines, 2))
+    if abs(out_mix[:, 0] @ out_mix[:, 1]) >= n_lines:
+        out_mix[n_lines // 2:, 1] *= -1
+    out_mix[:, 1] -= out_mix[:, 0] * (out_mix[:, 0] @ out_mix[:, 1]) / n_lines
+    return bv, out_mix / np.linalg.norm(out_mix, axis=0)
 
 
-def _hadamard(v: np.ndarray) -> np.ndarray:
-    v = v.copy()
-    nl = v.shape[-1]
-    h = 1
-    while h < nl:
-        for i in range(0, nl, 2 * h):
-            p = v[..., i:i + h].copy()
-            q = v[..., i + h:i + 2 * h].copy()
-            v[..., i:i + h] = p + q
-            v[..., i + h:i + 2 * h] = p - q
-        h *= 2
-    return v / np.sqrt(nl)
+def _fwht(vec: np.ndarray) -> np.ndarray:
+    vec = vec.copy()
+    n_lines = vec.shape[-1]
+    hh_ = 1
+    while hh_ < n_lines:
+        for ix in range(0, n_lines, 2 * hh_):
+            cfg = vec[..., ix:ix + hh_].copy()
+            qv = vec[..., ix + hh_:ix + 2 * hh_].copy()
+            vec[..., ix:ix + hh_] = cfg + qv
+            vec[..., ix + hh_:ix + 2 * hh_] = cfg - qv
+        hh_ *= 2
+    return vec / np.sqrt(n_lines)
 
 
-class _Fdn:
+class _DelayNet:
     """Feedback delay network state for one input channel."""
 
-    def __init__(self, dl: np.ndarray, depth: np.ndarray, rate: np.ndarray, phase: np.ndarray,
-                 lo: tuple, hi: tuple, b: np.ndarray, cm: np.ndarray):
-        self.dl, self.depth, self.rate, self.phase = dl, depth, rate, phase
-        self.lo, self.hi, self.b, self.cm = lo, hi, b, cm
-        nl = len(dl)
-        self.size = 1 << int(np.ceil(np.log2(int(dl.max() + depth.max() + 8))))
-        self.buf = np.zeros((nl, self.size))
-        self.ya = np.zeros(nl)
-        self.zl = np.zeros(nl)
-        self.zh = np.zeros(nl)
-        self.block = max(1, int(dl.min() - depth.max()) - 3)
+    def __init__(self, lens: np.ndarray, mod_depth: np.ndarray, lfo_hz: np.ndarray, ph: np.ndarray,
+                 lo_c: tuple, hi_c: tuple, bv: np.ndarray, out_mix: np.ndarray):
+        self.dl, self.depth, self.rate, self.phase = lens, mod_depth, lfo_hz, ph
+        self.lo, self.hi, self.b, self.cm = lo_c, hi_c, bv, out_mix
+        n_lines = len(lens)
+        self.size = 1 << int(np.ceil(np.log2(int(lens.max() + mod_depth.max() + 8))))
+        self.buf = np.zeros((n_lines, self.size))
+        self.ya = np.zeros(n_lines)
+        self.zl = np.zeros(n_lines)
+        self.zh = np.zeros(n_lines)
+        self.block = max(1, int(lens.min() - mod_depth.max()) - 3)
 
-    def _read(self, i0: int, k: int) -> np.ndarray:
-        i = np.arange(i0, i0 + k)[:, None]
-        d = self.dl + self.depth * np.sin(2 * np.pi * self.rate * i / SR + self.phase)
-        m = np.floor(d - 0.5).astype(int)
-        eta = (1 - (d - m)) / (1 + (d - m))
-        rows = np.arange(len(self.dl))[None, :]
-        a0 = self.buf[rows, (i - m) % self.size]
-        a1 = self.buf[rows, (i - m - 1) % self.size]
-        y = np.empty_like(a0)
-        ya = self.ya
-        for j in range(k):
-            ya = eta[j] * a0[j] + a1[j] - eta[j] * ya
-            y[j] = ya
-        self.ya = ya
-        return y
+    def _tap_lines(self, at0: int, cnt: int) -> np.ndarray:
+        ix = np.arange(at0, at0 + cnt)[:, None]
+        dly = self.dl + self.depth * np.sin(2 * np.pi * self.rate * ix / SR + self.phase)
+        mm = np.floor(dly - 0.5).astype(int)
+        frac_c = (1 - (dly - mm)) / (1 + (dly - mm))
+        row_ix = np.arange(len(self.dl))[None, :]
+        tap_a = self.buf[row_ix, (ix - mm) % self.size]
+        tap_b = self.buf[row_ix, (ix - mm - 1) % self.size]
+        res = np.empty_like(tap_a)
+        ap_state = self.ya
+        for jx in range(cnt):
+            ap_state = frac_c[jx] * tap_a[jx] + tap_b[jx] - frac_c[jx] * ap_state
+            res[jx] = ap_state
+        self.ya = ap_state
+        return res
 
-    def _shelves(self, y: np.ndarray) -> np.ndarray:
-        out = np.empty_like(y)
-        for k in range(y.shape[1]):
-            lb0, lb1, la1 = self.lo[0][k], self.lo[1][k], self.lo[2]
-            hb0, hb1, ha1 = self.hi
-            t, zl = signal.lfilter([lb0, lb1], [1.0, la1], y[:, k], zi=[self.zl[k]])
-            u, zh = signal.lfilter([hb0, hb1], [1.0, ha1], t, zi=[self.zh[k]])
-            self.zl[k], self.zh[k] = zl[0], zh[0]
-            out[:, k] = u
-        return out
+    def _damp_lines(self, res: np.ndarray) -> np.ndarray:
+        acc = np.empty_like(res)
+        for cnt in range(res.shape[1]):
+            lo_b0, lo_b1, lo_a1 = self.lo[0][cnt], self.lo[1][cnt], self.lo[2]
+            hi_b0, hi_b1, hi_a1 = self.hi
+            tm, z_lo = signal.lfilter([lo_b0, lo_b1], [1.0, lo_a1], res[:, cnt], zi=[self.zl[cnt]])
+            uu, z_hi = signal.lfilter([hi_b0, hi_b1], [1.0, hi_a1], tm, zi=[self.zh[cnt]])
+            self.zl[cnt], self.zh[cnt] = z_lo[0], z_hi[0]
+            acc[:, cnt] = uu
+        return acc
 
     def run(self, x: np.ndarray, n: int) -> np.ndarray:
-        out = np.zeros((n, 2))
-        i0 = 0
-        while i0 < n:
-            k = min(self.block, n - i0)
-            v = self._shelves(self._read(i0, k))
-            out[i0:i0 + k] = v @ self.cm
-            mixed = _hadamard(v)
-            xin = np.zeros(k)
-            seg = x[i0:i0 + k]
-            xin[: len(seg)] = seg
-            idx = np.arange(i0, i0 + k) % self.size
-            self.buf[:, idx] = (mixed + xin[:, None] * self.b[None, :]).T
-            i0 += k
-        return out
+        acc = np.zeros((n, 2))
+        at0 = 0
+        while at0 < n:
+            cnt = min(self.block, n - at0)
+            vec = self._damp_lines(self._tap_lines(at0, cnt))
+            acc[at0:at0 + cnt] = vec @ self.cm
+            mixd = _fwht(vec)
+            feed = np.zeros(cnt)
+            chunk = x[at0:at0 + cnt]
+            feed[: len(chunk)] = chunk
+            ids = np.arange(at0, at0 + cnt) % self.size
+            self.buf[:, ids] = (mixd + feed[:, None] * self.b[None, :]).T
+            at0 += cnt
+        return acc
 
 
-def _gains(dl: np.ndarray, rt: float) -> np.ndarray:
-    return 10 ** (-3 * dl / (max(rt, 0.02) * SR))
+def _loop_gain(lens: np.ndarray, t_dec: float) -> np.ndarray:
+    return 10 ** (-3 * lens / (max(t_dec, 0.02) * SR))
 
 
-def _shelf_pair(dl: np.ndarray, rt60: float, rt_lo: float, rt_hi: float, lf: float, hf: float):
-    gm, gl, gh = _gains(dl, rt60), _gains(dl, rt_lo), _gains(dl, rt_hi)
-    lows = [_shelf("low", g_l / g_m, lf) for g_l, g_m in zip(gl, gm)]
-    lb0 = np.array([s[0] for s in lows]) * gm
-    lb1 = np.array([s[1] for s in lows]) * gm
-    la1 = lows[0][2] if len(set(round(s[2], 15) for s in lows)) == 1 else None
-    highs = [_shelf("high", g_h / g_m, hf) for g_h, g_m in zip(gh, gm)]
-    return gm, lows, highs, lb0, lb1, la1
+def _damping_shelves(lens: np.ndarray, t60: float, t60_lo: float, t60_hi: float, lo_hz: float, hi_hz: float):
+    g_mid, g_lo, g_hi = _loop_gain(lens, t60), _loop_gain(lens, t60_lo), _loop_gain(lens, t60_hi)
+    lo_set = [_shelf_coefs("low", glo_i / gmid_i, lo_hz) for glo_i, gmid_i in zip(g_lo, g_mid)]
+    lo_b0 = np.array([sv[0] for sv in lo_set]) * g_mid
+    lo_b1 = np.array([sv[1] for sv in lo_set]) * g_mid
+    lo_a1 = lo_set[0][2] if len(set(round(sv[2], 15) for sv in lo_set)) == 1 else None
+    hi_set = [_shelf_coefs("high", ghi_i / gmid_i, hi_hz) for ghi_i, gmid_i in zip(g_hi, g_mid)]
+    return g_mid, lo_set, hi_set, lo_b0, lo_b1, lo_a1
 
 
-class _Room:
+class _RoomPlan:
     """Derived settings of one IR build."""
 
-    def __init__(self, p: dict):
-        self.p = p
-        self.rt_lo = p["rt60"] * p["bass"]
-        self.rt_hi = p["rt60"] * max(0.05, 1 - 0.85 * p["damp"])
-        self.tail = p["tail"] if p["tail"] is not None else 1.2 * max(p["rt60"], self.rt_lo)
-        self.pd = n_of(p["predelay"]) if p["predelay"] > 0 else 0
+    def __init__(self, cfg: dict):
+        self.p = cfg
+        self.rt_lo = cfg["rt60"] * cfg["bass"]
+        self.rt_hi = cfg["rt60"] * max(0.05, 1 - 0.85 * cfg["damp"])
+        self.tail = cfg["tail"] if cfg["tail"] is not None else 1.2 * max(cfg["rt60"], self.rt_lo)
+        self.pd = n_of(cfg["predelay"]) if cfg["predelay"] > 0 else 0
         self.n = max(n_of(self.tail), 64)
 
 
-def _rt_table(dlk: float, low: tuple, gmk: float, high: tuple) -> tuple[np.ndarray, np.ndarray]:
-    f = np.geomspace(20.0, 0.999 * SR / 2, 64)
-    w = 2 * np.pi * f / SR
-    _, hl = signal.freqz([low[0] * gmk, low[1] * gmk], [1.0, low[2]], worN=w)
-    _, hh = signal.freqz([high[0], high[1]], [1.0, high[2]], worN=w)
-    h = np.minimum(np.abs(hl * hh), 0.999999)
-    return f, -3 * dlk / (SR * np.log10(h))
+def _decay_curve(len_k: float, lo_sh: tuple, g_mid_k: float, hi_sh: tuple) -> tuple[np.ndarray, np.ndarray]:
+    freq = np.geomspace(20.0, 0.999 * SR / 2, 64)
+    wt = 2 * np.pi * freq / SR
+    _, resp_lo = signal.freqz([lo_sh[0] * g_mid_k, lo_sh[1] * g_mid_k], [1.0, lo_sh[2]], worN=wt)
+    _, resp_hi = signal.freqz([hi_sh[0], hi_sh[1]], [1.0, hi_sh[2]], worN=wt)
+    hh_ = np.minimum(np.abs(resp_lo * resp_hi), 0.999999)
+    return freq, -3 * len_k / (SR * np.log10(hh_))
 
 
-def _stft_decay(x: np.ndarray, n: int, decay_db: Any) -> np.ndarray:
-    ft, tt, z = signal.stft(x, fs=SR, nperseg=1024, noverlap=768, boundary="even")
-    z = z * decay_db(ft[:, None], tt[None, :])
-    _, y = signal.istft(z, fs=SR, nperseg=1024, noverlap=768, boundary=True)
-    out = np.zeros(n)
-    out[: min(n, len(y))] = y[:n]
-    return out
+def _spectral_decay(sig: np.ndarray, total_n: int, fall_db: Any) -> np.ndarray:
+    f_ax, tvec, zz = signal.stft(sig, fs=SR, nperseg=1024, noverlap=768, boundary="even")
+    zz = zz * fall_db(f_ax[:, None], tvec[None, :])
+    _, res = signal.istft(zz, fs=SR, nperseg=1024, noverlap=768, boundary=True)
+    acc = np.zeros(total_n)
+    acc[: min(total_n, len(res))] = res[:total_n]
+    return acc
 
 
-def _late_noise(r: np.random.Generator, n: int, f: np.ndarray, rt: np.ndarray, width: float) -> np.ndarray:
-    def dec(ff: np.ndarray, tt: np.ndarray) -> np.ndarray:
-        return np.exp(-6.91 * tt / np.interp(ff, f, rt))
+def _noise_tail(gen: np.random.Generator, total_n: int, freq: np.ndarray, t_dec: np.ndarray, spread_w: float) -> np.ndarray:
+    def decay_v(fq: np.ndarray, tvec: np.ndarray) -> np.ndarray:
+        return np.exp(-6.91 * tvec / np.interp(fq, freq, t_dec))
 
-    m = _stft_decay(r.standard_normal(n + 1024), n, dec)
-    sd = dsp.butter(_stft_decay(r.standard_normal(n + 1024), n, dec), "high", 200.0, 2)
-    lr = np.column_stack([m + width * sd, m - width * sd]) / np.sqrt(1 + 0.9 * width ** 2)
-    return lr * np.sqrt(13.8 / (np.median(rt) * SR))
-
-
-def _air(ir: np.ndarray, n: int, air: float) -> np.ndarray:
-    def dec(ff: np.ndarray, tt: np.ndarray) -> np.ndarray:
-        rate = air * 0.17 * 343 * (ff / 10000) ** 2
-        return 10 ** (-rate * np.maximum(tt - 512 / SR, 0) / 20)
-
-    return np.column_stack([_stft_decay(ir[:, c], n, dec) for c in range(ir.shape[1])])
+    mm = _spectral_decay(gen.standard_normal(total_n + 1024), total_n, decay_v)
+    sdev = dsp.butter(_spectral_decay(gen.standard_normal(total_n + 1024), total_n, decay_v), "high", 200.0, 2)
+    lr_v = np.column_stack([mm + spread_w * sdev, mm - spread_w * sdev]) / np.sqrt(1 + 0.9 * spread_w ** 2)
+    return lr_v * np.sqrt(13.8 / (np.median(t_dec) * SR))
 
 
-def _diffused(n: int, size: float, diffuse: float, c: int) -> np.ndarray:
-    x = np.zeros(n)
-    x[0] = 1.0
-    if diffuse > 0:
-        for j, ms in enumerate([1.1, 1.7, 2.9, 4.3]):
-            x = _allpass(x, int(ms * (0.6 + 0.8 * size) * 1e-3 * SR) + 3 * c + j, min(0.8, diffuse))
-    return x
+def _air_loss(resp: np.ndarray, total_n: int, air_v: float) -> np.ndarray:
+    def decay_v(fq: np.ndarray, tvec: np.ndarray) -> np.ndarray:
+        lfo_hz = air_v * 0.17 * 343 * (fq / 10000) ** 2
+        return 10 ** (-lfo_hz * np.maximum(tvec - 512 / SR, 0) / 20)
+
+    return np.column_stack([_spectral_decay(resp[:, chan], total_n, decay_v) for chan in range(resp.shape[1])])
 
 
-def _fdn_for(r: np.random.Generator, p: dict, dl: np.ndarray, shelves: tuple) -> "_Fdn":
+def _diffusion_kernel(total_n: int, room_size: float, diff_v: float, chan: int) -> np.ndarray:
+    sig = np.zeros(total_n)
+    sig[0] = 1.0
+    if diff_v > 0:
+        for jx, msec in enumerate([1.1, 1.7, 2.9, 4.3]):
+            sig = _schroeder_ap(sig, int(msec * (0.6 + 0.8 * room_size) * 1e-3 * SR) + 3 * chan + jx, min(0.8, diff_v))
+    return sig
+
+
+def _make_net(gen: np.random.Generator, cfg: dict, lens: np.ndarray, shelf_set: tuple) -> "_DelayNet":
     """The feedback delay network of one input; draws taps, then depth, rate and phase from r."""
-    nl = len(dl)
-    lows, highs, lb0, lb1 = shelves[1], shelves[2], shelves[3], shelves[4]
-    b, cm = _taps(r, nl)
-    depth = p["mod"] * (3 + 9 * r.uniform(0, 1, nl)) * (0.5 + 0.5 * p["size"])
-    rate = r.uniform(0.15, 1.1, nl)
-    phase = r.uniform(0, 2 * np.pi, nl)
-    return _Fdn(dl, depth, rate, phase, (lb0, lb1, lows[0][2]), highs[0], b, cm)
+    n_lines = len(lens)
+    lo_set, hi_set, lo_b0, lo_b1 = shelf_set[1], shelf_set[2], shelf_set[3], shelf_set[4]
+    bv, out_mix = _io_weights(gen, n_lines)
+    mod_depth = cfg["mod"] * (3 + 9 * gen.uniform(0, 1, n_lines)) * (0.5 + 0.5 * cfg["size"])
+    lfo_hz = gen.uniform(0.15, 1.1, n_lines)
+    ph = gen.uniform(0, 2 * np.pi, n_lines)
+    return _DelayNet(lens, mod_depth, lfo_hz, ph, (lo_b0, lo_b1, lo_set[0][2]), hi_set[0], bv, out_mix)
 
 
-def _add_early(y: np.ndarray, r: np.random.Generator, p: dict, n: int) -> np.ndarray:
-    if not (p["early_db"] is not None and p["early_db"] > -90):
-        return y
-    e = 10 ** (p["early_db"] / 10)
-    imp = np.array([1.0])
-    er = early(imp, r, p["size"], damp=p["damp"], width=p["width"])[:n]
-    y = y / np.sqrt(1 + e)
-    y[: len(er)] += er * np.sqrt(e / (1 + e))
-    return y
+def _mix_reflections(res: np.ndarray, gen: np.random.Generator, cfg: dict, total_n: int) -> np.ndarray:
+    if not (cfg["early_db"] is not None and cfg["early_db"] > -90):
+        return res
+    ev = 10 ** (cfg["early_db"] / 10)
+    impulse = np.array([1.0])
+    refl = early(impulse, gen, cfg["size"], damp=cfg["damp"], width=cfg["width"])[:total_n]
+    res = res / np.sqrt(1 + ev)
+    res[: len(refl)] += refl * np.sqrt(ev / (1 + ev))
+    return res
 
 
-def _ms_width(y: np.ndarray, w: float) -> np.ndarray:
-    mid, side = (y[:, 0] + y[:, 1]) / 2, (y[:, 0] - y[:, 1]) / 2
-    return np.column_stack([mid + w * side, mid - w * side])
+def _side_scale(res: np.ndarray, wt: float) -> np.ndarray:
+    mid_s, sidesig = (res[:, 0] + res[:, 1]) / 2, (res[:, 0] - res[:, 1]) / 2
+    return np.column_stack([mid_s + wt * sidesig, mid_s - wt * sidesig])
 
 
-def _one_input(r: np.random.Generator, rm: _Room, dl: np.ndarray, shelves: tuple, c: int) -> np.ndarray:
-    p, n = rm.p, rm.n
-    gm = shelves[0]
-    x = _diffused(n, p["size"], p["diffuse"], c)
-    fdn = _fdn_for(r, p, dl, shelves)
-    y = fdn.run(x, n) / np.sqrt(np.mean(gm ** 2 / (1 - gm ** 2)) / len(dl))
-    if p["late"] == "noise":
-        y = _cross_late(r, rm, y, dl, shelves)
-    y = _add_early(y, r, p, n)
-    return _ms_width(y, p["width"])
+def _net_tail(gen: np.random.Generator, plan: _RoomPlan, lens: np.ndarray, shelf_set: tuple, chan: int) -> np.ndarray:
+    cfg, total_n = plan.p, plan.n
+    g_mid = shelf_set[0]
+    sig = _diffusion_kernel(total_n, cfg["size"], cfg["diffuse"], chan)
+    net = _make_net(gen, cfg, lens, shelf_set)
+    res = net.run(sig, total_n) / np.sqrt(np.mean(g_mid ** 2 / (1 - g_mid ** 2)) / len(lens))
+    if cfg["late"] == "noise":
+        res = _crossed_tail(gen, plan, res, lens, shelf_set)
+    res = _mix_reflections(res, gen, cfg, total_n)
+    return _side_scale(res, cfg["width"])
 
 
-def _cross_late(r: np.random.Generator, rm: _Room, y: np.ndarray, dl: np.ndarray, shelves: tuple) -> np.ndarray:
-    gm, lows, highs = shelves[0], shelves[1], shelves[2]
-    k = int(np.argmin(np.abs(dl - np.median(dl))))
-    f, rt = _rt_table(dl[k], lows[k], gm[k], highs[k])
-    late = _late_noise(r, rm.n, f, rt, 1.0)
-    tx = 0.06 + 0.1 * rm.p["size"]
-    u = np.clip((t_of(rm.n) - 0.5 * tx) / tx, 0, 1)[:, None]
-    return y * np.cos(u * np.pi / 2) + late * np.sin(u * np.pi / 2)
+def _crossed_tail(gen: np.random.Generator, plan: _RoomPlan, res: np.ndarray, lens: np.ndarray, shelf_set: tuple) -> np.ndarray:
+    g_mid, lo_set, hi_set = shelf_set[0], shelf_set[1], shelf_set[2]
+    cnt = int(np.argmin(np.abs(lens - np.median(lens))))
+    freq, t_dec = _decay_curve(lens[cnt], lo_set[cnt], g_mid[cnt], hi_set[cnt])
+    late_s = _noise_tail(gen, plan.n, freq, t_dec, 1.0)
+    txs = 0.06 + 0.1 * plan.p["size"]
+    uu = np.clip((t_of(plan.n) - 0.5 * txs) / txs, 0, 1)[:, None]
+    return res * np.cos(uu * np.pi / 2) + late_s * np.sin(uu * np.pi / 2)
 
 
-def _build_ir(r: np.random.Generator, p: dict) -> np.ndarray:
-    assert p["lines"] in (4, 8, 16, 32), "lines must be 4, 8, 16 or 32"
-    rm = _Room(p)
-    dl = _delays(r, p["size"], p["lines"])
-    shelves = _shelf_pair(dl, p["rt60"], rm.rt_lo, rm.rt_hi, p["lf_hz"], p["hf_hz"])
-    ir = np.stack([_one_input(r, rm, dl, shelves, c) for c in range(p["inputs"])], axis=1)
-    ir = np.stack([_finish_ir(ir[:, c, :], rm, p) for c in range(p["inputs"])], axis=1)
-    return np.concatenate([np.zeros((rm.pd,) + ir.shape[1:]), ir])
+def _synth_ir(gen: np.random.Generator, cfg: dict) -> np.ndarray:
+    assert cfg["lines"] in (4, 8, 16, 32), "lines must be 4, 8, 16 or 32"
+    plan = _RoomPlan(cfg)
+    lens = _line_lengths(gen, cfg["size"], cfg["lines"])
+    shelf_set = _damping_shelves(lens, cfg["rt60"], plan.rt_lo, plan.rt_hi, cfg["lf_hz"], cfg["hf_hz"])
+    resp = np.stack([_net_tail(gen, plan, lens, shelf_set, chan) for chan in range(cfg["inputs"])], axis=1)
+    resp = np.stack([_polish_ir(resp[:, chan, :], plan, cfg) for chan in range(cfg["inputs"])], axis=1)
+    return np.concatenate([np.zeros((plan.pd,) + resp.shape[1:]), resp])
 
 
-def _finish_ir(y: np.ndarray, rm: _Room, p: dict) -> np.ndarray:
-    if p["air"] > 0:
-        y = _air(y, rm.n, p["air"])
-    if p["lowcut"] > 0:
-        y = dsp.butter(y, "high", p["lowcut"], 2)
-    k = min(rm.n, n_of(min(0.1, 0.2 * rm.tail)))
-    y = y.copy()
-    y[rm.n - k:] *= ((1 - np.linspace(0, 1, k)) ** 2)[:, None]
-    return y
+def _polish_ir(res: np.ndarray, plan: _RoomPlan, cfg: dict) -> np.ndarray:
+    if cfg["air"] > 0:
+        res = _air_loss(res, plan.n, cfg["air"])
+    if cfg["lowcut"] > 0:
+        res = dsp.butter(res, "high", cfg["lowcut"], 2)
+    cnt = min(plan.n, n_of(min(0.1, 0.2 * plan.tail)))
+    res = res.copy()
+    res[plan.n - cnt:] *= ((1 - np.linspace(0, 1, cnt)) ** 2)[:, None]
+    return res
 
 
-_IR_KEYS = ("rt60", "size", "predelay", "damp", "bass", "mod", "diffuse", "early_db", "width", "late", "lines",
+_IR_FIELDS = ("rt60", "size", "predelay", "damp", "bass", "mod", "diffuse", "early_db", "width", "late", "lines",
             "tail", "inputs", "hf_hz", "lf_hz", "air", "lowcut")
 
 
-def _ir_params(a: dict) -> dict:
+def _typed_ir_settings(av: dict) -> dict:
     """The settings of reverb_ir's arguments, typed, in _IR_KEYS order."""
-    return dict(rt60=float(a["rt60"]), size=float(a["size"]), predelay=float(a["predelay"]), damp=float(a["damp"]),
-                bass=float(a["bass"]), mod=float(a["mod"]), diffuse=float(a["diffuse"]),
-                early_db=None if a["early_db"] is None else float(a["early_db"]), width=float(a["width"]),
-                late=str(a["late"]), lines=int(a["lines"]), tail=None if a["tail"] is None else float(a["tail"]),
-                inputs=int(a["inputs"]), hf_hz=float(a["hf_hz"]), lf_hz=float(a["lf_hz"]), air=float(a["air"]),
-                lowcut=float(a["lowcut"]))
+    return dict(rt60=float(av["rt60"]), size=float(av["size"]), predelay=float(av["predelay"]), damp=float(av["damp"]),
+                bass=float(av["bass"]), mod=float(av["mod"]), diffuse=float(av["diffuse"]),
+                early_db=None if av["early_db"] is None else float(av["early_db"]), width=float(av["width"]),
+                late=str(av["late"]), lines=int(av["lines"]), tail=None if av["tail"] is None else float(av["tail"]),
+                inputs=int(av["inputs"]), hf_hz=float(av["hf_hz"]), lf_hz=float(av["lf_hz"]), air=float(av["air"]),
+                lowcut=float(av["lowcut"]))
 
 
 IR_DEFAULTS: dict[str, Any] = dict(
@@ -461,61 +461,61 @@ def reverb_ir(r: np.random.Generator, *args: Any, **opts: Any) -> np.ndarray:
 
     Settings and defaults are IR_DEFAULTS, in signature order.
     """
-    a = bind("reverb_ir", IR_DEFAULTS, args, opts)
-    p = _ir_params(a)
-    params = tuple(p[k] for k in _IR_KEYS)
-    if a["seed"] is not None:
-        ir = _seeded_ir(int(a["seed"]), p, params)
-    elif a["cache"] and r is not None and hasattr(r, "bit_generator"):
-        ir = _stateful_ir(r, p, params)
+    av = bind("reverb_ir", IR_DEFAULTS, args, opts)
+    cfg = _typed_ir_settings(av)
+    key_tuple = tuple(cfg[cnt] for cnt in _IR_FIELDS)
+    if av["seed"] is not None:
+        resp = _ir_by_seed(int(av["seed"]), cfg, key_tuple)
+    elif av["cache"] and r is not None and hasattr(r, "bit_generator"):
+        resp = _ir_by_state(r, cfg, key_tuple)
     else:
-        ir = _build_ir(r, p)
-    return ir
+        resp = _synth_ir(r, cfg)
+    return resp
 
 
 with_signature(reverb_ir, ("r",), IR_DEFAULTS)
 
 
-def _seeded_ir(seed: int, p: dict, params: tuple) -> np.ndarray:
-    key = ("seed", seed, params)
-    hit = _cache_get(key)
-    if hit is not None:
-        return hit[0].copy()
-    ir = _build_ir(dsp.rng(seed), p)
-    _cache_put(key, ir, None)
-    return ir
+def _ir_by_seed(seed_v: int, cfg: dict, key_tuple: tuple) -> np.ndarray:
+    cache_key = ("seed", seed_v, key_tuple)
+    found = _store_fetch(cache_key)
+    if found is not None:
+        return found[0].copy()
+    resp = _synth_ir(dsp.rng(seed_v), cfg)
+    _store_save(cache_key, resp, None)
+    return resp
 
 
-def _stateful_ir(r: np.random.Generator, p: dict, params: tuple) -> np.ndarray:
-    key = ("state", repr(r.bit_generator.state), params)
-    hit = _cache_get(key)
-    if hit is not None:
-        r.bit_generator.state = hit[1]
-        return hit[0].copy()
-    ir = _build_ir(r, p)
-    _cache_put(key, ir, r.bit_generator.state)
-    return ir
+def _ir_by_state(gen: np.random.Generator, cfg: dict, key_tuple: tuple) -> np.ndarray:
+    cache_key = ("state", repr(gen.bit_generator.state), key_tuple)
+    found = _store_fetch(cache_key)
+    if found is not None:
+        gen.bit_generator.state = found[1]
+        return found[0].copy()
+    resp = _synth_ir(gen, cfg)
+    _store_save(cache_key, resp, gen.bit_generator.state)
+    return resp
 
 
-_ROOM_KEYS = ("rt60", "size", "predelay", "damp", "bass", "mod", "diffuse", "width", "tail", "lowcut")
+_SPACE_FIELDS = ("rt60", "size", "predelay", "damp", "bass", "mod", "diffuse", "width", "tail", "lowcut")
 
 
-def _reverb_ir_of(a: dict, inputs: int) -> np.ndarray:
-    room = {k: a[k] for k in _ROOM_KEYS}
-    if a["grid"]:
-        room = ir_grid(**room)
-    return reverb_ir(a["r"], early_db=a["early_db"], late=a["late"], lines=a["lines"], inputs=inputs, air=a["air"],
-                     seed=a["ir_seed"], **room)
+def _ir_for_reverb(av: dict, n_in: int) -> np.ndarray:
+    space = {cnt: av[cnt] for cnt in _SPACE_FIELDS}
+    if av["grid"]:
+        space = ir_grid(**space)
+    return reverb_ir(av["r"], early_db=av["early_db"], late=av["late"], lines=av["lines"], inputs=n_in, air=av["air"],
+                     seed=av["ir_seed"], **space)
 
 
-def _wet_dry(x: np.ndarray, xs: np.ndarray, wetsig: np.ndarray, wet: float, dry: float, stereo: bool) -> np.ndarray:
-    if not stereo:
-        out = wet * wetsig.mean(axis=1) * np.sqrt(2)
-        out[: len(x)] += dry * xs.mean(axis=1)
-        return out
-    out = wetsig * wet
-    out[: len(x)] += dry * (xs if xs.shape[1] == 2 else np.column_stack([xs[:, 0], xs[:, 0]]))
-    return out
+def _blend_wet(sig: np.ndarray, cols: np.ndarray, wet_sig: np.ndarray, wet_v: float, dry_v: float, two_ch: bool) -> np.ndarray:
+    if not two_ch:
+        acc = wet_v * wet_sig.mean(axis=1) * np.sqrt(2)
+        acc[: len(sig)] += dry_v * cols.mean(axis=1)
+        return acc
+    acc = wet_sig * wet_v
+    acc[: len(sig)] += dry_v * (cols if cols.shape[1] == 2 else np.column_stack([cols[:, 0], cols[:, 0]]))
+    return acc
 
 
 REVERB_DEFAULTS: dict[str, Any] = dict(
@@ -528,13 +528,13 @@ def reverb(x: np.ndarray, r: np.random.Generator, *args: Any, **opts: Any) -> np
 
     Settings and defaults are REVERB_DEFAULTS, in signature order.
     """
-    a = {"r": r, **bind("reverb", REVERB_DEFAULTS, args, opts)}
+    av = {"r": r, **bind("reverb", REVERB_DEFAULTS, args, opts)}
     x = np.asarray(x, dtype=float)
-    xs = x[:, None] if x.ndim == 1 else x
-    ir = _reverb_ir_of(a, xs.shape[1])
-    wetsig = sum(np.column_stack([signal.fftconvolve(xs[:, c], ir[:, c, o]) for o in range(2)])
-                 for c in range(xs.shape[1]))
-    return _wet_dry(x, xs, wetsig, a["wet"], a["dry"], x.ndim == 2 if a["stereo"] is None else a["stereo"])
+    cols = x[:, None] if x.ndim == 1 else x
+    resp = _ir_for_reverb(av, cols.shape[1])
+    wet_sig = sum(np.column_stack([signal.fftconvolve(cols[:, chan], resp[:, chan, oc]) for oc in range(2)])
+                 for chan in range(cols.shape[1]))
+    return _blend_wet(x, cols, wet_sig, av["wet"], av["dry"], x.ndim == 2 if av["stereo"] is None else av["stereo"])
 
 
 with_signature(reverb, ("x", "r"), REVERB_DEFAULTS)
@@ -542,204 +542,204 @@ with_signature(reverb, ("x", "r"), REVERB_DEFAULTS)
 
 # ---------------------------------------------------------------- dynamics
 
-def _shelf_filter(x: np.ndarray, kind: str, db: float, fc: float) -> np.ndarray:
-    b0, b1, a1 = _shelf(kind, 10 ** (db / 20), fc)
-    return signal.lfilter([b0, b1], [1.0, a1], x, axis=0)
+def _apply_shelf(sig: np.ndarray, kind_s: str, db_v: float, corner: float) -> np.ndarray:
+    c_b0, c_b1, tap_b = _shelf_coefs(kind_s, 10 ** (db_v / 20), corner)
+    return signal.lfilter([c_b0, c_b1], [1.0, tap_b], sig, axis=0)
 
 
-def _tape_curve(u: np.ndarray, g: float, bias: float, os_: int) -> np.ndarray:
-    u = _shelf_filter(u, "high", 4.0, 3000.0 / os_)
-    bb = 0.12 + bias
-    u = np.tanh(g * u + bb) - np.tanh(bb)
-    return _shelf_filter(u, "high", -4.0, 3000.0 / os_)
+def _shape_tape(uu: np.ndarray, gn: float, offset: float, over: int) -> np.ndarray:
+    uu = _apply_shelf(uu, "high", 4.0, 3000.0 / over)
+    bv2 = 0.12 + offset
+    uu = np.tanh(gn * uu + bv2) - np.tanh(bv2)
+    return _apply_shelf(uu, "high", -4.0, 3000.0 / over)
 
 
-def _hard_curve(u: np.ndarray, g: float, bias: float, os_: int) -> np.ndarray:
-    return np.clip(g * u + bias, -1, 1) - np.clip(bias, -1, 1)
+def _shape_clip(uu: np.ndarray, gn: float, offset: float, over: int) -> np.ndarray:
+    return np.clip(gn * uu + offset, -1, 1) - np.clip(offset, -1, 1)
 
 
-def _fold_curve(u: np.ndarray, g: float, bias: float, os_: int) -> np.ndarray:
-    return np.sin(np.pi / 2 * (g * u + bias)) - np.sin(np.pi / 2 * bias)
+def _shape_fold(uu: np.ndarray, gn: float, offset: float, over: int) -> np.ndarray:
+    return np.sin(np.pi / 2 * (gn * uu + offset)) - np.sin(np.pi / 2 * offset)
 
 
-def _tanh_curve(u: np.ndarray, g: float, bias: float, os_: int) -> np.ndarray:
-    return np.tanh(g * u + bias) - np.tanh(bias)
+def _shape_tanh(uu: np.ndarray, gn: float, offset: float, over: int) -> np.ndarray:
+    return np.tanh(gn * uu + offset) - np.tanh(offset)
 
 
-_CURVES = {"tape": _tape_curve, "hard": _hard_curve, "fold": _fold_curve}
+_SHAPERS = {"tape": _shape_tape, "hard": _shape_clip, "fold": _shape_fold}
 
 
-def _curve(u: np.ndarray, mode: str, g: float, bias: float, os_: int) -> np.ndarray:
-    return _CURVES.get(mode, _tanh_curve)(u, g, bias, os_)
+def _shape(uu: np.ndarray, kind_m: str, gn: float, offset: float, over: int) -> np.ndarray:
+    return _SHAPERS.get(kind_m, _shape_tanh)(uu, gn, offset, over)
 
 
-def _match_level(y: np.ndarray, x: np.ndarray, level: str | None) -> np.ndarray:
-    if level == "rms":
-        return y * (_rms(x) - 1e-12) / (_rms(y) - 1e-12 + 1e-30)
-    if level == "peak":
-        return y * np.max(np.abs(x)) / (np.max(np.abs(y)) + 1e-12)
-    return y
+def _relevel(res: np.ndarray, sig: np.ndarray, lvl_mode: str | None) -> np.ndarray:
+    if lvl_mode == "rms":
+        return res * (_level_rms(sig) - 1e-12) / (_level_rms(res) - 1e-12 + 1e-30)
+    if lvl_mode == "peak":
+        return res * np.max(np.abs(sig)) / (np.max(np.abs(res)) + 1e-12)
+    return res
 
 
 def saturate(x: np.ndarray, drive_db: float = 6.0, mode: str = "tanh", mix: float = 1.0, bias: float = 0.0,
              os: int | None = None, level: str | None = "rms") -> np.ndarray:
     """Oversampled waveshaper (tanh, tape, hard, fold)."""
     x = np.asarray(x, dtype=float)
-    g = 10 ** (drive_db / 20)
-    os_ = os if os is not None else (8 if mode in ("hard", "fold") else 4)
-    win = ("kaiser", 9.0)
-    u = signal.resample_poly(x, os_, 1, axis=0, window=win) if os_ > 1 else x
-    y = _curve(u, mode, g, bias, os_)
-    y = signal.resample_poly(y, 1, os_, axis=0, window=win)[: len(x)] if os_ > 1 else y
+    gn = 10 ** (drive_db / 20)
+    over = os if os is not None else (8 if mode in ("hard", "fold") else 4)
+    window = ("kaiser", 9.0)
+    uu = signal.resample_poly(x, over, 1, axis=0, window=window) if over > 1 else x
+    res = _shape(uu, mode, gn, bias, over)
+    res = signal.resample_poly(res, 1, over, axis=0, window=window)[: len(x)] if over > 1 else res
     if mode == "tape":
-        y = dsp.butter(y, "low", 17000.0, 1)
+        res = dsp.butter(res, "low", 17000.0, 1)
     if bias != 0 or mode == "tape":
-        y = dsp.butter(y, "high", 8.0, 1)
-    y = _match_level(y, x, level)
-    return mix * y + (1 - mix) * x
+        res = dsp.butter(res, "high", 8.0, 1)
+    res = _relevel(res, x, level)
+    return mix * res + (1 - mix) * x
 
 
-def _slow_rise(ef: np.ndarray, att: float) -> np.ndarray:
-    out = np.empty(len(ef))
-    s = 0.0
-    for i, v in enumerate(ef.tolist()):
-        s = min(att * s + (1 - att) * v, v)
-        out[i] = s
-    return out
+def _lagged_rise(env_f: np.ndarray, att_k: float) -> np.ndarray:
+    acc = np.empty(len(env_f))
+    sv = 0.0
+    for ix, vec in enumerate(env_f.tolist()):
+        sv = min(att_k * sv + (1 - att_k) * vec, vec)
+        acc[ix] = sv
+    return acc
 
 
-def _db_ratio(a: np.ndarray, b: np.ndarray, scale: float) -> np.ndarray:
-    return np.clip(20 * np.log10((a + 1e-9) / (b + 1e-9)) / scale, 0, 1)
+def _ratio_db(av: np.ndarray, bv: np.ndarray, scl: float) -> np.ndarray:
+    return np.clip(20 * np.log10((av + 1e-9) / (bv + 1e-9)) / scl, 0, 1)
 
 
-def _attack_env(m: np.ndarray, s: float, attack_ms: float) -> np.ndarray:
-    ef = _follow(m, _coef(0.1 * s), _coef(15 * s))
-    es = _slow_rise(ef, _coef(attack_ms * s))
-    return _db_ratio(ef, es, 6.0)
+def _attack_part(mm: np.ndarray, sv: float, att_ms: float) -> np.ndarray:
+    env_f = _env_follower(mm, _smoothing_k(0.1 * sv), _smoothing_k(15 * sv))
+    ess = _lagged_rise(env_f, _smoothing_k(att_ms * sv))
+    return _ratio_db(env_f, ess, 6.0)
 
 
-def _sustain_env(m: np.ndarray, s: float, a: np.ndarray, floor_db: float) -> tuple[np.ndarray, np.ndarray]:
-    el = _follow(m, _coef(0.3 * s), _coef(350 * s))
-    eq = _follow(m, _coef(0.3 * s), _coef(25 * s))
-    d = _db_ratio(el, eq, 9.0) * (1 - a)
-    gate = np.clip((20 * np.log10(el / (m.max() + 1e-12) + 1e-12) - floor_db) / 12, 0, 1)
-    return d, gate
+def _sustain_part(mm: np.ndarray, sv: float, av: np.ndarray, bottom_db: float) -> tuple[np.ndarray, np.ndarray]:
+    elen = _env_follower(mm, _smoothing_k(0.3 * sv), _smoothing_k(350 * sv))
+    eq_v = _env_follower(mm, _smoothing_k(0.3 * sv), _smoothing_k(25 * sv))
+    dly = _ratio_db(elen, eq_v, 9.0) * (1 - av)
+    gate_v = np.clip((20 * np.log10(elen / (mm.max() + 1e-12) + 1e-12) - bottom_db) / 12, 0, 1)
+    return dly, gate_v
 
 
-def _smooth_gain(gain: np.ndarray) -> np.ndarray:
-    lo = gain.min() if len(gain) else 0.0
-    return _follow(gain - lo, _coef(0.2), _coef(5)) + lo
+def _gain_smooth(gain_v: np.ndarray) -> np.ndarray:
+    lo_c = gain_v.min() if len(gain_v) else 0.0
+    return _env_follower(gain_v - lo_c, _smoothing_k(0.2), _smoothing_k(5)) + lo_c
 
 
 def transient(x: np.ndarray, attack_db: float = 3.0, sustain_db: float = 0.0, attack_ms: float = 8.0,
               speed: float = 1.0, floor_db: float = -60.0) -> np.ndarray:
     """Level-independent attack and sustain shaper, stereo linked."""
     x = np.asarray(x, dtype=float)
-    m = np.abs(x).max(axis=1) if x.ndim == 2 else np.abs(x)
-    a = _attack_env(m, speed, attack_ms)
-    d, gate = _sustain_env(m, speed, a, floor_db)
-    g = 10 ** (_smooth_gain(attack_db * a + sustain_db * d * gate) / 20)
-    return x * (g[:, None] if x.ndim == 2 else g)
+    mm = np.abs(x).max(axis=1) if x.ndim == 2 else np.abs(x)
+    av = _attack_part(mm, speed, attack_ms)
+    dly, gate_v = _sustain_part(mm, speed, av, floor_db)
+    gn = 10 ** (_gain_smooth(attack_db * av + sustain_db * dly * gate_v) / 20)
+    return x * (gn[:, None] if x.ndim == 2 else gn)
 
 
-def _release(g: np.ndarray, coef: float) -> np.ndarray:
-    out = np.empty(len(g))
-    s = 1.0
-    for i, v in enumerate(g.tolist()):
-        s = 1 - (1 - s) * coef
-        if v < s:
-            s = v
-        out[i] = s
-    return out
+def _release_hold(gn: np.ndarray, coef_v: float) -> np.ndarray:
+    acc = np.empty(len(gn))
+    sv = 1.0
+    for ix, vec in enumerate(gn.tolist()):
+        sv = 1 - (1 - sv) * coef_v
+        if vec < sv:
+            sv = vec
+        acc[ix] = sv
+    return acc
 
 
-def _peak_env(x: np.ndarray, true_peak: bool) -> np.ndarray:
-    pk = np.abs(x).max(axis=1) if x.ndim == 2 else np.abs(x)
-    if true_peak and len(x) > 1:
-        up = np.abs(signal.resample_poly(x, 4, 1, axis=0))
-        up = up.max(axis=1) if up.ndim == 2 else up
-        pk = np.maximum(pk, up[: 4 * len(x)].reshape(len(x), 4).max(axis=1))
-    return pk
+def _peak_track(sig: np.ndarray, tp: bool) -> np.ndarray:
+    peak_v = np.abs(sig).max(axis=1) if sig.ndim == 2 else np.abs(sig)
+    if tp and len(sig) > 1:
+        upper = np.abs(signal.resample_poly(sig, 4, 1, axis=0))
+        upper = upper.max(axis=1) if upper.ndim == 2 else upper
+        peak_v = np.maximum(peak_v, upper[: 4 * len(sig)].reshape(len(sig), 4).max(axis=1))
+    return peak_v
 
 
-def _limit_gain(need: np.ndarray, w: int, release: float) -> np.ndarray:
-    g = ndimage.minimum_filter1d(need, w, mode="nearest")
-    g = _release(g, _coef(release * 1000))
-    return ndimage.uniform_filter1d(g, w, mode="nearest")
+def _limiter_gain(needed: np.ndarray, wt: int, rel_s: float) -> np.ndarray:
+    gn = ndimage.minimum_filter1d(needed, wt, mode="nearest")
+    gn = _release_hold(gn, _smoothing_k(rel_s * 1000))
+    return ndimage.uniform_filter1d(gn, wt, mode="nearest")
 
 
 def limit(x: np.ndarray, ceiling_db: float = -1.0, lookahead: float = 0.0025, release: float = 0.08,
           true_peak: bool = True) -> np.ndarray:
     """Offline look-ahead peak limiter with a true-peak detector."""
     x = np.asarray(x, dtype=float)
-    c = 10 ** (ceiling_db / 20)
-    need = np.minimum(1.0, c / np.maximum(_peak_env(x, true_peak), 1e-12))
-    g = _limit_gain(need, 2 * max(1, n_of(lookahead)) + 1, release)
-    y = x * (g[:, None] if x.ndim == 2 else g)
-    return np.clip(y, -c, c)
+    chan = 10 ** (ceiling_db / 20)
+    needed = np.minimum(1.0, chan / np.maximum(_peak_track(x, true_peak), 1e-12))
+    gn = _limiter_gain(needed, 2 * max(1, n_of(lookahead)) + 1, release)
+    res = x * (gn[:, None] if x.ndim == 2 else gn)
+    return np.clip(res, -chan, chan)
 
 
-def _lr4(x: np.ndarray, kind: str, f: float) -> np.ndarray:
-    return dsp.butter(dsp.butter(x, kind, f, 2), kind, f, 2)
+def _linkwitz(sig: np.ndarray, kind_s: str, freq: float) -> np.ndarray:
+    return dsp.butter(dsp.butter(sig, kind_s, freq, 2), kind_s, freq, 2)
 
 
 def split(x: np.ndarray, freqs: Any) -> list[np.ndarray]:
     """Linkwitz-Riley 4th-order band split, bands low to high."""
-    bands: list[np.ndarray] = []
-    rest = np.asarray(x, dtype=float)
-    for f in sorted(freqs):
-        bands = [_lr4(b, "low", f) + _lr4(b, "high", f) for b in bands]
-        bands.append(_lr4(rest, "low", f))
-        rest = _lr4(rest, "high", f)
-    return bands + [rest]
+    band_list: list[np.ndarray] = []
+    remain = np.asarray(x, dtype=float)
+    for freq in sorted(freqs):
+        band_list = [_linkwitz(bv, "low", freq) + _linkwitz(bv, "high", freq) for bv in band_list]
+        band_list.append(_linkwitz(remain, "low", freq))
+        remain = _linkwitz(remain, "high", freq)
+    return band_list + [remain]
 
 
 # ---------------------------------------------------------------- EQ match
 
-def _array_profile(a: np.ndarray) -> np.ndarray:
+def _profile_of_array(av: np.ndarray) -> np.ndarray:
     from hark.forge.engine import tone
 
-    return a if a.ndim == 1 and len(a) == len(tone.CEN) else tone.profile(a)
+    return av if av.ndim == 1 and len(av) == len(tone.CEN) else tone.profile(av)
 
 
-def _target_profile(target: Any) -> np.ndarray:
+def _goal_profile(goal: Any) -> np.ndarray:
     from hark.forge.engine import tone
 
-    if isinstance(target, tone.ToneRef):
-        prof = np.asarray(target.med, dtype=float)
-    elif isinstance(target, (list, tuple)) and target:
-        prof = np.asarray(tone.ToneRef(list(target)).med, dtype=float)
+    if isinstance(goal, tone.ToneRef):
+        prof_v = np.asarray(goal.med, dtype=float)
+    elif isinstance(goal, (list, tuple)) and goal:
+        prof_v = np.asarray(tone.ToneRef(list(goal)).med, dtype=float)
     else:
-        prof = _array_profile(np.asarray(target, dtype=float))
-    return prof
+        prof_v = _profile_of_array(np.asarray(goal, dtype=float))
+    return prof_v
 
 
 def match_curve(x: np.ndarray, target: Any, amount: float = 1.0, max_db: float = 12.0, smooth: int = 1) -> list:
     """28 band gains in dB that move x toward the target profile."""
     from hark.forge.engine import tone
 
-    p = tone.profile(x)
-    d = _target_profile(target) - p
-    w = 10 ** (p / 10)
-    d = d - np.sum(w * d) / np.sum(w)
-    d = np.where(p < -50, np.minimum(d, 6.0), d)
-    d = np.clip(d, -max_db, max_db)
+    cfg = tone.profile(x)
+    dly = _goal_profile(target) - cfg
+    wt = 10 ** (cfg / 10)
+    dly = dly - np.sum(wt * dly) / np.sum(wt)
+    dly = np.where(cfg < -50, np.minimum(dly, 6.0), dly)
+    dly = np.clip(dly, -max_db, max_db)
     for _ in range(int(smooth)):
-        e = np.concatenate([[d[0]], d, [d[-1]]])
-        d = 0.25 * e[:-2] + 0.5 * e[1:-1] + 0.25 * e[2:]
-    return [round(float(v), 2) for v in amount * d]
+        ev = np.concatenate([[dly[0]], dly, [dly[-1]]])
+        dly = 0.25 * ev[:-2] + 0.5 * ev[1:-1] + 0.25 * ev[2:]
+    return [round(float(vec), 2) for vec in amount * dly]
 
 
-def _min_phase(h_mag: np.ndarray, nf: int, taps: int) -> np.ndarray:
-    c = np.fft.ifft(np.log(np.maximum(h_mag, 1e-12))).real
-    f = np.zeros(nf)
-    f[0] = c[0]
-    f[1:nf // 2] = 2 * c[1:nf // 2]
-    f[nf // 2] = c[nf // 2]
-    h = np.fft.ifft(np.exp(np.fft.fft(f))).real[:taps]
-    win = np.ones(taps)
-    win[taps // 2:] = np.hanning(2 * (taps - taps // 2))[taps - taps // 2:]
-    return h * win
+def _minphase_fir(mag_h: np.ndarray, n_fft: int, n_taps: int) -> np.ndarray:
+    chan = np.fft.ifft(np.log(np.maximum(mag_h, 1e-12))).real
+    freq = np.zeros(n_fft)
+    freq[0] = chan[0]
+    freq[1:n_fft // 2] = 2 * chan[1:n_fft // 2]
+    freq[n_fft // 2] = chan[n_fft // 2]
+    hh_ = np.fft.ifft(np.exp(np.fft.fft(freq))).real[:n_taps]
+    window = np.ones(n_taps)
+    window[n_taps // 2:] = np.hanning(2 * (n_taps - n_taps // 2))[n_taps - n_taps // 2:]
+    return hh_ * window
 
 
 def eq_bands(x: np.ndarray, gains_db: Any, phase: str = "min", taps: int = 4096) -> np.ndarray:
@@ -747,101 +747,101 @@ def eq_bands(x: np.ndarray, gains_db: Any, phase: str = "min", taps: int = 4096)
     from hark.forge.engine import tone
 
     x = np.asarray(x, dtype=float)
-    nf = 4 * taps
-    f = np.fft.fftfreq(nf, 1.0 / SR)
-    g = np.interp(np.log2(np.maximum(np.abs(f), 1)), np.log2(tone.CEN), np.asarray(gains_db, float))
-    mag = 10 ** (g / 20)
+    n_fft = 4 * taps
+    freq = np.fft.fftfreq(n_fft, 1.0 / SR)
+    gn = np.interp(np.log2(np.maximum(np.abs(freq), 1)), np.log2(tone.CEN), np.asarray(gains_db, float))
+    mag_v = 10 ** (gn / 20)
     if phase == "linear":
-        h = np.roll(np.fft.ifft(mag).real, taps // 2)[:taps] * np.hanning(taps)
-        delay = taps // 2
+        hh_ = np.roll(np.fft.ifft(mag_v).real, taps // 2)[:taps] * np.hanning(taps)
+        lag_n = taps // 2
     else:
-        h = _min_phase(mag, nf, taps)
-        delay = 0
-    kern = h if x.ndim == 1 else h[:, None]
-    y = signal.fftconvolve(x, kern, axes=0) if x.ndim == 2 else signal.fftconvolve(x, h)
-    return y[delay:delay + len(x)]
+        hh_ = _minphase_fir(mag_v, n_fft, taps)
+        lag_n = 0
+    kernel = hh_ if x.ndim == 1 else hh_[:, None]
+    res = signal.fftconvolve(x, kernel, axes=0) if x.ndim == 2 else signal.fftconvolve(x, hh_)
+    return res[lag_n:lag_n + len(x)]
 
 
 def eq_match(x: np.ndarray, target: Any, amount: float = 1.0, max_db: float = 12.0, smooth: int = 1,
              phase: str = "min", iters: int = 2) -> np.ndarray:
     """Iterative 1/3-octave EQ match to a target, RMS kept."""
     x = np.asarray(x, dtype=float)
-    tot = np.zeros(28)
-    y = x
+    acc_db = np.zeros(28)
+    res = x
     for _ in range(max(1, int(iters))):
-        tot = np.clip(tot + np.array(match_curve(y, target, 1.0, max_db, smooth)), -max_db, max_db)
-        y = eq_bands(x, tot, phase)
+        acc_db = np.clip(acc_db + np.array(match_curve(res, target, 1.0, max_db, smooth)), -max_db, max_db)
+        res = eq_bands(x, acc_db, phase)
     if amount != 1:
-        y = eq_bands(x, amount * tot, phase)
-    return y * _rms(x) / _rms(y)
+        res = eq_bands(x, amount * acc_db, phase)
+    return res * _level_rms(x) / _level_rms(res)
 
 
 # ---------------------------------------------------------------- motion
 
-def _emission_times(t: np.ndarray, t0: float, v: float, dist: float, c: float) -> np.ndarray:
-    b = t - t0
-    return t0 + (c * c * b - np.sqrt(v * v * c * c * b * b + dist * dist * (c * c - v * v))) / (c * c - v * v)
+def _emit_time(tm: np.ndarray, t_zero: float, vec: float, range_m: float, chan: float) -> np.ndarray:
+    bv = tm - t_zero
+    return t_zero + (chan * chan * bv - np.sqrt(vec * vec * chan * chan * bv * bv + range_m * range_m * (chan * chan - vec * vec))) / (chan * chan - vec * vec)
 
 
-def _pass_times(dur: float, v: float, dist: float, t0: float, c: float) -> tuple[np.ndarray, np.ndarray]:
+def _flyby_times(span_s: float, vec: float, range_m: float, t_zero: float, chan: float) -> tuple[np.ndarray, np.ndarray]:
     """Emission times and distances of the heard samples of a straight pass."""
-    def dist_at(te: Any) -> Any:
-        return np.hypot(v * (te - t0), dist)
+    def range_at(t_emit: Any) -> Any:
+        return np.hypot(vec * (t_emit - t_zero), range_m)
 
-    t_first, t_last = dist_at(0.0) / c, dur + dist_at(dur) / c
-    t = t_first + np.arange(int((t_last - t_first) * SR)) / SR
-    te = _emission_times(t, t0, v, dist, c)
-    return te, dist_at(te)
-
-
-def _air_lowpass(y: np.ndarray, rr: np.ndarray, dist: float, air: float) -> np.ndarray:
-    att = air * 0.17 * np.maximum(rr - dist, 0)
-    fc = np.clip(10000 / np.maximum(10 ** (att / 10) - 1, 1e-9) ** 0.25, 200, 0.45 * SR)
-    return dsp.svf(y, fc, 0.707, "low")
+    t_begin, t_end = range_at(0.0) / chan, span_s + range_at(span_s) / chan
+    tm = t_begin + np.arange(int((t_end - t_begin) * SR)) / SR
+    t_emit = _emit_time(tm, t_zero, vec, range_m, chan)
+    return t_emit, range_at(t_emit)
 
 
-def _pass_pan(y: np.ndarray, side: np.ndarray, width: float) -> np.ndarray:
-    s = np.clip(side, -1, 1) * width
-    theta = (s + 1) * np.pi / 4
-    return np.column_stack([y * np.cos(theta), y * np.sin(theta)]) * np.sqrt(2)
+def _distance_lp(res: np.ndarray, rng_m: np.ndarray, range_m: float, air_v: float) -> np.ndarray:
+    att_k = air_v * 0.17 * np.maximum(rng_m - range_m, 0)
+    corner = np.clip(10000 / np.maximum(10 ** (att_k / 10) - 1, 1e-9) ** 0.25, 200, 0.45 * SR)
+    return dsp.svf(res, corner, 0.707, "low")
+
+
+def _flyby_pan(res: np.ndarray, sidesig: np.ndarray, spread_w: float) -> np.ndarray:
+    sv = np.clip(sidesig, -1, 1) * spread_w
+    ang = (sv + 1) * np.pi / 4
+    return np.column_stack([res * np.cos(ang), res * np.sin(ang)]) * np.sqrt(2)
 
 
 def doppler(x: np.ndarray, speed: float = 40.0, dist: float = 4.0, t_close: float | None = None, air: float = 1.0,
             width: float = 0.8, stereo: bool = True, c: float = 343.0, floor_db: float = -30.0) -> np.ndarray:
     """A source passing the listener on a straight line."""
-    xm = _mono(x)
-    dur = len(xm) / SR
-    t0 = dur / 2 if t_close is None else t_close
-    v = float(np.clip(speed, 1e-3, 0.95 * c))
-    te, rr = _pass_times(dur, v, dist, t0, c)
-    y = _hermite(xm, te * SR) * np.maximum(dist / rr, 10 ** (floor_db / 20))
-    y = _air_lowpass(y, rr, dist, air)
+    mono_in = _downmix(x)
+    span_s = len(mono_in) / SR
+    t_zero = span_s / 2 if t_close is None else t_close
+    vec = float(np.clip(speed, 1e-3, 0.95 * c))
+    t_emit, rng_m = _flyby_times(span_s, vec, dist, t_zero, c)
+    res = _cubic_read(mono_in, t_emit * SR) * np.maximum(dist / rng_m, 10 ** (floor_db / 20))
+    res = _distance_lp(res, rng_m, dist, air)
     if not stereo:
-        return y
-    return _pass_pan(y, v * (te - t0) / rr, width)
+        return res
+    return _flyby_pan(res, vec * (t_emit - t_zero) / rng_m, width)
 
 
 def decorrelate(x: np.ndarray, amount: float = 1.0, cut: float = 250.0) -> np.ndarray:
     """Mono to stereo with an all-pass side signal above cut Hz."""
-    xm = _mono(x)
-    side = xm
-    for d, g in ((149, 0.6), (263, -0.55), (397, 0.5)):
-        side = _allpass(side, d, g)
-    side = dsp.butter(side, "high", cut, 2)
-    side = side * 0.7 * _rms(xm) / _rms(side)
-    norm = np.sqrt(1 + 0.49 * amount ** 2)
-    return np.column_stack([xm + amount * side, xm - amount * side]) / norm
+    mono_in = _downmix(x)
+    sidesig = mono_in
+    for dly, gn in ((149, 0.6), (263, -0.55), (397, 0.5)):
+        sidesig = _schroeder_ap(sidesig, dly, gn)
+    sidesig = dsp.butter(sidesig, "high", cut, 2)
+    sidesig = sidesig * 0.7 * _level_rms(mono_in) / _level_rms(sidesig)
+    nrm = np.sqrt(1 + 0.49 * amount ** 2)
+    return np.column_stack([mono_in + amount * sidesig, mono_in - amount * sidesig]) / nrm
 
 
 def pan(x: np.ndarray, pos: Any) -> np.ndarray:
     """Constant-power pan along a control curve."""
     x = np.asarray(x, dtype=float)
-    p = np.clip(dsp.curve(pos, len(x)), -1, 1)
-    theta = (p + 1) * np.pi / 4
-    gl, gr = np.cos(theta) * np.sqrt(2), np.sin(theta) * np.sqrt(2)
+    cfg = np.clip(dsp.curve(pos, len(x)), -1, 1)
+    ang = (cfg + 1) * np.pi / 4
+    g_lo, grain_n = np.cos(ang) * np.sqrt(2), np.sin(ang) * np.sqrt(2)
     if x.ndim == 1:
-        return np.column_stack([x * gl, x * gr])
-    return np.column_stack([x[:, 0] * gl, x[:, 1] * gr])
+        return np.column_stack([x * g_lo, x * grain_n])
+    return np.column_stack([x[:, 0] * g_lo, x[:, 1] * grain_n])
 
 
 def width(x: np.ndarray, w: Any) -> np.ndarray:
@@ -849,50 +849,50 @@ def width(x: np.ndarray, w: Any) -> np.ndarray:
     x = np.asarray(x, dtype=float)
     if x.ndim == 1:
         x = decorrelate(x, 1.0)
-    k = np.clip(dsp.curve(w, len(x)), 0, 2)
-    mid = (x[:, 0] + x[:, 1]) / 2
-    side = (x[:, 0] - x[:, 1]) / 2 * k
-    return np.column_stack([mid + side, mid - side])
+    cnt = np.clip(dsp.curve(w, len(x)), 0, 2)
+    mid_s = (x[:, 0] + x[:, 1]) / 2
+    sidesig = (x[:, 0] - x[:, 1]) / 2 * cnt
+    return np.column_stack([mid_s + sidesig, mid_s - sidesig])
 
 
 def sweep_filter(x: np.ndarray, f0: float, f1: float, q: float = 4.0, curve_: str = "exp", power: float = 1.0,
                  mode: str = "bandn") -> np.ndarray:
     """State-variable filter that sweeps from f0 to f1."""
     x = np.asarray(x, dtype=float)
-    tr = dsp.sweep(f0, f1, len(x) / SR, curve_, power)
-    tr = np.concatenate([tr, np.full(max(0, len(x) - len(tr)), tr[-1])])[: len(x)]
-    return dsp.svf(x, tr, q, mode)
+    trk = dsp.sweep(f0, f1, len(x) / SR, curve_, power)
+    trk = np.concatenate([trk, np.full(max(0, len(x) - len(trk)), trk[-1])])[: len(x)]
+    return dsp.svf(x, trk, q, mode)
 
 
-def _read_track(x: np.ndarray, track: np.ndarray) -> np.ndarray:
-    pos = np.concatenate([[0.0], np.cumsum(track[:-1])])
-    pos = pos[pos < len(x) - 1]
-    return _hermite(x, pos)
+def _resample_track(sig: np.ndarray, trk_pos: np.ndarray) -> np.ndarray:
+    where = np.concatenate([[0.0], np.cumsum(trk_pos[:-1])])
+    where = where[where < len(sig) - 1]
+    return _cubic_read(sig, where)
 
 
 def varispeed(x: np.ndarray, speed: Any) -> np.ndarray:
     """Read x at a speed curve: 2 is an octave up, 0 is stopped."""
     x = np.asarray(x, dtype=float)
     if np.isscalar(speed):
-        n = int(len(x) / max(float(speed), 1e-3))
+        total_n = int(len(x) / max(float(speed), 1e-3))
     elif isinstance(speed, (list, tuple)) and speed and isinstance(speed[0], (list, tuple)):
-        n = n_of(max(p[0] for p in speed))
+        total_n = n_of(max(cfg[0] for cfg in speed))
     else:
-        n = len(speed)
-    return _read_track(x, np.maximum(dsp.curve(speed, n), 0))
+        total_n = len(speed)
+    return _resample_track(x, np.maximum(dsp.curve(speed, total_n), 0))
 
 
 def tape_stop(x: np.ndarray, start: float | None = None, seconds: float = 0.6, curve_: float = 1.6) -> np.ndarray:
     """Tape slowing to a stop."""
     x = np.asarray(x, dtype=float)
-    st = max(0.0, len(x) / SR - 0.6 * seconds) if start is None else start
-    track = np.concatenate([np.ones(n_of(st)), (1 - np.linspace(0, 1, n_of(seconds))) ** curve_])
-    y = _read_track(x, track)
-    k = min(len(y), n_of(0.005))
-    if k:
-        w = np.linspace(1, 0, k)
-        y[len(y) - k:] *= w if y.ndim == 1 else w[:, None]
-    return y
+    semis = max(0.0, len(x) / SR - 0.6 * seconds) if start is None else start
+    trk_pos = np.concatenate([np.ones(n_of(semis)), (1 - np.linspace(0, 1, n_of(seconds))) ** curve_])
+    res = _resample_track(x, trk_pos)
+    cnt = min(len(res), n_of(0.005))
+    if cnt:
+        wt = np.linspace(1, 0, cnt)
+        res[len(res) - cnt:] *= wt if res.ndim == 1 else wt[:, None]
+    return res
 
 
 # ---------------------------------------------------------------- glitch and grains
@@ -900,170 +900,170 @@ def tape_stop(x: np.ndarray, start: float | None = None, seconds: float = 0.6, c
 def crush(x: np.ndarray, bits: int | None = 8, rate: float | None = None, mix: float = 1.0) -> np.ndarray:
     """Sample-rate reduction and bit crush, no dither."""
     x = np.asarray(x, dtype=float)
-    y = x
+    res = x
     if rate is not None:
-        i = np.arange(len(x))
-        idx = np.minimum(np.floor(np.floor(i * rate / SR) * SR / rate).astype(int), len(x) - 1)
-        y = y[idx]
+        ix = np.arange(len(x))
+        ids = np.minimum(np.floor(np.floor(ix * rate / SR) * SR / rate).astype(int), len(x) - 1)
+        res = res[ids]
     if bits is not None:
-        q = 2 ** (bits - 1)
-        y = np.round(y * q) / q
-    return mix * y + (1 - mix) * x
+        qv = 2 ** (bits - 1)
+        res = np.round(res * qv) / qv
+    return mix * res + (1 - mix) * x
 
 
-def _stutter_copy(sl: np.ndarray, k: int, pitch_step: float, gate: float, fade_n: int, decay_db: float):
-    if pitch_step:
-        rate = 2 ** (k * pitch_step / 12)
-        c = _hermite(sl, np.arange(0, len(sl), rate)[: len(sl)])
+def _repeat_copy(seg_len: np.ndarray, cnt: int, st_step: float, gate_v: float, n_fade: int, fall_db: float):
+    if st_step:
+        lfo_hz = 2 ** (cnt * st_step / 12)
+        chan = _cubic_read(seg_len, np.arange(0, len(seg_len), lfo_hz)[: len(seg_len)])
     else:
-        c = sl.copy()
-    g = max(2, int(len(sl) * gate))
-    c[g:] = 0
-    c[:g] = _edge_fade(c[:g], fade_n)
-    return c * 10 ** (k * decay_db / 20)
+        chan = seg_len.copy()
+    gn = max(2, int(len(seg_len) * gate_v))
+    chan[gn:] = 0
+    chan[:gn] = _soft_edges(chan[:gn], n_fade)
+    return chan * 10 ** (cnt * fall_db / 20)
 
 
 def stutter(x: np.ndarray, start: float, length: float, repeats: int = 4, gate: float = 0.85,
             decay_db: float = 0.0, pitch_step: float = 0.0, fade: float = 0.002) -> np.ndarray:
     """Repeat one slice of x, gated, with optional pitch steps and decay."""
     x = np.asarray(x, dtype=float)
-    i0 = n_of(start) if start > 0 else 0
-    sl = x[i0:i0 + n_of(length)]
-    copies = [_stutter_copy(sl, k, pitch_step, gate, n_of(fade), decay_db) for k in range(int(repeats))]
-    return np.concatenate([x[:i0]] + copies + [x[i0 + len(sl):]])
+    at0 = n_of(start) if start > 0 else 0
+    seg_len = x[at0:at0 + n_of(length)]
+    cps = [_repeat_copy(seg_len, cnt, pitch_step, gate, n_of(fade), decay_db) for cnt in range(int(repeats))]
+    return np.concatenate([x[:at0]] + cps + [x[at0 + len(seg_len):]])
 
 
-def _octave_up(sl: np.ndarray, k: int) -> np.ndarray:
-    h = _edge_fade(sl[::2], k)
-    out = np.concatenate([h, h])[: len(sl)]
-    if len(out) < len(sl):
-        out = np.concatenate([out, np.zeros((len(sl) - len(out),) + sl.shape[1:])])
-    return out
+def _up_octave(seg_len: np.ndarray, cnt: int) -> np.ndarray:
+    hh_ = _soft_edges(seg_len[::2], cnt)
+    acc = np.concatenate([hh_, hh_])[: len(seg_len)]
+    if len(acc) < len(seg_len):
+        acc = np.concatenate([acc, np.zeros((len(seg_len) - len(acc),) + seg_len.shape[1:])])
+    return acc
 
 
-def _glitch_reverse(sl: np.ndarray, k: int) -> np.ndarray:
-    return sl[::-1].copy()
+def _g_reverse(seg_len: np.ndarray, cnt: int) -> np.ndarray:
+    return seg_len[::-1].copy()
 
 
-def _glitch_drop(sl: np.ndarray, k: int) -> np.ndarray:
-    return np.zeros_like(sl)
+def _g_drop(seg_len: np.ndarray, cnt: int) -> np.ndarray:
+    return np.zeros_like(seg_len)
 
 
-def _glitch_crush(sl: np.ndarray, k: int) -> np.ndarray:
-    return crush(sl, 6, 6000)
+def _g_crush(seg_len: np.ndarray, cnt: int) -> np.ndarray:
+    return crush(seg_len, 6, 6000)
 
 
-def _glitch_keep(sl: np.ndarray, k: int) -> np.ndarray:
-    return sl.copy()
+def _g_keep(seg_len: np.ndarray, cnt: int) -> np.ndarray:
+    return seg_len.copy()
 
 
 # Edit by the number of cumulative thresholds at or under u; 0 (repeat) falls back to reverse with no previous slice.
-_GLITCH = (_glitch_reverse, _glitch_reverse, _glitch_drop, _octave_up, _glitch_crush, _glitch_keep)
+_GLITCH_OPS = (_g_reverse, _g_reverse, _g_drop, _up_octave, _g_crush, _g_keep)
 
 
-def _glitch_slice(sl: np.ndarray, u: float, th: np.ndarray, prev: np.ndarray | None, k: int) -> np.ndarray:
-    i = int(np.searchsorted(th, u, side="right"))
-    if i == 0 and prev is not None and len(prev) == len(sl):
-        return prev.copy()
-    return _GLITCH[i](sl, k)
+def _g_slice(seg_len: np.ndarray, uu: float, thr: np.ndarray, last: np.ndarray | None, cnt: int) -> np.ndarray:
+    ix = int(np.searchsorted(thr, uu, side="right"))
+    if ix == 0 and last is not None and len(last) == len(seg_len):
+        return last.copy()
+    return _GLITCH_OPS[ix](seg_len, cnt)
 
 
 def glitch(x: np.ndarray, r: np.random.Generator, grid: float = 0.03, repeat: float = 0.25, reverse: float = 0.1,
            drop: float = 0.08, octave: float = 0.08, crush_: float = 0.08, fade: float = 0.0015) -> np.ndarray:
     """Random slice edits on a time grid: repeat, reverse, drop, octave up, crush."""
     x = np.asarray(x, dtype=float)
-    ln, k = max(16, n_of(grid)), n_of(fade)
-    th = np.cumsum([repeat, reverse, drop, octave, crush_])
-    out = np.zeros_like(x)
-    prev = None
-    for i in range(0, len(x), ln):
-        sl = x[i:i + ln]
-        s = _edge_fade(_glitch_slice(sl, r.uniform(), th, prev, k), k)
-        out[i:i + len(s)] = s
-        prev = s
-    return out
+    len_n, cnt = max(16, n_of(grid)), n_of(fade)
+    thr = np.cumsum([repeat, reverse, drop, octave, crush_])
+    acc = np.zeros_like(x)
+    last = None
+    for ix in range(0, len(x), len_n):
+        seg_len = x[ix:ix + len_n]
+        sv = _soft_edges(_g_slice(seg_len, r.uniform(), thr, last, cnt), cnt)
+        acc[ix:ix + len(sv)] = sv
+        last = sv
+    return acc
 
 
-def _pos_control(pos: Any, n: int) -> np.ndarray:
-    if isinstance(pos, tuple) and len(pos) == 2 and all(np.isscalar(p) for p in pos):
-        return np.linspace(pos[0], pos[1], n)
-    return dsp.curve(pos, n)
+def _position_curve(where: Any, total_n: int) -> np.ndarray:
+    if isinstance(where, tuple) and len(where) == 2 and all(np.isscalar(cfg) for cfg in where):
+        return np.linspace(where[0], where[1], total_n)
+    return dsp.curve(where, total_n)
 
 
-def _scatter(out: np.ndarray, s: np.ndarray, r: np.random.Generator, pc: np.ndarray, timing: tuple,
-             knobs: tuple) -> None:
+def _grain_scatter(acc: np.ndarray, sv: np.ndarray, gen: np.random.Generator, pcs: np.ndarray, times_v: tuple,
+             knob_d: tuple) -> None:
     """Add grains at a jittered period until seconds."""
-    seconds, period, time_jitter, gl = timing
-    win = np.hanning(gl)
-    n = len(out)
-    t = 0.0
-    while t < seconds:
-        tt = t + time_jitter * period * r.uniform(-0.5, 0.5)
-        i = n_of(tt) if tt > 0 else 0
-        if i < n:
-            _add_grain(out, s, r, i, pc, gl, win, knobs)
-        t += period
+    secs, per, tj, g_lo = times_v
+    window = np.hanning(g_lo)
+    total_n = len(acc)
+    tm = 0.0
+    while tm < secs:
+        tvec = tm + tj * per * gen.uniform(-0.5, 0.5)
+        ix = n_of(tvec) if tvec > 0 else 0
+        if ix < total_n:
+            _place_grain(acc, sv, gen, ix, pcs, g_lo, window, knob_d)
+        tm += per
 
 
 def granular(src: np.ndarray, seconds: float, r: np.random.Generator, grain: float = 0.06, density: float = 40.0,
              pos: Any = (0.0, 1.0), pos_jitter: float = 0.02, pitch: float = 0.0, pitch_jitter: float = 0.0,
              time_jitter: float = 0.5, spread: float = 0.6, reverse: float = 0.0) -> np.ndarray:
     """Stereo granular cloud read from a source."""
-    knobs = (pitch, pitch_jitter, pos_jitter, reverse, spread)
-    s = _mono(src)
-    n = n_of(seconds)
-    out = np.zeros((n, 2))
-    pc = _pos_control(pos, n)
-    period = 1.0 / max(density, 1e-3)
-    _scatter(out, s, r, pc, (seconds, period, time_jitter, n_of(grain)), knobs)
-    return out / np.sqrt(max(1.0, density * grain * 0.375))
+    knob_d = (pitch, pitch_jitter, pos_jitter, reverse, spread)
+    sv = _downmix(src)
+    total_n = n_of(seconds)
+    acc = np.zeros((total_n, 2))
+    pcs = _position_curve(pos, total_n)
+    per = 1.0 / max(density, 1e-3)
+    _grain_scatter(acc, sv, r, pcs, (seconds, per, time_jitter, n_of(grain)), knob_d)
+    return acc / np.sqrt(max(1.0, density * grain * 0.375))
 
 
-def _pan_add(out: np.ndarray, g: np.ndarray, i: int, theta: float) -> None:
-    m = min(len(g), len(out) - i)
-    out[i:i + m, 0] += g[:m] * np.cos(theta) * np.sqrt(2)
-    out[i:i + m, 1] += g[:m] * np.sin(theta) * np.sqrt(2)
+def _add_panned(acc: np.ndarray, gn: np.ndarray, ix: int, ang: float) -> None:
+    mm = min(len(gn), len(acc) - ix)
+    acc[ix:ix + mm, 0] += gn[:mm] * np.cos(ang) * np.sqrt(2)
+    acc[ix:ix + mm, 1] += gn[:mm] * np.sin(ang) * np.sqrt(2)
 
 
-def _add_grain(out: np.ndarray, s: np.ndarray, r: np.random.Generator, i: int, pc: np.ndarray, gl: int,
-               win: np.ndarray, knobs: tuple) -> None:
-    pitch, pitch_jitter, pos_jitter, reverse, spread = knobs
-    rate = 2 ** ((pitch + pitch_jitter * r.standard_normal()) / 12)
-    p0 = (pc[min(i, len(out) - 1)] + pos_jitter * r.standard_normal()) * (len(s) - gl * rate)
-    start = np.clip(p0, 0, max(0.0, len(s) - gl * rate - 2))
-    g = _hermite(s, start + np.arange(gl) * rate) * win
-    if r.uniform() < reverse:
-        g = g[::-1]
-    _pan_add(out, g, i, (np.clip(spread * r.uniform(-1, 1), -1, 1) + 1) * np.pi / 4)
+def _place_grain(acc: np.ndarray, sv: np.ndarray, gen: np.random.Generator, ix: int, pcs: np.ndarray, g_lo: int,
+               window: np.ndarray, knob_d: tuple) -> None:
+    pitch_v, pjit, pj, rev_p, pan_spread = knob_d
+    lfo_hz = 2 ** ((pitch_v + pjit * gen.standard_normal()) / 12)
+    cfg0 = (pcs[min(ix, len(acc) - 1)] + pj * gen.standard_normal()) * (len(sv) - g_lo * lfo_hz)
+    start_s = np.clip(cfg0, 0, max(0.0, len(sv) - g_lo * lfo_hz - 2))
+    gn = _cubic_read(sv, start_s + np.arange(g_lo) * lfo_hz) * window
+    if gen.uniform() < rev_p:
+        gn = gn[::-1]
+    _add_panned(acc, gn, ix, (np.clip(pan_spread * gen.uniform(-1, 1), -1, 1) + 1) * np.pi / 4)
 
 
-def _swell_head(wet: np.ndarray, k: int, seconds: float) -> np.ndarray:
-    sw = wet[:k][::-1].copy()
-    kf = min(k, n_of(0.35 * seconds))
-    sw[:kf] *= (np.linspace(0, 1, kf) ** 2)[:, None]
-    return sw
+def _swell_lead(wet_v: np.ndarray, cnt: int, secs: float) -> np.ndarray:
+    sw_ = wet_v[:cnt][::-1].copy()
+    kfac = min(cnt, n_of(0.35 * secs))
+    sw_[:kfac] *= (np.linspace(0, 1, kfac) ** 2)[:, None]
+    return sw_
 
 
-def _hit_after(hm: np.ndarray, r: np.random.Generator, room: tuple, hit_room: float) -> np.ndarray:
-    rt60, size, damp = room
-    if hit_room > 0:
-        return reverb(hm, r, 0.6 * rt60, size, predelay=0.0, damp=damp, wet=hit_room, dry=1.0, stereo=True)
-    return dsp.stereo_of(hm)
+def _hit_tail(hmag: np.ndarray, gen: np.random.Generator, space: tuple, room_amt: float) -> np.ndarray:
+    t60, room_size, damping = space
+    if room_amt > 0:
+        return reverb(hmag, gen, 0.6 * t60, room_size, predelay=0.0, damp=damping, wet=room_amt, dry=1.0, stereo=True)
+    return dsp.stereo_of(hmag)
 
 
 def reverse_swell(hit: np.ndarray, r: np.random.Generator, seconds: float = 1.0, rt60: float = 2.5,
                   size: float = 0.8, damp: float = 0.4, swell_db: float = -6.0, gap: float = 0.0,
                   hit_room: float = 0.15) -> np.ndarray:
     """A reversed reverb swell that leads into the hit."""
-    hm = _mono(hit)
-    wet = reverb(hm, r, rt60, size, predelay=0.0, damp=damp, wet=1.0, dry=0.0, stereo=True,
+    hmag = _downmix(hit)
+    wet_v = reverb(hmag, r, rt60, size, predelay=0.0, damp=damp, wet=1.0, dry=0.0, stereo=True,
                  tail=max(seconds, rt60) + 0.1)
-    k = n_of(seconds)
-    sw = _swell_head(wet, k, seconds)
-    after = _hit_after(hm, r, (rt60, size, damp), hit_room)
-    sw = sw * np.max(np.abs(after)) * 10 ** (swell_db / 20) / (np.max(np.abs(sw)) + 1e-12)
-    g = n_of(gap) if gap > 0 else 0
-    out = np.zeros((k + g + len(after), 2))
-    out[: len(sw)] += sw
-    out[k + g:] += after
-    return out
+    cnt = n_of(seconds)
+    sw_ = _swell_lead(wet_v, cnt, seconds)
+    post = _hit_tail(hmag, r, (rt60, size, damp), hit_room)
+    sw_ = sw_ * np.max(np.abs(post)) * 10 ** (swell_db / 20) / (np.max(np.abs(sw_)) + 1e-12)
+    gn = n_of(gap) if gap > 0 else 0
+    acc = np.zeros((cnt + gn + len(post), 2))
+    acc[: len(sw_)] += sw_
+    acc[cnt + gn:] += post
+    return acc
