@@ -68,24 +68,27 @@ def block_loudness(x: np.ndarray, win: float, hop: float, kw: np.ndarray | None 
     return _to_lufs(p), t
 
 
+def _above(p: np.ndarray, threshold: float) -> np.ndarray:
+    """The block powers whose loudness is above threshold."""
+    with np.errstate(divide="ignore"):
+        lv = -0.691 + 10.0 * np.log10(p)
+    return p[lv > threshold]
+
+
+def _mean_lufs(p: np.ndarray) -> float:
+    return -0.691 + 10.0 * math.log10(p.mean())
+
+
 def integrated(x: np.ndarray, kw: np.ndarray | None = None) -> float:
     """Gated integrated loudness (absolute -70 LUFS, relative -10 LU)."""
     k = kweight(as_stereo(x)) if kw is None else kw
     if len(k) < int(0.4 * SR):
         return NEG_INF
     p, _ = _block_power(k, 0.4, 0.1)
-    with np.errstate(divide="ignore"):
-        lv = -0.691 + 10.0 * np.log10(p)
-    keep = p[lv > -70.0]
-    if not len(keep):
-        return NEG_INF
-    rel = -0.691 + 10.0 * math.log10(keep.mean()) - 10.0
-    with np.errstate(divide="ignore"):
-        lk = -0.691 + 10.0 * np.log10(keep)
-    keep = keep[lk > rel]
-    if not len(keep):
-        return NEG_INF
-    return -0.691 + 10.0 * math.log10(keep.mean())
+    keep = _above(p, -70.0)
+    if len(keep):
+        keep = _above(keep, _mean_lufs(keep) - 10.0)
+    return _mean_lufs(keep) if len(keep) else NEG_INF
 
 
 def lra(x: np.ndarray, kw: np.ndarray | None = None) -> float:
@@ -231,19 +234,26 @@ def duck_times(n: int, hits, depth=0.55, tau=0.14) -> np.ndarray:
     return g
 
 
-def finish(x, lufs=-14.0, ceiling=0.77, mono_hz=120.0, comp=True, use_glue=False,
-           fade=0.0, tail_zero=480, end_fade=0.06):
-    """The full chain. Returns (master, max limiter gain reduction in dB)."""
-    x = _butter(as_stereo(x), 2, 28, "highpass")
-    x = mono_below(x, mono_hz)
-    if comp:
+FINISH = {"lufs": -14.0, "ceiling": 0.77, "mono_hz": 120.0, "comp": True, "use_glue": False,
+          "fade": 0.0, "tail_zero": 480, "end_fade": 0.06}
+
+
+def _pre(x: np.ndarray, o: dict) -> np.ndarray:
+    """High-pass, mono bass, optional compressor, glue and end fade."""
+    x = mono_below(_butter(as_stereo(x), 2, 28, "highpass"), o["mono_hz"])
+    if o["comp"]:
         x = compressor(x)
-    if use_glue:
+    if o["use_glue"]:
         x = glue(x)
-    n = len(x)
-    if fade > 0:
+    if o["fade"] > 0:
+        n = len(x)
         t = np.arange(n) / SR
-        x = x * (np.clip((n / SR - 0.03 - t) / fade, 0, 1) ** 2)[:, None]
+        x = x * (np.clip((n / SR - 0.03 - t) / o["fade"], 0, 1) ** 2)[:, None]
+    return x
+
+
+def _level(x: np.ndarray, lufs: float, ceiling: float) -> tuple[np.ndarray, float]:
+    """Gain to the target and limit, up to 8 rounds. Returns (x, max limiter gain reduction in dB)."""
     max_gr = 0.0
     for p in range(8):
         cur = integrated(x)
@@ -255,24 +265,35 @@ def finish(x, lufs=-14.0, ceiling=0.77, mono_hz=120.0, comp=True, use_glue=False
         cur = integrated(x)
         if p >= 2 and (not math.isfinite(cur) or abs(cur - lufs) <= 0.05):
             break
-    h = min(n, int(0.003 * SR))
-    x[:h] *= raised_cosine(h)[:, None]
-    t = min(n, int(max(end_fade, 0.01) * SR))
-    x[n - t:] *= raised_cosine(t)[::-1][:, None]
-    if tail_zero > 0:
-        x[max(0, n - tail_zero):] = 0.0
     return x, max_gr
 
 
-def gate(rep: dict, target: float, tol: float, max_tp: float) -> list[str]:
-    fails = []
-    if not math.isfinite(rep["lufs"]) or abs(rep["lufs"] - target) > tol:
-        fails.append(f"loudness {rep['lufs']:.2f} LUFS is outside {target:.1f} +-{tol} LU")
-    if rep["true_peak_db"] > max_tp:
-        fails.append(f"true peak {rep['true_peak_db']:.2f} dBTP is above {max_tp} dBTP")
-    if not rep["last_480_zero"]:
-        fails.append("the last 480 samples are not digital zero")
-    return fails
+def _edges(x: np.ndarray, o: dict) -> np.ndarray:
+    n = len(x)
+    h = min(n, int(0.003 * SR))
+    x[:h] *= raised_cosine(h)[:, None]
+    t = min(n, int(max(o["end_fade"], 0.01) * SR))
+    x[n - t:] *= raised_cosine(t)[::-1][:, None]
+    if o["tail_zero"] > 0:
+        x[max(0, n - o["tail_zero"]):] = 0.0
+    return x
+
+
+def finish(x, **opts):
+    """The full chain. opts override FINISH. Returns (master, max limiter gain reduction in dB)."""
+    o = dict(FINISH, **opts)
+    x, max_gr = _level(_pre(x, o), o["lufs"], o["ceiling"])
+    return _edges(x, o), max_gr
+
+
+def gate(rep: dict, args) -> list[str]:
+    """Gate failures against args.lufs, args.tol and args.max_tp."""
+    lufs_ok = math.isfinite(rep["lufs"]) and abs(rep["lufs"] - args.lufs) <= args.tol
+    checks = [(lufs_ok, f"loudness {rep['lufs']:.2f} LUFS is outside {args.lufs:.1f} +-{args.tol} LU"),
+              (rep["true_peak_db"] <= args.max_tp,
+               f"true peak {rep['true_peak_db']:.2f} dBTP is above {args.max_tp} dBTP"),
+              (rep["last_480_zero"], "the last 480 samples are not digital zero")]
+    return [msg for ok, msg in checks if not ok]
 
 
 def read_audio(path: str) -> np.ndarray:
@@ -292,36 +313,47 @@ def _clean(v):
     return v
 
 
-def run(args) -> int:
-    x = read_audio(args.input)
-    if args.measure:
-        rep = measure(x)
-    else:
-        if not args.output:
-            raise ValueError("OUTPUT is required unless --measure")
-        if args.sidechain:
-            x = x * sidechain_gain(read_audio(args.sidechain), len(x), args.sc_depth, args.sc_tau)[:, None]
-        y, gr = finish(x, args.lufs, args.ceiling, args.mono_hz, not args.no_comp, not args.no_glue,
-                       args.fade, args.tail_zero)
-        import soundfile as sf
-        sf.write(args.output, y.astype(np.float32), SR, subtype="PCM_24")
-        rep = measure(sf.read(args.output, dtype="float64", always_2d=True)[0])
-        rep["limiter_max_gr_db"] = gr
-        rep["output"] = args.output
-    rep["fails"] = gate(rep, args.lufs, args.tol, args.max_tp)
-    rep["pass"] = not rep["fails"]
-    rep = {k: _clean(v) for k, v in rep.items()}
+def _master(args, x: np.ndarray) -> dict:
+    """Master x to args.output and measure the written file."""
+    if not args.output:
+        raise ValueError("OUTPUT is required unless --measure")
+    if args.sidechain:
+        x = x * sidechain_gain(read_audio(args.sidechain), len(x), args.sc_depth, args.sc_tau)[:, None]
+    y, gr = finish(x, lufs=args.lufs, ceiling=args.ceiling, mono_hz=args.mono_hz, comp=not args.no_comp,
+                   use_glue=not args.no_glue, fade=args.fade, tail_zero=args.tail_zero)
+    import soundfile as sf
+    sf.write(args.output, y.astype(np.float32), SR, subtype="PCM_24")
+    rep = measure(sf.read(args.output, dtype="float64", always_2d=True)[0])
+    rep["limiter_max_gr_db"] = gr
+    rep["output"] = args.output
+    return rep
+
+
+def _print_report(rep: dict) -> None:
     word = "PASS" if rep["pass"] else "FAIL"
     f = lambda v: "n.a." if v is None else f"{v:.2f}"
     print(f"{word}  {f(rep['lufs'])} LUFS  TP {f(rep['true_peak_db'])} dBTP  LRA {f(rep['lra'])} LU  "
           f"loudest {f(rep['momentary_max'])} LUFS-M at {rep['momentary_max_t']:.2f}s")
     for line in rep["fails"]:
         print("  " + line)
-    if args.json == "-":
+
+
+def _write_json(dest: str | None, rep: dict) -> None:
+    if dest == "-":
         print(json.dumps(rep, indent=1))
-    elif args.json:
-        with open(args.json, "w") as fh:
+    elif dest:
+        with open(dest, "w") as fh:
             json.dump(rep, fh, indent=1)
+
+
+def run(args) -> int:
+    x = read_audio(args.input)
+    rep = measure(x) if args.measure else _master(args, x)
+    rep["fails"] = gate(rep, args)
+    rep["pass"] = not rep["fails"]
+    rep = {k: _clean(v) for k, v in rep.items()}
+    _print_report(rep)
+    _write_json(args.json, rep)
     return 0 if rep["pass"] else 1
 
 
@@ -382,18 +414,20 @@ def parse(argv):
     return p.parse_args(argv)
 
 
-def main(argv=None) -> int:
-    args = parse(sys.argv[1:] if argv is None else argv)
-    if args.self_test:
-        return self_test()
-    if not args.input:
-        print("error: INPUT is required", file=sys.stderr)
-        return 1
+def _safe_run(args) -> int:
+    """run(args) with every error as 1 line and exit 1."""
     try:
+        if not args.input:
+            raise ValueError("INPUT is required")
         return run(args)
     except Exception as e:  # one line, exit 1
         print(f"error: {e}", file=sys.stderr)
         return 1
+
+
+def main(argv=None) -> int:
+    args = parse(sys.argv[1:] if argv is None else argv)
+    return self_test() if args.self_test else _safe_run(args)
 
 
 if __name__ == "__main__":
