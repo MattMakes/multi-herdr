@@ -20,6 +20,7 @@ N_MEL = 64
 WIDTH_W = 0.04
 WIDTH_CAP_DB = 20
 TAIL_CORR_W = 1.0
+CEN = 1000.0 * 2.0 ** (np.arange(-15, 13) / 3.0)   # the 28 tone band centres
 
 _LEAD = 240
 _TINY = 1e-20
@@ -165,8 +166,7 @@ def melspec(m: np.ndarray, n_fft: int) -> np.ndarray:
 
 
 def _band_edges() -> np.ndarray:
-    cen = 1000.0 * 2.0 ** (np.arange(-15, 13) / 3.0)
-    return np.column_stack([cen / 2 ** (1 / 6), cen * 2 ** (1 / 6)])
+    return np.column_stack([CEN / 2 ** (1 / 6), CEN * 2 ** (1 / 6)])
 
 
 def bandgram(m: np.ndarray, nfft: int = 1024, hop: int = 512) -> np.ndarray:
@@ -246,10 +246,18 @@ def excess(a: np.ndarray, b: np.ndarray) -> tuple[float, float]:
     return ex, mi
 
 
-def _profile(m: np.ndarray) -> np.ndarray:
-    from hark.forge.engine import tone
+def profile(m: np.ndarray) -> np.ndarray:
+    """The tone profile: 28 third-octave band levels in dB relative to their total, floored at -60."""
+    m = mono(m)
+    p = np.abs(np.fft.rfft(m)) ** 2 if len(m) else np.zeros(1)
+    f = np.fft.rfftfreq(max(len(m), 1), 1.0 / SR)
+    edges = _band_edges()
+    bands = np.array([p[(f >= lo) & (f < hi)].sum() for lo, hi in edges]) + 1e-20
+    return np.maximum(10 * np.log10(bands / bands.sum()), -60.0)
 
-    return np.asarray(tone.profile(mono(m)), dtype=np.float64)
+
+def _profile(m: np.ndarray) -> np.ndarray:
+    return profile(m)
 
 
 def tone_db(a: np.ndarray, b: np.ndarray) -> float:
@@ -494,7 +502,6 @@ def _env_panel(ax: Any, cols: list) -> None:
 
 
 def _tone_panel(ax: Any, cols: list) -> None:
-    cen = 1000.0 * 2.0 ** (np.arange(-15, 13) / 3.0)
     for name, m in cols:
-        ax.semilogx(cen, _profile(m), label=name, lw=0.8)
+        ax.semilogx(CEN, _profile(m), label=name, lw=0.8)
     ax.legend(fontsize=6)
