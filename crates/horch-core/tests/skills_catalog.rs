@@ -589,6 +589,21 @@ fn skills_bundled_skip_dotfiles() {
     }
 }
 
+/// `build.rs` never bundles Python bytecode: no `__pycache__` directory and
+/// no `.pyc` file. A test run writes them beside the sources, and the size
+/// budget then counted them. The fixture `skills/__pycache__/fixture.pyc`
+/// exists on disk and must not appear.
+#[test]
+fn skills_bundled_skip_python_bytecode() {
+    assert!(skills_dir().join("__pycache__/fixture.pyc").is_file());
+    for (path, _) in BUNDLED_SKILL_FILES {
+        assert!(
+            !path.split('/').any(|part| part == "__pycache__") && !path.ends_with(".pyc"),
+            "{path} is Python bytecode"
+        );
+    }
+}
+
 /// The lock override rule: a `bundled:` lock entry never replaces the
 /// compiled-in copy; any other lock entry does, and new ids are added.
 #[test]

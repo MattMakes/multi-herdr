@@ -21,6 +21,10 @@ for v in $(compgen -e | grep -E '^GIT_CONFIG_(KEY|VALUE)_' || true); do
   unset "$v"
 done
 
+# No python step (and no cargo test that runs python) writes __pycache__
+# beside the sources: build.rs bundles files under skills/ from disk.
+export PYTHONDONTWRITEBYTECODE=1
+
 step() {
   echo "==> gate: $*"
   "$@"

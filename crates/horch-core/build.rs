@@ -173,10 +173,16 @@ fn collect_skill_files(root: &Path, dir: &Path, files: &mut Vec<(String, String)
     for entry in std::fs::read_dir(dir).unwrap() {
         let entry = entry.unwrap();
         // Dotfiles (`.DS_Store`, `.git`) are never part of a skill.
-        if entry.file_name().to_string_lossy().starts_with('.') {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if name.starts_with('.') {
             continue;
         }
         let kind = entry.file_type().unwrap();
+        // Python bytecode (`__pycache__/`, `*.pyc`) is a local build output
+        // of a test run, never part of a skill.
+        if (kind.is_dir() && name == "__pycache__") || (kind.is_file() && name.ends_with(".pyc")) {
+            continue;
+        }
         assert!(
             !kind.is_symlink(),
             "bundled skills must not depend on symlinks"
