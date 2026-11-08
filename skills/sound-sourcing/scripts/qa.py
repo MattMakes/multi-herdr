@@ -1272,126 +1272,150 @@ def main(argv=None) -> int:
     return self_test() if a.self_test else _run(a)
 
 
+def _qa_design(fade_in, offset=0.0) -> dict:
+    return {"duration": 3.0, "samples": {"q.x": {"file": "x.wav", "fade_in": fade_in}}, "pools": {"q.x": ["q.x"]},
+            "rules": [{"name": "q.r", "pool": "q.x", "align": "start", "offset": offset}],
+            "ambience": [{"name": "q.bed", "file": "bed.wav", "at": 0, "until": 3, "fade_in": 0.2, "fade_out": 0.2}]}
+
+
+def _mix_qa(d: str, design: str, cues: str = "c.json", master: bool = True, qa_args=()) -> tuple[int, dict]:
+    """Mix design with a trace, then run QA. Returns (QA exit code, qa.json)."""
+    flags = [] if master else ["--no-master"]
+    mix.main(["--root", d, "--cues", cues, "--trace", "out/qa/adds.json", "--cache", "cache", "--design", design] + flags)
+    code = main(["--root", d, "--design", design, "--cues", cues, "--cache", "cache"]
+                + ([] if master else ["--master", "none"]) + list(qa_args))
+    return code, mix.load_json(os.path.join(d, "out/qa/qa.json"))
+
+
+def _test_clicks(ck, fx, d: str) -> None:
+    """Q1, Q2: a master click at a placement start, and a fade-in that removes it."""
+    fx.write(os.path.join(d, "bed.wav"), fx.noise_bed(3.0, 0.002, 4))  # quiet: its 14 kHz noise must not hide the click
+    t = np.arange(int(0.2 * SR)) / SR
+    tone = 0.5 * np.sin(2 * np.pi * 300 * t + 1.0) * np.exp(-8 * t)  # starts on a non-zero sample
+    fx.write(os.path.join(d, "x.wav"), np.stack([tone, tone], 1), subtype="FLOAT")
+    fx.put_json(os.path.join(d, "c.json"), {"fps": 60, "events": [{"f": 60, "kind": "hit", "id": "q:h:0"}]})
+    fx.put_json(os.path.join(d, "d.json"), _qa_design(0))
+    code, q = _mix_qa(d, "d.json")
+    cl = q["sections"]["clicks"]
+    edge = [c for c in cl["items"] if c["in"] == "master" and c["at_edge"]]
+    ck("Q1 a master click at a placement start fails QA",
+       bool(edge) and edge[0]["owners"][0]["where"] == "start" and (cl["status"], code) == ("fail", 1))
+    fx.put_json(os.path.join(d, "d.json"), _qa_design(0.004))
+    _, q = _mix_qa(d, "d.json")
+    cl = q["sections"]["clicks"]
+    ck("Q2 a 4 ms fade-in leaves no edge click",
+       cl["status"] != "fail" and not any(c["at_edge"] and c["in"] == "master" for c in cl["items"]))
+
+
+def _test_masking(ck, fx, d: str) -> None:
+    """Q3: an effect 10 dB under a broadband bed."""
+    loud = fx.noise_bed(3.0, 0.2, 8)
+    fx.write(os.path.join(d, "loud.wav"), loud)
+    # the effect is the bed's own noise 10 dB down, so it is 10 dB under the bed in every band
+    fx.write(os.path.join(d, "soft.wav"), loud[SR:SR + int(0.15 * SR)] * 10 ** (-10 / 20))
+    fx.put_json(os.path.join(d, "d3.json"), {
+        "duration": 3.0, "samples": {"q.s": {"file": "soft.wav"}}, "pools": {"q.s": ["q.s"]},
+        "rules": [{"name": "q.s", "pool": "q.s"}],
+        "ambience": [{"name": "q.loud", "file": "loud.wav", "at": 0, "until": 3, "fade_in": 0.1, "fade_out": 0.1}]})
+    _, q = _mix_qa(d, "d3.json", master=False)
+    au = q["sections"]["audibility"]
+    ev = au["events"][0]
+    ck("Q3 masked under the bed", (ev["verdict"], ev["covered_by"], au["status"]) == ("masked", "music/amb", "warn"))
+
+
+def _test_offset(ck, fx, d: str) -> None:
+    """Q4: a rule offset of 0.2 s on an impact is deliberate."""
+    fx.write(os.path.join(d, "hit.wav"), fx.burst(0.1, 200, 40, 3))
+    fx.put_json(os.path.join(d, "d4.json"), {
+        "duration": 3.0, "samples": {"q.h": {"file": "hit.wav"}}, "pools": {"q.h": ["q.h"]},
+        "rules": [{"name": "q.late", "pool": "q.h", "offset": 0.2}],
+        "ambience": [{"name": "q.bed", "file": "bed.wav", "at": 0, "until": 3}]})
+    _, q = _mix_qa(d, "d4.json", master=False)
+    e = q["sections"]["sync"]["events"][0]
+    ck("Q4 the offset is deliberate", bool(e.get("deliberate")) and e["offset_rule"] == "q.late" and not e["issue"])
+
+
+def _test_density(ck, fx, d: str) -> None:
+    """Q5, Q6, Q7, Q8: machine gun, partial coverage, no trace, missing stems."""
+    evs = [{"f": 20 + 15 * k, "kind": "tick", "id": f"a:k:{k}"} for k in range(4)]
+    evs += [{"f": 120 + 10 * k, "kind": "tap", "id": f"b:t:{k}"} for k in range(6)]
+    fx.put_json(os.path.join(d, "c5.json"), {"fps": 60, "events": evs})
+    fx.put_json(os.path.join(d, "d5.json"), {
+        "duration": 3.0, "samples": {"q.h": {"file": "hit.wav"}}, "pools": {"q.h": ["q.h"]},
+        "rules": [{"name": "q.mg", "pool": "q.h", "match": {"kind": "tap"}},
+                  {"name": "q.part", "pool": "q.h", "match": {"id": "a:k:[01]$"}}]})
+    _, q = _mix_qa(d, "d5.json", cues="c5.json", master=False)
+    sec = q["sections"]
+    ck("Q5 machine gun", "q.mg" in sec["density"]["machine_gun"] and sec["density"]["status"] == "warn")
+    part = [(p["class"], p["unsounded"], p["of"]) for p in sec["coverage"]["partial"]]
+    ck("Q6 partial class a:k with 2 of 4 unsounded", ("a:k", 2, 4) in part and sec["coverage"]["status"] == "warn")
+    os.remove(os.path.join(d, "out/qa/adds.json"))
+    main(["--root", d, "--design", "d5.json", "--cues", "c5.json", "--master", "none", "--cache", "cache"])
+    sec = mix.load_json(os.path.join(d, "out/qa/qa.json"))["sections"]
+    skipped = {s for s in sec if sec[s]["status"] == "skipped"}
+    ck("Q7 trace sections skipped, the rest ran",
+       {"edges", "audibility", "harshness", "sync", "density"} <= skipped and not {"clicks", "coverage"} & skipped)
+    ck("Q8 missing stems exit 2", main(["--root", d, "--design", "d5.json", "--stems", "nope"]) == 2)
+
+
+def _test_empty_trim(ck, fx, d: str) -> None:
+    """Q9: a trim past the end of its file."""
+    fx.put_json(os.path.join(d, "d9.json"), {
+        "duration": 3.0, "samples": {"q.e": {"file": "hit.wav", "start": 5.0}}, "pools": {"q.e": ["q.e"]},
+        "rules": [{"name": "q.e", "pool": "q.e"}],
+        "ambience": [{"name": "q.bed", "file": "bed.wav", "at": 0, "until": 3}]})
+    code, q = _mix_qa(d, "d9.json", master=False)
+    sec = q["sections"]
+    ck("Q9 empty trim: edges issue, audibility silent, fail",
+       "empty" in " ".join(sec["edges"]["items"][0]["defects"]) and sec["audibility"]["events"][0]["verdict"] == "silent"
+       and (sec["audibility"]["status"], code) == ("fail", 1))
+
+
+def _splice(d: str, ok_reason) -> dict:
+    """The first music splice of a segment that ends inside a held chord, then silence."""
+    seg = {"label": "bars 1-2", "src_from": 0.0, "src_to": 2.0, "at": 0.0}
+    if ok_reason:
+        seg["qa_ok"] = ok_reason
+    seg2 = {"label": "breakdown", "src_from": 4.0, "src_to": 5.0, "at": 2.0}
+    with open(os.path.join(d, "d10.json"), "w") as fh:
+        json.dump({"duration": 4.0, "music": {"file": "chord.wav", "src_bpm": 120, "stretch": "none",
+                                              "segments": [seg, seg2]}}, fh)
+    mix.main(["--root", d, "--trace", "out/qa/adds.json", "--cache", "cache", "--design", "d10.json", "--no-master"])
+    main(["--root", d, "--design", "d10.json", "--master", "none", "--cache", "cache"])
+    return mix.load_json(os.path.join(d, "out/qa/qa.json"))["sections"]["edges"]["music_splices"][0]
+
+
+def _test_splice(ck, fx, d: str) -> None:
+    """Q10: a music segment that ends inside a held chord, then silence."""
+    t = np.arange(SR * 6) / SR
+    chord = 0.3 * (np.sin(2 * np.pi * 220 * t) + np.sin(2 * np.pi * 330 * t))
+    chord[4 * SR:] *= 0.0005
+    fx.write(os.path.join(d, "chord.wav"), np.stack([chord, chord], 1))
+    sp = _splice(d, None)
+    ck("Q10 the splice chops the music", any("chops the music" in m for m in sp["defects"]))
+    sp = _splice(d, "a hard cut into the breakdown")
+    ck("Q10 qa_ok turns the chop into a note", not sp["defects"] and any("acknowledged" in n for n in sp["notes"]))
+
+
+def _test_project(ck, fx, d: str) -> None:
+    """W3: the full fixture project, every section present."""
+    p = fx.project(os.path.join(d, "film"))
+    mix.main(["--root", p["root"], "--trace", "out/qa/adds.json"])
+    code = main(["--root", p["root"], "--layers"])
+    q = mix.load_json(os.path.join(p["root"], "out/qa/qa.json"))
+    need = {"clicks", "loudness", "coverage", "edges", "audibility", "harshness", "sync", "density", "listen"}
+    skipped = [k for k, s in q["sections"].items() if s["status"] == "skipped"]
+    ck("W3 every section present, only listen skipped", need <= set(q["sections"]) and code in (0, 1) and skipped == ["listen"])
+
+
 def self_test() -> int:
     import tempfile
     import fixtures as fx
     ck = fx.Checker()
-    py = lambda *args: mix.main(list(args))
     with tempfile.TemporaryDirectory() as d:
-        bed = fx.noise_bed(3.0, 0.002, 4)  # a quiet bed: its 14 kHz noise must not hide the click
-        fx.write(os.path.join(d, "bed.wav"), bed)
-        t = np.arange(int(0.2 * SR)) / SR
-        tone = 0.5 * np.sin(2 * np.pi * 300 * t + 1.0) * np.exp(-8 * t)  # starts on a non-zero sample
-        fx.write(os.path.join(d, "x.wav"), np.stack([tone, tone], 1), subtype="FLOAT")
-        fx.put_json(os.path.join(d, "c.json"), {"fps": 60, "events": [{"f": 60, "kind": "hit", "id": "q:h:0"}]})
-
-        def design(fade_in, offset=0.0):
-            return {"duration": 3.0, "samples": {"q.x": {"file": "x.wav", "fade_in": fade_in}}, "pools": {"q.x": ["q.x"]},
-                    "rules": [{"name": "q.r", "pool": "q.x", "align": "start", "offset": offset}],
-                    "ambience": [{"name": "q.bed", "file": "bed.wav", "at": 0, "until": 3, "fade_in": 0.2, "fade_out": 0.2}]}
-        mixargs = ["--root", d, "--cues", "c.json", "--trace", "out/qa/adds.json", "--cache", "cache"]
-        fx.put_json(os.path.join(d, "d.json"), design(0))
-        py(*mixargs, "--design", "d.json")
-        code = main(["--root", d, "--design", "d.json", "--cues", "c.json", "--cache", "cache"])
-        q = mix.load_json(os.path.join(d, "out/qa/qa.json"))
-        cl = q["sections"]["clicks"]
-        edge = [c for c in cl["items"] if c["in"] == "master" and c["at_edge"]]
-        ck("Q1 a master click at a placement start fails QA",
-           edge and edge[0]["owners"][0]["where"] == "start" and cl["status"] == "fail" and code == 1)
-        fx.put_json(os.path.join(d, "d.json"), design(0.004))
-        py(*mixargs, "--design", "d.json")
-        main(["--root", d, "--design", "d.json", "--cues", "c.json", "--cache", "cache"])
-        q = mix.load_json(os.path.join(d, "out/qa/qa.json"))
-        ck("Q2 a 4 ms fade-in leaves no edge click", q["sections"]["clicks"]["status"] != "fail"
-           and not any(c["at_edge"] and c["in"] == "master" for c in q["sections"]["clicks"]["items"]))
-        # Q3: an effect 10 dB under a broadband bed
-        loud = fx.noise_bed(3.0, 0.2, 8)
-        fx.write(os.path.join(d, "loud.wav"), loud)
-        # the effect is the bed's own noise 10 dB down, so it is 10 dB under the bed in every band
-        nb = loud[SR:SR + int(0.15 * SR)] * 10 ** (-10 / 20)
-        fx.write(os.path.join(d, "soft.wav"), nb)
-        fx.put_json(os.path.join(d, "d3.json"), {
-            "duration": 3.0, "samples": {"q.s": {"file": "soft.wav"}}, "pools": {"q.s": ["q.s"]},
-            "rules": [{"name": "q.s", "pool": "q.s"}],
-            "ambience": [{"name": "q.loud", "file": "loud.wav", "at": 0, "until": 3, "fade_in": 0.1, "fade_out": 0.1}]})
-        py(*mixargs, "--design", "d3.json", "--no-master")
-        main(["--root", d, "--design", "d3.json", "--cues", "c.json", "--master", "none", "--cache", "cache"])
-        au = mix.load_json(os.path.join(d, "out/qa/qa.json"))["sections"]["audibility"]
-        ev = au["events"][0]
-        ck("Q3 masked under the bed", ev["verdict"] == "masked" and ev["covered_by"] == "music/amb" and au["status"] == "warn")
-        # Q4: a rule offset of 0.2 s on an impact is deliberate
-        fx.write(os.path.join(d, "hit.wav"), fx.burst(0.1, 200, 40, 3))
-        fx.put_json(os.path.join(d, "d4.json"), {
-            "duration": 3.0, "samples": {"q.h": {"file": "hit.wav"}}, "pools": {"q.h": ["q.h"]},
-            "rules": [{"name": "q.late", "pool": "q.h", "offset": 0.2}],
-            "ambience": [{"name": "q.bed", "file": "bed.wav", "at": 0, "until": 3}]})
-        py(*mixargs, "--design", "d4.json", "--no-master")
-        main(["--root", d, "--design", "d4.json", "--cues", "c.json", "--master", "none", "--cache", "cache"])
-        sy = mix.load_json(os.path.join(d, "out/qa/qa.json"))["sections"]["sync"]
-        ck("Q4 the offset is deliberate", sy["events"][0].get("deliberate") and sy["events"][0]["offset_rule"] == "q.late"
-           and not sy["events"][0]["issue"])
-        # Q5, Q6: machine gun and partial coverage
-        evs = [{"f": 20 + 15 * k, "kind": "tick", "id": f"a:k:{k}"} for k in range(4)]
-        evs += [{"f": 120 + 10 * k, "kind": "tap", "id": f"b:t:{k}"} for k in range(6)]
-        fx.put_json(os.path.join(d, "c5.json"), {"fps": 60, "events": evs})
-        fx.put_json(os.path.join(d, "d5.json"), {
-            "duration": 3.0, "samples": {"q.h": {"file": "hit.wav"}}, "pools": {"q.h": ["q.h"]},
-            "rules": [{"name": "q.mg", "pool": "q.h", "match": {"kind": "tap"}},
-                      {"name": "q.part", "pool": "q.h", "match": {"id": "a:k:[01]$"}}]})
-        py("--root", d, "--cues", "c5.json", "--trace", "out/qa/adds.json", "--cache", "cache", "--design", "d5.json", "--no-master")
-        main(["--root", d, "--design", "d5.json", "--cues", "c5.json", "--master", "none", "--cache", "cache"])
-        q = mix.load_json(os.path.join(d, "out/qa/qa.json"))["sections"]
-        ck("Q5 machine gun", "q.mg" in q["density"]["machine_gun"] and q["density"]["status"] == "warn")
-        part = q["coverage"]["partial"]
-        ck("Q6 partial class a:k with 2 of 4 unsounded", any(p["class"] == "a:k" and p["unsounded"] == 2 and p["of"] == 4 for p in part)
-           and q["coverage"]["status"] == "warn")
-        # Q7: no trace
-        os.remove(os.path.join(d, "out/qa/adds.json"))
-        main(["--root", d, "--design", "d5.json", "--cues", "c5.json", "--master", "none", "--cache", "cache"])
-        q = mix.load_json(os.path.join(d, "out/qa/qa.json"))["sections"]
-        ck("Q7 trace sections skipped, the rest ran",
-           all(q[s]["status"] == "skipped" for s in ("edges", "audibility", "harshness", "sync", "density"))
-           and q["clicks"]["status"] != "skipped" and q["coverage"]["status"] != "skipped")
-        ck("Q8 missing stems exit 2", main(["--root", d, "--design", "d5.json", "--stems", "nope"]) == 2)
-        # Q9: a trim past the end of its file
-        fx.put_json(os.path.join(d, "d9.json"), {
-            "duration": 3.0, "samples": {"q.e": {"file": "hit.wav", "start": 5.0}}, "pools": {"q.e": ["q.e"]},
-            "rules": [{"name": "q.e", "pool": "q.e"}],
-            "ambience": [{"name": "q.bed", "file": "bed.wav", "at": 0, "until": 3}]})
-        py(*mixargs, "--design", "d9.json", "--no-master")
-        code = main(["--root", d, "--design", "d9.json", "--cues", "c.json", "--master", "none", "--cache", "cache"])
-        q = mix.load_json(os.path.join(d, "out/qa/qa.json"))["sections"]
-        ck("Q9 empty trim: edges issue, audibility silent, fail",
-           "empty" in " ".join(q["edges"]["items"][0]["defects"]) and q["audibility"]["events"][0]["verdict"] == "silent"
-           and q["audibility"]["status"] == "fail" and code == 1)
-        # Q10: a music segment that ends inside a held chord, then silence
-        t = np.arange(SR * 6) / SR
-        chord = 0.3 * (np.sin(2 * np.pi * 220 * t) + np.sin(2 * np.pi * 330 * t))
-        chord[4 * SR:] *= 0.0005
-        fx.write(os.path.join(d, "chord.wav"), np.stack([chord, chord], 1))
-        for ok_reason in (None, "a hard cut into the breakdown"):
-            seg = {"label": "bars 1-2", "src_from": 0.0, "src_to": 2.0, "at": 0.0}
-            seg2 = {"label": "breakdown", "src_from": 4.0, "src_to": 5.0, "at": 2.0}
-            if ok_reason:
-                seg["qa_ok"] = ok_reason
-            fx.put_json(os.path.join(d, "d10.json"), {"duration": 4.0, "music": {
-                "file": "chord.wav", "src_bpm": 120, "stretch": "none", "segments": [seg, seg2]}})
-            py("--root", d, "--trace", "out/qa/adds.json", "--cache", "cache", "--design", "d10.json", "--no-master")
-            main(["--root", d, "--design", "d10.json", "--master", "none", "--cache", "cache"])
-            sp = mix.load_json(os.path.join(d, "out/qa/qa.json"))["sections"]["edges"]["music_splices"][0]
-            if ok_reason:
-                ck("Q10 qa_ok turns the chop into a note", not sp["defects"] and any("acknowledged" in n for n in sp["notes"]))
-            else:
-                ck("Q10 the splice chops the music", any("chops the music" in m for m in sp["defects"]))
-        # W2/W3-like: the full fixture project, every section present
-        p = fx.project(os.path.join(d, "film"))
-        py("--root", p["root"], "--trace", "out/qa/adds.json")
-        code = main(["--root", p["root"], "--layers"])
-        q = mix.load_json(os.path.join(p["root"], "out/qa/qa.json"))
-        need = {"clicks", "loudness", "coverage", "edges", "audibility", "harshness", "sync", "density", "listen"}
-        ck("W3 every section present, only listen skipped",
-           need <= set(q["sections"]) and code in (0, 1)
-           and [k for k, s in q["sections"].items() if s["status"] == "skipped"] == ["listen"])
+        for test in (_test_clicks, _test_masking, _test_offset, _test_density, _test_empty_trim, _test_splice,
+                     _test_project):
+            test(ck, fx, d)
     return ck.code()
 
 
