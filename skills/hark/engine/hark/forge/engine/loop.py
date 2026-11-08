@@ -20,6 +20,7 @@ import numpy as np
 
 from hark.forge import recipes as registry
 from hark.forge.engine import polish, refsets, schema, search, tone
+from hark.forge.engine.args import bind, with_signature
 from hark.forge.engine.loop_report import audition, palette_md, report_md
 
 SR = 48000
@@ -83,19 +84,26 @@ def _recipe_refset(rec: Any) -> tuple[list[str] | None, str | None]:
     return (got, cat) if got else (None, None)
 
 
-def pick_refs(refs: Any = None, refset: str | None = None, recipe: Any = None,
-              log: Callable | None = None) -> tuple[list[str] | None, str | None]:
-    """(reference files or None, refset category used or None)."""
-    if refset:
-        return refsets.refset(refset), refset
-    if refs:
-        return _drop_held(_media(refs), False, log) or None, None
+def _recipe_refs(recipe: Any, log: Callable | None) -> tuple[list[str] | None, str | None]:
+    """The recipe's refset, else its REFS files that exist."""
     rec = load_recipe(recipe) if isinstance(recipe, str) else recipe
     got, cat = _recipe_refset(rec)
     if got:
         return got, cat
     have = [p for p in getattr(rec, "REFS", None) or [] if os.path.isfile(p)]
     return _drop_held(have, True, log) or None, None
+
+
+def pick_refs(refs: Any = None, refset: str | None = None, recipe: Any = None,
+              log: Callable | None = None) -> tuple[list[str] | None, str | None]:
+    """(reference files or None, refset category used or None)."""
+    if refset:
+        res = (refsets.refset(refset), refset)
+    elif refs:
+        res = (_drop_held(_media(refs), False, log) or None, None)
+    else:
+        res = _recipe_refs(recipe, log)
+    return res
 
 
 def resolve_refs(refs: Any = None, refset: str | None = None, recipe: Any = None,
@@ -155,14 +163,20 @@ def _lin_box(spec: tuple, v: float, box: float) -> tuple:
     return out + ("int",) if len(spec) > 2 and spec[2] == "int" else out
 
 
+def _boxable(k: str, spec: Any, params: dict, keys: Sequence[str] | None) -> bool:
+    return not (isinstance(spec, list) or k not in params or (keys is not None and k not in keys))
+
+
+def _box_of(spec: tuple, v: float, box: float) -> tuple | None:
+    kind = spec[2] if len(spec) > 2 else "lin"
+    return _log_box(spec, v, box) if kind == "log" else _lin_box(spec, v, box)
+
+
 def family_box(recipe: Any, params: dict, box: float = 0.15, keys: Sequence[str] | None = None) -> dict:
     """A narrow search space around one preset."""
     out = {}
     for k, spec in recipe.SPACE.items():
-        if isinstance(spec, list) or k not in params or (keys is not None and k not in keys):
-            continue
-        kind = spec[2] if len(spec) > 2 else "lin"
-        b = _log_box(spec, params[k], box) if kind == "log" else _lin_box(spec, params[k], box)
+        b = _box_of(spec, params[k], box) if _boxable(k, spec, params, keys) else None
         if b is not None and b[0] < b[1]:
             out[k] = b
     return out
@@ -303,20 +317,21 @@ def _tone_loo(P: np.ndarray, i: int) -> float:
     return round(float(np.sqrt(np.mean((P[i] - np.median(others, axis=0)) ** 2))), 2)
 
 
+def _ref_row(r: dict, i: int, P: np.ndarray | None, pre: Any, H: list) -> dict:
+    row = {"file": r.get("file"), "alt_zs": r.get("alt_zs"), **{k: r.get(k) for k in SCORE_KEYS}}
+    if P is not None and i < len(P) and len(P) > 1:
+        row.update(tone_loo_db=_tone_loo(P, i), t40_ms=pre.descs[i]["env"]["t40_ms"],
+                   length_s=round(len(pre.arrays[i]) / SR, 3))
+    if i < len(H) and H[i] is not None:
+        row["holdout"] = H[i]
+    return row
+
+
 def _ref_rows(critic: Any, pre: Any, H: list) -> list[dict]:
     if not getattr(critic, "refs", None) or not hasattr(critic, "score_refs"):
         return []
     P = np.array([d["profile"] for d in pre.descs]) if pre.descs else None
-    rows = []
-    for i, r in enumerate(critic.score_refs()):
-        row = {"file": r.get("file"), "alt_zs": r.get("alt_zs"), **{k: r.get(k) for k in SCORE_KEYS}}
-        if P is not None and i < len(P) and len(P) > 1:
-            row.update(tone_loo_db=_tone_loo(P, i), t40_ms=pre.descs[i]["env"]["t40_ms"],
-                       length_s=round(len(pre.arrays[i]) / SR, 3))
-        if i < len(H) and H[i] is not None:
-            row["holdout"] = H[i]
-        rows.append(row)
-    return rows
+    return [_ref_row(r, i, P, pre, H) for i, r in enumerate(critic.score_refs())]
 
 
 def _fmt(v: Any, nd: int = 2) -> str:
@@ -424,49 +439,64 @@ def _finish(r: dict, o: dict, t0: float, items: list[dict], X: list, pre: Any, p
 
 # ---------------------------------------------------------------- forge
 
-def _run(rec: Any, critic: Any, o: dict, t0: float) -> dict:
+def _render_picks(rec: Any, critic: Any, picks: list[dict], o: dict, pre: Any) -> tuple[list[dict], dict, list]:
+    """Render the picks, take holdouts and write the WAVs: (items, pick context, ref holdouts)."""
     name = _name(rec)
-    starts, n_bank = _starts(rec, o, critic)
-    pre = search.prescreen_for(critic)
-    res = _optimize(rec, critic, o, starts, pre)
-    picks, rule = _choose(rec, critic, res, o)
     X = search.render_many(rec, [(p["params"], p["seed"]) for p in picks], o["workers"])
     ctx = {"X": X, "H": _holdouts(critic, X, o["holdout"]), "pre": pre, "pairs": [None] * len(picks),
            "mode": getattr(critic, "mode", None)}
     ref_h = _holdouts(critic, list(getattr(critic, "ref_audio", None) or []), o["holdout"])
     items = [_pick_item(rec, name, i, p, ctx) for i, p in enumerate(picks)]
     _write_wavs(Path(o["out"]) if o["out"] is not None else None, items, X)
-    r = _report(name, critic, o, res, n_bank)
-    if any(p["render"] is None for p in items):
-        r.pop("schema")
-    ref_rows = _ref_rows(critic, pre, ref_h)
+    return items, ctx, ref_h
+
+
+def _add_picks(r: dict, critic: Any, items: list[dict], rule: str, ref_rows: list[dict]) -> None:
     gap = _gap(items, ref_rows)
     r.update(pick_rule=rule, picks=items, ref_scores=ref_rows, ref_scores_loo=True,
-             summary=_summary(name, critic.target, items, ref_rows) + (f" {gap}" if gap else ""))
+             summary=_summary(r["recipe"], critic.target, items, ref_rows) + (f" {gap}" if gap else ""))
     if gap:
         r["gap"] = gap
+
+
+def _run(rec: Any, critic: Any, o: dict, t0: float) -> dict:
+    starts, n_bank = _starts(rec, o, critic)
+    pre = search.prescreen_for(critic)
+    res = _optimize(rec, critic, o, starts, pre)
+    picks, rule = _choose(rec, critic, res, o)
+    items, ctx, ref_h = _render_picks(rec, critic, picks, o, pre)
+    r = _report(_name(rec), critic, o, res, n_bank)
+    if any(p["render"] is None for p in items):
+        r.pop("schema")
+    _add_picks(r, critic, items, rule, _ref_rows(critic, pre, ref_h))
     r["history"] = _history(res)
-    _finish(r, o, t0, items, X, pre, ctx["pairs"])
+    _finish(r, o, t0, items, ctx["X"], pre, ctx["pairs"])
     _save_bank(rec, critic, o, items)
     return r
 
 
-def forge(recipe: Any, target: str | None = None, alts: Sequence[str] | None = None, refs: Any = None,
-          budget: int = 160, pop: int = 16, keep: int = 4, seed: int = 0, out: Any = None,
-          log: Callable | None = print, init: Sequence[dict] | None = None, holdout: bool = True, robust: int = 0,
-          space: dict | None = None, sigma0: float = 0.22, sigma1: float = 0.04, critic: Any = None,
-          tone: float = 0.0, tone_target: float | None = None, reps: int = 1, strategy: str = "es",
-          prescreen: int = 0, workers: int | None = None, bank: bool = False, shortlist: int = 1,
-          refset: str | None = None, outputs: bool = True, bank_dir: Any = None, weights: dict | None = None,
-          mode: str = "auto", families: Any = None, box: float = 0.15) -> dict:
-    """Search a recipe against a critic; return the run report."""
+FORGE_DEFAULTS: dict[str, Any] = dict(
+    target=None, alts=None, refs=None, budget=160, pop=16, keep=4, seed=0, out=None, log=print, init=None,
+    holdout=True, robust=0, space=None, sigma0=0.22, sigma1=0.04, critic=None, tone=0.0, tone_target=None, reps=1,
+    strategy="es", prescreen=0, workers=None, bank=False, shortlist=1, refset=None, outputs=True, bank_dir=None,
+    weights=None, mode="auto", families=None, box=0.15)
+
+
+def forge(recipe: Any, *args: Any, **opts: Any) -> dict:
+    """Search a recipe against a critic; return the run report.
+
+    Options and defaults are FORGE_DEFAULTS, in signature order.
+    """
     t0 = time.time()
-    o = dict(locals())
+    o = {"recipe": recipe, **bind("forge", FORGE_DEFAULTS, args, opts), "t0": t0}
     rec = load_recipe(recipe) if isinstance(recipe, str) else recipe
-    critic = critic if critic is not None else _make_critic(rec, o)
-    if families is not None:
-        return _forge_families(rec, families, critic, o, t0)
+    critic = o["critic"] if o["critic"] is not None else _make_critic(rec, o)
+    if o["families"] is not None:
+        return _forge_families(rec, o["families"], critic, o, t0)
     return _run(rec, critic, o, t0)
+
+
+with_signature(forge, ("recipe",), FORGE_DEFAULTS)
 
 
 # ---------------------------------------------------------------- families
@@ -478,16 +508,20 @@ def _family_items(families: Any) -> list[tuple[str, dict]]:
     return list(families.items()) if isinstance(families, dict) else [tuple(f) for f in families]
 
 
+def _member_parts(spec: dict) -> tuple[dict, dict, Any, Any]:
+    """(init, fixed, space, budget) of a family spec; a plain dict is the init alone."""
+    if not any(k in spec for k in _SPEC_KEYS):
+        return dict(spec), {}, None, None
+    return dict(spec.get("init") or {}), dict(spec.get("fixed") or {}), spec.get("space"), spec.get("budget")
+
+
 def _member_setup(rec: Any, spec: dict, box: float) -> tuple[dict, dict, dict | None]:
-    plain = not any(k in spec for k in _SPEC_KEYS)
-    init = dict(spec) if plain else dict(spec.get("init") or {})
-    fixed = {} if plain else dict(spec.get("fixed") or {})
+    init, fixed, sp, budget = _member_parts(spec)
     base = {**rec.DEFAULTS, **init, **fixed}
-    sp = None if plain else spec.get("space")
     sp = dict(sp) if sp else family_box(rec, base, box)
     for k in fixed:
         sp.pop(k, None)
-    return base, sp, None if plain else spec.get("budget")
+    return base, sp, budget
 
 
 def _stand_in(rec: Any, base: dict) -> Any:
@@ -505,20 +539,29 @@ def _member_run(rec: Any, critic: Any, o: dict, k: int, fname: str, spec: dict) 
                  seed=o["seed"] + 101 * k, out=sub, holdout=False, outputs=False, bank=False, **run)
 
 
+def _family_member(picks: list[dict], fname: str) -> dict | None:
+    if not picks:
+        return None
+    m = {"params": picks[0]["params"], "seed": picks[0]["seed"], "family": fname}
+    if "robust" in picks[0]:
+        m["robust"] = picks[0]["robust"]
+    return m
+
+
+def _family_run(o: dict, fname: str, r: dict, picks: list[dict]) -> dict:
+    return {"family": fname, "out": str(Path(o["out"]) / "runs" / str(fname)) if o["out"] else None,
+            "budget": r["budget"], "timing": r["timing"], "total": picks[0]["score"]["total"] if picks else None}
+
+
 def _forge_families(rec: Any, families: Any, critic: Any, o: dict, t0: float) -> dict:
     o = {"budget": FAMILY_BUDGET, **o}
     members, runs = [], []
     for k, (fname, spec) in enumerate(_family_items(families)):
         r = _member_run(rec, critic, o, k, fname, spec)
         picks = r.get("picks") or []
-        if picks:
-            m = {"params": picks[0]["params"], "seed": picks[0]["seed"], "family": fname}
-            if "robust" in picks[0]:
-                m["robust"] = picks[0]["robust"]
-            members.append(m)
-        runs.append({"family": fname, "out": str(Path(o["out"]) / "runs" / str(fname)) if o["out"] else None,
-                     "budget": r["budget"], "timing": r["timing"], "total": picks[0]["score"]["total"] if picks
-                     else None})
+        m = _family_member(picks, fname)
+        members += [m] if m is not None else []
+        runs.append(_family_run(o, fname, r, picks))
     rep = palette(rec, members, critic, out=o["out"], name=o["refset"], holdout=o["holdout"], log=o["log"],
                   outputs=o["outputs"])
     rep["runs"] = runs
@@ -649,24 +692,30 @@ def _level(x: np.ndarray, gain: float) -> np.ndarray:
     return (np.asarray(x, dtype=np.float64) * gain).astype(np.float32)
 
 
-def palette(recipe: Any, members: Sequence[dict], critic: Any, out: Any = None, name: str | None = None,
-            peak_db: float = -1.0, loudness: bool = True, robust: int = 0, workers: int | None = None,
-            holdout: bool = True, log: Callable | None = print, outputs: bool = True) -> dict:
-    """Score an exact member set together and write it at matched loudness."""
-    rec = load_recipe(recipe) if isinstance(recipe, str) else recipe
-    live = _render_members(rec, members, workers, log)
+PALETTE_DEFAULTS: dict[str, Any] = dict(out=None, name=None, peak_db=-1.0, loudness=True, robust=0, workers=None,
+                                        holdout=True, log=print, outputs=True)
+
+
+def _level_members(rec: Any, members: Sequence[dict], a: dict) -> tuple[list, list, dict, tuple]:
+    """Render the members and level them: (live renders, levelled audio, loudness before, (gains, common gain))."""
+    live = _render_members(rec, members, a["workers"], a["log"])
     X = [v[3] for v in live]
     before = polish.loudness_spread(X)
-    g, c = _gains(X, before, loudness, peak_db)
-    Y = [_level(x, gi * c) for x, gi in zip(X, g)]
-    E = _embed(critic, Y)
+    g, c = _gains(X, before, a["loudness"], a["peak_db"])
+    return live, [_level(x, gi * c) for x, gi in zip(X, g)], before, (g, c)
+
+
+def _palette_ctx(rec: Any, critic: Any, Y: list, E: Any, gc: tuple, a: dict) -> dict:
     rows = critic.score(Y, E=E) if Y else []
-    cat = name or getattr(rec, "REFSET", None) or _name(rec)
-    ctx = {"g": g, "c": c, "rows": rows, "category": cat, "mode": getattr(critic, "mode", None), "robust": robust,
-           "critic": critic, "workers": workers, "H": _holdouts(critic, Y, holdout), "pre": search.prescreen_for(critic)}
-    items = [_palette_item(rec, k, v, y, ctx) for k, (v, y) in enumerate(zip(live, Y))]
-    var = _variety(critic, Y, E)
-    loud = {"before": before, "after": polish.loudness_spread(Y)}
+    cat = a["name"] or getattr(rec, "REFSET", None) or _name(rec)
+    return {"g": gc[0], "c": gc[1], "rows": rows, "category": cat, "mode": getattr(critic, "mode", None),
+            "robust": a["robust"], "critic": critic, "workers": a["workers"], "H": _holdouts(critic, Y, a["holdout"]),
+            "pre": search.prescreen_for(critic)}
+
+
+def _palette_report(rec: Any, critic: Any, ctx: dict, items: list[dict], var: dict, loud: dict,
+                    peak_db: float) -> dict:
+    cat = ctx["category"]
     r = {"schema": schema.SCHEMA, "recipe": _name(rec), "category": cat, "target": critic.target,
          "refs": list(getattr(critic, "refs", None) or []),
          "critic": {"version": getattr(critic, "version", None), "mode": ctx["mode"], "category": cat},
@@ -675,23 +724,49 @@ def palette(recipe: Any, members: Sequence[dict], critic: Any, out: Any = None, 
          "variety": var, "loudness": loud, "picks": items, "summary": _palette_summary(cat, items, var, loud)}
     if any(p["render"] is None for p in items):
         r.pop("schema")
-    if out is not None:
-        _palette_files(Path(out), r, Y, ctx["pre"], outputs)
-    if log:
-        log(r["summary"])
     return r
+
+
+def palette(recipe: Any, members: Sequence[dict], critic: Any, *args: Any, **opts: Any) -> dict:
+    """Score an exact member set together and write it at matched loudness.
+
+    Options and defaults are PALETTE_DEFAULTS, in signature order.
+    """
+    a = bind("palette", PALETTE_DEFAULTS, args, opts)
+    rec = load_recipe(recipe) if isinstance(recipe, str) else recipe
+    live, Y, before, gc = _level_members(rec, members, a)
+    E = _embed(critic, Y)
+    ctx = _palette_ctx(rec, critic, Y, E, gc, a)
+    items = [_palette_item(rec, k, v, y, ctx) for k, (v, y) in enumerate(zip(live, Y))]
+    var = _variety(critic, Y, E)
+    loud = {"before": before, "after": polish.loudness_spread(Y)}
+    r = _palette_report(rec, critic, ctx, items, var, loud, a["peak_db"])
+    if a["out"] is not None:
+        _palette_files(Path(a["out"]), r, Y, ctx["pre"], a["outputs"])
+    if a["log"]:
+        a["log"](r["summary"])
+    return r
+
+
+with_signature(palette, ("recipe", "members", "critic"), PALETTE_DEFAULTS)
 
 
 # ---------------------------------------------------------------- render without a search
 
+def _dict_sets(params: dict) -> list[tuple[dict, dict | None, int | None]]:
+    if "picks" in params:
+        res = [(dict(p.get("params") or {}), p, p.get("seed")) for p in params["picks"]]
+    elif "entries" in params:
+        res = [(dict(e["params"]), None, None) for e in params["entries"]]
+    else:
+        res = [(dict(params), None, params.get("seed") if isinstance(params.get("seed"), int) else None)]
+    return res
+
+
 def _sets_of(params: Any) -> list[tuple[dict, dict | None, int | None]]:
     """[(params, pick or None, own seed)] of a report, seed bank, dict or list."""
-    if isinstance(params, dict) and "picks" in params:
-        return [(dict(p.get("params") or {}), p, p.get("seed")) for p in params["picks"]]
-    if isinstance(params, dict) and "entries" in params:
-        return [(dict(e["params"]), None, None) for e in params["entries"]]
     if isinstance(params, dict):
-        return [(dict(params), None, params.get("seed") if isinstance(params.get("seed"), int) else None)]
+        return _dict_sets(params)
     return [(dict(p), None, None) for p in params]
 
 
@@ -721,23 +796,26 @@ def _file_measured(pre: Any, x: np.ndarray) -> dict:
     return {k: m[k] for k in ("tone_db", "tone_ratio", "t40_ms", "art", "nearest_ref")}
 
 
+def _param_file(rec: Any, params: Any, job: tuple, base: Path, pre: Any) -> dict:
+    from hark.core.audio import write_wav
+
+    n, p, pick, s = job
+    x = _render_one(rec, params, p, pick, s)
+    row: dict = {"set": n, "seed": s, "file": None}
+    if x is not None:
+        row["file"] = write_wav(base / f"{_name(rec)}_r{n:02d}_s{s}.wav", x, SR, "PCM_24")
+        if pre is not None and pre.descs:
+            row["measured"] = _file_measured(pre, x)
+    return row
+
+
 def render_params(recipe: Any, params: Any, seeds: Sequence[int] | None = None, out: Any = ".",
                   refs: Any = None) -> dict:
     """Render param sets without a search; {'recipe', 'files'}."""
-    from hark.core.audio import write_wav
-
     rec = load_recipe(recipe) if isinstance(recipe, str) else recipe
-    name, base = _name(rec), Path(out)
+    base = Path(out)
     base.mkdir(parents=True, exist_ok=True)
     pre = search.Prescreen(refs) if refs else None
-    files = []
-    for n, (p, pick, own) in enumerate(_sets_of(params), start=1):
-        for s in (list(seeds) if seeds else [own if own is not None else 0]):
-            x = _render_one(rec, params, p, pick, int(s))
-            row: dict = {"set": n, "seed": int(s), "file": None}
-            if x is not None:
-                row["file"] = write_wav(base / f"{name}_r{n:02d}_s{int(s)}.wav", x, SR, "PCM_24")
-                if pre is not None and pre.descs:
-                    row["measured"] = _file_measured(pre, x)
-            files.append(row)
-    return {"recipe": name, "files": files}
+    jobs = [(n, p, pick, int(s)) for n, (p, pick, own) in enumerate(_sets_of(params), start=1)
+            for s in (list(seeds) if seeds else [own if own is not None else 0])]
+    return {"recipe": _name(rec), "files": [_param_file(rec, params, j, base, pre) for j in jobs]}

@@ -6,7 +6,6 @@ the function says it returns stereo.
 
 from __future__ import annotations
 
-import inspect
 import threading
 from collections import OrderedDict
 from typing import Any
@@ -15,6 +14,7 @@ import numpy as np
 from scipy import ndimage, signal
 
 from hark.forge.engine import dsp
+from hark.forge.engine.args import bind, with_signature
 from hark.forge.engine.dsp import SR, n_of, t_of
 
 IR_CACHE_MB = 64
@@ -450,25 +450,6 @@ def _ir_params(a: dict) -> dict:
                 lowcut=float(a["lowcut"]))
 
 
-def _bind(name: str, defaults: dict, args: tuple, opts: dict) -> dict:
-    """Bind optional arguments like a signature with these defaults, in order: positional, then keyword."""
-    if len(args) > len(defaults):
-        raise TypeError(f"{name}() takes at most {len(defaults)} optional positional arguments ({len(args)} given)")
-    a = dict(zip(defaults, args))
-    twice = sorted(set(a) & set(opts))
-    unknown = sorted(set(opts) - set(defaults))
-    if twice or unknown:
-        what = f"multiple values for {twice[0]!r}" if twice else f"an unexpected keyword argument {unknown[0]!r}"
-        raise TypeError(f"{name}() got {what}")
-    return {**defaults, **a, **opts}
-
-
-def _signature(lead: tuple[str, ...], defaults: dict) -> inspect.Signature:
-    P = inspect.Parameter
-    return inspect.Signature([P(n, P.POSITIONAL_OR_KEYWORD) for n in lead]
-                             + [P(k, P.POSITIONAL_OR_KEYWORD, default=v) for k, v in defaults.items()])
-
-
 IR_DEFAULTS: dict[str, Any] = dict(
     rt60=1.6, size=0.6, predelay=0.01, damp=0.5, bass=1.2, mod=1.0, diffuse=0.7, early_db=-6.0, width=1.0,
     late="noise", lines=16, tail=None, inputs=1, hf_hz=4000.0, lf_hz=250.0, air=1.0, lowcut=0.0, seed=None,
@@ -480,7 +461,7 @@ def reverb_ir(r: np.random.Generator, *args: Any, **opts: Any) -> np.ndarray:
 
     Settings and defaults are IR_DEFAULTS, in signature order.
     """
-    a = _bind("reverb_ir", IR_DEFAULTS, args, opts)
+    a = bind("reverb_ir", IR_DEFAULTS, args, opts)
     p = _ir_params(a)
     params = tuple(p[k] for k in _IR_KEYS)
     if a["seed"] is not None:
@@ -492,7 +473,7 @@ def reverb_ir(r: np.random.Generator, *args: Any, **opts: Any) -> np.ndarray:
     return ir
 
 
-reverb_ir.__signature__ = _signature(("r",), IR_DEFAULTS)  # type: ignore[attr-defined]
+with_signature(reverb_ir, ("r",), IR_DEFAULTS)
 
 
 def _seeded_ir(seed: int, p: dict, params: tuple) -> np.ndarray:
@@ -547,7 +528,7 @@ def reverb(x: np.ndarray, r: np.random.Generator, *args: Any, **opts: Any) -> np
 
     Settings and defaults are REVERB_DEFAULTS, in signature order.
     """
-    a = {"r": r, **_bind("reverb", REVERB_DEFAULTS, args, opts)}
+    a = {"r": r, **bind("reverb", REVERB_DEFAULTS, args, opts)}
     x = np.asarray(x, dtype=float)
     xs = x[:, None] if x.ndim == 1 else x
     ir = _reverb_ir_of(a, xs.shape[1])
@@ -556,7 +537,7 @@ def reverb(x: np.ndarray, r: np.random.Generator, *args: Any, **opts: Any) -> np
     return _wet_dry(x, xs, wetsig, a["wet"], a["dry"], x.ndim == 2 if a["stereo"] is None else a["stereo"])
 
 
-reverb.__signature__ = _signature(("x", "r"), REVERB_DEFAULTS)  # type: ignore[attr-defined]
+with_signature(reverb, ("x", "r"), REVERB_DEFAULTS)
 
 
 # ---------------------------------------------------------------- dynamics
