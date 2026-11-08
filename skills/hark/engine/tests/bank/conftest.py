@@ -33,16 +33,32 @@ STAND_INS: list[str] = []
 # ---------------------------------------------------------------- stand-in plumbing
 
 
-def _absent(name: str) -> bool:
+def _spec(name: str):
     try:
-        return importlib.util.find_spec(name) is None
+        return importlib.util.find_spec(name)
     except (ModuleNotFoundError, ValueError):
-        return True
+        return None
+
+
+def _namespace_path(name: str) -> list[str] | None:
+    """The folders of a namespace package (no ``__init__.py``), else None."""
+    spec = _spec(name)
+    if spec is None or spec.origin not in (None, "namespace"):
+        return None
+    return list(spec.submodule_search_locations or [])
+
+
+def _absent(name: str) -> bool:
+    """True when the module is missing, or is only a namespace package of its sub-packages."""
+    return _spec(name) is None or _namespace_path(name) is not None
 
 
 def _install(name: str, attrs: dict) -> types.ModuleType:
     mod = types.ModuleType(name)
     mod.__dict__.update(attrs)
+    folders = _namespace_path(name)
+    if folders is not None:
+        mod.__path__ = folders
     mod.STAND_IN = True
     parent_name, _, leaf = name.rpartition(".")
     if parent_name and parent_name not in sys.modules:
@@ -573,6 +589,16 @@ def fixture_bank(tmp_path, monkeypatch, hark_home):
     bank.reload()
     yield bank
     bank.reload()
+
+
+@pytest.fixture
+def real_registry():
+    """Skip while the recipe registry (``hark.forge.recipes.load``, T-16) is a stand-in."""
+    from hark.forge import recipes
+
+    if getattr(recipes, "STAND_IN", False):
+        pytest.skip("needs the real recipe registry (T-16)")
+    return recipes
 
 
 @pytest.fixture
