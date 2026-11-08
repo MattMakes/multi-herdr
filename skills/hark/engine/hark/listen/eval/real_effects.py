@@ -56,15 +56,23 @@ def _own_job(i: int, jobs: set[int], Z: np.ndarray, C: np.ndarray, cheap: np.nda
     return {"z": Z[i, own], "others": others, "cheap": int(np.argmax(p) > 0)}
 
 
+def _passed(rows: Sequence[dict]) -> float | None:
+    """The mean share of other jobs where a sound reaches z >= 2."""
+    return mt.mean_or_none([float(np.mean(r["others"] >= PASS_Z)) for r in rows if len(r["others"])])
+
+
+def _median(values: Sequence[float]) -> float | None:
+    return round(float(np.median(values)), 2) if len(values) else None
+
+
 def way_stats(Z: np.ndarray, C: np.ndarray, filed: Sequence[set[int]], cheap: np.ndarray, scale: float) -> dict:
     """Own-job verdicts, AUC own against other jobs, other jobs passed and cheap-synth wins (Z, C: sounds x jobs)."""
     rows = [_own_job(i, jobs, Z, C, cheap, scale) for i, jobs in enumerate(filed) if jobs]
     own_z = [r["z"] for r in rows]
     neg = np.concatenate([r["others"] for r in rows]) if rows else np.zeros(0)
-    passed = [float(np.mean(r["others"] >= PASS_Z)) for r in rows if len(r["others"])]
-    median = round(float(np.median(own_z)), 2) if own_z else None
-    return {"n": len(rows), "verdicts": verdict_counts(own_z), "median_z": median, "auc": mt.auc_pairwise(own_z, neg),
-            "other_jobs_passed": mt.mean_or_none(passed), "cheap_won": sum(r["cheap"] for r in rows)}
+    return {"n": len(rows), "verdicts": verdict_counts(own_z), "median_z": _median(own_z),
+            "auc": mt.auc_pairwise(own_z, neg), "other_jobs_passed": _passed(rows),
+            "cheap_won": sum(r["cheap"] for r in rows)}
 
 
 def best_over(Zt: np.ndarray, Ct: np.ndarray, groups: Sequence[Sequence[int]]) -> tuple[np.ndarray, np.ndarray]:

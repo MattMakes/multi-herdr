@@ -318,12 +318,19 @@ def _tighten(env: np.ndarray, i0: int, i1: int, q: float, qe: float) -> tuple[in
     return i0, i1
 
 
+def _start_edge(env: np.ndarray, i0: int, i1: int, q: float, nlo: int) -> int:
+    return _snap_start(env, i0, i1, q, nlo) if env[i0] > q else i0
+
+
+def _end_edge(env: np.ndarray, i0: int, i1: int, levels: tuple[float, float], nhi: int) -> int:
+    q, qe = levels
+    return _snap_end(env, i0, i1, q, qe, nhi) if env[i1 - 1] > qe else i1
+
+
 def _snapped(env: np.ndarray, i0: int, i1: int, q: float, qe: float, near: tuple[int, int]) -> tuple[int, int]:
     """Frame edges moved to the quiet around the sound, inside the near frames (nlo, nhi)."""
-    if env[i0] > q:
-        i0 = _snap_start(env, i0, i1, q, near[0])
-    if env[i1 - 1] > qe:
-        i1 = _snap_end(env, i0, i1, q, qe, near[1])
+    i0 = _start_edge(env, i0, i1, q, near[0])
+    i1 = _end_edge(env, i0, i1, (q, qe), near[1])
     return _tighten(env, i0, i1, q, qe)
 
 

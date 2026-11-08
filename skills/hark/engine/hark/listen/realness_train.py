@@ -304,6 +304,12 @@ def _data_block(kept: list, y: np.ndarray, groups: list[str]) -> dict:
             "synth": int((1 - y).sum()), "groups": sorted(set(groups))}
 
 
+def _evidence_block(S: np.ndarray, y: np.ndarray, clap_head: dict) -> dict:
+    return {"prompts": {"real": list(rl.REAL_PROMPTS), "synth": list(rl.SYNTH_PROMPTS)},
+            "facts": facts_of(S, y), "silence_base": silence_base(S, y), "clap_direction": clap_direction(clap_head),
+            "eval": {"how": "grouped 5-fold out-of-fold predictions", "n": len(y)}}
+
+
 def train_model(root: str | None, forge_negatives: int = 0) -> dict:
     """Train both heads and the fusion layer; return the model dict (R12, without augmentation)."""
     ts = _training_set(root, forge_negatives)
@@ -319,9 +325,7 @@ def train_model(root: str | None, forge_negatives: int = 0) -> dict:
                    "intercept": fit["fb"]},
         "C": {"clap": fit["C"], "signal": SIGNAL_C}, "thresholds": fit["clip_th"],
         "file_thresholds": file_thresholds(fit["p_oof"], y, [c["source"] for c in kept], fit["clip_th"]),
-        "prompts": {"real": list(rl.REAL_PROMPTS), "synth": list(rl.SYNTH_PROMPTS)},
-        "facts": facts_of(S, y), "silence_base": silence_base(S, y), "clap_direction": clap_direction(fit["clap"]),
-        "eval": {"how": "grouped 5-fold out-of-fold predictions", "n": len(y)},
+        **_evidence_block(S, y, fit["clap"]),
     }
 
 

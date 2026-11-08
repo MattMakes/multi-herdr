@@ -141,28 +141,37 @@ def windows(x, win, hop, sr=48000, pad_last=False):
     return [(s / sr, x[s:s + w]) for s in starts]
 
 
+def _is_media(f, exts):
+    return os.path.splitext(f)[1].lower() in exts
+
+
+def _walk(p, recursive, exts):
+    found = []
+    for root, dirs, files in os.walk(p):
+        dirs.sort()
+        found += [os.path.join(root, f) for f in sorted(files) if _is_media(f, exts)]
+        if not recursive:
+            break
+    return found
+
+
+def _found(p, recursive, exts):
+    if os.path.isdir(p):
+        return _walk(p, recursive, exts)
+    if os.path.isfile(p):
+        return [p]
+    return sorted(f for f in glob.glob(p, recursive=True) if os.path.isfile(f) and _is_media(f, exts))
+
+
 def list_media(paths, recursive=True, exts=MEDIA_EXTS):
     if isinstance(paths, (str, os.PathLike)):
         paths = [paths]
     out, seen = [], set()
-    for p in map(str, paths):
-        if os.path.isdir(p):
-            found = []
-            for root, dirs, files in os.walk(p):
-                dirs.sort()
-                found += [os.path.join(root, f) for f in sorted(files) if os.path.splitext(f)[1].lower() in exts]
-                if not recursive:
-                    break
-        elif os.path.isfile(p):
-            found = [p]
-        else:
-            found = sorted(f for f in glob.glob(p, recursive=True)
-                           if os.path.isfile(f) and os.path.splitext(f)[1].lower() in exts)
-        for f in found:
-            k = os.path.normcase(os.path.abspath(f))
-            if k not in seen:
-                seen.add(k)
-                out.append(f)
+    for f in (f for p in map(str, paths) for f in _found(p, recursive, exts)):
+        k = os.path.normcase(os.path.abspath(f))
+        if k not in seen:
+            seen.add(k)
+            out.append(f)
     return out
 
 
@@ -297,23 +306,26 @@ def smooth_env(m, win_ms):
     return np.sqrt((c[b] - c[a]) / np.maximum(b - a, 1) + 1e-20)
 
 
-def envelope_times(m):
-    e5, e10 = smooth_env(m, 5), smooth_env(m, 10)
-    out = {}
-    if not len(e5):
-        return {"attack_at": None, "attack_ms": None, "peak_at": None, "decay_ms": None}
+def _attack(e5):
     i0 = int(np.argmax(e5 >= 0.1 * e5.max()))
     L = e5[i0:i0 + 300]
-    out["attack_at"] = i0 / 1000
-    out["attack_ms"] = float(np.argmax(L >= 0.9 * L.max())) if len(L) else None
-    ip = int(np.argmax(e10))
-    out["peak_at"] = ip / 1000
+    return {"attack_at": i0 / 1000, "attack_ms": float(np.argmax(L >= 0.9 * L.max())) if len(L) else None}
+
+
+def _decay(e10, ip):
     A = e10[ip:]
     pad = np.concatenate([A, np.full(20, A[-1])])
     M = np.array([pad[i:i + 21].max() for i in range(len(A))])
     hit = np.nonzero(M < e10[ip] * 10 ** (-1.5))[0]
-    out["decay_ms"] = float(hit[0]) if len(hit) else None
-    return out
+    return float(hit[0]) if len(hit) else None
+
+
+def envelope_times(m):
+    e5, e10 = smooth_env(m, 5), smooth_env(m, 10)
+    if not len(e5):
+        return {"attack_at": None, "attack_ms": None, "peak_at": None, "decay_ms": None}
+    ip = int(np.argmax(e10))
+    return {**_attack(e5), "peak_at": ip / 1000, "decay_ms": _decay(e10, ip)}
 
 
 def true_peak_dbtp(x):
@@ -389,53 +401,83 @@ def _stereo_fields(x, out):
         out["correlation"] = round(float(np.corrcoef(L, R)[0, 1]), 3)
 
 
-def _tonal(m, out):
+def _f0(yt, hr):
     import librosa
 
-    y = resample(np.asarray(m, np.float32), SR, 22050)
-    yt = y[:30 * 22050]
-    if len(yt) >= 2048:
-        h, p = librosa.effects.hpss(yt)
-        hr = float((h ** 2).sum() / ((h ** 2).sum() + (p ** 2).sum() + 1e-20))
-        out["harmonic_ratio"] = round(hr, 3)
-        if hr >= 0.8:
-            f0 = librosa.yin(yt, fmin=50, fmax=2000, sr=22050, frame_length=2048)
-            rms = librosa.feature.rms(y=yt, frame_length=2048, hop_length=512)[0][:len(f0)]
-            v = f0[:len(rms)][rms > 0.1 * rms.max()]
-            if len(v):
-                out["f0_hz"] = round(float(np.median(v)), 1)
+    if hr < 0.8:
+        return None
+    f0 = librosa.yin(yt, fmin=50, fmax=2000, sr=22050, frame_length=2048)
+    rms = librosa.feature.rms(y=yt, frame_length=2048, hop_length=512)[0][:len(f0)]
+    v = f0[:len(rms)][rms > 0.1 * rms.max()]
+    return round(float(np.median(v)), 1) if len(v) else None
+
+
+def _harmonic(m, out):
+    import librosa
+
+    yt = resample(np.asarray(m, np.float32), SR, 22050)[:30 * 22050]
+    if len(yt) < 2048:
+        return
+    h, p = librosa.effects.hpss(yt)
+    hr = float((h ** 2).sum() / ((h ** 2).sum() + (p ** 2).sum() + 1e-20))
+    out["harmonic_ratio"] = round(hr, 3)
+    f0 = _f0(yt, hr)
+    if f0 is not None:
+        out["f0_hz"] = f0
+
+
+def _tonal(m, out):
+    _harmonic(m, out)
     on = onsets(m)
-    out["onsets"] = on[:200]
-    out["onset_count"] = len(on)
-    out["onsets_per_s"] = round(len(on) / out["duration"], 2)
+    out.update(onsets=on[:200], onset_count=len(on), onsets_per_s=round(len(on) / out["duration"], 2))
+
+
+def _source(src, start, end):
+    if isinstance(src, (str, os.PathLike)):
+        return load(src, start=start, end=end)
+    x = np.asarray(src)
+    if start is None and end is None:
+        return x
+    return x[int(round((start or 0) * SR)):None if end is None else int(round(end * SR))]
+
+
+def _levels(x, out):
+    out["peak_dbfs"] = round(db(np.max(np.abs(x))), 1)
+    out["true_peak_dbtp"] = round(true_peak_dbtp(x), 1)
+    out["rms_dbfs"] = round(db(np.sqrt(np.mean(x ** 2))), 1)
+
+
+def _loudness(x, out):
+    n = len(x)
+    if n >= 0.4 * SR:
+        out["lufs"] = round(integrated_lufs(x), 1)
+    if n >= 3 * SR:
+        out["short_term_max_lufs"] = round(float(loudness_curve(x, 3.0, 0.5)[1].max()), 1)
+    v = lra(x) if n >= 6 * SR else None
+    if v is not None:
+        out["lra_lu"] = round(v, 1)
+
+
+def _floor(m, out):
+    out["noise_floor_dbfs"] = round(db(np.percentile(frame_rms(m, 960), 10)), 1)
+    out["digital_silence_frac"] = round(float(np.mean(np.abs(m) < 1e-6)), 4)
+
+
+def _rounded_env(m):
+    return {k: (round(v) if k.endswith("_ms") and v is not None else v) for k, v in envelope_times(m).items()}
 
 
 def measure(src, music=False, start=None, end=None, light=False):
-    x = load(src, start=start, end=end) if isinstance(src, (str, os.PathLike)) else np.asarray(src)
-    if isinstance(src, np.ndarray) and (start is not None or end is not None):
-        x = x[int(round((start or 0) * SR)):None if end is None else int(round(end * SR))]
-    x = _stereo(x)
+    x = _stereo(_source(src, start, end))
     out = {"duration": round(len(x) / SR, 3)}
     if len(x) < 240:
         return {"duration": out["duration"], "error": "too short to measure"}
     m = x.mean(axis=1)
-    out["peak_dbfs"] = round(db(np.max(np.abs(x))), 1)
-    out["true_peak_dbtp"] = round(true_peak_dbtp(x), 1)
-    out["rms_dbfs"] = round(db(np.sqrt(np.mean(x ** 2))), 1)
-    if len(x) >= 0.4 * SR:
-        out["lufs"] = round(integrated_lufs(x), 1)
-    if len(x) >= 3 * SR:
-        out["short_term_max_lufs"] = round(float(loudness_curve(x, 3.0, 0.5)[1].max()), 1)
-    if len(x) >= 6 * SR:
-        v = lra(x)
-        if v is not None:
-            out["lra_lu"] = round(v, 1)
-    fr = frame_rms(m, 960)
-    out["noise_floor_dbfs"] = round(db(np.percentile(fr, 10)), 1)
-    out["digital_silence_frac"] = round(float(np.mean(np.abs(m) < 1e-6)), 4)
+    _levels(x, out)
+    _loudness(x, out)
+    _floor(m, out)
     _stereo_fields(x, out)
-    et = envelope_times(m)
-    out.update({k: (round(v) if k.endswith("_ms") and v is not None else v) for k, v in et.items()})
+    out.update(_rounded_env(m))
     _spectral(m, out)
     if not light:
         _tonal(m, out)
@@ -453,21 +495,24 @@ def make_features() -> types.ModuleType:
 
 # ---------------------------------------------------------------- hark.core.report
 
+def _clean_float(obj):
+    v = float(obj)
+    return v if np.isfinite(v) else None
+
+
+_CLEANERS = (
+    (dict, lambda o: {str(k): clean(v) for k, v in o.items()}),
+    ((list, tuple), lambda o: [clean(v) for v in o]),
+    (np.ndarray, lambda o: clean(o.tolist())),
+    (np.integer, int),
+    ((float, np.floating), _clean_float),
+    ((str, int, bool, type(None)), lambda o: o),
+)
+
+
 def clean(obj):
-    if isinstance(obj, dict):
-        return {str(k): clean(v) for k, v in obj.items()}
-    if isinstance(obj, (list, tuple)):
-        return [clean(v) for v in obj]
-    if isinstance(obj, np.ndarray):
-        return clean(obj.tolist())
-    if isinstance(obj, np.integer):
-        return int(obj)
-    if isinstance(obj, (float, np.floating)):
-        v = float(obj)
-        return v if np.isfinite(v) else None
-    if isinstance(obj, (str, int, bool)) or obj is None:
-        return obj
-    return str(obj)
+    fn = next((f for t, f in _CLEANERS if isinstance(obj, t)), str)
+    return fn(obj)
 
 
 def to_json(result, indent=1):
@@ -578,28 +623,38 @@ def make_model_module(name: str, feature: str) -> types.ModuleType:
 
 # ---------------------------------------------------------------- hark.timeline.video
 
+def _video_frame_diff(path, cache=True):
+    raise AudioError(f"{path}: no picture in the stand-in")
+
+
+def _video_events(d, fps, ratio=4.0, floor=0.012, big=0.15, gap=0.12):
+    d = np.asarray(d, float)
+    if len(d) < 3:
+        return []
+    level = ratio * np.median(d) + 0.004
+    out = [i for i in range(1, len(d)) if _is_cut(d[i], big, floor, level)]
+    return _spaced_frames(out, fps, gap)
+
+
+def _is_cut(v, big, floor, level):
+    return v >= big or (v > floor and v > level)
+
+
+def _spaced_frames(frames, fps, gap):
+    keep, last = [], -1e9
+    for i in frames:
+        if (i - last) / fps >= gap:
+            keep.append(i)
+            last = i
+    return keep
+
+
 def make_video() -> types.ModuleType:
     m = _module("hark.timeline.video", "stand-in video")
     m.has_video = lambda path: bool(probe(path).get("has_video"))
     m.info = lambda path: {"duration": probe(path).get("duration"), "fps": None, "has_video": False}
-
-    def frame_diff(path, cache=True):
-        raise AudioError(f"{path}: no picture in the stand-in")
-
-    def diff_events(d, fps, ratio=4.0, floor=0.012, big=0.15, gap=0.12):
-        d = np.asarray(d, float)
-        if len(d) < 3:
-            return []
-        out = [i for i in range(1, len(d)) if d[i] >= big or (d[i] > floor and d[i] > ratio * np.median(d) + 0.004)]
-        keep, last = [], -1e9
-        for i in out:
-            if (i - last) / fps >= gap:
-                keep.append(i)
-                last = i
-        return keep
-
-    m.frame_diff = frame_diff
-    m.diff_events = diff_events
+    m.frame_diff = _video_frame_diff
+    m.diff_events = _video_events
     return m
 
 
