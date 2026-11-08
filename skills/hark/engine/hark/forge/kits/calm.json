@@ -1,0 +1,161 @@
+{
+ "kit": 1,
+ "name": "calm",
+ "sr": 48000,
+ "note": "Natural, soft touches for text-led films. One tuned instrument plays both bell and text, soft air carries movement, and the lockup is one struck note.",
+ "roles": {
+  "tick": {
+   "sound": "tap/glass",
+   "takes": 3,
+   "align": "onset",
+   "level_db": -8.0,
+   "note": "Dominoes knocking (CC0 fit, 0.14 s). It sits 3 dB higher because it is quieter at the same peak. Until the CC0 fit file ships, the forge member tap/glass stands in for fit/tick/domino; the level keeps the role's loudness."
+  },
+  "tick.crisp": {
+   "sound": "pro_tap/glass",
+   "takes": 3,
+   "align": "onset",
+   "level_db": -8,
+   "note": "A glass touch, 98 ms: a 225 Hz body with a glass partial. Crisp, with no synthetic tink."
+  },
+  "tock": {
+   "sound": "tap/knuckle",
+   "takes": 3,
+   "align": "onset",
+   "level_db": -6,
+   "note": "A knuckle knock, the low partner of the glass tick."
+  },
+  "hit": {
+   "sound": "notify/m0",
+   "takes": 2,
+   "align": "onset",
+   "level_db": -3,
+   "note": "The lockup is one struck bell at C5. It has one attack, no lead-in and 1.9 s of natural decay. Set edits.pitch to the film's root to tune it."
+  },
+  "land": {
+   "sound": "pro_pop_in/deep",
+   "takes": 3,
+   "align": "onset",
+   "level_db": -5,
+   "note": "A low, round thump (75 Hz body, 0.18 s) that you feel more than hear."
+  },
+  "land.light": {
+   "sound": "tap/soft",
+   "takes": 3,
+   "align": "onset",
+   "level_db": -8,
+   "note": "A soft fingertip thump for small elements."
+  },
+  "pop": {
+   "sound": "pro_pop_in/airy",
+   "takes": 4,
+   "align": "onset",
+   "level_db": -6.0,
+   "note": "A mouth plop (CC0 fit, 0.28 s) with no pitch glide. Until the CC0 fit file ships, the forge member pro_pop_in/airy stands in for fit/pop/mouth_plop; the level keeps the role's loudness."
+  },
+  "whoosh.short": {
+   "sound": "swipe/velvet",
+   "takes": 3,
+   "align": "peak",
+   "level_db": -7.0,
+   "note": "One smooth pass of air (CC0 fit, 0.48 s). Until the CC0 fit file ships, the forge member swipe/velvet stands in for fit/whoosh.short/bamboo_swish; the level keeps the role's loudness."
+  },
+  "whoosh.long": {
+   "sound": "whoosh_big/swell",
+   "takes": 2,
+   "align": "peak",
+   "level_db": -7,
+   "note": "A soft swell of air (1.36 s, peak at 0.44 s) for scene moves."
+  },
+  "suck": null,
+  "riser": null,
+  "drop": null,
+  "swell": null,
+  "key": {
+   "sound": "typing_key/thock",
+   "takes": 12,
+   "align": "onset",
+   "level_db": -10,
+   "note": "A mechanical key with a thock, a new take per keystroke. The light and laptop members ring, so the kit avoids them."
+  },
+  "key.space": {
+   "sound": "typing_key/thock",
+   "takes": 4,
+   "align": "onset",
+   "level_db": -9.5,
+   "note": "A mechanical space bar (CC0 fit, 0.39 s). Until the CC0 fit file ships, the forge member typing_key/thock stands in for fit/key.space/thock_space; the level keeps the role's loudness."
+  },
+  "key.return": {
+   "sound": "typing_key/deep",
+   "takes": 2,
+   "seed": 4100,
+   "align": "onset",
+   "level_db": -7,
+   "note": "A deep cap pressed harder, on its own seeds, 2.5 dB over the space bar."
+  },
+  "click": {
+   "sound": "tap/finger",
+   "takes": 2,
+   "align": "onset",
+   "level_db": -8.0,
+   "note": "A small plastic click (CC0 fit, 0.13 s, centroid 4.9 kHz). Until the CC0 fit file ships, the forge member tap/finger stands in for fit/click/floss_lid; the level keeps the role's loudness."
+  },
+  "click.confirm": {
+   "sound": "pluck/kalimba_soft",
+   "takes": 1,
+   "seed": 8101,
+   "edits": {
+    "pitch": "C6"
+   },
+   "align": "onset",
+   "level_db": -10,
+   "note": "A soft tuned pluck confirms an action. It is the bell and text voice, played quieter."
+  },
+  "snap": {
+   "sound": "toggle/latch",
+   "takes": 2,
+   "align": "onset",
+   "level_db": -3.0,
+   "note": "A switch flip (CC0 fit, 0.19 s) with one attack. Until the CC0 fit file ships, the forge member toggle/latch stands in for fit/snap/switch_flip; the level keeps the role's loudness."
+  },
+  "bell": {
+   "sound": "pluck/kalimba",
+   "takes": 1,
+   "pitches": [
+    "G4",
+    "A4",
+    "C5",
+    "D5",
+    "E5",
+    "G5",
+    "A5",
+    "C6",
+    "D6",
+    "E6"
+   ],
+   "align": "onset",
+   "level_db": -5,
+   "note": "Kalimba over 2 octaves of C pentatonic, 10 notes: one note per progress step or motif note."
+  },
+  "text": {
+   "sound": "pluck/kalimba_soft",
+   "takes": 1,
+   "pitches": [
+    "C5",
+    "D5",
+    "E5",
+    "G5",
+    "A5"
+   ],
+   "align": "onset",
+   "level_db": -12,
+   "note": "One quiet tuned note when a text fragment completes, never once per word. It stays under the picture."
+  }
+ },
+ "off": {
+  "suck": "a suck builds on top of the reveal",
+  "riser": "the reveal lands on one sound; use pro_riser/air_gate when a film needs a build",
+  "drop": "a calm film resolves without a sub drop; for weight, tune pro_sub_drop/soft to the root",
+  "swell": "a reversed swell into the hit gives the hit a second gesture"
+ }
+}

@@ -1,0 +1,268 @@
+{
+ "kit": 1,
+ "name": "launch",
+ "sr": 48000,
+ "note": "Soft, short mid-register effects for music-led launch films, set against the music bed instead of a fixed level. bed_db, offset_ms, min_gap_ms and width are medians measured on reference clips that hark does not have; level_db gives the same balance to a mixer with no bed. One gesture at a time: the music dips before a hit, a drop, a large whoosh or a swell and comes back with it. Nothing ducks under the effects.",
+ "roles": {
+  "tick": {
+   "sound": "pro_hover_tick/ping",
+   "takes": 3,
+   "align": "onset",
+   "level_db": 0,
+   "bed_db": 3,
+   "offset_ms": 0,
+   "min_gap_ms": 66,
+   "width": 0.1,
+   "note": "An airy 8.8 kHz tick, 60 ms, made fully wide. Ticks come in runs about 66 ms apart and are felt more than heard, with the same small margin over the bed as the light touches."
+  },
+  "tick.crisp": {
+   "sound": "pro_click/tink",
+   "takes": 3,
+   "align": "onset",
+   "level_db": -13,
+   "bed_db": 3,
+   "offset_ms": 0,
+   "min_gap_ms": 66,
+   "width": 0.3,
+   "note": "A bright designed tink, a little wide."
+  },
+  "tock": {
+   "sound": "knock/wood",
+   "takes": 3,
+   "align": "onset",
+   "level_db": -1.5,
+   "bed_db": 8,
+   "offset_ms": -40,
+   "min_gap_ms": 100,
+   "note": "A mid-band wood knock, 0.15 s, a 400 Hz block. Knocks land about 40 ms before the cut."
+  },
+  "hit": {
+   "sound": "cut_hit/punch",
+   "takes": 3,
+   "align": "onset",
+   "level_db": -9,
+   "bed_db": 7.5,
+   "offset_ms": 0,
+   "note": "One short, punchy hit on the cut, 0.28 s, two thirds of it under 150 Hz. It comes after the music dips."
+  },
+  "land": {
+   "sound": "pro_pop_in/round",
+   "takes": 4,
+   "align": "onset",
+   "level_db": -5.5,
+   "bed_db": 8,
+   "offset_ms": 30,
+   "min_gap_ms": 159,
+   "note": "A low, round thump for elements that pop in (124 Hz, 0.18 s), about 30 ms after the cut."
+  },
+  "land.light": {
+   "sound": "tap/finger",
+   "takes": 3,
+   "align": "onset",
+   "level_db": -10,
+   "bed_db": 3,
+   "offset_ms": -60,
+   "min_gap_ms": 115,
+   "note": "A light finger tap (150 to 260 Hz with a faint click), quiet against the bed, about 60 ms before the cut."
+  },
+  "pop": {
+   "sound": "ui_pop/soft",
+   "takes": 4,
+   "align": "onset",
+   "level_db": -8,
+   "bed_db": 8.5,
+   "offset_ms": 4,
+   "min_gap_ms": 114,
+   "note": "A soft, round mid pop (0.14 s, 550 Hz, 22 ms to the peak, 20 dB down after 75 ms). It is the effect used most, in runs about 114 ms apart."
+  },
+  "whoosh.short": {
+   "sound": "whoosh_fast/crisp",
+   "takes": 3,
+   "align": "peak",
+   "level_db": -5.5,
+   "bed_db": 9,
+   "offset_ms": 37,
+   "note": "A fast air whoosh, 0.37 s, 570 Hz, peaking about 37 ms after the cut. swish/bright is the brighter 2.4 kHz option."
+  },
+  "whoosh.long": {
+   "sound": "whoosh_big/thump",
+   "takes": 2,
+   "align": "peak",
+   "level_db": -6.5,
+   "bed_db": 8.5,
+   "offset_ms": 3,
+   "note": "A large, low whoosh that lands on a thump about 80 ms in and rings for about 0.35 s."
+  },
+  "suck": null,
+  "riser": {
+   "sound": "riser/dark",
+   "takes": 2,
+   "align": "peak",
+   "level_db": -3.5,
+   "bed_db": 8,
+   "offset_ms": -23,
+   "note": "A short dark riser (0.8 s of noise, sub and a stutter that speeds up, no synth sweep). Its peak is about 23 ms before the cut and its fall crosses the cut, so it aligns on the peak. Use 1 or 2 in a film at most."
+  },
+  "swell": {
+   "sound": "reverse_swell/dark",
+   "takes": 2,
+   "align": "peak",
+   "level_db": -5.5,
+   "bed_db": 9.5,
+   "offset_ms": 42,
+   "note": "A dark, almost mono reverse swell peaking about 42 ms after the cut. Use 1 in a film at most. reverse_swell/cymbal is the bright, wide option."
+  },
+  "drop": {
+   "sound": "cut_hit/kick",
+   "takes": 2,
+   "align": "onset",
+   "level_db": -8.5,
+   "bed_db": 7,
+   "offset_ms": 0,
+   "note": "A short sub hit led by a kick, 0.22 s, on the cut. Set edits.pitch to the root to tune it."
+  },
+  "key": {
+   "sound": "typing_key/clicky",
+   "takes": 12,
+   "align": "onset",
+   "level_db": -1,
+   "bed_db": 6.5,
+   "offset_ms": 8,
+   "min_gap_ms": 87,
+   "note": "Real-sounding keys in the mid band (1.3 to 4.4 kHz), a new take per keystroke, about 87 ms apart in a run."
+  },
+  "key.space": {
+   "sound": "typing_key/thock",
+   "takes": 4,
+   "align": "onset",
+   "level_db": -1.5,
+   "bed_db": 6.5,
+   "offset_ms": 8,
+   "note": "A mechanical space bar (CC0 fit). Until the CC0 fit file ships, the forge member typing_key/thock stands in for fit/key.space/thock_space; the level keeps the role's loudness."
+  },
+  "key.return": {
+   "sound": "typing_key/clicky",
+   "takes": 2,
+   "seed": 4100,
+   "align": "onset",
+   "level_db": -0.5,
+   "bed_db": 7,
+   "offset_ms": 8,
+   "note": "The same switch as the run, on its own seeds, a little louder."
+  },
+  "click": {
+   "sound": "tap/finger",
+   "takes": 2,
+   "align": "onset",
+   "level_db": -3.5,
+   "bed_db": 6.5,
+   "offset_ms": -11,
+   "min_gap_ms": 85,
+   "note": "A small plastic click (CC0 fit). Clicks land about 11 ms early. Until the CC0 fit file ships, the forge member tap/finger stands in for fit/click/floss_lid; the level keeps the role's loudness."
+  },
+  "click.confirm": {
+   "sound": "notify/mid_tine",
+   "takes": 1,
+   "align": "onset",
+   "level_db": -8.5,
+   "bed_db": 8.5,
+   "offset_ms": 0,
+   "note": "A round mid ding (690 Hz, 32 ms to the peak) that closes a run as its accent."
+  },
+  "snap": {
+   "sound": "shutter/dslr",
+   "takes": 2,
+   "align": "onset",
+   "level_db": -7,
+   "bed_db": 4,
+   "offset_ms": 9,
+   "min_gap_ms": 66,
+   "note": "A camera shutter for snap zooms and whip cuts. Use fit/snap/switch_flip for a toggle."
+  },
+  "bell": {
+   "sound": "mallet/glock",
+   "takes": 1,
+   "pitches": [
+    "G4",
+    "A4",
+    "C5",
+    "D5",
+    "E5",
+    "G5",
+    "A5",
+    "C6",
+    "D6",
+    "E6"
+   ],
+   "align": "onset",
+   "level_db": -8.5,
+   "bed_db": 7.5,
+   "offset_ms": -20,
+   "min_gap_ms": 110,
+   "width": 0.6,
+   "note": "A gated glockenspiel note with a voice an octave below (0.35 s), C pentatonic, made wide. Notes land about 20 ms early."
+  },
+  "text": {
+   "sound": "mallet/pluck",
+   "takes": 1,
+   "pitches": [
+    "C4",
+    "D4",
+    "E4",
+    "G4",
+    "A4"
+   ],
+   "align": "onset",
+   "level_db": -16,
+   "bed_db": 4,
+   "offset_ms": 0,
+   "min_gap_ms": 110,
+   "note": "One soft felt pluck per resolved fragment, low under the bed."
+  }
+ },
+ "off": {
+  "suck": "a reverse whoosh into a cut puts a lead-in on top of the hit; the dip in the music already does that"
+ },
+ "mix": {
+  "level": "bed",
+  "duck_db": 0,
+  "stop_down": {
+   "before": [
+    "hit",
+    "drop",
+    "whoosh.long",
+    "swell"
+   ],
+   "depth_db": [
+    6,
+    12
+   ],
+   "length_s": [
+    0.3,
+    0.5
+   ],
+   "release": "the music comes back with the hit"
+  },
+  "runs": {
+   "accent_at_end": [
+    "click.confirm",
+    "land",
+    "drop"
+   ]
+  },
+  "density_per_10s": {
+   "music_led": [
+    3,
+    13
+   ],
+   "voice_over_explainer": [
+    18,
+    30
+   ],
+   "effects_led": [
+    30,
+    38
+   ]
+  }
+ }
+}

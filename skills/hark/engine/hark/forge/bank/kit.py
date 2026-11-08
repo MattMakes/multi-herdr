@@ -672,9 +672,12 @@ def check(kit: Any, out: str | os.PathLike | None = None, log: Callable | None =
 
 def audition_dir(doc: dict) -> Path:
     """The default takes folder of an audition under ``HARK_HOME``."""
-    from hark.core import config
+    home = os.environ.get("HARK_HOME")
+    if not home:
+        from hark.core import config
 
-    return Path(config.HOME) / "kits" / f"{doc.get('name') or 'kit'}_{digest(doc)[:10]}"
+        home = str(config.HOME)
+    return Path(home).expanduser().resolve() / "kits" / f"{doc.get('name') or 'kit'}_{digest(doc)[:10]}"
 
 
 def _stereo(x: np.ndarray) -> np.ndarray:
@@ -966,7 +969,7 @@ def add_cli(sub: argparse._SubParsersAction) -> None:
     p.set_defaults(func=_help_of(p))
     s = p.add_subparsers(dest="kit_command")
     ip = s.add_parser("init", help="write a preset kit")
-    ip.add_argument("--preset", default="calm", choices=("calm", "crisp", "minimal", "launch"))
+    ip.add_argument("--preset", default="calm", help="calm (default), crisp, minimal or launch")
     ip.add_argument("-o", "--output", default="audio/kit.json")
     ip.add_argument("--force", action="store_true")
     report.add_common(ip)

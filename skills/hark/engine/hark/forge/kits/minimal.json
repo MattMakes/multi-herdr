@@ -1,0 +1,154 @@
+{
+ "kit": 1,
+ "name": "minimal",
+ "sr": 48000,
+ "note": "Designed, sub-led sounds for effects-only films with no music bed: breathy digital ticks, low sub swells for movement, one sub-led hit, a designed sub drop and key ticks with the lows cut. The light touch, the text touch and the snap use CC0 fits, because the designed taps and knock they replace scored as cheap synth in the forced choice (p 0.01 to 0.27).",
+ "roles": {
+  "tick": {
+   "sound": "pro_hover_tick/soft",
+   "takes": 3,
+   "align": "onset",
+   "level_db": -10,
+   "note": "An airy digital tick, 32 ms, for blinking cursors and counters. The air and glass members give click warnings."
+  },
+  "tick.crisp": {
+   "sound": "pro_hover_tick/ping",
+   "takes": 3,
+   "align": "onset",
+   "level_db": -12,
+   "note": "A short, high ping for exact interface ticks."
+  },
+  "tock": {
+   "sound": "pro_tap/soft",
+   "takes": 3,
+   "align": "onset",
+   "level_db": -8,
+   "note": "One soft, low thump."
+  },
+  "hit": {
+   "sound": "pro_impact/air",
+   "takes": 2,
+   "align": "onset",
+   "level_db": 0,
+   "note": "One gated hit led by the sub, 0.85 s: one attack, weight under 150 Hz, no layer on top."
+  },
+  "land": {
+   "sound": "pro_pop_in/deep",
+   "takes": 3,
+   "align": "onset",
+   "level_db": -5,
+   "note": "A low, round thump with a 75 Hz body."
+  },
+  "land.light": {
+   "sound": "pro_tap/finger",
+   "takes": 3,
+   "align": "onset",
+   "level_db": -8.0,
+   "note": "Fingers on a book (CC0 fit, 0.38 s, centroid 240 Hz). It sits under the sub-led sounds. Until the CC0 fit file ships, the forge member pro_tap/finger stands in for fit/land.light/fingertip_book; the level keeps the role's loudness."
+  },
+  "pop": {
+   "sound": "pro_pop_in/round",
+   "takes": 4,
+   "align": "onset",
+   "level_db": -7,
+   "note": "A round pop-in thump with no glide."
+  },
+  "whoosh.short": {
+   "sound": "whoosh_fast/heavy",
+   "takes": 3,
+   "align": "peak",
+   "level_db": -7,
+   "note": "A darker fast pass (centroid 381 Hz) that sits under the sub-led sounds."
+  },
+  "whoosh.long": {
+   "sound": "pro_whoosh_big/swell",
+   "takes": 2,
+   "align": "peak",
+   "level_db": -5,
+   "note": "A designed swell of low sub that leads into a cut (peak at 0.35 s), almost all of it under 150 Hz."
+  },
+  "suck": null,
+  "riser": null,
+  "swell": null,
+  "drop": {
+   "sound": "pro_sub_drop/ref",
+   "takes": 1,
+   "align": "onset",
+   "level_db": -3,
+   "note": "A designed drop that grows after the cut. Set edits.pitch to the root (G1 to C2)."
+  },
+  "key": {
+   "sound": "pro_typing_key/glass",
+   "takes": 12,
+   "align": "onset",
+   "level_db": -12,
+   "note": "A designed, high-passed key tick for animated type, a new take per keystroke."
+  },
+  "key.space": {
+   "sound": "pro_typing_key/tick",
+   "takes": 4,
+   "align": "onset",
+   "level_db": -12,
+   "note": "A softer designed tick for spaces."
+  },
+  "key.return": {
+   "sound": "pro_typing_key/double",
+   "takes": 2,
+   "align": "onset",
+   "level_db": -10,
+   "note": "A double tick at the end of a line."
+  },
+  "click": {
+   "sound": "pro_click/soft",
+   "takes": 2,
+   "align": "onset",
+   "level_db": -9,
+   "note": "A soft designed interface click, 53 ms."
+  },
+  "click.confirm": {
+   "sound": "pro_notify/ding_1822",
+   "takes": 1,
+   "align": "onset",
+   "level_db": -10,
+   "note": "A short, clean ding, 0.26 s."
+  },
+  "snap": {
+   "sound": "toggle/latch",
+   "takes": 2,
+   "align": "onset",
+   "level_db": -3.0,
+   "note": "A switch flip (CC0 fit). Until the CC0 fit file ships, the forge member toggle/latch stands in for fit/snap/switch_flip; the level keeps the role's loudness."
+  },
+  "bell": {
+   "sound": "pro_notify/ding_1822",
+   "takes": 1,
+   "pitches": [
+    "A5",
+    "C6",
+    "D6",
+    "F6",
+    "G6",
+    "A6",
+    "C7",
+    "D7",
+    "F7",
+    "G7"
+   ],
+   "align": "onset",
+   "level_db": -8,
+   "note": "The clean ding over 2 octaves of F pentatonic around its own 1822 Hz, 10 notes: a few designed notes and no ringing bell."
+  },
+  "text": {
+   "sound": "pro_tap/soft",
+   "takes": 3,
+   "align": "onset",
+   "level_db": -15.0,
+   "note": "A finger on a phone (CC0 fit), untuned. It sits 5 dB up because it is quieter at the same peak. Until the CC0 fit file ships, the forge member pro_tap/soft stands in for fit/land.light/finger_phone; the level keeps the role's loudness."
+  }
+ },
+ "off": {
+  "suck": "a suck builds on top of the reveal",
+  "riser": "off; pro_riser/air_gate is the short choice when a build is needed, never an endless riser",
+  "swell": "whoosh.long, a sub swell, already carries the movement"
+ }
+}
