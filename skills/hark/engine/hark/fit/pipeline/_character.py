@@ -154,22 +154,31 @@ def _longest_piece(pts: list) -> list:
     return max(pieces, key=len)
 
 
-def glide(m: np.ndarray) -> tuple[float, float]:
-    """(glide_oct, track_ms) of the loudest peak track."""
+def _loud_points(m: np.ndarray) -> list:
+    """Peak points within 15 dB of the loudest, or [] when fewer than 4 points exist."""
     pts = _glide_points(m) if len(m) and np.any(m) else []
     if len(pts) < 4:
-        return 0.0, 0.0
+        return []
     top = max(q[2] for q in pts)
-    pts = [q for q in pts if q[2] >= top - 15]
+    return [q for q in pts if q[2] >= top - 15]
+
+
+def _piece_octaves(piece: list) -> float:
+    if len(piece) < 4:
+        return 0.0
+    v = [q[1] for q in piece]
+    k = max(1, len(v) // 5)
+    return float(np.median(v[-k:]) - np.median(v[:k]))
+
+
+def glide(m: np.ndarray) -> tuple[float, float]:
+    """(glide_oct, track_ms) of the loudest peak track."""
+    pts = _loud_points(m)
     if len(pts) < 4:
         return 0.0, 0.0
     piece = _longest_piece(pts)
     track = (piece[-1][0] - piece[0][0]) * 128 / SR * 1000
-    if len(piece) < 4:
-        return 0.0, track
-    v = [q[1] for q in piece]
-    k = max(1, len(v) // 5)
-    return float(np.median(v[-k:]) - np.median(v[:k])), track
+    return _piece_octaves(piece), track
 
 
 def _strikes(x: np.ndarray) -> int:
@@ -179,16 +188,25 @@ def _strikes(x: np.ndarray) -> int:
         return 1
 
 
+_CLASS_RULES = (
+    ("glide", lambda c: c["gliding"]),
+    ("ringing", lambda c: c["tonal_share"] >= 0.8 and c["persistence"] >= 0.9 and c["t40_ms"] > 300),
+    ("struck", lambda c: c["impulsive"]),
+    ("gesture", lambda c: c["attack_ms"] > 40 and c["crest_db"] < 18),
+)
+
+
 def _class(c: dict) -> str:
-    if c["gliding"]:
-        return "glide"
-    if c["tonal_share"] >= 0.8 and c["persistence"] >= 0.9 and c["t40_ms"] > 300:
-        return "ringing"
-    if c["impulsive"]:
-        return "struck"
-    if c["attack_ms"] > 40 and c["crest_db"] < 18:
-        return "gesture"
-    return "mixed"
+    return next((name for name, rule in _CLASS_RULES if rule(c)), "mixed")
+
+
+def _flags(c: dict) -> dict:
+    return {
+        "impulsive": c["attack_ms"] <= 40 and (c["t40_ms"] <= 400 or c["crest_db"] >= 18),
+        "tonal": c["tonal_share"] >= 0.45 and c["persistence"] >= 0.5,
+        "noisy": c["tonal_share"] < 0.25,
+        "gliding": abs(c["glide_oct"]) >= 2 / 12 and c["track_ms"] >= 15 and c["tonal_share"] >= 0.25,
+    }
 
 
 def character(x: np.ndarray) -> dict:
@@ -201,10 +219,7 @@ def character(x: np.ndarray) -> dict:
     c["glide_oct"], c["track_ms"] = glide(m)
     c["strikes"] = _strikes(x)
     c["channels"] = _model.channels_of(x)
-    c["impulsive"] = c["attack_ms"] <= 40 and (c["t40_ms"] <= 400 or c["crest_db"] >= 18)
-    c["tonal"] = c["tonal_share"] >= 0.45 and c["persistence"] >= 0.5
-    c["noisy"] = c["tonal_share"] < 0.25
-    c["gliding"] = abs(c["glide_oct"]) >= 2 / 12 and c["track_ms"] >= 15 and c["tonal_share"] >= 0.25
+    c.update(_flags(c))
     c["class"] = _class(c)
     return {k: (round(v, 4) if isinstance(v, float) else v) for k, v in c.items()}
 
@@ -248,28 +263,38 @@ def _level(seg: np.ndarray) -> float:
     return 10 * math.log10(max(float(np.mean(seg ** 2)), 1e-20))
 
 
+def _bed_start(x: np.ndarray, m: np.ndarray) -> int | None:
+    """The refined sound onset in samples, or None when no bed onset exists."""
+    k = _bed_onset(m) if len(m) >= 1440 and np.any(m) else None
+    return None if k is None else _refine(x, k * 48)
+
+
+def _steady(seg: np.ndarray, level: float) -> bool:
+    q = [_level(part) for part in np.array_split(seg, 4)]
+    return -40 <= level <= -12 and max(q) - min(q) <= 6 and q[3] - q[0] <= 3
+
+
+def _psd_db(seg: np.ndarray) -> list:
+    _, _, z = signal.stft(seg, window="hann", nperseg=1024, noverlap=768, boundary=None, padded=False)
+    psd = np.median(np.abs(z) ** 2, axis=1)
+    return np.round(10 * np.log10(np.maximum(psd, 1e-30)), 1).tolist()
+
+
 def bed_of(x: np.ndarray) -> dict | None:
     """A steady pre-roll 12 to 40 dB under the sound, or None."""
     from hark.fit.pipeline.quality import peak_rms_db
 
-    m = mono(np.asarray(x, dtype=np.float64))
-    if len(m) < 1440 or not np.any(m):
-        return None
-    k = _bed_onset(m)
-    if k is None:
-        return None
-    on = _refine(np.asarray(x, dtype=np.float64), k * 48)
-    seg = m[144: on - 96]
+    x = np.asarray(x, dtype=np.float64)
+    m = mono(x)
+    on = _bed_start(x, m)
+    seg = m[144: on - 96] if on is not None else m[:0]
     if len(seg) < 1440:
         return None
     level = _level(seg) - peak_rms_db(m)
-    q = [_level(part) for part in np.array_split(seg, 4)]
-    if not (-40 <= level <= -12) or max(q) - min(q) > 6 or q[3] - q[0] > 3:
+    if not _steady(seg, level):
         return None
-    _, _, z = signal.stft(seg, window="hann", nperseg=1024, noverlap=768, boundary=None, padded=False)
-    psd = np.median(np.abs(z) ** 2, axis=1)
     return {"t_on": round(on / SR, 6), "level_db": round(level, 2), "n": int(len(m)), "nfft": 1024,
-            "psd_db": np.round(10 * np.log10(np.maximum(psd, 1e-30)), 1).tolist()}
+            "psd_db": _psd_db(seg)}
 
 
 def _strip_gain(m: np.ndarray, bed: dict) -> np.ndarray:
@@ -281,21 +306,29 @@ def _strip_gain(m: np.ndarray, bed: dict) -> np.ndarray:
     return (pad[:, :-2] + pad[:, 1:-1] + pad[:, 2:]) / 3
 
 
-def strip_bed(x: np.ndarray, bed: dict) -> np.ndarray:
-    """The recording with its bed spectrally removed and its pre-roll muted."""
-    x = np.asarray(x, dtype=np.float64)
-    g = _strip_gain(mono(x), bed)
-    chans = [x] if x.ndim == 1 else [x[:, c] for c in range(x.shape[1])]
-    out = []
-    for ch in chans:
-        _, _, z = signal.stft(ch, window="hann", nperseg=1024, noverlap=768)
-        _, y = signal.istft(z * g, window="hann", nperseg=1024, noverlap=768)
-        out.append(np.pad(y, (0, max(0, len(ch) - len(y))))[: len(ch)])
-    y = out[0] if x.ndim == 1 else np.column_stack(out)
-    on = int(round(float(bed["t_on"]) * SR))
-    ramp = np.ones(len(y))
+def _strip_channel(ch: np.ndarray, g: np.ndarray) -> np.ndarray:
+    _, _, z = signal.stft(ch, window="hann", nperseg=1024, noverlap=768)
+    _, y = signal.istft(z * g, window="hann", nperseg=1024, noverlap=768)
+    return np.pad(y, (0, max(0, len(ch) - len(y))))[: len(ch)]
+
+
+def _preroll_ramp(n: int, on: int) -> np.ndarray:
+    """0 before on - 2 ms, a raised-cosine rise to on - 0.5 ms, then 1."""
+    ramp = np.ones(n)
     a, b = max(0, on - 96), max(0, on - 24)
     ramp[:a] = 0.0
     if b > a:
         ramp[a:b] = 0.5 - 0.5 * np.cos(np.pi * np.arange(b - a) / (b - a))
+    return ramp
+
+
+def strip_bed(x: np.ndarray, bed: dict) -> np.ndarray:
+    """The recording with its bed spectrally removed and its pre-roll muted."""
+    x = np.asarray(x, dtype=np.float64)
+    g = _strip_gain(mono(x), bed)
+    if x.ndim == 1:
+        y = _strip_channel(x, g)
+    else:
+        y = np.column_stack([_strip_channel(x[:, c], g) for c in range(x.shape[1])])
+    ramp = _preroll_ramp(len(y), int(round(float(bed["t_on"]) * SR)))
     return y * (ramp if y.ndim == 1 else ramp[:, None])
