@@ -88,14 +88,16 @@ def shelf(x: np.ndarray, f0: float, gain_db: float, high: bool = True, s: float 
     c = np.cos(w0)
     alpha = np.sin(w0) / 2 * np.sqrt((a_ + 1 / a_) * (1 / s - 1) + 2)
     q = 2 * np.sqrt(a_) * alpha
-    sign = 1.0 if high else -1.0
-    b = [a_ * ((a_ + 1) + sign * (a_ - 1) * c + q),
-         -2 * sign * a_ * ((a_ - 1) + sign * (a_ + 1) * c),
-         a_ * ((a_ + 1) + sign * (a_ - 1) * c - q)]
-    a = [(a_ + 1) - sign * (a_ - 1) * c + q,
-         2 * sign * ((a_ - 1) - sign * (a_ + 1) * c),
-         (a_ + 1) - sign * (a_ - 1) * c - q]
-    return signal.lfilter(np.array(b) / a[0], np.array(a) / a[0], x, axis=0)
+    b, a = _shelf_ba(a_, c, q, 1.0 if high else -1.0)
+    return signal.lfilter(b / a[0], a / a[0], x, axis=0)
+
+
+def _shelf_ba(a_: float, c: float, q: float, sign: float) -> tuple[np.ndarray, np.ndarray]:
+    """The P12 numerator and denominator; sign +1 for the high shelf, -1 for the low shelf."""
+    plus, minus = (a_ + 1) + sign * (a_ - 1) * c, (a_ + 1) - sign * (a_ - 1) * c
+    mid_b = -2 * sign * a_ * ((a_ - 1) + sign * (a_ + 1) * c)
+    mid_a = 2 * sign * ((a_ - 1) - sign * (a_ + 1) * c)
+    return np.array([a_ * (plus + q), mid_b, a_ * (plus - q)]), np.array([minus + q, mid_a, minus - q])
 
 
 def raised_cos_in(k: int) -> np.ndarray:

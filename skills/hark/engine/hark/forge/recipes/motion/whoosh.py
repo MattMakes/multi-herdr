@@ -200,40 +200,56 @@ def local_space(params: dict, space: dict | None = None, keys=None, char_w: floa
     space = SPACE if space is None else space
     character = CHARACTER if character is None else character
     out = {}
-    for k, spec in space.items():
-        if (keys is not None and k not in keys) or isinstance(spec, list) or params.get(k) is None:
-            continue
-        box = _box(spec, params[k], char_w if k in character else free_w)
+    for k in _box_keys(params, space, keys):
+        box = _box(space[k], params[k], char_w if k in character else free_w)
         if box is not None:
             out[k] = box
     return out
 
 
+def _box_keys(params: dict, space: dict, keys) -> list[str]:
+    """The range keys of space that params sets, limited to keys when given."""
+    wanted = space if keys is None else [k for k in space if k in keys]
+    return [k for k in wanted if not isinstance(space[k], list) and params.get(k) is not None]
+
+
 def recipe(kind: str = "fast", defaults: dict | None = None,
            module_name: str = MODULE) -> types.SimpleNamespace:
     """A recipe object for one kind; its module name picks the seed bank."""
+    return types.SimpleNamespace(SPACE=SPACE, render=render, KIND=kind, MODULE=module_name,
+                                 **_kind_fields(kind, defaults))
+
+
+def _kind_fields(kind: str, defaults: dict | None) -> dict[str, Any]:
     info = KINDS[kind]
-    return types.SimpleNamespace(
-        TARGET=info["target"], ALTS=list(info["alts"]), REFSET=info["refset"], SPACE=SPACE,
-        DEFAULTS=dict(defaults if defaults is not None else BASES[kind]), render=render,
-        KIND=kind, MODULE=module_name)
+    return {"TARGET": info["target"], "ALTS": list(info["alts"]), "REFSET": info["refset"],
+            "DEFAULTS": dict(defaults if defaults is not None else BASES[kind])}
 
 
 def envelope(p: dict) -> tuple[np.ndarray, np.ndarray, float, int]:
     """The shared level curve (section 1.10): (t, a, tp, n)."""
-    rise, fall, hold = float(p["rise"]), float(p["fall"]), float(p["hold"])
-    tp = rise * (max(-float(p["start_db"]), 1.0) / 30.0) ** (1.0 / p["rise_k"])
-    room = 0.9 * p["rt60"] * min(1.0, 4 * p["room_wet"] + 0.2)
-    t_end = tp + hold + fall * (95.0 / 30.0) ** (1.0 / p["fall_k"]) + room + 0.05
-    n = u.samples(min(tp + max(t_end - tp, 0.1), 4.5))
+    tp = float(float(p["rise"]) * (max(-float(p["start_db"]), 1.0) / 30.0) ** (1.0 / p["rise_k"]))
+    n = _env_samples(p, tp)
     t = u.times(n)
-    d = t - tp
+    a = _level(p, t - tp)
+    return t, a / a.max(), tp, n
+
+
+def _env_samples(p: dict, tp: float) -> int:
+    """Steps 2 and 3 of 1.10: the end estimate, at most 4.5 s."""
+    room = 0.9 * p["rt60"] * min(1.0, 4 * p["room_wet"] + 0.2)
+    t_end = tp + p["hold"] + p["fall"] * (95.0 / 30.0) ** (1.0 / p["fall_k"]) + room + 0.05
+    return u.samples(min(tp + max(t_end - tp, 0.1), 4.5))
+
+
+def _level(p: dict, d: np.ndarray) -> np.ndarray:
+    """Steps 4 to 6 of 1.10: the level in dB as amplitude, with a rounded peak."""
+    rise, fall, hold = float(p["rise"]), float(p["fall"]), float(p["hold"])
     pre = d < 0
     x = np.where(pre, -d / rise, np.maximum(d - hold, 0.0) / fall)
     k = np.where(pre, p["rise_k"], p["fall_k"])
     a = 10 ** (np.maximum(-30.0 * x**k, -140.0) / 20.0)
-    a = u.hann_smooth(a, float(np.clip(0.3 * min(rise, fall + hold), 0.004, 0.1)))
-    return t, a / a.max(), float(tp), n
+    return u.hann_smooth(a, float(np.clip(0.3 * min(rise, fall + hold), 0.004, 0.1)))
 
 
 def _opt(p: dict, key: str) -> Any:
@@ -250,12 +266,9 @@ class _Pass:
         self.d = self.t - self.tp
         self.m = self.a ** p["track"]
         self.dop = 2 ** (-(p["dop_st"] / 12.0) * 0.5 * np.tanh(self.d / p["dop_w"]))
-        span = np.where(self.d < 0, p["up_oct"], p["down_oct"])
-        self.f_air = 2 ** (np.log2(p["f_peak"]) - span * (1 - self.m)) * self.dop
         self.sweep = _opt(p, "tail_sweep")
         self.g = 1 - np.exp(-np.maximum(self.d, 0) / _opt(p, "tail_tau"))
-        if self.sweep > 0:
-            self.f_air = self.f_air * 2 ** (-0.5 * self.sweep * self.g)
+        self.f_air = _air_centre(p, self.d, self.m, self.dop, 0.5 * self.sweep * self.g)
         fd = p["flut_depth"]
         self.flut = np.exp(fd * u.control(self.n, p["flut_f"], rng) - 0.5 * fd * fd)
 
@@ -265,6 +278,14 @@ class _Pass:
     def am(self, depth: float, fc: float) -> np.ndarray:
         v = np.exp(depth * u.control(self.n, fc, self.rng))
         return v / (u.rms(v) + u.EPS)
+
+
+def _air_centre(p: dict, d: np.ndarray, m: np.ndarray, dop: np.ndarray,
+                sink: np.ndarray) -> np.ndarray:
+    """Steps 3 and 4 of 1.11: the air band centre, sunk by the tail sweep."""
+    span = np.where(d < 0, p["up_oct"], p["down_oct"])
+    f_air = 2 ** (np.log2(p["f_peak"]) - span * (1 - m)) * dop
+    return f_air * 2 ** (-sink) if _opt(p, "tail_sweep") > 0 else f_air
 
 
 def _air_body(s: _Pass) -> np.ndarray:
@@ -456,17 +477,27 @@ def _finish(y: np.ndarray, p: dict) -> np.ndarray:
 
 def edit(y: np.ndarray, end_db: float, end_fade: float) -> np.ndarray:
     """The edit of section 1.12: cut where the level falls end_db under the peak, then fade."""
-    m = u.mono(y)
+    end = _edit_end(u.mono(y), end_db)
+    if end is not None:
+        y = y[: min(len(y), end + u.samples(end_fade / 2))]
+    return _edit_fades(np.array(y, dtype=float), end_fade)
+
+
+def _edit_end(m: np.ndarray, end_db: float) -> int | None:
+    """Steps 1 to 3 of 1.12: the first sample of the block under the end level (None: no block)."""
     k = len(m) // 240
-    if k >= 1:
-        blocks = m[: k * 240].reshape(k, 240)
-        e = 20 * np.log10(np.sqrt(np.mean(blocks * blocks, axis=1)) + u.EPS)
-        e = np.convolve(e, np.ones(4) / 4.0, mode="same")
-        i = int(np.argmax(e))
-        below = np.nonzero(e[i:] < e[i] + end_db)[0]
-        j = i + int(below[0]) if below.size else k
-        y = y[: min(len(y), j * 240 + u.samples(end_fade / 2))]
-    y = np.array(y, dtype=float)
+    if k < 1:
+        return None
+    blocks = m[: k * 240].reshape(k, 240)
+    e = 20 * np.log10(np.sqrt(np.mean(blocks * blocks, axis=1)) + u.EPS)
+    e = np.convolve(e, np.ones(4) / 4.0, mode="same")
+    i = int(np.argmax(e))
+    below = np.nonzero(e[i:] < e[i] + end_db)[0]
+    return 240 * (i + int(below[0]) if below.size else k)
+
+
+def _edit_fades(y: np.ndarray, end_fade: float) -> np.ndarray:
+    """Steps 5 and 6 of 1.12: the raised-cosine end fade and the sin² start ramp."""
     out = min(u.samples(end_fade), len(y) - 1)
     if out > 1:
         y[-out:] *= (0.5 + 0.5 * np.cos(np.pi * np.arange(out) / (out - 1)))[:, None]

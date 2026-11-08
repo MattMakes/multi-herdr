@@ -98,12 +98,20 @@ def preset_full(cat: str, params: dict) -> dict[str, Any]:
     return {**BASES[cat], **params}
 
 
-def recipe(cat: str = "swish", name: str | None = None) -> types.SimpleNamespace:
+def recipe(cat: str = "swish", name: str | None = None,
+           module_name: str = MODULE) -> types.SimpleNamespace:
     """A recipe object for one category; it uses the brightswish module name."""
-    member = name if name is not None else FAMILIES[cat][0][0]
-    return types.SimpleNamespace(
-        TARGET=TARGETS[cat], ALTS=list(ALTS), REFSET=cat, SPACE=SPACE,
-        DEFAULTS=preset(cat, member), render=render, MODULE=MODULE, PRESET=member)
+    member = _member(cat, name)
+    return types.SimpleNamespace(REFSET=cat, SPACE=SPACE, DEFAULTS=preset(cat, member),
+                                 render=render, MODULE=module_name, PRESET=member, **_texts(cat))
+
+
+def _member(cat: str, name: str | None) -> str:
+    return name if name is not None else FAMILIES[cat][0][0]
+
+
+def _texts(cat: str) -> dict[str, Any]:
+    return {"TARGET": TARGETS[cat], "ALTS": list(ALTS)}
 
 
 def falling_comb(x: np.ndarray, f0: float, f1: float, fb: float, mix: float) -> np.ndarray:

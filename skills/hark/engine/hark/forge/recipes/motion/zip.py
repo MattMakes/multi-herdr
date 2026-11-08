@@ -80,10 +80,16 @@ _R3 = {
 }
 
 
+def _round2(name: str) -> dict[str, float]:
+    return {k: float(v) for k, v in zip(_R2_KEYS, _R2[name])}
+
+
+def _round3(name: str) -> dict[str, float]:
+    return {k: float(v) for k, v in zip(tuple(_AIR_OFF), _R3[name])}
+
+
 def _pro(name: str) -> dict[str, Any]:
-    r2 = {k: float(v) for k, v in zip(_R2_KEYS, _R2[name])}
-    r3 = {k: float(v) for k, v in zip(tuple(_AIR_OFF), _R3[name])}
-    return {**FAMILIES[name], **r2, **r3}
+    return {**FAMILIES[name], **_round2(name), **_round3(name)}
 
 
 _PRO = {name: _pro(name) for name in _COLUMNS}
@@ -97,21 +103,29 @@ FAMILIES_BY_CAT: dict[str, dict[str, dict[str, Any]]] = {"pro_zip": _PRO}
 def trajectory(p: dict, n: int) -> np.ndarray:
     """The pitch per sample (section 7.6); a straight line on a log axis, or an arc."""
     t = np.linspace(0.0, 1.0, n)
-    f0 = float(p["f0"])
     if p["shape"] == "arc":
-        a = float(p["pk_at"])
-        up = np.clip(t / a, 0, 1)
-        dn = np.clip((t - a) / (1 - a), 0, 1)
-        lo, pk, back = np.log2(f0), np.log2(p["fpk"]), np.log2(f0 * p["arc_back"])
-        rise = lo + (pk - lo) * np.sin(0.5 * np.pi * up)
-        fall = pk + (back - pk) * (1 - np.cos(0.5 * np.pi * dn))
-        return 2 ** np.where(t <= a, rise, fall)
+        return _arc(p, t)
+    f0 = float(p["f0"])
+    return f0 * (_end_pitch(p, f0) / f0) ** (t ** (2 ** p["bend"]))
+
+
+def _end_pitch(p: dict, f0: float) -> float:
+    """f1, or 4 f0 (up) or f0 / 4 (down) when the sweep is under 1.5 times."""
     f1 = float(p["f1"])
     if p["shape"] == "up" and f1 < 1.5 * f0:
-        f1 = 4 * f0
-    elif p["shape"] == "down" and f1 > f0 / 1.5:
-        f1 = f0 / 4
-    return f0 * (f1 / f0) ** (t ** (2 ** p["bend"]))
+        return 4 * f0
+    if p["shape"] == "down" and f1 > f0 / 1.5:
+        return f0 / 4
+    return f1
+
+
+def _arc(p: dict, u_: np.ndarray) -> np.ndarray:
+    """The arc of 7.6: up to fpk on a sine, back to f0 x arc_back on a cosine (log2 Hz)."""
+    a, f0 = float(p["pk_at"]), float(p["f0"])
+    lo, pk, back = np.log2(f0), np.log2(p["fpk"]), np.log2(f0 * p["arc_back"])
+    rise = lo + (pk - lo) * np.sin(0.5 * np.pi * np.clip(u_ / a, 0, 1))
+    fall = pk + (back - pk) * (1 - np.cos(0.5 * np.pi * np.clip((u_ - a) / (1 - a), 0, 1)))
+    return 2 ** np.where(u_ <= a, rise, fall)
 
 
 def _voice(p: dict, f: np.ndarray, cents: float, rng: np.random.Generator) -> np.ndarray:
@@ -238,13 +252,20 @@ def _sweep(x: np.ndarray) -> tuple[float, float, bool]:
     t, lf = t[keep], np.log2(np.maximum(f[keep], 1.0))
     if len(lf) < 4:
         return 0.0, 0.0, False
-    rate, arc = _slope(t, lf), False
-    h = len(lf) // 2
-    if h >= 3 and len(lf) - h >= 3:
-        a, b = _slope(t[:h], lf[:h]), _slope(t[h:], lf[h:])
-        if a * b < 0 and min(abs(a), abs(b)) > 3:
-            rate, arc = (a if abs(a) >= abs(b) else b), True
+    half = _arc_rate(t, lf)
+    rate, arc = (_slope(t, lf), False) if half is None else (half, True)
     return float(lf.max() - lf.min()), rate, arc
+
+
+def _arc_rate(t: np.ndarray, lf: np.ndarray) -> float | None:
+    """The steeper half slope when the 2 halves sweep opposite ways above 3 oct/s, else None."""
+    h = len(lf) // 2
+    if h < 3 or len(lf) - h < 3:
+        return None
+    a, b = _slope(t[:h], lf[:h]), _slope(t[h:], lf[h:])
+    if a * b >= 0 or min(abs(a), abs(b)) <= 3:
+        return None
+    return a if abs(a) >= abs(b) else b
 
 
 def measure(x: np.ndarray) -> dict[str, Any]:

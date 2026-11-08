@@ -35,6 +35,15 @@ DEFAULTS_V1: dict[str, float] = {
 }
 
 
+def _proximity(p: dict, d: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """The pass curve U, the distance rr and the Doppler factor of version 1."""
+    s = np.where(d < 0, p["s_rise"], p["s_fall"])
+    big_u = np.exp(-0.5 * np.abs(d / s) ** p["beta"])
+    x = d / p["prox_w"]
+    rr = np.sqrt(1 + x * x)
+    return big_u, rr, 1 - p["doppler"] * (x / rr * big_u)
+
+
 class _Stick:
     """The shared motion of one version-1 render."""
 
@@ -43,11 +52,7 @@ class _Stick:
         self.n = u.samples(LENGTH_S)
         self.t = u.times(self.n)
         self.d = self.t - p["tc"]
-        s = np.where(self.d < 0, p["s_rise"], p["s_fall"])
-        self.U = np.exp(-0.5 * np.abs(self.d / s) ** p["beta"])
-        x = self.d / p["prox_w"]
-        self.rr = np.sqrt(1 + x * x)
-        self.dop = 1 - p["doppler"] * (x / self.rr * self.U)
+        self.U, self.rr, self.dop = _proximity(p, self.d)
         self.amp = self.U ** p["a_pow"] / self.rr
         fd = p["flut_depth"]
         self.flut = np.exp(fd * u.control(self.n, p["flut_f"], rng) - 0.5 * fd * fd)
