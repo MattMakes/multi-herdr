@@ -122,12 +122,13 @@ def _forced_mode() -> str | None:
 def _horch_answers() -> bool:
     """Whether `horch --version` exits 0 within version_timeout()."""
     quiet = subprocess.DEVNULL
+    argv = [horch_bin(), "--version"]
+    timeout = version_timeout()
     try:
-        r = subprocess.run([horch_bin(), "--version"], stdin=quiet, stdout=quiet, stderr=quiet,
-                           timeout=version_timeout())
+        code = subprocess.run(argv, stdin=quiet, stdout=quiet, stderr=quiet, timeout=timeout).returncode
     except (OSError, subprocess.TimeoutExpired):
         return False
-    return r.returncode == 0
+    return code == 0
 
 
 def mode() -> str:
