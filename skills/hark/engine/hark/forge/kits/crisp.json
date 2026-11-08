@@ -1,0 +1,154 @@
+{
+ "kit": 1,
+ "name": "crisp",
+ "sr": 48000,
+ "note": "Short, tight interface ticks and clicks for energetic dev-tool and product films. Quick air carries movement, one clean gated hit lands the reveal, and a brief sub drop sits in tune.",
+ "roles": {
+  "tick": {
+   "sound": "tap/glass",
+   "takes": 3,
+   "align": "onset",
+   "level_db": -8.0,
+   "note": "Dominoes knocking (CC0 fit). Until the CC0 fit file ships, the forge member tap/glass stands in for fit/tick/domino; the level keeps the role's loudness."
+  },
+  "tick.crisp": {
+   "sound": "pro_click/tink",
+   "takes": 3,
+   "align": "onset",
+   "level_db": -10,
+   "note": "A bright designed tink, 37 ms, one attack. Keep it low."
+  },
+  "tock": {
+   "sound": "tap/knuckle",
+   "takes": 3,
+   "align": "onset",
+   "level_db": -6,
+   "note": "A knuckle knock."
+  },
+  "hit": {
+   "sound": "pro_impact/short",
+   "takes": 3,
+   "align": "onset",
+   "level_db": 0,
+   "note": "One clean gated hit, 0.67 s: one attack and no lead-in (10 ms pre-swell)."
+  },
+  "land": {
+   "sound": "pro_pop_in/deep",
+   "takes": 3,
+   "align": "onset",
+   "level_db": -4,
+   "note": "A low, round thump for heavier elements."
+  },
+  "land.light": {
+   "sound": "pro_tap/finger",
+   "takes": 3,
+   "align": "onset",
+   "level_db": -7.5,
+   "note": "Fingers on a book (CC0 fit, 0.38 s). Until the CC0 fit file ships, the forge member pro_tap/finger stands in for fit/land.light/fingertip_book; the level keeps the role's loudness."
+  },
+  "pop": {
+   "sound": "pro_pop_in/round",
+   "takes": 4,
+   "align": "onset",
+   "level_db": -6,
+   "note": "A round pop-in thump with no glide, so a run of pops does not turn 8-bit."
+  },
+  "whoosh.short": {
+   "sound": "whoosh_fast/tight",
+   "takes": 3,
+   "align": "peak",
+   "level_db": -6,
+   "note": "A short, quick pass (0.54 s, peak at 0.16 s) for whip pans and fly-ins."
+  },
+  "whoosh.long": {
+   "sound": "whoosh_big/swell",
+   "takes": 2,
+   "align": "peak",
+   "level_db": -6,
+   "note": "A full swell of air for scene changes."
+  },
+  "suck": null,
+  "riser": null,
+  "swell": null,
+  "drop": {
+   "sound": "pro_sub_drop/quick",
+   "takes": 1,
+   "align": "onset",
+   "level_db": -4,
+   "note": "The shortest designed sub drop, 1.0 s, growing 110 ms after the cut. Set edits.pitch to the root (G1 to C2)."
+  },
+  "key": {
+   "sound": "typing_key/crisp",
+   "takes": 12,
+   "align": "onset",
+   "level_db": -10.0,
+   "note": "One mechanical key, down and up (CC0 fit, 0.43 s, centroid 2.2 kHz), a new take per keystroke. Until the CC0 fit file ships, the forge member typing_key/crisp stands in for fit/key/medium; the level keeps the role's loudness."
+  },
+  "key.space": {
+   "sound": "typing_key/thock",
+   "takes": 4,
+   "align": "onset",
+   "level_db": -9.0,
+   "note": "A mechanical space bar (CC0 fit). Until the CC0 fit file ships, the forge member typing_key/thock stands in for fit/key.space/thock_space; the level keeps the role's loudness."
+  },
+  "key.return": {
+   "sound": "typing_key/clicky",
+   "takes": 2,
+   "align": "onset",
+   "level_db": -7,
+   "note": "A clicky switch for Return, brighter and harder than the run."
+  },
+  "click": {
+   "sound": "tap/finger",
+   "takes": 2,
+   "align": "onset",
+   "level_db": -8.0,
+   "note": "A small plastic click (CC0 fit). Until the CC0 fit file ships, the forge member tap/finger stands in for fit/click/floss_lid; the level keeps the role's loudness."
+  },
+  "click.confirm": {
+   "sound": "pro_notify/ding_2045",
+   "takes": 1,
+   "align": "onset",
+   "level_db": -9,
+   "note": "A short, clean ding, 0.36 s."
+  },
+  "snap": {
+   "sound": "toggle/latch",
+   "takes": 2,
+   "align": "onset",
+   "level_db": -6.0,
+   "note": "A switch flip (CC0 fit). Until the CC0 fit file ships, the forge member toggle/latch stands in for fit/snap/switch_flip; the level keeps the role's loudness."
+  },
+  "bell": {
+   "sound": "pluck/kalimba",
+   "takes": 1,
+   "pitches": [
+    "G4",
+    "A4",
+    "C5",
+    "D5",
+    "E5",
+    "G5",
+    "A5",
+    "C6",
+    "D6",
+    "E6"
+   ],
+   "align": "onset",
+   "level_db": -5,
+   "note": "Tuned kalimba over 2 octaves of C pentatonic."
+  },
+  "text": {
+   "sound": "pro_tap/soft",
+   "takes": 3,
+   "align": "onset",
+   "level_db": -12.0,
+   "note": "A finger on a phone (CC0 fit, 0.33 s, centroid 95 Hz). It is untuned, so it cannot clash with the music, and sits 7 dB up because it is quieter at the same peak. Until the CC0 fit file ships, the forge member pro_tap/soft stands in for fit/land.light/finger_phone; the level keeps the role's loudness."
+  }
+ },
+ "off": {
+  "suck": "a suck builds on top of the reveal",
+  "riser": "off; pro_riser/air_gate is the short choice when a build is needed, never an endless riser",
+  "swell": "a swell puts a lead-in on top of the hit"
+ }
+}

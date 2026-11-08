@@ -1,0 +1,5 @@
+{
+ "_doc": "Class ids per held-out file id, written from folder and file name only, before any held-out score. Empty until a held-out library is built (NEEDS-DATA).",
+ "music_class": "music",
+ "files": {}
+}
