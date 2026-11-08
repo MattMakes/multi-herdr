@@ -240,10 +240,11 @@ These 10 skills are own text and belong to no phase; a `video-*` teammate attach
 
 ## Sound skills
 
-`hark` and `sound-sourcing` are own text, written clean-room from the behaviour specs in `docs/specs/hark/`. `hark` teaches the hark engine (listen, measure, forge, fit, bank, kit, timeline, critique) for video SFX and game SFX, and ships the engine package under `engine/` and its launcher `scripts/hark`. `sound-sourcing` builds a film soundtrack from real recordings (brief, sourcing, usage-rights audit, music edit, mix, master, QA, variants, credits, mux) and ships its Python scripts, each with a `--self-test`, and JSON templates. Both are exempt from the text-only rule.
+`hark` and `sound-sourcing` are own text, written clean-room from the behaviour specs in `docs/specs/hark/`. `hark` teaches the hark engine (listen, measure, forge, fit, bank, kit, timeline, critique) for video SFX and game SFX, and ships the engine package under `engine/` and its launcher `scripts/hark`. `sound-sourcing` builds a film soundtrack from real recordings (brief, sourcing, usage-rights audit, music edit, mix, master, QA, variants, credits, mux) and ships its Python scripts, each with a `--self-test`, and JSON templates. Both are exempt from the text-only rule. `audio-review` is own text and is text only: a blind review rubric for SFX and mixes that the `audio-reviewer` teammate on agy reads with `horch skills read`, because agy loads no bundled skills.
 
 | Skill | Kind |
 | --- | --- |
+| [audio-review](audio-review/SKILL.md) | own text |
 | [hark](hark/SKILL.md) | own text |
 | [sound-sourcing](sound-sourcing/SKILL.md) | own text |
 

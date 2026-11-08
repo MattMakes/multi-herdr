@@ -34,6 +34,7 @@ fn plan_for(t: &Teammate, base: &SkillCatalog) -> anyhow::Result<SkillActivation
 const REPO_ORIGINAL: &[&str] = &[
     "api-contracts",
     "architecture-review",
+    "audio-review",
     "blender-3d-print",
     "blender-baking",
     "blender-modeling",
@@ -107,6 +108,7 @@ const SKIP_NEW_TEAMMATES: &[&str] = &[
     "apple-platform-developer",
     "architect-reviewer-light",
     "astra-creative",
+    "audio-reviewer",
     "blender-3d-printer",
     "blender-artist",
     "blender-builder",

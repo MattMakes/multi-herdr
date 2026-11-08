@@ -107,6 +107,11 @@
       "verbatim": false
     },
     {
+      "name": "audio-review",
+      "copied_files": [],
+      "verbatim": false
+    },
+    {
       "name": "background-execution",
       "copied_files": [
         "SKILL.md",
