@@ -1,0 +1,1074 @@
+#!/usr/bin/env python3
+"""Measured QA of a render. Each finding names the placement that caused it.
+
+Sections: clicks, loudness, coverage, edges, audibility, harshness, sync,
+density, listen, mix. No models are needed except for --listen/--realness.
+Run with the hark venv Python and -I. --self-test runs the built-in checks.
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import math
+import os
+import re
+import sys
+from collections import Counter
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+import numpy as np  # noqa: E402
+from scipy import signal  # noqa: E402
+from scipy.ndimage import uniform_filter1d  # noqa: E402
+
+import master as mst  # noqa: E402
+import mix  # noqa: E402
+
+SR = mix.SR
+ORDER = {"fail": 3, "warn": 2, "ok": 1, "skipped": 0}
+LONG_KINDS = {"whoosh", "riser", "swell", "suck"}
+
+
+class InputError(Exception):
+    pass
+
+
+def ms(samples) -> float:
+    return round(float(samples) / SR * 1000, 1)
+
+
+def tfmt(t: float | None) -> str:
+    if t is None:
+        return "n.a."
+    return f"{t:.2f}s ({int(t // 60)}:{t % 60:05.2f})"
+
+
+def dbp(p: float) -> float:
+    return 10 * math.log10(p) if p > 0 else -200.0
+
+
+def clean(o):
+    if isinstance(o, dict):
+        return {str(k): clean(v) for k, v in o.items()}
+    if isinstance(o, (list, tuple)):
+        return [clean(v) for v in o]
+    if isinstance(o, np.generic):
+        o = o.item()
+    if isinstance(o, float) and not math.isfinite(o):
+        return None
+    return o
+
+
+def sos(order, hz, kind):
+    return signal.butter(order, hz, btype=kind, fs=SR, output="sos")
+
+
+# ---------------------------------------------------------------- inputs
+
+def read(path: str) -> np.ndarray:
+    import soundfile as sf
+    return mst.as_stereo(sf.read(path, dtype="float32", always_2d=True)[0]).astype(np.float32)
+
+
+def load_inputs(a) -> dict:
+    root = os.path.abspath(a.root)
+    solo = a.only is not None
+    tag = mix.safe(a.only, "A-Za-z0-9._-") if solo else None
+    rp = lambda p: mix.rpath(root, p)
+    dpath = rp(a.design)
+    if not os.path.isfile(dpath):
+        raise InputError(f"design not found: {dpath} (--design)")
+    design = mix.load_design(a.design, root, a.only)
+    report_p = rp(a.report or (f"out/audio-review/solo/{tag}_report.json" if solo else "out/qa/mix_report.json"))
+    if not os.path.isfile(report_p):
+        raise InputError(f"report not found: {report_p} (--report)")
+    stems_p = rp(a.stems or (f"out/audio-review/solo/{tag}_stems" if solo else "out/audio/stems"))
+    stems = {}
+    for b in mix.BUSES:
+        f = os.path.join(stems_p, f"{b}.wav")
+        if not os.path.isfile(f):
+            raise InputError(f"stems not found: {f} (--stems)")
+        stems[b] = read(f)
+    if len({len(x) for x in stems.values()}) != 1:
+        raise InputError(f"stems of one length not found: {stems_p} (--stems)")
+    master = None
+    if a.master != "none":
+        mp = rp(a.master) if a.master else (None if solo else rp("out/audio/soundtrack.wav"))
+        if mp and os.path.isfile(mp):
+            master = read(mp)
+            if abs(len(master) - len(stems["sfx"])) > 1:
+                raise InputError(f"master of the stems' length not found: {mp} (--master)")
+            master = np.pad(master, ((0, max(0, len(stems['sfx']) - len(master))), (0, 0)))[: len(stems["sfx"])]
+        elif a.master:
+            raise InputError(f"master not found: {mp} (--master)")
+    cp = mix.cue_path(a.cues, design, root)
+    cues = mix.load_cues(cp) if os.path.isfile(cp) else {"fps": 60, "events": []}
+    tp = rp(a.trace)
+    trace = mix.load_json(tp) if os.path.isfile(tp) else None
+    cache = rp(a.cache) if a.cache else os.path.join(root, "out/audio/cache")
+    return {"root": root, "design": design, "report": mix.load_json(report_p), "stems": stems, "master": master,
+            "cues": cues, "trace": trace, "cache": cache, "solo": solo,
+            "paths": {"design": dpath, "report": report_p, "stems": stems_p, "trace": tp if trace else None,
+                      "cues": cp, "master": a.master}}
+
+
+# ---------------------------------------------------------------- layers and groups
+
+def rebuild(ctx: dict) -> tuple[list, list[str]]:
+    d, rep, trace = ctx["design"], ctx["report"], ctx["trace"]
+    notes = []
+    recs = [r for r in trace if "sample" in r]
+    pls = rep["placements"]
+    if len(recs) != len(pls):
+        return None, [f"the trace ({len(recs)} sample adds) and the report ({len(pls)} placements) disagree: "
+                      "run the mix again with --trace"]
+    lib = mix.Library(d, ctx["root"], ctx["cache"])
+    ctx["lib"] = lib
+    N = len(ctx["stems"]["sfx"])
+    rules = {mix.rule_key(r, i): r for i, r in enumerate(d["rules"])}
+    places = iter(d["place"])
+    layers, bad = [], 0
+    for rec, pl in zip(recs, pls):
+        if pl["kind"] == "place":
+            item = next(places, {})
+            pitch, off, align = float(item.get("pitch", 0)), float(item.get("offset", 0)), item.get("align", "attack")
+            cue, rule, qok = float(item.get("at", pl["t"])), "place", item.get("qa_ok")
+        else:
+            r = rules.get(str(pl["rule"]), {})
+            pitch, off, align = float(pl.get("pitch", 0)), float(r.get("offset", 0)), pl.get("align", "attack")
+            cue, rule, qok = pl["t"] - off, str(pl["rule"]), r.get("qa_ok")
+        try:
+            x = lib.get(pl["sample"], pitch)
+        except mix.DesignError:
+            bad += 1
+            continue
+        if len(x) != rec["n"]:
+            bad += 1
+            continue
+        if rec["bus"] != "sfx":
+            continue
+        s = rec["start"]
+        a, b = max(0, s), min(N, s + len(x))
+        if a >= b and len(x):
+            continue  # a sound wholly outside the film
+        if not len(x):
+            # an empty trim stays as a silent layer, so audibility can name it
+            a = b = min(max(0, s), N)
+            y, att = np.zeros((0, 2), np.float32), a
+        else:
+            gl, gr = mix.pan_gains(rec["pan"])
+            y = x[a - s:b - s].astype(np.float32) * np.float32(rec["gain"])
+            y = y * np.array([gl, gr], np.float32) * mix.bus_curve(d, "sfx", a, b - a)[:, None]
+            att = s + mix.align_index(x, "attack")
+        layers.append({"sample": pl["sample"], "rule": rule, "kind": pl["kind"], "event": pl.get("event"),
+                       "cue": cue, "offset": off, "align": align, "start": s, "n": len(x), "a": a, "b": b, "sig": y,
+                       "qa_ok": qok, "att": att, "peak_db": mst.db(_peak(y))})
+    if bad:
+        notes.append(f"{bad} placement(s) could not be rebuilt: the design changed after the mix")
+    return layers, notes
+
+
+def _peak(x: np.ndarray) -> float:
+    return float(np.max(np.abs(x))) if x.size else 0.0
+
+
+def group(layers: list, G: float) -> list[dict]:
+    groups, index = [], {}
+    for L in sorted(layers, key=lambda q: q["att"]):
+        if L["kind"] == "place":
+            g = None
+            for cand in reversed(groups[-12:]):
+                if cand["free"] and L["att"] - cand["layers"][0]["att"] <= int(0.14 * SR):
+                    g = cand
+                    break
+            if g is None:
+                g = {"free": True, "layers": []}
+                groups.append(g)
+        else:
+            k = (L["event"], round(L["cue"], 4))
+            if k not in index:
+                index[k] = {"free": False, "layers": []}
+                groups.append(index[k])
+            g = index[k]
+        g["layers"].append(L)
+    out = []
+    for g in groups:
+        ls = g["layers"]
+        a, b = min(q["a"] for q in ls), max(q["b"] for q in ls)
+        sig = np.zeros((b - a, 2), np.float32)
+        for q in ls:
+            sig[q["a"] - a:q["b"] - a] += q["sig"]
+        loud = max(ls, key=lambda q: q["peak_db"])
+        pk = mst.db(_peak(sig)) + G
+        out.append({"a": a, "b": b, "sig": sig, "layers": ls, "cue": min(q["cue"] for q in ls), "loud": loud,
+                    "kind": loud["kind"], "label": ls[0]["event"] if not g["free"] else f"place:{ls[0]['sample']}",
+                    "long": any(q["kind"] in LONG_KINDS or q["align"] == "peak" for q in ls),
+                    "builds": any(q["kind"] in ("riser", "swell") for q in ls),
+                    "qa_ok": next((q["qa_ok"] for q in ls if q.get("qa_ok")), None),
+                    "att": min(q["att"] for q in ls), "peak_db": round(pk, 2), "silent": pk < -70,
+                    "rules": sorted({q["rule"] for q in ls}), "t": round(min(q["cue"] for q in ls), 4)})
+    return out
+
+
+# ---------------------------------------------------------------- clicks
+
+def _window_energy(p: np.ndarray, half: int) -> np.ndarray:
+    c = np.concatenate([[0.0], np.cumsum(p)])
+    i = np.arange(len(p))
+    return c[np.minimum(len(p), i + half + 1)] - c[np.maximum(0, i - half)]
+
+
+def detect_clicks(x: np.ndarray) -> list[dict]:
+    found = []
+    hp = sos(4, 14000, "highpass")
+    for ch in range(2):
+        hh = signal.sosfilt(hp, x[:, ch].astype(np.float64))
+        e, p = np.abs(hh), hh * hh
+        loc = np.sqrt(np.maximum(uniform_filter1d(p, 960), 0.0)) + 1e-5
+        near = np.sqrt(np.maximum(uniform_filter1d(p, 192), 0.0)) + 1e-5
+        cand = np.nonzero((e / loc > 9) & (e / near > 6) & (e > 0.01))[0]
+        if not len(cand):
+            continue
+        e24, e240 = _window_energy(p, 24), _window_energy(p, 240)
+        prev = -10 ** 9
+        for i in cand:
+            if i - prev > 480:
+                conc = e24[i] / max(e240[i], 1e-30)
+                found.append({"i": int(i), "ch": ch, "level_db": round(mst.db(float(e[i])), 2), "conc": round(float(conc), 3),
+                              "kind": "click" if conc >= 0.8 else "attack"})
+            prev = i
+    found.sort(key=lambda c: (c["i"], c["ch"]))
+    out = []
+    for c in found:
+        if out and c["i"] - out[-1]["i"] <= 48:
+            continue
+        out.append(c)
+    return out
+
+
+def _where(i: int, start: int, n: int) -> str:
+    if abs(i - start) <= 96:
+        return "start"
+    if abs(i - (start + n)) <= 96:
+        return "end"
+    return "body"
+
+
+def section_clicks(ctx, layers, G) -> dict:
+    sigs = ([("master", ctx["master"])] if ctx["master"] is not None else []) + [(b, ctx["stems"][b]) for b in mix.BUSES]
+    hp = sos(4, 14000, "highpass")
+    items, counts = [], {}
+    trace = ctx["trace"] or []
+    for name, x in sigs:
+        cl = detect_clicks(x)
+        counts[name] = {"clicks": sum(c["kind"] == "click" for c in cl), "attacks": sum(c["kind"] == "attack" for c in cl)}
+        for c in cl:
+            if c["kind"] != "click":
+                continue
+            i, owners = c["i"], []
+            if layers and name in ("master", "sfx"):
+                lvl = 10 ** (c["level_db"] / 20) * (10 ** (-G / 20) if name == "master" else 1)
+                best, bv = None, 0.0
+                for L in layers:
+                    if L["b"] < i - 480 or L["a"] > i + 480:
+                        continue
+                    lo, hi = max(L["a"], i - 480), min(L["b"], i + 480)
+                    if hi - lo < 64:
+                        lo, hi = max(L["a"], hi - 64), min(L["b"], lo + 64)
+                    seg = L["sig"][lo - L["a"]:hi - L["a"], c["ch"]].astype(np.float64)
+                    if len(seg) < 8:
+                        continue
+                    hh = np.abs(signal.sosfilt(hp, seg))
+                    k0, k1 = max(0, i - 24 - lo), max(0, min(len(hh), i + 25 - lo))
+                    v = float(hh[k0:k1].max()) if k1 > k0 else 0.0
+                    if v > bv:
+                        best, bv = L, v
+                if best is not None and bv >= 0.3 * lvl:
+                    w = _where(i, best["start"], best["n"])
+                    owners.append({"bus": "sfx", "what": best["sample"], "rule": best["rule"], "where": w,
+                                   "from_start_ms": ms(i - best["start"]), "from_end_ms": ms(best["start"] + best["n"] - i)})
+            if not owners:
+                recs = [r for r in trace if r["start"] - 960 <= i <= r["start"] + r["n"] + 960
+                        and (name == "master" or r["bus"] == name)]
+                dist = lambda r: min(abs(i - r["start"]), abs(i - r["start"] - r["n"]))
+                recs.sort(key=lambda r: (_where(i, r["start"], r["n"]) == "body", dist(r)))
+                for r in recs[:3]:
+                    owners.append({"bus": r["bus"], "what": r.get("sample") or r.get("name") or r.get("label"),
+                                   "rule": r.get("rule"), "where": _where(i, r["start"], r["n"]),
+                                   "from_start_ms": ms(i - r["start"]), "level_db": c["level_db"]})
+            items.append({"in": name, "t": round(i / SR, 4), "ch": c["ch"], "level_db": c["level_db"], "conc": c["conc"],
+                          "kind": "click", "owners": owners,
+                          "at_edge": bool(owners) and owners[0]["where"] in ("start", "end")})
+    edge_master = [c for c in items if c["in"] == "master" and c["at_edge"]]
+    status = "fail" if edge_master else ("warn" if items else "ok")
+    n = len(items)
+    summ = (f"{n} click(s), {len(edge_master)} at a placement edge on the master" if n else "no clicks")
+    if n:
+        summ += "; a click inside a recording is its own transient or a defect of the source: a critic decides"
+    return {"status": status, "summary": summ, "counts": counts, "items": items}
+
+
+# ---------------------------------------------------------------- edges
+
+def _rms_db(x: np.ndarray) -> float:
+    return mst.db(float(np.sqrt(np.mean(x.astype(np.float64) ** 2)))) if len(x) else -200.0
+
+
+def late_onset(x: np.ndarray) -> float | None:
+    m = np.abs(x).max(axis=1)
+    nb = len(m) // 240
+    if nb < 3:
+        return None
+    e = m[: nb * 240].reshape(nb, 240).max(axis=1)
+    pk = e.max()
+    for k in range(max(1, int(0.6 * nb)), nb):
+        if e[k] > 0.12 * pk and e[k] > 4 * e[k - 1]:
+            return round(k * 240 / SR, 4)
+    return None
+
+
+def judge_trim(o: dict, proc: np.ndarray, pre20: float, post20: float, starts_late: bool, fi: float, fo: float):
+    pk = float(np.max(np.abs(proc))) or 1e-12
+    head = _rms_db(proc[:48]) - mst.db(pk)
+    tail = _rms_db(proc[-48:]) - mst.db(pk)
+    att = mix.align_index(proc, "attack") / SR * 1000
+    defects, notes = [], []
+    if starts_late and pre20 > -20:
+        if fi < 0.005 and (att > 10 or pre20 > -10):
+            defects.append(f"abrupt entry: the trim cuts into a sound already playing (pre20 {pre20:.1f} dB) and no attack covers it")
+        else:
+            notes.append("the trim starts inside a sound; the fade-in softens it")
+    elif head > -30:
+        notes.append(f"the attack starts in the first ms (head {head:.1f} dB): the fade-in dulls it; start the trim 3-5 ms earlier")
+    if tail > -35 and post20 > -35:
+        (defects if fo < 0.03 else notes).append(
+            f"{'chopped' if fo < 0.03 else 'decay faded early'}: the sound continues after the trim (tail {tail:.1f} dB)")
+    lo = late_onset(proc)
+    if lo is not None:
+        notes.append(f"a second hit at {lo:.3f} s inside the sample (fine for a rattle, wrong for a single hit)")
+    if o.get("qa_ok") and defects:
+        notes += [f"acknowledged ({o['qa_ok']}): {m}" for m in defects]
+        defects = []
+    return {"head_db": round(head, 2), "tail_db": round(tail, 2), "attack_ms": round(att, 2), "late_onset": lo,
+            "defects": defects, "notes": notes}
+
+
+def section_edges(ctx) -> dict:
+    d, root, cache = ctx["design"], ctx["root"], ctx["cache"]
+    used = {p["sample"] for p in ctx["report"]["placements"]}
+    items = []
+    for name in sorted(u for u in used if "#" not in u and u in d["samples"]):
+        o = d["samples"][name]
+        raw = mix.decode(mix.rpath(root, o["file"]), cache)
+        a = int(float(o.get("start", 0)) * SR)
+        b = int(float(o["end"]) * SR) if o.get("end") is not None else len(raw)
+        trim = raw[a:b]
+        rpk = float(np.max(np.abs(trim))) if len(trim) else 0.0
+        it = {"sample": name, "file": o["file"]}
+        if mst.db(rpk) < -60:
+            why = ("empty (start >= end or past the file end)" if len(trim) == 0 else
+                   "digital silence" if rpk == 0 else "near-silent")
+            it.update(defects=[f"the trim is {why}; the file is {len(raw) / SR:.3f} s long"], notes=[])
+            items.append(it)
+            continue
+        proc = mix.shape(trim, o, with_fades=False)
+        pre20 = _rms_db(raw[max(0, a - 960):a]) - mst.db(rpk) if a > 0 else -200.0
+        post20 = _rms_db(raw[b:b + 960]) - mst.db(rpk) if b < len(raw) else -200.0
+        it.update(pre20_db=round(pre20, 2), post20_db=round(post20, 2))
+        it.update(judge_trim(o, proc, pre20, post20, a > 0, float(o.get("fade_in", 0.002)), float(o.get("fade_out", 0.012))))
+        if o.get("qa_ok"):
+            it["qa_ok"] = o["qa_ok"]
+        items.append(it)
+    for g in sorted({u.split("#")[0] for u in used if "#" in u}):
+        o = d["slices"].get(g, {})
+        it = {"slices": g, "file": o.get("file")}
+        try:
+            sl = mix.cut_slices(mix.decode(mix.rpath(root, o["file"]), cache), o, o["file"], with_fades=False)
+        except Exception as e:  # noqa: BLE001
+            it.update(defects=[f"cannot slice: {e}"], notes=[])
+            items.append(it)
+            continue
+        defs, nts = set(), set()
+        strip = lambda m: re.sub(r"\s*\([^)]*\d[^)]*\)|\d+(\.\d+)?\s*s\b", "", m).strip()
+        for _, x in sl:
+            r = judge_trim(o, x, -200.0, _rms_db(x[-48:]) - mst.db(float(np.max(np.abs(x))) or 1e-12), False,
+                           float(o.get("fade_in", 0.002)), float(o.get("fade_out", 0.02)))
+            defs |= {strip(m) for m in r["defects"]}
+            nts |= {strip(m) for m in r["notes"]}
+        it.update(n=len(sl), defects=sorted(defs), notes=sorted(nts))
+        items.append(it)
+    splices = []
+    mu = d.get("music")
+    film = len(ctx["stems"]["sfx"]) / SR
+    if mu and mu.get("segments"):
+        ratio = 1.0 if mu.get("stretch") == "none" else float(mu.get("target_bpm", 120)) / float(mu["src_bpm"])
+        path = mix.rpath(root, mu["file"])
+        src = mix.stretched(path, ratio, cache) if abs(ratio - 1) >= 1e-6 else mix.decode(path, cache)
+        k, w = 1 / ratio, int(0.05 * SR)
+        lv = lambda i: _rms_db(src[max(0, i):max(0, i) + w])
+        segs = sorted(mu["segments"], key=lambda s: float(s["at"]))
+        for j, s in enumerate(segs):
+            end = int(round(float(s["src_to"]) * k * SR))
+            start = int(round(float(s["src_from"]) * k * SR))
+            end_t = float(s["at"]) + (float(s["src_to"]) - float(s["src_from"])) * k
+            nxt = segs[j + 1] if j + 1 < len(segs) else None
+            out_db, cut = lv(end - w), lv(end)
+            in_db = lv(int(round(float(nxt["src_from"]) * k * SR))) if nxt else -120.0
+            row = {"label": s.get("label"), "at": s["at"], "end_t": round(end_t, 4), "out_db": round(out_db, 2),
+                   "cut_db": round(cut, 2), "in_db": round(in_db, 2), "defects": [], "notes": []}
+            if (not s.get("tail_fade") and float(s.get("fade_out", 0.06)) < 0.1 and end_t < film - 0.05
+                    and cut > out_db - 6 and cut > in_db + 6):
+                msg = "chops the music: the source keeps playing past src_to and the next part is quieter"
+                (row["notes"].append(f"acknowledged ({s['qa_ok']}): {msg}") if s.get("qa_ok") else row["defects"].append(msg))
+            if nxt is not None:
+                gap = float(nxt["at"]) - end_t
+                if gap > 0.02:
+                    row["notes"].append(f"{gap * 1000:.0f} ms of no music before the next segment")
+                elif gap < -0.1:
+                    row["notes"].append(f"overlaps the next segment by {-gap * 1000:.0f} ms")
+            if start > w and lv(start - w) > lv(start) - 3:
+                row["notes"].append("begins inside a sustained sound (no fresh attack on the splice)")
+            splices.append(row)
+    N = len(ctx["stems"]["sfx"])
+    cut = [{"bus": r["bus"], "what": r.get("sample") or r.get("name") or r.get("label"), "t": round(r["start"] / SR, 4),
+            "before_0": r["start"] < 0, "after_end": r["start"] + r["n"] > N}
+           for r in ctx["trace"] or [] if r["bus"] != "music" and (r["start"] < 0 or r["start"] + r["n"] > N)]
+    nd = sum(bool(i["defects"]) for i in items) + sum(bool(s["defects"]) for s in splices)
+    return {"status": "warn" if nd else "ok", "summary": f"{nd} edge defect(s) in {len(items)} trim(s) and {len(splices)} music splice(s)"
+            + (f"; {len(cut)} placement(s) cut by the film ends" if cut else ""),
+            "items": items, "music_splices": splices, "cut_by_film_ends": cut}
+
+
+# ---------------------------------------------------------------- audibility
+
+_BANDS = [10 ** (n / 10) for n in range(20, 42)]
+_MASKS: dict[int, list] = {}
+
+
+def band_energy(x: np.ndarray) -> np.ndarray:
+    n = len(x)
+    if n not in _MASKS:
+        f = np.fft.rfftfreq(n, 1 / SR)
+        _MASKS[n] = [(f >= c * 2 ** (-1 / 6)) & (f < c * 2 ** (1 / 6)) for c in _BANDS]
+    w = signal.windows.tukey(n, 0.25)[:, None]
+    p = (np.abs(np.fft.rfft(x * w, axis=0)) ** 2).sum(axis=1)
+    return np.array([p[m].sum() for m in _MASKS[n]]) + 1e-30
+
+
+def margin(E: np.ndarray, X: np.ndarray) -> tuple[float, float]:
+    keep = E >= 1e-3 * E.max()
+    m = np.clip(10 * np.log10(E / X), -60, 60)
+    m = np.where(keep, m, -np.inf)
+    i = int(np.argmax(m))
+    return round(float(m[i]), 2), round(_BANDS[i])
+
+
+def _take(x: np.ndarray, start: int, n: int, base: int = 0) -> np.ndarray:
+    """Samples [start, start + n) of x (x begins at absolute sample base), zero-padded."""
+    out = np.zeros((n, 2), np.float32)
+    a, b = max(start, base), min(start + n, base + len(x))
+    if a < b:
+        out[a - start:b - start] = x[a - base:b - base]
+    return out
+
+
+def best_window(E: np.ndarray, base: int, lo: int, hi: int, n: int) -> int:
+    p = (E.astype(np.float64) ** 2).sum(axis=1)
+    c = np.concatenate([[0.0], np.cumsum(p)])
+    best, bv = lo, -1.0
+    for s in range(lo, max(lo, hi) + 1, 48):
+        a, b = min(max(0, s - base), len(p)), min(max(0, s + n - base), len(p))
+        v = c[b] - c[a]
+        if v > bv:
+            best, bv = s, v
+    return best
+
+
+def judge_audibility(E, a, b, att, long, ctx) -> dict:
+    st = ctx["stems"]
+    w60, w20 = int(0.06 * SR), int(0.02 * SR)
+    hi60 = (b - w60) if long else att + int(0.3 * SR)
+    s60 = best_window(E, a, att - int(0.005 * SR), max(att - int(0.005 * SR), hi60), w60)
+    s20 = s60 if long else best_window(E, a, att - int(0.003 * SR), att + int(0.08 * SR), w20)
+    bed = lambda s, n: _take(st["music"], s, n) + _take(st["amb"], s, n)
+    rest = lambda s, n: _take(st["sfx"], s, n) - _take(E, s, n, a) + bed(s, n)
+    e60, e20 = band_energy(_take(E, s60, w60, a)), band_energy(_take(E, s20, w20, a))
+    vb, vbh = margin(e60, band_energy(bed(s60, w60)))
+    va, _ = margin(e60, band_energy(rest(s60, w60)))
+    f20, f20h = margin(e20, band_energy(rest(s20, w20)))
+    rd = max(va, f20)
+    verdict = "clear" if rd >= 6 else "ok" if rd >= 3 else "barely" if rd >= 0 else "masked"
+    return {"vs_bed_db": vb, "vs_bed_hz": vbh, "vs_all_db": va, "first20_db": f20, "first20_hz": f20h, "read_db": rd,
+            "verdict": verdict, "covered_by": "music/amb" if vb < 3 else "other effects"}
+
+
+def section_audibility(ctx, groups, G, layers_flag) -> dict:
+    rows = []
+    for g in groups:
+        row = {"t": g["t"], "label": g["label"], "kind": g["kind"], "n_layers": len(g["layers"]), "rules": g["rules"],
+               "peak_db": g["peak_db"]}
+        if g["qa_ok"]:
+            row["qa_ok"] = g["qa_ok"]
+        if g["silent"]:
+            row.update(verdict="silent", samples=sorted({q["sample"] for q in g["layers"]}))
+        elif ctx["no_bed"]:
+            row["verdict"] = "not judged"
+        else:
+            row.update(judge_audibility(g["sig"], g["a"], g["b"], g["att"], g["long"], ctx))
+        rows.append(row)
+    silent = [r for r in rows if r["verdict"] == "silent"]
+    judged = sorted([r for r in rows if "read_db" in r], key=lambda r: r["read_db"])
+    masked = [r for r in judged if r["verdict"] == "masked" and not r.get("qa_ok")]
+    if any(not r.get("qa_ok") for r in silent):
+        status = "fail"
+    elif ctx["no_bed"]:
+        status = "skipped"
+    else:
+        status = "warn" if masked else "ok"
+    out = {"status": status, "items": (silent + judged)[:40], "events": rows,
+           "summary": (f"{len(silent)} silent, {len(masked)} masked of {len(rows)} event(s)" if not ctx["no_bed"]
+                       else f"no bed (solo render): {len(silent)} silent of {len(rows)} event(s), the rest not judged")}
+    if layers_flag:
+        dead = []
+        for g in groups:
+            if g["silent"] or len(g["layers"]) < 2:
+                continue
+            for L in g["layers"]:
+                if L["peak_db"] + G < -70:
+                    dead.append({"t": g["t"], "rule": L["rule"], "sample": L["sample"], "read_db": None, "silent": True})
+                elif not ctx["no_bed"]:
+                    r = judge_audibility(L["sig"], L["a"], L["b"], L["att"], g["long"], ctx)
+                    if r["read_db"] < 0:
+                        dead.append({"t": g["t"], "rule": L["rule"], "sample": L["sample"], "read_db": r["read_db"]})
+        out["dead_layers"] = dead
+        out["summary"] += f"; {len(dead)} dead layer(s)"
+    return out
+
+
+# ---------------------------------------------------------------- harshness
+
+def section_harshness(ctx, groups, G) -> dict:
+    bp = sos(4, [2000, 6000], "bandpass")
+    lowp = sos(4, [80, 400], "bandpass")
+    mus = signal.sosfilt(bp, ctx["stems"]["music"].mean(axis=1).astype(np.float64))
+    mp = uniform_filter1d(mus * mus, 240)
+    has_music = mp.max() > 1e-10
+    ref = dbp(float(mp.max())) + G if has_music else None
+    rows, bright = [], []
+    pad = int(0.01 * SR)
+    for g in groups:
+        if g["silent"]:
+            continue
+        m = np.concatenate([np.zeros(pad), g["sig"].mean(axis=1).astype(np.float64)])
+        hi_b, lo_b = signal.sosfilt(bp, m)[pad:], signal.sosfilt(lowp, m)[pad:]
+        a0 = max(0, g["att"] - g["a"] - pad)
+        a1 = len(hi_b) if g["long"] else min(len(hi_b), g["att"] - g["a"] + int(0.08 * SR))
+        if a1 - a0 < 240:
+            continue
+        ph = uniform_filter1d(hi_b[a0:a1] ** 2, 240).max()
+        pl = uniform_filter1d(lo_b[a0:a1] ** 2, 240).max()
+        seg = m[pad + a0:pad + a1]
+        spec = np.abs(np.fft.rfft(seg * np.hanning(len(seg)))) ** 2
+        f = np.fft.rfftfreq(len(seg), 1 / SR)
+        cen = float((spec * f).sum() / max(spec.sum(), 1e-30))
+        pres = dbp(float(ph)) + G
+        row = {"t": g["t"], "label": g["label"], "rules": g["rules"], "pres_db": round(pres, 2),
+               "pres_minus_low_db": round(pres - dbp(float(pl)) - G, 2), "centroid_hz": round(cen),
+               "music_pres_db": None, "over_music_max_db": None, "issues": [], "bright": cen > 6500}
+        if has_music:
+            c, r = g["att"], int(0.25 * SR)
+            row["music_pres_db"] = round(dbp(float(np.mean(mus[max(0, c - r):c + r] ** 2))) + G, 2)
+            row["over_music_max_db"] = round(pres - ref, 2)
+            if pres - ref > 6 and not g["qa_ok"]:
+                row["issues"].append(f"2-6 kHz {pres - ref:.1f} dB above the music's loudest presence")
+        if row["bright"]:
+            bright.append({"t": g["t"], "label": g["label"], "centroid_hz": row["centroid_hz"]})
+        rows.append(row)
+    rows.sort(key=lambda r: -r["pres_db"])
+    hot = [r for r in rows if r["issues"]]
+    items = hot[:20] + [r for r in rows if not r["issues"]][: max(0, 10 - len(hot[:20]))]
+    summ = (f"{len(hot)} event(s) over the music's 2-6 kHz peak by more than 6 dB" if has_music
+            else "no music: the presence check is not judged") + f"; {len(bright)} bright event(s)"
+    return {"status": "warn" if hot else "ok", "summary": summ, "items": items, "bright": bright, "music_ref_db": ref}
+
+
+# ---------------------------------------------------------------- sync
+
+def _sync_issue(test, m, s):
+    if test == "end":
+        v = m["end_ms"] - s
+        return None if -300 <= v <= 60 else f"ends {v:.0f} ms from the hit (allowed -300..+60)"
+    if test == "apex":
+        v = m["apex_ms"] - s
+        return None if abs(v) <= 45 else f"apex {v:+.0f} ms off the cue (allowed +-45)"
+    if m["attack_ms"] - s < -45:
+        return f"sound before picture: attack {m['attack_ms'] - s:+.0f} ms"
+    if m["peak_ms"] - s > 75:
+        return f"lands late: peak {m['peak_ms'] - s:+.0f} ms"
+    return None
+
+
+def section_sync(groups) -> dict:
+    rows = []
+    for g in groups:
+        if g["silent"]:
+            continue
+        L = g["loud"]
+        if g["builds"]:
+            test = "apex" if L["align"] == "peak" else "end"
+        elif L["align"] in ("start", "end"):
+            continue
+        else:
+            test = "apex" if g["long"] else "impact"
+        x = np.abs(g["sig"]).max(axis=1)
+        cue = g["cue"] * SR
+        nb = len(x) // 240
+        pk = (int(np.argmax(x[: nb * 240].reshape(nb, 240).max(axis=1))) * 240 + 120) if nb else 0
+        pw = uniform_filter1d((g["sig"].astype(np.float64) ** 2).sum(axis=1), 2400)
+        m = {"attack_ms": ms(L["att"] - cue), "peak_ms": ms(g["a"] + pk - cue), "apex_ms": ms(g["a"] + int(np.argmax(pw)) - cue)}
+        row = {"t_cue": g["t"], "label": g["label"], "kind": g["kind"], "test": test, "align": L["align"], **m,
+               "long": g["long"], "issue": None}
+        if test == "end":
+            idx = np.nonzero(x > 0.1 * x.max())[0]
+            row["end_ms"] = m["end_ms"] = ms(g["a"] + (idx[-1] if len(idx) else 0) - cue)
+        issue = _sync_issue(test, m, 0)
+        if issue:
+            tried = []
+            for q in g["layers"]:
+                if abs(q["offset"]) >= 0.03:
+                    tried.append(q["offset"])
+                    if _sync_issue(test, m, q["offset"] * 1000) is None:
+                        row.update(deliberate=True, offset_s=q["offset"], offset_rule=q["rule"],
+                                   explanation=f"sits {q['offset'] * 1000:+.0f} ms off the cue by the offset of rule {q['rule']}")
+                        issue = None
+                        break
+            if issue and g["qa_ok"]:
+                row.update(deliberate=True, explanation=f"acknowledged: {g['qa_ok']}")
+                issue = None
+            if issue and tried:
+                row["offsets_tried_s"] = tried
+        row["issue"] = issue
+        rows.append(row)
+    issues = [r for r in rows if r["issue"]]
+    deliberate = [r for r in rows if r.get("deliberate")]
+    return {"status": "warn" if issues else "ok", "items": issues + deliberate, "events": rows,
+            "summary": f"{len(issues)} sync issue(s) in {len(rows)} judged event(s), {len(deliberate)} deliberate "
+                       "(check the deliberate ones on the frames)"}
+
+
+# ---------------------------------------------------------------- density, loudness, coverage
+
+def section_density(ctx, groups) -> dict:
+    dur = len(ctx["stems"]["sfx"]) / SR
+    live = [g for g in groups if not g["silent"]]
+    per = [0] * max(1, math.ceil(dur))
+    for g in live:
+        s = int(g["att"] // SR)
+        if 0 <= s < len(per):
+            per[s] += 1
+    busiest = sorted(({"s": i, "n": n} for i, n in enumerate(per) if n), key=lambda r: (-r["n"], r["s"]))[:5]
+    pls = ctx["report"]["placements"]
+    used = Counter(p["sample"] for p in pls).most_common(8)
+    rules, mg = [], []
+    by = {}
+    for p in pls:
+        if p["kind"] != "place":
+            by.setdefault(str(p["rule"]), []).append(p)
+    for r, ps in by.items():
+        if len(ps) < 4:
+            continue
+        ts = sorted(p["t"] for p in ps)
+        ioi = np.diff(ts)
+        row = {"rule": r, "n": len(ps), "distinct_samples": len({p["sample"] for p in ps}),
+               "ioi_s": round(float(ioi.mean()), 4), "ioi_cv": round(float(ioi.std() / ioi.mean()), 3) if ioi.mean() > 0 else None,
+               "gain_sd_db": round(float(np.std([p["gain_db"] for p in ps])), 3),
+               "pitch_sd_st": round(float(np.std([p["pitch"] for p in ps])), 3)}
+        rules.append(row)
+        if row["distinct_samples"] == 1 and row["pitch_sd_st"] < 0.1 and row["gain_sd_db"] < 0.5:
+            mg.append(r)
+    p10 = len(live) / dur * 10 if dur else 0
+    return {"status": "warn" if mg else "ok", "events_per_s": per, "busiest_s": busiest,
+            "most_used_samples": [{"sample": s, "n": n} for s, n in used], "rules": rules, "machine_gun": mg,
+            "summary": f"{len(live)} event(s), {p10:.1f} per 10 s (norm about 5); busiest seconds "
+                       + ", ".join(f"{b['s']}s x{b['n']}" for b in busiest[:3]) + (f"; machine gun: {', '.join(mg)}" if mg else "")}
+
+
+def section_loudness(ctx, target, pre_lufs) -> dict:
+    x = ctx["master"]
+    if x is None:
+        return {"status": "skipped", "summary": "no master"}
+    if len(x) < int(0.4 * SR):
+        return {"status": "skipped", "summary": "the master is shorter than 400 ms"}
+    if not np.any(x):
+        return {"status": "fail", "summary": "the master is all zeros"}
+    kw = mst.kweight(mst.as_stereo(x))
+    mom, mt = mst.block_loudness(x, 0.4, 0.1, kw)
+    st, _ = mst.block_loudness(x, 3.0, 1.0, kw)
+    i = int(np.argmax(mom))
+    dur = len(x) / SR
+    r = {"lufs": round(mst.integrated(x, kw), 2), "target": target, "true_peak_dbtp": round(mst.true_peak(x), 2),
+         "lra_lu": round(mst.lra(x, kw), 2), "premaster_lufs": pre_lufs, "loudest_momentary": round(float(mom[i]), 2),
+         "loudest_at": round(float(mt[i]), 2), "loudest_frac": round(float(mt[i]) / dur, 3),
+         "short_term_per_s": [round(float(v), 2) for v in st],
+         "head_5ms_peak_dbfs": round(mst.db(float(np.abs(x[:240]).max())), 2),
+         "tail_50ms_rms_dbfs": round(_rms_db(x[-2400:]), 2), "tail_10ms_peak_dbfs": round(mst.db(float(np.abs(x[-480:]).max())), 2)}
+    fps = float(ctx["cues"].get("fps", 60))
+    acts = {}
+    for name, a in (ctx["cues"].get("acts") or {}).items():
+        lo, hi = float(a["from"]) / fps, (float(a["from"]) + float(a["dur"])) / fps
+        sel = mom[(mt >= lo) & (mt < hi)]
+        acts[name] = {"from": round(lo, 3), "momentary_median": round(float(np.median(sel)), 2) if len(sel) else None,
+                      "momentary_max": round(float(sel.max()), 2) if len(sel) else None}
+    r["acts"] = acts
+    fails, warns = [], []
+    if not math.isfinite(r["lufs"]) or abs(r["lufs"] - target) > 0.5:
+        fails.append(f"integrated {r['lufs']} LUFS is off the target {target} by more than 0.5 LU")
+    if r["true_peak_dbtp"] > -1.0:
+        fails.append(f"true peak {r['true_peak_dbtp']} dBTP > -1.0 (AAC would clip)")
+    if r["tail_50ms_rms_dbfs"] > -45 or r["tail_10ms_peak_dbfs"] > -60:
+        fails.append("the end is not silent")
+    if r["head_5ms_peak_dbfs"] > -40:
+        warns.append("the first 5 ms are loud: starts mid-sound or clicks on sample 0")
+    if r["lra_lu"] < 4:
+        warns.append(f"LRA {r['lra_lu']} LU: flat")
+    if r["lra_lu"] > 10:
+        warns.append(f"LRA {r['lra_lu']} LU: quiet passages vanish on phones")
+    if r["loudest_frac"] > 0.85:
+        warns.append("the loudest moment is in the last 15 %: the peak belongs on the drop")
+    r.update(fails=fails, warnings=warns, status="fail" if fails else "warn" if warns else "ok",
+             summary=f"{r['lufs']} LUFS, TP {r['true_peak_dbtp']} dBTP, LRA {r['lra_lu']} LU, loudest {r['loudest_momentary']} "
+                     f"LUFS-M at {tfmt(r['loudest_at'])}" + ("; " + "; ".join(fails + warns) if fails or warns else ""))
+    return r
+
+
+def section_coverage(ctx, groups) -> dict:
+    fps = float(ctx["cues"].get("fps", 60))
+    none = {(round(e["t"], 4), e.get("kind"), e.get("id")) for e in ctx["report"].get("unsounded_events", [])}
+    placed_silent = []
+    for g in groups or []:
+        if g["silent"] and not g["qa_ok"] and not g["label"].startswith("place:"):
+            placed_silent.append({"t": g["t"], "kind": g["kind"], "id": g["label"]})
+            none.add((round(g["t"], 4), g["kind"], g["label"]))
+    cls = lambda kind, i: (kind, re.sub(r"(:\d+)+$", "", str(i or "")))
+    total, missing = Counter(), Counter()
+    for e in ctx["cues"].get("events", []):
+        c = cls(e.get("kind"), e.get("id"))
+        total[c] += 1
+        if (round(float(e["f"]) / fps, 4), e.get("kind"), e.get("id")) in none or any(
+                e.get("id") == p["id"] and e.get("kind") == p["kind"] for p in placed_silent):
+            missing[c] += 1
+    partial = [{"kind": k, "class": c, "unsounded": missing[(k, c)], "of": total[(k, c)]}
+               for (k, c) in total if 0 < missing[(k, c)] < total[(k, c)]]
+    never = [{"kind": k, "class": c, "n": total[(k, c)]} for (k, c) in total if missing[(k, c)] == total[(k, c)]]
+    summ = f"{len(partial)} partial class(es), {len(never)} class(es) never sounded, {len(placed_silent)} placed but silent"
+    if ctx["solo"]:
+        summ += "; solo render: events of other fragments are expected to have no sound"
+    return {"status": "warn" if partial or placed_silent else "ok", "summary": summ, "partial": partial,
+            "unsounded_classes": never, "placed_but_silent": placed_silent}
+
+
+def import_hark():
+    try:
+        import hark.api as api  # noqa: F401
+        return api
+    except ImportError:
+        eng = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "../../hark/engine"))
+        if os.path.isdir(eng) and eng not in sys.path:
+            sys.path.insert(0, eng)
+            try:
+                import hark.api as api  # noqa: F811
+                return api
+            except ImportError:
+                return None
+        return None
+
+
+def section_listen(ctx, a, outdir) -> dict:
+    api = import_hark()
+    if api is None:
+        return {"status": "skipped", "summary": "hark cannot be imported: run QA without --listen and call the hark "
+                "launcher (skills/hark/scripts/hark timeline ...) directly, or repair the venv"}
+    res, notes = {}, []
+    mp = None if a.master == "none" else mix.rpath(ctx["root"], a.master or "out/audio/soundtrack.wav")
+    video = mix.rpath(ctx["root"], a.video) if a.video else None
+    cs = mix.rpath(ctx["root"], a.cues_sounded)
+    if a.listen and mp and os.path.isfile(mp):
+        try:
+            tl = api.timeline(mp, video=video, cues=cs if os.path.isfile(cs) else None)
+            txt = tl.get("text", "")
+            with open(os.path.join(outdir, "qa_timeline.txt"), "w") as fh:
+                fh.write(txt)
+            s = tl.get("summary", "")
+            res["timeline"] = s if len(s) <= 400 else s[:360] + " ... (see qa_timeline.txt)"
+            try:
+                api.sheet(mp, os.path.join(outdir, "qa_sheet.png"), video=video, cues=cs if os.path.isfile(cs) else None, tl=tl)
+                res["sheet"] = os.path.join(outdir, "qa_sheet.png")
+            except Exception as e:  # noqa: BLE001
+                notes.append(f"sheet failed: {e}")
+        except Exception as e:  # noqa: BLE001
+            notes.append(f"timeline failed: {e}")
+        try:
+            cr = api.critique(mp, video=video, use_ast=False, use_realness=False)
+            res["critique"] = {"summary": cr.get("summary"), "verdict": cr.get("verdict"), "score": cr.get("score"),
+                               "actions": cr.get("actions"),
+                               "metrics": [m for m in cr.get("metrics", []) if m.get("status") in ("low", "high")]}
+        except Exception as e:  # noqa: BLE001
+            notes.append(f"critique failed: {e}")
+    not_real = []
+    if a.realness:
+        rows = []
+        for f in ctx["report"].get("files_used", []):
+            try:
+                r = api.realness(mix.rpath(ctx["root"], f))
+                rows.append({"file": f, "p_real": r.get("p_real"), "verdict": r.get("verdict")})
+            except Exception as e:  # noqa: BLE001
+                rows.append({"file": f, "p_real": None, "verdict": None})
+                notes.append(f"realness failed on {f}: {e}")
+        rows.sort(key=lambda r: (r["p_real"] is None, r["p_real"] or 0))
+        not_real = [r["file"] for r in rows if (r["p_real"] is not None and r["p_real"] < 0.5)
+                    or (r["p_real"] is None and "synth" in str(r["verdict"] or ""))]
+        res["realness"] = rows
+        res["not_real"] = not_real
+    status = "warn" if not_real or notes else "ok"
+    return {"status": status, "summary": f"{len(not_real)} recording(s) not real; {len(notes)} failed call(s)", "notes": notes, **res}
+
+
+# ---------------------------------------------------------------- main
+
+def analyse(a) -> dict:
+    ctx = load_inputs(a)
+    st = ctx["stems"]
+    ctx["no_bed"] = not np.any(st["music"]) and not np.any(st["amb"])
+    target = float((ctx["design"].get("master") or {}).get("lufs", -14))
+    total = st["sfx"] + st["amb"] + st["music"]
+    pre = mst.integrated(total) if len(total) >= int(0.4 * SR) else float("-inf")
+    mas = mst.integrated(ctx["master"]) if ctx["master"] is not None and len(ctx["master"]) >= int(0.4 * SR) else float("-inf")
+    scaled = math.isfinite(pre) and math.isfinite(mas)
+    G = mas - pre if scaled else 0.0
+    sections, notes = {}, []
+    layers = groups = None
+    if ctx["trace"] is not None:
+        layers, n = rebuild(ctx)
+        notes += n
+        if layers is not None:
+            groups = group(layers, G)
+    sections["clicks"] = section_clicks(ctx, layers, G)
+    sections["loudness"] = section_loudness(ctx, target, round(pre, 2) if math.isfinite(pre) else None)
+    sections["coverage"] = section_coverage(ctx, groups)
+    skip = {"status": "skipped", "summary": "no trace: run the mix with --trace" if ctx["trace"] is None else
+            "the trace and the report disagree: run the mix again with --trace"}
+    if ctx["trace"] is not None:
+        sections["edges"] = section_edges(ctx)
+    else:
+        sections["edges"] = dict(skip)
+    for name, fn in (("audibility", lambda: section_audibility(ctx, groups, G, a.layers)),
+                     ("harshness", lambda: section_harshness(ctx, groups, G)),
+                     ("sync", lambda: section_sync(groups)), ("density", lambda: section_density(ctx, groups))):
+        sections[name] = fn() if groups is not None else dict(skip)
+    outdir = os.path.dirname(mix.rpath(ctx["root"], a.out)) or "."
+    os.makedirs(outdir, exist_ok=True)
+    if a.listen or a.realness:
+        sections["listen"] = section_listen(ctx, a, outdir)
+    else:
+        sections["listen"] = {"status": "skipped", "summary": "not requested (--listen, --realness)"}
+    if all(not np.any(x) for x in st.values()):
+        sections["mix"] = {"status": "fail", "summary": "every stem is silent: check the trims (--dump), gains and cue matches"}
+    worst = max((s["status"] for s in sections.values()), key=lambda s: ORDER[s])
+    fails = [k for k, s in sections.items() if s["status"] == "fail"]
+    warns = [k for k, s in sections.items() if s["status"] == "warn"]
+    skipped = [k for k, s in sections.items() if s["status"] == "skipped"]
+    scale = f"levels at master scale (master {G:+.2f} dB over the stems)" if scaled and ctx["master"] is not None else "levels at stem scale"
+    summary = (f"QA {worst.upper()}: fail {', '.join(fails) or 'none'}; warn {', '.join(warns) or 'none'}; "
+               f"not run {', '.join(skipped) or 'none'}; {scale}")
+    return {"summary": summary, "status": worst, "note": "; ".join(notes) or None, "sections": sections,
+            "inputs": ctx["paths"]}
+
+
+def digest(res: dict) -> str:
+    out = [res["summary"]]
+    if res.get("note"):
+        out.append("note: " + res["note"])
+    for name, s in res["sections"].items():
+        out.append(f"{name.upper():11s} {s['status'].upper():7s} {s.get('summary', '')}")
+        rows = []
+        if name == "clicks":
+            rows = [f"{c['in']} {tfmt(c['t'])} {c['level_db']} dB " + (f"{c['owners'][0]['what']} ({c['owners'][0]['where']})" if c["owners"] else "no owner") for c in s.get("items", [])[:8]]
+        elif name == "edges":
+            rows = [f"{i.get('sample') or i.get('slices')}: {'; '.join(i['defects'])}" for i in s.get("items", []) if i.get("defects")][:8]
+            rows += [f"music {r['label']}: {'; '.join(r['defects'])}" for r in s.get("music_splices", []) if r["defects"]][:4]
+        elif name == "audibility":
+            rows = [f"{tfmt(r['t'])} {r['label']}: {r['verdict']}" + (f" read {r['read_db']} dB ({r['covered_by']})" if "read_db" in r else "") for r in s.get("items", [])[:6]]
+        elif name == "harshness":
+            rows = [f"{tfmt(r['t'])} {r['label']}: {'; '.join(r['issues'])}" for r in s.get("items", []) if r["issues"]][:5]
+        elif name == "sync":
+            rows = [f"{tfmt(r['t_cue'])} {r['label']}: {r['issue'] or r.get('explanation')}" for r in s.get("items", [])[:8]]
+        out += ["    " + r for r in rows]
+    return "\n".join(out)
+
+
+def parse(argv):
+    p = argparse.ArgumentParser(prog="qa.py", description="Measured QA of a render.")
+    p.add_argument("--root", default=".")
+    p.add_argument("--design", default="audio/sounddesign.json")
+    p.add_argument("--report")
+    p.add_argument("--trace", default="out/qa/adds.json")
+    p.add_argument("--stems")
+    p.add_argument("--master")
+    p.add_argument("--cues")
+    p.add_argument("--cues-sounded", default="out/qa/cues_sounded.json")
+    p.add_argument("--only")
+    p.add_argument("--cache")
+    p.add_argument("--video")
+    p.add_argument("--out", default="out/qa/qa.json")
+    p.add_argument("--layers", action="store_true")
+    p.add_argument("--listen", action="store_true")
+    p.add_argument("--realness", action="store_true")
+    p.add_argument("--json", action="store_true")
+    p.add_argument("--self-test", action="store_true")
+    return p.parse_args(argv)
+
+
+def main(argv=None) -> int:
+    a = parse(sys.argv[1:] if argv is None else argv)
+    if a.self_test:
+        return self_test()
+    try:
+        res = clean(analyse(a))
+    except InputError as e:
+        mix.ascii_print(f"qa.py: {e}", file=sys.stderr)
+        return 2
+    except mix.DesignError as e:
+        mix.ascii_print(f"qa.py: {e}", file=sys.stderr)
+        return 2
+    out = mix.rpath(os.path.abspath(a.root), a.out)
+    with open(out, "w") as fh:
+        json.dump(res, fh, indent=1)
+    mix.ascii_print(json.dumps(res, indent=1) if a.json else digest(res))
+    return 1 if res["status"] == "fail" else 0
+
+
+def self_test() -> int:
+    import tempfile
+    import fixtures as fx
+    ck = fx.Checker()
+    py = lambda *args: mix.main(list(args))
+    with tempfile.TemporaryDirectory() as d:
+        bed = fx.noise_bed(3.0, 0.002, 4)  # a quiet bed: its 14 kHz noise must not hide the click
+        fx.write(os.path.join(d, "bed.wav"), bed)
+        t = np.arange(int(0.2 * SR)) / SR
+        tone = 0.5 * np.sin(2 * np.pi * 300 * t + 1.0) * np.exp(-8 * t)  # starts on a non-zero sample
+        fx.write(os.path.join(d, "x.wav"), np.stack([tone, tone], 1), subtype="FLOAT")
+        fx.put_json(os.path.join(d, "c.json"), {"fps": 60, "events": [{"f": 60, "kind": "hit", "id": "q:h:0"}]})
+
+        def design(fade_in, offset=0.0):
+            return {"duration": 3.0, "samples": {"q.x": {"file": "x.wav", "fade_in": fade_in}}, "pools": {"q.x": ["q.x"]},
+                    "rules": [{"name": "q.r", "pool": "q.x", "align": "start", "offset": offset}],
+                    "ambience": [{"name": "q.bed", "file": "bed.wav", "at": 0, "until": 3, "fade_in": 0.2, "fade_out": 0.2}]}
+        mixargs = ["--root", d, "--cues", "c.json", "--trace", "out/qa/adds.json", "--cache", "cache"]
+        fx.put_json(os.path.join(d, "d.json"), design(0))
+        py(*mixargs, "--design", "d.json")
+        code = main(["--root", d, "--design", "d.json", "--cues", "c.json", "--cache", "cache"])
+        q = mix.load_json(os.path.join(d, "out/qa/qa.json"))
+        cl = q["sections"]["clicks"]
+        edge = [c for c in cl["items"] if c["in"] == "master" and c["at_edge"]]
+        ck("Q1 a master click at a placement start fails QA",
+           edge and edge[0]["owners"][0]["where"] == "start" and cl["status"] == "fail" and code == 1)
+        fx.put_json(os.path.join(d, "d.json"), design(0.004))
+        py(*mixargs, "--design", "d.json")
+        main(["--root", d, "--design", "d.json", "--cues", "c.json", "--cache", "cache"])
+        q = mix.load_json(os.path.join(d, "out/qa/qa.json"))
+        ck("Q2 a 4 ms fade-in leaves no edge click", q["sections"]["clicks"]["status"] != "fail"
+           and not any(c["at_edge"] and c["in"] == "master" for c in q["sections"]["clicks"]["items"]))
+        # Q3: an effect 10 dB under a broadband bed
+        loud = fx.noise_bed(3.0, 0.2, 8)
+        fx.write(os.path.join(d, "loud.wav"), loud)
+        # the effect is the bed's own noise 10 dB down, so it is 10 dB under the bed in every band
+        nb = loud[SR:SR + int(0.15 * SR)] * 10 ** (-10 / 20)
+        fx.write(os.path.join(d, "soft.wav"), nb)
+        fx.put_json(os.path.join(d, "d3.json"), {
+            "duration": 3.0, "samples": {"q.s": {"file": "soft.wav"}}, "pools": {"q.s": ["q.s"]},
+            "rules": [{"name": "q.s", "pool": "q.s"}],
+            "ambience": [{"name": "q.loud", "file": "loud.wav", "at": 0, "until": 3, "fade_in": 0.1, "fade_out": 0.1}]})
+        py(*mixargs, "--design", "d3.json", "--no-master")
+        main(["--root", d, "--design", "d3.json", "--cues", "c.json", "--master", "none", "--cache", "cache"])
+        au = mix.load_json(os.path.join(d, "out/qa/qa.json"))["sections"]["audibility"]
+        ev = au["events"][0]
+        ck("Q3 masked under the bed", ev["verdict"] == "masked" and ev["covered_by"] == "music/amb" and au["status"] == "warn")
+        # Q4: a rule offset of 0.2 s on an impact is deliberate
+        fx.write(os.path.join(d, "hit.wav"), fx.burst(0.1, 200, 40, 3))
+        fx.put_json(os.path.join(d, "d4.json"), {
+            "duration": 3.0, "samples": {"q.h": {"file": "hit.wav"}}, "pools": {"q.h": ["q.h"]},
+            "rules": [{"name": "q.late", "pool": "q.h", "offset": 0.2}],
+            "ambience": [{"name": "q.bed", "file": "bed.wav", "at": 0, "until": 3}]})
+        py(*mixargs, "--design", "d4.json", "--no-master")
+        main(["--root", d, "--design", "d4.json", "--cues", "c.json", "--master", "none", "--cache", "cache"])
+        sy = mix.load_json(os.path.join(d, "out/qa/qa.json"))["sections"]["sync"]
+        ck("Q4 the offset is deliberate", sy["events"][0].get("deliberate") and sy["events"][0]["offset_rule"] == "q.late"
+           and not sy["events"][0]["issue"])
+        # Q5, Q6: machine gun and partial coverage
+        evs = [{"f": 20 + 15 * k, "kind": "tick", "id": f"a:k:{k}"} for k in range(4)]
+        evs += [{"f": 120 + 10 * k, "kind": "tap", "id": f"b:t:{k}"} for k in range(6)]
+        fx.put_json(os.path.join(d, "c5.json"), {"fps": 60, "events": evs})
+        fx.put_json(os.path.join(d, "d5.json"), {
+            "duration": 3.0, "samples": {"q.h": {"file": "hit.wav"}}, "pools": {"q.h": ["q.h"]},
+            "rules": [{"name": "q.mg", "pool": "q.h", "match": {"kind": "tap"}},
+                      {"name": "q.part", "pool": "q.h", "match": {"id": "a:k:[01]$"}}]})
+        py("--root", d, "--cues", "c5.json", "--trace", "out/qa/adds.json", "--cache", "cache", "--design", "d5.json", "--no-master")
+        main(["--root", d, "--design", "d5.json", "--cues", "c5.json", "--master", "none", "--cache", "cache"])
+        q = mix.load_json(os.path.join(d, "out/qa/qa.json"))["sections"]
+        ck("Q5 machine gun", "q.mg" in q["density"]["machine_gun"] and q["density"]["status"] == "warn")
+        part = q["coverage"]["partial"]
+        ck("Q6 partial class a:k with 2 of 4 unsounded", any(p["class"] == "a:k" and p["unsounded"] == 2 and p["of"] == 4 for p in part)
+           and q["coverage"]["status"] == "warn")
+        # Q7: no trace
+        os.remove(os.path.join(d, "out/qa/adds.json"))
+        main(["--root", d, "--design", "d5.json", "--cues", "c5.json", "--master", "none", "--cache", "cache"])
+        q = mix.load_json(os.path.join(d, "out/qa/qa.json"))["sections"]
+        ck("Q7 trace sections skipped, the rest ran",
+           all(q[s]["status"] == "skipped" for s in ("edges", "audibility", "harshness", "sync", "density"))
+           and q["clicks"]["status"] != "skipped" and q["coverage"]["status"] != "skipped")
+        ck("Q8 missing stems exit 2", main(["--root", d, "--design", "d5.json", "--stems", "nope"]) == 2)
+        # Q9: a trim past the end of its file
+        fx.put_json(os.path.join(d, "d9.json"), {
+            "duration": 3.0, "samples": {"q.e": {"file": "hit.wav", "start": 5.0}}, "pools": {"q.e": ["q.e"]},
+            "rules": [{"name": "q.e", "pool": "q.e"}],
+            "ambience": [{"name": "q.bed", "file": "bed.wav", "at": 0, "until": 3}]})
+        py(*mixargs, "--design", "d9.json", "--no-master")
+        code = main(["--root", d, "--design", "d9.json", "--cues", "c.json", "--master", "none", "--cache", "cache"])
+        q = mix.load_json(os.path.join(d, "out/qa/qa.json"))["sections"]
+        ck("Q9 empty trim: edges issue, audibility silent, fail",
+           "empty" in " ".join(q["edges"]["items"][0]["defects"]) and q["audibility"]["events"][0]["verdict"] == "silent"
+           and q["audibility"]["status"] == "fail" and code == 1)
+        # Q10: a music segment that ends inside a held chord, then silence
+        t = np.arange(SR * 6) / SR
+        chord = 0.3 * (np.sin(2 * np.pi * 220 * t) + np.sin(2 * np.pi * 330 * t))
+        chord[4 * SR:] *= 0.0005
+        fx.write(os.path.join(d, "chord.wav"), np.stack([chord, chord], 1))
+        for ok_reason in (None, "a hard cut into the breakdown"):
+            seg = {"label": "bars 1-2", "src_from": 0.0, "src_to": 2.0, "at": 0.0}
+            seg2 = {"label": "breakdown", "src_from": 4.0, "src_to": 5.0, "at": 2.0}
+            if ok_reason:
+                seg["qa_ok"] = ok_reason
+            fx.put_json(os.path.join(d, "d10.json"), {"duration": 4.0, "music": {
+                "file": "chord.wav", "src_bpm": 120, "stretch": "none", "segments": [seg, seg2]}})
+            py("--root", d, "--trace", "out/qa/adds.json", "--cache", "cache", "--design", "d10.json", "--no-master")
+            main(["--root", d, "--design", "d10.json", "--master", "none", "--cache", "cache"])
+            sp = mix.load_json(os.path.join(d, "out/qa/qa.json"))["sections"]["edges"]["music_splices"][0]
+            if ok_reason:
+                ck("Q10 qa_ok turns the chop into a note", not sp["defects"] and any("acknowledged" in n for n in sp["notes"]))
+            else:
+                ck("Q10 the splice chops the music", any("chops the music" in m for m in sp["defects"]))
+        # W2/W3-like: the full fixture project, every section present
+        p = fx.project(os.path.join(d, "film"))
+        py("--root", p["root"], "--trace", "out/qa/adds.json")
+        code = main(["--root", p["root"], "--layers"])
+        q = mix.load_json(os.path.join(p["root"], "out/qa/qa.json"))
+        need = {"clicks", "loudness", "coverage", "edges", "audibility", "harshness", "sync", "density", "listen"}
+        ck("W3 every section present, only listen skipped",
+           need <= set(q["sections"]) and code in (0, 1)
+           and [k for k, s in q["sections"].items() if s["status"] == "skipped"] == ["listen"])
+    return ck.code()
+
+
+if __name__ == "__main__":
+    sys.exit(main())
