@@ -120,7 +120,9 @@ def _blocked(t: float, bounds, hop: float) -> bool:
     return any(abs(bt - t) <= hop for bt, _ in bounds)
 
 
-def _pick_pair(segs, win, hop, bounds, max_n):
+def _pick_pair(segs, ctx: tuple, max_n: int):
+    """Index of the next adjacent pair to merge, or None. ctx is (win, hop, bounds)."""
+    win, hop, bounds = ctx
     sims = [float(segs[k].vec @ segs[k + 1].vec) - (1.0 if _blocked(_junction(segs[k], segs[k + 1], win), bounds, hop)
                                                      else 0.0) for k in range(len(segs) - 1)]
     j = int(np.argmax(sims))
@@ -134,7 +136,7 @@ def merge_windows(spans, emb, dur, win, hop, bounds) -> list[_Seg]:
     segs = [_Seg([i], spans, emb) for i in range(len(spans))]
     max_n = max(2, math.ceil(dur / 8))
     while len(segs) > 1:
-        j = _pick_pair(segs, win, hop, bounds, max_n)
+        j = _pick_pair(segs, (win, hop, bounds), max_n)
         if j is None:
             break
         segs[j: j + 2] = [_Seg(segs[j].idx + segs[j + 1].idx, spans, emb)]
@@ -330,6 +332,18 @@ def _window_embeddings(m: np.ndarray, spans: list, t0: float, cache) -> np.ndarr
     return emb / (np.linalg.norm(emb, axis=1, keepdims=True) + 1e-12)
 
 
+def _segment(m: np.ndarray, step: tuple, t0: float, cache) -> dict:
+    """Embed the windows of m and merge them into segments. step is (win, hop)."""
+    win, hop = step
+    dur = m.size / SR
+    spans = [(s, round(min(dur, s + win), 3)) for s in window_starts(dur, win, hop)]
+    emb = _window_embeddings(m, spans, t0, cache)
+    bounds = novelty_bounds(m)
+    segs = merge_windows(spans, emb, dur, win, hop, bounds)
+    segs, edges = merge_slivers(segs, boundaries(segs, m, dur, win, hop))
+    return {"segs": segs, "edges": edges, "emb": emb, "bounds": bounds, "n": len(spans)}
+
+
 def sections(x: np.ndarray, t0: float, win: float, hop: float, ast_budget: int, cache) -> tuple[list[dict], dict]:
     """Sections of the window x (times relative to x; t0 is its file time for the cache keys)."""
     m = mono_of(x)
@@ -338,13 +352,9 @@ def sections(x: np.ndarray, t0: float, win: float, hop: float, ast_budget: int, 
         return [], {"windows": 0, "ast": 0}
     from hark.listen import vocabulary
 
-    spans = [(s, round(min(dur, s + win), 3)) for s in window_starts(dur, win, hop)]
-    emb = _window_embeddings(m, spans, t0, cache)
-    bounds = novelty_bounds(m)
-    segs = merge_windows(spans, emb, dur, win, hop, bounds)
-    segs, edges = merge_slivers(segs, boundaries(segs, m, dur, win, hop))
-    secs = _section_rows(segs, edges, emb, x, vocabulary.get())
+    seg = _segment(m, (win, hop), t0, cache)
+    secs = _section_rows(seg["segs"], seg["edges"], seg["emb"], x, vocabulary.get())
     n_ast = section_ast(secs, ast_budget, m, t0, cache)
     for sec in secs:
         sec["label"] = label(sec)
-    return merge_alike(secs, bounds, x), {"windows": len(spans), "ast": n_ast}
+    return merge_alike(secs, seg["bounds"], x), {"windows": seg["n"], "ast": n_ast}

@@ -577,11 +577,16 @@ class StubVocab:
 
 @pytest.fixture
 def stub_models(monkeypatch):
-    """Replace CLAP, AST and the vocabulary with fixed stubs. Returns the CLAP stub (it counts audio calls)."""
+    """Replace CLAP, AST and the vocabulary with fixed stubs. Returns the CLAP stub (it counts audio calls).
+
+    The stubs need no ML extras, so the CLI handlers' require_ml check is a no-op here.
+    """
     import hark.listen.vocabulary as vocabulary
+    import hark.models
     import hark.models.ast as ast_mod
     import hark.models.clap as clap_mod
 
+    monkeypatch.setattr(hark.models, "require_ml", lambda feature: None)
     clap, ast, vocab = StubClap(), StubAST(), StubVocab()
     monkeypatch.setattr(clap_mod, "get", lambda model_id=None: clap)
     monkeypatch.setattr(ast_mod, "get", lambda model_id=None: ast)

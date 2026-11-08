@@ -663,11 +663,16 @@ def act_realness(f: Film, key: str, p: float, status: str) -> str | None:
 ACTIONS["p_real"] = act_realness
 
 
+def _action_text(f: Film, row: dict) -> str | None:
+    key, status = row["metric"], row["status"]
+    usable = status in ("low", "high") and (key, status) not in NO_ACTION and key in ACTIONS
+    return ACTIONS[key](f, key, row["value"], status) if usable else None
+
+
 def _action(f: Film, row: dict) -> dict | None:
     """The action of one out-of-range row (also written into the row), or None."""
     key, status = row["metric"], row["status"]
-    usable = status in ("low", "high") and (key, status) not in NO_ACTION and key in ACTIONS
-    text = ACTIONS[key](f, key, row["value"], status) if usable else None
+    text = _action_text(f, row)
     if not text:
         return None
     edge = row["range"][0] if status == "low" else row["range"][1]

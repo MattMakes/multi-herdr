@@ -212,14 +212,12 @@ def _section_pass(rg: _Range, silent: bool, detail: str, span_cache) -> tuple[li
     return sections(rg.win, rg.t0, win, hop, ast_sec, span_cache)
 
 
-def _sync_blocks(cuts, fps, cues, inp, events, grid, envs) -> dict:
+def _sync_blocks(targets: dict, snd: dict) -> dict:
+    """Sync block per target kind. targets maps kind to (times, fps); snd holds events, grid and envs."""
+    grid = snd["grid"]
     beats = grid["beats"] if grid["confidence"] in ("clear", "weak") else None
-    out = {}
-    if cuts:
-        out["cuts"] = sync(cuts, events, beats, 1 / fps if fps else None, envs)
-    if cues:
-        out["cues"] = sync(cues, events, beats, 1 / inp.cue_fps if inp.cue_fps else None, envs)
-    return out
+    return {kind: sync(times, snd["events"], beats, 1 / fps if fps else None, snd["envs"])
+            for kind, (times, fps) in targets.items() if times}
 
 
 # ---------------------------------------------------------------- shifting to file time
@@ -300,7 +298,7 @@ def _analyse(inp: _Inputs, rg: _Range, detail: str, reuse: bool, clock: _Clock) 
     clock.mark("tag_events_s")
     secs, sec_calls = _section_pass(rg, snd["silent"], detail, span_cache)
     clock.mark("sections_s")
-    blocks = _sync_blocks(cuts, fps, cues, inp, snd["events"], snd["grid"], snd["envs"])
+    blocks = _sync_blocks({"cuts": (cuts, fps), "cues": (cues, inp.cue_fps)}, snd)
     return {"L": snd["L"], "events": _window_events(snd["events"], rg, snd["grid"]), "grid": snd["grid"],
             "cuts": cuts, "fps": fps, "blocks": blocks, "secs": secs, "tags": tags, "sec_calls": sec_calls}
 

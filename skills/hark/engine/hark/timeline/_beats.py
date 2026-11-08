@@ -135,7 +135,9 @@ def _best_period(m: np.ndarray, min_bpm: float, max_bpm: float):
     return max(pairs, key=lambda p: p[0][0]) if pairs else None
 
 
-def _grid(m: np.ndarray, beats: list[int], P: float, clarity: float, ac: np.ndarray, max_bpm: float) -> dict:
+def _grid(m: np.ndarray, beats: list[int], best: tuple, max_bpm: float) -> dict:
+    """Grid dict from the tracked beats and the (score, P, clarity, ac) of the chosen period."""
+    _, P, clarity, ac = best
     ibi = np.diff(beats)
     regularity = float(ibi.std() / ibi.mean())
     phase = downbeat_phase(m, beats)
@@ -152,8 +154,7 @@ def music_grid(m: np.ndarray, min_bpm: float = 60, max_bpm: float = 200) -> dict
     best = _best_period(m, min_bpm, max_bpm) if m.size >= 5 * SR else None
     if best is None:
         return empty_grid("the file is too short for a beat grid (under 5 s)")
-    (_, P, clarity, ac), env = best
-    beats = track(env, P)
+    beats = track(best[1], best[0][1])
     if len(beats) < 4:
         return empty_grid("no steady pulse was found")
-    return _grid(m, beats, P, clarity, ac, max_bpm)
+    return _grid(m, beats, best[0], max_bpm)
