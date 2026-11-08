@@ -1,7 +1,8 @@
-"""Audio measures, the shared pair trim, the level match and the cleanliness check of the blind test.
+"""Blind-test audio helpers: measurements, the common trim of a pair, loudness matching and the clean-cut checks.
 
-Both clips of a pair get the same trim rule, both play equally loud at their loudest moment, and no clip plays
-background noise before or after its sound. Levels are dB relative to each sound's own loudest envelope frame.
+The real and the made clip of a pair are trimmed by one rule and played equally loud at their loudest point, and
+neither clip lets room noise through before or after the sound. Envelope levels are in dB below the clip's own
+loudest frame.
 """
 
 from __future__ import annotations
@@ -16,17 +17,36 @@ from typing import Any
 import numpy as np
 
 SR = 48000
-LEAD, GAP, BETWEEN, TAIL = 1.0, 1.2, 2.5, 1.0
+
+# Playback layout of a trial, in seconds.
+LEAD = 1.0
+GAP = 1.2
+BETWEEN = 2.5
+TAIL = 1.0
 COMPAT = 1.3
-ON_DB, END_DB = -50.0, -50.0
-REACH_MARGIN, FLOOR_MARGIN, HEAD_MARGIN = 3.0, 10.0, 1.0
+
+# Trim levels and the margins added to them.
+END_DB = -50.0
+ON_DB = -50.0
+HEAD_MARGIN = 1.0
+REACH_MARGIN = 3.0
+FLOOR_MARGIN = 10.0
 LEVEL_CAP = -6.0
+
+# Fades.
+FADE_MIN_S = 0.005
+FADE_DB = 6.0
 FADE_IN_S = 0.004
-FADE_DB, FADE_MIN_S = 6.0, 0.005
-REF_FADE_DEFAULT, MADE_FADE_GUARD = 0.03, 0.01
+MADE_FADE_GUARD = 0.01
+REF_FADE_DEFAULT = 0.03
+
 ENV = {"short": (0.0025, 3), "long": (0.005, 6)}
-CLEAN_HEAD, CLEAN_REACH, CLEAN_FLOOR = -30.0, -30.0, -50.0
+CLEAN_FLOOR = -50.0
+CLEAN_REACH = -30.0
+CLEAN_HEAD = -30.0
 SHORT_S = 1.0
+
+# Loudness match.
 WIN = {"short": 0.1, "long": 0.4}
 TARGET = {"short": -15.0, "long": -16.0}
 TP_MAX = -1.0
@@ -34,116 +54,137 @@ FAIL = {"loud_lu": 0.5, "true_peak": TP_MAX + 0.05, "floor_margin": 6.0, "prerol
         "edge_loud": -20.0, "exposed_ms": 100.0, "exposed_floor": -70.0}
 WARN = {"length_ratio": 1.6, "tp_diff": 6.0, "other_lu": 2.0, "floor_dbfs": -60.0, "mono": 0.995, "wide": 0.9,
         "exposed_ms": 30.0}
-MANIFEST: Path | None = None  # the refset manifest; set by blind_v2
+MANIFEST: Path | None = None  # path of the refset manifest; blind_v2 sets it
+
+_MS = int(0.001 * SR)
 
 
-# ---------------------------------------------------------------- loading
+def _channels(x: Any) -> np.ndarray:
+    """2-D float view: one row per sample."""
+    return np.asarray(x, dtype=float).reshape(len(x), -1)
+
+
+def _to_db(power: Any, guard: float = 1e-20) -> Any:
+    return 10 * np.log10(power + guard)
+
+
+# ---------------------------------------------------------------- reading files
 
 def load_audio(path: Any, start: float | None = None, stop: float | None = None) -> np.ndarray:
-    """Float64 stereo at 48 kHz (mono doubled, first 2 channels kept), optionally only [start, stop)."""
+    """Two float64 channels at 48 kHz (a mono file is duplicated, extra channels dropped), optionally [start, stop)."""
     import soundfile as sf
     from scipy.signal import resample_poly
 
-    info = sf.info(str(path))
-    i0 = int(round((start or 0.0) * info.samplerate))
-    i1 = None if stop is None else int(round(stop * info.samplerate))
-    x, rate = sf.read(str(path), dtype="float64", always_2d=True, start=i0, stop=i1)
+    native = sf.info(str(path)).samplerate
+    first = int(round((start or 0.0) * native))
+    last = None if stop is None else int(round(stop * native))
+    data, rate = sf.read(str(path), dtype="float64", always_2d=True, start=first, stop=last)
     if rate != SR:
-        g = math.gcd(rate, SR)
-        x = resample_poly(x, SR // g, rate // g, axis=0)
-    return np.column_stack([x[:, 0], x[:, 0]]) if x.shape[1] == 1 else x[:, :2]
+        common = math.gcd(rate, SR)
+        data = resample_poly(data, SR // common, rate // common, axis=0)
+    if data.shape[1] != 1:
+        return data[:, :2]
+    return np.column_stack([data[:, 0], data[:, 0]])
 
 
-# ---------------------------------------------------------------- audio measures
+# ---------------------------------------------------------------- measurements
 
 def frames_db(x: np.ndarray, ms: float) -> np.ndarray:
-    """Channel-mean power per whole frame in dB; one value for a file shorter than a frame."""
-    p = np.mean(np.asarray(x, dtype=float).reshape(len(x), -1) ** 2, axis=1)
-    n = max(1, int(round(SR * ms / 1000)))
-    k = len(p) // n
-    if k < 1:
-        return np.array([10 * np.log10(float(np.mean(p)) + 1e-20)])
-    return 10 * np.log10(p[: k * n].reshape(k, n).mean(axis=1) + 1e-20)
+    """dB of the channel-averaged power in each complete frame; a clip shorter than one frame gives one value."""
+    per_sample = np.mean(_channels(x) ** 2, axis=1)
+    hop = max(1, int(round(SR * ms / 1000)))
+    whole = len(per_sample) // hop
+    if whole < 1:
+        return np.array([_to_db(float(np.mean(per_sample)))])
+    return _to_db(per_sample[: whole * hop].reshape(whole, hop).mean(axis=1))
 
 
 def onset(x: np.ndarray, below: float = 40) -> int:
-    """Sample of the first 1 ms frame within `below` dB of the loudest."""
-    e = frames_db(x, 1)
-    return int(np.argmax(e >= e.max() - below)) * int(0.001 * SR)
+    """Start sample of the first 1 ms frame no more than `below` dB under the peak frame."""
+    levels = frames_db(x, 1)
+    return int(np.argmax(levels >= levels.max() - below)) * _MS
 
 
 def end_of(x: np.ndarray, below: float = 50) -> int:
-    """End sample of the last 5 ms frame within `below` dB of the loudest."""
-    e = frames_db(x, 5)
-    return min(len(x), (int(np.flatnonzero(e >= e.max() - below)[-1]) + 1) * int(0.005 * SR))
+    """Sample just after the last 5 ms frame no more than `below` dB under the peak frame."""
+    levels = frames_db(x, 5)
+    final = int(np.flatnonzero(levels >= levels.max() - below)[-1])
+    return min(len(x), (final + 1) * int(0.005 * SR))
 
 
 def extent_s(x: np.ndarray) -> float:
-    """The audible extent in seconds."""
+    """Seconds between the onset and the end of the audible part."""
     return max(0.0, (end_of(x) - onset(x)) / SR)
 
 
 def raised(n: int) -> np.ndarray:
-    """Raised-cosine ramp 0 -> 1 over n samples."""
+    """Raised-cosine rise from 0 towards 1 in n steps."""
     return 0.5 - 0.5 * np.cos(np.pi * np.arange(n) / max(1, n))
 
 
 def power_frames(x: np.ndarray, n: int, smooth: int = 1) -> np.ndarray:
-    """Channel-summed power, mean per n-sample frame (last frame zero-padded), optionally smoothed."""
-    p = np.sum(np.asarray(x, dtype=float).reshape(len(x), -1) ** 2, axis=1)
-    k = max(1, math.ceil(len(p) / n))
-    p = np.pad(p, (0, k * n - len(p))).reshape(k, n).mean(axis=1)
-    if smooth > 1 and k > 1:
-        p = np.convolve(p, np.ones(smooth) / smooth, mode="same")
-    return p
+    """Mean of the channel-summed power over n-sample frames (zero-padded at the end), with optional smoothing."""
+    summed = np.sum(_channels(x) ** 2, axis=1)
+    count = max(1, math.ceil(len(summed) / n))
+    framed = np.pad(summed, (0, count * n - len(summed))).reshape(count, n).mean(axis=1)
+    if smooth <= 1 or count <= 1:
+        return framed
+    return np.convolve(framed, np.ones(smooth) / smooth, mode="same")
 
 
 def loud_max(x: np.ndarray, win: float) -> float:
-    """K-weighted loudness of the loudest win-second window, at every sample position."""
+    """K-weighted loudness of the loudest win-second span, tested at every sample offset."""
     from hark.core.features import k_weight
 
-    pad = np.zeros((int(0.05 * SR), 2))
-    y = np.concatenate([pad, np.asarray(x, dtype=float).reshape(len(x), -1)[:, :2] * np.ones((1, 2)), pad])
-    w = int(round(win * SR))
-    if len(y) < w:
-        y = np.pad(y, ((0, w - len(y)), (0, 0)))
-    s = np.sum(np.asarray(k_weight(y, SR)) ** 2, axis=1)
-    c = np.concatenate([[0.0], np.cumsum(s)])
-    return float(-0.691 + 10 * np.log10(np.max((c[w:] - c[:-w]) / w) + 1e-20))
+    margin = np.zeros((int(0.05 * SR), 2))
+    stereo = _channels(x)[:, :2] * np.ones((1, 2))
+    padded = np.concatenate([margin, stereo, margin])
+    span = int(round(win * SR))
+    if len(padded) < span:
+        padded = np.pad(padded, ((0, span - len(padded)), (0, 0)))
+    energy = np.sum(np.asarray(k_weight(padded, SR)) ** 2, axis=1)
+    running = np.concatenate([[0.0], np.cumsum(energy)])
+    best = np.max((running[span:] - running[:-span]) / span)
+    return float(-0.691 + _to_db(best))
 
 
 def meter_m400(x: np.ndarray) -> float:
-    """Max of the momentary loudness curve (400 ms window, 10 ms hop); a cross-check."""
+    """Peak of the momentary loudness curve (400 ms window, 10 ms step), used as a second opinion."""
     from hark.core.features import loudness_curve
 
-    n = int(0.4 * SR)
-    y = np.pad(x, ((0, max(0, n - len(x))), (0, 0)))
-    return float(np.max(loudness_curve(y, win=0.4, hop=0.01)[1]))
+    shortfall = max(0, int(0.4 * SR) - len(x))
+    padded = np.pad(x, ((0, shortfall), (0, 0)))
+    return float(np.max(loudness_curve(padded, win=0.4, hop=0.01)[1]))
 
 
 def true_peak(x: np.ndarray) -> float:
-    """True peak in dBTP (4x oversampled); never under the sample peak."""
+    """dBTP from 4x oversampling, never lower than the sample peak."""
     from hark.core.features import true_peak_dbtp
 
     return max(float(true_peak_dbtp(x)), sample_peak(x))
 
 
 def sample_peak(x: np.ndarray) -> float:
-    return float(20 * np.log10(np.max(np.abs(x)) + 1e-20)) if len(x) else -200.0
+    if not len(x):
+        return -200.0
+    return float(20 * np.log10(np.max(np.abs(x)) + 1e-20))
 
 
 def rms_dbfs(x: np.ndarray) -> float:
-    return float(10 * np.log10(np.mean(np.asarray(x) ** 2) + 1e-20)) if len(x) else -200.0
+    if not len(x):
+        return -200.0
+    return float(_to_db(np.mean(np.asarray(x) ** 2)))
 
 
 def stereo_corr(x: np.ndarray) -> float:
-    L, R = x[:, 0], x[:, 1]
-    return float(np.sum(L * R) / math.sqrt(float(np.sum(L ** 2) * np.sum(R ** 2)) + 1e-30))
+    left, right = x[:, 0], x[:, 1]
+    scale = math.sqrt(float(np.sum(left ** 2) * np.sum(right ** 2)) + 1e-30)
+    return float(np.sum(left * right) / scale)
 
 
-# ---------------------------------------------------------------- file facts
+# ---------------------------------------------------------------- per-file facts
 
-def _key(p: Any) -> str:
+def _path_key(p: Any) -> str:
     return os.path.normcase(os.path.normpath(str(p).replace("\\", "/")))
 
 
@@ -151,269 +192,284 @@ def _key(p: Any) -> str:
 def _manifest_index(path: str) -> dict:
     if not path or not os.path.isfile(path):
         return {}
-    m = json.loads(Path(path).read_text())
-    return {_key(r["file"]): r for c in m.values() for s in ("forge", "bench") for r in c.get(s) or []}
+    by_key = {}
+    for category in json.loads(Path(path).read_text()).values():
+        for split in ("forge", "bench"):
+            for record in category.get(split) or []:
+                by_key[_path_key(record["file"])] = record
+    return by_key
 
 
 def manifest_entry(p: Any) -> dict | None:
-    """The refset manifest record of a ref file, or None (a made final has none)."""
-    return _manifest_index(str(MANIFEST or "")).get(_key(p))
+    """Manifest record of a reference file; None for a made final, which has no record."""
+    return _manifest_index(str(MANIFEST or "")).get(_path_key(p))
 
 
 @functools.lru_cache(maxsize=None)
 def source_floor(p: str) -> float | None:
-    """The recording floor power of a bench ref, measured in its source around the trim."""
-    m = manifest_entry(p)
-    if not m or not m.get("source_path") or not os.path.isfile(m["source_path"]):
+    """Noise-floor power of a bench ref, measured in its source recording around the trimmed section."""
+    record = manifest_entry(p)
+    if not record or not record.get("source_path") or not os.path.isfile(record["source_path"]):
         return None
-    t0, t1 = m["trim_s"]
-    x = load_audio(m["source_path"], max(0.0, t0 - 20), t1 + 20)
-    pw = power_frames(x, int(0.05 * SR)) / 2
-    pw = pw[pw > 2e-10]
-    if not len(pw):
+    begin, finish = record["trim_s"]
+    around = load_audio(record["source_path"], max(0.0, begin - 20), finish + 20)
+    blocks = power_frames(around, int(0.05 * SR)) / 2
+    blocks = blocks[blocks > 2e-10]
+    if not len(blocks):
         return None
-    return float(np.percentile(pw, 5) * 10 ** (float(m.get("gain_db") or 0) / 10))
+    gain = 10 ** (float(record.get("gain_db") or 0) / 10)
+    return float(np.percentile(blocks, 5) * gain)
 
 
 def end_fade_s(p: Any) -> float:
-    m = manifest_entry(p)
-    if m is None:
+    record = manifest_entry(p)
+    if record is None:
         return MADE_FADE_GUARD
-    return float(m.get("fade_out_s") or REF_FADE_DEFAULT)
+    return float(record.get("fade_out_s") or REF_FADE_DEFAULT)
 
 
-def _db(p: np.ndarray, top: float) -> np.ndarray:
-    return 10 * np.log10(p + 1e-20) - top
-
-
-def _reach(e: np.ndarray, ip: int, stop: int, hop_s: float) -> float:
-    return float(np.min(e[max(ip, stop - max(1, math.ceil(0.015 / hop_s))):stop]))
-
-
-def _head(e1: np.ndarray, cut_file: bool) -> float | None:
+def _head_level(fine: np.ndarray, cut_file: bool) -> float | None:
+    """Loudest of 1 ms frames 2-4 (or of all frames in a very short clip); None for an uncut file."""
     if not cut_file:
-        res = None
-    elif len(e1) > 5:
-        res = float(np.max(e1[2:5]))
-    else:
-        res = float(np.max(e1))
-    return res
-
-
-def _floor_rel(floor_pow: float | None, top: float) -> float | None:
-    return float(10 * np.log10(floor_pow + 1e-30) - top) if floor_pow is not None else None
+        return None
+    return float(np.max(fine[2:5] if len(fine) > 5 else fine))
 
 
 def analyse(x: np.ndarray, cls: str, fade_s: float, floor_pow: float | None = None, cut_file: bool = True) -> dict:
-    """Envelope facts for the trim: reach, head, peak_late, strike and floor."""
-    hop_s, sm = ENV[cls]
-    n = int(round(hop_s * SR))
-    p = power_frames(x, n, sm)
-    top = float(10 * np.log10(p.max() + 1e-20))
-    e, e1 = _db(p, top), _db(power_frames(x, int(0.001 * SR)), top)
-    ip = int(np.argmax(e))
-    stop = max(ip + 1, len(e) - math.ceil((fade_s + 0.005) / hop_s))
-    return {"e": e, "e1": e1, "top": top, "ip": ip, "stop": stop, "hop": n, "reach": _reach(e, ip, stop, hop_s),
-            "head": _head(e1, cut_file), "peak_late": ip * n >= 0.85 * len(x),
-            "strike": float(np.max(e1[:15])) >= -6, "floor": _floor_rel(floor_pow, top), "fade_s": fade_s}
+    """Envelope facts the trim needs: reach, head, peak_late, strike and floor."""
+    hop_s, smooth = ENV[cls]
+    hop = int(round(hop_s * SR))
+    coarse_power = power_frames(x, hop, smooth)
+    top = float(_to_db(coarse_power.max()))
+    env = _to_db(coarse_power) - top
+    fine = _to_db(power_frames(x, _MS)) - top
+    peak = int(np.argmax(env))
+    stop = max(peak + 1, len(env) - math.ceil((fade_s + 0.005) / hop_s))
+    window = max(1, math.ceil(0.015 / hop_s))
+    reach = float(np.min(env[max(peak, stop - window):stop]))
+    floor = None if floor_pow is None else float(10 * np.log10(floor_pow + 1e-30) - top)
+    return {"e": env, "e1": fine, "top": top, "ip": peak, "stop": stop, "hop": hop, "reach": reach,
+            "head": _head_level(fine, cut_file), "peak_late": peak * hop >= 0.85 * len(x),
+            "strike": float(np.max(fine[:15])) >= -6, "floor": floor, "fade_s": fade_s}
 
 
 def _cls(*extents: float) -> str:
-    return "long" if max(extents) >= SHORT_S else "short"
+    return "short" if max(extents) < SHORT_S else "long"
 
 
-def _head_ok(info: dict) -> bool:
-    return info["head"] is None or info["head"] <= CLEAN_HEAD or info["strike"]
-
-
-def _clean(info: dict, x: np.ndarray) -> bool:
-    return (_head_ok(info) and (info["reach"] <= CLEAN_REACH or info["peak_late"])
-            and (info["floor"] is None or info["floor"] <= CLEAN_FLOOR) and stereo_corr(x) > -0.5)
+def _trims_cleanly(info: dict, x: np.ndarray) -> bool:
+    head = info["head"]
+    if not (head is None or head <= CLEAN_HEAD or info["strike"]):
+        return False
+    if not (info["reach"] <= CLEAN_REACH or info["peak_late"]):
+        return False
+    if info["floor"] is not None and info["floor"] > CLEAN_FLOOR:
+        return False
+    return stereo_corr(x) > -0.5
 
 
 @functools.lru_cache(maxsize=None)
 def facts(p: str, is_ref: bool) -> tuple[float, bool]:
-    """(audible extent, trims cleanly) of a file."""
-    x = load_audio(p)
-    ext = extent_s(x)
-    info = analyse(x, _cls(ext), end_fade_s(p) if is_ref else MADE_FADE_GUARD,
-                   source_floor(p) if is_ref else None, cut_file=is_ref)
-    return ext, bool(_clean(info, x))
+    """(audible extent, whether it trims cleanly) of one file."""
+    audio = load_audio(p)
+    extent = extent_s(audio)
+    if is_ref:
+        fade, floor = end_fade_s(p), source_floor(p)
+    else:
+        fade, floor = MADE_FADE_GUARD, None
+    info = analyse(audio, _cls(extent), fade, floor, cut_file=is_ref)
+    return extent, bool(_trims_cleanly(info, audio))
 
 
-# ---------------------------------------------------------------- the pair trim
+# ---------------------------------------------------------------- trimming a pair
 
 def pair_levels(a: dict, b: dict) -> tuple[float, float]:
-    """(L_on, L_end): levels both sounds reach naturally, above any floor, capped at -6 dB."""
-    floors = [i["floor"] + FLOOR_MARGIN for i in (a, b) if i.get("floor") is not None]
-    L_end = max([END_DB] + [i["reach"] + REACH_MARGIN for i in (a, b)] + floors)
-    L_on = max([ON_DB] + [i["head"] + HEAD_MARGIN for i in (a, b) if i.get("head") is not None] + floors)
-    return min(LEVEL_CAP, L_on), min(LEVEL_CAP, L_end)
+    """(L_on, L_end): levels both clips reach on their own, kept above any floor and capped at -6 dB."""
+    both = (a, b)
+    floor_terms = [side["floor"] + FLOOR_MARGIN for side in both if side.get("floor") is not None]
+    end_level = max([END_DB] + [side["reach"] + REACH_MARGIN for side in both] + floor_terms)
+    head_terms = [side["head"] + HEAD_MARGIN for side in both if side.get("head") is not None]
+    on_level = max([ON_DB] + head_terms + floor_terms)
+    return min(LEVEL_CAP, on_level), min(LEVEL_CAP, end_level)
 
 
-def _bounds(info: dict, n_x: int, L_on: float, L_end: float) -> tuple[int, int, int, int]:
-    n1, hop, e = int(0.001 * SR), info["hop"], info["e"]
-    hits = np.flatnonzero(info["e1"] >= L_on)
-    on = int(hits[0]) * n1 if len(hits) else 0
-    js = np.flatnonzero(e[: info["stop"]] >= L_end)
-    j = int(js[-1]) if len(js) else info["ip"]
-    end = min(n_x, (j + 1) * hop)
-    fs = np.flatnonzero(e[: j + 1] >= L_end + FADE_DB)
-    f0 = (int(fs[-1]) + 1) * hop if len(fs) else (info["ip"] + 1) * hop
-    f0 = min(max(f0, on), end - int(FADE_MIN_S * SR))
-    return on, j, end, f0
+def _last_index(mask: np.ndarray, fallback: int) -> int:
+    hits = np.flatnonzero(mask)
+    return int(hits[-1]) if len(hits) else fallback
 
 
-def _edge_facts(info: dict, start: int, on: int, j: int, f0: int) -> dict:
-    n1, hop, e = int(0.001 * SR), info["hop"], info["e"]
-    s, h = max(0, start), start + int(FADE_IN_S * SR) // 2
-    cut_in = float(np.max(info["e1"][s // n1: max(s // n1 + 1, math.ceil(h / n1))])) if h > s else -200.0
-    after = e[j + 1: j + 1 + math.ceil(0.005 * SR / hop)]
-    cut_out = float(np.max(after)) if len(after) else float(e[j])
-    exposed = None
+def _cut_points(info: dict, total: int, L_on: float, L_end: float) -> tuple[int, int, int, int]:
+    """(onset sample, last kept frame, end sample, fade-out start sample)."""
+    hop, env = info["hop"], info["e"]
+    above = np.flatnonzero(info["e1"] >= L_on)
+    begin = int(above[0]) * _MS if len(above) else 0
+    last = _last_index(env[: info["stop"]] >= L_end, info["ip"])
+    finish = min(total, (last + 1) * hop)
+    fade_frame = _last_index(env[: last + 1] >= L_end + FADE_DB, info["ip"])
+    fade_from = min(max((fade_frame + 1) * hop, begin), finish - int(FADE_MIN_S * SR))
+    return begin, last, finish, fade_from
+
+
+def _edge_levels(info: dict, start: int, begin: int, last: int, fade_from: int) -> dict:
+    hop, env = info["hop"], info["e"]
+    lo = max(0, start)
+    half_fade = start + int(FADE_IN_S * SR) // 2
+    if half_fade > lo:
+        first = lo // _MS
+        level_in = float(np.max(info["e1"][first: max(first + 1, math.ceil(half_fade / _MS))]))
+    else:
+        level_in = -200.0
+    beyond = env[last + 1: last + 1 + math.ceil(0.005 * SR / hop)]
+    level_out = float(np.max(beyond)) if len(beyond) else float(env[last])
+    heard = None
     if info.get("floor") is not None:
-        seg = e[on // hop: f0 // hop]
-        exposed = float(np.sum(seg < info["floor"] + 6) * hop / SR * 1000)
-    return {"cut_in_db": round(cut_in, 2), "cut_out_db": round(cut_out, 2), "floor_exposed_ms": exposed}
+        inside = env[begin // hop: fade_from // hop]
+        heard = float(np.sum(inside < info["floor"] + 6) * hop / SR * 1000)
+    return {"cut_in_db": round(level_in, 2), "cut_out_db": round(level_out, 2), "floor_exposed_ms": heard}
 
 
-def _faded_clip(x: np.ndarray, start: int, end: int, f0: int) -> tuple[np.ndarray, int]:
-    clip = np.array(x[max(0, start):end], dtype=float)
+def _apply_fades(x: np.ndarray, start: int, finish: int, fade_from: int) -> tuple[np.ndarray, int]:
+    piece = np.array(x[max(0, start):finish], dtype=float)
     if start < 0:
-        clip = np.concatenate([np.zeros((-start, clip.shape[1])), clip])
-    nf = int(FADE_IN_S * SR)
-    clip[:nf] *= raised(min(nf, len(clip)))[:, None][: len(clip[:nf])]
-    nout = end - f0
-    if nout > 0:
-        clip[-nout:] *= raised(nout)[::-1][:, None]
-    return clip, nout
+        piece = np.concatenate([np.zeros((-start, piece.shape[1])), piece])
+    rise = int(FADE_IN_S * SR)
+    piece[:rise] *= raised(min(rise, len(piece)))[:, None][: len(piece[:rise])]
+    tail = finish - fade_from
+    if tail > 0:
+        piece[-tail:] *= raised(tail)[::-1][:, None]
+    return piece, tail
 
 
-def _round2(v: float | None) -> float | None:
-    return None if v is None else round(v, 2)
-
-
-def _cut_facts(info: dict, marks: tuple[int, int, int, int, int], nout: int, kept: bool) -> dict:
-    on, start, end, j, f0 = marks
-    return {"onset_s": round(on / SR, 4), "start_s": round(start / SR, 4), "end_s": round(end / SR, 4),
-            "fade_out_ms": round(nout / SR * 1000, 2), **_edge_facts(info, start, on, j, f0),
-            "reach_db": round(info["reach"], 2), "head_db": _round2(info["head"]),
-            "floor_db": _round2(info["floor"]), "kept_file_end": kept,
-            "end_fade_s": info["fade_s"], "top_db": round(info["top"], 2)}
+def _maybe_round(value: float | None) -> float | None:
+    return value if value is None else round(value, 2)
 
 
 def cut(x: np.ndarray, info: dict, L_on: float, L_end: float, keep_end: bool) -> tuple[np.ndarray, dict]:
-    """Trim one clip with a 4 ms raised-cosine fade in and a fade over its last 6 dB; return (clip, facts)."""
-    on, j, end, f0 = _bounds(info, len(x), L_on, L_end)
-    start = on - int(FADE_IN_S * SR)
+    """Trim one clip: 4 ms raised-cosine fade-in, fade-out across its final 6 dB. Returns (clip, facts)."""
+    begin, last, finish, fade_from = _cut_points(info, len(x), L_on, L_end)
+    start = begin - int(FADE_IN_S * SR)
     kept = bool(keep_end and info["e"][info["stop"] - 1] >= L_end)
     if kept:
-        end, j = len(x), len(info["e"]) - 1
-        f0 = end - int(0.002 * SR)
-    clip, nout = _faded_clip(x, start, end, f0)
-    return clip, _cut_facts(info, (on, start, end, j, f0), nout, kept)
+        finish, last = len(x), len(info["e"]) - 1
+        fade_from = finish - int(0.002 * SR)
+    piece, tail = _apply_fades(x, start, finish, fade_from)
+    report = {"onset_s": round(begin / SR, 4), "start_s": round(start / SR, 4), "end_s": round(finish / SR, 4),
+              "fade_out_ms": round(tail / SR * 1000, 2)}
+    report.update(_edge_levels(info, start, begin, last, fade_from))
+    report.update(reach_db=round(info["reach"], 2), head_db=_maybe_round(info["head"]),
+                  floor_db=_maybe_round(info["floor"]), kept_file_end=kept, end_fade_s=info["fade_s"],
+                  top_db=round(info["top"], 2))
+    return piece, report
 
 
-# ---------------------------------------------------------------- level match and cleanliness
+# ---------------------------------------------------------------- loudness match and checks
 
 def match_pair(real: np.ndarray, made: np.ndarray, cls: str) -> tuple[float, float, float]:
-    """(made gain, common gain, peak-cap drop) in dB: equal loudest moments, true peaks under -1 dBTP."""
-    w = WIN[cls]
-    g = loud_max(real, w) - loud_max(made, w)
-    gc = TARGET[cls] - loud_max(real, w)
-    tp = max(true_peak(real), true_peak(made) + g) + gc
-    over = max(0.0, tp - TP_MAX)
-    return g, gc - over, over
+    """(made gain, shared gain, peak-cap reduction) in dB: equal loudest spans, true peaks at most -1 dBTP."""
+    span = WIN[cls]
+    real_loud = loud_max(real, span)
+    made_gain = real_loud - loud_max(made, span)
+    shared = TARGET[cls] - real_loud
+    peak = max(true_peak(real), true_peak(made) + made_gain) + shared
+    excess = max(0.0, peak - TP_MAX)
+    return made_gain, shared - excess, excess
 
 
 def measure_clip(x: np.ndarray, cls: str, onset_i: int) -> dict:
-    """Level facts of one clip as played."""
-    other = "long" if cls == "short" else "short"
-    return {"loud_pair_measure": loud_max(x, WIN[cls]), "loud_other_window": loud_max(x, WIN[other]),
+    """Level facts of one clip as the listener hears it."""
+    alt = "short" if cls == "long" else "long"
+    return {"loud_pair_measure": loud_max(x, WIN[cls]), "loud_other_window": loud_max(x, WIN[alt]),
             "meter_m400": meter_m400(x), "true_peak_dbtp": true_peak(x), "sample_peak_dbfs": sample_peak(x),
             "preroll_dbfs": rms_dbfs(x[:onset_i]), "length_s": round(len(x) / SR, 4), "stereo_corr": stereo_corr(x)}
 
 
+def _gap(m: tuple[dict, dict], key: str) -> float:
+    return abs(m[0][key] - m[1][key])
+
+
 def _pair_numbers(m: tuple[dict, dict], f: tuple[dict, dict], lv: tuple[float, float], gc: float) -> dict:
-    fr = f[0]
-    lens = sorted(c["length_s"] for c in m)
-    floor_played = fr["floor_db"] + fr["top_db"] + gc - 10 * math.log10(2) if fr["floor_db"] is not None else None
-    return {"loud_diff": abs(m[0]["loud_pair_measure"] - m[1]["loud_pair_measure"]),
-            "other_diff": abs(m[0]["loud_other_window"] - m[1]["loud_other_window"]),
-            "meter_diff": abs(m[0]["meter_m400"] - m[1]["meter_m400"]),
-            "tp_diff": abs(m[0]["true_peak_dbtp"] - m[1]["true_peak_dbtp"]),
-            "tp_max": max(c["true_peak_dbtp"] for c in m), "preroll_max_dbfs": max(c["preroll_dbfs"] for c in m),
-            "preroll_ms": max((c["onset_s"] - c["start_s"]) * 1000 for c in f),
-            "floor_played_dbfs": floor_played,
-            "floor_margin_db": min(lv) - fr["floor_db"] if fr["floor_db"] is not None else None,
-            "floor_exposed_ms": fr.get("floor_exposed_ms"), "lengths_s": lens,
-            "length_ratio": lens[1] / max(lens[0], 1e-9)}
+    ref_facts = f[0]
+    floor = ref_facts["floor_db"]
+    durations = sorted(clip["length_s"] for clip in m)
+    played = None if floor is None else floor + ref_facts["top_db"] + gc - 10 * math.log10(2)
+    return {"loud_diff": _gap(m, "loud_pair_measure"), "other_diff": _gap(m, "loud_other_window"),
+            "meter_diff": _gap(m, "meter_m400"), "tp_diff": _gap(m, "true_peak_dbtp"),
+            "tp_max": max(clip["true_peak_dbtp"] for clip in m),
+            "preroll_max_dbfs": max(clip["preroll_dbfs"] for clip in m),
+            "preroll_ms": max((side["onset_s"] - side["start_s"]) * 1000 for side in f),
+            "floor_played_dbfs": played,
+            "floor_margin_db": None if floor is None else min(lv) - floor,
+            "floor_exposed_ms": ref_facts.get("floor_exposed_ms"), "lengths_s": durations,
+            "length_ratio": durations[1] / max(durations[0], 1e-9)}
 
 
-def _edge_fails(f: tuple[dict, dict], fails: list) -> None:
-    for key, what in (("cut_in_db", "onset"), ("cut_out_db", "end")):
-        a, b = f[0][key], f[1][key]
-        if abs(a - b) > FAIL["edge_db"] and max(a, b) > FAIL["edge_loud"]:
-            fails.append(f"the {what} trims differ by {abs(a - b):.1f} dB while the louder is above -20 dB")
+def _floor_messages(nums: dict, fails: list, warns: list) -> None:
+    margin = nums["floor_margin_db"]
+    if margin is not None and margin < FAIL["floor_margin"]:
+        fails.append("floor margin %.1f dB under 6 dB" % margin)
+    played, heard = nums["floor_played_dbfs"], nums["floor_exposed_ms"]
+    if heard is not None:
+        text = "the floor is heard for %.0f ms inside a clip" % heard
+        if heard > FAIL["exposed_ms"] and played is not None and played > FAIL["exposed_floor"]:
+            fails.append(text)
+        elif heard > WARN["exposed_ms"]:
+            warns.append(text)
+    if played is not None and played > WARN["floor_dbfs"]:
+        warns.append("floor as played %.1f dBFS" % played)
 
 
-def _exposed_rule(ex: float | None, fp: float | None, fails: list, warns: list) -> None:
-    if ex is not None and ex > FAIL["exposed_ms"] and fp is not None and fp > FAIL["exposed_floor"]:
-        fails.append(f"the floor is heard for {ex:.0f} ms inside a clip")
-    elif ex is not None and ex > WARN["exposed_ms"]:
-        warns.append(f"the floor is heard for {ex:.0f} ms inside a clip")
+def _edge_messages(f: tuple[dict, dict], fails: list) -> None:
+    for key, where in (("cut_in_db", "onset"), ("cut_out_db", "end")):
+        one, two = f[0][key], f[1][key]
+        if abs(one - two) > FAIL["edge_db"] and max(one, two) > FAIL["edge_loud"]:
+            fails.append("the %s trims differ by %.1f dB while the louder is above -20 dB" % (where, abs(one - two)))
 
 
-def _floor_rules(p: dict, fails: list, warns: list) -> None:
-    if p["floor_margin_db"] is not None and p["floor_margin_db"] < FAIL["floor_margin"]:
-        fails.append(f"floor margin {p['floor_margin_db']:.1f} dB under 6 dB")
-    fp = p["floor_played_dbfs"]
-    _exposed_rule(p["floor_exposed_ms"], fp, fails, warns)
-    if fp is not None and fp > WARN["floor_dbfs"]:
-        warns.append(f"floor as played {fp:.1f} dBFS")
-
-
-def _warn_rules(m: tuple[dict, dict], p: dict, warns: list) -> None:
-    if p["length_ratio"] > WARN["length_ratio"]:
-        warns.append(f"length ratio {p['length_ratio']:.2f}")
-    if p["tp_diff"] > WARN["tp_diff"]:
-        warns.append(f"true peaks differ by {p['tp_diff']:.1f} dB")
-    if p["other_diff"] > WARN["other_lu"]:
-        warns.append(f"the other loudness window differs by {p['other_diff']:.1f} LU")
-    corr = sorted(c["stereo_corr"] for c in m)
-    if corr[1] >= WARN["mono"] and corr[0] < WARN["wide"]:
+def _soft_messages(m: tuple[dict, dict], nums: dict, warns: list) -> None:
+    if nums["length_ratio"] > WARN["length_ratio"]:
+        warns.append("length ratio %.2f" % nums["length_ratio"])
+    if nums["tp_diff"] > WARN["tp_diff"]:
+        warns.append("true peaks differ by %.1f dB" % nums["tp_diff"])
+    if nums["other_diff"] > WARN["other_lu"]:
+        warns.append("the other loudness window differs by %.1f LU" % nums["other_diff"])
+    low, high = sorted(clip["stereo_corr"] for clip in m)
+    if high >= WARN["mono"] and low < WARN["wide"]:
         warns.append("one clip is mono and the other is wide")
-    if corr[0] < 0:
+    if low < 0:
         warns.append("a clip has anti-phase stereo")
 
 
 def check_pair(m: tuple[dict, dict], f: tuple[dict, dict], lv: tuple[float, float], cls: str,
                gc: float) -> tuple[list[str], list[str], dict]:
-    """(fails, warnings, symmetric row) of one pair as played; real first in m and f."""
-    p = _pair_numbers(m, f, lv, gc)
+    """(fails, warnings, order-free row) of one pair as played; the real clip comes first in m and f."""
+    nums = _pair_numbers(m, f, lv, gc)
     fails: list[str] = []
     warns: list[str] = []
-    if p["loud_diff"] > FAIL["loud_lu"]:
-        fails.append(f"the loudest moments differ by {p['loud_diff']:.2f} LU")
-    if p["tp_max"] > FAIL["true_peak"]:
-        fails.append(f"true peak {p['tp_max']:.2f} dBTP above -1")
-    if p["preroll_ms"] > FAIL["preroll_ms"] + 1e-6:
-        fails.append(f"pre-roll {p['preroll_ms']:.1f} ms")
-    if any(c["cut_in_db"] >= lv[0] for c in f):
+    if nums["loud_diff"] > FAIL["loud_lu"]:
+        fails.append("the loudest moments differ by %.2f LU" % nums["loud_diff"])
+    if nums["tp_max"] > FAIL["true_peak"]:
+        fails.append("true peak %.2f dBTP above -1" % nums["tp_max"])
+    if nums["preroll_ms"] > FAIL["preroll_ms"] + 1e-6:
+        fails.append("pre-roll %.1f ms" % nums["preroll_ms"])
+    if any(side["cut_in_db"] >= lv[0] for side in f):
         fails.append("the pre-roll holds sound")
-    _floor_rules(p, fails, warns)
-    _edge_fails(f, fails)
-    _warn_rules(m, p, warns)
-    return fails, warns, _symmetric(cls, p, f, lv, m)
+    _floor_messages(nums, fails, warns)
+    _edge_messages(f, fails)
+    _soft_messages(m, nums, warns)
+    return fails, warns, _row(cls, nums, f, lv, m)
 
 
-def _symmetric(cls: str, p: dict, f: tuple[dict, dict], lv: tuple[float, float], m: tuple[dict, dict]) -> dict:
-    r = {"class": cls, "matched_on": f"K-weighted loudest {WIN[cls] * 1000:.0f} ms"}
-    for k in ("loud_diff", "other_diff", "meter_diff", "tp_diff", "tp_max", "preroll_max_dbfs", "preroll_ms",
-              "floor_played_dbfs", "floor_margin_db", "floor_exposed_ms", "length_ratio"):
-        r[k] = None if p[k] is None else round(p[k], 3)
-    r.update(L_on=round(lv[0], 2), L_end=round(lv[1], 2), lengths_s=p["lengths_s"],
-             cut_in_db=sorted(c["cut_in_db"] for c in f), cut_out_db=sorted(c["cut_out_db"] for c in f),
-             fade_out_ms=sorted(c["fade_out_ms"] for c in f),
-             stereo_corr=sorted(round(c["stereo_corr"], 3) for c in m))
-    return r
+_ROW_NUMBERS = ("loud_diff", "other_diff", "meter_diff", "tp_diff", "tp_max", "preroll_max_dbfs", "preroll_ms",
+                "floor_played_dbfs", "floor_margin_db", "floor_exposed_ms", "length_ratio")
+
+
+def _row(cls: str, nums: dict, f: tuple[dict, dict], lv: tuple[float, float], m: tuple[dict, dict]) -> dict:
+    row = {"class": cls, "matched_on": "K-weighted loudest %.0f ms" % (WIN[cls] * 1000)}
+    for key in _ROW_NUMBERS:
+        row[key] = None if nums[key] is None else round(nums[key], 3)
+    row["L_on"], row["L_end"] = round(lv[0], 2), round(lv[1], 2)
+    row["lengths_s"] = nums["lengths_s"]
+    for key in ("cut_in_db", "cut_out_db", "fade_out_ms"):
+        row[key] = sorted(side[key] for side in f)
+    row["stereo_corr"] = sorted(round(clip["stereo_corr"], 3) for clip in m)
+    return row
