@@ -4,6 +4,8 @@
 
 ## Unreleased
 
+## v0.4.7 - 2026-11-08
+
 - `herdr-fleet` starts again while another fleet runs in the same project.
   In v0.4.6 the new orchestrator exited at launch and its workspace closed,
   while `horch fleet` still said "Done". Now the new fleet leaves the other
