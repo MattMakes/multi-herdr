@@ -856,49 +856,68 @@ def section_sync(groups) -> dict:
 
 # ---------------------------------------------------------------- density, loudness, coverage
 
+def _per_second(live: list, dur: float) -> list[int]:
+    per = [0] * max(1, math.ceil(dur))
+    for s in (int(g["att"] // SR) for g in live):
+        if 0 <= s < len(per):
+            per[s] += 1
+    return per
+
+
+def _rule_row(r: str, ps: list) -> dict:
+    ioi = np.diff(sorted(p["t"] for p in ps))
+    return {"rule": r, "n": len(ps), "distinct_samples": len({p["sample"] for p in ps}),
+            "ioi_s": round(float(ioi.mean()), 4),
+            "ioi_cv": round(float(ioi.std() / ioi.mean()), 3) if ioi.mean() > 0 else None,
+            "gain_sd_db": round(float(np.std([p["gain_db"] for p in ps])), 3),
+            "pitch_sd_st": round(float(np.std([p["pitch"] for p in ps])), 3)}
+
+
+def _rule_rows(pls: list) -> tuple[list, list]:
+    """(a row per rule with 4 or more placements, the machine-gun rules)."""
+    by = {}
+    for p in (p for p in pls if p["kind"] != "place"):
+        by.setdefault(str(p["rule"]), []).append(p)
+    rules = [_rule_row(r, ps) for r, ps in by.items() if len(ps) >= 4]
+    return rules, _machine_gun(rules)
+
+
+def _machine_gun(rules: list) -> list[str]:
+    """Rules that repeat 1 take at 1 pitch and 1 level."""
+    return [row["rule"] for row in rules
+            if row["distinct_samples"] == 1 and row["pitch_sd_st"] < 0.1 and row["gain_sd_db"] < 0.5]
+
+
+def _busiest(per: list) -> list[dict]:
+    return sorted(({"s": i, "n": n} for i, n in enumerate(per) if n), key=lambda r: (-r["n"], r["s"]))[:5]
+
+
 def section_density(ctx, groups) -> dict:
     dur = len(ctx["stems"]["sfx"]) / SR
     live = [g for g in groups if not g["silent"]]
-    per = [0] * max(1, math.ceil(dur))
-    for g in live:
-        s = int(g["att"] // SR)
-        if 0 <= s < len(per):
-            per[s] += 1
-    busiest = sorted(({"s": i, "n": n} for i, n in enumerate(per) if n), key=lambda r: (-r["n"], r["s"]))[:5]
+    per = _per_second(live, dur)
+    busiest = _busiest(per)
     pls = ctx["report"]["placements"]
     used = Counter(p["sample"] for p in pls).most_common(8)
-    rules, mg = [], []
-    by = {}
-    for p in pls:
-        if p["kind"] != "place":
-            by.setdefault(str(p["rule"]), []).append(p)
-    for r, ps in by.items():
-        if len(ps) < 4:
-            continue
-        ts = sorted(p["t"] for p in ps)
-        ioi = np.diff(ts)
-        row = {"rule": r, "n": len(ps), "distinct_samples": len({p["sample"] for p in ps}),
-               "ioi_s": round(float(ioi.mean()), 4), "ioi_cv": round(float(ioi.std() / ioi.mean()), 3) if ioi.mean() > 0 else None,
-               "gain_sd_db": round(float(np.std([p["gain_db"] for p in ps])), 3),
-               "pitch_sd_st": round(float(np.std([p["pitch"] for p in ps])), 3)}
-        rules.append(row)
-        if row["distinct_samples"] == 1 and row["pitch_sd_st"] < 0.1 and row["gain_sd_db"] < 0.5:
-            mg.append(r)
+    rules, mg = _rule_rows(pls)
     p10 = len(live) / dur * 10 if dur else 0
+    summ = (f"{len(live)} event(s), {p10:.1f} per 10 s (norm about 5); busiest seconds "
+            + ", ".join(f"{b['s']}s x{b['n']}" for b in busiest[:3]) + (f"; machine gun: {', '.join(mg)}" if mg else ""))
     return {"status": "warn" if mg else "ok", "events_per_s": per, "busiest_s": busiest,
             "most_used_samples": [{"sample": s, "n": n} for s, n in used], "rules": rules, "machine_gun": mg,
-            "summary": f"{len(live)} event(s), {p10:.1f} per 10 s (norm about 5); busiest seconds "
-                       + ", ".join(f"{b['s']}s x{b['n']}" for b in busiest[:3]) + (f"; machine gun: {', '.join(mg)}" if mg else "")}
+            "summary": summ}
 
 
-def section_loudness(ctx, target, pre_lufs) -> dict:
-    x = ctx["master"]
+def _loudness_skip(x):
+    """The section result when the master cannot be measured, else None."""
     if x is None:
         return {"status": "skipped", "summary": "no master"}
     if len(x) < int(0.4 * SR):
         return {"status": "skipped", "summary": "the master is shorter than 400 ms"}
-    if not np.any(x):
-        return {"status": "fail", "summary": "the master is all zeros"}
+    return None if np.any(x) else {"status": "fail", "summary": "the master is all zeros"}
+
+
+def _loudness_numbers(x: np.ndarray, target: float, pre_lufs) -> tuple[dict, np.ndarray, np.ndarray]:
     kw = mst.kweight(mst.as_stereo(x))
     mom, mt = mst.block_loudness(x, 0.4, 0.1, kw)
     st, _ = mst.block_loudness(x, 3.0, 1.0, kw)
@@ -910,54 +929,87 @@ def section_loudness(ctx, target, pre_lufs) -> dict:
          "short_term_per_s": [round(float(v), 2) for v in st],
          "head_5ms_peak_dbfs": round(mst.db(float(np.abs(x[:240]).max())), 2),
          "tail_50ms_rms_dbfs": round(_rms_db(x[-2400:]), 2), "tail_10ms_peak_dbfs": round(mst.db(float(np.abs(x[-480:]).max())), 2)}
-    fps = float(ctx["cues"].get("fps", 60))
+    return r, mom, mt
+
+
+def _act_row(sel: np.ndarray, lo: float) -> dict:
+    if not len(sel):
+        return {"from": round(lo, 3), "momentary_median": None, "momentary_max": None}
+    return {"from": round(lo, 3), "momentary_median": round(float(np.median(sel)), 2),
+            "momentary_max": round(float(sel.max()), 2)}
+
+
+def _acts(cues: dict, mom: np.ndarray, mt: np.ndarray) -> dict:
+    fps = float(cues.get("fps", 60))
     acts = {}
-    for name, a in (ctx["cues"].get("acts") or {}).items():
+    for name, a in (cues.get("acts") or {}).items():
         lo, hi = float(a["from"]) / fps, (float(a["from"]) + float(a["dur"])) / fps
-        sel = mom[(mt >= lo) & (mt < hi)]
-        acts[name] = {"from": round(lo, 3), "momentary_median": round(float(np.median(sel)), 2) if len(sel) else None,
-                      "momentary_max": round(float(sel.max()), 2) if len(sel) else None}
-    r["acts"] = acts
-    fails, warns = [], []
-    if not math.isfinite(r["lufs"]) or abs(r["lufs"] - target) > 0.5:
-        fails.append(f"integrated {r['lufs']} LUFS is off the target {target} by more than 0.5 LU")
-    if r["true_peak_dbtp"] > -1.0:
-        fails.append(f"true peak {r['true_peak_dbtp']} dBTP > -1.0 (AAC would clip)")
-    if r["tail_50ms_rms_dbfs"] > -45 or r["tail_10ms_peak_dbfs"] > -60:
-        fails.append("the end is not silent")
-    if r["head_5ms_peak_dbfs"] > -40:
-        warns.append("the first 5 ms are loud: starts mid-sound or clicks on sample 0")
-    if r["lra_lu"] < 4:
-        warns.append(f"LRA {r['lra_lu']} LU: flat")
-    if r["lra_lu"] > 10:
-        warns.append(f"LRA {r['lra_lu']} LU: quiet passages vanish on phones")
-    if r["loudest_frac"] > 0.85:
-        warns.append("the loudest moment is in the last 15 %: the peak belongs on the drop")
-    r.update(fails=fails, warnings=warns, status="fail" if fails else "warn" if warns else "ok",
-             summary=f"{r['lufs']} LUFS, TP {r['true_peak_dbtp']} dBTP, LRA {r['lra_lu']} LU, loudest {r['loudest_momentary']} "
-                     f"LUFS-M at {tfmt(r['loudest_at'])}" + ("; " + "; ".join(fails + warns) if fails or warns else ""))
+        acts[name] = _act_row(mom[(mt >= lo) & (mt < hi)], lo)
+    return acts
+
+
+def _loudness_findings(r: dict, target: float) -> tuple[list, list]:
+    off = not math.isfinite(r["lufs"]) or abs(r["lufs"] - target) > 0.5
+    loud_end = r["tail_50ms_rms_dbfs"] > -45 or r["tail_10ms_peak_dbfs"] > -60
+    fails = [(off, f"integrated {r['lufs']} LUFS is off the target {target} by more than 0.5 LU"),
+             (r["true_peak_dbtp"] > -1.0, f"true peak {r['true_peak_dbtp']} dBTP > -1.0 (AAC would clip)"),
+             (loud_end, "the end is not silent")]
+    warns = [(r["head_5ms_peak_dbfs"] > -40, "the first 5 ms are loud: starts mid-sound or clicks on sample 0"),
+             (r["lra_lu"] < 4, f"LRA {r['lra_lu']} LU: flat"),
+             (r["lra_lu"] > 10, f"LRA {r['lra_lu']} LU: quiet passages vanish on phones"),
+             (r["loudest_frac"] > 0.85, "the loudest moment is in the last 15 %: the peak belongs on the drop")]
+    return [m for bad, m in fails if bad], [m for bad, m in warns if bad]
+
+
+def section_loudness(ctx, target, pre_lufs) -> dict:
+    skip = _loudness_skip(ctx["master"])
+    if skip is not None:
+        return skip
+    r, mom, mt = _loudness_numbers(ctx["master"], target, pre_lufs)
+    r["acts"] = _acts(ctx["cues"], mom, mt)
+    fails, warns = _loudness_findings(r, target)
+    status = "fail" if fails else "warn" if warns else "ok"
+    summ = (f"{r['lufs']} LUFS, TP {r['true_peak_dbtp']} dBTP, LRA {r['lra_lu']} LU, loudest {r['loudest_momentary']} "
+            f"LUFS-M at {tfmt(r['loudest_at'])}" + ("; " + "; ".join(fails + warns) if fails or warns else ""))
+    r.update(fails=fails, warnings=warns, status=status, summary=summ)
     return r
 
 
-def section_coverage(ctx, groups) -> dict:
+def _placed_silent(groups) -> list[dict]:
+    return [{"t": g["t"], "kind": g["kind"], "id": g["label"]} for g in groups or []
+            if g["silent"] and not g["qa_ok"] and not g["label"].startswith("place:")]
+
+
+def _event_class(kind, i) -> tuple:
+    return kind, re.sub(r"(:\d+)+$", "", str(i or ""))
+
+
+def _class_counts(ctx: dict, none: set, placed_silent: list) -> tuple[Counter, Counter]:
+    """(events per class, unsounded events per class)."""
     fps = float(ctx["cues"].get("fps", 60))
-    none = {(round(e["t"], 4), e.get("kind"), e.get("id")) for e in ctx["report"].get("unsounded_events", [])}
-    placed_silent = []
-    for g in groups or []:
-        if g["silent"] and not g["qa_ok"] and not g["label"].startswith("place:"):
-            placed_silent.append({"t": g["t"], "kind": g["kind"], "id": g["label"]})
-            none.add((round(g["t"], 4), g["kind"], g["label"]))
-    cls = lambda kind, i: (kind, re.sub(r"(:\d+)+$", "", str(i or "")))
     total, missing = Counter(), Counter()
     for e in ctx["cues"].get("events", []):
-        c = cls(e.get("kind"), e.get("id"))
+        c = _event_class(e.get("kind"), e.get("id"))
         total[c] += 1
-        if (round(float(e["f"]) / fps, 4), e.get("kind"), e.get("id")) in none or any(
-                e.get("id") == p["id"] and e.get("kind") == p["kind"] for p in placed_silent):
+        gone = (round(float(e["f"]) / fps, 4), e.get("kind"), e.get("id")) in none
+        if gone or any(e.get("id") == p["id"] and e.get("kind") == p["kind"] for p in placed_silent):
             missing[c] += 1
+    return total, missing
+
+
+def _class_rows(total: Counter, missing: Counter) -> tuple[list, list]:
+    """(partly sounded classes, never sounded classes)."""
     partial = [{"kind": k, "class": c, "unsounded": missing[(k, c)], "of": total[(k, c)]}
                for (k, c) in total if 0 < missing[(k, c)] < total[(k, c)]]
     never = [{"kind": k, "class": c, "n": total[(k, c)]} for (k, c) in total if missing[(k, c)] == total[(k, c)]]
+    return partial, never
+
+
+def section_coverage(ctx, groups) -> dict:
+    none = {(round(e["t"], 4), e.get("kind"), e.get("id")) for e in ctx["report"].get("unsounded_events", [])}
+    placed_silent = _placed_silent(groups)
+    none |= {(round(p["t"], 4), p["kind"], p["id"]) for p in placed_silent}
+    partial, never = _class_rows(*_class_counts(ctx, none, placed_silent))
     summ = f"{len(partial)} partial class(es), {len(never)} class(es) never sounded, {len(placed_silent)} placed but silent"
     if ctx["solo"]:
         summ += "; solo render: events of other fragments are expected to have no sound"
@@ -970,23 +1022,89 @@ def _load_api():
     return importlib.import_module("hark.core.api")  # the flat API that `import hark` forwards to
 
 
-def import_hark():
-    """The hark API, from the venv or from the sibling skill's engine folder; None when absent."""
+def _try_api():
     try:
         return _load_api()
     except ImportError:
-        pass
-    eng = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "../../hark/engine"))
-    if not os.path.isdir(eng):
         return None
+
+
+def _use_engine(eng: str) -> None:
+    """Put the sibling engine folder first on the path and forget any hark already imported."""
     if eng not in sys.path:
         sys.path.insert(0, eng)
     for name in [m for m in sys.modules if m == "hark" or m.startswith("hark.")]:
         del sys.modules[name]
+
+
+def import_hark():
+    """The hark API, from the venv or from the sibling skill's engine folder; None when absent."""
+    api = _try_api()
+    eng = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "../../hark/engine"))
+    if api is None and os.path.isdir(eng):
+        _use_engine(eng)
+        api = _try_api()
+    return api
+
+
+def _sheet(lx: dict, tl: dict, res: dict, notes: list) -> None:
     try:
-        return _load_api()
-    except ImportError:
-        return None
+        lx["api"].sheet(lx["mp"], os.path.join(lx["outdir"], "qa_sheet.png"), video=lx["video"], cues=lx["cues"], tl=tl)
+        res["sheet"] = os.path.join(lx["outdir"], "qa_sheet.png")
+    except Exception as e:  # noqa: BLE001
+        notes.append(f"sheet failed: {e}")
+
+
+def _timeline(lx: dict, res: dict, notes: list) -> None:
+    try:
+        tl = lx["api"].timeline(lx["mp"], video=lx["video"], cues=lx["cues"])
+        with open(os.path.join(lx["outdir"], "qa_timeline.txt"), "w") as fh:
+            fh.write(tl.get("text", ""))
+        s = tl.get("summary", "")
+        res["timeline"] = s if len(s) <= 400 else s[:360] + " ... (see qa_timeline.txt)"
+        _sheet(lx, tl, res, notes)
+    except Exception as e:  # noqa: BLE001
+        notes.append(f"timeline failed: {e}")
+
+
+def _critique(lx: dict, res: dict, notes: list) -> None:
+    try:
+        cr = lx["api"].critique(lx["mp"], video=lx["video"], use_ast=False, use_realness=False)
+        res["critique"] = {"summary": cr.get("summary"), "verdict": cr.get("verdict"), "score": cr.get("score"),
+                           "actions": cr.get("actions"),
+                           "metrics": [m for m in cr.get("metrics", []) if m.get("status") in ("low", "high")]}
+    except Exception as e:  # noqa: BLE001
+        notes.append(f"critique failed: {e}")
+
+
+def _realness_row(api, ctx: dict, f: str, notes: list) -> dict:
+    try:
+        r = api.realness(mix.rpath(ctx["root"], f))
+        return {"file": f, "p_real": r.get("p_real"), "verdict": r.get("verdict")}
+    except Exception as e:  # noqa: BLE001
+        notes.append(f"realness failed on {f}: {e}")
+        return {"file": f, "p_real": None, "verdict": None}
+
+
+def _not_real(r: dict) -> bool:
+    if r["p_real"] is not None:
+        return r["p_real"] < 0.5
+    return "synth" in str(r["verdict"] or "")
+
+
+def _realness(api, ctx: dict, res: dict, notes: list) -> list[str]:
+    rows = [_realness_row(api, ctx, f, notes) for f in ctx["report"].get("files_used", [])]
+    rows.sort(key=lambda r: (r["p_real"] is None, r["p_real"] or 0))
+    res["realness"] = rows
+    res["not_real"] = [r["file"] for r in rows if _not_real(r)]
+    return res["not_real"]
+
+
+def _listen_paths(ctx: dict, a) -> dict:
+    mp = None if a.master == "none" else mix.rpath(ctx["root"], a.master or "out/audio/soundtrack.wav")
+    cs = mix.rpath(ctx["root"], a.cues_sounded)
+    return {"mp": mp, "video": mix.rpath(ctx["root"], a.video) if a.video else None,
+            "cues": cs if os.path.isfile(cs) else None}
 
 
 def section_listen(ctx, a, outdir) -> dict:
@@ -995,46 +1113,11 @@ def section_listen(ctx, a, outdir) -> dict:
         return {"status": "skipped", "summary": "hark cannot be imported: run QA without --listen and call the hark "
                 "launcher (skills/hark/scripts/hark timeline ...) directly, or repair the venv"}
     res, notes = {}, []
-    mp = None if a.master == "none" else mix.rpath(ctx["root"], a.master or "out/audio/soundtrack.wav")
-    video = mix.rpath(ctx["root"], a.video) if a.video else None
-    cs = mix.rpath(ctx["root"], a.cues_sounded)
-    if a.listen and mp and os.path.isfile(mp):
-        try:
-            tl = api.timeline(mp, video=video, cues=cs if os.path.isfile(cs) else None)
-            txt = tl.get("text", "")
-            with open(os.path.join(outdir, "qa_timeline.txt"), "w") as fh:
-                fh.write(txt)
-            s = tl.get("summary", "")
-            res["timeline"] = s if len(s) <= 400 else s[:360] + " ... (see qa_timeline.txt)"
-            try:
-                api.sheet(mp, os.path.join(outdir, "qa_sheet.png"), video=video, cues=cs if os.path.isfile(cs) else None, tl=tl)
-                res["sheet"] = os.path.join(outdir, "qa_sheet.png")
-            except Exception as e:  # noqa: BLE001
-                notes.append(f"sheet failed: {e}")
-        except Exception as e:  # noqa: BLE001
-            notes.append(f"timeline failed: {e}")
-        try:
-            cr = api.critique(mp, video=video, use_ast=False, use_realness=False)
-            res["critique"] = {"summary": cr.get("summary"), "verdict": cr.get("verdict"), "score": cr.get("score"),
-                               "actions": cr.get("actions"),
-                               "metrics": [m for m in cr.get("metrics", []) if m.get("status") in ("low", "high")]}
-        except Exception as e:  # noqa: BLE001
-            notes.append(f"critique failed: {e}")
-    not_real = []
-    if a.realness:
-        rows = []
-        for f in ctx["report"].get("files_used", []):
-            try:
-                r = api.realness(mix.rpath(ctx["root"], f))
-                rows.append({"file": f, "p_real": r.get("p_real"), "verdict": r.get("verdict")})
-            except Exception as e:  # noqa: BLE001
-                rows.append({"file": f, "p_real": None, "verdict": None})
-                notes.append(f"realness failed on {f}: {e}")
-        rows.sort(key=lambda r: (r["p_real"] is None, r["p_real"] or 0))
-        not_real = [r["file"] for r in rows if (r["p_real"] is not None and r["p_real"] < 0.5)
-                    or (r["p_real"] is None and "synth" in str(r["verdict"] or ""))]
-        res["realness"] = rows
-        res["not_real"] = not_real
+    lx = dict(_listen_paths(ctx, a), api=api, outdir=outdir)
+    if a.listen and lx["mp"] and os.path.isfile(lx["mp"]):
+        _timeline(lx, res, notes)
+        _critique(lx, res, notes)
+    not_real = _realness(api, ctx, res, notes) if a.realness else []
     status = "warn" if not_real or notes else "ok"
     return {"status": status, "summary": f"{len(not_real)} recording(s) not real; {len(notes)} failed call(s)", "notes": notes, **res}
 
