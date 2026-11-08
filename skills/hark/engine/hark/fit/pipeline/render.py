@@ -64,20 +64,32 @@ def _roles(model: dict) -> set:
     return {layer.get("role") for layer in model.get("layers", [])}
 
 
+def _morph_knobs(model: dict) -> dict:
+    table = dict(knobs_of(model["a"]))
+    table["morph"] = (MORPH_RANGE, float(model.get("amount", 0.5)), "position between the 2 recordings")
+    return table
+
+
+def _hybrid_knobs(model: dict) -> dict:
+    roles = _roles(model)
+    return {k: v for k, v in KNOBS["hybrid"].items() if not k.endswith("_db") or k[:-3] in roles}
+
+
+def _gesture_knobs(model: dict) -> dict:
+    drop = () if model.get("tones") else ("tone_db", "vary")
+    return {k: v for k, v in KNOBS["gesture"].items() if k not in drop}
+
+
+_KNOB_TABLES: dict[str, Callable[[dict], dict]] = {
+    "morph": _morph_knobs, "hybrid": _hybrid_knobs, "gesture": _gesture_knobs,
+}
+
+
 def knobs_of(model: dict) -> dict:
     """The knob table of a model: name -> (search range, identity, description)."""
     name = kind_of(model)
-    if name == "morph":
-        table = dict(knobs_of(model["a"]))
-        table["morph"] = (MORPH_RANGE, float(model.get("amount", 0.5)), "position between the 2 recordings")
-        return table
-    table = dict(KNOBS[name])
-    if name == "hybrid":
-        roles = _roles(model)
-        return {k: v for k, v in table.items() if not k.endswith("_db") or k[:-3] in roles}
-    if name == "gesture" and not model.get("tones"):
-        return {k: v for k, v in table.items() if k not in ("tone_db", "vary")}
-    return table
+    table = _KNOB_TABLES.get(name)
+    return table(model) if table else dict(KNOBS[name])
 
 
 def identity(model: dict) -> dict:
@@ -92,16 +104,18 @@ def _check_knobs(model: dict, knobs: dict) -> None:
         raise ValueError(f"unknown fit knob(s) {bad}; known knobs: {known}")
 
 
+_FINISHED: dict[str, Callable[[dict], bool]] = {
+    "modal": lambda m: bool(m.get("coherent")),
+    "sines": lambda m: bool(m.get("coherent")),
+    "hybrid": lambda m: any(bool(layer["model"].get("coherent")) for layer in m.get("layers", [])),
+    "spectral": lambda m: bool(m.get("finish")),
+}
+
+
 def finished(model: dict) -> bool:
     """True when renders of this model get the finish step."""
-    name = kind_of(model)
-    if name in ("modal", "sines"):
-        return bool(model.get("coherent"))
-    if name == "hybrid":
-        return any(bool(layer["model"].get("coherent")) for layer in model.get("layers", []))
-    if name == "spectral":
-        return bool(model.get("finish"))
-    return True
+    rule = _FINISHED.get(kind_of(model))
+    return True if rule is None else rule(model)
 
 
 # ---------------------------------------------------------------- raw renders
@@ -136,23 +150,32 @@ def _raw_spectral(model: dict, seed: int, ring: bool, knobs: dict) -> np.ndarray
     return y.mean(axis=1) if channels_of(model) == 1 and y.ndim == 2 else y
 
 
+def _layer_sines(m: dict, s: int, two: bool, ring: bool, kn: dict) -> np.ndarray:
+    return _model.module("sines").render(m, seed=s, transpose=kn.get("pitch", 0.0), decay=kn.get("decay", 1.0),
+                                         brightness=kn.get("bright", 0.0), vary=kn.get("vary", 0.0), ring=ring,
+                                         stereo=bool(two and m.get("side")), width=kn.get("width", 1.0))
+
+
+def _layer_modal(m: dict, s: int, two: bool, ring: bool, kn: dict) -> np.ndarray:
+    size = 2.0 ** (-kn.get("pitch", 0.0) / 12)
+    return _model.module("modal").render(m, seed=s, size=size, damping=size / max(kn.get("decay", 1.0), 0.001),
+                                         brightness=kn.get("bright", 0.0), vary=kn.get("vary", 0.0),
+                                         width=kn.get("width", 1.0), ring=ring,
+                                         stereo=bool(two and m.get("side") is not None))
+
+
+def _layer_spectral(m: dict, s: int, two: bool, ring: bool, kn: dict) -> np.ndarray:
+    return _model.module("spectral").render(m, seed=s, shift=kn.get("pitch", 0.0) / 12, tilt=kn.get("bright", 0.0),
+                                            width=kn.get("width", 1.0), limit=False, steady=False)
+
+
+_LAYER_RENDER: dict[str, Callable] = {"sines": _layer_sines, "modal": _layer_modal}
+
+
 def _layer_render(layer: dict, i: int, seed: int, two: bool, ring: bool, kn: dict) -> np.ndarray:
     m = layer["model"]
     s = (seed * 7 + 101 * (i + 1)) & 0x7FFFFFFF
-    name = kind_of(m)
-    pitch, decay, bright = kn.get("pitch", 0.0), kn.get("decay", 1.0), kn.get("bright", 0.0)
-    vary, width = kn.get("vary", 0.0), kn.get("width", 1.0)
-    if name == "sines":
-        y = _model.module("sines").render(m, seed=s, transpose=pitch, decay=decay, brightness=bright, vary=vary,
-                                          ring=ring, stereo=bool(two and m.get("side")), width=width)
-    elif name == "modal":
-        size = 2.0 ** (-pitch / 12)
-        y = _model.module("modal").render(m, seed=s, size=size, damping=size / max(decay, 0.001),
-                                          brightness=bright, vary=vary, width=width, ring=ring,
-                                          stereo=bool(two and m.get("side") is not None))
-    else:
-        y = _model.module("spectral").render(m, seed=s, shift=pitch / 12, tilt=bright, width=width,
-                                             limit=False, steady=False)
+    y = _LAYER_RENDER.get(kind_of(m), _layer_spectral)(m, s, two, ring, kn)
     gain = float(layer.get("gain_db", 0.0)) + float(kn.get(f"{layer.get('role')}_db", 0.0))
     return _model.as_two(y, 2 if two else 1) * 10 ** (gain / 20)
 
@@ -222,47 +245,76 @@ def _owner(t: float, ts: list) -> int:
     return max(i, 0)
 
 
+def _bridge(pts: list, mine: list, ts: list, tn: list, i: int) -> list:
+    """Points of a strike that has a next strike: its own up to the gap, a bridge, then the next part."""
+    g = _curve(pts)
+    d, dn = tn[i] - ts[i], tn[i + 1] - ts[i + 1]
+    s, ns = max(ts[i + 1] - GATE_MAP_S, ts[i]), max(tn[i + 1] - GATE_MAP_S, tn[i])
+    e = min(s + d, ns)
+    out = [[t + d, v] for t, v in mine if t < s and t + d < ns]
+    out += [[e - 1e-6, g(e - d)], [ns, g(s)]]
+    return out + [[t + dn, v] for t, v in mine if t >= s]
+
+
+def _strike_points(pts: list, ts: list, tn: list, i: int) -> list:
+    """The gate points of strike i, moved with it."""
+    mine = [p for p in pts if _owner(p[0], ts) == i]
+    if i < len(ts) - 1:
+        return _bridge(pts, mine, ts, tn, i)
+    d = tn[i] - ts[i]
+    return [[t + d, v] for t, v in mine]
+
+
 def modal_gate_map(pts: list, ts: list, spacing: float) -> list:
     """Move gate breakpoints with the strikes when the spacing knob changes their gaps."""
     tn = _new_strikes(ts, spacing)
-    g = _curve(pts)
-    out: list = []
-    last = len(ts) - 1
-    for i in range(len(ts)):
-        mine = [p for p in pts if _owner(p[0], ts) == i]
-        d = tn[i] - ts[i]
-        if i == last:
-            out += [[t + d, v] for t, v in mine]
-            continue
-        s, ns = max(ts[i + 1] - GATE_MAP_S, ts[i]), max(tn[i + 1] - GATE_MAP_S, tn[i])
-        out += [[t + d, v] for t, v in mine if t < s and t + d < ns]
-        e = min(s + d, ns)
-        out += [[e - 1e-6, g(e - d)], [ns, g(s)]]
-        dn = tn[i + 1] - ts[i + 1]
-        out += [[t + dn, v] for t, v in mine if t >= s]
-    return _increasing(out)
+    return _increasing([p for i in range(len(ts)) for p in _strike_points(pts, ts, tn, i)])
 
 
 def _strike_times(model: dict) -> list:
     return [float(s["t"]) for s in model.get("strikes", [])]
 
 
+def _sines_map(model: dict, kn: dict) -> Callable[[list], list] | None:
+    if kn.get("stretch", 1.0) == 1:
+        return None
+    on, st = float(model.get("onset", 0.0)), kn["stretch"]
+    return lambda pts: [[on + (t - on) * st, d] for t, d in pts]
+
+
+def _spectral_map(model: dict, kn: dict) -> Callable[[list], list] | None:
+    sc = kn.get("length", 1.0) / max(kn.get("speed", 1.0), 0.001)
+    return None if sc == 1 else (lambda pts: [[t * sc, d] for t, d in pts])
+
+
+def _gesture_map(model: dict, kn: dict) -> Callable[[list], list] | None:
+    if kn.get("length", 1.0) == 1:
+        return None
+    on, ln = float((model.get("tones") or {}).get("onset", 0.0) or 0.0), kn["length"]
+    return lambda pts: [[on + (t - on) * ln, d] for t, d in pts]
+
+
+def _modal_map(model: dict, kn: dict) -> Callable[[list], list] | None:
+    if kn.get("spacing", 1.0) == 1 or len(model.get("strikes", [])) < 2:
+        return None
+    ts, sp = _strike_times(model), kn["spacing"]
+    return lambda pts: modal_gate_map(pts, ts, sp)
+
+
+def _same_times(pts: list) -> list:
+    return pts
+
+
+_GATE_MAPS: dict[str, Callable] = {
+    "sines": _sines_map, "spectral": _spectral_map, "gesture": _gesture_map, "modal": _modal_map,
+}
+
+
 def gate_map(model: dict, name: str, kn: dict) -> Callable[[list], list] | None:
     """The gate's time map for a kind and its knob values, or None."""
-    if name == "sines" and kn.get("stretch", 1.0) != 1:
-        on, st = float(model.get("onset", 0.0)), kn["stretch"]
-        return lambda pts: [[on + (t - on) * st, d] for t, d in pts]
-    if name == "spectral":
-        sc = kn.get("length", 1.0) / max(kn.get("speed", 1.0), 0.001)
-        if sc != 1:
-            return lambda pts: [[t * sc, d] for t, d in pts]
-    if name == "gesture" and kn.get("length", 1.0) != 1:
-        on, ln = float((model.get("tones") or {}).get("onset", 0.0) or 0.0), kn["length"]
-        return lambda pts: [[on + (t - on) * ln, d] for t, d in pts]
-    if name == "modal" and kn.get("spacing", 1.0) != 1 and len(model.get("strikes", [])) >= 2:
-        ts, sp = _strike_times(model), kn["spacing"]
-        return lambda pts: modal_gate_map(pts, ts, sp)
-    return lambda pts: pts
+    maker = _GATE_MAPS.get(name)
+    tmap = maker(model, kn) if maker else None
+    return tmap or _same_times
 
 
 # ---------------------------------------------------------------- render
@@ -291,27 +343,43 @@ def _post_and_layers(model: dict, name: str, y: np.ndarray, seed: int, take: boo
     return y
 
 
-def render_full(model: dict, seed: int = 0, take: bool | None = None, bed: bool = True, final: bool = True,
-                space: bool = True, **knobs: Any) -> np.ndarray:
-    """render with the internal switches: final=False leaves out the finish, space=False the space layer."""
-    name = kind_of(model)
-    _check_knobs(model, knobs)
-    if take is None:
-        take = float(knobs.get("vary", 0.0) or 0.0) > 0
-    if name == "morph":
-        amount = knobs.pop("morph", model.get("amount", 0.5))
-        m = morph(model["a"], model["b"], amount)
-        return render_full(m, seed, take, bed, final, space, **knobs)
-    kn = _vary_knobs(model, knobs)
+def _take_of(take: bool | None, knobs: dict) -> bool:
+    return float(knobs.get("vary", 0.0) or 0.0) > 0 if take is None else take
+
+
+def _ring_of(kn: dict, take: bool) -> bool:
     ring = kn.pop("ring", None)
-    ring = bool(take) if ring is None else bool(ring)
-    y = np.asarray(_RAW[name](model, int(seed), ring, kn), dtype=np.float64)
-    y = _post_and_layers(model, name, y, int(seed), bool(take), bed, space, kn)
+    return bool(take) if ring is None else bool(ring)
+
+
+def _final_steps(model: dict, y: np.ndarray, take: bool, final: bool) -> np.ndarray:
     if take:
         y = _post.take_highpass(y)
     if final and finished(model):
         y = finish(y)
     return y
+
+
+def _render_morph(model: dict, seed: int, take: bool, bed: bool, final: bool, space: bool,
+                  knobs: dict) -> np.ndarray:
+    kn = dict(knobs)
+    m = morph(model["a"], model["b"], kn.pop("morph", model.get("amount", 0.5)))
+    return render_full(m, seed, take, bed, final, space, **kn)
+
+
+def render_full(model: dict, seed: int = 0, take: bool | None = None, bed: bool = True, final: bool = True,
+                space: bool = True, **knobs: Any) -> np.ndarray:
+    """render with the internal switches: final=False leaves out the finish, space=False the space layer."""
+    name = kind_of(model)
+    _check_knobs(model, knobs)
+    take = _take_of(take, knobs)
+    if name == "morph":
+        return _render_morph(model, seed, take, bed, final, space, knobs)
+    kn = _vary_knobs(model, knobs)
+    ring = _ring_of(kn, take)
+    y = np.asarray(_RAW[name](model, int(seed), ring, kn), dtype=np.float64)
+    y = _post_and_layers(model, name, y, int(seed), bool(take), bed, space, kn)
+    return _final_steps(model, y, take, final)
 
 
 def render(model: dict, seed: int = 0, take: bool | None = None, bed: bool = True, **knobs: Any) -> np.ndarray:
@@ -391,22 +459,35 @@ def _indent(text: Any, pad: str = "  ") -> str:
     return "\n".join(pad + line for line in s.splitlines())
 
 
-def _kind_summary(model: dict) -> str:
-    name = kind_of(model)
-    if name == "morph":
-        head = f"morph {float(model.get('amount', 0.5)):.2f} of 2 {kind_of(model['a'])} fits"
-        return "\n".join([head, "a:", _indent(_kind_summary(model["a"])), "b:", _indent(_kind_summary(model["b"]))])
-    if name == "hybrid":
-        layers = model.get("layers", [])
-        lines = [f"hybrid of {len(layers)} layers, {1000 * float(model.get('length_s', 0)):.0f} ms"]
-        for layer in layers:
-            m = layer["model"]
-            det = "deterministic" if m.get("layer") == "deterministic" else "noise"
-            lines.append(f"{layer.get('role')}: {kind_of(m)} ({det}), gain {float(layer.get('gain_db', 0)):+.1f} dB")
-            lines.append(_indent(_kind_summary(m), "    "))
-        return "\n".join(lines)
-    s = _model.module(name).summary(model)
+def _morph_summary(model: dict) -> str:
+    head = f"morph {float(model.get('amount', 0.5)):.2f} of 2 {kind_of(model['a'])} fits"
+    return "\n".join([head, "a:", _indent(_kind_summary(model["a"])), "b:", _indent(_kind_summary(model["b"]))])
+
+
+def _layer_lines(layer: dict) -> list:
+    m = layer["model"]
+    det = "deterministic" if m.get("layer") == "deterministic" else "noise"
+    return [f"{layer.get('role')}: {kind_of(m)} ({det}), gain {float(layer.get('gain_db', 0)):+.1f} dB",
+            _indent(_kind_summary(m), "    ")]
+
+
+def _hybrid_summary(model: dict) -> str:
+    layers = model.get("layers", [])
+    lines = [f"hybrid of {len(layers)} layers, {1000 * float(model.get('length_s', 0)):.0f} ms"]
+    lines += [line for layer in layers for line in _layer_lines(layer)]
+    return "\n".join(lines)
+
+
+def _module_summary(model: dict) -> str:
+    s = _model.module(kind_of(model)).summary(model)
     return s if isinstance(s, str) else "\n".join(f"{k}: {v}" for k, v in s.items())
+
+
+_SUMMARIES: dict[str, Callable[[dict], str]] = {"morph": _morph_summary, "hybrid": _hybrid_summary}
+
+
+def _kind_summary(model: dict) -> str:
+    return _SUMMARIES.get(kind_of(model), _module_summary)(model)
 
 
 def summary(model: dict) -> str:

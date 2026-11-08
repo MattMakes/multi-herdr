@@ -213,22 +213,24 @@ def mel_distance(a: np.ndarray, b: np.ndarray, detail: bool = False) -> Any:
     return (total, d) if detail else total
 
 
-def env_corr(a: np.ndarray, b: np.ndarray) -> float:
-    """Pearson correlation of the 5 ms dB envelopes over active frames."""
+def _active_envs(a: np.ndarray, b: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """The 5 ms dB envelopes on the frames within 60 dB of the joint top, floored there."""
     ea, eb = env_db(a), env_db(b)
     n = min(len(ea), len(eb))
-    ea, eb = ea[:n], eb[:n]
     if n == 0:
-        return 0.0
+        return np.zeros(0), np.zeros(0)
+    ea, eb = ea[:n], eb[:n]
     top = max(ea.max(), eb.max())
     ea, eb = np.maximum(ea, top - 60), np.maximum(eb, top - 60)
     act = np.maximum(ea, eb) > top - 60
-    if act.sum() <= 3:
-        return 0.0
-    xa, xb = ea[act], eb[act]
-    if xa.std() < 1e-9 or xb.std() < 1e-9:
-        return 0.0
-    return float(np.corrcoef(xa, xb)[0, 1])
+    return ea[act], eb[act]
+
+
+def env_corr(a: np.ndarray, b: np.ndarray) -> float:
+    """Pearson correlation of the 5 ms dB envelopes over active frames."""
+    xa, xb = _active_envs(a, b)
+    ok = len(xa) > 3 and xa.std() >= 1e-9 and xb.std() >= 1e-9
+    return float(np.corrcoef(xa, xb)[0, 1]) if ok else 0.0
 
 
 def excess(a: np.ndarray, b: np.ndarray) -> tuple[float, float]:
@@ -276,37 +278,58 @@ def _band_ratio(sp: dict, end_frame: int) -> tuple[float, np.ndarray, np.ndarray
     return side, np.clip(10 * np.log10(ps / pm), -40, 10), 10 * np.log10(pm)
 
 
-def stereo(a: np.ndarray, b: np.ndarray) -> dict:
-    """side_db, width_db, tail_corr and tail_corr_err of render b against a."""
-    a, b = np.asarray(a, dtype=np.float64), np.asarray(b, dtype=np.float64)
-    if a.ndim < 2 and b.ndim < 2:
-        return _null_stereo()
-    from hark.fit.analysis import space
-
+def _stereo_pair(a: np.ndarray, b: np.ndarray) -> tuple | None:
+    """Both sounds as 2 channels from 2 ms before the onset, padded to one length; None when too short."""
     sa, sb = _two(a), _two(b)
     on = max(0, onset_index(sa.mean(axis=1)) - _LEAD)
     sa, sb = sa[on:], sb[on:]
     n = max(len(sa), len(sb))
     if n < 64:
-        return _null_stereo()
-    sa, sb = np.pad(sa, ((0, n - len(sa)), (0, 0))), np.pad(sb, ((0, n - len(sb)), (0, 0)))
-    end = max(int(space.active_span(sa)[2]), min(n, 960))
-    side, ratio, level = [], [], None
-    for s in (sa, sb):
+        return None
+    return np.pad(sa, ((0, n - len(sa)), (0, 0))), np.pad(sb, ((0, n - len(sb)), (0, 0)))
+
+
+def _side_bands(space: Any, pair: tuple, end: int) -> tuple[list, list, np.ndarray]:
+    """Side level per sound, side ratio per band per sound, and the original's band levels."""
+    side, ratio, levels = [], [], []
+    for s in pair:
         sp = space.side_powers(s[:end])
         sd, r, lv = _band_ratio(sp, len(np.asarray(sp["t"])))
         side.append(round(sd, 2))
         ratio.append(r)
-        level = lv if level is None else level
+        levels.append(lv)
+    return side, ratio, levels[0]
+
+
+def _width(ratio: list, level: np.ndarray) -> float:
     w = np.clip((level - level.max() + 40) / 40, 0, 1)
-    width = float(np.sum(w * np.minimum(np.abs(ratio[0] - ratio[1]), 30)) / max(w.sum(), 1e-9))
+    return float(np.sum(w * np.minimum(np.abs(ratio[0] - ratio[1]), 30)) / max(w.sum(), 1e-9))
+
+
+def _tail_corr(space: Any, sa: np.ndarray, sb: np.ndarray) -> tuple:
     span = space.tail_span(sa)
-    tc: tuple = (None, None)
-    if span is not None:
-        i, j = int(span[0]), int(span[1])
-        tc = tuple(_round(space.corr(s[i:j, 0], s[i:j, 1]), 4) for s in (sa, sb))
+    if span is None:
+        return None, None
+    i, j = int(span[0]), int(span[1])
+    return tuple(_round(space.corr(s[i:j, 0], s[i:j, 1]), 4) for s in (sa, sb))
+
+
+def _stereo_measures(sa: np.ndarray, sb: np.ndarray) -> dict:
+    from hark.fit.analysis import space
+
+    end = max(int(space.active_span(sa)[2]), min(len(sa), 960))
+    side, ratio, level = _side_bands(space, (sa, sb), end)
+    tc = _tail_corr(space, sa, sb)
     err = abs(tc[0] - tc[1]) if None not in tc else 0.0
-    return {"side_db": tuple(side), "width_db": round(width, 3), "tail_corr": tc, "tail_corr_err": round(err, 4)}
+    return {"side_db": tuple(side), "width_db": round(_width(ratio, level), 3), "tail_corr": tc,
+            "tail_corr_err": round(err, 4)}
+
+
+def stereo(a: np.ndarray, b: np.ndarray) -> dict:
+    """side_db, width_db, tail_corr and tail_corr_err of render b against a."""
+    a, b = np.asarray(a, dtype=np.float64), np.asarray(b, dtype=np.float64)
+    pair = _stereo_pair(a, b) if a.ndim >= 2 or b.ndim >= 2 else None
+    return _null_stereo() if pair is None else _stereo_measures(*pair)
 
 
 def _two(x: np.ndarray) -> np.ndarray:
@@ -327,19 +350,22 @@ def _round(v: Any, nd: int) -> Any:
 def _mono_measures(original: np.ndarray, resynth: np.ndarray) -> dict:
     a, b = _aligned(original, resynth)
     mel, parts = mel_distance(a, b, detail=True)
-    at_a, sh_a = attack(a)
-    at_b, sh_b = attack(b)
     ex, mi = excess(a, b)
-    return {
+    q = {
         "mel_db": round(mel, 3),
         "mel_256": round(parts[256], 2), "mel_1024": round(parts[1024], 2), "mel_4096": round(parts[4096], 2),
         "env_corr": round(env_corr(a, b), 4),
-        "attack_ms": (round(at_a, 2), round(at_b, 2)),
-        "sharp_db_ms": (round(sh_a, 2), round(sh_b, 2)),
-        "onset_err": round(abs(math.log2(sh_b / sh_a)), 3),
-        "excess_db": round(ex, 3), "missing_db": round(mi, 3),
-        "t40_ms": (round(t40(a), 1), round(t40(b), 1)),
     }
+    q.update(_attack_measures(a, b))
+    q.update({"excess_db": round(ex, 3), "missing_db": round(mi, 3), "t40_ms": (round(t40(a), 1), round(t40(b), 1))})
+    return q
+
+
+def _attack_measures(a: np.ndarray, b: np.ndarray) -> dict:
+    at_a, sh_a = attack(a)
+    at_b, sh_b = attack(b)
+    return {"attack_ms": (round(at_a, 2), round(at_b, 2)), "sharp_db_ms": (round(sh_a, 2), round(sh_b, 2)),
+            "onset_err": round(abs(math.log2(sh_b / sh_a)), 3)}
 
 
 def quality(original: Any, resynth: Any, clap: bool = False, describe: bool = False) -> dict:
@@ -454,6 +480,35 @@ def _spec_db(m: np.ndarray) -> np.ndarray:
     return _db(_stft_power(m, 1024, 128)).T
 
 
+def _columns(original: Any, resynth: Any, extra: tuple | None) -> list:
+    """(name, mono signal) per column, zero-padded to one length."""
+    cols = [("original", mono(load(original))), ("resynthesis", mono(load(resynth)))]
+    if extra is not None:
+        cols.append((extra[0], mono(load(extra[1]))))
+    n = max(len(c[1]) for c in cols)
+    return [(name, np.pad(m, (0, n - len(m)))) for name, m in cols]
+
+
+def _spec_panels(fig: Any, grid: Any, cols: list) -> None:
+    specs = [_spec_db(m) for _, m in cols]
+    top = max(s.max() for s in specs)
+    f = np.maximum(np.arange(513) * SR / 1024, 1)
+    t = np.arange(specs[0].shape[1]) * 128 / SR
+    for i, ((name, _), s) in enumerate(zip(cols, specs)):
+        ax = fig.add_subplot(grid[0, i])
+        ax.pcolormesh(t, f, s, vmin=top - 90, vmax=top, shading="auto")
+        ax.set_yscale("log")
+        ax.set_ylim(40, 22000)
+        ax.set_title(name)
+
+
+def _heading(title: str | None, q: dict | None) -> str:
+    head = title or ""
+    if q is not None:
+        head = (head + "\n" if head else "") + text(q)
+    return head
+
+
 def pair_png(path: str, original: Any, resynth: Any, title: str | None = None, q: dict | None = None,
              extra: tuple | None = None) -> str:
     """Write the side-by-side picture of original, render and an optional third sound."""
@@ -462,28 +517,13 @@ def pair_png(path: str, original: Any, resynth: Any, title: str | None = None, q
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
 
-    cols = [("original", mono(load(original))), ("resynthesis", mono(load(resynth)))]
-    if extra is not None:
-        cols.append((extra[0], mono(load(extra[1]))))
-    n = max(len(c[1]) for c in cols)
-    cols = [(name, np.pad(m, (0, n - len(m)))) for name, m in cols]
-    specs = [_spec_db(m) for _, m in cols]
-    top = max(s.max() for s in specs)
+    cols = _columns(original, resynth, extra)
     fig = plt.figure(figsize=(4.4 * len(cols), 6.2), dpi=110)
     grid = fig.add_gridspec(2, len(cols))
-    f = np.arange(513) * SR / 1024
-    t = np.arange(specs[0].shape[1]) * 128 / SR
-    for i, ((name, _), s) in enumerate(zip(cols, specs)):
-        ax = fig.add_subplot(grid[0, i])
-        ax.pcolormesh(t, np.maximum(f, 1), s, vmin=top - 90, vmax=top, shading="auto")
-        ax.set_yscale("log")
-        ax.set_ylim(40, 22000)
-        ax.set_title(name)
+    _spec_panels(fig, grid, cols)
     _env_panel(fig.add_subplot(grid[1, : max(1, len(cols) - 1)]), cols)
     _tone_panel(fig.add_subplot(grid[1, len(cols) - 1]), cols)
-    head = title or ""
-    if q is not None:
-        head = (head + "\n" if head else "") + text(q)
+    head = _heading(title, q)
     if head:
         fig.suptitle(head, fontsize=7)
     os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
