@@ -79,8 +79,8 @@ def _caps(cat: str) -> int:
     return min(len(finals(cat)), len(bench_refs(cat)))
 
 
-def allocate(n: int) -> dict[str, int]:
-    """Trials per PLAN category: 1 each, then up to min(2, plan), then round-robin up to the inputs."""
+def _first_rounds(n: int) -> tuple[dict[str, int], int]:
+    """1 trial per category, then up to min(2, plan); (allocation, trials left)."""
     alloc = {c: 0 for c, *_ in PLAN}
     left = n
     for c, *_ in PLAN:
@@ -89,11 +89,22 @@ def allocate(n: int) -> dict[str, int]:
     for c, _, t, _ in PLAN:
         if left and alloc[c] < min(2, t):
             alloc[c], left = alloc[c] + 1, left - 1
+    return alloc, left
+
+
+def _round_robin(alloc: dict[str, int], left: int) -> tuple[int, bool]:
+    grew = False
+    for c, *_ in PLAN:
+        if left and alloc[c] < _caps(c):
+            alloc[c], left, grew = alloc[c] + 1, left - 1, True
+    return left, grew
+
+
+def allocate(n: int) -> dict[str, int]:
+    """Trials per PLAN category: 1 each, then up to min(2, plan), then round-robin up to the inputs."""
+    alloc, left = _first_rounds(n)
     while left:
-        grew = False
-        for c, *_ in PLAN:
-            if left and alloc[c] < _caps(c):
-                alloc[c], left, grew = alloc[c] + 1, left - 1, True
+        left, grew = _round_robin(alloc, left)
         if not grew:
             raise SystemExit(f"cannot build {n} trials: not enough finals / bench refs")
     return {c: k for c, k in alloc.items() if k}
@@ -120,14 +131,15 @@ class _Picker:
 
         return sorted(self.alloc, key=key)
 
+    def _free(self, c: str) -> list[str]:
+        return [p for p in self.refs[c] if self.dig[p] not in self.used_dig]
+
     def available(self, c: str) -> list[str]:
-        free = [p for p in self.refs[c] if self.dig[p] not in self.used_dig]
+        free = self._free(c)
         clean = [p for p in free if bt.facts(p, True)[1]]
         fresh = [p for p in free if source_of(p) not in self.used_src]
-        for pool in ([p for p in clean if p in fresh], clean, fresh, free):
-            if pool:
-                return pool
-        return []
+        both = [p for p in clean if p in fresh]
+        return next((pool for pool in (both, clean, fresh, free) if pool), [])
 
     def _gap(self, m: str, refs: list[str]) -> float:
         em = max(bt.facts(m, False)[0], 1e-4)
@@ -141,10 +153,12 @@ class _Picker:
         ok = [m for m in fs if self._gap(m, av) <= math.log(bt.COMPAT)]
         clean = [m for m in ok if bt.facts(m, False)[1]]
         if len(clean) >= k:
-            return clean
-        if len(ok) >= k:
-            return ok
-        return sorted(fs, key=lambda m: (self._gap(m, av), m))[:k]
+            pool = clean
+        elif len(ok) >= k:
+            pool = ok
+        else:
+            pool = sorted(fs, key=lambda m: (self._gap(m, av), m))[:k]
+        return pool
 
     def _real_for(self, c: str, m: str) -> str:
         av = self.available(c)
@@ -200,22 +214,39 @@ def pick_trials(n: int, seed: int) -> list[dict]:
 
 # ---------------------------------------------------------------- one pair
 
-def _pair(t: dict) -> dict:
-    real, made = bt.load_audio(t["real"]), bt.load_audio(t["made"])
-    cls = bt._cls(bt.extent_s(real), bt.extent_s(made))
+def _analyse_pair(t: dict, real: np.ndarray, made: np.ndarray, cls: str) -> tuple[dict, dict, tuple]:
     ir = bt.analyse(real, cls, bt.end_fade_s(t["real"]), bt.source_floor(t["real"]), cut_file=True)
     im = bt.analyse(made, cls, bt.MADE_FADE_GUARD, None, cut_file=False)
-    lv = bt.pair_levels(ir, im)
+    return ir, im, bt.pair_levels(ir, im)
+
+
+def _cut_pair(real: np.ndarray, made: np.ndarray, ir: dict, im: dict, lv: tuple) -> tuple:
     keep = ir["peak_late"] and im["peak_late"]
     cr, fr = bt.cut(real, ir, lv[0], lv[1], keep)
     cm, fm = bt.cut(made, im, lv[0], lv[1], keep)
+    return cr, cm, (fr, fm)
+
+
+def _level_pair(cr: np.ndarray, cm: np.ndarray, cls: str) -> tuple:
     g, gc, over = bt.match_pair(cr, cm, cls)
-    cr, cm = cr * 10 ** (gc / 20), cm * 10 ** ((g + gc) / 20)
+    return cr * 10 ** (gc / 20), cm * 10 ** ((g + gc) / 20), (g, gc, over)
+
+
+def _played(cr: np.ndarray, cm: np.ndarray, cls: str) -> tuple[dict, dict]:
     nf = int(bt.FADE_IN_S * SR)
-    mr, mm = bt.measure_clip(cr, cls, nf), bt.measure_clip(cm, cls, nf)
-    fails, warns, row = bt.check_pair((mr, mm), (fr, fm), lv, cls, gc)
-    return {"real": cr, "made": cm, "cls": cls, "levels": lv, "facts": (fr, fm), "gains": (g, gc, over),
-            "played": (mr, mm), "fails": fails, "warns": warns, "row": row,
+    return bt.measure_clip(cr, cls, nf), bt.measure_clip(cm, cls, nf)
+
+
+def _pair(t: dict) -> dict:
+    real, made = bt.load_audio(t["real"]), bt.load_audio(t["made"])
+    cls = bt._cls(bt.extent_s(real), bt.extent_s(made))
+    ir, im, lv = _analyse_pair(t, real, made, cls)
+    cr, cm, facts = _cut_pair(real, made, ir, im, lv)
+    cr, cm, gains = _level_pair(cr, cm, cls)
+    played = _played(cr, cm, cls)
+    fails, warns, row = bt.check_pair(played, facts, lv, cls, gains[1])
+    return {"real": cr, "made": cm, "cls": cls, "levels": lv, "facts": facts, "gains": gains,
+            "played": played, "fails": fails, "warns": warns, "row": row,
             "files": (len(real) / SR, len(made) / SR), "extents": (bt.extent_s(real), bt.extent_s(made))}
 
 
@@ -230,22 +261,32 @@ def _md5(p: str) -> str:
     return hashlib.md5(Path(p).read_bytes()).hexdigest()
 
 
-def _key_entry(i: int, t: dict, pr: dict, a: tuple, b: tuple) -> dict:
-    g, gc, over = pr["gains"]
+def _key_head(i: int, t: dict, a: tuple, b: tuple) -> dict:
     return {"trial": i, "category": t["category"], "sound": t["sound"], "tier": t["tier"], "A_start": a[0],
             "B_start": b[0], "A_length_s": round(a[1], 6), "B_length_s": round(b[1], 6), "real": t["real_is"],
             "real_file": _rel(t["real"]), "made_file": _rel(t["made"]), "source_reused": t["source_reused"],
-            "clean_trim": t["clean"], "file_lengths_s": {"real": round(pr["files"][0], 3),
-                                                         "made": round(pr["files"][1], 3)},
+            "clean_trim": t["clean"]}
+
+
+def _key_trim(pr: dict) -> dict:
+    return {"file_lengths_s": {"real": round(pr["files"][0], 3), "made": round(pr["files"][1], 3)},
             "extents_s": {"real": round(pr["extents"][0], 3), "made": round(pr["extents"][1], 3)},
             "class": pr["cls"], "L_on": round(pr["levels"][0], 2), "L_end": round(pr["levels"][1], 2),
-            "trim_real": pr["facts"][0], "trim_made": pr["facts"][1], "pool": t["pool"],
-            "match": f"K-weighted loudest {bt.WIN[pr['cls']] * 1000:.0f} ms matched; real at "
+            "trim_real": pr["facts"][0], "trim_made": pr["facts"][1]}
+
+
+def _key_level(pr: dict) -> dict:
+    g, gc, over = pr["gains"]
+    return {"match": f"K-weighted loudest {bt.WIN[pr['cls']] * 1000:.0f} ms matched; real at "
                      f"{bt.TARGET[pr['cls']]:g} LUFS on that window unless a true peak would pass -1 dBTP",
             "made_gain_db": round(g, 3), "pair_gain_db": round(gc, 3), "peak_cap_drop_db": round(over, 3),
             "played": {"real": _round(pr["played"][0]), "made": _round(pr["played"][1])},
-            "fails": pr["fails"], "warnings": pr["warns"], "note": NOTES.get(t["category"]),
-            "md5": {"real": _md5(t["real"]), "made": _md5(t["made"])}}
+            "fails": pr["fails"], "warnings": pr["warns"]}
+
+
+def _key_entry(i: int, t: dict, pr: dict, a: tuple, b: tuple) -> dict:
+    return {**_key_head(i, t, a, b), **_key_trim(pr), "pool": t["pool"], **_key_level(pr),
+            "note": NOTES.get(t["category"]), "md5": {"real": _md5(t["real"]), "made": _md5(t["made"])}}
 
 
 def _round(d: dict) -> dict:
@@ -286,23 +327,28 @@ def _reel(clips: list[tuple], total: float) -> tuple[np.ndarray, list[str]]:
     return buf, fails
 
 
-def _summary(pairs: list[dict], trials: list[dict], reel_fails: list[str]) -> dict:
-    rows = [p["row"] for p in pairs]
-    fails = [f"trial {i} ({t['sound']}): {f}" for i, (t, p) in enumerate(zip(trials, pairs), 1) for f in p["fails"]]
-    warns = [f"trial {i} ({t['sound']}): {w}" for i, (t, p) in enumerate(zip(trials, pairs), 1) for w in p["warns"]]
-    fails += reel_fails
+def _trial_msgs(trials: list[dict], pairs: list[dict], key: str) -> list[str]:
+    return [f"trial {i} ({t['sound']}): {f}" for i, (t, p) in enumerate(zip(trials, pairs), 1) for f in p[key]]
 
+
+def _maxima(rows: list[dict]) -> dict:
     def mx(k: str) -> float | None:
         v = [r[k] for r in rows if r.get(k) is not None]
         return round(max(v), 3) if v else None
 
     margins = [r["floor_margin_db"] for r in rows if r.get("floor_margin_db") is not None]
+    return {"max_loud_diff_lu": mx("loud_diff"), "max_meter_diff_lu": mx("meter_diff"),
+            "max_true_peak_dbtp": mx("tp_max"), "max_tp_diff_db": mx("tp_diff"),
+            "max_preroll_dbfs": mx("preroll_max_dbfs"), "max_floor_played_dbfs": mx("floor_played_dbfs"),
+            "max_length_ratio": mx("length_ratio"), "min_floor_margin_db": round(min(margins), 2) if margins else None}
+
+
+def _summary(pairs: list[dict], trials: list[dict], reel_fails: list[str]) -> dict:
+    fails = _trial_msgs(trials, pairs, "fails") + reel_fails
+    warns = _trial_msgs(trials, pairs, "warns")
     return {"status": "FAIL" if fails else "PASS", "trials": len(pairs),
             "pairs_with_fails": sum(1 for p in pairs if p["fails"]),
-            "pairs_with_warnings": sum(1 for p in pairs if p["warns"]), "max_loud_diff_lu": mx("loud_diff"),
-            "max_meter_diff_lu": mx("meter_diff"), "max_true_peak_dbtp": mx("tp_max"), "max_tp_diff_db": mx("tp_diff"),
-            "max_preroll_dbfs": mx("preroll_max_dbfs"), "max_floor_played_dbfs": mx("floor_played_dbfs"),
-            "max_length_ratio": mx("length_ratio"), "min_floor_margin_db": round(min(margins), 2) if margins else None,
+            "pairs_with_warnings": sum(1 for p in pairs if p["warns"]), **_maxima([p["row"] for p in pairs]),
             "gaps_silent": "gaps are not digital silence" not in reel_fails, "fails": fails, "warnings": warns}
 
 
@@ -361,45 +407,69 @@ def _status_line(summary: dict) -> str:
             f"{len(summary['warnings'])} warnings" + "".join(f"\n  {x}" for x in summary["fails"] + summary["warnings"]))
 
 
-def build_blind(out: Any, n: int = 20, seed: int = 2026, quiet: bool = False, allow_fail: bool = False,
-                dry_run: bool = False) -> dict:
-    """Build the blind test folder; returns {'code', 'summary'}."""
-    bt.MANIFEST = Path(MANIFEST)
-    bt._manifest_index.cache_clear()
+def _same_inputs(before: dict, after: dict) -> None:
+    if after != before:
+        changed = sorted(os.path.basename(p) for p in set(before) | set(after) if before.get(p) != after.get(p))
+        raise SystemExit(f"input files changed while building ({', '.join(changed[:5])})")
+
+
+def _assemble(n: int, seed: int) -> tuple[dict, tuple]:
+    """(summary, (clips, reel, pairs, keys, total)); stops when an input file changes during the build."""
     before = _fingerprint()
     trials = pick_trials(n, seed)
     pairs = [_pair(t) for t in trials]
     clips, total = _place(trials, pairs)
     keys = [_key_entry(i, t, pr, (a[0], len(a[1]) / SR), (b[0], len(b[1]) / SR))
             for i, (t, pr, (a, b)) in enumerate(zip(trials, pairs, clips), 1)]
-    after = _fingerprint()
-    if after != before:
-        changed = sorted(os.path.basename(p) for p in set(before) | set(after) if before.get(p) != after.get(p))
-        raise SystemExit(f"input files changed while building ({', '.join(changed[:5])})")
+    _same_inputs(before, _fingerprint())
     reel, reel_fails = _reel(clips, total)
-    summary = _summary(pairs, trials, reel_fails)
+    return _summary(pairs, trials, reel_fails), (clips, reel, pairs, keys, total)
+
+
+def _print_fail(summary: dict) -> None:
+    print(f"CLEANLINESS FAIL (nothing written; {len(summary['fails'])} fails)")
+    for f in summary["fails"]:
+        print(f"  {f}")
+
+
+def build_blind(out: Any, n: int = 20, seed: int = 2026, quiet: bool = False, allow_fail: bool = False,
+                dry_run: bool = False) -> dict:
+    """Build the blind test folder; returns {'code', 'summary'}."""
+    bt.MANIFEST = Path(MANIFEST)
+    bt._manifest_index.cache_clear()
+    summary, parts = _assemble(n, seed)
     if dry_run:
         print(_status_line(summary))
-        return {"code": 0 if summary["status"] == "PASS" else 2, "summary": summary}
-    if summary["status"] == "FAIL" and not allow_fail:
-        print(f"CLEANLINESS FAIL (nothing written; {len(summary['fails'])} fails)")
-        for f in summary["fails"]:
-            print(f"  {f}")
-        return {"code": 2, "summary": summary}
-    _write(Path(out), clips, reel, pairs, keys, summary, seed, n, total, quiet)
+    elif summary["status"] == "FAIL" and not allow_fail:
+        _print_fail(summary)
+    else:
+        _write(Path(out), parts, summary, (seed, n, quiet))
     return {"code": 0 if summary["status"] == "PASS" else 2, "summary": summary}
 
 
-def _write(out: Path, clips: list, reel: np.ndarray, pairs: list, keys: list, summary: dict, seed: int, n: int,
-           total: float, quiet: bool) -> None:
+def _key_doc(seed: int, keys: list, summary: dict, pairs: list) -> dict:
+    return {"seed": seed, "built": time.strftime("%Y-%m-%d %H:%M"), "trials": keys, "excluded": EXCLUDED,
+            "cleanliness": summary, "how": "real = the side (A or B) that plays the real recording",
+            "residual_signs_made_vs_real": _residual(pairs)}
+
+
+def _write_docs(out: Path, clean: dict, key: dict, summary: dict) -> None:
+    from hark.forge.engine.eval.blind_sheet import SCORE_SCRIPT
+
+    (out / "cleanliness.json").write_text(json.dumps(clean, indent=1))
+    key["cleanliness"] = summary
+    (out / "KEY_open_after.json").write_text(json.dumps(key, indent=1))
+    (out / "score_answers.py").write_text(SCORE_SCRIPT)
+
+
+def _write(out: Path, parts: tuple, summary: dict, run: tuple) -> None:
     from hark.core.audio import write_wav
 
-    from hark.forge.engine.eval.blind_sheet import SCORE_SCRIPT, answer_sheet
+    from hark.forge.engine.eval.blind_sheet import answer_sheet
 
+    clips, reel, pairs, keys, total = parts
     clean = _cleanliness(summary, pairs)
-    key = {"seed": seed, "built": time.strftime("%Y-%m-%d %H:%M"), "trials": keys, "excluded": EXCLUDED,
-           "cleanliness": summary, "how": "real = the side (A or B) that plays the real recording",
-           "residual_signs_made_vs_real": _residual(pairs)}
+    key = _key_doc(run[0], keys, summary, pairs)
     json.dumps(clean)
     json.dumps(key)
     if not np.all(np.isfinite(reel)):
@@ -408,13 +478,10 @@ def _write(out: Path, clips: list, reel: np.ndarray, pairs: list, keys: list, su
     _write_trials(out, clips)
     write_wav(str(out / "blind_test.wav"), reel, SR, "PCM_24")
     _verify(out, pairs, summary)
-    (out / "cleanliness.json").write_text(json.dumps(clean, indent=1))
-    key["cleanliness"] = summary
-    (out / "KEY_open_after.json").write_text(json.dumps(key, indent=1))
-    (out / "score_answers.py").write_text(SCORE_SCRIPT)
-    sheet = answer_sheet(keys, summary, total, n)
+    _write_docs(out, clean, key, summary)
+    sheet = answer_sheet(keys, summary, total, run[1])
     (out / "answer_sheet.txt").write_text(sheet)
-    if not quiet:
+    if not run[2]:
         print(sheet)
 
 
@@ -425,8 +492,7 @@ def _path(p: str) -> Path:
     return q if q.is_absolute() else REPO / q
 
 
-def main(argv: Sequence[str] | None = None) -> int:
-    """Build the blind test and, unless skipped, the progress file."""
+def _parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(prog="python -m hark.forge.engine.eval.blind_v2")
     ap.add_argument("--out", default=str(OUT_DEFAULT))
     ap.add_argument("--progress", default=None)
@@ -436,7 +502,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     ap.add_argument("--only", choices=("blind", "progress"), default=None)
     ap.add_argument("--allow-fail", action="store_true")
     ap.add_argument("--dry-run", action="store_true")
-    a = ap.parse_args(argv)
+    return ap
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    """Build the blind test and, unless skipped, the progress file."""
+    a = _parser().parse_args(argv)
     out = _path(a.out)
     if a.only != "progress":
         res = build_blind(out, a.n, a.seed, allow_fail=a.allow_fail, dry_run=a.dry_run)
