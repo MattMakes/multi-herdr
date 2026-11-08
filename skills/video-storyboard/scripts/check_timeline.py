@@ -70,6 +70,7 @@ CAPTURE_SCALE_STEP = 0.5
 MENU_MESSAGE = "ui and menu scenes total %.3f s; the scaled limit is %.3f s (8 s per 80 s of film)"
 ENERGY_MIN, ENERGY_MAX = 0, 10
 MAX_GAP_BARS = 2
+REMOVED_SILENCE_KEY = "payoff_silence_sec"
 BEATS_PER_BAR = 4
 HERO_EARLIEST, HERO_LATEST = 0.30, 0.90
 MIN_DIRECTIONS = 3
@@ -139,11 +140,15 @@ def check_meta(meta, report):
         report.add("schema", "meta.bpm must be a number > 0 when present")
     if "terms" in meta and not (isinstance(meta["terms"], list) and all(non_empty_str(t) for t in meta["terms"])):
         report.add("schema", "meta.terms must be a list of non-empty strings when present")
-    for key in ("hero_sec", "payoff_silence_sec"):
+    for key in ("hero_sec", "payoff_breakdown_sec"):
         if key in meta and not is_range(meta[key], meta.get("duration_sec")):
             report.add("schema", "meta.%s must be [start_sec, end_sec] with 0 <= start_sec < end_sec <= meta.duration_sec" % key)
-    if "payoff_silence_sec" in meta and "hero_sec" not in meta:
-        report.add("schema", "meta.payoff_silence_sec needs meta.hero_sec")
+    if "payoff_breakdown_sec" in meta and "hero_sec" not in meta:
+        report.add("schema", "meta.payoff_breakdown_sec needs meta.hero_sec")
+    if REMOVED_SILENCE_KEY in meta:
+        report.add("schema", "meta.%s is removed: do not plan silence before the payoff. "
+                   "Delete it, or use the optional meta.payoff_breakdown_sec (a dip of at most 12 dB, never silent)"
+                   % REMOVED_SILENCE_KEY)
 
 
 def is_range(value, duration):
@@ -700,8 +705,6 @@ def check_event_gap(meta, scenes, rhythm, report):
     events = {0.0, meta["duration_sec"]} | {scene["start_sec"] for scene in scenes}
     events |= {event for item in rhythm for event in item.get("events_sec", [])}
     stops = [(item["start_sec"], item["end_sec"]) for item in rhythm if item.get("stop")]
-    if "payoff_silence_sec" in meta:
-        stops.append(tuple(meta["payoff_silence_sec"]))
     ordered = sorted(events)
     for a, b in zip(ordered, ordered[1:]):
         for start, end in open_pieces(a, b, stops):
@@ -726,12 +729,9 @@ def check_hero(meta, report):
             "meta.hero_sec [%.3f, %.3f] s must sit inside %.3f s to %.3f s (30 %% to 90 %% of the film)"
             % (hero[0], hero[1], HERO_EARLIEST * duration, HERO_LATEST * duration),
         )
-    silence = meta.get("payoff_silence_sec")
-    if silence is None:
-        if "bpm" in meta:
-            report.add("hero", "a film with music (meta.bpm) needs meta.payoff_silence_sec before the hero")
-    elif silence[1] > hero[0] + START_TOLERANCE_SEC:
-        report.add("hero", "meta.payoff_silence_sec ends at %.3f s, after the hero start %.3f s" % (silence[1], hero[0]))
+    breakdown = meta.get("payoff_breakdown_sec")
+    if breakdown is not None and breakdown[1] > hero[0] + START_TOLERANCE_SEC:
+        report.add("hero", "meta.payoff_breakdown_sec ends at %.3f s, after the hero start %.3f s" % (breakdown[1], hero[0]))
 
 
 def check_menu_time(meta, scenes, report):
@@ -1095,13 +1095,13 @@ def self_test():
             return {error["rule"] for error in check_directions(tmp)}
 
     def music_timeline():
-        """valid_timeline() with music: bpm 120 (1 bar = 2 s), rhythm, hero, silence and terms."""
+        """valid_timeline() with music: bpm 120 (1 bar = 2 s), rhythm, hero, breakdown and terms."""
         timeline = valid_timeline()
         timeline["meta"].update({
             "bpm": 120,
             "terms": ["flaky tests"],
             "hero_sec": [12.0, 13.5],
-            "payoff_silence_sec": [11.5, 12.0],
+            "payoff_breakdown_sec": [11.5, 12.0],
         })
         timeline["scenes"][0]["narration"] = "Flaky tests waste hours."
         timeline["scenes"][0]["caption"] = "Stop flaky tests"
@@ -1469,7 +1469,7 @@ def self_test():
             # 30 % of 15 s is 4.5 s, 90 % is 13.5 s.
             self.timeline = music_timeline()
             self.timeline["meta"]["hero_sec"] = [13.0, 14.0]
-            self.timeline["meta"]["payoff_silence_sec"] = [12.5, 13.0]
+            self.timeline["meta"]["payoff_breakdown_sec"] = [12.5, 13.0]
             self.timeline["rhythm"][3:] = [
                 {"start_sec": 11.5, "end_sec": 12.5, "energy": 4},
                 {"start_sec": 12.5, "end_sec": 13.0, "energy": 0, "stop": True},
@@ -1478,17 +1478,22 @@ def self_test():
             self.assertEqual(rules_of(self.timeline), {"hero"})
             self.assert_cli_fails_with("hero")
 
-        def test_13_hero_needs_silence_with_music(self):
+        def test_13_music_needs_no_payoff_field(self):
             self.timeline = music_timeline()
-            del self.timeline["meta"]["payoff_silence_sec"]
-            self.timeline["rhythm"][3]["stop"] = False
-            self.timeline["rhythm"][3]["events_sec"] = [11.75]
+            del self.timeline["meta"]["payoff_breakdown_sec"]
+            self.assertEqual(rules_of(self.timeline), set())
+
+        def test_13_breakdown_must_end_by_hero_start(self):
+            self.timeline = music_timeline()
+            self.timeline["meta"]["payoff_breakdown_sec"] = [11.5, 12.5]
             self.assertEqual(rules_of(self.timeline), {"hero"})
 
-        def test_13_silence_must_end_by_hero_start(self):
+        def test_13_removed_silence_field_is_rejected(self):
             self.timeline = music_timeline()
-            self.timeline["meta"]["payoff_silence_sec"] = [11.5, 12.5]
-            self.assertEqual(rules_of(self.timeline), {"hero"})
+            del self.timeline["meta"]["payoff_breakdown_sec"]
+            self.timeline["meta"][REMOVED_SILENCE_KEY] = [11.5, 12.0]
+            self.assertEqual(rules_of(self.timeline), {"schema"})
+            self.assert_cli_fails_with("schema")
 
         def test_13_hero_without_music_needs_no_silence(self):
             self.timeline["meta"]["hero_sec"] = [12.0, 13.5]
@@ -1497,14 +1502,14 @@ def self_test():
         def test_13_hero_needed_with_music(self):
             self.timeline = music_timeline()
             del self.timeline["meta"]["hero_sec"]
-            del self.timeline["meta"]["payoff_silence_sec"]
+            del self.timeline["meta"]["payoff_breakdown_sec"]
             self.timeline["rhythm"][3]["stop"] = False
             self.timeline["rhythm"][3]["events_sec"] = [11.75]
             self.assertEqual(rules_of(self.timeline), {"hero"})
 
         def test_14_schema_of_new_fields(self):
             for key, value in (("bpm", 0), ("terms", "flaky"), ("hero_sec", [3.0]),
-                               ("payoff_silence_sec", [1.0, 0.5])):
+                               ("payoff_breakdown_sec", [1.0, 0.5])):
                 timeline = music_timeline()
                 timeline["meta"][key] = value
                 self.assertEqual(rules_of(timeline), {"schema"}, key)

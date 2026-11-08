@@ -17,7 +17,7 @@ there is no grid: a scene that grew is not snapped, and the beats stay.
 Then every scene start_sec and meta.duration_sec are recomputed, and every
 other project time moves with the scenes:
   rhythm[].start_sec, rhythm[].end_sec, rhythm[].events_sec,
-  meta.hero_sec, meta.payoff_silence_sec, meta.allowed_silences.
+  meta.hero_sec, meta.payoff_breakdown_sec, meta.allowed_silences.
 
 A time inside a scene that grew scales with that scene: it keeps its fraction
 of the scene. The voice now runs slower than planned, so an event planned at
@@ -113,7 +113,7 @@ def reconcile(timeline, vo_durations):
         item["end_sec"] = move(item["end_sec"])
         if "events_sec" in item:
             item["events_sec"] = [move(t) for t in item["events_sec"]]
-    for key in ("hero_sec", "payoff_silence_sec"):
+    for key in ("hero_sec", "payoff_breakdown_sec"):
         if key in meta:
             meta[key] = [move(t) for t in meta[key]]
     if "allowed_silences" in meta:
@@ -171,7 +171,7 @@ def _music_timeline():
     return {
         "meta": {"id": "demo", "title": "Demo", "aspect": "16:9", "fps": 60, "width": 1920,
                  "height": 1080, "duration_sec": 15.0, "lufs_target": -14, "bpm": 120,
-                 "hero_sec": [10.0, 11.5], "payoff_silence_sec": [9.5, 10.0],
+                 "hero_sec": [10.0, 11.5], "payoff_breakdown_sec": [9.5, 10.0],
                  "allowed_silences": [[9.5, 10.0]]},
         "scenes": [
             scene("s01-hook", "hook", 0.0, 2.5, "slam-in", [0.5, 0.45], "Stop flaky tests",
@@ -244,8 +244,8 @@ def self_test():
         {"scene": "s02-demo", "old_duration_sec": 5.0, "new_duration_sec": 7.0}], changes)
     expect("scene starts and film length", [s["start_sec"] for s in new["scenes"]]
            == [0.0, 2.5, 9.5, 14.0] and new["meta"]["duration_sec"] == 17.0, new["scenes"])
-    expect("hero, silence and allowed silences move by 2.0 s",
-           new["meta"]["hero_sec"] == [12.0, 13.5] and new["meta"]["payoff_silence_sec"] == [11.5, 12.0]
+    expect("hero, breakdown and allowed silences move by 2.0 s",
+           new["meta"]["hero_sec"] == [12.0, 13.5] and new["meta"]["payoff_breakdown_sec"] == [11.5, 12.0]
            and new["meta"]["allowed_silences"] == [[11.5, 12.0]], new["meta"])
     expect("an event inside the grown scene scales (5.0 s -> 6.0 s)",
            new["rhythm"][1] == {"start_sec": 2.5, "end_sec": 9.5, "energy": 5, "events_sec": [6.0]},

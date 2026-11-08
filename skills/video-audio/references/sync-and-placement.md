@@ -172,26 +172,28 @@ in that band over the effect span, from onset to end. The effect level minus
 the bed level must be `3 dB` or more (`sfx.margin`). Fix: raise the cue `gain_db`, move
 the effect to a band where the bed is quiet, or duck the bed for the cue.
 
-## 4. The arc: hero, planned silence, drop
+## 4. The arc: hero, breakdown, drop
 
 The director writes these `timeline.json` fields:
 
 | Field | Meaning |
 | --- | --- |
-| `meta.bpm` | Optional. A number `> 0` says that the film has music. Then `meta.hero_sec` and `meta.payoff_silence_sec` are required. |
+| `meta.bpm` | Optional. A number `> 0` says that the film has music. Then `meta.hero_sec` is required. |
 | `meta.hero_sec` | `[start_sec, end_sec]` of the hero moment |
-| `meta.payoff_silence_sec` | `[start_sec, end_sec]` of the planned silence before the payoff |
+| `meta.payoff_breakdown_sec` | Optional. `[start_sec, end_sec]` of a breakdown before the payoff. The music dips, it never stops. |
 
 Rules:
 
 - `mix.hero_loudest`: the loudest momentary loudness (`400 ms`) of the mix is
   inside the hero range, within `0.5 LU`. Fix: lift the hero (an impact, the
   full bed) or lower the louder place.
-- `mix.payoff_silence`: inside the planned range there is a run of at least
-  `0.4 s` that is `15 dB` or more under the 90th percentile of the `100 ms`
-  levels and under `-30 dBFS`. Fix: cut the bed and the effects in that range,
-  and end the voice before it. A planned silence also counts as an allowed
-  silence for `silence.dropout`.
+- `mix.payoff_breakdown` (only when the field is present): the RMS level of
+  the range is at most `12 dB` under the median `100 ms` level of the rest of
+  the mix, and no `silencedetect` run (under `-50 dBFS`) touches the range.
+  Fix: low-pass the bed or remove the drums there. Do not cut the bed. The
+  range is not an allowed silence for `silence.dropout`.
+- `plan.removed_field`: `meta.payoff_silence_sec` is removed. Delete it, or
+  replace it with `meta.payoff_breakdown_sec`.
 - `music.drop` (with `--music audio/music.wav`): the drop is the downbeat whose
   bar has the largest rise in energy under `150 Hz`. When that rise is at least
   `6 dB` and the plan has a hero, the drop must be within 1 beat of the hero

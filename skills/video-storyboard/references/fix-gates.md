@@ -24,7 +24,7 @@ Each line names a `rule` of `check_timeline.py` and the usual fix.
 - `event_gap`: add an event (a reveal, a cut, a hit), or declare the
   stretch a `stop` when the stillness is the point.
 - `hero`: move the payoff into the middle part of the film, and end the
-  silence before the hero starts.
+  breakdown before the hero starts.
 - `menu_time`: shorten UI and menu scenes, or replace them with product
   footage that proves the same point.
 - `directions`: see "Three directions" in `video-direction`.

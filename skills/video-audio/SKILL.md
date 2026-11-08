@@ -85,7 +85,7 @@ end of a scene that grew moves up to the next beat (`k * 60 / bpm`), so every
 cut stays on the step 3 grid, and every `beat_in` and `beat_out` is
 recomputed from the new edges. The script applies the pad, recomputes every `start_sec` and `meta.duration_sec`, and moves the other
 project times with the scenes: `rhythm[]` `start_sec`, `end_sec` and
-`events_sec`, `meta.hero_sec`, `meta.payoff_silence_sec` and
+`events_sec`, `meta.hero_sec`, `meta.payoff_breakdown_sec` and
 `meta.allowed_silences`. A time inside a scene that grew keeps its fraction of
 that scene. A time after it moves by the same change. It records
 `vo_duration_sec` on each narrated scene and prints each changed scene.
@@ -127,8 +127,9 @@ Both lists are strictly increasing and inside `[0, meta.duration_sec]`. Snap
 cuts and hero reveals to a beat when the beat is within `40 ms` (`2` frames at
 `60 fps`). Tell the director which cuts moved.
 
-Trim or loop the bed to `meta.duration_sec`. Fade it out over the last `1.0 s`
-with `afade=t=out`.
+End on the song's real final phrase: edit whole bars out of the middle so the
+song's own ending lands on `meta.duration_sec`. A pad loop with a
+`1.0 s` `afade=t=out` is a fallback only, when the song has no usable ending.
 
 ## 3b. Sync sheet
 
@@ -221,11 +222,12 @@ Exit `2`: an input or a tool is missing.
 | `sfx.sync` | Each cue's sync point lands within `40 ms` of `time_sec` | Set `start_sec` from `--measure-sfx` |
 | `sfx.margin` | Effect level minus bed level in the effect's band is `>= 3 dB` | Raise `gain_db` or duck the bed |
 | `mix.hero_loudest` | Loudest moment inside `meta.hero_sec` | Lift the hero |
-| `mix.payoff_silence` | `>= 0.4 s` quiet run inside `meta.payoff_silence_sec` | Cut bed and SFX there |
+| `mix.payoff_breakdown` | Optional `meta.payoff_breakdown_sec` dips `<= 12 dB` and is never under `-50 dBFS` | Low-pass or thin the bed, do not cut it |
 | `music.drop` | The bed's drop within 1 beat of the hero start | Offset the bed |
 
-When `meta.bpm` is set, the film has music, and `meta.hero_sec` and
-`meta.payoff_silence_sec` are required.
+When `meta.bpm` is set, the film has music, and `meta.hero_sec` is required.
+No gate requires or exempts silence before the payoff. The old
+`meta.payoff_silence_sec` fails `plan.removed_field`.
 
 A planned silence (a dramatic pause) is allowed only when
 `timeline.json` lists it: `"meta": { "allowed_silences": [[12.4, 13.6]] }`, in seconds.
