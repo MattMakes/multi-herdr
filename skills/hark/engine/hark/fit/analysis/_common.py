@@ -149,14 +149,22 @@ def load_json(path: str) -> dict:
         return json.load(fh)
 
 
+def _kind_problem(model: Any, kind: str, version: int) -> str | None:
+    problem = None
+    if not isinstance(model, dict):
+        problem = f"not a {kind} model: {type(model).__name__}"
+    elif model.get("kind") != kind:
+        problem = f"not a {kind} model: kind {model.get('kind')!r}"
+    elif int(model.get("version", 1)) > version:
+        problem = f"{kind} model version {model.get('version')} is newer than {version}"
+    return problem
+
+
 def check_kind(model: Any, kind: str, version: int = 1) -> None:
     """ValueError unless ``model`` is a dict of ``kind`` with a supported version."""
-    if not isinstance(model, dict):
-        raise ValueError(f"not a {kind} model: {type(model).__name__}")
-    if model.get("kind") != kind:
-        raise ValueError(f"not a {kind} model: kind {model.get('kind')!r}")
-    if int(model.get("version", 1)) > version:
-        raise ValueError(f"{kind} model version {model.get('version')} is newer than {version}")
+    problem = _kind_problem(model, kind, version)
+    if problem:
+        raise ValueError(problem)
 
 
 def threads() -> int:
@@ -188,26 +196,32 @@ def mel_filters(nfft: int, n_mels: int, sr: int = SR, fmin: float = 30.0,
     return np.array(fb)
 
 
-def mel_db_distance(x: np.ndarray, y: np.ndarray, sizes=(256, 1024, 4096),
-                    mels=(32, 64, 96)) -> tuple[float, list[float]]:
-    """Mean absolute mel dB over cells above 80 dB under x's loudest cell."""
-    from scipy.signal import stft
+def _pad_pair(x: Any, y: Any) -> tuple[np.ndarray, np.ndarray]:
     x = np.asarray(x, dtype=float)
     y = np.asarray(y, dtype=float)
     n = max(len(x), len(y))
-    x = np.pad(x, (0, n - len(x)))
-    y = np.pad(y, (0, n - len(y)))
-    per = []
-    for size, nm in zip(sizes, mels):
-        if n < size:
-            continue
-        fb = mel_filters(size, nm)
-        sx = stft(x, nperseg=size, noverlap=size - size // 4)[2]
-        sy = stft(y, nperseg=size, noverlap=size - size // 4)[2]
-        mx = db(fb @ np.abs(sx) ** 2)
-        my = db(fb @ np.abs(sy) ** 2)
-        fl = mx.max() - 80.0
-        act = (mx > fl) | (my > fl)
-        if np.any(act):
-            per.append(float(np.mean(np.abs(np.maximum(mx, fl) - np.maximum(my, fl))[act])))
+    return np.pad(x, (0, n - len(x))), np.pad(y, (0, n - len(y)))
+
+
+def _mel_db(x: np.ndarray, fb: np.ndarray, size: int) -> np.ndarray:
+    from scipy.signal import stft
+    return db(fb @ np.abs(stft(x, nperseg=size, noverlap=size - size // 4)[2]) ** 2)
+
+
+def _mel_gap(x: np.ndarray, y: np.ndarray, size: int, n_mels: int) -> float | None:
+    fb = mel_filters(size, n_mels)
+    mx, my = _mel_db(x, fb, size), _mel_db(y, fb, size)
+    fl = mx.max() - 80.0
+    act = (mx > fl) | (my > fl)
+    if not np.any(act):
+        return None
+    return float(np.mean(np.abs(np.maximum(mx, fl) - np.maximum(my, fl))[act]))
+
+
+def mel_db_distance(x: np.ndarray, y: np.ndarray, sizes=(256, 1024, 4096),
+                    mels=(32, 64, 96)) -> tuple[float, list[float]]:
+    """Mean absolute mel dB over cells above 80 dB under x's loudest cell."""
+    x, y = _pad_pair(x, y)
+    gaps = [_mel_gap(x, y, size, nm) for size, nm in zip(sizes, mels) if len(x) >= size]
+    per = [g for g in gaps if g is not None]
     return (float(np.mean(per)) if per else 0.0), per

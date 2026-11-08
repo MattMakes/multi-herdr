@@ -51,43 +51,53 @@ def _chan(Y: np.ndarray, c: int, n: int) -> np.ndarray:
     return np.pad(y[:n], (0, max(0, n - len(y))))
 
 
+def _residual_chan(x: np.ndarray, y: np.ndarray, alpha: float, n_fft: int) -> np.ndarray:
+    kw = {"window": "hann", "nperseg": n_fft, "noverlap": n_fft - 256}
+    Sx = stft(x, **kw)[2]
+    Sy = stft(y, **kw)[2]
+    g = np.sqrt(np.clip(1 - alpha * np.abs(Sy) ** 2 / (np.abs(Sx) ** 2 + 1e-30), 0.0, 1.0))
+    r = istft(Sx * g, **kw)[1][:len(x)]
+    return np.pad(r, (0, len(x) - len(r)))
+
+
 def residual(X: np.ndarray, Y: np.ndarray, alpha: float = ALPHA, n_fft: int = 1024) -> np.ndarray:
     """X minus Y in the magnitude domain, with X's phase."""
     X = np.asarray(X, dtype=float)
     Y = np.asarray(Y, dtype=float)
-    n = len(X)
-    cols = [X] if X.ndim == 1 else [X[:, c] for c in range(X.shape[1])]
-    out = []
-    for c, x in enumerate(cols):
-        kw = {"window": "hann", "nperseg": n_fft, "noverlap": n_fft - 256}
-        Sx = stft(x, **kw)[2]
-        Sy = stft(_chan(Y, c, n), **kw)[2]
-        g = np.sqrt(np.clip(1 - alpha * np.abs(Sy) ** 2 / (np.abs(Sx) ** 2 + 1e-30), 0.0, 1.0))
-        r = istft(Sx * g, **kw)[1][:n]
-        out.append(np.pad(r, (0, n - len(r))))
-    return out[0] if X.ndim == 1 else np.column_stack(out)
+    if X.ndim == 1:
+        return _residual_chan(X, _chan(Y, 0, len(X)), alpha, n_fft)
+    return np.column_stack([_residual_chan(X[:, c], _chan(Y, c, len(X)), alpha, n_fft)
+                            for c in range(X.shape[1])])
 
 
 # ================================================================ tones
 
-def _deterministic(model: dict, two: bool, min_partial_ms: float) -> dict:
-    det = copy.deepcopy({k: v for k, v in model.items() if k not in ("post", "fit_engine")})
-    det["layer"] = "deterministic"
-    det["channels"] = 2 if two else 1
-    if det["kind"] == "modal":
-        L = det["length_s"]
-        det["noise"]["env"] = [[[0.0, -240.0], [L, -240.0]] for _ in det["noise"]["env"]]
-        det["onset"] = det["strikes"][0]["t"] if det["strikes"] else 0.0
-        if not two:
-            det.pop("side", None)
-            det.pop("side_t", None)
-        return det
+def _det_modal(det: dict, two: bool) -> dict:
+    L = det["length_s"]
+    det["noise"]["env"] = [[[0.0, -240.0], [L, -240.0]] for _ in det["noise"]["env"]]
+    det["onset"] = det["strikes"][0]["t"] if det["strikes"] else 0.0
+    if not two:
+        det.pop("side", None)
+        det.pop("side_t", None)
+    return det
+
+
+def _det_sines(det: dict, two: bool, min_partial_ms: float) -> dict:
     life = min_partial_ms / 1000.0
     det["partials"] = [p for p in det["partials"] if p["t1"] + p["rel"] - p["t0"] >= life]
     det["residual"] = {"bands": [1000.0], "times": [0.0, det["duration"]], "db": [[-150.0, -150.0]]}
     if not two:
         det.pop("side", None)
     return det
+
+
+def _deterministic(model: dict, two: bool, min_partial_ms: float) -> dict:
+    det = copy.deepcopy({k: v for k, v in model.items() if k not in ("post", "fit_engine")})
+    det["layer"] = "deterministic"
+    det["channels"] = 2 if two else 1
+    if det["kind"] == "modal":
+        return _det_modal(det, two)
+    return _det_sines(det, two, min_partial_ms)
 
 
 def _tones_length(det: dict) -> float:
@@ -103,21 +113,32 @@ def _render_tones(det: dict, seed: int, s: float, vary: float, width: float, ton
                              stereo=two)
 
 
-def gain_tones(det: dict, gain_db: float) -> dict:
-    """A copy of a tones model, gain_db louder."""
-    out = copy.deepcopy(det)
-    g = 10 ** (gain_db / 20)
-    if out["kind"] == "modal":
-        for st in out["strikes"]:
-            st["modes"] = [[r[0], r[1], r[2] * g, r[3]] for r in st["modes"]]
-            st["attack"] = [[r[0], r[1], r[2] * g, r[3]] for r in st["attack"]]
-        if out.get("sub"):
-            out["sub"]["x"] = [v * g for v in out["sub"]["x"]]
-        return out
+def _scaled_rows(rows: list, g: float) -> list:
+    return [[r[0], r[1], r[2] * g, r[3]] for r in rows]
+
+
+def _gain_modal(out: dict, g: float) -> None:
+    for st in out["strikes"]:
+        st["modes"] = _scaled_rows(st["modes"], g)
+        st["attack"] = _scaled_rows(st["attack"], g)
+    if out.get("sub"):
+        out["sub"]["x"] = [v * g for v in out["sub"]["x"]]
+
+
+def _gain_sines(out: dict, gain_db: float) -> None:
     for p in out["partials"]:
         p["amp"] = [[t, a + gain_db] for t, a in p["amp"]]
     for tr in out.get("transients", []):
-        tr["atoms"] = [[f, tau, a * g, ph] for f, tau, a, ph in tr["atoms"]]
+        tr["atoms"] = _scaled_rows(tr["atoms"], 10 ** (gain_db / 20))
+
+
+def gain_tones(det: dict, gain_db: float) -> dict:
+    """A copy of a tones model, gain_db louder."""
+    out = copy.deepcopy(det)
+    if out["kind"] == "modal":
+        _gain_modal(out, 10 ** (gain_db / 20))
+    else:
+        _gain_sines(out, gain_db)
     return out
 
 
@@ -146,6 +167,21 @@ def air(x: Any, y_det: np.ndarray | None = None, alpha: float = ALPHA, fast: boo
 
 # ================================================================ fit
 
+def _tones_layer(a: np.ndarray, two: bool, tones: Any, kind: str, fast: bool,
+                 min_partial_ms: float, tone_min: float) -> tuple:
+    """(deterministic tones or None, tone share, tones render (n, 2) or None)."""
+    if tones is False:
+        return None, 0.0, None
+    src = tones if isinstance(tones, dict) else _fit_tones(a, two, kind, fast)
+    det = _deterministic(src, two, min_partial_ms)
+    y_det = _fit_len(as_stereo(_render_tones(det, 0, 1.0, 0.0, 1.0, 0.0, False, two)), len(a))
+    e_x = float(np.sum(a ** 2))
+    share = float(np.sum(y_det ** 2)) / e_x if e_x > 0 else 0.0
+    if share < tone_min:
+        return None, share, None
+    return det, share, y_det
+
+
 def fit(x: Any, name: str | None = None, tones: Any = None, alpha: float = ALPHA,
         tone_min: float = 0.05, min_partial_ms: float = 0, fast: bool = False,
         tones_kind: str = "sines", verbose: bool = False, sr: int = SR, **air_kw) -> dict:
@@ -155,16 +191,7 @@ def fit(x: Any, name: str | None = None, tones: Any = None, alpha: float = ALPHA
     t0 = time.time()
     a = as_stereo(x) if isinstance(x, str) else as_stereo(resample(np.asarray(x, float), sr))
     two = not is_mono_pair(a)
-    n = len(a)
-    e_x = float(np.sum(a ** 2))
-    det, share, y_det = None, 0.0, None
-    if tones is not False:
-        src = tones if isinstance(tones, dict) else _fit_tones(a, two, tones_kind, fast)
-        det = _deterministic(src, two, min_partial_ms)
-        y_det = _fit_len(as_stereo(_render_tones(det, 0, 1.0, 0.0, 1.0, 0.0, False, two)), n)
-        share = float(np.sum(y_det ** 2)) / e_x if e_x > 0 else 0.0
-        if share < tone_min:
-            det, y_det = None, None
+    det, share, y_det = _tones_layer(a, two, tones, tones_kind, fast, min_partial_ms, tone_min)
     t1 = time.time()
     nm = name or source_name(x)
     am = air(a, y_det, alpha, fast, nm, **air_kw)
@@ -223,6 +250,33 @@ def _place(parts: list, m: int) -> np.ndarray:
     return out
 
 
+def _layers(model: dict, seed: int, s: float, k: dict, two: bool, ring: bool) -> list:
+    """The tones render and the aligned air render, each (m, 2)."""
+    det = model.get("tones")
+    am = model["air"]
+    parts = []
+    if det:
+        parts.append(as_stereo(_render_tones(det, seed, s, k["vary"], k["width"], k["tone_db"], ring, two)))
+        if ring:
+            am = _extend_air(am, max(0.06, len(parts[0]) / SR / s - am["dur"]))
+    y_air = spectral.render(am, (int(seed) * 7 + 101) & 0x7FFFFFFF, length=s, sweep=k["sweep"],
+                            roughness=k["roughness"], width=k["width"], pan=k["pan"],
+                            proximity=k["proximity"], gain_db=k["air_db"], limit=False).astype(float)
+    on = float(det.get("onset", 0.0)) if det else 0.0
+    parts.append(_shift(y_air, int(round(on * (1 - s) * SR))))
+    return parts
+
+
+def _pass_by(y: np.ndarray, traj: dict, s: float, doppler: float, motion: float) -> np.ndarray:
+    t_pk = traj["peak_s"] * s
+    tau = max(0.015, 0.25 * (traj["rise_s"] + traj["fall_s"]) * s)
+    if doppler:
+        y = spectral.bend(y, t_pk, tau, doppler)
+    if motion:
+        y = spectral.pass_pan(y, t_pk, tau, motion)
+    return y
+
+
 def render(model: dict, seed: int = 0, length: float = 1, sweep: float = 1, doppler: float = 0,
            proximity: float = 0, pan: float = 1, motion: float = 0, width: float = 1,
            roughness: float = 1, tone_db: float = 0, air_db: float = 0, vary: float = 0,
@@ -232,28 +286,12 @@ def render(model: dict, seed: int = 0, length: float = 1, sweep: float = 1, dopp
     two = model.get("channels", 1) == 2 if stereo is None else bool(stereo)
     s = max(length, 0.001)
     n = max(64, int(round(model["dur"] * s * SR)))
-    det = model.get("tones")
-    am = model["air"]
-    parts = []
-    if det:
-        parts.append(as_stereo(_render_tones(det, seed, s, vary, width, tone_db, ring, two)))
-        if ring:
-            am = _extend_air(am, max(0.06, len(parts[0]) / SR / s - am["dur"]))
-    y_air = spectral.render(am, (int(seed) * 7 + 101) & 0x7FFFFFFF, length=s, sweep=sweep,
-                            roughness=roughness, width=width, pan=pan, proximity=proximity,
-                            gain_db=air_db, limit=False).astype(float)
-    on = float(det.get("onset", 0.0)) if det else 0.0
-    parts.append(_shift(y_air, int(round(on * (1 - s) * SR))))
-    m = max([n] + [len(p) for p in parts]) if ring else n
-    y = _place(parts, m)
+    k = {"sweep": sweep, "proximity": proximity, "pan": pan, "width": width, "roughness": roughness,
+         "tone_db": tone_db, "air_db": air_db, "vary": vary}
+    parts = _layers(model, seed, s, k, two, ring)
+    y = _place(parts, max([n] + [len(p) for p in parts]) if ring else n)
     if doppler or motion:
-        tr = model["traj"]
-        t_pk = tr["peak_s"] * s
-        tau = max(0.015, 0.25 * (tr["rise_s"] + tr["fall_s"]) * s)
-        if doppler:
-            y = spectral.bend(y, t_pk, tau, doppler)
-        if motion:
-            y = spectral.pass_pan(y, t_pk, tau, motion)
+        y = _pass_by(y, model["traj"], s, doppler, motion)
     y = y * 10 ** (gain_db / 20)
     if ring:
         y = _end_fade(y)
