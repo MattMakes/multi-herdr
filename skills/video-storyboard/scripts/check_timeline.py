@@ -770,10 +770,15 @@ def event_times(meta, scenes, rhythm):
 def event_gaps(meta, scenes, rhythm):
     """Return (start, end, length, bars, limit) for each gap over the limit outside a stop."""
     limit = MAX_GAP_BARS * BEATS_PER_BAR * 60.0 / meta["bpm"]
-    ordered = event_times(meta, scenes, rhythm)
+    pieces = open_gap_pieces(event_times(meta, scenes, rhythm), rhythm)
+    over = limit + START_TOLERANCE_SEC
+    return [(a, b, b - a, MAX_GAP_BARS, limit) for a, b in pieces if b - a > over]
+
+
+def open_gap_pieces(ordered, rhythm):
+    """Return the parts between the sorted event times that no stop stretch covers."""
     stops = [(item["start_sec"], item["end_sec"]) for item in rhythm if item.get("stop")]
-    pieces = [piece for a, b in zip(ordered, ordered[1:]) for piece in open_pieces(a, b, stops)]
-    return [(a, b, b - a, MAX_GAP_BARS, limit) for a, b in pieces if b - a > limit + START_TOLERANCE_SEC]
+    return [piece for a, b in zip(ordered, ordered[1:]) for piece in open_pieces(a, b, stops)]
 
 
 def check_hero(meta, report):
@@ -1181,6 +1186,12 @@ def self_test():
         timeline["rhythm"] = copy.deepcopy(MUSIC_RHYTHM)
         return timeline
 
+    def music_timeline_with(key, value):
+        """music_timeline() with meta.<key> set to value."""
+        timeline = music_timeline()
+        timeline["meta"][key] = value
+        return timeline
+
     def reframe(scale):
         return {"scale": scale, "focal_point": [0.5, 0.4], "from_sec": 0.0, "to_sec": 1.2}
 
@@ -1575,11 +1586,10 @@ def self_test():
             self.assertEqual(rules_of(self.timeline), {"hero"})
 
         def test_14_schema_of_new_fields(self):
-            for key, value in (("bpm", 0), ("terms", "flaky"), ("hero_sec", [3.0]),
-                               ("payoff_breakdown_sec", [1.0, 0.5])):
-                timeline = music_timeline()
-                timeline["meta"][key] = value
-                self.assertEqual(rules_of(timeline), {"schema"}, key)
+            cases = (("bpm", 0), ("terms", "flaky"), ("hero_sec", [3.0]),
+                     ("payoff_breakdown_sec", [1.0, 0.5]))
+            for key, value in cases:
+                self.assertEqual(rules_of(music_timeline_with(key, value)), {"schema"}, key)
 
         def test_14_schema_of_rhythm_and_on_screen_text(self):
             timeline = valid_timeline()

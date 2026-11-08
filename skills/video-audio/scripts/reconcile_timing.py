@@ -191,14 +191,18 @@ def reconcile(timeline, vo_durations):
 
 
 def measure(timeline, audio_dir):
-    durations = {}
-    for scene in timeline["scenes"]:
-        if scene.get("narration"):
-            path = os.path.join(audio_dir, f"vo-{scene['id']}.wav")
-            if not os.path.isfile(path):
-                raise ToolError(f"missing voice file {path}")
-            durations[scene["id"]] = probe_duration(path)
-    return durations
+    """Return {scene id: voice seconds} for every narrated scene."""
+    narrated = [scene["id"] for scene in timeline["scenes"] if scene.get("narration")]
+    return {sid: _voice_duration(audio_dir, sid) for sid in narrated}
+
+
+def _voice_duration(audio_dir, sid):
+    """Return the length of audio/vo-<sid>.wav. Raise ToolError when it is missing."""
+    path = os.path.join(audio_dir, f"vo-{sid}.wav")
+    missing = not os.path.isfile(path)
+    if missing:
+        raise ToolError(f"missing voice file {path}")
+    return probe_duration(path)
 
 
 class _Captured:
