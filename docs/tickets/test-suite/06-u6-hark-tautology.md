@@ -1,0 +1,32 @@
+# 06: U6: hark Python tautologies
+
+<!-- horch-ticket: 1 -->
+**Persona:** primary `opus`, fallback `opus-hardening` · **Parallel:** yes
+**Kind:** quality
+**Review:** none
+**Check:** `PYTHONPATH=skills/hark/engine /Users/mascott/.local/state/hark/venv/bin/python -m pytest skills/hark/engine/tests/recipes_ui skills/hark/engine/tests/fit_analysis -q -m 'not ml and not live'`
+**Own:** `skills/hark/engine/tests/recipes_ui/test_ui_keys.py`, `skills/hark/engine/tests/fit_analysis/test_fit_acceptance.py`, `skills/hark/engine/tests/recipes_ui/test_ui_contract.py`
+
+## Goal
+
+Apply unit U6 of the audit: rewrite T1, remove T4 (4 tests) and T5 (1 test, 14 cases). The audit's Q4 is answered: the hark engine is complete now (T-33 integration), so these tests run for real. Clean-room rule: never open the upstream source of hark; read only docs/specs/hark/.
+
+## Context
+
+- Operator request (2026-11-08): make the test suite faster and more reliable; remove tautological tests, or rewrite them so they are anti-tautological. All of it merges into PR #344.
+- The audit is `docs/specs/test-suite-audit.md` (on this run branch). Read its Definitions and your unit section first. Baseline: cold `cargo test --workspace` 406 s, warm 285-327 s.
+- Anti-tautological means: the expected value comes from an independent source (hand-computed value, spec table, reviewed fixture, property), and a plausible 1-line mutation of the code under test makes the test fail. Show each mutation failing (then revert it) and name it in your commit message.
+- Never use a fixed `/tmp` path. Never raise a timeout to hide slowness: macOS scans each new executable for 14-35 s at first exec; tests warm fakes instead.
+- Before finish, run `cargo test --workspace --no-fail-fast` and `cargo clippy --workspace --all-targets -- -D warnings`. Run gates miss the horch crate tests.
+
+## Steps
+
+1. Read the audit unit and the code it names. Measure the before state (time, failure rate or the tautology).
+2. Make the change. For each rewritten test, show the mutation failing, then revert it.
+3. Run the check, then the workspace test and clippy runs named in Context.
+4. Commit exact files. Run `horch ledger finish`, then `horch ledger done` with before/after numbers and each mutation.
+
+## Done when
+
+- The check passes. The DONE report gives the before and after numbers.
+
