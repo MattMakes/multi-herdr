@@ -174,18 +174,25 @@ def ordinal(n: int) -> str:
 # ---------------------------------------------------------------- differences in words
 
 
+def _scaled(v: float, small: str, big: str, at: float) -> str:
+    return f"{int(round(v))} {small}" if v < at else f"{v / 1000:.1f} {big}"
+
+
+_FORMATS = {
+    "brightness_hz": lambda v: _scaled(v, "Hz", "kHz", 1000),
+    "bandwidth_hz": lambda v: _scaled(v, "Hz", "kHz", 1000),
+    "attack_ms": lambda v: _scaled(v, "ms", "s", 2000),
+    "decay_ms": lambda v: _scaled(v, "ms", "s", 2000),
+    "length_s": lambda v: f"{v:.2f} s",
+    "width_db": lambda v: "mono" if v <= MONO_DB else f"{int(round(v))} dB",
+}
+_UNITS = {"loudness_lufs": "LUFS", "noise_floor_dbfs": "dBFS", "peak_dbfs": "dBFS"}
+
+
 def fmt_value(key: str, v: float) -> str:
     """A measurement value as text with its unit."""
-    if key in ("brightness_hz", "bandwidth_hz"):
-        return f"{int(round(v))} Hz" if v < 1000 else f"{v / 1000:.1f} kHz"
-    if key in ("attack_ms", "decay_ms"):
-        return f"{int(round(v))} ms" if v < 2000 else f"{v / 1000:.1f} s"
-    if key == "length_s":
-        return f"{v:.2f} s"
-    if key == "width_db":
-        return "mono" if v <= MONO_DB else f"{int(round(v))} dB"
-    unit = {"loudness_lufs": "LUFS", "noise_floor_dbfs": "dBFS", "peak_dbfs": "dBFS"}.get(key, "dB")
-    return f"{int(round(v))} {unit}"
+    fmt = _FORMATS.get(key)
+    return fmt(v) if fmt else f"{int(round(v))} {_UNITS.get(key, 'dB')}"
 
 
 def _kept(kind: str, key: str, a: float, b: float, thr: float) -> bool:
@@ -365,32 +372,39 @@ def _diff_sentence(diffs: list[tuple[str, str]]) -> str:
     return "B is " + join_words([p for _, p in diffs]) + "."
 
 
+def _semantic_parts(E: np.ndarray, query: str | None, refs, a: str, b: str, k: int) -> tuple[dict, list[str]]:
+    """The query and refs parts of an A/B: (result fields, sentences)."""
+    rec: dict[str, Any] = {}
+    parts = []
+    if query is not None:
+        rec["query"], text = _query_part(E, str(query).strip())
+        parts.append(text)
+    if refs:
+        found, text = _refs_part(E, [refs] if isinstance(refs, str) else list(refs), a, b, k)
+        if found is not None:
+            rec["refs"] = found
+        parts.append(text)
+    return rec, parts
+
+
 def ab(a: str, b: str, query: str | None = None, refs: Sequence[str] | None = None, k: int = DEFAULT_K,
        a_start: float | None = None, a_end: float | None = None, b_start: float | None = None,
        b_end: float | None = None) -> dict:
     """A/B two sounds or two trims of one file."""
-    voc.check_range(a, a_start, a_end)
-    voc.check_range(b, b_start, b_end)
+    ra, rb = (a_start, a_end), (b_start, b_end)
+    voc.check_range(a, *ra)
+    voc.check_range(b, *rb)
     if query is not None and not str(query).strip():
         raise ValueError("no query given")
-    E = voc.embed_files([a, b], ranges=[(a_start, a_end), (b_start, b_end)])
+    E = voc.embed_files([a, b], ranges=[ra, rb])
     cos_ab = float(E[0] @ E[1])
-    result: dict[str, Any] = {"a": a, "b": b, "a_range": [a_start, a_end], "b_range": [b_start, b_end],
-                              "cosine_ab": round(cos_ab, 3)}
-    parts = [f"A = {trim_name(a, a_start, a_end)}, B = {trim_name(b, b_start, b_end)}."]
-    if query is not None:
-        result["query"], text = _query_part(E, str(query).strip())
-        parts.append(text)
-    if refs:
-        rec, text = _refs_part(E, [refs] if isinstance(refs, str) else list(refs), a, b, k)
-        if rec is not None:
-            result["refs"] = rec
-        parts.append(text)
-    parts.append(f"CLAP hears them as {similarity_words(cos_ab)} (cosine {cos_ab:.2f}).")
-    fa, fb = measure_path(a, a_start, a_end), measure_path(b, b_start, b_end)
+    rec, sem = _semantic_parts(E, query, refs, a, b, k)
+    fa, fb = measure_path(a, *ra), measure_path(b, *rb)
     diffs = differences(fa, fb)
-    parts.append(_diff_sentence(diffs))
-    result.update({"features": {"a": fa, "b": fb}, "differences": [k for k, _ in diffs]})
+    parts = [f"A = {trim_name(a, *ra)}, B = {trim_name(b, *rb)}.", *sem,
+             f"CLAP hears them as {similarity_words(cos_ab)} (cosine {cos_ab:.2f}).", _diff_sentence(diffs)]
+    result = {"a": a, "b": b, "a_range": list(ra), "b_range": list(rb), "cosine_ab": round(cos_ab, 3), **rec,
+              "features": {"a": fa, "b": fb}, "differences": [key for key, _ in diffs]}
     return {"summary": " ".join(parts), **result}
 
 

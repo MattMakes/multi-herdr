@@ -99,14 +99,18 @@ def _long_shape(m: dict, d: float) -> str:
     return ", ".join(parts)
 
 
-def _event_shape(m: dict, d: float) -> str:
-    n, rate, attack = m.get("onset_count"), m.get("onsets_per_s"), m.get("attack_ms")
-    if d < SHORT_S and (n is None or n <= SHORT_ONSETS):
-        if attack is not None and attack <= TRANSIENT_MS:
-            return "short transient"
-        if attack is not None and attack >= SWELL_MS:
-            return "short swell"
+def _short_shape(attack: float | None) -> str:
+    if attack is None:
         return "short one-shot"
+    if attack <= TRANSIENT_MS:
+        return "short transient"
+    return "short swell" if attack >= SWELL_MS else "short one-shot"
+
+
+def _event_shape(m: dict, d: float) -> str:
+    n, rate = m.get("onset_count"), m.get("onsets_per_s")
+    if d < SHORT_S and (n is None or n <= SHORT_ONSETS):
+        return _short_shape(m.get("attack_ms"))
     if rate is not None and rate >= BUSY_RATE:
         return f"busy, {rate:.1f} onsets/s"
     return f"{n} separate events" if n is not None and n >= 2 else "sustained"
@@ -210,6 +214,10 @@ def _embed_long(path: str, x: np.ndarray, s: float, e: float) -> dict:
     return {"a": voc.unit(W.mean(axis=0)), "probs": P.max(axis=0), "model": model, "spans": sp, "W": W, "P": P}
 
 
+def _apart(a: tuple[float, float], b: tuple[float, float]) -> bool:
+    return a[1] <= b[0] + OVERLAP_TOL or a[0] >= b[1] - OVERLAP_TOL
+
+
 def distinct_windows(spans: Sequence[tuple[float, float]], W: np.ndarray, terms: Sequence[str]) -> list[int]:
     """Indexes of 2 or 3 spans that read differently, in time order, or [] (D2)."""
     if len(spans) <= 1:
@@ -218,9 +226,7 @@ def distinct_windows(spans: Sequence[tuple[float, float]], W: np.ndarray, terms:
     dist = 1 - np.asarray(W, np.float64) @ u
     picked: list[int] = []
     for i in np.argsort(-dist, kind="stable"):
-        free = all(spans[i][1] <= spans[j][0] + OVERLAP_TOL or spans[i][0] >= spans[j][1] - OVERLAP_TOL
-                   for j in picked)
-        if free and all(terms[i] != terms[j] for j in picked):
+        if all(_apart(spans[i], spans[j]) and terms[i] != terms[j] for j in picked):
             picked.append(int(i))
         if len(picked) >= MAX_WINDOWS:
             break

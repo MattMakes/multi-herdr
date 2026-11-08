@@ -82,22 +82,31 @@ def class_ids(queries: Mapping) -> list[str]:
 # ---------------------------------------------------------------- metrics of one scored library
 
 
+def pooled_tagging(lib: ds.Library, U: np.ndarray, parts: Mapping[str, slice], classes: list[str]) -> dict:
+    """E7 over both phrasing sets: accuracy and MRR as means over every (file, set) pair."""
+    tags = [mt.tagging(U[:, parts[p]], lib.classes, classes) for p in ("p1", "p2")]
+    n = sum(t["n"] for t in tags)
+    if not n:
+        return {"n": 0, "accuracy": None, "mrr": None}
+    return {"n": n, **{k: sum(t["n"] * (t[k] or 0) for t in tags) / n for k in ("accuracy", "mrr")}}
+
+
+def class_z(Z: np.ndarray, parts: Mapping[str, slice]) -> np.ndarray:
+    """The 70 class columns: phrasing 1 of every class, then phrasing 2."""
+    return np.concatenate([Z[:, parts["p1"]], Z[:, parts["p2"]]], axis=1)
+
+
 def library_metrics(lib: ds.Library, U: np.ndarray, Z: np.ndarray, parts: Mapping[str, slice], classes: list[str],
                     queries: Mapping | None = None) -> dict:
     """E4, E5, E7, E8 (and E6 when ``queries`` is given) on one library."""
-    zc = np.concatenate([Z[:, parts["p1"]], Z[:, parts["p2"]]], axis=1)
-    cols = classes + classes
+    zc = class_z(Z, parts)
     out = {"n": len(lib.paths), "category": mt.category_metrics(Z[:, parts["cat"]], lib.folders),
-           "class": mt.class_metrics(zc, lib.classes, cols)}
-    tags = [mt.tagging(U[:, parts[p]], lib.classes, classes) for p in ("p1", "p2")]
-    n = sum(t["n"] for t in tags)
-    out["tagging"] = {"n": n,
-                      "accuracy": sum(t["n"] * (t["accuracy"] or 0) for t in tags) / n if n else None,
-                      "mrr": sum(t["n"] * (t["mrr"] or 0) for t in tags) / n if n else None}
+           "class": mt.class_metrics(zc, lib.classes, classes + classes),
+           "tagging": pooled_tagging(lib, U, parts, classes)}
     for mode, lenient in (("auc", True), ("auc_strict", False)):
         L = mt.label_matrix(lib.classes, classes, lenient)
         out[mode] = mt.pooled_auc(zc, np.concatenate([L, L], axis=1))
-    if queries is not None and queries.get("specific"):
+    if queries and queries.get("specific"):
         out["specific"] = specific_metrics(lib, Z[:, parts["spec"]], queries["specific"])
     return out
 
@@ -119,9 +128,8 @@ def specific_metrics(lib: ds.Library, Z: np.ndarray, specific: Sequence[Mapping]
 
 def pooled(lib: ds.Library, Z: np.ndarray, parts: Mapping[str, slice], classes: list[str],
            lenient: bool) -> tuple[np.ndarray, np.ndarray]:
-    zc = np.concatenate([Z[:, parts["p1"]], Z[:, parts["p2"]]], axis=1)
     L = mt.label_matrix(lib.classes, classes, lenient)
-    return mt.pooled_pairs(zc, np.concatenate([L, L], axis=1))
+    return mt.pooled_pairs(class_z(Z, parts), np.concatenate([L, L], axis=1))
 
 
 def bands_of(lib: ds.Library, Z: np.ndarray, parts: Mapping[str, slice], classes: list[str]) -> dict:
@@ -204,33 +212,45 @@ def cmd_stats(args, out: Path) -> None:
                  [f"statistics rebuilt from {stats['reference_set']}"])
 
 
-def cmd_analyze(args, out: Path) -> None:
+def analyze_setup(templates_name: str) -> dict:
+    """The tuning library, its references, the term and query embeddings of one template set."""
     root = ds.location("HARK_EVAL_ASSETS")
     queries = ds.read_label("queries.json")
-    tune = ds.tuning_library(root, queries)
-    refs = ds.heldout_library(root, ds.read_label("heldout_labels.json")).paths + ds.extra_refs()
-    templates = templates_of(args.templates)
-    vocab = voc.read_vocab()
-    terms = [p for c in vocab["categories"].values() for p in c]
-    E = voc.embed_phrases(terms, templates)
+    templates = templates_of(templates_name)
+    terms = [p for c in voc.read_vocab()["categories"].values() for p in c]
     texts, parts = query_columns(queries)
-    Q = voc.embed_phrases(texts, templates)
-    classes = class_ids(queries)
-    result, rows = {"templates": args.templates, "n_tune": len(tune.paths), "n_refs": len(refs), "cells": []}, []
+    refs = ds.heldout_library(root, ds.read_label("heldout_labels.json")).paths + ds.extra_refs()
+    return {"queries": queries, "tune": ds.tuning_library(root, queries), "refs": refs, "terms": terms,
+            "E": voc.embed_phrases(terms, templates), "Q": voc.embed_phrases(texts, templates), "parts": parts,
+            "classes": class_ids(queries)}
+
+
+def analyze_pad(cx: Mapping, pad: str) -> tuple[list[dict], dict | None]:
+    """Every calibration method for one pad; the shipped extras when this pad is the shipped one."""
+    tune, refs = cx["tune"], cx["refs"]
+    A = embed_set(tune.paths, pad)
+    R = embed_set(refs, pad, voc.REF_MAX_WIN)
+    st = ref_stats(R, refs, cx["E"], cx["Q"])
+    cells, shipped = [], None
+    for method in mt.METHODS:
+        U, Z = score(A, cx["E"], cx["Q"], method, st)
+        cells.append({"pad": pad, "method": method, "splits": {
+            s: library_metrics(tune.split(s), *_rows(tune, s, U, Z), cx["parts"], cx["classes"],
+                               cx["queries"] if s == "all" else None) for s in SPLITS}})
+        if pad == voc.PAD and method == "both":
+            shipped = shipped_extras(cx, A, R, Z)
+    return cells, shipped
+
+
+def cmd_analyze(args, out: Path) -> None:
+    cx = analyze_setup(args.templates)
+    result = {"templates": args.templates, "n_tune": len(cx["tune"].paths), "n_refs": len(cx["refs"]), "cells": []}
     for pad in voc.PADS:
-        A = embed_set(tune.paths, pad)
-        R = embed_set(refs, pad, voc.REF_MAX_WIN)
-        st = ref_stats(R, refs, E, Q)
-        for method in mt.METHODS:
-            U, Z = score(A, E, Q, method, st)
-            cell = {"pad": pad, "method": method,
-                    "splits": {s: library_metrics(tune.split(s), *_rows(tune, s, U, Z), parts, classes,
-                                                  queries if s == "all" else None) for s in SPLITS}}
-            result["cells"].append(cell)
-            rows.append(cell_row(cell))
-            if pad == voc.PAD and method == "both":
-                result["shipped"] = shipped_extras(tune, A, R, refs, E, Q, Z, parts, classes, terms)
-    write_result(out, "results.json", result, rows)
+        cells, shipped = analyze_pad(cx, pad)
+        result["cells"] += cells
+        if shipped is not None:
+            result["shipped"] = shipped
+    write_result(out, "results.json", result, [cell_row(c) for c in result["cells"]])
 
 
 def _rows(lib: ds.Library, split: str, U: np.ndarray, Z: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
@@ -245,20 +265,21 @@ def cell_row(cell: Mapping) -> str:
             f"AUC {_r(a['auc'])} strict {_r(a['auc_strict'])}")
 
 
-def shipped_extras(tune, A, R, refs, E, Q, Z, parts, classes, terms) -> dict:
+def shipped_extras(cx: Mapping, A: np.ndarray, R: np.ndarray, Z: np.ndarray) -> dict:
     """Thresholds (E9), bands (E10), reference sensitivity and the extreme term biases of the shipped cell."""
+    tune, parts, classes, terms = cx["tune"], cx["parts"], cx["classes"], cx["terms"]
     pos, neg = pooled(tune, Z, parts, classes, True)
-    st = ref_stats(R, refs, E, Q)
-    bias = E.astype(np.float64) @ st["m"]
+    bias = cx["E"].astype(np.float64) @ ref_stats(R, cx["refs"], cx["E"], cx["Q"])["m"]
     order = np.argsort(-bias)
     return {"thresholds": mt.pick_thresholds(pos, neg), "bands": bands_of(tune, Z, parts, classes),
-            "reference_sensitivity": sensitivity(tune, A, R, refs, E, Q, parts, classes),
+            "reference_sensitivity": sensitivity(cx, A, R),
             "bias_top10": [[terms[i], _r(bias[i], 4)] for i in order[:10]],
             "bias_bottom5": [[terms[i], _r(bias[i], 4)] for i in order[-5:]]}
 
 
-def sensitivity(tune, A, R, refs, E, Q, parts, classes) -> dict:
+def sensitivity(cx: Mapping, A: np.ndarray, R: np.ndarray) -> dict:
     """dev / test AUC for each reference variant of the shipped cell."""
+    tune, refs, E, Q = cx["tune"], cx["refs"], cx["E"], cx["Q"]
     keep = np.array([not music_like(p) for p in refs], bool)
     variants: dict[str, Callable[[], Mapping]] = {
         "folder_balanced": lambda: ref_stats(R, refs, E, Q),
@@ -270,9 +291,22 @@ def sensitivity(tune, A, R, refs, E, Q, parts, classes) -> dict:
     out = {}
     for name, make in variants.items():
         U, Z = score(A, E, Q, "both", make())
-        out[name] = {s: _r(library_metrics(tune.split(s), *_rows(tune, s, U, Z), parts, classes)["auc"])
+        out[name] = {s: _r(library_metrics(tune.split(s), *_rows(tune, s, U, Z), cx["parts"], cx["classes"])["auc"])
                      for s in ("dev", "test")}
     return out
+
+
+def heldout_variants(v: voc.Vocab) -> tuple[list[tuple[str, voc.Vocab | None]], str | None]:
+    """shipped, pre-registered (when its file exists) and raw cosine; a note when there is no pre-registered file."""
+    pre = ds.HERE / "vocab_preregistered.json"
+    if pre.exists():
+        return [("shipped", v), ("preregistered", voc.Vocab(path=pre)), ("raw", None)], None
+    return [("shipped", v), ("raw", None)], "no vocab_preregistered.json: the shipped vocabulary was written before any score"
+
+
+def vocab_row(name: str, m: Mapping) -> str:
+    return (f"{name:13s} cat MAP {_r(m['category']['map'])} class MAP {_r(m['class']['map'])} "
+            f"tag {_r(m['tagging']['accuracy'])} AUC {_r(m['auc'])} strict {_r(m['auc_strict'])}")
 
 
 def cmd_heldout(args, out: Path) -> None:
@@ -280,26 +314,18 @@ def cmd_heldout(args, out: Path) -> None:
     queries = ds.read_label("queries.json")
     held = ds.heldout_library(root, ds.read_label("heldout_labels.json"))
     texts, parts = query_columns(queries)
-    classes = class_ids(queries)
     A = embed_set(held.paths, voc.PAD)
     v = voc.get()
-    result, rows = {"n": len(held.paths), "with_class": sum(bool(c) for c in held.classes), "vocabularies": {}}, []
-    variants = [("shipped", v), ("raw", None)]
-    pre = ds.HERE / "vocab_preregistered.json"
-    if pre.exists():
-        variants.insert(1, ("preregistered", voc.Vocab(path=pre)))
-    else:
-        result["note"] = "no vocab_preregistered.json: the shipped vocabulary was written before any score"
-    for name, vocab in variants:
-        U, Z = heldout_scores(vocab or v, A, texts, raw=vocab is None)
-        m = library_metrics(held, U, Z, parts, classes)
-        result["vocabularies"][name] = m
-        rows.append(f"{name:13s} cat MAP {_r(m['category']['map'])} class MAP {_r(m['class']['map'])} "
-                    f"tag {_r(m['tagging']['accuracy'])} AUC {_r(m['auc'])} strict {_r(m['auc_strict'])}")
-    result["bands"] = bands_of(held, heldout_scores(v, A, texts)[1], parts, classes)
-    result["mood"] = mood_check(v, root, queries)
-    rows.append(f"mood negative {result['mood']['negative']}/{result['mood']['n']} chance "
-                f"{_r(result['mood']['chance'])}")
+    variants, note = heldout_variants(v)
+    scored = {name: library_metrics(held, *heldout_scores(vocab or v, A, texts, raw=vocab is None), parts,
+                                    class_ids(queries)) for name, vocab in variants}
+    mood = mood_check(v, root, queries)
+    result = {"n": len(held.paths), "with_class": sum(bool(c) for c in held.classes), "vocabularies": scored,
+              "bands": bands_of(held, heldout_scores(v, A, texts)[1], parts, class_ids(queries)), "mood": mood}
+    if note:
+        result["note"] = note
+    rows = [vocab_row(n, m) for n, m in scored.items()]
+    rows.append(f"mood negative {mood['negative']}/{mood['n']} chance {_r(mood['chance'])}")
     write_result(out, "heldout.json", result, rows)
 
 
@@ -324,20 +350,18 @@ def mood_check(v: voc.Vocab, root: Path, queries: Mapping) -> dict:
     return mt.mood_share(top, len(moods))
 
 
+def kind_row(true: str, texts: Sequence[str], read: Callable[[str], str]) -> dict:
+    """Counts of each read kind for texts of one true kind, and the costly errors."""
+    reads = {t: read(t) for t in texts}
+    wrong = "texture" if true == "event" else "event"
+    counts = {k: sum(r == k for r in reads.values()) for k in ("event", "either", "texture")}
+    return {"n": len(texts), **counts, "wrong": [t for t, r in reads.items() if r == wrong]}
+
+
 def kind_counts(labels: Mapping, read: Callable[[str], str]) -> dict:
     """E11: per part and true kind, the counts of each read kind and the costly errors."""
-    out = {}
-    for part, kinds in labels.items():
-        if part.startswith("_"):
-            continue
-        res = {}
-        for true, texts in kinds.items():
-            reads = {t: read(t) for t in texts}
-            res[true] = {"n": len(texts), **{k: sum(r == k for r in reads.values())
-                                             for k in ("event", "either", "texture")},
-                         "wrong": [t for t, r in reads.items() if r == ("texture" if true == "event" else "event")]}
-        out[part] = res
-    return out
+    return {part: {true: kind_row(true, texts, read) for true, texts in kinds.items()}
+            for part, kinds in labels.items() if not part.startswith("_")}
 
 
 def cmd_kind(args, out: Path) -> None:
