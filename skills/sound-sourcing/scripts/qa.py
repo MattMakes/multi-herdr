@@ -327,51 +327,60 @@ def _where(i: int, start: int, n: int) -> str:
     return "body"
 
 
-def section_clicks(ctx, layers, G) -> dict:
-    sigs = ([("master", ctx["master"])] if ctx["master"] is not None else []) + [(b, ctx["stems"][b]) for b in mix.BUSES]
-    hp = sos(4, 14000, "highpass")
-    items, counts = [], {}
-    trace = ctx["trace"] or []
-    for name, x in sigs:
-        cl = detect_clicks(x)
-        counts[name] = {"clicks": sum(c["kind"] == "click" for c in cl), "attacks": sum(c["kind"] == "attack" for c in cl)}
-        for c in cl:
-            if c["kind"] != "click":
-                continue
-            i, owners = c["i"], []
-            if layers and name in ("master", "sfx"):
-                lvl = 10 ** (c["level_db"] / 20) * (10 ** (-G / 20) if name == "master" else 1)
-                best, bv = None, 0.0
-                for L in layers:
-                    if L["b"] < i - 480 or L["a"] > i + 480:
-                        continue
-                    lo, hi = max(L["a"], i - 480), min(L["b"], i + 480)
-                    if hi - lo < 64:
-                        lo, hi = max(L["a"], hi - 64), min(L["b"], lo + 64)
-                    seg = L["sig"][lo - L["a"]:hi - L["a"], c["ch"]].astype(np.float64)
-                    if len(seg) < 8:
-                        continue
-                    hh = np.abs(signal.sosfilt(hp, seg))
-                    k0, k1 = max(0, i - 24 - lo), max(0, min(len(hh), i + 25 - lo))
-                    v = float(hh[k0:k1].max()) if k1 > k0 else 0.0
-                    if v > bv:
-                        best, bv = L, v
-                if best is not None and bv >= 0.3 * lvl:
-                    w = _where(i, best["start"], best["n"])
-                    owners.append({"bus": "sfx", "what": best["sample"], "rule": best["rule"], "where": w,
-                                   "from_start_ms": ms(i - best["start"]), "from_end_ms": ms(best["start"] + best["n"] - i)})
-            if not owners:
-                recs = [r for r in trace if r["start"] - 960 <= i <= r["start"] + r["n"] + 960
-                        and (name == "master" or r["bus"] == name)]
-                dist = lambda r: min(abs(i - r["start"]), abs(i - r["start"] - r["n"]))
-                recs.sort(key=lambda r: (_where(i, r["start"], r["n"]) == "body", dist(r)))
-                for r in recs[:3]:
-                    owners.append({"bus": r["bus"], "what": r.get("sample") or r.get("name") or r.get("label"),
-                                   "rule": r.get("rule"), "where": _where(i, r["start"], r["n"]),
-                                   "from_start_ms": ms(i - r["start"]), "level_db": c["level_db"]})
-            items.append({"in": name, "t": round(i / SR, 4), "ch": c["ch"], "level_db": c["level_db"], "conc": c["conc"],
-                          "kind": "click", "owners": owners,
-                          "at_edge": bool(owners) and owners[0]["where"] in ("start", "end")})
+def _layer_hf(L: dict, i: int, ch: int, hp) -> float | None:
+    """The high-passed peak of layer L within 0.5 ms of sample i, or None when L is not near i."""
+    if L["b"] < i - 480 or L["a"] > i + 480:
+        return None
+    lo, hi = max(L["a"], i - 480), min(L["b"], i + 480)
+    if hi - lo < 64:
+        lo, hi = max(L["a"], hi - 64), min(L["b"], lo + 64)
+    seg = L["sig"][lo - L["a"]:hi - L["a"], ch].astype(np.float64)
+    if len(seg) < 8:
+        return None
+    hh = np.abs(signal.sosfilt(hp, seg))
+    k0, k1 = max(0, i - 24 - lo), max(0, min(len(hh), i + 25 - lo))
+    return float(hh[k0:k1].max()) if k1 > k0 else 0.0
+
+
+def _layer_owner(c: dict, name: str, cx: dict) -> list[dict]:
+    """The sfx layer that carries click c, when its high band explains at least 30 % of it."""
+    i = c["i"]
+    lvl = 10 ** (c["level_db"] / 20) * (10 ** (-cx["G"] / 20) if name == "master" else 1)
+    best, bv = None, 0.0
+    for L in cx["layers"]:
+        v = _layer_hf(L, i, c["ch"], cx["hp"])
+        if v is not None and v > bv:
+            best, bv = L, v
+    if best is None or bv < 0.3 * lvl:
+        return []
+    return [{"bus": "sfx", "what": best["sample"], "rule": best["rule"], "where": _where(i, best["start"], best["n"]),
+             "from_start_ms": ms(i - best["start"]), "from_end_ms": ms(best["start"] + best["n"] - i)}]
+
+
+def _trace_owners(c: dict, name: str, trace: list) -> list[dict]:
+    """Up to 3 trace records near click c, edges first."""
+    i = c["i"]
+    recs = [r for r in trace if r["start"] - 960 <= i <= r["start"] + r["n"] + 960
+            and (name == "master" or r["bus"] == name)]
+    dist = lambda r: min(abs(i - r["start"]), abs(i - r["start"] - r["n"]))
+    recs.sort(key=lambda r: (_where(i, r["start"], r["n"]) == "body", dist(r)))
+    return [{"bus": r["bus"], "what": r.get("sample") or r.get("name") or r.get("label"),
+             "rule": r.get("rule"), "where": _where(i, r["start"], r["n"]),
+             "from_start_ms": ms(i - r["start"]), "level_db": c["level_db"]} for r in recs[:3]]
+
+
+def _click_item(name: str, c: dict, cx: dict) -> dict:
+    owners = _layer_owner(c, name, cx) if cx["layers"] and name in ("master", "sfx") else []
+    owners = owners or _trace_owners(c, name, cx["trace"])
+    return {"in": name, "t": round(c["i"] / SR, 4), "ch": c["ch"], "level_db": c["level_db"], "conc": c["conc"],
+            "kind": "click", "owners": owners, "at_edge": bool(owners) and owners[0]["where"] in ("start", "end")}
+
+
+def _click_counts(cl: list) -> dict:
+    return {"clicks": sum(c["kind"] == "click" for c in cl), "attacks": sum(c["kind"] == "attack" for c in cl)}
+
+
+def _clicks_result(items: list, counts: dict) -> dict:
     edge_master = [c for c in items if c["in"] == "master" and c["at_edge"]]
     status = "fail" if edge_master else ("warn" if items else "ok")
     n = len(items)
@@ -379,6 +388,17 @@ def section_clicks(ctx, layers, G) -> dict:
     if n:
         summ += "; a click inside a recording is its own transient or a defect of the source: a critic decides"
     return {"status": status, "summary": summ, "counts": counts, "items": items}
+
+
+def section_clicks(ctx, layers, G) -> dict:
+    sigs = ([("master", ctx["master"])] if ctx["master"] is not None else []) + [(b, ctx["stems"][b]) for b in mix.BUSES]
+    cx = {"layers": layers, "G": G, "hp": sos(4, 14000, "highpass"), "trace": ctx["trace"] or []}
+    items, counts = [], {}
+    for name, x in sigs:
+        cl = detect_clicks(x)
+        counts[name] = _click_counts(cl)
+        items += [_click_item(name, c, cx) for c in cl if c["kind"] == "click"]
+    return _clicks_result(items, counts)
 
 
 # ---------------------------------------------------------------- edges
@@ -400,22 +420,35 @@ def late_onset(x: np.ndarray) -> float | None:
     return None
 
 
-def judge_trim(o: dict, proc: np.ndarray, pre20: float, post20: float, starts_late: bool, fi: float, fo: float):
+def _entry_findings(ar: dict, head: float, att: float) -> tuple[list, list]:
+    inside = ar["starts_late"] and ar["pre20"] > -20
+    abrupt = inside and ar["fi"] < 0.005 and (att > 10 or ar["pre20"] > -10)
+    if abrupt:
+        return [f"abrupt entry: the trim cuts into a sound already playing (pre20 {ar['pre20']:.1f} dB) "
+                "and no attack covers it"], []
+    if inside:
+        return [], ["the trim starts inside a sound; the fade-in softens it"]
+    return [], ([f"the attack starts in the first ms (head {head:.1f} dB): the fade-in dulls it; start the trim "
+                 "3-5 ms earlier"] if head > -30 else [])
+
+
+def _exit_findings(ar: dict, tail: float) -> tuple[list, list]:
+    if not (tail > -35 and ar["post20"] > -35):
+        return [], []
+    chopped = ar["fo"] < 0.03
+    msg = f"{'chopped' if chopped else 'decay faded early'}: the sound continues after the trim (tail {tail:.1f} dB)"
+    return ([msg], []) if chopped else ([], [msg])
+
+
+def judge_trim(o: dict, proc: np.ndarray, ar: dict) -> dict:
+    """Edge findings of 1 trim. ar: pre20, post20 (dB around the trim), starts_late, fi, fo (fade lengths)."""
     pk = float(np.max(np.abs(proc))) or 1e-12
     head = _rms_db(proc[:48]) - mst.db(pk)
     tail = _rms_db(proc[-48:]) - mst.db(pk)
     att = mix.align_index(proc, "attack") / SR * 1000
-    defects, notes = [], []
-    if starts_late and pre20 > -20:
-        if fi < 0.005 and (att > 10 or pre20 > -10):
-            defects.append(f"abrupt entry: the trim cuts into a sound already playing (pre20 {pre20:.1f} dB) and no attack covers it")
-        else:
-            notes.append("the trim starts inside a sound; the fade-in softens it")
-    elif head > -30:
-        notes.append(f"the attack starts in the first ms (head {head:.1f} dB): the fade-in dulls it; start the trim 3-5 ms earlier")
-    if tail > -35 and post20 > -35:
-        (defects if fo < 0.03 else notes).append(
-            f"{'chopped' if fo < 0.03 else 'decay faded early'}: the sound continues after the trim (tail {tail:.1f} dB)")
+    defects, notes = _entry_findings(ar, head, att)
+    d2, n2 = _exit_findings(ar, tail)
+    defects, notes = defects + d2, notes + n2
     lo = late_onset(proc)
     if lo is not None:
         notes.append(f"a second hit at {lo:.3f} s inside the sample (fine for a rattle, wrong for a single hit)")
@@ -426,89 +459,134 @@ def judge_trim(o: dict, proc: np.ndarray, pre20: float, post20: float, starts_la
             "defects": defects, "notes": notes}
 
 
-def section_edges(ctx) -> dict:
-    d, root, cache = ctx["design"], ctx["root"], ctx["cache"]
-    used = {p["sample"] for p in ctx["report"]["placements"]}
-    items = []
-    for name in sorted(u for u in used if "#" not in u and u in d["samples"]):
-        o = d["samples"][name]
-        raw = mix.decode(mix.rpath(root, o["file"]), cache)
-        a = int(float(o.get("start", 0)) * SR)
-        b = int(float(o["end"]) * SR) if o.get("end") is not None else len(raw)
-        trim = raw[a:b]
-        rpk = float(np.max(np.abs(trim))) if len(trim) else 0.0
-        it = {"sample": name, "file": o["file"]}
-        if mst.db(rpk) < -60:
-            why = ("empty (start >= end or past the file end)" if len(trim) == 0 else
-                   "digital silence" if rpk == 0 else "near-silent")
-            it.update(defects=[f"the trim is {why}; the file is {len(raw) / SR:.3f} s long"], notes=[])
-            items.append(it)
-            continue
-        proc = mix.shape(trim, o, with_fades=False)
-        pre20 = _rms_db(raw[max(0, a - 960):a]) - mst.db(rpk) if a > 0 else -200.0
-        post20 = _rms_db(raw[b:b + 960]) - mst.db(rpk) if b < len(raw) else -200.0
-        it.update(pre20_db=round(pre20, 2), post20_db=round(post20, 2))
-        it.update(judge_trim(o, proc, pre20, post20, a > 0, float(o.get("fade_in", 0.002)), float(o.get("fade_out", 0.012))))
-        if o.get("qa_ok"):
-            it["qa_ok"] = o["qa_ok"]
-        items.append(it)
-    for g in sorted({u.split("#")[0] for u in used if "#" in u}):
-        o = d["slices"].get(g, {})
-        it = {"slices": g, "file": o.get("file")}
-        try:
-            sl = mix.cut_slices(mix.decode(mix.rpath(root, o["file"]), cache), o, o["file"], with_fades=False)
-        except Exception as e:  # noqa: BLE001
-            it.update(defects=[f"cannot slice: {e}"], notes=[])
-            items.append(it)
-            continue
-        defs, nts = set(), set()
-        strip = lambda m: re.sub(r"\s*\([^)]*\d[^)]*\)|\d+(\.\d+)?\s*s\b", "", m).strip()
-        for _, x in sl:
-            r = judge_trim(o, x, -200.0, _rms_db(x[-48:]) - mst.db(float(np.max(np.abs(x))) or 1e-12), False,
-                           float(o.get("fade_in", 0.002)), float(o.get("fade_out", 0.02)))
-            defs |= {strip(m) for m in r["defects"]}
-            nts |= {strip(m) for m in r["notes"]}
-        it.update(n=len(sl), defects=sorted(defs), notes=sorted(nts))
-        items.append(it)
-    splices = []
-    mu = d.get("music")
-    film = len(ctx["stems"]["sfx"]) / SR
-    if mu and mu.get("segments"):
-        ratio = 1.0 if mu.get("stretch") == "none" else float(mu.get("target_bpm", 120)) / float(mu["src_bpm"])
-        path = mix.rpath(root, mu["file"])
-        src = mix.stretched(path, ratio, cache) if abs(ratio - 1) >= 1e-6 else mix.decode(path, cache)
-        k, w = 1 / ratio, int(0.05 * SR)
-        lv = lambda i: _rms_db(src[max(0, i):max(0, i) + w])
-        segs = sorted(mu["segments"], key=lambda s: float(s["at"]))
-        for j, s in enumerate(segs):
-            end = int(round(float(s["src_to"]) * k * SR))
-            start = int(round(float(s["src_from"]) * k * SR))
-            end_t = float(s["at"]) + (float(s["src_to"]) - float(s["src_from"])) * k
-            nxt = segs[j + 1] if j + 1 < len(segs) else None
-            out_db, cut = lv(end - w), lv(end)
-            in_db = lv(int(round(float(nxt["src_from"]) * k * SR))) if nxt else -120.0
-            row = {"label": s.get("label"), "at": s["at"], "end_t": round(end_t, 4), "out_db": round(out_db, 2),
-                   "cut_db": round(cut, 2), "in_db": round(in_db, 2), "defects": [], "notes": []}
-            if (not s.get("tail_fade") and float(s.get("fade_out", 0.06)) < 0.1 and end_t < film - 0.05
-                    and cut > out_db - 6 and cut > in_db + 6):
-                msg = "chops the music: the source keeps playing past src_to and the next part is quieter"
-                (row["notes"].append(f"acknowledged ({s['qa_ok']}): {msg}") if s.get("qa_ok") else row["defects"].append(msg))
-            if nxt is not None:
-                gap = float(nxt["at"]) - end_t
-                if gap > 0.02:
-                    row["notes"].append(f"{gap * 1000:.0f} ms of no music before the next segment")
-                elif gap < -0.1:
-                    row["notes"].append(f"overlaps the next segment by {-gap * 1000:.0f} ms")
-            if start > w and lv(start - w) > lv(start) - 3:
-                row["notes"].append("begins inside a sustained sound (no fresh attack on the splice)")
-            splices.append(row)
+def _silent_trim(trim: np.ndarray, rpk: float, raw: np.ndarray) -> list[str]:
+    why = ("empty (start >= end or past the file end)" if len(trim) == 0 else
+           "digital silence" if rpk == 0 else "near-silent")
+    return [f"the trim is {why}; the file is {len(raw) / SR:.3f} s long"]
+
+
+def _sample_edges(ctx: dict, name: str) -> dict:
+    o = ctx["design"]["samples"][name]
+    raw = mix.decode(mix.rpath(ctx["root"], o["file"]), ctx["cache"])
+    a = int(float(o.get("start", 0)) * SR)
+    b = int(float(o["end"]) * SR) if o.get("end") is not None else len(raw)
+    trim = raw[a:b]
+    rpk = float(np.max(np.abs(trim))) if len(trim) else 0.0
+    it = {"sample": name, "file": o["file"]}
+    if mst.db(rpk) < -60:
+        it.update(defects=_silent_trim(trim, rpk, raw), notes=[])
+        return it
+    pre20 = _rms_db(raw[max(0, a - 960):a]) - mst.db(rpk) if a > 0 else -200.0
+    post20 = _rms_db(raw[b:b + 960]) - mst.db(rpk) if b < len(raw) else -200.0
+    it.update(pre20_db=round(pre20, 2), post20_db=round(post20, 2))
+    ar = {"pre20": pre20, "post20": post20, "starts_late": a > 0, "fi": float(o.get("fade_in", 0.002)),
+          "fo": float(o.get("fade_out", 0.012))}
+    it.update(judge_trim(o, mix.shape(trim, o, with_fades=False), ar))
+    if o.get("qa_ok"):
+        it["qa_ok"] = o["qa_ok"]
+    return it
+
+
+def _strip_numbers(m: str) -> str:
+    return re.sub(r"\s*\([^)]*\d[^)]*\)|\d+(\.\d+)?\s*s\b", "", m).strip()
+
+
+def _slice_edges(ctx: dict, g: str) -> dict:
+    o = ctx["design"]["slices"].get(g, {})
+    it = {"slices": g, "file": o.get("file")}
+    try:
+        sl = mix.cut_slices(mix.decode(mix.rpath(ctx["root"], o["file"]), ctx["cache"]), o, o["file"], with_fades=False)
+    except Exception as e:  # noqa: BLE001
+        it.update(defects=[f"cannot slice: {e}"], notes=[])
+        return it
+    defs, nts = set(), set()
+    for _, x in sl:
+        ar = {"pre20": -200.0, "post20": _rms_db(x[-48:]) - mst.db(float(np.max(np.abs(x))) or 1e-12),
+              "starts_late": False, "fi": float(o.get("fade_in", 0.002)), "fo": float(o.get("fade_out", 0.02))}
+        r = judge_trim(o, x, ar)
+        defs |= {_strip_numbers(m) for m in r["defects"]}
+        nts |= {_strip_numbers(m) for m in r["notes"]}
+    it.update(n=len(sl), defects=sorted(defs), notes=sorted(nts))
+    return it
+
+
+def _music_source(ctx: dict, mu: dict) -> tuple[np.ndarray, float]:
+    """The (stretched) music source and its time factor."""
+    ratio = 1.0 if mu.get("stretch") == "none" else float(mu.get("target_bpm", 120)) / float(mu["src_bpm"])
+    path = mix.rpath(ctx["root"], mu["file"])
+    src = mix.stretched(path, ratio, ctx["cache"]) if abs(ratio - 1) >= 1e-6 else mix.decode(path, ctx["cache"])
+    return src, 1 / ratio
+
+
+def _chop(row: dict, s: dict, end_t: float, film: float) -> None:
+    chops = (not s.get("tail_fade") and float(s.get("fade_out", 0.06)) < 0.1 and end_t < film - 0.05
+             and row["cut_db"] > row["out_db"] - 6 and row["cut_db"] > row["in_db"] + 6)
+    if not chops:
+        return
+    msg = "chops the music: the source keeps playing past src_to and the next part is quieter"
+    if s.get("qa_ok"):
+        row["notes"].append(f"acknowledged ({s['qa_ok']}): {msg}")
+    else:
+        row["defects"].append(msg)
+
+
+def _gap_note(nxt, end_t: float) -> list[str]:
+    gap = float(nxt["at"]) - end_t if nxt is not None else 0.0
+    if gap > 0.02:
+        return [f"{gap * 1000:.0f} ms of no music before the next segment"]
+    return [f"overlaps the next segment by {-gap * 1000:.0f} ms"] if gap < -0.1 else []
+
+
+def _splice_row(sp: dict, s: dict, nxt) -> dict:
+    """1 music splice. sp: lv (level at a sample), k (time factor), w (window), film (length)."""
+    lv, k, w = sp["lv"], sp["k"], sp["w"]
+    end = int(round(float(s["src_to"]) * k * SR))
+    start = int(round(float(s["src_from"]) * k * SR))
+    end_t = float(s["at"]) + (float(s["src_to"]) - float(s["src_from"])) * k
+    in_db = lv(int(round(float(nxt["src_from"]) * k * SR))) if nxt else -120.0
+    row = {"label": s.get("label"), "at": s["at"], "end_t": round(end_t, 4), "out_db": round(lv(end - w), 2),
+           "cut_db": round(lv(end), 2), "in_db": round(in_db, 2), "defects": [], "notes": []}
+    _chop(row, s, end_t, sp["film"])
+    row["notes"] += _gap_note(nxt, end_t)
+    if start > w and lv(start - w) > lv(start) - 3:
+        row["notes"].append("begins inside a sustained sound (no fresh attack on the splice)")
+    return row
+
+
+def _music_splices(ctx: dict) -> list[dict]:
+    mu = ctx["design"].get("music")
+    if not (mu and mu.get("segments")):
+        return []
+    src, k = _music_source(ctx, mu)
+    w = int(0.05 * SR)
+    sp = {"lv": lambda i: _rms_db(src[max(0, i):max(0, i) + w]), "k": k, "w": w,
+          "film": len(ctx["stems"]["sfx"]) / SR}
+    segs = sorted(mu["segments"], key=lambda s: float(s["at"]))
+    return [_splice_row(sp, s, segs[j + 1] if j + 1 < len(segs) else None) for j, s in enumerate(segs)]
+
+
+def _cut_by_ends(ctx: dict) -> list[dict]:
     N = len(ctx["stems"]["sfx"])
-    cut = [{"bus": r["bus"], "what": r.get("sample") or r.get("name") or r.get("label"), "t": round(r["start"] / SR, 4),
-            "before_0": r["start"] < 0, "after_end": r["start"] + r["n"] > N}
-           for r in ctx["trace"] or [] if r["bus"] != "music" and (r["start"] < 0 or r["start"] + r["n"] > N)]
+    return [{"bus": r["bus"], "what": r.get("sample") or r.get("name") or r.get("label"), "t": round(r["start"] / SR, 4),
+             "before_0": r["start"] < 0, "after_end": r["start"] + r["n"] > N}
+            for r in ctx["trace"] or [] if r["bus"] != "music" and (r["start"] < 0 or r["start"] + r["n"] > N)]
+
+
+def _trim_items(ctx: dict) -> list[dict]:
+    """Edge findings of every used sample trim and slice group."""
+    d = ctx["design"]
+    used = {p["sample"] for p in ctx["report"]["placements"]}
+    items = [_sample_edges(ctx, n) for n in sorted(u for u in used if "#" not in u and u in d["samples"])]
+    return items + [_slice_edges(ctx, g) for g in sorted({u.split("#")[0] for u in used if "#" in u})]
+
+
+def section_edges(ctx) -> dict:
+    items = _trim_items(ctx)
+    splices = _music_splices(ctx)
+    cut = _cut_by_ends(ctx)
     nd = sum(bool(i["defects"]) for i in items) + sum(bool(s["defects"]) for s in splices)
-    return {"status": "warn" if nd else "ok", "summary": f"{nd} edge defect(s) in {len(items)} trim(s) and {len(splices)} music splice(s)"
-            + (f"; {len(cut)} placement(s) cut by the film ends" if cut else ""),
+    summ = f"{nd} edge defect(s) in {len(items)} trim(s) and {len(splices)} music splice(s)"
+    return {"status": "warn" if nd else "ok", "summary": summ + (f"; {len(cut)} placement(s) cut by the film ends" if cut else ""),
             "items": items, "music_splices": splices, "cut_by_film_ends": cut}
 
 
