@@ -140,3 +140,45 @@ def _install() -> None:
 
 
 _install()
+
+
+# ---------------------------------------------------------------- test recipe
+
+TINY = "forgetest_tiny"
+
+
+def _load_tiny():
+    import importlib.util
+
+    from hark.forge import recipes as registry
+
+    parent = "hark.forge.recipes.ui"
+    if parent not in sys.modules:
+        try:
+            importlib.import_module(parent)
+        except ModuleNotFoundError:
+            pkg = types.ModuleType(parent)
+            pkg.__path__ = []
+            sys.modules[parent] = pkg
+    full = f"{parent}.{TINY}"
+    if full not in sys.modules:
+        spec = importlib.util.spec_from_file_location(full, Path(__file__).with_name("tiny_recipe.py"))
+        mod = importlib.util.module_from_spec(spec)
+        sys.modules[full] = mod
+        spec.loader.exec_module(mod)
+        setattr(sys.modules[parent], TINY, mod)
+    return registry, sys.modules[full]
+
+
+import importlib  # noqa: E402
+
+import pytest  # noqa: E402
+
+
+@pytest.fixture
+def tiny(monkeypatch):
+    """The tiny test recipe, registered in the recipe registry as forgetest_tiny."""
+    registry, mod = _load_tiny()
+    real = registry._table
+    monkeypatch.setattr(registry, "_table", lambda: {**real(), TINY: "ui"})
+    return mod
