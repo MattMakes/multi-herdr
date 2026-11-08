@@ -25,9 +25,9 @@ Apply the phone framing, proof, hero, and brand intro rules in
 3. Look for existing tokens: `MOTION.md`, `BRAND.md`, a design-system
    token file, or brand colors in the product's CSS. Reuse them (see
    "Reuse existing tokens").
-4. Write `BRIEF.md`.
-5. Pick 1 archetype from `references/archetypes.md`. Its duration range
-   must contain the target duration.
+4. Read `Format` from `PRODUCTION.md`: `short` or `long`. Write `BRIEF.md`.
+5. Pick 1 archetype from `references/archetypes.md`. Its format label must
+   match `Format`. Its duration range must contain the target duration.
 6. Write 3 directions and render 1 key frame for each (see "Three
    directions"). Send them to the orchestrator and stop. The orchestrator
    or the operator picks 1. Write the pick as a `chosen:` line.
@@ -46,8 +46,8 @@ under 1 page. Required sections:
 | Core takeaway | Exactly 1 sentence of 15 words or fewer. Every scene supports it or is cut. |
 | Proof | 1 to 3 concrete facts the video shows (a number, a before/after, a live run). |
 | Call to action | 1 action with 1 destination (a URL, a command, a store link). |
-| Format | Aspect, resolution, frame rate and target duration, from the table below. |
-| Channel | Where the video plays (landing page hero, social feed, docs page, talk). It sets sound-off defaults and the safe zones. |
+| Format | Write the line `Format: short` or `Format: long`, from `PRODUCTION.md`. Then give aspect, resolution, frame rate and target duration, from the table below. |
+| Channel | Where the video plays (landing page hero, social feed, docs page, talk, YouTube video page). For `short`, it sets sound-off defaults and the safe zones: assume muted. For `long`, the film plays on a YouTube page with captions only and no voice-over. |
 | Constraints | Brand rules, banned claims, legal text, deadlines. Write "none" when there are none. |
 | Loaded notes | 1 line: `Loaded notes: .video/NOTES.md` when you read it, or `Loaded notes: none` when it does not exist. |
 
@@ -61,9 +61,15 @@ Format values. Use only these:
 
 - Frame rate: `30` fps for talking, UI capture and slides. `60` fps for
   fast motion, scrolling capture and cursor-heavy demos.
-- Target duration: `15s`, `30s`, `60s` or `90s`. Pick the shortest one
-  that holds the proof. A 2nd aspect is a later reframe of the master, not
-  a 2nd direction.
+- Target duration, `short`: `15s`, `30s`, `60s` or `90s`. Pick the
+  shortest one that holds the proof.
+- Target duration, `long`: 180 s to 900 s, with aspect `16:9` only. Pick
+  the shortest length that holds the proof and 3 chapters or more.
+- A length from 91 s to 179 s fits neither format. Ask the operator to
+  choose 90 s (`short`) or 180 s or more (`long`).
+- A 2nd aspect is a later reframe of the master inside 1 format, not a 2nd
+  direction. A short cut of a long film is a separate production with
+  `Format: short`.
 
 ## DIRECTION.md
 
@@ -123,8 +129,10 @@ chosen direction only.
 ### Archetype and beats
 
 Name the archetype and copy its beat list with times scaled to the
-target duration. State the hook pattern you picked and the first 3 s in
-1 sentence: what moves, and what headline text lands.
+target duration. For `short`: state the hook pattern you picked and the
+first 3 s in 1 sentence: what moves, and what headline text lands. For
+`long`: state the cold open and the first 30 s in 1 sentence each: what
+moves, and how the first 30 s prove the promise of the title.
 
 ### Palette
 
@@ -181,11 +189,11 @@ target duration. State the hook pattern you picked and the first 3 s in
 |---|---|
 | `bpm` | 1 tempo, for example `112`. Scene cuts snap to its beat grid. |
 | `key` | 1 musical key, for example `D minor`, for any generated bed or stingers. |
-| `voice_persona` | Age range, pace, tone and 1 sentence of what it is not ("not a radio announcer"). |
-| `voice_wpm` | 130 to 160 WPM. The plan checker rejects more than 2.7 words/s. |
+| `voice_persona` | `short` only. `long` has no voice-over: write `none`. Age range, pace, tone and 1 sentence of what it is not ("not a radio announcer"). |
+| `voice_wpm` | `short` only. 130 to 160 WPM. The plan checker rejects more than 2.7 words/s. |
 | `lufs_target` | `-14` LUFS integrated for the final mix. Narration sits 8 dB to 12 dB above the music bed. |
 | `sfx` | The sound for clicks, key presses, reveals and transitions. Quiet, short, consistent. |
-| `sound_off` | What carries the story with no sound (captions, on-screen text). Assume a feed plays muted. |
+| `sound_off` | What carries the story with no sound (captions, on-screen text). `short`: assume a feed plays muted. `long`: captions carry the story, and game or product audio and music play under them. |
 
 ## Reuse existing tokens
 
@@ -209,14 +217,17 @@ Check each line before hand-off. Write the result in `DIRECTION.md`
 under "Checks".
 
 - [ ] Audience is 1 named group. Takeaway is 1 sentence of 15 words or fewer.
-- [ ] Aspect and resolution are 1 row of the format table. Frame rate is 30 or 60 fps.
-- [ ] Target duration is 15 s, 30 s, 60 s or 90 s and inside the archetype range.
+- [ ] `BRIEF.md` has a `Format: short` or `Format: long` line. The archetype label matches it.
+- [ ] Aspect and resolution are 1 row of the format table. Frame rate is 30 or 60 fps. A `long` film is `16:9`.
+- [ ] `short`: target duration is 15 s, 30 s, 60 s or 90 s and inside the archetype range.
+- [ ] `long`: target duration is 180 s to 900 s and inside the archetype range.
 - [ ] Palette has 5 colors or fewer. Every text pair is 4.5:1 or more, with the ratio written.
 - [ ] Typography has 2 families or fewer. Headline 64 px or more, body 36 px or more at 1080p.
 - [ ] Motion grammar has 2 easing curves or fewer. Transitions are 250 ms to 450 ms.
 - [ ] Audio mood names bpm, key, voice persona, voice WPM and -14 LUFS.
 - [ ] Every reused token names its source file.
-- [ ] The first 3 s are described: what moves and what headline lands.
+- [ ] `short`: the first 3 s are described: what moves and what headline lands.
+- [ ] `long`: the cold open and the first 30 s are described: what moves and how they prove the title's promise.
 - [ ] 3 directions, exactly 1 with depth, each with a key frame PNG and a palette source. 1 `chosen:` line.
 - [ ] `BRIEF.md` has a `Loaded notes:` line.
 
