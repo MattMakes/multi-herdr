@@ -329,6 +329,11 @@ def test_rnk_6_cached_rerank_speed(tmp_path, write, sig):
     for i in range(3):
         write(f"pack/c{i}.wav", sig.click(dur=3.0, freq=900 + 400 * i))
     folder = str(tmp_path / "pack")
+    # Load the model and embed both queries on another folder first: the timing then compares audio work only,
+    # whatever ran before this test in the same process.
+    write("warm/w.wav", sig.click(dur=0.5, freq=700))
+    for query in ("a click", "a door knock"):
+        search.rank([str(tmp_path / "warm")], query)
     t0 = time.perf_counter()
     search.rank([folder], "a click")
     cold = time.perf_counter() - t0

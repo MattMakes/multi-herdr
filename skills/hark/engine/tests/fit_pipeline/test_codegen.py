@@ -168,6 +168,10 @@ def _fake_registry(monkeypatch, src: str, recipe: types.ModuleType | None) -> No
     recipes.load = load
     monkeypatch.setitem(sys.modules, "hark.forge.engine.refsets", refsets)
     monkeypatch.setitem(sys.modules, "hark.forge.recipes", recipes)
+    # "from package import name" reads the package attribute first: replace it too, in case an earlier test
+    # imported the real module.
+    monkeypatch.setattr(importlib.import_module("hark.forge.engine"), "refsets", refsets, raising=False)
+    monkeypatch.setattr(importlib.import_module("hark.forge"), "recipes", recipes, raising=False)
 
 
 def test_c_8_critic_words_from_registry(monkeypatch, tmp_path):

@@ -374,26 +374,28 @@ def round_robin(cands: Sequence[dict], n: int = CAP) -> list[dict]:
 # ================================================================ find: strokes and events
 
 
-def _attack_time(env1: np.ndarray, floor: float, o: float) -> float:
+def _attack_time(env1: np.ndarray, floor: float, o: float) -> float | None:
+    """The attack near onset o (F5 step 3.4); None when no frame reaches floor + 10 dB (an onset in the noise)."""
     a0 = max(0, int(math.floor((o - ATTACK_REACH_S) / 0.001)))
     a1 = min(len(env1), int(math.floor((o + ATTACK_REACH_S) / 0.001)) + 1)
     if a1 <= a0:
         return o
     seg = env1[a0:a1]
     hit = np.nonzero(seg >= max(floor + 10, float(seg.max()) - 30))[0]
-    return (a0 + int(hit[0])) * 0.001 if len(hit) else o
+    return (a0 + int(hit[0])) * 0.001 if len(hit) else None
 
 
 def _stroke(env: np.ndarray, env1: np.ndarray, floor: float, o: float, nx: float, guard: float,
             prev_end: float) -> dict | None:
     f0 = int(math.floor(o / FRAME_S))
     f1 = min(len(env), max(f0 + 1, int(math.floor(nx / FRAME_S))))
-    if f0 >= f1:
+    attack = _attack_time(env1, floor, o)
+    if f0 >= f1 or attack is None:
         return None
     pk = f0 + int(np.argmax(env[f0:min(f1, f0 + PEAK_FRAMES)]))
     below = np.nonzero(env[pk:f1] < max(env[pk] - DECAY_DB, floor + STROKE_FLOOR_DB))[0]
     end = (pk + int(below[0])) * FRAME_S + END_PAD_S if len(below) else nx
-    start = max(0.0, _attack_time(env1, floor, o) - PRE_ROLL, prev_end)
+    start = max(0.0, attack - PRE_ROLL, prev_end)
     end = min(end, guard, start + EVENT_MAX_S)
     if end - start < MIN_STROKE_S:
         return None

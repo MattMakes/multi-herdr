@@ -416,7 +416,7 @@ def _describe_one(path: str) -> dict:
     from hark.listen.describe import describe
 
     r = describe(path)
-    tags = r.get("tags") or []
+    tags = r.get("top_tags") or []
     labels = r.get("audioset") or []
     top = tags[0] if tags else {}
     lab = labels[0] if labels else {}

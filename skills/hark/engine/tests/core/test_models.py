@@ -183,10 +183,24 @@ def test_models_init_imports_only_stdlib():
 # ---------------------------------------------------------------- real models (ML tier, pre-filled cache)
 
 
+# The user's offline flag and hub cache, read before the autouse cfg fixture clears them.
+_REAL_OFFLINE = __import__("hark.core.config", fromlist=["offline"]).offline()
+_REAL_HF_CACHE = __import__("hark.core.config", fromlist=["HF_CACHE"]).HF_CACHE
+
+
 @pytest.fixture
-def real_clap():
-    if __import__("hark.core.config", fromlist=["offline"]).offline() is None:
+def real_models(cfg, monkeypatch):
+    """The user's pre-filled hub cache, offline; embedding caches stay in tmp_path."""
+    if _REAL_OFFLINE is None:
         pytest.skip("needs-data: a pre-filled model cache with an offline flag (no test downloads)")
+    monkeypatch.setenv(_REAL_OFFLINE, "1")
+    cfg.HF_CACHE = _REAL_HF_CACHE
+    monkeypatch.setattr(clap, "_INSTANCE", None)
+    monkeypatch.setattr(ast, "_INSTANCE", None)
+
+
+@pytest.fixture
+def real_clap(real_models):
     return clap.get()
 
 
@@ -221,9 +235,7 @@ def test_at_37_embed_text_dedup(real_clap):
 
 
 @pytest.mark.ml
-def test_at_38_ast_probs():
-    if __import__("hark.core.config", fromlist=["offline"]).offline() is None:
-        pytest.skip("needs-data: a pre-filled model cache with an offline flag (no test downloads)")
+def test_at_38_ast_probs(real_models):
     tagger = ast.get()
     p = tagger.probs(0.1 * np.sin(np.arange(30 * SR) / 20.0).astype(np.float32))[0]
     assert p.shape == (527,) and p.min() >= 0 and p.max() <= 1
