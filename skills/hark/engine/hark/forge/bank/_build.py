@@ -104,18 +104,22 @@ def write_bank(path: str | os.PathLike, doc: dict) -> str:
 
 def clean(obj: Any) -> Any:
     """JSON-safe copy: numpy numbers become Python numbers, NaN becomes null."""
-    if isinstance(obj, dict):
-        return {str(k): clean(v) for k, v in obj.items()}
-    if isinstance(obj, (list, tuple)):
-        return [clean(v) for v in obj]
-    if isinstance(obj, np.ndarray):
-        return clean(obj.tolist())
-    if isinstance(obj, (np.floating, float)):
-        v = float(obj)
-        return v if np.isfinite(v) else None
-    if isinstance(obj, np.integer):
-        return int(obj)
-    return obj
+    fn = next((f for kinds, f in _CLEANERS if isinstance(obj, kinds)), None)
+    return obj if fn is None else fn(obj)
+
+
+def _finite(obj: Any) -> float | None:
+    v = float(obj)
+    return v if np.isfinite(v) else None
+
+
+_CLEANERS: tuple[tuple[Any, Callable[[Any], Any]], ...] = (
+    (dict, lambda o: {str(k): clean(v) for k, v in o.items()}),
+    ((list, tuple), lambda o: [clean(v) for v in o]),
+    (np.ndarray, lambda o: clean(o.tolist())),
+    ((np.floating, float), _finite),
+    (np.integer, int),
+)
 
 
 def _header(name: str, version: str | None, note: str) -> dict:
@@ -194,20 +198,34 @@ def _read_wav(path: str) -> np.ndarray:
     return x
 
 
-def _pick_entry(report: dict, pick: dict, folder: str, category: str) -> tuple[str, dict, np.ndarray]:
+def _pick_render(report: dict, pick: dict) -> tuple[dict, np.ndarray]:
+    """The render block of a pick and its raw render; ``ValueError`` when either is missing."""
     from hark.forge.engine import schema
 
     if not isinstance(pick.get("render"), dict):
         raise ValueError("no render block of its own")
     block = schema.block(report, pick)
-    member = block.get("member") or pick.get("name")
     raw = schema.raw(block)
     if raw is None:
         raise ValueError("the render failed or is silent")
-    wav = os.path.join(folder, os.path.basename(pick.get("file") or f"{pick.get('name')}.wav"))
+    return block, raw
+
+
+def _same_as_wav(raw: np.ndarray, block: dict, wav: str) -> None:
+    """``ValueError`` when the levelled re-render differs from the WAV by more than BUILD_TOL."""
+    from hark.forge.engine import schema
+
     err = schema.compare(schema.level(raw, block), _read_wav(wav))
     if not err <= BUILD_TOL:
         raise ValueError(f"re-render differs from its WAV by {err:.3g} (tolerance {BUILD_TOL:g})")
+
+
+def _pick_entry(report: dict, pick: dict, folder: str, category: str) -> tuple[str, dict, np.ndarray]:
+    from hark.forge.engine import schema
+
+    block, raw = _pick_render(report, pick)
+    _same_as_wav(raw, block, os.path.join(folder, os.path.basename(pick.get("file") or f"{pick.get('name')}.wav")))
+    member = block.get("member") or pick.get("name")
     entry = {"type": "forge", "category": category, "member": member}
     entry.update({k: block[k] for k in ("recipe", "fn", "params", "seed", "peak_db", "gain_db", "gain", "mode")
                   if k in block})
@@ -451,19 +469,35 @@ def _derive_fn(recipe: str, category: str) -> str:
 def target_misses(sound_id: str, meta: dict) -> list[str]:
     """Measures of a derived entry that miss its catalogue row (index, Data assets)."""
     row = B.catalog()["targets"].get(sound_id) or {}
-    misses = []
-    dur, peak = row.get("dur_s"), row.get("peak_s")
+    return [m for rule in (_dur_miss, _peak_miss, _centroid_miss, _lufs_miss) if (m := rule(row, meta))]
+
+
+def _dur_miss(row: dict, meta: dict) -> str | None:
+    dur = row.get("dur_s")
     if dur and abs(meta["dur_s"] - dur) > TOLERANCE_DUR * dur:
-        misses.append(f"dur {meta['dur_s']:.3f} s vs {dur:.3f}")
+        return f"dur {meta['dur_s']:.3f} s vs {dur:.3f}"
+    return None
+
+
+def _peak_miss(row: dict, meta: dict) -> str | None:
+    dur, peak = row.get("dur_s"), row.get("peak_s")
     if peak is not None and dur and abs(meta["peak_s"] - peak) > max(0.02, 0.1 * dur):
-        misses.append(f"peak {meta['peak_s']:.4f} s vs {peak:.4f}")
-    cen = row.get("centroid_hz")
-    if cen and meta.get("centroid_hz") and not 1 / TOLERANCE_CENTROID <= meta["centroid_hz"] / cen <= TOLERANCE_CENTROID:
-        misses.append(f"centroid {meta['centroid_hz']:.0f} Hz vs {cen:.0f}")
-    lufs = row.get("lufs_m_max")
-    if lufs is not None and meta.get("lufs_m_max") is not None and abs(meta["lufs_m_max"] - lufs) > TOLERANCE_LUFS:
-        misses.append(f"LUFS {meta['lufs_m_max']:.1f} vs {lufs:.1f}")
-    return misses
+        return f"peak {meta['peak_s']:.4f} s vs {peak:.4f}"
+    return None
+
+
+def _centroid_miss(row: dict, meta: dict) -> str | None:
+    cen, got = row.get("centroid_hz"), meta.get("centroid_hz")
+    if cen and got and not 1 / TOLERANCE_CENTROID <= got / cen <= TOLERANCE_CENTROID:
+        return f"centroid {got:.0f} Hz vs {cen:.0f}"
+    return None
+
+
+def _lufs_miss(row: dict, meta: dict) -> str | None:
+    lufs, got = row.get("lufs_m_max"), meta.get("lufs_m_max")
+    if lufs is not None and got is not None and abs(got - lufs) > TOLERANCE_LUFS:
+        return f"LUFS {got:.1f} vs {lufs:.1f}"
+    return None
 
 
 def _forge_v2_ids() -> list[str]:
@@ -521,14 +555,22 @@ def _load_model(model: dict | str) -> dict:
 
 def check_source(source: dict, allow_license: bool) -> None:
     """The source keys and licence rules of a fit entry (part 1, 7.4 steps 3-4)."""
+    _source_keys(source)
+    _licence_rules(source["license"], allow_license)
+
+
+def _source_keys(source: dict) -> None:
     missing = [k for k in SOURCE_KEYS if not isinstance(source.get(k), str) or not source.get(k).strip()]
     if missing:
         raise B.BankError(f"source misses {', '.join(missing)} (needs {', '.join(SOURCE_KEYS)})")
-    lic = source["license"].lower()
+
+
+def _licence_rules(licence: str, allow_license: bool) -> None:
+    lic = licence.lower()
     if REFUSED_WORDS.search(lic) or any(t in lic for t in REFUSED_TEXT):
-        raise B.BankError(f"licence {source['license']!r} forbids a derivative inside the package")
+        raise B.BankError(f"licence {licence!r} forbids a derivative inside the package")
     if not any(t in lic for t in FREE_LICENCES) and not allow_license:
-        raise B.BankError(f"licence {source['license']!r} is not CC0 or public domain (--allow-license to override)")
+        raise B.BankError(f"licence {licence!r} is not CC0 or public domain (--allow-license to override)")
 
 
 def _has_vary_knob(model: dict) -> bool:
@@ -568,24 +610,39 @@ def add_fit(model: dict | str, sound_id: str, source: dict | str, bank: str | No
             vary: float = 0.0, kinds: list[str] | None = None, notes: str | None = None,
             allow_license: bool = False, force: bool = False, log: Callable | None = None) -> dict:
     """Add one fitted model to a bank file (part 1, 7.4). Returns the entry plus its id."""
-    if not isinstance(sound_id, str) or not FIT_ID.match(sound_id):
-        raise B.BankError(f"fit id {sound_id!r} must look like fit/<role>/<name> ({FIT_ID.pattern})")
+    _check_fit_id(sound_id)
     model, source = _load_model(model), _load_json_arg(source, "source")
     check_source(source, allow_license)
-    if vary and not _has_vary_knob(model):
-        raise B.BankError(f"{sound_id}: this fit has no vary knob; takes still differ by seed")
+    _check_vary(model, sound_id, vary)
     path = str(bank or Path(B.BANK_DIR) / "fit.json")
     doc = _fit_doc(path)
-    if sound_id in doc["entries"] and not force:
-        raise B.BankError(f"{sound_id} is already in {path} (use --force to replace it)")
+    _check_free(doc, sound_id, path, force)
     entry = _fit_entry(model, sound_id, source, seed, vary, kinds, notes)
     doc["entries"][sound_id] = entry
     doc["hark"] = _hark_version()
     write_bank(path, doc)
-    pitch = f", {entry['pitch_hz']} Hz" if entry["pitch_hz"] else ""
-    _say(log, f"{sound_id} -> {path}: {entry['meta']['dur_s']:.3f} s, {entry['fit']['kind']}{pitch}, "
-              f"{source['license']}")
+    _say(log, _fit_line(sound_id, path, entry, source))
     return {**entry, "id": sound_id}
+
+
+def _check_fit_id(sound_id: Any) -> None:
+    if not isinstance(sound_id, str) or not FIT_ID.match(sound_id):
+        raise B.BankError(f"fit id {sound_id!r} must look like fit/<role>/<name> ({FIT_ID.pattern})")
+
+
+def _check_vary(model: dict, sound_id: str, vary: float) -> None:
+    if vary and not _has_vary_knob(model):
+        raise B.BankError(f"{sound_id}: this fit has no vary knob; takes still differ by seed")
+
+
+def _check_free(doc: dict, sound_id: str, path: str, force: bool) -> None:
+    if sound_id in doc["entries"] and not force:
+        raise B.BankError(f"{sound_id} is already in {path} (use --force to replace it)")
+
+
+def _fit_line(sound_id: str, path: str, entry: dict, source: dict) -> str:
+    pitch = f", {entry['pitch_hz']} Hz" if entry["pitch_hz"] else ""
+    return f"{sound_id} -> {path}: {entry['meta']['dur_s']:.3f} s, {entry['fit']['kind']}{pitch}, {source['license']}"
 
 
 # ---------------------------------------------------------------- 9 check
