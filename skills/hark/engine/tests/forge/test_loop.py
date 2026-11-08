@@ -311,6 +311,14 @@ def test_cli_check_runs_schema(run):
     assert _cli(["--check", str(out)]) == 0
 
 
+def test_cli_check_missing_folder_exits_1(tmp_path, capsys):
+    # T-41: a folder with no forge output is an error: exit 1 and 1 line on stderr
+    missing = tmp_path / "nope"
+    assert _cli(["--check", str(missing)]) == 1
+    got = capsys.readouterr()
+    assert got.out == "" and got.err == f"{missing}: no forge output folder (no report.json)\n"
+
+
 # ---------------------------------------------------------------- lazy entry module
 
 def test_hark_forge_lazy_names(tiny):

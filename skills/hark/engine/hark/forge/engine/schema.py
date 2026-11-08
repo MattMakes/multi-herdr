@@ -13,6 +13,7 @@ import glob
 import json
 import math
 import os
+import sys
 from collections.abc import Callable, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -368,13 +369,21 @@ def upgrade(report: Any, write: bool = False, tol: float = TOL, folder: Any = No
 
 # ---------------------------------------------------------------- CLI
 
+def _folders_of(item: str) -> set[str]:
+    """The forge output folders (with a report.json) that one argument names."""
+    return {p for p in glob.glob(item) or [item] if (Path(p) / "report.json").is_file()}
+
+
 def _folders(items: Sequence[str]) -> list[str]:
     out: set[str] = set()
     for item in items:
-        for p in glob.glob(item) or [item]:
-            if (Path(p) / "report.json").is_file():
-                out.add(p)
+        out |= _folders_of(item)
     return sorted(out)
+
+
+def _missing(items: Sequence[str]) -> list[str]:
+    """The arguments that name no forge output folder."""
+    return [item for item in items if not _folders_of(item)]
 
 
 def _line(d: str, rows: list[dict], tol: float, sources: str) -> str:
@@ -420,7 +429,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     ap.add_argument("--write", action="store_true")
     ap.add_argument("--tol", type=float, default=TOL)
     a = ap.parse_args(argv)
-    good = True
+    missing = _missing(a.dirs)
+    for item in missing:
+        print(f"{item}: no forge output folder (no report.json)", file=sys.stderr)
+    good = not missing
     for d in _folders(a.dirs):
         ok = _run_upgrade(d, a.tol, a.write) if a.upgrade else _run_check(d, a.tol)
         good = good and ok
