@@ -226,23 +226,36 @@ def _ridge(P: np.ndarray, f: np.ndarray) -> tuple[list[float], list[float]]:
     return ridge, share
 
 
-def _spectral_measures(m: np.ndarray) -> dict:
-    P, f = _frames(m)
+def _active(P: np.ndarray) -> np.ndarray:
     e = P.sum(axis=1)
-    act = P[e >= 0.01 * e.max()] if e.max() > 0 else P[:0]
-    out: dict = {"centroid_hz": None, "lo150": None, "hi4k": None, "tonal": None, "glide_st": None}
-    if not len(act):
-        return out
+    return P[e >= 0.01 * e.max()] if e.max() > 0 else P[:0]
+
+
+def _band_measures(act: np.ndarray, f: np.ndarray) -> dict:
     spec = act.mean(axis=0)
     tot = spec.sum() + 1e-30
-    out.update(centroid_hz=int(round(float((spec * f).sum() / tot))),
-               lo150=round(float(spec[f < 150].sum() / tot), 3),
-               hi4k=round(float(spec[f >= 4000].sum() / tot), 3))
+    return {"centroid_hz": int(round(float((spec * f).sum() / tot))),
+            "lo150": round(float(spec[f < 150].sum() / tot), 3),
+            "hi4k": round(float(spec[f >= 4000].sum() / tot), 3)}
+
+
+def _tonal_measures(act: np.ndarray, f: np.ndarray) -> dict:
     ridge, share = _ridge(act, f)
+    res: dict = {}
     if len(share) >= 2:
-        out["tonal"] = round(float(np.mean(share)), 2)
         k3 = max(1, min(3, len(ridge) // 3))
-        out["glide_st"] = round(float(12 * np.log2(np.median(ridge[-k3:]) / np.median(ridge[:k3]))), 1)
+        res = {"tonal": round(float(np.mean(share)), 2),
+               "glide_st": round(float(12 * np.log2(np.median(ridge[-k3:]) / np.median(ridge[:k3]))), 1)}
+    return res
+
+
+def _spectral_measures(m: np.ndarray) -> dict:
+    P, f = _frames(m)
+    act = _active(P)
+    out: dict = {"centroid_hz": None, "lo150": None, "hi4k": None, "tonal": None, "glide_st": None}
+    if len(act):
+        out.update(_band_measures(act, f))
+        out.update(_tonal_measures(act, f))
     return out
 
 
