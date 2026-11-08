@@ -6,7 +6,7 @@
     "halsteadVolume": "1 minor breach, draw_spectrogram at 1036 against the default 1000.",
     "halsteadDifficulty": "1 minor breach, merge_slivers at 35.6 against the default 30.",
     "maintainabilityIndex": "The index falls with Halstead volume, so numeric code scores low. 56 minor breaches, lowest 51.1 against the default 60.",
-    "peakLiveVariables": "Signal code keeps arrays, rates and frame sizes live together. 43 minor breaches, largest 13 against the default 7. Warn is 15, not 14: public API signature fixed by ARCHITECTURE. hark.fit.fit has 14 parameters, and each parameter is live from its signature line, so its peak is 14.",
+    "peakLiveVariables": "Signal code keeps arrays, rates and frame sizes live together. 43 minor breaches, largest 13 against the default 7. Warn is 17, not 14: public API signatures fixed by the spec. hark.fit.fit has 14 parameters (ARCHITECTURE) and hark.fit.run_fit has 16 parameters (fit-codegen.md). The analyser counts each parameter as live on the def line, so run_fit peaks at 16.",
     "abcScore": "Numeric code assigns and calls more per line. 5 minor breaches, largest 22.3 against the default 20."
   },
   "thresholds": {
@@ -15,7 +15,7 @@
     "halsteadVolume": { "warn": 1100, "error": 2000 },
     "halsteadDifficulty": { "warn": 36, "error": 50 },
     "maintainabilityIndex": { "warn": 50, "error": 35, "lowerIsBad": true },
-    "peakLiveVariables": { "warn": 15, "error": 18 },
+    "peakLiveVariables": { "warn": 17, "error": 18 },
     "abcScore": { "warn": 23, "error": 30 }
   }
 }
