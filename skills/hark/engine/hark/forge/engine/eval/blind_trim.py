@@ -186,6 +186,24 @@ def _db(p: np.ndarray, top: float) -> np.ndarray:
     return 10 * np.log10(p + 1e-20) - top
 
 
+def _reach(e: np.ndarray, ip: int, stop: int, hop_s: float) -> float:
+    return float(np.min(e[max(ip, stop - max(1, math.ceil(0.015 / hop_s))):stop]))
+
+
+def _head(e1: np.ndarray, cut_file: bool) -> float | None:
+    if not cut_file:
+        res = None
+    elif len(e1) > 5:
+        res = float(np.max(e1[2:5]))
+    else:
+        res = float(np.max(e1))
+    return res
+
+
+def _floor_rel(floor_pow: float | None, top: float) -> float | None:
+    return float(10 * np.log10(floor_pow + 1e-30) - top) if floor_pow is not None else None
+
+
 def analyse(x: np.ndarray, cls: str, fade_s: float, floor_pow: float | None = None, cut_file: bool = True) -> dict:
     """Envelope facts for the trim: reach, head, peak_late, strike and floor."""
     hop_s, sm = ENV[cls]
@@ -195,16 +213,22 @@ def analyse(x: np.ndarray, cls: str, fade_s: float, floor_pow: float | None = No
     e, e1 = _db(p, top), _db(power_frames(x, int(0.001 * SR)), top)
     ip = int(np.argmax(e))
     stop = max(ip + 1, len(e) - math.ceil((fade_s + 0.005) / hop_s))
-    reach = float(np.min(e[max(ip, stop - max(1, math.ceil(0.015 / hop_s))):stop]))
-    head = (float(np.max(e1[2:5])) if len(e1) > 5 else float(np.max(e1))) if cut_file else None
-    floor = float(10 * np.log10(floor_pow + 1e-30) - top) if floor_pow is not None else None
-    return {"e": e, "e1": e1, "top": top, "ip": ip, "stop": stop, "hop": n, "reach": reach, "head": head,
-            "peak_late": ip * n >= 0.85 * len(x), "strike": float(np.max(e1[:15])) >= -6, "floor": floor,
-            "fade_s": fade_s}
+    return {"e": e, "e1": e1, "top": top, "ip": ip, "stop": stop, "hop": n, "reach": _reach(e, ip, stop, hop_s),
+            "head": _head(e1, cut_file), "peak_late": ip * n >= 0.85 * len(x),
+            "strike": float(np.max(e1[:15])) >= -6, "floor": _floor_rel(floor_pow, top), "fade_s": fade_s}
 
 
 def _cls(*extents: float) -> str:
     return "long" if max(extents) >= SHORT_S else "short"
+
+
+def _head_ok(info: dict) -> bool:
+    return info["head"] is None or info["head"] <= CLEAN_HEAD or info["strike"]
+
+
+def _clean(info: dict, x: np.ndarray) -> bool:
+    return (_head_ok(info) and (info["reach"] <= CLEAN_REACH or info["peak_late"])
+            and (info["floor"] is None or info["floor"] <= CLEAN_FLOOR) and stereo_corr(x) > -0.5)
 
 
 @functools.lru_cache(maxsize=None)
@@ -214,10 +238,7 @@ def facts(p: str, is_ref: bool) -> tuple[float, bool]:
     ext = extent_s(x)
     info = analyse(x, _cls(ext), end_fade_s(p) if is_ref else MADE_FADE_GUARD,
                    source_floor(p) if is_ref else None, cut_file=is_ref)
-    clean = ((info["head"] is None or info["head"] <= CLEAN_HEAD or info["strike"])
-             and (info["reach"] <= CLEAN_REACH or info["peak_late"])
-             and (info["floor"] is None or info["floor"] <= CLEAN_FLOOR) and stereo_corr(x) > -0.5)
-    return ext, bool(clean)
+    return ext, bool(_clean(info, x))
 
 
 # ---------------------------------------------------------------- the pair trim
@@ -256,14 +277,7 @@ def _edge_facts(info: dict, start: int, on: int, j: int, f0: int) -> dict:
     return {"cut_in_db": round(cut_in, 2), "cut_out_db": round(cut_out, 2), "floor_exposed_ms": exposed}
 
 
-def cut(x: np.ndarray, info: dict, L_on: float, L_end: float, keep_end: bool) -> tuple[np.ndarray, dict]:
-    """Trim one clip with a 4 ms raised-cosine fade in and a fade over its last 6 dB; return (clip, facts)."""
-    on, j, end, f0 = _bounds(info, len(x), L_on, L_end)
-    start = on - int(FADE_IN_S * SR)
-    kept = bool(keep_end and info["e"][info["stop"] - 1] >= L_end)
-    if kept:
-        end, j = len(x), len(info["e"]) - 1
-        f0 = end - int(0.002 * SR)
+def _faded_clip(x: np.ndarray, start: int, end: int, f0: int) -> tuple[np.ndarray, int]:
     clip = np.array(x[max(0, start):end], dtype=float)
     if start < 0:
         clip = np.concatenate([np.zeros((-start, clip.shape[1])), clip])
@@ -272,12 +286,32 @@ def cut(x: np.ndarray, info: dict, L_on: float, L_end: float, keep_end: bool) ->
     nout = end - f0
     if nout > 0:
         clip[-nout:] *= raised(nout)[::-1][:, None]
-    f = {"onset_s": round(on / SR, 4), "start_s": round(start / SR, 4), "end_s": round(end / SR, 4),
-         "fade_out_ms": round(nout / SR * 1000, 2), **_edge_facts(info, start, on, j, f0),
-         "reach_db": round(info["reach"], 2), "head_db": None if info["head"] is None else round(info["head"], 2),
-         "floor_db": None if info["floor"] is None else round(info["floor"], 2), "kept_file_end": kept,
-         "end_fade_s": info["fade_s"], "top_db": round(info["top"], 2)}
-    return clip, f
+    return clip, nout
+
+
+def _round2(v: float | None) -> float | None:
+    return None if v is None else round(v, 2)
+
+
+def _cut_facts(info: dict, marks: tuple[int, int, int, int, int], nout: int, kept: bool) -> dict:
+    on, start, end, j, f0 = marks
+    return {"onset_s": round(on / SR, 4), "start_s": round(start / SR, 4), "end_s": round(end / SR, 4),
+            "fade_out_ms": round(nout / SR * 1000, 2), **_edge_facts(info, start, on, j, f0),
+            "reach_db": round(info["reach"], 2), "head_db": _round2(info["head"]),
+            "floor_db": _round2(info["floor"]), "kept_file_end": kept,
+            "end_fade_s": info["fade_s"], "top_db": round(info["top"], 2)}
+
+
+def cut(x: np.ndarray, info: dict, L_on: float, L_end: float, keep_end: bool) -> tuple[np.ndarray, dict]:
+    """Trim one clip with a 4 ms raised-cosine fade in and a fade over its last 6 dB; return (clip, facts)."""
+    on, j, end, f0 = _bounds(info, len(x), L_on, L_end)
+    start = on - int(FADE_IN_S * SR)
+    kept = bool(keep_end and info["e"][info["stop"] - 1] >= L_end)
+    if kept:
+        end, j = len(x), len(info["e"]) - 1
+        f0 = end - int(0.002 * SR)
+    clip, nout = _faded_clip(x, start, end, f0)
+    return clip, _cut_facts(info, (on, start, end, j, f0), nout, kept)
 
 
 # ---------------------------------------------------------------- level match and cleanliness
@@ -323,14 +357,18 @@ def _edge_fails(f: tuple[dict, dict], fails: list) -> None:
             fails.append(f"the {what} trims differ by {abs(a - b):.1f} dB while the louder is above -20 dB")
 
 
-def _floor_rules(p: dict, fails: list, warns: list) -> None:
-    if p["floor_margin_db"] is not None and p["floor_margin_db"] < FAIL["floor_margin"]:
-        fails.append(f"floor margin {p['floor_margin_db']:.1f} dB under 6 dB")
-    ex, fp = p["floor_exposed_ms"], p["floor_played_dbfs"]
+def _exposed_rule(ex: float | None, fp: float | None, fails: list, warns: list) -> None:
     if ex is not None and ex > FAIL["exposed_ms"] and fp is not None and fp > FAIL["exposed_floor"]:
         fails.append(f"the floor is heard for {ex:.0f} ms inside a clip")
     elif ex is not None and ex > WARN["exposed_ms"]:
         warns.append(f"the floor is heard for {ex:.0f} ms inside a clip")
+
+
+def _floor_rules(p: dict, fails: list, warns: list) -> None:
+    if p["floor_margin_db"] is not None and p["floor_margin_db"] < FAIL["floor_margin"]:
+        fails.append(f"floor margin {p['floor_margin_db']:.1f} dB under 6 dB")
+    fp = p["floor_played_dbfs"]
+    _exposed_rule(p["floor_exposed_ms"], fp, fails, warns)
     if fp is not None and fp > WARN["floor_dbfs"]:
         warns.append(f"floor as played {fp:.1f} dBFS")
 
