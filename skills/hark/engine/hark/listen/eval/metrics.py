@@ -208,23 +208,22 @@ def precision_at_base(lr: float, base: float = BASE_RATE) -> float:
     return lr * base / (lr * base + (1 - base))
 
 
+def band_row(name: str, pos: np.ndarray, neg: np.ndarray, lo: float, hi: float) -> dict:
+    """One row of the band table."""
+    tp, fp = band_counts(pos, neg, lo, hi)
+    lr = lr_of(tp, fp, len(pos), len(neg))
+    return {"band": name, "lo": None if math.isinf(lo) else lo, "tp": tp, "fp": fp,
+            "lr": None if fp == 0 else round(lr, 2), "precision": tp / max(1, tp + fp),
+            "precision_even_odds": 1.0 if math.isinf(lr) else lr / (lr + 1),
+            "recall_at_or_above": float((pos >= lo).sum() / max(1, len(pos)))}
+
+
 def band_table(pos: np.ndarray, neg: np.ndarray, cuts: Sequence[float] = BAND_CUTS) -> dict:
     """Per-band tp, fp, LR and precisions, not cumulative (E10)."""
     pos, neg = np.asarray(pos, np.float64), np.asarray(neg, np.float64)
-    names = ("strong", "plausible", "weak", "no match")
     edges = [math.inf, *cuts, -math.inf]
-    bands = []
-    for i, name in enumerate(names):
-        lo, hi = edges[i + 1], edges[i]
-        tp, fp = band_counts(pos, neg, lo, hi)
-        lr = lr_of(tp, fp, len(pos), len(neg))
-        bands.append({
-            "band": name, "lo": None if math.isinf(lo) else lo, "tp": tp, "fp": fp,
-            "lr": None if fp == 0 else round(lr, 2),
-            "precision": tp / max(1, tp + fp),
-            "precision_even_odds": 1.0 if math.isinf(lr) else lr / (lr + 1),
-            "recall_at_or_above": float((pos >= lo).sum() / max(1, len(pos))),
-        })
+    names = ("strong", "plausible", "weak", "no match")
+    bands = [band_row(name, pos, neg, edges[i + 1], edges[i]) for i, name in enumerate(names)]
     n_pos, n_neg = len(pos), len(neg)
     return {"n_pos": n_pos, "n_neg": n_neg, "base_rate": n_pos / max(1, n_pos + n_neg), "bands": bands}
 
@@ -304,43 +303,46 @@ def key_hit(segment: tuple[float, float], attacks: Sequence[float]) -> tuple[boo
     return ok, idx, lead
 
 
+def _inside(t: float, ranges: Sequence[tuple[float, float]]) -> bool:
+    return any(a <= t < b for a, b in ranges)
+
+
+def lead_stats(leads: Sequence[float]) -> dict:
+    """The median and range of the leads in ms (None without a lead)."""
+    if not leads:
+        return {"lead_median_ms": None, "lead_range_ms": None}
+    ms = 1000 * np.asarray(leads, np.float64)
+    return {"lead_median_ms": round(float(np.median(ms)), 1),
+            "lead_range_ms": [round(float(ms.min()), 1), round(float(ms.max()), 1)]}
+
+
 def key_report(segments: Sequence[tuple[float, float]], attacks: Sequence[float],
                unlabelled: Sequence[tuple[float, float]] = (), skips: Sequence[tuple[float, float]] = ()) -> dict:
     """Hits, distinct presses, lead stats, unlabelled and skip-range segments (E12)."""
-    hits, presses, leads, n_unlab, n_skip = 0, set(), [], 0, 0
-    for seg in segments:
-        if any(a <= seg[0] < b for a, b in unlabelled):
-            n_unlab += 1
-            continue
-        if any(a <= seg[0] < b for a, b in skips):
-            n_skip += 1
-            continue
-        ok, idx, lead = key_hit(seg, attacks)
-        if ok:
-            hits += 1
-            presses.add(idx)
-            leads.append(lead)
-    return {"segments": len(segments), "hits": hits, "presses_hit": len(presses),
-            "lead_median_ms": round(1000 * float(np.median(leads)), 1) if leads else None,
-            "lead_range_ms": [round(1000 * min(leads), 1), round(1000 * max(leads), 1)] if leads else None,
-            "unlabelled": n_unlab, "in_skip": n_skip}
+    n_unlab = sum(_inside(s[0], unlabelled) for s in segments)
+    n_skip = sum(_inside(s[0], skips) and not _inside(s[0], unlabelled) for s in segments)
+    judged = [key_hit(s, attacks) for s in segments if not (_inside(s[0], unlabelled) or _inside(s[0], skips))]
+    hits = [(idx, lead) for ok, idx, lead in judged if ok]
+    return {"segments": len(segments), "hits": len(hits), "presses_hit": len({i for i, _ in hits}),
+            **lead_stats([lead for _, lead in hits]), "unlabelled": n_unlab, "in_skip": n_skip}
+
+
+def _hit_events(seg: Mapping, events: Sequence[float]) -> list[float]:
+    return [e for e in events if seg["start"] - SCENE_SLACK_S <= e < seg["end"]]
 
 
 def scene_found(segments: Sequence[Mapping], events: Sequence[float]) -> dict:
     """Which events a find result found, top-1 and tight trims (E12 scene rule)."""
-    found, tight, leads = set(), 0, []
-    top1 = False
-    for n, seg in enumerate(segments):
-        hit = [e for e in events if seg["start"] - SCENE_SLACK_S <= e < seg["end"]]
-        if not hit:
-            continue
-        top1 = top1 or n == 0
+    found: set[float] = set()
+    leads = []
+    for seg in segments:
+        hit = _hit_events(seg, events)
         new = [e for e in hit if e not in found]
         found.update(hit)
-        if seg.get("kind") != "window" and new:
-            tight += 1
+        if new and seg.get("kind") != "window":
             leads.append(new[0] + 0.010 - seg["start"])
-    return {"found": sorted(found), "n_found": len(found), "top1": top1, "tight": tight,
+    top1 = bool(segments) and bool(_hit_events(segments[0], events))
+    return {"found": sorted(found), "n_found": len(found), "top1": top1, "tight": len(leads),
             "leads_ms": [round(1000 * v, 1) for v in leads]}
 
 

@@ -144,31 +144,52 @@ def _timed(fn: Callable[[], object]) -> float:
     return round(time.perf_counter() - t0, 2)
 
 
-def timings(assets: Path, out: Path) -> dict:
-    """E15: wall-clock seconds per call, models warm, every input a fresh copy (no cache hit)."""
-    from hark.listen import describe, match, search
+def _model_and_file_rows(root: Path, cfg: Mapping, tmp: Path) -> dict:
+    """model load, describe and match on the short key, describe on the 31 s rain."""
+    from hark.listen import describe, match
     from hark.listen.eval.run_eval import fresh_copy
     from hark.models import ast, clap
 
-    root = assets / "find"
-    cfg = json.loads((root / "checks.json").read_text(encoding="utf-8"))
-    tm, tmp = cfg["timing"], out / "timing"
-    res: dict[str, object] = {"threads": config.threads()}
-    res["model_load_s"] = _timed(lambda: (voc.get(), clap.get(), ast.get()))
+    tm = cfg["timing"]
+    res = {"model_load_s": _timed(lambda: (voc.get(), clap.get(), ast.get()))}
     key = fresh_copy(str(root / tm["short_key"]), tmp)
     res["describe_short_cold"] = _timed(lambda: describe.describe(key))
     res["match_cached_new_query"] = _timed(lambda: match.match(key, "a soft plastic tap"))
     rain = fresh_copy(str(root / tm["rain_31s"]), tmp)
     res["describe_31s_cold"] = _timed(lambda: describe.describe(rain))
+    return res
+
+
+def _find_rows(root: Path, cfg: Mapping, out: Path, tmp: Path) -> dict:
+    """find on K1 (cold, new query) and on S2 when it was built."""
+    from hark.listen import search
+    from hark.listen.eval.run_eval import fresh_copy
+
     k1 = fresh_copy(str(root / cfg["K1"]["file"]), tmp)
-    res["find_18s_cold"] = _timed(lambda: search.find(k1, KEY_QUERY, top=17))
-    res["find_18s_cached_new_query"] = _timed(lambda: search.find(k1, "a spacebar press", top=17))
+    res = {"find_18s_cold": _timed(lambda: search.find(k1, KEY_QUERY, top=17)),
+           "find_18s_cached_new_query": _timed(lambda: search.find(k1, "a spacebar press", top=17))}
     s2 = out / "s2.wav"
     if s2.exists():
         res["find_300s_cold"] = _timed(lambda: search.find(fresh_copy(str(s2), tmp), "a glass ting", top=3))
-    foley = [fresh_copy(p, tmp / "foley") for p in audio.list_media([str(root / tm["foley_dir"])])[:20]]
-    cold = _timed(lambda: search.rank(foley, "a cloth rustle"))
-    res["rank_20_foley_files_cold"] = {"seconds": cold, "per_file": round(cold / max(1, len(foley)), 2),
-                                       "audio_seconds": round(sum(audio.duration(p) for p in foley), 1)}
-    res["rank_20_cached_new_query"] = _timed(lambda: search.rank(foley, "a paper crumple"))
     return res
+
+
+def _rank_rows(root: Path, cfg: Mapping, tmp: Path) -> dict:
+    """rank over 20 fresh foley copies, cold and with a new query."""
+    from hark.listen import search
+    from hark.listen.eval.run_eval import fresh_copy
+
+    foley = [fresh_copy(p, tmp / "foley") for p in audio.list_media([str(root / cfg["timing"]["foley_dir"])])[:20]]
+    cold = _timed(lambda: search.rank(foley, "a cloth rustle"))
+    return {"rank_20_foley_files_cold": {"seconds": cold, "per_file": round(cold / max(1, len(foley)), 2),
+                                         "audio_seconds": round(sum(audio.duration(p) for p in foley), 1)},
+            "rank_20_cached_new_query": _timed(lambda: search.rank(foley, "a paper crumple"))}
+
+
+def timings(assets: Path, out: Path) -> dict:
+    """E15: wall-clock seconds per call, models warm, every input a fresh copy (no cache hit)."""
+    root = assets / "find"
+    cfg = json.loads((root / "checks.json").read_text(encoding="utf-8"))
+    tmp = out / "timing"
+    return {"threads": config.threads(), **_model_and_file_rows(root, cfg, tmp), **_find_rows(root, cfg, out, tmp),
+            **_rank_rows(root, cfg, tmp)}

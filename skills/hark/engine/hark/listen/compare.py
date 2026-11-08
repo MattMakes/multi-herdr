@@ -78,19 +78,28 @@ def _low_end(bands: dict | None) -> float | None:
     return round(10 * np.log10(10 ** (bands["sub"] / 10) + 10 ** (bands["low"] / 10)), 1)
 
 
+COPIED = ("peak_dbfs", "brightness_hz", "bandwidth_hz", "attack_ms", "decay_ms")
+
+
+def _width(m: dict) -> float:
+    w = m.get("side_to_mid_db")
+    return MONO_DB if w is None else max(MONO_DB, float(w))
+
+
+def _noise_floor(m: dict, dur: float) -> float | None:
+    if dur < NOISE_FLOOR_MIN_S or m.get("noise_floor_dbfs") is None:
+        return None
+    return max(NOISE_FLOOR_DB, float(m["noise_floor_dbfs"]))
+
+
 def feats(measurements: dict, audio_x: np.ndarray) -> dict:
     """Measurements that silence around a sound does not change (a key is absent when unknown)."""
     m = measurements
     dur = len(audio_x) / SR
-    width = m.get("side_to_mid_db")
     out = {"loudness_lufs": round(float(features.integrated_lufs(_padded(audio_x))), 1),
-           "peak_dbfs": m.get("peak_dbfs"), "brightness_hz": m.get("brightness_hz"),
-           "bandwidth_hz": m.get("bandwidth_hz"), "attack_ms": m.get("attack_ms"), "decay_ms": m.get("decay_ms"),
-           "length_s": sounding_length(audio_x), "duration": round(dur, 3),
-           "width_db": MONO_DB if width is None else max(MONO_DB, float(width)),
-           "low_end_db": _low_end(m.get("bands_db"))}
-    if dur >= NOISE_FLOOR_MIN_S and m.get("noise_floor_dbfs") is not None:
-        out["noise_floor_dbfs"] = max(NOISE_FLOOR_DB, float(m["noise_floor_dbfs"]))
+           **{k: m.get(k) for k in COPIED}, "length_s": sounding_length(audio_x), "duration": round(dur, 3),
+           "width_db": _width(m), "low_end_db": _low_end(m.get("bands_db")),
+           "noise_floor_dbfs": _noise_floor(m, dur)}
     return {k: v for k, v in out.items() if v is not None}
 
 
@@ -109,15 +118,19 @@ def _g(key: str, v: float) -> float:
     return float(np.log(max(v, 0.001))) if key in LOG_KEYS else float(v)
 
 
+def _spread(key: str, g: np.ndarray) -> tuple[float, float]:
+    """Median and scale (MAD-based, floored per key) of transformed values."""
+    med = float(np.median(g))
+    mad = float(np.median(np.abs(g - med)))
+    return med, max(MAD_FACTOR * mad, MIN_SCALE.get(key, DEFAULT_MIN_SCALE))
+
+
 def robust_z(key: str, x: float, refs: Sequence[float]) -> dict | None:
     """Robust z of a value against reference values (C2); None with fewer than 2 references."""
     vals = [float(r) for r in refs if r is not None]
     if len(vals) < 2:
         return None
-    g = np.array([_g(key, r) for r in vals])
-    med = float(np.median(g))
-    mad = float(np.median(np.abs(g - med)))
-    scale = max(MAD_FACTOR * mad, MIN_SCALE.get(key, DEFAULT_MIN_SCALE))
+    med, scale = _spread(key, np.array([_g(key, r) for r in vals]))
     back = float(np.exp(med)) if key in LOG_KEYS else med
     p10, p90 = np.percentile(vals, [10, 90])
     return {"value": x, "refs_median": round(back, 3), "robust_z": round((_g(key, x) - med) / scale, 2),
@@ -306,6 +319,17 @@ def _compare_summary(name: str, n: int, nearest: list[dict], typ: dict, outliers
     return " ".join(parts) + skipped_note(skipped)
 
 
+def _nearest(E: np.ndarray, ok: Sequence[str], k: int) -> list[dict]:
+    cos = E[1:] @ E[0]
+    order = np.argsort(-cos, kind="stable")[:k]
+    return [{"path": ok[i], "name": os.path.basename(ok[i]), "cosine": round(float(cos[i]), 3)} for i in order]
+
+
+def _median_abs_z(table: dict) -> float | None:
+    zs = [abs(v["robust_z"]) for v in table.values()]
+    return round(float(np.median(zs)), 2) if zs else None
+
+
 def compare(path: str, refs: Sequence[str], k: int = DEFAULT_K, start: float | None = None,
             end: float | None = None) -> dict:
     """Place a sound among reference recordings."""
@@ -315,17 +339,12 @@ def compare(path: str, refs: Sequence[str], k: int = DEFAULT_K, start: float | N
     if len(ok) < 2:
         return _short_compare(path, len(ok), skipped)
     E = voc.embed_files([path] + ok, ranges=[(start, end)] + [(None, None)] * len(ok))
-    cos = E[1:] @ E[0]
-    order = np.argsort(-cos, kind="stable")[:k]
-    nearest = [{"path": ok[i], "name": os.path.basename(ok[i]), "cosine": round(float(cos[i]), 3)} for i in order]
+    nearest = _nearest(E, ok, k)
     typ = typicality(E[0], E[1:], k)
-    fx = measure_path(path, start, end)
-    table = _feature_table(fx, [measure_path(p) for p in ok])
-    zs = [abs(v["robust_z"]) for v in table.values()]
+    table = _feature_table(measure_path(path, start, end), [measure_path(p) for p in ok])
     summary = _compare_summary(trim_name(path, start, end), len(ok), nearest, typ, _outlier_words(table), skipped)
     return {"summary": summary, "path": path, "range": [start, end], "n_refs": len(ok), "nearest": nearest,
-            "typicality": typ, "features": table,
-            "feature_distance": round(float(np.median(zs)), 2) if zs else None, "skipped": skipped}
+            "typicality": typ, "features": table, "feature_distance": _median_abs_z(table), "skipped": skipped}
 
 
 def compare_text(result: dict) -> str:

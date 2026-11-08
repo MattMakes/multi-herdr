@@ -348,19 +348,13 @@ def _too_quiet(base: dict, m: dict, x: np.ndarray, d: float) -> dict | None:
     return None
 
 
-def describe(path: str, start: float | None = None, end: float | None = None, top: int = DEFAULT_TOP) -> dict:
-    """What a sound sounds like: tags, hints, AudioSet labels, measurements and a summary."""
-    dur = voc.check_range(path, start, end)
-    s, e = voc.clamp_range(dur, start, end)
-    x = audio.load(path, start=start, end=end)
-    d = len(x) / SR
-    m = features.measure(x, light=d > LIGHT_S) if len(x) else {"error": "too short to measure"}
-    base: dict[str, Any] = {"path": path, "start": start, "end": end, "duration": round(d, 3)}
-    quiet = _too_quiet(base, m, x, d)
-    if quiet is not None:
-        return quiet
+def _measure(x: np.ndarray, d: float) -> dict:
+    return features.measure(x, light=d > LIGHT_S) if len(x) else {"error": "too short to measure"}
+
+
+def _described(base: dict, m: dict, d: float, emb: dict, top: int) -> dict:
+    """The tags, hints, AudioSet labels and summary of an audible sound."""
     v = voc.get()
-    emb = _embed_long(path, x, s, e) if d > LONG_S else _embed_short(path, s, e)
     cal = v.calibrate(emb["a"][None, :])
     r = {**base, "measurements": shown_measurements(m, d), "shape": shape_words(m, d),
          **tag_lists(v, cal.Z[0], cal.C[0], top), "audioset": audioset_list(emb["model"], emb["probs"])}
@@ -368,9 +362,22 @@ def describe(path: str, start: float | None = None, end: float | None = None, to
     tops: list[dict] = []
     if d > LONG_S:
         r["distinct_windows"], tops = window_records(emb, v)
-    p_music = float(emb["model"].prob_of(emb["probs"], "Music"))
-    r["summary"] = build_summary(r, p_music, tops)
+    r["summary"] = build_summary(r, float(emb["model"].prob_of(emb["probs"], "Music")), tops)
     return r
+
+
+def describe(path: str, start: float | None = None, end: float | None = None, top: int = DEFAULT_TOP) -> dict:
+    """What a sound sounds like: tags, hints, AudioSet labels, measurements and a summary."""
+    s, e = voc.clamp_range(voc.check_range(path, start, end), start, end)
+    x = audio.load(path, start=start, end=end)
+    d = len(x) / SR
+    m = _measure(x, d)
+    base: dict[str, Any] = {"path": path, "start": start, "end": end, "duration": round(d, 3)}
+    quiet = _too_quiet(base, m, x, d)
+    if quiet is not None:
+        return quiet
+    emb = _embed_long(path, x, s, e) if d > LONG_S else _embed_short(path, s, e)
+    return _described(base, m, d, emb, top)
 
 
 def describe_text(r: dict) -> str:
