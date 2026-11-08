@@ -1,0 +1,590 @@
+{
+ "_doc": "Category queries (one per folder), 35 classes (needs that map to them and 2 phrasings that describe the sound, not its job), 24 specific queries (relevant files by class ids, file ids or file-id prefixes). Written before any score.",
+ "categories": {
+  "ambience": "a quiet indoor or outdoor atmosphere",
+  "foley": "small everyday object handling sounds",
+  "garden": "outdoor garden and nature sounds",
+  "keyboard": "computer keyboard key sounds",
+  "magic": "bright sparkling chime sounds",
+  "motion": "whooshes and movement through the air",
+  "music": "a piece of music",
+  "toy": "small plastic toy clicks and taps"
+ },
+ "classes": [
+  {
+   "id": "room_tone",
+   "needs": [
+    "room tone",
+    "air tone",
+    "silence"
+   ],
+   "phrasings": [
+    "a quiet empty room hum",
+    "faint steady indoor air noise"
+   ]
+  },
+  {
+   "id": "rain",
+   "needs": [
+    "rain",
+    "rainfall"
+   ],
+   "phrasings": [
+    "steady rain falling",
+    "raindrops pattering on a surface"
+   ]
+  },
+  {
+   "id": "meadow",
+   "needs": [
+    "meadow",
+    "field ambience"
+   ],
+   "phrasings": [
+    "an open meadow with insects buzzing",
+    "a calm summer field atmosphere"
+   ]
+  },
+  {
+   "id": "wind_grass",
+   "needs": [
+    "wind",
+    "wind in grass"
+   ],
+   "phrasings": [
+    "wind blowing through tall grass",
+    "a soft breeze rustling grass"
+   ]
+  },
+  {
+   "id": "tiny_steps",
+   "needs": [
+    "tiny steps",
+    "small footsteps"
+   ],
+   "phrasings": [
+    "tiny quick footsteps",
+    "light pattering steps of a small creature"
+   ]
+  },
+  {
+   "id": "soft_landing",
+   "needs": [
+    "soft landing",
+    "soft thud"
+   ],
+   "phrasings": [
+    "a soft thud of something landing",
+    "a small object landing on a cushion"
+   ]
+  },
+  {
+   "id": "glass_squeak",
+   "needs": [
+    "glass squeak",
+    "squeak"
+   ],
+   "phrasings": [
+    "a squeak of a finger rubbing glass",
+    "a high rubbing squeal on glass"
+   ]
+  },
+  {
+   "id": "stretch_pop",
+   "needs": [
+    "stretch",
+    "rubber pop"
+   ],
+   "phrasings": [
+    "rubber stretching and then popping",
+    "an elastic band snapping"
+   ]
+  },
+  {
+   "id": "snap_lock",
+   "needs": [
+    "snap",
+    "snap fit"
+   ],
+   "phrasings": [
+    "two plastic parts snapping together",
+    "a crisp snap of a clip locking"
+   ]
+  },
+  {
+   "id": "small_pop",
+   "needs": [
+    "pop",
+    "bubble pop"
+   ],
+   "phrasings": [
+    "a small pop",
+    "a bubble popping"
+   ]
+  },
+  {
+   "id": "grass_steps",
+   "needs": [
+    "footsteps on grass"
+   ],
+   "phrasings": [
+    "footsteps walking on grass",
+    "feet crunching on a lawn"
+   ]
+  },
+  {
+   "id": "soil",
+   "needs": [
+    "dirt",
+    "soil"
+   ],
+   "phrasings": [
+    "digging in loose soil",
+    "dirt being scooped and poured"
+   ]
+  },
+  {
+   "id": "tree",
+   "needs": [
+    "tree",
+    "leaves"
+   ],
+   "phrasings": [
+    "leaves rustling in a tree",
+    "a branch creaking and leaves moving"
+   ]
+  },
+  {
+   "id": "fruit_drop",
+   "needs": [
+    "fruit drop",
+    "apple drop"
+   ],
+   "phrasings": [
+    "a fruit dropping onto the ground",
+    "an apple falling onto grass with a thud"
+   ]
+  },
+  {
+   "id": "tiny_crowd",
+   "needs": [
+    "tiny voices",
+    "small crowd"
+   ],
+   "phrasings": [
+    "a crowd of tiny chattering voices",
+    "many small high voices murmuring"
+   ]
+  },
+  {
+   "id": "key_thock",
+   "needs": [
+    "key press",
+    "keystroke"
+   ],
+   "phrasings": [
+    "a deep thock of a mechanical key",
+    "a single heavy keyboard key press"
+   ]
+  },
+  {
+   "id": "spacebar",
+   "needs": [
+    "spacebar"
+   ],
+   "phrasings": [
+    "a spacebar press",
+    "a wide keyboard key hit with a rattle"
+   ]
+  },
+  {
+   "id": "typing",
+   "needs": [
+    "typing"
+   ],
+   "phrasings": [
+    "fast continuous typing on a keyboard",
+    "many keyboard keys clattering in a stream"
+   ]
+  },
+  {
+   "id": "enter",
+   "needs": [
+    "enter key",
+    "return key"
+   ],
+   "phrasings": [
+    "an enter key press",
+    "a firm press of the return key"
+   ]
+  },
+  {
+   "id": "cursor_click",
+   "needs": [
+    "mouse click",
+    "click"
+   ],
+   "phrasings": [
+    "a computer mouse click",
+    "a small sharp button click"
+   ]
+  },
+  {
+   "id": "ting",
+   "needs": [
+    "ting",
+    "glass ting"
+   ],
+   "phrasings": [
+    "a glass ting",
+    "a bright clear ring of glass being struck"
+   ]
+  },
+  {
+   "id": "chime_sweep",
+   "needs": [
+    "chime sweep",
+    "wind chimes"
+   ],
+   "phrasings": [
+    "a sweep of shimmering chimes",
+    "a glissando of small bells"
+   ]
+  },
+  {
+   "id": "note",
+   "needs": [
+    "note",
+    "bell note"
+   ],
+   "phrasings": [
+    "a single bell note",
+    "one pure tuned tone ringing out"
+   ]
+  },
+  {
+   "id": "small_whoosh",
+   "needs": [
+    "whoosh",
+    "swish"
+   ],
+   "phrasings": [
+    "a short light whoosh",
+    "a quick swish through the air"
+   ]
+  },
+  {
+   "id": "big_whoosh",
+   "needs": [
+    "big whoosh",
+    "pass-by"
+   ],
+   "phrasings": [
+    "a heavy fast whoosh",
+    "a large object rushing past"
+   ]
+  },
+  {
+   "id": "plunge",
+   "needs": [
+    "splash",
+    "plunge"
+   ],
+   "phrasings": [
+    "an object dropping into water",
+    "a splash of something falling into water"
+   ]
+  },
+  {
+   "id": "underwater",
+   "needs": [
+    "underwater"
+   ],
+   "phrasings": [
+    "a muffled underwater atmosphere",
+    "bubbling sound heard under water"
+   ]
+  },
+  {
+   "id": "swell",
+   "needs": [
+    "swell",
+    "riser"
+   ],
+   "phrasings": [
+    "a rising swell",
+    "a sound growing louder into a peak"
+   ]
+  },
+  {
+   "id": "impact",
+   "needs": [
+    "impact",
+    "hit"
+   ],
+   "phrasings": [
+    "a heavy impact hit",
+    "a deep boom of something striking hard"
+   ]
+  },
+  {
+   "id": "music",
+   "needs": [
+    "music"
+   ],
+   "phrasings": [
+    "a piece of music",
+    "a song with instruments playing"
+   ]
+  },
+  {
+   "id": "toy_clicks",
+   "needs": [
+    "toy click",
+    "plastic click"
+   ],
+   "phrasings": [
+    "small plastic toy clicks",
+    "a cheap plastic toy clicking"
+   ]
+  },
+  {
+   "id": "lego",
+   "needs": [
+    "lego",
+    "brick click"
+   ],
+   "phrasings": [
+    "a lego brick click",
+    "plastic bricks clicking together"
+   ]
+  },
+  {
+   "id": "dominoes",
+   "needs": [
+    "dominoes"
+   ],
+   "phrasings": [
+    "dominoes falling one after another",
+    "a row of small tiles toppling and clacking"
+   ]
+  },
+  {
+   "id": "latch",
+   "needs": [
+    "latch"
+   ],
+   "phrasings": [
+    "a metal latch closing",
+    "a door latch clicking shut"
+   ]
+  },
+  {
+   "id": "switch",
+   "needs": [
+    "switch",
+    "light switch"
+   ],
+   "phrasings": [
+    "a light switch click",
+    "a small toggle switch flipped"
+   ]
+  }
+ ],
+ "specific": [
+  {
+   "text": "a glass ting",
+   "classes": [
+    "ting"
+   ],
+   "ids": [],
+   "prefixes": []
+  },
+  {
+   "text": "a whoosh",
+   "classes": [
+    "small_whoosh",
+    "big_whoosh"
+   ],
+   "ids": [],
+   "prefixes": []
+  },
+  {
+   "text": "a deep key thock",
+   "classes": [
+    "key_thock"
+   ],
+   "ids": [],
+   "prefixes": []
+  },
+  {
+   "text": "a cork pop",
+   "classes": [
+    "small_pop"
+   ],
+   "ids": [],
+   "prefixes": []
+  },
+  {
+   "text": "a spacebar press",
+   "classes": [
+    "spacebar"
+   ],
+   "ids": [],
+   "prefixes": []
+  },
+  {
+   "text": "rain on a window",
+   "classes": [
+    "rain"
+   ],
+   "ids": [],
+   "prefixes": []
+  },
+  {
+   "text": "a light switch click",
+   "classes": [
+    "switch"
+   ],
+   "ids": [],
+   "prefixes": []
+  },
+  {
+   "text": "an object dropping into water",
+   "classes": [
+    "plunge"
+   ],
+   "ids": [],
+   "prefixes": []
+  },
+  {
+   "text": "a small bell",
+   "classes": [
+    "note",
+    "ting"
+   ],
+   "ids": [],
+   "prefixes": []
+  },
+  {
+   "text": "a lego brick click",
+   "classes": [
+    "lego"
+   ],
+   "ids": [],
+   "prefixes": []
+  },
+  {
+   "text": "a mouse click",
+   "classes": [
+    "cursor_click"
+   ],
+   "ids": [],
+   "prefixes": []
+  },
+  {
+   "text": "tiny footsteps",
+   "classes": [
+    "tiny_steps"
+   ],
+   "ids": [],
+   "prefixes": []
+  },
+  {
+   "text": "wind in the grass",
+   "classes": [
+    "wind_grass"
+   ],
+   "ids": [],
+   "prefixes": []
+  },
+  {
+   "text": "a rubber band snap",
+   "classes": [
+    "stretch_pop"
+   ],
+   "ids": [],
+   "prefixes": []
+  },
+  {
+   "text": "dominoes toppling",
+   "classes": [
+    "dominoes"
+   ],
+   "ids": [],
+   "prefixes": []
+  },
+  {
+   "text": "a quiet room",
+   "classes": [
+    "room_tone"
+   ],
+   "ids": [],
+   "prefixes": []
+  },
+  {
+   "text": "a heavy boom",
+   "classes": [
+    "impact"
+   ],
+   "ids": [],
+   "prefixes": []
+  },
+  {
+   "text": "a rising swell",
+   "classes": [
+    "swell"
+   ],
+   "ids": [],
+   "prefixes": []
+  },
+  {
+   "text": "bubbles under water",
+   "classes": [
+    "underwater"
+   ],
+   "ids": [],
+   "prefixes": []
+  },
+  {
+   "text": "an apple falling on grass",
+   "classes": [
+    "fruit_drop"
+   ],
+   "ids": [],
+   "prefixes": []
+  },
+  {
+   "text": "a squeaky glass rub",
+   "classes": [
+    "glass_squeak"
+   ],
+   "ids": [],
+   "prefixes": []
+  },
+  {
+   "text": "a latch clicking shut",
+   "classes": [
+    "latch"
+   ],
+   "ids": [],
+   "prefixes": []
+  },
+  {
+   "text": "fast typing",
+   "classes": [
+    "typing"
+   ],
+   "ids": [],
+   "prefixes": []
+  },
+  {
+   "text": "shimmering chimes",
+   "classes": [
+    "chime_sweep"
+   ],
+   "ids": [],
+   "prefixes": []
+  }
+ ]
+}
