@@ -14,6 +14,7 @@ from collections.abc import Sequence
 from typing import Any
 
 import numpy as np
+from scipy import fft as sp_fft
 from scipy import ndimage, signal
 
 from hark.forge.engine import tone
@@ -290,7 +291,7 @@ def dc(x: Any) -> dict:
     """DC offset and infrasound share."""
     m = _mono(x)
     peak = float(np.max(np.abs(m))) + 1e-12 if len(m) else 1e-12
-    n = signal.next_fast_len(max(len(m), 1), real=True)
+    n = sp_fft.next_fast_len(max(len(m), 1), real=True)
     p = np.abs(np.fft.rfft(m, n)) ** 2
     f = np.fft.rfftfreq(n, 1 / SR)
     infra = 10 * math.log10(p[f < 15].sum() / (p.sum() + 1e-30) + 1e-12)
