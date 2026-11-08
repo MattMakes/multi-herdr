@@ -1306,10 +1306,9 @@ function writeTextFiles({ timeline, outDir, report }) {
   report.warnings.push(...ch.warnings);
 }
 
-async function writeCover({ master, outDir, hook, coverSec, timeline, report }) {
-  const at = coverSec ?? coverSecFor(timeline, hook);
+async function writeCover({ master, outDir, coverSec, report }) {
   const file = join(outDir, "cover.jpg");
-  await ffmpeg(["-ss", String(at), "-i", master, "-frames:v", "1", "-vf", fitFilter(ASPECTS["16x9"]), "-q:v", "2", file]);
+  await ffmpeg(["-ss", String(coverSec), "-i", master, "-frames:v", "1", "-vf", fitFilter(ASPECTS["16x9"]), "-q:v", "2", file]);
   report.outputs.push(file);
 }
 
@@ -1375,10 +1374,13 @@ async function writeAspect(ctx, aspect) {
 export const publishAspects = (meta, aspects) => (isLong(meta) ? aspects.filter((a) => a === "16x9") : aspects);
 
 // The cover of a "long" film comes from the hero chapter, the last one: 75 % into it.
+const hookCover = (hook) => hook.start_sec + hook.duration_sec * 0.75;
+const heroCover = (last, total) => last.start_sec + (total - last.start_sec) * 0.75;
+const heroChapter = (meta) => (isLong(meta) ? meta.chapters?.at(-1) : undefined);
+
 export function coverSecFor({ meta }, hook) {
-  const last = isLong(meta) ? meta.chapters?.at(-1) : undefined;
-  if (!last) return hook.start_sec + hook.duration_sec * 0.75;
-  return last.start_sec + (Number(meta.duration_sec) - last.start_sec) * 0.75;
+  const last = heroChapter(meta);
+  return last ? heroCover(last, Number(meta.duration_sec)) : hookCover(hook);
 }
 
 export async function packagePublish(opts) {
@@ -1388,7 +1390,8 @@ export async function packagePublish(opts) {
   opts = { ...opts, aspects: publishAspects(timeline.meta, opts.aspects) };
   const info = await probe(opts.master);
   mkdirSync(opts.outDir, { recursive: true });
-  const ctx = { ...opts, timeline, info, hook: hookScene(timeline), report: { outputs: [], warnings: [], reframe: {} } };
+  const hook = hookScene(timeline);
+  const ctx = { ...opts, coverSec: opts.coverSec ?? coverSecFor(timeline, hook), timeline, info, hook, report: { outputs: [], warnings: [], reframe: {} } };
   ctx.report.warnings.push(...dropped.map((a) => `${a}: skipped; meta.format is long and ships 16x9 only`));
   writeTextFiles(ctx);
   await writeCover(ctx);
