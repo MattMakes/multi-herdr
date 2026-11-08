@@ -150,27 +150,41 @@ def impulse(model: dict, part: str = "side", seed: int = 0, flat_iters: int = 4)
     """The impulse response of one part (unit-energy bands at their gains)."""
     gains = np.asarray(model[f"{part}_db"], dtype=float)
     on = gains > -140
-    if not np.any(on):
-        return np.zeros(1)
+    out = np.zeros(1)
+    if np.any(on):
+        out = _impulse_bands(model, part, seed, flat_iters, gains, on)
+    return out
+
+
+def _impulse_bands(model, part, seed, flat_iters, gains, on) -> np.ndarray:
     rt = np.clip(np.asarray(model["rt60"], dtype=float), 0.02, 3.0)
-    build = max(float(model.get("build", 1e-4)), 1e-4)
-    pre = float(model.get("predelay", 0.002))
-    length = int((pre + build + min(3.0, float(rt[on].max()))) * SR) + 1
+    t, rise = _rise(model, float(rt[on].max()))
+    length = len(t)
     r = np.random.default_rng((int(seed) * 7919 + SALT[part]) & 0xFFFFFFFF)
     nfft = next_fast_len(2 * length)
     spec = rfft(r.standard_normal(nfft))
     masks = tri_masks(model["bands"], nfft)
-    t = np.arange(length) / SR - pre
-    rise = np.where(t >= 0, 1.0 - np.exp(-np.maximum(t, 0) / build), 0.0)
     out = np.zeros(length)
     for b in np.nonzero(on)[0]:
         env = rise * np.exp(-6.907755 * np.maximum(t, 0) / rt[b])
-        h = irfft(spec * masks[b], nfft)[:length] * env
-        h = _flatten(h, masks[b], env, nfft, flat_iters)
-        e = np.sqrt(np.sum(h ** 2))
-        if e > 0:
-            out += h / e * 10.0 ** (gains[b] / 20.0)
+        out += _unit_band(spec, masks[b], env, nfft, flat_iters) * 10.0 ** (gains[b] / 20.0)
     return out
+
+
+def _rise(model: dict, rt_max: float) -> tuple[np.ndarray, np.ndarray]:
+    """Times from the predelay and the build-up curve over the impulse length."""
+    build = max(float(model.get("build", 1e-4)), 1e-4)
+    pre = float(model.get("predelay", 0.002))
+    length = int((pre + build + min(3.0, rt_max)) * SR) + 1
+    t = np.arange(length) / SR - pre
+    return t, np.where(t >= 0, 1.0 - np.exp(-np.maximum(t, 0) / build), 0.0)
+
+
+def _unit_band(spec, mask, env, nfft, flat_iters) -> np.ndarray:
+    h = irfft(spec * mask, nfft)[:len(env)] * env
+    h = _flatten(h, mask, env, nfft, flat_iters)
+    e = np.sqrt(np.sum(h ** 2))
+    return h / e if e > 0 else np.zeros(len(h))
 
 
 def _flatten(h: np.ndarray, mask: np.ndarray, env: np.ndarray, nfft: int, iters: int) -> np.ndarray:
@@ -233,18 +247,26 @@ def render_space(model: dict | None, dry: np.ndarray, seed: int = 0, width: floa
                  ring: bool = False, limit: bool = True) -> np.ndarray:
     """Dry plus wet as (n, 2). A null model returns the dry with no finish."""
     y = as_stereo(dry)
-    if not model or len(y) == 0:
-        return y
+    if model and len(y):
+        y = _with_space(model, y, seed, width, ring, limit)
+    return y
+
+
+def _with_space(model: dict, y: np.ndarray, seed: int, width: float, ring: bool, limit: bool) -> np.ndarray:
     if ring:
         y = np.vstack([y, np.zeros((int(tail_s(model) * SR) + 1, 2))])
     n = len(y)
-    wm = wet(model, y, seed, n, "mid") if np.any(_on(model, "mid")) else np.zeros(n)
-    ws = wet(model, y, seed, n, "side") if np.any(_on(model, "side")) else np.zeros(n)
+    wm = _part_wet(model, y, seed, n, "mid")
+    ws = _part_wet(model, y, seed, n, "side")
     if np.any(ws):
         refs = [(y[:, 0] - y[:, 1]) / 2, (y[:, 0] + y[:, 1]) / 2 + wm]
         ws = _orthogonal(ws, refs, model["bands"]) * width
     y = y + np.column_stack([wm + ws, wm - ws])
     return finish(y, SR, 0.0, -1.0, limit)
+
+
+def _part_wet(model: dict, y: np.ndarray, seed: int, n: int, part: str) -> np.ndarray:
+    return wet(model, y, seed, n, part) if np.any(_on(model, part)) else np.zeros(n)
 
 
 # ---------------------------------------------------------------- fit
@@ -253,21 +275,26 @@ def fit_space(x: Any, sr: int = 48000, dry: np.ndarray | None = None, max_corr: 
               iters: int = 3, need_db: float = -15, mid_need_db: float = -10) -> dict | None:
     """A space model for a stereo recording with a decorrelated tail, or None."""
     a = as_stereo(x) if isinstance(x, str) else as_stereo(resample(np.asarray(x, float), sr))
-    if not is_stereo(a):
-        return None
-    span = tail_span(a)
+    st = _space_start(a, dry, max_corr, mid_need_db)
+    out = None
+    if st is not None and st[3]["rel"] >= need_db:
+        out = _space_finish(a, *st, iters, need_db, mid_need_db)
+    return out
+
+
+def _space_start(a: np.ndarray, dry, max_corr: float, mid_need_db: float):
+    """(span, tail corr, context, need) when a has a decorrelated tail to model, else None."""
+    span = tail_span(a) if is_stereo(a) else None
     tc = tail_corr(a, span) if span else None
-    if span is None or tc is None or tc > max_corr:
+    if tc is None or tc > max_corr:
         return None
     ctx = _tail_context(a, span)
-    if ctx is None:
-        return None
-    need = _needs(ctx, a, dry, span, tc, mid_need_db)
-    if need is None:
-        return None
+    need = None if ctx is None else _needs(ctx, a, dry, span, tc, mid_need_db)
+    return None if need is None else (span, tc, ctx, need)
+
+
+def _space_finish(a, span, tc, ctx, need, iters, need_db, mid_need_db) -> dict | None:
     model = _start_model(ctx, need, span, tc)
-    if model is None or need["rel"] < need_db:
-        return None
     src = need["dry"] if need["dry"] is not None else a
     for _ in range(iters):
         _iterate(model, src, ctx, need)
@@ -287,20 +314,29 @@ def _tail_context(a: np.ndarray, span: tuple[int, int]) -> dict | None:
 
 
 def _needs(ctx: dict, a, dry, span, tc, mid_need_db) -> dict | None:
-    side_need = ctx["E_dif"].copy()
-    mid_need = np.zeros(len(BANDS))
-    tc_dry, d2 = 1.0, None
+    parts = (ctx["E_dif"].copy(), np.zeros(len(BANDS)), 1.0, None)
     if dry is not None:
-        d2 = as_stereo(dry)
-        d2 = np.pad(d2, ((0, max(0, len(a) - len(d2))), (0, 0)))[:len(a)]
-        tc_dry = tail_corr(d2, span)
-        if tc_dry is None or tc_dry <= tc + 0.1:
-            return None
-        dctx = _tail_context(d2, span)
-        if dctx is not None:
-            side_need = np.maximum(ctx["E_dif"] - dctx["E_dif"], 0.0)
-            short = np.maximum(ctx["E_mid"] - dctx["E_mid"], 0.0)
-            mid_need = np.where(short >= ctx["E_mid"] * 10 ** (mid_need_db / 10), short, 0.0)
+        parts = _dry_needs(ctx, a, dry, span, tc, mid_need_db)
+    return None if parts is None else _need_dict(ctx, *parts)
+
+
+def _dry_needs(ctx: dict, a, dry, span, tc, mid_need_db):
+    """(side need, mid need, dry tail corr, padded dry), or None when the dry is not drier."""
+    d2 = as_stereo(dry)
+    d2 = np.pad(d2, ((0, max(0, len(a) - len(d2))), (0, 0)))[:len(a)]
+    tc_dry = tail_corr(d2, span)
+    if tc_dry is None or tc_dry <= tc + 0.1:
+        return None
+    side_need, mid_need = ctx["E_dif"].copy(), np.zeros(len(BANDS))
+    dctx = _tail_context(d2, span)
+    if dctx is not None:
+        side_need = np.maximum(ctx["E_dif"] - dctx["E_dif"], 0.0)
+        short = np.maximum(ctx["E_mid"] - dctx["E_mid"], 0.0)
+        mid_need = np.where(short >= ctx["E_mid"] * 10 ** (mid_need_db / 10), short, 0.0)
+    return side_need, mid_need, tc_dry, d2
+
+
+def _need_dict(ctx: dict, side_need, mid_need, tc_dry, d2) -> dict | None:
     tot = float(side_need.sum())
     if tot <= 0 or ctx["E_dif"].sum() <= 0:
         return None
@@ -316,28 +352,41 @@ def _decay_slope(curve_db: np.ndarray, t: np.ndarray) -> float | None:
     return slope if slope < -1 else None
 
 
-def _start_model(ctx: dict, need: dict, span, tc) -> dict | None:
-    t = ctx["P"]["t"][ctx["frames"]]
+def _start_model(ctx: dict, need: dict, span, tc) -> dict:
     live = need["side"] > need["side"].max() * 1e-4
     rt_max = float(np.clip(4 * (span[1] - span[0]) / SR, 0.1, 3.0))
+    rt = _band_rts(ctx, live, rt_max)
+    live_mid = need["mid"] > max(need["mid"].max(), 1e-300) * 1e-4
+    live_mid &= need["mid"] > 0
+    return {"kind": "space", "version": VERSION, "predelay": 0.002,
+            "build": _build_s(ctx), "bands": list(BANDS),
+            "rt60": [round(float(r), 4) for r in rt],
+            "side_db": _start_gains(live), "mid_db": _start_gains(live_mid),
+            "tail_corr": round(float(tc), 4), "_rt_max": rt_max,
+            "_live": {"side": live, "mid": live_mid}}
+
+
+def _build_s(ctx: dict) -> float:
+    """Build-up time: the diffuse power peak after the mid power peak."""
+    tdif = ctx["P"]["t"][int(np.argmax(ctx["dif"].sum(axis=0)))]
+    tmid = ctx["P"]["t"][int(np.argmax(ctx["mid"].sum(axis=0)))]
+    return float(np.clip(tdif - tmid, 0.005, 0.08))
+
+
+def _band_rts(ctx: dict, live: np.ndarray, rt_max: float) -> np.ndarray:
+    """RT60 per band from the diffuse decay slope. Bands with no slope get the median."""
+    t = ctx["P"]["t"][ctx["frames"]]
     rts = []
     for b in range(len(BANDS)):
         s = _decay_slope(db(ctx["dif"][b, ctx["frames"]]), t) if live[b] else None
         rts.append(-60.0 / s if s else None)
     known = [r for r in rts if r]
     fill = float(np.median(known)) if known else 0.5
-    rt = np.clip([r if r else fill for r in rts], 0.05, rt_max)
-    tdif = ctx["P"]["t"][int(np.argmax(ctx["dif"].sum(axis=0)))]
-    tmid = ctx["P"]["t"][int(np.argmax(ctx["mid"].sum(axis=0)))]
-    live_mid = need["mid"] > max(need["mid"].max(), 1e-300) * 1e-4
-    live_mid &= need["mid"] > 0
-    return {"kind": "space", "version": VERSION, "predelay": 0.002,
-            "build": float(np.clip(tdif - tmid, 0.005, 0.08)), "bands": list(BANDS),
-            "rt60": [round(float(r), 4) for r in rt],
-            "side_db": [0.0 if v else OFF for v in live],
-            "mid_db": [0.0 if v else OFF for v in live_mid],
-            "tail_corr": round(float(tc), 4), "_rt_max": rt_max,
-            "_live": {"side": live, "mid": live_mid}}
+    return np.clip([r if r else fill for r in rts], 0.05, rt_max)
+
+
+def _start_gains(live: np.ndarray) -> list[float]:
+    return [0.0 if v else OFF for v in live]
 
 
 def _iterate(model: dict, src: np.ndarray, ctx: dict, need: dict) -> None:
@@ -396,10 +445,7 @@ def _corr_at(acc, g):
 
 
 def _level_side(model, a, src, span, tc, need, iters, need_db, mid_need_db) -> dict | None:
-    acc = _pool(model, src, span)
-    offs = np.arange(-12.0, 12.0001, 0.5)
-    cs = [_corr_at(acc, 10 ** (o / 20)) for o in offs]
-    best = float(offs[int(np.argmin(np.abs(np.asarray(cs) - tc)))])
+    best = _side_offset(model, src, span, tc)
     live = model["_live"]["side"]
     model["side_db"] = [round(float(np.clip(g + best, OFF, 40.0)), 2) if live[i] else OFF
                         for i, g in enumerate(model["side_db"])]
@@ -407,12 +453,24 @@ def _level_side(model, a, src, span, tc, need, iters, need_db, mid_need_db) -> d
     if tc_wet is None or abs(tc_wet - tc) >= abs(need["tc_dry"] - tc):
         return None
     out = _public(model)
-    out["fit"] = {"need_db": need_db,
-                  "mid_need_db": mid_need_db if np.any(model["_live"]["mid"]) else None,
-                  "iters": iters, "dry": need["dry"] is not None, "side_offset_db": best,
-                  "tail_corr_dry": round(float(need["tc_dry"]), 4),
-                  "tail_corr_wet": round(float(tc_wet), 4)}
+    out["fit"] = _fit_info(model, need, iters, need_db, mid_need_db, best, tc_wet)
     return out
+
+
+def _side_offset(model, src, span, tc) -> float:
+    """Side gain offset (dB) that best matches the recording's tail correlation."""
+    acc = _pool(model, src, span)
+    offs = np.arange(-12.0, 12.0001, 0.5)
+    cs = [_corr_at(acc, 10 ** (o / 20)) for o in offs]
+    return float(offs[int(np.argmin(np.abs(np.asarray(cs) - tc)))])
+
+
+def _fit_info(model, need, iters, need_db, mid_need_db, best, tc_wet) -> dict:
+    return {"need_db": need_db,
+            "mid_need_db": mid_need_db if np.any(model["_live"]["mid"]) else None,
+            "iters": iters, "dry": need["dry"] is not None, "side_offset_db": best,
+            "tail_corr_dry": round(float(need["tc_dry"]), 4),
+            "tail_corr_wet": round(float(tc_wet), 4)}
 
 
 def _public(model: dict) -> dict:
