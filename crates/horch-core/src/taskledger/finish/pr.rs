@@ -322,6 +322,12 @@ fn verdict(h: &Heads<'_>, head: &str, n: &str, short: &str, wait: &HeadWait) -> 
 
 /// The pr step.
 pub fn step(store: &mut Store, cx: &Ctx<'_>) -> Result<Outcome> {
+    if let Some(wt) = cx.worktree.as_ref() {
+        if land::no_commits_since_claim(&cx.tools.git, wt)? {
+            return Ok(Outcome::not_applicable("no commits")
+                .judged(cx.tools.git.tree(Path::new(&wt.path)).ok()));
+        }
+    }
     let Some(remote) = &cx.run.remote else {
         return Ok(Outcome::not_applicable(
             "the run has no remote, so it has no pull request",
@@ -344,7 +350,13 @@ pub fn step(store: &mut Store, cx: &Ctx<'_>) -> Result<Outcome> {
             "the task landed no commit that {base} lacks, so it needs no pull request"
         )));
     }
-    let section = section_text(store, cx, &landed)?;
+    let work = own_work(store, cx, &base, &landed)?;
+    if work.as_ref().is_some_and(|w| w.commits.is_empty()) {
+        return Ok(Outcome::not_applicable(
+            "the task landed no commit of its own, so the PR has no section for it",
+        ));
+    }
+    let section = section_text(store, cx, &landed, work.as_ref())?;
     let short = cx.task.short();
     // 1 writer at a time: the landing lock of this repository.
     let _lock = land::land_lock(cx)?;
@@ -424,36 +436,141 @@ pub fn pr_check(
     })
 }
 
-fn section_text(store: &Store, cx: &Ctx<'_>, landed: &str) -> Result<String> {
+/// What 1 task put on the run branch: the subjects of its own commits,
+/// oldest first, each with its short sha, and the files they touch.
+struct Work {
+    commits: Vec<String>,
+    files: Vec<String>,
+}
+
+/// The most commit subjects and files a section lists before it says how
+/// many more there are.
+const LIST_MAX: usize = 20;
+
+/// The landed commits of the run's other tasks that landed before this one:
+/// at another commit, or at the same commit and first (by time, then row).
+fn earlier_lands(store: &Store, cx: &Ctx<'_>) -> Result<Vec<String>> {
+    let Some(mine) = worktree_of(store.conn(), &cx.task.task_id)? else {
+        return Ok(Vec::new());
+    };
+    let mut stmt = store.conn().prepare(
+        "SELECT DISTINCT w.landed_commit FROM worktrees w
+         JOIN tasks t ON t.task_id = w.task_id
+         JOIN worktrees m ON m.worktree_id = ?2
+         WHERE t.run_id = ?1 AND w.task_id <> m.task_id AND w.landed_commit IS NOT NULL
+           AND (w.landed_commit <> m.landed_commit
+                OR (w.landed_at, w.rowid) < (m.landed_at, m.rowid))",
+    )?;
+    let rows = stmt
+        .query_map(rusqlite::params![cx.run.run_id, mine.worktree_id], |r| {
+            r.get::<_, String>(0)
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(rows)
+}
+
+/// The commits the task added to the run branch: those of `landed` that
+/// neither `base` nor an earlier land of the run holds. A land fast-forwards
+/// the run branch, so an earlier land is an ancestor of `landed`. `None` for a
+/// shared-checkout task with no recorded start, whose commits cannot be told
+/// from the others on the run branch.
+fn own_work(store: &Store, cx: &Ctx<'_>, base: &str, landed: &str) -> Result<Option<Work>> {
+    let git = &cx.tools.git;
+    let mut not = vec![format!("^{base}")];
+    if cx.task.uses_worktree() {
+        not.extend(
+            earlier_lands(store, cx)?
+                .into_iter()
+                .filter(|c| git.is_ancestor(&cx.root, c, landed))
+                .map(|c| format!("^{c}")),
+        );
+    } else {
+        match super::shared_start(&cx.tools.evidence_root, &cx.task.task_id) {
+            Some(start) => not.push(format!("^{start}")),
+            None => return Ok(None),
+        }
+    }
+    let log = |format: &str, extra: &[&str]| -> Result<String> {
+        let mut args = vec!["log", format];
+        args.extend_from_slice(extra);
+        args.push(landed);
+        args.extend(not.iter().map(String::as_str));
+        git.run(&cx.root, &args)
+    };
+    let commits = log("--format=%s (`%h`)", &["--reverse"])?
+        .lines()
+        .map(str::to_string)
+        .collect();
+    let mut files: Vec<String> = log("--format=", &["--name-only"])?
+        .lines()
+        .filter(|l| !l.trim().is_empty())
+        .map(str::to_string)
+        .collect();
+    files.sort();
+    files.dedup();
+    Ok(Some(Work { commits, files }))
+}
+
+/// `items` as a markdown list of at most [`LIST_MAX`] lines, `code` ones in
+/// backticks.
+fn list(items: &[String], code: bool, noun: &str) -> String {
+    let mut s = String::new();
+    for i in items.iter().take(LIST_MAX) {
+        if code {
+            s.push_str(&format!("- `{i}`\n"));
+        } else {
+            s.push_str(&format!("- {i}\n"));
+        }
+    }
+    if items.len() > LIST_MAX {
+        s.push_str(&format!("- and {} more {noun}\n", items.len() - LIST_MAX));
+    }
+    s
+}
+
+/// The task's section: what its commits did, the files they touch, who
+/// landed it where, and the sweeps that ran. A step that did not run, or
+/// did not apply, is left out.
+fn section_text(store: &Store, cx: &Ctx<'_>, landed: &str, work: Option<&Work>) -> Result<String> {
     let steps = super::steps_of(store.conn(), &cx.task.task_id, &cx.worker.worker_id)?;
-    let verdict = |name: &str| {
-        steps
-            .iter()
-            .find(|s| s.name == name)
-            .map(|s| {
-                let st = StepStatus::parse(&s.status)
-                    .map(|s| s.as_str())
-                    .unwrap_or("?");
-                s.verdict.clone().unwrap_or_else(|| st.to_string())
-            })
-            .unwrap_or_else(|| "-".into())
+    let ran = |name: &str| {
+        steps.iter().find(|s| s.name == name).and_then(|s| {
+            let st = StepStatus::parse(&s.status).ok()?;
+            if st == StepStatus::NotApplicable {
+                return None;
+            }
+            Some(format!(
+                "{name}: {}",
+                s.verdict.clone().unwrap_or_else(|| st.as_str().to_string())
+            ))
+        })
     };
     let mut s = format!("### {} {}\n\n", cx.task.short(), cx.task.title);
-    let summary = cx
-        .worker
-        .summary
-        .clone()
-        .or(cx.task.summary.clone())
-        .unwrap_or_else(|| format!("Landed by {}.", cx.worker.label()));
-    s.push_str(&summary);
-    s.push_str("\n\n");
+    if let Some(work) = work {
+        s.push_str(&list(&work.commits, false, "commits"));
+        if !work.files.is_empty() {
+            let n = work.files.len();
+            s.push_str(&format!(
+                "\n<details><summary>{n} file{} changed</summary>\n\n{}\n</details>\n",
+                if n == 1 { "" } else { "s" },
+                list(&work.files, true, "files")
+            ));
+        }
+        s.push('\n');
+    }
     s.push_str(&format!(
-        "- Commit: `{}`\n- code-sweep: {}\n- complexity-sweep: {}\n- check: {}\n",
-        &landed[..landed.len().min(12)],
-        verdict("code-sweep"),
-        verdict("complexity-sweep"),
-        verdict("recheck")
+        "Landed by {} at `{}`.",
+        cx.worker.label(),
+        &landed[..landed.len().min(12)]
     ));
+    let sweeps: Vec<String> = ["code-sweep", "complexity-sweep", "recheck"]
+        .into_iter()
+        .filter_map(ran)
+        .collect();
+    if !sweeps.is_empty() {
+        s.push_str(&format!(" {}.", sweeps.join(", ")));
+    }
+    s.push('\n');
     for w in super::codesweep::waivers(&cx.tools.evidence_root, &cx.task.task_id) {
         s.push_str(&format!(
             "- code-sweep {} waived by the orchestrator: {}\n",

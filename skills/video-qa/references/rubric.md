@@ -12,6 +12,10 @@ Verdict rule: `VERDICT: PASS` needs all 3 conditions:
 Any other result is `VERDICT: FAIL`. A score of `3` or lower on an axis
 needs at least 1 fix line for that axis in the report.
 
+Before scoring, read `qa/accepted-exceptions.md`. Do not report an issue that
+the file accepts. Keep the recorded reason in mind when you score the related
+axis. If the file does not exist, treat the accepted-exception list as empty.
+
 ## General score anchors
 
 | Score | Meaning |
@@ -24,6 +28,24 @@ needs at least 1 fix line for that axis in the report.
 
 The anchors for each axis below make these levels concrete. When the evidence
 fits 2 levels, give the lower score and write the reason in the report.
+
+## Phone-size self-review
+
+A numeric self-review is not enough. In a prior production, 4 of 5 solo-built
+episodes passed 15-18 of 18 self-review checks, then scored only `3.00-3.75` in
+blind review. Every fault hid the key action at phone size: a `100 px` subject,
+a `2 px` ring, a ring lost in ground texture, a hero weaker than an earlier
+shot, or a health bar that rose between shots.
+
+Run `qa_video.py --phone-frames qa/phone-frames`, then view `hero.png` and every
+key-action frame at its generated `360 px` height. Answer both questions for
+each frame:
+
+1. Can a new viewer see what happened within `1 s`?
+2. Is the hero the strongest moment?
+
+A no to either question is a `BLOCKER`. This self-review never replaces the
+fresh blind critic.
 
 ## Axis 1: Hook & First-Frame Read
 
@@ -39,8 +61,8 @@ Evidence: `qa/hook-strip.png`, frame 0, checks 4 and 5, `BRIEF.md`.
   at `360 px`.
 - 1: Frame 0 is blank or black, or nothing moves in `0.0-3.0 s`.
 
-Owners: weak claim or order of beats - `video-director`; late or weak motion -
-`video-animator`; blank frame 0 from the render - `video-editor`.
+Target weak claims or beat order in `DIRECTION.md` or `STORYBOARD.md`. Target
+late motion in the scene source. Target a blank encoded frame in the render script.
 
 ## Axis 2: Narrative & Pacing
 
@@ -56,8 +78,8 @@ Evidence: `qa/contact-sheet-360p.png`, `STORYBOARD.md`, scene durations in
   viewer can read it.
 - 1: No clear message, or no call to action.
 
-Owners: story, order and scene length - `video-director`; cut points -
-`video-editor`.
+Target story and order defects in `STORYBOARD.md`. Target scene lengths and cut
+points in `timeline.json` or `timeline-master.json`, whichever defines the cut.
 
 ## Axis 3: Typography & Safe Zones
 
@@ -71,8 +93,8 @@ scale, the `9x16.mp4` variant when present.
 - 2: Primary text is hard to read, low contrast, or partly in a safe zone.
 - 1: Text is cut off, covered, or not readable.
 
-Owners: type scale and contrast tokens - `video-director`; text layout in a
-scene - `video-animator`; reframing of a variant - `video-editor`.
+Target type tokens in `DIRECTION.md`, scene text layout in the scene source,
+and variant reframing in the render script.
 
 ## Axis 4: Motion Craft & Physics
 
@@ -87,23 +109,26 @@ check 1, check 2, check 7.
 - 1: Motion is broken: frames jump back, objects teleport, or the scene does
   not render the same way twice.
 
-Owners: scene and character motion - `video-animator`; transition timing -
-`video-editor`.
+Target scene and character motion in the scene source. Target transition timing
+in `timeline.json` or `timeline-master.json`.
 
-## Axis 5: Product/Demo Clarity
+## Axis 5: Product Desire & Demo Clarity
 
 Evidence: capture plates in the contact sheet, extracted frames, `BRIEF.md`.
 
-- 5: The viewer can follow every product action. The cursor, clicks and zooms
-  lead the eye to the result. UI text is readable.
-- 4: All actions are clear. 1 zoom is a little late or a little loose.
-- 3: 1 action is hard to follow, or the UI is too small at `360 px`.
-- 2: The main feature is not visible, or the demo shows dead time or loading.
+Ask: **Does it make a viewer WANT the product?** Score both the clarity of the
+proof and the desire created by the result.
+
+- 5: The result is desirable and the viewer can follow every product action.
+  The cursor, clicks and zooms lead the eye to clear proof. UI text is readable.
+- 4: The result creates desire and all actions are clear. 1 zoom is a little late or loose.
+- 3: The proof is useful but not compelling, 1 action is hard to follow, or the UI is too small at `360 px`.
+- 2: The main feature is not desirable or visible, or the demo shows dead time or loading.
 - 1: The product cannot be identified, or the demo shows an error state.
 
-Owners: recording, cursor and zoom - `video-capture`; demo choice -
-`video-director`. Mark `N/A` only when the brief has no product or demo; then
-score `5` and write `N/A - no demo in brief` in the axis row.
+Target recording, cursor, or zoom defects in the named plate file. Target a weak
+demo choice in `STORYBOARD.md`. Mark `N/A` only when the brief has no product or
+demo; then score `5` and write `N/A - no demo in brief` in the axis row.
 
 ## Axis 6: Character/Illustration Cohesion
 
@@ -116,8 +141,8 @@ Evidence: contact sheet, `MOTION.md` when present, `DIRECTION.md`.
 - 2: Several style breaks, or broken rig parts (detached limbs, wrong pivots).
 - 1: Characters change identity between scenes.
 
-Owners: rig and character motion - `video-animator`; style tokens -
-`video-director`. Mark `N/A` only when the video has no characters or
+Target rig and character motion in the scene source. Target style tokens in
+`DIRECTION.md`. Mark `N/A` only when the video has no characters or
 illustrations; then score `5` and write `N/A - no characters` in the axis row.
 
 ## Axis 7: Audio-Visual Sync
@@ -134,8 +159,9 @@ or `measured`).
 - 2: Several reveals are out of sync, or a click or pop at a cut.
 - 1: Voice and picture do not match, or audio is clipped or missing.
 
-Owners: mix, levels, pops, voice timing - `video-audio`; the position of a
-reveal - `video-animator`; the position of a cut - `video-editor`.
+Target mix, level, pop, or voice timing defects in the named audio file. Target
+a reveal in the scene source and a cut in the timeline file. A music gap or dip
+at a cut is high impact and ranks before visual polish.
 
 ## Axis 8: Brand & Aesthetic Cohesion
 
@@ -148,25 +174,23 @@ Evidence: contact sheet as a whole, `DIRECTION.md` palette and type tokens.
 - 2: Several scenes break the palette or font rules.
 - 1: No consistent look.
 
-Owners: tokens and rules - `video-director`; a scene off token -
-`video-animator`; color shift in the render - `video-editor`.
+Target tokens in `DIRECTION.md`, off-token visuals in the scene source, and an
+encoded color shift in the render script.
 
-## Owner table
+## Fix target table
 
-| Defect type | Owner |
+| Defect type | File to name on the fix line |
 | :--- | :--- |
-| Story, script, scene order, scene length, tokens, type scale | `video-director` |
-| Browser recording, cursor path, zoom, dead time in a plate | `video-capture` |
-| Voice, music, effects, loudness, true peak, pops, sync of words | `video-audio` |
-| Scene motion, character rig, text layout in a scene, determinism | `video-animator` |
-| Cuts, transitions, compositing, encode, variants, captions files | `video-editor` |
+| Story, script, scene order, tokens, type scale | `BRIEF.md`, `DIRECTION.md`, or `STORYBOARD.md` |
+| Scene length, cut, transition, or static-hold declaration | `timeline.json` or `timeline-master.json` |
+| Recording, cursor path, zoom, or dead time in a plate | The exact file under `plates/` |
+| Voice, music, effects, loudness, true peak, pops, or word sync | The exact file under `audio/` |
+| Scene motion, character rig, text layout, or determinism | The exact scene source file |
+| Compositing, encode, or variants | The exact render script |
+| Caption wording or timing | The exact caption file |
 
-Numeric check owners: checks 1 and 2 - `video-animator`; checks 3, 6 and 10 -
-`video-editor`; check 4 - `video-animator` when the scene starts blank,
-otherwise `video-editor`; check 5 - `video-animator`; check 7 -
-`video-animator` for a scene, `video-capture` for a plate; checks 8 and 9 -
-`video-audio`; check 11 safe zone - `video-director`, flashes -
-`video-animator`.
+Name the exact target file. Do not name a worker or seat. When a numeric check
+does not identify a file, inspect its evidence and name the file that produced it.
 
 ## Report template: qa/critique-round-<N>.md
 
@@ -175,7 +199,7 @@ otherwise `video-editor`; check 5 - `video-animator`; check 7 -
 
 VERDICT: <PASS|FAIL>
 
-Numeric gate: <passed|failed> (<k>/11 checks passed, qa/render-check.json)
+Numeric gate: <passed|failed> (<k>/20 checks passed, qa/render-check.json)
 Average score: <x.xx> / 5. Lowest axis: <axis name> (<score>).
 
 | # | Axis | Score | Reason |
@@ -184,35 +208,40 @@ Average score: <x.xx> / 5. Lowest axis: <axis name> (<score>).
 | 2 | Narrative & Pacing | <1-5> | <1 sentence> |
 | 3 | Typography & Safe Zones | <1-5> | <1 sentence> |
 | 4 | Motion Craft & Physics | <1-5> | <1 sentence> |
-| 5 | Product/Demo Clarity | <1-5> | <1 sentence> |
+| 5 | Product Desire & Demo Clarity | <1-5> | <1 sentence> |
 | 6 | Character/Illustration Cohesion | <1-5> | <1 sentence> |
 | 7 | Audio-Visual Sync | <1-5> | <1 sentence> |
 | 8 | Brand & Aesthetic Cohesion | <1-5> | <1 sentence> |
 
 ## Fixes
 
-[MM:SS.mmm] Scene <id>: <issue> -> <owner>: <fix>
+1. [BLOCKER|POLISH] [MM:SS.mmm] Scene <id>: <issue> -> <file>: <fix>
 ```
 
 Fix line rules:
 
-- 1 defect for each line. Sort the lines by time.
-- Put numeric gate errors first in time order with the other lines. Use the
-  `timestamp` from `render-check.json`. For an error without a time, use
+- Rank all lines by viewer impact. Rank `1` has the highest impact.
+- Mark each line `BLOCKER` or `POLISH`. A failed numeric check is a `BLOCKER`.
+- A false or unverified caption claim is a `BLOCKER`.
+- A music gap or dip at a cut is high impact. Put it before visual polish.
+- 1 defect for each line. Use the rank as the ordered-list number.
+- Include every numeric gate error and rank it by impact with the other lines.
+  Use the `timestamp` from `render-check.json`. For an error without a time, use
   `[00:00.000]` and the first scene ID.
 - `<issue>` states what a viewer sees or what the check measured, with the
   number: "headline is 22 px high at 360 px", "freeze 2.10 s".
+- `<file>` is the exact file that must change. It is not a worker or seat name.
 - `<fix>` states 1 action with a target value: "raise headline to 96 px",
   "move the reveal 0.20 s later to the downbeat at 04.000".
-- For `VERDICT: PASS`, the Fixes section may hold polish lines. Mark each
-  with `(optional)` after the fix.
+- Do not add a fix that appears in `qa/accepted-exceptions.md`.
+- For `VERDICT: PASS`, the Fixes section can contain `POLISH` lines.
 
 Example lines:
 
 ```text
-[00:00.000] Scene s01-hook: frame 0 is a flat navy background, claim appears at 01.200 -> video-animator: show the headline at frame 0 and start the logo move at 00.100
-[00:07.500] Scene s03-demo: cursor jumps 600 px in 1 frame -> video-capture: re-record with the smooth cursor path between the 2 clicks
-[00:12.033] Scene s04-arch: audio peak -1.8 dBFS within 20 ms of the cut -> video-audio: add a 10 ms fade at the cut and lower the whoosh by 4 dB
+1. [BLOCKER] [00:12.033] Scene s04-arch: music drops at the cut and the peak is -1.8 dBFS -> audio/music.wav: keep the bed continuous and lower the whoosh by 4 dB
+2. [BLOCKER] [00:00.000] Scene s01-hook: frame 0 is a flat navy background, claim appears at 01.200 -> scenes/s01-hook/index.html: show the headline at frame 0 and start the logo move at 00.100
+3. [POLISH] [00:07.500] Scene s03-demo: cursor jumps 600 px in 1 frame -> plates/s03-demo.mp4: re-record with a smooth cursor path between the 2 clicks
 ```
 
 ## Ranking mode: qa/ab-rank.md

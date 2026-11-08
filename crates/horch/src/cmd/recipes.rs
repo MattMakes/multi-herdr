@@ -146,7 +146,7 @@ impl FleetFlavor {
             FleetFlavor::Opus | FleetFlavor::Auto => "opus",
             FleetFlavor::Fable => "fable",
             FleetFlavor::Astra => "gpt-6-astra",
-            FleetFlavor::Sol => "gpt-5.6-sol",
+            FleetFlavor::Sol => "gpt-6.1-sol",
         }
     }
 
@@ -450,6 +450,22 @@ pub fn fleet_with(
     // The telemetry space (SPC-06). Never a reason for the fleet to fail.
     if let Err(e) = super::telemetry::ensure(ctx, &herdr, true) {
         println!("warning: telemetry space not started: {e:#}");
+    }
+
+    // A refused `pane-launch` exits, and herdr closes the workspace with
+    // its last pane: the fleet must not then report a live workspace.
+    if !herdr.pane_exists(&ws.root_pane_id) {
+        let e = anyhow::anyhow!(
+            "the orchestrator pane {} exited right after its launch, and workspace {} closed \
+             with it. To see why, run the launch in a pane by hand: horch pane-launch --role \
+             orchestrator --kind {} --model {}",
+            ws.root_pane_id,
+            ws.workspace_id,
+            flavor.pane_kind().as_str(),
+            flavor.model()
+        );
+        abandon_record(&ledger, &record_id, &e);
+        return Err(e);
     }
 
     print_fleet_ready(&ws.workspace_id, &ledger);
@@ -1156,7 +1172,8 @@ fn register_pane_then(
 /// in 1 transaction. No ledger, or no 1 run that fits, claims nothing. A
 /// workspace with another active run fails the launch. A run whose
 /// orchestrator lives in another workspace (`Skipped`) prints the claim text
-/// and fails the launch with 1 line that names that workspace and PID.
+/// and stays there: a respawn of that run fails with 1 line that names that
+/// workspace and PID; any other launch claims nothing and starts.
 fn claim_launch_run(
     ctx: &RuntimeContext,
     root: &Path,
@@ -1185,8 +1202,19 @@ fn claim_launch_run(
             pid,
         } => {
             println!("{text}");
-            anyhow::bail!(
-                "the launch starts no orchestrator: run {} is held in workspace {held} by PID {pid}",
+            // A respawn exists to take this run over: with the run's
+            // orchestrator alive it would be a 2nd orchestrator of 1 run
+            // (review 32 I-01).
+            if respawn.is_some() {
+                anyhow::bail!(
+                    "the launch starts no orchestrator: run {} is held in workspace {held} by PID {pid}",
+                    run.slug
+                );
+            }
+            // A new fleet beside a live one is allowed (`horch fleet` only
+            // warns): it leaves the run where it is and starts on its own.
+            println!(
+                "This orchestrator does not take run {}; it starts on its own run.",
                 run.slug
             );
         }
@@ -1538,7 +1566,7 @@ mod tests {
             (
                 FleetFlavor::Sol,
                 PaneKind::FleetCodexOrchestrator,
-                "gpt-5.6-sol",
+                "gpt-6.1-sol",
             ),
         ] {
             assert_eq!(flavor.pane_kind(), kind, "{flavor}");
@@ -2156,15 +2184,21 @@ mod tests {
         );
     }
 
-    /// Review 32 I-01 and report 54 F1: the active run's orchestrator lives
-    /// in workspace w1. A fleet launch in pane p2 of w2 gets `Skipped`: it
-    /// fails with 1 line that names w1 and the PID before it writes a route.
-    /// w2 has no `orchestrator` route and no lock holder, and w1's route and
-    /// the run row do not change.
-    #[test]
-    fn trf_38_a_refused_launch_writes_no_route() {
-        let dir = tempfile::tempdir().unwrap();
-        let bin = dir.path().join("herdr");
+    /// A ledger with active run r1 in workspace w1, whose orchestrator holds
+    /// the w1 lock and route, and a context in pane p2 of workspace w2. The
+    /// lock guard must outlive the test's launch.
+    fn held_run_fixture(
+        dir: &Path,
+    ) -> (
+        RuntimeContext,
+        PathBuf,
+        horch_core::taskledger::Store,
+        horch_core::taskledger::runs::Run,
+        Mailbox,
+        PathBuf,
+        horch_core::fsx::DirLockGuard,
+    ) {
+        let bin = dir.join("herdr");
         let warm = crate::test_support::write_warmed(
             &bin,
             "#!/bin/sh\n\
@@ -2176,20 +2210,17 @@ mod tests {
             &["warm"],
         );
         assert!(warm.status.success());
-        let db = dir.path().join("ledger.sqlite3");
-        let mut ctx = RuntimeContext::from_env(
+        let db = dir.join("ledger.sqlite3");
+        let ctx = RuntimeContext::from_env(
             &horch_core::runtime::MapEnv::new("/")
                 .with_exe("/opt/horch/bin/horch")
-                .with(
-                    "HORCH_STATE_DIR",
-                    dir.path().join("state").to_str().unwrap(),
-                )
+                .with("HORCH_STATE_DIR", dir.join("state").to_str().unwrap())
                 .with("HORCH_LEDGER_DB", db.to_str().unwrap())
                 .with("HORCH_HERDR_BIN", bin.to_str().unwrap())
                 .with("HERDR_PANE_ID", "p2"),
         )
         .unwrap();
-        let root = dir.path().join("repo");
+        let root = dir.join("repo");
         std::fs::create_dir_all(&root).unwrap();
         let mut store = horch_core::taskledger::open(&ctx).unwrap();
         let run = store
@@ -2208,10 +2239,56 @@ mod tests {
         // Launch A holds the w1 lock and the orchestrator route.
         let lock_dir = orchestrator::lock_dir(&db);
         std::fs::create_dir_all(&lock_dir).unwrap();
-        let _a = orchestrator::lock(&lock_dir, "w1").unwrap().unwrap();
+        let a = orchestrator::lock(&lock_dir, "w1").unwrap().unwrap();
         let w1 = Mailbox::under(&ctx.paths.state_root, "w1");
         std::fs::create_dir_all(w1.dir()).unwrap();
         w1.register_role("orchestrator", "p1").unwrap();
+        (ctx, root, store, run, w1, lock_dir, a)
+    }
+
+    /// The operator starts a 2nd fleet in a project whose planned run r1
+    /// has a live orchestrator in w1. The launch in pane p2 of w2 gets
+    /// `Skipped`, leaves r1 and w1 alone, and starts: w2 gets its own
+    /// orchestrator route and lock. v0.4.6 refused it, so every fleet beside
+    /// a live one died at launch.
+    #[test]
+    fn trf_38_a_fleet_beside_a_live_run_starts_without_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut ctx, root, store, run, w1, lock_dir, _a) = held_run_fixture(dir.path());
+        let before = horch_core::taskledger::runs::get(store.conn(), &run.run_id).unwrap();
+
+        let (_, pane, lock) = register_fleet_pane(
+            &mut ctx,
+            "orchestrator",
+            &PaneIdentity::default(),
+            &root,
+            None,
+        )
+        .expect("a fleet beside a live run starts");
+        assert_eq!(pane, "p2");
+        assert!(lock.is_some());
+        let w2 = Mailbox::under(&ctx.paths.state_root, "w2");
+        assert_eq!(w2.pane_for("orchestrator").as_deref(), Some("p2"));
+        assert_eq!(
+            orchestrator::holder(&lock_dir, "w2").map(|h| h.pid),
+            Some(std::process::id())
+        );
+        assert_eq!(w1.pane_for("orchestrator").as_deref(), Some("p1"));
+        assert_eq!(
+            horch_core::taskledger::runs::get(store.conn(), &run.run_id).unwrap(),
+            before
+        );
+    }
+
+    /// Review 32 I-01 and report 54 F1: the active run's orchestrator lives
+    /// in workspace w1. A respawn of r1 in pane p2 of w2 gets `Skipped`: it
+    /// fails with 1 line that names w1 and the PID before it writes a route.
+    /// w2 has no `orchestrator` route and no lock holder, and w1's route and
+    /// the run row do not change.
+    #[test]
+    fn trf_38_a_refused_respawn_writes_no_route() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut ctx, root, store, run, w1, lock_dir, _a) = held_run_fixture(dir.path());
         let before = horch_core::taskledger::runs::get(store.conn(), &run.run_id).unwrap();
 
         let Err(err) = register_fleet_pane(
@@ -2219,9 +2296,9 @@ mod tests {
             "orchestrator",
             &PaneIdentity::default(),
             &root,
-            None,
+            Some("r1"),
         ) else {
-            panic!("a skipped claim refuses the launch");
+            panic!("a skipped claim refuses the respawn");
         };
         assert_eq!(
             err.to_string(),

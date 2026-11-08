@@ -71,23 +71,26 @@ fn exe(name: &str) -> String {
 }
 
 impl Harness {
-    /// On unix the root is `/tmp/horch-e2e-<name>-<pid>-<n>`, with `<name>`
-    /// cut to its first 12 characters and `<n>` in hex (at most 32 digits,
-    /// 16 today): a Prime launch puts its daemon socket at
-    /// `<state>/prime/<id>/prime-agent-<uid>/d.sock`, the macOS socket path
-    /// limit is 104 bytes, and `temp_dir()` on macOS is about 49 bytes. A
-    /// 16-character name with a decimal `<n>` (19 digits) gave 105 bytes.
+    /// On unix the preferred root is `/tmp/horch-e2e-<name>-<pid>-<n>`, with
+    /// `<name>` cut to its first 12 characters and `<n>` in hex. When the
+    /// process cannot write there, `TMPDIR` is used only if Prime's longest
+    /// daemon socket path stays below macOS's 104-byte limit.
     pub fn new(name: &str) -> Self {
-        #[cfg(unix)]
-        let base = PathBuf::from("/tmp");
-        #[cfg(not(unix))]
-        let base = std::env::temp_dir();
         let short: String = name.chars().take(12).collect();
-        let root = base.join(format!(
-            "horch-e2e-{short}-{}-{:x}",
-            std::process::id(),
-            unique()
-        ));
+        let dir_name = format!("horch-e2e-{short}-{}-{:x}", std::process::id(), unique());
+        #[cfg(unix)]
+        let root = {
+            let preferred = Path::new("/tmp").join(&dir_name);
+            let _ = std::fs::remove_dir_all(&preferred);
+            let preferred_writable = std::fs::create_dir_all(&preferred).is_ok();
+            let fallback = std::env::var_os("TMPDIR")
+                .map(PathBuf::from)
+                .unwrap_or_else(std::env::temp_dir)
+                .join(format!("h{:x}-{:x}", std::process::id(), unique_sequence()));
+            choose_harness_root(&preferred, &fallback, preferred_writable)
+        };
+        #[cfg(not(unix))]
+        let root = std::env::temp_dir().join(dir_name);
         let _ = std::fs::remove_dir_all(&root);
         let mut h = Harness {
             home: root.join("home"),
@@ -473,6 +476,34 @@ impl Harness {
     }
 }
 
+#[cfg(unix)]
+const UNIX_SOCKET_PATH_LIMIT: usize = 104;
+
+/// Select the harness root after probing its preferred `/tmp` path.
+/// Prime launch ids contain 12 hex characters.
+#[cfg(unix)]
+fn choose_harness_root(preferred: &Path, fallback: &Path, preferred_writable: bool) -> PathBuf {
+    if preferred_writable {
+        return preferred.to_path_buf();
+    }
+    // SAFETY: plain syscall without arguments; it cannot fail.
+    let uid = unsafe { libc::getuid() };
+    let socket = fallback
+        .join("state/prime/ffffffffffff")
+        .join(format!("prime-agent-{uid}/d.sock"));
+    let socket_len = socket.as_os_str().as_encoded_bytes().len();
+    assert!(
+        socket_len < UNIX_SOCKET_PATH_LIMIT,
+        "the preferred harness path {} is not writable; the TMPDIR harness path {} gives Prime socket path {} ({} bytes), which must stay below {} bytes",
+        preferred.display(),
+        fallback.display(),
+        socket.display(),
+        socket_len,
+        UNIX_SOCKET_PATH_LIMIT
+    );
+    fallback.to_path_buf()
+}
+
 impl Drop for Harness {
     fn drop(&mut self) {
         let leaked = match reap(&self.root, &self.log) {
@@ -539,9 +570,24 @@ fn reap(root: &Path, log: &Path) -> std::io::Result<Vec<String>> {
         marks.push(format!("{}/", canonical.display()));
     }
     let me = std::process::id();
-    let all = listed(try_processes, REAP_GRACE)?;
     // SAFETY: plain syscall without arguments.
     let own_group = u32::try_from(unsafe { libc::getpgrp() }).ok();
+    let recorded: Vec<u32> = state["pids"]
+        .as_object()
+        .into_iter()
+        .flatten()
+        .filter_map(|(_, pid)| u32::try_from(pid.as_u64()?).ok())
+        .collect();
+    let Some(all) = process_list_or_sandbox(
+        try_processes,
+        REAP_GRACE,
+        &recorded,
+        own_group,
+        signal_groups,
+    )?
+    else {
+        return Ok(Vec::new());
+    };
     let mut groups: Vec<u32> = state["pids"]
         .as_object()
         .into_iter()
@@ -651,11 +697,44 @@ fn listed<T>(
     let until = std::time::Instant::now() + grace;
     loop {
         match list() {
-            Err(_) if std::time::Instant::now() < until => {
+            Err(e)
+                if e.kind() != std::io::ErrorKind::PermissionDenied
+                    && std::time::Instant::now() < until =>
+            {
                 std::thread::sleep(std::time::Duration::from_millis(50))
             }
             done => return done,
         }
+    }
+}
+
+/// List processes for the full leak scan. A sandbox can deny `ps`; then
+/// signal the pane groups fake-herdr recorded and skip only the leak scan.
+#[cfg(unix)]
+fn process_list_or_sandbox<T>(
+    list: impl Fn() -> std::io::Result<T>,
+    grace: std::time::Duration,
+    recorded: &[u32],
+    own_group: Option<u32>,
+    mut signal: impl FnMut(&[u32], &str),
+) -> std::io::Result<Option<T>> {
+    match listed(list, grace) {
+        Ok(all) => Ok(Some(all)),
+        Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => {
+            let mut groups: Vec<u32> = recorded
+                .iter()
+                .copied()
+                .filter(|g| *g > 1 && Some(*g) != own_group)
+                .collect();
+            groups.sort_unstable();
+            groups.dedup();
+            signal(&groups, "TERM");
+            eprintln!(
+                "warning: teardown signalled recorded pane groups but skipped the process leak scan in a sandbox: {error}"
+            );
+            Ok(None)
+        }
+        Err(error) => Err(error),
     }
 }
 
@@ -777,13 +856,17 @@ fn link_fake(from: &Path, to: &Path) -> std::io::Result<()> {
 }
 
 fn unique() -> u128 {
-    use std::sync::atomic::{AtomicU64, Ordering};
-    static N: AtomicU64 = AtomicU64::new(0);
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_nanos())
         .unwrap_or(0);
-    nanos ^ (N.fetch_add(1, Ordering::Relaxed) as u128)
+    nanos ^ (unique_sequence() as u128)
+}
+
+fn unique_sequence() -> u64 {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static N: AtomicU64 = AtomicU64::new(0);
+    N.fetch_add(1, Ordering::Relaxed)
 }
 
 fn find_on_real_path(name: &str) -> Option<PathBuf> {
@@ -823,10 +906,52 @@ fn walk(dir: &Path, out: &mut Vec<PathBuf>) {
 
 #[cfg(all(test, unix))]
 mod tests {
-    use std::cell::Cell;
+    use std::cell::{Cell, RefCell};
+    use std::path::{Path, PathBuf};
     use std::time::Duration;
 
-    use super::listed;
+    use super::{choose_harness_root, listed, process_list_or_sandbox};
+
+    #[test]
+    fn harness_root_prefers_writable_tmp_and_checks_the_tmpdir_socket_path() {
+        let preferred = Path::new("/tmp/horch-e2e-test");
+        let fallback = Path::new("/short/h1-1");
+        assert_eq!(choose_harness_root(preferred, fallback, true), preferred);
+        assert_eq!(choose_harness_root(preferred, fallback, false), fallback);
+
+        let long = PathBuf::from(format!("/{}", "x".repeat(104)));
+        let panic =
+            std::panic::catch_unwind(|| choose_harness_root(preferred, &long, false)).unwrap_err();
+        let message = panic
+            .downcast_ref::<String>()
+            .map(String::as_str)
+            .or_else(|| panic.downcast_ref::<&str>().copied())
+            .unwrap();
+        assert!(
+            message.contains(&preferred.display().to_string()),
+            "{message}"
+        );
+        assert!(message.contains(&long.display().to_string()), "{message}");
+    }
+
+    #[test]
+    fn a_permission_denied_process_scan_signals_recorded_groups_and_passes() {
+        let signals = RefCell::new(Vec::new());
+        let got = process_list_or_sandbox(
+            || Err::<Vec<u32>, _>(std::io::Error::from(std::io::ErrorKind::PermissionDenied)),
+            Duration::from_secs(5),
+            &[9, 7, 9, 1, 5],
+            Some(5),
+            |groups, signal| {
+                signals
+                    .borrow_mut()
+                    .push((groups.to_vec(), signal.to_string()))
+            },
+        )
+        .unwrap();
+        assert!(got.is_none(), "the sandbox skips the leak scan");
+        assert_eq!(signals.into_inner(), [(vec![7, 9], "TERM".into())]);
+    }
 
     /// A `ps` that failed to fork once is asked again, so teardown still
     /// sees the processes.

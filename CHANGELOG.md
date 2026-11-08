@@ -4,6 +4,26 @@
 
 ## Unreleased
 
+- `herdr-fleet` starts again while another fleet runs in the same project.
+  In v0.4.6 the new orchestrator exited at launch and its workspace closed,
+  while `horch fleet` still said "Done". Now the new fleet leaves the other
+  run alone and starts its own, and a fleet whose orchestrator does exit at
+  launch reports an error. `horch install` run from a gate or task worktree
+  no longer bakes that worktree's roster into the `herdr-fleet` launcher; it
+  uses the main checkout's.
+- `herdr-fleet sol` launches its Codex orchestrator on `gpt-6.1-sol`.
+- A fleet run's PR now says what each task did: the subjects of the task's
+  own commits and the files they touch, folded. A task that added no commit
+  of its own, such as a gate task, gets no section, and steps that did not
+  run are left out instead of showing `-`.
+- The `video-*` skills take the promo film's lessons: capture staging,
+  zoom plans, beat grids, music continuity, caption holds and stricter QA.
+- New bundled engine `hark`: a clean-room sound engine with analysis,
+  timeline, recipes and a sound bank. Its skill text lands later.
+- `horch skills path` prints a stable skill script path. A task with no
+  commits finishes without a land or push, and 2 first openers of a new
+  ledger no longer collide.
+
 ## v0.4.6 - 2026-11-06
 
 - Fleet work now flows to an end with no silent stop. Pull is the only

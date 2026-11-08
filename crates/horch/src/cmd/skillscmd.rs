@@ -45,6 +45,13 @@ pub enum SkillsCommand {
         #[arg(long, conflicts_with = "file")]
         files: bool,
     },
+    /// Print a stable absolute path to a skill or one of its scripts.
+    Path {
+        id: String,
+        /// A path relative to the skill directory.
+        #[arg(long, value_name = "REL")]
+        script: Option<String>,
+    },
     /// Install a skill from `owner/repo[@rev]`, an `https://` or `file://`
     /// git URL `[@rev]`, an absolute directory, or `bundled:<id>`, and pin
     /// it in the marketplace lock.
@@ -84,6 +91,7 @@ fn dispatch(ctx: &RuntimeContext, command: SkillsCommand) -> Result<()> {
         SkillsCommand::List { phase, json } => list(phase, json),
         SkillsCommand::Show { id, json } => show(ctx, &id, json),
         SkillsCommand::Read { id, file, files } => read(ctx, &id, file.as_deref(), files),
+        SkillsCommand::Path { id, script } => skill_path(ctx, &id, script.as_deref()),
         SkillsCommand::Install { source, path } => install(ctx, &source, path.as_deref()),
         SkillsCommand::Update { id } => update(ctx, id.as_deref()),
         SkillsCommand::Doctor => unreachable!("run handles doctor"),
@@ -168,6 +176,22 @@ fn read(ctx: &RuntimeContext, id: &str, file: Option<&str>, files: bool) -> Resu
     }
     let bytes = reading::read(&catalog, id, file.unwrap_or("SKILL.md"))?;
     output::print(&String::from_utf8_lossy(&bytes));
+    Ok(())
+}
+
+/// `horch skills path <id> [--script <rel>]`: materialize a bundled skill
+/// outside the disposable bundle tree, or return an installed skill's path.
+fn skill_path(ctx: &RuntimeContext, id: &str, script: Option<&str>) -> Result<()> {
+    let catalog = SkillCatalog::installed(&ctx.paths.data_root)?;
+    if let Some(rel) = script {
+        reading::read(&catalog, id, rel)?;
+    }
+    let dir = horch_core::skills::stable_skill_dir(&catalog, &ctx.paths.state_root, id)?;
+    let path = script.map_or(dir.clone(), |rel| dir.join(rel));
+    if !path.exists() {
+        return Err(anyhow!("skill '{id}' has no file '{}'", path.display()));
+    }
+    output::println(&path.display().to_string());
     Ok(())
 }
 

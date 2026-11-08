@@ -13,6 +13,14 @@ use super::schema;
 /// many workers at once on a slow disk.
 pub const BUSY_TIMEOUT: Duration = Duration::from_secs(30);
 
+/// A live opener keeps its initialization lock for at most this long before
+/// another machine may break it. Dead local processes are detected at once.
+const OPEN_LOCK_STALE_AFTER: Duration = Duration::from_secs(5 * 60);
+
+/// The cross-process lock used only while a ledger switches to WAL and runs
+/// its first migration. Ledgers already in WAL mode do not take this lock.
+const OPEN_LOCK_NAME: &str = "task-ledger-open";
+
 /// The ledger file under a home directory: `<home>/.horch/ledger.sqlite3`.
 pub fn default_path(home: &Path) -> PathBuf {
     home.join(".horch").join("ledger.sqlite3")
@@ -128,6 +136,22 @@ fn guard(ledger: &Path, from: i64) -> Result<()> {
     }
 }
 
+/// The current SQLite journal mode, in lower-case ASCII.
+fn journal_mode(conn: &Connection) -> Result<String> {
+    conn.query_row("PRAGMA journal_mode", [], |row| row.get(0))
+        .context("reading the task ledger journal mode")
+}
+
+/// Serialize the WAL switch and first migration across threads and processes.
+fn open_lock(path: &Path) -> Result<crate::fsx::DirLockGuard> {
+    let dir = path
+        .parent()
+        .filter(|dir| !dir.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    crate::fsx::DirLock::acquire(dir, OPEN_LOCK_NAME, OPEN_LOCK_STALE_AFTER, BUSY_TIMEOUT)
+        .with_context(|| format!("locking task ledger initialization for {}", path.display()))
+}
+
 /// An open task ledger.
 pub struct Store {
     conn: Connection,
@@ -144,12 +168,25 @@ impl Store {
         let mut conn = Connection::open(path)
             .with_context(|| format!("opening the task ledger {}", path.display()))?;
         conn.busy_timeout(BUSY_TIMEOUT)?;
-        // WAL: readers never block the 1 writer, and a crash mid-write keeps
-        // the last committed state.
-        let _: String = conn.query_row("PRAGMA journal_mode = WAL", [], |r| r.get(0))?;
+        // Switching journal mode is not covered by SQLite's busy timeout. A
+        // first opener holds a cross-process lock until migration completes;
+        // later openers see WAL and rely on SQLite's writer lock as usual.
+        let _open_lock = if journal_mode(&conn)? == "wal" {
+            None
+        } else {
+            Some(open_lock(path)?)
+        };
+        if journal_mode(&conn)? != "wal" {
+            // WAL: readers never block the 1 writer, and a crash mid-write
+            // keeps the last committed state.
+            let _: String = conn
+                .query_row("PRAGMA journal_mode = WAL", [], |row| row.get(0))
+                .context("setting the task ledger journal mode to WAL")?;
+        }
         conn.pragma_update(None, "synchronous", "NORMAL")?;
         conn.pragma_update(None, "foreign_keys", "ON")?;
-        schema::migrate_guarded(&mut conn, &|from| guard(path, from))?;
+        schema::migrate_guarded(&mut conn, &|from| guard(path, from))
+            .context("migrating the task ledger schema")?;
         Ok(Store {
             conn,
             path: path.to_path_buf(),
