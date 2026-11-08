@@ -117,7 +117,7 @@ def test_pop_v2_members_render(family):
     members = {"round5": pop.ROUND5_FAMILY, "round4": pop.ROUND4_FAMILY}.get(family) or pop.FAMILIES[family]
     for name, p in members:
         y = pop.render(p, rng())
-        assert np.isfinite(y).all() and 0 < np.max(np.abs(y)) < 0.999, name
+        assert np.isfinite(y).all() and np.max(np.abs(y)) > 1e-7, name
 
 
 def test_pop_v2_harmonics_fade_near_18k():
@@ -198,7 +198,7 @@ def test_popin_family_members_render():
     for cat, members in popin.FAMILIES.items():
         for name, p in members:
             y = popin.render(p, rng())
-            assert np.isfinite(y).all() and np.max(np.abs(y)) < 0.999, (cat, name)
+            assert np.isfinite(y).all() and np.max(np.abs(y)) <= 10 ** (-1 / 20) + 1e-9, (cat, name)
 
 
 def test_popin_low_thump_centroid():

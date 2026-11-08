@@ -322,7 +322,7 @@ def render(p: dict, rng: np.random.Generator) -> np.ndarray:
     st = _session(spaced_pair(x, p), p, rng)
     st = st[: L.n_of(dur)]
     st = dsp.fade(st, 0.002, rng.uniform(0.025, 0.05))
-    return np.asarray(L.headroom(st), dtype=np.float64)
+    return np.asarray(st, dtype=np.float64)
 
 
 # ---------------------------------------------------------------- v2 checks

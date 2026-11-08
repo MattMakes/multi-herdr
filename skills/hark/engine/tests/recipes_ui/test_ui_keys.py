@@ -152,7 +152,7 @@ def test_typing_release_extends_the_key():
                                   {"tink_db": 0, "tink_glide": -12}, {"rattle_db": -18}])
 def test_typing_round3_keys(edit):
     y = typing.render(dict(typing.DEFAULTS, **edit), rng())
-    assert np.isfinite(y).all() and np.max(np.abs(y)) < 0.999
+    assert np.isfinite(y).all() and np.max(np.abs(y)) > 1e-7
 
 
 def test_typing_key_times_spacing():

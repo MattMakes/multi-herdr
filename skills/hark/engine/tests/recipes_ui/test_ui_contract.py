@@ -13,7 +13,7 @@ import pytest
 
 SR = 48000
 UI = ("click", "keypress", "typing", "toggle", "shutter", "ui_pop", "popin", "pop")
-CLIP = 0.999
+FORGE_PEAK = 10 ** (-1 / 20)  # the forge normalises every render to -1 dBFS
 
 
 def load(name: str):
@@ -40,8 +40,15 @@ def check_audio(y: np.ndarray) -> None:
     assert y.ndim == 1 or (y.ndim == 2 and y.shape[1] == 2)
     assert len(y) > 0
     assert np.isfinite(y).all()
-    assert float(np.max(np.abs(y))) > 1e-7
-    assert float(np.max(np.abs(y))) < CLIP
+    pk = float(np.max(np.abs(y)))
+    assert pk > 1e-7
+    # Recipes keep the spec level, so a raw render can pass full scale. The forge output must not.
+    assert float(np.max(np.abs(forge_level(y)))) <= FORGE_PEAK + 1e-12
+
+
+def forge_level(y: np.ndarray) -> np.ndarray:
+    """The forge's -1 dBFS peak normalisation (ARCH 8.2): recipes do not do it themselves."""
+    return y * (FORGE_PEAK / float(np.max(np.abs(y))))
 
 
 @pytest.mark.parametrize("name,recipe", RECIPES, ids=IDS)

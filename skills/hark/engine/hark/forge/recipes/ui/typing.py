@@ -175,7 +175,7 @@ def render(p: dict, rng: np.random.Generator) -> np.ndarray:
     p = L.merged(DEFAULTS, p)
     force = math.exp(0.08 * rng.standard_normal())
     y = dsp.fade(one_key(p, rng, force), 0.0, 0.0015)
-    return L.headroom(np.column_stack([y, y]).astype(np.float64))
+    return np.column_stack([y, y]).astype(np.float64)
 
 
 # ------------------------------------------------------------------ typed run
@@ -231,7 +231,7 @@ def render_run(p: dict, rng: np.random.Generator) -> np.ndarray:
     bed = dsp.butter(rng.standard_normal(n), "band", (p["lowcut"], 16000), 2)
     y = y + bed / (np.std(bed) + 1e-12) * L.peak(y) * 10 ** (-68 / 20)
     y = dsp.fade(y, 0.002, 0.004)
-    return L.headroom(np.column_stack([y, y]).astype(np.float64))
+    return np.column_stack([y, y]).astype(np.float64)
 
 
 # --------------------------------------------------------------- study checks

@@ -195,14 +195,14 @@ def render_v1(p: dict, rng: np.random.Generator) -> np.ndarray:
     if "clip" not in p:
         x = dsp.mic(x, rng, air_db=p["air_db"], floor_db=p["floor_db"])
         x = dsp.trim_tail(np.asarray(x, dtype=float), -62.0, 0.02)
-        return L.headroom(np.asarray(dsp.fade(x, 0.001, 0.02), dtype=np.float64))
+        return np.asarray(dsp.fade(x, 0.001, 0.02), dtype=np.float64)
     x = dsp.butter(dsp.butter(x, "high", p["hp"], 4), "low", p["lp"], 2)
     x = np.asarray(dsp.mic(x, rng, air_db=p["air_db"], floor_db=p["floor_db"]), dtype=float)
     head = L.n_of(p["pre"]) + lead
     end = head + L.n_of(p["clip"])
     if "cut_db" in p:
         end = _cut_point(x, p, end, head)
-    return L.headroom(np.asarray(dsp.fade(x[:end], 0.001, p["cut_fade"]), dtype=np.float64))
+    return np.asarray(dsp.fade(x[:end], 0.001, p["cut_fade"]), dtype=np.float64)
 
 
 # ---------------------------------------------------------------- version 2
@@ -568,7 +568,7 @@ def render_v2(p: dict, rng: np.random.Generator) -> np.ndarray:
     w = np.cos(np.linspace(0, np.pi / 2, k)) ** 2
     y = np.array(y, dtype=float)
     y[len(y) - k:] *= w if y.ndim == 1 else w[:, None]
-    return L.headroom(y.astype(np.float64))
+    return y.astype(np.float64)
 
 
 def render(p: dict, rng: np.random.Generator) -> np.ndarray:

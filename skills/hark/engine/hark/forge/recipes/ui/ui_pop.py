@@ -7,7 +7,6 @@ import math
 import numpy as np
 
 from hark.forge.recipes import tonal
-from hark.forge.recipes.ui import _layers as L
 
 TARGET = "a soft rounded pop, a small bubble popping in a user interface"
 TARGETS = {"ui_pop": TARGET}
@@ -148,4 +147,4 @@ def render(p: dict, rng: np.random.Generator) -> np.ndarray:
             y[k:] += _one_pop(q, rng, n - k, f0 * p["dratio"], 0.9 * tau, 10 ** (p["dbl"] / 20))
     y = _layers(y, p, rng, n, tau, onset)
     st = tonal.finish(y, rng, hp=p["hp"], lp=p["lp"], room_wet=p["room"], rt60=p["rt"], width=p["width"], cut=400)
-    return np.asarray(L.headroom(st), dtype=np.float64)
+    return np.asarray(st, dtype=np.float64)

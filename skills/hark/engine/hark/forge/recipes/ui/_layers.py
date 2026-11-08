@@ -73,15 +73,6 @@ def onset_ramp(x: np.ndarray, rise: float) -> np.ndarray:
     return x
 
 
-HEADROOM_PEAK = 0.891  # -1 dBFS
-
-
-def headroom(x: np.ndarray) -> np.ndarray:
-    """Scale a render to a -1 dBFS peak only when its peak reaches 0.999 (full scale); else leave it."""
-    pk = peak(x)
-    return x * (HEADROOM_PEAK / pk) if pk >= 0.999 else x
-
-
 def db(v: float) -> float:
     return 10 ** (v / 20)
 

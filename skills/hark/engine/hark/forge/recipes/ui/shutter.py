@@ -8,7 +8,6 @@ import numpy as np
 
 from hark.forge.engine import dsp
 from hark.forge.recipes import tonal
-from hark.forge.recipes.ui import _layers as L
 
 TARGET = "a camera shutter click"
 TARGETS = {"shutter": TARGET}
@@ -154,4 +153,4 @@ def render(p: dict, rng: np.random.Generator) -> np.ndarray:
         w = _whirr(p, rng, gap)
         y[: min(n, len(w))] += w[: min(n, len(w))]
     st = tonal.finish(y, rng, hp=p["hp"], lp=p["lp"], room_wet=p["room"], rt60=p["rt"], width=p["width"], cut=600)
-    return np.asarray(L.headroom(st), dtype=np.float64)
+    return np.asarray(st, dtype=np.float64)
