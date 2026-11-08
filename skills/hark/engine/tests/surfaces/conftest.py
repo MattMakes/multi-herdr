@@ -187,9 +187,11 @@ def _new_module(name: str, attrs: dict[str, Any], package: bool = False) -> type
     return mod
 
 
-@pytest.fixture(scope="session", autouse=True)
-def standins() -> Iterator[list[str]]:
-    """Install a stand-in for every absent core or models module; remove them after the session."""
+def install_standins() -> list[str]:
+    """Install a stand-in for every absent core or models module; return their names.
+
+    The stdio server tests call this in the server process too (run this file with runpy).
+    """
     installed: list[str] = []
     if module_absent("hark.core"):
         _new_module("hark.core", {}, package=True)
@@ -198,6 +200,13 @@ def standins() -> Iterator[list[str]]:
         if module_absent(name):
             _new_module(name, attrs, package=name == "hark.models")
             installed.append(name)
+    return installed
+
+
+@pytest.fixture(scope="session", autouse=True)
+def standins() -> Iterator[list[str]]:
+    """The stand-ins of this session; removed after it."""
+    installed = install_standins()
     yield installed
     for name in reversed(installed):
         sys.modules.pop(name, None)
