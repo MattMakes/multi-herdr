@@ -344,7 +344,7 @@ def trim_tail(x: np.ndarray, floor_db: float = -70.0, keep: float = 0.01) -> np.
     x = np.asarray(x)
     if len(x) == 0:
         return x
-    m = np.abs(x.max(axis=1)) if x.ndim == 2 else np.abs(x)
+    m = np.abs(x).max(axis=1) if x.ndim == 2 else np.abs(x)
     loud = np.nonzero(m >= m.max() * 10 ** (floor_db / 20))[0]
     end = len(x) if len(loud) == 0 else min(len(x), int(loud[-1]) + n_of(keep))
     return x[:end]
