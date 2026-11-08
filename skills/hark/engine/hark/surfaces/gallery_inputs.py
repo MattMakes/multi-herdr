@@ -4,12 +4,15 @@ from __future__ import annotations
 
 import glob
 import importlib
+import itertools
 import json
 import math
 import os
 import re
 import time
 from typing import Any
+
+from hark.surfaces._flow import attempt, capture, raise_if
 
 SOUND_EXTS = (".wav", ".flac")
 LABEL_RE = re.compile(r"^([A-Za-z0-9_.+-]{2,}):(.*)$")
@@ -48,18 +51,24 @@ def _hidden(name: str) -> bool:
     return name.startswith(("_", "."))
 
 
+def _single_layout(folder: str, sub: str) -> dict[str, str] | None:
+    """A folder of sounds, or a category folder with ``<sub>/``; else None."""
+    nested = os.path.join(folder, sub)
+    own = {category_of(folder): slash(folder)} if sound_files(folder) else None
+    one = {os.path.basename(os.path.normpath(folder)): slash(nested)} if sound_files(nested) else None
+    return own or one
+
+
+def _tree_layout(folder: str, sub: str) -> dict[str, str]:
+    kids = [c for c in sorted(os.listdir(folder)) if not _hidden(c)]
+    return {c: slash(os.path.join(folder, c, sub)) for c in kids if sound_files(os.path.join(folder, c, sub))}
+
+
 def discover(folder: str, sub: str = "final") -> dict[str, str]:
     """``{category: sound folder}`` for a forge tree, a category folder or a final folder."""
-    if not os.path.isdir(folder):
-        raise FileNotFoundError(f"no such folder: {folder}")
-    if sound_files(folder):
-        return {category_of(folder): slash(folder)}
-    if sound_files(os.path.join(folder, sub)):
-        return {os.path.basename(os.path.normpath(folder)): slash(os.path.join(folder, sub))}
-    found = {c: slash(os.path.join(folder, c, sub)) for c in sorted(os.listdir(folder))
-             if not _hidden(c) and sound_files(os.path.join(folder, c, sub))}
-    if not found:
-        raise FileNotFoundError(f"no sounds in {folder}: expected the layout <category>/{sub}/*.wav")
+    raise_if(not os.path.isdir(folder), FileNotFoundError(f"no such folder: {folder}"))
+    found = _single_layout(folder, sub) or _tree_layout(folder, sub)
+    raise_if(not found, FileNotFoundError(f"no sounds in {folder}: expected the layout <category>/{sub}/*.wav"))
     return found
 
 
@@ -150,19 +159,28 @@ def _pick_key(pick: dict) -> str | None:
     return f"{pick['name']}.wav" if pick.get("name") else None
 
 
+def _dict_at(d: dict, key: str) -> dict:
+    v = d.get(key)
+    return v if isinstance(v, dict) else {}
+
+
+def _str_list(v: Any) -> list[str]:
+    return [x for x in v or [] if isinstance(x, str)]
+
+
+def _picks(rep: dict) -> dict[str, dict]:
+    keyed = ((_pick_key(p), p) for p in rep.get("picks") or [] if isinstance(p, dict))
+    return {k: p for k, p in keyed if k}
+
+
 def read_report(folder: str) -> dict[str, Any]:
     """The parts of ``<folder>/report.json`` the page shows; empty fields when missing."""
     rep = _read_json(os.path.join(folder, "report.json"))
     rep = rep if isinstance(rep, dict) else {}
-    critic = rep.get("critic") if isinstance(rep.get("critic"), dict) else {}
-    picks = {}
-    for p in rep.get("picks") or []:
-        key = _pick_key(p) if isinstance(p, dict) else None
-        if key:
-            picks[key] = p
-    return {"picks": picks, "target": rep.get("target"), "mode": rep.get("mode") or critic.get("mode"),
-            "tag": rep.get("tag"), "refs": [r for r in rep.get("refs") or [] if isinstance(r, str)],
-            "recipe": _recipe_text(rep), "method": rep.get("method") or rep.get("summary")}
+    mode = rep.get("mode") or _dict_at(rep, "critic").get("mode")
+    return {"picks": _picks(rep), "target": rep.get("target"), "mode": mode, "tag": rep.get("tag"),
+            "refs": _str_list(rep.get("refs")), "recipe": _recipe_text(rep),
+            "method": rep.get("method") or rep.get("summary")}
 
 
 def variant_of(pick: dict) -> str | None:
@@ -184,11 +202,14 @@ def _first(*vals: Any) -> Any:
     return next((v for v in vals if v is not None), None)
 
 
+def _top_label(top: Any) -> str | None:
+    """The first label of an AudioSet top list ``[[label, p], ...]``."""
+    ok = isinstance(top, list) and bool(top) and isinstance(top[0], (list, tuple)) and bool(top[0])
+    return str(top[0][0]) if ok else None
+
+
 def _audioset(pick: dict) -> str | None:
-    top = (pick.get("holdout") or {}).get("audioset_top") if isinstance(pick.get("holdout"), dict) else None
-    if isinstance(top, list) and top and isinstance(top[0], (list, tuple)) and top[0]:
-        return str(top[0][0])
-    return None
+    return _top_label(_dict_at(pick, "holdout").get("audioset_top"))
 
 
 def _words(pick: dict) -> Any:
@@ -197,19 +218,24 @@ def _words(pick: dict) -> Any:
     return score.get("polish_words") or polish.get("words") or ""
 
 
+CRITIC_SCORES = ("total", "match_z", "env_pen", "polish_pen", "art_pen")
+
+
+def _critic_measures(pick: dict, score: dict, meas: dict) -> dict[str, Any]:
+    passes = score.get("passes")
+    return {"passes": passes if isinstance(passes, bool) else None,
+            "tone_db": _first(_num(score, "tone_db"), _num(meas, "tone_db")),
+            "t40_ms": _num(meas, "t40_ms"), "t40_ref": _num(meas, "t40_ref"),
+            "nearest_ref": score.get("nearest_ref") or meas.get("nearest_ref"),
+            "sounds_like": _str_list(score.get("sounds_like"))[:3], "words": _words(pick)}
+
+
 def critic_of(pick: dict) -> dict[str, Any]:
     """The critic numbers of 1 pick (finite numbers only)."""
-    score = pick.get("score") if isinstance(pick.get("score"), dict) else {}
-    meas = pick.get("measured") if isinstance(pick.get("measured"), dict) else {}
-    robust = pick.get("robust") if isinstance(pick.get("robust"), dict) else {}
-    out = {k: _num(score, k) for k in ("total", "match_z", "env_pen", "polish_pen", "art_pen")}
-    out.update(passes=score.get("passes") if isinstance(score.get("passes"), bool) else None,
-               tone_db=_first(_num(score, "tone_db"), _num(meas, "tone_db")),
-               t40_ms=_num(meas, "t40_ms"), t40_ref=_num(meas, "t40_ref"),
-               nearest_ref=score.get("nearest_ref") or meas.get("nearest_ref"),
-               sounds_like=[s for s in (score.get("sounds_like") or []) if isinstance(s, str)][:3],
-               words=_words(pick), robust_mean=_num(robust, "mean"), robust_pass=_num(robust, "pass_rate"),
-               audioset=_audioset(pick))
+    score, robust = _dict_at(pick, "score"), _dict_at(pick, "robust")
+    out = {k: _num(score, k) for k in CRITIC_SCORES}
+    out.update(_critic_measures(pick, score, _dict_at(pick, "measured")))
+    out.update(robust_mean=_num(robust, "mean"), robust_pass=_num(robust, "pass_rate"), audioset=_audioset(pick))
     return out
 
 
@@ -273,19 +299,28 @@ def _newer(sound: dict, created: Any) -> bool:
         return False
 
 
+def _newer_reason(entry: dict, sound: dict, created: Any, tol: float) -> str:
+    return "file newer than the benchmark run" if _newer(sound, created) else ""
+
+
+def _length_reason(entry: dict, sound: dict, created: Any, tol: float) -> str:
+    length = entry.get("length_s")
+    off = finite(length) and abs(length - sound["dur_s"]) > tol
+    return f"length {sound['dur_s']:.3f} s, benchmark {length:.3f} s" if off else ""
+
+
+def _peak_reason(entry: dict, sound: dict, created: Any, tol: float) -> str:
+    peak = (entry.get("artifact_detail") or {}).get("peak_dbfs")
+    known = finite(peak) and sound.get("peak_dbfs") is not None
+    off = known and abs(peak - sound["peak_dbfs"]) > PEAK_TOL_DB
+    return f"peak {sound['peak_dbfs']:.1f} dBFS, benchmark {peak:.1f}" if off else ""
+
+
 def stale_reason(entry: dict | None, sound: dict, created: Any, tol: float = STALE_TOL_S) -> str:
     """Why a benchmark entry does not describe the file; empty when it does."""
-    if not entry:
-        return ""
-    if _newer(sound, created):
-        return "file newer than the benchmark run"
-    length = entry.get("length_s")
-    if finite(length) and abs(length - sound["dur_s"]) > tol:
-        return f"length {sound['dur_s']:.3f} s, benchmark {length:.3f} s"
-    peak = (entry.get("artifact_detail") or {}).get("peak_dbfs")
-    if finite(peak) and sound.get("peak_dbfs") is not None and abs(peak - sound["peak_dbfs"]) > PEAK_TOL_DB:
-        return f"peak {sound['peak_dbfs']:.1f} dBFS, benchmark {peak:.1f}"
-    return ""
+    checks = (_newer_reason, _length_reason, _peak_reason) if entry else ()
+    reasons = (check(entry, sound, created, tol) for check in checks)
+    return next((r for r in reasons if r), "")
 
 
 def _case(p: str) -> str:
@@ -301,14 +336,19 @@ def same_file(entry_file: str, sound_path: str, results_path: str) -> bool:
     return any(_case(os.path.join(r, entry_file)) == target for r in roots)
 
 
+BENCH_KEYS = ("tone_db", "t40_ratio", "typ_z", "phrase_z", "stereo_corr")
+
+
+def _finite_or_none(v: Any) -> Any:
+    return v if finite(v) else None
+
+
 def bench_numbers(entry: dict, n_checks: Any) -> dict[str, Any]:
-    out = {k: entry.get(k) if finite(entry.get(k)) else None
-           for k in ("tone_db", "t40_ratio", "typ_z", "phrase_z", "stereo_corr")}
-    top = entry.get("as_top")
-    label = str(top[0][0]).split(",")[0] if isinstance(top, list) and top and isinstance(top[0], (list, tuple)) and top[0] else None
-    out.update(inside=entry.get("inside_n") if finite(entry.get("inside_n")) else None,
-               n_checks=n_checks if finite(n_checks) else None,
-               artifacts=[str(a) for a in entry.get("artifacts") or []], audioset=label)
+    out = {k: _finite_or_none(entry.get(k)) for k in BENCH_KEYS}
+    label = _top_label(entry.get("as_top"))
+    out.update(inside=_finite_or_none(entry.get("inside_n")), n_checks=_finite_or_none(n_checks),
+               artifacts=[str(a) for a in entry.get("artifacts") or []],
+               audioset=label.split(",")[0] if label else None)
     return out
 
 
@@ -355,21 +395,27 @@ SUMMARY_ROWS = (
 INSIDE_HINT = "median per sound of how many checks fall within the spread of the real recordings"
 
 
+def _value_row(cols: list[dict], spec: tuple[str, str, str, str]) -> list[dict[str, str]]:
+    label, key, fmt, hint = spec
+    vals = [c.get(key) for c in cols]
+    row = {"label": label, "made": _fmt(vals[0], fmt), "forge": _fmt(vals[1], fmt), "loo": _fmt(vals[2], fmt),
+           "hint": hint}
+    return [row] if any(finite(v) for v in vals) else []
+
+
+def _inside_row(inside: dict) -> list[dict[str, str]]:
+    n = inside.get("n_checks")
+    keep = bool(inside.get("per_sound")) and finite(n)
+    return [{"label": "inside", "made": f"{_short(_median(inside['per_sound']))} / {n}",
+             "forge": _short(_median(inside.get("real_per_sound") or [])), "loo": "-", "hint": INSIDE_HINT}] \
+        if keep else []
+
+
 def summary_rows(cat: dict) -> list[dict[str, str]]:
     s = cat.get("summary") or {}
     cols = [s.get("made") or {}, s.get("real_cross") or {}, s.get("real_loo") or {}]
-    rows = []
-    for label, key, fmt, hint in SUMMARY_ROWS:
-        vals = [c.get(key) for c in cols]
-        if any(finite(v) for v in vals):
-            rows.append({"label": label, "made": _fmt(vals[0], fmt), "forge": _fmt(vals[1], fmt),
-                         "loo": _fmt(vals[2], fmt), "hint": hint})
-    inside = cat.get("inside") or {}
-    n = inside.get("n_checks")
-    if inside.get("per_sound") and finite(n):
-        rows.append({"label": "inside", "made": f"{_short(_median(inside['per_sound']))} / {n}",
-                     "forge": _short(_median(inside.get("real_per_sound") or [])), "loo": "-", "hint": INSIDE_HINT})
-    return rows
+    rows = [row for spec in SUMMARY_ROWS for row in _value_row(cols, spec)]
+    return rows + _inside_row(cat.get("inside") or {})
 
 
 def bench_summary(cat: dict) -> dict[str, Any]:
@@ -392,23 +438,33 @@ def _realignable(sounds: list[dict], base: list[Any]) -> bool:
     return all(names) and len(set(names)) == len(names) and sum(n in base for n in names) >= 2
 
 
-def _align_one(sounds: list[dict], base: list[Any]) -> list[dict | None]:
-    if not _realignable(sounds, base):
-        return list(sounds)
+def _seat(slots: list[dict | None], base: list[Any], s: dict) -> bool:
+    """Put s in its base column when that slot is free; True when it sat down."""
+    i = base.index(s["variant"]) if s["variant"] in base else -1
+    free = i >= 0 and slots[i] is None
+    slots[i] = s if free else slots[i]
+    return free
+
+
+def _fill(slots: list[dict | None], s: dict) -> None:
+    free = next((i for i, v in enumerate(slots) if v is None), None)
+    if free is None:
+        slots.append(s)
+    else:
+        slots[free] = s
+
+
+def _place(sounds: list[dict], base: list[Any]) -> list[dict | None]:
     slots: list[dict | None] = [None] * max(len(base), len(sounds))
-    rest = []
-    for s in sounds:
-        i = base.index(s["variant"]) if s["variant"] in base else -1
-        if i >= 0 and slots[i] is None:
-            slots[i] = s
-        else:
-            rest.append(s)
+    rest = [s for s in sounds if not _seat(slots, base, s)]  # seats in file order, keeps the rest
     for s in rest:
-        free = next((i for i, v in enumerate(slots) if v is None), None)
-        slots.append(s) if free is None else slots.__setitem__(free, s)
-    while slots and slots[-1] is None:
-        slots.pop()
-    return slots
+        _fill(slots, s)
+    last = max((i for i, v in enumerate(slots) if v is not None), default=-1)
+    return slots[:last + 1]
+
+
+def _align_one(sounds: list[dict], base: list[Any]) -> list[dict | None]:
+    return _place(sounds, base) if _realignable(sounds, base) else list(sounds)
 
 
 # ---------------------------------------------------------------- references
@@ -419,17 +475,15 @@ def refsets() -> Any:
     return importlib.import_module("hark.forge.engine.refsets")
 
 
+def _registry_categories() -> dict[str, str]:
+    return getattr(refsets(), "CATEGORIES", {}) or {}
+
+
 def category_description(cat: str, pro_text: dict[str, str]) -> str | None:
-    if cat in pro_text:
-        return pro_text[cat]
-    try:
-        cats = getattr(refsets(), "CATEGORIES", {}) or {}
-    except Exception:
-        return None
-    if cat in cats:
-        return cats[cat]
-    base = cat[4:] if cat.startswith("pro_") else None
-    return f"designed version: {cats[base]}" if base and base in cats else None
+    cats = {} if cat in pro_text else (attempt(_registry_categories) or {})
+    base = cat[4:] if cat.startswith("pro_") else ""
+    designed = f"designed version: {cats[base]}" if base in cats else None
+    return pro_text.get(cat) or cats.get(cat) or designed
 
 
 def ref_paths(mode: str, cat: str, report_refs: list[str]) -> list[str]:
@@ -457,39 +511,39 @@ def guard_refs(cat: str, paths: list[str], warnings: list[str]) -> list[str]:
     return kept
 
 
+def _pair(s: dict | None, by_name: dict[str, str], refs: list[str], turn: Any) -> str | None:
+    near = (s.get("critic") or {}).get("nearest_ref") if s else None
+    cycled = refs[next(turn) % len(refs)] if s and near not in by_name else None
+    return by_name[near] if near in by_name else cycled
+
+
 def pair_refs(order: list[dict | None], refs: list[str], cap: int) -> list[str | None]:
     """1 reference per shown sound: its nearest_ref when listed, else the references in turn."""
-    if not refs:
-        return []
     by_name = {os.path.basename(p): p for p in refs}
-    out: list[str | None] = []
-    turn = 0
-    for s in order:
-        if s is None:
-            out.append(None)
-            continue
-        near = (s.get("critic") or {}).get("nearest_ref")
-        if near in by_name:
-            out.append(by_name[near])
-        else:
-            out.append(refs[turn % len(refs)])
-            turn += 1
-    out = out[:cap]
+    turn = itertools.count()
+    out = [_pair(s, by_name, refs, turn) for s in order][:cap] if refs else []
     real = {p for p in out if p}
     return [next(iter(real))] if len(real) == 1 else out
 
 
+def _registry(mod: Any) -> dict:
+    """The refs registry; a missing registry counts as empty (no bench split)."""
+    reg, exc = capture(mod.load)
+    raise_if(exc is not None and not isinstance(exc, FileNotFoundError), exc)
+    return reg if exc is None else {"categories": {}}
+
+
+def _bench_names(reg: dict) -> set[str]:
+    cats = (reg.get("categories") or {}).values()
+    return {os.path.basename(p) for c in cats for p in c.get("bench") or []}
+
+
 def _held_names(names: list[str]) -> list[str]:
     mod = refsets()
-    try:
-        reg = mod.load()
-    except Exception as exc:
-        if type(exc).__name__ != "RefsetsMissing" and not isinstance(exc, FileNotFoundError):
-            raise
-        reg = {"categories": {}}
-    bench = {os.path.basename(p) for c in reg.get("categories", {}).values() for p in c.get("bench") or []}
+    bench = _bench_names(_registry(mod))
     stems = set(getattr(mod, "KIT_BENCH", ()) or ())
-    return [n for n in names if os.path.basename(n) in bench or os.path.splitext(os.path.basename(n))[0] in stems]
+    bases = [(n, os.path.basename(n)) for n in names]
+    return [n for n, b in bases if b in bench or os.path.splitext(b)[0] in stems]
 
 
 def _index_names(index: str) -> list[str] | None:
@@ -501,21 +555,23 @@ def _index_names(index: str) -> list[str] | None:
     return [m.group(1) for m in map(AUDITION_LINE.match, lines) if m]
 
 
+def _reel_of(folder: str) -> str | None:
+    paths = (os.path.join(folder, n) for n in AUDITION_NAMES)
+    return next((p for p in paths if os.path.isfile(p)), None)
+
+
+def _reel_problem(reel: str, cat: str) -> str | None:
+    names = _index_names(os.path.splitext(reel)[0] + ".txt")
+    held, exc = capture(_held_names, names) if names is not None else ([], None)
+    problems = ((names is None, "no index file beside it"),
+                (exc is not None, f"the held-out check is unavailable ({type(exc).__name__})"),
+                (bool(held), f"it plays held-out refs ({', '.join((held or [])[:3])})"))
+    return next((f"{cat}: audition reel left out: {msg}" for bad, msg in problems if bad), None)
+
+
 def audition_reel(folder: str, cat: str, warnings: list[str]) -> str | None:
     """The audition reel of a folder when its index can be checked and lists no held-out reference."""
-    reel = next((os.path.join(folder, n) for n in AUDITION_NAMES if os.path.isfile(os.path.join(folder, n))), None)
-    if reel is None:
-        return None
-    names = _index_names(os.path.splitext(reel)[0] + ".txt")
-    if names is None:
-        warnings.append(f"{cat}: audition reel left out: no index file beside it")
-        return None
-    try:
-        held = _held_names(names)
-    except Exception as exc:
-        warnings.append(f"{cat}: audition reel left out: the held-out check is unavailable ({type(exc).__name__})")
-        return None
-    if held:
-        warnings.append(f"{cat}: audition reel left out: it plays held-out refs ({', '.join(held[:3])})")
-        return None
-    return slash(reel)
+    reel = _reel_of(folder)
+    problem = _reel_problem(reel, cat) if reel else None
+    warnings.extend([problem] if problem else [])
+    return slash(reel) if reel and not problem else None
