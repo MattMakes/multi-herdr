@@ -88,8 +88,7 @@ def write_json(path: Path, data) -> None:
 
 
 def read_json(path: Path):
-    with open(path, encoding="utf-8") as f:
-        return json.load(f)
+    return json.loads(Path(path).read_text(encoding="utf-8"))
 
 
 MODE_ENV = "SKILL_INTAKE_MODE"
@@ -112,23 +111,34 @@ def horch_bin() -> str:
     return os.environ.get(HORCH_ENV) or "horch"
 
 
+def _forced_mode() -> str | None:
+    """SKILL_INTAKE_MODE when set; it must be fleet or plain."""
+    forced = os.environ.get(MODE_ENV)
+    if forced and forced not in ("fleet", "plain"):
+        raise TaskError(f"{MODE_ENV} must be fleet or plain, not {forced!r}")
+    return forced or None
+
+
+def _horch_answers() -> bool:
+    """Whether `horch --version` exits 0 within version_timeout()."""
+    quiet = subprocess.DEVNULL
+    try:
+        r = subprocess.run([horch_bin(), "--version"], stdin=quiet, stdout=quiet, stderr=quiet,
+                           timeout=version_timeout())
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return r.returncode == 0
+
+
 def mode() -> str:
     """The mode rule of spec 6.2: `fleet` when HORCH_ROLE, HORCH_RECORD_ID and
     HERDR_PANE_ID are set and not empty and `horch --version` exits 0 within
     5 seconds; else `plain`. SKILL_INTAKE_MODE=fleet|plain overrides it."""
-    forced = os.environ.get(MODE_ENV)
+    forced = _forced_mode()
     if forced:
-        if forced not in ("fleet", "plain"):
-            raise TaskError(f"{MODE_ENV} must be fleet or plain, not {forced!r}")
         return forced
-    if not all(os.environ.get(v) for v in FLEET_VARS):
-        return "plain"
-    try:
-        r = subprocess.run([horch_bin(), "--version"], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                           stderr=subprocess.DEVNULL, timeout=version_timeout())
-    except (OSError, subprocess.TimeoutExpired):
-        return "plain"
-    return "fleet" if r.returncode == 0 else "plain"
+    fleet = all(os.environ.get(v) for v in FLEET_VARS) and _horch_answers()
+    return "fleet" if fleet else "plain"
 
 
 def fleet_mode() -> bool:
