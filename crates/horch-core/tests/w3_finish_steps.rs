@@ -877,7 +877,10 @@ fn pr_is_not_applicable_when_the_worktree_has_no_commit() {
     finish::worktree_new(&mut w.store, &w.tools.git, &id, "feat").unwrap();
     let r = w.finish(&id);
     assert!(r.complete, "{r:?}");
+    // A task with 0 commits skips land and pr with the note "no commits".
     assert_eq!(step(&r, "land").status, "not_applicable", "{r:?}");
+    assert_eq!(note(&r, "land"), "no commits");
+    assert_eq!(w.worktree().landed_commit, None);
     assert_eq!(step(&r, "pr").status, "not_applicable", "{r:?}");
     assert_eq!(note(&r, "pr"), "no commits");
     assert!(
