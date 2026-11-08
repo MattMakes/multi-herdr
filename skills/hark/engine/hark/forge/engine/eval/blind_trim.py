@@ -267,15 +267,19 @@ def _cls(*extents: float) -> str:
     return "short" if max(extents) < SHORT_S else "long"
 
 
-def _trims_cleanly(info: dict, x: np.ndarray) -> bool:
+def _quiet_start(info: dict) -> bool:
     head = info["head"]
-    if not (head is None or head <= CLEAN_HEAD or info["strike"]):
-        return False
-    if not (info["reach"] <= CLEAN_REACH or info["peak_late"]):
-        return False
-    if info["floor"] is not None and info["floor"] > CLEAN_FLOOR:
-        return False
-    return stereo_corr(x) > -0.5
+    return head is None or head <= CLEAN_HEAD or info["strike"]
+
+
+def _quiet_edges(info: dict) -> bool:
+    ends_low = info["reach"] <= CLEAN_REACH or info["peak_late"]
+    floor_low = info["floor"] is None or info["floor"] <= CLEAN_FLOOR
+    return _quiet_start(info) and ends_low and floor_low
+
+
+def _trims_cleanly(info: dict, x: np.ndarray) -> bool:
+    return _quiet_edges(info) and stereo_corr(x) > -0.5
 
 
 @functools.lru_cache(maxsize=None)
@@ -366,10 +370,14 @@ def cut(x: np.ndarray, info: dict, L_on: float, L_end: float, keep_end: bool) ->
     report = {"onset_s": round(begin / SR, 4), "start_s": round(start / SR, 4), "end_s": round(finish / SR, 4),
               "fade_out_ms": round(tail / SR * 1000, 2)}
     report.update(_edge_levels(info, start, begin, last, fade_from))
-    report.update(reach_db=round(info["reach"], 2), head_db=_maybe_round(info["head"]),
-                  floor_db=_maybe_round(info["floor"]), kept_file_end=kept, end_fade_s=info["fade_s"],
-                  top_db=round(info["top"], 2))
+    report.update(_level_facts(info, kept))
     return piece, report
+
+
+def _level_facts(info: dict, kept: bool) -> dict:
+    return {"reach_db": round(info["reach"], 2), "head_db": _maybe_round(info["head"]),
+            "floor_db": _maybe_round(info["floor"]), "kept_file_end": kept, "end_fade_s": info["fade_s"],
+            "top_db": round(info["top"], 2)}
 
 
 # ---------------------------------------------------------------- loudness match and checks
@@ -413,17 +421,22 @@ def _pair_numbers(m: tuple[dict, dict], f: tuple[dict, dict], lv: tuple[float, f
             "length_ratio": durations[1] / max(durations[0], 1e-9)}
 
 
+def _exposure_message(heard: float | None, played: float | None, fails: list, warns: list) -> None:
+    if heard is None:
+        return
+    text = "the floor is heard for %.0f ms inside a clip" % heard
+    if heard > FAIL["exposed_ms"] and played is not None and played > FAIL["exposed_floor"]:
+        fails.append(text)
+    elif heard > WARN["exposed_ms"]:
+        warns.append(text)
+
+
 def _floor_messages(nums: dict, fails: list, warns: list) -> None:
     margin = nums["floor_margin_db"]
     if margin is not None and margin < FAIL["floor_margin"]:
         fails.append("floor margin %.1f dB under 6 dB" % margin)
-    played, heard = nums["floor_played_dbfs"], nums["floor_exposed_ms"]
-    if heard is not None:
-        text = "the floor is heard for %.0f ms inside a clip" % heard
-        if heard > FAIL["exposed_ms"] and played is not None and played > FAIL["exposed_floor"]:
-            fails.append(text)
-        elif heard > WARN["exposed_ms"]:
-            warns.append(text)
+    played = nums["floor_played_dbfs"]
+    _exposure_message(nums["floor_exposed_ms"], played, fails, warns)
     if played is not None and played > WARN["floor_dbfs"]:
         warns.append("floor as played %.1f dBFS" % played)
 

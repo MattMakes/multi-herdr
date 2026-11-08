@@ -38,16 +38,19 @@ def _cache_home() -> str:
     return os.path.join(os.path.expanduser("~"), ".cache", "hark")
 
 
+def _registry_files(registry: dict | None) -> list:
+    groups = ((registry or {}).get("categories") or {}).values()
+    return [item for entry in groups for key in _REGISTRY_GROUPS for item in entry.get(key) or []]
+
+
+def _grandparent(item: Any) -> str | None:
+    ancestors = Path(_forward(item)).parents
+    return _forward(ancestors[2]) if len(ancestors) > 2 else None
+
+
 def _library_folder(registry: dict | None, repo: str) -> str | None:
     """The one library folder (three levels above every ref file) when it lies outside the repo."""
-    groups = ((registry or {}).get("categories") or {}).values()
-    folders = set()
-    for entry in groups:
-        for key in _REGISTRY_GROUPS:
-            for item in entry.get(key) or []:
-                ancestors = Path(_forward(item)).parents
-                if len(ancestors) > 2:
-                    folders.add(_forward(ancestors[2]))
+    folders = {_grandparent(item) for item in _registry_files(registry)} - {None}
     if len(folders) != 1:
         return None
     folder = folders.pop()
@@ -101,12 +104,14 @@ def scrub(obj: Any, registry: dict | None = None, rs: Sequence[tuple[str, str]] 
     """Copy of obj with each string and dict key scrubbed; tuples come back as lists."""
     pairs = roots(registry) if rs is None else rs
     if isinstance(obj, str):
-        return scrub_text(obj, pairs)
-    if isinstance(obj, dict):
-        return {scrub(key, rs=pairs): scrub(val, rs=pairs) for key, val in obj.items()}
-    if isinstance(obj, (list, tuple)):
-        return [scrub(val, rs=pairs) for val in obj]
-    return obj
+        cleaned = scrub_text(obj, pairs)
+    elif isinstance(obj, dict):
+        cleaned = {scrub(key, rs=pairs): scrub(val, rs=pairs) for key, val in obj.items()}
+    elif isinstance(obj, (list, tuple)):
+        cleaned = [scrub(val, rs=pairs) for val in obj]
+    else:
+        cleaned = obj
+    return cleaned
 
 
 def leftovers(text: str) -> list[str]:

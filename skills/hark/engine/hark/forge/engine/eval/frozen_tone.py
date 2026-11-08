@@ -166,6 +166,20 @@ def _per_signal_facts(signals: list) -> tuple[list, list, list]:
     return tails, splits, seconds
 
 
+def _band_facts(offset, flagged: list, summary: dict) -> dict:
+    """Distance, ratio and per-band facts; the ref summary rides along under `_summary`."""
+    distance = _root_mean_square(offset)
+    spreads = summary["spreads"]
+    return {"tone_db": round(distance, 2), "tone_ratio": _relative_distance(distance, spreads),
+            "tone_ref": [round(one, 2) for one in spreads], "band_dev": [round(float(gap), 1) for gap in offset],
+            "outside": flagged, "_summary": summary}
+
+
+def _sound_facts(samples, summary: dict) -> dict:
+    return {"t40_ms": t40_ms(samples), "t40_ref": summary["tails"], "length_s": round(len(samples) / SR, 3),
+            "shares": shares(samples), "shares_ref_med": summary["typical"], "length_ref": summary["lengths"]}
+
+
 class ToneRef:
     """Band statistics of a set of reference sounds, used to judge how far a new sound sits from them."""
 
@@ -211,22 +225,8 @@ class ToneRef:
         subset = self.P[chosen]
         offset = level - median(subset, axis=0)
         flagged = self._flagged_bands(level, offset, subset.min(axis=0), subset.max(axis=0))
-        distance = _root_mean_square(offset)
-        facts = self._summary_of(chosen)
-        spreads = facts["spreads"]
-        result = {
-            "tone_db": round(distance, 2),
-            "tone_ratio": _relative_distance(distance, spreads),
-            "tone_ref": [round(one, 2) for one in spreads],
-            "band_dev": [round(float(gap), 1) for gap in offset],
-            "outside": flagged,
-            "t40_ms": t40_ms(samples),
-            "t40_ref": facts["tails"],
-            "length_s": round(len(samples) / SR, 3),
-            "shares": shares(samples),
-            "shares_ref_med": facts["typical"],
-            "length_ref": facts["lengths"],
-        }
+        result = _band_facts(offset, flagged, self._summary_of(chosen))
+        result.update(_sound_facts(samples, result.pop("_summary")))
         result["words"] = self.words(result)
         return result
 
