@@ -36,6 +36,14 @@ class NotReproducible(ValueError):
 
 # ---------------------------------------------------------------- blocks
 
+def _resolved(mod_name: str, name: str) -> Any:
+    try:
+        res = getattr(__import__(mod_name, fromlist=[name]), name, None)
+    except Exception:  # noqa: BLE001 - any import failure means "not resolvable"
+        res = None
+    return res
+
+
 def render_ref(fn: Any) -> tuple[str, str] | None:
     """(recipe short name, function name) of a recipe render function, or None."""
     if isinstance(fn, functools.partial):
@@ -43,15 +51,8 @@ def render_ref(fn: Any) -> tuple[str, str] | None:
     mod_name = getattr(fn, "__module__", None)
     name = getattr(fn, "__name__", None)
     short = registry.short_name(fn) if mod_name else None
-    if not short or not name or name == "<lambda>":
-        return None
-    try:
-        mod = __import__(mod_name, fromlist=[name])
-    except Exception:  # noqa: BLE001 - any import failure means "not resolvable"
-        return None
-    if getattr(mod, name, None) is not fn:
-        return None
-    return short, name
+    ok = bool(short) and bool(name) and name != "<lambda>" and _resolved(mod_name, name) is fn
+    return (short, name) if ok else None
 
 
 def resolve(block: dict) -> Callable:
@@ -113,17 +114,26 @@ def _legacy_params(report: dict, pick: dict) -> dict:
         raise NotReproducible(f"pick {pick.get('name')}: variant params cannot be resolved") from e
 
 
+def _member_key(pick: dict) -> str | None:
+    vals = [str(v) for v in (pick.get(k) for k in ("member", "family_name", "family", "preset"))
+            if isinstance(v, str) or (isinstance(v, int) and not isinstance(v, bool))]
+    return vals[0] if vals else None
+
+
+def _label_at(report: dict, index: int | None) -> str | None:
+    fam = report.get("family")
+    labels = fam.get("labels") if isinstance(fam, dict) else None
+    ok = isinstance(labels, list) and index is not None and index < len(labels)
+    return str(labels[index]) if ok else None
+
+
 def _legacy_member(report: dict, pick: dict, index: int | None) -> str | None:
-    for key in ("member", "family_name", "family", "preset"):
-        v = pick.get(key)
-        if isinstance(v, str) or (isinstance(v, int) and not isinstance(v, bool)):
-            return str(v)
-    if pick.get("family_member") is not None:
-        return str(pick["family_member"])
-    labels = (report.get("family") or {}).get("labels") if isinstance(report.get("family"), dict) else None
-    if isinstance(labels, list) and index is not None and index < len(labels):
-        return str(labels[index])
-    return None
+    res = _member_key(pick)
+    if res is None and pick.get("family_member") is not None:
+        res = str(pick["family_member"])
+    if res is None:
+        res = _label_at(report, index)
+    return res
 
 
 def _legacy_mode(report: dict) -> str | None:
@@ -210,19 +220,26 @@ def _read_wav(path: Path) -> np.ndarray:
     return sf.read(str(path), dtype="float64", always_2d=True)[0]
 
 
-def _check_row(report: dict, pick: dict, folder: Path, tol: float) -> dict:
-    name = pick.get("name") or "pick"
-    fname = os.path.basename(str(pick["file"]).replace("\\", "/")) if pick.get("file") else f"{name}.wav"
-    row: dict = {"name": name, "file": fname, "source": "block" if isinstance(pick.get("render"), dict) else "legacy"}
-    try:
-        b = block(report, pick)
-        row.update(recipe=b.get("recipe"), fn=b.get("fn"), member=b.get("member"))
-        wav = folder / fname
-        if not wav.is_file():
-            row.update(err=math.inf, ok=False, why="WAV missing")
-            return row
+def _pick_file(pick: dict, name: str) -> str:
+    return os.path.basename(str(pick["file"]).replace("\\", "/")) if pick.get("file") else f"{name}.wav"
+
+
+def _fill_err(row: dict, report: dict, pick: dict, wav: Path, tol: float) -> None:
+    b = block(report, pick)
+    row.update(recipe=b.get("recipe"), fn=b.get("fn"), member=b.get("member"))
+    if not wav.is_file():
+        row.update(err=math.inf, ok=False, why="WAV missing")
+    else:
         row["err"] = compare(rerender(b), _read_wav(wav))
         row["why"] = None if row["err"] <= tol else "samples differ"
+
+
+def _check_row(report: dict, pick: dict, folder: Path, tol: float) -> dict:
+    name = pick.get("name") or "pick"
+    fname = _pick_file(pick, name)
+    row: dict = {"name": name, "file": fname, "source": "block" if isinstance(pick.get("render"), dict) else "legacy"}
+    try:
+        _fill_err(row, report, pick, folder / fname, tol)
     except NotReproducible as e:
         row.update(err=math.inf, why=str(e))
     row["ok"] = row["err"] <= tol
@@ -325,6 +342,16 @@ def _upgrade_row(report: dict, pick: dict, base: Path) -> dict:
             "filled": len(bf["params"]) - len(b["params"]), "had_block": has}
 
 
+def _write_upgrade(rep: dict, rows: list[dict], base: Path, log: Callable | None) -> None:
+    bad = [r for r in rows if not r["ok"]]
+    if bad:
+        raise NotReproducible("not written: " + ", ".join(f"{r['name']} err {r['err']:.3g}" for r in bad))
+    path = base / "report.json"
+    write_json(path, rep)
+    if log:
+        log(f"wrote {path}: {len(rows)} render blocks (schema 2)")
+
+
 def upgrade(report: Any, write: bool = False, tol: float = TOL, folder: Any = None,
             log: Callable | None = print) -> tuple[dict, list[dict]]:
     """Add render blocks to an older report; write it only when every pick matches."""
@@ -335,13 +362,7 @@ def upgrade(report: Any, write: bool = False, tol: float = TOL, folder: Any = No
     if all(r["ok"] for r in rows):
         rep["schema"] = SCHEMA
     if write:
-        bad = [r for r in rows if not r["ok"]]
-        if bad:
-            raise NotReproducible("not written: " + ", ".join(f"{r['name']} err {r['err']:.3g}" for r in bad))
-        path = base / "report.json"
-        write_json(path, rep)
-        if log:
-            log(f"wrote {path}: {len(rows)} render blocks (schema 2)")
+        _write_upgrade(rep, rows, base, log)
     return rep, rows
 
 
