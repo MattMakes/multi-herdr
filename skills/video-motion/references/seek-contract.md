@@ -29,6 +29,13 @@ window.__videoMeta = { width: 1920, height: 1080, fps: 60, duration: 6.0 };
 
 `duration` is in seconds. The frame count is `Math.round(duration * fps)`. The last frame index is that count minus 1.
 
+When a seekable scene selects a frame from a raster or video plate, use
+`SeekTimeline.plateFrame(t, fps, lastFrame)`. It computes
+`Math.min(Math.floor(t * fps + 1e-6), lastFrame)`. The floor is required for
+fractional motion-blur seeks, and the clamp prevents the last subframe from
+requesting a frame beyond the exported plate. This rule changes only plate
+selection; output frame counts still use `Math.round(duration * fps)`.
+
 ## 2. Scene template
 
 Write the scene as 1 HTML file. Copy `<skill-dir>/scripts/seek-timeline.js` into the scene folder as `scenes/<scene-id>/seek-timeline.js`. `<skill-dir>` means the directory where the `video-motion` SKILL.md sits. The file has no dependencies and loads nothing from the network.

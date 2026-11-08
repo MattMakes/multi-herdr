@@ -18,6 +18,7 @@ pub(crate) mod materialize;
 pub mod reading;
 pub mod resolution;
 pub(crate) mod selection;
+mod stable;
 
 pub use activation::{InvocationPolicy, ResolvedSkillRef, SkillActivationPlan};
 pub use briefing::BriefingContext;
@@ -26,6 +27,7 @@ pub use materialize::MaterializedSkills;
 pub use resolution::{harness_support, SkillResolution, SupportCheck};
 pub(crate) use selection::phase_skills;
 pub use selection::selected;
+pub use stable::skill_dir as stable_skill_dir;
 
 include!(concat!(env!("OUT_DIR"), "/bundled_skills.rs"));
 

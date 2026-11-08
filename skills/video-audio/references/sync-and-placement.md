@@ -3,6 +3,47 @@
 This reference holds the detail of step 3b (the sync sheet), the effect
 placement in step 4, the bed file of step 5 and the arc rules of the gate.
 
+## Series song grids and final-bed cut checks
+
+Keep exactly 1 measured grid for each song at
+`<series root>/music/grids/<song id>.json`. Create it from the source song:
+
+```bash
+python3 "<skill-dir>/scripts/check_music.py" path/to/song.wav \
+  --write-grid "<series root>/music/grids/<song id>.json"
+```
+
+The file has this schema:
+
+```json
+{
+  "song": "song-id",
+  "source_sha256": "64 lowercase hexadecimal characters",
+  "tempo_bpm": 120.0,
+  "bar_sec": 2.0,
+  "downbeats_sec": [0.498, 2.498, 4.498],
+  "measured_by": "check_music.py 1"
+}
+```
+
+`song` identifies the source, and `source_sha256` proves which source file was
+measured. `tempo_bpm`, `bar_sec`, and `downbeats_sec` are measurements from that
+file. `measured_by` records the script and measurement version. An episode reads
+this series file. It never copies a tempo, bar length, or downbeat number by hand.
+
+The final bed can change the source timing through a warp, trim, or loop. At
+render time, measure the final bed again and compare every scene cut from
+`timeline-master.json` (or `timeline.json`) with its nearest measured beat:
+
+```bash
+python3 "<skill-dir>/scripts/check_audio.py" audio/mix.wav \
+  --timeline timeline-master.json --bed-beats audio/bed.wav
+```
+
+Every cut must be within `20 ms` of a measured final-bed beat. The report records
+the worst drift in seconds and its cut time. Rebuild the timing when this check
+fails; do not replace the series grid with a copied bar length.
+
 ## 1. The sync sheet: `audio/sync-sheet.json`
 
 `video-motion` locks word highlights to it. `video-character` builds visemes

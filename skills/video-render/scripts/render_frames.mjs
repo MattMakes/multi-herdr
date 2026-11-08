@@ -89,6 +89,13 @@ export async function probe(file) {
   return { video, audio, width: video.width, height: video.height, fps: rate(video.r_frame_rate), duration: Number(data.format.duration) };
 }
 
+export async function probeFrameCount(file) {
+  const text = await run("ffprobe", ["-v", "error", "-count_frames", "-select_streams", "v:0", "-show_entries", "stream=nb_read_frames", "-of", "default=nokey=1:noprint_wrappers=1", file]);
+  const count = Number(text.trim());
+  check(Number.isInteger(count) && count >= 0, `${file}: ffprobe returned invalid frame count ${JSON.stringify(text.trim())}`);
+  return count;
+}
+
 // The master and every export share these H.264 settings: CFR, High profile at level 4.2,
 // a 1 s GOP and 2 B-frames, with the moov atom at the front for streaming.
 export function h264Args(fps) {
@@ -512,6 +519,8 @@ export async function renderScene(opts) {
 // Format and rules: skills/video-qa/references/motion-checks.md, check 18. How the
 // render samples them: references/raster-sizes.md.
 export const RASTER_STEP_SEC = 0.1;
+export const PRE_UPSCALE_FACTOR = 2;
+export const PRE_UPSCALE_PSNR_DB = 40;
 
 // The probe runs in the page before the scene scripts. It keeps the <img> draws of every 2D
 // canvas for the current seek: the first drawImage or clearRect after a seek drops older draws.
@@ -582,17 +591,78 @@ function isShown(el, r) {
   return onScreen && el.checkVisibility({ opacityProperty: true, visibilityProperty: true });
 }
 
-async function loadNatural(url) {
+async function loadRaster(url) {
+  const cache = (window.__rasterImages ??= new Map());
+  if (cache.has(url)) return cache.get(url);
   const img = new Image();
   img.src = url;
   await img.decode().catch(Boolean);
-  return img.naturalWidth > 0 ? [img.naturalWidth, img.naturalHeight] : null;
+  const loaded = img.naturalWidth > 0 ? img : null;
+  cache.set(url, loaded);
+  return loaded;
+}
+
+async function loadNatural(url) {
+  const img = await loadRaster(url);
+  return img ? [img.naturalWidth, img.naturalHeight] : null;
 }
 
 // The pixel size of the image file, decoded once per url.
 function naturalSize(url) {
   const cache = (window.__rasterNatural ??= new Map());
   return cache.get(url) ?? cache.set(url, loadNatural(url)).get(url);
+}
+
+function pixelCanvas(width, height) {
+  return new OffscreenCanvas(width, height);
+}
+
+function pixelsOf(canvas) {
+  return canvas.getContext("2d", { willReadFrequently: true }).getImageData(0, 0, canvas.width, canvas.height).data;
+}
+
+const channelError = (a, b, i) => (a[i] - b[i]) ** 2;
+const pixelError = (a, b, i) => channelError(a, b, i) + channelError(a, b, i + 1) + channelError(a, b, i + 2);
+
+function rgbPsnr(a, b) {
+  let squared = 0;
+  for (let i = 0; i < a.length; i += 4) squared += pixelError(a, b, i);
+  const mse = squared / (a.length * 0.75);
+  return mse === 0 ? 99 : 10 * Math.log10((255 * 255) / mse);
+}
+
+function originalPixels(img, natural) {
+  const original = pixelCanvas(natural[0], natural[1]);
+  original.getContext("2d").drawImage(img, 0, 0);
+  return pixelsOf(original);
+}
+
+function roundTripPixels(img, natural, real) {
+  const small = pixelCanvas(real[0], real[1]);
+  const smallContext = small.getContext("2d");
+  smallContext.imageSmoothingEnabled = false;
+  smallContext.drawImage(img, 0, 0, real[0], real[1]);
+  const restored = pixelCanvas(natural[0], natural[1]);
+  const context = restored.getContext("2d");
+  context.imageSmoothingEnabled = false;
+  context.drawImage(small, 0, 0, natural[0], natural[1]);
+  return pixelsOf(restored);
+}
+
+async function detectDetail(url, natural, factor, threshold) {
+  const img = await loadRaster(url);
+  const real = natural.map((v) => Math.max(1, Math.floor(v / factor)));
+  const psnr = rgbPsnr(originalPixels(img, natural), roundTripPixels(img, natural, real));
+  return psnr > threshold ? { real_px: real, detail_scale: factor, detail_psnr_db: Math.round(psnr * 10) / 10 } : null;
+}
+
+const ignoreDetailError = () => null;
+const measureDetail = (...args) => detectDetail(...args).catch(ignoreDetailError);
+
+function detailFacts(url, natural, factor, threshold) {
+  const cache = (window.__rasterDetail ??= new Map());
+  const key = `${url}|${factor}|${threshold}`;
+  return cache.get(key) ?? cache.set(key, measureDetail(url, natural, factor, threshold)).get(key);
 }
 
 function fitScales(box, n) {
@@ -714,8 +784,13 @@ function usableSample(s) {
   return Boolean(s) && s[1][0] > 0 && s[1][1] > 0;
 }
 
-function sampleRecord([url, n, size]) {
-  return { src: rasterName(url), natural_px: n.map(roundTenth), drawn_px: size.map(deviceTenth) };
+async function enrichSample(sample) {
+  const detail = await detailFacts(sample[0], sample[1], 2, 40);
+  return [...sample, detail];
+}
+
+function sampleRecord([url, n, size, detail]) {
+  return { src: rasterName(url), natural_px: n.map(roundTenth), drawn_px: size.map(deviceTenth), ...(detail ?? {}) };
 }
 
 async function measureRasters() {
@@ -726,12 +801,15 @@ async function measureRasters() {
     ...[...(window.__rasterProbe?.canvases ?? [])].flatMap(canvasSamples),
     ...[...document.querySelectorAll("*")].flatMap(backgroundSamples),
   ]);
-  return found.filter(usableSample).map(sampleRecord);
+  const usable = found.filter(usableSample);
+  return (await Promise.all(usable.map(enrichSample))).map(sampleRecord);
 }
 
-const PAGE_FUNCTIONS = [rasterName, isRaster, isShown, loadNatural, naturalSize, fitScales, fitSize, trimmed, splitLayers, layerUrl,
+const PAGE_FUNCTIONS = [rasterName, isRaster, isShown, loadRaster, loadNatural, naturalSize, pixelCanvas, pixelsOf, rgbPsnr,
+  channelError, pixelError, originalPixels, roundTripPixels, detectDetail, ignoreDetailError, measureDetail, detailFacts,
+  fitScales, fitSize, trimmed, splitLayers, layerUrl,
   axisLength, keepRatio, lengthSize, backgroundSize, boxSample, imageSample, svgFit, svgImageSample, posterSample, scaledDraw,
-  canvasSamples, layerSample, axisScale, backgroundBox, backgroundSamples, roundTenth, deviceTenth, usableSample, sampleRecord,
+  canvasSamples, layerSample, axisScale, backgroundBox, backgroundSamples, roundTenth, deviceTenth, usableSample, enrichSample, sampleRecord,
   measureRasters];
 
 const measureScript = (f, fps) => `(async () => {
@@ -1179,14 +1257,54 @@ async function writeCover({ master, outDir, hook, coverSec, report }) {
   report.outputs.push(file);
 }
 
-async function writePreviews({ master, outDir, hook, info, report }) {
+// preview.mp4 is the full film, so it keeps the master frame count.
+async function writePreviewMp4({ master, outDir, report }) {
+  const mp4 = join(outDir, "preview.mp4");
+  await ffmpeg(["-i", master, "-an", ...PREVIEW_MP4_ARGS, mp4]);
+  report.outputs.push(mp4);
+}
+
+async function writePreviewGif({ master, outDir, hook, info, report }) {
   const len = Math.min(5, info.duration - hook.start_sec);
-  const clipArgs = ["-ss", String(hook.start_sec), "-t", String(len), "-i", master, "-an"];
-  const [mp4, gif] = [join(outDir, "preview.mp4"), join(outDir, "preview.gif")];
-  await ffmpeg([...clipArgs, ...PREVIEW_MP4_ARGS, mp4]);
-  await ffmpeg([...clipArgs, "-filter_complex", GIF_FILTER, "-loop", "0", gif]);
-  report.outputs.push(mp4, gif);
+  const gif = join(outDir, "preview.gif");
+  await ffmpeg(["-ss", String(hook.start_sec), "-t", String(len), "-i", master, "-an", "-filter_complex", GIF_FILTER, "-loop", "0", gif]);
+  report.outputs.push(gif);
   report.warnings.push(...(len < 5 ? [`preview: master holds ${len.toFixed(2)} s after the hook start, not 5 s`] : []));
+}
+
+async function writePreviews(ctx) {
+  await writePreviewMp4(ctx);
+  await writePreviewGif(ctx);
+}
+
+// [name, path] of master.mp4 first, then of every derived MP4.
+function encodedFiles({ master, outDir, aspects }) {
+  const files = [["master.mp4", master]];
+  for (const name of ["preview", ...aspects]) {
+    files.push([`${name}.mp4`, join(outDir, `${name}.mp4`)]);
+  }
+  return files;
+}
+
+async function probeEntry([name, file]) {
+  return [name, await probeFrameCount(file)];
+}
+
+// "<name>=<count>" for each derived entry whose count differs from the first (master) entry.
+function frameMismatches([[, master], ...derived]) {
+  const bad = [];
+  for (const [name, count] of derived) {
+    bad.push(...(count === master ? [] : [`${name}=${count}`]));
+  }
+  return bad;
+}
+
+// Every derived MP4 must decode to the master frame count: a packaging step never cuts the film.
+async function encodedFrameCounts(ctx) {
+  const entries = await Promise.all(encodedFiles(ctx).map(probeEntry));
+  const mismatches = frameMismatches(entries);
+  check(mismatches.length === 0, `derived frame counts differ from master.mp4 (${entries[0][1]}): ${mismatches.join(", ")}`);
+  return Object.fromEntries(entries);
 }
 
 async function writeAspect(ctx, aspect) {
@@ -1207,6 +1325,7 @@ export async function packagePublish(opts) {
   await writeCover(ctx);
   await writePreviews(ctx);
   await inSequence(opts.aspects, (aspect) => writeAspect(ctx, aspect));
+  ctx.report.frame_counts = await encodedFrameCounts(ctx);
   return ctx.report;
 }
 
@@ -1360,7 +1479,7 @@ async function checkStills(outDir) {
   const cover = await probe(join(outDir, "cover.jpg"));
   assertEq([cover.width, cover.height], [1920, 1080], "cover size");
   const prev = await probe(join(outDir, "preview.mp4"));
-  check(prev.audio === null && prev.width === 1280, "preview.mp4 is muted and 1280 px wide");
+  check(prev.audio === null && prev.width === 1280 && prev.video.nb_frames === "90", "preview.mp4 is muted, full length and 1280 px wide");
   check(statSync(join(outDir, "preview.gif")).size > 0, "preview.gif written");
 }
 
@@ -1372,6 +1491,7 @@ async function testPackage(root) {
   assertEq(readFileSync(join(outDir, "captions.srt"), "utf8"), EXPECTED_SRT, "packaged srt");
   await inSequence(Object.entries(ASPECTS), (entry) => checkAspectExport(outDir, entry));
   assertEq(report.reframe["9x16"].map((m) => m.mode), ["fit", "crop", "fit"], "9x16 modes");
+  assertEq(report.frame_counts, { "master.mp4": 90, "preview.mp4": 90, "16x9.mp4": 90, "9x16.mp4": 90, "1x1.mp4": 90 }, "encoded frame counts");
   await checkStills(outDir);
 }
 
@@ -1573,7 +1693,7 @@ const VECTOR_SVG = '<svg xmlns="http://www.w3.org/2000/svg" width="10" height="1
 async function rasterDir(root, name, files) {
   const dir = join(root, name);
   mkdirSync(dir, { recursive: true });
-  await ffmpeg(["-f", "lavfi", "-i", "color=c=0x4cf2aa:s=100x100", "-frames:v", "1", join(dir, files[0])]);
+  await ffmpeg(["-f", "lavfi", "-i", "testsrc2=s=100x100", "-frames:v", "1", join(dir, files[0])]);
   files.slice(1).forEach((f) => copyFileSync(join(dir, files[0]), join(dir, f)));
   return dir;
 }
@@ -1626,9 +1746,23 @@ async function testRasterClean(root) {
   const dir = await rasterDir(root, "raster-clean", ["img.png"]);
   writeFileSync(join(dir, "clean.html"), imgHtml(100));
   await rasterRender(join(dir, "clean.html"), join(dir, "clean"), join(dir, "clean.json"));
-  assertEq(readJson(join(dir, "clean.json")).samples.length, 5, "5 samples in 0.5 s");
+  const samples = readJson(join(dir, "clean.json")).samples;
+  assertEq(samples.length, 5, "5 samples in 0.5 s");
+  check(samples.every((sample) => !sample.real_px), "sharp 100 px frame is reported as pre-upscaled");
   if (noQa()) return NO_QA;
   check(qaRasterPasses(join(dir, "clean.json")), "qa_video raster_upscale fails the clean 1x report");
+}
+
+async function testPreUpscaledRaster(root) {
+  const dir = join(root, "raster-pre-upscaled");
+  mkdirSync(dir, { recursive: true });
+  await ffmpeg(["-f", "lavfi", "-i", "testsrc2=s=100x100", "-vf", "scale=50:50:flags=neighbor,scale=100:100:flags=neighbor", "-frames:v", "1", join(dir, "img.png")]);
+  writeFileSync(join(dir, "index.html"), imgHtml(100));
+  const reportFile = join(dir, "raster-sizes.json");
+  await rasterRender(join(dir, "index.html"), join(dir, "frames"), reportFile);
+  const sample = readJson(reportFile).samples[0];
+  assertEq(sample.real_px, [50, 50], "measured real resolution");
+  check(sample.detail_psnr_db > PRE_UPSCALE_PSNR_DB, "pre-upscaled plate does not exceed the PSNR threshold");
 }
 
 async function rasterProject(root) {
@@ -1685,6 +1819,7 @@ const CHROME_TESTS = [
   ["scope check passes a fix inside scope and names a changed scene outside it", testScope],
   ["raster sizes cover background, canvas, poster and SVG image, not SVG files", testRasterKinds],
   ["qa_video raster_upscale passes a 1x image from --scene --raster-sizes", testRasterClean],
+  ["raster sizes detect a frame pre-upscaled by 2x", testPreUpscaledRaster],
   ["qa_video raster_upscale fails a 1.3x image in render/raster-sizes.json from --scenes", testRasterScenes],
 ];
 

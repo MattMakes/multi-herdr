@@ -1,4 +1,4 @@
-# Motion, cut and frame checks (checks 12 to 18)
+# Motion, cut and frame checks (checks 12 to 20)
 
 `qa_video.py` decodes every frame of the master once more, in grey, scaled so
 the long side is `96 px` (`96x54` for a 16:9 master). A frame step is the mean
@@ -89,8 +89,31 @@ is the larger of the 2 axis ratios `drawn / natural`. Per `src`:
 is a bad input (exit `2`). Owner of a fix: `video-capture` (capture at a larger
 size) or `video-animator` (draw it smaller).
 
+## Check 19: cut_flash
+
+For every scene in `timeline-master.json`, or `timeline.json` when the master
+timeline is absent, the gate compares the mean luma of the final 2 frames before
+the scene end. A difference above `6%` of full scale fails and reports the scene
+ID, both frame numbers, and both luma values. A scene is exempt only when
+`static_hold` is `true` and `static_hold_reason` contains `fade`.
+
+## Check 20: gate_results
+
+The default expected results are `qa/audio-check.json`,
+`audio/music-continuity.json`, `qa/timeline-check.json`, and
+`qa/plate-check.json`. Repeat `--expect <path>` to replace that list. Each file
+must exist, contain a true `pass` or `passed` field, and be at least as new as
+the source it checks. Audio and music results check `audio/mix.wav`; timeline
+and plate results check `render/master.mp4`. A missing source also fails.
+
 ## Phone sheet
 
 `qa/phone-sheet-360w.png` has the contact sheet tiles (`2 fps`, 6 per row) at
 `360 px` wide, the width of a phone screen. A 16:9 master gives `360x202`
 tiles, a 9:16 master `360x640` tiles.
+
+`--phone-frames <dir>` writes a separate `hero.png` at the midpoint of
+`meta.hero_sec` (or the film midpoint) and every scene's key-action frames at
+`360 px` high. `locked_actions_sec` values are scene-relative. A scene without
+locked actions contributes its midpoint. Review these frames with the phone-size
+self-review in `rubric.md`.

@@ -181,6 +181,14 @@ test("plain objects animate as properties, for Canvas drawing", () => {
   assert.deepEqual([tl.seek(2) && ball.x, tl.seek(0) && ball.x], [100, 0]);
 });
 
+test("a final motion-blur subframe cannot pick past the exported plate", () => {
+  const { plateFrame } = load().ST;
+  const frameCount = 30;
+  const lastFrame = frameCount - 1;
+  assert.equal(plateFrame(lastFrame / FPS + 0.5 / FPS, FPS, lastFrame), lastFrame);
+  assert.equal(plateFrame(10.5 / FPS, FPS, lastFrame), 10);
+});
+
 // [preset, value at p = 0.1, 0.25, 0.5, 0.75, peak over [0, 1]]
 const SPRING_POINTS = [
   ["ui", [0.2035, 0.6510, 0.9663, 1.0035], 1.0035],

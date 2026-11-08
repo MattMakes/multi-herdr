@@ -25,6 +25,9 @@
   const orDefault = function (v, d) { return v === undefined || isNaN(v) ? d : v; };
   const clamp = function (x, lo, hi) { return Math.min(hi, Math.max(lo, x)); };
   const round4 = function (x) { return +x.toFixed(4); };
+  const plateFrame = function (t, fps, lastFrame) {
+    return Math.min(Math.floor(t * fps + 1e-6), lastFrame);
+  };
 
   // ------------------------------------------------------------ easing
   // A family makes an "in" curve. out(p) = 1 - in(1 - p); inOut joins halves.
@@ -403,6 +406,7 @@
   globalThis.SeekTimeline = {
     timeline: function (options) { return new Timeline(options || {}); },
     ease: ease,
+    plateFrame: plateFrame,
     springs: JSON.parse(JSON.stringify(SPRINGS))
   };
 }
