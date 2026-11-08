@@ -120,7 +120,9 @@ changed() {
 # needs the hark venv (HARK_PYTHON, default ~/.local/state/hark/venv) with
 # pytest. Without it the step prints a skip line and passes. Each test file
 # runs in its own pytest process, 8 at a time: 1 process took 1172 s. Exit
-# 5 (every test in the file deselected) passes.
+# 5 (every test in the file deselected) passes. HF_HUB_OFFLINE=1: a test
+# that is not `live` uses no network. Online, the Hugging Face Hub check of
+# a cached model prints progress to stderr, and test_c11_input_errors fails.
 hark_tests() {
   if ! changed skills/hark/; then
     echo "skipped: skills/hark/ did not change"
@@ -138,7 +140,7 @@ hark_tests() {
     xargs -P 8 -I{} sh -c '
       cd skills/hark/engine || exit 255
       log="$3/$(echo "$1" | tr / _).log"
-      PYTHONPATH=. "$2" -m pytest "$1" -q -p no:cacheprovider \
+      HF_HUB_OFFLINE=1 PYTHONPATH=. "$2" -m pytest "$1" -q -p no:cacheprovider \
         -m "not ml and not live" >"$log" 2>&1
       code=$?
       if [ "$code" -eq 0 ] || [ "$code" -eq 5 ]; then
