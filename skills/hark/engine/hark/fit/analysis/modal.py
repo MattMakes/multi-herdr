@@ -65,91 +65,91 @@ def onset_strength(m: np.ndarray, nper: int = 256, hop: int = 32,
                    cap: float = 1.5) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Capped log-spectral flux at lag 2, frame energy (dB) and frame centre samples."""
     m = np.asarray(m, dtype=float)
-    X = np.abs(stft(m, nperseg=nper, noverlap=nper - hop, boundary="zeros", padded=True)[2])
-    S = np.log1p(X / (0.001 * X.max() + 1e-12))
-    flux = np.zeros(S.shape[1])
-    if S.shape[1] > 2:
-        flux[2:] = np.sum(np.minimum(np.maximum(S[:, 2:] - S[:, :-2], 0.0), cap), axis=0)
-    energy = db(np.sum(X ** 2, axis=0))
-    return flux, energy, np.arange(S.shape[1]) * hop
+    xmat = np.abs(stft(m, nperseg=nper, noverlap=nper - hop, boundary="zeros", padded=True)[2])
+    smat = np.log1p(xmat / (0.001 * xmat.max() + 1e-12))
+    fluxv = np.zeros(smat.shape[1])
+    if smat.shape[1] > 2:
+        fluxv[2:] = np.sum(np.minimum(np.maximum(smat[:, 2:] - smat[:, :-2], 0.0), cap), axis=0)
+    energy = db(np.sum(xmat ** 2, axis=0))
+    return fluxv, energy, np.arange(smat.shape[1]) * hop
 
 
 def onsets(x: np.ndarray, rel: float = 0.2, floor_db: float = -36, min_gap_ms: float = 12,
            max_n: int = 10) -> list[int]:
     """Strike onsets in samples."""
     x = np.asarray(x, dtype=float)
-    out = [0]
+    acc = [0]
     if x.size and np.any(x):
-        out = _found_onsets(x, rel, floor_db, min_gap_ms, max_n)
-    return out
+        acc = _onsets_found(x, rel, floor_db, min_gap_ms, max_n)
+    return acc
 
 
-def _found_onsets(x: np.ndarray, rel: float, floor_db: float, min_gap_ms: float, max_n: int) -> list[int]:
-    flux, e, centre = onset_strength(x)
-    found = [[_refine(x, int(centre[k])), float(flux[k])]
-             for k in _onset_candidates(flux, e, rel, floor_db) if not _skip_candidate(x, int(centre[k]))]
-    found = _strongest(_gap_filter(found, min_gap_ms), max_n)
-    if found:
-        return [int(f[0]) for f in found]
+def _onsets_found(x: np.ndarray, relv: float, floor_db: float, min_gap_ms: float, n_cap: int) -> list[int]:
+    fluxv, ev, cen = onset_strength(x)
+    got = [[_refine_onset(x, int(cen[ix])), float(fluxv[ix])]
+             for ix in _onset_cands(fluxv, ev, relv, floor_db) if not _drop_cand(x, int(cen[ix]))]
+    got = _loudest(_filter_gaps(got, min_gap_ms), n_cap)
+    if got:
+        return [int(fq[0]) for fq in got]
     return [int(np.argmax(np.abs(x) >= 0.1 * np.max(np.abs(x))))]
 
 
-def _strongest(found: list, max_n: int) -> list:
-    if len(found) <= max_n:
-        return found
-    keep = sorted(np.argsort([-f[1] for f in found], kind="stable")[:max_n])
-    return [found[i] for i in keep]
+def _loudest(got: list, n_cap: int) -> list:
+    if len(got) <= n_cap:
+        return got
+    keep_m = sorted(np.argsort([-fq[1] for fq in got], kind="stable")[:n_cap])
+    return [got[ii] for ii in keep_m]
 
 
-def _onset_candidates(flux: np.ndarray, e: np.ndarray, rel: float, floor_db: float) -> list[int]:
+def _onset_cands(fluxv: np.ndarray, ev: np.ndarray, relv: float, floor_db: float) -> list[int]:
     from scipy.ndimage import maximum_filter1d, minimum_filter1d
-    fmax = float(flux.max())
-    if fmax <= 0:
+    f_max = float(fluxv.max())
+    if f_max <= 0:
         return []
-    local = flux >= maximum_filter1d(flux, 13, mode="constant")
-    ahead = maximum_filter1d(e, 9, origin=-4, mode="nearest")
-    before = minimum_filter1d(e, 9, origin=4, mode="nearest")
-    need = np.where(flux >= 0.5 * fmax, 1.0, 3.0)
-    ok = local & (flux >= rel * fmax) & (ahead >= e.max() + floor_db) & (ahead - before >= need)
-    return [int(k) for k in np.flatnonzero(ok) if k >= 2]
+    loc = fluxv >= maximum_filter1d(fluxv, 13, mode="constant")
+    aheadv = maximum_filter1d(ev, 9, origin=-4, mode="nearest")
+    earlier = minimum_filter1d(ev, 9, origin=4, mode="nearest")
+    want = np.where(fluxv >= 0.5 * f_max, 1.0, 3.0)
+    good = loc & (fluxv >= relv * f_max) & (aheadv >= ev.max() + floor_db) & (aheadv - earlier >= want)
+    return [int(ix) for ix in np.flatnonzero(good) if ix >= 2]
 
 
-def _skip_candidate(x: np.ndarray, c: int) -> bool:
-    if c > len(x) - 192:
+def _drop_cand(x: np.ndarray, cv: int) -> bool:
+    if cv > len(x) - 192:
         return True
-    if c < 128:
+    if cv < 128:
         return not (np.max(np.abs(x[:240])) >= 0.25 * np.max(np.abs(x)))
     return False
 
 
-def _refine(x: np.ndarray, c: int) -> int:
-    a, b = max(0, c - 240), min(len(x), c + 240)
-    w = x[a:b]
-    pk = float(np.max(np.abs(w))) if len(w) else 0.0
-    if len(w) < 100 or pk <= 0:
-        return c
-    return a + _rise_index(w, pk)
+def _refine_onset(x: np.ndarray, cv: int) -> int:
+    av, bv = max(0, cv - 240), min(len(x), cv + 240)
+    wv = x[av:bv]
+    pkv = float(np.max(np.abs(wv))) if len(wv) else 0.0
+    if len(wv) < 100 or pkv <= 0:
+        return cv
+    return av + _rise_at(wv, pkv)
 
 
-def _rise_index(w: np.ndarray, pk: float) -> int:
+def _rise_at(wv: np.ndarray, pkv: float) -> int:
     """Index of the strike start in w: the first loud sample after silence, else the first big step."""
-    if np.sqrt(np.mean(w[:96] ** 2)) < 0.05 * pk:
-        return int(np.argmax(np.abs(w) >= 0.1 * pk))
-    d = np.abs(np.diff(w))
-    thr = min(max(0.3 * d.max(), 4 * np.median(d[:96])), d.max())
-    return int(np.argmax(d >= thr))
+    if np.sqrt(np.mean(wv[:96] ** 2)) < 0.05 * pkv:
+        return int(np.argmax(np.abs(wv) >= 0.1 * pkv))
+    dv = np.abs(np.diff(wv))
+    thrv = min(max(0.3 * dv.max(), 4 * np.median(dv[:96])), dv.max())
+    return int(np.argmax(dv >= thrv))
 
 
-def _gap_filter(found: list, min_gap_ms: float) -> list:
-    gap = min_gap_ms * SR / 1000.0
-    out: list = []
-    for t, fl in sorted(found, key=lambda f: f[0]):
-        if out and t - out[-1][0] < gap:
-            if fl > 2.5 * out[-1][1]:
-                out[-1][1] = fl
+def _filter_gaps(got: list, min_gap_ms: float) -> list:
+    gapv = min_gap_ms * SR / 1000.0
+    acc: list = []
+    for tv, flv in sorted(got, key=lambda fq: fq[0]):
+        if acc and tv - acc[-1][0] < gapv:
+            if flv > 2.5 * acc[-1][1]:
+                acc[-1][1] = flv
             continue
-        out.append([t, fl])
-    return out
+        acc.append([tv, flv])
+    return acc
 
 
 # ================================================================ fade-out
@@ -158,54 +158,54 @@ def fade_out(x: np.ndarray, cands=(0.005, 0.01, 0.02, 0.03, 0.05, 0.1, 0.25),
              gain_db: float = 0.5) -> float:
     """Length (s) of a linear fade at the end of x, or 0 when there is none."""
     x = np.asarray(x, dtype=float)
-    pts = _tail_points(x)
-    return 0.0 if pts is None else _best_fade(*pts, cands, gain_db)
+    points = _tail_pts(x)
+    return 0.0 if points is None else _fade_pick(*points, cands, gain_db)
 
 
-def _tail_points(x: np.ndarray):
+def _tail_pts(x: np.ndarray):
     """Tail envelope points (t, env dB, length s, window s), or None when too short."""
-    hop = SR // 1000
-    nh = len(x) // hop
-    if nh < 20:
+    step_n = SR // 1000
+    nhv = len(x) // step_n
+    if nhv < 20:
         return None
     from scipy.ndimage import convolve1d
     from hark.fit.analysis._common import hann_norm
-    p = convolve1d(x ** 2, hann_norm(8 * hop), mode="nearest")
-    t = (np.arange(nh) * hop + hop // 2) / SR
-    env = db(p[(t * SR).astype(int)])
-    T = len(x) / SR
-    W = min(0.45 * T, 0.6)
-    sel = (t >= T - W) & (env >= env.max() - 80)
-    return (t[sel], env[sel], T, W) if sel.sum() >= 10 else None
+    pv = convolve1d(x ** 2, hann_norm(8 * step_n), mode="nearest")
+    tv = (np.arange(nhv) * step_n + step_n // 2) / SR
+    envl = db(pv[(tv * SR).astype(int)])
+    tmat = len(x) / SR
+    wmat = min(0.45 * tmat, 0.6)
+    pick = (tv >= tmat - wmat) & (envl >= envl.max() - 80)
+    return (tv[pick], envl[pick], tmat, wmat) if pick.sum() >= 10 else None
 
 
-def _best_fade(ts, es, T, W, cands, gain_db) -> float:
-    base = _ramp_error(ts, es, T, 0.0)
-    best, best_err = 0.0, base
-    for L in (c for c in cands if c <= W / 2):
-        err = _ramp_error(ts, es, T, L)
-        if err < best_err:
-            best, best_err = L, err
-    return float(best) if best and best_err < base - gain_db else 0.0
+def _fade_pick(tsv, esv, tmat, wmat, cand_l, gain_db) -> float:
+    basev = _ramp_err(tsv, esv, tmat, 0.0)
+    winner, err_best = 0.0, basev
+    for lrow in (cv for cv in cand_l if cv <= wmat / 2):
+        errv = _ramp_err(tsv, esv, tmat, lrow)
+        if errv < err_best:
+            winner, err_best = lrow, errv
+    return float(winner) if winner and err_best < basev - gain_db else 0.0
 
 
-def _ramp_error(t: np.ndarray, env: np.ndarray, T: float, L: float) -> float:
-    r = 20 * np.log10(np.clip((T - t) / L, 0.001, 1.0)) if L > 0 else np.zeros_like(t)
-    v = env - r
-    coef = np.polyfit(t, v, 1)
-    return float(np.mean(np.abs(v - np.polyval(coef, t))))
+def _ramp_err(tv: np.ndarray, envl: np.ndarray, tmat: float, lrow: float) -> float:
+    rv = 20 * np.log10(np.clip((tmat - tv) / lrow, 0.001, 1.0)) if lrow > 0 else np.zeros_like(tv)
+    vv = envl - rv
+    coefs = np.polyfit(tv, vv, 1)
+    return float(np.mean(np.abs(vv - np.polyval(coefs, tv))))
 
 
-def _unfade(m: np.ndarray, fo: float) -> tuple[np.ndarray, int]:
-    n = len(m)
-    nf = int(round(fo * SR))
-    y = m.copy()
-    if nf <= 0:
-        return y, n
-    nf = min(nf, n)
-    ramp = np.linspace(1.0, 0.0, nf)
-    y[n - nf:] = y[n - nf:] / np.maximum(ramp, 0.25)
-    return y, n - int(0.25 * nf)
+def _undo_fade(mv: np.ndarray, fov: float) -> tuple[np.ndarray, int]:
+    cnt = len(mv)
+    n_frq = int(round(fov * SR))
+    yv = mv.copy()
+    if n_frq <= 0:
+        return yv, cnt
+    n_frq = min(n_frq, cnt)
+    rmp = np.linspace(1.0, 0.0, n_frq)
+    yv[cnt - n_frq:] = yv[cnt - n_frq:] / np.maximum(rmp, 0.25)
+    return yv, cnt - int(0.25 * n_frq)
 
 
 # ================================================================ ESPRIT
@@ -213,209 +213,209 @@ def _unfade(m: np.ndarray, fo: float) -> tuple[np.ndarray, int]:
 def esprit(s: np.ndarray, kmax: int = 16, dyn_db: float = 60) -> tuple[np.ndarray, int]:
     """Poles of a sum of damped exponentials, model order by MDL."""
     s = np.asarray(s)
-    out = (np.zeros(0, dtype=complex), 0)
+    acc = (np.zeros(0, dtype=complex), 0)
     if len(s) >= 12:
-        out = _esprit_poles(s, kmax, dyn_db)
-    return out
+        acc = _poles_esprit(s, kmax, dyn_db)
+    return acc
 
 
-def _esprit_poles(s: np.ndarray, kmax: int, dyn_db: float) -> tuple[np.ndarray, int]:
-    N = len(s)
-    L = max(4, N // 3)
-    M = N - L + 1
-    H = np.lib.stride_tricks.sliding_window_view(s, M)[:L]
+def _poles_esprit(sgl: np.ndarray, k_max: int, dyn_db: float) -> tuple[np.ndarray, int]:
+    nlen = len(sgl)
+    lrow = max(4, nlen // 3)
+    mcol = nlen - lrow + 1
+    hank = np.lib.stride_tricks.sliding_window_view(sgl, mcol)[:lrow]
     try:
-        U, sv, _ = np.linalg.svd(H, full_matrices=False)
+        umat, svals, _ = np.linalg.svd(hank, full_matrices=False)
     except np.linalg.LinAlgError:
-        sv = np.zeros(0)
-    k = _mdl_order(sv, L, M, kmax, dyn_db)
-    if k == 0:
+        svals = np.zeros(0)
+    ix = _order_mdl(svals, lrow, mcol, k_max, dyn_db)
+    if ix == 0:
         return np.zeros(0, dtype=complex), 0
-    Uk = U[:, :k]
-    phi = np.linalg.lstsq(Uk[:-1], Uk[1:], rcond=None)[0]
-    return np.linalg.eigvals(phi), k
+    uk_m = umat[:, :ix]
+    phiv = np.linalg.lstsq(uk_m[:-1], uk_m[1:], rcond=None)[0]
+    return np.linalg.eigvals(phiv), ix
 
 
-def _mdl_order(sv: np.ndarray, p: int, M: int, kmax: int, dyn_db: float) -> int:
-    lam = sv ** 2
-    if not len(lam) or lam[0] <= 0:
+def _order_mdl(svals: np.ndarray, pv: int, mcol: int, k_max: int, dyn_db: float) -> int:
+    lamv = svals ** 2
+    if not len(lamv) or lamv[0] <= 0:
         return 0
-    cap = min(kmax, p - 2, int(np.sum(sv > sv[0] * 10 ** (-dyn_db / 20))))
-    best, best_k = np.inf, 0
-    for k in range(max(cap, 0) + 1):
-        rest = np.maximum(lam[k:], 1e-300)
-        g = np.exp(np.mean(np.log(rest)))
-        a = np.mean(rest)
-        v = -M * (p - k) * np.log(g / a) + 0.5 * k * (2 * p - k) * np.log(M)
-        if v < best:
-            best, best_k = v, k
-    return best_k
+    capv = min(k_max, pv - 2, int(np.sum(svals > svals[0] * 10 ** (-dyn_db / 20))))
+    winner, k_best = np.inf, 0
+    for ix in range(max(capv, 0) + 1):
+        remain = np.maximum(lamv[ix:], 1e-300)
+        gv = np.exp(np.mean(np.log(remain)))
+        av = np.mean(remain)
+        vv = -mcol * (pv - ix) * np.log(gv / av) + 0.5 * ix * (2 * pv - ix) * np.log(mcol)
+        if vv < winner:
+            winner, k_best = vv, ix
+    return k_best
 
 
 # ================================================================ mode candidates
 
-def _band_candidates(seg: np.ndarray, kmax: int, nmax: int) -> list[tuple[float, float]]:
-    Ns = len(seg)
-    if Ns < 32:
+def _cands_per_band(chunk: np.ndarray, k_max: int, n_max: int) -> list[tuple[float, float]]:
+    ns_v = len(chunk)
+    if ns_v < 32:
         return []
-    nfft = next_fast_len(2 * Ns)
-    X = fft(seg, nfft)
-    f = np.fft.fftfreq(nfft, 1.0 / SR)
-    out = []
-    for lo, hi in zip(MODE_BANDS[:-1], MODE_BANDS[1:]):
-        out += _one_band(X, f, Ns, nfft, lo, hi, kmax, nmax)
-    return out
+    fft_n = next_fast_len(2 * ns_v)
+    xmat = fft(chunk, fft_n)
+    fq = np.fft.fftfreq(fft_n, 1.0 / SR)
+    acc = []
+    for low_i, high_i in zip(MODE_BANDS[:-1], MODE_BANDS[1:]):
+        acc += _single_band(xmat, fq, ns_v, fft_n, low_i, high_i, k_max, n_max)
+    return acc
 
 
-def _band_mask(f: np.ndarray, lo: float, hi: float, tw: float) -> np.ndarray:
-    up = np.clip((f - (lo - 2 * tw)) / tw, 0.0, 1.0)
-    down = np.clip(((hi + 2 * tw) - f) / tw, 0.0, 1.0)
-    m = (0.5 - 0.5 * np.cos(np.pi * up)) * (0.5 - 0.5 * np.cos(np.pi * down))
-    return np.where(f > 0, m, 0.0)
+def _mask_band(fq: np.ndarray, low_i: float, high_i: float, twv: float) -> np.ndarray:
+    upv = np.clip((fq - (low_i - 2 * twv)) / twv, 0.0, 1.0)
+    downv = np.clip(((high_i + 2 * twv) - fq) / twv, 0.0, 1.0)
+    mv = (0.5 - 0.5 * np.cos(np.pi * upv)) * (0.5 - 0.5 * np.cos(np.pi * downv))
+    return np.where(fq > 0, mv, 0.0)
 
 
-def _one_band(X, f, Ns, nfft, lo, hi, kmax, nmax) -> list[tuple[float, float]]:
-    base = _baseband(X, f, Ns, lo, hi)
-    out = []
-    if base is not None:
-        d, fc, fs_d = base
-        for w in _band_windows(d, nmax):
-            out += _poles_to_modes(esprit(w, kmax)[0], fc, fs_d, lo, hi)
-    return out
+def _single_band(xmat, fq, ns_v, fft_n, low_i, high_i, k_max, n_max) -> list[tuple[float, float]]:
+    basev = _to_baseband(xmat, fq, ns_v, low_i, high_i)
+    acc = []
+    if basev is not None:
+        dv, fcv, fsd = basev
+        for wv in _windows_per_band(dv, n_max):
+            acc += _modes_from_poles(esprit(wv, k_max)[0], fcv, fsd, low_i, high_i)
+    return acc
 
 
-def _baseband(X, f, Ns, lo, hi):
+def _to_baseband(xmat, fq, ns_v, low_i, high_i):
     """Band lo..hi shifted to 0 Hz and decimated: (signal, centre, rate), or None when too short."""
-    B = hi - lo
-    tw = max(0.15 * B, 8.0)
-    D = max(1, min(int(SR / (1.15 * (B + 4 * tw))), Ns // 48))
-    if Ns // D < 16:
+    bmat = high_i - low_i
+    twv = max(0.15 * bmat, 8.0)
+    dmat = max(1, min(int(SR / (1.15 * (bmat + 4 * twv))), ns_v // 48))
+    if ns_v // dmat < 16:
         return None
-    fc = 0.5 * (lo + hi)
-    a = ifft(X * _band_mask(f, lo, hi, tw))[:Ns]
-    return (a * np.exp(-2j * np.pi * fc * np.arange(Ns) / SR))[::D], fc, SR / D
+    fcv = 0.5 * (low_i + high_i)
+    av = ifft(xmat * _mask_band(fq, low_i, high_i, twv))[:ns_v]
+    return (av * np.exp(-2j * np.pi * fcv * np.arange(ns_v) / SR))[::dmat], fcv, SR / dmat
 
 
-def _band_windows(d: np.ndarray, nmax: int) -> list[np.ndarray]:
-    wins = [d[:nmax]]
-    s2 = 3 * nmax // 4
-    if len(d) > s2 + nmax // 2 and np.mean(np.abs(d[s2:s2 + nmax]) ** 2) > 1e-4 * np.mean(np.abs(d[:nmax]) ** 2):
-        wins.append(d[s2:s2 + nmax])
-    return wins
+def _windows_per_band(dv: np.ndarray, n_max: int) -> list[np.ndarray]:
+    win_l = [dv[:n_max]]
+    sv2 = 3 * n_max // 4
+    if len(dv) > sv2 + n_max // 2 and np.mean(np.abs(dv[sv2:sv2 + n_max]) ** 2) > 1e-4 * np.mean(np.abs(dv[:n_max]) ** 2):
+        win_l.append(dv[sv2:sv2 + n_max])
+    return win_l
 
 
-def _poles_to_modes(z, fc, fs_d, lo, hi) -> list[tuple[float, float]]:
-    r = np.abs(z)
-    z = z[(r > 1e-6) & (r < 0.99999)]
-    out = []
-    for p in z:
-        fr = fc + np.angle(p) * fs_d / (2 * np.pi)
-        tau = -1.0 / (np.log(abs(p)) * fs_d)
-        if lo <= fr < hi and 0.0003 <= tau < 30 and np.pi * fr * tau >= 2:
-            out.append((float(fr), float(tau)))
-    return out
+def _modes_from_poles(zv, fcv, fsd, low_i, high_i) -> list[tuple[float, float]]:
+    rv = np.abs(zv)
+    zv = zv[(rv > 1e-6) & (rv < 0.99999)]
+    acc = []
+    for pv in zv:
+        frv = fcv + np.angle(pv) * fsd / (2 * np.pi)
+        tauv = -1.0 / (np.log(abs(pv)) * fsd)
+        if low_i <= frv < high_i and 0.0003 <= tauv < 30 and np.pi * frv * tauv >= 2:
+            acc.append((float(frv), float(tauv)))
+    return acc
 
 
-def _is_dup(f: float, tau: float, kept: list) -> bool:
-    for fe, te in kept:
-        tol = max(0.3, 0.0015 * f, 0.25 / (np.pi * np.sqrt(tau * te)))
-        if abs(f - fe) < tol and abs(np.log(tau / te)) < 1.2:
+def _duplicate(fq: float, tauv: float, kept_l: list) -> bool:
+    for fev, tev in kept_l:
+        tolv = max(0.3, 0.0015 * fq, 0.25 / (np.pi * np.sqrt(tauv * tev)))
+        if abs(fq - fev) < tolv and abs(np.log(tauv / tev)) < 1.2:
             return True
     return False
 
 
-def _dedupe(cands: list, kept: list) -> list:
-    pool = list(kept)
-    out = []
-    for f, tau in cands:
-        if not _is_dup(f, tau, pool):
-            out.append((f, tau))
-            pool.append((f, tau))
-    return out
+def _unique_modes(cand_l: list, kept_l: list) -> list:
+    poolv = list(kept_l)
+    acc = []
+    for fq, tauv in cand_l:
+        if not _duplicate(fq, tauv, poolv):
+            acc.append((fq, tauv))
+            poolv.append((fq, tauv))
+    return acc
 
 
 # ================================================================ least squares
 
-def _poles(freqs, taus) -> np.ndarray:
-    f = np.asarray(freqs, dtype=float)
-    t = np.asarray(taus, dtype=float)
-    return np.exp(-1.0 / (t * SR) + 2j * np.pi * f / SR)
+def _pole_set(freq_l, tau_l) -> np.ndarray:
+    fq = np.asarray(freq_l, dtype=float)
+    tv = np.asarray(tau_l, dtype=float)
+    return np.exp(-1.0 / (tv * SR) + 2j * np.pi * fq / SR)
 
 
-def _geo(w: np.ndarray, L: np.ndarray) -> np.ndarray:
-    near = np.abs(1 - w) < 1e-12
-    safe = np.where(near, 0.5, 1 - w)
-    return np.where(near, L, (1 - w ** L) / safe)
+def _geo_mean(wv: np.ndarray, lrow: np.ndarray) -> np.ndarray:
+    nearv = np.abs(1 - wv) < 1e-12
+    safev = np.where(nearv, 0.5, 1 - wv)
+    return np.where(nearv, lrow, (1 - wv ** lrow) / safev)
 
 
-def _gram(z: np.ndarray, starts: np.ndarray, end: int) -> np.ndarray:
-    s = np.asarray(starts)
-    late = np.maximum.outer(s, s)
-    L = np.maximum(end - late, 0).astype(float)
-    pi = z[:, None] ** (late - s[:, None])
-    pj = z[None, :] ** (late - s[None, :])
-    S1 = pi * pj * _geo(np.multiply.outer(z, z), L)
-    S2 = pi * np.conj(pj) * _geo(np.multiply.outer(z, np.conj(z)), L)
-    RR, II = np.real(S1 + S2) / 2, np.real(S2 - S1) / 2
-    RI, IR = np.imag(S1 - S2) / 2, np.imag(S1 + S2) / 2
-    return np.block([[RR, RI], [IR, II]])
+def _gram_mat(zv: np.ndarray, begins: np.ndarray, stop_i: int) -> np.ndarray:
+    sgl = np.asarray(begins)
+    latev = np.maximum.outer(sgl, sgl)
+    lrow = np.maximum(stop_i - latev, 0).astype(float)
+    pi = zv[:, None] ** (latev - sgl[:, None])
+    pjv = zv[None, :] ** (latev - sgl[None, :])
+    smat1 = pi * pjv * _geo_mean(np.multiply.outer(zv, zv), lrow)
+    smat2 = pi * np.conj(pjv) * _geo_mean(np.multiply.outer(zv, np.conj(zv)), lrow)
+    rr_m, ii_m = np.real(smat1 + smat2) / 2, np.real(smat2 - smat1) / 2
+    ri_m, ir_m = np.imag(smat1 - smat2) / 2, np.imag(smat1 + smat2) / 2
+    return np.block([[rr_m, ri_m], [ir_m, ii_m]])
 
 
-def _project(m: np.ndarray, z: np.ndarray, starts: np.ndarray, taus, end: int) -> np.ndarray:
-    P = np.zeros(len(z), dtype=complex)
-    taus = np.asarray(taus, dtype=float)
-    for s in np.unique(starts):
-        idx = np.flatnonzero(starts == s)
-        stop = min(end, int(s + 16 * taus[idx].max() * SR) + 1, len(m))
-        lz = np.log(z[idx])
-        for c0 in range(int(s), stop, 8192):
-            c1 = min(stop, c0 + 8192)
-            k = np.arange(c0 - s, c1 - s)
-            P[idx] += m[c0:c1] @ np.exp(np.multiply.outer(k, lz))
-    return np.concatenate([P.real, P.imag])
+def _projection(mv: np.ndarray, zv: np.ndarray, begins: np.ndarray, tau_l, stop_i: int) -> np.ndarray:
+    pmat = np.zeros(len(zv), dtype=complex)
+    tau_l = np.asarray(tau_l, dtype=float)
+    for sgl in np.unique(begins):
+        sel_i = np.flatnonzero(begins == sgl)
+        stop_v = min(stop_i, int(sgl + 16 * tau_l[sel_i].max() * SR) + 1, len(mv))
+        lzv = np.log(zv[sel_i])
+        for cv0 in range(int(sgl), stop_v, 8192):
+            cv1 = min(stop_v, cv0 + 8192)
+            ix = np.arange(cv0 - sgl, cv1 - sgl)
+            pmat[sel_i] += mv[cv0:cv1] @ np.exp(np.multiply.outer(ix, lzv))
+    return np.concatenate([pmat.real, pmat.imag])
 
 
-def _solve(G: np.ndarray, b: np.ndarray, lam: float) -> np.ndarray:
-    A = G + lam * np.diag(np.diag(G))
+def _lstsq_solve(gmat: np.ndarray, bv: np.ndarray, lamv: float) -> np.ndarray:
+    amat = gmat + lamv * np.diag(np.diag(gmat))
     try:
-        return np.linalg.solve(A, b)
+        return np.linalg.solve(amat, bv)
     except np.linalg.LinAlgError:
-        return np.linalg.lstsq(A, b, rcond=None)[0]
+        return np.linalg.lstsq(amat, bv, rcond=None)[0]
 
 
-def _quad(G: np.ndarray, x: np.ndarray, idx: np.ndarray, k: int) -> float:
-    j = np.concatenate([idx, idx + k])
-    return float(x[j] @ G[np.ix_(j, j)] @ x[j])
+def _quad_form(gmat: np.ndarray, x: np.ndarray, sel_i: np.ndarray, ix: int) -> float:
+    jx = np.concatenate([sel_i, sel_i + ix])
+    return float(x[jx] @ gmat[np.ix_(jx, jx)] @ x[jx])
 
 
-def _cancels(G: np.ndarray, x: np.ndarray, starts: np.ndarray, cross: float) -> bool:
-    k = len(starts)
-    total = float(x @ G @ x)
-    strike_sum = 0.0
-    for s in np.unique(starts):
-        idx = np.flatnonzero(starts == s)
-        joint = _quad(G, x, idx, k)
-        sep = sum(_quad(G, x, np.array([i]), k) for i in idx)
-        if sep > 2 * max(joint, 1e-300):
+def _cancelling(gmat: np.ndarray, x: np.ndarray, begins: np.ndarray, crs: float) -> bool:
+    ix = len(begins)
+    tot = float(x @ gmat @ x)
+    hit_sum = 0.0
+    for sgl in np.unique(begins):
+        sel_i = np.flatnonzero(begins == sgl)
+        jnt = _quad_form(gmat, x, sel_i, ix)
+        sepv = sum(_quad_form(gmat, x, np.array([ii]), ix) for ii in sel_i)
+        if sepv > 2 * max(jnt, 1e-300):
             return True
-        strike_sum += joint
-    return len(np.unique(starts)) > 1 and strike_sum > cross * max(total, 1e-300)
+        hit_sum += jnt
+    return len(np.unique(begins)) > 1 and hit_sum > crs * max(tot, 1e-300)
 
 
-def _ls(m, starts, freqs, taus, end, ridge, cross):
-    starts = np.asarray(starts, dtype=int)
-    z = _poles(freqs, taus)
-    G = _gram(z, starts, end)
-    b = _project(m, z, starts, taus, end)
-    lam = ridge
-    x = _solve(G, b, lam)
+def _lsq(mv, begins, freq_l, tau_l, stop_i, rdg, crs):
+    begins = np.asarray(begins, dtype=int)
+    zv = _pole_set(freq_l, tau_l)
+    gmat = _gram_mat(zv, begins, stop_i)
+    bv = _projection(mv, zv, begins, tau_l, stop_i)
+    lamv = rdg
+    x = _lstsq_solve(gmat, bv, lamv)
     for _ in range(5):
-        if not _cancels(G, x, starts, cross):
+        if not _cancelling(gmat, x, begins, crs):
             break
-        lam *= 10
-        x = _solve(G, b, lam)
-    k = len(starts)
-    return x[:k] - 1j * x[k:], G, b, x
+        lamv *= 10
+        x = _lstsq_solve(gmat, bv, lamv)
+    ix = len(begins)
+    return x[:ix] - 1j * x[ix:], gmat, bv, x
 
 
 def ls_modes(m: np.ndarray, starts, freqs, taus, end: int | None = None, ridge: float = 1e-5,
@@ -425,403 +425,403 @@ def ls_modes(m: np.ndarray, starts, freqs, taus, end: int | None = None, ridge: 
         return np.zeros(0, dtype=complex)
     m = np.asarray(m, dtype=float)
     end = len(m) if end is None else int(end)
-    return _ls(m, starts, freqs, taus, end, ridge, cross)[0]
+    return _lsq(m, starts, freqs, taus, end, ridge, cross)[0]
 
 
-def _energy(c: np.ndarray, taus) -> np.ndarray:
-    return 0.5 * np.abs(c) ** 2 / (1 - np.exp(-2.0 / (np.asarray(taus, dtype=float) * SR)))
+def _energy_of(cv: np.ndarray, tau_l) -> np.ndarray:
+    return 0.5 * np.abs(cv) ** 2 / (1 - np.exp(-2.0 / (np.asarray(tau_l, dtype=float) * SR)))
 
 
-def _mode_signal(n: int, starts, freqs, taus, c, end: int | None = None) -> np.ndarray:
-    y = np.zeros(n)
-    if len(freqs):
-        _add_modes(y, np.asarray(starts, dtype=int), freqs, np.asarray(taus, dtype=float), c,
-                   n if end is None else min(int(end), n))
-    return y
+def _mode_wave(cnt: int, begins, freq_l, tau_l, cv, stop_i: int | None = None) -> np.ndarray:
+    yv = np.zeros(cnt)
+    if len(freq_l):
+        _append_modes(yv, np.asarray(begins, dtype=int), freq_l, np.asarray(tau_l, dtype=float), cv,
+                   cnt if stop_i is None else min(int(stop_i), cnt))
+    return yv
 
 
-def _add_modes(y: np.ndarray, starts: np.ndarray, freqs, taus: np.ndarray, c, end: int) -> None:
-    z = _poles(freqs, taus)
-    for s in np.unique(starts):
-        idx = np.flatnonzero(starts == s)
-        stop = min(end, int(s + 16 * taus[idx].max() * SR) + 1)
-        lz = np.log(z[idx])
-        for c0 in range(int(s), stop, 8192):
-            c1 = min(stop, c0 + 8192)
-            k = np.arange(c0 - s, c1 - s)
-            y[c0:c1] += np.real(np.exp(np.multiply.outer(k, lz)) @ c[idx])
+def _append_modes(yv: np.ndarray, begins: np.ndarray, freq_l, tau_l: np.ndarray, cv, stop_i: int) -> None:
+    zv = _pole_set(freq_l, tau_l)
+    for sgl in np.unique(begins):
+        sel_i = np.flatnonzero(begins == sgl)
+        stop_v = min(stop_i, int(sgl + 16 * tau_l[sel_i].max() * SR) + 1)
+        lzv = np.log(zv[sel_i])
+        for cv0 in range(int(sgl), stop_v, 8192):
+            cv1 = min(stop_v, cv0 + 8192)
+            ix = np.arange(cv0 - sgl, cv1 - sgl)
+            yv[cv0:cv1] += np.real(np.exp(np.multiply.outer(ix, lzv)) @ cv[sel_i])
 
 
 # ================================================================ the passes
 
-def _strike_ends(ons: list[int], active_end: int) -> list[int]:
-    return [ons[i + 1] if i + 1 < len(ons) else active_end for i in range(len(ons))]
+def _ends_of_strikes(ons_l: list[int], act_end: int) -> list[int]:
+    return [ons_l[ii + 1] if ii + 1 < len(ons_l) else act_end for ii in range(len(ons_l))]
 
 
-def _active_end(m: np.ndarray, n_fit: int) -> int:
-    nfr = max(1, (len(m) - 24) // 12 + 1)
-    e = np.array([np.sum(m[i * 12:i * 12 + 24] ** 2) for i in range(nfr)])
-    if e.max() <= 0:
-        return n_fit
-    last = int(np.flatnonzero(e >= e.max() * 10 ** -7.5)[-1])
-    return min(last * 12 + 24 + 12, n_fit)
+def _end_of_active(mv: np.ndarray, fit_n: int) -> int:
+    nfrm = max(1, (len(mv) - 24) // 12 + 1)
+    ev = np.array([np.sum(mv[ii * 12:ii * 12 + 24] ** 2) for ii in range(nfrm)])
+    if ev.max() <= 0:
+        return fit_n
+    last_i = int(np.flatnonzero(ev >= ev.max() * 10 ** -7.5)[-1])
+    return min(last_i * 12 + 24 + 12, fit_n)
 
 
-def _new_modes(work, st, end, opts) -> list:
-    on, skip = st["on"], opts["skip"]
-    c0 = on + skip + int(round(0.0005 * SR))
-    seg = work[c0:min(end, c0 + int(opts["analysis_s"] * SR))]
-    cands = _dedupe(_band_candidates(seg, opts["kmax"], opts["nmax"]), st["carry"] + st["own"])
-    room = opts["max_modes"] - len(st["own"])
-    return _keep_new(work, cands, on + skip, end, room, opts) if cands and room > 0 else []
+def _fresh_modes(workv, stv, stop_i, cfg) -> list:
+    start_i, skipv = stv["on"], cfg["skip"]
+    cv0 = start_i + skipv + int(round(0.0005 * SR))
+    chunk = workv[cv0:min(stop_i, cv0 + int(cfg["analysis_s"] * SR))]
+    cand_l = _unique_modes(_cands_per_band(chunk, cfg["kmax"], cfg["nmax"]), stv["carry"] + stv["own"])
+    roomv = cfg["max_modes"] - len(stv["own"])
+    return _keep_fresh(workv, cand_l, start_i + skipv, stop_i, roomv, cfg) if cand_l and roomv > 0 else []
 
 
-def _keep_new(work, cands, start, end, room, opts) -> list:
+def _keep_fresh(workv, cand_l, begin, stop_i, roomv, cfg) -> list:
     """Keep the strongest new modes and subtract them from work."""
-    f, t = zip(*cands)
-    s = np.full(len(f), start)
-    c = ls_modes(work[:end], s, f, t, end, opts["ridge"], opts["cross"])
-    e = _energy(c, t)
-    keep = [i for i in np.argsort(-e)[:room] if e[i] >= e.sum() * 10 ** (opts["prune_db"] / 10)]
-    work[:] -= _mode_signal(len(work), s[keep], np.array(f)[keep], np.array(t)[keep], c[keep], end)
-    return [cands[i] for i in keep]
+    fq, tv = zip(*cand_l)
+    sgl = np.full(len(fq), begin)
+    cv = ls_modes(workv[:stop_i], sgl, fq, tv, stop_i, cfg["ridge"], cfg["cross"])
+    ev = _energy_of(cv, tv)
+    keep_m = [ii for ii in np.argsort(-ev)[:roomv] if ev[ii] >= ev.sum() * 10 ** (cfg["prune_db"] / 10)]
+    workv[:] -= _mode_wave(len(workv), sgl[keep_m], np.array(fq)[keep_m], np.array(tv)[keep_m], cv[keep_m], stop_i)
+    return [cand_l[ii] for ii in keep_m]
 
 
-def _carry(strikes: list, i: int) -> list:
-    on = strikes[i]["on"]
-    pool = []
-    for st in strikes[:i]:
-        for f, tau in st["own"]:
-            if np.exp(-(on - st["on"]) / (tau * SR)) > 0.01:
-                pool.append((f, tau))
-    pool.sort(key=lambda p: -p[1])
-    return _dedupe(pool[:40], [])
+def _carry_over(hits: list, ii: int) -> list:
+    start_i = hits[ii]["on"]
+    poolv = []
+    for stv in hits[:ii]:
+        for fq, tauv in stv["own"]:
+            if np.exp(-(start_i - stv["on"]) / (tauv * SR)) > 0.01:
+                poolv.append((fq, tauv))
+    poolv.sort(key=lambda pv: -pv[1])
+    return _unique_modes(poolv[:40], [])
 
 
-def _flat(strikes: list, skip: int):
-    rows = [(i, f, t) for i, st in enumerate(strikes) for f, t in st["carry"] + st["own"]]
-    if not rows:
+def _flat_fit(hits: list, skipv: int):
+    rws = [(ii, fq, tv) for ii, stv in enumerate(hits) for fq, tv in stv["carry"] + stv["own"]]
+    if not rws:
         return np.zeros(0, int), np.zeros(0), np.zeros(0), np.zeros(0, int)
-    idx, f, t = (np.array(v) for v in zip(*rows))
-    starts = np.array([strikes[i]["on"] + skip for i in idx])
-    return idx.astype(int), f.astype(float), t.astype(float), starts.astype(int)
+    sel_i, fq, tv = (np.array(vv) for vv in zip(*rws))
+    begins = np.array([hits[ii]["on"] + skipv for ii in sel_i])
+    return sel_i.astype(int), fq.astype(float), tv.astype(float), begins.astype(int)
 
 
-def _set_modes(strikes: list, idx, f, t, keep) -> None:
-    for i, st in enumerate(strikes):
-        sel = [j for j in np.flatnonzero(idx == i) if keep[j]]
-        n_carry = len(st["carry"])
-        rows = list(zip(f[sel], t[sel]))
-        pos = [j - np.flatnonzero(idx == i)[0] for j in sel]
-        st["carry"] = [r for r, p in zip(rows, pos) if p < n_carry]
-        st["own"] = [r for r, p in zip(rows, pos) if p >= n_carry]
+def _mode_set(hits: list, sel_i, fq, tv, keep_m) -> None:
+    for ii, stv in enumerate(hits):
+        pick = [jx for jx in np.flatnonzero(sel_i == ii) if keep_m[jx]]
+        carry_n = len(stv["carry"])
+        rws = list(zip(fq[pick], tv[pick]))
+        posv = [jx - np.flatnonzero(sel_i == ii)[0] for jx in pick]
+        stv["carry"] = [rv for rv, pv in zip(rws, posv) if pv < carry_n]
+        stv["own"] = [rv for rv, pv in zip(rws, posv) if pv >= carry_n]
 
 
-def _joint(y, strikes, opts):
+def _joint_fit(yv, hits, cfg):
     """Joint least squares of every strike's modes, with prune and cluster rounds."""
-    fitted = _prune_rounds(y, strikes, opts)
-    return None if fitted is None else _cluster_rounds(y, strikes, opts, fitted)
+    fit_l = _prune_loop(yv, hits, cfg)
+    return None if fit_l is None else _cluster_loop(yv, hits, cfg, fit_l)
 
 
-def _fit_flat(y, strikes, opts):
+def _flat_model(yv, hits, cfg):
     """(idx, f, t, starts, c, G, b, x) of every strike's modes, or None when there are none."""
-    idx, f, t, s = _flat(strikes, opts["skip"])
-    if not len(f):
+    sel_i, fq, tv, sgl = _flat_fit(hits, cfg["skip"])
+    if not len(fq):
         return None
-    return (idx, f, t, s) + tuple(_ls(y, s, f, t, opts["n_fit"], opts["ridge"], opts["cross"]))
+    return (sel_i, fq, tv, sgl) + tuple(_lsq(yv, sgl, fq, tv, cfg["n_fit"], cfg["ridge"], cfg["cross"]))
 
 
-def _prune_rounds(y, strikes, opts):
-    fitted = None
+def _prune_loop(yv, hits, cfg):
+    fit_l = None
     for _ in range(2):
-        fitted = _fit_flat(y, strikes, opts)
-        if fitted is None or _prune(strikes, fitted, opts):
+        fit_l = _flat_model(yv, hits, cfg)
+        if fit_l is None or _prune_once(hits, fit_l, cfg):
             break
-    return fitted
+    return fit_l
 
 
-def _prune(strikes, fitted, opts) -> bool:
+def _prune_once(hits, fit_l, cfg) -> bool:
     """Drop weak modes per strike. True when every mode stays."""
-    idx, f, t, _, c = fitted[:5]
-    e = _energy(c, t)
-    keep = np.ones(len(f), bool)
-    for i in range(len(strikes)):
-        sel = idx == i
-        if sel.any():
-            keep[sel] = e[sel] >= e[sel].sum() * 10 ** (opts["prune_db"] / 10)
-    done = bool(keep.all())
-    if not done:
-        _set_modes(strikes, idx, f, t, keep)
-    return done
+    sel_i, fq, tv, _, cv = fit_l[:5]
+    ev = _energy_of(cv, tv)
+    keep_m = np.ones(len(fq), bool)
+    for ii in range(len(hits)):
+        pick = sel_i == ii
+        if pick.any():
+            keep_m[pick] = ev[pick] >= ev[pick].sum() * 10 ** (cfg["prune_db"] / 10)
+    finished = bool(keep_m.all())
+    if not finished:
+        _mode_set(hits, sel_i, fq, tv, keep_m)
+    return finished
 
 
-def _cluster_rounds(y, strikes, opts, fitted):
+def _cluster_loop(yv, hits, cfg, fit_l):
     for _ in range(3):
-        idx, f, t, _, _, G, b, x = fitted
-        drop = _cluster_drops(idx, f, t, G, b, x)
-        if not drop.any():
+        sel_i, fq, tv, _, _, gmat, bv, x = fit_l
+        dropv = _drops_by_cluster(sel_i, fq, tv, gmat, bv, x)
+        if not dropv.any():
             break
-        _set_modes(strikes, idx, f, t, ~drop)
-        fitted = _fit_flat(y, strikes, opts)
-        if fitted is None:
+        _mode_set(hits, sel_i, fq, tv, ~dropv)
+        fit_l = _flat_model(yv, hits, cfg)
+        if fit_l is None:
             break
-    return None if fitted is None else fitted[:5]
+    return None if fit_l is None else fit_l[:5]
 
 
-def _cluster_drops(idx, f, t, G, b, x) -> np.ndarray:
-    k = len(f)
-    drop = np.zeros(k, bool)
-    for i in np.unique(idx):
-        mi = np.flatnonzero(idx == i)
-        mi = mi[np.argsort(f[mi], kind="stable")]
-        for cl in _clusters(mi, f, t):
-            sep = sum(_quad(G, x, np.array([j]), k) for j in cl)
-            if sep > 2 * max(_quad(G, x, np.array(cl), k), 1e-300):
-                best = max(cl, key=lambda j: _explained(G, b, j, k))
-                drop[[j for j in cl if j != best]] = True
-    return drop
+def _drops_by_cluster(sel_i, fq, tv, gmat, bv, x) -> np.ndarray:
+    ix = len(fq)
+    dropv = np.zeros(ix, bool)
+    for ii in np.unique(sel_i):
+        miv = np.flatnonzero(sel_i == ii)
+        miv = miv[np.argsort(fq[miv], kind="stable")]
+        for clv in _cluster_list(miv, fq, tv):
+            sepv = sum(_quad_form(gmat, x, np.array([jx]), ix) for jx in clv)
+            if sepv > 2 * max(_quad_form(gmat, x, np.array(clv), ix), 1e-300):
+                winner = max(clv, key=lambda jx: _explained_share(gmat, bv, jx, ix))
+                dropv[[jx for jx in clv if jx != winner]] = True
+    return dropv
 
 
-def _clusters(mi, f, t) -> list[list[int]]:
-    out, cur = [], [mi[0]] if len(mi) else []
-    for a, b2 in zip(mi[:-1], mi[1:]):
-        bw = 0.5 * (1 / (np.pi * t[a]) + 1 / (np.pi * t[b2]))
-        if f[b2] - f[a] < max(2.0, bw):
-            cur.append(b2)
+def _cluster_list(miv, fq, tv) -> list[list[int]]:
+    acc, now_v = [], [miv[0]] if len(miv) else []
+    for av, bv2 in zip(miv[:-1], miv[1:]):
+        bwv = 0.5 * (1 / (np.pi * tv[av]) + 1 / (np.pi * tv[bv2]))
+        if fq[bv2] - fq[av] < max(2.0, bwv):
+            now_v.append(bv2)
         else:
-            out.append(cur)
-            cur = [b2]
-    if cur:
-        out.append(cur)
-    return [c for c in out if len(c) >= 2]
+            acc.append(now_v)
+            now_v = [bv2]
+    if now_v:
+        acc.append(now_v)
+    return [cv for cv in acc if len(cv) >= 2]
 
 
-def _explained(G, b, j, k) -> float:
-    jj = [j, j + k]
-    Gk = G[np.ix_(jj, jj)]
+def _explained_share(gmat, bv, jx, ix) -> float:
+    jj2 = [jx, jx + ix]
+    gk_m = gmat[np.ix_(jj2, jj2)]
     try:
-        return float(b[jj] @ np.linalg.solve(Gk, b[jj]))
+        return float(bv[jj2] @ np.linalg.solve(gk_m, bv[jj2]))
     except np.linalg.LinAlgError:
         return 0.0
 
 
-def _passes(y: np.ndarray, ons: list[int], opts: dict):
-    strikes = [{"on": o, "own": [], "carry": []} for o in ons]
-    ends = _strike_ends(ons, opts["active_end"])
-    work = y.copy()
-    result = None
-    for _ in range(opts["passes"]):
-        _grow(work, strikes, ends, opts)
-        result = _joint(y, strikes, opts)
-        if result is None:
+def _pass_list(yv: np.ndarray, ons_l: list[int], cfg: dict):
+    hits = [{"on": ov, "own": [], "carry": []} for ov in ons_l]
+    end_l = _ends_of_strikes(ons_l, cfg["active_end"])
+    workv = yv.copy()
+    resv = None
+    for _ in range(cfg["passes"]):
+        _grow_modes(workv, hits, end_l, cfg)
+        resv = _joint_fit(yv, hits, cfg)
+        if resv is None:
             break
-        idx, f, t, s, c = result
-        work = y - _mode_signal(len(y), s, f, t, c, opts["n_fit"])
-    return strikes, result
+        sel_i, fq, tv, sgl, cv = resv
+        workv = yv - _mode_wave(len(yv), sgl, fq, tv, cv, cfg["n_fit"])
+    return hits, resv
 
 
-def _grow(work, strikes, ends, opts) -> None:
+def _grow_modes(workv, hits, end_l, cfg) -> None:
     """One pass of new modes for every strike."""
-    for i, st in enumerate(strikes):
-        st["carry"] = _carry(strikes, i)
-        st["own"] = _dedupe(st["own"], st["carry"])
-        end = opts["n_fit"] if i == len(strikes) - 1 else ends[i]
-        if ends[i] - (st["on"] + opts["skip"]) >= 48:
-            st["own"] += _new_modes(work, st, end, opts)
+    for ii, stv in enumerate(hits):
+        stv["carry"] = _carry_over(hits, ii)
+        stv["own"] = _unique_modes(stv["own"], stv["carry"])
+        stop_i = cfg["n_fit"] if ii == len(hits) - 1 else end_l[ii]
+        if end_l[ii] - (stv["on"] + cfg["skip"]) >= 48:
+            stv["own"] += _fresh_modes(workv, stv, stop_i, cfg)
 
 
 # ================================================================ strike rows
 
-def _rows(idx, f, t, c, i, skip) -> list:
-    sel = np.flatnonzero(idx == i)
-    rows = []
-    for j in sel[np.argsort(f[sel], kind="stable")]:
-        a = abs(c[j]) * np.exp(skip / (t[j] * SR))
-        ph = np.angle(c[j]) - 2 * np.pi * f[j] * skip / SR
-        ph = (ph + np.pi) % (2 * np.pi) - np.pi
-        row = [round(float(f[j]), 2), sig(t[j]), sig(a), round(float(ph), 4)]
-        if row[1] > 0 and row[2] > 0:
-            rows.append(row)
-    return rows
+def _row_set(sel_i, fq, tv, cv, ii, skipv) -> list:
+    pick = np.flatnonzero(sel_i == ii)
+    rws = []
+    for jx in pick[np.argsort(fq[pick], kind="stable")]:
+        av = abs(cv[jx]) * np.exp(skipv / (tv[jx] * SR))
+        phz = np.angle(cv[jx]) - 2 * np.pi * fq[jx] * skipv / SR
+        phz = (phz + np.pi) % (2 * np.pi) - np.pi
+        rw1 = [round(float(fq[jx]), 2), sig(tv[jx]), sig(av), round(float(phz), 4)]
+        if rw1[1] > 0 and rw1[2] > 0:
+            rws.append(rw1)
+    return rws
 
 
-def _rows_wave(rows: list, n: int) -> np.ndarray:
-    return K.mode_wave(np.asarray(rows, dtype=float).reshape(-1, 4), n)
+def _wave_of_rows(rws: list, cnt: int) -> np.ndarray:
+    return K.mode_wave(np.asarray(rws, dtype=float).reshape(-1, 4), cnt)
 
 
-def _choose_ramps(y, strikes_rows, ons, skip):
+def _pick_ramps(yv, hit_rows, ons_l, skipv):
     """Attack ramp per strike, and the mode signal with the chosen ramps."""
-    n = len(y)
-    modesig = np.zeros(n)
-    ramps = []
-    for i, (o, rows) in enumerate(zip(ons, strikes_rows)):
-        w = _strike_wave(rows, n - o, i > 0)
-        stop = min(n - o, skip + int(round(0.0015 * SR)))
-        best = _best_ramp(w[:stop], (y - modesig)[o:o + stop])
-        ramps.append(best if rows else 0.0)
-        modesig[o:] += _ramped(w, best)
-    return ramps, modesig
+    cnt = len(yv)
+    mode_sig = np.zeros(cnt)
+    ramp_l = []
+    for ii, (ov, rws) in enumerate(zip(ons_l, hit_rows)):
+        wv = _wave_of_strike(rws, cnt - ov, ii > 0)
+        stop_v = min(cnt - ov, skipv + int(round(0.0015 * SR)))
+        winner = _ramp_pick(wv[:stop_v], (yv - mode_sig)[ov:ov + stop_v])
+        ramp_l.append(winner if rws else 0.0)
+        mode_sig[ov:] += _with_ramp(wv, winner)
+    return ramp_l, mode_sig
 
 
-def _strike_wave(rows: list, n: int, later: bool) -> np.ndarray:
-    w = _rows_wave(rows, n) if rows else np.zeros(n)
-    if later:
-        k = min(K.LATER_RAMP, len(w))
-        w[:k] *= K.raised_cos(K.LATER_RAMP)[:k]
-    return w
+def _wave_of_strike(rws: list, cnt: int, laterv: bool) -> np.ndarray:
+    wv = _wave_of_rows(rws, cnt) if rws else np.zeros(cnt)
+    if laterv:
+        ix = min(K.LATER_RAMP, len(wv))
+        wv[:ix] *= K.raised_cos(K.LATER_RAMP)[:ix]
+    return wv
 
 
-def _best_ramp(head: np.ndarray, target: np.ndarray) -> float:
-    best, best_err = 0.0, None
-    for r_ms in RAMPS_MS:
-        err = float(np.sum((target - _ramped(head, r_ms)) ** 2))
-        if best_err is None or err < best_err * (1 - 1e-9):
-            best, best_err = r_ms, err
-    return best
+def _ramp_pick(headv: np.ndarray, tgt: np.ndarray) -> float:
+    winner, err_best = 0.0, None
+    for rms_v in RAMPS_MS:
+        errv = float(np.sum((tgt - _with_ramp(headv, rms_v)) ** 2))
+        if err_best is None or errv < err_best * (1 - 1e-9):
+            winner, err_best = rms_v, errv
+    return winner
 
 
-def _ramped(w: np.ndarray, r_ms: float) -> np.ndarray:
-    r = int(round(r_ms * SR / 1000.0))
-    if r <= 0:
-        return w
-    out = w.copy()
-    k = min(r, len(out))
-    out[:k] *= K.raised_cos(r)[:k]
-    return out
+def _with_ramp(wv: np.ndarray, rms_v: float) -> np.ndarray:
+    rv = int(round(rms_v * SR / 1000.0))
+    if rv <= 0:
+        return wv
+    acc = wv.copy()
+    ix = min(rv, len(acc))
+    acc[:ix] *= K.raised_cos(rv)[:ix]
+    return acc
 
 
-def _sub_pulse(resid: np.ndarray, y: np.ndarray):
-    n = len(y)
-    if n <= 4 * K.SUB_DEC:
-        return None, np.zeros(n)
-    lp = sosfiltfilt(butter(4, 20, fs=SR, output="sos"), resid)
-    if np.sum(lp ** 2) <= 0.001 * np.sum(y ** 2):
-        return None, np.zeros(n)
-    xs = [sig(v, 4) for v in resample_poly(lp, 1, K.SUB_DEC)]
-    up = resample_poly(np.asarray(xs), K.SUB_DEC, 1)
-    w = np.zeros(n)
-    w[:min(n, len(up))] = up[:n]
-    return {"rate": SR // K.SUB_DEC, "x": xs}, w
+def _subpulse(residv: np.ndarray, yv: np.ndarray):
+    cnt = len(yv)
+    if cnt <= 4 * K.SUB_DEC:
+        return None, np.zeros(cnt)
+    lpv = sosfiltfilt(butter(4, 20, fs=SR, output="sos"), residv)
+    if np.sum(lpv ** 2) <= 0.001 * np.sum(yv ** 2):
+        return None, np.zeros(cnt)
+    xsv = [sig(vv, 4) for vv in resample_poly(lpv, 1, K.SUB_DEC)]
+    upv = resample_poly(np.asarray(xsv), K.SUB_DEC, 1)
+    wv = np.zeros(cnt)
+    wv[:min(cnt, len(upv))] = upv[:cnt]
+    return {"rate": SR // K.SUB_DEC, "x": xsv}, wv
 
 
-def _contact(resid: np.ndarray, ons: list[int], attack_ms: float):
-    n = len(resid)
-    r = resid.copy()
-    out, total = [], np.zeros(n)
-    for i, o in enumerate(ons):
-        stop = min(o + int(round(attack_ms * SR / 1000)), ons[i + 1] if i + 1 < len(ons) else n, n)
-        rows = _contact_rows(r, o, stop) if stop - o >= 24 else []
-        out.append(rows)
-        if rows:
-            w = _rows_wave(rows, n - o)
-            r[o:] -= w
-            total[o:] += w
-    return out, total
+def _contact_fit(residv: np.ndarray, ons_l: list[int], attack_ms: float):
+    cnt = len(residv)
+    rv = residv.copy()
+    acc, tot = [], np.zeros(cnt)
+    for ii, ov in enumerate(ons_l):
+        stop_v = min(ov + int(round(attack_ms * SR / 1000)), ons_l[ii + 1] if ii + 1 < len(ons_l) else cnt, cnt)
+        rws = _rows_of_contact(rv, ov, stop_v) if stop_v - ov >= 24 else []
+        acc.append(rws)
+        if rws:
+            wv = _wave_of_rows(rws, cnt - ov)
+            rv[ov:] -= wv
+            tot[ov:] += wv
+    return acc, tot
 
 
-def _contact_rows(r: np.ndarray, o: int, stop: int) -> list:
-    f, tau = _contact_poles(r[o:stop])
-    rows = []
-    if len(f):
-        c = ls_modes(r, np.full(len(f), o), f, tau, min(len(r), o + int(0.006 * SR)))
-        rows = [[round(float(fi), 2), sig(ti), sig(abs(ci)), round(float(np.angle(ci)), 4)]
-                for fi, ti, ci in zip(f, tau, c)]
-    return sorted([rw for rw in rows if rw[1] > 0 and rw[2] > 0], key=lambda rw: rw[0])
+def _rows_of_contact(rv: np.ndarray, ov: int, stop_v: int) -> list:
+    fq, tauv = _poles_of_contact(rv[ov:stop_v])
+    rws = []
+    if len(fq):
+        cv = ls_modes(rv, np.full(len(fq), ov), fq, tauv, min(len(rv), ov + int(0.006 * SR)))
+        rws = [[round(float(fiv), 2), sig(tiv), sig(abs(civ)), round(float(np.angle(civ)), 4)]
+                for fiv, tiv, civ in zip(fq, tauv, cv)]
+    return sorted([rwv for rwv in rws if rwv[1] > 0 and rwv[2] > 0], key=lambda rwv: rwv[0])
 
 
-def _contact_poles(seg: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+def _poles_of_contact(chunk: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     """Frequencies and decays of the short contact modes in seg."""
-    z = esprit(seg, 24, 50)[0]
-    rad = np.abs(z)
-    z = z[(rad > 1e-4) & (rad < 0.9999) & (np.angle(z) >= 0)]
-    f = np.angle(z) * SR / (2 * np.pi)
-    tau = -1.0 / (np.log(np.abs(z)) * SR)
-    ok = (tau >= 1e-5) & (tau <= 0.002) & (f < 0.47 * SR)
-    return f[ok], tau[ok]
+    zv = esprit(chunk, 24, 50)[0]
+    radv = np.abs(zv)
+    zv = zv[(radv > 1e-4) & (radv < 0.9999) & (np.angle(zv) >= 0)]
+    fq = np.angle(zv) * SR / (2 * np.pi)
+    tauv = -1.0 / (np.log(np.abs(zv)) * SR)
+    good = (tauv >= 1e-5) & (tauv <= 0.002) & (fq < 0.47 * SR)
+    return fq[good], tauv[good]
 
 
 # ================================================================ noise envelopes
 
-def _band_power(x: np.ndarray, masks: np.ndarray, nfft: int) -> np.ndarray:
-    n = len(x)
-    X = rfft(x, nfft)
-    out = np.zeros((len(masks), n))
-    for b, w in enumerate(masks):
-        full = np.zeros(nfft, dtype=complex)
-        half = X * w
-        full[:len(half)] = half
-        full[1:(nfft + 1) // 2] *= 2
-        out[b] = 0.5 * np.abs(ifft(full)[:n]) ** 2
-    return out
+def _power_per_band(x: np.ndarray, mask_l: np.ndarray, fft_n: int) -> np.ndarray:
+    cnt = len(x)
+    xmat = rfft(x, fft_n)
+    acc = np.zeros((len(mask_l), cnt))
+    for bv, wv in enumerate(mask_l):
+        full = np.zeros(fft_n, dtype=complex)
+        halfv = xmat * wv
+        full[:len(halfv)] = halfv
+        full[1:(fft_n + 1) // 2] *= 2
+        acc[bv] = 0.5 * np.abs(ifft(full)[:cnt]) ** 2
+    return acc
 
 
-def _smoothed(P: np.ndarray, ms: float, grid: np.ndarray) -> np.ndarray:
+def _smooth_curve(pmat: np.ndarray, msv: float, gridv: np.ndarray) -> np.ndarray:
     from hark.fit.analysis._common import hann_norm
-    w = hann_norm(max(1, int(round(ms * SR / 1000))))
-    s = fftconvolve(P, w[None, :], mode="same", axes=1)
-    return np.maximum(s[:, grid], 0.0)
+    wv = hann_norm(max(1, int(round(msv * SR / 1000))))
+    sgl = fftconvolve(pmat, wv[None, :], mode="same", axes=1)
+    return np.maximum(sgl[:, gridv], 0.0)
 
 
-def _weights(tg: np.ndarray, ons_s: list[float]) -> tuple[np.ndarray, np.ndarray]:
-    near = np.zeros(len(tg))
-    for o in ons_s:
-        d = tg - o
-        w = np.where(d < -0.008, 0.0, np.where(d <= 0.015, 1.0, np.clip((0.03 - d) / 0.015, 0, 1)))
-        near = np.maximum(near, w)
-    far = np.clip((tg - max(ons_s) - 0.15) / 0.15, 0.0, 1.0)
-    return near, far
+def _weight_vec(tgv: np.ndarray, ons_sec: list[float]) -> tuple[np.ndarray, np.ndarray]:
+    nearv = np.zeros(len(tgv))
+    for ov in ons_sec:
+        dv = tgv - ov
+        wv = np.where(dv < -0.008, 0.0, np.where(dv <= 0.015, 1.0, np.clip((0.03 - dv) / 0.015, 0, 1)))
+        nearv = np.maximum(nearv, wv)
+    farv = np.clip((tgv - max(ons_sec) - 0.15) / 0.15, 0.0, 1.0)
+    return nearv, farv
 
 
-def _noise_power(x: np.ndarray, masks, nfft, grid, near, far) -> np.ndarray:
-    P = _band_power(x, masks, nfft)
-    s, m, l = (_smoothed(P, ms, grid) for ms in (0.5, 6.0, 30.0))
-    return near * s + (1 - near) * ((1 - far) * m + far * l)
+def _power_of_noise(x: np.ndarray, mask_l, fft_n, gridv, nearv, farv) -> np.ndarray:
+    pmat = _power_per_band(x, mask_l, fft_n)
+    sgl, mv, lv = (_smooth_curve(pmat, msv, gridv) for msv in (0.5, 6.0, 30.0))
+    return nearv * sgl + (1 - nearv) * ((1 - farv) * mv + farv * lv)
 
 
-def _noise_env(m: np.ndarray, det: np.ndarray, ons: list[int], tol_db: float, pre_cap_s: float) -> dict:
-    tg, far, E = _noise_db(m, det, ons, pre_cap_s)
-    env = []
-    for b in range(len(E)):
-        keep = rdp(tg, E[b], tol_db * (1 + far))
-        env.append([[round(float(tg[i]), 5), round(float(E[b, i]), 2)] for i in keep])
-    return {"edges": [float(e) for e in NOISE_EDGES], "h_erb": 0.4, "env": env}
+def _env_of_noise(mv: np.ndarray, tonal: np.ndarray, ons_l: list[int], tol_db: float, pre_cap_s: float) -> dict:
+    tgv, farv, emat = _noise_level_db(mv, tonal, ons_l, pre_cap_s)
+    envl = []
+    for bv in range(len(emat)):
+        keep_m = rdp(tgv, emat[bv], tol_db * (1 + farv))
+        envl.append([[round(float(tgv[ii]), 5), round(float(emat[bv, ii]), 2)] for ii in keep_m])
+    return {"edges": [float(ev) for ev in NOISE_EDGES], "h_erb": 0.4, "env": envl}
 
 
-def _noise_db(m: np.ndarray, det: np.ndarray, ons: list[int], pre_cap_s: float):
+def _noise_level_db(mv: np.ndarray, tonal: np.ndarray, ons_l: list[int], pre_cap_s: float):
     """Grid times, far weight and residual noise power (dB) per ERB band."""
-    n = len(m)
-    nfft = next_fast_len(n + 16384)
-    masks = K.erb_masks(nfft)
-    grid = np.arange(0, n, GRID)
-    tg = grid / SR
-    near, far = _weights(tg, [o / SR for o in ons])
-    Po = _noise_power(m, masks, nfft, grid, near, far)
-    Pd = _noise_power(det, masks, nfft, grid, near, far)
-    P = np.maximum(Po - Pd, 1e-6 * Po)
-    _pre_cap(P, ons, pre_cap_s)
-    E = db(P)
-    return tg, far, np.maximum(E, E.max() - 100.0)
+    cnt = len(mv)
+    fft_n = next_fast_len(cnt + 16384)
+    mask_l = K.erb_masks(fft_n)
+    gridv = np.arange(0, cnt, GRID)
+    tgv = gridv / SR
+    nearv, farv = _weight_vec(tgv, [ov / SR for ov in ons_l])
+    pov = _power_of_noise(mv, mask_l, fft_n, gridv, nearv, farv)
+    pdm = _power_of_noise(tonal, mask_l, fft_n, gridv, nearv, farv)
+    pmat = np.maximum(pov - pdm, 1e-6 * pov)
+    _cap_before(pmat, ons_l, pre_cap_s)
+    emat = db(pmat)
+    return tgv, farv, np.maximum(emat, emat.max() - 100.0)
 
 
-def _pre_cap(P: np.ndarray, ons: list[int], pre_cap_s: float) -> None:
-    for o in ons:
-        k = o // GRID
-        a = k - int(round(pre_cap_s / K.GRID_S))
-        if a < 1:
+def _cap_before(pmat: np.ndarray, ons_l: list[int], pre_cap_s: float) -> None:
+    for ov in ons_l:
+        ix = ov // GRID
+        av = ix - int(round(pre_cap_s / K.GRID_S))
+        if av < 1:
             continue
-        cap = np.min(P[:, max(0, a - 2):a + 1], axis=1, keepdims=True)
-        P[:, a:k + 1] = np.minimum(P[:, a:k + 1], cap)
+        capv = np.min(pmat[:, max(0, av - 2):av + 1], axis=1, keepdims=True)
+        pmat[:, av:ix + 1] = np.minimum(pmat[:, av:ix + 1], capv)
 
 
-def _side_ratio(a: np.ndarray) -> list[float]:
-    n = len(a)
-    nfft = next_fast_len(n)
-    masks = K.erb_masks(nfft)
-    S = np.abs(rfft((a[:, 0] - a[:, 1]) / 2, nfft)) ** 2
-    M = np.abs(rfft((a[:, 0] + a[:, 1]) / 2, nfft)) ** 2
-    W2 = masks ** 2
-    rho = np.sqrt((W2 @ S) / np.maximum(W2 @ M, 1e-300))
-    return [round(float(v), 4) for v in np.minimum(rho, 1.5)]
+def _ratio_side(av: np.ndarray) -> list[float]:
+    cnt = len(av)
+    fft_n = next_fast_len(cnt)
+    mask_l = K.erb_masks(fft_n)
+    smat = np.abs(rfft((av[:, 0] - av[:, 1]) / 2, fft_n)) ** 2
+    mcol = np.abs(rfft((av[:, 0] + av[:, 1]) / 2, fft_n)) ** 2
+    wmat2 = mask_l ** 2
+    rhov = np.sqrt((wmat2 @ smat) / np.maximum(wmat2 @ mcol, 1e-300))
+    return [round(float(vv), 4) for vv in np.minimum(rhov, 1.5)]
 
 
 # ================================================================ fit
@@ -833,80 +833,80 @@ FIT_KNOBS = {"max_strikes": 10, "kmax": 16, "nmax": 384, "passes": 2, "skip_ms":
 
 def fit(x: Any, **kw) -> dict:
     """A modal model of a path or a 48 kHz array, (n,) or (n, 2). Knobs and defaults: FIT_KNOBS."""
-    k = merge_knobs(FIT_KNOBS, kw, "modal fit")
-    a = as_stereo(x) if isinstance(x, str) else as_stereo(resample(np.asarray(x, float), k["sr"]))
-    model = _fit(a, k)
+    ix = merge_knobs(FIT_KNOBS, kw, "modal fit")
+    av = as_stereo(x) if isinstance(x, str) else as_stereo(resample(np.asarray(x, float), ix["sr"]))
+    model = _fit_core(av, ix)
     model["source"] = source_name(x)
-    if k["verbose"]:
+    if ix["verbose"]:
         print(summary(model))
     return model
 
 
-def _fit(a: np.ndarray, k: dict) -> dict:
-    stereo = not is_mono_pair(a)
-    m = a.mean(axis=1)
-    ons, fo, y, opts = _fit_setup(m, k)
-    det, strikes, sub, n_modes, modesig = _deterministic(y, ons, opts, k["attack_ms"])
-    _fade_tail(det, fo)
-    model = {"kind": KIND, "version": VERSION, "sr": SR, "length_s": round(len(m) / SR, 6),
-             "channels": 2 if stereo else 1, "fade_out_s": float(fo), "strikes": strikes, "sub": sub,
-             "noise": _noise_env(m, det, ons, k["noise_tol_db"], k["pre_cap_s"]), "side": None,
-             "coherent": True, "fit": _diag(m, modesig, det, k["skip_ms"], n_modes)}
+def _fit_core(av: np.ndarray, ix: dict) -> dict:
+    stereo = not is_mono_pair(av)
+    mv = av.mean(axis=1)
+    ons_l, fov, yv, cfg = _setup_fit(mv, ix)
+    tonal, hits, subv, mode_n, mode_sig = _tonal_part(yv, ons_l, cfg, ix["attack_ms"])
+    _tail_fade(tonal, fov)
+    model = {"kind": KIND, "version": VERSION, "sr": SR, "length_s": round(len(mv) / SR, 6),
+             "channels": 2 if stereo else 1, "fade_out_s": float(fov), "strikes": hits, "sub": subv,
+             "noise": _env_of_noise(mv, tonal, ons_l, ix["noise_tol_db"], ix["pre_cap_s"]), "side": None,
+             "coherent": True, "fit": _diagnostics(mv, mode_sig, tonal, ix["skip_ms"], mode_n)}
     if stereo:
-        _add_side(model, a, k["side_t"])
+        _attach_side(model, av, ix["side_t"])
     return model
 
 
-def _fit_setup(m: np.ndarray, k: dict):
+def _setup_fit(mv: np.ndarray, ix: dict):
     """Onsets, fade-out length, the unfaded signal and the pass options."""
-    ons = onsets(m, rel=k["onset_rel"], max_n=k["max_strikes"])
-    fo = fade_out(m)
-    y, n_fit = _unfade(m, fo)
-    return ons, fo, y, _fit_opts(k, n_fit, _active_end(m, n_fit))
+    ons_l = onsets(mv, rel=ix["onset_rel"], max_n=ix["max_strikes"])
+    fov = fade_out(mv)
+    yv, fit_n = _undo_fade(mv, fov)
+    return ons_l, fov, yv, _opts_of_fit(ix, fit_n, _end_of_active(mv, fit_n))
 
 
-def _fit_opts(k: dict, n_fit: int, active_end: int) -> dict:
-    return {"skip": int(round(k["skip_ms"] * SR / 1000)), "kmax": k["kmax"], "nmax": k["nmax"],
-            "passes": k["passes"], "prune_db": k["prune_db"], "max_modes": k["max_modes"],
-            "analysis_s": k["analysis_s"], "ridge": 1e-5, "cross": 10, "n_fit": n_fit,
-            "active_end": active_end}
+def _opts_of_fit(ix: dict, fit_n: int, act_end: int) -> dict:
+    return {"skip": int(round(ix["skip_ms"] * SR / 1000)), "kmax": ix["kmax"], "nmax": ix["nmax"],
+            "passes": ix["passes"], "prune_db": ix["prune_db"], "max_modes": ix["max_modes"],
+            "analysis_s": ix["analysis_s"], "ridge": 1e-5, "cross": 10, "n_fit": fit_n,
+            "active_end": act_end}
 
 
-def _fade_tail(det: np.ndarray, fo: float) -> None:
-    if fo > 0:
-        n = len(det)
-        nf = min(int(round(fo * SR)), n)
-        det[n - nf:] *= np.linspace(1.0, 0.0, nf)
+def _tail_fade(tonal: np.ndarray, fov: float) -> None:
+    if fov > 0:
+        cnt = len(tonal)
+        n_frq = min(int(round(fov * SR)), cnt)
+        tonal[cnt - n_frq:] *= np.linspace(1.0, 0.0, n_frq)
 
 
-def _add_side(model: dict, a: np.ndarray, side_t: bool) -> None:
-    model["side"] = _side_ratio(a)
+def _attach_side(model: dict, av: np.ndarray, side_t: bool) -> None:
+    model["side"] = _ratio_side(av)
     if side_t:
         from hark.fit.analysis import sinusoidal
-        model["side_t"] = sinusoidal.side_model(a, len(a) / SR)
+        model["side_t"] = sinusoidal.side_model(av, len(av) / SR)
 
 
-def _deterministic(y: np.ndarray, ons: list[int], opts: dict, attack_ms: float):
-    n = len(y)
-    _, res = _passes(y, ons, opts)
-    rows = [[] for _ in ons]
-    if res is not None:
-        idx, f, t, s, c = res
-        rows = [_rows(idx, f, t, c, i, opts["skip"]) for i in range(len(ons))]
-    ramps, modesig = _choose_ramps(y, rows, ons, opts["skip"])
-    sub, subw = _sub_pulse(y - modesig, y)
-    attack, contact = _contact(y - modesig - subw, ons, attack_ms)
-    strikes = [{"t": round(o / SR, 6), "ramp_ms": float(rp), "modes": rw, "attack": at}
-               for o, rp, rw, at in zip(ons, ramps, rows, attack)]
-    return modesig + subw + contact, strikes, sub, sum(len(r) for r in rows), modesig
+def _tonal_part(yv: np.ndarray, ons_l: list[int], cfg: dict, attack_ms: float):
+    cnt = len(yv)
+    _, rsv = _pass_list(yv, ons_l, cfg)
+    rws = [[] for _ in ons_l]
+    if rsv is not None:
+        sel_i, fq, tv, sgl, cv = rsv
+        rws = [_row_set(sel_i, fq, tv, cv, ii, cfg["skip"]) for ii in range(len(ons_l))]
+    ramp_l, mode_sig = _pick_ramps(yv, rws, ons_l, cfg["skip"])
+    subv, sub_w = _subpulse(yv - mode_sig, yv)
+    attack, contact = _contact_fit(yv - mode_sig - sub_w, ons_l, attack_ms)
+    hits = [{"t": round(ov / SR, 6), "ramp_ms": float(rpv), "modes": rwv, "attack": atv}
+               for ov, rpv, rwv, atv in zip(ons_l, ramp_l, rws, attack)]
+    return mode_sig + sub_w + contact, hits, subv, sum(len(rv) for rv in rws), mode_sig
 
 
-def _diag(m, modesig, det, skip_ms, n_modes) -> dict:
-    e = float(np.sum(m ** 2))
-    share = float(db(np.sum(modesig ** 2) / e)) if e > 0 else -300.0
-    resid = float(db(np.sum((m - det) ** 2) / e)) if e > 0 else -300.0
-    return {"skip_ms": skip_ms, "modes": int(n_modes), "mode_share_db": round(share, 2),
-            "resid_db": round(resid, 2)}
+def _diagnostics(mv, mode_sig, tonal, skip_ms, mode_n) -> dict:
+    ev = float(np.sum(mv ** 2))
+    frac = float(db(np.sum(mode_sig ** 2) / ev)) if ev > 0 else -300.0
+    residv = float(db(np.sum((mv - tonal) ** 2) / ev)) if ev > 0 else -300.0
+    return {"skip_ms": skip_ms, "modes": int(mode_n), "mode_share_db": round(frac, 2),
+            "resid_db": round(residv, 2)}
 
 
 # ================================================================ face
@@ -921,9 +921,9 @@ def render(model: dict, seed: int = 0, **knobs) -> np.ndarray:
     check(model)
     if "gain_db" in knobs:
         knobs["gain"] = knobs.pop("gain_db")
-    bad = sorted(set(knobs) - set(RENDER_KNOBS))
-    if bad:
-        raise ValueError(f"unknown modal knobs {bad}; known: {sorted(RENDER_KNOBS)}")
+    badv = sorted(set(knobs) - set(RENDER_KNOBS))
+    if badv:
+        raise ValueError(f"unknown modal knobs {badv}; known: {sorted(RENDER_KNOBS)}")
     return K.render_model(model, seed, **knobs)
 
 
@@ -934,67 +934,67 @@ def save(model: dict, path: str) -> None:
 
 def load(path: str) -> dict:
     """Read a model and check its kind."""
-    m = load_json(path)
-    check(m)
-    return m
+    mv = load_json(path)
+    check(mv)
+    return mv
 
 
 def summary(model: dict) -> str:
     """A few lines of text."""
-    ft = model.get("fit", {})
-    st = model.get("strikes", [])
-    lines = [f"modal v{model.get('version')}: {model['length_s'] * 1000:.0f} ms, {len(st)} strikes, "
-             f"{ft.get('modes', 0)} modes, mode share {ft.get('mode_share_db')} dB, "
-             f"residual {ft.get('resid_db')} dB"]
-    for s in st:
-        top = sorted(s["modes"], key=lambda r: -(r[2] ** 2 * r[1]))[:5]
-        modes = ", ".join(f"{r[0]:.0f} Hz/{r[1] * 1000:.0f} ms" for r in top) or "none"
-        lines.append(f"  strike {s['t'] * 1000:.1f} ms, ramp {s['ramp_ms']} ms, "
-                     f"{len(s['modes'])} modes: {modes}")
-    return "\n".join(lines)
+    ftv = model.get("fit", {})
+    stv = model.get("strikes", [])
+    line_l = [f"modal v{model.get('version')}: {model['length_s'] * 1000:.0f} ms, {len(stv)} strikes, "
+             f"{ftv.get('modes', 0)} modes, mode share {ftv.get('mode_share_db')} dB, "
+             f"residual {ftv.get('resid_db')} dB"]
+    for sgl in stv:
+        topv = sorted(sgl["modes"], key=lambda rv: -(rv[2] ** 2 * rv[1]))[:5]
+        modes = ", ".join(f"{rv[0]:.0f} Hz/{rv[1] * 1000:.0f} ms" for rv in topv) or "none"
+        line_l.append(f"  strike {sgl['t'] * 1000:.1f} ms, ramp {sgl['ramp_ms']} ms, "
+                     f"{len(sgl['modes'])} modes: {modes}")
+    return "\n".join(line_l)
 
 
 # ================================================================ quick checks
 
 def mel_distance(x: np.ndarray, y: np.ndarray) -> tuple[float, list[float]]:
     """Mean absolute mel dB at 3 FFT sizes, and the value per size."""
-    return mel_db_distance(_mono(x), _mono(y))
+    return mel_db_distance(_to_mono(x), _to_mono(y))
 
 
-def _mono(x: np.ndarray) -> np.ndarray:
+def _to_mono(x: np.ndarray) -> np.ndarray:
     x = np.asarray(x, dtype=float)
     return x.mean(axis=1) if x.ndim == 2 else x
 
 
-def _rms_env_db(x: np.ndarray, win: int, hop: int) -> np.ndarray:
-    p = np.convolve(x ** 2, np.ones(win) / win, mode="same")[::hop]
-    return db(p)
+def _env_rms_db(x: np.ndarray, winv: int, step_n: int) -> np.ndarray:
+    pv = np.convolve(x ** 2, np.ones(winv) / winv, mode="same")[::step_n]
+    return db(pv)
 
 
 def env_corr(x: np.ndarray, y: np.ndarray) -> float:
     """Pearson correlation of 2 ms RMS dB envelopes, floored 60 dB under x's peak."""
-    x, y = _mono(x), _mono(y)
-    n = max(len(x), len(y))
-    x, y = np.pad(x, (0, n - len(x))), np.pad(y, (0, n - len(y)))
-    ex, ey = _rms_env_db(x, 96, 96), _rms_env_db(y, 96, 96)
-    fl = ex.max() - 60
-    ex, ey = np.maximum(ex, fl), np.maximum(ey, fl)
-    if np.std(ex) == 0 or np.std(ey) == 0:
+    x, y = _to_mono(x), _to_mono(y)
+    cnt = max(len(x), len(y))
+    x, y = np.pad(x, (0, cnt - len(x))), np.pad(y, (0, cnt - len(y)))
+    exv, eyv = _env_rms_db(x, 96, 96), _env_rms_db(y, 96, 96)
+    flv = exv.max() - 60
+    exv, eyv = np.maximum(exv, flv), np.maximum(eyv, flv)
+    if np.std(exv) == 0 or np.std(eyv) == 0:
         return 0.0
-    return float(np.corrcoef(ex, ey)[0, 1])
+    return float(np.corrcoef(exv, eyv)[0, 1])
 
 
 def rise_ms(x: np.ndarray) -> float:
     """10 % to 90 % rise time of a 1 ms RMS envelope, ms."""
-    e = np.sqrt(np.convolve(_mono(x) ** 2, np.ones(48) / 48, mode="same")[::6])
-    if not len(e) or e.max() <= 0:
+    ev = np.sqrt(np.convolve(_to_mono(x) ** 2, np.ones(48) / 48, mode="same")[::6])
+    if not len(ev) or ev.max() <= 0:
         return 0.0
-    k = int(np.argmax(e))
-    a = max(0, k - int(0.03 * SR / 6))
-    seg = e[a:k + 1]
-    i10 = int(np.argmax(seg >= 0.1 * e[k]))
-    i90 = int(np.argmax(seg >= 0.9 * e[k]))
-    return float((i90 - i10) * 6 / SR * 1000)
+    ix = int(np.argmax(ev))
+    av = max(0, ix - int(0.03 * SR / 6))
+    chunk = ev[av:ix + 1]
+    ix10 = int(np.argmax(chunk >= 0.1 * ev[ix]))
+    ix90 = int(np.argmax(chunk >= 0.9 * ev[ix]))
+    return float((ix90 - ix10) * 6 / SR * 1000)
 
 
 # ================================================================ standalone code
@@ -1002,29 +1002,29 @@ def rise_ms(x: np.ndarray) -> float:
 def to_code(model: dict, name: str = "sound") -> str:
     """A standalone numpy + scipy script that renders the same samples as ``render``."""
     import inspect
-    lite = copy.deepcopy({k: v for k, v in model.items() if k != "fit_engine"})
+    slim = copy.deepcopy({ix: vv for ix, vv in model.items() if ix != "fit_engine"})
     return (f'"""Modal model {name!r}: standalone render (numpy and scipy only)."""\n\n'
-            + inspect.getsource(K) + "\n\nMODEL = " + _literal(lite) + "\n\n\n"
+            + inspect.getsource(K) + "\n\nMODEL = " + _as_literal(slim) + "\n\n\n"
             + "def render(seed=0, **knobs):\n    return render_model(MODEL, seed, **knobs)\n\n\n"
             + _MAIN_F32)
 
 
-def _literal(model: dict) -> str:
+def _as_literal(model: dict) -> str:
     """The model as a Python literal, one mode row per line."""
-    lines = ["{"]
-    for k, v in model.items():
-        if k == "strikes":
-            lines.append("    'strikes': [")
-            for s in v:
-                lines.append("        {" + f"'t': {s['t']!r}, 'ramp_ms': {s['ramp_ms']!r},")
-                lines.append("         'modes': [")
-                lines += [f"             {r!r}," for r in s["modes"]]
-                lines.append(f"         ], 'attack': {s['attack']!r}" + "},")
-            lines.append("    ],")
+    line_l = ["{"]
+    for ix, vv in model.items():
+        if ix == "strikes":
+            line_l.append("    'strikes': [")
+            for sgl in vv:
+                line_l.append("        {" + f"'t': {sgl['t']!r}, 'ramp_ms': {sgl['ramp_ms']!r},")
+                line_l.append("         'modes': [")
+                line_l += [f"             {rv!r}," for rv in sgl["modes"]]
+                line_l.append(f"         ], 'attack': {sgl['attack']!r}" + "},")
+            line_l.append("    ],")
         else:
-            lines.append(f"    {k!r}: {v!r},")
-    lines.append("}")
-    return "\n".join(lines)
+            line_l.append(f"    {ix!r}: {vv!r},")
+    line_l.append("}")
+    return "\n".join(line_l)
 
 
 _MAIN_F32 = '''if __name__ == "__main__":
