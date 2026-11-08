@@ -30,6 +30,7 @@ At each point it reads every visible raster image:
 | `<img>` | decoded image | box after `object-fit` |
 | CSS `background-image: url()` | decoded image | `background-size` in the padding box, times the CSS transform scale |
 | `<canvas>` `drawImage` of an `<img>` | source rectangle | destination size times the context transform and the canvas CSS scale |
+| `<canvas>` `drawImage` of a `<video>` | `videoWidth` x `videoHeight`, or the source rectangle | destination size times the context transform and the canvas CSS scale |
 | `<video poster>` | decoded poster | box after `object-fit`, while the poster shows |
 | SVG `<image>` | decoded image | box after `preserveAspectRatio` |
 
@@ -38,6 +39,15 @@ Visible means a non-zero box that touches the viewport and passes
 `checkVisibility` with opacity and visibility. SVG files and `data:image/svg`
 are vector, so they are skipped. 2 copies of 1 image at 1 time give 1 sample,
 the larger one, so a copy does not lengthen a warning run.
+
+A sample has `t_sec`, `src`, `natural_px` and `drawn_px`. A video draw adds
+`"source": "video"`, with `src` the file name of `currentSrc`. A draw with
+nearest-neighbour scaling (`imageSmoothingEnabled` false, or CSS
+`image-rendering: pixelated`) adds `"sampling": "nearest"`. The gate passes
+such a draw at a whole-number scale (pixel art).
+
+A report with `0` samples fails the gate. A scene that draws a plate must
+produce samples.
 
 ## Pre-upscaled plates
 
@@ -56,4 +66,4 @@ Limits:
   `clearRect` on it. A canvas that only draws shapes after a seek keeps the
   draws of the seek before.
 - A rotated element reports its bounding box, which is larger than the image.
-- Canvas draws of a canvas, a video or an `ImageBitmap` are not counted.
+- Canvas draws of a canvas or an `ImageBitmap` are not counted.

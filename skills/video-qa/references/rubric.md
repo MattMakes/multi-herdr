@@ -199,7 +199,7 @@ does not identify a file, inspect its evidence and name the file that produced i
 
 VERDICT: <PASS|FAIL>
 
-Numeric gate: <passed|failed> (<k>/20 checks passed, qa/render-check.json)
+Numeric gate: <passed|failed>, exit <code> (<n> pass / <m> skip / <k> fail, qa/render-check.json)
 Average score: <x.xx> / 5. Lowest axis: <axis name> (<score>).
 
 | # | Axis | Score | Reason |

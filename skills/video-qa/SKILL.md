@@ -46,13 +46,21 @@ Optional flags:
 | `--expect` | 4 production gate result files | Repeat to override the expected gate result list |
 | `--probe-forward`, `--probe-reverse` | not set | Probe PNG folders for the render determinism check |
 
-Exit codes: `0` all 20 checks pass, `1` at least 1 check fails, `2` the input
-is bad (missing file, unreadable `timeline.json`, missing `ffmpeg`).
+Each check has a `state`: `pass`, `fail` or `skip`. A skip means the check
+does not apply (no loop, film too short). A check that applies but cannot run
+is a `fail`: missing probes with HTML scenes, a missing or 0-sample raster
+report when a scene draws an image or video, `files_scanned: 0`. The headline
+reads `N pass / M skip / K fail`. `passed` is true only with 0 fails.
+
+Exit codes: `0` no check fails, `1` at least 1 check fails, `2` the input
+is bad (missing file, unreadable `timeline.json`, missing `ffmpeg`). The gate
+deletes the `--out` report first, and exit `2` writes `passed: false` with the
+error. A DONE quotes the exit code, not only the JSON.
 
 The probe folders hold the same file names, for frames `0`, `K` and `2K`. The
 video-editor renders them with the video-render skill: a cold forward pass to
 `probe/forward/` and a warm reverse pass to `probe/reverse/`. Without probe
-folders the render determinism check reports `skipped` and passes.
+folders the render determinism check fails when `scenes/` holds HTML.
 
 Self-test (synthesizes all fixtures in a temp folder, about 10 s):
 
@@ -115,7 +123,7 @@ Comments are not scanned.
 Checks 12 to 17 and 19 read every frame in grey at `96 px` on the long side. The measures,
 thresholds, gate-result defaults and the `raster-sizes.json` format for check 18 are in
 `<skill-dir>/references/motion-checks.md`. Without that file check 18
-reports `skipped` and passes.
+fails when a scene draws an image or video, and skips otherwise.
 
 The gate reads scene bounds from `timeline-master.json` when it exists.
 Otherwise, it reads scene bounds from `timeline.json`. Required fields are:
