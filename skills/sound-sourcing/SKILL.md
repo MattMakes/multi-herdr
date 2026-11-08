@@ -19,6 +19,7 @@ ffmpeg effects and the video pipeline's beat grid belong to the `video-audio` sk
 ## Setup
 
 - `{{PY}}` = `~/.local/state/hark/venv/bin/python`. Run every script as `{{PY}} -I {{SKILL}}/scripts/<name>.py`.
+- The scripts need numpy, scipy and soundfile (and soxr and librosa for some steps). The hark venv Python has them all.
 - `{{HARK}}` = `skills/hark/scripts/hark`, the hark launcher (`{{HARK}} doctor` checks the install).
 - `{{SKILL}}` = this folder. `{{ROOT}}` = the film project root (`--root`, default `.`).
 - Every script prints `--help`. Every script has `--self-test` (generated fixtures, no network).
