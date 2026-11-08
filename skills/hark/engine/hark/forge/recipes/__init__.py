@@ -27,18 +27,19 @@ class UnknownRecipe(KeyError):
     """No recipe of that name."""
 
 
+def _modules(path: Path) -> list[str]:
+    if not path.is_dir():
+        return []
+    return [i.name for i in pkgutil.iter_modules([str(path)]) if not (i.name.startswith("_") or i.ispkg)]
+
+
 def _scan(root: Path) -> dict[str, str]:
     found: dict[str, str] = {}
     for folder in FOLDERS:
-        path = root / folder
-        if not path.is_dir():
-            continue
-        for info in pkgutil.iter_modules([str(path)]):
-            if info.name.startswith("_") or info.ispkg:
-                continue
-            if info.name in found:
-                raise RuntimeError(f"recipe name {info.name!r} is in both {found[info.name]!r} and {folder!r}")
-            found[info.name] = folder
+        for name in _modules(root / folder):
+            if name in found:
+                raise RuntimeError(f"recipe name {name!r} is in both {found[name]!r} and {folder!r}")
+            found[name] = folder
     return found
 
 
