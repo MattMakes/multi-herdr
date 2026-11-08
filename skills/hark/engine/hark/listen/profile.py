@@ -131,9 +131,16 @@ def _round_metrics(m: Mapping[str, Any]) -> dict:
 # ================================================================ media checks
 
 
+def _no_streams(info: Mapping[str, Any]) -> bool:
+    """ffprobe found neither an audio nor a picture stream: the file is not media."""
+    return not info.get("codec") and not info.get("has_video") and not info.get("duration")
+
+
 def _probe_problem(info: Mapping[str, Any]) -> str | None:
     if info.get("probe_error"):
         return f"not a readable audio or video file ({str(info['probe_error'])[:160]})"
+    if _no_streams(info):
+        return "not a readable audio or video file (no audio or video stream)"
     return None if info.get("codec") else "no audio track"
 
 
