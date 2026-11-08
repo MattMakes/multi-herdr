@@ -23,6 +23,8 @@ import types
 from dataclasses import dataclass
 from typing import Any, Callable
 
+from hark.surfaces._flow import attempt, raise_if
+
 SERVER_NAME = "hark"
 COMPACT_LIMIT = 7000
 BODY_LIMIT = 24000
@@ -195,27 +197,37 @@ def clean(obj: Any) -> Any:
     return _clean_scalar(obj)
 
 
+def _native(obj: Any) -> Any:
+    finite = not (isinstance(obj, float) and not math.isfinite(obj))
+    plain = obj is None or isinstance(obj, (bool, int, float, str))
+    return (obj if plain else str(obj)) if finite else None
+
+
 def _clean_scalar(obj: Any) -> Any:
-    if hasattr(obj, "tolist") and not isinstance(obj, (str, bytes)):
-        return clean(obj.tolist())
-    if isinstance(obj, float) and not math.isfinite(obj):
-        return None
-    if obj is None or isinstance(obj, (bool, int, float, str)):
-        return obj
-    return str(obj)
+    array = hasattr(obj, "tolist") and not isinstance(obj, (str, bytes))
+    return clean(obj.tolist()) if array else _native(obj)
+
+
+def _shrink_str(v: str, cap: int, top: bool) -> str:
+    return v[:STRING_CAP] + " ..." if len(v) > STRING_CAP else v
+
+
+def _shrink_list(v: list, cap: int, top: bool) -> list:
+    out = [_shrink(x, cap) for x in v[:cap]]
+    return out + [f"... +{len(v) - cap} more"] if len(v) > cap else out
+
+
+def _shrink_dict(v: dict, cap: int, top: bool) -> dict:
+    return {k: _shrink(x, cap) for k, x in v.items() if not (top and k in ("summary", "text"))}
+
+
+_SHRINKERS: tuple[tuple[type, Callable[[Any, int, bool], Any]], ...] = (
+    (float, lambda v, cap, top: round(v, 3)), (str, _shrink_str), (list, _shrink_list), (dict, _shrink_dict))
 
 
 def _shrink(v: Any, cap: int, top: bool = False) -> Any:
-    if isinstance(v, float):
-        return round(v, 3)
-    if isinstance(v, str):
-        return v[:STRING_CAP] + " ..." if len(v) > STRING_CAP else v
-    if isinstance(v, list):
-        out = [_shrink(x, cap) for x in v[:cap]]
-        return out + [f"... +{len(v) - cap} more"] if len(v) > cap else out
-    if isinstance(v, dict):
-        return {k: _shrink(x, cap) for k, x in v.items() if not (top and k in ("summary", "text"))}
-    return v
+    fn = next((f for kind, f in _SHRINKERS if isinstance(v, kind)), None)
+    return fn(v, cap, top) if fn else v
 
 
 def _dump(v: Any) -> str:
@@ -248,17 +260,23 @@ def compact_json(result: Any) -> str:
     return _drop_fields(small)
 
 
+def _head_body(res: dict, full: bool) -> tuple[str, str]:
+    head, body = str(res.get("summary") or "").strip(), str(res.get("text") or "").strip()
+    cut = not full and len(body) > BODY_LIMIT
+    body = body[:BODY_LIMIT] + f"\n(text cut at {BODY_LIMIT} characters; full=true gives all of it)" if cut else body
+    return ("" if head and body.startswith(head) else head), body
+
+
+def _json_part(res: dict, full: bool) -> str:
+    return ("JSON: " + json.dumps(clean(res), ensure_ascii=False)) if full else "JSON (compact): " + compact_json(res)
+
+
 def format_result(result: Any, full: bool = False, ignored: list[str] | None = None) -> str:
     """Tool text: summary, body, ignored-arguments note and the JSON."""
     res = result if isinstance(result, dict) else {"summary": str(result)}
-    head, body = str(res.get("summary") or "").strip(), str(res.get("text") or "").strip()
-    if head and body.startswith(head):
-        head = ""
-    if not full and len(body) > BODY_LIMIT:
-        body = body[:BODY_LIMIT] + f"\n(text cut at {BODY_LIMIT} characters; full=true gives all of it)"
+    head, body = _head_body(res, full)
     note = f"(this hark version ignored: {', '.join(ignored)})" if ignored else ""
-    js = ("JSON: " + json.dumps(clean(res), ensure_ascii=False)) if full else "JSON (compact): " + compact_json(res)
-    return "\n\n".join(p for p in (head, body, note, js) if p)
+    return "\n\n".join(p for p in (head, body, note, _json_part(res, full)) if p)
 
 
 # ---------------------------------------------------------------- measure summary
@@ -337,13 +355,10 @@ def _norm(p: str) -> str:
 
 def file_arg(value: Any, what: str = "path") -> str:
     """An existing file path, normalized; ToolError otherwise."""
-    if not isinstance(value, str) or not value.strip().strip('"'):
-        raise ToolError(f"{what}: a file path is required")
+    raise_if(not isinstance(value, str) or not value.strip().strip('"'), ToolError(f"{what}: a file path is required"))
     path = _norm(value)
-    if os.path.isdir(path):
-        raise ToolError(f"{what}: {path} is a folder; a file is expected")
-    if not os.path.exists(path):
-        raise ToolError(f"{what}: no such file {path}; {_cwd_note()}")
+    raise_if(os.path.isdir(path), ToolError(f"{what}: {path} is a folder; a file is expected"))
+    raise_if(not os.path.exists(path), ToolError(f"{what}: no such file {path}; {_cwd_note()}"))
     return path
 
 
@@ -455,13 +470,16 @@ def _broken(t: Tool, exc: BaseException) -> str:
 def filter_kwargs(fn: Callable, kwargs: dict[str, Any]) -> tuple[dict[str, Any], list[str]]:
     """Drop null values, then keep only the names that ``fn`` accepts; return the ignored names."""
     given = {k: v for k, v in kwargs.items() if v is not None}
-    try:
-        params = inspect.signature(fn).parameters
-    except (TypeError, ValueError):
-        return given, []
-    if any(p.kind is p.VAR_KEYWORD for p in params.values()):
-        return given, []
-    return {k: v for k, v in given.items() if k in params}, [k for k in given if k not in params]
+    params = _params_of(fn)
+    names = given if params is None else params
+    return {k: v for k, v in given.items() if k in names}, [k for k in given if k not in names]
+
+
+def _params_of(fn: Callable) -> dict | None:
+    """The named parameters of fn, or None when it takes any keyword (or has no signature)."""
+    params = attempt(lambda: inspect.signature(fn).parameters)
+    open_kw = params is None or any(p.kind is p.VAR_KEYWORD for p in params.values())
+    return None if open_kw else dict(params)
 
 
 def _ml_message(exc: BaseException) -> str:
@@ -550,14 +568,16 @@ def t_ab(a: str, b: str, query: str | None = None, refs: Any = None, a_start: fl
     return _run("ab", kw, full)
 
 
+def _realness_row(r: dict) -> str:
+    p = r.get("p_real")
+    cell = f"{p:6.2f}" if isinstance(p, (int, float)) else f"{'-':>6}"
+    name = os.path.basename(str(r.get("path") or r.get("file") or ""))
+    return f"{cell}  {str(r.get('verdict') or '-'):<24} {name}: {r.get('why') or r.get('summary') or ''}"
+
+
 def _realness_text(res: dict) -> str:
-    rows = [str(res.get("summary") or ""), "p_real  verdict                  file: main reason"]
-    for r in res.get("files") or res.get("results") or []:
-        p = r.get("p_real")
-        cell = f"{p:6.2f}" if isinstance(p, (int, float)) else f"{'-':>6}"
-        why = r.get("why") or r.get("summary") or ""
-        rows.append(f"{cell}  {str(r.get('verdict') or '-'):<24} {os.path.basename(str(r.get('path') or r.get('file') or ''))}: {why}")
-    return "\n".join(rows)
+    rows = [_realness_row(r) for r in res.get("files") or res.get("results") or []]
+    return "\n".join([str(res.get("summary") or ""), "p_real  verdict                  file: main reason"] + rows)
 
 
 def _realness_ready() -> None:
@@ -674,10 +694,15 @@ def t_llm_critique(path: str, consent: bool = False, prompt: str | None = None, 
     return _run("llm_critique", kw, full)
 
 
+def _knob_extra(knobs: dict) -> str:
+    pitch = knobs.get("pitch")
+    note = pitch.get("note") if isinstance(pitch, dict) else None
+    return (", apex" if knobs.get("apex") else "") + (f", pitch {note}" if note else "")
+
+
 def _sfx_line(s: dict) -> str:
     knobs = s.get("knobs") or {}
-    pitch = (knobs.get("pitch") or {}).get("note") if isinstance(knobs.get("pitch"), dict) else None
-    extra = (", apex" if knobs.get("apex") else "") + (f", pitch {pitch}" if pitch else "")
+    extra = _knob_extra(knobs)
     kinds = ", ".join(s.get("kinds") or []) or "-"
     return (f"{s.get('id')}: {float(s.get('dur_s') or 0):.3f} s, peak {float(s.get('peak_s') or 0):.3f} s; "
             f"{kinds}; dur {knobs.get('dur')}{extra}")

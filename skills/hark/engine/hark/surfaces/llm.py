@@ -19,6 +19,8 @@ import time
 from pathlib import Path
 from typing import Any
 
+from hark.surfaces._flow import raise_if
+
 AGY_VERDICT = "HEARS"                      # docs/specs/hark/agy-audio-probe.md
 AGY_DEFAULT_MODEL = "gemini-4-argon-high"  # used when --model and HARK_LLM_MODEL are unset
 AGY_TIMEOUT_S = 240
@@ -146,19 +148,30 @@ class AgyProvider:
 
     def _answer(self, proc: subprocess.CompletedProcess, model: str) -> dict[str, Any]:
         data = _json_or_none(proc.stdout or "")
-        err = (proc.stderr or "")[:ERR_CAP]
-        if not isinstance(data, dict):
-            raise ProviderError(f"agy gave no JSON answer (exit {proc.returncode}): {err or (proc.stdout or '')[:ERR_CAP]}")
-        if data.get("finished_reason") or data.get("status") not in (None, "SUCCESS"):
-            raise ProviderError(f"agy stopped: status {data.get('status')}, "
-                                f"finished_reason {data.get('finished_reason')} (exit {proc.returncode})")
-        text = data.get("response")
-        if not isinstance(text, str) or not text.strip():
-            raise ProviderError(f"agy gave an empty answer (exit {proc.returncode}): {err}")
-        return {"text": text, "finish_reason": data.get("finish_reason") or data.get("stop_reason"),
+        _check_agy_json(data, proc)
+        return {"text": data["response"], "finish_reason": data.get("finish_reason") or data.get("stop_reason"),
                 "method": "agy", "files_api_deleted": None,
                 "model_version": data.get("model") or model or "agy-default",
                 "usage": _agy_usage(data.get("usage"))}
+
+
+def _stopped(data: dict) -> bool:
+    return bool(data.get("finished_reason")) or data.get("status") not in (None, "SUCCESS")
+
+
+def _blank(text: Any) -> bool:
+    return not isinstance(text, str) or not text.strip()
+
+
+def _check_agy_json(data: Any, proc: subprocess.CompletedProcess) -> None:
+    """ProviderError when agy gave no JSON, stopped early, or gave an empty answer."""
+    err = (proc.stderr or "")[:ERR_CAP]
+    code = proc.returncode
+    raise_if(not isinstance(data, dict),
+             ProviderError(f"agy gave no JSON answer (exit {code}): {err or (proc.stdout or '')[:ERR_CAP]}"))
+    raise_if(_stopped(data), ProviderError(f"agy stopped: status {data.get('status')}, "
+                                           f"finished_reason {data.get('finished_reason')} (exit {code})"))
+    raise_if(_blank(data.get("response")), ProviderError(f"agy gave an empty answer (exit {code}): {err}"))
 
 
 PROVIDERS: dict[str, type] = {"agy": AgyProvider}
@@ -392,21 +405,32 @@ def _strip_fences(text: str) -> str:
     return re.sub(r"\s*```\s*$", "", t)
 
 
+_BRACES = {"{": 1, "}": -1}
+
+
+def _in_string(state: dict, ch: str) -> bool:
+    esc = state["esc"]
+    state["esc"] = (not esc) and ch == "\\"
+    state["in_str"] = esc or ch != '"'
+    return False
+
+
+def _outside_string(state: dict, ch: str) -> bool:
+    state["in_str"] = ch == '"'
+    state["depth"] += _BRACES.get(ch, 0)
+    return ch == "}" and state["depth"] == 0
+
+
+def _object_end(text: str, i: int) -> int:
+    """The index after the brace that closes the object opened at ``i``, else the text length."""
+    state = {"depth": 0, "in_str": False, "esc": False}
+    steps = (j for j in range(i, len(text)) if (_in_string if state["in_str"] else _outside_string)(state, text[j]))
+    return next(steps, len(text) - 1) + 1
+
+
 def _outer_object(text: str) -> str | None:
     i = text.find("{")
-    if i < 0:
-        return None
-    depth, in_str, esc = 0, False, False
-    for j in range(i, len(text)):
-        ch = text[j]
-        if in_str:
-            esc, in_str = (False, in_str) if esc else (ch == "\\", ch != '"')
-            continue
-        in_str = ch == '"'
-        depth += {"{": 1, "}": -1}.get(ch, 0)
-        if depth == 0:
-            return text[i:j + 1]
-    return text[i:]
+    return text[i:_object_end(text, i)] if i >= 0 else None
 
 
 def _load_obj(cand: str) -> dict | None:
@@ -429,14 +453,10 @@ def parse_json(text: str) -> dict | None:
 
 def seconds_of(v: Any) -> float | None:
     """Seconds from a number or a string like 12.4, 0:12.5, 1:02 or 12.4s; else None."""
-    if isinstance(v, bool):
-        return None
-    if isinstance(v, (int, float)):
-        return float(v)
+    number = isinstance(v, (int, float)) and not isinstance(v, bool)
     m = _SECONDS.match(v) if isinstance(v, str) else None
-    if not m:
-        return None
-    return float(m.group(1) or 0) * 60 + float(m.group(2))
+    clock = float(m.group(1) or 0) * 60 + float(m.group(2)) if m else None
+    return float(v) if number else clock
 
 
 def score_of(v: Any) -> float | None:
@@ -558,24 +578,29 @@ def _span_text(item: dict) -> str:
     return f"{_fmt_time(a)}-{_fmt_time(b)}"
 
 
+def _headed(head: str, rows: list[str]) -> list[str]:
+    return [head] + rows if rows else []
+
+
+def _joined(head: str, sep: str, items: list[str]) -> list[str]:
+    return [head + sep.join(items)] if items else []
+
+
+def _issue_row(i: dict) -> str:
+    return f"  {_span_text(i)} {i['severity']} {i['category']}: {i['problem']} -> fix: {i['fix']}"
+
+
 def _critique_lines(c: dict) -> list[str]:
-    lines = [f"answer: {c['answer']}"] if c.get("answer") else []
     scored = [f"{k} {_num(v)}" for k, v in c["scores"].items() if v is not None]
-    if scored:
-        lines.append("scores (1-10, LLM opinion): " + ", ".join(scored))
-    lines += [f"  {k}: {v}" for k, v in c["notes"].items()]
-    if c["issues"]:
-        lines.append("issues (most severe first; times are file seconds, approximate):")
-        lines += [f"  {_span_text(i)} {i['severity']} {i['category']}: {i['problem']} -> fix: {i['fix']}"
-                  for i in c["issues"]]
-    if c["synthetic_or_cheap"]:
-        lines.append("synthetic or cheap moments:")
-        lines += [f"  {_span_text(i)} {i['what']}: {i['why']}" for i in c["synthetic_or_cheap"]]
-    if c["strengths"]:
-        lines.append("strengths: " + "; ".join(c["strengths"]))
-    if c["top_fixes"]:
-        lines.append("top fixes: " + " | ".join(f"{n}. {f}" for n, f in enumerate(c["top_fixes"], 1)))
-    return lines
+    return ([f"answer: {c['answer']}"] if c.get("answer") else []) \
+        + _joined("scores (1-10, LLM opinion): ", ", ", scored) \
+        + [f"  {k}: {v}" for k, v in c["notes"].items()] \
+        + _headed("issues (most severe first; times are file seconds, approximate):",
+                  [_issue_row(i) for i in c["issues"]]) \
+        + _headed("synthetic or cheap moments:",
+                  [f"  {_span_text(i)} {i['what']}: {i['why']}" for i in c["synthetic_or_cheap"]]) \
+        + _joined("strengths: ", "; ", c["strengths"]) \
+        + _joined("top fixes: ", " | ", [f"{n}. {f}" for n, f in enumerate(c["top_fixes"], 1)])
 
 
 def render(result: dict[str, Any]) -> str:
