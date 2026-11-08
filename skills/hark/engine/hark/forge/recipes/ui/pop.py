@@ -181,9 +181,8 @@ def _cut_point(x: np.ndarray, p: dict, end: int, head: int) -> int:
     return min(len(x), max(end, died), head + L.n_of(0.42))
 
 
-def render_v1(p: dict, rng: np.random.Generator) -> np.ndarray:
-    """Version 1: the bubble pop, mono float64 at 48 kHz (about 0.2-0.45 s with the edit)."""
-    p = L.merged(DEFAULTS, p)
+def _v1_signal(p: dict, rng: np.random.Generator) -> tuple[np.ndarray, int]:
+    """The bubble event with its optional leak, the pre-roll and the room; also the leak length."""
     x = _v1_event(p, rng, L.n_of(V1_N_S))
     lead = 0
     if p["swell_amp"] > 0.01:
@@ -191,11 +190,23 @@ def render_v1(p: dict, rng: np.random.Generator) -> np.ndarray:
         lead = len(leak)
         x = np.concatenate([leak, x])
     x = np.concatenate([np.zeros(L.n_of(p["pre"])), x])
-    x = np.asarray(dsp.room(x, rng, rt60=p["rt60"], size=p["size"], damp=p["damp"], wet=p["wet"]), dtype=float)
+    x = dsp.room(x, rng, rt60=p["rt60"], size=p["size"], damp=p["damp"], wet=p["wet"])
+    return np.asarray(x, dtype=float), lead
+
+
+def _v1_early_finish(x: np.ndarray, p: dict, rng: np.random.Generator) -> np.ndarray:
+    """The early-round finish (sets without `clip`): mic, tail trim and a short fade."""
+    x = dsp.mic(x, rng, air_db=p["air_db"], floor_db=p["floor_db"])
+    x = dsp.trim_tail(np.asarray(x, dtype=float), -62.0, 0.02)
+    return np.asarray(dsp.fade(x, 0.001, 0.02), dtype=np.float64)
+
+
+def render_v1(p: dict, rng: np.random.Generator) -> np.ndarray:
+    """Version 1: the bubble pop, mono float64 at 48 kHz (about 0.2-0.45 s with the edit)."""
+    p = L.merged(DEFAULTS, p)
+    x, lead = _v1_signal(p, rng)
     if "clip" not in p:
-        x = dsp.mic(x, rng, air_db=p["air_db"], floor_db=p["floor_db"])
-        x = dsp.trim_tail(np.asarray(x, dtype=float), -62.0, 0.02)
-        return np.asarray(dsp.fade(x, 0.001, 0.02), dtype=np.float64)
+        return _v1_early_finish(x, p, rng)
     x = dsp.butter(dsp.butter(x, "high", p["hp"], 4), "low", p["lp"], 2)
     x = np.asarray(dsp.mic(x, rng, air_db=p["air_db"], floor_db=p["floor_db"]), dtype=float)
     head = L.n_of(p["pre"]) + lead
@@ -359,6 +370,26 @@ def _moving_pitch(p: dict, n: int, f0: float, f1: float) -> np.ndarray:
     return np.exp(math.log(f1) + (math.log(f0) - math.log(f1)) * gl)
 
 
+def _moving_overtones(y: np.ndarray, p: dict, r: np.random.Generator, f: np.ndarray, ph: np.ndarray,
+                      dec: np.ndarray) -> np.ndarray:
+    """W4 overtones: harmonics 2 and 3, and an inharmonic second mode at n_m2r."""
+    if p["n_h2"] > 0:
+        y = y + p["n_h2"] * _fade_hi(f, 2) * dec * np.sin(2 * ph + 0.5)
+    if p["n_h3"] > 0:
+        y = y + p["n_h3"] * _fade_hi(f, 3) * dec ** 2 * np.sin(3 * ph + 1.1)
+    if p["n_m2"] > 0:
+        ph2 = np.cumsum(2 * np.pi * f * p["n_m2r"] / L.SR) + r.uniform(0, 2 * np.pi)
+        y = y + p["n_m2"] * _fade_hi(f, p["n_m2r"]) * dec ** p["n_m2d"] * np.sin(ph2)
+    return y
+
+
+def _moving_breath(p: dict, r: np.random.Generator, f: np.ndarray, env: np.ndarray, k: int) -> np.ndarray:
+    """W4 breath: pitch-tracking band noise at n_breath dB under the body envelope."""
+    b = _svf_noise(r, len(env), np.minimum(f, 16000.0), p["c_bq"])
+    b = b * math.sqrt(0.5) / (L.rms(b[:k]) + 1e-12)
+    return 10 ** (p["n_breath"] / 20) * b * env
+
+
 def moving_pop(p: dict, r: np.random.Generator, n: int, f0: float, f1: float, tau: float,
                att: float) -> np.ndarray:
     """W4: one round body whose log pitch travels from f0 to f1 during the decay."""
@@ -367,21 +398,11 @@ def moving_pop(p: dict, r: np.random.Generator, n: int, f0: float, f1: float, ta
     ph = np.cumsum(2 * np.pi * f / L.SR) + r.uniform(0, 2 * np.pi)
     env_r = 0.5 - 0.5 * np.cos(np.pi * np.clip(t / att, 0, 1))
     dec = np.exp(-np.maximum(t - att, 0) / tau)
-    y = np.sin(ph)
-    if p["n_h2"] > 0:
-        y = y + p["n_h2"] * _fade_hi(f, 2) * dec * np.sin(2 * ph + 0.5)
-    if p["n_h3"] > 0:
-        y = y + p["n_h3"] * _fade_hi(f, 3) * dec ** 2 * np.sin(3 * ph + 1.1)
-    if p["n_m2"] > 0:
-        ph2 = np.cumsum(2 * np.pi * f * p["n_m2r"] / L.SR) + r.uniform(0, 2 * np.pi)
-        y = y + p["n_m2"] * _fade_hi(f, p["n_m2r"]) * dec ** p["n_m2d"] * np.sin(ph2)
+    y = _moving_overtones(np.sin(ph), p, r, f, ph, dec)
     env = env_r * dec
     y = y * env
     if p["n_breath"] > -59:
-        b = _svf_noise(r, n, np.minimum(f, 16000.0), p["c_bq"])
-        k = min(n, max(16, L.n_of(att + tau)))
-        b = b * math.sqrt(0.5) / (L.rms(b[:k]) + 1e-12)
-        y = y + 10 ** (p["n_breath"] / 20) * b * env
+        y = y + _moving_breath(p, r, f, env, min(n, max(16, L.n_of(att + tau))))
     return y
 
 
@@ -451,33 +472,43 @@ def _pre_blip(y: np.ndarray, p: dict, t0: float) -> None:
         y[:kk] += 0.5 * g * ring * np.clip(tt / 0.0015, 0, 1)
 
 
+def _chirp_pitch(p: dict, s: np.ndarray, u: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """W6 steps 3-5: the eased log pitch, the optional steps and gate, and the landing drop."""
+    lo, hi = math.log(p["f_lo"]), math.log(p["f_hi"])
+
+    def log_at(v):
+        return hi + (lo - hi) * v ** p["ease"]
+
+    lp, gate = log_at(u), np.ones(len(s))
+    if p["steps"] > 0:
+        lp, gate = _step_gate(p, s, lp, log_at)
+    if p["land_drop"] > 0:
+        lp = lp - math.log(2) * p["land_drop"] / 12 * (1 - np.exp(-np.maximum(s - p["sweep"], 0) / 0.02))
+    return np.exp(lp), gate
+
+
+def _chirp_env(p: dict, s: np.ndarray, u: np.ndarray, gate: np.ndarray, i0: int) -> np.ndarray:
+    """W6 level curve times the step gate, silent before the start, with a 0.8 ms raised-cosine onset."""
+    env = np.where(s < 0, 0.0, _chirp_level(p, s, u) * gate)
+    a = max(0, min(L.n_of(0.0008), len(s) - i0))
+    env[i0:i0 + a] *= 0.5 - 0.5 * np.cos(np.linspace(0, np.pi, a))
+    return env
+
+
 def designed_chirp(p: dict, r: np.random.Generator) -> np.ndarray:
     """W6: the stepped or smooth designed chirp (or W3 / W5 when switched on)."""
     if p["n6"] > 0.5:
         return natural_pop(p, r)
     if p["c_nat"] > 0.5:
         return natural_chirp(p, r)
-    pre_on = p["pre_db"] > -39
-    t0 = p["pre_t"] if pre_on else 0.0
+    t0 = p["pre_t"] if p["pre_db"] > -39 else 0.0
     n = L.n_of(t0 + p["sweep"] + p["tail_hold"] + 5.5 * p["tail_tau"] + p["fade"] + 0.002)
     s = L.t_of(n) - t0
     u = np.clip(s / p["sweep"], 0, 1)
-    lo, hi = math.log(p["f_lo"]), math.log(p["f_hi"])
-
-    def log_at(v):
-        return hi + (lo - hi) * v ** p["ease"]
-
-    lp, gate = log_at(u), np.ones(n)
-    if p["steps"] > 0:
-        lp, gate = _step_gate(p, s, lp, log_at)
-    if p["land_drop"] > 0:
-        lp = lp - math.log(2) * p["land_drop"] / 12 * (1 - np.exp(-np.maximum(s - p["sweep"], 0) / 0.02))
-    f = np.exp(lp)
+    f, gate = _chirp_pitch(p, s, u)
     y = harmonics(np.cumsum(2 * np.pi * f / L.SR) + r.uniform(0, 2 * np.pi), f, p["harm"], p["odd"])
-    env = np.where(s < 0, 0.0, _chirp_level(p, s, u) * gate)
     i0 = L.n_of(t0) if t0 > 0 else 0
-    a = max(0, min(L.n_of(0.0008), n - i0))
-    env[i0:i0 + a] *= 0.5 - 0.5 * np.cos(np.linspace(0, np.pi, a))
+    env = _chirp_env(p, s, u, gate, i0)
     return _chirp_layers(y * env, p, r, f, env, t0, i0)
 
 

@@ -98,6 +98,15 @@ def _rattle(env: np.ndarray, p: dict, r: np.random.Generator, kr: np.random.Gene
             env[i:] += 10 ** (lvl_db / 20) * np.exp(-t / tau) * np.minimum(1.0, t / 0.0004)
 
 
+def _tink_partial(t: np.ndarray, f: float, glide: float, r: np.random.Generator) -> np.ndarray:
+    """The phase of 1 tink partial: a fixed tone, or a tone that glides by `glide` semitones in about 5 ms."""
+    f1 = f * (1 + 0.003 * r.standard_normal())
+    if glide == 0:
+        return 2 * np.pi * f1 * t
+    fi = np.minimum(f1 * 2 ** ((glide / 12) * (1 - np.exp(-t / 0.005))), 17000.0)
+    return 2 * np.pi * np.cumsum(fi) / L.SR
+
+
 def _tink(y: np.ndarray, p: dict, r: np.random.Generator, kr: np.random.Generator, k_hit: int,
           ridge_k: float) -> None:
     fs = np.sort(kr.uniform(5000, 12500, 3)) * ridge_k
@@ -107,14 +116,8 @@ def _tink(y: np.ndarray, p: dict, r: np.random.Generator, kr: np.random.Generato
         return
     t = L.t_of(m)
     tk = np.zeros(m)
-    gl = p["tink_glide"]
     for f, a, tau in zip(fs, (1.0, 0.6, 0.4), taus):
-        f1 = f * (1 + 0.003 * r.standard_normal())
-        if gl != 0:
-            fi = np.minimum(f1 * 2 ** ((gl / 12) * (1 - np.exp(-t / 0.005))), 17000.0)
-            ph = 2 * np.pi * np.cumsum(fi) / L.SR
-        else:
-            ph = 2 * np.pi * f1 * t
+        ph = _tink_partial(t, f, p["tink_glide"], r)
         tk += a * np.exp(-t / tau) * np.sin(ph + r.uniform(0, 6.28))
     ramp = min(24, m)
     tk[:ramp] *= np.arange(ramp) / 24
@@ -141,24 +144,41 @@ def _edit(y: np.ndarray, gate: float, end: int) -> np.ndarray:
     return out
 
 
-def one_key(p: dict, r: np.random.Generator, force: float = 1.0, ridge_k: float = 1.0) -> np.ndarray:
-    """One mono key tick: touch, hit, optional rattle, tink and release, then the edit."""
-    kr = key_rng(p["key"])
+def _key_frame(p: dict, r: np.random.Generator) -> tuple[float, bool, float, int]:
+    """The key's length, whether it has a release, the release time and the sample count."""
     length = p["length"] * (1 + 0.06 * r.standard_normal())
     rel_on = p["rel_db"] > OFF_DB
     t_rel = p["touch_dt"] + p["rel_dt"] * (1 + 0.08 * r.standard_normal())
     n = L.n_of(max(length, t_rel + 0.025 if rel_on else 0.0))
-    ridge = p["ridge"] * ridge_k * (1 + 0.015 * r.standard_normal())
+    return length, rel_on, t_rel, n
+
+
+def _key_noise(p: dict, r: np.random.Generator, n: int) -> np.ndarray:
+    """White noise, mixed with velvet grain when `grain` > 0."""
     w = r.standard_normal(n)
     if p["grain"] > 0:
         w = (1 - p["grain"]) * w + p["grain"] * _velvet(n, r, p["grain_rate"])
+    return w
+
+
+def _key_env(p: dict, r: np.random.Generator, n: int) -> tuple[np.ndarray, int, float]:
+    """The touch and hit envelope (Y2), the hit sample and the tail level."""
     k_hit = min(n, L.n_of(p["touch_dt"] * (1 + 0.1 * r.standard_normal())))
     tail = 10 ** ((p["tail_db"] + 1.5 * r.standard_normal()) / 20)
     hit = np.zeros(n)
     hit[k_hit:] = burst_env(n - k_hit, 0.6 * p["att"], p["att_curve"], p["tau1"], tail, p["tau2"])
     touch = 10 ** (p["touch_db"] / 20) * burst_env(n, p["att"], p["att_curve"], 0.7 * p["tau1"], 0.3 * tail,
                                                     0.5 * p["tau2"])
-    env = np.maximum(hit, touch)
+    return np.maximum(hit, touch), k_hit, tail
+
+
+def one_key(p: dict, r: np.random.Generator, force: float = 1.0, ridge_k: float = 1.0) -> np.ndarray:
+    """One mono key tick: touch, hit, optional rattle, tink and release, then the edit."""
+    kr = key_rng(p["key"])
+    length, rel_on, t_rel, n = _key_frame(p, r)
+    ridge = p["ridge"] * ridge_k * (1 + 0.015 * r.standard_normal())
+    w = _key_noise(p, r, n)
+    env, k_hit, tail = _key_env(p, r, n)
     if p["rattle_db"] > OFF_DB:
         _rattle(env, p, r, kr, k_hit)
     y = band(w * env, p, ridge=min(ridge, 16000.0))
