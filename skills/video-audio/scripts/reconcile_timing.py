@@ -71,53 +71,112 @@ def time_map(old_edges, new_edges):
     return move
 
 
+RANGE_KEYS = ("hero_sec", "payoff_breakdown_sec")
+
+
+def _scene_edges(scenes):
+    """Return every scene start and the end of the last scene."""
+    last = scenes[-1]
+    return [scene["start_sec"] for scene in scenes] + [last["start_sec"] + last["duration_sec"]]
+
+
+def _record_voice(scene, vo_durations):
+    """Record vo_duration_sec on a narrated scene. Return it rounded, or None."""
+    vo = vo_durations.get(scene["id"])
+    narrated = vo is not None
+    if narrated:
+        scene["vo_duration_sec"] = round(vo, 3)
+    return scene["vo_duration_sec"] if narrated else None
+
+
+def _grown_end(start, vo, planned, beat):
+    """Return the end of a scene that grows to its voice plus the pad, snapped up to a beat.
+
+    Return None when the voice plus the pad fits in the planned duration.
+    """
+    grows = vo is not None and round(vo + BREATH_PAD_SEC, 3) > planned
+    end = start + (vo or 0.0) + BREATH_PAD_SEC
+    snapped = math.ceil(end / beat - 1e-6) * beat if beat else end
+    return snapped if grows else None
+
+
+def _grow(scene, start, vo, beat):
+    """Grow the scene when its voice plus the pad is longer than planned. Return its end."""
+    planned = scene["duration_sec"]
+    end = _grown_end(start, vo, planned, beat)
+    scene["duration_sec"] = planned if end is None else round(end - start, 3)
+    return start + planned if end is None else end
+
+
+def _change_list(scene, planned):
+    """Return [the change entry] when the scene grew, else []."""
+    grew = scene["duration_sec"] != planned
+    change = {"scene": scene["id"], "old_duration_sec": planned,
+              "new_duration_sec": scene["duration_sec"]}
+    return [change] if grew else []
+
+
+def _fit_scene(scene, start, plan):
+    """Set the scene start, record its voice and grow it to fit. Return its end."""
+    scene["start_sec"] = round(start, 3)
+    planned = scene["duration_sec"]
+    end = _grow(scene, start, _record_voice(scene, plan["vo"]), plan["beat"])
+    plan["changes"].extend(_change_list(scene, planned))
+    return end
+
+
+def _lay_out(scenes, vo_durations, beat):
+    """Lay the scenes end to end from 0 s. Return (new_edges, changes)."""
+    edges, changes = [0.0], []
+    plan = {"vo": vo_durations, "beat": beat, "changes": changes}
+    for scene in scenes:
+        edges.append(_fit_scene(scene, edges[-1], plan))
+    return [round(edge, 3) for edge in edges], changes
+
+
+def _beat_marks(scene, beat):
+    """Return beat_in and beat_out of the scene on the beat grid."""
+    return {"beat_in": round(scene["start_sec"] / beat),
+            "beat_out": round((scene["start_sec"] + scene["duration_sec"]) / beat)}
+
+
+def _set_beats(scenes, beat):
+    """With a beat grid, recompute beat_in and beat_out of every scene from its edges."""
+    targets = scenes if beat else []
+    marks = [_beat_marks(scene, beat) for scene in targets]
+    for scene, mark in zip(targets, marks):
+        scene.update(mark)
+
+
+def _move_rhythm(item, move):
+    """Move 1 rhythm stretch and its events with the scenes."""
+    item["start_sec"] = move(item["start_sec"])
+    item["end_sec"] = move(item["end_sec"])
+    item.update({"events_sec": [move(t) for t in item["events_sec"]]} if "events_sec" in item else {})
+
+
+def _move_times(timeline, move):
+    """Move rhythm, the meta ranges and meta.allowed_silences with the scenes."""
+    meta = timeline["meta"]
+    for item in timeline.get("rhythm", []):
+        _move_rhythm(item, move)
+    meta.update({key: [move(t) for t in meta[key]] for key in RANGE_KEYS if key in meta})
+    silences = meta.get("allowed_silences")
+    moved = [[move(a), move(b)] for a, b in silences or []]
+    meta.update({"allowed_silences": moved} if silences is not None else {})
+
+
 def reconcile(timeline, vo_durations):
     """Apply the timing rule in place. vo_durations maps a scene id to seconds.
 
     Return the changed scenes as [{"scene", "old_duration_sec", "new_duration_sec"}].
     """
-    scenes = timeline["scenes"]
-    old_edges = [scene["start_sec"] for scene in scenes]
-    old_edges.append(scenes[-1]["start_sec"] + scenes[-1]["duration_sec"])
-    meta = timeline["meta"]
-    beat = 60.0 / meta["bpm"] if "bpm" in meta else None
-    changes = []
-    start = 0.0
-    new_edges = []
-    for scene in scenes:
-        scene["start_sec"] = round(start, 3)
-        new_edges.append(scene["start_sec"])
-        end = start + scene["duration_sec"]
-        if scene["id"] in vo_durations:
-            vo = round(vo_durations[scene["id"]], 3)
-            scene["vo_duration_sec"] = vo
-            planned = scene["duration_sec"]
-            if round(vo + BREATH_PAD_SEC, 3) > planned:
-                end = start + vo + BREATH_PAD_SEC
-                if beat:
-                    end = math.ceil(end / beat - 1e-6) * beat
-                scene["duration_sec"] = round(end - start, 3)
-                changes.append({"scene": scene["id"], "old_duration_sec": planned,
-                                "new_duration_sec": scene["duration_sec"]})
-        start = end
-    new_edges.append(round(start, 3))
-    meta["duration_sec"] = round(start, 3)
-    if beat:
-        for scene in scenes:
-            scene["beat_in"] = round(scene["start_sec"] / beat)
-            scene["beat_out"] = round((scene["start_sec"] + scene["duration_sec"]) / beat)
-
-    move = time_map(old_edges, new_edges)
-    for item in timeline.get("rhythm", []):
-        item["start_sec"] = move(item["start_sec"])
-        item["end_sec"] = move(item["end_sec"])
-        if "events_sec" in item:
-            item["events_sec"] = [move(t) for t in item["events_sec"]]
-    for key in ("hero_sec", "payoff_breakdown_sec"):
-        if key in meta:
-            meta[key] = [move(t) for t in meta[key]]
-    if "allowed_silences" in meta:
-        meta["allowed_silences"] = [[move(a), move(b)] for a, b in meta["allowed_silences"]]
+    old_edges = _scene_edges(timeline["scenes"])
+    beat = 60.0 / timeline["meta"]["bpm"] if "bpm" in timeline["meta"] else None
+    new_edges, changes = _lay_out(timeline["scenes"], vo_durations, beat)
+    timeline["meta"]["duration_sec"] = new_edges[-1]
+    _set_beats(timeline["scenes"], beat)
+    _move_times(timeline, time_map(old_edges, new_edges))
     return changes
 
 
