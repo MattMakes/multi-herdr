@@ -182,3 +182,34 @@ def tiny(monkeypatch):
     real = registry._table
     monkeypatch.setattr(registry, "_table", lambda: {**real(), TINY: "ui"})
     return mod
+
+
+# ---------------------------------------------------------------- model-free test critic
+
+class ToyCritic:
+    """A model-free critic: prefers a spectral centroid near 1500 Hz."""
+
+    def __init__(self, flat: bool = False, refs=None):
+        self.flat, self.refs, self.calls = flat, list(refs or []), 0
+        self.tone_target, self.polish_ref, self.study = None, None, {}
+        self.target, self.alts = "a short bright ping", []
+
+    def _row(self, x):
+        m = np.asarray(x, dtype=float)
+        m = m.mean(axis=1) if m.ndim == 2 else m
+        P = np.abs(np.fft.rfft(m)) ** 2
+        f = np.fft.rfftfreq(len(m), 1 / SR)
+        c = float((P * f).sum() / (P.sum() + 1e-30))
+        total = 1.0 if self.flat else 3.0 - abs(math.log2(c / 1500.0))
+        return {"total": total, "passes": total > 2.0, "match_z": total, "p_real": 0.9, "ref_typ_z": None,
+                "feat_pen": 0.0, "summary": f"centroid {c:.0f} Hz"}
+
+    def score(self, xs, E=None, exclude=None):
+        self.calls += 1
+        return [dict(self._row(x), i=i) for i, x in enumerate(xs)]
+
+
+@pytest.fixture
+def toy_critic():
+    """Factory of model-free critics: toy_critic(flat=False, refs=None)."""
+    return ToyCritic
