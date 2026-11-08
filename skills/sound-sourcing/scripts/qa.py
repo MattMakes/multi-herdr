@@ -767,19 +767,27 @@ def section_coverage(ctx, groups) -> dict:
             "unsounded_classes": never, "placed_but_silent": placed_silent}
 
 
+def _load_api():
+    import importlib
+    return importlib.import_module("hark.core.api")  # the flat API that `import hark` forwards to
+
+
 def import_hark():
+    """The hark API, from the venv or from the sibling skill's engine folder; None when absent."""
     try:
-        import hark.api as api  # noqa: F401
-        return api
+        return _load_api()
     except ImportError:
-        eng = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "../../hark/engine"))
-        if os.path.isdir(eng) and eng not in sys.path:
-            sys.path.insert(0, eng)
-            try:
-                import hark.api as api  # noqa: F811
-                return api
-            except ImportError:
-                return None
+        pass
+    eng = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "../../hark/engine"))
+    if not os.path.isdir(eng):
+        return None
+    if eng not in sys.path:
+        sys.path.insert(0, eng)
+    for name in [m for m in sys.modules if m == "hark" or m.startswith("hark.")]:
+        del sys.modules[name]
+    try:
+        return _load_api()
+    except ImportError:
         return None
 
 
