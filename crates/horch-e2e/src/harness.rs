@@ -488,6 +488,7 @@ fn choose_harness_root(preferred: &Path, fallback: &Path, preferred_writable: bo
     }
     let socket = fallback
         .join("state/prime/ffffffffffff")
+        // SAFETY: getuid has no preconditions and cannot fail.
         .join(format!("prime-agent-{}/d.sock", unsafe { libc::getuid() }));
     let socket_len = socket.as_os_str().as_encoded_bytes().len();
     assert!(
