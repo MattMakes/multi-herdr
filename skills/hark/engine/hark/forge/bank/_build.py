@@ -221,8 +221,6 @@ def _same_as_wav(raw: np.ndarray, block: dict, wav: str) -> None:
 
 
 def _pick_entry(report: dict, pick: dict, folder: str, category: str) -> tuple[str, dict, np.ndarray]:
-    from hark.forge.engine import schema
-
     block, raw = _pick_render(report, pick)
     _same_as_wav(raw, block, os.path.join(folder, os.path.basename(pick.get("file") or f"{pick.get('name')}.wav")))
     member = block.get("member") or pick.get("name")

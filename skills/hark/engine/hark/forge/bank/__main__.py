@@ -20,6 +20,14 @@ from pathlib import Path
 def _parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="python -m hark.forge.bank", description="build and check the hark bank files")
     sub = p.add_subparsers(dest="command", required=True)
+    _add_build(sub)
+    _add_fit_parser(sub)
+    c = sub.add_parser("check", help="re-render entries against their fingerprints")
+    c.add_argument("ids", nargs="*")
+    return p
+
+
+def _add_build(sub: argparse._SubParsersAction) -> None:
     b = sub.add_parser("build", help="write a bank file")
     b.add_argument("dirs", nargs="*", help="forge final folders (glob patterns allowed)")
     b.add_argument("-o", "--out", required=True)
@@ -29,6 +37,9 @@ def _parser() -> argparse.ArgumentParser:
     mode.add_argument("--derive", action="store_true", help="the forge file from the recipe family tables")
     b.add_argument("--version", dest="tag")
     b.add_argument("--ref-clap", help="JSON file {id: cosine} of fresh originality values (forge04)")
+
+
+def _add_fit_parser(sub: argparse._SubParsersAction) -> None:
     f = sub.add_parser("add-fit", help="add one fit entry")
     f.add_argument("model")
     f.add_argument("--id", required=True, dest="sound_id")
@@ -40,9 +51,6 @@ def _parser() -> argparse.ArgumentParser:
     f.add_argument("--notes")
     f.add_argument("--allow-license", action="store_true")
     f.add_argument("--force", action="store_true")
-    c = sub.add_parser("check", help="re-render entries against their fingerprints")
-    c.add_argument("ids", nargs="*")
-    return p
 
 
 def _build(args: argparse.Namespace) -> int:
