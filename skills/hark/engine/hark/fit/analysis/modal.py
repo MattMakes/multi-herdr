@@ -78,23 +78,27 @@ def onsets(x: np.ndarray, rel: float = 0.2, floor_db: float = -36, min_gap_ms: f
            max_n: int = 10) -> list[int]:
     """Strike onsets in samples."""
     x = np.asarray(x, dtype=float)
-    if x.size == 0 or not np.any(x):
-        return [0]
+    out = [0]
+    if x.size and np.any(x):
+        out = _found_onsets(x, rel, floor_db, min_gap_ms, max_n)
+    return out
+
+
+def _found_onsets(x: np.ndarray, rel: float, floor_db: float, min_gap_ms: float, max_n: int) -> list[int]:
     flux, e, centre = onset_strength(x)
-    cands = _onset_candidates(flux, e, rel, floor_db)
-    found = []
-    for k in cands:
-        c = int(centre[k])
-        if _skip_candidate(x, c):
-            continue
-        found.append([_refine(x, c), float(flux[k])])
-    found = _gap_filter(found, min_gap_ms)
-    if not found:
-        return [int(np.argmax(np.abs(x) >= 0.1 * np.max(np.abs(x))))]
-    if len(found) > max_n:
-        keep = sorted(np.argsort([-f[1] for f in found], kind="stable")[:max_n])
-        found = [found[i] for i in keep]
-    return [int(f[0]) for f in found]
+    found = [[_refine(x, int(centre[k])), float(flux[k])]
+             for k in _onset_candidates(flux, e, rel, floor_db) if not _skip_candidate(x, int(centre[k]))]
+    found = _strongest(_gap_filter(found, min_gap_ms), max_n)
+    if found:
+        return [int(f[0]) for f in found]
+    return [int(np.argmax(np.abs(x) >= 0.1 * np.max(np.abs(x))))]
+
+
+def _strongest(found: list, max_n: int) -> list:
+    if len(found) <= max_n:
+        return found
+    keep = sorted(np.argsort([-f[1] for f in found], kind="stable")[:max_n])
+    return [found[i] for i in keep]
 
 
 def _onset_candidates(flux: np.ndarray, e: np.ndarray, rel: float, floor_db: float) -> list[int]:
@@ -149,10 +153,16 @@ def fade_out(x: np.ndarray, cands=(0.005, 0.01, 0.02, 0.03, 0.05, 0.1, 0.25),
              gain_db: float = 0.5) -> float:
     """Length (s) of a linear fade at the end of x, or 0 when there is none."""
     x = np.asarray(x, dtype=float)
+    pts = _tail_points(x)
+    return 0.0 if pts is None else _best_fade(*pts, cands, gain_db)
+
+
+def _tail_points(x: np.ndarray):
+    """Tail envelope points (t, env dB, length s, window s), or None when too short."""
     hop = SR // 1000
     nh = len(x) // hop
     if nh < 20:
-        return 0.0
+        return None
     from scipy.ndimage import convolve1d
     from hark.fit.analysis._common import hann_norm
     p = convolve1d(x ** 2, hann_norm(8 * hop), mode="nearest")
@@ -161,14 +171,13 @@ def fade_out(x: np.ndarray, cands=(0.005, 0.01, 0.02, 0.03, 0.05, 0.1, 0.25),
     T = len(x) / SR
     W = min(0.45 * T, 0.6)
     sel = (t >= T - W) & (env >= env.max() - 80)
-    if sel.sum() < 10:
-        return 0.0
-    ts, es = t[sel], env[sel]
+    return (t[sel], env[sel], T, W) if sel.sum() >= 10 else None
+
+
+def _best_fade(ts, es, T, W, cands, gain_db) -> float:
     base = _ramp_error(ts, es, T, 0.0)
     best, best_err = 0.0, base
-    for L in cands:
-        if L > W / 2:
-            continue
+    for L in (c for c in cands if c <= W / 2):
         err = _ramp_error(ts, es, T, L)
         if err < best_err:
             best, best_err = L, err
@@ -199,16 +208,21 @@ def _unfade(m: np.ndarray, fo: float) -> tuple[np.ndarray, int]:
 def esprit(s: np.ndarray, kmax: int = 16, dyn_db: float = 60) -> tuple[np.ndarray, int]:
     """Poles of a sum of damped exponentials, model order by MDL."""
     s = np.asarray(s)
+    out = (np.zeros(0, dtype=complex), 0)
+    if len(s) >= 12:
+        out = _esprit_poles(s, kmax, dyn_db)
+    return out
+
+
+def _esprit_poles(s: np.ndarray, kmax: int, dyn_db: float) -> tuple[np.ndarray, int]:
     N = len(s)
-    if N < 12:
-        return np.zeros(0, dtype=complex), 0
     L = max(4, N // 3)
     M = N - L + 1
     H = np.lib.stride_tricks.sliding_window_view(s, M)[:L]
     try:
         U, sv, _ = np.linalg.svd(H, full_matrices=False)
     except np.linalg.LinAlgError:
-        return np.zeros(0, dtype=complex), 0
+        sv = np.zeros(0)
     k = _mdl_order(sv, L, M, kmax, dyn_db)
     if k == 0:
         return np.zeros(0, dtype=complex), 0
@@ -256,23 +270,33 @@ def _band_mask(f: np.ndarray, lo: float, hi: float, tw: float) -> np.ndarray:
 
 
 def _one_band(X, f, Ns, nfft, lo, hi, kmax, nmax) -> list[tuple[float, float]]:
+    base = _baseband(X, f, Ns, lo, hi)
+    out = []
+    if base is not None:
+        d, fc, fs_d = base
+        for w in _band_windows(d, nmax):
+            out += _poles_to_modes(esprit(w, kmax)[0], fc, fs_d, lo, hi)
+    return out
+
+
+def _baseband(X, f, Ns, lo, hi):
+    """Band lo..hi shifted to 0 Hz and decimated: (signal, centre, rate), or None when too short."""
     B = hi - lo
     tw = max(0.15 * B, 8.0)
     D = max(1, min(int(SR / (1.15 * (B + 4 * tw))), Ns // 48))
     if Ns // D < 16:
-        return []
+        return None
     fc = 0.5 * (lo + hi)
     a = ifft(X * _band_mask(f, lo, hi, tw))[:Ns]
-    d = (a * np.exp(-2j * np.pi * fc * np.arange(Ns) / SR))[::D]
-    fs_d = SR / D
+    return (a * np.exp(-2j * np.pi * fc * np.arange(Ns) / SR))[::D], fc, SR / D
+
+
+def _band_windows(d: np.ndarray, nmax: int) -> list[np.ndarray]:
     wins = [d[:nmax]]
     s2 = 3 * nmax // 4
     if len(d) > s2 + nmax // 2 and np.mean(np.abs(d[s2:s2 + nmax]) ** 2) > 1e-4 * np.mean(np.abs(d[:nmax]) ** 2):
         wins.append(d[s2:s2 + nmax])
-    out = []
-    for w in wins:
-        out += _poles_to_modes(esprit(w, kmax)[0], fc, fs_d, lo, hi)
-    return out
+    return wins
 
 
 def _poles_to_modes(z, fc, fs_d, lo, hi) -> list[tuple[float, float]]:
@@ -405,11 +429,13 @@ def _energy(c: np.ndarray, taus) -> np.ndarray:
 
 def _mode_signal(n: int, starts, freqs, taus, c, end: int | None = None) -> np.ndarray:
     y = np.zeros(n)
-    if not len(freqs):
-        return y
-    end = n if end is None else min(int(end), n)
-    starts = np.asarray(starts, dtype=int)
-    taus = np.asarray(taus, dtype=float)
+    if len(freqs):
+        _add_modes(y, np.asarray(starts, dtype=int), freqs, np.asarray(taus, dtype=float), c,
+                   n if end is None else min(int(end), n))
+    return y
+
+
+def _add_modes(y: np.ndarray, starts: np.ndarray, freqs, taus: np.ndarray, c, end: int) -> None:
     z = _poles(freqs, taus)
     for s in np.unique(starts):
         idx = np.flatnonzero(starts == s)
@@ -419,7 +445,6 @@ def _mode_signal(n: int, starts, freqs, taus, c, end: int | None = None) -> np.n
             c1 = min(stop, c0 + 8192)
             k = np.arange(c0 - s, c1 - s)
             y[c0:c1] += np.real(np.exp(np.multiply.outer(k, lz)) @ c[idx])
-    return y
 
 
 # ================================================================ the passes
@@ -443,14 +468,16 @@ def _new_modes(work, st, end, opts) -> list:
     seg = work[c0:min(end, c0 + int(opts["analysis_s"] * SR))]
     cands = _dedupe(_band_candidates(seg, opts["kmax"], opts["nmax"]), st["carry"] + st["own"])
     room = opts["max_modes"] - len(st["own"])
-    if not cands or room <= 0:
-        return []
+    return _keep_new(work, cands, on + skip, end, room, opts) if cands and room > 0 else []
+
+
+def _keep_new(work, cands, start, end, room, opts) -> list:
+    """Keep the strongest new modes and subtract them from work."""
     f, t = zip(*cands)
-    s = np.full(len(f), on + skip)
+    s = np.full(len(f), start)
     c = ls_modes(work[:end], s, f, t, end, opts["ridge"], opts["cross"])
     e = _energy(c, t)
-    order = np.argsort(-e)[:room]
-    keep = [i for i in order if e[i] >= e.sum() * 10 ** (opts["prune_db"] / 10)]
+    keep = [i for i in np.argsort(-e)[:room] if e[i] >= e.sum() * 10 ** (opts["prune_db"] / 10)]
     work[:] -= _mode_signal(len(work), s[keep], np.array(f)[keep], np.array(t)[keep], c[keep], end)
     return [cands[i] for i in keep]
 
@@ -487,30 +514,53 @@ def _set_modes(strikes: list, idx, f, t, keep) -> None:
 
 def _joint(y, strikes, opts):
     """Joint least squares of every strike's modes, with prune and cluster rounds."""
+    fitted = _prune_rounds(y, strikes, opts)
+    return None if fitted is None else _cluster_rounds(y, strikes, opts, fitted)
+
+
+def _fit_flat(y, strikes, opts):
+    """(idx, f, t, starts, c, G, b, x) of every strike's modes, or None when there are none."""
+    idx, f, t, s = _flat(strikes, opts["skip"])
+    if not len(f):
+        return None
+    return (idx, f, t, s) + tuple(_ls(y, s, f, t, opts["n_fit"], opts["ridge"], opts["cross"]))
+
+
+def _prune_rounds(y, strikes, opts):
+    fitted = None
     for _ in range(2):
-        idx, f, t, s = _flat(strikes, opts["skip"])
-        if not len(f):
-            return None
-        c, G, b, x = _ls(y, s, f, t, opts["n_fit"], opts["ridge"], opts["cross"])
-        e = _energy(c, t)
-        keep = np.ones(len(f), bool)
-        for i in range(len(strikes)):
-            sel = idx == i
-            if sel.any():
-                keep[sel] = e[sel] >= e[sel].sum() * 10 ** (opts["prune_db"] / 10)
-        if keep.all():
+        fitted = _fit_flat(y, strikes, opts)
+        if fitted is None or _prune(strikes, fitted, opts):
             break
+    return fitted
+
+
+def _prune(strikes, fitted, opts) -> bool:
+    """Drop weak modes per strike. True when every mode stays."""
+    idx, f, t, _, c = fitted[:5]
+    e = _energy(c, t)
+    keep = np.ones(len(f), bool)
+    for i in range(len(strikes)):
+        sel = idx == i
+        if sel.any():
+            keep[sel] = e[sel] >= e[sel].sum() * 10 ** (opts["prune_db"] / 10)
+    done = bool(keep.all())
+    if not done:
         _set_modes(strikes, idx, f, t, keep)
+    return done
+
+
+def _cluster_rounds(y, strikes, opts, fitted):
     for _ in range(3):
+        idx, f, t, _, _, G, b, x = fitted
         drop = _cluster_drops(idx, f, t, G, b, x)
         if not drop.any():
             break
         _set_modes(strikes, idx, f, t, ~drop)
-        idx, f, t, s = _flat(strikes, opts["skip"])
-        if not len(f):
-            return None
-        c, G, b, x = _ls(y, s, f, t, opts["n_fit"], opts["ridge"], opts["cross"])
-    return idx, f, t, s, c
+        fitted = _fit_flat(y, strikes, opts)
+        if fitted is None:
+            break
+    return None if fitted is None else fitted[:5]
 
 
 def _cluster_drops(idx, f, t, G, b, x) -> np.ndarray:
@@ -556,18 +606,23 @@ def _passes(y: np.ndarray, ons: list[int], opts: dict):
     work = y.copy()
     result = None
     for _ in range(opts["passes"]):
-        for i, st in enumerate(strikes):
-            st["carry"] = _carry(strikes, i)
-            st["own"] = _dedupe(st["own"], st["carry"])
-            end = opts["n_fit"] if i == len(strikes) - 1 else ends[i]
-            if ends[i] - (st["on"] + opts["skip"]) >= 48:
-                st["own"] += _new_modes(work, st, end, opts)
+        _grow(work, strikes, ends, opts)
         result = _joint(y, strikes, opts)
         if result is None:
             break
         idx, f, t, s, c = result
         work = y - _mode_signal(len(y), s, f, t, c, opts["n_fit"])
     return strikes, result
+
+
+def _grow(work, strikes, ends, opts) -> None:
+    """One pass of new modes for every strike."""
+    for i, st in enumerate(strikes):
+        st["carry"] = _carry(strikes, i)
+        st["own"] = _dedupe(st["own"], st["carry"])
+        end = opts["n_fit"] if i == len(strikes) - 1 else ends[i]
+        if ends[i] - (st["on"] + opts["skip"]) >= 48:
+            st["own"] += _new_modes(work, st, end, opts)
 
 
 # ================================================================ strike rows
@@ -595,20 +650,29 @@ def _choose_ramps(y, strikes_rows, ons, skip):
     modesig = np.zeros(n)
     ramps = []
     for i, (o, rows) in enumerate(zip(ons, strikes_rows)):
-        w = _rows_wave(rows, n - o) if rows else np.zeros(n - o)
-        if i > 0:
-            k = min(K.LATER_RAMP, len(w))
-            w[:k] *= K.raised_cos(K.LATER_RAMP)[:k]
+        w = _strike_wave(rows, n - o, i > 0)
         stop = min(n - o, skip + int(round(0.0015 * SR)))
-        target = (y - modesig)[o:o + stop]
-        best, best_err = 0.0, None
-        for r_ms in RAMPS_MS:
-            err = float(np.sum((target - _ramped(w[:stop], r_ms)) ** 2))
-            if best_err is None or err < best_err * (1 - 1e-9):
-                best, best_err = r_ms, err
+        best = _best_ramp(w[:stop], (y - modesig)[o:o + stop])
         ramps.append(best if rows else 0.0)
         modesig[o:] += _ramped(w, best)
     return ramps, modesig
+
+
+def _strike_wave(rows: list, n: int, later: bool) -> np.ndarray:
+    w = _rows_wave(rows, n) if rows else np.zeros(n)
+    if later:
+        k = min(K.LATER_RAMP, len(w))
+        w[:k] *= K.raised_cos(K.LATER_RAMP)[:k]
+    return w
+
+
+def _best_ramp(head: np.ndarray, target: np.ndarray) -> float:
+    best, best_err = 0.0, None
+    for r_ms in RAMPS_MS:
+        err = float(np.sum((target - _ramped(head, r_ms)) ** 2))
+        if best_err is None or err < best_err * (1 - 1e-9):
+            best, best_err = r_ms, err
+    return best
 
 
 def _ramped(w: np.ndarray, r_ms: float) -> np.ndarray:
@@ -651,19 +715,24 @@ def _contact(resid: np.ndarray, ons: list[int], attack_ms: float):
 
 
 def _contact_rows(r: np.ndarray, o: int, stop: int) -> list:
-    z = esprit(r[o:stop], 24, 50)[0]
+    f, tau = _contact_poles(r[o:stop])
+    rows = []
+    if len(f):
+        c = ls_modes(r, np.full(len(f), o), f, tau, min(len(r), o + int(0.006 * SR)))
+        rows = [[round(float(fi), 2), sig(ti), sig(abs(ci)), round(float(np.angle(ci)), 4)]
+                for fi, ti, ci in zip(f, tau, c)]
+    return sorted([rw for rw in rows if rw[1] > 0 and rw[2] > 0], key=lambda rw: rw[0])
+
+
+def _contact_poles(seg: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """Frequencies and decays of the short contact modes in seg."""
+    z = esprit(seg, 24, 50)[0]
     rad = np.abs(z)
     z = z[(rad > 1e-4) & (rad < 0.9999) & (np.angle(z) >= 0)]
     f = np.angle(z) * SR / (2 * np.pi)
     tau = -1.0 / (np.log(np.abs(z)) * SR)
     ok = (tau >= 1e-5) & (tau <= 0.002) & (f < 0.47 * SR)
-    f, tau = f[ok], tau[ok]
-    if not len(f):
-        return []
-    c = ls_modes(r, np.full(len(f), o), f, tau, min(len(r), o + int(0.006 * SR)))
-    rows = [[round(float(fi), 2), sig(ti), sig(abs(ci)), round(float(np.angle(ci)), 4)]
-            for fi, ti, ci in zip(f, tau, c)]
-    return sorted([rw for rw in rows if rw[1] > 0 and rw[2] > 0], key=lambda rw: rw[0])
+    return f[ok], tau[ok]
 
 
 # ================================================================ noise envelopes
@@ -705,6 +774,16 @@ def _noise_power(x: np.ndarray, masks, nfft, grid, near, far) -> np.ndarray:
 
 
 def _noise_env(m: np.ndarray, det: np.ndarray, ons: list[int], tol_db: float, pre_cap_s: float) -> dict:
+    tg, far, E = _noise_db(m, det, ons, pre_cap_s)
+    env = []
+    for b in range(len(E)):
+        keep = rdp(tg, E[b], tol_db * (1 + far))
+        env.append([[round(float(tg[i]), 5), round(float(E[b, i]), 2)] for i in keep])
+    return {"edges": [float(e) for e in NOISE_EDGES], "h_erb": 0.4, "env": env}
+
+
+def _noise_db(m: np.ndarray, det: np.ndarray, ons: list[int], pre_cap_s: float):
+    """Grid times, far weight and residual noise power (dB) per ERB band."""
     n = len(m)
     nfft = next_fast_len(n + 16384)
     masks = K.erb_masks(nfft)
@@ -716,12 +795,7 @@ def _noise_env(m: np.ndarray, det: np.ndarray, ons: list[int], tol_db: float, pr
     P = np.maximum(Po - Pd, 1e-6 * Po)
     _pre_cap(P, ons, pre_cap_s)
     E = db(P)
-    E = np.maximum(E, E.max() - 100.0)
-    env = []
-    for b in range(len(E)):
-        keep = rdp(tg, E[b], tol_db * (1 + far))
-        env.append([[round(float(tg[i]), 5), round(float(E[b, i]), 2)] for i in keep])
-    return {"edges": [float(e) for e in NOISE_EDGES], "h_erb": 0.4, "env": env}
+    return tg, far, np.maximum(E, E.max() - 100.0)
 
 
 def _pre_cap(P: np.ndarray, ons: list[int], pre_cap_s: float) -> None:
@@ -753,34 +827,55 @@ def fit(x: Any, max_strikes: int = 10, kmax: int = 16, nmax: int = 384, passes: 
         verbose: bool = False, ramps=RAMPS_MS, pre_cap_s: float = 0.002, side_t: bool = True,
         sr: int = SR) -> dict:
     """A modal model of a path or a 48 kHz array, (n,) or (n, 2)."""
+    k = {"max_strikes": max_strikes, "kmax": kmax, "nmax": nmax, "passes": passes, "skip_ms": skip_ms,
+         "prune_db": prune_db, "max_modes": max_modes, "onset_rel": onset_rel, "noise_tol_db": noise_tol_db,
+         "analysis_s": analysis_s, "attack_ms": attack_ms, "pre_cap_s": pre_cap_s, "side_t": side_t}
     a = as_stereo(x) if isinstance(x, str) else as_stereo(resample(np.asarray(x, float), sr))
-    stereo = not is_mono_pair(a)
-    m = a.mean(axis=1)
-    n = len(m)
-    ons = onsets(m, rel=onset_rel, max_n=max_strikes)
-    fo = fade_out(m)
-    y, n_fit = _unfade(m, fo)
-    skip = int(round(skip_ms * SR / 1000))
-    opts = {"skip": skip, "kmax": kmax, "nmax": nmax, "passes": passes, "prune_db": prune_db,
-            "max_modes": max_modes, "analysis_s": analysis_s, "ridge": 1e-5, "cross": 10,
-            "n_fit": n_fit, "active_end": _active_end(m, n_fit)}
-    det, strikes, sub, n_modes, modesig = _deterministic(y, ons, opts, attack_ms)
-    if fo > 0:
-        nf = min(int(round(fo * SR)), n)
-        det[n - nf:] *= np.linspace(1.0, 0.0, nf)
-    model = {"kind": KIND, "version": VERSION, "sr": SR, "length_s": round(n / SR, 6),
-             "channels": 2 if stereo else 1, "fade_out_s": float(fo), "strikes": strikes, "sub": sub,
-             "noise": _noise_env(m, det, ons, noise_tol_db, pre_cap_s), "side": None,
-             "coherent": True, "fit": _diag(m, modesig, det, skip_ms, n_modes)}
-    if stereo:
-        model["side"] = _side_ratio(a)
-        if side_t:
-            from hark.fit.analysis import sinusoidal
-            model["side_t"] = sinusoidal.side_model(a, n / SR)
+    model = _fit(a, k)
     model["source"] = source_name(x)
     if verbose:
         print(summary(model))
     return model
+
+
+def _fit(a: np.ndarray, k: dict) -> dict:
+    stereo = not is_mono_pair(a)
+    m = a.mean(axis=1)
+    n = len(m)
+    ons = onsets(m, rel=k["onset_rel"], max_n=k["max_strikes"])
+    fo = fade_out(m)
+    y, n_fit = _unfade(m, fo)
+    opts = _fit_opts(k, n_fit, _active_end(m, n_fit))
+    det, strikes, sub, n_modes, modesig = _deterministic(y, ons, opts, k["attack_ms"])
+    _fade_tail(det, fo)
+    model = {"kind": KIND, "version": VERSION, "sr": SR, "length_s": round(n / SR, 6),
+             "channels": 2 if stereo else 1, "fade_out_s": float(fo), "strikes": strikes, "sub": sub,
+             "noise": _noise_env(m, det, ons, k["noise_tol_db"], k["pre_cap_s"]), "side": None,
+             "coherent": True, "fit": _diag(m, modesig, det, k["skip_ms"], n_modes)}
+    if stereo:
+        _add_side(model, a, k["side_t"])
+    return model
+
+
+def _fit_opts(k: dict, n_fit: int, active_end: int) -> dict:
+    return {"skip": int(round(k["skip_ms"] * SR / 1000)), "kmax": k["kmax"], "nmax": k["nmax"],
+            "passes": k["passes"], "prune_db": k["prune_db"], "max_modes": k["max_modes"],
+            "analysis_s": k["analysis_s"], "ridge": 1e-5, "cross": 10, "n_fit": n_fit,
+            "active_end": active_end}
+
+
+def _fade_tail(det: np.ndarray, fo: float) -> None:
+    if fo > 0:
+        n = len(det)
+        nf = min(int(round(fo * SR)), n)
+        det[n - nf:] *= np.linspace(1.0, 0.0, nf)
+
+
+def _add_side(model: dict, a: np.ndarray, side_t: bool) -> None:
+    model["side"] = _side_ratio(a)
+    if side_t:
+        from hark.fit.analysis import sinusoidal
+        model["side_t"] = sinusoidal.side_model(a, len(a) / SR)
 
 
 def _deterministic(y: np.ndarray, ons: list[int], opts: dict, attack_ms: float):
